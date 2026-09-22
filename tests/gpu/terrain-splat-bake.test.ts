@@ -81,7 +81,7 @@ const address = createWorldPageAddress(4, 3, -2);
       await generator.settle();
       await pyramid.recenter(address.x * 512, address.z * 512);
       const baked = await splat.bake([channelSlot], 171);
-      expect(baked).toBe(1);
+      expect(baked).toEqual([channelSlot]);
 
       const origin = channelAtlas.slotOrigin(channelSlot.slotIndex);
       const read = async (index: number): Promise<Uint8Array> =>
@@ -228,12 +228,12 @@ const address = createWorldPageAddress(4, 3, -2);
 
       writeChannel(TERRAIN_CHANNEL_TEXTURES.flowAccum, flow);
       writeChannel(TERRAIN_CHANNEL_TEXTURES.soilDepth, soil.fill(0));
-      expect(await splat.bake([channelSlot], 171)).toBe(1);
+      expect(await splat.bake([channelSlot], 171)).toEqual([channelSlot]);
       const thin = await forestFloorShare();
 
       // 255/255 * 8 m = the deep end of the encoding, well past the litter ramp.
       writeChannel(TERRAIN_CHANNEL_TEXTURES.soilDepth, soil.fill(255));
-      expect(await splat.bake([channelSlot], 171)).toBe(1);
+      expect(await splat.bake([channelSlot], 171)).toEqual([channelSlot]);
       const deep = await forestFloorShare();
 
       console.log(
@@ -321,7 +321,7 @@ const address = createWorldPageAddress(4, 3, -2);
           invariantSlotKey(address), address)!.slot;
         await generator.generate([heightSlot]);
         await generator.settle();
-        expect(await splat.bake([channelSlot], 171)).toBe(1);
+        expect(await splat.bake([channelSlot], 171)).toEqual([channelSlot]);
         const origin = channelAtlas.slotOrigin(channelSlot.slotIndex);
         const ids = await channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatId)!.readPixels(
           0, 0, undefined, true, false,
@@ -398,4 +398,99 @@ const address = createWorldPageAddress(4, 3, -2);
       canvas.remove();
     }
   }, 300_000);
+  /**
+   * The season re-bake race. After a season change the in-place re-bake runs
+   * while new pages are still being admitted, and both call the same bake.
+   * The second call used to return 0 without baking, and its page was
+   * published anyway: sand, permanently, because it was marked baked for the
+   * season. A filtered capture of winter-noon then canopy-1200ft drew 42 % of
+   * that forest as flat sand. Both requests must bake; the second is queued.
+   */
+  it("queues a bake requested while another runs, and both pages are written", async () => {
+    const world = createWorld("splat-bake");
+    const addressA = createWorldPageAddress(4, 3, -2);
+    const addressB = createWorldPageAddress(4, 3, -1);
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, {
+      antialias: false,
+      enableAllFeatures: false,
+      setMaximumLimits: false,
+    });
+    let scene: Scene | null = null;
+    try {
+      await engine.initAsync();
+      engine.runRenderLoop(() => {});
+      scene = new Scene(engine);
+      const base = resolveWebGpuQualityProfile("medium", "balanced");
+      const profile = { ...base, heightAtlasSlots: 4, channelAtlasSlots: 4 };
+      const heightAtlas = new TerrainPageAtlas(scene, profile, {
+        kind: "height", worldRevision: "splat-bake-queue",
+      });
+      const channelAtlas = new TerrainPageAtlas(scene, profile, {
+        kind: "channel", worldRevision: "splat-bake-queue",
+        textureCount: TERRAIN_CHANNEL_TEXTURE_COUNT,
+      });
+      const generator = new TerrainPageGenerator(
+        engine, heightAtlas, world.seedHash, world.airport ?? null,
+      );
+      const pyramid = new GlobalHeightPyramid(scene, engine, world.seedHash);
+      const splat = new PageSplatBake(
+        engine, heightAtlas, channelAtlas, world.seedHash, world.sourceSeedHash,
+        world.seaLevel, world.latitudeDegrees, world.airport ?? null,
+      );
+      heightAtlas.residency.beginFrame(1);
+      channelAtlas.residency.beginFrame(1);
+      const heightA = heightAtlas.residency.request(invariantSlotKey(addressA), addressA)!.slot;
+      const heightB = heightAtlas.residency.request(invariantSlotKey(addressB), addressB)!.slot;
+      const channelA = channelAtlas.residency.request(invariantSlotKey(addressA), addressA)!.slot;
+      const channelB = channelAtlas.residency.request(invariantSlotKey(addressB), addressB)!.slot;
+      await generator.generate([heightA, heightB]);
+      await generator.settle();
+      await pyramid.recenter(addressA.x * 512, addressA.z * 512);
+
+      // The re-bake of a resident page for winter, and a new page's first bake
+      // requested while it is still running. Neither is awaited before the
+      // other is asked for.
+      const rebake = splat.bake([channelA], 355);
+      const firstBake = splat.bake([channelB], 171);
+      expect(await rebake).toEqual([channelA]);
+      expect(await firstBake).toEqual([channelB]);
+
+      const edge = TERRAIN_CHANNEL_SLOT_EDGE;
+      const minimumWeightSum = async (slotIndex: number): Promise<number> => {
+        const origin = channelAtlas.slotOrigin(slotIndex);
+        const weights = await channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.splatWeightLo)!.readPixels(
+          0, 0, undefined, true, false, origin.u, origin.v, edge, edge) as Uint8Array;
+        let minimum = 2;
+        for (let row = WORLD_PAGE_GUTTER; row < edge - WORLD_PAGE_GUTTER; row += 5) {
+          for (let column = WORLD_PAGE_GUTTER; column < edge - WORLD_PAGE_GUTTER; column += 5) {
+            const offset = (row * edge + column) * 4;
+            minimum = Math.min(minimum, (weights[offset]! + weights[offset + 1]!
+              + weights[offset + 2]! + weights[offset + 3]!) / 255);
+          }
+        }
+        return minimum;
+      };
+      const sumA = await minimumWeightSum(channelA.slotIndex);
+      const sumB = await minimumWeightSum(channelB.slotIndex);
+      console.log(`queued bakes: min weight sum ${sumA.toFixed(3)} (re-bake), ${sumB.toFixed(3)} (queued)`);
+      // An unwritten page is all zeros: material 0 (sand) at weight 0.
+      expect(sumA).toBeGreaterThan(0.9);
+      expect(sumB).toBeGreaterThan(0.9);
+
+      splat.dispose();
+      pyramid.dispose();
+      generator.dispose();
+      channelAtlas.dispose();
+      heightAtlas.dispose();
+    } finally {
+      scene?.dispose();
+      engine.stopRenderLoop();
+      engine.dispose();
+      canvas.remove();
+    }
+  }, 240_000);
 });

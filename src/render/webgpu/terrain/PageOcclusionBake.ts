@@ -446,6 +446,17 @@ export class PageSplatBake {
   private pageBuffer: StorageBuffer | null = null;
   private capacity = 0;
   private running = false;
+  /** Serialises `bake`: a second request waits for the first, it is never dropped. */
+  private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * The frame the last dispatch was RECORDED in. A dispatch goes into the
+   * frame's command encoder and is submitted at the end of the frame, but a
+   * storage-buffer update is written to the device queue at once: a second
+   * bake in the same frame would overwrite this bake's jobs before its
+   * dispatch ran, and both dispatches would bake the second batch's pages.
+   */
+  private recordedFrame = -1;
+  private frameWaiters: (() => void)[] = [];
   private disposed = false;
   private lastBatchSize = 0;
   private lastCostSampleCount = -1;
@@ -492,19 +503,59 @@ export class PageSplatBake {
     return readGpuDispatchMs(this.shader);
   }
 
-  /** Bake both resident season buckets for a batch of channel slots. */
-  async bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<number> {
-    if (this.disposed || this.running) return 0;
-    if (!this.channelAtlas.hasTextures || !this.heightAtlas.hasTextures) return 0;
+  /**
+   * Bake both resident season buckets for a batch of channel slots, and
+   * return the slots it actually wrote.
+   *
+   * QUEUED, never dropped. Two clients share this bake: a new page's first
+   * bake (after its occlusion bake) and the in-place season re-bake. It used
+   * to return 0 while another bake was running, and neither caller read the
+   * count, so a page admitted during a season re-bake was published with its
+   * splat texels never written: material 0 at weight 0, which is sand. It was
+   * also marked baked for the current season, so no re-bake ever repaired it.
+   * A filtered capture of `winter-noon` then `canopy-1200ft` drew that forest
+   * as flat sand on 42 % of the frame. The caller publishes what is returned
+   * and releases the rest; a slot with no height slot is not baked.
+   */
+  bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<readonly TerrainAtlasSlot[]> {
+    const run = this.queue.then(async () => {
+      await this.previousDispatchSubmitted();
+      return this.bakeNow(slots, dayOfYear);
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Resolves once the frame that recorded the last dispatch has been submitted. */
+  private previousDispatchSubmitted(): Promise<void> {
+    if (this.disposed || this.recordedFrame < 0 || this.engine.frameId > this.recordedFrame) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.frameWaiters.push(resolve);
+      // `endFrame` submits, then advances `frameId`, then notifies.
+      this.engine.onEndFrameObservable.addOnce(() => {
+        this.frameWaiters = this.frameWaiters.filter((waiter) => waiter !== resolve);
+        resolve();
+      });
+    });
+  }
+
+  private async bakeNow(
+    slots: readonly TerrainAtlasSlot[],
+    dayOfYear: number,
+  ): Promise<readonly TerrainAtlasSlot[]> {
+    if (this.disposed) return [];
+    if (!this.channelAtlas.hasTextures || !this.heightAtlas.hasTextures) return [];
     const bakeable = slots.filter(
       (slot) => this.heightAtlas.residency.slotIndexOf(slot.key) >= 0,
     );
-    if (bakeable.length === 0) return 0;
+    if (bakeable.length === 0) return [];
     this.ensureCapacity(bakeable.length);
     const shader = this.shader;
     const jobBuffer = this.jobBuffer;
     const pageBuffer = this.pageBuffer;
-    if (!shader || !jobBuffer || !pageBuffer) return 0;
+    if (!shader || !jobBuffer || !pageBuffer) return [];
 
     const blend = seasonBucketBlend(dayOfYear);
     const jobs = new Float32Array(bakeable.length * SPLAT_JOB_FLOATS);
@@ -578,7 +629,8 @@ export class PageSplatBake {
     try {
       const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
       await shader.dispatchWhenReady(groups, groups, bakeable.length);
-      return bakeable.length;
+      this.recordedFrame = this.engine.frameId;
+      return bakeable;
     } finally {
       this.running = false;
     }
@@ -587,6 +639,7 @@ export class PageSplatBake {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const waiter of this.frameWaiters.splice(0)) waiter();
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
     releaseGpuBufferBytes(this.registeredBufferBytes);

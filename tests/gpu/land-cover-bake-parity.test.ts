@@ -114,7 +114,7 @@ describe("land-cover bake parity (6-13)", () => {
       await generator.settle();
       await pyramid.recenter(
         addresses[0]!.x * 512 * 2 ** LEVEL, addresses[0]!.z * 512 * 2 ** LEVEL);
-      expect(await splat.bake(channelSlots, 171)).toBe(addresses.length);
+      expect(await splat.bake(channelSlots, 171)).toHaveLength(addresses.length);
 
       const edge = TERRAIN_CHANNEL_SLOT_EDGE;
       const texel = terrainChannelTexelSizeMeters(LEVEL);
