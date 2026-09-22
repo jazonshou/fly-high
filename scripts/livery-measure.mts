@@ -76,16 +76,25 @@ for (const file of process.argv.slice(2)) {
   const edges: string[] = [], widthsM: number[] = [], widthsPx: number[] = [];
   for (const x of [-18, -12, -6, 0, 6, 12, 18, 22]) {
     const ys: number[] = [], L: number[] = [], P: number[][] = [];
-    for (let y = f.bandTop + 0.35; y >= f.bandTop - 0.35; y -= 0.005) {
+    // +-0.30 and plateaus 0.12-0.28 from the edge: the whole scan stays under
+    // the main-deck pane bottoms (y = 0.02) for a top edge at -0.30 or lower.
+    // At +-0.35 the first samples fell on a pane, read dark, and the 90 %
+    // crossing landed on sample 0 -- a "38 cm" edge that was the scan window.
+    for (let y = f.bandTop + 0.30; y >= f.bandTop - 0.30; y -= 0.005) {
       const z = skinZ(x, y); if (!Number.isFinite(z)) continue;
       const p = project([x, y, z]);
       ys.push(y); P.push(p); L.push(lumAt(p[0]!, p[1]!));
     }
-    const hi = median(L.filter((_, i) => ys[i]! >= f.bandTop + 0.2));
-    const lo = median(L.filter((_, i) => ys[i]! <= f.bandTop - 0.2));
+    const hi = median(L.filter((_, i) => ys[i]! >= f.bandTop + 0.12 && ys[i]! <= f.bandTop + 0.28));
+    const lo = median(L.filter((_, i) => ys[i]! <= f.bandTop - 0.12 && ys[i]! >= f.bandTop - 0.28));
     if (!(hi - lo > 25)) { edges.push(`x=${x}: NO EDGE (plateaus ${hi.toFixed(0)}/${lo.toFixed(0)}; occluded or off-frame)`); continue; }
     const n = L.map((v) => (v - lo) / (hi - lo));
-    const i90 = n.findIndex((v) => v < 0.9), i10 = n.findIndex((v) => v < 0.1);
+    // The edge: the first sample under 10 %, and the LAST sample at or above
+    // 90 % before it -- not the first under 90 %, which a dark pane or seam
+    // above the edge can supply.
+    const i10 = n.findIndex((v) => v < 0.1);
+    let i90 = -1;
+    for (let i = 0; i < i10; i += 1) if (n[i]! >= 0.9) i90 = i;
     if (i90 < 0 || i10 < 0) { edges.push(`x=${x}: edge not crossed`); continue; }
     const wm = ys[i90]! - ys[i10]!, wp = Math.hypot(P[i10]![0]! - P[i90]![0]!, P[i10]![1]! - P[i90]![1]!);
     widthsM.push(wm); widthsPx.push(wp);

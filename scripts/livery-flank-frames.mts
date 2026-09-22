@@ -11,24 +11,31 @@
  *   - every starboard cabin pane centre, from the window mesh's own
  *     thin-instance matrices (both decks).
  *
- *   npx tsx scripts/livery-flank-frames.mts <outDir> <url> <expectTree> <distanceM> <bandTopY> <label> [elevationDeg]
+ *   npx tsx scripts/livery-flank-frames.mts <outDir> <url> <expectTree> <distanceM> <bandTopY> <label> [elevationDeg] [stationX]
  *
- * `url` is a running dev server; `expectTree` is the absolute path of the
- * checkout it must be serving, checked before anything is captured (two
- * worktrees on two ports look identical from the page). The camera is parked on
- * the STARBOARD flank in the aeroplane's own frame, `distanceM` out along the
- * wing axis and `elevationDeg` above the wing plane, re-parked every frame. The
- * HTML HUD is hidden before the screenshot so nothing painted by the page sits
- * on the flank being measured.
+ * `url` is a running dev server on localhost; `expectTree` is the absolute path
+ * of the checkout it must be serving. That is proved from the LISTENING
+ * PROCESS's working directory before anything is captured -- not from
+ * `/@fs<tree>/package.json`, which answers 200 for every worktree because Vite
+ * allows the whole workspace root. The camera is parked on the STARBOARD flank
+ * in the aeroplane's own frame, `distanceM` out along the wing axis and
+ * `elevationDeg` above the wing plane, aimed at body station `stationX` (the
+ * shell's centre when omitted), re-parked every frame. The HTML HUD is hidden
+ * before the screenshot so nothing painted by the page sits on the flank being
+ * measured.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
-const [outDir, url, expectTree, distanceRaw, bandTopRaw, label, elevationRaw] = process.argv.slice(2);
+const [outDir, url, expectTree, distanceRaw, bandTopRaw, label, elevationRaw, stationRaw] = process.argv.slice(2);
 if (!outDir || !url || !expectTree || !distanceRaw || !bandTopRaw || !label) {
-  throw new Error("usage: <outDir> <url> <expectTree> <distanceM> <bandTopY> <label> [elevationDeg]");
+  throw new Error("usage: <outDir> <url> <expectTree> <distanceM> <bandTopY> <label> [elevationDeg] [stationX]");
 }
+/** Body station to aim at, metres along +X; undefined aims at the shell's centre. */
+const station = stationRaw === undefined ? undefined : Number(stationRaw);
+if (station !== undefined && !Number.isFinite(station)) throw new RangeError("stationX must be a number");
 // Camera elevation above the wing plane, degrees. 0 = level with the fuselage
 // centre, which puts the dihedral wing across the sight line to the lower flank.
 const elevation = Number(elevationRaw ?? 0);
@@ -41,9 +48,15 @@ const WIDTH = 1280;
 const HEIGHT = 1280;
 mkdirSync(outDir, { recursive: true });
 
-const probe = await fetch(new URL(`/@fs${expectTree}/package.json`, url).toString());
-if (!probe.ok) throw new Error(`${url} is NOT serving ${expectTree} (${probe.status}); nothing captured.`);
-console.log(`serving: ${expectTree}`);
+// WHICH CHECKOUT IS SERVING: the listener's own working directory.
+const port = new URL(url).port;
+const listener = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" }).trim().split("\n")[0];
+const cwd = execFileSync("lsof", ["-a", "-p", listener!, "-d", "cwd", "-Fn"], { encoding: "utf8" })
+  .split("\n").find((line) => line.startsWith("n"))?.slice(1);
+if (!cwd || realpathSync(cwd) !== realpathSync(expectTree)) {
+  throw new Error(`${url} is served by pid ${listener} from ${cwd}, NOT ${expectTree}; nothing captured.`);
+}
+console.log(`serving: ${expectTree} (pid ${listener})`);
 
 const browser = await chromium.launch({
   ...chromiumStdioLaunchOptions(),
@@ -89,7 +102,7 @@ interface MeshLike {
   name: string;
   computeWorldMatrix(force: boolean): void;
   getWorldMatrix(): { m: ArrayLike<number> };
-  getBoundingInfo(): { boundingBox: { centerWorld: Vec } };
+  getBoundingInfo(): { boundingBox: { centerWorld: Vec; center: Vec } };
   _thinInstanceDataStorage?: { matrixData?: Float32Array };
 }
 interface SceneLike {
@@ -108,7 +121,7 @@ interface Held { __lvStore?: Record<string, unknown>; __lvScene?: SceneLike; __l
 // Park on the STARBOARD flank, `distance` metres out along the aeroplane's own
 // wing axis, roof up the frame -- re-parked every frame so the game's camera
 // cannot take it back.
-const parked = await page.evaluate(async ({ d, elevationDeg }: { d: number; elevationDeg: number }) => {
+const parked = await page.evaluate(async ({ d, elevationDeg, stationX }: { d: number; elevationDeg: number; stationX: number | null }) => {
   (globalThis as unknown as Record<string, unknown>).__name ??= (fn: unknown) => fn;
   const held = globalThis as unknown as Held;
   const storeUrl = performance.getEntriesByType("resource").map((r) => r.name)
@@ -133,7 +146,14 @@ const parked = await page.evaluate(async ({ d, elevationDeg }: { d: number; elev
     };
     const roof = unit(m[4]!, m[5]!, m[6]!);
     const wing = unit(m[8]!, m[9]!, m[10]!);
-    const c = shell.getBoundingInfo().boundingBox.centerWorld;
+    // The aim point: the shell's centre, or the body-frame point (stationX, the
+    // shell's own centre height, 0) through the shell's world matrix.
+    const local = shell.getBoundingInfo().boundingBox.center;
+    const c = stationX === null ? shell.getBoundingInfo().boundingBox.centerWorld : {
+      x: stationX * m[0]! + local.y * m[4]! + m[12]!,
+      y: stationX * m[1]! + local.y * m[5]! + m[13]!,
+      z: stationX * m[2]! + local.y * m[6]! + m[14]!,
+    };
     const cam = scene.activeCamera;
     if (!cam) return;
     const e = (elevationDeg * Math.PI) / 180;
@@ -147,7 +167,7 @@ const parked = await page.evaluate(async ({ d, elevationDeg }: { d: number; elev
     cam.setTarget(target);
   });
   return "parked";
-}, { d: distance, elevationDeg: elevation });
+}, { d: distance, elevationDeg: elevation, stationX: station ?? null });
 if (parked !== "parked") throw new Error(`VOID: ${parked}`);
 await page.waitForTimeout(4_000);
 // The canvas and every element that CONTAINS it stay visible; everything else
@@ -162,7 +182,7 @@ const hidden = await page.evaluate(() => {
   return count;
 });
 await page.waitForTimeout(500);
-const stem = `${outDir}/${label}-side-${distance}m${elevation ? `-el${elevation}` : ""}`;
+const stem = `${outDir}/${label}-side-${distance}m${elevation ? `-el${elevation}` : ""}${station !== undefined ? `-x${station}` : ""}`;
 const png = `${stem}.png`;
 await page.screenshot({ path: png, type: "png" });
 
@@ -201,7 +221,7 @@ const projected = await page.evaluate(() => {
 });
 
 writeFileSync(`${stem}.json`, JSON.stringify({
-  label, distance, elevation, bandTop, png, pageErrors, hudElementsHidden: hidden, ...projected,
+  label, distance, elevation, station: station ?? null, bandTop, png, pageErrors, hudElementsHidden: hidden, ...projected,
 }, null, 2));
 console.log(`wrote ${png} + projection json: ${projected.panes.length} starboard panes; page errors: ${pageErrors.length}`);
 await browser.close();

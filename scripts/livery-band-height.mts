@@ -4,7 +4,13 @@
  * starboard skin, projected through the frame's own camera (a frame from
  * `livery-flank-frames.mts`).
  *
- *   npx tsx scripts/livery-band-height.mts <frame.json> [...]
+ *   npx tsx scripts/livery-band-height.mts [--half] [--stations=from:to:step] <frame.json> [...]
+ *
+ * Default: navy is luminance under 45, strict, so the anti-aliased edge
+ * texels are trimmed (a few cm at 30 m). `--half` counts a sample as navy at
+ * or past HALF WAY from this station's own skin to its own band -- the
+ * extent a viewer reads as the band, and the right measure where a strict
+ * threshold is measuring anti-aliasing (the 112 m read).
  */
 import { readFileSync } from "node:fs";
 import sharp from "sharp";
@@ -34,7 +40,11 @@ const skinZ = (x: number, y: number) => {
 const DOORS = MAIN_DECK_DOORS.map((door) => door.x);
 const INTENDED = `${CHEATLINE.bottomY.toFixed(2)}..${CHEATLINE.topY.toFixed(2)}, ${(CHEATLINE.topY - CHEATLINE.bottomY).toFixed(2)} m`;
 
-for (const file of process.argv.slice(2)) {
+const half = process.argv.includes("--half");
+const range = (process.argv.find((arg) => arg.startsWith("--stations="))?.slice(11) ?? "-24:26:2").split(":").map(Number);
+const [fromX, toX, stepX] = range as [number, number, number];
+if (!(stepX! > 0) || !(toX! >= fromX!)) throw new RangeError("--stations=from:to:step");
+for (const file of process.argv.slice(2).filter((arg) => !arg.startsWith("--"))) {
   const f = JSON.parse(readFileSync(file, "utf8"));
   const { data, info } = await sharp(f.png).raw().toBuffer({ resolveWithObject: true });
   const W: number[] = f.W, VP: number[] = f.VP;
@@ -53,21 +63,35 @@ for (const file of process.argv.slice(2)) {
   };
   console.log(`\n=== ${f.label} @ ${f.distance} m: visible navy extent per station (intended ${INTENDED})`);
   const heights: { x: number; h: number }[] = [];
-  for (let x = -24; x <= 26; x += 2) {
+  for (let x = fromX; x <= toX + 1e-9; x += stepX) {
     const door = DOORS.some((d) => Math.abs(d - x) < 0.8);
     let top = NaN, bottom = NaN, offFrame = false;
+    const samples: { y: number; L: number }[] = [];
     for (let y = CHEATLINE.topY + 0.1; y >= CHEATLINE.bottomY - 0.4; y -= 0.01) {
       const z = skinZ(x, y); if (!Number.isFinite(z)) continue;
       const p = project([x, y, z]);
       const L = lum(p[0]!, p[1]!);
       if (!Number.isFinite(L)) { offFrame = true; break; }
-      // navy: dark, well below the white skin (~110-190 in these frames) and the grey belly
-      if (L < 45) { if (!Number.isFinite(top)) top = y; bottom = y; }
+      samples.push({ y, L });
+    }
+    // navy: dark, well below the white skin (~110-190 in these frames) and the
+    // grey belly; with --half, past the midpoint of THIS station's skin (the
+    // brightest sample above the band) and band (the band centre's sample).
+    const centre = samples.reduce((best, s) => Math.abs(s.y - (CHEATLINE.topY + CHEATLINE.bottomY) / 2)
+      < Math.abs(best.y - (CHEATLINE.topY + CHEATLINE.bottomY) / 2) ? s : best, samples[0] ?? { y: 0, L: NaN });
+    const skin = Math.max(...samples.filter((s) => s.y > CHEATLINE.topY).map((s) => s.L));
+    const threshold = half ? (skin + centre.L) / 2 : 45;
+    for (const { y, L } of samples) {
+      if (L < threshold) { if (!Number.isFinite(top)) top = y; bottom = y; }
     }
     if (offFrame) continue;
     const h = Number.isFinite(top) ? top - bottom : 0;
     heights.push({ x, h });
-    console.log(`  x=${String(x).padStart(3)}  ${Number.isFinite(top) ? `navy ${top.toFixed(2)} .. ${bottom.toFixed(2)}  height ${h.toFixed(2)} m` : "NO NAVY"}${door ? "   (door station)" : ""}`);
+    const pxPerM = (() => {
+      const a = project([x, CHEATLINE.topY, skinZ(x, CHEATLINE.topY)]), b = project([x, CHEATLINE.bottomY, skinZ(x, CHEATLINE.bottomY)]);
+      return Math.hypot(b[0]! - a[0]!, b[1]! - a[1]!) / (CHEATLINE.topY - CHEATLINE.bottomY);
+    })();
+    console.log(`  x=${String(x).padStart(3)}  ${Number.isFinite(top) ? `navy ${top.toFixed(2)} .. ${bottom.toFixed(2)}  height ${h.toFixed(2)} m = ${(h * pxPerM).toFixed(1)} px` : "NO NAVY"}${door ? "   (door station)" : ""}`);
   }
   const clean = heights.filter((r) => !DOORS.some((d) => Math.abs(d - r.x) < 0.8));
   const hs = clean.map((r) => r.h).sort((a, b) => a - b);
