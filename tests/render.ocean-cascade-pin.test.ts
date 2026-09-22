@@ -195,6 +195,25 @@ describe("the pin is capture-only and sits at the time pin", () => {
     expect(callers).toEqual(["tests/perf/perf-capture.test.ts"]);
   });
 
+  it("the ocean's frame-graph pass runs on every frame the renderer renders", () => {
+    // The pin fixes the ocean clock's count, but that clock ticks only when the
+    // pass runs. Give the pass a `cadence` or an `enabled` predicate and
+    // whether it runs is decided by the frame graph's OWN frame index, which
+    // is not pinned and carries every earlier shot's streaming. The history
+    // dependence comes straight back, and every other test here stays green.
+    // (Harness-owner review, 2026-09-22.)
+    const renderer = read("src/render/FlightRenderer.ts");
+    const name = renderer.indexOf('name: "spectral-ocean-compute"');
+    const start = renderer.lastIndexOf("this.graph.register({", name);
+    const end = renderer.indexOf("this.graph.register({", name);
+    expect(name).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(name);
+    const pass = renderer.slice(start, end);
+    expect(pass).toContain("this.ocean.update(");
+    expect(pass).not.toMatch(/\b(?:cadence|enabled)\s*[:(,]/);
+  });
+
   it("pins once per shot, after the time pin and before the settle", () => {
     // Before the time pin, the streaming loop would count on past it; after
     // the first settle frame, the settle would start on a history-dependent

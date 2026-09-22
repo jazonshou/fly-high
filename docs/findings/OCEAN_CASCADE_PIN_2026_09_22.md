@@ -1,6 +1,6 @@
 # Pinning the ocean's cascade cadence at each perf shot's time pin
 
-**Status: built on `jazonshou/ocean-cascade-pin` from `8d31fd2`; awaiting harness-owner review.**
+**Status: built on `jazonshou/ocean-cascade-pin` from `8d31fd2`; harness-owner review approved 2026-09-22 (plane engineer); merge is the PM's.**
 
 ## The defect
 
@@ -59,6 +59,12 @@ that passes on the broken code is a test of nothing.
   history on every cadence any tier runs gives one schedule. Source scans hold
   the pin to the renderer → ocean → clock chain under `src/`, to the perf harness
   alone outside it, and to its place after the time pin and before the settle.
+  One more scan, added on the harness owner's review, holds the ocean's
+  frame-graph pass to no `cadence` and no `enabled` predicate: either would let
+  the frame graph's own frame index — unpinned, carrying every earlier shot's
+  streaming — decide which frames tick the pinned clock, and every other test
+  would stay green. Verified to fail with `cadence: 2` and with
+  `enabled: () => true` added to the pass.
 - **`tests/gpu/ocean-cascade-pin.test.ts`** (GPU) builds the shipped ocean, runs
   two pre-pin histories two frames apart, and reads every cascade back texel by
   texel. Unpinned, only the every-4th cascade's displacement differs. Pinned,
@@ -225,3 +231,17 @@ Its SHOULDs — the merge consequence, the birds and cloud jitter, and unsourced
 foam-floor figures an earlier draft carried — are all addressed above. Before it
 stalled, the test-quality reviewer re-ran the GPU test independently and
 reproduced the foam floor exactly.
+
+The harness owner (the plane engineer) then reviewed it independently from the
+code and approved it. They re-derived the 395 and 1019 frame counts; confirmed
+that every render ticks the clock exactly once (the ocean's pass has no cadence
+and no enabled predicate, and the only per-frame skip, the budget probe's
+override, is HUD-triggered and never called by the harness); confirmed that no
+compute swap can land after a pin (the harness changes neither quality nor
+rendering mode, and the ocean swaps its compute only on a topology change); and
+checked the scotopic, resize and undrained capture modes. Their one
+recommendation, a guard against the pass later gaining a cadence or an enabled
+predicate, is the frame-graph scan under Tests. Their re-baseline runbook adds
+a second full capture on the same tree as an A/A, which turns "full 39-shot
+reproducibility is predicted, not measured" into a measured pinned noise floor
+per shot.
