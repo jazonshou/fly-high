@@ -437,7 +437,7 @@ export function buildBizjetCockpit(
 
   // THE DISPLAYS THEMSELVES, if this engine has a 2D canvas. Under NullEngine it does not, and the
   // screens keep the flat instrument-face material they were built with (see `displayAtlas.ts`).
-  const atlas = createDisplayAtlas(build.scene, BIZJET_DISPLAYS);
+  const atlas = createDisplayAtlas(build, BIZJET_DISPLAYS);
   if (atlas !== null) {
     screensMesh.material = displayMaterial(build, "bizjet-display", atlas);
   }

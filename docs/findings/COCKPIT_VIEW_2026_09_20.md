@@ -612,6 +612,18 @@ defect, the four test gaps behind the mutations just listed, a comment that said
 `render.cockpit-display-state.test.ts` flies the simulator (it builds its states by hand), the ladder
 rungs in the null-read frame, and five places where prose still gave the Global a ball.
 
+**The atlas now belongs to the visual that made it (a later fix).** The atlas texture was created
+against the scene and registered with nothing, so `visual.dispose()` left it behind. In one scene, five
+build-and-dispose cycles held five atlases: 15.84 MB on the 747, 10.56 MB on the Global. It now goes on
+`build.textures`, which `build.disposeMaterials()` frees with the paint synthesis's textures. Its canvas
+is sized to zero when it goes, and after the fix the same five cycles hold nothing.
+
+What this was NOT, measured: a leak on every aircraft switch in the app. That was first reported, and I
+repeated it. But the app rebuilds the whole renderer on a switch and disposes its scene, and
+`scene.dispose()` frees every texture in the scene, an orphaned `RawTexture` included. So the shipped app
+never piled atlases up. The defect bit only a visual disposed while its scene lives on: the tests, and
+any later in-scene aircraft swap.
+
 ## The Cessna's centre frame ends in structure, at both ends
 
 **What was wrong.** `windscreen-center-frame` is an exterior strut up the middle of the Cessna's
