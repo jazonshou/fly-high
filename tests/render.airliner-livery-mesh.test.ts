@@ -808,3 +808,47 @@ describe("rebuilding the 747", () => {
     expect(alive(), "textures the 747 allocated outlive its dispose()").toEqual([]);
   });
 });
+
+describe("the spoiler rim material", () => {
+  const SPOILERS = ["port", "starboard"].flatMap((side) =>
+    ["flight", "ground"].map((group) => `${side}-airliner-${group}-spoilers-surface`)).sort();
+
+  it("is worn by the four spoiler meshes and nothing else, on UV1 alone", () => {
+    const { scene } = build("airliner");
+    // Found by what it WEARS, so the rim leaking onto the wing is caught too.
+    const wearers = drawnMeshes(scene).filter(
+      (m) => (m.material as PBRMaterial | null)?.albedoTexture?.name === "airliner-spoiler-rim",
+    );
+    expect(wearers.map((m) => m.name).sort()).toEqual(SPOILERS);
+    for (const spoiler of wearers) {
+      expect(spoiler.material!.name).toBe("airliner-spoiler");
+      expect(layout(spoiler), spoiler.name).toEqual({ uv: true, uv2: false, color: false });
+      expect(declaredVaryings(spoiler), spoiler.name).toEqual({ uv2: false, vertexColor: false, albedoUv: 1 });
+    }
+    // Four meshes, one material: the rim is one image laid on every panel.
+    expect(new Set(wearers.map((m) => m.material)).size).toBe(1);
+  });
+
+  it("uses the body's normal and metallic-roughness OBJECTS, and leaves the body's albedo on the body", () => {
+    const { scene } = build("airliner");
+    const spoiler = mesh(scene, SPOILERS[0]!).material as PBRMaterial;
+    const body = mesh(scene, "airliner-body-exterior").material as PBRMaterial;
+    for (const slot of ["bumpTexture", "metallicTexture"] as const) {
+      expect(spoiler[slot], `${slot}: the spoiler has its own wrapper`).toBe(body[slot]);
+    }
+    expect(body.albedoTexture!.name).toBe("airliner-body-albedo");
+    const rim = spoiler.albedoTexture!;
+    expect(rim.wrapU).toBe(Texture.CLAMP_ADDRESSMODE);
+    expect(rim.wrapV).toBe(Texture.CLAMP_ADDRESSMODE);
+  });
+
+  it("gives every spoiler UVs spanning 0..1 in both axes, so each panel shows the whole rim once", () => {
+    const { scene } = build("airliner");
+    for (const name of SPOILERS) {
+      const uvs = data(mesh(scene, name), VertexBuffer.UVKind);
+      const u = uvs.filter((_, index) => index % 2 === 0);
+      const v = uvs.filter((_, index) => index % 2 === 1);
+      expect([Math.min(...u), Math.max(...u), Math.min(...v), Math.max(...v)], name).toEqual([0, 1, 0, 1]);
+    }
+  });
+});

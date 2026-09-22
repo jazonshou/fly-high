@@ -16,10 +16,17 @@ import {
   MAIN_DECK_DOORS,
   MAIN_DECK_FLOOR_Y,
   MAIN_DECK_WINDOW_Y,
+  SPOILER_RIM_CHORD_FRACTION,
+  SPOILER_RIM_SIZE,
+  SPOILER_RIM_SPAN_FRACTION,
+  SPOILER_SEAM,
+  SPOILER_TOP_TONE,
   buildAirlinerLivery,
   buildAirlinerLiveryImage,
   buildLiveryMipChain,
+  buildSpoilerRimImage,
   createAirlinerLiveryTexture,
+  createSpoilerRimTexture,
   phaseOfHeight,
   type LiveryImage,
 } from "../src/render/webgpu/aircraft/airlinerLivery";
@@ -415,6 +422,88 @@ describe("airliner livery mip chain and upload", () => {
       texture.dispose();
     } finally {
       spy.mockRestore();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+});
+
+describe("the spoiler rim image", () => {
+  const image = buildSpoilerRimImage();
+  const texel = (column: number, row: number): number[] => {
+    const index = (row * image.width + column) * 4;
+    return Array.from(image.data.subarray(index, index + 4));
+  };
+  const seam = [...SPOILER_SEAM, 255];
+  const tone = [...SPOILER_TOP_TONE, 255];
+
+  it("is a square power of two, opaque, and holds exactly the seam and the tone", () => {
+    expect(image.width).toBe(SPOILER_RIM_SIZE);
+    expect(image.height).toBe(SPOILER_RIM_SIZE);
+    expect(image.data.length).toBe(SPOILER_RIM_SIZE * SPOILER_RIM_SIZE * 4);
+    const seen = new Set<string>();
+    for (let row = 0; row < image.height; row += 1) {
+      for (let column = 0; column < image.width; column += 1) seen.add(texel(column, row).join(","));
+    }
+    expect([...seen].sort()).toEqual([seam.join(","), tone.join(",")].sort());
+  });
+
+  it("puts the seam's chord width across the COLUMNS (u) and its span width down the ROWS (v)", () => {
+    // `conformedPanels` gives u to the chord and v to the span. The two widths
+    // differ (6 and 4 texels at 128), so a transposed image fails here: a
+    // symmetric check could not tell.
+    const chordTexels = Math.round(SPOILER_RIM_CHORD_FRACTION * SPOILER_RIM_SIZE);
+    const spanTexels = Math.round(SPOILER_RIM_SPAN_FRACTION * SPOILER_RIM_SIZE);
+    expect([chordTexels, spanTexels]).toEqual([6, 4]);
+    const middle = SPOILER_RIM_SIZE / 2;
+    const across = Array.from({ length: SPOILER_RIM_SIZE }, (_, column) => texel(column, middle));
+    const along = Array.from({ length: SPOILER_RIM_SIZE }, (_, row) => texel(middle, row));
+    const seamRun = (line: number[][]): [number, number] => [
+      line.findIndex((value) => value.join() === tone.join()),
+      SPOILER_RIM_SIZE - 1 - line.findLastIndex((value) => value.join() === tone.join()),
+    ];
+    expect(seamRun(across), "seam texels at the hinge and trailing edges").toEqual([chordTexels, chordTexels]);
+    expect(seamRun(along), "seam texels at the inboard and outboard ends").toEqual([spanTexels, spanTexels]);
+    // Every corner is seam.
+    for (const [column, row] of [[0, 0], [SPOILER_RIM_SIZE - 1, 0], [0, SPOILER_RIM_SIZE - 1],
+      [SPOILER_RIM_SIZE - 1, SPOILER_RIM_SIZE - 1]] as const) {
+      expect(texel(column, row)).toEqual(seam);
+    }
+  });
+
+  it("tones the top a shade under the body paint's base colour, and the seam well under the top", () => {
+    const base = [0xf4, 0xf5, 0xf3];
+    SPOILER_TOP_TONE.forEach((value, channel) => {
+      expect(value / base[channel]!).toBeGreaterThan(0.84);
+      expect(value / base[channel]!).toBeLessThan(0.88);
+      expect(SPOILER_SEAM[channel]!).toBeLessThan(value / 2);
+    });
+  });
+
+  it("is deterministic, and refuses a size that is not a power of two", () => {
+    expect(buildSpoilerRimImage().data).toEqual(image.data);
+    expect(() => buildSpoilerRimImage(96)).toThrow(RangeError);
+    // Down to the smallest image, each side keeps at least one seam texel.
+    const tiny = buildSpoilerRimImage(4);
+    expect(Array.from(tiny.data.subarray(0, 4))).toEqual(seam);
+  });
+
+  it("uploads under NullEngine as one RawTexture, clamped both ways, level 0 only", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const update = vi.spyOn(RawTexture.prototype, "updateMipLevel");
+    try {
+      const texture = createSpoilerRimTexture(scene);
+      expect(update, "the spoiler rim must not hand-write levels FI-5 would overwrite").not.toHaveBeenCalled();
+      expect(texture.getSize()).toEqual({ width: SPOILER_RIM_SIZE, height: SPOILER_RIM_SIZE });
+      expect(texture.wrapU).toBe(Texture.CLAMP_ADDRESSMODE);
+      expect(texture.wrapV).toBe(Texture.CLAMP_ADDRESSMODE);
+      expect(texture.coordinatesIndex).toBe(0);
+      expect(texture.name).toBe("airliner-spoiler-rim");
+      expect(scene.textures).toContain(texture);
+      texture.dispose();
+    } finally {
+      update.mockRestore();
       scene.dispose();
       engine.dispose();
     }

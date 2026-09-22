@@ -648,6 +648,62 @@ function isPowerOfTwo(value: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// THE SPOILER RIM -- the stowed spoilers' own small image.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stowed spoilers lie in the wing, so at rest nothing marks them, which is
+ * correct and is also why Jason asked where they had gone. A real 747 shows
+ * each one as a panel: a dark seam round its edge and a top a shade off the
+ * wing. This image is that panel, drawn once and laid on EVERY spoiler through
+ * its own 0..1 UVs (`conformedPanels`: u across the chord, v along the span),
+ * so it follows each panel's outline whatever its size.
+ *
+ * TWO MARKS, for two ranges. The seam is a LINE, crisp at 30 m and gone by
+ * 112 m, where a 4-8 cm line is under a pixel. The top's tone is an AREA, and
+ * an area survives any distance. Neither costs a draw: the spoilers are
+ * already their own meshes. And neither costs a fragment input: the image
+ * rides UV1, which the panels already carry.
+ */
+export const SPOILER_RIM_SIZE = 128;
+/**
+ * The seam's width as a fraction of the panel: 5 % of the chord and 3 % of the
+ * span. The panels run 0.79-1.66 m in chord and 1.4-2.9 m in span, so the seam
+ * is 4.0-8.3 cm along the hinge and trailing edges and 4.2-8.7 cm across the
+ * ends -- one image cannot hold a width in metres across panels of different
+ * sizes, and this keeps the smallest panel's seam at about 4 cm.
+ */
+export const SPOILER_RIM_CHORD_FRACTION = 0.05;
+export const SPOILER_RIM_SPAN_FRACTION = 0.03;
+/**
+ * The top: the body paint's base colour (0xf4f5f3) at 0.86, a panel a shade
+ * greyer than the wing it lies in. The seam: a gap in shadow. Both decided,
+ * not measured, and the numbers to tune from a frame.
+ */
+export const SPOILER_TOP_TONE: LiveryRgb = [210, 211, 209];
+export const SPOILER_SEAM: LiveryRgb = [70, 72, 75];
+
+/** The spoiler panel image: the seam round the border, the tone inside. */
+export function buildSpoilerRimImage(size = SPOILER_RIM_SIZE): LiveryImage {
+  if (!isPowerOfTwo(size)) throw new RangeError(`The spoiler rim image is square, power of two; got ${size}`);
+  const data = new Uint8Array(size * size * CHANNELS);
+  // Whole texels: a seam of at least one, so the smallest image still has one.
+  const chordTexels = Math.max(1, Math.round(SPOILER_RIM_CHORD_FRACTION * size));
+  const spanTexels = Math.max(1, Math.round(SPOILER_RIM_SPAN_FRACTION * size));
+  for (let row = 0; row < size; row += 1) {
+    for (let column = 0; column < size; column += 1) {
+      // Columns are u (chord), rows are v (span).
+      const seam = column < chordTexels || column >= size - chordTexels
+        || row < spanTexels || row >= size - spanTexels;
+      const index = (row * size + column) * CHANNELS;
+      fillTexel(data, index, seam ? SPOILER_SEAM : SPOILER_TOP_TONE);
+      data[index + 3] = 255;
+    }
+  }
+  return { width: size, height: size, data };
+}
+
+// ---------------------------------------------------------------------------
 // THE UPLOAD BOUNDARY -- the only Babylon in the file.
 // ---------------------------------------------------------------------------
 
@@ -693,6 +749,35 @@ export function createAirlinerLiveryTexture(
   for (let level = 1; level < mips.length; level += 1) {
     texture.updateMipLevel(mips[level]!.data, level);
   }
+  return texture;
+}
+
+/**
+ * Upload the spoiler rim image. Level 0 only, and Babylon's own chain: on
+ * WebGPU its generated levels are what gets sampled whatever is uploaded after
+ * them (FI-5, measured), and for an albedo its linear-light average is the
+ * right downsample anyway -- the seam fading into the tone with distance.
+ * Both axes CLAMP: the UVs are 0..1 exactly, and a wrap would bleed the far
+ * seam across the near one.
+ */
+export function createSpoilerRimTexture(scene: Scene, image: LiveryImage = buildSpoilerRimImage()): RawTexture {
+  const texture = new RawTexture(
+    image.data,
+    image.width,
+    image.height,
+    Constants.TEXTUREFORMAT_RGBA,
+    scene,
+    true,
+    false,
+    Texture.TRILINEAR_SAMPLINGMODE,
+    Constants.TEXTURETYPE_UNSIGNED_BYTE,
+    0,
+    true,
+  );
+  texture.name = "airliner-spoiler-rim";
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  texture.anisotropicFilteringLevel = 8;
   return texture;
 }
 

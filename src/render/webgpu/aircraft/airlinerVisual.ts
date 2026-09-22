@@ -40,6 +40,7 @@ import {
   buildAirlinerLivery,
   buildLiveryMipChain,
   createAirlinerLiveryTexture,
+  createSpoilerRimTexture,
   radomeLiveryPhase,
 } from "./airlinerLivery";
 
@@ -768,6 +769,14 @@ export function createAirliner(scene: Scene): AircraftVisual {
     body,
     createAirlinerLiveryTexture(scene, buildLiveryMipChain(buildAirlinerLivery())),
   );
+  /**
+   * THE SPOILERS' OWN PAINT: the body's paint under the spoiler rim image
+   * (`buildSpoilerRimImage` says what it draws and why). Stowed, a spoiler lay
+   * in the wing in the wing's own paint and vanished; this marks each panel's
+   * outline and top at no draw and no fragment input -- the spoilers are
+   * already their own meshes, and the image rides the UV1 they already carry.
+   */
+  const spoilerPaint = build.repaintMaterial("airliner-spoiler", body, createSpoilerRimTexture(scene));
   // THE WING USED TO HAVE ITS OWN MATERIAL, and it no longer needs one.
   //
   // `airliner-wing` was the body recipe with `liveryColor` set equal to
@@ -1324,7 +1333,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         }
         return patch;
       });
-      build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, body, brake);
+      build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, spoilerPaint, brake);
       // The hinge LINE: the panels' own forward edge, end to end. Sweep from
       // the x term, dihedral and taper from the y term.
       hingeAlong(brake, new Vector3(
