@@ -1922,6 +1922,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     propeller: rig.propeller,
     cockpitParts: rig.cockpitParts,
     cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
+    displaysLive: cockpit.displaysLive,
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
@@ -1932,7 +1933,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
-      if (cockpitViewOn) cockpit.update(state);
+      if (cockpitViewOn) cockpit.update(state, delta);
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
       landingGear.position.y = pose.gearOffsetY;

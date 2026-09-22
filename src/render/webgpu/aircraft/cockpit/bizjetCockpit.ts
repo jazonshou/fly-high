@@ -1,12 +1,24 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
-import { buildAttitudeBall, glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
-import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
+import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import {
+  BIZJET_DISPLAYS,
+  DISPLAY_UPDATE_HZ,
+  createDisplayAtlas,
+  displayAtlasHeight,
+  displayAtlasWidth,
+  displayMaterial,
+  displaySlots,
+  paintDisplays,
+  remapScreenFaceToSlot,
+} from "./displays/displayAtlas";
+import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
 
 /**
  * What a pilot in the Global's LEFT seat sees, built to angles.
@@ -40,9 +52,9 @@ import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappin
  *    the eye's own z, their top edge 1.5 degrees below the hood's underside;
  *  - the left windscreen post's axis at azimuth -34 (+-1.5), raked like the glass;
  *  - an overhead from the glass's top edge aft to 0.3 m behind the eye;
- *  - the pilot's LEFT screen is a PFD whose upper two-thirds is an attitude ball
- *    built from separate pieces under ONE pivot node, so a later step only has
- *    to rotate that node (see `BIZJET_PFD`).
+ *  - the four screens draw the deck's real pages out of ONE atlas texture
+ *    (`displays/`): a PFD outboard and a map inboard for each seat. The pilot's
+ *    LEFT screen carried a 3D attitude ball until the pages went in.
  *
  * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at
  * negative Z.
@@ -231,55 +243,23 @@ export function bizjetScreenPlacements(): readonly { name: string; centre: Vecto
   return out;
 }
 
-// ---- the PFD's attitude display ------------------------------------------------
+// ---- what the pages need of this airframe -------------------------------------
 
 /**
- * THE ATTITUDE DISPLAY on the pilot's LEFT screen (the outboard one of the port
- * pair): a ball filling the upper two-thirds of the screen, made of a SKY half, a
- * GROUND half and a thin white PITCH BAR, all children of one pivot node at the
- * ball's centre (`buildAttitudeBall`, shared with the Cessna's attitude dial).
- * The cockpit's `update` rotates the pivot about the viewing axis (body X) by
- * minus the bank angle and slides the bar along the pivot's own Y for pitch, and
- * nothing else on the screens moves.
- *
- * IT IS ROUND on purpose. A rotating rectangle would poke out of the screen at
- * every bank angle but zero, and there is no clipping window here; a disc turned
- * about its own centre stays exactly where it was.
+ * The airframe constants the pages cannot read off the flight state, from the model's own tables:
+ * two engines, and 30 degrees of trailing-edge-down flap (`SURFACE_TRAVEL.bizjet.flap`, the same as
+ * the 747's; the Cessna's is 40).
  */
-export const BIZJET_PFD = Object.freeze({
-  /** The pilot's left screen. */
-  screen: "port-outboard",
-  /** The attitude display is this fraction of the screen's height, from the top. */
-  regionFraction: 2 / 3,
-  /** The ball's radius is the region's half-height less this. */
-  margin: 0.002,
-  thickness: 0.002,
-  /** The sky and ground plane stands this far in front of the screen's front. */
-  offset: 0.0025,
-  /** The pitch bar stands this far in front of that plane. */
-  barOffset: 0.0015,
-  barLength: 0.07,
-  barHeight: 0.003,
-  segments: 24,
-  pivotName: "bizjet-pfd-attitude-pivot",
-});
+export const BIZJET_DISPLAY_AIRFRAME: DisplayAirframe = Object.freeze({ engineCount: 2, fullFlapDegrees: 30 });
 
-/** Radius of the attitude ball. */
-export function bizjetPfdRadius(): number {
-  return (BIZJET_SCREENS.height * BIZJET_PFD.regionFraction) / 2 - BIZJET_PFD.margin;
-}
-
-/** The ball's centre, which is the pivot's position: the middle of the screen's upper two-thirds. */
-export function bizjetPfdCentre(): Vector3 {
-  const screen = bizjetScreenPlacements().find((placement) => placement.name === BIZJET_PFD.screen);
-  if (!screen) throw new Error(`no screen named ${BIZJET_PFD.screen}`);
-  const regionHeight = BIZJET_SCREENS.height * BIZJET_PFD.regionFraction;
-  return new Vector3(
-    screenFrontX() - BIZJET_PFD.offset - BIZJET_PFD.thickness / 2,
-    bizjetScreenTopY() - regionHeight / 2,
-    screen.centre.z,
-  );
-}
+/**
+ * THERE WAS A 3D ATTITUDE BALL ON THE PILOT'S LEFT SCREEN and it is gone: a sky half, a ground half
+ * and a pitch bar under a pivot, 2.5 mm in front of the glass, built when these screens were flat
+ * rectangles with nothing on them. The PFD page draws its own horizon now, so the ball was a second
+ * attitude indicator standing on top of the first and hiding most of it -- the same thing the 747's
+ * was, removed for the same measured reason. The Cessna keeps its ball, because that aeroplane's
+ * instrument is MECHANICAL and so is its model.
+ */
 
 // ---- the posts ---------------------------------------------------------------
 
@@ -375,11 +355,13 @@ const WALL = Object.freeze({
 export interface BizjetCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
+  /** True when the screens carry a live atlas: false under `NullEngine`, where there is no canvas. */
+  readonly displaysLive: boolean;
   /**
-   * Turn the attitude ball to what `state` reads. The visual calls this from its
-   * `update` ONLY while cockpit view is on.
+   * Redraw the displays at `DISPLAY_UPDATE_HZ`. The visual calls this from its `update` ONLY while
+   * cockpit view is on, and passes the frame's delta so the counter is the frame's own clock.
    */
-  update(state: FlightVisualState): void;
+  update(state: FlightVisualState, secondsSinceLastUpdate?: number): void;
 }
 
 export function buildBizjetCockpit(
@@ -433,26 +415,26 @@ export function buildBizjetCockpit(
     bezel.position.set(p.faceX - s.bezelThickness / 2 + 0.001, centre.y, centre.z);
     bezels.push(bezel);
   }
-  parts.push(build.mergeStatic("bizjet-screens", screens, root));
+  // EACH SCREEN'S PILOT-FACING FACE GETS ITS OWN SLOT of the display atlas, before the merge bakes
+  // the vertex data. The boxes are built in `bizjetScreenPlacements()` order and the slots are in
+  // the same order, so slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds
+  // that pairing by measuring the merged mesh's UVs against each screen's own z.
+  const slots = displaySlots(BIZJET_DISPLAYS);
+  const atlasWidth = displayAtlasWidth(BIZJET_DISPLAYS);
+  const atlasHeight = displayAtlasHeight(BIZJET_DISPLAYS);
+  for (const [index, screen] of screens.entries()) {
+    remapScreenFaceToSlot(screen as Mesh, slots[index]!, atlasWidth, atlasHeight);
+  }
+  const screensMesh = build.mergeStatic("bizjet-screens", screens, root);
+  parts.push(screensMesh);
   parts.push(build.mergeStatic("bizjet-screen-bezels", bezels, root));
 
-  // THE ATTITUDE DISPLAY on the pilot's left screen: a sky half, a ground half
-  // and a pitch bar, three separate meshes under one pivot node at the ball's
-  // centre (see `BIZJET_PFD`). They are the exception to the merging above: the
-  // pivot turns them, so they must stay separate from the screens.
-  const pfd = BIZJET_PFD;
-  const radius = bizjetPfdRadius();
-  const ball = buildAttitudeBall(build, root, bizjetPfdCentre(), {
-    prefix: "bizjet-pfd",
-    pivotName: pfd.pivotName,
-    radius,
-    thickness: pfd.thickness,
-    barOffset: pfd.barOffset,
-    barLength: pfd.barLength,
-    barHeight: pfd.barHeight,
-    segments: pfd.segments,
-  });
-  parts.push(...ball.parts);
+  // THE DISPLAYS THEMSELVES, if this engine has a 2D canvas. Under NullEngine it does not, and the
+  // screens keep the flat instrument-face material they were built with (see `displayAtlas.ts`).
+  const atlas = createDisplayAtlas(build.scene, BIZJET_DISPLAYS);
+  if (atlas !== null) {
+    screensMesh.material = displayMaterial(build, "bizjet-display", atlas);
+  }
 
   // THE WINDSCREEN POSTS, each in one vertical plane through the eye for the
   // left one; the right is its mirror (out of the player's frame, and built for
@@ -512,20 +494,20 @@ export function buildBizjetCockpit(
   }
   parts.push(build.mergeStatic("bizjet-side-walls", wallSources, root));
 
-  // THE ATTITUDE BALL'S STEP: the pivot turns the sky, the ground and the bar
-  // about the viewing axis, and the bar slides along the pivot's own up.
-  //
-  // The pivot's local X is body +X, which points AWAY from the pilot (the dials'
-  // normals point toward him, which is the other way round), and a positive
-  // rotation about an axis pointing away from the viewer is CLOCKWISE to him. So
-  // the clockwise-as-seen angle `attitudeHorizonDegrees` (minus the bank) goes in
-  // as it is. Held to the screen by `tests/render.cockpit-instruments.test.ts`,
-  // which projects the ball's horizon and the real one through the same camera.
+  // THE DISPLAYS ARE REDRAWN ON A COUNTER, not every frame: `update` is only called while cockpit
+  // view is on (the visual gates it), and 15 a second is as fast as a display needs to move. One
+  // redraw of this four-slot atlas is cheaper than the 747's six-slot one, and both are measured in
+  // the findings doc rather than assumed.
+  let sinceDisplayDraw = Number.POSITIVE_INFINITY;
   return {
     parts,
-    update(state) {
-      ball.pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
-      ball.bar.position.y = pitchBarOffsetMetres(state.pitch);
+    displaysLive: atlas !== null,
+    update(state, secondsSinceLastUpdate = 0) {
+      if (atlas === null) return;
+      sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
+      if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;
+      sinceDisplayDraw = 0;
+      paintDisplays(atlas, displayStateFromVisual(state, BIZJET_DISPLAY_AIRFRAME));
     },
   };
 }

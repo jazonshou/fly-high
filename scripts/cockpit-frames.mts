@@ -246,7 +246,9 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     // view, and in NO other. Read from the live scene, so a part that leaks into a
     // chase or orbit frame fails here instead of being noticed, or not, in the PNG.
     const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 19, bizjet: 11, airliner: 7 };
+    // Trainer 19; Global 8 and 747 4 since their 3D attitude balls came out (three meshes each,
+    // hung from a pivot; their PFD pages draw attitude on the screen now).
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 19, bizjet: 8, airliner: 4 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {

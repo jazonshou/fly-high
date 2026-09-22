@@ -8,8 +8,11 @@ import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
 import {
+  AIRLINER_DISPLAYS,
   DISPLAY_UPDATE_HZ,
   createDisplayAtlas,
+  displayAtlasHeight,
+  displayAtlasWidth,
   displayMaterial,
   displaySlots,
   paintDisplays,
@@ -484,9 +487,11 @@ export function buildAirlinerCockpit(
   // the vertex data. The boxes are built in `SCREEN_Z` order and the slots are in the same order, so
   // slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds that pairing by
   // measuring the merged mesh's UVs against each screen's own z.
-  const slots = displaySlots();
+  const slots = displaySlots(AIRLINER_DISPLAYS);
+  const atlasWidth = displayAtlasWidth(AIRLINER_DISPLAYS);
+  const atlasHeight = displayAtlasHeight(AIRLINER_DISPLAYS);
   for (const [index, screen] of screens.entries()) {
-    remapScreenFaceToSlot(screen as Mesh, slots[index]!);
+    remapScreenFaceToSlot(screen as Mesh, slots[index]!, atlasWidth, atlasHeight);
   }
   const screensMesh = build.mergeStatic("airliner-screens", screens, root);
   parts.push(screensMesh);
@@ -494,7 +499,7 @@ export function buildAirlinerCockpit(
 
   // THE DISPLAYS THEMSELVES, if this engine has a 2D canvas. Under NullEngine it does not, and the
   // screens keep the flat instrument-face material they were built with (see `displayAtlas.ts`).
-  const atlas = createDisplayAtlas(build.scene, "airliner-displays");
+  const atlas = createDisplayAtlas(build.scene, AIRLINER_DISPLAYS);
   if (atlas !== null) {
     screensMesh.material = displayMaterial(build, "airliner-display", atlas);
   }
