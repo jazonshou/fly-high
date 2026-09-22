@@ -212,12 +212,18 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
     // casters (the receive path does not compile without one), a reflection
     // probe as the environment, and both receiver registries. A lighter rig
     // measures a lighter permutation than the one that ships.
-    const counts: { kind: string; material: string; mesh: string; inputs: number; code: string }[] = [];
+    const counts: { kind: string; material: string; mesh: string; pass: number; inputs: number; code: string }[] = [];
     let blackScreenBuild = -1;
+    let mainPass = -1;
     try {
       const camera = new FreeCamera("aircraft-compile-all-camera", new Vector3(0, 60, -260), scene);
       camera.setTarget(new Vector3(0, 0, 0));
       scene.activeCamera = camera;
+      // The main colour pass is the CAMERA'S render pass, not RENDERPASS_MAIN:
+      // every camera allocates its own id, so in this engine it is whatever
+      // number the earlier blocks left next (it measured 12, with the four
+      // shadow cascades on 13-16).
+      mainPass = camera.renderPassId;
       const sun = new DirectionalLight("aircraft-compile-all-sun", new Vector3(-0.6, -0.8, 0.2).normalize(), scene);
       sun.intensity = 2.4;
       const fill = new HemisphericLight("aircraft-compile-all-fill", Vector3.Up(), scene);
@@ -261,28 +267,51 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
         for (const mesh of visual.meshes) {
           const material = mesh.material?.name ?? "(none)";
           for (const subMesh of mesh.subMeshes ?? []) {
-            const code = subMesh.effect?.fragmentSourceCode ?? "";
-            if (!code) continue;
-            counts.push({ kind, material, mesh: mesh.name, inputs: fragmentInputCount(code), code });
+            // EVERY RENDER PASS, not `subMesh.effect`. That getter returns the
+            // effect for `engine.currentRenderPassId` at the moment of reading,
+            // which after a frame can be a reflection-probe face or a shadow
+            // pass rather than the main colour pass -- this audit's first
+            // version read an arbitrary pass, and its own positive control is
+            // what exposed it. Each pass is a permutation the device must
+            // accept, so the worst over all of them is the one that decides.
+            const wrappers = (subMesh as unknown as {
+              _drawWrappers: ({ effect?: { fragmentSourceCode?: string } | null } | undefined)[];
+            })._drawWrappers ?? [];
+            wrappers.forEach((wrapper, pass) => {
+              const code = wrapper?.effect?.fragmentSourceCode ?? "";
+              if (code) counts.push({ kind, material, mesh: mesh.name, pass, inputs: fragmentInputCount(code), code });
+            });
           }
         }
       }
 
       // POSITIVE CONTROL for the budget assertion itself: rebuild, in memory,
       // the exact build that blacked out the 747 -- the fuselage shell with
-      // UV1 + UV2 AND vertex colour -- and read its count. It must come out at
-      // 16: a legal pipeline in this rig, but one with NO slot left, so the
-      // headroom check below would have rejected it. If it reads 15, this test
-      // cannot see the defect it exists to catch.
+      // UV1 + a SECOND UV set carrying the livery + vertex colour -- and read
+      // its count. It must come out at 16: a legal pipeline in this rig, but
+      // one with NO slot left, so the headroom check below rejects it. If it
+      // reads less, this test cannot see the defect it exists to catch.
+      //
+      // Built on a FRESH CLONE of the shell, not by mutating it: Babylon marks
+      // material defines dirty only on the draw wrapper of the render pass that
+      // is CURRENT when `markAsDirty` runs, so a mutation made between frames
+      // dirties the wrong pass and the main pass keeps its old effect. This
+      // control's first version did exactly that and read the unchanged 14. A
+      // new sub-mesh has no cached defines and compiles from scratch.
       const shell = visuals.find((entry) => entry.kind === "airliner")!.visual.meshes
         .find((mesh) => mesh.name === "airliner-fuselage-shell");
       expect(shell, "no airliner fuselage shell to rebuild the black-screen build on").toBeDefined();
-      shell!.setVerticesData(VertexBuffer.ColorKind, new Float32Array(shell!.getTotalVertices() * 4).fill(1), false, 4);
-      shell!.material!.markAsDirty(Constants.MATERIAL_AttributesDirtyFlag);
+      const rebuilt = (shell as unknown as { clone: (name: string) => typeof shell }).clone("black-screen-build")!;
+      (rebuilt as unknown as { makeGeometryUnique: () => void }).makeGeometryUnique();
+      rebuilt.setVerticesData(VertexBuffer.UV2Kind, Float32Array.from(rebuilt.getVerticesData(VertexBuffer.UVKind)!), false, 2);
+      rebuilt.setVerticesData(VertexBuffer.ColorKind, new Float32Array(rebuilt.getTotalVertices() * 4).fill(1), false, 4);
+      (rebuilt.material as unknown as { albedoTexture: { coordinatesIndex: number } }).albedoTexture.coordinatesIndex = 1;
       await scene.whenReadyAsync();
       scene.render();
       await device.queue.onSubmittedWorkDone();
-      blackScreenBuild = fragmentInputCount(shell!.subMeshes[0]!.effect?.fragmentSourceCode ?? "");
+      blackScreenBuild = fragmentInputCount(
+        rebuilt.subMeshes[0]!._getDrawWrapper(mainPass)?.effect?.fragmentSourceCode ?? "",
+      );
 
       expect(gpuErrors, gpuErrors.join("\n\n")).toEqual([]);
       expect(loggerErrors, loggerErrors.join("\n\n")).toEqual([]);
@@ -304,8 +333,9 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
       if (!worst.has(key) || worst.get(key)!.inputs < row.inputs) worst.set(key, row);
     }
     for (const [key, row] of [...worst.entries()].sort((a, b) => b[1].inputs - a[1].inputs)) {
+      const passes = [...new Set(counts.filter((c) => `${c.kind}/${c.material}` === key).map((c) => c.pass))].sort((a, b) => a - b);
       console.log(`[inter-stage] ${key.padEnd(44)} ${row.inputs}/${INTER_STAGE_LIMIT} `
-        + `headroom=${INTER_STAGE_LIMIT - row.inputs}  (${row.mesh})`);
+        + `headroom=${INTER_STAGE_LIMIT - row.inputs}  (${row.mesh}, worst in pass ${row.pass}; passes ${passes.join(",")})`);
     }
 
     // NON-VACUITY. Every airframe must have been attributed, with real counts;
@@ -315,6 +345,10 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
         `no compiled fragment effect was attributed to ${kind}`).toBeGreaterThan(0);
     }
     expect(AIRCRAFT_KINDS, "the airframe list lost the 747").toContain("airliner");
+    for (const kind of AIRCRAFT_KINDS) {
+      expect(counts.some((row) => row.kind === kind && row.pass === mainPass && row.inputs > 0),
+        `${kind}: the MAIN colour pass was never attributed -- the audit read only side passes`).toBe(true);
+    }
     // THE SHIPPING PATH WAS BUILT: shadow-receiving paint compiled the CSM
     // receive varyings. Asserted on the attributed code, never declared.
     for (const kind of AIRCRAFT_KINDS) {
@@ -351,6 +385,18 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
       .toBe(INTER_STAGE_LIMIT);
     expect(INTER_STAGE_LIMIT - blackScreenBuild >= 1,
       "the headroom check must REJECT the build that stopped the renderer").toBe(false);
+
+    // THE LIVERY COSTS NOTHING OVER ORDINARY PAINT. The skin carries its
+    // image on UV1 precisely so that it sits level with every other airframe's
+    // body paint; a skin heavier than the lightest airframe body means a
+    // varying crept back in (a second UV set, or vertex colour).
+    const livery = worst.get("airliner/airliner-skin");
+    const plainPaint = Math.min(...["trainer/trainer-body", "jet/jet-body"]
+      .map((key) => worst.get(key)?.inputs ?? Number.POSITIVE_INFINITY));
+    expect(livery, "the airliner's livery skin was not attributed").toBeDefined();
+    expect(Number.isFinite(plainPaint), "no plain airframe paint was attributed to compare with").toBe(true);
+    expect(livery!.inputs, `the livery skin compiles at ${livery!.inputs}, heavier than plain airframe `
+      + `paint at ${plainPaint}: a varying crept back onto the fuselage shell`).toBeLessThanOrEqual(plainPaint);
 
     for (const [key, row] of worst) {
       expect(row.inputs, `${key} compiles at ${row.inputs} fragment inputs, over the device maximum of `

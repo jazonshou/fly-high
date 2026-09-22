@@ -120,14 +120,6 @@ export interface AirfoilWingOptions {
 
 interface VertexMeshOptions {
   readonly uvs?: readonly number[];
-  /**
-   * A SECOND UV set, for a texture that must not share the first one's
-   * mapping. The airliner's livery needs this: UV1 drives the synthesized
-   * paint, which WRAPS, so re-scaling UV1 to a shared station range would
-   * re-tile the panel lines — on the radome by about seven times. UV2 carries
-   * the shared parametrisation and leaves UV1 byte-identical.
-   */
-  readonly uvs2?: readonly number[];
   readonly colors?: readonly number[];
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly castsShadow?: boolean;
@@ -519,9 +511,25 @@ export class AircraftBuildContext {
    * vertex paint rather than a texture: a function of world x and y crosses a
    * join without knowing it is there, and a per-loft u does not.
    *
-   * OMIT IT and nothing changes. Only the lofts that carry a shared image pass
-   * it, so every other airframe's positions, indices AND uvs stay byte for
-   * byte what they were.
+   * IT IS UV1, NOT A SECOND SET, and the reason is the fragment-input budget.
+   * WebGPU allows 16, and a clustered light container (the airfield attaches
+   * one) costs every lit material one of them. A second UV set is another; on
+   * the airliner's fuselage it was measured at 16 of 16 in Gate A's rig -- no
+   * slot for the container -- where UV1 alone keeps the skin at 14, the same
+   * as every other airframe's paint.
+   *
+   * The cost of sharing UV1 falls on the paint synthesis, which tiles on UV1
+   * and WRAPS: its panel lines now repeat over the shared range rather than
+   * each loft's own. On the fuselage that is 60 m instead of 56.6 (5.7 %
+   * longer, invisible); on the radome it is 60 m instead of its own 8.5, which
+   * is a FIX, not a cost -- per-loft UV packed the fuselage's whole panel
+   * pattern into the nose and drew its panel lines about 6.7x denser than the
+   * fuselage's. One range gives the whole body one panel scale.
+   *
+   * OMIT IT and nothing changes: u is the loft's own, and the caps keep their
+   * literal 0 and 1, so every other loft's positions, indices and UVs stay byte
+   * for byte what they were -- by construction, not by float arithmetic
+   * happening to agree.
    */
   loft(
     name: string,
@@ -546,15 +554,14 @@ export class AircraftBuildContext {
     const indices: number[] = [];
     const minimumX = sections[0]!.x;
     const length = sections[sections.length - 1]!.x - minimumX;
-    // UV1 keeps its own per-loft normalisation, untouched. The shared range
-    // goes to UV2 instead, because UV1 drives the wrapped paint synthesis and
-    // re-scaling it would re-tile every panel line on these lofts.
-    const sharedMinimumX = stationRange?.minimumX;
-    const sharedLength = stationRange?.length;
-    if (stationRange && !(sharedLength! > 0)) {
+    // u is measured over the shared station range when one is given, so every
+    // loft passing the same range agrees on u at every station; otherwise over
+    // this loft's own sections, exactly as before.
+    const uMinimumX = stationRange?.minimumX ?? minimumX;
+    const uLength = stationRange?.length ?? length;
+    if (stationRange && !(uLength > 0)) {
       throw new RangeError("An aircraft loft's station range must have positive length");
     }
-    const uvs2: number[] = [];
     for (const section of sections) {
       if (!(section.yRadius > 0) || !(section.zRadius > 0)) {
         throw new RangeError("Aircraft loft radii must be positive");
@@ -589,8 +596,7 @@ export class AircraftBuildContext {
           (section.yOffset ?? 0) + yShape * section.yRadius,
           (section.zOffset ?? 0) + zShape * halfWidth,
         );
-        uvs.push((section.x - minimumX) / length, phase);
-        if (stationRange) uvs2.push((section.x - sharedMinimumX!) / sharedLength!, phase);
+        uvs.push((section.x - uMinimumX) / uLength, phase);
       }
     }
     for (let section = 0; section < sections.length - 1; section += 1) {
@@ -605,16 +611,13 @@ export class AircraftBuildContext {
     const startCenter = positions.length / 3;
     const start = sections[0]!;
     positions.push(start.x, start.yOffset ?? 0, start.zOffset ?? 0);
-    uvs.push(0, 0.5);
-    // The caps are vertices too: a uv2 array short of the positions count
-    // fails VertexData's own validation at merge time, which is how this was
-    // found rather than by it rendering wrong.
-    if (stationRange) uvs2.push((start.x - sharedMinimumX!) / sharedLength!, 0.5);
+    // The caps are vertices too, and must sit on the shared range with the
+    // rings; without one they keep their literal 0 and 1.
+    uvs.push(stationRange ? (start.x - uMinimumX) / uLength : 0, 0.5);
     const endCenter = positions.length / 3;
     const end = sections[sections.length - 1]!;
     positions.push(end.x, end.yOffset ?? 0, end.zOffset ?? 0);
-    uvs.push(1, 0.5);
-    if (stationRange) uvs2.push((end.x - sharedMinimumX!) / sharedLength!, 0.5);
+    uvs.push(stationRange ? (end.x - uMinimumX) / uLength : 1, 0.5);
     const endRing = (sections.length - 1) * ringSize;
     for (let radial = 0; radial < radialSegments; radial += 1) {
       indices.push(startCenter, radial + 1, radial);
@@ -636,7 +639,6 @@ export class AircraftBuildContext {
     }
     return this.vertexMesh(name, positions, indices, material, parent, {
       uvs,
-      ...(stationRange ? { uvs2 } : {}),
       weldedNormals: crownSeam,
       metadata: {
         aircraftGeometry: "lofted-fuselage",
@@ -989,7 +991,6 @@ export class AircraftBuildContext {
     vertexData.indices = indices;
     vertexData.normals = normals;
     if (options.uvs) vertexData.uvs = [...options.uvs];
-    if (options.uvs2) vertexData.uvs2 = [...options.uvs2];
     if (options.colors) vertexData.colors = [...options.colors];
     const mesh = new Mesh(name, this.scene);
     vertexData.applyToMesh(mesh, false);

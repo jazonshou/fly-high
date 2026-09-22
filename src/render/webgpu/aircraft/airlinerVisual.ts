@@ -751,20 +751,22 @@ export function createAirliner(scene: Scene): AircraftVisual {
   } as const;
   const body = build.paintMaterial("airliner-body", bodyRecipe);
   /*
-   * THE LIVERY, as a body-space image on a SECOND UV set.
+   * THE LIVERY, as a body-space image.
    *
    * This is the replacement for the `livery-decal` band described below, and
    * it fixes that band's defect rather than re-committing it: a UV-space decal
    * drew "one per separately-UV'd part" because every mesh carried its own
-   * 0..1 u. The three lofts that wear the livery are given ONE shared station
-   * range instead (x -26..34), so a feature drawn at one u is at one station
-   * on all three and does not step at their joins -- the fuselage and nose
-   * disagreed by 0.615 of the texture width where they meet.
+   * 0..1 u. The TWO lofts that wear the livery -- fuselage and radome, which
+   * merge into one mesh -- are given ONE shared station range instead
+   * (x -26..34), so a feature drawn at one u is at one station on both and
+   * does not step at the join, where per-loft u disagreed by 0.615 of the
+   * texture width. The tailcone is not one of them: the band dies out by
+   * x = -24.5 and the tailcone spans -38..-26.
    *
-   * It rides on UV2, not UV1. UV1 drives the synthesized paint, which WRAPS,
-   * so rescaling it would re-tile every panel line on these lofts -- about
-   * seven times over on the radome. UV1 is therefore byte-identical on every
-   * loft in the fleet, these three included.
+   * It rides on UV1, not a second set, because of the fragment-input budget:
+   * see `stationRange` in builders.ts. Gate A measures this skin at 14 of 16,
+   * level with every other airframe's paint, leaving the slot the airfield's
+   * clustered container takes and one more.
    *
    * The material is CLONED from the body rather than synthesised again:
    * `paintMaterial` does not cache by recipe, so a second call would mean a
@@ -778,7 +780,6 @@ export function createAirliner(scene: Scene): AircraftVisual {
   );
   const skin = body.clone("airliner-skin") ?? body;
   skin.albedoTexture = liveryTexture;
-  liveryTexture.coordinatesIndex = 1;
   // THE WING USED TO HAVE ITS OWN MATERIAL, and it no longer needs one.
   //
   // `airliner-wing` was the body recipe with `liveryColor` set equal to
@@ -923,19 +924,20 @@ export function createAirliner(scene: Scene): AircraftVisual {
    * metre would shimmer rather than draw.
    */
   /*
-   * THE VERTEX-PAINT CHEATLINE IS GONE, AND ITS VARYING IS WHY THE TEXTURE
-   * FITS.
+   * THE VERTEX-PAINT CHEATLINE IS GONE, and it has to stay gone.
    *
-   * WebGPU caps a fragment stage at 16 user-defined input variables. UV2 is a
-   * seventeenth, and the device rejects the pipeline outright:
-   * "Total fragment input variables count (17 > 16 + 1) exceeds the maximum".
-   * The vertex COLOUR attribute this band wrote was one of the sixteen, so
-   * dropping it pays for UV2 exactly.
+   * WebGPU caps a fragment stage at 16 inputs, and the airfield's clustered
+   * container takes one from every lit material. The first livery build put
+   * this shell at UV1 + a second UV set + vertex COLOUR: 17 with the container
+   * attached, and the device refused the pipeline outright ("Total fragment
+   * input variables count (17 > 16 (user-defined) + 1 (front_facing)) exceeds
+   * the maximum (16)"). The 747 drew a black canvas under a live HUD. Vertex
+   * colour on this mesh is a varying the budget does not have room for, and
+   * Gate A now rejects exactly that build as its positive control.
    *
-   * That is not a coincidence to be grateful for, it is the same information
-   * twice: a band painted per vertex and a band painted in texels are two
-   * mechanisms for one stripe, and the texture exists because the vertex one
-   * cannot resolve an edge. The fuselage has six vertices over its height,
+   * Nor is it wanted: a band painted per vertex and a band painted in texels
+   * are two mechanisms for one stripe, and the texture exists because the
+   * vertex one cannot resolve an edge. The fuselage has six vertices over its height,
    * 0.72-0.85 m apart, so the 0.22 m smoothstep fell inside a single gap and
    * rendered as a ~0.8 m fade. See docs/findings/AIRLINER_LIVERY_UV.md.
    */
