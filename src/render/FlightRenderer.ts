@@ -1835,6 +1835,19 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /**
+   * Capture-only: restarts the ocean's cascade cadence at the harness's
+   * per-shot time pin. Without it, which frame the every-4th-frame wave
+   * cascade last evolved on depends on how many frames every EARLIER shot
+   * streamed, which is wall-clock paced, so a water shot's waves differ
+   * between runs of identical code. See `OceanCascadeClock`. Production never
+   * calls this; mid-flight it would dispatch the slow cascades out of turn.
+   */
+  pinOceanCascadePhaseForCapture(): void {
+    if (this.disposed) return;
+    this.ocean.pinCascadePhaseForCapture();
+  }
+
+  /**
    * Capture-only snapshot of the bounded detail builder. Counters are
    * cumulative so the harness can take two cheap snapshots outside the timed
    * loop instead of sampling diagnostics on every frame and perturbing p95.

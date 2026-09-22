@@ -1041,8 +1041,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // Pin the temporal phase before the settle: the streaming loop above
       // exits after a RUN-DEPENDENT number of frames, so accumulated time
       // would put waves and cloud advection at a different phase every run.
-      // The settle then rebuilds all temporal state (cloud history, foam
-      // decay) at these exact instants.
+      // The settle then rebuilds cloud history at these exact instants. It does
+      // NOT fully rebuild foam: with a 2.8 s half-life about a fifth of the
+      // foam from before the pin survives to capture, a measured floor of
+      // ~0.005-0.010/255 on near water between runs whose OWN streaming counts
+      // differ. The ocean's cascade cadence is pinned separately, below.
       //
       // Wave R: the phase keys on the shot's index in the CANONICAL list,
       // not its position in the selected subset. Baselines come from full
@@ -1061,6 +1064,14 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // sits on the same lamp phase (see `simulationTimeOffsetSeconds`).
       simulationTime = 500 + canonicalShotIndex * 120
         + (shot.simulationTimeOffsetSeconds ?? 0);
+      // Pinning TIME is not enough for the sea. The ocean decides which wave
+      // cascades to evolve by an absolute FRAME count that one renderer carries
+      // across every shot, so the every-4th-frame cascade's last update before
+      // capture depended on how many frames every earlier shot streamed — two
+      // phase classes per water shot, ~0.12-0.19/255 mean apart, flipping
+      // between runs of identical code and wholesale under VITE_PERF_SHOTS.
+      // Restart that count here, with the time.
+      renderer.pinOceanCascadePhaseForCapture();
       for (let settle = 0; settle < 150; settle += 1) {
         await nextAnimationFrame();
         simulationTime += 1 / 60;

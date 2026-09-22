@@ -38,8 +38,8 @@ import { viewScaleFromFov } from "@/src/render/webgpu/clouds/CloudReprojection";
 import {
   buildOceanFftDispatches,
   oceanCausticCurvatureScale,
+  OceanCascadeClock,
   oceanTransformNormalizationScale,
-  shouldUpdateOceanCascade,
   resolveSpectralOceanConfig,
   type OceanCascadeConfig,
   type SpectralOceanConfig,
@@ -1717,7 +1717,8 @@ class SpectralOceanCompute {
   readonly config: SpectralOceanConfig;
   readonly cascades: readonly OceanCascadeRuntime[];
   private readonly generateMips: ((texture: RawTexture) => void) | null;
-  private frameIndex = 0;
+  /** Which cascades dispatch on which frame; see `OceanCascadeClock`. */
+  private readonly clock = new OceanCascadeClock();
 
   constructor(
     scene: Scene,
@@ -1900,20 +1901,22 @@ class SpectralOceanCompute {
   }
 
   update(timeSeconds: number, deltaSeconds: number): void {
-    this.frameIndex += 1;
+    this.clock.tick();
     this.cascades.forEach((cascade, cascadeIndex) => {
       cascade.elapsedSecondsSinceDerivation += deltaSeconds;
       const cascadeConfig = this.config.cascades[cascadeIndex];
-      if (!cascadeConfig || !shouldUpdateOceanCascade(
-        this.frameIndex,
-        cascadeConfig.updateEveryNFrames,
-      )) return;
+      if (!cascadeConfig || !this.clock.dispatches(cascadeConfig.updateEveryNFrames)) return;
       const foamDecay = Math.exp(
         -Math.LN2 * cascade.elapsedSecondsSinceDerivation
           / this.config.foamHalfLifeSeconds,
       );
       this.dispatchCascade(cascade, cascadeIndex, timeSeconds, foamDecay);
     });
+  }
+
+  /** CAPTURE ONLY — see `OceanCascadeClock.pinForCapture`. */
+  pinCascadeClockForCapture(): void {
+    this.clock.pinForCapture();
   }
 
   dispose(): void {
@@ -2365,6 +2368,17 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     }).finally(() => {
       if (this.rebuildAbortController === controller) this.rebuildAbortController = null;
     });
+  }
+
+  /**
+   * CAPTURE ONLY: restarts the cascade cadence at the perf harness's per-shot
+   * time pin, so a shot's waves do not depend on how many frames earlier shots
+   * happened to stream. See `OceanCascadeClock`. A profile change rebuilds the
+   * compute, and a rebuilt compute starts its own clock at zero, so this needs
+   * no memory of its own.
+   */
+  pinCascadePhaseForCapture(): void {
+    this.compute.pinCascadeClockForCapture();
   }
 
   update(cameraWorld: Vector3, timeSeconds: number, deltaSeconds: number): void {
