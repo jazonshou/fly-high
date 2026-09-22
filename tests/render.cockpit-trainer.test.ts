@@ -17,6 +17,7 @@ import {
 } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
+import { worldTriangles as tipWorldTriangles, hitTriangle as tipHitTriangle } from "../scripts/rayCrossings.mts";
 
 /**
  * The Cessna's cockpit, held to the angles it was built to and to the shell it
@@ -337,5 +338,120 @@ describe("the trainer's cockpit parts", () => {
       expect(clearances.length).toBeGreaterThan(5);
       expect(Math.min(...clearances)).toBeGreaterThanOrEqual(-0.002);
     }
+  });
+});
+
+/**
+ * THE WINDSCREEN CENTRE FRAME'S TIP, and why it is a cone.
+ *
+ * `windscreen-center-frame` (trainerVisual.ts) is the one piece of exterior structure the pilot sees as the
+ * framing of his windscreen, and its top end stops in OPEN AIR: the cabin roof panel reaches only x 1.62,
+ * 0.38 m aft of the top at x 2, and the glass crown there (y 0.190) is below the top (y 0.210). A cylinder's
+ * flat end disc therefore read as a lit octagon against the sky: 48% of the rays over its own angular window
+ * on the player rig, 51% on the perf rig. A cockpit-only header to hide it was built and REJECTED (15% of
+ * frame to hide 1.4%); the fix is that the last 0.05 m is a cone to a true apex, so there is no disc at all.
+ *
+ * Both rigs are checked because the PERF rig (56 degrees, eye pinned to the centreline) is what the twelve
+ * compared trainer cockpit baselines are shot with.
+ */
+describe("the Cessna's windscreen centre frame", () => {
+  const FOOT = new Vector3(2.26, -0.02, 0);
+  const TOP = new Vector3(2, 0.21, 0);
+  const TIP_LENGTH = 0.05;
+
+  it("ends in an apex, not a disc: nothing at the top plane is more than a millimetre off the axis", () => {
+    const axis = TOP.subtract(FOOT).normalize();
+    const length = Vector3.Distance(TOP, FOOT);
+    const along = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), axis);
+    const vertices = tipWorldTriangles(named("windscreen-center-frame")).flatMap((t) => [t.a, t.b, t.c]);
+    expect(Math.max(...vertices.map(along)), "the mesh still reaches its design top").toBeCloseTo(length, 3);
+    const atApex = vertices.filter((p) => Math.abs(along(p) - length) < 2e-3);
+    expect(atApex.length, "vertices at the apex plane").toBeGreaterThan(0);
+    const radial = atApex.map((p) => {
+      const d = p.subtract(FOOT);
+      return d.subtract(axis.scale(Vector3.Dot(d, axis))).length();
+    });
+    // the cylinder this replaced carried its full 0.024 m radius all the way to the top
+    expect(Math.max(...radial)).toBeLessThan(0.001);
+  });
+
+  it("shows the pilot no flat end disc, on EITHER rig", () => {
+    const axis = TOP.subtract(FOOT).normalize();
+    const length = Vector3.Distance(TOP, FOOT);
+    const along = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), axis);
+    const frame = named("windscreen-center-frame");
+    // "the disc" is any triangle lying wholly in the apex plane: on the cone these survive only as
+    // zero-area slivers, and a sliver is never the nearest surface along a ray
+    const discTriangles = tipWorldTriangles(frame)
+      .filter((t) => [t.a, t.b, t.c].every((p) => Math.abs(along(p) - length) < 2e-3));
+    const key = (t: { a: Vector3; b: Vector3; c: Vector3 }) =>
+      `${t.a.x},${t.a.y},${t.a.z}|${t.b.x},${t.b.y},${t.b.z}|${t.c.x},${t.c.y},${t.c.z}`;
+    const discKeys = new Set(discTriangles.map(key));
+    const tipVertices = tipWorldTriangles(frame)
+      .filter((t) => [t.a, t.b, t.c].every((p) => along(p) > length - TIP_LENGTH - 0.002))
+      .flatMap((t) => [t.a, t.b, t.c]);
+    expect(tipVertices.length, "the tip has geometry to look at").toBeGreaterThan(0);
+    const triangles = scene.meshes
+      .filter(drawnByCockpitCamera)
+      .filter((mesh) => mesh.getTotalVertices() > 0)
+      .flatMap((mesh) => tipWorldTriangles(mesh));
+    for (const [label, right] of [["player", EYE.right], ["perf", 0]] as const) {
+      const eye = new Vector3(EYE.forward, EYE.up, right);
+      const angles = tipVertices.map((p) => {
+        const d = p.subtract(eye);
+        return { az: Math.atan2(d.z, d.x) * DEG, el: Math.atan2(d.y, Math.hypot(d.x, d.z)) * DEG };
+      });
+      const [az0, az1] = [Math.min(...angles.map((a) => a.az)) - 0.3, Math.max(...angles.map((a) => a.az)) + 0.3];
+      const [el0, el1] = [Math.min(...angles.map((a) => a.el)) - 0.3, Math.max(...angles.map((a) => a.el)) + 0.3];
+      let rays = 0;
+      let discNearest = 0;
+      let tipNearest = 0;
+      for (let az = az0; az <= az1; az += 0.1) {
+        for (let el = el0; el <= el1; el += 0.1) {
+          rays += 1;
+          const a = az / DEG;
+          const e = el / DEG;
+          const d = new Vector3(Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a));
+          let best = Number.POSITIVE_INFINITY;
+          let bestKey = "";
+          let bestIsFrame = false;
+          for (const t of triangles) {
+            const hit = tipHitTriangle(eye, d, t);
+            if (Number.isFinite(hit) && hit > NEAR_PLANE && hit < best) {
+              best = hit;
+              bestKey = key(t);
+              bestIsFrame = [t.a, t.b, t.c].every((p) => along(p) > length - TIP_LENGTH - 0.002);
+            }
+          }
+          if (discKeys.has(bestKey)) discNearest += 1;
+          if (bestIsFrame) tipNearest += 1;
+        }
+      }
+      // NON-VACUITY: the window is sampled AND the tip itself is visible there; only the DISC is gone
+      expect(rays, `${label}: rays over the tip's window`).toBeGreaterThan(500);
+      expect(tipNearest, `${label}: the tapered tip is still visible as structure`).toBeGreaterThan(0);
+      expect(discNearest, `${label}: rays that land on a flat end disc`).toBe(0);
+    }
+  });
+
+  it("keeps its foot, axis, radius and material: only the last 0.05 m changed", () => {
+    const frame = named("windscreen-center-frame");
+    const axis = TOP.subtract(FOOT).normalize();
+    const along = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), axis);
+    const vertices = worldVertices(frame);
+    expect(Math.min(...vertices.map(along)), "the foot is where it was").toBeCloseTo(0, 3);
+    // the bar's radius below the taper is unchanged: 0.024 at the top of the bar, 8% fatter at the foot
+    const atFoot = vertices.filter((p) => along(p) < 1e-3);
+    const radial = (p: Vector3) => {
+      const d = p.subtract(FOOT);
+      return d.subtract(axis.scale(Vector3.Dot(d, axis))).length();
+    };
+    expect(Math.max(...atFoot.map(radial))).toBeCloseTo(0.024 * 1.08, 3);
+    const shoulder = vertices.filter((p) => Math.abs(along(p) - (Vector3.Distance(TOP, FOOT) - TIP_LENGTH)) < 1e-3);
+    expect(shoulder.length, "the bar/cone shoulder exists").toBeGreaterThan(0);
+    expect(Math.max(...shoulder.map(radial))).toBeCloseTo(0.024, 3);
+    expect((frame.material as PBRMaterial).name).toBe("trainer-dark");
+    // it is EXTERIOR, not cockpit-only: that is the whole point of fixing it here rather than hiding it
+    expect(cockpitOnly.map((part) => part.name)).not.toContain("windscreen-center-frame");
   });
 });

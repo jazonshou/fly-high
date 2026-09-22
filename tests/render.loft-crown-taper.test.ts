@@ -214,7 +214,8 @@ describe("the loft's crown taper", () => {
       // winding decided by geometry). Checked mesh by mesh against e87d9da, positions and indices,
       // triangle count and area: only those two of the trainer's 70 meshes moved, and each keeps its 50
       // unique positions, its 96 triangles and its area. The jet's pin is unchanged.
-      trainer: "9105d40d",
+      // Re-pinned for the centre frame's tapered tip, on the same evidence as the seam pin above.
+      trainer: "3106e693",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",
