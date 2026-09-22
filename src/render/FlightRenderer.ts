@@ -165,6 +165,7 @@ import {
   CHASE_AIM_HEIGHT_METERS,
   cameraRigLiftToRef,
   cameraTrailMeters,
+  chaseRigHeightForBank,
   chaseRigOffsetsToRef,
   COCKPIT_AIM_DISTANCE_METERS,
   cockpitEyeForwardUpMetres,
@@ -2809,11 +2810,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.reducedMotion,
         this.observedGroundSpeed,
       );
+      // The height drops toward the aircraft's level in a bank, and only in a
+      // bank: wings level it is `profile.height` exactly. The blended lift above
+      // keeps a banked airframe centred; this keeps it from sinking in frame.
+      // See `CHASE_BANK_HEIGHT_DROP`.
       chaseRigOffsetsToRef(
         this.forward,
         this.cameraRigLift,
         profile.distance,
-        profile.height,
+        chaseRigHeightForBank(profile.height, this.forward, this.up),
         profile.aimAhead,
         CHASE_AIM_HEIGHT_METERS,
         trail,

@@ -242,6 +242,60 @@ export function cameraRigLiftToRef(
 }
 
 /**
+ * How far the chase camera drops toward the aircraft's own level in a bank:
+ * its height is `height x (1 - CHASE_BANK_HEIGHT_DROP x sin^2 bank)`, so 2/3 of
+ * the profile's at 45 degrees, 1/2 at 60 and 1/3 at 90 -- never below the
+ * aircraft.
+ *
+ * WHY. Building the rig on the blended lift (`cameraRigLiftToRef`) stopped the
+ * airframe sliding sideways in a bank, and in exchange it sank: the old rig
+ * raised the camera along the aircraft's BANKED up, which in a bank is lower
+ * in world terms, and the blended lift keeps it near world up. Measured on the
+ * two banked perf shots with only the lift switched (highlight centroid,
+ * percent down / across the frame): 45 degrees 74.0 / 37.2 with the old lift
+ * and 82.7 / 49.2 with the blended one; 60 degrees 65.3 / 35.1 and 77.8 / 49.3.
+ * Dropping the camera by bank alone gives the height back without giving back
+ * the slide: at 2/3 the same shots read 75.0 / 51.1 and 65.2 / 48.9.
+ *
+ * A steeper blend matched 45 degrees exactly too, but drifted the airframe 2-3
+ * percent sideways, a flatter view showing more of the lit lower wing. 2/3 is
+ * the constant that keeps it within about 1 percent of centre.
+ */
+export const CHASE_BANK_HEIGHT_DROP = 2 / 3;
+
+/**
+ * sin^2 of the aircraft's bank, measured from wings-level at the same heading
+ * and pitch -- the `up0` `cameraRigLiftToRef` blends from -- so pitch alone
+ * never reads as bank. `up` lies in the plane of `up0` and the horizontal
+ * starboard `h`, as `cos(bank) up0 + sin(bank) h`, so sin(bank) is `up . h`.
+ *
+ * Exactly 0 wings level (below 1e-12, a bank of about 6e-5 degrees) and where
+ * the nose points straight up or down, where "bank" has no meaning: the chase
+ * rig is then bit-for-bit what it was.
+ */
+export function chaseBankSinSquared(
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+): number {
+  const horizontal = Math.hypot(forward.x, forward.z);
+  if (!(horizontal > 1e-6)) return 0;
+  const sinBank = (up.x * -forward.z + up.z * forward.x) / horizontal;
+  const squared = sinBank * sinBank;
+  if (!(squared >= 1e-12)) return 0;
+  return Math.min(1, squared);
+}
+
+/** The chase camera's height for this attitude: `height` itself, exactly, wings level. */
+export function chaseRigHeightForBank(
+  height: number,
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+): number {
+  const sinSquared = chaseBankSinSquared(forward, up);
+  return sinSquared === 0 ? height : height * (1 - CHASE_BANK_HEIGHT_DROP * sinSquared);
+}
+
+/**
  * Where the chase camera and its aim point sit, relative to the aircraft.
  *
  * Pure, and separated from the renderer for one reason: the claim that this
