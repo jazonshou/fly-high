@@ -83,11 +83,19 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
   trainer: { mesh: "trainer-attitude-pitch-bar" },
   bizjet: { mesh: "bizjet-screens", block: 0 },
   airliner: { mesh: "airliner-screens", block: 0 },
-  jet: null,
+  // The F-16's panel board: one `build.box` under the coaming (the pilot does not see it from the seat, but
+  // the control samples the box's own faces alone, and its aft face is the nearest of them from the eye).
+  jet: { mesh: "jet-instrument-panel" },
 };
 
 /** How many cockpit-only meshes each aircraft has, so a mesh going missing cannot pass as a clean run. */
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 0 };
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 1 };
+/**
+ * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
+ * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed
+ * by `sculptSolid`, and it fills the bottom of the frame from the seat. It is held to the same zero here.
+ */
+const ALSO_WALKED: Readonly<Record<AircraftKind, readonly string[]>> = { trainer: [], bizjet: [], airliner: [], jet: ["jet-glare-shield"] };
 
 interface Prepared {
   readonly name: string;
@@ -217,7 +225,7 @@ const grid = (azFrom: number, azTo: number, elFrom: number, elTo: number, step: 
   return rays;
 };
 
-describe.each(["trainer", "bizjet", "airliner"] as const)("what the GPU draws of the %s's cockpit-only parts", (kind) => {
+describe.each(["trainer", "bizjet", "airliner", "jet"] as const)("what the GPU draws of the %s's cockpit-only parts", (kind) => {
   let engine: NullEngine;
   let scene: Scene;
   let aircraft: AircraftVisual;
@@ -249,7 +257,13 @@ describe.each(["trainer", "bizjet", "airliner"] as const)("what the GPU draws of
     const spec = aircraftSpec(kind).cockpitEye;
     eye = new Vector3(spec.forward, spec.up, spec.right);
     // NOT `.map(prepare)`: map passes the index, which `prepare` now reads as a box block.
-    meshes = (aircraft.cockpitOnlyParts ?? []).map((mesh) => prepare(mesh));
+    const walked = [...(aircraft.cockpitOnlyParts ?? [])];
+    for (const name of ALSO_WALKED[kind]) {
+      const mesh = scene.getMeshByName(name);
+      if (!mesh) throw new Error(`${kind}: ${name} is listed to be walked but was not built`);
+      walked.push(mesh);
+    }
+    meshes = walked.map((mesh) => prepare(mesh));
   });
   afterAll(() => {
     aircraft.dispose();
@@ -309,8 +323,11 @@ describe.each(["trainer", "bizjet", "airliner"] as const)("what the GPU draws of
   it("finds every cockpit-only mesh: the list this test walks is the aircraft's own", () => {
     // PINNED per aircraft rather than bounded below: the 747's kit went 7 -> 4 when its 3D attitude
     // ball came out, and a bound would have let that pass in silence either way.
-    expect(meshes.length, `${kind}'s cockpit-only meshes`).toBe(KIT_SIZE[kind]);
-    expect(meshes.map((mesh) => mesh.name).sort()).toEqual([...(aircraft.cockpitOnlyParts ?? [])].map((mesh) => mesh.name).sort());
+    expect((aircraft.cockpitOnlyParts ?? []).length, `${kind}'s cockpit-only meshes`).toBe(KIT_SIZE[kind]);
+    expect(meshes.length, `${kind}'s walked meshes: the kit and the parts listed beside it`).toBe(KIT_SIZE[kind] + ALSO_WALKED[kind].length);
+    expect(meshes.map((mesh) => mesh.name).sort()).toEqual([...(aircraft.cockpitOnlyParts ?? []).map((mesh) => mesh.name), ...ALSO_WALKED[kind]].sort());
+    // a part walked beside the kit is an ordinary part, not a cockpit-only one: the two lists do not overlap
+    for (const name of ALSO_WALKED[kind]) expect((aircraft.cockpitOnlyParts ?? []).map((mesh) => mesh.name), name).not.toContain(name);
     // the meshes exempted from the frame grid are real ones, so an exemption cannot outlive its mesh
     for (const name of BEYOND_THE_FRAME[kind]) expect(meshes.map((mesh) => mesh.name), name).toContain(name);
   });

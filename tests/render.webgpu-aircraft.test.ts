@@ -272,7 +272,10 @@ describe("Babylon WebGPU aircraft visual", () => {
       "jet-bubble-canopy",
       "jet-ejection-seat",
       "jet-instrument-panel",
-      "jet-attitude-gauge",
+      // The five dials and their needles are gone (cockpit phase F1): the board is bare
+      // under a wedge coaming, and the HUD's combiner frame stands on it, cockpit-only.
+      "jet-glare-shield",
+      "jet-hud-frame",
       "starboard-jet-inlet-cheek",
       "port-jet-inlet-cheek",
       "swept-vertical-stabilizer",

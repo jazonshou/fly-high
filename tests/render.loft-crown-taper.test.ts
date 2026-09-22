@@ -232,7 +232,11 @@ describe("the loft's crown taper", () => {
       trainer: "fd086242",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
-      jet: "8bb6edcd",
+      // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial
+      // and needle meshes gone, the coaming and the board rebuilt, the HUD frame new, the other 66
+      // meshes unmoved against f9d2672 (world positions to the micrometre, and indices). The crown
+      // taper is still unused on this airframe.
+      jet: "4853d635",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.

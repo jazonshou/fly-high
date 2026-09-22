@@ -15,6 +15,7 @@ import {
 import {
   applyCommonPose,
   configureCockpitLayers,
+  configureCockpitOnlyParts,
   configureRoot,
   createGlowApplier,
   createLampApplier,
@@ -22,10 +23,10 @@ import {
   yawHingeAlong,
   node,
   setCockpitVisibility,
-  addInstrumentPanel,
   type CommonRig,
 } from "./airframeRig";
 import { AircraftBuildContext } from "./builders";
+import { buildJetCockpit } from "./cockpit/jetCockpit";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftDefinition } from "@/src/sim";
 import type { AircraftVisual } from "./types";
@@ -283,6 +284,17 @@ export function createJet(scene: Scene): AircraftVisual {
   // keeps the mesh and its layer exactly as every test expects, and it is the
   // honest description of what this surface is for — the outside wants a solid
   // dark shape and the pilot wants a windscreen.
+  //
+  // AND IT IS TWO-SIDED, which the cockpit work (phase F1) measured rather than
+  // assumed: `build.material` turns `backFaceCulling` OFF for every alpha-blended
+  // airframe material, so from the seat, where every one of the canopy's nearest
+  // triangles is a back face (3,108 of 3,108 on the drawn-faces instrument), the
+  // GPU draws the inside of the bubble anyway. The frame reads as nearly plain
+  // sky because 0.16 of this tint over sky IS nearly plain sky, not because the
+  // glass is culled. Flipping the culling with the view would change the
+  // exterior (a one-sided bubble vanished from outside in the capture, above)
+  // and change nothing inside, so it is not done; the test holds the material
+  // two-sided in cockpit view.
   const glass = build.material("jet-glass", 0x0a1219, {
     roughness: 0.03,
     metallic: 0,
@@ -402,16 +414,10 @@ export function createJet(scene: Scene): AircraftVisual {
     roughness: 0.8,
     metallic: 0.02,
   });
-  const instrumentFace = build.material("jet-instrument-face", 0x050a0d, {
-    roughness: 0.7,
-    metallic: 0.05,
-  });
-  const instrumentMarking = build.material("jet-instrument-marking", 0x91d8b8, {
-    roughness: 0.34,
-    metallic: 0,
-    emissive: 0x49c18c,
-    emissiveIntensity: 0.7,
-  });
+  // No gauge-face or marking material: the five round dials and their needles are
+  // gone with phase F1 of the cockpit, and nothing else used either. The marking
+  // material outlived them for one pass, glowing at night on no mesh at all; the
+  // MFDs that replace the dials (F2) draw emissive pages of their own.
 
   // THE BLENDED BODY, which is the whole aeroplane. Four regimes down one loft,
   // and the section shape changes in every one of them:
@@ -965,8 +971,9 @@ export function createJet(scene: Scene): AircraftVisual {
   // shape whose lower half is inside the fuselage and never seen.
   //
   // TWO CONSTRAINTS HOLD THE SECTIONS. The crown at x 2.22 is 1.240 and the
-  // catalogue's cockpit eye is measured against it: panel top 0.82, eye 0.94,
-  // 0.30 m of headroom. And every section's BOTTOM must stay inside the skin —
+  // catalogue's cockpit eye is measured against it: the coaming's near edge
+  // 0.739 (the old panel top was 0.82), eye 0.94, 0.30 m of headroom. And
+  // every section's BOTTOM must stay inside the skin —
   // this is glass, so a section reaching below the fuselage would hang a
   // transparent blister under the belly. The forebody's floor is about -0.47
   // here, which is what caps `yRadius` at 0.80 and fixes `yOffset` at 0.44.
@@ -1095,33 +1102,23 @@ export function createJet(scene: Scene): AircraftVisual {
   const tub = build.box("jet-cockpit-tub", 1.9, 0.5, 0.84, interior, root);
   tub.position.set(2.2, 0.05, 0);
   tub.metadata = { ...tub.metadata, cockpitInterior: true, castsShadow: false };
-  // THE GLARE SHIELD. On the real aeroplane you never see the instrument panel
-  // from outside: you see the dark hood over it. Without one, the panel's top
-  // face catches the sun and reads at orbit distance as a pale BOX standing on
-  // the nose under the glass — the last of the three interior objects that were
-  // being mistaken for structure.
+  // THE COAMING, THE PANEL BOARD AND THE HUD FRAME (`cockpit/jetCockpit.ts`).
   //
-  // Its top is y 0.82, which is the panel's own top edge and NOT above it. The
-  // pilot's sightline from the eye at (2.22, 0.94) grazing that edge passes
-  // y 0.844 at this station, so the hood sits 24 mm below the line of sight and
-  // cannot become a bar across the forward view.
-  const glareShield = build.box("jet-glare-shield", 0.3, 0.08, 0.54, dark, root);
-  glareShield.position.set(2.78, 0.78, 0);
-  glareShield.rotation.z = -0.12;
-  glareShield.metadata = { ...glareShield.metadata, cockpitInterior: true, castsShadow: false };
-  // Panel centred at x 2.92 / y 0.55 and 0.54 m tall, so its top edge is
-  // y 0.82. The catalogue's cockpit eye is measured against those two numbers.
-  addInstrumentPanel(
-    build,
-    "jet",
-    root,
-    2.92,
-    0.55,
-    0.5,
-    interior,
-    instrumentFace,
-    instrumentMarking,
-  );
+  // The coaming keeps the job the old glare-shield box had. On the real
+  // aeroplane you never see the instrument panel from outside: you see the
+  // dark hood over it. Without one, the panel's top face catches the sun and
+  // reads at orbit distance as a pale BOX standing on the nose under the glass
+  // -- the last of the three interior objects that were being mistaken for
+  // structure. It is a wedge now, built to what the pilot sees: its far edge
+  // reads -10.2 degrees straight ahead, over the nose probe, and its near edge
+  // -16.0, on the matte glareshield material. The board under it has no dials any
+  // more (phase F2 puts the MFDs and the UFC on the coaming's near face, the
+  // only part of the panel the pilot sees), and the HUD's combiner
+  // frame stands on the coaming, cockpit-only: invisible from every other
+  // camera and never a shadow caster (`configureCockpitOnlyParts`).
+  const cockpit = buildJetCockpit(build, root, { interior });
+  const cockpitOnlyParts = cockpit.parts;
+  configureCockpitOnlyParts(cockpitOnlyParts);
 
   // THE ENGINE. One F110, one nozzle, and the exit plane on the sim's tailcone
   // contact point at x = -7.50.
@@ -1473,6 +1470,8 @@ export function createJet(scene: Scene): AircraftVisual {
     // ordinary world layers — a canopy the pilot cannot see through is worse
     // than no canopy, and on this aeroplane it is the whole point of the type.
     cockpitParts: [fuselage, radome, dorsalSpine],
+    // The HUD frame: see `buildJetCockpit`.
+    cockpitOnlyParts,
     wingSurfaces,
     // No separate ailerons and no separate flaps: this aeroplane's trailing
     // edge is one flaperon a side and `applyCommonPose` sums both commands
@@ -1498,6 +1497,7 @@ export function createJet(scene: Scene): AircraftVisual {
     root,
     propeller,
     cockpitParts: rig.cockpitParts,
+    cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
@@ -1542,7 +1542,6 @@ export function createJet(scene: Scene): AircraftVisual {
       jetApplyLamp(beaconLamp, lights.beacon);
       jetApplyLamp(strobeLamp, lights.strobe);
       jetApplyLamp(landingLamp, lights.landing);
-      jetApplyGlow(instrumentMarking, lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;

@@ -5,7 +5,6 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
 import type { AircraftKind } from "@/src/sim";
 import type { resolveAircraftAnimationPose } from "./animation";
-import { AircraftBuildContext } from "./builders";
 import { AIRCRAFT_EXTERIOR_LAYER_MASK, aircraftCameraLayerMask } from "./types";
 
 /**
@@ -244,68 +243,6 @@ export function configureRoot(root: TransformNode, kind: AircraftKind): void {
     bodyAxes: { forward: "+x", up: "+y", starboard: "+z" },
   };
 }
-
-export function addInstrumentPanel(
-  build: AircraftBuildContext,
-  prefix: string,
-  root: TransformNode,
-  x: number,
-  y: number,
-  depth: number,
-  panelMaterial: PBRMaterial,
-  faceMaterial: PBRMaterial,
-  markingMaterial: PBRMaterial,
-): readonly AbstractMesh[] {
-  const meshes: AbstractMesh[] = [];
-  const panel = build.box(
-    `${prefix}-instrument-panel`,
-    0.1,
-    0.54,
-    depth,
-    panelMaterial,
-    root,
-  );
-  panel.position.set(x, y, 0);
-  panel.rotation.z = -0.12;
-  panel.metadata = { ...panel.metadata, cockpitInterior: true };
-  meshes.push(panel);
-
-  const gauges = [
-    { name: "airspeed", y: 0.09, z: 0.22 },
-    { name: "attitude", y: 0.09, z: -0.02 },
-    { name: "altimeter", y: 0.09, z: -0.26 },
-    { name: "engine", y: -0.13, z: 0.12 },
-    { name: "vertical-speed", y: -0.13, z: -0.14 },
-  ] as const;
-  for (const [index, gauge] of gauges.entries()) {
-    const face = build.cylinder(
-      `${prefix}-${gauge.name}-gauge`,
-      0.016,
-      index === 1 ? 0.2 : 0.17,
-      index === 1 ? 0.2 : 0.17,
-      24,
-      faceMaterial,
-      root,
-    );
-    face.rotation.z = Math.PI / 2;
-    face.position.set(x - 0.061, y + gauge.y, gauge.z * depth);
-    face.metadata = { ...face.metadata, cockpitInterior: true, castsShadow: false };
-    const needle = build.box(
-      `${prefix}-${gauge.name}-needle`,
-      0.013,
-      0.012,
-      index === 1 ? 0.072 : 0.06,
-      markingMaterial,
-      root,
-    );
-    needle.position.set(x - 0.073, y + gauge.y, gauge.z * depth + 0.018);
-    needle.rotation.x = (index - 2) * 0.38;
-    needle.metadata = { ...needle.metadata, cockpitInterior: true, castsShadow: false };
-    meshes.push(face, needle);
-  }
-  return meshes;
-}
-
 
 export function applyCommonPose(
   rig: CommonRig,

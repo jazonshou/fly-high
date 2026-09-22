@@ -15,18 +15,33 @@ import type { AircraftBuildContext } from "../builders";
  */
 
 /**
+ * How much of the sky's image-based light a glareshield takes: all of it, as every other
+ * surface does. What it must not take is the sky's REFLECTION, and `metallicF0Factor` 0
+ * already removes that (F0 and F90 both zero), so this only lets the sky LIGHT it.
+ */
+export const GLARESHIELD_IMAGE_LIGHT = 1;
+
+/**
  * A glareshield's material: matte near-black that reflects nothing. Its top face
  * is the one interior surface lying at a grazing angle to the eye under an open
  * sky, so on the ordinary interior material (rough dielectric, lit by the sky's
  * image-based light) it read as a pale grey-blue shelf, the brightest thing in
- * the frame. Roughness 1, no clearcoat, F0 and F90 both zero
- * (`metallicF0Factor` 0) and no image-based light (`environmentIntensity` 0):
- * only the sun and the lamps light it, and at this albedo (about 0.06 a channel,
- * darker than the interior's 0.1 to 0.16) that is a near-black.
+ * the frame. That shelf was the sky REFLECTED at a grazing angle: roughness 1, no
+ * clearcoat and F0 and F90 both zero (`metallicF0Factor` 0) take it away.
+ *
+ * It keeps the sky's diffuse light (`GLARESHIELD_IMAGE_LIGHT`). With none, only the
+ * sun and the lamps lit it, and every face the sun missed rendered (0, 0, 0): the
+ * F-16's coaming face and HUD frame read as a black slab with a black doorway on it,
+ * and the 747's pillar read as a void before it moved to the interior material.
+ * Measured live at one frozen pose per deck (docs/findings/COCKPIT_VIEW_2026_09_20.md),
+ * the shaded faces go from 0-17 to 15-28 (of 255, luma) and the sunlit tops rise 10%.
+ * A "small" term was tried first and is too small: at a fifth of the sky's light the
+ * F-16's coaming face read 4.6, at half 10. At this albedo (about 0.06 a channel,
+ * darker than the interior's 0.1 to 0.16) it is still a near-black.
  */
 export function glareshieldMaterial(build: AircraftBuildContext, name: string): PBRMaterial {
   const material = build.material(name, 0x0e1012, { roughness: 1, metallic: 0 });
-  material.environmentIntensity = 0;
+  material.environmentIntensity = GLARESHIELD_IMAGE_LIGHT;
   material.metallicF0Factor = 0;
   return material;
 }
@@ -151,6 +166,65 @@ export function solidified(mesh: Mesh): Mesh {
   data.applyToMesh(mesh, false);
   mesh.refreshBoundingInfo();
   return mesh;
+}
+
+/**
+ * Move every vertex of a `solidPlate` and keep it a solid the GPU draws.
+ *
+ * `verticalProfile` extrudes ONE outline at ONE thickness, so a plate is a prism: the same
+ * section from end to end. A coaming is not. The F-16's is a wedge whose plan narrows from
+ * the panel to its far edge, so it is built as a plate at its widest and then SCULPTED: each
+ * vertex moved by `move` (in the mesh's own local space), every triangle's flat normal
+ * rewritten from its new corners, and the winding re-checked by the same rule `solidPlate`
+ * used (a drawn face's cross product points INTO the solid). A move that turned a triangle
+ * inside out throws rather than shipping a face the GPU culls, which is what a silent
+ * re-wind would hide: the drawn-faces test would then be the first to know, and this is
+ * earlier.
+ *
+ * Only for a mesh `solidPlate` made: three vertices of its own to a triangle, indices in
+ * order, so a per-triangle normal has nothing to share. Convexity is the caller's: the
+ * centroid rule that decides "into the solid" needs the centroid inside.
+ */
+export function sculptSolid(mesh: Mesh, move: (point: Vector3) => Vector3): void {
+  const source = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const uvSource = mesh.getVerticesData(VertexBuffer.UVKind);
+  const indices = mesh.getIndices();
+  if (!source || !uvSource || !indices) throw new Error(`sculptSolid "${mesh.name}": expected position, uv and indices`);
+  for (let i = 0; i < indices.length; i += 1) {
+    if (indices[i] !== i) throw new Error(`sculptSolid "${mesh.name}": expected a solidPlate mesh (three vertices of its own to a triangle)`);
+  }
+  const moved: Vector3[] = [];
+  for (let i = 0; i < source.length / 3; i += 1) {
+    moved.push(move(new Vector3(source[i * 3]!, source[i * 3 + 1]!, source[i * 3 + 2]!)));
+  }
+  const centroid = new Vector3();
+  for (const point of moved) centroid.addInPlace(point);
+  centroid.scaleInPlace(1 / moved.length);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  for (let t = 0; t + 2 < moved.length; t += 3) {
+    const a = moved[t]!;
+    const b = moved[t + 1]!;
+    const c = moved[t + 2]!;
+    const cross = Vector3.Cross(b.subtract(a), c.subtract(a));
+    const centre = a.add(b).add(c).scale(1 / 3);
+    if (Vector3.Dot(cross, centroid.subtract(centre)) < 0) {
+      throw new Error(`sculptSolid "${mesh.name}": the move turned triangle ${t / 3} inside out`);
+    }
+    // the same convention as solidPlate: the cross product points INTO the solid, the shading normal OUT of it
+    const normal = cross.normalize().scale(-1);
+    for (const corner of [a, b, c]) {
+      positions.push(corner.x, corner.y, corner.z);
+      normals.push(normal.x, normal.y, normal.z);
+    }
+  }
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = [...uvSource];
+  data.indices = [...indices];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
 }
 
 /** The rotation that takes local X, Y, Z onto the given orthonormal, right-handed basis. */

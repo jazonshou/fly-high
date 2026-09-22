@@ -18,6 +18,7 @@ import {
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
 import { worldTriangles as tipWorldTriangles, hitTriangle as tipHitTriangle } from "../scripts/rayCrossings.mts";
+import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 
 /**
  * The Cessna's cockpit, held to the angles it was built to and to the shell it
@@ -147,14 +148,14 @@ describe("the trainer's cockpit parts", () => {
     const hood = named("trainer-glareshield").material as PBRMaterial;
     const board = named("trainer-instrument-panel").material as PBRMaterial;
     expect(hood).not.toBe(board);
-    // albedo ~0.06 a channel (0.04-0.08), roughness 1, no clearcoat, F0/F90 zero, no image-based light
+    // albedo ~0.06 a channel (0.04-0.08), roughness 1, no clearcoat, F0/F90 zero, the sky's diffuse image light
     for (const channel of [hood.albedoColor.r, hood.albedoColor.g, hood.albedoColor.b]) {
       expect(channel).toBeGreaterThan(0.03);
       expect(channel).toBeLessThan(0.08);
     }
     expect(hood.roughness).toBeGreaterThanOrEqual(0.99);
     expect(hood.clearCoat.isEnabled).toBe(false);
-    expect(hood.environmentIntensity).toBe(0);
+    expect(hood.environmentIntensity, "lit by the sky's image light; F0 zero keeps it from reflecting the sky").toBe(GLARESHIELD_IMAGE_LIGHT);
     expect(hood.metallicF0Factor).toBe(0);
     // ...and darker than the panel board it stands on
     const luma = (m: PBRMaterial) => m.albedoColor.r + m.albedoColor.g + m.albedoColor.b;

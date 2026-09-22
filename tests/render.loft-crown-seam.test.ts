@@ -297,7 +297,15 @@ describe("a loft's crown seam", () => {
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global
       // re-pins above; the 747 is untouched by both.
-      jet: "b0eb20d5",
+      // RE-PINNED for the F-16's cockpit, phase F1 (jazonshou/cockpit-jet-f1): the five dials and
+      // their needles are gone (ten meshes), the tilted `jet-glare-shield` box is a wedge coaming
+      // (a `solidPlate` narrowed by `sculptSolid`: 24 -> 36 vertices, 12 triangles) and the board is
+      // rebuilt bare under it; ONE mesh is new, the cockpit-only `jet-hud-frame` (three struts
+      // merged, 114 vertices, 96 triangles). Checked mesh by mesh against f9d2672, WORLD positions
+      // AND indices (`tests/render.cockpit-jet.test.ts` pins every one): of the jet's 78 meshes the
+      // other 66 are unmoved to the micrometre, 78 -> 69. The change moves no other airframe (the
+      // trainer's 70, the Global's 96 and the 747's 93 meshes), which is why their pins here stay.
+      jet: "5adc3bad",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
