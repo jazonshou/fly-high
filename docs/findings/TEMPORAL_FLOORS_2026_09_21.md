@@ -61,7 +61,14 @@ by a test pinned to ten decimals. Nothing else in that merge does that.
 `3f1af43` fixes a real defect: the view rolled 18% of the bank while the rig's
 position and aim were raised along the aircraft's up at FULL strength, so the
 two disagreed by 82% of the bank and the airframe slid sideways out of frame at
-0.155% of frame width per degree. What the fix changes is what the frame
+0.155% of frame width per degree.
+
+**What changed is the rig's POSITION and AIM, which now build on the
+bank-blended vertical. `cameraBankFollow` is byte-identical across the commit
+at 0.18 and was already live when the baseline was captured (0ed07bc, one call
+site), so THE SHOT'S CONTENTS CHANGED, NOT ITS ROLL.** Reading the candidate's
+horizon tilt as new bank-following is the natural mistake and it is wrong: the
+tilt is in the baseline too. What the fix changes is what the frame
 CONTAINS, so a frame-to-frame metric must move. Reverting it would reinstate a
 visible defect to satisfy a floor that was within 0.0018 of failing before any
 of this work started.
