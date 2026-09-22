@@ -6,7 +6,6 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
-import type { Scene } from "@babylonjs/core/scene";
 import type { AircraftBuildContext } from "../../builders";
 import type { DisplayContext2D, DisplayState } from "./displayState";
 import { drawDisplayAtlas, type DisplayPage, type DisplaySlot } from "./displayPages";
@@ -235,8 +234,23 @@ export interface DisplayAtlas {
 /**
  * Try to make the atlas. Returns null wherever there is no 2D canvas -- every Node test -- and the
  * caller then leaves the screens on their flat material.
+ *
+ * THE ATLAS IS OWNED BY THE BUILD THAT MADE IT, and that is why this takes the build context rather
+ * than a scene. Its texture goes on `build.textures`, the list the paint synthesis's textures are on,
+ * which `build.disposeMaterials()` frees when the visual is disposed. It used to be created against
+ * the scene alone, so `visual.dispose()` left it behind: five build-and-dispose cycles of the 747 in
+ * one scene held five atlases, 15.84 MB (the Global's, 10.56 MB), measured. The canvas goes with it:
+ * when the texture is disposed the canvas is sized to zero, which releases its backing store at once
+ * rather than whenever the last reference to the cockpit happens to be collected.
+ *
+ * WHAT THAT WAS, AND WAS NOT, in the shipped app: an aircraft switch there rebuilds the whole renderer
+ * and disposes its scene, and `scene.dispose()` frees every texture in it, this one included
+ * (measured). So the app never piled atlases up across switches. The defect was the visual not
+ * owning what it made, which bites any path that disposes a visual and keeps its scene -- the tests,
+ * and any later in-scene aircraft swap.
  */
-export function createDisplayAtlas(scene: Scene, layout: DisplayLayout): DisplayAtlas | null {
+export function createDisplayAtlas(build: AircraftBuildContext, layout: DisplayLayout): DisplayAtlas | null {
+  const scene = build.scene;
   // NOT `DynamicTexture`, and that is measured rather than preferred. Its constructor calls
   // `engine.createDynamicTexture`, which exists on no engine in this tree-shakeable build until an
   // extension module is imported for its side effect -- and on THIS renderer's WebGPU engine the
@@ -272,6 +286,11 @@ export function createDisplayAtlas(scene: Scene, layout: DisplayLayout): Display
     texture.name = layout.name;
     texture.wrapU = Texture.CLAMP_ADDRESSMODE;
     texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+    build.textures.push(texture);
+    texture.onDisposeObservable.addOnce(() => {
+      canvas.width = 0;
+      canvas.height = 0;
+    });
     return { texture, context, canvas, slots: displaySlots(layout), width, height };
   } catch (error) {
     // KEPT, not swallowed. A silent catch here is what made the first live failure so slow to find:
@@ -304,6 +323,9 @@ export function displayMaterial(build: AircraftBuildContext, name: string, atlas
 
 /** Draw every page of the atlas's layout and hand the pixels to the GPU. */
 export function paintDisplays(atlas: DisplayAtlas, state: DisplayState): void {
+  // A disposed atlas has no texture to upload into (`RawTexture.update` on one throws); the visuals
+  // stop calling this once they are disposed, and this makes a late call harmless rather than fatal.
+  if (atlas.texture.getInternalTexture() === null) return;
   drawDisplayAtlas(atlas.context, atlas.width, atlas.height, atlas.slots, state);
   uploadDisplayAtlas(atlas);
 }

@@ -17,9 +17,12 @@ import {
   BIZJET_SCREENS,
   bizjetScreenPlacements,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
+import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import {
   AIRLINER_DISPLAYS,
   BIZJET_DISPLAYS,
+  createDisplayAtlas,
+  paintDisplays,
   DISPLAY_SLOT_HEIGHT,
   DISPLAY_SLOT_WIDTH,
   type DisplayLayout,
@@ -469,6 +472,88 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
         for (const size of uploads) expect(size).toBe(bytes);
       }
       aircraft.setCockpitView(false);
+    });
+  });
+
+  /**
+   * A `document` whose every canvas is recorded, for builds that make more than one: each build makes
+   * its own atlas canvas, and what happens to each one on dispose is what is being checked.
+   */
+  function withManyCanvases<T>(body: (canvases: StubCanvas[], scene: Scene) => T): T {
+    const canvases: StubCanvas[] = [];
+    const globals = globalThis as { document?: unknown };
+    const had = Object.prototype.hasOwnProperty.call(globals, "document");
+    const previous = globals.document;
+    globals.document = {
+      createElement: (tag: string) => {
+        if (tag !== "canvas") return null;
+        const context = createRecordingContext();
+        const canvas: StubCanvas = {
+          width: 0,
+          height: 0,
+          getContext: (kind: string) => (kind === "2d"
+            ? Object.assign(context, { getImageData: (_x: number, _y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) })
+            : null),
+        };
+        canvases.push(canvas);
+        return canvas;
+      },
+    };
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    scene.useRightHandedSystem = true;
+    try {
+      return body(canvases, scene);
+    } finally {
+      if (had) globals.document = previous;
+      else delete globals.document;
+      scene.dispose();
+      engine.dispose();
+    }
+  }
+
+  it("gives its atlas back when disposed: after two builds and two disposes the scene holds no atlas and no sized canvas", () => {
+    // The atlas used to be created against the scene, so `visual.dispose()` left it behind: every
+    // build-and-dispose of this deck in one scene kept one (3.17 MB on the 747, 2.11 MB on the Global).
+    // The shipped app disposes the whole scene on an aircraft switch, which freed it there; a visual
+    // disposed while its scene lives on did not. It is the build's now, on the list
+    // `build.disposeMaterials()` frees.
+    withManyCanvases((canvases, scene) => {
+      const before = new Set(scene.textures);
+      for (let cycle = 1; cycle <= 2; cycle += 1) {
+        const visual = createWebGpuAircraft(scene, deck.kind);
+        // NON-VACUITY: this build made a LIVE atlas, so there is one to leak
+        expect(scene.textures.some((t) => t.name === deck.layout.name), `cycle ${cycle}: a live atlas was made`).toBe(true);
+        visual.dispose();
+        // what is left is what was there before the first build, and nothing else of the aircraft's --
+        // except Babylon's per-scene environment BRDF lookup, which the first PBR material creates and
+        // the SCENE owns (`scene.environmentBRDFTexture`), shared by every PBR material it will ever draw
+        const left = scene.textures.filter((t) => !before.has(t) && t !== scene.environmentBRDFTexture);
+        expect(left.map((t) => t.name), `cycle ${cycle}: textures the aircraft left behind`).toEqual([]);
+      }
+      // and each build's canvas was sized to nothing when its texture went, releasing its backing store
+      expect(canvases, "one atlas canvas per build").toHaveLength(2);
+      for (const canvas of canvases) expect([canvas.width, canvas.height], "a disposed atlas's canvas").toEqual([0, 0]);
+    });
+  });
+
+  it("makes a late redraw of a disposed atlas harmless: nothing drawn, nothing uploaded, nothing thrown", () => {
+    // The visuals stop redrawing once they are disposed; this is the atlas's own guard for a call that
+    // comes late anyway. `RawTexture.update` on a disposed texture throws.
+    withManyCanvases((canvases, scene) => {
+      const build = new AircraftBuildContext(scene);
+      const atlas = createDisplayAtlas(build, deck.layout)!;
+      expect(atlas, "the stub document gives a live atlas").not.toBeNull();
+      const state = displayStateFromVisual({ ...INITIAL_VISUAL_STATE, bank: 10 }, deck.airframe);
+      // a live one draws (the control for "nothing drawn" below)
+      paintDisplays(atlas, state);
+      const drawnLive = (atlas.context as ReturnType<typeof createRecordingContext>).calls.length;
+      expect(drawnLive, "a live atlas draws").toBeGreaterThan(50);
+      build.disposeMaterials();
+      expect(atlas.texture.getInternalTexture(), "the build disposed the atlas's texture").toBeNull();
+      expect([canvases[0]!.width, canvases[0]!.height], "and released its canvas").toEqual([0, 0]);
+      expect(() => paintDisplays(atlas, state)).not.toThrow();
+      expect((atlas.context as ReturnType<typeof createRecordingContext>).calls.length, "a disposed atlas draws nothing").toBe(drawnLive);
     });
   });
 
