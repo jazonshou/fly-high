@@ -352,6 +352,60 @@ export function shouldUpdateOceanCascade(
     === oceanCascadeUpdatePhase(updateEveryNFrames);
 }
 
+/**
+ * The ocean's absolute frame counter, which decides which cascades dispatch on
+ * which frame (`shouldUpdateOceanCascade`).
+ *
+ * It is a class rather than a bare field so the perf harness can PIN it, and so
+ * the thing tests exercise is the thing the ocean runs.
+ *
+ * Why it needs pinning. The counter is only ever incremented, and one renderer
+ * serves every shot of a capture run, so at a shot's capture it holds the
+ * render count of the whole run so far. The streaming loop before each shot is
+ * paced by wall-clock time, so that count varies between runs of identical
+ * code, and its residue mod 4 decides whether the every-4th-frame cascade
+ * (128-512 m waves on tier 1) was last evolved at the capture frame or two
+ * frames earlier (streaming counts are multiples of 30, so histories differ by
+ * even counts). Measured 2026-09-22: two cascade-phase classes per static
+ * shot, 0.12-0.40/255 mean apart over 13-51 % of the near sea depending on the
+ * shot — enough to make a water baseline "move" on any run, full or filtered,
+ * with no code change. It is what the alpine-turf A/B read as glints
+ * "seeing the land through the reflection probe" (the probe renders only sky).
+ *
+ * `pinForCapture` resets the counter at the harness's time pin, so every shot's
+ * capture lands on the same cadence phase whatever streamed before it. It does
+ * not touch foam, which carries a few seconds of pre-pin history of its own: a
+ * named floor on near water between captures whose OWN streaming counts
+ * differ, growing with that difference and still rising at 240 frames (mean
+ * /255 over water-25ft's sea: 0.007 at 60 frames, 0.012 at 150). Where the
+ * shot's own count matches, pinned captures of the same list agree over the
+ * sea to within a few dozen 1-LSB pixels — the previous shot's foam, about 4 %
+ * of it, still reaching the capture.
+ */
+export class OceanCascadeClock {
+  private frameIndex = 0;
+
+  /** Advances one rendered ocean frame. */
+  tick(): void {
+    this.frameIndex += 1;
+  }
+
+  /** True when a cascade with this cadence dispatches on the current frame. */
+  dispatches(updateEveryNFrames: number): boolean {
+    return shouldUpdateOceanCascade(this.frameIndex, updateEveryNFrames);
+  }
+
+  /**
+   * CAPTURE ONLY: restarts the cadence at the harness's per-shot time pin. The
+   * game never calls this, and nothing but the perf harness may (a source-scan
+   * test holds that line). Mid-flight it would make every slow cascade
+   * dispatch out of turn.
+   */
+  pinForCapture(): void {
+    this.frameIndex = 0;
+  }
+}
+
 function uniformBuffer(byteLength: number): { buffer: ArrayBuffer; view: DataView } {
   const buffer = new ArrayBuffer(byteLength);
   return { buffer, view: new DataView(buffer) };
