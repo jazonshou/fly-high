@@ -10,6 +10,8 @@ const textureHarness = vi.hoisted(() => ({
     name: string;
     updateMipLevel(data: Uint8Array, level: number): void;
   }>,
+  /** Every upload, with the internal texture's mip flags as they stood at that moment. */
+  uploads: [] as Array<{ level: number; generateMipMaps: boolean; useMipMaps: boolean | null }>,
 }));
 
 vi.mock("@babylonjs/core/Materials/Textures/rawTexture2DArray", () => ({
@@ -18,11 +20,19 @@ vi.mock("@babylonjs/core/Materials/Textures/rawTexture2DArray", () => ({
     disposed = false;
     name = "";
 
+    // As Babylon builds it for `generateMipMaps = true`: the upload boundary takes it over (FI-5).
+    readonly internal = { generateMipMaps: true, useMipMaps: null as boolean | null };
+
     constructor() {
       textureHarness.instances.push(this);
     }
 
-    updateMipLevel(): void {
+    getInternalTexture() {
+      return this.internal;
+    }
+
+    updateMipLevel(_data: Uint8Array, level: number): void {
+      textureHarness.uploads.push({ level, ...this.internal });
       if (this.name === textureHarness.failName) {
         throw new Error(`forced mip upload failure for ${this.name}`);
       }
@@ -48,6 +58,21 @@ const scene = {} as Scene;
 beforeEach(() => {
   textureHarness.failName = null;
   textureHarness.instances.length = 0;
+  textureHarness.uploads.length = 0;
+});
+
+describe("texture array upload order (FI-5)", () => {
+  it("takes the chain away from Babylon before the first upload, and uploads every level from 0", () => {
+    // An upload of level 0 while generation is on records Babylon's blit, which lands after
+    // the hand-built levels and replaces layer 0's (MipChainUpload.ts).
+    const level0 = new Uint8Array(4 * 4 * 4).fill(255);
+    const plan = planMippedTextureArray([level0], 4, "box");
+    uploadMippedTextureArrayPlan(scene, plan, { name: "ordered-array" });
+    expect(textureHarness.uploads.map((upload) => upload.level)).toEqual([0, 1, 2]);
+    for (const upload of textureHarness.uploads) {
+      expect(upload, `level ${upload.level}`).toMatchObject({ generateMipMaps: false, useMipMaps: true });
+    }
+  });
 });
 
 describe("detail atlas upload ownership", () => {

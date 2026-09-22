@@ -2,6 +2,7 @@ import { Constants } from "@babylonjs/core/Engines/constants";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
+import { createRawTextureFromMipChain } from "../core/MipChainUpload";
 import type { LoftSection } from "./builders";
 
 /**
@@ -727,28 +728,14 @@ export function createAirlinerLiveryTexture(
 ): RawTexture {
   const base = mips[0];
   if (!base) throw new RangeError("A livery upload needs at least the base level");
-  const texture = new RawTexture(
-    base.data,
-    base.width,
-    base.height,
-    Constants.TEXTUREFORMAT_RGBA,
-    scene,
-    true,
-    false,
-    Texture.TRILINEAR_SAMPLINGMODE,
-    Constants.TEXTURETYPE_UNSIGNED_BYTE,
-    0,
-    true,
-    false,
-    mips.length,
-  );
+  // The hand-built chain, NOT Babylon's: see `MipChainUpload.ts` (FI-5).
+  const texture = createRawTextureFromMipChain(scene, mips.map((mip) => mip.data), base.width, base.height, {
+    useSrgbBuffer: true,
+  });
   texture.name = name;
   texture.wrapU = Texture.CLAMP_ADDRESSMODE;
   texture.wrapV = Texture.WRAP_ADDRESSMODE;
   texture.anisotropicFilteringLevel = 8;
-  for (let level = 1; level < mips.length; level += 1) {
-    texture.updateMipLevel(mips[level]!.data, level);
-  }
   return texture;
 }
 

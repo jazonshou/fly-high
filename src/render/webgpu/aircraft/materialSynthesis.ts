@@ -1,7 +1,7 @@
-import { Constants } from "@babylonjs/core/Engines/constants";
-import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import type { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
+import { createRawTextureFromMipChain } from "@/src/render/webgpu/core/MipChainUpload";
 import { buildMipChain } from "@/src/render/webgpu/core/TextureArrayMips";
 
 /**
@@ -289,28 +289,12 @@ function uploadMipChain(
   mips: readonly Uint8Array[],
   useSrgbBuffer: boolean,
 ): RawTexture {
-  const texture = new RawTexture(
-    mips[0]!,
-    edge,
-    edge,
-    Constants.TEXTUREFORMAT_RGBA,
-    scene,
-    true,
-    false,
-    Texture.TRILINEAR_SAMPLINGMODE,
-    Constants.TEXTURETYPE_UNSIGNED_BYTE,
-    0,
-    useSrgbBuffer,
-    false,
-    mips.length,
-  );
+  // The hand-built chain, NOT Babylon's: see `MipChainUpload.ts` (FI-5).
+  const texture = createRawTextureFromMipChain(scene, mips, edge, edge, { useSrgbBuffer });
   texture.name = name;
   texture.wrapU = Texture.WRAP_ADDRESSMODE;
   texture.wrapV = Texture.WRAP_ADDRESSMODE;
   texture.anisotropicFilteringLevel = 8;
-  for (let level = 1; level < mips.length; level += 1) {
-    texture.updateMipLevel(mips[level]!, level);
-  }
   return texture;
 }
 
