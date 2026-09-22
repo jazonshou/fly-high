@@ -12,12 +12,11 @@ import {
   createDisplayAtlas,
   displayMaterial,
   displaySlots,
-  paintStubAtlas,
+  paintDisplays,
   remapScreenFaceToSlot,
-  uploadDisplayAtlas,
   type DisplayAtlas,
 } from "./displays/displayAtlas";
-import { displayStateFrom, type DisplayAirframe } from "./displays/displayState";
+import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
 import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
@@ -594,13 +593,12 @@ export function buildAirlinerCockpit(
       sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
       if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;
       sinceDisplayDraw = 0;
-      drawDisplays(atlas, displayStateFrom(state, AIRLINER_DISPLAY_AIRFRAME));
+      drawDisplays(atlas, displayStateFromVisual(state, AIRLINER_DISPLAY_AIRFRAME));
     },
   };
 }
 
-/** The painter. A stub until the drawing module lands; swapping it is the only change that needs. */
-function drawDisplays(atlas: DisplayAtlas, state: ReturnType<typeof displayStateFrom>): void {
-  paintStubAtlas(atlas, state);
-  uploadDisplayAtlas(atlas);
+/** The painter: the four page kinds across the six slots, then the upload. */
+function drawDisplays(atlas: DisplayAtlas, state: ReturnType<typeof displayStateFromVisual>): void {
+  paintDisplays(atlas, state);
 }

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE } from "../src/game/types";
 import type { FlightVisualState } from "../src/game/types";
 import {
-  displayStateFrom,
+  displayStateFromVisual,
   type DisplayAirframe,
-} from "../src/render/webgpu/aircraft/cockpit/displays/displayState";
+} from "../src/render/webgpu/aircraft/cockpit/displays/displayStateFromVisual";
 
 /**
  * What the 747's six displays read, held to the numbers the HUD renders for the SAME state.
@@ -42,7 +42,7 @@ describe("the 747's display state", () => {
       verticalSpeed: -7.62,
       velocity: { x: 120, y: -7.62, z: 40 },
     });
-    const display = displayStateFrom(state, AIRLINER);
+    const display = displayStateFromVisual(state, AIRLINER);
     expect(display.airspeedKt).toBeCloseTo(hud.speedKnots(state), 6);
     expect(display.airspeedKt).toBeCloseTo(249.98, 1);
     expect(display.altitudeFtMsl).toBeCloseTo(hud.feet(3_048), 6);
@@ -52,24 +52,24 @@ describe("the 747's display state", () => {
     // ALTITUDE IS MSL, NOT AGL: the HUD's tape shows altitudeAgl and a display shows this one, so a
     // state whose two differ must not read the HUD's number here
     const overTerrain = stateWith({ altitude: 3_048, altitudeAgl: 500 });
-    expect(displayStateFrom(overTerrain, AIRLINER).altitudeFtMsl).toBeCloseTo(10_000, 0);
-    expect(displayStateFrom(overTerrain, AIRLINER).altitudeFtMsl).not.toBeCloseTo(hud.feet(500), 0);
+    expect(displayStateFromVisual(overTerrain, AIRLINER).altitudeFtMsl).toBeCloseTo(10_000, 0);
+    expect(displayStateFromVisual(overTerrain, AIRLINER).altitudeFtMsl).not.toBeCloseTo(hud.feet(500), 0);
   });
 
   it("reads ground speed from the horizontal velocity, not the airspeed", () => {
     // 150 east, 200 north and a climb: ground speed is the horizontal hypotenuse, 250 m/s, and the
     // climb rate must not leak into it
     const state = stateWith({ airspeed: 100, velocity: { x: 150, y: 30, z: 200 } });
-    const display = displayStateFrom(state, AIRLINER);
+    const display = displayStateFromVisual(state, AIRLINER);
     expect(display.groundSpeedKt).toBeCloseTo(250 * 1.94384, 6);
     expect(display.groundSpeedKt).not.toBeCloseTo(display.airspeedKt, 0);
     // a pure climb has no ground speed at all
-    expect(displayStateFrom(stateWith({ velocity: { x: 0, y: 50, z: 0 } }), AIRLINER).groundSpeedKt).toBe(0);
+    expect(displayStateFromVisual(stateWith({ velocity: { x: 0, y: 50, z: 0 } }), AIRLINER).groundSpeedKt).toBe(0);
   });
 
   it("passes heading, pitch and bank through as DEGREES, and wraps heading into [0, 360)", () => {
     const state = stateWith({ heading: 237.5, pitch: -4.25, bank: 18.5 });
-    const display = displayStateFrom(state, AIRLINER);
+    const display = displayStateFromVisual(state, AIRLINER);
     expect(display.headingDeg).toBeCloseTo(hud.heading(state), 6);
     expect(display.headingDeg).toBeCloseTo(237.5, 6);
     expect(display.pitchDeg).toBeCloseTo(-4.25, 6);
@@ -77,12 +77,12 @@ describe("the 747's display state", () => {
     // the control that catches a radians conversion: 237.5 degrees is NOT 237.5 radians in disguise
     expect(display.headingDeg).not.toBeCloseTo((237.5 * 180) / Math.PI % 360, 0);
     for (const [raw, wrapped] of [[-10, 350], [370, 10], [720, 0]] as const) {
-      expect(displayStateFrom(stateWith({ heading: raw }), AIRLINER).headingDeg).toBeCloseTo(wrapped, 6);
+      expect(displayStateFromVisual(stateWith({ heading: raw }), AIRLINER).headingDeg).toBeCloseTo(wrapped, 6);
     }
   });
 
   it("gives one N1 per engine, gear only at down-and-locked, flap in degrees and throttle in percent", () => {
-    const display = displayStateFrom(
+    const display = displayStateFromVisual(
       stateWith({ engineRpm: 92.4, gear: 1, flaps: 0.5, throttle: 0.83, brake: 0.25 }),
       AIRLINER,
     );
@@ -94,10 +94,10 @@ describe("the 747's display state", () => {
     expect(display.spoilers).toBeCloseTo(0.25, 6);
     // in transit is NOT down: a display that says DOWN while the gear is still travelling is a lie
     for (const travelling of [0, 0.5, 0.98]) {
-      expect(displayStateFrom(stateWith({ gear: travelling }), AIRLINER).gearDown).toBe(false);
+      expect(displayStateFromVisual(stateWith({ gear: travelling }), AIRLINER).gearDown).toBe(false);
     }
     // a two-engine airframe draws two gauges
-    expect(displayStateFrom(stateWith({ engineRpm: 50 }), { engineCount: 2, fullFlapDegrees: 20 }).n1Percent).toHaveLength(2);
+    expect(displayStateFromVisual(stateWith({ engineRpm: 50 }), { engineCount: 2, fullFlapDegrees: 20 }).n1Percent).toHaveLength(2);
   });
 
   it("holds every reading finite when the state is not", () => {
@@ -115,7 +115,7 @@ describe("the 747's display state", () => {
       brake: Number.NaN,
       velocity: { x: Number.NaN, y: 0, z: Number.NaN },
     });
-    const display = displayStateFrom(rubbish, AIRLINER);
+    const display = displayStateFromVisual(rubbish, AIRLINER);
     for (const [name, value] of Object.entries(display)) {
       if (name === "n1Percent") continue;
       if (typeof value === "number") expect(Number.isFinite(value), name).toBe(true);

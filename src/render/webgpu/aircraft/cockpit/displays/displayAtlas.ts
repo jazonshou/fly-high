@@ -8,7 +8,8 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { Scene } from "@babylonjs/core/scene";
 import type { AircraftBuildContext } from "../../builders";
-import type { DisplayState } from "./displayState";
+import type { DisplayContext2D, DisplayState } from "./displayState";
+import { drawDisplayAtlas, type DisplayPage, type DisplaySlot } from "./displayPages";
 
 /**
  * The six flight-deck displays as ONE texture, and the plumbing that gets it onto the screens.
@@ -30,40 +31,47 @@ import type { DisplayState } from "./displayState";
  * rather than passing by accident, and nothing in the suite depends on a GPU.
  */
 
-/** The slots, left to right across the atlas, in the order the screens are built (`SCREEN_Z`). */
-export const DISPLAY_SLOT_ORDER = [
-  "port-pfd",
-  "port-nd",
-  "port-eicas",
-  "starboard-eicas",
-  "starboard-nd",
-  "starboard-pfd",
-] as const;
-export type DisplaySlotName = (typeof DISPLAY_SLOT_ORDER)[number];
+/**
+ * The six screens, in the order `airlinerCockpit.ts` builds them (`SCREEN_Z`), each with the PAGE it
+ * shows. Both pilots get a PFD and an ND; the two centre screens are the EICAS pair.
+ */
+export const DISPLAY_SCREENS = [
+  { screen: "port-pfd", page: "pfd" },
+  { screen: "port-nd", page: "nd" },
+  { screen: "port-eicas", page: "eicas-upper" },
+  { screen: "starboard-eicas", page: "eicas-lower" },
+  { screen: "starboard-nd", page: "nd" },
+  { screen: "starboard-pfd", page: "pfd" },
+] as const satisfies readonly { screen: string; page: DisplayPage }[];
+export type DisplayScreenName = (typeof DISPLAY_SCREENS)[number]["screen"];
 
-/** One slot is a square; six of them side by side make the atlas. */
-export const DISPLAY_SLOT_PIXELS = 256;
-export const DISPLAY_ATLAS_WIDTH = DISPLAY_SLOT_PIXELS * DISPLAY_SLOT_ORDER.length;
-export const DISPLAY_ATLAS_HEIGHT = DISPLAY_SLOT_PIXELS;
+/**
+ * A slot is the shape of the SCREEN IT IS DRAWN ON, not a square. The screens are 0.22 x 0.15 m,
+ * 1.4667:1, and the pages are authored and tested at 440 x 300, the same ratio. A square slot (the
+ * first version of this was six 256 x 256 in a row) squashes every page and cramps its text; the
+ * aspect is what matters, so no square atlas would have been right at any resolution.
+ *
+ * Six of them, three across and two down. Whether 440 x 300 carries the text legibly at the size the
+ * screens actually occupy on a player's monitor is a question for a frame, not an argument, so this
+ * is the starting point rather than the answer.
+ */
+export const DISPLAY_SLOT_WIDTH = 440;
+export const DISPLAY_SLOT_HEIGHT = 300;
+export const DISPLAY_SLOT_COLUMNS = 3;
+export const DISPLAY_ATLAS_WIDTH = DISPLAY_SLOT_WIDTH * DISPLAY_SLOT_COLUMNS;
+export const DISPLAY_ATLAS_HEIGHT = DISPLAY_SLOT_HEIGHT * 2;
 /** Redraw rate while the cockpit is in view. A display is not an animation; 15 a second is plenty. */
 export const DISPLAY_UPDATE_HZ = 15;
 
-/** Where a slot sits in the atlas, in pixels. */
-export interface DisplaySlot {
-  readonly name: DisplaySlotName;
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-export function displaySlots(): readonly DisplaySlot[] {
-  return DISPLAY_SLOT_ORDER.map((name, index) => ({
-    name,
-    x: index * DISPLAY_SLOT_PIXELS,
-    y: 0,
-    width: DISPLAY_SLOT_PIXELS,
-    height: DISPLAY_SLOT_PIXELS,
+/** Each screen's slot, in the build order, carrying the screen's name alongside the page it draws. */
+export function displaySlots(): readonly (DisplaySlot & { readonly screen: DisplayScreenName })[] {
+  return DISPLAY_SCREENS.map(({ screen, page }, index) => ({
+    screen,
+    page,
+    x: (index % DISPLAY_SLOT_COLUMNS) * DISPLAY_SLOT_WIDTH,
+    y: Math.floor(index / DISPLAY_SLOT_COLUMNS) * DISPLAY_SLOT_HEIGHT,
+    w: DISPLAY_SLOT_WIDTH,
+    h: DISPLAY_SLOT_HEIGHT,
   }));
 }
 
@@ -93,9 +101,9 @@ export function remapScreenFaceToSlot(mesh: Mesh, slot: DisplaySlot, atlasWidth 
   let minimumX = Number.POSITIVE_INFINITY;
   for (let i = 0; i < positions.length; i += 3) minimumX = Math.min(minimumX, positions[i]!);
   const u0 = slot.x / atlasWidth;
-  const u1 = (slot.x + slot.width) / atlasWidth;
+  const u1 = (slot.x + slot.w) / atlasWidth;
   const v0 = slot.y / atlasHeight;
-  const v1 = (slot.y + slot.height) / atlasHeight;
+  const v1 = (slot.y + slot.h) / atlasHeight;
   let zLow = Number.POSITIVE_INFINITY;
   let zHigh = Number.NEGATIVE_INFINITY;
   let yLow = Number.POSITIVE_INFINITY;
@@ -122,19 +130,13 @@ export function remapScreenFaceToSlot(mesh: Mesh, slot: DisplaySlot, atlasWidth 
   mesh.setVerticesData(VertexBuffer.UVKind, uvs, true);
 }
 
-/** A 2D drawing surface, as much of one as the pages need. Kept structural so a test can record calls. */
-export interface DisplayContext2D {
-  fillStyle: string;
-  fillRect(x: number, y: number, width: number, height: number): void;
-}
-
 /** What a live atlas is: the texture, the canvas behind it, and the slots to draw into. */
 export interface DisplayAtlas {
   readonly texture: RawTexture;
   readonly context: DisplayContext2D;
   /** Read back to upload; kept so `uploadDisplayAtlas` does not have to find it again. */
   readonly canvas: HTMLCanvasElement;
-  readonly slots: readonly DisplaySlot[];
+  readonly slots: readonly (DisplaySlot & { readonly screen: DisplayScreenName })[];
   readonly width: number;
   readonly height: number;
 }
@@ -207,32 +209,10 @@ export function displayMaterial(build: AircraftBuildContext, name: string, atlas
   return material;
 }
 
-/**
- * THE STUB PAINTER, until the drawing module lands. Three things, each earning its place in a frame:
- * a flat colour a slot proves WHICH screen samples which slot; a small bright square in the slot's
- * top-left corner proves the face is not mirrored or upside down, which six flat colours could not;
- * and a bar across the bottom whose length tracks airspeed proves the ADAPTER is feeding live values
- * rather than the picture being a static image. All three go when the real pages arrive.
- */
-const STUB_COLOURS: Readonly<Record<DisplaySlotName, string>> = Object.freeze({
-  "port-pfd": "#12406b",
-  "port-nd": "#0d5c3a",
-  "port-eicas": "#6b4a12",
-  "starboard-eicas": "#6b2f12",
-  "starboard-nd": "#3a0d5c",
-  "starboard-pfd": "#12566b",
-});
-
-export function paintStubAtlas(atlas: DisplayAtlas, state: DisplayState): void {
-  // 0 at a standstill, full width by 400 kt: a 747 cruises well inside that, so the bar moves
-  const speedFraction = Math.min(1, Math.max(0, state.airspeedKt / 400));
-  for (const slot of atlas.slots) {
-    atlas.context.fillStyle = STUB_COLOURS[slot.name];
-    atlas.context.fillRect(slot.x, slot.y, slot.width, slot.height);
-    atlas.context.fillStyle = "#f2f6ff";
-    atlas.context.fillRect(slot.x + 12, slot.y + 12, 40, 18);
-    atlas.context.fillRect(slot.x + 12, slot.y + slot.height - 30, (slot.width - 24) * speedFraction, 12);
-  }
+/** Draw all six pages and hand the pixels to the GPU. */
+export function paintDisplays(atlas: DisplayAtlas, state: DisplayState): void {
+  drawDisplayAtlas(atlas.context, atlas.width, atlas.height, atlas.slots, state);
+  uploadDisplayAtlas(atlas);
 }
 
 /** Only the merged screens mesh may carry the atlas: a stray user would be a second draw state. */

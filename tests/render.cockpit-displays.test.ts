@@ -7,18 +7,18 @@ import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE } from "../src/game/types";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
-import { airlinerScreenPlacements } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
+import { AIRLINER_SCREENS, airlinerScreenPlacements } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
 import {
   DISPLAY_ATLAS_HEIGHT,
   DISPLAY_ATLAS_WIDTH,
-  DISPLAY_SLOT_ORDER,
-  DISPLAY_SLOT_PIXELS,
+  DISPLAY_SCREENS,
+  DISPLAY_SLOT_HEIGHT,
+  DISPLAY_SLOT_WIDTH,
   displaySlots,
-  paintStubAtlas,
-  type DisplayAtlas,
-  type DisplayContext2D,
 } from "../src/render/webgpu/aircraft/cockpit/displays/displayAtlas";
-import { displayStateFrom } from "../src/render/webgpu/aircraft/cockpit/displays/displayState";
+import { drawDisplayAtlas } from "../src/render/webgpu/aircraft/cockpit/displays/displayPages";
+import { displayStateFromVisual } from "../src/render/webgpu/aircraft/cockpit/displays/displayStateFromVisual";
+import { createRecordingContext } from "./support/recordingContext";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 
 /**
@@ -83,7 +83,7 @@ describe("the 747's displays, headless", () => {
     const normals = screens.getVerticesData(VertexBuffer.NormalKind)!;
     const uvs = screens.getVerticesData(VertexBuffer.UVKind)!;
     const placements = airlinerScreenPlacements();
-    expect(placements).toHaveLength(DISPLAY_SLOT_ORDER.length);
+    expect(placements).toHaveLength(DISPLAY_SCREENS.length);
     const slots = displaySlots();
     for (const [index, placement] of placements.entries()) {
       // the face's vertices: normal -X, and at this screen's own z
@@ -95,9 +95,9 @@ describe("the 747's displays, headless", () => {
       }
       expect(us.length, `${placement.name}: pilot-facing vertices`).toBe(4);
       const slot = slots[index]!;
-      expect(slot.name, `slot ${index} belongs to ${placement.name}`).toBe(placement.name);
+      expect(slot.screen, `slot ${index} belongs to ${placement.name}`).toBe(placement.name);
       expect(Math.min(...us)).toBeCloseTo(slot.x / DISPLAY_ATLAS_WIDTH, 6);
-      expect(Math.max(...us)).toBeCloseTo((slot.x + slot.width) / DISPLAY_ATLAS_WIDTH, 6);
+      expect(Math.max(...us)).toBeCloseTo((slot.x + slot.w) / DISPLAY_ATLAS_WIDTH, 6);
     }
   });
 
@@ -110,43 +110,45 @@ describe("the 747's displays, headless", () => {
 });
 
 describe("the 747's displays, drawn", () => {
-  /** The recording context: what the drawing module's own tests use, so both meet on one interface. */
-  function recorder(): { context: DisplayContext2D; calls: { style: string; rect: number[] }[] } {
-    const calls: { style: string; rect: number[] }[] = [];
-    const context: DisplayContext2D = {
-      fillStyle: "",
-      fillRect(x, y, width, height) {
-        calls.push({ style: this.fillStyle, rect: [x, y, width, height] });
-      },
-    };
-    return { context, calls };
-  }
-
-  it("runs the adapter and the painter over all six slots without an engine", () => {
-    const { context, calls } = recorder();
-    const atlas = {
-      slots: displaySlots(),
-      context,
-      width: DISPLAY_ATLAS_WIDTH,
-      height: DISPLAY_ATLAS_HEIGHT,
-    } as unknown as DisplayAtlas;
-    const state = displayStateFrom(
-      { ...INITIAL_VISUAL_STATE, airspeed: 128.6, altitude: 3_048, heading: 237.5, bank: 18.5 },
+  it("runs the adapter and all four page kinds over the six slots without an engine", () => {
+    // The live path, covered with no GPU and no canvas: the same recording context the pages' own
+    // tests use, so the page code and this integration meet on one interface.
+    const context = createRecordingContext();
+    const slots = displaySlots();
+    const state = displayStateFromVisual(
+      { ...INITIAL_VISUAL_STATE, airspeed: 128.6, altitude: 3_048, heading: 237.5, bank: 18.5, engineRpm: 88 },
       { engineCount: 4, fullFlapDegrees: 30 },
     );
-    paintStubAtlas(atlas, state);
-    // every slot filled, each at its own x, none overlapping and none outside the atlas
-    const fills = calls.filter((call) => call.rect[2] === DISPLAY_SLOT_PIXELS);
-    expect(fills).toHaveLength(DISPLAY_SLOT_ORDER.length);
-    const xs = fills.map((call) => call.rect[0]!);
-    expect(xs).toEqual([0, 256, 512, 768, 1024, 1280]);
-    expect(new Set(fills.map((call) => call.style)).size, "each slot is a different colour").toBe(6);
-    for (const call of calls) {
-      expect(call.rect[0]!).toBeGreaterThanOrEqual(0);
-      expect(call.rect[0]! + call.rect[2]!).toBeLessThanOrEqual(DISPLAY_ATLAS_WIDTH);
-      expect(call.rect[1]! + call.rect[3]!).toBeLessThanOrEqual(DISPLAY_ATLAS_HEIGHT);
+    drawDisplayAtlas(context, DISPLAY_ATLAS_WIDTH, DISPLAY_ATLAS_HEIGHT, slots, state);
+
+    // every slot was drawn into: each one clips to its own rectangle first
+    const clipRects = context.calls
+      .filter((call) => call.method === "rect")
+      .map((call) => call.args.map(Number));
+    for (const slot of slots) {
+      expect(
+        clipRects.some(([x, y, w, h]) => x === slot.x && y === slot.y && w === slot.w && h === slot.h),
+        `${slot.screen} (${slot.page}) was not clipped to its own rectangle`,
+      ).toBe(true);
     }
-    // the corner mark that proves the face is not mirrored once a frame is shot
-    expect(calls.length).toBeGreaterThan(fills.length);
+    // all four page kinds appear, and the six slots cover the atlas exactly
+    expect(new Set(slots.map((slot) => slot.page))).toEqual(
+      new Set(["pfd", "nd", "eicas-upper", "eicas-lower"]),
+    );
+    const covered = slots.reduce((sum, slot) => sum + slot.w * slot.h, 0);
+    expect(covered).toBe(DISPLAY_ATLAS_WIDTH * DISPLAY_ATLAS_HEIGHT);
+    // and nothing was drawn outside the atlas
+    for (const [x, y, w, h] of clipRects) {
+      expect(x!).toBeGreaterThanOrEqual(0);
+      expect(x! + w!).toBeLessThanOrEqual(DISPLAY_ATLAS_WIDTH);
+      expect(y! + h!).toBeLessThanOrEqual(DISPLAY_ATLAS_HEIGHT);
+    }
+  });
+
+  it("gives every slot the screens' own shape, not a square", () => {
+    // The screens are 0.22 x 0.15 m. A square slot squashes every page, whatever its resolution.
+    const screen = AIRLINER_SCREENS.width / AIRLINER_SCREENS.height;
+    expect(DISPLAY_SLOT_WIDTH / DISPLAY_SLOT_HEIGHT).toBeCloseTo(screen, 2);
+    for (const slot of displaySlots()) expect(slot.w / slot.h).toBeCloseTo(screen, 2);
   });
 });
