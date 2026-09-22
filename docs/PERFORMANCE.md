@@ -1344,33 +1344,48 @@ deadline** — inside the reference-host budget with 175 ms to spare.
 world-only rig; both are retained as the evidence behind the temporal and
 draw-call findings below, and neither is a baseline.
 
-**Twelve cockpit draw-call ceilings are now far too loose, and the re-pin is
-OWED rather than done here.** The world-only rig draws no aircraft mesh in the
-cockpit shots and removed **exactly 151 draw calls from every one of them**,
-which leaves each ceiling 147-189 above what the shot now measures — slack no
-plausible regression could breach. A ceiling with that much room is the
-draw-call twin of a baseline nothing compares against.
+**Twelve cockpit draw-call ceilings re-pinned DOWN to their exact measured
+counts, no margin** (follow-up commit at bed4d51, after this promotion). The
+world-only rig draws no aircraft mesh in the cockpit shots and removed
+**exactly 151 draw calls from every one of them**, which had left each ceiling
+147-189 above what the shot measures — slack no plausible regression could
+breach, and the draw-call twin of a baseline nothing compares against.
 
-It is not re-pinned in this commit because `tests/delivery-floors.test.ts`
-requires a draw-call ceiling to be **the measured count exactly, derived from
-three runs that agree**, and refuses to take a maximum: *"this quantity is
+    high-10000ft-down             223 -> 72     veg-seam-1600ft-oblique   255 -> 108
+    ground-2m-lowsun              268 -> 121    veg-seam-near-500ft       263 -> 116
+    canopy-1200ft                 260 -> 113    terrain-material-1600ft   282 -> 93
+    grove-forest-2m               267 -> 120    horizon-shadow-far-ann.   238 -> 91
+    grove-meadow-2m               281 -> 134    canopy-backlit-lowsun     246 -> 102
+    water-3m                      237 -> 90     water-400ft-glitter       234 -> 87
+
+**They are the measurement, not the measurement plus headroom.**
+`tests/delivery-floors.test.ts` requires exactly that — *"this quantity is
 host-independent, so headroom above the measurement is growth nobody has
-justified."* That rule is right, and it rules out both halves of a quick fix —
-a margin above the measurement, and a pin taken from a single run. Only run 3
-was captured on the world-only rig, so exactly one sample of the new geometry
-exists where three agreeing ones are required.
+justified"* — and `drawCallCeilingFrom` requires three runs that agree and
+refuses to take a maximum. A first attempt at measured + 4 was reverted when
+that test caught it.
 
-Two further full captures on this tree will complete it. They must be FULL
-captures: a filtered run does not reproduce a shot's draw count (`page-thrash-turn`
-read 253 in the full run and 259 in a single-shot one), for the same reason a
-filtered run cannot supply a hitch count — the shot arrives with a different
-streaming history.
+**Three runs, and all thirty-nine counts agreed across all three**: the
+promotion candidate `2026-09-22T05-40-42.875Z` plus two full captures on the
+merged tree. Not two — the third was needed, and the host-independence claim
+was exercised rather than asserted. The two new captures were run NORMAL rather
+than rebaselining, so they also verified that this promotion reproduces:
+**every one of the 36 compared shots passed its SSIM gates against the
+baselines promoted above**, lowest 0.9986, nineteen at exactly 1.000, and every
+failure in both runs was a delivery floor.
 
-`canopy-backlit-lowsun`'s +3 vegetation overrun, a known exception recorded on
-2026-09-03, therefore also stands until then. It is still visible in this run
-as the one cockpit shot sitting 144 under its old ceiling where the others sit
-147 — the +3 survives the cockpit's removal, which is what says it was never
-the cockpit's.
+They must be FULL captures. A filtered run does not reproduce a shot's draw
+count (`page-thrash-turn` reads 253 in a full run and 259 in a single-shot
+one), for the same reason it cannot supply a hitch count: the shot arrives with
+a different streaming history.
+
+`PREVIOUS_DRAW_CALL_CEILINGS` is refreshed for the twelve in the same commit
+and every raise that named them is spent into it, so the ratchet compares
+against what ships. **`canopy-backlit-lowsun`'s +3 vegetation overrun — 249
+against a 246 ceiling, carried as a known exception since 2026-09-03 — folds
+into its measured 102 and is retired.** It was never the cockpit's: with the
+cockpit's 151 draws gone it still sat 3 higher against its old ceiling than the
+other eleven, which is the same conclusion reached twice by different routes.
 
 **Per shot, the cause of its difference from the baseline it replaces.**
 A = the Cessna's crown-seam normal weld, a shading change down the fuselage
