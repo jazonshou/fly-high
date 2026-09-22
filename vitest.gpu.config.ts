@@ -65,6 +65,7 @@ export default defineConfig({
       "@babylonjs/core/Materials/PBR/pbrMaterial",
       "@babylonjs/core/Materials/Textures/Procedurals/proceduralTexture.pure",
       "@babylonjs/core/Materials/Textures/baseTexture.polynomial",
+      "@babylonjs/core/Materials/Textures/mirrorTexture",
       "@babylonjs/core/Materials/Textures/rawCubeTexture",
       "@babylonjs/core/Materials/Textures/rawTexture",
       "@babylonjs/core/Materials/Textures/rawTexture2DArray",

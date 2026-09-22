@@ -271,21 +271,58 @@ headroom >= 1 in Gate A's container-less rig: 15 there is 16 of 16 in flight.
   was 15 (16 live, no headroom); with the second set AND colour, 16 (17 live:
   the black screen).
 - `airliner-body`: 15 while an all-white colour fill stood on every body mesh.
-  After the cheatline became a texture the fill painted nothing; it is deleted
-  and the body is predicted at 14, **to be re-measured by Gate A**.
+  After the cheatline became a texture the fill painted nothing; it is deleted,
+  and Gate A re-measured the body at **14** (15 live) -- the slot it held for
+  nothing is free.
 - `bizjet-body` (carries vertex colour): 15 -- **16 of 16 live, zero headroom**.
   `bizjet-display` 14; trainer and jet paint 14.
 - The black-screen build, rebuilt inside Gate A as a positive control: 16, and
   the headroom check rejects it.
 
-**What Gate A cannot see.** Its `ReflectionProbe` has an empty `renderList` and
-renders nothing, so an aircraft inside a reflection pass is never compiled
-there. Clip planes (the water reflection), fog, log depth and debugMode cost +1
-each, tangents +3, a shadow-casting moon +9, and the cockpit's render layers
-and the prepass are unmeasured. The variant frames -- water reflection with an
-aircraft actually in the render list, night lights, cockpit layers, fog, each
-checked non-black with no pipeline error, plus an over-budget positive control
--- are the next GPU step, and their per-variant counts belong here.
+**What Gate A cannot see, and the test that does.** Gate A's `ReflectionProbe`
+has an empty `renderList` and renders nothing, and its rig has no container, no
+clip plane, no fog, no lamps and no cockpit layers.
+`tests/gpu/aircraft-render-variants.test.ts` builds each airframe in a scene of
+its own WITH the container (as every flight has it) and measures five passes:
+the day baseline; a REFLECTION -- Babylon's `MirrorTexture` under a water plane
+with the aircraft in its render list, what the lake capture 5-12 plans would
+build (the live game has no such pass: 2-10 retired the mirror); NIGHT, with the
+container's lamps lit; the COCKPIT layer mask, the shell hidden but still
+casting; and Babylon FOG. Each reading is the worst count per material over
+every pass, every device error in that pass's own frames, and pixels read back
+from the target rendered directly. Measured 2026-09-22, live counts:
+
+- day, night, cockpit: trainer and jet paint 15, `airliner-body` /
+  `airliner-accent` / `airliner-skin` 15, `bizjet-body` **16**. No errors,
+  every target drawn and not black. The live passes are clean.
+- reflection and fog (+1 each, the clip plane and the fog varying): trainer,
+  jet and all three 747 paints 16 -- no headroom, and they draw. `bizjet-body`
+  **17**: the device refuses the pipeline and the target is black.
+- The positive control, the black-screen layout rebuilt (the shell with a second
+  UV set carrying the livery and a colour channel): 17, refused, with the
+  device's own message. A colour channel ALONE on today's UV1 skin is 16 and
+  legal, which is why the control carries both.
+
+The test holds three rules: the counter and the device agree (over 16 exactly
+where the device refused); a live pass over budget is a hard fail; and a pass
+that does not exist live may be over only for the materials listed in its
+`KNOWN_OVER_BUDGET`, asserted both ways, so the list cannot go stale.
+
+**REGISTER: the Global's body has no slot for a clip plane or fog.** It carries
+vertex colour and sits at 16 of 16 live. It needs a varying freed (its painted
+band moved to a livery texture, as the 747's was) before 5-12 puts aircraft in
+the lake capture or anyone enables fog -- either one makes the Global stop
+drawing in that pass. Pre-existing, not the livery's; measured by the test
+above, where it is the one listed known-over-budget material.
+
+Two instrument traps the rig met, for whoever extends it. A mesh that a pass
+never DRAWS never builds a pipeline, so the device never refuses it even when
+its compiled shader counts 17: the reflection was first aimed at the airframe
+and its image fell off the mirror, and the Global read 17 with no error. And in
+this environment a canvas frame must be closed (`engine.beginFrame()` /
+`endFrame()` around `scene.render()`) before targets are drawn directly and read
+back, or every scene logs one "Destroyed texture ... WebgpuSwapChainTexture ...
+used in a submit".
 
 **Three Babylon 9.21 traps that make an inter-stage audit read the wrong
 thing:**
