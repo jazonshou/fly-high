@@ -399,16 +399,23 @@ describe("the Cessna's needles turn only while cockpit view is on", () => {
 // ---- the attitude balls -----------------------------------------------------------------------
 
 /**
- * The Global's PFD ball, the 747's PFD ball and the Cessna's attitude dial are ONE
- * builder at three placements (`buildAttitudeBall`; the two PFDs are the same size),
- * and all are held to the same picture: the ball's horizon on
- * the SCREEN parallel to the world's, its sky on the sky's side, its bar on the
- * pitch's side. The Cessna's dial normal points TOWARD the pilot and the Global's
+ * The Global's PFD ball and the Cessna's attitude dial are ONE builder at two
+ * placements (`buildAttitudeBall`), and both are held to the same picture: the ball's
+ * horizon on the SCREEN parallel to the world's, its sky on the sky's side, its bar on
+ * the pitch's side. The Cessna's dial normal points TOWARD the pilot and the Global's
  * pivot points away, so the sign is not taken from one on trust for the other: every
  * assertion here is about what the camera draws.
+ *
+ * THE 747 HAD A ROW HERE AND DOES NOT ANY MORE. Its 3D ball came from before its screens
+ * could draw anything; they draw pages now, and the PFD page draws its own attitude, so
+ * the ball was a second horizon standing a millimetre in front of the first and hiding
+ * most of it. What holds the 747's attitude picture instead is the PFD page's own horizon
+ * test and `render.cockpit-display-state.test.ts`, which flies the same simulator these
+ * rows fly and holds the page's pitch, bank and heading to the HUD's own numbers. The
+ * Cessna keeps its row because that aeroplane's ball is MECHANICAL, and so is its model.
  */
 interface BallCase {
-  readonly kind: "bizjet" | "trainer" | "airliner";
+  readonly kind: "bizjet" | "trainer";
   readonly label: string;
   readonly prefix: string;
   readonly pivotName: string;
@@ -419,7 +426,6 @@ interface BallCase {
 const BALLS: readonly BallCase[] = [
   { kind: "bizjet", label: "Global", prefix: "bizjet-pfd", pivotName: "bizjet-pfd-attitude-pivot", metresPerDegree: 0.001, radius: 0.048 },
   { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: 0.00075, radius: 0.036 },
-  { kind: "airliner", label: "747", prefix: "airliner-pfd", pivotName: "airliner-pfd-attitude-pivot", metresPerDegree: 0.001, radius: 0.048 },
 ];
 
 describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball", (_label, ball) => {

@@ -71,7 +71,23 @@ const BEYOND_THE_FRAME: Readonly<Record<AircraftKind, readonly string[]>> = {
 const TINY = /-needle$|-pitch-bar$|-(sky|ground)$/;
 const TINY_STEP = 0.1;
 const BEYOND_STEP = 0.25;
-const PITCH_BAR = /-pitch-bar$/;
+
+/**
+ * THE CONTROL'S BOX, per aircraft: a `build.box` the pilot plainly sees, closed and convex and
+ * wound by Babylon itself, so the convention can be asserted both ways before anything else is
+ * measured with it. The two attitude balls' pitch bars are one each; the 747's ball is gone (its
+ * PFD page draws attitude), so its control is the pilot's PFD SCREEN, which is box 0 of the merged
+ * `airliner-screens` -- the same kind of object, and one that is lit up in front of him.
+ */
+const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly block?: number } | null>> = {
+  trainer: { mesh: "trainer-attitude-pitch-bar" },
+  bizjet: { mesh: "bizjet-pfd-pitch-bar" },
+  airliner: { mesh: "airliner-screens", block: 0 },
+  jet: null,
+};
+
+/** How many cockpit-only meshes each aircraft has, so a mesh going missing cannot pass as a clean run. */
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 11, airliner: 4, jet: 0 };
 
 interface Prepared {
   readonly name: string;
@@ -85,7 +101,13 @@ interface Prepared {
   readonly corners: readonly Vector3[];
 }
 
-function prepare(mesh: AbstractMesh): Prepared {
+/**
+ * One mesh's triangles in world space. `block` restricts it to the k-th 24-vertex box of a MERGED
+ * mesh (`build.box` writes 24 vertices and 12 triangles in source order), which is how the control
+ * below gets at one closed convex box inside `airliner-screens`. The centre and corners are then
+ * that block's own, not the merged mesh's, so "inside" means inside THAT box.
+ */
+function prepare(mesh: AbstractMesh, block?: number): Prepared {
   mesh.computeWorldMatrix(true);
   const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
   const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
@@ -93,11 +115,18 @@ function prepare(mesh: AbstractMesh): Prepared {
   const world = mesh.getWorldMatrix();
   const point = (i: number) => Vector3.TransformCoordinates(new Vector3(positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!), world);
   const normal = (i: number) => Vector3.TransformNormal(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), world).normalize();
-  const count = indices.length / 3;
+  const lowest = block === undefined ? 0 : block * 24;
+  const highest = block === undefined ? Number.POSITIVE_INFINITY : lowest + 24;
+  const kept: number[] = [];
+  for (let t = 0; t < indices.length / 3; t += 1) {
+    const [ia, ib, ic] = [indices[t * 3]!, indices[t * 3 + 1]!, indices[t * 3 + 2]!];
+    if (ia >= lowest && ia < highest && ib >= lowest && ib < highest && ic >= lowest && ic < highest) kept.push(t);
+  }
+  const count = kept.length;
   const data = new Float64Array(count * 12);
   const flat = new Float64Array(count * 3).fill(Number.NaN);
-  for (let t = 0; t < count; t += 1) {
-    const [ia, ib, ic] = [indices[t * 3]!, indices[t * 3 + 1]!, indices[t * 3 + 2]!];
+  for (const [t, source] of kept.entries()) {
+    const [ia, ib, ic] = [indices[source * 3]!, indices[source * 3 + 1]!, indices[source * 3 + 2]!];
     const p0 = point(ia);
     const e1 = point(ib).subtract(p0);
     const e2 = point(ic).subtract(p0);
@@ -106,8 +135,15 @@ function prepare(mesh: AbstractMesh): Prepared {
     const [na, nb, nc] = [normal(ia), normal(ib), normal(ic)];
     if (Vector3.Distance(na, nb) < 1e-4 && Vector3.Distance(na, nc) < 1e-4) flat.set([na.x, na.y, na.z], t * 3);
   }
-  const box = mesh.getBoundingInfo().boundingBox;
-  return { name: mesh.name, data, flat, count, centre: box.centerWorld.clone(), corners: box.vectorsWorld.map((corner) => corner.clone()) };
+  if (block === undefined) {
+    const box = mesh.getBoundingInfo().boundingBox;
+    return { name: mesh.name, data, flat, count, centre: box.centerWorld.clone(), corners: box.vectorsWorld.map((corner) => corner.clone()) };
+  }
+  const blockPoints = Array.from({ length: 24 }, (_, i) => point(lowest + i));
+  const low = new Vector3(Math.min(...blockPoints.map((v) => v.x)), Math.min(...blockPoints.map((v) => v.y)), Math.min(...blockPoints.map((v) => v.z)));
+  const high = new Vector3(Math.max(...blockPoints.map((v) => v.x)), Math.max(...blockPoints.map((v) => v.y)), Math.max(...blockPoints.map((v) => v.z)));
+  const corners = [low.x, high.x].flatMap((x) => [low.y, high.y].flatMap((y) => [low.z, high.z].map((z) => new Vector3(x, y, z))));
+  return { name: `${mesh.name}[box ${block}]`, data, flat, count, centre: low.add(high).scale(0.5), corners };
 }
 
 interface Tally {
@@ -212,7 +248,8 @@ describe.each(["trainer", "bizjet", "airliner"] as const)("what the GPU draws of
     aircraft.setCockpitView(true);
     const spec = aircraftSpec(kind).cockpitEye;
     eye = new Vector3(spec.forward, spec.up, spec.right);
-    meshes = (aircraft.cockpitOnlyParts ?? []).map(prepare);
+    // NOT `.map(prepare)`: map passes the index, which `prepare` now reads as a box block.
+    meshes = (aircraft.cockpitOnlyParts ?? []).map((mesh) => prepare(mesh));
   });
   afterAll(() => {
     aircraft.dispose();
@@ -221,9 +258,12 @@ describe.each(["trainer", "bizjet", "airliner"] as const)("what the GPU draws of
   });
 
   it("agrees with a box: the convention says a box's front is drawn and its inside is not (the control)", () => {
-    // `*-pitch-bar` is a build.box, closed and convex, and visibly renders in every frame
-    const bar = meshes.find((mesh) => PITCH_BAR.test(mesh.name))!;
-    expect(bar, "the kind has a pitch bar to calibrate on").toBeDefined();
+    const control = CONTROL[kind]!;
+    expect(control, `${kind} has a control box`).not.toBeNull();
+    const source = scene.getMeshByName(control.mesh);
+    expect(source, `the control box's mesh ${control.mesh}`).not.toBeNull();
+    const bar = prepare(source!, control.block);
+    expect(bar.count, "the control is ONE box: 12 triangles").toBe(12);
     const centre = angles(bar.centre);
     const fromOutside = sample(bar, eye, grid(centre.az - 0.2, centre.az + 0.2, centre.el - 0.05, centre.el + 0.05, 0.05, 0));
     expect(fromOutside.rays, "rays at the bar's centre hit the bar").toBeGreaterThan(10);
@@ -267,7 +307,9 @@ describe.each(["trainer", "bizjet", "airliner"] as const)("what the GPU draws of
   });
 
   it("finds every cockpit-only mesh: the list this test walks is the aircraft's own", () => {
-    expect(meshes.length).toBeGreaterThanOrEqual(7);
+    // PINNED per aircraft rather than bounded below: the 747's kit went 7 -> 4 when its 3D attitude
+    // ball came out, and a bound would have let that pass in silence either way.
+    expect(meshes.length, `${kind}'s cockpit-only meshes`).toBe(KIT_SIZE[kind]);
     expect(meshes.map((mesh) => mesh.name).sort()).toEqual([...(aircraft.cockpitOnlyParts ?? [])].map((mesh) => mesh.name).sort());
     // the meshes exempted from the frame grid are real ones, so an exemption cannot outlive its mesh
     for (const name of BEYOND_THE_FRAME[kind]) expect(meshes.map((mesh) => mesh.name), name).toContain(name);

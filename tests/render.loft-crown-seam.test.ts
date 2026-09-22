@@ -297,7 +297,14 @@ describe("a loft's crown seam", () => {
       // extrusion, and only the plates' vertices went from shared to three to a triangle. The pillar and
       // the seam post are merged into the interior mesh (there is no windscreen-frame mesh), and the post's
       // mesh runs 0.08 m past its design top into the overhead (AIRLINER_POST.buryMetres).
-      airliner: "d6f31000",
+      // RE-PINNED for the 747 when its 3D attitude ball came out (the PFD page draws attitude on the
+      // screen now). Checked mesh by mesh against e27a030, positions AND indices: of its 96 meshes,
+      // exactly three are GONE -- airliner-pfd-sky and -ground (288 vertices, 96 triangles, 50 unique
+      // positions each) and airliner-pfd-pitch-bar (24, 12, 8) -- none is new, none moved, and the
+      // other 93 are bit-identical. Totals 11,163 -> 10,563 vertices and 17,208 -> 17,004 triangles,
+      // which is those three meshes and nothing else. The trainer's, the jet's and the Global's pins
+      // are untouched by this step, and the Global still carries its own ball.
+      airliner: "f2b46a08",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

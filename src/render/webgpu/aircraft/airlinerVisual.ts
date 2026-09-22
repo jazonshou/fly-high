@@ -2193,6 +2193,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     propeller: rig.propeller,
     cockpitParts: rig.cockpitParts,
     cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
+    displaysLive: cockpit.displaysLive,
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
@@ -2203,7 +2204,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
-      if (cockpitViewOn) cockpit.update(state);
+      if (cockpitViewOn) cockpit.update(state, delta);
       // The inboard ailerons follow the outboard pair exactly. The real
       // aeroplane locks them out above about 200 kt; the sim has no gain
       // schedule to read that from, and an inboard aileron frozen at neutral
