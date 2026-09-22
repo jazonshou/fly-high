@@ -190,6 +190,16 @@ Two consequences:
 
 ## Not addressed, and why
 
+- **Birds — registered follow-up (PM, 2026-09-22): pin the wildlife for
+  captures.** Routed after the end-of-wave re-baseline, because its swing on
+  `water-400ft-glitter` is bigger than the ocean's and will bite the
+  promotion's reproduction check. Note for whoever builds it: pinning the
+  clock alone will not do it. `WildlifeSystem`'s `FixedStepClock` only holds
+  the step accumulator; the birds' positions are agent state integrated since
+  each agent spawned, which is every frame of streaming. Spawning is already
+  deterministic (seeded per cell in `wildlife/generation.ts`), so the likely
+  shape is a capture-only respawn of the population plus a clock reset at the
+  time pin — the same place and the same "capture only" rule as this pin.
 - **Other frame counters.** The frame graph can gate passes on
   `frameIndex % cadence` and `runsEvery(interval)`, and the cloud runtime policy
   keeps its own frame index. Nothing currently uses the frame-graph cadence, and
