@@ -342,13 +342,60 @@ export interface CockpitRigOverride {
    * seat offset) and keeping their lens would only be half of keeping them.
    */
   readonly pinEyeToCentreline: boolean;
+  /**
+   * Draw NO part of the aeroplane through this camera while cockpit view is on: not the skin, the
+   * cabin roof, the centre windscreen frame, the posts, the cockpit-only kit or the propeller disc.
+   *
+   * The fourteen cockpit capture shots exist to measure VEGETATION, GROUND AND WATER from a pilot's
+   * eye. Once the cockpit had a kit in it, about 40% of every one of those frames was aeroplane --
+   * the centre frame a large obelisk down the middle at this rig's centreline eye, the cowl stand-in
+   * and the panel filling the lower third -- against committed baselines that are pure world. That
+   * costs the shots the coverage they were placed for, adds draws to ten ceilings, and writes every
+   * future cockpit change into the perf baselines. A world-only rig measures the world.
+   */
+  readonly hideAircraft: boolean;
+  /**
+   * The eye, in metres along the body's nose and up axes, FROZEN at what the renderer used when the
+   * fourteen cockpit baselines were promoted (`4b60d85`, `FlightRenderer.ts`: `forward.scale(1.15)`
+   * then `up.scale(1.12)`, one eye for every kind and no lateral term).
+   *
+   * It is pinned rather than read from the catalogue because the catalogue's eye MOVED during the
+   * cockpit work -- the trainer's is now (1.38, 0.12) -- and the terrain engineer measured the
+   * consequence directly: a 2 to 3 pixel VERTICAL shift of the world in all fourteen shots against
+   * their baselines (canopy-1200ft dy -2, veg-seam-near-500ft dy -3, horizon-shadow dy -1, while the
+   * chase shots were dy 0). With the aeroplane hidden, the world is the only thing left in those
+   * frames, so the eye that framed the baselines is the one that has to stay.
+   */
+  readonly eyeForwardMetres: number;
+  readonly eyeUpMetres: number;
 }
 
 /** The rig every perf-capture cockpit shot renders with: the previous one, exactly. */
 export const PERF_COCKPIT_RIG: CockpitRigOverride = Object.freeze({
   horizontalFovDegrees: PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
   pinEyeToCentreline: true,
+  hideAircraft: true,
+  eyeForwardMetres: 1.15,
+  eyeUpMetres: 1.12,
 });
+
+/**
+ * The eye a cockpit camera sits at, after any override: the catalogue's for a player, the frozen
+ * pre-wave one for perf capture (see `PERF_COCKPIT_RIG`).
+ */
+export function cockpitEyeForwardUpMetres(
+  eye: Readonly<Pick<CockpitEyeSpec, "forward" | "up">>,
+  override: Readonly<CockpitRigOverride> | null,
+): { readonly forward: number; readonly up: number } {
+  return override === null
+    ? { forward: eye.forward, up: eye.up }
+    : { forward: override.eyeForwardMetres, up: override.eyeUpMetres };
+}
+
+/** Whether this rig draws the aeroplane at all in cockpit view. */
+export function cockpitRigDrawsAircraft(override: Readonly<CockpitRigOverride> | null): boolean {
+  return override === null || !override.hideAircraft;
+}
 
 /** How far ahead of the eye the cockpit camera aims, in metres. */
 export const COCKPIT_AIM_DISTANCE_METERS = 400;

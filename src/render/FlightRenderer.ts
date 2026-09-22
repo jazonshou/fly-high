@@ -167,7 +167,9 @@ import {
   cameraTrailMeters,
   chaseRigOffsetsToRef,
   COCKPIT_AIM_DISTANCE_METERS,
+  cockpitEyeForwardUpMetres,
   cockpitEyeRightMeters,
+  cockpitRigDrawsAircraft,
   cockpitFieldOfViewDegrees,
   type CockpitRigOverride,
   cockpitRigPositionsToRef,
@@ -1502,7 +1504,16 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (mode === this.cameraMode) return;
     this.cameraMode = mode;
     this.cameraCut = true;
-    this.aircraft.setCockpitView(mode === "cockpit");
+    const cockpit = mode === "cockpit";
+    this.aircraft.setCockpitView(cockpit);
+    // A WORLD-ONLY RIG (perf capture) draws no part of the aeroplane in cockpit view. Disabling the
+    // visual's ROOT is what does it, rather than walking the meshes: `setCockpitView` and
+    // `configureCockpitOnlyParts` both own per-mesh `isVisible`, and a second writer would fight
+    // them on the way back out. A disabled root draws nothing beneath it whatever those flags say,
+    // and restoring it hands every mesh back in the state its own owner left it in.
+    if (!cockpitRigDrawsAircraft(this.cockpitRigOverride)) {
+      this.aircraft.root.setEnabled(!cockpit);
+    }
     this.graph.invalidateHistory("camera mode changed");
   }
 
@@ -2763,7 +2774,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         aircraftPosition,
         this.forward,
         this.up,
-        eye,
+        cockpitEyeForwardUpMetres(eye, this.cockpitRigOverride),
         cockpitEyeRightMeters(eye, this.cockpitRigOverride),
         COCKPIT_AIM_DISTANCE_METERS,
         this.desiredCamera,

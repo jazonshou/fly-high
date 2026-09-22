@@ -268,6 +268,10 @@ describe("the 747-8's draw budget", () => {
     }
     const before = visual.meshes.filter(issuesDraw).length;
     visual.setCockpitView(true);
+    // THE PERF RIG DRAWS NONE OF THIS. These seven are what a PLAYER's cockpit view costs; the
+    // fourteen perf capture shots run `PERF_COCKPIT_RIG`, which disables the aircraft's root
+    // entirely in cockpit view, so the aeroplane contributes 0 draws there -- kit, skin, framing and
+    // propeller disc alike (`tests/render.cockpit-rig.test.ts`).
     // in cockpit view they are drawn: seven draws, no shadow passes
     const during = visual.meshes.filter(issuesDraw);
     expect(during.length - before).toBe(7);

@@ -13,8 +13,10 @@ import {
   COCKPIT_HORIZONTAL_FOV_DEGREES,
   PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
   PERF_COCKPIT_RIG,
+  cockpitEyeForwardUpMetres,
   cockpitEyeRightMeters,
   cockpitFieldOfViewDegrees,
+  cockpitRigDrawsAircraft,
   cockpitRigPositionsToRef,
 } from "../src/render/cameraPresentation";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
@@ -168,7 +170,9 @@ function build(q: Quat, eye: { forward: number; up: number }, eyeRight: number) 
 describe("cockpit rig arithmetic", () => {
   it("reproduces the camera it had before there was a lateral eye, to the last bit, when the offset is zero", () => {
     // This is what lets the fourteen perf shots stay comparable: the pinned rig
-    // must not move the camera by so much as a rounding error. Floating-point
+    // must not move the camera by so much as a rounding error. The rig now also
+    // pins the eye's forward and up to the pre-wave numbers and draws none of
+    // the aeroplane, so the world is the ONLY thing left in those frames. Floating-point
     // addition is not associative, so a handful of tidy attitudes is not enough
     // to notice an addition done in a different order; a few hundred seeded
     // ones at a large, untidy origin are (the control that swaps the order of
@@ -267,6 +271,101 @@ describe("cockpit rig arithmetic", () => {
       expect(cockpitEyeRightMeters(eye, null)).toBe(eye.right);
       expect(cockpitEyeRightMeters(eye, PERF_COCKPIT_RIG)).toBe(0);
     }
+  });
+
+  it("freezes the perf rig's eye at the numbers the fourteen baselines were framed with", () => {
+    // `4b60d85`, the commit those baselines were promoted at, built the cockpit camera as
+    // `forward.scale(1.15)` then `up.scale(1.12)`, one eye for every kind. The catalogue's eye moved
+    // during the cockpit work and the terrain engineer measured the consequence: 2 to 3 px of
+    // VERTICAL world shift in all fourteen shots (the chase shots, which do not use this rig, were 0).
+    expect(PERF_COCKPIT_RIG.eyeForwardMetres).toBe(1.15);
+    expect(PERF_COCKPIT_RIG.eyeUpMetres).toBe(1.12);
+    for (const kind of AIRCRAFT_KINDS) {
+      const eye = aircraftSpec(kind).cockpitEye;
+      // a player gets the catalogue's eye, whatever the airframe
+      expect(cockpitEyeForwardUpMetres(eye, null)).toEqual({ forward: eye.forward, up: eye.up });
+      // the perf rig gets the frozen one, for every kind
+      expect(cockpitEyeForwardUpMetres(eye, PERF_COCKPIT_RIG)).toEqual({ forward: 1.15, up: 1.12 });
+    }
+    // NON-VACUITY: the trainer, which is what the fourteen shots fly, genuinely moved
+    const trainer = aircraftSpec("trainer").cockpitEye;
+    expect(trainer.forward).not.toBe(1.15);
+    expect(trainer.up).not.toBe(1.12);
+  });
+
+  it("draws the aeroplane for a player and hides it for the perf rig", () => {
+    expect(cockpitRigDrawsAircraft(null)).toBe(true);
+    expect(cockpitRigDrawsAircraft(PERF_COCKPIT_RIG)).toBe(false);
+    expect(PERF_COCKPIT_RIG.hideAircraft).toBe(true);
+  });
+});
+
+describe("a world-only rig shows the pilot nothing of his own aeroplane", () => {
+  /**
+   * The mechanism, on a REAL aircraft rather than a stand-in: disabling the visual's root.
+   *
+   * `isEnabled()` walks the ancestors, so this is the same question the renderer asks when it decides
+   * what to draw. It is done this way rather than by hiding meshes one at a time because
+   * `setCockpitView` and `configureCockpitOnlyParts` both own per-mesh `isVisible`, and a second
+   * writer would fight them on the way back out; a disabled root overrides all of it and restores
+   * every mesh to whatever its own owner last set.
+   */
+  function trainerInCockpitView(): { visual: ReturnType<typeof createWebGpuAircraft>; dispose: () => void } {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    scene.useRightHandedSystem = true;
+    const visual = createWebGpuAircraft(scene, "trainer");
+    visual.setCockpitView(true);
+    return {
+      visual,
+      dispose: () => {
+        visual.dispose();
+        scene.dispose();
+        engine.dispose();
+      },
+    };
+  }
+
+  it("hides every mesh of the aeroplane, the kit and the centre frame included, and the player rig does not", () => {
+    const { visual, dispose } = trainerInCockpitView();
+    try {
+      // THE POSITIVE CONTROL FIRST: on the player's rig, in the same cockpit view, the aeroplane is
+      // there — the obelisk the perf shots were losing 40% of their frame to is `windscreen-center-frame`
+      const drawnForPlayer = visual.meshes.filter((mesh) => mesh.isEnabled() && mesh.isVisible);
+      expect(drawnForPlayer.length).toBeGreaterThan(20);
+      const namesForPlayer = drawnForPlayer.map((mesh) => mesh.name);
+      expect(namesForPlayer).toContain("windscreen-center-frame");
+      expect(namesForPlayer.some((name) => name === "trainer-instrument-panel")).toBe(true);
+      expect(namesForPlayer.some((name) => name === "trainer-cabin-roof")).toBe(true);
+
+      // and now the world-only rig: nothing of the aeroplane at all
+      visual.root.setEnabled(false);
+      expect(visual.meshes.filter((mesh) => mesh.isEnabled())).toHaveLength(0);
+      for (const mesh of visual.meshes) {
+        expect(mesh.isEnabled(), `${mesh.name} still draws under a world-only rig`).toBe(false);
+      }
+
+      // leaving cockpit view hands everything back exactly as its own owner left it
+      visual.root.setEnabled(true);
+      visual.setCockpitView(false);
+      const drawnOutside = visual.meshes.filter((mesh) => mesh.isEnabled() && mesh.isVisible).map((mesh) => mesh.name);
+      expect(drawnOutside).toContain("windscreen-center-frame");
+      expect(drawnOutside).toContain("trainer-cabin-roof");
+      // the cockpit-only kit is invisible OUTSIDE cockpit view, which is its own rule and still holds
+      expect(drawnOutside).not.toContain("trainer-instrument-panel");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("is what the renderer actually does when the rig says so", () => {
+    // The two tests above prove the mechanism and the flag; this one proves the renderer joins them,
+    // in the same source-scanning style this file already uses for the override itself.
+    const source = readFileSync(join(ROOT, "src/render/FlightRenderer.ts"), "utf8");
+    expect(source).toMatch(/cockpitRigDrawsAircraft\(this\.cockpitRigOverride\)/);
+    expect(source).toMatch(/this\.aircraft\.root\.setEnabled\(/);
+    // and it reads the pinned eye rather than the catalogue's when the rig overrides it
+    expect(source).toMatch(/cockpitEyeForwardUpMetres\(eye, this\.cockpitRigOverride\)/);
   });
 });
 
