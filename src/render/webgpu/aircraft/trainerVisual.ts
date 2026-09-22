@@ -1,4 +1,4 @@
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { Scene } from "@babylonjs/core/scene";
@@ -284,14 +284,45 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // through one. The pilot sits in the LEFT seat, so it stands to the right of
   // his line of sight, as a centre frame does for the pilot on the left of a
   // real 150.
-  build.strutBetween(
-    "windscreen-center-frame",
-    new Vector3(2.26, -0.02, 0),
-    new Vector3(2, 0.21, 0),
-    0.024,
-    dark,
-    root,
-  );
+  // ITS TOP TAPERS TO A POINT, and that is not decoration. `strutBetween` is a cylinder with a flat end
+  // disc at each end, and this strut's top end stops in OPEN AIR: the cabin roof panel reaches only x 1.62,
+  // 0.38 m aft of the top at x 2, and the glass crown there is y 0.190, below the top's 0.210. So from the
+  // pilot's seat the end disc read as a lit octagon against the sky — 48% of the rays over its own angular
+  // window on the player rig and 51% on the perf rig (`scripts`' cap survey; the frame is in the findings
+  // doc). A cockpit-only header to hide it was measured and REJECTED: at 0.3-0.6 m from the eye any strip
+  // big enough to swallow the disc costs 15% of the frame to hide 1.4% of it. A point has no disc.
+  //
+  // Two primitives merged under the strut's own name, so the mesh count and every other exterior mesh stay
+  // exactly as they were: the bar at full radius to 0.05 m short of the top, then a cone to a true apex.
+  // `build.cylinder`'s `diameterTop` 0 collapses the top ring to one vertex, so no cap is generated at all —
+  // measured with the drawn-faces instrument, not assumed.
+  const centreFrameFoot = new Vector3(2.26, -0.02, 0);
+  const centreFrameTop = new Vector3(2, 0.21, 0);
+  const centreFrameRadius = 0.024;
+  const centreFrameTipLength = 0.05;
+  {
+    const axis = centreFrameTop.subtract(centreFrameFoot);
+    const length = axis.length();
+    const unit = axis.scale(1 / length);
+    const shoulder = centreFrameTop.subtract(unit.scale(centreFrameTipLength));
+    const sections: { readonly name: string; readonly from: Vector3; readonly to: Vector3; readonly diameterTop: number; readonly diameterBottom: number }[] = [
+      // the bar: the same 8% fatter foot `strutBetween` gives it, unchanged
+      { name: "windscreen-center-frame-bar", from: centreFrameFoot, to: shoulder, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
+      { name: "windscreen-center-frame-tip", from: shoulder, to: centreFrameTop, diameterTop: 0, diameterBottom: centreFrameRadius * 2 },
+    ];
+    const pieces = sections.map((section) => {
+      const run = section.to.subtract(section.from);
+      const piece = build.cylinder(section.name, run.length(), section.diameterTop, section.diameterBottom, 8, dark, root);
+      piece.position.copyFrom(section.from.add(section.to).scale(0.5));
+      piece.rotationQuaternion = Quaternion.FromUnitVectorsToRef(
+        Vector3.UpReadOnly,
+        run.scale(1 / run.length()),
+        new Quaternion(),
+      );
+      return piece;
+    });
+    build.mergeStatic("windscreen-center-frame", pieces, root);
+  }
 
   // The wing. Constant chord 1.44 m over the whole 10.17 m span, no taper and
   // no dihedral: the 150's planform is a rectangle, and the chord plane is

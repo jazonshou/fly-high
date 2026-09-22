@@ -270,7 +270,15 @@ describe("a loft's crown seam", () => {
       // indices): only the halves moved, and each has the same 50 unique positions, the same 96
       // triangles and the same area to 1e-17. The trainer's other 68 of 70 meshes, the Global's other
       // 97 of 99 and all 78 of the jet's are bit-identical, which is why the jet's pin below stays.
-      trainer: "c6fcfb25",
+      // RE-PINNED for the trainer by the windscreen centre frame's TAPERED TIP (jazonshou/cockpit-post-bury):
+      // `windscreen-center-frame` was a cylinder whose top end disc stopped in open air and read as a lit
+      // octagon from the pilot's seat (48% of the rays over its own window on the player rig, 51% on the perf
+      // rig). It is now the same bar with a cone over its last 0.05 m, collapsing to a true apex, so there is
+      // no disc to see: 38 -> 76 vertices, 32 -> 64 triangles, area 0.0566 -> 0.0546 m^2, same foot, axis,
+      // radius and material. Checked mesh by mesh against 003318a: it is the ONLY exterior mesh that moves,
+      // the trainer's other 50 exterior meshes and all 19 cockpit-only ones are bit-identical, and the jet's
+      // 78, the Global's 99 and the 747's 96 do not move at all.
+      trainer: "9bae9e9b",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global
