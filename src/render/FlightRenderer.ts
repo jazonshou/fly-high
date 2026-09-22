@@ -2073,6 +2073,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           type?: number;
           format?: number;
           generateMipMaps?: boolean;
+          mipLevelCount?: number;
         } | null;
       })._texture;
       if (!internal || seenTextures.has(internal)) continue;
@@ -2081,7 +2082,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const height = internal.height ?? 0;
       const depth = Math.max(1, internal.depth ?? 1);
       const bytesPerTexel = this.texelBytes(internal.type, internal.format);
-      const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
+      // A chain is a chain whoever built it. The hand-built ones (aircraft and
+      // airfield paint, the livery, the terrain/foliage/impostor arrays) carry
+      // their levels with Babylon's generation OFF (`MipChainUpload.ts`, FI-5),
+      // so the flag alone would drop a third of their bytes from a gated number.
+      const mipFactor = internal.generateMipMaps || (internal.mipLevelCount ?? 1) > 1 ? 4 / 3 : 1;
       bytes += width * height * depth * bytesPerTexel * mipFactor;
     }
     const textureBytes = bytes;
