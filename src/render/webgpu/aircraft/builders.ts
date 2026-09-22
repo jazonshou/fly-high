@@ -120,6 +120,14 @@ export interface AirfoilWingOptions {
 
 interface VertexMeshOptions {
   readonly uvs?: readonly number[];
+  /**
+   * A SECOND UV set, for a texture that must not share the first one's
+   * mapping. The airliner's livery needs this: UV1 drives the synthesized
+   * paint, which WRAPS, so re-scaling UV1 to a shared station range would
+   * re-tile the panel lines — on the radome by about seven times. UV2 carries
+   * the shared parametrisation and leaves UV1 byte-identical.
+   */
+  readonly uvs2?: readonly number[];
   readonly colors?: readonly number[];
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly castsShadow?: boolean;
@@ -500,12 +508,28 @@ export class AircraftBuildContext {
   }
 
   /** Elliptical cross-sections joined along body +X; never a scaled cylinder. */
+  /**
+   * `stationRange` makes several lofts share ONE station parametrisation, so a
+   * texture drawn across them does not step at their joins.
+   *
+   * Without it each loft normalises u over its OWN first and last section, and
+   * the airliner's fuselage (x -26..30.6) and nose (x 25.5..34) therefore
+   * disagree by 0.615 of the texture width where they meet at x = 30.6 — most
+   * of the way across the image. That is why the cheatline was body-space
+   * vertex paint rather than a texture: a function of world x and y crosses a
+   * join without knowing it is there, and a per-loft u does not.
+   *
+   * OMIT IT and nothing changes. Only the lofts that carry a shared image pass
+   * it, so every other airframe's positions, indices AND uvs stay byte for
+   * byte what they were.
+   */
   loft(
     name: string,
     sections: readonly LoftSection[],
     radialSegments: number,
     material: Material,
     parent: TransformNode,
+    stationRange?: { readonly minimumX: number; readonly length: number },
   ): Mesh {
     if (sections.length < 2) throw new RangeError("An aircraft loft needs at least two sections");
     if (!Number.isInteger(radialSegments) || radialSegments < 8) {
@@ -522,6 +546,15 @@ export class AircraftBuildContext {
     const indices: number[] = [];
     const minimumX = sections[0]!.x;
     const length = sections[sections.length - 1]!.x - minimumX;
+    // UV1 keeps its own per-loft normalisation, untouched. The shared range
+    // goes to UV2 instead, because UV1 drives the wrapped paint synthesis and
+    // re-scaling it would re-tile every panel line on these lofts.
+    const sharedMinimumX = stationRange?.minimumX;
+    const sharedLength = stationRange?.length;
+    if (stationRange && !(sharedLength! > 0)) {
+      throw new RangeError("An aircraft loft's station range must have positive length");
+    }
+    const uvs2: number[] = [];
     for (const section of sections) {
       if (!(section.yRadius > 0) || !(section.zRadius > 0)) {
         throw new RangeError("Aircraft loft radii must be positive");
@@ -557,6 +590,7 @@ export class AircraftBuildContext {
           (section.zOffset ?? 0) + zShape * halfWidth,
         );
         uvs.push((section.x - minimumX) / length, phase);
+        if (stationRange) uvs2.push((section.x - sharedMinimumX!) / sharedLength!, phase);
       }
     }
     for (let section = 0; section < sections.length - 1; section += 1) {
@@ -572,10 +606,15 @@ export class AircraftBuildContext {
     const start = sections[0]!;
     positions.push(start.x, start.yOffset ?? 0, start.zOffset ?? 0);
     uvs.push(0, 0.5);
+    // The caps are vertices too: a uv2 array short of the positions count
+    // fails VertexData's own validation at merge time, which is how this was
+    // found rather than by it rendering wrong.
+    if (stationRange) uvs2.push((start.x - sharedMinimumX!) / sharedLength!, 0.5);
     const endCenter = positions.length / 3;
     const end = sections[sections.length - 1]!;
     positions.push(end.x, end.yOffset ?? 0, end.zOffset ?? 0);
     uvs.push(1, 0.5);
+    if (stationRange) uvs2.push((end.x - sharedMinimumX!) / sharedLength!, 0.5);
     const endRing = (sections.length - 1) * ringSize;
     for (let radial = 0; radial < radialSegments; radial += 1) {
       indices.push(startCenter, radial + 1, radial);
@@ -597,6 +636,7 @@ export class AircraftBuildContext {
     }
     return this.vertexMesh(name, positions, indices, material, parent, {
       uvs,
+      ...(stationRange ? { uvs2 } : {}),
       weldedNormals: crownSeam,
       metadata: {
         aircraftGeometry: "lofted-fuselage",
@@ -949,6 +989,7 @@ export class AircraftBuildContext {
     vertexData.indices = indices;
     vertexData.normals = normals;
     if (options.uvs) vertexData.uvs = [...options.uvs];
+    if (options.uvs2) vertexData.uvs2 = [...options.uvs2];
     if (options.colors) vertexData.colors = [...options.colors];
     const mesh = new Mesh(name, this.scene);
     vertexData.applyToMesh(mesh, false);

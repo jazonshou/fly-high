@@ -36,6 +36,12 @@ import {
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { AIRLINER_SEAT, airlinerSeatPlacement, buildAirlinerCockpit } from "./cockpit/airlinerCockpit";
 import type { AircraftVisual } from "./types";
+import {
+  AIRLINER_LIVERY_STATION_RANGE,
+  buildAirlinerLivery,
+  buildLiveryMipChain,
+  createAirlinerLiveryTexture,
+} from "./airlinerLivery";
 
 /**
  * The Boeing 747-8 Intercontinental.
@@ -744,6 +750,35 @@ export function createAirliner(scene: Scene): AircraftVisual {
     liveryColor: 0xf4f5f3,
   } as const;
   const body = build.paintMaterial("airliner-body", bodyRecipe);
+  /*
+   * THE LIVERY, as a body-space image on a SECOND UV set.
+   *
+   * This is the replacement for the `livery-decal` band described below, and
+   * it fixes that band's defect rather than re-committing it: a UV-space decal
+   * drew "one per separately-UV'd part" because every mesh carried its own
+   * 0..1 u. The three lofts that wear the livery are given ONE shared station
+   * range instead (x -26..34), so a feature drawn at one u is at one station
+   * on all three and does not step at their joins -- the fuselage and nose
+   * disagreed by 0.615 of the texture width where they meet.
+   *
+   * It rides on UV2, not UV1. UV1 drives the synthesized paint, which WRAPS,
+   * so rescaling it would re-tile every panel line on these lofts -- about
+   * seven times over on the radome. UV1 is therefore byte-identical on every
+   * loft in the fleet, these three included.
+   *
+   * The material is CLONED from the body rather than synthesised again:
+   * `paintMaterial` does not cache by recipe, so a second call would mean a
+   * second surface synthesis and a second set of albedo, normal and
+   * metallic-roughness maps of identical paint. The clone shares all three and
+   * overrides the albedo alone.
+   */
+  const liveryTexture = createAirlinerLiveryTexture(
+    scene,
+    buildLiveryMipChain(buildAirlinerLivery()),
+  );
+  const skin = body.clone("airliner-skin") ?? body;
+  skin.albedoTexture = liveryTexture;
+  liveryTexture.coordinatesIndex = 1;
   // THE WING USED TO HAVE ITS OWN MATERIAL, and it no longer needs one.
   //
   // `airliner-wing` was the body recipe with `liveryColor` set equal to
@@ -861,14 +896,18 @@ export function createAirliner(scene: Scene): AircraftVisual {
 
   // 72 m from radome to tailcone, in four lofts: the parallel barrel, the
   // upswept tailcone, the drooped radome and the upper deck riding on top.
-  const fuselage = build.loft("airliner-fuselage", FUSELAGE_SECTIONS, 28, body, root);
+  const fuselage = build.loft(
+    "airliner-fuselage", FUSELAGE_SECTIONS, 28, skin, root, AIRLINER_LIVERY_STATION_RANGE,
+  );
   // 28 segments, matching the fuselage's, and the cheatline is why. Vertex
   // paint SAMPLES a continuous function at each mesh's own vertices and the
   // renderer interpolates between them, so two lofts with different
   // circumferential spacing rebuild the same edge up to half a spacing apart.
   // On the Global that was a 53 mm step at the tail join until the two counts
   // were matched; here the band would cross the nose join the same way.
-  const radome = build.loft("airliner-radome", NOSE_SECTIONS, 28, body, root);
+  const radome = build.loft(
+    "airliner-radome", NOSE_SECTIONS, 28, skin, root, AIRLINER_LIVERY_STATION_RANGE,
+  );
 
   /*
    * THE CHEATLINE, in BODY COORDINATES.
@@ -883,20 +922,23 @@ export function createAirliner(scene: Scene): AircraftVisual {
    * camera's 112 m standoff a pixel is about 9 cm, so a band under half a
    * metre would shimmer rather than draw.
    */
-  for (const skin of [fuselage, radome]) {
-    paintVertexBand(skin, CHEATLINE_LINEAR, (x, y, z) => {
-      // Dies out before the tailcone's taper and before the radome's tip,
-      // where a level band would ride up over a shape that is no longer a tube.
-      const station = smoothStep(-24.5, -22, x) * (1 - smoothStep(30.5, 32.5, x));
-      if (station <= 0) return 0;
-      // Flanks only: a band defined by height alone wraps under the belly
-      // wherever the section is narrower than the cabin's.
-      const flank = Math.min(1, Math.abs(z) / 1.6);
-      return station * flank
-        * (1 - smoothStep(CHEATLINE_HALF_HEIGHT, CHEATLINE_HALF_HEIGHT + 0.22,
-          Math.abs(y - MAIN_DECK_WINDOW_Y)));
-    });
-  }
+  /*
+   * THE VERTEX-PAINT CHEATLINE IS GONE, AND ITS VARYING IS WHY THE TEXTURE
+   * FITS.
+   *
+   * WebGPU caps a fragment stage at 16 user-defined input variables. UV2 is a
+   * seventeenth, and the device rejects the pipeline outright:
+   * "Total fragment input variables count (17 > 16 + 1) exceeds the maximum".
+   * The vertex COLOUR attribute this band wrote was one of the sixteen, so
+   * dropping it pays for UV2 exactly.
+   *
+   * That is not a coincidence to be grateful for, it is the same information
+   * twice: a band painted per vertex and a band painted in texels are two
+   * mechanisms for one stripe, and the texture exists because the vertex one
+   * cannot resolve an edge. The fuselage has six vertices over its height,
+   * 0.72-0.85 m apart, so the 0.22 m smoothstep fell inside a single gap and
+   * rendered as a ~0.8 m fade. See docs/findings/AIRLINER_LIVERY_UV.md.
+   */
   // Upswept, ending at (-38, +1.2) where the sim puts its tailcone contact
   // point. The upsweep is what buys a 72 m aeroplane its rotation angle: the
   // mains are at x = -3, so 10.4 degrees of tail-strike margin comes entirely
@@ -906,6 +948,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // the root and is NOT cockpit-excluded skin, so the whole list can be folded
   // into one mesh at the end of the build; see FOLDING THE STATIC AIRFRAME.
   const bodyExterior: AbstractMesh[] = [];
+  // NOT on the livery material, and not an oversight: the cheatline's station
+  // range dies out by x = -24.5 and this loft spans -38 to -26, so there is
+  // nothing to paint on it. It stays on `body` and stays merged into
+  // `airliner-body-exterior`; giving it the livery would have cost a draw call
+  // to carry an image it never samples. `mergeStatic` refuses a material
+  // mismatch outright, which is how this was caught rather than by a frame.
   bodyExterior.push(build.loft(
     "airliner-tailcone",
     [

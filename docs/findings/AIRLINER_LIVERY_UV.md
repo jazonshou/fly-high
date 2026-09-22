@@ -103,10 +103,14 @@ from the same section table the loft uses:
     y = yOffset + yRadius * cos(2*pi*v)        (squareness 2)
     v(y, x) = acos((y - yOffset(x)) / yRadius(x)) / (2*pi)
 
-Painting a straight row instead would put the band 23 texels low at the nose
-and level at the cabin — a band that visibly droops forward, which is the
-current defect in a new form. The same applies to every level feature: door
-outlines, the window surround band, the wing-root tone.
+Painting a straight row instead would put the band 23 texels off at the nose
+and level at the cabin. **The direction is UP, not down**: v is measured from
+the crown, so the straight row's 0.2696 is a SMALLER v than the level edge's
+0.3141 and therefore sits HIGHER on the skin — about 0.69 m up, above the
+window row. The band would ride up over the nose, not droop. (An earlier draft
+of this file said "droops forward"; the magnitude and the reverse control were
+right and the direction was wrong.) The same applies to every level feature:
+door outlines, the window surround band, the wing-root tone.
 
 ## 4. WHAT THE IMAGE CONTAINS, AND WHAT IT DOES NOT
 
