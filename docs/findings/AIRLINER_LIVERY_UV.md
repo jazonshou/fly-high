@@ -387,12 +387,36 @@ scale 2, so a 2560x2560 PNG; every pixel figure counts those pixels:
   **-2 / -5 / -4 before**, the panes as light as the skin, which is Jason's
   invisible bottom row; **+104 / +104 / +69 after**. The upper deck read +97 to
   +150 in both;
-- band top edge, 10-90 %: **28-60 cm before**, 5-8.5 cm after at 30 m,
-  8.5-12.5 cm at 60 m, and about 4.5 px at 112 m, where it is pixel-limited.
+- band top edge, 10-90 % (median over stations, the corrected instrument --
+  see below): **32 cm before** at 30 m, 25 cm at 60 m, 24.5 cm at 112 m, all
+  LOWER BOUNDS, since the vertex band's ~0.8 m ramp is wider than the scan;
+  **7.0 cm after** at 30 m (5-8 across stations), 11.0 cm at 60 m.
 
-The frames on the final skin -- band -0.80..-0.30, the radome re-solved, the
-body's maps shared -- are taken with the same instruments and recorded with
-the merge.
+**The final skin** (band -0.80..-0.30, the radome re-solved, the body's maps
+shared), the same instruments, every frame's serving tree proved from the
+dev server's own working directory:
+
+- main-deck pane contrast at 30 / 60 / 112 m: **+104.6 / +103.6 / +60.3**
+  (before: -2.3 / -4.6 / -4.1); upper deck +146 / +151 / +100;
+- band top edge, 10-90 %, median: **9.0 cm = 7.3 px at 30 m** (8-10.5 across
+  stations), 13.5 cm = 5.2 px at 60 m, 20 cm = 4.0 px at 112 m, where it is
+  pixel-limited. Half a texel wider than the first build's 7.0 at 30 m;
+- band height at half coverage, against the intended 0.50 m: **0.47-0.51 m at
+  every station at 30 m, median 0.50 = 40.5 px**, the wing root included
+  (0.50-0.51 at x -6..0 -- the fairing no longer cuts it; the -1.40 band read
+  0.45 of 1.0 there); the same from +12 degrees. At 112 m, **0.44 m = 8.8 px**
+  (x 2..26; aft of the wing the wing hides the flank at 0 degrees);
+- across the nose join, x 24 to 31.5 at 30 m: top edge -0.29..-0.32, bottom
+  -0.76..-0.83 at every station, no step and no split at the 27.3-27.8
+  crossover, from 0 and +12 degrees.
+
+**One more instrument lesson.** With the band's top raised to -0.30, the edge
+scan (+-0.35 m) reached the pane bottoms at y = 0.02; where a pane sat on the
+scan line the first sample read dark, the 90 % crossing landed on sample 0, and
+four stations reported the scan window -- 38 cm -- as the edge. The scan now
+stays under the panes and takes the LAST sample above 90 % before the first
+under 10 %; every figure above was re-measured with it, the earlier builds'
+included.
 
 **The Node instruments follow the same rule.** `render.airliner-livery-mesh`
 reads the band on the OUTER skin by casting a ray at each (x, y) against the
