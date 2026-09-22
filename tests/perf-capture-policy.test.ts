@@ -44,8 +44,9 @@ const chromiumShim = readSource(
 
 describe("perf-capture baseline policy", () => {
   it("keeps the two browser projects out of the shared Node optimizer cache", () => {
-    expect(gpuConfig).toContain('cacheDir: "node_modules/.vite-gpu"');
-    expect(perfConfig).toContain('cacheDir: "node_modules/.vite-perf"');
+    // Per project and per checkout; tests/checkout-cache-dir.test.ts guards every config.
+    expect(gpuConfig).toContain('cacheDir: checkoutCacheDir("gpu")');
+    expect(perfConfig).toContain('cacheDir: checkoutCacheDir("perf")');
   });
 
   it("prevents Chromium crashpad helpers from holding either browser project open", () => {

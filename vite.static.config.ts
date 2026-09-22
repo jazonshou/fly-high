@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
 
 /**
  * Static-site build used by the GitHub Pages deploy (`npm run build:pages`).
@@ -15,6 +16,8 @@ import { defineConfig } from "vite";
  */
 export default defineConfig({
   root: fileURLToPath(new URL("./static", import.meta.url)),
+  // Not the default: that would be the dev server's, shared by every worktree.
+  cacheDir: checkoutCacheDir("static"),
   base: process.env.PAGES_BASE ?? "/",
   plugins: [react()],
   resolve: {
