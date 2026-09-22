@@ -6,7 +6,7 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
-import { buildAttitudeBall, glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
+import { glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
 import {
   DISPLAY_UPDATE_HZ,
   createDisplayAtlas,
@@ -17,7 +17,6 @@ import {
   type DisplayAtlas,
 } from "./displays/displayAtlas";
 import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
-import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
  * What a pilot in the 747-8's LEFT seat sees, built to angles.
@@ -269,38 +268,6 @@ export function airlinerScreenPlacements(): readonly { name: string; centre: Vec
   return SCREEN_Z.map(([name, z]) => ({ name, centre: new Vector3(x, y, z) }));
 }
 
-// ---- the PFD's attitude display ---------------------------------------------------------
-
-/** The PFD's ball: the Global's, at the same size (the same 0.22 x 0.15 screen). */
-export const AIRLINER_PFD = Object.freeze({
-  screen: "port-pfd",
-  regionFraction: 2 / 3,
-  margin: 0.002,
-  thickness: 0.002,
-  offset: 0.0025,
-  barOffset: 0.0015,
-  barLength: 0.07,
-  barHeight: 0.003,
-  segments: 24,
-  pivotName: "airliner-pfd-attitude-pivot",
-});
-
-export function airlinerPfdRadius(): number {
-  return (AIRLINER_SCREENS.height * AIRLINER_PFD.regionFraction) / 2 - AIRLINER_PFD.margin;
-}
-
-/** The ball's centre, which is the pivot's position: the middle of the PFD's upper two-thirds. */
-export function airlinerPfdCentre(): Vector3 {
-  const screen = airlinerScreenPlacements().find((placement) => placement.name === AIRLINER_PFD.screen);
-  if (!screen) throw new Error(`no screen named ${AIRLINER_PFD.screen}`);
-  const regionHeight = AIRLINER_SCREENS.height * AIRLINER_PFD.regionFraction;
-  return new Vector3(
-    screenFrontX() - AIRLINER_PFD.offset - AIRLINER_PFD.thickness / 2,
-    airlinerScreenTopY() - regionHeight / 2,
-    screen.centre.z,
-  );
-}
-
 // ---- the overhead, the pillar and the post ------------------------------------------------
 
 export const AIRLINER_OVERHEAD = Object.freeze({
@@ -396,7 +363,7 @@ export const AIRLINER_POST = Object.freeze({ radius: 0.025, buryMetres: 0.08 });
 
 // ---- the builder ------------------------------------------------------------------------------
 
-/** What `buildAirlinerCockpit` hands back: the meshes, and the step that moves the attitude ball. */
+/** What `buildAirlinerCockpit` hands back: the meshes, and the step that redraws the displays. */
 export interface AirlinerCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
@@ -407,7 +374,7 @@ export interface AirlinerCockpit {
    */
   readonly displaysLive: boolean;
   /**
-   * Turn the attitude ball to what `state` reads, and redraw the displays at `DISPLAY_UPDATE_HZ`.
+   * Redraw the displays at `DISPLAY_UPDATE_HZ` from what `state` reads.
    * The visual calls this from its `update` ONLY while cockpit view is on, and passes the frame's
    * own delta so the redraw rate is wall-clock rather than frame-rate.
    */
@@ -419,11 +386,12 @@ export interface AirlinerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the rule
  * is applied in one place.
  *
- * Seven meshes: four static (the board, the overhead, the pillar and the post on
- * the interior material; the hood and the dash on the glareshield's; the six
- * screens; their six bezels) and the three attitude pieces, which stay separate
- * because the pivot turns them. There are no side walls and no
- * pedestal: nothing in the frame needs them (`docs/findings`, MAP B).
+ * FOUR meshes, all static: the board, the overhead, the pillar and the post on the
+ * interior material; the hood and the dash on the glareshield's; the six screens;
+ * their six bezels. It was seven until the 3D attitude ball came out -- its three
+ * pieces hung from a pivot, so they could not be merged -- and the PFD page draws
+ * attitude on the screen itself now. There are no side walls and no pedestal:
+ * nothing in the frame needs them (`docs/findings`, MAP B).
  */
 export function buildAirlinerCockpit(
   build: AircraftBuildContext,
@@ -531,20 +499,12 @@ export function buildAirlinerCockpit(
     screensMesh.material = displayMaterial(build, "airliner-display", atlas);
   }
 
-  // THE ATTITUDE DISPLAY on the pilot's PFD: three separate meshes under one pivot
-  // (`buildAttitudeBall`), the exception to the merging above.
-  const pfd = AIRLINER_PFD;
-  const ball = buildAttitudeBall(build, root, airlinerPfdCentre(), {
-    prefix: "airliner-pfd",
-    pivotName: pfd.pivotName,
-    radius: airlinerPfdRadius(),
-    thickness: pfd.thickness,
-    barOffset: pfd.barOffset,
-    barLength: pfd.barLength,
-    barHeight: pfd.barHeight,
-    segments: pfd.segments,
-  });
-  parts.push(...ball.parts);
+  // NO 3D ATTITUDE BALL. There was one here -- three meshes and a pivot standing a millimetre in
+  // front of the pilot's PFD -- from before the screens could draw anything. The PFD page draws its
+  // own attitude now and agrees with the HUD to a tenth of a degree, so the ball was a second
+  // attitude indicator sitting ON TOP of the first and hiding most of it (the frames in the findings
+  // doc show it). The trainer keeps its MECHANICAL ball, which is what that aeroplane has, and the
+  // Global keeps its until its own screens draw pages.
 
   // THE PILLAR AND THE SEAM POST, on the interior material with the board and the overhead they
   // hang from. Not the hood's matte one: that has no ambient light, so a face the sun misses reads
@@ -575,20 +535,21 @@ export function buildAirlinerCockpit(
   const post = build.strutBetween("airliner-windscreen-post-port", seam.bottom, buriedTop, AIRLINER_POST.radius, materials.interior, root);
   parts.push(build.mergeStatic("airliner-cockpit-interior", [board, overhead, pillar, post], root));
 
-  // THE ATTITUDE BALL'S STEP. The pivot's local X is body +X, which points AWAY
-  // from the pilot, and a positive rotation about an axis pointing away from the
-  // viewer is CLOCKWISE to him, so the clockwise-as-seen angle (minus the bank)
-  // goes in as it is; the bar slides along the pivot's own up. Held to the screen
-  // by `tests/render.cockpit-instruments.test.ts`.
-  // The displays are redrawn on a counter, not every frame: `update` is only called while cockpit
+  // THE DISPLAYS ARE REDRAWN ON A COUNTER, not every frame: `update` is only called while cockpit
   // view is on (the visual gates it), and 15 a second is as fast as a display needs to move.
+  //
+  // WHAT ONE REDRAW COSTS, measured in the live app on this machine (M2 Pro, WebGPU, 60 samples,
+  // one update per animation frame, the texture proven live and bound each time): 0.3 ms to draw
+  // the six pages, 2.0 ms for `getImageData`, 1.0 ms for `RawTexture.update`; 3.3 ms median, 3.5 ms
+  // at p90, so about 50 ms a second at 15 Hz. The readback is the biggest part and exists only
+  // because the bytes have to reach the GPU through a `RawTexture`: this engine build has neither
+  // `createDynamicTexture` nor `updateDynamicTexture` (both measured undefined), so the canvas
+  // cannot be handed to the texture directly. Both are on the register.
   let sinceDisplayDraw = Number.POSITIVE_INFINITY;
   return {
     parts,
     displaysLive: atlas !== null,
     update(state, secondsSinceLastUpdate = 0) {
-      ball.pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
-      ball.bar.position.y = pitchBarOffsetMetres(state.pitch);
       if (atlas === null) return;
       sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
       if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;

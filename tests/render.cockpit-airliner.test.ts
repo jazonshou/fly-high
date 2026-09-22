@@ -290,19 +290,20 @@ describe("the constants copied from the built glazing", () => {
 });
 
 describe("the 747's cockpit parts", () => {
-  it("are the seven named cockpit-only meshes, twenty-one authored parts, and nothing else new", () => {
+  it("are the four named cockpit-only meshes, eighteen authored parts, and nothing else new", () => {
     expect(cockpitOnly.map((part) => part.name).sort()).toEqual([
       "airliner-cockpit-interior",
       "airliner-glareshield",
-      "airliner-pfd-ground",
-      "airliner-pfd-pitch-bar",
-      "airliner-pfd-sky",
       "airliner-screen-bezels",
       "airliner-screens",
     ]);
     const sources = cockpitOnly.flatMap((part) => (part.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [part.name]);
-    // board + overhead + pillar + post, hood + dash, six screens, six bezels, the ball's three
-    expect(sources).toHaveLength(4 + 2 + 6 + 6 + 3);
+    // board + overhead + pillar + post, hood + dash, six screens, six bezels. There were three more
+    // -- a 3D attitude ball, a millimetre in front of the PFD's glass -- from before the screens
+    // could draw anything. The PFD page draws its own attitude now and agrees with the HUD to a
+    // tenth of a degree, so the ball was a second horizon standing ON the first and hiding most of
+    // it. The Cessna keeps its ball: that aeroplane has a MECHANICAL one.
+    expect(sources).toHaveLength(4 + 2 + 6 + 6);
     // the pillar and the post are part of the interior mesh: there is no mesh of their own
     expect(scene.getMeshByName("airliner-windscreen-frame")).toBeNull();
     for (const part of cockpitOnly) {
@@ -364,7 +365,7 @@ describe("the 747's cockpit parts", () => {
     const visual = createWebGpuAircraft(freshScene, "airliner");
     try {
       const parts = visual.cockpitOnlyParts ?? [];
-      expect(parts).toHaveLength(7);
+      expect(parts).toHaveLength(4);
       for (const part of parts) expect(part.isVisible, `${part.name} outside cockpit view`).toBe(false);
       visual.setCockpitView(true);
       for (const part of parts) expect(part.isVisible, `${part.name} in cockpit view`).toBe(true);
@@ -636,18 +637,12 @@ describe("the 747's screens", () => {
     expect(Math.atan2(top - EYE.up, front - EYE.forward) * DEG).toBeCloseTo(hoodUnder - 1.5, 1);
   });
 
-  it("carry the attitude ball on the PFD's upper two-thirds, in front of the glass", () => {
-    const pivot = scene.getTransformNodeByName("airliner-pfd-attitude-pivot")!;
-    expect(pivot, "the pivot node").not.toBeNull();
-    pivot.computeWorldMatrix(true);
-    const centre = pivot.getAbsolutePosition();
-    const screens = named("airliner-screens");
-    const pfd = boxBlock(screens, 0);
-    expect(centre.z).toBeCloseTo(centreOf(pfd).z, 4);
-    expect(centre.y).toBeCloseTo(Math.max(...pfd.map((v) => v.y)) - (0.15 * (2 / 3)) / 2, 4);
-    expect(Math.min(...pfd.map((v) => v.x)) - centre.x).toBeGreaterThan(0.002);
-    for (const piece of ["sky", "ground", "pitch-bar"]) expect(named(`airliner-pfd-${piece}`).parent).toBe(pivot);
-  });
+  // THE 3D ATTITUDE BALL THAT STOOD HERE IS GONE, and this is where its placement was held: a pivot
+  // on the PFD's upper two-thirds carrying a sky half, a ground half and a pitch bar, a millimetre in
+  // front of the glass. It was built when the screens were dark rectangles. Now the PFD page draws an
+  // attitude that `render.cockpit-display-state.test.ts` holds to the HUD's own numbers, so the ball
+  // was a SECOND horizon standing on top of the first and hiding most of it. What replaces this test
+  // is that one plus the PFD page's own horizon test, which measure the thing the pilot now sees.
 });
 
 describe("the 747's cockpit against the shell it stands in", () => {
@@ -657,12 +652,9 @@ describe("the 747's cockpit against the shell it stands in", () => {
     ["airliner-glareshield", "hood and dash"],
     ["airliner-screens", "screens"],
     ["airliner-screen-bezels", "bezels"],
-    ["airliner-pfd-sky", "ball sky"],
-    ["airliner-pfd-ground", "ball ground"],
-    ["airliner-pfd-pitch-bar", "ball bar"],
   ] as const;
 
-  it("keeps the panel, the hood, the dash, the screens and the ball inside the outer skin with clearance to spare", () => {
+  it("keeps the panel, the hood, the dash, the screens and the bezels inside the outer skin with clearance to spare", () => {
     const lines: string[] = [];
     for (const [meshName, label] of INSIDE) {
       const isBoard = meshName === "airliner-cockpit-interior";
@@ -739,7 +731,6 @@ describe("the 747's cockpit against the shell it stands in", () => {
   it("puts nothing in the frame that the design did not account for: below the hood is board, above the overhead's edge is overhead", () => {
     const allowed = new Set([
       "airliner-cockpit-interior", "airliner-glareshield", "airliner-screens", "airliner-screen-bezels",
-      "airliner-pfd-sky", "airliner-pfd-ground", "airliner-pfd-pitch-bar",
     ]);
     for (let az = -37; az <= 37; az += 2) {
       for (let el = -23; el <= 23; el += 1) {
@@ -754,14 +745,20 @@ describe("no loft end cap faces the pilot", () => {
   /**
    * Babylon's picking ignores back-face culling, so this works on the shell's own
    * triangles and calibrates which winding the ENGINE calls front-facing on a closed
-   * convex prism (the attitude ball's ground half): the sign for which a ray from
-   * outside meets a front face and a ray from inside meets none.
+   * convex prism: the sign for which a ray from outside meets a front face and a ray
+   * from inside meets none. The prism used to be the attitude ball's pitch bar; it is
+   * the pilot's PFD screen box now, which is the same kind of thing -- one `build.box`,
+   * closed and convex, wound by Babylon, and one the pilot plainly sees.
    */
   function calibrate(): number {
-    // a build.box, closed and convex and wound by Babylon itself: the ball's pitch bar
-    const bar = named("airliner-pfd-pitch-bar");
-    const prism = worldTriangles(bar);
-    const centre = centreOf(worldVertices(bar));
+    const screens = named("airliner-screens");
+    // the first of the six merged boxes: its 24 vertices are the first 24, so its triangles are
+    // the ones whose three indices all fall in that block
+    const all = worldTriangles(screens);
+    const indices = screens.getIndices()!;
+    const prism = all.filter((_, t) => [0, 1, 2].every((k) => indices[t * 3 + k]! < 24));
+    expect(prism, "the PFD screen box's own triangles").toHaveLength(12);
+    const centre = centreOf(boxBlock(screens, 0));
     const forward = new Vector3(1, 0, 0);
     const front = (origin: Vector3, sign: number) =>
       prism.some((t) => {

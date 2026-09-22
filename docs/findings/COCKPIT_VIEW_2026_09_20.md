@@ -228,7 +228,7 @@ four eyes; at the old station (28.8, 3.1) the same pane reads +0.9 / -9.2, at (2
 | hood | far top edge at -10.0 degrees (y 2.7837); aft-edge underside -14.4 |
 | dash | the hood's top surface carried on down 8.2 degrees to the glazing's lowest bottom edge (31.843, 2.623). The glass's bottom edge straight ahead reads -9.35 and the hood's far edge -10.0, so without it a 0.6 to 1 degree band of the hidden nose shows between them |
 | screens | six, 0.22 x 0.15, laid out about the SEATS: the PFDs on the seat lines (z -0.72 and +0.72), the NDs and the EICAS 0.245 inboard of each other. The pilot's PFD is straight ahead (azimuth 0), his ND at +18.2 and the EICAS at +33.4; three of the six are in the 75 degree frame |
-| PFD ball | `buildAttitudeBall`, the Global's and the Cessna's builder and mapping, on the PFD's upper two-thirds; the screen-space ground-truth test now runs over all three |
+| pages | the six screens sample one 1320 x 600 atlas, six 440 x 300 slots, redrawn at 15 Hz (`cockpit/displays/`). There was a 3D attitude ball here instead, `buildAttitudeBall` on the PFD's upper two-thirds, from before the screens could draw anything; it came out when the pages went in (see "The screens draw pages, and the ball came out") |
 | overhead | underside at the lowest pane top (y 3.137), the plan raked to follow the glass's top edge across the port No.1 pane and across the crown gap |
 | pillar | a trapezoid plate in the plane of the crown between the No.1 panes, z +-0.618 at the bottom to +-0.175 at the overhead: the model's panes leave a V of open crown 0.5 m wide at the top and 1.2 m at the bottom, which reads as sky with the shell hidden |
 | post | radius 0.025 in the seam between the No.1 and No.2 panes, which is a wedge 0.35 m wide at the bottom and 0.1 at the top. The design post ends where it meets the overhead's underside; its MESH runs 0.08 m on past that along its own axis (`AIRLINER_POST.buryMetres`), so no cut end shows |
@@ -364,8 +364,10 @@ the plane engineer, and it is not fixed here (`builders.ts` is not this branch's
 the GPU draws it. The convention was MEASURED on a `build.box` face that visibly renders: a drawn
 face's `cross(p1 - p0, p2 - p0)` points INTO the solid, so it is drawn if `dot(cross, rayDirection) > 0`.
 `tests/render.cockpit-drawn-faces.test.ts` runs it on the Cessna, the Global and the 747 with ZERO
-allowance, and asserts the convention first on the pitch bar's box, both ways (drawn from outside,
-culled from inside), so a flipped convention cannot pass. A second assertion holds every flat-shaded
+allowance, and asserts the convention first on a `build.box` the pilot plainly sees, both ways (drawn
+from outside, culled from inside), so a flipped convention cannot pass. (That box was the 747 ball's
+pitch bar until the ball came out; it is the pilot's PFD screen box now, which is the same kind of
+thing: one box, closed and convex, wound by Babylon itself.) A second assertion holds every flat-shaded
 triangle (three equal vertex normals: a box, a plate, a half) to a normal that faces the eye, so the
 plates' own normals cannot be written inward with every other test green. Every mesh must be hit by
 more than zero rays, because void has to look different from clean: the needles, the pitch bars and
@@ -389,7 +391,9 @@ vertices swapped) and gives every triangle three vertices of its own with a flat
 It does not read the builder's index order, so it survives the builder being fixed. The overhead, the
 dash, the pillar and both halves of every ball go through it. A plate has a dozen triangles, so three
 vertices each is cheap; the census arithmetic is in the draw-budget test. Draw counts and mesh counts
-did not move on any aircraft (89 drawn, 58 casters, 205 draws; seven cockpit-only meshes on the 747).
+did not move on any aircraft (89 drawn, 58 casters, 205 draws; seven cockpit-only meshes on the 747 --
+four now that the ball is gone, and the two rows of this table that name `airliner-pfd-sky` and
+`-ground` are a record of what WAS measured on meshes that no longer exist).
 
 **A single grid read zero by luck.** A grid on round angles can graze an edge built to a round angle
 (the hood's far top edge is built at -10.00 degrees, which is a grid line: the ray at azimuth 0,
@@ -459,6 +463,65 @@ purpose. The 747's ball is the dimmest of the three under the same materials.
 opposite to its caps, and a counter-clockwise outline builds inside out. `solidPlate` works round both;
 the builder is untouched.
 
+## The screens draw pages, and the ball came out
+
+**What the screens show.** Four page kinds -- PFD, ND in expanded-arc map mode, upper and lower
+EICAS -- across the six screens, drawn flat onto one 2D canvas and uploaded as ONE emissive texture
+(`cockpit/displays/`). Six screens, one atlas, one material, one draw: each screen box is given the
+UVs of its own slot before the merge, so the merged mesh samples six pictures out of one image. The
+pages are deterministic (no clock, no randomness), resolution-independent (every length a fraction of
+the slot) and finite (every reading clamped or wrapped before it becomes a coordinate).
+
+**Why the 3D attitude ball came out.** It was built when the screens were dark rectangles, and it
+stood a millimetre in front of the pilot's PFD. Once the PFD page drew its own horizon there were TWO
+attitude indicators on that screen, the solid one in front of the drawn one, hiding most of it. The
+page's attitude is held to the HUD's own numbers by `tests/render.cockpit-display-state.test.ts`
+(they agree to a tenth of a degree), so what came out is the redundant one. The Cessna keeps its
+ball, because that aeroplane's instrument is MECHANICAL; the Global keeps its until its own screens
+draw pages, which is on the register.
+
+**What the removal moved, every number read rather than accepted.** Cockpit-only meshes on the 747:
+7 -> 4 (the ball's three pieces hung from the pivot that turned them, so they could not be merged
+into anything). Cockpit view's draw delta: 7 -> 4, three draws fewer, and the pilot sees MORE of the
+PFD rather than less. Geometry census: -600 vertices and -612 indices, which is exactly two
+`solidPlate` halves of 96 triangles (288 vertices each) and a 24-vertex box of 12; the position sum
+fell by 600 times the PFD's own place; the area by 0.0162 m^2; the signed volume did not move at two
+decimals, because the halves are closed solids of about half a cubic centimetre. The airframe's
+EXTENTS did not move at all. The perf rig is unaffected either way: it draws no aircraft at all
+(`PERF_COCKPIT_RIG`).
+
+**The atlas's resolution was measured, not argued.** The question was whether to go from 440 x 300
+slots (a 1320 x 600 atlas) to 660 x 450 (1980 x 900). Both were timed in the LIVE app on this machine
+(M2 Pro, WebGPU, the 747 in cockpit view, 60 interleaved samples each, one update per animation
+frame, the texture bound to the screens and proven live before and after every sample):
+
+| atlas | draw six pages | `getImageData` | `RawTexture.update` | total, median | p90 | at 15 Hz |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1320 x 600 (now) | 0.3 ms | 2.0 ms | 1.0 ms | **3.3 ms** | 3.5 ms | 50 ms/s |
+| 1980 x 900 | 0.3 ms | 3.7 ms | 0.2 ms | **4.2 ms** | 4.6 ms | 63 ms/s |
+
+**The decision is to stay at 1320 x 600**, on the rule the PM set (1.5 ms an update) and on a second
+measurement that says the extra pixels would not be seen: at the viewport these frames were taken on
+(canvas 1244 x 933 device pixels) the pilot's PFD occupies 252 x 177 of them, so a 440 x 300 slot is
+already oversampled by about 1.7x. Two 4x crops of the PFD at the two atlas sizes, same state, same
+camera, differ only in the crispness of a few tick marks. The crossover is arithmetic: 440 x 300
+starts to UNDER-sample when the canvas is about 2,170 px wide, so a full-screen 4K player (PFD about
+778 x 546) would see the difference. That is a reason to revisit it with the cost fixed, not a reason
+to pay 0.9 ms more an update today.
+
+**The cost is dominated by a readback, and that is structural for now.** `getImageData` is 2.0 of the
+3.3 ms and exists only because the bytes have to reach the GPU through a `RawTexture`. The direct
+canvas upload would delete it, and this engine build has neither `createDynamicTexture` nor
+`updateDynamicTexture` (both measured `undefined` on the live `WebGPUEngine`); importing the
+extension that adds them broke the app's startup outright when it was tried. Registered, not fixed.
+
+**The measurement trap, because the first run of it was wrong.** The first timings used two textures
+created for the probe and bound to nothing. Something in the app disposed them after the first round,
+and a disposed `RawTexture.update` costs 0.13 ms -- five times FASTER than the smaller atlas, which is
+how the contradiction announced itself. A disposed texture's upload looks exactly like a fast one. The
+numbers above come from textures that were bound to the screens (so the frame visibly showed what was
+uploaded) and whose internal texture was asserted non-null on both sides of every sample.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -469,6 +532,15 @@ affected today. Their foreground is now the new panel, dials, hood, cowl stand-i
 and posts on top of the hidden tube, with lens and eye still pinned, so any
 baseline comparison of those shots sees a foreground change and no framing
 change.
+
+**The 2D HUD sits on the upper EICAS.** In cockpit view the game's own "ACTUAL" thrust and trim box
+is drawn over the right-hand screen's upper half. Both are correct on their own; nothing has decided
+which gives way in cockpit view. Registered for the PM, not changed here.
+
+**For the register, from the displays' own measurements:** the Global's screens have no pages yet (it
+keeps its 3D ball until they do); the atlas upload pays a 2 ms CPU readback that a direct canvas
+upload would delete, if an engine extension can be imported without breaking startup; and a 4K player
+would out-resolve the 440 x 300 slot (the crossover is a canvas about 2,170 px wide).
 
 **Not built:** the F-16's cockpit. Baselines are not promoted here; the single end-of-wave
 promotion absorbs the change.

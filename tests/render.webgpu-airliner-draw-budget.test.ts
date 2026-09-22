@@ -138,10 +138,9 @@ const ENCLOSED = new RegExp([
   "-fan-spool-(fan|spinner)$",
   "-engine-inlet$",
   "^airliner-(cabin-window-line|nacelle-chevron|windscreen-center-post)$",
-  // the cockpit's kit: 21 authored parts, all cockpit-only, so all outside the shadow map
+  // the cockpit's kit: 18 authored parts, all cockpit-only, so all outside the shadow map
   "^airliner-(instrument-panel|overhead|hood|dash|windscreen-pillar|windscreen-post-port)$",
   "^airliner-(screen|screen-bezel)-(port|starboard)-(pfd|nd|eicas)$",
-  "^airliner-pfd-(sky|ground|pitch-bar)$",
   "-(seat|headrest)$",
   "-axle-shaft$",
   "^airliner-nose-axle$",
@@ -252,33 +251,38 @@ describe("the 747-8's draw budget", () => {
     // duplicate, and this pins the total.
     //
     // 134 -> 144, DELIBERATELY, by the cockpit: the old instrument panel, its five
-    // gauges and its five needles are gone (-11), and the cockpit-only kit adds 21
+    // gauges and its five needles are gone (-11), and the cockpit-only kit adds 18
     // authored parts: the board and the overhead, the hood and the dash, six
-    // screens, six bezels, the pillar and the seam post, and the attitude ball's
-    // sky, ground and pitch bar. The seats and headrests are the same four parts,
-    // moved forward with the pilot.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 21);
+    // screens, six bezels, the pillar and the seam post. It was 21 until the 3D
+    // attitude ball came out: the PFD page draws attitude on the screen itself now,
+    // so the ball's sky, ground and pitch bar were a second horizon in front of the
+    // first. The seats and headrests are the same four parts, moved forward with
+    // the pilot.
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 18);
   });
 
-  it("keeps the cockpit's seven meshes outside every draw bound: invisible and never casting until cockpit view", () => {
+  it("keeps the cockpit's four meshes outside every draw bound: invisible and never casting until cockpit view", () => {
     const { visual } = build();
     const kit = visual.cockpitOnlyParts ?? [];
-    // seven, not eight: the pillar and the seam post are on the interior material with the board and the overhead
-    // and are merged into that mesh, where they had a mesh (and a draw state) of their own on the hood's matte one
-    expect(kit).toHaveLength(7);
+    // Four: the interior (board, overhead, pillar and seam post on one material), the glareshield
+    // (hood and dash), the six screens and the six bezels. It was seven until the 3D attitude ball
+    // came out -- its sky, ground and pitch bar were three meshes AND three draws standing in front
+    // of a PFD that draws its own attitude now. So cockpit view costs three draws fewer than it did,
+    // 7 -> 4, and the pilot sees MORE of the PFD, not less.
+    expect(kit).toHaveLength(4);
     for (const part of kit) {
       expect(issuesDraw(part), `${part.name} is counted as a draw outside cockpit view`).toBe(false);
       expect(castsShadow(part), `${part.name} casts a shadow`).toBe(false);
     }
     const before = visual.meshes.filter(issuesDraw).length;
     visual.setCockpitView(true);
-    // THE PERF RIG DRAWS NONE OF THIS. These seven are what a PLAYER's cockpit view costs; the
+    // THE PERF RIG DRAWS NONE OF THIS. These four are what a PLAYER's cockpit view costs; the
     // fourteen perf capture shots run `PERF_COCKPIT_RIG`, which disables the aircraft's root
     // entirely in cockpit view, so the aeroplane contributes 0 draws there -- kit, skin, framing and
     // propeller disc alike (`tests/render.cockpit-rig.test.ts`).
-    // in cockpit view they are drawn: seven draws, no shadow passes
+    // in cockpit view they are drawn: four draws, no shadow passes
     const during = visual.meshes.filter(issuesDraw);
-    expect(during.length - before).toBe(7);
+    expect(during.length - before).toBe(4);
     expect(during.filter(castsShadow).length).toBe(visual.meshes.filter((mesh) => issuesDraw(mesh) && castsShadow(mesh) && !kit.includes(mesh)).length);
     visual.setCockpitView(false);
     expect(visual.meshes.filter(issuesDraw)).toHaveLength(before);
@@ -305,11 +309,12 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const enclosed = [...authoredParts(visual)].filter(([name]) => ENCLOSED.test(name));
     // 4 fans, 4 spinners, 4 inlets, the window line, the chevrons, the centre
-    // post, the cockpit's 21 cockpit-only parts (there were the panel with 5 gauges
-    // and 5 needles, 11), 2 seats, 2 headrests, 8
-    // main axle shafts and the nose one, 6 panes of glass and 8 lamps.
+    // post, the cockpit's 18 cockpit-only parts (there were the panel with 5 gauges
+    // and 5 needles, 11; and the kit itself was 21 until the 3D attitude ball came
+    // out, the PFD page drawing attitude on the screen instead), 2 seats, 2 headrests,
+    // 8 main axle shafts and the nose one, 6 panes of glass and 8 lamps.
     expect(enclosed.map(([name]) => name).sort()).toHaveLength(
-      4 + 4 + 4 + 1 + 1 + 1 + 21 + 2 + 2 + 8 + 1 + 6 + 8,
+      4 + 4 + 4 + 1 + 1 + 1 + 18 + 2 + 2 + 8 + 1 + 6 + 8,
     );
     for (const [name, mesh] of enclosed) {
       expect(castsShadow(mesh), `${name} is still in the shadow map`).toBe(false);
@@ -467,25 +472,33 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // and 51,624, the same triangles) and nor did the extents. What moved is the post's top ring and cap, 19
     // vertices, 0.08 m along the post's axis (-0.47, 0.66, 0.59): the position sum by (-0.72, +1.00, +0.89), the
     // area by +0.0128 m^2 (a rod of radius 0.025 gaining 0.08 m of side is 0.013), the signed volume by -0.0002.
+    //
+    // THEN 11,163 TO 10,563 when the 747's 3D attitude ball came out (the PFD page draws attitude on
+    // the screen now). Every number below says it was the ball and nothing else that left: -600
+    // vertices and -612 indices is exactly its three pieces (two `solidPlate` halves, 96 triangles
+    // and 288 vertices each, and a 24-vertex box of 12); the position sum fell by 600 times the
+    // PFD's own place, (30.6, 2.67, -0.72) -> (-18,383.6, -1,601.4, +432.0); the area by 0.0162 m^2,
+    // which is two discs of radius 0.048 and a bar; the EXTENTS did not move at all, and neither did
+    // the signed volume at 2 dp, because the halves are closed solids of half a cubic centimetre.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(11_163);
-    expect(census.indices).toBe(51_624);
+    expect(census.vertices).toBe(10_563);
+    expect(census.indices).toBe(51_012);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(34820.1448, 1);
-    expect(census.positionSum.y).toBeCloseTo(-24763.0524, 1);
-    expect(census.positionSum.z).toBeCloseTo(-465.8063, 1);
-    expect(census.positionSquares).toBeCloseTo(7384563.46, 0);
+    expect(census.positionSum.x).toBeCloseTo(16436.5290, 1);
+    expect(census.positionSum.y).toBeCloseTo(-26364.4388, 1);
+    expect(census.positionSum.z).toBeCloseTo(-33.8063, 1);
+    expect(census.positionSquares).toBeCloseTo(6816714.78, 0);
     expect(census.normalSum.x).toBeCloseTo(-334.9543, 2);
     expect(census.normalSum.y).toBeCloseTo(125.0464, 2);
     expect(census.normalSum.z).toBeCloseTo(0.3310, 2);
-    expect(census.normalMoment).toBeCloseTo(11150.7291, 1);
+    expect(census.normalMoment).toBeCloseTo(11136.3587, 1);
     expect(census.signedVolume).toBeCloseTo(-3213.6603, 2);
-    expect(census.area).toBeCloseTo(4669.2133, 2);
+    expect(census.area).toBeCloseTo(4669.1971, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -517,11 +530,11 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // a gear door, the undercarriage. There were 74 before the fold (21
     // control surfaces, 8 fan parts, 6 door leaves, 39 gear parts) and each
     // must still be its own mesh under its own name.
-    // 71, from 68: the attitude ball's three pieces hang from the PIVOT the cockpit's
-    // update turns, exactly as a hinged surface hangs from its hinge, and none of
-    // them is folded.
+    // 68 again, from 71: the attitude ball's three pieces hung from the PIVOT the cockpit's
+    // update turned, exactly as a hinged surface hangs from its hinge. The ball is gone (the PFD
+    // page draws attitude), and with it the only cockpit part that was not bolted to the root.
     const hung = visual.meshes.filter((mesh) => mesh.parent !== visual.root);
-    expect(hung).toHaveLength(71);
+    expect(hung).toHaveLength(68);
     for (const mesh of hung) {
       expect(mesh.metadata?.mergedFrom, `${mesh.name} moves and was folded`).toBeUndefined();
     }
