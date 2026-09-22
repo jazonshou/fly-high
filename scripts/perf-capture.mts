@@ -902,7 +902,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // raise can name it. The ceiling is simply the measurement, which is what
     // the field is defined as.
     drawCallCeiling: 262,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
   },
   {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
@@ -1801,7 +1801,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     // 19.148 h -> sun sine +0.0872 (+5.0 deg), bisected on day 179 at 45N.
     clock: { dayOfYear: 179, solarTimeHours: 19.148 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1816,7 +1816,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     // 20.047 h -> sun sine -0.0523 (-3.0 deg), bisected on day 179 at 45N.
     clock: { dayOfYear: 179, solarTimeHours: 20.047 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1861,7 +1861,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // cloud pass's temporal jitter and this shot has never been captured.
     ssimThreshold: 0.96,
     ceilings: null,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
   },
   {
     name: "apron-hangar-variety",
@@ -1910,7 +1910,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * `yawForSunBearing`.
      */
     relativeSunBearingDegrees: -38.92,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1948,7 +1948,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      */
     relativeSunBearingDegrees: 0,
     clock: { dayOfYear: 179, solarTimeHours: 20.047 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1991,7 +1991,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * canonical shot index and moves every baselined wave phase.
      */
     clock: { dayOfYear: 171, solarTimeHours: 9.5 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -2024,7 +2024,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: -14_501,
     pitchDownDegrees: 22,
     airspeedMetersPerSecond: 0,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {

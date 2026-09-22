@@ -652,36 +652,43 @@ not evidence about where the floor belongs.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `approach-500ft` | 120.1 | 9.4 ms | 0 | 0 | 10.3 ms | 150 | 484.9 MiB |
 | `slant-10km` | 120.0 | 9.2 ms | 0 | 0 | 9.6 ms | 132 | 484.3 MiB |
-| `high-10000ft-down` | 120.0 | 9.2 ms | 0 | 0 | 9.8 ms | 135 | 485.0 MiB |
+| `high-10000ft-down` | 120.0 | 9.2 ms | 0 | 0 | 9.8 ms | 72 | 485.0 MiB |
 | `reference-viewport` | 120.3 | 9.3 ms | 0 | 0 | 10.1 ms | 151 | 492.3 MiB |
 | `cruise-horizon` | 119.9 | 9.1 ms | 0 | 0 | 12.2 ms | 129 | 484.9 MiB |
 | `winter-noon` | 120.1 | 9.2 ms | 0 | 0 | 10.1 ms | 150 | 484.9 MiB |
 | `night` | 120.1 | 9.2 ms | 0 | 0 | 9.7 ms | 152 | 484.9 MiB |
+| `night-moonlit` | 120.0 | 9.8 ms | 0 | 0 | 10.7 ms | 152 | 485.1 MiB |
+| `dusk-mesopic` | 100.4 | 11.4 ms | 0 | 0 | 13.5 ms | 248 | 368.5 MiB |
 | `motion-banked-turn` | 117.7 | 9.8 ms | 1 | 0 | 18.1 ms | 155 | 484.7 MiB |
 | `page-thrash-turn` | 118.7 | 9.7 ms | 0 | 0 | 12.3 ms | 154 | 484.7 MiB |
 | `cdlod-transition` | 119.9 | 9.1 ms | 0 | 0 | 10.3 ms | 122 | 483.9 MiB |
 | `cruise-sun-30` | 119.9 | 9.0 ms | 0 | 0 | 11.0 ms | 131 | 484.0 MiB |
 | `forest-500ft-sunbehind` | 120.2 | 9.2 ms | 0 | 0 | 9.9 ms | 151 | 484.7 MiB |
 | `coast-10km-lowsun` | 120.0 | 9.0 ms | 0 | 0 | 9.6 ms | 127 | 483.9 MiB |
-| `ground-2m-lowsun` | 119.9 | 9.5 ms | 0 | 0 | 10.5 ms | 159 | 485.0 MiB |
-| `canopy-1200ft` | 119.8 | 9.1 ms | 0 | 0 | 12.8 ms | 149 | 484.7 MiB |
+| `ground-2m-lowsun` | 119.9 | 9.5 ms | 0 | 0 | 10.5 ms | 121 | 485.0 MiB |
+| `canopy-1200ft` | 119.8 | 9.1 ms | 0 | 0 | 12.8 ms | 113 | 484.7 MiB |
 | `runway-on-approach` | 120.1 | 9.4 ms | 0 | 0 | 10.4 ms | 161 | 485.7 MiB |
 | `water-25ft` | 120.0 | 9.3 ms | 0 | 0 | 13.9 ms | 130 | 483.9 MiB |
-| `grove-forest-2m` | 120.2 | 9.1 ms | 0 | 0 | 9.6 ms | 156 | 484.7 MiB |
-| `grove-meadow-2m` | 120.1 | 9.4 ms | 0 | 0 | 10.6 ms | 168 | 484.8 MiB |
+| `grove-forest-2m` | 120.2 | 9.1 ms | 0 | 0 | 9.6 ms | 120 | 484.7 MiB |
+| `grove-meadow-2m` | 120.1 | 9.4 ms | 0 | 0 | 10.6 ms | 134 | 484.8 MiB |
 | `hills-dusk-glint` | 120.1 | 9.2 ms | 0 | 0 | 9.8 ms | 147 | 484.7 MiB |
 | `mountain-close` | 120.1 | 9.3 ms | 0 | 0 | 9.8 ms | 174 | 486.0 MiB |
 | `forest-line-highsun` | 120.2 | 9.2 ms | 0 | 0 | 9.6 ms | 147 | 484.7 MiB |
 | `cliff-60m` | 120.1 | 9.1 ms | 0 | 0 | 10.1 ms | 163 | 486.4 MiB |
-| `water-3m` | 120.0 | 9.4 ms | 0 | 0 | 10.0 ms | 129 | 483.9 MiB |
-| `veg-seam-1600ft-oblique` | 120.2 | 9.9 ms | 0 | 0 | 10.7 ms | 144 | 484.9 MiB |
-| `veg-seam-near-500ft` | 120.2 | 9.6 ms | 0 | 0 | 10.7 ms | 152 | 484.9 MiB |
-| `terrain-material-1600ft-down` | 119.8 | 9.2 ms | 0 | 0 | 13.9 ms | 172 | 486.4 MiB |
-| `horizon-shadow-far-annulus` | 119.9 | 9.6 ms | 0 | 0 | 10.7 ms | 148 | 485.8 MiB |
-| `canopy-backlit-lowsun` | 120.3 | 10.0 ms | 0 | 0 | 10.6 ms | 156 | 485.6 MiB |
-| `night-moonlit` | 120.0 | 9.8 ms | 0 | 0 | 10.7 ms | 152 | 485.1 MiB |
-| `water-400ft-glitter` | 119.7 | 9.5 ms | 0 | 0 | 12.5 ms | 234 | 248.4 MiB |
-
+| `water-3m` | 120.0 | 9.4 ms | 0 | 0 | 10.0 ms | 90 | 483.9 MiB |
+| `veg-seam-1600ft-oblique` | 120.2 | 9.9 ms | 0 | 0 | 10.7 ms | 108 | 484.9 MiB |
+| `veg-seam-near-500ft` | 120.2 | 9.6 ms | 0 | 0 | 10.7 ms | 116 | 484.9 MiB |
+| `terrain-material-1600ft-down` | 119.8 | 9.2 ms | 0 | 0 | 13.9 ms | 93 | 486.4 MiB |
+| `horizon-shadow-far-annulus` | 119.9 | 9.6 ms | 0 | 0 | 10.7 ms | 91 | 485.8 MiB |
+| `canopy-backlit-lowsun` | 120.3 | 10.0 ms | 0 | 0 | 10.6 ms | 102 | 485.6 MiB |
+| `golden-hour` | 98.7 | 11.4 ms | 0 | 0 | 15.1 ms | 247 | 368.5 MiB |
+| `blue-hour` | 100.1 | 11.4 ms | 0 | 0 | 14.8 ms | 247 | 368.5 MiB |
+| `night-beacon-offset` | 100.7 | 11.4 ms | 0 | 0 | 13.3 ms | 249 | 368.5 MiB |
+| `apron-hangar-variety` | 120.2 | 9.8 ms | 0 | 0 | 11.0 ms | 117 | 368.5 MiB |
+| `sunset-sunward` | 98.4 | 11.5 ms | 0 | 0 | 14.0 ms | 246 | 368.5 MiB |
+| `approach-lights-outboard` | 96.3 | 12.0 ms | 0 | 0 | 14.0 ms | 266 | 368.5 MiB |
+| `lake-island-piercing` | 120.0 | 9.7 ms | 0 | 0 | 10.6 ms | 91 | 368.5 MiB |
+| `water-400ft-glitter` | 119.7 | 9.5 ms | 0 | 0 | 12.5 ms | 87 | 248.4 MiB |
 All twenty-four shots in the Phase 6 snapshot cleared the strict FPS, p95,
 hitch-count and maximum-frame contract on the pre-ocean-presentation tree, with
 Phase 6's wetness, ecology, talus, canopy handoff, and GPU scatter live and
@@ -1314,3 +1321,111 @@ the delivery floors ran host-honest and three vegetation shots failed them
 (`forest-line-highsun` 92.2 vs 103, `canopy-backlit-lowsun` 92.5 vs 103 and
 draws 249 against a stale 246 ceiling, `hills-dusk-glint` p95 12.5 vs 11.8).
 Those are the known stale-on-this-host rows.
+
+### Promotion 2026-09-22 — the aircraft wave, on the world-only perf cockpit rig
+
+All thirty-nine baselines promoted from candidate `2026-09-22T05-40-42.875Z`, captured on this
+unpinned M2 Pro at House-Keeping `bcfbea5`. Thirty-one existing PNGs replaced
+and **eight promoted for the first time**, with their `comparesToBaseline`
+flags flipped in the same commit — a baseline nothing compares against passes
+forever and shows nothing, which `tests/perf-baseline-policy.test.ts` now
+fails on.
+
+**The run.** 39 of 39 shots had their gates evaluated. 45 gate failures, and
+**every one a delivery floor** — no draw-call ceiling, no visual, temporal,
+renderer-error, settling or lit-region gate failed. **Delivery floors were NOT
+re-pinned**: they fail on this host under any tree, and a clean
+reference-adapter run is still owed before any floor moves. Cold start is on
+file for this host for the first time at **2124.8 ms against its 2300 ms
+deadline** — inside the reference-host budget with 175 ms to spare.
+
+**Three candidates exist and only the last is promoted.** `2026-09-22T04-19-31.104Z`
+(51 failures) and `2026-09-22T04-30-10.407Z` (47) were captured before the
+world-only rig; both are retained as the evidence behind the temporal and
+draw-call findings below, and neither is a baseline.
+
+**Twelve cockpit draw-call ceilings are now far too loose, and the re-pin is
+OWED rather than done here.** The world-only rig draws no aircraft mesh in the
+cockpit shots and removed **exactly 151 draw calls from every one of them**,
+which leaves each ceiling 147-189 above what the shot now measures — slack no
+plausible regression could breach. A ceiling with that much room is the
+draw-call twin of a baseline nothing compares against.
+
+It is not re-pinned in this commit because `tests/delivery-floors.test.ts`
+requires a draw-call ceiling to be **the measured count exactly, derived from
+three runs that agree**, and refuses to take a maximum: *"this quantity is
+host-independent, so headroom above the measurement is growth nobody has
+justified."* That rule is right, and it rules out both halves of a quick fix —
+a margin above the measurement, and a pin taken from a single run. Only run 3
+was captured on the world-only rig, so exactly one sample of the new geometry
+exists where three agreeing ones are required.
+
+Two further full captures on this tree will complete it. They must be FULL
+captures: a filtered run does not reproduce a shot's draw count (`page-thrash-turn`
+read 253 in the full run and 259 in a single-shot one), for the same reason a
+filtered run cannot supply a hitch count — the shot arrives with a different
+streaming history.
+
+`canopy-backlit-lowsun`'s +3 vegetation overrun, a known exception recorded on
+2026-09-03, therefore also stands until then. It is still visible in this run
+as the one cockpit shot sitting 144 under its old ceiling where the others sit
+147 — the +3 survives the cockpit's removal, which is what says it was never
+the cockpit's.
+
+**Per shot, the cause of its difference from the baseline it replaces.**
+A = the Cessna's crown-seam normal weld, a shading change down the fuselage
+top, which only chase shots can see. B = the perf cockpit rig became
+world-only, so the fourteen cockpit shots lost their entire foreground.
+C = terrain far field with the far-sward dial ON, Jason's choice. D = water
+skyline. E = the chase rig's bank-blended re-centring, which by measurement
+moves only the two banked shots. NEW = promoted for the first time, judged on
+its own merits because no before exists.
+
+- `approach-500ft` — A+C
+- `slant-10km` — A+C
+- `high-10000ft-down` — B+C
+- `reference-viewport` — A+C
+- `cruise-horizon` — A+C
+- `winter-noon` — A+C
+- `night` — A+C
+- `night-moonlit` — A+C
+- `dusk-mesopic` — NEW+A+C
+- `motion-banked-turn` — E+C
+- `page-thrash-turn` — E+C
+- `cdlod-transition` — C
+- `cruise-sun-30` — A+C
+- `forest-500ft-sunbehind` — A+C
+- `coast-10km-lowsun` — A+D+C
+- `ground-2m-lowsun` — B+C
+- `canopy-1200ft` — B+C
+- `runway-on-approach` — A+C
+- `water-25ft` — A+D+C
+- `grove-forest-2m` — B+C
+- `grove-meadow-2m` — B+C
+- `hills-dusk-glint` — A+C
+- `mountain-close` — A+C
+- `forest-line-highsun` — A+C
+- `cliff-60m` — A+C
+- `water-3m` — B+D+C
+- `veg-seam-1600ft-oblique` — B+C
+- `veg-seam-near-500ft` — B+C
+- `terrain-material-1600ft-down` — B+C
+- `horizon-shadow-far-annulus` — B+C
+- `canopy-backlit-lowsun` — B+C
+- `golden-hour` — NEW+A+C
+- `blue-hour` — NEW+A+C
+- `night-beacon-offset` — NEW+A+C
+- `apron-hangar-variety` — NEW+B+C
+- `sunset-sunward` — NEW+A+C
+- `approach-lights-outboard` — NEW+A+C
+- `lake-island-piercing` — NEW+B+C
+- `water-400ft-glitter` — B+D+C
+
+**Cause E is confined to two shots and both are evidence-only.**
+`motion-banked-turn` (45°) and `page-thrash-turn` (60°) are the only shots in
+the table with any bank, and both gate temporally rather than on their PNG.
+Their per-shot `minConsecutiveSsim` floors were re-pinned from 0.67 to 0.60 and
+0.75 respectively before this capture — see
+`docs/findings/TEMPORAL_FLOORS_2026_09_21.md` for the bisect that found the
+0.0300 step and the fps-versus-metric control that proved the metric
+deterministic.
