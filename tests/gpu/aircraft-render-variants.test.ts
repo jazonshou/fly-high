@@ -365,7 +365,7 @@ describe("aircraft render variants, container attached", () => {
   }
 
   it("agrees with the device, draws the 747 in every variant, and refuses only the known materials", () => {
-    const PAINT = /-(body|skin|accent|underside)$/u;
+    const PAINT = /-(body|skin|accent|underside|spoiler)$/u;
     const table = readings.map((reading) => {
       const paints = [...reading.inputs].filter(([material]) => PAINT.test(material))
         .sort((a, b) => a[0].localeCompare(b[0])).map(([material, inputs]) => `${material} ${inputs}`).join(", ");
