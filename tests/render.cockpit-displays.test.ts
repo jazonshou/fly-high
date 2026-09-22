@@ -616,3 +616,34 @@ describe("the atlas's shape, for layouts no aeroplane has yet", () => {
     }
   });
 });
+
+/**
+ * THE OTHER DECKS' ATLASES DO NOT MOVE when a deck with a different slot shape arrives.
+ *
+ * Every call each atlas's painter makes -- method, arguments, paints, in order -- digested at one fixed
+ * flight state, on House-Keeping ac4eafe BEFORE `DisplayLayout` learned a per-deck slot size. A layout
+ * change that fed the wrong slot size to a deck, or moved one slot, changes the digest. The digest sees
+ * the drawing instructions, not pixels; there is no canvas here, and a canvas draws the same pixels
+ * from the same instructions.
+ */
+describe("the 747's and the Global's atlases, pinned before the slot size became per-deck", () => {
+  const PINNED: Readonly<Record<string, string>> = { "747": "0e7fe4d8:2090", Global: "d7144cad:1263" };
+  const digest = (layout: DisplayLayout, airframe: DisplayAirframe): string => {
+    const context = createRecordingContext();
+    const state = displayStateFromVisual(
+      { ...INITIAL_VISUAL_STATE, airspeed: 128.6, altitude: 3_048, heading: 237.5, bank: 18.5, pitch: 4.2, verticalSpeed: 6.1, engineRpm: 88, flaps: 0.5 },
+      airframe,
+    );
+    drawDisplayAtlas(context, displayAtlasWidth(layout), displayAtlasHeight(layout), displaySlots(layout), state);
+    const text = JSON.stringify([displayAtlasWidth(layout), displayAtlasHeight(layout), displaySlots(layout), context.calls]);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return `${hash.toString(16).padStart(8, "0")}:${context.calls.length}`;
+  };
+  it.each(DECKS.filter((deck) => deck.kind !== "jet").map((deck) => [deck.label, deck] as const))("draws the %s's atlas call for call as it did", (label, deck) => {
+    expect(digest(deck.layout, deck.airframe), `${label}: the atlas's drawing instructions`).toBe(PINNED[label]);
+  });
+});

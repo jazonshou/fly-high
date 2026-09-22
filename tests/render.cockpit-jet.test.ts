@@ -148,7 +148,6 @@ function frameBlock(which: (typeof FRAME_ORDER)[number]): Vector3[] {
   const k = FRAME_ORDER.indexOf(which);
   return vertices.slice(k * FRAME_VERTICES, (k + 1) * FRAME_VERTICES);
 }
-const mean = (vs: readonly Vector3[], axis: "x" | "y" | "z") => vs.reduce((s, v) => s + v[axis], 0) / vs.length;
 /** The bounding box's centre along an axis: a capped cylinder's axis, where the vertex mean is pulled toward its seam. */
 const centre = (vs: readonly Vector3[], axis: "x" | "y" | "z") => (Math.min(...vs.map((v) => v[axis])) + Math.max(...vs.map((v) => v[axis]))) / 2;
 
