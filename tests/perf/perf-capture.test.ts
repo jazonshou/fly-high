@@ -1041,12 +1041,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // Pin the temporal phase before the settle: the streaming loop above
       // exits after a RUN-DEPENDENT number of frames, so accumulated time
       // would put waves and cloud advection at a different phase every run.
-      // The settle then rebuilds cloud history at these exact instants. It does
-      // NOT fully rebuild foam: with a 2.8 s half-life about a fifth of the
-      // foam from before the pin survives to capture: a measured floor on near
-      // water between runs whose OWN streaming counts differ, growing with the
-      // difference (0.004/255 mean at 30 frames, 0.012 at 150). The ocean's
-      // cascade cadence is pinned separately, below.
+      // The settle rebuilds most temporal state at these exact instants, but
+      // three things keep history from before the pin, so identical code does
+      // not always give identical frames:
+      //  - foam: with a 2.8 s half-life about a fifth of it survives to
+      //    capture — a floor on near water between runs whose OWN streaming
+      //    counts differ, growing with the difference (0.007/255 mean at 60
+      //    frames, 0.012 at 150, still rising at 240);
+      //  - birds: the wildlife system's own fixed-step clock advances on every
+      //    render, streaming included (FlightRenderer.wildlife.update), so
+      //    birds sit elsewhere — alone enough to swing water-400ft-glitter's
+      //    worst-tile SSIM between 0.9784 and 0.9953 across repeats;
+      //  - cloud jitter: the raymarch and cloud-shadow jitter index is the
+      //    cloud system's own frame count mod 4096, never reset (no sky change
+      //    from it was measurable on the water shots).
+      // The ocean's cascade cadence is pinned separately, below.
       //
       // Wave R: the phase keys on the shot's index in the CANONICAL list,
       // not its position in the selected subset. Baselines come from full
@@ -1069,7 +1078,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // cascades to evolve by an absolute FRAME count that one renderer carries
       // across every shot, so the every-4th-frame cascade's last update before
       // capture depended on how many frames every earlier shot streamed — two
-      // phase classes per water shot, ~0.12-0.19/255 mean apart, flipping
+      // phase classes per water shot, 0.12-0.40/255 mean apart, flipping
       // between runs of identical code and wholesale under VITE_PERF_SHOTS.
       // Restart that count here, with the time.
       renderer.pinOceanCascadePhaseForCapture();

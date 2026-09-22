@@ -364,20 +364,23 @@ export function shouldUpdateOceanCascade(
  * render count of the whole run so far. The streaming loop before each shot is
  * paced by wall-clock time, so that count varies between runs of identical
  * code, and its residue mod 4 decides whether the every-4th-frame cascade
- * (128-512 m waves on tier 1) was last evolved at the capture instant or one
- * frame earlier. Measured 2026-09-22 over six full captures: two cascade-phase
- * classes per static shot, ~0.12-0.19/255 mean apart across roughly 28 % of
- * the near sea — enough to make a water baseline "move" on any run, full or
- * filtered, with no code change. It is what the alpine-turf A/B read as glints
+ * (128-512 m waves on tier 1) was last evolved at the capture frame or two
+ * frames earlier (streaming counts are multiples of 30, so histories differ by
+ * even counts). Measured 2026-09-22: two cascade-phase classes per static
+ * shot, 0.12-0.40/255 mean apart over 13-51 % of the near sea depending on the
+ * shot — enough to make a water baseline "move" on any run, full or filtered,
+ * with no code change. It is what the alpine-turf A/B read as glints
  * "seeing the land through the reflection probe" (the probe renders only sky).
  *
  * `pinForCapture` resets the counter at the harness's time pin, so every shot's
  * capture lands on the same cadence phase whatever streamed before it. It does
  * not touch foam, which carries a few seconds of pre-pin history of its own: a
  * named floor on near water between captures whose OWN streaming counts
- * differ, growing with that difference — measured 0.004 at 30 frames, 0.009 at
- * 90 and 0.012 at 150 (mean /255). Where the shot's own count matches, pinned
- * captures of the same list are bit-identical over the sea.
+ * differ, growing with that difference and still rising at 240 frames (mean
+ * /255 over water-25ft's sea: 0.007 at 60 frames, 0.012 at 150). Where the
+ * shot's own count matches, pinned captures of the same list agree over the
+ * sea to within a few dozen 1-LSB pixels — the previous shot's foam, about 4 %
+ * of it, still reaching the capture.
  */
 export class OceanCascadeClock {
   private frameIndex = 0;

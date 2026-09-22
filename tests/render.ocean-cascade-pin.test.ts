@@ -17,10 +17,10 @@ import {
  * every shot of a capture run. The streaming loop before each shot is paced by
  * wall-clock time, so the counter's value at a shot's capture varies between
  * runs of identical code, and its residue decides whether the every-4th-frame
- * cascade (128-512 m waves) was last evolved at the capture instant or a frame
+ * cascade (128-512 m waves) was last evolved at the capture frame or two frames
  * earlier. Measured 2026-09-22 over six full captures: two phase classes per
- * static water shot, ~0.12-0.19/255 mean apart over roughly 28 % of the near
- * sea, flipping between runs of identical code — and wholesale under
+ * static water shot, 0.12-0.40/255 mean apart over 13-51 % of the near sea
+ * depending on the shot, flipping between runs of identical code — and wholesale under
  * VITE_PERF_SHOTS. It is what the alpine-turf A/B read as glints "seeing the
  * land through the reflection probe"; the probe renders only sky.
  *
@@ -87,14 +87,16 @@ function lastEvolvedBeforeCapture(schedule: readonly number[][]): number[] {
 }
 
 /**
- * The cumulative streaming counts at water-25ft in the six captures that
- * settled the mechanism (run1..run3 of 2026-09-22 and the alpine-turf OFF/ON
- * pair), in that order. The pixels split them {run1, run3, OFF} against
- * {run2, ON}. The fixed per-shot render calls add the same constant to every
- * run, so they cannot change which runs share a class.
+ * The cumulative streaming counts at water-25ft in the six full captures that
+ * settled the mechanism, in this order: run1, run2 and run3 of 2026-09-22, the
+ * bed4d51 capture ("run4") the verification found in the plane engineer's
+ * artifacts, and the alpine-turf OFF/ON pair. The pixels split them
+ * {run1, run3, run4, OFF} against {run2, ON}. The fixed per-shot render calls
+ * add the same constant to every run, so they cannot change which runs share a
+ * class.
  */
-const MEASURED_WATER_25FT_HISTORIES = [15_060, 14_190, 14_280, 14_580, 14_430] as const;
-const MEASURED_PIXEL_CLASSES = [0, 1, 0, 0, 1] as const;
+const MEASURED_WATER_25FT_HISTORIES = [15_060, 14_190, 14_280, 13_800, 14_580, 14_430] as const;
+const MEASURED_PIXEL_CLASSES = [0, 1, 0, 0, 0, 1] as const;
 
 describe("the capture's ocean cadence, before the pin (the positive control)", () => {
   it("reproduces the two pixel classes the six captures measured", () => {

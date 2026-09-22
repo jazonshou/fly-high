@@ -244,16 +244,19 @@ describe("the shipped ocean at a capture, across two streaming histories", () =>
     // a fifth of what was there at the pin survives the 395 frames to the
     // capture. That is the named floor the re-captures measured on near water
     // when a shot's own streaming count differs, growing with the difference
-    // (0.004/255 mean at 30 frames, 0.012 at 150). Report it here as texel
+    // (0.007/255 mean at 60 frames, 0.012 at 150). Report it here as texel
     // foam units so a change that makes it worse is visible.
     console.log(`ocean-cascade-pin foam floor, max |dfoam| per cascade: ${foamDeltas.map((d) => d.toExponential(2)).join(", ")}`);
     // Measured 2026-09-22 on this adapter, identical over repeated runs:
     // 8.98e-3, 5.38e-3, 2.40e-3 and 0 for the four cascades (the 128-512 m
     // cascade carries no foam — swells that long do not break). The 395 frames
     // to capture are 6.6 s, so a 2.8 s half-life leaves ~20 % of the pre-pin
-    // difference. The bound is ~3.3x the worst cascade, there to fail if foam
-    // starts carrying much more of its history into a capture (a longer
-    // half-life, a shorter settle).
-    expect(Math.max(...foamDeltas), "foam carry-over across the pin").toBeLessThan(0.03);
+    // difference. The bound sits geometrically midway between that floor and
+    // what a DOUBLED foam half-life gives, measured with the same test: 5.6 s
+    // reads 2.03e-2 (4.2 s reads 1.54e-2; no decay at all, 5.25e-2). So it
+    // fails on a doubled half-life and passes the shipped ocean with 1.56x
+    // headroom. An earlier bound of 0.03 let a doubled half-life through while
+    // its comment claimed otherwise.
+    expect(Math.max(...foamDeltas), "foam carry-over across the pin").toBeLessThan(0.014);
   }, 300_000);
 });
