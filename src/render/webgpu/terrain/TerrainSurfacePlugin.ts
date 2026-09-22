@@ -85,6 +85,11 @@ import {
   SWARD_RELIEF_TINT,
   TERRAIN_SWARD_RELIEF_WGSL,
 } from "./SwardRelief";
+import {
+  TERRAIN_TURF_RELIEF_WGSL,
+  terrainTurfMesoGainTerm,
+  terrainTurfMesoGainWgsl,
+} from "./TurfRelief";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
@@ -1960,6 +1965,7 @@ fn terrainSurfaceShoreWetness(
 ${TERRAIN_GROUND_PATCHWORK_WGSL}
 ${TERRAIN_ROCK_RELIEF_WGSL}
 ${TERRAIN_SWARD_RELIEF_WGSL}
+${TERRAIN_TURF_RELIEF_WGSL}
 
 // ---------------------------------------------------------------------------
 // 4-7's channel pages, consumed on the CPU TILE MESHES.
@@ -2683,6 +2689,13 @@ var terrainF0 = terrainLayer0.f0 * terrainBlend0
 var terrainDiffuseRoughness = terrainLayer0.diffuseRoughness * terrainBlend0
   + terrainLayer1.diffuseRoughness * terrainBlend1
   + terrainLayer2.diffuseRoughness * terrainBlend2;
+// D-5: the SWARD share alone (grass, dry grass, heath), off the same blend
+// weights as the layers; the third candidate is only ever rock or snow. The
+// seam feather below re-targets what is DRAWN on an untrusted page, so it
+// re-targets this share with it, or D-5's gain would ride the secondary's
+// blend weight onto a scree or snow primary the feather has drawn instead.
+var terrainTurfCover = terrainTurfShareOf(i32(terrainLowerId)) * terrainBlend0
+  + terrainTurfShareOf(i32(terrainUpperId)) * terrainBlend1;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 // Wave Q seam feather, wave-R re-target: page confidence is
 // PIECEWISE-CONSTANT per residency level, so any binary gate draws a
@@ -2729,6 +2742,10 @@ if (terrainUsePageSplat && terrainClassStrength < 0.996) {
   terrainDiffuseRoughness = mix(
     mix(mix(terrainLayer0.diffuseRoughness, terrainLayer1.diffuseRoughness, terrainSeamPair), terrainLayer2.diffuseRoughness, terrainSeamThird),
     terrainDiffuseRoughness, terrainClassStrength);
+  terrainTurfCover = mix(
+    (terrainTurfShareOf(i32(terrainLowerId)) * (1.0 - terrainSeamPair)
+      + terrainTurfShareOf(i32(terrainUpperId)) * terrainSeamPair) * (1.0 - terrainSeamThird),
+    terrainTurfCover, terrainClassStrength);
 }
 #endif
 // W-1: what share of this fragment is vegetated ground, and how dry the
@@ -2817,6 +2834,7 @@ let terrainRockCover = terrainRockShareOf(i32(terrainPrimaryId)) * terrainBlend0
   + terrainRockShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
 let terrainSnowShare = terrainSnowShareOf(i32(terrainPrimaryId)) * terrainBlend0
   + terrainSnowShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
+let terrainTurfCover = terrainTurfShareOf(i32(terrainPrimaryId)) * terrainBlend0;
 #endif
 // W-1: mown airfield grass is not meadow. The graded surround comes from the
 // pavement SDF the runway painter already evaluates, so the two cannot
@@ -2834,6 +2852,13 @@ let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0)
 // relief lift included, or the lowest tier would still be paying for part of
 // a feature it does not get.
 let terrainGroundPatchworkOn = select(0.0, 1.0, uniforms.terrainSurfaceTuning.y > 0.5);
+// Canopy closure the vegetation system draws over this ground, read once here:
+// the scrub gate below and D-5's alpine turf gain both stand down under a canopy,
+// and the canopy handoff paints it.
+var terrainGroundCanopyClosure = 0.0;
+#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
+terrainGroundCanopyClosure = terrainSurfaceCanopyClosure(terrainPageUv);
+#endif
 
 // Fix-pack T1 — the meso band. Between the material tile (2.3–8.9 m) and the
 // kilometre wash NOTHING varied: no hue, no normal, no roughness — the clay
@@ -2884,6 +2909,7 @@ if (terrainMesoWeightA > 0.001) {
   let terrainMesoBGradWorld = mat2x2f(0.883, -0.469, 0.469, 0.883)
     * vec2f(terrainMesoB.y, terrainMesoB.z);
   let terrainSteep = smoothstep(0.34, 0.62, terrainSlope);
+${terrainTurfMesoGainWgsl()}
   // M-2: the altitude-keyed strata octave that lived here is gone. A field
   // keyed on world Y is constant along a contour, so however it was broken up
   // (wave Q gave it two incommensurate octaves and an along-strike mask) it
@@ -2899,7 +2925,7 @@ if (terrainMesoWeightA > 0.001) {
   let terrainMesoSlope = (
     terrainMesoAGradWorld * 0.42 * terrainMesoWeightA
     + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
-  ) * (0.4 + 0.45 * terrainGroundVegetation * terrainGroundPatchworkOn + 0.9 * terrainSteep);
+  ) * (0.4 + 0.45 * terrainGroundVegetation * terrainGroundPatchworkOn + 0.9 * terrainSteep)${terrainTurfMesoGainTerm()};
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainMesoSlope.x, 0.0, -terrainMesoSlope.y);
   let terrainMesoTone = (terrainMesoA.x - 0.5) * 0.26 * terrainMesoWeightA
@@ -2909,7 +2935,7 @@ if (terrainMesoWeightA > 0.001) {
     vec3f(1.038, 1.008, 0.955),
     mix(0.5, terrainMesoB.x, terrainMesoWeightB),
   );
-  terrainAlbedo *= terrainMesoHue * (1.0 + terrainMesoTone) * terrainMesoWeightA
+  terrainAlbedo *= terrainMesoHue * (1.0 + terrainMesoTone${terrainTurfMesoGainTerm()}) * terrainMesoWeightA
     + vec3f(1.0) * (1.0 - terrainMesoWeightA);
   terrainRoughness = clamp(
     terrainRoughness + (terrainMesoA.x - 0.5) * 0.14 * terrainMesoWeightA,
@@ -3194,12 +3220,9 @@ terrainRoughness = mix(terrainRoughness, terrainRoughness * 0.62 + 0.02, terrain
 // this shader observes.
 //
 // Gated on ground that could carry scrub: vegetated, not wet, not paved, and
-// not already under a canopy the vegetation system is drawing.
+// not already under a canopy the vegetation system is drawing (closure is read
+// above the patchwork branch).
 // ---------------------------------------------------------------------------
-var terrainGroundCanopyClosure = 0.0;
-#ifdef TERRAIN_SURFACE_PAGE_CHANNELS
-terrainGroundCanopyClosure = terrainSurfaceCanopyClosure(terrainPageUv);
-#endif
 var terrainGroundDirect = 1.0;
 {
   // Painted crowns exist only in the band where they cannot read as flat: from

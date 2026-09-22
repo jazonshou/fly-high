@@ -381,3 +381,81 @@ aircraft, so it should not show, but a fast enough aircraft could outrun them.
 The honest fix is a low-resolution biome-tone map for the whole streaming
 window: a new resource and a new binding against the 16-sampler limit. Low tier
 is unchanged: its two-material path never samples the second layer.
+
+## 6. High turf from 10,000 ft: more of the meso band, not new octaves (`D-5`)
+
+Reported at the promotion review (2026-09-21): from `high-10000ft-down` the reshaped massifs' turf reads green
+and flat. It is not bare. Fix-pack T1's meso band lays two soft value-noise octaves, 71 m and 23 m, over all
+ground (normal, tone, hue, roughness), and W-1 gave vegetated ground about twice their slope; at that shot's
+2-5 m footprint both are at full weight and they are the wavy streaks on the turf. What was missing was
+AMOUNT: a gain tuned for lowland meadow from a few hundred metres reads as flat paint from 2-10 km.
+
+`TurfRelief.ts` raises that band's slope and tone on alpine turf only, by `1 + TURF_RELIEF_STRENGTH x gate`,
+inside the meso block, so it evaluates no noise of its own. The owner chose 2x (strength 1) from frames of
+2x and 3x beside the mock he had approved. Measured on one tree at the same pose and hash: near-field
+luminance contrast (std, of 255) 11.82 -> 13.00 at 2x (3x: 14.54; the approved mock: 13.95); 0.56 % of
+pixels change by more than 8/255 (3x: 7.1 %); mean luminance on the land -0.7/255 (3x: -1.6: a rougher
+normal loses a little irradiance under a high sun, which is physical). Price at 2560 x 1440, three interleaved
+rounds, off-arm spread 0.2 fps: -0.6 % on `high-10000ft-down`, within the 1.6 fps spread on `slant-10km`.
+
+### Built first and dropped: billowed octaves at 120 m and 45 m
+
+The first build added hummock relief of its own: two rotated gradient-noise octaves, billowed with a rounded
+cusp, calibrated to the microrelief of real alpine meadow (2.9 degrees RMS slope, 2.5 % tone sigma at
+strength 1), band-limited by the ground block's octave-weight law, CPU twin pinned to the WGSL on the GPU
+(worst slope difference 8.5e-6). It cost 6.0 % on `high-10000ft-down` (-5.1 / -6.5 / -6.4 against a same-round
+off arm) and did not read: under that shot's 67.6 degree sun near-field contrast moved 11.82 -> 11.85 / 11.94 /
+12.08 at 1x / 2x / 3x; with the sun at 18.5 h the massif's own cast shadows take most of the turf and the lit
+patches did not change at 3x (0.14 % of pixels over 8/255); it only read at 6x, about 17 degrees RMS, which is
+not physical and costs the same. The cost is per covered pixel (-6.0 % where the gate opens on 76 % of the
+frame, -1.3 % where it opens on 4 %): 32 integer multiplies of the ground hash per pixel, not the octave
+count (the three-octave prototype cost 6.5 %). The first sizing of its heights at 2.5 % of the wavelength
+measured 11.5 degrees RMS: the unit-variance noise's gradient is about 3.3 per wavelength, so height over
+wavelength is not slope for this field.
+
+### The gate, and the two defects a review found in it
+
+Sward only (grass, dry grass, heath: `groundCoverOf >= 0.9`, the seam feather's own bar; forest floor at 0.55
+and scree at 0.15 are out, rock, snow, sand and pavement are zero) x the airfield exclusion x (1 - canopy
+closure) x the classifier's alpine ramp (420-980 m) x gentle ground (fading out over 33-40 degrees, gone where
+the classifier's `steep` begins) x a fade-in over a 0.6-2 m footprint, where D-3's coarsest octave has just
+faded (0.54-1.46 m) x W-1's tier switch. A verified multi-reviewer pass found two leaks in the first cut, both
+fixed:
+
+* The sward share was read off the blend weights, but on an untrusted page the seam feather re-targets what is
+  DRAWN to the primary (plus the fragment's third candidate) for any pair that is not two swards. A scree or
+  snow primary with a sward secondary got the term at the secondary's blend share (about 0.3-0.4 on L2-L4
+  pages, exactly the band's range). The share is now re-targeted inside the feather the same way the layers
+  are: `mix((s_lower (1 - pair) + s_upper pair)(1 - third), share, classStrength)`.
+* There was no canopy term. Beyond the trusted pages the fallback cannot name forest floor, and an upper forest
+  belt in a cool climate classifies as turf or heath, so the term reached ground the canopy handoff paints as
+  forest. It now multiplies by (1 - closure) like the scrub gate; the closure read moved above the patchwork
+  branch (same value, read once).
+
+Evidence, gate tinted red on the same hash: `high-10000ft-down` 75.9 % of the frame with every rock patch left
+uncoloured and clean-edged; `slant-10km` 4.0 % (far ridge tops); `winter-noon` 0 % (snow); `canopy-1200ft`,
+`forest-line-highsun` 0 %, and with altitude and range taken out of the gate the forest floor under dense trees
+stays uncoloured while the meadow beside it reddens; `approach-500ft` 0.9 %, `grove-meadow-2m` 0.2 %;
+`cliff-60m`, `mountain-close`, `terrain-material-1600ft-down` 0-0.1 % (range). Beyond the trusted pages the
+exclusion is only as good as the fallback, which knows grass, slope rock and snow and nothing else; every
+vegetated-ground term shares that limit.
+
+Tests (`render.webgpu-turf-relief.test.ts`): the share table and its threshold, the alpine ramp and the slope
+limit against both twins of the classifier, the fade-in against D-3, every factor of the gain, the fold at
+strength 0, the gain declared inside the meso block and multiplied into exactly its slope and its tone, the
+share lines of both material paths and the feather's re-target, and that everything the gain reads is declared
+above it. Nine mutations each fail it: forest floor admitted, the gain declared outside the meso block, the
+alpine ramp moved to 300 m, the feather re-target removed, the canopy factor removed, the gain dropped from
+the tone, dropped from the slope, the tier switch removed, and the dial set to B.
+
+What moves, all 39 shots captured on one tree with the gain on and off. The run-to-run floor is that same off
+arm against the promoted baselines, over all 39 shots: mean 0.000-0.017 of 255 (highest `forest-line-highsun`
+0.017, `mountain-close` 0.008). `high-10000ft-down` moves by a mean of 1.26/255, with 0.56 % of pixels over 8/255;
+it is the shot the term is for. `cruise-sun-30` 0.064 and `slant-10km` 0.040 are far ridge tops, with 0.01 % of
+pixels at most over 8/255. `water-25ft` 0.150 and `water-400ft-glitter` 0.072 are not turf: the capture harness
+never resets the ocean's frame counter, so wall-clock-paced streaming in earlier shots decides which frame the
+every-4th-frame wave cascade last updated before the pinned capture time; a turf-free pair on one tree
+reproduces the delta, and a same-phase turf-free capture matches the turf-ON sea (verified by the water
+engineer). `approach-500ft` 0.008 is also that class: its lake moved, 8.8 % of lake pixels, 7.9/255 at most, and
+it is excluded from turf by the code path, not by a measurement. `cruise-horizon` 0.019. Every other shot is
+at 0.017 or under, inside the floor. So one shot re-baselines.
