@@ -16,7 +16,8 @@
  *   npm run dev -- --port 3002        # in another shell
  *   npx tsx scripts/aircraft-framing-inflight.mts <outDir> [url] [seconds]
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
 
@@ -99,15 +100,17 @@ await page.addInitScript((
   } catch { /* first load has no settings yet; the default is the trainer */ }
 }, { kind: kindWanted, weather, timeOfDay, startAgl });
 if (expectTree) {
-  const probeUrl = new URL(`/@fs${expectTree}/package.json`, url).toString();
-  const response = await fetch(probeUrl);
-  if (!response.ok) {
-    throw new Error(
-      `${url} is NOT serving ${expectTree} (asked for ${probeUrl}, got `
-      + `${response.status}). Something else owns this port; nothing measured.`,
-    );
+  // Proved from the LISTENING process's working directory. `/@fs<tree>` is no
+  // proof: Vite allows the whole workspace root, so every worktree under it
+  // answers 200.
+  const port = new URL(url).port;
+  const listener = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" }).trim().split("\n")[0];
+  const cwd = execFileSync("lsof", ["-a", "-p", listener!, "-d", "cwd", "-Fn"], { encoding: "utf8" })
+    .split("\n").find((line) => line.startsWith("n"))?.slice(1);
+  if (!cwd || realpathSync(cwd) !== realpathSync(expectTree)) {
+    throw new Error(`${url} is served by pid ${listener} from ${cwd}, NOT ${expectTree}; nothing measured.`);
   }
-  console.log(`serving: ${expectTree} (verified via /@fs)`);
+  console.log(`serving: ${expectTree} (pid ${listener}'s working directory)`);
 } else {
   console.log("WARNING: no tree identity given, so this run cannot say which tree it measured");
 }
@@ -289,10 +292,12 @@ async function flyManoeuvre(): Promise<void> {
   await page.waitForTimeout(1_000);
   // A right turn the way a pilot flies one: roll in, hold the bank, then
   // centre the stick and let it settle. Sampling runs across all of it.
+  // FRAMING_ROLL_MS / FRAMING_HOLD_MS set how steep and how long: the defaults
+  // are the original 1.2 s roll and 3.5 s hold.
   await page.keyboard.down("d");
-  await page.waitForTimeout(1_200);
+  await page.waitForTimeout(Number(process.env.FRAMING_ROLL_MS ?? 1_200));
   await page.keyboard.up("d");
-  await page.waitForTimeout(3_500);
+  await page.waitForTimeout(Number(process.env.FRAMING_HOLD_MS ?? 3_500));
   await page.keyboard.down("a");
   await page.waitForTimeout(1_100);
   await page.keyboard.up("a");
@@ -440,20 +445,23 @@ console.log(`\nwrote ${outDir}/framing-${result.kind}-${manoeuvre}-${arm}.json a
 
 // The coupling the report describes: at each sampled bank angle, how far off
 // centre and how rolled does the airframe look?
-const buckets = new Map<number, { n: number; ndcX: number; roll: number }>();
+const buckets = new Map<number, { n: number; ndcX: number; ndcY: number; roll: number }>();
 for (const x of s) {
   const b = Math.round(x.bank! / 2) * 2;
-  const acc = buckets.get(b) ?? { n: 0, ndcX: 0, roll: 0 };
-  acc.n += 1; acc.ndcX += x.ndcX!; acc.roll += x.apparentRoll!;
+  const acc = buckets.get(b) ?? { n: 0, ndcX: 0, ndcY: 0, roll: 0 };
+  acc.n += 1; acc.ndcX += x.ndcX!; acc.ndcY += x.ndcY!; acc.roll += x.apparentRoll!;
   buckets.set(b, acc);
 }
-console.log("\n  bank(deg)  frames   mean ndcX   shift(% width)   apparent roll(deg)   roll/bank");
+// DOWN-FRAME is the airframe origin's height in frame measured from the top,
+// the quantity the chase-camera raise is about: (1 - ndcY) / 2.
+console.log("\n  bank(deg)  frames   mean ndcX   shift(% width)   down-frame(%)   apparent roll(deg)   roll/bank");
 for (const b of [...buckets.keys()].sort((a, c) => a - c)) {
   const acc = buckets.get(b)!;
   const nx = acc.ndcX / acc.n;
+  const ny = acc.ndcY / acc.n;
   const rl = acc.roll / acc.n;
   console.log(
-    `  ${String(b).padStart(7)}   ${String(acc.n).padStart(5)}   ${nx.toFixed(4).padStart(9)}   ${((nx / 2) * 100).toFixed(2).padStart(9)}        ${rl.toFixed(3).padStart(9)}        ${b === 0 ? "   -" : (rl / b).toFixed(3).padStart(6)}`,
+    `  ${String(b).padStart(7)}   ${String(acc.n).padStart(5)}   ${nx.toFixed(4).padStart(9)}   ${((nx / 2) * 100).toFixed(2).padStart(9)}        ${((1 - ny) / 2 * 100).toFixed(2).padStart(9)}        ${rl.toFixed(3).padStart(9)}        ${b === 0 ? "   -" : (rl / b).toFixed(3).padStart(6)}`,
   );
 }
 await browser.close();
