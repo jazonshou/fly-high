@@ -1606,8 +1606,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
   });
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
-  // The attitude ball turns only while cockpit view is on: outside it every part
-  // of it is invisible, and the visual already gets the whole state every frame.
+  // The displays redraw only while cockpit view is on: outside it every cockpit part
+  // is invisible, and the visual already gets the whole state every frame.
   let cockpitViewOn = false;
 
   // THE ENGINES. Two GE Passport 20s on pylons off the REAR FUSELAGE, not
@@ -1922,6 +1922,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     propeller: rig.propeller,
     cockpitParts: rig.cockpitParts,
     cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
+    displaysLive: cockpit.displaysLive,
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
@@ -1932,7 +1933,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       const spin = pose.rotorRadiansPerSecond * state.simulationTime;
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
-      if (cockpitViewOn) cockpit.update(state);
+      if (cockpitViewOn) cockpit.update(state, delta);
       landingGear.setEnabled(pose.gearVisible);
       landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
       landingGear.position.y = pose.gearOffsetY;
@@ -1974,6 +1975,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      // on the way IN, the displays redraw on the first frame: their clock stopped when the pilot left
+      if (enabled && !cockpitViewOn) cockpit.invalidateDisplays();
       cockpitViewOn = enabled;
       setCockpitVisibility(rig, scene, enabled);
     },

@@ -75,19 +75,19 @@ const BEYOND_STEP = 0.25;
 /**
  * THE CONTROL'S BOX, per aircraft: a `build.box` the pilot plainly sees, closed and convex and
  * wound by Babylon itself, so the convention can be asserted both ways before anything else is
- * measured with it. The two attitude balls' pitch bars are one each; the 747's ball is gone (its
- * PFD page draws attitude), so its control is the pilot's PFD SCREEN, which is box 0 of the merged
- * `airliner-screens` -- the same kind of object, and one that is lit up in front of him.
+ * measured with it. The Cessna's MECHANICAL ball still has a pitch bar to use. Both glass decks'
+ * balls are gone (their PFD pages draw attitude), so their control is the pilot's PFD SCREEN, box 0
+ * of the merged screens mesh -- the same kind of object, and one that is lit up in front of him.
  */
 const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly block?: number } | null>> = {
   trainer: { mesh: "trainer-attitude-pitch-bar" },
-  bizjet: { mesh: "bizjet-pfd-pitch-bar" },
+  bizjet: { mesh: "bizjet-screens", block: 0 },
   airliner: { mesh: "airliner-screens", block: 0 },
   jet: null,
 };
 
 /** How many cockpit-only meshes each aircraft has, so a mesh going missing cannot pass as a clean run. */
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 11, airliner: 4, jet: 0 };
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 0 };
 
 interface Prepared {
   readonly name: string;

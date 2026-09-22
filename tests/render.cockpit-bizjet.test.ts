@@ -229,11 +229,12 @@ describe("the Global's cockpit parts", () => {
     expect(firstHitDirection(new Vector3(0, 1, 0))?.mesh.name).not.toBe("bizjet-fuselage");
   });
 
-  it("are eight or fewer static meshes, and the three attitude pieces that stay separate, by name", () => {
+  it("are eight static meshes and nothing else: the attitude ball's three pieces are gone", () => {
     const names = cockpitOnly.map((part) => part.name).sort();
-    const attitude = names.filter((name) => name.startsWith("bizjet-pfd-"));
+    // The ball's three meshes hung from a pivot, so they could not be merged into anything and were
+    // the only cockpit parts that were not static. The PFD page draws attitude now.
+    expect(names.filter((name) => name.startsWith("bizjet-pfd-"))).toEqual([]);
     const fixed = names.filter((name) => !name.startsWith("bizjet-pfd-"));
-    expect(attitude).toEqual(["bizjet-pfd-ground", "bizjet-pfd-pitch-bar", "bizjet-pfd-sky"]);
     expect(fixed).toEqual([
       "bizjet-glareshield",
       "bizjet-instrument-panel",
@@ -244,7 +245,8 @@ describe("the Global's cockpit parts", () => {
       "bizjet-windscreen-post-port",
       "bizjet-windscreen-post-starboard",
     ]);
-    expect(fixed.length).toBeLessThanOrEqual(8);
+    expect(fixed.length).toBe(8);
+    expect(names).toEqual(fixed);
     // four screens are one mesh and four bezels are one mesh
     expect(named("bizjet-screens").metadata?.mergedFrom).toHaveLength(4);
     expect(named("bizjet-screen-bezels").metadata?.mergedFrom).toHaveLength(4);
@@ -436,92 +438,15 @@ describe("the Global's cockpit parts", () => {
     expect(Math.min(...clearances)).toBeLessThanOrEqual(0.03);
   });
 
-  it("build the pilot's left screen's attitude ball from three separate pieces under one pivot node", () => {
-    const sky = named("bizjet-pfd-sky");
-    const ground = named("bizjet-pfd-ground");
-    const bar = named("bizjet-pfd-pitch-bar");
-    const pivot = scene.getTransformNodeByName("bizjet-pfd-attitude-pivot");
-    expect(pivot, "the pivot node").not.toBeNull();
-    for (const part of [sky, ground, bar]) expect(part.parent, `${part.name} hangs from the pivot`).toBe(pivot);
-    // The pilot's LEFT screen: the outboard one of the port pair. Its box, from the built screens mesh.
-    const screens = worldVertices(named("bizjet-screens")).filter((v) => v.z < 0);
-    const outboardZ = Math.min(...screens.map((v) => v.z));
-    const screen = screens.filter((v) => v.z < outboardZ + 0.221);
-    const zLeft = Math.min(...screen.map((v) => v.z));
-    const zRight = Math.max(...screen.map((v) => v.z));
-    const top = Math.max(...screen.map((v) => v.y));
-    const frontX = Math.min(...screen.map((v) => v.x));
-    pivot!.computeWorldMatrix(true);
-    const centre = pivot!.getAbsolutePosition().clone();
-    // its centre: the middle of the screen's upper two-thirds, in the plane just in front of the glass
-    expect(centre.z).toBeCloseTo((zLeft + zRight) / 2, 4);
-    expect(centre.y).toBeCloseTo(top - (0.15 * (2 / 3)) / 2, 4);
-    expect(frontX - centre.x).toBeGreaterThan(0.002);
-    expect(frontX - centre.x).toBeLessThan(0.007);
-    // sky above, ground below, meeting on one horizontal line through the centre
-    const skyVertices = worldVertices(sky);
-    const groundVertices = worldVertices(ground);
-    expect(Math.min(...skyVertices.map((v) => v.y))).toBeCloseTo(centre.y, 5);
-    expect(Math.max(...groundVertices.map((v) => v.y))).toBeCloseTo(centre.y, 5);
-    expect(Math.max(...skyVertices.map((v) => v.y))).toBeGreaterThan(centre.y + 0.04);
-    expect(Math.min(...groundVertices.map((v) => v.y))).toBeLessThan(centre.y - 0.04);
-    // a disc that fills the upper two-thirds' height and no more: within 5 cm of the centre, and reaching 4.5 cm
-    const radial = (v: Vector3) => Math.hypot(v.y - centre.y, v.z - centre.z);
-    for (const v of [...skyVertices, ...groundVertices]) expect(radial(v)).toBeLessThanOrEqual(0.05 + 1e-6);
-    expect(Math.max(...[...skyVertices, ...groundVertices].map(radial))).toBeGreaterThan(0.045);
-    // sky blue-grey, earth brown, a white bar
-    const albedo = (mesh: AbstractMesh) => (mesh.material as PBRMaterial).albedoColor;
-    expect(albedo(sky).b).toBeGreaterThan(albedo(sky).r);
-    expect(albedo(ground).r).toBeGreaterThan(albedo(ground).b);
-    for (const channel of [albedo(bar).r, albedo(bar).g, albedo(bar).b]) expect(channel).toBeGreaterThan(0.85);
-    // THE PIVOT IS THE ONLY HANDLE: turning it about the viewing axis turns all three pieces as one, and
-    // nothing leaves the screen, at any angle. (A rotating rectangle would; that is why it is a disc.)
-    // Each piece's own direction is the mean of its vertices on the right of the centre minus those on its
-    // left, tracked by vertex INDEX so it cannot jump to another rim vertex as the piece turns.
-    const rest = { sky: worldVertices(sky), ground: worldVertices(ground), bar: worldVertices(bar) };
-    const sides = (vertices: Vector3[]) => ({
-      right: vertices.flatMap((v, i) => (v.z > centre.z + 1e-6 ? [i] : [])),
-      left: vertices.flatMap((v, i) => (v.z < centre.z - 1e-6 ? [i] : [])),
-    });
-    const indices = { sky: sides(rest.sky), ground: sides(rest.ground), bar: sides(rest.bar) };
-    const mean = (vertices: Vector3[], ids: number[]) => ids.reduce((sum, i) => sum.add(vertices[i]!), Vector3.Zero()).scale(1 / ids.length);
-    const direction = (vertices: Vector3[], side: { right: number[]; left: number[] }) => {
-      const d = mean(vertices, side.right).subtract(mean(vertices, side.left));
-      return Math.atan2(d.y, d.z) * DEG;
-    };
-    const wrap = (degrees: number) => ((((degrees + 180) % 360) + 360) % 360) - 180;
-    const at0 = { sky: direction(rest.sky, indices.sky), ground: direction(rest.ground, indices.ground), bar: direction(rest.bar, indices.bar) };
-    for (const degrees of [20, -37, 90, 155]) {
-      pivot!.rotation.x = (degrees * Math.PI) / 180;
-      pivot!.computeWorldMatrix(true);
-      for (const part of [sky, ground, bar]) part.computeWorldMatrix(true);
-      const now = { sky: worldVertices(sky), ground: worldVertices(ground), bar: worldVertices(bar) };
-      for (const v of [...now.sky, ...now.ground, ...now.bar]) {
-        expect(v.z, `${degrees}: inside the screen, left`).toBeGreaterThanOrEqual(zLeft - 1e-6);
-        expect(v.z, `${degrees}: inside the screen, right`).toBeLessThanOrEqual(zRight + 1e-6);
-        expect(v.y, `${degrees}: inside the screen, top`).toBeLessThanOrEqual(top + 1e-6);
-        expect(v.y, `${degrees}: inside the screen, bottom`).toBeGreaterThanOrEqual(top - 0.15 - 1e-6);
-      }
-      const turned = {
-        sky: wrap(direction(now.sky, indices.sky) - at0.sky),
-        ground: wrap(direction(now.ground, indices.ground) - at0.ground),
-        bar: wrap(direction(now.bar, indices.bar) - at0.bar),
-      };
-      // each turned by the angle asked for, in one consistent sense, and all three the same
-      expect(Math.abs(turned.sky), `${degrees}: how far the sky turned`).toBeCloseTo(Math.abs(wrap(degrees)), 0);
-      expect(Math.abs(wrap(turned.sky - turned.ground)), `${degrees}: sky and ground turn together`).toBeLessThan(0.5);
-      expect(Math.abs(wrap(turned.sky - turned.bar)), `${degrees}: sky and bar turn together`).toBeLessThan(0.5);
-    }
-    pivot!.rotation.x = 0;
-    pivot!.computeWorldMatrix(true);
-    for (const part of [sky, ground, bar]) part.computeWorldMatrix(true);
-    // what the eye meets: sky above the horizon line, ground below, and the bar on it
-    for (const [offset, expected] of [[0.02, "bizjet-pfd-sky"], [-0.02, "bizjet-pfd-ground"], [0, "bizjet-pfd-pitch-bar"]] as const) {
-      const target = new Vector3(centre.x, centre.y + offset, centre.z + 0.004);
-      const { az, el } = azel(target);
-      expect(firstHit(az, el)?.mesh.name, `${offset} from the horizon`).toBe(expected);
-    }
-  });
+  // THE 3D ATTITUDE BALL THAT STOOD HERE IS GONE, and this is where its placement, its colours and
+  // its pivot's containment were held: a disc filling the pilot's left screen's upper two-thirds,
+  // 2.5 mm in front of the glass, turning inside the screen at every angle. It was built when these
+  // screens were flat rectangles. The PFD page draws its own horizon now, so the ball was a SECOND
+  // attitude indicator standing on top of the first and hiding most of it -- the 747's went for the
+  // same reason and on the same evidence. What replaces this test is the PFD page's own horizon test
+  // plus `render.cockpit-display-state.test.ts`, which holds the page's pitch, bank and heading to
+  // the HUD's own numbers for the same flight state. The Cessna keeps its ball AND its row in
+  // `render.cockpit-instruments.test.ts`, because that aeroplane's instrument is MECHANICAL.
 
   it("keep the panel and its hood within a few millimetres of the shell", () => {
     const clearances: number[] = [];
@@ -626,7 +551,7 @@ describe("the Global's cockpit-only parts outside cockpit view", () => {
     localScene.activeCamera = localCamera;
     const visual = createWebGpuAircraft(localScene, "bizjet");
     const parts = visual.cockpitOnlyParts ?? [];
-    expect(parts.length).toBe(11);
+    expect(parts.length).toBe(8);
     const exteriorMask = localCamera.layerMask;
     for (const part of parts) {
       expect(part.isVisible, `${part.name} at rest`).toBe(false);

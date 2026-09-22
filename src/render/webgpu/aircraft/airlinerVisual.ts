@@ -2240,6 +2240,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      // on the way IN, the displays redraw on the first frame: their clock stopped when the pilot left
+      if (enabled && !cockpitViewOn) cockpit.invalidateDisplays();
       cockpitViewOn = enabled;
       setCockpitVisibility(rig, scene, enabled);
     },

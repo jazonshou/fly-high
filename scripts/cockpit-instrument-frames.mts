@@ -5,7 +5,9 @@
  *
  * The Cessna is photographed in level cruise, a climbing right turn, a left bank
  * and a descent at idle; the Global and the 747 in level flight, a 20 degree right
- * bank and a 20 degree left bank. All three wear an attitude ball. The level frames are the Scenic-assist start left to settle; the others
+ * bank and a 20 degree left bank. Only the Cessna wears a 3D attitude ball now (it is
+ * mechanical); the Global's and the 747's PFD PAGES draw attitude, so their frames carry
+ * no `ball` reading and are read by looking at the PFD. The level frames are the Scenic-assist start left to settle; the others
  * are flown by holding the real keys (Direct controls) under a closed loop that
  * reads the HUD's own pitch and bank, releases the key when the attitude is where
  * it is wanted and takes the frame while it holds.
@@ -207,13 +209,11 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       const pivot = scene.transformNodes.find((n) => n.name === "trainer-attitude-pivot")!;
       const bar = scene.meshes.find((m) => m.name === "trainer-attitude-pitch-bar")!;
       ball = { pivotDegrees: ((pivot.rotation?.x ?? 0) * 180) / Math.PI, barMetres: bar.position.y };
-    } else if (kind === "bizjet" || kind === "airliner") {
-      // the Global's and the 747's PFD balls: the same builder, named for their airframe
-      const prefix = kind === "bizjet" ? "bizjet-pfd" : "airliner-pfd";
-      const pivot = scene.transformNodes.find((n) => n.name === `${prefix}-attitude-pivot`)!;
-      const bar = scene.meshes.find((m) => m.name === `${prefix}-pitch-bar`)!;
-      ball = { pivotDegrees: ((pivot.rotation?.x ?? 0) * 180) / Math.PI, barMetres: bar.position.y };
     }
+    // NO `ball` READING FOR THE GLASS DECKS. The Global and the 747 had one each -- the same builder,
+    // named for their airframe -- and both are gone: their PFD PAGES draw attitude on the screen now,
+    // and what holds that is `tests/render.cockpit-display-state.test.ts` against the HUD's own
+    // numbers, not a node's rotation. A frame of those decks is read by looking at the PFD.
     const cockpitOnly = scene.meshes.filter((m) => m.metadata?.cockpitOnly === true);
     return {
       aircraftKind: kind,

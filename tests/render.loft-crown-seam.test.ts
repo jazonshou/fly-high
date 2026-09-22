@@ -285,7 +285,14 @@ describe("a loft's crown seam", () => {
       // re-pins above; the 747 is untouched by both.
       jet: "b0eb20d5",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
-      bizjet: "a8ce6a25",
+      // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
+      // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
+      // indices as this digest defines them: of its 99 meshes exactly three are GONE --
+      // bizjet-pfd-sky and -ground (288 vertices, 96 triangles, 50 unique positions each) and
+      // bizjet-pfd-pitch-bar (24, 12, 8) -- none is new, none changed, and the other 96 are
+      // bit-identical. Totals 10,861 -> 10,261 vertices and 17,358 -> 17,154 triangles, which is
+      // those three meshes and nothing else. The trainer keeps its ball and its pin.
+      bizjet: "4ffbccc5",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

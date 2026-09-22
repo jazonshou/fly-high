@@ -399,32 +399,35 @@ describe("the Cessna's needles turn only while cockpit view is on", () => {
 // ---- the attitude balls -----------------------------------------------------------------------
 
 /**
- * The Global's PFD ball and the Cessna's attitude dial are ONE builder at two
- * placements (`buildAttitudeBall`), and both are held to the same picture: the ball's
- * horizon on the SCREEN parallel to the world's, its sky on the sky's side, its bar on
- * the pitch's side. The Cessna's dial normal points TOWARD the pilot and the Global's
- * pivot points away, so the sign is not taken from one on trust for the other: every
- * assertion here is about what the camera draws.
+ * ONE ROW IS LEFT, and that is the whole story of this file now. The Cessna's attitude dial
+ * is a MECHANICAL instrument and its model is one too: a ball built by `buildAttitudeBall`,
+ * turned about the viewing axis, held to the picture the camera draws -- its horizon on the
+ * SCREEN parallel to the world's, its sky on the sky's side, its bar on the pitch's side.
+ * Its dial normal points TOWARD the pilot, which is the opposite of what a PFD pivot did, so
+ * the sign is measured here and never inherited.
  *
- * THE 747 HAD A ROW HERE AND DOES NOT ANY MORE. Its 3D ball came from before its screens
- * could draw anything; they draw pages now, and the PFD page draws its own attitude, so
- * the ball was a second horizon standing a millimetre in front of the first and hiding
- * most of it. What holds the 747's attitude picture instead is the PFD page's own horizon
- * test and `render.cockpit-display-state.test.ts`, which flies the same simulator these
- * rows fly and holds the page's pitch, bank and heading to the HUD's own numbers. The
- * Cessna keeps its row because that aeroplane's ball is MECHANICAL, and so is its model.
+ * THE 747 AND THE GLOBAL EACH HAD A ROW AND NEITHER DOES NOW. Both of their 3D balls came
+ * from before their screens could draw anything; both decks draw pages now, and a PFD page
+ * draws its own horizon, so each ball was a second attitude indicator standing a couple of
+ * millimetres in front of the first and hiding most of it. What holds those two aeroplanes'
+ * attitude picture instead is the PFD page's own horizon test and
+ * `render.cockpit-display-state.test.ts`, which holds the page's pitch, bank and heading to the
+ * HUD's own arithmetic for the same visual state. Note what that test does NOT do: it builds its
+ * states by hand and flies no simulator, so a sign error between the simulator and the visual
+ * state (the kind D-6 fixed) is not caught there; this row's simulator-flown check covers the
+ * Cessna alone. A live frame of each glass deck in a bank, with the drawn horizon measured off the
+ * rendered pixels against the model's own bank, is the evidence for those two.
  */
 interface BallCase {
-  readonly kind: "bizjet" | "trainer";
+  readonly kind: "trainer";
   readonly label: string;
   readonly prefix: string;
   readonly pivotName: string;
-  /** The bar's slide per degree of nose-up, metres: 1 mm on the Global's 0.048 m ball, 0.75 mm on the Cessna's 0.036 m one. */
+  /** The bar's slide per degree of nose-up, metres: 0.75 mm on the Cessna's 0.036 m ball (it was 1 mm on the glass decks' 0.048 m ones). */
   readonly metresPerDegree: number;
   readonly radius: number;
 }
 const BALLS: readonly BallCase[] = [
-  { kind: "bizjet", label: "Global", prefix: "bizjet-pfd", pivotName: "bizjet-pfd-attitude-pivot", metresPerDegree: 0.001, radius: 0.048 },
   { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: 0.00075, radius: 0.036 },
 ];
 
@@ -465,17 +468,15 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
 
   beforeAll(() => {
     fixture = buildFixture(ball.kind);
-    if (ball.kind !== "trainer") {
-      // the Global's and the 747's PFDs face straight aft: the body's own axes
-      plane = { up: new Vector3(0, 1, 0), right: new Vector3(0, 0, 1) };
-    } else {
-      // from the BUILT panel: the pilot looks along the dial's normal reversed, and his right is forward x up
-      const panel = fixture.mesh("trainer-instrument-panel");
-      panel.computeWorldMatrix(true);
-      const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-      const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
-      plane = { up, right: Vector3.Cross(normal.scale(-1), up).normalize() };
-    }
+    // FROM THE BUILT PANEL, not from the body's axes: this dial LEANS with the panel it is set in,
+    // and the pilot looks along its normal reversed, his right being forward x up. (The two PFD
+    // balls that used to run through here faced straight aft and could use the body's own axes; they
+    // are gone, and assuming their simpler case here would silently mis-measure a leaning dial.)
+    const panel = fixture.mesh("trainer-instrument-panel");
+    panel.computeWorldMatrix(true);
+    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
+    const panelUp = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    plane = { up: panelUp, right: Vector3.Cross(normal.scale(-1), panelUp).normalize() };
     // the diameter's two ends, found at rest in the PIVOT's own frame (the dial may lean): the sky half's vertices on y = 0
     pivot().computeWorldMatrix(true);
     const inverse = Matrix.Invert(pivot().getWorldMatrix());
@@ -538,7 +539,7 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
     const barAt = project(fixture.camera, bar.getBoundingInfo().boundingBox.centerWorld);
     if (pitch > 0) expect(side(ballLeft, ballRight, barAt), "nose up: the bar is not below the ball's horizon").toBe(side(ballLeft, ballRight, groundAt));
     if (pitch < 0) expect(side(ballLeft, ballRight, barAt), "nose down: the bar is not above the ball's horizon").toBe(side(ballLeft, ballRight, skyAt));
-    // a millimetre a degree on the Global's ball, in proportion to the radius on another, along the pivot's own up
+    // 0.75 mm a degree on the Cessna's 0.036 m ball (the glass decks' 0.048 m balls took 1 mm), along the pivot's own up
     expect(bar.position.y).toBeCloseTo(-pitch * ball.metresPerDegree, 9);
     expect(state.pitch).toBeCloseTo(pitch, 5);
   });

@@ -205,9 +205,10 @@ export function strip(
 // ---- the attitude ball ---------------------------------------------------------
 
 /**
- * What one attitude ball is made of. The Global's PFD and the Cessna's attitude
- * dial are the same picture at two sizes, so they share one builder: only the
- * numbers and the names differ.
+ * What one attitude ball is made of. It was one builder for three aeroplanes (the
+ * Global's and the 747's PFDs, and the Cessna's attitude dial, the same picture at
+ * different sizes); the two glass decks' PFD pages draw attitude now, and only the
+ * Cessna's MECHANICAL ball still uses it.
  */
 export interface AttitudeBallSpec {
   /** Names: `${prefix}-sky`, `${prefix}-ground`, `${prefix}-pitch-bar`; the materials `${prefix}-sky`, `-ground`, `-bar`. */
@@ -257,8 +258,9 @@ function halfDisc(radius: number, upper: boolean, segments: number): { x: number
  * the pilot's right; the halves stand in the Y-Z plane and the bar is in front of
  * them, on the pilot's side (local -X). A positive rotation about an axis pointing
  * away from the viewer is CLOCKWISE to him. `parent` must give the pivot that
- * frame: the Global's is the aircraft's own (X is the nose, the pilot looks along
- * it); a dial that faces the pilot at an angle gives it a frame node.
+ * frame: a dial that faces straight aft could use the aircraft's own (X is the nose,
+ * the pilot looks along it), as the glass decks' balls did; the Cessna's faces the
+ * pilot at an angle and gives it a frame node.
  *
  * IT IS ROUND on purpose. A rotating rectangle would poke out of a dial at every
  * bank angle but zero, and there is no clipping window here; a disc turned about

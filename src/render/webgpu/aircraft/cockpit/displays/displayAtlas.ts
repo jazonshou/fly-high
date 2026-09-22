@@ -12,12 +12,17 @@ import type { DisplayContext2D, DisplayState } from "./displayState";
 import { drawDisplayAtlas, type DisplayPage, type DisplaySlot } from "./displayPages";
 
 /**
- * The six flight-deck displays as ONE texture, and the plumbing that gets it onto the screens.
+ * A flight deck's displays as ONE texture, and the plumbing that gets it onto the screens.
  *
- * ONE atlas, one material, one mesh: the six screen boxes are already merged into
- * `airliner-screens`, and a texture each would be six materials and six draws. Each box's face
- * toward the pilot is given the UVs of its own slot BEFORE the merge, so the merged mesh samples six
- * different pictures out of one image with no extra draw.
+ * ONE atlas, one material, one mesh: an aeroplane's screen boxes are already merged into a single
+ * mesh, and a texture each would be a material and a draw each. Each box's face toward the pilot is
+ * given the UVs of its own slot BEFORE the merge, so the merged mesh samples several different
+ * pictures out of one image with no extra draw.
+ *
+ * WHAT IS PER-AEROPLANE is the LAYOUT (`DisplayLayout`): which screens there are, in the order the
+ * cockpit builds them, what page each one shows, and how many across the atlas is. Everything else
+ * -- the slot shape, the canvas, the texture, the upload, the material -- is shared, because it
+ * measured the same on both decks (see `DISPLAY_SLOT_WIDTH`).
  *
  * IT IS AN EMISSIVE TEXTURE, not an albedo one. A display emits; it is not a lit surface with a
  * picture painted on it. Albedo black and emissive white means what the canvas draws is what the
@@ -31,45 +36,131 @@ import { drawDisplayAtlas, type DisplayPage, type DisplaySlot } from "./displayP
  * rather than passing by accident, and nothing in the suite depends on a GPU.
  */
 
-/**
- * The six screens, in the order `airlinerCockpit.ts` builds them (`SCREEN_Z`), each with the PAGE it
- * shows. Both pilots get a PFD and an ND; the two centre screens are the EICAS pair.
- */
-export const DISPLAY_SCREENS = [
-  { screen: "port-pfd", page: "pfd" },
-  { screen: "port-nd", page: "nd" },
-  { screen: "port-eicas", page: "eicas-upper" },
-  { screen: "starboard-eicas", page: "eicas-lower" },
-  { screen: "starboard-nd", page: "nd" },
-  { screen: "starboard-pfd", page: "pfd" },
-] as const satisfies readonly { screen: string; page: DisplayPage }[];
-export type DisplayScreenName = (typeof DISPLAY_SCREENS)[number]["screen"];
+/** One aeroplane's deck: its screens in BUILD order, the page each shows, and the atlas's shape. */
+export interface DisplayLayout {
+  /** The atlas texture's name, and the stem of the material's. */
+  readonly name: string;
+  /** The merged mesh that samples this atlas, so a stray user can be told from the real one. */
+  readonly screensMesh: string;
+  /** Screens in the order the cockpit builds them: slot i belongs to screen i. */
+  readonly screens: readonly { readonly screen: string; readonly page: DisplayPage }[];
+  /** Slots across the atlas; the rows follow from the count. */
+  readonly columns: number;
+}
 
 /**
- * A slot is the shape of the SCREEN IT IS DRAWN ON, not a square. The screens are 0.22 x 0.15 m,
- * 1.4667:1, and the pages are authored and tested at 440 x 300, the same ratio. A square slot (the
- * first version of this was six 256 x 256 in a row) squashes every page and cramps its text; the
- * aspect is what matters, so no square atlas would have been right at any resolution.
+ * The 747's six, in the order `airlinerCockpit.ts` builds them (`SCREEN_Z`). Both pilots get a PFD
+ * and an ND; the two centre screens are the EICAS pair.
+ */
+export const AIRLINER_DISPLAYS: DisplayLayout = Object.freeze({
+  name: "airliner-displays",
+  screensMesh: "airliner-screens",
+  columns: 3,
+  screens: Object.freeze([
+    { screen: "port-pfd", page: "pfd" },
+    { screen: "port-nd", page: "nd" },
+    { screen: "port-eicas", page: "eicas-upper" },
+    { screen: "starboard-eicas", page: "eicas-lower" },
+    { screen: "starboard-nd", page: "nd" },
+    { screen: "starboard-pfd", page: "pfd" },
+  ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
+ * The Global's four, in `bizjetScreenPlacements()` order: each seat's OUTBOARD screen then its
+ * inboard one, port pair first. Each pilot gets a PFD outboard and a map inboard.
  *
- * Six of them, three across and two down. Whether 440 x 300 carries the text legibly at the size the
- * screens actually occupy on a player's monitor is a question for a frame, not an argument, so this
- * is the starting point rather than the answer.
+ * NO EICAS PAGE HERE, and the reason is a label rather than a preference. The built panel is two
+ * mirrored pairs with no engine screen in it, and the EICAS page draws the literal text "N1" beside
+ * its dials while this aeroplane's engine readout in this game is N2 (`catalogue.ts`: the Global's
+ * `engineReadout` is labelled N2, the 747's N1). Putting that page on this panel would print a label
+ * the game's own HUD contradicts for the same aeroplane. Engine indications here want the page's
+ * label taken from the airframe first, which is a change to the PAGE, not to this table.
+ *
+ * Only the PORT pair is ever seen: measured from the built mesh at the solved eye, the port screens
+ * sit at azimuth -10.8 and +10.8 and the starboard pair at +54.9 and +61.0, outside the 75 degree
+ * frame. The starboard pair is drawn because the aeroplane has it, not because anyone looks at it.
+ */
+export const BIZJET_DISPLAYS: DisplayLayout = Object.freeze({
+  name: "bizjet-displays",
+  screensMesh: "bizjet-screens",
+  columns: 2,
+  screens: Object.freeze([
+    { screen: "port-outboard", page: "pfd" },
+    { screen: "port-inboard", page: "nd" },
+    { screen: "starboard-outboard", page: "pfd" },
+    { screen: "starboard-inboard", page: "nd" },
+  ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
+ * A slot is the shape of the SCREEN IT IS DRAWN ON, not a square. Both decks' screens MEASURE
+ * 0.22 x 0.15 m on the built mesh -- 1.4667:1, the 747's and the Global's alike -- and the pages are
+ * authored and tested at 440 x 300, the same ratio. A square slot (the first version of this was six
+ * 256 x 256 in a row) squashes every page and cramps its text; the aspect is what matters, so no
+ * square atlas would have been right at any resolution. `tests/render.cockpit-displays.test.ts`
+ * measures every screen's pilot-facing face off both aeroplanes' BUILT merged mesh and holds the slot
+ * to the shape it finds, so a deck whose screens are a different shape fails there instead of drawing
+ * squashed.
+ *
+ * 440 x 300 is also a measured choice rather than a starting point now. At 660 x 450 one full atlas
+ * update costs 4.2 ms against 3.3 ms on this machine, and at the viewport it was measured on the
+ * pilot's PFD occupies 252 x 177 device pixels, so 440 x 300 is already oversampled about 1.7x. The
+ * numbers and the crossover (a canvas about 2,170 px wide) are in the findings doc.
  */
 export const DISPLAY_SLOT_WIDTH = 440;
 export const DISPLAY_SLOT_HEIGHT = 300;
-export const DISPLAY_SLOT_COLUMNS = 3;
-export const DISPLAY_ATLAS_WIDTH = DISPLAY_SLOT_WIDTH * DISPLAY_SLOT_COLUMNS;
-export const DISPLAY_ATLAS_HEIGHT = DISPLAY_SLOT_HEIGHT * 2;
+/** The atlas is as wide as its columns and as tall as the rows its screens need. */
+export function displayAtlasWidth(layout: DisplayLayout): number {
+  return DISPLAY_SLOT_WIDTH * layout.columns;
+}
+export function displayAtlasHeight(layout: DisplayLayout): number {
+  return DISPLAY_SLOT_HEIGHT * Math.ceil(layout.screens.length / layout.columns);
+}
 /** Redraw rate while the cockpit is in view. A display is not an animation; 15 a second is plenty. */
 export const DISPLAY_UPDATE_HZ = 15;
 
+/**
+ * WHEN TO REDRAW, shared by every deck: a counter fed the frame's own delta that says "now" at most
+ * `hz` times a second, and "now" on the first frame after `invalidate()`.
+ *
+ * THE INVALIDATE IS THE POINT OF THIS BEING A THING. The counter only runs while the cockpit is in
+ * view (the visuals call `update` only then), so on leaving it stops wherever it was -- often just
+ * after a redraw. Coming back, a bare counter would wait out the rest of its 1/15 s before drawing,
+ * and for those frames the screens would show the attitude, heading and altitude from when the pilot
+ * LAST LEFT, minutes old, behind an instant camera cut. The visuals call `invalidate()` on the way
+ * in, so the first frame back is a fresh picture. The first-ever entry did not need it (the counter
+ * starts due); every later one did, and a review of this code found it, not a frame.
+ */
+export interface DisplayRedrawClock {
+  /** Feed one frame's delta; true when the displays are due to be redrawn this frame. */
+  tick(secondsSinceLastUpdate: number): boolean;
+  /** The next `tick` is due, whatever it is fed: call on entering cockpit view. */
+  invalidate(): void;
+}
+
+export function displayRedrawClock(hz: number = DISPLAY_UPDATE_HZ): DisplayRedrawClock {
+  let since = Number.POSITIVE_INFINITY;
+  return {
+    tick(secondsSinceLastUpdate) {
+      since += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
+      if (since < 1 / hz) return false;
+      since = 0;
+      return true;
+    },
+    invalidate() {
+      since = Number.POSITIVE_INFINITY;
+    },
+  };
+}
+
 /** Each screen's slot, in the build order, carrying the screen's name alongside the page it draws. */
-export function displaySlots(): readonly (DisplaySlot & { readonly screen: DisplayScreenName })[] {
-  return DISPLAY_SCREENS.map(({ screen, page }, index) => ({
+export function displaySlots(layout: DisplayLayout): readonly (DisplaySlot & { readonly screen: string })[] {
+  return layout.screens.map(({ screen, page }, index) => ({
     screen,
     page,
-    x: (index % DISPLAY_SLOT_COLUMNS) * DISPLAY_SLOT_WIDTH,
-    y: Math.floor(index / DISPLAY_SLOT_COLUMNS) * DISPLAY_SLOT_HEIGHT,
+    x: (index % layout.columns) * DISPLAY_SLOT_WIDTH,
+    y: Math.floor(index / layout.columns) * DISPLAY_SLOT_HEIGHT,
     w: DISPLAY_SLOT_WIDTH,
     h: DISPLAY_SLOT_HEIGHT,
   }));
@@ -93,7 +184,7 @@ export function displaySlots(): readonly (DisplaySlot & { readonly screen: Displ
  * what the stub's asymmetric marks were for -- six flat colours would have shown a correct-looking
  * picture upside down, and the real pages' text would have been the first thing to notice.
  */
-export function remapScreenFaceToSlot(mesh: Mesh, slot: DisplaySlot, atlasWidth = DISPLAY_ATLAS_WIDTH, atlasHeight = DISPLAY_ATLAS_HEIGHT): void {
+export function remapScreenFaceToSlot(mesh: Mesh, slot: DisplaySlot, atlasWidth: number, atlasHeight: number): void {
   const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
   const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
   const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
@@ -136,7 +227,7 @@ export interface DisplayAtlas {
   readonly context: DisplayContext2D;
   /** Read back to upload; kept so `uploadDisplayAtlas` does not have to find it again. */
   readonly canvas: HTMLCanvasElement;
-  readonly slots: readonly (DisplaySlot & { readonly screen: DisplayScreenName })[];
+  readonly slots: readonly (DisplaySlot & { readonly screen: string })[];
   readonly width: number;
   readonly height: number;
 }
@@ -145,7 +236,7 @@ export interface DisplayAtlas {
  * Try to make the atlas. Returns null wherever there is no 2D canvas -- every Node test -- and the
  * caller then leaves the screens on their flat material.
  */
-export function createDisplayAtlas(scene: Scene, name: string): DisplayAtlas | null {
+export function createDisplayAtlas(scene: Scene, layout: DisplayLayout): DisplayAtlas | null {
   // NOT `DynamicTexture`, and that is measured rather than preferred. Its constructor calls
   // `engine.createDynamicTexture`, which exists on no engine in this tree-shakeable build until an
   // extension module is imported for its side effect -- and on THIS renderer's WebGPU engine the
@@ -159,27 +250,29 @@ export function createDisplayAtlas(scene: Scene, name: string): DisplayAtlas | n
   // pages draw into it, and `uploadDisplayAtlas` hands the pixels over.
   //
   // No `document` means no canvas, which is the headless case -- every Node test -- and returns null.
+  const width = displayAtlasWidth(layout);
+  const height = displayAtlasHeight(layout);
   try {
     if (typeof document === "undefined") return null;
     const canvas = document.createElement("canvas");
-    canvas.width = DISPLAY_ATLAS_WIDTH;
-    canvas.height = DISPLAY_ATLAS_HEIGHT;
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext("2d") as unknown as DisplayContext2D | null;
     if (!context || typeof context.fillRect !== "function") return null;
     const texture = RawTexture.CreateRGBATexture(
-      new Uint8Array(DISPLAY_ATLAS_WIDTH * DISPLAY_ATLAS_HEIGHT * 4),
-      DISPLAY_ATLAS_WIDTH,
-      DISPLAY_ATLAS_HEIGHT,
+      new Uint8Array(width * height * 4),
+      width,
+      height,
       scene,
       false,
       false,
       Texture.BILINEAR_SAMPLINGMODE,
       Constants.TEXTURETYPE_UNSIGNED_BYTE,
     );
-    texture.name = name;
+    texture.name = layout.name;
     texture.wrapU = Texture.CLAMP_ADDRESSMODE;
     texture.wrapV = Texture.CLAMP_ADDRESSMODE;
-    return { texture, context, canvas, slots: displaySlots(), width: DISPLAY_ATLAS_WIDTH, height: DISPLAY_ATLAS_HEIGHT };
+    return { texture, context, canvas, slots: displaySlots(layout), width, height };
   } catch (error) {
     // KEPT, not swallowed. A silent catch here is what made the first live failure so slow to find:
     // the screens simply stayed flat, which looks exactly like the headless path working as intended.
@@ -209,13 +302,13 @@ export function displayMaterial(build: AircraftBuildContext, name: string, atlas
   return material;
 }
 
-/** Draw all six pages and hand the pixels to the GPU. */
+/** Draw every page of the atlas's layout and hand the pixels to the GPU. */
 export function paintDisplays(atlas: DisplayAtlas, state: DisplayState): void {
   drawDisplayAtlas(atlas.context, atlas.width, atlas.height, atlas.slots, state);
   uploadDisplayAtlas(atlas);
 }
 
-/** Only the merged screens mesh may carry the atlas: a stray user would be a second draw state. */
-export function isScreensMesh(mesh: AbstractMesh): boolean {
-  return mesh.name === "airliner-screens";
+/** Only the layout's own merged screens mesh may carry its atlas: a stray user would be a second draw state. */
+export function isScreensMesh(mesh: AbstractMesh, layout: DisplayLayout): boolean {
+  return mesh.name === layout.screensMesh;
 }

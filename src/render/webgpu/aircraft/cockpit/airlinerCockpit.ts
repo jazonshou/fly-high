@@ -8,9 +8,12 @@ import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
 import {
-  DISPLAY_UPDATE_HZ,
+  AIRLINER_DISPLAYS,
   createDisplayAtlas,
+  displayAtlasHeight,
+  displayAtlasWidth,
   displayMaterial,
+  displayRedrawClock,
   displaySlots,
   paintDisplays,
   remapScreenFaceToSlot,
@@ -374,6 +377,11 @@ export interface AirlinerCockpit {
    */
   readonly displaysLive: boolean;
   /**
+   * The next `update` redraws the displays whatever its delta: the visual calls this on ENTERING
+   * cockpit view, so the first frame back is not the picture from when the pilot last left.
+   */
+  invalidateDisplays(): void;
+  /**
    * Redraw the displays at `DISPLAY_UPDATE_HZ` from what `state` reads.
    * The visual calls this from its `update` ONLY while cockpit view is on, and passes the frame's
    * own delta so the redraw rate is wall-clock rather than frame-rate.
@@ -484,9 +492,11 @@ export function buildAirlinerCockpit(
   // the vertex data. The boxes are built in `SCREEN_Z` order and the slots are in the same order, so
   // slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds that pairing by
   // measuring the merged mesh's UVs against each screen's own z.
-  const slots = displaySlots();
+  const slots = displaySlots(AIRLINER_DISPLAYS);
+  const atlasWidth = displayAtlasWidth(AIRLINER_DISPLAYS);
+  const atlasHeight = displayAtlasHeight(AIRLINER_DISPLAYS);
   for (const [index, screen] of screens.entries()) {
-    remapScreenFaceToSlot(screen as Mesh, slots[index]!);
+    remapScreenFaceToSlot(screen as Mesh, slots[index]!, atlasWidth, atlasHeight);
   }
   const screensMesh = build.mergeStatic("airliner-screens", screens, root);
   parts.push(screensMesh);
@@ -494,7 +504,7 @@ export function buildAirlinerCockpit(
 
   // THE DISPLAYS THEMSELVES, if this engine has a 2D canvas. Under NullEngine it does not, and the
   // screens keep the flat instrument-face material they were built with (see `displayAtlas.ts`).
-  const atlas = createDisplayAtlas(build.scene, "airliner-displays");
+  const atlas = createDisplayAtlas(build.scene, AIRLINER_DISPLAYS);
   if (atlas !== null) {
     screensMesh.material = displayMaterial(build, "airliner-display", atlas);
   }
@@ -535,8 +545,11 @@ export function buildAirlinerCockpit(
   const post = build.strutBetween("airliner-windscreen-post-port", seam.bottom, buriedTop, AIRLINER_POST.radius, materials.interior, root);
   parts.push(build.mergeStatic("airliner-cockpit-interior", [board, overhead, pillar, post], root));
 
-  // THE DISPLAYS ARE REDRAWN ON A COUNTER, not every frame: `update` is only called while cockpit
-  // view is on (the visual gates it), and 15 a second is as fast as a display needs to move.
+  // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
+  // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a
+  // display needs to move, and the visual invalidates it on entry. Before that invalidate existed,
+  // every return to the cockpit after the first showed the pages from when the pilot last left for
+  // up to three frames behind an instant camera cut: the counter stopped where it was on the way out.
   //
   // WHAT ONE REDRAW COSTS, measured in the live app on this machine (M2 Pro, WebGPU, 60 samples,
   // one update per animation frame, the texture proven live and bound each time): 0.3 ms to draw
@@ -545,15 +558,16 @@ export function buildAirlinerCockpit(
   // because the bytes have to reach the GPU through a `RawTexture`: this engine build has neither
   // `createDynamicTexture` nor `updateDynamicTexture` (both measured undefined), so the canvas
   // cannot be handed to the texture directly. Both are on the register.
-  let sinceDisplayDraw = Number.POSITIVE_INFINITY;
+  const redraw = displayRedrawClock();
   return {
     parts,
     displaysLive: atlas !== null,
+    invalidateDisplays() {
+      redraw.invalidate();
+    },
     update(state, secondsSinceLastUpdate = 0) {
       if (atlas === null) return;
-      sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
-      if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;
-      sinceDisplayDraw = 0;
+      if (!redraw.tick(secondsSinceLastUpdate)) return;
       drawDisplays(atlas, displayStateFromVisual(state, AIRLINER_DISPLAY_AIRFRAME));
     },
   };

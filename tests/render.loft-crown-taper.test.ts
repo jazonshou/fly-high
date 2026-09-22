@@ -223,7 +223,14 @@ describe("the loft's crown taper", () => {
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.
       // Re-pinned for the Global's two ball halves (2 of 99 meshes), by the same change and evidence as the trainer's above.
-      bizjet: "f3c409bd",
+      // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
+      // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
+      // indices as this digest defines them: of its 99 meshes exactly three are GONE --
+      // bizjet-pfd-sky and -ground (288 vertices, 96 triangles, 50 unique positions each) and
+      // bizjet-pfd-pitch-bar (24, 12, 8) -- none is new, none changed, and the other 96 are
+      // bit-identical. Totals 10,861 -> 10,261 vertices and 17,358 -> 17,154 triangles, which is
+      // those three meshes and nothing else. The trainer keeps its ball and its pin.
+      bizjet: "58163ded",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
