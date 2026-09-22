@@ -1043,9 +1043,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // would put waves and cloud advection at a different phase every run.
       // The settle then rebuilds cloud history at these exact instants. It does
       // NOT fully rebuild foam: with a 2.8 s half-life about a fifth of the
-      // foam from before the pin survives to capture, a measured floor of
-      // ~0.005-0.010/255 on near water between runs whose OWN streaming counts
-      // differ. The ocean's cascade cadence is pinned separately, below.
+      // foam from before the pin survives to capture: a measured floor on near
+      // water between runs whose OWN streaming counts differ, growing with the
+      // difference (0.004/255 mean at 30 frames, 0.012 at 150). The ocean's
+      // cascade cadence is pinned separately, below.
       //
       // Wave R: the phase keys on the shot's index in the CANONICAL list,
       // not its position in the selected subset. Baselines come from full

@@ -242,9 +242,10 @@ describe("the shipped ocean at a capture, across two streaming histories", () =>
     // FOAM IS OUTSIDE THE PIN, on purpose. It integrates: every derivation
     // reads the previous foam and decays it with a 2.8 s half-life, so about
     // a fifth of what was there at the pin survives the 395 frames to the
-    // capture. That is the named floor the re-captures measured at
-    // ~0.005-0.010/255 on near water. Report it here as texel foam units so a
-    // change that makes it worse is visible.
+    // capture. That is the named floor the re-captures measured on near water
+    // when a shot's own streaming count differs, growing with the difference
+    // (0.004/255 mean at 30 frames, 0.012 at 150). Report it here as texel
+    // foam units so a change that makes it worse is visible.
     console.log(`ocean-cascade-pin foam floor, max |dfoam| per cascade: ${foamDeltas.map((d) => d.toExponential(2)).join(", ")}`);
     // Measured 2026-09-22 on this adapter, identical over repeated runs:
     // 8.98e-3, 5.38e-3, 2.40e-3 and 0 for the four cascades (the 128-512 m

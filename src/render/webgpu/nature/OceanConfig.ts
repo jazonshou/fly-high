@@ -374,8 +374,10 @@ export function shouldUpdateOceanCascade(
  * `pinForCapture` resets the counter at the harness's time pin, so every shot's
  * capture lands on the same cadence phase whatever streamed before it. It does
  * not touch foam, which carries a few seconds of pre-pin history of its own: a
- * named floor of about 0.005-0.010/255 on near water between captures whose OWN
- * streaming counts differ.
+ * named floor on near water between captures whose OWN streaming counts
+ * differ, growing with that difference — measured 0.004 at 30 frames, 0.009 at
+ * 90 and 0.012 at 150 (mean /255). Where the shot's own count matches, pinned
+ * captures of the same list are bit-identical over the sea.
  */
 export class OceanCascadeClock {
   private frameIndex = 0;
