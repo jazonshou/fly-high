@@ -144,6 +144,19 @@ same test, or a generator that returns a uniform image passes it.
    by 0.040..0.049 (measured 0.0445). This is the test that catches a straight
    row, and it is the reason it is specified to a tolerance rather than
    "differs".
+
+5b. **THE REVERSE CONTROL, and it is not optional.** Feed the same check a
+   DELIBERATELY STRAIGHT row — the band painted at a constant v — and assert
+   it FAILS, by roughly 23 texels at the nose. Without this, test 5 is
+   satisfiable by any generator whose two sampled stations happen to differ,
+   including by accident. With it, the test is pinned to the actual defect:
+   a straight row must be measurably wrong at the nose, in the same units the
+   real band is measured in.
+
+   Same shape as the rule above every assertion in this list: a check that
+   cannot fail on the thing it is guarding against is not evidence. Build the
+   straight-row case as a fixture the test paints itself, not as a flag on the
+   real generator.
 6. **The band does not exist where the body is too short**: a station where
    `|(y - yOffset)/yRadius| > 1` has no navy in its column at all.
 7. **A door outline exists** at a named door station and is darker than the
