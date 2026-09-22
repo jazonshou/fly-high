@@ -336,7 +336,14 @@ describe("a loft's crown seam", () => {
       // other 93 are bit-identical. Totals 11,163 -> 10,563 vertices and 17,208 -> 17,004 triangles,
       // which is those three meshes and nothing else. The trainer's, the jet's and the Global's pins
       // are untouched by this step, and the Global still carries its own ball.
-      airliner: "f2b46a08",
+      // RE-PINNED for the nose re-loft (docs/findings/AIRLINER_NOSE_GLAZING.md). Checked mesh by mesh
+      // against House-Keeping 500b80a, positions AND indices: of 93 meshes, exactly three differ.
+      // airliner-fuselage-shell (613 vertices, 1,176 triangles, both unchanged) is the radome's 31.4
+      // ring raised into the brow. airliner-flight-deck-glazing goes 144 -> 1,440 vertices and 72 ->
+      // 1,512 triangles, six boxes become six 8 x 8 skin panels. airliner-windscreen-center-post goes
+      // 38 -> 96 and 32 -> 60, a strut becomes a 2 x 8 skin strip. The other 90 are bit-identical, and
+      // the other three airframes' pins are untouched.
+      airliner: "cf8ef834",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

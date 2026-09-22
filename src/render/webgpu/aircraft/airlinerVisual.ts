@@ -43,6 +43,14 @@ import {
   createSpoilerRimTexture,
   radomeLiveryPhase,
 } from "./airlinerLivery";
+import {
+  FLIGHT_DECK_PANES,
+  PANE_DEPTH,
+  PANE_PROUD,
+  SkinCaster,
+  paneGrid,
+  type SkinTriangles,
+} from "./airlinerGlazing";
 
 /**
  * The Boeing 747-8 Intercontinental.
@@ -469,7 +477,14 @@ const NOSE_SECTIONS: readonly LoftSection[] = [
   { x: 28, yRadius: 3.1, zRadius: 2.92, yOffset: 0.05 },
   { x: 29.2, yRadius: 3.28, zRadius: 2.7, yOffset: 0.42 },
   { x: 30.4, yRadius: 3.05, zRadius: 2.28, yOffset: 0.5 },
-  { x: 31.4, yRadius: 2.72, zRadius: 1.82, yOffset: 0.43 },
+  // THE BROW. This ring's crown is 3.38, raised 0.23 m from 3.15 with the belly
+  // held at -2.29 (yRadius and yOffset move together), so the crown runs on
+  // from the flight deck and then drops as the windscreen's face. At 3.15 the
+  // No.1 panes' top edge landed ON the crown: there was no roof above the
+  // windscreen at all (docs/findings/AIRLINER_NOSE_GLAZING.md). Now the top
+  // edge lands on the steep face below the brow. The rise is the crown
+  // reaching +15 degrees from the left-seat eye at this station.
+  { x: 31.4, yRadius: 2.835, zRadius: 1.82, yOffset: 0.545 },
   { x: 32.4, yRadius: 2, zRadius: 1.36, yOffset: 0.3 },
   { x: 33.4, yRadius: 1.2, zRadius: 0.92, yOffset: -0.25 },
   { x: 34, yRadius: 0.31, zRadius: 0.34, yOffset: -0.1 },
@@ -1663,62 +1678,53 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // meshes into the airframe-transparency rendering group: drawn before the
   // water, their depth pre-pass cuts a hole in the sea behind them, and that
   // is a defect this renderer has shipped before.
-  // THREE PANES A SIDE, wrapped around the nose on the skin itself.
+  // THREE PANES A SIDE, each the window of sky it shows, cast onto the skin.
   //
-  // The first version put a single flat windscreen box on the centreline at
-  // y = 3.0, and it never appeared in a rendered frame: at that station the
-  // upper deck's skin is at y = 3.6, so the whole pane was sealed inside the
-  // loft. A pane on a rounded nose has to be PLACED ON the surface, not near
-  // it, which is what `skinPoint` is for — the same call that puts 228 cabin
-  // windows in their skin. Each pane is 0.12 m thick and centred on the
-  // surface, so exactly half of it stands proud and the glass reads.
-  //
-  // Both angles are read off the skin rather than chosen: the pitch lays the
-  // pane against the flank's curvature, and the yaw follows the nose's taper,
-  // measured across the pane's own length. Without the yaw the forward corner
-  // of the No.1 window stands 0.15 m off a flank that is narrowing 0.5 m per
-  // metre right there.
-  const flightDeckWindows = [
-    { name: "one", x: 31.35, y: 2.88, length: 0.95, height: 0.7 },
-    { name: "two", x: 30.4, y: 2.95, length: 0.9, height: 0.64 },
-    { name: "three", x: 29.5, y: 2.95, length: 0.8, height: 0.58 },
-  ] as const;
+  // The panes were boxes placed by station and height and laid against the
+  // skin, and measured from the flight deck they gave an opening about 19
+  // degrees tall (the type's is ~35), a No.1 top edge sitting ON the crown,
+  // and a No.3 behind the pilot's shoulder. `airlinerGlazing.ts` now specifies
+  // each pane by azimuth and elevation from the centreline and casts that
+  // window onto the fuselage and nose AS BUILT -- their own triangles, so the
+  // glass follows the facets the skin is drawn with -- and `skinPanel` lays
+  // it on them, PANE_PROUD out and PANE_DEPTH in along the skin's normal.
+  // docs/findings/AIRLINER_NOSE_GLAZING.md has the design and the corner
+  // table the cockpit's eye is solved against.
+  const skinOf = (mesh: AbstractMesh): SkinTriangles => ({
+    positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
+    indices: mesh.getIndices()!,
+    normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
+  });
+  const caster = new SkinCaster([skinOf(fuselage), skinOf(radome)]);
   const flightDeckGlazing: AbstractMesh[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
-    for (const pane of flightDeckWindows) {
-      const glazing = build.box(
+    for (const pane of FLIGHT_DECK_PANES) {
+      const grid = paneGrid(caster, pane, side);
+      const glazing = build.skinPanel(
         `${sideName}-airliner-flight-deck-window-${pane.name}`,
-        pane.length,
-        pane.height,
-        0.12,
+        grid.points,
+        grid.normals,
+        PANE_PROUD,
+        PANE_DEPTH,
         glass,
         root,
       );
-      // NOSE_SECTIONS, not the upper deck's: forward of x = 30 the deck has
-      // already died inside the nose and the flight deck is the top of the
-      // nose's own section. Reading the upper deck's skin here would put the
-      // glass back inside the metal, which is the defect this loop exists for.
-      const half = pane.length * 0.5;
-      const forward = skinPoint(NOSE_SECTIONS, pane.x + half, pane.y);
-      const aft = skinPoint(NOSE_SECTIONS, pane.x - half, pane.y);
-      const skin = skinPoint(NOSE_SECTIONS, pane.x, pane.y);
-      glazing.position.set(pane.x, pane.y, side * skin.z);
-      glazing.rotation.y = side * Math.atan2(aft.z - forward.z, pane.length);
-      glazing.rotation.x = -side * skin.tilt;
       glazing.metadata = { ...glazing.metadata, castsShadow: false };
       flightDeckGlazing.push(glazing);
     }
   }
-  // The centre post, laid along the nose's crown line between the two No.1
-  // panes. Its endpoints are the crown height at those two stations, so it
-  // sits half in the skin instead of floating over it.
-  // Half sunk in the crown, so its shadow is the nose's own.
-  const windscreenFrame = withoutShadow(build.strutBetween(
+  // The centre post: the centreline strip between the two No.1 panes, cast
+  // the same way (+-1 degree of the +-2.5 gap, over No.1's elevations), so it
+  // lies on the skin at the glass's height the whole way down. A straight
+  // strut between two crown points sank 5 cm under the skin at the 32.4 ring.
+  const post = paneGrid(caster, { name: "one", azimuth: [-1, 1], elevation: FLIGHT_DECK_PANES[0]!.elevation }, 1, 2);
+  const windscreenFrame = withoutShadow(build.skinPanel(
     "airliner-windscreen-center-post",
-    new Vector3(31.9, 2.73, 0),
-    new Vector3(31.2, 3.23, 0),
-    0.09,
+    post.points,
+    post.normals,
+    PANE_PROUD,
+    PANE_DEPTH,
     dark,
     root,
   ));

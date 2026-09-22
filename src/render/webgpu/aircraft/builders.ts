@@ -494,6 +494,146 @@ export class AircraftBuildContext {
 
   }
 
+  /**
+   * A plate laid ON a curved skin: a grid of skin points, each moved `proud`
+   * out along its own skin normal for the outer face and `depth` in for the
+   * inner one, with a rim closing the edge.
+   *
+   * `conformedPanels` cannot do this. It drops its underside straight down in
+   * y and takes its winding from the first quad's y-facing component, which is
+   * right for a wing and zero on a near-vertical flank. A pane on a nose needs
+   * both faces parallel to the skin whichever way the skin faces.
+   *
+   * WINDING BY GEOMETRY, TRIANGLE BY TRIANGLE: every triangle is emitted so
+   * its cross product points INTO the solid, the convention Babylon draws in
+   * this right-handed scene (`solidPlate` measured it on a `box`), and the
+   * direction into the solid is KNOWN here rather than guessed: against the
+   * normal on the outer face, along it on the inner one, and toward the
+   * neighbouring interior grid point on the rim. A centroid test, which
+   * `solidified` uses, is wrong for a curved plate: the centroid of a pane
+   * that wraps a nose lies inside the body, beyond the inner face, so the
+   * inner face -- the one the cockpit looks through -- would come out culled.
+   *
+   * Faces share vertices, so their normals come out smooth; the rim has its
+   * own. UVs are the grid's 0..1 on both faces.
+   */
+  skinPanel(
+    name: string,
+    points: SurfacePatch,
+    normals: SurfacePatch,
+    proud: number,
+    depth: number,
+    material: Material,
+    parent: TransformNode,
+  ): Mesh {
+    const rows = points.length;
+    const columns = points[0]?.length ?? 0;
+    if (rows < 2 || columns < 2) throw new RangeError("A skin panel needs at least a 2 x 2 grid");
+    if (normals.length !== rows || [...points, ...normals].some((row) => row.length !== columns)) {
+      throw new RangeError("A skin panel's points and normals must be the same rectangular grid");
+    }
+    if (!(proud >= 0) || !(depth >= 0) || !(proud + depth > 0)) {
+      throw new RangeError("A skin panel needs a non-negative proud and depth with a positive total");
+    }
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    const offset = (row: number, column: number, distance: number): SurfacePoint => {
+      const point = points[row]![column]!;
+      const normal = normals[row]![column]!;
+      return { x: point.x + normal.x * distance, y: point.y + normal.y * distance, z: point.z + normal.z * distance };
+    };
+    const vertex = (at: SurfacePoint, row: number, column: number): number => {
+      positions.push(at.x, at.y, at.z);
+      uvs.push(column / (columns - 1), row / (rows - 1));
+      return positions.length / 3 - 1;
+    };
+    const at = (index: number): SurfacePoint => ({
+      x: positions[index * 3]!, y: positions[index * 3 + 1]!, z: positions[index * 3 + 2]!,
+    });
+    // One triangle, turned so its cross product points along `into`.
+    const triangle = (a: number, b: number, c: number, into: SurfacePoint): void => {
+      const pa = at(a);
+      const pb = at(b);
+      const pc = at(c);
+      const e1 = { x: pb.x - pa.x, y: pb.y - pa.y, z: pb.z - pa.z };
+      const e2 = { x: pc.x - pa.x, y: pc.y - pa.y, z: pc.z - pa.z };
+      const cross = {
+        x: e1.y * e2.z - e1.z * e2.y,
+        y: e1.z * e2.x - e1.x * e2.z,
+        z: e1.x * e2.y - e1.y * e2.x,
+      };
+      const facing = cross.x * into.x + cross.y * into.y + cross.z * into.z;
+      if (facing === 0) throw new RangeError(`skin panel "${name}": a degenerate triangle`);
+      if (facing > 0) indices.push(a, b, c);
+      else indices.push(a, c, b);
+    };
+    const negate = (v: SurfacePoint): SurfacePoint => ({ x: -v.x, y: -v.y, z: -v.z });
+    const mean = (...vs: SurfacePoint[]): SurfacePoint => ({
+      x: vs.reduce((s, v) => s + v.x, 0) / vs.length,
+      y: vs.reduce((s, v) => s + v.y, 0) / vs.length,
+      z: vs.reduce((s, v) => s + v.z, 0) / vs.length,
+    });
+
+    const outer: number[] = [];
+    const inner: number[] = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        outer.push(vertex(offset(row, column, proud), row, column));
+      }
+    }
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        inner.push(vertex(offset(row, column, -depth), row, column));
+      }
+    }
+    for (let row = 0; row < rows - 1; row += 1) {
+      for (let column = 0; column < columns - 1; column += 1) {
+        const k = row * columns + column;
+        const corners = [k, k + 1, k + columns, k + columns + 1];
+        const normal = mean(...corners.map((c) => normals[Math.floor(c / columns)]![c % columns]!));
+        // Outer face: the solid is inward, against the normal. Inner: along it.
+        triangle(outer[k]!, outer[k + 1]!, outer[k + columns]!, negate(normal));
+        triangle(outer[k + 1]!, outer[k + columns + 1]!, outer[k + columns]!, negate(normal));
+        triangle(inner[k]!, inner[k + 1]!, inner[k + columns]!, normal);
+        triangle(inner[k + 1]!, inner[k + columns + 1]!, inner[k + columns]!, normal);
+      }
+    }
+
+    // The rim: each boundary edge as its own quad, facing away from the grid
+    // point next to it on the inside, so the corners close whatever the order.
+    const edges: Array<[number, number, number, number]> = [];
+    for (let column = 0; column < columns - 1; column += 1) {
+      edges.push([0, column, 0, column + 1]);
+      edges.push([rows - 1, column, rows - 1, column + 1]);
+    }
+    for (let row = 0; row < rows - 1; row += 1) {
+      edges.push([row, 0, row + 1, 0]);
+      edges.push([row, columns - 1, row + 1, columns - 1]);
+    }
+    for (const [r0, c0, r1, c1] of edges) {
+      // The solid is on the pane's side of its own edge: toward the grid point
+      // one step in from the edge.
+      const inwardRow = r0 === r1 ? (r0 === 0 ? 1 : rows - 2) : r0;
+      const inwardColumn = c0 === c1 ? (c0 === 0 ? 1 : columns - 2) : c0;
+      const inwardPoint = points[inwardRow]![inwardColumn]!;
+      const midpoint = mean(points[r0]![c0]!, points[r1]![c1]!);
+      const into = {
+        x: inwardPoint.x - midpoint.x, y: inwardPoint.y - midpoint.y, z: inwardPoint.z - midpoint.z,
+      };
+      const a = vertex(offset(r0, c0, proud), r0, c0);
+      const b = vertex(offset(r1, c1, proud), r1, c1);
+      const c = vertex(offset(r0, c0, -depth), r0, c0);
+      const d = vertex(offset(r1, c1, -depth), r1, c1);
+      triangle(a, b, c, into);
+      triangle(b, d, c, into);
+    }
+    return this.vertexMesh(name, positions, indices, material, parent, {
+      uvs,
+      metadata: { aircraftGeometry: "skin-panel", grid: [rows, columns] },
+    });
+  }
+
   verticalProfile(
     name: string,
     outline: readonly VerticalProfilePoint[],
