@@ -22,6 +22,7 @@ import {
   airlinerSeamPostEndpoints,
 } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
+import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 
 /**
  * The 747-8's cockpit, held to the angles it was built to and to the shell it
@@ -321,9 +322,11 @@ describe("the 747's cockpit parts", () => {
     expect(interior.material, "the interior has a material").not.toBeNull();
     // the merge itself refuses parts on different materials, so each mesh is one instance, not an equal copy: a second material is a second draw state
     expect(interior.material, "the two draw states differ").not.toBe(glare.material);
-    // and the glareshield's is the matte one with no ambient light: what the pillar and the post must NOT be on,
-    // because a face the sun misses reads (0, 0, 0) on it (see the findings doc)
-    expect((glare.material as PBRMaterial).environmentIntensity, "the glareshield's material has no ambient light").toBe(0);
+    // and the glareshield's is the matte one that reflects nothing (F0 zero) but is LIT by the sky's image light,
+    // as the interior is. (It had none once, and a face the sun missed read (0, 0, 0): the pillar and the post
+    // moved to the interior material for that, and later the glareshield itself took the sky's light.)
+    expect((glare.material as PBRMaterial).metallicF0Factor, "the glareshield reflects nothing").toBe(0);
+    expect((glare.material as PBRMaterial).environmentIntensity, "the glareshield is lit by the sky").toBe(GLARESHIELD_IMAGE_LIGHT);
     expect((interior.material as PBRMaterial).environmentIntensity, "the interior's material is lit by the sky").toBeGreaterThan(0);
     // the same instance the seats stand on: the flight deck's own interior material, so no draw state of its own
     expect(interior.material, "the airframe's interior material").toBe(named("airliner-flight-deck-interior").material);

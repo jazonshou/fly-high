@@ -1,7 +1,8 @@
 # The cockpit view was broken by its lens, its eye and its hidden skin
 
 **Status: built for the Cessna, the Global and the 747, moving instruments
-included. The F-16 is not done.**
+included. The F-16 has its coaming, board and HUD frame (phase F1); its displays
+(F2) are not built.**
 
 Jason: *"Currently, the first person/cockpit view for all aircrafts are pretty
 broken. ... I want the views to look like the player is actually flying from the
@@ -238,8 +239,9 @@ The pillar and the post are on the INTERIOR material, the one the board, the ove
 are on, and are merged into `airliner-cockpit-interior` with the board and the overhead they hang
 from; the hood and the dash are the only parts on the glareshield's own matte material. It was
 built the other way first, and read wrong twice. On the airframe's glossy dark material the pillar's
-big face showed a sheen of the sky. On the glareshield's matte one, which has no ambient light by
-design (a glareshield must not reflect in the windscreen), any face the sun misses reads (0, 0, 0):
+big face showed a sheen of the sky. On the glareshield's matte one, which then had no ambient light
+(a glareshield must not reflect in the windscreen; it takes the sky's diffuse light since the F-16's
+phase F1, see there), any face the sun missed read (0, 0, 0):
 the pillar was a black hole in the picture beside a blue-grey ceiling, and the post a black bar beside
 a blue-grey pillar, which reads as two different aeroplanes. On the interior material both read the
 ceiling's own colour, (19, 29, 38) against the ceiling's (19, 27, 33). Seven cockpit-only meshes in
@@ -753,6 +755,124 @@ handed to a separate agent told to refute it. Six confirmed and seven refuted; a
 the see-through slab, the two vacuous tests, the bury margin, the segment claim, and +6.4 degrees
 that was +5.9.
 
+## The F-16's cockpit, phase F1: a coaming over the nose, a bare board and the HUD's frame
+
+**What was wrong.** From the F-16's eye (2.22, 0.94, 0; the catalogue's, not moved) the old cockpit
+was a tilted `jet-glare-shield` box whose top read -11 degrees straight ahead, with the panel board's
+top standing above it as the silhouette at -9.3, five round dials and their needles on the board that
+the box hid, and nothing of the aeroplane above the horizon. On the type the
+pilot sits high under a bubble, and what frames the forward view is the HUD's combiner frame standing
+on the coaming.
+
+**What is built** (`cockpit/jetCockpit.ts`; every number held to the built mesh by
+`tests/render.cockpit-jet.test.ts`):
+- **The coaming**, a wedge, not a tilted box: top surface from (2.92, 0.739) to (3.50, 0.710),
+  underside 0.60, plan half-width 0.38 at the near edge narrowing to 0.26 at the far edge (0.76 m across
+  to 0.52), vertical sides,
+  flat-shaded, closed (`solidPlate`, narrowed by `sculptSolid`). Its near edge reads -16.0 straight
+  ahead, its far edge -10.19. It stays an ordinary exterior part (the dark hood seen through the
+  glass from outside), never a shadow caster, on the matte glareshield material.
+- **The board**, one bare box, face 1 mm ahead of the coaming's near face, from the tub's top up to 2 cm
+  inside the coaming, half-width 0.355. It is the first surface nowhere in the 16:9 frame: out to
+  az +-28.5 everything below -16 is the coaming's near face, and beyond that the world through the
+  glass. The ten dial and needle meshes are gone.
+- **The HUD frame**, the jet's one cockpit-only mesh: two uprights and a top bar, untapered rods of
+  8 mm radius (16 mm across, about 20 px at 1600; at the first 12 mm they were 30 px and the frame read
+  as a black doorway),
+  in one vertical plane at x 3.05, the uprights at az +-6.5 and the bar at +4.5, a box containing the
+  game's HUD symbology at (0, 0). No glass plate. The feet are buried 0.03 m in the coaming, and every
+  rod end faces away from the eye (feet down, tops up, the bar's ends outboard), so no end disc is ever
+  drawn from the seat.
+
+**Three decisions, each moved a number the design had.**
+
+| | design | built | why |
+| --- | --- | --- | --- |
+| coaming far edge | -13.0 | **-10.19** | from the eye the air-data probe's tip reads -10.41 and the radome's crown -11.23. The radome is off the cockpit camera's layer mask; the probe is not, and at -13.0 it stood 2.6 degrees clear of the coaming, a needle with nothing under it. An F-16 pilot does not see the nose. (Before this phase the old board's top hid it, at -9.3; the new edge is 0.9 degrees lower.) |
+| HUD frame station | x 3.15 | **x 3.05** | the design assumed a canopy crown of 1.10 there. The built loft's is 1.088 on the centreline and 1.05 over the bar's ends, so the frame (then 12 mm rods) cleared the glass by 0.021. At 3.05, 0.1 m nearer the eye with the same angles and 8 mm rods, it clears by **0.074**, at its top corners (both the distance from each vertex to the nearest glass triangle; the test holds it at >= 0.05). |
+| coaming material | the airframe's dark | **matte glareshield** (the frame's instance) | with image-based light the near-flat top caught the sky at grazing angles and read as a pale shelf; the real hood is matte from outside too. |
+
+The coaming's silhouette across azimuth, read off its own triangles: -10.19 straight ahead, -9.99 at
+its far corners (az +-11.5; a straight edge reads highest off-centre), falling along the top side edge
+to -10.95 at az 15. Its highest vertex anywhere in the frame is a far corner, at -9.99. Straight ahead the window
+is open from the coaming's edge to the bar's underside (-10.1 to +3.55, every ray empty), and the
+uprights rise out of the coaming's top at -13.95.
+
+**The canopy, shown against hidden, on the GPU** (one frozen pose in the air, the sim paused, the pause
+dialog hidden in the capture page only). In cockpit view the glass is alpha 0.16, albedo #0A1219,
+two-sided, roughness 0.03, image light 0.75, radiance and specular over alpha. It changed 587,820 of
+the 1,440,000 pixels by more than 8/255, against 2,127 for two captures of the same state one second
+apart and 7,242 after hiding and restoring it. What it does is a uniform tint, about 6% darker in
+luminance and slightly blue (red 7-8% darker, green 6%, blue 4%): sky high
+(77, 119, 156) shown against (83, 126, 163) hidden; sky near the horizon (128, 161, 183) against
+(139, 171, 191); ground (104, 126, 133) against (112, 134, 139). It does not wash the sky out, so it is
+not why the view "reads as sky"; the coaming's top is unchanged by it (no glass between it and the eye).
+
+**The glareshield takes the sky's light, on all four decks.** The first F-16 frames read as a black
+slab with a black doorway on it: the coaming's near face (0, 1, 1), the rods (0, 0, 0). The shared
+`glareshieldMaterial` had no image-based light, so every face the sun missed rendered black -- the
+747 pillar's black void again (the pillar and the post had moved to the interior material for it).
+The pale shelf that material was built against was the sky REFLECTED at a grazing angle, and
+`metallicF0Factor` 0 already removes every reflection (F0 and F90 both zero). So the material now
+takes the sky's diffuse light at full strength (`GLARESHIELD_IMAGE_LIGHT` 1, what every other surface
+gets), and the rods went from 12 mm to 8 mm radius.
+
+Measured live, one frozen pose per deck: the sim paused, a mask for each mesh on the material made by
+hiding it, and the material's image light swept on the page. Luma is out of 255, and the noise
+between two frames of the same state was 0 to 5 px.
+
+| deck, pose | surface | before (0) | after (1) |
+| --- | --- | --- | --- |
+| F-16, air (sun ahead) | coaming near face | 1.2 | 15.5 |
+| | rods, core | 0.0 | 17.2 |
+| | coaming top, sunlit | 55.2 | 60.9 (+10%) |
+| F-16, air (second pose) | coaming near face | 16.0 | 25.4 |
+| | rods, core | 2.1 / 6.6 | 18.9 / 21.4 |
+| | coaming top, sunlit | 54.2 | 59.9 (+10%) |
+| F-16, runway (final frame) | near face / rods / top | -- | 23.1 / 24.7-28.2 / 60.9 |
+| 747, air | hood top | 54.5 | 60.0 (+10%) |
+| | hood and dash face | 17.0-17.2 | 27.4-27.7 |
+| | pillar and post | on the interior material: unchanged | |
+| Global, air | glareshield top | 55.3 | 60.8 (+10%) |
+| | glareshield face | 12.7 | 24.4 |
+| Cessna, air | hood, whole | 38.4 | 47.1 (+23%) |
+
+A small term, which was the first plan, is too small. On the F-16 at the first pose the near face read
+1.5 at 0.1, 4.6 at 0.2, 8.2 at 0.35, 10.0 at 0.5 and 13.1 at 0.75. Past 1 the sunlit top goes over +10%:
+at the second pose, 1.25 gave the near face 27.8 and the top +13%, and 1.5 gave 29.6 and +15%. The
+upward faces gain about 1.7 times what the aft faces gain, because they see more sky. So at the first
+pose the near face (15.5) and the rods (17.2) sit just under the ~18 wanted while the tops sit at the
++10% ceiling. The hoods still read matte and near-black from every seat, and the 747's pillars do not
+move. The cockpit-mode perf shots do not see it: their rig is world-only and draws no part of the
+aeroplane (`FlightRenderer.ts`). Whether a chase shot sees a hood through its glass was not measured.
+
+**Budget.** Outside cockpit view the jet spends 174 draws (184 before: the ten dials and needles are
+gone). In cockpit view the cockpit camera's layer mask drops exactly the fuselage, the radome and the
+spine and adds the frame; the 54 shadow casters do not change with the view.
+
+**The gate.** Every other jet mesh (66 of them) is where f9d2672 had it, world positions to the
+micrometre and indices, mesh by mesh; the jet goes 78 meshes to 69. The seam and taper digests are
+re-pinned for the jet alone.
+
+**Known limits, recorded rather than fixed:**
+- *The eye and the nose disagree.* The radome's crown reads -11.23 from this eye; on the type the
+  over-the-nose line is nearer -15. A nose-loft or eye question for a later pass.
+- *The 2D HUD crosses the 3D frame.* The pitch ladder is CSS and the frame is geometry, so at some window
+  shapes a ladder line crosses an upright. A real combiner frame does the same; the bar stays at +4.5.
+- *No side walls this pass.* At the frame's bottom corners the pilot sees the world through the glass.
+  The canopy sill is the first surface nowhere in the frame: out to about az 22 it is inside the frame
+  but behind the coaming, and beyond that it is below the frame's bottom (it reads -42.4 at az 90). So
+  its see-through planform walls (registered from the Cessna junction) are not met here.
+- *Composed for 16:10 and wider.* The lens is fixed horizontally, so a squarer window shows more below
+  the coaming: at 3:2 the board's face appears as a band of the interior's grey under the coaming's
+  near face (1.7% of the frame), at 4:3 5.1% and the canopy sill at the bottom corners, at 5:4 6.9%.
+  At 16:9 the sill's nearest approach to the frame's bottom is 4.1 degrees (az 27.5); at 16:10, 2.0.
+  Nothing locks the aspect ratio.
+- *No cockpit glow at night.* The dials' markings were the F-16's only emissive cockpit part and went
+  with them; nothing in its cockpit lights up at night until F2's displays do.
+- *F2's displays* go on the coaming's near face, the only part of the panel the pilot sees: the band
+  y 0.638 (the frame's bottom straight ahead at 16:9) to 0.739.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -772,7 +892,8 @@ which gives way in cockpit view. Registered for the PM, not changed here.
 against its caps, as `verticalProfile` does, so a planform's walls are culled from outside and its edge
 is see-through at grazing angles. The Cessna's roof is fixed here with `solidified()`. The F-16's three
 planforms (`jetVisual.ts`: the canopy sill, the shelves, the panels) are built the same way and were not
-touched. The canopy sill is cockpit-adjacent, so the F-16 cockpit work will meet it.
+touched. The F-16's sill is never seen from the seat (behind the coaming out to about az 22, below
+the frame beyond), so phase F1 did not meet it; side walls would.
 
 **For the register, from the displays' own measurements:** the engine page's label should come from
 the airframe (N1 on the 747, N2 on the Global and the F-16, RPM on the Cessna) before an engine page
@@ -781,5 +902,5 @@ Global, 1.9 on the 747) that a direct canvas upload would delete, if an engine e
 imported without breaking startup; and a 4K player would out-resolve the 440 x 300 slot (the
 crossover is a canvas about 2,170 px wide).
 
-**Not built:** the F-16's cockpit. Baselines are not promoted here; the single end-of-wave
-promotion absorbs the change.
+**Not built:** the F-16's displays (phase F2: the two MFDs and the UFC on the coaming's near face).
+Baselines are not promoted here; the single end-of-wave promotion absorbs the change.

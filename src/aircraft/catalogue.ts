@@ -254,13 +254,16 @@ const JET: AircraftSpec = Object.freeze({
   // behind the seat's front edge, under the aft canopy. The comment here used
   // to describe a "tandem canopy"; an F-16 has a single-seat one-piece bubble.
   //
-  // From the geometry: ejection seat centred (2.00, 0.32) reclined 26 degrees,
-  // panel centred x 2.92 with its top edge at y 0.82, canopy crown y 1.233 at
-  // x 2.22. The eye clears the panel top by 0.12 m over a 0.70 m reach — 9.7
-  // degrees of down-angle, against the 150's 9.8 and the Global's 9.6 — and
-  // leaves 0.29 m of headroom, which is a helmet and no more, as an F-16
-  // canopy is. The sightline passes over the radome, so the pilot can see the
-  // nose.
+  // From the geometry: the seat back reclined 15 degrees, canopy crown y 1.240
+  // at x 2.22, which leaves 0.30 m of headroom: a helmet and no more, as an
+  // F-16 canopy is. The cockpit is built AROUND this eye
+  // (`cockpit/jetCockpit.ts`): the coaming's near edge reads -16.0 straight
+  // ahead and its far edge -10.2, and the HUD frame stands at az +-6.5 / +4.5.
+  // The pilot does NOT see the nose: from here the air-data probe's tip reads
+  // -10.41 and the radome's crown -11.23, so the coaming covers both. On the
+  // type the over-the-nose line is nearer -15, so this eye and the nose loft
+  // disagree by a few degrees; that is a nose-loft or eye question, recorded,
+  // not settled here.
   // `right` 0: a single-seat aeroplane, and the seat is on the centreline.
   cockpitEye: Object.freeze({ forward: 2.22, up: 0.94, right: 0 }),
   spawn: Object.freeze({

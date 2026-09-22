@@ -16,6 +16,7 @@ import {
   bizjetShellTop,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
+import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 
 /**
  * The Global's cockpit, held to the angles it was built to and to the shell it
@@ -468,7 +469,7 @@ describe("the Global's cockpit parts", () => {
     }
     expect(hood.roughness).toBeGreaterThanOrEqual(0.99);
     expect(hood.clearCoat.isEnabled).toBe(false);
-    expect(hood.environmentIntensity).toBe(0);
+    expect(hood.environmentIntensity, "lit by the sky's image light; F0 zero keeps it from reflecting the sky").toBe(GLARESHIELD_IMAGE_LIGHT);
     expect(hood.metallicF0Factor).toBe(0);
     const luma = (m: PBRMaterial) => m.albedoColor.r + m.albedoColor.g + m.albedoColor.b;
     expect(luma(hood)).toBeLessThan(luma(board));

@@ -242,13 +242,13 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     if (reading.aircraftKind !== kind) {
       throw new Error(`${label}: the scene holds a "${reading.aircraftKind}", not the requested "${kind}"`);
     }
-    // Cockpit-only parts (the trainer, the Global and the 747 have them): drawn in cockpit
-    // view, and in NO other. Read from the live scene, so a part that leaks into a
+    // Cockpit-only parts (every airframe has them now; the F-16's is its HUD frame): drawn in
+    // cockpit view, and in NO other. Read from the live scene, so a part that leaks into a
     // chase or orbit frame fails here instead of being noticed, or not, in the PNG.
     const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
     // Trainer 19; Global 8 and 747 4 since their 3D attitude balls came out (three meshes each,
-    // hung from a pivot; their PFD pages draw attitude on the screen now).
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 19, bizjet: 8, airliner: 4 };
+    // hung from a pivot; their PFD pages draw attitude on the screen now); the F-16 1, its HUD frame.
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 1 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {
