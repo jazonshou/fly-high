@@ -685,14 +685,31 @@ The other 68, the jet's 78, the Global's 96 and the 747's 93 are bit-identical. 
 digests are re-pinned on that evidence.
 
 **Perf.** The 14 cockpit-mode shots draw no aircraft (`PERF_COCKPIT_RIG`), so nothing moves there. The
-26 chase shots fly the trainer by default, and they DO move. At the chase rig's rest position (13.5 m
+25 chase shots (of the 39; the other 14 are the cockpit shots) fly the trainer by default, and they DO move. At the chase rig's rest position (13.5 m
 back, 5.1 m up, 62 degrees, 1280 x 720):
 - The junction geometry changes the nearest opaque surface of only 4 of 921,600 pixels. From straight
   behind, the new bar lies in front of the strut.
 - The roof is the nearest surface on 702 pixels, 412 at the full-speed 15.7 m, and all of them change
   shading with its normals.
 
-The end-of-wave promotion absorbs both.
+The end-of-wave promotion absorbs both. The 25, as `PERF_CAPTURE_SHOTS` names them:
+approach-500ft, slant-10km, reference-viewport, cruise-horizon, winter-noon, night, night-moonlit,
+dusk-mesopic, motion-banked-turn, page-thrash-turn, cdlod-transition, cruise-sun-30,
+forest-500ft-sunbehind, coast-10km-lowsun, runway-on-approach, water-25ft, hills-dusk-glint,
+mountain-close, forest-line-highsun, cliff-60m, golden-hour, blue-hour, night-beacon-offset,
+sunset-sunward, approach-lights-outboard. (Commit 1c79768's message says 26; that count came from a grep
+that also matched the type declaration. 25 is read off the shot table itself.)
+
+**The see-through edge, before and after, in the live app.** Rendered in one paused flight, with the
+aircraft and the world frozen, by rewinding only the roof's 16 wall triangles back to the planform's
+order between captures:
+- A grazing view 3.5 m off the port side in the roof's plane: 3,533 pixels change between before and
+  after, against a control of 0 (two "after" captures three frames apart). Before, the roof's whole port
+  edge is a dark and green line through which the slab's inside and the far side show; after, it is a
+  solid wall.
+- At the review's own orbit pose (25.8 m, 62 degrees, 880 px wide): within 4 px of the buried end, 5
+  pixels change and 0 in the control. That is the fleck, at the size the review predicted, measured
+  because it is too small to see.
 
 **Tests and mutations.** The old apex tests are replaced by the member's own claims:
 - full radius right to the corner, read off the strut's OWN side triangles (a position filter at the
