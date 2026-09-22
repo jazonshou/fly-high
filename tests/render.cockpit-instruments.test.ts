@@ -411,8 +411,12 @@ describe("the Cessna's needles turn only while cockpit view is on", () => {
  * draws its own horizon, so each ball was a second attitude indicator standing a couple of
  * millimetres in front of the first and hiding most of it. What holds those two aeroplanes'
  * attitude picture instead is the PFD page's own horizon test and
- * `render.cockpit-display-state.test.ts`, which flies the same simulator this row flies and
- * holds the page's pitch, bank and heading to the HUD's own numbers.
+ * `render.cockpit-display-state.test.ts`, which holds the page's pitch, bank and heading to the
+ * HUD's own arithmetic for the same visual state. Note what that test does NOT do: it builds its
+ * states by hand and flies no simulator, so a sign error between the simulator and the visual
+ * state (the kind D-6 fixed) is not caught there; this row's simulator-flown check covers the
+ * Cessna alone. A live frame of each glass deck in a bank, with the drawn horizon measured off the
+ * rendered pixels against the model's own bank, is the evidence for those two.
  */
 interface BallCase {
   readonly kind: "trainer";
@@ -535,7 +539,7 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
     const barAt = project(fixture.camera, bar.getBoundingInfo().boundingBox.centerWorld);
     if (pitch > 0) expect(side(ballLeft, ballRight, barAt), "nose up: the bar is not below the ball's horizon").toBe(side(ballLeft, ballRight, groundAt));
     if (pitch < 0) expect(side(ballLeft, ballRight, barAt), "nose down: the bar is not above the ball's horizon").toBe(side(ballLeft, ballRight, skyAt));
-    // a millimetre a degree on the Global's ball, in proportion to the radius on another, along the pivot's own up
+    // 0.75 mm a degree on the Cessna's 0.036 m ball (the glass decks' 0.048 m balls took 1 mm), along the pivot's own up
     expect(bar.position.y).toBeCloseTo(-pitch * ball.metresPerDegree, 9);
     expect(state.pitch).toBeCloseTo(pitch, 5);
   });

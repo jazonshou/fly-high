@@ -99,8 +99,9 @@ export const BIZJET_DISPLAYS: DisplayLayout = Object.freeze({
  * authored and tested at 440 x 300, the same ratio. A square slot (the first version of this was six
  * 256 x 256 in a row) squashes every page and cramps its text; the aspect is what matters, so no
  * square atlas would have been right at any resolution. `tests/render.cockpit-displays.test.ts`
- * reads both aeroplanes' screens off the built mesh and holds the slots to what it finds, so a deck
- * whose screens are a different shape fails here instead of drawing squashed.
+ * measures every screen's pilot-facing face off both aeroplanes' BUILT merged mesh and holds the slot
+ * to the shape it finds, so a deck whose screens are a different shape fails there instead of drawing
+ * squashed.
  *
  * 440 x 300 is also a measured choice rather than a starting point now. At 660 x 450 one full atlas
  * update costs 4.2 ms against 3.3 ms on this machine, and at the viewport it was measured on the
@@ -118,6 +119,40 @@ export function displayAtlasHeight(layout: DisplayLayout): number {
 }
 /** Redraw rate while the cockpit is in view. A display is not an animation; 15 a second is plenty. */
 export const DISPLAY_UPDATE_HZ = 15;
+
+/**
+ * WHEN TO REDRAW, shared by every deck: a counter fed the frame's own delta that says "now" at most
+ * `hz` times a second, and "now" on the first frame after `invalidate()`.
+ *
+ * THE INVALIDATE IS THE POINT OF THIS BEING A THING. The counter only runs while the cockpit is in
+ * view (the visuals call `update` only then), so on leaving it stops wherever it was -- often just
+ * after a redraw. Coming back, a bare counter would wait out the rest of its 1/15 s before drawing,
+ * and for those frames the screens would show the attitude, heading and altitude from when the pilot
+ * LAST LEFT, minutes old, behind an instant camera cut. The visuals call `invalidate()` on the way
+ * in, so the first frame back is a fresh picture. The first-ever entry did not need it (the counter
+ * starts due); every later one did, and a review of this code found it, not a frame.
+ */
+export interface DisplayRedrawClock {
+  /** Feed one frame's delta; true when the displays are due to be redrawn this frame. */
+  tick(secondsSinceLastUpdate: number): boolean;
+  /** The next `tick` is due, whatever it is fed: call on entering cockpit view. */
+  invalidate(): void;
+}
+
+export function displayRedrawClock(hz: number = DISPLAY_UPDATE_HZ): DisplayRedrawClock {
+  let since = Number.POSITIVE_INFINITY;
+  return {
+    tick(secondsSinceLastUpdate) {
+      since += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
+      if (since < 1 / hz) return false;
+      since = 0;
+      return true;
+    },
+    invalidate() {
+      since = Number.POSITIVE_INFINITY;
+    },
+  };
+}
 
 /** Each screen's slot, in the build order, carrying the screen's name alongside the page it draws. */
 export function displaySlots(layout: DisplayLayout): readonly (DisplaySlot & { readonly screen: string })[] {
@@ -267,7 +302,7 @@ export function displayMaterial(build: AircraftBuildContext, name: string, atlas
   return material;
 }
 
-/** Draw all six pages and hand the pixels to the GPU. */
+/** Draw every page of the atlas's layout and hand the pixels to the GPU. */
 export function paintDisplays(atlas: DisplayAtlas, state: DisplayState): void {
   drawDisplayAtlas(atlas.context, atlas.width, atlas.height, atlas.slots, state);
   uploadDisplayAtlas(atlas);

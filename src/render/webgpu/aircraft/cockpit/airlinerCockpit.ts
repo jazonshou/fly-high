@@ -9,11 +9,11 @@ import type { AircraftBuildContext } from "../builders";
 import { glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
 import {
   AIRLINER_DISPLAYS,
-  DISPLAY_UPDATE_HZ,
   createDisplayAtlas,
   displayAtlasHeight,
   displayAtlasWidth,
   displayMaterial,
+  displayRedrawClock,
   displaySlots,
   paintDisplays,
   remapScreenFaceToSlot,
@@ -377,6 +377,11 @@ export interface AirlinerCockpit {
    */
   readonly displaysLive: boolean;
   /**
+   * The next `update` redraws the displays whatever its delta: the visual calls this on ENTERING
+   * cockpit view, so the first frame back is not the picture from when the pilot last left.
+   */
+  invalidateDisplays(): void;
+  /**
    * Redraw the displays at `DISPLAY_UPDATE_HZ` from what `state` reads.
    * The visual calls this from its `update` ONLY while cockpit view is on, and passes the frame's
    * own delta so the redraw rate is wall-clock rather than frame-rate.
@@ -540,8 +545,11 @@ export function buildAirlinerCockpit(
   const post = build.strutBetween("airliner-windscreen-post-port", seam.bottom, buriedTop, AIRLINER_POST.radius, materials.interior, root);
   parts.push(build.mergeStatic("airliner-cockpit-interior", [board, overhead, pillar, post], root));
 
-  // THE DISPLAYS ARE REDRAWN ON A COUNTER, not every frame: `update` is only called while cockpit
-  // view is on (the visual gates it), and 15 a second is as fast as a display needs to move.
+  // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
+  // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a
+  // display needs to move, and the visual invalidates it on entry. Before that invalidate existed,
+  // every return to the cockpit after the first showed the pages from when the pilot last left for
+  // up to three frames behind an instant camera cut: the counter stopped where it was on the way out.
   //
   // WHAT ONE REDRAW COSTS, measured in the live app on this machine (M2 Pro, WebGPU, 60 samples,
   // one update per animation frame, the texture proven live and bound each time): 0.3 ms to draw
@@ -550,15 +558,16 @@ export function buildAirlinerCockpit(
   // because the bytes have to reach the GPU through a `RawTexture`: this engine build has neither
   // `createDynamicTexture` nor `updateDynamicTexture` (both measured undefined), so the canvas
   // cannot be handed to the texture directly. Both are on the register.
-  let sinceDisplayDraw = Number.POSITIVE_INFINITY;
+  const redraw = displayRedrawClock();
   return {
     parts,
     displaysLive: atlas !== null,
+    invalidateDisplays() {
+      redraw.invalidate();
+    },
     update(state, secondsSinceLastUpdate = 0) {
       if (atlas === null) return;
-      sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
-      if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;
-      sinceDisplayDraw = 0;
+      if (!redraw.tick(secondsSinceLastUpdate)) return;
       drawDisplays(atlas, displayStateFromVisual(state, AIRLINER_DISPLAY_AIRFRAME));
     },
   };

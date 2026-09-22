@@ -9,11 +9,11 @@ import type { AircraftBuildContext } from "../builders";
 import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
 import {
   BIZJET_DISPLAYS,
-  DISPLAY_UPDATE_HZ,
   createDisplayAtlas,
   displayAtlasHeight,
   displayAtlasWidth,
   displayMaterial,
+  displayRedrawClock,
   displaySlots,
   paintDisplays,
   remapScreenFaceToSlot,
@@ -345,18 +345,24 @@ const WALL = Object.freeze({
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Eleven meshes: eight static (the panel, its hood, the screens, their bezels,
- * the two windscreen posts, the overhead, and the side walls with their sill
- * caps) and the three attitude pieces, which stay separate because the pivot turns them. There
- * is no pedestal: it would top out at -30 degrees between the
- * seats, below the frame at every azimuth it could be seen from.
+ * Eight meshes, all static: the panel, its hood, the screens, their bezels, the
+ * two windscreen posts, the overhead, and the side walls with their sill caps. It
+ * was eleven until the 3D attitude ball came out -- its three pieces hung from a
+ * pivot and could not be merged -- and the PFD page draws attitude on the screen
+ * now. There is no pedestal: it would top out at -30 degrees between the seats,
+ * below the frame at every azimuth it could be seen from.
  */
-/** What `buildBizjetCockpit` hands back: the meshes, and the step that moves the attitude ball. */
+/** What `buildBizjetCockpit` hands back: the meshes, and the displays' redraw step and its reset. */
 export interface BizjetCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
   /** True when the screens carry a live atlas: false under `NullEngine`, where there is no canvas. */
   readonly displaysLive: boolean;
+  /**
+   * The next `update` redraws the displays whatever its delta: the visual calls this on ENTERING
+   * cockpit view, so the first frame back is not the picture from when the pilot last left.
+   */
+  invalidateDisplays(): void;
   /**
    * Redraw the displays at `DISPLAY_UPDATE_HZ`. The visual calls this from its `update` ONLY while
    * cockpit view is on, and passes the frame's delta so the counter is the frame's own clock.
@@ -494,19 +500,21 @@ export function buildBizjetCockpit(
   }
   parts.push(build.mergeStatic("bizjet-side-walls", wallSources, root));
 
-  // THE DISPLAYS ARE REDRAWN ON A COUNTER, not every frame: `update` is only called while cockpit
-  // view is on (the visual gates it), and 15 a second is as fast as a display needs to move. One
-  // redraw of this four-slot atlas is cheaper than the 747's six-slot one, and both are measured in
-  // the findings doc rather than assumed.
-  let sinceDisplayDraw = Number.POSITIVE_INFINITY;
+  // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
+  // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a
+  // display needs to move, and the visual invalidates it on entry so a return to the cockpit never
+  // shows a stale picture. One redraw of this 880 x 600 atlas costs 2.4 ms median in the live app
+  // (1.6 of it the `getImageData` readback), against 3.15 for the 747's 1320 x 600 timed alongside it.
+  const redraw = displayRedrawClock();
   return {
     parts,
     displaysLive: atlas !== null,
+    invalidateDisplays() {
+      redraw.invalidate();
+    },
     update(state, secondsSinceLastUpdate = 0) {
       if (atlas === null) return;
-      sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
-      if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;
-      sinceDisplayDraw = 0;
+      if (!redraw.tick(secondsSinceLastUpdate)) return;
       paintDisplays(atlas, displayStateFromVisual(state, BIZJET_DISPLAY_AIRFRAME));
     },
   };

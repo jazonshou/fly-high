@@ -49,10 +49,11 @@ import type { AircraftKind } from "../src/sim";
  * integration meet on one interface.
  *
  * EVERY ROW BELOW IS RUN FOR BOTH AEROPLANES, because the machinery is shared and a deck-shaped
- * mistake in it (a slot table that fits six and not four, an atlas sized for two rows whatever the
- * screen count) shows up only where the shapes differ. The 747 has six screens three across; the
- * Global has four, two across, and no EICAS page -- see `BIZJET_DISPLAYS` for why its engine page
- * would print a label this aeroplane's own HUD contradicts.
+ * mistake in it (a slot table that fits six and not four) shows up only where the shapes differ. The
+ * 747 has six screens three across; the Global has four, two across, and no EICAS page -- see
+ * `BIZJET_DISPLAYS` for why its engine page would print a label this aeroplane's own HUD contradicts.
+ * Both real decks happen to be TWO rows deep, so a mistake that only shows at another depth (an atlas
+ * sized for two rows whatever the screen count) is held by synthetic layouts at the end of the file.
  */
 
 interface Deck {
@@ -197,11 +198,12 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     aircraft.setCockpitView(false);
   });
 
-  it("gives each screen its own slot of the atlas, in the order the screens are built", () => {
+  it("gives each screen its own slot of the atlas, u AND v, the right way up, in the order the screens are built", () => {
     // Measured off the MERGED mesh, which is what samples the texture: for each screen, the four
-    // vertices of its pilot-facing face (normal -X) must carry the u range of its own slot. This is
-    // the pairing a swapped slot table would break, and the frames would then show the PFD's picture
-    // on the ND.
+    // vertices of its pilot-facing face (normal -X) must carry the u AND v ranges of its own slot.
+    // This is the pairing a swapped slot table would break, and the frames would then show the PFD's
+    // picture on the ND. V MATTERS AS MUCH AS U: slots in one column share a u range, so a screen
+    // pointed at the wrong ROW -- or every slot collapsed onto the top row -- passes a u-only check.
     const screens = screensMesh();
     const positions = screens.getVerticesData(VertexBuffer.PositionKind)!;
     const normals = screens.getVerticesData(VertexBuffer.NormalKind)!;
@@ -214,17 +216,33 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     const slots = displaySlots(deck.layout);
     for (const [index, placement] of placements.entries()) {
       // the face's vertices: normal -X, and at this screen's own z
-      const us: number[] = [];
+      const face: { y: number; z: number; u: number; v: number }[] = [];
       for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
         if (normals[vertex * 3]! > -0.9) continue;
         if (Math.abs(positions[vertex * 3 + 2]! - placement.centre.z) > reach) continue;
-        us.push(uvs[vertex * 2]!);
+        face.push({ y: positions[vertex * 3 + 1]!, z: positions[vertex * 3 + 2]!, u: uvs[vertex * 2]!, v: uvs[vertex * 2 + 1]! });
       }
-      expect(us.length, `${placement.name}: pilot-facing vertices`).toBe(4);
+      expect(face.length, `${placement.name}: pilot-facing vertices`).toBe(4);
       const slot = slots[index]!;
       expect(slot.screen, `slot ${index} belongs to ${placement.name}`).toBe(placement.name);
-      expect(Math.min(...us)).toBeCloseTo(slot.x / atlasWidth, 6);
-      expect(Math.max(...us)).toBeCloseTo((slot.x + slot.w) / atlasWidth, 6);
+      const us = face.map((corner) => corner.u);
+      const vs = face.map((corner) => corner.v);
+      expect(Math.min(...us), `${placement.name}: u from`).toBeCloseTo(slot.x / atlasWidth, 6);
+      expect(Math.max(...us), `${placement.name}: u to`).toBeCloseTo((slot.x + slot.w) / atlasWidth, 6);
+      expect(Math.min(...vs), `${placement.name}: v from`).toBeCloseTo(slot.y / atlasHeight, 6);
+      expect(Math.max(...vs), `${placement.name}: v to`).toBeCloseTo((slot.y + slot.h) / atlasHeight, 6);
+      // THE RIGHT WAY UP: the face's TOP edge samples the slot's top row, i.e. the smaller v. A
+      // texture's v and a canvas's y run opposite ways here, which the first live 747 frame showed
+      // by drawing every page upside down; this holds the fix.
+      const topY = Math.max(...face.map((corner) => corner.y));
+      for (const corner of face.filter((c) => Math.abs(c.y - topY) < 1e-6)) {
+        expect(corner.v, `${placement.name}: its top edge samples the slot's top`).toBeCloseTo(slot.y / atlasHeight, 6);
+      }
+      // THE SCREEN'S OWN SHAPE, from the built face rather than the builder's constant: the slot
+      // must be drawn at the aspect the pilot actually sees, or every page is squashed
+      const built = (Math.max(...face.map((c) => c.z)) - Math.min(...face.map((c) => c.z)))
+        / (Math.max(...face.map((c) => c.y)) - Math.min(...face.map((c) => c.y)));
+      expect(slot.w / slot.h, `${placement.name}: slot aspect against the built face`).toBeCloseTo(built, 3);
     }
   });
 
@@ -261,6 +279,14 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     expect(new Set(slots.map((slot) => slot.page))).toEqual(new Set(Object.values(deck.pages)));
     const covered = slots.reduce((sum, slot) => sum + slot.w * slot.h, 0);
     expect(covered).toBe(atlasWidth * atlasHeight);
+    // a summed area cannot see two slots stacked on each other (every slot on row 0 still sums
+    // right), so no two may overlap: with that, the areas adding up means they TILE the atlas
+    for (const [i, a] of slots.entries()) {
+      for (const b of slots.slice(i + 1)) {
+        const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        expect(overlap, `${a.screen} and ${b.screen} overlap in the atlas`).toBe(false);
+      }
+    }
     // and nothing was drawn outside the atlas
     for (const [x, y, w, h] of clipRects) {
       expect(x!).toBeGreaterThanOrEqual(0);
@@ -305,16 +331,18 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
  *
  * Everything above runs the headless branch, where `createDisplayAtlas` finds no `document` and the
  * screens keep their flat material. That leaves the half that actually ships -- create the canvas,
- * draw the pages into it, hand the pixels to the texture, and do it fifteen times a second and not
- * once a frame -- covered only by looking at a frame. Three mutations proved the gap rather than
- * argued it: sizing the Global's atlas from the 747's layout, and deleting the redraw from the
- * cockpit's `update` altogether, both passed the whole suite.
+ * draw the pages into it, hand the pixels to the texture, do it fifteen times a second and not once a
+ * frame, and draw at once on coming back into the cockpit -- covered only by looking at a frame.
+ * Mutations proved the gap rather than argued it: sizing the Global's atlas from the 747's layout,
+ * deleting the redraw from the cockpit's `update`, deleting the UPLOAD so every screen stays black,
+ * and doubling the redraw rate each passed the whole suite at some point, and each fails here now.
  *
  * So this stands a MINIMAL `document` in front of one build. `createDisplayAtlas` is the only thing
  * in an aircraft build that touches `document` at all (grep says so), the stub hands back a canvas
  * whose 2D context is the recording context the pages' own tests use, and `RawTexture` and its
- * `update` work under `NullEngine` -- measured, not assumed. The global is set and restored inside
- * each test, and vitest gives this file its own worker, so nothing else sees it.
+ * `update` work under `NullEngine` -- measured, not assumed. The atlas texture's `update` is wrapped
+ * to count the uploads and their size, which is what a screen actually shows. The global is set and
+ * restored inside each test, and vitest gives this file its own worker, so nothing else sees it.
  */
 describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displays, live", (_label, deck) => {
   interface StubCanvas {
@@ -322,33 +350,36 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     height: number;
     getContext(kind: string): unknown;
   }
+  interface Live {
+    aircraft: AircraftVisual;
+    scene: Scene;
+    canvas: StubCanvas;
+    context: ReturnType<typeof createRecordingContext>;
+    /** One entry per `RawTexture.update` on the atlas: the byte count handed to the GPU. */
+    uploads: number[];
+    /** One entry per `getImageData` the upload read the canvas with. */
+    readbacks: number;
+  }
 
-  /** A canvas that records what was drawn on it and can hand back bytes for the upload. */
-  function stubCanvas(): { canvas: StubCanvas; context: ReturnType<typeof createRecordingContext> } {
+  /** Build one aircraft with the stub in place, hand it to `body`, and put the world back. */
+  function withLiveCanvas<T>(body: (live: Live) => T): T {
     const context = createRecordingContext();
+    const live = { uploads: [] as number[], readbacks: 0 } as Live;
     const canvas: StubCanvas = {
       width: 0,
       height: 0,
       getContext(kind: string) {
         if (kind !== "2d") return null;
-        // `uploadDisplayAtlas` asks the canvas for its pixels; the bytes themselves are the GPU's
-        // business and a texture upload of the right SIZE is all that can be checked here.
+        // `uploadDisplayAtlas` asks the canvas for its pixels: count the reads, and hand back bytes of
+        // the canvas's size so the upload's size can be checked against the atlas's
         return Object.assign(context, {
-          getImageData: (_x: number, _y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+          getImageData: (_x: number, _y: number, w: number, h: number) => {
+            live.readbacks += 1;
+            return { data: new Uint8ClampedArray(w * h * 4) };
+          },
         });
       },
     };
-    return { canvas, context };
-  }
-
-  /** Build one aircraft with the stub in place, hand it to `body`, and put the world back. */
-  function withLiveCanvas<T>(body: (parts: {
-    aircraft: AircraftVisual;
-    scene: Scene;
-    canvas: StubCanvas;
-    context: ReturnType<typeof createRecordingContext>;
-  }) => T): T {
-    const { canvas, context } = stubCanvas();
     const globals = globalThis as { document?: unknown };
     const had = Object.prototype.hasOwnProperty.call(globals, "document");
     const previous = globals.document;
@@ -360,7 +391,18 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     try {
       const aircraft = createWebGpuAircraft(scene, deck.kind);
       aircraft.root.computeWorldMatrix(true);
-      return body({ aircraft, scene, canvas, context });
+      // wrap the atlas texture's upload: every call is one picture handed to the screens
+      const texture = scene.textures.find((candidate) => candidate.name === deck.layout.name) as
+        | { update(data: ArrayBufferView): void }
+        | undefined;
+      if (!texture) throw new Error(`no atlas texture named ${deck.layout.name}`);
+      const upload = texture.update.bind(texture);
+      texture.update = (data: ArrayBufferView) => {
+        live.uploads.push(data.byteLength);
+        upload(data);
+      };
+      Object.assign(live, { aircraft, scene, canvas, context });
+      return body(live);
     } finally {
       if (had) globals.document = previous;
       else delete globals.document;
@@ -369,6 +411,8 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     }
   }
 
+  const bytes = displayAtlasWidth(deck.layout) * displayAtlasHeight(deck.layout) * 4;
+
   it("sizes the canvas and the texture from ITS OWN layout, and puts the atlas on the screens", () => {
     withLiveCanvas(({ aircraft, scene, canvas }) => {
       expect(aircraft.displaysLive, "the stub canvas should have given a live atlas").toBe(true);
@@ -376,7 +420,6 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
       expect(canvas.width).toBe(displayAtlasWidth(deck.layout));
       expect(canvas.height).toBe(displayAtlasHeight(deck.layout));
       const texture = scene.textures.find((candidate) => candidate.name === deck.layout.name);
-      expect(texture, `no texture named ${deck.layout.name}`).toBeDefined();
       expect(texture!.getSize()).toEqual({ width: displayAtlasWidth(deck.layout), height: displayAtlasHeight(deck.layout) });
       // and it is the screens' emissive image, on one mesh, with the flat material left behind
       const screens = scene.getMeshByName(deck.layout.screensMesh)!;
@@ -385,33 +428,106 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     });
   });
 
-  it("redraws every page on the first update in cockpit view, and then at 15 Hz and not per frame", () => {
-    withLiveCanvas(({ aircraft, context }) => {
+  it("draws every page AND hands the whole atlas to the texture on the first cockpit frame, and nothing outside it", () => {
+    withLiveCanvas((live) => {
+      // NOT destructured: `readbacks` is a number, and a destructured copy would read 0 forever
+      const { aircraft, context, uploads } = live;
       const slots = displaySlots(deck.layout);
       const clipped = () => {
         const rects = context.calls.filter((call) => call.method === "rect").map((call) => call.args.map(Number));
         return slots.filter((slot) => rects.some(([x, y, w, h]) => x === slot.x && y === slot.y && w === slot.w && h === slot.h)).length;
       };
-      const drawCalls = () => context.calls.length;
-
-      // nothing is drawn before the cockpit is entered, however much state arrives
+      // nothing is drawn or uploaded before the cockpit is entered, however much state arrives
       aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 5 }, 1 / 60);
-      expect(drawCalls(), "an exterior-view update drew on the displays").toBe(0);
+      expect(context.calls.length, "an exterior-view update drew on the displays").toBe(0);
+      expect(uploads, "an exterior-view update uploaded").toEqual([]);
 
       aircraft.setCockpitView(true);
       aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 5, pitch: 2 }, 1 / 60);
       expect(clipped(), "every slot drawn on the first cockpit update").toBe(slots.length);
-      const afterFirst = drawCalls();
-      expect(afterFirst).toBeGreaterThan(50);
-
-      // a frame later is NOT a redraw: 1/60 is well inside the 1/15 the counter waits for
-      aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 6, pitch: 2 }, 1 / 60);
-      expect(drawCalls(), "a second frame redrew the whole atlas").toBe(afterFirst);
-
-      // ... and once the counter passes 1/15 s of frames, it draws again
-      for (let frame = 0; frame < 3; frame += 1) aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 7 }, 1 / 60);
-      expect(drawCalls(), "the atlas never redrew after the counter came due").toBeGreaterThan(afterFirst);
+      // THE UPLOAD: a drawn canvas the texture never receives is a black screen with every draw
+      // call present, so the picture is counted where the screens read it
+      expect(uploads, "one upload of the whole atlas").toEqual([bytes]);
+      expect(live.readbacks, "one readback per upload").toBe(1);
       aircraft.setCockpitView(false);
     });
+  });
+
+  it("redraws at 15 Hz exactly, not faster and not per frame, whatever the frame rate", () => {
+    withLiveCanvas(({ aircraft, uploads }) => {
+      aircraft.setCockpitView(true);
+      // one second of frames at two very different rates. The redraw happens on the first frame and
+      // then each time 1/15 s of frames has gone by, so a second holds 15 of them -- not 30 (a halved
+      // threshold or DISPLAY_UPDATE_HZ at 30), not 60 (no counter at all)
+      for (const fps of [600, 90]) {
+        uploads.length = 0;
+        aircraft.setCockpitView(false);
+        aircraft.setCockpitView(true);
+        for (let frame = 0; frame < fps; frame += 1) aircraft.update({ ...INITIAL_VISUAL_STATE, bank: frame % 30 }, 1 / fps);
+        expect(uploads.length, `redraws in one second at ${fps} fps`).toBeGreaterThanOrEqual(15);
+        expect(uploads.length, `redraws in one second at ${fps} fps`).toBeLessThanOrEqual(16);
+        for (const size of uploads) expect(size).toBe(bytes);
+      }
+      aircraft.setCockpitView(false);
+    });
+  });
+
+  it("draws at once on coming BACK into the cockpit, not after the rest of a stale 1/15 s", () => {
+    withLiveCanvas(({ aircraft, uploads }) => {
+      aircraft.setCockpitView(true);
+      aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 30 }, 1 / 60);
+      expect(uploads).toHaveLength(1);
+      // leave straight after a redraw -- the case where the clock has the most left to run -- and fly on
+      aircraft.setCockpitView(false);
+      for (let frame = 0; frame < 120; frame += 1) aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 0 }, 1 / 60);
+      expect(uploads, "nothing is uploaded while the cockpit is not in view").toHaveLength(1);
+      // back in: the very first frame must carry the level wings the aeroplane has now, not the
+      // 30 degree bank it had when the pilot left
+      aircraft.setCockpitView(true);
+      aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 0 }, 1 / 60);
+      expect(uploads, "the first frame back redrew").toHaveLength(2);
+      // and entering twice without leaving is not a second invalidate: a frame later is not due
+      aircraft.setCockpitView(true);
+      aircraft.update({ ...INITIAL_VISUAL_STATE, bank: 0 }, 1 / 60);
+      expect(uploads, "a repeated enter forced a redraw").toHaveLength(2);
+      aircraft.setCockpitView(false);
+    });
+  });
+});
+
+/**
+ * THE ATLAS AT DEPTHS NO REAL DECK HAS. Both shipped decks are two rows deep (six three across,
+ * four two across), so a sizing rule that only works for two rows -- `DISPLAY_SLOT_HEIGHT * 2`, say --
+ * passes every test that uses them. These layouts are made up for the purpose, and the rules they
+ * hold are the ones any deck relies on: as many rows as the screens need and no more, every slot
+ * inside the atlas, and no two slots on top of each other.
+ */
+describe("the atlas's shape, for layouts no aeroplane has yet", () => {
+  const made = (count: number, columns: number): DisplayLayout => ({
+    name: `made-${count}-${columns}`,
+    screensMesh: "none",
+    columns,
+    screens: Array.from({ length: count }, (_, i) => ({ screen: `screen-${i}`, page: "pfd" as const })),
+  });
+  it.each([
+    [1, 1, 1],
+    [3, 3, 1],
+    [5, 2, 3],
+    [6, 2, 3],
+    [7, 3, 3],
+    [9, 3, 3],
+  ])("puts %i screens %i across in %i rows, every slot inside and none overlapping", (count, columns, rows) => {
+    const layout = made(count, columns);
+    expect(displayAtlasWidth(layout)).toBe(DISPLAY_SLOT_WIDTH * columns);
+    expect(displayAtlasHeight(layout)).toBe(DISPLAY_SLOT_HEIGHT * rows);
+    const slots = displaySlots(layout);
+    expect(slots).toHaveLength(count);
+    for (const [i, a] of slots.entries()) {
+      expect(a.x + a.w).toBeLessThanOrEqual(displayAtlasWidth(layout));
+      expect(a.y + a.h).toBeLessThanOrEqual(displayAtlasHeight(layout));
+      for (const b of slots.slice(i + 1)) {
+        expect(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h, `${a.screen} / ${b.screen}`).toBe(false);
+      }
+    }
   });
 });

@@ -67,7 +67,8 @@ rising to -4.7, the left post's axis at azimuth -35.
 matte black hood (top edge -10.0 degrees), four flat screens 0.22 by 0.15 with
 dark-grey bezels (the pilot's pair centred on the eye's own z, top edge 1.5
 degrees under the hood's underside), the pilot's left screen carrying an attitude
-ball of sky half, ground half and pitch bar under ONE pivot node, two windscreen
+ball of sky half, ground half and pitch bar under ONE pivot node (since removed: the
+screens draw real PFD and map pages now, see "The Global's screens draw pages too"), two windscreen
 posts (the left one's axis at azimuth -34, raked like the glass, its foot at the
 sill as far forward as the shell allows), an overhead from the glass's top edge
 to 0.3 m behind the eye, and side walls with sill caps. Hidden from the cockpit
@@ -133,7 +134,7 @@ HUD's units setting (`cockpit/instrumentMappings.ts`, a pure module):
 | Cessna altimeter | `altitude` (m above sea level) x 3.28084 ft | one needle, 360 per 1,000 ft, wraps |
 | Cessna vertical speed | `verticalSpeed` (m/s) x 196.85 ft/min | -90 at 0, 0 at +2,000, -180 at -2,000, clamped |
 | Cessna engine | `engineRpm` (prop RPM) | -135 at 0 to +135 at 2,750, clamped |
-| Global attitude ball | `bank`, `pitch` (degrees) | the ball's horizon turns by MINUS the bank; the pitch bar slides down 1 mm a degree of nose-up, clamped at 25 |
+| Global attitude ball (REMOVED; its PFD page draws attitude now) | `bank`, `pitch` (degrees) | the ball's horizon turned by MINUS the bank; the pitch bar slid down 1 mm a degree of nose-up, clamped at 25 |
 | Cessna attitude ball | `bank`, `pitch` (degrees) | the same ball at 0.75 of the size (radius 0.036 on the 0.08 dial): the bar slides 0.75 mm a degree, clamped at 25 |
 
 The Cessna's attitude dial first had no mapping and its needle stood at 12
@@ -365,9 +366,10 @@ the GPU draws it. The convention was MEASURED on a `build.box` face that visibly
 face's `cross(p1 - p0, p2 - p0)` points INTO the solid, so it is drawn if `dot(cross, rayDirection) > 0`.
 `tests/render.cockpit-drawn-faces.test.ts` runs it on the Cessna, the Global and the 747 with ZERO
 allowance, and asserts the convention first on a `build.box` the pilot plainly sees, both ways (drawn
-from outside, culled from inside), so a flipped convention cannot pass. (That box was the 747 ball's
-pitch bar until the ball came out; it is the pilot's PFD screen box now, which is the same kind of
-thing: one box, closed and convex, wound by Babylon itself.) A second assertion holds every flat-shaded
+from outside, culled from inside), so a flipped convention cannot pass. (On the Cessna that box is
+its mechanical ball's pitch bar. On the 747 and the Global it was their PFD balls' pitch bars until
+the balls came out; it is each pilot's PFD SCREEN box now, which is the same kind of thing: one box,
+closed and convex, wound by Babylon itself.) A second assertion holds every flat-shaded
 triangle (three equal vertex normals: a box, a plate, a half) to a normal that faces the eye, so the
 plates' own normals cannot be written inward with every other test green. Every mesh must be hit by
 more than zero rays, because void has to look different from clean: the needles, the pitch bars and
@@ -392,8 +394,9 @@ It does not read the builder's index order, so it survives the builder being fix
 dash, the pillar and both halves of every ball go through it. A plate has a dozen triangles, so three
 vertices each is cheap; the census arithmetic is in the draw-budget test. Draw counts and mesh counts
 did not move on any aircraft (89 drawn, 58 casters, 205 draws; seven cockpit-only meshes on the 747 --
-four now that the ball is gone, and the two rows of this table that name `airliner-pfd-sky` and
-`-ground` are a record of what WAS measured on meshes that no longer exist).
+four now that the ball is gone, and eleven on the Global then, eight now. The rows of this table that
+name `airliner-pfd-*` and `bizjet-pfd-*` are a record of what WAS measured on meshes that no longer
+exist; only the `trainer-attitude-*` rows describe meshes that are still built).
 
 **A single grid read zero by luck.** A grid on round angles can graze an edge built to a round angle
 (the hood's far top edge is built at -10.00 degrees, which is a grid line: the ray at azimuth 0,
@@ -477,8 +480,8 @@ stood a millimetre in front of the pilot's PFD. Once the PFD page drew its own h
 attitude indicators on that screen, the solid one in front of the drawn one, hiding most of it. The
 page's attitude is held to the HUD's own numbers by `tests/render.cockpit-display-state.test.ts`
 (they agree to a tenth of a degree), so what came out is the redundant one. The Cessna keeps its
-ball, because that aeroplane's instrument is MECHANICAL; the Global keeps its until its own screens
-draw pages, which is on the register.
+ball, because that aeroplane's instrument is MECHANICAL. The Global kept its until its own screens
+drew pages, and then it went too (next section).
 
 **What the removal moved, every number read rather than accepted.** Cockpit-only meshes on the 747:
 7 -> 4 (the ball's three pieces hung from the pivot that turned them, so they could not be merged
@@ -522,6 +525,93 @@ how the contradiction announced itself. A disposed texture's upload looks exactl
 numbers above come from textures that were bound to the screens (so the frame visibly showed what was
 uploaded) and whose internal texture was asserted non-null on both sides of every sample.
 
+## The Global's screens draw pages too, and its ball came out
+
+**One mechanism, two decks.** What was per-aeroplane in `displayAtlas.ts` -- which screens there are
+in build order, what page each shows, how many across the atlas is -- is a `DisplayLayout` now:
+`AIRLINER_DISPLAYS` (six, three across) and `BIZJET_DISPLAYS` (four, two across). Everything else is
+shared: the canvas, the `RawTexture`, the upload, the emissive material, the 15 Hz counter, the UV
+remap by NORMAL before the merge. The slot shape is shared because it MEASURED the same: all four of
+the Global's built screen boxes are 0.2200 x 0.1500 x 0.0030, aspect 1.4667, exactly the 747's. (The
+engineer had remembered them as 0.20 x 0.14 and said so to the PM; the built mesh settled it.) So the
+Global's atlas is two 440 x 300 slots across and two down, 880 x 600.
+
+**Pages: a PFD outboard and a map inboard for each seat, and no EICAS.** The built panel is two
+mirrored pairs with no engine screen, and the EICAS page prints the literal text "N1" beside its dials
+while this aeroplane's engine readout in this game is N2 (`catalogue.ts`). An engine page here would
+print a label the game's own HUD contradicts; parameterising the page's label per airframe is a page
+change, registered below. Only the PORT pair is ever seen: from the solved eye the port screens sit at
+azimuth -10.8 and +10.8 (elevation -22.2) and the starboard pair at +54.9 and +61.0, outside the 75
+degree frame.
+
+**The ball went for the 747's reason, on the same kind of evidence.** Cockpit-only meshes 11 -> 8. The
+seam and taper digests were re-pinned after building the Global at f9d2672 in a scratch worktree and
+diffing mesh by mesh, positions and indices as the digests define them: of 99 meshes exactly three
+are gone (the sky and ground halves, 288 vertices each, and the pitch bar, 24), none is new, none
+changed, the other 96 bit-identical; 10,861 -> 10,261 vertices. The attitude-ball suite keeps only
+the Cessna's row.
+
+**The picture agrees with the aeroplane, measured on the rendered pixels.** In a 20 degree right bank
+the PFD's drawn horizon, fitted across the middle of the ball from the frame the GPU drew (60 boundary
+points, residual 0.26 px), reads -19.61 degrees in screen coordinates against a bank of +19.41 read
+off the built fuselage's own starboard axis at the same instant: the same angle to 0.2 degrees, and
+the sense a right bank should give. An earlier sample agreed to 0.08. The instrument's null reads were
+checked, not trusted: at 27 degrees nose-down it found no horizon, and the frame shows why -- the ball
+is all ground, with the -15 and -20 rungs tilted by the bank. (The -10 rung is past the disc's edge at
+that pitch: the page clamps pitch at 25, so the horizon sits 0.625 of the page height below centre
+and the -10 rung 0.375 of it, outside a ball of radius 0.3. An earlier draft of this paragraph said
+"-10 and -20"; the review of this change caught it against the page's own arithmetic.)
+
+**What one update costs.** Timed in the live app alongside the 747's atlas as a control, 40
+interleaved samples each, textures bound and proven live on both sides of every sample:
+
+| atlas | draw | `getImageData` | `RawTexture.update` | total, median | p90 | at 15 Hz |
+| --- | --- | --- | --- | --- | --- | --- |
+| 880 x 600 (Global) | 0.2 ms | 1.6 ms | 0.65 ms | **2.4 ms** | 2.9 ms | 36 ms/s |
+| 1320 x 600 (747, control) | 0.3 ms | 1.9 ms | 1.0 ms | **3.15 ms** | 3.7 ms | 47 ms/s |
+
+The control reproduces the previous day's 3.3 ms, so the Global's number is not a quieter machine.
+The readback still dominates, and it does not scale down in proportion to the pixels: two-thirds of
+the pixels cost 84% of the readback, so part of it is a fixed cost per call.
+
+**A stale picture on every return to the cockpit, found by review rather than by a frame.** The
+redraw counter only runs while the cockpit is in view, so on leaving it stops wherever it was, often
+just after a redraw. The first entry was fine (the counter starts due); every later one waited out the
+rest of its 1/15 s, and for up to three frames behind an instant camera cut the screens showed the
+attitude, heading and altitude from when the pilot LAST LEFT. The 747 had the same defect since its
+pages went in. The counter is now one shared `displayRedrawClock` with an `invalidate()`, which both
+visuals call on the way into cockpit view (and only on the way in: entering twice without leaving does
+not force a redraw).
+
+**Tests that could not fail before now can.** The displays test runs every row for both decks. Its
+UV check reads v as well as u (slots in one column share a u range, so a screen pointed at the wrong
+row passed a u-only check), holds each face's top edge to its slot's top row (the orientation the
+first live 747 frame got wrong), and measures each screen's aspect off the BUILT face. No two slots may
+overlap, since a summed area cannot see two stacked on each other. Synthetic layouts one to three rows
+deep hold the sizing rule at depths neither real deck has. A live block stands a minimal `document`
+in front of one build (the only thing an aircraft build touches in `document` is `createDisplayAtlas`)
+and wraps the atlas texture's `update`, so the real path -- canvas, pages, the UPLOAD, the 15 Hz
+clock, the redraw on re-entry -- runs under `NullEngine`, where `RawTexture` and its `update`
+measurably work. The display airframe's two constants are held to their producers: engines counted off
+the built fans AND inlets (two counts, so a pattern that matched nothing cannot read as a
+zero-engine aeroplane), full flap from the animation's own pose.
+
+Twenty mutations, run with no dev server up: nineteen killed. Among them are nine that passed the whole
+suite at some point before these tests existed: the atlas sized from the other deck's layout, the
+redraw deleted, the 747's four engines on the Global, the upload deleted (every screen black), every
+slot collapsed onto the top row, the redraw at 30 Hz, the atlas fixed at two rows deep, no redraw on
+re-entry, and the pages upside down. The one survivor, the 747 at two columns instead of three, is
+EQUIVALENT: six screens tile 2 x 3 and 3 x 2 alike, into the same number of pixels, and nothing
+observable changes. (The same mutation on the Global, three columns for four screens, is killed: four
+does not tile three across.)
+
+**An independent review of this change**, three reviewers on correctness, test soundness and the
+truth of the prose, each finding checked by a separate agent told to refute it, confirmed eleven
+findings and refuted nine. Every confirmed one is fixed above or in the code comments: the re-entry
+defect, the four test gaps behind the mutations just listed, a comment that said
+`render.cockpit-display-state.test.ts` flies the simulator (it builds its states by hand), the ladder
+rungs in the null-read frame, and five places where prose still gave the Global a ball.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -537,10 +627,12 @@ change.
 is drawn over the right-hand screen's upper half. Both are correct on their own; nothing has decided
 which gives way in cockpit view. Registered for the PM, not changed here.
 
-**For the register, from the displays' own measurements:** the Global's screens have no pages yet (it
-keeps its 3D ball until they do); the atlas upload pays a 2 ms CPU readback that a direct canvas
-upload would delete, if an engine extension can be imported without breaking startup; and a 4K player
-would out-resolve the 440 x 300 slot (the crossover is a canvas about 2,170 px wide).
+**For the register, from the displays' own measurements:** the engine page's label should come from
+the airframe (N1 on the 747, N2 on the Global and the F-16, RPM on the Cessna) before an engine page
+goes on any aeroplane but the 747 -- a page change; the atlas upload pays a CPU readback (1.6 ms on the
+Global, 1.9 on the 747) that a direct canvas upload would delete, if an engine extension can be
+imported without breaking startup; and a 4K player would out-resolve the 440 x 300 slot (the
+crossover is a canvas about 2,170 px wide).
 
 **Not built:** the F-16's cockpit. Baselines are not promoted here; the single end-of-wave
 promotion absorbs the change.

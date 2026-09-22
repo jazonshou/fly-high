@@ -5,7 +5,9 @@
  *
  * The Cessna is photographed in level cruise, a climbing right turn, a left bank
  * and a descent at idle; the Global and the 747 in level flight, a 20 degree right
- * bank and a 20 degree left bank. All three wear an attitude ball. The level frames are the Scenic-assist start left to settle; the others
+ * bank and a 20 degree left bank. Only the Cessna wears a 3D attitude ball now (it is
+ * mechanical); the Global's and the 747's PFD PAGES draw attitude, so their frames carry
+ * no `ball` reading and are read by looking at the PFD. The level frames are the Scenic-assist start left to settle; the others
  * are flown by holding the real keys (Direct controls) under a closed loop that
  * reads the HUD's own pitch and bank, releases the key when the attitude is where
  * it is wanted and takes the frame while it holds.
