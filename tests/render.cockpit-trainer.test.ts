@@ -355,103 +355,195 @@ describe("the trainer's cockpit parts", () => {
  * compared trainer cockpit baselines are shot with.
  */
 describe("the Cessna's windscreen centre frame", () => {
+  /**
+   * The member runs up the windscreen, turns at a ball joint, and runs aft over the glass crown into
+   * the roof. Its history is why these tests look the way they do: its top first ended in a flat disc
+   * in open air (a lit octagon against the sky), then in a cone tapered to a point (a spike ending in
+   * the sky), and now it ends in STRUCTURE. So what is held is: the old foot, axis and radius up to the
+   * corner; the corner filled; the aft end inside the roof slab as BUILT; and no end disc of any of its
+   * pieces the nearest surface along any ray, from the pilot's seat or from outside.
+   */
   const FOOT = new Vector3(2.26, -0.02, 0);
-  const TOP = new Vector3(2, 0.21, 0);
-  const TIP_LENGTH = 0.05;
+  /** How far the mesh runs on past the design foot, down into the fuselage. */
+  const BURY = 0.09;
+  const CORNER = new Vector3(2, 0.21, 0);
+  const INTO_ROOF = new Vector3(1.6, 0.205, 0);
+  const RADIUS = 0.024;
+  const strutAxis = CORNER.subtract(FOOT).normalize();
+  const strutLength = Vector3.Distance(CORNER, FOOT);
+  const crownAxis = INTO_ROOF.subtract(CORNER).normalize();
+  const radialFrom = (origin: Vector3, axis: Vector3) => (p: Vector3) => {
+    const d = p.subtract(origin);
+    return d.subtract(axis.scale(Vector3.Dot(d, axis))).length();
+  };
+  type Tri = { a: Vector3; b: Vector3; c: Vector3 };
+  const key = (t: Tri) => `${t.a.x},${t.a.y},${t.a.z}|${t.b.x},${t.b.y},${t.b.z}|${t.c.x},${t.c.y},${t.c.z}`;
 
-  it("ends in an apex, not a disc: nothing at the top plane is more than a millimetre off the axis", () => {
-    const axis = TOP.subtract(FOOT).normalize();
-    const length = Vector3.Distance(TOP, FOOT);
-    const along = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), axis);
-    const vertices = tipWorldTriangles(named("windscreen-center-frame")).flatMap((t) => [t.a, t.b, t.c]);
-    expect(Math.max(...vertices.map(along)), "the mesh still reaches its design top").toBeCloseTo(length, 3);
-    const atApex = vertices.filter((p) => Math.abs(along(p) - length) < 2e-3);
-    expect(atApex.length, "vertices at the apex plane").toBeGreaterThan(0);
-    const radial = atApex.map((p) => {
-      const d = p.subtract(FOOT);
-      return d.subtract(axis.scale(Vector3.Dot(d, axis))).length();
-    });
-    // the cylinder this replaced carried its full 0.024 m radius all the way to the top
-    expect(Math.max(...radial)).toBeLessThan(0.001);
-  });
-
-  it("shows the pilot no flat end disc, on EITHER rig", () => {
-    const axis = TOP.subtract(FOOT).normalize();
-    const length = Vector3.Distance(TOP, FOOT);
-    const along = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), axis);
-    const frame = named("windscreen-center-frame");
-    // "the disc" is any triangle lying wholly in the apex plane: on the cone these survive only as
-    // zero-area slivers, and a sliver is never the nearest surface along a ray
-    const discTriangles = tipWorldTriangles(frame)
-      .filter((t) => [t.a, t.b, t.c].every((p) => Math.abs(along(p) - length) < 2e-3));
-    const key = (t: { a: Vector3; b: Vector3; c: Vector3 }) =>
-      `${t.a.x},${t.a.y},${t.a.z}|${t.b.x},${t.b.y},${t.b.z}|${t.c.x},${t.c.y},${t.c.z}`;
-    const discKeys = new Set(discTriangles.map(key));
-    const tipVertices = tipWorldTriangles(frame)
-      .filter((t) => [t.a, t.b, t.c].every((p) => along(p) > length - TIP_LENGTH - 0.002))
-      .flatMap((t) => [t.a, t.b, t.c]);
-    expect(tipVertices.length, "the tip has geometry to look at").toBeGreaterThan(0);
-    const triangles = scene.meshes
-      .filter(drawnByCockpitCamera)
-      .filter((mesh) => mesh.getTotalVertices() > 0)
-      .flatMap((mesh) => tipWorldTriangles(mesh));
-    for (const [label, right] of [["player", EYE.right], ["perf", 0]] as const) {
-      const eye = new Vector3(EYE.forward, EYE.up, right);
-      const angles = tipVertices.map((p) => {
-        const d = p.subtract(eye);
-        return { az: Math.atan2(d.z, d.x) * DEG, el: Math.atan2(d.y, Math.hypot(d.x, d.z)) * DEG };
-      });
-      const [az0, az1] = [Math.min(...angles.map((a) => a.az)) - 0.3, Math.max(...angles.map((a) => a.az)) + 0.3];
-      const [el0, el1] = [Math.min(...angles.map((a) => a.el)) - 0.3, Math.max(...angles.map((a) => a.el)) + 0.3];
-      let rays = 0;
-      let discNearest = 0;
-      let tipNearest = 0;
-      for (let az = az0; az <= az1; az += 0.1) {
-        for (let el = el0; el <= el1; el += 0.1) {
-          rays += 1;
-          const a = az / DEG;
-          const e = el / DEG;
-          const d = new Vector3(Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a));
-          let best = Number.POSITIVE_INFINITY;
-          let bestKey = "";
-          let bestIsFrame = false;
-          for (const t of triangles) {
-            const hit = tipHitTriangle(eye, d, t);
-            if (Number.isFinite(hit) && hit > NEAR_PLANE && hit < best) {
-              best = hit;
-              bestKey = key(t);
-              bestIsFrame = [t.a, t.b, t.c].every((p) => along(p) > length - TIP_LENGTH - 0.002);
-            }
-          }
-          if (discKeys.has(bestKey)) discNearest += 1;
-          if (bestIsFrame) tipNearest += 1;
-        }
-      }
-      // NON-VACUITY: the window is sampled AND the tip itself is visible there; only the DISC is gone
-      expect(rays, `${label}: rays over the tip's window`).toBeGreaterThan(500);
-      expect(tipNearest, `${label}: the tapered tip is still visible as structure`).toBeGreaterThan(0);
-      expect(discNearest, `${label}: rays that land on a flat end disc`).toBe(0);
-    }
-  });
-
-  it("keeps its foot, axis, radius and material: only the last 0.05 m changed", () => {
-    const frame = named("windscreen-center-frame");
-    const axis = TOP.subtract(FOOT).normalize();
-    const along = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), axis);
-    const vertices = worldVertices(frame);
-    expect(Math.min(...vertices.map(along)), "the foot is where it was").toBeCloseTo(0, 3);
-    // the bar's radius below the taper is unchanged: 0.024 at the top of the bar, 8% fatter at the foot
-    const atFoot = vertices.filter((p) => along(p) < 1e-3);
-    const radial = (p: Vector3) => {
-      const d = p.subtract(FOOT);
-      return d.subtract(axis.scale(Vector3.Dot(d, axis))).length();
+  /** The roof slab as BUILT: its world bounds, not the constants it was built from. */
+  function roofSlab() {
+    const roof = worldVertices(named("trainer-cabin-roof"));
+    return {
+      minY: Math.min(...roof.map((v) => v.y)),
+      maxY: Math.max(...roof.map((v) => v.y)),
+      frontX: Math.max(...roof.map((v) => v.x)),
+      triangles: tipWorldTriangles(named("trainer-cabin-roof")),
     };
-    expect(Math.max(...atFoot.map(radial))).toBeCloseTo(0.024 * 1.08, 3);
-    const shoulder = vertices.filter((p) => Math.abs(along(p) - (Vector3.Distance(TOP, FOOT) - TIP_LENGTH)) < 1e-3);
-    expect(shoulder.length, "the bar/cone shoulder exists").toBeGreaterThan(0);
-    expect(Math.max(...shoulder.map(radial))).toBeCloseTo(0.024, 3);
+  }
+
+  /**
+   * Every END DISC of the member's pieces: a triangle lying wholly in the plane that ends a bar (at the
+   * foot, at the corner on either bar, at the aft end), within the bar's radius of that end's centre,
+   * AND facing along the bar's axis. The last condition is not decoration: the ball's pole sits in the
+   * crown bar's end plane, and a thin triangle of the pole's fan lies almost in that plane too, so a
+   * plane-and-radius test alone read a piece of the ball as a disc (from behind, at the ball's top).
+   */
+  function endDiscs(frame: AbstractMesh): Tri[] {
+    const ends = [
+      { centre: FOOT.subtract(strutAxis.scale(BURY)), axis: strutAxis, radius: RADIUS * 1.08 },
+      { centre: CORNER, axis: strutAxis, radius: RADIUS },
+      { centre: CORNER, axis: crownAxis, radius: RADIUS },
+      { centre: INTO_ROOF, axis: crownAxis, radius: RADIUS },
+    ];
+    return tipWorldTriangles(frame).filter((t) => {
+      const normal = Vector3.Cross(t.b.subtract(t.a), t.c.subtract(t.a));
+      if (normal.length() < 1e-12) return false;
+      normal.normalize();
+      return ends.some((end) =>
+        Math.abs(Vector3.Dot(normal, end.axis)) > 0.99 &&
+        [t.a, t.b, t.c].every((p) =>
+          Math.abs(Vector3.Dot(p.subtract(end.centre), end.axis)) < 2e-3 && Vector3.Distance(p, end.centre) <= end.radius + 1e-3));
+    });
+  }
+
+  it("runs up the windscreen at its old foot, axis and radius, and turns at a ball of the same radius", () => {
+    const frame = named("windscreen-center-frame");
+    expect(frame.metadata?.mergedFrom).toEqual(["windscreen-center-frame-bar", "windscreen-center-frame-crown", "windscreen-center-frame-joint"]);
+    const vertices = worldVertices(frame);
+    const strutRadial = radialFrom(FOOT, strutAxis);
+    const alongStrut = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), strutAxis);
+    // the axis is the old one, through the design foot: every vertex of the bar is within its radius of it
+    const bar = vertices.filter((p) => alongStrut(p) > -BURY - 1e-3 && alongStrut(p) < strutLength + 1e-3 && strutRadial(p) < 0.03);
+    expect(Math.max(...bar.map(strutRadial)), "the bar's widest point, at its buried bottom").toBeCloseTo(RADIUS * 1.08, 3);
+    // the mesh runs on BURY past the design foot, and no further
+    expect(Math.min(...bar.map(alongStrut)), "the bottom ring").toBeCloseTo(-BURY, 3);
+    // the bar reaches the corner at full radius: the taper is gone
+    const atCorner = vertices.filter((p) => Math.abs(alongStrut(p) - strutLength) < 1e-3 && strutRadial(p) < 0.03);
+    expect(atCorner.length, "the strut's top ring").toBeGreaterThan(0);
+    expect(Math.max(...atCorner.map(strutRadial))).toBeCloseTo(RADIUS, 3);
+    // the ball: vertices a radius from the corner in every direction, including straight up and forward
+    const onBall = vertices.filter((p) => Math.abs(Vector3.Distance(p, CORNER) - RADIUS) < 1e-3);
+    expect(Math.max(...onBall.map((p) => p.y)), "the ball's top").toBeCloseTo(CORNER.y + RADIUS, 3);
+    expect(Math.max(...onBall.map((p) => p.x)), "the ball's front").toBeCloseTo(CORNER.x + RADIUS, 3);
     expect((frame.material as PBRMaterial).name).toBe("trainer-dark");
     // it is EXTERIOR, not cockpit-only: that is the whole point of fixing it here rather than hiding it
     expect(cockpitOnly.map((part) => part.name)).not.toContain("windscreen-center-frame");
+  });
+
+  it("starts under the cowl deck: every point of its bottom ring is below the surface above it", () => {
+    // The design foot stood 8 to 49 mm ABOVE the deck, so the ring floated and its end disc showed to
+    // anyone ahead of the aeroplane. Cast down from high above each point of the bottom ring: the first
+    // surface met must be the fuselage, and ABOVE the point, by at least 5 mm.
+    const frame = named("windscreen-center-frame");
+    const strutRadial = radialFrom(FOOT, strutAxis);
+    const alongStrut = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), strutAxis);
+    const ring = worldVertices(frame).filter((p) => Math.abs(alongStrut(p) + BURY) < 1e-3 && strutRadial(p) < 0.03);
+    expect(ring.length, "the bottom ring").toBeGreaterThanOrEqual(8);
+    const others = scene.meshes.filter((m) => m.getTotalVertices() > 0 && m.isEnabled() && !["trainer-canopy", "windscreen-center-frame"].includes(m.name));
+    const triangles = others.flatMap((m) => tipWorldTriangles(m).map((t) => ({ t, name: m.name })));
+    let shallowest = Number.POSITIVE_INFINITY;
+    for (const p of ring) {
+      let best = Number.POSITIVE_INFINITY;
+      let name = "";
+      for (const { t, name: n } of triangles) {
+        // 0.1 mm off the point in z: two of the ring's vertices sit at exactly z = 0, and a ray straight
+        // down the fuselage loft's crown seam can slip between the two triangles that share it and read
+        // the fuselage's BOTTOM as the first surface (it did: -0.54 m). A tenth of a millimetre is no
+        // change to what is being measured.
+        const hit = tipHitTriangle(new Vector3(p.x, 2, p.z + 1e-4), new Vector3(0, -1, 0), t);
+        if (Number.isFinite(hit) && hit < best) {
+          best = hit;
+          name = n;
+        }
+      }
+      expect(name, "the surface over the bottom ring").toBe("trainer-fuselage");
+      shallowest = Math.min(shallowest, (2 - best) - p.y);
+    }
+    expect(shallowest, "the least depth of the bottom ring under the deck").toBeGreaterThanOrEqual(0.005);
+  });
+
+  it("ends INSIDE the roof slab as built: everything of it aft of the roof's front edge is within the slab", () => {
+    // Read off the member AS BUILT, not along its design axis. A first version found the aft ring by the
+    // design axis and a 3 cm radial cut; with the aft end raised 2 cm, poking out of the roof's top, the
+    // cut excluded exactly the vertices that poked out and the test passed. The requirement is simpler
+    // than a ring: whatever part of this member is under the roof must be inside the roof.
+    const slab = roofSlab();
+    expect(slab.frontX, "the roof has not moved and left the bar in the air").toBeCloseTo(1.62, 3);
+    const vertices = worldVertices(named("windscreen-center-frame"));
+    const underRoof = vertices.filter((p) => p.x < slab.frontX);
+    // NON-VACUITY: the member does reach under the roof (its whole aft end ring, and the bar's last 2 cm)
+    expect(underRoof.length, "vertices of the member aft of the roof's front edge").toBeGreaterThanOrEqual(8);
+    expect(Math.min(...vertices.map((p) => p.x)), "it runs 2 cm past the front edge").toBeLessThanOrEqual(slab.frontX - 0.015);
+    for (const p of underRoof) {
+      expect(p.y, "above the slab's underside").toBeGreaterThan(slab.minY);
+      expect(p.y, "below the slab's top").toBeLessThan(slab.maxY);
+    }
+  });
+
+  it("shows no end disc of any of its pieces, from the pilot's seat or from outside, and the survey can see one when nothing hides it", () => {
+    const frame = named("windscreen-center-frame");
+    const discs = endDiscs(frame);
+    // NON-VACUITY: there ARE discs to find -- a cylinder with two nonzero diameters caps both ends,
+    // so the bar and the crown piece carry four between them (foot, both sides of the corner, aft end)
+    expect(discs.length, "end-disc triangles found").toBeGreaterThanOrEqual(4 * 6);
+    const discKeys = new Set(discs.map(key));
+    const glass = new Set(["trainer-canopy"]);
+    const drawn = scene.meshes.filter((mesh) => mesh.isEnabled() && mesh.getTotalVertices() > 0 && !glass.has(mesh.name));
+    const allTriangles = drawn.flatMap((mesh) => tipWorldTriangles(mesh).map((t) => ({ t, mesh: mesh.name })));
+    const frameOnly = tipWorldTriangles(frame).map((t) => ({ t, mesh: frame.name }));
+    const nearestKey = (list: { t: Tri; mesh: string }[], eye: Vector3, target: Vector3) => {
+      const d = target.subtract(eye).normalize();
+      let best = Number.POSITIVE_INFINITY;
+      let found = "";
+      for (const { t } of list) {
+        const hit = tipHitTriangle(eye, d, t);
+        // the drawn-face rule measured on a build.box: a face is drawn when its cross points along the ray
+        const drawnFace = Vector3.Dot(Vector3.Cross(t.b.subtract(t.a), t.c.subtract(t.a)), d) > 0;
+        if (Number.isFinite(hit) && hit > NEAR_PLANE && hit < best && drawnFace) {
+          best = hit;
+          found = key(t);
+        }
+      }
+      return found;
+    };
+    // the viewpoints: the pilot, and a ring of exterior cameras 4 m out round the junction
+    const eyes: [string, Vector3][] = [["pilot", new Vector3(EYE.forward, EYE.up, EYE.right)]];
+    for (const [az, el] of [[0, 20], [60, 25], [120, 30], [180, 25], [240, 30], [300, 25], [90, 60], [270, 60], [0, 75]] as const) {
+      const a = (az * Math.PI) / 180;
+      const e = (el * Math.PI) / 180;
+      eyes.push([`outside az ${az} el ${el}`, CORNER.add(new Vector3(Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a)).scale(4))]);
+    }
+    // aim at every disc triangle's own centroid, and a little either side of it
+    const targets = discs.flatMap((t) => {
+      const c = t.a.add(t.b).add(t.c).scale(1 / 3);
+      return [c, c.add(t.a.subtract(c).scale(0.5)), c.add(t.b.subtract(c).scale(0.5)), c.add(t.c.subtract(c).scale(0.5))];
+    });
+    let seenWithEverything = 0;
+    let seenWithFrameAlone = 0;
+    const where: string[] = [];
+    for (const [label, eye] of eyes) {
+      for (const target of targets) {
+        if (discKeys.has(nearestKey(allTriangles, eye, target))) {
+          seenWithEverything += 1;
+          if (where.length < 4) where.push(`${label} -> (${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`);
+        }
+        if (discKeys.has(nearestKey(frameOnly, eye, target))) seenWithFrameAlone += 1;
+      }
+    }
+    // THE POSITIVE CONTROL: with the ball's and the roof's cover taken away -- the member's own bars
+    // alone, so the ball is still there but nothing else -- some disc IS the nearest drawn surface
+    // from some viewpoint (the aft end's disc faces the pilot). A survey that could not see a disc
+    // would read zero below for the wrong reason.
+    expect(seenWithFrameAlone, "discs visible when only the member itself is in the scene").toBeGreaterThan(0);
+    expect(seenWithEverything, `discs seen in the real scene: ${where.join("; ")}`).toBe(0);
   });
 });

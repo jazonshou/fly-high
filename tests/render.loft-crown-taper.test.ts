@@ -215,7 +215,14 @@ describe("the loft's crown taper", () => {
       // triangle count and area: only those two of the trainer's 70 meshes moved, and each keeps its 50
       // unique positions, its 96 triangles and its area. The jet's pin is unchanged.
       // Re-pinned for the centre frame's tapered tip, on the same evidence as the seam pin above.
-      trainer: "3106e693",
+      // RE-PINNED for the trainer when the centre frame stopped ending in the air at EITHER end
+      // (jazonshou/cockpit-cessna-junction): its top turns aft at a ball joint and runs over the glass
+      // crown into the cabin roof's slab, and its foot runs on 0.09 m past the design foot down under
+      // the cowl deck it used to float above. Checked mesh by mesh against ea63db1, positions AND
+      // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
+      // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
+      // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
+      trainer: "f71f95c9",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",

@@ -278,7 +278,14 @@ describe("a loft's crown seam", () => {
       // radius and material. Checked mesh by mesh against 003318a: it is the ONLY exterior mesh that moves,
       // the trainer's other 50 exterior meshes and all 19 cockpit-only ones are bit-identical, and the jet's
       // 78, the Global's 99 and the 747's 96 do not move at all.
-      trainer: "9bae9e9b",
+      // RE-PINNED for the trainer when the centre frame stopped ending in the air at EITHER end
+      // (jazonshou/cockpit-cessna-junction): its top turns aft at a ball joint and runs over the glass
+      // crown into the cabin roof's slab, and its foot runs on 0.09 m past the design foot down under
+      // the cowl deck it used to float above. Checked mesh by mesh against ea63db1, positions AND
+      // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
+      // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
+      // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
+      trainer: "67a77711",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

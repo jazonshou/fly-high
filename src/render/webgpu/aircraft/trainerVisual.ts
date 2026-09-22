@@ -284,33 +284,51 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // through one. The pilot sits in the LEFT seat, so it stands to the right of
   // his line of sight, as a centre frame does for the pilot on the left of a
   // real 150.
-  // ITS TOP TAPERS TO A POINT, and that is not decoration. `strutBetween` is a cylinder with a flat end
-  // disc at each end, and this strut's top end stops in OPEN AIR: the cabin roof panel reaches only x 1.62,
-  // 0.38 m aft of the top at x 2, and the glass crown there is y 0.190, below the top's 0.210. So from the
-  // pilot's seat the end disc read as a lit octagon against the sky — 48% of the rays over its own angular
-  // window on the player rig and 51% on the perf rig (`scripts`' cap survey; the frame is in the findings
-  // doc). A cockpit-only header to hide it was measured and REJECTED: at 0.3-0.6 m from the eye any strip
-  // big enough to swallow the disc costs 15% of the frame to hide 1.4% of it. A point has no disc.
+  // ITS TOP TURNS AFT AND RUNS INTO THE ROOF, because a frame member has to end in structure. The
+  // cabin roof panel reaches only x 1.62, 0.38 m aft of the strut's top at x 2, and between the two the
+  // glass crown is flat, so the strut's top used to stop in OPEN AIR: first as a flat end disc that read
+  // as a lit octagon against the sky (48% of the rays over its own window on the player rig), then as a
+  // cone tapered to a point, which removed the disc and left a spike ending in the sky.
   //
-  // Two primitives merged under the strut's own name, so the mesh count and every other exterior mesh stay
-  // exactly as they were: the bar at full radius to 0.05 m short of the top, then a cone to a true apex.
-  // `build.cylinder`'s `diameterTop` 0 collapses the top ring to one vertex, so no cap is generated at all —
-  // measured with the drawn-faces instrument, not assumed.
+  // Measured before building (a ray survey of the player's 75-degree frame; the numbers are in the
+  // findings doc): the apex filled 44 cells of 14,008. Running the ROOF forward to the windscreen's top
+  // would have cost 1,750 cells, 12.5% of the frame, because this cabin is low over the pilot -- the
+  // glass crown at the windscreen top is 7 cm above the eye, +6.4 degrees -- so any roof edge there lands
+  // just above the horizon. A header bow across the top cost 446, all of it a bar across the view at
+  // +4..7 degrees. This, the strut turning aft over the crown's centreline into the roof's front edge,
+  // costs 276, none of it within 15 degrees of dead ahead: it is the upper right, where the strut was
+  // already going.
+  //
+  // THREE PRIMITIVES MERGED under the strut's own name, so the mesh count and every other exterior mesh
+  // stay exactly as they were: the bar at full radius from under the deck to the corner, a ball of the same
+  // radius at the corner, and a bar aft to x 1.60. The ball is what joins two round bars meeting at 41
+  // degrees without either a wedge-shaped gap on the outside of the bend or an exposed end disc: both
+  // bars' end discs lie inside it. The aft bar's own end disc is 2 cm inside the roof slab, at its
+  // mid-thickness (the slab is y 0.18..0.23 and the bar 0.181..0.229), so no end of this member is in
+  // the open -- `tests/render.cockpit-trainer.test.ts` holds that with the cap survey.
+  //
+  // THE FOOT HAD THE SAME FAULT, found by that survey rather than by eye: the design foot at
+  // (2.26, -0.02) stands above the cowl deck, whose surface there is y -0.047..-0.050, so the bar's
+  // bottom ring floated 8 to 49 mm clear of it and its end disc faced forward and down at anyone in
+  // front of the aeroplane. The design foot stays where it was, on the axis; the MESH runs on past it
+  // down into the fuselage by `centreFrameBuryMetres` (the 747's seam post does the same into its
+  // overhead), which puts every point of the bottom ring at least 5 mm under the deck -- 0.082 m is
+  // the least that does, measured, and 0.09 leaves a margin.
   const centreFrameFoot = new Vector3(2.26, -0.02, 0);
-  const centreFrameTop = new Vector3(2, 0.21, 0);
+  const centreFrameBuryMetres = 0.09;
+  const centreFrameCorner = new Vector3(2, 0.21, 0);
+  const centreFrameIntoRoof = new Vector3(1.6, 0.205, 0);
   const centreFrameRadius = 0.024;
-  const centreFrameTipLength = 0.05;
   {
-    const axis = centreFrameTop.subtract(centreFrameFoot);
-    const length = axis.length();
-    const unit = axis.scale(1 / length);
-    const shoulder = centreFrameTop.subtract(unit.scale(centreFrameTipLength));
+    const up = centreFrameCorner.subtract(centreFrameFoot).normalize();
+    const buriedFoot = centreFrameFoot.subtract(up.scale(centreFrameBuryMetres));
     const sections: { readonly name: string; readonly from: Vector3; readonly to: Vector3; readonly diameterTop: number; readonly diameterBottom: number }[] = [
-      // the bar: the same 8% fatter foot `strutBetween` gives it, unchanged
-      { name: "windscreen-center-frame-bar", from: centreFrameFoot, to: shoulder, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
-      { name: "windscreen-center-frame-tip", from: shoulder, to: centreFrameTop, diameterTop: 0, diameterBottom: centreFrameRadius * 2 },
+      // up the windscreen from below the deck, 8% fatter at the bottom as `strutBetween` makes a strut
+      { name: "windscreen-center-frame-bar", from: buriedFoot, to: centreFrameCorner, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
+      // aft over the glass crown into the roof, at the same radius so the member does not step
+      { name: "windscreen-center-frame-crown", from: centreFrameCorner, to: centreFrameIntoRoof, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2 },
     ];
-    const pieces = sections.map((section) => {
+    const pieces: AbstractMesh[] = sections.map((section) => {
       const run = section.to.subtract(section.from);
       const piece = build.cylinder(section.name, run.length(), section.diameterTop, section.diameterBottom, 8, dark, root);
       piece.position.copyFrom(section.from.add(section.to).scale(0.5));
@@ -321,6 +339,9 @@ export function createTrainer(scene: Scene): AircraftVisual {
       );
       return piece;
     });
+    const joint = build.sphere("windscreen-center-frame-joint", centreFrameRadius * 2, 8, dark, root);
+    joint.position.copyFrom(centreFrameCorner);
+    pieces.push(joint);
     build.mergeStatic("windscreen-center-frame", pieces, root);
   }
 
