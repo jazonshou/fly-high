@@ -732,6 +732,16 @@ GPU run consequently passed and exited normally in **134.83 s**; this changes te
 harness ownership only and does not alter renderer feature flags or acceptance
 thresholds.
 
+> **Amended 2026-09-22.** Those caches were per project but not per checkout.
+> Every worktree resolves `node_modules` to one directory, and Vite hashes the
+> project `root` into the optimizer's metadata, so a run from a second worktree
+> re-optimized the first worktree's cache under a live run ("Must call super
+> constructor", "CascadedShadowMap is not supported by the current engine").
+> Every Vite and Vitest config now takes its `cacheDir` from
+> `scripts/checkoutCacheDir.ts`: `node_modules/.vite-<kind>-<checkout>-<hash of
+> the resolved checkout path>`. `tests/checkout-cache-dir.test.ts` finds every
+> config by walking the tree and fails if one is left on a shared cache.
+
 > **Corrected 2026-08-31 (`6-12`).** The figures above were the 2026-08-25
 > fix-pack's (120.6 FPS / 9.4 ms / 17.6 ms across seventeen shots). Two further
 > claims in the superseded text were wrong:

@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
+import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
 import { chromiumStdioLaunchOptions } from "./scripts/playwrightChromiumLaunch";
 
 /**
@@ -23,7 +24,9 @@ export default defineConfig({
   // invalidate this graph on every boundary; one such rebuild passed all 130
   // tests and then stranded Playwright inside ctx.close(). A dedicated cache
   // makes a cold checkout build once and every later project leave it intact.
-  cacheDir: "node_modules/.vite-gpu",
+  // It is also per CHECKOUT: every worktree shares one node_modules, and a GPU
+  // run from a second tree used to re-optimize this cache under the first.
+  cacheDir: checkoutCacheDir("gpu"),
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),

@@ -1,7 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
 
 export default defineConfig({
+  // Vite's default cache is the one the dev server uses, in the node_modules
+  // every worktree shares. See scripts/checkoutCacheDir.ts.
+  cacheDir: checkoutCacheDir("node"),
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),

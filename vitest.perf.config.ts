@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
+import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
 import { chromiumStdioLaunchOptions } from "./scripts/playwrightChromiumLaunch";
 
 /**
@@ -47,8 +48,9 @@ function sweepWindowSize(): { width: number; height: number } {
 export default defineConfig({
   // The capture/cold-start browser has a different module graph from both the
   // Node suite and the GPU integration suite. Do not invalidate either one's
-  // optimizer state merely by running the documented acceptance sequence.
-  cacheDir: "node_modules/.vite-perf",
+  // optimizer state merely by running the documented acceptance sequence, nor
+  // another checkout's: every worktree shares one node_modules.
+  cacheDir: checkoutCacheDir("perf"),
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),
