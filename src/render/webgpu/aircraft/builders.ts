@@ -535,24 +535,30 @@ export class AircraftBuildContext {
     return this.vertexMesh(name, positions, indices, material, parent, { uvs });
   }
 
-  /** Elliptical cross-sections joined along body +X; never a scaled cylinder. */
   /**
-   * `stationRange` makes several lofts share ONE station parametrisation, so a
-   * texture drawn across them does not step at their joins.
+   * Elliptical cross-sections joined along body +X; never a scaled cylinder.
    *
-   * Without it each loft normalises u over its OWN first and last section, and
-   * the airliner's fuselage (x -26..30.6) and nose (x 25.5..34) therefore
-   * disagree by 0.615 of the texture width where they meet at x = 30.6 — most
-   * of the way across the image. That is why the cheatline was body-space
-   * vertex paint rather than a texture: a function of world x and y crosses a
-   * join without knowing it is there, and a per-loft u does not.
+   * `stationRange` makes several lofts share ONE station parametrisation, so a
+   * texture's u does not step where they meet. It shares u ONLY: v stays each
+   * loft's own phase, and one phase is a different height on two section
+   * tables, so a caller that needs v to mean a height must re-solve it (the
+   * 747's radome does, `radomeLiveryPhase`).
+   *
+   * Without it each loft normalises u over its OWN first and last section: the
+   * airliner's fuselage (x -26..30.6) and nose (x 25.5..34) disagree by 0.40
+   * of the texture width at x = 30.6, and by about 0.7 where their surfaces
+   * cross at band height. That is why the cheatline was body-space vertex paint
+   * rather than a texture: a function of world x and y crosses a join without
+   * knowing it is there, and a per-loft u does not.
    *
    * IT IS UV1, NOT A SECOND SET, and the reason is the fragment-input budget.
-   * WebGPU allows 16, and a clustered light container (the airfield attaches
-   * one) costs every lit material one of them. A second UV set is another; on
-   * the airliner's fuselage it was measured at 16 of 16 in Gate A's rig -- no
-   * slot for the container -- where UV1 alone keeps the skin at 14, the same
-   * as every other airframe's paint.
+   * WebGPU counts 16 inputs, `front_facing` among them, and the clustered
+   * light container every flight builds costs each lit material one more. A
+   * second UV set is another: on the airliner's fuselage it measured 15 in
+   * Gate A's container-less rig, 16 of 16 live -- no headroom -- where UV1
+   * alone keeps the skin at 14 (15 live), the same as every other airframe's
+   * paint. A second UV set AND a colour channel was 17 live, and the device
+   * refused the pipeline.
    *
    * The cost of sharing UV1 falls on the paint synthesis, which tiles on UV1
    * and WRAPS: its panel lines now repeat over the shared range rather than

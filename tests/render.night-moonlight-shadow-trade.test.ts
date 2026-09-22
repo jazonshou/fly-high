@@ -29,6 +29,13 @@ import { readSource, rawSource } from "./support/sourceText";
  * The answer is no at every tier, by a wide margin, and this file exists so the
  * next person proposing moon shadows can read the margin instead of relitigating
  * the judgement.
+ *
+ * THE INTER-STAGE PRICE, which this file does not measure: a moon CSM adds nine
+ * varyings to every shadow receiver (4 x vPositionFromLight, 4 x vDepthMetric,
+ * vPositionFromCamera). Terrain and detail sit at 15 of 16 live and the
+ * aircraft paint at 15-16, so every receiver would pass the device's 16 and
+ * stop drawing. Moon shadows need the receivers restructured first; they are
+ * not merely expensive.
  */
 
 const MIB = 1024 * 1024;

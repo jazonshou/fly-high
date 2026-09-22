@@ -1,7 +1,8 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Scene } from "@babylonjs/core/scene";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LoftSection } from "../src/render/webgpu/aircraft/builders";
 import {
   AIRLINER_LIVERY_SECTIONS,
@@ -39,6 +40,12 @@ import {
  * same check a deliberately straight row painted by this file and asserts
  * that the check FAILS on it, by the 22 texels the solve predicts. A check
  * that cannot fail on the thing it guards against is not evidence.
+ *
+ * 5 and 5b read the image against the fuselage table. Forward of x ~ 27 the
+ * visible skin is the radome, whose v is re-solved per vertex; that, and the
+ * inter-stage budget NullEngine cannot see, are checked on the built mesh in
+ * `render.airliner-livery-mesh.test.ts` (and the budget on the adapter by
+ * `tests/gpu/aircraft-material-compile.test.ts`).
  */
 
 const WHITE = [255, 255, 255] as const;
@@ -100,7 +107,11 @@ function levelBandBow(image: LiveryImage): { cabinRow: number; noseRow: number; 
   return { cabinRow, noseRow, bowV: (noseRow - cabinRow) / image.height };
 }
 
-/** Stations clear of every door, frame line and the wing-root tone. */
+/**
+ * Stations clear of every door and frame line. 0, 5 and 9 sit on the wing-root
+ * tone BELOW the band, which test 3 never samples; 29.6 is on the fuselage's
+ * buried sections, not the visible skin (the radome is outside there).
+ */
 const CLEAR_STATIONS = [-20, -6, 0, 5, 9, 13, 17, 21, 26, 29.6] as const;
 
 describe("airliner livery image", () => {
@@ -374,11 +385,28 @@ describe("airliner livery mip chain and upload", () => {
     }
   });
 
-  it("uploads under NullEngine as one RawTexture with the chain's level count", () => {
+  it("uploads under NullEngine as one RawTexture, writing every level of the chain", () => {
+    // What reaches the UPLOAD is checked here: each hand-built level 1..11 is
+    // written once, with its own bytes. Whether the GPU then KEEPS those
+    // levels is not a NullEngine question -- the review of the bind found
+    // Babylon's deferred level-0 mip generation queued after them on WebGPU,
+    // which would overwrite them -- and is settled by a readback on the adapter.
     const engine = new NullEngine();
     const scene = new Scene(engine);
+    const written: { level: number; bytes: number }[] = [];
+    const update = RawTexture.prototype.updateMipLevel;
+    const spy = vi.spyOn(RawTexture.prototype, "updateMipLevel").mockImplementation(
+      function (this: RawTexture, data: ArrayBufferView, level: number) {
+        written.push({ level, bytes: data.byteLength });
+        return update.call(this, data, level);
+      },
+    );
     try {
       const texture = createAirlinerLiveryTexture(scene, chain);
+      expect(chain.length).toBe(12);
+      expect(written.filter((write) => write.level > 0)).toEqual(
+        chain.slice(1).map((image, index) => ({ level: index + 1, bytes: image.data.byteLength })),
+      );
       expect(texture.getSize()).toEqual({ width: LIVERY_WIDTH, height: LIVERY_HEIGHT });
       expect(texture.wrapU).toBe(Texture.CLAMP_ADDRESSMODE);
       expect(texture.wrapV).toBe(Texture.WRAP_ADDRESSMODE);
@@ -386,6 +414,7 @@ describe("airliner livery mip chain and upload", () => {
       expect(scene.textures).toContain(texture);
       texture.dispose();
     } finally {
+      spy.mockRestore();
       scene.dispose();
       engine.dispose();
     }

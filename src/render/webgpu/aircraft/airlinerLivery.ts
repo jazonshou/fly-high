@@ -11,11 +11,14 @@ import type { LoftSection } from "./builders";
  * convention of `docs/findings/AIRLINER_LIVERY_UV.md`. The short form is
  * here so the code can be checked against it without leaving the file.
  *
- * WHY A TEXTURE. The cheatline is vertex colour today, and at the cabin the
- * fuselage has six vertices over its whole height, 0.72-0.85 m apart. The
- * paint's 0.22 m ramp falls inside one vertex gap, so what renders is a linear
- * fade across the whole gap: about 0.8 m of blur, and a resolution limit
- * rather than a tuning value. A texel edge is 3-4 cm at every range.
+ * WHY A TEXTURE. The cheatline was vertex colour, and round the waterline the
+ * fuselage's vertices are 0.69-0.72 m apart at the cabin (0.85 m under the
+ * hump). The paint's 0.22 m ramp fell inside one vertex gap, so what rendered
+ * was a linear fade across the whole gap: about 0.8 m of blur, and a
+ * resolution limit rather than a tuning value. A texel edge is one texel on
+ * the base level, 4.0 cm round the section at the cabin and 4.6 cm under the
+ * hump; further out the mip chain widens it in metres and keeps it near one
+ * pixel.
  *
  * WHY NO CANVAS. Every Node test runs under `NullEngine` with no 2D context,
  * so a canvas would make the image untestable headlessly. Everything here is
@@ -26,9 +29,13 @@ import type { LoftSection } from "./builders";
  *
  * THE AXES are the loft's, not the plan's: u is the station along the body
  * and v is the phase round the section -- 0 crown, 0.25 starboard flank, 0.5
- * keel, 0.75 port flank, 1 crown again. u is shared across the fuselage,
- * radome and tailcone as `(x + 26) / 60`, so a feature drawn at one u sits at
- * one station on all three lofts and does not step at the joins.
+ * keel, 0.75 port flank, 1 crown again, on UV1. u is shared by the fuselage
+ * and radome lofts as `(x + 26) / 60`, so a feature drawn at one u sits at one
+ * station on both. v is NOT shared by the station range: every height here is
+ * solved against the FUSELAGE table, and the radome -- the outer skin at band
+ * height from x ~ 27.0 (bottom edge) and ~ 27.75 (top edge) forward -- has its
+ * v re-solved per vertex from its own height (`radomeLiveryPhase`), so one v
+ * is one height on both lofts.
  *
  * THE TRAP: v IS AN ANGLE, SO A LEVEL BAND IS A CURVE IN THE IMAGE. Constant
  * world height is not constant v, because the section's radius and offset
@@ -41,7 +48,9 @@ import type { LoftSection } from "./builders";
 
 /**
  * 2048 x 512: 2.93 cm per texel along the body, and 4.0 cm round the 20.4 m
- * cabin circumference -- near enough isotropic. 4 MB, 5.6 MB with mips. The
+ * cabin circumference (4.6 cm under the hump) -- near enough isotropic.
+ * 4.2 MB (4.0 MiB) for the base level, 5.6 MB (5.33 MiB) with the full
+ * twelve-level chain. The
  * generator takes its size from these two constants and hardcodes neither, so
  * 1024 x 512 is a one-line change if the memory is judged too much.
  */
@@ -72,11 +81,13 @@ export const AIRLINER_LIVERY_STATION_RANGE: LiveryStationRange = { minimumX: -26
  * solve below. It would matter only for a feature positioned by z, and none
  * here is.
  *
- * Beyond the table's ends (the radome forward of 30.6, the tailcone aft of
- * -26) the end section is HELD, the same way `skinPoint` in
- * `airlinerVisual.ts` holds it. Nothing painted here relies on that: every
- * feature sits inside -24.5..30.6 except the cheatline's forward fade, which
- * is at 0.7 % coverage by the time the held section is 1 m stale.
+ * Beyond the table's ends the end section is HELD, the same way `skinPoint`
+ * in `airlinerVisual.ts` holds it, and the cheatline's forward fade RELIES on
+ * that: it is painted from x = 30.5 to 32.5, all of it on the radome, and it
+ * lands at the right height only because the radome's v is re-solved against
+ * this same table (`radomeLiveryPhase`). Forward of 30.6 the held section is a
+ * parametrisation, not a surface; the fuselage's own sections from x = 28
+ * forward are buried inside the radome.
  */
 export const AIRLINER_LIVERY_SECTIONS: readonly LoftSection[] = [
   { x: -26, yRadius: 3.08, zRadius: 3.08, yOffset: 0.16 },
@@ -96,8 +107,8 @@ export const AIRLINER_LIVERY_SECTIONS: readonly LoftSection[] = [
 
 // ---------------------------------------------------------------------------
 // COLOURS. The image is sRGB bytes and is uploaded as an sRGB buffer, so the
-// material decodes it; the scheme's source of truth stays the linear triple
-// the vertex band already uses.
+// material decodes it; the scheme's source of truth is `CHEATLINE_LINEAR`
+// below, the linear triple the deleted vertex band used.
 // ---------------------------------------------------------------------------
 
 export type LiveryRgb = readonly [number, number, number];
@@ -142,11 +153,10 @@ export const MAIN_DECK_WINDOW_Y = 0.2;
 export const MAIN_DECK_WINDOW_HEIGHT = 0.36;
 
 /**
- * The cheatline. Station ends follow the vertex band exactly: full from -22 to
- * 30.5 and smoothstepped to nothing by -24.5 aft and 32.5 forward, which is
- * what "dies out ... as the vertex band does now" means in that band's own
- * code. The forward fade is what lets the band be measured at x = 30.6 (the
- * last section, 99.3 % coverage) as the contract's table does.
+ * The cheatline. Station ends follow the deleted vertex band exactly: full
+ * from -22 to 30.5 and smoothstepped to nothing by -24.5 aft and 32.5
+ * forward, which is what the spec's "dies out ... as the vertex band does
+ * now" meant in that band's own code. At x = 30.6 it is at 99.3 % coverage.
  *
  * -0.80..-0.30, not the contract's -1.40..-0.40, because of the BELLY
  * FAIRING. It meets the fuselage at y ~ -0.90 over x -6..0, so the lower half
@@ -171,8 +181,7 @@ export const CHEATLINE = {
  * DECIDED here, from the 747-8's five doors a side (about 6.0, 16.2, 33.5,
  * 51.5 and 61 m aft of the nose on a 76.3 m aeroplane) scaled to this 72 m
  * airframe whose nose is at x = 34. Door 5 sits 1 m forward of that scaling
- * so it stays on the fuselage loft rather than the tailcone overlap and clear
- * of the -24 frame line. 1.07 x 1.93 m is a 747 Type A door. The floor is the
+ * so it clears the -24 frame line: unshifted it would span -24.10..-23.03. 1.07 x 1.93 m is a 747 Type A door. The floor is the
  * main deck's: `UPPER_DECK_FLOOR_Y` = 1.95 is documented as 2.6 m above it.
  */
 export const MAIN_DECK_FLOOR_Y = -0.65;
@@ -203,9 +212,11 @@ export const PANEL_LINE_STATIONS: readonly number[] = [-24, -4.32, 10.54, 26.5];
 /**
  * The wing-root tone: the fuselage flank over the root chord, from the
  * cheatline's bottom edge down to the keel, in a slightly darker tone. Most
- * of it is under the belly fairing (its own loft, not carrying this image);
- * what shows is the flank between the band and the fairing's crown at each
- * end of the root chord. Interpreted as a fuselage feature because this image
+ * of it is under the belly fairing (its own loft, not carrying this image),
+ * which meets the fuselage at y ~ -0.90 over x -6..0. With the band's bottom
+ * at -0.80, what shows is the strip between the band and the fairing's crown,
+ * widening forward of the fairing; not yet measured on a frame. (With the
+ * contract's -1.40 bottom it was entirely covered from -4.32 to ~6.1.) Interpreted as a fuselage feature because this image
  * is the fuselage's -- see the note on the wing at the end of the file.
  */
 export const WING_ROOT_TONE = { trailingX: -4.32, leadingX: 10.54 } as const;
@@ -535,8 +546,8 @@ function paintPanelLines(raster: Raster): void {
  * A door: its outline as a ring of `DOOR_OUTLINE_TEXELS` inside the door's
  * rectangle, then its window. The top and bottom edges are solved per column
  * like everything else, so the outline follows the skin where the section
- * changes across the door's own width (sub-texel at the cabin, two texels at
- * door 1).
+ * changes across the door's own width (under a texel at every door: at most
+ * 0.78, at door 1, where the x = 28 section sits inside the door).
  */
 function paintDoor(raster: Raster, doorX: number): void {
   const left = columnOfStation(raster, doorX - DOOR_WIDTH / 2);
@@ -644,10 +655,11 @@ function isPowerOfTwo(value: number): boolean {
  * Upload a livery and its chain as one `RawTexture`, every level explicit.
  * Works under `NullEngine`, which is how the test exercises it.
  *
- * u CLAMPS. The tailcone runs x -38..-25, which under the shared range is
- * u -0.2..0.017: wrapped, that would sample the FORWARD fuselage onto the
- * tail, cheatline and all. Clamped it repeats column 0, which is white by
- * assertion. v WRAPS: the seam is the duplicated crown vertex, and every ring
+ * u CLAMPS. The two lofts that carry the livery span x -26..34, u 0..1
+ * exactly, so today nothing samples off either end. The clamp guards a loft
+ * given this range later: the tailcone, x -38..-25, would read u -0.2..0.017,
+ * and wrapped that would sample the FORWARD fuselage onto the tail, cheatline
+ * and all. Clamped, it repeats column 0, which is white by assertion. v WRAPS: the seam is the duplicated crown vertex, and every ring
  * feature paints row 0 and the last row alike, so the wrap is invisible.
  * Anisotropy 8 as the aircraft paint has: a fuselage is seen at grazing
  * angles from every chase position.
@@ -695,7 +707,7 @@ function mix(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-/** Hermite ramp, the same shape the vertex band's ends use. */
+/** Hermite ramp, the same shape the deleted vertex band's ends used. */
 function smoothStep(edge0: number, edge1: number, value: number): number {
   const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);

@@ -9,7 +9,6 @@ import {
 } from "./interStageBudget";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
-import { Constants } from "@babylonjs/core/Engines/constants";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
@@ -172,11 +171,14 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
    * WHY THIS BLOCK EXISTS. The block above compiles the trainer and the jet and
    * nothing else. The 747 was never compiled on an adapter by any GPU test, so
    * when its livery put the fuselage at UV1 + UV2 + vertex colour, nothing in
-   * the repository could see the result: with the airfield's clustered
-   * container attached, the fragment stage wanted 17 inputs, the device refused
-   * the pipeline, and the renderer stopped and drew a black canvas under a live
-   * HUD. The headroom assertion above is precisely the check that catches that
-   * build -- it simply never ran on the airframe that had it.
+   * the repository could see the result: with the clustered container
+   * attached (FlightRenderer builds it in every flight, from the aircraft's own
+   * cast pools and wash lights, airport or not), the fragment stage wanted 17
+   * inputs, the device refused the pipeline, and the renderer stopped and drew a
+   * black canvas under a live HUD. The headroom assertion above is precisely the
+   * check that catches that build -- it simply never ran on the airframe that
+   * had it. This rig has no container and no moon, so it reads one below live:
+   * 15 here is 16 of 16 in flight.
    *
    * So this compiles EVERY airframe the game can fly, from AIRCRAFT_KINDS rather
    * than a hand-written list, and holds each MATERIAL to the same standard: at
@@ -402,8 +404,9 @@ describe("every airframe's materials keep a slot for the clustered container (Ga
       expect(row.inputs, `${key} compiles at ${row.inputs} fragment inputs, over the device maximum of `
         + `${INTER_STAGE_LIMIT}. The mesh will not draw at all.`).toBeLessThanOrEqual(INTER_STAGE_LIMIT);
       expect(INTER_STAGE_LIMIT - row.inputs, `${key} has NO slot for the clustered container `
-        + `(${row.inputs}/${INTER_STAGE_LIMIT}, on ${row.mesh}). The airfield attaches one in production, `
-        + "so this material stops drawing the moment the airport has lamps. Free a varying first.")
+        + `(${row.inputs}/${INTER_STAGE_LIMIT}, on ${row.mesh}). Production attaches one in every flight `
+        + "(the aircraft's own cast pools and wash lights), so this material would not draw at all. "
+        + "Free a varying first.")
         .toBeGreaterThanOrEqual(1);
     }
   }, 120_000);

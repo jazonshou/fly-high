@@ -706,10 +706,11 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const root = new TransformNode("boeing-747-8", scene);
   configureRoot(root, "airliner");
 
-  // Three paint recipes: the shell, the wing, and the accent. This airframe
-  // carries four times the Global's painted area and each recipe costs three
+  // Two paint recipes, the shell and the accent; the wing's own was retired
+  // (see THE WING USED TO HAVE ITS OWN MATERIAL below). This airframe carries
+  // four times the Global's painted area and each recipe costs three
   // synthesized 64-pixel textures, so a recipe has to buy something a camera
-  // can find — and the wing's does; see `wing` below.
+  // can find.
   const bodyRecipe = {
     seed: 0x7478_0001,
     baseColor: 0xf4f5f3,
@@ -733,9 +734,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // a space each mesh owns separately.
     //
     // With the two colours equal, `mix(value, livery, decal)` is the identity
-    // and the band is gone. The real livery goes on below as body-space vertex
-    // paint, where a boundary is a height and a station and crosses a mesh
-    // join without knowing it is there.
+    // and the band is gone. The real livery goes on below as a texture on UV1,
+    // worn by `skin`, whose station axis the fuselage and radome share and
+    // whose v the radome re-solves from its own heights.
     liveryColor: 0xf4f5f3,
   } as const;
   const body = build.paintMaterial("airliner-body", bodyRecipe);
@@ -785,7 +786,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // materials to 16 and from 10 textures to 7. `paintMaterial` does not cache
   // by recipe — it synthesises the surface and builds albedo, normal and
   // metallic-roughness maps on every call — so an identical recipe meant a
-  // second synthesis and a second set of three maps of the same paint.
+  // second synthesis and a second set of three maps of the same paint. (The
+  // livery since added one material, `airliner-skin`, and one texture,
+  // `airliner-livery`; the skin shares the body's other two maps.)
   //
   // What it did NOT cost, which is worth recording because it is the first
   // thing one would assume: nothing. Mesh count and predicted draws are
