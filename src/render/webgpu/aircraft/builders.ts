@@ -243,21 +243,57 @@ export class AircraftBuildContext {
     const synthesis = synthesizeAircraftSurface(recipe);
     const textures = createAircraftSurfaceTextures(this.scene, name, synthesis);
     this.textures.push(textures.albedo, textures.normal, textures.metallicRoughness);
+    textures.normal.level = 0.42;
+    return this.dressPaint(name, textures.albedo, textures.normal, textures.metallicRoughness, {
+      aircraftPaint: true,
+      aircraftPaintFeatures: [...AIRCRAFT_PAINT_FEATURES],
+      aircraftPaintRecipe: { ...recipe },
+      aircraftPaintFeatureCoverage: { ...synthesis.featureCoverage },
+    });
+  }
+
+  /**
+   * `painted`'s paint under another albedo: its normal and metallic-roughness
+   * maps are the SAME texture objects, not copies, and `albedo` becomes this
+   * context's to dispose.
+   *
+   * Not `painted.clone()`. `PBRMaterial.clone` clones every texture, and a
+   * cloned RawTexture comes back with the defaults: the normal map's 0.42 level
+   * became 1 (surface tilt p95 7.5 deg -> 17.3 deg), WRAP became CLAMP and
+   * anisotropy 8 became 4. Each clone also allocated a GPU texture that nothing
+   * owned, and neither the clone nor its textures were in `materials` or
+   * `textures`, so disposing the aircraft left them all behind.
+   */
+  repaintMaterial(name: string, painted: PBRMaterial, albedo: BaseTexture): PBRMaterial {
+    const { bumpTexture, metallicTexture } = painted;
+    if (!bumpTexture || !metallicTexture) {
+      throw new Error(`${painted.name} has no normal or metallic-roughness map to share; is it a paintMaterial?`);
+    }
+    this.textures.push(albedo);
+    return this.dressPaint(name, albedo, bumpTexture, metallicTexture, {
+      ...(painted.metadata as Record<string, unknown> | null),
+    });
+  }
+
+  /** The one construction `paintMaterial` and `repaintMaterial` share. */
+  private dressPaint(
+    name: string,
+    albedo: BaseTexture,
+    normal: BaseTexture,
+    metallicRoughness: BaseTexture,
+    metadata: Record<string, unknown>,
+  ): PBRMaterial {
     const material = this.material(name, 0xffffff, { roughness: 1, metallic: 1 });
-    material.albedoTexture = textures.albedo;
-    material.bumpTexture = textures.normal;
-    material.bumpTexture.level = 0.42;
-    material.metallicTexture = textures.metallicRoughness;
+    material.albedoTexture = albedo;
+    material.bumpTexture = normal;
+    material.metallicTexture = metallicRoughness;
     material.useAmbientOcclusionFromMetallicTextureRed = true;
     material.useRoughnessFromMetallicTextureAlpha = false;
     material.useRoughnessFromMetallicTextureGreen = true;
     material.useMetallnessFromMetallicTextureBlue = true;
     material.metadata = {
       ...(material.metadata as Record<string, unknown> | null),
-      aircraftPaint: true,
-      aircraftPaintFeatures: [...AIRCRAFT_PAINT_FEATURES],
-      aircraftPaintRecipe: { ...recipe },
-      aircraftPaintFeatureCoverage: { ...synthesis.featureCoverage },
+      ...metadata,
     };
     return material;
   }
@@ -499,13 +535,51 @@ export class AircraftBuildContext {
     return this.vertexMesh(name, positions, indices, material, parent, { uvs });
   }
 
-  /** Elliptical cross-sections joined along body +X; never a scaled cylinder. */
+  /**
+   * Elliptical cross-sections joined along body +X; never a scaled cylinder.
+   *
+   * `stationRange` makes several lofts share ONE station parametrisation, so a
+   * texture's u does not step where they meet. It shares u ONLY: v stays each
+   * loft's own phase, and one phase is a different height on two section
+   * tables, so a caller that needs v to mean a height must re-solve it (the
+   * 747's radome does, `radomeLiveryPhase`).
+   *
+   * Without it each loft normalises u over its OWN first and last section: the
+   * airliner's fuselage (x -26..30.6) and nose (x 25.5..34) disagree by 0.40
+   * of the texture width at x = 30.6, and by about 0.7 where their surfaces
+   * cross at band height. That is why the cheatline was body-space vertex paint
+   * rather than a texture: a function of world x and y crosses a join without
+   * knowing it is there, and a per-loft u does not.
+   *
+   * IT IS UV1, NOT A SECOND SET, and the reason is the fragment-input budget.
+   * WebGPU counts 16 inputs, `front_facing` among them, and the clustered
+   * light container every flight builds costs each lit material one more. A
+   * second UV set is another: on the airliner's fuselage it measured 15 in
+   * Gate A's container-less rig, 16 of 16 live -- no headroom -- where UV1
+   * alone keeps the skin at 14 (15 live), the same as every other airframe's
+   * paint. A second UV set AND a colour channel was 17 live, and the device
+   * refused the pipeline.
+   *
+   * The cost of sharing UV1 falls on the paint synthesis, which tiles on UV1
+   * and WRAPS: its panel lines now repeat over the shared range rather than
+   * each loft's own. On the fuselage that is 60 m instead of 56.6 (5.7 %
+   * longer, invisible); on the radome it is 60 m instead of its own 8.5, which
+   * is a FIX, not a cost -- per-loft UV packed the fuselage's whole panel
+   * pattern into the nose and drew its panel lines about 6.7x denser than the
+   * fuselage's. One range gives the whole body one panel scale.
+   *
+   * OMIT IT and nothing changes: u is the loft's own, and the caps keep their
+   * literal 0 and 1, so every other loft's positions, indices and UVs stay byte
+   * for byte what they were -- by construction, not by float arithmetic
+   * happening to agree.
+   */
   loft(
     name: string,
     sections: readonly LoftSection[],
     radialSegments: number,
     material: Material,
     parent: TransformNode,
+    stationRange?: { readonly minimumX: number; readonly length: number },
   ): Mesh {
     if (sections.length < 2) throw new RangeError("An aircraft loft needs at least two sections");
     if (!Number.isInteger(radialSegments) || radialSegments < 8) {
@@ -522,6 +596,14 @@ export class AircraftBuildContext {
     const indices: number[] = [];
     const minimumX = sections[0]!.x;
     const length = sections[sections.length - 1]!.x - minimumX;
+    // u is measured over the shared station range when one is given, so every
+    // loft passing the same range agrees on u at every station; otherwise over
+    // this loft's own sections, exactly as before.
+    const uMinimumX = stationRange?.minimumX ?? minimumX;
+    const uLength = stationRange?.length ?? length;
+    if (stationRange && !(Number.isFinite(uMinimumX) && Number.isFinite(uLength) && uLength > 0)) {
+      throw new RangeError("An aircraft loft's station range must be finite with positive length");
+    }
     for (const section of sections) {
       if (!(section.yRadius > 0) || !(section.zRadius > 0)) {
         throw new RangeError("Aircraft loft radii must be positive");
@@ -556,7 +638,7 @@ export class AircraftBuildContext {
           (section.yOffset ?? 0) + yShape * section.yRadius,
           (section.zOffset ?? 0) + zShape * halfWidth,
         );
-        uvs.push((section.x - minimumX) / length, phase);
+        uvs.push((section.x - uMinimumX) / uLength, phase);
       }
     }
     for (let section = 0; section < sections.length - 1; section += 1) {
@@ -571,11 +653,13 @@ export class AircraftBuildContext {
     const startCenter = positions.length / 3;
     const start = sections[0]!;
     positions.push(start.x, start.yOffset ?? 0, start.zOffset ?? 0);
-    uvs.push(0, 0.5);
+    // The caps are vertices too, and must sit on the shared range with the
+    // rings; without one they keep their literal 0 and 1.
+    uvs.push(stationRange ? (start.x - uMinimumX) / uLength : 0, 0.5);
     const endCenter = positions.length / 3;
     const end = sections[sections.length - 1]!;
     positions.push(end.x, end.yOffset ?? 0, end.zOffset ?? 0);
-    uvs.push(1, 0.5);
+    uvs.push(stationRange ? (end.x - uMinimumX) / uLength : 1, 0.5);
     const endRing = (sections.length - 1) * ringSize;
     for (let radial = 0; radial < radialSegments; radial += 1) {
       indices.push(startCenter, radial + 1, radial);

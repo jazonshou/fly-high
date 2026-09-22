@@ -5,6 +5,7 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
@@ -20,6 +21,11 @@ import {
   AircraftBuildContext,
   isAlphaBlendedAirframeMaterial,
 } from "../src/render/webgpu/aircraft/builders";
+import {
+  AIRLINER_LIVERY_STATION_RANGE,
+  CHEATLINE,
+  buildAirlinerLivery,
+} from "../src/render/webgpu/aircraft/airlinerLivery";
 
 /**
  * The 747-8's draw budget, and the things that must survive spending less.
@@ -187,27 +193,102 @@ describe("the 747-8's wing is one white surface", () => {
     }
   });
 
-  it("leaves the fuselage its cheatline, painted where a mesh join cannot break it", () => {
-    // This used to read the fuselage's RECIPE and assert its livery colour
-    // differed from its base -- that is, that it still carried the paint
-    // synthesis's UV band. It does not any more, and should not: that band is
-    // a diagonal in each mesh's own 0..1 tile, so it stepped and changed angle
-    // at every join and never formed a line at all. The cheatline is vertex
-    // paint in body coordinates now, so this reads the actual colours.
+  it("leaves the fuselage its cheatline, in the livery texture on the shared station range", () => {
+    // The texture band replaced the vertex-paint band, and deleting the vertex
+    // COLOUR buffer is what paid for it: WebGPU allows a fragment stage 16
+    // inputs, and UV1 + a second UV set + colour on this shell came to 17 with
+    // the airfield's clustered container attached, which black-screened the
+    // 747 (docs/findings/AIRLINER_LIVERY_UV.md). So this asserts both: the band
+    // is in the texture where the shell samples it, and the shell carries no
+    // colour buffer and no second UV set to bring the 17th input back.
     const { scene } = build();
-    const shell = scene.meshes.find((mesh) => /^airliner-fuselage/.test(mesh.name));
-    expect(shell, "no fuselage mesh to read the cheatline off").toBeDefined();
-    const colors = shell!.getVerticesData(VertexBuffer.ColorKind);
-    expect(colors, "the fuselage carries no vertex colour at all").toBeTruthy();
-    let painted = 0;
-    let white = 0;
-    for (let vertex = 0; vertex < colors!.length / 4; vertex += 1) {
-      if (colors![vertex * 4]! < 0.5) painted += 1; else white += 1;
+    const shell = scene.getMeshByName("airliner-fuselage-shell");
+    expect(shell, "no fuselage shell to read the cheatline off").toBeTruthy();
+    // POSITIVE CONTROL: the check can see a colour buffer where there is one.
+    const probe = new Mesh("colour-probe", scene);
+    probe.setVerticesData(VertexBuffer.PositionKind, [0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    probe.setVerticesData(VertexBuffer.ColorKind, new Array<number>(12).fill(1));
+    expect(probe.getVerticesData(VertexBuffer.ColorKind), "the check cannot see colour").not.toBeNull();
+    probe.dispose();
+    expect(shell!.getVerticesData(VertexBuffer.ColorKind), "the shell carries vertex colour again").toBeNull();
+    expect(shell!.getVerticesData(VertexBuffer.UV2Kind), "the shell carries a second UV set again").toBeNull();
+
+    const albedo = (shell!.material as { albedoTexture?: BaseTexture | null } | null)?.albedoTexture;
+    expect(albedo?.name, "the shell does not wear the livery").toBe("airliner-livery");
+    expect(albedo!.coordinatesIndex, "the livery must ride on UV1").toBe(0);
+
+    const positions = shell!.getVerticesData(VertexBuffer.PositionKind)!;
+    const uvs = shell!.getVerticesData(VertexBuffer.UVKind)!;
+    const indices = shell!.getIndices()!;
+    const { minimumX, length } = AIRLINER_LIVERY_STATION_RANGE;
+    // ONE station range for both lofts: u is x's, on the fuselage and the
+    // radome alike. Per-loft u disagreed by 0.615 of the texture at the join.
+    let lowestX = Infinity;
+    let highestX = -Infinity;
+    let worstU = 0;
+    for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+      const x = positions[vertex * 3]!;
+      lowestX = Math.min(lowestX, x);
+      highestX = Math.max(highestX, x);
+      worstU = Math.max(worstU, Math.abs(uvs[vertex * 2]! - (x - minimumX) / length));
     }
-    // Both halves: a cheatline that covered everything would pass a "has
-    // paint" check just as well as one that covered nothing.
-    expect(painted, "no vertex is in the cheatline").toBeGreaterThan(20);
-    expect(white, "every vertex is in the cheatline").toBeGreaterThan(200);
+    expect(lowestX, "the shell lost the fuselage's aft end").toBeLessThan(-25.9);
+    expect(highestX, "the shell lost the radome").toBeGreaterThan(33.9);
+    expect(worstU, "a shell vertex is off the shared station range").toBeLessThan(1e-6);
+
+    // The band, read where the rasteriser would: at every starboard vertex and
+    // triangle centroid in the band's full-strength stations, the texel at the
+    // interpolated (u, v), placed at the interpolated body height. `shiftV`
+    // moves every lookup round the section, for the control below.
+    const image = buildAirlinerLivery();
+    const texelAt = (u: number, v: number) => {
+      const column = Math.min(image.width - 1, Math.max(0, Math.floor(u * image.width)));
+      const row = Math.min(image.height - 1, Math.max(0, Math.floor((v - Math.floor(v)) * image.height)));
+      const index = (row * image.width + column) * 4;
+      return [image.data[index]!, image.data[index + 1]!, image.data[index + 2]!] as const;
+    };
+    // Blue-dominant, not "nearer navy than white": the door windows (30, 34,
+    // 42) and door seals (140, 140, 140) are both nearer navy, and neither is
+    // the cheatline.
+    const isNavy = ([r, g, b]: readonly [number, number, number]) => b - r > 40 && b - g > 25 && b < 160;
+    const isWhite = ([r, g, b]: readonly [number, number, number]) => Math.min(r, g, b) >= 200;
+    const read = (shiftV: number) => {
+      const navyHeights: number[] = [];
+      let white = 0;
+      const sample = (x: number, y: number, z: number, u: number, v: number) => {
+        if (!(z > 0) || x < CHEATLINE.aftFullX || x > CHEATLINE.forwardFullX) return;
+        const texel = texelAt(u, v + shiftV);
+        if (isNavy(texel)) navyHeights.push(y);
+        else if (isWhite(texel)) white += 1;
+      };
+      for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+        sample(positions[vertex * 3]!, positions[vertex * 3 + 1]!, positions[vertex * 3 + 2]!,
+          uvs[vertex * 2]!, uvs[vertex * 2 + 1]!);
+      }
+      for (let corner = 0; corner < indices.length; corner += 3) {
+        const [a, b, c] = [indices[corner]!, indices[corner + 1]!, indices[corner + 2]!];
+        // Not the end caps: a cap fans from a centre vertex at v = 0.5, so its
+        // centroids are no height on the skin. Only a cap spans no stations.
+        const [xa, xb, xc] = [positions[a * 3]!, positions[b * 3]!, positions[c * 3]!];
+        if (Math.max(xa, xb, xc) === Math.min(xa, xb, xc)) continue;
+        const mean = (buffer: ArrayLike<number>, stride: number, offset: number) =>
+          (buffer[a * stride + offset]! + buffer[b * stride + offset]! + buffer[c * stride + offset]!) / 3;
+        sample(mean(positions, 3, 0), mean(positions, 3, 1), mean(positions, 3, 2), mean(uvs, 2, 0), mean(uvs, 2, 1));
+      }
+      // 5 cm: a texel is 4 cm round the cabin, and a centroid sits on the chord.
+      const offBand = navyHeights.filter((y) => y > CHEATLINE.topY + 0.05 || y < CHEATLINE.bottomY - 0.05);
+      return { navy: navyHeights.length, white, offBand };
+    };
+
+    // BOTH halves: a band covering everything would pass "has navy" as well as
+    // one covering nothing passes "has white". Measured 29 navy, 582 white.
+    const shipped = read(0);
+    expect(shipped.navy, "no navy where the shell samples the livery").toBeGreaterThan(15);
+    expect(shipped.white, "no white where the shell samples the livery").toBeGreaterThan(300);
+    expect(shipped.offBand.map((y) => y.toFixed(3)), "navy is off the band's heights").toEqual([]);
+    // CONTROL: moved 0.02 round the section (about 0.4 m on the flank), the same
+    // lookups must put navy off the band, or the check above cannot fail.
+    expect(read(0.02).offBand.length, "the placement check cannot see a band 0.4 m out").toBeGreaterThan(10);
   });
 });
 

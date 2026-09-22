@@ -448,7 +448,9 @@ const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Ob
 
 /**
  * Pipelines, shader cache, aircraft/airport meshes, sky dome, small LUTs.
- * Gate A's worst live aircraft surface maps add about 0.188 MiB here.
+ * Aircraft surface maps add about 0.188 MiB here for the trainer and jet; the
+ * 747's add about 5.46 MiB, 5.33 MiB of it the 2048 x 512 livery with its
+ * twelve-level chain (computed from the allocation sizes).
  */
 const MISC_ALLOWANCE_MIB = 40;
 
