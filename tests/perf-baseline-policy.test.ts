@@ -48,7 +48,8 @@ const comparesToBaseline = (shot: (typeof PERF_CAPTURE_SHOTS)[number]): boolean 
  */
 const IMAGE_GATE_REPLACED: Readonly<Record<string, string>> = {
   "motion-banked-turn": "gated on consecutive-frame SSIM through the turn, not on a baseline",
-  "page-thrash-turn": "gated on hitch count and residency depth, not on an image",
+  "page-thrash-turn": "gated on consecutive-frame SSIM through the turn, on hitch count "
+    + "and on residency depth, not on an image",
   "cdlod-transition": "gated on consecutive-frame SSIM, which is what geomorph popping is",
 };
 
