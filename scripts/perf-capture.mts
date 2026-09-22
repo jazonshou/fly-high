@@ -928,7 +928,18 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // without any flicker (page-thrash-turn measured 0.6988 at the fix-pack
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
-    temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
+    // 0.67 -> 0.75, PER SHOT, and this one TIGHTENS. Measured 0.7826.
+    //
+    // The honest side of the same table: if the floors are re-pinned from what
+    // each shot measures, the 45-degree shot has been carrying a floor far
+    // looser than its own behaviour and gets a real gate for the first time.
+    // Re-pinning only the one that failed would be choosing the direction.
+    // Margin 0.033, about 75x the run-to-run spread (0.7826-0.7828 shipped).
+    //
+    // It moved -0.0115 at 3f1af43's chase re-centring, against -0.0300 on the
+    // 60-degree shot and 0.0000 on the level one; that bank-scaling is what
+    // identified the rig. See page-thrash-turn below for the full bisect.
+    temporalFloors: { minConsecutiveSsim: 0.75, maxMeanLuminanceDelta: 0.01 },
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 20, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
@@ -957,7 +968,47 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // without any flicker (page-thrash-turn measured 0.6988 at the fix-pack
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
-    temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
+    // 0.67 -> 0.60, PER SHOT. Measured 0.6300 at bd5d947.
+    //
+    // ONE 0.67 FLOOR AT 0, 45 AND 60 DEGREES OF BANK WAS NEVER MEASURING THE
+    // SAME QUANTITY. On a banked chase shot the consecutive-frame metric
+    // counts CAMERA work as much as flicker, and the three shots sit
+    // naturally at 0.98 (0 deg), 0.78 (45 deg) and 0.63 (60 deg).
+    //
+    // Bisected 2026-09-21, one shot per tree:
+    //   41fc505 water-environment-colour  0.6718  passing by 0.0018
+    //   216d5e4 terrain-ground-texture    0.6674  CROSSED, by 0.0044
+    //   1510b74 water-sun-glitter         0.6673  flat
+    //   3f1af43 chase-rig re-centring     0.6374  -0.0300 in one commit
+    //   bd5d947 today                     0.6300
+    // The crossing was terrain's 0.0044 on a shot already 0.0018 from the
+    // floor; the movement was the chase rig's 0.0300. The rig fix is correct
+    // — it stops the airframe sliding out of frame at 0.155% of frame width
+    // per degree of bank — and what it changes is what the frame CONTAINS, so
+    // a frame-to-frame metric must move. The effect scales with bank: 0.0000
+    // at 0 deg, -0.0115 at 45, -0.0300 at 60.
+    //
+    // Not the far-sward dial: flipping it moves this 0.0002. Not the host:
+    // across fifteen runs fps ranged 38.8-95.3 while this read 0.6373-0.6374,
+    // so it is deterministic (the capture steps SIM time on a fixed schedule).
+    // Filtered-vs-full differs by 1e-4 here, so single-shot runs are valid for
+    // this metric though not for SSIM-against-baseline.
+    //
+    // THAT LICENCE IS FOR THIS METRIC ONLY, AND THE SHOT NEXT DOOR PROVES IT.
+    // Measured across one full 39-shot run and one filtered 3-shot run of the
+    // same tree:
+    //                        full(39)   filtered(3)
+    //   minConsecutiveSsim     0.6299       0.6300     <- 1e-4, usable
+    //   hitchCount                  0           29     <- unusable
+    // motion-banked-turn and cdlod-transition read 0 -> 8 and 0 -> 4 the same
+    // way. Hitching is a property of the streaming history a shot arrives
+    // with, which the shot list decides; consecutive-frame SSIM is a property
+    // of a fixed sim-time step, which it does not. Never read a hitch count,
+    // or anything else streaming-paced, out of a filtered run.
+    //
+    // THE FLICKER DETECTOR THAT MATTERS IS THE ONE BELOW: maxMeanLuminanceDelta
+    // held at 0.0005 against 0.01 throughout. Genuine flicker still fails it.
+    temporalFloors: { minConsecutiveSsim: 0.6, maxMeanLuminanceDelta: 0.01 },
     // The residency ceilings below remain the Phase-4 DESIGN INTENTS — the
     // atlas holds 196 slots at tier 1, and a pump that leaves more than 24
     // pages pending is admitting faster than the meter retires. `4.5-D1`
@@ -999,6 +1050,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // without any flicker (page-thrash-turn measured 0.6988 at the fix-pack
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
+    // 0.67 STAYS HERE, and this shot is why the other two could move: at zero
+    // bank it measures geomorph popping and nothing else, and it reads 0.9755
+    // — 46% above the floor. It is the level control for the pair below.
     temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
     // `4.5-D1`: re-pinned from what the fixed selector actually produces
     // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
