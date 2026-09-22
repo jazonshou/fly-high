@@ -222,7 +222,14 @@ describe("the loft's crown taper", () => {
       // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
       // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
       // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
-      trainer: "b04fd773",
+      // AND AGAIN, after an independent review found the roof slab's edge walls inside-out (`build.planform`
+      // winds them against its caps) so the frame's buried end showed through them at grazing angles: the
+      // roof is `solidified` now, and the joint is a 16-segment ball 3% over the bars. Against ea63db1, TWO
+      // of the trainer's 70 meshes differ: `trainer-cabin-roof` (the same 28 triangles over the same 16
+      // positions, and the SAME set of position-UV pairs; only winding and flat normals changed, so 16 -> 84
+      // vertices) and `windscreen-center-frame` (76 -> 779 vertices, 64 -> 1,360 triangles). The other 68,
+      // and all of the jet's, the Global's and the 747's, are bit-identical.
+      trainer: "fd086242",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",
