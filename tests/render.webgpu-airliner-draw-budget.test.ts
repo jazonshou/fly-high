@@ -237,6 +237,10 @@ describe("the 747-8's draw budget", () => {
     // property, and what the kit costs in cockpit view. The old gauge faces and
     // needles were two drawn meshes and are gone (89 drawn, from 91; 205 draws,
     // from 207); the old board was folded into the seats' mesh and is gone with it.
+    // THE SIX DISPLAYS COST NOTHING HERE. They are one texture on the ONE merged `airliner-screens`
+    // mesh, which already existed and already had one material; the atlas changes which material that
+    // is (an emissive one) in cockpit view only, not how many meshes or draws there are. Where there
+    // is no 2D canvas -- every run of this test -- the screens keep their flat material entirely.
     expect(drawn.length).toBeLessThanOrEqual(97);
     expect(casters.length).toBeLessThanOrEqual(64);
     expect(draws).toBeLessThanOrEqual(225);

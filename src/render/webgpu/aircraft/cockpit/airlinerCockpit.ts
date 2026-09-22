@@ -1,11 +1,23 @@
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { buildAttitudeBall, glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
+import {
+  DISPLAY_UPDATE_HZ,
+  createDisplayAtlas,
+  displayMaterial,
+  displaySlots,
+  paintStubAtlas,
+  remapScreenFaceToSlot,
+  uploadDisplayAtlas,
+  type DisplayAtlas,
+} from "./displays/displayAtlas";
+import { displayStateFrom, type DisplayAirframe } from "./displays/displayState";
 import { attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
@@ -208,6 +220,9 @@ export const AIRLINER_DASH = Object.freeze({
 
 // ---- the screens -------------------------------------------------------------------
 
+/** What the displays need that the flight state does not carry: four engines, 30 degrees of flap (`animation.ts`'s own table). */
+export const AIRLINER_DISPLAY_AIRFRAME: DisplayAirframe = Object.freeze({ engineCount: 4, fullFlapDegrees: 30 });
+
 export const AIRLINER_SCREENS = Object.freeze({
   width: 0.22,
   height: 0.15,
@@ -387,10 +402,17 @@ export interface AirlinerCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
   /**
-   * Turn the attitude ball to what `state` reads. The visual calls this from its
-   * `update` ONLY while cockpit view is on.
+   * Whether the six screens are drawing. False wherever there is no 2D canvas -- every Node test
+   * under `NullEngine` -- where they keep their flat material instead. Exposed so a test asserts the
+   * headless path deliberately rather than passing because nothing was drawn.
    */
-  update(state: FlightVisualState): void;
+  readonly displaysLive: boolean;
+  /**
+   * Turn the attitude ball to what `state` reads, and redraw the displays at `DISPLAY_UPDATE_HZ`.
+   * The visual calls this from its `update` ONLY while cockpit view is on, and passes the frame's
+   * own delta so the redraw rate is wall-clock rather than frame-rate.
+   */
+  update(state: FlightVisualState, secondsSinceLastUpdate?: number): void;
 }
 
 /**
@@ -491,8 +513,24 @@ export function buildAirlinerCockpit(
     bezel.position.set(faceX - s.bezelThickness / 2 + 0.001, centre.y, centre.z);
     bezels.push(bezel);
   }
-  parts.push(build.mergeStatic("airliner-screens", screens, root));
+  // EACH SCREEN'S PILOT-FACING FACE GETS ITS OWN SLOT of the display atlas, before the merge bakes
+  // the vertex data. The boxes are built in `SCREEN_Z` order and the slots are in the same order, so
+  // slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds that pairing by
+  // measuring the merged mesh's UVs against each screen's own z.
+  const slots = displaySlots();
+  for (const [index, screen] of screens.entries()) {
+    remapScreenFaceToSlot(screen as Mesh, slots[index]!);
+  }
+  const screensMesh = build.mergeStatic("airliner-screens", screens, root);
+  parts.push(screensMesh);
   parts.push(build.mergeStatic("airliner-screen-bezels", bezels, root));
+
+  // THE DISPLAYS THEMSELVES, if this engine has a 2D canvas. Under NullEngine it does not, and the
+  // screens keep the flat instrument-face material they were built with (see `displayAtlas.ts`).
+  const atlas = createDisplayAtlas(build.scene, "airliner-displays");
+  if (atlas !== null) {
+    screensMesh.material = displayMaterial(build, "airliner-display", atlas);
+  }
 
   // THE ATTITUDE DISPLAY on the pilot's PFD: three separate meshes under one pivot
   // (`buildAttitudeBall`), the exception to the merging above.
@@ -543,11 +581,26 @@ export function buildAirlinerCockpit(
   // viewer is CLOCKWISE to him, so the clockwise-as-seen angle (minus the bank)
   // goes in as it is; the bar slides along the pivot's own up. Held to the screen
   // by `tests/render.cockpit-instruments.test.ts`.
+  // The displays are redrawn on a counter, not every frame: `update` is only called while cockpit
+  // view is on (the visual gates it), and 15 a second is as fast as a display needs to move.
+  let sinceDisplayDraw = Number.POSITIVE_INFINITY;
   return {
     parts,
-    update(state) {
+    displaysLive: atlas !== null,
+    update(state, secondsSinceLastUpdate = 0) {
       ball.pivot.rotation.x = (attitudeHorizonDegrees(state.bank) * Math.PI) / 180;
       ball.bar.position.y = pitchBarOffsetMetres(state.pitch);
+      if (atlas === null) return;
+      sinceDisplayDraw += Number.isFinite(secondsSinceLastUpdate) ? Math.max(0, secondsSinceLastUpdate) : 0;
+      if (sinceDisplayDraw < 1 / DISPLAY_UPDATE_HZ) return;
+      sinceDisplayDraw = 0;
+      drawDisplays(atlas, displayStateFrom(state, AIRLINER_DISPLAY_AIRFRAME));
     },
   };
+}
+
+/** The painter. A stub until the drawing module lands; swapping it is the only change that needs. */
+function drawDisplays(atlas: DisplayAtlas, state: ReturnType<typeof displayStateFrom>): void {
+  paintStubAtlas(atlas, state);
+  uploadDisplayAtlas(atlas);
 }

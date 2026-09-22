@@ -42,6 +42,13 @@ export interface AircraftVisual {
    * Absent on an airframe that has none.
    */
   readonly cockpitOnlyParts?: readonly AbstractMesh[];
+  /**
+   * Whether this airframe's cockpit displays are drawing. Absent on airframes that have none, and
+   * FALSE wherever there is no 2D canvas to draw on -- every Node test under `NullEngine`. It is
+   * surfaced so a test can assert the headless path deliberately: a suite that drew nothing and a
+   * suite whose displays are broken look identical from outside.
+   */
+  readonly displaysLive?: boolean;
   /** All meshes owned by this visual, useful for shadow-caster registration. */
   readonly meshes: readonly AbstractMesh[];
   update(state: FlightVisualState, deltaSeconds: number): void;
