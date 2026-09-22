@@ -278,7 +278,21 @@ describe("a loft's crown seam", () => {
       // radius and material. Checked mesh by mesh against 003318a: it is the ONLY exterior mesh that moves,
       // the trainer's other 50 exterior meshes and all 19 cockpit-only ones are bit-identical, and the jet's
       // 78, the Global's 99 and the 747's 96 do not move at all.
-      trainer: "9bae9e9b",
+      // RE-PINNED for the trainer when the centre frame stopped ending in the air at EITHER end
+      // (jazonshou/cockpit-cessna-junction): its top turns aft at a ball joint and runs over the glass
+      // crown into the cabin roof's slab, and its foot runs on 0.09 m past the design foot down under
+      // the cowl deck it used to float above. Checked mesh by mesh against ea63db1, positions AND
+      // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
+      // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
+      // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
+      // AND AGAIN, after an independent review found the roof slab's edge walls inside-out (`build.planform`
+      // winds them against its caps) so the frame's buried end showed through them at grazing angles: the
+      // roof is `solidified` now, and the joint is a 16-segment ball 3% over the bars. Against ea63db1, TWO
+      // of the trainer's 70 meshes differ: `trainer-cabin-roof` (the same 28 triangles over the same 16
+      // positions, and the SAME set of position-UV pairs; only winding and flat normals changed, so 16 -> 84
+      // vertices) and `windscreen-center-frame` (76 -> 779 vertices, 64 -> 1,360 triangles). The other 68,
+      // and all of the jet's, the Global's and the 747's, are bit-identical.
+      trainer: "cc9fea6a",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

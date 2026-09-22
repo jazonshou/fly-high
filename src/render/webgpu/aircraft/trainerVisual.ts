@@ -18,6 +18,7 @@ import {
   setCockpitVisibility,
   type CommonRig,
 } from "./airframeRig";
+import { solidified } from "./cockpit/cockpitPrimitives";
 import { buildTrainerCockpit } from "./cockpit/trainerCockpit";
 import { AircraftBuildContext } from "./builders";
 import { TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
@@ -261,7 +262,15 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // which the glass crown is flat (x 0.24..1.62); forward and aft of that the
   // glass is meant to show, because that is where the windscreen and the rear
   // window are.
-  const cabinRoof = build.planform(
+  //
+  // `solidified` because `build.planform` winds its thin EDGE WALLS against its caps, so from outside
+  // every wall of this slab was back-face culled: at grazing angles the roof's edge was see-through,
+  // and anything inside the slab showed through it -- the centre frame's end, buried here, read as a
+  // dark fleck in the roof edge from an orbit camera near the roof's plane. Rewound by geometry, the
+  // positions and UVs are exactly the builder's; only the faces' orientation and shading changed.
+  // (The builder itself is the plane engineer's, and on their register; the F-16's three planforms
+  // have the same walls.)
+  const cabinRoof = solidified(build.planform(
     "trainer-cabin-roof",
     [
       { x: 1.62, z: 0.15 },
@@ -276,7 +285,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
     0.05,
     body,
     root,
-  );
+  ));
   cabinRoof.position.y = 0.205;
   // Visible from the pilot's seat, like the rest of the opaque shell (see the
   // note on the glass above). It is 24 mm of metal down the middle of the
@@ -284,33 +293,53 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // through one. The pilot sits in the LEFT seat, so it stands to the right of
   // his line of sight, as a centre frame does for the pilot on the left of a
   // real 150.
-  // ITS TOP TAPERS TO A POINT, and that is not decoration. `strutBetween` is a cylinder with a flat end
-  // disc at each end, and this strut's top end stops in OPEN AIR: the cabin roof panel reaches only x 1.62,
-  // 0.38 m aft of the top at x 2, and the glass crown there is y 0.190, below the top's 0.210. So from the
-  // pilot's seat the end disc read as a lit octagon against the sky — 48% of the rays over its own angular
-  // window on the player rig and 51% on the perf rig (`scripts`' cap survey; the frame is in the findings
-  // doc). A cockpit-only header to hide it was measured and REJECTED: at 0.3-0.6 m from the eye any strip
-  // big enough to swallow the disc costs 15% of the frame to hide 1.4% of it. A point has no disc.
+  // ITS TOP TURNS AFT AND RUNS INTO THE ROOF, because a frame member has to end in structure. The
+  // cabin roof panel reaches only x 1.62, 0.38 m aft of the strut's top at x 2, and between the two the
+  // glass crown is flat, so the strut's top used to stop in OPEN AIR: first as a flat end disc that read
+  // as a lit octagon against the sky (48% of the rays over its own window on the player rig), then as a
+  // cone tapered to a point, which removed the disc and left a spike ending in the sky.
   //
-  // Two primitives merged under the strut's own name, so the mesh count and every other exterior mesh stay
-  // exactly as they were: the bar at full radius to 0.05 m short of the top, then a cone to a true apex.
-  // `build.cylinder`'s `diameterTop` 0 collapses the top ring to one vertex, so no cap is generated at all —
-  // measured with the drawn-faces instrument, not assumed.
+  // Measured before building (a ray survey of the player's 75-degree frame; the numbers are in the
+  // findings doc): the apex filled 44 cells of 14,008. Running the ROOF forward to the windscreen's top
+  // would have cost 1,750 cells, 12.5% of the frame, because this cabin is low over the pilot -- the
+  // glass crown at the windscreen top is 7 cm above the eye and 0.67 m from it, +5.9 degrees -- so any
+  // roof edge there lands just above the horizon. A header bow across the top cost 446, all of it a bar
+  // across the view at +4..7 degrees. This, the strut turning aft along the crown's centreline (half
+  // sunk in the glass, which passes through it) into the roof's front edge, costs 276, none of it within
+  // 15 degrees of dead ahead: it is the upper right, where the strut was already going.
+  //
+  // THREE PRIMITIVES MERGED under the strut's own name, so the mesh count stays as it was: the bar at
+  // full radius from under the deck to the corner, a ball at the corner (3% over the bars' radius, see
+  // below), and a bar aft to x 1.60. The ball is what joins two round bars whose axes bend 42 degrees
+  // without either a wedge-shaped gap on the outside of the bend or an exposed end disc: both bars' end
+  // discs lie inside it. The aft bar's own end disc is 2 cm inside the roof slab, at its mid-thickness
+  // (the slab is y 0.18..0.23 and the bar 0.181..0.229), and the slab is CLOSED now (see `solidified`
+  // above), so no end of this member is in the open, from the seat or from any exterior angle --
+  // `tests/render.cockpit-trainer.test.ts` holds that with a cap survey that includes grazing views.
+  //
+  // THE FOOT HAD THE SAME FAULT, found by that survey rather than by eye: the design foot at
+  // (2.26, -0.02) stands above the cowl deck, whose surface there is y -0.047..-0.050, so the bar's
+  // bottom ring floated 8 to 49 mm clear of it and its end disc faced forward and down at anyone in
+  // front of the aeroplane. The design foot stays where it was, on the axis; the MESH runs on past it
+  // down into the fuselage by `centreFrameBuryMetres` (the 747's seam post does the same into its
+  // overhead). Measured, as least cover of the bottom ring under the deck: 0.082 m only just gets it
+  // under (0.9 mm), 0.089 m is the least for the 5 mm the test asks, and 0.10 m gives 11.8 mm.
   const centreFrameFoot = new Vector3(2.26, -0.02, 0);
-  const centreFrameTop = new Vector3(2, 0.21, 0);
+  const centreFrameBuryMetres = 0.1;
+  const centreFrameCorner = new Vector3(2, 0.21, 0);
+  const centreFrameIntoRoof = new Vector3(1.6, 0.205, 0);
   const centreFrameRadius = 0.024;
-  const centreFrameTipLength = 0.05;
+  const centreFrameJointScale = 1.03;
   {
-    const axis = centreFrameTop.subtract(centreFrameFoot);
-    const length = axis.length();
-    const unit = axis.scale(1 / length);
-    const shoulder = centreFrameTop.subtract(unit.scale(centreFrameTipLength));
+    const up = centreFrameCorner.subtract(centreFrameFoot).normalize();
+    const buriedFoot = centreFrameFoot.subtract(up.scale(centreFrameBuryMetres));
     const sections: { readonly name: string; readonly from: Vector3; readonly to: Vector3; readonly diameterTop: number; readonly diameterBottom: number }[] = [
-      // the bar: the same 8% fatter foot `strutBetween` gives it, unchanged
-      { name: "windscreen-center-frame-bar", from: centreFrameFoot, to: shoulder, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
-      { name: "windscreen-center-frame-tip", from: shoulder, to: centreFrameTop, diameterTop: 0, diameterBottom: centreFrameRadius * 2 },
+      // up the windscreen from below the deck, 8% fatter at the bottom as `strutBetween` makes a strut
+      { name: "windscreen-center-frame-bar", from: buriedFoot, to: centreFrameCorner, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
+      // aft along the glass crown into the roof, at the same radius so the member does not step
+      { name: "windscreen-center-frame-crown", from: centreFrameCorner, to: centreFrameIntoRoof, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2 },
     ];
-    const pieces = sections.map((section) => {
+    const pieces: AbstractMesh[] = sections.map((section) => {
       const run = section.to.subtract(section.from);
       const piece = build.cylinder(section.name, run.length(), section.diameterTop, section.diameterBottom, 8, dark, root);
       piece.position.copyFrom(section.from.add(section.to).scale(0.5));
@@ -321,6 +350,16 @@ export function createTrainer(scene: Scene): AircraftVisual {
       );
       return piece;
     });
+    // 3% LARGER than the bars, sixteen segments, and both measured. At the bars' own radius the bars'
+    // octagonal end rings lie ON the sphere the faceted ball is inscribed in, so they poke out between its
+    // vertices at ANY tessellation -- 12 of the 14 distinct corner-ring positions, by up to 0.32 mm at
+    // eight segments and 0.12 mm at sixteen -- and a 4x crop of the elbow showed that as a notch. More
+    // segments only shrink it; a larger radius is what closes it. At 1.03 all fourteen are inside by at
+    // least 0.60 mm, and sixteen segments (1,296 triangles, still one draw) keep the knuckle's silhouette
+    // round rather than faceted where it sits in the pilot's upper-right view.
+    const joint = build.sphere("windscreen-center-frame-joint", centreFrameRadius * 2 * centreFrameJointScale, 16, dark, root);
+    joint.position.copyFrom(centreFrameCorner);
+    pieces.push(joint);
     build.mergeStatic("windscreen-center-frame", pieces, root);
   }
 

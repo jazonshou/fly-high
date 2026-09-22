@@ -612,6 +612,135 @@ defect, the four test gaps behind the mutations just listed, a comment that said
 `render.cockpit-display-state.test.ts` flies the simulator (it builds its states by hand), the ladder
 rungs in the null-read frame, and five places where prose still gave the Global a ball.
 
+## The Cessna's centre frame ends in structure, at both ends
+
+**What was wrong.** `windscreen-center-frame` is an exterior strut up the middle of the Cessna's
+windscreen. Its top stopped at (2.0, 0.21, 0), 0.38 m short of the cabin roof, whose panel reaches only
+x 1.62; between them the glass crown is flat. From the pilot's seat the top first read as a flat end
+disc lit against the sky, then (after the taper, bd5d947) as a spike ending in the sky. The foot had the
+same fault, found by this change's own survey rather than by eye: the design foot stands 8 to 49 mm
+ABOVE the cowl deck (the deck under it is y -0.047..-0.050), so the bottom ring floated and its end disc
+faced forward and down at anyone ahead of the aeroplane.
+
+**Measured before building, and neither briefed option survived it.** A ray survey of the player's
+75-degree frame (0.5 degree cells, 14,008 in the frame; the canopy hidden as the cockpit camera hides
+it; back faces culled by the measured convention). The cabin is low over the pilot: the eye is at
+(1.38, 0.12, -0.26), under the roof, and the glass crown at the windscreen top is 7 cm above it and
+0.67 m from it, +5.9 degrees. Any roof edge at the windscreen top therefore lands just above the horizon.
+
+| option | cells | share of frame | against the 44-cell apex | within +-15 deg of dead ahead |
+| --- | --- | --- | --- | --- |
+| run the roof forward to x 2.03 | 1,750 | 12.5% | 40x | 935 |
+| a header bow across the windscreen top | 446 | 3.2% | 10x | 187 |
+| **the frame turns aft along the crown into the roof** | **276** | **2.0%** | **6x** | **0** |
+| the same at half radius | 143 | 1.0% | 3x | 0 |
+
+The third is built: all of its cost is in the upper right, where the strut was already going, and it
+turns the strut into one member that meets the roof. As built it costs 278 cells, 277 of which were sky.
+Half radius was cheaper but would have read as a wire stepping off a strut.
+
+**How it is built.** Three primitives merged under the frame's own name:
+- the bar from under the deck to the corner;
+- a ball at the corner;
+- a bar aft to x 1.60, 2 cm inside the roof's front edge and within its thickness (the slab is
+  y 0.18..0.23, the bar 0.181..0.229). It runs half sunk in the glass crown, which passes through it.
+
+The bars' axes bend 42 degrees at the corner.
+
+The foot runs 0.10 m past the design foot along the axis, the way the 747's seam post runs into its
+overhead. Measured as the bottom ring's least cover under the deck: 0.082 m only just gets it under
+(0.9 mm), 0.089 m is the least for the 5 mm the test asks, and 0.10 m gives 11.8 mm.
+
+**The ball is 3% over the bars' radius, with sixteen segments, and both are measured.** At the bars'
+own radius the bars' octagonal end rings lie ON the sphere the faceted ball is inscribed in. So 12 of the
+14 distinct corner-ring positions poke out between its vertices at ANY tessellation: by 0.32 mm at eight
+segments and 0.12 mm at sixteen. A 4x crop of the elbow showed that as a notch. More segments only
+shrink it; radius is what closes it. At 1.03 all fourteen are inside by at least 0.60 mm, and sixteen
+segments keep the knuckle round rather than faceted where it sits in the pilot's upper-right view:
+1,296 triangles, still one draw.
+
+**The roof slab was see-through at its edges, and burying the end there exposed it.** An independent
+review found this; my survey had not. `build.planform` winds a slab's thin edge walls against its caps,
+the same shared-builder defect as `verticalProfile`, so every wall of `trainer-cabin-roof` was back-face
+culled from outside. At grazing angles the roof's edge was see-through. The crown bar's buried end showed
+through it as a 1-3 px dark fleck from the orbit camera in a banked turn, near the roof's plane, and my
+exterior viewpoints had all been 20 degrees or more above that plane.
+
+The roof is now rebuilt with its winding decided by geometry: `solidPlate`'s core, split out as
+`solidified()`. The refactor is exact: every other plate on all three aircraft keeps a bit-identical
+digest. The roof is the same surface: the same 28 triangles over the same 16 positions, with an identical
+set of position+UV pairs.
+
+**That fix also corrects the roof's shading, and that is a visible change.** The planform's normals were
+averaged across its caps and its inside-out walls, and all 16 of its vertices are on its rim. So the flat
+roof was shaded like a pillow: its top face's normals were tilted 25 to 70 degrees from vertical, 46 on
+average. They are now exactly vertical, top and underside.
+
+**Exterior gate, mesh by mesh against ea63db1, positions and indices.** Two of the trainer's 70 meshes
+differ:
+- the roof: the same surface, rewound and flat-shaded, 16 -> 84 vertices;
+- the frame: 76 -> 779 vertices, 64 -> 1,360 triangles, most of it the ball.
+
+The other 68, the jet's 78, the Global's 96 and the 747's 93 are bit-identical. The seam and taper
+digests are re-pinned on that evidence.
+
+**Perf.** The 14 cockpit-mode shots draw no aircraft (`PERF_COCKPIT_RIG`), so nothing moves there. The
+25 chase shots (of the 39; the other 14 are the cockpit shots) fly the trainer by default, and they DO move. At the chase rig's rest position (13.5 m
+back, 5.1 m up, 62 degrees, 1280 x 720):
+- The junction geometry changes the nearest opaque surface of only 4 of 921,600 pixels. From straight
+  behind, the new bar lies in front of the strut.
+- The roof is the nearest surface on 702 pixels, 412 at the full-speed 15.7 m, and all of them change
+  shading with its normals.
+
+The end-of-wave promotion absorbs both. The 25, as `PERF_CAPTURE_SHOTS` names them:
+approach-500ft, slant-10km, reference-viewport, cruise-horizon, winter-noon, night, night-moonlit,
+dusk-mesopic, motion-banked-turn, page-thrash-turn, cdlod-transition, cruise-sun-30,
+forest-500ft-sunbehind, coast-10km-lowsun, runway-on-approach, water-25ft, hills-dusk-glint,
+mountain-close, forest-line-highsun, cliff-60m, golden-hour, blue-hour, night-beacon-offset,
+sunset-sunward, approach-lights-outboard. (Commit 1c79768's message says 26; that count came from a grep
+that also matched the type declaration. 25 is read off the shot table itself.)
+
+**The see-through edge, before and after, in the live app.** Rendered in one paused flight, with the
+aircraft and the world frozen, by rewinding only the roof's 16 wall triangles back to the planform's
+order between captures:
+- A grazing view 3.5 m off the port side in the roof's plane: 3,533 pixels change between before and
+  after, against a control of 0 (two "after" captures three frames apart). Before, the roof's whole port
+  edge is a dark and green line through which the slab's inside and the far side show; after, it is a
+  solid wall.
+- At the review's own orbit pose (25.8 m, 62 degrees, 880 px wide): within 4 px of the buried end, 5
+  pixels change and 0 in the control. That is the fleck, at the size the review predicted, measured
+  because it is too small to see.
+
+**Tests and mutations.** The old apex tests are replaced by the member's own claims:
+- full radius right to the corner, read off the strut's OWN side triangles (a position filter at the
+  corner also caught the crown bar's ring, and could not fail);
+- BOTH bars' corner rings centred on the corner and inside the ball's convex facets, each ring
+  separately;
+- the bottom ring under the deck, cast from above and nudged 0.1 mm off the fuselage's crown seam;
+- everything aft of the roof's front edge inside the slab, and every face of the slab facing out;
+- the member's faces drawn from the seat, with a control that finds them culled when wound backwards;
+- no end disc the nearest drawn surface from the seat or from 240 exterior viewpoints (every 30 degrees
+  round, six of ten elevations within 5 degrees of the roof's plane, at 4 m and at 25 m), with a
+  positive control that finds discs when only the member is in the scene.
+
+Occluders are taken from a box round the whole cabin. A first box left out the roof's aft wall, and a
+ray from dead astern travelled inside the slab to the buried end: a false alarm, and the reason the box
+now takes in the whole roof.
+
+Twelve mutations, all killed:
+- an unsolidified roof;
+- the strut tapered to a point inside the ball, and at half thickness (both passed the first version);
+- the strut ending 1 cm short, and the crown bar starting 1 cm aft (both passed the first knuckle test);
+- the foot buried 0.085 m, and not at all;
+- the ball at the bars' own radius, and no ball;
+- the aft end 1 cm short of the roof, and riding out of the slab's top;
+- the member wound backwards.
+
+**The review itself**: three reviewers (geometry, test soundness, truth of the prose), each finding
+handed to a separate agent told to refute it. Six confirmed and seven refuted; all six are fixed above:
+the see-through slab, the two vacuous tests, the bury margin, the segment claim, and +6.4 degrees
+that was +5.9.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -626,6 +755,12 @@ change.
 **The 2D HUD sits on the upper EICAS.** In cockpit view the game's own "ACTUAL" thrust and trim box
 is drawn over the right-hand screen's upper half. Both are correct on their own; nothing has decided
 which gives way in cockpit view. Registered for the PM, not changed here.
+
+**For the plane engineer's register, from the Cessna junction:** `build.planform` winds its edge walls
+against its caps, as `verticalProfile` does, so a planform's walls are culled from outside and its edge
+is see-through at grazing angles. The Cessna's roof is fixed here with `solidified()`. The F-16's three
+planforms (`jetVisual.ts`: the canopy sill, the shelves, the panels) are built the same way and were not
+touched. The canopy sill is cockpit-adjacent, so the F-16 cockpit work will meet it.
 
 **For the register, from the displays' own measurements:** the engine page's label should come from
 the airframe (N1 on the 747, N2 on the Global and the F-16, RPM on the Cessna) before an engine page

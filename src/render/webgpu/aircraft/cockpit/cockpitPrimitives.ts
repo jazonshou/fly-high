@@ -90,10 +90,25 @@ export function solidPlate(
   material: PBRMaterial,
   parent: TransformNode,
 ): Mesh {
-  const mesh = build.verticalProfile(name, clockwise(outline), thickness, material, parent);
+  return solidified(build.verticalProfile(name, clockwise(outline), thickness, material, parent));
+}
+
+/**
+ * The winding-by-geometry half of `solidPlate`, for a CONVEX closed mesh some other builder made:
+ * every triangle rewound so its cross product points into the solid, three vertices of its own,
+ * a flat normal pointing out, and each corner's UV carried over, so positions and texturing are
+ * exactly what the builder made and only the faces' orientation and shading change. Rewrites the
+ * mesh in place and returns it.
+ *
+ * `build.planform` has the same defect as `verticalProfile` (its thin edge walls wound against its
+ * caps), and a planform's walls are therefore see-through from outside: the Cessna's cabin roof
+ * showed whatever was inside its slab at grazing angles. It goes through here.
+ */
+export function solidified(mesh: Mesh): Mesh {
+  const name = mesh.name;
   const kinds = [...mesh.getVerticesDataKinds()].sort();
   if (kinds.join(",") !== [VertexBuffer.NormalKind, VertexBuffer.PositionKind, VertexBuffer.UVKind].sort().join(",")) {
-    throw new Error(`solidPlate "${name}": expected position, normal and uv, found ${kinds.join(", ")}`);
+    throw new Error(`solidified "${name}": expected position, normal and uv, found ${kinds.join(", ")}`);
   }
   const source = mesh.getVerticesData(VertexBuffer.PositionKind)!;
   const uvSource = mesh.getVerticesData(VertexBuffer.UVKind)!;
