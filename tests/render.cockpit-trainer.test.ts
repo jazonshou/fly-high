@@ -415,7 +415,7 @@ describe("the Cessna's windscreen centre frame", () => {
     });
   }
 
-  it("runs up the windscreen at its old foot, axis and radius, and turns at a ball of the same radius", () => {
+  it("runs up the windscreen at its old foot, axis and radius, and turns at a ball 5% over the bars' radius", () => {
     const frame = named("windscreen-center-frame");
     expect(frame.metadata?.mergedFrom).toEqual(["windscreen-center-frame-bar", "windscreen-center-frame-crown", "windscreen-center-frame-joint"]);
     const vertices = worldVertices(frame);
@@ -427,16 +427,47 @@ describe("the Cessna's windscreen centre frame", () => {
     // the mesh runs on BURY past the design foot, and no further
     expect(Math.min(...bar.map(alongStrut)), "the bottom ring").toBeCloseTo(-BURY, 3);
     // the bar reaches the corner at full radius: the taper is gone
-    const atCorner = vertices.filter((p) => Math.abs(alongStrut(p) - strutLength) < 1e-3 && strutRadial(p) < 0.03);
+    // (within 2% of the bar's radius: the ball's equator lies in the same plane at 1.05 radii)
+    const atCorner = vertices.filter((p) => Math.abs(alongStrut(p) - strutLength) < 1e-3 && strutRadial(p) < RADIUS * 1.02);
     expect(atCorner.length, "the strut's top ring").toBeGreaterThan(0);
     expect(Math.max(...atCorner.map(strutRadial))).toBeCloseTo(RADIUS, 3);
-    // the ball: vertices a radius from the corner in every direction, including straight up and forward
-    const onBall = vertices.filter((p) => Math.abs(Vector3.Distance(p, CORNER) - RADIUS) < 1e-3);
-    expect(Math.max(...onBall.map((p) => p.y)), "the ball's top").toBeCloseTo(CORNER.y + RADIUS, 3);
-    expect(Math.max(...onBall.map((p) => p.x)), "the ball's front").toBeCloseTo(CORNER.x + RADIUS, 3);
+    // the ball: vertices 1.05 radii from the corner, including straight up and forward
+    const BALL = RADIUS * 1.05;
+    const onBall = vertices.filter((p) => Math.abs(Vector3.Distance(p, CORNER) - BALL) < 1e-3);
+    expect(Math.max(...onBall.map((p) => p.y)), "the ball's top").toBeCloseTo(CORNER.y + BALL, 3);
+    expect(Math.max(...onBall.map((p) => p.x)), "the ball's front").toBeCloseTo(CORNER.x + BALL, 3);
     expect((frame.material as PBRMaterial).name).toBe("trainer-dark");
     // it is EXTERIOR, not cockpit-only: that is the whole point of fixing it here rather than hiding it
     expect(cockpitOnly.map((part) => part.name)).not.toContain("windscreen-center-frame");
+  });
+
+  it("is a knuckle at the corner, not a notch: both bars' end rings lie INSIDE the ball's faceted surface", () => {
+    // Read off the built merged mesh, pieces by their `mergedFrom` order: the bar, the crown bar, then
+    // the ball. At the bars' own radius the ball's facets dipped inside the bars' octagonal end rings
+    // and 60 of those 80 vertices poked out -- a notch at the elbow in a 4x crop, though no end disc was
+    // exposed and every other test passed. Containment in the ball's CONVEX faceted surface is the test.
+    const frame = named("windscreen-center-frame");
+    const all = worldVertices(frame);
+    const ballVertices = all.filter((p) => Math.abs(Vector3.Distance(p, CORNER) - RADIUS * 1.05) < 1e-3);
+    expect(ballVertices.length, "the ball's vertices").toBeGreaterThan(40);
+    const ballTriangles = tipWorldTriangles(frame).filter((t) =>
+      [t.a, t.b, t.c].every((p) => Math.abs(Vector3.Distance(p, CORNER) - RADIUS * 1.05) < 1e-3));
+    expect(ballTriangles.length, "the ball's triangles").toBeGreaterThan(100);
+    // the bars' vertices within a bar radius of the corner: their end rings
+    const rings = all.filter((p) => Vector3.Distance(p, CORNER) <= RADIUS * 1.001 && Vector3.Distance(p, CORNER) > RADIUS * 0.5);
+    expect(rings.length, "the bars' corner rings").toBeGreaterThanOrEqual(16);
+    let worst = Number.NEGATIVE_INFINITY;
+    for (const p of rings) {
+      for (const t of ballTriangles) {
+        const n = Vector3.Cross(t.b.subtract(t.a), t.c.subtract(t.a));
+        if (n.length() < 1e-14) continue;
+        n.normalize();
+        if (Vector3.Dot(n, t.a.subtract(CORNER)) < 0) n.scaleInPlace(-1);
+        worst = Math.max(worst, Vector3.Dot(n, p.subtract(t.a)));
+      }
+    }
+    // inside every face plane, by at least half a millimetre
+    expect(worst, "the furthest a corner-ring vertex stands outside a ball facet, metres").toBeLessThan(-0.0005);
   });
 
   it("starts under the cowl deck: every point of its bottom ring is below the surface above it", () => {

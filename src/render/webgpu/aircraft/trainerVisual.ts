@@ -301,7 +301,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   //
   // THREE PRIMITIVES MERGED under the strut's own name, so the mesh count and every other exterior mesh
   // stay exactly as they were: the bar at full radius from under the deck to the corner, a ball of the same
-  // radius at the corner, and a bar aft to x 1.60. The ball is what joins two round bars meeting at 41
+  // radius (5% over, see below) at the corner, and a bar aft to x 1.60. The ball is what joins two round bars meeting at 41
   // degrees without either a wedge-shaped gap on the outside of the bend or an exposed end disc: both
   // bars' end discs lie inside it. The aft bar's own end disc is 2 cm inside the roof slab, at its
   // mid-thickness (the slab is y 0.18..0.23 and the bar 0.181..0.229), so no end of this member is in
@@ -319,6 +319,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const centreFrameCorner = new Vector3(2, 0.21, 0);
   const centreFrameIntoRoof = new Vector3(1.6, 0.205, 0);
   const centreFrameRadius = 0.024;
+  const centreFrameJointScale = 1.05;
   {
     const up = centreFrameCorner.subtract(centreFrameFoot).normalize();
     const buriedFoot = centreFrameFoot.subtract(up.scale(centreFrameBuryMetres));
@@ -339,7 +340,11 @@ export function createTrainer(scene: Scene): AircraftVisual {
       );
       return piece;
     });
-    const joint = build.sphere("windscreen-center-frame-joint", centreFrameRadius * 2, 8, dark, root);
+    // 5% LARGER than the bars, and measured, not rounded: at the bars' own radius the ball's eight-segment
+    // facets dip inside the bars' octagonal end rings, 60 of their 80 vertices poked out by up to 0.32 mm,
+    // and a 4x crop of the elbow showed the notch. At 1.05 every one of them is inside by 0.86 mm or more,
+    // for the same 400 triangles; more segments would have cost three times as many to do the same.
+    const joint = build.sphere("windscreen-center-frame-joint", centreFrameRadius * 2 * centreFrameJointScale, 8, dark, root);
     joint.position.copyFrom(centreFrameCorner);
     pieces.push(joint);
     build.mergeStatic("windscreen-center-frame", pieces, root);

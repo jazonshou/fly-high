@@ -612,6 +612,79 @@ defect, the four test gaps behind the mutations just listed, a comment that said
 `render.cockpit-display-state.test.ts` flies the simulator (it builds its states by hand), the ladder
 rungs in the null-read frame, and five places where prose still gave the Global a ball.
 
+## The Cessna's centre frame ends in structure, at both ends
+
+**What was wrong.** `windscreen-center-frame` is an exterior strut up the middle of the Cessna's
+windscreen. Its top stopped at (2.0, 0.21, 0), 0.38 m short of the cabin roof, whose panel reaches only
+x 1.62; between them the glass crown is flat. From the pilot's seat the top first read as a flat end
+disc lit against the sky, then (after the taper, bd5d947) as a spike ending in the sky. The foot had the
+same fault, found by this change's own survey rather than by eye: the design foot stands 8 to 49 mm
+ABOVE the cowl deck (the deck under it is y -0.047..-0.050), so the bottom ring floated and its end disc
+faced forward and down at anyone ahead of the aeroplane.
+
+**Measured before building, and neither briefed option survived it.** A ray survey of the player's
+75-degree frame (0.5 degree cells, 14,008 in the frame; the canopy hidden as the cockpit camera hides
+it; back faces culled by the measured convention). The cabin is low over the pilot: the eye is at
+(1.38, 0.12, -0.26), under the roof, and the glass crown at the windscreen top is 7 cm above it and
+0.62 m ahead, +6.4 degrees. Any roof edge at the windscreen top therefore lands just above the horizon.
+
+| option | cells | share of frame | against the 44-cell apex | within +-15 deg of dead ahead |
+| --- | --- | --- | --- | --- |
+| run the roof forward to x 2.03 | 1,750 | 12.5% | 40x | 935 |
+| a header bow across the windscreen top | 446 | 3.2% | 10x | 187 |
+| **the frame turns aft over the crown into the roof** | **276** | **2.0%** | **6x** | **0** |
+| the same at half radius | 143 | 1.0% | 3x | 0 |
+
+The third is built: all of its cost is in the upper right, where the strut was already going, and it
+turns the strut into one member that meets the roof. As built it costs 278 cells, 277 of which were sky.
+Half radius was cheaper but would have read as a wire stepping off a strut.
+
+**How it is built.** Three primitives merged under the frame's own name:
+- the bar from under the deck to the corner;
+- a ball at the corner;
+- a bar aft to x 1.60, 2 cm inside the roof's front edge and within its thickness (the slab is
+  y 0.18..0.23, the bar 0.181..0.229).
+
+The foot runs 0.09 m past the design foot along the axis. 0.082 m was the measured least that puts
+every point of the ring 5 mm under the deck; the 747's seam post runs into its overhead the same way.
+**The ball is 5% over the bars' radius, and that is measured, not rounded.** At the bars' own radius, 60
+of the 80 vertices of the two bars' corner rings stood outside the ball's eight-segment facets, by up to
+0.32 mm, and a 4x crop of the elbow showed a notch. At 1.05 every one is inside by at least 0.86 mm, for
+the same 400 triangles.
+
+**Exterior gate, mesh by mesh against ea63db1, positions and indices.** The frame is the ONLY one of the
+trainer's 70 meshes that differs (76 -> 307 vertices, 64 -> 464 triangles, most of it the ball). The
+jet's 78, the Global's 96 and the 747's 93 are bit-identical. The seam and taper digests are re-pinned
+on that evidence.
+
+**Perf.** The 14 cockpit-mode shots draw no aircraft (`PERF_COCKPIT_RIG`), so nothing moves there. The
+claim "no baseline moves" does NOT hold for the 26 chase shots, which fly the trainer by default. At the
+chase rig's rest position (13.5 m back, 5.1 m up, 62 degrees, 1280 x 720), a pixel diff of the junction's
+window between ea63db1 and this change shows 4 of 921,600 pixels changing their nearest opaque surface
+(2 at the full-speed 15.7 m, 65 degrees). Seen from straight behind, the new bar lies in front of the
+strut, which already filled those pixels. Banked chase shots see the bar from off the centreline and
+will show more of it, bounded by its footprint of a few dozen pixels.
+
+**Tests and mutations.** The old apex tests are replaced by the member's own claims:
+- the old axis and radius to the corner;
+- a knuckle, not a notch, at the corner (the bars' corner rings inside the ball's convex facets);
+- every point of the bottom ring under the deck, cast from above;
+- everything aft of the roof's front edge inside the slab, read off the built mesh;
+- no end disc the nearest drawn surface from the pilot or from nine exterior viewpoints.
+The last one carries a positive control: with only the member in the scene, discs ARE found.
+
+Two instruments failed first and were fixed, not trusted:
+- A ray cast straight down the fuselage loft's crown seam slipped between two triangles and read the
+  fuselage's floor as the deck (-0.54 m). The casts now start 0.1 mm off the seam.
+- A thin triangle in the ball's pole fan lies almost in a bar's end plane, and was read as an end disc.
+  End discs are now also required to face along their bar.
+
+Eight mutations, all killed: the foot unburied, the foot buried only 0.05 m, no ball, a half-size ball,
+a ball at the bars' own radius, the aft end 1 cm short of the roof, the aft end riding out of the
+slab's top, and the old taper back. The "out of the slab's top" mutation passed a first version of the
+roof test, which found the aft ring along the design axis inside a 3 cm radius. That cut excluded
+exactly the vertices poking out. That version is gone.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

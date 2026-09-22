@@ -285,7 +285,7 @@ describe("a loft's crown seam", () => {
       // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
       // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
       // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
-      trainer: "67a77711",
+      trainer: "fecd367b",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

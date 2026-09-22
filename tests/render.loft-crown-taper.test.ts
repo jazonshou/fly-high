@@ -222,7 +222,7 @@ describe("the loft's crown taper", () => {
       // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
       // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
       // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
-      trainer: "f71f95c9",
+      trainer: "b04fd773",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       jet: "8bb6edcd",
