@@ -164,8 +164,9 @@ describe("the 747's livery mesh fits the fragment stage", () => {
   });
 
   it("never gives one mesh UV1, UV2 and vertex colour together, on any airframe", () => {
-    // The same limit, fleet-wide: the Global and the Cessna paint with vertex
-    // colour, and the next livery could be theirs.
+    // The same limit, fleet-wide. The Global's livery was vertex colour too
+    // until it moved to an image (`bizjetLivery.ts`); the next airframe's
+    // could be again.
     const allThree = (target: AbstractMesh) => {
       const kinds = layout(target);
       return kinds.uv && kinds.uv2 && kinds.color;
@@ -182,8 +183,11 @@ describe("the 747's livery mesh fits the fragment stage", () => {
     expect(offenders, "a mesh carries all three: its pipeline fails on the GPU and it draws nothing")
       .toEqual([]);
     // NON-VACUITY: the fleet has colour in it, and the check flags a mesh that
-    // has all three. Nothing in the fleet carries UV2, so that half is synthetic.
-    expect(coloured, "no mesh has vertex colour, so the conjunction was never tested").toBeGreaterThan(20);
+    // has all three. Nothing in the fleet carries UV2, so that half is
+    // synthetic. The colour half is real but small now: the trainer's
+    // propeller disc (its vertex alpha) is the one coloured mesh left, since
+    // the Global's livery -- 43 coloured meshes -- became an image.
+    expect(coloured, "no mesh has vertex colour, so the conjunction was never tested").toBeGreaterThanOrEqual(1);
     const { scene } = build("airliner");
     const control = withColour(mesh(scene, "airliner-fuselage-shell"));
     control.setVerticesData(VertexBuffer.UV2Kind, data(control, VertexBuffer.UVKind), false);

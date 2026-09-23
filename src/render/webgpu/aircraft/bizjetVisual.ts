@@ -27,7 +27,17 @@ import {
   setCockpitVisibility,
   type CommonRig,
 } from "./airframeRig";
-import { AircraftBuildContext, paintVertexBand, type LoftSection } from "./builders";
+import { AircraftBuildContext, type LoftSection } from "./builders";
+import {
+  GLOBAL_FUSELAGE_SECTIONS,
+  GLOBAL_HOUSE_SCHEME,
+  GLOBAL_LIVERY_STATION_RANGE,
+  GLOBAL_RADOME_SECTIONS,
+  GLOBAL_TAILCONE_SECTIONS,
+  buildGlobalLiveryMips,
+  createGlobalLiveryTexture,
+  createSolidLiveryTexture,
+} from "./bizjetLivery";
 import { buildBizjetCockpit } from "./cockpit/bizjetCockpit";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
@@ -185,16 +195,7 @@ const FLAP_SEAL_SPAN = 0.14;
  * between 34.8 mm and 55.2 mm out of a body that narrows; a part can only lie
  * in a surface if it can ask where the surface is.
  */
-const FUSELAGE_SECTIONS: readonly LoftSection[] = [
-  { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
-  { x: -10.5, yRadius: 1.23, zRadius: 1.19, yOffset: 0.12 },
-  { x: -8, yRadius: 1.34, zRadius: 1.33, yOffset: 0.03 },
-  { x: -2, yRadius: 1.345, zRadius: 1.345 },
-  { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
-  { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
-  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-];
+const FUSELAGE_SECTIONS: readonly LoftSection[] = GLOBAL_FUSELAGE_SECTIONS;
 
 /** The section the loft draws at a station, between its two nearest ribs. */
 function fuselageSectionAt(x: number): { yRadius: number; zRadius: number; yOffset: number } {
@@ -264,51 +265,17 @@ const CABIN_WINDOW_WIDTH = 0.385;
 const CABIN_WINDOW_HEIGHT_RATIO = 1.4;
 
 /**
- * The gold pinstripe of the Bombardier house scheme, as the 2019 EBACE
- * demonstrator wears it: ONE thin line, below the window row at about the
- * cabin floor, running level down the cabin and tapering out on the lower
- * nose. It is painted with VERTEX COLOUR on the fuselage lofts rather than
- * as a decal mesh laid on the skin, and that is the whole point — a stripe
- * mesh a few millimetres proud of a 33 m fuselage z-fights from a couple of
- * hundred metres out, which is exactly the kind of shimmer this pass is
- * here to remove. A colour multiplied into the skin cannot fight anything.
- */
-const CHEATLINE_HALF_HEIGHT = 0.055;
-/** Linear-space gold: vertex colour multiplies albedo AFTER the sRGB decode. */
-const CHEATLINE_LINEAR: readonly [number, number, number] = [0.52, 0.30, 0.055];
-
-/**
- * THE SCHEME, and the one rule that makes it survivable.
+ * THE SCHEME is the livery image's (`bizjetLivery.ts`), not vertex colour.
  *
- * Navy and gold over white, which is the palette this aeroplane already wore
- * in gold alone. Every boundary below is a function of BODY COORDINATES -- a
- * height band, a station range, a fraction of the fin's height -- and never of
- * a mesh's own UVs. That is not style, it is the fix for what Jason called
- * misaligned lines: a stripe defined per mesh restarts at every panel join, so
- * it steps at the joins and wraps where a section narrows, which is how the
- * old livery drew a helix around the fuselage. A boundary in body coordinates
- * crosses a join without knowing the join is there.
- *
- * SIZED FOR DISTANCE rather than for the close-up. At the 65 m orbit a pixel
- * is about 5 cm, so the navy band is a window tall (0.539 m, about eleven
- * pixels) and the gold pinstripe is 0.11 m (two). Anything thinner is a
- * shimmer at the range the aeroplane is actually looked at.
+ * It was vertex colour on the body lofts, fin, tailplane, winglets and
+ * nacelles, painted as functions of body coordinates so a line crossed a mesh
+ * join without stepping. That rule survives in the image, which is solved in
+ * body coordinates too. What did not survive was the cost: the colour channel
+ * held the body material at 16 of 16 fragment inputs live and 17 in a
+ * reflection or fog pass, and it drew at the mesh's resolution, a rib gap
+ * lengthwise. The skin now wears the image on UV1, which costs no input.
  */
-const NAVY_LINEAR: readonly [number, number, number] = [0.006, 0.018, 0.078];
-/** Light grey under the belly, so the aeroplane shades from below. */
-const BELLY_LINEAR: readonly [number, number, number] = [0.46, 0.50, 0.53];
-
-/**
- * The cheatline runs along the WINDOW LINE, because that is where this
- * aeroplane's is: `CABIN_WINDOW_Y` centres it and one window's height sets its
- * depth, so the navy swallows the window row rather than running near it.
- */
-const CHEATLINE_Y = CABIN_WINDOW_Y;
-const CHEATLINE_NAVY_HALF_HEIGHT = (CABIN_WINDOW_WIDTH * CABIN_WINDOW_HEIGHT_RATIO) / 2;
-/** The gold sits DIRECTLY beneath the navy, sharing an edge with it. */
-const PINSTRIPE_Y = CHEATLINE_Y - CHEATLINE_NAVY_HALF_HEIGHT - CHEATLINE_HALF_HEIGHT;
-/** Below this the belly greys off. The cabin floor is around -0.45. */
-const BELLY_Y = -0.62;
+const LIVERY_SCHEME = GLOBAL_HOUSE_SCHEME;
 
 interface WingSection {
   readonly leadingX: number;
@@ -321,13 +288,6 @@ interface WingSection {
 /** Linear interpolation, kept local so the planform reads as arithmetic. */
 function mix(from: number, to: number, amount: number): number {
   return from + (to - from) * amount;
-}
-
-/** Hermite ramp; `edge0 > edge1` simply runs the ramp the other way. */
-function smoothStep(edge0: number, edge1: number, value: number): number {
-  if (edge0 === edge1) return value < edge0 ? 0 : 1;
-  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
 }
 
 /**
@@ -502,15 +462,15 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // costs nothing: `mix(value, livery, decal)` becomes the identity, and the
   // panel lines, rivets, seams, filler, soot and leading-edge wear all stay.
   //
-  // The real livery goes on afterwards as `paintVertexBand`, where it can be
-  // put exactly where the aeroplane wears it.
+  // The real livery is the skin's image, below, where it can be put exactly
+  // where the aeroplane wears it.
   //
   // Dropping the second recipe also drops three synthesized textures and a
   // material: the navy-and-gold control surfaces it painted are not on this
   // aeroplane. A Global's flaps, ailerons, rudder and elevator are the same
   // white as the wing they fold into, which is also why the wing now reads as
   // one surface instead of a mosaic of striped rectangles.
-  const body = build.paintMaterial("bizjet-body", {
+  const bodyRecipe = {
     seed: 0x6108_0001,
     baseColor: 0xf2f4f3,
     liveryColor: 0xf2f4f3,
@@ -518,10 +478,41 @@ export function createBizJet(scene: Scene): AircraftVisual {
     metallic: 0.16,
     sootStrength: 0.34,
     wearStrength: 0.4,
-    // The 64-pixel maps stretch over a 33 m fuselage. At full strength the
-    // panel grid would read as quilting rather than as skin.
+    // Turned down for the fuselage, which this recipe was stretched over when
+    // it was chosen; the fuselage now has the skin's recipe below, and the
+    // wings and tail keep this one unchanged.
     panelStrength: 0.45,
-  });
+  } as const;
+  const body = build.paintMaterial("bizjet-body", bodyRecipe);
+  /*
+   * THE SKIN: the fuselage, radome and tailcone, wearing the livery image on
+   * UV1 (`bizjetLivery.ts` for what it draws and why it is an image).
+   *
+   * Its RELIEF is the body recipe with every feature that belongs to a panel
+   * turned off -- the grid, seam and rivets, the soot, the filler and the
+   * leading-edge wear. The 64-pixel tile is laid ONCE over the 33.5 m body
+   * (u is the station), so each of those is a half-metre smear: four dark
+   * rings, a 28 m soot streak down the port flank, two 3 m filler patches and
+   * a bare-metal radome. What stays is the paint grain, the recipe's finish.
+   * Sharing the body's maps (`repaintMaterial`) would keep every one of them
+   * in the normal map and the ambient-occlusion channel under the new colour.
+   */
+  const skin = build.liveryPaintMaterial("bizjet-skin", {
+    ...bodyRecipe,
+    panelStrength: 0,
+    sootStrength: 0,
+    fillerStrength: 0,
+    rivetStrength: 0,
+    wearStrength: 0,
+  }, createGlobalLiveryTexture(scene, buildGlobalLiveryMips(LIVERY_SCHEME)));
+  /** The nacelles in the scheme's colour, or in the body's own paint when it names none. */
+  const nacellePaint = LIVERY_SCHEME.nacelle
+    ? build.repaintMaterial(
+      "bizjet-nacelle-paint",
+      body,
+      createSolidLiveryTexture(scene, LIVERY_SCHEME.nacelle, "bizjet-nacelle-livery"),
+    )
+    : body;
   const dark = build.material("bizjet-dark", 0x101b22, {
     roughness: 0.26,
     metallic: 0.4,
@@ -629,40 +620,18 @@ export function createBizJet(scene: Scene): AircraftVisual {
     "bizjet-fuselage",
     FUSELAGE_SECTIONS,
     48,
-    body,
+    skin,
     root,
   );
   // The nose DROOPS: the sim's two radome contact points straddle y = -0.15,
   // not y = 0. That is the real shape — the flight deck sits on top of a
   // radome whose axis falls away from the cabin centreline — and it is most of
   // what stops a business jet nose reading as a fighter's.
-  const radome = build.loft(
-    "bizjet-radome",
-    [
-      { x: 13.1, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-      { x: 14.1, yRadius: 0.62, zRadius: 0.62, yOffset: -0.12 },
-      { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
-      { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
-    ],
-    40,
-    body,
-    root,
-  );
+  const radome = build.loft("bizjet-radome", GLOBAL_RADOME_SECTIONS, 40, skin, root);
   // Upswept, ending at (-18.5, +0.62) where the sim puts its tailcone contact
   // point. The upsweep is what gives a long aeroplane its rotation angle
   // without dragging the tail, and on this type it also carries the APU.
-  const tailcone = build.loft(
-    "bizjet-tailcone",
-    [
-      { x: -18.5, yRadius: 0.14, zRadius: 0.12, yOffset: 0.62 },
-      { x: -17.2, yRadius: 0.42, zRadius: 0.36, yOffset: 0.58 },
-      { x: -15.4, yRadius: 0.7, zRadius: 0.64, yOffset: 0.48 },
-      { x: -12.9, yRadius: 1.02, zRadius: 0.98, yOffset: 0.25 },
-    ],
-    48,
-    body,
-    root,
-  );
+  const tailcone = build.loft("bizjet-tailcone", GLOBAL_TAILCONE_SECTIONS, 48, skin, root);
   // The wing-to-body fairing, which on this aeroplane houses the wing box, the
   // main gear bays and the centre tank and is wider than the fuselage itself.
   // Its underside at y = -1.80 is what the belly beacon is mounted on; without
@@ -687,15 +656,13 @@ export function createBizJet(scene: Scene): AircraftVisual {
     root,
   );
 
-  // ONE chordwise coordinate for the whole body, so the fuselage, the radome
-  // and the tailcone stop being three separate 0..1 tiles with three
-  // independent panel-line grids meeting at two visible discontinuities. The
-  // loft builder normalises u over each mesh's OWN length; re-normalising over
-  // the aeroplane's 33.5 m makes the frame rings run unbroken nose to tail and
-  // puts the paint's leading-edge wear on the radome tip and the tailcone tip,
-  // which is where an aeroplane wears.
-  const BODY_MIN_X = -18.5;
-  const BODY_LENGTH = 33.5;
+  // ONE station coordinate for the whole body, so the fuselage, the radome
+  // and the tailcone stop being three separate 0..1 tiles meeting at two
+  // visible discontinuities. The loft builder normalises u over each mesh's
+  // OWN length; re-normalising over the aeroplane's 33.5 m is what lets one
+  // livery image run unbroken nose to tail: a feature drawn at one u is at one
+  // station on all three lofts.
+  const { minimumX: BODY_MIN_X, length: BODY_LENGTH } = GLOBAL_LIVERY_STATION_RANGE;
   for (const loft of [fuselage, radome, tailcone]) {
     const positions = loft.getVerticesData(VertexBuffer.PositionKind)!;
     const uvs = loft.getVerticesData(VertexBuffer.UVKind)!;
@@ -705,43 +672,6 @@ export function createBizJet(scene: Scene): AircraftVisual {
     loft.setVerticesData(VertexBuffer.UVKind, uvs, false);
   }
 
-  /*
-   * THE FUSELAGE: grey belly, navy cheatline, gold pinstripe beneath it.
-   *
-   * Painted in this order because each is a multiply and the later ones are
-   * meant to sit ON the earlier: the belly greys the whole underside, then the
-   * navy takes the window line, then the gold takes the strip directly under
-   * the navy. All three are body-space, so they run unbroken across the three
-   * separate lofts the body is made of -- the radome, the fuselage and the
-   * tailcone -- which is exactly what a per-mesh stripe cannot do.
-   */
-  for (const loft of [fuselage, radome, tailcone]) {
-    // The belly. No station range: it runs the whole length, because an
-    // aeroplane's underside is grey from the radome to the tailcone.
-    paintVertexBand(loft, BELLY_LINEAR, (_x, y) =>
-      1 - smoothStep(BELLY_Y - 0.34, BELLY_Y + 0.1, y));
-  }
-  // The cheatline goes on the FUSELAGE AND TAILCONE ONLY. It starts just
-  // behind the flight deck, and the radome is the nose cone ahead of that, so
-  // asking for it there paints nothing -- which `paintVertexBand` refuses
-  // rather than silently accepting, and did.
-  for (const loft of [fuselage, tailcone]) {
-    // The navy band, and the gold under it, share a station window and a
-    // flank test so the two cannot drift apart at the ends.
-    const station = (x: number): number =>
-      // Starts just behind the flight deck and dies out on the tailcone.
-      smoothStep(11.6, 10.4, x) * (1 - smoothStep(-15.6, -17.6, x));
-    // Only on the FLANKS: a band defined by height alone wraps under the
-    // belly wherever the section is narrower than the cabin's, which is what
-    // drew a helix around the nose the first time this was attempted.
-    const flank = (z: number): number => Math.min(1, Math.abs(z) / 0.55);
-    paintVertexBand(loft, NAVY_LINEAR, (x, y, z) => station(x) * flank(z)
-      * (1 - smoothStep(CHEATLINE_NAVY_HALF_HEIGHT,
-        CHEATLINE_NAVY_HALF_HEIGHT + 0.09, Math.abs(y - CHEATLINE_Y))));
-    paintVertexBand(loft, CHEATLINE_LINEAR, (x, y, z) => station(x) * flank(z)
-      * (1 - smoothStep(CHEATLINE_HALF_HEIGHT,
-        CHEATLINE_HALF_HEIGHT + 0.05, Math.abs(y - PINSTRIPE_Y))));
-  }
 
   // One 12-sided oval, thin-instanced down both sides. The instance matrix is
   // the ENTIRE transform — the base mesh keeps an identity one — because thin
@@ -1270,20 +1200,10 @@ export function createBizJet(scene: Scene): AircraftVisual {
     );
     upper.rotation.x = -side * Math.atan2(WINGLET_UPPER_RISE, WINGLET_UPPER_REACH);
     wingSurfaces.push(blend, upper);
-    /*
-     * THE WINGLET: navy on both faces, gold along the top edge.
-     *
-     * The blend is painted from 40% of its span up rather than all of it, so
-     * the navy starts on the winglet proper and the white wing runs out to the
-     * tip -- a winglet painted right down into the wing reads as a wing with a
-     * blue end. Both are painted on LOCAL z, which on these panels is height
-     * up the winglet, and both carry their own dihedral rotation afterwards.
-     */
-    paintVertexBand(blend, NAVY_LINEAR, (_x, _y, z) =>
-      smoothStep(blendSpan * 0.4, blendSpan * 0.62, Math.abs(z)));
-    paintVertexBand(upper, NAVY_LINEAR, () => 1);
-    paintVertexBand(upper, CHEATLINE_LINEAR, (_x, _y, z) =>
-      smoothStep(upperSpan - 0.11, upperSpan - 0.03, Math.abs(z)));
+    // THE WINGLET is in the body's paint. The navy scheme's navy and gold here,
+    // and the house scheme's gold tip, are part images to come (livery stage
+    // 2b): vertex colour cannot come back, it is the fragment input the
+    // livery image freed.
 
     // Landing lights in the wing roots, which is where this type carries them.
     // Seated on the section law like everything else on this wing, so the lens
@@ -1342,14 +1262,10 @@ export function createBizJet(scene: Scene): AircraftVisual {
       tipZ: FIN_TIP_Y - FIN_ROOT_Y,
       thicknessRatio: 0.085,
       chordSegments: 12,
-      // 24, not 4, and the livery is why. Vertex paint is only as sharp as the
-      // mesh is tessellated, and at four span segments the rings are 1.1 m
-      // apart on a 4.38 m fin -- so the gold stripe at the navy's lower edge
-      // landed BETWEEN two of them and painted nothing at all.
-      // `paintVertexBand` refused the run rather than drawing a fin with no
-      // stripe on it. 24 divides the height so that a ring falls exactly on
-      // the boundary at a third, which is the edge loop that boundary needs,
-      // and drops the spacing to 0.18 m, matching the fuselage's.
+      // 24, not 4: chosen for the old vertex-paint livery, which was only as
+      // sharp as the mesh (a ring on the navy's boundary at a third, 0.18 m
+      // spacing). The livery is no longer vertex paint; the tessellation is
+      // kept so the fin's shape and lighting do not move with it.
       spanSegments: 24,
     },
     body,
@@ -1358,23 +1274,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
   fin.rotation.x = -Math.PI / 2;
   fin.position.y = FIN_ROOT_Y;
   wingSurfaces.push(fin);
-  /*
-   * THE FIN: navy from a third of its height to the top, gold along the lower
-   * edge of the navy.
-   *
-   * The fraction is of the FIN's own height rather than a world y, so the band
-   * stays put if the tail is ever resized -- and the panel is built before its
-   * `rotation.x`, so its local z IS height above the fin root. Painting on a
-   * world y here would be painting on a coordinate this mesh does not have
-   * yet, which is the sort of thing that survives review and then shows up
-   * ninety degrees out.
-   */
-  const FIN_NAVY_FROM = (FIN_TIP_Y - FIN_ROOT_Y) / 3;
-  paintVertexBand(fin, NAVY_LINEAR, (_x, _y, z) => smoothStep(
-    FIN_NAVY_FROM - 0.06, FIN_NAVY_FROM + 0.06, Math.abs(z)));
-  paintVertexBand(fin, CHEATLINE_LINEAR, (_x, _y, z) =>
-    1 - smoothStep(CHEATLINE_HALF_HEIGHT, CHEATLINE_HALF_HEIGHT + 0.05,
-      Math.abs(Math.abs(z) - FIN_NAVY_FROM)));
+  // THE FIN is in the body's paint: its markings, like the winglets', are
+  // part images to come (livery stage 2b), not vertex colour.
 
   const rudder = node("rudder", root, scene);
   rudder.position.set(RUDDER_HINGE_ROOT_X, FIN_ROOT_Y, 0);
@@ -1445,14 +1346,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // Anhedral: the tip drops, so the sign is the opposite of the wing's.
     tailplane.rotation.x = side * TAILPLANE_ANHEDRAL;
     wingSurfaces.push(tailplane);
-    // The thin gold line along the stabiliser leading edge, which is the one
-    // other marking the demonstrator carries besides the cheatline. Painted
-    // into the vertices for the same reason the cheatline is.
-    paintVertexBand(tailplane, CHEATLINE_LINEAR, (x, _y, z) => {
-      const station = Math.abs(z);
-      const leading = mix(-14.2, -17.05, (station - 0.32) / (TAILPLANE_TIP_Z - 0.32));
-      return 1 - smoothStep(0.1, 0.22, leading - x);
-    });
+    // The tailplane is in the body's paint; the navy scheme's gold leading
+    // edge is a part image to come (livery stage 2b).
   }
   // The bullet fairing over the fin/tailplane junction, and it is not
   // decoration: the fin tip is barely 0.13 m thick and BOTH the tailplane and
@@ -1628,7 +1523,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
   const fanSpools: TransformNode[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
-    const nacelle = build.loft(
+    build.loft(
       `${sideName}-bizjet-nacelle`,
       [
         { x: -14.05, yRadius: 0.55, zRadius: 0.55, yOffset: 0.75, zOffset: side * 2.3 },
@@ -1646,13 +1541,12 @@ export function createBizJet(scene: Scene): AircraftVisual {
         { x: -9.35, yRadius: 0.78, zRadius: 0.78, yOffset: 0.75, zOffset: side * 2.3 },
       ],
       28,
-      body,
+      nacellePaint,
       root,
     );
-    // THE NACELLE: navy all over. No band and no boundary, so nothing here can
-    // step at a join -- the intake ring in front of it is a separate mesh and
-    // keeps its bright metal, which is what gives the engine its lip.
-    paintVertexBand(nacelle, NAVY_LINEAR, () => 1);
+    // THE NACELLE in the scheme's colour (white, the body's paint, in the house
+    // scheme). The intake ring in front of it is a separate mesh and keeps its
+    // bright metal, which is what gives the engine its lip.
     // FLIPPED NORMALS, and the only mesh on this aeroplane that had them.
     // `verticalProfile` extrudes whatever outline it is handed and does not
     // reverse the winding, so the orientation is decided by the order of the
@@ -1888,30 +1782,12 @@ export function createBizJet(scene: Scene): AircraftVisual {
     gearDoors,
     speedBrakes,
   };
-  /*
-   * EVERY part on the paint material carries a colour channel, painted or not.
-   *
-   * Vertex colour is an optional attribute: Babylon gives a mesh one only when
-   * something writes it. So after the livery, some parts of this aeroplane
-   * have one and some do not -- and `MergeMeshes` requires identical attribute
-   * sets, silently dropping the channel from the merged result if they differ.
-   * A later pass merging static parts by material would therefore repaint the
-   * whole aeroplane white and nobody would know which change did it.
-   *
-   * White is the identity for a multiply, so this costs four floats a vertex
-   * and changes nothing on screen.
-   */
-  for (const mesh of build.meshes) {
-    if (mesh.material !== body) continue;
-    if (mesh.getVerticesData(VertexBuffer.ColorKind)) continue;
-    const vertices = mesh.getTotalVertices();
-    if (vertices === 0) continue;
-    mesh.setVerticesData(
-      VertexBuffer.ColorKind,
-      new Array<number>(vertices * 4).fill(1),
-      false,
-    );
-  }
+  // NO part on the paint materials carries a colour channel. They all did --
+  // a white one filled in here so a merge by material could not drop the
+  // livery's -- and that channel was the body material's 16th fragment input
+  // live and the 17th in a reflection or fog pass. The livery is an image now
+  // (`bizjetLivery.ts`), and `render.bizjet-livery` fails if a colour channel
+  // reaches any mesh the body or the skin paints.
   configureCockpitLayers(rig.cockpitParts);
   let disposed = false;
   return {

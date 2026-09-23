@@ -46,6 +46,19 @@ export interface AircraftPaintRecipe {
    * byte-identical to the pre-`panelStrength` synthesis.
    */
   readonly panelStrength?: number;
+  /**
+   * Scales the two filler patches (tone, relief and roughness), default 1.
+   * Like `panelStrength`, for a surface the 64² tile is stretched over: on the
+   * Global's 33.5 m body each patch is a 3 m smear. Omitted, byte-identical.
+   */
+  readonly fillerStrength?: number;
+  /**
+   * Scales the rivets' relief, default 1. Rivets sit on the panel grid whatever
+   * `panelStrength` says, so turning the grid off leaves its rivet rows behind
+   * as 0.5 m bumps in the normal map; this is the switch for those. Omitted,
+   * byte-identical.
+   */
+  readonly rivetStrength?: number;
 }
 
 export interface AircraftSurfaceSynthesis {
@@ -148,6 +161,8 @@ export function synthesizeAircraftSurface(
   const sootStrength = clamp01(recipe.sootStrength ?? 0.82);
   const wearStrength = clamp01(recipe.wearStrength ?? 0.72);
   const panelStrength = clamp01(recipe.panelStrength ?? 1);
+  const fillerStrength = clamp01(recipe.fillerStrength ?? 1);
+  const rivetStrength = clamp01(recipe.rivetStrength ?? 1);
 
   for (let y = 0; y < edge; y += 1) {
     for (let x = 0; x < edge; x += 1) {
@@ -173,7 +188,7 @@ export function synthesizeAircraftSurface(
       const filler = Math.max(
         ellipticalMask(u, v, 0.27, 0.31, 0.095, 0.055),
         ellipticalMask(u, v, 0.73, 0.67, 0.12, 0.07),
-      ) * (0.7 + 0.3 * hash2(x >> 1, y >> 1, recipe.seed ^ 0xbb67_ae85));
+      ) * (0.7 + 0.3 * hash2(x >> 1, y >> 1, recipe.seed ^ 0xbb67_ae85)) * fillerStrength;
       const sootAxis = Math.abs(v - (0.69 + 0.07 * (u - 0.18)));
       const soot = sootStrength
         * smoothstep(0.08, 0.24, u)
@@ -187,7 +202,7 @@ export function synthesizeAircraftSurface(
       const liveryDecal = 1 - smoothstep(0.055, 0.085, Math.abs(decalCoordinate - 0.5));
 
       if (panelLine > 0.5) featureCounts["panel-lines"] += 1;
-      if (rivet) featureCounts.rivets += 1;
+      if (rivet && rivetStrength > 0) featureCounts.rivets += 1;
       if (seam > 0.5) featureCounts.seams += 1;
       if (filler > 0.35) featureCounts.filler += 1;
       if (soot > 0.12) featureCounts["exhaust-soot"] += 1;
@@ -209,7 +224,7 @@ export function synthesizeAircraftSurface(
       albedo[out + 3] = 255;
 
       height[index] = grain * 0.012 - panelLine * 0.085 - seam * 0.035
-        + (rivet ? 0.11 : 0) + filler * 0.025 - wear * 0.018;
+        + (rivet ? 0.11 * rivetStrength : 0) + filler * 0.025 - wear * 0.018;
       const roughness = clamp01(
         recipe.roughness + grain * 0.035 + filler * 0.12 + soot * 0.24 - wear * 0.18,
       );
@@ -296,6 +311,28 @@ function uploadMipChain(
   texture.wrapV = Texture.WRAP_ADDRESSMODE;
   texture.anisotropicFilteringLevel = 8;
   return texture;
+}
+
+/**
+ * The relief half of a synthesized plan: its normal and metallic-roughness
+ * maps, without uploading an albedo, for a surface whose colour comes from a
+ * livery image instead (`AircraftBuildContext.liveryPaintMaterial`).
+ */
+export function createAircraftReliefTextures(
+  scene: Scene,
+  name: string,
+  synthesis: AircraftSurfaceSynthesis,
+): Omit<AircraftSurfaceTextures, "albedo"> {
+  return {
+    normal: uploadMipChain(scene, `${name}-normal`, synthesis.edge, synthesis.normalMips, false),
+    metallicRoughness: uploadMipChain(
+      scene,
+      `${name}-metallic-roughness`,
+      synthesis.edge,
+      synthesis.metallicRoughnessMips,
+      false,
+    ),
+  };
 }
 
 /** Babylon upload boundary for a pure synthesized plan. */

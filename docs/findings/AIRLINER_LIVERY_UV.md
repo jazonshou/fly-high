@@ -275,7 +275,9 @@ headroom >= 1 in Gate A's container-less rig: 15 there is 16 of 16 in flight.
   and Gate A re-measured the body at **14** (15 live) -- the slot it held for
   nothing is free.
 - `bizjet-body` (carries vertex colour): 15 -- **16 of 16 live, zero headroom**.
-  `bizjet-display` 14; trainer and jet paint 14.
+  `bizjet-display` 14; trainer and jet paint 14. *Superseded the same evening:
+  the Global's livery became an image too (`GLOBAL_LIVERY.md`), and Gate A
+  re-measured `bizjet-body` and the new `bizjet-skin` at **14** (15 live).*
 - The black-screen build, rebuilt inside Gate A as a positive control: 16, and
   the headroom check rejects it.
 
@@ -308,12 +310,12 @@ where the device refused); a live pass over budget is a hard fail; and a pass
 that does not exist live may be over only for the materials listed in its
 `KNOWN_OVER_BUDGET`, asserted both ways, so the list cannot go stale.
 
-**REGISTER: the Global's body has no slot for a clip plane or fog.** It carries
-vertex colour and sits at 16 of 16 live. It needs a varying freed (its painted
-band moved to a livery texture, as the 747's was) before 5-12 puts aircraft in
-the lake capture or anyone enables fog -- either one makes the Global stop
-drawing in that pass. Pre-existing, not the livery's; measured by the test
-above, where it is the one listed known-over-budget material.
+**REGISTER, CLOSED 2026-09-22: the Global's body had no slot for a clip plane
+or fog.** It carried vertex colour and sat at 16 of 16 live, and was the one
+listed known-over-budget material. Its livery is now an image on UV1
+(`GLOBAL_LIVERY.md`) and no mesh it paints carries colour: the rig reads
+`bizjet-body` and `bizjet-skin` at 15 live and 16 in reflection and fog, with
+no device error and the target drawn, and `KNOWN_OVER_BUDGET` is empty.
 
 Two instrument traps the rig met, for whoever extends it. A mesh that a pass
 never DRAWS never builds a pipeline, so the device never refuses it even when
