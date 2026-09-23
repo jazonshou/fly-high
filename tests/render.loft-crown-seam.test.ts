@@ -372,7 +372,26 @@ describe("a loft's crown seam", () => {
       // (`bizjet-glareshield`), the screens and the bezels move to the new eye and deck line (10.88); and the six
       // seat meshes follow the eye to 0.55 (bizjetSeats.ts). Checked mesh by mesh against eeb1606 (positions,
       // normals, UVs, indices, world matrix, material, visibility): the other 81 meshes are bit-identical.
-      bizjet: "4b02292c",
+      // RE-PINNED for the Global's nose section, phase 3c part 6: over the windshield the fuselage's upper
+      // half is a V of flat panes (`crownSquareness` 1.26-1.47, back to the ellipse by 2.75 m aft), fitted
+      // with the crown to both brochure renders; ring count unchanged. `bizjet-fuselage`, the flight-deck
+      // glazing and `bizjet-cabin-windows` (within render.bizjet-nose's 0.2 mm) move; the centre post
+      // gains a third column on the V's ridge (96 -> 120 vertices); and `bizjet-cockpit-interior`, whose
+      // lining is cast along the panes' edges, re-samples (4816 -> 4964 vertices; the kit's own tests
+      // re-pin on the cockpit engineer's commit). Checked mesh by mesh against 6638484: the Global's other
+      // 86 meshes, and every mesh of the trainer, the jet and the 747, are bit-identical.
+      // RE-PINNED for part 6b: the V's crown and waterline filleted (0.15 m) and its upper half sampled by
+      // the normal's angle, the rings either side resampled the same way; ring count unchanged.
+      // `bizjet-fuselage`, the flight-deck glazing, the post and `bizjet-cockpit-interior`'s lining move
+      // (counts unchanged). Checked mesh by mesh against 49916b4: the Global's other 87 meshes, and every
+      // mesh of the trainer, the jet and the 747, are bit-identical.
+      // RE-PINNED for the Global's kit on part 6b (jazonshou/global-nose-repin): the lining's post and the centre
+      // sill and crown take the V's ridge as a column, as the glass post does (`bizjet-cockpit-interior` 4964 -> 5046
+      // vertices), and the lip and the board end 5 cm inside the shell as built, 1.3 cm inboard of the pillars' feet
+      // (`bizjet-glareshield` narrower, its triangles unchanged); the deck line stays 10.88 and hides the V's low
+      // outboard corner by a pinned profile. Checked mesh by mesh against cc16f33 (positions, normals, UVs, indices,
+      // world matrix, material, visibility): the other 89 meshes are bit-identical.
+      bizjet: "f347a355",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

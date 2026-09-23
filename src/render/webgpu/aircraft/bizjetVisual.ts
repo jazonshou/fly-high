@@ -1305,7 +1305,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // The centre post, cast the same way over the windshields' stations, so it
   // lies on the skin between them the whole way up. It is the dark strut it
   // replaces, now on the skin: the strut stood 0.2 m clear of the crown.
-  const post = paneGrid(flightDeckCaster, globalCentrePostPane(), 1, 2, GLOBAL_FLIGHT_DECK_REFERENCE);
+  // THREE COLUMNS, one on the ridge: the nose is a V there (phase 3c, part 6),
+  // and a chord from edge to edge ran 2.4 cm under the ridge, 8 mm inside it.
+  const post = paneGrid(flightDeckCaster, globalCentrePostPane(), 1, 3, GLOBAL_FLIGHT_DECK_REFERENCE);
   const centrePost = build.skinPanel(
     "bizjet-windscreen-center-post",
     post.points,

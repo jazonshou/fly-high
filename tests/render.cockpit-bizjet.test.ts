@@ -69,9 +69,14 @@ const FRAME_V = FRAME_U / (16 / 9);
  *  - `postHead`: the centre post's head reads at least this high from the eye (`postHeadGoal` is the aim, reported;
  *    the nose's crown may stand at most 0.10 m over the type's silhouette, and that bounds how high the head can go);
  *  - the whole centre post is in the frame from the seat (its azimuth is wherever the glass puts it);
- *  - `lipTolerance`: the catalogue's deck line is the lip rule's answer, the HIGHEST straight lip over no glass,
- *    to this;
- *  - `displays`: at least this share of each of the pilot's two screens is in the frame.
+ *  - `hiddenAhead`, `hiddenAnywhere`: how much glass the lip may hide under its row, in degrees of the picture's
+ *    rows (elevation straight ahead): straight ahead, and anywhere in the frame along the lip. Part 6's V drops the
+ *    windshield's bottom edge outboard, and a straight lip at the deck line hides that low corner, as a real
+ *    glareshield does (the highest lip that hides NONE, `highestClearLip`, read 15.085 on part 6 and 12.184 on 6b's
+ *    filleted V, where the lip hides 0.00 straight ahead and 1.30 at most; part 6 was pinned at 0.6 and 4.3);
+ *  - `downVision`: the lowest the pilot sees through the glass straight ahead, at most this;
+ *  - `displays`: at least this share of each of the pilot's two screens is in the frame (65% since P1a; the rule's
+ *    15.085 deck line on part 6 would leave 38%);
  */
 const TARGETS = {
   opening: 24,
@@ -80,8 +85,10 @@ const TARGETS = {
   starboardTopAtPost: 5,
   postHead: 6,
   postHeadGoal: 10,
-  lipTolerance: 0.01,
-  displays: 0.35,
+  hiddenAhead: 0.3,
+  hiddenAnywhere: 1.6,
+  downVision: -10,
+  displays: 0.65,
 } as const;
 
 /**
@@ -424,9 +431,11 @@ describe("the glass the kit is built against", () => {
       table.push(`${outline.name}: ${corners(port, 0).map((v) => `(${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)})`).join(" ")}`);
     }
     console.info(`the Global's corner table, port outer faces (bottom-inboard, bottom-outboard, top-outboard, top-inboard):\n  ${table.join("\n  ")}`);
-    // THE POST fills the gap between the windshields: its two columns are the windshields' inboard edges on the skin
+    // THE POST fills the gap between the windshields: its outer columns are the windshields' inboard edges on the skin,
+    // and a third runs up the V's ridge between them (phase 3c, part 6: on two, a chord under the ridge put it inside)
     const post = panel("bizjet-windscreen-center-post");
-    expect(post.columns).toBe(2);
+    expect(post.columns).toBe(3);
+    for (let row = 0; row < post.rows; row += 1) expect(Math.abs(skinVertex(post, row, 1).z), "the post's middle column on the centreline").toBeLessThan(1e-6);
     expect(GLOBAL_CENTRE_POST.halfAngle).toBe(GLOBAL_FLIGHT_DECK_OUTLINES[0]!.bottom[0]![1]);
     expect(GLOBAL_CENTRE_POST.aft).toEqual([GLOBAL_FLIGHT_DECK_OUTLINES[0]!.bottom[0]![0], GLOBAL_FLIGHT_DECK_OUTLINES[0]!.top[0]![0]]);
     const port = panel("port-bizjet-flight-deck-window-windshield");
@@ -660,6 +669,26 @@ describe("the frame: the lining round the glass", () => {
     expect(seamVertices).toBeGreaterThan(150);
   });
 
+  it("runs the post's lining up the V's ridge, and shares its foot and head with the centre sill and crown, bit for bit", () => {
+    // Over the windshield the section is a V (phase 3c, part 6), and a chord from one windshield's inboard edge to the
+    // other's runs up to 2.4 cm under the ridge: more than the seam test's centimetre, so a strip that left the ridge out
+    // would part from its neighbour with no vertex near enough to be judged. So the ridge is pinned directly.
+    const post = panel("bizjet-lining-post");
+    const sill = panel("bizjet-lining-sill-centre");
+    const crown = panel("bizjet-lining-crown-centre");
+    expect(post.columns, "the post's lining: two edges and the ridge").toBe(3);
+    for (let row = 0; row < post.rows; row += 1) {
+      const ridge = liningSkinVertex(post, row, 1);
+      expect(Math.abs(ridge.z), `row ${row}: on the centreline`).toBeLessThan(1e-9);
+      expect(distanceToTriangles(ridge, shell), `row ${row}: on the skin's ridge`).toBeLessThan(0.002);
+    }
+    // the post's foot IS three points of the centre sill's top row, and its head three of the centre crown's bottom row
+    const rowOf = (p: Panel, row: number) => Array.from({ length: p.columns }, (_, c) => gridVertex(p, 1, row, c));
+    for (const [label, end, edge] of [["foot", rowOf(post, 0), rowOf(sill, sill.rows - 1)], ["head", rowOf(post, post.rows - 1), rowOf(crown, 0)]] as const) {
+      for (const v of end) expect(edge.some((w) => w.equals(v)), `the post's ${label} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}) on its neighbour's row`).toBe(true);
+    }
+  });
+
   it("lines every member from the seat: a ray at the post's, the pillar's and the mid post's middle meets its own strip, drawn", () => {
     const interior = named("bizjet-cockpit-interior");
     const middleOf = (strip: string) => {
@@ -840,6 +869,7 @@ describe("the frame: the lining round the glass", () => {
     const normals = interior.getVerticesData(VertexBuffer.NormalKind)!;
     const indices = interior.getIndices()!;
     let seen = 0;
+    let hidden = 0;
     for (const side of [-1, 1] as const) {
       for (const sill of BIZJET_SILL_CAP.sills) {
         const cap = panel(bizjetSillCapMeshName(sill, side));
@@ -853,11 +883,21 @@ describe("the frame: the lining round the glass", () => {
           // no glass under it from the eye: the ledge's inboard edge reads lower than the pane's edge
           expect(azel(gridVertex(cap, 1, 1, c)).el, `${cap.name} column ${c} reads under the pane's edge`).toBeLessThan(azel(gridVertex(cap, 1, 0, c)).el);
         }
-        // where it is in the frame (the port forward side pane's, from the left seat), the eye meets its top face
+        // where it is in the frame (the port forward side pane's, from the left seat), the eye meets its top face; UNDER
+        // THE LIP'S LINE, within the lip's span, the board is nearer and the lip rule decides (a V nose puts the side
+        // pane's forward foot there)
+        const lipHalfWidth = Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z)));
         for (let c = 0; c + 1 < cap.columns; c += 1) {
           const middle = Vector3.Lerp(Vector3.Lerp(gridVertex(cap, 1, 0, c), gridVertex(cap, 1, 0, c + 1), 0.5), Vector3.Lerp(gridVertex(cap, 1, 1, c), gridVertex(cap, 1, 1, c + 1), 0.5), 0.5);
           const { az, el } = azel(middle);
           if (!inFrame(az, el)) continue;
+          const atFace = EYE.right + (bizjetPanelFaceX() - EYE.forward) * Math.tan(az / DEG);
+          if (Math.abs(atFace) <= lipHalfWidth && el < lipElevation(az)) {
+            const deck = firstHitAlong(middle.subtract(EYE_POINT).normalize())!;
+            expect(partOf(deck.mesh, deck.faceId), `${cap.name} at (${az.toFixed(1)}, ${el.toFixed(1)}), under the deck`).toMatch(/^bizjet-(instrument-panel|glareshield|screen-.*)$/);
+            hidden += 1;
+            continue;
+          }
           const d = middle.subtract(EYE_POINT).normalize();
           const hit = firstHitAlong(d);
           expect(hit?.mesh, `${cap.name} at (${az.toFixed(1)}, ${el.toFixed(1)})`).toBe(interior);
@@ -869,7 +909,7 @@ describe("the frame: the lining round the glass", () => {
         }
       }
     }
-    console.info(`the Global's sill caps: ${seen} cells of the port forward side pane's cap in the frame, each met on its top face`);
+    console.info(`the Global's sill caps: ${seen} cells of the port forward side pane's cap in the frame, each met on its top face; ${hidden} under the deck`);
     expect(seen, "the forward side pane's cap is in the frame from the seat").toBeGreaterThan(1);
   });
 
@@ -966,33 +1006,68 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     expect(lip.y).toBeCloseTo(low, 9);
   });
 
-  it("stands the lip at the catalogue's deck line, and that is the rule's answer against the BUILT sills", () => {
+  it("stands the lip at the catalogue's deck line, hiding no more glass than the pinned profile (the BUILT sills)", () => {
     const lipVertices = worldVertices(named("bizjet-glareshield"));
     const halfWidth = Math.max(...lipVertices.map((v) => Math.abs(v.z)));
-    const rule = highestClearLip({ x: EYE.forward, y: EYE.up, z: EYE.right }, bizjetPanelFaceX(), sillRims(), halfWidth);
     const recorded = aircraftSpec("bizjet").cockpitDeckLineDegrees;
-    const held = azel(new Vector3(rule.held.x, rule.held.y, rule.held.z));
-    console.info(`the Global's lip rule: deck line ${(-rule.elevationDegrees).toFixed(3)}, held by the glass at (${held.az.toFixed(1)}, ${held.el.toFixed(2)}); catalogue ${recorded}`);
     // the lip as built is the catalogue's line
     expect(Math.max(...lipVertices.map((v) => v.y))).toBeCloseTo(bizjetLipY(), 6);
     expect(Math.min(...lipVertices.map((v) => v.x)), "flush with the face").toBeCloseTo(bizjetPanelFaceX(), 6);
     expect(Math.atan2(bizjetLipY() - EYE.up, bizjetPanelFaceX() - EYE.forward) * DEG).toBeCloseTo(-recorded, 9);
-    // and the catalogue's line is the rule's
-    expect(Math.abs(-rule.elevationDegrees - recorded), "the catalogue's deck line against the rule").toBeLessThanOrEqual(TARGETS.lipTolerance);
+    // THE GLASS IT HIDES: every rim point in the frame and over the lip's span that reads under the lip's row, by how
+    // far (a line along z is one row, the row of its slope along x; a rim point's row is its own slope's)
+    const slope = (p: Vector3) => (p.y - EYE.up) / (p.x - EYE.forward);
+    const lipRow = Math.atan(-Math.tan(recorded / DEG)) * DEG;
+    const d = bizjetPanelFaceX() - EYE.forward;
+    let ahead = 0;
+    let anywhere = 0;
+    let where = "";
+    let rimsAhead = 0;
+    let lowestAhead = Number.POSITIVE_INFINITY;
+    for (const p of sillRims()) {
+      const across = (p.z - EYE.right) / (p.x - EYE.forward);
+      if (Math.abs(across) > FRAME_U || Math.abs(EYE.right + d * across) > halfWidth) continue;
+      const { az, el } = azel(p);
+      const hidden = Math.max(0, lipRow - Math.atan(slope(p)) * DEG);
+      if (Math.abs(az) <= 0.5) {
+        rimsAhead += 1;
+        ahead = Math.max(ahead, hidden);
+        lowestAhead = Math.min(lowestAhead, el);
+      }
+      if (hidden > anywhere) {
+        anywhere = hidden;
+        where = `(${az.toFixed(1)}, ${el.toFixed(2)})`;
+      }
+    }
+    const rule = highestClearLip({ x: EYE.forward, y: EYE.up, z: EYE.right }, bizjetPanelFaceX(), sillRims(), halfWidth);
+    // THE DOWN-VISION straight ahead: the glass down to its rim, or to the lip if the lip is higher
+    const downVision = Math.max(lowestAhead, -recorded);
+    console.info(`the Global's lip at ${recorded}: hides ${ahead.toFixed(2)} degrees of glass straight ahead, ${anywhere.toFixed(2)} at most (at ${where}); the pilot sees down to ${downVision.toFixed(2)} straight ahead (the rim ${lowestAhead.toFixed(2)}); the highest lip hiding none would read ${(-rule.elevationDegrees).toFixed(3)}`);
+    expect(rimsAhead, "rim points straight ahead").toBeGreaterThan(2);
+    expect(ahead, "glass hidden straight ahead").toBeLessThanOrEqual(TARGETS.hiddenAhead);
+    expect(anywhere, "glass hidden anywhere along the lip").toBeLessThanOrEqual(TARGETS.hiddenAnywhere);
+    expect(downVision, "the down-vision straight ahead").toBeLessThanOrEqual(TARGETS.downVision);
   });
 
-  it("ends the lip at the windshield's pillars, not at the shell: a glareshield spans post to post", () => {
+  it("ends the lip at the windshield's pillars, or 5 cm inside the shell where that is nearer: a glareshield spans post to post", () => {
     // Out to the shell, a lower lip is also a wider one, and on part 3's nose it reached under the forward side panes'
-    // low corners, whose glass then held it down (11.49 against 3.96). Past the pillars the side sills are lining.
+    // low corners, whose glass then held it down (11.49 against 3.96). Past the pillars the side sills are lining. On
+    // part 6's V the shell narrows fast forward of the face, and 5 cm inside it ends the lip a little inboard of the
+    // pillars' feet; the pillar's lining covers the rest (the whole-frame test finds no hidden skin showing).
     const lip = worldVertices(named("bizjet-glareshield"));
     const halfWidth = Math.max(...lip.map((v) => Math.abs(v.z)));
     const port = panel("port-bizjet-flight-deck-window-windshield");
     const pillarFoot = Math.abs(skinVertex(port, 0, port.columns - 1).z);
-    // the shell where the lip's ends stand, at its top: the pillar is what binds, with room (so this is not vacuous)
-    const shell = Math.min(...[bizjetPanelFaceX(), bizjetPanelFaceX() + BIZJET_GLARESHIELD.depth].map((x) => crossings(new Vector3(x, bizjetLipY(), 0), new Vector3(0, 0, -1), worldTriangles(fuselage)).at(-1)!));
-    console.info(`the Global's lip: half-width ${halfWidth.toFixed(4)} m; the windshield's pillar foot ${pillarFoot.toFixed(4)} m out; the shell there ${shell.toFixed(4)} m`);
-    expect(Math.abs(halfWidth - pillarFoot), "the lip ends at the pillars' feet (the analytic outline against the cast skin)").toBeLessThan(0.01);
-    expect(shell - halfWidth, "the shell is wider there: the pillar binds").toBeGreaterThan(0.05);
+    // the built shell where the lip's ends stand, at the lip's top and its underside, along the wedge
+    const heights = [bizjetLipY(), bizjetLipY() - bizjetLipThickness()];
+    const shell = Math.min(...[bizjetPanelFaceX(), bizjetPanelFaceX() + BIZJET_GLARESHIELD.depth].flatMap((x) => heights.map((y) => crossings(new Vector3(x, y, 0), new Vector3(0, 0, -1), worldTriangles(fuselage)).at(-1)!)));
+    const binds = shell - BIZJET_PANEL.shellMargin < pillarFoot ? "the shell" : "the pillars";
+    console.info(`the Global's lip: half-width ${halfWidth.toFixed(4)} m; the windshield's pillar foot ${pillarFoot.toFixed(4)} m out; the shell there ${shell.toFixed(4)} m; ${binds} binds`);
+    expect(halfWidth, "no wider than the pillars' feet").toBeLessThanOrEqual(pillarFoot + 0.002);
+    expect(shell - halfWidth, "5 cm inside the built shell, less its facets").toBeGreaterThanOrEqual(BIZJET_PANEL.shellMargin - 0.003);
+    // and it is one of the two that binds: not narrower than both allow
+    expect(Math.min(pillarFoot, shell - BIZJET_PANEL.shellMargin) - halfWidth, "as wide as it may be").toBeLessThan(0.006);
+    expect(BIZJET_PANEL.shellMargin, "the PM's span margin").toBeGreaterThanOrEqual(0.05);
   });
 
   it("grows the lip's face with the deck line, so the wedge's top always falls faster than the sight line over it", () => {

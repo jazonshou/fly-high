@@ -750,6 +750,34 @@ the seat and none from the chase camera.
 - The 4x crops of the post and the pillar are an even face, with no hairline or seam.
 - The chase frame has no kit in it.
 
+**Parts 6 and 6b, the V over the windshield (49916b4, then cc16f33's filleted V; re-pinned on
+jazonshou/global-nose-repin).** The plane engineer's V drops the windshield's bottom edge outboard. On part 6 the
+sill's rim read -14.77 at az -12, and 6b's fillet raised it to -11.93.
+- **The deck line stays 10.88.** The highest straight lip that hides no glass read 15.085 on part 6, which would
+  have left the pilot's screens at 38%; on 6b it reads 12.184. So the glareshield hides the V's low outboard
+  corner, as a real glareshield hides a windshield's lower corners. On 6b it hides 0.00 degree straight ahead and
+  1.30 at most (az -12), pinned at 0.3 and 1.6. Part 6 read 0.52 and 4.21 and was pinned at 0.6 and 4.3.
+- **The pilot sees down to -10.50 straight ahead,** the glass's own rim (the pin is -10). The aim point on final is
+  clear.
+- **The lip and the board end 5 cm inside the shell AS BUILT,** measured by the caster the glass was cast with, at
+  the lip's top and underside along the wedge. That is half-width 0.776, 1.3 cm inboard of the pillars' feet. The
+  pillar's lining covers the rest, and the whole-frame test finds no hidden skin showing.
+  - The section functions describe the loft's rings. On 6b the facets stand up to 4 mm inside them, more than a
+    margin can be trusted to within, so a span read off `globalSectionHalfWidth` came to 4.4 cm of the built shell.
+- **The lining's post takes the V's ridge as a column,** as the glass post does. A chord from edge to edge runs up
+  to 2.4 cm under the ridge. That is more than the seam test's centimetre, so a strip that left the ridge out would
+  part from its neighbour with no vertex near enough to be judged; the ridge and the post's shared foot and head
+  are pinned directly.
+- **K0 from the seated eye on 6b, at the skin's hole:**
+  - windshield tops 12.06 at the post, 18.56 outboard, 11.17 starboard at the post;
+  - post head 11.62 (the goal is 10), rising 0.404 m on the skin;
+  - pillar 8.10 to 9.67 degrees wide, its side face 0.62 to 0.74;
+  - the screens 76.2% in the frame;
+  - one reveal ray; the lining at least 10 mm inside the skin.
+- **Eight mutations, all caught:** the lip a degree higher; the old rule's 15.09 (by the screens' 65%); the ridge
+  dropped from the post, from everything, or from the crown alone; the old 1 cm margin; the shell read from the
+  section function instead of the built facets; the lip out to the pillars regardless.
+
 ## The Cessna's centre frame ends in structure, at both ends
 
 **What was wrong.** `windscreen-center-frame` is an exterior strut up the middle of the Cessna's

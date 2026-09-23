@@ -1,0 +1,55 @@
+{
+ "source": "Bombardier Global 7500 brochure (2018), p. 35, the starboard render, at 300 dpi (3450 x 2400 px). Hand-digitised and the camera solved by the water engineer's session ('Water realism and appearance'), 2026-09-23, handed over for phase 3c, part 6 (docs/findings/GLOBAL_LIVERY.md).",
+ "camera": {
+  "about": "A pinhole solved on the render's 15 cabin windows (centre, top and bottom; rms 0.84 px), the cabin's top rim (614 columns, rms 0.41 px) and the forward belly edge (157 columns, rms 0.47 px): 49.7 degrees forward of abeam, 6.0 above, 242 m out. Body metres (x forward, y up, z starboard) to camera: pc = R (p - centre), R from the rotation vector (axis times angle, radians); u = principal.u + focal pc.x / pc.z, v = principal.v + focal pc.y / pc.z, v down. The station anchor is p. 29's: the front window 6.40 m aft of the tip.",
+  "rotationVector": [
+   -2.699849398,
+   0.108884264,
+   1.277851256
+  ],
+  "centre": [
+   188.933404,
+   25.403772,
+   155.808285
+  ],
+  "focalPx": 23397.4635,
+  "principal": [
+   1725,
+   1200
+  ],
+  "windowHeight": 0.5293
+ },
+ "noseEdge": {
+  "about": "The nose's upper outline, digitised by hand column by column: the first row of aircraft under the background (clouds and sky), sub-pixel. 'glass' where the windshield itself forms the outline. A 1-4 px darker rim hugs the edge outside these points; if it is skin, every residual shrinks by up to 0.04 m.",
+  "points": [
+   {"u": 2650, "v": 966.56, "kind": "skin"},
+   {"u": 2665, "v": 968.6, "kind": "skin"},
+   {"u": 2680, "v": 970.54, "kind": "skin"},
+   {"u": 2695, "v": 973.27, "kind": "skin"},
+   {"u": 2710, "v": 976.82, "kind": "skin"},
+   {"u": 2725, "v": 983.16, "kind": "skin"},
+   {"u": 2740, "v": 991.13, "kind": "skin"},
+   {"u": 2750, "v": 996.78, "kind": "skin"},
+   {"u": 2755, "v": 999.93, "kind": "skin"},
+   {"u": 2760, "v": 1002.81, "kind": "skin"},
+   {"u": 2765, "v": 1004.24, "kind": "skin"},
+   {"u": 2770, "v": 1014.6, "kind": "glass"},
+   {"u": 2775, "v": 1018.6, "kind": "glass"},
+   {"u": 2780, "v": 1021.98, "kind": "glass"},
+   {"u": 2785, "v": 1025.46, "kind": "glass"},
+   {"u": 2790, "v": 1031.21, "kind": "glass"},
+   {"u": 2795, "v": 1035.36, "kind": "glass"},
+   {"u": 2800, "v": 1039.6, "kind": "glass"},
+   {"u": 2805, "v": 1043.79, "kind": "glass"},
+   {"u": 2810, "v": 1046.74, "kind": "glass"},
+   {"u": 2815, "v": 1047.83, "kind": "skin"},
+   {"u": 2825, "v": 1054.94, "kind": "skin"},
+   {"u": 2840, "v": 1067.83, "kind": "skin"},
+   {"u": 2855, "v": 1081.97, "kind": "skin"},
+   {"u": 2862, "v": 1088.54, "kind": "skin"},
+   {"u": 2870, "v": 1096.5, "kind": "skin"},
+   {"u": 2878, "v": 1104.48, "kind": "skin"},
+   {"u": 2886, "v": 1113.12, "kind": "skin"}
+  ]
+ }
+}

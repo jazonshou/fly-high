@@ -3,7 +3,7 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { createRawTextureFromMipChain } from "../core/MipChainUpload";
-import type { LoftSection } from "./builders";
+import { loftSectionPoint, type LoftSection } from "./builders";
 
 /**
  * THE AIRLINER'S LIVERY, rasterised by hand into RGBA bytes.
@@ -236,6 +236,8 @@ interface SectionAtStation {
   readonly yRadius: number;
   readonly yOffset: number;
   readonly squareness: number;
+  /** The loft section itself where either ring has a filleted V above (`crownSquareness`), for its heights. */
+  readonly crown?: LoftSection;
 }
 
 /**
@@ -261,6 +263,18 @@ export function sectionAtStation(sections: readonly LoftSection[], x: number): S
     yRadius: mix(low.yRadius, high.yRadius, t),
     yOffset: mix(low.yOffset ?? 0, high.yOffset ?? 0, t),
     squareness: mix(low.squareness ?? 2, high.squareness ?? 2, t),
+    ...(low.crownSquareness === undefined && high.crownSquareness === undefined
+      ? {}
+      : {
+          crown: {
+            x,
+            yRadius: mix(low.yRadius, high.yRadius, t),
+            zRadius: mix(low.zRadius, high.zRadius, t),
+            yOffset: mix(low.yOffset ?? 0, high.yOffset ?? 0, t),
+            crownSquareness: mix(low.crownSquareness ?? 2, high.crownSquareness ?? 2, t),
+            crownFillet: mix(low.crownFillet ?? 0, high.crownFillet ?? 0, t),
+          },
+        }),
   };
 }
 
@@ -282,6 +296,18 @@ export function phaseOfHeight(
   const section = sectionAtStation(sections, x);
   const rise = (y - section.yOffset) / section.yRadius;
   if (!(Math.abs(rise) <= 1)) return undefined;
+  if (section.crown && rise > 0) {
+    // The filleted V above: its height falls from the crown to the widest point; bisect the angle.
+    let low = 0;
+    let high = Math.PI / 2;
+    for (let step = 0; step < 60; step += 1) {
+      const middle = (low + high) / 2;
+      if (loftSectionPoint(section.crown, middle).y > y) low = middle;
+      else high = middle;
+    }
+    const phase = (low + high) / 2 / (2 * Math.PI);
+    return flank === "starboard" ? phase : 1 - phase;
+  }
   const cosMagnitude = Math.abs(rise) ** (section.squareness / 2);
   const cosine = Math.min(1, Math.max(-1, Math.sign(rise) * cosMagnitude));
   const phase = Math.acos(cosine) / (2 * Math.PI);
