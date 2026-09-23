@@ -227,6 +227,59 @@ export function sculptSolid(mesh: Mesh, move: (point: Vector3) => Vector3): void
   mesh.refreshBoundingInfo();
 }
 
+/** A flat quad of a `facetMesh`: four corners in order round it, and the way its drawn side faces. */
+export interface FacetQuad {
+  readonly corners: readonly [Vector3, Vector3, Vector3, Vector3];
+  /** Unit, pointing OUT of the solid: the side the GPU draws, and the shading normal. */
+  readonly normal: Vector3;
+}
+
+/**
+ * A mesh of flat quads whose drawn side is GIVEN, not inferred: for a solid no prism or centroid can describe, a
+ * frame round a hole, whose centroid is in the hole. Each quad becomes two triangles wound by `solidPlate`'s rule (a
+ * drawn face's cross product points INTO the solid, against the quad's `normal`), three vertices of their own and
+ * the quad's normal, so it shades flat. A quad with no area is left out. UVs are all zero: nothing here is textured.
+ *
+ * The mesh is made as a `solidPlate` (so the builder owns, parents and registers it as it does every part) and its
+ * vertex data rewritten, as `solidified` rewrites a builder's.
+ */
+export function facetMesh(
+  build: AircraftBuildContext,
+  name: string,
+  quads: readonly FacetQuad[],
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (const { corners, normal } of quads) {
+    for (const [i, j, k] of [[0, 1, 2], [0, 2, 3]] as const) {
+      let triangle: [Vector3, Vector3, Vector3] = [corners[i], corners[j], corners[k]];
+      const cross = Vector3.Cross(triangle[1].subtract(triangle[0]), triangle[2].subtract(triangle[0]));
+      if (cross.length() < 1e-12) continue;
+      if (Vector3.Dot(cross, normal) > 0) triangle = [triangle[0], triangle[2], triangle[1]];
+      for (const corner of triangle) {
+        positions.push(corner.x, corner.y, corner.z);
+        normals.push(normal.x, normal.y, normal.z);
+        uvs.push(0, 0);
+        indices.push(indices.length);
+      }
+    }
+  }
+  if (indices.length === 0) throw new RangeError(`facetMesh "${name}": no quad has any area`);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = uvs;
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
+}
+
 /** The rotation that takes local X, Y, Z onto the given orthonormal, right-handed basis. */
 export function basisQuaternion(xAxis: Vector3, yAxis: Vector3, zAxis: Vector3): Quaternion {
   const matrix = Matrix.FromValues(
