@@ -89,7 +89,7 @@ function eye(): { forward: number; up: number; right: number } {
   return aircraftSpec("bizjet").cockpitEye;
 }
 
-/** The lens's half-width, as a slope: the frame's left and right edges at any aspect (the lens is horizontal-fixed). */
+/** The lens's half-width, as a slope: the frame's left and right edges at 16:9 and narrower (the lens is horizontal-fixed up to 16:9). */
 const FRAME_HALF_WIDTH = Math.tan((COCKPIT_HORIZONTAL_FOV_DEGREES / 2) * DEG);
 
 // ---- the frame: the lining cast on the skin round the glass ----------------------------------

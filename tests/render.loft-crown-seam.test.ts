@@ -365,7 +365,14 @@ describe("a loft's crown seam", () => {
       // it at the brow; ring count unchanged. The flight-deck glazing and post re-cast onto it,
       // `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh against
       // 3da1899: the other 91 meshes are bit-identical.
-      bizjet: "31b4527e",
+      // RE-PINNED for the Global's cockpit kit, re-solved on the six-pane band (jazonshou/cockpit-bizjet-kit2):
+      // the window frame is a lining cast from R onto the skin round the panes, merged with the panel board
+      // as `bizjet-cockpit-interior` (NEW, 4804 vertices); the old board, both windscreen posts, the overhead
+      // and the side walls are GONE; the lip (`bizjet-glareshield`), the screens and the bezels move to the
+      // new eye and deck line; and the six seat meshes follow the eye to 0.55 (bizjetSeats.ts). Checked mesh
+      // by mesh against 8d5deeb (positions, normals, UVs, indices, world matrix, material, visibility): the
+      // other 81 meshes are bit-identical.
+      bizjet: "0d232a30",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh
