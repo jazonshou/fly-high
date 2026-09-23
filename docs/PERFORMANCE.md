@@ -1575,3 +1575,89 @@ it: disabling the checks turns the control red; a still-needed raise missing
 fails through the ratchet and the coupling; a raise added while nothing is
 raised fails through the coupling, the accounting and the outlived check.
 
+### Promotion 2026-09-23 — all thirty-nine at the wildlife-pin churn point
+
+All 39 baselines replaced, byte-identical (sha1-verified), from candidate
+`tests/perf/artifacts/rebaseline-candidates/2026-09-23T04-50-34.261Z/`, captured at House-Keeping `bd7a584`. The candidate and two normal
+captures of the same tree agree on every shot to 0.003/255 mean, with no pixel
+moving by more than 8/255 and identical draw counts in all three runs (the
+three-run A/A). The water engineer accepted the 30 shots
+`scripts/wildlife-shot-birds.mts` gives birds (24 with a bird in frame once the
+wildlife is pinned, 6 that can show one only unpinned). Every clearly visible
+bird sits at its predicted pixel; the faint ones were confirmed statistically
+(candidate differs from baseline at 59 % of the 188 predicted spots against 7 %
+at controls 15 px away); and the falsifier, a bird where none is predicted, fired
+0 times across 37 inspected strong changes.
+
+**All thirty-nine, not only the bird shots**, so the baselines are one
+generation again. 28 came from `19216c3` and carry work merged since
+and never promoted, because those shots stayed inside their gates; leaving some
+of them behind would keep a two-generation set for no reason.
+
+**Each row says what moved.** Pixels moving by 3 levels or more against the old
+baseline, the water review's threshold, because a gull on a light sky moves only
+3-8 levels. They are mapped against the predicted bird positions (14 px radius)
+and, in the chase shots, the trainer's screen box, which is approximate on the
+two banked shots (`tests/perf/artifacts/rebaseline-candidates/2026-09-23T04-50-34.261Z/moved-map.png`, drawn at > 8 levels, and
+`tests/perf/artifacts/rebaseline-candidates/2026-09-23T04-50-34.261Z/promotion-split.json`, at both thresholds).
+
+- F = FI-5 (`4d8b2a8`): crown-edge coverage from hand-built mip chains. The
+  terrain engineer confirmed the crown speckle is FI-5, and that the splat queue
+  (`ce48b1a`) and D-5 (`2e3b281`), which also postdate these baselines, moved
+  none of these shots.
+- C = the Cessna's cabin. The trainer's 70 meshes were hashed one by one under
+  NullEngine at the old baselines' capture tree `bcfbea5` and at `bd7a584`, and
+  exactly two differ: `trainer-cabin-roof` (16 -> 84 vertices, the roof as a
+  closed solid) and `windscreen-center-frame` (76 -> 779), from `1c79768`,
+  `6c66ac0` and `b760485`, merged as `37d24da`. No other trainer mesh, the
+  glazing included, changed. The old baselines show a solid glazed cabin where
+  the candidate shows the frame and the interior through the glass.
+- O = the ocean's cascade phase pinned for captures (`a4c8762`), which also
+  postdates the `19216c3` baselines: sea glints and foam move wherever sea is in
+  frame. "World" in the catch-up rows is F, plus O where there is sea.
+- W = the wildlife pin.
+
+Catch-up, baselines from `19216c3`:
+
+- `approach-500ft` — catch-up since 19216c3, 14744 px >= 3/255: aircraft 2467 (C), world 12261 (F/O), birds 16 (W)
+- `blue-hour` — catch-up since 19216c3, 2021 px >= 3/255: aircraft 834 (C), world 1178 (F/O), birds 9 (W)
+- `canopy-1200ft` — catch-up since 19216c3, 11362 px >= 3/255: world 11063 (F/O), birds 299 (W)
+- `canopy-backlit-lowsun` — catch-up since 19216c3, 8247 px >= 3/255: world 8221 (F/O), birds 26 (W)
+- `cdlod-transition` — catch-up since 19216c3, 3016 px >= 3/255: aircraft 724 (C), world 2292 (F/O); no birds
+- `cliff-60m` — catch-up since 19216c3, 1403 px >= 3/255: aircraft 1002 (C), world 401 (F/O); birds only unpinned, so its old baseline's birds are not separable (W, accepted by the water engineer)
+- `cruise-horizon` — catch-up since 19216c3, 3225 px >= 3/255: aircraft 739 (C), world 2486 (F/O); no birds
+- `cruise-sun-30` — catch-up since 19216c3, 10878 px >= 3/255: aircraft 796 (C), world 10082 (F/O); no birds
+- `dusk-mesopic` — catch-up since 19216c3, 8505 px >= 3/255: aircraft 1697 (C), world 6799 (F/O), birds 9 (W)
+- `forest-500ft-sunbehind` — catch-up since 19216c3, 9272 px >= 3/255: aircraft 2479 (C), world 6739 (F/O), birds 54 (W)
+- `forest-line-highsun` — catch-up since 19216c3, 11926 px >= 3/255: aircraft 2556 (C), world 8872 (F/O), birds 498 (W)
+- `golden-hour` — catch-up since 19216c3, 8680 px >= 3/255: aircraft 1816 (C), world 6856 (F/O), birds 8 (W)
+- `ground-2m-lowsun` — catch-up since 19216c3, 4113 px >= 3/255: world 4113 (F/O), birds 0 (W)
+- `grove-forest-2m` — catch-up since 19216c3, 568 px >= 3/255: world 568 (F/O); birds only unpinned, so its old baseline's birds are not separable (W, accepted by the water engineer)
+- `grove-meadow-2m` — catch-up since 19216c3, 4986 px >= 3/255: world 4958 (F/O), birds 28 (W)
+- `horizon-shadow-far-annulus` — catch-up since 19216c3, 801 px >= 3/255: world 801 (F/O); birds only unpinned, so its old baseline's birds are not separable (W, accepted by the water engineer)
+- `mountain-close` — catch-up since 19216c3, 1813 px >= 3/255: aircraft 1097 (C), world 716 (F/O); birds only unpinned, so its old baseline's birds are not separable (W, accepted by the water engineer)
+- `night` — catch-up since 19216c3, 1054 px >= 3/255: aircraft 915 (C), world 135 (F/O), birds 4 (W)
+- `night-beacon-offset` — catch-up since 19216c3, 8349 px >= 3/255: aircraft 1719 (C), world 6579 (F/O), birds 51 (W)
+- `night-moonlit` — catch-up since 19216c3, 8356 px >= 3/255: aircraft 1738 (C), world 6567 (F/O), birds 51 (W)
+- `reference-viewport` — catch-up since 19216c3, 11839 px >= 3/255: aircraft 3069 (C), world 8770 (F/O), birds 0 (W)
+- `runway-on-approach` — catch-up since 19216c3, 11283 px >= 3/255: aircraft 840 (C), world 10443 (F/O), birds 0 (W)
+- `slant-10km` — catch-up since 19216c3, 7443 px >= 3/255: aircraft 1617 (C), world 5826 (F/O); no birds
+- `sunset-sunward` — catch-up since 19216c3, 3091 px >= 3/255: aircraft 980 (C), world 2104 (F/O), birds 7 (W)
+- `terrain-material-1600ft-down` — catch-up since 19216c3, 52 px >= 3/255: world 52 (F/O); no birds
+- `veg-seam-1600ft-oblique` — catch-up since 19216c3, 15567 px >= 3/255: world 15458 (F/O), birds 109 (W)
+- `veg-seam-near-500ft` — catch-up since 19216c3, 12708 px >= 3/255: world 12708 (F/O); no birds
+- `winter-noon` — catch-up since 19216c3, 1788 px >= 3/255: aircraft 1024 (C), world 751 (F/O), birds 13 (W)
+
+Recent, baselines from `35e03d3`:
+
+- `approach-lights-outboard` — W + residual: birds 0 of 384 px >= 3/255, world 384
+- `apron-hangar-variety` — W + residual: birds 43 of 72 px >= 3/255, world 29
+- `coast-10km-lowsun` — residual only, no birds: 56 px >= 3/255, world 56
+- `high-10000ft-down` — residual only, no birds: 9 px >= 3/255, world 9
+- `hills-dusk-glint` — W + residual: birds 220 of 291 px >= 3/255, world 55, aircraft 16
+- `lake-island-piercing` — residual only, no birds: 7 px >= 3/255, world 7
+- `motion-banked-turn` — W + residual: birds only unpinned (its old baseline's), 200 px >= 3/255, world 133, aircraft 67
+- `page-thrash-turn` — W + residual: its only change is an 80 px speck cluster at (803-835, 487-498), 55 px from the probe's three boar, on the 60-degree banked shot where the probe's chase-roll model is approximate; accepted by the water engineer as evidence-only, temporally gated
+- `water-25ft` — W + residual: birds only unpinned (its old baseline's), 120 px >= 3/255, world 102, aircraft 18
+- `water-3m` — W + residual: birds 14 of 139 px >= 3/255, world 125
+- `water-400ft-glitter` — W + residual: birds 6 of 204 px >= 3/255, world 198
