@@ -9,9 +9,10 @@ import {
   type TerrainPageErosionGpuOptions,
 } from "@/src/render/webgpu/terrain/TerrainPageErosionGpu";
 import {
+  chargedStageMs,
   type ErosionCostStage,
-  EXPECTED_STAGE_DISPATCHES,
   erosionStageCoverageFaults,
+  expectedStageDispatches,
   UNUSABLE_READINGS_PER_PAGE_CAP,
 } from "./support/erosionStageCoverage";
 import { readSource } from "./support/sourceText";
@@ -40,12 +41,16 @@ const SHADERS_PER_STAGE: Readonly<Record<ErosionCostStage, number>> = {
   seed: 1,
   geology: 2,
   breachDirect: 1,
+  breachArgs: 1,
   breachPit: 1,
   decode: 1,
   streamPower: 2,
   talus: 4,
   fineBand: 2,
 };
+
+/** The cost test's page lists 372 pits: three carve chunks. */
+const EXPECTED_STAGE_DISPATCHES = expectedStageDispatches(372);
 
 const PINNED_NANOSECONDS = (stage: ErosionCostStage): number =>
   TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * 1_000_000;
@@ -115,7 +120,7 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
       expect(samples[stage].dispatches, stage).toBe(EXPECTED_STAGE_DISPATCHES[stage]);
       expect(samples[stage].unusable, stage).toBe(0);
     }
-    expect(erosionStageCoverageFaults(samples)).toEqual([]);
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
   });
 
   it("counts a pass that read zero as unusable, prices it at nothing, and the page passes", () => {
@@ -124,12 +129,9 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
       stage === "breachDirect" && index === 0 ? 0 : undefined);
     // The failure this guards: breach read "1 of 2" because the zero was dropped.
     expect(samples.breachDirect).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1 });
-    expect(samples.breachPit).toEqual({
-      milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit,
-      dispatches: 1,
-      unusable: 0,
-    });
-    expect(erosionStageCoverageFaults(samples)).toEqual([]);
+    expect(samples.breachPit.milliseconds).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit * 3, 12);
+    expect(samples.breachPit).toMatchObject({ dispatches: 3, unusable: 0 });
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
     // Nothing was priced from it: the running estimate did not move toward zero.
     expect(fake.producer.stageEstimates().breachDirect)
       .toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect, 12);
@@ -152,7 +154,7 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const samples = runFakePage(fake, (stage, index) =>
       stage === "decode" && index === 0 ? Number.NaN : undefined);
     expect(samples.decode).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1 });
-    expect(erosionStageCoverageFaults(samples)).toEqual([]);
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
   });
 
   it("returns no per-dispatch price for a frame whose only reading was unusable", () => {
@@ -168,8 +170,8 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const samples = runFakePage(fake, undefined, (stage) =>
       stage === "breachPit" ? 0 : EXPECTED_STAGE_DISPATCHES[stage]);
     expect(samples.breachPit).toMatchObject({ dispatches: 0, unusable: 0 });
-    expect(erosionStageCoverageFaults(samples)).toEqual([
-      "did not measure every breachPit dispatch: 0 priced + 0 unusable, expected 1",
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([
+      "did not measure every breachPit dispatch: 0 priced + 0 unusable, expected 3",
     ]);
   });
 
@@ -177,13 +179,13 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const fake = producerWithFakeTrackers();
     const samples = runFakePage(fake, (stage, index) =>
       stage === "breachPit" && index === 0 ? "none" : undefined);
-    expect(samples.breachPit).toMatchObject({ dispatches: 0, unusable: 0 });
-    expect(erosionStageCoverageFaults(samples)).toEqual([
-      "did not measure every breachPit dispatch: 0 priced + 0 unusable, expected 1",
+    expect(samples.breachPit).toMatchObject({ dispatches: 2, unusable: 0 });
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([
+      "did not measure every breachPit dispatch: 2 priced + 0 unusable, expected 3",
     ]);
   });
 
-  it("offers breach one pass at a time, each at its own price", () => {
+  it("offers breach one pass at a time at its own price, then the carve's chunks at theirs", () => {
     const producer = new TerrainPageErosionGpu({} as AbstractEngine, {} as TerrainPageErosionGpuOptions);
     const internals = producer as unknown as {
       job: { stage: string; breachDirectDone: boolean; asyncInFlight: boolean; cancelled: boolean } | null;
@@ -192,21 +194,27 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     };
     internals.pruneStale = () => {};
     internals.stageEstimatesMs.breachDirect = 0.04;
+    internals.stageEstimatesMs.breachArgs = 0.002;
     internals.stageEstimatesMs.breachPit = 2.5;
-    internals.job = { stage: "breach", breachDirectDone: false, asyncInFlight: false, cancelled: false };
+    internals.job = {
+      stage: "breach", breachDirectDone: false, breachArgsDone: false, asyncInFlight: false, cancelled: false,
+    } as never;
     expect(producer.demand(0)).toEqual({ count: 1, costMs: 0.04 });
-    internals.job.breachDirectDone = true;
-    expect(producer.demand(0)).toEqual({ count: 1, costMs: 2.5 });
+    (internals.job as unknown as { breachDirectDone: boolean }).breachDirectDone = true;
+    expect(producer.demand(0)).toEqual({ count: 1, costMs: 0.002 });
+    Object.assign(internals.job as object, { breachArgsDone: true, asyncInFlight: true });
+    // The count is being read back: nothing to offer until it lands.
+    expect(producer.demand(0)).toEqual({ count: 0, costMs: expect.any(Number) });
+    Object.assign(internals.job as object, { asyncInFlight: false, breachChunks: 3, breachChunksDone: 1 });
+    expect(producer.demand(0)).toEqual({ count: 2, costMs: 2.5 });
   });
 
   it("does not let a reading that never arrives hold up the passes after it", () => {
     const fake = producerWithFakeTrackers();
     runFakePage(fake, (stage, index) => stage === "breachPit" && index === 0 ? "none" : undefined);
-    expect(runFakePage(fake).breachPit).toEqual({
-      milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit,
-      dispatches: 1,
-      unusable: 0,
-    });
+    const next = runFakePage(fake).breachPit;
+    expect(next.milliseconds).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit * 3, 12);
+    expect(next).toMatchObject({ dispatches: 3, unusable: 0 });
   });
 
   it("does not mistake a reading not yet arrived for a reading of zero, and prices it when it lands", () => {
@@ -284,7 +292,7 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const samples = runFakePage(fake, (stage, index) =>
       stage === "streamPower" && index < over ? 0 : undefined);
     expect(samples.streamPower.unusable).toBe(over);
-    expect(erosionStageCoverageFaults(samples)).toEqual([
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([
       `${over} dispatches read no positive duration; at most `
       + `${UNUSABLE_READINGS_PER_PAGE_CAP} per page are tolerated`,
     ]);
@@ -294,33 +302,46 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const fake = producerWithFakeTrackers();
     const samples = runFakePage(fake);
     const broken = { ...samples, fineBand: { ...samples.fineBand, milliseconds: 0 } };
-    expect(erosionStageCoverageFaults(broken)).toEqual([
+    expect(erosionStageCoverageFaults(broken, EXPECTED_STAGE_DISPATCHES)).toEqual([
       "measured fineBand dispatches but no GPU time",
     ]);
   });
 });
 
-describe("W-1d stage coverage: the unusable allowance cannot hide a regression", () => {
+describe("W-1d stage coverage: an unusable reading cannot hide a cost", () => {
   const stages = Object.keys(EXPECTED_STAGE_DISPATCHES) as ErosionCostStage[];
-  const pinned = (subset: readonly ErosionCostStage[]) => subset.reduce(
+  const pinnedPage = stages.reduce(
     (total, stage) => total + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * EXPECTED_STAGE_DISPATCHES[stage],
     0,
   );
-  const dearest = (subset: readonly ErosionCostStage[]) =>
-    Math.max(...subset.map((stage) => TERRAIN_EROSION_STAGE_SEED_COST_MS[stage]));
+  const chargedPage = (samples: ReturnType<typeof runFakePage>) =>
+    stages.reduce((total, stage) => total + chargedStageMs(samples[stage], stage), 0);
 
-  it("hides under 2 % of the pinned page, against a whole-page alarm at twice its price", () => {
-    expect(UNUSABLE_READINGS_PER_PAGE_CAP * dearest(stages) / pinned(stages)).toBeLessThan(0.02);
+  it("charges each unusable dispatch at its stage's pinned price, whichever stage it is", () => {
+    for (const stage of stages) {
+      const fake = producerWithFakeTrackers();
+      const samples = runFakePage(fake, (at, index) => at === stage && index === 0 ? 0 : undefined);
+      expect(samples[stage].unusable, stage).toBe(1);
+      // Every reading here is its pinned price, so a page that lost one reads
+      // exactly as dear as a page that lost none.
+      expect(chargedPage(samples), stage).toBeCloseTo(pinnedPage, 9);
+    }
   });
 
-  it("hides under 10 % of the pinned minor stages, against their alarm at four times", () => {
-    const minor = stages.filter((stage) => stage !== "seed" && stage !== "talus");
-    expect(UNUSABLE_READINGS_PER_PAGE_CAP * dearest(minor) / pinned(minor)).toBeLessThan(0.1);
+  it("charges the dearest dispatch in full: losing its reading does not cheapen the page", () => {
+    const dearest = stages.reduce((max, stage) =>
+      TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] > TERRAIN_EROSION_STAGE_SEED_COST_MS[max] ? stage : max);
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake, (at, index) => at === dearest && index === 0 ? Number.NaN : undefined);
+    const measuredOnly = stages.reduce((total, stage) => total + samples[stage].milliseconds, 0);
+    expect(pinnedPage - measuredOnly).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS[dearest], 9);
+    expect(chargedPage(samples)).toBeCloseTo(pinnedPage, 9);
   });
 
   it("is what the GPU cost test applies, next to the issued-dispatch count", () => {
     const source = readSource(join(import.meta.dirname, "gpu", "terrain-page-erosion-cost.test.ts"));
-    expect(source).toContain("erosionStageCoverageFaults(page.samples)");
+    expect(source).toContain("erosionStageCoverageFaults(page.samples, page.expected)");
+    expect(source).toContain("total + chargedStageMs(sample[stage], stage)");
     expect(source).toContain("dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0");
     expect(source).toMatch(
       /expect\(page\.dispatches, `timed page \$\{pageIndex \+ 1\} DAG dispatch count`\)\s+\.toBe\(expectedTotalDispatches\);/u,

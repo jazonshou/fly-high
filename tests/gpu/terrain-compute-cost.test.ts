@@ -19,8 +19,10 @@ import {
   invariantSlotKey,
   type TerrainAtlasSlot,
 } from "../../src/render/webgpu/terrain/TerrainPageAtlas";
+import { seasonBucketBlend } from "../../src/render/webgpu/terrain/TerrainSpineContract";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import { hashSeed } from "../../src/world/seed";
+import { logPricingSample, pricingRun } from "../support/pricingRun";
 
 /**
  * `4.5-B2(a)` — what one terrain compute dispatch actually costs, measured.
@@ -140,6 +142,9 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
         + "counter to read; the pinned seeds stay unverified on this host",
       );
     }
+    // A pricing run refuses to measure without its idle gap (see pricingRun.ts).
+    const pricing = pricingRun();
+    if (pricing) console.log(`PRICING run: ${pricing.idleGapMs} ms idle before it`);
     const measured = await withScene(async (engine, scene) => {
       const base = resolveWebGpuQualityProfile("medium", "balanced");
       const profile = { ...base, heightAtlasSlots: SLOTS, channelAtlasSlots: SLOTS };
@@ -172,9 +177,25 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
       const nextFrame = (): Promise<void> =>
         new Promise((resolve) => requestAnimationFrame(() => resolve()));
 
+      // Pricing runs log each sample beside the dispatch that produced it, so a
+      // bimodal figure can be told apart: different inputs mean the price's
+      // unit is wrong, identical inputs mean the modes are external.
+      const lastDispatch = new Map<string, readonly number[]>();
+      const watch = (name: string, owner: unknown) => {
+        const shader = (owner as { shader: { dispatchWhenReady(...args: number[]): Promise<void> } | null }).shader;
+        if (!shader) return;
+        const dispatch = shader.dispatchWhenReady.bind(shader);
+        shader.dispatchWhenReady = (...args: number[]) => {
+          lastDispatch.set(name, args);
+          return dispatch(...args);
+        };
+      };
       const time = async (
         run: () => Promise<unknown>,
         consume: () => number | null,
+        name = "",
+        inputs: () => Readonly<Record<string, unknown>> = () => ({}),
+        owner: unknown = null,
       ): Promise<number> => {
         // One warm run first: the first dispatch pays synchronous pipeline
         // creation, which `4.5-C2(a)` pre-warms in the renderer and which must
@@ -182,6 +203,8 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
         await run();
         await nextFrame();
         consume();
+        // The shader exists from the first dispatch on: watch it from here.
+        if (pricing && owner) watch(name, owner);
         const samples: number[] = [];
         for (let repeat = 0; repeat < REPEATS; repeat += 1) {
           await run();
@@ -190,6 +213,12 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
             await nextFrame();
             const sample = consume();
             if (sample !== null) {
+              if (pricing) {
+                logPricingSample(name, samples.length, sample, {
+                  dispatch: lastDispatch.get(name) ?? null,
+                  ...inputs(),
+                });
+              }
               samples.push(sample);
               break;
             }
@@ -200,15 +229,25 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
         return sorted[Math.floor(sorted.length / 2)]!;
       };
 
+      const levels = (slots: readonly TerrainAtlasSlot[]) => slots.map((slot) => slot.address.level);
       const terrainCompute = await time(
         () => generator.generate(heightSlots),
-        () => generator.consumeMeasuredDispatchCostMs());
+        () => generator.consumeMeasuredDispatchCostMs(),
+        "terrainCompute",
+        () => ({ levels: levels(heightSlots) }),
+        generator);
       const occlusionCompute = await time(
         () => occlusion.bake(channelSlots),
-        () => occlusion.consumeMeasuredDispatchCostMs());
+        () => occlusion.consumeMeasuredDispatchCostMs(),
+        "occlusionCompute",
+        () => ({ levels: levels(channelSlots) }),
+        occlusion);
       const splatCompute = await time(
         () => splat.bake(channelSlots, 171),
-        () => splat.consumeMeasuredDispatchCostMs());
+        () => splat.consumeMeasuredDispatchCostMs(),
+        "splatCompute",
+        () => ({ levels: levels(channelSlots), dayOfYear: 171, season: seasonBucketBlend(171) }),
+        splat);
 
       // The splat bake's COARSE path. From a 64 m channel texel up every
       // supersample tap samples its own canopy (the level-3 batch above never
@@ -227,7 +266,10 @@ describe("terrain compute dispatch cost (4.5-B2a)", () => {
       generator.consumeMeasuredDispatchCostMs();
       const splatComputeCoarse = await time(
         () => splat.bake(coarseChannelSlots, 171),
-        () => splat.consumeMeasuredDispatchCostMs());
+        () => splat.consumeMeasuredDispatchCostMs(),
+        "splatCompute",
+        () => ({ levels: levels(coarseChannelSlots), dayOfYear: 171, season: seasonBucketBlend(171) }),
+        splat);
 
       generator.dispose();
       occlusion.dispose();
