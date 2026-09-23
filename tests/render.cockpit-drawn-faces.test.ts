@@ -89,7 +89,7 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
 };
 
 /** How many cockpit-only meshes each aircraft has, so a mesh going missing cannot pass as a clean run. */
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 1 };
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 3 };
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed

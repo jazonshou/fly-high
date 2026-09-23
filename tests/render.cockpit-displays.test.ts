@@ -1,6 +1,7 @@
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -18,9 +19,11 @@ import {
   bizjetScreenPlacements,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
+import { JET_DISPLAY_AIRFRAME, JET_MFD, jetMfdPlacements } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
 import {
   AIRLINER_DISPLAYS,
   BIZJET_DISPLAYS,
+  JET_DISPLAYS,
   createDisplayAtlas,
   paintDisplays,
   DISPLAY_SLOT_HEIGHT,
@@ -30,17 +33,17 @@ import {
   displayAtlasWidth,
   displaySlots,
 } from "../src/render/webgpu/aircraft/cockpit/displays/displayAtlas";
-import { drawDisplayAtlas } from "../src/render/webgpu/aircraft/cockpit/displays/displayPages";
+import { drawDisplayAtlas, drawNd } from "../src/render/webgpu/aircraft/cockpit/displays/displayPages";
 import {
   displayStateFromVisual,
   type DisplayAirframe,
 } from "../src/render/webgpu/aircraft/cockpit/displays/displayStateFromVisual";
-import { createRecordingContext } from "./support/recordingContext";
+import { createRecordingContext, transformedPoints, type RecordedCall } from "./support/recordingContext";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import type { AircraftKind } from "../src/sim";
 
 /**
- * Both glass decks: which screen samples which slot, and that the whole live path runs without a GPU.
+ * The three glass decks: which screen samples which slot, and that the whole live path runs without a GPU.
  *
  * THE HEADLESS PATH IS THE DEFAULT HERE, and deliberately so. Every Node test builds under
  * `NullEngine`, which has no 2D canvas, so `createDisplayAtlas` returns null and the screens keep
@@ -51,12 +54,13 @@ import type { AircraftKind } from "../src/sim";
  * context. That is the same shape the drawing module's own tests use, so the page code and this
  * integration meet on one interface.
  *
- * EVERY ROW BELOW IS RUN FOR BOTH AEROPLANES, because the machinery is shared and a deck-shaped
+ * EVERY ROW BELOW IS RUN FOR ALL THREE AEROPLANES, because the machinery is shared and a deck-shaped
  * mistake in it (a slot table that fits six and not four) shows up only where the shapes differ. The
  * 747 has six screens three across; the Global has four, two across, and no EICAS page -- see
- * `BIZJET_DISPLAYS` for why its engine page would print a label this aeroplane's own HUD contradicts.
- * Both real decks happen to be TWO rows deep, so a mistake that only shows at another depth (an atlas
- * sized for two rows whatever the screen count) is held by synthetic layouts at the end of the file.
+ * `BIZJET_DISPLAYS` for why its engine page would print a label this aeroplane's own HUD contradicts;
+ * the F-16 has two SQUARE screens, one row of two, in slots of its own size. Two real decks are two
+ * rows deep and one is one, so a mistake that only shows at another depth is held by synthetic
+ * layouts at the end of the file.
  */
 
 interface Deck {
@@ -70,6 +74,15 @@ interface Deck {
   readonly airframe: DisplayAirframe;
   /** What each screen's NAME says it must draw. */
   readonly pages: Readonly<Record<string, string>>;
+  /** The merged bezels mesh beside the screens mesh, and a pattern every screen or bezel part, merged or not, matches. */
+  readonly bezelsMesh: string;
+  readonly screenParts: RegExp;
+  /**
+   * Two independent counts of the engines, over authored part names: one part per engine each. The
+   * turbofans have a spinning fan and an inlet; the F-16's one engine has a turbine hub behind one
+   * ventral inlet.
+   */
+  readonly engineParts: { readonly first: RegExp; readonly second: RegExp };
 }
 
 const DECKS: readonly Deck[] = [
@@ -81,6 +94,9 @@ const DECKS: readonly Deck[] = [
     placements: airlinerScreenPlacements,
     screen: { width: AIRLINER_SCREENS.width, height: AIRLINER_SCREENS.height },
     airframe: AIRLINER_DISPLAY_AIRFRAME,
+    bezelsMesh: "airliner-screen-bezels",
+    screenParts: /^airliner-screen/,
+    engineParts: { first: /fan-spool-fan$/, second: /-engine-inlet$/ },
     pages: {
       "port-pfd": "pfd",
       "starboard-pfd": "pfd",
@@ -99,12 +115,32 @@ const DECKS: readonly Deck[] = [
     placements: bizjetScreenPlacements,
     screen: { width: BIZJET_SCREENS.width, height: BIZJET_SCREENS.height },
     airframe: BIZJET_DISPLAY_AIRFRAME,
+    bezelsMesh: "bizjet-screen-bezels",
+    screenParts: /^bizjet-screen/,
+    engineParts: { first: /fan-spool-fan$/, second: /-engine-inlet$/ },
     pages: {
       // each seat: a PFD on the outboard screen, the map inboard
       "port-outboard": "pfd",
       "port-inboard": "nd",
       "starboard-outboard": "pfd",
       "starboard-inboard": "nd",
+    },
+  },
+  {
+    kind: "jet",
+    label: "F-16",
+    layout: JET_DISPLAYS,
+    flatMaterial: "jet-instrument-face",
+    placements: jetMfdPlacements,
+    screen: { width: JET_MFD.screen, height: JET_MFD.screen },
+    airframe: JET_DISPLAY_AIRFRAME,
+    bezelsMesh: "jet-mfd-bezels",
+    screenParts: /^jet-(screens|mfd-)/,
+    engineParts: { first: /^jet-turbine-hub$/, second: /^jet-ventral-inlet$/ },
+    pages: {
+      // the type's pair: the PFD on the left MFD, the map on the right
+      port: "pfd",
+      starboard: "nd",
     },
   },
 ];
@@ -116,20 +152,21 @@ const DECKS: readonly Deck[] = [
  * many engines to draw a gauge for, and what full flap means in degrees. Both are easy to write down
  * from memory and impossible to notice when wrong -- an EICAS drawing four gauges on a twin, or a
  * flap readout scaled by the wrong travel, is a plausible picture. So neither is compared with a
- * literal here: the engine count is counted off the BUILT nacelles, and the flap travel is taken
+ * literal here: the engine count is counted off the BUILT engine parts (the turbofans' fans and inlets,
+ * the F-16's one turbine hub and ventral inlet), and the flap travel is taken
  * from the animation's own pose at full flap, which is the code that actually moves the panels.
  * (A mutation that gave the Global the 747's four engines passed everything until this existed.)
  */
 describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's display airframe", (_label, deck) => {
-  it("counts its engines off the built nacelles and takes full flap from the animation, not from a literal", () => {
+  it("counts its engines off the built engine parts and takes full flap from the animation, not from a literal", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     scene.useRightHandedSystem = true;
     try {
       const aircraft = createWebGpuAircraft(scene, deck.kind);
       // TWO INDEPENDENT COUNTS of the same thing, because one regexp that matched nothing would
-      // read as an aeroplane with no engines and pass a `toBe(0)`: the fans the visual spins, one
-      // per engine, and the inlets they sit behind.
+      // read as an aeroplane with no engines and pass a `toBe(0)`: one part per engine each (the
+      // turbofans' spinning fans and their inlets; the F-16's turbine hub and its ventral inlet).
       // over AUTHORED part names, live meshes and merged sources alike: the 747's inlets are folded
       // into a static mesh and only their `mergedFrom` names survive, while its fans still spin
       const authored = new Set<string>();
@@ -139,10 +176,10 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
         else authored.add(mesh.name);
       }
       const count = (pattern: RegExp) => [...authored].filter((name) => pattern.test(name)).length;
-      const fans = count(/fan-spool-fan$/);
-      const inlets = count(/-engine-inlet$/);
-      expect(fans, `${deck.label}: fans found to count`).toBeGreaterThan(0);
-      expect(inlets, `${deck.label}: inlets found to count`).toBe(fans);
+      const fans = count(deck.engineParts.first);
+      const inlets = count(deck.engineParts.second);
+      expect(fans, `${deck.label}: engines found to count`).toBeGreaterThan(0);
+      expect(inlets, `${deck.label}: the second count agrees`).toBe(fans);
       expect(deck.airframe.engineCount, "gauges drawn against engines built").toBe(fans);
 
       // `flap` is trailing-edge-down radians at the state given; at flaps 1 it is the type's full travel
@@ -159,6 +196,78 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     }
   });
 });
+
+
+/**
+ * Every piece of text a drawn atlas puts on its PFD and ND pages, with the box it must stay inside: the readout box it
+ * is written in (a stroked rect just before it), else the innermost rectangular clip it is drawn under (a tape, the
+ * heading strip's window, or the page's own slot). Text under a round clip (the attitude disc's rung numbers) is left
+ * out: the disc clips those by design. Extents are a monospace 0.6 em a character wide and one em tall about the
+ * baseline in force. Absolute atlas pixels, from a replay of the transform stack (translate, rotate, scale).
+ */
+function textInContainers(calls: readonly RecordedCall[], pages: readonly { x: number; y: number; w: number; h: number }[]) {
+  // WHICH PAGE drew a call is the slot bracket it is in (drawDisplayAtlas: save, rect(slot), clip, ..., restore at the
+  // atlas's top level), not where its anchor lands: text anchored off every page would otherwise count for none.
+  let depth = 0;
+  let awaitingPage = false;
+  let page: { x: number; y: number; w: number; h: number } | null = null;
+  interface Rect { x: number; y: number; w: number; h: number }
+  type Clip = Rect | "round";
+  let m = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  let clips: Clip[] = [];
+  const stack: { m: typeof m; clips: Clip[] }[] = [];
+  let font = 10;
+  let align = "start";
+  let baseline = "alphabetic";
+  let lastStroke: { at: number; rect: Rect } | null = null;
+  const out: { text: string; box: Rect; page: Rect; left: number; top: number; width: number; height: number; kind: "readout" | "clip" }[] = [];
+  const containers: { box: Rect; page: Rect }[] = [];
+  const absRect = (x: number, y: number, w: number, h: number): Rect | null =>
+    Math.abs(m.b) < 1e-12 && Math.abs(m.c) < 1e-12 ? { x: m.e + m.a * x, y: m.f + m.d * y, w: m.a * w, h: m.d * h } : null;
+  calls.forEach((call, i) => {
+    const n = (k: number) => call.args[k] as number;
+    switch (call.method) {
+      case "save": if (depth === 0) awaitingPage = true; depth += 1; stack.push({ m: { ...m }, clips: [...clips] }); break;
+      case "restore": { depth -= 1; if (depth === 0) page = null; const top = stack.pop(); if (top) { m = top.m; clips = top.clips; } break; }
+      case "translate": m = { ...m, e: m.e + m.a * n(0) + m.c * n(1), f: m.f + m.b * n(0) + m.d * n(1) }; break;
+      case "rotate": { const cos = Math.cos(n(0)); const sin = Math.sin(n(0)); m = { ...m, a: m.a * cos + m.c * sin, b: m.b * cos + m.d * sin, c: -m.a * sin + m.c * cos, d: -m.b * sin + m.d * cos }; break; }
+      case "scale": m = { ...m, a: m.a * n(0), b: m.b * n(0), c: m.c * n(1), d: m.d * n(1) }; break;
+      case "rect":
+        if (calls[i + 1]?.method === "clip") {
+          const r = absRect(n(0), n(1), n(2), n(3));
+          clips.push(r ?? "round");
+          if (awaitingPage && r) {
+            // the bracket's own slot: one of the PFD / ND pages, or a page this check leaves out (EICAS)
+            page = pages.find((p) => p.x === r.x && p.y === r.y && p.w === r.w && p.h === r.h) ?? null;
+            awaitingPage = false;
+          } else if (page && r) containers.push({ box: r, page });
+        }
+        break;
+      case "arc": if (calls[i + 1]?.method === "clip") clips.push("round"); break;
+      case "strokeRect": { const r = absRect(n(0), n(1), n(2), n(3)); if (r) { lastStroke = { at: i, rect: r }; if (page) containers.push({ box: r, page }); } break; }
+      case "set:font": font = Number(/([0-9.]+)px/.exec(String(call.args[0]))?.[1] ?? 10); break;
+      case "set:textAlign": align = String(call.args[0]); break;
+      case "set:textBaseline": baseline = String(call.args[0]); break;
+      case "fillText": {
+        const text = String(call.args[0]);
+        const x = m.e + m.a * n(1) + m.c * n(2);
+        const y = m.f + m.b * n(1) + m.d * n(2);
+        if (!page) break;
+        if (clips.includes("round")) break;
+        const width = 0.6 * font * text.length;
+        const left = align === "center" ? x - width / 2 : align === "right" || align === "end" ? x - width : x;
+        const top = baseline === "middle" ? y - font / 2 : baseline === "top" || baseline === "hanging" ? y : baseline === "bottom" ? y - font : y - 0.8 * font;
+        const readout = lastStroke !== null && i - lastStroke.at <= 8
+          && x >= lastStroke.rect.x && x <= lastStroke.rect.x + lastStroke.rect.w && y >= lastStroke.rect.y && y <= lastStroke.rect.y + lastStroke.rect.h;
+        const box = readout ? lastStroke!.rect : (clips.at(-1) as Rect);
+        out.push({ text, box, page, left, top, width, height: font, kind: readout ? "readout" : "clip" });
+        break;
+      }
+      default: break;
+    }
+  });
+  return { texts: out, containers };
+}
 
 describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displays", (_label, deck) => {
   let engine: NullEngine;
@@ -219,11 +328,11 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     const slots = displaySlots(deck.layout);
     for (const [index, placement] of placements.entries()) {
       // the face's vertices: normal -X, and at this screen's own z
-      const face: { y: number; z: number; u: number; v: number }[] = [];
+      const face: { x: number; y: number; z: number; u: number; v: number }[] = [];
       for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
         if (normals[vertex * 3]! > -0.9) continue;
         if (Math.abs(positions[vertex * 3 + 2]! - placement.centre.z) > reach) continue;
-        face.push({ y: positions[vertex * 3 + 1]!, z: positions[vertex * 3 + 2]!, u: uvs[vertex * 2]!, v: uvs[vertex * 2 + 1]! });
+        face.push({ x: positions[vertex * 3]!, y: positions[vertex * 3 + 1]!, z: positions[vertex * 3 + 2]!, u: uvs[vertex * 2]!, v: uvs[vertex * 2 + 1]! });
       }
       expect(face.length, `${placement.name}: pilot-facing vertices`).toBe(4);
       const slot = slots[index]!;
@@ -241,18 +350,30 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
       for (const corner of face.filter((c) => Math.abs(c.y - topY) < 1e-6)) {
         expect(corner.v, `${placement.name}: its top edge samples the slot's top`).toBeCloseTo(slot.y / atlasHeight, 6);
       }
+      // AND THE RIGHT WAY ROUND: the face's LEFT edge as the pilot sees it (smaller z; his right is +Z) samples
+      // the slot's left column, the smaller u. Checking the u range alone passed a page drawn mirror-image.
+      const leftZ = Math.min(...face.map((corner) => corner.z));
+      const leftEdge = face.filter((c) => Math.abs(c.z - leftZ) < 1e-6);
+      expect(leftEdge.length, `${placement.name}: the face's left edge`).toBe(2);
+      for (const corner of leftEdge) {
+        expect(corner.u, `${placement.name}: its left edge samples the slot's left`).toBeCloseTo(slot.x / atlasWidth, 6);
+      }
       // THE SCREEN'S OWN SHAPE, from the built face rather than the builder's constant: the slot
-      // must be drawn at the aspect the pilot actually sees, or every page is squashed
+      // must be drawn at the aspect the pilot actually sees, or every page is squashed. The height is
+      // measured ALONG the face, from the bottom pair of corners to the top pair: the F-16's face leans
+      // back 15 degrees, and its y extent alone is the height times cos 15
+      const byHeight = [...face].sort((a, b) => a.y - b.y);
+      const bottomMid = { x: (byHeight[0]!.x + byHeight[1]!.x) / 2, y: (byHeight[0]!.y + byHeight[1]!.y) / 2 };
+      const topMid = { x: (byHeight[2]!.x + byHeight[3]!.x) / 2, y: (byHeight[2]!.y + byHeight[3]!.y) / 2 };
       const built = (Math.max(...face.map((c) => c.z)) - Math.min(...face.map((c) => c.z)))
-        / (Math.max(...face.map((c) => c.y)) - Math.min(...face.map((c) => c.y)));
+        / Math.hypot(topMid.x - bottomMid.x, topMid.y - bottomMid.y);
       expect(slot.w / slot.h, `${placement.name}: slot aspect against the built face`).toBeCloseTo(built, 3);
     }
   });
 
   it("costs no extra draw: still one screens mesh on one material", () => {
-    const stem = `${deck.kind === "airliner" ? "airliner" : "bizjet"}-screen`;
-    const screenMeshes = aircraft.meshes.filter((mesh) => mesh.name.startsWith(stem));
-    expect(screenMeshes.map((mesh) => mesh.name).sort()).toEqual([`${stem}-bezels`, `${stem}s`].sort());
+    const screenMeshes = aircraft.meshes.filter((mesh) => deck.screenParts.test(mesh.name));
+    expect(screenMeshes.map((mesh) => mesh.name).sort()).toEqual([deck.bezelsMesh, deck.layout.screensMesh].sort());
     // every screen in one mesh, every bezel in another, as before the atlas
     expect((screensMesh().metadata as { mergedFrom?: string[] }).mergedFrom).toHaveLength(deck.layout.screens.length);
   });
@@ -298,6 +419,111 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     }
   });
 
+  it("keeps every piece of the PFD's and the ND's text inside its readout box or its page on both axes, and across its scrolling tape or strip", () => {
+    // A demanding state: five-digit altitudes on the tape and in the readout, three-digit speeds, a descent on the
+    // VSI, a heading that puts labels at both ends of the ND's arc. On the F-16's square page the text was sized from
+    // h and the boxes from w: the altitude labels were clipped by 14 px and the readout's digits ran 17 px out of
+    // their box. The text is sized from `pageRoundScale` now; on 440 x 300 that is h, so these decks are unchanged.
+    // A SCROLLING window (a tape, taller than wide; the heading strip, wider than tall) clips its labels where they
+    // scroll off its ends, by design: there only the other axis is held.
+    const context = createRecordingContext();
+    const state = displayStateFromVisual(
+      { ...INITIAL_VISUAL_STATE, airspeed: 257, altitude: 4_580, heading: 90, bank: 0, pitch: 2, verticalSpeed: -15, engineRpm: 90 },
+      deck.airframe,
+    );
+    const slots = displaySlots(deck.layout);
+    drawDisplayAtlas(context, atlasWidth, atlasHeight, slots, state);
+    const pages = slots.filter((slot) => slot.page === "pfd" || slot.page === "nd");
+    const { texts, containers } = textInContainers(context.calls, pages);
+    // every box and window a page draws text into is itself inside that page
+    expect(containers.length, "boxes and windows found").toBeGreaterThan(4);
+    for (const { box, page } of containers) {
+      expect(box.x, "a box or window's left, inside its page").toBeGreaterThanOrEqual(page.x - 1e-6);
+      expect(box.x + box.w, "its right").toBeLessThanOrEqual(page.x + page.w + 1e-6);
+      expect(box.y, "its top").toBeGreaterThanOrEqual(page.y - 1e-6);
+      expect(box.y + box.h, "its bottom").toBeLessThanOrEqual(page.y + page.h + 1e-6);
+    }
+    expect(texts.length, "text found on the PFD and ND pages").toBeGreaterThan(20 * pages.length / 2);
+    expect(texts.some((t) => t.kind === "readout" && /^1[0-9]{4}$/.test(t.text)), "a five-digit altitude readout among them").toBe(true);
+    const isPage = (box: { x: number; y: number; w: number; h: number }) =>
+      pages.some((p) => p.x === box.x && p.y === box.y && p.w === box.w && p.h === box.h);
+    let scrolling = 0;
+    for (const t of texts) {
+      const window = t.kind === "clip" && !isPage(t.box);
+      const scrollsVertically = window && t.box.h > t.box.w;
+      const scrollsAcross = window && t.box.w >= t.box.h;
+      if (window) scrolling += 1;
+      const where = `"${t.text}" in its ${t.kind === "readout" ? "readout box" : window ? "scrolling window" : "page"} (${t.box.x.toFixed(1)}, ${t.box.y.toFixed(1)}, ${t.box.w.toFixed(1)} x ${t.box.h.toFixed(1)})`;
+      if (!scrollsAcross) {
+        expect(t.left, `${where}: left`).toBeGreaterThanOrEqual(t.box.x - 1e-6);
+        expect(t.left + t.width, `${where}: right`).toBeLessThanOrEqual(t.box.x + t.box.w + 1e-6);
+      }
+      if (!scrollsVertically) {
+        expect(t.top, `${where}: top`).toBeGreaterThanOrEqual(t.box.y - 1e-6);
+        expect(t.top + t.height, `${where}: bottom`).toBeLessThanOrEqual(t.box.y + t.box.h + 1e-6);
+      }
+    }
+    expect(scrolling, "tape and strip labels found").toBeGreaterThan(5);
+  });
+
+  it("never lets a heading label on the ND's rose touch the heading box, at any heading, and leaves labels out only where they would", () => {
+    // On the F-16's square page the rose's top runs under the heading box, and a label drawn there showed as a fragment
+    // at a quarter of all headings; such a label is not drawn now. On 440 x 300 no label ever comes near the box, so
+    // those decks draw every label, as before. A 1 degree sweep of all 360, on the page as the ND slot draws it.
+    const nd = displaySlots(deck.layout).find((slot) => slot.page === "nd")!;
+    let fired = 0;
+    for (let heading = 0; heading < 360; heading += 1) {
+      const context = createRecordingContext();
+      drawNd(context, nd.w, nd.h, displayStateFromVisual({ ...INITIAL_VISUAL_STATE, heading }, deck.airframe));
+      const calls = context.calls;
+      const n = (call: RecordedCall, k: number) => call.args[k] as number;
+      // the heading box: the one stroked rect in the page's top fifth
+      const boxes = calls.filter((call) => call.method === "strokeRect" && n(call, 1) < 0.2 * nd.h);
+      expect(boxes.length, `heading ${heading}: the heading box`).toBe(1);
+      const [bx, by, bw, bh] = boxes[0]!.args as [number, number, number, number];
+      // the rose: the largest arc, about own ship; its labels, the centred digits beyond it
+      const points = transformedPoints(calls);
+      const arcs = calls.flatMap((call, i) => (call.method === "arc" ? [{ r: n(call, 2), at: points.find((p) => p.index === i)! }] : []));
+      const rose = arcs.reduce((a, b) => (b.r > a.r ? b : a));
+      let font = 10;
+      let align = "start";
+      const labels: { text: string; delta: number }[] = [];
+      for (const [i, call] of calls.entries()) {
+        if (call.method === "set:font") font = Number(/([0-9.]+)px/.exec(String(call.args[0]))?.[1] ?? 10);
+        if (call.method === "set:textAlign") align = String(call.args[0]);
+        if (call.method !== "fillText" || align !== "center" || !/^[0-9]+$/.test(String(call.args[0]))) continue;
+        const p = points.find((q) => q.index === i)!;
+        if (Math.hypot(p.x - rose.at.x, p.y - rose.at.y) <= rose.r) continue;
+        const text = String(call.args[0]);
+        const half = (0.6 * font * text.length) / 2;
+        const touches = p.x + half > bx && p.x - half < bx + bw && p.y + font / 2 > by && p.y - font / 2 < by + bh;
+        expect(touches, `heading ${heading}: label "${text}" at (${p.x.toFixed(1)}, ${p.y.toFixed(1)}) touches the heading box`).toBe(false);
+        const bearing = (Math.atan2(p.x - rose.at.x, rose.at.y - p.y) * 180) / Math.PI;
+        labels.push({ text, delta: bearing });
+      }
+      // which labels the arc should carry: every multiple of 30 within 60 degrees either side of the heading
+      const expected = [...Array(12).keys()].map((k) => k * 30).filter((tick) => Math.abs(((tick - heading + 540) % 360) - 180) <= 60);
+      const missing = expected.length - labels.length;
+      if (deck.kind === "jet") {
+        expect(missing, `heading ${heading}: labels left out`).toBeLessThanOrEqual(1);
+        if (missing === 1) {
+          fired += 1;
+          // the one left out is the topmost: every label drawn is further from the top than the nearest expected tick
+          const nearestTop = Math.min(...expected.map((tick) => Math.abs(((tick - heading + 540) % 360) - 180)));
+          expect(nearestTop, `heading ${heading}: a label left out far from the top`).toBeLessThanOrEqual(12);
+          for (const label of labels) expect(Math.abs(label.delta), `heading ${heading}: "${label.text}" is not the top one`).toBeGreaterThan(nearestTop + 1);
+        }
+      } else {
+        expect(missing, `heading ${heading}: every label drawn on 440 x 300`).toBe(0);
+      }
+    }
+    // NON-VACUITY: on the square the rule does fire, and not at every heading
+    if (deck.kind === "jet") {
+      expect(fired, "headings at which the F-16's top label is left out").toBeGreaterThan(100);
+      expect(fired).toBeLessThan(300);
+    }
+  });
+
   it("draws each screen the page its NAME says, so a swapped slot table cannot pass", () => {
     // The screens are named for what they are, and that is the only ground truth for which page
     // belongs on which: a pilot's PFD screen must draw the PFD. Pairing screens to RECTANGLES is
@@ -315,16 +541,25 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     }
   });
 
-  it("gives every slot the screens' own shape, not a square, and the atlas the rows its screens need", () => {
-    // Both decks' screens measure 0.22 x 0.15 m on the BUILT mesh. A square slot squashes every
-    // page, whatever its resolution.
+  it("gives every slot the screens' own shape (square only where the screens are) and the atlas the rows its screens need", () => {
+    // The 747's and the Global's screens measure 0.22 x 0.15 m on the BUILT mesh and draw into the
+    // shared 440 x 300; the F-16's are square and draw into 400 x 400 of its own. A slot of the wrong
+    // shape squashes every page, whatever its resolution.
     const shape = deck.screen.width / deck.screen.height;
-    expect(DISPLAY_SLOT_WIDTH / DISPLAY_SLOT_HEIGHT).toBeCloseTo(shape, 2);
-    for (const slot of displaySlots(deck.layout)) expect(slot.w / slot.h).toBeCloseTo(shape, 2);
+    const slotWidth = deck.layout.slotWidth ?? DISPLAY_SLOT_WIDTH;
+    const slotHeight = deck.layout.slotHeight ?? DISPLAY_SLOT_HEIGHT;
+    expect(slotWidth / slotHeight).toBeCloseTo(shape, 2);
+    for (const slot of displaySlots(deck.layout)) {
+      expect(slot.w / slot.h).toBeCloseTo(shape, 2);
+      expect([slot.w, slot.h], "every slot the deck's own size").toEqual([slotWidth, slotHeight]);
+    }
+    // the turbofans keep the shared size: only a deck whose screens are another shape has its own
+    if (deck.kind !== "jet") expect([deck.layout.slotWidth, deck.layout.slotHeight]).toEqual([undefined, undefined]);
+    else expect([slotWidth, slotHeight]).toEqual([400, 400]);
     // the atlas is exactly as big as the deck needs: a size fixed for one deck would waste or clip
     const rows = Math.ceil(deck.layout.screens.length / deck.layout.columns);
-    expect(atlasWidth).toBe(DISPLAY_SLOT_WIDTH * deck.layout.columns);
-    expect(atlasHeight).toBe(DISPLAY_SLOT_HEIGHT * rows);
+    expect(atlasWidth).toBe(slotWidth * deck.layout.columns);
+    expect(atlasHeight).toBe(slotHeight * rows);
     expect(deck.layout.screens.length).toBe(deck.layout.columns * rows);
   });
 });
@@ -424,10 +659,22 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
       expect(canvas.height).toBe(displayAtlasHeight(deck.layout));
       const texture = scene.textures.find((candidate) => candidate.name === deck.layout.name);
       expect(texture!.getSize()).toEqual({ width: displayAtlasWidth(deck.layout), height: displayAtlasHeight(deck.layout) });
+      // MIPMAPPED where the deck's screens minify it (the F-16's, 2.1 texels a pixel: bilinear shimmered under a
+      // quarter-pixel camera shift), trilinear there; plain bilinear on the turbofans' screens, as before
+      const mipmapped = deck.kind === "jet";
+      expect(texture!.getInternalTexture()!.generateMipMaps, "mipmaps").toBe(mipmapped);
+      expect(texture!.samplingMode, "sampling").toBe(mipmapped ? Texture.TRILINEAR_SAMPLINGMODE : Texture.BILINEAR_SAMPLINGMODE);
       // and it is the screens' emissive image, on one mesh, with the flat material left behind
       const screens = scene.getMeshByName(deck.layout.screensMesh)!;
       expect(screens.material!.name).not.toBe(deck.flatMaterial);
-      expect((screens.material as { emissiveTexture?: { name: string } }).emissiveTexture?.name).toBe(deck.layout.name);
+      expect((screens.material as { emissiveTexture?: unknown }).emissiveTexture, "the atlas itself, not a texture of its name").toBe(texture);
+      // and on NOTHING ELSE: a bezel (or any mesh) wearing it smears the whole atlas over its faces. By the texture
+      // OBJECT, on every mesh in the scene.
+      const wearers = scene.meshes.filter((mesh) => {
+        const material = mesh.material as { emissiveTexture?: unknown; albedoTexture?: unknown } | null;
+        return material?.emissiveTexture === texture || material?.albedoTexture === texture;
+      });
+      expect(wearers.map((mesh) => mesh.name), "the meshes that sample the atlas").toEqual([deck.layout.screensMesh]);
     });
   });
 
@@ -614,5 +861,36 @@ describe("the atlas's shape, for layouts no aeroplane has yet", () => {
         expect(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h, `${a.screen} / ${b.screen}`).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * THE OTHER DECKS' ATLASES DO NOT MOVE when a deck with a different slot shape arrives.
+ *
+ * Every call each atlas's painter makes -- method, arguments, paints, in order -- digested at one fixed
+ * flight state, on House-Keeping ac4eafe BEFORE `DisplayLayout` learned a per-deck slot size. A layout
+ * change that fed the wrong slot size to a deck, or moved one slot, changes the digest. The digest sees
+ * the drawing instructions, not pixels; there is no canvas here, and a canvas draws the same pixels
+ * from the same instructions.
+ */
+describe("the 747's and the Global's atlases, pinned before the slot size became per-deck", () => {
+  const PINNED: Readonly<Record<string, string>> = { "747": "0e7fe4d8:2090", Global: "d7144cad:1263" };
+  const digest = (layout: DisplayLayout, airframe: DisplayAirframe): string => {
+    const context = createRecordingContext();
+    const state = displayStateFromVisual(
+      { ...INITIAL_VISUAL_STATE, airspeed: 128.6, altitude: 3_048, heading: 237.5, bank: 18.5, pitch: 4.2, verticalSpeed: 6.1, engineRpm: 88, flaps: 0.5 },
+      airframe,
+    );
+    drawDisplayAtlas(context, displayAtlasWidth(layout), displayAtlasHeight(layout), displaySlots(layout), state);
+    const text = JSON.stringify([displayAtlasWidth(layout), displayAtlasHeight(layout), displaySlots(layout), context.calls]);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return `${hash.toString(16).padStart(8, "0")}:${context.calls.length}`;
+  };
+  it.each(DECKS.filter((deck) => deck.kind !== "jet").map((deck) => [deck.label, deck] as const))("draws the %s's atlas call for call as it did", (label, deck) => {
+    expect(digest(deck.layout, deck.airframe), `${label}: the atlas's drawing instructions`).toBe(PINNED[label]);
   });
 });

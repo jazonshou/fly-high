@@ -12,7 +12,8 @@ import type { DisplayContext2D, DisplayPaint, DisplayState } from "./displayStat
  *  - RESOLUTION-INDEPENDENT. Every length is a fraction of the page's width
  *    or height, laid out for the 747's 0.22 x 0.15 m screens (aspect 1.47,
  *    `AIRLINER_SCREENS`) and sensible on a square. Fonts are
- *    `Math.round(h * factor)px`, and nothing measures text.
+ *    `Math.round(size * factor)px`, where the PFD's and the ND's text size is
+ *    `pageRoundScale` (h on 440 x 300), and nothing measures text.
  *  - FINITE. Any finite state draws finite arguments: every reading is clamped
  *    or wrapped before it becomes a coordinate, tapes iterate by count and not
  *    by accumulating a value, and nothing divides by an engine count of zero.
@@ -125,20 +126,39 @@ function clearPage(ctx: DisplayContext2D, w: number, h: number): void {
 // ---- the PFD's attitude geometry ------------------------------------------------------
 
 /**
+ * The height a 440 x 300 page would have at this width: `h` itself on the 747's and the Global's
+ * 1.47:1 slots, and less than `h` on a squarer one. The PFD's whole attitude instrument -- the
+ * disc, its pitch scale and rungs, the roll scale and the aircraft symbol -- is sized from it rather
+ * than from `h`, so on the F-16's 400 x 400 slot it is the 440 x 300 instrument made smaller, keeping
+ * its room beside the tapes, instead of a disc that grows with the extra height into them. The tapes
+ * span the disc's height, so they shorten with it (and so show more knots and feet per pixel). It is
+ * also the TEXT SIZE of every `text()` and `readoutBox()` call on the PFD and the ND (and so the
+ * readouts' frame width, which `readoutBox` takes from the same argument), and it places the ND's
+ * own ship and rose centre (`drawNd`). (The rose's radius keeps its labels' room by a term of its
+ * own.) On a 440 x 300 slot this is exactly 300 (`440 * 300 / 440` is an exact division), so those
+ * decks draw bit for bit as before.
+ */
+export function pageRoundScale(w: number, h: number): number {
+  return Math.min(h, (w * 300) / 440);
+}
+
+/**
  * Where the PFD's ball sits: centred, a little above the middle, so the roll
  * scale and its index clear the FMA row above (index base at 0.10 h, FMA text
  * to 0.073 h) and the heading box fits under it (ball bottom 0.76 h, box top
  * 0.775 h); its radius; and half the length of the horizon line, which is four
  * radii so that the line still crosses the whole disc at the pitch clamp under
  * any bank (the offset is at most 0.625 h, the disc reaches 0.3 h past that,
- * and 1.2 h covers both with room).
+ * and 1.2 h covers both with room). Those fractions are the 440 x 300 page's; on
+ * a squarer one the radius is from `pageRoundScale`, so the ball is smaller and
+ * the clearances larger (on 400 x 400: ball bottom 0.665 h, horizon 5.9 radii).
  */
 export function pfdGeometry(w: number, h: number): {
   readonly ballCentre: { readonly x: number; readonly y: number };
   readonly ballRadius: number;
   readonly horizonHalfLength: number;
 } {
-  return { ballCentre: { x: 0.5 * w, y: 0.46 * h }, ballRadius: 0.3 * h, horizonHalfLength: 1.2 * h };
+  return { ballCentre: { x: 0.5 * w, y: 0.46 * h }, ballRadius: 0.3 * pageRoundScale(w, h), horizonHalfLength: 1.2 * h };
 }
 
 /** Pixels the horizon moves DOWN the screen for nose-up pitch: one degree is h/40, clamped at 25 degrees so the horizon never leaves the ball. */
@@ -171,22 +191,23 @@ export function attitudeRotationRadians(bankDeg: number): number {
 
 /** The sky, the ground, the horizon and the pitch ladder, inside the ball's disc, under bank and pitch. */
 function drawAttitudeBall(ctx: DisplayContext2D, w: number, h: number, state: DisplayState): void {
+  const s = pageRoundScale(w, h);
   const { ballCentre, ballRadius, horizonHalfLength: L } = pfdGeometry(w, h);
-  const pxPerDeg = h / 40;
+  const pxPerDeg = s / 40;
   ctx.save();
   ctx.beginPath();
   ctx.arc(ballCentre.x, ballCentre.y, ballRadius, 0, 2 * Math.PI);
   ctx.clip();
   ctx.translate(ballCentre.x, ballCentre.y);
   ctx.rotate(attitudeRotationRadians(state.bankDeg));
-  const offset = pfdHorizonOffsetPx(state.pitchDeg, h);
+  const offset = pfdHorizonOffsetPx(state.pitchDeg, s);
   ctx.translate(0, offset);
   ctx.fillStyle = DISPLAY_COLOURS.sky;
   ctx.fillRect(-L, -L, 2 * L, L);
   ctx.fillStyle = DISPLAY_COLOURS.ground;
   ctx.fillRect(-L, 0, 2 * L, L);
   ctx.strokeStyle = DISPLAY_COLOURS.white;
-  ctx.lineWidth = h * 0.006;
+  ctx.lineWidth = s * 0.006;
   line(ctx, -L, 0, L, 0);
   // The ladder: nose-up degrees are ABOVE the horizon (smaller y), so that when the
   // aeroplane pitches up and the horizon drops, the matching rung meets the symbol.
@@ -195,21 +216,21 @@ function drawAttitudeBall(ctx: DisplayContext2D, w: number, h: number, state: Di
   // the radius is wholly outside the disc under any bank: it is not drawn, which
   // keeps its numbers' anchors on the page as well as its ink off the clip.
   const rungs = [-20, -15, -10, -5, 5, 10, 15, 20].filter((deg) => Math.abs(offset - deg * pxPerDeg) <= ballRadius);
-  ctx.lineWidth = h * 0.004;
-  const numberedHalf = 0.12 * h;
+  ctx.lineWidth = s * 0.004;
+  const numberedHalf = 0.12 * s;
   for (const deg of rungs) {
-    const half = deg % 10 === 0 ? numberedHalf : 0.06 * h;
+    const half = deg % 10 === 0 ? numberedHalf : 0.06 * s;
     line(ctx, -half, -deg * pxPerDeg, half, -deg * pxPerDeg);
   }
   // Its numbers stand on blue and brown: a thin black halo keeps them legible at a texture's few pixels a glyph.
-  ctx.font = `${Math.round(h * 0.04)}px monospace`;
+  ctx.font = `${Math.round(s * 0.04)}px monospace`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.strokeStyle = DISPLAY_COLOURS.background;
-  ctx.lineWidth = h * 0.008;
+  ctx.lineWidth = s * 0.008;
   ctx.fillStyle = DISPLAY_COLOURS.white;
   for (const deg of rungs.filter((rung) => rung % 10 === 0)) {
-    for (const x of [-numberedHalf - 0.05 * h, numberedHalf + 0.05 * h]) {
+    for (const x of [-numberedHalf - 0.05 * s, numberedHalf + 0.05 * s]) {
       ctx.strokeText(String(Math.abs(deg)), x, -deg * pxPerDeg);
       ctx.fillText(String(Math.abs(deg)), x, -deg * pxPerDeg);
     }
@@ -223,44 +244,46 @@ function drawAttitudeBall(ctx: DisplayContext2D, w: number, h: number, state: Di
  * left of the fixed index (the same rotation as the horizon, minus the bank).
  */
 function drawRollScale(ctx: DisplayContext2D, w: number, h: number, bankDeg: number): void {
+  const s = pageRoundScale(w, h);
   const { ballCentre, ballRadius } = pfdGeometry(w, h);
   const R = ballRadius * 1.04;
   ctx.save();
   ctx.translate(ballCentre.x, ballCentre.y);
   ctx.strokeStyle = DISPLAY_COLOURS.white;
-  ctx.lineWidth = h * 0.005;
+  ctx.lineWidth = s * 0.005;
   ctx.beginPath();
   ctx.arc(0, 0, R, TWELVE_OCLOCK - 60 * DEG, TWELVE_OCLOCK + 60 * DEG);
   ctx.stroke();
   // no tick at zero: the fixed index IS the zero mark, as on Boeing's scale
   for (const deg of [-60, -45, -30, -20, -10, 10, 20, 30, 45, 60]) {
-    const length = deg % 30 === 0 ? 0.05 * h : 0.03 * h;
+    const length = deg % 30 === 0 ? 0.05 * s : 0.03 * s;
     const a = deg * DEG;
     line(ctx, R * Math.sin(a), -R * Math.cos(a), (R + length) * Math.sin(a), -(R + length) * Math.cos(a));
   }
   ctx.fillStyle = DISPLAY_COLOURS.white;
-  const t = 0.03 * h;
+  const t = 0.03 * s;
   // the fixed index, seated on the arc and pointing down at it
-  triangle(ctx, 0, -R - 0.005 * h, -t, -R - 0.005 * h - 1.4 * t, t, -R - 0.005 * h - 1.4 * t);
+  triangle(ctx, 0, -R - 0.005 * s, -t, -R - 0.005 * s - 1.4 * t, t, -R - 0.005 * s - 1.4 * t);
   ctx.rotate(attitudeRotationRadians(bankDeg));
   // the sky pointer, inside the arc, pointing up at the scale
-  triangle(ctx, 0, -R + 0.01 * h, -t, -R + 0.01 * h + 1.4 * t, t, -R + 0.01 * h + 1.4 * t);
+  triangle(ctx, 0, -R + 0.01 * s, -t, -R + 0.01 * s + 1.4 * t, t, -R + 0.01 * s + 1.4 * t);
   ctx.restore();
 }
 
 /** The aeroplane: two wing bars and a centre square, white-edged black, fixed at the ball's centre. */
 function drawAircraftSymbol(ctx: DisplayContext2D, w: number, h: number): void {
+  const s = pageRoundScale(w, h);
   const { ballCentre: c } = pfdGeometry(w, h);
   ctx.fillStyle = DISPLAY_COLOURS.background;
   ctx.strokeStyle = DISPLAY_COLOURS.white;
-  ctx.lineWidth = h * 0.006;
-  const barLength = 0.12 * h;
-  const barHeight = 0.018 * h;
-  for (const x of [c.x - 0.26 * h, c.x + 0.26 * h - barLength]) {
+  ctx.lineWidth = s * 0.006;
+  const barLength = 0.12 * s;
+  const barHeight = 0.018 * s;
+  for (const x of [c.x - 0.26 * s, c.x + 0.26 * s - barLength]) {
     ctx.fillRect(x, c.y - barHeight / 2, barLength, barHeight);
     ctx.strokeRect(x, c.y - barHeight / 2, barLength, barHeight);
   }
-  const square = 0.024 * h;
+  const square = 0.024 * s;
   ctx.fillRect(c.x - square / 2, c.y - square / 2, square, square);
   ctx.strokeRect(c.x - square / 2, c.y - square / 2, square, square);
 }
@@ -284,7 +307,7 @@ interface TapeSpec {
 }
 
 /** A vertical tape that slides so its centre reads `value`; larger values are higher on the screen. */
-function drawTape(ctx: DisplayContext2D, h: number, spec: TapeSpec): void {
+function drawTape(ctx: DisplayContext2D, h: number, spec: TapeSpec, textSize: number): void {
   const centreY = spec.y + spec.height / 2;
   const pxPerUnit = spec.height / 2 / spec.halfRange;
   const first = Math.ceil((spec.value - spec.halfRange) / spec.tickEvery) * spec.tickEvery;
@@ -309,7 +332,7 @@ function drawTape(ctx: DisplayContext2D, h: number, spec: TapeSpec): void {
     line(ctx, tickX, y, tickX + tickDirection * length, y);
     if (labelled) {
       const labelX = tickX + tickDirection * (length + 0.01 * h);
-      text(ctx, h, 0.04, String(v), labelX, y, DISPLAY_COLOURS.white, spec.ticksOnRight ? "right" : "left");
+      text(ctx, textSize, 0.04, String(v), labelX, y, DISPLAY_COLOURS.white, spec.ticksOnRight ? "right" : "left");
     }
   }
   ctx.restore();
@@ -318,17 +341,17 @@ function drawTape(ctx: DisplayContext2D, h: number, spec: TapeSpec): void {
 function drawAirspeedTape(ctx: DisplayContext2D, w: number, h: number, airspeedKt: number): void {
   const { ballCentre, ballRadius } = pfdGeometry(w, h);
   const tape = { x: 0.05 * w, y: ballCentre.y - ballRadius, width: 0.14 * w, height: 2 * ballRadius };
-  drawTape(ctx, h, { ...tape, value: airspeedKt, halfRange: 60, tickEvery: 10, labelEvery: 20, floor: 0, ticksOnRight: true });
+  drawTape(ctx, h, { ...tape, value: airspeedKt, halfRange: 60, tickEvery: 10, labelEvery: 20, floor: 0, ticksOnRight: true }, pageRoundScale(w, h));
   // The readout box overhangs the tape's inner edge, as Boeing's does, so its pointer edge touches the scale.
-  readoutBox(ctx, h, 0.06, String(Math.round(airspeedKt)), tape.x, ballCentre.y - 0.04 * h, tape.width + 0.02 * w, 0.08 * h);
+  readoutBox(ctx, pageRoundScale(w, h), 0.06, String(Math.round(airspeedKt)), tape.x, ballCentre.y - 0.04 * h, tape.width + 0.02 * w, 0.08 * h);
 }
 
 /** The altitude readout is rounded to 20 feet, Boeing's resolution, and drawn as plain digits: "5000". */
 function drawAltitudeTape(ctx: DisplayContext2D, w: number, h: number, altitudeFt: number): void {
   const { ballCentre, ballRadius } = pfdGeometry(w, h);
   const tape = { x: 0.8 * w, y: ballCentre.y - ballRadius, width: 0.13 * w, height: 2 * ballRadius };
-  drawTape(ctx, h, { ...tape, value: altitudeFt, halfRange: 600, tickEvery: 100, labelEvery: 500, floor: null, ticksOnRight: false });
-  readoutBox(ctx, h, 0.06, String(Math.round(altitudeFt / 20) * 20), tape.x - 0.02 * w, ballCentre.y - 0.04 * h, tape.width + 0.02 * w, 0.08 * h);
+  drawTape(ctx, h, { ...tape, value: altitudeFt, halfRange: 600, tickEvery: 100, labelEvery: 500, floor: null, ticksOnRight: false }, pageRoundScale(w, h));
+  readoutBox(ctx, pageRoundScale(w, h), 0.06, String(Math.round(altitudeFt / 20) * 20), tape.x - 0.02 * w, ballCentre.y - 0.04 * h, tape.width + 0.02 * w, 0.08 * h);
 }
 
 /** Vertical speed: a linear scale to 3,000 feet a minute either way, a needle to the reading, and digits beyond 100. */
@@ -343,7 +366,7 @@ function drawVerticalSpeed(ctx: DisplayContext2D, w: number, h: number, vertical
   for (const fpm of [-2000, -1000, 0, 1000, 2000]) {
     const y = ballCentre.y - fpm * pxPerFpm;
     line(ctx, scaleX, y, scaleX + 0.015 * w, y);
-    if (fpm !== 0) text(ctx, h, 0.035, String(Math.abs(fpm) / 1000), scaleX + 0.03 * w, y, DISPLAY_COLOURS.white);
+    if (fpm !== 0) text(ctx, pageRoundScale(w, h), 0.035, String(Math.abs(fpm) / 1000), scaleX + 0.03 * w, y, DISPLAY_COLOURS.white);
   }
   const needleY = ballCentre.y - clamp(verticalSpeedFpm, -3000, 3000) * pxPerFpm;
   ctx.lineWidth = h * 0.006;
@@ -351,7 +374,7 @@ function drawVerticalSpeed(ctx: DisplayContext2D, w: number, h: number, vertical
   if (Math.abs(verticalSpeedFpm) > 100) {
     const digits = String(Math.round(Math.abs(verticalSpeedFpm) / 50) * 50);
     const y = verticalSpeedFpm > 0 ? ballCentre.y - halfHeight - 0.04 * h : ballCentre.y + halfHeight + 0.04 * h;
-    text(ctx, h, 0.04, digits, scaleX + 0.02 * w, y, DISPLAY_COLOURS.white, "right");
+    text(ctx, pageRoundScale(w, h), 0.04, digits, scaleX + 0.02 * w, y, DISPLAY_COLOURS.white, "right");
   }
 }
 
@@ -376,12 +399,12 @@ function drawHeadingStrip(ctx: DisplayContext2D, w: number, h: number, headingDe
     const x = centreX + headingDelta(heading, tick) * pxPerDeg;
     const labelled = tick % 30 === 0;
     line(ctx, x, top, x, top + (labelled ? 0.035 * h : 0.02 * h));
-    if (labelled) text(ctx, h, 0.04, String(wrap360(tick) / 10), x, top + 0.07 * h, DISPLAY_COLOURS.white);
+    if (labelled) text(ctx, pageRoundScale(w, h), 0.04, String(wrap360(tick) / 10), x, top + 0.07 * h, DISPLAY_COLOURS.white);
   }
   ctx.restore();
   ctx.fillStyle = DISPLAY_COLOURS.white;
   triangle(ctx, centreX, top, centreX - 0.015 * h, top - 0.025 * h, centreX + 0.015 * h, top - 0.025 * h);
-  readoutBox(ctx, h, 0.05, headingText(headingDeg), centreX - 0.06 * w, 0.775 * h, 0.12 * w, 0.065 * h);
+  readoutBox(ctx, pageRoundScale(w, h), 0.05, headingText(headingDeg), centreX - 0.06 * w, 0.775 * h, 0.12 * w, 0.065 * h);
 }
 
 /** The flight-mode annunciator: fixed placeholders until an autopilot exists to report modes. */
@@ -391,7 +414,7 @@ function drawFma(ctx: DisplayContext2D, w: number, h: number): void {
     [0.5, "LNAV"],
     [0.7, "VNAV PTH"],
   ] as const) {
-    text(ctx, h, 0.045, mode, x * w, 0.05 * h, DISPLAY_COLOURS.green);
+    text(ctx, pageRoundScale(w, h), 0.045, mode, x * w, 0.05 * h, DISPLAY_COLOURS.green);
   }
 }
 
@@ -413,14 +436,34 @@ export const drawPfd: DrawPage = (ctx, w, h, state) => {
  * Expanded-arc map mode at a 40 nm range: own ship at the bottom centre, the
  * compass arc 60 degrees either side of the heading with the heading at the
  * top, a dashed ring at half range, and the track straight up. The arc's
- * radius is the smaller of 0.68 h and 0.52 w so the labels beyond it stay on the
- * page on the 747's 1.47 aspect and on a square alike.
+ * radius is the smallest of three: 0.68 h, 0.52 w, and the radius at which the
+ * +-60 degree heading labels' TEXT keeps 20 px from the page's sides (a label is at
+ * most two monospace characters, 0.6 em each, centred 0.055 h beyond the arc). On
+ * the 747's and the Global's 440 x 300 the first is the smallest (204, against 228.8
+ * and 206.1), so they draw as before; on the F-16's 400 x 400 the third is (178.2).
+ * (Sizing the first from `pageRoundScale` as well was tried and changes nothing on
+ * any deck: where the page is square, the labels' term is smaller still.)
  */
 export const drawNd: DrawPage = (ctx, w, h, state) => {
   clearPage(ctx, w, h);
   const heading = wrap360(state.headingDeg);
-  const own = { x: 0.5 * w, y: 0.86 * h };
-  const R = Math.min(0.68 * h, 0.52 * w);
+  // Own ship, and the rose's centre with it, at 0.86 of the page's round scale: 0.86 h on 440 x 300 (258, as
+  // always), and higher on a square page (234.5 on 400 x 400), where the frame at the F-16's lens shows only the top
+  // 63% of the screen: there it puts own ship in view and closes the empty band under the header. The arc's top then
+  // runs under the heading box, so a heading label whose text would touch the box is not drawn (the box shows the
+  // heading); on 440 x 300 no label comes within 3 px of it, so none is ever left out there.
+  const own = { x: 0.5 * w, y: 0.86 * pageRoundScale(w, h) };
+  const headingBox = { x: 0.5 * w - 0.055 * w, y: 0.025 * h, w: 0.11 * w, h: 0.07 * h };
+  const labelFont = Math.round(0.04 * pageRoundScale(w, h));
+  /** Would a rose label's text (0.6 em a character, one em tall about its middle), at (x, y) from own ship, touch the heading box? */
+  const touchesHeadingBox = (label: string, x: number, y: number) => {
+    const half = (0.6 * labelFont * label.length) / 2;
+    return own.x + x + half > headingBox.x && own.x + x - half < headingBox.x + headingBox.w
+      && own.y + y + labelFont / 2 > headingBox.y && own.y + y - labelFont / 2 < headingBox.y + headingBox.h;
+  };
+  const labelHalfWidth = 0.6 * Math.round(0.04 * pageRoundScale(w, h));
+  const labelsKeepClear = (0.5 * w - 20 - labelHalfWidth) / Math.sin(60 * DEG) - 0.055 * h;
+  const R = Math.min(0.68 * h, 0.52 * w, labelsKeepClear);
   ctx.save();
   ctx.translate(own.x, own.y);
   ctx.strokeStyle = DISPLAY_COLOURS.white;
@@ -434,7 +477,7 @@ export const drawNd: DrawPage = (ctx, w, h, state) => {
     ctx.arc(0, 0, R * fraction, TWELVE_OCLOCK - 60 * DEG, TWELVE_OCLOCK + 60 * DEG);
     ctx.stroke();
     const a = -55 * DEG;
-    text(ctx, h, 0.04, range, R * fraction * Math.sin(a) - 0.01 * w, -R * fraction * Math.cos(a), DISPLAY_COLOURS.cyan, "right");
+    text(ctx, pageRoundScale(w, h), 0.04, range, R * fraction * Math.sin(a) - 0.01 * w, -R * fraction * Math.cos(a), DISPLAY_COLOURS.cyan, "right");
   }
   ctx.setLineDash([]);
   const base = Math.round(heading / 10) * 10;
@@ -447,7 +490,10 @@ export const drawNd: DrawPage = (ctx, w, h, state) => {
     const length = labelled ? 0.035 * h : 0.02 * h;
     line(ctx, R * Math.sin(a), -R * Math.cos(a), (R + length) * Math.sin(a), -(R + length) * Math.cos(a));
     if (labelled) {
-      text(ctx, h, 0.04, String(wrap360(tick) / 10), (R + 0.055 * h) * Math.sin(a), -(R + 0.055 * h) * Math.cos(a), DISPLAY_COLOURS.white);
+      const label = String(wrap360(tick) / 10);
+      const x = (R + 0.055 * h) * Math.sin(a);
+      const y = -(R + 0.055 * h) * Math.cos(a);
+      if (!touchesHeadingBox(label, x, y)) text(ctx, pageRoundScale(w, h), 0.04, label, x, y, DISPLAY_COLOURS.white);
     }
   }
   ctx.strokeStyle = DISPLAY_COLOURS.magenta;
@@ -457,16 +503,16 @@ export const drawNd: DrawPage = (ctx, w, h, state) => {
   triangle(ctx, 0, -0.035 * h, -0.025 * h, 0.02 * h, 0.025 * h, 0.02 * h);
   ctx.restore();
   // the heading box at the top, its digits framed, and the pointer under it at the arc's top
-  text(ctx, h, 0.045, "HDG", 0.5 * w - 0.07 * w, 0.06 * h, DISPLAY_COLOURS.cyan, "right");
-  readoutBox(ctx, h, 0.05, headingText(state.headingDeg), 0.5 * w - 0.055 * w, 0.025 * h, 0.11 * w, 0.07 * h);
-  text(ctx, h, 0.045, "MAG", 0.5 * w + 0.07 * w, 0.06 * h, DISPLAY_COLOURS.green, "left");
+  text(ctx, pageRoundScale(w, h), 0.045, "HDG", 0.5 * w - 0.07 * w, 0.06 * h, DISPLAY_COLOURS.cyan, "right");
+  readoutBox(ctx, pageRoundScale(w, h), 0.05, headingText(state.headingDeg), headingBox.x, headingBox.y, headingBox.w, headingBox.h);
+  text(ctx, pageRoundScale(w, h), 0.045, "MAG", 0.5 * w + 0.07 * w, 0.06 * h, DISPLAY_COLOURS.green, "left");
   ctx.fillStyle = DISPLAY_COLOURS.white;
   triangle(ctx, own.x, own.y - R, own.x - 0.015 * h, own.y - R - 0.03 * h, own.x + 0.015 * h, own.y - R - 0.03 * h);
   // ground speed and true airspeed, top left: cyan labels, white values
-  text(ctx, h, 0.045, "GS", 0.02 * w, 0.06 * h, DISPLAY_COLOURS.cyan, "left");
-  text(ctx, h, 0.045, String(Math.round(state.groundSpeedKt)), 0.08 * w, 0.06 * h, DISPLAY_COLOURS.white, "left");
-  text(ctx, h, 0.045, "TAS", 0.2 * w, 0.06 * h, DISPLAY_COLOURS.cyan, "left");
-  text(ctx, h, 0.045, String(Math.round(state.airspeedKt)), 0.28 * w, 0.06 * h, DISPLAY_COLOURS.white, "left");
+  text(ctx, pageRoundScale(w, h), 0.045, "GS", 0.02 * w, 0.06 * h, DISPLAY_COLOURS.cyan, "left");
+  text(ctx, pageRoundScale(w, h), 0.045, String(Math.round(state.groundSpeedKt)), 0.08 * w, 0.06 * h, DISPLAY_COLOURS.white, "left");
+  text(ctx, pageRoundScale(w, h), 0.045, "TAS", 0.2 * w, 0.06 * h, DISPLAY_COLOURS.cyan, "left");
+  text(ctx, pageRoundScale(w, h), 0.045, String(Math.round(state.airspeedKt)), 0.28 * w, 0.06 * h, DISPLAY_COLOURS.white, "left");
 };
 
 // ---- the EICAS's gauges ---------------------------------------------------------------

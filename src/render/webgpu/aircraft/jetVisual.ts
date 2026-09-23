@@ -414,10 +414,16 @@ export function createJet(scene: Scene): AircraftVisual {
     roughness: 0.8,
     metallic: 0.02,
   });
-  // No gauge-face or marking material: the five round dials and their needles are
-  // gone with phase F1 of the cockpit, and nothing else used either. The marking
-  // material outlived them for one pass, glowing at night on no mesh at all; the
-  // MFDs that replace the dials (F2) draw emissive pages of their own.
+  // No marking material: the five round dials and their needles went with phase
+  // F1 of the cockpit, and the marking material outlived them for one pass,
+  // glowing at night on no mesh at all. The MFDs that replace the dials (F2) draw
+  // emissive pages of their own. This instrument face is back for them, as the
+  // screens' flat material where there is no 2D canvas to draw pages on (every
+  // Node test); it is the Global's.
+  const instrumentFace = build.material("jet-instrument-face", 0x050a0d, {
+    roughness: 0.7,
+    metallic: 0.05,
+  });
 
   // THE BLENDED BODY, which is the whole aeroplane. Four regimes down one loft,
   // and the section shape changes in every one of them:
@@ -1112,11 +1118,12 @@ export function createJet(scene: Scene): AircraftVisual {
   // structure. It is a wedge now, built to what the pilot sees: its far edge
   // reads -10.2 degrees straight ahead, over the nose probe, and its near edge
   // -16.0, on the matte glareshield material. The board under it has no dials any
-  // more (phase F2 puts the MFDs and the UFC on the coaming's near face, the
-  // only part of the panel the pilot sees), and the HUD's combiner
-  // frame stands on the coaming, cockpit-only: invisible from every other
-  // camera and never a shadow caster (`configureCockpitOnlyParts`).
-  const cockpit = buildJetCockpit(build, root, { interior });
+  // more: phase F2's two MFDs stand proud of the coaming's near face instead, the
+  // only part of the panel the pilot sees (the UFC between them is not built).
+  // The HUD's combiner frame stands on the coaming. The frame and the MFDs'
+  // bezels and screens are cockpit-only: invisible from every other camera and
+  // never shadow casters (`configureCockpitOnlyParts`).
+  const cockpit = buildJetCockpit(build, root, { interior, instrumentFace });
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
 
@@ -1490,6 +1497,7 @@ export function createJet(scene: Scene): AircraftVisual {
   };
   configureCockpitLayers(rig.cockpitParts);
   let disposed = false;
+  let cockpitViewOn = false;
   return {
     kind: "jet",
     handedness: "right",
@@ -1498,11 +1506,13 @@ export function createJet(scene: Scene): AircraftVisual {
     propeller,
     cockpitParts: rig.cockpitParts,
     cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
+    displaysLive: cockpit.displaysLive,
     meshes: build.meshes,
     update(state, deltaSeconds) {
       if (disposed) return;
       const delta = safeAircraftAnimationDelta(deltaSeconds);
       const pose = resolveAircraftAnimationPose("jet", state);
+      if (cockpitViewOn) cockpit.update(state, delta);
       // Phase-anchored to simulation time rather than accumulated per frame, so
       // an identically-timed frame is identical across capture runs.
       propeller.rotation.x = pose.rotorRadiansPerSecond * state.simulationTime;
@@ -1545,6 +1555,9 @@ export function createJet(scene: Scene): AircraftVisual {
     },
     setCockpitView(enabled) {
       if (disposed) return;
+      // on the way IN, the MFDs redraw on the first frame: their clock stopped when the pilot left
+      if (enabled && !cockpitViewOn) cockpit.invalidateDisplays();
+      cockpitViewOn = enabled;
       glass.alpha = enabled ? CANOPY_ALPHA_COCKPIT : CANOPY_ALPHA_EXTERIOR;
       setCockpitVisibility(rig, scene, enabled);
     },

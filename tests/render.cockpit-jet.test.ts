@@ -13,22 +13,40 @@ import { COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import {
   JET_COAMING,
+  JET_DISPLAY_AIRFRAME,
   JET_HUD_FRAME,
+  JET_MFD,
   JET_PANEL,
   jetCoamingEdgeElevationDegrees,
   jetCoamingHalfWidth,
   jetCoamingTopY,
   jetHudFrameAngles,
   jetHudFrameFootY,
+  jetMfdFrame,
+  jetMfdPlacements,
   jetPanelTopY,
 } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
+import {
+  AIRLINER_DISPLAYS,
+  JET_DISPLAYS,
+  type DisplayLayout,
+  displayAtlasHeight,
+  displayAtlasWidth,
+  displaySlots,
+} from "../src/render/webgpu/aircraft/cockpit/displays/displayAtlas";
+import { drawDisplayAtlas, pageRoundScale } from "../src/render/webgpu/aircraft/cockpit/displays/displayPages";
+import { displayStateFromVisual, type DisplayAirframe } from "../src/render/webgpu/aircraft/cockpit/displays/displayStateFromVisual";
+import { AIRLINER_DISPLAY_AIRFRAME } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
+import { INITIAL_VISUAL_STATE } from "../src/game/types";
+import { createRecordingContext, transformedPoints, type RecordedCall } from "./support/recordingContext";
 import { aircraftCameraLayerMask, type AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { AIRCRAFT_KINDS } from "../src/sim";
 import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 
 /**
- * The F-16's cockpit, phase F1, held to the angles it was built to and to the
- * airframe it stands in.
+ * The F-16's cockpit, phases F1 (the coaming, the board, the HUD frame) and F2
+ * (the two MFDs), held to the angles it was built to and to the airframe it
+ * stands in.
  *
  * The EYE is the catalogue's (2.22, 0.94, 0), which this phase does not move.
  * Everything is asserted as angles from it at the 75 degree lens, measured on the
@@ -148,7 +166,6 @@ function frameBlock(which: (typeof FRAME_ORDER)[number]): Vector3[] {
   const k = FRAME_ORDER.indexOf(which);
   return vertices.slice(k * FRAME_VERTICES, (k + 1) * FRAME_VERTICES);
 }
-const mean = (vs: readonly Vector3[], axis: "x" | "y" | "z") => vs.reduce((s, v) => s + v[axis], 0) / vs.length;
 /** The bounding box's centre along an axis: a capped cylinder's axis, where the vertex mean is pulled toward its seam. */
 const centre = (vs: readonly Vector3[], axis: "x" | "y" | "z") => (Math.min(...vs.map((v) => v[axis])) + Math.max(...vs.map((v) => v[axis]))) / 2;
 
@@ -453,8 +470,8 @@ describe("the coaming", () => {
 });
 
 describe("the HUD frame", () => {
-  it("is the one cockpit-only mesh, three struts merged on the shared matte glareshield material, and there is no glass plate", () => {
-    expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame"]);
+  it("is one of the three cockpit-only meshes (with the MFDs' bezels and screens), three struts merged on the shared matte glareshield material, and there is no glass plate", () => {
+    expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-mfd-bezels", "jet-screens"]);
     const frame = named("jet-hud-frame");
     expect((frame.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(FRAME_SOURCES);
     expect(frame.getTotalVertices()).toBe(FRAME_VERTICES * 3);
@@ -633,7 +650,7 @@ describe("the HUD frame", () => {
     const visual = createWebGpuAircraft(freshScene, "jet");
     try {
       const parts = visual.cockpitOnlyParts ?? [];
-      expect(parts.map((part) => part.name)).toEqual(["jet-hud-frame"]);
+      expect(parts.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-mfd-bezels", "jet-screens"]);
       for (const part of parts) expect(part.isVisible, `${part.name} outside cockpit view`).toBe(false);
       visual.setCockpitView(true);
       for (const part of parts) expect(part.isVisible, `${part.name} in cockpit view`).toBe(true);
@@ -699,7 +716,533 @@ describe("the panel board", () => {
       const from = (mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [];
       expect(from.filter((name) => /-gauge$|-needle$/.test(name)), `${mesh.name} still carries an old gauge`).toEqual([]);
     }
-    expect(scene.materials.map((m) => m.name)).not.toContain("jet-instrument-face");
+    // the instrument-face material is back for F2, on the MFD screens alone: their flat face where there is
+    // no 2D canvas to draw pages on (here). No dial wears it.
+    const onFace = scene.meshes.filter((mesh) => mesh.material?.name === "jet-instrument-face").map((mesh) => mesh.name);
+    expect(onFace).toEqual(["jet-screens"]);
+  });
+});
+
+describe("the MFDs", () => {
+  /**
+   * What the eye reads straight down each MFD's centre line, measured on the built mesh by scanning the
+   * first surface from the eye in 0.01 degree steps. Pinned to +-0.2.
+   */
+  const READS = { bezelTop: -16.23, screenTop: -17.7, screenBottom: -25.62, bezelBottom: -27.88 };
+  /**
+   * Of the screen's height as the eye reads it, how much is inside the 16:9 frame at the MFDs' azimuth: 63%, the
+   * screen lifted 6 mm in its bezel (centred it was 57%, under the 60% the brief set).
+   */
+  const IN_FRAME = 0.63;
+  const sides = [["port", -1], ["starboard", 1]] as const;
+  const screenVertices = (side: number) => worldVertices(named("jet-screens")).filter((v) => Math.sign(v.z) === side);
+  const centreAzimuth = (side: number) => {
+    const vs = screenVertices(side);
+    const c = vs.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / vs.length);
+    return azel(c).az;
+  };
+  /** Down one azimuth: the first and last elevation at which each mesh is the first surface. */
+  function scan(az: number): Map<string, [number, number]> {
+    const seen = new Map<string, [number, number]>();
+    for (let e = -12; e >= -32; e -= 0.01) {
+      const name = firstHit(az, e)?.name ?? "-";
+      const range = seen.get(name);
+      if (!range) seen.set(name, [e, e]);
+      else range[1] = e;
+    }
+    return seen;
+  }
+
+  it("stand on the coaming's near face, tilted back 15 degrees about the top, 1 mm off the face and under the 0.735 ceiling", () => {
+    const bezels = worldVertices(named("jet-mfd-bezels"));
+    const screens = worldVertices(named("jet-screens"));
+    expect(bezels).toHaveLength(48);
+    expect(screens).toHaveLength(48);
+    const all = [...bezels, ...screens];
+    // THE CEILING: nothing of the MFDs above 0.735, 4 mm under the coaming's top surface where it starts (its built
+    // near top edge, 0.739) -- against the design's number and the built coaming, not the builder's own constant
+    const coamingTop = Math.max(...worldVertices(named("jet-glare-shield")).map((v) => v.y));
+    expect(coamingTop).toBeCloseTo(0.739, 6);
+    expect(Math.max(...all.map((v) => v.y)), "the highest point, the bezels' front top edge").toBeCloseTo(0.735, 6);
+    expect(coamingTop - Math.max(...all.map((v) => v.y)), "under the coaming's top surface").toBeGreaterThan(0.0035);
+    // 1 mm off the face plane (x 2.92), nothing behind it: no coincident faces with the near face or the board
+    expect(Math.max(...bezels.map((v) => v.x)), "the bezels' back top edge").toBeCloseTo(JET_PANEL.faceX - 0.001, 6);
+    expect(Math.max(...screens.map((v) => v.x)), "the screens are in front of the bezels").toBeLessThan(JET_PANEL.faceX - 0.001);
+    // the bottom stands out toward the pilot: the bezels' back bottom edge is 0.15 sin 15 = 3.9 cm proud
+    const lowest = Math.min(...bezels.map((v) => v.y));
+    const bottomBack = bezels.filter((v) => Math.abs(v.y - lowest) < 0.006);
+    expect(JET_PANEL.faceX - Math.max(...bottomBack.map((v) => v.x)), "the bottom stands proud").toBeCloseTo(0.001 + 0.15 * Math.sin((15 * Math.PI) / 180), 3);
+    // THE TILT, from the built faces' own normals: the pilot-facing faces point 15 degrees UP, toward the eye
+    const mesh = named("jet-screens");
+    const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const facing: number[] = [];
+    for (let i = 0; i < normals.length; i += 3) if (normals[i]! < -0.9) facing.push((Math.atan2(normals[i + 1]!, -normals[i]!) * 180) / Math.PI);
+    expect(facing.length, "the two screens' pilot-facing corners").toBe(8);
+    for (const angle of facing) expect(angle, "the face's normal above horizontal").toBeCloseTo(15, 3);
+    // THE BEZELS' MATERIAL: their own dark grey, the type's, neither the interior grey (on which they read as light
+    // slabs, 79/255 against the coaming face's 20.5) nor the glareshield. Albedo 0x10 a channel: the lit face reads
+    // 41, twice the coaming's face (measured live, one frozen pose). One instance, worn by the bezels alone.
+    const bezelMaterial = named("jet-mfd-bezels").material as PBRMaterial;
+    expect(bezelMaterial.name).toBe("jet-mfd-bezel");
+    expect(bezelMaterial, "not the interior grey").not.toBe(named("jet-instrument-panel").material);
+    expect(bezelMaterial, "not the glareshield").not.toBe(named("jet-glare-shield").material);
+    for (const channel of ["r", "g", "b"] as const) expect(bezelMaterial.albedoColor[channel], `albedo ${channel}`).toBeCloseTo(0x10 / 255, 6);
+    expect(bezelMaterial.roughness).toBe(0.8);
+    expect(scene.meshes.filter((mesh) => mesh.material === bezelMaterial).map((mesh) => mesh.name), "its only wearer").toEqual(["jet-mfd-bezels"]);
+    expect(scene.materials.filter((material) => material.name === "jet-mfd-bezel"), "one instance").toHaveLength(1);
+    // square, centred at z +-0.17, 0.102 of screen in a 0.15 bezel; the 0.19 between them is the UFC's
+    for (const [name, side] of sides) {
+      const own = (vs: Vector3[]) => vs.filter((v) => Math.sign(v.z) === side);
+      const zs = (vs: Vector3[]): [number, number] => [Math.min(...vs.map((v) => v.z)), Math.max(...vs.map((v) => v.z))];
+      const [b0, b1] = zs(own(bezels));
+      const [s0, s1] = zs(own(screens));
+      expect(b1 - b0, `${name} bezel width`).toBeCloseTo(0.15, 6);
+      expect(s1 - s0, `${name} screen width`).toBeCloseTo(0.102, 6);
+      expect((b0 + b1) / 2, `${name} centre line`).toBeCloseTo(side * 0.17, 6);
+      expect((s0 + s1) / 2, `${name} screen centred across`).toBeCloseTo(side * 0.17, 6);
+    }
+    expect(Math.min(...bezels.filter((v) => v.z > 0).map((v) => v.z)) * 2, "the gap between the bezels").toBeCloseTo(0.19, 6);
+    // the screens' front stands 1 mm proud of the bezels' front, along the face's normal
+    const { out } = jetMfdFrame();
+    const front = (vs: Vector3[]) => Math.min(...vs.map((v) => Vector3.Dot(v, out.scale(-1))));
+    // (against the design's 1 mm, not the builder's constant: a builder set to 0 would agree with itself)
+    expect(front(bezels) - front(screens), "screen 1 mm proud of the bezel: no coincident faces").toBeCloseTo(0.001, 6);
+  });
+
+  it("are the first surface over every screen's face: nine points each, and with the screen gone the same rays go on to the bezel, and with both gone to the near face or the board", () => {
+    const { up, out } = jetMfdFrame();
+    const across = new Vector3(0, 0, 1);
+    for (const { name, centre } of jetMfdPlacements()) {
+      const faceCentre = centre.add(out.scale(JET_MFD.screenThickness / 2));
+      for (const a of [-0.35, 0, 0.35]) {
+        for (const b of [-0.35, 0, 0.35]) {
+          const target = faceCentre.add(up.scale(a * JET_MFD.screen)).add(across.scale(b * JET_MFD.screen));
+          const toward = target.subtract(EYE_POINT);
+          const distance = toward.length();
+          const ray = new Ray(EYE_POINT, toward.normalize(), 60);
+          const hit = scene.pickWithRay(ray, drawnByCockpitCamera);
+          expect(hit?.pickedMesh?.name, `${name} (${a}, ${b})`).toBe("jet-screens");
+          expect(hit!.distance, `${name} (${a}, ${b}): at the face`).toBeCloseTo(distance, 3);
+          // THE CONTROL, in two steps: the screens gone, the ray meets the bezel behind; both gone, the coaming's
+          // near face or the board, further still. The rays are not passing through empty space by luck.
+          const screens = named("jet-screens");
+          const bezels = named("jet-mfd-bezels");
+          screens.isVisible = false;
+          try {
+            const behind = scene.pickWithRay(ray, drawnByCockpitCamera);
+            expect(behind?.pickedMesh?.name, `${name} (${a}, ${b}) without the screen`).toBe("jet-mfd-bezels");
+            expect(behind!.distance).toBeGreaterThan(hit!.distance);
+            bezels.isVisible = false;
+            const panel = scene.pickWithRay(ray, drawnByCockpitCamera);
+            expect(["jet-glare-shield", "jet-instrument-panel"], `${name} (${a}, ${b}) without the MFD`).toContain(panel?.pickedMesh?.name);
+            expect(panel!.distance).toBeGreaterThan(behind!.distance);
+          } finally {
+            screens.isVisible = true;
+            bezels.isVisible = true;
+          }
+        }
+      }
+    }
+  });
+
+  it("read, straight down each centre line (az +-14.4), bezel top -16.2, screen top -17.7 and bottom -25.6, bezel bottom -27.9: the frame's bottom (-22.7 there) cuts the screen, leaving 63% of it in view", () => {
+    for (const [name, side] of sides) {
+      const az = centreAzimuth(side);
+      expect(Math.abs(az), `${name}: centre azimuth`).toBeGreaterThan(14.2);
+      expect(Math.abs(az)).toBeLessThan(14.7);
+      const seen = scan(az);
+      const bezel = seen.get("jet-mfd-bezels");
+      const screen = seen.get("jet-screens");
+      expect(bezel && screen, `${name}: both found`).toBeTruthy();
+      expect(Math.abs(bezel![0] - READS.bezelTop), `${name}: bezel top ${bezel![0].toFixed(2)}`).toBeLessThan(0.2);
+      expect(Math.abs(screen![0] - READS.screenTop), `${name}: screen top ${screen![0].toFixed(2)}`).toBeLessThan(0.2);
+      expect(Math.abs(screen![1] - READS.screenBottom), `${name}: screen bottom ${screen![1].toFixed(2)}`).toBeLessThan(0.2);
+      expect(Math.abs(bezel![1] - READS.bezelBottom), `${name}: bezel bottom ${bezel![1].toFixed(2)}`).toBeLessThan(0.2);
+      // above the MFD, the near face; below it, the board: the order down the line
+      expect(seen.get("jet-glare-shield")![1], `${name}: the near face ends where the bezel starts`).toBeGreaterThan(bezel![0]);
+      expect(seen.get("jet-instrument-panel")![0], `${name}: the board starts under the bezel`).toBeLessThan(bezel![1]);
+      // THE FRAME: the screen's top is in it and the bezel's bottom is not, at the frame's bottom HERE (a rectangle's
+      // bottom edge is -23.35 only straight ahead)
+      const bottom = -frameLimit(az);
+      expect(bottom).toBeGreaterThan(-22.8);
+      expect(bottom).toBeLessThan(-22.6);
+      expect(screen![0], `${name}: screen top inside the frame`).toBeGreaterThan(bottom);
+      expect(bezel![1], `${name}: bezel bottom below the frame`).toBeLessThan(bottom);
+      const inFrame = (screen![0] - Math.max(bottom, screen![1])) / (screen![0] - screen![1]);
+      expect(Math.abs(inFrame - IN_FRAME), `${name}: ${(inFrame * 100).toFixed(1)}% of the screen in frame`).toBeLessThan(0.01);
+      expect(inFrame, `${name}: the brief's bar`).toBeGreaterThanOrEqual(0.6);
+    }
+  });
+
+  it("sample an 800 x 400 atlas, two 400 x 400 slots, the PFD on the pilot's LEFT screen and the map on his right", () => {
+    expect([displayAtlasWidth(JET_DISPLAYS), displayAtlasHeight(JET_DISPLAYS)]).toEqual([800, 400]);
+    expect(displaySlots(JET_DISPLAYS).map(({ screen, page, x, y, w, h }) => [screen, page, x, y, w, h])).toEqual([
+      ["port", "pfd", 0, 0, 400, 400],
+      ["starboard", "nd", 400, 0, 400, 400],
+    ]);
+    expect(JET_DISPLAY_AIRFRAME.engineCount).toBe(1);
+    // THE PFD IS ON THE PILOT'S LEFT, from what the built mesh samples: every pilot-facing vertex whose u is in the
+    // PFD's slot is at negative z (port), every one in the map's at positive z. (The placements' names alone agree
+    // with themselves whichever side "port" is built on.)
+    const mesh = named("jet-screens");
+    const world = worldVertices(mesh);
+    const uvs = mesh.getVerticesData(VertexBuffer.UVKind)!;
+    const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const pfd = displaySlots(JET_DISPLAYS).find((slot) => slot.page === "pfd")!;
+    // each pilot-facing face as a whole (the two faces share u = 0.5 along their inner edges): its mean u says which
+    // slot it samples, its z which side it is on
+    const faces: Record<"port" | "starboard", number[]> = { port: [], starboard: [] };
+    for (let i = 0; i < world.length; i += 1) {
+      if (normals[i * 3]! > -0.9) continue;
+      faces[world[i]!.z < 0 ? "port" : "starboard"].push(uvs[i * 2]! * displayAtlasWidth(JET_DISPLAYS));
+    }
+    expect([faces.port.length, faces.starboard.length], "the two faces' corners").toEqual([4, 4]);
+    const meanU = (us: number[]) => us.reduce((sum, u) => sum + u, 0) / us.length;
+    expect(meanU(faces.port), "the pilot's LEFT screen samples the PFD's slot").toBeCloseTo(pfd.x + pfd.w / 2, 6);
+    expect(Math.abs(meanU(faces.starboard) - (pfd.x + pfd.w / 2)), "and his right screen does not").toBeGreaterThan(pfd.w / 2);
+    // (u AND v the right way up and the right way round, per screen, is held with the other decks in
+    // render.cockpit-displays.test.ts, measured off the merged mesh)
+  });
+
+  /**
+   * ROOM ON A SQUARE PAGE. The pages were laid out for 440 x 300; drawn into 400 x 400 with the disc sized from `h`,
+   * the PFD's altitude readout overlapped the attitude disc by 8 px and the ND's +-60 degree labels ran past the
+   * slot's edges. The PFD's attitude instrument is sized from the slot's shape now (`pageRoundScale`) and the ND's
+   * rose keeps its labels' text 20 px in, and this holds the room they have, from the recorded instructions: the
+   * disc >= 20 px from every tape and readout box, and every piece of the ND's text wholly inside its slot at a
+   * heading that puts labels at both ends of the arc.
+   */
+  it("gives the PFD's disc 20 px of room beside its tapes and boxes, and keeps all of the ND's text inside its slot, in 400 x 400", () => {
+    const context = createRecordingContext();
+    // heading 90 puts a labelled tick at each end of the ND's +-60 degree arc (30 and 150)
+    const state = displayStateFromVisual({ ...INITIAL_VISUAL_STATE, airspeed: 180, altitude: 1_500, heading: 90, bank: 0, pitch: 0 }, JET_DISPLAY_AIRFRAME);
+    drawDisplayAtlas(context, displayAtlasWidth(JET_DISPLAYS), displayAtlasHeight(JET_DISPLAYS), displaySlots(JET_DISPLAYS), state);
+    const calls = context.calls;
+    const n = (call: RecordedCall, i: number) => call.args[i] as number;
+    // the disc: the clip arc centred at (200, 184) in the port slot
+    const discAt = calls.findIndex((call, i) => call.method === "arc" && n(call, 0) === 200 && n(call, 1) === 184 && calls[i + 1]?.method === "clip");
+    expect(discAt, "the attitude disc's clip arc").toBeGreaterThan(0);
+    const disc = { x: 200, y: 184, r: n(calls[discAt]!, 2) };
+    /** From the disc's rim to a rectangle: negative when they overlap. */
+    const gap = (x: number, y: number, w: number, h: number) =>
+      Math.hypot(Math.max(x - disc.x, 0, disc.x - (x + w)), Math.max(y - disc.y, 0, disc.y - (y + h))) - disc.r;
+    // THE CONTROL on the distance itself: a box across the rim reads negative, one 30 px off reads 30
+    expect(gap(disc.x + disc.r - 5, disc.y - 5, 20, 10)).toBeLessThan(0);
+    expect(gap(disc.x + disc.r + 30, disc.y - 5, 20, 10)).toBeCloseTo(30, 9);
+    // the tapes (a rect clipped to at once) and the readout boxes (a filled-and-stroked rect with its digits after it)
+    const tapes = calls.flatMap((call, i) => call.method === "rect" && calls[i + 1]?.method === "clip" && n(call, 2) < 400 && n(call, 0) < 400 && i > discAt ? [call] : [])
+      .filter((call) => !(n(call, 0) === 0 && n(call, 1) === 0 && n(call, 2) === 400 && n(call, 3) === 400));
+    const boxes = calls.flatMap((call, i) => call.method === "strokeRect" && n(call, 0) < 400 && calls.slice(i + 1, i + 6).some((next) => next.method === "fillText") ? [call] : []);
+    const beside = [...tapes, ...boxes].filter((call) => {
+      const y0 = n(call, 1);
+      const y1 = y0 + n(call, 3);
+      return y1 > disc.y - disc.r && y0 < disc.y + disc.r; // level with the disc: the tapes and the speed and altitude boxes
+    });
+    expect(beside.length, "the two tapes and the two readout boxes level with the disc").toBe(4);
+    for (const call of beside) {
+      expect(gap(n(call, 0), n(call, 1), n(call, 2), n(call, 3)), `${call.method} at x ${n(call, 0).toFixed(1)}: room beside the disc`).toBeGreaterThanOrEqual(20);
+    }
+    // EVERY PIECE OF TEXT ON BOTH PAGES, attributed to the slot whose bracket DREW it (drawDisplayAtlas clips each page
+    // to its slot between a save and its restore), wholly inside that slot on BOTH axes: text measured at a monospace
+    // 0.6 em a character, its height from its baseline. Sorting text by where it lands instead passed text anchored off
+    // a slot's edge (it simply counted for no slot). And the PFD's tapes inside its slot. And the rose's labels (the
+    // heading numbers on the arc, anchored beyond it from own ship at (600, 234.5)) with their TEXT >= 20 px from the
+    // slot's sides, anchors too: at +-60 degrees the text ends 20.0 px ("15") and 23.3 px ("3") from the sides, where
+    // the 747's 440 x 300 gives 21.8 and 25.4. (Before the rose's radius took the labels' room into account it was
+    // 10.7 and 15.5: the anchors were 20 px in, the text was not.)
+    const slots = displaySlots(JET_DISPLAYS);
+    let depth = 0;
+    let awaitingSlot = false;
+    let slot: { x: number; y: number; w: number; h: number; page: string } | null = null;
+    let font = 10;
+    let align: string = "start";
+    let baseline: string = "alphabetic";
+    const texts: Record<string, number> = { pfd: 0, nd: 0 };
+    const roseLabels: string[] = [];
+    let tapesInside = 0;
+    const points = transformedPoints(calls);
+    for (const [i, call] of calls.entries()) {
+      if (call.method === "save") {
+        if (depth === 0) awaitingSlot = true;
+        depth += 1;
+      } else if (call.method === "restore") {
+        depth -= 1;
+        if (depth === 0) slot = null;
+      } else if (call.method === "rect" && awaitingSlot) {
+        const [x, y, w, h] = call.args as number[];
+        slot = { ...slots.find((candidate) => candidate.x === x && candidate.y === y && candidate.w === w && candidate.h === h)! };
+        expect(slot.page, `the slot bracket at call ${i}`).toBeDefined();
+        awaitingSlot = false;
+      } else if (call.method === "rect" && slot?.page === "pfd" && calls[i + 1]?.method === "clip") {
+        // a tape or the heading strip's window (each clipped to at once), under no transform: inside the slot
+        const [x, y, w, h] = call.args as number[];
+        expect(x!, "a clipped window's left").toBeGreaterThanOrEqual(0);
+        expect(x! + w!, "a clipped window's right").toBeLessThanOrEqual(slot.w);
+        expect(y!, "a clipped window's top").toBeGreaterThanOrEqual(0);
+        expect(y! + h!, "a clipped window's bottom").toBeLessThanOrEqual(slot.h + 1e-9);
+        tapesInside += 1;
+      }
+      if (call.method === "set:font") font = Number(/([0-9.]+)px/.exec(String(call.args[0]))?.[1] ?? 10);
+      if (call.method === "set:textAlign") align = String(call.args[0]);
+      if (call.method === "set:textBaseline") baseline = String(call.args[0]);
+      if (call.method !== "fillText") continue;
+      expect(slot, `text "${String(call.args[0])}" drawn outside any slot's bracket`).not.toBeNull();
+      const point = points.find((p) => p.index === i)!;
+      const text = String(call.args[0]);
+      const width = 0.6 * font * text.length;
+      const left = align === "center" ? point.x - width / 2 : align === "right" || align === "end" ? point.x - width : point.x;
+      const top = baseline === "middle" ? point.y - font / 2 : baseline === "top" || baseline === "hanging" ? point.y : baseline === "bottom" ? point.y - font : point.y - 0.8 * font;
+      const where = `${slot!.page} "${text}" at (${point.x.toFixed(1)}, ${point.y.toFixed(1)})`;
+      expect(left, `${where}: its left end`).toBeGreaterThanOrEqual(slot!.x);
+      expect(left + width, `${where}: its right end`).toBeLessThanOrEqual(slot!.x + slot!.w);
+      expect(top, `${where}: its top`).toBeGreaterThanOrEqual(slot!.y);
+      expect(top + font, `${where}: its bottom`).toBeLessThanOrEqual(slot!.y + slot!.h);
+      texts[slot!.page] = (texts[slot!.page] ?? 0) + 1;
+      const fromOwnShip = Math.hypot(point.x - 600, point.y - 0.86 * pageRoundScale(400, 400));
+      if (slot!.page === "nd" && /^[0-9]+$/.test(text) && align === "center" && fromOwnShip > 150) {
+        roseLabels.push(text);
+        expect(Math.min(point.x - 400, 800 - point.x), `rose label "${text}": its anchor from the slot's sides`).toBeGreaterThanOrEqual(20);
+        expect(Math.min(left - 400, 800 - (left + width)), `rose label "${text}": its text from the slot's sides`).toBeGreaterThanOrEqual(20 - 1e-6);
+      }
+    }
+    // at heading 90 the arc carries 3, 6, 9, 12 and 15; "9", at its top, would touch the heading box and is left out
+    expect(roseLabels.sort(), "the rose's labels, both ends of the arc among them").toEqual(["12", "15", "3", "6"]);
+    expect(texts.nd, "the ND's text found").toBeGreaterThan(8);
+    expect(texts.pfd, "the PFD's text found").toBeGreaterThan(8);
+    expect(tapesInside, "the PFD's two tapes and its heading strip's window found").toBe(3);
+  });
+
+  /**
+   * WHAT OF THE MAP THE PILOT SEES. The frame at this lens shows only the top of each MFD, so on the square page the
+   * ND's own ship and the rose's centre stand at 0.86 of the page's round scale (234.5 of 400), not 0.86 h (344),
+   * which was below the frame. The rows in frame are DERIVED here, from the built screen and the frame's bottom at its
+   * azimuth: where the ray at the frame's bottom crosses the screen's face, as a fraction of the way down it.
+   */
+  it("puts the ND's own ship and the rose's centre in the rows of the page the frame shows, and keeps HDG 10 px from the TAS value", () => {
+    // the rows in frame, from the built mesh: the starboard screen's pilot-facing face, its top and bottom edges
+    const mesh = named("jet-screens");
+    const world = worldVertices(mesh);
+    const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const face = world.filter((v, i) => normals[i * 3]! < -0.9 && v.z > 0);
+    expect(face).toHaveLength(4);
+    const byHeight = [...face].sort((a, b) => a.y - b.y);
+    const bottomEdge = byHeight[0]!.add(byHeight[1]!).scale(0.5);
+    const topEdge = byHeight[2]!.add(byHeight[3]!).scale(0.5);
+    const middle = topEdge.add(bottomEdge).scale(0.5);
+    const az = azel(middle).az;
+    const bottom = -frameLimit(az);
+    const { out } = jetMfdFrame();
+    const ray = direction(az, bottom);
+    const hit = EYE_POINT.add(ray.scale(Vector3.Dot(middle.subtract(EYE_POINT), out) / Vector3.Dot(ray, out)));
+    const down = bottomEdge.subtract(topEdge);
+    const fraction = Vector3.Dot(hit.subtract(topEdge), down) / down.lengthSquared();
+    const rowsInFrame = fraction * displaySlots(JET_DISPLAYS)[1]!.h;
+    expect(fraction, "the share of the screen, top down, in frame").toBeGreaterThan(0.6);
+    expect(fraction).toBeLessThan(0.65);
+    // the ND as drawn: own ship is the triangle drawn about the rose's centre, the rose the largest arc centred there
+    const context = createRecordingContext();
+    const state = displayStateFromVisual({ ...INITIAL_VISUAL_STATE, airspeed: 257, altitude: 1_500, heading: 90 }, JET_DISPLAY_AIRFRAME);
+    drawDisplayAtlas(context, displayAtlasWidth(JET_DISPLAYS), displayAtlasHeight(JET_DISPLAYS), displaySlots(JET_DISPLAYS), state);
+    const points = transformedPoints(context.calls);
+    const arcs = points.filter((p) => p.method === "arc" && p.x === 600);
+    const centreY = arcs[0]!.y;
+    for (const arc of arcs) expect(arc.y, "every rose arc about one centre").toBeCloseTo(centreY, 9);
+    // own ship: the FILLED TRIANGLE (beginPath, moveTo, lineTo, lineTo, closePath, fill) whose centre is nearest the
+    // rose's; all three of its corners, however far one of them strays (a proximity window around the centre dropped a
+    // stray corner, and counted the magenta track line's start as one)
+    const calls = context.calls;
+    const triangles = calls.flatMap((call, i) => {
+      const shape = ["beginPath", "moveTo", "lineTo", "lineTo", "closePath", "fill"];
+      if (!shape.every((method, k) => calls[i + k]?.method === method)) return [];
+      const corners = [i + 1, i + 2, i + 3].map((index) => points.find((p) => p.index === index)!);
+      const cx = corners.reduce((sum, p) => sum + p.x, 0) / 3;
+      const cy = corners.reduce((sum, p) => sum + p.y, 0) / 3;
+      return cx > 400 ? [{ corners, cx, cy }] : [];
+    });
+    const nearest = [...triangles].sort((a, b) => Math.hypot(a.cx - 600, a.cy - centreY) - Math.hypot(b.cx - 600, b.cy - centreY));
+    expect(nearest.length, "the ND's filled triangles").toBeGreaterThanOrEqual(2);
+    expect(Math.hypot(nearest[0]!.cx - 600, nearest[0]!.cy - centreY), "own ship about the rose's centre").toBeLessThan(10);
+    expect(Math.hypot(nearest[1]!.cx - 600, nearest[1]!.cy - centreY), "and no other triangle there").toBeGreaterThan(50);
+    const ownShipBottom = Math.max(...nearest[0]!.corners.map((p) => p.y));
+    expect(centreY, "the rose's centre in frame").toBeLessThan(rowsInFrame);
+    expect(ownShipBottom, `own ship's lowest point (${ownShipBottom.toFixed(1)}) in frame (rows to ${rowsInFrame.toFixed(1)})`).toBeLessThan(rowsInFrame);
+    // the other decks keep own ship where it was: 0.86 h on 440 x 300 (checked on the 747's page)
+    const reference = createRecordingContext();
+    drawDisplayAtlas(reference, displayAtlasWidth(AIRLINER_DISPLAYS), displayAtlasHeight(AIRLINER_DISPLAYS), displaySlots(AIRLINER_DISPLAYS),
+      displayStateFromVisual({ ...INITIAL_VISUAL_STATE, heading: 90 }, AIRLINER_DISPLAY_AIRFRAME));
+    const nd = displaySlots(AIRLINER_DISPLAYS).find((slot) => slot.page === "nd")!;
+    const referenceArc = transformedPoints(reference.calls).find((p) => p.method === "arc" && p.x === nd.x + nd.w / 2)!;
+    expect(referenceArc.y - nd.y, "the 747's own ship").toBeCloseTo(0.86 * 300, 9);
+    // THE HEADER: "HDG" (right-aligned) at least 10 px clear of the TAS value on its left
+    let font = 10;
+    let align = "start";
+    const extents: Record<string, [number, number]> = {};
+    let afterTas = false;
+    for (const [i, call] of context.calls.entries()) {
+      if (call.method === "set:font") font = Number(/([0-9.]+)px/.exec(String(call.args[0]))?.[1] ?? 10);
+      if (call.method === "set:textAlign") align = String(call.args[0]);
+      if (call.method !== "fillText") continue;
+      const p = points.find((q) => q.index === i)!;
+      if (p.x < 400) continue;
+      const text = String(call.args[0]);
+      const width = 0.6 * font * text.length;
+      const left = align === "center" ? p.x - width / 2 : align === "right" || align === "end" ? p.x - width : p.x;
+      if (text === "HDG") extents.hdg = [left, left + width];
+      if (afterTas) {
+        extents.tasValue = [left, left + width];
+        afterTas = false;
+      }
+      if (text === "TAS") afterTas = true;
+    }
+    expect(extents.hdg && extents.tasValue, "HDG and the TAS value found").toBeTruthy();
+    expect(extents.hdg![0] - extents.tasValue![1], "HDG clear of the TAS value").toBeGreaterThanOrEqual(10);
+  });
+
+  /**
+   * THE SQUARE'S ATTITUDE INSTRUMENT IS THE 440 x 300 ONE, SMALLER. The disc, its pitch scale, its rungs, the roll
+   * scale and the aircraft symbol are all sized from one `pageRoundScale`, so on the F-16's 400 x 400 page the wing
+   * bars sit inside the disc as they do on the other decks, and the disc shows as many degrees of pitch as theirs.
+   * (With the disc alone sized from it, the bars overhung the disc by 22 px a side and the disc showed +-8.2.)
+   */
+  it("keeps the aircraft symbol >= 10 px inside the disc, and shows the same degrees of pitch in the disc as the 747's", () => {
+    const drawPfd = (layout: DisplayLayout, airframe: DisplayAirframe, pitch: number) => {
+      const context = createRecordingContext();
+      const state = displayStateFromVisual({ ...INITIAL_VISUAL_STATE, airspeed: 180, altitude: 1_500, heading: 90, bank: 0, pitch }, airframe);
+      drawDisplayAtlas(context, displayAtlasWidth(layout), displayAtlasHeight(layout), displaySlots(layout), state);
+      const calls = context.calls;
+      // the first disc: the port PFD's clip arc, then translate to its centre, rotate by the bank, translate by the pitch
+      const at = calls.findIndex((call, i) => call.method === "arc" && calls[i + 1]?.method === "clip");
+      const arc = calls[at]!;
+      expect([calls[at + 2]!.method, calls[at + 3]!.method, calls[at + 4]!.method]).toEqual(["translate", "rotate", "translate"]);
+      return { calls, at, cx: arc.args[0] as number, cy: arc.args[1] as number, r: arc.args[2] as number, offset: calls[at + 4]!.args[1] as number };
+    };
+    // DEGREES OF PITCH THE DISC HOLDS: its radius over the horizon's travel per degree, read off the drawn offset
+    const degreesInDisc = (layout: DisplayLayout, airframe: DisplayAirframe) => {
+      const level = drawPfd(layout, airframe, 0);
+      const up = drawPfd(layout, airframe, 5);
+      expect(level.offset).toBe(0);
+      return up.r / ((up.offset - level.offset) / 5);
+    };
+    // THE LADDER READS THE PITCH: at 5 and 10 degrees nose up, the rung for that pitch lies on the aircraft symbol (the
+    // disc's centre). The horizon's travel and the rungs' spacing are two numbers; spaced apart, a rung misreads the
+    // pitch while the horizon still moves right. Read on the drawn page: the horizontal strokes inside the disc's
+    // bracket, centred on the disc and shorter than its diameter (the horizon line is longer), in absolute pixels.
+    for (const [layout, airframe, label] of [[JET_DISPLAYS, JET_DISPLAY_AIRFRAME, "F-16"], [AIRLINER_DISPLAYS, AIRLINER_DISPLAY_AIRFRAME, "747"]] as const) {
+      for (const pitch of [5, 10]) {
+        const { calls: page, at, cx, cy, r } = drawPfd(layout, airframe, pitch);
+        const open = page.slice(0, at).map((call) => call.method).lastIndexOf("save");
+        let depth = 0;
+        let close = open;
+        for (; close < page.length; close += 1) {
+          if (page[close]!.method === "save") depth += 1;
+          if (page[close]!.method === "restore") depth -= 1;
+          if (depth === 0) break;
+        }
+        const pts = transformedPoints(page).filter((point) => point.index > open && point.index < close);
+        const rungs: number[] = [];
+        for (const [k, a] of pts.entries()) {
+          const b = pts[k + 1];
+          if (a.method !== "moveTo" || b?.method !== "lineTo" || b.index !== a.index + 1) continue;
+          const horizontal = Math.abs(a.y - b.y) < 1e-6;
+          const centred = Math.abs((a.x + b.x) / 2 - cx) < 1e-6;
+          if (horizontal && centred && Math.abs(b.x - a.x) < 2 * r) rungs.push(a.y);
+        }
+        expect(rungs.length, `${label} at ${pitch}: rungs drawn`).toBeGreaterThan(1);
+        const nearest = Math.min(...rungs.map((y) => Math.abs(y - cy)));
+        expect(nearest, `${label} at ${pitch} degrees: the ${pitch} rung on the symbol`).toBeLessThan(0.5);
+      }
+    }
+    const jetDegrees = degreesInDisc(JET_DISPLAYS, JET_DISPLAY_AIRFRAME);
+    const referenceDegrees = degreesInDisc(AIRLINER_DISPLAYS, AIRLINER_DISPLAY_AIRFRAME);
+    expect(referenceDegrees, "the 747's disc, the reference").toBeCloseTo(12, 6);
+    expect(jetDegrees, "the F-16's disc holds what the 747's does").toBeCloseTo(referenceDegrees, 6);
+    // THE WING BARS AND THE CENTRE SQUARE: filled-and-stroked rects level with the disc's centre, inside its x span,
+    // with no digits after them (which is what tells them from the tapes' readout boxes)
+    const { calls, at, cx, cy, r } = drawPfd(JET_DISPLAYS, JET_DISPLAY_AIRFRAME, 0);
+    const symbol = calls.flatMap((call, i) => {
+      if (call.method !== "strokeRect" || i < at) return [];
+      const [x, y, w, h] = call.args as number[];
+      const level = Math.abs(y! + h! / 2 - cy) < 1e-6;
+      const within = x! > cx - r - 40 && x! + w! < cx + r + 40;
+      const readout = calls.slice(i + 1, i + 6).some((next) => next.method === "fillText");
+      return level && within && !readout ? [{ x: x!, y: y!, w: w!, h: h! }] : [];
+    });
+    expect(symbol.length, "two wing bars and the centre square").toBe(3);
+    for (const piece of symbol) {
+      const corners = [[piece.x, piece.y], [piece.x + piece.w, piece.y], [piece.x, piece.y + piece.h], [piece.x + piece.w, piece.y + piece.h]];
+      const furthest = Math.max(...corners.map(([x, y]) => Math.hypot(x! - cx, y! - cy)));
+      expect(r - furthest, `the symbol piece at x ${piece.x.toFixed(1)}: inside the disc's rim`).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  /**
+   * THE DISCS STAY ROUND IN A SQUARE SLOT. The pages were authored for 440 x 300 and draw from the slot's own
+   * width and height, so a square could squash them if any of it scaled x and y apart. Checked on the drawing
+   * instructions (there is no canvas under Node): the PFD's attitude disc is a clip ARC and the ND's rose is arcs,
+   * and an arc is round wherever the transform in force is a similarity. So: every arc of these two pages is
+   * drawn under a transform whose two axes are equal in length and square to each other, and the disc and the
+   * rose sit inside their own slot. THE CONTROL: the same check on the same page drawn under a 1.2 x 1 stretch
+   * fails, so it can see a squash.
+   */
+  it("keeps the PFD's attitude disc and the ND's rose round in their square slots (the instructions, not pixels)", () => {
+    const draw = (stretch: number | null): RecordedCall[] => {
+      const context = createRecordingContext();
+      if (stretch !== null) context.scale(stretch, 1);
+      const state = displayStateFromVisual({ ...INITIAL_VISUAL_STATE, airspeed: 180, altitude: 1_500, heading: 95, bank: 20, pitch: 5 }, JET_DISPLAY_AIRFRAME);
+      drawDisplayAtlas(context, displayAtlasWidth(JET_DISPLAYS), displayAtlasHeight(JET_DISPLAYS), displaySlots(JET_DISPLAYS), state);
+      return [...context.calls];
+    };
+    /** The transform in force at each arc, replayed as the recording context replays points. */
+    const arcTransforms = (calls: RecordedCall[]) => {
+      const out: { index: number; radius: number; a: number; b: number; c: number; d: number }[] = [];
+      let m = { a: 1, b: 0, c: 0, d: 1 };
+      const stack: (typeof m)[] = [];
+      calls.forEach((call, index) => {
+        const n = (i: number) => call.args[i] as number;
+        if (call.method === "save") stack.push({ ...m });
+        else if (call.method === "restore") m = stack.pop() ?? m;
+        else if (call.method === "rotate") {
+          const cos = Math.cos(n(0));
+          const sin = Math.sin(n(0));
+          m = { a: m.a * cos + m.c * sin, b: m.b * cos + m.d * sin, c: -m.a * sin + m.c * cos, d: -m.b * sin + m.d * cos };
+        } else if (call.method === "scale") m = { a: m.a * n(0), b: m.b * n(0), c: m.c * n(1), d: m.d * n(1) };
+        else if (call.method === "arc") out.push({ index, radius: n(2), ...m });
+      });
+      return out;
+    };
+    const round = (t: { a: number; b: number; c: number; d: number }) =>
+      Math.abs(Math.hypot(t.a, t.b) - Math.hypot(t.c, t.d)) < 1e-9 && Math.abs(t.a * t.c + t.b * t.d) < 1e-9;
+    const calls = draw(null);
+    const arcs = arcTransforms(calls);
+    const centres = transformedPoints(calls).filter((p) => p.method === "arc");
+    expect(arcs.length).toBe(centres.length);
+    // the scale the two round things are sized from: 272.7 on a 400 x 400 page, 300 on the others' 440 x 300
+    const scale = pageRoundScale(400, 400);
+    expect(scale).toBeCloseTo((400 * 300) / 440, 9);
+    expect(pageRoundScale(440, 300), "the other decks' pages: exactly h").toBe(300);
+    // the PFD's disc: radius 0.3 x 272.7 = 81.8 in the port slot, centred at (200, 184), wholly inside x 0..400
+    const discRadius = 0.3 * scale;
+    const disc = arcs.findIndex((arc) => Math.abs(arc.radius - discRadius) < 1e-9);
+    expect(disc, "the attitude disc's clip arc").toBeGreaterThanOrEqual(0);
+    expect([centres[disc]!.x, centres[disc]!.y]).toEqual([200, 184]);
+    expect(centres[disc]!.x - discRadius).toBeGreaterThanOrEqual(0);
+    expect(centres[disc]!.x + discRadius).toBeLessThanOrEqual(400);
+    // the ND's rose: the 40 nm arc, the largest centred on own ship, which stands at 0.86 of the page's round scale
+    // (234.5 on the square, 258 = 0.86 h on 440 x 300). Its radius is 178.2 on the square, set by its labels' room (the
+    // smallest of 0.68 h = 272, 0.52 w = 208 and the labels' 178.2, with the labels' font from the page scale)
+    const ownY = 0.86 * scale;
+    const roseRadius = Math.max(...arcs.filter((arc, i) => centres[i]!.x === 600 && Math.abs(centres[i]!.y - ownY) < 1e-9).map((arc) => arc.radius));
+    expect(roseRadius).toBeCloseTo(178.2, 1);
+    const rose = arcs.findIndex((arc, i) => arc.radius === roseRadius && centres[i]!.x > 400);
+    expect(rose, "the ND's 40 nm arc").toBeGreaterThanOrEqual(0);
+    expect(centres[rose]!.x).toBe(600);
+    expect(centres[rose]!.y).toBeCloseTo(ownY, 9);
+    // its +-60 degree span stays inside the slot
+    expect(600 - roseRadius * Math.sin(Math.PI / 3)).toBeGreaterThan(400);
+    expect(600 + roseRadius * Math.sin(Math.PI / 3)).toBeLessThan(800);
+    for (const arc of arcs) expect(round(arc), `arc ${arc.index} (radius ${arc.radius}) drawn under a squashing transform`).toBe(true);
+    // THE CONTROL: a stretch the check must catch
+    expect(arcTransforms(draw(1.2)).some((arc) => !round(arc)), "the check sees a 1.2 x 1 stretch").toBe(true);
   });
 });
 
@@ -826,7 +1369,8 @@ describe("nothing else moved: the gate against f9d2672", () => {
     ["swept-vertical-stabilizer", "c79e7c35"],
     ["tail-navigation-light", "2a758df2"],
   ];
-  const REBUILT = ["jet-glare-shield", "jet-instrument-panel", "jet-hud-frame"];
+  /** F1 rebuilt or added the first three; F2 added the MFDs' two. */
+  const REBUILT = ["jet-glare-shield", "jet-instrument-panel", "jet-hud-frame", "jet-mfd-bezels", "jet-screens"];
   const GONE = ["airspeed", "attitude", "altimeter", "engine", "vertical-speed"].flatMap((dial) => [`jet-${dial}-gauge`, `jet-${dial}-needle`]);
   // (There was a second whole-airframe gate here for the trainer, the Global and the 747, pinned at f9d2672.
   // `render.loft-crown-seam.test.ts` already pins those three whole, so every legitimate change to them had to be
@@ -850,7 +1394,7 @@ describe("nothing else moved: the gate against f9d2672", () => {
     };
   }
 
-  it("keeps every jet mesh outside the phase's three where f9d2672 had it (world positions to the micrometre, and indices), mesh by mesh, and has exactly those three besides", () => {
+  it("keeps every jet mesh outside the cockpit's five where f9d2672 had it (world positions to the micrometre, and indices), mesh by mesh, and has exactly those five besides", () => {
     const jet = built("jet");
     try {
       const byName = new Map(jet.meshes.map((mesh) => [mesh.name, mesh]));
@@ -868,20 +1412,21 @@ describe("nothing else moved: the gate against f9d2672", () => {
       }
       expect(moved, "meshes that moved since f9d2672").toEqual([]);
       for (const name of GONE) expect(byName.has(name), name).toBe(false);
-      // 78 -> 69: twelve gone (the ten dials and needles, the old glare-shield box and the old panel), three here
-      expect(jet.meshes).toHaveLength(69);
+      // 78 -> 69 -> 71: twelve gone in F1 (the ten dials and needles, the old glare-shield box and the old panel),
+      // three there, and F2's two MFD meshes
+      expect(jet.meshes).toHaveLength(71);
     } finally {
       jet.dispose();
     }
   });
 
-  it("spends 174 draws outside cockpit view (184 at f9d2672: the ten dials and needles are gone), and in it what the cockpit camera draws", () => {
+  it("spends 174 draws outside cockpit view (184 at f9d2672: the ten dials and needles are gone), and in it the cockpit camera trades the skin's three for the kit's three", () => {
     const jet = built("jet");
     try {
       const casts = (mesh: AbstractMesh) => (mesh.metadata as { castsShadow?: boolean } | null)?.castsShadow !== false;
       // One draw in the colour pass and one per sun-shadow cascade for a caster, as the 747's budget counts them.
       // BEFORE: 78 meshes, 76 drawn (the two reheat cones are disabled), 54 casters, 184 draws. The dials and
-      // needles were ten drawn non-casting meshes; the frame is one, cockpit-only.
+      // needles were ten drawn non-casting meshes; the frame and the MFDs' two are cockpit-only.
       const exteriorMask = aircraftCameraLayerMask(0x0fff_ffff, false);
       const cockpitMask = aircraftCameraLayerMask(0x0fff_ffff, true);
       const drawnBy = (mask: number) => (mesh: AbstractMesh) =>
@@ -890,18 +1435,18 @@ describe("nothing else moved: the gate against f9d2672", () => {
       expect(outside).toHaveLength(66);
       expect(outside.filter(casts)).toHaveLength(54);
       expect(outside.length + 2 * outside.filter(casts).length).toBe(174);
-      expect(outside.map((mesh) => mesh.name)).not.toContain("jet-hud-frame");
+      for (const name of ["jet-hud-frame", "jet-mfd-bezels", "jet-screens"]) expect(outside.map((mesh) => mesh.name), "a cockpit-only mesh outside").not.toContain(name);
       // IN COCKPIT VIEW, through the visual's own setCockpitView and counted by what the COCKPIT camera draws:
       // the frame appears, and the fuselage, radome and dorsal spine drop out of its layer mask (the canopy stays,
       // at the cockpit alpha). (A first version set the
       // frame visible by hand and ignored the mask, and reported a colour-pass count no camera draws.)
       jet.visual.setCockpitView(true);
       const inside = jet.meshes.filter(drawnBy(cockpitMask));
-      expect(inside.map((mesh) => mesh.name)).toContain("jet-hud-frame");
+      for (const name of ["jet-hud-frame", "jet-mfd-bezels", "jet-screens"]) expect(inside.map((mesh) => mesh.name)).toContain(name);
       const hiddenByMask = outside.filter((mesh) => (mesh.layerMask & cockpitMask) === 0).map((mesh) => mesh.name).sort();
       expect(hiddenByMask, "what the cockpit camera does not draw").toEqual(jet.visual.cockpitParts.map((mesh) => mesh.name).sort());
       expect(hiddenByMask, "NON-VACUITY: the mask hides something").toHaveLength(3);
-      expect(inside).toHaveLength(outside.length - hiddenByMask.length + 1);
+      expect(inside).toHaveLength(outside.length - hiddenByMask.length + 3);
       // the shadow passes are the sun's, not the cockpit camera's: the casters do not change with the view
       expect(jet.meshes.filter((mesh) => drawnBy(exteriorMask)(mesh) || drawnBy(cockpitMask)(mesh)).filter(casts)).toHaveLength(54);
       jet.visual.setCockpitView(false);
