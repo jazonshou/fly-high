@@ -346,7 +346,11 @@ describe("a loft's crown seam", () => {
       // post re-cast onto it (counts unchanged); `bizjet-cabin-windows` moves within render.bizjet-nose's
       // 0.2 mm (the 9.5 ring's normals average the span forward of it). Checked mesh by mesh against
       // c252859: the other 89 meshes are bit-identical.
-      bizjet: "df41835d",
+      // RE-PINNED for the Global's crew seats (phase 3c, part 2): placed from catalogue.cockpitEye
+      // (bizjetSeats.ts), the cushion 0.80 m under the eye. The two seats are rebuilt from the floor to
+      // the cushion, the headrests move, and two seat backs are NEW (24 vertices each). Checked mesh by
+      // mesh against b23d9a0: the other 89 meshes are bit-identical.
+      bizjet: "a8c94e5d",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

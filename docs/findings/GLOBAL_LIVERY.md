@@ -468,6 +468,18 @@ From the catalogue eye at 0.78 the same windshield is -11.35 to +5.35
 degrees, and every table pin at that eye moves. That eye is the cockpit
 engineer's to re-solve against these numbers.
 
+**The seats follow the eye.** They were a tilted box and a headrest at fixed
+coordinates, the box's top at about 0.60, which a seated eye at 0.55 would
+have had over it. `bizjetSeats.ts` now places them from
+`catalogue.cockpitEye`:
+- a base from the floor (-0.66) to a cushion 0.80 m under the eye;
+- a back to the shoulders, 0.17 m under the eye;
+- a headrest behind the head that reaches past the eye.
+
+`tests/render.bizjet-seats.test.ts` reads the catalogue's eye and holds the
+cushion offset on the built meshes, so re-solving the eye moves the seats with
+it.
+
 The second camera (p. 35 against p. 29) still has to confirm or trim s. The
 table is parametric, so a trim is one re-pin.
 

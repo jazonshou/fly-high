@@ -40,6 +40,7 @@ import {
   globalCentrePostPane,
   globalGlazingPane,
 } from "./bizjetGlazing";
+import { globalSeatPlacement } from "./bizjetSeats";
 import {
   CABIN_PANE_DEPTH,
   CABIN_PANE_PROUD,
@@ -1316,31 +1317,18 @@ export function createBizJet(scene: Scene): AircraftVisual {
   );
   centrePost.metadata = { ...centrePost.metadata, castsShadow: false };
 
-  // The seats stand 0.05 m aft of the pilot's eye in x (`catalogue.cockpitEye`,
-  // forward 11.90): seat centre 11.85, headrest 11.57. They stood at 11.72 and
-  // 11.44 when the eye was at 11.6, and moved 0.13 m with it.
+  // THE CREW SEATS, placed from the pilots' eye (`bizjetSeats.ts`): the cushion
+  // 0.80 m under it, the back to the shoulders, the headrest behind the head. They
+  // were a tilted box with its top at about 0.60 at fixed coordinates, which a
+  // seated eye at 0.55 would have had over it.
+  const seating = globalSeatPlacement();
   for (const side of [1, -1] as const) {
-    const seat = build.box(
-      side > 0 ? "bizjet-captain-seat" : "bizjet-first-officer-seat",
-      0.56,
-      0.72,
-      0.52,
-      interior,
-      root,
-    );
-    seat.position.set(11.85, 0.24, side * 0.52);
-    seat.rotation.z = -0.09;
-    seat.metadata = { ...seat.metadata, cockpitInterior: true, castsShadow: false };
-    const headrest = build.box(
-      side > 0 ? "bizjet-captain-headrest" : "bizjet-first-officer-headrest",
-      0.24,
-      0.3,
-      0.4,
-      interior,
-      root,
-    );
-    headrest.position.set(11.57, 0.68, side * 0.52);
-    headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
+    const name = side > 0 ? "bizjet-captain" : "bizjet-first-officer";
+    for (const [part, box] of [["seat", seating.base], ["seat-back", seating.back], ["headrest", seating.headrest]] as const) {
+      const mesh = build.box(`${name}-${part}`, box.length, box.height, box.width, interior, root);
+      mesh.position.set(box.x, box.y, side * seating.z);
+      mesh.metadata = { ...mesh.metadata, cockpitInterior: true, castsShadow: false };
+    }
   }
   // The panel, its hood, the four flat screens, the posts, the ceiling and the
   // side walls are COCKPIT-ONLY parts, built to angles from the pilot's left-seat
