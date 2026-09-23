@@ -108,8 +108,8 @@ measurement per frame, so the error there is a lag of one frame, not a reading o
 
 | price | value | status |
 |---|---|---|
-| `TERRAIN_EROSION_STAGE_SEED_COST_MS` (the stage split) | seed 0.29, geology 0.082, breach 0.067, decode 0.089, streamPower 0.033, talus 0.32, fineBand 0.082 | **wrong in its split**; breach is off by about 20x. Re-priced on this instrument 2026-09-22 with the breach carve rebuilt (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md) |
-| `COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute` | 0.24 | a page average; the page total is roughly right, so probably close. Now 0.28, the re-priced table's weighted dispatch |
+| `TERRAIN_EROSION_STAGE_SEED_COST_MS` (the stage split) | seed 0.29, geology 0.082, breach 0.067, decode 0.089, streamPower 0.033, talus 0.32, fineBand 0.082 | **wrong in its split**; breach is off by about 20x |
+| `COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute` | 0.24 | a page average; the page total is roughly right, so probably close |
 | `COMPUTE_DISPATCH_SEED_COST_MS.terrainCompute` | 1.9 | unverified; depends on which pass held its slot the frame before |
 | `COMPUTE_DISPATCH_SEED_COST_MS.splatCompute` | 0.4 | unverified, same reason |
 | `COMPUTE_DISPATCH_SEED_COST_MS.occlusionCompute` | 0.3 | unverified, same reason |
@@ -229,6 +229,5 @@ recorded for the re-price, not applied.
 Priced on the fixed instrument, the breach pit carve costs ~6 ms as one dispatch (eroded worlds only: the default
 analytic game never runs the erosion producer). At tier 1 it cannot be admitted
 honestly: at the shipped 0.067 ms it spikes one frame per eroded page to ~9 ms of compute against a 1.73 ms cap, and at
-its measured price it stalls behind any higher-priority client with steady demand. The carve now runs one workgroup
-per pit, a chunk of 128 pits per admitted dispatch at 0.21 ms, and the erosion stages are re-priced with it: see
-docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md.
+its measured price it stalls behind any higher-priority client with steady demand. See
+docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md; the erosion re-price is held until the carve is banded to fit its row.

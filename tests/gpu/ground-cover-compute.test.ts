@@ -20,18 +20,13 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Scene } from "@babylonjs/core/scene";
 import { ComputeBudget, COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
-import {
-  installDeferredPassTiming,
-  PassCostTape,
-  passTimingSinkOf,
-} from "../../src/render/webgpu/core/DeferredPassTiming";
+import { installDeferredPassTiming } from "../../src/render/webgpu/core/DeferredPassTiming";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { GroundCoverSystem } from "../../src/render/webgpu/detail/GroundCoverSystem";
 import { GROUND_COVER_LAWS } from "../../src/render/webgpu/detail/groundCoverLaw";
 import { TerrainBiome } from "../../src/world";
 import { hashSeed } from "../../src/world/seed";
 import type { TerrainSample } from "../../src/world/types";
-import { logPricingSample, pricingRun } from "../support/pricingRun";
 
 /**
  * `6-9` on a real adapter — the composed placement kernel, and the cull.
@@ -235,49 +230,12 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
         if (gpuErrors.length > 0) break;
       }
       expect(materialReady, "the blade material never compiled").toBe(true);
-      // A pricing run measures ring 0 on its own tape: each dispatch's own
-      // delivered time, not the meter's average, which starts at the seed and
-      // converges only as far as the deliveries it happened to see.
-      const pricing = pricingRun();
-      const ring0 = (system as unknown as {
-        rings: Array<{ compute: { dispatch(x: number, y: number, z: number): boolean }; laneCount: number }>;
-      }).rings[0];
-      const tape = pricing && ring0 ? new PassCostTape(engine, passTimingSinkOf(ring0.compute)) : null;
-      const tapeSamples: number[] = [];
-      if (tape && ring0) {
-        const dispatch = ring0.compute.dispatch.bind(ring0.compute);
-        ring0.compute.dispatch = (x, y, z) => {
-          const dispatched = dispatch(x, y, z);
-          if (dispatched) tape.dispatched(1);
-          return dispatched;
-        };
-      }
-      const takeTape = () => {
-        if (!tape || !ring0) return;
-        const reading = tape.take();
-        if (reading.units <= 0) return;
-        const milliseconds = reading.milliseconds / reading.units;
-        logPricingSample("groundCoverCompute", tapeSamples.length, milliseconds, {
-          lanes: ring0.laneCount,
-          unusable: reading.unusableUnits,
-        });
-        tapeSamples.push(milliseconds);
-      };
       // Let the meter's exponential smoothing converge on the real cost
       // before it is compared with the pinned seed: one observation is 25% of
       // the way from the seed to the measurement by construction.
       for (let frame = 0; frame < 40; frame += 1) {
         await step();
-        takeTape();
         if (gpuErrors.length > 0) break;
-      }
-      if (tape) {
-        const sorted = [...tapeSamples].sort((a, b) => a - b);
-        console.log(
-          `PRICING groundCoverCompute tape: ${sorted.length} dispatches, `
-          + `median ${(sorted[Math.floor(sorted.length / 2)] ?? Number.NaN).toFixed(4)} ms`,
-        );
-        tape.dispose();
       }
       expect(gpuErrors, "the composed placement kernel raised a GPU error").toEqual([]);
 

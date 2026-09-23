@@ -26,8 +26,9 @@ the compute cap for the whole frame is 1.73 ms. What happens depends on the pric
 
 So **re-pricing alone is not a fix.** The true price turns a 9 ms spike into a stall whenever a higher-priority client
 has continuous demand. The pit carve has to be split into dispatches that each fit the row, the way the seed and
-geology stages already run as bands. Only then can its price be honest and admissible. That is what was done (below),
-and the re-price landed with it.
+geology stages already run as bands. Only then can its price be honest and admissible. The re-price of the erosion
+stages is held until that lands, and the breach-frame test becomes its standing gate: booked close to spent, and the
+page converging, at the measured prices. Until then the test records the behaviour above rather than asserting it.
 
 Scope: only ERODED worlds. The game defaults to the analytic world (`DEFAULT_WORLD_EVOLUTION = "analytic"`), and
 `FlightGame` builds an eroded one only when the URL asks for it; the erosion producer, and the pit carve with it, never
@@ -59,100 +60,3 @@ Apple's `spotlightknowledged` at 92-100 % CPU.
   unpriced until the earlier fine-bake lows are explained.
 - **Ground cover** measured on its own tape (per dispatch, not the meter's average) still disagreed across runs
   (0.08-0.15 ms). Its seed stays.
-
-## The fix: one workgroup per pit, a chunk of pits per dispatch
-
-**Why the pass was slow.** The serial carve gave each pit one thread searching its 33² window alone, so the pass lasted
-as long as its slowest pit: one 8-row band holding a pit cost 89 % of the whole pass. It was latency-bound, not
-throughput-bound.
-
-**The parallel carve.** The direct pass now also lists every pit, appending it to a list with an atomic count. Each
-listed pit gets one workgroup. Its 64 lanes stride the window, and a shared-memory tree reduction picks the target under
-the serial search's own total order: lower score, then lower target index. The score and path expressions are the serial
-pass's, character for character. The serial pass is kept (`breachPitSerialWgsl`) as the control. On the device the
-parallel carve is bit-identical to it: 0 height and 0 receiver differences on pages of 372, 794 and 1070 pits
-(`tests/gpu/breach-pit-parallel-identity.test.ts`). A CPU twin of the lanes and reduction is held against
-`breachLocalPits` on the 16 survey pages, and on a surface built to tie across lanes.
-
-**One pass was still too long on dense pages.** Timed cold, as the first pass on a fresh page, over three runs, the
-single parallel pass took:
-
-| Pits on the page | One pass, cold |
-|---|---|
-| 372 | 0.34-0.37 ms |
-| 794 | 0.68-0.72 ms |
-| 1070 | 0.88-0.89 ms |
-
-The cost is linear, about 0.9 µs a pit, once the GPU is full, and it is past tier 1's 0.4 ms row on the dense pages.
-
-**So the carve runs in chunks** of 128 listed pits: one indirect dispatch and one admitted unit per chunk.
-
-- A one-thread args pass writes each chunk's workgroup count into its own arg set and zeroes a claim cursor. Each
-  workgroup claims its pit from that cursor, so no chunk needs to be told where it starts. Which workgroup carves which
-  pit cannot change the result: the carve is a min-combine, and each pit writes only its own receiver.
-- The pit count is read back before anything is carved, because only the device knows how many chunks there are. In
-  every metered run the chunks ran in the frame straight after the args pass, so the read has cost less than a frame.
-- A page with more pits than the list holds (4096; the survey's worst was 712) fails at that read, before any carving,
-  and is counted (`pitListOverflows`).
-- A count that reads back as zeros is recognised, because the args pass always writes chunk 0's y as 1. It is re-read
-  once; if it faults again the page fails. A faulted read is never taken for a page without pits.
-
-**Chunk cost.** Cold full chunks on the three pages, three runs, one chunk per frame: median **0.202 ms** of 48
-(0.185-0.224), the same on every page. The worst cold chunk sits under 0.25 ms, 40 % under the row, because the price is
-spent under load.
-
-**What chunking costs.** A partial chunk of 26-116 pits still takes 0.16-0.21 ms: that is the slowest pit's own latency,
-and a page pays it once per chunk. So chunking roughly doubles the carve's total GPU time (the 1070-pit page: about
-1.8 ms over 9 chunks, against 0.89 ms in one pass). That is the accepted cost of admitting the carve in units small
-enough for any one frame to hold.
-
-**Prices, 23:47-23:51, cold.**
-
-- breachDirect: 0.099 ms (0.098 in all three runs).
-- breachArgs: 0.013 ms.
-- Carve chunk: 0.21 ms.
-- The stages the fix left alone keep the 22:38 figures. This slot's cold figures agree with them within 10 %, except
-  seed, whose cold first page reads 0.42-0.46 ms against 0.40. That would put it past the tier-1 row, which no stage
-  may be, so it is recorded here, not priced.
-- The erosion client's seed moves from 0.24 to 0.28 ms: the table's weighted dispatch is 46.4 ms over 166 dispatches.
-
-## The standing gate
-
-`tests/gpu/erosion-breach-frame.test.ts` now asserts what it used to record. It runs the 372-pit page and the 1070-pit
-page through the live meter at tier 1, at the table's prices, beside the competitor (two dispatches a frame at
-occlusion priority). It asserts:
-
-- the page converges;
-- the competitor is admitted every frame;
-- no frame refuses erosion while it has demand;
-- the breach runs exactly one direct pass, one args pass and one chunk per 128 pits;
-- no breach frame spends more than 1.5 times what it was booked at, plus a 0.08 ms pass floor.
-
-Over-booking is recorded, not asserted (open item 1 below).
-
-The three runs on 2026-09-22, at 23:53, 23:54 and 23:54, before the check was made one-sided. A full Node suite from
-another worktree ran under the first two. Figures are booked / spent in ms:
-
-| Run | L3 direct | L3 args | L3 three chunks | L5 direct | L5 args | L5 chunks |
-|---|---|---|---|---|---|---|
-| 1 | 0.099 / 0.098 | 0.013 / 0.012 | 0.630 / 0.074 | not printed | not printed | not printed |
-| 2 | 0.099 / 0.097 | 0.013 / 0.010 | 0.630 / 0.567 | 0.099 / 0.099 | 0.013 / 0.013 | six: 1.260 / 1.190; three: 0.630 / 0.548 |
-| 3 | 0.099 / 0.161 | 0.013 / 0.075 | 0.630 / 0.585 | not printed | not printed | not printed |
-
-- Every page converged in 47-48 frames, with no frame refusing erosion with demand and the competitor admitted every
-  frame.
-- The busiest frame, six chunks admitted through the surplus pass, used 1.46 ms of compute against the 1.73 ms cap.
-- The old two-sided check failed runs 1 and 3: the args pass's 0.075 ms (its floor), and the 0.074 ms under-read.
-- Every printed frame passes the one-sided check.
-- The L5 page of runs 1 and 3 was not printed, because the test asserted page by page; it now logs both pages first.
-
-## Open
-
-1. **The chunk under-read.** Three chunks sharing a frame read 0.074 ms in total against 0.63 booked, and the cost
-   test's later same-page runs read about 0.05 ms a chunk. That is a quarter of what a chunk costs alone. It is either
-   the timestamps of back-to-back passes or a genuinely faster re-run of a page just carved. The parity tests rule out
-   an uncarved page. The first instrument: timestamps per chunk, with the claim cursor's final value read back beside
-   them as the device's own record that the carve ran.
-2. **Seed bands against the row.** The seed stage's cold first page reads 0.42-0.46 ms a band, past tier 1's 0.4 ms
-   row. It stays priced at 0.40 with that noted. A finer band is its own item.
-

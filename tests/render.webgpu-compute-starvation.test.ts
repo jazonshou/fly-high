@@ -69,15 +69,13 @@ describe("ComputeBudget starvation audit", () => {
         if (cost > row) overRow.push(`${client}@${tier} (${cost} > ${row})`);
       }
     }
-    // Measured 2026-08-31 on 1e526f9, with erosionCompute's seed re-priced on
-    // 2026-09-22 (0.24 -> 0.28, the re-measured stage table's weighted
-    // dispatch). Every entry means "one dispatch does not fit this client's
-    // own row at this tier".
+    // Measured 2026-08-31 on 1e526f9. Every entry means "one dispatch does not
+    // fit this client's own row at this tier".
     expect(overRow).toEqual([
       "terrainCompute@0 (1.9 > 0.4)",
       "splatCompute@0 (0.4 > 0.15)",
       "occlusionCompute@0 (0.3 > 0.1)",
-      "erosionCompute@0 (0.28 > 0.2)",
+      "erosionCompute@0 (0.24 > 0.2)",
       "terrainCompute@1 (1.9 > 0.7)",
       "splatCompute@1 (0.4 > 0.25)",
       "occlusionCompute@1 (0.3 > 0.2)",
@@ -101,10 +99,9 @@ describe("ComputeBudget starvation audit", () => {
     // MEASURED 2026-08-31 on 1e526f9 — and the shape is NOT what priority
     // order would suggest, which is why it is measured rather than reasoned:
     //
-    //   tier 0 (cap 0.95): erosionCompute starves. Its seed (0.24, 0.28 since
-    //     2026-09-22) exceeds its own row (0.20) so reservation admits
-    //     nothing, and by the surplus pass the cheaper clients ahead have
-    //     spent the cap down to 0.19.
+    //   tier 0 (cap 0.95): erosionCompute starves. Its seed (0.24) exceeds its
+    //     own row (0.20) so reservation admits nothing, and by the surplus
+    //     pass the cheaper clients ahead have spent the cap down to 0.19.
     //   tier 1 (cap 1.73): nobody starves.
     //   tier 2 (cap 2.45): splatCompute AND occlusionCompute starve. Here
     //     terrain's 1.9 ms FITS the cap, so it is taken in the surplus pass

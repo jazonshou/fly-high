@@ -5,9 +5,8 @@ import {
 import {
   TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
   TERRAIN_EROSION_SEED_BAND_ROWS,
-  TERRAIN_EROSION_STAGE_SEED_COST_MS,
+  type TERRAIN_EROSION_STAGE_SEED_COST_MS,
   type TerrainErosionStageMeasurement,
-  terrainBreachPitChunks,
 } from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
 
 /**
@@ -17,64 +16,41 @@ import {
 export type ErosionCostStage = keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS;
 
 /**
- * The complete production DAG for a page with `pits` listed breach pits,
- * derived from the same geometry/configuration constants as the producer. This
- * is the timing sample's non-vacuity guard: a cheap result with a missing
- * shader is not a fast page. Every stage is fixed but the pit carve, which
- * runs one chunk per `BREACH_PIT_CHUNK_PITS` pits.
+ * The complete production DAG, derived from the same geometry/configuration
+ * constants as the producer. This is the timing sample's non-vacuity guard:
+ * a cheap result with a missing shader is not a fast page.
  */
-export function expectedStageDispatches(pits: number): Readonly<Record<ErosionCostStage, number>> {
-  return Object.freeze({
-    seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
-    // Erodibility before breach and repose after stream power.
-    geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-      / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
-    breachDirect: 1,
-    // Each chunk's dispatch size, written from the pit count the direct pass kept.
-    breachArgs: 1,
-    // One indirect dispatch per chunk of the list.
-    breachPit: terrainBreachPitChunks(pits),
-    decode: 1,
-    streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
-    // One gather and one apply per iteration.
-    talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
-    fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-      / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
-  });
-}
+export const EXPECTED_STAGE_DISPATCHES: Readonly<Record<ErosionCostStage, number>> = Object.freeze({
+  seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
+  // Erodibility before breach and repose after stream power.
+  geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
+  breachDirect: 1,
+  breachPit: 1,
+  decode: 1,
+  streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
+  // One gather and one apply per iteration.
+  talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
+  fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
+});
 
 /**
- * Dispatches per page that may read no positive duration before the page is
- * called a broken instrument. A COUNT alarm, not a cost allowance: an unusable
- * reading means "cost unknown", and `chargedStageMs` charges it at its stage's
- * pinned price, so no cost can hide behind one.
+ * Dispatches per page that may read no positive duration and still count as
+ * present. An unusable reading prices nothing, so the cap is what bounds the
+ * cost a page total can be missing.
  *
  * Why 2. The failure this was built for dropped exactly one breach reading on
  * timed page 1, identically in six runs over two trees and two checkouts, and
- * only while another process loaded the GPU (Babylon read a slot never written
- * before: docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md). Two
- * adjacent passes reading nothing together is the next case, and 2 admits it.
- * It used to bound the cost a page could hide, which held only while every
- * dispatch really was as cheap as its pin; on the fixed instrument one pinned
- * at 0.067 ms read ~6 ms (the breach pit carve,
- * docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md). A cap cannot bound a cost
- * nobody knows, which is why an unknown is now charged instead. A
- * counter that is broken rather than occasionally unreadable reads nothing for
- * every dispatch of the page and still fails.
+ * only while another process loaded the GPU. The breach step records both of
+ * its passes in one pump, so two adjacent passes reading nothing together is
+ * the next case, and 2 admits it. The cost it can hide is at most two of the
+ * dearest pinned dispatch (talus, 0.32 ms): 0.64 ms, 1.7 % of the 37.4 ms
+ * pinned page the whole-page alarm compares against twice its price. The Node
+ * guard holds that bound. A counter that is broken rather than occasionally
+ * unreadable reads nothing for all 163 dispatches and still fails.
  */
 export const UNUSABLE_READINGS_PER_PAGE_CAP = 2;
-
-/**
- * One stage's cost in a page total: what its priced dispatches measured, plus
- * each unusable dispatch charged at the stage's pinned price. Unknown is not
- * free, and it is not a guess either: it is the price the meter admits it at.
- */
-export function chargedStageMs(
-  sample: Readonly<TerrainErosionStageMeasurement>,
-  stage: ErosionCostStage,
-): number {
-  return sample.milliseconds + sample.unusable * TERRAIN_EROSION_STAGE_SEED_COST_MS[stage];
-}
 
 /**
  * Everything wrong with one timed page's stage sample, empty when it is
@@ -83,7 +59,7 @@ export function chargedStageMs(
  */
 export function erosionStageCoverageFaults(
   samples: Readonly<Record<ErosionCostStage, Readonly<TerrainErosionStageMeasurement>>>,
-  expected: Readonly<Record<ErosionCostStage, number>>,
+  expected: Readonly<Record<ErosionCostStage, number>> = EXPECTED_STAGE_DISPATCHES,
   cap: number = UNUSABLE_READINGS_PER_PAGE_CAP,
 ): string[] {
   const faults: string[] = [];
