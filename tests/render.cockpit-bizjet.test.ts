@@ -72,6 +72,12 @@ const TARGETS = {
   displays: 0.35,
 } as const;
 
+/**
+ * The windshield/side pillar's side faces from the seat, at most: the 2 cm frame's read 0.33 to 0.49 degrees across
+ * it (K1, the seated eye on 8d5deeb's nose); the glass's own 0.10 m slab would read several times that.
+ */
+const PILLAR_SIDE_DEGREES = 0.8;
+
 interface Panel { name: string; rows: number; columns: number; positions: number[]; triangles: number }
 
 let engine: NullEngine;
@@ -761,6 +767,37 @@ describe("the frame: the lining round the glass", () => {
     expect(rim, "the rims are a small part of what shows").toBeLessThan(face / 5);
     expect(tightestFace).toBeGreaterThan(0.005);
     expect(shadedAway, "lining vertices shaded away from the eye").toBe(0);
+  });
+
+  it("reads THIN: the windshield/side pillar is nearly all face from the seat, its side faces a sliver (the 2 cm frame)", () => {
+    // K3's lesson on the 747: the frame's depth shows as a second, lit face down the side of every pillar, and at the
+    // glass's own 0.10 m it was half the pillar. Measured across the port pillar in 0.01 degree steps, each ray's first
+    // drawn triangle classed by where `skinPanel` wrote it: two outer and two inner triangles a grid cell, then the rims.
+    const interior = named("bizjet-cockpit-interior");
+    const sources = (interior.metadata as { mergedFrom: string[] }).mergedFrom;
+    const strip = "port-bizjet-lining-pillar";
+    let start = 0;
+    for (const name of sources) {
+      if (name === strip) break;
+      start += name === "bizjet-instrument-panel" ? 12 : panel(name).triangles;
+    }
+    const p = panel(strip);
+    const cells = (p.rows - 1) * (p.columns - 1);
+    const readings: string[] = [];
+    for (const el of [-8, 0, 4]) {
+      let face = 0;
+      let side = 0;
+      for (let az = -40; az <= 0; az += 0.01) {
+        const hit = kitHit(az, el);
+        if (!hit || hit.mesh !== interior || partOf(interior, hit.faceId) !== strip) continue;
+        if (hit.faceId - start >= cells * 4) side += 0.01;
+        else face += 0.01;
+      }
+      readings.push(`el ${el}: ${(face + side).toFixed(2)} = face ${face.toFixed(2)} + side ${side.toFixed(2)}`);
+      expect(face, `the pillar at el ${el}`).toBeGreaterThan(3);
+      expect(side, `its side faces at el ${el}`).toBeLessThan(PILLAR_SIDE_DEGREES);
+    }
+    console.info(`the Global's windshield/side pillar from the eye: ${readings.join("; ")}`);
   });
 
   it("puts nothing in the frame that the design did not account for: the kit, or the world through the glass", () => {
