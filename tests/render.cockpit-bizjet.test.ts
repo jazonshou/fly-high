@@ -60,6 +60,8 @@ const FRAME_V = FRAME_U / (16 / 9);
  * THE TARGETS, the PM's for this type (K0), in one place. Degrees from the eye at the 75 degree, 16:9 lens.
  *  - `opening`: the port windshield's run of elevation straight ahead, and straight ahead is inside it;
  *  - `topEdge`: the glass's top edge straight ahead is at least this high, so the roof line is in the frame;
+ *  - `topCorners`, `topLevel`: both of the port windshield's top corners (on the skin) are at least this high, and
+ *    within this of each other: the windshield's top runs level to the post, not down to the horizon there;
  *  - the whole centre post is in the frame from the seat (its azimuth is wherever the glass puts it);
  *  - `lipTolerance`: the catalogue's deck line is the lip rule's answer, the HIGHEST straight lip over no glass,
  *    to this;
@@ -68,6 +70,8 @@ const FRAME_V = FRAME_U / (16 / 9);
 const TARGETS = {
   opening: 24,
   topEdge: 10,
+  topCorners: 12,
+  topLevel: 3,
   lipTolerance: 0.01,
   displays: 0.35,
 } as const;
@@ -410,6 +414,18 @@ describe("the Global's eye", () => {
     expect(run!.from, "straight ahead is inside the glass: its bottom is under the horizon").toBeLessThan(0);
     expect(run!.to, "the top edge straight ahead").toBeGreaterThanOrEqual(TARGETS.topEdge);
     expect(run!.to - run!.from, "the opening straight ahead").toBeGreaterThanOrEqual(TARGETS.opening);
+  });
+
+  it("has the port windshield's top level across it: both top corners at least the target, and within the target of each other", () => {
+    // Part 3's windshield fell from +14 at its outboard top to +1.3 at the post, so the right-hand windshield sat below
+    // the horizon and the right-centre of the frame above it was roof (K2). The corners on the skin, from the eye.
+    const port = panel("port-bizjet-flight-deck-window-windshield");
+    const top = port.rows - 1;
+    const [inboard, outboard] = [0, port.columns - 1].map((column) => azel(skinVertex(port, top, column)).el);
+    console.info(`the Global's windshield top corners from the eye: inboard (at the post) ${inboard!.toFixed(2)}, outboard ${outboard!.toFixed(2)}`);
+    expect(inboard, "the top corner at the post").toBeGreaterThanOrEqual(TARGETS.topCorners);
+    expect(outboard, "the top corner outboard").toBeGreaterThanOrEqual(TARGETS.topCorners);
+    expect(Math.abs(inboard! - outboard!), "the top's fall across the windshield").toBeLessThanOrEqual(TARGETS.topLevel);
   });
 
   it("reads the glass by the same instrument that a second one agrees with, from two eyes (the control)", () => {
