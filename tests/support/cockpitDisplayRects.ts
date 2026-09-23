@@ -2,14 +2,15 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   AIRLINER_SCREENS,
+  airlinerPanelFace,
   airlinerScreenPlacements,
 } from "@/src/render/webgpu/aircraft/cockpit/airlinerCockpit";
 import {
   BIZJET_SCREENS,
-  bizjetBezelFacets,
   bizjetPanelFace,
   bizjetScreenPlacements,
 } from "@/src/render/webgpu/aircraft/cockpit/bizjetCockpit";
+import { framedScreenFacets, type FramedScreenDesign } from "@/src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 import { JET_MFD, jetMfdFrame, jetMfdPlacements } from "@/src/render/webgpu/aircraft/cockpit/jetCockpit";
 import { TRAINER_DIAL_DIAMETER, trainerDialPlacements } from "@/src/render/webgpu/aircraft/cockpit/trainerCockpit";
 import type { Deck } from "./cockpitFootprints";
@@ -42,6 +43,34 @@ const Y = new Vector3(0, 1, 0);
 const rectangle = (centre: Vector3, side: Vector3, up: Vector3, halfWidth: number, halfHeight: number) =>
   [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => centre.add(side.scale(a! * halfWidth)).add(up.scale(b! * halfHeight)));
 
+/**
+ * A leaned deck's screens and bezels (the Global's and the 747's P1 panels): each screen recessed behind a chamfered
+ * frame on the board's leaned face. Nothing is re-derived from constants: the face's own axes, each screen plate's
+ * centre and each bezel's facets come from the builder's functions, so a panel move carries this with it.
+ */
+function framedScreens(
+  s: FramedScreenDesign & { readonly screenThickness: number },
+  face: { readonly up: { readonly x: number; readonly y: number }; readonly normal: { readonly x: number; readonly y: number } },
+  placements: readonly { readonly name: string; readonly centre: Vector3; readonly faceCentre: Vector3 }[],
+): CockpitPart[] {
+  const parts: CockpitPart[] = [];
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  for (const p of placements) {
+    // The placement is the plate's centre; its front is half a thickness out along the face's normal.
+    parts.push({ name: p.name, kind: "screen", outline: rectangle(p.centre.add(out.scale(s.screenThickness / 2)), Z, up, s.width / 2, s.height / 2) });
+    // Every corner of the bezel's two solids. Its back stands 1 mm inside the board and its sides are square to
+    // the face, so a corner behind the face is brought out onto it: the outline is the bezel as it stands proud.
+    const { frame, rim } = framedScreenFacets(p.faceCentre, face, s);
+    const outline = [...frame, ...rim].flatMap((quad) => quad.corners).map((corner) => {
+      const depth = Vector3.Dot(corner.subtract(p.faceCentre), out);
+      return depth < 0 ? corner.subtract(out.scale(depth)) : corner;
+    });
+    parts.push({ name: `${p.name} bezel`, kind: "bezel", outline });
+  }
+  return parts;
+}
+
 /** Every screen and its bezel (the dials, on the trainer), as its builder places it. */
 export function cockpitParts(deck: Deck): CockpitPart[] {
   const parts: CockpitPart[] = [];
@@ -53,33 +82,10 @@ export function cockpitParts(deck: Deck): CockpitPart[] {
       parts.push({ name: `${p.name} MFD bezel`, kind: "bezel", outline: rectangle(p.bezel.add(out.scale(m.bezelThickness / 2)), Z, up, m.bezel / 2, m.bezel / 2) });
     }
   } else if (deck === "bizjet") {
-    // The Global's screens ride its LEANED board, each recessed behind a chamfered frame (the P1 panel), so
-    // nothing here is re-derived from constants: the face's own axes, each screen plate's centre and each
-    // bezel's facets come from the builder's functions, and a panel move carries this with it.
-    const s = BIZJET_SCREENS;
-    const face = bizjetPanelFace();
-    const up = new Vector3(face.up.x, face.up.y, 0);
-    const out = new Vector3(face.normal.x, face.normal.y, 0);
-    for (const p of bizjetScreenPlacements()) {
-      // The placement is the plate's centre; its front is half a thickness out along the face's normal.
-      parts.push({ name: p.name, kind: "screen", outline: rectangle(p.centre.add(out.scale(s.screenThickness / 2)), Z, up, s.width / 2, s.height / 2) });
-      // Every corner of the bezel's two solids. Its back stands 1 mm inside the board and its sides are square to
-      // the face, so a corner behind the face is brought out onto it: the outline is the bezel as it stands proud.
-      const { frame, rim } = bizjetBezelFacets(p.faceCentre);
-      const outline = [...frame, ...rim].flatMap((quad) => quad.corners).map((corner) => {
-        const depth = Vector3.Dot(corner.subtract(p.faceCentre), out);
-        return depth < 0 ? corner.subtract(out.scale(depth)) : corner;
-      });
-      parts.push({ name: `${p.name} bezel`, kind: "bezel", outline });
-    }
+    parts.push(...framedScreens(BIZJET_SCREENS, bizjetPanelFace(), bizjetScreenPlacements()));
   } else if (deck === "airliner") {
-    const s = AIRLINER_SCREENS;
-    for (const p of airlinerScreenPlacements()) {
-      // The placement is the screen's centre; its front face is half a thickness toward the pilot.
-      const front = p.centre.subtract(new Vector3(s.screenThickness / 2, 0, 0));
-      parts.push({ name: p.name, kind: "screen", outline: rectangle(front, Z, Y, s.width / 2, s.height / 2) });
-      parts.push({ name: `${p.name} bezel`, kind: "bezel", outline: rectangle(front.add(new Vector3(s.screenThickness, 0, 0)), Z, Y, s.width / 2 + s.bezel, s.height / 2 + s.bezel) });
-    }
+    // The 747's P1 panel is the Global's kind: leaned 17 degrees, each screen recessed behind a chamfered frame
+    parts.push(...framedScreens(AIRLINER_SCREENS, airlinerPanelFace(), airlinerScreenPlacements()));
   } else {
     for (const d of trainerDialPlacements()) {
       const n = d.normal.normalize();

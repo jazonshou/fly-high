@@ -133,9 +133,11 @@ describe("what the lens shows of each deck, from the kits' own constants", () =>
     expect(share("jet", "port MFD", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
     expect(share("airliner", "port-pfd", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
     expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.295, 2);
-    // The same parts at 16:9: 62 %, 38 % and 72.5 % of their rows.
+    // The same parts at 16:9: 62 %, 36.5 % and 72.5 % of their rows. (The 747's was 38 % on K3's upright board; on
+    // its P1 panel, leaned 17 degrees, the screen's lower part is nearer the eye and spans more rows, so the frame's
+    // bottom cuts a larger share of its ROWS while the share of its face is the same 38.1 % the kit's test reads.)
     expect(share("jet", "port MFD", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.62, 2);
-    expect(share("airliner", "port-pfd", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.38, 2);
+    expect(share("airliner", "port-pfd", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.365, 2);
     expect(share("bizjet", "port-outboard", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.725, 2);
     // The loss itself: at 21:9 the plain lens shows the Global's screen at less than half the rows 16:9 shows.
     expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES))
