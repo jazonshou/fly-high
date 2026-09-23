@@ -9,8 +9,8 @@ import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import {
   chargedStageMs,
   type ErosionCostStage,
-  EXPECTED_STAGE_DISPATCHES,
   erosionStageCoverageFaults,
+  expectedStageDispatches,
 } from "../support/erosionStageCoverage";
 import {
   buildHarness,
@@ -51,10 +51,10 @@ const MINOR_STAGES: readonly CostStage[] = COST_STAGES.filter(
   (stage) => !MAJOR_STAGES.includes(stage),
 );
 
-function pinnedCost(stages: readonly CostStage[]): number {
+function pinnedCost(stages: readonly CostStage[], expected: Readonly<Record<CostStage, number>>): number {
   return stages.reduce(
     (total, stage) => total
-      + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * EXPECTED_STAGE_DISPATCHES[stage],
+      + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * expected[stage],
     0,
   );
 }
@@ -64,9 +64,6 @@ function measuredCost(sample: StageMeasurements, stages: readonly CostStage[]): 
   return stages.reduce((total, stage) => total + chargedStageMs(sample[stage], stage), 0);
 }
 
-const PINNED_PAGE_COST_MS = pinnedCost(COST_STAGES);
-const PINNED_MAJOR_COST_MS = pinnedCost(MAJOR_STAGES);
-const PINNED_MINOR_COST_MS = pinnedCost(MINOR_STAGES);
 
 describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
   it("holds the complete DAG's concentrated cost against its pinned admission price", async (context) => {
@@ -127,6 +124,7 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
           readonly frames: number;
           readonly wallMilliseconds: number;
           readonly dispatches: number;
+          readonly expected: Readonly<Record<CostStage, number>>;
         }> = [];
         for (let repeat = 0; repeat < TIMED_PAGES; repeat += 1) {
           const timed = await runPage(harness, address, 4);
@@ -137,6 +135,8 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
             frames: timed.frames,
             wallMilliseconds: harness.producer.lastCompletedPageTiming?.totalMilliseconds ?? 0,
             dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0,
+            // The carve runs a chunk per listed pits, so the page's own count decides it.
+            expected: expectedStageDispatches(harness.producer.lastBreachPits ?? 0),
           });
         }
         return { pages, warmFrames: warm.frames };
@@ -158,14 +158,21 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       return;
     }
 
-    const expectedTotalDispatches = Object.values(EXPECTED_STAGE_DISPATCHES)
+    // Every timed page is the same page, so one expected DAG and one pinned price.
+    const expected = measured.pages[0]!.expected;
+    for (const page of measured.pages) expect(page.expected).toEqual(expected);
+    expect(expected.breachPit, "the page listed no pits, so the carve was never priced").toBeGreaterThan(0);
+    const PINNED_PAGE_COST_MS = pinnedCost(COST_STAGES, expected);
+    const PINNED_MAJOR_COST_MS = pinnedCost(MAJOR_STAGES, expected);
+    const PINNED_MINOR_COST_MS = pinnedCost(MINOR_STAGES, expected);
+    const expectedTotalDispatches = Object.values(expected)
       .reduce((sum, count) => sum + count, 0);
     const pageRows = measured.pages.map((page, pageIndex) => {
       // Every dispatch present, priced or unusable, and the unusable ones
       // capped (see UNUSABLE_READINGS_PER_PAGE_CAP). A shader that never
       // dispatched gives no reading at all and still fails here.
       expect(
-        erosionStageCoverageFaults(page.samples),
+        erosionStageCoverageFaults(page.samples, page.expected),
         `timed page ${pageIndex + 1} stage coverage`,
       ).toEqual([]);
       expect(page.dispatches, `timed page ${pageIndex + 1} DAG dispatch count`)
@@ -233,10 +240,11 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
     // Drop the same single slowest physical page for both groups. Seed+talus
     // carry 92% of the declared page price and have 112 dispatches/page, so a
     // 2x grouped guard is stable and catches the stages that can actually
-    // break page admission. The five minor stages are only 8% of the price and
+    // break page admission. The minor stages are only 8% of the price and
     // include the 1-dispatch decode and 20-us stream-power counters; combining
-    // all 51 dispatches/page supports the original one-sided 4x alarm without
-    // pretending an individual short counter has that precision.
+    // all 54 dispatches/page (with the L3 page's 3 carve chunks) supports the
+    // original one-sided 4x alarm without pretending an individual short
+    // counter has that precision.
     const retained = [...pageRows]
       .sort((first, second) => first.total - second.total)
       .slice(0, REQUIRED_CONCENTRATED_PAGES);
@@ -260,7 +268,7 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
     // Keep the published client seed connected to the stage table. A future
     // seed edit cannot make the aggregate gate pass by silently changing only
     // one side of the admission contract. It is intentionally conservative:
-    // the stage-weighted 0.229 ms rounds up to 0.24 ms, so compare the policy
+    // the stage-weighted 0.226 ms rounds up to 0.24 ms, so compare the policy
     // relationship rather than demanding false decimal equality.
     const weightedDispatchSeed = PINNED_PAGE_COST_MS / expectedTotalDispatches;
     expect(

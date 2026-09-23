@@ -7,6 +7,7 @@ import {
   TERRAIN_EROSION_SEED_BAND_ROWS,
   TERRAIN_EROSION_STAGE_SEED_COST_MS,
   type TerrainErosionStageMeasurement,
+  terrainBreachPitChunks,
 } from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
 
 /**
@@ -16,24 +17,31 @@ import {
 export type ErosionCostStage = keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS;
 
 /**
- * The complete production DAG, derived from the same geometry/configuration
- * constants as the producer. This is the timing sample's non-vacuity guard:
- * a cheap result with a missing shader is not a fast page.
+ * The complete production DAG for a page with `pits` listed breach pits,
+ * derived from the same geometry/configuration constants as the producer. This
+ * is the timing sample's non-vacuity guard: a cheap result with a missing
+ * shader is not a fast page. Every stage is fixed but the pit carve, which
+ * runs one chunk per `BREACH_PIT_CHUNK_PITS` pits.
  */
-export const EXPECTED_STAGE_DISPATCHES: Readonly<Record<ErosionCostStage, number>> = Object.freeze({
-  seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
-  // Erodibility before breach and repose after stream power.
-  geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
-  breachDirect: 1,
-  breachPit: 1,
-  decode: 1,
-  streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
-  // One gather and one apply per iteration.
-  talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
-  fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
-});
+export function expectedStageDispatches(pits: number): Readonly<Record<ErosionCostStage, number>> {
+  return Object.freeze({
+    seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
+    // Erodibility before breach and repose after stream power.
+    geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+      / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
+    breachDirect: 1,
+    // Each chunk's dispatch size, written from the pit count the direct pass kept.
+    breachArgs: 1,
+    // One indirect dispatch per chunk of the list.
+    breachPit: terrainBreachPitChunks(pits),
+    decode: 1,
+    streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
+    // One gather and one apply per iteration.
+    talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
+    fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
+      / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
+  });
+}
 
 /**
  * Dispatches per page that may read no positive duration before the page is
@@ -52,7 +60,7 @@ export const EXPECTED_STAGE_DISPATCHES: Readonly<Record<ErosionCostStage, number
  * docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md). A cap cannot bound a cost
  * nobody knows, which is why an unknown is now charged instead. A
  * counter that is broken rather than occasionally unreadable reads nothing for
- * all 163 dispatches and still fails.
+ * every dispatch of the page and still fails.
  */
 export const UNUSABLE_READINGS_PER_PAGE_CAP = 2;
 
@@ -75,7 +83,7 @@ export function chargedStageMs(
  */
 export function erosionStageCoverageFaults(
   samples: Readonly<Record<ErosionCostStage, Readonly<TerrainErosionStageMeasurement>>>,
-  expected: Readonly<Record<ErosionCostStage, number>> = EXPECTED_STAGE_DISPATCHES,
+  expected: Readonly<Record<ErosionCostStage, number>>,
   cap: number = UNUSABLE_READINGS_PER_PAGE_CAP,
 ): string[] {
   const faults: string[] = [];
