@@ -3,24 +3,26 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, describe, expect, it } from "vitest";
-import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
+import { AircraftBuildContext, loftSectionPoint, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 
 /**
- * `crownSquareness` gives a loft section's UPPER half its own superellipse
- * exponent, and below 2 that draws it toward a V: the Global's flight deck,
- * flat windshield panes meeting at the centre post (phase 3c, part 6). This
- * holds it to what makes it safe:
+ * `crownSquareness` with `crownFillet` makes a loft section's UPPER half a
+ * FILLETED V: the superellipse of that exponent, its radii shrunk by the
+ * fillet, offset back out by it, and sampled by the outward normal's angle.
+ * The Global's flight deck: flat windshield panes meeting at the centre post
+ * (phase 3c, part 6b). This holds it to what makes it safe:
  *
- *  1. It is the IDENTITY when unused, or when it equals the section's own
- *     squareness: no vertex of any existing loft moves (and the trainer, jet
- *     and 747 digests in render.loft-crown-seam / -taper are unchanged).
+ *  1. It is the IDENTITY when unused: no vertex of any existing loft moves
+ *     (and the trainer, jet and 747 digests in render.loft-crown-seam / -taper
+ *     are unchanged).
  *  2. It moves the upper half ONLY, and keeps the crown's height and the
  *     half-width at the widest point: the lower half is the ellipse's bit for
- *     bit, and so are the crown and waterline vertices (the seam's to 1e-12).
- *  3. It is TANGENT-CONTINUOUS for any exponent above 1, horizontal at the
- *     crown and vertical at the waterline, which the chord next to each
- *     approaches as the ring is sampled finer; at 1 the crown is a ridge, and
- *     the builder refuses it.
+ *     bit, and every upper vertex lies inside the ellipse through the same
+ *     crown and width.
+ *  3. It is SMOOTH: the curvature is capped at 1 / fillet, so the crown is
+ *     round and not a ridge, and sampled by the normal's angle every facet of
+ *     the upper half turns by the same step. An unfilleted V is the control:
+ *     its crown's radius shrinks toward nothing as the ring is sampled finer.
  */
 
 const fixtures: Array<{ engine: NullEngine; scene: Scene }> = [];
@@ -47,76 +49,100 @@ const ELLIPSE: readonly LoftSection[] = [
   { x: 0, yRadius: 0.85, zRadius: 1.14, yOffset: -0.1 },
   { x: 1, yRadius: 0.8, zRadius: 1.1, yOffset: -0.16 },
 ];
-const V = (n: number): LoftSection[] => ELLIPSE.map((section) => ({ ...section, crownSquareness: n }));
+const V = (n: number, fillet: number): LoftSection[] => ELLIPSE.map((s) => ({ ...s, crownSquareness: n, crownFillet: fillet }));
 
 /** A ring vertex's (y, z), ring `ring`, radial `radial`, `segments` round. */
 const at = (positions: Float32Array, segments: number, ring: number, radial: number) => {
   const i = (ring * (segments + 1) + radial) * 3;
   return { y: positions[i + 1]!, z: positions[i + 2]! };
 };
+/** The radius of the circle through three ring vertices. */
+const circumradius = (p: { y: number; z: number }, q: { y: number; z: number }, r: { y: number; z: number }) => {
+  const a = Math.hypot(p.y - q.y, p.z - q.z);
+  const b = Math.hypot(q.y - r.y, q.z - r.z);
+  const c = Math.hypot(r.y - p.y, r.z - p.z);
+  const area = Math.abs((q.z - p.z) * (r.y - p.y) - (r.z - p.z) * (q.y - p.y)) / 2;
+  return (a * b * c) / (4 * area);
+};
 
-describe("the loft's crown squareness", () => {
-  it("is the identity when absent, and when it equals the section's own squareness", () => {
+describe("the loft's filleted crown", () => {
+  it("is the identity when absent, and at exponent 2 with no fillet lays the ellipse itself", () => {
     const plain = positionsOf(ELLIPSE, 48);
-    expect(Array.from(positionsOf(V(2), 48))).toEqual(Array.from(plain));
-    const squared = ELLIPSE.map((section) => ({ ...section, squareness: 3 }));
-    expect(Array.from(positionsOf(squared.map((s) => ({ ...s, crownSquareness: 3 })), 48))).toEqual(Array.from(positionsOf(squared, 48)));
-  });
-
-  it("moves the upper half only, holding the crown's height and the waterline's width", () => {
-    const segments = 48;
-    const plain = positionsOf(ELLIPSE, segments);
-    const vee = positionsOf(V(1.3), segments);
+    expect(Array.from(positionsOf(ELLIPSE.map((s) => ({ ...s })), 48))).toEqual(Array.from(plain));
+    // At 2 with no fillet the upper half is the same curve, resampled by the normal's angle.
+    const resampled = positionsOf(V(2, 0), 48);
     for (let ring = 0; ring < 2; ring += 1) {
-      // Crown (radial 0, and the seam's copy of it) and both waterline vertices (a quarter and three
-      // quarters round): the same points. (At the seam sin(2 pi) is 1e-16, which the V's exponent takes
-      // to 1e-24: both are the centre line.)
-      for (const radial of [0, segments / 4, (3 * segments) / 4, segments]) {
-        const v = at(vee, segments, ring, radial);
-        const e = at(plain, segments, ring, radial);
-        expect(v.y).toBe(e.y);
-        expect(Math.abs(v.z - e.z)).toBeLessThan(1e-12);
-      }
-      // The lower half, bit for bit.
-      for (let radial = segments / 4; radial <= (3 * segments) / 4; radial += 1) {
-        expect(at(vee, segments, ring, radial)).toEqual(at(plain, segments, ring, radial));
-      }
-      // The upper half: every vertex between crown and waterline lower AND inward, both flanks.
-      for (const radial of [...Array.from({ length: segments / 4 - 1 }, (_, k) => k + 1), ...Array.from({ length: segments / 4 - 1 }, (_, k) => (3 * segments) / 4 + 1 + k)]) {
-        const v = at(vee, segments, ring, radial);
-        const e = at(plain, segments, ring, radial);
-        expect(v.y).toBeLessThan(e.y);
-        expect(Math.abs(v.z)).toBeLessThan(Math.abs(e.z));
+      const s = ELLIPSE[ring]!;
+      for (let radial = 0; radial <= 48; radial += 1) {
+        const p = at(resampled, 48, ring, radial);
+        expect(Math.abs(((p.y - s.yOffset!) / s.yRadius) ** 2 + (p.z / s.zRadius) ** 2 - 1)).toBeLessThan(1e-6);
       }
     }
   });
 
-  it("stays tangent-continuous at the crown and the waterline for an exponent above 1, and refuses 1", () => {
-    // The chord from the crown to its neighbour flattens toward horizontal, and the chord from the
-    // waterline up to its neighbour steepens toward vertical, as the ring is sampled finer: the
-    // surface has a tangent there, not a corner. Measured at n 1.3 (the Global's is 1.26-1.47).
-    const chords = (segments: number) => {
-      const p = positionsOf(V(1.3), segments);
-      const crown = at(p, segments, 0, 0);
-      const nextToCrown = at(p, segments, 0, 1);
-      const waterline = at(p, segments, 0, segments / 4);
-      const aboveWaterline = at(p, segments, 0, segments / 4 - 1);
-      return {
-        crownFromHorizontal: Math.atan2(Math.abs(crown.y - nextToCrown.y), Math.abs(nextToCrown.z - crown.z)) * 180 / Math.PI,
-        waterlineFromVertical: Math.atan2(Math.abs(waterline.z - aboveWaterline.z), Math.abs(aboveWaterline.y - waterline.y)) * 180 / Math.PI,
-      };
+  it("moves the upper half only, holding the crown's height and the waterline's width, inside the ellipse", () => {
+    const segments = 48;
+    const plain = positionsOf(ELLIPSE, segments);
+    const vee = positionsOf(V(1.35, 0.15), segments);
+    for (let ring = 0; ring < 2; ring += 1) {
+      const s = ELLIPSE[ring]!;
+      // The lower half, bit for bit.
+      for (let radial = segments / 4 + 1; radial < (3 * segments) / 4; radial += 1) {
+        expect(at(vee, segments, ring, radial)).toEqual(at(plain, segments, ring, radial));
+      }
+      // The crown's height and the waterline's width, to a micrometre.
+      expect(Math.abs(at(vee, segments, ring, 0).y - (s.yOffset! + s.yRadius))).toBeLessThan(1e-6);
+      expect(Math.abs(at(vee, segments, ring, segments / 4).z - s.zRadius)).toBeLessThan(1e-6);
+      expect(Math.abs(at(vee, segments, ring, segments / 4).y - s.yOffset!)).toBeLessThan(1e-6);
+      // Every other upper vertex strictly inside the ellipse: the shoulders come down and in.
+      for (const radial of [...Array.from({ length: segments / 4 - 1 }, (_, k) => k + 1), ...Array.from({ length: segments / 4 - 1 }, (_, k) => (3 * segments) / 4 + 1 + k)]) {
+        const p = at(vee, segments, ring, radial);
+        expect(((p.y - s.yOffset!) / s.yRadius) ** 2 + (p.z / s.zRadius) ** 2).toBeLessThan(1);
+      }
+    }
+  });
+
+  it("is smooth: the crown is round to the fillet's radius, and every upper facet turns by the same step", () => {
+    // The crown's radius of curvature, from the crown and the points a step either side of it, the step
+    // finer and finer (the loft's own point function, in double precision: at a 4800th of a turn the
+    // mesh's float32 vertices are closer than their rounding). The filleted V's converges on the fillet
+    // (0.15 m); the unfilleted V's collapses.
+    const crownRadius = (section: LoftSection, steps: number) => {
+      const step = (2 * Math.PI) / steps;
+      return circumradius(loftSectionPoint(section, -step), loftSectionPoint(section, 0), loftSectionPoint(section, step));
     };
-    const coarse = chords(48);
-    const fine = chords(480);
-    const finer = chords(4800);
-    expect(fine.crownFromHorizontal).toBeLessThan(coarse.crownFromHorizontal);
-    expect(finer.crownFromHorizontal).toBeLessThan(fine.crownFromHorizontal);
-    expect(fine.waterlineFromVertical).toBeLessThan(coarse.waterlineFromVertical);
-    expect(finer.waterlineFromVertical).toBeLessThan(fine.waterlineFromVertical);
-    expect(finer.crownFromHorizontal).toBeLessThan(6);
-    expect(finer.waterlineFromVertical).toBeLessThan(6);
-    // CONTROL: at exponent 1 the section would be a diamond, with a corner at the crown that no
-    // sampling removes, and the builder refuses it.
-    expect(() => positionsOf(V(1), 48)).toThrow(RangeError);
+    expect(Math.abs(crownRadius(V(1.35, 0.15)[0]!, 480) - 0.15)).toBeLessThan(0.01);
+    expect(Math.abs(crownRadius(V(1.35, 0.15)[0]!, 48000) - 0.15)).toBeLessThan(0.001);
+    // CONTROL: no fillet, a ridge. Its crown's radius falls with every refinement.
+    const ridge480 = crownRadius(V(1.35, 0)[0]!, 480);
+    const ridge48000 = crownRadius(V(1.35, 0)[0]!, 48000);
+    expect(ridge48000).toBeLessThan(ridge480 / 10);
+    expect(ridge48000).toBeLessThan(0.01);
+    // Sampled by the normal's angle: consecutive upper facets turn by 360 / segments, to a quarter of a
+    // degree (a chord between two samples is the mean tangent only where the curvature is even); no
+    // step gathers the turn as the unfilleted, angle-sampled V's did (20 degrees at the waterline).
+    const segments = 48;
+    const p = positionsOf(V(1.35, 0.15), segments);
+    const heading = (k: number) => {
+      const a = at(p, segments, 0, k);
+      const b = at(p, segments, 0, k + 1);
+      return Math.atan2(b.y - a.y, b.z - a.z);
+    };
+    for (let k = 0; k < segments / 4 - 1; k += 1) {
+      expect(Math.abs(Math.abs(heading(k + 1) - heading(k)) * 180 / Math.PI - 360 / segments)).toBeLessThan(0.25);
+    }
+  });
+
+  it("shares its point with the loft, and refuses a ridge, an oversized fillet or a fillet without a V", () => {
+    const segments = 48;
+    const p = positionsOf(V(1.35, 0.15), segments);
+    for (let radial = 0; radial <= segments; radial += 1) {
+      const point = loftSectionPoint(V(1.35, 0.15)[0]!, (radial / segments) * Math.PI * 2);
+      expect(at(p, segments, 0, radial).y).toBeCloseTo(point.y, 6);
+      expect(at(p, segments, 0, radial).z).toBeCloseTo(point.z, 6);
+    }
+    expect(() => positionsOf(V(1, 0.15), 48)).toThrow(RangeError);
+    expect(() => positionsOf(V(1.35, 0.9), 48)).toThrow(RangeError);
+    expect(() => positionsOf(ELLIPSE.map((s) => ({ ...s, crownFillet: 0.1 })), 48)).toThrow(RangeError);
   });
 });

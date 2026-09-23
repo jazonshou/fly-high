@@ -3,7 +3,7 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { createRawTextureFromMipChain } from "../core/MipChainUpload";
 import { buildLiveryMipChain, phaseOfHeight, type LiveryImage, type LiveryRgb } from "./airlinerLivery";
-import type { LoftSection } from "./builders";
+import { loftSectionPoint, type LoftSection } from "./builders";
 
 /**
  * THE GLOBAL'S LIVERY, rasterised by hand into RGBA bytes, in the pattern of
@@ -65,9 +65,12 @@ const CHANNELS = 4;
  * forward of abeam and 6 above), each through a camera solved on its own
  * windows. The first reads the crown and the second the shoulders, and no
  * ellipse fits both over the windshield. There the section is a V of flat
- * panes meeting at the centre post: `crownSquareness` 1.47 at 1.2-1.8 m aft,
- * 1.26 at 2.1, 1.30 at 2.3. Seen from below, a V's shoulder stands lower than
- * its ridge, so the ridge sits above the side view's silhouette.
+ * panes meeting at the centre post, FILLETED 0.15 m at its crown and its
+ * waterline (`crownSquareness` 1.35-1.49 from 1.5 to 2.45 m aft, 1.75 at 1.2
+ * and 1.65 at 2.6; part 6b): an unfilleted V drew a chine along the waterline
+ * and a line down the ridge in the frames. Seen from below, a V's shoulder
+ * stands lower than its ridge, so the ridge sits above the side view's
+ * silhouette.
  *
  * THE V STOPS AT THE WINDSHIELD. Aft of it the section returns to the
  * ellipse by 2.75 m aft (1.6 at 2.5), which keeps the side windows where the
@@ -98,29 +101,29 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
   { x: 10.5, yRadius: 1.3047, zRadius: 1.3200, yOffset: 0.0278 },
   { x: 11, yRadius: 1.2721, zRadius: 1.3200, yOffset: 0.0407 },
-  { x: 11.5, yRadius: 1.2201, zRadius: 1.3150, yOffset: 0.0369 },
-  { x: 11.9, yRadius: 1.1475, zRadius: 1.2806, yOffset: 0.0117 },
-  { x: 12.2, yRadius: 1.0564, zRadius: 1.2436, yOffset: -0.0340 },
-  { x: 12.4, yRadius: 0.9973, zRadius: 1.2152, yOffset: -0.0577, crownSquareness: 1.796 },
-  { x: 12.55, yRadius: 0.9675, zRadius: 1.1909, yOffset: -0.0622, crownSquareness: 1.513 },
-  { x: 12.7, yRadius: 0.9244, zRadius: 1.1606, yOffset: -0.0802, crownSquareness: 1.300 },
-  { x: 12.78, yRadius: 0.8920, zRadius: 1.1444, yOffset: -0.0989, crownSquareness: 1.276 },
-  { x: 12.87, yRadius: 0.8475, zRadius: 1.1263, yOffset: -0.1277, crownSquareness: 1.261 },
-  { x: 12.95, yRadius: 0.8001, zRadius: 1.1101, yOffset: -0.1609, crownSquareness: 1.276 },
-  { x: 13.03, yRadius: 0.7553, zRadius: 1.0906, yOffset: -0.1913, crownSquareness: 1.344 },
-  { x: 13.1, yRadius: 0.7166, zRadius: 1.0686, yOffset: -0.2176, crownSquareness: 1.416 },
-  { x: 13.2, yRadius: 0.6698, zRadius: 1.0371, yOffset: -0.2475, crownSquareness: 1.470 },
-  { x: 13.31, yRadius: 0.6352, zRadius: 1.0026, yOffset: -0.2643, crownSquareness: 1.470 },
-  { x: 13.45, yRadius: 0.5981, zRadius: 0.9503, yOffset: -0.2792, crownSquareness: 1.470 },
-  { x: 13.6, yRadius: 0.5515, zRadius: 0.8907, yOffset: -0.3028, crownSquareness: 1.498 },
-  { x: 13.8, yRadius: 0.4830, zRadius: 0.8062, yOffset: -0.3411, crownSquareness: 1.689 },
-  { x: 14.1, yRadius: 0.3737, zRadius: 0.6720, yOffset: -0.4065 },
-  { x: 14.4, yRadius: 0.2691, zRadius: 0.5020, yOffset: -0.4680 },
-  { x: 14.7, yRadius: 0.1795, zRadius: 0.3400, yOffset: -0.5144 },
+  { x: 11.5, yRadius: 1.2207, zRadius: 1.3150, yOffset: 0.0375, crownSquareness: 2 },
+  { x: 11.9, yRadius: 1.1457, zRadius: 1.2806, yOffset: 0.0099, crownSquareness: 2 },
+  { x: 12.2, yRadius: 1.0578, zRadius: 1.2436, yOffset: -0.0326, crownSquareness: 2 },
+  { x: 12.4, yRadius: 1.0066, zRadius: 1.2152, yOffset: -0.0484, crownSquareness: 1.650, crownFillet: 0.15 },
+  { x: 12.55, yRadius: 0.9643, zRadius: 1.1909, yOffset: -0.0654, crownSquareness: 1.453, crownFillet: 0.15 },
+  { x: 12.7, yRadius: 0.9137, zRadius: 1.1606, yOffset: -0.0909, crownSquareness: 1.362, crownFillet: 0.15 },
+  { x: 12.78, yRadius: 0.8816, zRadius: 1.1444, yOffset: -0.1093, crownSquareness: 1.353, crownFillet: 0.15 },
+  { x: 12.87, yRadius: 0.8377, zRadius: 1.1263, yOffset: -0.1375, crownSquareness: 1.349, crownFillet: 0.15 },
+  { x: 12.95, yRadius: 0.7925, zRadius: 1.1101, yOffset: -0.1685, crownSquareness: 1.360, crownFillet: 0.15 },
+  { x: 13.03, yRadius: 0.7493, zRadius: 1.0906, yOffset: -0.1973, crownSquareness: 1.405, crownFillet: 0.15 },
+  { x: 13.1, yRadius: 0.7118, zRadius: 1.0686, yOffset: -0.2224, crownSquareness: 1.436, crownFillet: 0.15 },
+  { x: 13.2, yRadius: 0.6658, zRadius: 1.0371, yOffset: -0.2515, crownSquareness: 1.450, crownFillet: 0.15 },
+  { x: 13.31, yRadius: 0.6303, zRadius: 1.0026, yOffset: -0.2692, crownSquareness: 1.460, crownFillet: 0.15 },
+  { x: 13.45, yRadius: 0.5916, zRadius: 0.9503, yOffset: -0.2857, crownSquareness: 1.489, crownFillet: 0.15 },
+  { x: 13.6, yRadius: 0.5448, zRadius: 0.8907, yOffset: -0.3095, crownSquareness: 1.575, crownFillet: 0.15 },
+  { x: 13.8, yRadius: 0.4777, zRadius: 0.8062, yOffset: -0.3464, crownSquareness: 1.745, crownFillet: 0.15 },
+  { x: 14.1, yRadius: 0.3713, zRadius: 0.6720, yOffset: -0.4089, crownSquareness: 2 },
+  { x: 14.4, yRadius: 0.2691, zRadius: 0.5020, yOffset: -0.4680, crownSquareness: 2 },
+  { x: 14.7, yRadius: 0.1801, zRadius: 0.3400, yOffset: -0.5138, crownSquareness: 2 },
   // The tip, its crown at the gold line's height (phase 3c, parts 4-5): the sim's two
   // radome contact points straddle it 0.15 m above and below (`src/sim/aircraft.ts`,
   // held by render.bizjet-nose against the built mesh).
-  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.55 },
+  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.55, crownSquareness: 2 },
 ];
 
 /** The upswept tailcone, ending at the sim's tailcone contact point. */
@@ -482,8 +485,9 @@ function paintStripe(raster: Raster, stripe: GlobalLiveryStripe): void {
 /**
  * The world height of phase `v` at station `x`: the loft's own section,
  * `y = yOffset + yRadius * cos(2 pi v)` at squareness 2, and the
- * superellipse's `sign(cos) |cos|^(2/n)` in general, with the upper half's
- * `crownSquareness` above the widest point, as `phaseOfHeight` inverts it.
+ * superellipse's `sign(cos) |cos|^(2/n)` in general, and the loft's own
+ * filleted V above the widest point where a ring has one, as `phaseOfHeight`
+ * inverts it.
  */
 export function heightOfPhase(sections: readonly LoftSection[], x: number, v: number): number {
   let low = sections[0]!;
@@ -500,11 +504,19 @@ export function heightOfPhase(sections: readonly LoftSection[], x: number, v: nu
   const yOffset = (low.yOffset ?? 0) + ((high.yOffset ?? 0) - (low.yOffset ?? 0)) * t;
   const squareness = (low.squareness ?? 2) + ((high.squareness ?? 2) - (low.squareness ?? 2)) * t;
   const cosine = Math.cos(v * 2 * Math.PI);
-  // The upper half takes its own exponent where the ring has one (the V over the flight deck).
-  const lowCrown = low.crownSquareness ?? low.squareness ?? 2;
-  const highCrown = high.crownSquareness ?? high.squareness ?? 2;
-  const exponent = cosine > 0 ? lowCrown + (highCrown - lowCrown) * t : squareness;
-  return yOffset + yRadius * Math.sign(cosine) * Math.abs(cosine) ** (2 / exponent);
+  if (cosine > 0 && (low.crownSquareness !== undefined || high.crownSquareness !== undefined)) {
+    // The filleted V over the flight deck: the loft's own point.
+    const mix = (a: number, b: number) => a + (b - a) * t;
+    return loftSectionPoint({
+      x,
+      yRadius,
+      zRadius: mix(low.zRadius, high.zRadius),
+      yOffset,
+      crownSquareness: mix(low.crownSquareness ?? 2, high.crownSquareness ?? 2),
+      crownFillet: mix(low.crownFillet ?? 0, high.crownFillet ?? 0),
+    }, v * 2 * Math.PI).y;
+  }
+  return yOffset + yRadius * Math.sign(cosine) * Math.abs(cosine) ** (2 / squareness);
 }
 
 // ---------------------------------------------------------------------------

@@ -255,10 +255,10 @@ describe("the Global's flight-deck glass", () => {
     }
     // The outline is a point on the loft's smooth section; the cast lands on the facet under it,
     // up to 2 mm inside at 48 segments round on an ellipse, which moves it along the sightline, and
-    // the steeper the skin to the sightline the further. Measured 6.0 mm and 0.50 degrees at worst on
-    // part 6's nose (18.2 mm and 0.28 on part 3's, 10.8 and 0.15 on part 2's, 5.0 and 0.13 on part 1's,
-    // 5.7 and 0.11 before 3c). With the V carried on under the side panes it was 0.72: its 48 facets
-    // are longest at 50-65 degrees round, and the cast landed 6 mm inboard of the smooth V.
+    // the steeper the skin to the sightline the further. Measured 17.4 mm and 0.48 degrees at worst on
+    // part 6b's filleted V, whose flat flanks are sampled by their normal's angle and so run long (6.0
+    // and 0.50 on part 6's V, 18.2 and 0.28 on part 3's nose, 10.8 and 0.15 on part 2's, 5.0 and 0.13 on
+    // part 1's, 5.7 and 0.11 before 3c). With the V carried on under the side panes it was 0.72.
     expect(aft).toBeLessThan(0.025);
     expect(angle).toBeLessThan(0.6);
 
@@ -275,9 +275,10 @@ describe("the Global's flight-deck glass", () => {
     expect(misplaced.angle).toBeGreaterThan(4.5);
   });
 
-  it("stands the centre post's glass outside the V: a third column on the ridge, where two ran under it", () => {
-    // The nose is a V over the windshield (phase 3c, part 6), with its ridge on the centre line under
-    // the post. The post is cast +-4 degrees round, and a chord from edge to edge runs under the ridge.
+  it("stands the centre post's glass clear of the V's crown: a third column on it, where two ran under it", () => {
+    // The nose is a filleted V over the windshield (phase 3c, part 6b), its crown on the centre line
+    // under the post. The post is cast +-4 degrees round, and a chord from edge to edge runs under the
+    // crown.
     const built = post();
     expect(built.columns).toBe(3);
     // Its middle column is cast onto the ridge, and its glass stands out along the ridge's normal, to a
@@ -287,7 +288,7 @@ describe("the Global's flight-deck glass", () => {
       expect(Math.abs(cast.points[row]![1]!.z)).toBeLessThan(1e-6);
       expect(Math.abs(vertex(built, 0, row, 1).z)).toBeLessThan(1e-3);
     }
-    // Measured 8.9 mm out and 21.8 mm in at worst.
+    // Measured 9.3 mm out and 21.8 mm in at worst.
     const { outer, inner } = clearances([built], caster);
     expect(outer).toBeGreaterThan(0.005);
     expect(inner).toBeLessThan(-0.015);
@@ -302,9 +303,10 @@ describe("the Global's flight-deck glass", () => {
       positions: Array.from(mesh.getVerticesData(VertexBuffer.PositionKind)!),
       indices: Array.from(mesh.getIndices()!),
     };
-    // Measured 7.8 mm INSIDE the skin at worst, where the chord crosses the ridge.
+    // Measured 1.6 mm out at worst, where the chord crosses the crown: under the 3 mm the glass is held
+    // to (on the unfilleted V of part 6 it was 7.8 mm INSIDE).
     const control = clearances([twoColumns], caster);
-    expect(control.outer).toBeLessThan(0);
+    expect(control.outer).toBeLessThan(0.003);
     scene2.dispose();
     engine.dispose();
   });
@@ -312,7 +314,8 @@ describe("the Global's flight-deck glass", () => {
   it("keeps the outer face outside the skin and the inner face inside it, at every cell centre", () => {
     // Along the skin's normal, from a ray cast from R through each cell's centre. The design is
     // 12 mm out and 30 mm in; the chords between grid points cross the nose's facet creases.
-    // Measured 8.7 mm out and 18.5 mm in at worst on part 6's V. 4.7 and 19.2 on part 5's nose, whose
+    // Measured 8.2 mm out and 19.9 mm in at worst on part 6b's filleted V (8.7 and 18.5 on part 6's). 4.7
+    // and 19.2 on part 5's nose, whose
     // straight nose ends at 1.6 m aft so the post's foot lies on the curve (ended at the foot, 13.5 mm
     // in); 7.0 and 19.4 on part
     // 4 (d)'s filleted brow (as a single knee, 0.4 mm INSIDE); 6.2 and 19.8 on part 3's, 6.6 and 19.5

@@ -321,10 +321,10 @@ describe("the Global's nose (phase 3c)", () => {
     expect(keel).toBeLessThan(0.02);
     expect(rise).toBeLessThanOrEqual(0.001);
     // The drop, against the nose before, at the stations the table states (m aft of the tip).
-    // Measured (part 6, the ridge of the V over the windshield): 0.474 / 0.458 / 0.211 / 0.089 / 0.054,
-    // the crown then 0.195 / 0.422 / 0.777 / 1.114 / 1.257 (part 5: 0.577 / 0.541 / 0.225 / 0.070 /
-    // 0.056).
-    const drops: [number, number][] = [[1.3, 0.474], [1.8, 0.458], [2.2, 0.211], [3.0, 0.089], [3.5, 0.054]];
+    // Measured (part 6b, the filleted V's crown over the windshield): 0.486 / 0.466 / 0.231 / 0.090 /
+    // 0.053, the crown then 0.183 / 0.414 / 0.756 / 1.112 / 1.258 (part 5: 0.577 / 0.541 / 0.225 / 0.070
+    // / 0.056).
+    const drops: [number, number][] = [[1.3, 0.486], [1.8, 0.466], [2.2, 0.231], [3.0, 0.09], [3.5, 0.053]];
     for (const [aft, want] of drops) {
       const x = TIP_X - aft;
       const got = crownAt(before, x, -0.1) - crownAt(now, x);
@@ -438,28 +438,46 @@ describe("the Global's nose (phase 3c)", () => {
     expect(beforeAcross.filter((c) => c.angle > 5).length).toBe(24);
   });
 
-  it("turns the V's facets round the ring within bounds at its ridge and its waterline", () => {
-    // Over the windshield the upper half is a V (phase 3c, part 6): tangent-continuous at the ridge
-    // and the waterline (render.loft-crown-squareness), but its curvature runs to infinity at both, so
-    // at 48 segments round the facets turn hardest there. The turn from each vertex's normal to the
-    // next round the ring, over the ridge (radials 0-1) and the waterline (10-14).
+  it("rounds the V's crown and keeps its waterline as smooth as the ellipse's (part 6b)", () => {
+    // Over the windshield the upper half is a filleted V. Unfilleted it drew a line down the ridge and a
+    // chine along the waterline in the frames: the curvature ran to infinity at both.
     const normals = fuselage.getVerticesData(VertexBuffer.NormalKind)!;
-    const worstAt = (x: number) => {
-      const ring = GLOBAL_FUSELAGE_SECTIONS.findIndex((section) => section.x === x);
-      const turn = (radial: number) => angleBetween(vec(normals, ring * RING + radial), vec(normals, ring * RING + radial + 1));
-      return { ridge: turn(0), waterline: Math.max(...[10, 11, 12, 13].map(turn)) };
+    const positions = fuselage.getVerticesData(VertexBuffer.PositionKind)!;
+    // The V rings (below 2); the ellipses either side carry 2, resampled by the same normal angles so the
+    // strips between them do not twist.
+    const vRings = GLOBAL_FUSELAGE_SECTIONS.map((section, ring) => ({ section, ring })).filter(({ section }) => (section.crownSquareness ?? 2) < 2);
+    expect(vRings.length).toBeGreaterThanOrEqual(10);
+    const point = (data: ArrayLike<number>, ring: number, radial: number) => ({
+      y: data[(ring * RING + ((radial + 48) % 48)) * 3 + 1]!, z: data[(ring * RING + ((radial + 48) % 48)) * 3 + 2]!,
+    });
+    const circumradius = (p: { y: number; z: number }, q: { y: number; z: number }, r: { y: number; z: number }) => {
+      const a = Math.hypot(p.y - q.y, p.z - q.z); const b = Math.hypot(q.y - r.y, q.z - r.z); const c = Math.hypot(r.y - p.y, r.z - p.z);
+      return (a * b * c) / (2 * Math.abs((q.z - p.z) * (r.y - p.y) - (r.z - p.z) * (q.y - p.y)));
     };
-    const vRings = GLOBAL_FUSELAGE_SECTIONS.filter((section) => (section.crownSquareness ?? 2) < 1.6).map((section) => worstAt(section.x));
-    expect(vRings.length).toBeGreaterThanOrEqual(8);
-    // Measured: 19.9 degrees a step at worst at the waterline (13.03 and 12.87) and 15.2 at the ridge
-    // (12.7), against 9.1 and 6.2 on the ellipse aft of the V (12.2). Registered for the frames: if the
-    // waterline reads as a line, the V's exponent returns to 2 toward it.
-    expect(Math.max(...vRings.map((r) => r.waterline))).toBeLessThan(20.5);
-    expect(Math.max(...vRings.map((r) => r.ridge))).toBeLessThan(16);
-    // CONTROL: the ellipse ring aft of the V turns under 10 at both.
-    const ellipse = worstAt(12.2);
-    expect(ellipse.waterline).toBeLessThan(10);
-    expect(ellipse.ridge).toBeLessThan(10);
+    // The crown's radius from the crown vertex and its neighbours round the ring.
+    const crownRadii = vRings.map(({ ring }) => circumradius(point(positions, ring, -1), point(positions, ring, 0), point(positions, ring, 1)));
+    // The waterline: the turn from each vertex's normal to the next, radials 10-14, against the same table
+    // lofted as ellipses (no V), ring by ring.
+    const lofts = new AircraftBuildContext(scene);
+    const ellipseMesh = lofts.loft("ellipse-control", GLOBAL_FUSELAGE_SECTIONS.map((ring) => (ring.crownSquareness === undefined ? ring : { ...ring, crownSquareness: 2, crownFillet: 0 })), 48,
+      new StandardMaterial("e", scene), new TransformNode("e", scene));
+    const ellipseNormals = ellipseMesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const waterline = (data: ArrayLike<number>, ring: number) => Math.max(...[10, 11, 12, 13].map((radial) => angleBetween(vec(data, ring * RING + radial), vec(data, ring * RING + radial + 1))));
+    const excess = vRings.map(({ ring }) => waterline(normals, ring) - waterline(ellipseNormals, ring));
+    // Measured: the crown's radius 0.18-0.87 m on every V ring (the fillet is 0.15; the V's own curvature
+    // adds to it away from the ridge); the waterline's worst turn per step 8.8-11.4 degrees, the same to
+    // a tenth as the same rings lofted as ellipses: the V adds nothing there (unfilleted and sampled by
+    // angle it added 10). The forward rings' steps over 9.1 are their own lower halves', which part 6b
+    // leaves alone: flat ellipses turn hardest at the waterline.
+    for (const radius of crownRadii) expect(radius).toBeGreaterThanOrEqual(0.15);
+    for (const step of excess) expect(step).toBeLessThanOrEqual(0.1);
+    // CONTROL: the same V without its fillet has a ridge: its crown's radius from the same three vertices.
+    const ridged = lofts.loft("ridge-control", GLOBAL_FUSELAGE_SECTIONS.map((ring) => ((ring.crownSquareness ?? 2) < 2 ? { ...ring, crownFillet: 0 } : ring)), 48,
+      new StandardMaterial("r", scene), new TransformNode("r", scene));
+    const ridgedPositions = ridged.getVerticesData(VertexBuffer.PositionKind)!;
+    const ridgeRadii = vRings.map(({ ring }) => circumradius(point(ridgedPositions, ring, -1), point(ridgedPositions, ring, 0), point(ridgedPositions, ring, 1)));
+    // Measured 0.04 m at its tightest (12.78-12.87), against the fillet's 0.18.
+    expect(Math.min(...ridgeRadii)).toBeLessThan(0.1);
   });
 
   it("shades the nose as one surface: no crease where the radome met the fuselage's capped end", () => {
@@ -483,9 +501,9 @@ describe("the Global's nose (phase 3c)", () => {
       angleBetween(vec(fb, lastRing), vec(rb, radomeRing)),
       angleBetween(vec(fb, lastRing + 12), vec(rb, radomeRing + 10)),
     );
-    // Measured (part 6): the worst step between rings 9.6 degrees, on the crown into 12.7 where the V
-    // ends into the roof; 9.1 into 11.9, 8.8 into 13.2 and 8.5 into 13.31 at the face's foot. Through
-    // the blend to the drooped tip (13.45 .. 14.7) no step is over 6.5 (render.bizjet-seat-view). 34.0
+    // Measured (part 6b): the worst step between rings 8.6 degrees, on the crown into 11.9 where the
+    // roof steepens toward the seat; 8.0 into 13.2 and 7.7 into 13.31 at the face's foot. Through the
+    // blend to the drooped tip (13.45 .. 14.7) no step is over 6.5 (render.bizjet-seat-view). 34.0
     // across 13.2 before.
     expect(worst).toBeLessThan(13.5);
     expect(crease).toBeGreaterThan(25);
@@ -516,9 +534,9 @@ describe("the Global's nose (phase 3c)", () => {
       };
       return { foot: range(1.5, 1.9999), face: range(2.0, 3.5) };
     };
-    // Measured (part 6, the V sampled as the loft draws it): -0.072..-0.042 over the foot, where the
-    // face stays under the line so the aim point on final stays in the glass; -0.040..+0.007 over
-    // the face and roof (part 5: -0.114..-0.047 and -0.041..+0.079).
+    // Measured (part 6b, the filleted V sampled as the loft draws it): -0.081..-0.047 over the foot,
+    // where the face stays under the line so the aim point on final stays in the glass; -0.046..-0.002
+    // over the face and roof (part 5: -0.114..-0.047 and -0.041..+0.079).
     const built = bands(GLOBAL_FUSELAGE_SECTIONS);
     expect(built.foot.columns).toBeGreaterThan(30);
     expect(built.face.columns).toBeGreaterThan(100);
@@ -544,16 +562,16 @@ describe("the Global's nose (phase 3c)", () => {
     const ellipse = band(GLOBAL_FUSELAGE_SECTIONS.map(({ crownSquareness: _, ...ring }) => ring));
     const part5 = band([...cabin, ...PART_5_NOSE]);
     const lifted = band(GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x > 9.5 ? { ...r, yOffset: (r.yOffset ?? 0) + 0.1 } : r)));
-    // Measured: -0.046..+0.103, rms 0.061 over 21 points: within 0.05 to 2.5 m aft, then up to +0.10 at
-    // 2.6-2.8, where the V gives way to the ellipse so that the side windows stay on p. 29's. There
+    // Measured (part 6b): -0.034..+0.105, rms 0.055 over 21 points: within 0.05 to 2.6 m aft, then up to
+    // +0.10 at 2.7-2.8, where the V gives way to the ellipse so that the side windows stay on p. 29's. There
     // p. 35's outline is its windshield glass, which a hidden sliver of brow may lift (registered).
     // Forward of 1.5 m aft it reads the nose 0.03-0.14 high toward the tip: registered, as neither
     // the crown nor a credible width fits it (docs/findings/GLOBAL_LIVERY.md, part 6).
     expect(built.points).toBeGreaterThanOrEqual(18);
     expect(Math.max(-built.low, built.high)).toBeLessThanOrEqual(0.11);
     expect(built.rms).toBeLessThanOrEqual(0.07);
-    // CONTROLS. The same crowns on ellipses read rms 0.131, up to +0.218: the section is what p. 35
-    // sees. Part 5's nose reads 0.137, up to +0.225. The built nose lifted 0.10 m reads 0.045 at
+    // CONTROLS. The same crowns on ellipses read rms 0.125, up to +0.202: the section is what p. 35
+    // sees. Part 5's nose reads 0.137, up to +0.225. The built nose lifted 0.10 m reads 0.054 at
     // least, the instrument's sign and scale (the camera is 6 degrees above).
     expect(ellipse.rms).toBeGreaterThan(0.1);
     expect(part5.rms).toBeGreaterThan(0.1);

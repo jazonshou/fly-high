@@ -36,7 +36,7 @@
  */
 
 import type { GlazingPane, Point3 } from "./airlinerGlazing";
-import type { LoftSection } from "./builders";
+import { loftSectionPoint, type LoftSection } from "./builders";
 import { GLOBAL_FUSELAGE_SECTIONS } from "./bizjetLivery";
 
 /** The azimuth reference: on the centreline at the pilots' station and eye height (`cockpitEye` 11.90 / 0.78). */
@@ -109,11 +109,13 @@ export const GLOBAL_PANE_PROUD = 0.012;
 export const GLOBAL_PANE_DEPTH = 0.03;
 
 interface Section {
+  readonly x: number;
   readonly yRadius: number;
   readonly zRadius: number;
   readonly yOffset: number;
-  /** The upper half's superellipse exponent: 2 is the ellipse, below 2 a V (`LoftSection.crownSquareness`). */
-  readonly crownSquareness: number;
+  /** The upper half's filleted V (`LoftSection.crownSquareness`, `crownFillet`); absent on an ellipse. */
+  readonly crownSquareness?: number;
+  readonly crownFillet?: number;
 }
 
 function interpolate(sections: readonly LoftSection[], x: number): Section {
@@ -127,12 +129,34 @@ function interpolate(sections: readonly LoftSection[], x: number): Section {
     }
   }
   const t = Math.min(1, Math.max(0, (x - low.x) / (high.x - low.x)));
-  return {
+  const section = {
+    x,
     yRadius: low.yRadius + (high.yRadius - low.yRadius) * t,
     zRadius: low.zRadius + (high.zRadius - low.zRadius) * t,
     yOffset: (low.yOffset ?? 0) + ((high.yOffset ?? 0) - (low.yOffset ?? 0)) * t,
-    crownSquareness: (low.crownSquareness ?? 2) + ((high.crownSquareness ?? 2) - (low.crownSquareness ?? 2)) * t,
   };
+  if (low.crownSquareness === undefined && high.crownSquareness === undefined) return section;
+  // Between a V ring and an ellipse ring the V's parameters run to the ellipse's (2, no fillet): the same
+  // curve the ellipse ring draws, sampled by normal angle.
+  return {
+    ...section,
+    crownSquareness: (low.crownSquareness ?? 2) + ((high.crownSquareness ?? 2) - (low.crownSquareness ?? 2)) * t,
+    crownFillet: (low.crownFillet ?? 0) + ((high.crownFillet ?? 0) - (low.crownFillet ?? 0)) * t,
+  };
+}
+
+/** The upper-half angle whose loft point has coordinate `key` equal to `target`, by bisection (monotone). */
+function upperAngle(section: Section, key: "y" | "z", target: number): number {
+  let low = 0;
+  let high = Math.PI / 2;
+  for (let step = 0; step < 60; step += 1) {
+    const middle = (low + high) / 2;
+    const value = loftSectionPoint(section, middle)[key];
+    // z rises from the crown to the widest point; y falls.
+    if (key === "z" ? value < target : value > target) low = middle;
+    else high = middle;
+  }
+  return (low + high) / 2;
 }
 
 /**
@@ -161,25 +185,23 @@ export function globalSkinSectionAt(x: number): Section {
  * THE ANGLE IS THE TOP VIEW'S HALF-WIDTH. The outlines were read off the
  * brochure's top view as half-widths and stored as the angle whose sine is
  * that fraction of the section's; on an ellipse that is the angle round the
- * section. On a V (phase 3c, part 6) the point keeps that half-width, and so
- * where the top view put it, and takes the V's height there. Keeping the
- * ellipse's angle instead would slide every pane inboard and down the V's
- * flank: the pilot's bottom edge straight ahead went from -11.1 to -6.5.
+ * section. On the filleted V (phase 3c, part 6) the point keeps that
+ * half-width, and so where the top view put it, and takes the V's height
+ * there. Keeping the ellipse's angle instead would slide every pane inboard and
+ * down the V's flank: the pilot's bottom edge straight ahead went from -11.1
+ * to -6.5.
  */
 export function globalBodyPoint([aft, angle]: BodyPoint, side: 1 | -1): Point3 {
   const x = GLOBAL_NOSE_TIP_X - aft;
   const section = globalSkinSectionAt(x);
   const radians = (angle * Math.PI) / 180;
-  const cosine = Math.cos(radians);
-  const n = section.crownSquareness;
-  // The V's height at the half-width fraction s: |u|^n + s^n = 1 on the upper half.
-  const s = Math.abs(Math.sin(radians));
-  const rise = cosine > 0 && n !== 2 ? (1 - s ** n) ** (1 / n) : cosine;
-  return {
-    x,
-    y: section.yOffset + section.yRadius * rise,
-    z: side * section.zRadius * Math.sin(radians),
-  };
+  const halfWidth = section.zRadius * Math.sin(radians);
+  if (section.crownSquareness === undefined || !(Math.cos(radians) > 0)) {
+    return { x, y: section.yOffset + section.yRadius * Math.cos(radians), z: side * halfWidth };
+  }
+  // On the filleted V: the point at this half-width, and the V's height there.
+  const point = loftSectionPoint(section, upperAngle(section, "z", Math.abs(halfWidth)));
+  return { x, y: point.y, z: side * halfWidth };
 }
 
 /**
@@ -192,8 +214,8 @@ export function globalSectionHalfWidth(x: number, y: number): number {
   const section = globalSkinSectionAt(x);
   const u = (y - section.yOffset) / section.yRadius;
   if (Math.abs(u) > 1) return Number.NaN;
-  const n = u > 0 ? section.crownSquareness : 2;
-  return section.zRadius * (n === 2 ? Math.sqrt(1 - u * u) : (1 - Math.abs(u) ** n) ** (1 / n));
+  if (section.crownSquareness === undefined || u <= 0) return section.zRadius * Math.sqrt(1 - u * u);
+  return Math.abs(loftSectionPoint(section, upperAngle(section, "y", y)).z);
 }
 
 /** The (azimuth, elevation) in degrees, outboard positive, of the sightline from `reference` through a starboard point. */

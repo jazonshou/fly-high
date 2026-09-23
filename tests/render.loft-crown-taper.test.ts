@@ -312,7 +312,12 @@ describe("the loft's crown taper", () => {
       // lining is cast along the panes' edges, re-samples (4816 -> 4964 vertices; the kit's own tests
       // re-pin on the cockpit engineer's commit). Checked mesh by mesh against 6638484: the Global's other
       // 86 meshes, and every mesh of the trainer, the jet and the 747, are bit-identical.
-      bizjet: "49f13a41",
+      // RE-PINNED for part 6b: the V's crown and waterline filleted (0.15 m) and its upper half sampled by
+      // the normal's angle, the rings either side resampled the same way; ring count unchanged.
+      // `bizjet-fuselage`, the flight-deck glazing, the post and `bizjet-cockpit-interior`'s lining move
+      // (counts unchanged). Checked mesh by mesh against 49916b4: the Global's other 87 meshes, and every
+      // mesh of the trainer, the jet and the 747, are bit-identical.
+      bizjet: "280fa45a",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

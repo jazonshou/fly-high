@@ -102,20 +102,76 @@ export interface LoftSection {
    */
   readonly crownZRadius?: number;
   /**
-   * Superellipse exponent of the UPPER half alone (above `yOffset`), where
-   * `squareness` sets both. Below 2 it draws the upper half toward a V: the
-   * flanks straighten and the shoulders come down and in, while the crown's
-   * height, the half-width at the widest point and the lower half all stay.
-   * That is a flight deck of flat windshield panes meeting at a centre post,
-   * which an ellipse through the same crown and width stands proud of on
-   * both shoulders.
+   * The UPPER half (above `yOffset`) as a FILLETED V, where this is set: the
+   * superellipse of this exponent with radii shrunk by `crownFillet`, offset
+   * back out by `crownFillet`. Below 2 the flanks straighten and the shoulders
+   * come down and in, while the crown's height, the half-width at the widest
+   * point and the lower half all stay: a flight deck of flat windshield panes
+   * meeting at a centre post, which an ellipse through the same crown and
+   * width stands proud of on both shoulders.
    *
-   * It must be above 1: the upper half stays tangent-continuous, horizontal
-   * at the crown and vertical at the widest point, for any exponent above 1;
-   * at 1 the crown is a ridge. Where it is absent the section is exactly what
-   * it was, bit for bit.
+   * THE FILLET IS THE SHADING'S. A superellipse below 2 is only
+   * tangent-continuous at its crown and its widest point: its curvature runs
+   * to infinity there, and at 48 segments round the facets turned 20 degrees a
+   * step at the waterline and 15 at the ridge, a chine and a ridge line in
+   * every frame. Offset by a radius, the curve is convex with its curvature
+   * capped at 1 / `crownFillet`, and the upper half is sampled by its OUTWARD
+   * NORMAL'S angle from vertical (the radial's own angle), so every facet turns
+   * the same 360 / segments degrees.
+   *
+   * It must be above 1. Where it is absent the section is exactly what it was,
+   * bit for bit; where it is set the upper half is resampled, so even at 2 with
+   * no fillet its vertices lie on the ellipse but not at the ellipse's angles.
+   * A crown-tapered ring (`crownZRadius`) cannot take it.
    */
   readonly crownSquareness?: number;
+  /** The filleted V's radius, in metres (0 when absent); below both radii. Only with `crownSquareness`. */
+  readonly crownFillet?: number;
+}
+
+/**
+ * A loft section's point at radial `angle` (0 at the crown, increasing toward
+ * +z first), as the loft lays its ring down: the superellipse (with the crown
+ * taper) below and, where `crownSquareness` is set, the filleted V above at
+ * outward-normal angle `angle`. Every consumer that must agree with the drawn
+ * surface (the glazing, the livery's heights) reads it here.
+ */
+export function loftSectionPoint(section: LoftSection, angle: number): { y: number; z: number } {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  if (section.crownSquareness !== undefined && cosine > 0) {
+    const n = section.crownSquareness;
+    const fillet = section.crownFillet ?? 0;
+    const a = section.zRadius - fillet;
+    const b = section.yRadius - fillet;
+    // The superellipse's point whose outward normal is at `phi` from vertical:
+    // (u / v)^(n-1) = (a / b) tan(phi), with u^n + v^n = 1.
+    const phi = Math.min(Math.abs(Math.atan2(sine, cosine)), Math.PI / 2 - 1e-12);
+    const q = ((a * Math.tan(phi)) / b) ** (1 / (n - 1));
+    const v = (1 + q ** n) ** (-1 / n);
+    const u = q * v;
+    return {
+      y: (section.yOffset ?? 0) + b * v + fillet * Math.cos(phi),
+      z: (section.zOffset ?? 0) + Math.sign(sine) * (a * u + fillet * Math.sin(phi)),
+    };
+  }
+  const shapeExponent = 2 / (section.squareness ?? 2);
+  const crownZRadius = section.crownZRadius ?? section.zRadius;
+  // Superellipse: |cos|^(2/n)·sign(cos). At n = 2 this is exactly the
+  // ellipse the pre-fix-pack loft produced.
+  const yShape = Math.sign(cosine) * Math.abs(cosine) ** shapeExponent;
+  const zShape = Math.sign(sine) * Math.abs(sine) ** shapeExponent;
+  // The crown taper: nothing on the lower half, easing to
+  // `crownZRadius` by the top. `rise` is 0 at and below the equator and
+  // 1 at the crown; the smoothstep gives it zero slope at both ends, so
+  // the widest point stays tangent-continuous.
+  const rise = Math.max(0, yShape);
+  const lift = rise * rise * (3 - 2 * rise);
+  const halfWidth = section.zRadius + (crownZRadius - section.zRadius) * lift;
+  return {
+    y: (section.yOffset ?? 0) + yShape * section.yRadius,
+    z: (section.zOffset ?? 0) + zShape * halfWidth,
+  };
 }
 
 export interface AirfoilWingOptions {
@@ -749,34 +805,22 @@ export class AircraftBuildContext {
       if (!(crownZRadius > 0)) {
         throw new RangeError("Aircraft loft crown radius must be positive");
       }
-      if (section.crownSquareness !== undefined && !(section.crownSquareness > 1)) {
-        throw new RangeError("Aircraft loft crown squareness must be above 1");
+      if (section.crownSquareness !== undefined) {
+        if (!(section.crownSquareness > 1)) throw new RangeError("Aircraft loft crown squareness must be above 1");
+        if (section.crownZRadius !== undefined) {
+          throw new RangeError("Aircraft loft crown squareness cannot combine with a crown radius");
+        }
+        const fillet = section.crownFillet ?? 0;
+        if (!(fillet >= 0 && fillet < Math.min(section.yRadius, section.zRadius))) {
+          throw new RangeError("Aircraft loft crown fillet must be at least 0 and under both radii");
+        }
+      } else if (section.crownFillet !== undefined) {
+        throw new RangeError("Aircraft loft crown fillet needs a crown squareness");
       }
-      const shapeExponent = 2 / squareness;
-      const crownExponent = section.crownSquareness === undefined ? shapeExponent : 2 / section.crownSquareness;
       for (let radial = 0; radial <= radialSegments; radial += 1) {
         const phase = radial / radialSegments;
-        const angle = phase * Math.PI * 2;
-        const cosine = Math.cos(angle);
-        const sine = Math.sin(angle);
-        // Superellipse: |cos|^(2/n)·sign(cos). At n = 2 this is exactly the
-        // ellipse the pre-fix-pack loft produced. The upper half (cos > 0)
-        // takes `crownSquareness` when there is one.
-        const exponent = cosine > 0 ? crownExponent : shapeExponent;
-        const yShape = Math.sign(cosine) * Math.abs(cosine) ** exponent;
-        const zShape = Math.sign(sine) * Math.abs(sine) ** exponent;
-        // The crown taper: nothing on the lower half, easing to
-        // `crownZRadius` by the top. `rise` is 0 at and below the equator and
-        // 1 at the crown; the smoothstep gives it zero slope at both ends, so
-        // the widest point stays tangent-continuous.
-        const rise = Math.max(0, yShape);
-        const lift = rise * rise * (3 - 2 * rise);
-        const halfWidth = section.zRadius + (crownZRadius - section.zRadius) * lift;
-        positions.push(
-          section.x,
-          (section.yOffset ?? 0) + yShape * section.yRadius,
-          (section.zOffset ?? 0) + zShape * halfWidth,
-        );
+        const point = loftSectionPoint(section, phase * Math.PI * 2);
+        positions.push(section.x, point.y, point.z);
         uvs.push((section.x - uMinimumX) / uLength, phase);
       }
     }

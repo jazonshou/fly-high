@@ -1002,6 +1002,86 @@ for one):
   nor a credible width fits it: that would take half-widths 25-37% under the
   top view, or n = 1.05. So the tip and the forward widths stay as built.
 
+## Phase 3c, part 6b: the V filleted
+
+**The frames found both lines the V was registered for.** At 5 m abeam the flank
+under the windshield carried a diagonal shading edge, running forward and down
+from the glass. That was the waterline, where the V's upper half met the round
+lower one. From the front a bright line ran down the ridge to where the V ends,
+about 1.2 m aft. The type's flank and crown are smooth. Both came from the
+same cause: a superellipse below 2 is only tangent-continuous at its crown and
+its widest point, and its curvature runs to infinity at both. At 48 segments
+round, the facets turned 20 degrees a step at the waterline and 15 at the
+ridge.
+
+**A varying exponent cannot fix it.** An exponent that returns to 2 at the crown
+and the waterline (a sin^2(2t) blend), dipping to its least at 45 degrees
+round, keeps the ends round. But it is convex only for a dip down to about 1.6,
+and the two cameras ask for about 1.3. Any stronger dip puts an inflection
+between the round crown and the pulled-in shoulder.
+
+**What does fix it is a filleted V** (`crownSquareness` with `crownFillet` in
+`builders.ts`):
+- **The shape:** the superellipse with its radii shrunk by the fillet, offset
+  back out by it. It is convex for any exponent, its curvature is capped at 1 /
+  fillet, and the crown's height, the widest half-width and the lower half are
+  unchanged.
+- **The sampling:** the upper half is laid down by its outward normal's angle,
+  so every upper facet turns by the same 7.5 degrees.
+- **The neighbours:** the elliptical rings either side of the V carry
+  `crownSquareness` 2, the same ellipse resampled by the same angles. Otherwise
+  the strips between a V ring and a parametric one twist: 10.5 degrees into
+  14.1.
+- **One point function:** `loftSectionPoint` is shared by the loft, the
+  glazing's width-anchored body point, `globalSectionHalfWidth` and the
+  livery's heights.
+
+**Refitted to both cameras with a 0.15 m fillet**, the V ending by 2.75 m aft as
+in part 6: the exponent runs 1.35-1.49 from 1.5 to 2.45 m aft, 1.75 at 1.2 and
+1.65 at 2.6. The face comes down 0.05 / 0.08 / 0.05 m as before. A 0.25 m fillet
+fits no better and needs a harder V (1.07-1.36).
+
+**Against both renders** (`render.bizjet-nose`):
+- **p. 29:** the foot (1.5-2.0 m aft) reads -0.081..-0.047 and the face and roof
+  (2.0-3.5) -0.046..-0.002.
+- **p. 35, 1.5-3.6 m aft:** -0.034..+0.105, rms 0.055 (part 6's V read 0.061).
+- **The p. 35 controls:** the same crowns on ellipses read rms 0.125, part 5
+  0.137, and the nose lifted 0.10 m reads +0.054 or more.
+
+**The shading** (`render.bizjet-nose`, `render.loft-crown-squareness`):
+- **The crown:** radius 0.18-0.87 m on every V ring. Without its fillet the
+  same V's crown is a ridge, 0.04 m at its tightest.
+- **The waterline:** the worst turn per step is 8.8-11.4 degrees, the same to a
+  tenth as the same rings lofted as ellipses. The V adds nothing there. The
+  forward rings' steps over 9.1 are their own flat lower halves', which 6b
+  leaves alone.
+- **Ring to ring:** the worst step on the crown is 8.6 degrees (into 11.9).
+  Round the shoulder, 9.9 degrees into 12.2, where the V begins within 0.2 m
+  (2.75 to 2.6 m aft). That step is registered for the frames.
+
+**Built, from the seated eye (11.90, 0.55, -0.52), on the built glass**:
+- **Straight ahead:** -10.25 to +18.90. From 0.78 it is -20.4 to -2.3.
+- **The port windshield's corners**, azimuth (right +) / elevation / range:
+  - bottom at the post: +17.65 / -7.05 / 1.491;
+  - bottom outboard: -17.23 / -11.03 / 0.950;
+  - top outboard: -11.20 / +19.17 / 0.576;
+  - top at the post: +26.31 / +12.53 / 1.012.
+- **Starboard top at the post:** +11.59.
+- **The post's head:** +12.53 / +12.72 / +11.59, with the middle column on the
+  crown. It is 0.398 m tall.
+- **Headroom:** 0.506 m up at the seat; 0.377 m up 0.3 m ahead (0.294 to the
+  nearest skin).
+- **The side panes:** tops 0.72-0.81, bottoms 0.33-0.49.
+- **The glass:** 8.2 mm out and 19.9 mm in. The post's two-column control is
+  now 1.6 mm out, under the 3 mm the glass is held to, where on the unfilleted
+  V it was 7.8 mm in.
+
+**What moved.** Checked mesh by mesh against 49916b4:
+- the fuselage, the flight-deck glazing and the post;
+- `bizjet-cockpit-interior`'s lining, with its counts unchanged;
+- the Global's other 87 meshes, and every mesh of the trainer, the jet and the
+  747, are bit-identical.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own
