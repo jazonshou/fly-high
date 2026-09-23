@@ -31,8 +31,8 @@ import {
   terrainChannelTexelSizeMeters,
   terrainTexelSizeMeters,
 } from "./TerrainSpineContract";
+import { PassCostTape, passTimingSinkOf } from "@/src/render/webgpu/core/DeferredPassTiming";
 import {
-  consumeGpuDispatchCostMs,
   readGpuDispatchMs,
   TERRAIN_CHANNEL_TEXTURES,
   type TerrainAtlasSlot,
@@ -282,8 +282,8 @@ export class PageOcclusionBake {
   private capacity = 0;
   private running = false;
   private disposed = false;
-  private lastBatchSize = 0;
-  private lastCostSampleCount = -1;
+  /** This shader's passes, each paired with its own delivered duration (DeferredPassTiming.ts). */
+  private costTape: PassCostTape | null = null;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -296,12 +296,13 @@ export class PageOcclusionBake {
     return this.running;
   }
 
-  /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
+  /**
+   * `4.5-B2(a)`: the measured per-page cost of the batches whose timing was
+   * delivered since the last call, each priced by its OWN page count.
+   */
   consumeMeasuredDispatchCostMs(): number | null {
-    const sample = consumeGpuDispatchCostMs(
-      this.shader, this.lastBatchSize, this.lastCostSampleCount);
-    this.lastCostSampleCount = sample.sampleCount;
-    return sample.milliseconds;
+    const reading = this.costTape?.take();
+    return reading && reading.units > 0 ? reading.milliseconds / reading.units : null;
   }
 
   /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
@@ -362,10 +363,11 @@ export class PageOcclusionBake {
     jobBuffer.update(new Uint8Array(jobs.buffer));
 
     this.running = true;
-    this.lastBatchSize = bakeable.length;
     try {
       const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
       await shader.dispatchWhenReady(groups, groups, bakeable.length);
+      // After the pass exists: it carries the frame its timing is delivered under.
+      this.costTape?.dispatched(bakeable.length);
       // Deliberately does NOT mark the slots resident. A channel slot carries
       // occlusion AND splat, and the splat bake runs after this one; marking
       // residency here published a page whose splat texels were still zero —
@@ -385,6 +387,8 @@ export class PageOcclusionBake {
     this.registeredBufferBytes = 0;
     this.jobBuffer = null;
     this.shader = null;
+    this.costTape?.dispose();
+    this.costTape = null;
   }
 
   private ensureCapacity(count: number, pyramidTexture: unknown): void {
@@ -413,6 +417,7 @@ export class PageOcclusionBake {
         },
       },
     );
+    this.costTape ??= new PassCostTape(this.engine, passTimingSinkOf(this.shader));
     this.shader.setStorageBuffer("jobs", this.jobBuffer);
     const height = this.heightAtlas.texture();
     if (height) this.shader.setTexture("heightAtlas", height, false);
@@ -458,8 +463,8 @@ export class PageSplatBake {
   private recordedFrame = -1;
   private frameWaiters: (() => void)[] = [];
   private disposed = false;
-  private lastBatchSize = 0;
-  private lastCostSampleCount = -1;
+  /** This shader's passes, each paired with its own delivered duration (DeferredPassTiming.ts). */
+  private costTape: PassCostTape | null = null;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -490,12 +495,13 @@ export class PageSplatBake {
     return this.running;
   }
 
-  /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
+  /**
+   * `4.5-B2(a)`: the measured per-page cost of the batches whose timing was
+   * delivered since the last call, each priced by its OWN page count.
+   */
   consumeMeasuredDispatchCostMs(): number | null {
-    const sample = consumeGpuDispatchCostMs(
-      this.shader, this.lastBatchSize, this.lastCostSampleCount);
-    this.lastCostSampleCount = sample.sampleCount;
-    return sample.milliseconds;
+    const reading = this.costTape?.take();
+    return reading && reading.units > 0 ? reading.milliseconds / reading.units : null;
   }
 
   /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
@@ -625,10 +631,11 @@ export class PageSplatBake {
     pageBuffer.update(pages);
 
     this.running = true;
-    this.lastBatchSize = bakeable.length;
     try {
       const groups = Math.ceil(TERRAIN_CHANNEL_SLOT_EDGE / OCCLUSION_WORKGROUP_EDGE);
       await shader.dispatchWhenReady(groups, groups, bakeable.length);
+      // After the pass exists: it carries the frame its timing is delivered under.
+      this.costTape?.dispatched(bakeable.length);
       this.recordedFrame = this.engine.frameId;
       return bakeable;
     } finally {
@@ -647,6 +654,8 @@ export class PageSplatBake {
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.shader = null;
+    this.costTape?.dispose();
+    this.costTape = null;
   }
 
   private ensureCapacity(count: number): void {
@@ -683,6 +692,7 @@ export class PageSplatBake {
         },
       },
     );
+    this.costTape ??= new PassCostTape(this.engine, passTimingSinkOf(this.shader));
     this.shader.setStorageBuffer("terrainKernelPages", this.pageBuffer);
     this.shader.setStorageBuffer("splatJobs", this.jobBuffer);
     const height = this.heightAtlas.texture();

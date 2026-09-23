@@ -195,3 +195,31 @@ says so.
 **The prices are not changed here.** The same three cost runs, on the fixed instrument, put whole pages at
 49.3-52.0 ms against the pinned 37.4. Per dispatch: seed 0.37-0.42 ms (pinned 0.29), talus 0.36-0.38 (0.32), and
 breach 2.8-3.2 ms per dispatch unit (0.067). They are recorded for the re-price, which is its own commit.
+
+## The three per-page meters on the tape
+
+The terrain page generator, the occlusion bake and the splat bake priced a reading as "latest delivered frame ÷
+batch dispatched last" (`consumeGpuDispatchCostMs`). The clipmap reads its meters before it dispatches, so that was
+right only while a reading landed within one frame. They now record each batch on a `PassCostTape` once the pass
+exists, with its own page count, and price each delivery by that count.
+
+The control (`tests/gpu/pass-cost-consumers.test.ts`) keeps every frame GPU-bound with a filler pass and runs ten
+batches of 1-8 pages through each meter. Each meter is read every frame in the clipmap's order, and the generator
+dispatches whenever production's own limit (a free bounds-ring buffer) allows. Over three runs:
+
+| meter | tape | old path, same deliveries |
+|---|---|---|
+| terrain page generator | 39 of 39 pages, all of 81.3-87.0 ms | 9 of 10 readings paired with the wrong batch, worst ×8.00 |
+| occlusion bake | 39 of 39 pages, all of 8.5-10.4 ms | 8-9 of 10 paired wrong, worst ×6.00; one batch lost in one run |
+| splat bake | 39 of 39 pages, all of 8.8-9.6 ms | 8-9 of 10 paired wrong, worst ×6.00; one batch lost in one run |
+
+The control fails if the old path is not caught going wrong, so it cannot pass on a run that never lagged. An earlier
+run that waited for no page readbacks at all before each generator batch was stricter than production, and there
+the old path mispaired only 0-1 of 10.
+
+Ground cover stays on `consumeGpuDispatchCostMs`: it dispatches each ring at most once a frame at the ring's fixed
+lane count and prices ring 0 as a batch of 1, which that path handles correctly. A source guard pins that pattern.
+
+On the fixed instrument and the tape, `terrain-compute-cost.test.ts` measured terrainCompute 2.079 ms per page
+(pinned 1.9), occlusionCompute 0.173 (0.3), splatCompute 0.331 (0.4), and the coarse splat bake at 0.673. They are
+recorded for the re-price, not applied.
