@@ -76,6 +76,8 @@ interface Deck {
   readonly pages: Readonly<Record<string, string>>;
   /** The merged bezels mesh beside the screens mesh, and a pattern every screen or bezel part, merged or not, matches. */
   readonly bezelsMesh: string;
+  /** The deck's other meshes round its screens (the Global's bezel rims and wells, P1b): not screens, and not the atlas's. */
+  readonly surroundMeshes?: readonly string[];
   readonly screenParts: RegExp;
   /**
    * Two independent counts of the engines, over authored part names: one part per engine each. The
@@ -118,6 +120,7 @@ const DECKS: readonly Deck[] = [
     screen: { width: BIZJET_SCREENS.width, height: BIZJET_SCREENS.height },
     airframe: BIZJET_DISPLAY_AIRFRAME,
     bezelsMesh: "bizjet-screen-bezels",
+    surroundMeshes: ["bizjet-screen-bezel-rims", "bizjet-screen-wells"],
     screenParts: /^bizjet-screen/,
     engineParts: { first: /fan-spool-fan$/, second: /-engine-inlet$/ },
     pages: {
@@ -378,7 +381,7 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
 
   it("costs no extra draw: still one screens mesh on one material", () => {
     const screenMeshes = aircraft.meshes.filter((mesh) => deck.screenParts.test(mesh.name));
-    expect(screenMeshes.map((mesh) => mesh.name).sort()).toEqual([deck.bezelsMesh, deck.layout.screensMesh].sort());
+    expect(screenMeshes.map((mesh) => mesh.name).sort()).toEqual([deck.bezelsMesh, ...(deck.surroundMeshes ?? []), deck.layout.screensMesh].sort());
     // every screen in one mesh, every bezel in another, as before the atlas
     expect((screensMesh().metadata as { mergedFrom?: string[] }).mergedFrom).toHaveLength(deck.layout.screens.length);
   });

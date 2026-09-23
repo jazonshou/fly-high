@@ -692,11 +692,12 @@ the rest.
   0.3 degree higher. It is held by the windshield's bottom at the post end.
 - The face grows with the deck line: max(0.02, 0.08 tan(deck + 3)). At a fixed 0.02 the wedge's top fell 14
   degrees, and a sweep of the catalogue's value for the HUD found its forward corner showing over the lip past
-  a 14 degree deck line (15 read 14.89).
+  a 14 degree deck line (15 read 14.89). (The wedge is gone since P1a, below: a rounded edge on the same line.)
 - The HUD fits over deck lines from 2.31 to 15 on all five window shapes.
 
 **The screens** hang 1.5 degrees under the lip's underside, the pilot's pair on the eye's own z. 76.2% of
-each is in the 16:9 frame (the floor is 35%), and the outboard one clears the skin by 0.31 m.
+each is in the 16:9 frame (the floor is 35%), and the outboard one clears the skin by 0.31 m. (Since P1a they
+hang under the deck's edge on a leaned face, 71.4%: below.)
 
 **What the tests hold** (tests/render.cockpit-bizjet.test.ts, 34):
 - the corner table, read off the built panes at test time, not copied;
@@ -1315,6 +1316,180 @@ whole-frame test now classes a sightline as glass when it crosses a pane's hole 
 skin level), and allows half a degree at an edge, where the rim reads widest (No.2's top, 1.3 m away and
 seen at a slant). The no-T-junction test and the drawn-faces walk stay at zero.
 
+## The Global's panel, integrated (P0, P1a to P1c)
+
+Jason: the instrumentation read as a box pasted at the bottom of the screen. P0 measured why, from the seat,
+on the merged kit (6638484) and its level frame. Each tone sample was a pixel projected from a built point
+and confirmed by ray to be that part; the projection matched the live capture to 0.2 px.
+- **It was the geometry, not a flat tone.** The board was a vertical slab (0 degrees of lean). A 1.7 degree
+  band of lip sat flush on it, with no step, rail or shadow. The board's own gradient, top to bottom, was
+  19.4% of its mean, so it was not a flat-luma rectangle.
+- **The bezels were the brightest thing low in the frame:** luma 81 against the board's 28 to 32. They were
+  square rims around screens that stood 1 mm PROUD of them.
+- **At the left the board just stopped,** at az -22.8, against 14.7 degrees of flat wall lining.
+- **The 747's board** (K3's frame) is the same kind of object: vertical and flush, and the bezels read 164
+  against its 54. Their marking is emissive at 0.7 against the Global's 0.175.
+
+**P1a, the deck as the pilot reads it, top to bottom** (`bizjetGlareshieldSection`, `bizjetPanelFace`). A first
+build (7dc8801) was revised on the PM's decisions; both are recorded.
+- **The glareshield's ROUNDED aft edge,** r 0.0125. The deck line's sight line is tangent to it, and the tangent
+  is a vertex, so the silhouette is the catalogue's 10.88 exactly: one row of the picture, with the rule, the
+  HUD and the whole-frame glass test unchanged. Its upper side faces the sky.
+- **The aft face,** dropping 0.005 under the round.
+- **A 45 degree COVE,** 0.010 forward and 0.010 down, facing down and aft, to the panel's face. The first build
+  had a flat underside (normal -y) running 0.03 forward. That was 0.16 m under the eye and never seen from the
+  seat. The cove is seen: its normal leans toward the eye at every corner, and it faces the image light's lower
+  half. It is the shade under a glareshield, from geometry alone: live, 43 to 45% darker than the board 10 cm
+  lower (below).
+- **The deck's edge,** from the tangent to the cove's foot, reads **2.342 degrees** straight ahead (the round
+  1.28, the drop 0.42, the cove 0.64) against the design's ceiling of 2.5. The first build's round r 0.02 and
+  0.015 drop made it 3.3.
+- **The hood** falls forward at 12 degrees for 0.18 m. That is steeper than the 10.88 degree sight line, so
+  none of it shows. Its underside falls with it from the cove's foot, one plate of constant thickness, so the
+  solid stays convex. At these radii a flat underside would leave the hood -7.8 mm thick, which is refused at
+  build.
+- **The board's face, leaned back 15 degrees** about its top edge at the cove's foot. The type's panel is
+  fairly upright. Its normal is 5.40 degrees off the eye from the centre of the pilot's pair of screens (the
+  bound is 8) and 11.6 from each screen's own centre. The design first asked for 12 degrees "so the normal
+  points at the eye within 3": the pair's centre is about 20.4 degrees under the eye, so no lean near 12 can
+  do that. The first build aimed it exactly at 21.9, which reads like a laptop's screen; that stays a
+  documented one-constant alternative. The lean pivots at the top, so the foot swings aft (still below the
+  frame) and the cove meets the face.
+
+**What the pilot sees now:** under the round's lit rim, a dark aft face and the cove, then the board. The
+screens ride the face, their top edge 0.8 degree under the cove's foot. **71.4%** of each is in the frame by the
+test's ray grid (the design asks 65%; the first build's 61.9% missed it). Every kit vertex clears the skin by
+0.19 m or more.
+
+**Tests** (tests/render.cockpit-bizjet.test.ts, 39): the round on the sight line at deck lines 5, 10.88 and 11.5;
+the hood's top and underside falling together; the PM's ranges written out, with the deck's edge at most 2.5; the
+cove by its built normals, facing the eye, and by ray; the board square to the leaned normal; the screens square
+to the face, 1 mm into the board and 1 mm proud of their bezels, and at least 65% in the frame; the aim at most 8
+degrees, with an upright-board control. The two loft digests are re-pinned. Mesh by mesh against 6638484, only
+the four kit meshes changed (the glareshield from 8 to 52 triangles).
+
+Sixteen mutations, all caught:
+- the PM's three: lean 0; the cove flattened; the hood sloping up (refused at build by a guard, and, with the
+  guard removed, caught by eight tests, both glass tests among them);
+- thirteen more: the edge too tall; the tangent not a vertex; the board, the screens and the bezels each left
+  unturned; the board turned the wrong way; the round on the wrong side of the line; the screens hung from the
+  round; the 21.9 alternative; the old 1.5 degree gap; the old round; the cove at 30 degrees; the hood's
+  underside flat.
+
+One instrument lied on the way: a corner finder at 1e-9 found all four float32 corners of a screen at one lean
+and two at another. It works at 2 micrometres, and a sweep of the lean fails only the aim test.
+
+The reserve, if the cove had not read as shade, was an AO gradient in a board-only albedo on the board's
+existing UV (no new varying). It was not needed.
+
+**P1b, the bezels.** In P0 they were square pale plates (luma 81, against the board's 28) under screens standing
+1 mm PROUD of them. Each is now a frame round its screen (`bizjetScreenStack`, `bizjetBezelFacets`), square to the
+leaned face:
+- **The stack:** the frame's back is 1 mm inside the board and its front 6 mm out. A 4 mm chamfer at 45 degrees
+  runs round its outer edge, down to 2 mm out.
+- **The opening** is the screen plus a 2 mm gap each side. The screen is a 0.5 mm plate whose face stands
+  **3 mm behind** the frame's front.
+- **Behind the gap,** a well on the instrument face's near-black. From 10 to 20 degrees off the face, the screen's
+  own edge hides the far side's gap, as a recessed screen's does; the near side and the top show.
+
+**Materials.** The frame is on a Global-only bezel material, 0x2c3034, with the board's roughness and metalness and
+NO emissive. By albedo alone it is 1.41 times the board's luma, and live it reads 1.46 by mean (1.39 by median);
+the design asks 1.3 to 1.6. The chamfered rim stays on the shared marking material, so the night glow
+(`applyGlow`) is the rim's alone.
+The display material is untouched: the recess is geometry, so the display gains no varying.
+
+**Two closed solids.** The frame (the ring from the opening to the chamfer's shoulder) and the rim (the band from
+the shoulder to the edge) are each closed on their own. The drawn-faces test walks each mesh alone: a frame left
+open where the rim covers it showed rays meeting its inside faces. They are built by a new primitive, `facetMesh`:
+flat quads wound by a given outward normal, for a solid no centroid rule can wind (a frame's centroid is in its
+hole).
+
+**The count.** The kit is six meshes: the glareshield, the interior, the screens, the frames, the rims and the
+wells. That is two more draws than P1a; the pages and their digests are unchanged. Against 92ef8e9, the screens
+and the frames change, the rims and wells are new, and the other 89 meshes are bit-identical.
+
+**Tests** (41): the frame's size and opening; the stack's planes, to a hundredth of a millimetre; the chamfer by its
+built normals (45 degrees, all four sides, 4 mm across); by ray, the recess (3 mm), the gap (the well) and the
+frame's face; the materials (no emissive on the frame, the glow on the rim, the albedo ratio).
+
+Eleven mutations, all caught:
+- the PM's four: no chamfer, the screen proud, the frame on the old marking material, emissive on the frame;
+- seven more: no gap, the frame as light as the old bezel or as dark as the board, the chamfer at 30 degrees, the
+  frame left open under the rim, `facetMesh`'s winding reversed, no wells.
+
+One instrument was stale in the test file: its `partOf` counted every bezel as a 12-triangle box.
+
+**On the V (P1a and P1b carried onto 7766139).** The deck's full width is sized where it stands, at the round, the
+cove and the board's top back corner. There it reaches the windshield's pillars, with 9 cm of shell to spare.
+- **The hood is TAPERED in plan** (`bizjetHoodTaper`, by `sculptSolid`, the F-16 coaming's way). It keeps 5 cm inside
+  the V's shell as built at every station, from 0.789 at the cove to 0.745 at its forward end. It cannot be seen from
+  the seat.
+- **Why the taper and the carry-over are one commit.** An untapered hood cannot be both inside the skin and wide: sized
+  over the hood's depth, the whole deck narrows to 0.705 m and the outboard screen hangs past the board's end.
+- **The pillars' feet are CAST** from R onto the skin, as the glass and the pillar's lining are. The outline's own
+  point stands 4.5 mm outboard of the facets it is cast onto, and the deck had run 2.5 mm past the glass's pillar.
+- **Tests** (43): a named taper test (the aft part at the deck's width, the forward end drawn in, every vertex 5 cm
+  inside the shell at its own station).
+- **Mutations, ten, all caught:** no taper; the whole glareshield narrowed to the hood's end; the taper with no margin;
+  the pillar foot from the outline; the deck sized over the hood; and one each of P1a's, P1b's and the re-pin's.
+
+**P1c, the side consoles** (`bizjetSideConsoleFacets`), one each side.
+- **An armrest-height console would stand wholly under the frame.** The wall it was for is 0.5 to 0.7 m ahead,
+  where the frame's bottom is 0.28 m under the eye: at eye - 0.45 it covered 0% of the wall. So each console's top
+  is the sill cap's, widened: level with the side pane's bottom edge (it covers no glass, by the cap's own rule),
+  from the cap's inboard edge to the board's end, which it meets flush.
+- **The cap's inboard edge IS the console's top edge,** vertex for vertex, on the cap's own columns: no T-junction.
+- **A 2 cm lip runs along its inboard top edge,** over a 45 degree cove, with the face set back under it (the rail's
+  idea). The face runs down to the board's foot, and the outboard side follows the shell down from the cap, 5 cm
+  inside it.
+- **It runs aft to x 11.85.** The seat's base stands inboard of its face.
+
+**6b moved the goal.** The 21 degrees of wall was part 5's nose. On 6b the forward side pane comes down to -16 to
+-18 degrees in those columns, and under its sill band and its cap only 1.3 to 4.5 degrees of wall was left. The
+console takes all of that: with it, the bare wall is 0.4 to 1.3 degrees a column (the sill's band between the
+glass and the cap), against 2.5 to 5.7 without. In the frame it reads as a lit ledge under the cap.
+
+**Two traps on the way:**
+- The console's section is not convex (the lip overhangs the set-back face), so no centroid gives every face's
+  outside. It is taken from the section's own winding, and the drawn-faces test caught the first build's culled
+  coves.
+- A rule that never engages on this nose (the outboard side following a shell narrower below) survived its
+  mutation as an equivalent, and is pinned on a shell given to it.
+
+**Tests** (48): the wall under the cap, per column, with a no-console control; the seam on the caps; the lip and
+the cove by the built normals; no glass covered; inside the skin (0.064 m at the tightest); the seats clear; the
+shell rule. Seven mutations, all caught:
+- the top at armrest height; the face 10 cm outboard; the console removed;
+- off the cap's vertices; no lip; the faces oriented by a centroid; the outboard side not following the shell.
+
+The kit is seven meshes. Against 43d360d only the new consoles mesh changes; the other 93 are bit-identical.
+
+**The frames** (43ac997, the pilot's left seat, 16:9, seed g7500k2; the eye, the 75 degree lens, the glareshield's
+top at 0.4224 and the seven kit meshes asserted from the live scene; the projection within 0.1 px of the live
+capture):
+- **Level.** The deck reads as a padded rail: the round's lit top (luma 38, p90 56) over the aft face (17) and the
+  cove (14.8), then the leaned board (28).
+  - The cove reads 43.1% darker than the board 10 to 13 cm down the face between the pairs, and 44.9% outboard of
+    them. The board's own first 3 cm read 20% BRIGHTER than lower down: a flat lit face gets brighter toward its
+    top with the view angle, so the band is the cove's.
+  - The bezels are dark frames at 1.46 times the board, round screens recessed in near-black wells (20).
+  - Their chamfered rims catch the sky as a bright bevel (118, p90 179, the marking material's day emissive
+    included). If the outline reads too bright, the lever is the rim's day emissive, not the geometry.
+  - The screens are 71.4% in the frame.
+  - In the lower left, 6b's side glass comes down to about row 790, then the lit ledge of the cap and the console
+    (95 to 99), and the console's dark face (28).
+- **Rolled** (24.3 degrees right), **final** (scenic, wings level at 2.77, the aim point -4.93 under the body axis
+  and in the glass), and **the chase camera**, with no kit in it.
+- **4x crops:** the rail over the PFD, a bezel's corner, the console.
+- **The inter-stage budget, live** (the variants test with its container, restored by sha after a per-material
+  print): the display is 15 (16 of 16 under fog, drawn), and the bezel, the instrument face (the wells), the
+  interior (with the consoles), the glareshield and the marking are 14 (15 under fog). No GPU error in any variant.
+
+**For the 747's turn (noted, not built):** its lip-to-bottom band is only 4.78 degrees with the screens at
+37.8%, so the same deck must cost the screens nothing: the round and the drop at their minimum, and the gap
+0.5 degree. Its bezels need a material of their own: dark, 1.3 to 1.6 times the board by day, with the night
+glow on the rim only. The marking material they use now is shared with the panel's labels.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
@@ -1347,7 +1522,7 @@ crossover is a canvas about 2,170 px wide).
 **Not built:** the F-16's UFC, between the MFDs.
 Baselines are not promoted here; the single end-of-wave promotion absorbs the change.
 
-**Not built, the Global's next kit item: an armrest / side console.** From the seat, the wall under the
+**Built in P1c (above), once the Global's next kit item: an armrest / side console.** From the seat, the wall under the
 forward side pane runs 15 to 18 degrees from the pane's bottom edge (about -3 at az -24) down to the frame's
 bottom (-21.5 at az -24, -18.9 at the corner). The sill cap breaks the glass-to-wall edge with a ledge 1.4
 to 1.7 degrees tall; the rest is one flat tone of lining.

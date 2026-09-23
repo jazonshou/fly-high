@@ -391,7 +391,25 @@ describe("a loft's crown seam", () => {
       // (`bizjet-glareshield` narrower, its triangles unchanged); the deck line stays 10.88 and hides the V's low
       // outboard corner by a pinned profile. Checked mesh by mesh against cc16f33 (positions, normals, UVs, indices,
       // world matrix, material, visibility): the other 89 meshes are bit-identical.
-      bizjet: "f347a355",
+      // RE-PINNED for the Global's panel integration, P1a (jazonshou/cockpit-panel-integration): the board's face leans
+      // back 15 degrees under a glareshield that is one solid with a rounded aft edge on the deck line, a 45 degree cove
+      // under it and a 12 degree hood (`bizjet-glareshield` 8 -> 52 triangles), and the four screens and bezels ride the
+      // leaned face; `bizjet-cockpit-interior` keeps its 4816 vertices (the board is still a box, turned). Checked mesh
+      // by mesh against 6638484 (positions, normals, UVs, indices, world matrix, material, visibility): the other 87
+      // meshes are bit-identical.
+      // RE-PINNED for P1b, the Global's bezels: each a frame round its screen on a bezel material of its own
+      // (`bizjet-screen-bezels` 48 -> 128 triangles) with a 4 mm 45 degree chamfered rim on the marking material (NEW,
+      // `bizjet-screen-bezel-rims`, 128), the screens recessed 3 mm behind the frames' fronts as 0.5 mm plates, and a
+      // dark well behind each 2 mm gap (NEW, `bizjet-screen-wells`, 48). Checked mesh by mesh against 92ef8e9
+      // (positions, normals, UVs, indices, world matrix, material, visibility): the other 89 meshes are bit-identical.
+      // RE-PINNED for P1a and P1b carried onto 7766139 (the V nose merged), with the hood TAPERED in plan to the V's shell
+      // (the deck at the pillars' feet as cast, 0.789; the hood's forward end 0.745). Checked mesh by mesh against
+      // 7766139: the board (in `bizjet-cockpit-interior`), `bizjet-glareshield`, the screens and the bezels' frames change,
+      // the rims and the wells are new; the other 87 meshes are bit-identical.
+      // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
+      // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
+      // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
+      bizjet: "0d9b6dba",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh
