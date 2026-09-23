@@ -14,9 +14,10 @@
  *     over serialised to `undefined` — values are passed in as ARGUMENTS here;
  *   - the camera really sits at the catalogue's `cockpitEye` — `forward`, `up`
  *     AND `right` — in the aircraft's body frame, and has the lens it is
- *     supposed to (`COCKPIT_HORIZONTAL_FOV_DEGREES`), both read from the same
- *     modules the renderer reads and never typed here, so a frame is never
- *     described by what the code is supposed to do. A mismatch throws.
+ *     supposed to (`cockpitHorizontalFieldOfViewForAspect` for this window:
+ *     `COCKPIT_HORIZONTAL_FOV_DEGREES` up to 16:9, wider beyond), both read from
+ *     the same modules the renderer reads and never typed here, so a frame is
+ *     never described by what the code is supposed to do. A mismatch throws.
  *
  * Nothing is written to the page or to src/: the reader is a closure inside one
  * page.evaluate that reaches the scene through Vite's optimised copy of
@@ -40,6 +41,7 @@ import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   COCKPIT_HORIZONTAL_FOV_DEGREES,
   PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
+  cockpitHorizontalFieldOfViewForAspect,
 } from "@/src/render/cameraPresentation";
 import type { AircraftKind } from "@/src/sim";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
@@ -68,12 +70,16 @@ const LENS_REQUEST = process.env.LENS === undefined || process.env.LENS === "" ?
 if (LENS_REQUEST !== null && !(LENS_REQUEST > 20 && LENS_REQUEST < 150)) {
   throw new Error(`LENS=${process.env.LENS} is not a plausible horizontal field of view`);
 }
-/** The lens every frame in this run must have: the constant the renderer reads, unless a lens was requested. */
-const EXPECTED_LENS = LENS_REQUEST ?? COCKPIT_HORIZONTAL_FOV_DEGREES;
+/**
+ * The lens every frame in this run must have: the one the renderer resolves for this window
+ * (the constant up to 16:9), unless a lens was requested. A requested lens is only checked as
+ * given, so LENS on a window wider than 16:9 fails loudly rather than being reinterpreted.
+ */
+const EXPECTED_LENS = LENS_REQUEST ?? cockpitHorizontalFieldOfViewForAspect(null, WIDTH / HEIGHT);
 mkdirSync(outDir, { recursive: true });
 console.log(
   `lens: COCKPIT_HORIZONTAL_FOV_DEGREES = ${COCKPIT_HORIZONTAL_FOV_DEGREES} (gameplay; the perf harness keeps`
-  + ` ${PERF_COCKPIT_HORIZONTAL_FOV_DEGREES}); this run expects ${EXPECTED_LENS}`
+  + ` ${PERF_COCKPIT_HORIZONTAL_FOV_DEGREES}); this run (${WIDTH} x ${HEIGHT}) expects ${EXPECTED_LENS.toFixed(3)}`
   + `${LENS_REQUEST === null ? "" : " (REQUESTED by LENS, served-source rewrite)"}`,
 );
 console.log("eye: catalogue cockpitEye {forward, up, right} per kind, asserted against the live camera");
