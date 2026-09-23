@@ -12,7 +12,6 @@ import {
   GLOBAL_FLIGHT_DECK_REFERENCE,
   anglesTo,
   globalBodyPoint,
-  globalSkinSectionAt,
   outlinePoint,
   type BodyPoint,
   type GlobalPaneOutline,
@@ -59,12 +58,14 @@ import { displayStateFromVisual, type DisplayAirframe } from "./displays/display
  *
  * THE DECK is the glareshield's lip alone, a line along z at the panel's face, FLUSH with it, standing
  * at the catalogue's deck line (`cockpitDeckLineDegrees`, the one number the 2D HUD keeps above, so the
- * two cannot disagree). The rule it is held to is this type's own: the HIGHEST straight lip that covers
- * no glass the pilot can see (`highestClearLip`). The windshield's bottom edge rises towards the post,
- * so no straight lip can follow it within a degree the way the 747's does; this one meets the glass
- * where the bottom edge is lowest in the frame, and the sill, window frame on the interior material,
- * fills the rest up to the glass. `tests/render.cockpit-bizjet.test.ts` solves the rule against the
- * BUILT sills and holds the catalogue's number to it.
+ * two cannot disagree). Through part 5's nose it was held to the HIGHEST straight lip that covers no
+ * glass the pilot can see (`highestClearLip`), and it stood where the windshield's bottom edge is lowest
+ * in the frame, with the sill, window frame on the interior material, filling the rest up to the glass.
+ * Part 6's V drops that edge outboard (to -14.8 at az -12, where the rule put the deck line at 15.085
+ * and would have cost the pilot's screens half their height; 6b's fillet raised it to -11.9 and the
+ * rule to 12.184). So the deck line stays at 10.88 and the glareshield HIDES the V's low outboard
+ * corner, as a real glareshield hides a windshield's lower corners, by at most a PINNED PROFILE: 0.3
+ * degree straight ahead, 1.6 anywhere (`tests/render.cockpit-bizjet.test.ts`, against the BUILT sills).
  *
  * THE EYE is the catalogue's. Everything else here is solved from it and from the glass as built, so
  * the pins live in the catalogue and the tests, not here.
@@ -162,9 +163,15 @@ function rowsFor(spans: readonly number[]): number {
  * Every strip of the lining, READ from the outlines: members, then the sills and crowns that run from their edges.
  *
  * The seams are shared cast points by construction: the post's columns are the windshields' inboard edges (their
- * starboard half the port edge's exact negation), a member's columns are its two panes' edges, and each sill or
- * crown's columns are the pane and member edges it runs from, joined in azimuth order, so neighbouring strips
- * share whole columns and every sill (every crown) has the same rows.
+ * starboard half the port edge's exact negation) and, between them, the centreline at each edge point's station, a
+ * member's columns are its two panes' edges, and each sill or crown's columns are the pane and member edges it runs
+ * from, joined in azimuth order, so neighbouring strips share whole columns and every sill (every crown) has the same
+ * rows.
+ *
+ * THE POST'S MIDDLE COLUMN is the nose's ridge. Over the windshield the section is a V (phase 3c, part 6), and a chord
+ * from one windshield's inboard edge to the other's runs under the ridge (the plane engineer's glass post, on two
+ * columns, stood 7.8 mm inside the skin there): the post, and the centre sill's and crown's rows at its foot and head,
+ * take the ridge as a column of their own, as the glass post does.
  */
 export function bizjetLiningStrips(): readonly BizjetLiningStrip[] {
   const windshield = pane("windshield");
@@ -173,8 +180,9 @@ export function bizjetLiningStrips(): readonly BizjetLiningStrip[] {
   const { bottom, top, aftEnd } = BIZJET_LINING;
   const mirror = ([azimuth, elevation]: Angles): Angles => [-azimuth, elevation];
 
-  // THE MEMBERS: two columns each, PANE_GRID rows along the panes' own side edges.
-  const post = paneSide(windshield, 0).map((p) => { const a = seen(p); return [mirror(a), a]; });
+  // THE MEMBERS: PANE_GRID rows along the panes' own side edges; two columns each, and the post a third on the ridge.
+  const ridge = (p: BodyPoint): Angles => seen([p[0], 0]);
+  const post = paneSide(windshield, 0).map((p) => { const a = seen(p); return [mirror(a), ridge(p), a]; });
   const pillar = paneSide(windshield, 1).map((p, row) => [seen(p), seen(paneSide(forward, 0)[row]!)]);
   const midPost = paneSide(forward, 1).map((p, row) => [seen(p), seen(paneSide(aft, 0)[row]!)]);
   const aftEdge = paneSide(aft, 1);
@@ -183,9 +191,12 @@ export function bizjetLiningStrips(): readonly BizjetLiningStrip[] {
   // THE EDGES THE SILLS HANG FROM and the crowns stand on, in azimuth order, with which chords are glass.
   const windshieldBottom = paneEdge(windshield, 0);
   const windshieldTop = paneEdge(windshield, 1);
-  const centreBottom = [...[...windshieldBottom].reverse().map(mirror), ...windshieldBottom];
-  const centreTop = [...[...windshieldTop].reverse().map(mirror), ...windshieldTop];
-  const centreGlass = [...Array.from({ length: PANE_GRID - 1 }, (_, k) => k), ...Array.from({ length: PANE_GRID - 1 }, (_, k) => PANE_GRID + k)];
+  const postFoot = ridge(outlinePoint(windshield, 0, 0));
+  const postHead = ridge(outlinePoint(windshield, 0, 1));
+  const centreBottom = [...[...windshieldBottom].reverse().map(mirror), postFoot, ...windshieldBottom];
+  const centreTop = [...[...windshieldTop].reverse().map(mirror), postHead, ...windshieldTop];
+  // the port windshield's chords, then (past the post's two) the starboard's
+  const centreGlass = [...Array.from({ length: PANE_GRID - 1 }, (_, k) => k), ...Array.from({ length: PANE_GRID - 1 }, (_, k) => PANE_GRID + 1 + k)];
   // the forward side: the pillar's foot (from the windshield's outboard corner), then the pane
   const forwardBottom = [windshieldBottom.at(-1)!, ...paneEdge(forward, 0)];
   const forwardTop = [windshieldTop.at(-1)!, ...paneEdge(forward, 1)];
@@ -335,20 +346,23 @@ export const BIZJET_PANEL = Object.freeze({
   /** The board runs down to this far under the eye: below the frame at any aspect the lens is used at. */
   bottomBelowEye: 0.58,
   /**
-   * Kept between the board's and the lip's corners and the shell. The fuselage is a 48-gon inscribed in the
-   * ellipse the glazing module reads, so the shell's half-width is taken at cos(pi / 48) of the ellipse's, less this.
+   * Kept between the board's and the lip's ends and the shell as built, everywhere along the wedge. On part 6's V the
+   * shell narrows fast forward of the face, and this, not the pillars, ends the lip: a little inboard of the pillars'
+   * feet, where the pillar's lining covers the rest.
    */
-  shellMargin: 0.01,
+  shellMargin: 0.05,
 });
 
-/** Segments round the fuselage loft (`bizjetVisual.ts`): its facets are inside the ellipse by up to 1 - cos(pi / n). */
-const FUSELAGE_SEGMENTS = 48;
-
-/** The shell's half-width at a station and height, facet-inscribed; NaN where the height is outside the ring. */
-function shellHalfWidth(x: number, y: number): number {
-  const section = globalSkinSectionAt(x);
-  const u = (y - section.yOffset) / section.yRadius;
-  return Math.abs(u) > 1 ? Number.NaN : section.zRadius * Math.sqrt(1 - u * u) * Math.cos(Math.PI / FUSELAGE_SEGMENTS);
+/**
+ * The shell's half-width at a station and height AS BUILT: where a ray from the centreline leaves the fuselage's own
+ * triangles, by the caster the glass and the lining were cast with (the narrower side, though the body is symmetric);
+ * NaN where it finds none. The section functions (`globalSectionHalfWidth`) describe the loft's rings; between rings,
+ * and across a ring's chords, the facets stand inside them, by up to 4 mm where part 6b fillets the V, which is more
+ * than a margin can be trusted to within.
+ */
+function shellHalfWidth(skin: SkinCaster, x: number, y: number): number {
+  const sides = ([-1, 1] as const).map((side) => skin.exit({ x, y, z: 0 }, { x: 0, y: 0, z: side })?.distance ?? Number.NaN);
+  return Math.min(...sides);
 }
 
 export function bizjetPanelFaceX(): number {
@@ -383,7 +397,7 @@ export function bizjetLipThickness(deckLine: number = aircraftSpec("bizjet").coc
 }
 
 /**
- * How wide the lip and the board are: out to the windshield's pillars, and no further than the shell lets them.
+ * How wide the lip and the board are: out to the windshield's pillars, and no nearer the shell than `shellMargin`.
  *
  * A glareshield spans the windshields, post to post; beside the pilot the side windows have sills of their own (the
  * lining's), not the deck. Out to the shell instead, the lip would run under the forward side panes' low inboard
@@ -391,10 +405,12 @@ export function bizjetLipThickness(deckLine: number = aircraftSpec("bizjet").coc
  * straight ahead (K1: 11.49 against 3.96 degrees from c252859's eye). The pillars' feet are read off the outline:
  * the windshield's bottom outboard corner on the body.
  */
-export function bizjetPanelHalfWidth(): number {
+export function bizjetPanelHalfWidth(skin: SkinCaster): number {
   const faceX = bizjetPanelFaceX();
   const topY = bizjetLipY();
-  const widths = [faceX, faceX + BIZJET_PANEL.thickness].map((x) => shellHalfWidth(x, topY));
+  // along the wedge, at the lip's top and its underside
+  const heights = [topY, topY - bizjetLipThickness()];
+  const widths = [faceX, faceX + BIZJET_PANEL.thickness].flatMap((x) => heights.map((y) => shellHalfWidth(skin, x, y)));
   if (widths.some((w) => !Number.isFinite(w))) throw new RangeError(`the Global's panel: the shell has no width at y ${topY.toFixed(3)}`);
   const windshield = pane("windshield");
   const pillarFoot = Math.abs(globalBodyPoint(windshield.bottom[windshield.bottom.length - 1]!, 1).z);
@@ -508,7 +524,7 @@ export function buildBizjetCockpit(
 
   // THE LIP, at the catalogue's deck line, as wide as the shell lets it be there.
   const faceX = bizjetPanelFaceX();
-  const halfWidth = bizjetPanelHalfWidth();
+  const halfWidth = bizjetPanelHalfWidth(skin);
   const lipY = bizjetLipY();
   const g = BIZJET_GLARESHIELD;
   const undersideY = lipY - bizjetLipThickness();

@@ -317,7 +317,13 @@ describe("the loft's crown taper", () => {
       // `bizjet-fuselage`, the flight-deck glazing, the post and `bizjet-cockpit-interior`'s lining move
       // (counts unchanged). Checked mesh by mesh against 49916b4: the Global's other 87 meshes, and every
       // mesh of the trainer, the jet and the 747, are bit-identical.
-      bizjet: "280fa45a",
+      // RE-PINNED for the Global's kit on part 6b (jazonshou/global-nose-repin): the lining's post and the centre
+      // sill and crown take the V's ridge as a column, as the glass post does (`bizjet-cockpit-interior` 4964 -> 5046
+      // vertices), and the lip and the board end 5 cm inside the shell as built, 1.3 cm inboard of the pillars' feet
+      // (`bizjet-glareshield` narrower, its triangles unchanged); the deck line stays 10.88 and hides the V's low
+      // outboard corner by a pinned profile. Checked mesh by mesh against cc16f33 (positions, normals, UVs, indices,
+      // world matrix, material, visibility): the other 89 meshes are bit-identical.
+      bizjet: "4268196d",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

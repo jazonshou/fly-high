@@ -368,9 +368,13 @@ const BIZJET: AircraftSpec = Object.freeze({
   // left; the eye follows the geometry, not the name. The seats are placed
   // from this eye (bizjetSeats.ts), so they cannot drift from it.
   cockpitEye: Object.freeze({ forward: 11.9, up: 0.55, right: -0.52 }),
-  // The glareshield's lip: the HIGHEST straight lip that covers no glass the
-  // pilot sees (cockpit/bizjetCockpit.ts, `highestClearLip`), solved on the
-  // built sills from the eye at 10.880 and held there by
+  // The glareshield's lip: the HIGHEST straight lip that covered no glass the
+  // pilot sees (cockpit/bizjetCockpit.ts, `highestClearLip`), solved on part
+  // 5's built sills from the eye at 10.880. Part 6's V drops the windshield's
+  // bottom edge outboard (that rule read 15.085 on part 6, which would have
+  // halved the screens, and 12.184 on 6b's filleted V), so it is kept, and the
+  // glareshield hides the V's low outboard corner by at most a pinned profile,
+  // 0.3 degree straight ahead and 1.6 anywhere, held by
   // tests/render.cockpit-bizjet.test.ts.
   cockpitDeckLineDegrees: 10.88,
   spawn: Object.freeze({
