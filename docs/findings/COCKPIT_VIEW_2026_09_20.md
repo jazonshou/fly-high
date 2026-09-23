@@ -1119,6 +1119,52 @@ screens' places moved.
 and measured against the flat window boxes. The grid above replaces the first; the second's numbers are
 printed by `tests/render.cockpit-airliner.test.ts`, which holds them.
 
+## The 747's window frames thinned (K3)
+
+Jason, on K2's frame: the window frames "look thick" and "bulky, low quality". Measured from the eye (0.01
+degree steps along each member at el -8, 0 and +4, each ray's first drawn triangle classed by where
+`skinPanel` wrote it as the inner face, the side faces (the rims) or the outer face):
+
+| member (from the eye) | physical face | as built in K1/K2 | of it, side faces | the type (PM) |
+| --- | --- | --- | --- | --- |
+| port No.1 / No.2 pillar, az -9, 1.77 m | 6.5 cm | 3.65 / 3.83 / 4.00 | 1.80 / 1.89 / 2.19 | ~15 cm, 4.5 |
+| centre post and its gaps, az 14, 2.02 m | 16.3 cm (post 6.5 + 2 x 4.9) | 5.44 / 5.49 / 5.51 | 0.9 - 1.1 | ~12 cm, 3.6 |
+| starboard No.1 / No.2 pillar, az 36, 2.13 m | 6.6 cm | 1.8 - 1.9 | 0.05 - 0.12 | |
+
+The pillars were never wide: they are less than half the type's width. What read as bulk was the lining's
+depth. As the glass's own 0.10 m slab, its side faces showed down each pillar as a second, lit tone, half
+the pillar's apparent width. Thinner linings, measured the same way, gave the side faces a linear scale:
+0.05 m deep, the pillar 2.9 degrees (side 1.0); 0.02 m, 2.3 (side 0.4).
+
+**The PM's decision, built:** the lining is 0.02 m deep, 0.008 out of the skin and 0.012 in
+(`AIRLINER_LINING.proud` and `.depth`). The pillars keep their 6.5 cm faces and read 2.23 / 2.33 / 2.38
+degrees with 0.36 / 0.37 / 0.44 of side; a test holds them under 2.6 with under 0.5 of side.
+
+**The centre member.** It read 4.76 with the thin lining, because the glazing's centre gap was +-2.5 at R.
+The plane engineer narrowed it to +-`CENTRE_POST_HALF_AZIMUTH` (a shared constant) and widened their post
+to fill it (1a0ec56), so the kit's gap strips retire. At 1.6 the member read 3.12 from the seat; built at
+1.8, 1.9 and 2.0 it read 3.48, 3.67 and 3.85 (over the 3.8 ceiling, the lining's 0.2 of side counting), so
+the constant settled at 1.9 (4251e15). Their post is the glass's 0.10 m slab, and against
+the 2 cm lining it stood 4.8 cm into the cabin: K3's frames showed its top end as a lit block where it met the
+crown, and a stripe of its side down its length. So it went back with the shell and the glass among the parts
+the cockpit camera does not draw (the exterior camera draws it as before), and the lining covers its place, a
+strip across the centreline on the lining's own lines: one tone with the pillars, no end faces, watertight
+with the crown and the sill. From the eye it reads 3.69 / 3.67 / 3.66 degrees at el -8 / 0 / +4, face 3.5 and
+side 0.2, against the type's 3.6 and a 3.8 ceiling; a test holds it under 3.8. The lip holds at -18.57:
+pane one's bottom edge now reaches inboard to 1.9, and the sill there reads under a degree.
+
+**What the depth moved, re-derived rather than re-pinned.** The opening the pilot sees is now the thin
+lining's, so the bottom of the view over No.1 is the sill's own top edge, 0.008 out of the skin, not the
+hidden glass's outer face at 0.04: it reads -17.41 (inboard) to -18.66 (outboard) where the glass's read
+-16.88 to -18.10. The lip, solved against it by the same rule (the lowest line leaving no more than a
+degree of sill), drops from -18.04 to -18.57; the sill runs -0.45 to 0.99. The top row of screens,
+hanging 0.25 degrees under it, is 37.8% in the frame where it was 43.5% (a panel at 0.75 m would give
+31.7%). The deck line is the lip, one row across the frame: 18.5688 by the HUD layout's instrument,
+18.570 by ray; the catalogue records 18.57, and both HUD tests pass with their files unchanged. The
+whole-frame test now classes a sightline as glass when it crosses a pane's hole in the SKIN (its grid at
+skin level), and allows half a degree at an edge, where the rim reads widest (No.2's top, 1.3 m away and
+seen at a slant). The no-T-junction test and the drawn-faces walk stay at zero.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

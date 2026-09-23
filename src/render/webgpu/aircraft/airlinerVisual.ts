@@ -44,6 +44,7 @@ import {
   radomeLiveryPhase,
 } from "./airlinerLivery";
 import {
+  CENTRE_POST_HALF_AZIMUTH,
   FLIGHT_DECK_PANES,
   PANE_DEPTH,
   PANE_PROUD,
@@ -1741,13 +1742,29 @@ export function createAirliner(scene: Scene): AircraftVisual {
     }
   }
   // The centre post: the centreline strip between the two No.1 panes, cast
-  // the same way (+-1 degree of the +-2.5 gap, over No.1's elevations), so it
-  // lies on the skin at the glass's height the whole way down. A straight
-  // strut between two crown points sank 5 cm under the skin at the 32.4 ring.
-  // It is its own mesh, and the cockpit camera draws it: the one piece of the
-  // windscreen frame the cockpit kit does not build.
-  const post = paneGrid(caster, { name: "one", azimuth: [-1, 1], elevation: FLIGHT_DECK_PANES[0]!.elevation }, 1, 2);
-  withoutShadow(build.skinPanel(
+  // the same way over No.1's elevations, so it lies on the skin at the glass's
+  // height the whole way down. A straight strut between two crown points sank
+  // 5 cm under the skin at the 32.4 ring. It is its own mesh, and the cockpit
+  // camera does not draw it: it is the glass's 0.10 m slab, and against the
+  // cockpit kit's 2 cm frame lining it would stand 4.8 cm into the cabin with its
+  // end and side faces showing, so the kit lines its place from inside instead
+  // (`cockpit/airlinerCockpit.ts`).
+  //
+  // It FILLS the gap, +-CENTRE_POST_HALF_AZIMUTH, where it used to sit +-1 in
+  // +-2.5 with skin showing either side. Its edge columns are cast along the
+  // No.1 panes' own inboard sightlines at the same PANE_GRID elevations, so
+  // post and pane share those edge vertices exactly: no seam, and the rims
+  // that meet there are enclosed between two solids and never seen. Two
+  // columns, as before: across 3.8 degrees the chord sags about 1.7 mm under
+  // the crown (1.2 mm across 3.2, going as the square), inside PANE_PROUD's
+  // 4 cm, and the kit's frame meets the same corner points.
+  const post = paneGrid(
+    caster,
+    { name: "one", azimuth: [-CENTRE_POST_HALF_AZIMUTH, CENTRE_POST_HALF_AZIMUTH], elevation: FLIGHT_DECK_PANES[0]!.elevation },
+    1,
+    2,
+  );
+  const centrePost = withoutShadow(build.skinPanel(
     "airliner-windscreen-center-post",
     post.points,
     post.normals,
@@ -2169,18 +2186,16 @@ export function createAirliner(scene: Scene): AircraftVisual {
   //
   // Left alone on purpose: the three thin-instanced meshes (a merge drops the
   // instance buffer), the eight lamps (the wash-light test sites each one by
-  // name and position) and the centre post. It was the only dark part on the
-  // cockpit-excluded layer; the cockpit camera draws it now (it is the one piece
-  // of the windscreen frame the cockpit kit does not build), and folding it into
-  // another dark mesh is a change to the airframe's batching, not to the cockpit.
+  // name and position) and the centre post, which is the only dark part on
+  // the cockpit-excluded layer and so has nothing to merge with.
   //
-  // THE COCKPIT SHELL IS ITS OWN GROUP. The two lofts that would block the
+  // THE COCKPIT SHELL IS ITS OWN GROUP. The two lofts and the post that would block the
   // pilot's view carry `AIRCRAFT_EXTERIOR_LAYER_MASK`, which the cockpit
   // camera clears; the tailcone and fairings behind them do not. One mesh has
   // one layer mask, so they cannot share one. The mask is put on the sources
   // FIRST so that `mergeStatic`'s own check is a real one: offer it the
   // tailcone here and it throws rather than hiding the tail from the pilot.
-  configureCockpitLayers([fuselage, radome]);
+  configureCockpitLayers([fuselage, radome, centrePost]);
   const fuselageShell = build.mergeStatic(
     "airliner-fuselage-shell", [fuselage, radome], root);
   build.mergeStatic("airliner-body-exterior", bodyExterior, root);
@@ -2226,16 +2241,16 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // the same simulation-time phase below, so they cannot be seen out of step.
     propeller: fanSpools[0]!,
     // What the cockpit camera must not draw: the opaque skin that would block the
-    // pilot's view (the fuselage and radome shell) and the flight deck GLAZING.
-    // The glass is a refractive PBR, and a refractive material draws as an opaque
-    // slab from INSIDE: from the pilot's seat it was two dark trapezoids across the
-    // windscreen. What frames the view instead is the cockpit-only kit
-    // (`cockpit/airlinerCockpit.ts`) and the centre post, which the cockpit camera
-    // draws. The fuselage loft's forward end cap stands at x 30.80, between the eye
+    // pilot's view (the fuselage and radome shell), the centre post (the kit lines
+    // its place at the frame's own depth) and the flight deck GLAZING. The glass is
+    // a refractive PBR, and a refractive material draws as an opaque slab from
+    // INSIDE: from the pilot's seat it was two dark trapezoids across the windscreen.
+    // What frames the view instead is the cockpit-only kit
+    // (`cockpit/airlinerCockpit.ts`). The fuselage loft's forward end cap stands at x 30.80, between the eye
     // and the glass, and is wound outward (it faces the nose), so the GPU culls it
     // from the seat even before this list hides it; the radome's rear cap is at x
     // 25.5, 4 m behind the eye. `tests/render.cockpit-airliner.test.ts` holds both.
-    cockpitParts: [fuselageShell, flightDeckGlass],
+    cockpitParts: [fuselageShell, centrePost, flightDeckGlass],
     cockpitOnlyParts,
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],

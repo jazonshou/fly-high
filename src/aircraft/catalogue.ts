@@ -460,11 +460,10 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // left of straight ahead.
   cockpitEye: Object.freeze({ forward: 29.85, up: 2.93, right: -0.5 }),
   // The glareshield's lip: a line along z at the panel's face, so it is ONE row across the whole
-  // frame, the deck's highest (18.039 by tests/support/cockpitFootprints.ts's instrument, and
-  // -18.04 straight ahead by ray; tests/render.cockpit-airliner.test.ts and
-  // tests/ui.hud-cockpit-deck-line.test.ts hold both). The sill above it, up to the glass, is
-  // window frame, not deck.
-  cockpitDeckLineDegrees: 18.04,
+  // frame, the deck's highest, by tests/support/cockpitFootprints.ts's instrument and straight
+  // ahead by ray (tests/render.cockpit-airliner.test.ts and tests/ui.hud-cockpit-deck-line.test.ts
+  // hold both). The sill above it, up to the window, is frame, not deck.
+  cockpitDeckLineDegrees: 18.57,
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this
     // aeroplane flies level at down low, where the air is dense: at 230 it

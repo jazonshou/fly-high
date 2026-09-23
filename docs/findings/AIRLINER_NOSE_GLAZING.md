@@ -32,15 +32,21 @@ at az +-2.5" can only be in the aircraft frame.
 
 | pane | azimuth from R | elevation from R |
 |---|---|---|
-| No.1 | 2.5..24 | -18..+12 |
+| No.1 | 1.9..24 | -18..+12 |
 | No.2 | 26..54 | -15..+10 |
 | No.3 | 56..75 | -12..+8 |
 
-The centre pillar is +-2.5 degrees. Between panes, a 2-degree pillar is taken out
-of the shared edge at 25 and 55. The centre post is a dark strip over +-1 degree
-of the centre gap, cast the same way, so it lies on the skin at the glass's
-height. A straight strut between two crown points sank 5 cm under the skin at
-the 32.4 ring.
+The centre member is +-1.9 degrees (`CENTRE_POST_HALF_AZIMUTH`). It was +-2.5
+until the cockpit engineer's K3 measured it from the left seat at 5.5 degrees,
+where the type's is about 3.6. They then measured it from the eye on the kit's
+2 cm lining at each candidate: 1.6 read 3.11, 1.8 read 3.48, 1.9 reads 3.67
+(face 3.46 + side 0.20), and 2.0 read 3.85, over the 3.8 ceiling. Glass to
+glass at the horizon from the catalogue eye it is now 3.6. Between panes, a 2-degree pillar is taken out of the shared edge at 25
+and 55. The centre post is a dark strip that FILLS the centre gap, cast the same
+way along the No.1 panes' own inboard sightlines at the same elevations, so post
+and pane share their edge vertices and no skin shows between them (it was a +-1
+strip in a +-2.5 gap). A straight strut between two crown points sank 5 cm under
+the skin at the 32.4 ring.
 
 **How a pane is made.** Its window of sky is an 8 x 8 grid of sightlines from R.
 Each sightline is cast onto the fuselage and nose lofts' own triangles, taking
@@ -64,12 +70,12 @@ order. That diagonal mirrors the other way on the port side, so the drawn skin
 itself is 1.9 cm asymmetric, and the glass follows the skin as drawn. Body
 metres: x forward, y up, z starboard.
 
-    PANE ONE  (az 2.5..24, el -18..12)   outer face               inner face
-      bottom inboard                  32.591  2.090  0.120     32.514  2.027  0.111
+    PANE ONE  (az 1.9..24, el -18..12)   outer face               inner face
+      bottom inboard                  32.595  2.089  0.091     32.518  2.026  0.084
       bottom outboard                 32.073  2.186  0.981     32.013  2.135  0.920
       top outboard                    31.263  3.275  0.615     31.219  3.195  0.576
-      top inboard                     31.512  3.303  0.072     31.461  3.217  0.066
-      outer normal at centre: 39.7 deg above horizontal, 23.1 deg outboard
+      top inboard                     31.515  3.303  0.055     31.463  3.218  0.050
+      outer normal at centre: 39.8 deg above horizontal, 22.6 deg outboard
 
     PANE TWO  (az 26..54, el -15..10)
       bottom inboard                  31.918  2.357  0.998     31.860  2.303  0.936
@@ -101,12 +107,13 @@ closed the gaps up.
 
 - **From R**, through each pane's centre azimuth: No.1 **30.25 degrees**
   (-17.30..12.95), No.2 25.35, No.3 20.25. The old No.1 was ~19.
-- **From E at the horizon**, left to right: port No.3 -62.0..-33.1, pillar,
-  port No.2 -30.6..-3.7, pillar, **port No.1 -1.8..+17.9**, centre post
-  +17.9..+22.5, starboard No.1 22.5..41.1, No.2 42.8..65.3, No.3 66.8..79.8.
+- **From E at the horizon**, left to right, with E the catalogue eye (29.85,
+  2.93, -0.50): port No.3 -65.15..-40.65, pillar, port No.2 -38.30..-10.80,
+  pillar, **port No.1 -8.80..+12.15**, centre member +12.15..+15.75 (**3.6
+  degrees**), starboard No.1 15.75..35.80, No.2 37.65..61.35, No.3 62.95..77.25.
 - **From E, through each pane's middle as the pilot sees it**: port No.1
-  30.8 degrees (-17.3..13.5), port No.2 32.8, port No.3 34.2, starboard No.1
-  26.8.
+  30.25 degrees (-17.20..13.05), port No.2 29.35, port No.3 27.65, starboard
+  No.1 27.50.
 
 ## The brow
 

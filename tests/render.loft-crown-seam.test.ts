@@ -365,7 +365,21 @@ describe("a loft's crown seam", () => {
       // airliner-screen-bezels keep their counts and move to the new panel; and
       // airliner-flight-deck-interior keeps its counts, its seats moving under the new eye. The other 88
       // are bit-identical: the shell, the glazing and the centre post included.
-      airliner: "96726bd2",
+      // RE-PINNED for the 747's centre member (jazonshou/747-centre-gap): the No.1 panes start at
+      // az 1.6 (CENTRE_POST_HALF_AZIMUTH) where they started at 2.5, and the post widens from +-1 to
+      // +-1.6 to fill the gap. Checked mesh by mesh against 58f8b28: three of 93 meshes moved and no
+      // count did -- the flight-deck glazing, the centre post, and the cockpit interior, whose lining
+      // reads the pane spec -- and the other 90 are bit-identical.
+      // RE-PINNED when the member settled at 1.9 (the cockpit engineer's reading from the eye on the kit's
+      // lining, 3.67 degrees against the type's 3.6): the same three meshes moved, no count did, and the
+      // other 90 are bit-identical against 1a0ec56.
+      // RE-PINNED for K3 (the lining thinned to 0.02 m, the lip re-solved to -18.57, the kit lining the post's place
+      // where the gap strips were): checked mesh by mesh against 4251e15, none gone, none new, exactly four moved,
+      // the kit's own: airliner-cockpit-interior 2,716 -> 2,556 vertices and 2,468 -> 2,328 triangles (the thinner
+      // lining, the post's strip for the two gap strips, the board's top), airliner-glareshield (the lip, lower),
+      // airliner-screens and airliner-screen-bezels (hung from it). The other 89 are bit-identical, the plane
+      // engineer's post included.
+      airliner: "86dfbb0e",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
