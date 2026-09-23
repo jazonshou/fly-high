@@ -252,10 +252,10 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     // cockpit view, and in NO other. Read from the live scene, so a part that leaks into a
     // chase or orbit frame fails here instead of being noticed, or not, in the PNG.
     const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
-    // Trainer 19; Global 8 and 747 4 since their 3D attitude balls came out (three meshes each,
-    // hung from a pivot; their PFD pages draw attitude on the screen now); the F-16 3, its HUD frame and its
-    // MFDs' bezels and screens.
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 19, bizjet: 8, airliner: 4, jet: 3 };
+    // Trainer 15 since it kept three dials (19 with the second row); Global 7 on its P1 panel; 747 4 since its 3D
+    // attitude ball came out (three meshes, hung from a pivot; its PFD page draws attitude on the screen now); the
+    // F-16 3, its HUD frame and its MFDs' bezels and screens. The same counts as tests/render.cockpit-drawn-faces.
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 4, jet: 3 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {
