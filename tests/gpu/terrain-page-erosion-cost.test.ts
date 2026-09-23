@@ -7,6 +7,7 @@ import {
 } from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import {
+  chargedStageMs,
   type ErosionCostStage,
   EXPECTED_STAGE_DISPATCHES,
   erosionStageCoverageFaults,
@@ -18,6 +19,7 @@ import {
   runPage,
   withScene,
 } from "./terrainPageErosionGpuHarness";
+import { pricingRun } from "../support/pricingRun";
 
 /**
  * `W-1d`: what one dispatch of the multi-frame page-erosion DAG actually
@@ -57,8 +59,9 @@ function pinnedCost(stages: readonly CostStage[]): number {
   );
 }
 
+/** Measured cost, with every unusable dispatch charged at its stage's pinned price. */
 function measuredCost(sample: StageMeasurements, stages: readonly CostStage[]): number {
-  return stages.reduce((total, stage) => total + sample[stage].milliseconds, 0);
+  return stages.reduce((total, stage) => total + chargedStageMs(sample[stage], stage), 0);
 }
 
 const PINNED_PAGE_COST_MS = pinnedCost(COST_STAGES);
@@ -74,6 +77,9 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
         + "counter to read; the pinned stage seeds stay unverified on this host",
       );
     }
+    // A pricing run refuses to measure without its idle gap (see pricingRun.ts).
+    const pricing = pricingRun();
+    if (pricing) console.log(`PRICING run: ${pricing.idleGapMs} ms idle before it`);
     // Every pass's duration as the deferred timing delivered it, by counter,
     // since the last page boundary: what each stage's reading must add up to.
     const delivered = new Map<unknown, number>();

@@ -9,6 +9,7 @@ import {
   type TerrainPageErosionGpuOptions,
 } from "@/src/render/webgpu/terrain/TerrainPageErosionGpu";
 import {
+  chargedStageMs,
   type ErosionCostStage,
   EXPECTED_STAGE_DISPATCHES,
   erosionStageCoverageFaults,
@@ -300,27 +301,40 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   });
 });
 
-describe("W-1d stage coverage: the unusable allowance cannot hide a regression", () => {
+describe("W-1d stage coverage: an unusable reading cannot hide a cost", () => {
   const stages = Object.keys(EXPECTED_STAGE_DISPATCHES) as ErosionCostStage[];
-  const pinned = (subset: readonly ErosionCostStage[]) => subset.reduce(
+  const pinnedPage = stages.reduce(
     (total, stage) => total + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * EXPECTED_STAGE_DISPATCHES[stage],
     0,
   );
-  const dearest = (subset: readonly ErosionCostStage[]) =>
-    Math.max(...subset.map((stage) => TERRAIN_EROSION_STAGE_SEED_COST_MS[stage]));
+  const chargedPage = (samples: ReturnType<typeof runFakePage>) =>
+    stages.reduce((total, stage) => total + chargedStageMs(samples[stage], stage), 0);
 
-  it("hides under 2 % of the pinned page, against a whole-page alarm at twice its price", () => {
-    expect(UNUSABLE_READINGS_PER_PAGE_CAP * dearest(stages) / pinned(stages)).toBeLessThan(0.02);
+  it("charges each unusable dispatch at its stage's pinned price, whichever stage it is", () => {
+    for (const stage of stages) {
+      const fake = producerWithFakeTrackers();
+      const samples = runFakePage(fake, (at, index) => at === stage && index === 0 ? 0 : undefined);
+      expect(samples[stage].unusable, stage).toBe(1);
+      // Every reading here is its pinned price, so a page that lost one reads
+      // exactly as dear as a page that lost none.
+      expect(chargedPage(samples), stage).toBeCloseTo(pinnedPage, 9);
+    }
   });
 
-  it("hides under 10 % of the pinned minor stages, against their alarm at four times", () => {
-    const minor = stages.filter((stage) => stage !== "seed" && stage !== "talus");
-    expect(UNUSABLE_READINGS_PER_PAGE_CAP * dearest(minor) / pinned(minor)).toBeLessThan(0.1);
+  it("charges the dearest dispatch in full: losing its reading does not cheapen the page", () => {
+    const dearest = stages.reduce((max, stage) =>
+      TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] > TERRAIN_EROSION_STAGE_SEED_COST_MS[max] ? stage : max);
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake, (at, index) => at === dearest && index === 0 ? Number.NaN : undefined);
+    const measuredOnly = stages.reduce((total, stage) => total + samples[stage].milliseconds, 0);
+    expect(pinnedPage - measuredOnly).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS[dearest], 9);
+    expect(chargedPage(samples)).toBeCloseTo(pinnedPage, 9);
   });
 
   it("is what the GPU cost test applies, next to the issued-dispatch count", () => {
     const source = readSource(join(import.meta.dirname, "gpu", "terrain-page-erosion-cost.test.ts"));
     expect(source).toContain("erosionStageCoverageFaults(page.samples)");
+    expect(source).toContain("total + chargedStageMs(sample[stage], stage)");
     expect(source).toContain("dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0");
     expect(source).toMatch(
       /expect\(page\.dispatches, `timed page \$\{pageIndex \+ 1\} DAG dispatch count`\)\s+\.toBe\(expectedTotalDispatches\);/u,
