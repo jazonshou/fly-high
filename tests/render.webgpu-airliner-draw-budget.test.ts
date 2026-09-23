@@ -145,8 +145,8 @@ const ENCLOSED = new RegExp([
   "-engine-inlet$",
   "^airliner-(cabin-window-line|nacelle-chevron|windscreen-center-post)$",
   // the cockpit's kit: 30 authored parts, all cockpit-only, so all outside the shadow map. The board, the
-  // glareshield's lip, and the lining round the glass: two strips across the centreline and seven a side
-  "^airliner-(instrument-panel|glareshield-lip)$",
+  // glareshield (its lip, unmerged), and the lining round the glass: two strips across the centreline and seven a side
+  "^airliner-(instrument-panel|glareshield)$",
   "^((port|starboard)-)?airliner-lining-",
 
   "^airliner-(screen|screen-bezel)-(port|starboard)-(pfd|nd|eicas)$",
@@ -350,8 +350,8 @@ describe("the 747-8's draw budget", () => {
   it("keeps the cockpit's four meshes outside every draw bound: invisible and never casting until cockpit view", () => {
     const { visual } = build();
     const kit = visual.cockpitOnlyParts ?? [];
-    // Four: the interior (the board and the lining's crowns, pillars and post gaps on one material), the
-    // glareshield (its lip and the lining's sills), the six screens and the six bezels. It was seven until the 3D attitude ball
+    // Four: the interior (the board and the whole window frame's lining on one material), the glareshield (its
+    // lip alone), the six screens and the six bezels. It was seven until the 3D attitude ball
     // came out -- its sky, ground and pitch bar were three meshes AND three draws standing in front
     // of a PFD that draws its own attitude now. So cockpit view costs three draws fewer than it did,
     // 7 -> 4, and the pilot sees MORE of the PFD, not less.

@@ -352,14 +352,14 @@ describe("a loft's crown seam", () => {
       // them. The other 91 are bit-identical, the centre post included.
       // RE-PINNED for the cockpit kit cast round the re-lofted glass, and the eye moved to (29.85, 2.93,
       // -0.50). Checked mesh by mesh against a480804, positions AND indices: of 93 meshes, none gone, none
-      // new, exactly five differ, all the flight deck's. airliner-cockpit-interior goes 158 -> 1,844 vertices
-      // and 76 -> 1,672 triangles (the board and the lining's crowns, pillars and post gaps, where the
-      // overhead, the pillar and the seam post were); airliner-glareshield 60 -> 896 and 24 -> 804 (the lip
-      // and the lining's sills, where the hood and the dash were); airliner-screens and
+      // new, exactly five differ, all the flight deck's. airliner-cockpit-interior goes 158 -> 2,716 vertices
+      // and 76 -> 2,468 triangles (the board and the whole window frame's lining, sills, crowns, pillars and
+      // post gaps, where the overhead, the pillar and the seam post were); airliner-glareshield 60 -> 24 and
+      // 24 -> 8 (the lip alone, where the hood and the dash were); airliner-screens and
       // airliner-screen-bezels keep their counts and move to the new panel; and
       // airliner-flight-deck-interior keeps its counts, its seats moving under the new eye. The other 88
       // are bit-identical: the shell, the glazing and the centre post included.
-      airliner: "063301a2",
+      airliner: "96726bd2",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

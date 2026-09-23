@@ -22,6 +22,7 @@ import {
   airlinerPanelFaceX,
 } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
 import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
+import { cockpitView, measureDeckLineDegrees } from "./support/cockpitFootprints";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 
 /**
@@ -175,15 +176,15 @@ function firstHit(azimuth: number, elevation: number) {
   return firstHitAlong(direction(azimuth, elevation));
 }
 /**
- * Which authored part of a merged mesh a picked triangle belongs to. The kit's merged meshes carry their sources
- * in `mergedFrom`; the lining's triangle counts are the captured panels' own, the rest are written here, and the
- * sum is checked against the mesh.
+ * Which authored part of a merged mesh a picked triangle belongs to (an unmerged mesh is its own part). The kit's
+ * merged meshes carry their sources in `mergedFrom`; the lining's triangle counts are the captured panels' own, the
+ * boxes' are written here, and the sum is checked against the mesh.
  */
 function partOf(mesh: AbstractMesh, faceId: number): string {
   const sources = (mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom;
   if (!sources) return mesh.name;
   // the lip is a three-sided `solidPlate` (two caps and three walls of two); the board, the screens and the bezels are boxes
-  const count = (name: string) => (name === "airliner-glareshield-lip" ? 8 : /^airliner-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles);
+  const count = (name: string) => (/^airliner-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles);
   const total = sources.reduce((sum, name) => sum + count(name), 0);
   expect(total, `${mesh.name}: its sources' triangles add up to the mesh's`).toBe(mesh.getTotalIndices() / 3);
   let start = 0;
@@ -413,13 +414,16 @@ describe("the glass the kit is built against", () => {
 
 describe("the 747's cockpit parts", () => {
   const SILLS = ["airliner-lining-sill-centre", "port-airliner-lining-sill-two", "starboard-airliner-lining-sill-two", "port-airliner-lining-sill-three", "starboard-airliner-lining-sill-three"];
+  // the board, then the lining in the order it is cast: the sill and the crown across the centreline, then a side each
   const INTERIOR = [
     "airliner-instrument-panel",
-    "airliner-lining-crown-centre",
+    "airliner-lining-sill-centre", "airliner-lining-crown-centre",
     "port-airliner-lining-post-gap", "starboard-airliner-lining-post-gap",
     "port-airliner-lining-pillar-one-two", "starboard-airliner-lining-pillar-one-two",
+    "port-airliner-lining-sill-two", "starboard-airliner-lining-sill-two",
     "port-airliner-lining-crown-two", "starboard-airliner-lining-crown-two",
     "port-airliner-lining-pillar-two-three", "starboard-airliner-lining-pillar-two-three",
+    "port-airliner-lining-sill-three", "starboard-airliner-lining-sill-three",
     "port-airliner-lining-crown-three", "starboard-airliner-lining-crown-three",
   ];
 
@@ -427,8 +431,8 @@ describe("the 747's cockpit parts", () => {
     expect(cockpitOnly.map((part) => part.name).sort()).toEqual([
       "airliner-cockpit-interior", "airliner-glareshield", "airliner-screen-bezels", "airliner-screens",
     ]);
-    // the lip and five sills; the board and eleven lining strips; six screens; six bezels
-    expect((named("airliner-glareshield").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["airliner-glareshield-lip", ...SILLS]);
+    // the lip alone; the board and the sixteen lining strips; six screens; six bezels
+    expect((named("airliner-glareshield").metadata as { mergedFrom?: string[] }).mergedFrom, "the glareshield is the lip, unmerged").toBeUndefined();
     expect((named("airliner-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(INTERIOR);
     const sources = cockpitOnly.flatMap((part) => (part.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [part.name]);
     expect(sources).toHaveLength(6 + 12 + 6 + 6);
@@ -442,10 +446,16 @@ describe("the 747's cockpit parts", () => {
     }
   });
 
-  it("put the lip and the sills on the glareshield's own matte material and the board and the rest of the lining on the flight deck's interior one", () => {
+  it("put the lip alone on the glareshield's own matte material, and the board and the whole window frame, sills included, on the flight deck's interior one", () => {
     const glare = named("airliner-glareshield");
     const interior = named("airliner-cockpit-interior");
     expect(interior.material, "the two draw states differ").not.toBe(glare.material);
+    // THE SILLS ARE FRAME: in the interior mesh, on its material, with the crown and the pillars; the glareshield is the
+    // lip's wedge alone (8 triangles, 24 vertices), the deck line's one straight row
+    const frame = (interior.metadata as { mergedFrom: string[] }).mergedFrom;
+    for (const sill of SILLS) expect(frame, `${sill} is window frame`).toContain(sill);
+    expect(glare.getTotalIndices() / 3).toBe(8);
+    expect(glare.getTotalVertices()).toBe(24);
     expect((glare.material as PBRMaterial).metallicF0Factor, "the glareshield reflects nothing").toBe(0);
     expect((glare.material as PBRMaterial).environmentIntensity, "the glareshield is lit by the sky").toBe(GLARESHIELD_IMAGE_LIGHT);
     expect((interior.material as PBRMaterial).environmentIntensity, "the interior's material is lit by the sky").toBeGreaterThan(0);
@@ -552,35 +562,54 @@ describe("what the pilot sees straight ahead", () => {
       rays += 1;
       if (!hit) continue;
       const part = partOf(hit.pickedMesh!, hit.faceId);
-      expect(["airliner-glareshield-lip", "airliner-instrument-panel"], `the lip's own body at azimuth ${az.toFixed(2)}`).not.toContain(part);
+      expect(["airliner-glareshield", "airliner-instrument-panel"], `the lip's own body at azimuth ${az.toFixed(2)}`).not.toContain(part);
       expect(hit.distance, `what shows over the lip at azimuth ${az.toFixed(2)} is far beyond it`).toBeGreaterThan(1.2);
     }
     expect(rays).toBeGreaterThan(40);
     // CONTROL: just under the lip the ray meets the lip
-    expect(firstPart(0, lipElevation(0) - 0.05)).toBe("airliner-glareshield-lip");
+    expect(firstPart(0, lipElevation(0) - 0.05)).toBe("airliner-glareshield");
   });
 
-  it("puts the deck line at the catalogue's value: straight ahead, the highest glareshield is the sill at No.1's bottom edge", () => {
+  it("puts the deck line at the catalogue's value: the lip, one row across the frame, with the grey sill above it up to No.1", () => {
     const recorded = aircraftSpec("airliner").cockpitDeckLineDegrees;
-    expect(recorded, "the 747 records its deck line").toBeDefined();
-    let deck = Number.NaN;
+    // THE HUD LAYOUT'S OWN INSTRUMENT: the deck's highest row anywhere across the frame (glareshield, panel, screens
+    // and bezels are deck; the window frame is not)
+    const view = cockpitView("airliner", 1600, 900);
+    let row = Number.NaN;
+    try {
+      row = measureDeckLineDegrees(view);
+    } finally {
+      view.dispose();
+    }
+    // AND STRAIGHT AHEAD, BY RAY: the highest glareshield
+    let ahead = Number.NaN;
     for (let e = 0; e >= -30; e -= 0.005) {
-      const hit = firstHit(0, e);
-      if (hit?.pickedMesh?.name === "airliner-glareshield") {
-        deck = e;
-        expect(partOf(hit.pickedMesh, hit.faceId), "the highest glareshield straight ahead").toBe("airliner-lining-sill-centre");
+      if (firstHit(0, e)?.pickedMesh?.name === "airliner-glareshield") {
+        ahead = e;
         break;
       }
     }
-    console.info(`747 deck line straight ahead: ${deck.toFixed(3)} (catalogue ${recorded})`);
-    expect(Math.abs(-deck - recorded!), "the ray and the catalogue agree to 0.2").toBeLessThanOrEqual(0.2);
-    // it is No.1's outer bottom edge there: the glass starts where the sill stops
+    console.info(`747 deck line: the deck's highest row ${row.toFixed(4)} (the HUD's instrument), the glareshield straight ahead ${(-ahead).toFixed(3)} by ray; catalogue ${recorded}`);
+    expect(Math.abs(row - recorded), "the instrument and the catalogue").toBeLessThanOrEqual(0.02);
+    expect(Math.abs(-ahead - recorded), "the ray and the catalogue").toBeLessThanOrEqual(0.2);
+    // ONE ROW: the lip is a line along z, so the highest row anywhere is the lip's row straight ahead
+    expect(Math.abs(row + ahead)).toBeLessThan(0.05);
+    expect(ahead).toBeCloseTo(AIRLINER_GLARESHIELD.lipElevationDegrees, 1);
+    // ABOVE IT, THE SILL: window frame, the interior mesh, from the lip up to No.1's outer bottom edge (-17.32)
     const bottom = edgePoints(panel("port-airliner-flight-deck-window-one"), 0, "bottom", 40).map((p) => azel(p));
     const i = bottom.findIndex((q, k) => k > 0 && Math.sign(q.az) !== Math.sign(bottom[k - 1]!.az));
     const glassAhead = bottom[i - 1]!.el + ((bottom[i]!.el - bottom[i - 1]!.el) * (0 - bottom[i - 1]!.az)) / (bottom[i]!.az - bottom[i - 1]!.az);
-    expect(Math.abs(deck - glassAhead)).toBeLessThan(0.1);
-    // and it stands above the lip it rises from
-    expect(deck).toBeGreaterThan(AIRLINER_GLARESHIELD.lipElevationDegrees);
+    expect(glassAhead - ahead, "the band of sill straight ahead, degrees").toBeGreaterThan(0.5);
+    let band = 0;
+    for (let e = ahead + 0.05; e < glassAhead - 0.05; e += 0.05) {
+      const hit = firstHit(0, e);
+      expect(hit?.pickedMesh?.name, `the sill at ${e.toFixed(2)}`).toBe("airliner-cockpit-interior");
+      expect(partOf(hit!.pickedMesh!, hit!.faceId)).toBe("airliner-lining-sill-centre");
+      band += 1;
+    }
+    expect(band).toBeGreaterThan(8);
+    // and just over No.1's bottom edge, the glass: nothing drawn
+    expect(firstHit(0, glassAhead + 0.1)).toBeNull();
   });
 
   it("frames every edge of the glass the pilot sees with the kit: no hidden skin shows beside any pane or the post", () => {
@@ -591,7 +620,7 @@ describe("what the pilot sees straight ahead", () => {
       const outboard = side === "port" ? -1 : 1;
       for (const pane of ["one", "two"] as const) {
         const name = `${side}-airliner-flight-deck-window-${pane}`;
-        cases.push({ pane: name, edge: "bottom", face: 0, out: [0, -1], frame: /glareshield-lip|sill/ });
+        cases.push({ pane: name, edge: "bottom", face: 0, out: [0, -1], frame: /^airliner-glareshield$|sill/ });
         cases.push({ pane: name, edge: "top", face: 1, out: [0, 1], frame: /crown/ });
         cases.push({ pane: name, edge: "inboard", face: 0, out: [-outboard, 0], frame: pane === "one" ? /post-gap/ : /pillar-one-two/ });
         cases.push({ pane: name, edge: "outboard", face: 0, out: [outboard, 0], frame: pane === "one" ? /pillar-one-two/ : /pillar-two-three/ });

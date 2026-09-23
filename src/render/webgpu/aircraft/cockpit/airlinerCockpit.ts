@@ -62,9 +62,11 @@ import { displayStateFromVisual, type DisplayAirframe } from "./displays/display
  *    degree of sill between itself and No.1's bottom edge anywhere along that edge. It stands
  *    FLUSH with the panel's face, and the screens hang 0.25 degrees under it, so 43.5% of each
  *    screen in the top row is in the frame;
- *  - above the lip the sill lining carries the glareshield on to each pane's bottom edge, so no
- *    band of the hidden nose shows between them; the deck's top straight ahead is therefore No.1's
- *    bottom edge, which is what `catalogue.cockpitDeckLineDegrees` records;
+ *  - above the lip the SILL, the bottom of the window frame, runs on to each pane's bottom edge, so
+ *    no band of the hidden nose shows between them. It is frame, not deck: on the interior material
+ *    with the crown and the pillars, a lighter window surround over a dark hood, as the type has it.
+ *    The deck proper is the lip alone, one straight row across the frame, and that row is what
+ *    `catalogue.cockpitDeckLineDegrees` records (the 2D HUD keeps above it);
  *  - the screens are the type's layout: each pilot's PFD straight ahead of them and their ND
  *    inboard of it, the upper EICAS on the centreline and the lower one under it.
  *
@@ -75,10 +77,10 @@ const DEG = Math.PI / 180;
 
 export interface AirlinerCockpitMaterials {
   /**
-   * Dark matte interior: the panel board, the crown lining, the pillars and the gaps by the post, which are one
-   * structure and one draw state. (The glareshield and the sill lining have the glareshield's own:
-   * `glareshieldMaterial`.) A material with no ambient light reads (0, 0, 0) on any face the sun misses: a hole in
-   * the picture beside a lit ceiling. This one is the flight deck's own, the seats' material.
+   * Dark matte interior: the panel board and the whole window frame (sills, crowns, pillars and the gaps by the
+   * post), which are one structure and one draw state. (The glareshield's lip has its own: `glareshieldMaterial`.)
+   * A material with no ambient light reads (0, 0, 0) on any face the sun misses: a hole in the picture beside a lit
+   * ceiling. This one is the flight deck's own, the seats' material.
    */
   readonly interior: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
@@ -168,6 +170,9 @@ export function airlinerPanelFaceX(): number {
  * than the sight line over the lip (21.8 degrees against 18.04), so from the eye nothing of the glareshield or the
  * board behind it shows above the lip, and the lip is the line the pilot reads. A box's far top corner would stand
  * 1.6 cm over that sight line and become the edge instead.
+ *
+ * Being a line along z, the lip is ONE row of the picture across the whole frame, and it is the deck's top: the
+ * value `catalogue.cockpitDeckLineDegrees` records and the 2D HUD keeps above.
  */
 export const AIRLINER_GLARESHIELD = Object.freeze({
   lipElevationDegrees: -18.04,
@@ -260,8 +265,6 @@ export interface LiningStrip {
   readonly elevation: readonly [number, number];
   /** Built once across the centreline, or once a side (mirrored). */
   readonly centre: boolean;
-  /** The sills carry the glareshield on to the glass; the rest is the interior. */
-  readonly on: "glareshield" | "interior";
 }
 
 /**
@@ -280,15 +283,15 @@ export function airlinerLiningStrips(): readonly LiningStrip[] {
   const oneTwo = pillar(one, two);
   const twoThree = pillar(two, three);
   return [
-    { name: "sill-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [bottom, one.elevation[0]], centre: true, on: "glareshield" },
-    { name: "crown-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [one.elevation[1], top], centre: true, on: "interior" },
-    { name: "post-gap", azimuth: [AIRLINER_POST_HALF_AZIMUTH, one.azimuth[0]], elevation: one.elevation, centre: false, on: "interior" },
-    { name: "pillar-one-two", azimuth: oneTwo.azimuth, elevation: oneTwo.elevation, centre: false, on: "interior" },
-    { name: "sill-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [bottom, two.elevation[0]], centre: false, on: "glareshield" },
-    { name: "crown-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [two.elevation[1], top], centre: false, on: "interior" },
-    { name: "pillar-two-three", azimuth: twoThree.azimuth, elevation: twoThree.elevation, centre: false, on: "interior" },
-    { name: "sill-three", azimuth: three.azimuth, elevation: [bottom, three.elevation[0]], centre: false, on: "glareshield" },
-    { name: "crown-three", azimuth: three.azimuth, elevation: [three.elevation[1], top], centre: false, on: "interior" },
+    { name: "sill-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [bottom, one.elevation[0]], centre: true },
+    { name: "crown-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [one.elevation[1], top], centre: true },
+    { name: "post-gap", azimuth: [AIRLINER_POST_HALF_AZIMUTH, one.azimuth[0]], elevation: one.elevation, centre: false },
+    { name: "pillar-one-two", azimuth: oneTwo.azimuth, elevation: oneTwo.elevation, centre: false },
+    { name: "sill-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [bottom, two.elevation[0]], centre: false },
+    { name: "crown-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [two.elevation[1], top], centre: false },
+    { name: "pillar-two-three", azimuth: twoThree.azimuth, elevation: twoThree.elevation, centre: false },
+    { name: "sill-three", azimuth: three.azimuth, elevation: [bottom, three.elevation[0]], centre: false },
+    { name: "crown-three", azimuth: three.azimuth, elevation: [three.elevation[1], top], centre: false },
   ];
 }
 
@@ -385,9 +388,8 @@ export interface AirlinerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the rule
  * is applied in one place. `skin` is the caster the glazing was cast with.
  *
- * FOUR meshes, all static: the board and the interior lining (crowns, pillars, the gaps by the post) on the
- * interior material; the glareshield's lip and the sill lining on the glareshield's; the six screens; their six
- * bezels.
+ * FOUR meshes, all static: the board and the window frame's lining on the interior material; the glareshield's lip
+ * on the glareshield's, alone; the six screens; their six bezels.
  */
 export function buildAirlinerCockpit(
   build: AircraftBuildContext,
@@ -404,39 +406,39 @@ export function buildAirlinerCockpit(
 
   // THE LINING: one skin panel per strip (a side, or once across the centreline), at the panes' own proud and
   // depth, so its rim at a pane's edge is that pane's edge, inner face and outer alike.
-  const glare = glareshieldMaterial(build, "airliner-glareshield");
-  const lining: Record<LiningStrip["on"], AbstractMesh[]> = { glareshield: [], interior: [] };
+  const lining: AbstractMesh[] = [];
   for (const strip of airlinerLiningStrips()) {
     const sides: readonly (readonly [string, 1 | -1])[] = strip.centre ? [["", -1]] : [["port-", -1], ["starboard-", 1]];
     for (const [prefix, side] of sides) {
       const grid = liningGrid(skin, strip, side);
-      lining[strip.on].push(build.skinPanel(
+      lining.push(build.skinPanel(
         `${prefix}airliner-lining-${strip.name}`,
         grid.points,
         grid.normals,
         PANE_PROUD,
         PANE_DEPTH,
-        strip.on === "glareshield" ? glare : materials.interior,
+        materials.interior,
         root,
       ));
     }
   }
 
-  // THE GLARESHIELD'S LIP: the wedge, extruded along z (`verticalProfile` extrudes its x-y outline along z), with
-  // the sill lining in one mesh on the glareshield's material.
+  // THE GLARESHIELD: the lip alone, the wedge extruded along z (`verticalProfile` extrudes its x-y outline along z),
+  // on a material of its own (matte near-black, no reflection): a glareshield must not reflect in the windscreen.
+  // It is the whole deck line, so it is the mesh named for it.
   const lip = solidPlate(
     build,
-    "airliner-glareshield-lip",
+    "airliner-glareshield",
     [
       { x: faceX, y: lipY },
       { x: faceX, y: undersideY },
       { x: faceX + g.depth, y: undersideY },
     ],
     p.halfWidth * 2,
-    glare,
+    glareshieldMaterial(build, "airliner-glareshield"),
     root,
   );
-  parts.push(build.mergeStatic("airliner-glareshield", [lip, ...lining.glareshield], root));
+  parts.push(lip);
 
   // THE PANEL BOARD, from below the frame up to the glareshield's underside.
   const board = build.box("airliner-instrument-panel", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root);
@@ -481,9 +483,9 @@ export function buildAirlinerCockpit(
     screensMesh.material = displayMaterial(build, "airliner-display", atlas);
   }
 
-  // THE BOARD AND THE INTERIOR LINING, one mesh on the flight deck's interior material (the seats'). Not the
-  // glareshield's for the crown and the pillars: they are the ceiling and the window frame, lit by the cabin.
-  parts.push(build.mergeStatic("airliner-cockpit-interior", [board, ...lining.interior], root));
+  // THE BOARD AND THE WINDOW FRAME, one mesh on the flight deck's interior material (the seats'). The sills are
+  // frame too, not the glareshield's: the lighter surround round the glass, over the dark hood.
+  parts.push(build.mergeStatic("airliner-cockpit-interior", [board, ...lining], root));
 
   // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
   // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a

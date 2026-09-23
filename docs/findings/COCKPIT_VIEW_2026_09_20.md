@@ -1071,18 +1071,22 @@ their shared seam on different chords, which part by a fraction of a millimetre,
 showed hairlines of sky along the crown's seams. A test now finds no T-junction anywhere in the frame (105
 with the old sampling). They are skin panels, not `solidPlate`s, because the pane edges are curves on a curved nose and a plate is flat; the
 builder winds them by geometry to the same rule (the cross product into the solid), and the drawn-faces walk
-reads zero culled on all four meshes at both offsets. The sills are on the glareshield's matte material, so
-from the seat the glareshield runs on to the glass; the crowns, pillars and gaps are on the flight deck's
-interior material, the seats'.
+reads zero culled on all four meshes at both offsets. The whole lining, sills included, is on the flight
+deck's interior material (the seats') in one mesh with the board: the sill is the bottom of the window
+frame, a lighter surround over the dark hood, as the type has it. The glareshield is the lip alone.
 
 **The centre post** is the plane engineer's cast strip, and the cockpit camera draws it now: it left
 `cockpitParts`, and the shell and the glazing stay there. From the eye its inner face is 2.02 m away, drawn
 by the GPU's rule and shaded toward the seat; hidden, the same ray meets nothing. It is walked by the
 drawn-faces test beside the kit, at zero.
 
-**The deck line** straight ahead is the sill where it meets No.1's bottom edge, -17.325, not the lip
-(-18.04) it rises from. `catalogue.cockpitDeckLineDegrees` records 17.32 for the 747, held to a ray
-within 0.2.
+**The deck line** is the lip. The merged field means the deck's highest ROW anywhere across the frame
+(the 2D HUD keeps above it), measured by the HUD layout's own instrument. With the sills on the glareshield
+that row was the sill under No.2's inboard corners, 15.49, while straight ahead read 17.32, and the HUD
+layout's row test failed at 17.32. With the sill as frame the deck is the lip, a line along z, so one row
+across the whole frame: the instrument reads 18.039 and the ray straight ahead 18.040.
+`catalogue.cockpitDeckLineDegrees` records 18.04, and both the 747 test and the HUD deck-line test hold it.
+Above the lip straight ahead the grey sill runs 0.72 degrees up to No.1's bottom edge (-17.32).
 
 **A correction to K0.** The K0 report said the fuselage loft's forward end cap at x 30.80 FACES the pilot
 between the eye and the glass. It is between them, and a sightline straight ahead crosses it, but it is
@@ -1095,7 +1099,7 @@ cockpit camera either way.
 | No.1 at the horizon / pillar / post | ahead in the middle third / - / +10..+16 | -8.8..+11.6 / -10.7..-8.9 / +13.1..+14.8 |
 | No.1's opening, glass ahead, headroom | >= 28, >= 1.4 m, the crown's | 30.4, 1.90 m, 0.615 m |
 | lip straight ahead | the lowest with the sill <= 1 | -18.04 (sill -0.45..+1.00) |
-| deck line straight ahead | catalogue +-0.2 | -17.325 (catalogue 17.32) |
+| deck line (the deck's highest row; straight ahead) | catalogue +-0.02; +-0.2 | 18.039; 18.040 (catalogue 18.04) |
 | PFD / ND / upper EICAS in the frame | >= 35% | 42.9% each on a 21 x 21 grid (43.5% exact) |
 | lower EICAS, starboard ND and PFD | - | 0% (under the frame; beyond its right edge) |
 | holes in the picture | glass only | 0 rays of skin showing, 0 of the kit over a pane's middle |
