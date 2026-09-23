@@ -1,9 +1,8 @@
 # Pinning the wildlife at each perf shot's time pin
 
-**Status: built on `jazonshou/wildlife-capture-pin` from `e9d902d`, Node-tested;
-harness-owner review approved 2026-09-23 (plane engineer). The PM merges it as a
-churn point after that night's promotion; the capture-side check comes from the
-captures taken on that tip.**
+**Status: merged into House-Keeping at `0449de2` (2026-09-23), after the harness
+owner's review. Checked on captures 2026-09-23 on `bd7a584`: three full runs,
+every prediction held; see "Capture-side check, measured" below.**
 
 Registered as a follow-up in
 [OCEAN_CASCADE_PIN_2026_09_22.md](OCEAN_CASCADE_PIN_2026_09_22.md), after the
@@ -235,15 +234,58 @@ shots carry unpinned birds. Its A/A floor on those shots includes bird noise
 that this pin removes. After the merge, that floor should drop to the foam and
 cloud-jitter residue.
 
-## Capture-side check, after the next GPU window
+## Capture-side check, measured (2026-09-23)
 
-- A same-tree A/A pair on this branch: every bird shot identical apart from
-  foam and cloud jitter, with no bird-sized clusters.
-- `terrain-material-1600ft-down` at 87 draws in every run (above), and every
-  draw count identical across the runs.
-- The same shots against an unpinned capture: differences at the probe's
-  predicted positions, printed per shot by the probe. For example,
-  `water-3m`'s nine birds are predicted around x 294-381, y 71-147.
+The churn window on `bd7a584` (House-Keeping with both pins) took a REBASELINE
+candidate (`tests/perf/artifacts/rebaseline-candidates/2026-09-23T04-50-34.261Z/`
+in the plane engineer's worktree) and two normal full runs on the same tree.
+
+**The pin's floor.**
+- **Runs agree.** The three runs agree to at most 0.003/255 mean on every shot.
+- **No bird-scale change.** No bird-scale change repeats between runs. The few
+  pixels over 8 levels that differ at all are sea glints and distant terrain,
+  and on `forest-line-highsun` one normal run matches the candidate exactly.
+- **Draw counts.** They are identical in all three runs on every shot, and
+  `terrain-material-1600ft-down` draws 87 in all three, as predicted above.
+
+**The birds sit where the probe puts them.** Each candidate was compared with
+its committed baseline, in which the birds were unpinned:
+- **Visible birds.** Every clearly visible bird is on its predicted pixel.
+- **Faint birds.** Many birds are too faint to see one by one, so they were
+  confirmed statistically. At the 188 predicted positions the candidate differs
+  from the baseline, by at least 1 level, at **59 %** of spots, against **7 %**
+  at control spots 15 px away:
+  - far birds (700 m and more): 47 % against 2 %;
+  - the approach pose and its seven re-lit twins: 44 % against 0 of 480.
+- **Predicted birds that show nothing.** Each is one of:
+  - a sub-pixel far bird that covers no samples;
+  - a dark hawk on a dark sky (night, blue hour);
+  - hidden: on `ground-2m-lowsun` the top of the frame is leaves beside the 2 m
+    eye, and the probe ignores occlusion.
+
+**The falsifier did not fire.** The falsifier is a new bird where the probe
+predicts none. 37 strong unpredicted changes in smooth surroundings were flagged,
+across every shot, and each was inspected in a magnified crop. None is a bird:
+they are tree-crown texture, distant terrain faces and sea glints. One change on
+a recent baseline is named rather than explained: `page-thrash-turn`'s 80 px
+speck cluster at a forest edge, (803-835, 487-498). The probe puts that shot's
+three near boar 55 px away, and this 60-degree-banked motion shot is where the
+probe's chase-roll model is least exact.
+
+**How to review a bird shot** (the standard since this check):
+- **Threshold.** Work at **3 levels or more, not 8**. Light gulls against a
+  light sky move pixels by 3-8 levels, and hawks 750 m or more away are about
+  3 px across with sub-pixel wings. So a mask at more than 8 levels misses most
+  birds; the first pass here did exactly that.
+- **Faint birds.** Confirm them against controls 15 px away, as above, not one
+  by one.
+- **Falsifier candidates.** Inspect every one by crop. A smooth-surround test
+  lets distant terrain faces, crowns and sea glints through as "new objects".
+
+The tools are the probe (`scripts/wildlife-shot-birds.mts`) and the review
+scripts from the check: change maps, per-shot counts, the 15 px control and
+crop mosaics. The scripts are kept in the water engineer's session scratchpad,
+not committed.
 
 ## Review
 
