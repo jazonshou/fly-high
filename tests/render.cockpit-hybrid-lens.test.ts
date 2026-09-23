@@ -125,15 +125,20 @@ describe("what the lens shows of each deck, from the kits' own constants", () =>
 
   it("CONTROL: the plain 75 degree lens loses them at 21:9, so the comparison above can see it", () => {
     // Top-row display rows in frame at 2560 x 1080 with horizontal-fixed 75 degrees: none of the
-    // F-16's MFD screens or the 747's top row, 11-13 % of the Global's (the survey's 0 / 0 / 13).
+    // F-16's MFD screens or the 747's top row, 29.5 % of the Global's. (The survey's 0 / 0 / 13 was on the
+    // Global's flat board; its P1 panel stands the screens higher, 72.5 % of their rows in a 16:9 frame.
+    // A plain 75 degree ray grid reads the Global's two at 29.6 % and 72.6 %.)
     const share = (deck: (typeof DECKS)[number], name: string, w: number, h: number, lens: number) =>
       rowShareInFrame(projectPart(deck, cockpitParts(deck).find((p) => p.name === name)!, w, h, lens), h);
     expect(share("jet", "port MFD", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
     expect(share("airliner", "port-pfd", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
-    expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeLessThan(0.15);
-    // The same parts at 16:9: 62 %, 38 % and 57 % of their rows.
+    expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.295, 2);
+    // The same parts at 16:9: 62 %, 38 % and 72.5 % of their rows.
     expect(share("jet", "port MFD", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.62, 2);
     expect(share("airliner", "port-pfd", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.38, 2);
-    expect(share("bizjet", "port-outboard", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.57, 2);
+    expect(share("bizjet", "port-outboard", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.725, 2);
+    // The loss itself: at 21:9 the plain lens shows the Global's screen at less than half the rows 16:9 shows.
+    expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES))
+      .toBeLessThan(0.5 * share("bizjet", "port-outboard", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES));
   });
 });
