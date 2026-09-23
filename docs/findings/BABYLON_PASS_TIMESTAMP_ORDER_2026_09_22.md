@@ -131,7 +131,7 @@ is a pit: 0.13 ms for the pair"*, was written off this instrument.
 page. Under this mechanism a zero means "this slot has never been written", which is exactly a reading the counter
 could not give, so the change is correct. It fixes the counting, not the attribution.
 
-## Fix shape (for decision; not implemented)
+## Fix shape (approved, built below)
 
 What Babylon allows without patching `node_modules`: replace, on the engine **instance**, the per-pass read that
 `endPass` triggers. Keep Babylon's slot allocation and `timestampWrites` exactly as they are. Change only when the
@@ -146,8 +146,7 @@ slots are read:
 3. The queue order is then correct by construction: the resolve is submitted after the frame that wrote the
    slots, and before the next frame's encoder can overwrite them.
 
-Side effect: one readback per frame instead of one per timed pass. `GpuTimingPolicy.ts` records that per-pass
-readbacks cost about 0.49 ms per timed pass on the reference host.
+Side effect: one readback per frame instead of one per timed pass (the cost is re-measured below).
 
 What it touches: Babylon internals (`_timestampQuery`, `_measureDuration._querySet`, `WebGPUPerfCounter._addDuration`).
 It needs the same version-pinned source guard that `render.gpu-timing-policy.test.ts` already applies to Babylon's
@@ -156,3 +155,43 @@ read microseconds.
 
 Order, once the fix is in: every price in the table above is **re-measured on the fixed instrument before any
 gate changes**, and none is adjusted to fit.
+
+## The fix, built (`src/render/webgpu/core/DeferredPassTiming.ts`)
+
+The instrument is the shape above. The renderer installs it right after the one timing switch, and a failure to
+install is fatal on a timed run. So are the three GPU tests that switch timing on.
+
+Building it exposed a second, smaller defect in the **consumers**. The erosion producer (and, the same way, the
+page generator and the splat and occlusion bakes, through `consumeGpuDispatchCostMs`) polled Babylon's counter and
+took `counter.current`, the latest frame's sum, whenever `count` moved:
+- when two frames land between polls, the first is lost;
+- a delivery that lands when no dispatch is pending is skipped without being marked seen, and is credited to the
+  next dispatch, possibly on the next page;
+- a delivered frame is divided by the batch dispatched last.
+
+Deliveries now come a frame after the dispatch, so all three happen. On the fixed instrument, page 1's seed stage
+read 0.54-1.20 ms away from the sum of its own passes. `PassCostTape` fixes it for the erosion producer. It records
+each pass after dispatch, with its frame id and units, and pairs it with the delivery for that pass, in dispatch
+order. A reading that never comes is dropped when a later frame's arrives, never priced.
+
+Gates, all on the reference host (Firefox 0.1-4.8 % CPU):
+
+| gate | result |
+|---|---|
+| (a) heavy/trivial control, both orders (`tests/gpu/deferred-pass-timing.test.ts`) | every heavy pass reads 3.78-7.17 ms, every trivial pass 0.004-0.009 ms |
+| (b) each erosion stage's reading equals its own passes' delivered time (`terrain-page-erosion-cost.test.ts`) | within 1 µs, every stage, 12 of 12 timed pages, 3 of 3 runs |
+| (c) unusable readings on a quiet machine | 0 on the warm page and on all 12 timed pages, 3 of 3 runs |
+| (d) readbacks per frame | 1.00 at 20, 44 and 88 timed passes; 0 per-pass reads. Babylon's own read: 20.00, 44.00, 88.00 |
+| (e) frame interval against timed passes per frame (base 8.33 ms) | Babylon's read: 8.33 / 8.34 / 12.37 ms at 20 / 44 / 88; deferred: 8.33-8.35 ms at every count |
+| (f) `2ec55a2`'s tests | every case kept, rebuilt on the tape, plus the two lag cases above; 17 of 17 |
+
+The GPU tests that time passes (`terrain-compute-cost`, `ground-cover-compute`, `terrain-erosion-live-pump`) pass
+on it. The Node tests for the instrument (18) and the stage coverage (17) catch 14 of 14 mutations.
+
+(e) does not reproduce the ~0.49 ms per timed pass of the synthetic probe (RESOLUTION_PLAN.md section 3.2). On this
+host and browser, per-pass reads cost nothing up to 44 per frame and about 4 ms at 88. `GpuTimingPolicy.ts` now
+says so.
+
+**The prices are not changed here.** The same three cost runs, on the fixed instrument, put whole pages at
+49.3-52.0 ms against the pinned 37.4. Per dispatch: seed 0.37-0.42 ms (pinned 0.29), talus 0.36-0.38 (0.32), and
+breach 2.8-3.2 ms per dispatch unit (0.067). They are recorded for the re-price, which is its own commit.
