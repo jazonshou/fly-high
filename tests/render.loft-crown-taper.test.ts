@@ -292,7 +292,12 @@ describe("the loft's crown taper", () => {
       // 20 rings -> 28 (982 -> 1374 vertices). The flight-deck glazing and post re-cast onto it (counts
       // unchanged), `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh
       // against 3d6d97c: the other 91 meshes are bit-identical.
-      bizjet: "b03b5d08",
+      // RE-PINNED for the Global's nose, phase 3c part 5: the crown on the p. 29 render's corrected
+      // silhouette (the sky edge), under it at the foot for the aim point on final and up to 0.09 over
+      // it at the brow; ring count unchanged. The flight-deck glazing and post re-cast onto it,
+      // `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh against
+      // 3da1899: the other 91 meshes are bit-identical.
+      bizjet: "102fe87e",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

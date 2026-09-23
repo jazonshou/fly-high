@@ -575,6 +575,10 @@ three):
 
 ## Phase 3c, part 4 (d): a bounded brow
 
+> **Superseded by part 5 (below).** Every render number in this section was
+> measured against a mis-traced silhouette, 0.12-0.20 m low over the nose. The
+> view numbers and the glass-clearance finding stand.
+
 **Part 4 asked for a level windshield top** (both top corners within 3 degrees
 of each other), a brow over it, and the nose under the brow falling hardest.
 What the study found:
@@ -705,6 +709,176 @@ built 0.735 is the least that holds the view targets from the seated eye. If
 the second camera confirms the render's brow, the choice is between the view
 and the silhouette, or a lower eye. At 0.65 the post's head is near +5
 degrees.
+
+## Phase 3c, part 5: the render's line, corrected
+
+**The render's silhouette was traced wrong over the nose.** The trace that the
+p. 29 camera was solved with, and that parts 2-4 were fitted or bounded against,
+did not follow the silhouette. It followed the LOWER edge of the dark reflection
+band on the nose's glossy upper surface.
+
+It was found by drawing it over a zoomed crop, 6x, with station ticks from the
+camera. Column u 600 of the render (300 dpi), luminance by row:
+
+| rows | what it is | luminance |
+|---|---|---|
+| to 1142 | sky | 185-199 |
+| 1144-1148 | the aircraft's edge | 118, then 66-67 |
+| 1156 | where the old trace sat | 133 |
+
+The old trace sat on the band's inner edge, 12 px low there.
+
+- **Over the nose (u 470-740)** the true edge is 12-18 px higher, 0.12-0.20 m
+  at the nose's range.
+- **Over the cabin** it is 2 px higher. The band is thin there, which is why
+  the camera solve, the constant-section control and every cross-check agreed
+  with it.
+
+The new trace (`tests/fixtures/global-p29-silhouette.json`) is the sky edge:
+- per column, the first row darker than the sky (the median of the 25 rows
+  above) by more than 25 levels;
+- sub-pixel at the half level;
+- plus 1.96 px, the old trace's median offset over the constant section, so
+  the camera's calibration holds.
+
+Three different nose tables read the same render line from it to 2 cm.
+
+The evidence crops are outside the repository, because the render is
+Bombardier's: `p29-edge-zoom.png`, `p29-edge-tip.png`,
+`p29-outline-overlay.png` and `p29-outline-overlay-u4.png` in the session's
+g7500 scratch directory.
+
+**The render's line**, m aft of the tip -> height:
+
+| m aft | 1.3 | 1.5 | 1.7 | 1.9 | 2.0 | 2.2 | 2.4 | 2.6 | 2.8 | 3.0 | 3.2 | 3.5 | 4.0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| height (m) | 0.19 | 0.285 | 0.38 | 0.49 | 0.56 | 0.70 | 0.83 | 0.935 | 1.04 | 1.11 | 1.18 | 1.26 | 1.31 |
+
+It is a steady ramp with no brow: about 0.5 m per metre from the tip to 1.9 m
+aft, 0.7 over the windshield, easing to 0.1 by 4 m. Extended forward, it meets
+the tip's crown at -0.46.
+
+**What that does to parts 1-4.** The crown against the corrected line (+ =
+above it):
+
+| nose | 1.0-2.0 m aft | 2.0-3.5 m aft |
+|---|---|---|
+| part 1 (the pre-3c crown, held) | +0.32..+0.43 | +0.04..+0.32 |
+| part 3 (3d6d97c) | -0.11..-0.15 | -0.05..-0.15 |
+| part 4's level roof | -0.11..-0.05 | -0.13..+0.14 |
+| part 4 (d) (3da1899) | -0.13..-0.05 | -0.15..+0.02 |
+
+Three earlier statements change with it:
+- **"The nose was 0.3-0.7 m higher at 1-2 m aft"** (part 2): it was 0.32-0.43.
+- **Part 3's crown, "0.9 of the camera fit,"** sat 0.11-0.15 below the type
+  everywhere. That is why its windshield read low and small in the frames.
+- **Part 4 (d)'s brow** was not a 0.20 m bulge over the render. It was on the
+  render at the post's head and 0.13-0.15 BELOW it over the roof behind.
+
+**Part 5 builds on the render's line.** The PM's priorities, in order:
+1. The aim point on final is in the glass: the bottom edge straight ahead at
+   -9.5 or lower, since the aim point sits at -8.47 under the body axis.
+2. The render bound: -0.12..+0.10 m over 1.5-2.0 m aft (the foot), and
+   -0.05..+0.10 over 2.0-3.5.
+3. The post's head as high as that allows (goal +10, pass +6), port top
+   corners +6 or higher, the starboard top +5 or higher at the post.
+4. Headroom 0.35 at the seat and 0.25 at 0.3 m ahead; the tip at -0.55.
+
+The crown is the render's line plus an offset:
+- **The nose** runs straight from the tip's crown (0, -0.45) to 1.6 m aft,
+  0.115 under the line.
+- **The face** is 0.08 under the line at 1.9 m aft and 0.05 under by 2.0.
+- **The brow** is up to 0.09 over the line at 2.25 m aft, the post's head:
+  0.05 over at 2.6, 0.02 at 3.0, and on the line from 3.4.
+
+The anchors are every 0.1 m, with a monotone cubic through them. The keel and
+the widths are part 1's.
+
+**Why each move:**
+- **The face under the line.** The pilot's bottom edge straight ahead is at
+  1.9 m aft, 30 degrees round, where the render's face is 0.49 high. Measured
+  on the built glass, the bottom edge against the face's offset at 1.9 m aft:
+
+  | offset at 1.9 m aft | bottom edge |
+  |---|---|
+  | -0.045 | -8.85 |
+  | -0.060 | -9.45 |
+  | -0.075 | -10.10 |
+  | -0.080 | -10.30 |
+  | -0.090 | -10.70 |
+
+  The study's own reading, on the cast grid, is 0.5 degrees optimistic
+  against the built outer face.
+- **The straight nose ends at 1.6, not at the foot.** Ended at the foot (1.69),
+  the concave corner there leaves the windshield's inner face only 13.5 mm
+  inside the skin, where the brief asks for 15. Ended at 1.6, with the foot on
+  the curve, it is 19.2 mm inside and 4.7 mm out.
+- **The brow over the line.** It is what the bound allows for the post's
+  head, with 2 cm to spare: the worst column is +0.079.
+
+**Built, from the seated eye (11.90, 0.55, -0.52), on the built glass**
+(`render.bizjet-seat-view`, the corner table):
+- **Straight ahead:** -10.20 to +27.25, 37.5 degrees tall. From 0.78 it is
+  -20.3 to +7.45.
+- **The port windshield's corners**, azimuth (right +) / elevation / range:
+  - bottom at the post: +17.68 / -10.23 / 1.505;
+  - bottom outboard: -17.26 / -0.93 / 0.939;
+  - top outboard: -11.38 / +27.92 / 0.616;
+  - top at the post: +26.40 / +13.75 / 1.019.
+- **The top edges:** port +13.75 to +27.92; starboard +12.75 at the post,
+  +12.84 at its outboard end.
+- **The post:** 0.509 m tall on its outer face (0.283 to 0.792), its foot on
+  the loft at x 13.305 (y 0.272 cast), its head at x 12.786. From the seat its
+  head is +13.75 and +12.75 across its two edges. The crown there falls 1.03 m
+  per metre, 46 degrees.
+- **Room:**
+  - at the seat, 0.513 m straight up, 0.441 m to the nearest skin, 0.467 m to
+    the glass;
+  - 0.3 m ahead, 0.420 / 0.354 / 0.367;
+  - the headrest is 0.46 clear.
+- **The nose ahead of the foot** turns 1.2-5.5 degrees ring to ring from 13.45
+  to 14.7, and 3.0 into the foot's ring. The sunk-ring control moves the foot
+  from 1.695 m aft to 1.861.
+- **The side panes:** tops at 0.80-0.85, bottoms at 0.48-0.52. Through the
+  camera their tops lie on the render's side-window tops, where part 4 (d)'s
+  were 0.1 m under them.
+- **The glass:** 4.7 mm out, 19.2 mm in. The worst ring-to-ring shading step is
+  11.9 degrees, on the crown at the post's head.
+
+**Against the render** (`render.bizjet-nose`):
+- **The foot (1.5-2.0 m aft)** reads -0.114..-0.047.
+- **The face and roof (2.0-3.5)** read -0.041..+0.079. By station, + meaning
+  above:
+
+  | m aft | 1.9 | 2.0 | 2.2 | 2.5 | 3.0 | 3.5 |
+  |---|---|---|---|---|---|---|
+  | above the render (m) | -0.079 | -0.041 | +0.056 | +0.052 | +0.004 | -0.006 |
+
+- **The test pins both ranges** at the brief's limits.
+- **The instrument's control** is the constant section: a median of +0.4 cm,
+  90% of columns within 1.5 cm, and 0.101 when lifted 0.10 m.
+- **The bound's control** is part 4's level roof: +0.141 at the brow and
+  -0.129 at 3.5 m aft, out on both sides.
+
+**What moved.** Checked mesh by mesh against 3da1899:
+- the fuselage, with the same 28 rings;
+- the flight-deck glazing and the post, re-cast;
+- the cabin windows, within `render.bizjet-nose`'s 0.2 mm;
+- the other 91 meshes are bit-identical.
+
+The tip and the radome contact points are part 4 (d)'s. All of `tests/sim.*`,
+`services` and the Global's render tests pass: 27 files, 285 tests.
+
+**Registered, for the second camera and for Jason:**
+- **The side panes' bottoms.** Through the camera they sit about 0.06 m above
+  the render's side-window bottoms. Their tops match. The outline's bottom
+  angles are the top view's, so the side panes may be 0.06 m short.
+- **The brow's 0.09 over the line** is the post's head bought within the bound.
+  If the second camera moves the line, the brow moves with it: every ring is
+  the line plus the offsets above.
+- **The foot's 0.08 under the line** is the aim point on final from an eye at
+  0.55. A higher eye buys about 2 degrees of down-vision per 0.05 m and costs
+  about 4 of up-vision. There is up-vision to spare now: +27 straight ahead.
 
 ## Stage 2b, and what it is not
 

@@ -360,7 +360,12 @@ describe("a loft's crown seam", () => {
       // 20 rings -> 28 (982 -> 1374 vertices). The flight-deck glazing and post re-cast onto it (counts
       // unchanged), `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh
       // against 3d6d97c: the other 91 meshes are bit-identical.
-      bizjet: "2bf466f8",
+      // RE-PINNED for the Global's nose, phase 3c part 5: the crown on the p. 29 render's corrected
+      // silhouette (the sky edge), under it at the foot for the aim point on final and up to 0.09 over
+      // it at the brow; ring count unchanged. The flight-deck glazing and post re-cast onto it,
+      // `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh against
+      // 3da1899: the other 91 meshes are bit-identical.
+      bizjet: "31b4527e",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

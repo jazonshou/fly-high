@@ -56,7 +56,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * Part 4's nose, the level roof (crown 0.87 at the post's head), forward of the 9.5 ring, literally:
- * the brow's other end (docs/findings/GLOBAL_LIVERY.md).
+ * the render bound's control (docs/findings/GLOBAL_LIVERY.md).
  */
 const PART_4_NOSE: readonly LoftSection[] = [
   { x: 9.5, yRadius: 1.335, zRadius: 1.32, yOffset: 0 },
@@ -87,7 +87,7 @@ const PART_4_NOSE: readonly LoftSection[] = [
 /** The brochure's port render (p. 29): its solved camera and its upper silhouette, one row per image column. */
 const P29 = JSON.parse(readFileSync(join(ROOT, "tests/fixtures/global-p29-silhouette.json"), "utf8")) as {
   camera: { rotationVector: [number, number, number]; centre: [number, number, number]; focalPx: number; principal: [number, number] };
-  upper: { columns: [number, number][] };
+  upper: { columns: [number, number][]; offsetPx: number };
 };
 
 let engine: NullEngine;
@@ -179,7 +179,7 @@ function p29Project(p: Point3): { u: number; v: number; depth: number } {
 }
 
 /**
- * How far a loft's upper silhouette stands above the render's, image column by image column: the
+ * How far a loft's upper silhouette stands above the render's (its sky edge), column by column: the
  * topmost projected point of the sections in each column against the render's topmost row, in metres
  * at that point's depth (+ = the loft above the render), with the station it comes from (m aft of the tip).
  */
@@ -196,7 +196,7 @@ function p29Residuals(sections: readonly LoftSection[], stations: readonly [numb
       if (!was || q.v < was.v) top.set(u, { v: q.v, x, depth: q.depth });
     }
   }
-  const observed = new Map(P29.upper.columns);
+  const observed = new Map(P29.upper.columns.map(([u, v]) => [u, v + P29.upper.offsetPx]));
   const rows: { aft: number; above: number }[] = [];
   for (const [u, point] of top) {
     const v = observed.get(u);
@@ -248,9 +248,9 @@ describe("the Global's nose (phase 3c)", () => {
     expect(keel).toBeLessThan(0.02);
     expect(rise).toBeLessThanOrEqual(0.001);
     // The drop, against the nose before, at the stations the table states (m aft of the tip).
-    // Measured (part 4 (d)): 0.583 / 0.562 / 0.269 / 0.227 / 0.121, the crown then 0.086 / 0.318 / 0.718
-    // / 0.976 / 1.190.
-    const drops: [number, number][] = [[1.3, 0.583], [1.8, 0.562], [2.2, 0.269], [3.0, 0.227], [3.5, 0.121]];
+    // Measured (part 5): 0.577 / 0.541 / 0.225 / 0.070 / 0.056, the crown then 0.092 / 0.339 / 0.763
+    // / 1.133 / 1.256.
+    const drops: [number, number][] = [[1.3, 0.577], [1.8, 0.541], [2.2, 0.225], [3.0, 0.07], [3.5, 0.056]];
     for (const [aft, want] of drops) {
       const x = TIP_X - aft;
       const got = crownAt(before, x, -0.1) - crownAt(now, x);
@@ -385,15 +385,15 @@ describe("the Global's nose (phase 3c)", () => {
       angleBetween(vec(fb, lastRing), vec(rb, radomeRing)),
       angleBetween(vec(fb, lastRing + 12), vec(rb, radomeRing + 10)),
     );
-    // Measured: the worst step between rings 10.4 degrees, on the crown into 11.5, where the roof
-    // steepens toward the seat; 9.3 / 8.4 / 8.0 over the brow's fillet (12.7 .. 12.87). Through the
-    // blend to the drooped tip (13.45 .. 14.7) no step is over 5.6 (render.bizjet-seat-view). 34.0
+    // Measured: the worst step between rings 11.9 degrees, on the crown into 12.78, the post's head,
+    // where the brow turns onto the roof; 9.2 into 12.7 and 8.3 into 13.1, at the face's foot. Through
+    // the blend to the drooped tip (13.45 .. 14.7) no step is over 5.6 (render.bizjet-seat-view). 34.0
     // across 13.2 before.
     expect(worst).toBeLessThan(13.5);
     expect(crease).toBeGreaterThan(25);
   });
 
-  it("stands the brow no more than 0.20 m above the p. 29 render, and no more than 0.10 anywhere else from 1.9 to 3.5 m aft", () => {
+  it("holds the crown to the p. 29 render: -0.12..+0.10 m over 1.5-2.0 m aft, -0.05..+0.10 from 2.0 to 3.5", () => {
     const cabin = GLOBAL_FUSELAGE_SECTIONS.filter((section) => section.x < 9.5);
     const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
     // CONTROL: the instrument reads the render, in metres, with its sign. The constant section (2-17 m aft
@@ -404,29 +404,33 @@ describe("the Global's nose (phase 3c)", () => {
     const constant = onConstant(GLOBAL_FUSELAGE_SECTIONS);
     const lifted = onConstant(GLOBAL_FUSELAGE_SECTIONS.map((r) => ({ ...r, yOffset: (r.yOffset ?? 0) + 0.1 })));
     expect(constant.length).toBeGreaterThan(300);
-    // Measured: a median of -0.2 cm, 90% of columns within 2.6 cm (the rest are the render's antennas),
-    // and 0.094 lifted (the camera is 15 degrees below the body: 0.1 cos 15 is 0.097).
     expect(Math.abs(median(constant))).toBeLessThan(0.01);
+    // Measured: a median of +0.4 cm, 90% of columns within 1.5 cm (the rest are the render's antennas),
+    // and 0.101 lifted.
     expect(Math.abs(median(lifted) - 0.1)).toBeLessThan(0.01);
 
-    /** Every column's residual from 1.9 to 3.5 m aft, and the stations where it is over 0.10. */
-    const brow = (sections: readonly LoftSection[]) => {
-      const rows = p29Residuals(sections, [9, 15], 0.005, [470, 999]).filter((r) => r.aft >= 1.9 && r.aft <= 3.5);
-      const over = rows.filter((r) => r.above > 0.1).map((r) => r.aft);
-      return { rows: rows.length, worst: Math.max(...rows.map((r) => r.above)), from: Math.min(...over), to: Math.max(...over) };
+    /** The lowest and highest residual over the foot (1.5-2.0 m aft) and the face and roof (2.0-3.5). */
+    const bands = (sections: readonly LoftSection[]) => {
+      const rows = p29Residuals(sections, [9, 15], 0.005, [470, 999]);
+      const range = (from: number, to: number) => {
+        const r = rows.filter((q) => q.aft >= from && q.aft <= to).map((q) => q.above);
+        return { columns: r.length, low: Math.min(...r), high: Math.max(...r) };
+      };
+      return { foot: range(1.5, 1.9999), face: range(2.0, 3.5) };
     };
-    const built = brow(GLOBAL_FUSELAGE_SECTIONS);
-    // Measured: 0.203 at worst, at 2.17 m aft, the face just under the brow; over 0.10 only from 2.03
-    // to 2.39 m aft, the brow and its fillet. The render's crown at the post's head is near 0.59; the
-    // brow is 0.735 there so that the post's head and the windshield's top corners clear +10 degrees.
-    expect(built.rows).toBeGreaterThan(100);
-    expect(built.worst).toBeLessThan(0.21);
-    expect(built.from).toBeGreaterThanOrEqual(2.0);
-    expect(built.to).toBeLessThanOrEqual(2.4);
-    // CONTROL: part 4's level roof, the brow's other end, through the same instrument: 0.288 at worst,
-    // and over 0.10 back to 2.55 m aft.
-    const part4 = brow([...cabin, ...PART_4_NOSE]);
-    expect(part4.worst).toBeGreaterThan(0.25);
-    expect(part4.to).toBeGreaterThan(2.4);
+    // Measured: -0.114..-0.047 over the foot, where the face stays under the line so the aim point on
+    // final stays in the glass; -0.041..+0.079 over the face and roof, the most over at the brow.
+    const built = bands(GLOBAL_FUSELAGE_SECTIONS);
+    expect(built.foot.columns).toBeGreaterThan(30);
+    expect(built.face.columns).toBeGreaterThan(100);
+    expect(built.foot.low).toBeGreaterThanOrEqual(-0.12);
+    expect(built.foot.high).toBeLessThanOrEqual(0.1);
+    expect(built.face.low).toBeGreaterThanOrEqual(-0.05);
+    expect(built.face.high).toBeLessThanOrEqual(0.1);
+    // CONTROL: part 4's level roof, through the same instrument, is out on both sides: +0.141 at the
+    // brow and -0.129 at 3.5 m aft.
+    const part4 = bands([...cabin, ...PART_4_NOSE]);
+    expect(part4.face.high).toBeGreaterThan(0.1);
+    expect(part4.face.low).toBeLessThan(-0.05);
   });
 });
