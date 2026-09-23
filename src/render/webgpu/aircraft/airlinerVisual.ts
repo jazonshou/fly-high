@@ -43,6 +43,14 @@ import {
   createSpoilerRimTexture,
   radomeLiveryPhase,
 } from "./airlinerLivery";
+import {
+  FLIGHT_DECK_PANES,
+  PANE_DEPTH,
+  PANE_PROUD,
+  SkinCaster,
+  paneGrid,
+  type SkinTriangles,
+} from "./airlinerGlazing";
 
 /**
  * The Boeing 747-8 Intercontinental.
@@ -430,11 +438,35 @@ const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   // The crown reaches 4.40 here, which is where `sim/aircraft.ts` puts its
   // upper-deck contact point, exactly as the old separate hump loft did.
   { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },
-  // ...and then hands the crown down to the nose loft, narrowing enough by
-  // the last section to be swallowed by it rather than capped in the open.
-  { x: 28, yRadius: 3.575, zRadius: 3, yOffset: 0.675, crownZRadius: 2.45 },
-  { x: 29.6, yRadius: 3.15, zRadius: 2.6, yOffset: 0.65, crownZRadius: 2.2 },
-  { x: 30.6, yRadius: 2.55, zRadius: 2.05, yOffset: 0.6, crownZRadius: 1.8 },
+  // ...and then HANDS THE SKIN TO THE NOSE LOFT ALONG A TANGENT, not across a
+  // crease. These rings used to dive under the nose: the two lofts crossed on
+  // a slanted loop (x 29.0-29.9 over the top, 26.9-28.0 underneath), and their
+  // normals differed by up to 32 degrees at the crown and 19 underneath. It
+  // showed as a jagged shading line down the flank behind the flight deck
+  // (docs/findings/AIRLINER_NOSE_GLAZING.md).
+  //
+  // Now there is ONE crossing, a ring at x ~ 29.8 with the normals within
+  // 5 degrees all the way round (tests/render.airliner-nose-join.test.ts).
+  // - 27.2 is the old surface there, exactly (sections are linear between
+  //   rings); it holds the belly line from here back.
+  // - 28 keeps the crown at 4.25 but takes the nose's lower lip, belly -3.05,
+  //   which used to show BELOW this loft between 27 and 29. The nose's own 28
+  //   ring is now this one, 3 % inside, so the nose stays buried aft of 29.2.
+  // - 29.2 to 30.4 HUG the nose: its own section at each station, scaled
+  //   about its centre by 1.004 falling to 0.996, so this loft passes inside
+  //   the nose at a shallow, even angle.
+  // - 30.8 is the buried end.
+  // The nose is untouched from its 29.2 ring forward, so the flight-deck glass
+  // cast onto it is byte-identical. The price of that is the crown at 29.2:
+  // the nose's own crown there is 3.70, and the hump now comes down onto it
+  // (about 0.2 m lower than before, the forehead a little steeper).
+  { x: 27.2, yRadius: 3.675, zRadius: 3.1, yOffset: 0.635, crownZRadius: 2.51 },
+  { x: 28, yRadius: 3.65, zRadius: 3, yOffset: 0.6, crownZRadius: 2.45 },
+  { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 },
+  { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 },
+  { x: 30, yRadius: 3.1225, zRadius: 2.4168, yOffset: 0.4733 },
+  { x: 30.4, yRadius: 3.0378, zRadius: 2.2709, yOffset: 0.5 },
+  { x: 30.8, yRadius: 2.7565, zRadius: 1.9493, yOffset: 0.518 },
 ];
 
 /**
@@ -466,10 +498,19 @@ const NOSE_SECTIONS: readonly LoftSection[] = [
   // join; at the first draft's x = 27 the two lofts met almost exactly and the
   // seam showed as a ring around the nose in the rendered frames.
   { x: 25.5, yRadius: 3, zRadius: 3, yOffset: -0.02 },
-  { x: 28, yRadius: 3.1, zRadius: 2.92, yOffset: 0.05 },
+  // The fuselage's own 28 ring scaled 0.97 about its centre: buried inside it,
+  // so the two lofts do not cross aft of 29.2 (see the fuselage's forward end).
+  { x: 28, yRadius: 3.5405, zRadius: 2.91, yOffset: 0.6, crownZRadius: 2.3765 },
   { x: 29.2, yRadius: 3.28, zRadius: 2.7, yOffset: 0.42 },
   { x: 30.4, yRadius: 3.05, zRadius: 2.28, yOffset: 0.5 },
-  { x: 31.4, yRadius: 2.72, zRadius: 1.82, yOffset: 0.43 },
+  // THE BROW. This ring's crown is 3.38, raised 0.23 m from 3.15 with the belly
+  // held at -2.29 (yRadius and yOffset move together), so the crown runs on
+  // from the flight deck and then drops as the windscreen's face. At 3.15 the
+  // No.1 panes' top edge landed ON the crown: there was no roof above the
+  // windscreen at all (docs/findings/AIRLINER_NOSE_GLAZING.md). Now the top
+  // edge lands on the steep face below the brow. The rise is the crown
+  // reaching +15 degrees from the left-seat eye at this station.
+  { x: 31.4, yRadius: 2.835, zRadius: 1.82, yOffset: 0.545 },
   { x: 32.4, yRadius: 2, zRadius: 1.36, yOffset: 0.3 },
   { x: 33.4, yRadius: 1.2, zRadius: 0.92, yOffset: -0.25 },
   { x: 34, yRadius: 0.31, zRadius: 0.34, yOffset: -0.1 },
@@ -1663,70 +1704,64 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // meshes into the airframe-transparency rendering group: drawn before the
   // water, their depth pre-pass cuts a hole in the sea behind them, and that
   // is a defect this renderer has shipped before.
-  // THREE PANES A SIDE, wrapped around the nose on the skin itself.
+  // THREE PANES A SIDE, each the window of sky it shows, cast onto the skin.
   //
-  // The first version put a single flat windscreen box on the centreline at
-  // y = 3.0, and it never appeared in a rendered frame: at that station the
-  // upper deck's skin is at y = 3.6, so the whole pane was sealed inside the
-  // loft. A pane on a rounded nose has to be PLACED ON the surface, not near
-  // it, which is what `skinPoint` is for — the same call that puts 228 cabin
-  // windows in their skin. Each pane is 0.12 m thick and centred on the
-  // surface, so exactly half of it stands proud and the glass reads.
-  //
-  // Both angles are read off the skin rather than chosen: the pitch lays the
-  // pane against the flank's curvature, and the yaw follows the nose's taper,
-  // measured across the pane's own length. Without the yaw the forward corner
-  // of the No.1 window stands 0.15 m off a flank that is narrowing 0.5 m per
-  // metre right there.
-  const flightDeckWindows = [
-    { name: "one", x: 31.35, y: 2.88, length: 0.95, height: 0.7 },
-    { name: "two", x: 30.4, y: 2.95, length: 0.9, height: 0.64 },
-    { name: "three", x: 29.5, y: 2.95, length: 0.8, height: 0.58 },
-  ] as const;
+  // The panes were boxes placed by station and height and laid against the
+  // skin, and measured from the flight deck they gave an opening about 19
+  // degrees tall (the type's is ~35), a No.1 top edge sitting ON the crown,
+  // and a No.3 behind the pilot's shoulder. `airlinerGlazing.ts` now specifies
+  // each pane by azimuth and elevation from the centreline and casts that
+  // window onto the fuselage and nose AS BUILT -- their own triangles, so the
+  // glass follows the facets the skin is drawn with -- and `skinPanel` lays
+  // it on them, PANE_PROUD out and PANE_DEPTH in along the skin's normal.
+  // docs/findings/AIRLINER_NOSE_GLAZING.md has the design and the corner
+  // table the cockpit's eye is solved against.
+  const skinOf = (mesh: AbstractMesh): SkinTriangles => ({
+    positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
+    indices: mesh.getIndices()!,
+    normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
+  });
+  const caster = new SkinCaster([skinOf(fuselage), skinOf(radome)]);
   const flightDeckGlazing: AbstractMesh[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
-    for (const pane of flightDeckWindows) {
-      const glazing = build.box(
+    for (const pane of FLIGHT_DECK_PANES) {
+      const grid = paneGrid(caster, pane, side);
+      const glazing = build.skinPanel(
         `${sideName}-airliner-flight-deck-window-${pane.name}`,
-        pane.length,
-        pane.height,
-        0.12,
+        grid.points,
+        grid.normals,
+        PANE_PROUD,
+        PANE_DEPTH,
         glass,
         root,
       );
-      // NOSE_SECTIONS, not the upper deck's: forward of x = 30 the deck has
-      // already died inside the nose and the flight deck is the top of the
-      // nose's own section. Reading the upper deck's skin here would put the
-      // glass back inside the metal, which is the defect this loop exists for.
-      const half = pane.length * 0.5;
-      const forward = skinPoint(NOSE_SECTIONS, pane.x + half, pane.y);
-      const aft = skinPoint(NOSE_SECTIONS, pane.x - half, pane.y);
-      const skin = skinPoint(NOSE_SECTIONS, pane.x, pane.y);
-      glazing.position.set(pane.x, pane.y, side * skin.z);
-      glazing.rotation.y = side * Math.atan2(aft.z - forward.z, pane.length);
-      glazing.rotation.x = -side * skin.tilt;
       glazing.metadata = { ...glazing.metadata, castsShadow: false };
       flightDeckGlazing.push(glazing);
     }
   }
-  // The centre post, laid along the nose's crown line between the two No.1
-  // panes. Its endpoints are the crown height at those two stations, so it
-  // sits half in the skin instead of floating over it.
-  // Half sunk in the crown, so its shadow is the nose's own.
-  const windscreenFrame = withoutShadow(build.strutBetween(
+  // The centre post: the centreline strip between the two No.1 panes, cast
+  // the same way (+-1 degree of the +-2.5 gap, over No.1's elevations), so it
+  // lies on the skin at the glass's height the whole way down. A straight
+  // strut between two crown points sank 5 cm under the skin at the 32.4 ring.
+  // It is its own mesh, and the cockpit camera draws it: the one piece of the
+  // windscreen frame the cockpit kit does not build.
+  const post = paneGrid(caster, { name: "one", azimuth: [-1, 1], elevation: FLIGHT_DECK_PANES[0]!.elevation }, 1, 2);
+  withoutShadow(build.skinPanel(
     "airliner-windscreen-center-post",
-    new Vector3(31.9, 2.73, 0),
-    new Vector3(31.2, 3.23, 0),
-    0.09,
+    post.points,
+    post.normals,
+    PANE_PROUD,
+    PANE_DEPTH,
     dark,
     root,
   ));
 
-  // The seats stand around the pilot's eye (`catalogue.cockpitEye`, forward 29.9):
-  // seat centre 0.05 m aft of it, its highest corner 0.15 m below it, the headrest
-  // where it always was relative to the seat. They stood at 29.0 with the eye at
-  // 28.8, 2 m behind the glass, which is why no eye could see more than +5 / -7.
+  // The seats stand around the pilot's eye (`catalogue.cockpitEye`): seat centre
+  // 0.05 m aft of it, its highest corner 0.15 m below it, each seat as far off the
+  // centreline as the eye is, the headrest where it always was relative to the seat.
+  // They stood at 29.0 with the eye at 28.8, 2 m behind the glass, which is why no
+  // eye could see more than +5 / -7.
   const flightDeckFurniture: AbstractMesh[] = [];
   const seating = airlinerSeatPlacement();
   for (const side of [1, -1] as const) {
@@ -1738,7 +1773,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       interior,
       root,
     );
-    seat.position.set(seating.seatX, seating.seatY, side * AIRLINER_SEAT.z);
+    seat.position.set(seating.seatX, seating.seatY, side * seating.z);
     seat.rotation.z = AIRLINER_SEAT.tilt;
     seat.metadata = { ...seat.metadata, cockpitInterior: true, castsShadow: false };
     const headrest = build.box(
@@ -1749,22 +1784,22 @@ export function createAirliner(scene: Scene): AircraftVisual {
       interior,
       root,
     );
-    headrest.position.set(seating.headrestX, seating.headrestY, side * AIRLINER_SEAT.z);
+    headrest.position.set(seating.headrestX, seating.headrestY, side * seating.z);
     headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
     flightDeckFurniture.push(seat, headrest);
   }
   // THE OLD PANEL, ITS FIVE GAUGES AND ITS FIVE NEEDLES ARE GONE. A board laid out
   // about the centreline, 1.15 m in front of a left-seat eye, with dials mostly
   // below the frame, is replaced by the cockpit-only kit in
-  // `cockpit/airlinerCockpit.ts`: a panel and hood at -10 degrees, a dash, six
-  // screens laid out about the seats with an attitude ball on the pilot's PFD, an
-  // overhead, a pillar and a post. `configureCockpitOnlyParts` makes them invisible
-  // until cockpit view is entered and never a shadow caster.
+  // `cockpit/airlinerCockpit.ts`: a panel with a glareshield lip, six screens in the
+  // type's layout, and the frame round the glass cast on this same skin with this
+  // same caster, so its edges are the panes' own. `configureCockpitOnlyParts` makes
+  // them invisible until cockpit view is entered and never a shadow caster.
   const cockpit = buildAirlinerCockpit(build, root, {
     interior,
     instrumentFace,
     instrumentMarking,
-  });
+  }, caster);
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
   // The attitude ball turns only while cockpit view is on: outside it every part
@@ -2134,16 +2169,18 @@ export function createAirliner(scene: Scene): AircraftVisual {
   //
   // Left alone on purpose: the three thin-instanced meshes (a merge drops the
   // instance buffer), the eight lamps (the wash-light test sites each one by
-  // name and position) and the centre post, which is the only dark part on
-  // the cockpit-excluded layer and so has nothing to merge with.
+  // name and position) and the centre post. It was the only dark part on the
+  // cockpit-excluded layer; the cockpit camera draws it now (it is the one piece
+  // of the windscreen frame the cockpit kit does not build), and folding it into
+  // another dark mesh is a change to the airframe's batching, not to the cockpit.
   //
-  // THE COCKPIT SHELL IS ITS OWN GROUP. The three lofts that would block the
+  // THE COCKPIT SHELL IS ITS OWN GROUP. The two lofts that would block the
   // pilot's view carry `AIRCRAFT_EXTERIOR_LAYER_MASK`, which the cockpit
   // camera clears; the tailcone and fairings behind them do not. One mesh has
   // one layer mask, so they cannot share one. The mask is put on the sources
   // FIRST so that `mergeStatic`'s own check is a real one: offer it the
   // tailcone here and it throws rather than hiding the tail from the pilot.
-  configureCockpitLayers([fuselage, radome, windscreenFrame]);
+  configureCockpitLayers([fuselage, radome]);
   const fuselageShell = build.mergeStatic(
     "airliner-fuselage-shell", [fuselage, radome], root);
   build.mergeStatic("airliner-body-exterior", bodyExterior, root);
@@ -2189,15 +2226,16 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // the same simulation-time phase below, so they cannot be seen out of step.
     propeller: fanSpools[0]!,
     // What the cockpit camera must not draw: the opaque skin that would block the
-    // pilot's view (the fuselage and radome shell, and the centre post), and the
-    // flight deck GLAZING. The glass is a refractive PBR, and a refractive
-    // material draws as an opaque slab from INSIDE: from the pilot's seat it was
-    // two dark trapezoids across the windscreen. What frames the view instead is
-    // the cockpit-only kit (`cockpit/airlinerCockpit.ts`). No loft end cap faces
-    // the pilot (the radome's rear cap, 28 m2, is at x 25.5, 4 m behind the eye,
-    // and the fuselage's front cap at x 30.6 is wound outward), which
-    // `tests/render.cockpit-airliner.test.ts` holds, so none is listed.
-    cockpitParts: [fuselageShell, windscreenFrame, flightDeckGlass],
+    // pilot's view (the fuselage and radome shell) and the flight deck GLAZING.
+    // The glass is a refractive PBR, and a refractive material draws as an opaque
+    // slab from INSIDE: from the pilot's seat it was two dark trapezoids across the
+    // windscreen. What frames the view instead is the cockpit-only kit
+    // (`cockpit/airlinerCockpit.ts`) and the centre post, which the cockpit camera
+    // draws. The fuselage loft's forward end cap stands at x 30.80, between the eye
+    // and the glass, and is wound outward (it faces the nose), so the GPU culls it
+    // from the seat even before this list hides it; the radome's rear cap is at x
+    // 25.5, 4 m behind the eye. `tests/render.cockpit-airliner.test.ts` holds both.
+    cockpitParts: [fuselageShell, flightDeckGlass],
     cockpitOnlyParts,
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],

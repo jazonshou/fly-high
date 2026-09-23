@@ -317,9 +317,11 @@ describe("the station range reaches UV1's u and nothing else", () => {
         if (Math.abs(uv[vertex * 2 + 1]! - own) > 1e-3) moved += 1;
       }
     }
-    // CONTROL: the re-solve moved most of the radome, so the comparison above
-    // was not own-phase against own-phase.
-    expect(moved, "the radome's v was never re-solved").toBeGreaterThan(100);
+    // CONTROL: the re-solve moved much of the radome, so the comparison above
+    // was not own-phase against own-phase. (80 since the nose join: the radome's
+    // 28 ring is now the fuselage's own section scaled 0.97, whose phase the
+    // table's barely moves; it was over 100 when that ring was the radome's own.)
+    expect(moved, "the radome's v was never re-solved").toBeGreaterThan(50);
   });
 
   it("changes nothing but the shell's UVs across the whole fleet: built without the range, only UV1 differs", () => {

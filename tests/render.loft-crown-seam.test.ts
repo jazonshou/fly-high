@@ -336,7 +336,30 @@ describe("a loft's crown seam", () => {
       // other 93 are bit-identical. Totals 11,163 -> 10,563 vertices and 17,208 -> 17,004 triangles,
       // which is those three meshes and nothing else. The trainer's, the jet's and the Global's pins
       // are untouched by this step, and the Global still carries its own ball.
-      airliner: "f2b46a08",
+      // RE-PINNED for the nose re-loft (docs/findings/AIRLINER_NOSE_GLAZING.md). Checked mesh by mesh
+      // against House-Keeping 500b80a, positions AND indices: of 93 meshes, exactly three differ.
+      // airliner-fuselage-shell (613 vertices, 1,176 triangles, both unchanged) is the radome's 31.4
+      // ring raised into the brow. airliner-flight-deck-glazing goes 144 -> 1,440 vertices and 72 ->
+      // 1,512 triangles, six boxes become six 8 x 8 skin panels. airliner-windscreen-center-post goes
+      // 38 -> 96 and 32 -> 60, a strut becomes a 2 x 8 skin strip. The other 90 are bit-identical, and
+      // the other three airframes' pins are untouched.
+      // RE-PINNED for the fuselage/radome join. Checked mesh by mesh against 1849fd8: of 93
+      // meshes, exactly two differ. airliner-fuselage-shell goes 613 -> 729 vertices and
+      // 1,176 -> 1,400 triangles: the fuselage's four extra rings, its reshaped 28 ring and
+      // the nose's. airliner-flight-deck-glazing keeps its counts and moves only in the No.3
+      // panes' aft third (x 30.21..30.40), by at most 2.7 mm: the nose's shading normals at
+      // its 29.2 ring average in the reshaped segment behind it, and the glass is laid along
+      // them. The other 91 are bit-identical, the centre post included.
+      // RE-PINNED for the cockpit kit cast round the re-lofted glass, and the eye moved to (29.85, 2.93,
+      // -0.50). Checked mesh by mesh against a480804, positions AND indices: of 93 meshes, none gone, none
+      // new, exactly five differ, all the flight deck's. airliner-cockpit-interior goes 158 -> 2,716 vertices
+      // and 76 -> 2,468 triangles (the board and the whole window frame's lining, sills, crowns, pillars and
+      // post gaps, where the overhead, the pillar and the seam post were); airliner-glareshield 60 -> 24 and
+      // 24 -> 8 (the lip alone, where the hood and the dash were); airliner-screens and
+      // airliner-screen-bezels keep their counts and move to the new panel; and
+      // airliner-flight-deck-interior keeps its counts, its seats moving under the new eye. The other 88
+      // are bit-identical: the shell, the glazing and the centre post included.
+      airliner: "96726bd2",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

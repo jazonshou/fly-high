@@ -441,31 +441,30 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // 41.6%, and the look-down angle matches at 17.9 degrees on both. The
   // provisional 140/46 was not wrong, just 10% tighter.
   cinematic: Object.freeze({ radiusMeters: 155, heightMeters: 50, heightDriftMeters: 10 }),
-  // The eye is SOLVED against the built flight-deck glazing (`scripts/airliner-eye-solve.mts`),
-  // in the PORT seat at z -0.72 (the mesh named `airliner-first-officer-seat`; see the
-  // Global's note on the swapped seat names). The requirements: y inside the glass's span
-  // (2.623 to 3.218); the port No.1 pane, the only glass straight ahead of a pilot at that z,
-  // reading as far above AND below the horizon as it can; at least 0.55 m from the glass and
-  // 0.15 m under the skin. The best point is T 9.53 (top +9.53, bottom -9.61) at
-  // (29.915, 2.935), where the glass distance is exactly 0.55; this is the round point with a
-  // margin: top +9.64, bottom -9.39, glass 0.558 m, skin above 0.474 m.
+  // The eye was chosen on a grid of candidate eyes against the BUILT flight-deck glazing, after
+  // the nose was re-lofted and the panes cast by angle (docs/findings/COCKPIT_VIEW_2026_09_20.md,
+  // the K0 table), in the PORT seat (the mesh named `airliner-first-officer-seat`; see the
+  // Global's note on the swapped seat names). The targets: 0.50 to 0.55 m off the centreline,
+  // where the type's seat spacing puts the captain; straight ahead in the middle third of the
+  // port No.1 pane's azimuth span; the centre post at +10 to +16; No.1's opening at least 28
+  // degrees; the glass at least 1.4 m ahead. From here No.1 reads -8.8..+11.6 at the horizon,
+  // the post +13.1..+14.8, the opening 30.4, the glass 1.90 m. The height is the old eye's: the
+  // pilot's eye height is what stays when the seat moves inboard, and the crown is higher there,
+  // so the headroom grew (0.522 to 0.615) rather than the eye.
   //
   // It exists only because the flight deck is built AROUND it (`cockpit/airlinerCockpit.ts`):
-  // the seats and headrests stand 0.05 m aft of it, the panel's face 0.75 m ahead, the
-  // hood's far edge at -10 degrees. The first version of this record had the seats 2 m behind
-  // the glass and the eye between them at (28.8, 3.1, 0), and from there no eye could read
-  // more than +5 / -7; the catalogue's earlier value, 29.5, sat ahead of the instrument
-  // panel's own front face, and 5.1 was 0.70 m above the upper-deck crown at 4.40.
-  //
-  // The opening is still only about 19 degrees tall where the type's is nearer 35: the
-  // model's panes lie 45 to 53 degrees UP on the nose crown, far forward, and the crown (3.10
-  // at x 31.0, z -0.72) is the ceiling of every one of them. That is a nose re-loft.
-  cockpitEye: Object.freeze({ forward: 29.9, up: 2.93, right: -0.72 }),
-  // MEASURED ON THE OLD KIT (de91cef, before K1: a480804's nose join, the eye's
-  // move to (29.85, 3.023, -0.50) and the rebuilt glareshield); RE-MEASURED IN K1.
-  // The cockpit engineer owns this value and its ray assertion in the kit MR;
-  // until then the deck-line tests hold it as it is.
-  cockpitDeckLineDegrees: 8.99,
+  // the seats stand under it, 0.50 m either side; the panel's face is 0.85 m ahead; the
+  // glareshield's lip reads -18.04 straight ahead. The eye before this one, (29.9, 2.93, -0.72),
+  // was solved against the flat window boxes the re-loft replaced, and from it the pilot looked
+  // through the outboard edge of their own No.1 with the No.1 / No.2 pillar 1.8 to 3.7 degrees
+  // left of straight ahead.
+  cockpitEye: Object.freeze({ forward: 29.85, up: 2.93, right: -0.5 }),
+  // The glareshield's lip: a line along z at the panel's face, so it is ONE row across the whole
+  // frame, the deck's highest (18.039 by tests/support/cockpitFootprints.ts's instrument, and
+  // -18.04 straight ahead by ray; tests/render.cockpit-airliner.test.ts and
+  // tests/ui.hud-cockpit-deck-line.test.ts hold both). The sill above it, up to the glass, is
+  // window frame, not deck.
+  cockpitDeckLineDegrees: 18.04,
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this
     // aeroplane flies level at down low, where the air is dense: at 230 it
