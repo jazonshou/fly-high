@@ -185,6 +185,13 @@ Gates, all on the reference host (Firefox 0.1-4.8 % CPU):
 | (e) frame interval against timed passes per frame (base 8.33 ms) | Babylon's read: 8.33 / 8.34 / 12.37 ms at 20 / 44 / 88; deferred: 8.33-8.35 ms at every count |
 | (f) `2ec55a2`'s tests | every case kept, rebuilt on the tape, plus the two lag cases above; 17 of 17 |
 
+Row (e), re-taken 2026-09-23. The 2026-09-22 arms were the second and third WebGPU engines on one page, and a
+later engine inherits Babylon's module-level timestamp state from the first. The arms now run in their own
+files, each the first engine on its page: Babylon's read gave 8.33 / 8.33 / 13.1 ms at 20 / 44 / 88, and the
+deferred read 8.33-8.34 ms at every count. That run was under load (Firefox's GPU helper at 48-50% of a
+core, the GPU 20-36% busy). The shape is the claim, not the 88-pass digits; re-take those on a quiet host
+before quoting them.
+
 The GPU tests that time passes (`terrain-compute-cost`, `ground-cover-compute`, `terrain-erosion-live-pump`) pass
 on it. The Node tests for the instrument (18) and the stage coverage (17) catch 14 of 14 mutations.
 
