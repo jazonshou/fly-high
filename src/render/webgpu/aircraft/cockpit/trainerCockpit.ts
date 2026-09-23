@@ -7,14 +7,7 @@ import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftBuildContext } from "../builders";
 import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
 import { basisQuaternion, buildAttitudeBall, glareshieldMaterial, slab, strip, type AttitudeBall } from "./cockpitPrimitives";
-import {
-  airspeedNeedleDegrees,
-  altimeterNeedleDegrees,
-  attitudeHorizonDegrees,
-  engineNeedleDegrees,
-  pitchBarOffsetMetres,
-  verticalSpeedNeedleDegrees,
-} from "./instrumentMappings";
+import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
  * What a pilot in a Cessna 150's LEFT seat sees, built to angles.
@@ -33,8 +26,10 @@ import {
  * degree lens, and what each number below was solved to:
  *  - the glareshield top straight ahead reads -8 to -11 degrees (built at -8.35,
  *    the PM having asked for it 5 mm lower than the first build's -8.0);
- *  - the main instrument row is centred -15 degrees, each dial at least 4.5
- *    degrees across, and the second row -21;
+ *  - the instrument row is centred -15 degrees, each dial at least 4.5 degrees
+ *    across. It is the only row: three dials, as Jason asked (2026-09-23). The
+ *    second row, vertical speed and engine at -21, is gone, and the panel was
+ *    not re-laid out for it;
  *  - the left windscreen post's axis stands at azimuth -35, hugging the left
  *    edge of the frame (the D3 window is -37 to -31);
  *  - the cowl rises above the glareshield to about -4.7, as a Cessna's does.
@@ -69,12 +64,12 @@ export const TRAINER_PANEL = Object.freeze({
   /**
    * Height of the panel's rear-top edge: the sill line (0), less the 5 mm the PM
    * asked the glareshield to come down. The dial centres are solved against the
-   * panel's rear face, so they follow it and stay at -15 and -21 degrees.
+   * panel's rear face, so they follow it and stay at -15 degrees.
    */
   topRearY: -0.005,
   /**
    * Half its width. It has to carry the dial row, whose left edge is at z -0.40
-   * (`TRAINER_DIAL_ROWS`), with a few centimetres to spare. That is wider than
+   * (`TRAINER_DIAL_ROW`), with a few centimetres to spare. That is wider than
    * the tube's rounded shoulder (0.38 at x 2.07, y -0.1) and than the greenhouse
    * glass narrowing toward the nose (0.35 at x 2.18), and it does not matter: the
    * cockpit camera hides both, and nothing here is visible from any other
@@ -116,21 +111,17 @@ export const TRAINER_ATTITUDE_BALL = Object.freeze({
 });
 
 /**
- * The dials, left to right, with the elevation from the eye at which each row
- * is centred. Names are the ones the builder has always used; the ORDER within a
- * row is the real one (airspeed left of the attitude indicator, altimeter to its
- * right), where the old layout mirrored it.
+ * The dials, left to right, and the elevation from the eye at which the row is
+ * centred. THREE DIALS, one row: Jason asked for three (2026-09-23), and the
+ * second row (vertical speed and engine, at -21) went with its needles. Names are
+ * the ones the builder has always used; the ORDER is the real one (airspeed left
+ * of the attitude indicator, altimeter to its right), where the old layout
+ * mirrored it.
  */
-export const TRAINER_DIAL_ROWS = Object.freeze([
-  Object.freeze({
-    elevationDegrees: -15,
-    dials: Object.freeze([["airspeed", -0.36], ["attitude", -0.26], ["altimeter", -0.16]] as const),
-  }),
-  Object.freeze({
-    elevationDegrees: -21,
-    dials: Object.freeze([["vertical-speed", -0.31], ["engine", -0.21]] as const),
-  }),
-]);
+export const TRAINER_DIAL_ROW = Object.freeze({
+  elevationDegrees: -15,
+  dials: Object.freeze([["airspeed", -0.36], ["attitude", -0.26], ["altimeter", -0.16]] as const),
+});
 
 /**
  * A needle: a bar 3 mm across with a POINTER 28 mm long on one side of the dial's
@@ -250,14 +241,8 @@ function dialCentreOnPanel(elevationDegrees: number): Vector3 {
 /** Where every dial's centre is, in body coordinates, and the direction its face looks (toward the pilot). */
 export function trainerDialPlacements(): readonly { name: string; centre: Vector3; normal: Vector3 }[] {
   const { rearFaceNormal } = panelFrame();
-  const out: { name: string; centre: Vector3; normal: Vector3 }[] = [];
-  for (const row of TRAINER_DIAL_ROWS) {
-    const onFace = dialCentreOnPanel(row.elevationDegrees);
-    for (const [name, z] of row.dials) {
-      out.push({ name, centre: new Vector3(onFace.x, onFace.y, z), normal: rearFaceNormal.clone() });
-    }
-  }
-  return out;
+  const onFace = dialCentreOnPanel(TRAINER_DIAL_ROW.elevationDegrees);
+  return TRAINER_DIAL_ROW.dials.map(([name, z]) => ({ name, centre: new Vector3(onFace.x, onFace.y, z), normal: rearFaceNormal.clone() }));
 }
 
 /**
@@ -304,9 +289,9 @@ export interface TrainerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Nineteen meshes in four groups: the cowl stand-in (1), the panel and its hood
+ * Fifteen meshes in five groups: the cowl stand-in (1), the panel and its hood
  * (2), the windscreen posts (2), the door panels with their sill caps (2), and the
- * dials (12: five gauge faces, four needles, and the attitude ball's three pieces).
+ * dials (8: three gauge faces, two needles, and the attitude ball's three pieces).
  */
 export function buildTrainerCockpit(
   build: AircraftBuildContext,
@@ -467,7 +452,7 @@ export function buildTrainerCockpit(
     parts.push(build.mergeStatic(`trainer-door-${sideName}`, [lower, upper, cap], root));
   }
 
-  // THE NEEDLES' STEP. Four dials have a needle; the fifth, "attitude", has the
+  // THE NEEDLES' STEP. Two dials have a needle; the third, "attitude", has the
   // ball (below). Each needle's transform is its frame with a turn about its own
   // X. `clockwiseDegrees` is the angle as the pilot SEES it (12 o'clock 0, 3
   // o'clock +90); the dial's normal points TOWARD him, so a clockwise turn is a
@@ -482,14 +467,11 @@ export function buildTrainerCockpit(
     Quaternion.RotationAxisToRef(dialAxis, (-clockwiseDegrees * Math.PI) / 180, spin);
     needle.frame.multiplyToRef(spin, needle.mesh.rotationQuaternion!);
   };
-  const engineFullScale = aircraftSpec("trainer").engineReadout.maximum;
   return {
     parts,
     update(state) {
       turnNeedle("airspeed", airspeedNeedleDegrees(state.airspeed, TRAINER_AIRSPEED_FULL_SCALE_KNOTS));
       turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));
-      turnNeedle("vertical-speed", verticalSpeedNeedleDegrees(state.verticalSpeed));
-      turnNeedle("engine", engineNeedleDegrees(state.engineRpm, engineFullScale));
       // THE BALL. Its pivot's local X points AWAY from the pilot, so a positive
       // rotation is clockwise to him and the clockwise-as-seen angle (minus the
       // bank) goes in as it is; the bar slides along the pivot's own up.

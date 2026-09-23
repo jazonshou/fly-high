@@ -50,7 +50,6 @@ import { flyAt } from "./support/visualStateFromSimulator";
 
 const KNOTS = 1.94384;
 const FEET = 3.28084;
-const FPM = 196.85;
 
 function stateWith(overrides: Partial<FlightVisualState>): FlightVisualState {
   return { ...INITIAL_VISUAL_STATE, ...overrides };
@@ -210,9 +209,9 @@ describe("the Cessna's needles", () => {
 
   it("has each needle's origin on its gauge's centre, with local X the dial's normal, before and after it turns", () => {
     const { normal } = dialPlane();
-    for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
+    for (const dial of ["airspeed", "altimeter"]) {
       const gauge = fixture.mesh(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
-      for (const readings of [{}, { airspeed: 70, altitude: 900, verticalSpeed: -3, engineRpm: 2300 }]) {
+      for (const readings of [{}, { airspeed: 70, altitude: 900 }]) {
         show(readings);
         const { mesh, hub } = needle(dial);
         // 1 mm: the origin is the gauge's centre, where a needle turns about
@@ -229,7 +228,7 @@ describe("the Cessna's needles", () => {
       const panel = fresh.mesh("trainer-instrument-panel");
       const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
       const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-      for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
+      for (const dial of ["airspeed", "altimeter"]) {
         const mesh = fresh.mesh(`trainer-${dial}-needle`);
         const hub = mesh.getAbsolutePosition();
         const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02);
@@ -246,11 +245,10 @@ describe("the Cessna's needles", () => {
     }
   });
 
-  it("turns each needle CLOCKWISE ON THE SCREEN as its reading rises (airspeed, altimeter, engine)", () => {
+  it("turns each needle CLOCKWISE ON THE SCREEN as its reading rises (airspeed, altimeter)", () => {
     const cases = [
       { dial: "airspeed", low: { airspeed: 60 / KNOTS }, high: { airspeed: 100 / KNOTS } },
       { dial: "altimeter", low: { altitude: 1_100 / FEET }, high: { altitude: 1_350 / FEET } },
-      { dial: "engine", low: { engineRpm: 1_000 }, high: { engineRpm: 2_000 } },
     ] as const;
     for (const { dial, low, high } of cases) {
       show(low);
@@ -267,8 +265,6 @@ describe("the Cessna's needles", () => {
     const sweeps = [
       { dial: "airspeed", make: (v: number) => ({ airspeed: v / KNOTS }), values: [0, 20, 40, 60, 80, 100, 120, 140, 160] },
       { dial: "altimeter", make: (v: number) => ({ altitude: v / FEET }), values: [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 990] },
-      { dial: "engine", make: (v: number) => ({ engineRpm: v }), values: [0, 500, 1_000, 1_500, 2_000, 2_500, 2_750] },
-      { dial: "vertical-speed", make: (v: number) => ({ verticalSpeed: v / FPM }), values: [-2_000, -1_000, 0, 1_000, 2_000] },
     ];
     for (const { dial, make, values } of sweeps) {
       const angles = values.map((value) => {
@@ -283,25 +279,6 @@ describe("the Cessna's needles", () => {
     }
   });
 
-  it("moves the vertical speed needle UP the screen for a climb and DOWN for a descent, clockwise through 12 o'clock", () => {
-    const tipHeight = (fpm: number) => {
-      show({ verticalSpeed: fpm / FPM });
-      const { hub, tip } = needle("vertical-speed");
-      return { tip: project(fixture.camera, tip).y, hub: project(fixture.camera, hub).y };
-    };
-    const descending = tipHeight(-1_000);
-    const level = tipHeight(0);
-    const climbing = tipHeight(1_000);
-    // pixel y grows downward, so UP is a smaller y
-    expect(climbing.tip, "climb: tip above the level reading").toBeLessThan(level.tip - 3);
-    expect(level.tip, "descent: tip below the level reading").toBeLessThan(descending.tip - 3);
-    show({ verticalSpeed: 0 });
-    const zero = screenVector("vertical-speed");
-    show({ verticalSpeed: 1_000 / FPM });
-    const up = screenVector("vertical-speed");
-    expect(turnedClockwise(zero, up)).toBe(true);
-  });
-
   it("puts every needle at the literal angle the mapping calls for, measured in the dial's plane", () => {
     const wrap = (degrees: number) => ((((degrees + 180) % 360) + 360) % 360) - 180;
     const cases: readonly (readonly [string, (v: number) => Partial<FlightVisualState>, readonly (readonly [number, number])[]])[] = [
@@ -309,10 +286,6 @@ describe("the Cessna's needles", () => {
       ["airspeed", (v) => ({ airspeed: v / KNOTS }), [[0, -150], [40, -75], [80, 0], [120, 75], [160, 150], [220, 150]]],
       // feet of altitude ABOVE SEA LEVEL -> degrees: 360 per 1,000, wrapping
       ["altimeter", (v) => ({ altitude: v / FEET }), [[0, 0], [250, 90], [500, 180], [750, 270], [1_250, 90], [5_249.3, 89.748]]],
-      // feet per minute -> degrees: -90 at 0, 0 at +2,000, -180 at -2,000, clamped
-      ["vertical-speed", (v) => ({ verticalSpeed: v / FPM }), [[0, -90], [1_000, -45], [2_000, 0], [3_000, 0], [-1_000, -135], [-2_000, -180], [-3_000, -180]]],
-      // RPM -> degrees: -135 at 0, +135 at 2,750, clamped
-      ["engine", (v) => ({ engineRpm: v }), [[0, -135], [700, -135 + (270 * 700) / 2_750], [1_375, 0], [2_750, 135], [3_500, 135]]],
     ];
     for (const [dial, make, points] of cases) {
       for (const [reading, expected] of points) {
@@ -335,7 +308,7 @@ describe("the Cessna's needles", () => {
     expect(angleDifference(measured, agl), "the altimeter is not reading the height above the ground").toBeGreaterThan(90);
   });
 
-  it("agrees with the number the HUD renders for the same state: IAS, V/S and RPM", () => {
+  it("agrees with the number the HUD renders for the same state: IAS", () => {
     const states = [
       { label: "cruise", airspeed: 44.4, verticalSpeed: 2.54, engineRpm: 2_210 },
       { label: "descent at idle", airspeed: 41, verticalSpeed: -4.06, engineRpm: 700 },
@@ -345,28 +318,20 @@ describe("the Cessna's needles", () => {
     for (const { label, ...values } of states) {
       const state = stateWith(values);
       const markup = renderHud(state, "trainer");
-      const hud = {
-        knots: Number(/aria-label="IAS: (-?\d+) KT"/.exec(markup)?.[1]),
-        fpm: Number(/<small>V\/S<\/small><strong>(?:<!-- -->)?\+?(-?\d+)/.exec(markup)?.[1]),
-        rpm: Number(/<small>RPM<\/small><strong>(\d+)/.exec(markup)?.[1]),
-      };
-      expect(Number.isFinite(hud.knots) && Number.isFinite(hud.fpm) && Number.isFinite(hud.rpm), `${label}: parsed the HUD (${markup.slice(0, 0)}${JSON.stringify(hud)})`).toBe(true);
+      const hud = { knots: Number(/aria-label="IAS: (-?\d+) KT"/.exec(markup)?.[1]) };
+      expect(Number.isFinite(hud.knots), `${label}: parsed the HUD (${JSON.stringify(hud)})`).toBe(true);
       show(values);
       // the needle's angle, back to a reading with the literal inverse of the mapping
       const knots = ((planeAngle("airspeed") + 150) / 300) * 160;
-      const fpm = ((planeAngle("vertical-speed") + 90) / 90) * 2_000;
-      const rpm = ((planeAngle("engine") + 135) / 270) * 2_750;
-      // the HUD rounds (to 1 kt, 1 ft/min, 10 rpm), the needle does not
+      // the HUD rounds to 1 kt, the needle does not
       expect(Math.abs(knots - hud.knots), `${label}: needle says ${knots.toFixed(2)} kt, HUD ${hud.knots}`).toBeLessThanOrEqual(0.5 + 1e-3);
-      expect(Math.abs(fpm - hud.fpm), `${label}: needle says ${fpm.toFixed(2)} ft/min, HUD ${hud.fpm}`).toBeLessThanOrEqual(0.5 + 1e-3);
-      expect(Math.abs(rpm - hud.rpm), `${label}: needle says ${rpm.toFixed(1)} rpm, HUD ${hud.rpm}`).toBeLessThanOrEqual(5 + 1e-3);
     }
   });
 
   it("holds a needle where it was when the reading is not a number, instead of poisoning its transform", () => {
-    show({ airspeed: 50 / KNOTS, altitude: 800, verticalSpeed: 1, engineRpm: 1_800 });
-    show({ airspeed: Number.NaN, altitude: Number.NaN, verticalSpeed: Number.POSITIVE_INFINITY, engineRpm: Number.NaN });
-    for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
+    show({ airspeed: 50 / KNOTS, altitude: 800 });
+    show({ airspeed: Number.NaN, altitude: Number.POSITIVE_INFINITY });
+    for (const dial of ["airspeed", "altimeter"]) {
       const { mesh } = needle(dial);
       const q = mesh.rotationQuaternion!;
       expect(Number.isFinite(q.x + q.y + q.z + q.w), `${dial} rotation`).toBe(true);
@@ -623,9 +588,9 @@ describe("the Cessna's attitude dial", () => {
     return { normal, up, right: Vector3.Cross(normal.scale(-1), up).normalize() };
   }
 
-  it("has a BALL and no needle: the other four dials keep theirs", () => {
+  it("has a BALL and no needle: the other two dials keep theirs", () => {
     expect(fixture.scene.getMeshByName("trainer-attitude-needle")).toBeNull();
-    for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
+    for (const dial of ["airspeed", "altimeter"]) {
       expect(fixture.scene.getMeshByName(`trainer-${dial}-needle`), `${dial} needle`).not.toBeNull();
     }
     for (const name of ["sky", "ground", "pitch-bar"]) {

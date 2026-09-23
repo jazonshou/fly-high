@@ -229,7 +229,12 @@ describe("the loft's crown taper", () => {
       // positions, and the SAME set of position-UV pairs; only winding and flat normals changed, so 16 -> 84
       // vertices) and `windscreen-center-frame` (76 -> 779 vertices, 64 -> 1,360 triangles). The other 68,
       // and all of the jet's, the Global's and the 747's, are bit-identical.
-      trainer: "fd086242",
+      // RE-PINNED for the trainer when it kept THREE DIALS (jazonshou/trainer-three-dials; Jason, 2026-09-23):
+      // the second row's four meshes are gone (`trainer-vertical-speed-gauge`, `trainer-engine-gauge` and their
+      // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
+      // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
+      // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
+      trainer: "c44794a2",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial
