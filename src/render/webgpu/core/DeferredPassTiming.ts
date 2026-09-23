@@ -98,6 +98,11 @@ export function passDurationNs(values: BigUint64Array, first: number, slot: numb
   return Number(end - begin);
 }
 
+/** A timed shader's counter, the sink its passes are delivered to; undefined when timing is off. */
+export function passTimingSinkOf(shader: unknown): PassDurationSink | undefined {
+  return (shader as { gpuTimeInFrame?: PassDurationSink } | null | undefined)?.gpuTimeInFrame;
+}
+
 type PassDurationListener = (frameId: number, durationNs: number) => void;
 const passDurationListeners = new WeakMap<PassDurationSink, Set<PassDurationListener>>();
 

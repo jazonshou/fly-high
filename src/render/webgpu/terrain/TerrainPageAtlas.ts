@@ -7,6 +7,7 @@ import {
   registerGpuBufferBytes,
   releaseGpuBufferBytes,
 } from "@/src/render/webgpu/core/GpuBufferInventory";
+import { PassCostTape, passTimingSinkOf } from "@/src/render/webgpu/core/DeferredPassTiming";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
@@ -777,7 +778,7 @@ export function invariantSlotKey(address: WorldPageAddress): TerrainSlotKey {
  * Four is comfortably more than the two-to-three frames a readback takes, and
  * the pump defers rather than reusing a buffer whose read has not landed.
  */
-const BOUNDS_BUFFER_RING = 4;
+export const BOUNDS_BUFFER_RING = 4;
 
 /** Workgroup edge; 264 / 8 = 33 workgroups per slot edge, exactly. */
 const PAGE_WORKGROUP_EDGE = 8;
@@ -974,6 +975,15 @@ fn generatePage(
  *
  * `null` when the adapter has no `timestamp-query`, when no dispatch has run,
  * or when the last sample has already been consumed.
+ *
+ * **Only for a client whose batch never varies.** It divides the LATEST
+ * delivered frame by the batch the caller names, and a reading lands a frame
+ * or more after its dispatch: a client whose batch size changes between
+ * dispatches gets one batch's time divided by another's size, and two frames
+ * delivered between reads lose the first. The page generator and both bakes
+ * therefore price through a `PassCostTape` (DeferredPassTiming.ts), which
+ * pairs each delivery with its own batch. What still uses this is ground
+ * cover: one dispatch per ring per frame, priced as a batch of 1.
  */
 export interface GpuDispatchCostSampler {
   readonly gpuTimeInFrame?: { readonly counter: { readonly count: number; readonly current: number } };
@@ -1104,8 +1114,8 @@ export class TerrainPageGenerator {
   private readbacksInFlight = 0;
   private readonly pendingReadbacks = new Set<Promise<void>>();
   private disposed = false;
-  private lastBatchSize = 0;
-  private lastCostSampleCount = -1;
+  /** This shader's passes, each paired with its own delivered duration (DeferredPassTiming.ts). */
+  private costTape: PassCostTape | null = null;
   private collisionPagePublisher: TerrainCollisionPagePublisher | null = null;
   private auxPagePublisher: TerrainAuxPagePublisher | null = null;
   private readonly world: Readonly<WorldDefinition> | null;
@@ -1281,11 +1291,13 @@ export class TerrainPageGenerator {
     }
   }
 
-  /** `4.5-B2(a)`: the measured per-page cost of the last resolved batch. */
+  /**
+   * `4.5-B2(a)`: the measured per-page cost of the batches whose timing was
+   * delivered since the last call, each priced by its OWN page count.
+   */
   consumeMeasuredDispatchCostMs(): number | null {
-    const sample = consumeGpuDispatchCostMs(this.shader, this.lastBatchSize, this.lastCostSampleCount);
-    this.lastCostSampleCount = sample.sampleCount;
-    return sample.milliseconds;
+    const reading = this.costTape?.take();
+    return reading && reading.units > 0 ? reading.milliseconds / reading.units : null;
   }
 
   /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
@@ -1376,7 +1388,6 @@ export class TerrainPageGenerator {
     // already encoded.
     shader.setStorageBuffer("pageBounds", boundsBuffer);
     this.inFlight = slots;
-    this.lastBatchSize = slots.length;
     for (const slot of slots) slot.generationSubmitted = true;
     try {
       await shader.dispatchWhenReady(
@@ -1384,6 +1395,8 @@ export class TerrainPageGenerator {
         TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE,
         slots.length,
       );
+      // After the pass exists: it carries the frame its timing is delivered under.
+      this.costTape?.dispatched(slots.length);
     } finally {
       this.inFlight = [];
     }
@@ -1460,7 +1473,6 @@ export class TerrainPageGenerator {
   private generateEroded(slots: readonly TerrainAtlasSlot[]): void {
     const executor = this.erosionExecutor;
     if (!executor) return;
-    this.lastBatchSize = 0;
     for (const slot of slots) {
       const token = slot.token;
       if (!token || slot.generationSubmitted) continue;
@@ -1714,6 +1726,8 @@ export class TerrainPageGenerator {
     this.pageBuffer = null;
     this.offsetBuffer = null;
     this.shader = null;
+    this.costTape?.dispose();
+    this.costTape = null;
   }
 
   private ensureCapacity(count: number): void {
@@ -1777,6 +1791,7 @@ export class TerrainPageGenerator {
         },
       },
     );
+    this.costTape ??= new PassCostTape(this.engine, passTimingSinkOf(this.shader));
     const texture = this.atlas.texture();
     if (texture) this.shader.setStorageTexture("heightAtlas", texture);
     this.shader.setStorageBuffer("terrainKernelPages", this.pageBuffer);
