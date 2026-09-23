@@ -32,7 +32,25 @@ export interface Point3 {
 /** The azimuth reference: on the centreline at the pilots' station and eye height. */
 export const FLIGHT_DECK_REFERENCE: Point3 = Object.freeze({ x: 29.9, y: 2.93, z: 0 });
 
-export interface FlightDeckPane {
+/** A pane of any airframe's glazing, specified as the window of sky it shows from a reference point. */
+export interface GlazingPane {
+  readonly name: string;
+  /** Degrees from dead ahead, outboard positive, on the pane's own side. */
+  readonly azimuth: readonly [number, number];
+  /** Degrees above the horizontal. */
+  readonly elevation: readonly [number, number];
+  /**
+   * A pane whose edges are NOT lines of constant azimuth and elevation: the
+   * (azimuth, elevation) at a point of the unit square, columns inboard to
+   * outboard and rows bottom to top. A real windscreen's pillars and sills are
+   * lines on the airframe, not sightlines from the reference, so a pane laid
+   * out on the body is a curved patch in angle. When given, `azimuth` and
+   * `elevation` are only its bounding ranges and the grid is cast through this.
+   */
+  readonly at?: (columnFraction: number, rowFraction: number) => readonly [number, number];
+}
+
+export interface FlightDeckPane extends GlazingPane {
   readonly name: "one" | "two" | "three";
   /** Degrees from dead ahead, outboard positive, on the pane's own side. */
   readonly azimuth: readonly [number, number];
@@ -179,19 +197,32 @@ export interface PaneGrid {
 
 /**
  * The pane's window of sky, cast onto the skin: PANE_GRID rows and, unless a
- * narrow strip asks for fewer, PANE_GRID columns.
+ * narrow strip asks for fewer, PANE_GRID columns. `reference` is the point the
+ * angles are measured from: the 747's R unless another airframe names its own.
  */
-export function paneGrid(caster: SkinCaster, pane: FlightDeckPane, side: 1 | -1, columns = PANE_GRID): PaneGrid {
+export function paneGrid(
+  caster: SkinCaster,
+  pane: GlazingPane,
+  side: 1 | -1,
+  columns = PANE_GRID,
+  reference: Point3 = FLIGHT_DECK_REFERENCE,
+): PaneGrid {
   if (!Number.isInteger(columns) || columns < 2) throw new RangeError("A pane grid needs at least two columns");
   const points: Point3[][] = [];
   const normals: Point3[][] = [];
   for (let row = 0; row < PANE_GRID; row += 1) {
-    const elevation = pane.elevation[0] + (pane.elevation[1] - pane.elevation[0]) * (row / (PANE_GRID - 1));
+    const rowFraction = row / (PANE_GRID - 1);
     const pointRow: Point3[] = [];
     const normalRow: Point3[] = [];
     for (let column = 0; column < columns; column += 1) {
-      const azimuth = pane.azimuth[0] + (pane.azimuth[1] - pane.azimuth[0]) * (column / (columns - 1));
-      const hit = caster.exit(FLIGHT_DECK_REFERENCE, sightline(azimuth, elevation, side));
+      const columnFraction = column / (columns - 1);
+      const [azimuth, elevation] = pane.at
+        ? pane.at(columnFraction, rowFraction)
+        : [
+            pane.azimuth[0] + (pane.azimuth[1] - pane.azimuth[0]) * columnFraction,
+            pane.elevation[0] + (pane.elevation[1] - pane.elevation[0]) * rowFraction,
+          ];
+      const hit = caster.exit(reference, sightline(azimuth, elevation, side));
       if (!hit) {
         throw new RangeError(`flight-deck pane ${pane.name}: no skin at az ${azimuth.toFixed(2)}, el ${elevation.toFixed(2)}`);
       }

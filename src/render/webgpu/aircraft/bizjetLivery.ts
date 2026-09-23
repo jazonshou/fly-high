@@ -55,9 +55,16 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
 ];
 
-/** The drooped radome, ending at the sim's radome contact points. */
+/**
+ * The drooped radome, ending at the sim's radome contact points. It starts at
+ * 13.1, inside the fuselage, and its 13.2 ring IS the fuselage's last: without
+ * it the radome interpolated from 13.1 and stood 3.8 cm inside the fuselage's
+ * capped end at the crown, a forward-facing lip right round the nose at 13.2
+ * that the windshield crosses (phase 3b; `render.bizjet-flight-deck`).
+ */
 export const GLOBAL_RADOME_SECTIONS: readonly LoftSection[] = [
   { x: 13.1, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
+  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
   { x: 14.1, yRadius: 0.62, zRadius: 0.62, yOffset: -0.12 },
   { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
   { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
@@ -79,15 +86,17 @@ export const GLOBAL_LIVERY_STATION_RANGE = { minimumX: -18.5, length: 33.5 } as 
  * fuselage's first, the fuselage's, and the radome's forward of the
  * fuselage's last.
  *
- * NOT EXACT IN TWO SHORT SPANS, and measured rather than assumed. Where a
+ * NOT EXACT IN ONE SHORT SPAN, and measured rather than assumed. Where a
  * loft's own neighbouring ring is not in this table, the loft interpolates
  * toward a ring this table does not have: the tailcone from -15.4 to its own
- * -12.9 ring (this table reaches the fuselage's -13.1 instead), and the radome
- * from its 13.1 ring to 14.1 (this table starts from the fuselage's 13.2). The
- * sections differ there by at most 5.6 mm (tailcone, at -13.1) and 2.8 cm in
- * radius (radome, at 13.2, where the radome is still inside the fuselage and
- * not seen). `render.bizjet-livery-mesh` measures the drawn line on the built
- * lofts through both spans.
+ * -12.9 ring (this table reaches the fuselage's -13.1 instead). The sections
+ * differ there by at most 5.6 mm, at -13.1. The radome was the second span,
+ * interpolating from its 13.1 ring and 2.8 cm in radius inside the table at
+ * 13.2 -- where it was NOT hidden, as this said: the fuselage ends there, so
+ * the difference was a lip in the skin. Its 13.2 ring is the fuselage's now
+ * (phase 3b), and the table is exact from 13.2 forward.
+ * `render.bizjet-livery-mesh` measures the drawn line on the built lofts
+ * through both spans.
  */
 export const GLOBAL_LIVERY_SECTIONS: readonly LoftSection[] = [
   ...GLOBAL_TAILCONE_SECTIONS.filter((section) => section.x < GLOBAL_FUSELAGE_SECTIONS[0]!.x),

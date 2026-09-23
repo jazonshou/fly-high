@@ -199,6 +199,110 @@ front of the row. The group is 0.38 m tall at 1x, 0.53 at 2x, 0.68 at 3x.
 pinned byte for byte to the 2a image as the reference, and frames of 1x and 2x,
 abeam and three-quarter, come from the next GPU window.
 
+## Phase 3b: the flight deck, six panes cast from the top view
+
+The flight deck was a raked box across the nose and a thick slab each side,
+sunk into the skin so that what showed was wherever they cut it: no posts, no
+pillars, and a band two-thirds the type's length. It is now the type's six
+panes: a windshield either side of a centre post, then a forward and an aft
+side pane a side, behind a swept pillar and either side of a mid post, with
+the top edge one line from the crown at the post, back and down round the
+section to the aft edge.
+
+**The outline is read off the top view** (p. 31, 65.14 px/m, nose tip on row
+101), row by row at 0.05 m stations: where the glass starts and stops across
+the section, and where the silhouette is. Each edge is kept as metres aft of
+the nose tip and degrees round the section from the crown, asin(z /
+half-width); the starboard side is the reference and port is the mirror
+(port's windshield is washed out by a reflection in the render). The
+silhouette jumps at 1.7-1.9 m aft where the pitot probes stand off the skin,
+and the half-width there is interpolated across them.
+
+| edge | from | to |
+|---|---|---|
+| windshield bottom | 1.69 m aft, 4 deg (beside the post) | 2.21 m, 44 deg |
+| windshield top | 2.22 m, 4 deg | 2.57 m, 31 deg |
+| forward side bottom | 2.28 m, 50 deg | 2.85 m, 63.5 deg |
+| forward side top | 2.62 m, 35 deg | 2.93 m, 42 deg |
+| aft side bottom | 2.91 m, 64.5 deg | 3.40 m, 68 deg |
+| aft side top | 2.99 m, 44 deg | 3.40 m, 51 deg |
+
+The mid post is not resolved in the top view; both starboard renders put it
+half way along the side glazing, leaning aft at the top, and that is where it
+is. The glazing ends square at 3.40 m aft (3.42 starboard, 3.37 port). The
+bottom of the side glazing is the mean of the two sides, which differ by up to
+5 degrees where the starboard render's shading darkens the skin beside the
+glass. Cross-checks: the starboard render (p. 35), solved for a camera 10
+degrees above, puts the aft pane's top edge 53 degrees round the section, and
+the top view puts it at 51.
+
+**Why station and angle, not heights: the nose is not the type's.** Against the
+top view, the model's nose is 0.12-0.23 m narrower in half-width from 1.3 to
+3.5 m aft of the tip (type 0.86 / 1.15 / 1.21 / 1.28 / 1.34 at 1.3 / 2.0 / 2.5
+/ 3.0 / 3.5 m; model 0.74 / 0.92 / 1.02 / 1.11 / 1.19). Against the port render,
+solved for a camera about 28 degrees below, its crown is 0.2-0.27 m higher
+above the stripe where the windshield sits: the type's nose drops steeply ahead
+of the flight deck, under a brow, and the model's is a smooth ogive. Heights
+copied off the type would float off or sink into this nose. The same station
+and the same angle round the section put every corner in the same place ON the
+nose, so the glass is where the type's is on whatever nose it is cast onto,
+and a re-lofted nose re-casts it with no new table. What it cannot fix is that
+the windshield sits higher on this nose than on the type's: from R it runs from
+el +2.6 at the post to +13.9, where the type's windshield is below the pilots'
+eyes. That is the nose, and it is not in this change.
+
+**How it is built** is the 747's: every grid point is the sightline from R =
+(11.90, 0.78, 0), the centreline at the eye's station and height, through the
+outline's point on the loft's section, cast onto the fuselage's and radome's
+own triangles; `skinPanel` lays the glass 12 mm proud and 30 mm deep, and the
+six panes merge into `bizjet-flight-deck-glazing`. The centre post is the same
+over +-4 degrees of the crown (0.13 m across; the type's measures 0.13). The
+panes are the cabin windows' dark, not the glass material: that is 71 %
+see-through, the only thing behind a pane laid on the skin is the white skin,
+and it read as a pale tint where the type reads black with the sky in it. From
+the seat the panes are hidden, as the glass was.
+
+**The radome had a lip.** It started at its 13.1 ring, inside the fuselage, so
+at the fuselage's capped end (13.2) it stood 3.8 cm inside the skin at the
+crown: a forward-facing step round the nose, which the 2a table's note called
+hidden. It was not, and the windshield crosses it. Cast across the step, the
+glass's outer face went under the fuselage's edge (5.2 mm on the windshield,
+measured). The radome's 13.2 ring is now the fuselage's own, and the livery
+table is exact from 13.2 forward.
+
+`tests/render.bizjet-flight-deck.test.ts` holds it:
+- every grid point on its sightline and 12 mm out along the skin's normal;
+- every point within 5.7 mm and 0.11 degrees of the outline, with a control
+  that moves the windshield 0.1 m and 5 degrees and reads exactly that;
+- the outer face 4.5 mm or more outside the skin and the inner 19.6 mm or
+  more inside it at every cell centre, with the old radome as the control;
+- every face drawn from its own side (from outside, from R and from the left
+  seat), with a reversed pane as the control;
+- port mirroring starboard to the skin's own 1.5 mm triangulation asymmetry;
+- the top edge running monotonically back and down from the post, stepping
+  only across the pillar and the mid post.
+
+**The corner table**, which the cockpit's eye and kit are solved against, is
+`npx tsx scripts/airliner-glazing-table.mts --airframe bizjet`; the 747's is the
+same script without the flag, and its output is unchanged. From the left-seat
+eye (11.90, 0.78, -0.52), straight ahead is glass from -0.5 to +17.2 degrees.
+Through the middle of each pane at the horizon it runs:
+- the port windshield, -1.9 to +12.8;
+- the port forward side, -17.5 to +23.4;
+- the port aft side, -25.7 to +18.2.
+
+The cockpit kit still places its posts and overhead against the old box
+(`cockpit/bizjetCockpit.ts` keeps its own copy of the box). Five of
+`render.cockpit-bizjet`'s tests read the box and fail until the kit is
+re-solved against this table. That is the cockpit engineer's, by design.
+
+Geometry, checked mesh by mesh against 0ba7987:
+- gone: the three glass boxes;
+- new: `bizjet-flight-deck-glazing`, 1,440 vertices and 1,512 triangles;
+- re-cast: the post;
+- changed: the radome, one ring;
+- unchanged: the other 91 meshes, bit-identical.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own
