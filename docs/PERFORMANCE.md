@@ -1454,3 +1454,69 @@ Their per-shot `minConsecutiveSsim` floors were re-pinned from 0.67 to 0.60 and
 `docs/findings/TEMPORAL_FLOORS_2026_09_21.md` for the bisect that found the
 0.0300 step and the fps-versus-metric control that proved the metric
 deterministic.
+
+### Promotion 2026-09-23 — eleven movers from the end of the wave
+
+Eleven baselines replaced from candidate `2026-09-23T02-15-57.995Z`, captured on
+this unpinned M2 Pro at House-Keeping `e9d902d`. The other twenty-eight are
+unchanged: against the old baselines they read rgbSsim 0.9973 or higher.
+
+**The run.** 39 of 39 shots had their gates evaluated. 58 gate failures across 20
+shots, **every one a timing gate**: measured and wall-clock fps floors, p95
+interval, worst frame and p999 on the two banked shots, the two strict delivery
+gates, and `page-thrash-turn`'s hitch count, 4 against a ceiling of 3. No
+visual, temporal, draw-call, renderer-error or readback gate failed.
+**Delivery floors were NOT re-pinned**, as at every promotion on this host.
+Cold start reached ready at **2229.1 ms against its 2300 ms deadline**.
+
+**The A/A floor.** A second full capture on the same tree, run normally, was
+compared shot by shot with the candidate. On every shot the mean difference is
+0.024/255 or less (worst `forest-line-highsun`) and 0.08 % of pixels or fewer
+move by more than 8/255. Draw counts agree on 38 of 39 shots.
+`terrain-material-1600ft-down` read 87 in the candidate and 93 in the second
+run. It read 93 in the nine full captures before them, so the 87 is the shot's
+first disagreement; it stays at its ceiling of 93 and is under investigation.
+
+**The sea is pinned, measured.** No sea moved more than 0.011/255 between the
+two runs. Their shots' own streaming histories were 16,620 frames apart: the
+candidate took the 360-frame minimum on 35 shots, and the normal run 31,560
+frames in total. The unpinned ocean split runs by 0.12-0.40/255, and the
+falsifier registered before the capture (any sea at 0.1 or more) did not fire.
+Off the sea, what moves is D-5, the splat queue, FI-5 and the trainer's
+recent frame and roof changes, and all of it reproduces in the A/A.
+
+**Per shot, the cause of its difference from the baseline it replaces.**
+S = the queued splat bake (`58c1eaa`): after a season change the forest had been
+drawn as sand, and the old baselines had captured that beige floor. T = D-5, more
+of the meso band on alpine turf (`dd7c18d`). F = FI-5 (`e9d902d`): hand-built mip
+chains are kept and sampled instead of Babylon's, which changes crown-edge
+coverage and aircraft paint by single pixels. R = the chase camera's bank-blended
+height (`0162a6a`), which reframes only the banked shots. O = the ocean's cascade
+phase pinned for captures (`a4c8762`), which puts every water shot in one phase
+class.
+
+- `apron-hangar-variety` — S+F: the sand detector reads 20.1 % -> 0.0 %, with no seam where the old page edge ran
+- `approach-lights-outboard` — S+F: sand 11.2 % -> 0.0 %
+- `high-10000ft-down` — T+F: near-band contrast 11.82 -> 13.00, the D-5 figure recorded at its merge; rock, snow and ridgelines unchanged
+- `motion-banked-turn` — R: evidence-only, gated temporally
+- `page-thrash-turn` — R: evidence-only, gated temporally
+- `water-3m` — O+F: its sea moves 0.37/255 against the old baseline, because the pin changes its cascade class; A/A sea 0.0064, whole frame 0.0041
+- `water-25ft` — O+F: sea 0.19/255 against the old baseline, for the same reason; A/A sea 0.0049, whole frame 0.0030
+- `water-400ft-glitter` — O+F: A/A sea 0.0107, whole frame 0.0079
+- `coast-10km-lowsun` — O+F: A/A sea 0.0096, whole frame 0.0017
+- `hills-dusk-glint` — O+F: A/A sea 0.0043, whole frame 0.0010
+- `lake-island-piercing` — O+F: A/A 0.0000
+
+**Owed: twenty draw-call ceilings sit above what their shots measure.**
+Eighteen chase shots read exactly 14 draws under their ceilings,
+`coast-10km-lowsun` 16 and `mountain-close` 55. The counts are identical in
+every full capture since 2026-09-22, both runs of this window included, and the
+2026-09-22 promotion re-pinned only the twelve cockpit shots. They are not
+re-pinned here: a ceiling is pinned from three full runs that agree, on the tree
+going forward. Those three runs come at the next churn point, the wildlife
+capture pin, which moves birds out of some frames. Thirteen of the fourteen are
+named: `da86f47` made the trainer's interior cockpit-only, eleven meshes and
+among them the one shadow caster, which is 11 main-pass and 2 cascade draws.
+The rest (1 on every chase shot, 3 on `coast-10km-lowsun`, 42 on
+`mountain-close`) are world-side, and a short bisection names them before the
+re-pin.
