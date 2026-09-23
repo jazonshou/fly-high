@@ -150,6 +150,25 @@ GPU through a buffer written once (or updatable), and its standing test has to
 catch an `updateVerticesData` on a non-updatable buffer, since no Node read of
 the mesh can.
 
+## The stripe's thickness, for Jason to pick
+
+Jason, on the 2a frames: "looking good", and the stripe "running across the
+body" thicker. As drawn, the 0.09 m gold is 5 px wide in the 40 m abeam frame
+(2560 px, 62-degree lens) -- about 2.4 px in a 1280-wide view -- and on the
+shaded flank it renders dark olive (67, 68, 45) on a blue-grey skin (115, 140,
+161): it reads by luminance, not by hue, and at that width it reads as a
+hairline.
+
+`globalHouseScheme(stripeScale)` draws the group at any scale; 1 is byte for
+byte the 2a image. The pinstripes scale WITH the gold and the gaps do not: on
+lit previews at the 40 m frame's scale, pinstripes held at 0.03 m are 0.8 of a
+pixel in a 1280-wide view and dissolve into shimmer under a thicker gold, while
+scaled ones stay lines (1.6 px at 2x, 2.4 at 3x) and keep the type's roughly 3:1
+proportion; scaled gaps would carry the second pinstripe off the flank at the
+front of the row. The group is 0.38 m tall at 1x, 0.53 at 2x, 0.68 at 3x. Frames
+of 1x, 2x and 3x, abeam and three-quarter, go to Jason from the next GPU window;
+the scale ships when he picks.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own

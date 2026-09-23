@@ -19,8 +19,10 @@ import {
   GLOBAL_LIVERY_WIDTH,
   GLOBAL_NAVY_SCHEME,
   buildGlobalLiveryImage,
+  globalHouseScheme,
   heightOfPhase,
   stripeCentreAt,
+  type GlobalLiveryScheme,
   type GlobalLiveryStripe,
 } from "../src/render/webgpu/aircraft/bizjetLivery";
 import { phaseOfHeight } from "../src/render/webgpu/aircraft/airlinerLivery";
@@ -216,6 +218,64 @@ describe("the livery image", () => {
     // And the house scheme has no navy there: the window row is white.
     const house = texel(image, (4 + 18.5) / 33.5, phaseOfHeight(GLOBAL_LIVERY_SECTIONS, 4, 0.38)!);
     expect(distance(house, GLOBAL_BASE_WHITE)).toBeLessThan(2);
+  });
+});
+
+describe("the stripe scale Jason picks from", () => {
+  /** The drawn bands down the starboard flank at one station: [colour name, top y, bottom y] per run of rows. */
+  function bands(scheme: GlobalLiveryScheme, x: number) {
+    const image = buildGlobalLiveryImage(scheme);
+    const column = Math.floor(((x + 18.5) / 33.5) * image.width);
+    const gold = scheme.stripes[0]!.colour;
+    const grey = scheme.stripes[1]!.colour;
+    const runs: { name: string; top: number; bottom: number }[] = [];
+    for (let row = 0; row < image.height / 2; row += 1) {
+      const index = (row * image.width + column) * 4;
+      const at: LiveryRgb = [image.data[index]!, image.data[index + 1]!, image.data[index + 2]!];
+      // A texel belongs to a line if it is at least half way from the base to the line's colour.
+      const toward = (colour: LiveryRgb) => (GLOBAL_BASE_WHITE[0] - at[0]) / (GLOBAL_BASE_WHITE[0] - colour[0]);
+      const name = distance(at, gold) < distance(at, grey) ? (toward(gold) >= 0.5 ? "gold" : "") : (toward(grey) >= 0.5 ? "grey" : "");
+      const top = heightOfPhase(GLOBAL_LIVERY_SECTIONS, x, row / image.height);
+      const bottom = heightOfPhase(GLOBAL_LIVERY_SECTIONS, x, (row + 1) / image.height);
+      // Above the belly only: its grey has the pinstripes' red channel.
+      if (bottom < scheme.belly!.topY) break;
+      const last = runs[runs.length - 1];
+      if (name && last?.name === name && Math.abs(last.bottom - top) < 1e-9) last.bottom = bottom;
+      else if (name) runs.push({ name, top, bottom });
+    }
+    return runs;
+  }
+
+  it("draws exactly the shipped 2a image at scale 1", () => {
+    // The 2a scheme as it was written, literally: pinstripes 0.165 and 0.32 m under a 0.09 m gold.
+    const house = globalHouseScheme(1);
+    const gold = house.stripes[0]!;
+    const literal: GlobalLiveryScheme = {
+      ...house,
+      stripes: [gold, ...[-0.165, -0.32].map((dy, index) => ({
+        ...house.stripes[1]!, name: `pinstripe-${index + 1}`, halfHeight: 0.015,
+        centre: gold.centre.map(([x, y]) => [x, y + dy] as const),
+      }))],
+    };
+    expect(Buffer.from(buildGlobalLiveryImage(house).data).equals(Buffer.from(buildGlobalLiveryImage(literal).data))).toBe(true);
+    expect(Buffer.from(buildGlobalLiveryImage(GLOBAL_HOUSE_SCHEME).data)
+      .equals(Buffer.from(buildGlobalLiveryImage(house).data))).toBe(true);
+  });
+
+  it("thickens the gold and the pinstripes together at 2x and 3x, and holds the gaps between them", () => {
+    // A row is 3.3 cm round the cabin, so a band's measured edge is within a row. That is too
+    // coarse to tell held pinstripes (0.03 m) from scaled ones at 2x (0.06); the 3x case (0.09)
+    // is the one that fails if the pinstripes stop scaling.
+    const TEXEL = 0.04;
+    for (const scale of [1, 2, 3]) {
+      const runs = bands(globalHouseScheme(scale), 4);
+      expect(runs.map((run) => run.name), `x${scale}: the flank's bands top to bottom`).toEqual(["gold", "grey", "grey"]);
+      const [gold, first, second] = runs as [typeof runs[0], typeof runs[0], typeof runs[0]];
+      expect(Math.abs(gold.top - gold.bottom - 0.09 * scale), `x${scale} gold`).toBeLessThan(TEXEL);
+      expect(Math.abs(first.top - first.bottom - 0.03 * scale), `x${scale} pinstripe`).toBeLessThan(TEXEL);
+      expect(Math.abs(gold.bottom - first.top - 0.105), `x${scale} first gap`).toBeLessThan(TEXEL);
+      expect(Math.abs(first.bottom - second.top - 0.125), `x${scale} second gap`).toBeLessThan(TEXEL);
+    }
   });
 });
 

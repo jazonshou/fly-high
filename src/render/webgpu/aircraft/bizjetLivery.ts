@@ -185,10 +185,19 @@ const HOUSE_GOLD_CENTRE: readonly (readonly [number, number])[] = [
 ];
 const offsetKnots = (knots: readonly (readonly [number, number])[], dy: number) =>
   knots.map(([x, y]) => [x, y + dy] as const);
-/** The pinstripes' offsets below the gold's centre: 0.17 and 0.33 m in the port render, 0.16 and 0.30 in the starboard. */
-const HOUSE_PINSTRIPE_OFFSETS = [-0.165, -0.32] as const;
 /** The line's station extent: into the radome tip forward, out over the metre aft of window 11 until the swoosh. */
 const HOUSE_EXTENT = { aftEndX: -1.4, aftFullX: -0.4, forwardFullX: 14.6, forwardEndX: 14.95 } as const;
+/** The gold as measured: 0.09 m (7-8 px against a 0.54 m window's 52 in the starboard render). */
+const HOUSE_GOLD_HALF_HEIGHT = 0.045;
+/** The pinstripes, 0.03 m: 1-2 px against the same window. */
+const HOUSE_PINSTRIPE_HALF_HEIGHT = 0.015;
+/**
+ * The group's two GAPS, edge to edge: gold to the first pinstripe 0.105 m, the
+ * first pinstripe to the second 0.125. With the widths above they put the
+ * pinstripes' centres 0.165 and 0.32 m below the gold's (0.17/0.33 in the port
+ * render, 0.16/0.30 in the starboard).
+ */
+const HOUSE_GAPS = [0.105, 0.125] as const;
 
 /**
  * The house belly starts LOWER than the vertex scheme's (-0.52): at the front
@@ -197,22 +206,44 @@ const HOUSE_EXTENT = { aftEndX: -1.4, aftFullX: -0.4, forwardFullX: 14.6, forwar
  */
 const HOUSE_BELLY = { colour: GLOBAL_BELLY_GREY, topY: -0.95, feather: 0.25 } as const;
 
-export const GLOBAL_HOUSE_SCHEME: GlobalLiveryScheme = {
-  name: "house",
-  base: GLOBAL_BASE_WHITE,
-  belly: HOUSE_BELLY,
-  stripes: [
-    { name: "gold", colour: [197, 158, 85], centre: HOUSE_GOLD_CENTRE, halfHeight: 0.045, ...HOUSE_EXTENT },
-    ...HOUSE_PINSTRIPE_OFFSETS.map((offset, index) => ({
-      name: `pinstripe-${index + 1}`,
-      colour: [171, 167, 165] as LiveryRgb,
-      centre: offsetKnots(HOUSE_GOLD_CENTRE, offset),
-      halfHeight: 0.015,
-      ...HOUSE_EXTENT,
-    })),
-  ],
-  nacelle: null,
-};
+/**
+ * The house scheme with its line group `stripeScale` times as thick -- Jason
+ * asked for the stripe "running across the body" thicker, and picks the scale.
+ *
+ * THE PINSTRIPES SCALE WITH THE GOLD, AND THE GAPS DO NOT. Measured on lit
+ * previews at the 40 m frame's scale: held at 0.03 m a pinstripe is 0.8 of a
+ * pixel at 40 m in a 1280-wide view, so under a thicker gold it dissolves into
+ * shimmer and the group reads top-heavy; scaled it is 1.6 px at 2x and 2.4 px
+ * at 3x, still a line, and the type's roughly 3:1 gold-to-pinstripe proportion
+ * holds. Scaling the gaps too would carry the second pinstripe off the flank
+ * at the front of the row (at 3x, 1.0 m below a gold already at -0.45), so the
+ * group grows by its lines only: 0.38 m tall at 1x, 0.53 at 2x, 0.68 at 3x.
+ */
+export function globalHouseScheme(stripeScale = 1): GlobalLiveryScheme {
+  if (!(stripeScale > 0)) throw new RangeError("A stripe scale must be positive");
+  const gold = HOUSE_GOLD_HALF_HEIGHT * stripeScale;
+  const pin = HOUSE_PINSTRIPE_HALF_HEIGHT * stripeScale;
+  const first = gold + HOUSE_GAPS[0] + pin;
+  const offsets = [first, first + pin + HOUSE_GAPS[1] + pin];
+  return {
+    name: stripeScale === 1 ? "house" : `house-x${stripeScale}`,
+    base: GLOBAL_BASE_WHITE,
+    belly: HOUSE_BELLY,
+    stripes: [
+      { name: "gold", colour: [197, 158, 85], centre: HOUSE_GOLD_CENTRE, halfHeight: gold, ...HOUSE_EXTENT },
+      ...offsets.map((offset, index) => ({
+        name: `pinstripe-${index + 1}`,
+        colour: [171, 167, 165] as LiveryRgb,
+        centre: offsetKnots(HOUSE_GOLD_CENTRE, -offset),
+        halfHeight: pin,
+        ...HOUSE_EXTENT,
+      })),
+    ],
+    nacelle: null,
+  };
+}
+
+export const GLOBAL_HOUSE_SCHEME: GlobalLiveryScheme = globalHouseScheme(1);
 
 /**
  * THE SCHEME THE VERTEX PAINT DREW, as parameters: the navy band a window tall
