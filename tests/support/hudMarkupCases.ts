@@ -48,8 +48,9 @@ export function hudMarkupCases(cameraModes: readonly CameraMode[]): HudMarkupCas
       }
     }
   }
-  cases.push({ name: "trainer/full/chase/cruise/metric", aircraft: "trainer", mode: "full", cameraMode: "chase", state: CRUISE, units: "metric", mouseFlight: false });
-  cases.push({ name: "jet/full/chase/cruise/mouse", aircraft: "jet", mode: "full", cameraMode: "chase", state: CRUISE, units: "aviation", mouseFlight: true });
+  const first = cameraModes[0]!;
+  cases.push({ name: `trainer/full/${first}/cruise/metric`, aircraft: "trainer", mode: "full", cameraMode: first, state: CRUISE, units: "metric", mouseFlight: false });
+  cases.push({ name: `jet/full/${first}/cruise/mouse`, aircraft: "jet", mode: "full", cameraMode: first, state: CRUISE, units: "aviation", mouseFlight: true });
   return cases;
 }
 
