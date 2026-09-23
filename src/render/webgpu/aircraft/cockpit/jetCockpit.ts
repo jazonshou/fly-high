@@ -6,11 +6,25 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
 import { glareshieldMaterial, sculptSolid, solidPlate } from "./cockpitPrimitives";
+import {
+  JET_DISPLAYS,
+  createDisplayAtlas,
+  displayAtlasHeight,
+  displayAtlasWidth,
+  displayMaterial,
+  displayRedrawClock,
+  displaySlots,
+  paintDisplays,
+  remapScreenFaceToSlot,
+} from "./displays/displayAtlas";
+import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
+import type { FlightVisualState } from "@/src/game/types";
 
 /**
  * What the F-16's pilot sees over the coaming, built to angles. PHASE F1: the
- * coaming, the panel board under it and the HUD's combiner frame. No displays
- * yet (F2 owes the two MFDs, the UFC and the instrument frames).
+ * coaming, the panel board under it and the HUD's combiner frame. PHASE F2: the
+ * two MFDs on the coaming's near face, drawing the PFD and the map pages. The
+ * UFC between them is not built.
  *
  * WHY THIS EXISTS. The old cockpit was a tilted `jet-glare-shield` box whose
  * top read -11 degrees straight ahead, with the panel board's top standing above
@@ -42,8 +56,10 @@ import { glareshieldMaterial, sculptSolid, solidPlate } from "./cockpitPrimitive
  */
 
 export interface JetCockpitMaterials {
-  /** The dark matte interior: the panel board (the tub and the seat are on it too). */
+  /** The dark matte interior: the panel board and the MFD bezels (the tub and the seat are on it too). */
   readonly interior: PBRMaterial;
+  /** The screens' flat material where there is no 2D canvas to draw pages on (every Node test). */
+  readonly instrumentFace: PBRMaterial;
 }
 
 function eye(): { forward: number; up: number; right: number } {
@@ -196,6 +212,80 @@ export function jetHudFrameAngles(): { uprightAzimuthDegrees: number; barElevati
   };
 }
 
+// ---- the MFDs --------------------------------------------------------------------------------
+
+/**
+ * Two square MFDs on the coaming's near face, the type's: a 6-inch bezel round a 4-inch screen, the
+ * bezel band being where the real jet's buttons sit. They stand PROUD of the face on their own bezels,
+ * TILTED BACK about the top back edge, which lies 1 mm off the face plane, and the bottom stands out
+ * toward the pilot, so the screen faces up at an eye that looks down at it. From the eye to the
+ * screen's centre that is 15.2 degrees off the face's normal (cos 0.965), measured in 3D at the
+ * MFDs' +-14.4 azimuth; tilting the top toward the pilot instead left it 39.3 off (0.774), upright
+ * 25.9 (0.900).
+ *
+ * THE CEILING. Nothing of them may stand above y 0.735: the coaming's top surface starts at 0.739 at
+ * the near edge, and a bezel above it would stand proud of the hood from the seat and from outside.
+ * The FRONT top corner is the highest point (the face leans back, so the front is above the back), so
+ * the back top edge sits `thickness * sin(tilt)` lower.
+ *
+ * WHAT OF THEM IS SEEN. The 16:9 frame's bottom at their azimuth (+-14.4) is -22.7, not the -23.35 it
+ * is straight ahead (the frame is a rectangle), so the frame shows the top of each page and not the
+ * bottom: 63% of the screen, measured on the built mesh by the test. The game has no head movement,
+ * so the bottom 37% of each page is never seen: the ND puts its own ship higher on a square page to
+ * stay in view (`drawNd`), and the PFD's heading strip, which is lost, repeats the HUD's heading tape.
+ */
+export const JET_MFD = Object.freeze({
+  /** The bezel: square, and its thickness. */
+  bezel: 0.15,
+  bezelThickness: 0.02,
+  /** The screen: square, on the bezel's front face (lifted `screenLift`), standing `screenProud` in front of it. */
+  screen: 0.102,
+  screenThickness: 0.003,
+  screenProud: 0.001,
+  /**
+   * How far the screen's centre stands ABOVE the bezel's centre, up the face: 6 mm, so the border is 18 mm
+   * above the screen and 30 mm below it. That is this game's choice, not the type's (whose bezel carries
+   * buttons on all four sides): centred, the frame's bottom at the MFDs' azimuth left 57% of the screen in
+   * view; lifted, 63%.
+   */
+  screenLift: 0.006,
+  /** Each MFD's centre line; the 0.19 between the bezels is the UFC's (not built). */
+  z: 0.17,
+  /** Back from vertical, about the top back edge: the bottom stands out toward the pilot. */
+  tiltDegrees: 15,
+  /** Nothing of them above this: the coaming's top surface starts at 0.739. */
+  ceilingY: 0.735,
+  /** The bezels' backs stand this far in front of the face plane, so no two faces are coincident. */
+  standOff: 0.001,
+});
+
+/** The frame an MFD is built in: its back top edge on the face plane, up the face, and the face's outward normal. */
+export function jetMfdFrame(): { backTop: Vector3; up: Vector3; out: Vector3 } {
+  const m = JET_MFD;
+  const t = (m.tiltDegrees * Math.PI) / 180;
+  const up = new Vector3(Math.sin(t), Math.cos(t), 0);
+  const out = new Vector3(-Math.cos(t), Math.sin(t), 0);
+  // the FRONT top corner is at the ceiling: back top = ceiling - thickness * sin(tilt)
+  const backTop = new Vector3(JET_PANEL.faceX - m.standOff, m.ceilingY - m.bezelThickness * Math.sin(t), 0);
+  return { backTop, up, out };
+}
+
+/** Each MFD's bezel and screen centres, port then starboard: the build order, and the slot order. */
+export function jetMfdPlacements(): readonly { name: "port" | "starboard"; bezel: Vector3; centre: Vector3 }[] {
+  const m = JET_MFD;
+  const { backTop, up, out } = jetMfdFrame();
+  const bezelFrontCentre = backTop.subtract(up.scale(m.bezel / 2)).add(out.scale(m.bezelThickness));
+  const bezel = bezelFrontCentre.subtract(out.scale(m.bezelThickness / 2));
+  const screen = bezelFrontCentre.add(up.scale(m.screenLift)).add(out.scale(m.screenProud - m.screenThickness / 2));
+  return (["port", "starboard"] as const).map((name) => {
+    const z = name === "port" ? -m.z : m.z;
+    return { name, bezel: new Vector3(bezel.x, bezel.y, z), centre: new Vector3(screen.x, screen.y, z) };
+  });
+}
+
+/** What the pages need of this airframe that the flight state does not carry: one engine, 20 degrees of flap (`animation.ts`). */
+export const JET_DISPLAY_AIRFRAME: DisplayAirframe = Object.freeze({ engineCount: 1, fullFlapDegrees: 20 });
+
 // ---- the builder ----------------------------------------------------------------------------
 
 /** What `buildJetCockpit` hands back. */
@@ -204,8 +294,17 @@ export interface JetCockpit {
   readonly coaming: Mesh;
   /** `jet-instrument-panel`: the board, an ordinary airframe part. */
   readonly board: Mesh;
-  /** The cockpit-only meshes, unconfigured: the caller marks them (`configureCockpitOnlyParts`). The HUD frame. */
+  /**
+   * The cockpit-only meshes, unconfigured: the caller marks them (`configureCockpitOnlyParts`). The HUD
+   * frame, the MFD bezels and the MFD screens.
+   */
   readonly parts: readonly AbstractMesh[];
+  /** Whether the MFDs are drawing pages: false wherever there is no 2D canvas (every Node test). */
+  readonly displaysLive: boolean;
+  /** Call on the way INTO cockpit view: the next update redraws whatever the clock says. */
+  invalidateDisplays(): void;
+  /** Redraw the pages on the shared 15 Hz clock; the visual calls it only while cockpit view is on. */
+  update(state: FlightVisualState, secondsSinceLastUpdate?: number): void;
 }
 
 /**
@@ -281,5 +380,51 @@ export function buildJetCockpit(
     ));
   const bar = rod("jet-hud-frame-bar", new Vector3(f.x, f.barY, -f.z), new Vector3(f.x, f.barY, f.z));
   const frame = build.mergeStatic("jet-hud-frame", [...uprights, bar], root);
-  return { coaming, board, parts: [frame] };
+
+  // THE MFDs: two meshes for four boxes, as the Global's are. Each box is built square and turned back
+  // by the tilt about z (its local X is its thickness, pointing away from the pilot; local Y runs up
+  // the face), and its PILOT-FACING face -- local normal -X, which the turn does not change in the
+  // vertex data -- is pointed at its own slot of the atlas before the merge bakes the transforms.
+  const m = JET_MFD;
+  const tilt = (m.tiltDegrees * Math.PI) / 180;
+  const screens: AbstractMesh[] = [];
+  const bezels: AbstractMesh[] = [];
+  const slots = displaySlots(JET_DISPLAYS);
+  const atlasWidth = displayAtlasWidth(JET_DISPLAYS);
+  const atlasHeight = displayAtlasHeight(JET_DISPLAYS);
+  for (const [index, { name, bezel: bezelCentre, centre }] of jetMfdPlacements().entries()) {
+    const bezel = build.box(`jet-mfd-bezel-${name}`, m.bezelThickness, m.bezel, m.bezel, materials.interior, root);
+    bezel.position.copyFrom(bezelCentre);
+    bezel.rotation.z = -tilt;
+    bezels.push(bezel);
+    const screen = build.box(`jet-mfd-screen-${name}`, m.screenThickness, m.screen, m.screen, materials.instrumentFace, root);
+    screen.position.copyFrom(centre);
+    screen.rotation.z = -tilt;
+    remapScreenFaceToSlot(screen, slots[index]!, atlasWidth, atlasHeight);
+    screens.push(screen);
+  }
+  const screensMesh = build.mergeStatic(JET_DISPLAYS.screensMesh, screens, root);
+  const bezelsMesh = build.mergeStatic("jet-mfd-bezels", bezels, root);
+
+  // THE PAGES, where there is a 2D canvas; under NullEngine the screens keep their flat material.
+  const atlas = createDisplayAtlas(build, JET_DISPLAYS);
+  if (atlas !== null) {
+    screensMesh.material = displayMaterial(build, "jet-display", atlas);
+  }
+  // Redrawn on the shared clock, invalidated on the way into cockpit view (`displayRedrawClock`).
+  const redraw = displayRedrawClock();
+  return {
+    coaming,
+    board,
+    parts: [frame, bezelsMesh, screensMesh],
+    displaysLive: atlas !== null,
+    invalidateDisplays() {
+      redraw.invalidate();
+    },
+    update(state, secondsSinceLastUpdate = 0) {
+      if (atlas === null) return;
+      if (!redraw.tick(secondsSinceLastUpdate)) return;
+      paintDisplays(atlas, displayStateFromVisual(state, JET_DISPLAY_AIRFRAME));
+    },
+  };
 }

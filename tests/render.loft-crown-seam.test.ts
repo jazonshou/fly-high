@@ -305,7 +305,10 @@ describe("a loft's crown seam", () => {
       // AND indices (`tests/render.cockpit-jet.test.ts` pins every one): of the jet's 78 meshes the
       // other 66 are unmoved to the micrometre, 78 -> 69. The change moves no other airframe (the
       // trainer's 70, the Global's 96 and the 747's 93 meshes), which is why their pins here stay.
-      jet: "5adc3bad",
+      // RE-PINNED for the F-16's MFDs, phase F2: two meshes added, both cockpit-only (`jet-mfd-bezels`, two
+      // boxes merged; `jet-screens`, two boxes remapped into the display atlas and merged). The per-mesh gate in
+      // `tests/render.cockpit-jet.test.ts` holds the other 66 unmoved.
+      jet: "8b08bd05",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

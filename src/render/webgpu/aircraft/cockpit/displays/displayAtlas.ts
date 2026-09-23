@@ -19,9 +19,9 @@ import { drawDisplayAtlas, type DisplayPage, type DisplaySlot } from "./displayP
  * pictures out of one image with no extra draw.
  *
  * WHAT IS PER-AEROPLANE is the LAYOUT (`DisplayLayout`): which screens there are, in the order the
- * cockpit builds them, what page each one shows, and how many across the atlas is. Everything else
- * -- the slot shape, the canvas, the texture, the upload, the material -- is shared, because it
- * measured the same on both decks (see `DISPLAY_SLOT_WIDTH`).
+ * cockpit builds them, what page each one shows, how many across the atlas is, and the slot's size
+ * where its screens are not the shared 440 x 300 shape (the F-16's are square). Everything else --
+ * the canvas, the texture, the upload, the material -- is shared.
  *
  * IT IS AN EMISSIVE TEXTURE, not an albedo one. A display emits; it is not a lit surface with a
  * picture painted on it. Albedo black and emissive white means what the canvas draws is what the
@@ -45,6 +45,21 @@ export interface DisplayLayout {
   readonly screens: readonly { readonly screen: string; readonly page: DisplayPage }[];
   /** Slots across the atlas; the rows follow from the count. */
   readonly columns: number;
+  /**
+   * The slot's size in pixels, which is the SHAPE of this deck's screens (see `DISPLAY_SLOT_WIDTH`).
+   * Absent means the shared 440 x 300 the 747's and the Global's 1.47:1 screens use.
+   */
+  readonly slotWidth?: number;
+  readonly slotHeight?: number;
+  /**
+   * Mipmap the atlas, with trilinear sampling: for a deck whose screens are drawn much SMALLER than the atlas's
+   * texels. The F-16's 400-texel slots land on about 190 screen pixels at this lens (2.1 texels a pixel; the 747's
+   * 1.19, the Global's 1.03), and bilinear sampling at that ratio skips texels: measured in the live app, a camera
+   * shift of a quarter of a pixel changed about 160 pixels of each F-16 screen by more than 24 levels of 255, and
+   * mipmapped none (a half pixel: about 215 against 2 or 3), and its text went from dots to legible. The mips are
+   * made by the engine from level 0 on each upload. Absent means no mipmaps, as the turbofans' screens have.
+   */
+  readonly mipmaps?: boolean;
 }
 
 /**
@@ -93,14 +108,34 @@ export const BIZJET_DISPLAYS: DisplayLayout = Object.freeze({
 });
 
 /**
- * A slot is the shape of the SCREEN IT IS DRAWN ON, not a square. Both decks' screens MEASURE
- * 0.22 x 0.15 m on the built mesh -- 1.4667:1, the 747's and the Global's alike -- and the pages are
- * authored and tested at 440 x 300, the same ratio. A square slot (the first version of this was six
- * 256 x 256 in a row) squashes every page and cramps its text; the aspect is what matters, so no
- * square atlas would have been right at any resolution. `tests/render.cockpit-displays.test.ts`
- * measures every screen's pilot-facing face off both aeroplanes' BUILT merged mesh and holds the slot
- * to the shape it finds, so a deck whose screens are a different shape fails there instead of drawing
- * squashed.
+ * The F-16's two MFDs, port then starboard as `jetCockpit.ts` builds them: a PFD on the left and the
+ * map on the right. Its screens are SQUARE (the type's 4-inch displays), so its slots are too: two
+ * 400 x 400 in an 800 x 400 atlas. The pages were authored at 440 x 300 and draw from the slot's own
+ * width and height, so a square slot draws them square, not stretched; what changes is room. Sized
+ * from `h`, the PFD's attitude disc overlapped its altitude readout by 8 px at 400 x 400; it is sized
+ * from `pageRoundScale` now, and the ND's rose keeps its labels 20 px in (see `displayPages.ts`).
+ */
+export const JET_DISPLAYS: DisplayLayout = Object.freeze({
+  name: "jet-displays",
+  screensMesh: "jet-screens",
+  columns: 2,
+  slotWidth: 400,
+  slotHeight: 400,
+  mipmaps: true,
+  screens: Object.freeze([
+    { screen: "port", page: "pfd" },
+    { screen: "starboard", page: "nd" },
+  ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
+ * A slot is the shape of the SCREEN IT IS DRAWN ON. The 747's and the Global's screens MEASURE
+ * 0.22 x 0.15 m on the built mesh -- 1.4667:1 -- and the pages are authored and tested at 440 x 300,
+ * the same ratio; the F-16's are square, so its slots are (`JET_DISPLAYS`). A slot of the wrong shape
+ * (the first version of this was six 256 x 256 in a row, for 1.47:1 screens) squashes every page and
+ * cramps its text. `tests/render.cockpit-displays.test.ts` measures every screen's pilot-facing face
+ * off each aeroplane's BUILT merged mesh and holds the slot to the shape it finds, so a deck whose
+ * screens are a different shape fails there instead of drawing squashed.
  *
  * 440 x 300 is also a measured choice rather than a starting point now. At 660 x 450 one full atlas
  * update costs 4.2 ms against 3.3 ms on this machine, and at the viewport it was measured on the
@@ -109,12 +144,19 @@ export const BIZJET_DISPLAYS: DisplayLayout = Object.freeze({
  */
 export const DISPLAY_SLOT_WIDTH = 440;
 export const DISPLAY_SLOT_HEIGHT = 300;
+/** A deck's slot size: its own if it has square (or other) screens, else the shared 440 x 300. */
+export function displaySlotWidth(layout: DisplayLayout): number {
+  return layout.slotWidth ?? DISPLAY_SLOT_WIDTH;
+}
+export function displaySlotHeight(layout: DisplayLayout): number {
+  return layout.slotHeight ?? DISPLAY_SLOT_HEIGHT;
+}
 /** The atlas is as wide as its columns and as tall as the rows its screens need. */
 export function displayAtlasWidth(layout: DisplayLayout): number {
-  return DISPLAY_SLOT_WIDTH * layout.columns;
+  return displaySlotWidth(layout) * layout.columns;
 }
 export function displayAtlasHeight(layout: DisplayLayout): number {
-  return DISPLAY_SLOT_HEIGHT * Math.ceil(layout.screens.length / layout.columns);
+  return displaySlotHeight(layout) * Math.ceil(layout.screens.length / layout.columns);
 }
 /** Redraw rate while the cockpit is in view. A display is not an animation; 15 a second is plenty. */
 export const DISPLAY_UPDATE_HZ = 15;
@@ -155,13 +197,15 @@ export function displayRedrawClock(hz: number = DISPLAY_UPDATE_HZ): DisplayRedra
 
 /** Each screen's slot, in the build order, carrying the screen's name alongside the page it draws. */
 export function displaySlots(layout: DisplayLayout): readonly (DisplaySlot & { readonly screen: string })[] {
+  const w = displaySlotWidth(layout);
+  const h = displaySlotHeight(layout);
   return layout.screens.map(({ screen, page }, index) => ({
     screen,
     page,
-    x: (index % layout.columns) * DISPLAY_SLOT_WIDTH,
-    y: Math.floor(index / layout.columns) * DISPLAY_SLOT_HEIGHT,
-    w: DISPLAY_SLOT_WIDTH,
-    h: DISPLAY_SLOT_HEIGHT,
+    x: (index % layout.columns) * w,
+    y: Math.floor(index / layout.columns) * h,
+    w,
+    h,
   }));
 }
 
@@ -273,14 +317,15 @@ export function createDisplayAtlas(build: AircraftBuildContext, layout: DisplayL
     canvas.height = height;
     const context = canvas.getContext("2d") as unknown as DisplayContext2D | null;
     if (!context || typeof context.fillRect !== "function") return null;
+    const mipmaps = layout.mipmaps ?? false;
     const texture = RawTexture.CreateRGBATexture(
       new Uint8Array(width * height * 4),
       width,
       height,
       scene,
+      mipmaps,
       false,
-      false,
-      Texture.BILINEAR_SAMPLINGMODE,
+      mipmaps ? Texture.TRILINEAR_SAMPLINGMODE : Texture.BILINEAR_SAMPLINGMODE,
       Constants.TEXTURETYPE_UNSIGNED_BYTE,
     );
     texture.name = layout.name;

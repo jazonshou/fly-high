@@ -1,8 +1,8 @@
 # The cockpit view was broken by its lens, its eye and its hidden skin
 
 **Status: built for the Cessna, the Global and the 747, moving instruments
-included. The F-16 has its coaming, board and HUD frame (phase F1); its displays
-(F2) are not built.**
+included. The F-16 has its coaming, board and HUD frame (phase F1) and its two
+MFDs drawing the PFD and the map (phase F2); its UFC is not built.**
 
 Jason: *"Currently, the first person/cockpit view for all aircrafts are pretty
 broken. ... I want the views to look like the player is actually flying from the
@@ -869,9 +869,157 @@ re-pinned for the jet alone.
   At 16:9 the sill's nearest approach to the frame's bottom is 4.1 degrees (az 27.5); at 16:10, 2.0.
   Nothing locks the aspect ratio.
 - *No cockpit glow at night.* The dials' markings were the F-16's only emissive cockpit part and went
-  with them; nothing in its cockpit lights up at night until F2's displays do.
+  with them; nothing in its cockpit lit up at night until F2's displays (below).
 - *F2's displays* go on the coaming's near face, the only part of the panel the pilot sees: the band
-  y 0.638 (the frame's bottom straight ahead at 16:9) to 0.739.
+  y 0.638 (the frame's bottom straight ahead at 16:9) to 0.739. Built in F2 (below), standing proud
+  of that face from y 0.585 to 0.735.
+
+## The F-16's MFDs, phase F2: two square screens standing proud of the coaming's face
+
+**Where.** The type's two MFDs, a 6-inch bezel around a 4-inch screen, on the panel under the HUD.
+Here that panel is the coaming's near face at x 2.92, which from the eye is only a 10 cm band in
+frame (-16.0 at its top edge, the frame's bottom at 16:9 below it). So each MFD stands PROUD of the
+face on its own bezel, and the frame shows the top of it, as it shows a real pilot at this lens.
+
+Measured before building (F2-0), and three things in the brief did not survive it:
+- *The height.* A 0.15 bezel tilted 15 degrees with its bottom at y 0.595 has its top at 0.740, over
+  the 0.735 ceiling. Anything above 0.739 stands proud of the coaming's top surface, from the seat
+  and from outside.
+- *The tilt's direction.* "Top toward the pilot" points the screen 15 degrees DOWN, away from an eye
+  that looks down at it. Built instead: tilted BACK about the top edge, bottom standing 3.9 cm out
+  toward the pilot. That is how a panel faces a pilot who looks down at it. Measured in 3D from the eye
+  to the screen's centre at the MFDs' +-14.4 azimuth, the face's normal is 15.2 degrees off the
+  sightline (cos 0.965), against 39.3 (0.774) for the top toward the pilot and 25.9 (0.900) upright.
+  (The F2-0 figures, 8, 38 and 22, were in the vertical plane only.)
+- *The frame's bottom at the MFDs.* The 16:9 frame is a rectangle, so its bottom is -23.35 only
+  straight ahead. At the MFDs' azimuth, +-14.4, it is -22.7. Centred in its bezel, a 0.102 screen is
+  57% in frame. Lifting it 6 mm within the bezel (18 mm of border above it, 30 mm below; a choice
+  of this game's, since the type's bezel carries buttons on all four sides) gives 63%, against the
+  60% the brief asked for.
+
+**As built** (`cockpit/jetCockpit.ts`, `JET_MFD`):
+- Bezels 0.15 square, 0.02 thick, at z +-0.17. The 0.19 between them is the UFC's, which is not built.
+- The back top edge sits 1 mm off the face plane, turned back 15 degrees about it. The front top
+  corner is at the 0.735 ceiling.
+- Screens 0.102 square, 1 mm proud of the bezel, lifted 6 mm.
+- The bezels are on the interior grey, so they read apart from the near-black coaming face. The
+  screens use the atlas's emissive material when there is a 2D canvas, and a flat instrument face
+  under Node.
+- Both meshes are cockpit-only. The kit is 3 meshes (the frame, the bezels, the screens): cockpit
+  view spends +2 draws, and outside cockpit view is unchanged at 174.
+
+Read from the eye straight down each MFD's centre line (az +-14.40), by ray on the built mesh:
+
+| edge | elevation |
+| --- | --- |
+| near face above, down to | -16.22 |
+| bezel top | -16.23 |
+| screen top | -17.70 |
+| frame's bottom, 16:9 | -22.69 |
+| screen bottom | -25.62 |
+| bezel bottom | -27.88 (then the board) |
+
+**Pages.** The port screen draws the PFD and the starboard the map: the existing pages, through the
+shared atlas. The atlas is 800 x 400, two square 400 x 400 slots, because a slot is the shape of its
+screen. `DisplayLayout` has a per-deck slot size for this, and the 747 and the Global keep the shared
+440 x 300. Their drawn atlases were digested on ac4eafe before the change (every painter call at one
+flight state), and still match call for call.
+
+The redraw is wired as the Global's: the shared 15 Hz clock, invalidated on the way into cockpit
+view, a flat material headless (`displaysLive` false). The F-16 is now a third deck in the shared
+display suite, so the live path covers it too: the canvas and texture are sized from its own layout,
+it draws and uploads on the first cockpit frame, redraws at exactly 15 Hz, redraws at once on
+coming back into the cockpit, gives the atlas back on dispose, and treats a late redraw as harmless.
+Its engine count (1) is counted off the built turbine hub and inlet, and its flap travel (20) comes
+from the animation's pose.
+
+**Square pages, and the one drawing change.** The pages were laid out for 440 x 300 and draw from
+the slot's own width and height, so a square does not squash them: every arc is drawn under a
+transform with equal axes, held from the recorded instructions against a 1.2 x 1 stretch that the
+check does catch. But the extra height crowded them. The PFD's attitude disc (radius 0.3 h, 120 px)
+touched its altitude tape and came within 4 px of its airspeed tape, and its altitude and airspeed
+readouts overlapped it by 8 and 4 px. The ND's +-60 degree labels' anchors were 0.8 px from the
+slot's sides and their text ran past them. Two changes, each leaving 440 x 300 exactly as it was:
+- ONE parameter, `pageRoundScale(w, h) = min(h, 300 w / 440)`: the height a 440 x 300 page would have
+  at this width, exactly h on the other decks' slots (an exact division), 272.7 on the F-16's. It
+  sizes the PFD's whole attitude instrument: disc, pitch scale, rungs and their numbers, roll scale,
+  aircraft symbol.
+- A third term in the ND rose's min(): the radius at which its +-60 degree labels' TEXT keeps 20 px
+  from the slot's sides. It is 206.1 on 440 x 300, above the 204 in use there, and 178.2 on the
+  square (with the labels' font from the page scale, below), where it binds. (Sizing the rose from the page scale as well changed nothing on any deck,
+  so it is not done.)
+Two things follow from those two changes: the tapes span the disc's height, so on
+the square they shorten with it (y 102 to 266 instead of 64 to 304, more knots per pixel), and the
+ND's rings, ticks, track line and heading pointer are drawn from the rose's radius, so they move in
+with it.
+
+**The review found three more places where h-sized text met w-sized boxes on the square**, and the
+same parameter fixes them. The PFD's altitude labels (16 px from h in a 52 px tape from w) were
+clipped by 14 px at 15,000 ft. The altitude readout's 24 px digits ran 17 px out of its 60 px box.
+The ND's "HDG" overlapped the TAS value by 4.8 px. Every `text()` and `readoutBox()` call on the PFD
+and the ND now takes `pageRoundScale` as its text size. So does the readout boxes' frame width, which
+`readoutBox` takes from the same argument (2.0 to 1.36 px on the square). On 440 x 300 that
+is h, and the digests still match. On the square, every piece of PFD and ND text is inside its
+readout box or page on both axes, and across its scrolling tape or strip. That is held on all three
+decks at five-digit altitudes. HDG clears the TAS value by at least 10 px. The rose's label-room
+term uses the labels' new font, so the rose is 178.2.
+
+**What of each page is seen.** The game has no head movement, so the rows of a page below the
+frame's bottom are never seen: 0 to 250 of 400, derived from the built screen and the frame's bottom
+at the MFDs' azimuth. At 0.86 h, the ND's own ship (344) and its 20 nm ring were below that. Own ship
+and the rose's centre now stand at 0.86 of the page's round scale: 258 on 440 x 300, as before, and
+234.5 on the square. There own ship's lowest point is at 242.5, in view, and the empty band under the
+header closes. The arc's top then runs under the heading box. A label drawn there was covered only
+within about 4 degrees of its own heading; further off, a fragment of it stuck out past the box's
+edge, at about a quarter of all headings (a review sweep). So a rose label whose text would touch the
+heading box is not drawn: the box shows the heading. On the square that leaves the top label out at
+about 54% of headings. On 440 x 300 no label comes within 3 px of the box, so every label is still
+drawn there (a 1-degree sweep of 360 on all three decks holds both). (0.62 h, 248, would keep that
+label 4 px under the box but put own ship's base 5.6 px below the frame.) The PFD's heading strip stays below the frame; it repeats the
+HUD's heading tape. So does the lower half of its vertical-speed scale, which is still sized from h
+(y 84 to 284): the descent digits are never seen and the -2000 label is cut by the frame's edge. The
+HUD shows V/S.
+
+The first cut sized the disc alone. It cleared the tapes, but left the wing bars overhanging the
+smaller disc by 22 px a side and the disc holding +-8.2 degrees of pitch where the other decks hold
+12. So the square's attitude instrument is now the 440 x 300 one at 272.7/300 scale. In the 400 x 400
+slot, from the recorded instructions:
+- The disc (radius 81.8) is 34.2 px from the airspeed box, 42.2 from its tape, 30.2 from the altitude
+  box and 38.2 from its tape.
+- The wing bars are 10.9 px inside the disc.
+- The disc holds 12.0 degrees of pitch, measured the same way on the 747's page.
+- The rose (radius 178.2) keeps its +-60 degree labels' text 20.0 px ("15") and 23.3 px ("3") from the
+  slot's sides, where the 747's 440 x 300 gives 21.8 and 25.4. (Text widths are taken as a monospace
+  0.6 em a character, in the code and the test alike; the live atlas's glyphs are measured in F2-2.)
+  Sized from the page scale alone (185.5) the labels' anchors were 20 px in but their text only 10.7
+  and 15.5.
+- The 747's and the Global's atlases are call-for-call identical to ac4eafe (the digests pinned before
+  the change).
+
+**The F-16's atlas is mipmapped.** Each 400-texel slot lands on about 190 screen pixels at this lens,
+2.1 texels a pixel (the 747's 1.19, the Global's 1.03). Bilinear sampling at that ratio skips texels.
+Measured in the live app with the sim paused and the camera shifted sideways by a fraction of a pixel,
+right before it renders:
+
+| camera shift | PFD screen, bilinear | mipmapped | ND screen, bilinear | mipmapped |
+| --- | --- | --- | --- | --- |
+| none (control) | 0 | 0 | 0 | 0 |
+| 0.15 mm, about 1/4 px | 161 | 0 | 136 | 0 |
+| 0.3 mm, about 1/2 px | 222 | 2 | 211 | 3 |
+| 0.6 mm, about 1 px | 292 | 72 | 296 | 43 |
+
+The counts are pixels of a 152 x 73 screen region whose brightness changed by more than 24 levels of 255.
+Any vibration or camera motion shimmers the bilinear screens. Mipmapped (trilinear, the engine making the
+chain from level 0 on each upload), the text went from dots to legible in the 4x crop. The upload's CPU
+cost is the same, 0.10 ms median over about 40 uploads either way; the mip chain is made on the GPU,
+which that number does not see. `DisplayLayout.mipmaps` is on for the F-16 alone; the turbofans' screens
+are barely minified and stay as they were.
+
+**Live checks (F2-2).** The attitude disc's flat sky and ground in the live atlas's readback span
+162 x 162 texels, an aspect of exactly 1.00. The labels' font measures 13.25 px for "15" against the
+13.2 the page and tests assume (0.6 em a character). The cockpit camera draws 71 - 3 (the skin its mask
+hides) - 2 (the reheat cones, disabled) = 66 of the jet's meshes, as pinned; in the air the ten
+landing-gear meshes are disabled too (gear up), 56.
 
 ## Not done, and one thing to know
 
@@ -902,5 +1050,5 @@ Global, 1.9 on the 747) that a direct canvas upload would delete, if an engine e
 imported without breaking startup; and a 4K player would out-resolve the 440 x 300 slot (the
 crossover is a canvas about 2,170 px wide).
 
-**Not built:** the F-16's displays (phase F2: the two MFDs and the UFC on the coaming's near face).
+**Not built:** the F-16's UFC, between the MFDs.
 Baselines are not promoted here; the single end-of-wave promotion absorbs the change.
