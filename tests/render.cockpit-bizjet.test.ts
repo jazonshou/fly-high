@@ -8,7 +8,7 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { crossings, worldTriangles, type Triangle } from "../scripts/rayCrossings.mts";
+import { crossings, distanceToTriangles, worldTriangles, type Triangle } from "../scripts/rayCrossings.mts";
 import { aircraftSpec } from "../src/aircraft/catalogue";
 import { COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
@@ -83,10 +83,11 @@ const TARGETS = {
 } as const;
 
 /**
- * The windshield/side pillar's side faces from the seat, at most: the 2 cm frame's read 0.33 to 0.49 degrees across
- * it (K1, the seated eye on 8d5deeb's nose); the glass's own 0.10 m slab would read several times that.
+ * The windshield/side pillar's side faces from the seat, at most: the 2 cm frame's read 0.33 to 0.49 degrees across it on
+ * 8d5deeb's nose and 0.70 to 1.09 on 3da1899's, whose steeper, lower nose shows more of the frame's depth; the glass's own
+ * 0.10 m slab would read five times that.
  */
-const PILLAR_SIDE_DEGREES = 0.8;
+const PILLAR_SIDE_DEGREES = 1.5;
 
 interface Panel { name: string; rows: number; columns: number; positions: number[]; triangles: number }
 
@@ -225,10 +226,26 @@ function skinExit(d: Vector3): number {
   return crossings(EYE_POINT, d.normalizeToNew(), shell).at(-1) ?? Number.NaN;
 }
 /** The first drawn surface INSIDE the skin: the kit or nothing (what shows through culled skin is the world outside). */
+/**
+ * The first drawn surface INSIDE the skin: the kit or nothing (what shows through culled skin is the world outside). The
+ * lining lies ON the skin, its slab straddling it, and where the skin is concave (part 4's nose runs straight from the
+ * post's foot, a crease under the windshield) a chord of it stands a millimetre or two OUTSIDE: the skin is culled
+ * from inside, so it still covers the view. A lining hit counts, then, wherever it lies within the lining's own proud
+ * of the skin, measured normal to it, whichever side.
+ */
 function kitHit(azimuth: number, elevation: number): Hit | null {
   const d = direction(azimuth, elevation);
   const hit = firstHitAlong(d);
-  return hit && hit.distance < skinExit(d) - 1e-4 ? hit : null;
+  if (!hit) return null;
+  if (hit.distance < skinExit(d) - 1e-4) return hit;
+  const onSkin = hit.mesh.name === "bizjet-cockpit-interior" && /bizjet-lining-/.test(partOf(hit.mesh, hit.faceId))
+    && distanceToTriangles(EYE_POINT.add(d.scale(hit.distance)), shell) <= BIZJET_LINING.proud + 1e-4;
+  return onSkin ? hit : null;
+}
+/** How far inside the skin a point along a ray from the eye is, normal to the skin: negative outside it. */
+function insideSkin(d: Vector3, distance: number): number {
+  const off = distanceToTriangles(EYE_POINT.add(d.scale(distance)), shell);
+  return distance < skinExit(d) ? off : -off;
 }
 /** Which authored part of a merged mesh a picked triangle belongs to (an unmerged mesh is its own part). */
 function partOf(mesh: AbstractMesh, faceId: number): string {
@@ -775,7 +792,7 @@ describe("the frame: the lining round the glass", () => {
     }
   });
 
-  it("lines the skin from inside: where the pilot sees the lining's face it stands inside the skin, shaded toward the cabin", () => {
+  it("lines the skin from inside: where the pilot sees the lining's face it lies on the skin, shaded toward the cabin", () => {
     let face = 0;
     let rim = 0;
     let tightestFace = Number.POSITIVE_INFINITY;
@@ -793,16 +810,18 @@ describe("the frame: the lining round the glass", () => {
           continue;
         }
         face += 1;
-        tightestFace = Math.min(tightestFace, skinExit(d) - hit!.distance);
+        tightestFace = Math.min(tightestFace, insideSkin(d, hit!.distance));
         const normals = hit!.mesh.getVerticesData(VertexBuffer.NormalKind)!;
         const indices = hit!.mesh.getIndices()!;
         for (let k = 0; k < 3; k += 1) if (Vector3.Dot(Vector3.FromArray(normals, indices[hit!.faceId * 3 + k]! * 3), d) >= 0) shadedAway += 1;
       }
     }
-    console.info(`the Global's lining: ${face} rays on its inner face, the tightest ${tightestFace.toFixed(4)} m inside the skin; ${rim} on its rims`);
+    console.info(`the Global's lining: ${face} rays on its inner face, the tightest ${tightestFace.toFixed(4)} m inside the skin (negative: outside it, in a crease); ${rim} on its rims`);
     expect(face).toBeGreaterThan(300);
     expect(rim, "the rims are a small part of what shows").toBeLessThan(face / 5);
-    expect(tightestFace).toBeGreaterThan(0.005);
+    // ON the skin: the inner face stands BIZJET_LINING.depth in, less a chord's sag where the skin is convex; where it
+    // is concave the chord can carry it out, but never beyond the lining's own proud
+    expect(tightestFace).toBeGreaterThan(-BIZJET_LINING.proud);
     expect(shadedAway, "lining vertices shaded away from the eye").toBe(0);
   });
 
@@ -821,7 +840,10 @@ describe("the frame: the lining round the glass", () => {
     const p = panel(strip);
     const cells = (p.rows - 1) * (p.columns - 1);
     const readings: string[] = [];
-    for (const el of [-8, 0, 4]) {
+    // across its own height from the eye (the pillar's foot moves with the nose): a quarter, half and three quarters up
+    const middleEl = (row: number) => azel(Vector3.Lerp(gridVertex(p, 1, row, 0), gridVertex(p, 1, row, p.columns - 1), 0.5)).el;
+    const [low, high] = [middleEl(0), middleEl(p.rows - 1)];
+    for (const el of [0.25, 0.5, 0.75].map((f) => Math.round((low + (high - low) * f) * 10) / 10)) {
       let face = 0;
       let side = 0;
       for (let az = -40; az <= 0; az += 0.01) {
@@ -831,6 +853,7 @@ describe("the frame: the lining round the glass", () => {
         else face += 0.01;
       }
       readings.push(`el ${el}: ${(face + side).toFixed(2)} = face ${face.toFixed(2)} + side ${side.toFixed(2)}`);
+      console.info(`  pillar at el ${el}: ${(face + side).toFixed(2)} = face ${face.toFixed(2)} + side ${side.toFixed(2)}`);
       expect(face, `the pillar at el ${el}`).toBeGreaterThan(3);
       expect(side, `its side faces at el ${el}`).toBeLessThan(PILLAR_SIDE_DEGREES);
     }
