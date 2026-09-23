@@ -15,7 +15,8 @@ the compute cap for the whole frame is 1.73 ms. What happens depends on the pric
 - **At the shipped price it spikes.** The page is admitted through the live `ComputeBudget` beside a competing
   client at occlusion priority, two dispatches every frame, priced at their own measured 0.137 ms. Estimates stay
   frozen at the seeds, as in shipping. The page converges in 47 frames. In the pit's frame the budget booked 0.067 ms
-  for erosion, which spent **6.78 ms**. It booked 0.274 ms for the competitor, which spent **2.47 ms** (its short
+  for erosion, which spent **6.78 ms** (the pit's own spend varies between runs: 3.43 ms in a later run of the same test,
+  that one beside a CPU-heavy Node job, so the spike is 3.4-6.8 ms on this page). It booked 0.274 ms for the competitor, which spent **2.47 ms** (its short
   passes stretched beside the pit). That frame's compute came to **9.25 ms against the 1.73 ms cap**: 8.9 ms that
   nothing booked. It happens once per eroded page.
 - **At its measured price it stalls.** Priced at 6.0 ms, the pit never fits the row or the cap. `ComputeBudget`'s floor
@@ -29,8 +30,12 @@ geology stages already run as bands. Only then can its price be honest and admis
 stages is held until that lands, and the breach-frame test becomes its standing gate: booked close to spent, and the
 page converging, at the measured prices. Until then the test records the behaviour above rather than asserting it.
 
-Shipping impact: every eroded page puts one ~6 ms dispatch, plus whatever it slows beside it, into one frame. It is a
-hitch source with no visual effect.
+Scope: only ERODED worlds. The game defaults to the analytic world (`DEFAULT_WORLD_EVOLUTION = "analytic"`), and
+`FlightGame` builds an eroded one only when the URL asks for it; the erosion producer, and the pit carve with it, never
+runs in the default game, and no current capture shot uses the eroded world. In an eroded world, every eroded page puts
+one pit-carve dispatch, plus whatever it slows beside it, into one frame: a hitch source with no visual effect. What
+reaches the default game is the analytic clients' seeds (terrain page generation, the splat and occlusion bakes, ground
+cover), which were also measured on the old instrument and are the half of the re-price still to be measured clean.
 
 ## The clean-room slot that measured it
 
