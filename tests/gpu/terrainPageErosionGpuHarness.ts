@@ -3,6 +3,10 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { Scene } from "@babylonjs/core/scene";
+import {
+  type DeferredPassTimingOptions,
+  installDeferredPassTiming,
+} from "../../src/render/webgpu/core/DeferredPassTiming";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import {
   EVOLUTION_DOMAIN_SAMPLE_COUNT,
@@ -48,6 +52,7 @@ const SLOTS = 16;
 export async function withScene<T>(
   run: (engine: WebGPUEngine, scene: Scene) => Promise<T>,
   timed = false,
+  timing: DeferredPassTimingOptions = {},
 ): Promise<T> {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -74,6 +79,10 @@ export async function withScene<T>(
     // which surfaces downstream as NaN scratch, not as a device problem. Ask
     // the device itself, and only then turn the counters on.
     if (timed) engine.enableGPUTimingMeasurements = gpuTimingAvailable(engine);
+    // Each pass's own time, not the slot's previous occupant (DeferredPassTiming.ts).
+    if (engine.enableGPUTimingMeasurements && !installDeferredPassTiming(engine, timing)) {
+      throw new Error("GPU timing is on but per-pass timing could not be installed");
+    }
     engine.runRenderLoop(() => {});
     scene = new Scene(engine);
     return await run(engine, scene);

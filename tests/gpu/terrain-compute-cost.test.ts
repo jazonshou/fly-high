@@ -5,6 +5,7 @@ import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
 import { COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
+import { installDeferredPassTiming } from "../../src/render/webgpu/core/DeferredPassTiming";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { GlobalHeightPyramid } from "../../src/render/webgpu/terrain/GlobalHeightPyramid";
 import {
@@ -83,6 +84,8 @@ async function withScene<T>(run: (engine: WebGPUEngine, scene: Scene) => Promise
       );
     }
     engine.enableGPUTimingMeasurements = true;
+    // Each pass's own time, not the slot's previous occupant (DeferredPassTiming.ts).
+    if (!installDeferredPassTiming(engine)) throw new Error("per-pass timing could not be installed");
     engine.runRenderLoop(() => {});
     scene = new Scene(engine);
     return await run(engine, scene);
