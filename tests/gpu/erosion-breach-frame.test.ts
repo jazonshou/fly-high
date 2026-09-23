@@ -6,7 +6,15 @@ import { FRAME_BUDGET_MS } from "@/src/render/webgpu/core/PerformanceBudget";
 import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import { TERRAIN_EROSION_STAGE_SEED_COST_MS } from "@/src/render/webgpu/terrain/TerrainPageErosionGpu";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
-import { admit, buildHarness, gpuTimingAvailable, nextFrame, withScene } from "./terrainPageErosionGpuHarness";
+import {
+  adapterAdvertisesTimestampQuery,
+  admit,
+  buildHarness,
+  gpuTimingAvailable,
+  NO_TIMESTAMP_QUERY_REASON,
+  nextFrame,
+  withScene,
+} from "./terrainPageErosionGpuHarness";
 
 /**
  * The breach-pit pass in the frame that runs it, admitted the way the renderer
@@ -47,7 +55,10 @@ interface FrameRow {
 }
 
 describe("breach-pit in its frame, under the live admission meter", () => {
-  it("records booked against spent for the pit carve, at the shipped and at the measured prices", async () => {
+  it("records booked against spent for the pit carve, at the shipped and at the measured prices", async (context) => {
+    if (!(await adapterAdvertisesTimestampQuery())) {
+      context.skip(`${NO_TIMESTAMP_QUERY_REASON}; the breach frame's booked-against-spent stays unrecorded on this host`);
+    }
     const spentBySinkFrame = new Map<unknown, Map<number, number>>();
     const result = await withScene(async (engine, scene) => {
       if (!gpuTimingAvailable(engine)) return null;
@@ -172,7 +183,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         frames.set(frameId, (frames.get(frameId) ?? 0) + nanoseconds);
       },
     });
-    if (!result) throw new Error("no timestamp-query on this device; nothing was measured");
+    if (!result) throw new Error("the adapter advertises timestamp-query but the device measured nothing");
 
     const row = FRAME_BUDGET_MS[1].erosionCompute;
     const spent = (sinks: ReadonlySet<unknown>, frameId: number) => {
