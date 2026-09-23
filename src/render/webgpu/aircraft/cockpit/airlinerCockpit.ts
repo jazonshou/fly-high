@@ -5,8 +5,18 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
+import {
+  FLIGHT_DECK_PANES,
+  FLIGHT_DECK_REFERENCE,
+  PANE_DEPTH,
+  PANE_PROUD,
+  sightline,
+  type FlightDeckPane,
+  type Point3,
+  type SkinCaster,
+} from "../airlinerGlazing";
 import type { AircraftBuildContext } from "../builders";
-import { glareshieldMaterial, orient, solidPlate } from "./cockpitPrimitives";
+import { glareshieldMaterial, solidPlate } from "./cockpitPrimitives";
 import {
   AIRLINER_DISPLAYS,
   createDisplayAtlas,
@@ -22,63 +32,52 @@ import {
 import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
 
 /**
- * What a pilot in the 747-8's LEFT seat sees, built to angles.
+ * What a pilot in the 747-8's LEFT seat sees, built to the glass as it is built.
  *
- * WHY THIS EXISTS. The flight deck was a centred instrument board with five
- * dials on it, two seats 2 m behind the glass, and six glazing boxes the cockpit
- * camera drew as opaque slabs: from the catalogue's centreline eye the picture
- * was two huge dark trapezoids and a wall of panel with the dials mostly below
- * the frame. The glazing is `airliner-glass`, a PBR with refraction on, and a
- * refractive material draws as an opaque slab from inside, so the glazing is now
- * excluded from the cockpit camera (`cockpitParts`), as the Global's windscreen
- * is, and what frames the view is built here as COCKPIT-ONLY parts
- * (`CommonRig.cockpitOnlyParts`): invisible from any other camera and never a
- * shadow caster.
+ * THE GLASS IS CAST, AND SO IS THE FRAME ROUND IT. The flight-deck panes are windows of sky
+ * specified by azimuth and elevation from a reference R on the centreline and cast onto the
+ * nose's own triangles (`airlinerGlazing.ts`, docs/findings/AIRLINER_NOSE_GLAZING.md). The shell
+ * and the glazing are hidden from the cockpit camera, so everything that frames the view is
+ * built here as COCKPIT-ONLY parts (`CommonRig.cockpitOnlyParts`), invisible from any other camera
+ * and never a shadow caster. The frame between, above and below the panes is the same cast: a
+ * LINING, one `skinPanel` per rectangle of R's sky that is not glass, laid on the same skin from the
+ * same reference at the panes' own depth. Its edges therefore ARE the panes' edges, by construction
+ * and at every point of them, rather than plates placed against copied corners: the No.1 / No.2
+ * pillar is the strip between azimuths 24 and 26, the crown lining starts at No.1's +12, and a
+ * re-loft of the nose moves the frame with the glass. The one piece of the frame that is not the
+ * kit's is the centre post, the plane engineer's cast strip over R's +-1 degree, which the cockpit
+ * camera now draws (`airlinerVisual.ts`); the kit lines the gap between it and each No.1 pane.
  *
- * THE EYE, (29.90, 2.93, -0.72), was SOLVED against the built glazing
- * (`scripts/airliner-eye-solve.mts`) with the old panel and seats treated as
- * movable: eye y inside the glass's span, at least 0.55 m from the glass and
- * 0.15 m under the skin, and the port No.1 pane, the only glass straight ahead of
- * a pilot at z -0.72, read as far above AND below the horizon as it can. That is
- * T = 9.39 (top +9.64, bottom -9.39) with 0.558 m to the glass and 0.474 m of
- * skin; the best point is T 9.53 at (29.915, 2.935), where the glass distance is
- * exactly 0.55. The seats used to stand 2 m behind the glass, which is why the
- * old eye could read no more than +5 / -7: the pilots now sit where a 747's do,
- * and the deck is built around them.
+ * THE EYE, (29.85, 2.93, -0.50), was chosen on a grid of candidate eyes against the built glass
+ * (the K0 table in docs/findings/COCKPIT_VIEW_2026_09_20.md): 0.50 m off the centreline, as the
+ * type's seat spacing puts the captain; straight ahead in the middle third of the port No.1
+ * pane's azimuth span (No.1 reads -8.8..+11.6 at the horizon); the centre post at +13.1..+14.8;
+ * No.1's opening 30.4 degrees; the glass 1.90 m ahead. It keeps the old eye's HEIGHT: the pilot's
+ * eye height is the constant when the seat moves inboard, and the crown there is higher.
  *
- * WHAT CANNOT BE FIXED HERE. The opening is about 19 degrees tall where the
- * type's is nearer 35, because the model's panes lie 45 to 53 degrees UP on the
- * nose crown and sit far forward, and the crown itself (3.10 m at x 31.0, z -0.72)
- * is the ceiling of every one of them. Taller is a nose re-loft, not cockpit
- * work (docs/findings/COCKPIT_VIEW_2026_09_20.md, the plane engineer's register).
+ * THE TARGETS, as angles from the eye at the 75 degree lens (16:9, so the frame's bottom reads
+ * -23.35 straight ahead):
+ *  - the glareshield's lip reads -18.04 straight ahead, the LOWEST line that leaves no more than 1
+ *    degree of sill between itself and No.1's bottom edge anywhere along that edge. It stands
+ *    FLUSH with the panel's face, and the screens hang 0.25 degrees under it, so 43.5% of each
+ *    screen in the top row is in the frame;
+ *  - above the lip the sill lining carries the glareshield on to each pane's bottom edge, so no
+ *    band of the hidden nose shows between them; the deck's top straight ahead is therefore No.1's
+ *    bottom edge, which is what `catalogue.cockpitDeckLineDegrees` records;
+ *  - the screens are the type's layout: each pilot's PFD straight ahead of them and their ND
+ *    inboard of it, the upper EICAS on the centreline and the lower one under it.
  *
- * THE TARGETS, as angles from the eye at the 75 degree lens:
- *  - the hood's top edge straight ahead reads -10 degrees (+-1); a dash slab
- *    carries it on, sloping down to the glass's lowest bottom edge, because the
- *    glass's bottom edge straight ahead reads -9.4 and the hood's far edge would
- *    otherwise leave a band of the hidden nose between them;
- *  - the pilot's own PFD is straight ahead: six screens across, laid out about
- *    the SEATS (PFD, ND, EICAS a side), the pilot's PFD on the eye's z;
- *  - the PFD's upper two-thirds is an attitude ball, the same builder and the same
- *    mapping as the Global's and the Cessna's;
- *  - the port No.1 pane's top edge and the overhead's underside meet at the
- *    lowest pane top (y 3.137); a trapezoid PILLAR fills the V-shaped gap of crown
- *    between the two No.1 panes, and a post stands in the seam between No.1 and No.2.
- *
- * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at
- * negative Z. Every number that comes from the built glazing is a copy, held to
- * the built mesh by `tests/render.cockpit-airliner.test.ts`, so a re-loft of the
- * nose fails there instead of leaving a stale table.
+ * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at negative Z.
  */
 
 const DEG = Math.PI / 180;
 
 export interface AirlinerCockpitMaterials {
   /**
-   * Dark matte interior: the panel board, the overhead, the pillar and the post, which are one structure and one
-   * draw state. (The hood and the dash have the hood's own: `glareshieldMaterial`.) The pillar and the post were
-   * on the glareshield's, and a material with no ambient light reads (0, 0, 0) on any face the sun misses: a hole
-   * in the picture beside a blue-grey ceiling. On this one the pillar reads the ceiling's own colour.
+   * Dark matte interior: the panel board, the crown lining, the pillars and the gaps by the post, which are one
+   * structure and one draw state. (The glareshield and the sill lining have the glareshield's own:
+   * `glareshieldMaterial`.) A material with no ambient light reads (0, 0, 0) on any face the sun misses: a hole in
+   * the picture beside a lit ceiling. This one is the flight deck's own, the seats' material.
    */
   readonly interior: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
@@ -90,49 +89,14 @@ function eye(): { forward: number; up: number; right: number } {
   return aircraftSpec("airliner").cockpitEye;
 }
 
-const point = (xyz: readonly [number, number, number]): Vector3 => new Vector3(xyz[0], xyz[1], xyz[2]);
-
-// ---- the glass ---------------------------------------------------------------
-
-/**
- * Corners of the built glazing that the kit is placed against, in body metres.
- * `airliner-flight-deck-glazing` is one merged mesh of six thick boxes; each pane
- * is a 0.12 m slab laid on the nose crown, so its INNER face (toward the pilot)
- * is 0.06 m inside the skin and its OUTER face's top edge is the highest thing
- * of the pane.
- */
-export const AIRLINER_GLAZING = Object.freeze({
-  /** The port No.1 pane's inner face, the pane straight ahead of the left seat. */
-  portOneInner: Object.freeze({
-    bottomInboard: [31.843, 2.623, -0.618] as const,
-    bottomOutboard: [31.233, 2.623, -1.347] as const,
-    topOutboard: [30.802, 3.041, -0.987] as const,
-    topInboard: [31.412, 3.041, -0.258] as const,
-  }),
-  /** The port No.1 pane's OUTER face's top edge: what the pilot's sightline has to clear. */
-  portOneOuterTop: Object.freeze({
-    outboard: [30.857, 3.137, -1.033] as const,
-    inboard: [31.467, 3.137, -0.304] as const,
-  }),
-  /** The port No.2 pane's forward edge on its inner face, across the seam from No.1. */
-  portTwoForwardInner: Object.freeze({
-    bottom: [30.886, 2.682, -1.336] as const,
-    top: [30.695, 3.133, -0.924] as const,
-  }),
-  /** The LOWEST top edge of any pane (No.1's outer edge); No.2's is 3.218 and No.3's 3.197. */
-  lowestTopY: 3.137,
-  /** The lowest bottom edge of any pane (No.1's inner edge). */
-  lowestBottomY: 2.623,
-});
-
 // ---- the seats -----------------------------------------------------------------
 
 /**
  * The seats stand 0.05 m aft of the pilot's eye in x (seat centre `forward - 0.05`)
  * and their highest corner 0.15 m below it, as the Global's do, and the headrests
  * keep their old place relative to the seat. Both pairs are symmetric about the
- * centreline; the pilot's is the PORT one, which is the mesh NAMED first-officer.
- * The old deck had them at 29.0 with the eye at 28.8.
+ * centreline, each under its pilot's eye (`airlinerSeatPlacement().z`); the pilot's
+ * is the PORT one, which is the mesh NAMED first-officer.
  */
 export const AIRLINER_SEAT = Object.freeze({
   behindEye: 0.05,
@@ -142,8 +106,6 @@ export const AIRLINER_SEAT = Object.freeze({
   width: 0.58,
   /** Rotation about Z, radians; the seat leans back, its rear-top corner the highest. */
   tilt: -0.07,
-  /** Centre to centre of each seat from the centreline. */
-  z: 0.72,
   headrestBehindSeat: 0.42,
   headrestAboveSeat: 0.48,
   headrestLength: 0.24,
@@ -151,73 +113,72 @@ export const AIRLINER_SEAT = Object.freeze({
   headrestWidth: 0.46,
 });
 
-/** Where the seat and its headrest go, in body x and y. */
-export function airlinerSeatPlacement(): { seatX: number; seatY: number; headrestX: number; headrestY: number } {
+/** Where the seat and its headrest go, in body x and y, and each seat's distance from the centreline: the eye's. */
+export function airlinerSeatPlacement(): { seatX: number; seatY: number; headrestX: number; headrestY: number; z: number } {
   const e = eye();
   const s = AIRLINER_SEAT;
   // the highest corner of a box tilted about Z is its rear-top one
   const rise = (s.height / 2) * Math.cos(s.tilt) + (s.length / 2) * Math.sin(-s.tilt);
   const seatX = e.forward - s.behindEye;
   const seatY = e.up - s.topBelowEye - rise;
-  return { seatX, seatY, headrestX: seatX - s.headrestBehindSeat, headrestY: seatY + s.headrestAboveSeat };
+  return { seatX, seatY, headrestX: seatX - s.headrestBehindSeat, headrestY: seatY + s.headrestAboveSeat, z: Math.abs(e.right) };
 }
 
-// ---- the panel and its hood -------------------------------------------------------
+// ---- the panel and its glareshield ------------------------------------------------
 
 export const AIRLINER_PANEL = Object.freeze({
-  /** The pilot-facing face of the board is this far ahead of the eye. */
-  faceAheadOfEye: 0.75,
-  thickness: 0.08,
   /**
-   * Half its width: the shell's OUTER half-width at the hood's far top edge (x 30.73,
-   * y 2.78) is 1.323 m, measured as the last crossing of a ray from the centreline
-   * (the nose loft alone there: the fuselage loft ends at x 30.6), less 2 cm. The nose
-   * narrows fast here: 1.42 at the hood's aft edge, 1.18 at y 2.9.
+   * The pilot-facing face of the board is this far ahead of the eye: the top of the type's range. At 0.75 the
+   * top row of screens was 36.8% in the frame, at 0.85 it is 43.5%: the lip and the frame's bottom are angles, so
+   * the band between them is the same number of degrees at any distance, and a screen further away is fewer
+   * degrees tall, so more of it fits in that band.
+   */
+  faceAheadOfEye: 0.85,
+  /**
+   * The board stands this deep behind its face. No deeper: its top edge's far corner must stay under the sight
+   * line over the lip, which falls 0.3257 m a metre (tan 18.04), and the lip is 0.02 above the board's top.
+   */
+  thickness: 0.05,
+  /**
+   * Half its width. The shell's OUTER half-width where the board stands (x 30.70..30.75, y 2.2..2.65) is 1.44 m
+   * or more, measured as the last crossing of a ray from the centreline; the frame needs 1.152 on the pilot's
+   * side at the face (tan 37.5 x 0.85, from z -0.50).
    */
   halfWidth: 1.3,
-  /** Below the frame at every azimuth (44 degrees under the eye at the face). */
+  /** Below the frame at every azimuth: the frame's bottom crosses the face's plane at y 2.566. */
   bottomY: 2.2,
-  hoodThickness: 0.02,
-  /** The hood stands this far aft of the face. */
-  hoodOverhang: 0.1,
-  /** The hood's top edge as the pilot sees it straight ahead. */
-  hoodTopElevationDegrees: -10,
 });
 
 export function airlinerPanelFaceX(): number {
   return eye().forward + AIRLINER_PANEL.faceAheadOfEye;
 }
 
-/** The height of the hood's top surface: solved so its far edge reads `hoodTopElevationDegrees` from the eye. */
-export function airlinerHoodTopY(): number {
-  const p = AIRLINER_PANEL;
-  const e = eye();
-  return e.up + Math.tan(p.hoodTopElevationDegrees * DEG) * (airlinerPanelFaceX() + p.thickness - e.forward);
-}
-
-/** Elevation, from the eye, of the hood's aft edge underside: the line below which the panel face is visible. */
-export function airlinerHoodUndersideElevationDegrees(): number {
-  const p = AIRLINER_PANEL;
-  const e = eye();
-  return Math.atan2(airlinerHoodTopY() - p.hoodThickness - e.up, airlinerPanelFaceX() - p.hoodOverhang - e.forward) / DEG;
-}
-
 /**
- * The DASH: the hood's top surface runs on, sloping down, from its far top edge to
- * the glass's lowest bottom edge. Without it the hood's far edge (-10 straight
- * ahead) sits below the glass's bottom edge (-9.4), and the band between them
- * shows the hidden nose. Its plan is the shell's outer half-width less 2 cm at
- * each end (1.30 at the hood, 0.50 where the nose narrows to 0.54 at the glass),
- * joined by a straight line that stays inside it (measured in the test).
+ * THE GLARESHIELD: a lip along the top of the panel's face, flush with it, and nothing aft of it.
+ *
+ * Its top edge is a line along z at the face's x, and it reads `lipElevationDegrees` straight ahead. That is the
+ * LOWEST such line that keeps the sill -- the strip between the lip and No.1's bottom edge as the pilot sees it --
+ * no more than 1 degree tall anywhere along that edge: No.1's outer bottom edge reads -16.88 at its inboard end
+ * (az +7.9) and -18.10 at its outboard end (az -12.2), and a line along z reads shallower off axis, so the sill
+ * is 1.00 degree at the inboard end and the lip stands 0.44 degree over the glass at the outboard end. Solved
+ * against the cast edge, held to the BUILT glass by `tests/render.cockpit-airliner.test.ts`.
+ *
+ * Its section is a WEDGE, not a box: the aft face 0.02 tall, the top falling away forward over `depth` steeper
+ * than the sight line over the lip (21.8 degrees against 18.04), so from the eye nothing of the glareshield or the
+ * board behind it shows above the lip, and the lip is the line the pilot reads. A box's far top corner would stand
+ * 1.6 cm over that sight line and become the edge instead.
  */
-export const AIRLINER_DASH = Object.freeze({
+export const AIRLINER_GLARESHIELD = Object.freeze({
+  lipElevationDegrees: -18.04,
   thickness: 0.02,
-  /** Half-width where it leaves the hood, and at its far end. */
-  nearHalfWidth: 1.3,
-  farHalfWidth: 0.5,
-  /** Its far top edge stands on the glass's lowest bottom edge, here in x. */
-  farX: 31.843,
+  depth: AIRLINER_PANEL.thickness,
 });
+
+/** The height of the lip: its edge at the face reads `lipElevationDegrees` straight ahead. */
+export function airlinerLipY(): number {
+  const e = eye();
+  return e.up + Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees * DEG) * (airlinerPanelFaceX() - e.forward);
+}
 
 // ---- the screens -------------------------------------------------------------------
 
@@ -228,28 +189,31 @@ export const AIRLINER_SCREENS = Object.freeze({
   width: 0.22,
   height: 0.15,
   bezel: 0.01,
-  /** Centre to centre of neighbours. The bezels leave 5 mm between them. */
+  /** Centre to centre of neighbours across a row. The bezels leave 5 mm between them. */
   pitch: 0.245,
-  /** The screens' top edge reads this far below the hood's underside. */
-  belowHoodDegrees: 1.5,
+  /** The top row's top edge reads this far below the glareshield's underside at the face. */
+  belowGlareshieldDegrees: 0.25,
+  /** Between the upper EICAS's bezel and the lower one's. */
+  rowGap: 0.005,
   bezelThickness: 0.007,
   screenThickness: 0.003,
 });
 
 /**
- * Six screens laid out about the SEATS, not the aeroplane: each pilot's PFD on
- * the line of his own eye (z -0.72 and +0.72), the NDs at 0.245 inboard of them and
- * the two EICAS at 0.245 inboard again, so the pair in the middle stands 0.46 apart.
- * From the left seat the PFD is straight ahead; a row symmetric about z 0 at one
- * pitch would put it 8 degrees off his line and most of the row out of the frame.
+ * The type's layout, in the SLOT order of `AIRLINER_DISPLAYS`: each pilot's PFD straight ahead of their own eye,
+ * their ND one pitch inboard, the two EICAS on the centreline, upper over lower. The names are the slot table's, which the
+ * atlas digest pins: "port-eicas" is the UPPER EICAS and "starboard-eicas" the LOWER, the pair that stood side by
+ * side about the old seats at +-0.72.
+ *
+ * `z` takes the seat's distance from the centreline (the pilot's eye's) and the pitch; `row` 1 is the lower EICAS's.
  */
-const SCREEN_Z: readonly (readonly [string, number])[] = [
-  ["port-pfd", -0.72],
-  ["port-nd", -0.475],
-  ["port-eicas", -0.23],
-  ["starboard-eicas", 0.23],
-  ["starboard-nd", 0.475],
-  ["starboard-pfd", 0.72],
+const SCREEN_LAYOUT: readonly { readonly name: string; readonly z: (seat: number, pitch: number) => number; readonly row: 0 | 1 }[] = [
+  { name: "port-pfd", z: (seat) => -seat, row: 0 },
+  { name: "port-nd", z: (seat, pitch) => -seat + pitch, row: 0 },
+  { name: "port-eicas", z: () => 0, row: 0 },
+  { name: "starboard-eicas", z: () => 0, row: 1 },
+  { name: "starboard-nd", z: (seat, pitch) => seat - pitch, row: 0 },
+  { name: "starboard-pfd", z: (seat) => seat, row: 0 },
 ];
 
 /** The plane the screens' front stands in: 1 mm in front of the bezel's front face. */
@@ -257,112 +221,96 @@ function screenFrontX(): number {
   return airlinerPanelFaceX() - AIRLINER_SCREENS.bezelThickness;
 }
 
-/** Height of the screens' top edge, solved from the hood's underside line. */
+/** Height of the top row's top edge, solved from the glareshield's underside at the face. */
 export function airlinerScreenTopY(): number {
   const e = eye();
-  const elevation = (airlinerHoodUndersideElevationDegrees() - AIRLINER_SCREENS.belowHoodDegrees) * DEG;
-  return e.up + Math.tan(elevation) * (screenFrontX() - e.forward);
+  const underside = Math.atan2(airlinerLipY() - AIRLINER_GLARESHIELD.thickness - e.up, airlinerPanelFaceX() - e.forward);
+  return e.up + Math.tan(underside - AIRLINER_SCREENS.belowGlareshieldDegrees * DEG) * (screenFrontX() - e.forward);
 }
 
 export function airlinerScreenPlacements(): readonly { name: string; centre: Vector3 }[] {
   const s = AIRLINER_SCREENS;
-  const y = airlinerScreenTopY() - s.height / 2;
+  const seat = Math.abs(eye().right);
+  const topRow = airlinerScreenTopY() - s.height / 2;
+  const rowDrop = s.height + s.bezel * 2 + s.rowGap;
   const x = screenFrontX() + s.screenThickness / 2;
-  return SCREEN_Z.map(([name, z]) => ({ name, centre: new Vector3(x, y, z) }));
+  return SCREEN_LAYOUT.map(({ name, z, row }) => ({ name, centre: new Vector3(x, topRow - row * rowDrop, z(seat, s.pitch)) }));
 }
 
-// ---- the overhead, the pillar and the post ------------------------------------------------
+// ---- the frame: the lining cast on the skin round the glass ----------------------------------
 
-export const AIRLINER_OVERHEAD = Object.freeze({
-  thickness: 0.03,
-  /** Out past the wall at this height: the slab pokes through the skin, and nothing can see that. */
-  halfWidth: 1.4,
-  /** The slab's aft end, behind the eye. */
-  behindEye: 0.3,
-});
+/**
+ * The plane engineer's centre post is cast over R's azimuth +-`POST_HALF_AZIMUTH` and No.1's elevations
+ * (`airlinerVisual.ts`); the gap between it and each No.1 pane's inboard edge (2.5) is lined here. A copy, held
+ * to the built post by the test.
+ */
+export const AIRLINER_POST_HALF_AZIMUTH = 1;
 
-export function airlinerOverheadUndersideY(): number {
-  return AIRLINER_GLAZING.lowestTopY;
+/** How far below and above the glass the lining runs, in R's elevation: past the frame's edges from the eye with room. */
+export const AIRLINER_LINING = Object.freeze({ bottom: -30, top: 40, maxStepDegrees: 5 });
+
+export interface LiningStrip {
+  readonly name: string;
+  /** R's azimuths, outboard positive on each side. A CENTRE strip runs from the starboard value to the port one. */
+  readonly azimuth: readonly [number, number];
+  readonly elevation: readonly [number, number];
+  /** Built once across the centreline, or once a side (mirrored). */
+  readonly centre: boolean;
+  /** The sills carry the glareshield on to the glass; the rest is the interior. */
+  readonly on: "glareshield" | "interior";
 }
 
 /**
- * The overhead's plan, counter-clockwise (x forward, z to starboard). Its raked
- * front edge runs from the wall to the port No.1 pane's inboard top corner and
- * straight across the crown gap to the mirror image, so the opening's top edge
- * follows the glass's and no band of hidden crown shows above it. Convex, which is
- * all `verticalProfile` can extrude.
+ * Every rectangle of R's sky round the glass that is not glass and not the centre post, READ from
+ * `FLIGHT_DECK_PANES`: the sill under each pane and the crown over it, the pillar between neighbours (as tall as
+ * the taller of the two), and the gap either side of the post. Together with the panes and the post they tile R's
+ * view from `AIRLINER_LINING.bottom` to `.top` and out to No.3's outboard edge, which is behind the frame's edge.
  */
-export function airlinerOverheadPlan(): { x: number; z: number }[] {
-  const e = eye();
-  const o = AIRLINER_OVERHEAD;
-  const back = e.forward - o.behindEye;
-  const wallFront = AIRLINER_GLAZING.portOneOuterTop.outboard[0];
-  const cornerX = AIRLINER_GLAZING.portOneOuterTop.inboard[0];
-  const cornerZ = AIRLINER_GLAZING.portOneOuterTop.inboard[2];
+export function airlinerLiningStrips(): readonly LiningStrip[] {
+  const [one, two, three] = [FLIGHT_DECK_PANES[0]!, FLIGHT_DECK_PANES[1]!, FLIGHT_DECK_PANES[2]!];
+  const { bottom, top } = AIRLINER_LINING;
+  const pillar = (inner: FlightDeckPane, outer: FlightDeckPane) => ({
+    azimuth: [inner.azimuth[1], outer.azimuth[0]] as const,
+    elevation: [Math.min(inner.elevation[0], outer.elevation[0]), Math.max(inner.elevation[1], outer.elevation[1])] as const,
+  });
+  const oneTwo = pillar(one, two);
+  const twoThree = pillar(two, three);
   return [
-    { x: back, z: -o.halfWidth },
-    { x: wallFront, z: -o.halfWidth },
-    { x: cornerX, z: cornerZ },
-    { x: cornerX, z: -cornerZ },
-    { x: wallFront, z: o.halfWidth },
-    { x: back, z: o.halfWidth },
+    { name: "sill-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [bottom, one.elevation[0]], centre: true, on: "glareshield" },
+    { name: "crown-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [one.elevation[1], top], centre: true, on: "interior" },
+    { name: "post-gap", azimuth: [AIRLINER_POST_HALF_AZIMUTH, one.azimuth[0]], elevation: one.elevation, centre: false, on: "interior" },
+    { name: "pillar-one-two", azimuth: oneTwo.azimuth, elevation: oneTwo.elevation, centre: false, on: "interior" },
+    { name: "sill-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [bottom, two.elevation[0]], centre: false, on: "glareshield" },
+    { name: "crown-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [two.elevation[1], top], centre: false, on: "interior" },
+    { name: "pillar-two-three", azimuth: twoThree.azimuth, elevation: twoThree.elevation, centre: false, on: "interior" },
+    { name: "sill-three", azimuth: three.azimuth, elevation: [bottom, three.elevation[0]], centre: false, on: "glareshield" },
+    { name: "crown-three", azimuth: three.azimuth, elevation: [three.elevation[1], top], centre: false, on: "interior" },
   ];
 }
 
-/**
- * The PILLAR: a trapezoid plate in the plane of the crown between the two No.1
- * panes, whose inboard edges run from z +-0.618 at the bottom (y 2.623) to +-0.258
- * at the top (y 3.041), a V of hidden crown that would otherwise show as sky. It
- * is carried up the same lines to the overhead's underside.
- */
-export function airlinerPillarOutline(): { bottom: Vector3; up: Vector3; length: number; bottomHalf: number; topHalf: number } {
-  const inner = AIRLINER_GLAZING.portOneInner;
-  const bottom = point(inner.bottomInboard);
-  const top = point(inner.topInboard);
-  // the plane's up-slope direction in x and y (both edges are parallel to z)
-  const slope = new Vector3(top.x - bottom.x, top.y - bottom.y, 0);
-  const slopeLength = slope.length();
-  const up = slope.scale(1 / slopeLength);
-  const bottomHalf = Math.abs(bottom.z);
-  const topHalfAtGlass = Math.abs(top.z);
-  // extend along the slope until the top edge stands at the overhead's underside
-  const toOverhead = (airlinerOverheadUndersideY() - bottom.y) / up.y;
-  const halfPerLength = (bottomHalf - topHalfAtGlass) / slopeLength;
-  return {
-    bottom: new Vector3(bottom.x, bottom.y, 0),
-    up,
-    length: toOverhead,
-    bottomHalf,
-    topHalf: bottomHalf - halfPerLength * toOverhead,
-  };
+/** A strip's grid on the skin, cast from R as the panes are: rows bottom to top, columns in the strip's azimuth order. */
+function liningGrid(skin: SkinCaster, strip: LiningStrip, side: 1 | -1): { points: Point3[][]; normals: Point3[][] } {
+  const steps = (span: number) => Math.max(1, Math.ceil(Math.abs(span) / AIRLINER_LINING.maxStepDegrees));
+  const rows = steps(strip.elevation[1] - strip.elevation[0]) + 1;
+  const columns = steps(strip.azimuth[1] - strip.azimuth[0]) + 1;
+  const points: Point3[][] = [];
+  const normals: Point3[][] = [];
+  for (let row = 0; row < rows; row += 1) {
+    const elevation = strip.elevation[0] + ((strip.elevation[1] - strip.elevation[0]) * row) / (rows - 1);
+    const pointRow: Point3[] = [];
+    const normalRow: Point3[] = [];
+    for (let column = 0; column < columns; column += 1) {
+      const azimuth = strip.azimuth[0] + ((strip.azimuth[1] - strip.azimuth[0]) * column) / (columns - 1);
+      const hit = skin.exit(FLIGHT_DECK_REFERENCE, sightline(azimuth, elevation, side));
+      if (!hit) throw new RangeError(`747 cockpit lining ${strip.name}: no skin at az ${azimuth.toFixed(2)}, el ${elevation.toFixed(2)}`);
+      pointRow.push(hit.point);
+      normalRow.push(hit.normal);
+    }
+    points.push(pointRow);
+    normals.push(normalRow);
+  }
+  return { points, normals };
 }
-
-/** The post in the seam between the port No.1 and No.2 panes: the wedge's midline, carried up to the overhead. */
-export function airlinerSeamPostEndpoints(): { bottom: Vector3; top: Vector3 } {
-  const g = AIRLINER_GLAZING;
-  const one = { bottom: point(g.portOneInner.bottomOutboard), top: point(g.portOneInner.topOutboard) };
-  const two = { bottom: point(g.portTwoForwardInner.bottom), top: point(g.portTwoForwardInner.top) };
-  const bottom = one.bottom.add(two.bottom).scale(0.5);
-  const midTop = one.top.add(two.top).scale(0.5);
-  const direction = midTop.subtract(bottom);
-  const toOverhead = (airlinerOverheadUndersideY() - bottom.y) / direction.y;
-  return { bottom, top: bottom.add(direction.scale(toOverhead)) };
-}
-
-/**
- * The seam post's radius, and how far its MESH runs past the design top.
- *
- * The radius was 0.03, which read about 4.3 degrees wide in the first live frame and chunky against
- * a window; 0.025 reads 3.6.
- *
- * `airlinerSeamPostEndpoints().top` is where the post MEETS the overhead's underside, and it is the
- * point every angle test reads. A rod that ends exactly on the ceiling's underside shows its end cap
- * to the pilot, a small lit wedge against the ceiling (it read at about (555, 190) in the first live
- * frame). So the mesh runs on `buryMetres` past that point along its own axis and the cut end lies
- * above the plate: poking through the top of a cockpit-only plate is invisible from everywhere, as the
- * overhead's poking through the crown is.
- */
-export const AIRLINER_POST = Object.freeze({ radius: 0.025, buryMetres: 0.08 });
 
 // ---- the builder ------------------------------------------------------------------------------
 
@@ -392,83 +340,64 @@ export interface AirlinerCockpit {
 /**
  * Build the cockpit. Returns every mesh it made, unconfigured: the caller marks
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the rule
- * is applied in one place.
+ * is applied in one place. `skin` is the caster the glazing was cast with.
  *
- * FOUR meshes, all static: the board, the overhead, the pillar and the post on the
- * interior material; the hood and the dash on the glareshield's; the six screens;
- * their six bezels. It was seven until the 3D attitude ball came out -- its three
- * pieces hung from a pivot, so they could not be merged -- and the PFD page draws
- * attitude on the screen itself now. There are no side walls and no pedestal:
- * nothing in the frame needs them (`docs/findings`, MAP B).
+ * FOUR meshes, all static: the board and the interior lining (crowns, pillars, the gaps by the post) on the
+ * interior material; the glareshield's lip and the sill lining on the glareshield's; the six screens; their six
+ * bezels.
  */
 export function buildAirlinerCockpit(
   build: AircraftBuildContext,
   root: TransformNode,
   materials: AirlinerCockpitMaterials,
+  skin: SkinCaster,
 ): AirlinerCockpit {
   const parts: AbstractMesh[] = [];
   const p = AIRLINER_PANEL;
+  const g = AIRLINER_GLARESHIELD;
   const faceX = airlinerPanelFaceX();
+  const lipY = airlinerLipY();
+  const undersideY = lipY - g.thickness;
 
-  // THE PANEL BOARD, THE OVERHEAD, THE PILLAR AND THE SEAM POST, one mesh on the interior
-  // material (merged below, once the pillar and the post exist). The board runs from below
-  // the frame up to the hood's underside.
-  const hoodTop = airlinerHoodTopY();
-  const undersideY = hoodTop - p.hoodThickness;
-  const board = build.box(
-    "airliner-instrument-panel", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root,
-  );
-  board.position.set(faceX + p.thickness / 2, (p.bottomY + undersideY) / 2, 0);
-
-  // The overhead is a plan-form, so it is an outline extruded along Z and turned
-  // a quarter about X: the outline's y becomes body z, its thickness runs up.
-  // (The three plates, this and the dash and the pillar, are `solidPlate`s: `verticalProfile` builds a
-  // counter-clockwise outline inside out and winds its thin edge walls against its caps.)
-  const overhead = solidPlate(
-    build,
-    "airliner-overhead",
-    airlinerOverheadPlan().map(({ x, z }) => ({ x, y: z })),
-    AIRLINER_OVERHEAD.thickness,
-    materials.interior,
-    root,
-  );
-  overhead.rotation.x = Math.PI / 2;
-  overhead.position.y = airlinerOverheadUndersideY() + AIRLINER_OVERHEAD.thickness / 2;
-
-  // THE HOOD AND THE DASH, one mesh on a material of its own (matte near-black, no
-  // reflection): a glareshield must not reflect in the windscreen.
+  // THE LINING: one skin panel per strip (a side, or once across the centreline), at the panes' own proud and
+  // depth, so its rim at a pane's edge is that pane's edge, inner face and outer alike.
   const glare = glareshieldMaterial(build, "airliner-glareshield");
-  const hoodLength = p.thickness + p.hoodOverhang;
-  const hood = build.box("airliner-hood", hoodLength, p.hoodThickness, p.halfWidth * 2, glare, root);
-  hood.position.set(faceX - p.hoodOverhang + hoodLength / 2, hoodTop - p.hoodThickness / 2, 0);
-  // The dash runs from the hood's far top edge to the glass's lowest bottom edge: a
-  // trapezoid in the plane whose local X is body z, local Y is down the slope and local
-  // Z is the normal that faces up. Its top surface passes through both edges.
-  const d = AIRLINER_DASH;
-  const dashFrom = new Vector3(faceX + p.thickness, hoodTop, 0);
-  const dashTo = new Vector3(d.farX, AIRLINER_GLAZING.lowestBottomY, 0);
-  const along = dashTo.subtract(dashFrom);
-  const dashLength = along.length();
-  const alongUnit = along.scale(1 / dashLength);
-  const across = new Vector3(0, 0, 1);
-  const normal = Vector3.Cross(across, alongUnit).normalize();
-  const dash = solidPlate(
+  const lining: Record<LiningStrip["on"], AbstractMesh[]> = { glareshield: [], interior: [] };
+  for (const strip of airlinerLiningStrips()) {
+    const sides: readonly (readonly [string, 1 | -1])[] = strip.centre ? [["", -1]] : [["port-", -1], ["starboard-", 1]];
+    for (const [prefix, side] of sides) {
+      const grid = liningGrid(skin, strip, side);
+      lining[strip.on].push(build.skinPanel(
+        `${prefix}airliner-lining-${strip.name}`,
+        grid.points,
+        grid.normals,
+        PANE_PROUD,
+        PANE_DEPTH,
+        strip.on === "glareshield" ? glare : materials.interior,
+        root,
+      ));
+    }
+  }
+
+  // THE GLARESHIELD'S LIP: the wedge, extruded along z (`verticalProfile` extrudes its x-y outline along z), with
+  // the sill lining in one mesh on the glareshield's material.
+  const lip = solidPlate(
     build,
-    "airliner-dash",
+    "airliner-glareshield-lip",
     [
-      { x: -d.nearHalfWidth, y: 0 },
-      { x: d.nearHalfWidth, y: 0 },
-      { x: d.farHalfWidth, y: dashLength },
-      { x: -d.farHalfWidth, y: dashLength },
+      { x: faceX, y: lipY },
+      { x: faceX, y: undersideY },
+      { x: faceX + g.depth, y: undersideY },
     ],
-    d.thickness,
+    p.halfWidth * 2,
     glare,
     root,
   );
-  orient(dash, across, alongUnit, normal);
-  // the outline's origin is the near edge's midpoint, and the slab's mid-plane passes through it, so the top surface is 1 cm high
-  dash.position.copyFrom(dashFrom.subtract(normal.scale(d.thickness / 2)));
-  parts.push(build.mergeStatic("airliner-glareshield", [hood, dash], root));
+  parts.push(build.mergeStatic("airliner-glareshield", [lip, ...lining.glareshield], root));
+
+  // THE PANEL BOARD, from below the frame up to the glareshield's underside.
+  const board = build.box("airliner-instrument-panel", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root);
+  board.position.set(faceX + p.thickness / 2, (p.bottomY + undersideY) / 2, 0);
 
   // THE SCREENS AND THEIR BEZELS: two meshes for twelve boxes. The bezel's back
   // stands 1 mm inside the board so nothing is coincident.
@@ -489,9 +418,9 @@ export function buildAirlinerCockpit(
     bezels.push(bezel);
   }
   // EACH SCREEN'S PILOT-FACING FACE GETS ITS OWN SLOT of the display atlas, before the merge bakes
-  // the vertex data. The boxes are built in `SCREEN_Z` order and the slots are in the same order, so
+  // the vertex data. The boxes are built in `SCREEN_LAYOUT` order and the slots are in the same order, so
   // slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds that pairing by
-  // measuring the merged mesh's UVs against each screen's own z.
+  // measuring the merged mesh's UVs against each screen's own place.
   const slots = displaySlots(AIRLINER_DISPLAYS);
   const atlasWidth = displayAtlasWidth(AIRLINER_DISPLAYS);
   const atlasHeight = displayAtlasHeight(AIRLINER_DISPLAYS);
@@ -509,41 +438,9 @@ export function buildAirlinerCockpit(
     screensMesh.material = displayMaterial(build, "airliner-display", atlas);
   }
 
-  // NO 3D ATTITUDE BALL. There was one here -- three meshes and a pivot standing a millimetre in
-  // front of the pilot's PFD -- from before the screens could draw anything. The PFD page draws its
-  // own attitude now and agrees with the HUD to a tenth of a degree, so the ball was a second
-  // attitude indicator sitting ON TOP of the first and hiding most of it (the frames in the findings
-  // doc show it). The trainer keeps its MECHANICAL ball, which is what that aeroplane has, and the
-  // Global keeps its until its own screens draw pages.
-
-  // THE PILLAR AND THE SEAM POST, on the interior material with the board and the overhead they
-  // hang from. Not the hood's matte one: that has no ambient light, so a face the sun misses reads
-  // (0, 0, 0) and the pillar showed as a black hole beside a blue-grey ceiling. Not the airframe's
-  // glossy dark one either: the pillar's big face showed a sheen of the sky across it.
-  const pillarGeometry = airlinerPillarOutline();
-  const pillar = solidPlate(
-    build,
-    "airliner-windscreen-pillar",
-    [
-      { x: -pillarGeometry.bottomHalf, y: 0 },
-      { x: pillarGeometry.bottomHalf, y: 0 },
-      { x: pillarGeometry.topHalf, y: pillarGeometry.length },
-      { x: -pillarGeometry.topHalf, y: pillarGeometry.length },
-    ],
-    0.04,
-    materials.interior,
-    root,
-  );
-  const pillarUp = pillarGeometry.up;
-  const pillarNormal = Vector3.Cross(across, pillarUp).normalize();
-  orient(pillar, across, pillarUp, pillarNormal);
-  pillar.position.copyFrom(pillarGeometry.bottom);
-  // the design top is where the post meets the overhead; the MESH runs on past it (see AIRLINER_POST.buryMetres)
-  const seam = airlinerSeamPostEndpoints();
-  const postAxis = seam.top.subtract(seam.bottom).normalize();
-  const buriedTop = seam.top.add(postAxis.scale(AIRLINER_POST.buryMetres));
-  const post = build.strutBetween("airliner-windscreen-post-port", seam.bottom, buriedTop, AIRLINER_POST.radius, materials.interior, root);
-  parts.push(build.mergeStatic("airliner-cockpit-interior", [board, overhead, pillar, post], root));
+  // THE BOARD AND THE INTERIOR LINING, one mesh on the flight deck's interior material (the seats'). Not the
+  // glareshield's for the crown and the pillars: they are the ceiling and the window frame, lit by the cabin.
+  parts.push(build.mergeStatic("airliner-cockpit-interior", [board, ...lining.interior], root));
 
   // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
   // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a

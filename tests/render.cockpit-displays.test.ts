@@ -102,7 +102,9 @@ const DECKS: readonly Deck[] = [
       "starboard-pfd": "pfd",
       "port-nd": "nd",
       "starboard-nd": "nd",
-      // the two centre screens are the EICAS pair, upper on the port side as the panel is laid out
+      // the two centre screens are the EICAS pair: the slot table's names are from when they stood side by side
+      // about the old seats, and the digest pins them; "port-eicas" is the UPPER one on the centreline, and
+      // "starboard-eicas" the LOWER one under it (`airlinerScreenPlacements`)
       "port-eicas": "eicas-upper",
       "starboard-eicas": "eicas-lower",
     },
@@ -322,16 +324,19 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     const uvs = screens.getVerticesData(VertexBuffer.UVKind)!;
     const placements = deck.placements();
     expect(placements).toHaveLength(deck.layout.screens.length);
-    // half a screen plus 5 mm: wide enough to take one screen's own face, narrow enough to exclude
-    // its neighbour's (the pairs are 0.245 apart centre to centre on both decks)
+    // half a screen plus 5 mm, across and up: wide enough to take one screen's own face, narrow enough to
+    // exclude its neighbour's (the pairs are 0.245 apart centre to centre on both decks, and the 747's two
+    // EICAS stand one over the other on the centreline, 0.175 apart)
     const reach = deck.screen.width / 2 + 0.005;
+    const reachUp = deck.screen.height / 2 + 0.005;
     const slots = displaySlots(deck.layout);
     for (const [index, placement] of placements.entries()) {
-      // the face's vertices: normal -X, and at this screen's own z
+      // the face's vertices: normal -X, and at this screen's own z and height
       const face: { x: number; y: number; z: number; u: number; v: number }[] = [];
       for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
         if (normals[vertex * 3]! > -0.9) continue;
         if (Math.abs(positions[vertex * 3 + 2]! - placement.centre.z) > reach) continue;
+        if (Math.abs(positions[vertex * 3 + 1]! - placement.centre.y) > reachUp) continue;
         face.push({ x: positions[vertex * 3]!, y: positions[vertex * 3 + 1]!, z: positions[vertex * 3 + 2]!, u: uvs[vertex * 2]!, v: uvs[vertex * 2 + 1]! });
       }
       expect(face.length, `${placement.name}: pilot-facing vertices`).toBe(4);

@@ -51,6 +51,9 @@ beforeAll(() => {
   const spy = vi.spyOn(AircraftBuildContext.prototype, "skinPanel").mockImplementation(
     function (this: AircraftBuildContext, ...args: Parameters<typeof original>) {
       const mesh = original.apply(this, args);
+      // The glass and the post only. The cockpit kit lines the skin round the glass with the same builder
+      // (`cockpit/airlinerCockpit.ts`); that lining is the cockpit's, and `render.cockpit-airliner.test.ts` holds it.
+      if (!/flight-deck-window|windscreen-center-post/.test(args[0])) return mesh;
       panels.push({
         name: args[0],
         rows: args[1].length,

@@ -93,9 +93,16 @@ const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed
- * by `sculptSolid`, and it fills the bottom of the frame from the seat. It is held to the same zero here.
+ * by `sculptSolid`, and it fills the bottom of the frame from the seat; the 747's centre post is the plane
+ * engineer's skin strip, cast with the glass, which the cockpit camera draws since the kit was cast round the
+ * re-lofted glass. Both are held to the same zero here.
  */
-const ALSO_WALKED: Readonly<Record<AircraftKind, readonly string[]>> = { trainer: [], bizjet: [], airliner: [], jet: ["jet-glare-shield"] };
+const ALSO_WALKED: Readonly<Record<AircraftKind, readonly string[]>> = {
+  trainer: [],
+  bizjet: [],
+  airliner: ["airliner-windscreen-center-post"],
+  jet: ["jet-glare-shield"],
+};
 
 interface Prepared {
   readonly name: string;

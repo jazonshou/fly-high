@@ -1744,8 +1744,10 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // the same way (+-1 degree of the +-2.5 gap, over No.1's elevations), so it
   // lies on the skin at the glass's height the whole way down. A straight
   // strut between two crown points sank 5 cm under the skin at the 32.4 ring.
+  // It is its own mesh, and the cockpit camera draws it: the one piece of the
+  // windscreen frame the cockpit kit does not build.
   const post = paneGrid(caster, { name: "one", azimuth: [-1, 1], elevation: FLIGHT_DECK_PANES[0]!.elevation }, 1, 2);
-  const windscreenFrame = withoutShadow(build.skinPanel(
+  withoutShadow(build.skinPanel(
     "airliner-windscreen-center-post",
     post.points,
     post.normals,
@@ -1755,10 +1757,11 @@ export function createAirliner(scene: Scene): AircraftVisual {
     root,
   ));
 
-  // The seats stand around the pilot's eye (`catalogue.cockpitEye`, forward 29.9):
-  // seat centre 0.05 m aft of it, its highest corner 0.15 m below it, the headrest
-  // where it always was relative to the seat. They stood at 29.0 with the eye at
-  // 28.8, 2 m behind the glass, which is why no eye could see more than +5 / -7.
+  // The seats stand around the pilot's eye (`catalogue.cockpitEye`): seat centre
+  // 0.05 m aft of it, its highest corner 0.15 m below it, each seat as far off the
+  // centreline as the eye is, the headrest where it always was relative to the seat.
+  // They stood at 29.0 with the eye at 28.8, 2 m behind the glass, which is why no
+  // eye could see more than +5 / -7.
   const flightDeckFurniture: AbstractMesh[] = [];
   const seating = airlinerSeatPlacement();
   for (const side of [1, -1] as const) {
@@ -1770,7 +1773,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       interior,
       root,
     );
-    seat.position.set(seating.seatX, seating.seatY, side * AIRLINER_SEAT.z);
+    seat.position.set(seating.seatX, seating.seatY, side * seating.z);
     seat.rotation.z = AIRLINER_SEAT.tilt;
     seat.metadata = { ...seat.metadata, cockpitInterior: true, castsShadow: false };
     const headrest = build.box(
@@ -1781,22 +1784,22 @@ export function createAirliner(scene: Scene): AircraftVisual {
       interior,
       root,
     );
-    headrest.position.set(seating.headrestX, seating.headrestY, side * AIRLINER_SEAT.z);
+    headrest.position.set(seating.headrestX, seating.headrestY, side * seating.z);
     headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
     flightDeckFurniture.push(seat, headrest);
   }
   // THE OLD PANEL, ITS FIVE GAUGES AND ITS FIVE NEEDLES ARE GONE. A board laid out
   // about the centreline, 1.15 m in front of a left-seat eye, with dials mostly
   // below the frame, is replaced by the cockpit-only kit in
-  // `cockpit/airlinerCockpit.ts`: a panel and hood at -10 degrees, a dash, six
-  // screens laid out about the seats with an attitude ball on the pilot's PFD, an
-  // overhead, a pillar and a post. `configureCockpitOnlyParts` makes them invisible
-  // until cockpit view is entered and never a shadow caster.
+  // `cockpit/airlinerCockpit.ts`: a panel with a glareshield lip, six screens in the
+  // type's layout, and the frame round the glass cast on this same skin with this
+  // same caster, so its edges are the panes' own. `configureCockpitOnlyParts` makes
+  // them invisible until cockpit view is entered and never a shadow caster.
   const cockpit = buildAirlinerCockpit(build, root, {
     interior,
     instrumentFace,
     instrumentMarking,
-  });
+  }, caster);
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
   // The attitude ball turns only while cockpit view is on: outside it every part
@@ -2166,16 +2169,18 @@ export function createAirliner(scene: Scene): AircraftVisual {
   //
   // Left alone on purpose: the three thin-instanced meshes (a merge drops the
   // instance buffer), the eight lamps (the wash-light test sites each one by
-  // name and position) and the centre post, which is the only dark part on
-  // the cockpit-excluded layer and so has nothing to merge with.
+  // name and position) and the centre post. It was the only dark part on the
+  // cockpit-excluded layer; the cockpit camera draws it now (it is the one piece
+  // of the windscreen frame the cockpit kit does not build), and folding it into
+  // another dark mesh is a change to the airframe's batching, not to the cockpit.
   //
-  // THE COCKPIT SHELL IS ITS OWN GROUP. The three lofts that would block the
+  // THE COCKPIT SHELL IS ITS OWN GROUP. The two lofts that would block the
   // pilot's view carry `AIRCRAFT_EXTERIOR_LAYER_MASK`, which the cockpit
   // camera clears; the tailcone and fairings behind them do not. One mesh has
   // one layer mask, so they cannot share one. The mask is put on the sources
   // FIRST so that `mergeStatic`'s own check is a real one: offer it the
   // tailcone here and it throws rather than hiding the tail from the pilot.
-  configureCockpitLayers([fuselage, radome, windscreenFrame]);
+  configureCockpitLayers([fuselage, radome]);
   const fuselageShell = build.mergeStatic(
     "airliner-fuselage-shell", [fuselage, radome], root);
   build.mergeStatic("airliner-body-exterior", bodyExterior, root);
@@ -2221,15 +2226,16 @@ export function createAirliner(scene: Scene): AircraftVisual {
     // the same simulation-time phase below, so they cannot be seen out of step.
     propeller: fanSpools[0]!,
     // What the cockpit camera must not draw: the opaque skin that would block the
-    // pilot's view (the fuselage and radome shell, and the centre post), and the
-    // flight deck GLAZING. The glass is a refractive PBR, and a refractive
-    // material draws as an opaque slab from INSIDE: from the pilot's seat it was
-    // two dark trapezoids across the windscreen. What frames the view instead is
-    // the cockpit-only kit (`cockpit/airlinerCockpit.ts`). No loft end cap faces
-    // the pilot (the radome's rear cap, 28 m2, is at x 25.5, 4 m behind the eye,
-    // and the fuselage's front cap at x 30.6 is wound outward), which
-    // `tests/render.cockpit-airliner.test.ts` holds, so none is listed.
-    cockpitParts: [fuselageShell, windscreenFrame, flightDeckGlass],
+    // pilot's view (the fuselage and radome shell) and the flight deck GLAZING.
+    // The glass is a refractive PBR, and a refractive material draws as an opaque
+    // slab from INSIDE: from the pilot's seat it was two dark trapezoids across the
+    // windscreen. What frames the view instead is the cockpit-only kit
+    // (`cockpit/airlinerCockpit.ts`) and the centre post, which the cockpit camera
+    // draws. The fuselage loft's forward end cap stands at x 30.80, between the eye
+    // and the glass, and is wound outward (it faces the nose), so the GPU culls it
+    // from the seat even before this list hides it; the radome's rear cap is at x
+    // 25.5, 4 m behind the eye. `tests/render.cockpit-airliner.test.ts` holds both.
+    cockpitParts: [fuselageShell, flightDeckGlass],
     cockpitOnlyParts,
     wingSurfaces,
     ailerons: [starboardAileron, portAileron],

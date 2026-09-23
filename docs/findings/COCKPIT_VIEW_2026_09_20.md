@@ -199,6 +199,8 @@ reads level (its states carry pitch and bank 0) and the attitude needle is gone.
 
 ## The 747's cockpit
 
+*Built against the flat window boxes; superseded by "The 747 rebuilt round the re-lofted glass" below, when the nose was re-lofted and the panes cast by angle.*
+
 **What was wrong, measured.** From the catalogue's eye (28.8, 3.1, 0) the live frame
 was two huge dark slabs and a wall of panel. `airliner-flight-deck-glazing` is a PBR with
 refraction on (`airliner-glass`, alpha 0.29, `subSurface.isRefractionEnabled`), and a
@@ -1022,6 +1024,90 @@ are barely minified and stay as they were.
 13.2 the page and tests assume (0.6 em a character). The cockpit camera draws 71 - 3 (the skin its mask
 hides) - 2 (the reheat cones, disabled) = 66 of the jet's meshes, as pinned; in the air the ten
 landing-gear meshes are disabled too (gear up), 56.
+
+## The 747 rebuilt round the re-lofted glass (K0, K1)
+
+The plane engineer re-lofted the nose and replaced the six flat window boxes with panes CAST by angle
+from R (29.9, 2.93, 0) onto the skin (docs/findings/AIRLINER_NOSE_GLAZING.md): No.1 az 2.5..24 /
+el -18..+12, No.2 26..54 / -15..+10, No.3 56..75 / -12..+8, a 2 degree pillar gap at 25 and 55, a centre
+post strip over +-1 in a +-2.5 gap. The old kit was placed against copied box corners, and six of its tests
+went red by design. This is the kit rebuilt to the new glass, and the eye re-chosen for it.
+
+**The eye (K0).** `scripts/airliner-eye-grid.mts` reads candidate eyes against the BUILT panes' outer faces
+(the glazing table's method: a sightline through a pillar gap that grazes a rim is not glass). The targets:
+0.50..0.55 m to port, where the type's seat spacing puts the captain; straight ahead in the middle third of
+port No.1's azimuth run at the horizon; the post at +10..+16; No.1's opening at least 28 degrees; the glass
+at least 1.4 m ahead. The chosen eye is **(29.85, 2.93, -0.50)**: No.1 -8.8..+11.6, the No.1 / No.2 pillar
+-10.7..-8.9, the post +13.1..+14.8, the opening 30.4, the glass 1.90 m. It keeps the old eye's height (the
+pilot's eye height is what stays when the seat moves inboard; the crown is higher there, so the headroom
+grew, 0.522 -> 0.615). From the old eye (29.9, 2.93, -0.72) the pilot looked through the outboard edge of
+their own No.1, the pillar 1.8..3.7 degrees left of straight ahead; that eye is the test's control. The seats
+moved under the new eye (+-0.50).
+
+**The displays decided the glareshield (K1 step 0).** The lip has to sit within a degree of No.1's bottom
+edge, which from this eye reads -16.88 at its inboard end and -18.10 at its outboard end, while the 16:9
+frame's bottom is -23.35 straight ahead: five degrees for the screens. With the old recipe (a hood 0.1 m aft
+of the panel's face, screens 1.5 degrees under its underside) not one screen was in the frame. What
+fits: the glareshield FLUSH with the face (a 0.02 m lip and nothing aft of it), the screens 0.25 degrees
+under it, vertical, and the face at 0.85 m, the top of the type's range. The lip and the frame's bottom are
+angles, so the band between them is the same at any distance, and a screen further away is fewer degrees
+tall: 36.8% of each top-row screen is in the frame at 0.75, 43.5% at 0.85.
+
+**The lip** reads -18.04 straight ahead: the LOWEST line along z that leaves no more than a degree of sill
+between itself and No.1's outer bottom edge anywhere along it (the sill runs -0.45..+1.00; the lip covers
+0.45 of glass at No.1's outboard end). Its section is a wedge whose top falls away forward at 21.8 degrees,
+steeper than the 18.04 sight line over it, so nothing of it or of the board behind it shows above the lip.
+A box's far top corner would stand 1.6 cm over that sight line and become the edge instead.
+
+**The frame is a LINING cast with the glass.** Everything between, above and below the panes is one
+`skinPanel` per rectangle of R's sky that is not glass, cast from R onto the same skin with the same caster
+and laid at the panes' own 0.04 out and 0.06 in: under each pane a sill, over it a crown, between
+neighbours a pillar as tall as the taller one, and either side of the post the gap to No.1. Nine strips, two
+across the centreline and seven a side, read from `FLIGHT_DECK_PANES` rather than typed. The edges are
+therefore the panes' edges at every point, and a re-loft moves the frame with the glass. They are skin
+panels, not `solidPlate`s, because the pane edges are curves on a curved nose and a plate is flat; the
+builder winds them by geometry to the same rule (the cross product into the solid), and the drawn-faces walk
+reads zero culled on all four meshes at both offsets. The sills are on the glareshield's matte material, so
+from the seat the glareshield runs on to the glass; the crowns, pillars and gaps are on the flight deck's
+interior material, the seats'.
+
+**The centre post** is the plane engineer's cast strip, and the cockpit camera draws it now: it left
+`cockpitParts`, and the shell and the glazing stay there. From the eye its inner face is 2.02 m away, drawn
+by the GPU's rule and shaded toward the seat; hidden, the same ray meets nothing. It is walked by the
+drawn-faces test beside the kit, at zero.
+
+**The deck line** straight ahead is the sill where it meets No.1's bottom edge, -17.325, not the lip
+(-18.04) it rises from. `catalogue.cockpitDeckLineDegrees` records 17.32 for the 747, held to a ray
+within 0.2.
+
+**A correction to K0.** The K0 report said the fuselage loft's forward end cap at x 30.80 FACES the pilot
+between the eye and the glass. It is between them, and a sightline straight ahead crosses it, but it is
+wound OUTWARD (it faces the nose): the test's calibrated winding says the GPU culls it from the seat. The
+claim came from a ray cast, which meets a face whichever way it faces. The shell stays hidden from the
+cockpit camera either way.
+
+| quantity (from the eye, 16:9, 75 degrees) | target | measured |
+| --- | --- | --- |
+| No.1 at the horizon / pillar / post | ahead in the middle third / - / +10..+16 | -8.8..+11.6 / -10.7..-8.9 / +13.1..+14.8 |
+| No.1's opening, glass ahead, headroom | >= 28, >= 1.4 m, the crown's | 30.4, 1.90 m, 0.615 m |
+| lip straight ahead | the lowest with the sill <= 1 | -18.04 (sill -0.45..+1.00) |
+| deck line straight ahead | catalogue +-0.2 | -17.325 (catalogue 17.32) |
+| PFD / ND / upper EICAS in the frame | >= 35% | 42.9% each on a 21 x 21 grid (43.5% exact) |
+| lower EICAS, starboard ND and PFD | - | 0% (under the frame; beyond its right edge) |
+| holes in the picture | glass only | 0 rays of skin showing, 0 of the kit over a pane's middle |
+| lining, inner face / rims | inside the skin / no further out than the glass | 0.070 m inside at the tightest / 0.066 m out at the farthest |
+| board and lip against the outer skin | >= 0.01 m | 0.160 m |
+
+**Cost.** Still four cockpit-only meshes; the cockpit camera draws 91 of the airframe's meshes where it
+drew 90 (the post); the exterior camera's 89 did not move. The airframe grew by 2,030 vertices and 5,520
+indices (the lining's 2,200 and the lip's 24, less the overhead, hood, dash, pillar and seam post), and
+building it takes about 4 ms more (NullEngine, median of 15 builds: 50 against 48). The 747's and the
+Global's display atlases draw call for call as they did: the slots and pages are unchanged, and only the
+screens' places moved.
+
+**Retired:** `scripts/airliner-eye-solve.mts` and `scripts/airliner-cockpit-clearance.mts`, which solved
+and measured against the flat window boxes. The grid above replaces the first; the second's numbers are
+printed by `tests/render.cockpit-airliner.test.ts`, which holds them.
 
 ## Not done, and one thing to know
 

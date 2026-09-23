@@ -144,8 +144,11 @@ const ENCLOSED = new RegExp([
   "-fan-spool-(fan|spinner)$",
   "-engine-inlet$",
   "^airliner-(cabin-window-line|nacelle-chevron|windscreen-center-post)$",
-  // the cockpit's kit: 18 authored parts, all cockpit-only, so all outside the shadow map
-  "^airliner-(instrument-panel|overhead|hood|dash|windscreen-pillar|windscreen-post-port)$",
+  // the cockpit's kit: 30 authored parts, all cockpit-only, so all outside the shadow map. The board, the
+  // glareshield's lip, and the lining round the glass: two strips across the centreline and seven a side
+  "^airliner-(instrument-panel|glareshield-lip)$",
+  "^((port|starboard)-)?airliner-lining-",
+
   "^airliner-(screen|screen-bezel)-(port|starboard)-(pfd|nd|eicas)$",
   "-(seat|headrest)$",
   "-axle-shaft$",
@@ -331,22 +334,24 @@ describe("the 747-8's draw budget", () => {
     // Nothing dropped and nothing carried twice: `authoredParts` throws on a
     // duplicate, and this pins the total.
     //
-    // 134 -> 144, DELIBERATELY, by the cockpit: the old instrument panel, its five
-    // gauges and its five needles are gone (-11), and the cockpit-only kit adds 18
-    // authored parts: the board and the overhead, the hood and the dash, six
-    // screens, six bezels, the pillar and the seam post. It was 21 until the 3D
-    // attitude ball came out: the PFD page draws attitude on the screen itself now,
-    // so the ball's sky, ground and pitch bar were a second horizon in front of the
-    // first. The seats and headrests are the same four parts, moved forward with
-    // the pilot.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 18);
+    // 134 -> 153, DELIBERATELY, by the cockpit: the old instrument panel, its five
+    // gauges and its five needles are gone (-11), and the cockpit-only kit adds 30
+    // authored parts: the board, the glareshield's lip, six screens, six bezels, and
+    // the lining cast round the glass (the sill and the crown across the centreline,
+    // and a side each of the gap by the post, two pillars, two sills and two crowns).
+    // It was 18 with the flat window boxes (the board and the overhead, the hood and
+    // the dash, the pillar and the seam post, and the twelve screens and bezels), and
+    // 21 before that, until the 3D attitude ball came out: the PFD page draws attitude
+    // on the screen itself now. The seats and headrests are the same four parts,
+    // moved with the pilot.
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 30);
   });
 
   it("keeps the cockpit's four meshes outside every draw bound: invisible and never casting until cockpit view", () => {
     const { visual } = build();
     const kit = visual.cockpitOnlyParts ?? [];
-    // Four: the interior (board, overhead, pillar and seam post on one material), the glareshield
-    // (hood and dash), the six screens and the six bezels. It was seven until the 3D attitude ball
+    // Four: the interior (the board and the lining's crowns, pillars and post gaps on one material), the
+    // glareshield (its lip and the lining's sills), the six screens and the six bezels. It was seven until the 3D attitude ball
     // came out -- its sky, ground and pitch bar were three meshes AND three draws standing in front
     // of a PFD that draws its own attitude now. So cockpit view costs three draws fewer than it did,
     // 7 -> 4, and the pilot sees MORE of the PFD, not less.
@@ -390,12 +395,13 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const enclosed = [...authoredParts(visual)].filter(([name]) => ENCLOSED.test(name));
     // 4 fans, 4 spinners, 4 inlets, the window line, the chevrons, the centre
-    // post, the cockpit's 18 cockpit-only parts (there were the panel with 5 gauges
-    // and 5 needles, 11; and the kit itself was 21 until the 3D attitude ball came
-    // out, the PFD page drawing attitude on the screen instead), 2 seats, 2 headrests,
-    // 8 main axle shafts and the nose one, 6 panes of glass and 8 lamps.
+    // post, the cockpit's 30 cockpit-only parts (there were the panel with 5 gauges
+    // and 5 needles, 11; the kit was 21 until the 3D attitude ball came out, and 18
+    // until it was cast round the re-lofted glass), 2 seats, 2 headrests, 8 main axle
+    // shafts and the nose one, 6 panes of glass and 8 lamps. The centre post casts
+    // nothing whichever camera draws it: its shadow is the nose's.
     expect(enclosed.map(([name]) => name).sort()).toHaveLength(
-      4 + 4 + 4 + 1 + 1 + 1 + 18 + 2 + 2 + 8 + 1 + 6 + 8,
+      4 + 4 + 4 + 1 + 1 + 1 + 30 + 2 + 2 + 8 + 1 + 6 + 8,
     );
     for (const [name, mesh] of enclosed) {
       expect(castsShadow(mesh), `${name} is still in the shadow map`).toBe(false);
@@ -580,25 +586,35 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // volume moved by -13.32 m^3 and the area by +8.01 m^2: the census sums each closed loft on
     // its own, and the fuselage now runs to 30.8 hugging the nose instead of tapering away
     // inside it from 28, so the two overlap more.
+    //
+    // THEN 12,033 TO 14,063 with the cockpit kit cast round the re-lofted glass. The overhead (60 vertices), the
+    // hood (24), the dash (36), the pillar (36) and the port seam post (38) left; the glareshield's lip (a 3-sided
+    // `solidPlate`, 24) and the lining came, 16 skin panels of 2,200 vertices and 5,760 indices (a panel of r x c
+    // grid points is 2rc + 8(c-1) + 8(r-1) vertices, and the strips are 4x12, 7x12, then a side each 7x2, 7x2,
+    // 4x7, 7x7, 6x2, 5x5 and 8x5): +2,030 and +5,520 exactly. The board is the same box, 0.03 thinner; the seats
+    // moved 0.22 inboard and 0.05 aft with the eye. The extents did not move. The position sum's x rose by about
+    // what 2,030 vertices at x ~31 weigh (+63,169); its z by +36.5, most of it the seam post leaving, which stood
+    // on the port side alone (38 vertices at z about -1.1). The area rose by 7.40 m^2 (the lining's two faces),
+    // the signed volume by -0.66 m^3.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(12_033);
-    expect(census.indices).toBe(56_088);
+    expect(census.vertices).toBe(14_063);
+    expect(census.indices).toBe(61_608);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(62223.8086, 1);
-    expect(census.positionSum.y).toBeCloseTo(-22523.1531, 1);
-    expect(census.positionSum.z).toBeCloseTo(-31.2799, 1);
-    expect(census.positionSquares).toBeCloseTo(8257010.11, 0);
-    expect(census.normalSum.x).toBeCloseTo(-389.8330, 2);
-    expect(census.normalSum.y).toBeCloseTo(89.3725, 2);
-    expect(census.normalSum.z).toBeCloseTo(0.1516, 2);
-    expect(census.normalMoment).toBeCloseTo(9813.8428, 1);
-    expect(census.signedVolume).toBeCloseTo(-3227.7020, 2);
-    expect(census.area).toBeCloseTo(4680.8703, 2);
+    expect(census.positionSum.x).toBeCloseTo(125392.7142, 1);
+    expect(census.positionSum.y).toBeCloseTo(-16954.3830, 1);
+    expect(census.positionSum.z).toBeCloseTo(5.2408, 1);
+    expect(census.positionSquares).toBeCloseTo(10242027.32, 0);
+    expect(census.normalSum.x).toBeCloseTo(-539.1249, 2);
+    expect(census.normalSum.y).toBeCloseTo(36.9270, 2);
+    expect(census.normalSum.z).toBeCloseTo(-0.5656, 2);
+    expect(census.normalMoment).toBeCloseTo(5291.3267, 1);
+    expect(census.signedVolume).toBeCloseTo(-3228.3613, 2);
+    expect(census.area).toBeCloseTo(4688.2677, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -683,7 +699,9 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
       "airliner-radome",
       // `airliner-upper-deck` was here until the hump became part of the
       // fuselage loft; the skin it used to hide is hidden by the fuselage now.
-      "airliner-windscreen-center-post",
+      // `airliner-windscreen-center-post` was here too, until the cockpit kit was
+      // cast round the re-lofted glass: the post is the one piece of the windscreen
+      // frame the kit does not build, so the cockpit camera draws it now.
       // AND THE FLIGHT DECK GLAZING, deliberately, by the cockpit: the glass is a
       // refractive PBR, which draws as an opaque slab from inside, so from the
       // pilot's seat it was two dark trapezoids across the windscreen. All six
@@ -704,6 +722,7 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     expect(new Set(visual.cockpitParts)).toEqual(new Set(formerCockpitParts));
     const exteriorMask = camera.layerMask;
 
+    const exteriorDraws = visual.meshes.filter((mesh) => issuesDraw(mesh) && (mesh.layerMask & camera.layerMask) !== 0);
     visual.setCockpitView(true);
     for (const mesh of visual.meshes) {
       const hidden = (mesh.layerMask & camera.layerMask) === 0;
@@ -711,6 +730,14 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
       // Still drawn, so still a shadow caster: excluded from this camera only.
       expect(mesh.isVisible, mesh.name).toBe(true);
     }
+    // WHAT THE COCKPIT CAMERA DRAWS: everything the exterior camera does, less the shell and the glazing, plus the
+    // kit's four. The centre post is among them now; it was hidden with the shell until the kit was cast round the
+    // re-lofted glass, and the count went 90 -> 91 for it. (The exterior camera's own count, 89, did not move.)
+    const cockpitDraws = visual.meshes.filter((mesh) => issuesDraw(mesh) && (mesh.layerMask & camera.layerMask) !== 0);
+    expect(cockpitDraws.length).toBe(exteriorDraws.length - visual.cockpitParts.length + (visual.cockpitOnlyParts ?? []).length);
+    expect(exteriorDraws.length).toBe(89);
+    expect(cockpitDraws.length).toBe(91);
+    expect(cockpitDraws.map((mesh) => mesh.name)).toContain("airliner-windscreen-center-post");
     for (const part of formerCockpitParts) {
       expect(part.layerMask).toBe(AIRCRAFT_EXTERIOR_LAYER_MASK);
     }
