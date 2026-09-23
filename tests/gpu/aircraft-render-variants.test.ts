@@ -77,14 +77,16 @@ const LIVE_VARIANTS: ReadonlySet<Variant> = new Set(["day", "night", "cockpit"])
  * Materials over budget in a pass that does NOT exist live today, each keyed
  * airframe/material/variant with its reason. Asserted BOTH ways: the test
  * fails if a listed material stops being over (the entry is stale -- remove
- * it) and if any material not listed goes over (a regression). Registered as
- * "Global body needs a varying freed (its painted band -> a livery texture, as
- * the 747's) before 5-12 puts aircraft in the lake capture or fog is enabled".
+ * it) and if any material not listed goes over (a regression).
+ *
+ * Empty since the Global's livery became an image. Its two rows were
+ * `bizjet/bizjet-body/reflection` and `.../fog`: the body carried vertex
+ * colour, 16 of 16 live, and the mirror's clip plane or fog was a 17th. The
+ * colour channel is gone from every mesh the body and the skin paint
+ * (`render.bizjet-livery` pins that in Node), which is the input those rows
+ * were waiting for.
  */
-const KNOWN_OVER_BUDGET: ReadonlyMap<string, string> = new Map([
-  ["bizjet/bizjet-body/reflection", "carries vertex colour: 16 of 16 live, and the mirror's clip plane is a 17th"],
-  ["bizjet/bizjet-body/fog", "carries vertex colour: 16 of 16 live, and fog is a 17th"],
-]);
+const KNOWN_OVER_BUDGET: ReadonlyMap<string, string> = new Map();
 
 let engine: WebGPUEngine;
 let canvas: HTMLCanvasElement;
