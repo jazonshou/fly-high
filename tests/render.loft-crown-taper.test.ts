@@ -338,7 +338,10 @@ describe("the loft's crown taper", () => {
       // (the deck at the pillars' feet as cast, 0.789; the hood's forward end 0.745). Checked mesh by mesh against
       // 7766139: the board (in `bizjet-cockpit-interior`), `bizjet-glareshield`, the screens and the bezels' frames change,
       // the rims and the wells are new; the other 87 meshes are bit-identical.
-      bizjet: "48c14c0b",
+      // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
+      // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
+      // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
+      bizjet: "4036722a",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

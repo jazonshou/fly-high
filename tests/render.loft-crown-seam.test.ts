@@ -406,7 +406,10 @@ describe("a loft's crown seam", () => {
       // (the deck at the pillars' feet as cast, 0.789; the hood's forward end 0.745). Checked mesh by mesh against
       // 7766139: the board (in `bizjet-cockpit-interior`), `bizjet-glareshield`, the screens and the bezels' frames change,
       // the rims and the wells are new; the other 87 meshes are bit-identical.
-      bizjet: "ce143853",
+      // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
+      // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
+      // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
+      bizjet: "0d9b6dba",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

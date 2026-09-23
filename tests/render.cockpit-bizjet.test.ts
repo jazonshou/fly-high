@@ -15,11 +15,13 @@ import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import { PANE_GRID } from "../src/render/webgpu/aircraft/airlinerGlazing";
 import { GLOBAL_CENTRE_POST, GLOBAL_FLIGHT_DECK_OUTLINES, GLOBAL_PANE_DEPTH, GLOBAL_PANE_PROUD } from "../src/render/webgpu/aircraft/bizjetGlazing";
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
+import { globalSeatPlacement } from "../src/render/webgpu/aircraft/bizjetSeats";
 import {
   BIZJET_GLARESHIELD,
   BIZJET_LINING,
   BIZJET_PANEL,
   BIZJET_SCREENS,
+  BIZJET_SIDE_CONSOLE,
   BIZJET_SILL_CAP,
   bizjetGlareshieldSection,
   bizjetLipY,
@@ -28,6 +30,7 @@ import {
   bizjetPanelFace,
   bizjetPanelFaceX,
   bizjetScreenPlacements,
+  bizjetSideConsoleFacets,
   bizjetSillCapMeshName,
   highestClearLip,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
@@ -80,7 +83,9 @@ const FRAME_V = FRAME_U / (16 / 9);
  *  - `displays`: at least this share of each of the pilot's two screens is in the frame (65% since P1a; the rule's
  *    15.085 deck line on part 6 would leave 38%);
  *  - `aim`: the panel's face normal points at the eye from the centre of the pilot's pair of screens, to this;
- *  - `deckEdge`: the deck's edge, from the deck line down to the cove's foot, is at most this tall straight ahead.
+ *  - `deckEdge`: the deck's edge, from the deck line down to the cove's foot, is at most this tall straight ahead;
+ *  - `bareWall`: at most this much of the wall's own lining shows in any column of the frame's lower left (P1c; it was
+ *    about 21 degrees on part 5's nose, and 6b's lower side pane left 2.5 to 3.8 before the consoles).
  */
 const TARGETS = {
   opening: 24,
@@ -95,6 +100,7 @@ const TARGETS = {
   displays: 0.65,
   aim: 8,
   deckEdge: 2.5,
+  bareWall: 5,
 } as const;
 
 /**
@@ -274,7 +280,10 @@ function partOf(mesh: AbstractMesh, faceId: number): string {
   if (!sources) return mesh.name;
   // the board, the screens and the wells are boxes; a bezel's frame and its rim are 16 quads each (`bizjetBezelFacets`); the
   // lining's strips are the captured panels
-  const count = (name: string) => (/^bizjet-screen-bezel-/.test(name) ? 32 : /^bizjet-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles);
+  const count = (name: string) => {
+    if (/^bizjet-side-console-/.test(name)) return named("bizjet-side-consoles").getTotalIndices() / 3 / 2; // the two sides are mirror images
+    return /^bizjet-screen-bezel-/.test(name) ? 32 : /^bizjet-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles;
+  };
   let start = 0;
   for (const name of sources) {
     if (faceId < start + count(name)) return name;
@@ -535,8 +544,8 @@ describe("the Global's eye", () => {
 });
 
 describe("the Global's cockpit parts", () => {
-  it("are six static meshes: the glareshield, the board and the whole window frame as one, the screens, their bezels' frames and rims, the wells", () => {
-    expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-glareshield", "bizjet-screen-bezel-rims", "bizjet-screen-bezels", "bizjet-screen-wells", "bizjet-screens"]);
+  it("are seven static meshes: the glareshield, the board and the window frame as one, the screens, their frames, rims and wells, the side consoles", () => {
+    expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-glareshield", "bizjet-screen-bezel-rims", "bizjet-screen-bezels", "bizjet-screen-wells", "bizjet-screens", "bizjet-side-consoles"]);
     // the interior is the board, every lining strip the strip table names (a side each or once across the centreline),
     // and the two side sills' caps a side
     expect((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["bizjet-instrument-panel", ...frameStripNames()]);
@@ -1531,6 +1540,153 @@ describe("the Global's panel face", () => {
   });
 });
 
+describe("the Global's side consoles", () => {
+  /** The frame's rows, as elevation straight ahead in the picture's column `px`, the kit's first hit down each. */
+  const column = (px: number) => {
+    const u = (((px + 0.5) / 1600) * 2 - 1) * FRAME_U;
+    const rows: { el: number; part: string | null }[] = [];
+    for (let py = 440; py < 900; py += 1) {
+      const v = -(((py + 0.5) / 900) * 2 - 1) * FRAME_V;
+      const hit = firstHitAlong(new Vector3(1, v, u));
+      rows.push({ el: Math.atan(v) * DEG, part: hit ? partOf(hit.mesh, hit.faceId) : null });
+    }
+    return rows;
+  };
+  /** Degrees of the column where the first thing met is the wall's own lining under the side panes. */
+  const bareWall = (rows: { el: number; part: string | null }[]) => {
+    let degrees = 0;
+    for (let k = 0; k + 1 < rows.length; k += 1) if (/-bizjet-lining-sill-(forward|aft)-side$/.test(rows[k]!.part ?? "")) degrees += rows[k]!.el - rows[k + 1]!.el;
+    return degrees;
+  };
+
+  it("fill the wall under the side panes' caps: at most 5 degrees of bare wall down each column of the frame's lower left", () => {
+    // On part 5's nose the wall there was about 21 degrees; 6b's side pane reaches lower, and the glass comes down to -16
+    // to -18 degrees in these columns, the pane's sill and its cap under it, then wall to the frame's bottom. The console
+    // stands under the cap: with it, no wall shows under the cap, only the sill's band between the glass and the cap.
+    const consoles = named("bizjet-side-consoles");
+    const report: string[] = [];
+    const underCap = (rows: { el: number; part: string | null }[]) => {
+      const cap = rows.findIndex((r) => /-bizjet-lining-cap-forward-side$/.test(r.part ?? ""));
+      return cap < 0 ? Number.NaN : bareWall(rows.slice(rows.findIndex((r, k) => k > cap && !/-cap-/.test(r.part ?? ""))));
+    };
+    for (const px of [40, 120, 200, 280, 340]) {
+      const rows = column(px);
+      const bare = bareWall(rows);
+      // CONTROL: without the console the same column shows wall under the cap, down to the frame's bottom
+      consoles.isVisible = false;
+      let without = Number.NaN;
+      try {
+        without = underCap(column(px));
+      } finally {
+        consoles.isVisible = true;
+      }
+      const withIt = underCap(rows);
+      report.push(`px ${px}: ${bare.toFixed(2)} in all (under the cap ${withIt.toFixed(2)}, without the console ${without.toFixed(2)})`);
+      expect(without, `px ${px}: wall under the cap for the console to cover`).toBeGreaterThan(0.5);
+      expect(withIt, `px ${px}: wall under the cap, with the console`).toBeLessThanOrEqual(0.05);
+      expect(bare, `px ${px}: bare wall`).toBeLessThanOrEqual(TARGETS.bareWall);
+    }
+    console.info(`the Global's bare wall in the frame's lower left, degrees: ${report.join("; ")}`);
+  });
+
+  it("stand on the sill caps' inboard edges, vertex for vertex, level with the side panes' bottom edges (no T-junction)", () => {
+    const consoles = worldVertices(named("bizjet-side-consoles"));
+    for (const side of ["port", "starboard"] as const) {
+      const rows = BIZJET_SILL_CAP.sills.map((sill) => panel(bizjetSillCapMeshName(sill, side === "port" ? -1 : 1)));
+      // the caps' inboard edges on their top faces, forward side then aft side, shared corners once
+      const edge = [...rows[0]!.columns > 0 ? Array.from({ length: rows[0]!.columns }, (_, c) => gridVertex(rows[0]!, 1, 1, c)) : [],
+        ...Array.from({ length: rows[1]!.columns - 1 }, (_, c) => gridVertex(rows[1]!, 1, 1, c + 1))];
+      const mine = consoles.filter((v) => (side === "port" ? v.z < 0 : v.z > 0));
+      const onEdge = edge.filter((p) => mine.some((v) => Vector3.Distance(v, p) < 2e-6));
+      expect(onEdge.length, `${side}: the console on the caps' columns`).toBeGreaterThan(8);
+      // every console vertex near a cap chord is one of the chord's own ends: no T-junction along the seam
+      for (let k = 0; k + 1 < edge.length; k += 1) {
+        const [a, b] = [edge[k]!, edge[k + 1]!];
+        for (const v of mine) {
+          const ab = b.subtract(a);
+          const t = Vector3.Dot(v.subtract(a), ab) / ab.lengthSquared();
+          if (t <= 1e-6 || t >= 1 - 1e-6) continue;
+          expect(Vector3.Distance(v, a.add(ab.scale(t))), `${side}: a console vertex inside a cap chord`).toBeGreaterThan(0.001);
+        }
+      }
+      // level with the edge: every console vertex at the top is at a cap column's height
+      const heights = new Set(onEdge.map((p) => p.y.toFixed(5)));
+      for (const v of mine.filter((q) => q.y > 0.2)) {
+        const near = onEdge.some((p) => Math.abs(p.x - v.x) < 2e-6);
+        if (near && v.y > Math.min(...onEdge.map((p) => p.y)) - 0.05) expect([...heights].some((h) => Math.abs(Number(h) - v.y) <= 0.04 + 1e-5), `${side}: a top vertex off its column's height`).toBe(true);
+      }
+    }
+  });
+
+  it("hang a 2 cm lip along the top's inboard edge over a 45 degree cove, the face set back under it, by the built normals", () => {
+    const mesh = named("bizjet-side-consoles");
+    const vertices = worldVertices(mesh);
+    const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const port = (i: number) => vertices[i]!.z < 0;
+    const zOf = (i: number, test: (n: Vector3) => boolean) => [...new Set(vertices.map((_, k) => k).filter((k) => port(k) && test(new Vector3(normals[k * 3]!, normals[k * 3 + 1]!, normals[k * 3 + 2]!))).map((k) => vertices[k]!.z.toFixed(4)))].map(Number);
+    void zOf;
+    const facing = (want: Vector3) => vertices.map((_, k) => k).filter((k) => port(k) && Vector3.Dot(new Vector3(normals[k * 3]!, normals[k * 3 + 1]!, normals[k * 3 + 2]!), want) > 0.9999);
+    const inboard = facing(new Vector3(0, 0, 1));
+    const cove = facing(new Vector3(0, -Math.SQRT1_2, Math.SQRT1_2));
+    const planes = [...new Set(inboard.map((k) => vertices[k]!.z.toFixed(4)))].map(Number).sort((a, b) => a - b);
+    const deck = Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z)));
+    expect(planes, "the lip's face flush with the board's end, the face under it 2 cm outboard").toEqual([-(deck + 0.02), -deck].map((z) => Number(z.toFixed(4))));
+    expect(cove.length, "the cove's faces").toBeGreaterThan(0);
+    for (const k of cove) expect(vertices[k]!.z).toBeGreaterThanOrEqual(-(deck + 0.02) - 1e-4);
+    // the lip's face: 2 cm tall, at the board's end
+    const lip = inboard.filter((k) => Math.abs(vertices[k]!.z + deck) < 1e-4);
+    const lipHeights = new Map<string, number[]>();
+    for (const k of lip) {
+      const key = vertices[k]!.x.toFixed(4);
+      lipHeights.set(key, [...(lipHeights.get(key) ?? []), vertices[k]!.y]);
+    }
+    for (const [x, ys] of lipHeights) expect(Math.max(...ys) - Math.min(...ys), `the lip at x ${x}`).toBeCloseTo(BIZJET_SIDE_CONSOLE.lip, 5);
+  });
+
+  it("follow the shell down from the cap: on a shell narrower below, the outboard bottom edge stays the margin inside it", () => {
+    // On this nose the shell at the board's foot is wide enough that the cap's line is already inside it, so the rule is
+    // pinned on a shell given to it: a cap line at 0.90 over a shell 0.85 wide at the foot
+    const cap = [0, 1, 2, 3].map((k) => ({ x: 12.6 - 0.1 * k, y: 0.35, z: -0.9 }));
+    const { facets } = bizjetSideConsoleFacets(cap, 0.7, -1, (_x, y) => (y < 0.3 ? 0.85 : 0.95));
+    const low = facets.flatMap((f) => [...f.corners]).filter((v) => v.y < 0.3);
+    expect(low.length).toBeGreaterThan(0);
+    expect(Math.max(...low.map((v) => -v.z)), "the bottom's outboard edge").toBeCloseTo(0.85 - BIZJET_PANEL.shellMargin, 9);
+    // and where the shell is wide the bottom keeps the cap's own line
+    const wide = bizjetSideConsoleFacets(cap, 0.7, -1, () => 2).facets.flatMap((f) => [...f.corners]).filter((v) => v.y < 0.3);
+    expect(Math.max(...wide.map((v) => -v.z))).toBeCloseTo(0.9, 9);
+  });
+
+  it("cover no glass, stand inside the skin, and leave the seats clear", () => {
+    const consoles = named("bizjet-side-consoles");
+    let met = 0;
+    for (let az = -37; az <= -15; az += 1) {
+      for (let el = -23; el <= 5; el += 1) {
+        if (!inFrame(az, el)) continue;
+        const hit = kitHit(az, el);
+        if (hit?.mesh !== consoles) continue;
+        met += 1;
+        expect(exitsThrough(az, el).what, `(${az}, ${el}): the console over glass`).not.toBe("glass");
+      }
+    }
+    expect(met, "rays meeting the console").toBeGreaterThan(50);
+    // inside the skin: at least the cap's width less the lining's depth from it (the console stands against the wall, its
+    // outboard side following the shell down from the cap)
+    let tightest = Number.POSITIVE_INFINITY;
+    for (const v of worldVertices(consoles)) {
+      const wall = crossings(new Vector3(v.x, v.y, 0), new Vector3(0, 0, v.z < 0 ? -1 : 1), shell).at(-1);
+      if (wall === undefined) continue;
+      tightest = Math.min(tightest, wall - Math.abs(v.z));
+    }
+    console.info(`the Global's side consoles: ${met} rays meet them; the tightest clearance from the skin ${tightest.toFixed(4)} m`);
+    expect(tightest).toBeGreaterThanOrEqual(0.04);
+    // the seat's base stands inboard of the console's face, and its back aft of the console's end
+    const seat = globalSeatPlacement();
+    const faceZ = Math.min(...worldVertices(consoles).filter((v) => v.z < 0).map((v) => -v.z).filter((z) => z > 0));
+    expect(faceZ - (seat.z + seat.base.width / 2), "the seat's base inboard of the console").toBeGreaterThan(0.01);
+    expect(Math.min(...worldVertices(consoles).map((v) => v.x)), "the console's aft end").toBeGreaterThanOrEqual(BIZJET_SIDE_CONSOLE.aftX);
+  });
+});
+
 describe("the Global's cockpit-only parts outside cockpit view", () => {
   it("are invisible at rest and after exit, visible only inside, and never shadow casters", () => {
     const local = new NullEngine();
@@ -1540,7 +1696,7 @@ describe("the Global's cockpit-only parts outside cockpit view", () => {
     localScene.activeCamera = localCamera;
     const visual = createWebGpuAircraft(localScene, "bizjet");
     const parts = visual.cockpitOnlyParts ?? [];
-    expect(parts.length).toBe(6);
+    expect(parts.length).toBe(7);
     const exteriorMask = localCamera.layerMask;
     for (const part of parts) {
       expect(part.isVisible, `${part.name} at rest`).toBe(false);

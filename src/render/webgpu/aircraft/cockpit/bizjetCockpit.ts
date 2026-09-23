@@ -670,6 +670,99 @@ export function bizjetBezelMaterial(build: AircraftBuildContext): PBRMaterial {
   return build.material("bizjet-bezel", BIZJET_BEZEL_ALBEDO, { roughness: 0.82, metallic: 0.02 });
 }
 
+// ---- the side consoles ---------------------------------------------------------------------------
+
+/**
+ * THE SIDE CONSOLES (P1c): the sill cap widened into a console's top, one each side, from the board's end aft to the seat.
+ *
+ * From the seat the wall under the forward side pane filled the frame's lower left, about 21 degrees of one flat tone from
+ * the pane's bottom edge to the frame's bottom, on part 5's nose (P0 and P1c's rays). Part 6b's side pane reaches lower:
+ * the glass now comes down to -16 to -18 degrees there, and under the pane's sill and its cap about 1 to 2.6 degrees of
+ * wall is left. A console at armrest height would stand wholly under the frame: the wall is 0.5 to 0.7 m ahead, where
+ * the frame's bottom is 0.28 m under the eye. So the console's TOP is the sill cap's, level with the pane's bottom edge
+ * (it covers no glass, by the cap's own rule), running inboard from the cap's inboard edge to the board's end, which it
+ * meets flush: the board, continued aft along the wall, and in the frame a lit ledge under the cap instead of wall.
+ *
+ *  - Its outboard top edge IS the cap's inboard edge, vertex for vertex (no T-junction), at the cap's own columns: from
+ *    the first that leaves room inboard of the board's end aft to the last forward of `aftX`.
+ *  - Along its inboard top edge a LIP, `lip` tall, and under it a 45 degree cove `lip` deep to the inboard face, set back:
+ *    the top edge reads lit, the face under it shaded (the rail's idea, P1a).
+ *  - The inboard face runs straight down to the board's own foot, past the frame's bottom; the outboard side follows the
+ *    shell down from the cap, `shellMargin` inside it.
+ */
+export const BIZJET_SIDE_CONSOLE = Object.freeze({
+  lip: 0.02,
+  /** The console's aft end: the seat's centre, as the design has it (the seat's base stands inboard of the console's face). */
+  aftX: 11.85,
+});
+
+/**
+ * A side console's facets, closed, from the cap's inboard edge (`capInboard`, the cap's row 1 in order along the sill,
+ * forward side then aft side, shared corners once) to the board's end at `deckHalfWidth`; `side` -1 port, +1 starboard;
+ * `shell` the shell's half-width as built at a station and height. Returns the columns it stood on, for the seam's pin.
+ */
+export function bizjetSideConsoleFacets(
+  capInboard: readonly Point3[],
+  deckHalfWidth: number,
+  side: 1 | -1,
+  shell: (x: number, y: number) => number,
+): { facets: FacetQuad[]; columns: Point3[] } {
+  const c = BIZJET_SIDE_CONSOLE;
+  const floorY = eye().up - BIZJET_PANEL.bottomBelowEye;
+  const inboardZ = side * deckHalfWidth;
+  const faceZ = side * (deckHalfWidth + c.lip);
+  const room = (p: Point3) => Math.abs(p.z) > deckHalfWidth + c.lip + 0.001;
+  const columns = capInboard.filter((p) => p.x >= c.aftX && room(p));
+  // one run of columns, forward to aft, with nothing skipped between
+  const first = capInboard.indexOf(columns[0]!);
+  if (columns.length < 2 || columns.some((p, k) => capInboard[first + k] !== p)) {
+    throw new RangeError("the Global's side console: the cap leaves no single run of room inboard of it");
+  }
+  const V = (x: number, y: number, z: number) => new Vector3(x, y, z);
+  // the section at a column, round it: the cap's edge, the lip, the cove, the face, the floor
+  const section = (p: Point3) => [
+    V(p.x, p.y, p.z),
+    V(p.x, p.y, inboardZ),
+    V(p.x, p.y - c.lip, inboardZ),
+    V(p.x, p.y - 2 * c.lip, faceZ),
+    V(p.x, floorY, faceZ),
+    V(p.x, floorY, side * Math.min(Math.abs(p.z), shell(p.x, floorY) - BIZJET_PANEL.shellMargin)),
+  ];
+  const centroid = (points: readonly Vector3[]) => points.reduce((sum, q) => sum.add(q), Vector3.Zero()).scale(1 / points.length);
+  const outward = (corners: readonly Vector3[], away: Vector3) => {
+    const n = Vector3.Cross(corners[1]!.subtract(corners[0]!), corners[2]!.subtract(corners[0]!)).normalize();
+    return Vector3.Dot(n, centroid(corners).subtract(away)) < 0 ? n.scale(-1) : n;
+  };
+  const sections = columns.map(section);
+  // THE SECTION IS NOT CONVEX: the lip overhangs the face set back under it, so the cove's foot is a reflex corner, and
+  // no centroid tells every face's outside. Each face's outside is its section edge's, from the section's own winding in
+  // (z, y): rotated a quarter turn away from the inside.
+  const winding = (points: readonly Vector3[]) => Math.sign(points.reduce((sum, q, i) => {
+    const r = points[(i + 1) % points.length]!;
+    return sum + q.z * r.y - r.z * q.y;
+  }, 0));
+  const facets: FacetQuad[] = [];
+  for (let k = 0; k + 1 < sections.length; k += 1) {
+    const [a, b] = [sections[k]!, sections[k + 1]!];
+    const turn = winding(a);
+    for (let e = 0; e < 6; e += 1) {
+      const corners = [a[e]!, a[(e + 1) % 6]!, b[(e + 1) % 6]!, b[e]!] as const;
+      const edge = corners[1].subtract(corners[0]);
+      const away = new Vector3(0, -turn * edge.z, turn * edge.y);
+      // the face's own normal (its twist between columns is a few millimetres at most), on the side of its edge's outside
+      let n = Vector3.Cross(corners[1].subtract(corners[0]), corners[3].subtract(corners[0])).normalize();
+      if (Vector3.Dot(n, away) < 0) n = n.scale(-1);
+      facets.push({ corners, normal: n });
+    }
+  }
+  // the two ends, fanned from the cap's edge
+  for (const [end, other] of [[sections[0]!, sections[1]!], [sections.at(-1)!, sections.at(-2)!]] as const) {
+    const n = outward([end[0]!, end[1]!, end[2]!], centroid(other));
+    for (let e = 1; e + 1 < 6; e += 1) facets.push({ corners: [end[0]!, end[e]!, end[e + 1]!, end[e + 1]!], normal: n });
+  }
+  return { facets, columns };
+}
+
 // ---- what the pages need of this airframe -------------------------------------
 
 /**
@@ -704,8 +797,9 @@ export interface BizjetCockpit {
  * (`configureCockpitOnlyParts`) and registers them, so the rule is applied in one place. `skin` is the
  * caster the flight-deck glass was cast with.
  *
- * SIX meshes, all static: the board and the window frame's lining on the interior material; the glareshield on its
- * own, alone; the four screens; their four bezels' frames; the frames' chamfered rims; the wells behind the screens.
+ * SEVEN meshes, all static: the board and the window frame's lining on the interior material; the glareshield on its
+ * own, alone; the four screens; their four bezels' frames; the frames' chamfered rims; the wells behind the screens; the
+ * two side consoles, on the interior material.
  */
 export function buildBizjetCockpit(
   build: AircraftBuildContext,
@@ -810,6 +904,18 @@ export function buildBizjetCockpit(
 
   // THE BOARD AND THE WINDOW FRAME, one mesh on the interior material: the sills are frame too, not the deck.
   parts.push(build.mergeStatic("bizjet-cockpit-interior", [board, ...lining], root));
+
+  // THE SIDE CONSOLES, on the sill caps' inboard edges, flush with the board's ends: one mesh on the interior material.
+  const consoles: AbstractMesh[] = [];
+  for (const side of [-1, 1] as const) {
+    const prefix = side > 0 ? "starboard-" : "port-";
+    const capRow = (sill: string) => bizjetSillCapGrid(sills.get(`${prefix}bizjet-lining-${sill}`)!).points[1]!;
+    const forward = capRow("sill-forward-side");
+    const aft = capRow("sill-aft-side");
+    const { facets } = bizjetSideConsoleFacets([...forward, ...aft.slice(1)], halfWidth, side, (x, y) => shellHalfWidth(skin, x, y));
+    consoles.push(facetMesh(build, `bizjet-side-console-${side > 0 ? "starboard" : "port"}`, facets, materials.interior, root));
+  }
+  parts.push(build.mergeStatic("bizjet-side-consoles", consoles, root));
 
   // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
   // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a

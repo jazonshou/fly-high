@@ -1432,6 +1432,37 @@ cove and the board's top back corner. There it reaches the windshield's pillars,
 - **Mutations, ten, all caught:** no taper; the whole glareshield narrowed to the hood's end; the taper with no margin;
   the pillar foot from the outline; the deck sized over the hood; and one each of P1a's, P1b's and the re-pin's.
 
+**P1c, the side consoles** (`bizjetSideConsoleFacets`), one each side.
+- **An armrest-height console would stand wholly under the frame.** The wall it was for is 0.5 to 0.7 m ahead,
+  where the frame's bottom is 0.28 m under the eye: at eye - 0.45 it covered 0% of the wall. So each console's top
+  is the sill cap's, widened: level with the side pane's bottom edge (it covers no glass, by the cap's own rule),
+  from the cap's inboard edge to the board's end, which it meets flush.
+- **The cap's inboard edge IS the console's top edge,** vertex for vertex, on the cap's own columns: no T-junction.
+- **A 2 cm lip runs along its inboard top edge,** over a 45 degree cove, with the face set back under it (the rail's
+  idea). The face runs down to the board's foot, and the outboard side follows the shell down from the cap, 5 cm
+  inside it.
+- **It runs aft to x 11.85.** The seat's base stands inboard of its face.
+
+**6b moved the goal.** The 21 degrees of wall was part 5's nose. On 6b the forward side pane comes down to -16 to
+-18 degrees in those columns, and under its sill band and its cap only 1.3 to 4.5 degrees of wall was left. The
+console takes all of that: with it, the bare wall is 0.4 to 1.3 degrees a column (the sill's band between the
+glass and the cap), against 2.5 to 5.7 without. In the frame it reads as a lit ledge under the cap.
+
+**Two traps on the way:**
+- The console's section is not convex (the lip overhangs the set-back face), so no centroid gives every face's
+  outside. It is taken from the section's own winding, and the drawn-faces test caught the first build's culled
+  coves.
+- A rule that never engages on this nose (the outboard side following a shell narrower below) survived its
+  mutation as an equivalent, and is pinned on a shell given to it.
+
+**Tests** (48): the wall under the cap, per column, with a no-console control; the seam on the caps; the lip and
+the cove by the built normals; no glass covered; inside the skin (0.064 m at the tightest); the seats clear; the
+shell rule. Seven mutations, all caught:
+- the top at armrest height; the face 10 cm outboard; the console removed;
+- off the cap's vertices; no lip; the faces oriented by a centroid; the outboard side not following the shell.
+
+The kit is seven meshes. Against 43d360d only the new consoles mesh changes; the other 93 are bit-identical.
+
 **For the 747's turn (noted, not built):** its lip-to-bottom band is only 4.78 degrees with the screens at
 37.8%, so the same deck must cost the screens nothing: the round and the drop at their minimum, and the gap
 0.5 degree. Its bezels need a material of their own: dark, 1.3 to 1.6 times the board by day, with the night
@@ -1469,7 +1500,7 @@ crossover is a canvas about 2,170 px wide).
 **Not built:** the F-16's UFC, between the MFDs.
 Baselines are not promoted here; the single end-of-wave promotion absorbs the change.
 
-**Not built, the Global's next kit item: an armrest / side console.** From the seat, the wall under the
+**Built in P1c (above), once the Global's next kit item: an armrest / side console.** From the seat, the wall under the
 forward side pane runs 15 to 18 degrees from the pane's bottom edge (about -3 at az -24) down to the frame's
 bottom (-21.5 at az -24, -18.9 at the corner). The sill cap breaks the glass-to-wall edge with a ledge 1.4
 to 1.7 degrees tall; the rest is one flat tone of lining.
