@@ -6,7 +6,9 @@ import type {
 } from "@/src/game/types";
 import type { HudMode, UnitSystem } from "@/src/settings";
 import { aircraftDefinition, type AircraftKind } from "@/src/sim";
+import type { CSSProperties } from "react";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
+import { cockpitDeckKStyleValue } from "@/src/ui/cockpitHudLayout";
 
 interface HudProps {
   state: FlightVisualState;
@@ -103,8 +105,20 @@ export function Hud({
       ? "UP"
       : "TRANSIT";
 
+  // Cockpit view keeps the HUD above the deck line (src/ui/cockpitHudLayout.ts);
+  // the class and `--deck-k` exist ONLY there, so every other camera's HUD is
+  // exactly the markup it was.
+  const cockpit = cameraMode === "cockpit";
+  const cockpitStyle = cockpit
+    ? ({ "--deck-k": cockpitDeckKStyleValue(spec.cockpitDeckLineDegrees) } as CSSProperties)
+    : undefined;
+
   return (
-    <div className={`flight-hud flight-hud--${mode}`} aria-live="off">
+    <div
+      className={`flight-hud flight-hud--${mode}${cockpit ? " flight-hud--cockpit" : ""}`}
+      style={cockpitStyle}
+      aria-live="off"
+    >
       <div className="flight-hud__topline">
         <div className="hud-session">
           <span>{controlModeLabel}</span>

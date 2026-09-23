@@ -138,6 +138,23 @@ export interface AircraftSpec {
   readonly chase: ChaseFramingSpec;
   readonly cinematic: CinematicOrbitSpec;
   readonly cockpitEye: CockpitEyeSpec;
+  /**
+   * The deck's top below the eye, in degrees, measured on the built kit: where
+   * the glareshield, panel, screens and bezels begin, seen from `cockpitEye` looking
+   * down the body axis — the angle whose tangent is the deck's highest ROW's drop
+   * below the centre row, per unit of the lens's focal length. Straight ahead that
+   * is the deck edge's depression; off-centre it describes the row, which is what a
+   * window cares about.
+   *
+   * The 2D HUD keeps out from under it in cockpit view (`flight-hud--cockpit` in
+   * src/game/flight.css). The cockpit lens is horizontal-fixed, so on any window
+   * the deck's top sits `(width / 2) * tan(this) / tan(lens / 2)` pixels below the
+   * centre row — which is how the rule holds for any window shape.
+   *
+   * Asserted by ray against the built kit in tests/ui.hud-cockpit-deck-line.test.ts,
+   * so a kit that moves its deck moves this with it.
+   */
+  readonly cockpitDeckLineDegrees: number;
   readonly spawn: SpawnSpec;
   readonly engineReadout: EngineReadoutSpec;
   readonly engineSound: EngineSoundSpec;
@@ -181,6 +198,8 @@ const TRAINER: AircraftSpec = Object.freeze({
   // sits on the left, and the eye used to be on the centreline between the two
   // seats.
   cockpitEye: Object.freeze({ forward: 1.38, up: 0.12, right: -0.26 }),
+  // The glareshield's crown, right of centre.
+  cockpitDeckLineDegrees: 8.31,
   spawn: Object.freeze({
     airborneAirspeed: 56,
     // Chosen so the aeroplane sits in APPROXIMATELY LEVEL FLIGHT hands-off,
@@ -266,6 +285,8 @@ const JET: AircraftSpec = Object.freeze({
   // not settled here.
   // `right` 0: a single-seat aeroplane, and the seat is on the centreline.
   cockpitEye: Object.freeze({ forward: 2.22, up: 0.94, right: 0 }),
+  // The coaming's far edge straight ahead (render.cockpit-jet.test.ts holds it at -10.2).
+  cockpitDeckLineDegrees: 10.19,
   spawn: Object.freeze({
     // 210 m/s, about 408 kt: an unremarkable low-level cruise for this
     // aeroplane, and comfortably above the speed where the spawn phugoid bites.
@@ -348,6 +369,8 @@ const BIZJET: AircraftSpec = Object.freeze({
   // left; the eye follows the geometry, not the name. Both seat pairs stand
   // 0.05 m aft of the eye in x (seat centre 11.85).
   cockpitEye: Object.freeze({ forward: 11.9, up: 0.78, right: -0.52 }),
+  // The glareshield's top edge.
+  cockpitDeckLineDegrees: 10.00,
   spawn: Object.freeze({
     // 200 m/s. 210 was above the speed at which this aeroplane flies level in
     // dense air near the ground, so it converted the excess into climb no
@@ -438,6 +461,11 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // model's panes lie 45 to 53 degrees UP on the nose crown, far forward, and the crown (3.10
   // at x 31.0, z -0.72) is the ceiling of every one of them. That is a nose re-loft.
   cockpitEye: Object.freeze({ forward: 29.9, up: 2.93, right: -0.72 }),
+  // MEASURED ON THE OLD KIT (de91cef, before K1: a480804's nose join, the eye's
+  // move to (29.85, 3.023, -0.50) and the rebuilt glareshield); RE-MEASURED IN K1.
+  // The cockpit engineer owns this value and its ray assertion in the kit MR;
+  // until then the deck-line tests hold it as it is.
+  cockpitDeckLineDegrees: 8.99,
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this
     // aeroplane flies level at down low, where the air is dense: at 230 it

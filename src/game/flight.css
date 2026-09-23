@@ -1436,6 +1436,55 @@
   line-height: 1.35;
 }
 
+/*
+ * Cockpit view. `Hud` adds `flight-hud--cockpit` and `--deck-k` only then, so
+ * every other camera's HUD is byte for byte what it was.
+ *
+ * THE RULE: nothing of the HUD draws below the deck line, the row where the
+ * airframe's glareshield, panel, screens and bezels begin, less 12px. The cockpit
+ * lens is horizontal-fixed, so that row is 50% of the height plus 50vw * k on any
+ * window shape, k = tan(cockpitDeckLineDegrees) / tan(lens / 2)
+ * (src/ui/cockpitHudLayout.ts, whose numbers these are). Measured, and the layout
+ * chosen, in docs/findings/COCKPIT_HUD_LAYOUT_2026_09_23.md.
+ */
+.flight-hud--cockpit {
+  --hud-deck-line: calc(50% + 50vw * var(--deck-k) - 12px);
+}
+
+/* The bottom group moves to a band under the session line. */
+.flight-hud--cockpit .flight-hud__bottom {
+  top: 60px;
+  bottom: auto;
+  align-items: flex-start;
+}
+
+/* Right-hand in every mode: alone in the minimal HUD it would take the left. */
+.flight-hud--cockpit .control-status {
+  margin-left: auto;
+}
+
+/* Key hints: always shown, between the session line and the band. */
+.flight-hud--cockpit .hud-help {
+  top: 42px;
+  bottom: auto;
+}
+
+/* Below the ACTUAL panel, whose top-right place it would otherwise share. */
+.flight-hud--cockpit .diagnostics {
+  top: 163px;
+}
+
+/* The tapes stay centred unless the deck line would reach them (half-height 85px). */
+.flight-hud--cockpit .metric-tape {
+  top: min(50%, calc(var(--hud-deck-line) - 85px));
+}
+
+/* The attitude box (340 x 230, centred) is cut at the deck line. Its pitch
+   ladder moves with pitch, so this is the guard, not the placement. */
+.flight-hud--cockpit .attitude {
+  clip-path: inset(0 0 max(0px, calc(115px + 12px - 50vw * var(--deck-k))) 0);
+}
+
 .pause-screen {
   position: absolute;
   inset: 0;
