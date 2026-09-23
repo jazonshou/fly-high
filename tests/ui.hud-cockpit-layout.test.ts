@@ -86,7 +86,9 @@ describe("the HUD's markup", () => {
     const renderer = readFileSync(join(ROOT, "src/render/FlightRenderer.ts"), "utf8");
     expect(renderer).toContain("camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;");
     // (The override argument is tests/render.cockpit-rig.test.ts's to hold; it is not named here.)
-    expect(renderer).toMatch(/fieldOfView = cockpitHorizontalFieldOfViewForAspect\(\s*this\.\w+,\s*this\.engine\.getAspectRatio\(this\.camera\),\s*\);/);
+    expect(renderer).toMatch(/fieldOfView = cockpitHorizontalFieldOfViewForAspect\(\s*this\.\w+,\s*this\.windowAspectRatio\(\),\s*\);/);
+    // The window's CSS shape, not the render raster, whose rounding moved a 16:9-exact lens.
+    expect(renderer).toMatch(/return canvas\.clientWidth \/ canvas\.clientHeight;/);
     expect(renderer).not.toMatch(/fieldOfView = cockpitFieldOfViewDegrees\(/);
   });
 });

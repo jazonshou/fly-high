@@ -260,7 +260,11 @@ within 2 px on all four decks. The HUD's boxes come from the stylesheet model.
   shows at 21:9 exactly the rows it shows at 16:9.
 - **The perf rig's lens is an override** and never changes.
 
-The renderer resolves it every frame from `engine.getAspectRatio(camera)`. The
+The renderer resolves it every frame from the canvas's CSS size, the window shape
+the HUD's stylesheet reads too. It does not use the render raster: in the first
+21:9 frame run the raster's rounding under a fractional render scale gave 91.325
+degrees against the window's 91.309, and the frame tool refused it. The same
+rounding could have put a 16:9 window past 16:9 and moved its 75 degrees. The
 HUD's half is the stylesheet's `min(50vw, 88.889vh)` in the deck line and the
 attitude clip; the markup is unchanged.
 

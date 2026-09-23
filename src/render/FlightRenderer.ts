@@ -2827,7 +2827,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // so a wide window adds width rather than cropping the panel.
       fieldOfView = cockpitHorizontalFieldOfViewForAspect(
         this.cockpitRigOverride,
-        this.engine.getAspectRatio(this.camera),
+        this.windowAspectRatio(),
       );
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
@@ -2961,6 +2961,21 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     );
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
+  }
+
+  /**
+   * The window's shape as the player sees it: the canvas's CSS size, which is
+   * what the HUD's stylesheet reads too. Not the render raster: its rounding
+   * under a fractional render scale put a 2560 x 1080 window a hair wider than
+   * that (the cockpit lens measured 91.325 degrees against 91.309), and it could
+   * equally put a 16:9 window past 16:9 and move the 75 degree lens there.
+   */
+  private windowAspectRatio(): number {
+    const canvas = this.engine.getRenderingCanvas();
+    if (canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+      return canvas.clientWidth / canvas.clientHeight;
+    }
+    return this.engine.getAspectRatio(this.camera);
   }
 
   /**
