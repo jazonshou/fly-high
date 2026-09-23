@@ -98,10 +98,10 @@ exhaustive 1,600-column search exactly on all four decks.
 
 | deck | survey (2 px grid) | bisected, in the catalogue | k |
 | --- | --- | --- | --- |
-| trainer | 8.29 | 8.31 | 0.1899 |
-| F-16 | 10.22 | 10.19 | 0.2344 |
-| Global | 10.01 | 10.00 | 0.2297 |
-| 747 | 8.94 | 8.99, on the kit before K1 | 0.2059 |
+| trainer | 8.29 | 8.31 | 0.1904 |
+| F-16 | 10.22 | 10.19 | 0.2343 |
+| Global | 10.01 | 10.00 | 0.2298 |
+| 747 | 8.94 | 8.99, on the kit before K1 | 0.2062 |
 
 The survey's figures read 1-2 px high, because they took the first 2 px cell's top
 edge. The F-16's bisected 10.19 agrees with its own test's -10.2 +- 0.1. The 747's
