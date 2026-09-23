@@ -994,6 +994,11 @@ interface ShaderCostTracker {
   shader: ComputeShader;
   stage: StageCostKey;
   dispatchesSinceConsume: number;
+  /**
+   * The counter's `count` when it was last read. Starts at 0, the count of a
+   * fresh Babylon counter that has resolved nothing: a start below it read
+   * "no reading yet" as a reading of 0 ms.
+   */
   lastSampleCount: number;
 }
 
@@ -1055,6 +1060,17 @@ export interface TerrainPageErosionGpuOptions {
 }
 
 /**
+ * One stage's GPU timing since the last `consumeStageMeasurements`: the
+ * milliseconds and dispatch count of the readings that priced something, and
+ * the dispatches whose reading came back with no positive duration.
+ */
+export interface TerrainErosionStageMeasurement {
+  milliseconds: number;
+  dispatches: number;
+  unusable: number;
+}
+
+/**
  * Per-page erosion timing sample for the report/tests (last completed page).
  */
 export interface TerrainErosionGpuPageTiming {
@@ -1082,17 +1098,14 @@ export class TerrainPageErosionGpu {
     ...TERRAIN_EROSION_STAGE_SEED_COST_MS,
   };
   private costTrackers: ShaderCostTracker[] = [];
-  private readonly stageSamples: Record<
-    StageCostKey,
-    { milliseconds: number; dispatches: number }
-  > = {
-    seed: { milliseconds: 0, dispatches: 0 },
-    geology: { milliseconds: 0, dispatches: 0 },
-    breach: { milliseconds: 0, dispatches: 0 },
-    decode: { milliseconds: 0, dispatches: 0 },
-    streamPower: { milliseconds: 0, dispatches: 0 },
-    talus: { milliseconds: 0, dispatches: 0 },
-    fineBand: { milliseconds: 0, dispatches: 0 },
+  private readonly stageSamples: Record<StageCostKey, TerrainErosionStageMeasurement> = {
+    seed: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    geology: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    breach: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    decode: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    streamPower: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    talus: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    fineBand: { milliseconds: 0, dispatches: 0, unusable: 0 },
   };
   private lastPageTiming: TerrainErosionGpuPageTiming | null = null;
 
@@ -1472,6 +1485,13 @@ export class TerrainPageErosionGpu {
       const milliseconds = counter.current / 1_000_000;
       tracker.lastSampleCount = counter.count;
       if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
+        // Babylon hands a pass whose timestamp pair gave no positive duration
+        // to the counter as 0. That is a reading the counter could not give,
+        // not a free dispatch: it prices nothing, so it stays out of the
+        // estimate and the average, but the dispatch RAN and is counted as
+        // such. Discarding the count made an unreadable pass look exactly
+        // like a shader that never dispatched.
+        this.stageSamples[tracker.stage].unusable += tracker.dispatchesSinceConsume;
         tracker.dispatchesSinceConsume = 0;
         continue;
       }
@@ -1498,20 +1518,18 @@ export class TerrainPageErosionGpu {
    * RAW accumulated timing per stage since the last call, unsmoothed: the
    * cost test measures with this rather than with the running estimate, whose
    * exponential smoothing would drag a measurement toward the pinned seed it
-   * is supposed to falsify.
+   * is supposed to falsify. `dispatches` are the ones a positive reading
+   * priced; `unusable` ran but read no positive duration. A dispatch whose
+   * reading never arrived is in neither.
    */
-  consumeStageMeasurements(): Readonly<
-    Record<StageCostKey, { readonly milliseconds: number; readonly dispatches: number }>
-  > {
+  consumeStageMeasurements(): Readonly<Record<StageCostKey, Readonly<TerrainErosionStageMeasurement>>> {
     const snapshot = Object.fromEntries(
-      Object.entries(this.stageSamples).map(([stage, sample]) => [
-        stage,
-        { milliseconds: sample.milliseconds, dispatches: sample.dispatches },
-      ]),
-    ) as Record<StageCostKey, { milliseconds: number; dispatches: number }>;
+      Object.entries(this.stageSamples).map(([stage, sample]) => [stage, { ...sample }]),
+    ) as Record<StageCostKey, TerrainErosionStageMeasurement>;
     for (const sample of Object.values(this.stageSamples)) {
       sample.milliseconds = 0;
       sample.dispatches = 0;
+      sample.unusable = 0;
     }
     return snapshot;
   }
@@ -2161,35 +2179,35 @@ export class TerrainPageErosionGpu {
       fineBandBtoA,
     });
     this.costTrackers = [
-      { shader: seed, stage: "seed", dispatchesSinceConsume: 0, lastSampleCount: -1 },
+      { shader: seed, stage: "seed", dispatchesSinceConsume: 0, lastSampleCount: 0 },
       {
         shader: geologyErodibility,
         stage: "geology",
         dispatchesSinceConsume: 0,
-        lastSampleCount: -1,
+        lastSampleCount: 0,
       },
-      { shader: geologyRepose, stage: "geology", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: breachDirect, stage: "breach", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: breachPit, stage: "breach", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: decode, stage: "decode", dispatchesSinceConsume: 0, lastSampleCount: -1 },
+      { shader: geologyRepose, stage: "geology", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: breachDirect, stage: "breach", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: breachPit, stage: "breach", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: decode, stage: "decode", dispatchesSinceConsume: 0, lastSampleCount: 0 },
       {
         shader: streamPowerFromA,
         stage: "streamPower",
         dispatchesSinceConsume: 0,
-        lastSampleCount: -1,
+        lastSampleCount: 0,
       },
       {
         shader: streamPowerFromB,
         stage: "streamPower",
         dispatchesSinceConsume: 0,
-        lastSampleCount: -1,
+        lastSampleCount: 0,
       },
-      { shader: talusGatherFromA, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: talusGatherFromB, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: talusApplyAtoB, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: talusApplyBtoA, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: fineBandAtoB, stage: "fineBand", dispatchesSinceConsume: 0, lastSampleCount: -1 },
-      { shader: fineBandBtoA, stage: "fineBand", dispatchesSinceConsume: 0, lastSampleCount: -1 },
+      { shader: talusGatherFromA, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: talusGatherFromB, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: talusApplyAtoB, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: talusApplyBtoA, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: fineBandAtoB, stage: "fineBand", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      { shader: fineBandBtoA, stage: "fineBand", dispatchesSinceConsume: 0, lastSampleCount: 0 },
     ];
     return this.shaders;
   }

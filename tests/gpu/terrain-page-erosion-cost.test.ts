@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
 import { COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
 import {
-  EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS,
-  TERRAIN_EROSION_PRODUCTION_CONFIG,
-} from "../../src/render/webgpu/terrain/TerrainErosionCompute";
-import {
-  TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
-  TERRAIN_EROSION_SEED_BAND_ROWS,
   TERRAIN_EROSION_STAGE_SEED_COST_MS,
+  type TerrainErosionStageMeasurement,
 } from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
+import {
+  type ErosionCostStage,
+  EXPECTED_STAGE_DISPATCHES,
+  erosionStageCoverageFaults,
+} from "../support/erosionStageCoverage";
 import {
   buildHarness,
   gpuTimingAvailable,
@@ -35,31 +35,10 @@ import {
  * several WebGPU devices does not reliably get one — see the harness note.
  */
 
-type CostStage = keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS;
-type StageMeasurements = Readonly<
-  Record<CostStage, { readonly milliseconds: number; readonly dispatches: number }>
->;
+type CostStage = ErosionCostStage;
+type StageMeasurements = Readonly<Record<CostStage, Readonly<TerrainErosionStageMeasurement>>>;
 
 const COST_STAGES = Object.keys(TERRAIN_EROSION_STAGE_SEED_COST_MS) as CostStage[];
-
-/**
- * The complete production DAG, derived from the same geometry/configuration
- * constants as the producer. This is the timing sample's non-vacuity guard:
- * a cheap result with a missing shader is not a fast page.
- */
-const EXPECTED_STAGE_DISPATCHES: Readonly<Record<CostStage, number>> = Object.freeze({
-  seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
-  // Erodibility before breach and repose after stream power.
-  geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
-  breach: 2,
-  decode: 1,
-  streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
-  // One gather and one apply per iteration.
-  talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
-  fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
-});
 
 const TIMED_PAGES = 4;
 const REQUIRED_CONCENTRATED_PAGES = TIMED_PAGES - 1;
@@ -153,17 +132,13 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
     const expectedTotalDispatches = Object.values(EXPECTED_STAGE_DISPATCHES)
       .reduce((sum, count) => sum + count, 0);
     const pageRows = measured.pages.map((page, pageIndex) => {
-      for (const stage of COST_STAGES) {
-        const sample = page.samples[stage];
-        expect(
-          sample.dispatches,
-          `timed page ${pageIndex + 1} did not measure every ${stage} dispatch`,
-        ).toBe(EXPECTED_STAGE_DISPATCHES[stage]);
-        expect(
-          sample.milliseconds,
-          `timed page ${pageIndex + 1} measured ${stage} dispatches but no GPU time`,
-        ).toBeGreaterThan(0);
-      }
+      // Every dispatch present, priced or unusable, and the unusable ones
+      // capped (see UNUSABLE_READINGS_PER_PAGE_CAP). A shader that never
+      // dispatched gives no reading at all and still fails here.
+      expect(
+        erosionStageCoverageFaults(page.samples),
+        `timed page ${pageIndex + 1} stage coverage`,
+      ).toEqual([]);
       expect(page.dispatches, `timed page ${pageIndex + 1} DAG dispatch count`)
         .toBe(expectedTotalDispatches);
       const total = measuredCost(page.samples, COST_STAGES);
@@ -171,13 +146,18 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       const minor = measuredCost(page.samples, MINOR_STAGES);
       const perDispatch = Object.fromEntries(COST_STAGES.map((stage) => [
         stage,
-        page.samples[stage].milliseconds / page.samples[stage].dispatches,
+        page.samples[stage].dispatches > 0
+          ? page.samples[stage].milliseconds / page.samples[stage].dispatches
+          : null,
       ]));
+      const unusable = COST_STAGES.filter((stage) => page.samples[stage].unusable > 0)
+        .map((stage) => `${stage} ${page.samples[stage].unusable}`);
       console.log(
         `W-1d timed page ${pageIndex + 1}/${TIMED_PAGES}:`,
         `${total.toFixed(2)} ms GPU (${(total / expectedTotalDispatches).toFixed(4)} ms/dispatch),`,
         `major ${major.toFixed(2)} ms, minor ${minor.toFixed(2)} ms,`,
-        `${page.frames} pump frames, ${Math.round(page.wallMilliseconds)} ms wall; stages`,
+        `${page.frames} pump frames, ${Math.round(page.wallMilliseconds)} ms wall;`,
+        `unusable readings: ${unusable.length > 0 ? unusable.join(", ") : "none"}; stages`,
         JSON.stringify(perDispatch, (_, value) =>
           typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value),
       );
