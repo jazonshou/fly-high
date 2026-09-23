@@ -212,7 +212,10 @@ export type TerrainErosionGpuStage =
  * one workgroup row, and the talus pair is `W-1a`'s shader, not this file's.
  */
 export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
-  Record<"seed" | "geology" | "breach" | "decode" | "streamPower" | "talus" | "fineBand", number>
+  Record<
+    "seed" | "geology" | "breachDirect" | "breachPit" | "decode" | "streamPower" | "talus" | "fineBand",
+    number
+  >
 > = Object.freeze({
   // One 8-row band of the composed analytic+uplift kernel: eight supersampled
   // evaluations of the two ~750-line kernels per texel above L0, plus the
@@ -221,9 +224,15 @@ export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
   // One 48-row band of the geology sampler: two filtered value-noise octaves
   // and a fabric angle, once per texel. 8 bands per pass, two passes, 1.3 ms.
   geology: 0.082,
-  // Direct-receiver gather, then the sparse (2r+1)² pit carve, over 384².
-  // Cheap because almost no cell is a pit: 0.13 ms for the pair.
-  breach: 0.067,
+  // The breach stage's two passes, priced apart: one price for both could be a
+  // measurement of neither, because on an instrument that reads each pass's
+  // own time they are far apart
+  // (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md). Both still
+  // carry the old single breach figure until they are re-measured.
+  // Direct-receiver gather over 384².
+  breachDirect: 0.067,
+  // The sparse (2r+1)² pit carve over 384².
+  breachPit: 0.067,
   // A single 384² pass, and therefore the one figure here with no averaging
   // behind it — its counter is a single noisy sample of a 0.09 ms dispatch.
   decode: 0.089,
@@ -1097,7 +1106,8 @@ export class TerrainPageErosionGpu {
   private readonly stageSamples: Record<StageCostKey, TerrainErosionStageMeasurement> = {
     seed: { milliseconds: 0, dispatches: 0, unusable: 0 },
     geology: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    breach: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    breachDirect: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    breachPit: { milliseconds: 0, dispatches: 0, unusable: 0 },
     decode: { milliseconds: 0, dispatches: 0, unusable: 0 },
     streamPower: { milliseconds: 0, dispatches: 0, unusable: 0 },
     talus: { milliseconds: 0, dispatches: 0, unusable: 0 },
@@ -1168,10 +1178,11 @@ export class TerrainPageErosionGpu {
           costMs: this.stageEstimatesMs.geology,
         };
       case "breach":
-        return {
-          count: job.breachDirectDone ? 1 : 2,
-          costMs: this.stageEstimatesMs.breach,
-        };
+        // One pass at a time, each at its own price: the two differ too much
+        // for one estimate to admit both honestly.
+        return job.breachDirectDone
+          ? { count: 1, costMs: this.stageEstimatesMs.breachPit }
+          : { count: 1, costMs: this.stageEstimatesMs.breachDirect };
       case "decode":
         return { count: 1, costMs: this.stageEstimatesMs.decode };
       case "stream-power":
@@ -1403,12 +1414,12 @@ export class TerrainPageErosionGpu {
 
     if (job.stage === "breach") {
       if (!job.breachDirectDone) {
-        await this.dispatch(shaders.breachDirect, "breach", fullGroups, fullGroups, 1, job);
+        await this.dispatch(shaders.breachDirect, "breachDirect", fullGroups, fullGroups, 1, job);
         job.breachDirectDone = true;
         remaining -= 1;
         if (remaining <= 0 || job.cancelled || this.job !== job) return;
       }
-      await this.dispatch(shaders.breachPit, "breach", fullGroups, fullGroups, 1, job);
+      await this.dispatch(shaders.breachPit, "breachPit", fullGroups, fullGroups, 1, job);
       job.stage = "readback";
       job.asyncInFlight = true;
       void this.runReadbackAndMfd(job, buffers);
@@ -2176,8 +2187,8 @@ export class TerrainPageErosionGpu {
       tracked(seed, "seed"),
       tracked(geologyErodibility, "geology"),
       tracked(geologyRepose, "geology"),
-      tracked(breachDirect, "breach"),
-      tracked(breachPit, "breach"),
+      tracked(breachDirect, "breachDirect"),
+      tracked(breachPit, "breachPit"),
       tracked(decode, "decode"),
       tracked(streamPowerFromA, "streamPower"),
       tracked(streamPowerFromB, "streamPower"),

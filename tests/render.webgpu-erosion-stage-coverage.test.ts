@@ -39,7 +39,8 @@ interface FakeTracker {
 const SHADERS_PER_STAGE: Readonly<Record<ErosionCostStage, number>> = {
   seed: 1,
   geology: 2,
-  breach: 2,
+  breachDirect: 1,
+  breachPit: 1,
   decode: 1,
   streamPower: 2,
   talus: 4,
@@ -120,26 +121,28 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   it("counts a pass that read zero as unusable, prices it at nothing, and the page passes", () => {
     const fake = producerWithFakeTrackers();
     const samples = runFakePage(fake, (stage, index) =>
-      stage === "breach" && index === 0 ? 0 : undefined);
+      stage === "breachDirect" && index === 0 ? 0 : undefined);
     // The failure this guards: breach read "1 of 2" because the zero was dropped.
-    expect(samples.breach).toEqual({
-      milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breach,
+    expect(samples.breachDirect).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1 });
+    expect(samples.breachPit).toEqual({
+      milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit,
       dispatches: 1,
-      unusable: 1,
+      unusable: 0,
     });
     expect(erosionStageCoverageFaults(samples)).toEqual([]);
     // Nothing was priced from it: the running estimate did not move toward zero.
-    expect(fake.producer.stageEstimates().breach).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breach, 12);
+    expect(fake.producer.stageEstimates().breachDirect)
+      .toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect, 12);
   });
 
   it("starts each page's unusable count afresh, so a warm page's cannot enter page 1", () => {
     const fake = producerWithFakeTrackers();
     runFakePage(fake, (stage, index) =>
-      stage === "breach" && index === 0 ? 0 : undefined);
+      stage === "breachDirect" && index === 0 ? 0 : undefined);
     const next = runFakePage(fake);
-    expect(next.breach).toEqual({
-      milliseconds: 2 * TERRAIN_EROSION_STAGE_SEED_COST_MS.breach,
-      dispatches: 2,
+    expect(next.breachDirect).toEqual({
+      milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect,
+      dispatches: 1,
       unusable: 0,
     });
   });
@@ -163,29 +166,45 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   it("still fails a page with a shader that never dispatched", () => {
     const fake = producerWithFakeTrackers();
     const samples = runFakePage(fake, undefined, (stage) =>
-      stage === "breach" ? 1 : EXPECTED_STAGE_DISPATCHES[stage]);
-    expect(samples.breach).toMatchObject({ dispatches: 1, unusable: 0 });
+      stage === "breachPit" ? 0 : EXPECTED_STAGE_DISPATCHES[stage]);
+    expect(samples.breachPit).toMatchObject({ dispatches: 0, unusable: 0 });
     expect(erosionStageCoverageFaults(samples)).toEqual([
-      "did not measure every breach dispatch: 1 priced + 0 unusable, expected 2",
+      "did not measure every breachPit dispatch: 0 priced + 0 unusable, expected 1",
     ]);
   });
 
   it("still fails a page with a reading that never arrived", () => {
     const fake = producerWithFakeTrackers();
     const samples = runFakePage(fake, (stage, index) =>
-      stage === "breach" && index === 0 ? "none" : undefined);
-    expect(samples.breach).toMatchObject({ dispatches: 1, unusable: 0 });
+      stage === "breachPit" && index === 0 ? "none" : undefined);
+    expect(samples.breachPit).toMatchObject({ dispatches: 0, unusable: 0 });
     expect(erosionStageCoverageFaults(samples)).toEqual([
-      "did not measure every breach dispatch: 1 priced + 0 unusable, expected 2",
+      "did not measure every breachPit dispatch: 0 priced + 0 unusable, expected 1",
     ]);
+  });
+
+  it("offers breach one pass at a time, each at its own price", () => {
+    const producer = new TerrainPageErosionGpu({} as AbstractEngine, {} as TerrainPageErosionGpuOptions);
+    const internals = producer as unknown as {
+      job: { stage: string; breachDirectDone: boolean; asyncInFlight: boolean; cancelled: boolean } | null;
+      stageEstimatesMs: Record<ErosionCostStage, number>;
+      pruneStale(): void;
+    };
+    internals.pruneStale = () => {};
+    internals.stageEstimatesMs.breachDirect = 0.04;
+    internals.stageEstimatesMs.breachPit = 2.5;
+    internals.job = { stage: "breach", breachDirectDone: false, asyncInFlight: false, cancelled: false };
+    expect(producer.demand(0)).toEqual({ count: 1, costMs: 0.04 });
+    internals.job.breachDirectDone = true;
+    expect(producer.demand(0)).toEqual({ count: 1, costMs: 2.5 });
   });
 
   it("does not let a reading that never arrives hold up the passes after it", () => {
     const fake = producerWithFakeTrackers();
-    runFakePage(fake, (stage, index) => stage === "breach" && index === 0 ? "none" : undefined);
-    expect(runFakePage(fake).breach).toEqual({
-      milliseconds: 2 * TERRAIN_EROSION_STAGE_SEED_COST_MS.breach,
-      dispatches: 2,
+    runFakePage(fake, (stage, index) => stage === "breachPit" && index === 0 ? "none" : undefined);
+    expect(runFakePage(fake).breachPit).toEqual({
+      milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit,
+      dispatches: 1,
       unusable: 0,
     });
   });
