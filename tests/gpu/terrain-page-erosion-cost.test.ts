@@ -238,9 +238,9 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
     ).toBeGreaterThanOrEqual(REQUIRED_CONCENTRATED_PAGES);
 
     // Drop the same single slowest physical page for both groups. Seed+talus
-    // carry 92% of the declared page price and have 112 dispatches/page, so a
+    // carry 95% of the declared page price and have 112 dispatches/page, so a
     // 2x grouped guard is stable and catches the stages that can actually
-    // break page admission. The minor stages are only 8% of the price and
+    // break page admission. The minor stages are only 5% of the price and
     // include the 1-dispatch decode and 20-us stream-power counters; combining
     // all 54 dispatches/page (with the L3 page's 3 carve chunks) supports the
     // original one-sided 4x alarm without pretending an individual short
@@ -267,9 +267,9 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
 
     // Keep the published client seed connected to the stage table. A future
     // seed edit cannot make the aggregate gate pass by silently changing only
-    // one side of the admission contract. It is intentionally conservative:
-    // the stage-weighted 0.226 ms rounds up to 0.24 ms, so compare the policy
-    // relationship rather than demanding false decimal equality.
+    // one side of the admission contract. The stage-weighted 0.280 ms is
+    // published as 0.28 ms, so compare the policy relationship rather than
+    // demanding false decimal equality.
     const weightedDispatchSeed = PINNED_PAGE_COST_MS / expectedTotalDispatches;
     expect(
       Math.abs(weightedDispatchSeed - COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute)

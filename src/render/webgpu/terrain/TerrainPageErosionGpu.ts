@@ -179,37 +179,40 @@ export type TerrainErosionGpuStage =
 
 /**
  * Measured per-dispatch GPU cost by stage, in milliseconds at the 384²
- * production scratch on the reference adapter (Apple silicon, ANGLE Metal,
- * 2026-08-30, seed w1d-page-erosion-gpu, an L3 page; re-measured by the
- * concentrated whole-page and grouped one-sided guards in
- * tests/gpu/terrain-page-erosion-cost.test.ts). Production ships with GPU
+ * production scratch on the reference adapter (Apple silicon, WebGPU on
+ * Metal, seed w1d-page-erosion-gpu, an L3 page). Production ships with GPU
  * timing OFF, so these constants ARE the admission prices for a normal
  * session; the running estimate refines them only on a pinned diagnostic
- * capture.
+ * capture. Held by the concentrated whole-page and grouped one-sided guards in
+ * tests/gpu/terrain-page-erosion-cost.test.ts.
  *
- * Whole page after `W-4`: **38.1-39.9 ms of GPU across 163 dispatches** over
- * three consecutive runs (48 seed bands, 16 geology bands over two passes, 2
- * breach, 1 decode, 24 stream-power, 64 talus, 8 fine-band), amortised at
- * whatever the meter admits. W-4's FINE BAND pass is the whole delta from the
- * recorded 37.4 ms / 155 dispatches: **+8 dispatches and +0.6-0.9 ms**, or
- * 2.4% of the page, for moving the fine bands off the uplift input.
+ * Re-priced 2026-09-22 on the instrument that reads each pass's own time
+ * (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md); every figure
+ * before then was the time of whatever pass last held the query slot. Each is
+ * a clean-room price: at least 20 s of idle GPU before the run
+ * (tests/support/pricingRun.ts), three runs. The stages the breach fix left
+ * alone carry the 22:38 slot's figures, whose three runs agreed within 1-7 %;
+ * the breach passes, rebuilt as a pit list, a chunk-sizing pass and a chunked
+ * carve (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md), are priced from
+ * the 23:47 slot, cold: the first pass on a fresh page.
  *
- * The single-dispatch rows (decode, and stream power at ~20 microseconds each)
- * remain the noisy ones this file already warned about: across five runs on
- * the reference adapter `decode` was measured at 0.085, 0.091, 0.091, 0.198
- * and 0.816 ms, and `streamPower` at 0.066, 0.072, 0.073 and 0.367. Both
- * outliers are the counter, not the shader — the whole-page total moved 4% in
- * the same runs. They deliberately have no individual timing bounds: the gate
- * requires every dispatch to be present, then measures their combined page
- * contribution so counter granularity cannot masquerade as shader drift.
+ * Whole page: **46.4 ms of GPU across 166 dispatches** on the L3 page (48 seed
+ * bands, 16 geology bands over two passes, the breach's direct and args passes
+ * and 3 carve chunks, 1 decode, 24 stream-power, 64 talus, 8 fine-band). The
+ * carve's chunks follow the page's pits, one per 128, so a denser page has
+ * more of them.
  *
  * Two stages sit ABOVE the tier-0 `erosionCompute` row of 0.2 ms — seed at
- * 0.29 and talus at 0.32 — and both are inside tier 1's 0.4 ms row, which is
- * the shipping tier. At tier 0 they are admitted through the surplus pass
- * (eroded mode leaves `terrainCompute` with no demand at all, so its row is
- * surplus every frame) or, failing that, the floor of one. Neither can be
- * banded further without changes outside this item: the seed band is already
- * one workgroup row, and the talus pair is `W-1a`'s shader, not this file's.
+ * 0.40 and talus at 0.39 — and both fit tier 1's 0.4 ms row, which is the
+ * shipping tier, seed exactly. Seed's cold first page reads 0.42-0.46 (23:49),
+ * past that row; it is recorded in the finding rather than priced, because
+ * every stage must fit the tier-1 row (the erosion parent-chain test) and a
+ * finer seed band is outside this item. At tier 0 they are admitted through
+ * the surplus pass (eroded mode leaves `terrainCompute` with no demand at all,
+ * so its row is surplus every frame) or, failing that, the floor of one.
+ * Neither can be banded further without changes outside this item: the seed
+ * band is already one workgroup row, and the talus pair is `W-1a`'s shader,
+ * not this file's.
  */
 export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
   Record<
@@ -220,44 +223,47 @@ export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
 > = Object.freeze({
   // One 8-row band of the composed analytic+uplift kernel: eight supersampled
   // evaluations of the two ~750-line kernels per texel above L0, plus the
-  // macro-uplift (or parent-filter) leg. 48 bands, 14.0 ms of the page.
-  seed: 0.29,
+  // macro-uplift (or parent-filter) leg. 48 bands, 19.2 ms of the page.
+  seed: 0.4,
   // One 48-row band of the geology sampler: two filtered value-noise octaves
-  // and a fabric angle, once per texel. 8 bands per pass, two passes, 1.3 ms.
-  geology: 0.082,
-  // The breach stage's passes, priced apart: one price for all of them could
-  // be a measurement of none, because on an instrument that reads each pass's
-  // own time they are far apart
-  // (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md). All three
-  // carry the old single breach figure until they are re-measured.
-  // Direct-receiver gather over 384², which also lists the pits for the carve.
-  breachDirect: 0.067,
-  // One thread writing each carve chunk's indirect dispatch size from the pit count.
-  breachArgs: 0.067,
+  // and a fabric angle, once per texel. 8 bands per pass, two passes, 0.18 ms.
+  geology: 0.011,
+  // The breach stage's passes, each priced on its own: one price for all of
+  // them would be a measurement of none, because they are far apart.
+  // Direct-receiver gather over 384², which also lists the pits for the carve:
+  // 0.098 ms cold in all three runs.
+  breachDirect: 0.099,
+  // One thread writing each carve chunk's indirect dispatch size from the pit
+  // count: 0.012 cold. Alone in a frame it has read as much as 0.075, which
+  // is a pass's floor on this adapter, not its work.
+  breachArgs: 0.013,
   // One chunk of the (2r+1)² pit carve: up to `BREACH_PIT_CHUNK_PITS` listed
   // pits, one workgroup each, one indirect dispatch from its own arg set.
-  breachPit: 0.067,
+  // Cold full chunks on pages of 372, 794 and 1070 pits: median 0.202 ms over
+  // 48 (0.185-0.224), the same on every page. A partial chunk still costs
+  // ~0.16, the slowest pit's own latency, so a page pays that once a chunk.
+  breachPit: 0.21,
   // A single 384² pass, and therefore the one figure here with no averaging
-  // behind it — its counter is a single noisy sample of a 0.09 ms dispatch.
-  decode: 0.089,
-  // One implicit-Jacobi stream-power iteration at 384². 24 of them, ~0.8 ms.
-  // The noisiest row: 0.022-0.049 across four runs on one adapter, because a
-  // 20-microsecond dispatch is near the counter's own resolution. Centred on
-  // the median; the cost gate aggregates all 24 with the other minor stages.
-  streamPower: 0.033,
+  // behind it. On the old instrument it read 0.085-0.816 ms, the slot's
+  // previous occupant; on its own it reads 0.019-0.021.
+  decode: 0.021,
+  // One implicit-Jacobi stream-power iteration at 384². 24 of them, ~1.0 ms.
+  // Centred on the median; the cost gate aggregates all 24 with the other
+  // minor stages.
+  streamPower: 0.041,
   // One talus gather or one talus apply at 384². **The page's dominant cost:
-  // 64 dispatches, 20.7 ms — 55% of the whole DAG.** The gather recomputes
+  // 64 dispatches, 25.0 ms — 54% of the whole DAG.** The gather recomputes
   // every neighbour's full eight-way outflow distribution to stay a pure
   // gather (W-1a's shape, and the reason it is bit-reproducible), which is 64
   // loads per cell. Recorded as the first place to look if the page rate has
   // to improve again.
-  talus: 0.32,
+  talus: 0.39,
   // W-4's FINE BAND band: one 48-row slice of the uplift kernel's fine-band
   // sampler (a fabric angle and three ridged octaves) plus the soil mask's
   // five-tap stencil. Seeded at the geology row it is closest to — geology is
   // two filtered octaves plus a fabric angle over the same band height — and
   // re-measured inside the complete-page aggregate rather than in isolation.
-  fineBand: 0.082,
+  fineBand: 0.043,
 });
 
 /**

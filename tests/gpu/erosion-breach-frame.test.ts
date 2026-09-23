@@ -4,50 +4,69 @@ import { describe, expect, it } from "vitest";
 import { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
 import { FRAME_BUDGET_MS } from "@/src/render/webgpu/core/PerformanceBudget";
 import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
-import { TERRAIN_EROSION_STAGE_SEED_COST_MS } from "@/src/render/webgpu/terrain/TerrainPageErosionGpu";
+import {
+  TERRAIN_EROSION_STAGE_SEED_COST_MS,
+  terrainBreachPitChunks,
+} from "@/src/render/webgpu/terrain/TerrainPageErosionGpu";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import { admit, buildHarness, gpuTimingAvailable, nextFrame, withScene } from "./terrainPageErosionGpuHarness";
 
 /**
- * The breach-pit pass in the frame that runs it, admitted the way the renderer
+ * The breach stage in the frames that run it, admitted the way the renderer
  * admits it: the producer's `demand()` submitted to a `ComputeBudget` at the
  * shipping tier, beside a higher-priority client with steady demand, and only
- * what the plan admits pumped. Estimates stay frozen at their seeds, as in
+ * what the plan admits pumped. Estimates stay frozen at the stage table, as in
  * shipping, where timing is off and nothing refines them.
  *
  * Per frame it records what the budget BOOKED and what the GPU SPENT, for the
  * erosion client and for the competitor, from every pass's own delivered
- * duration (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md). Two
- * pages: one at the breach prices the table ships, one at the prices measured
- * for the two breach passes in the clean-room slot of 2026-09-22.
+ * duration (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md).
  *
- * It RECORDS today's behaviour rather than asserting it, because today's
- * behaviour is the defect (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md):
- * at the shipped 0.067 ms the ~6 ms pit carve is admitted as if free and the
- * frame spends ~9 ms of compute against a 1.73 ms cap; at its measured price
- * it never fits the cap, the floor of one goes to the higher-priority client
- * with demand, and the page stalls. What it asserts is that the measurement is
- * real: the shipped page converges and the pit frame's spend was delivered.
- * Once the pit carve is banded to fit the row, this becomes the standing gate:
- * booked close to spent, and the page converging, at the measured prices.
+ * The standing gate for docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md. The
+ * defect it records: the pit carve ran as one serial pass of ~6 ms, admitted
+ * at 0.067 ms as if free; priced honestly it never fit the cap, the floor of
+ * one went to the higher-priority client, and the page stalled. The fix runs
+ * the carve a chunk of pits at a time, each chunk an admitted unit priced
+ * under the erosion row. So on a sparse page and a dense one, at the table's
+ * prices and with the competitor present: the page converges, erosion is
+ * never refused while it has demand, and no breach pass spends much more than
+ * it was booked at, which is what a hitch is.
+ *
+ * Over-booking (a pass spending well under its price) is recorded per frame,
+ * not asserted: three chunks sharing a frame have read as little as 0.074 ms
+ * against 0.63 booked, and whether that is the timestamps of back-to-back
+ * passes or a genuinely faster re-run of the page is not yet known. It wastes
+ * budget; it cannot hitch.
  */
 
-/** The measured prices of the two breach passes: clean-room slot, 2026-09-22 (median of three runs). */
-const MEASURED_BREACH_MS = Object.freeze({ direct: 0.11, pit: 6.0 });
 const COMPETITOR_DEMAND = 2;
+/** The sparse page the cost test prices on, and the densest page measured (1070 pits). */
+const PAGES = [[3, -3, 5], [5, -1, 1]] as const;
+/**
+ * The hitch side of booked against spent, per breach frame: spent at most
+ * half again what was booked, plus a pass's floor. The floor is what a pass
+ * reads beyond its work on this adapter: the one-thread args pass, booked at
+ * 0.013 ms, has read anywhere from 0.007 to 0.075 ms alone in its frame
+ * (2026-09-22/23), so 0.08 ms covers it.
+ */
+const OVERSPEND_RATIO = 1.5;
+const PASS_FLOOR_MS = 0.08;
 
 interface FrameRow {
   readonly frameId: number;
   readonly stage: string;
-  readonly breachPass: "direct" | "pit" | null;
+  readonly breachPass: "direct" | "args" | "chunk" | null;
+  /** In breach with the chunks unknown: the pit count is being read back. */
+  readonly awaitingCount: boolean;
+  readonly erosionDemand: number;
   readonly erosionAdmitted: number;
   readonly erosionBookedMs: number;
   readonly competitorAdmitted: number;
   readonly competitorBookedMs: number;
 }
 
-describe("breach-pit in its frame, under the live admission meter", () => {
-  it("records booked against spent for the pit carve, at the shipped and at the measured prices", async () => {
+describe("the breach stage in its frames, under the live admission meter", () => {
+  it("converges, and no breach pass overspends its booking, at the table's prices beside a competitor", async () => {
     const spentBySinkFrame = new Map<unknown, Map<number, number>>();
     const result = await withScene(async (engine, scene) => {
       if (!gpuTimingAvailable(engine)) return null;
@@ -77,16 +96,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       };
       const estimates = (harness.producer as unknown as { stageEstimatesMs: Record<string, number> }).stageEstimatesMs;
       const profile = resolveWebGpuQualityProfile("medium", "balanced");
-      const address = createWorldPageAddress(3, -3, 5);
 
-      const runPage = async (breach: { direct: number; pit: number } | null, competitorMs: number) => {
+      const runPage = async (level: number, x: number, z: number, competitorMs: number) => {
         Object.assign(estimates, TERRAIN_EROSION_STAGE_SEED_COST_MS);
-        if (breach) {
-          estimates.breachDirect = breach.direct;
-          estimates.breachPit = breach.pit;
-        }
         const budget = new ComputeBudget(profile);
-        const slot = admit(harness, address);
+        const slot = admit(harness, createWorldPageAddress(level, x, z));
         let settled = false;
         let failure: unknown = null;
         void harness.producer.beginPage(slot, slot.token!)
@@ -101,8 +115,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           const competitorAdmitted = competitorMs > 0 ? budget.admitted("occlusionCompute") : 0;
           for (let pass = 0; pass < competitorAdmitted; pass += 1) competitor.dispatch(4096, 1, 1);
           const stage = String(harness.producer.activeStage);
-          const job = (harness.producer as unknown as { job: { breachDirectDone: boolean } | null }).job;
-          const breachPass = stage === "breach" ? (job?.breachDirectDone ? "pit" : "direct") : null;
+          const job = (harness.producer as unknown as {
+            job: { breachDirectDone: boolean; breachArgsDone: boolean; asyncInFlight: boolean } | null;
+          }).job;
+          const breachPass = stage !== "breach" ? null
+            : !job?.breachDirectDone ? "direct" : !job.breachArgsDone ? "args" : "chunk";
           const erosionAdmitted = budget.admitted("erosionCompute");
           const frameId = engine.frameId;
           if (erosionAdmitted > 0) await harness.producer.pump(erosionAdmitted);
@@ -110,6 +127,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
             frameId,
             stage,
             breachPass: erosionAdmitted > 0 ? breachPass : null,
+            awaitingCount: stage === "breach" && job?.breachArgsDone === true && job.asyncInFlight,
+            erosionDemand: demand.count,
             erosionAdmitted,
             erosionBookedMs: erosionAdmitted * demand.costMs,
             competitorAdmitted,
@@ -119,15 +138,18 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         }
         for (let frame = 0; frame < 16; frame += 1) await nextFrame();
         if (failure) throw failure;
+        const pits = harness.producer.lastBreachPits ?? 0;
         if (!settled) harness.producer.cancelActive("breach-frame: stalled under the meter");
         harness.heightAtlas.residency.release(slot.key);
-        return { rows, settled };
+        return { rows, settled, pits };
       };
 
       try {
-        // Warm every pipeline, and price the competitor from its own passes.
+        // Warm every pipeline on both pages, and price the competitor from its own passes.
         await competitor.dispatchWhenReady(4096, 1, 1);
-        if (!(await runPage(null, 0)).settled) throw new Error("the warm page never converged");
+        for (const [level, x, z] of PAGES) {
+          if (!(await runPage(level, x, z, 0)).settled) throw new Error("a warm page never converged");
+        }
         const probeFrames: number[] = [];
         for (let frame = 0; frame < 8; frame += 1) {
           probeFrames.push(engine.frameId);
@@ -142,22 +164,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         const competitorMs = competitorSamples[Math.floor(competitorSamples.length / 2)] ?? 0;
         if (!(competitorMs > 0)) throw new Error("the competitor was never timed");
 
-        const arms = [
-          {
-            name: "shipped prices",
-            breach: {
-              direct: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect,
-              pit: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit,
-            },
-          },
-          { name: "measured prices", breach: MEASURED_BREACH_MS },
-        ];
-        const out = [];
-        for (const arm of arms) {
-          const page = await runPage(arm.breach, competitorMs);
-          out.push({ name: arm.name, rows: page.rows, settled: page.settled });
+        const pages = [];
+        for (const [level, x, z] of PAGES) {
+          pages.push({ label: `L${level} ${x},${z}`, ...(await runPage(level, x, z, competitorMs)) });
         }
-        return { competitorMs, arms: out, erosionSinks: erosionSinks(), competitorSink, capMs: new ComputeBudget(profile).capMs };
+        return { competitorMs, pages, erosionSinks: erosionSinks(), competitorSink, capMs: new ComputeBudget(profile).capMs };
       } finally {
         sink.dispose();
         harness.dispose();
@@ -183,41 +194,64 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     const competitorSinks = new Set([result.competitorSink]);
     console.log(
       `breach frame: tier 1, erosion row ${row} ms, compute cap ${result.capMs.toFixed(2)} ms, `
-      + `competitor ${COMPETITOR_DEMAND} x ${result.competitorMs.toFixed(3)} ms at occlusion priority`,
+      + `competitor ${COMPETITOR_DEMAND} x ${result.competitorMs.toFixed(3)} ms at occlusion priority; `
+      + `breach prices direct ${TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect}, `
+      + `args ${TERRAIN_EROSION_STAGE_SEED_COST_MS.breachArgs}, chunk ${TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit} ms`,
     );
-    const summaries = result.arms.map(({ name, rows, settled }) => {
-      const stalled = rows.filter((frame) => frame.stage === "breach" && frame.erosionAdmitted === 0).length;
-      console.log(`  ${name}: ${settled ? "converged" : "STALLED"} in ${rows.length} frames; `
-        + `${stalled} frames in breach with erosion admitted 0; competitor admitted every frame: `
-        + `${rows.every((frame) => frame.competitorAdmitted > 0)}`);
-      const breachRows = rows.filter((frame) => frame.breachPass !== null);
+    // Every page's record first, then the assertions: a failure on one page
+    // must not hide the other's.
+    const verdicts = result.pages.map((page) => {
+      const refused = page.rows.filter((frame) => frame.erosionDemand > 0 && frame.erosionAdmitted === 0);
+      const breachRows = page.rows.filter((frame) => frame.breachPass !== null);
+      console.log(`  ${page.label}: ${page.settled ? "converged" : "STALLED"} in ${page.rows.length} frames, `
+        + `${page.pits} pits; ${page.rows.filter((frame) => frame.awaitingCount).length} frames awaiting the pit count; `
+        + `${refused.length} frames refused erosion with demand; `
+        + `competitor admitted every frame: ${page.rows.every((frame) => frame.competitorAdmitted > 0)}`);
+      const overspent: string[] = [];
+      const overbooked: string[] = [];
       for (const frame of breachRows) {
         const erosionSpent = spent(result.erosionSinks, frame.frameId);
         const competitorSpent = spent(competitorSinks, frame.frameId);
         console.log(
-          `  ${name}: frame ${frame.frameId} breach ${frame.breachPass} (${frame.erosionAdmitted} admitted): `
+          `  ${page.label}: frame ${frame.frameId} breach ${frame.breachPass} x${frame.erosionAdmitted}: `
           + `erosion booked ${frame.erosionBookedMs.toFixed(3)} spent ${erosionSpent.toFixed(3)} ms; `
           + `competitor ${frame.competitorAdmitted} admitted, booked ${frame.competitorBookedMs.toFixed(3)} `
           + `spent ${competitorSpent.toFixed(3)} ms; frame compute ${(erosionSpent + competitorSpent).toFixed(3)} ms`,
         );
+        const record = `frame ${frame.frameId} ${frame.breachPass}: booked ${frame.erosionBookedMs.toFixed(3)}, `
+          + `spent ${erosionSpent.toFixed(3)} ms`;
+        if (erosionSpent > frame.erosionBookedMs * OVERSPEND_RATIO + PASS_FLOOR_MS) overspent.push(record);
+        if (erosionSpent < frame.erosionBookedMs / OVERSPEND_RATIO - PASS_FLOOR_MS) overbooked.push(record);
       }
-      const pitFrame = breachRows.find((frame) => frame.breachPass === "pit");
-      const worst = rows.reduce((max, frame) => Math.max(
+      const worst = page.rows.reduce((max, frame) => Math.max(
         max,
         spent(result.erosionSinks, frame.frameId) + spent(competitorSinks, frame.frameId)
           - frame.erosionBookedMs - frame.competitorBookedMs,
       ), 0);
-      console.log(`  ${name}: page in ${rows.length} frames; worst frame spent-minus-booked ${worst.toFixed(3)} ms`);
-      return { name, settled, pitFrame, pitSpent: pitFrame ? spent(result.erosionSinks, pitFrame.frameId) : 0 };
+      console.log(`  ${page.label}: worst frame spent-minus-booked ${worst.toFixed(3)} ms; `
+        + `over-booked breach frames (recorded, not asserted): ${overbooked.length > 0 ? overbooked.join("; ") : "none"}`);
+      // Every breach pass that ran under the meter, counted by what it admitted.
+      const passes = (pass: FrameRow["breachPass"]) => breachRows
+        .filter((frame) => frame.breachPass === pass)
+        .reduce((sum, frame) => sum + frame.erosionAdmitted, 0);
+      return {
+        page,
+        refused,
+        overspent,
+        passes: { direct: passes("direct"), args: passes("args"), chunks: passes("chunk") },
+      };
     });
 
-    // The measurement is real: the shipped page converges, its pit ran in a
-    // frame of its own record, and that frame's spend was delivered.
-    const shipped = summaries.find((summary) => summary.name === "shipped prices")!;
-    expect(shipped.settled, "the shipped page never converged under the meter").toBe(true);
-    expect(shipped.pitFrame, "the pit never ran under the meter").toBeTruthy();
-    expect(shipped.pitSpent, "the pit frame's spend was never delivered").toBeGreaterThan(0);
-    // The measured-price page is recorded, converged or stalled, not asserted:
-    // see the finding. The banding makes both pages converge with booked close to spent.
+    for (const { page, refused, overspent, passes } of verdicts) {
+      expect(page.settled, `${page.label} never converged under the meter`).toBe(true);
+      expect(page.rows.every((frame) => frame.competitorAdmitted > 0), `${page.label}: the competitor was refused`)
+        .toBe(true);
+      expect(refused.map((frame) => `${frame.frameId} ${frame.stage}`), `${page.label}: erosion refused with demand`)
+        .toEqual([]);
+      // Non-vacuity: every breach pass ran under the meter, a chunk per 128 listed pits.
+      expect(passes, page.label).toEqual({ direct: 1, args: 1, chunks: terrainBreachPitChunks(page.pits) });
+      expect(page.pits, `${page.label}: no pits, no carve under the meter`).toBeGreaterThan(0);
+      expect(overspent, `${page.label}: breach passes spent well past what they were booked at`).toEqual([]);
+    }
   }, 300_000);
 });
