@@ -200,6 +200,29 @@ describe("the Global's nose (phase 3c)", () => {
     expect(GLOBAL_8000.airframeContactPoints.slice(0, 2)).toEqual([{ x: 15, y: 0.1, z: 0 }, { x: 15, y: -0.4, z: 0 }]);
   });
 
+  it("crosses the old join at 13.2 with the normals either side within 5 degrees at every azimuth -- where it creased", () => {
+    // The shading normal just aft of 13.2 and just forward of it, round the whole section, cast
+    // from the axis at the join's centre height: on the nose before, aft is the fuselage's last
+    // span and forward is the radome, the same instrument as the 747's join test.
+    const across = (skin: SkinCaster) => {
+      const found: { azimuth: number; angle: number }[] = [];
+      for (let azimuth = 0; azimuth < 360; azimuth += 15) {
+        const direction = { x: 0, y: Math.cos(azimuth / DEG), z: Math.sin(azimuth / DEG) };
+        const aft = skin.exit({ x: 13.2 - 0.02, y: -0.02, z: 0 }, direction)!;
+        const forward = skin.exit({ x: 13.2 + 0.02, y: -0.02, z: 0 }, direction)!;
+        found.push({ azimuth, angle: angleBetween(aft.normal, forward.normal) });
+      }
+      return found;
+    };
+    const nowAcross = across(now);
+    for (const c of nowAcross) expect(c.angle, `azimuth ${c.azimuth}`).toBeLessThanOrEqual(5);
+    // CONTROL: the nose before, through the same instrument.
+    const beforeAcross = across(before);
+    // Measured: 0.65 degrees at worst now; before, 34.0 at worst and over 5 at all 24 azimuths.
+    expect(Math.max(...beforeAcross.map((c) => c.angle))).toBeGreaterThan(20);
+    expect(beforeAcross.filter((c) => c.angle > 5).length).toBe(24);
+  });
+
   it("shades the nose as one surface: no crease where the radome met the fuselage's capped end", () => {
     const normals = fuselage.getVerticesData(VertexBuffer.NormalKind)!;
     // The flank vertex (a quarter of the way round) of each ring from 9.5 to the tip's last ring:

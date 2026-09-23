@@ -1268,8 +1268,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
    * 71 % see-through, and what is behind a pane laid on the skin is the white
    * skin, so it read as a pale tint where the type reads black with the sky in
    * it. It never mattered from the seat, where the panes are hidden (below).
-   * Merged into one mesh; the post is its own, because the cockpit camera
-   * draws it. No shadow: a centimetre of glass has nothing to cast.
+   * Merged into one mesh; the post is its own. Both are hidden from the seat,
+   * where the kit lines them from inside. No shadow: a centimetre of glass has
+   * nothing to cast.
    */
   const flightDeckCaster = new SkinCaster([fuselage].map((mesh) => ({
     positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
@@ -1607,14 +1608,17 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // whose rear cap faced the pilot as a black disc across the windscreen.
     // The nose is the fuselage's own loft now (phase 3c), with no cap inside it.
     //
-    // The fuselage and the centre post are NOT here: the eye is inside the
-    // fuselage shell (0.34 m of skin above it, 0.48 m to the port wall since
-    // phase 3c widened the nose) and
-    // back-face culling hides the shell from inside, so it draws nothing of
-    // itself, while the centre post is what a windscreen's framing is. What
-    // replaces the hidden glass's framing is built as cockpit-only parts: see
-    // `buildBizjetCockpit`.
-    cockpitParts: [flightDeckGlass],
+    // The CENTRE POST is here too: it is cast onto the skin 12 mm proud and
+    // 30 mm deep, and from the seat that is a slab end-on across the
+    // windscreen. The kit lines it from inside on the same grid, as the 747's
+    // does (`buildBizjetCockpit`).
+    //
+    // The fuselage is NOT here: the eye is inside the fuselage shell (0.34 m
+    // of skin above it, 0.48 m to the port wall since phase 3c widened the
+    // nose) and back-face culling hides the shell from inside, so it draws
+    // nothing of itself. What replaces the hidden glass's framing is built as
+    // cockpit-only parts: see `buildBizjetCockpit`.
+    cockpitParts: [flightDeckGlass, centrePost],
     cockpitOnlyParts,
     wingSurfaces,
     // Starboard first, because the side loop runs +1 first and

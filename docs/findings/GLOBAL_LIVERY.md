@@ -335,6 +335,15 @@ normals at 13.2, measured. The nose is now the fuselage loft's own rings,
 degrees, at the tip where the nose turns fastest. `bizjet-radome` is gone, and
 with it the cap the cockpit had to hide.
 
+Across the old join, at every 15 degrees of azimuth, the normals 2 cm either
+side of 13.2 now agree within 0.65 degrees. The gate is 5, as for the 747's
+join. The same instrument reads 34 degrees at worst on the old nose, and over 5
+at all 24 azimuths.
+
+The centre post is in `cockpitParts` with the glass. From the seat the 12 mm
+proud, 30 mm deep strip is a slab end-on across the windscreen, and the kit
+lines it from inside on the same grid, as the 747's does.
+
 **The height is held.** Each new ring's crown and keel are the old tables' at
 its station. Where the old kinks (11.6 and 13.2) now fall between rings the
 chord cuts the corner, by at most 2.1 cm at the crown and 0.8 cm at the keel.
