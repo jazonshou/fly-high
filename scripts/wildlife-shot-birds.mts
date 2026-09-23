@@ -18,25 +18,25 @@
  * boar draw legs, antlers and tusks only at near LOD, and every wildlife batch
  * is drawn in or out of frame.
  *
- * APPROXIMATIONS, all on the side of reporting a bird rather than missing one:
- *  - the camera is the rig's settled pose, not its smoothed one: cockpit eye at
- *    the aircraft (the perf rig's seat offsets are under 2 m), chase camera
- *    `distance` behind and `height` above, aimed at `aimAhead` + 1.25 m;
- *  - terrain and cloud occlusion are ignored, so a bird behind a ridge counts;
+ * The camera is the renderer's own, at rest (`scripts/wildlifeShotCamera.mts`):
+ * the chase and cockpit rigs composed from the renderer's pure rig functions and
+ * projected through a Babylon camera set up as the renderer's. It used to be a
+ * hand-built approximation, exact only wings level at zero pitch, which put
+ * points 118-157 px from where the render drew them on the banked motion shots
+ * (tests/render.wildlife-shot-camera.test.ts holds the new one to 0.1 px).
+ *
+ * APPROXIMATIONS, both on the side of reporting a bird rather than missing one:
+ *  - terrain, tree and cloud occlusion are ignored, so a bird behind a ridge or
+ *    a boar under a crown counts;
  *  - bird shadows are not counted.
- * The capture-side A/A after the next full pinned pair is the check on it.
+ * The capture-side check on `bd7a584` (docs/findings/WILDLIFE_CAPTURE_PIN_2026_09_22.md)
+ * is the check on it.
  *
  * `resolvePlacement` below MIRRORS the harness's (tests/perf/perf-capture.test.ts);
  * if the harness's changes, this one must follow.
  */
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
-import { aircraftSpec, rampAtSpeed } from "../src/aircraft/catalogue";
-import {
-  CHASE_AIM_HEIGHT_METERS,
-  PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
-  cameraBankFollow,
-} from "../src/render/cameraPresentation";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import { densityField } from "../src/render/webgpu/detail/densityField";
 import { sunDirectionForClock } from "../src/render/webgpu/nature/EnvironmentDirector";
@@ -56,6 +56,7 @@ import {
   yawForSunBearing,
   type PerfCaptureShotDefinition,
 } from "./perf-capture.mts";
+import { wildlifeShotCamera } from "./wildlifeShotCamera.mts";
 
 // The harness's renders from the pin to the captured frame (see its comments).
 const STATIC_FRAMES_FROM_PIN = 150 + 4 + PERF_CAPTURE_MEASURE_FRAMES + 1;
@@ -76,12 +77,6 @@ function spanMeters(species: "gull" | "hawk"): number {
 const SPAN = { gull: spanMeters("gull"), hawk: spanMeters("hawk") };
 
 type V = { x: number; y: number; z: number };
-const sub = (a: V, b: V): V => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
-const add = (a: V, b: V): V => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
-const scale = (a: V, s: number): V => ({ x: a.x * s, y: a.y * s, z: a.z * s });
-const dot = (a: V, b: V) => a.x * b.x + a.y * b.y + a.z * b.z;
-const cross = (a: V, b: V): V => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
-const norm = (a: V): V => scale(a, 1 / Math.hypot(a.x, a.y, a.z));
 
 const world = createWorld(PERF_CAPTURE_SEED, { worldEvolution: "analytic" });
 const airportX = world.airport?.centerX ?? 0;
@@ -231,44 +226,24 @@ for (const shot of PERF_CAPTURE_SHOTS) {
   const pinnedNearGround = nearGround();
   const birds = agents().filter((agent): agent is BirdAgent => agent.kind === "bird");
 
-  // The camera at capture.
-  const h = headingVectorFromYaw(yaw);
-  const pitch = shot.pitchDownDegrees * DEG;
-  const forward = norm({ x: h.x * Math.cos(pitch), y: -Math.sin(pitch), z: h.z * Math.cos(pitch) });
-  const aircraft = { x, y: altitude, z };
-  let eye: V;
-  let look: V;
-  let hfov: number;
-  if (shot.cameraMode === "cockpit") {
-    eye = aircraft;
-    look = forward;
-    hfov = PERF_COCKPIT_HORIZONTAL_FOV_DEGREES * DEG;
-  } else {
-    const chase = aircraftSpec("trainer").chase;
-    const distance = rampAtSpeed(chase.distance, shot.airspeedMetersPerSecond);
-    const aimAhead = rampAtSpeed(chase.aimAhead, shot.airspeedMetersPerSecond);
-    eye = add(sub(aircraft, scale(forward, distance)), { x: 0, y: chase.height, z: 0 });
-    look = norm(sub(add(add(aircraft, scale(forward, aimAhead)), { x: 0, y: CHASE_AIM_HEIGHT_METERS, z: 0 }), eye));
-    hfov = rampAtSpeed(chase.fieldOfView, shot.airspeedMetersPerSecond) * DEG;
-  }
+  // The camera at capture: the renderer's rig at rest, around the aircraft.
   const width = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
   const height = shot.viewportHeight ?? PERF_CAPTURE_HEIGHT;
-  const vfov = 2 * Math.atan(Math.tan(hfov / 2) * (height / width));
-  const roll = bank * cameraBankFollow(shot.cameraMode, false) * DEG;
-  const level = norm(cross(look, { x: 0, y: 1, z: 0 })); // camera right, before roll
-  const upLevel = cross(level, look);
-  const right = add(scale(level, Math.cos(roll)), scale(upLevel, Math.sin(roll)));
-  const up = cross(right, look);
-  const pixelsPerRadian = width / (2 * Math.tan(hfov / 2));
-
+  const camera = wildlifeShotCamera({
+    cameraMode: shot.cameraMode,
+    aircraft: { x, y: altitude, z },
+    yawDegrees: yaw,
+    pitchDownDegrees: shot.pitchDownDegrees,
+    bankDegrees: bank,
+    airspeedMetersPerSecond: shot.airspeedMetersPerSecond,
+    width,
+    height,
+    terrainHeight: (sx, sz) => sampleTerrain(world, sx, sz).height,
+  });
+  const pixelsPerRadian = camera.pixelsPerRadian;
   const project = (position: V) => {
-    const d = sub(position, eye);
-    const depth = dot(d, look);
-    if (depth <= 1) return null;
-    const sx = dot(d, right) / depth / Math.tan(hfov / 2);
-    const sy = dot(d, up) / depth / Math.tan(vfov / 2);
-    return { ax: Math.abs(sx), ay: Math.abs(sy), depth, distance: Math.hypot(d.x, d.y, d.z),
-      px: Math.round(width / 2 * (1 + sx)), py: Math.round(height / 2 * (1 - sy)) };
+    const p = camera.project(position);
+    return p && { ...p, px: Math.round(p.x), py: Math.round(p.y) };
   };
   const inFrame: { px: number; distance: number; at: string }[] = [];
   let nearMiss = 0;
@@ -320,6 +295,7 @@ for (const shot of PERF_CAPTURE_SHOTS) {
   if (otherNearSets.size > 0) {
     drawVolatile.push(`${shot.name}: pinned near [${pinnedNearGround || "none"}], unpinned also [${[...otherNearSets].join("] [")}]`);
   }
+  camera.dispose();
   wildlife.dispose();
   scene.dispose();
   engine.dispose();
