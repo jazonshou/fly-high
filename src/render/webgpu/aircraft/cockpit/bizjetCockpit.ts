@@ -377,9 +377,8 @@ export const BIZJET_GLARESHIELD = Object.freeze({
  * degree catalogue read 14.89 on the HUD's instrument). So the face grows with the deck line, from 0.02 m, and the
  * board's top, under it, stays under the same sight line.
  */
-export function bizjetLipThickness(): number {
+export function bizjetLipThickness(deckLine: number = aircraftSpec("bizjet").cockpitDeckLineDegrees): number {
   const g = BIZJET_GLARESHIELD;
-  const deckLine = aircraftSpec("bizjet").cockpitDeckLineDegrees;
   return Math.max(g.thickness, g.depth * Math.tan((deckLine + g.fallBeyondSightDegrees) * DEG));
 }
 

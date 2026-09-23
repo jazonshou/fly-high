@@ -981,6 +981,33 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     expect(Math.abs(-rule.elevationDegrees - recorded), "the catalogue's deck line against the rule").toBeLessThanOrEqual(TARGETS.lipTolerance);
   });
 
+  it("ends the lip at the windshield's pillars, not at the shell: a glareshield spans post to post", () => {
+    // Out to the shell, a lower lip is also a wider one, and on part 3's nose it reached under the forward side panes'
+    // low corners, whose glass then held it down (11.49 against 3.96). Past the pillars the side sills are lining.
+    const lip = worldVertices(named("bizjet-glareshield"));
+    const halfWidth = Math.max(...lip.map((v) => Math.abs(v.z)));
+    const port = panel("port-bizjet-flight-deck-window-windshield");
+    const pillarFoot = Math.abs(skinVertex(port, 0, port.columns - 1).z);
+    // the shell where the lip's ends stand, at its top: the pillar is what binds, with room (so this is not vacuous)
+    const shell = Math.min(...[bizjetPanelFaceX(), bizjetPanelFaceX() + BIZJET_GLARESHIELD.depth].map((x) => crossings(new Vector3(x, bizjetLipY(), 0), new Vector3(0, 0, -1), worldTriangles(fuselage)).at(-1)!));
+    console.info(`the Global's lip: half-width ${halfWidth.toFixed(4)} m; the windshield's pillar foot ${pillarFoot.toFixed(4)} m out; the shell there ${shell.toFixed(4)} m`);
+    expect(Math.abs(halfWidth - pillarFoot), "the lip ends at the pillars' feet (the analytic outline against the cast skin)").toBeLessThan(0.01);
+    expect(shell - halfWidth, "the shell is wider there: the pillar binds").toBeGreaterThan(0.05);
+  });
+
+  it("grows the lip's face with the deck line, so the wedge's top always falls faster than the sight line over it", () => {
+    // At a fixed 0.02 m face the wedge's top fell 14 degrees, and past a 14 degree deck line its forward corner showed over
+    // the lip (a 15 degree catalogue read 14.89). The rule, at deck lines either side of where it starts to grow:
+    const { depth, thickness, fallBeyondSightDegrees } = BIZJET_GLARESHIELD;
+    for (const deckLine of [5, 10.88, 15, 20]) {
+      const face = bizjetLipThickness(deckLine);
+      expect(face).toBeGreaterThanOrEqual(thickness);
+      expect(Math.atan2(face, depth) * DEG, `the wedge's fall at a ${deckLine} degree deck line`).toBeGreaterThanOrEqual(deckLine + fallBeyondSightDegrees - 1e-9);
+    }
+    expect(bizjetLipThickness(5), "0.02 m where that is already steep enough").toBe(thickness);
+    expect(bizjetLipThickness(15)).toBeCloseTo(depth * Math.tan(18 / DEG), 12);
+  });
+
   it("shows nothing of the glareshield or the board over the lip: the lip is the edge the pilot reads", () => {
     let rays = 0;
     const halfWidth = Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z)));
