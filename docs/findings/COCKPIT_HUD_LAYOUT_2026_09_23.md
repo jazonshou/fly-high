@@ -130,7 +130,9 @@ places anything for the cockpit is scoped under that class.
     pitch ladder moves with pitch;
   - the tapes' top is `min(50%, deck line - 85 px)`, so they rise on tall windows.
 - **Diagnostics overlay** (debug, off by default) moves to 163 px, below the band.
-- **F-16: no change.** The 2D attitude symbology sits inside the real HUD frame.
+- **F-16: no change.** The 2D ladder, aircraft symbol and heading box sit inside
+  the real HUD frame. The 300 px horizon line crosses its uprights (see the
+  correction below).
 
 **Measured result:**
 - **Overlap:** on all four decks, at all five window shapes, with the full, minimal
