@@ -326,11 +326,26 @@ export function bizjetLipY(): number {
 }
 
 export const BIZJET_GLARESHIELD = Object.freeze({
-  /** The lip's aft face. */
+  /** The lip's aft face, at least. */
   thickness: 0.02,
-  /** Its top falls away forward over the board's depth: 14 degrees, steeper than any sight line over it here. */
+  /** Its top falls away forward over the board's depth. */
   depth: BIZJET_PANEL.thickness,
+  /** ...at least this much steeper than the sight line over the lip. */
+  fallBeyondSightDegrees: 3,
 });
+
+/**
+ * The lip's aft face, as tall as it must be for the wedge's top to fall away from the eye. The sight line over the lip
+ * falls tan(deck line) a metre, and a wedge whose top falls less shows its FORWARD corner over the lip, which then is
+ * the edge the pilot reads (the 747's lesson): at the fixed 0.02 m that happened past a 14 degree deck line (a 15
+ * degree catalogue read 14.89 on the HUD's instrument). So the face grows with the deck line, from 0.02 m, and the
+ * board's top, under it, stays under the same sight line.
+ */
+export function bizjetLipThickness(): number {
+  const g = BIZJET_GLARESHIELD;
+  const deckLine = aircraftSpec("bizjet").cockpitDeckLineDegrees;
+  return Math.max(g.thickness, g.depth * Math.tan((deckLine + g.fallBeyondSightDegrees) * DEG));
+}
 
 /**
  * How wide the lip and the board are: out to the windshield's pillars, and no further than the shell lets them.
@@ -374,7 +389,7 @@ function screenFrontX(): number {
 export function bizjetScreenPlacements(): readonly { name: string; centre: Vector3 }[] {
   const s = BIZJET_SCREENS;
   const e = eye();
-  const underside = Math.atan2(bizjetLipY() - BIZJET_GLARESHIELD.thickness - e.up, bizjetPanelFaceX() - e.forward) / DEG;
+  const underside = Math.atan2(bizjetLipY() - bizjetLipThickness() - e.up, bizjetPanelFaceX() - e.forward) / DEG;
   const top = e.up + Math.tan((underside - s.belowLipDegrees) * DEG) * (screenFrontX() - e.forward);
   const y = top - s.height / 2;
   const x = screenFrontX() + s.screenThickness / 2;
@@ -451,7 +466,7 @@ export function buildBizjetCockpit(
   const halfWidth = bizjetPanelHalfWidth();
   const lipY = bizjetLipY();
   const g = BIZJET_GLARESHIELD;
-  const undersideY = lipY - g.thickness;
+  const undersideY = lipY - bizjetLipThickness();
   // A WEDGE, its aft face flush with the board's face and its top falling away forward, so from the eye nothing of
   // the glareshield or the board behind it shows over the lip: the lip is the line the pilot reads.
   parts.push(solidPlate(

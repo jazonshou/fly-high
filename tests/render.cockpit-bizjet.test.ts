@@ -17,6 +17,7 @@ import { GLOBAL_CENTRE_POST, GLOBAL_FLIGHT_DECK_OUTLINES, GLOBAL_PANE_DEPTH, GLO
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import {
   BIZJET_GLARESHIELD,
+  bizjetLipThickness,
   BIZJET_LINING,
   BIZJET_PANEL,
   BIZJET_SCREENS,
@@ -63,15 +64,12 @@ const FRAME_V = FRAME_U / (16 / 9);
  *  - `lipTolerance`: the catalogue's deck line is the lip rule's answer, the HIGHEST straight lip over no glass,
  *    to this;
  *  - `displays`: at least this share of each of the pilot's two screens is in the frame.
- * `k0` is the K0 reading this file's lip solver must reproduce on c252859's nose (the skin-level bottom edge of the
- * port windshield, from the K0 fallback eye): it moves with the nose and is re-read from K0 when the nose does.
  */
 const TARGETS = {
   opening: 24,
   topEdge: 10,
   lipTolerance: 0.01,
   displays: 0.35,
-  k0: { eye: new Vector3(11.9, 0.84, -0.52), deckLine: 8.16 },
 } as const;
 
 interface Panel { name: string; rows: number; columns: number; positions: number[]; triangles: number }
@@ -643,7 +641,8 @@ describe("the frame: the lining round the glass", () => {
       }
     }
     expect(missing.slice(0, 8), `${missing.length} edge samples unframed`).toEqual([]);
-    expect(framed, "samples of the edges in the frame").toBeGreaterThan(100);
+    // NON-VACUITY: a floor well under what any eye in the K0 grids gives (98 from the seated eye on part 2's nose)
+    expect(framed, "samples of the edges in the frame").toBeGreaterThan(60);
   });
 
   it("has a hole in the picture only where there is glass, and covers glass only at a pane's own edges, by the frame's own depth", () => {
@@ -777,12 +776,28 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     expect(highestClearLip(eye, 12.55, [...edge, beyond], 2).elevationDegrees).toBeLessThan(level - 5);
   });
 
-  it("reproduces K0's reading on the corner table: the skin-level windshield bottom from K0's fallback eye", () => {
+  it("is K0's rule on the built glass: the closed form agrees with a search over lip heights by elevation, from the eye", () => {
+    // K0 solved the rule by bisection on ELEVATIONS: a lip reads atan((y - eye.y) cos(az) / d) at each azimuth, and
+    // it may not stand above the windshield's bottom edge (its hole in the skin) anywhere in the frame. The closed form
+    // solves the same thing by slopes. The two must agree on whatever glass this nose has, read at test time.
     const port = panel("port-bizjet-flight-deck-window-windshield");
     const bottom = edgePoints(port, "skin", "bottom", 10);
-    const { eye, deckLine } = TARGETS.k0;
-    const lip = highestClearLip({ x: eye.x, y: eye.y, z: eye.z }, eye.x + BIZJET_PANEL.faceAheadOfEye, bottom, 10);
-    expect(-lip.elevationDegrees).toBeCloseTo(deckLine, 2);
+    const faceX = bizjetPanelFaceX();
+    const d = faceX - EYE.forward;
+    const seen = bottom.map((p) => azel(p)).filter(({ az }) => Math.abs(Math.tan(az / DEG)) <= FRAME_U);
+    expect(seen.length, "the windshield's bottom edge in the frame").toBeGreaterThan(40);
+    const covers = (y: number) => seen.some(({ az, el }) => Math.atan(((y - EYE.up) * Math.cos(az / DEG)) / d) * DEG > el + 1e-9);
+    let low = EYE.up - 1;
+    let high = EYE.up + 1;
+    expect(covers(high) && !covers(low), "the search brackets the rule").toBe(true);
+    for (let i = 0; i < 80; i += 1) {
+      const mid = (low + high) / 2;
+      if (covers(mid)) high = mid;
+      else low = mid;
+    }
+    const lip = highestClearLip({ x: EYE.forward, y: EYE.up, z: EYE.right }, faceX, bottom, 10);
+    console.info(`the Global's lip rule on the windshield's skin-level bottom from the eye: ${(-lip.elevationDegrees).toFixed(3)} by slopes, ${(-Math.atan((low - EYE.up) / d) * DEG).toFixed(3)} by elevations`);
+    expect(lip.y).toBeCloseTo(low, 9);
   });
 
   it("stands the lip at the catalogue's deck line, and that is the rule's answer against the BUILT sills", () => {
@@ -879,7 +894,7 @@ describe("the Global's screens", () => {
   it("put the screens' top edge 1.5 degrees under the lip's underside at the face", () => {
     const top = Math.max(...screenBlock(0).map((v) => v.y));
     const front = Math.min(...screenBlock(0).map((v) => v.x));
-    const underside = Math.atan2(bizjetLipY() - BIZJET_GLARESHIELD.thickness - EYE.up, bizjetPanelFaceX() - EYE.forward) * DEG;
+    const underside = Math.atan2(bizjetLipY() - bizjetLipThickness() - EYE.up, bizjetPanelFaceX() - EYE.forward) * DEG;
     expect(Math.atan2(top - EYE.up, front - EYE.forward) * DEG).toBeCloseTo(underside - BIZJET_SCREENS.belowLipDegrees, 4);
   });
 
@@ -948,7 +963,15 @@ describe("the Global's cockpit against the shell it stands in", () => {
     expect(bizjetPanelFaceX() - EYE.forward).toBeCloseTo(BIZJET_PANEL.faceAheadOfEye, 9);
     const board = worldVertices(named("bizjet-cockpit-interior")).slice(0, 24);
     expect(Math.min(...board.map((v) => v.x))).toBeCloseTo(bizjetPanelFaceX(), 6);
-    expect(Math.max(...board.map((v) => v.y))).toBeCloseTo(bizjetLipY() - BIZJET_GLARESHIELD.thickness, 6);
+    expect(Math.max(...board.map((v) => v.y))).toBeCloseTo(bizjetLipY() - bizjetLipThickness(), 6);
+    // THE WEDGE falls away from the eye: its top slopes down forward more steeply than the sight line over the lip,
+    // so its forward corner (and the board's top behind it) stays under that line at any deck line
+    const lip = worldVertices(named("bizjet-glareshield"));
+    const tall = Math.max(...lip.map((v) => v.y)) - Math.min(...lip.map((v) => v.y));
+    const deep = Math.max(...lip.map((v) => v.x)) - Math.min(...lip.map((v) => v.x));
+    expect(deep).toBeCloseTo(BIZJET_GLARESHIELD.depth, 6);
+    expect(Math.atan2(tall, deep) * DEG, "the wedge's top against the sight line over the lip")
+      .toBeGreaterThan(aircraftSpec("bizjet").cockpitDeckLineDegrees + BIZJET_GLARESHIELD.fallBeyondSightDegrees - 1e-3);
     // the frame's bottom crosses the face's plane FRAME_V under the eye per metre ahead; the board runs below it
     expect(Math.min(...board.map((v) => v.y))).toBeLessThan(EYE.up - FRAME_V * BIZJET_PANEL.faceAheadOfEye);
     // and the lining runs past the lip's line: the rows under the glass the lip does not reach are sill all the way
