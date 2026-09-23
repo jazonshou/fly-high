@@ -226,7 +226,8 @@ recorded for the re-price, not applied.
 
 ## What the fixed instrument found next
 
-Priced on the fixed instrument, the breach pit carve costs ~6 ms as one dispatch. At tier 1 it cannot be admitted
+Priced on the fixed instrument, the breach pit carve costs ~6 ms as one dispatch (eroded worlds only: the default
+analytic game never runs the erosion producer). At tier 1 it cannot be admitted
 honestly: at the shipped 0.067 ms it spikes one frame per eroded page to ~9 ms of compute against a 1.73 ms cap, and at
 its measured price it stalls behind any higher-priority client with steady demand. See
 docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md; the erosion re-price is held until the carve is banded to fit its row.
