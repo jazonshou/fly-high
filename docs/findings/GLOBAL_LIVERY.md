@@ -165,9 +165,12 @@ lit previews at the 40 m frame's scale, pinstripes held at 0.03 m are 0.8 of a
 pixel in a 1280-wide view and dissolve into shimmer under a thicker gold, while
 scaled ones stay lines (1.6 px at 2x, 2.4 at 3x) and keep the type's roughly 3:1
 proportion; scaled gaps would carry the second pinstripe off the flank at the
-front of the row. The group is 0.38 m tall at 1x, 0.53 at 2x, 0.68 at 3x. Frames
-of 1x, 2x and 3x, abeam and three-quarter, go to Jason from the next GPU window;
-the scale ships when he picks.
+front of the row. The group is 0.38 m tall at 1x, 0.53 at 2x, 0.68 at 3x.
+
+**Jason picked 2x** from the lit previews: the shipped scheme is
+`globalHouseScheme(2)`, a 0.18 m gold with 0.06 m pinstripes. Scale 1 stays
+pinned byte for byte to the 2a image as the reference, and frames of 1x and 2x,
+abeam and three-quarter, come from the next GPU window.
 
 ## Stage 2b, and what it is not
 

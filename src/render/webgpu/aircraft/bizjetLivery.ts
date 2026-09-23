@@ -218,6 +218,7 @@ const HOUSE_BELLY = { colour: GLOBAL_BELLY_GREY, topY: -0.95, feather: 0.25 } as
  * holds. Scaling the gaps too would carry the second pinstripe off the flank
  * at the front of the row (at 3x, 1.0 m below a gold already at -0.45), so the
  * group grows by its lines only: 0.38 m tall at 1x, 0.53 at 2x, 0.68 at 3x.
+ * The knots, pinstripe offsets and belly comments above are all stated at 1x.
  */
 export function globalHouseScheme(stripeScale = 1): GlobalLiveryScheme {
   if (!(stripeScale > 0)) throw new RangeError("A stripe scale must be positive");
@@ -243,7 +244,12 @@ export function globalHouseScheme(stripeScale = 1): GlobalLiveryScheme {
   };
 }
 
-export const GLOBAL_HOUSE_SCHEME: GlobalLiveryScheme = globalHouseScheme(1);
+/**
+ * THE SHIPPED SCHEME, at 2x: Jason's pick from the 1x / 2x / 3x previews
+ * (2026-09-22). A 0.18 m gold with 0.06 m pinstripes, the group 0.53 m tall.
+ */
+export const GLOBAL_HOUSE_STRIPE_SCALE = 2;
+export const GLOBAL_HOUSE_SCHEME: GlobalLiveryScheme = globalHouseScheme(GLOBAL_HOUSE_STRIPE_SCALE);
 
 /**
  * THE SCHEME THE VERTEX PAINT DREW, as parameters: the navy band a window tall

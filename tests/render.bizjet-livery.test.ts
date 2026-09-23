@@ -14,6 +14,7 @@ import {
   GLOBAL_BASE_WHITE,
   GLOBAL_BELLY_GREY,
   GLOBAL_HOUSE_SCHEME,
+  GLOBAL_HOUSE_STRIPE_SCALE,
   GLOBAL_LIVERY_HEIGHT,
   GLOBAL_LIVERY_SECTIONS,
   GLOBAL_LIVERY_WIDTH,
@@ -258,8 +259,19 @@ describe("the stripe scale Jason picks from", () => {
       }))],
     };
     expect(Buffer.from(buildGlobalLiveryImage(house).data).equals(Buffer.from(buildGlobalLiveryImage(literal).data))).toBe(true);
+  });
+
+  it("ships Jason's pick, 2x: a 0.18 m gold with 0.06 m pinstripes, the gaps as at 1x", () => {
+    expect(GLOBAL_HOUSE_STRIPE_SCALE).toBe(2);
     expect(Buffer.from(buildGlobalLiveryImage(GLOBAL_HOUSE_SCHEME).data)
-      .equals(Buffer.from(buildGlobalLiveryImage(house).data))).toBe(true);
+      .equals(Buffer.from(buildGlobalLiveryImage(globalHouseScheme(2)).data))).toBe(true);
+    const [gold, first, second] = bands(GLOBAL_HOUSE_SCHEME, 4) as [ReturnType<typeof bands>[0], ReturnType<typeof bands>[0], ReturnType<typeof bands>[0]];
+    expect(Math.abs(gold.top - gold.bottom - 0.18)).toBeLessThan(0.04);
+    expect(Math.abs(first.top - first.bottom - 0.06)).toBeLessThan(0.04);
+    expect(Math.abs(second.top - second.bottom - 0.06)).toBeLessThan(0.04);
+    // CONTROL: the 1x reference draws a gold half as thick, so the check above can tell them apart.
+    const [oneGold] = bands(globalHouseScheme(1), 4);
+    expect((gold.top - gold.bottom) - (oneGold!.top - oneGold!.bottom)).toBeGreaterThan(0.06);
   });
 
   it("thickens the gold and the pinstripes together at 2x and 3x, and holds the gaps between them", () => {
@@ -372,20 +384,24 @@ describe("the house cheatline on the built lofts", () => {
       // so a texel counts if it is at least 30 % of the way from the base
       // white to the pinstripe grey (and is not gold).
       const grey = stripe("pinstripe-1").colour;
+      // Where the scheme puts them, below the gold's centre (0.225 and 0.41 m at the shipped 2x).
+      const below = (name: string) => stripeCentreAt(gold, x) - stripeCentreAt(stripe(name), x);
+      const [firstBelow, secondBelow] = [below("pinstripe-1"), below("pinstripe-2")];
+      const split = goldCentre - (firstBelow + secondBelow) / 2;
       const greys: number[] = [];
-      for (let y = goldCentre - 0.1; y >= goldCentre - 0.42; y -= 0.004) {
+      for (let y = goldCentre - gold.halfHeight - 0.03; y >= goldCentre - secondBelow - 0.1; y -= 0.004) {
         const hit = skinAt(x, y);
         if (!hit) continue;
         const at = texel(image, hit.u, hit.v);
         const toward = (GLOBAL_BASE_WHITE[0] - at[0]) / (GLOBAL_BASE_WHITE[0] - grey[0]);
         if (toward > 0.3 && distance(at, gold.colour) > 40) greys.push(y);
       }
-      const upper = greys.filter((y) => y > goldCentre - 0.24);
-      const lower = greys.filter((y) => y <= goldCentre - 0.24);
+      const upper = greys.filter((y) => y > split);
+      const lower = greys.filter((y) => y <= split);
       expect(upper.length && lower.length, `x ${x}: pinstripes not found below the gold`).toBeTruthy();
       const mid = (ys: number[]) => (Math.max(...ys) + Math.min(...ys)) / 2;
-      expect(Math.abs(mid(upper) - (goldCentre - 0.165)), `x ${x}: first pinstripe`).toBeLessThan(TOLERANCE_M);
-      expect(Math.abs(mid(lower) - (goldCentre - 0.32)), `x ${x}: second pinstripe`).toBeLessThan(TOLERANCE_M);
+      expect(Math.abs(mid(upper) - (goldCentre - firstBelow)), `x ${x}: first pinstripe`).toBeLessThan(TOLERANCE_M);
+      expect(Math.abs(mid(lower) - (goldCentre - secondBelow)), `x ${x}: second pinstripe`).toBeLessThan(TOLERANCE_M);
     }
     // Aft of the fade (-1.4) the scheme draws no line until the swoosh (stage 2b).
     for (const x of [-3, -8, -14]) {
