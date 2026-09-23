@@ -44,6 +44,7 @@ import {
   radomeLiveryPhase,
 } from "./airlinerLivery";
 import {
+  CENTRE_POST_HALF_AZIMUTH,
   FLIGHT_DECK_PANES,
   PANE_DEPTH,
   PANE_PROUD,
@@ -1741,12 +1742,26 @@ export function createAirliner(scene: Scene): AircraftVisual {
     }
   }
   // The centre post: the centreline strip between the two No.1 panes, cast
-  // the same way (+-1 degree of the +-2.5 gap, over No.1's elevations), so it
-  // lies on the skin at the glass's height the whole way down. A straight
-  // strut between two crown points sank 5 cm under the skin at the 32.4 ring.
-  // It is its own mesh, and the cockpit camera draws it: the one piece of the
-  // windscreen frame the cockpit kit does not build.
-  const post = paneGrid(caster, { name: "one", azimuth: [-1, 1], elevation: FLIGHT_DECK_PANES[0]!.elevation }, 1, 2);
+  // the same way over No.1's elevations, so it lies on the skin at the glass's
+  // height the whole way down. A straight strut between two crown points sank
+  // 5 cm under the skin at the 32.4 ring. It is its own mesh, and the cockpit
+  // camera draws it: the one piece of the windscreen frame the cockpit kit
+  // does not build.
+  //
+  // It FILLS the gap, +-CENTRE_POST_HALF_AZIMUTH, where it used to sit +-1 in
+  // +-2.5 with skin showing either side. Its edge columns are cast along the
+  // No.1 panes' own inboard sightlines at the same PANE_GRID elevations, so
+  // post and pane share those edge vertices exactly: no seam, and the rims
+  // that meet there are enclosed between two solids and never seen. Two
+  // columns, as before: across 3.2 degrees the chord sags about 1.2 mm under
+  // the crown, inside PANE_PROUD's 4 cm, and the kit's frame meets the same
+  // corner points.
+  const post = paneGrid(
+    caster,
+    { name: "one", azimuth: [-CENTRE_POST_HALF_AZIMUTH, CENTRE_POST_HALF_AZIMUTH], elevation: FLIGHT_DECK_PANES[0]!.elevation },
+    1,
+    2,
+  );
   withoutShadow(build.skinPanel(
     "airliner-windscreen-center-post",
     post.points,

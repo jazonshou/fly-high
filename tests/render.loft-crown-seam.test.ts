@@ -359,7 +359,12 @@ describe("a loft's crown seam", () => {
       // airliner-screen-bezels keep their counts and move to the new panel; and
       // airliner-flight-deck-interior keeps its counts, its seats moving under the new eye. The other 88
       // are bit-identical: the shell, the glazing and the centre post included.
-      airliner: "96726bd2",
+      // RE-PINNED for the 747's centre member (jazonshou/747-centre-gap): the No.1 panes start at
+      // az 1.6 (CENTRE_POST_HALF_AZIMUTH) where they started at 2.5, and the post widens from +-1 to
+      // +-1.6 to fill the gap. Checked mesh by mesh against 58f8b28: three of 93 meshes moved and no
+      // count did -- the flight-deck glazing, the centre post, and the cockpit interior, whose lining
+      // reads the pane spec -- and the other 90 are bit-identical.
+      airliner: "7f34021c",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

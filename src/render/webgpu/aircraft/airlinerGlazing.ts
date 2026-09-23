@@ -41,13 +41,22 @@ export interface FlightDeckPane {
 }
 
 /**
- * The accepted design. The centre pillar is +-2.5 degrees; between panes a
- * 2-degree pillar is taken out of the ranges' shared edge (25 and 55), half
- * from each side. No.1 runs 30 degrees tall (-18..+12) against the type's ~35
- * and the old build's ~19.
+ * The centre member's half-width, degrees of azimuth from the centreline at R:
+ * the No.1 panes start here and the centre post fills the gap between them.
+ * 1.6, not the design's first 2.5: seen from the left seat the member read
+ * 5.5 degrees wide where the type's is about 3.6 (the cockpit engineer's K3
+ * measurement), and +-1.6 at R is about that from the seat.
+ */
+export const CENTRE_POST_HALF_AZIMUTH = 1.6;
+
+/**
+ * The accepted design. The centre member is +-CENTRE_POST_HALF_AZIMUTH;
+ * between panes a 2-degree pillar is taken out of the ranges' shared edge (25
+ * and 55), half from each side. No.1 runs 30 degrees tall (-18..+12) against
+ * the type's ~35 and the old build's ~19.
  */
 export const FLIGHT_DECK_PANES: readonly FlightDeckPane[] = Object.freeze([
-  { name: "one", azimuth: [2.5, 24], elevation: [-18, 12] },
+  { name: "one", azimuth: [CENTRE_POST_HALF_AZIMUTH, 24], elevation: [-18, 12] },
   { name: "two", azimuth: [26, 54], elevation: [-15, 10] },
   { name: "three", azimuth: [56, 75], elevation: [-12, 8] },
 ]);
