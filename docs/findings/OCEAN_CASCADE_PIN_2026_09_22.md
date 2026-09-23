@@ -1,6 +1,8 @@
 # Pinning the ocean's cascade cadence at each perf shot's time pin
 
-**Status: built on `jazonshou/ocean-cascade-pin` from `8d31fd2`; harness-owner review approved 2026-09-22 (plane engineer); merge is the PM's.**
+**Status: merged into House-Keeping at `a4c8762` (2026-09-22), after the
+harness owner's review. Full-run reproducibility measured 2026-09-23 on
+`e9d902d` — see "Full runs, measured" below.**
 
 ## The defect
 
@@ -154,10 +156,66 @@ measured a filtered water shot 0.5-0.8/255 away from its full-run frame.
 
 **So the pin makes any run of a given list reproducible on the sea, apart from
 the floors named here. It does not make a filtered run comparable to a full
-one.** For full 39-shot runs this is predicted, not measured: no full capture
-was taken on the pinned tree. It is the same mechanism with a longer list, and
-the model above that predicts all 24 evidence captures says the same. Water
-baselines must still come from full runs, as they always have.
+one.** Water baselines must still come from full runs, as they always have.
+For full 39-shot runs this was at first only predicted; it has since been
+measured, below.
+
+## Full runs, measured (2026-09-23)
+
+The end-of-wave re-baseline on `e9d902d` (the pin plus F-16 F1 and FI-5) took
+two full 39-shot captures on one tree: the REBASELINE candidate
+(`tests/perf/artifacts/rebaseline-candidates/2026-09-23T02-15-57.995Z/`) and a
+normal run 7.8 minutes later. They streamed very differently. The candidate sat
+at the 360-frame minimum on 35 of the 39 shots, and the normal run streamed
+31,560 frames in all against 14,940. So every shot reached its capture with a
+cumulative history 16,620 frames apart — a harsher A/A than any the evidence
+above could stage.
+
+No sea moved more than 0.011/255, against 0.12-0.40/255 between the unpinned
+ocean's two classes. The pin holds on full runs.
+
+| shot | own streaming (candidate / normal) | sea, mean abs dL/255 | whole frame | worst-tile rgb SSIM |
+| --- | ---: | ---: | ---: | ---: |
+| `water-3m` | 360 / 1260 | 0.0064 | 0.0041 | 0.9963 |
+| `water-25ft` | 480 / 510 | 0.0049 | 0.0030 | 0.9996 |
+| `water-400ft-glitter` | 360 / 1290 | 0.0107 | 0.0079 | 0.9966 |
+| `coast-10km-lowsun` | 360 / 750 | 0.0096 | 0.0017 | 0.9997 |
+| `hills-dusk-glint` | 360 / 360 | 0.0043 | 0.0010 | 0.9895 |
+| `terrain-material-1600ft-down` | 360 / 930 | no water | bit-identical | 1.0000 |
+| `lake-island-piercing` | 360 / 660 | no water | 0.0000 | 1.0000 |
+
+The worst-tile column is the normal run scored against the candidate — what a
+later run scores against these baselines once promoted. What remains between
+the runs is:
+
+- **Foam on the sea**, from the shot's own streaming gap (30-930 frames
+  here) and about 4 % carried from the previous shot. One cluster at
+  `water-3m`'s horizon, (832-864, 256-320), recurs at the same place in this
+  pair and in the evidence repeats above, outside any bird's reach: most
+  likely surf on the far shore.
+- **Birds off the sea**, which this pin does not touch. The lowest worst
+  tile, `hills-dusk-glint`'s 0.9895, is a single bird tile, where the wildlife
+  pin's probe puts that flock (branch `jazonshou/wildlife-capture-pin`, which
+  pins the birds the same way).
+
+The review was pre-registered before either capture existed, and scored 5
+pass, 2 fail, 1 partial, 1 pending (the byte check of the promoted baselines).
+The two failures are calibration for the next prediction of this kind:
+
+1. **Cockpit water shots do not always stream 360 frames.** The prediction
+   assumed they do, and so bounded their sea at 0.002/255. The normal run
+   streamed 1260 and 1290 on them, and the foam floor that comes with a
+   900-frame gap put the sea at 0.0064 and 0.0107. Bound a shot's sea by the
+   foam curve at the largest own-streaming gap a run can produce, not at the
+   gap last seen.
+2. **Far-sea foam is not negligible in a mean.** At range, foam spreads as
+   1-3 levels over the whole box (`coast-10km-lowsun`: mean 0.0096, max 2.9
+   levels) rather than as a few bright pixels. So the prediction of 0.005
+   was half the measured value. The max tells range foam from near foam, and
+   the mean does not.
+
+The partial was the same mistake as the first failure: `water-3m`'s loudest
+changed tile was predicted to be a bird, and it was foam.
 
 ## What merging does to the baselines — read this before any A/B
 
