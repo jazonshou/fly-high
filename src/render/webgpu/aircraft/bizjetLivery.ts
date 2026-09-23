@@ -218,8 +218,15 @@ const HOUSE_GOLD_CENTRE: readonly (readonly [number, number])[] = [
 ];
 const offsetKnots = (knots: readonly (readonly [number, number])[], dy: number) =>
   knots.map(([x, y]) => [x, y + dy] as const);
-/** The line's station extent: into the radome tip forward, out over the metre aft of window 11 until the swoosh. */
-const HOUSE_EXTENT = { aftEndX: -1.4, aftFullX: -0.4, forwardFullX: 14.6, forwardEndX: 14.95 } as const;
+/**
+ * The line's station extent: out over the metre aft of window 11 until the
+ * swoosh, and forward to a point at the tip. Forward it fades from 0.6 m aft of
+ * the tip (14.4): on the drooped tip (phase 3c, part 3) the ring is 0.2 m tall,
+ * about the 2x gold's own 0.18, and a line held full to 14.6 painted the tip
+ * cone's flanks gold, a gold chin from the front. The type's line runs out to a
+ * point there.
+ */
+const HOUSE_EXTENT = { aftEndX: -1.4, aftFullX: -0.4, forwardFullX: 14.4, forwardEndX: 14.95 } as const;
 /** The gold as measured: 0.09 m (7-8 px against a 0.54 m window's 52 in the starboard render). */
 const HOUSE_GOLD_HALF_HEIGHT = 0.045;
 /** The pinstripes, 0.03 m: 1-2 px against the same window. */

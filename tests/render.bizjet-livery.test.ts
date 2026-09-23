@@ -23,6 +23,7 @@ import {
   globalHouseScheme,
   heightOfPhase,
   stripeCentreAt,
+  stripePresenceAt,
   type GlobalLiveryScheme,
   type GlobalLiveryStripe,
 } from "../src/render/webgpu/aircraft/bizjetLivery";
@@ -209,6 +210,18 @@ describe("the livery image", () => {
     const flank = texel(image, u(-6), phaseOfHeight(GLOBAL_LIVERY_SECTIONS, -6, 0.6)!);
     expect(distance(keel, GLOBAL_BELLY_GREY)).toBeLessThan(2);
     expect(distance(flank, GLOBAL_BASE_WHITE)).toBeLessThan(2);
+  });
+
+  it("runs the gold out ahead of the drooped tip instead of painting the tip cone's flanks", () => {
+    // The tip ring is 0.2 m tall (y -0.55..-0.35), about the 2x gold's own 0.18, so a line held
+    // full to 14.6 painted most of the last 0.3 m of the cone: a gold chin from the front. It
+    // fades from 14.4 now, and is at 0.43 at the 14.7 ring.
+    const gold = GLOBAL_HOUSE_SCHEME.stripes.find((stripe) => stripe.name === "gold")!;
+    expect(stripePresenceAt(gold, 14.4)).toBe(1);
+    expect(stripePresenceAt(gold, 14.7)).toBeLessThan(0.5);
+    expect(stripePresenceAt(gold, 14.95)).toBe(0);
+    // CONTROL: the extent as it was reads 0.80 at the same ring.
+    expect(stripePresenceAt({ ...gold, forwardFullX: 14.6 }, 14.7)).toBeGreaterThan(0.75);
   });
 
   it("keeps the navy scheme a parameter: the same generator paints the navy band on the window row", () => {

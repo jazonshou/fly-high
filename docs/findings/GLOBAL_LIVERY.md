@@ -551,7 +551,27 @@ pitch. All of `sim.*` passes: 21 files, 233 tests.
 
 **The livery follows.** The gold's last two knots, (14.4, -0.40) and
 (15, -0.20), rose to meet the old tip. They are gone, and the line holds -0.45
-into the drooped tip.
+into the drooped tip. The line also fades out earlier: from 14.4, where it
+held full to 14.6. The drooped tip's ring is 0.2 m tall, about the 2x gold's
+own 0.18, so a line held full to 14.6 painted most of the tip cone's flanks: a
+gold chin from the front, where the type's line runs out to a point. At the
+14.7 ring it is 0.43 of full now, where it was 0.80. This is a change to the
+texture alone: all 95 meshes are bit-identical to 8d5deeb.
+
+**Registered, for the second camera and for Jason** (the frames show all
+three):
+- **The tip's height.** At -0.45 the upper line flattens a little into the tip:
+  the crown's slope goes from 0.49 to 0.24 m per metre over the last metre, a
+  short "beak". The camera fit's own tip is nearer -0.6. A tip at -0.55 with
+  the same crown still passes the requirement (-13.2..+13.2, the foot at
+  x 13.29, the crown monotone) and would straighten the line. But it moves the
+  radome contact points to (15, -0.30) / (15, -0.80), so a nose-down touch
+  registers 0.1 m lower again, and it re-pins the tip and the digests.
+- **The brow.** From abeam the crown shows a knee just above the windshield's
+  top edge, where the 11.75 crest turns 13.3 degrees ring to ring. Does the
+  type's crown turn that sharply there, or flow?
+- **The tip's closing radius**, 0.1 m, is the old radome's, carried over. From
+  abeam the tip reads sharper than a radome. Is 0.1 the type's?
 
 ## Stage 2b, and what it is not
 
