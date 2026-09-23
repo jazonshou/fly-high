@@ -25,7 +25,87 @@ import {
   tailDeferredFloorsFrom,
   MEASURED_DRAW_DELTAS,
   RETRACTED_DRAW_READINGS,
+  type DrawCallRaise,
 } from "../scripts/deliveryFloors.mts";
+
+/**
+ * THE DRAW-CALL RATCHET'S ACCOUNTING, as pure checks over a state.
+ *
+ * The live tests below run these on the committed constants; the synthetic
+ * control at the end of the draw-call block runs the SAME functions on
+ * constructed states and asserts each one fails where it should. That split
+ * exists because the live list can legitimately be empty -- the 2026-09-23
+ * re-pin refreshed `PREVIOUS_DRAW_CALL_CEILINGS` and spent every raise -- and
+ * a check that only ever sees an empty list is not shown to bite by anything
+ * live. The control is what keeps these checks load-bearing when no raise is.
+ */
+interface RatchetState {
+  readonly ceilings: Readonly<Record<string, number>>;
+  readonly previous: Readonly<Record<string, number>>;
+  readonly raises: readonly DrawCallRaise[];
+  readonly staged: readonly { readonly feature: string }[];
+}
+const LIVE_RATCHET: RatchetState = {
+  ceilings: Object.fromEntries(PERF_CAPTURE_SHOTS
+    .filter((shot) => typeof shot.drawCallCeiling === "number")
+    .map((shot) => [shot.name, shot.drawCallCeiling!])),
+  previous: PREVIOUS_DRAW_CALL_CEILINGS,
+  raises: DRAW_CALL_RAISES,
+  staged: MEASURED_DRAW_DELTAS,
+};
+const namedBy = (raise: DrawCallRaise): readonly string[] =>
+  raise.kind === "uniform" ? raise.shots : Object.keys(raise.deltas);
+/** Shots whose ceiling exceeds previous + declared: undeclared growth. */
+function ratchetBreaches(state: RatchetState): string[] {
+  return Object.entries(state.ceilings)
+    .filter(([name, ceiling]) => state.previous[name] !== undefined
+      && ceiling > state.previous[name]! + declaredRaiseFor(name, state.raises))
+    .map(([name]) => name).sort();
+}
+/** Every shot a raise names whose movement is not EXACTLY the declared sum, as a message. */
+function unaccountedRaises(state: RatchetState): string[] {
+  const named = new Set(state.raises.flatMap(namedBy));
+  const out: string[] = [];
+  for (const name of [...named].sort()) {
+    const features = state.raises.filter((raise) => namedBy(raise).includes(name)).map((raise) => raise.feature);
+    const ceiling = state.ceilings[name];
+    const previous = state.previous[name];
+    if (ceiling === undefined) { out.push(`${features.join(" + ")} names ${name}, which has no ceiling`); continue; }
+    if (previous === undefined) { out.push(`${features.join(" + ")} names ${name}, which has no previous ceiling`); continue; }
+    const moved = ceiling - previous;
+    const declared = declaredRaiseFor(name, state.raises);
+    if (moved !== declared) {
+      out.push(`${name} moved by ${moved}, but the raises naming it (${features.join(" + ")}) declare ${declared}`);
+    }
+  }
+  return out;
+}
+/** Raises that no shot they name still needs: the growth they permitted is gone. */
+function outlivedRaises(state: RatchetState): string[] {
+  return state.raises.filter((raise) => !namedBy(raise).some((name) => {
+    const ceiling = state.ceilings[name];
+    const previous = state.previous[name];
+    return ceiling !== undefined && previous !== undefined && ceiling > previous;
+  })).map((raise) => raise.feature);
+}
+/** Features both staged in MEASURED_DRAW_DELTAS and declared as raises: subtracted twice by the next reconciler. */
+function stagedAndDeclared(state: RatchetState): string[] {
+  const declared = new Set(state.raises.map((raise) => raise.feature));
+  return state.staged.filter((measured) => declared.has(measured.feature)).map((measured) => measured.feature);
+}
+/** THE COUPLING: the raise list is empty IF AND ONLY IF no committed ceiling exceeds its previous. */
+function couplingBreach(state: RatchetState): string | undefined {
+  const raised = Object.entries(state.ceilings)
+    .filter(([name, ceiling]) => state.previous[name] !== undefined && ceiling > state.previous[name]!)
+    .map(([name]) => name);
+  if (state.raises.length === 0 && raised.length > 0) {
+    return `no raise is declared, but ${raised.join(", ")} sit above their previous ceilings`;
+  }
+  if (state.raises.length > 0 && raised.length === 0) {
+    return `${state.raises.map((raise) => raise.feature).join(", ")} declared, but no ceiling sits above its previous`;
+  }
+  return undefined;
+}
 
 /**
  * The delivery floors are DERIVED from recorded run samples, and this file is
@@ -522,51 +602,22 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
       // which. **Do not relax this to `toBeLessThanOrEqual`**; the ceiling gate
       // above is already the permissive one, and this is the check that makes
       // the total honest.
-      const named = new Set<string>();
-      for (const raise of DRAW_CALL_RAISES) {
-        for (const name of raise.kind === "uniform" ? raise.shots : Object.keys(raise.deltas)) {
-          named.add(name);
-        }
-      }
-      for (const name of [...named].sort()) {
-        const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
-        const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
-        const features = DRAW_CALL_RAISES.filter((raise) => raise.kind === "uniform"
-          ? raise.shots.includes(name)
-          : raise.deltas[name] !== undefined).map((raise) => raise.feature);
-        expect(shot?.drawCallCeiling, `${features.join(" + ")} names ${name}, which has no ceiling`)
-          .toBeDefined();
-        expect(previous, `${features.join(" + ")} names ${name}, which has no previous ceiling`)
-          .toBeDefined();
-        const moved = shot!.drawCallCeiling! - previous!;
-        expect(
-          moved,
-          `${name} moved by ${moved}, but the raises naming it `
-            + `(${features.join(" + ")}) declare ${declaredRaiseFor(name)}. Either a `
-            + "feature's cost is not what its entry claims, or undeclared growth is "
-            + "riding in beside it.",
-        ).toBe(declaredRaiseFor(name));
-      }
+      expect(
+        unaccountedRaises(LIVE_RATCHET),
+        "Either a feature's cost is not what its entry claims, or undeclared growth is "
+          + "riding in beside it.",
+      ).toEqual([]);
     });
 
     it("no raise outlives the growth it was declared for", () => {
       // Entries are not standing permission. If a feature is removed and the
       // ceilings come back down, its raise must go too — otherwise the
       // allowance accumulates and the ratchet loosens by one entry at a time.
-      for (const raise of DRAW_CALL_RAISES) {
-        const named = raise.kind === "uniform" ? raise.shots : Object.keys(raise.deltas);
-        const stillNeeded = named.filter((name) => {
-          const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
-          const previous = PREVIOUS_DRAW_CALL_CEILINGS[name];
-          return shot?.drawCallCeiling !== undefined && previous !== undefined
-            && shot.drawCallCeiling > previous;
-        });
-        expect(
-          stillNeeded.length,
-          `${raise.feature}'s raise is no longer needed by any shot it names — the growth `
-            + "it permitted is gone. Delete the entry rather than leaving an allowance.",
-        ).toBeGreaterThan(0);
-      }
+      expect(
+        outlivedRaises(LIVE_RATCHET),
+        "these raises are no longer needed by any shot they name — the growth they "
+          + "permitted is gone. Delete the entries rather than leaving an allowance.",
+      ).toEqual([]);
     });
 
     it("a per-shot raise says what varies, and is not a disguised uniform one", () => {
@@ -583,16 +634,68 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
       }
     });
 
-    it("is load-bearing: the committed ceilings need it", () => {
-      // Non-vacuity for the whole mechanism. If no shot currently exceeds its
-      // previous, DRAW_CALL_RAISES is inert and every assertion above passes
-      // without testing anything.
-      const raised = SHOTS_WITH_DRAW_CEILINGS.filter((shot) => {
-        const previous = PREVIOUS_DRAW_CALL_CEILINGS[shot.name];
-        return previous !== undefined && (shot.drawCallCeiling ?? 0) > previous;
-      });
-      expect(raised.length, "no ceiling exceeds its previous; the raise mechanism is untested")
-        .toBeGreaterThan(0);
+    it("the raise list is empty IF AND ONLY IF nothing is raised", () => {
+      // This replaced "is load-bearing: the committed ceilings need it", which
+      // required SOME ceiling above its previous. The 2026-09-23 re-pin
+      // refreshed PREVIOUS_DRAW_CALL_CEILINGS to what ships and spent every
+      // raise, which is the state the ratchet aims at, and that assertion could
+      // not pass in it. The coupling keeps its teeth without a live raise: a
+      // still-needed raise deleted fails here AND in the ratchet, and a raise
+      // declared while nothing is raised fails here. That the checks themselves
+      // bite is the synthetic control's job, below.
+      expect(couplingBreach(LIVE_RATCHET)).toBeUndefined();
+    });
+  });
+
+  describe("SYNTHETIC POSITIVE CONTROL — the accounting checks fail where they should", () => {
+    // The live raise list is empty after the 2026-09-23 re-pin, so nothing live
+    // shows these checks can fail. These constructed states do, through the
+    // SAME functions the live tests call.
+    const uniform = (feature: string, delta: number, shots: string[]): DrawCallRaise =>
+      ({ kind: "uniform", feature, commit: "synthetic", reason: "synthetic control", delta, shots });
+    const perShot = (feature: string, deltas: Record<string, number>): DrawCallRaise =>
+      ({ kind: "per-shot", feature, commit: "synthetic", reason: "synthetic control", whyNonUniform: "synthetic", deltas });
+    // a: raised +4, declared +4 -- clean. b: raised +3, declared +1 -- an OVER-RAISE, undeclared
+    // growth. c: named by a +2 raise and not raised at all -- a raise that outlived its growth.
+    // d: raised +3 by a per-shot raise -- clean, so the two forms are summed alike. r1 is also
+    // still staged -- promoted and not removed.
+    const MIXED: RatchetState = {
+      ceilings: { a: 104, b: 53, c: 70, d: 33 },
+      previous: { a: 100, b: 50, c: 70, d: 30 },
+      raises: [uniform("r1", 4, ["a"]), uniform("r2", 1, ["b"]), uniform("r3", 2, ["c"]), perShot("r4", { d: 3 })],
+      staged: [{ feature: "r1" }, { feature: "unrelated" }],
+    };
+
+    it("finds each planted fault, and only those", () => {
+      expect(ratchetBreaches(MIXED)).toEqual(["b"]);
+      expect(unaccountedRaises(MIXED)).toEqual([
+        "b moved by 3, but the raises naming it (r2) declare 1",
+        "c moved by 0, but the raises naming it (r3) declare 2",
+      ]);
+      expect(outlivedRaises(MIXED)).toEqual(["r3"]);
+      expect(stagedAndDeclared(MIXED)).toEqual(["r1"]);
+      // Raises are declared and something is raised: the coupling holds.
+      expect(couplingBreach(MIXED)).toBeUndefined();
+    });
+
+    it("(i) a still-needed raise deleted fails through the ratchet AND the coupling", () => {
+      const needed: RatchetState = { ceilings: { a: 104 }, previous: { a: 100 }, raises: [uniform("r1", 4, ["a"])], staged: [] };
+      // CONTROL: intact, every check is clean.
+      expect([ratchetBreaches(needed), unaccountedRaises(needed), outlivedRaises(needed)]).toEqual([[], [], []]);
+      expect(couplingBreach(needed)).toBeUndefined();
+      const deleted: RatchetState = { ...needed, raises: [] };
+      expect(ratchetBreaches(deleted)).toEqual(["a"]);
+      expect(couplingBreach(deleted)).toMatch(/no raise is declared, but a sit above/u);
+    });
+
+    it("(ii) a raise declared while nothing is raised fails through the coupling", () => {
+      // CONTROL: the shipped shape -- no raise, and nothing above its previous -- is clean.
+      const flat: RatchetState = { ceilings: { a: 100 }, previous: { a: 100 }, raises: [], staged: [] };
+      expect(couplingBreach(flat)).toBeUndefined();
+      const added: RatchetState = { ...flat, raises: [uniform("stray", 2, ["a"])] };
+      expect(couplingBreach(added)).toMatch(/stray declared, but no ceiling sits above its previous/u);
+      expect(outlivedRaises(added)).toEqual(["stray"]);
+      expect(unaccountedRaises(added)).toEqual(["a moved by 0, but the raises naming it (stray) declare 2"]);
     });
   });
 
@@ -847,10 +950,7 @@ describe("measured draw deltas awaiting a raise entry", () => {
     // memory. The failure it guards is the opposite one: a delta that has been
     // promoted into DRAW_CALL_RAISES and left here too would be subtracted
     // TWICE by the next person reconciling a remainder.
-    const declared = new Set(DRAW_CALL_RAISES.map((raise) => raise.feature));
-    const stillStaged = MEASURED_DRAW_DELTAS
-      .filter((measured) => declared.has(measured.feature))
-      .map((measured) => measured.feature);
+    const stillStaged = stagedAndDeclared(LIVE_RATCHET);
     expect(
       stillStaged,
       `these features are BOTH staged in MEASURED_DRAW_DELTAS and declared in `
@@ -859,12 +959,14 @@ describe("measured draw deltas awaiting a raise entry", () => {
     ).toEqual([]);
   });
 
-  it("NON-VACUITY — both lists are populated, so the check above compares something", () => {
+  it("NON-VACUITY — the staging record is populated, and the declared side is exercised by the synthetic control", () => {
     // An empty staging record satisfies the intersection trivially, which is
     // exactly how this guard would stop guarding once the batch lands and
-    // someone forgets to delete it along with the entries.
+    // someone forgets to delete it along with the entries. The declared side
+    // may now legitimately be empty (the 2026-09-23 re-pin spent every raise),
+    // so ITS non-vacuity is the synthetic control's staged-and-declared case in
+    // the draw-call block, not a live-list length.
     expect(MEASURED_DRAW_DELTAS.length).toBeGreaterThan(0);
-    expect(DRAW_CALL_RAISES.length).toBeGreaterThan(0);
   });
 
   it("a NON-UNIFORM delta is recorded per shot, never averaged into a number", () => {
