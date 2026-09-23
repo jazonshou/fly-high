@@ -367,7 +367,11 @@ describe("a loft's crown seam", () => {
       // RE-PINNED when the member settled at 1.9 (the cockpit engineer's reading from the eye on the kit's
       // lining, 3.67 degrees against the type's 3.6): the same three meshes moved, no count did, and the
       // other 90 are bit-identical against 1a0ec56.
-      airliner: "8a3b24e2",
+      // RE-PINNED for K3 (the lining thinned to 0.02 m, the lip re-solved to -18.57): checked mesh by mesh against
+      // 58f8b28, the counts of every mesh unchanged and exactly four moved, the kit's own: airliner-cockpit-interior
+      // (the thinner lining, the board's top), airliner-glareshield (the lip, lower), airliner-screens and
+      // airliner-screen-bezels (hung from it). The other 89 are bit-identical.
+      airliner: "8a06b2e1",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

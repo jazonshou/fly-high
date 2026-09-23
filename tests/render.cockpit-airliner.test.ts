@@ -10,15 +10,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { crossings, hitTriangle, worldTriangles, type Triangle } from "../scripts/rayCrossings.mts";
 import { aircraftSpec } from "../src/aircraft/catalogue";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
-import { FLIGHT_DECK_REFERENCE, PANE_PROUD } from "../src/render/webgpu/aircraft/airlinerGlazing";
+import { FLIGHT_DECK_REFERENCE, PANE_DEPTH, PANE_PROUD } from "../src/render/webgpu/aircraft/airlinerGlazing";
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import {
   AIRLINER_GLARESHIELD,
+  AIRLINER_LINING,
   AIRLINER_PANEL,
   AIRLINER_POST_HALF_AZIMUTH,
   AIRLINER_SCREENS,
   AIRLINER_SEAT,
   airlinerLipY,
+  airlinerLiningLines,
   airlinerPanelFaceX,
 } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
 import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
@@ -36,7 +38,7 @@ import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
  *
  * THE EYE is (29.85, 2.93, -0.50), chosen on the K0 grid (docs/findings/COCKPIT_VIEW_2026_09_20.md),
  * and everything else is asserted as an angle from it at the 75 degree, 16:9 lens: the lip at
- * -18.04 straight ahead, no more than a degree of sill under No.1 anywhere, the deck line at the
+ * -18.57 straight ahead, no more than a degree of sill under No.1 anywhere, the deck line at the
  * catalogue's value, each pane's every edge framed by the kit, every hole in the picture a pane, the
  * top row of screens at least 35% in the frame.
  *
@@ -105,12 +107,19 @@ function gridVertex(p: Panel, face: 0 | 1, row: number, column: number): Vector3
   const i = (face * p.rows * p.columns + row * p.columns + column) * 3;
   return new Vector3(p.positions[i]!, p.positions[i + 1]!, p.positions[i + 2]!);
 }
+/**
+ * A pane's (or the post's) grid point ON THE SKIN: the glass slab stands PANE_PROUD out and PANE_DEPTH in, so the skin
+ * is that far between its outer and inner faces. The hole the pane makes in the skin is what the lining frames.
+ */
+function skinVertex(p: Panel, row: number, column: number): Vector3 {
+  return Vector3.Lerp(gridVertex(p, 0, row, column), gridVertex(p, 1, row, column), PANE_PROUD / (PANE_PROUD + PANE_DEPTH));
+}
 /** One face of a captured skin panel as triangles: what a sightline through it crosses, rims left out. */
-function faceTriangles(p: Panel, face: 0 | 1): Triangle[] {
+function faceTriangles(p: Panel, face: 0 | 1 | "skin"): Triangle[] {
   const out: Triangle[] = [];
   for (let row = 0; row < p.rows - 1; row += 1) {
     for (let column = 0; column < p.columns - 1; column += 1) {
-      const v = (r: number, c: number) => gridVertex(p, face, r, c);
+      const v = (r: number, c: number) => (face === "skin" ? skinVertex(p, r, c) : gridVertex(p, face, r, c));
       out.push({ a: v(row, column), b: v(row, column + 1), c: v(row + 1, column) });
       out.push({ a: v(row, column + 1), b: v(row + 1, column + 1), c: v(row + 1, column) });
     }
@@ -118,14 +127,15 @@ function faceTriangles(p: Panel, face: 0 | 1): Triangle[] {
   return out;
 }
 /** Points along one edge of a captured panel's face, the chords between grid points sampled `per` times. */
-function edgePoints(p: Panel, face: 0 | 1, edge: "bottom" | "top" | "inboard" | "outboard", per = 8): Vector3[] {
+function edgePoints(p: Panel, face: 0 | 1 | "skin", edge: "bottom" | "top" | "inboard" | "outboard", per = 8): Vector3[] {
+  const at = (row: number, column: number) => (face === "skin" ? skinVertex(p, row, column) : gridVertex(p, face, row, column));
   const grid: Vector3[] = [];
   if (edge === "bottom" || edge === "top") {
     const row = edge === "bottom" ? 0 : p.rows - 1;
-    for (let column = 0; column < p.columns; column += 1) grid.push(gridVertex(p, face, row, column));
+    for (let column = 0; column < p.columns; column += 1) grid.push(at(row, column));
   } else {
     const column = edge === "inboard" ? 0 : p.columns - 1;
-    for (let row = 0; row < p.rows; row += 1) grid.push(gridVertex(p, face, row, column));
+    for (let row = 0; row < p.rows; row += 1) grid.push(at(row, column));
   }
   const out: Vector3[] = [];
   for (let k = 0; k + 1 < grid.length; k += 1) {
@@ -200,24 +210,41 @@ function firstPart(azimuth: number, elevation: number): string | null {
   return hit ? partOf(hit.pickedMesh!, hit.faceId) : null;
 }
 /**
- * What a sightline from the eye leaves the body through: a pane, the post, or skin. A pane is 0.10 m thick (0.04
- * out of the skin, 0.06 in), so a sightline is THROUGH it when it crosses both its faces, inner and outer; one that
- * meets a face and leaves by the rim is looking at the pane's edge, which is frame. That is the aperture of a thick
- * window seen obliquely, and the lining, the same slab laid round it, frames exactly that.
+ * What a sightline from the eye leaves the body through: a pane, the post, or skin, by where it crosses the SKIN:
+ * through the hole a pane makes in it (the pane's grid at skin level) or not. The lining is a thin slab laid on the
+ * skin round each hole (0.008 out, 0.012 in), so the opening the pilot sees is that hole to within its rim. (It was
+ * the glass's own 0.10 m slab until K3, and the opening then was a thick window's: crossing both glass faces.)
  */
-let slabs: { what: "glass" | "post"; outer: Triangle[]; inner: Triangle[] }[] = [];
+let holes: { what: "glass" | "post"; skin: Triangle[] }[] = [];
 function exitsThrough(azimuth: number, elevation: number): "glass" | "post" | "skin" {
-  if (slabs.length === 0) {
-    slabs = panels
+  if (holes.length === 0) {
+    holes = panels
       .filter((p) => /flight-deck-window|windscreen-center-post/.test(p.name))
-      .map((p) => ({ what: /post/.test(p.name) ? "post" as const : "glass" as const, outer: faceTriangles(p, 0), inner: faceTriangles(p, 1) }));
-    expect(slabs, "six panes and the post").toHaveLength(7);
+      .map((p) => ({ what: /post/.test(p.name) ? "post" as const : "glass" as const, skin: faceTriangles(p, "skin") }));
+    expect(holes, "six panes and the post").toHaveLength(7);
   }
   const d = direction(azimuth, elevation);
-  for (const slab of slabs) {
-    if (crossings(EYE_POINT, d, slab.inner).length > 0 && crossings(EYE_POINT, d, slab.outer).length > 0) return slab.what;
-  }
+  for (const hole of holes) if (crossings(EYE_POINT, d, hole.skin).length > 0) return hole.what;
   return "skin";
+}
+/**
+ * The bottom of the view over port No.1, as the pilot reads it: the sill lining's top edge under No.1. Its rim runs
+ * from the inner face (0.012 in) to the outer (0.008 out), and the edge the eye reads is whichever is higher; sampled
+ * along the chords between the sill's grid columns under No.1 (R's azimuths 2.5 to 24, port).
+ */
+function viewBottomOverNoOne(per = 20): { az: number; el: number }[] {
+  const sill = panel("airliner-lining-sill-centre");
+  const columns = airlinerLiningLines().azimuth.filter((a) => a >= -26 - 1e-9 && a <= 26 + 1e-9);
+  expect(columns, "the centre sill's columns").toHaveLength(sill.columns);
+  const under = columns.map((a, k) => [a, k] as const).filter(([a]) => a >= 2.5 - 1e-9 && a <= 24 + 1e-9).map(([, k]) => k);
+  const out: { az: number; el: number }[] = [];
+  for (let i = 0; i + 1 < under.length; i += 1) {
+    for (let s = 0; s <= per; s += 1) {
+      const [outer, inner] = ([0, 1] as const).map((face) => azel(Vector3.Lerp(gridVertex(sill, face, sill.rows - 1, under[i]!), gridVertex(sill, face, sill.rows - 1, under[i + 1]!), s / per)));
+      out.push(outer!.el >= inner!.el ? outer! : inner!);
+    }
+  }
+  return out;
 }
 /** The lip's top edge as the pilot reads it along an azimuth: a line along z at the face, so its elevation is exact. */
 function lipElevation(azimuth: number): number {
@@ -537,18 +564,15 @@ describe("the centre post", () => {
 });
 
 describe("what the pilot sees straight ahead", () => {
-  it("has the glareshield's lip at -18.04, and no more than a degree of sill under No.1 anywhere along its bottom edge", () => {
+  it("has the glareshield's lip at -18.57, and no more than a degree of sill under No.1 anywhere along its bottom edge", () => {
     const lip = worldVertices(named("airliner-glareshield")).slice(0, 24);
     const aftTop = lip.filter((v) => Math.abs(v.x - airlinerPanelFaceX()) < 1e-6 && Math.abs(v.y - airlinerLipY()) < 1e-6);
     expect(aftTop.length, "the lip's aft top edge").toBeGreaterThanOrEqual(2);
     expect(Math.max(...lip.map((v) => v.y)), "nothing of the lip is higher than its aft top edge").toBeCloseTo(airlinerLipY(), 6);
     expect(Math.min(...lip.map((v) => v.x)), "and nothing of it is aft of the face: flush").toBeCloseTo(airlinerPanelFaceX(), 6);
     expect(Math.atan2(airlinerLipY() - EYE.up, airlinerPanelFaceX() - EYE.forward) * DEG).toBeCloseTo(AIRLINER_GLARESHIELD.lipElevationDegrees, 6);
-    // the sill: No.1's OUTER bottom edge (the aperture's bottom, seen from inside) less the lip, along the edge
-    const sills = edgePoints(panel("port-airliner-flight-deck-window-one"), 0, "bottom").map((p) => {
-      const { az, el } = azel(p);
-      return el - lipElevation(az);
-    });
+    // the sill: the bottom of the view over No.1 (the sill lining's own top edge) less the lip, all along No.1
+    const sills = viewBottomOverNoOne().map(({ az, el }) => el - lipElevation(az));
     console.info(`747 sill under No.1: ${Math.min(...sills).toFixed(2)}..${Math.max(...sills).toFixed(2)} degrees`);
     expect(Math.max(...sills), "no more than a degree of sill").toBeLessThanOrEqual(1.0);
     // and it is the LOWEST such lip: the sill reaches the degree somewhere (the inboard end)
@@ -595,8 +619,8 @@ describe("what the pilot sees straight ahead", () => {
     // ONE ROW: the lip is a line along z, so the highest row anywhere is the lip's row straight ahead
     expect(Math.abs(row + ahead)).toBeLessThan(0.05);
     expect(ahead).toBeCloseTo(AIRLINER_GLARESHIELD.lipElevationDegrees, 1);
-    // ABOVE IT, THE SILL: window frame, the interior mesh, from the lip up to No.1's outer bottom edge (-17.32)
-    const bottom = edgePoints(panel("port-airliner-flight-deck-window-one"), 0, "bottom", 40).map((p) => azel(p));
+    // ABOVE IT, THE SILL: window frame, the interior mesh, from the lip up to the bottom of the view (-17.86)
+    const bottom = viewBottomOverNoOne(40);
     const i = bottom.findIndex((q, k) => k > 0 && Math.sign(q.az) !== Math.sign(bottom[k - 1]!.az));
     const glassAhead = bottom[i - 1]!.el + ((bottom[i]!.el - bottom[i - 1]!.el) * (0 - bottom[i - 1]!.az)) / (bottom[i]!.az - bottom[i - 1]!.az);
     expect(glassAhead - ahead, "the band of sill straight ahead, degrees").toBeGreaterThan(0.5);
@@ -613,23 +637,23 @@ describe("what the pilot sees straight ahead", () => {
   });
 
   it("frames every edge of the glass the pilot sees with the kit: no hidden skin shows beside any pane or the post", () => {
-    // 0.3 degrees outside each edge, from the face the aperture is bounded by on that side (the outer face at the
-    // bottom and the sides, the inner face at the top), the cockpit camera draws the frame; 0.3 inside, it draws nothing.
-    const cases: { pane: string; edge: "bottom" | "top" | "inboard" | "outboard"; face: 0 | 1; out: [number, number]; frame: RegExp }[] = [];
+    // 0.3 degrees outside each pane's hole in the skin (its grid at skin level: the lining is a thin slab round it),
+    // the cockpit camera draws the frame.
+    const cases: { pane: string; edge: "bottom" | "top" | "inboard" | "outboard"; out: [number, number]; frame: RegExp }[] = [];
     for (const side of ["port", "starboard"] as const) {
       const outboard = side === "port" ? -1 : 1;
       for (const pane of ["one", "two"] as const) {
         const name = `${side}-airliner-flight-deck-window-${pane}`;
-        cases.push({ pane: name, edge: "bottom", face: 0, out: [0, -1], frame: /^airliner-glareshield$|sill/ });
-        cases.push({ pane: name, edge: "top", face: 1, out: [0, 1], frame: /crown/ });
-        cases.push({ pane: name, edge: "inboard", face: 0, out: [-outboard, 0], frame: pane === "one" ? /post-gap/ : /pillar-one-two/ });
-        cases.push({ pane: name, edge: "outboard", face: 0, out: [outboard, 0], frame: pane === "one" ? /pillar-one-two/ : /pillar-two-three/ });
+        cases.push({ pane: name, edge: "bottom", out: [0, -1], frame: /^airliner-glareshield$|sill/ });
+        cases.push({ pane: name, edge: "top", out: [0, 1], frame: /crown/ });
+        cases.push({ pane: name, edge: "inboard", out: [-outboard, 0], frame: pane === "one" ? /post-gap/ : /pillar-one-two/ });
+        cases.push({ pane: name, edge: "outboard", out: [outboard, 0], frame: pane === "one" ? /pillar-one-two/ : /pillar-two-three/ });
       }
     }
     const post = panel("airliner-windscreen-center-post");
     let framed = 0;
     for (const c of cases) {
-      const points = edgePoints(panel(c.pane), c.face, c.edge, 3);
+      const points = edgePoints(panel(c.pane), "skin", c.edge, 3);
       // an edge's first and last grid segment end in a corner, where the frame part of the NEXT edge is the neighbour
       const kept = points.slice(3, -4);
       for (const p of kept) {
@@ -678,10 +702,11 @@ describe("what the pilot sees straight ahead", () => {
         const hit = firstHit(az, e);
         expect(hit?.pickedMesh, `the crown at azimuth ${az}, elevation ${e.toFixed(2)}`).toBe(interior);
         expect(partOf(hit!.pickedMesh!, hit!.faceId)).toMatch(/crown/);
-        // UNDER the skin, never the shell: the body's outer skin along the same ray is beyond it
+        // UNDER the skin, never the shell: the body's outer skin along the same ray is beyond it (the lining's inner
+        // face stands 0.012 in)
         const d = direction(az, e);
         const skin = crossings(EYE_POINT, d, shell).at(-1)!;
-        expect(skin - hit!.distance, `the crown stands inside the skin at azimuth ${az}, elevation ${e.toFixed(2)}`).toBeGreaterThan(0.02);
+        expect(skin - hit!.distance, `the crown stands inside the skin at azimuth ${az}, elevation ${e.toFixed(2)}`).toBeGreaterThan(0.005);
       }
     }
     // CONTROL: without the interior mesh those rays meet nothing the cockpit camera draws; the crown is what covers them
@@ -708,10 +733,11 @@ describe("what the pilot sees straight ahead", () => {
       }
       return k;
     };
-    // an edge: within a third of a degree of another kind of exit (the chords of the lining and of the pane beside it
-    // are sampled at different points along their shared edge, which is where they differ)
+    // an edge: within half a degree of another kind of exit. The lining's rim runs 0.012 in from the skin and 0.008
+    // out of it round each hole, and No.2's top edge is 1.3 m away and seen at a slant, where that rim reads up to
+    // half a degree across; the lining's chords and the pane's are also sampled at different points along an edge.
     const nearEdge = (az: number, el: number, what: string) =>
-      [[0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]].some(([da, de]) => exit(az + da!, el + de!) !== what);
+      [[0.5, 0], [-0.5, 0], [0, 0.5], [0, -0.5]].some(([da, de]) => exit(az + da!, el + de!) !== what);
     for (let az = -37.5 + 0.37; az <= 37.5; az += 1) {
       for (let el = -24 + 0.37; el <= 24; el += 1) {
         if (!inFrame(az, el)) continue;
@@ -804,10 +830,11 @@ describe("the 747's screens", () => {
       fractions[name.replace("airliner-screen-", "")] = seen / total;
     }
     console.info(`747 screens in the frame: ${Object.entries(fractions).map(([n, f]) => `${n} ${(f * 100).toFixed(1)}%`).join(", ")}`);
-    // the floor is 35%; the build gives 43.5% exactly (42.9% on this grid), and a panel back at 0.75 m would give 36.8%
+    // the floor is 35%; the build gives 37.8% exactly (38.1% on this grid), and a panel back at 0.75 m would give 31.7%.
+    // (It was 43.5% with the lining the glass's own slab: its sill stood 0.04 out and the lip 0.54 degree higher.)
     for (const name of ["port-pfd", "port-nd", "port-eicas"]) {
       expect(fractions[name], `${name} in the frame`).toBeGreaterThanOrEqual(0.35);
-      expect(fractions[name], `${name} as built`).toBeGreaterThan(0.42);
+      expect(fractions[name], `${name} as built`).toBeGreaterThan(0.37);
     }
     expect(fractions["starboard-eicas"], "the lower EICAS is under the frame").toBe(0);
     // the starboard pair is beyond the frame's right edge but for a sliver of the ND
@@ -893,9 +920,9 @@ describe("the 747's cockpit against the shell it stands in", () => {
     expect(seamVertices).toBeGreaterThan(150);
   });
 
-  it("lines the skin from inside: where the pilot sees the lining's face it stands inside the outer skin, and its rim no further out than the glass", () => {
-    // The lining is the panes' own slab, 0.04 out of the skin and 0.06 in. Its INNER face is what lines the deck;
-    // where a sightline meets its rim instead, at a pane's edge, the rim stands out of the skin as the pane's does.
+  it("lines the skin from inside: where the pilot sees the lining's face it stands inside the outer skin, and its thin rim barely out of it", () => {
+    // The lining is a thin slab on the skin, AIRLINER_LINING.proud (0.008) out and .depth (0.012) in. Its INNER face is
+    // what lines the deck; where a sightline meets its rim instead, at a pane's edge, the rim stands just out of the skin.
     let face = 0;
     let rim = 0;
     let tightestFace = Number.POSITIVE_INFINITY;
@@ -930,10 +957,52 @@ describe("the 747's cockpit against the shell it stands in", () => {
     console.info(`747 lining: ${face} rays on its inner face, the tightest ${tightestFace.toFixed(4)} m inside the skin; ${rim} on its rims, the farthest ${(-farthestRim).toFixed(4)} m outside`);
     expect(face).toBeGreaterThan(300);
     expect(rim, "the rims are the frame's depth at the panes' edges, a small part of what shows").toBeLessThan(face / 5);
-    expect(tightestFace).toBeGreaterThan(0.02);
+    // the lining's inner face stands AIRLINER_LINING.depth (0.012) in; the chords between its grid points only sag further in
+    expect(tightestFace).toBeGreaterThan(0.005);
     expect(shadedAway, "lining vertices shaded away from the eye").toBe(0);
-    // seen along a slanting sightline, a rim 0.04 proud of the skin can read up to about 0.07 outside it
-    expect(farthestRim).toBeGreaterThan(-(PANE_PROUD * 2));
+    // seen along a slanting sightline, a rim AIRLINER_LINING.proud (0.008) out of the skin can read up to about twice that outside it
+    expect(farthestRim).toBeGreaterThan(-(AIRLINER_LINING.proud * 2));
+  });
+
+  it("reads THIN: the No.1 / No.2 pillar is nearly all face, its side faces under half a degree (K3)", () => {
+    // Jason's "thick, bulky" frames were the lining's depth: as the glass's own 0.10 m slab, its side faces were half
+    // the pillar's apparent width, 1.9 of 3.8 degrees, a second lit tone down every pillar. At 0.02 m the pillar reads
+    // 2.3 degrees with 0.4 of side. Measured along the horizon across the pillar in 0.01 degree steps, each ray's first
+    // drawn triangle classed by where `skinPanel` wrote it: two outer and two inner triangles a grid cell, then the rims.
+    const faceOf = (mesh: AbstractMesh, faceId: number): { part: string; face: "inner" | "outer" | "side" } | null => {
+      const part = partOf(mesh, faceId);
+      const p = panels.find((q) => q.name === part);
+      if (!p) return null;
+      const sources = (mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [mesh.name];
+      let start = 0;
+      for (const name of sources) {
+        if (name === part) break;
+        start += /^airliner-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles;
+      }
+      const k = faceId - start;
+      const cells = (p.rows - 1) * (p.columns - 1);
+      return { part, face: k >= cells * 4 ? "side" : k % 4 < 2 ? "outer" : "inner" };
+    };
+    const measure = (el: number) => {
+      let inner = 0;
+      let side = 0;
+      for (let az = -13; az <= -5; az += 0.01) {
+        const hit = firstHit(az, el);
+        if (!hit) continue;
+        const f = faceOf(hit.pickedMesh!, hit.faceId);
+        if (f?.part !== "port-airliner-lining-pillar-one-two") continue;
+        if (f.face === "side") side += 0.01;
+        else inner += 0.01;
+      }
+      return { inner, side, total: inner + side };
+    };
+    for (const el of [-8, 0, 4]) {
+      const m = measure(el);
+      console.info(`747 No.1 / No.2 pillar at el ${el}: ${m.total.toFixed(2)} deg, face ${m.inner.toFixed(2)} + side ${m.side.toFixed(2)}`);
+      expect(m.inner, "the pillar is there").toBeGreaterThan(1.5);
+      expect(m.side, "its side faces").toBeLessThan(0.5);
+      expect(m.total).toBeLessThan(2.6);
+    }
   });
 
   it("puts nothing in the frame that the design did not account for: the kit and the centre post", () => {

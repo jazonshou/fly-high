@@ -8,9 +8,7 @@ import type { FlightVisualState } from "@/src/game/types";
 import {
   FLIGHT_DECK_PANES,
   FLIGHT_DECK_REFERENCE,
-  PANE_DEPTH,
   PANE_GRID,
-  PANE_PROUD,
   sightline,
   type FlightDeckPane,
   type Point3,
@@ -58,10 +56,10 @@ import { displayStateFromVisual, type DisplayAirframe } from "./displays/display
  *
  * THE TARGETS, as angles from the eye at the 75 degree lens (16:9, so the frame's bottom reads
  * -23.35 straight ahead):
- *  - the glareshield's lip reads -18.04 straight ahead, the LOWEST line that leaves no more than 1
- *    degree of sill between itself and No.1's bottom edge anywhere along that edge. It stands
- *    FLUSH with the panel's face, and the screens hang 0.25 degrees under it, so 43.5% of each
- *    screen in the top row is in the frame;
+ *  - the glareshield's lip reads -18.57 straight ahead, the LOWEST line that leaves no more than 1
+ *    degree of sill between itself and the bottom of the view over No.1 (the sill's own top edge)
+ *    anywhere along it. It stands FLUSH with the panel's face, and the screens hang 0.25 degrees
+ *    under it, so 37.8% of each screen in the top row is in the frame;
  *  - above the lip the SILL, the bottom of the window frame, runs on to each pane's bottom edge, so
  *    no band of the hidden nose shows between them. It is frame, not deck: on the interior material
  *    with the crown and the pillars, a lighter window surround over a dark hood, as the type has it.
@@ -132,14 +130,14 @@ export function airlinerSeatPlacement(): { seatX: number; seatY: number; headres
 export const AIRLINER_PANEL = Object.freeze({
   /**
    * The pilot-facing face of the board is this far ahead of the eye: the top of the type's range. At 0.75 the
-   * top row of screens was 36.8% in the frame, at 0.85 it is 43.5%: the lip and the frame's bottom are angles, so
-   * the band between them is the same number of degrees at any distance, and a screen further away is fewer
+   * top row of screens would be 31.7% in the frame, at 0.85 it is 37.8%: the lip and the frame's bottom are angles,
+   * so the band between them is the same number of degrees at any distance, and a screen further away is fewer
    * degrees tall, so more of it fits in that band.
    */
   faceAheadOfEye: 0.85,
   /**
    * The board stands this deep behind its face. No deeper: its top edge's far corner must stay under the sight
-   * line over the lip, which falls 0.3257 m a metre (tan 18.04), and the lip is 0.02 above the board's top.
+   * line over the lip, which falls 0.3359 m a metre (tan 18.57), and the lip is 0.02 above the board's top.
    */
   thickness: 0.05,
   /**
@@ -160,22 +158,24 @@ export function airlinerPanelFaceX(): number {
  * THE GLARESHIELD: a lip along the top of the panel's face, flush with it, and nothing aft of it.
  *
  * Its top edge is a line along z at the face's x, and it reads `lipElevationDegrees` straight ahead. That is the
- * LOWEST such line that keeps the sill -- the strip between the lip and No.1's bottom edge as the pilot sees it --
- * no more than 1 degree tall anywhere along that edge: No.1's outer bottom edge reads -16.88 at its inboard end
- * (az +7.9) and -18.10 at its outboard end (az -12.2), and a line along z reads shallower off axis, so the sill
- * is 1.00 degree at the inboard end and the lip stands 0.44 degree over the glass at the outboard end. Solved
- * against the cast edge, held to the BUILT glass by `tests/render.cockpit-airliner.test.ts`.
+ * LOWEST such line that keeps the sill -- the strip between the lip and the bottom of the view over No.1 -- no
+ * more than 1 degree tall anywhere along No.1. The bottom of the view is the sill lining's own top edge (its rim's
+ * outer edge, 0.008 out of the skin; the glass is not drawn), which reads -17.41 at No.1's inboard end (az +8.0)
+ * and -18.66 at its outboard end (az -11.8), and a line along z reads shallower off axis, so the sill is 0.99
+ * degree at the inboard end and the lip stands 0.45 degree over the window at the outboard end. Solved against
+ * the BUILT lining and held to it by `tests/render.cockpit-airliner.test.ts`. (With the lining the glass's own
+ * 0.10 m slab, its top edge stood 0.04 out, read 0.5 degree higher, and the lip was -18.04.)
  *
  * Its section is a WEDGE, not a box: the aft face 0.02 tall, the top falling away forward over `depth` steeper
- * than the sight line over the lip (21.8 degrees against 18.04), so from the eye nothing of the glareshield or the
+ * than the sight line over the lip (21.8 degrees against 18.57), so from the eye nothing of the glareshield or the
  * board behind it shows above the lip, and the lip is the line the pilot reads. A box's far top corner would stand
- * 1.6 cm over that sight line and become the edge instead.
+ * 1.7 cm over that sight line and become the edge instead.
  *
  * Being a line along z, the lip is ONE row of the picture across the whole frame, and it is the deck's top: the
  * value `catalogue.cockpitDeckLineDegrees` records and the 2D HUD keeps above.
  */
 export const AIRLINER_GLARESHIELD = Object.freeze({
-  lipElevationDegrees: -18.04,
+  lipElevationDegrees: -18.57,
   thickness: 0.02,
   depth: AIRLINER_PANEL.thickness,
 });
@@ -254,9 +254,18 @@ export const AIRLINER_POST_HALF_AZIMUTH = 1;
 
 /**
  * How far below and above the glass the lining runs, in R's elevation (past the frame's edges from the eye, with
- * room), and the widest step between its grid lines (`airlinerLiningLines`).
+ * room), the widest step between its grid lines (`airlinerLiningLines`), and how far it stands out of the skin and
+ * in from it.
+ *
+ * THE DEPTH IS THE FRAME'S LOOK. The lining was the glass's own slab, 0.04 out and 0.06 in, and from the eye that
+ * 0.10 m of depth showed as a second, lit face down the side of every pillar: half the No.1 / No.2 pillar's
+ * apparent width (1.9 of 3.8 degrees) was side face, and the pillars read thick and two-toned where they are 6.5 cm
+ * across. At 0.02 m the side is 0.4 degrees and the pillar reads 2.3, nearly all face (K3,
+ * docs/findings/COCKPIT_VIEW_2026_09_20.md). The window the pilot sees is then the lining's own opening: its rim
+ * stands 0.008 out of the skin, so the sill's top edge, not the hidden glass's outer face, is the bottom of the
+ * view, and the lip is solved against that.
  */
-export const AIRLINER_LINING = Object.freeze({ bottom: -30, top: 40, maxStepDegrees: 5 });
+export const AIRLINER_LINING = Object.freeze({ bottom: -30, top: 40, maxStepDegrees: 5, proud: 0.008, depth: 0.012 });
 
 export interface LiningStrip {
   readonly name: string;
@@ -415,8 +424,8 @@ export function buildAirlinerCockpit(
         `${prefix}airliner-lining-${strip.name}`,
         grid.points,
         grid.normals,
-        PANE_PROUD,
-        PANE_DEPTH,
+        AIRLINER_LINING.proud,
+        AIRLINER_LINING.depth,
         materials.interior,
         root,
       ));
