@@ -517,11 +517,11 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   // the wing chord plane are the contact points.
   airframeContactPoints: Object.freeze([
     // The radome: 0.15 m above and below the drooped tip, whose ring the
-    // renderer draws at y -0.45 +- 0.1 (`GLOBAL_FUSELAGE_SECTIONS`; held there
+    // renderer draws at y -0.55 +- 0.1 (`GLOBAL_FUSELAGE_SECTIONS`; held there
     // by render.bizjet-nose against the built mesh). They were 0.1 and -0.4
-    // round a tip at -0.15: a nose-down touch now registers 0.3 m lower.
-    Object.freeze({ x: 15, y: -0.2, z: 0 }),
-    Object.freeze({ x: 15, y: -0.7, z: 0 }),
+    // round a tip at -0.15: a nose-down touch now registers 0.4 m lower.
+    Object.freeze({ x: 15, y: -0.3, z: 0 }),
+    Object.freeze({ x: 15, y: -0.8, z: 0 }),
     Object.freeze({ x: 11.5, y: 1.6, z: 0 }),
     Object.freeze({ x: 0, y: -1.5, z: 0 }),
     // x -6.44, not -1. Measured at the true tip station on the rebuilt wing:

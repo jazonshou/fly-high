@@ -272,8 +272,9 @@ describe("the Global's flight-deck glass", () => {
   it("keeps the outer face outside the skin and the inner face inside it, at every cell centre", () => {
     // Along the skin's normal, from a ray cast from R through each cell's centre. The design is
     // 12 mm out and 30 mm in; the chords between grid points cross the nose's facet creases.
-    // Measured 6.2 mm out and 19.8 mm in at worst on part 3's nose (6.6 and 19.5 on part 2's, 7.5
-    // and 29.4 on part 1's, 4.5 and 19.6 before phase 3c).
+    // Measured 7.0 mm out and 19.4 mm in at worst on part 4 (d)'s nose, whose brow and face are
+    // filleted for this (with the brow a single knee: 0.4 mm INSIDE); 6.2 and 19.8 on part 3's, 6.6
+    // and 19.5 on part 2's, 7.5 and 29.4 on part 1's, 4.5 and 19.6 before phase 3c.
     const { outer, inner } = clearances(panels, caster);
     expect(outer).toBeGreaterThan(0.003);
     expect(inner).toBeLessThan(-0.015);

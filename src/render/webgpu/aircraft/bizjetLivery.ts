@@ -59,21 +59,39 @@ const CHANNELS = 4;
  * every ring is the cabin's as it was, and the tip's last two rings are the
  * radome's as they were.
  *
- * THE NOSE IS THE TYPE'S SHAPE: low ahead of the flight deck, the tip drooped
- * (phase 3c, parts 2 and 3). The type's nose falls away steeply ahead of the
- * windshield under a brow, and its tip is at the gold line's height; this one
- * was a smooth ogive, 0.3-0.7 m higher at 1-2 m aft of the tip by a camera
- * solved on the port render (p. 29), with its tip at -0.15. What decided how
- * far is the seat: from a seated eye (11.90, 0.55, -0.52), 1.21 m above the
- * -0.66 floor, the windshield has to span -10 to +10 degrees straight ahead
- * (on final the aim point is 6-8 degrees under the body axis). The crown is
- * 0.9 of the camera fit, which centres the windshield at -13.2..+13.2; the tip
- * is at -0.45, the least droop that lets the windshield's foot land on the nose
- * rather than cast past it. The crown is a monotone cubic from the tip through
- * 0.9 of the fit at 1.0-4.0 m aft to the cabin from 5.5; the keel is part 1's
- * aft of 1.8 m and droops to the tip; the widths are part 1's; 11.75 and 12.25
- * draw the brow. The crown drops 0.60 / 0.56 / 0.44 / 0.25 / 0.10 m at 1.3 /
- * 1.8 / 2.2 / 3.0 / 3.5 m aft.
+ * THE NOSE IS THE TYPE'S SHAPE: low ahead of the flight deck, under a brow,
+ * the tip drooped (phase 3c, parts 2-4). The type's nose falls away steeply
+ * ahead of the windshield under a brow, and its tip is at the gold line's
+ * height; this one was a smooth ogive, 0.3-0.7 m higher at 1-2 m aft of the tip
+ * by a camera solved on the port render (p. 29), with its tip at -0.15. What
+ * decides it is the seat: from a seated eye (11.90, 0.55, -0.52), 1.21 m above
+ * the -0.66 floor, the windshield has to reach below -10 degrees straight ahead
+ * (on final the aim point is 6-8 degrees under the body axis), both its top
+ * corners above +10, and the centre post's head above +10.
+ *
+ * The crown, in (m aft of the tip, height): STRAIGHT from the tip's crown
+ * (0, -0.45) to the post's foot (1.69, 0.25), on which the windshield's
+ * bottom lands; then a polyline through (1.9, 0.37), a brow corner at 2.22
+ * and the seat (3.1, 1.0), filleted 1.0 m round its concave corner and 0.8 m
+ * round the brow, the corner set so the crown at the post's head (2.22) is
+ * 0.735: the face drops hardest just under the brow. Then (3.5, 1.19), (4.0,
+ * 1.25), the cabin from 5.5; a monotone cubic through all of it, sampled at
+ * the rings. The keel is part 1's aft of 1.8 m and droops to the tip; the
+ * widths are part 1's. THE FILLETS ARE THE GLASS'S: the panes are 8 x 8 grids
+ * cast onto this skin (their cells up to 0.24 m across), and a sharper brow
+ * or face puts a cell centre inside the skin (0.4 mm in, against 12 mm out
+ * designed, with the brow a single knee; 7.0 mm out filleted).
+ *
+ * THE BROW IS A BOUNDED COMPROMISE, NOT A MEASUREMENT (part 4 (d)). The render
+ * puts the crown at the post's head near 0.59, which from this eye puts the
+ * post's head at +2 degrees; a level roof at 0.87 opens the view to the brief
+ * but stands up to 0.29 m proud of the render. 0.735 is the least (to 5 mm)
+ * that keeps the post's head, across both its edges, and both port top
+ * corners above +10. It stands up to 0.20 m above the render on the face just
+ * under the brow, over 0.10 only from 2.03 to 2.39 m aft, and no more than 0.10
+ * above it elsewhere from 1.9 to 3.5 m aft (held by render.bizjet-nose against
+ * the render's silhouette). A second camera decides the final brow; every
+ * ring here is a function of those anchors and fillets.
  */
 export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
@@ -82,23 +100,31 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -2, yRadius: 1.345, zRadius: 1.345 },
   { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 10.5, yRadius: 1.2742, zRadius: 1.32, yOffset: -0.0028 },
-  { x: 11, yRadius: 1.2319, zRadius: 1.32, yOffset: 0.0005 },
-  { x: 11.5, yRadius: 1.195, zRadius: 1.315, yOffset: 0.0117 },
-  { x: 11.75, yRadius: 1.1256, zRadius: 1.2935, yOffset: -0.0291 },
-  { x: 12, yRadius: 1.0385, zRadius: 1.272, yOffset: -0.084 },
-  { x: 12.25, yRadius: 0.9871, zRadius: 1.2365, yOffset: -0.0943 },
-  { x: 12.5, yRadius: 0.9088, zRadius: 1.201, yOffset: -0.1294 },
-  { x: 13, yRadius: 0.674, zRadius: 1.1, yOffset: -0.279 },
-  { x: 13.35, yRadius: 0.565, zRadius: 0.99, yOffset: -0.324 },
-  { x: 13.7, yRadius: 0.4443, zRadius: 0.851, yOffset: -0.3758 },
-  { x: 14.1, yRadius: 0.3093, zRadius: 0.672, yOffset: -0.4285 },
-  { x: 14.4, yRadius: 0.2348, zRadius: 0.502, yOffset: -0.4401 },
-  { x: 14.7, yRadius: 0.1676, zRadius: 0.34, yOffset: -0.4443 },
-  // The tip, drooped to the gold line's height (phase 3c, part 3): the sim's two
+  { x: 10.5, yRadius: 1.2834, zRadius: 1.3200, yOffset: 0.0065 },
+  { x: 11, yRadius: 1.2407, zRadius: 1.3200, yOffset: 0.0093 },
+  { x: 11.5, yRadius: 1.1866, zRadius: 1.3150, yOffset: 0.0034 },
+  { x: 11.9, yRadius: 1.0679, zRadius: 1.2806, yOffset: -0.0679 },
+  { x: 12.2, yRadius: 1.0090, zRadius: 1.2436, yOffset: -0.0813 },
+  { x: 12.4, yRadius: 0.9701, zRadius: 1.2152, yOffset: -0.0848 },
+  { x: 12.55, yRadius: 0.9393, zRadius: 1.1909, yOffset: -0.0905 },
+  { x: 12.7, yRadius: 0.8949, zRadius: 1.1606, yOffset: -0.1096 },
+  { x: 12.78, yRadius: 0.8629, zRadius: 1.1444, yOffset: -0.1280 },
+  { x: 12.87, yRadius: 0.8177, zRadius: 1.1263, yOffset: -0.1575 },
+  { x: 12.95, yRadius: 0.7658, zRadius: 1.1101, yOffset: -0.1952 },
+  { x: 13.03, yRadius: 0.7082, zRadius: 1.0906, yOffset: -0.2384 },
+  { x: 13.1, yRadius: 0.6665, zRadius: 1.0686, yOffset: -0.2677 },
+  { x: 13.2, yRadius: 0.6177, zRadius: 1.0371, yOffset: -0.2996 },
+  { x: 13.31, yRadius: 0.5747, zRadius: 1.0026, yOffset: -0.3247 },
+  { x: 13.45, yRadius: 0.5315, zRadius: 0.9503, yOffset: -0.3459 },
+  { x: 13.6, yRadius: 0.4899, zRadius: 0.8907, yOffset: -0.3643 },
+  { x: 13.8, yRadius: 0.4356, zRadius: 0.8062, yOffset: -0.3886 },
+  { x: 14.1, yRadius: 0.3515, zRadius: 0.6720, yOffset: -0.4287 },
+  { x: 14.4, yRadius: 0.2678, zRadius: 0.5020, yOffset: -0.4693 },
+  { x: 14.7, yRadius: 0.1841, zRadius: 0.3400, yOffset: -0.5098 },
+  // The tip, its crown at the gold line's height (phase 3c, part 4): the sim's two
   // radome contact points straddle it 0.15 m above and below (`src/sim/aircraft.ts`,
   // held by render.bizjet-nose against the built mesh).
-  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.45 },
+  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.55 },
 ];
 
 /** The upswept tailcone, ending at the sim's tailcone contact point. */

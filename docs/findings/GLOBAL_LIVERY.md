@@ -573,6 +573,139 @@ three):
 - **The tip's closing radius**, 0.1 m, is the old radome's, carried over. From
   abeam the tip reads sharper than a radome. Is 0.1 the type's?
 
+## Phase 3c, part 4 (d): a bounded brow
+
+**Part 4 asked for a level windshield top** (both top corners within 3 degrees
+of each other), a brow over it, and the nose under the brow falling hardest.
+What the study found:
+- **The level top cannot be had.** The top edge runs from the post (2.22 m aft,
+  4 degrees round) back to 2.57 m aft, 31 degrees round. From the seated eye
+  that spreads the edge's elevation by about 10 degrees whatever the crown
+  does.
+- **A uniform face misses the -10 bottom.** The face has to drop hardest just
+  under the brow.
+- **A level roof at 0.87 stands up to 0.29 m above the p. 29 render**, and
+  more than 0.10 above it from 2.03 to 2.55 m aft.
+
+The PM's call, (d), is a bounded compromise built now. The second camera
+decides the final brow; everything downstream is a table change and re-pins.
+The targets, from the seated eye:
+- both port top corners and the post's head at +10 or higher;
+- the starboard top at +8 or higher at the post;
+- the post 0.45 m tall or more;
+- the bottom -10 or lower straight ahead;
+- the foot on the loft at x 13.29;
+- the nose straight from the foot to a tip at -0.55;
+- headroom 0.35 m at the seat and 0.25 m 0.3 m ahead;
+- the roof at 0.2 m per metre or less;
+- the brow no more than 0.10 m above the render anywhere from 1.9 to 3.5 m aft.
+
+**Two of those cannot hold together, and the build keeps the view.**
+- **The render bound against the post's head.** Through the solved camera
+  (`tests/fixtures/global-p29-silhouette.json`), the render's crown at the
+  post's head is about 0.59, and 0.65 at 2.3 m aft. From the seated eye a brow
+  at 0.59 puts the post's head at +2 degrees. The post's head reaches +10 across
+  both its edges only with the crown at 0.735 there. So the brow stands
+  0.14-0.20 m above the render at the post's head, whatever the shape either
+  side. Holding 0.10 everywhere needs a brow near 0.64, and the post's head near
+  +5.
+- **The roof slope against the headroom.** 0.35 m straight up at the seat needs
+  the crown at 1.0 there. That is also the render's own crown at the seat:
+  +0.009 at 3.0 m aft. From a 0.735 brow, 0.2 m per metre reaches only 0.91 at
+  the seat, leaving 0.28-0.33 m of headroom. The render's own roof rises 0.47 m
+  per metre from the post's head to the seat. The built roof averages 0.30.
+
+**The fillets are the glass's.** Built first as a single knee at the brow,
+`render.bizjet-flight-deck` failed:
+- a windshield cell's centre sat 0.4 mm INSIDE the skin, against 12 mm out
+  designed;
+- more rings did not help: 0.7 mm out, then 0.3;
+- the fault is the cells, not the rings. The panes are 8 x 8 grids whose
+  outboard cells span 0.24 m, and a surface that turns within a few
+  centimetres sags under them.
+
+The grid cannot change, because the cockpit kit's lining shares its cast points
+by construction. So the crown is a polyline through the foot (1.69, 0.25), (1.9,
+0.37), a brow corner at 2.22 and the seat (3.1, 1.0). It is filleted 1.0 m
+round the concave corner and 0.8 m round the brow, with the corner set so the
+crown at 2.22 is 0.735. The same cubic takes it on through (3.5, 1.19) and
+(4.0, 1.25) to the cabin from 5.5. The glass is then 7.0 mm out and 19.4 mm in
+at worst (part 3: 6.2 and 19.8). The worst ring-to-ring shading step falls from
+13.3 degrees to 10.4.
+
+**Built, from the seated eye (11.90, 0.55, -0.52), on the built glass**
+(`render.bizjet-seat-view`, the corner table):
+- **Straight ahead:** -10.65 to +21.05, 31.7 degrees tall. From 0.78 it is
+  -20.7 to -0.1.
+- **The port windshield's corners**, azimuth (right +) / elevation / range:
+  - bottom at the post: +17.69 / -11.04 / 1.509;
+  - bottom outboard: -17.30 / -3.38 / 0.939;
+  - top outboard: -11.37 / +20.34 / 0.578;
+  - top at the post: +26.46 / +11.05 / 1.006.
+- **The top edges:** port +11.05 to +21.18. Starboard +10.23 at the post,
+  +9.04 at its outboard end.
+- **The post:** 0.482 m tall on its outer face (0.261 to 0.743), its foot on
+  the loft at x 13.305, its head +11.05 and +10.23 across its two edges, raked
+  42 degrees. The brow at 0.730 left the far edge at +9.98; 0.735 is the least
+  that clears, to 5 mm.
+- **Room:**
+  - at the seat, 0.356 m straight up, 0.320 m to the nearest skin, 0.399 m to
+    the glass;
+  - 0.3 m ahead, 0.283 / 0.257 / 0.288;
+  - the headrest is 0.38 clear.
+- **The nose ahead of the foot** turns 1.3-5.5 degrees ring to ring from 13.45
+  to 14.7. It turns 7.1 into the foot's own ring, where the face begins. The
+  sunk-ring control (13.2 and 13.31 down 12 cm) moves the foot from 1.695 m aft
+  to 1.858.
+- **The side panes:** tops at 0.68-0.73, bottoms at 0.37-0.47.
+
+**Against the render** (`render.bizjet-nose`):
+- **Per station**, as the median over 0.12 m of columns, + meaning above the
+  render:
+
+  | m aft of the tip | 1.9 | 2.1 | 2.2 | 2.3 | 2.6 | 3.0 | 3.3 | 3.5 |
+  |---|---|---|---|---|---|---|---|---|
+  | above the render (m) | +0.024 | +0.160 | +0.157 | +0.131 | -0.015 | +0.009 | -0.087 | -0.020 |
+
+- **The worst column is +0.203**, at 2.17 m aft, on the face just under the
+  brow.
+- **Over 0.10 only from 2.03 to 2.39 m aft**, the brow and its fillet, and
+  under it everywhere else from 1.9 to 3.5. The test pins exactly that: no
+  more than 0.21 at worst, and nothing over 0.10 outside 2.0-2.4.
+- **Its control is part 4's level roof**, literally: +0.288 at worst, and over
+  0.10 back to 2.55 m aft.
+- **The instrument's own control** is the constant section, which the camera
+  was solved on. The median residual is -0.2 cm, and 90% of columns are within
+  2.6 cm; the rest are the render's antennas. The same section lifted 0.10 m
+  reads +0.094: the camera is 15 degrees below, and 0.1 cos 15 is 0.097.
+
+**The sim moves with the tip.** The radome contact points go to (15, -0.30) and
+(15, -0.80), still 0.15 m either side of the tip ring (-0.65 to -0.45):
+- a nose-down touch registers 0.1 m lower than part 3, and 0.4 m lower than
+  before phase 3c;
+- the broad-phase radius goes to 15.021;
+- `render.bizjet-nose` reads the built tip against them, with part 3's points
+  as the control;
+- all of `tests/sim.*` passes (19 files, 211 tests), and so do `services` and
+  `sim.wingtip-strike`.
+
+**What moved.** Checked mesh by mesh against 3d6d97c:
+- `bizjet-fuselage` goes from 20 rings to 28 (982 -> 1374 vertices);
+- the flight-deck glazing and the post re-cast onto it, with counts unchanged;
+- `bizjet-cabin-windows` moves within `render.bizjet-nose`'s 0.2 mm;
+- the other 91 meshes are bit-identical.
+
+Of part 3's registered items, the tip's height is settled at -0.55, and the
+brow's knee is now a fillet. The tip's closing radius is still open.
+
+**Registered: the brow's final height belongs to the second camera** (p. 35
+against p. 29). The two ends are part 4's level roof, 0.87 at the post's head,
+and the render's crown, 0.59 at the post's head and 0.65 at 2.3 m aft. The
+built 0.735 is the least that holds the view targets from the seated eye. If
+the second camera confirms the render's brow, the choice is between the view
+and the silhouette, or a lower eye. At 0.65 the post's head is near +5
+degrees.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own
