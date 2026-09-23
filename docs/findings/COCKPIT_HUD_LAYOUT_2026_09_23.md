@@ -268,11 +268,35 @@ rounding could have put a 16:9 window past 16:9 and moved its 75 degrees. The
 HUD's half is the stylesheet's `min(50vw, 88.889vh)` in the deck line and the
 attitude clip; the markup is unchanged.
 
-**What it costs.** At 2560 x 1080 the frustum is 1.333 times as wide and 1.333
-times as tall as the plain lens there. **Its cross-section is 1.78 times the plain
-lens's and 1.33 times 16:9 play's, so a 21:9 player pays roughly that in world
-draw**: terrain, vegetation and cloud. 16:9 and narrower windows pay nothing. At
-3440 x 1440 the factors are 1.81 and 1.34. These are geometry, not a measurement.
+**What it costs, measured (2026-09-24, 01:32-01:35, this Mac, headless).** The
+frustum at 2560 x 1080 is 1.333 times as wide and as tall as the plain lens's,
+1.78 times its cross-section, and before measuring this finding said a 21:9 player
+would pay roughly that in world draw. **That was wrong for this renderer.**
+
+The A/B used the perf harness's pinned setup: render scale pinned, GPU timing on,
+seed, clock and weather fixed. Pose: the trainer at approach-500ft, in cockpit.
+The arms differed only in the lens: no override against an override that is the
+gameplay rig with the lens held at 75. They ran in the order plain, hybrid,
+hybrid, plain at 2560 x 1080, then both at 1600 x 900, one browser per arm,
+240 measured frames each.
+
+- **Draws, triangles, instances and resident pages** were identical at both lenses:
+  264, 1,796,442, 95,321 and 40. The renderer submits the same world at 75 and
+  91 degrees on this pose, so the wider lens costs fragments, not submissions.
+- **Frame interval at 21:9**, hybrid against plain: p50 14.05 against 13.5 ms
+  (x1.04), p95 15.7 against 15.25 (x1.03). Each lens's two runs agreed within
+  0.1 ms.
+- **16:9 control**: the same lens (75.000), the same draws and triangles, and
+  interval p50 12.3 against 12.4 ms, which is noise.
+- **Hybrid 21:9 against 16:9 play**: x1.13 at p50, x1.15 at p95. The plain lens at
+  21:9 is already x1.10, because the 21:9 raster has 1.41 times the pixels, so the
+  lens itself adds about 4 % on top of what a 21:9 window costs anyway.
+- **The whole-frame GPU timestamp counter** read about 0.9 ms against a 13 ms
+  interval. It covers only part of the frame, so the interval is the figure
+  quoted.
+- **Instrument trap:** a second FlightRenderer in the same page, with GPU timing
+  on, reuses the first device's timestamp query set and fails validation. Run
+  one arm per browser.
 
 **Tests.**
 - **`tests/render.cockpit-hybrid-lens.test.ts`** holds the lens:
