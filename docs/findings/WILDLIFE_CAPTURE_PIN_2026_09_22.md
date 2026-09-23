@@ -1,7 +1,9 @@
 # Pinning the wildlife at each perf shot's time pin
 
 **Status: built on `jazonshou/wildlife-capture-pin` from `e9d902d`, Node-tested;
-awaiting harness-owner review. The capture-side check waits for a GPU window.**
+harness-owner review approved 2026-09-23 (plane engineer). The PM merges it as a
+churn point after that night's promotion; the capture-side check comes from the
+captures taken on that tip.**
 
 Registered as a follow-up in
 [OCEAN_CASCADE_PIN_2026_09_22.md](OCEAN_CASCADE_PIN_2026_09_22.md), after the
@@ -177,6 +179,34 @@ the wildlife unpinned:
 
 This is consistency, not proof. The capture-side check below is the proof.
 
+## The wildlife moves DRAW COUNTS too
+
+Deer and boar draw their legs, antlers and tusks only at "near" LOD, within
+460 m of the aircraft (`assignWildlifeLod`). Every wildlife batch is drawn
+whether or not it is in frame (`alwaysSelectAsActiveMesh`), and casts shadows.
+So which animals happen to be near decides the draw count, even on a shot
+that shows no animal.
+
+The unpinned animals wander, so on four shots the near set changes with
+history (the probe's last section):
+
+- `terrain-material-1600ft-down`: its nearest animal is at 436 m, and the near
+  set ran from none to six animals. This was MEASURED on the end-of-wave pair
+  on `e9d902d`. The REBASELINE candidate drew 87 calls and the normal run 93,
+  on one tree, with bit-identical pixels. It was the only shot of the 39
+  whose draw count differed between the two.
+- `mountain-close`: 0-4 deer near.
+- `grove-forest-2m`: a deer at 455-490 m.
+- `page-thrash-turn`: a boar near or not.
+
+Draw-call ceilings are pinned from three IDENTICAL runs (`drawCallCeilingFrom`
+throws otherwise), so on the unpinned tree these shots can refuse a re-pin for
+no code reason. Pinned, each shot's near set is fixed. For example,
+`terrain-material-1600ft-down` has three boar near at capture. So after the
+merge the counts are deterministic, but may differ from any count pinned
+before it. Draw ceilings for these four should be re-pinned from runs on the
+pinned tip.
+
 ## What merging does to the baselines
 
 Merging moves the birds on every bird shot to their pinned positions: up to 30
@@ -195,6 +225,25 @@ cloud-jitter residue.
 - The same shots against an unpinned capture: differences at the probe's
   predicted positions, printed per shot by the probe. For example,
   `water-3m`'s nine birds are predicted around x 294-381, y 71-147.
+
+## Review
+
+The harness owner approved it with nothing blocking, and checked it from the
+code:
+
+- All seven `renderer.render` calls in the harness pass `1 / 60`.
+- The visibility pass has no cadence and no enabled predicate, and its one
+  early return (`if (!state) return;`) cannot fire in a capture.
+- The 1,019-frame motion model holds.
+- The three resets are the complete set of history. The simulation holds no
+  random source, the spatial hash is rebuilt every step, and the system's
+  other fields are derived or statistics.
+
+The probe's mirror of `resolvePlacement` stays for now. It throws on an
+unmirrored mode but cannot see a change inside one. Extracting the harness's
+pure core so both import it is the harness owner's follow-up. Their
+expectation that draw counts are unaffected holds for the birds but not for
+deer and boar; see above.
 
 ## Not addressed
 

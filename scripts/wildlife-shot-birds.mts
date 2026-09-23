@@ -14,6 +14,10 @@
  * It also flies the same flocks on for 200 s and reports how often a bird
  * is in frame then — what an UNPINNED capture of the pose can show.
  *
+ * And it lists the shots whose DRAW COUNT depends on wildlife history: deer and
+ * boar draw legs, antlers and tusks only at near LOD, and every wildlife batch
+ * is drawn in or out of frame.
+ *
  * APPROXIMATIONS, all on the side of reporting a bird rather than missing one:
  *  - the camera is the rig's settled pose, not its smoothed one: cockpit eye at
  *    the aircraft (the perf rig's seat offsets are under 2 m), chase camera
@@ -36,7 +40,7 @@ import {
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import { densityField } from "../src/render/webgpu/detail/densityField";
 import { sunDirectionForClock } from "../src/render/webgpu/nature/EnvironmentDirector";
-import { WildlifeSystem, type BirdAgent } from "../src/render/webgpu/wildlife";
+import { WildlifeSystem, type BirdAgent, type GroundAnimalAgent, type WildlifeAgent } from "../src/render/webgpu/wildlife";
 import { createWildlifePrototypeGeometry } from "../src/render/webgpu/wildlife/appearance";
 import { createWorld, sampleTerrain, sampleTerrainHeight } from "../src/world";
 import {
@@ -59,6 +63,8 @@ const MOTION_FRAMES_FROM_PIN = STATIC_FRAMES_FROM_PIN + PERF_CAPTURE_TEMPORAL_FR
 const MOTION_DRAIN_FRAMES = 600;
 const PROFILE = resolveWebGpuQualityProfile("medium", "balanced");
 const DEG = Math.PI / 180;
+/** `assignWildlifeLod`'s ground-animal near distance. */
+const GROUND_NEAR_METERS = 460;
 
 // A bird's drawn size: wing tip to wing tip across both wings.
 function spanMeters(species: "gull" | "hawk"): number {
@@ -163,6 +169,7 @@ function resolvePlacement(shot: PerfCaptureShotDefinition): { offsetXMeters: num
 const rows: string[] = [];
 const withBirds: string[] = [];
 const unpinnedWithBirds: string[] = [];
+const drawVolatile: string[] = [];
 for (const shot of PERF_CAPTURE_SHOTS) {
   if ((shot.worldEvolution ?? "analytic") !== "analytic") {
     rows.push(`${shot.name.padEnd(34)} (eroded world — not modelled)`);
@@ -212,8 +219,17 @@ for (const shot of PERF_CAPTURE_SHOTS) {
   for (let f = 0; f < (isMotion ? MOTION_DRAIN_FRAMES : 0) + 1; f += 1) step(); // drain, then the capture
   const expected = isMotion ? MOTION_FRAMES_FROM_PIN : STATIC_FRAMES_FROM_PIN;
   if (stepped !== expected) throw new Error(`${shot.name}: stepped ${stepped} frames, the harness renders ${expected}`);
-  const birds = ((wildlife as unknown as { agents: { kind: string }[] }).agents)
-    .filter((agent): agent is BirdAgent => agent.kind === "bird");
+  const agents = () => (wildlife as unknown as { agents: WildlifeAgent[] }).agents;
+  // Deer and boar draw their legs, antlers and tusks only at "near" LOD (within
+  // GROUND_NEAR_METERS of the aircraft, `assignWildlifeLod`), and every
+  // wildlife batch is drawn whether or not it is in frame. So which animals are
+  // near decides the DRAW COUNT, even on a shot with no animal in view.
+  const nearGround = () => agents()
+    .filter((agent): agent is GroundAnimalAgent => agent.kind === "ground")
+    .filter((agent) => Math.hypot(agent.position.x - x, agent.position.y - altitude, agent.position.z - z) <= GROUND_NEAR_METERS)
+    .map((agent) => agent.species).sort().join(",");
+  const pinnedNearGround = nearGround();
+  const birds = agents().filter((agent): agent is BirdAgent => agent.kind === "bird");
 
   // The camera at capture.
   const h = headingVectorFromYaw(yaw);
@@ -279,12 +295,14 @@ for (const shot of PERF_CAPTURE_SHOTS) {
   // UNPINNED: the same flocks, flown on for 200 s and sampled every 0.5 s —
   // how often an unpinned capture of this pose has a bird in frame, any size.
   let samplesWithBird = 0;
+  const otherNearSets = new Set<string>();
   const box = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
   const SAMPLES = 400;
   for (let sample = 0; sample < SAMPLES; sample += 1) {
     for (let f = 0; f < 30; f += 1) step();
-    const flying = ((wildlife as unknown as { agents: { kind: string }[] }).agents)
-      .filter((agent): agent is BirdAgent => agent.kind === "bird");
+    const flying = agents().filter((agent): agent is BirdAgent => agent.kind === "bird");
+    const near = nearGround();
+    if (near !== pinnedNearGround) otherNearSets.add(near || "none");
     let any = false;
     for (const bird of flying) {
       const p = project(bird.position);
@@ -299,6 +317,9 @@ for (const shot of PERF_CAPTURE_SHOTS) {
   rows[rows.length - (inFrame.length > 0 ? 2 : 1)] += `  | unpinned: bird in frame ${(100 * unpinned).toFixed(0).padStart(3)}% of instants`
     + (samplesWithBird > 0 ? `, within x ${box.x0}-${box.x1} y ${box.y0}-${box.y1}` : "");
   if (unpinned > 0) unpinnedWithBirds.push(`${shot.name} (${(100 * unpinned).toFixed(0)}%)`);
+  if (otherNearSets.size > 0) {
+    drawVolatile.push(`${shot.name}: pinned near [${pinnedNearGround || "none"}], unpinned also [${[...otherNearSets].join("] [")}]`);
+  }
   wildlife.dispose();
   scene.dispose();
   engine.dispose();
@@ -307,3 +328,4 @@ console.log(`span: gull ${SPAN.gull.toFixed(2)} m, hawk ${SPAN.hawk.toFixed(2)} 
 for (const row of rows) console.log(row);
 console.log(`\nPINNED — ${withBirds.length} of ${PERF_CAPTURE_SHOTS.length} shots with a bird in frame at capture (count, largest):\n  ${withBirds.join("\n  ")}`);
 console.log(`\nUNPINNED — ${unpinnedWithBirds.length} shots can have one (share of instants):\n  ${unpinnedWithBirds.join("\n  ")}`);
+console.log(`\nDRAW-COUNT VOLATILE UNPINNED — ${drawVolatile.length} shots whose near deer/boar set changes with history:\n  ${drawVolatile.join("\n  ") || "none"}`);
