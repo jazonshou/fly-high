@@ -118,9 +118,13 @@ const mean = (...ps: Point3[]): Point3 => ({
 /** Where a point is on the body: metres aft of the nose tip, and degrees round its station's section from the crown. */
 const onBody = (point: Point3): { aft: number; angle: number } => {
   const section = globalSkinSectionAt(point.x);
+  // On a V ring (phase 3c, part 6) the outline's angle is the top view's half-width: sin(angle) = |z| / zRadius.
+  const onV = section.crownSquareness !== 2 && point.y > section.yOffset;
   return {
     aft: GLOBAL_NOSE_TIP_X - point.x,
-    angle: Math.atan2(Math.abs(point.z) / section.zRadius, (point.y - section.yOffset) / section.yRadius) * DEG,
+    angle: onV
+      ? Math.asin(Math.min(1, Math.abs(point.z) / section.zRadius)) * DEG
+      : Math.atan2(Math.abs(point.z) / section.zRadius, (point.y - section.yOffset) / section.yRadius) * DEG,
   };
 };
 
@@ -229,9 +233,9 @@ describe("the Global's flight-deck glass", () => {
         }
       }
     }
-    const grid = paneGrid(caster, globalCentrePostPane(), 1, 2, R);
+    const grid = paneGrid(caster, globalCentrePostPane(), 1, 3, R);
     for (let row = 0; row < PANE_GRID; row += 1) {
-      for (let column = 0; column < 2; column += 1) {
+      for (let column = 0; column < 3; column += 1) {
         const expected = add(grid.points[row]![column]!, grid.normals[row]![column]!, GLOBAL_PANE_PROUD);
         const outer = vertex(post(), 0, row, column);
         expect(Math.hypot(outer.x - expected.x, outer.y - expected.y, outer.z - expected.z)).toBeLessThan(1e-5);
@@ -250,11 +254,13 @@ describe("the Global's flight-deck glass", () => {
       }
     }
     // The outline is a point on the loft's smooth section; the cast lands on the facet under it,
-    // up to 2 mm inside at 48 segments round, which moves it along the sightline, and the
-    // steeper the skin to the sightline the further. Measured 18.2 mm and 0.28 degrees at worst on
-    // part 3's nose (10.8 and 0.15 on part 2's, 5.0 and 0.13 on part 1's, 5.7 and 0.11 before 3c).
+    // up to 2 mm inside at 48 segments round on an ellipse, which moves it along the sightline, and
+    // the steeper the skin to the sightline the further. Measured 6.0 mm and 0.50 degrees at worst on
+    // part 6's nose (18.2 mm and 0.28 on part 3's, 10.8 and 0.15 on part 2's, 5.0 and 0.13 on part 1's,
+    // 5.7 and 0.11 before 3c). With the V carried on under the side panes it was 0.72: its 48 facets
+    // are longest at 50-65 degrees round, and the cast landed 6 mm inboard of the smooth V.
     expect(aft).toBeLessThan(0.025);
-    expect(angle).toBeLessThan(0.5);
+    expect(angle).toBeLessThan(0.6);
 
     // CONTROL: the windshield cast from an outline 0.1 m further aft and 5 degrees further round
     // reads as exactly that against the outline it was not cast from.
@@ -269,11 +275,46 @@ describe("the Global's flight-deck glass", () => {
     expect(misplaced.angle).toBeGreaterThan(4.5);
   });
 
+  it("stands the centre post's glass outside the V: a third column on the ridge, where two ran under it", () => {
+    // The nose is a V over the windshield (phase 3c, part 6), with its ridge on the centre line under
+    // the post. The post is cast +-4 degrees round, and a chord from edge to edge runs under the ridge.
+    const built = post();
+    expect(built.columns).toBe(3);
+    // Its middle column is cast onto the ridge, and its glass stands out along the ridge's normal, to a
+    // millimetre (the normal is the welded seam's, interpolated).
+    const cast = paneGrid(caster, globalCentrePostPane(), 1, 3, R);
+    for (let row = 0; row < built.rows; row += 1) {
+      expect(Math.abs(cast.points[row]![1]!.z)).toBeLessThan(1e-6);
+      expect(Math.abs(vertex(built, 0, row, 1).z)).toBeLessThan(1e-3);
+    }
+    // Measured 8.9 mm out and 21.8 mm in at worst.
+    const { outer, inner } = clearances([built], caster);
+    expect(outer).toBeGreaterThan(0.005);
+    expect(inner).toBeLessThan(-0.015);
+    // CONTROL: the same post with two columns, edge to edge across the ridge, on the same skin.
+    const engine = new NullEngine();
+    const scene2 = new Scene(engine);
+    const grid = paneGrid(caster, globalCentrePostPane(), 1, 2, R);
+    const mesh = new AircraftBuildContext(scene2).skinPanel("two-column-post", grid.points, grid.normals, GLOBAL_PANE_PROUD,
+      GLOBAL_PANE_DEPTH, new StandardMaterial("p", scene2), new TransformNode("p", scene2));
+    const twoColumns: Panel = {
+      name: "two-column-post", rows: PANE_GRID, columns: 2,
+      positions: Array.from(mesh.getVerticesData(VertexBuffer.PositionKind)!),
+      indices: Array.from(mesh.getIndices()!),
+    };
+    // Measured 7.8 mm INSIDE the skin at worst, where the chord crosses the ridge.
+    const control = clearances([twoColumns], caster);
+    expect(control.outer).toBeLessThan(0);
+    scene2.dispose();
+    engine.dispose();
+  });
+
   it("keeps the outer face outside the skin and the inner face inside it, at every cell centre", () => {
     // Along the skin's normal, from a ray cast from R through each cell's centre. The design is
     // 12 mm out and 30 mm in; the chords between grid points cross the nose's facet creases.
-    // Measured 4.7 mm out and 19.2 mm in at worst on part 5's nose, whose straight nose ends at 1.6 m
-    // aft so the post's foot lies on the curve (ended at the foot, 13.5 mm in); 7.0 and 19.4 on part
+    // Measured 8.7 mm out and 18.5 mm in at worst on part 6's V. 4.7 and 19.2 on part 5's nose, whose
+    // straight nose ends at 1.6 m aft so the post's foot lies on the curve (ended at the foot, 13.5 mm
+    // in); 7.0 and 19.4 on part
     // 4 (d)'s filleted brow (as a single knee, 0.4 mm INSIDE); 6.2 and 19.8 on part 3's, 6.6 and 19.5
     // on part 2's, 7.5 and 29.4 on part 1's, 4.5 and 19.6 before phase 3c.
     const { outer, inner } = clearances(panels, caster);

@@ -236,6 +236,8 @@ interface SectionAtStation {
   readonly yRadius: number;
   readonly yOffset: number;
   readonly squareness: number;
+  /** The upper half's exponent: `squareness` unless the ring sets `crownSquareness`. */
+  readonly crownSquareness: number;
 }
 
 /**
@@ -261,6 +263,8 @@ export function sectionAtStation(sections: readonly LoftSection[], x: number): S
     yRadius: mix(low.yRadius, high.yRadius, t),
     yOffset: mix(low.yOffset ?? 0, high.yOffset ?? 0, t),
     squareness: mix(low.squareness ?? 2, high.squareness ?? 2, t),
+    // The upper half's own exponent where a ring has one (`LoftSection.crownSquareness`), else the ring's.
+    crownSquareness: mix(low.crownSquareness ?? low.squareness ?? 2, high.crownSquareness ?? high.squareness ?? 2, t),
   };
 }
 
@@ -282,7 +286,7 @@ export function phaseOfHeight(
   const section = sectionAtStation(sections, x);
   const rise = (y - section.yOffset) / section.yRadius;
   if (!(Math.abs(rise) <= 1)) return undefined;
-  const cosMagnitude = Math.abs(rise) ** (section.squareness / 2);
+  const cosMagnitude = Math.abs(rise) ** ((rise > 0 ? section.crownSquareness : section.squareness) / 2);
   const cosine = Math.min(1, Math.max(-1, Math.sign(rise) * cosMagnitude));
   const phase = Math.acos(cosine) / (2 * Math.PI);
   return flank === "starboard" ? phase : 1 - phase;

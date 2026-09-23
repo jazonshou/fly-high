@@ -17,7 +17,7 @@ import { GLOBAL_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/bizjetLi
 import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 
 /**
- * The Global's flight deck from a SEATED eye (phase 3c, parts 2-5): what the
+ * The Global's flight deck from a SEATED eye (phase 3c, parts 2-6): what the
  * nose's shape is held to. The requirement (part 5): straight ahead the
  * windshield reaches -10 degrees or lower (on final the aim point sits 8.5 under
  * the body axis), at least 24 tall, the horizon inside; the port windshield's
@@ -145,7 +145,7 @@ function headroom(caster: SkinCaster, eye: Point3) {
 }
 
 describe("the Global's flight deck from a seated eye (phase 3c)", () => {
-  it("shows -10.2 to +27.3 degrees of windshield straight ahead: 10 below the horizon and 10 above", () => {
+  it("shows -11.1 to +19.6 degrees of windshield straight ahead: 10 below the horizon and 10 above", () => {
     const windshield = new SkinCaster([outerFace(pane("port", "windshield"))]);
     const seated = aheadRun(windshield, SEAT_EYE);
     // One unbroken run, at least 24 degrees tall, reaching 10 below the horizon and 10 above.
@@ -153,14 +153,15 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
     expect(seated.high - seated.low).toBeGreaterThanOrEqual(24);
     expect(seated.low).toBeLessThanOrEqual(-10);
     expect(seated.high).toBeGreaterThanOrEqual(10);
-    // Measured -10.20 and +27.25 (part 4 (d)'s crown gave -10.65 and +21.05, part 3's -12.65 and +13.95).
-    expect(seated.low).toBeCloseTo(-10.2, 0);
-    expect(seated.high).toBeCloseTo(27.25, 0);
+    // Measured -11.10 and +19.55 on part 6's V (part 5's crown gave -10.20 and +27.25, part 4 (d)'s
+    // -10.65 and +21.05, part 3's -12.65 and +13.95).
+    expect(seated.low).toBeCloseTo(-11.1, 0);
+    expect(seated.high).toBeCloseTo(19.55, 0);
     // The corners: azimuth (left +), elevation, range. Column 0 is the post's edge, row 0 the bottom.
     const w = pane("port", "windshield");
     const expected: [number, number, number, number, number][] = [
-      [0, 0, -17.68, -10.23, 1.505], [0, w.columns - 1, 17.26, -0.93, 0.939],
-      [w.rows - 1, w.columns - 1, 11.38, 27.92, 0.616], [w.rows - 1, 0, -26.4, 13.75, 1.019],
+      [0, 0, -17.6, -6.78, 1.493], [0, w.columns - 1, 17.39, -14.13, 0.968],
+      [w.rows - 1, w.columns - 1, 11.14, 20.01, 0.578], [w.rows - 1, 0, -26.28, 13.06, 1.013],
     ];
     for (const [row, column, az, el, range] of expected) {
       const s = sight(SEAT_EYE, vertex(w, row, column));
@@ -168,7 +169,7 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
       expect(Math.abs(s.el - el), `corner ${row},${column} elevation ${s.el.toFixed(2)}`).toBeLessThan(0.3);
       expect(Math.abs(s.range - range), `corner ${row},${column} range ${s.range.toFixed(3)}`).toBeLessThan(0.01);
     }
-    // CONTROL: from the old catalogue eye's height, 0.78, the same windshield runs -20.3..+7.45: the
+    // CONTROL: from the old catalogue eye's height, 0.78, the same windshield runs -21.1..-1.7: the
     // instrument reads the eye, and the aim point on final would be under the glareshield.
     const high = aheadRun(windshield, { ...SEAT_EYE, y: 0.78 });
     expect(high.low).toBeLessThan(-15);
@@ -187,19 +188,20 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
       postHead: topOf(post).map((q) => sight(eye, q).el),
     });
     const seated = read(SEAT_EYE);
-    // Measured: the port top corners +13.75 (at the post) and +27.92; the starboard top at the post
-    // +12.75; the post's head +13.75 and +12.75 across its two edges (the goal was +10).
+    // Measured: the port top corners +13.06 (at the post) and +20.01; the starboard top at the post
+    // +12.07; the post's head +13.06 / +13.81 / +12.07 across its three columns, the middle one on the
+    // V's ridge (the goal was +10).
     for (const el of [...seated.portTop, ...seated.postHead]) expect(el).toBeGreaterThanOrEqual(6);
     expect(seated.starboardAtPost).toBeGreaterThanOrEqual(5);
-    expect(seated.portTop[0]).toBeCloseTo(13.75, 1);
-    expect(seated.portTop[1]).toBeCloseTo(27.92, 1);
-    expect(seated.starboardAtPost).toBeCloseTo(12.75, 1);
+    expect(seated.portTop[0]).toBeCloseTo(13.06, 1);
+    expect(seated.portTop[1]).toBeCloseTo(20.01, 1);
+    expect(seated.starboardAtPost).toBeCloseTo(12.07, 1);
     expect(Math.min(...seated.postHead)).toBeGreaterThanOrEqual(10);
-    // The post: 0.509 m tall on its outer face (0.283 .. 0.792), its foot on the nose at x 13.311, its
-    // head at 12.786.
+    // The post: 0.397 m tall on its outer face (0.382 .. 0.779 at its edges, 0.803 on the ridge), its
+    // foot on the nose at x 13.313, its head at 12.785.
     const heads = topOf(post).map((q) => q.y);
     const feet = footOf(post).map((q) => q.y);
-    expect(Math.min(...heads) - Math.max(...feet)).toBeCloseTo(0.509, 2);
+    expect(Math.min(...heads) - Math.max(...feet)).toBeCloseTo(0.397, 2);
     // CONTROL: from the old catalogue eye's height, 0.78, every one of them reads below +10, and the
     // post's head below the +6 pass mark (+0.7).
     const high = read({ ...SEAT_EYE, y: 0.78 });
@@ -215,21 +217,21 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
       }
       return nearest;
     };
-    // The brief: 0.35 at the seat and 0.25 at 0.3 m ahead. Measured (part 5, the render's roof): at the
-    // seat 0.513 straight up, 0.441 to the nearest skin, 0.467 to the nearest glass; 0.3 m ahead 0.420,
-    // 0.354 and 0.367 (part 4 (d): 0.356 / 0.320 / 0.399, 0.283 / 0.257 / 0.288).
+    // The brief: 0.35 at the seat and 0.25 at 0.3 m ahead. Measured (part 6): at the seat 0.509
+    // straight up, 0.424 to the nearest skin, 0.452 to the nearest glass; 0.3 m ahead 0.374, 0.298 and
+    // 0.317 (part 5: 0.513 / 0.441 / 0.467, 0.420 / 0.354 / 0.367).
     const atSeat = headroom(skin, SEAT_EYE);
     expect(atSeat.up).toBeGreaterThanOrEqual(0.35);
-    expect(atSeat.up).toBeCloseTo(0.513, 2);
-    expect(atSeat.nearest).toBeCloseTo(0.441, 2);
-    expect(glass(SEAT_EYE)).toBeCloseTo(0.467, 2);
+    expect(atSeat.up).toBeCloseTo(0.509, 2);
+    expect(atSeat.nearest).toBeCloseTo(0.424, 2);
+    expect(glass(SEAT_EYE)).toBeCloseTo(0.452, 2);
     const ahead = { ...SEAT_EYE, x: SEAT_EYE.x + 0.3 };
     const atAhead = headroom(skin, ahead);
     expect(atAhead.up).toBeGreaterThanOrEqual(0.25);
     expect(atAhead.nearest).toBeGreaterThanOrEqual(0.25);
-    expect(atAhead.up).toBeCloseTo(0.42, 2);
-    expect(atAhead.nearest).toBeCloseTo(0.354, 2);
-    expect(glass(ahead)).toBeCloseTo(0.367, 2);
+    expect(atAhead.up).toBeCloseTo(0.374, 2);
+    expect(atAhead.nearest).toBeCloseTo(0.298, 2);
+    expect(glass(ahead)).toBeCloseTo(0.317, 2);
     // CONTROL: the same instrument on part 1's nose from the old eye (0.78) reads what the cockpit
     // engineer's K0 measured independently there: 0.34 straight up, 0.30 nearest.
     const lofts = new AircraftBuildContext(scene);
@@ -244,23 +246,23 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
       paneGrid(caster, globalGlazingPane(GLOBAL_FLIGHT_DECK_OUTLINES[0]!), side, PANE_GRID, R).points[0]![0]!;
     for (const side of [1, -1] as const) {
       // The outline's foot is 1.69 m aft beside the post; the cast lands on the facet under it.
-      expect(foot(skin, side).x).toBeCloseTo(13.305, 2);
+      expect(foot(skin, side).x).toBeCloseTo(13.308, 2);
     }
     // CONTROL: the same table with its 13.2 and 13.31 rings sunk 12 cm, a dip under the foot that
     // leaves the nose ahead of it a shelf. The instrument sees the foot leave the outline: measured
-    // 1.861 m aft, against 1.695.
+    // 1.860 m aft, against 1.692.
     const sunk = GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x === 13.2 || r.x === 13.31 ? { ...r, yOffset: (r.yOffset ?? 0) - 0.12 } : r));
     const lofts = new AircraftBuildContext(scene);
     const shelf = new SkinCaster([soup(lofts.loft("dip", sunk, 48, new StandardMaterial("d", scene), new TransformNode("d", scene)))]);
-    expect(Math.abs(GLOBAL_NOSE_TIP_X - foot(shelf, 1).x - 1.695)).toBeGreaterThan(0.1);
+    expect(Math.abs(GLOBAL_NOSE_TIP_X - foot(shelf, 1).x - 1.692)).toBeGreaterThan(0.1);
     // Forward of the windshield to the drooped tip, STRAIGHT in profile from 1.6 m aft: the turn between
-    // consecutive rings, over every radial, stays gentle. Measured 4.2, 3.5, 1.2, 3.3, 2.2, 5.5 degrees
-    // into 13.45 .. 14.7 (3.0 into the foot's own ring, 13.31). (Into the tip ring itself it is 32: the
-    // ring's normals average the cap that closes the nose.)
+    // consecutive rings, over every radial, stays gentle. Measured 2.2, 3.8, 4.1, 6.2, 2.9, 5.8 degrees
+    // into 13.45 .. 14.7 on part 6's V (8.5 into the foot's own ring, 13.31, where the face begins).
+    // (Into the tip ring itself it is 32: the ring's normals average the cap that closes the nose.)
     const normals = fuselage.getVerticesData(VertexBuffer.NormalKind)!;
     const RING = 49;
     let previous = 0;
-    for (const [x, measured] of [[13.45, 4.22], [13.6, 3.51], [13.8, 1.24], [14.1, 3.34], [14.4, 2.17], [14.7, 5.52]] as const) {
+    for (const [x, measured] of [[13.45, 2.22], [13.6, 3.77], [13.8, 4.08], [14.1, 6.21], [14.4, 2.87], [14.7, 5.78]] as const) {
       const ring = GLOBAL_FUSELAGE_SECTIONS.findIndex((r) => r.x === x);
       let worst = 0;
       for (let radial = 0; radial < 48; radial += 1) {
@@ -275,7 +277,7 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
     }
   });
 
-  it("carries the side panes' edges with the crown: tops at 0.80-0.85, bottoms at 0.48-0.52", () => {
+  it("carries the side panes' edges with the crown: tops at 0.73-0.81, bottoms at 0.28-0.49", () => {
     const edges = (name: string) => {
       const p = pane("port", name);
       const row = (r: number) => Array.from({ length: p.columns }, (_, c) => vertex(p, r, c));
@@ -287,12 +289,13 @@ describe("the Global's flight deck from a seated eye (phase 3c)", () => {
         nearest: Math.min(...top.map((q) => sight(SEAT_EYE, q).range)),
       };
     };
-    // Measured (outer face): forward pane top 0.818-0.851, bottom 0.488-0.517, its top edge 0.467 m
-    // from the seated eye; aft pane top 0.795-0.823, bottom 0.481-0.488, 0.470 m. Through the p. 29
-    // camera their tops lie on the render's side-window tops.
+    // Measured (outer face): forward pane top 0.735-0.810, bottom 0.277-0.458, its top edge 0.452 m
+    // from the seated eye; aft pane top 0.795-0.810, bottom 0.458-0.486, 0.460 m. The forward pane's
+    // inboard end stands on the V's return to the ellipse (n 1.6-1.8), 0.04-0.08 under the render's
+    // window there (registered); the aft pane and the forward pane's outboard end are on p. 29's.
     const expected: Record<string, { top: number[]; bottom: number[]; nearest: number }> = {
-      "forward-side": { top: [0.818, 0.851], bottom: [0.488, 0.517], nearest: 0.467 },
-      "aft-side": { top: [0.795, 0.823], bottom: [0.481, 0.488], nearest: 0.47 },
+      "forward-side": { top: [0.735, 0.81], bottom: [0.277, 0.458], nearest: 0.452 },
+      "aft-side": { top: [0.795, 0.81], bottom: [0.458, 0.486], nearest: 0.46 },
     };
     for (const [name, want] of Object.entries(expected)) {
       const got = edges(name);

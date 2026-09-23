@@ -101,6 +101,21 @@ export interface LoftSection {
    * existing loft is bit-identical.
    */
   readonly crownZRadius?: number;
+  /**
+   * Superellipse exponent of the UPPER half alone (above `yOffset`), where
+   * `squareness` sets both. Below 2 it draws the upper half toward a V: the
+   * flanks straighten and the shoulders come down and in, while the crown's
+   * height, the half-width at the widest point and the lower half all stay.
+   * That is a flight deck of flat windshield panes meeting at a centre post,
+   * which an ellipse through the same crown and width stands proud of on
+   * both shoulders.
+   *
+   * It must be above 1: the upper half stays tangent-continuous, horizontal
+   * at the crown and vertical at the widest point, for any exponent above 1;
+   * at 1 the crown is a ridge. Where it is absent the section is exactly what
+   * it was, bit for bit.
+   */
+  readonly crownSquareness?: number;
 }
 
 export interface AirfoilWingOptions {
@@ -734,16 +749,22 @@ export class AircraftBuildContext {
       if (!(crownZRadius > 0)) {
         throw new RangeError("Aircraft loft crown radius must be positive");
       }
+      if (section.crownSquareness !== undefined && !(section.crownSquareness > 1)) {
+        throw new RangeError("Aircraft loft crown squareness must be above 1");
+      }
       const shapeExponent = 2 / squareness;
+      const crownExponent = section.crownSquareness === undefined ? shapeExponent : 2 / section.crownSquareness;
       for (let radial = 0; radial <= radialSegments; radial += 1) {
         const phase = radial / radialSegments;
         const angle = phase * Math.PI * 2;
         const cosine = Math.cos(angle);
         const sine = Math.sin(angle);
         // Superellipse: |cos|^(2/n)·sign(cos). At n = 2 this is exactly the
-        // ellipse the pre-fix-pack loft produced.
-        const yShape = Math.sign(cosine) * Math.abs(cosine) ** shapeExponent;
-        const zShape = Math.sign(sine) * Math.abs(sine) ** shapeExponent;
+        // ellipse the pre-fix-pack loft produced. The upper half (cos > 0)
+        // takes `crownSquareness` when there is one.
+        const exponent = cosine > 0 ? crownExponent : shapeExponent;
+        const yShape = Math.sign(cosine) * Math.abs(cosine) ** exponent;
+        const zShape = Math.sign(sine) * Math.abs(sine) ** exponent;
         // The crown taper: nothing on the lower half, easing to
         // `crownZRadius` by the top. `rise` is 0 at and below the equator and
         // 1 at the crown; the smoothstep gives it zero slope at both ends, so

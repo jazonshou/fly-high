@@ -108,13 +108,15 @@ export const GLOBAL_PANE_PROUD = 0.012;
 /** Glass inside the skin: the inner face the cockpit looks through. */
 export const GLOBAL_PANE_DEPTH = 0.03;
 
-interface Ellipse {
+interface Section {
   readonly yRadius: number;
   readonly zRadius: number;
   readonly yOffset: number;
+  /** The upper half's superellipse exponent: 2 is the ellipse, below 2 a V (`LoftSection.crownSquareness`). */
+  readonly crownSquareness: number;
 }
 
-function interpolate(sections: readonly LoftSection[], x: number): Ellipse {
+function interpolate(sections: readonly LoftSection[], x: number): Section {
   let low = sections[0]!;
   let high = sections[sections.length - 1]!;
   for (let index = 1; index < sections.length; index += 1) {
@@ -129,16 +131,21 @@ function interpolate(sections: readonly LoftSection[], x: number): Ellipse {
     yRadius: low.yRadius + (high.yRadius - low.yRadius) * t,
     zRadius: low.zRadius + (high.zRadius - low.zRadius) * t,
     yOffset: (low.yOffset ?? 0) + ((high.yOffset ?? 0) - (low.yOffset ?? 0)) * t,
+    crownSquareness: (low.crownSquareness ?? 2) + ((high.crownSquareness ?? 2) - (low.crownSquareness ?? 2)) * t,
   };
 }
 
 /**
  * The skin's section at a station: the fuselage loft's, which runs to the
- * nose tip. Linear between rings, as the loft's facets are. Every Global ring
- * is a plain ellipse; a squared or crown-tapered ring would need the loft's
- * full formula, so one fails here rather than casting to the wrong place.
+ * nose tip. Linear between rings, as the loft's facets are (exactly so for
+ * the radii and the offset; the upper half's exponent, where it varies from
+ * ring to ring, is interpolated as a parameter, which the facets are not).
+ * Every Global ring is an ellipse below its widest point and an ellipse or a
+ * V above it (`crownSquareness`); a squared or crown-tapered ring would need
+ * the loft's full formula, so one fails here rather than casting to the wrong
+ * place.
  */
-export function globalSkinSectionAt(x: number): Ellipse {
+export function globalSkinSectionAt(x: number): Section {
   for (const section of GLOBAL_FUSELAGE_SECTIONS) {
     if ((section.squareness ?? 2) !== 2 || section.crownZRadius !== undefined || section.zOffset !== undefined) {
       throw new RangeError(`the Global's glazing assumes elliptical rings; the ring at x ${section.x} is not one`);
@@ -147,16 +154,46 @@ export function globalSkinSectionAt(x: number): Ellipse {
   return interpolate(GLOBAL_FUSELAGE_SECTIONS, x);
 }
 
-/** The loft's point at a station and an angle round the section; `side` +1 starboard (+z). */
+/**
+ * The loft's point at a station and an angle round the section; `side` +1
+ * starboard (+z).
+ *
+ * THE ANGLE IS THE TOP VIEW'S HALF-WIDTH. The outlines were read off the
+ * brochure's top view as half-widths and stored as the angle whose sine is
+ * that fraction of the section's; on an ellipse that is the angle round the
+ * section. On a V (phase 3c, part 6) the point keeps that half-width, and so
+ * where the top view put it, and takes the V's height there. Keeping the
+ * ellipse's angle instead would slide every pane inboard and down the V's
+ * flank: the pilot's bottom edge straight ahead went from -11.1 to -6.5.
+ */
 export function globalBodyPoint([aft, angle]: BodyPoint, side: 1 | -1): Point3 {
   const x = GLOBAL_NOSE_TIP_X - aft;
   const section = globalSkinSectionAt(x);
   const radians = (angle * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const n = section.crownSquareness;
+  // The V's height at the half-width fraction s: |u|^n + s^n = 1 on the upper half.
+  const s = Math.abs(Math.sin(radians));
+  const rise = cosine > 0 && n !== 2 ? (1 - s ** n) ** (1 / n) : cosine;
   return {
     x,
-    y: section.yOffset + section.yRadius * Math.cos(radians),
+    y: section.yOffset + section.yRadius * rise,
     z: side * section.zRadius * Math.sin(radians),
   };
+}
+
+/**
+ * The skin's half-width at a station and height, on the section the loft is
+ * built from (not the 48-gon of its facets); NaN outside the ring. Above the
+ * widest point it follows the upper half's exponent, so a V narrows faster
+ * than an ellipse would.
+ */
+export function globalSectionHalfWidth(x: number, y: number): number {
+  const section = globalSkinSectionAt(x);
+  const u = (y - section.yOffset) / section.yRadius;
+  if (Math.abs(u) > 1) return Number.NaN;
+  const n = u > 0 ? section.crownSquareness : 2;
+  return section.zRadius * (n === 2 ? Math.sqrt(1 - u * u) : (1 - Math.abs(u) ** n) ** (1 / n));
 }
 
 /** The (azimuth, elevation) in degrees, outboard positive, of the sightline from `reference` through a starboard point. */

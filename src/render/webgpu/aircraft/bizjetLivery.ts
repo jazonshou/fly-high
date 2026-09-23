@@ -59,29 +59,35 @@ const CHANNELS = 4;
  * every ring is the cabin's as it was, and the tip's last two rings are the
  * radome's as they were.
  *
- * THE NOSE IS THE RENDER'S LINE (phase 3c, part 5). The crown follows the
- * brochure's port render (p. 29) through a camera solved on it: the render's
- * upper silhouette, where it meets the sky. An earlier trace followed the lower
- * edge of the reflection band on the nose's upper surface, 0.12-0.20 m low, and
- * parts 2-4 were fitted or bounded against it (docs). The line is a steady
- * ramp, about 0.7 m per metre over the windshield, with no brow.
+ * THE NOSE IS TWO RENDERS' SHAPE (phase 3c, parts 5 and 6). The crown and
+ * the section are fitted TOGETHER to the brochure's port render (p. 29, a
+ * side view 15 degrees below) and its starboard one (p. 35, 50 degrees
+ * forward of abeam and 6 above), each through a camera solved on its own
+ * windows. The first reads the crown and the second the shoulders, and no
+ * ellipse fits both over the windshield. There the section is a V of flat
+ * panes meeting at the centre post: `crownSquareness` 1.47 at 1.2-1.8 m aft,
+ * 1.26 at 2.1, 1.30 at 2.3. Seen from below, a V's shoulder stands lower than
+ * its ridge, so the ridge sits above the side view's silhouette.
  *
- * The seat moves it in three places. From the seated eye (11.90, 0.55, -0.52),
- * 1.21 m above the -0.66 floor, the aim point on final sits 8.5 degrees under
- * the body axis and must be in the glass:
- * - the nose runs STRAIGHT from the tip's crown (0, -0.45) to 1.6 m aft, 0.115
- *   under the line;
- * - the face is 0.08 under at 1.9 m aft, back to 0.05 under by 2.0. The
- *   pilot's bottom edge straight ahead is there, 30 degrees round, and this
- *   puts it at -10.2;
- * - the brow stands up to 0.09 over the line at 2.25 m aft, the post's head,
- *   and is back on it by 3.4. From the seat the post's head is then at +13.75.
+ * THE V STOPS AT THE WINDSHIELD. Aft of it the section returns to the
+ * ellipse by 2.75 m aft (1.6 at 2.5), which keeps the side windows where the
+ * side view shows them, as the top view places them. Carried on to 3.0 m, as
+ * p. 35's outline asks, it drops the side panes 0.1-0.2 m under the render's
+ * windows. There p. 35's outline is its own windshield glass, which a hidden
+ * sliver of brow may lift (docs, part 6). The widths, the keel and the tip are
+ * part 5's.
  *
- * The line itself runs from 3.4 to the cabin at 5.5. The anchors are every
- * 0.1 m, with a monotone cubic through them sampled at the rings. The keel is
- * part 1's aft of 1.8 m and droops to the tip; the widths are part 1's.
- * render.bizjet-nose holds the crown against the render: -0.12..+0.10 m over
- * 1.5-2.0 m aft and -0.05..+0.10 over 2.0-3.5.
+ * The seat lowers the face. From the seated eye (11.90, 0.55, -0.52), 1.21 m
+ * above the -0.66 floor, the aim point on final sits 8.5 degrees under the
+ * body axis and must be in the glass. So the fitted crown comes down 0.05 /
+ * 0.08 / 0.05 m at 1.5 / 1.8 / 2.0 m aft, inside the side view's bound at the
+ * foot, and the pilot's bottom edge straight ahead is at -11.1. The face can
+ * come down no further: at 0.12 the windshield's foot casts past it.
+ *
+ * The anchors are the fitted crown every 0.2-0.3 m, with a monotone cubic
+ * through them sampled at the rings. render.bizjet-nose holds the crown
+ * against both renders: p. 29 -0.12..+0.10 m over 1.5-2.0 m aft and
+ * -0.05..+0.10 over 2.0-3.5; p. 35 within 0.11, rms 0.07, over 1.5-3.6.
  */
 export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
@@ -90,27 +96,27 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -2, yRadius: 1.345, zRadius: 1.345 },
   { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 10.5, yRadius: 1.3028, zRadius: 1.3200, yOffset: 0.0259 },
+  { x: 10.5, yRadius: 1.3047, zRadius: 1.3200, yOffset: 0.0278 },
   { x: 11, yRadius: 1.2721, zRadius: 1.3200, yOffset: 0.0407 },
-  { x: 11.5, yRadius: 1.2194, zRadius: 1.3150, yOffset: 0.0362 },
-  { x: 11.9, yRadius: 1.1496, zRadius: 1.2806, yOffset: 0.0138 },
-  { x: 12.2, yRadius: 1.0806, zRadius: 1.2436, yOffset: -0.0098 },
-  { x: 12.4, yRadius: 1.0200, zRadius: 1.2152, yOffset: -0.0350 },
-  { x: 12.55, yRadius: 0.9768, zRadius: 1.1909, yOffset: -0.0529 },
-  { x: 12.7, yRadius: 0.9293, zRadius: 1.1606, yOffset: -0.0753 },
-  { x: 12.78, yRadius: 0.8883, zRadius: 1.1444, yOffset: -0.1026 },
-  { x: 12.87, yRadius: 0.8290, zRadius: 1.1263, yOffset: -0.1462 },
-  { x: 12.95, yRadius: 0.7684, zRadius: 1.1101, yOffset: -0.1926 },
-  { x: 13.03, yRadius: 0.7115, zRadius: 1.0906, yOffset: -0.2351 },
-  { x: 13.1, yRadius: 0.6713, zRadius: 1.0686, yOffset: -0.2629 },
-  { x: 13.2, yRadius: 0.6283, zRadius: 1.0371, yOffset: -0.2890 },
-  { x: 13.31, yRadius: 0.5857, zRadius: 1.0026, yOffset: -0.3138 },
-  { x: 13.45, yRadius: 0.5363, zRadius: 0.9503, yOffset: -0.3410 },
-  { x: 13.6, yRadius: 0.4929, zRadius: 0.8907, yOffset: -0.3614 },
-  { x: 13.8, yRadius: 0.4381, zRadius: 0.8062, yOffset: -0.3860 },
-  { x: 14.1, yRadius: 0.3534, zRadius: 0.6720, yOffset: -0.4268 },
+  { x: 11.5, yRadius: 1.2201, zRadius: 1.3150, yOffset: 0.0369 },
+  { x: 11.9, yRadius: 1.1475, zRadius: 1.2806, yOffset: 0.0117 },
+  { x: 12.2, yRadius: 1.0564, zRadius: 1.2436, yOffset: -0.0340 },
+  { x: 12.4, yRadius: 0.9973, zRadius: 1.2152, yOffset: -0.0577, crownSquareness: 1.796 },
+  { x: 12.55, yRadius: 0.9675, zRadius: 1.1909, yOffset: -0.0622, crownSquareness: 1.513 },
+  { x: 12.7, yRadius: 0.9244, zRadius: 1.1606, yOffset: -0.0802, crownSquareness: 1.300 },
+  { x: 12.78, yRadius: 0.8920, zRadius: 1.1444, yOffset: -0.0989, crownSquareness: 1.276 },
+  { x: 12.87, yRadius: 0.8475, zRadius: 1.1263, yOffset: -0.1277, crownSquareness: 1.261 },
+  { x: 12.95, yRadius: 0.8001, zRadius: 1.1101, yOffset: -0.1609, crownSquareness: 1.276 },
+  { x: 13.03, yRadius: 0.7553, zRadius: 1.0906, yOffset: -0.1913, crownSquareness: 1.344 },
+  { x: 13.1, yRadius: 0.7166, zRadius: 1.0686, yOffset: -0.2176, crownSquareness: 1.416 },
+  { x: 13.2, yRadius: 0.6698, zRadius: 1.0371, yOffset: -0.2475, crownSquareness: 1.470 },
+  { x: 13.31, yRadius: 0.6352, zRadius: 1.0026, yOffset: -0.2643, crownSquareness: 1.470 },
+  { x: 13.45, yRadius: 0.5981, zRadius: 0.9503, yOffset: -0.2792, crownSquareness: 1.470 },
+  { x: 13.6, yRadius: 0.5515, zRadius: 0.8907, yOffset: -0.3028, crownSquareness: 1.498 },
+  { x: 13.8, yRadius: 0.4830, zRadius: 0.8062, yOffset: -0.3411, crownSquareness: 1.689 },
+  { x: 14.1, yRadius: 0.3737, zRadius: 0.6720, yOffset: -0.4065 },
   { x: 14.4, yRadius: 0.2691, zRadius: 0.5020, yOffset: -0.4680 },
-  { x: 14.7, yRadius: 0.1847, zRadius: 0.3400, yOffset: -0.5092 },
+  { x: 14.7, yRadius: 0.1795, zRadius: 0.3400, yOffset: -0.5144 },
   // The tip, its crown at the gold line's height (phase 3c, parts 4-5): the sim's two
   // radome contact points straddle it 0.15 m above and below (`src/sim/aircraft.ts`,
   // held by render.bizjet-nose against the built mesh).
@@ -475,9 +481,9 @@ function paintStripe(raster: Raster, stripe: GlobalLiveryStripe): void {
 
 /**
  * The world height of phase `v` at station `x`: the loft's own section,
- * `y = yOffset + yRadius * cos(2 pi v)` at squareness 2 (the Global's), and
- * the superellipse's `sign(cos) |cos|^(2/n)` in general, as `phaseOfHeight`
- * inverts it.
+ * `y = yOffset + yRadius * cos(2 pi v)` at squareness 2, and the
+ * superellipse's `sign(cos) |cos|^(2/n)` in general, with the upper half's
+ * `crownSquareness` above the widest point, as `phaseOfHeight` inverts it.
  */
 export function heightOfPhase(sections: readonly LoftSection[], x: number, v: number): number {
   let low = sections[0]!;
@@ -494,7 +500,11 @@ export function heightOfPhase(sections: readonly LoftSection[], x: number, v: nu
   const yOffset = (low.yOffset ?? 0) + ((high.yOffset ?? 0) - (low.yOffset ?? 0)) * t;
   const squareness = (low.squareness ?? 2) + ((high.squareness ?? 2) - (low.squareness ?? 2)) * t;
   const cosine = Math.cos(v * 2 * Math.PI);
-  return yOffset + yRadius * Math.sign(cosine) * Math.abs(cosine) ** (2 / squareness);
+  // The upper half takes its own exponent where the ring has one (the V over the flight deck).
+  const lowCrown = low.crownSquareness ?? low.squareness ?? 2;
+  const highCrown = high.crownSquareness ?? high.squareness ?? 2;
+  const exponent = cosine > 0 ? lowCrown + (highCrown - lowCrown) * t : squareness;
+  return yOffset + yRadius * Math.sign(cosine) * Math.abs(cosine) ** (2 / exponent);
 }
 
 // ---------------------------------------------------------------------------

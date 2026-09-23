@@ -880,6 +880,128 @@ The tip and the radome contact points are part 4 (d)'s. All of `tests/sim.*`,
   0.55. A higher eye buys about 2 degrees of down-vision per 0.05 m and costs
   about 4 of up-vision. There is up-vision to spare now: +27 straight ahead.
 
+## Phase 3c, part 6: a V over the windshield
+
+**A second camera.** The water engineer's session hand-digitised the nose's
+outline on the starboard render (p. 35). It solved that render's camera on its
+15 cabin windows (rms 0.84 px), the cabin's top rim (0.41 px) and the forward
+belly edge (0.47 px): 49.7 degrees forward of abeam, 6 above, 242 m out. That
+camera and its 28 nose points are `tests/fixtures/global-p35-nose-edge.json`,
+numbers only. Where p. 29 sees the crown from below, p. 35 sees the shoulders,
+40-64 degrees round the section over the windshield.
+
+**No ellipse fits both cameras; a V does.** Crown and section were fitted
+jointly to p. 29's sky edge and p. 35's points, with the keel and the widths
+held. The section's upper half is a superellipse of exponent n (2 is the
+ellipse, lower toward a V).
+
+| fit | p. 29 rms (m) | p. 35 rms (m) |
+|---|---|---|
+| crown and n | 0.003 | 0.047 |
+| crown alone, ellipse | 0.011 | 0.100 |
+
+n comes out at 1.26-1.47 over the windshield: flat panes meeting at the centre
+post. A V's shoulder, seen from below, stands under its ridge, so the ridge
+sits 0.05-0.08 above p. 29's silhouette.
+
+**The V stops at the windshield.** Carried on to 3.0 m aft as p. 35 asks, it
+put the side panes 0.1-0.2 m under the p. 29 render's side windows, which part
+5's matched. The side-pane tops at 2.4-2.9 m aft, 35-42 degrees round, sit
+where p. 35's outline chose the V. Keeping their heights instead pulls their
+tops up to 0.27 m inboard of the top view. There p. 35's outline is its own
+windshield GLASS (columns u 2770-2810), which a hidden sliver of brow may lift
+by 7 px. p. 29's windows are direct evidence, and the side windows were
+Jason's complaint. So n runs 1.47 at 1.2-1.8 m aft, 1.26 at 2.1 and 1.30 at
+2.3, and returns to the ellipse by 2.75, with 1.6 at 2.5. The crown was then
+refitted aft of 2.2 to both cameras.
+
+**The outline keeps the top view's half-width.** The outlines are stored as
+angles whose sines are the top view's half-width fractions (`globalBodyPoint`).
+On a V the point keeps that half-width and takes the V's height. Keeping the
+ellipse's angle instead slides every pane inboard and down the flank, and the
+pilot's bottom edge straight ahead went from -11.1 to -6.5.
+
+**The seat lowers the face, as in part 5.** The fitted crown comes down 0.05 /
+0.08 / 0.05 m at 1.5 / 1.8 / 2.0 m aft. That keeps the aim point on final in
+the glass (-8.47 under the body axis; the priority is -9.5). Lowered all the way
+to the bound (0.12 at 1.8), the windshield's foot casts past the face (x 13.54)
+and the glass comes 9.3 mm in. Raising the ridge instead (n held at 1.6 or
+more) costs p. 35 rms 0.072 and puts the bottom edge at -6.2.
+
+**Built, from the seated eye (11.90, 0.55, -0.52), on the built glass**
+(`render.bizjet-seat-view`, the corner table):
+- **Straight ahead:** -11.10 to +19.55. From 0.78 it is -21.1 to -1.7.
+- **The port windshield's corners**, azimuth (right +) / elevation / range:
+  - bottom at the post: +17.60 / -6.78 / 1.493;
+  - bottom outboard: -17.39 / -14.13 / 0.968;
+  - top outboard: -11.14 / +20.01 / 0.578;
+  - top at the post: +26.28 / +13.06 / 1.013.
+- **Starboard top at the post:** +12.07.
+- **The post:** its head is +13.06 / +13.81 / +12.07 across its three columns.
+  It is 0.397 m tall at its edges, its foot at x 13.313.
+- **Headroom:** 0.509 m up at the seat (0.424 nearest skin); 0.374 m up 0.3 m
+  ahead (0.298 nearest).
+- **The side panes:** tops 0.73-0.81, bottoms 0.28-0.49.
+- **The glass:** 8.7 mm out, 18.5 mm in.
+
+**Against both renders** (`render.bizjet-nose`):
+- **p. 29:** the foot (1.5-2.0 m aft) reads -0.072..-0.042 and the face and
+  roof (2.0-3.5) -0.040..+0.007.
+- **p. 35, 1.5-3.6 m aft:** -0.046..+0.103, rms 0.061. It is within 0.05 to
+  2.5 m aft, then up to +0.10 at 2.6-2.8, where the V gives way.
+- **The p. 35 bound's controls:** the same crowns on ellipses read rms 0.131;
+  part 5's nose reads 0.137; lifting the nose 0.10 m moves every point up by
+  0.045 or more.
+
+**The centre post takes a third column on the ridge.** Cast +-4 degrees round
+with two columns, its chord crossed under the V's ridge and the glass sat
+7.8 mm INSIDE the skin. With the middle column on the ridge it is 8.9 mm out.
+
+**What the V costs in shading.** It is tangent-continuous at its ridge and its
+waterline for any exponent above 1 (`render.loft-crown-squareness`). But its
+curvature runs to infinity at both, so at 48 segments round the facets turn
+hardest there:
+- 19.9 degrees a step at the waterline;
+- 15.2 at the ridge;
+- against 9.1 and 6.2 on the ellipse aft of it.
+
+That is registered for the frames. If the waterline reads as a line along the
+nose, the exponent returns to 2 toward it.
+
+**What moved.** Checked mesh by mesh against 6638484:
+- the fuselage, the flight-deck glazing, and the cabin windows (within 0.2 mm);
+- the post, which gains its ridge column (96 -> 120 vertices);
+- `bizjet-cockpit-interior`, whose lining is cast along the panes' edges and
+  re-samples (4816 -> 4964 vertices). The kit's own tests re-pin on the
+  cockpit engineer's commit;
+- the Global's other 86 meshes, and every mesh of the trainer, the jet and the
+  747, are bit-identical.
+
+The new loft option is `crownSquareness` (`builders.ts`), bit-identical when
+absent. The livery's height and phase helpers carry it on the upper half; the
+gold and the belly sit below it and do not move. `globalSectionHalfWidth` gives
+the V's half-width at a height, for the cockpit kit's shell.
+
+**Registered, for a front or top-quarter reference** (the PM has asked Jason
+for one):
+- **p. 35's +0.08 at 2.6 m aft**, against the hidden-sliver reading of its
+  glass points.
+- **The forward side pane's inboard end**, 0.04-0.08 m under the render's
+  window, on the V's return to the ellipse (n 1.6-1.8).
+- **The tip and the forward nose.** The water engineer re-checked p. 35's
+  five forward points:
+  - all five sit on the skin's sky edge to 0.5 px, and the dark rim beside
+    them is a JPEG halo, not skin;
+  - the observed tip is 0.056 m further aft than the model's, and about
+    0.14 m lower;
+  - the edge falls about 1 px per px near the tip, against the model's
+    0.73-0.86.
+
+  p. 29 disagrees in sign there. Both cameras are 6 m or more from anything
+  they were solved on, so it is a question of extrapolation. Neither the crown
+  nor a credible width fits it: that would take half-widths 25-37% under the
+  top view, or n = 1.05. So the tip and the forward widths stay as built.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own

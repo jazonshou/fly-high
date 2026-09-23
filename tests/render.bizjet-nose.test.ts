@@ -84,10 +84,49 @@ const PART_4_NOSE: readonly LoftSection[] = [
   { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.55 },
 ];
 
+/** Part 5's nose (eeb1606), elliptical sections, forward of the 9.5 ring, literally: the p. 35 bound's control. */
+const PART_5_NOSE: readonly LoftSection[] = [
+  { x: 9.5, yRadius: 1.3350, zRadius: 1.3200, yOffset: 0.0000 },
+  { x: 10.5, yRadius: 1.3028, zRadius: 1.3200, yOffset: 0.0259 },
+  { x: 11, yRadius: 1.2721, zRadius: 1.3200, yOffset: 0.0407 },
+  { x: 11.5, yRadius: 1.2194, zRadius: 1.3150, yOffset: 0.0362 },
+  { x: 11.9, yRadius: 1.1496, zRadius: 1.2806, yOffset: 0.0138 },
+  { x: 12.2, yRadius: 1.0806, zRadius: 1.2436, yOffset: -0.0098 },
+  { x: 12.4, yRadius: 1.0200, zRadius: 1.2152, yOffset: -0.0350 },
+  { x: 12.55, yRadius: 0.9768, zRadius: 1.1909, yOffset: -0.0529 },
+  { x: 12.7, yRadius: 0.9293, zRadius: 1.1606, yOffset: -0.0753 },
+  { x: 12.78, yRadius: 0.8883, zRadius: 1.1444, yOffset: -0.1026 },
+  { x: 12.87, yRadius: 0.8290, zRadius: 1.1263, yOffset: -0.1462 },
+  { x: 12.95, yRadius: 0.7684, zRadius: 1.1101, yOffset: -0.1926 },
+  { x: 13.03, yRadius: 0.7115, zRadius: 1.0906, yOffset: -0.2351 },
+  { x: 13.1, yRadius: 0.6713, zRadius: 1.0686, yOffset: -0.2629 },
+  { x: 13.2, yRadius: 0.6283, zRadius: 1.0371, yOffset: -0.2890 },
+  { x: 13.31, yRadius: 0.5857, zRadius: 1.0026, yOffset: -0.3138 },
+  { x: 13.45, yRadius: 0.5363, zRadius: 0.9503, yOffset: -0.3410 },
+  { x: 13.6, yRadius: 0.4929, zRadius: 0.8907, yOffset: -0.3614 },
+  { x: 13.8, yRadius: 0.4381, zRadius: 0.8062, yOffset: -0.3860 },
+  { x: 14.1, yRadius: 0.3534, zRadius: 0.6720, yOffset: -0.4268 },
+  { x: 14.4, yRadius: 0.2691, zRadius: 0.5020, yOffset: -0.4680 },
+  { x: 14.7, yRadius: 0.1847, zRadius: 0.3400, yOffset: -0.5092 },
+  { x: 15, yRadius: 0.1000, zRadius: 0.1000, yOffset: -0.5500 },
+];
+
+/** A brochure render's solved pinhole: body metres to pixels (the fixtures say how). */
+interface RenderCamera {
+  rotationVector: [number, number, number];
+  centre: [number, number, number];
+  focalPx: number;
+  principal: [number, number];
+}
 /** The brochure's port render (p. 29): its solved camera and its upper silhouette, one row per image column. */
 const P29 = JSON.parse(readFileSync(join(ROOT, "tests/fixtures/global-p29-silhouette.json"), "utf8")) as {
-  camera: { rotationVector: [number, number, number]; centre: [number, number, number]; focalPx: number; principal: [number, number] };
+  camera: RenderCamera;
   upper: { columns: [number, number][]; offsetPx: number };
+};
+/** The starboard render (p. 35), 50 degrees forward of abeam: its camera and the nose's outline, by hand. */
+const P35 = JSON.parse(readFileSync(join(ROOT, "tests/fixtures/global-p35-nose-edge.json"), "utf8")) as {
+  camera: RenderCamera;
+  noseEdge: { points: { u: number; v: number; kind: string }[] };
 };
 
 let engine: NullEngine;
@@ -144,26 +183,33 @@ function centreAt(sections: readonly LoftSection[], x: number): number {
 }
 
 /** A loft table's section at a station, every radius and the offset linear between rings (as the loft is). */
-function sectionAt(sections: readonly LoftSection[], x: number): { yRadius: number; zRadius: number; yOffset: number } {
+function sectionAt(sections: readonly LoftSection[], x: number) {
+  let a = sections[sections.length - 1]!;
+  let b = a;
+  let f = 0;
   for (let i = 1; i < sections.length; i += 1) {
-    const a = sections[i - 1]!;
-    const b = sections[i]!;
-    if (x <= b.x) {
-      const f = (x - a.x) / (b.x - a.x);
-      const at = (p: number, q: number) => p + (q - p) * f;
-      return { yRadius: at(a.yRadius, b.yRadius), zRadius: at(a.zRadius, b.zRadius), yOffset: at(a.yOffset ?? 0, b.yOffset ?? 0) };
+    if (x <= sections[i]!.x) {
+      a = sections[i - 1]!;
+      b = sections[i]!;
+      f = (x - a.x) / (b.x - a.x);
+      break;
     }
   }
-  const last = sections[sections.length - 1]!;
-  return { yRadius: last.yRadius, zRadius: last.zRadius, yOffset: last.yOffset ?? 0 };
+  const at = (p: number, q: number) => p + (q - p) * f;
+  return {
+    yRadius: at(a.yRadius, b.yRadius),
+    zRadius: at(a.zRadius, b.zRadius),
+    yOffset: at(a.yOffset ?? 0, b.yOffset ?? 0),
+    crownSquareness: at(a.crownSquareness ?? 2, b.crownSquareness ?? 2),
+  };
 }
 
-/** Body metres to the p. 29 render's pixels, through its solved pinhole; `depth` is along the camera's axis. */
-function p29Project(p: Point3): { u: number; v: number; depth: number } {
-  const [rx, ry, rz] = P29.camera.rotationVector;
+/** Body metres to a render's pixels, through its solved pinhole; `depth` is along the camera's axis. */
+function project(camera: RenderCamera, p: Point3): { u: number; v: number; depth: number } {
+  const [rx, ry, rz] = camera.rotationVector;
   const angle = Math.hypot(rx, ry, rz);
   const k = { x: rx / angle, y: ry / angle, z: rz / angle };
-  const d = { x: p.x - P29.camera.centre[0], y: p.y - P29.camera.centre[1], z: p.z - P29.camera.centre[2] };
+  const d = { x: p.x - camera.centre[0], y: p.y - camera.centre[1], z: p.z - camera.centre[2] };
   // Rodrigues: the rotation vector's rotation applied to d.
   const c = Math.cos(angle);
   const s = Math.sin(angle);
@@ -174,35 +220,62 @@ function p29Project(p: Point3): { u: number; v: number; depth: number } {
     y: d.y * c + cross.y * s + k.y * kd * (1 - c),
     z: d.z * c + cross.z * s + k.z * kd * (1 - c),
   };
-  const f = P29.camera.focalPx;
-  return { u: P29.camera.principal[0] + (f * q.x) / q.z, v: P29.camera.principal[1] + (f * q.y) / q.z, depth: q.z };
+  const f = camera.focalPx;
+  return { u: camera.principal[0] + (f * q.x) / q.z, v: camera.principal[1] + (f * q.y) / q.z, depth: q.z };
 }
 
 /**
- * How far a loft's upper silhouette stands above the render's (its sky edge), column by column: the
- * topmost projected point of the sections in each column against the render's topmost row, in metres
- * at that point's depth (+ = the loft above the render), with the station it comes from (m aft of the tip).
+ * A loft's upper outline through a render's camera: the topmost projected point of the sections in
+ * each image column, with its station and depth. The sections are the loft's own, the upper half's
+ * exponent included (`crownSquareness`: a V over the flight deck).
  */
-function p29Residuals(sections: readonly LoftSection[], stations: readonly [number, number], step: number, columns: readonly [number, number]) {
+function outlineThrough(camera: RenderCamera, sections: readonly LoftSection[], stations: readonly [number, number], step: number, degreesStep: number) {
   const top = new Map<number, { v: number; x: number; depth: number }>();
   for (let x = stations[0]; x <= stations[1] + 1e-9; x += step) {
     const section = sectionAt(sections, x);
-    for (let degrees = 0; degrees < 360; degrees += 2) {
+    for (let degrees = 0; degrees < 360; degrees += degreesStep) {
       const angle = degrees / DEG;
-      const q = p29Project({ x, y: section.yOffset + section.yRadius * Math.cos(angle), z: section.zRadius * Math.sin(angle) });
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const e = cos > 0 ? 2 / section.crownSquareness : 1;
+      const q = project(camera, {
+        x,
+        y: section.yOffset + section.yRadius * Math.sign(cos) * Math.abs(cos) ** e,
+        z: section.zRadius * Math.sign(sin) * Math.abs(sin) ** e,
+      });
       const u = Math.round(q.u);
-      if (u < columns[0] || u > columns[1]) continue;
       const was = top.get(u);
       if (!was || q.v < was.v) top.set(u, { v: q.v, x, depth: q.depth });
     }
   }
+  return top;
+}
+
+/**
+ * How far a loft's upper silhouette stands above the p. 29 render's (its sky edge), column by column,
+ * in metres at the silhouette's depth (+ = the loft above the render), with the station it comes from
+ * (m aft of the tip).
+ */
+function p29Residuals(sections: readonly LoftSection[], stations: readonly [number, number], step: number, columns: readonly [number, number]) {
+  const top = outlineThrough(P29.camera, sections, stations, step, 2);
   const observed = new Map(P29.upper.columns.map(([u, v]) => [u, v + P29.upper.offsetPx]));
   const rows: { aft: number; above: number }[] = [];
   for (const [u, point] of top) {
     const v = observed.get(u);
-    if (v !== undefined) rows.push({ aft: TIP_X - point.x, above: ((v - point.v) * point.depth) / P29.camera.focalPx });
+    if (u >= columns[0] && u <= columns[1] && v !== undefined) {
+      rows.push({ aft: TIP_X - point.x, above: ((v - point.v) * point.depth) / P29.camera.focalPx });
+    }
   }
   return rows.sort((a, b) => a.aft - b.aft);
+}
+
+/** The same against the p. 35 render's hand-digitised nose outline, point by point. */
+function p35Residuals(sections: readonly LoftSection[]) {
+  const top = outlineThrough(P35.camera, sections, [10.5, 15], 0.004, 1);
+  return P35.noseEdge.points.flatMap((point) => {
+    const at = top.get(point.u);
+    return at ? [{ aft: TIP_X - at.x, above: ((point.v - at.v) * at.depth) / P35.camera.focalPx }] : [];
+  }).sort((a, b) => a.aft - b.aft);
 }
 
 describe("the Global's nose (phase 3c)", () => {
@@ -248,9 +321,10 @@ describe("the Global's nose (phase 3c)", () => {
     expect(keel).toBeLessThan(0.02);
     expect(rise).toBeLessThanOrEqual(0.001);
     // The drop, against the nose before, at the stations the table states (m aft of the tip).
-    // Measured (part 5): 0.577 / 0.541 / 0.225 / 0.070 / 0.056, the crown then 0.092 / 0.339 / 0.763
-    // / 1.133 / 1.256.
-    const drops: [number, number][] = [[1.3, 0.577], [1.8, 0.541], [2.2, 0.225], [3.0, 0.07], [3.5, 0.056]];
+    // Measured (part 6, the ridge of the V over the windshield): 0.474 / 0.458 / 0.211 / 0.089 / 0.054,
+    // the crown then 0.195 / 0.422 / 0.777 / 1.114 / 1.257 (part 5: 0.577 / 0.541 / 0.225 / 0.070 /
+    // 0.056).
+    const drops: [number, number][] = [[1.3, 0.474], [1.8, 0.458], [2.2, 0.211], [3.0, 0.089], [3.5, 0.054]];
     for (const [aft, want] of drops) {
       const x = TIP_X - aft;
       const got = crownAt(before, x, -0.1) - crownAt(now, x);
@@ -364,6 +438,30 @@ describe("the Global's nose (phase 3c)", () => {
     expect(beforeAcross.filter((c) => c.angle > 5).length).toBe(24);
   });
 
+  it("turns the V's facets round the ring within bounds at its ridge and its waterline", () => {
+    // Over the windshield the upper half is a V (phase 3c, part 6): tangent-continuous at the ridge
+    // and the waterline (render.loft-crown-squareness), but its curvature runs to infinity at both, so
+    // at 48 segments round the facets turn hardest there. The turn from each vertex's normal to the
+    // next round the ring, over the ridge (radials 0-1) and the waterline (10-14).
+    const normals = fuselage.getVerticesData(VertexBuffer.NormalKind)!;
+    const worstAt = (x: number) => {
+      const ring = GLOBAL_FUSELAGE_SECTIONS.findIndex((section) => section.x === x);
+      const turn = (radial: number) => angleBetween(vec(normals, ring * RING + radial), vec(normals, ring * RING + radial + 1));
+      return { ridge: turn(0), waterline: Math.max(...[10, 11, 12, 13].map(turn)) };
+    };
+    const vRings = GLOBAL_FUSELAGE_SECTIONS.filter((section) => (section.crownSquareness ?? 2) < 1.6).map((section) => worstAt(section.x));
+    expect(vRings.length).toBeGreaterThanOrEqual(8);
+    // Measured: 19.9 degrees a step at worst at the waterline (13.03 and 12.87) and 15.2 at the ridge
+    // (12.7), against 9.1 and 6.2 on the ellipse aft of the V (12.2). Registered for the frames: if the
+    // waterline reads as a line, the V's exponent returns to 2 toward it.
+    expect(Math.max(...vRings.map((r) => r.waterline))).toBeLessThan(20.5);
+    expect(Math.max(...vRings.map((r) => r.ridge))).toBeLessThan(16);
+    // CONTROL: the ellipse ring aft of the V turns under 10 at both.
+    const ellipse = worstAt(12.2);
+    expect(ellipse.waterline).toBeLessThan(10);
+    expect(ellipse.ridge).toBeLessThan(10);
+  });
+
   it("shades the nose as one surface: no crease where the radome met the fuselage's capped end", () => {
     const normals = fuselage.getVerticesData(VertexBuffer.NormalKind)!;
     // The flank vertex (a quarter of the way round) of each ring from 9.5 to the tip's last ring:
@@ -385,9 +483,9 @@ describe("the Global's nose (phase 3c)", () => {
       angleBetween(vec(fb, lastRing), vec(rb, radomeRing)),
       angleBetween(vec(fb, lastRing + 12), vec(rb, radomeRing + 10)),
     );
-    // Measured: the worst step between rings 11.9 degrees, on the crown into 12.78, the post's head,
-    // where the brow turns onto the roof; 9.2 into 12.7 and 8.3 into 13.1, at the face's foot. Through
-    // the blend to the drooped tip (13.45 .. 14.7) no step is over 5.6 (render.bizjet-seat-view). 34.0
+    // Measured (part 6): the worst step between rings 9.6 degrees, on the crown into 12.7 where the V
+    // ends into the roof; 9.1 into 11.9, 8.8 into 13.2 and 8.5 into 13.31 at the face's foot. Through
+    // the blend to the drooped tip (13.45 .. 14.7) no step is over 6.5 (render.bizjet-seat-view). 34.0
     // across 13.2 before.
     expect(worst).toBeLessThan(13.5);
     expect(crease).toBeGreaterThan(25);
@@ -418,8 +516,9 @@ describe("the Global's nose (phase 3c)", () => {
       };
       return { foot: range(1.5, 1.9999), face: range(2.0, 3.5) };
     };
-    // Measured: -0.114..-0.047 over the foot, where the face stays under the line so the aim point on
-    // final stays in the glass; -0.041..+0.079 over the face and roof, the most over at the brow.
+    // Measured (part 6, the V sampled as the loft draws it): -0.072..-0.042 over the foot, where the
+    // face stays under the line so the aim point on final stays in the glass; -0.040..+0.007 over
+    // the face and roof (part 5: -0.114..-0.047 and -0.041..+0.079).
     const built = bands(GLOBAL_FUSELAGE_SECTIONS);
     expect(built.foot.columns).toBeGreaterThan(30);
     expect(built.face.columns).toBeGreaterThan(100);
@@ -432,5 +531,32 @@ describe("the Global's nose (phase 3c)", () => {
     const part4 = bands([...cabin, ...PART_4_NOSE]);
     expect(part4.face.high).toBeGreaterThan(0.1);
     expect(part4.face.low).toBeLessThan(-0.05);
+  });
+
+  it("holds the nose to the p. 35 render's outline: within 0.11 m, rms 0.07, from 1.5 to 3.6 m aft", () => {
+    const cabin = GLOBAL_FUSELAGE_SECTIONS.filter((section) => section.x < 9.5);
+    const band = (sections: readonly LoftSection[]) => {
+      const rows = p35Residuals(sections).filter((r) => r.aft >= 1.5 && r.aft <= 3.6);
+      const values = rows.map((r) => r.above);
+      return { points: rows.length, low: Math.min(...values), high: Math.max(...values), rms: Math.sqrt(values.reduce((t, v) => t + v * v, 0) / values.length) };
+    };
+    const built = band(GLOBAL_FUSELAGE_SECTIONS);
+    const ellipse = band(GLOBAL_FUSELAGE_SECTIONS.map(({ crownSquareness: _, ...ring }) => ring));
+    const part5 = band([...cabin, ...PART_5_NOSE]);
+    const lifted = band(GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x > 9.5 ? { ...r, yOffset: (r.yOffset ?? 0) + 0.1 } : r)));
+    // Measured: -0.046..+0.103, rms 0.061 over 21 points: within 0.05 to 2.5 m aft, then up to +0.10 at
+    // 2.6-2.8, where the V gives way to the ellipse so that the side windows stay on p. 29's. There
+    // p. 35's outline is its windshield glass, which a hidden sliver of brow may lift (registered).
+    // Forward of 1.5 m aft it reads the nose 0.03-0.14 high toward the tip: registered, as neither
+    // the crown nor a credible width fits it (docs/findings/GLOBAL_LIVERY.md, part 6).
+    expect(built.points).toBeGreaterThanOrEqual(18);
+    expect(Math.max(-built.low, built.high)).toBeLessThanOrEqual(0.11);
+    expect(built.rms).toBeLessThanOrEqual(0.07);
+    // CONTROLS. The same crowns on ellipses read rms 0.131, up to +0.218: the section is what p. 35
+    // sees. Part 5's nose reads 0.137, up to +0.225. The built nose lifted 0.10 m reads 0.045 at
+    // least, the instrument's sign and scale (the camera is 6 degrees above).
+    expect(ellipse.rms).toBeGreaterThan(0.1);
+    expect(part5.rms).toBeGreaterThan(0.1);
+    expect(lifted.low).toBeGreaterThan(0.03);
   });
 });
