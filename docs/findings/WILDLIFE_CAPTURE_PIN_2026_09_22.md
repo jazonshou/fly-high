@@ -207,6 +207,23 @@ merge the counts are deterministic, but may differ from any count pinned
 before it. Draw ceilings for these four should be re-pinned from runs on the
 pinned tip.
 
+**The ages explain both measured counts.** `terrain-material-1600ft-down`'s
+previous shot (`veg-seam-near-500ft`) is 9.4 km away, so its animals spawn
+fresh when its own streaming starts, and are captured `own streaming + 395`
+frames later. The probe gives the near set at each age:
+
+| run | frames after spawn | near at capture | draws |
+| --- | ---: | --- | ---: |
+| REBASELINE candidate | 360 + 395 = 755 | 3 boar | 87 |
+| normal run | 930 + 395 = 1,325 | 3 boar, 1 deer | 93 |
+| pinned (every run) | 395 | 3 boar | predicted: 87 |
+
+The six draws between them fit the deer's leg and antler batches in the main
+pass and two shadow cascades. The nine earlier full captures read 93: a deer
+had wandered near in each. **Prediction for the pinned tip:
+`terrain-material-1600ft-down` draws 87 in all three runs**, 6 under its
+current ceiling of 93.
+
 ## What merging does to the baselines
 
 Merging moves the birds on every bird shot to their pinned positions: up to 30
@@ -222,6 +239,8 @@ cloud-jitter residue.
 
 - A same-tree A/A pair on this branch: every bird shot identical apart from
   foam and cloud jitter, with no bird-sized clusters.
+- `terrain-material-1600ft-down` at 87 draws in every run (above), and every
+  draw count identical across the runs.
 - The same shots against an unpinned capture: differences at the probe's
   predicted positions, printed per shot by the probe. For example,
   `water-3m`'s nine birds are predicted around x 294-381, y 71-147.
