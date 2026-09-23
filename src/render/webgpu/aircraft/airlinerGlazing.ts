@@ -43,11 +43,14 @@ export interface FlightDeckPane {
 /**
  * The centre member's half-width, degrees of azimuth from the centreline at R:
  * the No.1 panes start here and the centre post fills the gap between them.
- * 1.6, not the design's first 2.5: seen from the left seat the member read
+ * 1.9, not the design's first 2.5: seen from the left seat the member read
  * 5.5 degrees wide where the type's is about 3.6 (the cockpit engineer's K3
- * measurement), and +-1.6 at R is about that from the seat.
+ * measurement). The cockpit engineer then measured it from the eye on the
+ * kit's 2 cm lining at each candidate: 1.6 -> 3.11, 1.8 -> 3.48, 1.9 -> 3.67
+ * (face 3.46 + side 0.20), 2.0 -> 3.85, against the type's 3.6 and a 3.8
+ * ceiling. 1.9 is the nearest inside it.
  */
-export const CENTRE_POST_HALF_AZIMUTH = 1.6;
+export const CENTRE_POST_HALF_AZIMUTH = 1.9;
 
 /**
  * The accepted design. The centre member is +-CENTRE_POST_HALF_AZIMUTH;

@@ -1753,9 +1753,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // No.1 panes' own inboard sightlines at the same PANE_GRID elevations, so
   // post and pane share those edge vertices exactly: no seam, and the rims
   // that meet there are enclosed between two solids and never seen. Two
-  // columns, as before: across 3.2 degrees the chord sags about 1.2 mm under
-  // the crown, inside PANE_PROUD's 4 cm, and the kit's frame meets the same
-  // corner points.
+  // columns, as before: across 3.8 degrees the chord sags about 1.7 mm under
+  // the crown (1.2 mm across 3.2, going as the square), inside PANE_PROUD's
+  // 4 cm, and the kit's frame meets the same corner points.
   const post = paneGrid(
     caster,
     { name: "one", azimuth: [-CENTRE_POST_HALF_AZIMUTH, CENTRE_POST_HALF_AZIMUTH], elevation: FLIGHT_DECK_PANES[0]!.elevation },

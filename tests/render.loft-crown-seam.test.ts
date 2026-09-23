@@ -364,7 +364,10 @@ describe("a loft's crown seam", () => {
       // +-1.6 to fill the gap. Checked mesh by mesh against 58f8b28: three of 93 meshes moved and no
       // count did -- the flight-deck glazing, the centre post, and the cockpit interior, whose lining
       // reads the pane spec -- and the other 90 are bit-identical.
-      airliner: "7f34021c",
+      // RE-PINNED when the member settled at 1.9 (the cockpit engineer's reading from the eye on the kit's
+      // lining, 3.67 degrees against the type's 3.6): the same three meshes moved, no count did, and the
+      // other 90 are bit-identical against 1a0ec56.
+      airliner: "8a3b24e2",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
