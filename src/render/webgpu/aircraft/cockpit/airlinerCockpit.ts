@@ -15,7 +15,7 @@ import {
   type SkinCaster,
 } from "../airlinerGlazing";
 import type { AircraftBuildContext } from "../builders";
-import { glareshieldMaterial, solidPlate } from "./cockpitPrimitives";
+import { glareshieldMaterial, roundedDeckSection, solidPlate, type RoundedDeckSection } from "./cockpitPrimitives";
 import {
   AIRLINER_DISPLAYS,
   createDisplayAtlas,
@@ -150,42 +150,73 @@ export const AIRLINER_PANEL = Object.freeze({
   halfWidth: 1.3,
   /** Below the frame at every azimuth: the frame's bottom crosses the face's plane at y 2.566. */
   bottomY: 2.2,
+  /**
+   * Back from vertical, top AWAY from the pilot, about the face's top edge at the cove's foot (P1a). The screens' share
+   * of the frame is this deck's binding constraint, and it does not bind the lean: a smaller deck edge raised the
+   * screens more than any lean lowers them (39.1% at the aimed 24 degrees against K3's 37.8%). So the lean is the most
+   * upright that faces the pilot as the Global's does: the face's normal 7.3 degrees off the eye from the PFD's centre
+   * (the bound is 8).
+   */
+  leanDegrees: 17,
 });
 
+/** The glareshield's aft face: the deck's nearest plane to the pilot, where the lip reads its deck line. */
 export function airlinerPanelFaceX(): number {
   return eye().forward + AIRLINER_PANEL.faceAheadOfEye;
 }
 
 /**
- * THE GLARESHIELD: a lip along the top of the panel's face, flush with it, and nothing aft of it.
+ * THE GLARESHIELD. Its deck line is the K3 rule's: the LOWEST line along z that keeps the sill -- the strip between the
+ * lip and the bottom of the view over No.1 -- no more than 1 degree tall anywhere along No.1. The bottom of the view is
+ * the sill lining's own top edge (its rim's outer edge, 0.008 out of the skin; the glass is not drawn), which reads
+ * -17.41 at No.1's inboard end (az +8.0) and -18.66 at its outboard end (az -11.8), and a line along z reads shallower
+ * off axis, so the sill is 0.99 degree at the inboard end and the lip stands 0.45 degree over the window at the outboard
+ * end. Solved against the BUILT lining and held to it by `tests/render.cockpit-airliner.test.ts`.
  *
- * Its top edge is a line along z at the face's x, and it reads `lipElevationDegrees` straight ahead. That is the
- * LOWEST such line that keeps the sill -- the strip between the lip and the bottom of the view over No.1 -- no
- * more than 1 degree tall anywhere along No.1. The bottom of the view is the sill lining's own top edge (its rim's
- * outer edge, 0.008 out of the skin; the glass is not drawn), which reads -17.41 at No.1's inboard end (az +8.0)
- * and -18.66 at its outboard end (az -11.8), and a line along z reads shallower off axis, so the sill is 0.99
- * degree at the inboard end and the lip stands 0.45 degree over the window at the outboard end. Solved against
- * the BUILT lining and held to it by `tests/render.cockpit-airliner.test.ts`. (With the lining the glass's own
- * 0.10 m slab, its top edge stood 0.04 out, read 0.5 degree higher, and the lip was -18.04.)
+ * Its section is a ROUNDED DECK (P1a, `roundedDeckSection`, the Global's): a round on the deck line's sight line at a
+ * vertex, so the silhouette is the deck line exactly; a 45 degree cove under it to the leaned panel's face; a hood
+ * falling forward faster than the sight line, so nothing of it shows. On this deck the band from the lip to the frame's
+ * bottom is only 4.78 degrees, and the screens' share of it binds, so the round, the drop and the cove are the least that
+ * reads (a lit line over a dark hairline, 0.54 degree in all, where K3's flush lip face was 1.20).
  *
- * Its section is a WEDGE, not a box: the aft face 0.02 tall, the top falling away forward over `depth` steeper
- * than the sight line over the lip (21.8 degrees against 18.57), so from the eye nothing of the glareshield or the
- * board behind it shows above the lip, and the lip is the line the pilot reads. A box's far top corner would stand
- * 1.7 cm over that sight line and become the edge instead.
- *
- * Being a line along z, the lip is ONE row of the picture across the whole frame, and it is the deck's top: the
+ * Being a line along z, the silhouette is ONE row of the picture across the whole frame, and it is the deck's top: the
  * value `catalogue.cockpitDeckLineDegrees` records and the 2D HUD keeps above.
  */
 export const AIRLINER_GLARESHIELD = Object.freeze({
   lipElevationDegrees: -18.57,
-  thickness: 0.02,
-  depth: AIRLINER_PANEL.thickness,
+  radius: 0.005,
+  drop: 0,
+  cove: 0.003,
+  /** Faster than the 18.57 degree sight line over the round. */
+  hoodFallDegrees: 21,
+  /** The shell is wide here (1.44 m where the board stands, against the deck's 1.3): no taper. */
+  hoodDepth: 0.1,
+  roundSegments: 8,
 });
 
-/** The height of the lip: its edge at the face reads `lipElevationDegrees` straight ahead. */
+/** The deck line's height at the aft face: it reads `lipElevationDegrees` straight ahead (the round's silhouette is on it). */
 export function airlinerLipY(): number {
   const e = eye();
   return e.up + Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees * DEG) * (airlinerPanelFaceX() - e.forward);
+}
+
+/** The glareshield's section in body x and y (`roundedDeckSection`). */
+export function airlinerGlareshieldSection(): RoundedDeckSection {
+  return roundedDeckSection(eye(), airlinerPanelFaceX(), -AIRLINER_GLARESHIELD.lipElevationDegrees, AIRLINER_GLARESHIELD, "the 747");
+}
+
+/**
+ * The panel's face, leaned back by `leanDegrees` about its top edge at the cove's foot: that edge, the unit vector UP the
+ * face, and the face's unit normal toward the pilot (aft and up), in body x and y.
+ */
+export function airlinerPanelFace(): { top: { x: number; y: number }; up: { x: number; y: number }; normal: { x: number; y: number }; bottomY: number } {
+  const lean = AIRLINER_PANEL.leanDegrees * DEG;
+  return {
+    top: airlinerGlareshieldSection().faceTop,
+    up: { x: Math.sin(lean), y: Math.cos(lean) },
+    normal: { x: -Math.cos(lean), y: Math.sin(lean) },
+    bottomY: AIRLINER_PANEL.bottomY,
+  };
 }
 
 // ---- the screens -------------------------------------------------------------------
@@ -199,8 +230,12 @@ export const AIRLINER_SCREENS = Object.freeze({
   bezel: 0.01,
   /** Centre to centre of neighbours across a row. The bezels leave 5 mm between them. */
   pitch: 0.245,
-  /** The top row's top edge reads this far below the glareshield's underside at the face. */
-  belowGlareshieldDegrees: 0.25,
+  /**
+   * The top row's top edge reads this far below the cove's foot (the lowest edge of the deck the pilot sees): the
+   * least at which the bezels' top rims, 10 mm over their screens, clear the cove (at 0.5 they stood 0.14 degree into
+   * it). The top row keeps 37.9% of its screens in the frame (K3's 37.8).
+   */
+  belowDeckEdgeDegrees: 0.65,
   /** Between the upper EICAS's bezel and the lower one's. */
   rowGap: 0.005,
   bezelThickness: 0.007,
@@ -224,25 +259,30 @@ const SCREEN_LAYOUT: readonly { readonly name: string; readonly z: (seat: number
   { name: "starboard-pfd", z: (seat) => seat, row: 0 },
 ];
 
-/** The plane the screens' front stands in: 1 mm in front of the bezel's front face. */
-function screenFrontX(): number {
-  return airlinerPanelFaceX() - AIRLINER_SCREENS.bezelThickness;
-}
-
-/** Height of the top row's top edge, solved from the glareshield's underside at the face. */
-export function airlinerScreenTopY(): number {
-  const e = eye();
-  const underside = Math.atan2(airlinerLipY() - AIRLINER_GLARESHIELD.thickness - e.up, airlinerPanelFaceX() - e.forward);
-  return e.up + Math.tan(underside - AIRLINER_SCREENS.belowGlareshieldDegrees * DEG) * (screenFrontX() - e.forward);
-}
-
-export function airlinerScreenPlacements(): readonly { name: string; centre: Vector3 }[] {
+/**
+ * The six screens on the leaned face, in `SCREEN_LAYOUT`'s order: `centre` is the screen box's and `bezelCentre` its
+ * bezel's, both turned back by the lean about z. The screen's front stands 1 mm proud of its bezel's front, the bezel's
+ * back 1 mm inside the board, all square to the face; the top row's front top edge reads `belowDeckEdgeDegrees` under
+ * the cove's foot, and the lower EICAS stands a row down the face.
+ */
+export function airlinerScreenPlacements(): readonly { name: string; centre: Vector3; bezelCentre: Vector3 }[] {
   const s = AIRLINER_SCREENS;
-  const seat = Math.abs(eye().right);
-  const topRow = airlinerScreenTopY() - s.height / 2;
+  const e = eye();
+  const seat = Math.abs(e.right);
+  const face = airlinerPanelFace();
+  const along = (h: number, out: number) => ({ x: face.top.x + h * face.up.x + out * face.normal.x, y: face.top.y + h * face.up.y + out * face.normal.y });
+  // a line along z reads one row wherever it is: the row is the slope (y - eye.y) / (x - eye.x)
+  const slope = Math.tan(Math.atan2(face.top.y - e.up, face.top.x - e.forward) - s.belowDeckEdgeDegrees * DEG);
+  const front = along(0, s.bezelThickness);
+  const h = (slope * (front.x - e.forward) - (front.y - e.up)) / (face.up.y - slope * face.up.x);
   const rowDrop = s.height + s.bezel * 2 + s.rowGap;
-  const x = screenFrontX() + s.screenThickness / 2;
-  return SCREEN_LAYOUT.map(({ name, z, row }) => ({ name, centre: new Vector3(x, topRow - row * rowDrop, z(seat, s.pitch)) }));
+  return SCREEN_LAYOUT.map(({ name, z, row }) => {
+    const middle = h - s.height / 2 - row * rowDrop;
+    const screen = along(middle, s.bezelThickness - s.screenThickness / 2);
+    const bezel = along(middle, s.bezelThickness / 2 - 0.001);
+    const at = z(seat, s.pitch);
+    return { name, centre: new Vector3(screen.x, screen.y, at), bezelCentre: new Vector3(bezel.x, bezel.y, at) };
+  });
 }
 
 // ---- the frame: the lining cast on the skin round the glass ----------------------------------
@@ -402,10 +442,6 @@ export function buildAirlinerCockpit(
 ): AirlinerCockpit {
   const parts: AbstractMesh[] = [];
   const p = AIRLINER_PANEL;
-  const g = AIRLINER_GLARESHIELD;
-  const faceX = airlinerPanelFaceX();
-  const lipY = airlinerLipY();
-  const undersideY = lipY - g.thickness;
 
   // THE LINING: one skin panel per strip (a side, or once across the centreline), at the panes' own proud and
   // depth, so its rim at a pane's edge is that pane's edge, inner face and outer alike.
@@ -426,43 +462,42 @@ export function buildAirlinerCockpit(
     }
   }
 
-  // THE GLARESHIELD: the lip alone, the wedge extruded along z (`verticalProfile` extrudes its x-y outline along z),
-  // on a material of its own (matte near-black, no reflection): a glareshield must not reflect in the windscreen.
-  // It is the whole deck line, so it is the mesh named for it.
-  const lip = solidPlate(
-    build,
-    "airliner-glareshield",
-    [
-      { x: faceX, y: lipY },
-      { x: faceX, y: undersideY },
-      { x: faceX + g.depth, y: undersideY },
-    ],
-    p.halfWidth * 2,
-    glareshieldMaterial(build, "airliner-glareshield"),
-    root,
-  );
-  parts.push(lip);
+  // THE GLARESHIELD, a rounded deck (`airlinerGlareshieldSection`) extruded along z on a material of its own (matte
+  // near-black, no reflection): a glareshield must not reflect in the windscreen. It is the whole deck line, so it is the
+  // mesh named for it.
+  parts.push(solidPlate(build, "airliner-glareshield", airlinerGlareshieldSection().outline, p.halfWidth * 2, glareshieldMaterial(build, "airliner-glareshield"), root));
 
-  // THE PANEL BOARD, from below the frame up to the glareshield's underside.
-  const board = build.box("airliner-instrument-panel", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root);
-  board.position.set(faceX + p.thickness / 2, (p.bottomY + undersideY) / 2, 0);
+  // THE PANEL BOARD, its face leaned back from its top edge at the cove's foot down past the frame's bottom. A box turned
+  // back about z (its local X is its thickness, away from the pilot; its local Y runs up the face).
+  const face = airlinerPanelFace();
+  const lean = p.leanDegrees * DEG;
+  const faceLength = (face.top.y - face.bottomY) / Math.cos(lean);
+  const board = build.box("airliner-instrument-panel", p.thickness, faceLength, p.halfWidth * 2, materials.interior, root);
+  board.position.set(
+    face.top.x - (faceLength / 2) * face.up.x - (p.thickness / 2) * face.normal.x,
+    face.top.y - (faceLength / 2) * face.up.y - (p.thickness / 2) * face.normal.y,
+    0,
+  );
+  board.rotation.z = -lean;
 
   // THE SCREENS AND THEIR BEZELS: two meshes for twelve boxes. The bezel's back
   // stands 1 mm inside the board so nothing is coincident.
   const s = AIRLINER_SCREENS;
   const screens: AbstractMesh[] = [];
   const bezels: AbstractMesh[] = [];
-  for (const { name, centre } of airlinerScreenPlacements()) {
+  for (const { name, centre, bezelCentre } of airlinerScreenPlacements()) {
     const screen = build.box(
       `airliner-screen-${name}`, s.screenThickness, s.height, s.width, materials.instrumentFace, root,
     );
     screen.position.copyFrom(centre);
+    screen.rotation.z = -lean;
     screens.push(screen);
     const bezel = build.box(
       `airliner-screen-bezel-${name}`, s.bezelThickness, s.height + s.bezel * 2, s.width + s.bezel * 2,
       materials.instrumentMarking, root,
     );
-    bezel.position.set(faceX - s.bezelThickness / 2 + 0.001, centre.y, centre.z);
+    bezel.position.copyFrom(bezelCentre);
+    bezel.rotation.z = -lean;
     bezels.push(bezel);
   }
   // EACH SCREEN'S PILOT-FACING FACE GETS ITS OWN SLOT of the display atlas, before the merge bakes

@@ -17,7 +17,7 @@ import {
   type GlobalPaneOutline,
 } from "../bizjetGlazing";
 import type { AircraftBuildContext } from "../builders";
-import { facetMesh, glareshieldMaterial, sculptSolid, solidPlate, type FacetQuad } from "./cockpitPrimitives";
+import { facetMesh, glareshieldMaterial, roundedDeckSection, sculptSolid, solidPlate, type FacetQuad, type RoundedDeckSection } from "./cockpitPrimitives";
 import {
   BIZJET_DISPLAYS,
   createDisplayAtlas,
@@ -426,59 +426,11 @@ export const BIZJET_GLARESHIELD = Object.freeze({
   roundSegments: 8,
 });
 
-/** The glareshield's section in body x and y, and the points the rest of the deck is placed from. */
-export interface BizjetGlareshieldSection {
-  /** The prism's outline, convex, in order round it (`solidPlate` winds it). */
-  readonly outline: readonly { readonly x: number; readonly y: number }[];
-  /** The round's vertices, from the hood's tangent round to the aft face's, the deck line's tangent among them. */
-  readonly round: readonly { readonly x: number; readonly y: number }[];
-  /** The round's centre. */
-  readonly centre: { readonly x: number; readonly y: number };
-  /** Where the deck line's sight line touches the round: the silhouette. */
-  readonly tangent: { readonly x: number; readonly y: number };
-  /** The aft face's foot, where the cove turns under. */
-  readonly coveTop: { readonly x: number; readonly y: number };
-  /** The cove's foot: the panel's face's top edge, and the lowest edge of the deck the pilot sees. */
-  readonly faceTop: { readonly x: number; readonly y: number };
-}
+/** The glareshield's section in body x and y, and the points the rest of the deck is placed from (`roundedDeckSection`). */
+export type BizjetGlareshieldSection = RoundedDeckSection;
 
 export function bizjetGlareshieldSection(deckLine: number = aircraftSpec("bizjet").cockpitDeckLineDegrees): BizjetGlareshieldSection {
-  const g = BIZJET_GLARESHIELD;
-  const e = eye();
-  const aftX = bizjetPanelFaceX();
-  const fall = g.hoodFallDegrees * DEG;
-  const sight = deckLine * DEG;
-  if (!(deckLine < g.hoodFallDegrees)) {
-    throw new RangeError(`the Global's hood falls ${g.hoodFallDegrees} degrees, no steeper than the ${deckLine} degree sight line over the deck: its top would show over the round`);
-  }
-  // THE ROUND: its centre `radius` forward of the aft face and `radius` under the sight line (the line through the eye
-  // falling at the deck line, whose upward normal is (sin, cos) of it).
-  const cx = aftX + g.radius;
-  const cy = e.up - (g.radius + Math.sin(sight) * (cx - e.forward)) / Math.cos(sight);
-  const at = (angle: number) => ({ x: cx + g.radius * Math.sin(angle), y: cy + g.radius * Math.cos(angle) });
-  // angles from straight up, forward positive: -90 is the aft face's tangent, +fall the hood's
-  const angles = Array.from({ length: g.roundSegments + 1 }, (_, k) => fall - ((fall + Math.PI / 2) * k) / g.roundSegments);
-  if (sight > -Math.PI / 2 && sight < fall) angles.push(sight);
-  angles.sort((a, b) => b - a);
-  const round = angles.map(at);
-  const coveTop = { x: aftX, y: cy - g.drop };
-  const faceTop = { x: aftX + g.cove, y: coveTop.y - g.cove };
-  // the hood: its top from the round's forward tangent, its underside from the cove's foot, both falling at `fall`
-  const endX = aftX + g.hoodDepth;
-  const hoodTop = round[0]!;
-  const endTop = { x: endX, y: hoodTop.y - (endX - hoodTop.x) * Math.tan(fall) };
-  const endFoot = { x: endX, y: faceTop.y - (endX - faceTop.x) * Math.tan(fall) };
-  if (!(endTop.y - endFoot.y >= 0.001)) {
-    throw new RangeError(`the Global's hood is ${((endTop.y - endFoot.y) * 1000).toFixed(2)} mm thick: its top meets its underside`);
-  }
-  return {
-    outline: [...(g.drop > 0 ? [coveTop] : []), faceTop, endFoot, endTop, ...round],
-    round,
-    centre: { x: cx, y: cy },
-    tangent: at(sight),
-    coveTop,
-    faceTop,
-  };
+  return roundedDeckSection(eye(), bizjetPanelFaceX(), deckLine, BIZJET_GLARESHIELD, "the Global");
 }
 
 /**

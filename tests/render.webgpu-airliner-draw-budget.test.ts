@@ -622,25 +622,32 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // (8 x 2 grids, 96 vertices and 180 indices each), the post's strip came (9 x 2 on the lining's own rows, 108 and
     // 204), and the centre sill and crown lost their +-1 columns (4 x 16 -> 4 x 14 and 7 x 16 -> 7 x 14: 32 and 96, 44
     // and 168). -160 vertices and -420 indices exactly.
+    //
+    // THEN 14,395 TO 14,515 with the panel's integration (P1a): the glareshield went from the flush lip's 3-sided wedge
+    // (8 triangles, 24 vertices) to a rounded deck (`airlinerGlareshieldSection`: 13 sides, 48 triangles, 144), +120
+    // vertices and +120 indices exactly; the board, the screens and the bezels are the same boxes, leaned back 17
+    // degrees. The extents and the position sum's z did not move; its x and y rose by what 120 vertices at the deck
+    // weigh, about (30.6, 2.65) each (+3,675.7, +318.5). The area rose by 0.43 m^2 (the hood, 0.10 deep, over the
+    // wedge's 0.05), the signed volume by -0.005 m^3.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(14_395);
-    expect(census.indices).toBe(62_796);
+    expect(census.vertices).toBe(14_515);
+    expect(census.indices).toBe(62_916);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(135663.0471, 1);
-    expect(census.positionSum.y).toBeCloseTo(-16036.1222, 1);
+    expect(census.positionSum.x).toBeCloseTo(139338.7389, 1);
+    expect(census.positionSum.y).toBeCloseTo(-15717.6326, 1);
     expect(census.positionSum.z).toBeCloseTo(5.8455, 1);
-    expect(census.positionSquares).toBeCloseTo(10563023.37, 0);
-    expect(census.normalSum.x).toBeCloseTo(-556.0137, 2);
-    expect(census.normalSum.y).toBeCloseTo(33.9240, 2);
+    expect(census.positionSquares).toBeCloseTo(10676660.32, 0);
+    expect(census.normalSum.x).toBeCloseTo(-571.7650, 2);
+    expect(census.normalSum.y).toBeCloseTo(69.5240, 2);
     expect(census.normalSum.z).toBeCloseTo(-0.7645, 2);
-    expect(census.normalMoment).toBeCloseTo(4752.9739, 1);
-    expect(census.signedVolume).toBeCloseTo(-3227.6353, 2);
-    expect(census.area).toBeCloseTo(4684.5241, 2);
+    expect(census.normalMoment).toBeCloseTo(4442.1191, 1);
+    expect(census.signedVolume).toBeCloseTo(-3227.6402, 2);
+    expect(census.area).toBeCloseTo(4684.9509, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {

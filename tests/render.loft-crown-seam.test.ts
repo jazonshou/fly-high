@@ -470,7 +470,12 @@ describe("a loft's crown seam", () => {
       // lining, the post's strip for the two gap strips, the board's top), airliner-glareshield (the lip, lower),
       // airliner-screens and airliner-screen-bezels (hung from it). The other 89 are bit-identical, the plane
       // engineer's post included.
-      airliner: "86dfbb0e",
+      // RE-PINNED for the 747's panel integration, P1a (jazonshou/cockpit-panel-747): the glareshield a rounded deck on the
+      // deck line (8 -> 48 triangles), the board, the screens and the bezels leaned back 17 degrees. Checked mesh by mesh
+      // against c586870 (positions, normals, UVs, indices, world matrix, material, visibility): airliner-glareshield,
+      // airliner-cockpit-interior (the board), airliner-screens and airliner-screen-bezels changed; the other 89 are
+      // bit-identical.
+      airliner: "f5008e22",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

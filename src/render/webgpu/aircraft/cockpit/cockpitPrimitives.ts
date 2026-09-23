@@ -227,6 +227,89 @@ export function sculptSolid(mesh: Mesh, move: (point: Vector3) => Vector3): void
   mesh.refreshBoundingInfo();
 }
 
+/**
+ * A ROUNDED DECK's design: a glareshield whose aft edge is a round on the deck line's sight line, a drop and a 45
+ * degree cove under it to the panel's face, and a hood over the board falling forward (P1a, the Global's first, then
+ * the 747's). Lengths in metres, angles in degrees.
+ */
+export interface RoundedDeckDesign {
+  readonly radius: number;
+  readonly drop: number;
+  /** The cove's run forward, and its fall: 45 degrees. */
+  readonly cove: number;
+  readonly hoodFallDegrees: number;
+  readonly hoodDepth: number;
+  /** Chords round the aft edge, besides the one vertex put on the deck line's tangent. */
+  readonly roundSegments: number;
+}
+
+/** A rounded deck's section in body x and y, and the points the rest of the deck is placed from. */
+export interface RoundedDeckSection {
+  /** The prism's outline, convex, in order round it (`solidPlate` winds it). */
+  readonly outline: readonly { readonly x: number; readonly y: number }[];
+  /** The round's vertices, from the hood's tangent round to the aft face's, the deck line's tangent among them. */
+  readonly round: readonly { readonly x: number; readonly y: number }[];
+  /** The round's centre. */
+  readonly centre: { readonly x: number; readonly y: number };
+  /** Where the deck line's sight line touches the round: the silhouette. */
+  readonly tangent: { readonly x: number; readonly y: number };
+  /** The aft face's foot, where the cove turns under. */
+  readonly coveTop: { readonly x: number; readonly y: number };
+  /** The cove's foot: the panel's face's top edge, and the lowest edge of the deck the pilot sees. */
+  readonly faceTop: { readonly x: number; readonly y: number };
+}
+
+/**
+ * A rounded deck's section from an eye (`forward`, `up`), the aft face's station `aftX` and the deck line (degrees
+ * under the eye). THE ROUND is tangent to the aft face and to the hood's top, and the deck line's sight line is tangent
+ * to it AT A VERTEX, so the silhouette is the deck line exactly: one row of the picture. The cove runs `cove` forward
+ * and `cove` down from the aft face's foot; the hood's top and underside both fall at `hoodFallDegrees`, a plate of
+ * one thickness, so the solid stays convex. `who` names the airframe in what it throws.
+ */
+export function roundedDeckSection(
+  eye: { readonly forward: number; readonly up: number },
+  aftX: number,
+  deckLine: number,
+  g: RoundedDeckDesign,
+  who: string,
+): RoundedDeckSection {
+  const e = eye;
+  const DEGREE = Math.PI / 180;
+  const fall = g.hoodFallDegrees * DEGREE;
+  const sight = deckLine * DEGREE;
+  if (!(deckLine < g.hoodFallDegrees)) {
+    throw new RangeError(`${who}'s hood falls ${g.hoodFallDegrees} degrees, no steeper than the ${deckLine} degree sight line over the deck: its top would show over the round`);
+  }
+  // THE ROUND: its centre `radius` forward of the aft face and `radius` under the sight line (the line through the eye
+  // falling at the deck line, whose upward normal is (sin, cos) of it).
+  const cx = aftX + g.radius;
+  const cy = e.up - (g.radius + Math.sin(sight) * (cx - e.forward)) / Math.cos(sight);
+  const at = (angle: number) => ({ x: cx + g.radius * Math.sin(angle), y: cy + g.radius * Math.cos(angle) });
+  // angles from straight up, forward positive: -90 is the aft face's tangent, +fall the hood's
+  const angles = Array.from({ length: g.roundSegments + 1 }, (_, k) => fall - ((fall + Math.PI / 2) * k) / g.roundSegments);
+  if (sight > -Math.PI / 2 && sight < fall) angles.push(sight);
+  angles.sort((a, b) => b - a);
+  const round = angles.map(at);
+  const coveTop = { x: aftX, y: cy - g.drop };
+  const faceTop = { x: aftX + g.cove, y: coveTop.y - g.cove };
+  // the hood: its top from the round's forward tangent, its underside from the cove's foot, both falling at `fall`
+  const endX = aftX + g.hoodDepth;
+  const hoodTop = round[0]!;
+  const endTop = { x: endX, y: hoodTop.y - (endX - hoodTop.x) * Math.tan(fall) };
+  const endFoot = { x: endX, y: faceTop.y - (endX - faceTop.x) * Math.tan(fall) };
+  if (!(endTop.y - endFoot.y >= 0.001)) {
+    throw new RangeError(`${who}'s hood is ${((endTop.y - endFoot.y) * 1000).toFixed(2)} mm thick: its top meets its underside`);
+  }
+  return {
+    outline: [...(g.drop > 0 ? [coveTop] : []), faceTop, endFoot, endTop, ...round],
+    round,
+    centre: { x: cx, y: cy },
+    tangent: at(sight),
+    coveTop,
+    faceTop,
+  };
+}
+
 /** A flat quad of a `facetMesh`: four corners in order round it, and the way its drawn side faces. */
 export interface FacetQuad {
   readonly corners: readonly [Vector3, Vector3, Vector3, Vector3];

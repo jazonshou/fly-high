@@ -1485,10 +1485,44 @@ capture):
   print): the display is 15 (16 of 16 under fog, drawn), and the bezel, the instrument face (the wells), the
   interior (with the consoles), the glareshield and the marking are 14 (15 under fog). No GPU error in any variant.
 
-**For the 747's turn (noted, not built):** its lip-to-bottom band is only 4.78 degrees with the screens at
-37.8%, so the same deck must cost the screens nothing: the round and the drop at their minimum, and the gap
-0.5 degree. Its bezels need a material of their own: dark, 1.3 to 1.6 times the board by day, with the night
-glow on the rim only. The marking material they use now is shared with the panel's labels.
+## The 747's panel, integrated (P1a)
+
+The 747's board was the same kind of object as the Global's (P0): a vertical slab under a flush lip, with square pale
+bezels (164 against its 54). Its band from the lip to the frame's bottom is only 4.78 degrees, and the top row of
+screens' share of it (37.8%, the K3 Jason chose) is this deck's binding constraint.
+
+**The rounded deck is now shared.** The Global's section builder moved into `cockpitPrimitives` as
+`roundedDeckSection`, verbatim and parameterised. All 94 of the Global's meshes are bit-identical against c586870
+(positions, normals, UVs, indices, world matrix, material, visibility).
+
+**The 747's deck** (`airlinerGlareshieldSection`, `airlinerPanelFace`):
+- **The least deck edge that reads:** a round r 0.005 on the deck line (-18.57, the K3 sill rule's; the tangent a
+  vertex), no drop, and a 3 mm cove. That is 0.538 degree straight ahead, where K3's flush lip face was 1.20. It reads
+  as a lit line over a dark hairline: the honest price of the band.
+- **The hood** falls 21 degrees (steeper than the 18.57 sight line) for 0.10 m. The shell is wide here, so it needs no
+  taper; every vertex is at least 5 cm inside it.
+- **The lean does not bind the share.** The smaller edge raised the screens by 0.41 degree, more than any lean lowers
+  them: the top row keeps 39.1% even at the aimed 24 degrees. So the lean is the most upright that faces the pilot as
+  the Global's does, 17 degrees: 7.5 degrees off the eye at the PFD's centre (the bound is 8), against the upright
+  K3 board's 24.
+- **The gap under the deck's edge is 0.65 degree, not 0.5.** At 0.5 the bezels' top rims (10 mm over their screens,
+  0.67 degree at 0.85 m) stood 0.14 degree into the cove over each screen; at 0.65 they reach its foot and stop
+  there.
+- **The top row keeps 38.1% on the test's grid** (K3's 37.8, which read 38.1 on the same grid). The lower EICAS is
+  still under the frame.
+
+**Tests** (tests/render.cockpit-airliner.test.ts, 32): the silhouette on the deck line; the least edge; the hood
+inside the shell untapered; the lean and the aim, with an upright control; the top row 0.65 degree under the cove's
+foot, square to the leaned face; the bezels reaching the cove's foot and no further; the share on the leaned face,
+nothing lost against K3. The seam digest and the 747's geometry census are re-pinned (+120 vertices and indices, the
+glareshield's 24 to 144). Mesh by mesh against c586870, only the four kit meshes changed.
+
+Eight mutations, all caught: lean 0; the spec's 0.5 degree gap; the Global's round; a hood no steeper than the sight
+line (refused at build); the board or the screens unturned; the hood run out through the shell; the flush lip back.
+
+**Still to come on the 747:** P1b, the bezels framed and recessed on a dark 747 bezel material with the glow on the
+rim alone; the marking material stays for the panel's labels. P1c is skipped if the rays find no wall beside the
+board: in P0 the board runs past both frame edges (az -43 to +65).
 
 ## Not done, and one thing to know
 
