@@ -264,6 +264,9 @@ Two consequences:
   deterministic (seeded per cell in `wildlife/generation.ts`), so the likely
   shape is a capture-only respawn of the population plus a clock reset at the
   time pin — the same place and the same "capture only" rule as this pin.
+  Built as [WILDLIFE_CAPTURE_PIN_2026_09_22.md](WILDLIFE_CAPTURE_PIN_2026_09_22.md),
+  which found that shape incomplete: the simulation's own step count is a
+  third piece of history and is reset too.
 - **Other frame counters.** The frame graph can gate passes on
   `frameIndex % cadence` and `runsEvery(interval)`, and the cloud runtime policy
   keeps its own frame index. Nothing currently uses the frame-graph cadence, and
