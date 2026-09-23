@@ -303,6 +303,103 @@ Geometry, checked mesh by mesh against 0ba7987:
 - changed: the radome, one ring;
 - unchanged: the other 91 meshes, bit-identical.
 
+## Phase 3c, part 1: the nose as wide as the type's, and one surface
+
+**The width.** Half-widths, top view, with the pitot probes (which stand off
+the skin 1.6-2.2 m aft of the tip) median-filtered out and the cabin
+normalised to the model's 1.345 (the top view reads 1.359 there, a 1 %
+scale):
+
+| m aft of the tip | type | before | built |
+|---|---|---|---|
+| 1.3 | 0.851 | 0.73 | 0.851 |
+| 2.0 | 1.10 | 0.92 | 1.10 |
+| 2.5 | 1.201 | 1.02 | 1.201 |
+| 3.0 | 1.272 | 1.11 | 1.272 |
+| 3.5 | 1.322 | 1.19 | 1.315 |
+
+The value at 2.0 m is the least certain: the probes cover 1.6-2.2 m, and the
+bridge across them reads 1.08 linear and 1.12 as a monotone cubic. My first
+reading, 1.15, had the probes in it. The widening starts at the 9.5 ring (5.5 m
+aft), which is unchanged, and runs to the 14.4 ring. The last two rings, 14.7
+and the tip at 15, are the radome's as they were, and the sim's two radome
+contact points at (15, 0.1) and (15, -0.4) still straddle the tip.
+
+**One surface.** The nose was a separate capped radome lofted from 13.1,
+inside the fuselage's capped end at 13.2. `ComputeNormals` averages a ring's
+normals over every face on it, the cap's included, so the fuselage's last ring
+was shaded as though it faced half forward. That is the crease round the nose
+under the windshield in the 3b abeam frame: 34 degrees between the two lofts'
+normals at 13.2, measured. The nose is now the fuselage loft's own rings,
+18 where there were 8. The worst turn between consecutive rings is 7.2
+degrees, at the tip where the nose turns fastest. `bizjet-radome` is gone, and
+with it the cap the cockpit had to hide.
+
+**The height is held.** Each new ring's crown and keel are the old tables' at
+its station. Where the old kinks (11.6 and 13.2) now fall between rings the
+chord cuts the corner, by at most 2.1 cm at the crown and 0.8 cm at the keel.
+
+**What moved, and what did not.** Checked mesh by mesh against d52ccc2:
+- gone: `bizjet-radome`, 207 vertices and 400 triangles;
+- grown: `bizjet-fuselage`, from 394 to 884 vertices;
+- re-cast onto the wider nose, counts unchanged: the flight-deck glazing and
+  the post;
+- `bizjet-cabin-windows`: at most 0.16 mm;
+- unchanged, bit-identical: the other 89 meshes.
+
+Every fuselage vertex to 9.5 m is bit-identical, and every normal to 4.5 m. The
+9.5 ring's normals turned 1.77 degrees, because they average the new span
+forward of it. That is why the cabin row moved at all: its cast points are
+identical, and the first windows' normals interpolate the 9.5 ring's. No loft
+that widens forward of 9.5 can hold those normals.
+
+`tests/render.bizjet-nose.test.ts` holds each claim against the nose as it
+was, built from that build's own tables:
+- the widths, within 3 cm of the type, where the old nose was 0.1 m or more
+  narrower at every station;
+- the crown and keel held;
+- the cabin bit-identical, with a control on the first ring forward;
+- the window row;
+- the tip ring and the contact points;
+- the smooth shading, against the old 34-degree crease.
+
+The 3b glazing tests pass on the new nose. The outer face is now 7.5 mm or
+more out (was 4.5) and the inner face 29.4 mm or more in (was 19.6). The lip
+control is kept, cast onto the pre-3b tables written into the test. It reads
+5.9 mm under.
+
+**The flight deck on the wider nose** (corner table): the windshield's outer
+corner moves out from z 0.67 to 0.80, heights unchanged. From the left-seat
+eye, straight ahead is glass from +0.7 to +18.2 degrees (was -0.5 to +17.2).
+Through the middles of the port panes at the horizon:
+- the windshield, -1.9 to +17.1;
+- the forward side pane, -14.9 to +19.7;
+- the aft side pane, -20.7 to +13.3.
+
+The eye has 0.34 m of skin above it and 0.48 m to the port wall.
+
+**Part 2, the crown, is measured but not built.**
+- **The camera.** It is solved from the port render (p. 29) with a pinhole
+  camera, fitted to the window row at the top view's stations (6.40 + 0.915 k m
+  aft) and to both silhouettes of the cabin cylinder. The fit is 0.82 px RMS:
+  67 m out, 15 degrees below, f 5,516 px. The gold stripe cross-checks it to
+  about 0.1 m along the cabin.
+- **The type's crown through it:**
+
+  | m aft of the tip | 1.0 | 1.4 | 1.8 | 2.2 | 2.6 | 3.0 |
+  |---|---|---|---|---|---|---|
+  | type, y (m) | -0.15 | +0.06 | +0.25 | +0.44 | +0.82 | +0.93 |
+  | below the model's (m) | 0.7 | 0.65 | 0.63 | 0.55 | 0.28 | 0.27 |
+
+  The tip sits near y -0.6, where the model's is -0.15.
+- **Why it is not built yet.** At those heights the windshield would lie
+  entirely below any plausible seated eye. Every constraint on the camera is
+  in the cabin, and the nose is extrapolated from it (a worse-constrained solve
+  moved the tip by 40 px). So the direction is certain (lower, flatter and
+  drooped ahead of the flight deck) and the magnitude is not yet good to 3 cm.
+- **What would pin it.** A second, independent camera (p. 35, from above),
+  and a decision on the tip, whose contact points the sim owns.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own

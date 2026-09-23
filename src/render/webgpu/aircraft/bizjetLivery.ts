@@ -17,7 +17,7 @@ import type { LoftSection } from "./builders";
  * across a whole rib gap. An image on UV1 costs no input and draws to a texel.
  *
  * THE AXES are the lofts': u is the station along the body, `(x + 18.5) /
- * 33.5`, which the fuselage, radome and tailcone already share (`bizjetVisual`
+ * 33.5`, which the fuselage and tailcone already share (`bizjetVisual`
  * re-normalises it over the aeroplane's length); v is the phase round the
  * section -- 0 crown, 0.25 starboard flank, 0.5 keel, 0.75 port flank.
  *
@@ -41,8 +41,28 @@ const CHANNELS = 4;
 // ---------------------------------------------------------------------------
 
 /**
- * The cabin tube. Also what the cabin window line reads (`cabinHalfWidthAt`):
- * a part can only lie in a surface if it can ask where the surface is.
+ * The cabin tube AND THE NOSE, one loft from -13.1 to the tip at 15. Also what
+ * the cabin windows and the flight-deck glass are cast onto: a part can only
+ * lie in a surface if it can ask where the surface is.
+ *
+ * THE NOSE IS ONE SURFACE (phase 3c). It was a separate capped radome from
+ * 13.1, and the fuselage ended at 13.2 on a cap. `ComputeNormals` averages a
+ * ring's normals over the cap's faces too, so the fuselage's last ring was
+ * shaded as though it faced half forward: a crease right round the nose at
+ * 13.2 in every frame, under the windshield. One loft has no seam to crease.
+ *
+ * THE WIDTH IS THE TYPE'S, from 4.5 m aft of the tip forward. Half-widths off
+ * the brochure's top view (p. 31, with the pitot probes at 1.6-2.2 m aft
+ * filtered out and the cabin normalised to 1.345, the top view reading 1.359
+ * there): 0.85 at 1.3 m aft, 0.99 at 1.65, 1.10 at 2.0, 1.20 at 2.5, 1.27 at
+ * 3.0, 1.32 at 3.5. The nose was 0.12-0.23 m narrower. From the 9.5 ring aft
+ * every ring is the cabin's as it was, and the tip's last two rings are the
+ * radome's as they were.
+ *
+ * THE HEIGHT IS HELD: each ring's crown and keel are the old tables' at that
+ * station, so the nose widened without rising or falling (within 2 cm where
+ * the old tables' kinks at 11.6 and 13.2 now fall between rings). Dropping the
+ * crown to the type's is phase 3c's second part.
  */
 export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
@@ -51,21 +71,18 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -2, yRadius: 1.345, zRadius: 1.345 },
   { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
-  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-];
-
-/**
- * The drooped radome, ending at the sim's radome contact points. It starts at
- * 13.1, inside the fuselage, and its 13.2 ring IS the fuselage's last: without
- * it the radome interpolated from 13.1 and stood 3.8 cm inside the fuselage's
- * capped end at the crown, a forward-facing lip right round the nose at 13.2
- * that the windshield crosses (phase 3b; `render.bizjet-flight-deck`).
- */
-export const GLOBAL_RADOME_SECTIONS: readonly LoftSection[] = [
-  { x: 13.1, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-  { x: 14.1, yRadius: 0.62, zRadius: 0.62, yOffset: -0.12 },
+  { x: 10.5, yRadius: 1.2945, zRadius: 1.32, yOffset: 0.0286 },
+  { x: 11, yRadius: 1.2743, zRadius: 1.32, yOffset: 0.0429 },
+  { x: 11.5, yRadius: 1.254, zRadius: 1.315, yOffset: 0.0571 },
+  { x: 12, yRadius: 1.1625, zRadius: 1.272, yOffset: 0.04 },
+  { x: 12.5, yRadius: 1.0531, zRadius: 1.201, yOffset: 0.015 },
+  { x: 13, yRadius: 0.9437, zRadius: 1.1, yOffset: -0.01 },
+  { x: 13.35, yRadius: 0.8533, zRadius: 0.99, yOffset: -0.0367 },
+  { x: 13.7, yRadius: 0.7444, zRadius: 0.851, yOffset: -0.0756 },
+  { x: 14.1, yRadius: 0.62, zRadius: 0.672, yOffset: -0.12 },
+  { x: 14.4, yRadius: 0.48, zRadius: 0.502, yOffset: -0.135 },
+  // The drooped tip, as the radome ended: the sim's two radome contact points
+  // straddle it at y 0.1 and -0.4 (`src/sim/aircraft.ts`).
   { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
   { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
 ];
@@ -78,32 +95,25 @@ export const GLOBAL_TAILCONE_SECTIONS: readonly LoftSection[] = [
   { x: -12.9, yRadius: 1.02, zRadius: 0.98, yOffset: 0.25 },
 ];
 
-/** u = (x - minimumX) / length on all three body lofts: radome tip to tailcone tip. */
+/** u = (x - minimumX) / length on both body lofts: nose tip to tailcone tip. */
 export const GLOBAL_LIVERY_STATION_RANGE = { minimumX: -18.5, length: 33.5 } as const;
 
 /**
  * The table the image is solved on: the tailcone's sections aft of the
- * fuselage's first, the fuselage's, and the radome's forward of the
- * fuselage's last.
+ * fuselage's first, then the fuselage's, which run to the nose tip.
  *
  * NOT EXACT IN ONE SHORT SPAN, and measured rather than assumed. Where a
  * loft's own neighbouring ring is not in this table, the loft interpolates
  * toward a ring this table does not have: the tailcone from -15.4 to its own
  * -12.9 ring (this table reaches the fuselage's -13.1 instead). The sections
- * differ there by at most 5.6 mm, at -13.1. The radome was the second span,
- * interpolating from its 13.1 ring and 2.8 cm in radius inside the table at
- * 13.2 -- where it was NOT hidden, as this said: the fuselage ends there, so
- * the difference was a lip in the skin. Its 13.2 ring is the fuselage's now
- * (phase 3b), and the table is exact from 13.2 forward.
- * `render.bizjet-livery-mesh` measures the drawn line on the built lofts
- * through both spans.
+ * differ there by at most 5.6 mm, at -13.1. The radome was a second such span
+ * until the nose became part of the fuselage's loft (phase 3c): forward of
+ * the cabin the table IS the loft. `render.bizjet-livery-mesh` measures the
+ * drawn line on the built lofts.
  */
 export const GLOBAL_LIVERY_SECTIONS: readonly LoftSection[] = [
   ...GLOBAL_TAILCONE_SECTIONS.filter((section) => section.x < GLOBAL_FUSELAGE_SECTIONS[0]!.x),
   ...GLOBAL_FUSELAGE_SECTIONS,
-  ...GLOBAL_RADOME_SECTIONS.filter(
-    (section) => section.x > GLOBAL_FUSELAGE_SECTIONS[GLOBAL_FUSELAGE_SECTIONS.length - 1]!.x,
-  ),
 ];
 
 // ---------------------------------------------------------------------------

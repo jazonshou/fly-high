@@ -78,7 +78,7 @@ const AIRFRAMES: Record<string, Airframe> = {
       const edge = (points: readonly (readonly [number, number])[]) => points.map(([aft, angle]) => `${aft}/${angle}`).join(" ");
       return `outline (m aft of the tip / deg from the crown) bottom ${edge(outline.bottom)}; top ${edge(outline.top)}`;
     },
-    skin: ["bizjet-fuselage", "bizjet-radome"],
+    skin: ["bizjet-fuselage"],
     inboard: "windshield",
     inboardLabel: "windshield",
   },
