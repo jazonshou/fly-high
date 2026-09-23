@@ -1849,6 +1849,18 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /**
+   * Capture-only: respawns the wildlife from its seed and restarts its clocks
+   * at the harness's per-shot time pin. Without it the birds in a shot are
+   * wherever every EARLIER shot's frames flew them, so identical code puts
+   * them in different places run to run. See `WildlifeSystem.respawnForCapture`.
+   * Production never calls this; mid-flight it would teleport every animal.
+   */
+  pinWildlifeForCapture(): void {
+    if (this.disposed) return;
+    this.wildlife.respawnForCapture();
+  }
+
+  /**
    * Capture-only snapshot of the bounded detail builder. Counters are
    * cumulative so the harness can take two cheap snapshots outside the timed
    * loop instead of sampling diagnostics on every frame and perturbing p95.

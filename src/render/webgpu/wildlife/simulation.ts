@@ -198,6 +198,17 @@ export class WildlifeSimulation {
   private readonly spatialHash = new SpatialHash3D(48);
   private stepIndex = 0;
 
+  /**
+   * CAPTURE ONLY — `WildlifeSystem.respawnForCapture` is the one caller.
+   * `stepIndex` is history in its own right: it chooses which far birds and
+   * ground animals run their AI on a step, and it is the clock of every
+   * bird's wander term, so two systems with identical agents still diverge if
+   * they have taken different numbers of steps.
+   */
+  restartStepCountForCapture(): void {
+    this.stepIndex = 0;
+  }
+
   step(
     agents: readonly WildlifeAgent[],
     context: WildlifeSimulationContext,
