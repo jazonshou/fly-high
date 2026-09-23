@@ -46,13 +46,10 @@ What does not:
 - **the flight deck**: one raked slab and a side slab each side, whose visible
   outlines are wherever they cut the skin; the type has six panes in one band;
 - a **drawing defect**: every cabin pane draws only 0.452 of its 0.539 m, its
-  bottom cut flat at y ~0.175, a loft vertex row (1.345 cos 82.5 deg = 0.1756).
-  A CPU ray cast does not reproduce the cut. It does show the pane 0.1-3.2 mm
-  BEHIND the skin at y 0.18 and 0.48-0.56: the pane's 12-vertex fan chords
-  cross the 48-sided skin's facets between vertices, which the vertex-based
-  seating table in `GLOBAL_WINDOW_SEATING_2026_09_20.md` ("every vertex within
-  9 mm") cannot see. The cut's cause is open; the next instrument is a frame
-  with the skin hidden.
+  bottom cut flat at y ~0.19. A CPU ray cast does not reproduce the cut, and
+  first suggested the pane's fan chords crossing the skin's facets. That was
+  wrong: the cause is that the pane the GPU draws is not the one any CPU
+  instrument reads (see "The flat cut" below).
 
 The floor: not published. The published 1.88 m cabin height in a 2.69 m section
 puts it at or below y -0.66, so the model's sill (0.11) is 0.77 m above it -- a
@@ -118,10 +115,40 @@ Colours: the gold (197, 158, 85) and grey (171, 167, 165) are sampled off the to
 view, lit from above; the base is the body paint's 0xf2f4f3, so the skin meets
 the wing without a step. All three are to tune from a frame.
 
-**Owed from a GPU window:** Gate A and the variant rig on this change, expected
-`bizjet-body` and `bizjet-skin` at 14 in the rig and 15 live, reflection and fog
-16 with no errors; the 747 finding's live-count lines for `bizjet-body` follow
-from that run. Then before/after frames at the phase-1 poses.
+**Measured on the GPU (2026-09-22, 20:56, on the commit that made this
+change):** Gate A's rig reads `bizjet-body` 14 (its worst mesh is now the belly
+fairing) and `bizjet-skin` 14, headroom 2 each. The variant rig, with the
+container: day, night and cockpit 15 and 15; reflection and fog 16 and 16, with
+no device error and the target drawn (peak luminance 254, where both passes read
+0 with 5 and 12 errors before). With `KNOWN_OVER_BUDGET` empty the test's
+both-ways check passes. Frames at the four phase-1 poses show the smears gone,
+the skin white, the windows reading dark on it, and the gold rising aft.
+
+## The flat cut: the pane's bow never reached the GPU
+
+The frame with the fuselage hidden settles it. With the skin, window 6 draws
+from y 0.640 down to 0.199; without it, from 0.641 down to 0.127 -- the whole
+pane. So the skin hides the pane's lower part. Every CPU instrument says it
+should not: the ray cast has the pane 0.5-6.6 mm proud there, and also has it
+1-3 mm BEHIND the skin at y 0.48-0.56, where the GPU draws it.
+
+The pattern is a FLAT pane, and the mechanism is a Babylon trap. The bow is
+written by mutating the array `getVerticesData` returns and then calling
+`updateVerticesData`. On a buffer created non-updatable -- `CreateCylinder`'s
+default -- `Buffer.update` calls `create`, which does nothing once the GPU buffer
+exists, and says nothing. But `getVerticesData` hands back the buffer's own
+array, so the in-place mutation changed the CPU copy every instrument reads,
+while the GPU kept the flat cylinder uploaded at construction. That pane's outer
+face sits at seat + 35 mm, and it crosses the skin at y 0.19: exactly the cut.
+(`createNormals` goes through `setVerticesData`, which replaces the buffer, so
+the GPU did get the bowed NORMALS.) `LightPoints.ts` met the same trap once, as a
+dark airfield. The seating table in `GLOBAL_WINDOW_SEATING_2026_09_20.md` read
+the same CPU copy, so its "every vertex within 9 mm" was never the GPU's.
+
+Not fixed here: phase 3a replaces the pane. Its construction has to reach the
+GPU through a buffer written once (or updatable), and its standing test has to
+catch an `updateVerticesData` on a non-updatable buffer, since no Node read of
+the mesh can.
 
 ## Stage 2b, and what it is not
 
