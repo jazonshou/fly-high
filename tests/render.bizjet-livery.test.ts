@@ -23,6 +23,7 @@ import {
   globalHouseScheme,
   heightOfPhase,
   stripeCentreAt,
+  stripePresenceAt,
   type GlobalLiveryScheme,
   type GlobalLiveryStripe,
 } from "../src/render/webgpu/aircraft/bizjetLivery";
@@ -117,10 +118,10 @@ describe("the Global's body fits the fragment stage", () => {
 });
 
 describe("the skin", () => {
-  it("is the fuselage, radome and tailcone, wearing the livery on UV1 with u clamped and v wrapped", () => {
+  it("is the fuselage (the nose included) and the tailcone, wearing the livery on UV1 with u clamped and v wrapped", () => {
     const scene = buildGlobal();
     const wearers = drawn(scene).filter((m) => m.material?.name === "bizjet-skin").map((m) => m.name).sort();
-    expect(wearers).toEqual(["bizjet-fuselage", "bizjet-radome", "bizjet-tailcone"]);
+    expect(wearers).toEqual(["bizjet-fuselage", "bizjet-tailcone"]);
     const skin = scene.getMaterialByName("bizjet-skin") as PBRMaterial;
     const livery = skin.albedoTexture as RawTexture;
     expect(livery).toBeInstanceOf(RawTexture);
@@ -209,6 +210,18 @@ describe("the livery image", () => {
     const flank = texel(image, u(-6), phaseOfHeight(GLOBAL_LIVERY_SECTIONS, -6, 0.6)!);
     expect(distance(keel, GLOBAL_BELLY_GREY)).toBeLessThan(2);
     expect(distance(flank, GLOBAL_BASE_WHITE)).toBeLessThan(2);
+  });
+
+  it("runs the gold out ahead of the drooped tip instead of painting the tip cone's flanks", () => {
+    // The tip ring is 0.2 m tall (y -0.55..-0.35), about the 2x gold's own 0.18, so a line held
+    // full to 14.6 painted most of the last 0.3 m of the cone: a gold chin from the front. It
+    // fades from 14.4 now, and is at 0.43 at the 14.7 ring.
+    const gold = GLOBAL_HOUSE_SCHEME.stripes.find((stripe) => stripe.name === "gold")!;
+    expect(stripePresenceAt(gold, 14.4)).toBe(1);
+    expect(stripePresenceAt(gold, 14.7)).toBeLessThan(0.5);
+    expect(stripePresenceAt(gold, 14.95)).toBe(0);
+    // CONTROL: the extent as it was reads 0.80 at the same ring.
+    expect(stripePresenceAt({ ...gold, forwardFullX: 14.6 }, 14.7)).toBeGreaterThan(0.75);
   });
 
   it("keeps the navy scheme a parameter: the same generator paints the navy band on the window row", () => {
@@ -302,7 +315,7 @@ describe("the house cheatline on the built lofts", () => {
    */
   function outerSkin(scene: Scene, flank: 1 | -1) {
     const triangles: { p: Vector3[]; uv: number[][] }[] = [];
-    for (const name of ["bizjet-fuselage", "bizjet-radome", "bizjet-tailcone"]) {
+    for (const name of ["bizjet-fuselage", "bizjet-tailcone"]) {
       const mesh = scene.getMeshByName(name) as Mesh;
       mesh.computeWorldMatrix(true);
       const world = mesh.getWorldMatrix();
@@ -349,11 +362,11 @@ describe("the house cheatline on the built lofts", () => {
   }
 
   const image = buildGlobalLiveryImage(GLOBAL_HOUSE_SCHEME);
-  /** A texel is 3.3 cm round the cabin (less round the radome); the scan steps 4 mm. */
+  /** A texel is 3.3 cm round the cabin (less round the nose); the scan steps 4 mm. */
   const TOLERANCE_M = 0.04;
-  // The row (window 2 .. window 11), forward of it, the radome from the
-  // fuselage's end to its 14.1 ring (the table's inexact span until the radome
-  // took the fuselage's 13.2 ring, phase 3b), and the gold's full extent aft.
+  // The row (window 2 .. window 11), forward of it, the nose to 14.2 (the
+  // radome's own loft until phase 3c, and the table's inexact span until 3b),
+  // and the gold's full extent aft.
   const STATIONS = [-0.4, 0.52, 2.36, 4.2, 6.04, 7.88, 9, 11, 12.9, 13.4, 13.8, 14.2];
 
   for (const flank of [1, -1] as const) {

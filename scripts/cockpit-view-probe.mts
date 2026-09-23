@@ -150,11 +150,11 @@ const NOTES: Record<AircraftKind, KindNotes> = {
     // "captain" at +Z (starboard); a captain flies from the left seat, so the
     // port one is the pilot's regardless of what it is called.
     seat: /^bizjet-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.52",
-    sill: /flight-deck-window$/, sillEdge: "bottom",
-    panel: /^bizjet-instrument-panel$/, glare: /^bizjet-glareshield$/,
-    // The panel is one mesh with its hood now (a board and a plate), so its
-    // bounding-box centre is not inside solid; the overhead is a single closed box.
-    control: /^bizjet-overhead$/,
+    // The six panes are ONE mesh; its box's bottom is the lowest pane's.
+    sill: /^bizjet-flight-deck-glazing$/, sillEdge: "bottom",
+    // The panel board and the window frame's lining are one cockpit-only mesh, as the 747's are.
+    panel: /^bizjet-cockpit-interior$/, glare: /^bizjet-glareshield$/,
+    control: /^port-navigation-light$/,
   },
   airliner: {
     seat: /^airliner-first-officer-seat$/, seatNote: "port seat (named first-officer), z -0.72",

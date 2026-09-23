@@ -16,13 +16,13 @@
  * round the section from the crown), the angle being asin(z / half-width) at
  * that station. docs/findings/GLOBAL_LIVERY.md, "Phase 3b", has the table.
  *
- * WHY STATION AND ANGLE, not heights. The model's nose is not the type's: the
- * top view has it 0.12-0.23 m narrower from 1.3 to 3.5 m aft of the tip, and
- * the port render has its crown 0.2-0.27 m higher above the stripe where the
- * windshield sits. Heights copied from the type would float off or sink into
- * this nose. The same station and the same angle round the section put each
- * corner in the same place ON the nose, whatever the nose is, so a re-lofted
- * nose re-casts the glass without a new table.
+ * WHY STATION AND ANGLE, not heights. The model's nose was not the type's:
+ * 0.12-0.23 m narrower from 1.3 to 3.5 m aft of the tip (phase 3c widened it
+ * to the top view's), and taller where the windshield sits. Heights copied
+ * from the type would float off or sink into a nose that is not the type's.
+ * The same station and the same angle round the section put each corner in
+ * the same place ON the nose, whatever the nose is, so a re-lofted nose
+ * re-casts the glass without a new table (as phase 3c's did).
  *
  * HOW IT IS BUILT. As the 747's (`airlinerGlazing.ts`): every grid point is a
  * sightline from a reference on the centreline, cast onto the skin's own
@@ -37,13 +37,13 @@
 
 import type { GlazingPane, Point3 } from "./airlinerGlazing";
 import type { LoftSection } from "./builders";
-import { GLOBAL_FUSELAGE_SECTIONS, GLOBAL_RADOME_SECTIONS } from "./bizjetLivery";
+import { GLOBAL_FUSELAGE_SECTIONS } from "./bizjetLivery";
 
 /** The azimuth reference: on the centreline at the pilots' station and eye height (`cockpitEye` 11.90 / 0.78). */
 export const GLOBAL_FLIGHT_DECK_REFERENCE: Point3 = Object.freeze({ x: 11.9, y: 0.78, z: 0 });
 
-/** The radome's tip, which "aft of the nose tip" is measured from. */
-export const GLOBAL_NOSE_TIP_X = GLOBAL_RADOME_SECTIONS[GLOBAL_RADOME_SECTIONS.length - 1]!.x;
+/** The nose tip, which "aft of the nose tip" is measured from: the fuselage loft's last ring. */
+export const GLOBAL_NOSE_TIP_X = GLOBAL_FUSELAGE_SECTIONS[GLOBAL_FUSELAGE_SECTIONS.length - 1]!.x;
 
 /** A point of the outline: metres aft of the nose tip, degrees round the section from the crown. */
 export type BodyPoint = readonly [aft: number, angle: number];
@@ -133,21 +133,18 @@ function interpolate(sections: readonly LoftSection[], x: number): Ellipse {
 }
 
 /**
- * The OUTER skin's section at a station: the radome's own rings forward of the
- * fuselage's last ring (13.2), the fuselage's aft of it. Between 13.1 and 13.2
- * the radome runs inside the fuselage, which is the skin there. Linear between
- * rings, as the loft's facets are. Every Global ring is a plain ellipse; a
- * squared or crown-tapered ring would need the loft's full formula, so one
- * fails here rather than casting to the wrong place.
+ * The skin's section at a station: the fuselage loft's, which runs to the
+ * nose tip. Linear between rings, as the loft's facets are. Every Global ring
+ * is a plain ellipse; a squared or crown-tapered ring would need the loft's
+ * full formula, so one fails here rather than casting to the wrong place.
  */
 export function globalSkinSectionAt(x: number): Ellipse {
-  for (const section of [...GLOBAL_FUSELAGE_SECTIONS, ...GLOBAL_RADOME_SECTIONS]) {
+  for (const section of GLOBAL_FUSELAGE_SECTIONS) {
     if ((section.squareness ?? 2) !== 2 || section.crownZRadius !== undefined || section.zOffset !== undefined) {
       throw new RangeError(`the Global's glazing assumes elliptical rings; the ring at x ${section.x} is not one`);
     }
   }
-  const fuselageEnd = GLOBAL_FUSELAGE_SECTIONS[GLOBAL_FUSELAGE_SECTIONS.length - 1]!.x;
-  return interpolate(x > fuselageEnd ? GLOBAL_RADOME_SECTIONS : GLOBAL_FUSELAGE_SECTIONS, x);
+  return interpolate(GLOBAL_FUSELAGE_SECTIONS, x);
 }
 
 /** The loft's point at a station and an angle round the section; `side` +1 starboard (+z). */

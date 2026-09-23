@@ -26,7 +26,6 @@ import {
   GLOBAL_FUSELAGE_SECTIONS,
   GLOBAL_HOUSE_SCHEME,
   GLOBAL_LIVERY_STATION_RANGE,
-  GLOBAL_RADOME_SECTIONS,
   GLOBAL_TAILCONE_SECTIONS,
   buildGlobalLiveryMips,
   createGlobalLiveryTexture,
@@ -41,6 +40,7 @@ import {
   globalCentrePostPane,
   globalGlazingPane,
 } from "./bizjetGlazing";
+import { globalSeatPlacement } from "./bizjetSeats";
 import {
   CABIN_PANE_DEPTH,
   CABIN_PANE_PROUD,
@@ -415,7 +415,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
   } as const;
   const body = build.paintMaterial("bizjet-body", bodyRecipe);
   /*
-   * THE SKIN: the fuselage, radome and tailcone, wearing the livery image on
+   * THE SKIN: the fuselage (the nose included) and the tailcone, wearing the livery image on
    * UV1 (`bizjetLivery.ts` for what it draws and why it is an image).
    *
    * Its RELIEF is the body recipe with every feature that belongs to a panel
@@ -500,8 +500,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
     emissive: 0xffe6a8, emissiveIntensity: 2.6,
   });
 
-  // 33.5 m from radome to tailcone, in three lofts: the constant-section tube,
-  // the upswept tailcone and the drooped radome. Outside diameter 2.69 m —
+  // 33.5 m from nose tip to tailcone, in two lofts: the tube with its nose
+  // (one surface, `GLOBAL_FUSELAGE_SECTIONS`) and the upswept tailcone. Outside diameter 2.69 m —
   // the Global Express section, carried over unchanged, and the widest cabin
   // in the class. The centreline is body y = 0, which puts the belly at -1.345
   // and, with the main wheels contacting at -2.7, gives the ground clearance
@@ -525,8 +525,10 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // The nose DROOPS: the sim's two radome contact points straddle y = -0.15,
   // not y = 0. That is the real shape — the flight deck sits on top of a
   // radome whose axis falls away from the cabin centreline — and it is most of
-  // what stops a business jet nose reading as a fighter's.
-  const radome = build.loft("bizjet-radome", GLOBAL_RADOME_SECTIONS, 40, skin, root);
+  // what stops a business jet nose reading as a fighter's. It is the same loft
+  // as the cabin (phase 3c): a separate radome met the fuselage's capped end
+  // at 13.2, and the cap's faces shaded the fuselage's last ring as though it
+  // faced half forward, a crease round the nose under the windshield.
   // Upswept, ending at (-18.5, +0.62) where the sim puts its tailcone contact
   // point. The upsweep is what gives a long aeroplane its rotation angle
   // without dragging the tail, and on this type it also carries the APU.
@@ -555,14 +557,14 @@ export function createBizJet(scene: Scene): AircraftVisual {
     root,
   );
 
-  // ONE station coordinate for the whole body, so the fuselage, the radome
-  // and the tailcone stop being three separate 0..1 tiles meeting at two
-  // visible discontinuities. The loft builder normalises u over each mesh's
+  // ONE station coordinate for the whole body, so the fuselage and the
+  // tailcone stop being separate 0..1 tiles meeting at a visible
+  // discontinuity. The loft builder normalises u over each mesh's
   // OWN length; re-normalising over the aeroplane's 33.5 m is what lets one
   // livery image run unbroken nose to tail: a feature drawn at one u is at one
   // station on all three lofts.
   const { minimumX: BODY_MIN_X, length: BODY_LENGTH } = GLOBAL_LIVERY_STATION_RANGE;
-  for (const loft of [fuselage, radome, tailcone]) {
+  for (const loft of [fuselage, tailcone]) {
     const positions = loft.getVerticesData(VertexBuffer.PositionKind)!;
     const uvs = loft.getVerticesData(VertexBuffer.UVKind)!;
     for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
@@ -1267,10 +1269,11 @@ export function createBizJet(scene: Scene): AircraftVisual {
    * 71 % see-through, and what is behind a pane laid on the skin is the white
    * skin, so it read as a pale tint where the type reads black with the sky in
    * it. It never mattered from the seat, where the panes are hidden (below).
-   * Merged into one mesh; the post is its own, because the cockpit camera
-   * draws it. No shadow: a centimetre of glass has nothing to cast.
+   * Merged into one mesh; the post is its own. Both are hidden from the seat,
+   * where the kit lines them from inside. No shadow: a centimetre of glass has
+   * nothing to cast.
    */
-  const flightDeckCaster = new SkinCaster([fuselage, radome].map((mesh) => ({
+  const flightDeckCaster = new SkinCaster([fuselage].map((mesh) => ({
     positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
     indices: mesh.getIndices()!,
     normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
@@ -1314,42 +1317,29 @@ export function createBizJet(scene: Scene): AircraftVisual {
   );
   centrePost.metadata = { ...centrePost.metadata, castsShadow: false };
 
-  // The seats stand 0.05 m aft of the pilot's eye in x (`catalogue.cockpitEye`,
-  // forward 11.90): seat centre 11.85, headrest 11.57. They stood at 11.72 and
-  // 11.44 when the eye was at 11.6, and moved 0.13 m with it.
+  // THE CREW SEATS, placed from the pilots' eye (`bizjetSeats.ts`): the cushion
+  // 0.80 m under it, the back to the shoulders, the headrest behind the head. They
+  // were a tilted box with its top at about 0.60 at fixed coordinates, which a
+  // seated eye at 0.55 would have had over it.
+  const seating = globalSeatPlacement();
   for (const side of [1, -1] as const) {
-    const seat = build.box(
-      side > 0 ? "bizjet-captain-seat" : "bizjet-first-officer-seat",
-      0.56,
-      0.72,
-      0.52,
-      interior,
-      root,
-    );
-    seat.position.set(11.85, 0.24, side * 0.52);
-    seat.rotation.z = -0.09;
-    seat.metadata = { ...seat.metadata, cockpitInterior: true, castsShadow: false };
-    const headrest = build.box(
-      side > 0 ? "bizjet-captain-headrest" : "bizjet-first-officer-headrest",
-      0.24,
-      0.3,
-      0.4,
-      interior,
-      root,
-    );
-    headrest.position.set(11.57, 0.68, side * 0.52);
-    headrest.metadata = { ...headrest.metadata, cockpitInterior: true, castsShadow: false };
+    const name = side > 0 ? "bizjet-captain" : "bizjet-first-officer";
+    for (const [part, box] of [["seat", seating.base], ["seat-back", seating.back], ["headrest", seating.headrest]] as const) {
+      const mesh = build.box(`${name}-${part}`, box.length, box.height, box.width, interior, root);
+      mesh.position.set(box.x, box.y, side * seating.z);
+      mesh.metadata = { ...mesh.metadata, cockpitInterior: true, castsShadow: false };
+    }
   }
-  // The panel, its hood, the four flat screens, the posts, the ceiling and the
-  // side walls are COCKPIT-ONLY parts, built to angles from the pilot's left-seat
-  // eye in `cockpit/bizjetCockpit.ts`. `configureCockpitOnlyParts` makes them
-  // invisible until cockpit view is entered and never a shadow caster.
+  // The window frame's lining, the panel, its lip and the four flat screens are
+  // COCKPIT-ONLY parts, built in `cockpit/bizjetCockpit.ts` from the pilot's
+  // left-seat eye, the lining cast with the glass's own caster so its edges are
+  // the panes'. `configureCockpitOnlyParts` makes them invisible until cockpit
+  // view is entered and never a shadow caster.
   const cockpit = buildBizjetCockpit(build, root, {
     interior,
-    dark,
     instrumentFace,
     instrumentMarking,
-  });
+  }, flightDeckCaster);
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
   // The displays redraw only while cockpit view is on: outside it every cockpit part
@@ -1600,21 +1590,23 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // starboard spool is the one it names; both are driven from the same
     // simulation-time phase below, so they can never be seen out of step.
     propeller: fanSpools[0]!,
-    // THE GLASS THE PILOT SITS BEHIND, and the RADOME. The six flight-deck
-    // panes are opaque from inside, as the glass boxes before them were (they
-    // drew as flat opaque slabs). The radome is a
-    // separate capped loft whose rear cap, at x 13.1, faces the pilot: with the
-    // radome visible it is a black disc across the middle and right of the
-    // windscreen (317 of the 2,800 cells of the probe's frame), and the only face
-    // of the radome the seat can ever see, so it goes.
+    // THE GLASS THE PILOT SITS BEHIND. The six flight-deck panes are opaque
+    // from inside, as the glass boxes before them were (they drew as flat
+    // opaque slabs). The radome used to be here too: a separate capped loft
+    // whose rear cap faced the pilot as a black disc across the windscreen.
+    // The nose is the fuselage's own loft now (phase 3c), with no cap inside it.
     //
-    // The fuselage and the centre post are NOT here: the eye is inside the
-    // fuselage shell (0.31 m of skin above it, 0.37 m to the port wall) and
-    // back-face culling hides the shell from inside, so it draws nothing of
-    // itself, while the centre post is what a windscreen's framing is. What
-    // replaces the hidden glass's framing is built as cockpit-only parts: see
-    // `buildBizjetCockpit`.
-    cockpitParts: [flightDeckGlass, radome],
+    // The CENTRE POST is here too: it is cast onto the skin 12 mm proud and
+    // 30 mm deep, and from the seat that is a slab end-on across the
+    // windscreen. The kit lines it from inside on the same grid, as the 747's
+    // does (`buildBizjetCockpit`).
+    //
+    // The fuselage is NOT here: the eye is inside the fuselage shell (0.34 m
+    // of skin above it, 0.48 m to the port wall since phase 3c widened the
+    // nose) and back-face culling hides the shell from inside, so it draws
+    // nothing of itself. What replaces the hidden glass's framing is built as
+    // cockpit-only parts: see `buildBizjetCockpit`.
+    cockpitParts: [flightDeckGlass, centrePost],
     cockpitOnlyParts,
     wingSurfaces,
     // Starboard first, because the side loop runs +1 first and

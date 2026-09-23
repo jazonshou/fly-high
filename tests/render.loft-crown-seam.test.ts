@@ -332,7 +332,47 @@ describe("a loft's crown seam", () => {
       // out a 3.8 cm lip the windshield crosses (166 -> 207 vertices, 320 -> 400 triangles).
       // Checked mesh by mesh against 0ba7987, positions, normals, UVs, indices, world matrix,
       // material and visibility: the Global's other 91 meshes are bit-identical.
-      bizjet: "9d9a8525",
+      // RE-PINNED for the Global's nose (phase 3c, part 1): widened to the type's half-widths and
+      // lofted as ONE surface with the cabin. `bizjet-radome` (207 vertices, 400 triangles) is GONE,
+      // its rings now the fuselage's; `bizjet-fuselage` goes from 8 rings to 18 (394 -> 884 vertices);
+      // the flight-deck glazing and post re-cast onto the wider nose (counts unchanged); and
+      // `bizjet-cabin-windows` moves by at most 0.16 mm, the first windows' normals interpolating the
+      // 9.5 ring's, which average the new span forward of it. Checked mesh by mesh against d52ccc2,
+      // positions, normals, UVs, indices, world matrix, material and visibility: the other 89 meshes
+      // are bit-identical, and so is every fuselage vertex to 9.5 m (render.bizjet-nose).
+      // RE-PINNED for the Global's nose, phase 3c part 2: the crown lowered ahead of the flight deck
+      // (0.45 of the camera-solved drop, the keel and the widths held) and two rings added at 11.75
+      // and 12.25 for the brow: `bizjet-fuselage` 884 -> 982 vertices; the flight-deck glazing and
+      // post re-cast onto it (counts unchanged); `bizjet-cabin-windows` moves within render.bizjet-nose's
+      // 0.2 mm (the 9.5 ring's normals average the span forward of it). Checked mesh by mesh against
+      // c252859: the other 89 meshes are bit-identical.
+      // RE-PINNED for the Global's crew seats (phase 3c, part 2): placed from catalogue.cockpitEye
+      // (bizjetSeats.ts), the cushion 0.80 m under the eye. The two seats are rebuilt from the floor to
+      // the cushion, the headrests move, and two seat backs are NEW (24 vertices each). Checked mesh by
+      // mesh against b23d9a0: the other 89 meshes are bit-identical.
+      // RE-PINNED for the Global's nose, phase 3c part 3: the crown to 0.9 of the camera fit and the tip
+      // drooped to the gold line (-0.45), the keel drooping with it forward of 1.8 m aft; ring counts
+      // unchanged. The flight-deck glazing and post re-cast onto it, `bizjet-cabin-windows` moves within
+      // render.bizjet-nose's 0.2 mm. Checked mesh by mesh against 99ab242: the other 91 meshes, the
+      // seats among them, are bit-identical.
+      // RE-PINNED for the Global's nose, phase 3c part 4 (d): the crown under a filleted brow, 0.735 at
+      // the post's head, and straight from the post's foot to a tip dropped to -0.55; `bizjet-fuselage`
+      // 20 rings -> 28 (982 -> 1374 vertices). The flight-deck glazing and post re-cast onto it (counts
+      // unchanged), `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh
+      // against 3d6d97c: the other 91 meshes are bit-identical.
+      // RE-PINNED for the Global's nose, phase 3c part 5: the crown on the p. 29 render's corrected
+      // silhouette (the sky edge), under it at the foot for the aim point on final and up to 0.09 over
+      // it at the brow; ring count unchanged. The flight-deck glazing and post re-cast onto it,
+      // `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh against
+      // 3da1899: the other 91 meshes are bit-identical.
+      // RE-PINNED for the Global's cockpit kit, re-solved on the six-pane band (jazonshou/cockpit-bizjet-kit2):
+      // the window frame is a lining cast from R onto the skin round the panes, with a sill cap along the side
+      // panes' bottom edges, merged with the panel board as `bizjet-cockpit-interior` (NEW, 4816 vertices); the
+      // old board, both windscreen posts, the overhead and the side walls are GONE; the lip
+      // (`bizjet-glareshield`), the screens and the bezels move to the new eye and deck line (10.88); and the six
+      // seat meshes follow the eye to 0.55 (bizjetSeats.ts). Checked mesh by mesh against eeb1606 (positions,
+      // normals, UVs, indices, world matrix, material, visibility): the other 81 meshes are bit-identical.
+      bizjet: "4b02292c",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

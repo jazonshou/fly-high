@@ -28,8 +28,7 @@ import {
   outlinePoint,
   type GlobalPaneOutline,
 } from "../src/render/webgpu/aircraft/bizjetGlazing";
-import { GLOBAL_RADOME_SECTIONS } from "../src/render/webgpu/aircraft/bizjetLivery";
-import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
+import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 
 /**
  * The Global's flight-deck glass, as BUILT: the type's six panes, laid out on
@@ -84,7 +83,7 @@ beforeAll(() => {
   scene.useRightHandedSystem = true;
   visual = createWebGpuAircraft(scene, "bizjet");
   spy.mockRestore();
-  const skin = ["bizjet-fuselage", "bizjet-radome"].map((name) => scene.getMeshByName(name) as Mesh);
+  const skin = ["bizjet-fuselage"].map((name) => scene.getMeshByName(name) as Mesh);
   for (const mesh of skin) expect(mesh.getWorldMatrix().isIdentity(), `${mesh.name}'s vertices are not body metres`).toBe(true);
   caster = new SkinCaster(skin.map(soup));
 });
@@ -251,9 +250,10 @@ describe("the Global's flight-deck glass", () => {
       }
     }
     // The outline is a point on the loft's smooth section; the cast lands on the facet under it,
-    // up to 2 mm inside at 40 segments round, which moves it along the sightline. Measured
-    // 5.7 mm and 0.11 degrees at worst.
-    expect(aft).toBeLessThan(0.006);
+    // up to 2 mm inside at 48 segments round, which moves it along the sightline, and the
+    // steeper the skin to the sightline the further. Measured 18.2 mm and 0.28 degrees at worst on
+    // part 3's nose (10.8 and 0.15 on part 2's, 5.0 and 0.13 on part 1's, 5.7 and 0.11 before 3c).
+    expect(aft).toBeLessThan(0.025);
     expect(angle).toBeLessThan(0.5);
 
     // CONTROL: the windshield cast from an outline 0.1 m further aft and 5 degrees further round
@@ -272,24 +272,37 @@ describe("the Global's flight-deck glass", () => {
   it("keeps the outer face outside the skin and the inner face inside it, at every cell centre", () => {
     // Along the skin's normal, from a ray cast from R through each cell's centre. The design is
     // 12 mm out and 30 mm in; the chords between grid points cross the nose's facet creases.
-    // Measured 4.5 mm out and 19.6 mm in at worst.
+    // Measured 4.7 mm out and 19.2 mm in at worst on part 5's nose, whose straight nose ends at 1.6 m
+    // aft so the post's foot lies on the curve (ended at the foot, 13.5 mm in); 7.0 and 19.4 on part
+    // 4 (d)'s filleted brow (as a single knee, 0.4 mm INSIDE); 6.2 and 19.8 on part 3's, 6.6 and 19.5
+    // on part 2's, 7.5 and 29.4 on part 1's, 4.5 and 19.6 before phase 3c.
     const { outer, inner } = clearances(panels, caster);
     expect(outer).toBeGreaterThan(0.003);
     expect(inner).toBeLessThan(-0.015);
 
-    // CONTROL, and the reason the radome has a ring at 13.2: without it the radome ran from its
-    // 13.1 ring and stood 3.8 cm inside the fuselage's capped end at the crown. The windshield
-    // crosses 13.2, and cast onto that skin its outer face goes UNDER the lip.
+    // CONTROL, and one reason the nose is one loft: the nose as it was before phase 3b, a
+    // fuselage ending on a cap at 13.2 and a radome running from its own 13.1 ring, 3.8 cm inside
+    // the fuselage's end at the crown. The windshield crosses 13.2, and cast onto that skin its
+    // outer face goes UNDER the lip. The two tables are that build's, literally.
     const engine = new NullEngine();
     const scene2 = new Scene(engine);
-    const oldRadome = new AircraftBuildContext(scene2).loft(
-      "old-radome",
-      GLOBAL_RADOME_SECTIONS.filter((section) => section.x !== 13.2),
-      40,
-      new StandardMaterial("m", scene2),
-      new TransformNode("r", scene2),
-    );
-    const withLip = new SkinCaster([soup(scene.getMeshByName("bizjet-fuselage") as Mesh), soup(oldRadome)]);
+    const fuselageBefore: LoftSection[] = [
+      { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
+      { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
+      { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
+      { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
+    ];
+    const radomeBefore: LoftSection[] = [
+      { x: 13.1, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
+      { x: 14.1, yRadius: 0.62, zRadius: 0.62, yOffset: -0.12 },
+      { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
+      { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
+    ];
+    const lofts = new AircraftBuildContext(scene2);
+    const withLip = new SkinCaster([
+      soup(lofts.loft("old-fuselage", fuselageBefore, 48, new StandardMaterial("f", scene2), new TransformNode("f", scene2))),
+      soup(lofts.loft("old-radome", radomeBefore, 40, new StandardMaterial("r", scene2), new TransformNode("r", scene2))),
+    ]);
     const build2 = new AircraftBuildContext(scene2);
     const oldPanels = ([
       ["old-starboard-windshield", globalGlazingPane(GLOBAL_FLIGHT_DECK_OUTLINES[0]!), PANE_GRID, 1],
@@ -305,9 +318,9 @@ describe("the Global's flight-deck glass", () => {
         indices: Array.from(mesh.getIndices()!),
       };
     });
-    // Measured 5.2 mm under on either windshield and 1.4 mm under on the post. (The glass as
-    // first built on that skin read 15.9 mm under: its sightlines were aimed through the old
-    // section table, and the control aims through the new one.)
+    // Measured 174 mm under. The control aims its sightlines through TODAY's section table, so the
+    // number moves with the nose: 33 mm under on part 2's, 5.9 on part 1's, and 15.9 for the
+    // glass first built on that skin, aimed through that build's own table.
     const before = clearances(oldPanels, withLip);
     expect(before.outer).toBeLessThan(-0.004);
     scene2.dispose();
@@ -384,15 +397,17 @@ describe("the Global's flight-deck glass", () => {
     // over the band the glass covers.
     let skin = 0;
     for (let az = 0; az <= 105; az += 5) {
-      for (let el = -12; el <= 12; el += 3) {
+      for (let el = -30; el <= 15; el += 3) {
         const s = caster.exit(R, sightline(az, el, 1))!.point;
         const p = caster.exit(R, sightline(az, el, -1))!.point;
         skin = Math.max(skin, Math.abs(s.x - p.x), Math.abs(s.y - p.y), Math.abs(s.z + p.z));
       }
     }
-    // Measured 1.5 mm both, the glass's worst 0.02 mm over the skin's (sampled coarser).
+    // The skin is sampled over the band the glass covers from R, which on part 3's lowered nose runs
+    // down to el -30. Measured 7.1 mm on the glass and 7.8 on the skin (3.8 and 4.1 on part 2's
+    // nose, 2.1 and 1.9 on part 1's).
     expect(skin, "the skin became symmetric: tighten the glass bound").toBeGreaterThan(0.001);
-    expect(glass).toBeLessThan(0.003);
+    expect(glass).toBeLessThan(0.009);
   });
 
   it("runs the top edge as one line under the crown: from the post, back and down round the section to the aft edge", () => {

@@ -17,7 +17,7 @@ import type { LoftSection } from "./builders";
  * across a whole rib gap. An image on UV1 costs no input and draws to a texel.
  *
  * THE AXES are the lofts': u is the station along the body, `(x + 18.5) /
- * 33.5`, which the fuselage, radome and tailcone already share (`bizjetVisual`
+ * 33.5`, which the fuselage and tailcone already share (`bizjetVisual`
  * re-normalises it over the aeroplane's length); v is the phase round the
  * section -- 0 crown, 0.25 starboard flank, 0.5 keel, 0.75 port flank.
  *
@@ -41,8 +41,47 @@ const CHANNELS = 4;
 // ---------------------------------------------------------------------------
 
 /**
- * The cabin tube. Also what the cabin window line reads (`cabinHalfWidthAt`):
- * a part can only lie in a surface if it can ask where the surface is.
+ * The cabin tube AND THE NOSE, one loft from -13.1 to the tip at 15. Also what
+ * the cabin windows and the flight-deck glass are cast onto: a part can only
+ * lie in a surface if it can ask where the surface is.
+ *
+ * THE NOSE IS ONE SURFACE (phase 3c). It was a separate capped radome from
+ * 13.1, and the fuselage ended at 13.2 on a cap. `ComputeNormals` averages a
+ * ring's normals over the cap's faces too, so the fuselage's last ring was
+ * shaded as though it faced half forward: a crease right round the nose at
+ * 13.2 in every frame, under the windshield. One loft has no seam to crease.
+ *
+ * THE WIDTH IS THE TYPE'S, from 4.5 m aft of the tip forward. Half-widths off
+ * the brochure's top view (p. 31, with the pitot probes at 1.6-2.2 m aft
+ * filtered out and the cabin normalised to 1.345, the top view reading 1.359
+ * there): 0.85 at 1.3 m aft, 0.99 at 1.65, 1.10 at 2.0, 1.20 at 2.5, 1.27 at
+ * 3.0, 1.32 at 3.5. The nose was 0.12-0.23 m narrower. From the 9.5 ring aft
+ * every ring is the cabin's as it was, and the tip's last two rings are the
+ * radome's as they were.
+ *
+ * THE NOSE IS THE RENDER'S LINE (phase 3c, part 5). The crown follows the
+ * brochure's port render (p. 29) through a camera solved on it: the render's
+ * upper silhouette, where it meets the sky. An earlier trace followed the lower
+ * edge of the reflection band on the nose's upper surface, 0.12-0.20 m low, and
+ * parts 2-4 were fitted or bounded against it (docs). The line is a steady
+ * ramp, about 0.7 m per metre over the windshield, with no brow.
+ *
+ * The seat moves it in three places. From the seated eye (11.90, 0.55, -0.52),
+ * 1.21 m above the -0.66 floor, the aim point on final sits 8.5 degrees under
+ * the body axis and must be in the glass:
+ * - the nose runs STRAIGHT from the tip's crown (0, -0.45) to 1.6 m aft, 0.115
+ *   under the line;
+ * - the face is 0.08 under at 1.9 m aft, back to 0.05 under by 2.0. The
+ *   pilot's bottom edge straight ahead is there, 30 degrees round, and this
+ *   puts it at -10.2;
+ * - the brow stands up to 0.09 over the line at 2.25 m aft, the post's head,
+ *   and is back on it by 3.4. From the seat the post's head is then at +13.75.
+ *
+ * The line itself runs from 3.4 to the cabin at 5.5. The anchors are every
+ * 0.1 m, with a monotone cubic through them sampled at the rings. The keel is
+ * part 1's aft of 1.8 m and droops to the tip; the widths are part 1's.
+ * render.bizjet-nose holds the crown against the render: -0.12..+0.10 m over
+ * 1.5-2.0 m aft and -0.05..+0.10 over 2.0-3.5.
  */
 export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
@@ -51,23 +90,31 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -2, yRadius: 1.345, zRadius: 1.345 },
   { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 },
-  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-];
-
-/**
- * The drooped radome, ending at the sim's radome contact points. It starts at
- * 13.1, inside the fuselage, and its 13.2 ring IS the fuselage's last: without
- * it the radome interpolated from 13.1 and stood 3.8 cm inside the fuselage's
- * capped end at the crown, a forward-facing lip right round the nose at 13.2
- * that the windshield crosses (phase 3b; `render.bizjet-flight-deck`).
- */
-export const GLOBAL_RADOME_SECTIONS: readonly LoftSection[] = [
-  { x: 13.1, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-  { x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 },
-  { x: 14.1, yRadius: 0.62, zRadius: 0.62, yOffset: -0.12 },
-  { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
-  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
+  { x: 10.5, yRadius: 1.3028, zRadius: 1.3200, yOffset: 0.0259 },
+  { x: 11, yRadius: 1.2721, zRadius: 1.3200, yOffset: 0.0407 },
+  { x: 11.5, yRadius: 1.2194, zRadius: 1.3150, yOffset: 0.0362 },
+  { x: 11.9, yRadius: 1.1496, zRadius: 1.2806, yOffset: 0.0138 },
+  { x: 12.2, yRadius: 1.0806, zRadius: 1.2436, yOffset: -0.0098 },
+  { x: 12.4, yRadius: 1.0200, zRadius: 1.2152, yOffset: -0.0350 },
+  { x: 12.55, yRadius: 0.9768, zRadius: 1.1909, yOffset: -0.0529 },
+  { x: 12.7, yRadius: 0.9293, zRadius: 1.1606, yOffset: -0.0753 },
+  { x: 12.78, yRadius: 0.8883, zRadius: 1.1444, yOffset: -0.1026 },
+  { x: 12.87, yRadius: 0.8290, zRadius: 1.1263, yOffset: -0.1462 },
+  { x: 12.95, yRadius: 0.7684, zRadius: 1.1101, yOffset: -0.1926 },
+  { x: 13.03, yRadius: 0.7115, zRadius: 1.0906, yOffset: -0.2351 },
+  { x: 13.1, yRadius: 0.6713, zRadius: 1.0686, yOffset: -0.2629 },
+  { x: 13.2, yRadius: 0.6283, zRadius: 1.0371, yOffset: -0.2890 },
+  { x: 13.31, yRadius: 0.5857, zRadius: 1.0026, yOffset: -0.3138 },
+  { x: 13.45, yRadius: 0.5363, zRadius: 0.9503, yOffset: -0.3410 },
+  { x: 13.6, yRadius: 0.4929, zRadius: 0.8907, yOffset: -0.3614 },
+  { x: 13.8, yRadius: 0.4381, zRadius: 0.8062, yOffset: -0.3860 },
+  { x: 14.1, yRadius: 0.3534, zRadius: 0.6720, yOffset: -0.4268 },
+  { x: 14.4, yRadius: 0.2691, zRadius: 0.5020, yOffset: -0.4680 },
+  { x: 14.7, yRadius: 0.1847, zRadius: 0.3400, yOffset: -0.5092 },
+  // The tip, its crown at the gold line's height (phase 3c, parts 4-5): the sim's two
+  // radome contact points straddle it 0.15 m above and below (`src/sim/aircraft.ts`,
+  // held by render.bizjet-nose against the built mesh).
+  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.55 },
 ];
 
 /** The upswept tailcone, ending at the sim's tailcone contact point. */
@@ -78,32 +125,25 @@ export const GLOBAL_TAILCONE_SECTIONS: readonly LoftSection[] = [
   { x: -12.9, yRadius: 1.02, zRadius: 0.98, yOffset: 0.25 },
 ];
 
-/** u = (x - minimumX) / length on all three body lofts: radome tip to tailcone tip. */
+/** u = (x - minimumX) / length on both body lofts: nose tip to tailcone tip. */
 export const GLOBAL_LIVERY_STATION_RANGE = { minimumX: -18.5, length: 33.5 } as const;
 
 /**
  * The table the image is solved on: the tailcone's sections aft of the
- * fuselage's first, the fuselage's, and the radome's forward of the
- * fuselage's last.
+ * fuselage's first, then the fuselage's, which run to the nose tip.
  *
  * NOT EXACT IN ONE SHORT SPAN, and measured rather than assumed. Where a
  * loft's own neighbouring ring is not in this table, the loft interpolates
  * toward a ring this table does not have: the tailcone from -15.4 to its own
  * -12.9 ring (this table reaches the fuselage's -13.1 instead). The sections
- * differ there by at most 5.6 mm, at -13.1. The radome was the second span,
- * interpolating from its 13.1 ring and 2.8 cm in radius inside the table at
- * 13.2 -- where it was NOT hidden, as this said: the fuselage ends there, so
- * the difference was a lip in the skin. Its 13.2 ring is the fuselage's now
- * (phase 3b), and the table is exact from 13.2 forward.
- * `render.bizjet-livery-mesh` measures the drawn line on the built lofts
- * through both spans.
+ * differ there by at most 5.6 mm, at -13.1. The radome was a second such span
+ * until the nose became part of the fuselage's loft (phase 3c): forward of
+ * the cabin the table IS the loft. `render.bizjet-livery-mesh` measures the
+ * drawn line on the built lofts.
  */
 export const GLOBAL_LIVERY_SECTIONS: readonly LoftSection[] = [
   ...GLOBAL_TAILCONE_SECTIONS.filter((section) => section.x < GLOBAL_FUSELAGE_SECTIONS[0]!.x),
   ...GLOBAL_FUSELAGE_SECTIONS,
-  ...GLOBAL_RADOME_SECTIONS.filter(
-    (section) => section.x > GLOBAL_FUSELAGE_SECTIONS[GLOBAL_FUSELAGE_SECTIONS.length - 1]!.x,
-  ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -172,7 +212,9 @@ export const GLOBAL_BELLY_GREY: LiveryRgb = overBase([0.46, 0.5, 0.53]);
  * With the sill at y 0.11 and a window 0.54 m tall, the mean is the knots
  * below: about -0.41 at window 2 rising 3.4 degrees to meet the sill line at
  * window 11 (x ~ -0.4), where on the type it becomes the aft swoosh. Forward of
- * the row it runs level at about -0.45 and rises into the radome tip. The
+ * the row it runs level at about -0.45 into the tip, as both renders show: the
+ * tip is drooped to that height (phase 3c, part 3). It rose to -0.2 to meet
+ * the old tip at -0.15, and the last knot is now held to the tip. The
  * swoosh is stage 2b; until then the line and the pinstripes fade out over
  * the metre aft of window 11.
  *
@@ -189,13 +231,18 @@ const HOUSE_GOLD_CENTRE: readonly (readonly [number, number])[] = [
   [7.88, -0.414],
   [9.3, -0.45],
   [13.2, -0.45],
-  [14.4, -0.4],
-  [15, -0.2],
 ];
 const offsetKnots = (knots: readonly (readonly [number, number])[], dy: number) =>
   knots.map(([x, y]) => [x, y + dy] as const);
-/** The line's station extent: into the radome tip forward, out over the metre aft of window 11 until the swoosh. */
-const HOUSE_EXTENT = { aftEndX: -1.4, aftFullX: -0.4, forwardFullX: 14.6, forwardEndX: 14.95 } as const;
+/**
+ * The line's station extent: out over the metre aft of window 11 until the
+ * swoosh, and forward to a point at the tip. Forward it fades from 0.6 m aft of
+ * the tip (14.4): on the drooped tip (phase 3c, part 3) the ring is 0.2 m tall,
+ * about the 2x gold's own 0.18, and a line held full to 14.6 painted the tip
+ * cone's flanks gold, a gold chin from the front. The type's line runs out to a
+ * point there.
+ */
+const HOUSE_EXTENT = { aftEndX: -1.4, aftFullX: -0.4, forwardFullX: 14.4, forwardEndX: 14.95 } as const;
 /** The gold as measured: 0.09 m (7-8 px against a 0.54 m window's 52 in the starboard render). */
 const HOUSE_GOLD_HALF_HEIGHT = 0.045;
 /** The pinstripes, 0.03 m: 1-2 px against the same window. */
