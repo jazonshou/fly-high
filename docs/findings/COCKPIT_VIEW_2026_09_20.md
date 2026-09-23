@@ -1316,7 +1316,7 @@ whole-frame test now classes a sightline as glass when it crosses a pane's hole 
 skin level), and allows half a degree at an edge, where the rim reads widest (No.2's top, 1.3 m away and
 seen at a slant). The no-T-junction test and the drawn-faces walk stay at zero.
 
-## The Global's panel, integrated (P0, P1a)
+## The Global's panel, integrated (P0, P1a to P1c)
 
 Jason: the instrumentation read as a box pasted at the bottom of the screen. P0 measured why, from the seat,
 on the merged kit (6638484) and its level frame. Each tone sample was a pixel projected from a built point
@@ -1339,7 +1339,8 @@ build (7dc8801) was revised on the PM's decisions; both are recorded.
 - **A 45 degree COVE,** 0.010 forward and 0.010 down, facing down and aft, to the panel's face. The first build
   had a flat underside (normal -y) running 0.03 forward. That was 0.16 m under the eye and never seen from the
   seat. The cove is seen: its normal leans toward the eye at every corner, and it faces the image light's lower
-  half. It is the shade under a glareshield, from geometry alone. Its tone is measured in the level frame.
+  half. It is the shade under a glareshield, from geometry alone: live, 43 to 45% darker than the board 10 cm
+  lower (below).
 - **The deck's edge,** from the tangent to the cove's foot, reads **2.342 degrees** straight ahead (the round
   1.28, the drop 0.42, the cove 0.64) against the design's ceiling of 2.5. The first build's round r 0.02 and
   0.015 drop made it 3.3.
@@ -1378,9 +1379,8 @@ Sixteen mutations, all caught:
 One instrument lied on the way: a corner finder at 1e-9 found all four float32 corners of a screen at one lean
 and two at another. It works at 2 micrometres, and a sweep of the lean fails only the aim test.
 
-**Measured next, in the level frame:** the cove's tone against the board 10 cm lower, as a number with no
-threshold. If it does not read as shade, an AO gradient in a board-only albedo on the board's existing UV is
-the reserve (no new varying).
+The reserve, if the cove had not read as shade, was an AO gradient in a board-only albedo on the board's
+existing UV (no new varying). It was not needed.
 
 **P1b, the bezels.** In P0 they were square pale plates (luma 81, against the board's 28) under screens standing
 1 mm PROUD of them. Each is now a frame round its screen (`bizjetScreenStack`, `bizjetBezelFacets`), square to the
@@ -1393,8 +1393,9 @@ leaned face:
   own edge hides the far side's gap, as a recessed screen's does; the near side and the top show.
 
 **Materials.** The frame is on a Global-only bezel material, 0x2c3034, with the board's roughness and metalness and
-NO emissive. By albedo alone it is 1.41 times the board's luma; the design asks 1.3 to 1.6, measured in the next
-frames. The chamfered rim stays on the shared marking material, so the night glow (`applyGlow`) is the rim's alone.
+NO emissive. By albedo alone it is 1.41 times the board's luma, and live it reads 1.46 by mean (1.39 by median);
+the design asks 1.3 to 1.6. The chamfered rim stays on the shared marking material, so the night glow
+(`applyGlow`) is the rim's alone.
 The display material is untouched: the recess is geometry, so the display gains no varying.
 
 **Two closed solids.** The frame (the ring from the opening to the chamfer's shoulder) and the rim (the band from
@@ -1462,6 +1463,27 @@ shell rule. Seven mutations, all caught:
 - off the cap's vertices; no lip; the faces oriented by a centroid; the outboard side not following the shell.
 
 The kit is seven meshes. Against 43d360d only the new consoles mesh changes; the other 93 are bit-identical.
+
+**The frames** (43ac997, the pilot's left seat, 16:9, seed g7500k2; the eye, the 75 degree lens, the glareshield's
+top at 0.4224 and the seven kit meshes asserted from the live scene; the projection within 0.1 px of the live
+capture):
+- **Level.** The deck reads as a padded rail: the round's lit top (luma 38, p90 56) over the aft face (17) and the
+  cove (14.8), then the leaned board (28).
+  - The cove reads 43.1% darker than the board 10 to 13 cm down the face between the pairs, and 44.9% outboard of
+    them. The board's own first 3 cm read 20% BRIGHTER than lower down: a flat lit face gets brighter toward its
+    top with the view angle, so the band is the cove's.
+  - The bezels are dark frames at 1.46 times the board, round screens recessed in near-black wells (20).
+  - Their chamfered rims catch the sky as a bright bevel (118, p90 179, the marking material's day emissive
+    included). If the outline reads too bright, the lever is the rim's day emissive, not the geometry.
+  - The screens are 71.4% in the frame.
+  - In the lower left, 6b's side glass comes down to about row 790, then the lit ledge of the cap and the console
+    (95 to 99), and the console's dark face (28).
+- **Rolled** (24.3 degrees right), **final** (scenic, wings level at 2.77, the aim point -4.93 under the body axis
+  and in the glass), and **the chase camera**, with no kit in it.
+- **4x crops:** the rail over the PFD, a bezel's corner, the console.
+- **The inter-stage budget, live** (the variants test with its container, restored by sha after a per-material
+  print): the display is 15 (16 of 16 under fog, drawn), and the bezel, the instrument face (the wells), the
+  interior (with the consoles), the glareshield and the marking are 14 (15 under fog). No GPU error in any variant.
 
 **For the 747's turn (noted, not built):** its lip-to-bottom band is only 4.78 degrees with the screens at
 37.8%, so the same deck must cost the screens nothing: the round and the drop at their minimum, and the gap
