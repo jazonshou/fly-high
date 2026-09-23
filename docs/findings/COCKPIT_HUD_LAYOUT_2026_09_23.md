@@ -265,9 +265,10 @@ HUD's half is the stylesheet's `min(50vw, 88.889vh)` in the deck line and the
 attitude clip; the markup is unchanged.
 
 **What it costs.** At 2560 x 1080 the frustum is 1.333 times as wide and 1.333
-times as tall as the plain lens there: 1.78 times the cross-section. Against 16:9
-play it has the same vertical field and is 1.333 times as wide. That is more
-terrain, vegetation and cloud in view on 21:9 windows only. Not measured.
+times as tall as the plain lens there. **Its cross-section is 1.78 times the plain
+lens's and 1.33 times 16:9 play's, so a 21:9 player pays roughly that in world
+draw**: terrain, vegetation and cloud. 16:9 and narrower windows pay nothing. At
+3440 x 1440 the factors are 1.81 and 1.34. These are geometry, not a measurement.
 
 **Tests.**
 - **`tests/render.cockpit-hybrid-lens.test.ts`** holds the lens:
