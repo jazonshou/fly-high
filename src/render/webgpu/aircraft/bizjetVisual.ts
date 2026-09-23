@@ -32,7 +32,15 @@ import {
   createGlobalLiveryTexture,
   createSolidLiveryTexture,
 } from "./bizjetLivery";
-import { SkinCaster } from "./airlinerGlazing";
+import { PANE_GRID, SkinCaster, paneGrid } from "./airlinerGlazing";
+import {
+  GLOBAL_FLIGHT_DECK_OUTLINES,
+  GLOBAL_FLIGHT_DECK_REFERENCE,
+  GLOBAL_PANE_DEPTH,
+  GLOBAL_PANE_PROUD,
+  globalCentrePostPane,
+  globalGlazingPane,
+} from "./bizjetGlazing";
 import {
   CABIN_PANE_DEPTH,
   CABIN_PANE_PROUD,
@@ -439,37 +447,6 @@ export function createBizJet(scene: Scene): AircraftVisual {
     roughness: 0.26,
     metallic: 0.4,
   });
-  const glass = build.material("bizjet-glass", 0x14323f, {
-    roughness: 0.04,
-    metallic: 0,
-    alpha: 0.29,
-    doubleSided: true,
-    clearCoat: { intensity: 1, roughness: 0.02, indexOfRefraction: 1.5 },
-    transmission: {
-      indexOfRefraction: 1.52,
-      minimumThickness: 0.005,
-      maximumThickness: 0.014,
-      tintColor: 0xa9dae6,
-      tintColorAtDistance: 3.2,
-    },
-  });
-  /*
-   * No depth pre-pass on the glazing. `build.material` turns
-   * `needDepthPrePass` on for every alpha-blended airframe material, which is
-   * right for the propeller disc it was written for and wrong for glass: at
-   * cinematic distance it suppresses the colour pass outright while leaving it
-   * intact close up. That is what made the F-16's canopy invisible for four
-   * rounds, and the Cessna's 2.94 m cabin glazing was losing its glass the
-   * same way — captured before and after, the cabin went from a bare shell
-   * with the interior showing through to a properly glazed canopy.
-   *
-   * This aeroplane's glazing is small enough that the loss is hard to see, so
-   * it is fixed on the MECHANISM rather than on a photograph: the suppression
-   * is a function of camera distance, not of how big the pane is, and leaving
-   * known-broken glass on an airframe because it is inconspicuous is not a
-   * reason to leave it. Scoped to this material; `builders.ts` is untouched.
-   */
-  glass.needDepthPrePass = false;
   const tire = build.material("bizjet-tire", 0x06080a, { roughness: 1, metallic: 0 });
   const hub = build.material("bizjet-hub", 0x8b9498, { roughness: 0.32, metallic: 0.74 });
   const hotMetal = build.material("bizjet-hot-metal", 0x4b5153, {
@@ -1278,54 +1255,64 @@ export function createBizJet(scene: Scene): AircraftVisual {
     elevators.push(elevator);
   }
 
-  // FLIGHT DECK. Well forward and high, on top of the drooped radome. The
-  // glass goes through `build.material`'s alpha path, which is what moves
-  // these meshes into the airframe-transparency rendering group: drawn before
-  // the water their depth pre-pass cuts a hole in the sea behind them, and
-  // that is a defect this renderer has shipped before.
-  // Let INTO the nose crown, not perched on it. Measured, the fuselage top at
-  // x = 12.85 is y 0.95, so the old 0.66 m pane centred at 0.88 stood a
-  // quarter of a metre above the skin it is supposed to be glazed into, and
-  // the centre post reached y 1.3 against a 1.15 m crown — a dark bar poking
-  // out of the nose in every forward three-quarter frame.
-  const windscreen = build.box("bizjet-windscreen", 0.16, 0.56, 1.44, glass, root);
-  windscreen.position.set(12.72, 0.7, 0);
-  windscreen.rotation.z = 0.6;
-  windscreen.metadata = { ...windscreen.metadata, castsShadow: false };
-  const sideWindows: Mesh[] = [];
+  /*
+   * THE FLIGHT DECK: the type's six panes -- a windshield either side of the
+   * centre post, and a forward and an aft side pane a side -- cast onto the
+   * nose's own triangles (`bizjetGlazing.ts` has the outline and where it was
+   * read). The glass was one raked box across the nose and a thick slab each
+   * side, sunk into the skin so that what showed was wherever they cut it:
+   * no posts, no pillars, and a band two-thirds the type's length.
+   *
+   * The panes are the cabin windows' dark, not glass: the glass material is
+   * 71 % see-through, and what is behind a pane laid on the skin is the white
+   * skin, so it read as a pale tint where the type reads black with the sky in
+   * it. It never mattered from the seat, where the panes are hidden (below).
+   * Merged into one mesh; the post is its own, because the cockpit camera
+   * draws it. No shadow: a centimetre of glass has nothing to cast.
+   */
+  const flightDeckCaster = new SkinCaster([fuselage, radome].map((mesh) => ({
+    positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
+    indices: mesh.getIndices()!,
+    normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
+  })));
+  const flightDeckPanes: Mesh[] = [];
   for (const side of [1, -1] as const) {
-    // EMBEDDED, not laid on. Measured, the old pane sat at |z| = 0.99 where
-    // the skin at that height is 0.89 — a 1.8 m dark slab standing 0.10 m
-    // proud of the nose, which is how it read in every three-quarter frame.
-    // A thin pane on a curved fuselage is also a shallow-angle near-tangency,
-    // which shimmers. This one is deliberately THICK and sunk well inside, so
-    // what shows is the intersection of a slab with the skin: a window-shaped
-    // patch that follows the curve and crosses it at a steep angle.
-    const sideWindow = build.box(
-      side > 0 ? "starboard-bizjet-flight-deck-window" : "port-bizjet-flight-deck-window",
-      1.02,
-      0.44,
-      0.34,
-      glass,
-      root,
-    );
-    sideWindow.position.set(11.92, 0.76, side * 0.72);
-    // Laid along the flank: a third of a radian about X points the pane
-    // outboard and up, following the skin it is let into, and a little yaw
-    // follows the nose's taper so the forward end does not surface.
-    sideWindow.rotation.x = -side * 0.3;
-    sideWindow.rotation.y = side * 0.06;
-    sideWindow.metadata = { ...sideWindow.metadata, castsShadow: false };
-    sideWindows.push(sideWindow);
+    for (const outline of GLOBAL_FLIGHT_DECK_OUTLINES) {
+      const grid = paneGrid(
+        flightDeckCaster,
+        globalGlazingPane(outline),
+        side,
+        PANE_GRID,
+        GLOBAL_FLIGHT_DECK_REFERENCE,
+      );
+      const pane = build.skinPanel(
+        `${side > 0 ? "starboard" : "port"}-bizjet-flight-deck-window-${outline.name}`,
+        grid.points,
+        grid.normals,
+        GLOBAL_PANE_PROUD,
+        GLOBAL_PANE_DEPTH,
+        dark,
+        root,
+      );
+      pane.metadata = { ...pane.metadata, castsShadow: false };
+      flightDeckPanes.push(pane);
+    }
   }
-  build.strutBetween(
+  const flightDeckGlass = build.mergeStatic("bizjet-flight-deck-glazing", flightDeckPanes, root);
+  // The centre post, cast the same way over the windshields' stations, so it
+  // lies on the skin between them the whole way up. It is the dark strut it
+  // replaces, now on the skin: the strut stood 0.2 m clear of the crown.
+  const post = paneGrid(flightDeckCaster, globalCentrePostPane(), 1, 2, GLOBAL_FLIGHT_DECK_REFERENCE);
+  const centrePost = build.skinPanel(
     "bizjet-windscreen-center-post",
-    new Vector3(13.0, 0.44, 0),
-    new Vector3(12.34, 1.0, 0),
-    0.05,
+    post.points,
+    post.normals,
+    GLOBAL_PANE_PROUD,
+    GLOBAL_PANE_DEPTH,
     dark,
     root,
   );
+  centrePost.metadata = { ...centrePost.metadata, castsShadow: false };
 
   // The seats stand 0.05 m aft of the pilot's eye in x (`catalogue.cockpitEye`,
   // forward 11.90): seat centre 11.85, headrest 11.57. They stood at 11.72 and
@@ -1613,10 +1600,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // starboard spool is the one it names; both are driven from the same
     // simulation-time phase below, so they can never be seen out of step.
     propeller: fanSpools[0]!,
-    // THE GLASS THE PILOT SITS BEHIND, and the RADOME. The windscreen and the
-    // two flight-deck windows are built with `transmission`, and from inside they
-    // draw as flat opaque slabs (measured against the shipped frame; the old
-    // comment here said they were see-through, which was wrong). The radome is a
+    // THE GLASS THE PILOT SITS BEHIND, and the RADOME. The six flight-deck
+    // panes are opaque from inside, as the glass boxes before them were (they
+    // drew as flat opaque slabs). The radome is a
     // separate capped loft whose rear cap, at x 13.1, faces the pilot: with the
     // radome visible it is a black disc across the middle and right of the
     // windscreen (317 of the 2,800 cells of the probe's frame), and the only face
@@ -1628,7 +1614,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     // itself, while the centre post is what a windscreen's framing is. What
     // replaces the hidden glass's framing is built as cockpit-only parts: see
     // `buildBizjetCockpit`.
-    cockpitParts: [windscreen, ...sideWindows, radome],
+    cockpitParts: [flightDeckGlass, radome],
     cockpitOnlyParts,
     wingSurfaces,
     // Starboard first, because the side loop runs +1 first and
