@@ -255,16 +255,7 @@ describe("the loft's crown taper", () => {
       // the fuselage's own triangles and merged, 7,896 vertices and 8,512 triangles, one draw.
       // Checked mesh by mesh against 58f8b28, positions, normals, UVs, indices, world matrix,
       // material and visibility: the Global's other 95 meshes are bit-identical.
-      // RE-PINNED for the Global's flight deck (phase 3b): the three glass boxes
-      // (`bizjet-windscreen` and the two `*-bizjet-flight-deck-window` slabs, 24 vertices and
-      // 12 triangles each) are GONE, `bizjet-flight-deck-glazing` is NEW -- six panes cast onto
-      // the nose's own triangles and merged, 1,440 vertices and 1,512 triangles --
-      // `bizjet-windscreen-center-post` is re-cast on the skin (a 38-vertex strut -> a 96-vertex
-      // `skinPanel`), and `bizjet-radome` gains a ring at 13.2, the fuselage's last, which takes
-      // out a 3.8 cm lip the windshield crosses (166 -> 207 vertices, 320 -> 400 triangles).
-      // Checked mesh by mesh against 0ba7987, positions, normals, UVs, indices, world matrix,
-      // material and visibility: the Global's other 91 meshes are bit-identical.
-      bizjet: "3640e45d",
+      bizjet: "4f548357",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

@@ -351,9 +351,8 @@ describe("the house cheatline on the built lofts", () => {
   const image = buildGlobalLiveryImage(GLOBAL_HOUSE_SCHEME);
   /** A texel is 3.3 cm round the cabin (less round the radome); the scan steps 4 mm. */
   const TOLERANCE_M = 0.04;
-  // The row (window 2 .. window 11), forward of it, the radome from the
-  // fuselage's end to its 14.1 ring (the table's inexact span until the radome
-  // took the fuselage's 13.2 ring, phase 3b), and the gold's full extent aft.
+  // The row (window 2 .. window 11), forward of it, the radome through the
+  // table's inexact span (13.2-14.1), and the gold's full extent aft.
   const STATIONS = [-0.4, 0.52, 2.36, 4.2, 6.04, 7.88, 9, 11, 12.9, 13.4, 13.8, 14.2];
 
   for (const flank of [1, -1] as const) {

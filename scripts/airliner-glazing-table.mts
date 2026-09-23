@@ -1,11 +1,10 @@
 /**
- * A flight deck's corner table, read off the BUILT meshes: the 747's, or the
- * Global's with `--airframe bizjet`.
+ * The 747 flight-deck glazing's corner table, read off the BUILT meshes.
  *
  * The cockpit engineer's eye solve and kit are placed against the glass as it
- * is built, not against the design angles, so this builds the real aeroplane
+ * is built, not against the design angles, so this builds the real airliner
  * in a NullEngine, captures each pane as `skinPanel` returns it, proves the
- * merged `<kind>-flight-deck-glazing` holds those same vertices, and prints:
+ * merged `airliner-flight-deck-glazing` holds those same vertices, and prints:
  *
  *   CORNERS   outer and inner face corners of every pane, body metres
  *             (x forward, y up, z starboard), and the outer corners' az/el
@@ -16,10 +15,10 @@
  *             left-seat eye E straight ahead, and from R at each pane's
  *             centre azimuth -- scanned in 0.05 degree steps against the
  *             merged glazing's own triangles;
- *   BROW      where the inboard pane's top edge lands on the centreline: the
+ *   BROW      where the No.1 glass's top edge lands on the centreline: the
  *             crown's slope there, and the crest behind it.
  *
- *   npx tsx scripts/airliner-glazing-table.mts [--airframe airliner|bizjet] [--json <path>]
+ *   npx tsx scripts/airliner-glazing-table.mts [--json <path>]
  */
 import { writeFileSync } from "node:fs";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -30,67 +29,14 @@ import { aircraftSpec } from "../src/aircraft/catalogue";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import {
   FLIGHT_DECK_PANES,
-  FLIGHT_DECK_REFERENCE,
+  FLIGHT_DECK_REFERENCE as R,
   SkinCaster,
   sightline,
-  type GlazingPane,
   type Point3,
 } from "../src/render/webgpu/aircraft/airlinerGlazing";
-import {
-  GLOBAL_FLIGHT_DECK_OUTLINES,
-  GLOBAL_FLIGHT_DECK_REFERENCE,
-  globalGlazingPane,
-} from "../src/render/webgpu/aircraft/bizjetGlazing";
 import { AircraftBuildContext, type SurfacePatch } from "../src/render/webgpu/aircraft/builders";
 
-/** What differs between the two flight decks; everything else is read the same way. */
-interface Airframe {
-  readonly kind: "airliner" | "bizjet";
-  readonly title: string;
-  readonly reference: Point3;
-  readonly panes: readonly GlazingPane[];
-  /** How each pane's design is printed: the 747's angles, the Global's outline on the body. */
-  readonly design: (pane: GlazingPane) => string;
-  /** The skin the brow is read off, as named meshes. */
-  readonly skin: readonly string[];
-  /** The pane whose top edge meets the centreline, and what the table calls it. */
-  readonly inboard: string;
-  readonly inboardLabel: string;
-}
-const AIRFRAMES: Record<string, Airframe> = {
-  airliner: {
-    kind: "airliner",
-    title: "747",
-    reference: FLIGHT_DECK_REFERENCE,
-    panes: FLIGHT_DECK_PANES,
-    design: (pane) => `design az ${pane.azimuth.join("..")}  el ${pane.elevation.join("..")}`,
-    skin: ["airliner-fuselage-shell"],
-    inboard: "one",
-    inboardLabel: "No.1",
-  },
-  bizjet: {
-    kind: "bizjet",
-    title: "GLOBAL",
-    reference: GLOBAL_FLIGHT_DECK_REFERENCE,
-    panes: GLOBAL_FLIGHT_DECK_OUTLINES.map((outline) => globalGlazingPane(outline)),
-    design: (pane) => {
-      const outline = GLOBAL_FLIGHT_DECK_OUTLINES.find((o) => o.name === pane.name)!;
-      const edge = (points: readonly (readonly [number, number])[]) => points.map(([aft, angle]) => `${aft}/${angle}`).join(" ");
-      return `outline (m aft of the tip / deg from the crown) bottom ${edge(outline.bottom)}; top ${edge(outline.top)}`;
-    },
-    skin: ["bizjet-fuselage", "bizjet-radome"],
-    inboard: "windshield",
-    inboardLabel: "windshield",
-  },
-};
-const airframeFlag = process.argv.indexOf("--airframe");
-const airframeName = airframeFlag > 0 ? process.argv[airframeFlag + 1]! : "airliner";
-const airframe = AIRFRAMES[airframeName];
-if (!airframe) throw new Error(`--airframe ${airframeName}: expected one of ${Object.keys(AIRFRAMES).join(", ")}`);
-const R = airframe.reference;
-const kind = airframe.kind;
-
-const eyeSpec = aircraftSpec(kind).cockpitEye;
+const eyeSpec = aircraftSpec("airliner").cockpitEye;
 const E: Point3 = { x: eyeSpec.forward, y: eyeSpec.up, z: eyeSpec.right };
 const DEG = 180 / Math.PI;
 
@@ -114,7 +60,7 @@ AircraftBuildContext.prototype.skinPanel = function (this: AircraftBuildContext,
 const engine = new NullEngine();
 const scene = new Scene(engine);
 scene.useRightHandedSystem = true;
-const visual = createWebGpuAircraft(scene, kind);
+const visual = createWebGpuAircraft(scene, "airliner");
 const named = (name: string): Mesh => {
   const found = scene.getMeshByName(name);
   if (!found) throw new Error(`no mesh ${name}`);
@@ -125,10 +71,10 @@ const triangles = (mesh: Mesh) => ({
   indices: mesh.getIndices()!,
   normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
 });
-const glazing = named(`${kind}-flight-deck-glazing`);
-const skin = airframe.skin.map(named);
+const glazing = named("airliner-flight-deck-glazing");
+const shell = named("airliner-fuselage-shell");
 // The merged meshes sit under the aircraft root at identity: their vertices are body metres.
-for (const mesh of [glazing, ...skin]) {
+for (const mesh of [glazing, shell]) {
   if (!mesh.getWorldMatrix().isIdentity()) throw new Error(`${mesh.name} is not at identity; the table would not be body metres`);
 }
 
@@ -221,12 +167,12 @@ const openings = (origin: Point3, az: number, side: 1 | -1) => runsOf(origin, (e
 const runText = (runs: Array<[number, number]>) => runs.map(([a, b]) => `${a.toFixed(2)}..${b.toFixed(2)} (${(b - a).toFixed(2)} deg)`).join(", ") || "none";
 
 const report: Record<string, unknown> = { reference: R, eye: E, panes: {} };
-console.log(`${airframe.title} FLIGHT-DECK GLAZING, from the BUILT meshes (${panes.length} panes, every vertex found in the merged glazing)`);
+console.log(`747 FLIGHT-DECK GLAZING, from the BUILT meshes (${panes.length} panes, every vertex found in the merged glazing)`);
 console.log(`R = (${f3(R)})  azimuth reference;  E = (${f3(E)})  left-seat eye (catalogue.cockpitEye)\n`);
 for (const side of [1, -1] as const) {
   const sideName = side > 0 ? "starboard" : "port";
-  for (const spec of airframe.panes) {
-    const pane = panes.find((p) => p.name === `${sideName}-${kind}-flight-deck-window-${spec.name}`)!;
+  for (const spec of FLIGHT_DECK_PANES) {
+    const pane = panes.find((p) => p.name === `${sideName}-airliner-flight-deck-window-${spec.name}`)!;
     const last = { row: pane.rows - 1, column: pane.columns - 1 };
     const cornerCells = {
       bottomInboard: [0, 0], bottomOutboard: [0, last.column], topOutboard: [last.row, last.column], topInboard: [last.row, 0],
@@ -251,7 +197,7 @@ for (const side of [1, -1] as const) {
     const fromR = openings(R, centreAz, side);
     (report.panes as Record<string, unknown>)[pane.name] = { corners, normal, openingFromR: { azimuth: centreAz, runs: fromR } };
     if (side < 0) continue; // port mirrors starboard; checked below, printed once
-    console.log(`PANE ${spec.name.toUpperCase()}  ${airframe.design(spec)}   (starboard; port = z mirrored)`);
+    console.log(`PANE ${spec.name.toUpperCase()}  design az ${spec.azimuth.join("..")}  el ${spec.elevation.join("..")}   (starboard; port = z mirrored)`);
     console.log("  corner           outer face (x y z)          inner face (x y z)         outer az/el from R");
     for (const [key, corner] of Object.entries(corners)) {
       console.log(`  ${key.padEnd(15)} ${f3(corner.outer)}   ${f3(corner.inner)}   ${corner.outerFromR.az.toFixed(2).padStart(6)} ${corner.outerFromR.el.toFixed(2).padStart(6)}`);
@@ -263,9 +209,9 @@ for (const side of [1, -1] as const) {
 
 // Mirror check: port == starboard with z negated, vertex for vertex.
 let mirrorError = 0;
-for (const spec of airframe.panes) {
-  const s = panes.find((p) => p.name === `starboard-${kind}-flight-deck-window-${spec.name}`)!;
-  const p = panes.find((q) => q.name === `port-${kind}-flight-deck-window-${spec.name}`)!;
+for (const spec of FLIGHT_DECK_PANES) {
+  const s = panes.find((p) => p.name === `starboard-airliner-flight-deck-window-${spec.name}`)!;
+  const p = panes.find((q) => q.name === `port-airliner-flight-deck-window-${spec.name}`)!;
   for (let i = 0; i < s.positions.length; i += 3) {
     mirrorError = Math.max(mirrorError, Math.abs(s.positions[i]! - p.positions[i]!), Math.abs(s.positions[i + 1]! - p.positions[i + 1]!),
       Math.abs(s.positions[i + 2]! + p.positions[i + 2]!));
@@ -289,12 +235,12 @@ for (const run of asSeen) {
   console.log(`  pane seen from E over az ${run.azimuth[0]!.toFixed(2)}..${run.azimuth[1]!.toFixed(2)}: through its middle (az ${run.middle.toFixed(2)}) el ${runText(run.elevation)}`);
 }
 
-// BROW: where the inboard glass's top edge lands on the centreline, the crown's
+// BROW: where the No.1 glass's top edge lands on the centreline, the crown's
 // slope there, and the crest (a kink of 0.3 m per metre or more) in the 0.3 m
 // aft of it -- the same definition as tests/render.airliner-glazing.test.ts.
-const shellCaster = new SkinCaster(skin.map(triangles));
+const shellCaster = new SkinCaster([triangles(shell)]);
 const crownAt = (x: number) => shellCaster.exit({ x, y: 0, z: 0 }, { x: 0, y: 1, z: 0 })!.point.y;
-const one = panes.find((p) => p.name === `starboard-${kind}-flight-deck-window-${airframe.inboard}`)!;
+const one = panes.find((p) => p.name === "starboard-airliner-flight-deck-window-one")!;
 const topInboard = vertexOf(one, 0, one.rows - 1, 0);
 const skinTop = { x: topInboard.x, y: crownAt(topInboard.x) };
 const slope = (crownAt(skinTop.x + 0.03) - crownAt(skinTop.x - 0.03)) / 0.06;
@@ -305,7 +251,7 @@ for (let aft = 0.02; aft <= 0.3; aft += 0.01) {
   if (bend < -0.3 && bend < crest.bend) crest = { bend, x, y: crownAt(x) };
 }
 const topFromE = angles(E, topInboard, 1).el;
-console.log(`BROW: ${airframe.inboardLabel} top-inboard corner (outer face) x ${topInboard.x.toFixed(3)} y ${topInboard.y.toFixed(3)}, ${topFromE.toFixed(1)} deg from E; `
+console.log(`BROW: No.1 top-inboard corner (outer face) x ${topInboard.x.toFixed(3)} y ${topInboard.y.toFixed(3)}, ${topFromE.toFixed(1)} deg from E; `
   + `the crown there falls ${(-slope).toFixed(2)} m per metre (${(Math.atan(-slope) * DEG).toFixed(0)} deg)`);
 console.log(Number.isFinite(crest.x)
   ? `  crest ${(skinTop.x - crest.x).toFixed(2)} m aft at x ${crest.x.toFixed(2)}, y ${crest.y.toFixed(3)}: ${(crest.y - skinTop.y).toFixed(3)} m above the skin at the glass's top, `

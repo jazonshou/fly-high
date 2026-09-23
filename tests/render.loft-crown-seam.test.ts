@@ -323,16 +323,7 @@ describe("a loft's crown seam", () => {
       // the fuselage's own triangles and merged, 7,896 vertices and 8,512 triangles, one draw.
       // Checked mesh by mesh against 58f8b28, positions, normals, UVs, indices, world matrix,
       // material and visibility: the Global's other 95 meshes are bit-identical.
-      // RE-PINNED for the Global's flight deck (phase 3b): the three glass boxes
-      // (`bizjet-windscreen` and the two `*-bizjet-flight-deck-window` slabs, 24 vertices and
-      // 12 triangles each) are GONE, `bizjet-flight-deck-glazing` is NEW -- six panes cast onto
-      // the nose's own triangles and merged, 1,440 vertices and 1,512 triangles --
-      // `bizjet-windscreen-center-post` is re-cast on the skin (a 38-vertex strut -> a 96-vertex
-      // `skinPanel`), and `bizjet-radome` gains a ring at 13.2, the fuselage's last, which takes
-      // out a 3.8 cm lip the windshield crosses (166 -> 207 vertices, 320 -> 400 triangles).
-      // Checked mesh by mesh against 0ba7987, positions, normals, UVs, indices, world matrix,
-      // material and visibility: the Global's other 91 meshes are bit-identical.
-      bizjet: "9d9a8525",
+      bizjet: "c924fe9f",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh
