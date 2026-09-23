@@ -310,6 +310,78 @@ export function roundedDeckSection(
   };
 }
 
+/**
+ * A FRAMED SCREEN's design (P1b, the Global's first, then the 747's): the screen, its bezel's rim beyond it (the gap,
+ * the frame's flat face, the chamfer), and the depths of the stack square to the panel's face. Metres.
+ */
+export interface FramedScreenDesign {
+  readonly width: number;
+  readonly height: number;
+  /** The bezel's rim beyond the screen: the dark gap, then the frame's flat face, then its chamfer. */
+  readonly bezel: number;
+  /** The frame's front stands this far out of the board's face; its back is 1 mm inside it. */
+  readonly bezelThickness: number;
+  /** The chamfer round the frame's outer edge: this wide across the face and this deep, at 45 degrees. */
+  readonly chamfer: number;
+  /** Between the frame's inner edge and the screen: a dark well. */
+  readonly gap: number;
+  /** The screen's face stands this far BEHIND the frame's front. */
+  readonly recess: number;
+  readonly screenThickness: number;
+}
+
+/** How far out of the board's face each plane of a framed screen's stack stands, square to the face (the face is 0). */
+export function framedScreenStack(s: FramedScreenDesign): { bezelBack: number; bezelFront: number; chamferFoot: number; screenFront: number; screenBack: number } {
+  const bezelBack = -0.001;
+  const bezelFront = bezelBack + s.bezelThickness;
+  const screenFront = bezelFront - s.recess;
+  return { bezelBack, bezelFront, chamferFoot: bezelFront - s.chamfer, screenFront, screenBack: screenFront - s.screenThickness };
+}
+
+/**
+ * A screen's bezel as flat quads about `faceCentre` on a (leaned) panel face whose unit vectors up the face and out of it
+ * toward the pilot are `face.up` and `face.normal` (x and y; the face runs along z), in two CLOSED solids that meet
+ * along the chamfer's shoulder: `frame`, a ring from the opening (the screen and its gap) out to the shoulder, its flat
+ * front toward the pilot; and `rim`, the band from the shoulder out to the bezel's edge, whose front is the 45 degree
+ * chamfer. Each is closed on its own, so wherever a ray meets either first it meets a face the GPU draws (the faces where
+ * they meet face each other inside the bezel and are never seen); the rim is apart so the night glow can be on it alone.
+ */
+export function framedScreenFacets(
+  faceCentre: Vector3,
+  face: { readonly up: { readonly x: number; readonly y: number }; readonly normal: { readonly x: number; readonly y: number } },
+  s: FramedScreenDesign,
+): { frame: FacetQuad[]; rim: FacetQuad[] } {
+  const stack = framedScreenStack(s);
+  const across = new Vector3(0, 0, 1);
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const at = (u: number, v: number, o: number) => faceCentre.add(across.scale(u)).add(up.scale(v)).add(out.scale(o));
+  // a rectangle's corners, bottom-left round to top-left, and each side's outward direction in the face
+  const rect = (x: number, y: number, o: number) => [at(-x, -y, o), at(x, -y, o), at(x, y, o), at(-x, y, o)];
+  const sides = [up.scale(-1), across, up, across.scale(-1)];
+  const ring = (a: Vector3[], b: Vector3[], normal: (k: number) => Vector3): FacetQuad[] =>
+    [0, 1, 2, 3].map((k) => ({ corners: [a[k]!, a[(k + 1) % 4]!, b[(k + 1) % 4]!, b[k]!] as const, normal: normal(k) }));
+  const opening = (o: number) => rect(s.width / 2 + s.gap, s.height / 2 + s.gap, o);
+  const shoulder = (o: number) => rect(s.width / 2 + s.bezel - s.chamfer, s.height / 2 + s.bezel - s.chamfer, o);
+  const edge = (o: number) => rect(s.width / 2 + s.bezel, s.height / 2 + s.bezel, o);
+  const { bezelFront: front, bezelBack: back, chamferFoot: foot } = stack;
+  return {
+    frame: [
+      ...ring(opening(front), shoulder(front), () => out),
+      ...ring(shoulder(front), shoulder(back), (k) => sides[k]!),
+      ...ring(opening(back), shoulder(back), () => out.scale(-1)),
+      ...ring(opening(back), opening(front), (k) => sides[k]!.scale(-1)),
+    ],
+    rim: [
+      // the chamfer runs as far across the face as it falls toward it: its normal is halfway between the side's and the face's
+      ...ring(shoulder(front), edge(foot), (k) => sides[k]!.add(out).normalize()),
+      ...ring(edge(foot), edge(back), (k) => sides[k]!),
+      ...ring(shoulder(back), edge(back), () => out.scale(-1)),
+      ...ring(shoulder(back), shoulder(front), (k) => sides[k]!.scale(-1)),
+    ],
+  };
+}
+
 /** A flat quad of a `facetMesh`: four corners in order round it, and the way its drawn side faces. */
 export interface FacetQuad {
   readonly corners: readonly [Vector3, Vector3, Vector3, Vector3];

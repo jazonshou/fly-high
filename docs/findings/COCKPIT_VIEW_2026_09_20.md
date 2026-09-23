@@ -1485,7 +1485,7 @@ capture):
   print): the display is 15 (16 of 16 under fog, drawn), and the bezel, the instrument face (the wells), the
   interior (with the consoles), the glareshield and the marking are 14 (15 under fog). No GPU error in any variant.
 
-## The 747's panel, integrated (P1a)
+## The 747's panel, integrated (P1a, P1b; P1c not needed)
 
 The 747's board was the same kind of object as the Global's (P0): a vertical slab under a flush lip, with square pale
 bezels (164 against its 54). Its band from the lip to the frame's bottom is only 4.78 degrees, and the top row of
@@ -1520,9 +1520,48 @@ glareshield's 24 to 144). Mesh by mesh against c586870, only the four kit meshes
 Eight mutations, all caught: lean 0; the spec's 0.5 degree gap; the Global's round; a hood no steeper than the sight
 line (refused at build); the board or the screens unturned; the hood run out through the shell; the flush lip back.
 
-**Still to come on the 747:** P1b, the bezels framed and recessed on a dark 747 bezel material with the glow on the
-rim alone; the marking material stays for the panel's labels. P1c is skipped if the rays find no wall beside the
-board: in P0 the board runs past both frame edges (az -43 to +65).
+**P1b, the bezels framed and recessed.** The Global's framed screen moved into `cockpitPrimitives`
+(`framedScreenStack`, `framedScreenFacets`), and all 94 of the Global's meshes are again bit-identical against
+c586870. On the 747 each screen now has the Global's stack, square to the leaned face:
+- **The frame** runs from 1 mm inside the board to 6 mm out, with a 4 mm chamfer at 45 degrees round its outer edge.
+- **The screen** is a 0.5 mm plate whose face is **3 mm behind** the frame's front. It stood 1 mm proud until now.
+- **Behind the 2 mm gap** is a well on the instrument face's near-black. By ray, the gap meets the well on both
+  sides of the PFD (it is straight ahead), on the ND's side toward the eye, and over each screen's top.
+- **The frames' tops** now sit 0.005 degree UNDER the cove's foot. K3's square bezels stood 0.008 over it. The pin is
+  now "no higher than the foot", and a 0.6 degree gap fails it.
+- **The share is unchanged:** the top row is still 38.1% in the frame.
+
+**Materials.** The frames are on a 747-only `airliner-bezel`: 0x2c3034, with the board's finish and NO emissive,
+1.41 times the board's luma by albedo. The chamfered rims are on the 747's marking material, retuned to the
+Global's rim: 0x2b3237, with its day emissive at 0.175. Until now that material was pale 0x9fd9e8 with its emissive
+at 0.7, and on it the bezels read 164 against the board's 54. Nothing else in the airframe uses it, so it stays the
+one `applyGlow` drives, and the glow is the rim's alone.
+
+**The count.** The kit is six meshes (the rims and the wells are new): two more draws in cockpit view, 92 from the
+cockpit camera. The airframe has 164 authored parts, up from 152, and its geometry census is re-pinned (+1,152
+vertices and indices exactly). Mesh by mesh against 2432e58, the screens and the frames changed, the rims and wells
+are new, and the other 91 meshes are bit-identical.
+
+**Tests** (36): the frame's size and opening; the stack's planes on all six screens; the chamfer by its built
+normals; by ray, the recess, the gap and the frame's face; the materials. Fifteen mutations, all caught:
+- no chamfer; the screen proud; no gap; no wells; a 30 degree chamfer; the frames placed from the screen's centre;
+- the frames on the marking material, at the old pale tone, as dark as the board, or emissive;
+- the rims on the frames' material, or the old pale marking back;
+- the wells on the frames' material; `facetMesh`'s winding reversed; a 0.6 degree gap under the deck.
+
+**P1c, skipped: no wall shows beside the 747's board.** The Global's side consoles filled a bare wall standing
+beside a board that ended at az -23. From the 747's seat the board's ends are at az -43.2 and +64.6, past both edges
+of the frame. By ray on the built kit, every column sampled (100, one every 16 px) is deck from the frame's bottom
+row up to the deck line (row 800). Above it the frame shows only window frame, and no ray under the glass meets anything outside the
+kit. The window frame is:
+- the sills: at most 1 degree over No.1 (K3's rule), and 1.2 to 2.5 degrees over No.2, whose bottom edge stands
+  higher;
+- the members: the post and the pillars.
+
+A test pins the deck filling the frame under the deck line. With the board narrowed to 0.8 m, which ends at az -19,
+only that test fails.
+
+The frames and the live tone for P1a and P1b come in one GPU slot.
 
 ## Not done, and one thing to know
 

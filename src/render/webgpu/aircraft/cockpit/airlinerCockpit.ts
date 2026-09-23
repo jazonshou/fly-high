@@ -15,7 +15,15 @@ import {
   type SkinCaster,
 } from "../airlinerGlazing";
 import type { AircraftBuildContext } from "../builders";
-import { glareshieldMaterial, roundedDeckSection, solidPlate, type RoundedDeckSection } from "./cockpitPrimitives";
+import {
+  facetMesh,
+  framedScreenFacets,
+  framedScreenStack,
+  glareshieldMaterial,
+  roundedDeckSection,
+  solidPlate,
+  type RoundedDeckSection,
+} from "./cockpitPrimitives";
 import {
   AIRLINER_DISPLAYS,
   createDisplayAtlas,
@@ -84,7 +92,10 @@ export interface AirlinerCockpitMaterials {
    */
   readonly interior: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
-  /** Bezels. It carries the night glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one. */
+  /**
+   * The bezels' chamfered rims (P1b; the frames have their own dark material). It carries the night glow
+   * (`applyGlow(instrumentMarking, ...)`), so it must be the shared one.
+   */
   readonly instrumentMarking: PBRMaterial;
 }
 
@@ -238,8 +249,16 @@ export const AIRLINER_SCREENS = Object.freeze({
   belowDeckEdgeDegrees: 0.65,
   /** Between the upper EICAS's bezel and the lower one's. */
   rowGap: 0.005,
+  /** The bezel's frame (P1b, `framedScreenFacets`): its front this far out of the board, its back 1 mm inside it. */
   bezelThickness: 0.007,
-  screenThickness: 0.003,
+  /** The chamfer round the frame's outer edge, 45 degrees; the dark gap round the screen; the screen's face this far
+   * behind the frame's front; the screen a thin plate, its sides in the well. */
+  chamfer: 0.004,
+  gap: 0.002,
+  recess: 0.003,
+  screenThickness: 0.0005,
+  /** The well's floor behind the gap, straddling the board's face. */
+  wellThickness: 0.001,
 });
 
 /**
@@ -260,29 +279,40 @@ const SCREEN_LAYOUT: readonly { readonly name: string; readonly z: (seat: number
 ];
 
 /**
- * The six screens on the leaned face, in `SCREEN_LAYOUT`'s order: `centre` is the screen box's and `bezelCentre` its
- * bezel's, both turned back by the lean about z. The screen's front stands 1 mm proud of its bezel's front, the bezel's
- * back 1 mm inside the board, all square to the face; the top row's front top edge reads `belowDeckEdgeDegrees` under
- * the cove's foot, and the lower EICAS stands a row down the face.
+ * The six screens on the leaned face, in `SCREEN_LAYOUT`'s order: `centre` is the screen plate's, and `faceCentre` the
+ * same point on the board's face, where the bezel's frame and the well are laid out from (`framedScreenFacets`). The
+ * screen plate is turned back by the lean about z, its face `recess` behind its frame's front; the top row's face top
+ * edge reads `belowDeckEdgeDegrees` under the cove's foot, and the lower EICAS stands a row down the face.
  */
-export function airlinerScreenPlacements(): readonly { name: string; centre: Vector3; bezelCentre: Vector3 }[] {
+export function airlinerScreenPlacements(): readonly { name: string; centre: Vector3; faceCentre: Vector3 }[] {
   const s = AIRLINER_SCREENS;
+  const stack = framedScreenStack(s);
   const e = eye();
   const seat = Math.abs(e.right);
   const face = airlinerPanelFace();
   const along = (h: number, out: number) => ({ x: face.top.x + h * face.up.x + out * face.normal.x, y: face.top.y + h * face.up.y + out * face.normal.y });
   // a line along z reads one row wherever it is: the row is the slope (y - eye.y) / (x - eye.x)
   const slope = Math.tan(Math.atan2(face.top.y - e.up, face.top.x - e.forward) - s.belowDeckEdgeDegrees * DEG);
-  const front = along(0, s.bezelThickness);
+  const front = along(0, stack.screenFront);
   const h = (slope * (front.x - e.forward) - (front.y - e.up)) / (face.up.y - slope * face.up.x);
   const rowDrop = s.height + s.bezel * 2 + s.rowGap;
   return SCREEN_LAYOUT.map(({ name, z, row }) => {
     const middle = h - s.height / 2 - row * rowDrop;
-    const screen = along(middle, s.bezelThickness - s.screenThickness / 2);
-    const bezel = along(middle, s.bezelThickness / 2 - 0.001);
+    const screen = along(middle, (stack.screenFront + stack.screenBack) / 2);
+    const onFace = along(middle, 0);
     const at = z(seat, s.pitch);
-    return { name, centre: new Vector3(screen.x, screen.y, at), bezelCentre: new Vector3(bezel.x, bezel.y, at) };
+    return { name, centre: new Vector3(screen.x, screen.y, at), faceCentre: new Vector3(onFace.x, onFace.y, at) };
   });
+}
+
+/**
+ * The bezel FRAMES' own material (P1b), the 747's alone: dark neutral grey with the board's finish and NO emissive,
+ * lighter than the board by albedo alone (the design's 1.3 to 1.6 times its luma; the Global's frames read 1.46 live).
+ * The chamfered RIM round each frame is on the shared marking material, which carries the night glow.
+ */
+export const AIRLINER_BEZEL_ALBEDO = 0x2c3034;
+function airlinerBezelMaterial(build: AircraftBuildContext): PBRMaterial {
+  return build.material("airliner-bezel", AIRLINER_BEZEL_ALBEDO, { roughness: 0.82, metallic: 0.02 });
 }
 
 // ---- the frame: the lining cast on the skin round the glass ----------------------------------
@@ -431,8 +461,9 @@ export interface AirlinerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the rule
  * is applied in one place. `skin` is the caster the glazing was cast with.
  *
- * FOUR meshes, all static: the board and the window frame's lining on the interior material; the glareshield's lip
- * on the glareshield's, alone; the six screens; their six bezels.
+ * SIX meshes, all static: the board and the window frame's lining on the interior material; the glareshield's rounded
+ * deck on the glareshield's, alone; the six screens; their six bezel frames; the frames' chamfered rims, on the marking
+ * (the night glow); the wells behind the gaps round the screens.
  */
 export function buildAirlinerCockpit(
   build: AircraftBuildContext,
@@ -480,25 +511,29 @@ export function buildAirlinerCockpit(
   );
   board.rotation.z = -lean;
 
-  // THE SCREENS AND THEIR BEZELS: two meshes for twelve boxes. The bezel's back
-  // stands 1 mm inside the board so nothing is coincident.
+  // THE SCREENS, THEIR BEZELS AND THEIR WELLS: four meshes, turned back with the face. A screen is a thin glass plate
+  // RECESSED behind its bezel's front; the bezel a frame round it on its own dark material, its chamfered rim on the
+  // marking (the night glow's); behind the gap between them, a well on the instrument-face material, dark.
   const s = AIRLINER_SCREENS;
+  const bezelMaterial = airlinerBezelMaterial(build);
   const screens: AbstractMesh[] = [];
-  const bezels: AbstractMesh[] = [];
-  for (const { name, centre, bezelCentre } of airlinerScreenPlacements()) {
+  const frames: AbstractMesh[] = [];
+  const rims: AbstractMesh[] = [];
+  const wells: AbstractMesh[] = [];
+  for (const { name, centre, faceCentre } of airlinerScreenPlacements()) {
     const screen = build.box(
       `airliner-screen-${name}`, s.screenThickness, s.height, s.width, materials.instrumentFace, root,
     );
     screen.position.copyFrom(centre);
     screen.rotation.z = -lean;
     screens.push(screen);
-    const bezel = build.box(
-      `airliner-screen-bezel-${name}`, s.bezelThickness, s.height + s.bezel * 2, s.width + s.bezel * 2,
-      materials.instrumentMarking, root,
-    );
-    bezel.position.copyFrom(bezelCentre);
-    bezel.rotation.z = -lean;
-    bezels.push(bezel);
+    const facets = framedScreenFacets(faceCentre, face, s);
+    frames.push(facetMesh(build, `airliner-screen-bezel-${name}`, facets.frame, bezelMaterial, root));
+    rims.push(facetMesh(build, `airliner-screen-bezel-rim-${name}`, facets.rim, materials.instrumentMarking, root));
+    const well = build.box(`airliner-screen-well-${name}`, s.wellThickness, s.height + s.gap * 2, s.width + s.gap * 2, materials.instrumentFace, root);
+    well.position.copyFrom(faceCentre);
+    well.rotation.z = -lean;
+    wells.push(well);
   }
   // EACH SCREEN'S PILOT-FACING FACE GETS ITS OWN SLOT of the display atlas, before the merge bakes
   // the vertex data. The boxes are built in `SCREEN_LAYOUT` order and the slots are in the same order, so
@@ -512,7 +547,9 @@ export function buildAirlinerCockpit(
   }
   const screensMesh = build.mergeStatic("airliner-screens", screens, root);
   parts.push(screensMesh);
-  parts.push(build.mergeStatic("airliner-screen-bezels", bezels, root));
+  parts.push(build.mergeStatic("airliner-screen-bezels", frames, root));
+  parts.push(build.mergeStatic("airliner-screen-bezel-rims", rims, root));
+  parts.push(build.mergeStatic("airliner-screen-wells", wells, root));
 
   // THE DISPLAYS THEMSELVES, if this engine has a 2D canvas. Under NullEngine it does not, and the
   // screens keep the flat instrument-face material they were built with (see `displayAtlas.ts`).
