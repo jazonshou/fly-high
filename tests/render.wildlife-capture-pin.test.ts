@@ -237,6 +237,11 @@ describe("each part of the pin is needed", () => {
       },
       histories: ["own streaming 1110", "own streaming 1260"],
     },
+    // Within one shot list the pre-pin histories differ by multiples of 30
+    // frames, the 1/60 s renders step the 1/30 s clock in pairs, and the
+    // accumulator sits at exactly 0 at the pin either way (measured at
+    // 1110/1260, 1110/1140, 14190/15060) — so this part only bites across
+    // lists, where the frame count can differ by an odd number.
     "a respawn and the step count, without the clock": {
       pin: (system) => {
         const inner = internals(system);
