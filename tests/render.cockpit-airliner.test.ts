@@ -821,6 +821,49 @@ describe("the 747's cockpit against the shell it stands in", () => {
     console.info(`747 cockpit clearance from the shell's outer skin:\n  ${lines.join("\n  ")}`);
   });
 
+  it("is watertight: wherever two pieces of the frame meet, they meet at the same points (no T-junction)", () => {
+    // Two strips that meet on the curved skin at DIFFERENT points each span the seam with their own chords, which part
+    // by a fraction of a millimetre, and the hidden sky shows through as a bright hairline: K2's first live frame had
+    // them along the crown's seams. So along every seam between two frame pieces (the lining's strips and the post),
+    // each inner-face boundary vertex of one that lies within a centimetre of the other's boundary is one of the
+    // other's boundary vertices, to the last bit. (A T-junction vertex lies about half a millimetre off the chord.)
+    const frame = panels.filter((p) => /lining|windscreen-center-post/.test(p.name));
+    expect(frame.length, "sixteen lining strips and the post").toBe(17);
+    const boundary = (p: Panel) => {
+      const loop: Vector3[] = [];
+      for (let c = 0; c < p.columns; c += 1) loop.push(gridVertex(p, 1, 0, c));
+      for (let r = 1; r < p.rows; r += 1) loop.push(gridVertex(p, 1, r, p.columns - 1));
+      for (let c = p.columns - 2; c >= 0; c -= 1) loop.push(gridVertex(p, 1, p.rows - 1, c));
+      for (let r = p.rows - 2; r >= 1; r -= 1) loop.push(gridVertex(p, 1, r, 0));
+      return loop;
+    };
+    const loops = frame.map((p) => ({ name: p.name, loop: boundary(p) }));
+    const toSegment = (v: Vector3, a: Vector3, b: Vector3) => {
+      const ab = b.subtract(a);
+      const t = Math.max(0, Math.min(1, Vector3.Dot(v.subtract(a), ab) / ab.lengthSquared()));
+      return Vector3.Distance(v, a.add(ab.scale(t)));
+    };
+    let seamVertices = 0;
+    const junctions: string[] = [];
+    for (const one of loops) {
+      for (const other of loops) {
+        if (one === other) continue;
+        for (const v of one.loop) {
+          let near = Number.POSITIVE_INFINITY;
+          for (let k = 0; k < other.loop.length; k += 1) near = Math.min(near, toSegment(v, other.loop[k]!, other.loop[(k + 1) % other.loop.length]!));
+          if (near > 0.01) continue;
+          seamVertices += 1;
+          if (!other.loop.some((w) => Vector3.Distance(v, w) < 1e-9)) {
+            junctions.push(`${one.name} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}) on ${other.name}'s edge, ${(near * 1000).toFixed(2)} mm off it`);
+          }
+        }
+      }
+    }
+    expect(junctions.slice(0, 8), `${junctions.length} T-junctions`).toEqual([]);
+    // NON-VACUITY: the seams were found (every strip meets at least one other along an edge)
+    expect(seamVertices).toBeGreaterThan(150);
+  });
+
   it("lines the skin from inside: where the pilot sees the lining's face it stands inside the outer skin, and its rim no further out than the glass", () => {
     // The lining is the panes' own slab, 0.04 out of the skin and 0.06 in. Its INNER face is what lines the deck;
     // where a sightline meets its rim instead, at a pane's edge, the rim stands out of the skin as the pane's does.

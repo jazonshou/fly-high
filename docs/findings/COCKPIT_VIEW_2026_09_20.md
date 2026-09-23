@@ -1064,8 +1064,12 @@ A box's far top corner would stand 1.6 cm over that sight line and become the ed
 and laid at the panes' own 0.04 out and 0.06 in: under each pane a sill, over it a crown, between
 neighbours a pillar as tall as the taller one, and either side of the post the gap to No.1. Nine strips, two
 across the centreline and seven a side, read from `FLIGHT_DECK_PANES` rather than typed. The edges are
-therefore the panes' edges at every point, and a re-loft moves the frame with the glass. They are skin
-panels, not `solidPlate`s, because the pane edges are curves on a curved nose and a plate is flat; the
+therefore the panes' edges at every point, and a re-loft moves the frame with the glass. The strips are
+cast on ONE set of grid lines (the panes' and the post's edges, with lines no more than 5 degrees apart
+between them), so that two strips meet at the same points: sampled on rows of their own, neighbours crossed
+their shared seam on different chords, which part by a fraction of a millimetre, and K2's first live frame
+showed hairlines of sky along the crown's seams. A test now finds no T-junction anywhere in the frame (105
+with the old sampling). They are skin panels, not `solidPlate`s, because the pane edges are curves on a curved nose and a plate is flat; the
 builder winds them by geometry to the same rule (the cross product into the solid), and the drawn-faces walk
 reads zero culled on all four meshes at both offsets. The sills are on the glareshield's matte material, so
 from the seat the glareshield runs on to the glass; the crowns, pillars and gaps are on the flight deck's
@@ -1095,13 +1099,15 @@ cockpit camera either way.
 | PFD / ND / upper EICAS in the frame | >= 35% | 42.9% each on a 21 x 21 grid (43.5% exact) |
 | lower EICAS, starboard ND and PFD | - | 0% (under the frame; beyond its right edge) |
 | holes in the picture | glass only | 0 rays of skin showing, 0 of the kit over a pane's middle |
-| lining, inner face / rims | inside the skin / no further out than the glass | 0.070 m inside at the tightest / 0.066 m out at the farthest |
+| lining, inner face / rims | inside the skin / no further out than the glass | 0.069 m inside at the tightest / 0.065 m out at the farthest |
+| seams between frame pieces | no T-junction | none (105 with each strip on rows of its own) |
 | board and lip against the outer skin | >= 0.01 m | 0.160 m |
 
 **Cost.** Still four cockpit-only meshes; the cockpit camera draws 91 of the airframe's meshes where it
-drew 90 (the post); the exterior camera's 89 did not move. The airframe grew by 2,030 vertices and 5,520
-indices (the lining's 2,200 and the lip's 24, less the overhead, hood, dash, pillar and seam post), and
-building it takes about 4 ms more (NullEngine, median of 15 builds: 50 against 48). The 747's and the
+drew 90 (the post); the exterior camera's 89 did not move. The airframe grew by 2,522 vertices and 7,128
+indices (the lining's 2,692 and the lip's 24, less the overhead, hood, dash, pillar and seam post), and
+building it costs a few milliseconds at most: NullEngine medians of 15 builds read 48 to 53 ms across runs,
+against the base's 48. The 747's and the
 Global's display atlases draw call for call as they did: the slots and pages are unchanged, and only the
 screens' places moved.
 

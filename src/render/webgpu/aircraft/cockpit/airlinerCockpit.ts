@@ -9,6 +9,7 @@ import {
   FLIGHT_DECK_PANES,
   FLIGHT_DECK_REFERENCE,
   PANE_DEPTH,
+  PANE_GRID,
   PANE_PROUD,
   sightline,
   type FlightDeckPane,
@@ -246,7 +247,10 @@ export function airlinerScreenPlacements(): readonly { name: string; centre: Vec
  */
 export const AIRLINER_POST_HALF_AZIMUTH = 1;
 
-/** How far below and above the glass the lining runs, in R's elevation: past the frame's edges from the eye with room. */
+/**
+ * How far below and above the glass the lining runs, in R's elevation (past the frame's edges from the eye, with
+ * room), and the widest step between its grid lines (`airlinerLiningLines`).
+ */
 export const AIRLINER_LINING = Object.freeze({ bottom: -30, top: 40, maxStepDegrees: 5 });
 
 export interface LiningStrip {
@@ -288,19 +292,58 @@ export function airlinerLiningStrips(): readonly LiningStrip[] {
   ];
 }
 
-/** A strip's grid on the skin, cast from R as the panes are: rows bottom to top, columns in the strip's azimuth order. */
+/** Breakpoints with lines added between each pair, evenly, no more than `maxStepDegrees` apart. */
+function subdivided(breaks: readonly number[]): number[] {
+  const out: number[] = [];
+  for (let i = 0; i + 1 < breaks.length; i += 1) {
+    const a = breaks[i]!;
+    const b = breaks[i + 1]!;
+    const pieces = Math.max(1, Math.ceil((b - a) / AIRLINER_LINING.maxStepDegrees));
+    for (let k = 0; k < pieces; k += 1) out.push(k === 0 ? a : a + ((b - a) * k) / pieces);
+  }
+  out.push(breaks.at(-1)!);
+  return out;
+}
+
+/**
+ * THE LINING'S ONE GRID. Two strips that meet must meet at the SAME cast points. A strip sampled on rows of its own
+ * shares only its corners with its neighbour, and between them each edge is its own chord across the curved skin, so
+ * the two edges part by a fraction of a millimetre and the hidden sky shows through the frame as a bright hairline:
+ * it did, in K2's first live frame, along the crown's seams. So every strip takes its rows and columns from these
+ * lines: the panes' own edges and the post's, with lines added between them no more than `maxStepDegrees` apart, and
+ * nothing between the post's two edges, so the post's top and foot are single chords in the crown and the sill too.
+ * The gaps by the post take the POST's rows (`paneGrid`'s rows over No.1's elevations, the same expression), because
+ * the post is the one neighbour not cast on these lines. Azimuths are outboard positive; across the centreline the
+ * port lines are mirrored, and a mirrored sightline is the same ray to the last bit.
+ */
+export function airlinerLiningLines(): { azimuth: readonly number[]; elevation: readonly number[]; postRows: readonly number[] } {
+  const [one, two, three] = [FLIGHT_DECK_PANES[0]!, FLIGHT_DECK_PANES[1]!, FLIGHT_DECK_PANES[2]!];
+  const port = subdivided([AIRLINER_POST_HALF_AZIMUTH, one.azimuth[0], one.azimuth[1], two.azimuth[0], two.azimuth[1], three.azimuth[0], three.azimuth[1]]);
+  const breaks = [AIRLINER_LINING.bottom, AIRLINER_LINING.top, ...[one, two, three].flatMap((pane) => [...pane.elevation])];
+  return {
+    azimuth: [...port.map((a) => -a).reverse(), ...port],
+    elevation: subdivided([...new Set(breaks)].sort((a, b) => a - b)),
+    postRows: Array.from({ length: PANE_GRID }, (_, row) => one.elevation[0] + (one.elevation[1] - one.elevation[0]) * (row / (PANE_GRID - 1))),
+  };
+}
+
+/** A strip's grid on the skin, cast from R as the panes are, on the lining's lines: rows bottom to top, columns in azimuth order. */
 function liningGrid(skin: SkinCaster, strip: LiningStrip, side: 1 | -1): { points: Point3[][]; normals: Point3[][] } {
-  const steps = (span: number) => Math.max(1, Math.ceil(Math.abs(span) / AIRLINER_LINING.maxStepDegrees));
-  const rows = steps(strip.elevation[1] - strip.elevation[0]) + 1;
-  const columns = steps(strip.azimuth[1] - strip.azimuth[0]) + 1;
+  const lines = airlinerLiningLines();
+  const within = (values: readonly number[], [from, to]: readonly [number, number]) => values.filter((v) => v >= from - 1e-9 && v <= to + 1e-9);
+  const columns = within(lines.azimuth, strip.azimuth);
+  const rows = strip.name === "post-gap" ? lines.postRows : within(lines.elevation, strip.elevation);
+  for (const [what, got, range] of [["azimuth", columns, strip.azimuth], ["elevation", rows, strip.elevation]] as const) {
+    if (got.length < 2 || got[0] !== range[0] || got.at(-1) !== range[1]) {
+      throw new RangeError(`747 cockpit lining ${strip.name}: its ${what} range ${range.join("..")} is not on the lining's lines`);
+    }
+  }
   const points: Point3[][] = [];
   const normals: Point3[][] = [];
-  for (let row = 0; row < rows; row += 1) {
-    const elevation = strip.elevation[0] + ((strip.elevation[1] - strip.elevation[0]) * row) / (rows - 1);
+  for (const elevation of rows) {
     const pointRow: Point3[] = [];
     const normalRow: Point3[] = [];
-    for (let column = 0; column < columns; column += 1) {
-      const azimuth = strip.azimuth[0] + ((strip.azimuth[1] - strip.azimuth[0]) * column) / (columns - 1);
+    for (const azimuth of columns) {
       const hit = skin.exit(FLIGHT_DECK_REFERENCE, sightline(azimuth, elevation, side));
       if (!hit) throw new RangeError(`747 cockpit lining ${strip.name}: no skin at az ${azimuth.toFixed(2)}, el ${elevation.toFixed(2)}`);
       pointRow.push(hit.point);

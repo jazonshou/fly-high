@@ -587,34 +587,36 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // its own, and the fuselage now runs to 30.8 hugging the nose instead of tapering away
     // inside it from 28, so the two overlap more.
     //
-    // THEN 12,033 TO 14,063 with the cockpit kit cast round the re-lofted glass. The overhead (60 vertices), the
+    // THEN 12,033 TO 14,555 with the cockpit kit cast round the re-lofted glass. The overhead (60 vertices), the
     // hood (24), the dash (36), the pillar (36) and the port seam post (38) left; the glareshield's lip (a 3-sided
-    // `solidPlate`, 24) and the lining came, 16 skin panels of 2,200 vertices and 5,760 indices (a panel of r x c
-    // grid points is 2rc + 8(c-1) + 8(r-1) vertices, and the strips are 4x12, 7x12, then a side each 7x2, 7x2,
-    // 4x7, 7x7, 6x2, 5x5 and 8x5): +2,030 and +5,520 exactly. The board is the same box, 0.03 thinner; the seats
-    // moved 0.22 inboard and 0.05 aft with the eye. The extents did not move. The position sum's x rose by about
-    // what 2,030 vertices at x ~31 weigh (+63,169); its z by +36.5, most of it the seam post leaving, which stood
-    // on the port side alone (38 vertices at z about -1.1). The area rose by 7.40 m^2 (the lining's two faces),
-    // the signed volume by -0.66 m^3.
+    // `solidPlate`, 24) and the lining came, 16 skin panels of 2,692 vertices and 7,368 indices (a panel of r x c
+    // grid points is 2rc + 8(c-1) + 8(r-1) vertices, and the strips are 4x16 and 7x16 across the centreline, then a
+    // side each 8x2, 9x2, 5x8, 8x8, 7x2, 6x5 and 9x5): +2,522 and +7,128 exactly. The strips are cast on ONE set of
+    // grid lines (`airlinerLiningLines`) so neighbours meet at the same points; sampled on rows of their own, K2's
+    // first live frame showed hairline cracks of sky along the crown's seams. The board is the same box, 0.03
+    // thinner; the seats moved 0.22 inboard and 0.05 aft with the eye. The extents did not move. The position sum's x
+    // rose by about what 2,522 vertices at x ~31 weigh (+78,535); its z by +37.2, most of it the seam post leaving,
+    // which stood on the port side alone (38 vertices at z about -1.1). The area rose by 7.42 m^2 (the lining's two
+    // faces), the signed volume by -0.66 m^3.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(14_063);
-    expect(census.indices).toBe(61_608);
+    expect(census.vertices).toBe(14_555);
+    expect(census.indices).toBe(63_216);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(125392.7142, 1);
-    expect(census.positionSum.y).toBeCloseTo(-16954.3830, 1);
-    expect(census.positionSum.z).toBeCloseTo(5.2408, 1);
-    expect(census.positionSquares).toBeCloseTo(10242027.32, 0);
-    expect(census.normalSum.x).toBeCloseTo(-539.1249, 2);
-    expect(census.normalSum.y).toBeCloseTo(36.9270, 2);
-    expect(census.normalSum.z).toBeCloseTo(-0.5656, 2);
-    expect(census.normalMoment).toBeCloseTo(5291.3267, 1);
-    expect(census.signedVolume).toBeCloseTo(-3228.3613, 2);
-    expect(census.area).toBeCloseTo(4688.2677, 2);
+    expect(census.positionSum.x).toBeCloseTo(140759.0344, 1);
+    expect(census.positionSum.y).toBeCloseTo(-15619.8937, 1);
+    expect(census.positionSum.z).toBeCloseTo(5.8989, 1);
+    expect(census.positionSquares).toBeCloseTo(10726575.19, 0);
+    expect(census.normalSum.x).toBeCloseTo(-554.7628, 2);
+    expect(census.normalSum.y).toBeCloseTo(31.6334, 2);
+    expect(census.normalSum.z).toBeCloseTo(-0.6931, 2);
+    expect(census.normalMoment).toBeCloseTo(4856.0079, 1);
+    expect(census.signedVolume).toBeCloseTo(-3228.3626, 2);
+    expect(census.area).toBeCloseTo(4688.2902, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
