@@ -1,5 +1,12 @@
 # The Global's cabin windows stand 35–55 mm out of the fuselage
 
+> **SUPERSEDED 2026-09-23 (Global phase 3a, `GLOBAL_LIVERY.md`).** The bow this
+> file records was written into a vertex buffer created non-updatable, which
+> Babylon drops without a word: the CPU copy that every figure below was read
+> from was bowed, and the GPU drew the flat pane. The "after" table is true of a
+> mesh the GPU never received. The pane is now cast and built once, and seated
+> by ray over the whole window, not at vertices.
+
 **Measured, not fixed.** Numbers first, so the decision is someone else's.
 
 ## The number

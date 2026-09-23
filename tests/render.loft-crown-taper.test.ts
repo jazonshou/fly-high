@@ -249,7 +249,13 @@ describe("the loft's crown taper", () => {
       // bizjet-pfd-pitch-bar (24, 12, 8) -- none is new, none changed, and the other 96 are
       // bit-identical. Totals 10,861 -> 10,261 vertices and 17,358 -> 17,154 triangles, which is
       // those three meshes and nothing else. The trainer keeps its ball and its pin.
-      bizjet: "58163ded",
+      // RE-PINNED for the Global's cabin windows (phase 3a): the thin-instanced oval
+      // `bizjet-cabin-window-line` (54 vertices, 144 indices, bowed on the CPU copy only --
+      // the GPU drew it flat) is GONE, and `bizjet-cabin-windows` is NEW: 28 panes cast onto
+      // the fuselage's own triangles and merged, 7,896 vertices and 8,512 triangles, one draw.
+      // Checked mesh by mesh against 58f8b28, positions, normals, UVs, indices, world matrix,
+      // material and visibility: the Global's other 95 meshes are bit-identical.
+      bizjet: "4f548357",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
