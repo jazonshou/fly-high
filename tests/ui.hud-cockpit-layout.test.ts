@@ -30,17 +30,18 @@ import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMa
  *    class and `--deck-k` alone;
  *  - the stylesheet's cockpit rules are scoped to the cockpit class and carry the
  *    layout module's numbers;
- *  - on FIVE window shapes, every deck's rows are where the rule says: Babylon's own
- *    horizontal-fixed camera, sized to each window, finds the deck's first row
- *    within 2 px of H/2 + (W/2) * k;
- *  - on those five shapes, every deck, and the full, minimal and alert HUDs, no HUD
+ *  - on SEVEN window shapes (16:9 at three sizes, 4:3 and 21:9 at three), every
+ *    deck's rows are where the rule says: Babylon's own horizontal-fixed camera,
+ *    sized to each window, finds the deck's first row within 2 px of
+ *    H/2 + (W/2) * k;
+ *  - on those seven shapes, every deck, and the full, minimal and alert HUDs, no HUD
  *    element lies over a screen, bezel, glareshield or panel pixel, and none crosses
  *    the deck line. The element boxes are read from the stylesheet
  *    (tests/support/cockpitHudModel.ts), so a deleted layout rule sends its element
  *    back onto the screens, and this fails.
  */
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SHAPES = [[1280, 720], [1600, 900], [1920, 1080], [1600, 1200], [2560, 1080]] as const;
+const SHAPES = [[1280, 720], [1600, 900], [1920, 1080], [1600, 1200], [1680, 720], [2560, 1080], [3440, 1440]] as const;
 const kOf = (deck: Deck) => cockpitDeckK(aircraftSpec(deck).cockpitDeckLineDegrees);
 
 describe("the HUD's markup", () => {
