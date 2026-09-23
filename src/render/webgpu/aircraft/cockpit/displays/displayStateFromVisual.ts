@@ -50,9 +50,10 @@ function finiteOr(value: number, fallback: number): number {
  *
  * `n1Percent` repeats ONE number: the simulator models a single `engineRpm` (a percentage on the
  * jets) and no per-engine state, so four gauges that differed would be drawing fiction.
- * `spoilers` comes from the BRAKE, which is what `animation.ts` drives the wings from (ground
- * spoilers armed by it on the wheels, flight speed brake in the air); the two cases differ in the
- * radians the animation scales it to, not in the fraction a display annunciates.
+ * `spoilers` is the larger of the speed brake (the BRAKE, which the flight spoilers rise on in the
+ * air) and the ground spoilers the sim deployed (touchdown at idle, or the wheel brake on the
+ * ground): the two panels `animation.ts` draws, and the cases differ in the radians it scales them
+ * to, not in the fraction a display annunciates.
  */
 export function displayStateFromVisual(state: FlightVisualState, airframe: DisplayAirframe): DisplayState {
   const velocityX = finiteOr(state.velocity?.x ?? 0, 0);
@@ -72,7 +73,7 @@ export function displayStateFromVisual(state: FlightVisualState, airframe: Displ
     // 1 is down-and-locked; anything less is in transit, and a display that says DOWN then lies
     gearDown: finiteOr(state.gear, 0) >= 0.99,
     flapDeg: clamp(finiteOr(state.flaps, 0), 0, 1) * airframe.fullFlapDegrees,
-    spoilers: clamp(finiteOr(state.brake, 0), 0, 1),
+    spoilers: Math.max(clamp(finiteOr(state.brake, 0), 0, 1), clamp(finiteOr(state.groundSpoilers, 0), 0, 1)),
     throttlePercent: clamp(finiteOr(state.throttle, 0), 0, 1) * 100,
   };
 }

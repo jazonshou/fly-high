@@ -440,6 +440,7 @@ export function interpolateFlightState(
   result.aileron = lerp(first.aileron, second.aileron, alpha);
   result.rudder = lerp(first.rudder, second.rudder, alpha);
   result.brake = lerp(first.brake, second.brake, alpha);
+  result.groundSpoilers = lerp(first.groundSpoilers, second.groundSpoilers, alpha);
   result.trim = lerp(first.trim, second.trim, alpha);
   result.flaps = lerp(first.flaps, second.flaps, alpha);
   result.gear = lerp(first.gear, second.gear, alpha);

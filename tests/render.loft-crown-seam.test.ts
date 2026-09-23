@@ -482,7 +482,11 @@ describe("a loft's crown seam", () => {
       // `airliner-screen-wells`, 72). Checked mesh by mesh against 2432e58: none gone, those two new, airliner-screens
       // and airliner-screen-bezels changed; the other 91 are bit-identical. The Global's 94 are bit-identical against
       // c586870 after the move.
-      airliner: "6fdfc378",
+      // RE-PINNED for the spoiler bays (the dark well a raised spoiler uncovers): checked mesh by mesh against
+      // 55679ba, none gone and none moved, one new: airliner-spoiler-bays, 360 vertices (twelve plates on the
+      // wing's skin, folded into one). The other 95 are bit-identical, the kit's included; so is every mesh of the
+      // Global, whose spoilers changed only in how they are posed.
+      airliner: "5b27cdfc",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

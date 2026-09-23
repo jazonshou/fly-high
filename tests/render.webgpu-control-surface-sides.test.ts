@@ -281,14 +281,20 @@ describe("control surfaces move the way the pilot's controls promise", () => {
         expect(trailingEdge(scene, port).y).toBeGreaterThan(portNeutral + 0.05);
       });
 
-      it("stows the GROUND spoilers in the air and deploys them on the ground", () => {
+      it("stows the GROUND spoilers in the air and deploys them with the ground spoilers the sim drives", () => {
         // Inboard panels, and the distinction is the whole reason the pose
         // carries groups rather than one angle: in the air the speed brake is
-        // the outboard panels' job alone.
-        if (kind !== "airliner") return;
+        // the outboard panels' job alone. The Global has the same split (its
+        // inboard ground spoiler, three multi-function panels).
+        if (kind !== "airliner" && kind !== "bizjet") return;
         const { scene, visual } = build(kind);
-        const ground = "starboard-airliner-ground-spoilers-surface";
-        const flight = "starboard-airliner-flight-spoilers-surface";
+        const ground = kind === "airliner"
+          ? "starboard-airliner-ground-spoilers-surface"
+          : "starboard-bizjet-ground-spoiler-surface";
+        const flight = kind === "airliner"
+          ? "starboard-airliner-flight-spoilers-surface"
+          : "starboard-bizjet-one-spoiler-surface";
+        const onRunway = { onGround: true, altitudeAgl: 0, altitude: 0 };
 
         fly(visual, { brake: 0 });
         const groundStowed = trailingEdge(scene, ground).y;
@@ -301,9 +307,21 @@ describe("control surfaces move the way the pilot's controls promise", () => {
         // null above is about the group and not about the brake being ignored.
         expect(trailingEdge(scene, flight).y).toBeGreaterThan(flightStowed + 0.05);
 
-        fly(visual, { brake: 1, onGround: true, altitudeAgl: 0, altitude: 0 });
-        expect(trailingEdge(scene, ground).y, "a ground spoiler stayed down on the ground")
+        // WHEN they deploy is the sim's decision (`groundSpoilers`: touchdown at
+        // idle, or the brake on the wheels), and the lift the aeroplane flies by
+        // follows it. The brake and the wheels alone must not raise them here: a
+        // second producer of the same fact is free to disagree with the first.
+        fly(visual, { brake: 1, ...onRunway, groundSpoilers: 0 });
+        expect(trailingEdge(scene, ground).y, "the visual re-derived the ground spoilers")
+          .toBeCloseTo(groundStowed, 6);
+
+        // A touchdown at idle: the sim's ground spoilers out and no brake at all.
+        // Every panel stands up.
+        fly(visual, { brake: 0, ...onRunway, groundSpoilers: 1 });
+        expect(trailingEdge(scene, ground).y, "a ground spoiler stayed down with the ground spoilers out")
           .toBeGreaterThan(groundStowed + 0.05);
+        expect(trailingEdge(scene, flight).y, "a flight panel stayed down with the ground spoilers out")
+          .toBeGreaterThan(flightStowed + 0.05);
       });
 
       it("raises the elevator to pitch up", () => {

@@ -391,6 +391,7 @@ function visualState(): FlightVisualState {
     aileron: snapshot.actuators.roll,
     rudder: snapshot.actuators.yaw,
     brake: snapshot.actuators.brake,
+    groundSpoilers: snapshot.actuators.groundSpoilers,
     trim: snapshot.actuators.trim,
     flaps: snapshot.actuators.flaps,
     gear: snapshot.actuators.gear,
