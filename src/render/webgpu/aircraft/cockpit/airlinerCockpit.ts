@@ -8,7 +8,7 @@ import type { FlightVisualState } from "@/src/game/types";
 import {
   FLIGHT_DECK_PANES,
   FLIGHT_DECK_REFERENCE,
-  PANE_GRID,
+  CENTRE_POST_HALF_AZIMUTH,
   sightline,
   type FlightDeckPane,
   type Point3,
@@ -43,14 +43,16 @@ import { displayStateFromVisual, type DisplayAirframe } from "./displays/display
  * same reference at the panes' own depth. Its edges therefore ARE the panes' edges, by construction
  * and at every point of them, rather than plates placed against copied corners: the No.1 / No.2
  * pillar is the strip between azimuths 24 and 26, the crown lining starts at No.1's +12, and a
- * re-loft of the nose moves the frame with the glass. The one piece of the frame that is not the
- * kit's is the centre post, the plane engineer's cast strip over R's +-1 degree, which the cockpit
- * camera now draws (`airlinerVisual.ts`); the kit lines the gap between it and each No.1 pane.
+ * re-loft of the nose moves the frame with the glass. The centre post is lined the same way: the
+ * plane engineer's post (+-`CENTRE_POST_HALF_AZIMUTH`, filling the gap between the No.1 panes) is
+ * the glass's own 0.10 m slab, and against a 2 cm lining it stood 4.8 cm into the cabin with its
+ * end and side faces showing, so it is hidden from the cockpit camera with the shell and the glass,
+ * and the kit's lining covers its place, one tone with the pillars.
  *
  * THE EYE, (29.85, 2.93, -0.50), was chosen on a grid of candidate eyes against the built glass
  * (the K0 table in docs/findings/COCKPIT_VIEW_2026_09_20.md): 0.50 m off the centreline, as the
  * type's seat spacing puts the captain; straight ahead in the middle third of the port No.1
- * pane's azimuth span (No.1 reads -8.8..+11.6 at the horizon); the centre post at +13.1..+14.8;
+ * pane's azimuth span (No.1 reads -8.8..+11.6 at the horizon, against the glass as the eye was chosen);
  * No.1's opening 30.4 degrees; the glass 1.90 m ahead. It keeps the old eye's HEIGHT: the pilot's
  * eye height is the constant when the seat moves inboard, and the crown there is higher.
  *
@@ -246,13 +248,6 @@ export function airlinerScreenPlacements(): readonly { name: string; centre: Vec
 // ---- the frame: the lining cast on the skin round the glass ----------------------------------
 
 /**
- * The plane engineer's centre post is cast over R's azimuth +-`POST_HALF_AZIMUTH` and No.1's elevations
- * (`airlinerVisual.ts`); the gap between it and each No.1 pane's inboard edge (2.5) is lined here. A copy, held
- * to the built post by the test.
- */
-export const AIRLINER_POST_HALF_AZIMUTH = 1;
-
-/**
  * How far below and above the glass the lining runs, in R's elevation (past the frame's edges from the eye, with
  * room), the widest step between its grid lines (`airlinerLiningLines`), and how far it stands out of the skin and
  * in from it.
@@ -277,10 +272,10 @@ export interface LiningStrip {
 }
 
 /**
- * Every rectangle of R's sky round the glass that is not glass and not the centre post, READ from
- * `FLIGHT_DECK_PANES`: the sill under each pane and the crown over it, the pillar between neighbours (as tall as
- * the taller of the two), and the gap either side of the post. Together with the panes and the post they tile R's
- * view from `AIRLINER_LINING.bottom` to `.top` and out to No.3's outboard edge, which is behind the frame's edge.
+ * Every rectangle of R's sky round the glass that is not glass, READ from `FLIGHT_DECK_PANES` and
+ * `CENTRE_POST_HALF_AZIMUTH`: the sill under each pane and the crown over it, the pillar between neighbours (as tall
+ * as the taller of the two), and the centre post between the No.1 panes. Together with the panes they tile R's view
+ * from `AIRLINER_LINING.bottom` to `.top` and out to No.3's outboard edge, which is behind the frame's edge.
  */
 export function airlinerLiningStrips(): readonly LiningStrip[] {
   const [one, two, three] = [FLIGHT_DECK_PANES[0]!, FLIGHT_DECK_PANES[1]!, FLIGHT_DECK_PANES[2]!];
@@ -294,7 +289,7 @@ export function airlinerLiningStrips(): readonly LiningStrip[] {
   return [
     { name: "sill-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [bottom, one.elevation[0]], centre: true },
     { name: "crown-centre", azimuth: [-oneTwo.azimuth[1], oneTwo.azimuth[1]], elevation: [one.elevation[1], top], centre: true },
-    { name: "post-gap", azimuth: [AIRLINER_POST_HALF_AZIMUTH, one.azimuth[0]], elevation: one.elevation, centre: false },
+    { name: "post", azimuth: [-CENTRE_POST_HALF_AZIMUTH, CENTRE_POST_HALF_AZIMUTH], elevation: one.elevation, centre: true },
     { name: "pillar-one-two", azimuth: oneTwo.azimuth, elevation: oneTwo.elevation, centre: false },
     { name: "sill-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [bottom, two.elevation[0]], centre: false },
     { name: "crown-two", azimuth: [two.azimuth[0], three.azimuth[0]], elevation: [two.elevation[1], top], centre: false },
@@ -324,18 +319,17 @@ function subdivided(breaks: readonly number[]): number[] {
  * it did, in K2's first live frame, along the crown's seams. So every strip takes its rows and columns from these
  * lines: the panes' own edges and the post's, with lines added between them no more than `maxStepDegrees` apart, and
  * nothing between the post's two edges, so the post's top and foot are single chords in the crown and the sill too.
- * The gaps by the post take the POST's rows (`paneGrid`'s rows over No.1's elevations, the same expression), because
- * the post is the one neighbour not cast on these lines. Azimuths are outboard positive; across the centreline the
- * port lines are mirrored, and a mirrored sightline is the same ray to the last bit.
+ * Azimuths are outboard positive; across the centreline the port lines are mirrored, and a mirrored sightline is the
+ * same ray to the last bit.
  */
-export function airlinerLiningLines(): { azimuth: readonly number[]; elevation: readonly number[]; postRows: readonly number[] } {
+export function airlinerLiningLines(): { azimuth: readonly number[]; elevation: readonly number[] } {
   const [one, two, three] = [FLIGHT_DECK_PANES[0]!, FLIGHT_DECK_PANES[1]!, FLIGHT_DECK_PANES[2]!];
-  const port = subdivided([AIRLINER_POST_HALF_AZIMUTH, one.azimuth[0], one.azimuth[1], two.azimuth[0], two.azimuth[1], three.azimuth[0], three.azimuth[1]]);
+  const unique = (values: readonly number[]) => [...new Set(values)].sort((a, b) => a - b);
+  const port = subdivided(unique([CENTRE_POST_HALF_AZIMUTH, one.azimuth[0], one.azimuth[1], two.azimuth[0], two.azimuth[1], three.azimuth[0], three.azimuth[1]]));
   const breaks = [AIRLINER_LINING.bottom, AIRLINER_LINING.top, ...[one, two, three].flatMap((pane) => [...pane.elevation])];
   return {
     azimuth: [...port.map((a) => -a).reverse(), ...port],
-    elevation: subdivided([...new Set(breaks)].sort((a, b) => a - b)),
-    postRows: Array.from({ length: PANE_GRID }, (_, row) => one.elevation[0] + (one.elevation[1] - one.elevation[0]) * (row / (PANE_GRID - 1))),
+    elevation: subdivided(unique(breaks)),
   };
 }
 
@@ -344,7 +338,7 @@ function liningGrid(skin: SkinCaster, strip: LiningStrip, side: 1 | -1): { point
   const lines = airlinerLiningLines();
   const within = (values: readonly number[], [from, to]: readonly [number, number]) => values.filter((v) => v >= from - 1e-9 && v <= to + 1e-9);
   const columns = within(lines.azimuth, strip.azimuth);
-  const rows = strip.name === "post-gap" ? lines.postRows : within(lines.elevation, strip.elevation);
+  const rows = within(lines.elevation, strip.elevation);
   for (const [what, got, range] of [["azimuth", columns, strip.azimuth], ["elevation", rows, strip.elevation]] as const) {
     if (got.length < 2 || got[0] !== range[0] || got.at(-1) !== range[1]) {
       throw new RangeError(`747 cockpit lining ${strip.name}: its ${what} range ${range.join("..")} is not on the lining's lines`);

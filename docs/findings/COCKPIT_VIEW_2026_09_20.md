@@ -1138,9 +1138,20 @@ the pillar's apparent width. Thinner linings, measured the same way, gave the si
 
 **The PM's decision, built:** the lining is 0.02 m deep, 0.008 out of the skin and 0.012 in
 (`AIRLINER_LINING.proud` and `.depth`). The pillars keep their 6.5 cm faces and read 2.23 / 2.33 / 2.38
-degrees with 0.36 / 0.37 / 0.44 of side; a test holds them under 2.6 with under 0.5 of side. The centre
-member reads 4.76; it comes down to its 3.8 target when the plane engineer narrows the centre gap from
-+-2.5 degrees to about +-1.6 on the glazing (the gap strips follow `FLIGHT_DECK_PANES`).
+degrees with 0.36 / 0.37 / 0.44 of side; a test holds them under 2.6 with under 0.5 of side.
+
+**The centre member.** It read 4.76 with the thin lining, because the glazing's centre gap was +-2.5 at R.
+The plane engineer narrowed it to +-`CENTRE_POST_HALF_AZIMUTH` (a shared constant) and widened their post
+to fill it (1a0ec56), so the kit's gap strips retire. At 1.6 the member read 3.12 from the seat; built at
+1.8, 1.9 and 2.0 it read 3.48, 3.67 and 3.85 (over the 3.8 ceiling, the lining's 0.2 of side counting), so
+the constant settled at 1.9 (4251e15). Their post is the glass's 0.10 m slab, and against
+the 2 cm lining it stood 4.8 cm into the cabin: K3's frames showed its top end as a lit block where it met the
+crown, and a stripe of its side down its length. So it went back with the shell and the glass among the parts
+the cockpit camera does not draw (the exterior camera draws it as before), and the lining covers its place, a
+strip across the centreline on the lining's own lines: one tone with the pillars, no end faces, watertight
+with the crown and the sill. From the eye it reads 3.69 / 3.67 / 3.66 degrees at el -8 / 0 / +4, face 3.5 and
+side 0.2, against the type's 3.6 and a 3.8 ceiling; a test holds it under 3.8. The lip holds at -18.57:
+pane one's bottom edge now reaches inboard to 1.9, and the sill there reads under a degree.
 
 **What the depth moved, re-derived rather than re-pinned.** The opening the pilot sees is now the thin
 lining's, so the bottom of the view over No.1 is the sill's own top edge, 0.008 out of the skin, not the

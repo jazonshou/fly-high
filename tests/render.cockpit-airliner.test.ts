@@ -10,13 +10,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { crossings, hitTriangle, worldTriangles, type Triangle } from "../scripts/rayCrossings.mts";
 import { aircraftSpec } from "../src/aircraft/catalogue";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
-import { FLIGHT_DECK_REFERENCE, PANE_DEPTH, PANE_PROUD } from "../src/render/webgpu/aircraft/airlinerGlazing";
+import { CENTRE_POST_HALF_AZIMUTH, FLIGHT_DECK_PANES, FLIGHT_DECK_REFERENCE, PANE_DEPTH, PANE_PROUD } from "../src/render/webgpu/aircraft/airlinerGlazing";
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import {
   AIRLINER_GLARESHIELD,
   AIRLINER_LINING,
   AIRLINER_PANEL,
-  AIRLINER_POST_HALF_AZIMUTH,
   AIRLINER_SCREENS,
   AIRLINER_SEAT,
   airlinerLipY,
@@ -57,16 +56,17 @@ const FRAME_U = Math.tan(37.5 / DEG);
 const FRAME_V = FRAME_U / (16 / 9);
 
 /**
- * THE CORNER TABLE, copied from `npx tsx scripts/airliner-glazing-table.mts --json` at a480804 (the
+ * THE CORNER TABLE, copied from `npx tsx scripts/airliner-glazing-table.mts --json` at 4251e15 (the centre member at
+ * +-CENTRE_POST_HALF_AZIMUTH = 1.9; before it, a480804: 
  * re-loft and the crease join): the port panes' outer and inner face corners, body metres. The only
  * source of pane geometry; held to the built panes below.
  */
 const PORT_PANE_CORNERS = {
   one: {
-    bottomInboard: { outer: [32.591, 2.09, -0.119], inner: [32.514, 2.027, -0.111] },
+    bottomInboard: { outer: [32.596, 2.089, -0.091], inner: [32.518, 2.026, -0.085] },
     bottomOutboard: { outer: [32.073, 2.186, -0.982], inner: [32.014, 2.134, -0.92] },
     topOutboard: { outer: [31.254, 3.274, -0.611], inner: [31.212, 3.192, -0.572] },
-    topInboard: { outer: [31.512, 3.303, -0.071], inner: [31.461, 3.217, -0.067] },
+    topInboard: { outer: [31.515, 3.303, -0.054], inner: [31.464, 3.217, -0.051] },
   },
   two: {
     bottomInboard: { outer: [31.918, 2.357, -0.998], inner: [31.862, 2.302, -0.936] },
@@ -236,7 +236,8 @@ function viewBottomOverNoOne(per = 20): { az: number; el: number }[] {
   const sill = panel("airliner-lining-sill-centre");
   const columns = airlinerLiningLines().azimuth.filter((a) => a >= -26 - 1e-9 && a <= 26 + 1e-9);
   expect(columns, "the centre sill's columns").toHaveLength(sill.columns);
-  const under = columns.map((a, k) => [a, k] as const).filter(([a]) => a >= 2.5 - 1e-9 && a <= 24 + 1e-9).map(([, k]) => k);
+  const [from, to] = FLIGHT_DECK_PANES[0]!.azimuth;
+  const under = columns.map((a, k) => [a, k] as const).filter(([a]) => a >= from - 1e-9 && a <= to + 1e-9).map(([, k]) => k);
   const out: { az: number; el: number }[] = [];
   for (let i = 0; i + 1 < under.length; i += 1) {
     for (let s = 0; s <= per; s += 1) {
@@ -349,10 +350,12 @@ describe("the 747's eye", () => {
   it("reads the BUILT glass as the K0 targets asked: straight ahead in No.1's middle third, the post at +10..+16, 28 degrees of opening, 1.4 m of glass", () => {
     const glass = readGlass(EYE_POINT);
     console.info(`747 glass from the eye: No.1 ${glass.one.from.toFixed(1)}..${glass.one.to.toFixed(1)}, pillar ${glass.pillar.from.toFixed(1)}..${glass.pillar.to.toFixed(1)}, post ${glass.post.from.toFixed(1)}..${glass.post.to.toFixed(1)}, opening ${glass.opening.toFixed(1)}, glass ${glassAheadText(glass.glassAhead)}`);
-    // K0: No.1 -8.8..+11.6, the pillar -10.7..-8.9, the post +13.1..+14.8, the opening 30.4, the glass 1.90
+    // K0 (on a480804): No.1 -8.8..+11.6, the pillar -10.7..-8.9, the post +13.1..+14.8, the opening 30.4, the glass 1.90.
+    // Since the centre member settled at +-1.9 (4251e15): No.1 -8.8..+12.1, the post +12.2..+15.7, the opening 30.3.
     expect(glass.aheadInMiddleThird, "straight ahead in the middle third of No.1").toBe(true);
     expect(glass.one.from).toBeCloseTo(-8.8, 0);
-    expect(glass.one.to).toBeCloseTo(11.6, 0);
+    // (11.6 against the glass the eye was chosen on; 12.1 since the No.1 panes start at CENTRE_POST_HALF_AZIMUTH)
+    expect(glass.one.to).toBeCloseTo(12.1, 0);
     expect(glass.pillar.what, "outboard of No.1 at the horizon is the pillar gap").toBe("-");
     expect(glass.pillar.to).toBeLessThan(glass.one.from);
     expect(glass.post.from).toBeGreaterThanOrEqual(10);
@@ -424,7 +427,7 @@ describe("the glass the kit is built against", () => {
     }
   });
 
-  it("has the centre post over R's +-AIRLINER_POST_HALF_AZIMUTH, which the kit's gap lining meets", () => {
+  it("has the centre post over R's +-CENTRE_POST_HALF_AZIMUTH, the lining's post strip's own lines", () => {
     const post = panel("airliner-windscreen-center-post");
     expect(post.columns, "the post is a strip two grid points wide").toBe(2);
     const R = new Vector3(FLIGHT_DECK_REFERENCE.x, FLIGHT_DECK_REFERENCE.y, FLIGHT_DECK_REFERENCE.z);
@@ -433,7 +436,7 @@ describe("the glass the kit is built against", () => {
         // the SKIN point is between the faces, 0.04 of the 0.10 in from the outer one
         const skinPoint = Vector3.Lerp(gridVertex(post, 0, row, column), gridVertex(post, 1, row, column), 0.4);
         const d = skinPoint.subtract(R);
-        expect(Math.abs(Math.atan2(d.z, d.x) * DEG)).toBeCloseTo(AIRLINER_POST_HALF_AZIMUTH, 1);
+        expect(Math.abs(Math.atan2(d.z, d.x) * DEG)).toBeCloseTo(CENTRE_POST_HALF_AZIMUTH, 1);
       }
     }
   });
@@ -444,8 +447,7 @@ describe("the 747's cockpit parts", () => {
   // the board, then the lining in the order it is cast: the sill and the crown across the centreline, then a side each
   const INTERIOR = [
     "airliner-instrument-panel",
-    "airliner-lining-sill-centre", "airliner-lining-crown-centre",
-    "port-airliner-lining-post-gap", "starboard-airliner-lining-post-gap",
+    "airliner-lining-sill-centre", "airliner-lining-crown-centre", "airliner-lining-post",
     "port-airliner-lining-pillar-one-two", "starboard-airliner-lining-pillar-one-two",
     "port-airliner-lining-sill-two", "starboard-airliner-lining-sill-two",
     "port-airliner-lining-crown-two", "starboard-airliner-lining-crown-two",
@@ -454,15 +456,15 @@ describe("the 747's cockpit parts", () => {
     "port-airliner-lining-crown-three", "starboard-airliner-lining-crown-three",
   ];
 
-  it("are the four named cockpit-only meshes, thirty authored parts, and nothing else new", () => {
+  it("are the four named cockpit-only meshes, twenty-nine authored parts, and nothing else new", () => {
     expect(cockpitOnly.map((part) => part.name).sort()).toEqual([
       "airliner-cockpit-interior", "airliner-glareshield", "airliner-screen-bezels", "airliner-screens",
     ]);
-    // the lip alone; the board and the sixteen lining strips; six screens; six bezels
+    // the lip alone; the board and the fifteen lining strips; six screens; six bezels
     expect((named("airliner-glareshield").metadata as { mergedFrom?: string[] }).mergedFrom, "the glareshield is the lip, unmerged").toBeUndefined();
     expect((named("airliner-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(INTERIOR);
     const sources = cockpitOnly.flatMap((part) => (part.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [part.name]);
-    expect(sources).toHaveLength(6 + 12 + 6 + 6);
+    expect(sources).toHaveLength(1 + 16 + 6 + 6);
     // the old kit's parts are gone: the hood, the dash, the overhead, the pillar plate and the seam post
     for (const gone of ["airliner-hood", "airliner-dash", "airliner-overhead", "airliner-windscreen-pillar", "airliner-windscreen-post-port"]) {
       expect(sources, gone).not.toContain(gone);
@@ -517,32 +519,36 @@ describe("the 747's cockpit parts", () => {
     }
   });
 
-  it("hide the shell and the GLAZING from the cockpit camera, and nothing else: the centre post is drawn", () => {
-    expect([...aircraft.cockpitParts].map((part) => part.name).sort()).toEqual(["airliner-flight-deck-glazing", "airliner-fuselage-shell"]);
+  it("hide the shell, the centre post and the GLAZING from the cockpit camera, and nothing else", () => {
+    expect([...aircraft.cockpitParts].map((part) => part.name).sort()).toEqual(["airliner-flight-deck-glazing", "airliner-fuselage-shell", "airliner-windscreen-center-post"]);
     for (const mesh of aircraft.meshes) {
       const hidden = (mesh.layerMask & camera.layerMask) === 0;
       expect(hidden, `${mesh.name} in cockpit view`).toBe(aircraft.cockpitParts.includes(mesh));
     }
     const glass = named("airliner-flight-deck-glazing").material as PBRMaterial;
     expect(glass.subSurface.isRefractionEnabled, "the glazing's material refracts").toBe(true);
-    expect(drawnByCockpitCamera(named("airliner-windscreen-center-post")), "the post").toBe(true);
+    // the post is the glass's 0.10 m slab; the kit lines its place at the frame's 0.02
+    expect(drawnByCockpitCamera(named("airliner-windscreen-center-post")), "the post").toBe(false);
   });
 });
 
 describe("the centre post", () => {
-  it("is drawn from the seat: a ray at the middle of its inner face meets it 2.0 m away, on a face the GPU draws, shaded toward the eye", () => {
+  it("is the KIT's lining from the seat: a ray at the post meets the lining's post strip, on a face the GPU draws, shaded toward the eye", () => {
+    // The plane engineer's post is the glass's 0.10 m slab; against the 2 cm lining it stood 4.8 cm into the cabin and
+    // its top end showed as a lit block (K3's frames). It is hidden from the cockpit camera, and the lining covers its
+    // place at the frame's own depth, cast on the same lines, so from the seat it reads as the pillars do.
     const post = panel("airliner-windscreen-center-post");
     const middle = Math.floor(post.rows / 2);
-    const target = Vector3.Lerp(gridVertex(post, 1, middle, 0), gridVertex(post, 1, middle, 1), 0.5);
+    const target = Vector3.Lerp(skinVertex(post, middle, 0), skinVertex(post, middle, 1), 0.5);
     const d = target.subtract(EYE_POINT).normalize();
     const hit = firstHitAlong(d);
-    expect(hit?.pickedMesh?.name).toBe("airliner-windscreen-center-post");
-    expect(hit!.distance).toBeCloseTo(Vector3.Distance(target, EYE_POINT), 2);
-    // 2.02 m: the post is a strip across the nose's crown, further than the glass straight ahead (1.90)
+    expect(hit?.pickedMesh?.name).toBe("airliner-cockpit-interior");
+    expect(partOf(hit!.pickedMesh!, hit!.faceId)).toBe("airliner-lining-post");
+    // about 2.0 m, just short of the skin there: the lining's inner face stands 0.012 in
     expect(hit!.distance).toBeGreaterThan(1.9);
-    expect(hit!.distance).toBeLessThan(2.1);
+    expect(hit!.distance).toBeLessThan(Vector3.Distance(target, EYE_POINT));
     // the GPU's rule: a drawn face's cross product points INTO the solid, along the ray
-    const mesh = named("airliner-windscreen-center-post");
+    const mesh = hit!.pickedMesh!;
     const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
     const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
     const indices = mesh.getIndices()!;
@@ -553,13 +559,39 @@ describe("the centre post", () => {
       const n = indices[hit!.faceId * 3 + k]! * 3;
       expect(normals[n]! * d.x + normals[n + 1]! * d.y + normals[n + 2]! * d.z, "shaded toward the eye").toBeLessThan(0);
     }
-    // CONTROL: with the post hidden, the same ray passes to the opening: nothing the cockpit camera draws is behind it
+    // CONTROL: with the kit's interior hidden, the same ray meets nothing the cockpit camera draws (the post is hidden too)
     mesh.isVisible = false;
     try {
       expect(firstHitAlong(d)).toBeNull();
     } finally {
       mesh.isVisible = true;
     }
+  });
+
+  it("reads inside the 3.8 degree target from the seat: the centre member's face and side, recorded", () => {
+    const members: string[] = [];
+    for (const el of [-8, 0, 4]) {
+      let face = 0;
+      let side = 0;
+      for (let az = 10; az <= 20; az += 0.01) {
+        const hit = firstHit(az, el);
+        if (!hit || partOf(hit.pickedMesh!, hit.faceId) !== "airliner-lining-post") continue;
+        const p = panel("airliner-lining-post");
+        const sources = (hit.pickedMesh!.metadata as { mergedFrom: string[] }).mergedFrom;
+        let start = 0;
+        for (const name of sources) {
+          if (name === "airliner-lining-post") break;
+          start += /^airliner-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles;
+        }
+        if (hit.faceId - start >= (p.rows - 1) * (p.columns - 1) * 4) side += 0.01;
+        else face += 0.01;
+      }
+      members.push(`el ${el}: ${(face + side).toFixed(2)} = face ${face.toFixed(2)} + side ${side.toFixed(2)}`);
+      expect(face + side, `the centre member at el ${el}`).toBeLessThanOrEqual(3.8);
+      expect(face, "the post is there").toBeGreaterThan(2.5);
+      expect(side).toBeLessThan(0.6);
+    }
+    console.info(`747 centre member from the eye: ${members.join("; ")}`);
   });
 });
 
@@ -646,11 +678,10 @@ describe("what the pilot sees straight ahead", () => {
         const name = `${side}-airliner-flight-deck-window-${pane}`;
         cases.push({ pane: name, edge: "bottom", out: [0, -1], frame: /^airliner-glareshield$|sill/ });
         cases.push({ pane: name, edge: "top", out: [0, 1], frame: /crown/ });
-        cases.push({ pane: name, edge: "inboard", out: [-outboard, 0], frame: pane === "one" ? /post-gap/ : /pillar-one-two/ });
+        cases.push({ pane: name, edge: "inboard", out: [-outboard, 0], frame: pane === "one" ? /lining-post/ : /pillar-one-two/ });
         cases.push({ pane: name, edge: "outboard", out: [outboard, 0], frame: pane === "one" ? /pillar-one-two/ : /pillar-two-three/ });
       }
     }
-    const post = panel("airliner-windscreen-center-post");
     let framed = 0;
     for (const c of cases) {
       const points = edgePoints(panel(c.pane), "skin", c.edge, 3);
@@ -665,17 +696,6 @@ describe("what the pilot sees straight ahead", () => {
         const underLip = outside[1] < lipElevation(outside[0]);
         expect(part, `${c.pane} ${c.edge} edge at (${az.toFixed(1)}, ${el.toFixed(1)}): the frame outside it`).not.toBeNull();
         if (!underLip) expect(part!, `${c.pane} ${c.edge} edge at (${az.toFixed(1)}, ${el.toFixed(1)})`).toMatch(c.frame);
-        framed += 1;
-      }
-    }
-    // and each edge of the post meets the gap lining, 0.3 degrees beyond the post as the pilot sees it: the strip is
-    // seen from 14 degrees off, so one of its rims shows, and its edge is whichever face's reads further out
-    for (let row = 1; row < post.rows - 1; row += 1) {
-      const azimuths = [0, 1].flatMap((column) => ([0, 1] as const).map((face) => azel(gridVertex(post, face, row, column))));
-      const el = azimuths.reduce((sum, a) => sum + a.el, 0) / 4;
-      for (const az of [Math.min(...azimuths.map((a) => a.az)) - 0.3, Math.max(...azimuths.map((a) => a.az)) + 0.3]) {
-        if (el < lipElevation(az)) continue;
-        expect(firstPart(az, el), `beside the post at (${az.toFixed(1)}, ${el.toFixed(1)})`).toMatch(/post-gap/);
         framed += 1;
       }
     }
@@ -880,11 +900,13 @@ describe("the 747's cockpit against the shell it stands in", () => {
   it("is watertight: wherever two pieces of the frame meet, they meet at the same points (no T-junction)", () => {
     // Two strips that meet on the curved skin at DIFFERENT points each span the seam with their own chords, which part
     // by a fraction of a millimetre, and the hidden sky shows through as a bright hairline: K2's first live frame had
-    // them along the crown's seams. So along every seam between two frame pieces (the lining's strips and the post),
+    // them along the crown's seams. So along every seam between two frame pieces (the lining's strips, the post's among them),
     // each inner-face boundary vertex of one that lies within a centimetre of the other's boundary is one of the
     // other's boundary vertices, to the last bit. (A T-junction vertex lies about half a millimetre off the chord.)
-    const frame = panels.filter((p) => /lining|windscreen-center-post/.test(p.name));
-    expect(frame.length, "sixteen lining strips and the post").toBe(17);
+    // the lining alone: the plane engineer's post is hidden from the cockpit camera, and the lining's post strip is cast on
+    // the same lines as its neighbours
+    const frame = panels.filter((p) => /lining/.test(p.name));
+    expect(frame.length, "fifteen lining strips").toBe(15);
     const boundary = (p: Panel) => {
       const loop: Vector3[] = [];
       for (let c = 0; c < p.columns; c += 1) loop.push(gridVertex(p, 1, 0, c));
@@ -1007,7 +1029,7 @@ describe("the 747's cockpit against the shell it stands in", () => {
 
   it("puts nothing in the frame that the design did not account for: the kit and the centre post", () => {
     const allowed = new Set([
-      "airliner-cockpit-interior", "airliner-glareshield", "airliner-screens", "airliner-screen-bezels", "airliner-windscreen-center-post",
+      "airliner-cockpit-interior", "airliner-glareshield", "airliner-screens", "airliner-screen-bezels",
     ]);
     for (let az = -37; az <= 37; az += 2) {
       for (let el = -23; el <= 23; el += 1) {
