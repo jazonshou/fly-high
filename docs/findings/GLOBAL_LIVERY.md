@@ -150,6 +150,33 @@ GPU through a buffer written once (or updatable), and its standing test has to
 catch an `updateVerticesData` on a non-updatable buffer, since no Node read of
 the mesh can.
 
+## Phase 3a: the panes, cast and built once
+
+The pane is now what the type has and what the GPU draws.
+
+- **The outline:** a rounded rectangle 0.37 x 0.56 m (superellipse exponent 4),
+  0.192 m^2 = 298 in^2 against the type's 300. The row is unchanged: 14 a side
+  from x 8.8 at a 0.92 m pitch, centred at y 0.38.
+- **The seat:** every grid point (7 x 11 a pane) is cast straight out of the
+  body onto the fuselage's OWN triangles (`SkinCaster`, the 747 glazing's
+  caster), and `skinPanel` builds the pane from those points 6 mm proud and
+  30 mm deep. The 28 panes merge into one mesh, `bizjet-cabin-windows`, so it
+  is still one draw.
+- **Measured by ray over the whole window,** 5,054 rays a side
+  (`tests/render.bizjet-cabin-windows.test.ts`): the glass stands 4.06-6.77 mm
+  proud of the skin everywhere, the low end being where a cell's chord crosses
+  a facet crease. Two controls: the skin read against itself is exactly flush,
+  and a pane built 4 mm sunk by the same tools reads as sunk.
+- **Nothing is written into a buffer after it is made.**
+  `tests/render.aircraft-vertex-buffer-writes.test.ts` watches every
+  `VertexBuffer.update` during every airframe's build and fails any whose
+  buffer is not updatable. Its positive control is a box written the old way,
+  and on the tree before this change it flagged exactly one write in the
+  fleet: the Global's pane bow.
+- **Geometry:** checked mesh by mesh against 58f8b28, the Global's other 95
+  meshes are bit-identical; the old base mesh (54 vertices) is gone and the new
+  one is 7,896 vertices and 8,512 triangles.
+
 ## The stripe's thickness, for Jason to pick
 
 Jason, on the 2a frames: "looking good", and the stripe "running across the
