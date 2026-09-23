@@ -630,95 +630,123 @@ any later in-scene aircraft swap.
 
 ## The Global rebuilt round its six-pane band (K0, K1, K2)
 
-The Global's flight deck was a raked glass slab across the nose and a slab each side; its kit hung off
-them (the overhead under the slab's top edge, two free struts at +-34 degrees, a sill at y 0.52). The plane
-engineer replaced them with the type's six panes, laid out on the body by station aft of the nose tip and
-angle round the section, read off the brochure's top view, and cast onto the skin from R (11.90, 0.78, 0)
-(phase 3b, docs/findings/GLOBAL_LIVERY.md). The centre post is cast the same way and hidden from the seat.
-Nothing the old kit hung off exists any more, so the kit is rebuilt, and the eye re-chosen, three times over,
-because the first two noses could not be flown from.
+The Global's flight deck was a raked glass slab across the nose and a slab each side, and its kit hung off
+them: the overhead under the slab's top edge, two free struts at +-34 degrees, a sill at y 0.52. The plane
+engineer replaced them with the type's six panes. They are laid out on the body by station aft of the nose
+tip and by angle round the section, read off the brochure's top view, and cast onto the skin from R
+(11.90, 0.78, 0) (phase 3b, docs/findings/GLOBAL_LIVERY.md). The centre post is cast the same way and hidden
+from the seat. Nothing the old kit hung off exists any more, so the kit is rebuilt, parametric on the glass,
+and it has now stood on five noses without an edit.
 
-**K0 found the nose, not the eye, was the constraint.** On the first cast nose (c252859) the windshield was
-a slot about 15 degrees tall from any seat eye. It lay nearly flat, rising 0.16 m over 0.53 m at the post,
-and from the old eye (11.90, 0.78) straight ahead was 0.1 degree UNDER the glass. An opening of 24 degrees
-needed the eye 0.2-0.3 m forward of the seat with the glass 0.22-0.29 m away. The model's crown sat higher
-and flatter than the type's (an ambiguous "its" in a note had it the other way round, and the plane engineer
-corrected it). Part 2 lowered the crown for a seated eye at 0.55 (1.21 m over the -0.66 floor): from there
-the glass ran -1.15..+25.00 straight ahead, every target met except the one that had not been written down.
-A flight deck you can land from sees the aim point on final, 6-8 degrees under the body axis (the type's
-design eye sees 15-17 down); at 0.55 the glass reached 1.15 under the horizon, and the runway on final would
-have been behind the glareshield. Part 3 (8d5deeb) dropped the tip and the crown further.
+**K0 found the nose, not the eye, was the constraint.** On the first cast nose (c252859) the windshield was a
+slot about 15 degrees tall from any seat eye: it lay nearly flat, rising 0.16 m over 0.53 m at the post.
+Part 2 lowered the crown for a SEATED eye at 0.55 (1.21 m over the -0.66 floor), and every written target was
+met there. The one that had not been written down was down-vision. A flight deck you can land from sees the
+aim point on final, 6 to 8 degrees under the body axis (the type's design eye sees 15 to 17 down), and the
+glass reached 1.15 under the horizon. Part 3 dropped the tip and the crown. Its K2 frames showed the
+windshield's top falling from +14 outboard to +1.3 at the post, a post only 0.30 m tall on the skin, and the
+right-hand windshield under the horizon. Part 4 raised the roof on a silhouette that turned out to have been
+traced along a reflection band 0.12 to 0.20 m low. Part 5 (eeb1606) put the crown on the corrected line.
 
-**The eye, (11.90, 0.55, -0.52).** On part 3's glass, through the pane's hole in the skin: the port
-windshield straight ahead runs -13.20..+13.25 (26.45 degrees; its outer face -12.65..+13.95, the plane
-engineer's table reproduced to the digit). Straight ahead is inside, the down-vision is past -10, the top
-edge is past +10, and the whole centre post is in the 16:9 frame (its foot at az +20.5, its head +30.7). There
-is 0.37 m of skin over the eye. On the grid, heights 0.55 to 0.58 at the seat's station all pass, and 0.55
-has the most margin on every target. The seats are placed from the eye (bizjetSeats.ts), so they cannot drift
-from it.
+**The eye, (11.90, 0.55, -0.52), on part 5's glass** (through the pane's hole in the skin):
+- the port windshield runs -10.65..+26.70 straight ahead (37.35 degrees; its outer face -10.20..+27.25, the
+  plane engineer's table reproduced byte for byte);
+- straight ahead is inside the glass, and the down-vision is past -10;
+- both windshields' tops stand over the horizon at the post (+13.38 and +12.39; +27.31 outboard);
+- the centre post rises 0.51 m on the skin, its head reads +12.89, and the whole post is in the 16:9 frame;
+- there is 0.51 m of skin over the eye.
+The seats are placed from the eye (bizjetSeats.ts).
 
 **The frame is a lining cast on the panes' own lines.** Seventeen `skinPanel` strips, cast from R with the
-glass's own caster onto the same fuselage triangles, every edge point from the same `outlinePoint` the glass
-is cast through, at the panes' own grid fractions:
+glass's own caster onto the same fuselage triangles. Every edge point comes from the same `outlinePoint` the
+glass is cast through, at the panes' own grid fractions:
 - the MEMBERS between neighbouring panes: the centre post (between the windshields' inboard edges), the
   windshield / side pillar, the mid post, and 0.10 m of aft end;
 - a SILL under every pane and member, and a CROWN over each, straight down (up) in R's elevation to -40
   (+60).
 So a lining edge that meets a pane IS that pane's edge, and neighbouring strips share whole columns: no
 T-junction. It is 2 cm deep (0.008 out, 0.012 in), the 747's K3 depth. From the seat the windshield / side
-pillar reads 7.8-8.9 degrees wide, which is the type's ~0.1 m member at 0.69 m, and 0.33-0.49 of that is side
-face. Nothing is copied from a table: all three noses moved the frame with the glass and no edit.
+pillar reads 8.0 to 9.5 degrees wide, which is the type's ~0.1 m member at 0.7 m; 0.6 to 0.9 of that is
+side face.
 
-**The lip, this type's rule: the highest straight lip that covers no glass.** The windshield's bottom edge
-rises towards the post (-14.3 at its outboard corner, -11.1 near the post, from the eye), so no straight lip can
-sit within a degree of it all along, the way the 747's does. This one meets the glass where the edge is
-lowest, and the sill, window frame on the interior material, fills the rest. A line along z at the face reads
-tan(el) = (y - eye) cos(az) / d, and a glass point reads its own slope (p.y - eye) / (p.x - eye) in the same
-form, so the highest clear lip is the LEAST slope. It is closed form (`highestClearLip`), checked against K0's
-own bisection on elevations. It spans post to post, ending at the windshield's pillars. Out to the shell, a
-lower lip is also a wider one, and it was held by the side panes' low inboard corners half a metre off at the
-frame's edge (11.49 against 3.96 on c252859). On the built sills' top rims it reads **14.052**, the catalogue's
-deck line 14.05, where the other decks are 8.3-18.6. (The skin-level edge gives 14.41: the rim stands 0.36
-degree higher.) The lip's face grows with the deck line, max(0.02, 0.08 tan(deck + 3)). At a fixed 0.02 the
-wedge's top fell 14 degrees, and a sweep of the catalogue's value for the HUD found its forward corner showing
-over the lip past a 14 degree deck line (15 read 14.89).
+**A sill cap along the side panes' bottom edges.** From the seat, the wall under the forward side pane is a
+large flat area. It is lining, not a missing window: at az -30 the pane's glass ends a few degrees under the
+horizon. So a ledge runs the whole top row of each side sill:
+- 0.05 m inboard and 0.02 m deep, level with the pane's bottom edge;
+- its outboard row IS the sill's top row on the lining's inner face, bit for bit;
+- it covers no glass: from above, its inboard edge reads lower than the pane's.
+In the frame it reads as a lit ledge 1.4 to 1.7 degrees tall.
 
-**The screens** hang 1.5 degrees under the lip's underside, the pilot's pair on the eye's own z: 47.6% of
-each is in the 16:9 frame (the floor is 35%), and the outboard one clears the skin by 0.24 m.
+**The lip, this type's rule: the highest straight lip that covers no glass.** The windshield's bottom edge is
+not level from the seat, so no straight lip can sit within a degree of it all along, the way the 747's does.
+This one meets the glass where the edge is lowest, and the sill, window frame on the interior material, fills
+the rest.
+- The rule: a line along z at the face reads tan(el) = (y - eye) cos(az) / d, and a glass point reads its own
+  slope (p.y - eye) / (p.x - eye) in the same form. So the highest clear lip is the LEAST slope, closed form
+  (`highestClearLip`), checked against K0's own bisection on elevations.
+- The span: post to post, ending at the windshield's pillars. Out to the shell, a lower lip is also a wider
+  one, and on part 3's nose the side panes' low inboard corners half a metre off then held it down (11.49
+  against 3.96).
+- The value: on part 5's built sills' rims it reads **10.880**, the catalogue's deck line 10.88, near the old
+  Global kit's 10.00 and within the other decks' 8.3 to 18.6. The skin-level edge gives 11.182; the rim stands
+  0.3 degree higher. It is held by the windshield's bottom at the post end.
+- The face grows with the deck line: max(0.02, 0.08 tan(deck + 3)). At a fixed 0.02 the wedge's top fell 14
+  degrees, and a sweep of the catalogue's value for the HUD found its forward corner showing over the lip past
+  a 14 degree deck line (15 read 14.89).
+- The HUD fits over deck lines from 2.31 to 15 on all five window shapes.
 
-**What the tests hold** (tests/render.cockpit-bizjet.test.ts, 29): the corner table read off the built panes
-at test time, not copied; the targets in one block; culling calibrated on the lip's wedge before any ray is
-believed (the fuselage is DRAWN from inside and culled); no shell face drawn toward the pilot inside the
-body, with a reversed-winding control; the whole frame cast (no hidden skin shows, no lining footprint over a
-pane: the 2 cm slab's REVEAL at the side glass, seen at a slant from 0.4-0.6 m, is 11 rays and allowed); the
-seams; the members' rays; the lip rule against the built sills; the deck line by the HUD's instrument
-(14.0501) and by ray; the screens in the frame; the clearance from the built skin; the pillar reading thin.
-Twelve mutations, each caught by a named test: the eye back at 0.78, a pillar 2 degrees off its edge, a plate
-inside out, a display slot moved, the lining at 0.10 m, the lip left at 10.00, the lip out to the shell, no
-centre sill, the crowns a degree above the glass, no post strip, the screens hung from the lip's top, and the
-wedge's face fixed at 0.02.
+**The screens** hang 1.5 degrees under the lip's underside, the pilot's pair on the eye's own z. 76.2% of
+each is in the 16:9 frame (the floor is 35%), and the outboard one clears the skin by 0.31 m.
 
-**Instruments that part 3 read wrong, and why.** Three held on the first nose and misread the last, and none
-was a defect of the kit. (1) The T-junction test judged the crowns' FREE top rows too. With R 0.14 m under
-part 3's roof they all converge overhead, and two passed within 7.6 mm without meeting; a seam test must judge
-seams. (2) From a high eye the drooped nose's outside shows through the windshield. That is the world, not an
-end cap, so the test counts only shell faces met before the ray leaves the body. (3) A quad's diagonal does
-not mirror, and on the steepest nose a corner stands 9.3 mm off its mirror image (2 mm on the first).
+**What the tests hold** (tests/render.cockpit-bizjet.test.ts, 34):
+- the corner table, read off the built panes at test time, not copied;
+- the targets, in one block;
+- culling calibrated on the lip's wedge before any ray is believed (the fuselage is DRAWN from inside and
+  culled);
+- no shell face drawn toward the pilot inside the body, with a reversed-winding control;
+- the whole frame cast: no hidden skin shows, and no lining footprint lies over a pane;
+- the seams; the members' rays; the sill caps;
+- the lip rule against the built sills, the lip's span, and its face;
+- the deck line by the HUD's instrument (10.8801) and by ray;
+- the screens in the frame, and the clearance from the built skin;
+- the pillar reading thin.
+Thirteen mutations, each caught by a named test: the eye back at 0.78, a pillar 2 degrees off its edge, a
+plate inside out, a display slot moved, the lining at 0.10 m, the lip left at 10.00, the lip out to the
+shell, no centre sill, the crowns a degree above the glass, no post strip, the screens hung from the lip's
+top, the caps not built, and the wedge's face fixed at 0.02.
+Two of them survived part 5's first run, each for a reason, and were pinned directly:
+- the lip span: part 5's higher side panes put no glass under a wider lip either;
+- the face rule: at 10.88 its own answer IS 0.02.
 
-**K2, the frames** (the pilot's left seat, 16:9, the sim paused, one world seed). Every frame asserted, from the
-live scene: the eye at the catalogue's (11.90, 0.55, -0.52) to the millimetre; the lens 75 degrees
-horizontal-fixed; the lip's top at the kit's own height; the kit's four meshes visible from the seat and none
-from the chase camera.
-- Level: it reads as a flight deck. The port windshield, the post to its right, the windshield / side pillar
-  on the left (nearly 8 degrees wide, as measured), the ceiling across the top, the lip, and the two displays
-  under it, cut by the frame's bottom at about half their height. Terrain is visible to about -13 degrees
-  straight ahead. Part 3's windshield has its top edge falling from +14 outboard to +1.3 at the post, so it
-  is a sloping trapezoid, and the post and the crown read as one dark wedge.
-- Rolled 20 degrees right (19.9 read).
-- On final, by a served rewrite of the airborne start alone (1.9 km short of the threshold, 120 m up; nothing
-  in the tree): the aim point, 300 m past the threshold, reads 8.47 degrees under the body axis, and the kit
-  is not drawn at its pixel: it is in the glass, a pale strip there. The frame is not a stabilised approach:
-  in pilot mode with no input the aircraft rolled to 41 degrees in the 2.3 s before the pause.
+**Instruments the noses read wrong, and why.** None was a defect of the kit.
+- A seam test must judge SEAMS. With R 0.14 m under part 3's roof, the crowns' free top rows converge
+  overhead, and two passed within 7.6 mm without meeting.
+- From a high eye the drooped nose's outside shows through the windshield. That is the world, not an end cap,
+  so the test counts only shell faces met before the ray leaves the body.
+- A quad's diagonal does not mirror, and on a steep nose a corner stands 9.3 mm off its mirror image.
+- Part 4 and part 5 run the crown straight from the post's foot, which leaves a shallow concave crease under
+  the windshield, and a lining chord across it stands up to 5 mm OUTSIDE the skin. The skin is culled from
+  inside, so it still covers the view, and a lining hit counts within the lining's own 8 mm proud. (A first
+  map of that crease reported 897 open rays: it had left out the lining's rims. Single rays traced by hand
+  settled it.)
+- The pillar test sampled fixed elevations, and on part 4 there is no pillar at -8. It now reads a quarter,
+  half and three quarters up the pillar's own height.
+
+**K2, the frames** (part 5; the pilot's left seat, 16:9, the sim paused, one world seed). Every frame
+asserted, from the live scene: the eye at the catalogue's (11.90, 0.55, -0.52) to the millimetre; the lens 75
+degrees horizontal-fixed; the lip's top at the kit's own height (0.4251); the kit's four meshes visible from
+the seat and none from the chase camera.
+- Level: it reads as a flight deck. A big windshield from about -10 to +27 degrees, terrain ahead and below
+  it, the post a dark band at az +20 to +31 with the starboard windshield beyond, and the windshield / side
+  pillar at left. The ceiling runs across the top, then the lip, and both displays about three-quarters in
+  the frame. At far left, the forward side pane with the sill cap's lit ledge along its bottom.
+- Rolled right (23.9 read; the roll ran on past 20 before the pause).
+- On final, by a served rewrite of the airborne start alone (1.9 km short of the threshold; nothing in the
+  tree), in scenic mode with the wings level (2.95). The capture refuses a frame with more than 5 degrees of
+  bank (it did once, at 5.5) or with the kit over the aim point. The aim point reads -4.86 under the body axis
+  and is in the glass. Its height assumed the spawn's 120 m; the hold had climbed to 168 m, so the true aim
+  point is about 1.5 degrees lower, still 4 degrees above the windshield's bottom straight ahead. The frame
+  shows grass at the computed point, not the runway.
 - The 4x crops of the post and the pillar are an even face, with no hairline or seam.
 - The chase frame has no kit in it.
 
@@ -1244,3 +1272,8 @@ crossover is a canvas about 2,170 px wide).
 
 **Not built:** the F-16's UFC, between the MFDs.
 Baselines are not promoted here; the single end-of-wave promotion absorbs the change.
+
+**Not built, the Global's next kit item: an armrest / side console.** From the seat, the wall under the
+forward side pane runs 15 to 18 degrees from the pane's bottom edge (about -3 at az -24) down to the frame's
+bottom (-21.5 at az -24, -18.9 at the corner). The sill cap breaks the glass-to-wall edge with a ledge 1.4
+to 1.7 degrees tall; the rest is one flat tone of lining.
