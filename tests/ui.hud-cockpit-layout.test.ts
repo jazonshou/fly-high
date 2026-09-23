@@ -103,6 +103,8 @@ describe("the stylesheet's cockpit rules", () => {
     expect(at(" .flight-hud__bottom")).toMatchObject({ top: `${COCKPIT_HUD_TOP_BAND_PX}px`, bottom: "auto", "align-items": "flex-start" });
     expect(at(" .hud-help")).toMatchObject({ top: `${COCKPIT_HUD_HINTS_TOP_PX}px`, bottom: "auto" });
     expect(at(" .diagnostics").top).toBe(`${COCKPIT_HUD_DIAGNOSTICS_TOP_PX}px`);
+    // The ACTUAL panel stays top-right in the minimal HUD too, where it would otherwise be alone on the left.
+    expect(at(" .control-status")["margin-left"]).toBe("auto");
     // The attitude clip is the attitude box's half-height plus the margin, less the deck's drop.
     expect(at(" .attitude")["clip-path"]).toBe(`inset(0 0 max(0px, calc(115px + ${COCKPIT_HUD_DECK_MARGIN_PX}px - 50vw * var(--deck-k))) 0)`);
     expect(rules.get(".attitude")?.height).toBe("230px");
