@@ -17,7 +17,13 @@ import {
 } from "../../src/render/webgpu/terrain/TerrainPageAtlas";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import { hashSeed } from "../../src/world/seed";
-import { gpuTimingAvailable, nextFrame, withScene } from "./terrainPageErosionGpuHarness";
+import {
+  adapterAdvertisesTimestampQuery,
+  gpuTimingAvailable,
+  NO_TIMESTAMP_QUERY_REASON,
+  nextFrame,
+  withScene,
+} from "./terrainPageErosionGpuHarness";
 
 /**
  * The per-page meters on the device, with batch sizes that vary, read in the
@@ -71,7 +77,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 
 describe("per-page meters priced by each batch's own page count, on the device", () => {
-  it("the tape accounts for every batch at its own count; the old path is caught mispairing", async () => {
+  it("the tape accounts for every batch at its own count; the old path is caught mispairing", async (context) => {
+    if (!(await adapterAdvertisesTimestampQuery())) {
+      context.skip(`${NO_TIMESTAMP_QUERY_REASON}; the per-page meters' pairing stays unverified on this host`);
+    }
     const delivered = new Map<unknown, number[]>();
     const runs = await withScene(async (engine, scene) => {
       if (!gpuTimingAvailable(engine)) return null;
@@ -220,7 +229,7 @@ describe("per-page meters priced by each batch's own page count, on the device",
     }, true, {
       onPassTimed: (sink, _frameId, nanoseconds) => { delivered.get(sink)?.push(nanoseconds); },
     });
-    if (!runs) throw new Error("no timestamp-query on this device; nothing was measured");
+    if (!runs) throw new Error("the adapter advertises timestamp-query but the device measured nothing");
 
     for (const run of runs) {
       console.log(

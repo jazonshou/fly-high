@@ -8,7 +8,13 @@ import {
   type DeferredPassTiming,
   installDeferredPassTiming,
 } from "../../src/render/webgpu/core/DeferredPassTiming";
-import { gpuTimingAvailable, nextFrame } from "./terrainPageErosionGpuHarness";
+import {
+  adapterAdvertisesTimestampQuery,
+  gpuTimingAvailable,
+  NO_TIMESTAMP_QUERY_REASON,
+  nextFrame,
+  timestampQueryForcedOff,
+} from "./terrainPageErosionGpuHarness";
 
 /**
  * The per-pass timing instrument itself (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md).
@@ -40,7 +46,9 @@ async function withTimedEngine<T>(
     antialias: false,
     enableAllFeatures: false,
     setMaximumLimits: false,
-    deviceDescriptor: { requiredFeatures: ["timestamp-query"] as GPUFeatureName[] },
+    ...(timestampQueryForcedOff()
+      ? {}
+      : { deviceDescriptor: { requiredFeatures: ["timestamp-query"] as GPUFeatureName[] } }),
   });
   try {
     await engine.initAsync();
@@ -84,7 +92,10 @@ async function nextReading(shader: ComputeShader, after: number): Promise<number
 }
 
 describe("deferred per-pass timing on the device", () => {
-  it("gives a heavy and a trivial pass taking turns in slot 0 their own times, in both orders", async () => {
+  it("gives a heavy and a trivial pass taking turns in slot 0 their own times, in both orders", async (context) => {
+    if (!(await adapterAdvertisesTimestampQuery())) {
+      context.skip(`${NO_TIMESTAMP_QUERY_REASON}; the per-pass instrument stays unverified on this host`);
+    }
     const readings = await withTimedEngine(true, async ({ engine }) => {
       engine.runRenderLoop(() => {});
       const sink = new StorageBuffer(engine, SINK_INVOCATIONS * 4);
@@ -115,7 +126,9 @@ describe("deferred per-pass timing on the device", () => {
         sink.dispose();
       }
     });
-    if (!readings) throw new Error("no timestamp-query on this device; the control measured nothing");
+    if (!readings) {
+      throw new Error("the adapter advertises timestamp-query but the device measured nothing; the control proves nothing");
+    }
     for (const reading of readings) console.log(`control ${reading.order}: ${reading.name} ${reading.ms.toFixed(4)} ms`);
     const heavy = readings.filter((reading) => reading.name === "timing-heavy").map((reading) => reading.ms);
     const trivial = readings.filter((reading) => reading.name === "timing-trivial").map((reading) => reading.ms);
@@ -128,7 +141,10 @@ describe("deferred per-pass timing on the device", () => {
     expect(Math.min(...heavy)).toBeGreaterThan(10 * Math.max(...trivial));
   }, 120_000);
 
-  it("reads back once per frame however many passes it times; Babylon's read once per pass", async () => {
+  it("reads back once per frame however many passes it times; Babylon's read once per pass", async (context) => {
+    if (!(await adapterAdvertisesTimestampQuery())) {
+      context.skip(`${NO_TIMESTAMP_QUERY_REASON}; the readback count stays unverified on this host`);
+    }
     const PASSES = [0, 20, 44, 88];
     const FRAMES = 120;
     const arm = (deferred: boolean) => withTimedEngine(deferred, async ({ engine, timing }) => {
@@ -180,7 +196,9 @@ describe("deferred per-pass timing on the device", () => {
     });
     const babylon = await arm(false);
     const deferred = await arm(true);
-    if (!babylon || !deferred) throw new Error("no timestamp-query on this device; nothing was measured");
+    if (!babylon || !deferred) {
+      throw new Error("the adapter advertises timestamp-query but the device measured nothing");
+    }
     for (const [name, rows] of [["babylon", babylon], ["deferred", deferred]] as const) {
       for (const row of rows) {
         console.log(

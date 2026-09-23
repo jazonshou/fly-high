@@ -3,6 +3,7 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { Scene } from "@babylonjs/core/scene";
+import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
 import {
   type DeferredPassTimingOptions,
   installDeferredPassTiming,
@@ -49,6 +50,31 @@ import { createWorld, type WorldDefinition } from "../../src/world";
 const SEED = "w1d-page-erosion-gpu";
 const SLOTS = 16;
 
+/**
+ * Test-only: behave as an adapter without `timestamp-query`, the case of
+ * GitHub's hosted macOS runners, so a machine that has the counter can show
+ * the timing tests' skip path. `VITE_GPU_NO_TIMESTAMP_QUERY=1` makes
+ * `adapterAdvertisesTimestampQuery` answer no and leaves the feature out of
+ * every timed device's request.
+ */
+export function timestampQueryForcedOff(): boolean {
+  return (import.meta.env as Record<string, string | undefined>).VITE_GPU_NO_TIMESTAMP_QUERY === "1";
+}
+
+/** Why a timing test skips on such an adapter; each test adds what stays unverified. */
+export const NO_TIMESTAMP_QUERY_REASON = "this adapter exposes no timestamp-query, so there is no per-pass counter to read";
+
+/**
+ * Whether the ADAPTER advertises `timestamp-query`: the one question a timing
+ * test may skip on. Never a zero reading: an adapter that advertises the
+ * counter and a device that then measures nothing is the regression those
+ * tests exist to catch, and it must keep failing.
+ */
+export async function adapterAdvertisesTimestampQuery(): Promise<boolean> {
+  if (timestampQueryForcedOff()) return false;
+  return (await inspectWebGpuCapabilities()).features.has("timestamp-query");
+}
+
 export async function withScene<T>(
   run: (engine: WebGPUEngine, scene: Scene) => Promise<T>,
   timed = false,
@@ -65,7 +91,7 @@ export async function withScene<T>(
     // The counter has to be asked for at DEVICE creation; Babylon silently
     // drops an unsupported entry rather than letting requestDevice reject, so
     // enabledExtensions is checked below rather than trusted here.
-    ...(timed
+    ...(timed && !timestampQueryForcedOff()
       ? { deviceDescriptor: { requiredFeatures: ["timestamp-query"] as GPUFeatureName[] } }
       : {}),
   });
