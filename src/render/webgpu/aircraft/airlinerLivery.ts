@@ -86,9 +86,9 @@ export const AIRLINER_LIVERY_STATION_RANGE: LiveryStationRange = { minimumX: -26
  * in `airlinerVisual.ts` holds it, and the cheatline's forward fade RELIES on
  * that: it is painted from x = 30.5 to 32.5, all of it on the radome, and it
  * lands at the right height only because the radome's v is re-solved against
- * this same table (`radomeLiveryPhase`). Forward of 30.6 the held section is a
- * parametrisation, not a surface; the fuselage's own sections from x = 28
- * forward are buried inside the radome.
+ * this same table (`radomeLiveryPhase`). Forward of 30.8 the held section is a
+ * parametrisation, not a surface; the fuselage's own sections forward of the
+ * crossing at x ~ 29.8 are buried inside the radome, which they hug.
  */
 export const AIRLINER_LIVERY_SECTIONS: readonly LoftSection[] = [
   { x: -26, yRadius: 3.08, zRadius: 3.08, yOffset: 0.16 },
@@ -101,9 +101,13 @@ export const AIRLINER_LIVERY_SECTIONS: readonly LoftSection[] = [
   { x: 17, yRadius: 3.785, zRadius: 3.25, yOffset: 0.535 },
   { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57 },
   { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575 },
-  { x: 28, yRadius: 3.575, zRadius: 3, yOffset: 0.675 },
-  { x: 29.6, yRadius: 3.15, zRadius: 2.6, yOffset: 0.65 },
-  { x: 30.6, yRadius: 2.55, zRadius: 2.05, yOffset: 0.6 },
+  { x: 27.2, yRadius: 3.675, zRadius: 3.1, yOffset: 0.635 },
+  { x: 28, yRadius: 3.65, zRadius: 3, yOffset: 0.6 },
+  { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 },
+  { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 },
+  { x: 30, yRadius: 3.1225, zRadius: 2.4168, yOffset: 0.4733 },
+  { x: 30.4, yRadius: 3.0378, zRadius: 2.2709, yOffset: 0.5 },
+  { x: 30.8, yRadius: 2.7565, zRadius: 1.9493, yOffset: 0.518 },
 ];
 
 // ---------------------------------------------------------------------------

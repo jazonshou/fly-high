@@ -116,8 +116,8 @@ function levelBandBow(image: LiveryImage): { cabinRow: number; noseRow: number; 
 
 /**
  * Stations clear of every door and frame line. 0, 5 and 9 sit on the wing-root
- * tone BELOW the band, which test 3 never samples; 29.6 is on the fuselage's
- * buried sections, not the visible skin (the radome is outside there).
+ * tone BELOW the band, which test 3 never samples; 29.6 is where the
+ * fuselage hugs the radome, millimetres outside it, just aft of their crossing.
  */
 const CLEAR_STATIONS = [-20, -6, 0, 5, 9, 13, 17, 21, 26, 29.6] as const;
 
@@ -209,23 +209,28 @@ describe("airliner livery image", () => {
     }
   });
 
-  it("5: the band CURVES -- its top edge at x = 30.6 is 0.040..0.049 of a circuit from x = -20", () => {
+  it("5: the band CURVES -- its top edge at x = 30.6 is 0.027..0.034 of a circuit from x = -20", () => {
     // The contract's measured numbers, straight from the solve.
     // (The contract measured 0.2696 .. 0.3141, a bow of 0.0445, for its top
     // edge at -0.40; the band moved up to -0.30 to clear the belly fairing.)
+    // RE-PINNED for the nose join: the fuselage's forward rings now hug the
+    // radome instead of diving under it, so the table's section at 30.6 is the
+    // radome's size (yRadius 3.0 where it was 2.55) and the band sits nearer
+    // the flank's middle there: 0.2950, a bow of 0.0303 where it was 0.3074 and
+    // 0.0427. It still curves, and 5b still catches a straight row.
     expect(phaseAt(-20, CHEATLINE.topY)).toBeCloseTo(0.2647, 3);
-    expect(phaseAt(30.6, CHEATLINE.topY)).toBeCloseTo(0.3074, 3);
+    expect(phaseAt(30.6, CHEATLINE.topY)).toBeCloseTo(0.295, 3);
     // And from the painted image, which is what the GPU will see.
     const bow = levelBandBow(livery);
     expect(
       bow.bowV,
       `band top edge: row ${bow.cabinRow} at x = -20, row ${bow.noseRow} at x = 30.6, `
-        + `bow ${bow.bowV.toFixed(4)} of a circuit; the solve gives 0.0427`,
-    ).toBeGreaterThanOrEqual(0.04);
-    expect(bow.bowV).toBeLessThanOrEqual(0.049);
+        + `bow ${bow.bowV.toFixed(4)} of a circuit; the solve gives 0.0303`,
+    ).toBeGreaterThanOrEqual(0.027);
+    expect(bow.bowV).toBeLessThanOrEqual(0.034);
   });
 
-  it("5b: REVERSE CONTROL -- a straight row fails the same check by ~22 texels at the nose", () => {
+  it("5b: REVERSE CONTROL -- a straight row fails the same check by ~15 texels at the nose", () => {
     // Painted HERE, not by the generator: the band's own cabin rows carried
     // straight forward at constant v, which is exactly the row a generator
     // that forgot section 3 of the contract would paint.
@@ -259,17 +264,17 @@ describe("airliner livery image", () => {
     // The check of test 5 must FAIL on it...
     expect(
       control.bowV,
-      `the straight row measured a bow of ${control.bowV.toFixed(4)}, inside the 0.040..0.049 `
+      `the straight row measured a bow of ${control.bowV.toFixed(4)}, inside the 0.027..0.034 `
         + "window: the level-band check cannot tell a straight row from the curve",
-    ).toBeLessThan(0.04);
-    // ...and by the amount the solve predicts: 0.0427 x 512 = 21.9 texels.
+    ).toBeLessThan(0.027);
+    // ...and by the amount the solve predicts: 0.0303 x 512 = 15.5 texels.
     const texelsOff = Math.abs(control.noseRow - real.noseRow);
     expect(
       texelsOff,
       `straight row sits ${texelsOff} texels from the level band at x = 30.6 (rows `
-        + `${control.noseRow} vs ${real.noseRow}); the solve predicts about 22`,
-    ).toBeGreaterThanOrEqual(20);
-    expect(texelsOff).toBeLessThanOrEqual(24);
+        + `${control.noseRow} vs ${real.noseRow}); the solve predicts about 15.5`,
+    ).toBeGreaterThanOrEqual(13);
+    expect(texelsOff).toBeLessThanOrEqual(18);
   });
 
   it("6: paints no band where the body is too short -- and does where it is not", () => {

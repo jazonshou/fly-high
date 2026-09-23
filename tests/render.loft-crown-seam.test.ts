@@ -343,7 +343,14 @@ describe("a loft's crown seam", () => {
       // 1,512 triangles, six boxes become six 8 x 8 skin panels. airliner-windscreen-center-post goes
       // 38 -> 96 and 32 -> 60, a strut becomes a 2 x 8 skin strip. The other 90 are bit-identical, and
       // the other three airframes' pins are untouched.
-      airliner: "cf8ef834",
+      // RE-PINNED for the fuselage/radome join. Checked mesh by mesh against 1849fd8: of 93
+      // meshes, exactly two differ. airliner-fuselage-shell goes 613 -> 729 vertices and
+      // 1,176 -> 1,400 triangles: the fuselage's four extra rings, its reshaped 28 ring and
+      // the nose's. airliner-flight-deck-glazing keeps its counts and moves only in the No.3
+      // panes' aft third (x 30.21..30.40), by at most 2.7 mm: the nose's shading normals at
+      // its 29.2 ring average in the reshaped segment behind it, and the glass is laid along
+      // them. The other 91 are bit-identical, the centre post included.
+      airliner: "87e67ec1",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

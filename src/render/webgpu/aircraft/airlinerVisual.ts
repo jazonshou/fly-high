@@ -438,11 +438,35 @@ const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   // The crown reaches 4.40 here, which is where `sim/aircraft.ts` puts its
   // upper-deck contact point, exactly as the old separate hump loft did.
   { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },
-  // ...and then hands the crown down to the nose loft, narrowing enough by
-  // the last section to be swallowed by it rather than capped in the open.
-  { x: 28, yRadius: 3.575, zRadius: 3, yOffset: 0.675, crownZRadius: 2.45 },
-  { x: 29.6, yRadius: 3.15, zRadius: 2.6, yOffset: 0.65, crownZRadius: 2.2 },
-  { x: 30.6, yRadius: 2.55, zRadius: 2.05, yOffset: 0.6, crownZRadius: 1.8 },
+  // ...and then HANDS THE SKIN TO THE NOSE LOFT ALONG A TANGENT, not across a
+  // crease. These rings used to dive under the nose: the two lofts crossed on
+  // a slanted loop (x 29.0-29.9 over the top, 26.9-28.0 underneath), and their
+  // normals differed by up to 32 degrees at the crown and 19 underneath. It
+  // showed as a jagged shading line down the flank behind the flight deck
+  // (docs/findings/AIRLINER_NOSE_GLAZING.md).
+  //
+  // Now there is ONE crossing, a ring at x ~ 29.8 with the normals within
+  // 5 degrees all the way round (tests/render.airliner-nose-join.test.ts).
+  // - 27.2 is the old surface there, exactly (sections are linear between
+  //   rings); it holds the belly line from here back.
+  // - 28 keeps the crown at 4.25 but takes the nose's lower lip, belly -3.05,
+  //   which used to show BELOW this loft between 27 and 29. The nose's own 28
+  //   ring is now this one, 3 % inside, so the nose stays buried aft of 29.2.
+  // - 29.2 to 30.4 HUG the nose: its own section at each station, scaled
+  //   about its centre by 1.004 falling to 0.996, so this loft passes inside
+  //   the nose at a shallow, even angle.
+  // - 30.8 is the buried end.
+  // The nose is untouched from its 29.2 ring forward, so the flight-deck glass
+  // cast onto it is byte-identical. The price of that is the crown at 29.2:
+  // the nose's own crown there is 3.70, and the hump now comes down onto it
+  // (about 0.2 m lower than before, the forehead a little steeper).
+  { x: 27.2, yRadius: 3.675, zRadius: 3.1, yOffset: 0.635, crownZRadius: 2.51 },
+  { x: 28, yRadius: 3.65, zRadius: 3, yOffset: 0.6, crownZRadius: 2.45 },
+  { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 },
+  { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 },
+  { x: 30, yRadius: 3.1225, zRadius: 2.4168, yOffset: 0.4733 },
+  { x: 30.4, yRadius: 3.0378, zRadius: 2.2709, yOffset: 0.5 },
+  { x: 30.8, yRadius: 2.7565, zRadius: 1.9493, yOffset: 0.518 },
 ];
 
 /**
@@ -474,7 +498,9 @@ const NOSE_SECTIONS: readonly LoftSection[] = [
   // join; at the first draft's x = 27 the two lofts met almost exactly and the
   // seam showed as a ring around the nose in the rendered frames.
   { x: 25.5, yRadius: 3, zRadius: 3, yOffset: -0.02 },
-  { x: 28, yRadius: 3.1, zRadius: 2.92, yOffset: 0.05 },
+  // The fuselage's own 28 ring scaled 0.97 about its centre: buried inside it,
+  // so the two lofts do not cross aft of 29.2 (see the fuselage's forward end).
+  { x: 28, yRadius: 3.5405, zRadius: 2.91, yOffset: 0.6, crownZRadius: 2.3765 },
   { x: 29.2, yRadius: 3.28, zRadius: 2.7, yOffset: 0.42 },
   { x: 30.4, yRadius: 3.05, zRadius: 2.28, yOffset: 0.5 },
   // THE BROW. This ring's crown is 3.38, raised 0.23 m from 3.15 with the belly

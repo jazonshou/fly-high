@@ -81,7 +81,7 @@ metres: x forward, y up, z starboard.
     PANE THREE  (az 56..75, el -12..8)
       bottom inboard                  30.913  2.572  1.510     30.875  2.520  1.434
       bottom outboard                 30.361  2.582  1.711     30.334  2.527  1.632
-      top outboard                    30.232  3.137  1.237     30.214  3.060  1.176
+      top outboard                    30.233  3.137  1.237     30.213  3.060  1.177
       top inboard                     30.632  3.142  1.092     30.604  3.065  1.034
       outer normal at centre: 41.1 deg above horizontal, 69.1 deg outboard
 
@@ -148,14 +148,31 @@ from an eye inside the body, which every ray exits, so it could not fail.
    ~1.4 m. With azimuths from the centreline, a pillar at 25 degrees from R
    passes just outboard of an eye 0.72 m off the centreline. The remedy belongs
    to the eye (inboard and/or forward) or to the design (No.1 wider).
-3. **The glass no longer covers the fuselage/radome crease.** The two lofts
-   cross along x 29.0..29.9, and there the skins' normals differ by 32 degrees
-   at the crown, 17 at 45 degrees round the section, and 7 low on the flank. It
-   renders as a jagged shading line down the flank just aft of the new No.3.
-   It is not new: nothing aft of the 30.4 ring moved. The old No.3 and No.2
-   boxes, at x 29.1..30.85, sat over part of it. The fix is a tangent join: the
-   radome carries the hump's section forward of ~28.5, or the fuselage ends
-   inside it. That is a separate item.
+3. **The fuselage/radome crease: fixed in the second commit.** The glass no
+   longer covered it. The two lofts crossed on a slanted loop: over the top at
+   x 29.0..29.9, underneath at 26.9..28.0, three times on each flank. Their
+   normals differed by up to 32 degrees at the crown and 19 underneath, and it
+   rendered as a jagged shading line just aft of the new No.3.
+   Now they cross ONCE, on a ring at x ~ 29.8, within 5 degrees all the way
+   round (tests/render.airliner-nose-join.test.ts, with the old join as its
+   control). How:
+   - the fuselage's forward rings hug the nose over 29.2..30.4, scaled 1.004
+     falling to 0.996 about each section's centre;
+   - its 28 ring takes the nose's lower lip as its belly;
+   - the nose's 28 ring is that, 3 % inside.
+   Nothing on the nose moved from its 29.2 ring forward, and nothing on the
+   fuselage from its 26 ring aft (vertex for vertex).
+   Two costs, measured on the union's silhouette:
+   - **The crown is 0.2 m lower at x 29.2**: the hump comes down onto the
+     nose's own 3.70 there. That is forced by leaving the nose's glass
+     segment alone. The kink it leaves is 17 degrees inside one smooth-shaded
+     loft, where there was a 32-degree intersection.
+   - **The lower flank is up to 7 cm narrower at x 28.** The belly line is
+     held within 1.3 cm.
+   The glass moved by at most 2.7 mm, in the No.3 panes' aft third only. The
+   nose's shading normals at its 29.2 ring average in the reshaped segment
+   behind it, and the glass is laid along them. Holding the glass exactly
+   would cost a fuller lower flank instead.
 4. **The eye re-solve** runs against this table. Five of the 27
    `render.cockpit-airliner` tests go red on the re-loft branch, by design: the
    kit's `AIRLINER_GLAZING` constants and four sightline checks were copied
