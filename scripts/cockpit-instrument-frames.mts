@@ -23,8 +23,9 @@
  *     and the ball's poses are read from the live scene, in the aircraft's body
  *     frame, and turned back into readings with the inverse of the mapping, and each
  *     must match the HUD within a tolerance that allows for the HUD's 75 ms
- *     refresh: airspeed +-3 kt, vertical speed +-200 ft/min, RPM +-60, bank +-3
- *     degrees, pitch +-2 degrees. A needle or a ball running the wrong way, or a
+ *     refresh: airspeed +-3 kt, bank +-3 degrees, pitch +-2 degrees. (The Cessna
+ *     has three dials, airspeed, attitude and altimeter: its vertical speed and
+ *     engine dials went with the second row.) A needle or a ball running the wrong way, or a
  *     dial on the wrong field, cannot pass. The altimeter has no HUD number (the HUD shows
  *     height above the ground); it is checked to be finite, and held to
  *     `tests/render.cockpit-instruments.test.ts` for the rest.
@@ -200,7 +201,7 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       // The pilot's right is panel local X x local Y = local Z (the pilot looks along -X, the face's normal reversed).
       const right = inBody(panelRows[2]);
       needleDegrees = {};
-      for (const dial of ["airspeed", "altimeter", "vertical-speed", "engine"]) {
+      for (const dial of ["airspeed", "altimeter"]) {
         const needle = scene.meshes.find((m) => m.name === `trainer-${dial}-needle`)!;
         const pointer = inBody(rows(needle)[1]);
         needleDegrees[dial] = (Math.atan2(dot(pointer, right), dot(pointer, up)) * 180) / Math.PI;
@@ -363,8 +364,6 @@ async function runGroup(mode: "scenic" | "unassisted", scenarios: readonly Scena
         const n = scene.needleDegrees;
         // the inverse of the mapping, written here as literals (the PM's numbers)
         within("airspeed kt", ((n.airspeed! + 150) / 300) * 160, hud.knots, 3);
-        within("vertical speed ft/min", ((n["vertical-speed"]! + 90) / 90) * 2_000, hud.verticalSpeedFpm, 200);
-        within("engine rpm", ((n.engine! + 135) / 270) * 2_750, hud.engine, 60);
         if (!Number.isFinite(n.altimeter)) throw new Error(`${label}: the altimeter needle is not finite`);
         checks.push(`altimeter ${(((n.altimeter! % 360) + 360) % 360 / 360 * 1_000).toFixed(0)} ft (mod 1,000; no HUD number)`);
       }

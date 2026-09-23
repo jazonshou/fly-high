@@ -28,7 +28,8 @@ import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/c
  * left-seat eye at the 75 degree lens: glareshield top -8.2 to -11 degrees (it
  * was built at -8.0 and the PM asked for it 5 mm lower, which reads -8.35),
  * instrument row centred at -15 (+-1.5) with each dial at least 4.5 degrees
- * across and a second row at -21, the left windscreen post's axis between
+ * across (the ONLY row: Jason asked for three dials, 2026-09-23, and the second
+ * row at -21 went), the left windscreen post's axis between
  * azimuth -37 and -31 (at -35), the cowl reading about -4.7 above the
  * glareshield. Each has a
  * control: `scripts`' mutation runs move the number and watch the test fail.
@@ -123,11 +124,21 @@ afterAll(() => {
 });
 
 describe("the trainer's cockpit parts", () => {
-  it("are eight or fewer new meshes beyond the twelve dial meshes, and keep the dial names", () => {
-    // five gauge faces, four needles (the attitude dial has a BALL instead: sky, ground, pitch bar)
+  it("have exactly three dials, airspeed, attitude and altimeter, and nothing else on the panel", () => {
+    // Jason: "the trainer should only have 3 dials" (2026-09-23). Read off the BUILT meshes and off the
+    // placements the HUD survey projects, so a fourth dial left in either place fails here by name.
+    const parts = cockpitOnly.map((part) => part.name);
+    expect(parts.filter((name) => /-gauge$/.test(name)).sort()).toEqual(["trainer-airspeed-gauge", "trainer-altimeter-gauge", "trainer-attitude-gauge"]);
+    expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle"]);
+    expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
+    expect(parts).toHaveLength(15);
+  });
+
+  it("are eight or fewer new meshes beyond the eight dial meshes, and keep the dial names", () => {
+    // three gauge faces, two needles (the attitude dial has a BALL instead: sky, ground, pitch bar)
     const dialNames = [
-      ...["airspeed", "attitude", "altimeter", "engine", "vertical-speed"].map((dial) => `trainer-${dial}-gauge`),
-      ...["airspeed", "altimeter", "engine", "vertical-speed"].map((dial) => `trainer-${dial}-needle`),
+      ...["airspeed", "attitude", "altimeter"].map((dial) => `trainer-${dial}-gauge`),
+      ...["airspeed", "altimeter"].map((dial) => `trainer-${dial}-needle`),
       "trainer-attitude-sky", "trainer-attitude-ground", "trainer-attitude-pitch-bar",
     ];
     for (const name of dialNames) expect(cockpitOnly.map((part) => part.name)).toContain(name);
@@ -162,7 +173,7 @@ describe("the trainer's cockpit parts", () => {
     expect(luma(hood)).toBeLessThan(luma(board));
   });
 
-  it("put the main instrument row at -15 degrees and the second at -21, each dial at least 4.5 degrees across", () => {
+  it("put the instrument row at -15 degrees, each dial at least 4.5 degrees across", () => {
     const row = (dials: string[]) => dials.map((dial) => {
       const centre = named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
       const distance = Vector3.Distance(centre, EYE_POINT);
@@ -173,11 +184,6 @@ describe("the trainer's cockpit parts", () => {
       expect(el, `${dial} elevation`).toBeLessThan(-13.5);
       expect(across, `${dial} angular size`).toBeGreaterThanOrEqual(4.5);
     }
-    for (const { dial, el, across } of row(["vertical-speed", "engine"])) {
-      expect(el, `${dial} elevation`).toBeGreaterThan(-22.5);
-      expect(el, `${dial} elevation`).toBeLessThan(-19.5);
-      expect(across, `${dial} angular size`).toBeGreaterThanOrEqual(4.5);
-    }
   });
 
   it("have every dial in front of the LEFT seat, in the real order, facing the pilot", () => {
@@ -186,7 +192,7 @@ describe("the trainer's cockpit parts", () => {
     expect(z("airspeed")).toBeLessThan(z("attitude"));
     expect(z("attitude")).toBeLessThan(z("altimeter"));
     expect(z("attitude")).toBeCloseTo(EYE.right, 2);
-    for (const dial of ["airspeed", "attitude", "altimeter", "engine", "vertical-speed"]) {
+    for (const dial of ["airspeed", "attitude", "altimeter"]) {
       const centre = named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
       // Every dial is where the pilot can see it: the first thing a ray toward it meets is the dial, or its needle.
       const d = centre.subtract(EYE_POINT);

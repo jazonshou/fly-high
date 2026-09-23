@@ -292,7 +292,12 @@ describe("a loft's crown seam", () => {
       // positions, and the SAME set of position-UV pairs; only winding and flat normals changed, so 16 -> 84
       // vertices) and `windscreen-center-frame` (76 -> 779 vertices, 64 -> 1,360 triangles). The other 68,
       // and all of the jet's, the Global's and the 747's, are bit-identical.
-      trainer: "cc9fea6a",
+      // RE-PINNED for the trainer when it kept THREE DIALS (jazonshou/trainer-three-dials; Jason, 2026-09-23):
+      // the second row's four meshes are gone (`trainer-vertical-speed-gauge`, `trainer-engine-gauge` and their
+      // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
+      // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
+      // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
+      trainer: "1f9a6faa",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global
