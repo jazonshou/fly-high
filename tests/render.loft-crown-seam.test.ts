@@ -340,7 +340,13 @@ describe("a loft's crown seam", () => {
       // 9.5 ring's, which average the new span forward of it. Checked mesh by mesh against d52ccc2,
       // positions, normals, UVs, indices, world matrix, material and visibility: the other 89 meshes
       // are bit-identical, and so is every fuselage vertex to 9.5 m (render.bizjet-nose).
-      bizjet: "d6c8c74c",
+      // RE-PINNED for the Global's nose, phase 3c part 2: the crown lowered ahead of the flight deck
+      // (0.45 of the camera-solved drop, the keel and the widths held) and two rings added at 11.75
+      // and 12.25 for the brow: `bizjet-fuselage` 884 -> 982 vertices; the flight-deck glazing and
+      // post re-cast onto it (counts unchanged); `bizjet-cabin-windows` moves within render.bizjet-nose's
+      // 0.2 mm (the 9.5 ring's normals average the span forward of it). Checked mesh by mesh against
+      // c252859: the other 89 meshes are bit-identical.
+      bizjet: "df41835d",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

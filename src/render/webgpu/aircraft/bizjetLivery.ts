@@ -59,10 +59,19 @@ const CHANNELS = 4;
  * every ring is the cabin's as it was, and the tip's last two rings are the
  * radome's as they were.
  *
- * THE HEIGHT IS HELD: each ring's crown and keel are the old tables' at that
- * station, so the nose widened without rising or falling (within 2 cm where
- * the old tables' kinks at 11.6 and 13.2 now fall between rings). Dropping the
- * crown to the type's is phase 3c's second part.
+ * THE CROWN COMES DOWN ahead of the flight deck (phase 3c, part 2), the keel
+ * does not. The type's nose falls away steeply ahead of the windshield under a
+ * brow; this one was a smooth ogive, 0.3-0.7 m higher at 1-2 m aft of the tip
+ * by a camera solved on the port render (p. 29; docs/findings/GLOBAL_LIVERY.md).
+ * The crown is 0.45 of that drop: the largest the held tip allows before the
+ * nose ahead of the windshield goes flat enough for the windshield's foot to
+ * cast past it, and the one that puts the horizon inside a 26-degree
+ * windshield from a seated eye at y 0.55 (1.21 m above the -0.66 floor). The
+ * curve is a monotone cubic through the held tip (0, 0.3 and 0.6 m aft), the
+ * scaled drop at 1.8-4.0 m aft and the cabin from 5.5, sampled at the rings;
+ * 11.75 and 12.25 are there to draw the brow. The crown drops 0.18 / 0.27 /
+ * 0.22 / 0.12 / 0.05 m at 1.3 / 1.8 / 2.2 / 3.0 / 3.5 m aft; the keel and the
+ * widths are part 1's.
  */
 export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
@@ -71,15 +80,17 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -2, yRadius: 1.345, zRadius: 1.345 },
   { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 10.5, yRadius: 1.2945, zRadius: 1.32, yOffset: 0.0286 },
-  { x: 11, yRadius: 1.2743, zRadius: 1.32, yOffset: 0.0429 },
-  { x: 11.5, yRadius: 1.254, zRadius: 1.315, yOffset: 0.0571 },
-  { x: 12, yRadius: 1.1625, zRadius: 1.272, yOffset: 0.04 },
-  { x: 12.5, yRadius: 1.0531, zRadius: 1.201, yOffset: 0.015 },
-  { x: 13, yRadius: 0.9437, zRadius: 1.1, yOffset: -0.01 },
-  { x: 13.35, yRadius: 0.8533, zRadius: 0.99, yOffset: -0.0367 },
-  { x: 13.7, yRadius: 0.7444, zRadius: 0.851, yOffset: -0.0756 },
-  { x: 14.1, yRadius: 0.62, zRadius: 0.672, yOffset: -0.12 },
+  { x: 10.5, yRadius: 1.2818, zRadius: 1.32, yOffset: 0.0159 },
+  { x: 11, yRadius: 1.2531, zRadius: 1.32, yOffset: 0.0217 },
+  { x: 11.5, yRadius: 1.2279, zRadius: 1.315, yOffset: 0.031 },
+  { x: 11.75, yRadius: 1.1719, zRadius: 1.2935, yOffset: 0.0122 },
+  { x: 12, yRadius: 1.1005, zRadius: 1.272, yOffset: -0.022 },
+  { x: 12.25, yRadius: 1.048, zRadius: 1.2365, yOffset: -0.0323 },
+  { x: 12.5, yRadius: 0.9804, zRadius: 1.201, yOffset: -0.0577 },
+  { x: 13, yRadius: 0.8046, zRadius: 1.1, yOffset: -0.1491 },
+  { x: 13.35, yRadius: 0.7208, zRadius: 0.99, yOffset: -0.1692 },
+  { x: 13.7, yRadius: 0.6543, zRadius: 0.851, yOffset: -0.1657 },
+  { x: 14.1, yRadius: 0.5807, zRadius: 0.672, yOffset: -0.1593 },
   { x: 14.4, yRadius: 0.48, zRadius: 0.502, yOffset: -0.135 },
   // The drooped tip, as the radome ended: the sim's two radome contact points
   // straddle it at y 0.1 and -0.4 (`src/sim/aircraft.ts`).

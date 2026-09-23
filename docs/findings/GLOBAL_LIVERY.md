@@ -409,6 +409,68 @@ The eye has 0.34 m of skin above it and 0.48 m to the port wall.
 - **What would pin it.** A second, independent camera (p. 35, from above),
   and a decision on the tip, whose contact points the sim owns.
 
+## Phase 3c, part 2: the crown lowered for a seated eye
+
+**What decided it was the seat, not the silhouette.** The cockpit engineer's
+K0 on part 1's nose found the windshield a slot 17.2 degrees tall from the
+catalogue eye (11.90, 0.78, -0.52), and no eye in their grid reached 24. So I
+took the windshield as cast, by station and angle round the section, and
+measured it straight ahead from the seat while scaling the camera fit's drop
+by s, with the tip held. The opening is set by the EYE's height:
+- **Crown drop:** it slides the window down without growing it. From 0.78,
+  s 0 gives 17.2 degrees, s 0.2 gives 16.5 and s 0.45 gives 15.3.
+- **Crown raise:** +0.3 m reaches 25 degrees, but wholly above the horizon,
+  over a hump above the cabin crown.
+- **Eye at 0.60:** 23.6 degrees at most.
+- **Eye at 0.55** (1.21 m above the -0.66 floor, a seated eye): 24-26 degrees
+  at any s, with straight ahead inside the glass only once s reaches 0.45.
+- **Past s 0.5:** with the tip held, the nose ahead of the windshield goes
+  flat and the windshield's foot casts past it.
+
+So the crown is **s = 0.45** of the camera fit: the largest the held tip
+allows. It is drawn as a monotone cubic through the held tip (0, 0.3 and 0.6 m
+aft), the scaled drop at 1.8-4.0 m aft and the cabin from 5.5, with rings added
+at 11.75 and 12.25 for the brow. Nothing rises going forward. The keel and the
+widths are part 1's.
+
+| m aft of the tip | 1.3 | 1.8 | 2.2 | 2.6 | 3.0 | 3.5 |
+|---|---|---|---|---|---|---|
+| crown, part 1 | 0.669 | 0.867 | 0.987 | 1.095 | 1.203 | 1.311 |
+| crown, part 2 | 0.489 | 0.596 | 0.762 | 0.960 | 1.079 | 1.259 |
+
+**From the seated eye (11.90, 0.55, -0.52), on the built glass**
+(`tests/render.bizjet-seat-view.test.ts`; the corner table with `--eye
+11.9,0.55,-0.52`):
+- **Straight ahead:** the port windshield spans -0.60 to +25.55 degrees, 26.2
+  tall, with the horizon inside it.
+- **The windshield's corners,** as azimuth / elevation / range:
+  bottom-inboard -17.8 / +1.0 / 1.47, bottom-outboard +17.4 / -1.2 / 0.94,
+  top-outboard +11.4 / +26.1 / 0.61, top-inboard -26.5 / +13.3 / 1.01.
+- **Through the middle of each port pane at the horizon:** the windshield
+  -1.9 to +26.2, the forward side pane -5.6 to +34.3, the aft side pane -8.7
+  to +29.7.
+- **Room at the seat:** 0.472 m of skin straight up, 0.401 m to the nearest
+  skin and 0.442 m to the nearest glass. From the old eye on part 1's nose it
+  was 0.341 / 0.302 / 0.38, the numbers K0 measured independently. 0.3 m ahead
+  of the seat it is 0.379 / 0.331 / 0.347.
+- **The windshield's foot** casts 1.701 m aft, on the loft. The control, the
+  same table with two rings sunk 12 cm, moves it to 1.911.
+- **The blend into the held tip:** the turn between consecutive rings, over
+  every radial, grows steadily at 3.8, 6.3, 8.9 and 12.2 degrees into 13.7,
+  14.1, 14.4 and 14.7.
+- **What else moved:**
+  - the windshield's rake at the post goes from 17 to 22 degrees;
+  - the post runs y 0.56-0.77, where it ran 0.83-0.99;
+  - the side panes' tops sit at 0.78-0.82 (were 0.83-0.91) and their bottoms
+    at 0.45-0.49 (were 0.52-0.65).
+
+From the catalogue eye at 0.78 the same windshield is -11.35 to +5.35
+degrees, and every table pin at that eye moves. That eye is the cockpit
+engineer's to re-solve against these numbers.
+
+The second camera (p. 35 against p. 29) still has to confirm or trim s. The
+table is parametric, so a trim is one re-pin.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own

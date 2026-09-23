@@ -122,20 +122,44 @@ describe("the Global's nose (phase 3c)", () => {
     }
   });
 
-  it("holds the crown and the keel: within 2.5 cm of the nose before at every 5 cm from 9.5 m to the tip ring", () => {
-    let crown = 0;
+  it("holds the keel, and lowers the crown ahead of the flight deck without a shelf (part 2)", () => {
+    const up = { x: 0, y: 1, z: 0 };
+    const down = { x: 0, y: -1, z: 0 };
+    const crownAt = (skin: SkinCaster, x: number) => skin.exit({ x, y: -0.3, z: 0 }, up)!.point.y;
+    const keelAt = (skin: SkinCaster, x: number) => skin.exit({ x, y: -0.3, z: 0 }, down)!.point.y;
     let keel = 0;
-    for (let x = 9.5; x <= 14.7 + 1e-9; x += 0.05) {
-      const up = { x: 0, y: 1, z: 0 };
-      const down = { x: 0, y: -1, z: 0 };
-      const axis = { x, y: -0.1, z: 0 };
-      crown = Math.max(crown, Math.abs(now.exit(axis, up)!.point.y - before.exit(axis, up)!.point.y));
-      keel = Math.max(keel, Math.abs(now.exit(axis, down)!.point.y - before.exit(axis, down)!.point.y));
+    let rise = 0;
+    let last = crownAt(now, 9.5);
+    for (let x = 9.55; x <= 14.7 + 1e-9; x += 0.05) {
+      keel = Math.max(keel, Math.abs(keelAt(now, x) - keelAt(before, x)));
+      const crown = crownAt(now, x);
+      // Going forward the crown only ever falls: no shelf for the windshield's foot to cast past.
+      // `rise` is the total climb, summed over every 5 cm that climbs at all.
+      rise += Math.max(0, crown - last);
+      last = crown;
     }
-    // Measured 2.1 cm on the crown and 0.8 cm on the keel: where the old tables' kinks at 11.6
-    // and 13.2 now fall between rings, the chord cuts the corner.
-    expect(crown).toBeLessThan(0.025);
-    expect(keel).toBeLessThan(0.025);
+    // Measured 0.8 cm: part 1's chords across the old tables' kinks, which part 2 does not touch.
+    expect(keel).toBeLessThan(0.01);
+    expect(rise).toBeLessThanOrEqual(0.001);
+    // The drop, against the nose before, at the stations the table states (m aft of the tip).
+    const drops: [number, number][] = [[1.3, 0.18], [1.8, 0.27], [2.2, 0.22], [3.0, 0.12], [3.5, 0.05]];
+    for (const [aft, want] of drops) {
+      const x = TIP_X - aft;
+      const got = crownAt(before, x) - crownAt(now, x);
+      expect(Math.abs(got - want), `${aft} m aft: the crown came down ${got.toFixed(3)}`).toBeLessThan(0.02);
+    }
+    // CONTROL: the same table with its 14.1 ring lifted 10 cm, above the 13.7 ring behind it, reads as a rise.
+    const bumped = GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x === 14.1 ? { ...r, yOffset: (r.yOffset ?? 0) + 0.1 } : r));
+    const lofts = new AircraftBuildContext(scene);
+    const shelf = new SkinCaster([soup(lofts.loft("shelf", bumped, 48, new StandardMaterial("s", scene), new TransformNode("s", scene)))]);
+    let shelfRise = 0;
+    let previous = crownAt(shelf, 9.5);
+    for (let x = 9.55; x <= 14.7 + 1e-9; x += 0.05) {
+      const crown = crownAt(shelf, x);
+      shelfRise += Math.max(0, crown - previous);
+      previous = crown;
+    }
+    expect(shelfRise).toBeGreaterThan(0.02);
   });
 
   it("leaves the cabin aft of the widening bit-identical: every vertex to 9.5 m, every normal to 4.5 m", () => {
@@ -244,9 +268,9 @@ describe("the Global's nose (phase 3c)", () => {
       angleBetween(vec(fb, lastRing), vec(rb, radomeRing)),
       angleBetween(vec(fb, lastRing + 12), vec(rb, radomeRing + 10)),
     );
-    // Measured: the worst step between rings 7.2 degrees (at the tip, where the nose turns
-    // fastest), and 34.0 across 13.2 before.
-    expect(worst).toBeLessThan(8);
+    // Measured: the worst step between rings 12.2 degrees, from 14.4 to 14.7, where the lowered
+    // crown meets the held tip (7.2 at the tip itself before part 2), and 34.0 across 13.2 before.
+    expect(worst).toBeLessThan(12.5);
     expect(crease).toBeGreaterThan(25);
   });
 });

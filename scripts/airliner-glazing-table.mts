@@ -19,7 +19,10 @@
  *   BROW      where the inboard pane's top edge lands on the centreline: the
  *             crown's slope there, and the crest behind it.
  *
- *   npx tsx scripts/airliner-glazing-table.mts [--airframe airliner|bizjet] [--json <path>]
+ *   npx tsx scripts/airliner-glazing-table.mts [--airframe airliner|bizjet] [--eye x,y,z] [--json <path>]
+ *
+ * `--eye` reads the table from another eye than `catalogue.cockpitEye` -- the
+ * Global's seated eye (11.9,0.55,-0.52) while the cockpit's is being re-solved.
  */
 import { writeFileSync } from "node:fs";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
@@ -91,7 +94,12 @@ const R = airframe.reference;
 const kind = airframe.kind;
 
 const eyeSpec = aircraftSpec(kind).cockpitEye;
-const E: Point3 = { x: eyeSpec.forward, y: eyeSpec.up, z: eyeSpec.right };
+const eyeFlag = process.argv.indexOf("--eye");
+const eyeOverride = eyeFlag > 0 ? process.argv[eyeFlag + 1]!.split(",").map(Number) : null;
+if (eyeOverride && (eyeOverride.length !== 3 || !eyeOverride.every(Number.isFinite))) throw new Error("--eye x,y,z: three numbers");
+const E: Point3 = eyeOverride
+  ? { x: eyeOverride[0]!, y: eyeOverride[1]!, z: eyeOverride[2]! }
+  : { x: eyeSpec.forward, y: eyeSpec.up, z: eyeSpec.right };
 const DEG = 180 / Math.PI;
 
 // Capture each skin panel as the builder returns it.
@@ -222,7 +230,7 @@ const runText = (runs: Array<[number, number]>) => runs.map(([a, b]) => `${a.toF
 
 const report: Record<string, unknown> = { reference: R, eye: E, panes: {} };
 console.log(`${airframe.title} FLIGHT-DECK GLAZING, from the BUILT meshes (${panes.length} panes, every vertex found in the merged glazing)`);
-console.log(`R = (${f3(R)})  azimuth reference;  E = (${f3(E)})  left-seat eye (catalogue.cockpitEye)\n`);
+console.log(`R = (${f3(R)})  azimuth reference;  E = (${f3(E)})  left-seat eye (${eyeOverride ? "--eye" : "catalogue.cockpitEye"})\n`);
 for (const side of [1, -1] as const) {
   const sideName = side > 0 ? "starboard" : "port";
   for (const spec of airframe.panes) {
