@@ -131,7 +131,7 @@ practice every in-frame bird is at least 2.6 px across (the drawn span is
 
 **Pinned, 24 of the 39 shots have birds in frame at capture** (count, largest):
 
-- The approach-500ft pose and its six re-lit twins show the same birds,
+- The approach-500ft pose and its seven re-lit twins show the same birds,
   because the wildlife does not read simulation time: 10 birds, 3.4 px, on
   `approach-500ft`, `winter-noon`, `night`, `night-moonlit`,
   `dusk-mesopic`, `golden-hour`, `blue-hour` and `night-beacon-offset`.
