@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
+import { WebGPUPerfCounter } from "@babylonjs/core/Engines/WebGPU/webgpuPerfCounter";
 import { describe, expect, it } from "vitest";
+import { deliverPassDuration, PassCostTape } from "@/src/render/webgpu/core/DeferredPassTiming";
 import {
   TERRAIN_EROSION_STAGE_SEED_COST_MS,
   TerrainPageErosionGpu,
@@ -21,16 +23,16 @@ import { readSource } from "./support/sourceText";
  * told apart from a shader that never dispatched; and the allowance for such
  * readings must stay too small to hide a cost regression.
  *
- * The producer's trackers are replaced with fakes carrying Babylon's counter
- * shape (`gpuTimeInFrame.counter`: `count` advances once per frame that
- * resolved a reading, `current` is that frame's nanoseconds).
+ * The producer's trackers are replaced with fakes built the producer's way:
+ * a real Babylon counter per shader and a `PassCostTape` on it. A pass is
+ * recorded as the producer's `dispatch` records it, and its reading arrives
+ * through `deliverPassDuration`, the deferred timing's one delivery path.
  */
 
 interface FakeTracker {
-  shader: { gpuTimeInFrame: { counter: { count: number; current: number } } };
+  shader: { gpuTimeInFrame: WebGPUPerfCounter };
   stage: ErosionCostStage;
-  dispatchesSinceConsume: number;
-  lastSampleCount: number;
+  tape: PassCostTape;
 }
 
 /** Shaders per stage, as the producer's `costTrackers` list them. */
@@ -50,27 +52,31 @@ const PINNED_NANOSECONDS = (stage: ErosionCostStage): number =>
 function producerWithFakeTrackers(): {
   producer: TerrainPageErosionGpu;
   trackers: Record<ErosionCostStage, FakeTracker[]>;
+  engine: { frameId: number };
 } {
   // The constructor only stores its options; nothing here touches the GPU.
   const producer = new TerrainPageErosionGpu(
     {} as AbstractEngine,
     {} as TerrainPageErosionGpuOptions,
   );
+  const engine = { frameId: 1 };
   const trackers = Object.fromEntries(
     (Object.keys(SHADERS_PER_STAGE) as ErosionCostStage[]).map((stage) => [
       stage,
-      Array.from({ length: SHADERS_PER_STAGE[stage] }, () => ({
-        shader: { gpuTimeInFrame: { counter: { count: 0, current: 0 } } },
-        stage,
-        dispatchesSinceConsume: 0,
-        // As the producer seeds them: the fresh counter's own count.
-        lastSampleCount: 0,
-      })),
+      Array.from({ length: SHADERS_PER_STAGE[stage] }, () => {
+        const counter = new WebGPUPerfCounter();
+        return { shader: { gpuTimeInFrame: counter }, stage, tape: new PassCostTape(engine, counter) };
+      }),
     ]),
   ) as Record<ErosionCostStage, FakeTracker[]>;
   (producer as unknown as { costTrackers: FakeTracker[] }).costTrackers =
     Object.values(trackers).flat();
-  return { producer, trackers };
+  return { producer, trackers, engine };
+}
+
+/** The deferred timing delivering one pass's reading, keyed by the frame it was recorded in. */
+function deliver(tracker: FakeTracker, frameId: number, nanoseconds: number): void {
+  deliverPassDuration(tracker.shader.gpuTimeInFrame, frameId, nanoseconds);
 }
 
 /** A reading in nanoseconds, or "none" for one that never resolves. */
@@ -81,8 +87,7 @@ type Reading = number | "none";
  * `readingFor` overrides the pinned reading of a stage's n-th dispatch.
  */
 function runFakePage(
-  producer: TerrainPageErosionGpu,
-  trackers: Record<ErosionCostStage, FakeTracker[]>,
+  { producer, trackers, engine }: ReturnType<typeof producerWithFakeTrackers>,
   readingFor: (stage: ErosionCostStage, index: number) => Reading | undefined = () => undefined,
   dispatchesFor: (stage: ErosionCostStage) => number = (stage) => EXPECTED_STAGE_DISPATCHES[stage],
 ) {
@@ -90,14 +95,11 @@ function runFakePage(
     const shaders = trackers[stage];
     for (let index = 0; index < dispatchesFor(stage); index += 1) {
       const tracker = shaders[index % shaders.length]!;
-      // What the producer's private `dispatch` does to the tracker.
-      tracker.dispatchesSinceConsume += 1;
+      // What the producer's private `dispatch` does once the pass exists.
+      tracker.tape.dispatched(1);
       const reading = readingFor(stage, index) ?? PINNED_NANOSECONDS(stage);
-      if (reading !== "none") {
-        const counter = tracker.shader.gpuTimeInFrame.counter;
-        counter.count += 1;
-        counter.current = reading;
-      }
+      if (reading !== "none") deliver(tracker, engine.frameId, reading);
+      engine.frameId += 1;
       producer.consumeMeasuredDispatchCostMs();
     }
   }
@@ -106,8 +108,8 @@ function runFakePage(
 
 describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", () => {
   it("prices every dispatch of a page whose readings are all good", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    const samples = runFakePage(producer, trackers);
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake);
     for (const stage of Object.keys(EXPECTED_STAGE_DISPATCHES) as ErosionCostStage[]) {
       expect(samples[stage].dispatches, stage).toBe(EXPECTED_STAGE_DISPATCHES[stage]);
       expect(samples[stage].unusable, stage).toBe(0);
@@ -116,8 +118,8 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   });
 
   it("counts a pass that read zero as unusable, prices it at nothing, and the page passes", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    const samples = runFakePage(producer, trackers, (stage, index) =>
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake, (stage, index) =>
       stage === "breach" && index === 0 ? 0 : undefined);
     // The failure this guards: breach read "1 of 2" because the zero was dropped.
     expect(samples.breach).toEqual({
@@ -127,14 +129,14 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     });
     expect(erosionStageCoverageFaults(samples)).toEqual([]);
     // Nothing was priced from it: the running estimate did not move toward zero.
-    expect(producer.stageEstimates().breach).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breach, 12);
+    expect(fake.producer.stageEstimates().breach).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breach, 12);
   });
 
   it("starts each page's unusable count afresh, so a warm page's cannot enter page 1", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    runFakePage(producer, trackers, (stage, index) =>
+    const fake = producerWithFakeTrackers();
+    runFakePage(fake, (stage, index) =>
       stage === "breach" && index === 0 ? 0 : undefined);
-    const next = runFakePage(producer, trackers);
+    const next = runFakePage(fake);
     expect(next.breach).toEqual({
       milliseconds: 2 * TERRAIN_EROSION_STAGE_SEED_COST_MS.breach,
       dispatches: 2,
@@ -143,25 +145,24 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   });
 
   it("treats a non-finite reading the same way", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    const samples = runFakePage(producer, trackers, (stage, index) =>
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake, (stage, index) =>
       stage === "decode" && index === 0 ? Number.NaN : undefined);
     expect(samples.decode).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1 });
     expect(erosionStageCoverageFaults(samples)).toEqual([]);
   });
 
   it("returns no per-dispatch price for a frame whose only reading was unusable", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
+    const { producer, trackers, engine } = producerWithFakeTrackers();
     const tracker = trackers.decode[0]!;
-    tracker.dispatchesSinceConsume = 1;
-    tracker.shader.gpuTimeInFrame.counter.count = 1;
-    tracker.shader.gpuTimeInFrame.counter.current = 0;
+    tracker.tape.dispatched(1);
+    deliver(tracker, engine.frameId, 0);
     expect(producer.consumeMeasuredDispatchCostMs()).toBeNull();
   });
 
   it("still fails a page with a shader that never dispatched", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    const samples = runFakePage(producer, trackers, undefined, (stage) =>
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake, undefined, (stage) =>
       stage === "breach" ? 1 : EXPECTED_STAGE_DISPATCHES[stage]);
     expect(samples.breach).toMatchObject({ dispatches: 1, unusable: 0 });
     expect(erosionStageCoverageFaults(samples)).toEqual([
@@ -170,8 +171,8 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   });
 
   it("still fails a page with a reading that never arrived", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    const samples = runFakePage(producer, trackers, (stage, index) =>
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake, (stage, index) =>
       stage === "breach" && index === 0 ? "none" : undefined);
     expect(samples.breach).toMatchObject({ dispatches: 1, unusable: 0 });
     expect(erosionStageCoverageFaults(samples)).toEqual([
@@ -179,14 +180,25 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     ]);
   });
 
-  it("does not mistake a shader's first reading, not yet arrived, for a reading of zero", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
+  it("does not let a reading that never arrives hold up the passes after it", () => {
+    const fake = producerWithFakeTrackers();
+    runFakePage(fake, (stage, index) => stage === "breach" && index === 0 ? "none" : undefined);
+    expect(runFakePage(fake).breach).toEqual({
+      milliseconds: 2 * TERRAIN_EROSION_STAGE_SEED_COST_MS.breach,
+      dispatches: 2,
+      unusable: 0,
+    });
+  });
+
+  it("does not mistake a reading not yet arrived for a reading of zero, and prices it when it lands", () => {
+    const { producer, trackers, engine } = producerWithFakeTrackers();
     const tracker = trackers.seed[0]!;
-    tracker.dispatchesSinceConsume = 1;
+    tracker.tape.dispatched(1);
+    const frame = engine.frameId;
+    engine.frameId += 3;
     producer.consumeMeasuredDispatchCostMs();
-    expect(tracker.dispatchesSinceConsume).toBe(1);
-    tracker.shader.gpuTimeInFrame.counter.count = 1;
-    tracker.shader.gpuTimeInFrame.counter.current = PINNED_NANOSECONDS("seed");
+    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0, dispatches: 0, unusable: 0 });
+    deliver(tracker, frame, PINNED_NANOSECONDS("seed"));
     producer.consumeMeasuredDispatchCostMs();
     expect(producer.consumeStageMeasurements().seed).toEqual({
       milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.seed,
@@ -195,19 +207,62 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     });
   });
 
-  it("seeds every producer tracker at the fresh counter's count", () => {
+  it("prices every frame when two land between reads, each at its own time", () => {
+    // Polling Babylon's counter kept only the later frame's sum here.
+    const { producer, trackers, engine } = producerWithFakeTrackers();
+    const tracker = trackers.seed[0]!;
+    const frames = [engine.frameId, engine.frameId + 1];
+    tracker.tape.dispatched(4);
+    engine.frameId += 1;
+    tracker.tape.dispatched(4);
+    deliver(tracker, frames[0]!, 1_200_000);
+    deliver(tracker, frames[1]!, 900_000);
+    producer.consumeMeasuredDispatchCostMs();
+    const seed = producer.consumeStageMeasurements().seed;
+    expect(seed.milliseconds).toBeCloseTo(2.1, 12);
+    expect(seed).toMatchObject({ dispatches: 8, unusable: 0 });
+  });
+
+  it("never credits a late reading to a later dispatch", () => {
+    // Polling credited a reading that landed with nothing pending to the next
+    // page's first dispatch.
+    const { producer, trackers, engine } = producerWithFakeTrackers();
+    const tracker = trackers.seed[0]!;
+    tracker.tape.dispatched(1);
+    const early = engine.frameId;
+    deliver(tracker, early, 700_000);
+    producer.consumeMeasuredDispatchCostMs();
+    producer.consumeStageMeasurements();
+    deliver(tracker, early, 700_000); // a stray repeat for a pass already priced
+    engine.frameId += 1;
+    tracker.tape.dispatched(1);
+    producer.consumeMeasuredDispatchCostMs();
+    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0, dispatches: 0, unusable: 0 });
+    deliver(tracker, engine.frameId, 300_000);
+    producer.consumeMeasuredDispatchCostMs();
+    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0.3, dispatches: 1, unusable: 0 });
+  });
+
+  it("gives every producer tracker a tape on its own shader's counter, recorded after the pass exists", () => {
     const source = readSource(join(
       import.meta.dirname, "..", "src", "render", "webgpu", "terrain", "TerrainPageErosionGpu.ts"));
-    const seeded = [...source.matchAll(/lastSampleCount: (-?\d+)/gu)].map((match) => match[1]);
-    expect(seeded.length).toBeGreaterThan(0);
-    expect(new Set(seeded)).toEqual(new Set(["0"]));
-    expect(seeded).toHaveLength(Object.values(SHADERS_PER_STAGE).reduce((sum, count) => sum + count, 0));
+    const tracked = [...source.matchAll(/tracked\((\w+), "(\w+)"\),/gu)];
+    expect(tracked).toHaveLength(Object.values(SHADERS_PER_STAGE).reduce((sum, count) => sum + count, 0));
+    for (const stage of Object.keys(SHADERS_PER_STAGE) as ErosionCostStage[]) {
+      expect(tracked.filter((match) => match[2] === stage), stage).toHaveLength(SHADERS_PER_STAGE[stage]);
+    }
+    expect(source).toMatch(
+      /tape: new PassCostTape\(\s+this\.engine,\s+\(shader as unknown as \{ gpuTimeInFrame\?: PassDurationSink \}\)\.gpuTimeInFrame,/u);
+    const dispatchWhenReady = source.indexOf("await shader.dispatchWhenReady(groupsX, groupsY, groupsZ);");
+    const recorded = source.indexOf("?.tape.dispatched(costUnits);");
+    expect(dispatchWhenReady).toBeGreaterThan(0);
+    expect(recorded).toBeGreaterThan(dispatchWhenReady);
   });
 
   it("fails a page with more unusable readings than the cap", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
+    const fake = producerWithFakeTrackers();
     const over = UNUSABLE_READINGS_PER_PAGE_CAP + 1;
-    const samples = runFakePage(producer, trackers, (stage, index) =>
+    const samples = runFakePage(fake, (stage, index) =>
       stage === "streamPower" && index < over ? 0 : undefined);
     expect(samples.streamPower.unusable).toBe(over);
     expect(erosionStageCoverageFaults(samples)).toEqual([
@@ -217,8 +272,8 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
   });
 
   it("fails priced dispatches that carry no time", () => {
-    const { producer, trackers } = producerWithFakeTrackers();
-    const samples = runFakePage(producer, trackers);
+    const fake = producerWithFakeTrackers();
+    const samples = runFakePage(fake);
     const broken = { ...samples, fineBand: { ...samples.fineBand, milliseconds: 0 } };
     expect(erosionStageCoverageFaults(broken)).toEqual([
       "measured fineBand dispatches but no GPU time",

@@ -72,6 +72,7 @@ import {
   formatGpuUncapturedError,
   GpuUncapturedErrorGuard,
 } from "./webgpu/core/GpuUncapturedErrorGuard";
+import { installDeferredPassTiming } from "./webgpu/core/DeferredPassTiming";
 import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
 import { inventoriedGpuBufferBytes } from "./webgpu/core/GpuBufferInventory";
 import {
@@ -856,6 +857,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
       engine.enableGPUTimingMeasurements = gpuTimingEnabled;
+      // Babylon's own per-pass read reports the slot's previous occupant
+      // (DeferredPassTiming.ts). A diagnostic capture that times passes must
+      // read each pass's own time, or it measures nothing it can name.
+      if (engine.enableGPUTimingMeasurements && !installDeferredPassTiming(engine)) {
+        throw new Error("GPU timing is on but per-pass timing could not be installed on this engine");
+      }
       assertStartupInvariants({
         timestampQuerySupported,
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,

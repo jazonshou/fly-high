@@ -20,6 +20,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Scene } from "@babylonjs/core/scene";
 import { ComputeBudget, COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
+import { installDeferredPassTiming } from "../../src/render/webgpu/core/DeferredPassTiming";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { GroundCoverSystem } from "../../src/render/webgpu/detail/GroundCoverSystem";
 import { GROUND_COVER_LAWS } from "../../src/render/webgpu/detail/groundCoverLaw";
@@ -81,6 +82,8 @@ beforeAll(async () => {
   if (timestampsAvailable) {
     // G0-2: locked once, before any scene work is encoded.
     engine.enableGPUTimingMeasurements = true;
+    // Each pass's own time, not the slot's previous occupant (DeferredPassTiming.ts).
+    if (!installDeferredPassTiming(engine)) throw new Error("per-pass timing could not be installed");
   }
   const device = (engine as unknown as { _device: GPUDevice })._device;
   device.addEventListener("uncapturederror", (event) => {

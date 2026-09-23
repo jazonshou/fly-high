@@ -74,12 +74,26 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
         + "counter to read; the pinned stage seeds stay unverified on this host",
       );
     }
+    // Every pass's duration as the deferred timing delivered it, by counter,
+    // since the last page boundary: what each stage's reading must add up to.
+    const delivered = new Map<unknown, number>();
     const measured = await withScene(async (engine, scene) => {
       // A page that has already built and disposed a dozen WebGPU devices does
       // not reliably get `timestamp-query` back, and Babylon drops the request
       // silently rather than failing. Report it rather than measuring zeros.
       if (!gpuTimingAvailable(engine)) return null;
       const harness = buildHarness(engine, scene);
+      const deliveredByStage = (): Record<CostStage, number> => {
+        const trackers = (harness.producer as unknown as {
+          costTrackers: ReadonlyArray<{ shader: { gpuTimeInFrame?: unknown }; stage: CostStage }>;
+        }).costTrackers;
+        const byStage = Object.fromEntries(COST_STAGES.map((stage) => [stage, 0])) as Record<CostStage, number>;
+        for (const tracker of trackers) {
+          byStage[tracker.stage] += (delivered.get(tracker.shader.gpuTimeInFrame) ?? 0) / 1_000_000;
+        }
+        delivered.clear();
+        return byStage;
+      };
       try {
         const address = createWorldPageAddress(3, -3, 5);
         const drainTiming = async () => {
@@ -96,10 +110,14 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
         // counters rather than letting a delayed warm timestamp enter page 1.
         const warm = await runPage(harness, address, 4);
         await drainTiming();
-        harness.producer.consumeStageMeasurements();
+        const warmSamples = harness.producer.consumeStageMeasurements();
+        deliveredByStage();
+        console.log(`W-1d warm page: ${COST_STAGES.reduce(
+          (sum, stage) => sum + warmSamples[stage].unusable, 0)} unusable readings`);
 
         const pages: Array<{
           readonly samples: StageMeasurements;
+          readonly delivered: Record<CostStage, number>;
           readonly frames: number;
           readonly wallMilliseconds: number;
           readonly dispatches: number;
@@ -109,6 +127,7 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
           await drainTiming();
           pages.push({
             samples: harness.producer.consumeStageMeasurements(),
+            delivered: deliveredByStage(),
             frames: timed.frames,
             wallMilliseconds: harness.producer.lastCompletedPageTiming?.totalMilliseconds ?? 0,
             dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0,
@@ -118,7 +137,11 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       } finally {
         harness.dispose();
       }
-    }, true);
+    }, true, {
+      onPassTimed: (sink, _frameId, nanoseconds) => {
+        delivered.set(sink, (delivered.get(sink) ?? 0) + nanoseconds);
+      },
+    });
     if (!measured) {
       context.skip(
         "this device did not grant timestamp-query (it is granted to the first "
@@ -141,6 +164,17 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       ).toEqual([]);
       expect(page.dispatches, `timed page ${pageIndex + 1} DAG dispatch count`)
         .toBe(expectedTotalDispatches);
+      // The instrument: each stage's reading is exactly the time its own
+      // passes took, as delivered after their frame was submitted — not the
+      // previous occupant of their query slots
+      // (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md).
+      for (const stage of COST_STAGES) {
+        expect(
+          Math.abs(page.samples[stage].milliseconds - page.delivered[stage]),
+          `timed page ${pageIndex + 1} ${stage}: read ${page.samples[stage].milliseconds} ms, `
+          + `its passes took ${page.delivered[stage]} ms`,
+        ).toBeLessThan(0.001);
+      }
       const total = measuredCost(page.samples, COST_STAGES);
       const major = measuredCost(page.samples, MAJOR_STAGES);
       const minor = measuredCost(page.samples, MINOR_STAGES);

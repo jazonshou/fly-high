@@ -8,6 +8,7 @@ import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import { type PassDurationSink, PassCostTape } from "@/src/render/webgpu/core/DeferredPassTiming";
 import type { AirportDefinition, WorldDefinition } from "@/src/world/types";
 import {
   WORLD_PAGE_BASE_EXTENT_METERS,
@@ -991,15 +992,10 @@ interface GpuShaders {
 type StageCostKey = keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS;
 
 interface ShaderCostTracker {
-  shader: ComputeShader;
-  stage: StageCostKey;
-  dispatchesSinceConsume: number;
-  /**
-   * The counter's `count` when it was last read. Starts at 0, the count of a
-   * fresh Babylon counter that has resolved nothing: a start below it read
-   * "no reading yet" as a reading of 0 ms.
-   */
-  lastSampleCount: number;
+  readonly shader: ComputeShader;
+  readonly stage: StageCostKey;
+  /** This shader's passes, each paired with its own delivered duration. */
+  readonly tape: PassCostTape;
 }
 
 interface ParentBlockBinding {
@@ -1471,39 +1467,27 @@ export class TerrainPageErosionGpu {
     }
   }
 
-  /** The measured per-dispatch cost of whatever samples resolved, averaged. */
+  /** The measured per-dispatch cost of whatever passes were delivered, averaged. */
   consumeMeasuredDispatchCostMs(): number | null {
     let totalMs = 0;
     let totalDispatches = 0;
     for (const tracker of this.costTrackers) {
-      const sampler = tracker.shader as unknown as {
-        gpuTimeInFrame?: { counter: { count: number; current: number } };
-      };
-      const counter = sampler.gpuTimeInFrame?.counter;
-      if (!counter || tracker.dispatchesSinceConsume <= 0) continue;
-      if (counter.count === tracker.lastSampleCount) continue;
-      const milliseconds = counter.current / 1_000_000;
-      tracker.lastSampleCount = counter.count;
-      if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
-        // Babylon hands a pass whose timestamp pair gave no positive duration
-        // to the counter as 0. That is a reading the counter could not give,
-        // not a free dispatch: it prices nothing, so it stays out of the
-        // estimate and the average, but the dispatch RAN and is counted as
-        // such. Discarding the count made an unreadable pass look exactly
-        // like a shader that never dispatched.
-        this.stageSamples[tracker.stage].unusable += tracker.dispatchesSinceConsume;
-        tracker.dispatchesSinceConsume = 0;
-        continue;
-      }
-      const perDispatch = milliseconds / tracker.dispatchesSinceConsume;
+      const reading = tracker.tape.take();
+      const sample = this.stageSamples[tracker.stage];
+      // A pass whose timestamp pair gave no positive duration is a reading
+      // the device could not give, not a free dispatch: it prices nothing, so
+      // it stays out of the estimate and the average, but the dispatch RAN
+      // and is counted as such. Discarding it made an unreadable pass look
+      // exactly like a shader that never dispatched.
+      sample.unusable += reading.unusableUnits;
+      if (reading.units <= 0) continue;
+      const perDispatch = reading.milliseconds / reading.units;
       const previous = this.stageEstimatesMs[tracker.stage];
       this.stageEstimatesMs[tracker.stage] = previous + (perDispatch - previous) * 0.25;
-      const sample = this.stageSamples[tracker.stage];
-      sample.milliseconds += milliseconds;
-      sample.dispatches += tracker.dispatchesSinceConsume;
-      totalMs += milliseconds;
-      totalDispatches += tracker.dispatchesSinceConsume;
-      tracker.dispatchesSinceConsume = 0;
+      sample.milliseconds += reading.milliseconds;
+      sample.dispatches += reading.units;
+      totalMs += reading.milliseconds;
+      totalDispatches += reading.units;
     }
     if (totalDispatches <= 0) return null;
     return totalMs / totalDispatches;
@@ -1546,6 +1530,7 @@ export class TerrainPageErosionGpu {
     this.cancelActive("producer disposed");
     this.releaseBuffers();
     this.shaders = null;
+    for (const tracker of this.costTrackers) tracker.tape.dispose();
     this.costTrackers = [];
   }
 
@@ -1851,14 +1836,15 @@ export class TerrainPageErosionGpu {
     costUnits = 1,
   ): Promise<void> {
     job.dispatchesUsed += costUnits;
-    const tracker = this.costTrackers.find((entry) => entry.shader === shader);
-    if (tracker) tracker.dispatchesSinceConsume += costUnits;
     void stage;
     // `dispatch` returns false only before the effect is ready; the awaited
     // form then compiles it. Both encode into the CURRENT frame's encoder.
     if (!shader.dispatch(groupsX, groupsY, groupsZ)) {
       await shader.dispatchWhenReady(groupsX, groupsY, groupsZ);
     }
+    // Recorded AFTER the pass exists, so it carries the frame id the pass was
+    // encoded in, which is the frame its timing will be delivered under.
+    this.costTrackers.find((entry) => entry.shader === shader)?.tape.dispatched(costUnits);
   }
 
   private releaseBuffers(): void {
@@ -2178,36 +2164,29 @@ export class TerrainPageErosionGpu {
       fineBandAtoB,
       fineBandBtoA,
     });
+    const tracked = (shader: ComputeShader, stage: StageCostKey): ShaderCostTracker => ({
+      shader,
+      stage,
+      tape: new PassCostTape(
+        this.engine,
+        (shader as unknown as { gpuTimeInFrame?: PassDurationSink }).gpuTimeInFrame,
+      ),
+    });
     this.costTrackers = [
-      { shader: seed, stage: "seed", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      {
-        shader: geologyErodibility,
-        stage: "geology",
-        dispatchesSinceConsume: 0,
-        lastSampleCount: 0,
-      },
-      { shader: geologyRepose, stage: "geology", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: breachDirect, stage: "breach", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: breachPit, stage: "breach", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: decode, stage: "decode", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      {
-        shader: streamPowerFromA,
-        stage: "streamPower",
-        dispatchesSinceConsume: 0,
-        lastSampleCount: 0,
-      },
-      {
-        shader: streamPowerFromB,
-        stage: "streamPower",
-        dispatchesSinceConsume: 0,
-        lastSampleCount: 0,
-      },
-      { shader: talusGatherFromA, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: talusGatherFromB, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: talusApplyAtoB, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: talusApplyBtoA, stage: "talus", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: fineBandAtoB, stage: "fineBand", dispatchesSinceConsume: 0, lastSampleCount: 0 },
-      { shader: fineBandBtoA, stage: "fineBand", dispatchesSinceConsume: 0, lastSampleCount: 0 },
+      tracked(seed, "seed"),
+      tracked(geologyErodibility, "geology"),
+      tracked(geologyRepose, "geology"),
+      tracked(breachDirect, "breach"),
+      tracked(breachPit, "breach"),
+      tracked(decode, "decode"),
+      tracked(streamPowerFromA, "streamPower"),
+      tracked(streamPowerFromB, "streamPower"),
+      tracked(talusGatherFromA, "talus"),
+      tracked(talusGatherFromB, "talus"),
+      tracked(talusApplyAtoB, "talus"),
+      tracked(talusApplyBtoA, "talus"),
+      tracked(fineBandAtoB, "fineBand"),
+      tracked(fineBandBtoA, "fineBand"),
     ];
     return this.shaders;
   }
