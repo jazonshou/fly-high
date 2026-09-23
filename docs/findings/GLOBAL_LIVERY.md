@@ -483,6 +483,76 @@ it.
 The second camera (p. 35 against p. 29) still has to confirm or trim s. The
 table is parametric, so a trim is one re-pin.
 
+## Phase 3c, part 3: the full requirement, and the tip released
+
+**The requirement part 2 was built to was incomplete.** It asked only that the
+horizon be inside the glass, and part 2's windshield reached 1 degree under it.
+On final approach the aim point sits 6-8 degrees under the body axis (a
+3-degree glide plus nose-up pitch), where part 2 put the glareshield. The full
+requirement, from the seated eye (11.90, 0.55, -0.52), straight ahead:
+- the windshield spans -10 to +10 degrees or more;
+- it is at least 24 degrees tall;
+- the horizon is inside it.
+
+For reference, the type's design eye sees about 15-17 degrees down over the
+nose, and the other flight decks here give 8.3-18.6.
+
+**The drop sets the span; the tip only has to get out of the way.** Studied
+over s (fraction of the camera fit's crown) and the tip ring's height:
+- **How far down the pilot sees is set by s alone.** At s 0.9 straight ahead
+  runs -13.2 to +13.2; at s 1.0 it runs -15.7 to +10.4, with 0.4 degrees to
+  spare at the top.
+- **The tip only needs to be low enough** that the nose ahead of the
+  windshield falls faster than the windshield foot's sightline, so the foot
+  lands on the nose:
+  - s 1.0 needs a tip at -0.6 or lower;
+  - s 0.9 needs -0.45 or lower;
+  - s 0.8 needs -0.4 or lower.
+- **The eye's latitude is narrow.** At s 0.9 the eye can sit at 0.55-0.58; at
+  0.80 of the fit, 0.55-0.60. An eye at 0.65 never works.
+
+**Built:** s = 0.9 and the tip at -0.45, the least droop that works there. That
+is where the starboard render puts the tip: at the gold line's height, with the
+gold running into it. The crown is a monotone cubic from the tip, through 0.9 of
+the fit at 1.0-4.0 m aft, to the cabin from 5.5. The keel runs through part 1's
+at 1.8-5.5 m aft and droops forward of that to the tip; the widths are part 1's.
+The crown drops 0.60 / 0.56 / 0.44 / 0.25 / 0.10 m at 1.3 / 1.8 / 2.2 / 3.0 /
+3.5 m aft.
+
+**From the seated eye, on the built glass** (`render.bizjet-seat-view`):
+- **Straight ahead:** the windshield spans -12.65 to +13.95 degrees, 26.6
+  tall. From 0.78 it is -22.5 to -7.7, wholly below the horizon, which is why
+  the eye comes down.
+- **Room:** at the seat, 0.368 m of skin straight up, 0.306 m to the nearest
+  skin and 0.394 m to the nearest glass. 0.3 m ahead of the seat, 0.262 /
+  0.234 / 0.270. The old eye on part 1's nose had 0.341 / 0.302.
+- **The windshield's foot** casts at x 13.29. The sunk-ring control moves it to
+  1.95 m aft.
+- **The turn between rings** is 3.5-6.1 degrees from 13.35 to the last ring
+  before the tip, and 13.3 at the brow's crest (11.75).
+- **What moved:**
+  - the windshield's rake at the post goes to 30 degrees;
+  - the side panes' tops come to 0.67-0.74 and their bottoms to 0.33-0.44.
+
+**The sim moves with the tip.** The two radome contact points in
+`GLOBAL_8000.airframeContactPoints` go from (15, 0.1) and (15, -0.4) to
+(15, -0.20) and (15, -0.70). That keeps them 0.15 m above and below the tip,
+as before. `render.bizjet-nose` reads the BUILT tip against them, so a tip that
+moves without them fails; the control is the old points, one of which would sit
+inside the new tip. The sim reads them in five places:
+- the broad-phase radius, 15.0003 -> 15.016;
+- the lowest clearance and the ground resolve: a nose-down touch now registers
+  0.3 m lower;
+- the spawn pose;
+- the airframe-strike impact speed.
+
+The airborne start height is unaffected, because the gear is lower at the start
+pitch. All of `sim.*` passes: 21 files, 233 tests.
+
+**The livery follows.** The gold's last two knots, (14.4, -0.40) and
+(15, -0.20), rose to meet the old tip. They are gone, and the line holds -0.45
+into the drooped tip.
+
 ## Stage 2b, and what it is not
 
 The swoosh, the fin tip and the winglet tips are part images on each part's own

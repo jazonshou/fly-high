@@ -59,19 +59,21 @@ const CHANNELS = 4;
  * every ring is the cabin's as it was, and the tip's last two rings are the
  * radome's as they were.
  *
- * THE CROWN COMES DOWN ahead of the flight deck (phase 3c, part 2), the keel
- * does not. The type's nose falls away steeply ahead of the windshield under a
- * brow; this one was a smooth ogive, 0.3-0.7 m higher at 1-2 m aft of the tip
- * by a camera solved on the port render (p. 29; docs/findings/GLOBAL_LIVERY.md).
- * The crown is 0.45 of that drop: the largest the held tip allows before the
- * nose ahead of the windshield goes flat enough for the windshield's foot to
- * cast past it, and the one that puts the horizon inside a 26-degree
- * windshield from a seated eye at y 0.55 (1.21 m above the -0.66 floor). The
- * curve is a monotone cubic through the held tip (0, 0.3 and 0.6 m aft), the
- * scaled drop at 1.8-4.0 m aft and the cabin from 5.5, sampled at the rings;
- * 11.75 and 12.25 are there to draw the brow. The crown drops 0.18 / 0.27 /
- * 0.22 / 0.12 / 0.05 m at 1.3 / 1.8 / 2.2 / 3.0 / 3.5 m aft; the keel and the
- * widths are part 1's.
+ * THE NOSE IS THE TYPE'S SHAPE: low ahead of the flight deck, the tip drooped
+ * (phase 3c, parts 2 and 3). The type's nose falls away steeply ahead of the
+ * windshield under a brow, and its tip is at the gold line's height; this one
+ * was a smooth ogive, 0.3-0.7 m higher at 1-2 m aft of the tip by a camera
+ * solved on the port render (p. 29), with its tip at -0.15. What decided how
+ * far is the seat: from a seated eye (11.90, 0.55, -0.52), 1.21 m above the
+ * -0.66 floor, the windshield has to span -10 to +10 degrees straight ahead
+ * (on final the aim point is 6-8 degrees under the body axis). The crown is
+ * 0.9 of the camera fit, which centres the windshield at -13.2..+13.2; the tip
+ * is at -0.45, the least droop that lets the windshield's foot land on the nose
+ * rather than cast past it. The crown is a monotone cubic from the tip through
+ * 0.9 of the fit at 1.0-4.0 m aft to the cabin from 5.5; the keel is part 1's
+ * aft of 1.8 m and droops to the tip; the widths are part 1's; 11.75 and 12.25
+ * draw the brow. The crown drops 0.60 / 0.56 / 0.44 / 0.25 / 0.10 m at 1.3 /
+ * 1.8 / 2.2 / 3.0 / 3.5 m aft.
  */
 export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -13.1, yRadius: 1.0, zRadius: 0.96, yOffset: 0.27 },
@@ -80,22 +82,23 @@ export const GLOBAL_FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -2, yRadius: 1.345, zRadius: 1.345 },
   { x: 4.5, yRadius: 1.345, zRadius: 1.345 },
   { x: 9.5, yRadius: 1.335, zRadius: 1.32 },
-  { x: 10.5, yRadius: 1.2818, zRadius: 1.32, yOffset: 0.0159 },
-  { x: 11, yRadius: 1.2531, zRadius: 1.32, yOffset: 0.0217 },
-  { x: 11.5, yRadius: 1.2279, zRadius: 1.315, yOffset: 0.031 },
-  { x: 11.75, yRadius: 1.1719, zRadius: 1.2935, yOffset: 0.0122 },
-  { x: 12, yRadius: 1.1005, zRadius: 1.272, yOffset: -0.022 },
-  { x: 12.25, yRadius: 1.048, zRadius: 1.2365, yOffset: -0.0323 },
-  { x: 12.5, yRadius: 0.9804, zRadius: 1.201, yOffset: -0.0577 },
-  { x: 13, yRadius: 0.8046, zRadius: 1.1, yOffset: -0.1491 },
-  { x: 13.35, yRadius: 0.7208, zRadius: 0.99, yOffset: -0.1692 },
-  { x: 13.7, yRadius: 0.6543, zRadius: 0.851, yOffset: -0.1657 },
-  { x: 14.1, yRadius: 0.5807, zRadius: 0.672, yOffset: -0.1593 },
-  { x: 14.4, yRadius: 0.48, zRadius: 0.502, yOffset: -0.135 },
-  // The drooped tip, as the radome ended: the sim's two radome contact points
-  // straddle it at y 0.1 and -0.4 (`src/sim/aircraft.ts`).
-  { x: 14.7, yRadius: 0.34, zRadius: 0.34, yOffset: -0.15 },
-  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.15 },
+  { x: 10.5, yRadius: 1.2742, zRadius: 1.32, yOffset: -0.0028 },
+  { x: 11, yRadius: 1.2319, zRadius: 1.32, yOffset: 0.0005 },
+  { x: 11.5, yRadius: 1.195, zRadius: 1.315, yOffset: 0.0117 },
+  { x: 11.75, yRadius: 1.1256, zRadius: 1.2935, yOffset: -0.0291 },
+  { x: 12, yRadius: 1.0385, zRadius: 1.272, yOffset: -0.084 },
+  { x: 12.25, yRadius: 0.9871, zRadius: 1.2365, yOffset: -0.0943 },
+  { x: 12.5, yRadius: 0.9088, zRadius: 1.201, yOffset: -0.1294 },
+  { x: 13, yRadius: 0.674, zRadius: 1.1, yOffset: -0.279 },
+  { x: 13.35, yRadius: 0.565, zRadius: 0.99, yOffset: -0.324 },
+  { x: 13.7, yRadius: 0.4443, zRadius: 0.851, yOffset: -0.3758 },
+  { x: 14.1, yRadius: 0.3093, zRadius: 0.672, yOffset: -0.4285 },
+  { x: 14.4, yRadius: 0.2348, zRadius: 0.502, yOffset: -0.4401 },
+  { x: 14.7, yRadius: 0.1676, zRadius: 0.34, yOffset: -0.4443 },
+  // The tip, drooped to the gold line's height (phase 3c, part 3): the sim's two
+  // radome contact points straddle it 0.15 m above and below (`src/sim/aircraft.ts`,
+  // held by render.bizjet-nose against the built mesh).
+  { x: 15, yRadius: 0.1, zRadius: 0.1, yOffset: -0.45 },
 ];
 
 /** The upswept tailcone, ending at the sim's tailcone contact point. */
@@ -193,7 +196,9 @@ export const GLOBAL_BELLY_GREY: LiveryRgb = overBase([0.46, 0.5, 0.53]);
  * With the sill at y 0.11 and a window 0.54 m tall, the mean is the knots
  * below: about -0.41 at window 2 rising 3.4 degrees to meet the sill line at
  * window 11 (x ~ -0.4), where on the type it becomes the aft swoosh. Forward of
- * the row it runs level at about -0.45 and rises into the radome tip. The
+ * the row it runs level at about -0.45 into the tip, as both renders show: the
+ * tip is drooped to that height (phase 3c, part 3). It rose to -0.2 to meet
+ * the old tip at -0.15, and the last knot is now held to the tip. The
  * swoosh is stage 2b; until then the line and the pinstripes fade out over
  * the metre aft of window 11.
  *
@@ -210,8 +215,6 @@ const HOUSE_GOLD_CENTRE: readonly (readonly [number, number])[] = [
   [7.88, -0.414],
   [9.3, -0.45],
   [13.2, -0.45],
-  [14.4, -0.4],
-  [15, -0.2],
 ];
 const offsetKnots = (knots: readonly (readonly [number, number])[], dy: number) =>
   knots.map(([x, y]) => [x, y + dy] as const);

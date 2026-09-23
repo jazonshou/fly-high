@@ -251,9 +251,9 @@ describe("the Global's flight-deck glass", () => {
     }
     // The outline is a point on the loft's smooth section; the cast lands on the facet under it,
     // up to 2 mm inside at 48 segments round, which moves it along the sightline, and the
-    // steeper the skin to the sightline the further. Measured 10.8 mm and 0.15 degrees at worst on
-    // the lowered crown (5.0 mm and 0.13 on part 1's nose, 5.7 and 0.11 before phase 3c).
-    expect(aft).toBeLessThan(0.015);
+    // steeper the skin to the sightline the further. Measured 18.2 mm and 0.28 degrees at worst on
+    // part 3's nose (10.8 and 0.15 on part 2's, 5.0 and 0.13 on part 1's, 5.7 and 0.11 before 3c).
+    expect(aft).toBeLessThan(0.025);
     expect(angle).toBeLessThan(0.5);
 
     // CONTROL: the windshield cast from an outline 0.1 m further aft and 5 degrees further round
@@ -272,8 +272,8 @@ describe("the Global's flight-deck glass", () => {
   it("keeps the outer face outside the skin and the inner face inside it, at every cell centre", () => {
     // Along the skin's normal, from a ray cast from R through each cell's centre. The design is
     // 12 mm out and 30 mm in; the chords between grid points cross the nose's facet creases.
-    // Measured 6.6 mm out and 19.5 mm in at worst on the lowered crown (7.5 and 29.4 on part 1's
-    // nose, 4.5 and 19.6 before phase 3c).
+    // Measured 6.2 mm out and 19.8 mm in at worst on part 3's nose (6.6 and 19.5 on part 2's, 7.5
+    // and 29.4 on part 1's, 4.5 and 19.6 before phase 3c).
     const { outer, inner } = clearances(panels, caster);
     expect(outer).toBeGreaterThan(0.003);
     expect(inner).toBeLessThan(-0.015);
@@ -316,9 +316,9 @@ describe("the Global's flight-deck glass", () => {
         indices: Array.from(mesh.getIndices()!),
       };
     });
-    // Measured 33 mm under. The control aims its sightlines through TODAY's section table, so the
-    // number moves with the nose: 5.9 mm under on part 1's, and 15.9 for the glass first built on
-    // that skin, aimed through that build's own table.
+    // Measured 174 mm under. The control aims its sightlines through TODAY's section table, so the
+    // number moves with the nose: 33 mm under on part 2's, 5.9 on part 1's, and 15.9 for the
+    // glass first built on that skin, aimed through that build's own table.
     const before = clearances(oldPanels, withLip);
     expect(before.outer).toBeLessThan(-0.004);
     scene2.dispose();
@@ -395,16 +395,17 @@ describe("the Global's flight-deck glass", () => {
     // over the band the glass covers.
     let skin = 0;
     for (let az = 0; az <= 105; az += 5) {
-      for (let el = -12; el <= 12; el += 3) {
+      for (let el = -30; el <= 15; el += 3) {
         const s = caster.exit(R, sightline(az, el, 1))!.point;
         const p = caster.exit(R, sightline(az, el, -1))!.point;
         skin = Math.max(skin, Math.abs(s.x - p.x), Math.abs(s.y - p.y), Math.abs(s.z + p.z));
       }
     }
-    // Measured 3.8 mm on the glass and 4.1 on the skin (sampled coarser) on the lowered crown;
-    // 2.1 and 1.9 on part 1's nose.
+    // The skin is sampled over the band the glass covers from R, which on part 3's lowered nose runs
+    // down to el -30. Measured 7.1 mm on the glass and 7.8 on the skin (3.8 and 4.1 on part 2's
+    // nose, 2.1 and 1.9 on part 1's).
     expect(skin, "the skin became symmetric: tighten the glass bound").toBeGreaterThan(0.001);
-    expect(glass).toBeLessThan(0.005);
+    expect(glass).toBeLessThan(0.009);
   });
 
   it("runs the top edge as one line under the crown: from the post, back and down round the section to the aft edge", () => {

@@ -122,34 +122,36 @@ describe("the Global's nose (phase 3c)", () => {
     }
   });
 
-  it("holds the keel, and lowers the crown ahead of the flight deck without a shelf (part 2)", () => {
+  it("holds the keel aft of the flight deck, and lowers the crown ahead of it to a drooped tip without a shelf", () => {
     const up = { x: 0, y: 1, z: 0 };
     const down = { x: 0, y: -1, z: 0 };
-    const crownAt = (skin: SkinCaster, x: number) => skin.exit({ x, y: -0.3, z: 0 }, up)!.point.y;
-    const keelAt = (skin: SkinCaster, x: number) => skin.exit({ x, y: -0.3, z: 0 }, down)!.point.y;
+    const crownAt = (skin: SkinCaster, x: number, from = -0.45) => skin.exit({ x, y: from, z: 0 }, up)!.point.y;
+    const keelAt = (skin: SkinCaster, x: number, from = -0.45) => skin.exit({ x, y: from, z: 0 }, down)!.point.y;
     let keel = 0;
+    for (let x = 9.55; x <= 13.2 + 1e-9; x += 0.05) keel = Math.max(keel, Math.abs(keelAt(now, x) - keelAt(before, x, -0.1)));
     let rise = 0;
     let last = crownAt(now, 9.5);
-    for (let x = 9.55; x <= 14.7 + 1e-9; x += 0.05) {
-      keel = Math.max(keel, Math.abs(keelAt(now, x) - keelAt(before, x)));
+    for (let x = 9.55; x <= 14.95 + 1e-9; x += 0.05) {
       const crown = crownAt(now, x);
       // Going forward the crown only ever falls: no shelf for the windshield's foot to cast past.
       // `rise` is the total climb, summed over every 5 cm that climbs at all.
       rise += Math.max(0, crown - last);
       last = crown;
     }
-    // Measured 0.8 cm: part 1's chords across the old tables' kinks, which part 2 does not touch.
-    expect(keel).toBeLessThan(0.01);
+    // Aft of the flight deck (1.8 m aft of the tip and back) the keel runs through part 1's at the
+    // table's anchor stations and smoothly between them: 1.8 cm at most from the nose before,
+    // measured. Forward of it the keel droops to the tip.
+    expect(keel).toBeLessThan(0.02);
     expect(rise).toBeLessThanOrEqual(0.001);
     // The drop, against the nose before, at the stations the table states (m aft of the tip).
-    const drops: [number, number][] = [[1.3, 0.18], [1.8, 0.27], [2.2, 0.22], [3.0, 0.12], [3.5, 0.05]];
+    const drops: [number, number][] = [[1.3, 0.6], [1.8, 0.56], [2.2, 0.44], [3.0, 0.25], [3.5, 0.1]];
     for (const [aft, want] of drops) {
       const x = TIP_X - aft;
-      const got = crownAt(before, x) - crownAt(now, x);
-      expect(Math.abs(got - want), `${aft} m aft: the crown came down ${got.toFixed(3)}`).toBeLessThan(0.02);
+      const got = crownAt(before, x, -0.1) - crownAt(now, x);
+      expect(Math.abs(got - want), `${aft} m aft: the crown came down ${got.toFixed(3)}`).toBeLessThan(0.03);
     }
-    // CONTROL: the same table with its 14.1 ring lifted 10 cm, above the 13.7 ring behind it, reads as a rise.
-    const bumped = GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x === 14.1 ? { ...r, yOffset: (r.yOffset ?? 0) + 0.1 } : r));
+    // CONTROL: the same table with its 14.1 ring lifted 25 cm, above the 13.7 ring behind it, reads as a rise.
+    const bumped = GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x === 14.1 ? { ...r, yOffset: (r.yOffset ?? 0) + 0.25 } : r));
     const lofts = new AircraftBuildContext(scene);
     const shelf = new SkinCaster([soup(lofts.loft("shelf", bumped, 48, new StandardMaterial("s", scene), new TransformNode("s", scene)))]);
     let shelfRise = 0;
@@ -204,24 +206,31 @@ describe("the Global's nose (phase 3c)", () => {
     expect(glass).toBeLessThan(0.0002);
   });
 
-  it("keeps the tip ring and the sim's contact points: the tip is where the radome's was", () => {
+  it("straddles the BUILT tip with the sim's two radome contact points, 0.15 m above and below it", () => {
     const positions = fuselage.getVerticesData(VertexBuffer.PositionKind)!;
-    const tip = GLOBAL_FUSELAGE_SECTIONS[GLOBAL_FUSELAGE_SECTIONS.length - 1]!;
-    expect(tip).toEqual(RADOME_BEFORE[RADOME_BEFORE.length - 1]);
-    expect(GLOBAL_FUSELAGE_SECTIONS[GLOBAL_FUSELAGE_SECTIONS.length - 2]).toEqual(RADOME_BEFORE[RADOME_BEFORE.length - 2]);
-    let ringVertices = 0;
+    let top = -Infinity;
+    let bottom = Infinity;
     for (let i = 0; i < positions.length; i += 3) {
       if (positions[i] !== TIP_X) continue;
-      ringVertices += 1;
-      const dy = (positions[i + 1]! - (tip.yOffset ?? 0)) / tip.yRadius;
-      const dz = positions[i + 2]! / tip.zRadius;
-      // On the tip's ellipse, or the cap's centre on its axis.
-      expect(Math.abs(Math.hypot(dy, dz) - 1) < 1e-6 || Math.hypot(dy, dz) < 1e-9).toBe(true);
+      top = Math.max(top, positions[i + 1]!);
+      bottom = Math.min(bottom, positions[i + 1]!);
     }
-    expect(ringVertices).toBe(RING + 1);
-    // The sim's contact points are its own (`src/sim/aircraft.ts`) and this change does not touch
-    // them: the two at the radome still straddle the tip, 0.25 above and below its axis.
-    expect(GLOBAL_8000.airframeContactPoints.slice(0, 2)).toEqual([{ x: 15, y: 0.1, z: 0 }, { x: 15, y: -0.4, z: 0 }]);
+    // The tip is drooped to the gold line: its ring spans -0.55..-0.35 (it was -0.25..-0.05).
+    expect(top).toBeCloseTo(-0.35, 6);
+    expect(bottom).toBeCloseTo(-0.55, 6);
+    /** Where each contact point at the tip's station stands against the built tip: + above its top, - below its bottom. */
+    const margins = (points: readonly { x: number; y: number; z: number }[]) =>
+      points.filter((p) => p.x === TIP_X).map((p) => (p.y > top ? p.y - top : p.y < bottom ? p.y - bottom : 0));
+    // The sim's own points (`src/sim/aircraft.ts`): exactly 0.15 m above the tip and 0.15 m below it,
+    // so a future tip move that forgets them fails here.
+    const now = margins(GLOBAL_8000.airframeContactPoints);
+    expect(now.length).toBe(2);
+    expect(Math.max(...now)).toBeCloseTo(0.15, 6);
+    expect(Math.min(...now)).toBeCloseTo(-0.15, 6);
+    // CONTROL: the points as they were, (15, 0.1) and (15, -0.4), against this tip: the lower one
+    // is INSIDE the mesh's height range (0), the upper 0.45 m clear of it.
+    const was = margins([{ x: 15, y: 0.1, z: 0 }, { x: 15, y: -0.4, z: 0 }]);
+    expect(was).toContain(0);
   });
 
   it("crosses the old join at 13.2 with the normals either side within 5 degrees at every azimuth -- where it creased", () => {
@@ -268,9 +277,10 @@ describe("the Global's nose (phase 3c)", () => {
       angleBetween(vec(fb, lastRing), vec(rb, radomeRing)),
       angleBetween(vec(fb, lastRing + 12), vec(rb, radomeRing + 10)),
     );
-    // Measured: the worst step between rings 12.2 degrees, from 14.4 to 14.7, where the lowered
-    // crown meets the held tip (7.2 at the tip itself before part 2), and 34.0 across 13.2 before.
-    expect(worst).toBeLessThan(12.5);
+    // Measured: the worst step between rings 13.3 degrees, into 11.75, the brow's crest, and 11.8 into
+    // 12.5 below it -- the type's brow, drawn. Through the blend to the drooped tip (13.35 .. 14.7)
+    // no step is over 6.1 (render.bizjet-seat-view). 34.0 across 13.2 before.
+    expect(worst).toBeLessThan(13.5);
     expect(crease).toBeGreaterThan(25);
   });
 });

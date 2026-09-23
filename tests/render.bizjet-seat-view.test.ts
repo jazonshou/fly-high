@@ -17,8 +17,10 @@ import { GLOBAL_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/bizjetLi
 import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 
 /**
- * The Global's flight deck from a SEATED eye (phase 3c, part 2): what the
- * lowered crown was lowered for. The eye is (11.90, 0.55, -0.52): the
+ * The Global's flight deck from a SEATED eye (phase 3c, parts 2 and 3): what
+ * the lowered crown and the drooped tip are for. The requirement: straight
+ * ahead the windshield spans -10 to +10 degrees or more (on final the aim point
+ * sits 6-8 degrees under the body axis), at least 24 tall, the horizon inside. The eye is (11.90, 0.55, -0.52): the
  * catalogue eye's station and seat, at a seated height, 1.21 m above the floor
  * at -0.66. It is this test's constant, not `catalogue.cockpitEye`, which the
  * cockpit engineer re-solves against these numbers.
@@ -140,23 +142,23 @@ function headroom(caster: SkinCaster, eye: Point3) {
   return { up: caster.exit(eye, { x: 0, y: 1, z: 0 })!.distance, nearest };
 }
 
-describe("the Global's flight deck from a seated eye (phase 3c, part 2)", () => {
-  it("puts the horizon inside a 26-degree windshield straight ahead: -0.6 to +25.6", () => {
+describe("the Global's flight deck from a seated eye (phase 3c)", () => {
+  it("shows -12.7 to +14.0 degrees of windshield straight ahead: 10 below the horizon and 10 above, with margin", () => {
     const windshield = new SkinCaster([outerFace(pane("port", "windshield"))]);
     const seated = aheadRun(windshield, SEAT_EYE);
-    // One unbroken run, at least 24 degrees tall, with straight ahead inside it and the top above +10.
+    // One unbroken run, at least 24 degrees tall, reaching 10 below the horizon and 10 above.
     expect(seated.count * 0.05).toBeGreaterThan(seated.high - seated.low - 0.1);
     expect(seated.high - seated.low).toBeGreaterThanOrEqual(24);
-    expect(seated.low).toBeLessThanOrEqual(0);
+    expect(seated.low).toBeLessThanOrEqual(-10);
     expect(seated.high).toBeGreaterThanOrEqual(10);
-    // Measured -0.60 and +25.55.
-    expect(seated.low).toBeCloseTo(-0.6, 0);
-    expect(seated.high).toBeCloseTo(25.55, 0);
+    // Measured -12.65 and +13.95 (part 2's crown gave -0.60 and +25.55).
+    expect(seated.low).toBeCloseTo(-12.65, 0);
+    expect(seated.high).toBeCloseTo(13.95, 0);
     // The corners, as the cockpit engineer reads them: azimuth (right +), elevation, range.
     const w = pane("port", "windshield");
     const expected: [number, number, number, number, number][] = [
-      [0, 0, -17.79, 0.97, 1.473], [0, w.columns - 1, 17.38, -1.2, 0.937],
-      [w.rows - 1, w.columns - 1, 11.4, 26.07, 0.605], [w.rows - 1, 0, -26.52, 13.25, 1.012],
+      [0, 0, -17.86, -10.63, 1.495], [0, w.columns - 1, 17.33, -12.12, 0.959],
+      [w.rows - 1, w.columns - 1, 11.31, 14.25, 0.562], [w.rows - 1, 0, -26.47, 1.34, 0.987],
     ];
     for (const [row, column, az, el, range] of expected) {
       const s = sight(SEAT_EYE, vertex(w, row, column));
@@ -164,14 +166,13 @@ describe("the Global's flight deck from a seated eye (phase 3c, part 2)", () => 
       expect(Math.abs(s.el - el), `corner ${row},${column} elevation ${s.el.toFixed(2)}`).toBeLessThan(0.3);
       expect(Math.abs(s.range - range), `corner ${row},${column} range ${s.range.toFixed(3)}`).toBeLessThan(0.01);
     }
-    // CONTROL: from the catalogue eye's height, 0.78, the same windshield is 16.7 degrees and
-    // mostly below the horizon (-11.35..+5.35): no crown serves an eye that high (docs).
+    // CONTROL: from the old catalogue eye's height, 0.78, the same windshield is wholly below the
+    // horizon (-22.5..-7.7): no nose serves an eye that high (docs).
     const high = aheadRun(windshield, { ...SEAT_EYE, y: 0.78 });
-    expect(high.high - high.low).toBeLessThan(24);
-    expect(high.high).toBeLessThan(10);
+    expect(high.high).toBeLessThan(0);
   });
 
-  it("leaves more room round the seated eye than the old eye had: at the seat and 0.3 m ahead of it", () => {
+  it("leaves the seated eye as much room as the old eye had: at the seat and 0.3 m ahead of it", () => {
     const glass = (eye: Point3) => {
       let nearest = Infinity;
       for (const p of panels) for (let i = 0; i < p.rows * p.columns; i += 1) {
@@ -179,17 +180,17 @@ describe("the Global's flight deck from a seated eye (phase 3c, part 2)", () => 
       }
       return nearest;
     };
-    // Measured: at the seat 0.472 straight up, 0.401 to the nearest skin, 0.442 to the nearest glass;
-    // 0.3 m ahead 0.379, 0.331 and 0.347.
+    // Measured: at the seat 0.368 straight up, 0.306 to the nearest skin, 0.394 to the nearest glass;
+    // 0.3 m ahead 0.262, 0.234 and 0.270 (part 2's crown: 0.472 / 0.401 / 0.442, 0.379 / 0.331 / 0.347).
     const atSeat = headroom(skin, SEAT_EYE);
-    expect(atSeat.up).toBeCloseTo(0.472, 2);
-    expect(atSeat.nearest).toBeCloseTo(0.401, 2);
-    expect(glass(SEAT_EYE)).toBeCloseTo(0.442, 2);
+    expect(atSeat.up).toBeCloseTo(0.368, 2);
+    expect(atSeat.nearest).toBeCloseTo(0.306, 2);
+    expect(glass(SEAT_EYE)).toBeCloseTo(0.394, 2);
     const ahead = { ...SEAT_EYE, x: SEAT_EYE.x + 0.3 };
     const atAhead = headroom(skin, ahead);
-    expect(atAhead.up).toBeCloseTo(0.379, 2);
-    expect(atAhead.nearest).toBeCloseTo(0.331, 2);
-    expect(glass(ahead)).toBeCloseTo(0.347, 2);
+    expect(atAhead.up).toBeCloseTo(0.262, 2);
+    expect(atAhead.nearest).toBeCloseTo(0.234, 2);
+    expect(glass(ahead)).toBeCloseTo(0.27, 2);
     // CONTROL: the same instrument on part 1's nose from the old eye (0.78) reads what the cockpit
     // engineer's K0 measured independently there: 0.34 straight up, 0.30 nearest.
     const lofts = new AircraftBuildContext(scene);
@@ -199,25 +200,26 @@ describe("the Global's flight deck from a seated eye (phase 3c, part 2)", () => 
     expect(old.nearest).toBeCloseTo(0.302, 2);
   });
 
-  it("casts the windshield's foot on the loft at 1.70 m aft, not past a shelf, and turns smoothly into the held tip", () => {
+  it("casts the windshield's foot on the loft at x 13.29, not past a shelf, and turns smoothly into the drooped tip", () => {
     const foot = (caster: SkinCaster, side: 1 | -1) =>
       paneGrid(caster, globalGlazingPane(GLOBAL_FLIGHT_DECK_OUTLINES[0]!), side, PANE_GRID, R).points[0]![0]!;
     for (const side of [1, -1] as const) {
       // The outline's foot is 1.69 m aft beside the post; the cast lands on the facet under it.
-      expect(GLOBAL_NOSE_TIP_X - foot(skin, side).x).toBeCloseTo(1.701, 2);
+      expect(foot(skin, side).x).toBeCloseTo(13.292, 2);
     }
     // CONTROL: the same table with its 13.35 and 13.7 rings sunk 12 cm, a dip that leaves the nose
-    // ahead of it a shelf. The instrument sees the foot leave the outline: measured 1.911 m aft.
+    // ahead of it a shelf. The instrument sees the foot leave the outline: measured 1.950 m aft.
     const sunk = GLOBAL_FUSELAGE_SECTIONS.map((r) => (r.x === 13.35 || r.x === 13.7 ? { ...r, yOffset: (r.yOffset ?? 0) - 0.12 } : r));
     const lofts = new AircraftBuildContext(scene);
     const shelf = new SkinCaster([soup(lofts.loft("dip", sunk, 48, new StandardMaterial("d", scene), new TransformNode("d", scene)))]);
-    expect(Math.abs(GLOBAL_NOSE_TIP_X - foot(shelf, 1).x - 1.701)).toBeGreaterThan(0.1);
-    // The blend, 0.6-1.3 m aft of the tip: the turn between consecutive rings, over every radial,
-    // grows steadily into the held tip. Measured 3.8, 6.3, 8.9, 12.2 degrees into 13.7 .. 14.7.
+    expect(Math.abs(GLOBAL_NOSE_TIP_X - foot(shelf, 1).x - 1.708)).toBeGreaterThan(0.1);
+    // Forward of the windshield to the drooped tip: the turn between consecutive rings, over every
+    // radial, stays gentle. Measured 5.9, 3.5, 5.1, 5.9, 6.1 degrees into 13.35 .. 14.7. (Into the
+    // tip ring itself it is 32: the ring's normals average the cap that closes the nose.)
     const normals = fuselage.getVerticesData(VertexBuffer.NormalKind)!;
     const RING = 49;
     let previous = 0;
-    for (const [x, measured] of [[13.7, 3.78], [14.1, 6.27], [14.4, 8.89], [14.7, 12.17]] as const) {
+    for (const [x, measured] of [[13.35, 5.92], [13.7, 3.52], [14.1, 5.1], [14.4, 5.86], [14.7, 6.08]] as const) {
       const ring = GLOBAL_FUSELAGE_SECTIONS.findIndex((r) => r.x === x);
       let worst = 0;
       for (let radial = 0; radial < 48; radial += 1) {
@@ -227,12 +229,12 @@ describe("the Global's flight deck from a seated eye (phase 3c, part 2)", () => 
         worst = Math.max(worst, Math.acos(Math.min(1, cos)) * DEG);
       }
       expect(worst, `into ring ${x}`).toBeCloseTo(measured, 1);
-      expect(worst - previous, `into ring ${x}: a jump, not a turn`).toBeLessThan(4);
-      previous = worst;
+      expect(worst, `into ring ${x}: a crease, not a turn`).toBeLessThan(6.5);
+      previous = Math.max(previous, worst);
     }
   });
 
-  it("brings the side panes' edges down with the crown: tops at 0.78-0.82, bottoms at 0.45-0.49", () => {
+  it("brings the side panes' edges down with the crown: tops at 0.67-0.74, bottoms at 0.33-0.44", () => {
     const edges = (name: string) => {
       const p = pane("port", name);
       const row = (r: number) => Array.from({ length: p.columns }, (_, c) => vertex(p, r, c));
@@ -244,11 +246,11 @@ describe("the Global's flight deck from a seated eye (phase 3c, part 2)", () => 
         nearest: Math.min(...top.map((q) => sight(SEAT_EYE, q).range)),
       };
     };
-    // Measured (outer face): forward pane top 0.791-0.817, bottom 0.456-0.491, its top edge 0.442 m
-    // from the seated eye; aft pane top 0.777-0.790, bottom 0.447-0.480, 0.447 m.
+    // Measured (outer face): forward pane top 0.673-0.706, bottom 0.331-0.376, its top edge 0.394 m
+    // from the seated eye; aft pane top 0.670-0.738, bottom 0.359-0.438, 0.403 m.
     const expected: Record<string, { top: number[]; bottom: number[]; nearest: number }> = {
-      "forward-side": { top: [0.791, 0.817], bottom: [0.456, 0.491], nearest: 0.442 },
-      "aft-side": { top: [0.777, 0.79], bottom: [0.447, 0.48], nearest: 0.447 },
+      "forward-side": { top: [0.673, 0.706], bottom: [0.331, 0.376], nearest: 0.394 },
+      "aft-side": { top: [0.67, 0.738], bottom: [0.359, 0.438], nearest: 0.403 },
     };
     for (const [name, want] of Object.entries(expected)) {
       const got = edges(name);

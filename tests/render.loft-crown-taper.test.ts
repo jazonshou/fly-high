@@ -282,7 +282,12 @@ describe("the loft's crown taper", () => {
       // (bizjetSeats.ts), the cushion 0.80 m under the eye. The two seats are rebuilt from the floor to
       // the cushion, the headrests move, and two seat backs are NEW (24 vertices each). Checked mesh by
       // mesh against b23d9a0: the other 89 meshes are bit-identical.
-      bizjet: "056ec2d5",
+      // RE-PINNED for the Global's nose, phase 3c part 3: the crown to 0.9 of the camera fit and the tip
+      // drooped to the gold line (-0.45), the keel drooping with it forward of 1.8 m aft; ring counts
+      // unchanged. The flight-deck glazing and post re-cast onto it, `bizjet-cabin-windows` moves within
+      // render.bizjet-nose's 0.2 mm. Checked mesh by mesh against 99ab242: the other 91 meshes, the
+      // seats among them, are bit-identical.
+      bizjet: "477b6ce2",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
