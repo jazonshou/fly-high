@@ -351,14 +351,14 @@ const BIZJET: AircraftSpec = Object.freeze({
   // aeroplane rather than along it.
   cinematic: Object.freeze({ radiusMeters: 65, heightMeters: 21, heightDriftMeters: 5 }),
   // The SEATED eye: 1.21 m over the flight deck's floor (-0.66), the one the
-  // Global's nose was re-lofted for (phase 3c, parts 2 and 3, and
+  // Global's nose was re-lofted for (phase 3c, parts 2 to 5, and
   // docs/findings/GLOBAL_LIVERY.md). From it, on the built glass (K0 in
   // docs/findings/COCKPIT_VIEW_2026_09_20.md), the port windshield straight
-  // ahead runs -13.2 to +13.3 degrees: straight ahead is inside the glass, and
-  // so is the aim point on final, 6 to 8 degrees under the body axis. The whole
-  // centre post is in the 16:9 frame, and there is 0.37 m of skin over the eye.
-  // Of the heights 0.55 to 0.58 at the seat's station, all of which pass, this
-  // one has the most margin on every target. (The first eye, (11.6, 1.05),
+  // ahead runs -10.7 to +26.7 degrees: straight ahead is inside the glass, and
+  // so is the aim point on final, 6 to 8 degrees under the body axis. Both
+  // windshields' tops stand over the horizon at the post (+13.4 and +12.4),
+  // the whole centre post is in the 16:9 frame (its head at +12.9), and there
+  // is 0.51 m of skin over the eye. (The first eye, (11.6, 1.05),
   // stood over the old raked windscreen slab, and the second, (11.9, 0.78),
   // was solved against that same slab. Both are gone with it.)
   //
@@ -370,9 +370,9 @@ const BIZJET: AircraftSpec = Object.freeze({
   cockpitEye: Object.freeze({ forward: 11.9, up: 0.55, right: -0.52 }),
   // The glareshield's lip: the HIGHEST straight lip that covers no glass the
   // pilot sees (cockpit/bizjetCockpit.ts, `highestClearLip`), solved on the
-  // built sills from the eye at 14.052 and held there by
+  // built sills from the eye at 10.880 and held there by
   // tests/render.cockpit-bizjet.test.ts.
-  cockpitDeckLineDegrees: 14.05,
+  cockpitDeckLineDegrees: 10.88,
   spawn: Object.freeze({
     // 200 m/s. 210 was above the speed at which this aeroplane flies level in
     // dense air near the ground, so it converted the excess into climb no
