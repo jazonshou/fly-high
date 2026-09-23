@@ -225,6 +225,42 @@ export function bizjetLiningMeshName(strip: BizjetLiningStrip, side: 1 | -1): st
   return `${strip.centre ? "" : side > 0 ? "starboard-" : "port-"}bizjet-lining-${strip.name}`;
 }
 
+/**
+ * THE SILL CAP: a ledge along the side panes' bottom edges, so the wall under them reads as structure and not as a
+ * void (K2's frames: from the seat about 11 degrees of flat wall runs from the forward side pane's bottom edge to the
+ * frame's bottom). It runs the whole top row of the side sills (under the pillar's foot and the mid post too), its top
+ * face level with that row on the lining's inner face and `width` inboard of it, horizontally, `thickness` deep.
+ */
+export const BIZJET_SILL_CAP = Object.freeze({ width: 0.05, thickness: 0.02, sills: ["sill-forward-side", "sill-aft-side"] as const });
+
+/** A cap's mesh name: the side's, after its sill (`port-bizjet-lining-cap-forward-side`). */
+export function bizjetSillCapMeshName(sill: (typeof BIZJET_SILL_CAP.sills)[number], side: 1 | -1): string {
+  return `${side > 0 ? "starboard-" : "port-"}bizjet-lining-cap-${sill.replace(/^sill-/, "")}`;
+}
+
+/**
+ * A cap's grid on its sill's top row. Row 0 IS the sill's top row on the lining's inner face, computed the way
+ * `skinPanel` offsets it (point + normal x -depth), so the cap and the sill meet at the same points to the last bit
+ * (no T-junction); row 1 is `width` inboard of it along the wall's own inward normal laid flat. The normals point DOWN,
+ * with the cap's thickness as its proud and nothing as its depth, so the grid is its top face and its inner face.
+ */
+export function bizjetSillCapGrid(sill: { points: readonly (readonly Point3[])[]; normals: readonly (readonly Point3[])[] }): { points: Point3[][]; normals: Point3[][] } {
+  const top = sill.points.length - 1;
+  const { depth } = BIZJET_LINING;
+  const edge: Point3[] = [];
+  const inboard: Point3[] = [];
+  for (const [column, p] of sill.points[top]!.entries()) {
+    const n = sill.normals[top]![column]!;
+    const e = { x: p.x + n.x * -depth, y: p.y + n.y * -depth, z: p.z + n.z * -depth };
+    const flat = Math.hypot(n.x, n.z);
+    if (!(flat > 0)) throw new RangeError("the Global's sill cap: the wall has no horizontal normal there");
+    edge.push(e);
+    inboard.push({ x: e.x - (n.x / flat) * BIZJET_SILL_CAP.width, y: e.y, z: e.z - (n.z / flat) * BIZJET_SILL_CAP.width });
+  }
+  const down = edge.map(() => ({ x: 0, y: -1, z: 0 }));
+  return { points: [edge, inboard], normals: [down, down.map((d) => ({ ...d }))] };
+}
+
 /** A strip's grid on the skin, cast from R as the panes are: rows bottom to top, columns in azimuth order. */
 export function bizjetLiningGrid(skin: SkinCaster, strip: BizjetLiningStrip, side: 1 | -1): { points: Point3[][]; normals: Point3[][] } {
   const points: Point3[][] = [];
@@ -449,15 +485,25 @@ export function buildBizjetCockpit(
   const parts: AbstractMesh[] = [];
   const e = eye();
 
-  // THE LINING: one skin panel per strip (a side, or once across the centreline), 2 cm deep about the skin.
+  // THE LINING: one skin panel per strip (a side, or once across the centreline), 2 cm deep about the skin; then the
+  // sill caps on the side sills' top rows.
   const lining: AbstractMesh[] = [];
+  const sills = new Map<string, { points: Point3[][]; normals: Point3[][] }>();
   for (const strip of bizjetLiningStrips()) {
     const sides: readonly (1 | -1)[] = strip.centre ? [-1] : [-1, 1];
     for (const side of sides) {
       const grid = bizjetLiningGrid(skin, strip, side);
-      lining.push(build.skinPanel(
-        bizjetLiningMeshName(strip, side), grid.points, grid.normals, BIZJET_LINING.proud, BIZJET_LINING.depth, materials.interior, root,
-      ));
+      const name = bizjetLiningMeshName(strip, side);
+      sills.set(name, grid);
+      lining.push(build.skinPanel(name, grid.points, grid.normals, BIZJET_LINING.proud, BIZJET_LINING.depth, materials.interior, root));
+    }
+  }
+  for (const side of [-1, 1] as const) {
+    for (const sill of BIZJET_SILL_CAP.sills) {
+      const grid = sills.get(`${side > 0 ? "starboard-" : "port-"}bizjet-lining-${sill}`);
+      if (!grid) throw new Error(`the Global's sill cap: no ${sill} was built`);
+      const cap = bizjetSillCapGrid(grid);
+      lining.push(build.skinPanel(bizjetSillCapMeshName(sill, side), cap.points, cap.normals, BIZJET_SILL_CAP.thickness, 0, materials.interior, root));
     }
   }
 

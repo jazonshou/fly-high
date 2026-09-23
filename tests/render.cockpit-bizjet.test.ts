@@ -21,10 +21,12 @@ import {
   BIZJET_LINING,
   BIZJET_PANEL,
   BIZJET_SCREENS,
+  BIZJET_SILL_CAP,
   bizjetLipY,
   bizjetLiningMeshName,
   bizjetLiningStrips,
   bizjetPanelFaceX,
+  bizjetSillCapMeshName,
   highestClearLip,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
@@ -104,6 +106,12 @@ function named(name: string): AbstractMesh {
   const found = scene.getMeshByName(name);
   if (!found) throw new Error(`missing mesh ${name}`);
   return found;
+}
+/** The window frame's strips as built, in build order: the lining (a side each, or once across the centreline), then the sill caps. */
+function frameStripNames(): string[] {
+  const lining = bizjetLiningStrips().flatMap((strip) => (strip.centre ? [bizjetLiningMeshName(strip, -1)] : [bizjetLiningMeshName(strip, -1), bizjetLiningMeshName(strip, 1)]));
+  const caps = ([-1, 1] as const).flatMap((side) => BIZJET_SILL_CAP.sills.map((sill) => bizjetSillCapMeshName(sill, side)));
+  return [...lining, ...caps];
 }
 function panel(name: string): Panel {
   const found = panels.find((p) => p.name === name);
@@ -513,9 +521,9 @@ describe("the Global's eye", () => {
 describe("the Global's cockpit parts", () => {
   it("are four static meshes: the lip, the board and the whole window frame as one, the screens and their bezels", () => {
     expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-glareshield", "bizjet-screen-bezels", "bizjet-screens"]);
-    // the interior is the board and every lining strip the strip table names, a side each or once across the centreline
-    const lining = bizjetLiningStrips().flatMap((strip) => (strip.centre ? [bizjetLiningMeshName(strip, -1)] : [bizjetLiningMeshName(strip, -1), bizjetLiningMeshName(strip, 1)]));
-    expect((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["bizjet-instrument-panel", ...lining]);
+    // the interior is the board, every lining strip the strip table names (a side each or once across the centreline),
+    // and the two side sills' caps a side
+    expect((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["bizjet-instrument-panel", ...frameStripNames()]);
     // the lip alone on the glareshield mesh, a three-sided solidPlate (two caps and three walls of two triangles)
     expect((named("bizjet-glareshield").metadata as { mergedFrom?: string[] } | null)?.mergedFrom).toBeUndefined();
     expect(named("bizjet-glareshield").getTotalIndices() / 3).toBe(8);
@@ -605,9 +613,7 @@ describe("the frame: the lining round the glass", () => {
     // seam each inner-face boundary vertex of one strip within a centimetre of another's boundary is one of that
     // strip's boundary vertices, to the last bit.
     const frame = panels.filter((p) => /bizjet-lining-/.test(p.name));
-    expect(frame.map((p) => p.name).sort()).toEqual(
-      bizjetLiningStrips().flatMap((strip) => (strip.centre ? [bizjetLiningMeshName(strip, -1)] : [bizjetLiningMeshName(strip, -1), bizjetLiningMeshName(strip, 1)])).sort(),
-    );
+    expect(frame.map((p) => p.name).sort()).toEqual(frameStripNames().sort());
     // A strip's boundary as the chords that can be a SEAM: every edge but the lining's own outer bound, a sill's bottom
     // row (R's elevation BIZJET_LINING.bottom) and a crown's top row (.top), which meet nothing. Those free edges run far
     // outside the frame, and near R's zenith the crowns' top rows all converge on a few centimetres of roof, where one
@@ -700,7 +706,7 @@ describe("the frame: the lining round the glass", () => {
       cases.push({ pane: pane("windshield"), edge: "top", out: [0, 1], frame: /crown-centre/ });
       cases.push({ pane: pane("windshield"), edge: "inboard", out: [-outboard, 0], frame: /lining-post/ });
       cases.push({ pane: pane("windshield"), edge: "outboard", out: [outboard, 0], frame: /lining-pillar/ });
-      cases.push({ pane: pane("forward-side"), edge: "bottom", out: [0, -1], frame: /sill-forward-side/ });
+      cases.push({ pane: pane("forward-side"), edge: "bottom", out: [0, -1], frame: /sill-forward-side|cap-forward-side/ });
       cases.push({ pane: pane("forward-side"), edge: "top", out: [0, 1], frame: /crown-forward-side/ });
       cases.push({ pane: pane("forward-side"), edge: "inboard", out: [-outboard, 0], frame: /lining-pillar/ });
       cases.push({ pane: pane("forward-side"), edge: "outboard", out: [outboard, 0], frame: /lining-mid-post/ });
@@ -823,6 +829,48 @@ describe("the frame: the lining round the glass", () => {
     // is concave the chord can carry it out, but never beyond the lining's own proud
     expect(tightestFace).toBeGreaterThan(-BIZJET_LINING.proud);
     expect(shadedAway, "lining vertices shaded away from the eye").toBe(0);
+  });
+
+  it("caps the side panes' sills: under each side pane's bottom edge the eye meets the cap's top face, lit toward the cabin", () => {
+    // The wall under the forward side pane is about 11 degrees of flat lining from the seat (K2); the cap is a ledge along
+    // the pane's bottom edge, level with it and BIZJET_SILL_CAP.width inboard. Its row 0 IS its sill's top row on the
+    // lining's inner face (the no-T-junction test holds the seam), and from the eye above, its inboard edge reads lower
+    // than the pane's edge, so it covers no glass.
+    const interior = named("bizjet-cockpit-interior");
+    const normals = interior.getVerticesData(VertexBuffer.NormalKind)!;
+    const indices = interior.getIndices()!;
+    let seen = 0;
+    for (const side of [-1, 1] as const) {
+      for (const sill of BIZJET_SILL_CAP.sills) {
+        const cap = panel(bizjetSillCapMeshName(sill, side));
+        const under = panel(`${side > 0 ? "starboard" : "port"}-bizjet-lining-${sill}`);
+        expect([cap.rows, cap.columns], `${cap.name}: two rows on its sill's columns`).toEqual([2, under.columns]);
+        for (let c = 0; c < cap.columns; c += 1) {
+          // the seam, to the last bit, and the ledge's width and level
+          expect(gridVertex(cap, 1, 0, c).equals(gridVertex(under, 1, under.rows - 1, c)), `${cap.name} column ${c} on its sill's top row`).toBe(true);
+          expect(gridVertex(cap, 1, 1, c).y).toBeCloseTo(gridVertex(cap, 1, 0, c).y, 6);
+          expect(Vector3.Distance(gridVertex(cap, 1, 0, c), gridVertex(cap, 1, 1, c))).toBeCloseTo(BIZJET_SILL_CAP.width, 5);
+          // no glass under it from the eye: the ledge's inboard edge reads lower than the pane's edge
+          expect(azel(gridVertex(cap, 1, 1, c)).el, `${cap.name} column ${c} reads under the pane's edge`).toBeLessThan(azel(gridVertex(cap, 1, 0, c)).el);
+        }
+        // where it is in the frame (the port forward side pane's, from the left seat), the eye meets its top face
+        for (let c = 0; c + 1 < cap.columns; c += 1) {
+          const middle = Vector3.Lerp(Vector3.Lerp(gridVertex(cap, 1, 0, c), gridVertex(cap, 1, 0, c + 1), 0.5), Vector3.Lerp(gridVertex(cap, 1, 1, c), gridVertex(cap, 1, 1, c + 1), 0.5), 0.5);
+          const { az, el } = azel(middle);
+          if (!inFrame(az, el)) continue;
+          const d = middle.subtract(EYE_POINT).normalize();
+          const hit = firstHitAlong(d);
+          expect(hit?.mesh, `${cap.name} at (${az.toFixed(1)}, ${el.toFixed(1)})`).toBe(interior);
+          expect(partOf(hit!.mesh, hit!.faceId), `${cap.name} at (${az.toFixed(1)}, ${el.toFixed(1)})`).toBe(cap.name);
+          // on its TOP face, not its rim: one of the top face's own triangles is crossed where the ray met the mesh
+          expect(crossings(EYE_POINT, d, faceTriangles(cap, 1)).some((t) => Math.abs(t - hit!.distance) < 1e-4), `${cap.name}: on its top face`).toBe(true);
+          for (let k = 0; k < 3; k += 1) expect(Vector3.Dot(Vector3.FromArray(normals, indices[hit!.faceId * 3 + k]! * 3), d), `${cap.name}: lit toward the cabin`).toBeLessThan(0);
+          seen += 1;
+        }
+      }
+    }
+    console.info(`the Global's sill caps: ${seen} cells of the port forward side pane's cap in the frame, each met on its top face`);
+    expect(seen, "the forward side pane's cap is in the frame from the seat").toBeGreaterThan(1);
   });
 
   it("reads THIN: the windshield/side pillar is nearly all face from the seat, its side faces a sliver (the 2 cm frame)", () => {
