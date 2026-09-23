@@ -3,14 +3,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { aircraftSpec } from "../src/aircraft/catalogue";
-import { COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
+import { COCKPIT_HORIZONTAL_FOV_DEGREES, COCKPIT_LENS_HELD_ASPECT } from "../src/render/cameraPresentation";
 import {
   COCKPIT_HUD_DECK_MARGIN_PX,
   COCKPIT_HUD_DIAGNOSTICS_TOP_PX,
+  COCKPIT_HUD_HELD_HALF_WIDTH_VH,
   COCKPIT_HUD_HINTS_TOP_PX,
   COCKPIT_HUD_TOP_BAND_PX,
   cockpitDeckK,
   cockpitDeckKStyleValue,
+  cockpitDeckLineY,
 } from "../src/ui/cockpitHudLayout";
 import { DECKS, DECK_CATEGORIES, cockpitView, type CockpitView, type Deck } from "./support/cockpitFootprints";
 import { cockpitHudLayout, flightCssRules, readTopLevelRules } from "./support/cockpitHudModel";
@@ -21,7 +23,8 @@ import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMa
  *
  * THE RULE: nothing of the HUD draws below the deck line, the row where the
  * airframe's glareshield, panel, screens and bezels begin, less 12 px. The cockpit
- * lens is horizontal-fixed, so that row is H/2 + (W/2) * k on any window shape,
+ * lens is horizontal-fixed up to 16:9 and holds its 16:9 vertical field beyond, so
+ * that row is H/2 + min(W/2, 8H/9) * k on any window shape,
  * k = tan(cockpitDeckLineDegrees) / tan(lens / 2).
  *
  * What is held here:
@@ -30,17 +33,19 @@ import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMa
  *    class and `--deck-k` alone;
  *  - the stylesheet's cockpit rules are scoped to the cockpit class and carry the
  *    layout module's numbers;
- *  - on FIVE window shapes, every deck's rows are where the rule says: Babylon's own
- *    horizontal-fixed camera, sized to each window, finds the deck's first row
- *    within 2 px of H/2 + (W/2) * k;
- *  - on those five shapes, every deck, and the full, minimal and alert HUDs, no HUD
+ *  - on SEVEN window shapes (16:9 at three sizes, 4:3 and 21:9 at three), every
+ *    deck's rows are where THE STYLESHEET says: Babylon's own camera, on the lens
+ *    the renderer resolves for that window's aspect, finds the deck's first row
+ *    within 2 px of the row flight.css computes. So a stylesheet that loses its
+ *    21:9 term, or a lens that moves its breakpoint, fails here on geometry;
+ *  - on those seven shapes, every deck, and the full, minimal and alert HUDs, no HUD
  *    element lies over a screen, bezel, glareshield or panel pixel, and none crosses
  *    the deck line. The element boxes are read from the stylesheet
  *    (tests/support/cockpitHudModel.ts), so a deleted layout rule sends its element
  *    back onto the screens, and this fails.
  */
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SHAPES = [[1280, 720], [1600, 900], [1920, 1080], [1600, 1200], [2560, 1080]] as const;
+const SHAPES = [[1280, 720], [1600, 900], [1920, 1080], [1600, 1200], [1680, 720], [2560, 1080], [3440, 1440]] as const;
 const kOf = (deck: Deck) => cockpitDeckK(aircraftSpec(deck).cockpitDeckLineDegrees);
 
 describe("the HUD's markup", () => {
@@ -77,8 +82,14 @@ describe("the HUD's markup", () => {
       const expected = Math.tan((degrees * Math.PI) / 180) / Math.tan((COCKPIT_HORIZONTAL_FOV_DEGREES * Math.PI) / 360);
       expect(cockpitDeckK(degrees)).toBeCloseTo(expected, 12);
     }
-    // The rule is exact only for a horizontal-fixed lens: hold the renderer to it.
-    expect(readFileSync(join(ROOT, "src/render/FlightRenderer.ts"), "utf8")).toContain("camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;");
+    // The rule is exact only for a horizontal-fixed camera on the aspect lens: hold the renderer to both.
+    const renderer = readFileSync(join(ROOT, "src/render/FlightRenderer.ts"), "utf8");
+    expect(renderer).toContain("camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;");
+    // (The override argument is tests/render.cockpit-rig.test.ts's to hold; it is not named here.)
+    expect(renderer).toMatch(/fieldOfView = cockpitHorizontalFieldOfViewForAspect\(\s*this\.\w+,\s*this\.windowAspectRatio\(\),\s*\);/);
+    // The window's CSS shape, not the render raster, whose rounding moved a 16:9-exact lens.
+    expect(renderer).toMatch(/return canvas\.clientWidth \/ canvas\.clientHeight;/);
+    expect(renderer).not.toMatch(/fieldOfView = cockpitFieldOfViewDegrees\(/);
   });
 });
 
@@ -99,14 +110,18 @@ describe("the stylesheet's cockpit rules", () => {
 
   it("carry the layout module's numbers", () => {
     const at = (selector: string) => rules.get(`.flight-hud--cockpit${selector}`) ?? {};
-    expect(at("")["--hud-deck-line"]).toBe(`calc(50% + 50vw * var(--deck-k) - ${COCKPIT_HUD_DECK_MARGIN_PX}px)`);
+    // The half-width term stops at a 16:9 window's half-width, where the lens stops being horizontal-fixed.
+    expect(COCKPIT_HUD_HELD_HALF_WIDTH_VH).toBeCloseTo(50 * COCKPIT_LENS_HELD_ASPECT, 3);
+    const halfWidth = `min(50vw, ${COCKPIT_HUD_HELD_HALF_WIDTH_VH}vh)`;
+    expect(halfWidth).toBe("min(50vw, 88.889vh)");
+    expect(at("")["--hud-deck-line"]).toBe(`calc(50% + ${halfWidth} * var(--deck-k) - ${COCKPIT_HUD_DECK_MARGIN_PX}px)`);
     expect(at(" .flight-hud__bottom")).toMatchObject({ top: `${COCKPIT_HUD_TOP_BAND_PX}px`, bottom: "auto", "align-items": "flex-start" });
     expect(at(" .hud-help")).toMatchObject({ top: `${COCKPIT_HUD_HINTS_TOP_PX}px`, bottom: "auto" });
     expect(at(" .diagnostics").top).toBe(`${COCKPIT_HUD_DIAGNOSTICS_TOP_PX}px`);
     // The ACTUAL panel stays top-right in the minimal HUD too, where it would otherwise be alone on the left.
     expect(at(" .control-status")["margin-left"]).toBe("auto");
     // The attitude clip is the attitude box's half-height plus the margin, less the deck's drop.
-    expect(at(" .attitude")["clip-path"]).toBe(`inset(0 0 max(0px, calc(115px + ${COCKPIT_HUD_DECK_MARGIN_PX}px - 50vw * var(--deck-k))) 0)`);
+    expect(at(" .attitude")["clip-path"]).toBe(`inset(0 0 max(0px, calc(115px + ${COCKPIT_HUD_DECK_MARGIN_PX}px - ${halfWidth} * var(--deck-k))) 0)`);
     expect(rules.get(".attitude")?.height).toBe("230px");
     expect(rules.get(".metric-tape")?.height).toBe("170px");
   });
@@ -126,10 +141,14 @@ for (const [width, height] of SHAPES) {
       return hit !== null && DECK_CATEGORIES.has(hit.category);
     };
 
-    it("puts every deck's first row within 2 px of H/2 + (W/2) * k", () => {
+    it("puts every deck's first row within 2 px of the row the stylesheet computes", () => {
+      const rules = flightCssRules(ROOT);
       for (const deck of DECKS) {
         const view = views.get(deck)!;
-        const predicted = height / 2 + (width / 2) * kOf(deck);
+        const layout = cockpitHudLayout(rules, { width, height, k: kOf(deck), aircraft: deck, mode: "full", alerts: false });
+        // The layout module computes the same row the stylesheet does.
+        expect(cockpitDeckLineY(width, height, kOf(deck))).toBeCloseTo(layout.deckLine, 6);
+        const predicted = layout.deckLine + COCKPIT_HUD_DECK_MARGIN_PX;
         const clearRow = Math.floor(predicted - 2.5); // pixel centre at least 2 px above
         const deckRow = Math.ceil(predicted + 1.5); // pixel centre at least 2 px below
         const clear: number[] = [];

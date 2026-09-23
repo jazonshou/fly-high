@@ -461,6 +461,39 @@ export function cockpitFieldOfViewDegrees(
   return override === null ? COCKPIT_HORIZONTAL_FOV_DEGREES : override.horizontalFovDegrees;
 }
 
+/**
+ * The widest window, width over height, on which the gameplay cockpit lens is
+ * still its 75 degrees HORIZONTAL: 16:9. Wider than this it holds the vertical
+ * field it has here instead (`cockpitHorizontalFieldOfViewForAspect`).
+ */
+export const COCKPIT_LENS_HELD_ASPECT = 16 / 9;
+
+/**
+ * The cockpit camera's horizontal field of view, in degrees, on a window of
+ * `aspect` (width over height): a hybrid lens.
+ *
+ * Up to 16:9 it is `cockpitFieldOfViewDegrees(override)`, the same number: the
+ * horizontal-fixed 75 degrees every deck is built and measured against. Wider,
+ * the gameplay lens keeps the VERTICAL field it has at 16:9 (46.69 degrees) and
+ * grows sideways, to 90.4 degrees at 21:9. Horizontal-fixed alone crops a wide
+ * window from below: at 21:9 the frame's bottom is 18.2 degrees under the eye
+ * (23.35 at 16:9), which left none of the F-16's MFDs or the 747's glass in
+ * view and 13 % of the Global's screens (docs/findings/COCKPIT_HUD_LAYOUT_2026_09_23.md).
+ *
+ * The perf rig's lens (an override) is fixed at every aspect: its shots and
+ * baselines were framed on it.
+ */
+export function cockpitHorizontalFieldOfViewForAspect(
+  override: Readonly<CockpitRigOverride> | null,
+  aspect: number,
+): number {
+  const lens = cockpitFieldOfViewDegrees(override);
+  // A window with no height (an infinite aspect) keeps the plain lens rather than a 180 degree one.
+  if (override !== null || !Number.isFinite(aspect) || !(aspect > COCKPIT_LENS_HELD_ASPECT)) return lens;
+  const tanHalfVertical = Math.tan((lens * Math.PI) / 360) / COCKPIT_LENS_HELD_ASPECT;
+  return (Math.atan(tanHalfVertical * aspect) * 360) / Math.PI;
+}
+
 /** The eye's lateral offset in metres, positive to starboard, after any override. */
 export function cockpitEyeRightMeters(
   eye: Readonly<Pick<CockpitEyeSpec, "right">>,

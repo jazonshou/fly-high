@@ -9,7 +9,7 @@ import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Scene } from "@babylonjs/core/scene";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
-import { COCKPIT_HORIZONTAL_FOV_DEGREES } from "@/src/render/cameraPresentation";
+import { COCKPIT_HORIZONTAL_FOV_DEGREES, cockpitHorizontalFieldOfViewForAspect } from "@/src/render/cameraPresentation";
 import { createWebGpuAircraft } from "@/src/render/webgpu/aircraft";
 import type { AircraftVisual } from "@/src/render/webgpu/aircraft/types";
 import type { AircraftKind } from "@/src/sim";
@@ -22,8 +22,10 @@ import type { AircraftKind } from "@/src/sim";
  * Each deck is built under NullEngine as tests/render.cockpit-*.test.ts build it
  * (root at the origin, body +X nose / +Y up / +Z starboard, cockpit view on). The
  * camera is the renderer's cockpit camera: the catalogue eye, looking down the body
- * axis, HORIZONTAL-FIXED at the gameplay lens, sized to the window being tested, so
- * its picking rays come from Babylon's own projection for that window shape.
+ * axis, HORIZONTAL-FIXED at the gameplay lens the renderer resolves for this window's
+ * aspect (`cockpitHorizontalFieldOfViewForAspect`: 75 degrees up to 16:9, the 16:9
+ * vertical field held beyond it), sized to the window being tested, so its picking
+ * rays come from Babylon's own projection for that window shape.
  *
  * A pick returns the first surface the GPU DRAWS along the ray, which is not what a
  * plain ray cast returns: the eye sits inside the Global's and the 747's fuselages,
@@ -76,7 +78,7 @@ export function cockpitView(kind: AircraftKind, width: number, height: number): 
   const eye = new Vector3(spec.forward, spec.up, spec.right);
   const camera = new UniversalCamera("cockpit-footprint-camera", eye.clone(), scene);
   camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
-  camera.fov = (COCKPIT_HORIZONTAL_FOV_DEGREES * Math.PI) / 180;
+  camera.fov = (cockpitHorizontalFieldOfViewForAspect(null, width / height) * Math.PI) / 180;
   camera.minZ = 0.08;
   camera.setTarget(eye.add(new Vector3(1, 0, 0)));
   scene.activeCamera = camera;

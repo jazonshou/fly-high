@@ -1,7 +1,10 @@
 # The 2D HUD in cockpit view: keeping it off the instruments
 
-**Status: built on `jazonshou/cockpit-hud-layout` from `de91cef`. Node tests, a
-Chromium check of the real stylesheet and in-game frames of all four decks agree.**
+**Status: built on `jazonshou/cockpit-hud-layout` from `de91cef`, merged as `b8f7e59`.
+Node tests, a Chromium check of the real stylesheet and in-game frames of all four
+decks agree. The hybrid cockpit lens (2026-09-23, `jazonshou/hud-hybrid-lens`, below)
+changes the rule's half-width term on windows wider than 16:9; frames and Jason's
+look pending.**
 
 ## The problem
 
@@ -88,7 +91,9 @@ the row where the airframe's glareshield, panel, screens and bezels begin, less 
     H / 2 + (W / 2) * k,    k = tan(cockpitDeckLineDegrees) / tan(37.5 degrees)
 
 on every window shape. In CSS that is `calc(50% + 50vw * k)`, so the rule follows a
-resize with no script.
+resize with no script. Since the hybrid lens (below) the half-width term stops at a
+16:9 window's: `H / 2 + min(W / 2, 8H / 9) * k`, in CSS
+`calc(50% + min(50vw, 88.889vh) * k)`.
 
 `cockpitDeckLineDegrees` is a new catalogue field, measured on the built kit by ray.
 Each column is walked down to its first deck hit and bisected to 1e-4 degrees, with
@@ -210,6 +215,118 @@ The survey said the F-16's 2D symbology fits between the HUD frame's uprights (t
 90 px ladder line). The horizon itself (`.attitude__horizon`) is 300 px wide, so it
 crosses each upright by about 20 px, faded by the attitude box's radial mask. The
 live F2 frame shows exactly that. The decision (no change) stands.
+
+## Look items, and the hybrid lens (2026-09-23)
+
+**Survey, on `99ffed3` (747 deck 18.57).** Every screen, bezel and dial was
+projected from the kits' own constants (`jetMfdPlacements`, `bizjetScreenPlacements`,
+`airlinerScreenPlacements`, `trainerDialPlacements` and their sizes) through the
+gameplay lens. Each top edge was checked against the ray grid's first drawn row:
+within 2 px on all four decks. The HUD's boxes come from the stylesheet model.
+
+- **Overlap: 0 px everywhere.** The check covers 9 HUD elements, 4 airframes,
+  7 windows (16:9 at four sizes; 21:9 at 1680 x 720, 2560 x 1080 and 3440 x 1440)
+  and 4 HUD states. The nearest element to any display is the attitude box above
+  the trainer's dials: 66 px at 1280 x 720, 104 px at 1600 x 900.
+- **The 747 over its EICAS: 0 px.** The ACTUAL panel sits in the top band, 665 px
+  above the upper EICAS at 1600 x 900.
+- **The limit is the lens, not the HUD.** A horizontal-fixed 75 degree lens puts the
+  frame's bottom 23.35 degrees under the eye at 16:9 and 18.20 at 21:9. Of each
+  display's rows, this much was in frame:
+
+| deck part | degrees below eye | whole up to W/H | 16:9 | 21:9 |
+| --- | --- | --- | --- | --- |
+| F-16 MFD screens | 18.2-26.3 | 1.55 | 62 % | 0 % |
+| Global screens | 16.6-28.0 | 1.44 | 57 % | 13 % |
+| 747 PFD, ND, upper EICAS | 20.0-28.4 | 1.41 | 38 % | 0 % |
+| 747 lower EICAS | 29.7-36.8 | 1.02 | 0 % | 0 % |
+| trainer lower dials | 18.0-23.9 | 1.71 | 86 % | 2 % |
+
+  At 21:9 not even the 747's glareshield lip was in frame (it leaves at W/H 2.28).
+  The 747's 38 % at 16:9 is the kit's geometry: no 16:9 lens fixes it short of a
+  look-down or moving the displays. It is registered as a 747 K-item for Jason's
+  look.
+- **The HUD never meets itself.** The tapes' top stays at least 70 px under the
+  top band down to the stylesheet's smallest window (820 x 650), and at least
+  124 px under it at 21:9.
+
+**The hybrid lens (the PM's decision).**
+`cockpitHorizontalFieldOfViewForAspect(override, aspect)` in
+`src/render/cameraPresentation.ts`:
+- **Up to 16:9** it returns the 75 degree lens, the same number, so no 16:9 frame
+  moves.
+- **Wider**, it holds the 16:9 vertical field (46.69 degrees) and grows sideways:
+  90.4 degrees at 21:9, 91.3 at 2560 x 1080, 91.8 at 3440 x 1440. Every display then
+  shows at 21:9 exactly the rows it shows at 16:9.
+- **The perf rig's lens is an override** and never changes.
+
+The renderer resolves it every frame from the canvas's CSS size, the window shape
+the HUD's stylesheet reads too. It does not use the render raster: in the first
+21:9 frame run the raster's rounding under a fractional render scale gave 91.325
+degrees against the window's 91.309, and the frame tool refused it. The same
+rounding could have put a 16:9 window past 16:9 and moved its 75 degrees. The
+HUD's half is the stylesheet's `min(50vw, 88.889vh)` in the deck line and the
+attitude clip; the markup is unchanged.
+
+**What it costs, measured (2026-09-24, 01:32-01:35, this Mac, headless).** The
+frustum at 2560 x 1080 is 1.333 times as wide and as tall as the plain lens's,
+1.78 times its cross-section, and before measuring this finding said a 21:9 player
+would pay roughly that in world draw. **That was wrong for this renderer.**
+
+The A/B used the perf harness's pinned setup: render scale pinned, GPU timing on,
+seed, clock and weather fixed. Pose: the trainer at approach-500ft, in cockpit.
+The arms differed only in the lens: no override against an override that is the
+gameplay rig with the lens held at 75. They ran in the order plain, hybrid,
+hybrid, plain at 2560 x 1080, then both at 1600 x 900, one browser per arm,
+240 measured frames each.
+
+- **Draws, triangles, instances and resident pages** were identical at both lenses:
+  264, 1,796,442, 95,321 and 40. The renderer submits the same world at 75 and
+  91 degrees on this pose, so the wider lens costs fragments, not submissions.
+- **Frame interval at 21:9**, hybrid against plain: p50 14.05 against 13.5 ms
+  (x1.04), p95 15.7 against 15.25 (x1.03). Each lens's two runs agreed within
+  0.1 ms.
+- **16:9 control**: the same lens (75.000), the same draws and triangles, and
+  interval p50 12.3 against 12.4 ms, which is noise.
+- **Hybrid 21:9 against 16:9 play**: x1.13 at p50, x1.15 at p95. The plain lens at
+  21:9 is already x1.10, because the 21:9 raster has 1.41 times the pixels, so the
+  lens itself adds about 4 % on top of what a 21:9 window costs anyway.
+- **The whole-frame GPU timestamp counter** read about 0.9 ms against a 13 ms
+  interval. It covers only part of the frame, so the interval is the figure
+  quoted.
+- **Instrument trap:** a second FlightRenderer in the same page, with GPU timing
+  on, reuses the first device's timestamp query set and fails validation. Run
+  one arm per browser.
+
+**Tests.**
+- **`tests/render.cockpit-hybrid-lens.test.ts`** holds the lens:
+  - exactly 75 on every 16:9 and narrower window;
+  - the 16:9 vertical held from 1.78 up;
+  - the breakpoint pinned from both sides;
+  - the perf override untouched at every aspect.
+- **Display shares** (same file): every display is at least as visible at 21:9 as
+  at 16:9, with the same rows, from the kit constants. A positive control holds 25
+  displays' top edges to the ray grid within 0.94 px at 1600 x 900 and 2560 x 1080.
+  A CONTROL keeps the plain lens's 21:9 losses (F-16 0 %, 747 0 %, Global under
+  15 %).
+- **`tests/ui.hud-cockpit-layout.test.ts`** now reads the predicted deck row FROM
+  THE STYLESHEET. Its camera (`tests/support/cockpitFootprints.ts`) sees each window
+  through the aspect lens, at seven shapes including the three 21:9 ones. So a
+  stylesheet that loses its 21:9 term, and a lens that moves its breakpoint, both
+  fail on geometry.
+- **Mutations: 14, all caught.**
+  - The breakpoint moved to 1.7 or to 1.85, and `>=` at the breakpoint. The last is
+    caught only because the formula's float at exactly 16:9 is not bit-equal to 75.
+  - The perf override widened; the hybrid removed; the wrong vertical held; the
+    infinite-aspect guard removed.
+  - The renderer back on the fixed lens (caught by the source scan, since the
+    renderer cannot run in Node).
+  - The stylesheet's deck line without `min()`, or capped at 100vh; the attitude
+    clip without `min()`; the layout module's row without the cap.
+  - Both instruments mutated: the footprint camera on the fixed lens, and the model
+    ignoring the cap.
+- **`scripts/cockpit-frames.mts`** now expects the lens the renderer resolves for
+  its window, so a 21:9 frame is asserted against 91.3 degrees rather than refused.
 
 ## Not addressed
 

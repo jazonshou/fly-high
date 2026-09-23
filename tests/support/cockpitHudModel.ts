@@ -105,10 +105,18 @@ export function cockpitHudLayout(
   const cockpit = (selector: string) => rules.get(`.flight-hud--cockpit${selector ? ` ${selector}` : ""}`);
   const base = (selector: string) => rules.get(selector) ?? {};
 
+  // The half-width term: `50vw`, or `min(50vw, <n>vh)` for a lens that holds its vertical field on wide windows.
+  const halfWidthOf = (term: string, what: string): number => {
+    if (term === "50vw") return W / 2;
+    const capped = /^min\(50vw, (\d+(?:\.\d+)?)vh\)$/.exec(term);
+    if (capped) return Math.min(W / 2, (H * Number(capped[1])) / 100);
+    throw new Error(`${what}'s half-width term "${term}" is not one this model reads`);
+  };
   const deckRule = cockpit("")?.["--hud-deck-line"];
-  const deckMatch = deckRule === undefined ? null : /^calc\(50% \+ 50vw \* var\(--deck-k\) - (\d+)px\)$/.exec(deckRule);
+  const deckMatch = deckRule === undefined ? null : /^calc\(50% \+ (.+) \* var\(--deck-k\) - (\d+)px\)$/.exec(deckRule);
   if (!deckMatch) throw new Error(`.flight-hud--cockpit --hud-deck-line is "${deckRule}", not the rule this model reads`);
-  const deckLine = H / 2 + (W / 2) * k - Number(deckMatch[1]);
+  const halfWidth = halfWidthOf(deckMatch[1]!, "--hud-deck-line");
+  const deckLine = H / 2 + halfWidth * k - Number(deckMatch[2]);
 
   const boxes: HudBox[] = [];
   const box = (name: string, x0: number, y0: number, w: number, h: number) =>
@@ -128,9 +136,9 @@ export function cockpitHudLayout(
 
   // The attitude box, less whatever the clip cuts off its bottom.
   const clip = cockpit(".attitude")?.["clip-path"];
-  let cut = 0;
-  if (clip === "inset(0 0 max(0px, calc(115px + 12px - 50vw * var(--deck-k))) 0)") cut = Math.max(0, 127 - (W / 2) * k);
-  else if (clip !== undefined) throw new Error(`.flight-hud--cockpit .attitude clip-path "${clip}" is not read by this model`);
+  const clipMatch = clip === undefined ? null : /^inset\(0 0 max\(0px, calc\(115px \+ 12px - (.+) \* var\(--deck-k\)\)\) 0\)$/.exec(clip);
+  if (clip !== undefined && !clipMatch) throw new Error(`.flight-hud--cockpit .attitude clip-path "${clip}" is not read by this model`);
+  const cut = clipMatch ? Math.max(0, 127 - halfWidthOf(clipMatch[1]!, ".attitude clip-path") * k) : 0;
   box("attitude", W / 2 - s.attitude.width / 2, H / 2 - s.attitude.height / 2, s.attitude.width, s.attitude.height - cut);
 
   if (alerts) {

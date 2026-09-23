@@ -1442,13 +1442,15 @@
  *
  * THE RULE: nothing of the HUD draws below the deck line, the row where the
  * airframe's glareshield, panel, screens and bezels begin, less 12px. The cockpit
- * lens is horizontal-fixed, so that row is 50% of the height plus 50vw * k on any
- * window shape, k = tan(cockpitDeckLineDegrees) / tan(lens / 2)
+ * lens is horizontal-fixed up to 16:9, so there that row is 50% of the height plus
+ * 50vw * k, k = tan(cockpitDeckLineDegrees) / tan(lens / 2). Wider, the lens holds
+ * its 16:9 vertical field, so the half-width term stops at the half-width a 16:9
+ * window of this height would have: 50vh * 16 / 9 = 88.889vh
  * (src/ui/cockpitHudLayout.ts, whose numbers these are). Measured, and the layout
  * chosen, in docs/findings/COCKPIT_HUD_LAYOUT_2026_09_23.md.
  */
 .flight-hud--cockpit {
-  --hud-deck-line: calc(50% + 50vw * var(--deck-k) - 12px);
+  --hud-deck-line: calc(50% + min(50vw, 88.889vh) * var(--deck-k) - 12px);
 }
 
 /* The bottom group moves to a band under the session line. */
@@ -1482,7 +1484,7 @@
 /* The attitude box (340 x 230, centred) is cut at the deck line. Its pitch
    ladder moves with pitch, so this is the guard, not the placement. */
 .flight-hud--cockpit .attitude {
-  clip-path: inset(0 0 max(0px, calc(115px + 12px - 50vw * var(--deck-k))) 0);
+  clip-path: inset(0 0 max(0px, calc(115px + 12px - min(50vw, 88.889vh) * var(--deck-k))) 0);
 }
 
 .pause-screen {
