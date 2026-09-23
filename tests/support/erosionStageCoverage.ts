@@ -25,7 +25,8 @@ export const EXPECTED_STAGE_DISPATCHES: Readonly<Record<ErosionCostStage, number
   // Erodibility before breach and repose after stream power.
   geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
     / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
-  breach: 2,
+  breachDirect: 1,
+  breachPit: 1,
   decode: 1,
   streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
   // One gather and one apply per iteration.

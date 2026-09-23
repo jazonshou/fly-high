@@ -223,3 +223,10 @@ lane count and prices ring 0 as a batch of 1, which that path handles correctly.
 On the fixed instrument and the tape, `terrain-compute-cost.test.ts` measured terrainCompute 2.079 ms per page
 (pinned 1.9), occlusionCompute 0.173 (0.3), splatCompute 0.331 (0.4), and the coarse splat bake at 0.673. They are
 recorded for the re-price, not applied.
+
+## What the fixed instrument found next
+
+Priced on the fixed instrument, the breach pit carve costs ~6 ms as one dispatch. At tier 1 it cannot be admitted
+honestly: at the shipped 0.067 ms it spikes one frame per eroded page to ~9 ms of compute against a 1.73 ms cap, and at
+its measured price it stalls behind any higher-priority client with steady demand. See
+docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md; the erosion re-price is held until the carve is banded to fit its row.
