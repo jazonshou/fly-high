@@ -779,13 +779,17 @@ describe("the MFDs", () => {
     for (let i = 0; i < normals.length; i += 3) if (normals[i]! < -0.9) facing.push((Math.atan2(normals[i + 1]!, -normals[i]!) * 180) / Math.PI);
     expect(facing.length, "the two screens' pilot-facing corners").toBe(8);
     for (const angle of facing) expect(angle, "the face's normal above horizontal").toBeCloseTo(15, 3);
-    // THE BEZELS' MATERIAL: the interior grey the board wears, so they read apart from the near-black coaming face
+    // THE BEZELS' MATERIAL: their own dark grey, the type's, neither the interior grey (on which they read as light
+    // slabs, 79/255 against the coaming face's 20.5) nor the glareshield. Albedo 0x10 a channel: the lit face reads
+    // 41, twice the coaming's face (measured live, one frozen pose). One instance, worn by the bezels alone.
     const bezelMaterial = named("jet-mfd-bezels").material as PBRMaterial;
-    expect(bezelMaterial, "the board's interior instance").toBe(named("jet-instrument-panel").material);
-    const coamingAlbedo = (named("jet-glare-shield").material as PBRMaterial).albedoColor;
-    for (const channel of ["r", "g", "b"] as const) {
-      expect(bezelMaterial.albedoColor[channel], `bezel ${channel} lighter than the coaming's`).toBeGreaterThan(coamingAlbedo[channel] * 2);
-    }
+    expect(bezelMaterial.name).toBe("jet-mfd-bezel");
+    expect(bezelMaterial, "not the interior grey").not.toBe(named("jet-instrument-panel").material);
+    expect(bezelMaterial, "not the glareshield").not.toBe(named("jet-glare-shield").material);
+    for (const channel of ["r", "g", "b"] as const) expect(bezelMaterial.albedoColor[channel], `albedo ${channel}`).toBeCloseTo(0x10 / 255, 6);
+    expect(bezelMaterial.roughness).toBe(0.8);
+    expect(scene.meshes.filter((mesh) => mesh.material === bezelMaterial).map((mesh) => mesh.name), "its only wearer").toEqual(["jet-mfd-bezels"]);
+    expect(scene.materials.filter((material) => material.name === "jet-mfd-bezel"), "one instance").toHaveLength(1);
     // square, centred at z +-0.17, 0.102 of screen in a 0.15 bezel; the 0.19 between them is the UFC's
     for (const [name, side] of sides) {
       const own = (vs: Vector3[]) => vs.filter((v) => Math.sign(v.z) === side);

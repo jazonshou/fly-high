@@ -902,9 +902,11 @@ Measured before building (F2-0), and three things in the brief did not survive i
 - The back top edge sits 1 mm off the face plane, turned back 15 degrees about it. The front top
   corner is at the 0.735 ceiling.
 - Screens 0.102 square, 1 mm proud of the bezel, lifted 6 mm.
-- The bezels are on the interior grey, so they read apart from the near-black coaming face. The
-  screens use the atlas's emissive material when there is a 2D canvas, and a flat instrument face
-  under Node.
+- The bezels have a dark grey of their own (`jet-mfd-bezel`, albedo 0x101010), the type's. On the
+  interior grey, as first built, they read as light slabs: 79/255 against the coaming face's 20.5,
+  measured live at one frozen pose. At 0x10 the lit face reads 41 (the side border 39), twice the coaming's
+  face. The screens use the atlas's emissive material when there is a 2D canvas, and a flat
+  instrument face under Node.
 - Both meshes are cockpit-only. The kit is 3 meshes (the frame, the bezels, the screens): cockpit
   view spends +2 draws, and outside cockpit view is unchanged at 174.
 

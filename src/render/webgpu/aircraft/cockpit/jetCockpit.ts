@@ -56,7 +56,7 @@ import type { FlightVisualState } from "@/src/game/types";
  */
 
 export interface JetCockpitMaterials {
-  /** The dark matte interior: the panel board and the MFD bezels (the tub and the seat are on it too). */
+  /** The dark matte interior: the panel board (the tub and the seat are on it too). */
   readonly interior: PBRMaterial;
   /** The screens' flat material where there is no 2D canvas to draw pages on (every Node test). */
   readonly instrumentFace: PBRMaterial;
@@ -389,11 +389,16 @@ export function buildJetCockpit(
   const tilt = (m.tiltDegrees * Math.PI) / 180;
   const screens: AbstractMesh[] = [];
   const bezels: AbstractMesh[] = [];
+  // The bezels' own dark grey, the type's: on the interior grey they read as light slabs against the near-black
+  // coaming (79/255 luma against its 20.5, measured live at one frozen pose). At 0x101010, otherwise the interior's
+  // roughness and metalness, the lit face reads 41 (the side border 39): twice the coaming's face, far below the
+  // screens' text.
+  const bezelMaterial = build.material("jet-mfd-bezel", 0x101010, { roughness: 0.8, metallic: 0.02 });
   const slots = displaySlots(JET_DISPLAYS);
   const atlasWidth = displayAtlasWidth(JET_DISPLAYS);
   const atlasHeight = displayAtlasHeight(JET_DISPLAYS);
   for (const [index, { name, bezel: bezelCentre, centre }] of jetMfdPlacements().entries()) {
-    const bezel = build.box(`jet-mfd-bezel-${name}`, m.bezelThickness, m.bezel, m.bezel, materials.interior, root);
+    const bezel = build.box(`jet-mfd-bezel-${name}`, m.bezelThickness, m.bezel, m.bezel, bezelMaterial, root);
     bezel.position.copyFrom(bezelCentre);
     bezel.rotation.z = -tilt;
     bezels.push(bezel);
