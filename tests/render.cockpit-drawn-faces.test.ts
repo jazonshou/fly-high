@@ -60,7 +60,7 @@ const OFFSETS = [0.37, 0.61] as const;
 const BEYOND_THE_FRAME: Readonly<Record<AircraftKind, readonly string[]>> = {
   trainer: ["trainer-windscreen-post-starboard", "trainer-door-starboard"],
   jet: [],
-  bizjet: ["bizjet-windscreen-post-starboard"],
+  bizjet: [],
   airliner: [],
 };
 /**

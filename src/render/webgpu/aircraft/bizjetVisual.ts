@@ -1330,16 +1330,16 @@ export function createBizJet(scene: Scene): AircraftVisual {
       mesh.metadata = { ...mesh.metadata, cockpitInterior: true, castsShadow: false };
     }
   }
-  // The panel, its hood, the four flat screens, the posts, the ceiling and the
-  // side walls are COCKPIT-ONLY parts, built to angles from the pilot's left-seat
-  // eye in `cockpit/bizjetCockpit.ts`. `configureCockpitOnlyParts` makes them
-  // invisible until cockpit view is entered and never a shadow caster.
+  // The window frame's lining, the panel, its lip and the four flat screens are
+  // COCKPIT-ONLY parts, built in `cockpit/bizjetCockpit.ts` from the pilot's
+  // left-seat eye, the lining cast with the glass's own caster so its edges are
+  // the panes'. `configureCockpitOnlyParts` makes them invisible until cockpit
+  // view is entered and never a shadow caster.
   const cockpit = buildBizjetCockpit(build, root, {
     interior,
-    dark,
     instrumentFace,
     instrumentMarking,
-  });
+  }, flightDeckCaster);
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
   // The displays redraw only while cockpit view is on: outside it every cockpit part

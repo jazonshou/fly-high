@@ -5,8 +5,20 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
+import { COCKPIT_HORIZONTAL_FOV_DEGREES } from "@/src/render/cameraPresentation";
+import { PANE_GRID, sightline, type Point3, type SkinCaster } from "../airlinerGlazing";
+import {
+  GLOBAL_FLIGHT_DECK_OUTLINES,
+  GLOBAL_FLIGHT_DECK_REFERENCE,
+  anglesTo,
+  globalBodyPoint,
+  globalSkinSectionAt,
+  outlinePoint,
+  type BodyPoint,
+  type GlobalPaneOutline,
+} from "../bizjetGlazing";
 import type { AircraftBuildContext } from "../builders";
-import { glareshieldMaterial, slab, strip } from "./cockpitPrimitives";
+import { glareshieldMaterial, solidPlate } from "./cockpitPrimitives";
 import {
   BIZJET_DISPLAYS,
   createDisplayAtlas,
@@ -21,52 +33,50 @@ import {
 import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
 
 /**
- * What a pilot in the Global's LEFT seat sees, built to angles.
+ * What a pilot in the Global's LEFT seat sees, built to the glass as it is built.
  *
- * WHY THIS EXISTS. The flight deck was a pair of seat slabs and a panel board
- * with five round dials on it, and the cockpit camera hid the fuselage and the
- * radome, so what the pilot saw was the underside of nothing: no ceiling, no
- * posts, no walls, a panel that sat at the wrong height for the eye. The eye
- * itself was ABOVE the top of the windscreen (`catalogue.cockpitEye` was
- * (11.6, 1.05); the glass tops out at y 0.98), so the whole windscreen was under
- * the horizon.
+ * THE GLASS IS CAST, AND SO IS THE FRAME ROUND IT. The flight deck is the type's six panes, a
+ * windshield either side of a centre post and a forward and an aft side pane a side, laid out on the
+ * body by station and angle round the section (`bizjetGlazing.ts`) and cast onto the fuselage's own
+ * triangles from the reference R. The glass and the plane engineer's post are hidden from the
+ * cockpit camera, and the shell draws nothing of itself from inside, so everything that frames the
+ * view is built here as COCKPIT-ONLY parts (`CommonRig.cockpitOnlyParts`), invisible from any other
+ * camera and never a shadow caster. The frame is a LINING cast the same way, from the same R onto
+ * the same triangles (the caster the glass was cast with is handed in), one `skinPanel` per strip:
  *
- * The eye is now (11.90, 0.78, -0.52), found by `scripts/global-eye-solve.mts`
- * against the four constraints the PM set: inside the glass's vertical span, the
- * glass's top edge reading +14 to +18 degrees straight ahead, the glass at least
- * 0.55 m away, and at least 0.15 m of skin above the head. It is a thin sliver
- * of feasible points (forward 11.85 to 11.95 at up 0.78) and this is its middle.
+ *  - the MEMBERS between neighbouring panes are the body between their edges, read off the
+ *    outlines: the centre post between the two windshields' inboard edges, the pillar between the
+ *    windshield and the forward side pane, the mid post between the side panes, and the aft end
+ *    behind the aft side pane;
+ *  - under every pane and member a SILL, and over every one a CROWN, running straight down (up) in
+ *    R's elevation from its edge to `BIZJET_LINING.bottom` (`.top`), as the 747's do.
  *
- * WHAT IS HIDDEN AND WHAT IS NOT. The glass (`bizjet-windscreen` and the two
- * flight-deck windows) is excluded from the cockpit camera: it is built with
- * `transmission`, which draws as an opaque slab from inside. The fuselage, the
- * radome and the centre post are visible again: the eye is inside a closed shell
- * whose back faces are culled, so it draws nothing of itself, and the centre post
- * is what a windscreen's framing is. Everything below is COCKPIT-ONLY
- * (`CommonRig.cockpitOnlyParts`): invisible from any other camera and never a
- * shadow caster, so nothing in a chase or orbit frame can show a floating panel.
+ * Every strip takes the points of its edges from the same functions the glass is cast through
+ * (`outlinePoint`), at the panes' own grid fractions, so a lining edge that meets a pane IS that
+ * pane's edge, and two strips that meet share every cast point along the seam: no T-junction and no
+ * hairline (the 747's K2 lesson). Nothing is copied from a table: a re-lofted nose, or panes moved
+ * on it, move the frame with the glass.
  *
- * THE TARGETS, as angles from the eye at the 75 degree lens:
- *  - the hood's top edge straight ahead reads -10 degrees (+-1);
- *  - four flat screens, each 0.22 wide by 0.15 tall, the pilot's pair centred on
- *    the eye's own z, their top edge 1.5 degrees below the hood's underside;
- *  - the left windscreen post's axis at azimuth -34 (+-1.5), raked like the glass;
- *  - an overhead from the glass's top edge aft to 0.3 m behind the eye;
- *  - the four screens draw the deck's real pages out of ONE atlas texture
- *    (`displays/`): a PFD outboard and a map inboard for each seat. The pilot's
- *    LEFT screen carried a 3D attitude ball until the pages went in.
+ * THE DECK is the glareshield's lip alone, a line along z at the panel's face, FLUSH with it, standing
+ * at the catalogue's deck line (`cockpitDeckLineDegrees`, the one number the 2D HUD keeps above, so the
+ * two cannot disagree). The rule it is held to is this type's own: the HIGHEST straight lip that covers
+ * no glass the pilot can see (`highestClearLip`). The windshield's bottom edge rises towards the post,
+ * so no straight lip can follow it within a degree the way the 747's does; this one meets the glass
+ * where the bottom edge is lowest in the frame, and the sill, window frame on the interior material,
+ * fills the rest up to the glass. `tests/render.cockpit-bizjet.test.ts` solves the rule against the
+ * BUILT sills and holds the catalogue's number to it.
  *
- * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at
- * negative Z.
+ * THE EYE is the catalogue's. Everything else here is solved from it and from the glass as built, so
+ * the pins live in the catalogue and the tests, not here.
+ *
+ * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at negative Z.
  */
 
 const DEG = Math.PI / 180;
 
 export interface BizjetCockpitMaterials {
-  /** Dark matte interior: the panel board, the overhead and the walls. (The hood has its own: `glareshieldMaterial`.) */
+  /** Dark matte interior: the panel board and the window frame's lining. (The lip has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
-  /** The windscreen posts (the same as the centre post's). */
-  readonly dark: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
   /**
    * Bezels: a dark-grey rim with a faint lit edge by day. It carries the night
@@ -79,126 +89,266 @@ function eye(): { forward: number; up: number; right: number } {
   return aircraftSpec("bizjet").cockpitEye;
 }
 
-// ---- the shell ---------------------------------------------------------------
+/** The lens's half-width, as a slope: the frame's left and right edges at any aspect (the lens is horizontal-fixed). */
+const FRAME_HALF_WIDTH = Math.tan((COCKPIT_HORIZONTAL_FOV_DEGREES / 2) * DEG);
 
-interface Ring {
-  readonly x: number;
-  readonly yRadius: number;
-  readonly zRadius: number;
-  readonly yOffset: number;
+// ---- the frame: the lining cast on the skin round the glass ----------------------------------
+
+/**
+ * How far below and above the glass the lining runs, in R's elevation; the widest step between a sill's or a
+ * crown's rows; how far it stands out of the skin and in from it (the 747's 2 cm, K3: a deeper lining shows its
+ * side as a second, lit face down every pillar); and how many metres of station the aft end member takes.
+ *
+ * The bounds are R's, and the eye is not R: they reach past the 16:9 frame's edges from the eye with room,
+ * which `tests/render.cockpit-bizjet.test.ts` holds by casting the whole frame (no hidden skin showing).
+ */
+export const BIZJET_LINING = Object.freeze({ bottom: -40, top: 60, maxStepDegrees: 5, proud: 0.008, depth: 0.012, aftEnd: 0.1 });
+
+/** A lining strip as R sees it: its grid of STARBOARD (azimuth, elevation) from R, rows bottom to top, columns in azimuth order. */
+export interface BizjetLiningStrip {
+  readonly name: string;
+  /**
+   * Built once across the centreline (cast on the port side, so a negative azimuth is the starboard half), or
+   * once a side, mirrored.
+   */
+  readonly centre: boolean;
+  readonly angles: readonly (readonly (readonly [number, number])[])[];
+  /** The columns whose top row (a sill) or bottom row (a crown) runs along a pane's edge, chord by chord: `[k, k + 1]`. */
+  readonly glassChords: readonly number[];
+}
+
+type Angles = readonly [number, number];
+
+function pane(name: GlobalPaneOutline["name"]): GlobalPaneOutline {
+  const found = GLOBAL_FLIGHT_DECK_OUTLINES.find((outline) => outline.name === name);
+  if (!found) throw new Error(`the Global's flight deck has no ${name} pane`);
+  return found;
+}
+
+/** R's starboard (azimuth, elevation) of a point on the body: the sightline the glass is cast along. */
+function seen(point: BodyPoint): Angles {
+  return anglesTo(globalBodyPoint(point, 1), GLOBAL_FLIGHT_DECK_REFERENCE);
+}
+
+const fractions = (count: number) => Array.from({ length: count }, (_, k) => k / (count - 1));
+
+/** A pane's bottom (row 0) or top (row 1) edge at the pane's own column fractions, inboard to outboard. */
+function paneEdge(outline: GlobalPaneOutline, row: 0 | 1): Angles[] {
+  return fractions(PANE_GRID).map((column) => seen(outlinePoint(outline, column, row)));
+}
+
+/** A pane's inboard (column 0) or outboard (column 1) edge at the pane's own row fractions, bottom to top. */
+function paneSide(outline: GlobalPaneOutline, column: 0 | 1): BodyPoint[] {
+  return fractions(PANE_GRID).map((row) => outlinePoint(outline, column, row));
 }
 
 /**
- * The fuselage loft's sections through the flight deck (`bizjetVisual.ts`,
- * `build.loft("bizjet-fuselage", ...)`). A loft has one ring per section and no
- * interpolation, so between two sections every ring vertex slides linearly, which
- * makes the cross-section an ellipse of linearly interpolated radii and offset at
- * EVERY station: half-width and crown height are closed forms. These numbers are
- * copies, held to the built mesh by `tests/render.cockpit-bizjet.test.ts`, so a
- * change to the fuselage fails there instead of leaving a stale table.
+ * A strip `rows` tall at the azimuths of `edge`, running straight down (a sill) or up (a crown) in R's elevation
+ * from the edge to `to`: rows bottom to top, so a sill's top row and a crown's bottom row are the edge itself.
  */
-export const BIZJET_SHELL_SECTIONS: readonly Ring[] = Object.freeze([
-  Object.freeze({ x: 9.5, yRadius: 1.335, zRadius: 1.32, yOffset: 0 }),
-  Object.freeze({ x: 11.6, yRadius: 1.25, zRadius: 1.19, yOffset: 0.06 }),
-  Object.freeze({ x: 13.2, yRadius: 0.9, zRadius: 0.88, yOffset: -0.02 }),
-]);
+function verticalRun(edge: readonly Angles[], to: number, rows: number, downward: boolean): Angles[][] {
+  return fractions(rows).map((f) => edge.map(([azimuth, elevation]) => {
+    const [from, until] = downward ? [to, elevation] : [elevation, to];
+    return [azimuth, f === 1 ? until : from + (until - from) * f] as const;
+  }));
+}
 
-export function bizjetShellRing(x: number): Omit<Ring, "x"> {
-  const sections = BIZJET_SHELL_SECTIONS;
-  const first = sections[0]!;
-  if (x <= first.x) return first;
-  for (let i = 1; i < sections.length; i += 1) {
-    const a = sections[i - 1]!;
-    const b = sections[i]!;
-    if (x <= b.x) {
-      const t = (x - a.x) / (b.x - a.x);
-      return {
-        yRadius: a.yRadius + (b.yRadius - a.yRadius) * t,
-        zRadius: a.zRadius + (b.zRadius - a.zRadius) * t,
-        yOffset: a.yOffset + (b.yOffset - a.yOffset) * t,
-      };
+/** Rows needed so that no step of any run is wider than `maxStepDegrees`. */
+function rowsFor(spans: readonly number[]): number {
+  return Math.max(2, Math.ceil(Math.max(...spans) / BIZJET_LINING.maxStepDegrees) + 1);
+}
+
+/**
+ * Every strip of the lining, READ from the outlines: members, then the sills and crowns that run from their edges.
+ *
+ * The seams are shared cast points by construction: the post's columns are the windshields' inboard edges (their
+ * starboard half the port edge's exact negation), a member's columns are its two panes' edges, and each sill or
+ * crown's columns are the pane and member edges it runs from, joined in azimuth order, so neighbouring strips
+ * share whole columns and every sill (every crown) has the same rows.
+ */
+export function bizjetLiningStrips(): readonly BizjetLiningStrip[] {
+  const windshield = pane("windshield");
+  const forward = pane("forward-side");
+  const aft = pane("aft-side");
+  const { bottom, top, aftEnd } = BIZJET_LINING;
+  const mirror = ([azimuth, elevation]: Angles): Angles => [-azimuth, elevation];
+
+  // THE MEMBERS: two columns each, PANE_GRID rows along the panes' own side edges.
+  const post = paneSide(windshield, 0).map((p) => { const a = seen(p); return [mirror(a), a]; });
+  const pillar = paneSide(windshield, 1).map((p, row) => [seen(p), seen(paneSide(forward, 0)[row]!)]);
+  const midPost = paneSide(forward, 1).map((p, row) => [seen(p), seen(paneSide(aft, 0)[row]!)]);
+  const aftEdge = paneSide(aft, 1);
+  const aftEndMember = aftEdge.map((p) => [seen(p), seen([p[0] + aftEnd, p[1]])]);
+
+  // THE EDGES THE SILLS HANG FROM and the crowns stand on, in azimuth order, with which chords are glass.
+  const windshieldBottom = paneEdge(windshield, 0);
+  const windshieldTop = paneEdge(windshield, 1);
+  const centreBottom = [...[...windshieldBottom].reverse().map(mirror), ...windshieldBottom];
+  const centreTop = [...[...windshieldTop].reverse().map(mirror), ...windshieldTop];
+  const centreGlass = [...Array.from({ length: PANE_GRID - 1 }, (_, k) => k), ...Array.from({ length: PANE_GRID - 1 }, (_, k) => PANE_GRID + k)];
+  // the forward side: the pillar's foot (from the windshield's outboard corner), then the pane
+  const forwardBottom = [windshieldBottom.at(-1)!, ...paneEdge(forward, 0)];
+  const forwardTop = [windshieldTop.at(-1)!, ...paneEdge(forward, 1)];
+  const forwardGlass = Array.from({ length: PANE_GRID - 1 }, (_, k) => k + 1);
+  // the aft side: the mid post's foot, the pane, then the aft end's
+  const aftBottom = [paneEdge(forward, 0).at(-1)!, ...paneEdge(aft, 0), aftEndMember[0]![1]!];
+  const aftTop = [paneEdge(forward, 1).at(-1)!, ...paneEdge(aft, 1), aftEndMember.at(-1)![1]!];
+  const aftGlass = Array.from({ length: PANE_GRID - 1 }, (_, k) => k + 1);
+
+  const bottoms = [centreBottom, forwardBottom, aftBottom];
+  const tops = [centreTop, forwardTop, aftTop];
+  for (const edge of bottoms) for (const [, elevation] of edge) {
+    if (!(elevation > bottom)) throw new RangeError(`the Global's lining: glass at R elevation ${elevation.toFixed(2)} is under the lining's bottom`);
+  }
+  for (const edge of tops) for (const [, elevation] of edge) {
+    if (!(elevation < top)) throw new RangeError(`the Global's lining: glass at R elevation ${elevation.toFixed(2)} is over the lining's top`);
+  }
+  const sillRows = rowsFor(bottoms.flat().map(([, elevation]) => elevation - bottom));
+  const crownRows = rowsFor(tops.flat().map(([, elevation]) => top - elevation));
+
+  return [
+    { name: "post", centre: true, angles: post, glassChords: [] },
+    { name: "sill-centre", centre: true, angles: verticalRun(centreBottom, bottom, sillRows, true), glassChords: centreGlass },
+    { name: "crown-centre", centre: true, angles: verticalRun(centreTop, top, crownRows, false), glassChords: centreGlass },
+    { name: "pillar", centre: false, angles: pillar, glassChords: [] },
+    { name: "sill-forward-side", centre: false, angles: verticalRun(forwardBottom, bottom, sillRows, true), glassChords: forwardGlass },
+    { name: "crown-forward-side", centre: false, angles: verticalRun(forwardTop, top, crownRows, false), glassChords: forwardGlass },
+    { name: "mid-post", centre: false, angles: midPost, glassChords: [] },
+    { name: "aft-end", centre: false, angles: aftEndMember, glassChords: [] },
+    { name: "sill-aft-side", centre: false, angles: verticalRun(aftBottom, bottom, sillRows, true), glassChords: aftGlass },
+    { name: "crown-aft-side", centre: false, angles: verticalRun(aftTop, top, crownRows, false), glassChords: aftGlass },
+  ];
+}
+
+/** A strip's name as built: `port-` / `starboard-` for a side's, none for a centre strip. */
+export function bizjetLiningMeshName(strip: BizjetLiningStrip, side: 1 | -1): string {
+  return `${strip.centre ? "" : side > 0 ? "starboard-" : "port-"}bizjet-lining-${strip.name}`;
+}
+
+/** A strip's grid on the skin, cast from R as the panes are: rows bottom to top, columns in azimuth order. */
+export function bizjetLiningGrid(skin: SkinCaster, strip: BizjetLiningStrip, side: 1 | -1): { points: Point3[][]; normals: Point3[][] } {
+  const points: Point3[][] = [];
+  const normals: Point3[][] = [];
+  for (const row of strip.angles) {
+    const pointRow: Point3[] = [];
+    const normalRow: Point3[] = [];
+    for (const [azimuth, elevation] of row) {
+      const hit = skin.exit(GLOBAL_FLIGHT_DECK_REFERENCE, sightline(azimuth, elevation, side));
+      if (!hit) throw new RangeError(`the Global's lining ${strip.name}: no skin at az ${azimuth.toFixed(2)}, el ${elevation.toFixed(2)}`);
+      pointRow.push(hit.point);
+      normalRow.push(hit.normal);
+    }
+    points.push(pointRow);
+    normals.push(normalRow);
+  }
+  return { points, normals };
+}
+
+// ---- the lip -----------------------------------------------------------------------------------
+
+/**
+ * THE LIP RULE for this type: the HIGHEST straight lip that covers no glass.
+ *
+ * A line along z at `faceX` and height y reads, at an azimuth az from the eye, tan(el) = (y - eye.y) cos(az) /
+ * (faceX - eye.x); a point p at that same azimuth reads tan(el) = (p.y - eye.y) cos(az) / (p.x - eye.x). So the
+ * lip is under p exactly when (y - eye.y) / (faceX - eye.x) <= (p.y - eye.y) / (p.x - eye.x): p's SLOPE in the
+ * vertical plane along x, whatever its azimuth. The highest lip under every point is the least slope, and
+ * nothing is solved iteratively.
+ *
+ * `glass` is the edge the pilot sees the glass begin at (for the kit, the sill's top rim, each point the higher of
+ * its outer and inner edge). Only points in the frame (the lens's half-width) and over the lip's own span count:
+ * glass the lip does not reach, or the pilot cannot see, does not hold it down.
+ *
+ * Returns the lip's height and its elevation straight ahead (negative: under the horizon); the deck line is minus
+ * that.
+ */
+export function highestClearLip(
+  eyePoint: Point3,
+  faceX: number,
+  glass: readonly Point3[],
+  halfWidth: number,
+  frameHalfWidth = FRAME_HALF_WIDTH,
+): { y: number; elevationDegrees: number; held: Point3 } {
+  const ahead = faceX - eyePoint.x;
+  if (!(ahead > 0)) throw new RangeError("the lip must stand ahead of the eye");
+  let least = Number.POSITIVE_INFINITY;
+  let held: Point3 | null = null;
+  for (const p of glass) {
+    const forward = p.x - eyePoint.x;
+    if (!(forward > 0)) continue;
+    const across = (p.z - eyePoint.z) / forward;
+    if (Math.abs(across) > frameHalfWidth) continue;
+    if (Math.abs(eyePoint.z + ahead * across) > halfWidth) continue;
+    const slope = (p.y - eyePoint.y) / forward;
+    if (slope < least) {
+      least = slope;
+      held = p;
     }
   }
-  return sections[sections.length - 1]!;
+  if (held === null) throw new RangeError("no glass in the frame over the lip: the rule has nothing to hold it");
+  return { y: eyePoint.y + least * ahead, elevationDegrees: Math.atan(least) / DEG, held };
 }
 
-/** Distance from the centreline to the shell at station `x` and height `y`, or NaN if `y` is outside the ring. */
-export function bizjetShellHalfWidth(x: number, y: number): number {
-  const ring = bizjetShellRing(x);
-  const u = (y - ring.yOffset) / ring.yRadius;
-  return Math.abs(u) > 1 ? Number.NaN : ring.zRadius * Math.sqrt(1 - u * u);
-}
-
-/** Height of the shell's top skin at station `x` and lateral `z`, or NaN if the shell is not that wide there. */
-export function bizjetShellTop(x: number, z: number): number {
-  const ring = bizjetShellRing(x);
-  const v = z / ring.zRadius;
-  return Math.abs(v) > 1 ? Number.NaN : ring.yOffset + ring.yRadius * Math.sqrt(1 - v * v);
-}
-
-// ---- the glass ---------------------------------------------------------------
-
-/**
- * The windscreen pane, as `bizjetVisual.ts` builds it: a thick slab centred at
- * (x, y), leaned back `rake` radians about Z. Held to the built mesh by the test.
- */
-export const BIZJET_WINDSCREEN = Object.freeze({
-  x: 12.72,
-  y: 0.7,
-  thickness: 0.16,
-  height: 0.56,
-  width: 1.44,
-  rake: 0.6,
-});
-
-/**
- * The highest point of the pane the pilot can see: its top-FRONT corner. The
- * slab's top face leans toward the pilot, so from below and behind it is visible
- * and its far edge is the top of the opening.
- */
-export function bizjetWindscreenTopFront(): { x: number; y: number } {
-  const { x, y, thickness, height, rake } = BIZJET_WINDSCREEN;
-  const c = Math.cos(rake);
-  const s = Math.sin(rake);
-  return { x: x + (thickness / 2) * c - (height / 2) * s, y: y + (thickness / 2) * s + (height / 2) * c };
-}
-
-/** Where the side windows' lower edge runs, and so where the sill is. */
-export const BIZJET_SILL_Y = 0.52;
-
-// ---- the panel and its hood ---------------------------------------------------
+// ---- the panel, its lip and the screens --------------------------------------------------------
 
 export const BIZJET_PANEL = Object.freeze({
-  /** The pilot-facing face of the board. */
-  faceX: 12.55,
+  /** The pilot-facing face of the board is this far ahead of the eye (it was at x 12.55 with the eye at 11.90). */
+  faceAheadOfEye: 0.65,
+  /** The board stands this deep behind its face; the lip's wedge runs the same depth. */
   thickness: 0.08,
+  /** The board runs down to this far under the eye: below the frame at any aspect the lens is used at. */
+  bottomBelowEye: 0.58,
   /**
-   * The shell is 0.796 out at the hood's height (y 0.65) at the face and 0.772 at
-   * the board's front (0.765 measured off the built 48-gon), so 0.765 keeps the
-   * hood's corners inside it. The outer bezels reach 0.7625.
+   * Kept between the board's and the lip's corners and the shell. The fuselage is a 48-gon inscribed in the
+   * ellipse the glazing module reads, so the shell's half-width is taken at cos(pi / 48) of the ellipse's, less this.
    */
-  halfWidth: 0.765,
-  /** Below the frame at every azimuth, so nothing shows under it. */
-  bottomY: 0.2,
-  hoodThickness: 0.02,
-  /** The hood stands this far aft of the face. */
-  hoodOverhang: 0.1,
-  /** The hood's top edge as the pilot sees it straight ahead. */
-  hoodTopElevationDegrees: -10,
+  shellMargin: 0.01,
 });
 
-/** The height of the hood's top surface: solved so its far edge reads `hoodTopElevationDegrees` from the eye. */
-export function bizjetHoodTopY(): number {
-  const p = BIZJET_PANEL;
-  const e = eye();
-  return e.up + Math.tan(p.hoodTopElevationDegrees * DEG) * (p.faceX + p.thickness - e.forward);
+/** Segments round the fuselage loft (`bizjetVisual.ts`): its facets are inside the ellipse by up to 1 - cos(pi / n). */
+const FUSELAGE_SEGMENTS = 48;
+
+/** The shell's half-width at a station and height, facet-inscribed; NaN where the height is outside the ring. */
+function shellHalfWidth(x: number, y: number): number {
+  const section = globalSkinSectionAt(x);
+  const u = (y - section.yOffset) / section.yRadius;
+  return Math.abs(u) > 1 ? Number.NaN : section.zRadius * Math.sqrt(1 - u * u) * Math.cos(Math.PI / FUSELAGE_SEGMENTS);
 }
 
-/** Elevation, from the eye, of the hood's aft edge underside: the line below which the panel face is visible. */
-export function bizjetHoodUndersideElevationDegrees(): number {
-  const p = BIZJET_PANEL;
+export function bizjetPanelFaceX(): number {
+  return eye().forward + BIZJET_PANEL.faceAheadOfEye;
+}
+
+/** The lip's height: its edge at the face reads minus the catalogue's deck line straight ahead. */
+export function bizjetLipY(): number {
   const e = eye();
-  return Math.atan2(bizjetHoodTopY() - p.hoodThickness - e.up, p.faceX - p.hoodOverhang - e.forward) / DEG;
+  return e.up - Math.tan(aircraftSpec("bizjet").cockpitDeckLineDegrees * DEG) * BIZJET_PANEL.faceAheadOfEye;
+}
+
+export const BIZJET_GLARESHIELD = Object.freeze({
+  /** The lip's aft face. */
+  thickness: 0.02,
+  /** Its top falls away forward over the board's depth: 14 degrees, steeper than any sight line over it here. */
+  depth: BIZJET_PANEL.thickness,
+});
+
+/**
+ * How wide the lip and the board are: out to the windshield's pillars, and no further than the shell lets them.
+ *
+ * A glareshield spans the windshields, post to post; beside the pilot the side windows have sills of their own (the
+ * lining's), not the deck. Out to the shell instead, the lip would run under the forward side panes' low inboard
+ * corners, and the rule would be held by glass at the frame's edge half a metre away rather than by the windshield
+ * straight ahead (K1: 11.49 against 3.96 degrees from c252859's eye). The pillars' feet are read off the outline:
+ * the windshield's bottom outboard corner on the body.
+ */
+export function bizjetPanelHalfWidth(): number {
+  const faceX = bizjetPanelFaceX();
+  const topY = bizjetLipY();
+  const widths = [faceX, faceX + BIZJET_PANEL.thickness].map((x) => shellHalfWidth(x, topY));
+  if (widths.some((w) => !Number.isFinite(w))) throw new RangeError(`the Global's panel: the shell has no width at y ${topY.toFixed(3)}`);
+  const windshield = pane("windshield");
+  const pillarFoot = Math.abs(globalBodyPoint(windshield.bottom[windshield.bottom.length - 1]!, 1).z);
+  return Math.min(pillarFoot, ...widths.map((w) => w - BIZJET_PANEL.shellMargin));
 }
 
 // ---- the screens -------------------------------------------------------------
@@ -209,29 +359,24 @@ export const BIZJET_SCREENS = Object.freeze({
   bezel: 0.01,
   /** Centre to centre inside a pair. The bezels leave 5 mm between them. */
   pitch: 0.245,
-  /** The screens' top edge reads this far below the hood's underside. */
-  belowHoodDegrees: 1.5,
+  /** The screens' top edge reads this far below the lip's underside at the face. */
+  belowLipDegrees: 1.5,
   bezelThickness: 0.007,
   screenThickness: 0.003,
 });
 
 /** The plane the screens' front stands in: 1 mm in front of the bezel's front face. */
 function screenFrontX(): number {
-  return BIZJET_PANEL.faceX - BIZJET_SCREENS.bezelThickness;
+  return bizjetPanelFaceX() - BIZJET_SCREENS.bezelThickness;
 }
 
-/** Height of the screens' top edge, solved from the hood's underside line. */
-export function bizjetScreenTopY(): number {
-  const e = eye();
-  const elevation = (bizjetHoodUndersideElevationDegrees() - BIZJET_SCREENS.belowHoodDegrees) * DEG;
-  return e.up + Math.tan(elevation) * (screenFrontX() - e.forward);
-}
-
-/** The four screens: the pilot's pair on the eye's own z, the other pair mirrored. */
+/** The four screens under the lip: the pilot's pair on the eye's own z, the other pair mirrored. */
 export function bizjetScreenPlacements(): readonly { name: string; centre: Vector3 }[] {
   const s = BIZJET_SCREENS;
   const e = eye();
-  const y = bizjetScreenTopY() - s.height / 2;
+  const underside = Math.atan2(bizjetLipY() - BIZJET_GLARESHIELD.thickness - e.up, bizjetPanelFaceX() - e.forward) / DEG;
+  const top = e.up + Math.tan((underside - s.belowLipDegrees) * DEG) * (screenFrontX() - e.forward);
+  const y = top - s.height / 2;
   const x = screenFrontX() + s.screenThickness / 2;
   const out: { name: string; centre: Vector3 }[] = [];
   for (const [seat, z] of [["port", e.right], ["starboard", -e.right]] as const) {
@@ -252,106 +397,8 @@ export function bizjetScreenPlacements(): readonly { name: string; centre: Vecto
  */
 export const BIZJET_DISPLAY_AIRFRAME: DisplayAirframe = Object.freeze({ engineCount: 2, fullFlapDegrees: 30 });
 
-/**
- * THERE WAS A 3D ATTITUDE BALL ON THE PILOT'S LEFT SCREEN and it is gone: a sky half, a ground half
- * and a pitch bar under a pivot, 2.5 mm in front of the glass, built when these screens were flat
- * rectangles with nothing on them. The PFD page draws its own horizon now, so the ball was a second
- * attitude indicator standing on top of the first and hiding most of it -- the same thing the 747's
- * was, removed for the same measured reason. The Cessna keeps its ball, because that aeroplane's
- * instrument is MECHANICAL and so is its model.
- */
+// ---- the builder ------------------------------------------------------------------------------
 
-// ---- the posts ---------------------------------------------------------------
-
-export const BIZJET_POST = Object.freeze({
-  /**
-   * The left post's axis, in the vertical plane through the eye at this azimuth.
-   * It was -29 with radius 0.03, and in the frame it stood a sixth of the way in
-   * and split the view: near its top it is only 0.32 m from the eye, so it has to
-   * be thinner AND further out to read as a window frame.
-   */
-  azimuthDegrees: -34,
-  radius: 0.02,
-  /**
-   * Clearance kept between the post's foot and the shell there. The strut's base
-   * is 8% fatter than its top and the built fuselage is a 48-gon inscribed in the
-   * ellipse the model uses, so 10 mm leaves the measured clearance about 5 mm.
-   */
-  footMargin: 0.01,
-});
-
-/** The overhead: a slab whose underside is at the glass's top edge (`bizjetOverheadUndersideY`). */
-export const BIZJET_OVERHEAD = Object.freeze({
-  thickness: 0.03,
-  /** Out to the side windows' outer extent (0.978), so the ceiling runs over them. */
-  halfWidth: 0.98,
-  /** The slab's aft end, behind the eye. */
-  behindEye: 0.3,
-});
-
-export function bizjetOverheadUndersideY(): number {
-  return bizjetWindscreenTopFront().y;
-}
-
-/**
- * The two ends of a windscreen post. The LEFT post's axis lies in the vertical
- * plane through the eye at `BIZJET_POST.azimuthDegrees`, so it projects to one
- * vertical line on screen at that azimuth whatever its lean; it is raked like
- * the glass (in the x-y projection, top toward the pilot), stands on the sill
- * line, and is pushed as far forward as its foot can go while it stays inside
- * the shell there. Its top ends in the overhead. The right post is the mirror
- * image across the centreline.
- */
-export function bizjetPostEndpoints(side: -1 | 1): { bottom: Vector3; top: Vector3 } {
-  const e = eye();
-  const azimuth = BIZJET_POST.azimuthDegrees * DEG;
-  const dirX = Math.cos(azimuth);
-  const dirZ = Math.sin(azimuth);
-  const footY = BIZJET_SILL_Y - 0.01;
-  const topY = bizjetOverheadUndersideY() + BIZJET_OVERHEAD.thickness / 2;
-  const fits = (d: number): boolean => {
-    const wall = bizjetShellHalfWidth(e.forward + d * dirX, footY);
-    return Math.abs(e.right + d * dirZ) + BIZJET_POST.radius + BIZJET_POST.footMargin <= wall;
-  };
-  let near = 0.3;
-  let far = 1.6;
-  for (let i = 0; i < 60; i += 1) {
-    const mid = (near + far) / 2;
-    if (fits(mid)) near = mid;
-    else far = mid;
-  }
-  // The top is nearer the eye by the glass's rake: tan(rake) of horizontal run in
-  // X per metre of rise, which along the plane is that divided by cos(azimuth).
-  const run = (Math.tan(BIZJET_WINDSCREEN.rake) * (topY - footY)) / dirX;
-  const bottom = new Vector3(e.forward + near * dirX, footY, e.right + near * dirZ);
-  const top = new Vector3(e.forward + (near - run) * dirX, topY, e.right + (near - run) * dirZ);
-  if (side < 0) return { bottom, top };
-  return { bottom: new Vector3(bottom.x, bottom.y, -bottom.z), top: new Vector3(top.x, top.y, -top.z) };
-}
-
-// ---- the side walls -----------------------------------------------------------
-
-const WALL = Object.freeze({
-  bottomY: -0.15,
-  /** Inside the shell by this much. */
-  inset: 0.015,
-  thickness: 0.01,
-  capWidth: 0.05,
-  capThickness: 0.02,
-});
-
-/**
- * Build the cockpit. Returns every mesh it made, unconfigured: the caller marks
- * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
- * rule is applied in one place.
- *
- * Eight meshes, all static: the panel, its hood, the screens, their bezels, the
- * two windscreen posts, the overhead, and the side walls with their sill caps. It
- * was eleven until the 3D attitude ball came out -- its three pieces hung from a
- * pivot and could not be merged -- and the PFD page draws attitude on the screen
- * now. There is no pedestal: it would top out at -30 degrees between the seats,
- * below the frame at every azimuth it could be seen from.
- */
 /** What `buildBizjetCockpit` hands back: the meshes, and the displays' redraw step and its reset. */
 export interface BizjetCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
@@ -370,55 +417,77 @@ export interface BizjetCockpit {
   update(state: FlightVisualState, secondsSinceLastUpdate?: number): void;
 }
 
+/**
+ * Build the cockpit. Returns every mesh it made, unconfigured: the caller marks them cockpit-only
+ * (`configureCockpitOnlyParts`) and registers them, so the rule is applied in one place. `skin` is the
+ * caster the flight-deck glass was cast with.
+ *
+ * FOUR meshes, all static: the board and the window frame's lining on the interior material; the lip on the
+ * glareshield's, alone; the four screens; their four bezels.
+ */
 export function buildBizjetCockpit(
   build: AircraftBuildContext,
   root: TransformNode,
   materials: BizjetCockpitMaterials,
+  skin: SkinCaster,
 ): BizjetCockpit {
   const parts: AbstractMesh[] = [];
   const e = eye();
+
+  // THE LINING: one skin panel per strip (a side, or once across the centreline), 2 cm deep about the skin.
+  const lining: AbstractMesh[] = [];
+  for (const strip of bizjetLiningStrips()) {
+    const sides: readonly (1 | -1)[] = strip.centre ? [-1] : [-1, 1];
+    for (const side of sides) {
+      const grid = bizjetLiningGrid(skin, strip, side);
+      lining.push(build.skinPanel(
+        bizjetLiningMeshName(strip, side), grid.points, grid.normals, BIZJET_LINING.proud, BIZJET_LINING.depth, materials.interior, root,
+      ));
+    }
+  }
+
+  // THE LIP, at the catalogue's deck line, as wide as the shell lets it be there.
+  const faceX = bizjetPanelFaceX();
+  const halfWidth = bizjetPanelHalfWidth();
+  const lipY = bizjetLipY();
+  const g = BIZJET_GLARESHIELD;
+  const undersideY = lipY - g.thickness;
+  // A WEDGE, its aft face flush with the board's face and its top falling away forward, so from the eye nothing of
+  // the glareshield or the board behind it shows over the lip: the lip is the line the pilot reads.
+  parts.push(solidPlate(
+    build,
+    "bizjet-glareshield",
+    [
+      { x: faceX, y: lipY },
+      { x: faceX, y: undersideY },
+      { x: faceX + g.depth, y: undersideY },
+    ],
+    halfWidth * 2,
+    glareshieldMaterial(build, "bizjet-glareshield"),
+    root,
+  ));
+
+  // THE PANEL BOARD, from under the frame up to the lip's underside, as wide as the lip.
   const p = BIZJET_PANEL;
+  const bottomY = e.up - p.bottomBelowEye;
+  const board = build.box("bizjet-instrument-panel", p.thickness, undersideY - bottomY, halfWidth * 2, materials.interior, root);
+  board.position.set(faceX + p.thickness / 2, (bottomY + undersideY) / 2, 0);
 
-  // THE PANEL AND ITS HOOD, two meshes. The board runs from below the frame up to
-  // the hood's underside; the hood is a plate on it, standing `hoodOverhang`
-  // aft of the face and level with the board's front. Its top is what the pilot
-  // reads as -10 degrees. The hood wears a material of its own (matte
-  // near-black, no reflection): a glareshield must not reflect in the windscreen,
-  // and on the interior material its top face was the brightest thing in the frame.
-  const hoodTop = bizjetHoodTopY();
-  const undersideY = hoodTop - p.hoodThickness;
-  const board = build.box(
-    "bizjet-instrument-panel", p.thickness, undersideY - p.bottomY, p.halfWidth * 2, materials.interior, root,
-  );
-  board.position.set(p.faceX + p.thickness / 2, (p.bottomY + undersideY) / 2, 0);
-  const hoodLength = p.thickness + p.hoodOverhang;
-  parts.push(board);
-  const hood = build.box(
-    "bizjet-glareshield", hoodLength, p.hoodThickness, p.halfWidth * 2,
-    glareshieldMaterial(build, "bizjet-glareshield"), root,
-  );
-  hood.position.set(p.faceX - p.hoodOverhang + hoodLength / 2, hoodTop - p.hoodThickness / 2, 0);
-  parts.push(hood);
-
-  // THE SCREENS AND THEIR BEZELS: two meshes for eight boxes. A screen is a flat
-  // glass display on the instrument-face material; its bezel is the marking
-  // material, so the night glow that lights the old dials lights it too. The
-  // bezel's back stands 1 mm inside the board so nothing is coincident, and the
-  // screen stands 1 mm proud of the bezel.
+  // THE SCREENS AND THEIR BEZELS: two meshes for eight boxes. A screen is a flat glass display on the
+  // instrument-face material; its bezel is the marking material, so the night glow reaches it. The bezel's back
+  // stands 1 mm inside the board so nothing is coincident, and the screen stands 1 mm proud of the bezel.
   const s = BIZJET_SCREENS;
   const screens: AbstractMesh[] = [];
   const bezels: AbstractMesh[] = [];
   for (const { name, centre } of bizjetScreenPlacements()) {
-    const screen = build.box(
-      `bizjet-screen-${name}`, s.screenThickness, s.height, s.width, materials.instrumentFace, root,
-    );
+    const screen = build.box(`bizjet-screen-${name}`, s.screenThickness, s.height, s.width, materials.instrumentFace, root);
     screen.position.copyFrom(centre);
     screens.push(screen);
     const bezel = build.box(
       `bizjet-screen-bezel-${name}`, s.bezelThickness, s.height + s.bezel * 2, s.width + s.bezel * 2,
       materials.instrumentMarking, root,
     );
-    bezel.position.set(p.faceX - s.bezelThickness / 2 + 0.001, centre.y, centre.z);
+    bezel.position.set(faceX - s.bezelThickness / 2 + 0.001, centre.y, centre.z);
     bezels.push(bezel);
   }
   // EACH SCREEN'S PILOT-FACING FACE GETS ITS OWN SLOT of the display atlas, before the merge bakes
@@ -442,63 +511,8 @@ export function buildBizjetCockpit(
     screensMesh.material = displayMaterial(build, "bizjet-display", atlas);
   }
 
-  // THE WINDSCREEN POSTS, each in one vertical plane through the eye for the
-  // left one; the right is its mirror (out of the player's frame, and built for
-  // the perf rig's centreline eye).
-  for (const side of [-1, 1] as const) {
-    const { bottom, top } = bizjetPostEndpoints(side);
-    parts.push(build.strutBetween(
-      side < 0 ? "bizjet-windscreen-post-port" : "bizjet-windscreen-post-starboard",
-      bottom, top, BIZJET_POST.radius, materials.dark, root,
-    ));
-  }
-
-  // THE OVERHEAD. From the glass's top edge aft to 0.3 m behind the eye, so
-  // everything above the opening reads as a ceiling and not as sky.
-  //
-  // IT POKES THROUGH THE SKIN. The windscreen is a flat 1.44 m pane and the nose
-  // it sits in falls away sideways: at the pilot's z (-0.52) the crown is 0.879 m
-  // high at x 12.63 against the glass's top edge at 0.976, so the slab's front
-  // edge stands 0.10 m above the skin there (0.13 with its own thickness), and
-  // its outer ends run past the shell altogether (the side windows are 0.98 out).
-  // Nothing can see that: it is cockpit-only, and the cockpit camera culls the
-  // shell from inside. The alternative, a ceiling that follows the crown, would
-  // make the opening's top edge read about +11 degrees instead of +15. Measured
-  // in `scripts/bizjet-cockpit-clearance.mts`.
-  const frontX = bizjetWindscreenTopFront().x;
-  const aftX = e.forward - BIZJET_OVERHEAD.behindEye;
-  const overhead = build.box(
-    "bizjet-overhead", frontX - aftX, BIZJET_OVERHEAD.thickness, BIZJET_OVERHEAD.halfWidth * 2, materials.interior, root,
-  );
-  overhead.position.set((aftX + frontX) / 2, bizjetOverheadUndersideY() + BIZJET_OVERHEAD.thickness / 2, 0);
-  parts.push(overhead);
-
-  // THE SIDE WALLS with their SILL CAPS, one mesh for both sides. The wall
-  // stands just inside the shell from the floor line up to the side windows'
-  // lower edge, from 0.3 m behind the eye to the panel; the cap makes the sill a
-  // ledge and not a knife edge. A chord between the two ends lies inside the
-  // shell because the shell is convex.
-  const wallSources: AbstractMesh[] = [];
-  const x0 = aftX;
-  const x1 = p.faceX;
-  const capTopY = BIZJET_SILL_Y;
-  for (const side of [-1, 1] as const) {
-    const sideName = side < 0 ? "port" : "starboard";
-    const wall = (x: number) => side * (bizjetShellHalfWidth(x, BIZJET_SILL_Y) - WALL.inset);
-    wallSources.push(slab(
-      build, `bizjet-wall-${sideName}`, materials.interior, root,
-      new Vector3(x0, WALL.bottomY, wall(x0)), new Vector3(x1, WALL.bottomY, wall(x1)),
-      new Vector3(x0, capTopY - WALL.capThickness, wall(x0)), new Vector3(x1, capTopY - WALL.capThickness, wall(x1)),
-      WALL.thickness,
-    ));
-    wallSources.push(strip(
-      build, `bizjet-sill-${sideName}`, materials.interior, root,
-      new Vector3(x0, capTopY - WALL.capThickness / 2, wall(x0) - side * (WALL.capWidth / 2)),
-      new Vector3(x1, capTopY - WALL.capThickness / 2, wall(x1) - side * (WALL.capWidth / 2)),
-      WALL.capWidth, WALL.capThickness,
-    ));
-  }
-  parts.push(build.mergeStatic("bizjet-side-walls", wallSources, root));
+  // THE BOARD AND THE WINDOW FRAME, one mesh on the interior material: the sills are frame too, not the deck.
+  parts.push(build.mergeStatic("bizjet-cockpit-interior", [board, ...lining], root));
 
   // THE DISPLAYS ARE REDRAWN ON THE SHARED CLOCK (`displayRedrawClock`), not every frame: `update`
   // is only called while cockpit view is on (the visual gates it), 15 a second is as fast as a
