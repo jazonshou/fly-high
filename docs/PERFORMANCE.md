@@ -1476,6 +1476,8 @@ move by more than 8/255. Draw counts agree on 38 of 39 shots.
 `terrain-material-1600ft-down` read 87 in the candidate and 93 in the second
 run. It read 93 in the nine full captures before them, so the 87 is the shot's
 first disagreement; it stays at its ceiling of 93 and is under investigation.
+*(Resolved at the 2026-09-23 re-pin below: 87 on three pinned runs, the
+wildlife pin, as predicted.)*
 
 **The sea is pinned, measured.** No sea moved more than 0.011/255 between the
 two runs. Their shots' own streaming histories were 16,620 frames apart: the
@@ -1520,3 +1522,56 @@ among them the one shadow caster, which is 11 main-pass and 2 cascade draws.
 The rest (1 on every chase shot, 3 on `coast-10km-lowsun`, 42 on
 `mountain-close`) are world-side, and a short bisection names them before the
 re-pin.
+
+### Re-pin 2026-09-23 — twenty-one draw-call ceilings at the wildlife-pin churn point
+
+Twenty-one `drawCallCeiling` values re-pinned at House-Keeping `bd7a584` from
+three full captures that agree on every shot's count: the REBASELINE candidate
+`rebaseline-candidates/2026-09-23T04-50-34.261Z/` and two normal captures of the
+same tree (2026-09-23T04-57-55.457Z and 05-05-13.308Z). With the ocean cascade
+and the wildlife pinned, the three agreed on pixels too: 0.003/255 mean at most
+on any shot, no pixel moving by more than 8/255. All three evaluated 39 of 39
+shots, and every gate failure (40, 40 and 32) was a delivery floor.
+
+**Why they were slack.** Twenty ceilings had sat above their shots' counts in
+every full capture since 2026-09-22: the eighteen chase shots by 14,
+`coast-10km-lowsun` by 16 and `mountain-close` by 55. Nothing went red, because
+the capture gate is `<=`. A draw-call bisection with the wildlife switched off
+(three shots, nine arms, differences of arms only) named the causes:
+
+- `da86f47`: the trainer's interior made cockpit-only, 11 meshes = 11 main-pass
+  + 2 cascade draws. -13 on the eighteen chase shots and coast.
+- `1bf4209`, the mountains wave: -2 on `coast-10km-lowsun`, -56 on
+  `mountain-close`.
+- -1 on every shot from a span of 22 non-merge `src` commits the arms did not
+  isolate: reachable from `4a4390f^1` but not from `1bf4209`, `c0b1356^1` or
+  `91b10a2`. The trainer-glazing trio `9e4cd74`, `6a1e498` and `d20a00f` is the
+  likely cause.
+- `4a4390f`, `c0b1356` and `91b10a2`: 0 on all three shots.
+- The pairs summed to the endpoint difference to within that -1 (-1 / -3 / -57
+  from `1510b74` to `da86f47^1`, for reference-viewport / coast /
+  mountain-close).
+
+So the chase shots' -14 is -13 - 1 and coast's -16 is -13 - 2 - 1, both exactly.
+`mountain-close` moved -55 against -70 from the arms; the remaining +15 is
+wildlife near-LOD, history-dependent before the pin, and is not measured.
+`terrain-material-1600ft-down` moves 93 -> 87 for the same reason: deer and boar
+draw near-LOD parts only within 460 m, so its count depended on where the animals
+had wandered, and 87 is the count predicted for every pinned run.
+
+**The ratchet.** `PREVIOUS_DRAW_CALL_CEILINGS` is refreshed to the new counts for
+the twenty shots it holds. That spends every entry in `DRAW_CALL_RAISES`, since
+each named only those twenty (`csm-cascade-decoupling`, `since-pin-global`,
+`since-pin-airfield`, `airfield-lighting`, `bloom`,
+`tree-lod-residency-lead`); their growth is inside the new snapshot. Every
+ceiling tightened; none rose.
+
+An empty raise list made two of `tests/delivery-floors.test.ts`'s guards
+unsatisfiable: both required SOME live raise. They are replaced by a coupling
+(the list is empty if and only if no committed ceiling exceeds its previous) and
+a synthetic positive control that runs the same accounting checks on
+constructed states and asserts each fails where it should. Mutations confirmed
+it: disabling the checks turns the control red; a still-needed raise missing
+fails through the ratchet and the coupling; a raise added while nothing is
+raised fails through the coupling, the accounting and the outlived check.
+

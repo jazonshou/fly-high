@@ -627,40 +627,56 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // shots' counts were identical across the three runs, which is the
   // host-independence claim exercised rather than assumed.
   //
+  // TWENTY-ONE SHOTS RE-PINNED 2026-09-23 at bd7a584, the wildlife-pin churn
+  // point, from three full runs that agree on every shot's count: the
+  // REBASELINE candidate 2026-09-23T04-50-34.261Z and two normal captures
+  // (04-57-55.457Z, 05-05-13.308Z). With the ocean cascade and the wildlife
+  // pinned, the three also agreed on pixels to 0.003/255. What had left these
+  // ceilings slack, from a draw-call bisection with the wildlife held out
+  // (docs/PERFORMANCE.md, "Re-pin 2026-09-23"):
+  // - da86f47: the trainer's interior made cockpit-only, 11 meshes = 11
+  //   main-pass + 2 cascade draws, -13 on the eighteen chase shots and coast;
+  // - 1bf4209 (the mountains wave): -2 on coast-10km-lowsun, -56 on
+  //   mountain-close;
+  // - -1 on every shot from a 22-commit span the arms did not isolate, the
+  //   trainer-glazing trio 9e4cd74 / 6a1e498 / d20a00f the likely cause;
+  // - mountain-close's remaining +15, and terrain-material-1600ft-down's 93 ->
+  //   87: wildlife near-LOD, history-dependent before the pin, not measured.
+  //
   // `canopy-backlit-lowsun`'s long-standing +3 vegetation overrun (249 against
   // a 246 ceiling, carried as a known exception since 2026-09-03) is folded
   // into its measured 102 here and is no longer an exception. It was never the
   // cockpit's: after the cockpit's 151 draws went away it still sat 3 higher
   // relative to its old ceiling than the other eleven.
-  "approach-500ft":              [261, 261, 261],
-  "slant-10km":                  [223, 223, 223], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
+  "approach-500ft":              [247, 247, 247],
+  "slant-10km":                  [209, 209, 209], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
   "high-10000ft-down":           [72, 72, 72],
-  "reference-viewport":          [262, 262, 262],
-  "cruise-horizon":              [214, 214, 214],
-  "winter-noon":                 [261, 261, 261],
-  "night":                       [263, 263, 263],
-  "night-moonlit":               [263, 263, 263],
-  "dusk-mesopic":                [262, 262, 262],
-  "motion-banked-turn":          [268, 268, 268],
-  "page-thrash-turn":            [267, 267, 267],
-  "cdlod-transition":            [209, 209, 209], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
-  "cruise-sun-30":               [240, 240, 240],
-  "forest-500ft-sunbehind":      [262, 262, 262],
-  "coast-10km-lowsun":           [235, 235, 235],
+  "reference-viewport":          [248, 248, 248],
+  "cruise-horizon":              [200, 200, 200],
+  "winter-noon":                 [247, 247, 247],
+  "night":                       [249, 249, 249],
+  "night-moonlit":               [249, 249, 249],
+  "dusk-mesopic":                [248, 248, 248],
+  "motion-banked-turn":          [254, 254, 254],
+  "page-thrash-turn":            [253, 253, 253],
+  "cdlod-transition":            [195, 195, 195], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
+  "cruise-sun-30":               [226, 226, 226],
+  "forest-500ft-sunbehind":      [248, 248, 248],
+  "coast-10km-lowsun":           [219, 219, 219],
   "ground-2m-lowsun":            [121, 121, 121],
   "canopy-1200ft":               [113, 113, 113],
-  "runway-on-approach":          [269, 269, 269],
-  "water-25ft":                  [238, 238, 238],
+  "runway-on-approach":          [255, 255, 255],
+  "water-25ft":                  [224, 224, 224],
   "grove-forest-2m":             [120, 120, 120],
   "grove-meadow-2m":             [134, 134, 134],
-  "hills-dusk-glint":            [258, 258, 258],
-  "mountain-close":              [285, 285, 285],
-  "forest-line-highsun":         [258, 258, 258],
-  "cliff-60m":                   [251, 251, 251],
+  "hills-dusk-glint":            [244, 244, 244],
+  "mountain-close":              [230, 230, 230],
+  "forest-line-highsun":         [244, 244, 244],
+  "cliff-60m":                   [237, 237, 237],
   "water-3m":                    [90, 90, 90],
   "veg-seam-1600ft-oblique":     [108, 108, 108],
   "veg-seam-near-500ft":         [116, 116, 116],
-  "terrain-material-1600ft-down":[93, 93, 93],
+  "terrain-material-1600ft-down":[87, 87, 87],
   "horizon-shadow-far-annulus":  [91, 91, 91],
   "canopy-backlit-lowsun":       [102, 102, 102],
   // W-11, 2026-09-19. FIVE identical readings rather than three, and they span
@@ -700,26 +716,31 @@ export const PREVIOUS_DRAW_CALL_CEILINGS: Readonly<Record<string, number>> = Obj
   // Refreshing rather than leaving the old values is the same repair the
   // 285eb2b entry above records: a baseline that no longer ships constrains
   // nothing.
-  "night-moonlit":                157,
-  "dusk-mesopic":                 156,
-  "approach-500ft":               150,
-  "slant-10km":                   132,
-  "reference-viewport":           151,
-  "cruise-horizon":               127,
-  "winter-noon":                  150,
-  "night":                        152,
-  "motion-banked-turn":           155,
-  "page-thrash-turn":             154,
-  "cdlod-transition":             122,
-  "cruise-sun-30":                131,
-  "forest-500ft-sunbehind":       151,
-  "coast-10km-lowsun":            127,
-  "runway-on-approach":           161,
-  "water-25ft":                   130,
-  "hills-dusk-glint":             147,
-  "mountain-close":               175,
-  "forest-line-highsun":          147,
-  "cliff-60m":                    163,
+  // ALL TWENTY REFRESHED 2026-09-23 at bd7a584 to the re-pinned counts (see
+  // DRAW_CALL_SAMPLES), which SPENDS every raise that named them: each of the
+  // six entries in DRAW_CALL_RAISES named only these twenty, so all six are
+  // deleted. Their growth is inside the new snapshot now, not an allowance on
+  // top of an old one.
+  "night-moonlit":                249,
+  "dusk-mesopic":                 248,
+  "approach-500ft":               247,
+  "slant-10km":                   209,
+  "reference-viewport":           248,
+  "cruise-horizon":               200,
+  "winter-noon":                  247,
+  "night":                        249,
+  "motion-banked-turn":           254,
+  "page-thrash-turn":             253,
+  "cdlod-transition":             195,
+  "cruise-sun-30":                226,
+  "forest-500ft-sunbehind":       248,
+  "coast-10km-lowsun":            219,
+  "runway-on-approach":           255,
+  "water-25ft":                   224,
+  "hills-dusk-glint":             244,
+  "mountain-close":               230,
+  "forest-line-highsun":          244,
+  "cliff-60m":                    237,
 });
 
 /**
@@ -794,212 +815,7 @@ export type DrawCallRaise =
  * Adding either to a raise's `shots` list fails with "which has no previous
  * ceiling", which is correct and reads like a bug in the entry.
  */
-export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
-  Object.freeze({
-    kind: "per-shot" as const,
-    feature: "csm-cascade-decoupling",
-    commit: "034aedd",
-    deltas: Object.freeze({
-      "approach-500ft":              67,
-      "slant-10km":                  61,
-      "reference-viewport":          67,
-      "cruise-horizon":              58,
-      "winter-noon":                 67,
-      "night":                       67,
-      "night-moonlit":               67,
-      "dusk-mesopic":                67,
-      "motion-banked-turn":          69,
-      "page-thrash-turn":            69,
-      "cdlod-transition":            57,
-      "cruise-sun-30":               65,
-      "forest-500ft-sunbehind":      67,
-      "coast-10km-lowsun":           64,
-      "runway-on-approach":          64,
-      "water-25ft":                  64,
-      "hills-dusk-glint":            67,
-      "mountain-close":              66,
-      "forest-line-highsun":         67,
-      "cliff-60m":                   59,
-    }),
-    reason:
-      "`DepthOnlyCascadedShadowGenerator` passed `noColorAttachment: true`, which "
-      + "nulled the render target's colour texture -- and `RenderTargetTexture`'s "
-      + "per-layer loop is gated on `is2DArray`, which READS that colour texture. "
-      + "The loop was skipped and only cascade 0 ever rendered. The optimisation "
-      + "disabled cascade rendering through a property unrelated to where shadow "
-      + "data is stored, and `034aedd` decoupled them. "
-      + "PER-SHOT, not uniform, and the reason is the mechanism: the cost is one "
-      + "extra depth render per CASTING MESH IN FRAME, so it scales with how much "
-      + "geometry casts at that vantage. Declared from the difference between the "
-      + "shipped arm and an arm with only this change reverted (`NOCASC`), which "
-      + "is the only way to attribute it -- three arms alone gave an "
-      + "unattributable total.",
-    whyNonUniform:
-      "57..69, mean 65.1 across 36 shots. The spread is caster count in frame: "
-      + "a vantage with more shadow-casting geometry pays more. No shot is at "
-      + "zero, because the terrain sheet casts everywhere.",
-  }),
-  Object.freeze({
-    kind: "uniform" as const,
-    feature: "since-pin-global",
-    commit: "768f1cb",
-    delta: 24,
-    shots: Object.freeze([
-      "slant-10km",
-      "cruise-horizon",
-      "cdlod-transition",
-      "cliff-60m",
-    ]),
-    reason:
-      "AGGREGATE, and deliberately not attributed per feature. Everything landed "
-      + "between the previous pin and `768f1cb` EXCEPT the cascade decoupling "
-      + "above, measured as `NOCASC` minus the committed ceiling. It is +24 on "
-      + "exactly these seven shots and +39 on the other twenty-four; this entry "
-      + "is the global half. "
-      + "THE SEVEN ARE THE SHOTS WITH NO AIRFIELD IN FRAME, and that is checkable "
-      + "rather than asserted: the identical seven appear as the zero group in "
-      + "`hangar-detail` and as the negative group in `parametric-hangars`, three "
-      + "measurements from three commit pairs by three owners. The boundary is "
-      + "`AIRFIELD_STRUCTURE_LOD.cullDistanceMeters = 6000`. "
-      + "NOT DECOMPOSED FURTHER because this measurement cannot: it has one arm "
-      + "for the whole span. Splitting it per owner would be arithmetic dressed "
-      + "as attribution.",
-  }),
-  Object.freeze({
-    kind: "uniform" as const,
-    feature: "since-pin-airfield",
-    commit: "768f1cb",
-    delta: 39,
-    shots: Object.freeze([
-      "approach-500ft",
-      "reference-viewport",
-      "winter-noon",
-      "night",
-      "night-moonlit",
-      "dusk-mesopic",
-      "motion-banked-turn",
-      "page-thrash-turn",
-      "cruise-sun-30",
-      "forest-500ft-sunbehind",
-      "coast-10km-lowsun",
-      "runway-on-approach",
-      "water-25ft",
-      "hills-dusk-glint",
-      "mountain-close",
-      "forest-line-highsun",
-    ]),
-    reason:
-      "The airfield half of the same aggregate: +39 where the airfield is within "
-      + "the 6000 m structure cull, against +24 where it is not. The 15-draw "
-      + "difference is the airfield's own growth over the span -- hangars, tower, "
-      + "signage, obstruction lighting -- and is NOT decomposed per feature for "
-      + "the reason given on the global entry. "
-      + "Declared as two uniform raises rather than one per-shot raise so that "
-      + "GROUP MEMBERSHIP IS EXPLICIT: a shot moving between the groups is a "
-      + "visibility change and should fail loudly, which a per-shot table of the "
-      + "same numbers would absorb silently.",
-  }),
-  Object.freeze({
-    kind: "uniform" as const,
-    feature: "airfield-lighting",
-    commit: "122f9fa",
-    reason:
-      "AirfieldLightingSystem populates LightPointSystem, which had been "
-      + "constructed with an EMPTY fixture list and so issued no draw at all. One "
-      + "instanced draw now carries every light point -- 279 placed fixtures "
-      + "expanded per lit direction plus 8 PAPI lamps, 402 in total -- so the cost "
-      + "is one draw however many lamps are in frame, and it did NOT move when the "
-      + "lamps were recalibrated brighter. Uniform because the mesh sets "
-      + "`alwaysSelectAsActiveMesh = true` and is submitted on every shot whether "
-      + "or not the airfield is in view; a frustum-culled mesh would have made "
-      + "this per-shot. MEASURED +1 on 30 of 30, three byte-identical warm runs "
-      + "in a clean worktree at committed 326f94e. A fourth, first-run capture was "
-      + "taken and discarded by protocol: SWE II 1 measured a real first-run effect "
-      + "(136 vs 157 on `night`, residentTerrainPages and vegetationBatches moving "
-      + "with it), and although it did not occur here, a non-reproduction on a "
-      + "different shot and thermal state is not a refutation. `dusk-mesopic` is "
-      + "deliberately NOT named: it is new, has no committed ceiling, and needs "
-      + "its own three clean runs rather than riding in on this one. `night-moonlit` + is absent for the same structural reason: both postdate + `PREVIOUS_DRAW_CALL_CEILINGS`, so there is no baseline to have moved FROM + and their movement is not expressible as a raise. Their ceilings are still + the measured count -- that field is defined as the measurement, not as a + ratcheted value -- but they sit outside the raise mechanism until the + snapshot is next refreshed. Bloom names the same 29 for the same reason.",
-    delta: 1,
-    shots: Object.freeze([
-      "approach-500ft",
-      "cdlod-transition",
-      "cliff-60m",
-      "coast-10km-lowsun",
-      "cruise-horizon",
-      "cruise-sun-30",
-      "forest-500ft-sunbehind",
-      "forest-line-highsun",
-      "hills-dusk-glint",
-      "motion-banked-turn",
-      "mountain-close",
-      "night",
-      "page-thrash-turn",
-      "reference-viewport",
-      "runway-on-approach",
-      "slant-10km",
-      "water-25ft",
-      "winter-noon",
-    ]),
-  }),
-  Object.freeze({
-    kind: "uniform" as const,
-    feature: "bloom",
-    commit: "285eb2b",
-    reason:
-      "BloomPass attaches four PostProcess instances — bright, blur-h, blur-v, "
-      + "composite — to the camera chain at tier 1. There is no content gating: "
-      + "the threshold is applied per pixel INSIDE the bright shader, so it "
-      + "decides what glows, never whether the pass runs. Every tier-1 shot pays "
-      + "four draws and only the shots with a bright source get anything for "
-      + "them. Measured 30 of 30 at +4, byte-identical across three runs.",
-    delta: 4,
-    shots: Object.freeze([
-    "approach-500ft",
-    "slant-10km",
-    "reference-viewport",
-    "cruise-horizon",
-    "winter-noon",
-    "night",
-    "motion-banked-turn",
-    "page-thrash-turn",
-    "cdlod-transition",
-    "cruise-sun-30",
-    "forest-500ft-sunbehind",
-    "coast-10km-lowsun",
-    "runway-on-approach",
-    "water-25ft",
-    "hills-dusk-glint",
-    "mountain-close",
-    "forest-line-highsun",
-    "cliff-60m",
-    ]),
-  }),
-  Object.freeze({
-    kind: "uniform" as const,
-    feature: "tree-lod-residency-lead",
-    commit: "070389a",
-    reason:
-      "Cell residency reaches one cull fade past the impostor radius so a new "
-      + "cell publishes outside the live cull and dithers in on approach (tree "
-      + "LOD continuity, 2026-09-14). Static shots are unchanged: an impostor "
-      + "batch rebuilds its bounding box every update from the cells inside the "
-      + "live cull only and is hidden when none is, so the records the shader "
-      + "kills never reach a draw. On a MOVING shot the far band's chunk is now "
-      + "published — with records inside the cull, in frame — at the sample "
-      + "instant, where before the cells just inside the radius were still "
-      + "generating: one real draw. Only a shot whose observer is moving at the "
-      + "sample instant can show it; slant-10km (84 m/s) and cdlod-transition "
-      + "(96 m/s) do, page-thrash-turn (78 m/s) measured at its ceiling with "
-      + "the lead, and every static shot measured at its ceiling. Identical "
-      + "across every run on the M2 Pro.",
-    delta: 1,
-    shots: Object.freeze([
-    "slant-10km",
-    "cdlod-transition",
-    ]),
-  }),
-]);
+export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([]);
 
 /**
  * **Measured draw-call deltas that have not yet become raise entries.**
@@ -1322,9 +1138,9 @@ export const RETRACTED_DRAW_READINGS: readonly RetractedDrawReading[] = Object.f
 
 
 /** Total declared raise for a shot, or 0 if none is declared. */
-export function declaredRaiseFor(name: string): number {
+export function declaredRaiseFor(name: string, raises: readonly DrawCallRaise[] = DRAW_CALL_RAISES): number {
   let total = 0;
-  for (const raise of DRAW_CALL_RAISES) {
+  for (const raise of raises) {
     if (raise.kind === "uniform") {
       if (raise.shots.includes(name)) total += raise.delta;
     } else if (raise.deltas[name] !== undefined) {
