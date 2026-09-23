@@ -1,8 +1,7 @@
 # The 2D HUD in cockpit view: keeping it off the instruments
 
-**Status: built on `jazonshou/cockpit-hud-layout` from `de91cef`. Node tests and a
-Chromium check of the real stylesheet are green; the in-game frames wait for a GPU
-window.**
+**Status: built on `jazonshou/cockpit-hud-layout` from `de91cef`. Node tests, a
+Chromium check of the real stylesheet and in-game frames of all four decks agree.**
 
 ## The problem
 
@@ -187,6 +186,24 @@ The PM's phrase for the first mutation was "k dropped (hints land on a screen)".
 this layout the hints no longer depend on `k`: they sit in the top band. So that case
 is split in two: `--deck-k` dropped, and the hints rule deleted. Both are caught.
 
+## Frames
+
+Taken 2026-09-23, 20:43-20:46. The dev server ran on port 3021 from this worktree
+with `--strictPort`; its `/@fs` check answered 200 for this tree and 403 for the
+main checkout. The frame tool was the cockpit engineer's scripts/cockpit-frames.mts,
+which asserts the live eye, the lens and horizontal-fixed from the scene. Air pose,
+scenic start.
+
+- **1600 x 900, all four decks.** The instrument strip is top-left, the ACTUAL
+  panel top-right and the key hints under the session line.
+  - Every gauge (trainer), both MFDs (F-16), the PFD and ND (Global) and the PFD,
+    ND and upper EICAS (747) are wholly clear.
+  - The tapes and the attitude sit above each glareshield.
+- **1680 x 720, the F-16.** The coaming begins at about y 557, against the rule's
+  556.8, and the whole HUD is above it.
+  - At this aspect the MFDs themselves fall almost wholly below the frame. That is
+    a cockpit framing question, not the HUD's.
+
 ## Corrections to the survey
 
 The survey said the F-16's 2D symbology fits between the HUD frame's uprights (the
@@ -202,4 +219,3 @@ live F2 frame shows exactly that. The decision (no change) stands.
   footprint tests sample only the five shapes above.
 - **The diagnostics overlay** is not in the footprint test. It is a debug view, off
   by default.
-- **Frames.** One per deck at 16:9, and the F-16 at 21:9, wait for a GPU window.
