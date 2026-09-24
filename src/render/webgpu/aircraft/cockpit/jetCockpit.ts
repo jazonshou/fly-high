@@ -628,6 +628,71 @@ export function jetSillInnerAt(x: number): number {
   return a.inner + ((x - a.x) / (b.x - a.x)) * (b.inner - a.inner);
 }
 
+// ---- the rail's ends ------------------------------------------------------------------------
+
+/**
+ * THE RAIL'S ENDS (the F-16 pass, step 5; Jason: "make the front rim / black rectangle more rounded"). The rail ended
+ * square at az +-26.45, a black bar with cut ends over the sills. Each end now sweeps aft and down into its sill: from
+ * the rail's silhouette at az 25 (so the deck row stays one row from -25 to +25) the sill rises along x in an S of two
+ * arcs of `sRadius`, level at both ends, to the silhouette's height, on the glareshield's matte and merged into the
+ * coaming, so the black of the rail runs on down into the sill.
+ *
+ * WHY ALONG X: the glass is 2 cm outboard of the rail's end. From az 25 to the glass less 2 cm there are 2.8 cm of run
+ * across z for a 9 cm drop, so a round across z (or a round in plan of 0.10) does not fit; along the canopy it does,
+ * widening with the glass as it falls (2.3 cm wide at the top, the sill's 5.4 at its foot). Its section is the sill's
+ * (rounded top edges), its outer edge `glassMargin` inside the glass at its own top's height at every station.
+ */
+export const JET_RAIL_END = Object.freeze({
+  startAzimuthDegrees: 25,
+  sRadius: 0.15,
+  /** Stations along the S, foot to top: 8 walls. */
+  stations: 9,
+  /** The glass's inner half-width at each station's top, foot to top, by crossings on the built canopy. */
+  glassHalfWidth: Object.freeze([0.4436, 0.4407, 0.4362, 0.427, 0.4143, 0.4016, 0.3924, 0.3857, 0.3813]),
+});
+
+/**
+ * The rail end's stations, foot to top: x, the S's top there, and the outer and inner edges' half-widths. The foot is
+ * the sill's own section; the top is at the rail's silhouette (the round's tangent on the deck line), from az 25 out.
+ */
+export function jetRailEndStations(): { x: number; top: number; outer: number; inner: number }[] {
+  const e = JET_RAIL_END;
+  const t = jetGlareshieldSection().tangent;
+  const low = JET_SILL.topY;
+  const half = (t.y - low) / 2;
+  const arc = Math.sqrt(2 * e.sRadius * half - half * half);
+  const foot = t.x - 2 * arc;
+  const top = (x: number) => (x >= foot + arc ? t.y - (e.sRadius - Math.sqrt(e.sRadius ** 2 - (t.x - x) ** 2)) : low + (e.sRadius - Math.sqrt(e.sRadius ** 2 - (x - foot) ** 2)));
+  const startZ = (t.x - eye().forward) * Math.tan((e.startAzimuthDegrees * Math.PI) / 180);
+  const footInner = jetSillInnerAt(foot);
+  return Array.from({ length: e.stations }, (_, i) => {
+    const f = i / (e.stations - 1);
+    const x = foot + (t.x - foot) * f;
+    // the foot is the sill's own section, so the S leaves it level and flush
+    if (i === 0) return { x, top: low, outer: sillOuterAt(foot), inner: footInner };
+    return { x, top: i === e.stations - 1 ? t.y : top(x), outer: e.glassHalfWidth[i]! - JET_SILL.glassMargin, inner: footInner + (startZ - footInner) * f };
+  });
+}
+
+/** The rail end's S: its slope (dy/dx) at x, 0 at its foot and at its top. */
+export function jetRailEndSlope(x: number): number {
+  const e = JET_RAIL_END;
+  const t = jetGlareshieldSection().tangent;
+  const half = (t.y - JET_SILL.topY) / 2;
+  const arc = Math.sqrt(2 * e.sRadius * half - half * half);
+  const foot = t.x - 2 * arc;
+  const d = x >= foot + arc ? t.x - x : x - foot;
+  return Math.max(0, d) / Math.sqrt(e.sRadius ** 2 - Math.max(0, d) ** 2);
+}
+
+/** The sill rail's outer edge's half-width at x (linear between its stations). */
+function sillOuterAt(x: number): number {
+  const stations = jetSillStations();
+  const k = Math.max(0, Math.min(stations.length - 2, stations.findIndex((station) => station.x > x) - 1));
+  const [a, b] = [stations[k]!, stations[k + 1]!];
+  return a.outer + ((x - a.x) / (b.x - a.x)) * (b.outer - a.outer);
+}
+
 // ---- the builder ----------------------------------------------------------------------------
 
 /** What `buildJetCockpit` hands back. */
@@ -681,12 +746,34 @@ export function buildJetCockpit(
   // The rail's section, extruded across the full width; then the plan is narrowed forward
   // of the board's back. Local space is body space here: the mesh hangs from the root
   // with no transform of its own.
-  const coaming = solidPlate(build, "jet-glare-shield", jetGlareshieldSection().outline, g.nearHalfWidth * 2, glare, root);
-  sculptSolid(coaming, (point) => new Vector3(point.x, point.y, (point.z * jetCoamingHalfWidth(point.x)) / g.nearHalfWidth));
+  const rail = solidPlate(build, "jet-glare-shield-rail", jetGlareshieldSection().outline, g.nearHalfWidth * 2, glare, root);
+  sculptSolid(rail, (point) => new Vector3(point.x, point.y, (point.z * jetCoamingHalfWidth(point.x)) / g.nearHalfWidth));
   // the round shades as a curve (step 3): flat, its eight chords read as bands about 20 px tall
   const section = jetGlareshieldSection();
-  smoothRoundNormals(coaming, section.round, section.centre);
-  coaming.metadata = { ...coaming.metadata, cockpitInterior: true, castsShadow: false };
+  smoothRoundNormals(rail, section.round, section.centre);
+  // THE RAIL'S ENDS (step 5), each sweeping aft and down into its sill, merged with it on the glareshield's matte
+  const ends = jetRailEndStations();
+  const coamingParts: AbstractMesh[] = [rail];
+  for (const side of [-1, 1] as const) {
+    const inset = (station: { outer: number; inner: number }, u: number) => (u <= JET_SILL.width / 2 ? u : u - (JET_SILL.width - (station.outer - station.inner)));
+    coamingParts.push(sweptSolid(
+      build,
+      `jet-glare-shield-end-${side < 0 ? "port" : "starboard"}`,
+      jetSillSection(),
+      ends.length,
+      (i, point) => new Vector3(
+        ends[i]!.x,
+        point.y <= JET_SILL.bottomY ? point.y : point.y + (ends[i]!.top - JET_SILL.topY),
+        side * (ends[i]!.outer - inset(ends[i]!, point.u)),
+      ),
+      (direction) => new Vector3(0, direction.y, -side * direction.u),
+      glare,
+      root,
+      { smoothAlong: true, tangent: (i) => new Vector3(1, jetRailEndSlope(ends[i]!.x), 0) },
+    ));
+  }
+  for (const part of coamingParts) part.metadata = { ...part.metadata, cockpitInterior: true, castsShadow: false };
+  const coaming = build.mergeStatic("jet-glare-shield", coamingParts, root);
 
   // THE BOARD, the leaned dash: a plate of its side elevation at the face's width, narrowed with the hood over its
   // depth, on the panel material the Global's and the 747's boards wear

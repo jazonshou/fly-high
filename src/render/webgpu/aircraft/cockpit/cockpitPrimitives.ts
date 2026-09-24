@@ -545,6 +545,13 @@ export interface SweptSection {
  * (`smoothRoundNormals`' rule), made square to the wall's run between the two stations, so neighbouring chords meet
  * with one normal and a round meets the flat face it is tangent to with that face's normal. Which side of a wall is
  * out is the section's (its convex outline), not a centroid's, so the plan may bend either way.
+ *
+ * `smoothAlong`: shade the walls as a surface curving from station to station too (a sill rising in an S): at each
+ * station every wall vertex of a section point takes the mean of its normals from the walls on both sides of the
+ * station, and at a round's points (its tangents too) the mean over the round's chords and the faces it is tangent
+ * to. The section's hard corners (points on no round) keep one normal a face. `tangent`, with it: the sweep's own
+ * direction at a station (a curve's, where the stations only sample it); each round's normals there are made square
+ * to it, so a sweep that leaves a station level is shaded level there, not as its first wall's chord.
  */
 export function sweptSolid(
   build: AircraftBuildContext,
@@ -555,10 +562,12 @@ export function sweptSolid(
   across: (direction: { readonly u: number; readonly y: number }) => Vector3,
   material: PBRMaterial,
   parent: TransformNode,
+  options: { readonly smoothAlong?: boolean; readonly tangent?: (station: number) => Vector3 } = {},
 ): Mesh {
   const points = section.points;
   const n = points.length;
   if (n < 3 || stations < 2) throw new RangeError(`sweptSolid "${name}": needs a section of three points or more and two stations or more`);
+  const onRound = (j: number) => section.rounds.some((r) => j >= r.first && j <= r.last);
   const middle = { u: points.reduce((sum, p) => sum + p.u, 0) / n, y: points.reduce((sum, p) => sum + p.y, 0) / n };
   const rings = Array.from({ length: stations }, (_, i) => points.map((p) => place(i, p)));
   const centres = Array.from({ length: stations }, (_, i) => place(i, middle));
@@ -566,15 +575,24 @@ export function sweptSolid(
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
-  const push = (corners: [Vector3, Vector3, Vector3], outward: Vector3, shading: [Vector3, Vector3, Vector3] | null) => {
+  /** Each wall vertex's smoothing key along the stations (null for the caps'). */
+  const keys: (string | null)[] = [];
+  const push = (
+    corners: [Vector3, Vector3, Vector3],
+    outward: Vector3,
+    shading: [Vector3, Vector3, Vector3] | null,
+    tags: [string, string, string] | null = null,
+  ) => {
     const a = corners[0];
     let [b, c] = [corners[1], corners[2]];
     let shade = shading;
+    let tag = tags;
     let cross = Vector3.Cross(b.subtract(a), c.subtract(a));
     if (cross.length() < 1e-12) return;
     if (Vector3.Dot(cross, outward) > 0) {
       [b, c] = [c, b];
       if (shade) shade = [shade[0], shade[2], shade[1]];
+      if (tag) tag = [tag[0], tag[2], tag[1]];
       cross = cross.scale(-1);
     }
     const flat = cross.normalize().scale(-1);
@@ -583,8 +601,12 @@ export function sweptSolid(
       positions.push(corner.x, corner.y, corner.z);
       normals.push(normal.x, normal.y, normal.z);
       indices.push(indices.length);
+      keys.push(tag ? tag[k]! : null);
     });
   };
+  // a wall vertex's key: its station and section point, and its face too where the point is a hard corner
+  const key = (station: number, point: number, edge: number) => (onRound(point) ? `${station}|${point}` : `${station}|${point}|${edge}`);
+  const roundStation = (k: string) => (k.split("|").length === 2 ? Number(k.split("|")[0]) : null);
   for (let i = 0; i + 1 < stations; i += 1) {
     for (let j = 0; j < n; j += 1) {
       const k = (j + 1) % n;
@@ -605,13 +627,32 @@ export function sweptSolid(
       const b = rings[i]![k]!;
       const c = rings[i + 1]![k]!;
       const d = rings[i + 1]![j]!;
-      push([a, b, c], outward, round ? [radial(j), radial(k), radial(k)] : null);
-      push([a, c, d], outward, round ? [radial(j), radial(k), radial(j)] : null);
+      push([a, b, c], outward, round ? [radial(j), radial(k), radial(k)] : null, [key(i, j, j), key(i, k, j), key(i + 1, k, j)]);
+      push([a, c, d], outward, round ? [radial(j), radial(k), radial(j)] : null, [key(i, j, j), key(i + 1, k, j), key(i + 1, j, j)]);
     }
   }
   for (const [ring, towards] of [[0, 1], [stations - 1, stations - 2]] as const) {
     const outward = centres[ring]!.subtract(centres[towards]!).normalize();
     for (let m = 1; m + 1 < n; m += 1) push([rings[ring]![0]!, rings[ring]![m]!, rings[ring]![m + 1]!], outward, null);
+  }
+  if (options.smoothAlong) {
+    const sums = new Map<string, Vector3>();
+    keys.forEach((k, v) => {
+      if (k === null) return;
+      sums.set(k, (sums.get(k) ?? Vector3.Zero()).add(new Vector3(normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!)));
+    });
+    keys.forEach((k, v) => {
+      if (k === null) return;
+      let mean = sums.get(k)!.normalize();
+      const station = roundStation(k);
+      if (options.tangent && station !== null) {
+        const along = options.tangent(station).normalize();
+        mean = mean.subtract(along.scale(Vector3.Dot(mean, along))).normalize();
+      }
+      normals[v * 3] = mean.x;
+      normals[v * 3 + 1] = mean.y;
+      normals[v * 3 + 2] = mean.z;
+    });
   }
   const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
   const data = new VertexData();

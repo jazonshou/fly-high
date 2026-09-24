@@ -1909,6 +1909,42 @@ nose, and beside it the frame looked straight out through the glass.
   - the housing on a second glareshield instance;
   - the frames at 1.0 times the board, at 2.74 times, and back at 3b's 1.41.
 
+**Step 5a, the rail's ends** (Jason, on the step 3 frames: "make the front rim / black rectangle more rounded").
+- **Before:** the rail ended square at az +-26.45, a black bar with cut ends over the sills.
+- **The measure that decided the shape.** The glass is 2 cm outboard of the rail's end. From az 25 (where the deck row
+  must stay one row) to the glass less 2 cm there are 2.8 cm of run across z, for a 9.0 cm drop to the sill.
+  - So a round across z can't fit: R 0.15 needs 13.8 cm of run and R 0.10 needs 10.
+  - Neither can a round of 0.10 in plan: it would run aft at z 0.437, outside the glass.
+  - Along the canopy it fits.
+- **The build: each end sweeps aft and down into its sill** (`JET_RAIL_END`, `jetRailEndStations`).
+  - From the rail's silhouette at az 25, the sill rises along x in an S of two arcs of R 0.15 to the silhouette's
+    height. The S is level at both ends and tangent to the sill's top at its foot (x 2.729).
+  - Its section is the sill's (top edges rounded at 1 cm). It is 2.3 cm wide at the top and has the sill's own
+    section at the foot. Its outer edge is 2.1 cm inside the glass at its own top's height at every station (nearest
+    glass 2.22 cm).
+  - It is on the glareshield's matte, merged into the coaming, so the rail's black runs on down into the sill. Mesh
+    by mesh against 92ccf97, only the coaming changed (144 -> 984 vertices); the sills are untouched.
+  - `sweptSolid` gained `smoothAlong` (the walls shaded as a surface from station to station, one normal at every
+    place but the section's hard corners) and `tangent` (the S's own slope, so the ends shade level where the S is
+    level, not as their first chord).
+- **What the frame shows.**
+  - The silhouette holds the rail's row at az 25 (-9.25). It falls in the picture's rows, never rising and never
+    stepping more than 0.2 degree between 0.1 degree samples: -11.51 at az 30, -16.09 at 35, -17.71 at 37.4.
+  - No world shows under it at 16:9.
+  - The deck row is one row from -25 to 25. The deck-line instrument reads 10.19, and the 2D layout is byte-identical.
+  - Near the dash the ends stand 1 to 2 cm inboard of its side, so the frame's bottom row now leaves the dash at az
+    27.0 (27.7).
+- **The instrument trap.** Babylon's picker meets back faces and takes a triangle's edge with a tolerance. At the end's
+  forward cap (facing away, culled) it read a silhouette 0.15 mm over the cap's top: a false rise in the row. So the
+  silhouette is read off front faces only, with the exact ray-triangle test.
+- Six mutations, all caught:
+  - square ends kept (the silhouette steps 0.28 degree at az 27.1);
+  - the corner starting at az 22;
+  - flat along x;
+  - the foot 1 cm above the sill;
+  - no tangent given (the foot shaded 5.1 degrees off level);
+  - the ends on the glass.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
