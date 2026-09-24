@@ -1341,12 +1341,15 @@ export interface TerrainPageErosionGpuOptions {
 /**
  * One stage's GPU timing since the last `consumeStageMeasurements`: the
  * milliseconds and dispatch count of the readings that priced something, and
- * the dispatches whose reading came back with no positive duration.
+ * the dispatches whose reading came back with no positive duration. `stale`
+ * is the part of `unusable` the deferred timing found never rewritten (the
+ * previous frame's pair): the instrument's failure, not the dispatch's.
  */
 export interface TerrainErosionStageMeasurement {
   milliseconds: number;
   dispatches: number;
   unusable: number;
+  stale: number;
 }
 
 /**
@@ -1378,15 +1381,15 @@ export class TerrainPageErosionGpu {
   };
   private costTrackers: ShaderCostTracker[] = [];
   private readonly stageSamples: Record<StageCostKey, TerrainErosionStageMeasurement> = {
-    seed: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    geology: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    breachDirect: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    breachArgs: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    breachPit: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    decode: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    streamPower: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    talus: { milliseconds: 0, dispatches: 0, unusable: 0 },
-    fineBand: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    seed: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    geology: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    breachDirect: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    breachArgs: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    breachPit: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    decode: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    streamPower: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    talus: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
+    fineBand: { milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 },
   };
   private lastPageTiming: TerrainErosionGpuPageTiming | null = null;
   private pitListOverflowCount = 0;
@@ -1806,6 +1809,7 @@ export class TerrainPageErosionGpu {
       // and is counted as such. Discarding it made an unreadable pass look
       // exactly like a shader that never dispatched.
       sample.unusable += reading.unusableUnits;
+      sample.stale += reading.staleUnits;
       if (reading.units <= 0) continue;
       const perDispatch = reading.milliseconds / reading.units;
       const previous = this.stageEstimatesMs[tracker.stage];
@@ -1840,6 +1844,7 @@ export class TerrainPageErosionGpu {
       sample.milliseconds = 0;
       sample.dispatches = 0;
       sample.unusable = 0;
+      sample.stale = 0;
     }
     return snapshot;
   }

@@ -456,6 +456,15 @@ that same window.
 
    Still open: why a whole frame's slots go unwritten (item 4's neighbour, and not the carve's), and why the args pass
    reads high, which is item 6.
+
+   In the confirmation of 2026-09-24 09:01-09:04, the stale frame landed on L3's ARGS FRAME in 2 of 3 breach-frame
+   runs. The guard read that frame as 0, and the direct frame before it read high (0.158 and 0.166 ms against about
+   0.10). It also hit the cost test's pages: 4 stale units on page 1 and 4 on the warm page, one frame of four pumped
+   dispatches. That is past the coverage check's allowance of 2 unusable units. The check now counts the units the
+   deferred timing flagged stale apart from that allowance, and fails a page where more than a quarter of the units
+   are stale (`STALE_READINGS_PER_PAGE_SHARE`), because then the counter is not being written at all. The args frame
+   is the frame whose command buffer now carries the pit count's copy after the args pass, which is item 6's
+   hypothesis.
 6. **The args pass's 0.08 ms is priced, not explained.** The hypothesis: with the count read at the frame's end, the
    copy of the pit count follows the args pass in the same command buffer, and the barrier that orders it after the
    pass's write lands inside the pass's end timestamp. With the flushing read, the command buffer was submitted at

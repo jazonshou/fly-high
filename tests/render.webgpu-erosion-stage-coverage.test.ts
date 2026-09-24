@@ -12,6 +12,7 @@ import {
   chargedStageMs,
   type ErosionCostStage,
   erosionStageCoverageFaults,
+  STALE_READINGS_PER_PAGE_SHARE,
   expectedStageDispatches,
   UNUSABLE_READINGS_PER_PAGE_CAP,
 } from "./support/erosionStageCoverage";
@@ -81,12 +82,15 @@ function producerWithFakeTrackers(): {
 }
 
 /** The deferred timing delivering one pass's reading, keyed by the frame it was recorded in. */
-function deliver(tracker: FakeTracker, frameId: number, nanoseconds: number): void {
-  deliverPassDuration(tracker.shader.gpuTimeInFrame, frameId, nanoseconds);
+function deliver(tracker: FakeTracker, frameId: number, nanoseconds: number, stale = false): void {
+  deliverPassDuration(tracker.shader.gpuTimeInFrame, frameId, nanoseconds, stale);
 }
 
-/** A reading in nanoseconds, or "none" for one that never resolves. */
-type Reading = number | "none";
+/**
+ * A reading in nanoseconds, "none" for one that never resolves, or "stale" for
+ * one the deferred timing found never rewritten (delivered as 0, flagged).
+ */
+type Reading = number | "none" | "stale";
 
 /**
  * One page, one dispatch per frame, consumed every frame as the harness does.
@@ -104,7 +108,8 @@ function runFakePage(
       // What the producer's private `dispatch` does once the pass exists.
       tracker.tape.dispatched(1);
       const reading = readingFor(stage, index) ?? PINNED_NANOSECONDS(stage);
-      if (reading !== "none") deliver(tracker, engine.frameId, reading);
+      if (reading === "stale") deliver(tracker, engine.frameId, 0, true);
+      else if (reading !== "none") deliver(tracker, engine.frameId, reading);
       engine.frameId += 1;
       producer.consumeMeasuredDispatchCostMs();
     }
@@ -128,7 +133,7 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const samples = runFakePage(fake, (stage, index) =>
       stage === "breachDirect" && index === 0 ? 0 : undefined);
     // The failure this guards: breach read "1 of 2" because the zero was dropped.
-    expect(samples.breachDirect).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1 });
+    expect(samples.breachDirect).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1, stale: 0 });
     expect(samples.breachPit.milliseconds).toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breachPit * 3, 12);
     expect(samples.breachPit).toMatchObject({ dispatches: 3, unusable: 0 });
     expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
@@ -137,23 +142,33 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
       .toBeCloseTo(TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect, 12);
   });
 
-  it("starts each page's unusable count afresh, so a warm page's cannot enter page 1", () => {
+  it("starts each page's unusable and stale counts afresh, so a warm page's cannot enter page 1", () => {
     const fake = producerWithFakeTrackers();
-    runFakePage(fake, (stage, index) =>
-      stage === "breachDirect" && index === 0 ? 0 : undefined);
-    const next = runFakePage(fake);
+    // The warm page: a zero, and a stale frame of four talus passes.
+    runFakePage(fake, (stage, index) => {
+      if (stage === "talus" && index < 4) return "stale";
+      return stage === "breachDirect" && index === 0 ? 0 : undefined;
+    });
+    // Page 1: three written zeros on talus, past the cap. A stale count carried
+    // over from the warm page would excuse them.
+    const next = runFakePage(fake, (stage, index) => (stage === "talus" && index < 3 ? 0 : undefined));
     expect(next.breachDirect).toEqual({
       milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.breachDirect,
       dispatches: 1,
       unusable: 0,
+      stale: 0,
     });
+    expect(next.talus).toMatchObject({ unusable: 3, stale: 0 });
+    expect(erosionStageCoverageFaults(next, EXPECTED_STAGE_DISPATCHES)).toEqual([
+      `3 dispatches read no positive duration; at most ${UNUSABLE_READINGS_PER_PAGE_CAP} per page are tolerated`,
+    ]);
   });
 
   it("treats a non-finite reading the same way", () => {
     const fake = producerWithFakeTrackers();
     const samples = runFakePage(fake, (stage, index) =>
       stage === "decode" && index === 0 ? Number.NaN : undefined);
-    expect(samples.decode).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1 });
+    expect(samples.decode).toEqual({ milliseconds: 0, dispatches: 0, unusable: 1, stale: 0 });
     expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
   });
 
@@ -224,13 +239,14 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     const frame = engine.frameId;
     engine.frameId += 3;
     producer.consumeMeasuredDispatchCostMs();
-    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0, dispatches: 0, unusable: 0 });
+    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 });
     deliver(tracker, frame, PINNED_NANOSECONDS("seed"));
     producer.consumeMeasuredDispatchCostMs();
     expect(producer.consumeStageMeasurements().seed).toEqual({
       milliseconds: TERRAIN_EROSION_STAGE_SEED_COST_MS.seed,
       dispatches: 1,
       unusable: 0,
+      stale: 0,
     });
   });
 
@@ -264,10 +280,10 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
     engine.frameId += 1;
     tracker.tape.dispatched(1);
     producer.consumeMeasuredDispatchCostMs();
-    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0, dispatches: 0, unusable: 0 });
+    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0, dispatches: 0, unusable: 0, stale: 0 });
     deliver(tracker, engine.frameId, 300_000);
     producer.consumeMeasuredDispatchCostMs();
-    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0.3, dispatches: 1, unusable: 0 });
+    expect(producer.consumeStageMeasurements().seed).toEqual({ milliseconds: 0.3, dispatches: 1, unusable: 0, stale: 0 });
   });
 
   it("gives every producer tracker a tape on its own shader's counter, recorded after the pass exists", () => {
@@ -296,6 +312,55 @@ describe("W-1d stage coverage: a reading of nothing is not a missing dispatch", 
       `${over} dispatches read no positive duration; at most `
       + `${UNUSABLE_READINGS_PER_PAGE_CAP} per page are tolerated`,
     ]);
+  });
+
+  it("tolerates a stale frame apart from the cap: four passes the timing found never rewritten", () => {
+    const fake = producerWithFakeTrackers();
+    // The reference host's case: one frame of the cost test's four dispatches, all stale.
+    const samples = runFakePage(fake, (stage, index) => (stage === "talus" && index < 4 ? "stale" : undefined));
+    expect(samples.talus).toMatchObject({ dispatches: 60, unusable: 4, stale: 4 });
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
+  });
+
+  it("still fails zeros past the cap that the timing did not find stale, whatever stale ones sit beside them", () => {
+    const fake = producerWithFakeTrackers();
+    const over = UNUSABLE_READINGS_PER_PAGE_CAP + 1;
+    const samples = runFakePage(fake, (stage, index) => {
+      if (stage === "talus" && index < 4) return "stale";
+      return stage === "streamPower" && index < over ? 0 : undefined;
+    });
+    expect(samples.streamPower).toMatchObject({ unusable: over, stale: 0 });
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toEqual([
+      `${over} dispatches read no positive duration besides 4 the timing found stale; `
+      + `at most ${UNUSABLE_READINGS_PER_PAGE_CAP} per page are tolerated`,
+    ]);
+  });
+
+  it("holds the stale share at a quarter of the page: 41 of 166 stale passes, 42 fail", () => {
+    const total = Object.values(EXPECTED_STAGE_DISPATCHES).reduce((sum, count) => sum + count, 0);
+    expect(total).toBe(166);
+    const within = Math.floor(total * STALE_READINGS_PER_PAGE_SHARE);
+    expect(within).toBe(41);
+    const atShare = runFakePage(producerWithFakeTrackers(), (stage, index) =>
+      (stage === "talus" && index < within ? "stale" : undefined));
+    expect(erosionStageCoverageFaults(atShare, EXPECTED_STAGE_DISPATCHES)).toEqual([]);
+    const past = runFakePage(producerWithFakeTrackers(), (stage, index) =>
+      (stage === "talus" && index < within + 1 ? "stale" : undefined));
+    expect(erosionStageCoverageFaults(past, EXPECTED_STAGE_DISPATCHES)).toEqual([
+      `${within + 1} of ${total} dispatches read stale timestamps; past a quarter of the page, the counter is not being written`,
+    ]);
+  });
+
+  it("fails a page whose readings are mostly stale: the counter is not being written", () => {
+    const fake = producerWithFakeTrackers();
+    // Every talus and stream-power dispatch stale: 88 of the page's 166.
+    const samples = runFakePage(fake, (stage) => (stage === "talus" || stage === "streamPower" ? "stale" : undefined));
+    const total = Object.values(EXPECTED_STAGE_DISPATCHES).reduce((sum, count) => sum + count, 0);
+    const stale = EXPECTED_STAGE_DISPATCHES.talus + EXPECTED_STAGE_DISPATCHES.streamPower;
+    expect(stale).toBeGreaterThan(total * STALE_READINGS_PER_PAGE_SHARE);
+    expect(erosionStageCoverageFaults(samples, EXPECTED_STAGE_DISPATCHES)).toContain(
+      `${stale} of ${total} dispatches read stale timestamps; past a quarter of the page, the counter is not being written`,
+    );
   });
 
   it("fails priced dispatches that carry no time", () => {

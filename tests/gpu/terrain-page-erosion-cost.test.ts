@@ -116,7 +116,8 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
         const warmSamples = harness.producer.consumeStageMeasurements();
         deliveredByStage();
         console.log(`W-1d warm page: ${COST_STAGES.reduce(
-          (sum, stage) => sum + warmSamples[stage].unusable, 0)} unusable readings`);
+          (sum, stage) => sum + warmSamples[stage].unusable, 0)} unusable readings, ${COST_STAGES.reduce(
+          (sum, stage) => sum + warmSamples[stage].stale, 0)} of them stale`);
 
         const pages: Array<{
           readonly samples: StageMeasurements;
@@ -198,7 +199,8 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
           : null,
       ]));
       const unusable = COST_STAGES.filter((stage) => page.samples[stage].unusable > 0)
-        .map((stage) => `${stage} ${page.samples[stage].unusable}`);
+        .map((stage) => `${stage} ${page.samples[stage].unusable}`
+          + (page.samples[stage].stale > 0 ? ` (${page.samples[stage].stale} stale)` : ""));
       console.log(
         `W-1d timed page ${pageIndex + 1}/${TIMED_PAGES}:`,
         `${total.toFixed(2)} ms GPU (${(total / expectedTotalDispatches).toFixed(4)} ms/dispatch),`,
