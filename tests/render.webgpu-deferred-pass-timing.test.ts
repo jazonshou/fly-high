@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFERRED_PASS_TIMING_GPU_FLAGS,
   installDeferredPassTiming,
+  PassCostTape,
   passDurationNs,
   passQueryRange,
 } from "@/src/render/webgpu/core/DeferredPassTiming";
@@ -216,6 +217,45 @@ describe("deferred per-pass timing: each pass reads its own time", () => {
     expect(timing.staleReadings).toBe(3);
     expect(fineBand.counter.count).toBe(2);
     expect(fineBand.counter.current).toBe(71_000);
+  });
+
+  it("tells a tape which unusable units were stale, and a written pair that did not increase merely unusable", async () => {
+    const fake = fakeEngine();
+    installDeferredPassTiming(fake.asEngine);
+    const counter = new WebGPUPerfCounter();
+    const tape = new PassCostTape(fake.engine, counter);
+    // Frame 1 writes its slot: priced, two units.
+    const written = fake.recordPass(counter, 5_000);
+    tape.dispatched(2);
+    fake.endFrame([written]);
+    await settle();
+    // Frame 2 times a pass in the same slot and never writes it: stale, three units.
+    fake.recordPass(counter, 6_000);
+    tape.dispatched(3);
+    fake.endFrame([]);
+    await settle();
+    // Frame 3 writes a pair that does not increase: unusable, but written, so not stale.
+    const flat = fake.recordPass(counter, 0);
+    tape.dispatched(1);
+    fake.endFrame([flat]);
+    await settle();
+    expect(tape.take()).toEqual({ milliseconds: 0.005, units: 2, unusableUnits: 4, staleUnits: 3 });
+  });
+
+  it("never calls a slot that was never written at all stale: (0, 0) is unusable, and counts against the cap", async () => {
+    const fake = fakeEngine();
+    const timing = installDeferredPassTiming(fake.asEngine)!;
+    const counter = new WebGPUPerfCounter();
+    const tape = new PassCostTape(fake.engine, counter);
+    // A fresh query set: the slot resolves as (0, 0), which equals the zeros
+    // the guard starts from. It is a reading the device never gave, not the
+    // previous frame's, and must not be excused from the cap as stale.
+    fake.recordPass(counter, 5_000);
+    tape.dispatched(1);
+    fake.endFrame([]);
+    await settle();
+    expect(tape.take()).toEqual({ milliseconds: 0, units: 0, unusableUnits: 1, staleUnits: 0 });
+    expect(timing.staleReadings).toBe(0);
   });
 
   it("delivers a pair that is not increasing as 0, so a consumer can count it unusable", async () => {

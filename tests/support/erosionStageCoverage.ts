@@ -65,6 +65,19 @@ export function expectedStageDispatches(pits: number): Readonly<Record<ErosionCo
 export const UNUSABLE_READINGS_PER_PAGE_CAP = 2;
 
 /**
+ * Stale readings are the deferred timing's own failure: a pass whose
+ * timestamp pair came back exactly as the previous resolve left it, never
+ * rewritten (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md, open item 5).
+ * On the reference host a whole frame goes stale now and then, and the cost
+ * test pumps four dispatches a frame, so one stale frame alone is past
+ * `UNUSABLE_READINGS_PER_PAGE_CAP`. They are tolerated apart from that
+ * allowance, up to this share of the page's dispatches. Past it the counter is
+ * not being written at all, and a page that measured next to nothing must not
+ * pass for one that measured everything.
+ */
+export const STALE_READINGS_PER_PAGE_SHARE = 0.25;
+
+/**
  * One stage's cost in a page total: what its priced dispatches measured, plus
  * each unusable dispatch charged at the stage's pinned price. Unknown is not
  * free, and it is not a guess either: it is the price the meter admits it at.
@@ -79,7 +92,9 @@ export function chargedStageMs(
 /**
  * Everything wrong with one timed page's stage sample, empty when it is
  * complete: every expected dispatch either priced or unusable, time behind
- * every priced one, and no more unusable readings than the cap.
+ * every priced one, no more unusable readings than the cap besides those the
+ * deferred timing found stale, and no more stale ones than a quarter of the
+ * page.
  */
 export function erosionStageCoverageFaults(
   samples: Readonly<Record<ErosionCostStage, Readonly<TerrainErosionStageMeasurement>>>,
@@ -88,6 +103,8 @@ export function erosionStageCoverageFaults(
 ): string[] {
   const faults: string[] = [];
   let unusable = 0;
+  let stale = 0;
+  let total = 0;
   for (const stage of Object.keys(expected) as ErosionCostStage[]) {
     const sample = samples[stage];
     if (sample.dispatches + sample.unusable !== expected[stage]) {
@@ -100,10 +117,19 @@ export function erosionStageCoverageFaults(
       faults.push(`measured ${stage} dispatches but no GPU time`);
     }
     unusable += sample.unusable;
+    stale += Math.min(sample.stale, sample.unusable);
+    total += expected[stage];
   }
-  if (unusable > cap) {
+  if (unusable - stale > cap) {
+    faults.push(stale > 0
+      ? `${unusable - stale} dispatches read no positive duration besides ${stale} the timing found stale; `
+        + `at most ${cap} per page are tolerated`
+      : `${unusable} dispatches read no positive duration; at most ${cap} per page are tolerated`);
+  }
+  if (stale > total * STALE_READINGS_PER_PAGE_SHARE) {
     faults.push(
-      `${unusable} dispatches read no positive duration; at most ${cap} per page are tolerated`,
+      `${stale} of ${total} dispatches read stale timestamps; past a quarter of the page, `
+      + "the counter is not being written",
     );
   }
   return faults;

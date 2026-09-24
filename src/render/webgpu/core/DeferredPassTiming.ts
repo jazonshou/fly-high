@@ -104,7 +104,11 @@ export function passTimingSinkOf(shader: unknown): PassDurationSink | undefined 
   return (shader as { gpuTimeInFrame?: PassDurationSink } | null | undefined)?.gpuTimeInFrame;
 }
 
-type PassDurationListener = (frameId: number, durationNs: number) => void;
+/**
+ * `stale`: the deferred timing found this pass's timestamp pair exactly as the
+ * previous resolve left it, never rewritten, and delivers it as 0 (unusable).
+ */
+type PassDurationListener = (frameId: number, durationNs: number, stale: boolean) => void;
 const passDurationListeners = new WeakMap<PassDurationSink, Set<PassDurationListener>>();
 
 /**
@@ -122,10 +126,15 @@ export function observePassDurations(sink: PassDurationSink, listener: PassDurat
 }
 
 /** The one delivery path: Babylon's counter first, then whoever observes it. */
-export function deliverPassDuration(sink: PassDurationSink, frameId: number, durationNs: number): void {
+export function deliverPassDuration(
+  sink: PassDurationSink,
+  frameId: number,
+  durationNs: number,
+  stale = false,
+): void {
   sink._addDuration(frameId, durationNs);
   const listeners = passDurationListeners.get(sink);
-  if (listeners) for (const listener of listeners) listener(frameId, durationNs);
+  if (listeners) for (const listener of listeners) listener(frameId, durationNs, stale);
 }
 
 /** What a tape's passes cost since the last `take`. */
@@ -136,6 +145,12 @@ export interface PassCostReading {
   readonly units: number;
   /** Units whose pass read no positive duration: a reading the device could not give. */
   readonly unusableUnits: number;
+  /**
+   * Of `unusableUnits`, those whose pass the deferred timing found stale: its
+   * slots never rewritten, the previous frame's pair. The instrument's
+   * failure, not the pass's; a consumer may tolerate them apart.
+   */
+  readonly staleUnits: number;
 }
 
 /** Passes a tape will wait for before it drops the oldest (a reading that is never coming). */
@@ -157,6 +172,7 @@ export class PassCostTape {
   private milliseconds = 0;
   private units = 0;
   private unusableUnits = 0;
+  private staleUnits = 0;
   private readonly unsubscribe: (() => void) | null;
 
   constructor(
@@ -164,7 +180,7 @@ export class PassCostTape {
     sink: PassDurationSink | null | undefined,
   ) {
     this.unsubscribe = sink
-      ? observePassDurations(sink, (frameId, durationNs) => this.deliver(frameId, durationNs))
+      ? observePassDurations(sink, (frameId, durationNs, stale) => this.deliver(frameId, durationNs, stale))
       : null;
   }
 
@@ -182,10 +198,16 @@ export class PassCostTape {
 
   /** Priced and unusable units since the last call, and the priced passes' time. */
   take(): PassCostReading {
-    const reading = { milliseconds: this.milliseconds, units: this.units, unusableUnits: this.unusableUnits };
+    const reading = {
+      milliseconds: this.milliseconds,
+      units: this.units,
+      unusableUnits: this.unusableUnits,
+      staleUnits: this.staleUnits,
+    };
     this.milliseconds = 0;
     this.units = 0;
     this.unusableUnits = 0;
+    this.staleUnits = 0;
     return reading;
   }
 
@@ -194,7 +216,7 @@ export class PassCostTape {
     this.passes.length = 0;
   }
 
-  private deliver(frameId: number, durationNs: number): void {
+  private deliver(frameId: number, durationNs: number, stale: boolean): void {
     // A pass from an older frame whose reading never came is dropped, not priced.
     while (this.passes.length > 0 && this.passes[0]!.frameId < frameId) this.passes.shift();
     const pass = this.passes[0];
@@ -205,6 +227,7 @@ export class PassCostTape {
       this.units += pass.units;
     } else {
       this.unusableUnits += pass.units;
+      if (stale) this.staleUnits += pass.units;
     }
   }
 }
@@ -307,21 +330,22 @@ export function installDeferredPassTiming(
         return;
       }
       const values = new BigUint64Array(target.getMappedRange(0, bytes));
-      const durations = passes.map((pass) => {
+      const stale = passes.map((pass) => {
         const at = pass.slot + PASS_QUERY_OFFSET;
         const begin = values[at - first];
-        if (begin !== undefined && begin !== 0n
-          && begin === lastResolved[at] && values[at + 1 - first] === lastResolved[at + 1]) {
-          staleReadings += 1;
-          return 0;
-        }
-        return passDurationNs(values, first, pass.slot);
+        return begin !== undefined && begin !== 0n
+          && begin === lastResolved[at] && values[at + 1 - first] === lastResolved[at + 1];
+      });
+      const durations = passes.map((pass, index) => {
+        if (!stale[index]) return passDurationNs(values, first, pass.slot);
+        staleReadings += 1;
+        return 0;
       });
       lastResolved.set(values, first);
       target.unmap();
       spare.push(target);
       passes.forEach((pass, index) => {
-        deliverPassDuration(pass.sink, pass.frameId, durations[index]!);
+        deliverPassDuration(pass.sink, pass.frameId, durations[index]!, stale[index]!);
         options.onPassTimed?.(pass.sink, pass.frameId, durations[index]!);
       });
     }, () => {
