@@ -1262,9 +1262,10 @@ describe("the fuselage's forward end cap", () => {
       caps.set(key, entry);
     }
     const found = [...caps.values()].filter((cap) => cap.area > 0.05).sort((a, b) => a.x - b.x);
-    // NON-VACUITY, and the station: the four caps of the two lofts, of 28 triangles each; the fuselage's forward one
-    // at 30.8 since the crease join
-    expect(found.map((cap) => Number(cap.x.toFixed(1)))).toEqual([-26, 25.5, 30.8, 34]);
+    // NON-VACUITY, and the station: the caps of the two lofts, of 28 triangles each; the fuselage's forward one at
+    // 30.8 since the crease join. Three since the nose polish (2026-09-23): the radome closes on a pole at x 34, so
+    // there is no flat cap there to find.
+    expect(found.map((cap) => Number(cap.x.toFixed(1)))).toEqual([-26, 25.5, 30.8]);
     for (const cap of found) expect(cap.triangles).toHaveLength(28);
     const centreOfCap = (cap: (typeof found)[number]) => cap.triangles.flatMap((t) => [t.a, t.b, t.c]).reduce((s, v) => s.add(v), Vector3.Zero()).scale(1 / (cap.triangles.length * 3));
     const facesViewer = (cap: (typeof found)[number], from: Vector3, toward: Vector3) => {

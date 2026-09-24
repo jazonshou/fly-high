@@ -244,6 +244,15 @@ export interface ShapedCurveSpec {
   /** Knot spacing, metres: the finest bend the fit can make. */
   readonly knotSpacing: number;
   readonly shape: ProfileShape;
+  /**
+   * A curvature penalty, lambda x the integral of y''^2 (for this family,
+   * the sum of (slope step)^2 / knot interval), added to the squared
+   * misfit. 0 where absent: the plain least-squares curve. A traced edge is
+   * quantised to its pixel, and with no shape to hold it (the 747's crown,
+   * which does steepen at the windscreen) a free fit follows the pixel
+   * steps into creases; this is what smooths them instead.
+   */
+  readonly roughness?: number;
 }
 
 /**
@@ -287,10 +296,20 @@ export function fitShapedCurve(points: readonly ProfilePoint[], spec: ShapedCurv
     if (pinned) out[0] = spec.originSlope!;
     return out;
   };
+  const lambda = spec.roughness ?? 0;
+  if (!(lambda >= 0)) throw new RangeError("A shaped fit's roughness must be zero or positive");
   const residual = (sigma: readonly number[]) => design.map((row, j) => row.reduce((sum, b, k) => sum + b * sigma[k]!, 0) - target[j]!);
   const gradient = (sigma: readonly number[]) => {
     const r = residual(sigma);
-    return knots.map((_, k) => design.reduce((sum, row, j) => sum + row[k]! * r[j]!, 0));
+    const g = knots.map((_, k) => design.reduce((sum, row, j) => sum + row[k]! * r[j]!, 0));
+    if (lambda > 0) {
+      for (let k = 0; k < knots.length - 1; k += 1) {
+        const step = (lambda * (sigma[k + 1]! - sigma[k]!)) / (knots[k + 1]! - knots[k]!);
+        g[k]! -= step;
+        g[k + 1]! += step;
+      }
+    }
+    return g;
   };
   // The step: 1 / the largest eigenvalue of the normal matrix, by power iteration.
   let vector = knots.map(() => 1);
@@ -300,6 +319,8 @@ export function fitShapedCurve(points: readonly ProfilePoint[], spec: ShapedCurv
     lipschitz = Math.hypot(...next) / Math.hypot(...vector);
     vector = next.map((v) => v / Math.hypot(...next));
   }
+  // The penalty's own curvature is at most 4 lambda / the shortest interval.
+  if (lambda > 0) lipschitz += (4 * lambda) / Math.min(...knots.slice(1).map((x, k) => x - knots[k]!));
   let current = project(slopes);
   let momentum = current.slice();
   let t = 1;

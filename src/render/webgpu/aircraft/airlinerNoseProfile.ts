@@ -57,7 +57,17 @@ export interface NoseProfile {
    * it starts, so the closure is tangent-continuous with the curves behind it,
    * and a vertical tangent at the tip, so the nose closes round, not on a point.
    */
-  readonly tip: { readonly x: number; readonly length: number };
+  readonly tip: {
+    readonly x: number;
+    readonly length: number;
+    /**
+     * The closure's length for the HALF-WIDTH, where it differs from the
+     * vertical radii's: a tip's radius of curvature is (radius)^2 / length on
+     * each axis, so one length cannot give a side view and a plan the same
+     * tip radius unless the section there is round. `length` where absent.
+     */
+    readonly planLength?: number;
+  };
 }
 
 export interface NoseRingOptions {
@@ -98,17 +108,27 @@ function curvesOf(profile: NoseProfile): NoseCurves {
   };
 }
 
-/** The tip closure's radius scale at `x`: 1 behind the closure, falling on an ellipse to 0 at the tip. */
-export function tipClosureScale(profile: NoseProfile, x: number): number {
-  const start = profile.tip.x - profile.tip.length;
+/**
+ * The tip closure's radius scale at `x`: 1 behind the closure, falling on an
+ * ellipse to 0 at the tip. `plan` reads the half-width's own closure length.
+ */
+export function tipClosureScale(profile: NoseProfile, x: number, axis: "vertical" | "plan" = "vertical"): number {
+  const length = axis === "plan" ? profile.tip.planLength ?? profile.tip.length : profile.tip.length;
+  const start = profile.tip.x - length;
   if (x <= start) return 1;
-  const s = Math.min(1, (x - start) / profile.tip.length);
+  const s = Math.min(1, (x - start) / length);
   return Math.sqrt(1 - s * s);
+}
+
+/** The longer of the two closures: where the rings start crowding toward the tip. */
+function closureLength(profile: NoseProfile): number {
+  return Math.max(profile.tip.length, profile.tip.planLength ?? profile.tip.length);
 }
 
 /** The section at one station, closure applied. */
 export function noseSectionAt(profile: NoseProfile, x: number, curves: NoseCurves = curvesOf(profile)): LoftSection {
   const scale = tipClosureScale(profile, x);
+  const planScale = tipClosureScale(profile, x, "plan");
   const waterline = curves.waterline.value(x);
   const crown = curves.crown.value(x);
   const keel = curves.keel.value(x);
@@ -128,15 +148,16 @@ export function noseSectionAt(profile: NoseProfile, x: number, curves: NoseCurve
     yOffset: waterline,
     yRadius: (crown - waterline) * scale,
     lowerYRadius: (waterline - keel) * scale,
-    zRadius: halfWidth * scale,
-    ...(crownHalfWidth !== undefined ? { crownZRadius: crownHalfWidth * scale } : {}),
+    zRadius: halfWidth * planScale,
+    ...(crownHalfWidth !== undefined ? { crownZRadius: crownHalfWidth * planScale } : {}),
   };
 }
 
 /** The nose's rings, from `options.from` to the tip. */
 export function noseSections(profile: NoseProfile, options: NoseRingOptions): LoftSection[] {
-  const closureStart = profile.tip.x - profile.tip.length;
-  if (!(profile.tip.length > 0) || !(closureStart > options.from)) {
+  const length = closureLength(profile);
+  const closureStart = profile.tip.x - length;
+  if (!(profile.tip.length > 0) || !(length > 0) || !(closureStart > options.from)) {
     throw new RangeError("The nose's tip closure must be positive and start ahead of the first ring");
   }
   if (!(options.pitch > 0) || !(Number.isInteger(options.tipRings) && options.tipRings >= 2)) {
@@ -150,7 +171,7 @@ export function noseSections(profile: NoseProfile, options: NoseRingOptions): Lo
   for (let i = 0; i <= body; i += 1) stations.push(options.from + ((closureStart - options.from) * i) / body);
   const lastAngle = Math.acos(lastScale);
   for (let i = 1; i <= options.tipRings; i += 1) {
-    stations.push(closureStart + profile.tip.length * Math.sin((lastAngle * i) / options.tipRings));
+    stations.push(closureStart + length * Math.sin((lastAngle * i) / options.tipRings));
   }
   return stations.map((x) => noseSectionAt(profile, x, curves));
 }
@@ -275,13 +296,24 @@ export interface NoseReference {
   readonly waterline?: readonly ProfilePoint[];
 }
 
-/** The fuselage ring the nose must leave from, and leave level. */
+/** The fuselage ring the nose must leave from, and the slopes it must leave along (level where absent). */
 export interface NoseJoin {
   readonly x: number;
   readonly crown: number;
   readonly keel: number;
   readonly waterline: number;
   readonly halfWidth: number;
+  /**
+   * The fuselage's own slope at the join, per line, so the nose leaves it
+   * tangent-continuous: a ruled loft's slope there is the chord from its
+   * previous ring. 0 (level) where absent.
+   */
+  readonly slopes?: {
+    readonly crown?: number;
+    readonly keel?: number;
+    readonly halfWidth?: number;
+    readonly waterline?: number;
+  };
 }
 
 export interface NoseFitOptions {
@@ -289,6 +321,21 @@ export interface NoseFitOptions {
   readonly tip: NoseProfile["tip"];
   /** The finest bend the fit can make, metres. */
   readonly knotSpacing?: number;
+  /**
+   * The crown's shape. Concave by default, a crown that only falls faster
+   * toward the nose; the 747's is NOT (Boeing's steepens again at the
+   * windscreen, a steeper face between the radome and the hump), so it is
+   * given as unconstrained there and the knot spacing does the smoothing.
+   */
+  readonly crownShape?: ProfileShape;
+  /** The crown's curvature penalty (`fitShapedCurve`'s roughness); 0 where absent. */
+  readonly crownRoughness?: number;
+  /**
+   * The widest point's height, given rather than fitted: a side view and a
+   * plan cannot see it. Used as it is, and as the centre the side view's radii
+   * are divided out of the tip closure about.
+   */
+  readonly waterline?: ProfileCurveSpec;
   /**
    * Reference points inside the tip closure are divided back out of it before
    * the fit; below this scale they say more about the tracing than the
@@ -316,33 +363,159 @@ export function fitNoseProfile(reference: NoseReference, options: NoseFitOptions
   const probe: NoseProfile = {
     crown: { points: [] }, keel: { points: [] }, waterline: { points: [] }, halfWidth: { points: [] }, tip,
   };
-  const scaleAt = (x: number) => tipClosureScale(probe, x);
-  const usable = (points: readonly ProfilePoint[]) =>
-    points.filter((point) => point.x > join.x && point.x < tip.x && scaleAt(point.x) >= minimumScale);
-  const fitLine = (y: number, points: readonly ProfilePoint[], shape: ProfileShape): ProfileCurveSpec => {
+  const scaleAt = (x: number, axis: "vertical" | "plan" = "vertical") => tipClosureScale(probe, x, axis);
+  const usable = (points: readonly ProfilePoint[], axis: "vertical" | "plan" = "vertical") =>
+    points.filter((point) => point.x > join.x && point.x < tip.x && scaleAt(point.x, axis) >= minimumScale);
+  const fitLine = (y: number, slope: number, points: readonly ProfilePoint[], shape: ProfileShape, roughness = 0): ProfileCurveSpec => {
     const fitted = fitShapedCurve(points, {
-      origin: { x: join.x, y }, originSlope: 0, to: tip.x, knotSpacing: spacing, shape,
+      origin: { x: join.x, y }, originSlope: slope, to: tip.x, knotSpacing: spacing, shape, roughness,
     });
     return { origin: fitted.origin, slopeKnots: fitted.slopeKnots };
   };
+  const slopes = join.slopes ?? {};
 
   const traced = reference.waterline && usable(reference.waterline).length > 0;
-  const waterline: ProfileCurveSpec = traced
-    ? fitLine(join.waterline, usable(reference.waterline!), {})
-    : { points: [{ x: join.x, y: join.waterline }, { x: tip.x, y: join.waterline }], startSlope: 0, endSlope: 0 };
+  const waterline: ProfileCurveSpec = options.waterline ?? (traced
+    ? fitLine(join.waterline, slopes.waterline ?? 0, usable(reference.waterline!), {})
+    : { points: [{ x: join.x, y: join.waterline }, { x: tip.x, y: join.waterline }], startSlope: 0, endSlope: 0 });
   const waterlineCurve = curve(waterline);
   // Radii out of the closure: about the fitted widest point for the side view, about the centreline for the plan.
-  const unclose = (points: readonly ProfilePoint[], about: (x: number) => number) =>
-    usable(points).map((point) => {
+  const unclose = (points: readonly ProfilePoint[], about: (x: number) => number, axis: "vertical" | "plan" = "vertical") =>
+    usable(points, axis).map((point) => {
       const centre = about(point.x);
-      return { x: point.x, y: centre + (point.y - centre) / scaleAt(point.x) };
+      return { x: point.x, y: centre + (point.y - centre) / scaleAt(point.x, axis) };
     });
 
   return {
-    crown: fitLine(join.crown, unclose(reference.crown, (x) => waterlineCurve.value(x)), { curvature: "concave" }),
-    keel: fitLine(join.keel, unclose(reference.keel, (x) => waterlineCurve.value(x)), { monotone: "increasing", curvature: "convex" }),
+    crown: fitLine(join.crown, slopes.crown ?? 0, unclose(reference.crown, (x) => waterlineCurve.value(x)), options.crownShape ?? { curvature: "concave" }, options.crownRoughness ?? 0),
+    keel: fitLine(join.keel, slopes.keel ?? 0, unclose(reference.keel, (x) => waterlineCurve.value(x)), { monotone: "increasing", curvature: "convex" }),
     waterline,
-    halfWidth: fitLine(join.halfWidth, unclose(reference.halfWidth, () => 0), { monotone: "decreasing", curvature: "concave" }),
+    halfWidth: fitLine(join.halfWidth, slopes.halfWidth ?? 0, unclose(reference.halfWidth, () => 0, "plan"), { monotone: "decreasing", curvature: "concave" }),
     tip,
+  };
+}
+
+/**
+ * A plain ring's outline and its crown half-width as a fraction of its
+ * half-width: what `blendRings` and `closeOnPole` work on. Rings with a
+ * squareness or a filleted crown are not plain, and are refused.
+ */
+function plainRing(section: LoftSection): { crown: number; keel: number; waterline: number; halfWidth: number; crownRatio: number } {
+  if (section.squareness !== undefined || section.crownSquareness !== undefined || section.zOffset !== undefined) {
+    throw new RangeError("Only plain elliptical rings can be blended");
+  }
+  const waterline = section.yOffset ?? 0;
+  return {
+    crown: waterline + section.yRadius,
+    keel: waterline - (section.lowerYRadius ?? section.yRadius),
+    waterline,
+    halfWidth: section.zRadius,
+    crownRatio: (section.crownZRadius ?? section.zRadius) / section.zRadius,
+  };
+}
+
+type PlainRing = ReturnType<typeof plainRing>;
+const RING_LINES = ["crown", "keel", "waterline", "halfWidth", "crownRatio"] as const;
+
+/** Station `x` rounded to the micrometre, so 26 + 0.2 * 1 is 26.2 and two tables agree on it exactly. */
+const station = (x: number) => Math.round(x * 1e6) / 1e6;
+
+/**
+ * Rings every `pitch` metres strictly between `from` and `to`, on a C1 cubic
+ * (Hermite) in each outline line -- crown, keel, height of the widest point,
+ * half-width, and the crown half-width as a fraction of it -- with each end's
+ * slope that of the straight strip on its far side (`before` to `from`, `to`
+ * to `after`). The strips either side are untouched, so the outline turns at
+ * `from` and `to` only by what those rings already turned, and between them by
+ * a small angle at each of many rings instead of a large one at a few.
+ */
+export function blendRings(before: LoftSection, from: LoftSection, to: LoftSection, after: LoftSection, pitch: number): LoftSection[] {
+  if (!(before.x < from.x && from.x < to.x && to.x < after.x)) throw new RangeError("Blend rings must be in order along +X");
+  if (!(pitch > 0)) throw new RangeError("The blend needs a positive pitch");
+  const [b, f, t, a] = [before, from, to, after].map(plainRing) as [PlainRing, PlainRing, PlainRing, PlainRing];
+  const span = to.x - from.x;
+  const count = Math.max(1, Math.round(span / pitch));
+  const lower = from.lowerYRadius !== undefined || to.lowerYRadius !== undefined;
+  const crowned = from.crownZRadius !== undefined || to.crownZRadius !== undefined;
+  const rings: LoftSection[] = [];
+  for (let i = 1; i < count; i += 1) {
+    const s = i / count;
+    const h00 = 2 * s ** 3 - 3 * s ** 2 + 1;
+    const h10 = s ** 3 - 2 * s ** 2 + s;
+    const h01 = -2 * s ** 3 + 3 * s ** 2;
+    const h11 = s ** 3 - s ** 2;
+    const line = {} as Record<(typeof RING_LINES)[number], number>;
+    for (const key of RING_LINES) {
+      const startSlope = ((f[key] - b[key]) / (from.x - before.x)) * span;
+      const endSlope = ((a[key] - t[key]) / (after.x - to.x)) * span;
+      line[key] = h00 * f[key] + h10 * startSlope + h01 * t[key] + h11 * endSlope;
+    }
+    rings.push({
+      x: station(from.x + span * s),
+      yRadius: lower ? line.crown - line.waterline : (line.crown - line.keel) / 2,
+      ...(lower ? { lowerYRadius: line.waterline - line.keel } : {}),
+      zRadius: line.halfWidth,
+      yOffset: lower ? line.waterline : (line.crown + line.keel) / 2,
+      ...(crowned ? { crownZRadius: line.crownRatio * line.halfWidth } : {}),
+    });
+  }
+  return rings;
+}
+
+/**
+ * Rings from `last` to a POLE at `poleX`, rounding the nose off instead of
+ * ending it on a flat disc. Each radius -- crown and keel about the pole's
+ * height (`last`'s widest point), and the half-width -- closes as
+ * r0 * sqrt(1 - u) * (1 + beta * u) over u = 0..1, which ends vertical (a
+ * round tip) and starts on the slope of the strip from `before`, so there is
+ * no corner at `last`. beta outside (-1/4, 1/2] would bend the closure the
+ * wrong way somewhere, so a pole too near or too far for the incoming slopes
+ * is refused. The widest point eases level onto the pole's height. Rings are
+ * spaced so each is an equal step in radius. Loft them with `endPoleX`.
+ */
+export function closeOnPole(before: LoftSection, last: LoftSection, poleX: number, rings: number): LoftSection[] {
+  if (!(before.x < last.x && last.x < poleX)) throw new RangeError("The pole must lie ahead of the last ring");
+  if (!(Number.isInteger(rings) && rings >= 2)) throw new RangeError("A closure needs at least two rings");
+  const b = plainRing(before);
+  const l = plainRing(last);
+  const length = poleX - last.x;
+  const run = last.x - before.x;
+  const pole = l.waterline;
+  const closure = (radius: number, slope: number) => {
+    const beta = 0.5 + (slope * length) / radius;
+    if (!(radius > 0) || !(beta > -0.25 && beta <= 0.5)) {
+      throw new RangeError(`A closure from radius ${radius} on slope ${slope} over ${length} m bends the wrong way (beta ${beta})`);
+    }
+    return (u: number) => radius * Math.sqrt(1 - u) * (1 + beta * u);
+  };
+  const crown = closure(l.crown - pole, (l.crown - b.crown) / run);
+  const keel = closure(pole - l.keel, -(l.keel - b.keel) / run);
+  const halfWidth = closure(l.halfWidth, (l.halfWidth - b.halfWidth) / run);
+  const waterlineSlope = ((l.waterline - b.waterline) / run) * length;
+  const out: LoftSection[] = [];
+  for (let i = 1; i <= rings; i += 1) {
+    const u = 1 - ((rings + 1 - i) / (rings + 1)) ** 2;
+    const waterline = pole + waterlineSlope * u * (1 - u) ** 2;
+    const width = halfWidth(u);
+    out.push({
+      x: station(last.x + length * u),
+      yRadius: pole + crown(u) - waterline,
+      lowerYRadius: waterline - (pole - keel(u)),
+      zRadius: width,
+      yOffset: waterline,
+      ...(last.crownZRadius !== undefined ? { crownZRadius: l.crownRatio * width } : {}),
+    });
+  }
+  return out;
+}
+
+/** `section` scaled by `factor` about its own widest point: the same shape, inside it (factor < 1). */
+export function scaledRing(section: LoftSection, factor: number): LoftSection {
+  return {
+    ...section,
+    yRadius: section.yRadius * factor,
+    zRadius: section.zRadius * factor,
+    ...(section.lowerYRadius !== undefined ? { lowerYRadius: section.lowerYRadius * factor } : {}),
+    ...(section.crownZRadius !== undefined ? { crownZRadius: section.crownZRadius * factor } : {}),
   };
 }

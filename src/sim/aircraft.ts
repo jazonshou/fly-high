@@ -654,8 +654,11 @@ export const BOEING_747_8: Readonly<AircraftDefinition> = Object.freeze({
   // 7.4, and it is 9.0 even at MTOW, so the margin narrows with weight but
   // never closes.
   airframeContactPoints: Object.freeze([
-    Object.freeze({ x: 34, y: 0.2, z: 0 }),
-    Object.freeze({ x: 34, y: -0.4, z: 0 }),
+    // The radome's crown and keel at x 33.9, 4-5 mm inside the metal: the nose
+    // closes on a rounded tip at x 34, y -0.25 (`NOSE_SECTIONS`), where it used
+    // to end on a flat disc spanning -0.41 to +0.21 at x 34.
+    Object.freeze({ x: 33.9, y: 0.16, z: 0 }),
+    Object.freeze({ x: 33.9, y: -0.62, z: 0 }),
     Object.freeze({ x: 26, y: 4.4, z: 0 }),
     Object.freeze({ x: 0, y: -3.6, z: 0 }),
     // x -17.4, and this point has now been measured against the built wing

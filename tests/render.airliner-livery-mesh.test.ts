@@ -12,6 +12,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWebGpuAircraft, type AircraftVisual } from "../src/render/webgpu/aircraft";
+import { NOSE_SECTIONS } from "../src/render/webgpu/aircraft/airlinerVisual";
 import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 import {
   AIRLINER_LIVERY_SECTIONS,
@@ -376,7 +377,8 @@ describe("the station range reaches UV1's u and nothing else", () => {
       return found;
     };
     function stripped(this: AircraftBuildContext, ...args: LoftArgs): Mesh {
-      return original.call(this, args[0], args[1], args[2], args[3], args[4]);
+      // The range stripped and nothing else: the caps argument (the nose's pole) stays.
+      return original.call(this, args[0], args[1], args[2], args[3], args[4], undefined, args[6]);
     }
 
     // Which lofts take the range at all: none on three airframes, two on the 747.
@@ -650,9 +652,10 @@ describe("the cheatline on the built fuselage", () => {
       return found;
     };
     const shipped = ratios((index) => uv[(offset + index) * 2 + 1]!);
-    expect(shipped.length, "no radome ring was read").toBe(8 * 28);
+    // One ratio per step round every ring of the nose (28 rings since the nose polish; 8 before it).
+    expect(shipped.length, "no radome ring was read").toBe(NOSE_SECTIONS.length * 28);
     const worst = { low: Math.min(...shipped), high: Math.max(...shipped) };
-    // Measured 0.73 .. 1.32 of the loft's own step, over all eight rings.
+    // Measured 0.678 .. 1.315 of the loft's own step over the nose's 28 rings (0.73 .. 1.32 over the old eight).
     expect(worst.low, "a radome ring's v runs backwards or all but stops").toBeGreaterThan(0.6);
     expect(worst.high, "a radome ring's v is stretched").toBeLessThan(1.6);
     // CONTROL: the check sees a fold. Swap two neighbours' v on one ring.

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  blendRings,
+  closeOnPole,
   fitNoseProfile,
   noseSectionAt,
   noseSections,
@@ -13,7 +15,36 @@ import {
   type OutlineStation,
 } from "../src/render/webgpu/aircraft/airlinerNoseProfile";
 import { FUSELAGE_SECTIONS, NOSE_SECTIONS } from "../src/render/webgpu/aircraft/airlinerVisual";
-import { loftSectionPoint } from "../src/render/webgpu/aircraft/builders";
+import { loftSectionPoint, type LoftSection } from "../src/render/webgpu/aircraft/builders";
+
+/**
+ * THE HAND-RINGED NOSE UNTIL 2026-09-23, frozen here as the instrument's
+ * positive control: the fuselage's forward rings (21 and on) and the nose,
+ * exactly as they were at ae8ca49, before the polish blended the fuselage
+ * into the flight deck's roof and rounded the tip. The S the diagnosis found
+ * is in these numbers.
+ */
+const HAND_RINGED_FUSELAGE: readonly LoftSection[] = [
+  { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57, crownZRadius: 2.61 },
+  { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },
+  { x: 27.2, yRadius: 3.675, zRadius: 3.1, yOffset: 0.635, crownZRadius: 2.51 },
+  { x: 28, yRadius: 3.65, zRadius: 3, yOffset: 0.6, crownZRadius: 2.45 },
+  { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 },
+  { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 },
+  { x: 30, yRadius: 3.1225, zRadius: 2.4168, yOffset: 0.4733 },
+  { x: 30.4, yRadius: 3.0378, zRadius: 2.2709, yOffset: 0.5 },
+  { x: 30.8, yRadius: 2.7565, zRadius: 1.9493, yOffset: 0.518 },
+];
+const HAND_RINGED_NOSE: readonly LoftSection[] = [
+  { x: 25.5, yRadius: 3, zRadius: 3, yOffset: -0.02 },
+  { x: 28, yRadius: 3.5405, zRadius: 2.91, yOffset: 0.6, crownZRadius: 2.3765 },
+  { x: 29.2, yRadius: 3.28, zRadius: 2.7, yOffset: 0.42 },
+  { x: 30.4, yRadius: 3.05, zRadius: 2.28, yOffset: 0.5 },
+  { x: 31.4, yRadius: 2.835, zRadius: 1.82, yOffset: 0.545 },
+  { x: 32.4, yRadius: 2, zRadius: 1.36, yOffset: 0.3 },
+  { x: 33.4, yRadius: 1.2, zRadius: 0.92, yOffset: -0.25 },
+  { x: 34, yRadius: 0.31, zRadius: 0.34, yOffset: -0.1 },
+];
 
 /**
  * The machinery for re-lofting the 747's nose from a reference (phase B,
@@ -48,15 +79,31 @@ const TRUTH: NoseProfile = {
 const RINGS = { from: 26, pitch: 0.2, tipRings: 12 };
 
 describe("the nose outline instrument", () => {
-  it("finds the S in today's hand-ringed 747 crown, where the diagnosis put it", () => {
-    const forward = FUSELAGE_SECTIONS.filter((section) => section.x >= 21);
-    const today = outlineBreaks(unionOutline(forward, NOSE_SECTIONS));
-    const at = (x: number) => today.crown.find((corner) => Math.abs(corner.x - x) < 1e-9)!.degrees;
-    expect(at(28)).toBeCloseTo(-19.8, 1);
-    expect(at(29.2), "the crown bends back UP over the pilots").toBeCloseTo(15.7, 1);
-    expect(at(31.4), "the brow").toBeCloseTo(-37.6, 1);
+  it("finds the S in the hand-ringed 747 crown, where the diagnosis put it -- and the polish takes out all of it but the brow", () => {
+    const hand = outlineBreaks(unionOutline(HAND_RINGED_FUSELAGE, HAND_RINGED_NOSE));
+    const at = (breaks: readonly { x: number; degrees: number }[], x: number) => breaks.find((corner) => Math.abs(corner.x - x) < 1e-9)!.degrees;
+    expect(at(hand.crown, 28)).toBeCloseTo(-19.8, 1);
+    expect(at(hand.crown, 29.2), "the crown bends back UP over the pilots").toBeCloseTo(15.7, 1);
+    expect(at(hand.crown, 31.4), "the brow").toBeCloseTo(-37.6, 1);
     // And the keel reverses its sweep at 32.4.
-    expect(today.keel.find((corner) => Math.abs(corner.x - 32.4) < 1e-9)!.degrees).toBeCloseTo(-16.5, 1);
+    expect(at(hand.keel, 32.4)).toBeCloseTo(-16.5, 1);
+
+    // THE SHIPPED NOSE, polished (2026-09-23). Behind the flight deck the crown turns by 3.2 degrees at most a ring
+    // (at 26.2), and by +1.2 at 29.2 where the hand rings bent it up 15.7: the roof the glass sits on is the same, but
+    // the blend now eases onto it. The brow at 31.4 stays, because the No.1 panes are cast onto the strips either side
+    // of it; the root is a flight-deck eye 0.5-0.7 m low for a Boeing-shaped nose (AIRLINER_NOSE_POLISH_2026_09_23.md).
+    const shipped = outlineBreaks(unionOutline(FUSELAGE_SECTIONS.filter((section) => section.x >= 21), NOSE_SECTIONS));
+    const behindDeck = shipped.crown.filter((corner) => corner.x >= 26 && corner.x <= 30.8);
+    expect(Math.max(...behindDeck.map((corner) => Math.abs(corner.degrees)))).toBeLessThan(3.5);
+    expect(at(shipped.crown, 29.2)).toBeCloseTo(1.17, 1);
+    expect(at(shipped.crown, 31.4), "the brow, kept").toBeCloseTo(-37.6, 1);
+    // The keel sweeps up without turning back down anywhere, from the cabin to the tip.
+    expect(Math.min(...shipped.keel.filter((corner) => corner.x >= 26).map((corner) => corner.degrees))).toBeGreaterThan(-1);
+    expect(at(shipped.keel, 32.4)).toBeCloseTo(0, 6);
+    // And the tip closes on a pole: the last ring is 0.28 x 0.24 m where the hand rings ended on a 0.68 x 0.62 disc.
+    const last = sectionOutline(NOSE_SECTIONS[NOSE_SECTIONS.length - 1]!);
+    expect(2 * last.halfWidth).toBeLessThan(0.3);
+    expect(last.crown - last.keel).toBeLessThan(0.25);
   });
 });
 
@@ -155,5 +202,52 @@ describe("the nose fit", () => {
     };
     const corners = outlineBreaks(noseSections(direct, RINGS).map(sectionOutline));
     expect(Math.max(...corners.crown.map((corner) => corner.degrees))).toBeGreaterThan(1);
+  });
+});
+
+describe("the ring repairs the nose polish is built with", () => {
+  it("blendRings puts a straight run's rings exactly on it, and the shipped blend on one smooth curve", () => {
+    // CONTROL: four rings on one straight line in every quantity; a C1 cubic through them is that line.
+    const straight = (x: number): LoftSection => ({ x, yRadius: 3 - 0.1 * (x - 20), zRadius: 2.5 - 0.05 * (x - 20), yOffset: 0.2 + 0.01 * (x - 20) });
+    const rings = blendRings(straight(20), straight(21), straight(23), straight(24), 0.5);
+    expect(rings.map((ring) => ring.x)).toEqual([21.5, 22, 22.5]);
+    for (const ring of rings) {
+      const want = straight(ring.x);
+      expect(ring.yRadius).toBeCloseTo(want.yRadius, 12);
+      expect(ring.zRadius).toBeCloseTo(want.zRadius, 12);
+      expect(ring.yOffset).toBeCloseTo(want.yOffset!, 12);
+      expect(ring.lowerYRadius).toBeUndefined();
+    }
+    // The shipped blend: the fuselage's rings from 26.2 to 29.0, every 0.2 m, and the livery's table has the same.
+    const blend = FUSELAGE_SECTIONS.filter((section) => section.x > 26 && section.x < 29.2);
+    expect(blend.map((ring) => ring.x)).toEqual(Array.from({ length: 15 }, (_, i) => Math.round((26.2 + 0.2 * i) * 10) / 10));
+  });
+
+  it("closeOnPole starts on the incoming strip's slope, closes every radius on the pole, and refuses a pole too far", () => {
+    const before: LoftSection = { x: 32.4, yRadius: 2, zRadius: 1.36, yOffset: 0.3 };
+    const last: LoftSection = { x: 33.4, yRadius: 1.2, lowerYRadius: 0.86, zRadius: 0.92, yOffset: -0.25 };
+    const rings = closeOnPole(before, last, 34, 7);
+    expect(rings).toHaveLength(7);
+    const outline = [before, last, ...rings].map(sectionOutline);
+    const pole = -0.25;
+    for (let i = 2; i < outline.length; i += 1) {
+      const [a, b] = [outline[i - 1]!, outline[i]!];
+      expect(b.x).toBeGreaterThan(a.x);
+      expect(b.crown - pole).toBeLessThan(a.crown - pole);
+      expect(pole - b.keel).toBeLessThan(pole - a.keel);
+      expect(b.halfWidth).toBeLessThan(a.halfWidth);
+    }
+    // Round: the last ring is within an eighth of 33.4's radii of the pole, and 1 cm behind it.
+    const end = outline[outline.length - 1]!;
+    expect(end.crown - pole).toBeLessThan((1.2 + 0.1) / 8);
+    expect(end.halfWidth).toBeLessThan(0.92 / 6);
+    expect(34 - end.x).toBeLessThan(0.01);
+    // C1 at 33.4: the outline turns there by no more than the closure's own curvature over its first strip.
+    const turns = outlineBreaks(outline);
+    for (const line of ["crown", "keel", "plan"] as const) {
+      expect(Math.abs(turns[line].find((corner) => corner.x === 33.4)!.degrees), line).toBeLessThan(5);
+    }
+    // The crown arrives at 53 degrees; from 0.8 m out it would have to bulge before it could close, and is refused.
+    expect(() => closeOnPole(before, last, 34.2, 7)).toThrow(RangeError);
   });
 });

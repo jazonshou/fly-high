@@ -52,6 +52,7 @@ import {
   paneGrid,
   type SkinTriangles,
 } from "./airlinerGlazing";
+import { blendRings, closeOnPole, scaledRing } from "./airlinerNoseProfile";
 
 /**
  * The Boeing 747-8 Intercontinental.
@@ -425,6 +426,18 @@ function lowerSurfaceY(z: number): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * The fuselage's forward rings that the blend behind the flight deck reads
+ * (see `FUSELAGE_SECTIONS`). 21 and 26 are the level deck; 29.2 and 29.6 are
+ * the first two of the rings that hug the nose.
+ */
+const DECK_21: LoftSection = { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57, crownZRadius: 2.61 };
+const DECK_26: LoftSection = { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 };
+const HUG_29_2: LoftSection = { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 };
+const HUG_29_6: LoftSection = { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 };
+/** 26.2 .. 29.0, every 0.2 m. */
+const DECK_TO_NOSE = blendRings(DECK_21, DECK_26, HUG_29_2, HUG_29_6, 0.2);
+
+/**
  * The constant-section tube: 6.5 m outside diameter, centreline y = 0, running
  * from the tailcone join to the nose join. Six sections for 53 m of parallel
  * barrel is not miserliness — it IS a cylinder, and sections only buy anything
@@ -452,10 +465,10 @@ export const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: 9, yRadius: 3.525, zRadius: 3.25, yOffset: 0.275, crownZRadius: 2.94 },
   { x: 13, yRadius: 3.685, zRadius: 3.25, yOffset: 0.435, crownZRadius: 2.76 },
   { x: 17, yRadius: 3.785, zRadius: 3.25, yOffset: 0.535, crownZRadius: 2.65 },
-  { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57, crownZRadius: 2.61 },
+  DECK_21,
   // The crown reaches 4.40 here, which is where `sim/aircraft.ts` puts its
   // upper-deck contact point, exactly as the old separate hump loft did.
-  { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575, crownZRadius: 2.6 },
+  DECK_26,
   // ...and then HANDS THE SKIN TO THE NOSE LOFT ALONG A TANGENT, not across a
   // crease. These rings used to dive under the nose: the two lofts crossed on
   // a slanted loop (x 29.0-29.9 over the top, 26.9-28.0 underneath), and their
@@ -465,23 +478,23 @@ export const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   //
   // Now there is ONE crossing, a ring at x ~ 29.8 with the normals within
   // 5 degrees all the way round (tests/render.airliner-nose-join.test.ts).
-  // - 27.2 is the old surface there, exactly (sections are linear between
-  //   rings); it holds the belly line from here back.
-  // - 28 keeps the crown at 4.25 but takes the nose's lower lip, belly -3.05,
-  //   which used to show BELOW this loft between 27 and 29. The nose's own 28
-  //   ring is now this one, 3 % inside, so the nose stays buried aft of 29.2.
+  // - 26.2 to 29.0 are a C1 BLEND from the deck to the nose (`blendRings`),
+  //   every 0.2 m. They were two hand rings, 27.2 and 28, and the crown broke
+  //   -19.8 degrees at 28 and +15.7 at 29.2 on them: the forehead dived at
+  //   24 degrees onto the flight deck's roof and bent back up into it, half of
+  //   the S that read as wonky (Jason, 2026-09-23). The blend still falls onto
+  //   the same roof -- that roof carries the glass -- but at 16 degrees at most
+  //   and at under 3 degrees a ring. The belly rises on it from -3.25 without
+  //   the step the 27.2 ring made.
   // - 29.2 to 30.4 HUG the nose: its own section at each station, scaled
   //   about its centre by 1.004 falling to 0.996, so this loft passes inside
   //   the nose at a shallow, even angle.
   // - 30.8 is the buried end.
-  // The nose is untouched from its 29.2 ring forward, so the flight-deck glass
-  // cast onto it is byte-identical. The price of that is the crown at 29.2:
-  // the nose's own crown there is 3.70, and the hump now comes down onto it
-  // (about 0.2 m lower than before, the forehead a little steeper).
-  { x: 27.2, yRadius: 3.675, zRadius: 3.1, yOffset: 0.635, crownZRadius: 2.51 },
-  { x: 28, yRadius: 3.65, zRadius: 3, yOffset: 0.6, crownZRadius: 2.45 },
-  { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 },
-  { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 },
+  // The nose is untouched from its 29.2 ring to its 33.4 ring, so the
+  // flight-deck glass cast onto it is byte-identical.
+  ...DECK_TO_NOSE,
+  HUG_29_2,
+  HUG_29_6,
   { x: 30, yRadius: 3.1225, zRadius: 2.4168, yOffset: 0.4733 },
   { x: 30.4, yRadius: 3.0378, zRadius: 2.2709, yOffset: 0.5 },
   { x: 30.8, yRadius: 2.7565, zRadius: 1.9493, yOffset: 0.518 },
@@ -502,23 +515,38 @@ export const FUSELAGE_SECTIONS: readonly LoftSection[] = [
  * about x = 29.5 without a step: 4.40, 4.25, 3.95 on the deck, then 3.70,
  * 3.55, 3.15 on the nose.
  *
- * It ends at x = 34 where the sim puts its two radome contact points. They
- * straddle y = 0.2 and y = -0.4, and the last section spans -0.41 to +0.21,
- * so the collision hull and the metal agree at the one place an aeroplane hits
- * things nose first.
+ * It ends in a ROUNDED TIP on a pole at x = 34, where it used to end on a
+ * flat disc 0.68 x 0.62 m. The sim's two radome contact points sit on the
+ * closure's crown and keel at x = 33.9 (`sim/aircraft.ts`), so the collision
+ * hull and the metal agree at the one place an aeroplane hits things nose
+ * first.
  *
- * The underside SWEEPS UP, from -3.05 at the cabin to -1.45 at the radome.
- * That is the real shape, and with the crown falling at the same time it is
- * most of why a 747 nose reads as a 747 rather than as a cone.
+ * The underside SWEEPS UP, from -3.05 at the cabin to the tip. That is the
+ * real shape, and with the crown falling at the same time it is most of why a
+ * 747 nose reads as a 747 rather than as a cone. It sweeps up in one straight
+ * run from 31.4 into the tip's curve now; it used to flatten at 33.4 (a keel
+ * that turned back down, -16.5 degrees) and then rise 60 degrees onto the disc.
  */
+const NOSE_32_4: LoftSection = { x: 32.4, yRadius: 2, zRadius: 1.36, yOffset: 0.3 };
+// The keel carried on at the 31.4 -> 32.4 slope to -1.11 (it was -1.45), the
+// upper half as it was: the glass's forward corners are on the strip behind.
+const NOSE_33_4: LoftSection = { x: 33.4, yRadius: 1.2, lowerYRadius: 0.86, zRadius: 0.92, yOffset: -0.25 };
+/** The tip's pole: the nose loft closes on it (`endPoleX`). */
+export const AIRLINER_NOSE_POLE_X = 34;
+
 export const NOSE_SECTIONS: readonly LoftSection[] = [
   // Starts 1.9 m inside the barrel so its aft cap is buried well clear of the
   // join; at the first draft's x = 27 the two lofts met almost exactly and the
   // seam showed as a ring around the nose in the rendered frames.
   { x: 25.5, yRadius: 3, zRadius: 3, yOffset: -0.02 },
-  // The fuselage's own 28 ring scaled 0.97 about its centre: buried inside it,
-  // so the two lofts do not cross aft of 29.2 (see the fuselage's forward end).
-  { x: 28, yRadius: 3.5405, zRadius: 2.91, yOffset: 0.6, crownZRadius: 2.3765 },
+  // The fuselage's own blend rings scaled about their centres, buried inside
+  // it so the two lofts do not cross aft of 29.2 (see the fuselage's forward
+  // end): 0.97 at 26, rising evenly to the 29.2 ring's own 1/1.004. At 0.97
+  // all the way, the 29.0 ring's crown sat 6 cm under the 29.2 ring's and the
+  // nose's crown normal there tipped back into the crossing at 29.8 (6.0
+  // degrees against the fuselage's; the join holds 5).
+  ...DECK_TO_NOSE.map((ring) =>
+    scaledRing(ring, 0.97 + (1 / 1.004 - 0.97) * ((ring.x - DECK_26.x) / (HUG_29_2.x - DECK_26.x)))),
   { x: 29.2, yRadius: 3.28, zRadius: 2.7, yOffset: 0.42 },
   { x: 30.4, yRadius: 3.05, zRadius: 2.28, yOffset: 0.5 },
   // THE BROW. This ring's crown is 3.38, raised 0.23 m from 3.15 with the belly
@@ -529,9 +557,11 @@ export const NOSE_SECTIONS: readonly LoftSection[] = [
   // edge lands on the steep face below the brow. The rise is the crown
   // reaching +15 degrees from the left-seat eye at this station.
   { x: 31.4, yRadius: 2.835, zRadius: 1.82, yOffset: 0.545 },
-  { x: 32.4, yRadius: 2, zRadius: 1.36, yOffset: 0.3 },
-  { x: 33.4, yRadius: 1.2, zRadius: 0.92, yOffset: -0.25 },
-  { x: 34, yRadius: 0.31, zRadius: 0.34, yOffset: -0.1 },
+  NOSE_32_4,
+  NOSE_33_4,
+  // The rounded tip: seven rings closing each radius from 33.4 onto the pole,
+  // on the slopes they arrive with (`closeOnPole`).
+  ...closeOnPole(NOSE_32_4, NOSE_33_4, AIRLINER_NOSE_POLE_X, 7),
 ];
 
 /*
@@ -599,14 +629,17 @@ function skinPoint(
     high.crownZRadius ?? high.zRadius,
     t,
   );
-  const rise = (y - yOffset) / yRadius;
+  // Below the widest point, the lower half's own radius where a section has one.
+  const lowerYRadius = alongPanel(low.lowerYRadius ?? low.yRadius, high.lowerYRadius ?? high.yRadius, t);
+  const radius = y < yOffset ? lowerYRadius : yRadius;
+  const rise = (y - yOffset) / radius;
   // The same crown taper the loft builder applies, or every window forward of
   // the wing would be placed against an ellipse the skin no longer is.
   const lift = Math.max(0, rise) ** 2 * (3 - 2 * Math.max(0, rise));
   const halfWidth = zRadius + (crownZRadius - zRadius) * lift;
   const z = halfWidth * Math.sqrt(Math.max(0, 1 - rise * rise));
   // Outward normal at that point, as (dy, dz).
-  return { z, tilt: Math.atan2(rise / yRadius, z / (halfWidth * halfWidth)) };
+  return { z, tilt: Math.atan2(rise / radius, z / (halfWidth * halfWidth)) };
 }
 
 /**
@@ -964,6 +997,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // is kept because nothing argues for changing it.
   const radome = build.loft(
     "airliner-radome", NOSE_SECTIONS, 28, skin, root, AIRLINER_LIVERY_STATION_RANGE,
+    { endPoleX: AIRLINER_NOSE_POLE_X },
   );
   // The station range shares u with the fuselage; v it cannot share, because
   // the image's heights are solved on the FUSELAGE's sections and the radome

@@ -3,6 +3,7 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { createRawTextureFromMipChain } from "../core/MipChainUpload";
+import { blendRings } from "./airlinerNoseProfile";
 import { loftSectionPoint, type LoftSection } from "./builders";
 
 /**
@@ -90,6 +91,10 @@ export const AIRLINER_LIVERY_STATION_RANGE: LiveryStationRange = { minimumX: -26
  * parametrisation, not a surface; the fuselage's own sections forward of the
  * crossing at x ~ 29.8 are buried inside the radome, which they hug.
  */
+const LIVERY_21: LoftSection = { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57 };
+const LIVERY_26: LoftSection = { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575 };
+const LIVERY_29_2: LoftSection = { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 };
+const LIVERY_29_6: LoftSection = { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 };
 export const AIRLINER_LIVERY_SECTIONS: readonly LoftSection[] = [
   { x: -26, yRadius: 3.08, zRadius: 3.08, yOffset: 0.16 },
   { x: -20, yRadius: 3.25, zRadius: 3.25, yOffset: 0 },
@@ -99,12 +104,13 @@ export const AIRLINER_LIVERY_SECTIONS: readonly LoftSection[] = [
   { x: 9, yRadius: 3.525, zRadius: 3.25, yOffset: 0.275 },
   { x: 13, yRadius: 3.685, zRadius: 3.25, yOffset: 0.435 },
   { x: 17, yRadius: 3.785, zRadius: 3.25, yOffset: 0.535 },
-  { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57 },
-  { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575 },
-  { x: 27.2, yRadius: 3.675, zRadius: 3.1, yOffset: 0.635 },
-  { x: 28, yRadius: 3.65, zRadius: 3, yOffset: 0.6 },
-  { x: 29.2, yRadius: 3.2931, zRadius: 2.7108, yOffset: 0.42 },
-  { x: 29.6, yRadius: 3.2076, zRadius: 2.5634, yOffset: 0.4467 },
+  LIVERY_21,
+  LIVERY_26,
+  // The fuselage's C1 blend from the deck to the nose, from the same rings by
+  // the same function, so it is the same rings.
+  ...blendRings(LIVERY_21, LIVERY_26, LIVERY_29_2, LIVERY_29_6, 0.2),
+  LIVERY_29_2,
+  LIVERY_29_6,
   { x: 30, yRadius: 3.1225, zRadius: 2.4168, yOffset: 0.4733 },
   { x: 30.4, yRadius: 3.0378, zRadius: 2.2709, yOffset: 0.5 },
   { x: 30.8, yRadius: 2.7565, zRadius: 1.9493, yOffset: 0.518 },
@@ -234,6 +240,8 @@ export type LiveryFlank = "starboard" | "port";
 
 interface SectionAtStation {
   readonly yRadius: number;
+  /** Below the widest point; `yRadius` where the rings have no `lowerYRadius`. */
+  readonly lowerYRadius: number;
   readonly yOffset: number;
   readonly squareness: number;
   /** The loft section itself where either ring has a filleted V above (`crownSquareness`), for its heights. */
@@ -261,6 +269,7 @@ export function sectionAtStation(sections: readonly LoftSection[], x: number): S
   const t = Math.min(1, Math.max(0, (x - low.x) / span));
   return {
     yRadius: mix(low.yRadius, high.yRadius, t),
+    lowerYRadius: mix(low.lowerYRadius ?? low.yRadius, high.lowerYRadius ?? high.yRadius, t),
     yOffset: mix(low.yOffset ?? 0, high.yOffset ?? 0, t),
     squareness: mix(low.squareness ?? 2, high.squareness ?? 2, t),
     ...(low.crownSquareness === undefined && high.crownSquareness === undefined
@@ -294,7 +303,8 @@ export function phaseOfHeight(
   flank: LiveryFlank = "starboard",
 ): number | undefined {
   const section = sectionAtStation(sections, x);
-  const rise = (y - section.yOffset) / section.yRadius;
+  // Below the widest point, the lower half's own radius (the 747's nose rings have one).
+  const rise = (y - section.yOffset) / (y < section.yOffset ? section.lowerYRadius : section.yRadius);
   if (!(Math.abs(rise) <= 1)) return undefined;
   if (section.crown && rise > 0) {
     // The filleted V above: its height falls from the crown to the widest point; bisect the angle.

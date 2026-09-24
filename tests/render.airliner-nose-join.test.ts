@@ -6,6 +6,7 @@ import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createWebGpuAircraft, type AircraftVisual } from "../src/render/webgpu/aircraft";
 import { SkinCaster, type SkinTriangles } from "../src/render/webgpu/aircraft/airlinerGlazing";
+import { NOSE_SECTIONS } from "../src/render/webgpu/aircraft/airlinerVisual";
 import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 
 /**
@@ -136,33 +137,46 @@ describe("the 747's fuselage/radome join", () => {
     expect(before.filter((c) => c.angle > 5).length).toBeGreaterThan(20);
   });
 
-  it("moves nothing on the nose from its 29.2 ring forward, and nothing on the fuselage from its 26 ring aft", () => {
-    // Forward of 29.2 the nose carries the flight-deck glass, which is cast onto it;
-    // aft of 26 the fuselage is the cabin, the doors and the livery's straight run.
-    // Only ring vertices pair by index: the caps' centre vertices follow the rings,
-    // so they sit at a different index once the fuselage has more rings.
-    const same = (now: number[], then: number[], keep: (x: number) => boolean, count = Math.min(now.length, then.length) / 3) => {
-      let kept = 0;
-      let moved = 0;
-      for (let v = 0; v < count; v += 1) {
-        if (!keep(then[v * 3]!)) continue;
-        kept += 1;
-        if (now[v * 3] !== then[v * 3] || now[v * 3 + 1] !== then[v * 3 + 1] || now[v * 3 + 2] !== then[v * 3 + 2]) moved += 1;
-      }
-      return { kept, moved };
+  it("moves nothing on the nose from its 29.2 ring to its 32.4 ring, nor 33.4's upper half, nor the fuselage from 26 aft", () => {
+    // From 29.2 to 33.4 the nose carries the flight-deck glass, which is cast onto it; aft of 26 the fuselage is the
+    // cabin, the doors and the livery's straight run. The nose polish (2026-09-23) re-ringed the nose behind 29.2 and
+    // ahead of 33.4 and lowered 33.4's keel, so its rings pair by STATION: a ring is its 29 vertices, laid in order.
+    const rings = (positions: number[], count: number) => {
+      const out = new Map<number, number[]>();
+      for (let ring = 0; ring < count; ring += 1) out.set(positions[ring * 29 * 3]!, positions.slice(ring * 29 * 3, (ring + 1) * 29 * 3));
+      return out;
     };
-    // The nose keeps its ring count, so its vertices pair by index.
     const nose = built.get("airliner-radome")!;
-    expect(nose.positions.length).toBe(old.nose.positions.length);
-    const forward = same(nose.positions, old.nose.positions, (x) => x >= 29.2 - 1e-9);
-    expect(forward.kept, "no nose vertex forward of 29.2 was compared").toBeGreaterThan(29 * 5);
-    expect(forward.moved).toBe(0);
+    const now = rings(nose.positions, NOSE_SECTIONS.length);
+    const then = rings(old.nose.positions, OLD_NOSE.length);
+    const moved = (x: number, keep: (y: number) => boolean = () => true) => {
+      const a = now.get(x)!;
+      const b = then.get(x)!;
+      let compared = 0;
+      let count = 0;
+      for (let v = 0; v < 29; v += 1) {
+        if (!keep(b[v * 3 + 1]!)) continue;
+        compared += 1;
+        if (a[v * 3] !== b[v * 3] || a[v * 3 + 1] !== b[v * 3 + 1] || a[v * 3 + 2] !== b[v * 3 + 2]) count += 1;
+      }
+      return { compared, count };
+    };
+    for (const x of [29.2, 30.4, 31.4, 32.4]) expect(moved(x), `the nose's ${x} ring`).toEqual({ compared: 29, count: 0 });
+    // 33.4: the upper half (and the widest point, at its own height) stays; the keel carried on is the change.
+    const upper = moved(33.4, (y) => y >= -0.25);
+    expect(upper.compared).toBe(15);
+    expect(upper.count).toBe(0);
     // The fuselage's first ten rings (-26 .. 26) are its first 290 vertices in both builds.
     const fuselage = built.get("airliner-fuselage")!;
-    const aft = same(fuselage.positions, old.fuselage.positions, (x) => x <= 26 + 1e-9, 29 * OLD_FUSELAGE.length);
-    expect(aft.kept).toBe(29 * 10);
-    expect(aft.moved).toBe(0);
-    // CONTROL: the same comparison sees the join itself move.
-    expect(same(nose.positions, old.nose.positions, (x) => x > 27 && x < 29).moved).toBeGreaterThan(0);
+    let aft = 0;
+    for (let v = 0; v < 29 * 10; v += 1) {
+      for (let k = 0; k < 3; k += 1) if (fuselage.positions[v * 3 + k] !== old.fuselage.positions[v * 3 + k]) { aft += 1; break; }
+    }
+    expect(fuselage.positions[29 * 9 * 3]).toBe(26);
+    expect(aft).toBe(0);
+    // CONTROLS: the same comparison sees the join's 28 ring move, and 33.4's keel.
+    expect(moved(28).count).toBeGreaterThan(20);
+    // 14, not 13: one widest point is at cos(3 pi / 2) = -1.8e-16, so it reads the lower radius, and moves by an ulp.
+    expect(moved(33.4, (y) => y < -0.25)).toEqual({ compared: 14, count: 14 });
   });
 });

@@ -170,7 +170,10 @@ const FUSELAGE: Record<AircraftKind, string> = {
  * Texels a metre along the body for the airframes this change leaves alone
  * (their builders, meshes and paint are untouched). The trainer's was 9.1 at 64.
  */
-const DENSITY: Record<Exclude<AircraftKind, "trainer">, number> = { jet: 5.45, bizjet: 29.72, airliner: 33.38 };
+// The airliner's RE-PINNED 33.38 -> 33.17 for the nose polish (2026-09-23), its paint byte-identical: this is a median
+// over the shell's triangles, and the nose went from 8 rings to 28, so more of them are the nose's, where the skin
+// slopes to the axis and u's gradient along the surface has less of its length in x.
+const DENSITY: Record<Exclude<AircraftKind, "trainer">, number> = { jet: 5.45, bizjet: 29.72, airliner: 33.17 };
 
 /** 10-90 % widths, in texels, of the livery band's trailing edge along rows of the trainer body's albedo. */
 function liveryEdgeTexels(recipe: AircraftPaintRecipe, edge: number): number[] {
