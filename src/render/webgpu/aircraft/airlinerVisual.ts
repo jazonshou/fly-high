@@ -8,6 +8,7 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import {
   resolveAircraftAnimationPose,
@@ -28,6 +29,7 @@ import {
 import {
   AircraftBuildContext,
   nacaThickness,
+  weldNormals,
   type LoftSection,
   type SurfacePoint,
 } from "./builders";
@@ -593,56 +595,6 @@ export const NOSE_SECTIONS: readonly LoftSection[] = [
 const UPPER_DECK_FLOOR_Y = 1.95;
 
 /**
- * Where a cabin window has to sit to be IN the skin, and how far the skin is
- * tilted there.
- *
- * 228 windows over a fuselage that tapers at both ends and a hump whose section
- * changes every metre cannot share one half-width; the forward-most main deck
- * pane is 0.4 m inboard of the mid-cabin one and the upper deck line moves
- * 0.6 m across its own run. Reading the answer off the loft sections costs
- * twelve lines and removes the whole class of "the windows float off the nose"
- * defect. Returns the outboard z of the skin at (x, y) and the angle its
- * outward normal makes with the horizontal, which is what lays each pane flat
- * on a curved flank instead of letting its corners stand proud.
- */
-function skinPoint(
-  sections: readonly LoftSection[],
-  x: number,
-  y: number,
-): { z: number; tilt: number } {
-  let low = sections[0]!;
-  let high = sections[sections.length - 1]!;
-  for (let index = 1; index < sections.length; index += 1) {
-    if (sections[index]!.x >= x) {
-      low = sections[index - 1]!;
-      high = sections[index]!;
-      break;
-    }
-  }
-  const span = Math.max(1e-6, high.x - low.x);
-  const t = Math.min(1, Math.max(0, (x - low.x) / span));
-  const yRadius = alongPanel(low.yRadius, high.yRadius, t);
-  const zRadius = alongPanel(low.zRadius, high.zRadius, t);
-  const yOffset = alongPanel(low.yOffset ?? 0, high.yOffset ?? 0, t);
-  const crownZRadius = alongPanel(
-    low.crownZRadius ?? low.zRadius,
-    high.crownZRadius ?? high.zRadius,
-    t,
-  );
-  // Below the widest point, the lower half's own radius where a section has one.
-  const lowerYRadius = alongPanel(low.lowerYRadius ?? low.yRadius, high.lowerYRadius ?? high.yRadius, t);
-  const radius = y < yOffset ? lowerYRadius : yRadius;
-  const rise = (y - yOffset) / radius;
-  // The same crown taper the loft builder applies, or every window forward of
-  // the wing would be placed against an ellipse the skin no longer is.
-  const lift = Math.max(0, rise) ** 2 * (3 - 2 * Math.max(0, rise));
-  const halfWidth = zRadius + (crownZRadius - zRadius) * lift;
-  const z = halfWidth * Math.sqrt(Math.max(0, 1 - rise * rise));
-  // Outward normal at that point, as (dy, dz).
-  return { z, tilt: Math.atan2(rise / radius, z / (halfWidth * halfWidth)) };
-}
-
-/**
  * The cabin window line: 88 panes a side on the main deck and 26 a side on the
  * upper deck, in ONE draw call.
  *
@@ -1014,6 +966,34 @@ export function createAirliner(scene: Scene): AircraftVisual {
     }
     radome.setVerticesData(VertexBuffer.UVKind, uvs, false);
   }
+  // The skin AS DRAWN, for everything that has to sit on it: the cabin
+  // windows and the flight-deck glass. Both lofts, because forward of x ~ 29.8
+  // the nose is the outer skin; `exit` takes the farthest crossing.
+  const skinOf = (mesh: AbstractMesh): SkinTriangles => ({
+    positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
+    indices: mesh.getIndices()!,
+    normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
+  });
+  const caster = new SkinCaster([skinOf(fuselage), skinOf(radome)]);
+  // The cabin windows read the fuselage's SIDE STRIPS only, with the normals
+  // recomputed without its end caps. A capped end's fan shares its ring's
+  // vertices, so the buried aft cap at x -26 tilts that ring's shading normals
+  // 35 degrees aft, and the tilt runs forward across the 6 m strip to x -20:
+  // panes laid on it turned up to 26 degrees off their own facets, where the
+  // skin there slopes 1.4. The glass keeps `caster`: it is cast nowhere near a
+  // cap ring, and it is pinned to a millimetre as it is.
+  const windowSkin = (() => {
+    const { loftSectionCount, radialSegments } = fuselage.metadata as { loftSectionCount: number; radialSegments: number };
+    const positions = fuselage.getVerticesData(VertexBuffer.PositionKind)!;
+    const indices = Array.from(fuselage.getIndices()!).slice(0, (loftSectionCount - 1) * radialSegments * 6);
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, indices, normals);
+    // The crown seam, welded as the loft welds it.
+    weldNormals(normals, Array.from({ length: loftSectionCount }, (_, ring) => [
+      ring * (radialSegments + 1), ring * (radialSegments + 1) + radialSegments,
+    ]));
+    return new SkinCaster([{ positions, indices, normals }]);
+  })();
 
   /*
    * THE VERTEX-PAINT CHEATLINE IS GONE, and it has to stay gone.
@@ -1117,31 +1097,34 @@ export function createAirliner(scene: Scene): AircraftVisual {
     let offset = 0;
     for (const side of [1, -1] as const) {
       for (const deck of [
-        {
-          sections: FUSELAGE_SECTIONS,
-          count: MAIN_DECK_WINDOW_COUNT,
-          forwardX: MAIN_DECK_WINDOW_FORWARD_X,
-          y: MAIN_DECK_WINDOW_Y,
-        },
-        {
-          sections: FUSELAGE_SECTIONS,
-          count: UPPER_DECK_WINDOW_COUNT,
-          forwardX: UPPER_DECK_WINDOW_FORWARD_X,
-          y: UPPER_DECK_WINDOW_Y,
-        },
+        { count: MAIN_DECK_WINDOW_COUNT, forwardX: MAIN_DECK_WINDOW_FORWARD_X, y: MAIN_DECK_WINDOW_Y },
+        { count: UPPER_DECK_WINDOW_COUNT, forwardX: UPPER_DECK_WINDOW_FORWARD_X, y: UPPER_DECK_WINDOW_Y },
       ]) {
         for (let index = 0; index < deck.count; index += 1) {
           const x = deck.forwardX - index * CABIN_WINDOW_PITCH;
-          const skin = skinPoint(deck.sections, x, deck.y);
+          // ON THE SKIN AS DRAWN: straight out from the centreline at the
+          // window's height to where the loft's own triangles are, and laid
+          // along the skin's normal there (`windowSkin`, above: the side
+          // strips' own, without the caps'). The windows used to be placed on
+          // the IDEAL section (the smooth ellipse the rings describe), but the
+          // loft draws 28 flat facets round it, so each pane stood proud of the
+          // skin by the facet's sag at its height: 0.5 to 20 mm on the main
+          // deck, 16.3 along the barrel. The ideal tilt, the plain ellipse's
+          // gradient, left out the crown taper, so the upper-deck panes faced
+          // 5.3-7.4 degrees below their skin. The 747 nose polish's blend
+          // (2026-09-23) slid the forward upper-deck panes mid-facet (17.9 mm,
+          // 8.7 and 11.3 degrees), and they read as light boxes from abeam
+          // (tests/render.airliner-cabin-windows.test.ts).
+          const hit = windowSkin.exit({ x, y: deck.y, z: 0 }, { x: 0, y: 0, z: side });
+          if (!hit) throw new RangeError(`No skin under the cabin window at x ${x}, y ${deck.y}`);
+          // The pane's face is its local Z, its width (local X) runs along the
+          // body and its height (local Y) up the flank.
+          const face = new Vector3(hit.normal.x, hit.normal.y, hit.normal.z);
+          const along = new Vector3(1, 0, 0).subtract(face.scale(face.x)).normalize();
           Matrix.Compose(
             unit,
-            // The pane's face is its local Z. Turning it by the skin's own
-            // tilt lays it along the flank instead of letting the upper
-            // corners of an upper-deck window stand off a curving roof. The
-            // box is symmetric through z, so the port side takes the mirrored
-            // angle rather than a second half-turn.
-            Quaternion.RotationYawPitchRoll(0, -side * skin.tilt, 0),
-            new Vector3(x, deck.y, side * skin.z),
+            Quaternion.RotationQuaternionFromAxis(along, Vector3.Cross(face, along), face),
+            new Vector3(hit.point.x, hit.point.y, hit.point.z),
           ).copyToArray(matrices, offset);
           offset += 16;
         }
@@ -1792,13 +1775,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // glass follows the facets the skin is drawn with -- and `skinPanel` lays
   // it on them, PANE_PROUD out and PANE_DEPTH in along the skin's normal.
   // docs/findings/AIRLINER_NOSE_GLAZING.md has the design and the corner
-  // table the cockpit's eye is solved against.
-  const skinOf = (mesh: AbstractMesh): SkinTriangles => ({
-    positions: mesh.getVerticesData(VertexBuffer.PositionKind)!,
-    indices: mesh.getIndices()!,
-    normals: mesh.getVerticesData(VertexBuffer.NormalKind)!,
-  });
-  const caster = new SkinCaster([skinOf(fuselage), skinOf(radome)]);
+  // table the cockpit's eye is solved against. The caster is the one the cabin
+  // windows sit on, built after the lofts.
   const flightDeckGlazing: AbstractMesh[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";

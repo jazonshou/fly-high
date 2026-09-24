@@ -83,13 +83,13 @@ export const AIRLINER_LIVERY_STATION_RANGE: LiveryStationRange = { minimumX: -26
  * solve below. It would matter only for a feature positioned by z, and none
  * here is.
  *
- * Beyond the table's ends the end section is HELD, the same way `skinPoint`
- * in `airlinerVisual.ts` holds it, and the cheatline's forward fade RELIES on
- * that: it is painted from x = 30.5 to 32.5, all of it on the radome, and it
- * lands at the right height only because the radome's v is re-solved against
- * this same table (`radomeLiveryPhase`). Forward of 30.8 the held section is a
- * parametrisation, not a surface; the fuselage's own sections forward of the
- * crossing at x ~ 29.8 are buried inside the radome, which they hug.
+ * Beyond the table's ends the end section is HELD, and the cheatline's forward
+ * fade RELIES on that: it is painted from x = 30.5 to 32.5, all of it on the
+ * radome, and it lands at the right height only because the radome's v is
+ * re-solved against this same table (`radomeLiveryPhase`). Forward of 30.8
+ * the held section is a parametrisation, not a surface; the fuselage's own
+ * sections forward of the crossing at x ~ 29.8 are buried inside the radome,
+ * which they hug.
  */
 const LIVERY_21: LoftSection = { x: 21, yRadius: 3.82, zRadius: 3.25, yOffset: 0.57 };
 const LIVERY_26: LoftSection = { x: 26, yRadius: 3.825, zRadius: 3.25, yOffset: 0.575 };

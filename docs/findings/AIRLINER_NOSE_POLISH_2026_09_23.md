@@ -44,14 +44,16 @@ that is still too low, and cannot lift it without moving the glass.
 - The loft closes on the pole (`endPoleX`) instead of a flat fan.
 - `sim/aircraft.ts`: the two radome contacts move from the disc's edges, (34, 0.2) and (34, -0.4), to the closure's
   crown and keel at x 33.9, (33.9, 0.16) and (33.9, -0.62), about 5 mm inside the metal.
-- `lowerYRadius` is read by the livery's height solve and `skinPoint`, as the loft reads it.
+- `lowerYRadius` is read by the livery's height solve, as the loft reads it.
 
 ## What did not move, and what moved without its skin moving
 
 - The nose's rings 29.2, 30.4, 31.4 and 32.4, and 33.4's upper half, are bit-identical, paired by station
   (tests/render.airliner-nose-join.test.ts); so are the fuselage's first ten rings, -26 to 26. The glass is cast onto
   exactly those strips.
-- Mesh by mesh against ae8ca49: 92 of the 747's 96 meshes, and all 94 of the Global's, are bit-identical. Four moved:
+- Mesh by mesh against ae8ca49, in POSITIONS AND INDICES: 92 of the 747's 96 meshes, and all 94 of the Global's, are
+  bit-identical. That digest does not read thin-instance matrices, and it missed one: the cabin window line is ONE box
+  thin-instanced 228 times, and ten of its instances moved (the next section). Four meshes moved in the digest:
   - `airliner-fuselage-shell`: this change (729 -> 1,686 vertices).
   - `airliner-flight-deck-glazing`: 0.42 mm at most.
   - `airliner-windscreen-center-post`: 0.26 mm at most.
@@ -109,8 +111,78 @@ census tests. Every one also fails the geometry digest and the census; this tabl
   median over the shell's triangles, and more of them are now the nose's.
 - The cockpit's cap census: three caps (-26, 25.5, 30.8), because there is no flat cap at 34 now.
 - The radome's v steps: 28 rings read, 0.678 .. 1.315 of the loft's own step.
+- For the cabin windows (2026-09-24): the digest now reads thin-instance matrices (the 747's pin 5cb70892; the jet's
+  8e254ead with its geometry unchanged). The census's positionSum.z 5.8467 -> 5.4175 and positionSquares 12688599.61 ->
+  12688157.61, derived in the test.
 
-## Not yet verified
+## The GPU frames (2026-09-24), and the cabin windows they caught
 
-GPU frames and Gate A (stage 3) wait for a GPU slot. Nothing here adds a draw, a material or a varying: the shell is
-still one mesh on the same material.
+Gate A is green on d30bb05: the 747's varyings are 15/16, and there are 0 errors in every variant of all four
+airframes. Before/after pairs at five poses, b2748f3 against d30bb05 (headed, `?seed=g7500`), all at a matched
+render scale. They confirm what the CPU frames showed. The forehead eases onto the roof, the tip's silhouette is one
+curve, and the chin's flat disc with its concentric shading arcs is gone.
+
+The tip does show faint radial SPOKES converging on the pole, seen head-on at 10 m and invisible from the chase.
+They are the loft's 28 segments round the ring meeting at one point, 12.86 degrees apart. Densifying the closure's
+rings along x would not remove them. They are accepted.
+
+**The frames caught what the digest could not: the two forward upper-deck windows read as light boxes.**
+- Each window was placed on the IDEAL section at its height: the smooth ellipse the rings describe.
+- The loft draws that section as 28 flat facets. So each pane stood proud of the drawn skin by the facet's sag at
+  its height. A facet-sag prediction reproduced the measured gaps in both trees.
+- The blend slid the forward upper-deck heights mid-facet: 5.7 -> 17.6 mm proud at x 28.04. The instances there
+  turned by up to 7.9 degrees between the trees, and against the skin's smooth normal they sit 8.7 and 11.3 degrees
+  off.
+
+Measuring every pane showed the ideal placement had been off all along:
+- The main deck stood 0.5-20.2 mm proud, 16.3 along the barrel, where its 0.2 m height lands 3.5 degrees round from
+  a ring vertex. It varies as the section's centre moves: 0.5 at x 7.4, about 20 forward of x 14.
+- The upper-deck panes were turned 5.3-7.4 degrees below their skin, because the plain ellipse's gradient leaves out
+  the crown taper.
+
+**The fix seats all 228 on the skin as drawn.**
+- Each centre is cast straight out from the centreline at the window's height onto the fuselage loft's own triangles.
+- Each face is laid along the skin's normal there, with the width along the body.
+
+The normal is NOT the fuselage's shading normal, and the first seating learned that the hard way. A capped loft's
+end fan shares its ring's vertices. The buried aft cap at x -26 therefore tilts that ring's normals 35 degrees aft,
+and the tilt interpolates forward across the 6 m strip to x -20. The first seating's aft panes were turned 2.6 to 25
+degrees off a skin that slopes 1.4 there. Its own test read the turn against those same normals and called it zero.
+
+An adversarial review caught it. The windows now read the side strips only, with normals recomputed without the caps
+and the crown seam welded as the loft welds it (`windowSkin`). The glass keeps its caster and is bit-identical.
+
+The visible skin between x -25 and -20 is still SHADED with the cap-tilted normals. That predates this change and is
+logged as a follow-up.
+
+`tests/render.airliner-cabin-windows.test.ts` shares nothing with the placement but the built triangles. The gap is
+read along each pane's own face normal. The turn is read against the ANALYTIC normal of the loft's ruled surface,
+from `FUSELAGE_SECTIONS` and `loftSectionPoint`.
+
+The pins:
+- centre within 2 mm of the drawn skin (measured 0.000);
+- face within 2 degrees of the smooth normal (measured 1.6, the 28-facet ring's own interpolation);
+- width along the body within 1 degree;
+- every pane at its design station and height.
+
+Two controls fail it. The old ideal placement fails: median main-deck gap 16.3 mm, forward upper deck 17.9, the
+upper deck turned at least 5.3 degrees. The first seating, rebuilt on the capped shading normals, fails: all 16 aft
+panes over the pin, 25.2 degrees at the aft-most.
+
+Four mutations fail it:
+- a 3 mm outward offset;
+- every pane spun 90 degrees about its normal;
+- the stations shifted 0.28 m;
+- the capped normals put back.
+
+What moved: the pane centres by a median of 16 mm (at most 24), and the faces onto the smooth normal. Against
+d30bb05, nothing else moved: every mesh's world matrix, normals, UVs and material are the same, the glazing and the
+kit included.
+
+The geometry digest (`render.loft-crown-seam`) now reads thin-instance matrices too, so the jet's pin moved with its
+geometry unchanged. The census re-pins two sums, positionSum.z and positionSquares, from the centres alone. A
+symmetric box's 24 vertices sum to 24 times its centre, and the loft's split diagonal mirrors the wrong way on one
+flank, so mirrored panes now differ by -2.0 to +3.2 mm.
+
+The window fix's own GPU pair (abeam el 0 and el 5) is owed.
+
