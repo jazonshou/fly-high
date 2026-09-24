@@ -334,7 +334,10 @@ describe("a loft's crown seam", () => {
       // Checked mesh by mesh against 926333b: that one, and the jet's other 74 meshes bit-identical.
       // RE-PINNED for step 5: `jet-glare-shield` is the rail and its two ends swept aft and down into the sills, merged
       // (144 -> 984 vertices). Checked mesh by mesh against 92ccf97: that one, and the jet's other 74 bit-identical.
-      jet: "90b10695",
+      // RE-PINNED for step 5b: the HUD frame's top corners rounded (two quarter-circle tubes merged with the shortened
+      // rods, 114 -> 226 vertices) and the combiner's panes following them (4 -> 32 triangles). Checked mesh by mesh
+      // against 10f3502: those two, and the jet's other 73 bit-identical.
+      jet: "7d145111",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

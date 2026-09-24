@@ -1945,6 +1945,25 @@ nose, and beside it the frame looked straight out through the glass.
   - no tangent given (the foot shaded 5.1 degrees off level);
   - the ends on the glass.
 
+**Step 5b, the HUD frame's top corners** (in case Jason's "black rectangle" was the frame).
+- **The corners.** The rods' centreline turns from each upright into the bar on a quarter circle of 0.025, tangent to
+  both, on the same axes (az +-6.5, +4.5), so the 2D HUD's registration holds. Each corner is a tube of the rods' 5 mm
+  radius, seven rings of the cylinders' own eight points, so it meets the upright's top and the bar's end ring to ring.
+  It is smooth-shaded round the tube, and the rods' end caps at the joints face away from the eye.
+- **The combiner's panes follow the rods' axes round the corners** (16 points a pane, fanned), so no glass stands
+  outside the rods.
+- **The window.** It is still open from -8.4 to +3.55 within az +-5.8: the rounded corner's inner edge reads az 5.92 at
+  +3.55. At 0.03 it read 5.76 and would have closed the window's corners. The glass rays' positive control moved from
+  +3.9 to +3.55, the window pin's top: over it the rounded corners take the box's corners.
+- The frame clears the glass by 0.086 (0.074 square). Mesh by mesh against 10f3502, the frame (114 -> 226 vertices)
+  and the combiner (4 -> 32 triangles) changed, and the jet's other 73 meshes are bit-identical.
+- Five mutation runs, all caught:
+  - the radius at 0.03 (the window closes at +3.55);
+  - square corners kept;
+  - square pane corners;
+  - a pane's round 6 mm off the axis;
+  - the corners wound inside out (the drawn-faces walk).
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

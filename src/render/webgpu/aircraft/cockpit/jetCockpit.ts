@@ -1,6 +1,7 @@
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
@@ -230,6 +231,15 @@ export const JET_HUD_FRAME = Object.freeze({
   barY: 1.0053,
   radius: 0.005,
   /**
+   * The top corners' round (step 5b): the rods' centreline turns from each upright into the bar on a quarter circle of
+   * this radius, tangent to both, on the same axes (so the 2D HUD's registration holds). At 0.03 the rods' inner edge
+   * stood into the symbology's window at its top corners (open to az 5.76 at +3.55, the window pin's 5.8); at 0.025 it
+   * is open to 5.92.
+   */
+  cornerRadius: 0.025,
+  /** Rings along each corner's quarter circle, and round each ring (the rods' cylinders' eight). */
+  cornerSegments: 6,
+  /**
    * The uprights' feet stand this far BELOW the housing's top over their axes (step 2: they
    * are in the housing's mount, not the hood): a strut that ended on a surface would show its
    * end disc as a lit octagon (the Cessna's centre frame did, until it was tapered); buried,
@@ -418,17 +428,35 @@ export const JET_HUD_COMBINER = Object.freeze({
   intoHousing: 0.005,
 });
 
-/** The two panes' corners, aft then forward, each bottom-port, bottom-starboard, top-starboard, top-port. */
-export function jetHudCombinerPanes(): readonly (readonly [Vector3, Vector3, Vector3, Vector3])[] {
+/**
+ * The two panes' outlines, aft then forward, each from bottom-port round: bottom-starboard, up the starboard upright's
+ * axis, round the corner's centreline (step 5b), across the bar's axis, round the port corner and down. On the rods'
+ * axes, so no glass stands outside the rods at the rounded corners.
+ */
+export function jetHudCombinerPanes(): readonly (readonly Vector3[])[] {
   const f = JET_HUD_FRAME;
   return JET_HUD_COMBINER.paneX.map((x) => {
     const bottom = jetHudHousingTopY(x, f.z) - JET_HUD_COMBINER.intoHousing;
+    const corner = (side: -1 | 1) => jetHudFrameCornerAxis(side).map((p) => new Vector3(x, p.y, p.z));
     return [
-    new Vector3(x, bottom, -f.z),
-    new Vector3(x, bottom, f.z),
-    new Vector3(x, f.barY, f.z),
-    new Vector3(x, f.barY, -f.z),
-    ] as const;
+      new Vector3(x, bottom, -f.z),
+      new Vector3(x, bottom, f.z),
+      ...corner(1),
+      ...corner(-1).reverse(),
+    ];
+  });
+}
+
+/**
+ * A top corner's centreline, from the upright's top (where it leaves the upright's axis) round to the bar's end, on a
+ * quarter circle of `cornerRadius` tangent to both: `cornerSegments` + 1 points, in the frame's plane.
+ */
+export function jetHudFrameCornerAxis(side: -1 | 1): Vector3[] {
+  const f = JET_HUD_FRAME;
+  const R = f.cornerRadius;
+  return Array.from({ length: f.cornerSegments + 1 }, (_, i) => {
+    const angle = (Math.PI / 2) * (i / f.cornerSegments);
+    return new Vector3(f.x, f.barY - R + R * Math.sin(angle), side * (f.z - R + R * Math.cos(angle)));
   });
 }
 
@@ -445,6 +473,57 @@ export function jetHudFrameAngles(): { uprightAzimuthDegrees: number; barElevati
     uprightAzimuthDegrees: Math.atan2(f.z, f.x - e.forward) * DEG,
     barElevationDegrees: Math.atan2(f.barY - e.up, f.x - e.forward) * DEG,
   };
+}
+
+/**
+ * A top corner of the HUD frame (step 5b): a tube of the rods' radius round the corner's centreline
+ * (`jetHudFrameCornerAxis`), its rings the rods' eight points (so it meets the upright's top and the bar's end ring to
+ * ring), smooth-shaded round the tube as the rods' cylinders are, wound so every face is drawn from outside. Open at
+ * both ends: the upright's top cap and the bar's end cap close it, and both face away from the eye.
+ */
+function hudFrameCorner(build: AircraftBuildContext, name: string, side: -1 | 1, material: PBRMaterial, parent: TransformNode): Mesh {
+  const f = JET_HUD_FRAME;
+  const around = 8;
+  const axis = jetHudFrameCornerAxis(side);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const ring: Vector3[][] = [];
+  for (let i = 0; i < axis.length; i += 1) {
+    const angle = (Math.PI / 2) * (i / f.cornerSegments);
+    // the ring's plane: the frame's normal (x) and the corner's outward radial in the frame's plane
+    const outward = new Vector3(0, Math.sin(angle), side * Math.cos(angle));
+    ring.push(Array.from({ length: around }, (_, k) => {
+      const phi = (2 * Math.PI * k) / around;
+      const n = new Vector3(Math.cos(phi), 0, 0).add(outward.scale(Math.sin(phi)));
+      const p = axis[i]!.add(n.scale(f.radius));
+      positions.push(p.x, p.y, p.z);
+      normals.push(n.x, n.y, n.z);
+      return n;
+    }));
+  }
+  const indices: number[] = [];
+  const at = (i: number, k: number) => i * around + (k % around);
+  const point = (v: number) => new Vector3(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+  for (let i = 0; i + 1 < axis.length; i += 1) {
+    for (let k = 0; k < around; k += 1) {
+      for (const [a, b, c] of [[at(i, k), at(i, k + 1), at(i + 1, k + 1)], [at(i, k), at(i + 1, k + 1), at(i + 1, k)]] as const) {
+        // `solidPlate`'s rule: a drawn face's cross product points INTO the solid, against the outward normal
+        const cross = Vector3.Cross(point(b).subtract(point(a)), point(c).subtract(point(a)));
+        const out = ring[i]![k]!;
+        if (Vector3.Dot(cross, out) > 0) indices.push(a, c, b);
+        else indices.push(a, b, c);
+      }
+    }
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = new Array<number>((positions.length / 3) * 2).fill(0);
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
 }
 
 // ---- the MFDs --------------------------------------------------------------------------------
@@ -788,7 +867,9 @@ export function buildJetCockpit(
 
   const f = JET_HUD_FRAME;
   const footY = jetHudFrameFootY();
-  const topY = f.barY + f.radius;
+  // the uprights and the bar stop where the corners' rounds take over (step 5b)
+  const topY = f.barY - f.cornerRadius;
+  const barEnd = f.z - f.cornerRadius;
   // an untapered rod between two points, oriented as `strutBetween` orients its cylinder
   const rod = (name: string, from: Vector3, to: Vector3) => {
     const run = to.subtract(from);
@@ -803,8 +884,9 @@ export function buildJetCockpit(
       new Vector3(f.x, footY, side * f.z),
       new Vector3(f.x, topY, side * f.z),
     ));
-  const bar = rod("jet-hud-frame-bar", new Vector3(f.x, f.barY, -f.z), new Vector3(f.x, f.barY, f.z));
-  const frame = build.mergeStatic("jet-hud-frame", [...uprights, bar], root);
+  const bar = rod("jet-hud-frame-bar", new Vector3(f.x, f.barY, -barEnd), new Vector3(f.x, f.barY, barEnd));
+  const corners = ([-1, 1] as const).map((side) => hudFrameCorner(build, side < 0 ? "jet-hud-frame-corner-port" : "jet-hud-frame-corner-starboard", side, glare, root));
+  const frame = build.mergeStatic("jet-hud-frame", [...uprights, bar, ...corners], root);
 
   // THE HOUSING, on the glareshield's matte (the coaming's instance, as the frame is), its own opaque mesh
   const housing = facetMesh(build, "jet-hud-housing", jetHudHousingFacets(), glare, root);
@@ -816,7 +898,17 @@ export function buildJetCockpit(
   combinerGlass.needDepthPrePass = false;
   combinerGlass.disableDepthWrite = true;
   const toward = new Vector3(-1, 0, 0);
-  const combiner = facetMesh(build, "jet-hud-combiner", jetHudCombinerPanes().map((corners) => ({ corners, normal: toward })), combinerGlass, root);
+  // each pane fanned from its middle (its outline is convex): a triangle a facet, the fourth corner repeated
+  const combiner = facetMesh(
+    build,
+    "jet-hud-combiner",
+    jetHudCombinerPanes().flatMap((outline) => {
+      const middle = outline.reduce((sum, p) => sum.add(p), Vector3.Zero()).scale(1 / outline.length);
+      return outline.map((p, k) => ({ corners: [middle, p, outline[(k + 1) % outline.length]!, outline[(k + 1) % outline.length]!] as const, normal: toward }));
+    }),
+    combinerGlass,
+    root,
+  );
 
   // THE MFDs, framed and recessed on the leaned dash: each screen a thin plate turned back with the face, its PILOT-FACING
   // face (local normal -X, which the turn does not change in the vertex data) pointed at its own slot of the atlas

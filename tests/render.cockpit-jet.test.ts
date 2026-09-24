@@ -25,6 +25,7 @@ import {
   JET_HUD_COMBINER,
   JET_HUD_HOUSING,
   jetHudCombinerPanes,
+  jetHudFrameCornerAxis,
   jetHudFrameFootY,
   jetHudHousingTopY,
   jetMfdPlacements,
@@ -177,21 +178,26 @@ function worldDigest(meshes: readonly AbstractMesh[]): string {
 }
 
 /**
- * `jet-hud-frame` is three untapered rods merged in one order, vertices in that order: the port
- * upright, the starboard upright, the bar, 38 vertices and 32 triangles each (an 8-sided cylinder with
- * its two caps). Pinned so a change to a strut fails loudly instead of slicing the wrong vertices.
+ * `jet-hud-frame` is three untapered rods and two rounded corners merged in one order, vertices in that order: the
+ * port upright, the starboard upright, the bar, 38 vertices and 32 triangles each (an 8-sided cylinder with its two
+ * caps), then the port and the starboard corner (step 5b), 56 vertices and 96 triangles each (seven rings of eight
+ * round a quarter circle, open at both ends). Pinned so a change to a strut fails loudly instead of slicing the wrong
+ * vertices.
  */
-const FRAME_ORDER = ["port", "starboard", "bar"] as const;
-const FRAME_SOURCES = ["jet-hud-frame-upright-port", "jet-hud-frame-upright-starboard", "jet-hud-frame-bar"];
+const FRAME_ORDER = ["port", "starboard", "bar", "port corner", "starboard corner"] as const;
+const FRAME_SOURCES = ["jet-hud-frame-upright-port", "jet-hud-frame-upright-starboard", "jet-hud-frame-bar", "jet-hud-frame-corner-port", "jet-hud-frame-corner-starboard"];
 const FRAME_VERTICES = 38;
 const FRAME_TRIANGLES = 32;
+const CORNER_VERTICES = 56;
+const CORNER_TRIANGLES = 96;
 function frameBlock(which: (typeof FRAME_ORDER)[number]): Vector3[] {
   const mesh = named("jet-hud-frame");
   expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom, "the frame's sources, in merge order").toEqual(FRAME_SOURCES);
   const vertices = worldVertices(mesh);
-  expect(vertices.length, "the frame's vertices").toBe(FRAME_VERTICES * FRAME_ORDER.length);
+  expect(vertices.length, "the frame's vertices").toBe(FRAME_VERTICES * 3 + CORNER_VERTICES * 2);
   const k = FRAME_ORDER.indexOf(which);
-  return vertices.slice(k * FRAME_VERTICES, (k + 1) * FRAME_VERTICES);
+  const from = k < 3 ? k * FRAME_VERTICES : 3 * FRAME_VERTICES + (k - 3) * CORNER_VERTICES;
+  return vertices.slice(from, from + (k < 3 ? FRAME_VERTICES : CORNER_VERTICES));
 }
 /** The bounding box's centre along an axis: a capped cylinder's axis, where the vertex mean is pulled toward its seam. */
 const centre = (vs: readonly Vector3[], axis: "x" | "y" | "z") => (Math.min(...vs.map((v) => v[axis])) + Math.max(...vs.map((v) => v[axis]))) / 2;
@@ -561,12 +567,12 @@ describe("the coaming", () => {
 });
 
 describe("the HUD frame", () => {
-  it("is one of the seven cockpit-only meshes (with its housing, its combiner, the MFDs' frames and rims, the screens and the sills), three struts merged on the shared matte glareshield material", () => {
+  it("is one of the seven cockpit-only meshes (with its housing, its combiner, the MFDs' frames and rims, the screens and the sills), three struts and two rounded corners merged on the shared matte glareshield material", () => {
     expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills"]);
     const frame = named("jet-hud-frame");
     expect((frame.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(FRAME_SOURCES);
-    expect(frame.getTotalVertices()).toBe(FRAME_VERTICES * 3);
-    expect(frame.getIndices()!.length / 3).toBe(FRAME_TRIANGLES * 3);
+    expect(frame.getTotalVertices()).toBe(FRAME_VERTICES * 3 + CORNER_VERTICES * 2);
+    expect(frame.getIndices()!.length / 3).toBe(FRAME_TRIANGLES * 3 + CORNER_TRIANGLES * 2);
     const material = frame.material as PBRMaterial;
     expect(material.name).toBe("jet-glareshield");
     expect(material.environmentIntensity, "lit by the sky; matte: reflects nothing").toBe(GLARESHIELD_IMAGE_LIGHT);
@@ -615,10 +621,27 @@ describe("the HUD frame", () => {
     const barRadial = bar.map((v) => Math.hypot(v.x - 3.05, v.y - JET_HUD_FRAME.barY)).filter((r) => r > 0.003);
     expect(Math.min(...barRadial), "the bar's thinnest ring").toBeCloseTo(0.005, 4);
     expect(Math.max(...barRadial), "the bar's fattest ring").toBeCloseTo(0.005, 4);
-    // the bar runs between the uprights' AXES, so its ends are inside the uprights (to their outboard faces it
-    // stood 1.6 px past them), and the uprights run up to the bar's top: the corners close
-    expect(Math.max(...bar.map((v) => Math.abs(v.z)))).toBeCloseTo(JET_HUD_FRAME.z, 4);
-    expect(Math.max(...starboard.map((v) => v.y))).toBeCloseTo(JET_HUD_FRAME.barY + JET_HUD_FRAME.radius, 4);
+    // THE CORNERS ARE ROUNDED (step 5b): the uprights run up to, and the bar out to, where a quarter circle of
+    // centreline radius 0.025 takes over, tangent to both (square, the bar ran between the uprights' axes and the
+    // uprights up to the bar's top)
+    const R = JET_HUD_FRAME.cornerRadius;
+    expect(R).toBe(0.025);
+    expect(Math.max(...bar.map((v) => Math.abs(v.z)))).toBeCloseTo(JET_HUD_FRAME.z - R, 4);
+    expect(Math.max(...starboard.map((v) => v.y))).toBeCloseTo(JET_HUD_FRAME.barY - R, 4);
+    for (const [which, side] of [["port corner", -1], ["starboard corner", 1]] as const) {
+      const corner = frameBlock(which);
+      const axis = jetHudFrameCornerAxis(side);
+      // its centreline: from the upright's axis at its top, round to the bar's axis at its end
+      expect([axis[0]!.y, Math.abs(axis[0]!.z)], `${which} leaves the upright`).toEqual([expect.closeTo(JET_HUD_FRAME.barY - R, 12), expect.closeTo(JET_HUD_FRAME.z, 12)]);
+      expect([axis[axis.length - 1]!.y, Math.abs(axis[axis.length - 1]!.z)], `${which} meets the bar`).toEqual([expect.closeTo(JET_HUD_FRAME.barY, 12), expect.closeTo(JET_HUD_FRAME.z - R, 12)]);
+      // a tube of the rods' radius round a quarter circle of R about (barY - R, z - R), in the frame's plane
+      const centreY = JET_HUD_FRAME.barY - R;
+      const centreZ = side * (JET_HUD_FRAME.z - R);
+      for (const v of corner) {
+        const inPlane = Math.hypot(v.y - centreY, v.z - centreZ);
+        expect(Math.hypot(v.x - JET_HUD_FRAME.x, inPlane - R), `${which} vertex off its centreline`).toBeCloseTo(JET_HUD_FRAME.radius, 6);
+      }
+    }
   });
 
   it("rises from its housing: seen from the housing's top up to the bar, the housing under it, the rail under that", () => {
@@ -691,14 +714,16 @@ describe("the HUD frame", () => {
     const frame = named("jet-hud-frame");
     const triangles = worldTriangles(frame);
     const footY = jetHudFrameFootY();
-    const topY = JET_HUD_FRAME.barY + JET_HUD_FRAME.radius;
+    // the uprights' tops and the bar's ends where the corners' rounds take over (step 5b): inside the corners' tubes
+    const topY = JET_HUD_FRAME.barY - JET_HUD_FRAME.cornerRadius;
     const f = JET_HUD_FRAME;
+    const barEnd = f.z - f.cornerRadius;
     const flat = (t: Triangle, pick: (v: Vector3) => number, value: number) => [t.a, t.b, t.c].every((v) => Math.abs(pick(v) - value) < 1e-4);
     const caps = {
       feet: triangles.filter((t) => flat(t, (v) => v.y, footY)),
       tops: triangles.filter((t) => flat(t, (v) => v.y, topY) && [t.a, t.b, t.c].every((v) => Math.abs(Math.abs(v.z) - f.z) < f.radius + 1e-4)),
       // each end is flat at ONE z (flat in |z| would also take the bar's own side walls, which run end to end)
-      barEnds: triangles.filter((t) => (flat(t, (v) => v.z, f.z) || flat(t, (v) => v.z, -f.z)) && [t.a, t.b, t.c].every((v) => Math.abs(v.y - f.barY) < f.radius + 1e-4)),
+      barEnds: triangles.filter((t) => (flat(t, (v) => v.z, barEnd) || flat(t, (v) => v.z, -barEnd)) && [t.a, t.b, t.c].every((v) => Math.abs(v.y - f.barY) < f.radius + 1e-4)),
     };
     const drawnFromEye = (t: Triangle) => {
       const toward = t.a.add(t.b).add(t.c).scale(1 / 3).subtract(EYE_POINT);
@@ -714,7 +739,7 @@ describe("the HUD frame", () => {
     expect(sides.filter(drawnFromEye).length, "side-wall triangles drawn from the eye").toBeGreaterThan(20);
   });
 
-  it("clears the BUILT canopy by at least 0.05 m everywhere: 0.074 at the frame's top corners, 0.1 m nearer the eye than the design put it", () => {
+  it("clears the BUILT canopy by at least 0.05 m everywhere: 0.086 at the frame's rounded top corners, 0.1 m nearer the eye than the design put it", () => {
     // At the design's x 3.15 the frame cleared the built glass by only 0.021 (at the uprights' tops, by the same
     // nearest-triangle measure as below; the bar's ends by 0.023): the design assumed a crown of
     // 1.10 there, the loft's is 1.088 on the centreline and falls to 1.05 over the ends. At x 3.05 the crown is
@@ -732,7 +757,10 @@ describe("the HUD frame", () => {
     const clearance = Math.min(...upper.map((v) => distanceToTriangles(v, canopy)));
     expect(clearance, "the frame is inside the glass").toBeGreaterThan(0);
     expect(clearance, "the design's clearance, against the built loft").toBeGreaterThanOrEqual(0.05);
-    expect(clearance, "the record: 0.074 at 8 mm rods, a little more at 5").toBeLessThan(0.085);
+    console.info(`F-16 HUD frame: nearest glass ${clearance.toFixed(4)} m`);
+    // the record: 0.074 at 8 mm rods, a little more at 5; 0.086 with the corners rounded (step 5b)
+    expect(clearance).toBeGreaterThan(0.08);
+    expect(clearance).toBeLessThan(0.09);
     // and nothing of the frame pokes through: every vertex is under the crown line at its own station and z
     for (const v of upper) {
       const above = crossings(new Vector3(v.x, v.y, v.z), new Vector3(0, 1, 0), canopy);
@@ -938,10 +966,12 @@ describe("the HUD's housing and glass, together (the F-16 pass, step 2)", () => 
 });
 
 describe("the HUD's combiner (the F-16 pass, step 2)", () => {
+  /** Each pane's triangles: its outline (16 points: the bottom's two, each corner's seven) fanned from its middle. */
+  const PANE_TRIANGLES = 16;
   const panes = () => {
     const t = worldTriangles(named("jet-hud-combiner"));
-    expect(t, "two panes, two triangles each").toHaveLength(4);
-    return [t.slice(0, 2), t.slice(2, 4)] as const;
+    expect(t, "two panes, 16 triangles each").toHaveLength(2 * PANE_TRIANGLES);
+    return [t.slice(0, PANE_TRIANGLES), t.slice(PANE_TRIANGLES)] as const;
   };
   const corners = (tris: readonly Triangle[]) => {
     const out: Vector3[] = [];
@@ -973,7 +1003,7 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
     expect((combiner.metadata as { castsShadow?: boolean }).castsShadow).toBe(false);
     const [first, second] = panes();
     const xs = [corners(first), corners(second)].map((c) => {
-      expect(c).toHaveLength(4);
+      expect(c, "its outline's 16 points and the fan's middle").toHaveLength(17);
       for (const v of c) expect(v.x).toBeCloseTo(c[0]!.x, 6);
       return c[0]!.x;
     });
@@ -984,17 +1014,26 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
   it("fills the frame's outline and no more: into the uprights and the bar, and down into the housing, so no gap shows over it", () => {
     const f = JET_HUD_FRAME;
     const housing = worldTriangles(named("jet-hud-housing"));
+    // the frame's centreline: the uprights' axes, the bar's, and the corners' quarter circles (step 5b)
+    const R = f.cornerRadius;
+    const offAxis = (v: Vector3) => {
+      const z = Math.abs(v.z);
+      if (v.y <= f.barY - R) return Math.abs(z - f.z);
+      if (z <= f.z - R) return Math.abs(v.y - f.barY);
+      return Math.abs(Math.hypot(v.y - (f.barY - R), z - (f.z - R)) - R);
+    };
     for (const pane of panes()) {
-      const c = corners(pane);
-      for (const v of c) {
-        expect(v.y, "no pane vertex over the bar's top").toBeLessThanOrEqual(f.barY + f.radius + 0.001);
-        expect(Math.abs(v.z), "none past the uprights").toBeLessThanOrEqual(f.z + f.radius + 0.001);
-      }
+      const middle = pane[0]!.a;
+      const c = corners(pane).filter((v) => Vector3.Distance(v, middle) > 1e-6);
+      expect(c, "its outline: the bottom's two, each corner's seven").toHaveLength(16);
+      // ON THE RODS' AXES all round, the rounded corners too: no glass stands outside the rods
+      for (const v of c) expect(offAxis(v), `pane vertex (${v.y.toFixed(4)}, ${v.z.toFixed(4)}) off the frame's centreline`).toBeLessThan(1e-6);
       expect(Math.max(...c.map((v) => Math.abs(v.z)))).toBeCloseTo(f.z, 5);
       expect(Math.max(...c.map((v) => v.y))).toBeCloseTo(f.barY, 5);
       // the bottom edge inside the housing all along it: no gap between the glass and the hump
-      const bottom = c.filter((v) => v.y < f.barY - 0.01);
-      expect(bottom).toHaveLength(2);
+      const lowest = [...c].sort((a, b) => a.y - b.y);
+      const bottom = lowest.slice(0, 2);
+      expect(lowest[2]!.y, "two corners at the bottom").toBeGreaterThan(bottom[1]!.y + 0.05);
       const [a, b] = bottom as [Vector3, Vector3];
       for (let t = 0; t <= 1; t += 0.05) {
         const p = Vector3.Lerp(a, b, t);
@@ -1004,7 +1043,7 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
     expect(jetHudCombinerPanes()).toHaveLength(2);
   });
 
-  it("faces the eye, pane by pane: each pane's two triangles are drawn from the seat, their flat normals toward it", () => {
+  it("faces the eye, pane by pane: each pane's triangles are drawn from the seat, their flat normals toward it", () => {
     const combiner = named("jet-hud-combiner");
     const normals = combiner.getVerticesData(VertexBuffer.NormalKind)!;
     for (const [k, pane] of panes().entries()) {
@@ -1013,7 +1052,7 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
         const centreOfTriangle = t.a.add(t.b).add(t.c).scale(1 / 3);
         if (Vector3.Dot(Vector3.Cross(t.b.subtract(t.a), t.c.subtract(t.a)), centreOfTriangle.subtract(EYE_POINT)) > 0) drawn += 1;
       }
-      expect(drawn, `pane ${k}: triangles drawn from the eye`).toBe(2);
+      expect(drawn, `pane ${k}: triangles drawn from the eye`).toBe(PANE_TRIANGLES);
     }
     for (let i = 0; i < normals.length; i += 3) expect([normals[i], normals[i + 1], normals[i + 2]], "a flat normal toward the eye").toEqual([-1, 0, 0]);
   });
@@ -1023,7 +1062,8 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
     // asked of the panes' own triangles, so the window being empty is not the instrument never touching the glass
     const glass = worldTriangles(named("jet-hud-combiner"));
     const hits = (az: number, e: number) => glass.map((t) => hitTriangle(EYE_POINT, direction(az, e), t)).filter(Number.isFinite).sort((a, b) => a - b);
-    for (const [az, e] of [[0, -2], [-5.8, 3.9], [5.8, 3.9], [-5.8, -8.4], [5.8, -8.4]] as const) {
+    // (the window's top corners at +3.55, the window pin's top: over it the rounded corners take the corners of the box)
+    for (const [az, e] of [[0, -2], [-5.8, 3.55], [5.8, 3.55], [-5.8, -8.4], [5.8, -8.4]] as const) {
       expect(firstHit(az, e)?.name ?? null, `opaque at azimuth ${az}, elevation ${e}`).toBeNull();
       const found = hits(az, e);
       expect(found, `both panes at azimuth ${az}, elevation ${e}`).toHaveLength(2);
