@@ -53,9 +53,12 @@ const PAGES = [[3, -3, 5], [5, -1, 1]] as const;
 /**
  * The hitch side of booked against spent, per breach frame: spent at most
  * half again what was booked, plus a pass's floor. The floor is what a pass
- * reads beyond its work on this adapter: the one-thread args pass, booked at
- * 0.013 ms, has read anywhere from 0.007 to 0.075 ms alone in its frame
- * (2026-09-22/23), so 0.08 ms covers it.
+ * reads beyond its work on this adapter: the one-thread args pass read 0.007
+ * to 0.075 ms alone in its frame when the count read flushed mid-frame
+ * (2026-09-22/23). With the count read at the frame's end it reads 0.067 to
+ * 0.104 there, so it is priced at 0.08 and its bound is 0.2. A frame whose
+ * readings are the previous frame's, never rewritten, now reads 0 (the deferred
+ * timing's stale guard) and cannot fail this.
  */
 const OVERSPEND_RATIO = 1.5;
 const PASS_FLOOR_MS = 0.08;

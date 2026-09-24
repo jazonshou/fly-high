@@ -234,9 +234,13 @@ export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
   // 0.098 ms cold in all three runs.
   breachDirect: 0.099,
   // One thread writing each carve chunk's size from the pit count and zeroing
-  // the claim cursor: 0.012 cold. Alone in a frame it has read as much as 0.075, which
-  // is a pass's floor on this adapter, not its work.
-  breachArgs: 0.013,
+  // the claim cursor: 0.012-0.015 in the cost test's pages. In the frame it runs in
+  // under the live meter, with the count read at the frame's end, it reads
+  // 0.067-0.104 (median 0.077 over 13; the flushing read's frames read ~0.013).
+  // Priced at what that frame spends. Why the reading is that high is not
+  // shown: its end timestamp may take in the count's copy that follows it
+  // (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md, open item 5).
+  breachArgs: 0.08,
   // One chunk of the (2r+1)² pit carve: up to `BREACH_PIT_CHUNK_PITS` listed
   // pits, one workgroup each, dispatched at its CPU-known size.
   // Cold full chunks on pages of 372, 794 and 1070 pits: median 0.202 ms over

@@ -118,7 +118,8 @@ enough for any one frame to hold.
 **Prices, 23:47-23:51, cold.**
 
 - breachDirect: 0.099 ms (0.098 in all three runs).
-- breachArgs: 0.013 ms.
+- breachArgs: 0.013 ms. (Re-priced 2026-09-23 at 0.08 ms, what its frame spends with the count read at the frame's end:
+  see the fixed tree's runs and open item 5.)
 - Carve chunk: 0.21 ms.
 - The stages the fix left alone keep the 22:38 figures. This slot's cold figures agree with them within 10 %, except
   seed, whose cold first page reads 0.42-0.46 ms against 0.40. That would put it past the tier-1 row, which no stage
@@ -379,7 +380,10 @@ read before each run:
   - The warm re-run pages now read 0.139-0.190 ms a chunk, where the broken tree's read about 0.05: open item 1's
     under-read is gone with the defect.
 - **The breach frame gate:** 2 of 3 runs pass, and one fails on L3's one-thread args pass (booked 0.013 ms, read 0.164,
-  against 1.5 x booked + 0.08 = 0.0995). See open item 5.
+  against 1.5 x booked + 0.08 = 0.0995). See open item 5. That item's probe found two things.
+  - The 0.164 was a stale timing frame. The deferred timing now delivers such a reading as 0 (5399d94).
+  - The args pass reads 0.067-0.104 ms in its own frame with the count read at the frame's end, against about 0.013
+    with the flushing read. It is priced at 0.08 ms from its frame.
 
 **A separate harness artefact, found on the way.** Babylon's `ComputePassDescriptor` is one module-level object shared
 by every engine on a page. Its `timestampWrites` is rewritten only for shaders that carry a GPU timer. So an untimed
@@ -431,8 +435,24 @@ that same window.
    and an args pass (the cursor is never re-zeroed) is not shown.
 5. **The breach frame gate on the fixed tree: the args pass's readings.** One run of three failed on L3's one-thread
    args pass, which read 0.164 ms against 0.013 booked. That frame's readings equal the previous frame's EXACTLY
-   (erosion 0.164, competitor 0.338, frame 0.502 in both), which looks like a stale timing read rather than a real
-   overspend. Babylon hands out timestamp slots by pass order within a frame and resets them at `endFrame`, so a
-   resolve over unwritten slots returns the previous frame's values. The args pass also reads higher on the fixed tree
-   than before the fix: 0.016-0.164 ms over six readings, against 0.010-0.075 over four. Next: a probe that logs every
-   frame's per-pass readings and counts exact duplicate frames, on the fixed and the pre-fix trees.
+   (erosion 0.164, competitor 0.338, frame 0.502 in both).
+
+   A probe (2026-09-23 21:36-21:38) logged every delivered pass in the gate's scenario: four runs on the fixed tree and
+   four with the count read's flush restored.
+   - **Stale frames happen on both trees.** A whole frame came back with every slot exactly the previous frame's, once
+     in four runs on each tree, at a stage change. The last reading went to another shader: "competitor 141873,
+     competitor 134165, talus-apply 66874", then "competitor 141873, competitor 134165, fine-band 66874". They
+     predate the fix.
+   - **The short-frame form of the idea is refuted.** Babylon hands slots out by pass order in a frame, so the guess was
+     that a frame with fewer passes would read the tail of the one before. 0 of 78 such frames repeated anything.
+   - **Single slots of ~25 µs talus passes repeat by chance.** The timestamp tick is 41.67 ns (24 583 ns is exactly
+     590 ticks).
+
+   Resolved for the carve in two parts:
+   - The deferred timing drops a reading whose 64-bit begin/end pair comes back unchanged, as 0 (unusable), and
+     counts it (`staleReadings`, 5399d94).
+   - The args pass reads 0.067-0.104 ms (median 0.077 over 13 readings) in its frame with the count read at the
+     frame's end, against 0.012-0.016 with the flushing read. It is priced at 0.08 ms from that frame.
+
+   Still open: why a whole frame's slots go unwritten, and why the args pass reads high. It may be the count's copy
+   that follows it in the same command buffer, taken into its end timestamp.
