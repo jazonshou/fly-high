@@ -1892,11 +1892,25 @@ export class TerrainPageErosionGpu {
    * `runReadbackAndMfd`), which would carve nothing and publish an uncarved
    * page; the args pass always writes chunk 0's y as 1, so a zero there is a
    * faulted read, re-read once, never a page without pits.
+   *
+   * `noDelay: false`, and it is the fix, not a preference: the read's copy
+   * stays in the frame's own encoder and is mapped at `onEndFrameObservable`,
+   * after the frame's submit. With `noDelay: true` the read flushed the frame
+   * mid-way (`flushFramebuffer()`), and with GPU timing on and the deferred
+   * per-pass timing installed, 13 of 20 timed runs lost whole pages' direct
+   * and args passes. The claim cursor was never re-zeroed, the count read
+   * handed back the previous page's (same address, same count, so no guard
+   * sees it) and the carve claimed slots past the list. The end-of-frame read
+   * was 0 of 20 in the same interleaved sample; unstamping the carve's own
+   * passes was 12 of 20 (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md).
+   * It costs at most one more frame before the page learns its chunk count,
+   * and it always resolves: the game pumps this producer from the render loop,
+   * and every GPU test that drives it runs one (`withScene`).
    */
   private async runPitCountReadback(job: ActiveJob, buffers: GpuBuffers): Promise<void> {
     try {
       const readHead = async (): Promise<Uint32Array> => {
-        const view = await buffers.pitArgs.read(0, 16, undefined, true);
+        const view = await buffers.pitArgs.read(0, 16, undefined, false);
         return new Uint32Array(view.buffer.slice(view.byteOffset, view.byteOffset + 16));
       };
       let head = await readHead();

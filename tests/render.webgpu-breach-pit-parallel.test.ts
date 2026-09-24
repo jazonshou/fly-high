@@ -21,7 +21,7 @@ import { readSource, stripComments } from "./support/sourceText";
 /**
  * The breach stage as passes (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md):
  * the direct pass lists the pits, a one-thread pass writes each carve chunk's
- * indirect dispatch size, the pit count is read back to know how many chunks
+ * dispatch size, the pit count is read back to know how many chunks
  * there are, and the carve runs one workgroup per listed pit, a chunk of
  * `BREACH_PIT_CHUNK_PITS` pits per admitted dispatch. What a frame cannot
  * show: the stage machine's order (a fresh count before the direct pass,
@@ -64,8 +64,11 @@ function stagedProducer(options: {
       update: (data: Uint32Array) => {
         calls.push(`reset pitArgs: ${data.length} words, ${data.every((word) => word === 0) ? "all zero" : "NOT ZERO"}`);
       },
-      read: async (offset: number, size: number) => {
-        calls.push(`read pitArgs ${offset}+${size}`);
+      // The count is read at the frame's end, never through a mid-frame flush
+      // (`noDelay`): with the deferred per-pass timing installed, the flush
+      // lost whole pages' passes (the finding's sample 2).
+      read: async (offset: number, size: number, _buffer?: unknown, noDelay?: boolean) => {
+        calls.push(`read pitArgs ${offset}+${size}${noDelay ? " WITH A MID-FRAME FLUSH" : " at the frame's end"}`);
         await readsReleased;
         // What the args pass leaves in chunk 0's arg set and the count word;
         // a faulted read is all zeros.
@@ -125,7 +128,7 @@ describe("breach as passes: the stage machine", () => {
       `reset pitArgs: ${BREACH_PIT_CHUNKS * 4} words, all zero`,
       "dispatch breachDirect 48",
       "dispatch breachArgs 1",
-      "read pitArgs 0+16",
+      "read pitArgs 0+16 at the frame's end",
       // Each chunk at its CPU-known size: 128, 128 and the 44 left of 300.
       "dispatch breachPit 128",
       "dispatch breachPit 128",
@@ -142,7 +145,7 @@ describe("breach as passes: the stage machine", () => {
       `reset pitArgs: ${BREACH_PIT_CHUNKS * 4} words, all zero`,
       "dispatch breachDirect 48",
       "dispatch breachArgs 1",
-      "read pitArgs 0+16",
+      "read pitArgs 0+16 at the frame's end",
     ]);
     expect(job).toMatchObject({ asyncInFlight: true, stage: "breach", dispatchesUsed: 2 });
   });
@@ -202,7 +205,7 @@ describe("breach as passes: a page whose pits overflow the list fails loudly", (
     const once = stagedProducer({ pits: 300, faultedReads: 1 });
     await once.producer.pump(2);
     await settle();
-    expect(once.calls.filter((call) => call.startsWith("read"))).toEqual(["read pitArgs 0+16", "read pitArgs 0+16"]);
+    expect(once.calls.filter((call) => call.startsWith("read"))).toEqual(["read pitArgs 0+16 at the frame's end", "read pitArgs 0+16 at the frame's end"]);
     expect(once.job).toMatchObject({ breachChunks: 3, asyncInFlight: false });
 
     const twice = stagedProducer({ pits: 300, faultedReads: 2 });
