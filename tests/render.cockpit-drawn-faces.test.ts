@@ -97,14 +97,16 @@ const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 15, bizjet: 
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed
- * by `sculptSolid`, and it fills the bottom of the frame from the seat. It is held to the same zero here. (The
- * 747's centre post was walked here while the cockpit camera drew it; the kit lines its place now.)
+ * by `sculptSolid`, and its rail is the deck line from the seat; its board is the dash under the rail's cove
+ * (step 1 of the F-16 pass: another narrowed `solidPlate`), which the pilot sees from the cove's foot down.
+ * Both are held to the same zero here. (The 747's centre post was walked here while the cockpit camera drew
+ * it; the kit lines its place now.)
  */
 const ALSO_WALKED: Readonly<Record<AircraftKind, readonly string[]>> = {
   trainer: [],
   bizjet: [],
   airliner: [],
-  jet: ["jet-glare-shield"],
+  jet: ["jet-glare-shield", "jet-instrument-panel"],
 };
 
 interface Prepared {

@@ -5,7 +5,7 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
-import { glareshieldMaterial, sculptSolid, solidPlate } from "./cockpitPrimitives";
+import { glareshieldMaterial, roundedDeckSection, sculptSolid, solidPlate, type RoundedDeckSection } from "./cockpitPrimitives";
 import {
   JET_DISPLAYS,
   createDisplayAtlas,
@@ -23,7 +23,7 @@ import type { FlightVisualState } from "@/src/game/types";
 /**
  * What the F-16's pilot sees over the coaming, built to angles. PHASE F1: the
  * coaming, the panel board under it and the HUD's combiner frame. PHASE F2: the
- * two MFDs on the coaming's near face, drawing the PFD and the map pages. The
+ * two MFDs on the panel's face, drawing the PFD and the map pages. The
  * UFC between them is not built.
  *
  * WHY THIS EXISTS. The old cockpit was a tilted `jet-glare-shield` box whose
@@ -37,17 +37,18 @@ import type { FlightVisualState } from "@/src/game/types";
  *
  * THE TARGETS, as angles from the eye E = (2.22, 0.94, 0) (`catalogue.cockpitEye`,
  * which this pass does not move) at the 75 degree lens:
- *  - the coaming's far edge is the silhouette straight ahead at -10.2 degrees and
- *    its near edge (the panel face) at -16.0, so its top surface shows as a 5.8
- *    degree band. -10.2 and not lower because the nose must not show: from this eye
- *    the air-data probe's tip reads -10.41 and the radome's crown -11.23 (the radome
- *    is hidden in cockpit view, the probe is not), and an F-16 pilot does not see
- *    the nose. On the type the over-the-nose line is nearer -15, so the eye and the
- *    nose disagree by a few degrees: a nose-loft or eye question for a later pass;
+ *  - the deck line, the silhouette straight ahead, is -10.19 degrees (the catalogue's
+ *    `cockpitDeckLineDegrees`): the coaming's rounded rail stands on it (the F-16 pass,
+ *    step 1; it was a wedge's far edge, with its flat top showing as a 5.8 degree band
+ *    down to a near edge at -16.0). -10.19 and not lower because the nose must not
+ *    show: from this eye the air-data probe's tip reads -10.41 and the radome's crown
+ *    -11.23 (the radome is hidden in cockpit view, the probe is not), and an F-16 pilot
+ *    does not see the nose. On the type the over-the-nose line is nearer -15, so the eye
+ *    and the nose disagree by a few degrees: a nose-loft or eye question for a later pass;
  *  - the HUD frame's uprights stand at az +-6.5 and its top bar reads +4.5, the
- *    box containing (0, 0); the uprights' feet are BURIED in the coaming;
- *  - the panel board runs from the tub's top up under the coaming, and nothing
- *    of it shows above the coaming's near edge.
+ *    box containing (0, 0); the uprights' feet are BURIED in the hood, behind the rail;
+ *  - the panel board is the dash: from the tub's top up to the cove's foot under the
+ *    rail, with the MFDs on its face.
  *
  * Body coordinates: +X nose, +Y up, +Z starboard; one seat on the centreline.
  * `tests/render.cockpit-jet.test.ts` holds the angles, the extents and the frame's
@@ -71,91 +72,85 @@ const DEG = 180 / Math.PI;
 // ---- the coaming ---------------------------------------------------------------
 
 /**
- * A WEDGE, not a tilted box: its top surface runs from the panel face down to a far
- * edge, its underside is flat, its sides are vertical, and its plan narrows toward
- * the nose as the canopy does. The far edge is what the pilot sees as the bottom of
- * the world; the top surface shows between it and the near edge.
+ * A ROUNDED RAIL, not a wedge (the F-16 pass, step 1; the Global's deck, P1a). The deck line is the catalogue's
+ * (10.19 degrees under the eye, over the nose probe's tip at -10.41), and it is the rail's ROUND at the aft face that
+ * stands on it: the round is tangent to the sight line at a vertex, so the silhouette is one row of the picture. Under
+ * the round a 45 degree cove turns in to the board's face (the dash); forward of it the hood falls away faster than the
+ * sight line, so no part of its top is seen from the seat.
+ *
+ * WHY. The wedge's top was a flat, sky-facing plane that the pilot saw as a 5.8 degree band, the brightest thing on
+ * the deck (58 luma against the near face's 20, uniform from front to back) with razor edges (57 to 24 in one pixel):
+ * a table top. Shading a plane cannot help (a plane of any slope is lit evenly), and tilting it toward the pilot only
+ * shows more of it; the rail shows the pilot a thin lit round and a dark cove instead, and the board's top rises to the
+ * cove's foot, so the MFDs can stand 3.5 cm higher and their screens come into the frame whole.
+ *
+ * THE PLAN is the rail's full width at the aft face and narrows forward of the cove's foot to the hood's end, as the
+ * canopy does. The width is the canopy's: the rail stands 7 cm higher than the wedge's near edge did, where the bubble
+ * is narrower (0.380 to 0.384 inside at its top, x 2.92 to 2.95), and at the wedge's 0.38 it came within 1.1 mm of
+ * the glass; at 0.36 it clears it by 2 cm, and the narrowing hood by 3 to 4 cm all the way forward.
  */
-export const JET_COAMING = Object.freeze({
-  /** The panel face: where the top surface starts. */
-  nearX: 2.92,
-  /** Reads -16.0 degrees straight ahead. */
-  nearTopY: 0.739,
-  farX: 3.5,
-  /**
-   * Reads -10.19 degrees straight ahead: the silhouette, over the probe's tip at -10.41 (the old board's
-   * top, the silhouette before, read -9.3). The glass is 0.077 above the far corners (3.5, 0.710, +-0.26)
-   * and 0.030 from them at its nearest,
-   * and nothing of the airframe but the glass is over the coaming (the cockpit-only HUD frame stands on
-   * it): it is under the bubble, which runs to x 4.1.
-   */
-  farTopY: 0.71,
-  undersideY: 0.6,
-  nearHalfWidth: 0.38,
+export const JET_GLARESHIELD = Object.freeze({
+  /** The aft face, where the round turns under into the cove: 0.70 ahead of the eye. */
+  aftX: 2.92,
+  radius: 0.02,
+  drop: 0,
+  cove: 0.01,
+  /** Steeper than the 10.19 degree sight line, so the hood's top never shows over the round. */
+  hoodFallDegrees: 13,
+  /** To x 3.50, the wedge's far edge: from outside it is still the dark hood over the panel. */
+  hoodDepth: 0.58,
+  roundSegments: 8,
+  /** The plan's half-width: the rail's, to the cove's foot, then narrowing to the hood's forward end. */
+  nearHalfWidth: 0.36,
   farHalfWidth: 0.26,
 });
 
-/** Height of the coaming's top surface at a station between its near and far edges. */
+/** The rail's section in body x and y: the round on the deck line, the cove, the hood (`roundedDeckSection`). */
+export function jetGlareshieldSection(): RoundedDeckSection {
+  return roundedDeckSection(eye(), JET_GLARESHIELD.aftX, aircraftSpec("jet").cockpitDeckLineDegrees, JET_GLARESHIELD, "the F-16");
+}
+
+/** Height of the hood's top at a station forward of the round (where the HUD frame stands). */
 export function jetCoamingTopY(x: number): number {
-  const c = JET_COAMING;
-  return c.nearTopY + ((c.farTopY - c.nearTopY) * (x - c.nearX)) / (c.farX - c.nearX);
+  const top = jetGlareshieldSection().round[0]!;
+  return top.y - (x - top.x) * Math.tan((JET_GLARESHIELD.hoodFallDegrees * Math.PI) / 180);
 }
 
-/** Half-width of the coaming's plan at a station between its near and far edges. */
+/**
+ * Half-width of the coaming's plan at a station: the rail's back to the cove's foot, then narrowing linearly to the
+ * hood's forward end. Every vertex forward of the foot is on the linear part, so a wall's width at any station between
+ * its vertices is this function's too.
+ */
 export function jetCoamingHalfWidth(x: number): number {
-  const c = JET_COAMING;
-  return c.nearHalfWidth + ((c.farHalfWidth - c.nearHalfWidth) * (x - c.nearX)) / (c.farX - c.nearX);
-}
-
-/** What an edge of the coaming's top surface reads straight ahead, from the eye. */
-export function jetCoamingEdgeElevationDegrees(edge: "near" | "far"): number {
-  const c = JET_COAMING;
-  const e = eye();
-  const x = edge === "near" ? c.nearX : c.farX;
-  const y = edge === "near" ? c.nearTopY : c.farTopY;
-  return Math.atan2(y - e.up, x - e.forward) * DEG;
+  const g = JET_GLARESHIELD;
+  const from = g.aftX + g.cove;
+  if (x <= from) return g.nearHalfWidth;
+  return g.nearHalfWidth + ((g.farHalfWidth - g.nearHalfWidth) * (x - from)) / (g.aftX + g.hoodDepth - from);
 }
 
 // ---- the panel board ---------------------------------------------------------------
 
 /**
- * One board and no dials. It stands on the tub and runs up INTO the coaming, whose
- * near face carries the panel face on up to the -16 degree edge. In a 16:9 window
- * the board is the first surface nowhere: straight ahead it takes over from the
- * coaming's near face at -25.9, below the frame's -23.35. In windows of 1.55:1 or
- * squarer (3:2, 4:3) its face shows under the coaming's near face as a band of the
- * interior's grey, lighter than the near face: the cockpit is composed for 16:10 and
- * wider.
- *
- * WHY IT STOPS INSIDE THE COAMING rather than at the coaming's near top edge. The
- * coaming's top surface slopes DOWN from that edge, so a board of any thickness
- * whose top were at y 0.739 would stand proud of the surface just ahead of the
- * edge (5 mm over its 0.1 m depth) and its top face would show from the
- * seat as a strip above the coaming. Buried 2 cm above the underside, nothing of it
- * can show: the coaming's near face is 1 mm nearer the eye than the board's over the
- * buried strip, so no two faces are coincident.
+ * One board and no dials: the DASH, its face at the cove's foot and its top there, from the tub up. Its plan is the
+ * hood's less `sideInset` a side (its sides are never coplanar with the hood's walls), narrowing with the hood over its
+ * depth, so its top is inside the hood along its whole depth: over the board the hood's underside falls away forward
+ * from the cove's foot while the board's top stays at it. Upright in this step; the lean is step 3's.
  */
 export const JET_PANEL = Object.freeze({
-  /** The panel face, which is the coaming's near face; the board's own face stands `setBack` ahead of it. */
-  faceX: 2.92,
-  setBack: 0.001,
   thickness: 0.1,
-  /**
-   * 0.355, not the design's 0.40, and measured: the coaming's plan narrows from 0.380 at the board's face to
-   * 0.359 at its back (x 2.921 to 3.021), so a 0.40 board stood out past the coaming's side walls there and
-   * two strips of its top, 2 to 4 cm wide, showed from outside above the sill. At 0.355 its top is under
-   * the coaming along its whole depth, and no lip of it shows beside the coaming's near face from the
-   * seat, in any window shape.
-   */
-  halfWidth: 0.355,
+  sideInset: 0.005,
   /** The tub's top. */
   bottomY: 0.3,
-  /** The board's top runs this far up into the coaming, above its underside. */
-  buryMetres: 0.02,
 });
 
+/** The board's face: at the cove's foot, and its top there. */
+export function jetPanelFace(): { x: number; topY: number } {
+  const foot = jetGlareshieldSection().faceTop;
+  return { x: foot.x, topY: foot.y };
+}
+
 export function jetPanelTopY(): number {
-  return JET_COAMING.undersideY + JET_PANEL.buryMetres;
+  return jetPanelFace().topY;
 }
 
 // ---- the HUD combiner frame ---------------------------------------------------------------
@@ -189,15 +184,16 @@ export const JET_HUD_FRAME = Object.freeze({
   barY: 1.0053,
   radius: 0.008,
   /**
-   * The uprights' feet stand this far BELOW the coaming's top surface at the frame's
-   * station: a strut that ended on the surface would show its end disc as a lit
-   * octagon (the Cessna's centre frame did, until it was tapered); buried, the cut
-   * end is inside the coaming and nothing sees it.
+   * The uprights' feet stand this far BELOW the hood's top at the frame's station: a
+   * strut that ended on the surface would show its end disc as a lit octagon (the
+   * Cessna's centre frame did, until it was tapered); buried, the cut end is inside the
+   * hood and nothing sees it. 2 cm, not the wedge's 3: the hood is a plate 3.3 cm thick
+   * here, and the feet stand 1.3 cm clear of its underside.
    */
-  buryMetres: 0.03,
+  buryMetres: 0.02,
 });
 
-/** Where the uprights' feet are: inside the coaming. */
+/** Where the uprights' feet are: inside the hood, behind the rail (the rail hides the frame below the deck line). */
 export function jetHudFrameFootY(): number {
   return jetCoamingTopY(JET_HUD_FRAME.x) - JET_HUD_FRAME.buryMetres;
 }
@@ -215,7 +211,7 @@ export function jetHudFrameAngles(): { uprightAzimuthDegrees: number; barElevati
 // ---- the MFDs --------------------------------------------------------------------------------
 
 /**
- * Two square MFDs on the coaming's near face, the type's: a 6-inch bezel round a 4-inch screen, the
+ * Two square MFDs on the board's face (the dash), the type's: a 6-inch bezel round a 4-inch screen, the
  * bezel band being where the real jet's buttons sit. They stand PROUD of the face on their own bezels,
  * TILTED BACK about the top back edge, which lies 1 mm off the face plane, and the bottom stands out
  * toward the pilot, so the screen faces up at an eye that looks down at it. From the eye to the
@@ -223,16 +219,16 @@ export function jetHudFrameAngles(): { uprightAzimuthDegrees: number; barElevati
  * MFDs' +-14.4 azimuth; tilting the top toward the pilot instead left it 39.3 off (0.774), upright
  * 25.9 (0.900).
  *
- * THE CEILING. Nothing of them may stand above y 0.735: the coaming's top surface starts at 0.739 at
- * the near edge, and a bezel above it would stand proud of the hood from the seat and from outside.
- * The FRONT top corner is the highest point (the face leans back, so the front is above the back), so
- * the back top edge sits `thickness * sin(tilt)` lower.
+ * THE CEILING (`jetMfdCeilingY`). Nothing of them may stand above 1 cm under the cove's foot, the
+ * lowest edge of the deck the pilot sees, so the round and the cove show whole over them. The FRONT top
+ * corner is the highest point (the face leans back, so the front is above the back), so the back top edge
+ * sits `thickness * sin(tilt)` lower. Under the wedge the ceiling was 0.735, 4 mm under its near edge.
  *
  * WHAT OF THEM IS SEEN. The 16:9 frame's bottom at their azimuth (+-14.4) is -22.7, not the -23.35 it
- * is straight ahead (the frame is a rectangle), so the frame shows the top of each page and not the
- * bottom: 63% of the screen, measured on the built mesh by the test. The game has no head movement,
- * so the bottom 37% of each page is never seen: the ND puts its own ship higher on a square page to
- * stay in view (`drawNd`), and the PFD's heading strip, which is lost, repeats the HUD's heading tape.
+ * is straight ahead (the frame is a rectangle). Under the wedge's near edge at -16 the frame showed 63%
+ * of each screen; under the rail's cove at -12.7 they stand 3.5 cm higher, and the frame shows all of it
+ * (measured on the built mesh by the test). The ND still puts its own ship higher on a square page
+ * (`drawNd`), and the PFD's heading strip still repeats the HUD's heading tape.
  */
 export const JET_MFD = Object.freeze({
   /** The bezel: square, and its thickness. */
@@ -253,11 +249,16 @@ export const JET_MFD = Object.freeze({
   z: 0.17,
   /** Back from vertical, about the top back edge: the bottom stands out toward the pilot. */
   tiltDegrees: 15,
-  /** Nothing of them above this: the coaming's top surface starts at 0.739. */
-  ceilingY: 0.735,
+  /** How far under the cove's foot nothing of them may stand. */
+  underCoveFoot: 0.01,
   /** The bezels' backs stand this far in front of the face plane, so no two faces are coincident. */
   standOff: 0.001,
 });
+
+/** The MFDs' ceiling: `underCoveFoot` under the cove's foot. */
+export function jetMfdCeilingY(): number {
+  return jetPanelFace().topY - JET_MFD.underCoveFoot;
+}
 
 /** The frame an MFD is built in: its back top edge on the face plane, up the face, and the face's outward normal. */
 export function jetMfdFrame(): { backTop: Vector3; up: Vector3; out: Vector3 } {
@@ -266,7 +267,7 @@ export function jetMfdFrame(): { backTop: Vector3; up: Vector3; out: Vector3 } {
   const up = new Vector3(Math.sin(t), Math.cos(t), 0);
   const out = new Vector3(-Math.cos(t), Math.sin(t), 0);
   // the FRONT top corner is at the ceiling: back top = ceiling - thickness * sin(tilt)
-  const backTop = new Vector3(JET_PANEL.faceX - m.standOff, m.ceilingY - m.bezelThickness * Math.sin(t), 0);
+  const backTop = new Vector3(jetPanelFace().x - m.standOff, jetMfdCeilingY() - m.bezelThickness * Math.sin(t), 0);
   return { backTop, up, out };
 }
 
@@ -316,9 +317,9 @@ export interface JetCockpit {
  * frame's instance, not the airframe's dark: from the seat a near-flat top surface on
  * a material with image-based light caught the sky at grazing angles and read as a
  * pale shelf, which is what a glareshield exists to stop, and the real hood is matte
- * from outside too. Its shape is a `solidPlate`
- * of its side elevation at its full near width, then `sculptSolid` narrows the plan
- * toward the far edge: `verticalProfile` cannot taper, and a tapered box is not a box.
+ * from outside too. Its shape is a `solidPlate` of the rail's section
+ * (`jetGlareshieldSection`) at its full width, then `sculptSolid` narrows the plan
+ * forward of the board's back: `verticalProfile` cannot taper.
  *
  * THE FRAME is three UNTAPERED rods merged into ONE mesh on the shared matte
  * glareshield material (one instance). Not `strutBetween`: it makes a strut's `from`
@@ -334,31 +335,33 @@ export function buildJetCockpit(
   root: TransformNode,
   materials: JetCockpitMaterials,
 ): JetCockpit {
-  const c = JET_COAMING;
+  const g = JET_GLARESHIELD;
   const glare = glareshieldMaterial(build, "jet-glareshield");
-  // The side elevation, extruded across the full near width; then the plan is narrowed
-  // toward the far edge. Local space is body space here: the mesh hangs from the root
+  // The rail's section, extruded across the full width; then the plan is narrowed forward
+  // of the board's back. Local space is body space here: the mesh hangs from the root
   // with no transform of its own.
-  const coaming = solidPlate(
-    build,
-    "jet-glare-shield",
-    [
-      { x: c.nearX, y: c.undersideY },
-      { x: c.farX, y: c.undersideY },
-      { x: c.farX, y: c.farTopY },
-      { x: c.nearX, y: c.nearTopY },
-    ],
-    c.nearHalfWidth * 2,
-    glare,
-    root,
-  );
-  sculptSolid(coaming, (point) => new Vector3(point.x, point.y, (point.z * jetCoamingHalfWidth(point.x)) / c.nearHalfWidth));
+  const coaming = solidPlate(build, "jet-glare-shield", jetGlareshieldSection().outline, g.nearHalfWidth * 2, glare, root);
+  sculptSolid(coaming, (point) => new Vector3(point.x, point.y, (point.z * jetCoamingHalfWidth(point.x)) / g.nearHalfWidth));
   coaming.metadata = { ...coaming.metadata, cockpitInterior: true, castsShadow: false };
 
+  // THE BOARD, a plate of its side elevation at the face's width, narrowed with the hood over its depth
   const p = JET_PANEL;
-  const boardTop = jetPanelTopY();
-  const board = build.box("jet-instrument-panel", p.thickness, boardTop - p.bottomY, p.halfWidth * 2, materials.interior, root);
-  board.position.set(p.faceX + p.setBack + p.thickness / 2, (p.bottomY + boardTop) / 2, 0);
+  const face = jetPanelFace();
+  const faceHalfWidth = g.nearHalfWidth - p.sideInset;
+  const board = solidPlate(
+    build,
+    "jet-instrument-panel",
+    [
+      { x: face.x, y: p.bottomY },
+      { x: face.x + p.thickness, y: p.bottomY },
+      { x: face.x + p.thickness, y: face.topY },
+      { x: face.x, y: face.topY },
+    ],
+    faceHalfWidth * 2,
+    materials.interior,
+    root,
+  );
+  sculptSolid(board, (point) => new Vector3(point.x, point.y, (point.z * (jetCoamingHalfWidth(point.x) - p.sideInset)) / faceHalfWidth));
   board.metadata = { ...board.metadata, cockpitInterior: true };
 
   const f = JET_HUD_FRAME;

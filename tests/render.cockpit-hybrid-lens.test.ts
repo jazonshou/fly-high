@@ -124,23 +124,27 @@ describe("what the lens shows of each deck, from the kits' own constants", () =>
   });
 
   it("CONTROL: the plain 75 degree lens loses them at 21:9, so the comparison above can see it", () => {
-    // Top-row display rows in frame at 2560 x 1080 with horizontal-fixed 75 degrees: none of the
-    // F-16's MFD screens or the 747's top row, 29.5 % of the Global's. (The survey's 0 / 0 / 13 was on the
-    // Global's flat board; its P1 panel stands the screens higher, 72.5 % of their rows in a 16:9 frame.
-    // A plain 75 degree ray grid reads the Global's two at 29.6 % and 72.6 %.)
+    // Top-row display rows in frame at 2560 x 1080 with horizontal-fixed 75 degrees: none of the 747's top
+    // row, 29.5 % of the Global's, 31.4 % of the F-16's MFDs. (The survey's 0 / 0 / 13 was on the Global's flat
+    // board; its P1 panel stands the screens higher, 72.5 % of their rows in a 16:9 frame. A plain 75 degree ray
+    // grid reads the Global's two at 29.6 % and 72.6 %. The F-16's read none at 21:9 and 62 % at 16:9 under the
+    // wedge's near edge at -16; under the rail's cove at -12.7 they stand 3.5 cm higher.)
     const share = (deck: (typeof DECKS)[number], name: string, w: number, h: number, lens: number) =>
       rowShareInFrame(projectPart(deck, cockpitParts(deck).find((p) => p.name === name)!, w, h, lens), h);
-    expect(share("jet", "port MFD", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
+    expect(share("jet", "port MFD", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.314, 2);
     expect(share("airliner", "port-pfd", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
     expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.295, 2);
-    // The same parts at 16:9: 62 %, 36.5 % and 72.5 % of their rows. (The 747's was 38 % on K3's upright board; on
+    // The same parts at 16:9: 98.6 %, 36.5 % and 72.5 % of their rows. (The 747's was 38 % on K3's upright board; on
     // its P1 panel, leaned 17 degrees, the screen's lower part is nearer the eye and spans more rows, so the frame's
     // bottom cuts a larger share of its ROWS while the share of its face is the same 38.1 % the kit's test reads.)
-    expect(share("jet", "port MFD", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.62, 2);
+    expect(share("jet", "port MFD", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.986, 2);
     expect(share("airliner", "port-pfd", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.365, 2);
     expect(share("bizjet", "port-outboard", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.725, 2);
-    // The loss itself: at 21:9 the plain lens shows the Global's screen at less than half the rows 16:9 shows.
-    expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES))
-      .toBeLessThan(0.5 * share("bizjet", "port-outboard", 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES));
+    // The loss itself: at 21:9 the plain lens shows the Global's screen, and the F-16's, at less than half the rows
+    // 16:9 shows.
+    for (const [deck, name] of [["bizjet", "port-outboard"], ["jet", "port MFD"]] as const) {
+      expect(share(deck, name, 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES), deck)
+        .toBeLessThan(0.5 * share(deck, name, 1600, 900, COCKPIT_HORIZONTAL_FOV_DEGREES));
+    }
   });
 });

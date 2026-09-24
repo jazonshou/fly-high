@@ -1624,6 +1624,77 @@ Eight mutations, all caught:
 - the Global's rim back on `applyGlow`'s law;
 - the 747's light state not driving the rim.
 
+## The F-16's cockpit, less blocky (P0, step 1)
+
+Jason: "the F-16 cockpit looks rudimentary -- no more instruments, but the window and dash should be less blocky and
+look more real."
+
+**P0, what read blocky and why.** This was measured by ray on the kit as built, with the tone taken from the as-built
+frame of 22 September (the jet unchanged since 83abfe9).
+- **No window frame is in view.** This F-16 has one-piece canopy glass. Its only bow is the aft one at x 1.35,
+  behind the pilot. The only "window frame" in the picture is the HUD's combiner frame, a bare goalpost of 8 mm
+  rods 19 degrees tall.
+- **The deck floats.**
+  - 81% of the frame is world, and 29% of its columns (az +-28.6 to +-37.5) hold no aircraft at all.
+  - Beside the dash, 56,700 px of lit terrain (luma 159) sit under the deck's top edge.
+  - The aircraft's own skin cannot fill it. The eye is outside the fuselage (its top is at y 0.41, 0.53 m under the
+    eye), and with the hidden skin drawn, none of the uncovered frame would meet it.
+- **The coaming was a flat table top.**
+  - Its top was a sky-facing plane seen as a 5.8 degree band, the brightest part of the deck and uniform front to
+    back (58 luma against the near face's 20).
+  - Its near edge was a razor, 57 to 24 in one pixel.
+  - Shading a plane cannot help, because a plane of any slope is lit evenly. Tilting it toward the pilot only
+    enlarges it and drags the MFDs down.
+- **A roughness grain cannot show on it.** F0 is 0, so there is no highlight for roughness to shape. The diffuse
+  model (Babylon's default, EON) takes a separate diffuse roughness. A per-pixel variation would need a texture, which
+  adds a UV varying.
+
+**Step 1, the coaming as a rounded rail** (`jetGlareshieldSection`, the shared `roundedDeckSection`; the Global's
+way, option E).
+- **The rail.** Its round (r 0.02) at the aft face, x 2.92, is tangent at a vertex to the catalogue's deck line
+  (-10.19, over the probe's tip at -10.41).
+  - Under it a 45 degree cove (1 cm) turns in to the dash at -12.68, so the deck's edge the pilot reads is 2.49
+    degrees.
+  - Forward of the round, the hood falls 13 degrees (steeper than the sight line) to x 3.50, so no part of its top
+    is seen.
+  - The rail reads ONE ROW across the frame: tan(el)/cos(az) is the deck line's to 1e-4 from az -25 to 25.
+- **Its width is the canopy's.**
+  - The rail stands 7 cm higher than the wedge's near edge did, where the bubble is narrower (0.380 to 0.384 inside
+    at its top). At the wedge's 0.38 it came within 1.1 mm of the glass.
+  - At 0.36 it clears the glass by 2.1 cm. The plan narrows linearly from the cove's foot to 0.26 at the hood's end,
+    3 to 4 cm inside the glass all the way.
+- **The dash.** The board's face and top are at the cove's foot, from the tub up, as a narrowed `solidPlate` (the
+  hood's plan less 5 mm a side), its top inside the hood along its whole depth. It is upright for now; the lean is
+  step 3's.
+- **The MFDs** stand 1 cm under the cove's foot (3.5 cm higher than under the wedge). Down their centre lines (az
+  +-14.2) the frame shows **98.6%** of each screen, where it showed 63%.
+- **The HUD frame** keeps its outline, so the 2D HUD's registration holds. It now rises from behind the rail: seen
+  from -10.12 up (the rail's row at az 6.5), where it rose out of the wedge's top at -13.95. Its feet are buried 2 cm
+  in the hood, which is a 3.3 cm plate there, 1.3 cm clear of its underside.
+- **What it costs.**
+  - The rail's ends read az +-27 where the wedge's near face reached +-28.5, a degree and a half more of empty
+    columns each side. Step 4's rails and consoles are for those columns.
+  - From outside, the hood's aft end stands 7 cm higher, under the canopy.
+
+**Tests** (tests/render.cockpit-jet.test.ts, 31):
+- the rail on the deck line by ray, with the tangent a vertex;
+- the cove by its built normals, and by ray the rail, the cove, then the dash;
+- one row across the rail, with nothing of it over the row;
+- the section and the plan, the hood falling 13 degrees, and every vertex 2 cm inside the bubble;
+- the dash inside the hood;
+- the MFDs under the cove's foot, and their reads and share;
+- the HUD frame's foot at the rail, and its feet buried 2 cm.
+
+The dash is now walked by the drawn-faces test with the coaming, and both hold zero. The wide-lens control re-pins
+the F-16's plain-lens rows (0.986 at 16:9, 0.314 at 21:9). The loft digests are re-pinned for the jet. Mesh by mesh
+against 2dacb1c, the five kit meshes changed and the other 66 of the jet's are bit-identical.
+
+Ten mutations, all caught:
+- the rail a degree under the deck line; a hood no steeper than the sight line (refused at build); the wedge's 0.38
+  width;
+- the board not narrowed; the MFDs at the wedge's ceiling, or over the cove's foot; the feet buried 3 cm;
+- no cove; the board's face off the cove's foot; the plan narrowing from the aft face.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

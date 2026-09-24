@@ -313,7 +313,12 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for the F-16's MFDs, phase F2: two meshes added, both cockpit-only (`jet-mfd-bezels`, two
       // boxes merged; `jet-screens`, two boxes remapped into the display atlas and merged). The per-mesh gate in
       // `tests/render.cockpit-jet.test.ts` holds the other 66 unmoved.
-      jet: "8b08bd05",
+      // RE-PINNED for the F-16 pass, step 1 (jazonshou/cockpit-jet-panel): the wedge coaming is a rounded rail on the
+      // deck line (`jetGlareshieldSection`, the shared rounded deck: 12 -> 48 triangles), the board the dash under its
+      // cove (a narrowed `solidPlate`, still 12 triangles, 24 -> 36 vertices), the MFDs 3.5 cm higher under the cove's foot, the HUD frame's feet in
+      // the hood. Checked mesh by mesh against 2dacb1c (positions, normals, UVs, indices, world matrix, material,
+      // visibility): of the jet's 71 those five changed, and the other 66 are bit-identical; no other airframe moved.
+      jet: "07d7a891",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
