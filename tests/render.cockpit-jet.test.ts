@@ -80,6 +80,17 @@ import { cockpitDeckK, cockpitDeckKStyleValue, cockpitDeckLineY } from "../src/u
  */
 
 const DEG = 180 / Math.PI;
+/**
+ * Where the F-16's ND puts own ship on its 400 x 400 page (step 5c): the drawing, from the heading labels' ring (the
+ * rose's 178.2, the radius at which the +-60 degree labels' 11 px text keeps 20 px from the page's sides, plus the
+ * labels' 0.055 h and half their font) down to own ship's tail (0.02 h), centred between the heading box's bottom
+ * (0.095 h) and the page's bottom. Written out here, not read from the page code.
+ */
+const ND_ROSE_RADIUS = (200 - 20 - 0.6 * 11) / Math.sin(Math.PI / 3) - 0.055 * 400;
+const ND_OWN_SHIP_Y = (() => {
+  const drawn = ND_ROSE_RADIUS + 0.055 * 400 + 11 / 2 + 0.02 * 400;
+  return 0.095 * 400 + (400 - 0.095 * 400 - drawn) / 2 + drawn - 0.02 * 400;
+})();
 const EYE = aircraftSpec("jet").cockpitEye;
 const EYE_POINT = new Vector3(EYE.forward, EYE.up, EYE.right);
 const TAN_HALF_H = Math.tan((COCKPIT_HORIZONTAL_FOV_DEGREES * Math.PI) / 360);
@@ -1495,15 +1506,16 @@ describe("the MFDs", () => {
       expect(top, `${where}: its top`).toBeGreaterThanOrEqual(slot!.y);
       expect(top + font, `${where}: its bottom`).toBeLessThanOrEqual(slot!.y + slot!.h);
       texts[slot!.page] = (texts[slot!.page] ?? 0) + 1;
-      const fromOwnShip = Math.hypot(point.x - 600, point.y - 0.86 * pageRoundScale(400, 400));
+      const fromOwnShip = Math.hypot(point.x - 600, point.y - ND_OWN_SHIP_Y);
       if (slot!.page === "nd" && /^[0-9]+$/.test(text) && align === "center" && fromOwnShip > 150) {
         roseLabels.push(text);
         expect(Math.min(point.x - 400, 800 - point.x), `rose label "${text}": its anchor from the slot's sides`).toBeGreaterThanOrEqual(20);
         expect(Math.min(left - 400, 800 - (left + width)), `rose label "${text}": its text from the slot's sides`).toBeGreaterThanOrEqual(20 - 1e-6);
       }
     }
-    // at heading 90 the arc carries 3, 6, 9, 12 and 15; "9", at its top, would touch the heading box and is left out
-    expect(roseLabels.sort(), "the rose's labels, both ends of the arc among them").toEqual(["12", "15", "3", "6"]);
+    // at heading 90 the arc carries 3, 6, 9, 12 and 15, all of them ("9", at its top, was left out while own ship stood
+    // at 234.5 and the ring ran under the heading box)
+    expect(roseLabels.sort(), "the rose's labels, both ends of the arc among them").toEqual(["12", "15", "3", "6", "9"]);
     expect(texts.nd, "the ND's text found").toBeGreaterThan(8);
     expect(texts.pfd, "the PFD's text found").toBeGreaterThan(8);
     expect(tapesInside, "the PFD's two tapes and its heading strip's window found").toBe(3);
@@ -1566,6 +1578,15 @@ describe("the MFDs", () => {
     const ownShipBottom = Math.max(...nearest[0]!.corners.map((p) => p.y));
     expect(centreY, "the rose's centre in frame").toBeLessThan(rowsInFrame);
     expect(ownShipBottom, `own ship's lowest point (${ownShipBottom.toFixed(1)}) in frame (rows to ${rowsInFrame.toFixed(1)})`).toBeLessThan(rowsInFrame);
+    // CENTRED (step 5c): own ship at 317.9 (0.795 h; 234.5 while the frame showed the screen's top 63%), the band
+    // between the heading box and the labels' ring equal to the band under own ship's tail
+    expect(centreY, "the rose's centre in the slot").toBeCloseTo(ND_OWN_SHIP_Y, 6);
+    const labelsTop = centreY - ND_ROSE_RADIUS - 0.055 * 400 - Math.round(0.04 * pageRoundScale(400, 400)) / 2;
+    const above = labelsTop - (0.025 + 0.07) * 400;
+    const below = 400 - (centreY + 0.02 * 400);
+    console.info(`F-16 ND: own ship at ${centreY.toFixed(2)}; ${above.toFixed(1)} px under the heading box, ${below.toFixed(1)} under own ship`);
+    expect(above).toBeCloseTo(below, 1);
+    expect(above).toBeGreaterThan(70);
     // the other decks keep own ship where it was: 0.86 h on 440 x 300 (checked on the 747's page)
     const reference = createRecordingContext();
     drawDisplayAtlas(reference, displayAtlasWidth(AIRLINER_DISPLAYS), displayAtlasHeight(AIRLINER_DISPLAYS), displaySlots(AIRLINER_DISPLAYS),
@@ -1727,11 +1748,12 @@ describe("the MFDs", () => {
     expect([centres[disc]!.x, centres[disc]!.y]).toEqual([200, 184]);
     expect(centres[disc]!.x - discRadius).toBeGreaterThanOrEqual(0);
     expect(centres[disc]!.x + discRadius).toBeLessThanOrEqual(400);
-    // the ND's rose: the 40 nm arc, the largest centred on own ship, which stands at 0.86 of the page's round scale
-    // (234.5 on the square, 258 = 0.86 h on 440 x 300). Its radius is 178.2 on the square, set by its labels' room (the
-    // smallest of 0.68 h = 272, 0.52 w = 208 and the labels' 178.2, with the labels' font from the page scale)
-    const ownY = 0.86 * scale;
-    const roseRadius = Math.max(...arcs.filter((arc, i) => centres[i]!.x === 600 && Math.abs(centres[i]!.y - ownY) < 1e-9).map((arc) => arc.radius));
+    // the ND's rose: the 40 nm arc, the largest centred on own ship, which stands at 317.9 on the square (the drawing
+    // centred under the header, step 5c) and 258 = 0.86 h on 440 x 300. Its radius is 178.2 on the square, set by its
+    // labels' room (the smallest of 0.68 h = 272, 0.52 w = 208 and the labels' 178.2, with the labels' font from the
+    // page scale)
+    const ownY = ND_OWN_SHIP_Y;
+    const roseRadius = Math.max(...arcs.filter((arc, i) => centres[i]!.x === 600 && Math.abs(centres[i]!.y - ownY) < 1e-6).map((arc) => arc.radius));
     expect(roseRadius).toBeCloseTo(178.2, 1);
     const rose = arcs.findIndex((arc, i) => arc.radius === roseRadius && centres[i]!.x > 400);
     expect(rose, "the ND's 40 nm arc").toBeGreaterThanOrEqual(0);

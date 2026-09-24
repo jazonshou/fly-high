@@ -477,9 +477,10 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
   });
 
   it("never lets a heading label on the ND's rose touch the heading box, at any heading, and leaves labels out only where they would", () => {
-    // On the F-16's square page the rose's top runs under the heading box, and a label drawn there showed as a fragment
-    // at a quarter of all headings; such a label is not drawn now. On 440 x 300 no label ever comes near the box, so
-    // those decks draw every label, as before. A 1 degree sweep of all 360, on the page as the ND slot draws it.
+    // On the F-16's square page the rose's top ran under the heading box (own ship at 234.5), and a label drawn there
+    // showed as a fragment at a quarter of all headings; such a label was left out. Since its drawing is centred on
+    // the page (step 5c, own ship at 317.9) the labels' ring clears the box by 74 px, and every deck draws every label.
+    // A 1 degree sweep of all 360, on the page as the ND slot draws it.
     const nd = displaySlots(deck.layout).find((slot) => slot.page === "nd")!;
     let fired = 0;
     for (let heading = 0; heading < 360; heading += 1) {
@@ -514,24 +515,16 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
       // which labels the arc should carry: every multiple of 30 within 60 degrees either side of the heading
       const expected = [...Array(12).keys()].map((k) => k * 30).filter((tick) => Math.abs(((tick - heading + 540) % 360) - 180) <= 60);
       const missing = expected.length - labels.length;
-      if (deck.kind === "jet") {
-        expect(missing, `heading ${heading}: labels left out`).toBeLessThanOrEqual(1);
-        if (missing === 1) {
-          fired += 1;
-          // the one left out is the topmost: every label drawn is further from the top than the nearest expected tick
-          const nearestTop = Math.min(...expected.map((tick) => Math.abs(((tick - heading + 540) % 360) - 180)));
-          expect(nearestTop, `heading ${heading}: a label left out far from the top`).toBeLessThanOrEqual(12);
-          for (const label of labels) expect(Math.abs(label.delta), `heading ${heading}: "${label.text}" is not the top one`).toBeGreaterThan(nearestTop + 1);
-        }
-      } else {
-        expect(missing, `heading ${heading}: every label drawn on 440 x 300`).toBe(0);
-      }
+      expect(missing, `heading ${heading}: every label drawn`).toBe(0);
+      // and the ring they stand on clears the box: its top label's text at least 60 px under it on the square (74)
+      const topLabel = Math.min(...labels.map((l) => Math.abs(l.delta)));
+      if (deck.kind === "jet" && topLabel < 1) fired += 1;
+      const clearance = rose.at.y - rose.r - 0.055 * nd.h - font / 2 - (by + bh);
+      expect(clearance, `heading ${heading}: the labels' ring under the heading box`).toBeGreaterThan(deck.kind === "jet" ? 60 : 0);
     }
-    // NON-VACUITY: on the square the rule does fire, and not at every heading
-    if (deck.kind === "jet") {
-      expect(fired, "headings at which the F-16's top label is left out").toBeGreaterThan(100);
-      expect(fired).toBeLessThan(300);
-    }
+    // NON-VACUITY: on the square, the headings with a label within a degree of the arc's top, right under the box (one
+    // a label, 12), are among those swept, and it is drawn there
+    if (deck.kind === "jet") expect(fired, "headings with a label at the arc's top on the square").toBe(12);
   });
 
   it("draws each screen the page its NAME says, so a swapped slot table cannot pass", () => {
@@ -902,5 +895,11 @@ describe("the 747's and the Global's atlases, pinned before the slot size became
   };
   it.each(DECKS.filter((deck) => deck.kind !== "jet").map((deck) => [deck.label, deck] as const))("draws the %s's atlas call for call as it did", (label, deck) => {
     expect(digest(deck.layout, deck.airframe), `${label}: the atlas's drawing instructions`).toBe(PINNED[label]);
+  });
+  // THE F-16's, pinned at step 5c (its ND's drawing centred on the square page, own ship at 317.9): the same digest,
+  // so a later change to its pages is a deliberate re-pin
+  it("draws the F-16's atlas call for call as step 5c pinned it", () => {
+    const jet = DECKS.find((deck) => deck.kind === "jet")!;
+    expect(digest(jet.layout, jet.airframe), "F-16: the atlas's drawing instructions").toBe("59822999:633");
   });
 });

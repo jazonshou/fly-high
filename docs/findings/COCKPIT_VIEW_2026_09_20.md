@@ -1964,6 +1964,20 @@ nose, and beside it the frame looked straight out through the glass.
   - a pane's round 6 mm off the axis;
   - the corners wound inside out (the drawn-faces walk).
 
+**Step 5c, the ND re-centred** (the P1 registered in F2). The F-16's ND put own ship at 234.5 on its 400 x 400 page (0.86
+of the page's round scale), high on the page, while the frame showed only the top 63% of the screen. Since step 3 it
+shows all of it, and the bottom 39% of the page was blank.
+- **The build.** On a square page the drawing is centred under the header, from the heading labels' ring down to own
+  ship's tail: own ship at 317.9 (0.795 h), with 74.1 px above and below. The rose stays 178.2: its size is set by the
+  +-60 degree labels' room at the page's sides, not by height.
+- **The labels.** Every heading label is now drawn at every heading (the ring clears the heading box by 74 px). On the
+  square the rule that left the top label out fired at a quarter of all headings before.
+- **The other decks.** On 440 x 300 own ship stays at 0.86 h, and the 747's and the Global's atlases are call for call
+  as pinned. The F-16's atlas digest is new, pinned here (59822999:633). HDG-TAS spacing is untouched.
+- Two mutations, both caught:
+  - own ship left at 234.5;
+  - the centring applied to 440 x 300 (the 747's and the Global's digests catch it).
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

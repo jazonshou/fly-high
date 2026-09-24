@@ -447,23 +447,26 @@ export const drawPfd: DrawPage = (ctx, w, h, state) => {
 export const drawNd: DrawPage = (ctx, w, h, state) => {
   clearPage(ctx, w, h);
   const heading = wrap360(state.headingDeg);
-  // Own ship, and the rose's centre with it, at 0.86 of the page's round scale: 0.86 h on 440 x 300 (258, as
-  // always), and higher on a square page (234.5 on 400 x 400), where the frame at the F-16's lens shows only the top
-  // 63% of the screen: there it puts own ship in view and closes the empty band under the header. The arc's top then
-  // runs under the heading box, so a heading label whose text would touch the box is not drawn (the box shows the
-  // heading); on 440 x 300 no label comes within 3 px of it, so none is ever left out there.
-  const own = { x: 0.5 * w, y: 0.86 * pageRoundScale(w, h) };
   const headingBox = { x: 0.5 * w - 0.055 * w, y: 0.025 * h, w: 0.11 * w, h: 0.07 * h };
   const labelFont = Math.round(0.04 * pageRoundScale(w, h));
+  const labelHalfWidth = 0.6 * Math.round(0.04 * pageRoundScale(w, h));
+  const labelsKeepClear = (0.5 * w - 20 - labelHalfWidth) / Math.sin(60 * DEG) - 0.055 * h;
+  const R = Math.min(0.68 * h, 0.52 * w, labelsKeepClear);
+  // Own ship, and the rose's centre with it: at 0.86 h on 440 x 300 (258, as always). On a square page (the F-16's
+  // 400 x 400) the drawing -- from the heading labels' ring down to own ship's tail -- is centred in the page under the
+  // header (own ship at 0.795 h, 318): the rose is as wide as the labels let it be, so the page has height to spare,
+  // and centred it leaves the same band above and below. (It stood at 234.5 while the frame showed only the top 63% of
+  // the F-16's screen; since its dash leaned the frame shows all of it.) A heading label whose text would touch the
+  // box is not drawn (the box shows the heading); on either page none comes near it now.
+  const headerBottom = headingBox.y + headingBox.h;
+  const drawn = R + 0.055 * h + labelFont / 2 + 0.02 * h;
+  const own = { x: 0.5 * w, y: w === h ? headerBottom + (h - headerBottom - drawn) / 2 + (drawn - 0.02 * h) : 0.86 * pageRoundScale(w, h) };
   /** Would a rose label's text (0.6 em a character, one em tall about its middle), at (x, y) from own ship, touch the heading box? */
   const touchesHeadingBox = (label: string, x: number, y: number) => {
     const half = (0.6 * labelFont * label.length) / 2;
     return own.x + x + half > headingBox.x && own.x + x - half < headingBox.x + headingBox.w
       && own.y + y + labelFont / 2 > headingBox.y && own.y + y - labelFont / 2 < headingBox.y + headingBox.h;
   };
-  const labelHalfWidth = 0.6 * Math.round(0.04 * pageRoundScale(w, h));
-  const labelsKeepClear = (0.5 * w - 20 - labelHalfWidth) / Math.sin(60 * DEG) - 0.055 * h;
-  const R = Math.min(0.68 * h, 0.52 * w, labelsKeepClear);
   ctx.save();
   ctx.translate(own.x, own.y);
   ctx.strokeStyle = DISPLAY_COLOURS.white;
