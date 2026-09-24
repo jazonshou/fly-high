@@ -70,8 +70,8 @@ export interface JetCockpitMaterials {
   /** The screens' flat material where there is no 2D canvas to draw pages on (every Node test). */
   readonly instrumentFace: PBRMaterial;
   /**
-   * The bezel rims' shared material (`bezelRimMaterial`, `BEZEL_RIM`), which the HUD's housing wears: the visual
-   * drives its night glow (`bezelRimEmissive`).
+   * The bezel rims' shared material (`bezelRimMaterial`, `BEZEL_RIM`), which the MFDs' rims and the HUD's housing
+   * wear: the visual drives its night glow (`bezelRimEmissive`).
    */
   readonly rim: PBRMaterial;
 }
@@ -447,9 +447,11 @@ export function jetHudFrameAngles(): { uprightAzimuthDegrees: number; barElevati
  * Two square MFDs on the leaned dash, the type's 4-inch screens, FRAMED AND RECESSED as the Global's and the 747's are
  * (the shared `framedScreenStack` and `framedScreenFacets`, step 3): a frame 24 mm wide round each screen with a 4 mm
  * chamfer at 45 degrees round its outer edge, a 2 mm gap, the screen 3 mm behind the frame's front, all square to the
- * leaned face. Each frame and its rim are one mesh with the other's (`jet-mfd-bezels`) on the bezel rims' shared
- * material, so the framing costs no draw. (They stood proud as 20 mm slabs, tilted back 15 degrees on the upright
- * board, the screen 1 mm proud.)
+ * leaned face. Both frames are one mesh (`jet-mfd-frames`) on their own dark grey, `JET_MFD_FRAME_MATERIAL`, which
+ * never glows; both chamfered rims are another (`jet-mfd-rims`) on the bezel rims' shared material, which carries the
+ * night glow, so at night the frames are outlined, not lit slabs (step 3b; one opaque draw more than one mesh on the
+ * rims' material, whose frames read the board's tone by day and glowed whole at night). (They stood proud as 20 mm
+ * slabs, tilted back 15 degrees on the upright board, the screen 1 mm proud.)
  *
  * WHERE: the frame's highest point reads `underFootDegrees` under the cove's foot, so the rail's round and its cove
  * show whole over them; a line along z reads one row, so that holds at every corner.
@@ -473,6 +475,13 @@ export const JET_MFD = Object.freeze({
   /** The frames' highest point under the cove's foot, from the eye. */
   underFootDegrees: 0.3,
 });
+
+/**
+ * The MFD frames' own material (step 3b): the 747's frame grey with the board's finish and NO emissive, lighter than
+ * the dash (`JET_PANEL_MATERIAL`, the same board) by albedo alone, 1.41 times its luma (the design's 1.3 to 1.6; the
+ * Global's frames read 1.46 live). The glow is the rims' alone.
+ */
+export const JET_MFD_FRAME_MATERIAL = Object.freeze({ albedo: 0x2c3034, roughness: 0.82, metallic: 0.02 });
 
 /**
  * Each MFD's screen-plate centre and its face centre (on the board's face, where its frame is laid out from), port then
@@ -520,7 +529,7 @@ export interface JetCockpit {
   readonly board: Mesh;
   /**
    * The cockpit-only meshes, unconfigured: the caller marks them (`configureCockpitOnlyParts`). The HUD
-   * frame, its housing, its combiner's panes, the MFD bezels and the MFD screens.
+   * frame, its housing, its combiner's panes, the MFDs' frames, their rims and the MFD screens.
    */
   readonly parts: readonly AbstractMesh[];
   /** Whether the MFDs are drawing pages: false wherever there is no 2D canvas (every Node test). */
@@ -616,18 +625,22 @@ export function buildJetCockpit(
 
   // THE MFDs, framed and recessed on the leaned dash: each screen a thin plate turned back with the face, its PILOT-FACING
   // face (local normal -X, which the turn does not change in the vertex data) pointed at its own slot of the atlas
-  // before the merge bakes the transforms; each frame and its chamfered rim on the bezel rims' shared material, both
-  // MFDs' in one mesh
+  // before the merge bakes the transforms; each frame on the frames' own grey, its chamfered rim on the bezel rims'
+  // shared material, both MFDs' frames in one mesh and their rims in another
   const m = JET_MFD;
   const lean = (p.leanDegrees * Math.PI) / 180;
+  const fm = JET_MFD_FRAME_MATERIAL;
+  const frameMaterial = build.material("jet-mfd-frame", fm.albedo, { roughness: fm.roughness, metallic: fm.metallic });
   const screens: AbstractMesh[] = [];
-  const bezels: AbstractMesh[] = [];
+  const frames: AbstractMesh[] = [];
+  const rims: AbstractMesh[] = [];
   const slots = displaySlots(JET_DISPLAYS);
   const atlasWidth = displayAtlasWidth(JET_DISPLAYS);
   const atlasHeight = displayAtlasHeight(JET_DISPLAYS);
   for (const [index, { name, centre, faceCentre }] of jetMfdPlacements().entries()) {
     const facets = framedScreenFacets(faceCentre, face, m);
-    bezels.push(facetMesh(build, `jet-mfd-bezel-${name}`, [...facets.frame, ...facets.rim], materials.rim, root));
+    frames.push(facetMesh(build, `jet-mfd-frame-${name}`, facets.frame, frameMaterial, root));
+    rims.push(facetMesh(build, `jet-mfd-rim-${name}`, facets.rim, materials.rim, root));
     const screen = build.box(`jet-mfd-screen-${name}`, m.screenThickness, m.height, m.width, materials.instrumentFace, root);
     screen.position.copyFrom(centre);
     screen.rotation.z = -lean;
@@ -635,7 +648,8 @@ export function buildJetCockpit(
     screens.push(screen);
   }
   const screensMesh = build.mergeStatic(JET_DISPLAYS.screensMesh, screens, root);
-  const bezelsMesh = build.mergeStatic("jet-mfd-bezels", bezels, root);
+  const framesMesh = build.mergeStatic("jet-mfd-frames", frames, root);
+  const rimsMesh = build.mergeStatic("jet-mfd-rims", rims, root);
 
   // THE PAGES, where there is a 2D canvas; under NullEngine the screens keep their flat material.
   const atlas = createDisplayAtlas(build, JET_DISPLAYS);
@@ -647,7 +661,7 @@ export function buildJetCockpit(
   return {
     coaming,
     board,
-    parts: [frame, housing, combiner, bezelsMesh, screensMesh],
+    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh],
     displaysLive: atlas !== null,
     invalidateDisplays() {
       redraw.invalidate();

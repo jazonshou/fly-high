@@ -140,7 +140,8 @@ const DECKS: readonly Deck[] = [
     placements: jetMfdPlacements,
     screen: { width: JET_MFD.width, height: JET_MFD.height },
     airframe: JET_DISPLAY_AIRFRAME,
-    bezelsMesh: "jet-mfd-bezels",
+    bezelsMesh: "jet-mfd-frames",
+    surroundMeshes: ["jet-mfd-rims"],
     screenParts: /^jet-(screens|mfd-)/,
     engineParts: { first: /^jet-turbine-hub$/, second: /^jet-ventral-inlet$/ },
     pages: {

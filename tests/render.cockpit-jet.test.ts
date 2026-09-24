@@ -540,8 +540,8 @@ describe("the coaming", () => {
 });
 
 describe("the HUD frame", () => {
-  it("is one of the five cockpit-only meshes (with its housing, its combiner and the MFDs' bezels and screens), three struts merged on the shared matte glareshield material", () => {
-    expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-bezels", "jet-screens"]);
+  it("is one of the six cockpit-only meshes (with its housing, its combiner, the MFDs' frames and rims and the screens), three struts merged on the shared matte glareshield material", () => {
+    expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens"]);
     const frame = named("jet-hud-frame");
     expect((frame.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(FRAME_SOURCES);
     expect(frame.getTotalVertices()).toBe(FRAME_VERTICES * 3);
@@ -726,7 +726,7 @@ describe("the HUD frame", () => {
     const visual = createWebGpuAircraft(freshScene, "jet");
     try {
       const parts = visual.cockpitOnlyParts ?? [];
-      expect(parts.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-bezels", "jet-screens"]);
+      expect(parts.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens"]);
       for (const part of parts) expect(part.isVisible, `${part.name} outside cockpit view`).toBe(false);
       visual.setCockpitView(true);
       for (const part of parts) expect(part.isVisible, `${part.name} in cockpit view`).toBe(true);
@@ -1113,23 +1113,27 @@ describe("the MFDs", () => {
     return seen;
   }
 
-  it("are framed and recessed on the leaned dash, square to it: the frame 1 mm into the board, the screen 3 mm behind the frame's front, both MFDs' frames and rims one mesh on the bezel rims' material", () => {
+  it("are framed and recessed on the leaned dash, square to it: the frame 1 mm into the board, the screen 3 mm behind the frame's front, both MFDs' frames one mesh and their rims another", () => {
     const face = jetPanelFace();
     const plane = (v: Vector3) => (v.x - face.top.x) * face.normal.x + (v.y - face.top.y) * face.normal.y; // out of the face
     const levels = (vs: Vector3[]) => [...new Set(vs.map((v) => plane(v).toFixed(5)))].map(Number).sort((a, b) => a - b);
-    const bezels = worldVertices(named("jet-mfd-bezels"));
+    const frames = worldVertices(named("jet-mfd-frames"));
+    const rims = worldVertices(named("jet-mfd-rims"));
     const screens = worldVertices(named("jet-screens"));
-    // each MFD's frame (16 quads) and rim (16 quads), unshared: 192 vertices, both MFDs one mesh
-    expect(bezels).toHaveLength(2 * 192);
+    // each MFD's frame (16 quads) and its rim (16 quads), unshared: 96 vertices each, both MFDs' in each mesh
+    expect(frames).toHaveLength(2 * 96);
+    expect(rims).toHaveLength(2 * 96);
     expect(screens).toHaveLength(48);
+    const bezel = (k: number) => [...frames.slice(k * 96, k * 96 + 96), ...rims.slice(k * 96, k * 96 + 96)];
     for (const [k, side] of [[0, -1], [1, 1]] as const) {
-      const own = bezels.slice(k * 192, k * 192 + 192);
+      const own = bezel(k);
       expect(own.every((v) => Math.sign(v.z) === side), "in placement order").toBe(true);
       // the frame's back 1 mm inside the board, its front 6 mm out, the chamfer's foot 2 mm out
       expect(levels(own), `bezel ${k}'s planes`).toEqual([-0.001, 0.002, 0.006]);
       // the screen: a 0.5 mm plate whose face is 3 mm behind the frame's front (it stood 1 mm proud)
       expect(levels(screens.filter((v) => Math.sign(v.z) === side)), `screen ${k}'s planes`).toEqual([0.0025, 0.003]);
     }
+    const bezels = [...bezel(0), ...bezel(1)];
     // square, centred at z +-0.17: a 0.102 screen, its frame 0.15 overall, the 0.19 between the frames the UFC's
     for (const [name, side] of sides) {
       const zs = (vs: Vector3[]) => [Math.min(...vs.map((v) => v.z)), Math.max(...vs.map((v) => v.z))] as const;
@@ -1145,27 +1149,62 @@ describe("the MFDs", () => {
     // the face and across it, is half the screen and 2 mm out; the screen is square)
     const up = new Vector3(face.up.x, face.up.y, 0);
     for (const [k, { faceCentre }] of jetMfdPlacements().entries()) {
-      const frame = bezels.slice(k * 192, k * 192 + 96);
+      const frame = frames.slice(k * 96, k * 96 + 96);
       const reach = frame.map((v) => Math.max(Math.abs(v.z - faceCentre.z), Math.abs(Vector3.Dot(v.subtract(faceCentre), up))));
       expect(Math.min(...reach), `frame ${k}'s opening`).toBeCloseTo(JET_MFD.width / 2 + 0.002, 5);
     }
-    // UNDER THE COVE'S FOOT: every frame vertex reads 0.3 degree or more under it (a line along z reads one row)
+    // UNDER THE COVE'S FOOT: every frame and rim vertex reads 0.3 degree or more under it (a line along z reads one row)
     const row = (v: { x: number; y: number }) => (v.y - EYE.up) / (v.x - EYE.forward);
     const footRow = Math.atan(row(jetGlareshieldSection().faceTop)) * DEG;
     const highest = Math.max(...bezels.map((v) => Math.atan(row(v)) * DEG));
     expect(footRow - highest, "the frames' highest point under the cove's foot").toBeGreaterThanOrEqual(0.3 - 1e-3);
-    // THE BEZEL RIMS' MATERIAL, the jet's instance of the shared `BEZEL_RIM` (the housing's too): no draw of their own
-    const material = named("jet-mfd-bezels").material as PBRMaterial;
-    expect(material).toBe(named("jet-hud-housing").material);
-    expect(material.name).toBe("jet-bezel-rim");
+    expect(scene.getMeshByName("jet-mfd-bezels"), "the one mesh of step 3 is split").toBeNull();
     expect(scene.materials.filter((m) => m.name === "jet-mfd-bezel"), "the old slab material is gone").toHaveLength(0);
+  });
+
+  it("put the frames on their own grey, lighter than the dash by albedo alone and never glowing, and the chamfered rims on the bezel rims' material, which glows at night (step 3b)", () => {
+    // THE RIMS: the jet's instance of the shared `BEZEL_RIM` (the housing's too), day 0.05, night by `bezelRimEmissive`
+    const rim = named("jet-mfd-rims").material as PBRMaterial;
+    expect(rim).toBe(named("jet-hud-housing").material);
+    expect(rim.name).toBe("jet-bezel-rim");
+    // THE FRAMES: their own material, the dash's finish, and NO emissive
+    const frame = named("jet-mfd-frames").material as PBRMaterial;
+    const board = named("jet-instrument-panel").material as PBRMaterial;
+    expect(frame.name).toBe("jet-mfd-frame");
+    expect(frame).not.toBe(rim);
+    expect(frame).not.toBe(board);
+    expect([frame.roughness, frame.metallic], "the dash's finish").toEqual([board.roughness, board.metallic]);
+    // AT EVERY LIGHT STATE: the frames emit nothing, the rims their own law (0.05 by day, 0.56 at night)
+    try {
+      for (const g of [1, COCKPIT_GLOW_NIGHT_MULTIPLE]) {
+        aircraft.setLightState({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow: g });
+        expect([frame.emissiveColor.r, frame.emissiveColor.g, frame.emissiveColor.b], `the frames at glow ${g}`).toEqual([0, 0, 0]);
+        expect(rim.emissiveIntensity, `the rims at glow ${g}`).toBeCloseTo(bezelRimEmissive(g), 12);
+        expect(rim.emissiveColor.r + rim.emissiveColor.g + rim.emissiveColor.b, "the rims' glow has a colour").toBeGreaterThan(0);
+      }
+      // the law's two ends, so a law that stopped glowing would fail here too
+      expect(bezelRimEmissive(1)).toBe(BEZEL_RIM.dayEmissiveIntensity);
+      expect(bezelRimEmissive(COCKPIT_GLOW_NIGHT_MULTIPLE)).toBeCloseTo(BEZEL_RIM.nightEmissiveIntensity, 12);
+      expect(BEZEL_RIM.nightEmissiveIntensity).toBeCloseTo(0.56, 12);
+    } finally {
+      aircraft.setLightState({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow: 1 });
+    }
+    // LIGHTER THAN THE DASH BY ALBEDO ALONE, in the design's range, by the Global's and the 747's measure: with the
+    // dash's finish and its normal a frame takes the dash's light, so its luma against the dash's is its albedo's
+    // luminance against the dash's, in linear light, carried back to sRGB (the live frame is the measurement)
+    const linear = (m: PBRMaterial) => 0.2126 * m.albedoColor.r ** 2.2 + 0.7152 * m.albedoColor.g ** 2.2 + 0.0722 * m.albedoColor.b ** 2.2;
+    const ratio = (linear(frame) / linear(board)) ** (1 / 2.2);
+    console.info(`F-16 MFD frames against the dash, by albedo: ${ratio.toFixed(3)} in luma`);
+    expect(ratio).toBeGreaterThanOrEqual(1.3);
+    expect(ratio).toBeLessThanOrEqual(1.6);
   });
 
   it("bevel each frame: a 4 mm chamfer at 45 degrees round its outer edge, facing out of the face, by the built normals", () => {
     const face = jetPanelFace();
     const out = new Vector3(face.normal.x, face.normal.y, 0);
     const up = new Vector3(face.up.x, face.up.y, 0);
-    const mesh = named("jet-mfd-bezels");
+    // the chamfer is the rim's (the frame's front meets it at the chamfer's shoulder)
+    const mesh = named("jet-mfd-rims");
     const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
     const vertices = worldVertices(mesh);
     const seen = new Set<string>();
@@ -1183,7 +1222,7 @@ describe("the MFDs", () => {
     expect(seen.size, "all four sides").toBe(4);
     expect(chamfer, "four chamfer quads a frame, two triangles each, two frames").toBe(2 * 4 * 2 * 3);
     for (const [k, { faceCentre }] of jetMfdPlacements().entries()) {
-      const rim = vertices.slice(k * 192 + 96, k * 192 + 192).map((v) => Math.abs(v.z - faceCentre.z));
+      const rim = vertices.slice(k * 96, k * 96 + 96).map((v) => Math.abs(v.z - faceCentre.z));
       const edges = [...new Set(rim.map((z) => z.toFixed(5)))].map(Number).sort((a, b) => a - b).slice(-2);
       expect(edges[1]! - edges[0]!, `rim ${k}: 4 mm across the face`).toBeCloseTo(0.004, 5);
     }
@@ -1223,7 +1262,7 @@ describe("the MFDs", () => {
       expect(scene.pickWithRay(new Ray(EYE_POINT, gap.subtract(EYE_POINT).normalize(), 60), drawnByCockpitCamera)?.pickedMesh?.name, `${name}: the dash in the gap`).toBe("jet-instrument-panel");
       // a ray at the frame's flat face meets the frame, on its front
       const flat = faceCentre.add(across.scale(Math.sign(faceCentre.z) * -1 * (JET_MFD.width / 2 + JET_MFD.gap + 0.002))).add(out.scale(0.006));
-      expect(scene.pickWithRay(new Ray(EYE_POINT, flat.subtract(EYE_POINT).normalize(), 60), drawnByCockpitCamera)?.pickedMesh?.name, `${name}: the frame's face`).toBe("jet-mfd-bezels");
+      expect(scene.pickWithRay(new Ray(EYE_POINT, flat.subtract(EYE_POINT).normalize(), 60), drawnByCockpitCamera)?.pickedMesh?.name, `${name}: the frame's face`).toBe("jet-mfd-frames");
     }
   });
 
@@ -1234,7 +1273,9 @@ describe("the MFDs", () => {
       expect(Math.abs(az), `${name}: centre azimuth`).toBeGreaterThan(13.5);
       expect(Math.abs(az)).toBeLessThan(14.4);
       const seen = scan(az);
-      const bezel = seen.get("jet-mfd-bezels");
+      // the bezel as the eye reads it: its frame and its rim together
+      const parts = [seen.get("jet-mfd-frames"), seen.get("jet-mfd-rims")].filter((r): r is [number, number] => r !== undefined);
+      const bezel: [number, number] | undefined = parts.length ? [Math.max(...parts.map((r) => r[0])), Math.min(...parts.map((r) => r[1]))] : undefined;
       const screen = seen.get("jet-screens");
       expect(bezel && screen, `${name}: both found`).toBeTruthy();
       expect(Math.abs(bezel![0] - READS.bezelTop), `${name}: bezel top ${bezel![0].toFixed(2)}`).toBeLessThan(0.2);
@@ -1766,8 +1807,11 @@ describe("nothing else moved: the gate against f9d2672", () => {
     ["swept-vertical-stabilizer", "c79e7c35"],
     ["tail-navigation-light", "2a758df2"],
   ];
-  /** F1 rebuilt or added the first three; F2 added the MFDs' two; the F-16 pass's step 2 the housing and the combiner. */
-  const REBUILT = ["jet-glare-shield", "jet-instrument-panel", "jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-bezels", "jet-screens"];
+  /**
+   * F1 rebuilt or added the first three; F2 added the MFDs' two; the F-16 pass's step 2 the housing and the combiner;
+   * step 3b split the MFDs' bezels into their frames and their rims.
+   */
+  const REBUILT = ["jet-glare-shield", "jet-instrument-panel", "jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens"];
   const GONE = ["airspeed", "attitude", "altimeter", "engine", "vertical-speed"].flatMap((dial) => [`jet-${dial}-gauge`, `jet-${dial}-needle`]);
   // (There was a second whole-airframe gate here for the trainer, the Global and the 747, pinned at f9d2672.
   // `render.loft-crown-seam.test.ts` already pins those three whole, so every legitimate change to them had to be
@@ -1791,7 +1835,7 @@ describe("nothing else moved: the gate against f9d2672", () => {
     };
   }
 
-  it("keeps every jet mesh outside the cockpit's seven where f9d2672 had it (world positions to the micrometre, and indices), mesh by mesh, and has exactly those seven besides", () => {
+  it("keeps every jet mesh outside the cockpit's eight where f9d2672 had it (world positions to the micrometre, and indices), mesh by mesh, and has exactly those eight besides", () => {
     const jet = built("jet");
     try {
       const byName = new Map(jet.meshes.map((mesh) => [mesh.name, mesh]));
@@ -1809,15 +1853,16 @@ describe("nothing else moved: the gate against f9d2672", () => {
       }
       expect(moved, "meshes that moved since f9d2672").toEqual([]);
       for (const name of GONE) expect(byName.has(name), name).toBe(false);
-      // 78 -> 69 -> 71 -> 73: twelve gone in F1 (the ten dials and needles, the old glare-shield box and the old
-      // panel), three there, F2's two MFD meshes, and step 2's HUD housing and its combiner's panes
-      expect(jet.meshes).toHaveLength(73);
+      // 78 -> 69 -> 71 -> 73 -> 74: twelve gone in F1 (the ten dials and needles, the old glare-shield box and the
+      // old panel), three there, F2's two MFD meshes, step 2's HUD housing and its combiner's panes, and step 3b's
+      // MFD frames and rims apart
+      expect(jet.meshes).toHaveLength(74);
     } finally {
       jet.dispose();
     }
   });
 
-  it("spends 174 draws outside cockpit view (184 at f9d2672: the ten dials and needles are gone), and in it the cockpit camera trades the skin's three for the kit's five, one of them the combiner's alpha draw", () => {
+  it("spends 174 draws outside cockpit view (184 at f9d2672: the ten dials and needles are gone), and in it the cockpit camera trades the skin's three for the kit's six, one of them the combiner's alpha draw", () => {
     const jet = built("jet");
     try {
       const casts = (mesh: AbstractMesh) => (mesh.metadata as { castsShadow?: boolean } | null)?.castsShadow !== false;
@@ -1832,18 +1877,18 @@ describe("nothing else moved: the gate against f9d2672", () => {
       expect(outside).toHaveLength(66);
       expect(outside.filter(casts)).toHaveLength(54);
       expect(outside.length + 2 * outside.filter(casts).length).toBe(174);
-      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-bezels", "jet-screens"]) expect(outside.map((mesh) => mesh.name), "a cockpit-only mesh outside").not.toContain(name);
+      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens"]) expect(outside.map((mesh) => mesh.name), "a cockpit-only mesh outside").not.toContain(name);
       // IN COCKPIT VIEW, through the visual's own setCockpitView and counted by what the COCKPIT camera draws:
       // the frame appears, and the fuselage, radome and dorsal spine drop out of its layer mask (the canopy stays,
       // at the cockpit alpha). (A first version set the
       // frame visible by hand and ignored the mask, and reported a colour-pass count no camera draws.)
       jet.visual.setCockpitView(true);
       const inside = jet.meshes.filter(drawnBy(cockpitMask));
-      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-bezels", "jet-screens"]) expect(inside.map((mesh) => mesh.name)).toContain(name);
+      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens"]) expect(inside.map((mesh) => mesh.name)).toContain(name);
       const hiddenByMask = outside.filter((mesh) => (mesh.layerMask & cockpitMask) === 0).map((mesh) => mesh.name).sort();
       expect(hiddenByMask, "what the cockpit camera does not draw").toEqual(jet.visual.cockpitParts.map((mesh) => mesh.name).sort());
       expect(hiddenByMask, "NON-VACUITY: the mask hides something").toHaveLength(3);
-      expect(inside).toHaveLength(outside.length - hiddenByMask.length + 5);
+      expect(inside).toHaveLength(outside.length - hiddenByMask.length + 6);
       // the one alpha draw the kit adds: the combiner's two panes, one mesh (the canopy's is the airframe's own)
       const blended = (mesh: AbstractMesh) => (mesh.material as PBRMaterial | null)?.needAlphaBlendingForMesh(mesh) ?? false;
       expect(inside.filter(blended).map((mesh) => mesh.name).sort()).toEqual(["jet-bubble-canopy", "jet-hud-combiner"]);

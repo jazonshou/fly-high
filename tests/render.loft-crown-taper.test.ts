@@ -248,7 +248,8 @@ describe("the loft's crown taper", () => {
       // other 70 meshes bit-identical.
       // Re-pinned for step 3 on the same evidence: the dash leaned 15 degrees, the MFDs framed and recessed on it, the
       // rail's round smooth-shaded; the jet's other 69 meshes bit-identical against dd66a55.
-      jet: "8ddc7e73",
+      // Re-pinned for step 3b on the same evidence: the MFDs' bezels split into frames and rims, the other 72 bit-identical.
+      jet: "9e33c343",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.

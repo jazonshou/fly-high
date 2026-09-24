@@ -1818,6 +1818,20 @@ Eleven mutations, all caught:
   and the dash seen through the gap by ray;
 - the rail's normals left flat; the dash on the tub's material; the combiner back at 0.05.
 
+**Step 3b, the frames on their own material** (the PM's call on the one-mesh cost above). The Global and the 747 read
+because a frame's body stands 1.3 to 1.6 times its board by day, and only the chamfered rim glows at night. A whole
+frame face at 0.56 would read as a lit slab.
+- The frames are one mesh (`jet-mfd-frames`) on `jet-mfd-frame`: the 747's frame grey 0x2c3034 with the dash's finish,
+  and no emissive at any light state. Against the dash (`jet-panel`), by the Global's and the 747's measure (the albedo's
+  linear luminance ratio, carried back to sRGB), that is **1.41**.
+- The rims are another mesh (`jet-mfd-rims`) on `jet-bezel-rim`: 0.05 by day and 0.56 at night.
+- It costs one opaque draw: the kit is 6 meshes (the drawn-faces walk and the frame tool count 6).
+- Mesh by mesh against 6407aa4 (step 3 rebased onto b2748f3, the jet bit-identical to e521f93): `jet-mfd-bezels` is
+  gone, and `jet-mfd-frames` and `jet-mfd-rims` are the same facets, 192 vertices each. The jet's other 72 meshes are
+  bit-identical. The loft digests are re-pinned.
+- Five mutations, all caught: the frames left on the rim material; the frame tone 1.0 times the board and 1.96 times;
+  the rims on the frame material (no night glow); the frames given the rims' day emissive.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,
