@@ -662,6 +662,14 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // skin: the position sum's x rose by 27,477 (about x 28.7 each), the area by 6.40 m^2 and the signed volume by
     // -13.82 m^3 (it counts the buried nose inside the fuselage as well, so it is a check, not a volume). The normal
     // sum's x rose by 237.9: the nose's new rings face forward.
+    //
+    // THEN, with every count unchanged, the 228 cabin windows seated on the skin as drawn (2026-09-24; they had sat
+    // on the ideal section, about 16 mm proud of the 28-facet loft). A closed symmetric box's 24 vertices sum to 24
+    // times its centre and its normals to zero, so only the centres show: the panes sank a median 16 mm toward the
+    // axis (positionSquares -442.0) and the two sides now differ by the loft's triangulation, whose split diagonal
+    // mirrors the wrong way on one flank (positionSum.z -0.429: mirrored panes -2.0 to +3.2 mm apart, 0.16 on
+    // average; they were exactly mirrored on the ideal section). x and y sums, normals, volume and area are
+    // unchanged.
     const census = geometryCensus(build().visual);
     expect(census.vertices).toBe(16_984);
     expect(census.indices).toBe(71_628);
@@ -673,8 +681,8 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
     expect(census.positionSum.x).toBeCloseTo(200412.3591, 1);
     expect(census.positionSum.y).toBeCloseTo(-12867.8963, 1);
-    expect(census.positionSum.z).toBeCloseTo(5.8467, 1);
-    expect(census.positionSquares).toBeCloseTo(12688599.61, 0);
+    expect(census.positionSum.z).toBeCloseTo(5.4175, 1);
+    expect(census.positionSquares).toBeCloseTo(12688157.61, 0);
     expect(census.normalSum.x).toBeCloseTo(-294.6042, 2);
     expect(census.normalSum.y).toBeCloseTo(78.8021, 2);
     expect(census.normalSum.z).toBeCloseTo(-0.3751, 2);

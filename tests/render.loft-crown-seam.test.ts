@@ -1,6 +1,7 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { afterEach, describe, expect, it } from "vitest";
 import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
@@ -229,7 +230,7 @@ describe("a loft's crown seam", () => {
       .toBeLessThan(1e-9);
   });
 
-  it("moves no vertex of any airframe: positions and indices are bit-identical", () => {
+  it("moves no vertex of any airframe: positions, indices and thin-instance placements are bit-identical", () => {
     // Pinned SEPARATELY from normals and from the draw-budget census, which
     // does fold normals in. If one of these four moves, the change was not a
     // shading change.
@@ -243,6 +244,9 @@ describe("a loft's crown seam", () => {
     // MATRICES, and this digest reads `getVerticesData(PositionKind)` and
     // `getIndices()` only. Instance matrices are not in it, so half of that
     // change is invisible here by construction.
+    // THEY ARE NOW (2026-09-24): the loop below also reads every thin
+    // instance's matrix, after ten of the 747's 228 cabin windows moved with
+    // this digest calling the window line bit-identical.
     const pinned: Readonly<Record<AircraftKind, string>> = {
       // RE-PINNED for the trainer and the Global by the cockpit work (jazonshou/cockpit-view),
       // which replaced their cockpit meshes: the old panel, gauges and needles are gone and
@@ -337,7 +341,10 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for step 5b: the HUD frame's top corners rounded (two quarter-circle tubes merged with the shortened
       // rods, 114 -> 226 vertices) and the combiner's panes following them (4 -> 32 triangles). Checked mesh by mesh
       // against 10f3502: those two, and the jet's other 73 bit-identical.
-      jet: "7d145111",
+      // RE-PINNED 7d145111 -> 71f87079 when this digest began reading thin-instance matrices (2026-09-24): the jet's
+      // nozzle petals (14) and turbine blades (8) are thin instances. Its positions and indices alone still hash to
+      // 7d145111; nothing about the jet changed.
+      jet: "71f87079",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
@@ -517,7 +524,12 @@ describe("a loft's crown seam", () => {
       // their counts and move because all three are CAST from R onto the skin and stand off it along its shading
       // normals, which the new rings either side of the nose's 29.2 and 33.4 rings turn; the skin under the glass did
       // not move. The other 92, and every mesh of the Global, are bit-identical.
-      airliner: "8dc7d09c",
+      // RE-PINNED 8dc7d09c -> 5cb70892 for the cabin windows seated on the skin as drawn, and this digest reading
+      // thin-instance matrices (2026-09-24). Positions and indices alone still hash to 8dc7d09c: no base mesh moved,
+      // the glazing and the kit included. The instances (the window line x228, flap-track canoes x8, nacelle chevrons
+      // x48): dumped against d30bb05, only the window line's changed, every pane onto the drawn facets (median 16 mm,
+      // at most 24) and along the skin's cap-free normal (tests/render.airliner-cabin-windows.test.ts).
+      airliner: "5cb70892",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
@@ -533,8 +545,13 @@ describe("a loft's crown seam", () => {
       for (const mesh of meshes) {
         geometry.push(...(mesh.getVerticesData(VertexBuffer.PositionKind) ?? []));
         geometry.push(...(mesh.getIndices() ?? []));
+        // And where a thin-instanced mesh's copies ARE: the instance matrices are its placement, and a digest of
+        // the base box alone called the 747's 228 cabin windows "bit-identical" while ten of them moved.
+        if (mesh instanceof Mesh && mesh.thinInstanceCount > 0) {
+          for (const matrix of mesh.thinInstanceGetWorldMatrices()) geometry.push(...matrix.m);
+        }
       }
-      expect(digest(geometry), `${kind} positions+indices`).toBe(pinned[kind]);
+      expect(digest(geometry), `${kind} positions+indices+instances`).toBe(pinned[kind]);
     }
   });
 });

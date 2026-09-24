@@ -1354,7 +1354,7 @@ function appendExtrudedIndices(indices: number[], count: number): void {
  * trailing edge IS a crease, and averaging across it would round off the one
  * edge the shape depends on. Welding is opt-in per call for that reason.
  */
-function weldNormals(normals: number[], groups: readonly (readonly number[])[]): void {
+export function weldNormals(normals: number[], groups: readonly (readonly number[])[]): void {
   for (const group of groups) {
     let x = 0; let y = 0; let z = 0;
     for (const vertex of group) {
