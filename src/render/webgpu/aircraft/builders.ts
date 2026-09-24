@@ -128,6 +128,25 @@ export interface LoftSection {
   readonly crownSquareness?: number;
   /** The filleted V's radius, in metres (0 when absent); below both radii. Only with `crownSquareness`. */
   readonly crownFillet?: number;
+  /**
+   * The LOWER half's vertical radius, below `yOffset`, where it differs from
+   * the upper half's `yRadius`: a section whose widest point is not halfway
+   * between its crown and its keel.
+   *
+   * A symmetric section pins its widest point to the midpoint of crown and
+   * keel, so a nose whose crown falls and whose keel rises at different rates
+   * drags the line of its widest point up and down with them -- on the 747's
+   * hand-ringed nose it wandered 0.64, 0.60, 0.42, 0.50, 0.55, 0.30, -0.25 over
+   * six metres, and the flank's highlight kinked with it. With this the crown,
+   * the keel and the widest point's height are three independent numbers.
+   *
+   * The two halves meet at the widest point with the same half-width and both
+   * vertical there, so the section stays tangent-continuous; only the
+   * curvature steps, as it does between any two ellipses. Absent, the
+   * arithmetic is exactly what it was and every existing loft is
+   * bit-identical.
+   */
+  readonly lowerYRadius?: number;
 }
 
 /**
@@ -169,8 +188,10 @@ export function loftSectionPoint(section: LoftSection, angle: number): { y: numb
   const rise = Math.max(0, yShape);
   const lift = rise * rise * (3 - 2 * rise);
   const halfWidth = section.zRadius + (crownZRadius - section.zRadius) * lift;
+  // Below the widest point the lower half's own radius, where one is given.
+  const yRadius = yShape < 0 && section.lowerYRadius !== undefined ? section.lowerYRadius : section.yRadius;
   return {
-    y: (section.yOffset ?? 0) + yShape * section.yRadius,
+    y: (section.yOffset ?? 0) + yShape * yRadius,
     z: (section.zOffset ?? 0) + zShape * halfWidth,
   };
 }
@@ -777,6 +798,21 @@ export class AircraftBuildContext {
     material: Material,
     parent: TransformNode,
     stationRange?: { readonly minimumX: number; readonly length: number },
+    /**
+     * `endPoleX`: close the last ring on a POLE at this station, on the
+     * section's own centre, instead of a flat fan in the ring's plane. A nose
+     * whose rings shrink toward a tip then ends in a point, with no flat disc
+     * at all; it must lie ahead of the last ring. Absent, the cap is the flat
+     * fan it always was, bit for bit.
+     *
+     * `openStart` / `openEnd`: no cap at that end, where another loft carries
+     * the skin on from the same ring. A flat cap there is not merely hidden:
+     * its fan shares the ring's vertices, so its normal averages into theirs
+     * and the seam shades as a line (the 747's fuselage and nose, joined at
+     * x 22, measured 180 degrees apart there with both capped). Absent, both
+     * ends are capped as they always were.
+     */
+    caps?: { readonly endPoleX?: number; readonly openStart?: boolean; readonly openEnd?: boolean },
   ): Mesh {
     if (sections.length < 2) throw new RangeError("An aircraft loft needs at least two sections");
     if (!Number.isInteger(radialSegments) || radialSegments < 8) {
@@ -813,6 +849,9 @@ export class AircraftBuildContext {
       if (!(crownZRadius > 0)) {
         throw new RangeError("Aircraft loft crown radius must be positive");
       }
+      if (section.lowerYRadius !== undefined && !(section.lowerYRadius > 0)) {
+        throw new RangeError("Aircraft loft lower radius must be positive");
+      }
       if (section.crownSquareness !== undefined) {
         if (!(section.crownSquareness > 1)) throw new RangeError("Aircraft loft crown squareness must be above 1");
         if (section.crownZRadius !== undefined) {
@@ -843,18 +882,30 @@ export class AircraftBuildContext {
     }
     const startCenter = positions.length / 3;
     const start = sections[0]!;
-    positions.push(start.x, start.yOffset ?? 0, start.zOffset ?? 0);
-    // The caps are vertices too, and must sit on the shared range with the
-    // rings; without one they keep their literal 0 and 1.
-    uvs.push(stationRange ? (start.x - uMinimumX) / uLength : 0, 0.5);
+    if (!caps?.openStart) {
+      positions.push(start.x, start.yOffset ?? 0, start.zOffset ?? 0);
+      // The caps are vertices too, and must sit on the shared range with the
+      // rings; without one they keep their literal 0 and 1.
+      uvs.push(stationRange ? (start.x - uMinimumX) / uLength : 0, 0.5);
+    }
     const endCenter = positions.length / 3;
     const end = sections[sections.length - 1]!;
-    positions.push(end.x, end.yOffset ?? 0, end.zOffset ?? 0);
-    uvs.push(stationRange ? (end.x - uMinimumX) / uLength : 1, 0.5);
+    const poleX = caps?.endPoleX;
+    if (poleX !== undefined && !(poleX > end.x)) {
+      throw new RangeError("An aircraft loft's end pole must lie ahead of its last ring");
+    }
+    if (poleX !== undefined && caps?.openEnd) {
+      throw new RangeError("An aircraft loft's open end cannot also close on a pole");
+    }
+    const endX = poleX ?? end.x;
+    if (!caps?.openEnd) {
+      positions.push(endX, end.yOffset ?? 0, end.zOffset ?? 0);
+      uvs.push(stationRange ? (endX - uMinimumX) / uLength : 1, 0.5);
+    }
     const endRing = (sections.length - 1) * ringSize;
     for (let radial = 0; radial < radialSegments; radial += 1) {
-      indices.push(startCenter, radial + 1, radial);
-      indices.push(endCenter, endRing + radial, endRing + radial + 1);
+      if (!caps?.openStart) indices.push(startCenter, radial + 1, radial);
+      if (!caps?.openEnd) indices.push(endCenter, endRing + radial, endRing + radial + 1);
     }
     reverseTriangleWinding(indices);
     // THE RING CLOSES AT THE CROWN. `angle` starts at 0, where the superellipse

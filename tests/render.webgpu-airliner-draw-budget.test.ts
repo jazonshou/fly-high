@@ -653,25 +653,34 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // exactly, and nothing else moved. They sit aft and low, on the wing: the position sum's x fell by 1,733.3 and y by
     // 482.5 (360 vertices at a mean of x -4.8, y -1.34), z is untouched (they are symmetric), the area rose by 55.51
     // m^2 (two faces of about 27 m^2 of bay, and their 2 mm rims) and the signed volume by -0.054 m^3 (27 m^2 x 2 mm).
+    //
+    // THEN 16,027 TO 16,984 with the nose polish (2026-09-23), all of it in airliner-fuselage-shell. The fuselage's
+    // 27.2 and 28 rings became fifteen blend rings, 26.2 to 29.0: +13 rings, +377 vertices and +2,184 indices (13 x 28
+    // x 6). The nose went from 8 rings and two flat caps to 28 rings, a flat aft cap and a pole: 234 -> 814 vertices
+    // and 1,344 -> 4,704 indices, +580 and +3,360. +957 and +5,544 exactly. The extents did not move: the pole is at
+    // x 34, where the flat disc was. The rest moved by what 957 vertices round the fore-body weigh and by the reshaped
+    // skin: the position sum's x rose by 27,477 (about x 28.7 each), the area by 6.40 m^2 and the signed volume by
+    // -13.82 m^3 (it counts the buried nose inside the fuselage as well, so it is a check, not a volume). The normal
+    // sum's x rose by 237.9: the nose's new rings face forward.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(16_027);
-    expect(census.indices).toBe(66_084);
+    expect(census.vertices).toBe(16_984);
+    expect(census.indices).toBe(71_628);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(172935.2981, 1);
-    expect(census.positionSum.y).toBeCloseTo(-13290.7196, 1);
-    expect(census.positionSum.z).toBeCloseTo(5.8455, 1);
-    expect(census.positionSquares).toBeCloseTo(11884569.78, 0);
-    expect(census.normalSum.x).toBeCloseTo(-532.5144, 2);
-    expect(census.normalSum.y).toBeCloseTo(56.7055, 2);
-    expect(census.normalSum.z).toBeCloseTo(-0.7645, 2);
-    expect(census.normalMoment).toBeCloseTo(5884.7235, 1);
-    expect(census.signedVolume).toBeCloseTo(-3227.6929, 2);
-    expect(census.area).toBeCloseTo(4740.5418, 2);
+    expect(census.positionSum.x).toBeCloseTo(200412.3591, 1);
+    expect(census.positionSum.y).toBeCloseTo(-12867.8963, 1);
+    expect(census.positionSum.z).toBeCloseTo(5.8467, 1);
+    expect(census.positionSquares).toBeCloseTo(12688599.61, 0);
+    expect(census.normalSum.x).toBeCloseTo(-294.6042, 2);
+    expect(census.normalSum.y).toBeCloseTo(78.8021, 2);
+    expect(census.normalSum.z).toBeCloseTo(-0.3751, 2);
+    expect(census.normalMoment).toBeCloseTo(15998.0733, 1);
+    expect(census.signedVolume).toBeCloseTo(-3241.5120, 2);
+    expect(census.area).toBeCloseTo(4746.9383, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {

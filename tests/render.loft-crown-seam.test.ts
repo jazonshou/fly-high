@@ -510,7 +510,14 @@ describe("a loft's crown seam", () => {
       // 55679ba, none gone and none moved, one new: airliner-spoiler-bays, 360 vertices (twelve plates on the
       // wing's skin, folded into one). The other 95 are bit-identical, the kit's included; so is every mesh of the
       // Global, whose spoilers changed only in how they are posed.
-      airliner: "5b27cdfc",
+      // RE-PINNED for the nose polish (2026-09-23): checked mesh by mesh against ae8ca49, none gone, none new, four
+      // moved. airliner-fuselage-shell 729 -> 1,686 vertices (the fuselage's 27.2 and 28 rings now fifteen blend rings,
+      // the nose 8 rings to 28 and a pole). airliner-flight-deck-glazing (0.42 mm at most), airliner-cockpit-interior
+      // (the kit's lining, 7.7 mm at most, at x 33.43 on the new tip) and airliner-windscreen-center-post (0.26 mm) keep
+      // their counts and move because all three are CAST from R onto the skin and stand off it along its shading
+      // normals, which the new rings either side of the nose's 29.2 and 33.4 rings turn; the skin under the glass did
+      // not move. The other 92, and every mesh of the Global, are bit-identical.
+      airliner: "8dc7d09c",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
