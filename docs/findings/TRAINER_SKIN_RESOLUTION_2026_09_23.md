@@ -87,6 +87,27 @@ the 256 map's tilt p90 was 39°. Normal-map tilt of the body paint (p50 / p90 / 
 - The panel line at u 0.63, row to row: at most 0.08 texel over 95 rows. Texel-indexed at 256, it jumps up to
   3 texels every 8 rows.
 
+## The frames with the dials (7f185ed)
+
+Same framing, served from 7f185ed. Only the Medium 1080p pair matched the baseline's render scale
+(0.850 / 0.850). High came back at 0.900 twice, against the baseline's 0.950, even with Firefox's helper at
+0 %, so the High pair is not compared.
+
+- **Livery edge, 10-90 % across the green band's edge** (Medium 1080p, 10 m, px):
+
+  | build | px |
+  |---|---|
+  | 72c8edb, 64² | 21-28 |
+  | f355a31, 256² texel-indexed | 19-20 |
+  | 7f185ed, 256² with the dials | 4-7 |
+  | Global's gold stripe, for reference | 5-11 |
+
+- **The door seam** is one straight dark line: no stepping, no rivet ladder. It is the design's panel line
+  drawn sharp: 0.012 of the body each side, about 8 cm on the trainer, so it reads as a strip about 10 cm
+  wide. Real panel lines are narrower. A trainer-only width dial on the line's smoothstep would be the next
+  step if that reads heavy.
+- **The grain** is the 64 design's, smooth between lattice nodes. The texel-indexed 256 map's speckle is gone.
+
 ## Cost
 
 - **GPU memory: +2.8 MiB.** Each material has three RGBA8 maps with full mip chains: 1.00 MiB at 256 against
