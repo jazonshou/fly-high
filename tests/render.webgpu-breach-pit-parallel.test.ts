@@ -138,6 +138,24 @@ describe("breach as passes: the stage machine", () => {
     expect(job.dispatchesUsed).toBe(5);
   });
 
+  it("waits for the count as the async stage Gate F permits, and is back in breach with the chunks' demand once it lands", async () => {
+    const { producer, releaseReads } = stagedProducer({ pits: 300, holdReads: true });
+    await producer.pump(2);
+    // In flight: an ASYNCHRONOUS stage asking for nothing, not the dispatch
+    // stage "breach" asking for nothing, which is Gate F's deadlock. The count
+    // is mapped at the frame's end, so this wait always spans a frame.
+    expect(producer.activeStage).toBe("breach-count");
+    expect(producer.demand(0).count).toBe(0);
+    const gateF = readSource(join(import.meta.dirname, "gpu", "terrain-erosion-live-pump.test.ts"));
+    const permitted = /const permitted = new Set\(\[([^\]]*)\]\)/u.exec(gateF)?.[1] ?? "";
+    expect(permitted, "Gate F's permitted zero-demand stages").toContain('"breach-count"');
+    expect(permitted).not.toContain('"breach"');
+    releaseReads();
+    await settle();
+    expect(producer.activeStage).toBe("breach");
+    expect(producer.demand(0)).toMatchObject({ count: 3 });
+  });
+
   it("stops at the count read however many dispatches a pump admits", async () => {
     const { producer, calls, job } = stagedProducer({ pits: 300, holdReads: true });
     await producer.pump(10);
@@ -147,7 +165,7 @@ describe("breach as passes: the stage machine", () => {
       "dispatch breachArgs 1",
       "read pitArgs 0+16 at the frame's end",
     ]);
-    expect(job).toMatchObject({ asyncInFlight: true, stage: "breach", dispatchesUsed: 2 });
+    expect(job).toMatchObject({ asyncInFlight: true, stage: "breach-count", dispatchesUsed: 2 });
   });
 
   it("carves nothing on a page without pits, and goes straight to the readback", async () => {
