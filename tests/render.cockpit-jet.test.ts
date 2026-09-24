@@ -55,7 +55,7 @@ import { createRecordingContext, transformedPoints, type RecordedCall } from "./
 import { aircraftCameraLayerMask, type AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { AIRCRAFT_KINDS } from "../src/sim";
 import { BEZEL_RIM, GLARESHIELD_IMAGE_LIGHT, bezelRimEmissive } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
-import { COCKPIT_GLOW_NIGHT_MULTIPLE } from "../src/render/webgpu/lighting/AircraftLighting";
+import { COCKPIT_GLOW_NIGHT_MULTIPLE, aircraftWashLights } from "../src/render/webgpu/lighting/AircraftLighting";
 import { cockpitView, measureDeckLineDegrees } from "./support/cockpitFootprints";
 import { cockpitDeckK, cockpitDeckKStyleValue, cockpitDeckLineY } from "../src/ui/cockpitHudLayout";
 
@@ -1002,6 +1002,16 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
     // 0.05 the rule said 9.75% and the frame read 5.5%, the band's floor; step 3 raised it)
     expect(glass.alpha).toBe(0.08);
     expect(1 - (1 - glass.alpha) ** 2, "darker through both panes, by the rule").toBeCloseTo(0.1536, 4);
+    // NOT A MIRROR (step 5d): the beacon's wash light, on the centreline behind the pilot, mirrors in the upright panes
+    // onto the flight-path marker, and at 0.05 its highlight was a flashing red bloom there at night. The geometry that
+    // makes it so, from the wash table and the panes' plane:
+    const beacon = aircraftWashLights("jet").find((wash) => wash.name === "aircraft-beacon-wash")!;
+    const mirrored = new Vector3(2 * JET_HUD_COMBINER.paneX[0] - beacon.offset[0], beacon.offset[1], beacon.offset[2]);
+    expect(Math.abs(azel(mirrored).az), "the beacon's image in the panes: straight ahead").toBeLessThan(0.3);
+    expect(Math.abs(azel(mirrored).el), "and on the horizon line, the flight-path marker's").toBeLessThan(0.3);
+    expect(JET_HUD_COMBINER.paneX[0] - beacon.offset[0], "within the wash's range").toBeLessThan(beacon.rangeMeters);
+    // so the glass is rough enough to spread the highlight: 0.35 (GGX's peak falls as roughness to the fourth power)
+    expect(glass.roughness).toBe(0.35);
     // green-gold: green over red over blue
     expect(glass.albedoColor.g).toBeGreaterThan(glass.albedoColor.r);
     expect(glass.albedoColor.r).toBeGreaterThan(glass.albedoColor.b);

@@ -1978,6 +1978,26 @@ shows all of it, and the bottom 39% of the page was blank.
   - own ship left at 234.5;
   - the centring applied to 440 x 300 (the 747's and the Global's digests catch it).
 
+**Step 5d, the beacon's glint in the combiner.**
+- **What the final slot's night frames showed:** a red-white bloom about 80 px across at the view's centre, over the
+  flight-path marker. The 3b night frame at the same heading had none.
+- **Why, by geometry.** The jet's `aircraft-beacon-wash` is a red point light at (-1.6, 0.92, 0), on the centreline
+  behind the pilot at eye height (range 12 m, lit 22% of each beacon cycle). The combiner's panes are flat, upright
+  and near-mirrors at roughness 0.05, 4.65 m from it. The beacon's image in them lies at (7.7, 0.92, 0): from the eye,
+  az 0, el -0.21.
+  - A Node ray down the centre line meets only the canopy and the combiner, on every layer.
+  - The 3b capture's paused sim time fell in the beacon's dark 78%, the final slot's in its lit 22%.
+  - It has been in the kit since step 2, which added the combiner.
+- **Why not an exclusion.** The wash is one of the one clustered container's lights, with the airfield's. Babylon's
+  `ClusteredLightContainer` packs its lights into one buffer and never reads a light's own excluded meshes. So the
+  beacon alone cannot be kept off the glass; the container's `excludedMeshes` would take every clustered light off it,
+  and that needs a renderer hook.
+- **The fix: the combiner's roughness from 0.05 to 0.35,** kit-local. The highlight's lobe spreads and its peak falls
+  with roughness to the fourth power. The test pins the roughness and the geometry that makes it needed (the beacon's
+  image straight ahead, within the wash's range).
+- One mutation (back at 0.05), caught. The night capture with the beacon forced lit, and the day tint's re-read, are
+  the check.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

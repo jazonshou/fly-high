@@ -419,11 +419,19 @@ function jetHudHousingFacets(): { corners: [Vector3, Vector3, Vector3, Vector3];
  * No depth pre-pass and no depth write, as the canopy's: written, the panes' depth would cut the canopy behind them
  * (sorted after them, its bounding centre being nearer the eye), and the combiner would read brighter than its
  * surround, not tinted. The live frame is the measurement (the glass adds its own reflection).
+ *
+ * ROUGHNESS 0.35, NOT A MIRROR (step 5d). The panes are flat and upright, and the red anticollision beacon's wash light
+ * (`aircraft-beacon-wash`, at (-1.6, 0.92, 0), on the centreline behind the pilot at eye height) mirrors in them at az
+ * 0, el -0.21: on the flight-path marker. At 0.05 its highlight was a flashing red bloom about 80 px across there,
+ * whenever the beacon was lit at night. The wash is one of the clustered container's lights, and the container packs
+ * its lights into one buffer and never reads a light's own excluded meshes, so it cannot be kept off the glass by
+ * itself; at 0.35 the highlight's lobe spreads and its peak falls by some three orders.
  */
 export const JET_HUD_COMBINER = Object.freeze({
   paneX: [3.045, 3.055] as const,
   albedo: 0x9fb86a,
   alpha: 0.08,
+  roughness: 0.35,
   /** The panes' bottom edge, this far under the housing's top at the uprights. */
   intoHousing: 0.005,
 });
@@ -894,7 +902,7 @@ export function buildJetCockpit(
   // THE COMBINER: both panes one mesh on a new instance of the canopy glass's kind, single-sided toward the eye (the
   // material is two-sided, as every alpha-blended airframe material is; the winding is what the drawn-faces walk reads)
   const c = JET_HUD_COMBINER;
-  const combinerGlass = build.material("jet-hud-glass", c.albedo, { roughness: 0.05, metallic: 0, alpha: c.alpha });
+  const combinerGlass = build.material("jet-hud-glass", c.albedo, { roughness: c.roughness, metallic: 0, alpha: c.alpha });
   combinerGlass.needDepthPrePass = false;
   combinerGlass.disableDepthWrite = true;
   const toward = new Vector3(-1, 0, 0);
