@@ -430,7 +430,7 @@ function lowerSurfaceY(z: number): number {
  * barrel is not miserliness — it IS a cylinder, and sections only buy anything
  * where the radius changes.
  */
-const FUSELAGE_SECTIONS: readonly LoftSection[] = [
+export const FUSELAGE_SECTIONS: readonly LoftSection[] = [
   { x: -26, yRadius: 3.08, zRadius: 3.08, yOffset: 0.16 },
   { x: -20, yRadius: 3.25, zRadius: 3.25 },
   { x: -6, yRadius: 3.25, zRadius: 3.25 },
@@ -511,7 +511,7 @@ const FUSELAGE_SECTIONS: readonly LoftSection[] = [
  * That is the real shape, and with the crown falling at the same time it is
  * most of why a 747 nose reads as a 747 rather than as a cone.
  */
-const NOSE_SECTIONS: readonly LoftSection[] = [
+export const NOSE_SECTIONS: readonly LoftSection[] = [
   // Starts 1.9 m inside the barrel so its aft cap is buried well clear of the
   // join; at the first draft's x = 27 the two lofts met almost exactly and the
   // seam showed as a ring around the nose in the rendered frames.

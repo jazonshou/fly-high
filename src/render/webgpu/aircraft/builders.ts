@@ -128,6 +128,25 @@ export interface LoftSection {
   readonly crownSquareness?: number;
   /** The filleted V's radius, in metres (0 when absent); below both radii. Only with `crownSquareness`. */
   readonly crownFillet?: number;
+  /**
+   * The LOWER half's vertical radius, below `yOffset`, where it differs from
+   * the upper half's `yRadius`: a section whose widest point is not halfway
+   * between its crown and its keel.
+   *
+   * A symmetric section pins its widest point to the midpoint of crown and
+   * keel, so a nose whose crown falls and whose keel rises at different rates
+   * drags the line of its widest point up and down with them -- on the 747's
+   * hand-ringed nose it wandered 0.64, 0.60, 0.42, 0.50, 0.55, 0.30, -0.25 over
+   * six metres, and the flank's highlight kinked with it. With this the crown,
+   * the keel and the widest point's height are three independent numbers.
+   *
+   * The two halves meet at the widest point with the same half-width and both
+   * vertical there, so the section stays tangent-continuous; only the
+   * curvature steps, as it does between any two ellipses. Absent, the
+   * arithmetic is exactly what it was and every existing loft is
+   * bit-identical.
+   */
+  readonly lowerYRadius?: number;
 }
 
 /**
@@ -169,8 +188,10 @@ export function loftSectionPoint(section: LoftSection, angle: number): { y: numb
   const rise = Math.max(0, yShape);
   const lift = rise * rise * (3 - 2 * rise);
   const halfWidth = section.zRadius + (crownZRadius - section.zRadius) * lift;
+  // Below the widest point the lower half's own radius, where one is given.
+  const yRadius = yShape < 0 && section.lowerYRadius !== undefined ? section.lowerYRadius : section.yRadius;
   return {
-    y: (section.yOffset ?? 0) + yShape * section.yRadius,
+    y: (section.yOffset ?? 0) + yShape * yRadius,
     z: (section.zOffset ?? 0) + zShape * halfWidth,
   };
 }
@@ -812,6 +833,9 @@ export class AircraftBuildContext {
       const crownZRadius = section.crownZRadius ?? section.zRadius;
       if (!(crownZRadius > 0)) {
         throw new RangeError("Aircraft loft crown radius must be positive");
+      }
+      if (section.lowerYRadius !== undefined && !(section.lowerYRadius > 0)) {
+        throw new RangeError("Aircraft loft lower radius must be positive");
       }
       if (section.crownSquareness !== undefined) {
         if (!(section.crownSquareness > 1)) throw new RangeError("Aircraft loft crown squareness must be above 1");
