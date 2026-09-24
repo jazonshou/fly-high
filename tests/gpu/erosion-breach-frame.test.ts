@@ -141,7 +141,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
             frameId,
             stage,
             breachPass: erosionAdmitted > 0 ? breachPass : null,
-            awaitingCount: stage === "breach" && job?.breachArgsDone === true && job.asyncInFlight,
+            awaitingCount: stage === "breach-count",
             erosionDemand: demand.count,
             erosionAdmitted,
             erosionBookedMs: erosionAdmitted * demand.costMs,

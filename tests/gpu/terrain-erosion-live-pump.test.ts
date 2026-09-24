@@ -153,7 +153,7 @@ describe("erosion DAG under the live admission meter (Gate F)", () => {
         // The stages that may legitimately want nothing: a CPU/worker step or
         // a readback is in flight, or the page is done.
         const permitted = new Set([
-          "idle", "seed-inputs", "readback", "mfd", "evolved-readback", "finish",
+          "idle", "seed-inputs", "breach-count", "readback", "mfd", "evolved-readback", "finish",
         ]);
         const offenders = [...zeroDemandStages].filter((stage) => !permitted.has(stage));
         expect(

@@ -167,6 +167,7 @@ export type TerrainErosionGpuStage =
   | "seed"
   | "geology"
   | "breach"
+  | "breach-count"
   | "readback"
   | "mfd"
   | "decode"
@@ -1504,14 +1505,16 @@ export class TerrainPageErosionGpu {
           count: GEOLOGY_BAND_COUNT - job.bandIndex,
           costMs: this.stageEstimatesMs.fineBand,
         };
-      // Stages that legitimately want nothing: the CPU seed inputs, the two
-      // readbacks and the MFD step are asynchronous (the `asyncInFlight` guard
-      // above normally answers first), and `finish` is terminal.
+      // Stages that legitimately want nothing: the CPU seed inputs, the pit
+      // count's read, the two readbacks and the MFD step are asynchronous (the
+      // `asyncInFlight` guard above normally answers first), and `finish` is
+      // terminal.
       // `idle` is the no-job sentinel `activeStage` reports and is unreachable
       // here — the `!job` branch above already answered — but it is named so
       // the exhaustiveness check below stays a real guarantee.
       case "idle":
       case "seed-inputs":
+      case "breach-count":
       case "readback":
       case "mfd":
       case "evolved-readback":
@@ -1725,6 +1728,12 @@ export class TerrainPageErosionGpu {
         if (job.cancelled || this.job !== job) return;
         // How many chunks to carve is the pit count, which only the device
         // holds: nothing more is dispatched for the page until it is read.
+        // The wait is its own asynchronous stage: the count is mapped at the
+        // frame's end, so it spans at least a frame in which the page asks the
+        // meter for nothing, and a DISPATCH stage asking for nothing is Gate
+        // F's deadlock (tests/gpu/terrain-erosion-live-pump.test.ts). Nothing
+        // needs pumping meanwhile; the read completes on its own.
+        job.stage = "breach-count";
         job.asyncInFlight = true;
         void this.runPitCountReadback(job, buffers);
         return;
@@ -1935,6 +1944,7 @@ export class TerrainPageErosionGpu {
       job.breachChunks = terrainBreachPitChunks(pits);
       job.breachListed = Math.min(pits, BREACH_PIT_LIST_CAPACITY);
       if (job.breachChunks > 0) {
+        job.stage = "breach";
         job.asyncInFlight = false;
         return;
       }
