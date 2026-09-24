@@ -83,9 +83,10 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
   trainer: { mesh: "trainer-attitude-pitch-bar" },
   bizjet: { mesh: "bizjet-screens", block: 0 },
   airliner: { mesh: "airliner-screens", block: 0 },
-  // The F-16's panel board: one `build.box` under the coaming (the pilot does not see it from the seat, but
-  // the control samples the box's own faces alone, and its aft face is the nearest of them from the eye).
-  jet: { mesh: "jet-instrument-panel" },
+  // The F-16's pilot's left MFD screen, box 0 of the merged screens mesh, as the glass decks' are. (It was the
+  // panel board, a `build.box` until the F-16 pass made the board a narrowed `solidPlate`: a control wound by the
+  // rule it is there to check.)
+  jet: { mesh: "jet-screens", block: 0 },
 };
 
 /** How many cockpit-only meshes each aircraft has, so a mesh going missing cannot pass as a clean run. */
