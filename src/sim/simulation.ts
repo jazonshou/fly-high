@@ -60,6 +60,21 @@ const MAX_GEAR_COMPRESSION = 0.22;
 const GEAR_DOWN_LOCK_THRESHOLD = 0.98;
 const CRASH_IMPACT_SPEED = 8.5;
 const CRASH_SURFACE_CLEARANCE = 0.006;
+/**
+ * GROUND SPOILERS, the type's rule with the speedbrake always armed: on the
+ * ground they deploy fully once the throttle is back at idle above a walking-
+ * pace-and-then-some ground speed (a touchdown, or a rejected take-off), and
+ * with the wheel brake held at any speed. In the air they stow. The numbers
+ * are chosen, not transcribed: 15 m/s is well above any taxi and well below
+ * any touchdown, and "idle" allows a sliver of lever for a gamepad's slack.
+ */
+export const GROUND_SPOILER_ARMED_SPEED = 15;
+export const GROUND_SPOILER_IDLE_THROTTLE = 0.05;
+/** Full travel per second: out in 0.4 s, which is how quickly the lift goes. */
+export const GROUND_SPOILER_RATE = 2.5;
+/** Lift dumped by the panels: fully deployed on the ground, and as the speed brake. */
+const GROUND_SPOILER_LIFT_DUMP = 0.62;
+const FLIGHT_SPEED_BRAKE_LIFT_DUMP = 0.12;
 // Numerical translational safety envelope. This is a NaN/injection guard, not
 // a flight-shaping limit: it sits far above anything gravity plus the drag
 // polar can reach for either aircraft, so the aerodynamics — never the clamp —
@@ -499,7 +514,7 @@ export function createFlightState(
   // F-16 and the 747-8 ask for more again. A spawn speed that is quietly
   // ignored makes the catalogue lie about the aeroplane.
   const airspeed = clamp(finiteOr(spawn.airspeed, onGround ? 0 : 50), 0, MAX_TRANSLATIONAL_SPEED);
-  const actuators = normalizedControls(spawn.controls);
+  const actuators: ActuatorState = { ...normalizedControls(spawn.controls), groundSpoilers: 0 };
   actuators.gear = onGround
     ? 1
     : gearExtensionForAircraft(
@@ -608,11 +623,57 @@ export function createFlightState(
 
 export const spawnFlight = createFlightState;
 
+/**
+ * Where the ground spoilers are being driven, 0..1: the type's rule (see
+ * `GROUND_SPOILER_ARMED_SPEED`). Reads the ACTUATORS, so it follows the lever
+ * and the brake the aeroplane actually has, not the ones the pilot is asking for.
+ */
+export function groundSpoilerDemand(
+  aircraft: AircraftDefinition,
+  actuators: ActuatorState,
+  weightOnWheels: boolean,
+  groundSpeed: number,
+): number {
+  if (!aircraft.groundSpoilers || !weightOnWheels) return 0;
+  const armedTouchdown = actuators.throttle <= GROUND_SPOILER_IDLE_THROTTLE
+    && groundSpeed > GROUND_SPOILER_ARMED_SPEED;
+  return armedTouchdown ? 1 : clamp(actuators.brake, 0, 1);
+}
+
+/**
+ * The fraction of lift the panels dump. On an airframe with ground spoilers it
+ * reads their deployment, and the brake only as the flight speed brake, so the
+ * sim dumps lift exactly when (and as far as) the drawn panels stand up. The
+ * others keep the brake-driven dump they always had, bit for bit.
+ */
+export function speedBrakeLiftDump(
+  aircraft: AircraftDefinition,
+  actuators: ActuatorState,
+  onGround: boolean,
+): number {
+  if (!(aircraft.speedBrakeDrag > 0)) return 0;
+  if (!aircraft.groundSpoilers) {
+    return actuators.brake * (onGround ? GROUND_SPOILER_LIFT_DUMP : FLIGHT_SPEED_BRAKE_LIFT_DUMP);
+  }
+  return Math.max(
+    actuators.groundSpoilers * GROUND_SPOILER_LIFT_DUMP,
+    actuators.brake * FLIGHT_SPEED_BRAKE_LIFT_DUMP,
+  );
+}
+
+/** How far the panels stand up for their DRAG: the speed brake, or the ground spoilers if more. */
+function speedBrakeDeployment(aircraft: AircraftDefinition, actuators: ActuatorState): number {
+  return aircraft.groundSpoilers
+    ? Math.max(actuators.brake, actuators.groundSpoilers)
+    : actuators.brake;
+}
+
 function updateActuators(
   actuators: ActuatorState,
   controls: FlightControls,
   aircraft: AircraftDefinition,
   weightOnWheels: boolean,
+  groundSpeed: number,
   dt: number,
 ): void {
   actuators.throttle = moveToward(actuators.throttle, controls.throttle, dt * 1.5);
@@ -622,6 +683,13 @@ function updateActuators(
   actuators.trim = moveToward(actuators.trim, controls.trim, dt * 0.45);
   actuators.flaps = moveToward(actuators.flaps, controls.flaps, dt * 0.28);
   actuators.brake = moveToward(actuators.brake, controls.brake, dt * 5);
+  actuators.groundSpoilers = aircraft.groundSpoilers
+    ? moveToward(
+        actuators.groundSpoilers,
+        groundSpoilerDemand(aircraft, actuators, weightOnWheels, groundSpeed),
+        dt * GROUND_SPOILER_RATE,
+      )
+    : 0;
   actuators.gear = aircraft.retractableGear
     ? moveToward(
         actuators.gear,
@@ -1046,7 +1114,14 @@ function integrateSubstep(
     settleCrashedState(state, environment, aircraft, scratch, dt, false);
     return;
   }
-  updateActuators(state.actuators, controls, aircraft, state.onGround, dt);
+  updateActuators(
+    state.actuators,
+    controls,
+    aircraft,
+    state.onGround,
+    Math.hypot(state.velocity.x, state.velocity.z),
+    dt,
+  );
 
   const gravity = clamp(finiteOr(environment.gravity, STANDARD_GRAVITY), 0, 30);
   scratch.relativeWorld.x = state.velocity.x - finiteOr(environment.wind?.x, 0);
@@ -1086,13 +1161,13 @@ function integrateSubstep(
     state.actuators.flaps,
     aircraft,
   );
-  // The jet's brake command drives its speed-brake panels in flight and its
-  // lift-dump/spoiler function once weight is on the wheels. Wheel braking is
-  // still applied exclusively by loaded gear contacts below.
-  const speedBrakeLiftDump = aircraft.speedBrakeDrag > 0
-    ? state.actuators.brake * (state.onGround ? 0.62 : 0.12)
-    : 0;
-  const liftCoefficient = baseLiftCoefficient * (1 - speedBrakeLiftDump);
+  // The brake command drives the speed-brake panels in flight and, on the
+  // jet, its lift-dump function once weight is on the wheels; on an airframe
+  // with ground spoilers the dump reads their deployment instead (see
+  // `speedBrakeLiftDump`). Wheel braking is still applied exclusively by
+  // loaded gear contacts below.
+  const liftDump = speedBrakeLiftDump(aircraft, state.actuators, state.onGround);
+  const liftCoefficient = baseLiftCoefficient * (1 - liftDump);
   // Adding the (possibly zero) wave-drag term after the base polar keeps the
   // trainer bit-identical: x + 0 is exact for every positive float.
   const dragCoefficient =
@@ -1102,7 +1177,7 @@ function integrateSubstep(
       state.actuators.flaps,
       aircraft,
       state.actuators.gear,
-      state.actuators.brake,
+      speedBrakeDeployment(aircraft, state.actuators),
     ) + waveDragCoefficient(aircraft, airspeed, airDensity);
   const liftForce = dynamicPressure * aircraft.wingArea * liftCoefficient;
   const dragForce = dynamicPressure * aircraft.wingArea * dragCoefficient;

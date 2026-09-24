@@ -20,9 +20,9 @@ export interface AircraftAnimationPose {
    * DEPLOYED, unlike `speedBrake` above, which carries the sign its hinge
    * wants; the caller negates.
    *
-   * Only the 747 has spoilers grouped this way. The others fill it with zeros
-   * and drive their own panels from `speedBrake`, which is the single symmetric
-   * number they all want.
+   * The 747 and the Global have spoilers grouped this way. The trainer and
+   * the F-16 fill it with zeros; the F-16 drives its airbrake petals from
+   * `speedBrake`, the single symmetric number it wants.
    */
   readonly spoilers: AircraftSpoilerPose;
   /**
@@ -36,18 +36,26 @@ export interface AircraftAnimationPose {
  * HOW A LARGE TRANSPORT'S SPOILERS ACTUALLY WORK, which is three jobs from two
  * inputs, and why one number could not do it.
  *
- * The twelve panels split into INBOARD GROUND SPOILERS and OUTBOARD FLIGHT
- * SPOILERS. The ground spoilers deploy only on the ground — on touchdown they
- * dump the wing's remaining lift on to the wheels — and stay stowed in the air.
- * The flight spoilers do double duty: they rise symmetrically as the SPEED
- * BRAKE, and they also rise DIFFERENTIALLY with roll input, on the down-going
- * wing only, to augment the ailerons. The two demands are summed on each wing
- * and limited to the panel's travel, so a speed-braking aeroplane rolled hard
- * right does not ask its starboard panels for more than they have.
+ * The panels split into INBOARD GROUND SPOILERS and OUTBOARD FLIGHT SPOILERS
+ * (the Global's are its MULTI-FUNCTION panels). The ground spoilers deploy
+ * only on the ground -- on touchdown they dump the wing's remaining lift on to
+ * the wheels -- and stay stowed in the air. The flight spoilers do double
+ * duty: they rise symmetrically as the SPEED BRAKE, and (on the 747) also
+ * DIFFERENTIALLY with roll input, on the down-going wing only, to augment the
+ * ailerons. On the ground every panel goes to full with the ground spoilers.
  *
- * That arrangement is the aeroplane's. THE ANGLES BELOW ARE NOT TRANSCRIBED —
- * they are chosen for how they read at chase range, and are marked so rather
- * than presented as a manual's figures.
+ * WHEN the ground spoilers deploy is the SIM's decision, not this file's:
+ * `state.groundSpoilers` is the deployment the sim drives (touchdown with the
+ * throttle at idle, or the wheel brake on the ground; see
+ * `groundSpoilerDemand`) and dumps lift by. Re-deriving it here from the brake
+ * and the wheels would be a second producer of the same fact, free to
+ * disagree with the one the aeroplane flies by.
+ *
+ * That arrangement is the aeroplane's. THE ANGLES ARE CHOSEN, NOT TRANSCRIBED:
+ * the 747's 60 degree full travel and 25 degree speed brake are the type's
+ * figures in round numbers (the flight detent is a partial deployment); the
+ * roll mix, the 44.7 degree cap on the airborne sum and the Global's travel
+ * are chosen for how they read.
  */
 export interface AircraftSpoilerPose {
   /** Inboard ground spoilers, both wings together. */
@@ -62,35 +70,49 @@ const SPOILERS_STOWED: AircraftSpoilerPose = Object.freeze({
   flightStarboard: 0,
 });
 
-/** Full travel, which is what the ground spoilers take and what caps the sum. */
-const SPOILER_FULL = 0.78;
-/** The speed brake in flight, deliberately short of full. */
-const SPOILER_FLIGHT_BRAKE = 0.35;
-/** What full roll input adds, on the down-going wing only. */
-const SPOILER_ROLL = 0.45;
+interface SpoilerTravel {
+  /** Every panel's travel with the ground spoilers fully out. */
+  readonly groundFull: number;
+  /** The flight panels' speed brake at full brake, airborne. */
+  readonly speedBrake: number;
+  /** What full roll input adds, down-going wing only. */
+  readonly roll: number;
+  /** The cap on the airborne sum of speed brake and roll. */
+  readonly flightCap: number;
+}
+
+const DEGREES = Math.PI / 180;
+
+export const SPOILER_TRAVEL: Readonly<Partial<Record<AircraftKind, SpoilerTravel>>> = Object.freeze({
+  airliner: Object.freeze({ groundFull: 60 * DEGREES, speedBrake: 25 * DEGREES, roll: 0.45, flightCap: 0.78 }),
+  // The Global keeps the 39 degrees its panels always had, now on the ground
+  // only; no roll mix, which it was never given.
+  bizjet: Object.freeze({ groundFull: 0.68, speedBrake: 25 * DEGREES, roll: 0, flightCap: 0.68 }),
+});
 
 function resolveSpoilers(
   kind: AircraftKind,
   aileron: number,
   brake: number,
-  onGround: boolean,
+  groundSpoilers: number,
 ): AircraftSpoilerPose {
-  if (kind !== "airliner") return SPOILERS_STOWED;
-  const symmetric = brake * (onGround ? SPOILER_FULL : SPOILER_FLIGHT_BRAKE);
+  const travel = SPOILER_TRAVEL[kind];
+  if (!travel) return SPOILERS_STOWED;
+  const ground = groundSpoilers * travel.groundFull;
   // A POSITIVE `aileron` IS A ROLL TO THE RIGHT, which drops the right wing —
   // so the STARBOARD panels are the ones that rise. The sign is pinned on the
   // built meshes in `render.webgpu-control-surface-sides`, with the flipped
   // mix asserted to fail the same measurement, because "right stick raises the
   // right spoilers" reads equally true backwards to anyone not holding the
   // body-axis contract in their head.
-  const starboardRoll = Math.max(0, aileron) * SPOILER_ROLL;
-  const portRoll = Math.max(0, -aileron) * SPOILER_ROLL;
-  const limit = (value: number) => Math.min(SPOILER_FULL, Math.max(0, value));
+  const starboardRoll = Math.max(0, aileron) * travel.roll;
+  const portRoll = Math.max(0, -aileron) * travel.roll;
+  const flight = (roll: number) =>
+    Math.max(ground, Math.min(travel.flightCap, Math.max(0, brake * travel.speedBrake + roll)));
   return {
-    // Ground spoilers are armed by the brake and grounded by the wheels.
-    ground: onGround ? brake * SPOILER_FULL : 0,
-    flightPort: limit(symmetric + portRoll),
-    flightStarboard: limit(symmetric + starboardRoll),
+    ground,
+    flightPort: flight(portRoll),
+    flightStarboard: flight(starboardRoll),
   };
 }
 
@@ -242,7 +264,7 @@ export function resolveAircraftAnimationPose(
       gearOffsetY: -0.24 * (1 - easedGear),
       gearDoorTravel: Math.sin(Math.PI * gearTravel) * 1.05,
       speedBrake: -brake * 0.68,
-      spoilers: resolveSpoilers(kind, aileron, brake, state.onGround),
+      spoilers: resolveSpoilers(kind, aileron, brake, clamp(finite(state.groundSpoilers), 0, 1)),
       flap: flaps * travel.flap,
     };
   }

@@ -53,16 +53,26 @@ import type { AircraftVisual } from "./types";
 
 /**
  * The retractable parts, on the same contract the sport jet's rig uses: the
- * gear collapses by scaling one node, the doors swing on the door travel and
- * the brake panels take a single angle. The Global's brake panels are wing
- * spoilers rather than the jet's fuselage airbrake, but they are driven from
- * the identical pose field, because "how far is the brake out" is one number
- * whatever the metal doing it looks like.
+ * gear collapses by scaling one node and the doors swing on the door travel.
+ * The spoilers are NOT the jet's one-angle airbrake: the inboard GROUND
+ * spoiler deploys only with the ground spoilers the sim drives, and the three
+ * multi-function panels are the speed brake in the air and go full with it on
+ * the ground (`pose.spoilers`, the rule the 747 uses). Driven from the jet's
+ * single `speedBrake` they had the type's rule reversed: the ground spoiler
+ * stood up in flight.
  */
 interface BizJetRig extends CommonRig {
   readonly landingGear: TransformNode;
   readonly gearDoors: readonly AbstractMesh[];
-  readonly speedBrakes: readonly TransformNode[];
+  readonly spoilers: readonly BizJetSpoiler[];
+}
+
+interface BizJetSpoiler {
+  readonly node: TransformNode;
+  /** The inboard panel is the ground spoiler; the other three are multi-function. */
+  readonly group: "ground" | "flight";
+  /** +1 starboard, -1 port. */
+  readonly side: number;
 }
 
 /**
@@ -605,7 +615,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
 
   const wingSurfaces: AbstractMesh[] = [];
   const flaps: TransformNode[] = [];
-  const speedBrakes: TransformNode[] = [];
+  const spoilers: BizJetSpoiler[] = [];
   const ailerons: TransformNode[] = [];
   /** Every flap hinge with the rest pose its Fowler travel departs from. */
   const flapTravel: { node: TransformNode; restX: number; restY: number }[] = [];
@@ -981,7 +991,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       panel.position.x = -spoiler.chord * 0.5;
       panel.rotation.z = tilt;
       panel.rotation.x = -spanTilt;
-      speedBrakes.push(brake);
+      spoilers.push({ node: brake, group: spoiler.name === "ground-spoiler" ? "ground" : "flight", side });
     }
 
     // The winglet: shallow blend off the tip, then the fin proper.
@@ -1617,7 +1627,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
     noseWheel,
     landingGear,
     gearDoors,
-    speedBrakes,
+    spoilers,
   };
   // NO part on the paint materials carries a colour channel. They all did --
   // a white one filled in here so a merge by material could not drop the
@@ -1666,14 +1676,18 @@ export function createBizJet(scene: Scene): AircraftVisual {
         track.node.position.y = track.restY - FLAP_DOWN_TRAVEL * flapFraction;
       }
       // The spoiler panels live INSIDE the wing at rest (see their seating).
-      // Switching them off below a couple of milliradians makes that
+      // Switching each off below a couple of milliradians makes that
       // unconditional rather than merely deep enough: at rest there is no
       // panel to z-fight with the skin at any distance, and because the
       // threshold is crossed while the panel is still buried, nothing pops.
-      const braking = Math.abs(pose.speedBrake) > 0.002;
-      for (const speedBrake of rig.speedBrakes) {
-        speedBrake.setEnabled(braking);
-        speedBrake.rotation.z = pose.speedBrake;
+      // NEGATED, because `pose.spoilers` states a deployment angle while the
+      // hinge wants the sign that lifts a trailing edge.
+      for (const spoiler of rig.spoilers) {
+        const deployed = spoiler.group === "ground"
+          ? pose.spoilers.ground
+          : (spoiler.side > 0 ? pose.spoilers.flightStarboard : pose.spoilers.flightPort);
+        spoiler.node.setEnabled(deployed > 0.002);
+        spoiler.node.rotation.z = -deployed;
       }
     },
     setLightState(lights) {

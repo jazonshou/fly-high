@@ -123,7 +123,20 @@ export interface SpawnOptions {
   terrainHeight?: number;
 }
 
-export type ActuatorState = FlightControls;
+/**
+ * What the aeroplane's actuators actually hold: every control after its slew
+ * limit, plus the one surface no control commands directly.
+ */
+export type ActuatorState = FlightControls & {
+  /**
+   * Ground-spoiler (lift-dump) deployment, 0..1 of full. The SIM decides it --
+   * touchdown with the throttle at idle, or the wheel brake on the ground,
+   * on an airframe with `groundSpoilers` -- and everything downstream reads
+   * this one number: the lift dump, the panels' drag and the drawn panels.
+   * Always 0 on an airframe without ground spoilers.
+   */
+  groundSpoilers: number;
+};
 
 export interface DynamicsState {
   angleOfAttack: number;

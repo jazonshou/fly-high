@@ -159,7 +159,8 @@ Ranked by how much it would show.
    it is not what the metal does. The real fix is to cut the spoiler bays out
    of the wing skin, which is a wing rebuild rather than a panel one.
 
-4. **There is no spoiler bay under the panels.** Deployed, the underside of
+4. **There is no spoiler bay under the panels.** *(A dark bay now lies under each panel, 2026-09-23: see
+   `GROUND_SPOILERS_2026_09_23.md`. The skin is still not cut.)* Deployed, the underside of
    each panel shows the wing's own upper skin beneath it, not a recessed well
    with its actuator. At 39 degrees and chase range this reads as a shallow
    step; close up it would not.

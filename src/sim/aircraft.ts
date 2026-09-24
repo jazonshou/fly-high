@@ -108,6 +108,15 @@ export interface AircraftDefinition {
   gearDrag: number;
   /** Additional drag coefficient at full speed-brake deployment. */
   speedBrakeDrag: number;
+  /**
+   * Whether the aeroplane has GROUND SPOILERS: lift dumpers that deploy on
+   * their own at touchdown (the type's speedbrake armed, always here, since
+   * nothing in the cockpit disarms it) and with the wheel brake on the
+   * ground. The sim owns their deployment (`ActuatorState.groundSpoilers`);
+   * the lift dump and the drawn panels both read it. `false` keeps an
+   * airframe's brake-only lift dump exactly as it was.
+   */
+  groundSpoilers: boolean;
   /** Whether the undercarriage can be retracted by the pilot. */
   retractableGear: boolean;
   /** Full normalized gear travel per second. */
@@ -218,6 +227,7 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   flapDrag: 0.064,
   gearDrag: 0,
   speedBrakeDrag: 0,
+  groundSpoilers: false,
   retractableGear: false,
   gearCycleRate: 0,
   // The trainer never approaches its critical Mach number; Infinity/0 keeps
@@ -332,6 +342,7 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   flapDrag: 0.075,
   gearDrag: 0.045,
   speedBrakeDrag: 0.19,
+  groundSpoilers: false,
   retractableGear: true,
   gearCycleRate: 0.42,
   // Unlike the aeroplane this replaces, the F-16 genuinely goes supersonic, so
@@ -464,6 +475,7 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   gearDrag: 0.022,
   // Spoilers rather than a fuselage airbrake, so less than the sport jet's.
   speedBrakeDrag: 0.09,
+  groundSpoilers: true,
   retractableGear: true,
   // Roughly eight seconds from locked down to locked up, which is what a leg
   // this size takes.
@@ -583,6 +595,7 @@ export const BOEING_747_8: Readonly<AircraftDefinition> = Object.freeze({
   flapDrag: 0.13,
   gearDrag: 0.025,
   speedBrakeDrag: 0.1,
+  groundSpoilers: true,
   retractableGear: true,
   // Eighteen wheels on five legs take their time.
   gearCycleRate: 0.1,

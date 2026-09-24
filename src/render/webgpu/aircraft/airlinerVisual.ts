@@ -242,6 +242,23 @@ const SPOILER_AFT_FRACTION = HINGE_CHORD_FRACTION - 0.025;
 const SPOILER_PROUD = 0.012;
 const SPOILER_THICKNESS = 0.06;
 /**
+ * THE BAY under each panel: a matte near-black plate on the skin over the
+ * panel's footprint, 2-4 mm proud, so a raised panel uncovers a shadowed well
+ * instead of the same white wing it lay on. That is most of what makes a
+ * deployed spoiler read from behind: at the 747's 17 degree chase sightline a
+ * raised panel leans back over its bay like a lean-to, and the camera looks
+ * under it on to the floor. Stowed, the bay is INSIDE the panel (whose top is
+ * 12 mm proud and bottom 48 mm under the skin) and inset from its outline, so
+ * nothing of it shows. 8 mm under the panel's top and 4 over the skin is
+ * nothing to a reversed-Z float32 depth buffer, which resolves about 0.01 mm
+ * at the 112 m chase.
+ */
+const SPOILER_BAY_PROUD = 0.004;
+const SPOILER_BAY_THICKNESS = 0.002;
+/** Inset of the bay from the panel's outline, as a fraction of chord and in metres of span. */
+const SPOILER_BAY_CHORD_INSET = 0.002;
+const SPOILER_BAY_SPAN_INSET = 0.02;
+/**
  * One span segment would be exact — the skin is ruled in z within a panel —
  * but two lets the normals interpolate across the panel instead of being
  * constant over its whole width. The chord is a curve and needs its four.
@@ -1131,6 +1148,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
     group: (typeof SPOILER_GROUPS)[number]["name"];
     side: 1 | -1;
   }[] = [];
+  /** The bays under the panels, both wings: one static mesh (see `SPOILER_BAY_PROUD`). */
+  const spoilerBays: AbstractMesh[] = [];
 
   // STARBOARD IS BODY +Z. Every side loop in this file runs [1, -1] and calls
   // +1 starboard, so the name and the sign cannot drift apart the way they did
@@ -1374,6 +1393,31 @@ export function createAirliner(scene: Scene): AircraftVisual {
         return patch;
       });
       build.conformedPanels(`${brake.name}-surface`, patches, SPOILER_THICKNESS, spoilerPaint, brake);
+      // The bays, in body coordinates on the root: they stay with the wing.
+      const bayPatches = group.panels.map((panel) => {
+        const rootBayZ = panel.rootZ + SPOILER_BAY_SPAN_INSET;
+        const tipBayZ = panel.tipZ - SPOILER_BAY_SPAN_INSET;
+        const patch: SurfacePoint[][] = [];
+        for (let span = 0; span <= SPOILER_SPAN_SEGMENTS; span += 1) {
+          const z = rootBayZ + (tipBayZ - rootBayZ) * (span / SPOILER_SPAN_SEGMENTS);
+          const row: SurfacePoint[] = [];
+          for (let chord = 0; chord <= SPOILER_CHORD_SEGMENTS; chord += 1) {
+            const fraction = SPOILER_HINGE_FRACTION + SPOILER_BAY_CHORD_INSET
+              + (SPOILER_AFT_FRACTION - SPOILER_HINGE_FRACTION - 2 * SPOILER_BAY_CHORD_INSET)
+                * (chord / SPOILER_CHORD_SEGMENTS);
+            row.push({
+              x: chordFractionX(z, fraction),
+              y: wingSkinY(z, fraction, true) + SPOILER_BAY_PROUD,
+              z: side * z,
+            });
+          }
+          patch.push(row);
+        }
+        return patch;
+      });
+      spoilerBays.push(build.conformedPanels(
+        `${sideName}-airliner-${group.name}-bay`, bayPatches, SPOILER_BAY_THICKNESS, tire, root,
+      ));
       // The hinge LINE: the panels' own forward edge, end to end. Sweep from
       // the x term, dihedral and taper from the y term.
       hingeAlong(brake, new Vector3(
@@ -2219,6 +2263,13 @@ export function createAirliner(scene: Scene): AircraftVisual {
   }
   build.mergeStatic("airliner-engine-cores", engineCores, root);
   build.mergeStatic("airliner-engine-inlets", engineInlets, root);
+  // ONE DRAW for all twelve bays, on the tyres' matte near-black: the inlets'
+  // `dark` would have been free, but at 0.28 roughness and 0.36 metallic it
+  // mirrors the sky at the chase's grazing angle and reads grey, which is the
+  // opposite of a shadowed well. No shadow: a 2 mm plate on the skin has
+  // nothing to cast and would only acne the wing.
+  const spoilerBayMesh = build.mergeStatic("airliner-spoiler-bays", spoilerBays, root);
+  spoilerBayMesh.metadata = { ...spoilerBayMesh.metadata, castsShadow: false };
   // The flight deck's furniture, one mesh: the two seats and the two headrests. (The
   // panel, its gauges and its needles are gone: see the cockpit kit above.)
   build.mergeStatic("airliner-flight-deck-interior", flightDeckFurniture, root);

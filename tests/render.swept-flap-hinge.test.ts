@@ -103,6 +103,13 @@ function deflect(visual: AircraftVisual, amount: number): void {
     // other surface here deflects on the ground too, so the pose costs
     // nothing and covers two more hinges.
     onGround: true,
+    // AND THE SIM'S GROUND SPOILERS. Since 2026-09-23 the sim decides when the
+    // ground spoilers deploy (touchdown at idle, or the brake on the wheels)
+    // and the visual reads that one number instead of re-deriving it from the
+    // brake and the wheels, so the pose above alone left the 747's inboard pair
+    // and the Global's ground spoiler undriven again: thirteen surfaces, not
+    // fifteen, and the Global one short.
+    groundSpoilers: amount,
   };
   visual.update(state, 1 / 60);
 }

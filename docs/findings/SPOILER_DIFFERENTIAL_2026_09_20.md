@@ -1,5 +1,9 @@
 # The 747's twelve spoilers did one thing; the aeroplane's do three
 
+> **Superseded in part, 2026-09-23** (`GROUND_SPOILERS_2026_09_23.md`): the ground spoilers now deploy on the
+> sim's `groundSpoilers` (touchdown at idle, or the brake on the wheels) rather than on brake and wheels in the
+> pose, full travel is 60 degrees and the flight speed brake 25, and a dark bay lies under each panel.
+
 Every panel took one angle from one number, so the aeroplane had no roll
 spoilers and its inboard panels deployed in flight — which they never do.
 
