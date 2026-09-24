@@ -18,6 +18,7 @@ import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import {
+  AIRCRAFT_PAINT_EDGE,
   AIRCRAFT_PAINT_FEATURES,
   createAircraftReliefTextures,
   createAircraftSurfaceTextures,
@@ -265,9 +266,15 @@ export class AircraftBuildContext {
     return material;
   }
 
-  /** Deterministic A-2 paint using the shared CPU-mip convention. */
-  paintMaterial(name: string, recipe: AircraftPaintRecipe): PBRMaterial {
-    const synthesis = synthesizeAircraftSurface(recipe);
+  /**
+   * Deterministic A-2 paint using the shared CPU-mip convention. `edge` is the
+   * maps' size, `AIRCRAFT_PAINT_EDGE` unless the airframe needs more texels on
+   * a surface it is seen close to; it is recorded in the metadata so the paint
+   * can be synthesised again exactly as built.
+   */
+  paintMaterial(name: string, recipe: AircraftPaintRecipe, options: { readonly edge?: number } = {}): PBRMaterial {
+    const edge = options.edge ?? AIRCRAFT_PAINT_EDGE;
+    const synthesis = synthesizeAircraftSurface(recipe, edge);
     const textures = createAircraftSurfaceTextures(this.scene, name, synthesis);
     this.textures.push(textures.albedo, textures.normal, textures.metallicRoughness);
     textures.normal.level = 0.42;
@@ -275,6 +282,7 @@ export class AircraftBuildContext {
       aircraftPaint: true,
       aircraftPaintFeatures: [...AIRCRAFT_PAINT_FEATURES],
       aircraftPaintRecipe: { ...recipe },
+      aircraftPaintEdge: edge,
       aircraftPaintFeatureCoverage: { ...synthesis.featureCoverage },
     });
   }

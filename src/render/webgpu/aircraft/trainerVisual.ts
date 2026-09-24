@@ -52,6 +52,38 @@ interface TrainerPropellerRig {
  * where they bite: the cabin greenhouse below, and the propeller's ground
  * clearance at the spinner.
  */
+/**
+ * The trainer's paint maps are 256 texels on a side, not the shared 64
+ * (docs/findings/TRAINER_SKIN_RESOLUTION_2026_09_23.md).
+ *
+ * The loft lays one map over the WHOLE 6.9 m fuselage and its full
+ * circumference, and each wing panel's chord and 5.085 m span. At 64 that is
+ * 9.3 texels a metre along the body and 12.6 along the span, against 30.6 on
+ * the Global's livery and 34.1 on the 747's. A 10 m chase then magnifies a
+ * texel to 6.5 px at 720p, so the panel lines and rivets smear and no mip or
+ * bias can help. At 256: 37 along the body, 78 around it, 50 along the span,
+ * for 1 MiB of GPU memory per paint material and about 10-13 ms of synthesis
+ * each at build.
+ */
+const TRAINER_PAINT_EDGE = 256;
+
+/**
+ * What 256 texels need from the recipe, both of them trainer-only dials:
+ *
+ * - `noiseLattice: 64`: the synthesis indexed its noise in texels, so at 256
+ *   it drew another design. The panel lines' 8-texel jitter blocks stepped
+ *   each line sideways every 10 cm (a "totem pole" at the cabin door), and the
+ *   rivets became dashes across the lines. On a 64-cell lattice, 256 draws the
+ *   64-texel design, sharper.
+ * - `liveryEdge: [0.068, 0.072]`: the green band's default edge is a 0.21 m
+ *   ramp, soft by design, which no texel count sharpens. 0.004 of the length
+ *   is 2.8 cm, about one texel at 256.
+ */
+const TRAINER_PAINT_DIALS = {
+  noiseLattice: 64,
+  liveryEdge: [0.068, 0.072],
+} as const;
+
 export function createTrainer(scene: Scene): AircraftVisual {
   const build = new AircraftBuildContext(scene);
   const root = new TransformNode("aerolith-trainer", scene);
@@ -65,8 +97,9 @@ export function createTrainer(scene: Scene): AircraftVisual {
     metallic: 0.08,
     sootStrength: 0.92,
     wearStrength: 0.74,
+    ...TRAINER_PAINT_DIALS,
   } as const;
-  const body = build.paintMaterial("trainer-body", bodyRecipe);
+  const body = build.paintMaterial("trainer-body", bodyRecipe, { edge: TRAINER_PAINT_EDGE });
   // The body paint with NO livery: the livery colour set equal to the base, so
   // `mix(value, livery, decal)` is the identity and the diagonal band the
   // synthesis draws in UV space is gone, exactly as the 747's plain wing does
@@ -76,7 +109,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const cowlPaint = build.paintMaterial("trainer-cowl", {
     ...bodyRecipe,
     liveryColor: bodyRecipe.baseColor,
-  });
+  }, { edge: TRAINER_PAINT_EDGE });
   const accent = build.paintMaterial("trainer-accent", {
     seed: 0x41a2_1702,
     baseColor: 0xcfe95d,
@@ -85,7 +118,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
     metallic: 0.06,
     sootStrength: 0.26,
     wearStrength: 0.68,
-  });
+    ...TRAINER_PAINT_DIALS,
+  }, { edge: TRAINER_PAINT_EDGE });
   const dark = build.material("trainer-dark", 0x142b32, {
     roughness: 0.25,
     metallic: 0.15,

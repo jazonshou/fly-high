@@ -59,6 +59,29 @@ export interface AircraftPaintRecipe {
    * byte-identical.
    */
   readonly rivetStrength?: number;
+  /**
+   * Draws the paint's noise on a UV lattice of this many cells a side, so the
+   * DESIGN no longer depends on the map's size. Omitted, the noise is indexed
+   * in texels, as it always was: grain per texel, the panel lines' jitter in
+   * 8-texel blocks, filler mottling in 2-texel blocks. That is one design at
+   * 64 and another at 256, where the jitter blocks step each panel line
+   * sideways every 10 cm on the trainer, the "totem pole" seam
+   * (docs/findings/TRAINER_SKIN_RESOLUTION_2026_09_23.md).
+   *
+   * Set, every noise term is smooth value noise on the lattice (the jitter on
+   * a lattice an eighth as fine, the filler mottling on half), and rivets are
+   * domes about a cell across instead of whichever texels fall in their band.
+   * At 64 a 64-cell lattice draws today's grain exactly; at 256 it draws the
+   * same design, sharper. Omitted, byte-identical.
+   */
+  readonly noiseLattice?: number;
+  /**
+   * The livery band's edge, as the smoothstep's two ends in the band's own
+   * coordinate (default [0.055, 0.085]). The default ramp is 0.03 of the map
+   * whatever its size: 0.21 m across the trainer's 6.9 m fuselage, soft by
+   * design, which no texel count sharpens. Omitted, byte-identical.
+   */
+  readonly liveryEdge?: readonly [number, number];
 }
 
 export interface AircraftSurfaceSynthesis {
@@ -115,6 +138,48 @@ function hash2(x: number, y: number, seed: number): number {
   return ((hash ^ (hash >>> 14)) >>> 0) / 4_294_967_296;
 }
 
+/** A wrapped noise lattice's node values, `hash2(x, y, seed)` for x, y < cells. */
+interface NoiseLattice {
+  readonly cells: number;
+  readonly values: Float64Array;
+}
+
+function noiseLattice(cells: number, seed: number): NoiseLattice {
+  const values = new Float64Array(cells * cells);
+  for (let y = 0; y < cells; y += 1) {
+    for (let x = 0; x < cells; x += 1) values[y * cells + x] = hash2(x, y, seed);
+  }
+  return { cells, values };
+}
+
+/**
+ * Smooth value noise in [0, 1) on a wrapped lattice, its nodes at the texel
+ * centres of a `cells`-texel map: a `cells`-sized map samples exactly
+ * `hash2(x, y, seed)`, and a larger one draws the same values with
+ * smoothstep-weighted bilinear in between.
+ */
+function sampleNoise({ cells, values }: NoiseLattice, u: number, v: number): number {
+  const tx = u * cells - 0.5;
+  const ty = v * cells - 0.5;
+  const x0 = Math.floor(tx);
+  const y0 = Math.floor(ty);
+  const fx = tx - x0;
+  const fy = ty - y0;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  // cells is a power of two: & wraps negatives too.
+  const xa = x0 & (cells - 1);
+  const xb = (x0 + 1) & (cells - 1);
+  const ya = (y0 & (cells - 1)) * cells;
+  const yb = ((y0 + 1) & (cells - 1)) * cells;
+  const a = values[ya + xa]!;
+  const b = values[ya + xb]!;
+  const c = values[yb + xa]!;
+  const d = values[yb + xb]!;
+  const top = a + (b - a) * sx;
+  return top + ((c + (d - c) * sx) - top) * sy;
+}
+
 function distanceToNearest(value: number, positions: readonly number[]): number {
   let distance = Number.POSITIVE_INFINITY;
   for (const position of positions) distance = Math.min(distance, Math.abs(value - position));
@@ -163,6 +228,23 @@ export function synthesizeAircraftSurface(
   const panelStrength = clamp01(recipe.panelStrength ?? 1);
   const fillerStrength = clamp01(recipe.fillerStrength ?? 1);
   const rivetStrength = clamp01(recipe.rivetStrength ?? 1);
+  const lattice = recipe.noiseLattice;
+  if (lattice !== undefined && (!Number.isInteger(lattice) || lattice < 8 || (lattice & (lattice - 1)) !== 0)) {
+    throw new RangeError(`Aircraft paint noiseLattice must be a power of two >= 8, got ${lattice}`);
+  }
+  const [liveryInner, liveryOuter] = recipe.liveryEdge ?? [0.055, 0.085];
+  // A rivet dome's half-sizes along and across its line, in UV: about a lattice
+  // cell across, as a rivet reads at the lattice's own size.
+  const rivetAlong = lattice === undefined ? 0 : 0.6 / lattice;
+  const rivetAcross = lattice === undefined ? 0 : 0.9 / lattice;
+  // The jitter on a lattice an eighth as fine, the filler mottling on half.
+  const lattices = lattice === undefined ? undefined : {
+    grain: noiseLattice(lattice, recipe.seed),
+    broad: noiseLattice(lattice >> 3, recipe.seed ^ 0x6a09_e667),
+    filler: noiseLattice(lattice >> 1, recipe.seed ^ 0xbb67_ae85),
+    soot: noiseLattice(lattice, recipe.seed ^ 0x3c6e_f372),
+    wear: noiseLattice(lattice, recipe.seed ^ 0xa54f_f53a),
+  };
 
   for (let y = 0; y < edge; y += 1) {
     for (let x = 0; x < edge; x += 1) {
@@ -170,8 +252,10 @@ export function synthesizeAircraftSurface(
       const v = (y + 0.5) / edge;
       const index = y * edge + x;
       const out = index * CHANNELS;
-      const grain = hash2(x, y, recipe.seed) - 0.5;
-      const broad = hash2(x >> 3, y >> 3, recipe.seed ^ 0x6a09_e667) - 0.5;
+      const grain = (lattices ? sampleNoise(lattices.grain, u, v) : hash2(x, y, recipe.seed)) - 0.5;
+      const broad = (lattices
+        ? sampleNoise(lattices.broad, u, v)
+        : hash2(x >> 3, y >> 3, recipe.seed ^ 0x6a09_e667)) - 0.5;
       const warpedU = fract(u + broad * 0.012);
       const warpedV = fract(v + grain * 0.004);
       const panelDistance = Math.min(
@@ -185,24 +269,44 @@ export function synthesizeAircraftSurface(
       const rivetPhase = nearVerticalPanel ? fract(v * 30) : fract(u * 30);
       const rivet = (nearVerticalPanel || nearHorizontalPanel)
         && Math.min(rivetPhase, 1 - rivetPhase) < 0.075;
+      // On a lattice, a rivet is a dome centred on its line every 1/30, not
+      // whichever texels happen to fall in the band: at 256 that band draws
+      // dashes across the line, a ladder.
+      let rivetAmount = rivet ? 1 : 0;
+      if (lattice !== undefined) {
+        const acrossVertical = distanceToNearest(warpedU, verticalPanels) / rivetAcross;
+        const acrossHorizontal = distanceToNearest(warpedV, horizontalPanels) / rivetAcross;
+        // Farther than a dome's half-width from every line: no rivet, and no need to ask.
+        if (Math.min(acrossVertical, acrossHorizontal) >= 1) {
+          rivetAmount = 0;
+        } else {
+          const vPhase = fract(v * 30);
+          const uPhase = fract(u * 30);
+          const onVertical = Math.hypot(acrossVertical, Math.min(vPhase, 1 - vPhase) / 30 / rivetAlong);
+          const onHorizontal = Math.hypot(acrossHorizontal, Math.min(uPhase, 1 - uPhase) / 30 / rivetAlong);
+          rivetAmount = 1 - smoothstep(0, 1, Math.min(onVertical, onHorizontal));
+        }
+      }
       const filler = Math.max(
         ellipticalMask(u, v, 0.27, 0.31, 0.095, 0.055),
         ellipticalMask(u, v, 0.73, 0.67, 0.12, 0.07),
-      ) * (0.7 + 0.3 * hash2(x >> 1, y >> 1, recipe.seed ^ 0xbb67_ae85)) * fillerStrength;
+      ) * (0.7 + 0.3 * (lattices
+        ? sampleNoise(lattices.filler, u, v)
+        : hash2(x >> 1, y >> 1, recipe.seed ^ 0xbb67_ae85))) * fillerStrength;
       const sootAxis = Math.abs(v - (0.69 + 0.07 * (u - 0.18)));
       const soot = sootStrength
         * smoothstep(0.08, 0.24, u)
         * (1 - smoothstep(0.56, 0.9, u))
         * (1 - smoothstep(0.015, 0.11, sootAxis))
-        * (0.66 + 0.34 * hash2(x, y, recipe.seed ^ 0x3c6e_f372));
+        * (0.66 + 0.34 * (lattices ? sampleNoise(lattices.soot, u, v) : hash2(x, y, recipe.seed ^ 0x3c6e_f372)));
       const leadingEdge = 1 - smoothstep(0.018, 0.075, Math.min(u, 1 - u));
       const wear = wearStrength * leadingEdge
-        * smoothstep(0.2, 0.72, hash2(x, y, recipe.seed ^ 0xa54f_f53a));
+        * smoothstep(0.2, 0.72, lattices ? sampleNoise(lattices.wear, u, v) : hash2(x, y, recipe.seed ^ 0xa54f_f53a));
       const decalCoordinate = fract(u - v * 0.37 + 0.18);
-      const liveryDecal = 1 - smoothstep(0.055, 0.085, Math.abs(decalCoordinate - 0.5));
+      const liveryDecal = 1 - smoothstep(liveryInner, liveryOuter, Math.abs(decalCoordinate - 0.5));
 
       if (panelLine > 0.5) featureCounts["panel-lines"] += 1;
-      if (rivet && rivetStrength > 0) featureCounts.rivets += 1;
+      if (rivetAmount > 0.5 && rivetStrength > 0) featureCounts.rivets += 1;
       if (seam > 0.5) featureCounts.seams += 1;
       if (filler > 0.35) featureCounts.filler += 1;
       if (soot > 0.12) featureCounts["exhaust-soot"] += 1;
@@ -224,7 +328,8 @@ export function synthesizeAircraftSurface(
       albedo[out + 3] = 255;
 
       height[index] = grain * 0.012 - panelLine * 0.085 - seam * 0.035
-        + (rivet ? 0.11 * rivetStrength : 0) + filler * 0.025 - wear * 0.018;
+        + (rivetAmount === 1 ? 0.11 * rivetStrength : 0.11 * rivetStrength * rivetAmount)
+        + filler * 0.025 - wear * 0.018;
       const roughness = clamp01(
         recipe.roughness + grain * 0.035 + filler * 0.12 + soot * 0.24 - wear * 0.18,
       );
@@ -239,7 +344,11 @@ export function synthesizeAircraftSurface(
     }
   }
 
-  // Wrapped central differences keep the micro-normal map seamless.
+  // Wrapped central differences keep the micro-normal map seamless. The slope
+  // stays per TEXEL on a lattice too: the relief that shows (lines, rivets) is
+  // about a texel wide at 64 and a few at 256, so per-texel slopes match the
+  // 64 design. Taken per lattice cell (x edge / lattice) the 256 map's tilt p90
+  // was 39 deg against 12.8 at 64; per texel it is 11.5.
   for (let y = 0; y < edge; y += 1) {
     const previousY = (y + edge - 1) & (edge - 1);
     const nextY = (y + 1) & (edge - 1);
