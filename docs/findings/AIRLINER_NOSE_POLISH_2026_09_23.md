@@ -21,6 +21,12 @@ ruled surface the loft draws), the hand-ringed nose at ae8ca49:
 | keel, 26 to 29.2 | +9.9, -10.6, +9.1 at 26, 27.2, 28: a step up to -3.04 and back | under 1.4 a ring |
 | keel at 33.4 | +46.0, onto the disc | +2.6, into the round tip |
 | tip | flat disc 0.68 x 0.62 m at x 34 | pole at x 34; last ring 0.28 x 0.24 m, 9 mm behind it |
+| the tip closure's worst turn, the fan to the pole included | 46.0 (onto the disc) | 9.0, under the ring's own 12.86 round |
+| the crown's DIP below a convex roof (hump to brow) | 0.23 m at 29.2 | 0.12 m at 29.0 |
+
+The dip is the crown's depth below the straight line from the hump to the brow at 31.4, which is the roof a convex
+nose would have. The 0.12 m left is what raising the roof would remove (see below): the blend eases onto a roof
+that is still too low, and cannot lift it without moving the glass.
 
 ## What changed
 
@@ -68,12 +74,28 @@ A buried loft is not invisible: its vertex normals are shared with the rings tha
 
 ## What this does not fix, and why
 
-The shelf over the pilots and the brow at 31.4 stay. The No.1 panes are cast onto the strips either side of the
-brow, and the roof carries No.2 and No.3. Boeing's drawing puts the root of the problem further back: the model's
+The nose is still too SHORT ahead of the glass: the windscreen sits 1.4-3.8 m aft of the tip, Boeing's 4.5-6.4
+(D6-58326-3 Rev E, side view p2-7). The strip from 32.4 to 33.4 carries the No.1 panes' forward corners (x 32.07 to
+32.60), and the corner table holds them to 1 mm: moving 33.4's upper half by 2 cm fails it. So the radome cannot
+grow forward without re-casting the glass. The shelf over the pilots and the brow at 31.4 stay too. The No.1 panes
+are cast onto the strips either side of the brow, and the roof carries No.2 and No.3. Boeing's drawing puts the root of the problem further back: the model's
 eye sits 6.18 m over the belly, at the bottom edge of Boeing's windscreen face (about 6.25-7.47 m). A Boeing-shaped
 nose round that eye leaves the lowest designed sightlines (No.1 down to -18 deg) exiting onto the radome. A nose
 that is accurate needs the flight deck about 0.7 m higher: the eye, the glass design, the kit, the floor and the
 seats (B''). The Boeing-registered loft that assumes it is built and unmerged on jazonshou/747-nose-reloft (7f07e3e).
+
+## Mutations: each is caught by a test aimed at it
+
+Each was applied to `airlinerVisual.ts` alone and run against the 747's nose, cockpit, glazing, livery, digest and
+census tests. Every one also fails the geometry digest and the census; this table lists only the tests aimed at it.
+
+| mutation | caught by |
+|---|---|
+| the flat cap back (no `endPoleX`) | the cockpit's cap census (a fourth cap, at the tip) |
+| the keel reversal at 32.4 back (33.4's lower radius 1.2) | the outline test; the join test's 33.4 lower-half pairing |
+| 2 cm on 33.4's upper half | the 1 mm corner table; the join test's station pairing |
+| 1 cm on 30.4, under the glass | the corner table; the join test; the outline test |
+| the hand ring's hard corner at 27.2 | the outline test; the join crossing (normals); the livery transcription and cheatline |
 
 ## Re-pins, each with its reason in the test
 

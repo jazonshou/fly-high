@@ -14,7 +14,7 @@ import {
   type NoseReference,
   type OutlineStation,
 } from "../src/render/webgpu/aircraft/airlinerNoseProfile";
-import { FUSELAGE_SECTIONS, NOSE_SECTIONS } from "../src/render/webgpu/aircraft/airlinerVisual";
+import { AIRLINER_NOSE_POLE_X, FUSELAGE_SECTIONS, NOSE_SECTIONS } from "../src/render/webgpu/aircraft/airlinerVisual";
 import { loftSectionPoint, type LoftSection } from "../src/render/webgpu/aircraft/builders";
 
 /**
@@ -100,10 +100,24 @@ describe("the nose outline instrument", () => {
     // The keel sweeps up without turning back down anywhere, from the cabin to the tip.
     expect(Math.min(...shipped.keel.filter((corner) => corner.x >= 26).map((corner) => corner.degrees))).toBeGreaterThan(-1);
     expect(at(shipped.keel, 32.4)).toBeCloseTo(0, 6);
+    // Monotone, too: every station from 29.2 to the tip is higher underneath than the one behind it.
+    const shippedOutline = unionOutline(FUSELAGE_SECTIONS.filter((section) => section.x >= 21), NOSE_SECTIONS);
+    const keel = shippedOutline.filter((station) => station.x >= 29.2).map((station) => station.keel);
+    expect(keel.every((y, i) => i === 0 || y > keel[i - 1]!)).toBe(true);
     // And the tip closes on a pole: the last ring is 0.28 x 0.24 m where the hand rings ended on a 0.68 x 0.62 disc.
     const last = sectionOutline(NOSE_SECTIONS[NOSE_SECTIONS.length - 1]!);
     expect(2 * last.halfWidth).toBeLessThan(0.3);
     expect(last.crown - last.keel).toBeLessThan(0.25);
+    // The closure, the fan onto the pole included, turns less at any ring than the ring's own step round (360/28 =
+    // 12.86 degrees), so its rings are no coarser along the nose than they are round it: 9.0 at most (the keel, at
+    // the last ring).
+    const pole: OutlineStation = { x: AIRLINER_NOSE_POLE_X, crown: last.waterline, keel: last.waterline, waterline: last.waterline, halfWidth: 0 };
+    const closure = outlineBreaks([...shippedOutline, pole]);
+    for (const line of ["crown", "keel", "plan"] as const) {
+      const worst = Math.max(...closure[line].filter((corner) => corner.x >= 33.4).map((corner) => Math.abs(corner.degrees)));
+      expect(worst, line).toBeLessThan(360 / 28);
+      expect(worst, line).toBeGreaterThan(8);
+    }
   });
 });
 
