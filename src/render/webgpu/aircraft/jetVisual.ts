@@ -27,6 +27,7 @@ import {
 } from "./airframeRig";
 import { AircraftBuildContext } from "./builders";
 import { buildJetCockpit } from "./cockpit/jetCockpit";
+import { bezelRimEmissive, bezelRimMaterial } from "./cockpit/cockpitPrimitives";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftDefinition } from "@/src/sim";
 import type { AircraftVisual } from "./types";
@@ -1115,15 +1116,18 @@ export function createJet(scene: Scene): AircraftVisual {
   // dark hood over it. Without one, the panel's top face catches the sun and
   // reads at orbit distance as a pale BOX standing on the nose under the glass
   // -- the last of the three interior objects that were being mistaken for
-  // structure. It is a wedge now, built to what the pilot sees: its far edge
-  // reads -10.2 degrees straight ahead, over the nose probe, and its near edge
-  // -16.0, on the matte glareshield material. The board under it has no dials any
-  // more: phase F2's two MFDs stand proud of the coaming's near face instead, the
-  // only part of the panel the pilot sees (the UFC between them is not built).
-  // The HUD's combiner frame stands on the coaming. The frame and the MFDs'
-  // bezels and screens are cockpit-only: invisible from every other camera and
-  // never shadow casters (`configureCockpitOnlyParts`).
-  const cockpit = buildJetCockpit(build, root, { interior, instrumentFace });
+  // structure. It is built to what the pilot sees: a rounded rail on the deck
+  // line (-10.19 straight ahead, over the nose probe) with a cove under it down
+  // to the dash, on the matte glareshield material. The dash has no dials: it
+  // leans back to the pilot with the two MFDs framed and recessed on it (the UFC
+  // between them is not built). The HUD rises from a housing on the hood behind
+  // the rail. A level sill runs along the glass each side, a console inboard of
+  // it. The HUD's frame, housing and combiner, the MFDs' frames, rims and
+  // screens, and the sills are cockpit-only: invisible from every other camera
+  // and never shadow casters (`configureCockpitOnlyParts`).
+  // The bezel rims' shared material (the Global's and the 747's), on the MFDs' rims; its night glow below
+  const rim = bezelRimMaterial(build, "jet-bezel-rim");
+  const cockpit = buildJetCockpit(build, root, { instrumentFace, rim });
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
 
@@ -1552,6 +1556,8 @@ export function createJet(scene: Scene): AircraftVisual {
       jetApplyLamp(beaconLamp, lights.beacon);
       jetApplyLamp(strobeLamp, lights.strobe);
       jetApplyLamp(landingLamp, lights.landing);
+      // the rims' own law (`bezelRimEmissive`): the day value by day, the night glow at night
+      rim.emissiveIntensity = bezelRimEmissive(lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;

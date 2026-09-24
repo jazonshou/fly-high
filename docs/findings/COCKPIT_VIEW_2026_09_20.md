@@ -1624,6 +1624,380 @@ Eight mutations, all caught:
 - the Global's rim back on `applyGlow`'s law;
 - the 747's light state not driving the rim.
 
+## The F-16's cockpit, less blocky (P0, step 1)
+
+Jason: "the F-16 cockpit looks rudimentary -- no more instruments, but the window and dash should be less blocky and
+look more real."
+
+**P0, what read blocky and why.** This was measured by ray on the kit as built, with the tone taken from the as-built
+frame of 22 September (the jet unchanged since 83abfe9).
+- **No window frame is in view.** This F-16 has one-piece canopy glass. Its only bow is the aft one at x 1.35,
+  behind the pilot. The only "window frame" in the picture is the HUD's combiner frame, a bare goalpost of 8 mm
+  rods 19 degrees tall.
+- **The deck floats.**
+  - 81% of the frame is world, and 29% of its columns (az +-28.6 to +-37.5) hold no aircraft at all.
+  - Beside the dash, 56,700 px of lit terrain (luma 159) sit under the deck's top edge.
+  - The aircraft's own skin cannot fill it. The eye is outside the fuselage (its top is at y 0.41, 0.53 m under the
+    eye), and with the hidden skin drawn, none of the uncovered frame would meet it.
+- **The coaming was a flat table top.**
+  - Its top was a sky-facing plane seen as a 5.8 degree band, the brightest part of the deck and uniform front to
+    back (58 luma against the near face's 20).
+  - Its near edge was a razor, 57 to 24 in one pixel.
+  - Shading a plane cannot help, because a plane of any slope is lit evenly. Tilting it toward the pilot only
+    enlarges it and drags the MFDs down.
+- **A roughness grain cannot show on it.** F0 is 0, so there is no highlight for roughness to shape. The diffuse
+  model (Babylon's default, EON) takes a separate diffuse roughness. A per-pixel variation would need a texture, which
+  adds a UV varying.
+
+**Step 1, the coaming as a rounded rail** (`jetGlareshieldSection`, the shared `roundedDeckSection`; the Global's
+way, option E).
+- **The rail.** Its round (r 0.02) at the aft face, x 2.92, is tangent at a vertex to the catalogue's deck line
+  (-10.19, over the probe's tip at -10.41).
+  - Under it a 45 degree cove (1 cm) turns in to the dash at -12.68, so the deck's edge the pilot reads is 2.49
+    degrees.
+  - Forward of the round, the hood falls 13 degrees (steeper than the sight line) to x 3.50, so no part of its top
+    is seen.
+  - The rail reads ONE ROW across the frame: tan(el)/cos(az) is the deck line's to 1e-4 from az -25 to 25.
+- **Its width is the canopy's.**
+  - The rail stands 7 cm higher than the wedge's near edge did, where the bubble is narrower (0.380 to 0.384 inside
+    at its top). At the wedge's 0.38 it came within 1.1 mm of the glass.
+  - At 0.36 it clears the glass by 2.1 cm. The plan narrows linearly from the cove's foot to 0.26 at the hood's end,
+    3 to 4 cm inside the glass all the way.
+- **The dash.** The board's face and top are at the cove's foot, from the tub up, as a narrowed `solidPlate` (the
+  hood's plan less 5 mm a side), its top inside the hood along its whole depth. It is upright for now; the lean is
+  step 3's.
+- **The MFDs** stand 1 cm under the cove's foot (3.5 cm higher than under the wedge). Down their centre lines (az
+  +-14.2) the frame shows **98.6%** of each screen, where it showed 63%.
+- **The HUD frame** keeps its outline, so the 2D HUD's registration holds. It now rises from behind the rail: seen
+  from -10.12 up (the rail's row at az 6.5), where it rose out of the wedge's top at -13.95. Its feet are buried 2 cm
+  in the hood, which is a 3.3 cm plate there, 1.3 cm clear of its underside.
+- **What it costs.**
+  - The rail's ends read az +-27 where the wedge's near face reached +-28.5, a degree and a half more of empty
+    columns each side. Step 4's rails and consoles are for those columns.
+  - From outside, the hood's aft end stands 7 cm higher, under the canopy.
+
+**Tests** (tests/render.cockpit-jet.test.ts, 31):
+- the rail on the deck line by ray, with the tangent a vertex;
+- the cove by its built normals, and by ray the rail, the cove, then the dash;
+- one row across the rail, with nothing of it over the row;
+- the section and the plan, the hood falling 13 degrees, and every vertex 2 cm inside the bubble;
+- the dash inside the hood;
+- the MFDs under the cove's foot, and their reads and share;
+- the HUD frame's foot at the rail, and its feet buried 2 cm.
+
+The dash is now walked by the drawn-faces test with the coaming, and both hold zero. The wide-lens control re-pins
+the F-16's plain-lens rows (0.986 at 16:9, 0.314 at 21:9). The loft digests are re-pinned for the jet. Mesh by mesh
+against 2dacb1c, the five kit meshes changed and the other 66 of the jet's are bit-identical.
+
+Ten mutations, all caught:
+- the rail a degree under the deck line; a hood no steeper than the sight line (refused at build); the wedge's 0.38
+  width;
+- the board not narrowed; the MFDs at the wedge's ceiling, or over the cove's foot; the feet buried 3 cm;
+- no cove; the board's face off the cove's foot; the plan narrowing from the aft face.
+
+**Step 2, the HUD's housing and combiner** (`JET_HUD_HOUSING`, `JET_HUD_COMBINER`). The goalpost read as a black
+doorway with nothing under it; the type's HUD is a body on the glareshield with glass in a thin frame.
+
+**The housing** (`jet-hud-housing`) is a rounded box 0.22 wide (the uprights at +-0.0946 stand in it) on the hood,
+behind the rail. It is built as a loft of rounded side sections across z, on the bezel rims' shared material, which
+the jet's light state now drives by the rims' own glow law.
+- **A hump, not hidden.** At the frame's station the rail's sight line is 5 mm over the hood, so a housing under
+  that line would be a plinth with no pixels. From the seat it is a low hump over the rail:
+  - -8.61 straight ahead, falling to -8.75 at the uprights, then over a round shoulder to the rail's row at az +-7.46;
+  - never rising, no step between 0.01 degree samples, and its last reading over the row 0.16 degree;
+  - its ends, by its own vertices, no more than a millimetre over the row.
+- **Its top falls forward, section by section,** just faster than the sight line over its aft edge at that z, so the
+  aft edge is the silhouette everywhere. Built level, it showed its forward edge instead and read -7.55.
+- **That caps its height where the feet go in.** It is 2.9 cm proud of the hood straight ahead at x 3.05 and 2.6 cm
+  at the uprights. So the feet are buried 1.5 cm and stand 1.1 cm clear of the hood. The design's 2 cm burial with 1
+  cm clear would need the hump at -8.3; at -8.6 the housing can stand at most 2.8 cm tall at the uprights.
+- **Out of the symbology and the deck line.** No vertex reads over -8.4, more than 4 degrees under the heading box
+  (-4.3). It is "structure" to the HUD's layout: the deck-line instrument still reads the rail's 10.19, and the 2D HUD
+  layout's tests are unchanged.
+
+**The frame's rods are 5 mm,** on the same axes: az +-6.5 and +4.5, so the 2D HUD's registration holds. They were 8.
+The uprights' feet are in the housing's mount. From the seat the uprights are now first seen at -8.76, just over the
+housing (-8.745 at az 6.5), where they rose from behind the rail at -10.12.
+
+**The combiner** (`jet-hud-combiner`) is two panes in one cockpit-only mesh.
+- **Placement.** The panes are 1 cm apart at x 3.045 and 3.055. They run from the uprights' and the bar's axes down
+  into the housing, whose top holds their bottom edge all along it, so no gap shows. Both are single-sided toward the
+  eye.
+- **The glass** is a new instance of the canopy glass's kind: alpha-blended PBR, green-gold, alpha 0.05. By the
+  two-layer rule that is 1 - 0.95^2 = 9.75% darker through both, and the live frame is the measurement.
+- **No depth pre-pass and no depth write, set after the material is made.** THE TRAP: the shared builder turns the
+  depth pre-pass ON for every alpha-blended airframe material (right for the propeller disc it was written for).
+  Written, the panes' depth would cut the canopy behind them: it sorts after them, its bounding centre being nearer
+  the eye. The combiner would then read brighter than its surround, not tinted. The canopy turns its own pre-pass off
+  for the same family of reasons. Both flags are pinned, and a mutation with depth write on is caught.
+- **The positive control.** The opaque-ray tests of the symbology's window skip alpha meshes. So a test asks the
+  panes' own triangles: both panes are met at the window's centre and at its four corners, 1 cm apart, and no glass
+  is met outside the frame. From the housing's top up to the bar, the window is still opaque-empty.
+
+**Draws.** Two are added in cockpit view: the housing (opaque) and the combiner (alpha). The kit is 5 meshes (the
+drawn-faces walk and the frame tool count 5). Outside cockpit view, 174 draws as before.
+
+**Tests** (41):
+- the housing's shape, material, glow and clearance, rounded in plan and in section (both top edges turn through 45
+  degrees; the aft round spans its centimetre);
+- its hump from the seat, with its ends pinned by vertex;
+- its place under the symbology by the HUD's own instrument;
+- the feet in the mount;
+- the combiner's glass (both depth flags), outline, facing and rays;
+- together:
+  - the glass is first seen at the hump's arc between the uprights (a pane nearer than any opaque surface, within
+    0.03 degree of the hump), and nowhere outside them;
+  - the window is opaque-empty from -8.4 to +3.55 across its full width (1,440 rays);
+  - the 2D HUD's layout is byte for byte as 55679ba wrote it: `--deck-k` "0.2343", its deck row 625.40 at 1600 x 900
+    and 752.88 at 2560 x 1080.
+Mesh by mesh against step 1, `jet-hud-frame` changed and the housing and the combiner are new; the jet's other 70
+meshes are bit-identical. The jet's loft digests are re-pinned.
+
+Thirteen mutations, all caught:
+- the housing's top at -8.0; its ends 0.5 degree over the rail (two ways: with the plan's rounded corners, the end
+  shrinks to a point, so the ends are pinned by vertex; and with square corners);
+- the housing 0.18 wide; the feet in the hood; the housing not cockpit-only; its top flat (section radius 0);
+- one pane; opaque panes; normals away from the eye;
+- the rods left at 8 mm; the panes writing depth; the housing's top level.
+
+The F-16's drawn-faces control moved to the pilot's left MFD screen, a Babylon-wound box, since step 1 made the board
+a narrowed `solidPlate`.
+
+**Step 3, the dash leaned and the MFDs framed** (`JET_PANEL`, `jetPanelSection`, `JET_MFD`; the Global's and the 747's
+rule and primitives).
+- **The lean, by the measure.** The dash leans back 15 degrees about the cove's foot (x 2.93), so the rail and the cove
+  still show whole. At the board's centre (2.910, 0.704) its normal is **3.89 degrees** off the eye's ray, where
+  upright it was 18.6.
+  - The ray there climbs 18.9 degrees aft, so the measure is a V about 19: lean 10 reads 8.8, 20 reads 1.1, 25 reads
+    6.1 and 30 reads 11.2. **The design's "lean 25, normal past 8" mutation does not hold for this eye.** 25 is inside
+    the band, so 30 and 10 are the mutations that cross it.
+  - The face runs down to the tub at x 2.80, 13 cm nearer than its top. Its feet read az +-31.4, under the frame, and
+    the frame's bottom row stays on the dash out to az 27.7 (26.6 upright).
+  - Its top runs back from the cove's foot under the hood. Its front corners are 2.72 cm under the hood's top and 5 mm
+    from its walls; its back corners are 2.78 cm under and 3.9 mm from the walls.
+  - The face is on the panel material the Global's and the 747's boards wear (`jet-panel`: 0x1a2328, roughness 0.82,
+    metallic 0.02), not the tub's blue.
+- **Framed MFDs** (`framedScreenStack` / `framedScreenFacets`).
+  - The frame has a 4 mm 45-degree chamfer round its outer edge, and a 2 mm gap to its screen. Its back is 1 mm in
+    the board and its front 6 mm out; the screen's face is 3 mm behind the frame's front (it stood 1 mm proud).
+  - Both frames and both rims are one mesh, `jet-mfd-bezels` (384 vertices), on the jet's instance of `BEZEL_RIM`
+    (`jet-bezel-rim`, which the housing wears too). Its glow is day 0.05, night by `bezelRimEmissive`. The old
+    `jet-mfd-bezel` slab material is gone, and there is no new draw.
+  - Each MFD is placed down the leaned face (bisected) so that the frames' highest point reads 0.3 degree under the
+    cove's foot (-12.98 against -12.68).
+  - Down their centre lines (az +-14) they read frame top -12.61, screen top -14.45, screen bottom -22.28 and frame
+    bottom -24.08. The frame's bottom is at -22.72 there, so **all of each screen is in view** (98.6% upright). The
+    plain-lens control reads 37.1% of the rows at 21:9 and 100% at 16:9.
+  - **What one mesh costs.** Frame and rim share the rim's material, so by day the frames are nearly the dash's tone
+    (0x1a1e21 on 0x1a2328, where the Global's frames stand 1.3 to 1.6 times their board). At night the whole frame
+    glows at the rim's 0.56, not only its outline. There are no wells, and the dash shows through the 2 mm gap. The
+    frames will show whether this reads.
+- **The rail's round is smooth-shaded** (`smoothRoundNormals`, shared). Each chord's corners take the round's own
+  normal, so adjacent chords turn by the angle between them: 2.81, 10.07, then 12.875 degrees seven times. The eight
+  chords' 20 px bands should go.
+  - There is one normal at every point of the round, and the hood's top meets it at its tangent with the same normal.
+    The only crease left is the 45-degree turn into the cove under the rail.
+  - It has the same 144 vertices; only the chords' normals change.
+- **The combiner's alpha is 0.08** (it was 0.05, which the frame read at 5.5%, the band's floor). By the two-layer rule
+  that is 1 - 0.92^2 = 15.4%. The glass gives some back as its own reflection, so the pixel read should land mid-band.
+  The 5 to 15% band is held on the pixel read, which is the next frames'.
+
+**Tests** (43). The board test covers the lean measure, with the upright control, the section, the plan, the top's
+corners inside the hood and the material by name. The frames are pinned by their planes, widths, opening and chamfer
+normals. Each screen is first surface at nine points, 3 mm behind the frame's front, and with the screen gone the ray
+meets the dash. The dash shows in the gap, the frames stay under the cove's foot, and both reads and shares are pinned.
+The rail's round is pinned by its normals, and the combiner by its alpha and the rule. The display rects model the
+jet's MFDs with the shared `framedScreens`. Mesh by mesh against dd66a55, the board, the bezels, the screens and the
+coaming changed (the coaming only in its normals), and the jet's other 69 meshes are bit-identical. The combiner's mesh
+is unchanged; only its material's alpha changed. The loft digests are re-pinned.
+
+Eleven mutations, all caught:
+- no lean (18.6 off); lean 30 (11.2 off); lean 10 (8.8 off); lean 25, which only the feet's azimuth pin catches;
+- chamfer 0; a bezel corner 0.1 degree over the cove's foot; the frames and rims on the glareshield's matte;
+- gap 0, which at first **survived**. Nothing pinned the gap, so there are now two pins: the frame's opening by vertex,
+  and the dash seen through the gap by ray;
+- the rail's normals left flat; the dash on the tub's material; the combiner back at 0.05.
+
+**Step 3b, the frames on their own material** (the PM's call on the one-mesh cost above). The Global and the 747 read
+because a frame's body stands 1.3 to 1.6 times its board by day, and only the chamfered rim glows at night. A whole
+frame face at 0.56 would read as a lit slab.
+- The frames are one mesh (`jet-mfd-frames`) on `jet-mfd-frame`: the 747's frame grey 0x2c3034 with the dash's finish,
+  and no emissive at any light state. Against the dash (`jet-panel`), by the Global's and the 747's measure (the albedo's
+  linear luminance ratio, carried back to sRGB), that is **1.41**.
+- The rims are another mesh (`jet-mfd-rims`) on `jet-bezel-rim`: 0.05 by day and 0.56 at night.
+- It costs one opaque draw: the kit is 6 meshes (the drawn-faces walk and the frame tool count 6).
+- Mesh by mesh against 6407aa4 (step 3 rebased onto b2748f3, the jet bit-identical to e521f93): `jet-mfd-bezels` is
+  gone, and `jet-mfd-frames` and `jet-mfd-rims` are the same facets, 192 vertices each. The jet's other 72 meshes are
+  bit-identical. The loft digests are re-pinned.
+- Five mutations, all caught: the frames left on the rim material; the frame tone 1.0 times the board and 1.96 times;
+  the rims on the frame material (no night glow); the frames given the rims' day emissive.
+
+**The frames slot after 3b** (16:9, before 55679ba, after 926333b by day and by night):
+- The tint through the panes read 8.7% darker, mid-band.
+- The four materials' shader inputs stay at 14 (15 with fog).
+- The rail's round shades as one gradient.
+- At night the MFDs read as outlines, a bright rim round a dark frame.
+- Two things were found:
+  - The HUD housing, on the rim material since step 2, glows whole at night (luma 217 against the rail's 14).
+  - The frames read 1.24 times the dash's luma live, against 1.41 by the albedo measure: the leaned dash's sky
+    specular is a constant that narrows the ratio.
+  Both are the PM's to decide.
+
+**Step 4, the sills** (`JET_SILL`, `sweptSolid`). The frame's lower third held no aircraft from az 27.7 to the frame's
+edge: 252 of 800 columns (every 2nd pixel at 1600 x 900), 40.0% of it world. The deck is the width of the canopy's
+nose, and beside it the frame looked straight out through the glass.
+- **The rail.**
+  - Its top is level at 0.72 (eye - 0.22), 6 cm wide, with top edges rounded at 1 cm.
+  - Its outer edge is 2.1 cm inside the glass's inner half-width at the top's height. It runs from x 1.9, behind the
+    eye, through a bend at 2.6 (where the canopy's widest run ends), on beside the dash to the board's back (3.03).
+  - Its inner face lies on the board's side from x 2.93. At the face plane it stands 3.1 mm off the board's side, and
+    nothing of it is in the board.
+  - It is a new shared primitive, `sweptSolid`: one convex section carried through stations. A `solidPlate` is one
+    section at one thickness and cannot follow the glass's curve. Its rounds take the radial normal made square to
+    the wall's run (`smoothRoundNormals`' rule), so neighbouring chords turn by 45 degrees and the rounds meet the top
+    and the faces with their own normals.
+  - Ended at the dash's face plane, the rail left a NOTCH: rays skimming its end dropped under its top and out
+    through the glass, a wedge of world about 1.6 by 0.8 degrees (85 of 5,241 rays at 0.1 degree). Beside the dash
+    to the board's back, none.
+- **The console.** Its top is at 0.60, 15 cm inboard of the rail's inner face, from x 1.9 to the dash's leaned face
+  and down to the tub. It runs 3 cm in under the rail, whose bottom is 1 cm under the console's top, so their seam
+  cannot open. It is under the frame's bottom at 16:9 and at 21:9. Without it, a ray under the frame at az 30 sees the
+  world, since the fuselage is hidden in cockpit view.
+- **Both sides' rails and consoles are one cockpit-only mesh** (`jet-sills`, 432 vertices) on the dash's material. That
+  is one opaque draw, and the kit is 7 meshes. It is 432 vertices, not the 400 aimed at: the station beside the dash
+  that closes the notch costs 96.
+- **What it does to the frame.** At 16:9 no column of the lower third is empty (252 before), and the bottom row's
+  aircraft reaches the frame's edge (az 37.45). The lower third is now 31.2% world (40.0% before): dash 28.6%, coaming
+  10.6%, screens 10.5%, sills 8.9%, frames 7.1%, housing 1.6%, rims 1.5%.
+  - At 21:9 under the hybrid lens (91.31 degrees), a level top at 0.72 reaches az 38.9. The corners beyond, to 45.65,
+    would need the top at up to 0.762 there (271 of 1,280 columns stay world). That call is the PM's.
+  - The sills' highest point is the rail's top beside the board's back: el -13.83, row -0.272 against the coaming's
+    -0.180, so it never climbs into the deck line. The deck-line instrument still reads 10.19, and the 2D layout is
+    byte for byte as it was.
+- Mesh by mesh against 926333b, `jet-sills` is new and the jet's other 74 meshes are bit-identical. The loft digests
+  are re-pinned.
+- Nine mutation runs, all caught:
+  - the top at 0.66 (the columns come back);
+  - the outer edge on the glass;
+  - the aft end at x 2.6;
+  - no console, twice: left out of the merge, and gone from the scene (the ray under the frame then sees the world);
+  - a 5 mm gap at the dash, two ways (the console short of the face, the rail off the board's side);
+  - square top edges;
+  - the rail ended at the dash's face (the notch).
+  Of these, the aft end, the console and the two junction gaps are outside what the eye sees, so they are caught by
+  the structure pins and the ray under the frame, not by the frame.
+- **21:9's corners (the PM's call: keep 0.72).** Along az 40 the sills are first met 0.56 degree UNDER the frame's
+  bottom, and along az 45.6 3.62 degrees under it. The frame's bottom rises toward its side edge (-16.8 at az 45.6),
+  while the sill falls away outboard. So those columns (az 38.9 to 45.65) hold no aircraft anywhere in their lower
+  third. It is the view out over the side past the sill, not a strip of world under a visible sill.
+
+**Step 3c, the housing and the frames' tone** (the PM's calls on the frames slot's two findings).
+- **The HUD housing is on the glareshield's matte**, the coaming's own instance: the type's HUD body is black and
+  continuous with the glareshield. Its emissive is black at both light states. On the bezel rims' material it read as
+  a lighter hump by day and glowed whole at night.
+- **The frames' grey is 0x373c41, 1.76 by the albedo measure.** The design's number is the LIVE read, 1.40 to 1.50 times
+  the dash's luma by day. The albedo measure is not that read. The leaned dash and the frames share one normal and one
+  finish, so the sky's specular adds the same to both and compresses the live ratio under the albedo's: 3b's 0x2c3034,
+  1.41 by albedo, read 1.24 live. Fitting 3b's two patches (each face's light a gain on its albedo plus a shared
+  constant, the constant the larger) puts a live 1.40 to 1.50 at 1.67 to 1.82 by albedo, and 0x373c41 at about 1.45.
+  The test pins the albedo measure to 1.65 to 1.85. The final frames slot holds the live read.
+- Mesh by mesh against b7ebd5c, `jet-hud-housing` changed its material. The frames' albedo is invisible to that census,
+  which records material names, so the test pins it. The jet's other 74 meshes are bit-identical, and the loft digests
+  (geometry only) are unchanged.
+- Six mutations, all caught:
+  - the housing on the rim material, and on `jet-mfd-frame`;
+  - the housing on a second glareshield instance;
+  - the frames at 1.0 times the board, at 2.74 times, and back at 3b's 1.41.
+
+**Step 5a, the rail's ends** (Jason, on the step 3 frames: "make the front rim / black rectangle more rounded").
+- **Before:** the rail ended square at az +-26.45, a black bar with cut ends over the sills.
+- **The measure that decided the shape.** The glass is 2 cm outboard of the rail's end. From az 25 (where the deck row
+  must stay one row) to the glass less 2 cm there are 2.8 cm of run across z, for a 9.0 cm drop to the sill.
+  - So a round across z can't fit: R 0.15 needs 13.8 cm of run and R 0.10 needs 10.
+  - Neither can a round of 0.10 in plan: it would run aft at z 0.437, outside the glass.
+  - Along the canopy it fits.
+- **The build: each end sweeps aft and down into its sill** (`JET_RAIL_END`, `jetRailEndStations`).
+  - From the rail's silhouette at az 25, the sill rises along x in an S of two arcs of R 0.15 to the silhouette's
+    height. The S is level at both ends and tangent to the sill's top at its foot (x 2.729).
+  - Its section is the sill's (top edges rounded at 1 cm). It is 2.3 cm wide at the top and has the sill's own
+    section at the foot. Its outer edge is 2.1 cm inside the glass at its own top's height at every station (nearest
+    glass 2.22 cm).
+  - It is on the glareshield's matte, merged into the coaming, so the rail's black runs on down into the sill. Mesh
+    by mesh against 92ccf97, only the coaming changed (144 -> 984 vertices); the sills are untouched.
+  - `sweptSolid` gained `smoothAlong` (the walls shaded as a surface from station to station, one normal at every
+    place but the section's hard corners) and `tangent` (the S's own slope, so the ends shade level where the S is
+    level, not as their first chord).
+- **What the frame shows.**
+  - The silhouette holds the rail's row at az 25 (-9.25). It falls in the picture's rows, never rising and never
+    stepping more than 0.2 degree between 0.1 degree samples: -11.51 at az 30, -16.09 at 35, -17.71 at 37.4.
+  - No world shows under it at 16:9.
+  - The deck row is one row from -25 to 25. The deck-line instrument reads 10.19, and the 2D layout is byte-identical.
+  - Near the dash the ends stand 1 to 2 cm inboard of its side, so the frame's bottom row now leaves the dash at az
+    27.0 (27.7).
+- **The instrument trap.** Babylon's picker meets back faces and takes a triangle's edge with a tolerance. At the end's
+  forward cap (facing away, culled) it read a silhouette 0.15 mm over the cap's top: a false rise in the row. So the
+  silhouette is read off front faces only, with the exact ray-triangle test.
+- Six mutations, all caught:
+  - square ends kept (the silhouette steps 0.28 degree at az 27.1);
+  - the corner starting at az 22;
+  - flat along x;
+  - the foot 1 cm above the sill;
+  - no tangent given (the foot shaded 5.1 degrees off level);
+  - the ends on the glass.
+
+**Step 5b, the HUD frame's top corners** (in case Jason's "black rectangle" was the frame).
+- **The corners.** The rods' centreline turns from each upright into the bar on a quarter circle of 0.025, tangent to
+  both, on the same axes (az +-6.5, +4.5), so the 2D HUD's registration holds. Each corner is a tube of the rods' 5 mm
+  radius, seven rings of the cylinders' own eight points, so it meets the upright's top and the bar's end ring to ring.
+  It is smooth-shaded round the tube, and the rods' end caps at the joints face away from the eye.
+- **The combiner's panes follow the rods' axes round the corners** (16 points a pane, fanned), so no glass stands
+  outside the rods.
+- **The window.** It is still open from -8.4 to +3.55 within az +-5.8: the rounded corner's inner edge reads az 5.92 at
+  +3.55. At 0.03 it read 5.76 and would have closed the window's corners. The glass rays' positive control moved from
+  +3.9 to +3.55, the window pin's top: over it the rounded corners take the box's corners.
+- The frame clears the glass by 0.086 (0.074 square). Mesh by mesh against 10f3502, the frame (114 -> 226 vertices)
+  and the combiner (4 -> 32 triangles) changed, and the jet's other 73 meshes are bit-identical.
+- Five mutation runs, all caught:
+  - the radius at 0.03 (the window closes at +3.55);
+  - square corners kept;
+  - square pane corners;
+  - a pane's round 6 mm off the axis;
+  - the corners wound inside out (the drawn-faces walk).
+
+**Step 5c, the ND re-centred** (the P1 registered in F2). The F-16's ND put own ship at 234.5 on its 400 x 400 page (0.86
+of the page's round scale), high on the page, while the frame showed only the top 63% of the screen. Since step 3 it
+shows all of it, and the bottom 39% of the page was blank.
+- **The build.** On a square page the drawing is centred under the header, from the heading labels' ring down to own
+  ship's tail: own ship at 317.9 (0.795 h), with 74.1 px above and below. The rose stays 178.2: its size is set by the
+  +-60 degree labels' room at the page's sides, not by height.
+- **The labels.** Every heading label is now drawn at every heading (the ring clears the heading box by 74 px). On the
+  square the rule that left the top label out fired at a quarter of all headings before.
+- **The other decks.** On 440 x 300 own ship stays at 0.86 h, and the 747's and the Global's atlases are call for call
+  as pinned. The F-16's atlas digest is new, pinned here (59822999:633). HDG-TAS spacing is untouched.
+- Two mutations, both caught:
+  - own ship left at 234.5;
+  - the centring applied to 440 x 300 (the 747's and the Global's digests catch it).
+
+**Step 5d, the beacon's glint in the combiner.**
+- **What the final slot's night frames showed:** a red-white bloom about 80 px across at the view's centre, over the
+  flight-path marker. The 3b night frame at the same heading had none.
+- **Why, by geometry.** The jet's `aircraft-beacon-wash` is a red point light at (-1.6, 0.92, 0), on the centreline
+  behind the pilot at eye height (range 12 m, lit 22% of each beacon cycle). The combiner's panes are flat, upright
+  and near-mirrors at roughness 0.05, 4.65 m from it. The beacon's image in them lies at (7.7, 0.92, 0): from the eye,
+  az 0, el -0.21.
+  - A Node ray down the centre line meets only the canopy and the combiner, on every layer.
+  - The 3b capture's paused sim time fell in the beacon's dark 78%, the final slot's in its lit 22%.
+  - It has been in the kit since step 2, which added the combiner.
+- **Why not an exclusion.** The wash is one of the one clustered container's lights, with the airfield's. Babylon's
+  `ClusteredLightContainer` packs its lights into one buffer and never reads a light's own excluded meshes. So the
+  beacon alone cannot be kept off the glass; the container's `excludedMeshes` would take every clustered light off it,
+  and that needs a renderer hook.
+- **The fix: the combiner's roughness from 0.05 to 0.35,** kit-local. The highlight's lobe spreads and its peak falls
+  with roughness to the fourth power. The test pins the roughness and the geometry that makes it needed (the beacon's
+  image straight ahead, within the wash's range).
+- One mutation (back at 0.05), caught. The night capture with the beacon forced lit, and the day tint's re-read, are
+  the check.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

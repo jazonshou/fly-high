@@ -313,7 +313,31 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for the F-16's MFDs, phase F2: two meshes added, both cockpit-only (`jet-mfd-bezels`, two
       // boxes merged; `jet-screens`, two boxes remapped into the display atlas and merged). The per-mesh gate in
       // `tests/render.cockpit-jet.test.ts` holds the other 66 unmoved.
-      jet: "8b08bd05",
+      // RE-PINNED for the F-16 pass, step 1 (jazonshou/cockpit-jet-panel): the wedge coaming is a rounded rail on the
+      // deck line (`jetGlareshieldSection`, the shared rounded deck: 12 -> 48 triangles), the board the dash under its
+      // cove (a narrowed `solidPlate`, still 12 triangles, 24 -> 36 vertices), the MFDs 3.5 cm higher under the cove's foot, the HUD frame's feet in
+      // the hood. Checked mesh by mesh against 2dacb1c (positions, normals, UVs, indices, world matrix, material,
+      // visibility): of the jet's 71 those five changed, and the other 66 are bit-identical; no other airframe moved.
+      // RE-PINNED for step 2, the HUD's housing and combiner: TWO meshes new, both cockpit-only (`jet-hud-housing`, a
+      // lofted rounded box, 360 triangles; `jet-hud-combiner`, two tinted panes, 4), and `jet-hud-frame` rebuilt with
+      // 5 mm rods, its feet in the housing (same counts). Checked mesh by mesh against 7a5980e: those three, and the
+      // jet's other 70 bit-identical.
+      // RE-PINNED for step 3, the dash leaned and the MFDs framed: `jet-instrument-panel` leaned back 15 degrees from
+      // the cove's foot (still 36 vertices), `jet-mfd-bezels` each MFD's chamfered frame and rim (48 -> 384 vertices),
+      // `jet-screens` on the leaned face 3 mm behind the frames (48); `jet-glare-shield`'s round smooth-shaded, its
+      // normals only, which this digest does not see. Checked mesh by mesh against dd66a55 (positions, normals, UVs,
+      // indices, world matrix, material, visibility): those four, and the jet's other 69 bit-identical.
+      // RE-PINNED for step 3b: `jet-mfd-bezels` split into `jet-mfd-frames` (on their own grey) and `jet-mfd-rims` (on the
+      // rims' glow), the same facets in two meshes (192 vertices each). Checked mesh by mesh against 6407aa4: those
+      // three names, and the jet's other 72 meshes bit-identical.
+      // RE-PINNED for step 4: `jet-sills` new, both sides' rails and consoles in one cockpit-only mesh (432 vertices).
+      // Checked mesh by mesh against 926333b: that one, and the jet's other 74 meshes bit-identical.
+      // RE-PINNED for step 5: `jet-glare-shield` is the rail and its two ends swept aft and down into the sills, merged
+      // (144 -> 984 vertices). Checked mesh by mesh against 92ccf97: that one, and the jet's other 74 bit-identical.
+      // RE-PINNED for step 5b: the HUD frame's top corners rounded (two quarter-circle tubes merged with the shortened
+      // rods, 114 -> 226 vertices) and the combiner's panes following them (4 -> 32 triangles). Checked mesh by mesh
+      // against 10f3502: those two, and the jet's other 73 bit-identical.
+      jet: "7d145111",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

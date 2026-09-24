@@ -242,7 +242,17 @@ describe("the loft's crown taper", () => {
       // meshes unmoved against f9d2672 (world positions to the micrometre, and indices). The crown
       // taper is still unused on this airframe.
       // Re-pinned for the F-16's MFDs (phase F2: the bezels and the screens, two cockpit-only meshes added).
-      jet: "c0872e4d",
+      // Re-pinned for the F-16 pass, step 1, on the same evidence as the seam pin: the coaming a rounded rail, the
+      // board the dash under its cove, the MFDs and the HUD frame's feet moved with them; the other 66 bit-identical.
+      // Re-pinned for step 2 on the same evidence: the HUD's housing and combiner new, its frame's rods 5 mm, the jet's
+      // other 70 meshes bit-identical.
+      // Re-pinned for step 3 on the same evidence: the dash leaned 15 degrees, the MFDs framed and recessed on it, the
+      // rail's round smooth-shaded; the jet's other 69 meshes bit-identical against dd66a55.
+      // Re-pinned for step 3b on the same evidence: the MFDs' bezels split into frames and rims, the other 72 bit-identical.
+      // Re-pinned for step 4 on the same evidence: the sills new, the other 74 bit-identical.
+      // Re-pinned for step 5 on the same evidence: the rail's ends swept into the sills, the other 74 bit-identical.
+      // Re-pinned for step 5b on the same evidence: the HUD frame's corners rounded, the panes with them.
+      jet: "b17137a9",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.

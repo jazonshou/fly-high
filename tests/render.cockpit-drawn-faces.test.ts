@@ -83,28 +83,32 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
   trainer: { mesh: "trainer-attitude-pitch-bar" },
   bizjet: { mesh: "bizjet-screens", block: 0 },
   airliner: { mesh: "airliner-screens", block: 0 },
-  // The F-16's panel board: one `build.box` under the coaming (the pilot does not see it from the seat, but
-  // the control samples the box's own faces alone, and its aft face is the nearest of them from the eye).
-  jet: { mesh: "jet-instrument-panel" },
+  // The F-16's pilot's left MFD screen, box 0 of the merged screens mesh, as the glass decks' are. (It was the
+  // panel board, a `build.box` until the F-16 pass made the board a narrowed `solidPlate`: a control wound by the
+  // rule it is there to check.)
+  jet: { mesh: "jet-screens", block: 0 },
 };
 
 /** How many cockpit-only meshes each aircraft has, so a mesh going missing cannot pass as a clean run. */
 // The Global's went 8 -> 4 when its kit was re-solved on the six-pane band: the old board, posts, overhead and walls
 // are gone, and the board and the window frame's lining are one mesh. The trainer's went 19 -> 15 when it kept
 // three dials: the second row's two gauge faces and two needles are gone. The 747's went 4 -> 6 with its framed,
-// recessed screens (P1b): the bezels' rims and the wells behind the screens.
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 15, bizjet: 7, airliner: 6, jet: 3 };
+// recessed screens (P1b): the bezels' rims and the wells behind the screens. The F-16's went 3 -> 5 with its HUD's
+// housing and its combiner (the F-16 pass, step 2: two panes, one mesh), walked with the frame.
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 15, bizjet: 7, airliner: 6, jet: 7 };
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed
- * by `sculptSolid`, and it fills the bottom of the frame from the seat. It is held to the same zero here. (The
- * 747's centre post was walked here while the cockpit camera drew it; the kit lines its place now.)
+ * by `sculptSolid`, and its rail is the deck line from the seat; its board is the dash under the rail's cove
+ * (step 1 of the F-16 pass: another narrowed `solidPlate`), which the pilot sees from the cove's foot down.
+ * Both are held to the same zero here. (The 747's centre post was walked here while the cockpit camera drew
+ * it; the kit lines its place now.)
  */
 const ALSO_WALKED: Readonly<Record<AircraftKind, readonly string[]>> = {
   trainer: [],
   bizjet: [],
   airliner: [],
-  jet: ["jet-glare-shield"],
+  jet: ["jet-glare-shield", "jet-instrument-panel"],
 };
 
 interface Prepared {
