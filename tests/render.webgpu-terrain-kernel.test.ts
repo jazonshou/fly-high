@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MOUNTAIN_SHAPE } from "@/src/world/terrain";
 import {
   TERRAIN_KERNEL_CONSTANTS,
   TERRAIN_KERNEL_FORBIDDEN_BUILTINS,
@@ -43,9 +44,10 @@ describe("terrain height kernel WGSL (4-1)", () => {
   });
 
   // Assertion 79.
-  it("carries all eleven injected expectation constants verbatim", () => {
+  // M-1 added two: the soft ridge channel's octave mean and its composite's.
+  it("carries all thirteen injected expectation constants verbatim", () => {
     const entries = Object.entries(TERRAIN_KERNEL_CONSTANTS);
-    expect(entries).toHaveLength(11);
+    expect(entries).toHaveLength(13);
     for (const [name, value] of entries) {
       const literal = Number.isInteger(value) ? `${value}.0` : String(value);
       expect(code, `${name} = ${literal}`).toContain(literal);
@@ -54,6 +56,19 @@ describe("terrain height kernel WGSL (4-1)", () => {
     // that owns it, so a drift there fails this test rather than shipping.
     expect(TERRAIN_KERNEL_CONSTANTS.RIDGED_OCTAVE_BAND_LIMIT_MEAN).toBe(0.4491);
     expect(TERRAIN_KERNEL_CONSTANTS.MAX_TERRAIN_HEIGHT).toBe(4_500);
+  });
+
+  it("M-1: carries every massif-shape figure from MOUNTAIN_SHAPE, never a retyped one", () => {
+    for (const [name, value] of Object.entries(MOUNTAIN_SHAPE)) {
+      const literal = Number.isInteger(value) ? `${value}.0` : String(value);
+      expect(code, `${name} = ${literal}`).toContain(literal);
+    }
+    // The hard channel must stay kRidgedFbm's arithmetic: same accumulation,
+    // same order, or a closed gate is no longer a bit-identical world.
+    expect(code).toContain("fn kRidgedFbmPair(");
+    expect(code).toContain("sum = sum + ridge * ridge * amplitude;");
+    expect(code).toContain("let shapeWeight = kSmoothstep(K_SHAPE_GATE_LOW, K_SHAPE_GATE_HIGH, mountainRegion)");
+    expect(code).toContain("if (shapeWeight > 0.0) {");
   });
 
   it("enumerates the lattices one evaluation costs", () => {

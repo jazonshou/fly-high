@@ -80,6 +80,7 @@ import {
   detailFadeBandMemberships,
   detailTreeCanopyRankOrder,
   DETAIL_CULL_FADE_MARGIN_METERS,
+  DETAIL_DENSITY_SHARE_REFRESH_EPSILON,
   DETAIL_FADE_MARGIN_METERS,
   DETAIL_MEMBERSHIP_SLACK_METERS,
   GROUND_COVER_EDGE_FADE_METERS,
@@ -215,6 +216,27 @@ interface DetailBatch {
   filledRevision: number;
   /** Floating origin encoded into the currently uploaded instance records. */
   builtOrigin: { x: number; y: number; z: number };
+  /** The chunk's first cell and its cell span, for the occupancy grid below. */
+  readonly chunkMinCellX: number;
+  readonly chunkMinCellZ: number;
+  readonly chunkCellSpan: number;
+  /**
+   * 2026-09-14: for an impostor batch, a local-space AABB per chunk cell of
+   * the records standing in it (six floats per cell, +∞/−∞ when empty) —
+   * refreshed at every publication from the packed positions.
+   * `refreshRangeCulledBatches` rebuilds the mesh's bounding box each update
+   * from the cells inside the live cull only, so frustum culling behaves as if
+   * the records the shader will kill did not exist, and hides the batch when
+   * no cell is inside. Null for every other batch kind.
+   */
+  impostorCellBounds: Float32Array | null;
+  /**
+   * Margin the batch's published bounds carry beyond the raw positions per
+   * axis (billboard extent, wind) — per axis, because the vertical margin is
+   * a billboard's height and would widen a box rebuilt from cells past the
+   * published one if applied sideways.
+   */
+  impostorBoundsPadding: readonly [number, number, number];
 }
 
 interface RetiredDetailBatch {
@@ -642,8 +664,11 @@ const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
  *
  * The defect this replaces
  * stepped **7.33x at tier 1 and 11.07x at tier 0**.
+ *
+ * The epsilon itself lives in `presentationBuild.ts` beside the admission
+ * margin that must exceed it (2026-09-13); re-exported here unchanged.
  */
-const DETAIL_DENSITY_SHARE_REFRESH_EPSILON = 0.02;
+export { DETAIL_DENSITY_SHARE_REFRESH_EPSILON };
 /** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
@@ -688,6 +713,18 @@ function requireFinite(value: number, label: string): number {
 }
 
 /** Saturating diagnostic counter: bounded storage even in a days-long session. */
+/** Scratch vectors for the per-update impostor bounding boxes (no per-frame allocation). */
+const DETAIL_RANGE_CULL_MINIMUM = new Vector3();
+const DETAIL_RANGE_CULL_MAXIMUM = new Vector3();
+
+/**
+ * Batches that draw the far band's stand-ins: the merged impostor quad, or the
+ * per-species crossed-card `crown-far` geometry the no-atlas path substitutes.
+ */
+function isImpostorBatchKey(prototypeKey: string): boolean {
+  return prototypeKey === TREE_IMPOSTOR_PROTOTYPE_KEY || prototypeKey.endsWith("-crown-far");
+}
+
 function addDiagnosticCount(current: number, increment = 1): number {
   return Math.min(Number.MAX_SAFE_INTEGER, current + increment);
 }
@@ -1169,7 +1206,8 @@ export class WorldDetailRuntime {
     const plugin = this.materialPlugin(material);
     if (!plugin) return;
     this.bandFadePlugins.add(plugin);
-    // Placeholder radii until the first update supplies the profile's law.
+    // Placeholder radii until the first update supplies the profile's law;
+    // the share floors default to 1 (draw every resident record) there.
     plugin.setBandFades(400, 1_400, 8_000);
   }
 
@@ -1630,16 +1668,163 @@ export class WorldDetailRuntime {
         profile.renderedDensityLaw.near.outerRadiusMeters,
         profile.renderedDensityLaw.mid.outerRadiusMeters,
         profile.renderedDensityLaw.far.outerRadiusMeters,
+        profile.renderedDensityLaw.farFloorShare,
+        profile.renderedDensityLaw.impostorFloorShare,
       );
     }
     if (this.batchesDirty) {
       // Stays dirty while the amortized sweep has a backlog.
       this.batchesDirty = this.rebuildBatches(floatingOrigin, profile);
+      // After the sweep, so a batch flipped this update is culled this update.
+      this.refreshRangeCulledBatches(profile);
     } else {
       // Camera rotation does not affect paging signatures, but it does change
       // which spatial chunks Babylon submits to the main view.
+      this.refreshRangeCulledBatches(profile);
       this.refreshVisibilityStatistics();
     }
+  }
+
+  /**
+   * 2026-09-14: an impostor batch whose every record lies beyond the live
+   * cull is not submitted.
+   *
+   * Impostor records have no outer membership edge and residency reaches one
+   * cull fade past the impostor radius (so far chunks ignore the observer and
+   * new cells arrive outside the cull), which means a chunk can hold an
+   * impostor batch that the shader kills to the last vertex — and Babylon
+   * would still submit it: measured as exactly one draw over the committed
+   * ceiling on nine capture shots. The decision keys on the cells the batch's
+   * RECORDS actually occupy (`impostorCellBounds`, a local AABB per chunk cell
+   * taken from the packed positions at publication): each update the mesh's
+   * bounding box is rebuilt from the cells inside the cull radius only, so
+   * Babylon's frustum test sees exactly the records that can draw, and the
+   * batch is hidden outright when no cell is inside. Every stem in a cell is
+   * at least the cell's own distance away, so a cell at or past the radius
+   * holds only records the shader kills. Three coarser tests were measured and
+   * rejected: the batch BOUND is an axis-aligned box over records strung along
+   * an arc, whose nearest corner sat 400 m inside the nearest record; the
+   * chunk's nearest RESIDENT cell can be a treeless shore cell at 2.6 km while
+   * every record comes from cells past 3 km; and a flag-per-cell hide still
+   * submitted a batch whose in-cull records lay outside the frustum while its
+   * beyond-cull records had stretched the box into it. A few boxes per
+   * impostor batch per update; the chase camera trails the observer (free-fly
+   * IS the observer), so a cell at the cull radius from the observer is no
+   * nearer the eye. `isVisible` rather than `setEnabled`, so publication,
+   * retirement and origin compensation — which key on enablement — never see
+   * the cull.
+   */
+  private refreshRangeCulledBatches(profile: WebGpuQualityProfile): void {
+    const cullRadiusMeters = profile.renderedDensityLaw.far.outerRadiusMeters;
+    for (const batch of this.batches.values()) {
+      const cellBounds = batch.impostorCellBounds;
+      if (cellBounds === null) continue;
+      const span = batch.chunkCellSpan;
+      const padding = batch.impostorBoundsPadding;
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let minZ = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      let maxZ = Number.NEGATIVE_INFINITY;
+      for (let index = 0; index < span * span; index += 1) {
+        const base = index * 6;
+        if (!(cellBounds[base]! <= cellBounds[base + 3]!)) continue;
+        const cellX = batch.chunkMinCellX + (index % span);
+        const cellZ = batch.chunkMinCellZ + Math.floor(index / span);
+        const distance = detailCellMinimumDistanceMeters(
+          this.observerX,
+          this.observerZ,
+          cellX,
+          cellZ,
+          this.cellSizeMeters,
+        );
+        if (distance >= cullRadiusMeters) continue;
+        minX = Math.min(minX, cellBounds[base]!);
+        minY = Math.min(minY, cellBounds[base + 1]!);
+        minZ = Math.min(minZ, cellBounds[base + 2]!);
+        maxX = Math.max(maxX, cellBounds[base + 3]!);
+        maxY = Math.max(maxY, cellBounds[base + 4]!);
+        maxZ = Math.max(maxZ, cellBounds[base + 5]!);
+      }
+      const visible = minX <= maxX;
+      batch.mesh.isVisible = visible;
+      if (!visible) continue;
+      DETAIL_RANGE_CULL_MINIMUM.set(minX - padding[0], minY - padding[1], minZ - padding[2]);
+      DETAIL_RANGE_CULL_MAXIMUM.set(maxX + padding[0], maxY + padding[1], maxZ + padding[2]);
+      batch.mesh.getBoundingInfo().reConstruct(
+        DETAIL_RANGE_CULL_MINIMUM,
+        DETAIL_RANGE_CULL_MAXIMUM,
+      );
+    }
+  }
+
+  /**
+   * Rebuilds an impostor batch's per-cell record bounds from its packed
+   * records — one pass over the positions (float32 x, y, z at the head of
+   * each 32-byte row, local to the record origin) at every publication — and
+   * the margin the published bounds carry beyond the raw positions (the
+   * billboard extent and wind padding the bound kernel adds), so a box built
+   * from cells stays as conservative as the full one. Other batch kinds keep
+   * null and are never range-culled here.
+   */
+  private refreshImpostorOccupancy(batch: DetailBatch, recordOrigin: DetailFloatingOrigin): void {
+    if (!isImpostorBatchKey(batch.prototypeKey)) {
+      batch.impostorCellBounds = null;
+      batch.impostorBoundsPadding = [0, 0, 0];
+      return;
+    }
+    const span = batch.chunkCellSpan;
+    const cellBounds = new Float32Array(span * span * 6);
+    for (let index = 0; index < span * span; index += 1) {
+      cellBounds[index * 6] = Number.POSITIVE_INFINITY;
+      cellBounds[index * 6 + 1] = Number.POSITIVE_INFINITY;
+      cellBounds[index * 6 + 2] = Number.POSITIVE_INFINITY;
+      cellBounds[index * 6 + 3] = Number.NEGATIVE_INFINITY;
+      cellBounds[index * 6 + 4] = Number.NEGATIVE_INFINITY;
+      cellBounds[index * 6 + 5] = Number.NEGATIVE_INFINITY;
+    }
+    const packed = batch.writer.finish();
+    const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+    const count = batch.writer.count;
+    let rawMinX = Number.POSITIVE_INFINITY;
+    let rawMinY = Number.POSITIVE_INFINITY;
+    let rawMinZ = Number.POSITIVE_INFINITY;
+    let rawMaxX = Number.NEGATIVE_INFINITY;
+    let rawMaxY = Number.NEGATIVE_INFINITY;
+    let rawMaxZ = Number.NEGATIVE_INFINITY;
+    for (let record = 0; record < count; record += 1) {
+      const offset = record * DETAIL_INSTANCE_STRIDE_BYTES;
+      const x = view.getFloat32(offset, true);
+      const y = view.getFloat32(offset + 4, true);
+      const z = view.getFloat32(offset + 8, true);
+      rawMinX = Math.min(rawMinX, x);
+      rawMinY = Math.min(rawMinY, y);
+      rawMinZ = Math.min(rawMinZ, z);
+      rawMaxX = Math.max(rawMaxX, x);
+      rawMaxY = Math.max(rawMaxY, y);
+      rawMaxZ = Math.max(rawMaxZ, z);
+      const localX = Math.floor((x + recordOrigin.x) / this.cellSizeMeters) - batch.chunkMinCellX;
+      const localZ = Math.floor((z + recordOrigin.z) / this.cellSizeMeters) - batch.chunkMinCellZ;
+      if (localX < 0 || localX >= span || localZ < 0 || localZ >= span) continue;
+      const base = (localZ * span + localX) * 6;
+      cellBounds[base] = Math.min(cellBounds[base]!, x);
+      cellBounds[base + 1] = Math.min(cellBounds[base + 1]!, y);
+      cellBounds[base + 2] = Math.min(cellBounds[base + 2]!, z);
+      cellBounds[base + 3] = Math.max(cellBounds[base + 3]!, x);
+      cellBounds[base + 4] = Math.max(cellBounds[base + 4]!, y);
+      cellBounds[base + 5] = Math.max(cellBounds[base + 5]!, z);
+    }
+    const published = count > 0 ? batch.bounds.minimum() : null;
+    const publishedMax = count > 0 ? batch.bounds.maximum() : null;
+    batch.impostorBoundsPadding = published && publishedMax
+      ? [
+          Math.max(0, rawMinX - published[0], publishedMax[0] - rawMaxX),
+          Math.max(0, rawMinY - published[1], publishedMax[1] - rawMaxY),
+          Math.max(0, rawMinZ - published[2], publishedMax[2] - rawMaxZ),
+        ]
+      : [0, 0, 0];
+    batch.impostorCellBounds = cellBounds;
   }
 
   /**
@@ -1719,7 +1904,24 @@ export class WorldDetailRuntime {
     predictionZ: number,
     profile: WebGpuQualityProfile,
   ): void {
-    const radius = profile.vegetationDistance;
+    // 2026-09-14: residency reaches one cull fade PAST the impostor radius.
+    // A cell requested exactly at the impostor radius is generated and
+    // published while the observer keeps closing, so at flight speed its
+    // near stems landed INSIDE the cull window at partial or full opacity in
+    // one frame — the "patches spawning on approach" the user saw in the
+    // viewer. Requested a fade earlier, a new cell publishes with every stem
+    // beyond the live cull and dithers in over the 420 m window as the
+    // observer approaches; the records beyond the cull cost four killed
+    // vertices each and are priced in `DYNAMIC_ALLOCATIONS.detailInstanceBudget`.
+    // The lead exists only when residency actually reaches the law's cull
+    // edge (the shipped profiles: vegetationDistance IS the impostor radius).
+    // A residency window that ends inside the drawn band — a truncated test
+    // fixture, or the governor's distance lever under pressure — has no fade
+    // at its edge for a lead to serve.
+    const reachesCull = profile.vegetationDistance
+      >= profile.renderedDensityLaw.far.outerRadiusMeters;
+    const radius = profile.vegetationDistance
+      + (reachesCull ? DETAIL_CULL_FADE_MARGIN_METERS : 0);
     const minCellX = Math.floor((Math.min(observer.x, predictionX) - radius) / this.cellSizeMeters);
     const maxCellX = Math.floor((Math.max(observer.x, predictionX) + radius) / this.cellSizeMeters);
     const minCellZ = Math.floor((Math.min(observer.z, predictionZ) - radius) / this.cellSizeMeters);
@@ -1866,6 +2068,7 @@ export class WorldDetailRuntime {
       densityLaw.mid.outerRadiusMeters,
       densityLaw.far.outerRadiusMeters,
       densityLaw.farFloorShare,
+      densityLaw.impostorFloorShare,
       profile.treeVariantCap,
       profile.treePrototypeMode,
       profile.grassRadiusMeters,
@@ -1885,6 +2088,7 @@ export class WorldDetailRuntime {
         densityLaw.mid.outerRadiusMeters,
         densityLaw.far.outerRadiusMeters,
         densityLaw.farFloorShare,
+        densityLaw.impostorFloorShare,
         profile.treeVariantCap,
         profile.treePrototypeMode,
         profile.grassRadiusMeters,
@@ -2445,7 +2649,9 @@ export class WorldDetailRuntime {
       + statistics.rockInstances
       + statistics.clutterInstances
       + statistics.groundCoverInstances;
-    const maximumPackedRecords = statistics.treeInstances * 6
+    // A stem carries at most seven records: three near parts, three mid
+    // parts, and (2026-09-13) one impostor coexisting with either.
+    const maximumPackedRecords = statistics.treeInstances * 7
       + statistics.shrubInstances
       + statistics.rockInstances
       + statistics.clutterInstances
@@ -2801,6 +3007,7 @@ export class WorldDetailRuntime {
   ): void {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
+    this.refreshImpostorOccupancy(batch, recordOrigin);
     if (count === 0 || batch.gpu === null) {
       batch.mesh.setEnabled(false);
       return;
@@ -2986,6 +3193,7 @@ export class WorldDetailRuntime {
   ): void {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
+    this.refreshImpostorOccupancy(batch, recordOrigin);
     if (count === 0) {
       batch.mesh.setEnabled(false);
       return;
@@ -3145,6 +3353,7 @@ export class WorldDetailRuntime {
     const camera = this.scene.activeCamera;
     for (const batch of this.batches.values()) {
       if (!batch.mesh.isEnabled() || batch.mesh.forcedInstanceCount <= 0) continue;
+      if (!batch.mesh.isVisible) continue;
       if (camera && !camera.isInFrustum(batch.mesh)) continue;
       renderedThinInstances += batch.mesh.forcedInstanceCount;
       activeBatches += 1;
@@ -3211,12 +3420,16 @@ export class WorldDetailRuntime {
     );
     const pad = DETAIL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
       + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS;
-    const cullPad = DETAIL_CULL_FADE_MARGIN_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
-      + DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS;
+    // 2026-09-14: the far cull edge is NOT a frontier. Impostor records have
+    // no outer membership edge any more (`detailFadeBandMemberships`), the
+    // shader culls at the live range, and a far chunk's record set depends on
+    // its resident cells alone — so nothing about it changes when the
+    // observer moves, and re-baking it every 64 m (with its whole impostor
+    // set, 7× heavier since the fill) was the traffic behind the in-flight
+    // hitches and the far band arriving as a patchwork.
     const edges: readonly (readonly [number, number])[] = [
       [law.near.outerRadiusMeters, pad],
       [law.mid.outerRadiusMeters, pad],
-      [law.far.outerRadiusMeters, cullPad],
       [
         this.lastGrassRadius,
         GROUND_COVER_EDGE_FADE_METERS + DETAIL_MEMBERSHIP_SLACK_METERS
@@ -3302,6 +3515,11 @@ export class WorldDetailRuntime {
       bounds: new DetailInstanceBounds(),
       prototypeBoundKernel: prototype.boundKernel,
       gpu: null,
+      chunkMinCellX: coordinates.minCellX,
+      chunkMinCellZ: coordinates.minCellZ,
+      chunkCellSpan: coordinates.maxCellX - coordinates.minCellX,
+      impostorCellBounds: null,
+      impostorBoundsPadding: [0, 0, 0],
       filledRevision: 0,
       builtOrigin: { x: 0, y: 0, z: 0 },
     };

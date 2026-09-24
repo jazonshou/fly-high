@@ -10,6 +10,7 @@ import {
   DetailInstanceWriter,
   detailPrototypeBoundKernel,
   detailRadialScaleForWorldRadius,
+  detailStemHash,
   normalAlignedQuaternion,
   yawQuaternion,
   type DetailInstanceRecord,
@@ -112,8 +113,10 @@ function transformedVertices(
 ): ReadonlyArray<readonly [number, number, number]> {
   const decoded = decodeInstance(record);
   const modifier = Math.floor(decoded.variant / 32);
+  // 2026-09-13: the shader reads the phase lane through the per-stem hash.
+  const stemPhase = detailStemHash(decoded.windPhase);
   const characterLean = modifier === 1
-    ? 0.1 + (decoded.windPhase * 7.31 - Math.floor(decoded.windPhase * 7.31)) * 0.11
+    ? 0.1 + (stemPhase * 7.31 - Math.floor(stemPhase * 7.31)) * 0.11
     : 0;
   const points: Array<readonly [number, number, number]> = [];
   for (let index = 0; index < geometry.positions.length; index += 3) {

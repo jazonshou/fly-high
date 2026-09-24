@@ -149,27 +149,88 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(transform(fixture.scene, "starboard-aileron").rotation.z).toBeLessThan(0);
     expect(transform(fixture.scene, "port-aileron").rotation.z).toBeGreaterThan(0);
     expect(transform(fixture.scene, "elevator").rotation.z).toBeLessThan(0);
-    expect(transform(fixture.scene, "rudder").rotation.y).toBeLessThan(0);
+    // Flipped with the rudder-direction fix: right rudder now swings the
+    // trailing edge to STARBOARD, which is what yaws the nose right. This pin
+    // held the old inverted sign. `render.webgpu-control-surface-sides`
+    // asserts the direction in world space, where a name cannot go wrong.
+    expect(transform(fixture.scene, "rudder").rotation.y).toBeGreaterThan(0);
     expect(transform(fixture.scene, "nose-wheel-steering").rotation.y).toBeLessThan(0);
     expect(transform(fixture.scene, "starboard-main-wheel").rotation.z).toBeLessThan(0);
     expect(aircraft.propeller.rotation.x).toBeGreaterThan(0);
 
     const exteriorMaskBeforeCockpit = fixture.camera.layerMask;
+    // THE TUBE AND THE GLASS ARE COCKPIT-EXCLUDED; THE ROOF AND THE CENTRE FRAME
+    // ARE NOT.
+    //
+    // The glass, which is what lets it drop its depth pre-pass and read as glass
+    // from outside. Both halves are pinned because each alone is a defect:
+    // visible to an exterior camera, or the cabin is a bare shell with the
+    // interior showing through; hidden from the cockpit camera, or the pilot's
+    // forward view is the near-black blue wash the pre-pass was there to
+    // prevent. The trade -- no glass from the seat -- was put to the PM and
+    // authorised.
+    //
+    // The fuselage tube, because its cabin-section top skin IS the window sill
+    // and the pilot's eye is above it: shown, it is the outside of a white
+    // deck filling the bottom third of the frame, hiding everything inside it.
+    // Its cowl, panel, dials and door panels are rebuilt as COCKPIT-ONLY parts.
+    //
+    // The roof and the centre frame hang over the pilot and are what a
+    // windscreen's framing is, so they must be visible to the cockpit camera as
+    // well as to every other one.
     const canopy = mesh(fixture.scene, "trainer-canopy");
-    expect(aircraft.cockpitParts).not.toContain(canopy);
+    const tube = mesh(fixture.scene, "trainer-fuselage");
+    const overhead = ["trainer-cabin-roof", "windscreen-center-frame"]
+      .map((name) => mesh(fixture.scene, name));
+    const cockpitOnly = aircraft.cockpitOnlyParts ?? [];
+    const maskBefore = new Map(fixture.scene.meshes.map((part) => [part, part.layerMask]));
+    expect(new Set(aircraft.cockpitParts)).toEqual(new Set([tube, canopy]));
+    expect(aircraft.cockpitParts).toHaveLength(2);
     expectVisibleToCamera(canopy, fixture.camera);
+    expectVisibleToCamera(tube, fixture.camera);
+    for (const part of overhead) expectVisibleToCamera(part, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
     expect(
       aircraft.cockpitParts.every((part) => part.layerMask === AIRCRAFT_EXTERIOR_LAYER_MASK),
     ).toBe(true);
+    // COCKPIT-ONLY PARTS: there are some, and before cockpit view they are
+    // invisible and never shadow casters.
+    expect(cockpitOnly.length).toBeGreaterThan(0);
+    for (const part of cockpitOnly) {
+      expect(part.isVisible, `${part.name} must be invisible outside cockpit view`).toBe(false);
+      expect(part.metadata?.castsShadow, `${part.name} must not cast a shadow`).toBe(false);
+    }
+    // The renderer registers exactly the meshes that do not say castsShadow:
+    // false, so none of these can be among them.
+    const casters = new Set(aircraft.meshes.filter((part) => part.metadata?.castsShadow !== false));
+    for (const part of cockpitOnly) expect(casters.has(part)).toBe(false);
     aircraft.setCockpitView(true);
-    expectVisibleToCamera(canopy, fixture.camera);
+    // Still drawn and still a shadow caster — excluded from THIS camera only.
+    expect(canopy.isVisible).toBe(true);
+    expect(canopy.layerMask & fixture.camera.layerMask).toBe(0);
+    expect(tube.isVisible).toBe(true);
+    expect(tube.layerMask & fixture.camera.layerMask).toBe(0);
     expect(
       aircraft.cockpitParts.every(
         (part) => part.isVisible && (part.layerMask & fixture.camera.layerMask) === 0,
       ),
     ).toBe(true);
+    // The roof and the centre frame are visible to the cockpit camera too, and
+    // nothing about their layers moved to make it so.
+    for (const part of overhead) {
+      expect(part.isVisible).toBe(true);
+      expect(part.isEnabled()).toBe(true);
+      expect(part.layerMask & fixture.camera.layerMask).not.toBe(0);
+      expect(part.layerMask).toBe(maskBefore.get(part));
+    }
+    // Cockpit-only parts are drawn now, on ordinary layers, and still never casters.
+    for (const part of cockpitOnly) {
+      expect(part.isVisible, `${part.name} must be visible in cockpit view`).toBe(true);
+      expect(part.isEnabled()).toBe(true);
+      expect(part.layerMask & fixture.camera.layerMask).not.toBe(0);
+      expect(part.metadata?.castsShadow).toBe(false);
+    }
     expect(mesh(fixture.scene, "port-main-wing-forward").isVisible).toBe(true);
     expect(
       mesh(fixture.scene, "port-main-wing-forward").layerMask & fixture.camera.layerMask,
@@ -177,9 +238,17 @@ describe("Babylon WebGPU aircraft visual", () => {
     expectShadowCastersVisible(aircraft.meshes);
     aircraft.setCockpitView(false);
     expectVisibleToCamera(canopy, fixture.camera);
+    expectVisibleToCamera(tube, fixture.camera);
+    for (const part of overhead) expectVisibleToCamera(part, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
     expect(aircraft.cockpitParts.every((part) => part.isVisible)).toBe(true);
+    // ON EXIT the cockpit-only parts are invisible again, and every mask is
+    // restored exactly: the camera's, and every mesh's.
+    for (const part of cockpitOnly) {
+      expect(part.isVisible, `${part.name} must be invisible again after cockpit view`).toBe(false);
+    }
     expect(fixture.camera.layerMask).toBe(exteriorMaskBeforeCockpit);
+    for (const [part, mask] of maskBefore) expect(part.layerMask).toBe(mask);
 
     aircraft.dispose();
     aircraft.dispose();
@@ -191,21 +260,24 @@ describe("Babylon WebGPU aircraft visual", () => {
   it("builds the distinct jet and applies smooth gear and speed-brake travel", () => {
     const fixture = rightHandedFixture();
     const aircraft = createWebGpuAircraft(fixture.scene, "jet");
-    expect(aircraft.group.name).toBe("vesper-fast-jet");
+    expect(aircraft.group.name).toBe("f-16c-fighting-falcon");
     expect(aircraft.propeller.name).toBe("jet-compressor");
     for (const detail of [
       "jet-fuselage",
       "port-swept-main-wing",
       "starboard-swept-main-wing",
-      "port-swept-tailplane",
-      "starboard-swept-tailplane",
+      "port-jet-stabilator-root-fairing",
+      "starboard-jet-stabilator-root-fairing",
       "radar-nose",
-      "tandem-canopy",
-      "jet-front-seat",
+      "jet-bubble-canopy",
+      "jet-ejection-seat",
       "jet-instrument-panel",
-      "jet-attitude-gauge",
-      "starboard-engine-intake",
-      "port-engine-intake",
+      // The five dials and their needles are gone (cockpit phase F1): the board is bare
+      // under a wedge coaming, and the HUD's combiner frame stands on it, cockpit-only.
+      "jet-glare-shield",
+      "jet-hud-frame",
+      "starboard-jet-inlet-cheek",
+      "port-jet-inlet-cheek",
       "swept-vertical-stabilizer",
       "landing-gear-doors",
       "starboard-main-strut",
@@ -231,10 +303,17 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     const gear = transform(fixture.scene, "retractable-landing-gear");
     expect(gear.isEnabled()).toBe(false);
-    expect(transform(fixture.scene, "starboard-aileron").rotation.z).toBeLessThan(0);
-    expect(transform(fixture.scene, "port-aileron").rotation.z).toBeGreaterThan(0);
+    // The F-16 rolls on FLAPERONS: one surface a side that is also its flap,
+    // as the aeroplane's is. With the flaps up their deflection is the roll
+    // command alone, so the signs here are the ones the ailerons carried.
+    expect(transform(fixture.scene, "starboard-jet-flaperon").rotation.z).toBeLessThan(0);
+    expect(transform(fixture.scene, "port-jet-flaperon").rotation.z).toBeGreaterThan(0);
     expect(transform(fixture.scene, "elevator").rotation.z).toBeGreaterThan(0);
-    expect(transform(fixture.scene, "rudder").rotation.y).toBeLessThan(0);
+    // Flipped with the rudder-direction fix: right rudder now swings the
+    // trailing edge to STARBOARD, which is what yaws the nose right. This pin
+    // held the old inverted sign. `render.webgpu-control-surface-sides`
+    // asserts the direction in world space, where a name cannot go wrong.
+    expect(transform(fixture.scene, "rudder").rotation.y).toBeGreaterThan(0);
 
     aircraft.update(
       { ...INITIAL_VISUAL_STATE, gear: 0.5, brake: 1, onGround: false },
@@ -243,7 +322,16 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(gear.isEnabled()).toBe(true);
     expect(gear.scaling.y).toBeGreaterThan(0.08);
     expect(gear.scaling.y).toBeLessThan(1);
-    expect(mesh(fixture.scene, "starboard-main-gear-door").rotation.x).toBeGreaterThan(1);
+    // The two main doors tip in opposite senses, which is what makes them a
+    // mirrored pair, and both return to closed at each end of the cycle.
+    // Asserted as a pair rather than as a fixed sign per side: the sign is
+    // assigned by index in `applyCommonPose`, so pinning "starboard is
+    // positive" pins the array order rather than the aeroplane, and it broke
+    // when the port/starboard names were corrected without any door moving.
+    const starboardDoor = mesh(fixture.scene, "starboard-main-gear-door").rotation.x;
+    const portDoor = mesh(fixture.scene, "port-main-gear-door").rotation.x;
+    expect(Math.abs(starboardDoor)).toBeGreaterThan(1);
+    expect(starboardDoor).toBeCloseTo(-portDoor, 8);
     expect(transform(fixture.scene, "starboard-speed-brake").rotation.z).toBeLessThan(-0.6);
 
     aircraft.update(
@@ -252,7 +340,7 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     expect(gear.scaling.y).toBe(1);
     expect(gear.position.y).toBeCloseTo(0, 10);
-    const canopy = mesh(fixture.scene, "tandem-canopy");
+    const canopy = mesh(fixture.scene, "jet-bubble-canopy");
     expect(aircraft.cockpitParts).not.toContain(canopy);
     expectVisibleToCamera(canopy, fixture.camera);
     expectShadowCastersVisible(aircraft.meshes);
@@ -288,7 +376,8 @@ describe("Babylon WebGPU aircraft visual", () => {
     expect(trainer.starboardAileron).toBe(-0.25);
     expect(trainer.portAileron).toBe(0.25);
     expect(trainer.elevator).toBe(0.3);
-    expect(trainer.rudder).toBe(-0.32);
+    // Flipped with the rudder-direction fix; see the note above.
+    expect(trainer.rudder).toBe(0.32);
     expect(trainer.mainWheelRadiansPerSecond).toBeCloseTo(-60 / 0.27, 8);
 
     const jet = resolveAircraftAnimationPose("jet", {

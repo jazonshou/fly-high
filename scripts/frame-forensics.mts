@@ -40,6 +40,9 @@
 
 import { readFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
+import { aircraftSpec } from "../src/aircraft/catalogue";
+import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
+import type { AircraftKind } from "../src/sim";
 
 // ---------------------------------------------------------------- PNG decode
 
@@ -322,26 +325,34 @@ export interface ShotCamera {
 /**
  * Build the camera for a cockpit-mode capture shot at yaw 0.
  *
- * The cockpit eye sits `forward * 1.15 + up * 1.12` from the aircraft origin
- * (`FlightRenderer`), the FOV is 56° horizontal, and pitch is a rotation about
- * +Z by `-pitchDown` with yaw 0 pointing along +X (`headingVectorFromYaw`).
+ * This reconstructs the camera the PERF HARNESS renders with, not the one a
+ * player gets. The eye is the catalogue's `cockpitEye.forward` and `.up` for
+ * `kind` (the trainer, which is what a capture flies unless told otherwise) —
+ * this used to be a literal `1.15 / 1.12` from an airframe that no longer
+ * exists — with NO lateral offset, because the harness pins the eye to the
+ * centreline (`PERF_COCKPIT_RIG`). The lens defaults to
+ * `PERF_COCKPIT_HORIZONTAL_FOV_DEGREES`, horizontal, for the same reason.
+ * Pitch is a rotation about +Z by `-pitchDown` with yaw 0 pointing along +X
+ * (`headingVectorFromYaw`).
  */
 export function cockpitCamera(
   aircraft: { x: number; y: number; z: number },
   pitchDownDegrees: number,
   width = 1_280,
   height = 720,
-  horizontalFovDegrees = 56,
+  horizontalFovDegrees = PERF_COCKPIT_HORIZONTAL_FOV_DEGREES,
+  kind: AircraftKind = "trainer",
 ): ShotCamera {
   const p = (pitchDownDegrees * Math.PI) / 180;
   const forward = { x: Math.cos(-p), y: Math.sin(-p), z: 0 };
   const up = { x: -Math.sin(-p), y: Math.cos(-p), z: 0 };
   const right = { x: 0, y: 0, z: 1 }; // forward × up, right-handed with +Y up
+  const eye = aircraftSpec(kind).cockpitEye;
   return {
     eye: {
-      x: aircraft.x + forward.x * 1.15 + up.x * 1.12,
-      y: aircraft.y + forward.y * 1.15 + up.y * 1.12,
-      z: aircraft.z + forward.z * 1.15 + up.z * 1.12,
+      x: aircraft.x + forward.x * eye.forward + up.x * eye.up,
+      y: aircraft.y + forward.y * eye.forward + up.y * eye.up,
+      z: aircraft.z + forward.z * eye.forward + up.z * eye.up,
     },
     forward,
     up,

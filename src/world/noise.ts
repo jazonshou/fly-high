@@ -122,6 +122,8 @@ export function filteredValueNoise2D(
  * talus terms, differently shaped); it fades toward its expectation instead.
  */
 export const RIDGED_OCTAVE_BAND_LIMIT_MEAN = 0.4491;
+/** `ridgedFbm2D`'s fixed octave gain. Named so the soft channel can differ from it. */
+export const RIDGED_PERSISTENCE = 0.52;
 
 /**
  * Fraction of a ridged channel's variance that survives the band-limit fade
@@ -135,6 +137,7 @@ export function ridgedChannelVarianceKept(
   octaves: number,
   baseWavelengthMeters: number,
   filterWidthMeters: number,
+  persistence = RIDGED_PERSISTENCE,
 ): number {
   if (filterWidthMeters <= 0 || baseWavelengthMeters <= 0) return 1;
   let amplitude = 1;
@@ -145,7 +148,7 @@ export function ridgedChannelVarianceKept(
     const weight = octaveBandWeight(wavelength, filterWidthMeters);
     kept += amplitude * weight * (amplitude * weight);
     total += amplitude * amplitude;
-    amplitude *= 0.52;
+    amplitude *= persistence;
     wavelength /= 2.03;
   }
   return total > 0 ? kept / total : 1;
@@ -250,4 +253,88 @@ export function ridgedFbm2D(
   }
 
   return amplitudeSum > 0 ? saturate(sum / amplitudeSum) : 0;
+}
+
+/**
+ * What a massif reads instead of the ridge channel's cusps (wave M-1).
+ *
+ * `ridgedFbm2D` has two properties that are right for a range seen from 40 km
+ * and wrong for a mountain flown past. Its octave gain times its lacunarity is
+ * 0.52 x 2.03 = 1.06, so every octave contributes the SAME slope at its own
+ * crest however small it is, and `(1 - |v|)^2` has a slope discontinuity ON
+ * that crest. Where several octaves' crests coincide the slopes add, which is
+ * the 77-degree needle measured on seed "terra1": 430 m of rise in 100 m.
+ *
+ * The soft channel is built from the SAME octave samples, so it costs no noise
+ * evaluation and its ridge lines lie exactly where the shipped channel's do.
+ * It differs in two ways, both parameters so the shape authority owns them:
+ *   - the cusp is rounded, `1 - sqrt(v^2 + c^2)`, renormalised by `1 - c` so
+ *     the octave still spans [0, 1];
+ *   - the octave gain is lower, so slope falls with scale the way it does on
+ *     ground that has been weathered.
+ *
+ * The HARD half of the result is `ridgedFbm2D`'s arithmetic verbatim, in the
+ * same order, so a caller that ignores the soft half gets a bit-identical
+ * world. Assertion pinned in tests/world.mountain-shape.test.ts.
+ */
+export interface RidgedPair {
+  hard: number;
+  soft: number;
+}
+
+export function ridgedFbmPair2D(
+  seedHash: number,
+  x: number,
+  z: number,
+  octaves: number,
+  baseWavelengthMeters: number,
+  filterWidthMeters: number,
+  softCusp: number,
+  softPersistence: number,
+  softOctaveMean: number,
+  target: RidgedPair,
+): RidgedPair {
+  const filtering = filterWidthMeters > 0 && baseWavelengthMeters > 0;
+  const softScale = 1 / (1 - softCusp);
+  let amplitude = 1;
+  let softAmplitude = 1;
+  let frequency = 1;
+  let wavelength = baseWavelengthMeters;
+  let sum = 0;
+  let softSum = 0;
+  let amplitudeSum = 0;
+  let softAmplitudeSum = 0;
+
+  for (let octave = 0; octave < octaves; octave += 1) {
+    const weight = filtering ? octaveBandWeight(wavelength, filterWidthMeters) : 1;
+    if (weight > 0) {
+      const octaveSeed = mixSeed(seedHash, 31 + octave);
+      const value = valueNoise2D(octaveSeed, x * frequency, z * frequency);
+      const ridge = 1 - Math.abs(value);
+      const rounded = Math.max(0, 1 - Math.sqrt(value * value + softCusp * softCusp)) * softScale;
+      if (weight >= 1) {
+        sum += ridge * ridge * amplitude;
+        softSum += rounded * rounded * softAmplitude;
+      } else {
+        const banded = RIDGED_OCTAVE_BAND_LIMIT_MEAN
+          + (ridge * ridge - RIDGED_OCTAVE_BAND_LIMIT_MEAN) * weight;
+        sum += banded * amplitude;
+        softSum += (softOctaveMean + (rounded * rounded - softOctaveMean) * weight)
+          * softAmplitude;
+      }
+    } else {
+      sum += RIDGED_OCTAVE_BAND_LIMIT_MEAN * amplitude;
+      softSum += softOctaveMean * softAmplitude;
+    }
+    amplitudeSum += amplitude;
+    softAmplitudeSum += softAmplitude;
+    amplitude *= RIDGED_PERSISTENCE;
+    softAmplitude *= softPersistence;
+    frequency *= 2.03;
+    if (filtering) wavelength /= 2.03;
+  }
+
+  target.hard = amplitudeSum > 0 ? saturate(sum / amplitudeSum) : 0;
+  target.soft = softAmplitudeSum > 0 ? saturate(softSum / softAmplitudeSum) : 0;
+  return target;
 }

@@ -27,6 +27,13 @@ import type { Scene } from "@babylonjs/core/scene";
  *
  *     terrain 15   detail 15   aircraft 14   wildlife 13   ground cover 13   airport 4
  *
+ * "aircraft 14" is the trainer and jet paint. Paint that carries one more
+ * varying reads one more: in Gate A's container-less rig on 2026-09-22 the
+ * Global's `bizjet-body` (it carries vertex colour) read 15, so 16 of 16 with
+ * this container attached -- zero headroom. The 747's livery skin reads 14 (it
+ * rides UV1 alone). Its body read 15 while an all-white colour fill stood on
+ * it; that fill is gone, and Gate A re-measures it.
+ *
  * **Terrain and detail have exactly ONE slot each**, and detail only has that
  * because `7-4b` freed it with `forceIrradianceInFragment`. Before that it sat
  * at 16 of 16 and attaching a container made the foliage stop drawing

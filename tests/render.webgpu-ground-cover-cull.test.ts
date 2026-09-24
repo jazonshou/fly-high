@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { saturate, smoothstep } from "../src/world/noise";
@@ -61,6 +62,16 @@ import {
  *    "draw the whole lattice", which is wave G's shipped behaviour.
  */
 
+/*
+ * Babylon's shipped source is found through MODULE RESOLUTION rather than by
+ * building a path from this repo's root. A git worktree has no `node_modules`
+ * of its own — Node resolves the package by walking up to the main checkout —
+ * so a root-relative path passes in a lived-in clone and fails in every fresh
+ * worktree, which is the tree an end-of-wave promotion runs from.
+ */
+const babylonCoreRoot = dirname(
+  createRequire(import.meta.url).resolve("@babylonjs/core"),
+);
 const projectRoot = join(import.meta.dirname, "..");
 
 // ---------------------------------------------------------------------------
@@ -433,7 +444,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
     // `setIndirectData`'s instance-count early-return are verified present in
     // 9.21.2 and are NOT public API.
     const drawContext = readFileSync(
-      join(projectRoot, "node_modules/@babylonjs/core/Engines/WebGPU/webgpuDrawContext.js"),
+      join(babylonCoreRoot, "Engines/WebGPU/webgpuDrawContext.js"),
       "utf8",
     );
     expect(drawContext).toContain("setIndirectData(indexOrVertexCount, instanceCount");
@@ -445,7 +456,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
     expect(drawContext).toContain("WebGPUConstants.BufferUsage.Storage");
 
     const engine = readFileSync(
-      join(projectRoot, "node_modules/@babylonjs/core/Engines/webgpuEngine.pure.js"),
+      join(babylonCoreRoot, "Engines/webgpuEngine.pure.js"),
       "utf8",
     );
     expect(engine).toContain("this._currentDrawContext.indirectDrawBuffer");
@@ -456,7 +467,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
     // The per-pass shape R4 says both original designs missed: a wrapper per
     // render-pass id, so a compute write fixes exactly one pass.
     const subMesh = readFileSync(
-      join(projectRoot, "node_modules/@babylonjs/core/Meshes/subMesh.pure.js"),
+      join(babylonCoreRoot, "Meshes/subMesh.pure.js"),
       "utf8",
     );
     expect(subMesh).toContain("_getDrawWrapper(passId, createIfNotExisting = false)");
@@ -479,7 +490,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
     expect(pinned).toMatch(/^\d+\.\d+\.\d+$/u);
     const installed = JSON.parse(
       readFileSync(
-        join(projectRoot, "node_modules/@babylonjs/core/package.json"),
+        join(babylonCoreRoot, "package.json"),
         "utf8",
       ),
     ) as { version: string };
@@ -543,7 +554,7 @@ describe("§7 R4: the indirect path is an optimisation behind a loud assertion",
     })).toBe(12);
     // And the Babylon expression this mirrors is still what Scene.render does.
     const scene = readFileSync(
-      join(projectRoot, "node_modules/@babylonjs/core/scene.pure.js"),
+      join(babylonCoreRoot, "scene.pure.js"),
       "utf8",
     );
     expect(scene).toContain(

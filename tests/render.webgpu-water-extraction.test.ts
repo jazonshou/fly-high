@@ -149,11 +149,120 @@ describe("water shader extraction (2-8a)", () => {
     // The fragment hash below is byte-for-byte unchanged, which is the claim
     // that this moved geometry only. Deliberate, named, reviewed — the flow
     // this assertion exists to force; the decision is in ARCHITECTURE.md.
+    //
+    // Re-pinned 2026-09-14 by wave S (the far field), BOTH stages. Vertex:
+    // the lattice-Nyquist displacement fade keys on the ring's horizontal
+    // radius and the pixel fade on slant range, instead of one min() on slant
+    // range that deleted the swell geometry from 545 m of altitude up.
+    // Fragment: a mean-one sun-glint sparkle on the Karis lobe, distant
+    // whitecap flecks spent from the foam mip mean, a drifting far gust field
+    // on the short-wave slope variance, and the rough-interface Fresnel.
+    // Each is pinned by name in tests/render.webgpu-water-far-field.test.ts;
+    // the decision is in ARCHITECTURE.md.
+    //
+    // Re-pinned 2026-09-14 (wave S, second pass), BOTH stages: the whitecap
+    // flecks became the same screen-hashed mean-one twinkle the glints use
+    // (the per-pixel cell search cost 15 ms a frame with the sea in the lower
+    // half of the frame), the far gust's 1.5 km octave moved to a vertex
+    // varying with a warped 380 m octave per pixel (the unwarped lattice read
+    // as rows of drifting blobs in the glitter path), and the sparkle hash is
+    // a one-lane integer hash.
+    // Re-pinned by W-8c: the province index passes through a contrast curve
+    // (smoothstep 0.18..0.82, the identity at mid-province) before it reaches
+    // the concentrations, and the resuspended sediment load follows the
+    // province's runoff instead of being the same ~7.7 g/m^3 on every coast in
+    // the world — which is why no sea bed used to read through anywhere.
+    // Deliberate, named, reviewed.
+    //
+    // Re-pinned by W-8b (the province's widened authority): the chlorophyll and
+    // CDOM responses are steeper, the analytic bed takes the province's runoff
+    // so a dry coast's sand is pale and a wet one's silt is dark, and the
+    // whitecap pattern is bounded at eight times its own mean. Deliberate,
+    // named, reviewed.
+    //
+    // Re-pinned by W-10's occlusion correction: the horizon test is softened by
+    // the reflection LOBE's own width and takes no jitter (the shared operator
+    // applies jitter as a fraction of the band, so a wide band turned it into
+    // per-pixel salt), and the occluded hillside is hazed by the shared aerial
+    // operator at the fragment's own range. Deliberate, named, reviewed.
+    //
+    // Re-pinned by W-10 (the far field's variation). BOTH hashes move again.
+    // The VERTEX gained the extracted bathymetry lookup and the four-tap
+    // upwind march that measures wind shelter, plus the two horizon-field
+    // samples it hands the fragment (the fragment has no sampler free, so the
+    // packed values ride two varyings and the fragment evaluates the SHARED
+    // horizon operator against its own per-pixel reflection direction). The
+    // FRAGMENT gained that occlusion of the reflected sky, the sheltered wind
+    // driving both the Cox-Munk anchor and Monahan's coverage, and the
+    // Langmuir windrow comb. Deliberate, named, reviewed.
+    //
+    // Re-pinned by W-8 (the water-type field). BOTH hashes move, and the
+    // VERTEX one for the first time since wave S: the ocean vertex now samples
+    // the baked environment field (productivity, runoff) and carries it to the
+    // fragment as a varying, because the fragment stage has no free sampler —
+    // it declares exactly the 16 sampled textures the device limit allows.
+    // The fragment gained the shared constituent model and the sea's own
+    // chemistry law (open-ocean chlorophyll to coastal green by depth, the
+    // land's runoff from the field, and surf-zone resuspension), which
+    // replaces the single bound optical type. Deliberate, named, reviewed.
+    //
+    // Re-pinned by W-9 (the far field's own statistics). FRAGMENT ONLY again,
+    // and the vertex hash below has still not moved since wave S. The fragment
+    // gained the Cox-Munk anchor for sub-pixel slope variance (one identity
+    // replacing a sum of independent estimates, applied only outside the
+    // near-field window, so the near field is bit-identical), a roughness
+    // ceiling at 0.6 instead of 0.5 (0.5 IS Cox-Munk at 9.7 m/s, so the
+    // shipped world sat on the clamp), Monahan's whitecap coverage with the
+    // spectrum's breaking field normalised by its own coarsest mip, and the
+    // split of foam into wind whitecaps at Koepke's effective 0.22 and surf at
+    // fresh-foam 0.5, both lit by the shared downwelling irradiance. Deliberate,
+    // named, reviewed.
+    //
+    // Re-pinned by W-7 (the optical water type and the physical body model).
+    // FRAGMENT ONLY — the vertex hash below is byte-for-byte the one wave S
+    // left, which is the claim that W-7 moved no displacement, no varying and
+    // no spectrum: it is a shading change and nothing else. The fragment
+    // gained the `waterAbsorption`/`waterBackscatter` uniforms and the shared
+    // depth include's new body model (Lee et al.'s two-term shallow-water
+    // reflectance, the refracted solar and upwelling path lengths, and the
+    // coloured downwelling irradiance split into its collimated and diffuse
+    // shares), and LOST three fixed-teal terms and the grey illuminance
+    // scalar: the turbidity in-scatter, `subsurfaceScatter` and
+    // `horizonScatter`. It also lost the now-unused `sunIlluminanceNormalized`
+    // uniform, and its crest-SSS call gained the water type's own transmission
+    // tint. This MOVES PIXELS on every shot with water in it, by design — deep
+    // water is now two orders of magnitude darker in green, and every water
+    // body takes its colour from the scene's own light. Those shots rebaseline
+    // once the whole W-7/W-8 wave has landed, not here. Deliberate, named,
+    // reviewed — the flow this assertion exists to force.
+    //
+    // Re-pinned by W-11 (the sun glitter). FRAGMENT ONLY -- the vertex hash
+    // below is byte-for-byte the one W-7 left, which is the claim that W-11
+    // moved no displacement, no varying, no spectrum and no mesh fade: it
+    // changes WHERE a glint is drawn and nothing about the surface it is drawn
+    // on. The fragment gained `waterGlintCell` and `waterGlintCountGain` from
+    // the shared far-field block and two call sites for them (the sun lobe's
+    // sparkle and the distant whitecap flecks), and LOST `waterTwinkleGain`
+    // and both of its `fragmentInputs.position.xy` arguments -- the screen
+    // hash is gone from this shader and the extraction test asserts it cannot
+    // return. The count now reads the CELL's area rather than the pixel's, and
+    // the facet length that scales it moved 0.06 -> 0.0172 m.
+    //
+    // This MOVES PIXELS on every shot with a sun or moon glitter path in it,
+    // by design: the old gain put 13% of water pixels above 1x as a smear of
+    // mid-greys welded to the screen, and the new one spends the same
+    // expectation as discrete glints anchored to the water. Measured on
+    // `water-400ft-glitter`, the path's mean luminance goes 0.276 -> 0.320
+    // against 0.393 for the smooth lobe with no sparkle at all, so it is also
+    // giving back two thirds of the brightness a mean-one gain was losing
+    // through the tone map. Those shots rebaseline with this wave, and shots
+    // with no glitter path in frame do not move at all -- `night-moonlit` is
+    // bit-identical across the change at an identical shot list.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "9686627ee8433515ffff57ca467c63db3feb066684c24c1b637935f9ca218609",
+      "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "38d9efceb366812bdd8e89655b7e78757a0ed501a55563203a4de6614432bcd0",
+      "f29919337f93a01f199e96fd49e8d64f64f5826265d58c06ab606e13bbd0b5a1",
     );
   });
 

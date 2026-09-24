@@ -202,7 +202,14 @@ export const SURFACE_MATERIALS: readonly SurfaceMaterialSpec[] = Object.freeze([
     roughness: [0.45, 0.72],
     diffuseRoughness: 0.35,
     f0: 0.046,
-    referenceAlbedo: [0.17, 0.165, 0.155],
+    // M-2: 0.166 -> 0.236 luminance. The old figure is a basalt; measured
+    // broadband albedos run ~0.10 for basalt, 0.20-0.25 for gneiss and schist,
+    // 0.30-0.35 for granite and 0.30-0.45 for limestone, and the mountain
+    // report's reference is a light grey limestone massif. At 0.166 a sunlit
+    // face sat BELOW the meadow under it (Grass 0.160, DryGrass 0.212), so a
+    // peak read as a charcoal cut-out. Kept at the dark end of the light
+    // rocks: relief and gullies need headroom to shade into.
+    referenceAlbedo: [0.243, 0.236, 0.219],
     seasonal: false,
     triplanar: true,
   },

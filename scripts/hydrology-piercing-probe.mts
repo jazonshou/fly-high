@@ -204,6 +204,7 @@ let meshWorstOwner = "";
 for (const lake of hydrology.lakes) {
   const arrays: HydrologyMeshArrays = {
     positions: [], normals: [], uvs: [], indices: [], flowData: [], waterData: [],
+    waterChemistry: [],
   };
   appendContainedLake(arrays, lake, ground);
   const positions = arrays.positions;

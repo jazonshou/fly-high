@@ -224,6 +224,29 @@ export class WildlifeSystem {
     );
   }
 
+  /**
+   * CAPTURE ONLY. Forgets every frame this system has lived through, so the
+   * next `update` starts from what the seed alone decides: the population is
+   * respawned from its per-cell spawn descriptors, and the fixed-step clock
+   * and the simulation's step count restart from zero.
+   *
+   * All three are needed. The birds are agent state integrated since each
+   * agent spawned — and `reconcilePopulation` keeps an agent across a rebuild
+   * whenever its id is still wanted, so a rebuild alone does not reset it.
+   * The clock's accumulator decides which frames step and the interpolation
+   * between steps. The step count decides which agents run their AI on a step
+   * and drives the birds' wander. Mid-flight this would teleport every animal
+   * back to its spawn point, which is why the perf harness, at its time pin,
+   * is the only caller (`tests/render.wildlife-capture-pin.test.ts`).
+   */
+  respawnForCapture(): void {
+    if (this.disposed) return;
+    this.agents = [];
+    this.populationSignature = "";
+    this.clock.reset();
+    this.simulation.restartStepCountForCapture();
+  }
+
   /** Supplies only enabled, populated thin-instance sources to a CSM/shadow generator. */
   addShadowCasters(add: (mesh: Mesh) => void): void {
     if (this.disposed) return;

@@ -1,3 +1,4 @@
+import { pilotSurfaceClearance } from "../sim";
 import type { FlightVisualState } from "./types";
 
 /**
@@ -16,6 +17,16 @@ export interface FreeFlyOptions {
   canvas: HTMLCanvasElement;
   /** Rendered-surface height for the ground clamp (consumer authority). */
   groundHeight: (x: number, z: number) => number;
+  /**
+   * Still water height, for the AGL READOUT only.
+   *
+   * Deliberately not folded into `groundHeight`: that sampler is also the
+   * camera floor clamp below, and raising the floor to the waterline would stop
+   * the viewer descending to look at the seabed, which is one of the things the
+   * viewer is for. So the clamp keeps the terrain and the readout takes the
+   * higher of the two. Omit it and the readout behaves exactly as it did.
+   */
+  seaLevel?: number;
   /** Pose and clock continuity with the scene being observed. */
   initialState: FlightVisualState;
 }
@@ -43,6 +54,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 export class FreeFlyController {
   private readonly canvas: HTMLCanvasElement;
   private readonly groundHeight: (x: number, z: number) => number;
+  private readonly seaLevel: number | undefined;
   private readonly pressed = new Set<string>();
   private yawRadians: number;
   private pitchRadians: number;
@@ -61,6 +73,7 @@ export class FreeFlyController {
   constructor(options: FreeFlyOptions) {
     this.canvas = options.canvas;
     this.groundHeight = options.groundHeight;
+    this.seaLevel = options.seaLevel;
     const initial = options.initialState;
     this.positionX = initial.position.x;
     this.positionY = initial.position.y;
@@ -188,9 +201,16 @@ export class FreeFlyController {
     state.airspeed = Math.hypot(this.velocityX, this.velocityY, this.velocityZ);
     state.verticalSpeed = this.velocityY;
     state.altitude = this.positionY;
-    state.altitudeAgl = Number.isFinite(ground)
-      ? Math.max(0, this.positionY - ground)
-      : this.positionY;
+    // The simulator's own rule, imported rather than restated: the viewer HUD
+    // and the flight HUD have to agree over water, and they did not before --
+    // this readout is the one in the screenshot that showed a height above the
+    // SEABED. The ground CLAMP above is deliberately untouched and still uses
+    // the terrain, so the viewer can still descend to look at the seabed.
+    state.altitudeAgl = pilotSurfaceClearance(
+      Number.isFinite(ground) ? this.positionY - ground : this.positionY,
+      this.positionY,
+      this.seaLevel,
+    );
     state.heading = (Math.atan2(forwardX, forwardZ) * 180 / Math.PI + 360) % 360;
     state.pitch = this.pitchRadians * 180 / Math.PI;
     state.bank = 0;

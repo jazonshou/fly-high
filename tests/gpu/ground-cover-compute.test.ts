@@ -20,12 +20,18 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Scene } from "@babylonjs/core/scene";
 import { ComputeBudget, COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
+import {
+  installDeferredPassTiming,
+  PassCostTape,
+  passTimingSinkOf,
+} from "../../src/render/webgpu/core/DeferredPassTiming";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { GroundCoverSystem } from "../../src/render/webgpu/detail/GroundCoverSystem";
 import { GROUND_COVER_LAWS } from "../../src/render/webgpu/detail/groundCoverLaw";
 import { TerrainBiome } from "../../src/world";
 import { hashSeed } from "../../src/world/seed";
 import type { TerrainSample } from "../../src/world/types";
+import { logPricingSample, pricingRun } from "../support/pricingRun";
 
 /**
  * `6-9` on a real adapter — the composed placement kernel, and the cull.
@@ -81,6 +87,8 @@ beforeAll(async () => {
   if (timestampsAvailable) {
     // G0-2: locked once, before any scene work is encoded.
     engine.enableGPUTimingMeasurements = true;
+    // Each pass's own time, not the slot's previous occupant (DeferredPassTiming.ts).
+    if (!installDeferredPassTiming(engine)) throw new Error("per-pass timing could not be installed");
   }
   const device = (engine as unknown as { _device: GPUDevice })._device;
   device.addEventListener("uncapturederror", (event) => {
@@ -115,6 +123,16 @@ function meadowSampler(): (x: number, z: number) => TerrainSample {
     } as unknown as TerrainSample;
   };
 }
+
+/**
+ * A dispatch cost is a statement about a QUIET, pinned host. `cold-start.test.ts`
+ * and the perf capture already key "report, do not assert" on this variable;
+ * the 4x regression alarm below failed at machine load 8 on a commit that
+ * predated any change to this kernel, with every functional output identical
+ * (2026-09-20). Unset, which is the default and what CI's pinned job runs, the
+ * bound is asserted exactly as before.
+ */
+const ENFORCE_REFERENCE_HOST_COST = import.meta.env.VITE_PERF_UNPINNED_HOST !== "1";
 
 describe("6-9 ground-cover placement compute on a real adapter", () => {
   it("compiles the composed kernel, compacts, and reports a culled draw count", async () => {
@@ -217,12 +235,49 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
         if (gpuErrors.length > 0) break;
       }
       expect(materialReady, "the blade material never compiled").toBe(true);
+      // A pricing run measures ring 0 on its own tape: each dispatch's own
+      // delivered time, not the meter's average, which starts at the seed and
+      // converges only as far as the deliveries it happened to see.
+      const pricing = pricingRun();
+      const ring0 = (system as unknown as {
+        rings: Array<{ compute: { dispatch(x: number, y: number, z: number): boolean }; laneCount: number }>;
+      }).rings[0];
+      const tape = pricing && ring0 ? new PassCostTape(engine, passTimingSinkOf(ring0.compute)) : null;
+      const tapeSamples: number[] = [];
+      if (tape && ring0) {
+        const dispatch = ring0.compute.dispatch.bind(ring0.compute);
+        ring0.compute.dispatch = (x, y, z) => {
+          const dispatched = dispatch(x, y, z);
+          if (dispatched) tape.dispatched(1);
+          return dispatched;
+        };
+      }
+      const takeTape = () => {
+        if (!tape || !ring0) return;
+        const reading = tape.take();
+        if (reading.units <= 0) return;
+        const milliseconds = reading.milliseconds / reading.units;
+        logPricingSample("groundCoverCompute", tapeSamples.length, milliseconds, {
+          lanes: ring0.laneCount,
+          unusable: reading.unusableUnits,
+        });
+        tapeSamples.push(milliseconds);
+      };
       // Let the meter's exponential smoothing converge on the real cost
       // before it is compared with the pinned seed: one observation is 25% of
       // the way from the seed to the measurement by construction.
       for (let frame = 0; frame < 40; frame += 1) {
         await step();
+        takeTape();
         if (gpuErrors.length > 0) break;
+      }
+      if (tape) {
+        const sorted = [...tapeSamples].sort((a, b) => a - b);
+        console.log(
+          `PRICING groundCoverCompute tape: ${sorted.length} dispatches, `
+          + `median ${(sorted[Math.floor(sorted.length / 2)] ?? Number.NaN).toFixed(4)} ms`,
+        );
+        tape.dispose();
       }
       expect(gpuErrors, "the composed placement kernel raised a GPU error").toEqual([]);
 
@@ -263,8 +318,21 @@ describe("6-9 ground-cover placement compute on a real adapter", () => {
         "the adapter granted timestamp-query but no dispatch cost was observed",
       ).toBe(timestampsAvailable);
       if (measured !== seed) {
-        expect(measured, `measured ${measured.toFixed(4)} ms vs seed ${seed} ms`)
-          .toBeLessThan(seed * 4);
+        const bound = seed * 4;
+        if (ENFORCE_REFERENCE_HOST_COST) {
+          expect(measured, `measured ${measured.toFixed(4)} ms vs seed ${seed} ms`)
+            .toBeLessThan(bound);
+        } else {
+          // Same switch, same meaning as cold start's deadline: this host is not
+          // the pinned, quiet reference, so a dispatch timed while something
+          // else holds the GPU says nothing about the kernel. Reported loudly,
+          // never asserted; every functional assertion here is still enforced.
+          console.warn(
+            `GROUND-COVER COST reported only: VITE_PERF_UNPINNED_HOST=1; `
+              + `measured ${measured.toFixed(4)} ms vs seed ${seed} ms, bound ${bound.toFixed(4)} ms: `
+              + (measured < bound ? "within it" : "EXCEEDED, and would FAIL on the reference host"),
+          );
+        }
       }
       // Uncaptured errors arrive asynchronously — drain the queue before the
       // zero-error assertion is allowed to mean anything.

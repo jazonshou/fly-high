@@ -125,7 +125,7 @@ function chainComputeFactory(options: {
       dispose: () => undefined,
     },
     splatBake: {
-      bake: async (slots) => slots.length,
+      bake: async (slots) => slots,
       consumeMeasuredDispatchCostMs: () => null,
       dispose: () => undefined,
     },

@@ -2,15 +2,16 @@ import { describe, expect, it } from "vitest";
 import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
 import { COMPUTE_DISPATCH_SEED_COST_MS } from "../../src/render/webgpu/core/ComputeBudget";
 import {
-  EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS,
-  TERRAIN_EROSION_PRODUCTION_CONFIG,
-} from "../../src/render/webgpu/terrain/TerrainErosionCompute";
-import {
-  TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
-  TERRAIN_EROSION_SEED_BAND_ROWS,
   TERRAIN_EROSION_STAGE_SEED_COST_MS,
+  type TerrainErosionStageMeasurement,
 } from "../../src/render/webgpu/terrain/TerrainPageErosionGpu";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
+import {
+  chargedStageMs,
+  type ErosionCostStage,
+  erosionStageCoverageFaults,
+  expectedStageDispatches,
+} from "../support/erosionStageCoverage";
 import {
   buildHarness,
   gpuTimingAvailable,
@@ -18,6 +19,7 @@ import {
   runPage,
   withScene,
 } from "./terrainPageErosionGpuHarness";
+import { pricingRun } from "../support/pricingRun";
 
 /**
  * `W-1d`: what one dispatch of the multi-frame page-erosion DAG actually
@@ -35,31 +37,10 @@ import {
  * several WebGPU devices does not reliably get one — see the harness note.
  */
 
-type CostStage = keyof typeof TERRAIN_EROSION_STAGE_SEED_COST_MS;
-type StageMeasurements = Readonly<
-  Record<CostStage, { readonly milliseconds: number; readonly dispatches: number }>
->;
+type CostStage = ErosionCostStage;
+type StageMeasurements = Readonly<Record<CostStage, Readonly<TerrainErosionStageMeasurement>>>;
 
 const COST_STAGES = Object.keys(TERRAIN_EROSION_STAGE_SEED_COST_MS) as CostStage[];
-
-/**
- * The complete production DAG, derived from the same geometry/configuration
- * constants as the producer. This is the timing sample's non-vacuity guard:
- * a cheap result with a missing shader is not a fast page.
- */
-const EXPECTED_STAGE_DISPATCHES: Readonly<Record<CostStage, number>> = Object.freeze({
-  seed: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS / TERRAIN_EROSION_SEED_BAND_ROWS,
-  // Erodibility before breach and repose after stream power.
-  geology: (EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS) * 2,
-  breach: 2,
-  decode: 1,
-  streamPower: TERRAIN_EROSION_PRODUCTION_CONFIG.streamPowerIterations,
-  // One gather and one apply per iteration.
-  talus: TERRAIN_EROSION_PRODUCTION_CONFIG.talusIterations * 2,
-  fineBand: EROSION_PRODUCTION_SCRATCH_EDGE_TEXELS
-    / TERRAIN_EROSION_GEOLOGY_BAND_ROWS,
-});
 
 const TIMED_PAGES = 4;
 const REQUIRED_CONCENTRATED_PAGES = TIMED_PAGES - 1;
@@ -70,21 +51,19 @@ const MINOR_STAGES: readonly CostStage[] = COST_STAGES.filter(
   (stage) => !MAJOR_STAGES.includes(stage),
 );
 
-function pinnedCost(stages: readonly CostStage[]): number {
+function pinnedCost(stages: readonly CostStage[], expected: Readonly<Record<CostStage, number>>): number {
   return stages.reduce(
     (total, stage) => total
-      + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * EXPECTED_STAGE_DISPATCHES[stage],
+      + TERRAIN_EROSION_STAGE_SEED_COST_MS[stage] * expected[stage],
     0,
   );
 }
 
+/** Measured cost, with every unusable dispatch charged at its stage's pinned price. */
 function measuredCost(sample: StageMeasurements, stages: readonly CostStage[]): number {
-  return stages.reduce((total, stage) => total + sample[stage].milliseconds, 0);
+  return stages.reduce((total, stage) => total + chargedStageMs(sample[stage], stage), 0);
 }
 
-const PINNED_PAGE_COST_MS = pinnedCost(COST_STAGES);
-const PINNED_MAJOR_COST_MS = pinnedCost(MAJOR_STAGES);
-const PINNED_MINOR_COST_MS = pinnedCost(MINOR_STAGES);
 
 describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
   it("holds the complete DAG's concentrated cost against its pinned admission price", async (context) => {
@@ -95,12 +74,29 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
         + "counter to read; the pinned stage seeds stay unverified on this host",
       );
     }
+    // A pricing run refuses to measure without its idle gap (see pricingRun.ts).
+    const pricing = pricingRun();
+    if (pricing) console.log(`PRICING run: ${pricing.idleGapMs} ms idle before it`);
+    // Every pass's duration as the deferred timing delivered it, by counter,
+    // since the last page boundary: what each stage's reading must add up to.
+    const delivered = new Map<unknown, number>();
     const measured = await withScene(async (engine, scene) => {
       // A page that has already built and disposed a dozen WebGPU devices does
       // not reliably get `timestamp-query` back, and Babylon drops the request
       // silently rather than failing. Report it rather than measuring zeros.
       if (!gpuTimingAvailable(engine)) return null;
       const harness = buildHarness(engine, scene);
+      const deliveredByStage = (): Record<CostStage, number> => {
+        const trackers = (harness.producer as unknown as {
+          costTrackers: ReadonlyArray<{ shader: { gpuTimeInFrame?: unknown }; stage: CostStage }>;
+        }).costTrackers;
+        const byStage = Object.fromEntries(COST_STAGES.map((stage) => [stage, 0])) as Record<CostStage, number>;
+        for (const tracker of trackers) {
+          byStage[tracker.stage] += (delivered.get(tracker.shader.gpuTimeInFrame) ?? 0) / 1_000_000;
+        }
+        delivered.clear();
+        return byStage;
+      };
       try {
         const address = createWorldPageAddress(3, -3, 5);
         const drainTiming = async () => {
@@ -117,29 +113,42 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
         // counters rather than letting a delayed warm timestamp enter page 1.
         const warm = await runPage(harness, address, 4);
         await drainTiming();
-        harness.producer.consumeStageMeasurements();
+        const warmSamples = harness.producer.consumeStageMeasurements();
+        deliveredByStage();
+        console.log(`W-1d warm page: ${COST_STAGES.reduce(
+          (sum, stage) => sum + warmSamples[stage].unusable, 0)} unusable readings, ${COST_STAGES.reduce(
+          (sum, stage) => sum + warmSamples[stage].stale, 0)} of them stale`);
 
         const pages: Array<{
           readonly samples: StageMeasurements;
+          readonly delivered: Record<CostStage, number>;
           readonly frames: number;
           readonly wallMilliseconds: number;
           readonly dispatches: number;
+          readonly expected: Readonly<Record<CostStage, number>>;
         }> = [];
         for (let repeat = 0; repeat < TIMED_PAGES; repeat += 1) {
           const timed = await runPage(harness, address, 4);
           await drainTiming();
           pages.push({
             samples: harness.producer.consumeStageMeasurements(),
+            delivered: deliveredByStage(),
             frames: timed.frames,
             wallMilliseconds: harness.producer.lastCompletedPageTiming?.totalMilliseconds ?? 0,
             dispatches: harness.producer.lastCompletedPageTiming?.dispatches ?? 0,
+            // The carve runs a chunk per listed pits, so the page's own count decides it.
+            expected: expectedStageDispatches(harness.producer.lastBreachPits ?? 0),
           });
         }
         return { pages, warmFrames: warm.frames };
       } finally {
         harness.dispose();
       }
-    }, true);
+    }, true, {
+      onPassTimed: (sink, _frameId, nanoseconds) => {
+        delivered.set(sink, (delivered.get(sink) ?? 0) + nanoseconds);
+      },
+    });
     if (!measured) {
       context.skip(
         "this device did not grant timestamp-query (it is granted to the first "
@@ -150,34 +159,54 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
       return;
     }
 
-    const expectedTotalDispatches = Object.values(EXPECTED_STAGE_DISPATCHES)
+    // Every timed page is the same page, so one expected DAG and one pinned price.
+    const expected = measured.pages[0]!.expected;
+    for (const page of measured.pages) expect(page.expected).toEqual(expected);
+    expect(expected.breachPit, "the page listed no pits, so the carve was never priced").toBeGreaterThan(0);
+    const PINNED_PAGE_COST_MS = pinnedCost(COST_STAGES, expected);
+    const PINNED_MAJOR_COST_MS = pinnedCost(MAJOR_STAGES, expected);
+    const PINNED_MINOR_COST_MS = pinnedCost(MINOR_STAGES, expected);
+    const expectedTotalDispatches = Object.values(expected)
       .reduce((sum, count) => sum + count, 0);
     const pageRows = measured.pages.map((page, pageIndex) => {
-      for (const stage of COST_STAGES) {
-        const sample = page.samples[stage];
-        expect(
-          sample.dispatches,
-          `timed page ${pageIndex + 1} did not measure every ${stage} dispatch`,
-        ).toBe(EXPECTED_STAGE_DISPATCHES[stage]);
-        expect(
-          sample.milliseconds,
-          `timed page ${pageIndex + 1} measured ${stage} dispatches but no GPU time`,
-        ).toBeGreaterThan(0);
-      }
+      // Every dispatch present, priced or unusable, and the unusable ones
+      // capped (see UNUSABLE_READINGS_PER_PAGE_CAP). A shader that never
+      // dispatched gives no reading at all and still fails here.
+      expect(
+        erosionStageCoverageFaults(page.samples, page.expected),
+        `timed page ${pageIndex + 1} stage coverage`,
+      ).toEqual([]);
       expect(page.dispatches, `timed page ${pageIndex + 1} DAG dispatch count`)
         .toBe(expectedTotalDispatches);
+      // The instrument: each stage's reading is exactly the time its own
+      // passes took, as delivered after their frame was submitted — not the
+      // previous occupant of their query slots
+      // (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md).
+      for (const stage of COST_STAGES) {
+        expect(
+          Math.abs(page.samples[stage].milliseconds - page.delivered[stage]),
+          `timed page ${pageIndex + 1} ${stage}: read ${page.samples[stage].milliseconds} ms, `
+          + `its passes took ${page.delivered[stage]} ms`,
+        ).toBeLessThan(0.001);
+      }
       const total = measuredCost(page.samples, COST_STAGES);
       const major = measuredCost(page.samples, MAJOR_STAGES);
       const minor = measuredCost(page.samples, MINOR_STAGES);
       const perDispatch = Object.fromEntries(COST_STAGES.map((stage) => [
         stage,
-        page.samples[stage].milliseconds / page.samples[stage].dispatches,
+        page.samples[stage].dispatches > 0
+          ? page.samples[stage].milliseconds / page.samples[stage].dispatches
+          : null,
       ]));
+      const unusable = COST_STAGES.filter((stage) => page.samples[stage].unusable > 0)
+        .map((stage) => `${stage} ${page.samples[stage].unusable}`
+          + (page.samples[stage].stale > 0 ? ` (${page.samples[stage].stale} stale)` : ""));
       console.log(
         `W-1d timed page ${pageIndex + 1}/${TIMED_PAGES}:`,
         `${total.toFixed(2)} ms GPU (${(total / expectedTotalDispatches).toFixed(4)} ms/dispatch),`,
         `major ${major.toFixed(2)} ms, minor ${minor.toFixed(2)} ms,`,
-        `${page.frames} pump frames, ${Math.round(page.wallMilliseconds)} ms wall; stages`,
+        `${page.frames} pump frames, ${Math.round(page.wallMilliseconds)} ms wall;`,
+        `unusable readings: ${unusable.length > 0 ? unusable.join(", ") : "none"}; stages`,
         JSON.stringify(perDispatch, (_, value) =>
           typeof value === "number" ? Math.round(value * 10_000) / 10_000 : value),
       );
@@ -211,12 +240,13 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
     ).toBeGreaterThanOrEqual(REQUIRED_CONCENTRATED_PAGES);
 
     // Drop the same single slowest physical page for both groups. Seed+talus
-    // carry 92% of the declared page price and have 112 dispatches/page, so a
+    // carry 95% of the declared page price and have 112 dispatches/page, so a
     // 2x grouped guard is stable and catches the stages that can actually
-    // break page admission. The five minor stages are only 8% of the price and
+    // break page admission. The minor stages are only 5% of the price and
     // include the 1-dispatch decode and 20-us stream-power counters; combining
-    // all 51 dispatches/page supports the original one-sided 4x alarm without
-    // pretending an individual short counter has that precision.
+    // all 54 dispatches/page (with the L3 page's 3 carve chunks) supports the
+    // original one-sided 4x alarm without pretending an individual short
+    // counter has that precision.
     const retained = [...pageRows]
       .sort((first, second) => first.total - second.total)
       .slice(0, REQUIRED_CONCENTRATED_PAGES);
@@ -239,9 +269,9 @@ describe("terrain page erosion GPU dispatch cost (W-1d)", () => {
 
     // Keep the published client seed connected to the stage table. A future
     // seed edit cannot make the aggregate gate pass by silently changing only
-    // one side of the admission contract. It is intentionally conservative:
-    // the stage-weighted 0.229 ms rounds up to 0.24 ms, so compare the policy
-    // relationship rather than demanding false decimal equality.
+    // one side of the admission contract. The stage-weighted 0.280 ms is
+    // published as 0.28 ms, so compare the policy relationship rather than
+    // demanding false decimal equality.
     const weightedDispatchSeed = PINNED_PAGE_COST_MS / expectedTotalDispatches;
     expect(
       Math.abs(weightedDispatchSeed - COMPUTE_DISPATCH_SEED_COST_MS.erosionCompute)

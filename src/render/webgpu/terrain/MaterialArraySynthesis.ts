@@ -528,7 +528,31 @@ const GRASS_BLADE_LIGHT: Rgb = [0.145, 0.215, 0.07];
 const GRASS_STRAW_DARK: Rgb = [0.135, 0.115, 0.05];
 const GRASS_STRAW_LIGHT: Rgb = [0.255, 0.225, 0.098];
 
-function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: number): void {
+/**
+ * `W-2` — the sward's METRE-scale contrast, as a recipe parameter.
+ *
+ * The clump field is a 1 m fbm, and every colour it drives lands in the tile's
+ * |k| <= 4 band — the band whose energy IS the tiling repeat, because it
+ * survives every mip the ground is ever seen through. Measured at seed "s3",
+ * edge 256: DryGrass carried 1.13e-4 of low-|k| albedo power against Grass's
+ * 2.66e-5, four times as much, and that is the fine repeating grid the near
+ * field shows over dry ground. The cause is the straw ramp: at strawShare 0.8
+ * the colour runs the WHOLE straw pair (0.135 -> 0.255 luma, nearly 2x) across
+ * one metre-scale field, and the bare-soil mask opens on the same field, so
+ * the two reinforce. `MaterialArraySynthesis.ts`'s own note called this out and
+ * left it for a sward retune: this is that retune.
+ *
+ * Compressing the field's COLOUR authority is the fix that keeps what the
+ * recipe is for. Blade density, blade lie and the height channel still read the
+ * full clump — the sward keeps its patchiness at blade scale, which is where a
+ * real sward's variation lives — while the metre-scale albedo swing narrows.
+ */
+function synthesizeSward(
+  context: RecipeContext,
+  strawShare: number,
+  bareShare: number,
+  clumpContrast: number,
+): void {
   const { canvas, seed, random, texelsPerMeter } = context;
   const edge = canvas.edge;
   // The base is the sward's own colour, not soil. An earlier draft used a
@@ -563,10 +587,15 @@ function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: 
       // note asks for, because the dominant coarse source is not this term but
       // the clump-driven straw ramp above. Compressing that ramp is the real
       // fix and is a sward retune, not a mask repair; left for one.
-      const bare = saturate((1 - smoothstep(0.2, 0.44, clump)) * (0.18 + bareShare * 0.5));
+      // W-2: the colour reads a COMPRESSED clump, centred on the same mean, so
+      // the ramp keeps its direction and loses the amplitude that repeats.
+      const tone = saturate(0.5 + (clump - 0.5) * clumpContrast);
+      const bare = saturate(
+        (1 - smoothstep(0.2, 0.44, clump)) * (0.18 + bareShare * 0.5) * clumpContrast,
+      );
       const sward = mixRgb(
-        mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, clump),
-        mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, clump),
+        mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, tone),
+        mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, tone),
         strawShare * 0.85,
       );
       return mixRgb(sward, GRASS_SOIL, bare);
@@ -621,8 +650,13 @@ function synthesizeSward(context: RecipeContext, strawShare: number, bareShare: 
   }
 }
 
-const synthesizeGrass: Recipe = (context) => synthesizeSward(context, 0.12, 0.2);
-const synthesizeDryGrass: Recipe = (context) => synthesizeSward(context, 0.8, 0.34);
+// Grass keeps its full clump contrast: measured at 2.66e-5 of low-|k| power,
+// it never showed a repeat. DryGrass runs the same recipe with four times the
+// straw share, so it needs the compression — 0.42 takes it to the same order
+// as Grass without touching either material's integrated albedo, which
+// fitAlbedoToReference pins afterwards regardless.
+const synthesizeGrass: Recipe = (context) => synthesizeSward(context, 0.12, 0.2, 1);
+const synthesizeDryGrass: Recipe = (context) => synthesizeSward(context, 0.8, 0.34, 0.42);
 
 // --- Forest floor ----------------------------------------------------------
 
@@ -1495,6 +1529,98 @@ function flattenLowFrequency(
   }
 }
 
+/**
+ * An exact notch on the TILING BAND: every Fourier line with |k| <= 4 cycles
+ * per tile, which is the band whose energy IS the visible repeat.
+ *
+ * `flattenLowFrequency` was supposed to own this and cannot: a box high-pass
+ * has its first null at 3 cycles per tile and GAIN at 4, so whatever a recipe
+ * leaves there comes through. Seen from the app at 30 m above dry grassland
+ * (2026-09-19): one dark feature of the DryGrass tile standing in a regular
+ * lattice of identical stamps across half the frame — the de-tile warp bends a
+ * repeat, it does not remove one. Measured at seed "fly-high", edge 512, the
+ * band carried 4.65e-5 of luminance power on Grass and 2.35e-5 on DryGrass.
+ *
+ * Evaluated on a 64² box reduction (16 samples per cycle at k = 4), so it is
+ * ~0.4 M multiply-adds per channel rather than an FFT, and it touches nothing
+ * outside the band: the 5–50 cm content a sward is made of is k >= 5.
+ */
+function suppressTilingBand(
+  field: Float32Array,
+  edge: number,
+  stride: number,
+  channel: number,
+  keepFraction: number,
+): void {
+  const small = Math.min(64, edge);
+  const block = edge / small;
+  const reduced = new Float64Array(small * small);
+  for (let y = 0; y < edge; y += 1) {
+    const row = Math.floor(y / block) * small;
+    for (let x = 0; x < edge; x += 1) {
+      reduced[row + Math.floor(x / block)]! += field[(y * edge + x) * stride + channel]!;
+    }
+  }
+  const inverseBlock = 1 / (block * block);
+  for (let index = 0; index < reduced.length; index += 1) reduced[index]! *= inverseBlock;
+  const low = new Float64Array(small * small);
+  const cosines = new Float64Array(small * small);
+  const sines = new Float64Array(small * small);
+  for (let ky = -TILING_BAND_CYCLES; ky <= TILING_BAND_CYCLES; ky += 1) {
+    for (let kx = 0; kx <= TILING_BAND_CYCLES; kx += 1) {
+      // Half plane only: the (-kx, -ky) line is this one's conjugate.
+      if (kx === 0 && ky <= 0) continue;
+      if (Math.hypot(kx, ky) > TILING_BAND_CYCLES + 1e-9) continue;
+      let cosine = 0;
+      let sine = 0;
+      for (let y = 0; y < small; y += 1) {
+        for (let x = 0; x < small; x += 1) {
+          const index = y * small + x;
+          const phase = (2 * Math.PI * (kx * x + ky * y)) / small;
+          const c = Math.cos(phase);
+          const d = Math.sin(phase);
+          cosines[index] = c;
+          sines[index] = d;
+          cosine += reduced[index]! * c;
+          sine += reduced[index]! * d;
+        }
+      }
+      const scale = 2 / (small * small);
+      for (let index = 0; index < low.length; index += 1) {
+        low[index]! += scale * (cosine * cosines[index]! + sine * sines[index]!);
+      }
+    }
+  }
+  const remove = 1 - keepFraction;
+  for (let y = 0; y < edge; y += 1) {
+    const sy = (y + 0.5) / block - 0.5;
+    const y0 = Math.floor(sy);
+    const fy = sy - y0;
+    const ya = wrapCell(y0, small) * small;
+    const yb = wrapCell(y0 + 1, small) * small;
+    for (let x = 0; x < edge; x += 1) {
+      const sx = (x + 0.5) / block - 0.5;
+      const x0 = Math.floor(sx);
+      const fx = sx - x0;
+      const xa = wrapCell(x0, small);
+      const xb = wrapCell(x0 + 1, small);
+      const top = low[ya + xa]! + (low[ya + xb]! - low[ya + xa]!) * fx;
+      const bottom = low[yb + xa]! + (low[yb + xb]! - low[yb + xa]!) * fx;
+      field[(y * edge + x) * stride + channel]! -= (top + (bottom - top) * fy) * remove;
+    }
+  }
+}
+
+/** The tiling band: lines with |k| at or under this many cycles per tile. */
+export const TILING_BAND_CYCLES = 4;
+/** How much of the band a sward keeps. */
+export const SWARD_TILING_BAND_KEEP = 0.3;
+/** The layers the notch applies to: the two that carpet open country. */
+export const TILING_BAND_NOTCHED_MATERIALS: readonly SurfaceMaterialId[] = Object.freeze([
+  SurfaceMaterial.Grass,
+  SurfaceMaterial.DryGrass,
+]);
+
 /** Radius of the local mean the high-pass measures against, as a fraction of the edge. */
 const LOW_FREQUENCY_RADIUS_FRACTION = 6;
 /**
@@ -1700,6 +1826,13 @@ export function synthesizeSurfaceMaterial(
   }
   flattenLowFrequency(canvas.height, edge, 1, 0, radius, LOW_FREQUENCY_KEEP);
   flattenLowFrequency(canvas.roughness, edge, 1, 0, radius, LOW_FREQUENCY_KEEP);
+  // After the high-pass, because the high-pass is what leaves the band standing.
+  if (TILING_BAND_NOTCHED_MATERIALS.includes(id)) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      suppressTilingBand(canvas.albedo, edge, 3, channel, SWARD_TILING_BAND_KEEP);
+    }
+    suppressTilingBand(canvas.height, edge, 1, 0, SWARD_TILING_BAND_KEEP);
+  }
   normalizeHeightToHalf(canvas.height);
   fitRoughnessToSpec(canvas.roughness, spec);
   fitAlbedoToReference(canvas.albedo, spec);

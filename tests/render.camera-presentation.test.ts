@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { chaseCameraProfile } from "../src/render/FlightRenderer";
+import { AIRCRAFT_KINDS } from "../src/sim";
 import {
+  CHASE_AIM_HEIGHT_METERS,
+  CHASE_BANK_HEIGHT_DROP,
+  chaseBankSinSquared,
+  chaseRigHeightForBank,
+  chaseRigOffsetsToRef,
+  CAMERA_RESPONSE_SECONDS,
+  CAMERA_RESPONSE_SECONDS_REDUCED_MOTION,
   cameraBankFollow,
   cameraPresentationResponse,
+  cameraRigLiftToRef,
+  cameraTrailMeters,
   orthogonalizeCameraUpToRef,
   shouldStabilizeCameraHorizon,
   smoothCameraVectorToRef,
@@ -133,5 +144,501 @@ describe("camera presentation", () => {
 
     expect(Math.max(...chase.map(Math.abs))).toBeLessThan(0.08);
     expect(highFrequencyEnergy(chase)).toBeLessThan(highFrequencyEnergy(fullPhysical) * 0.25);
+  });
+
+  describe("rig lift", () => {
+    const lift = (
+      forward: [number, number, number],
+      up: [number, number, number],
+      follow: number,
+    ) => {
+      const result = { x: 0, y: 0, z: 0 };
+      cameraRigLiftToRef(
+        { x: forward[0], y: forward[1], z: forward[2] },
+        { x: up[0], y: up[1], z: up[2] },
+        follow,
+        result,
+      );
+      return result;
+    };
+    /** Body axes at a given pitch and bank, nose along world +X (D-6). */
+    const attitude = (pitch: number, bank: number) => {
+      const forward: [number, number, number] = [Math.cos(pitch), Math.sin(pitch), 0];
+      // Up at zero bank, then rolled about the nose.
+      const up0: [number, number, number] = [-Math.sin(pitch), Math.cos(pitch), 0];
+      const starboard: [number, number, number] = [0, 0, 1];
+      const up: [number, number, number] = [
+        up0[0] * Math.cos(bank) - starboard[0] * Math.sin(bank),
+        up0[1] * Math.cos(bank) - starboard[1] * Math.sin(bank),
+        up0[2] * Math.cos(bank) - starboard[2] * Math.sin(bank),
+      ];
+      return { forward, up, up0 };
+    };
+
+    it("leaves a wings-level rig untouched at any pitch or heading", () => {
+      // The whole point of blending from wings-level rather than from world
+      // up: every unbanked frame is bit-identical to lifting along the
+      // aircraft's own up.
+      //
+      // THIS COMMENT USED TO SAY "which is every perf-capture shot", AND THAT
+      // IS NOT TRUE. Two of the thirty-nine are banked on purpose —
+      // `motion-banked-turn` at 45 degrees and `page-thrash-turn` at 60 — so
+      // this proof covers thirty-seven of them and not those two. The claim
+      // mattered because it is what a promotion leans on when it asks whether
+      // a rig change can move a baseline: for those two shots the answer is
+      // "yes, by design", and the case that covers them is the next test
+      // down, `adopts exactly the bank the view adopts`.
+      for (const pitch of [0, 0.1, -0.25, 0.6]) {
+        for (const heading of [0, 1.2, -2.7, Math.PI]) {
+          const { forward, up } = attitude(pitch, 0);
+          const rotated: [number, number, number] = [
+            forward[0] * Math.cos(heading) - forward[2] * Math.sin(heading),
+            forward[1],
+            forward[0] * Math.sin(heading) + forward[2] * Math.cos(heading),
+          ];
+          const rotatedUp: [number, number, number] = [
+            up[0] * Math.cos(heading) - up[2] * Math.sin(heading),
+            up[1],
+            up[0] * Math.sin(heading) + up[2] * Math.cos(heading),
+          ];
+          const result = lift(rotated, rotatedUp, cameraBankFollow("chase", false));
+          expect(result.x).toBeCloseTo(rotatedUp[0], 10);
+          expect(result.y).toBeCloseTo(rotatedUp[1], 10);
+          expect(result.z).toBeCloseTo(rotatedUp[2], 10);
+        }
+      }
+    });
+
+    it("adopts exactly the bank the view adopts", () => {
+      // The defect was that the rig lifted along the aircraft's up at full
+      // strength while the view rolled only 18% of the way there. Both now
+      // sit at the same roll angle, which is what keeps the airframe centred.
+      const bank = 0.35;
+      const { forward, up, up0 } = attitude(0.08, bank);
+      for (const follow of [0, 0.18, 0.3, 1]) {
+        const result = lift(forward, up, follow);
+        const expected = {
+          x: up0[0] + (up[0] - up0[0]) * follow,
+          y: up0[1] + (up[1] - up0[1]) * follow,
+          z: up0[2] + (up[2] - up0[2]) * follow,
+        };
+        const length = Math.hypot(expected.x, expected.y, expected.z);
+        expect(result.x).toBeCloseTo(expected.x / length, 10);
+        expect(result.y).toBeCloseTo(expected.y / length, 10);
+        expect(result.z).toBeCloseTo(expected.z / length, 10);
+      }
+    });
+
+    it("reproduces the aircraft's own up when the view follows bank fully", () => {
+      const { forward, up } = attitude(0.12, -0.4);
+      const result = lift(forward, up, cameraBankFollow("cockpit", false));
+      expect(result.x).toBeCloseTo(up[0], 10);
+      expect(result.y).toBeCloseTo(up[1], 10);
+      expect(result.z).toBeCloseTo(up[2], 10);
+    });
+
+    it("holds the wings-level vertical under reduced motion", () => {
+      const { forward, up, up0 } = attitude(0.05, 0.5);
+      const result = lift(forward, up, cameraBankFollow("chase", true));
+      expect(result.x).toBeCloseTo(up0[0], 10);
+      expect(result.y).toBeCloseTo(up0[1], 10);
+      expect(result.z).toBeCloseTo(up0[2], 10);
+    });
+
+    it("falls back to the aircraft's up when the nose is vertical", () => {
+      // "Wings level" has no meaning straight up; the rig must not divide by a
+      // vanishing horizontal component.
+      const up = { x: -1, y: 0, z: 0 };
+      const result = { x: 0, y: 0, z: 0 };
+      cameraRigLiftToRef({ x: 0, y: 1, z: 0 }, up, 0.18, result);
+      expect(result).toEqual(up);
+    });
+  });
+
+  describe("trail", () => {
+    it("is zero for an aeroplane that is not moving", () => {
+      // The lag this replaces was produced by MOTION, so a stationary
+      // aeroplane never had one. Deriving the trail from the airspeed field
+      // instead pushed the camera tens of metres back in every chase shot of
+      // the perf set, where the position is held fixed while an airspeed is
+      // declared: 30% to 99% of pixels moved against a same-arm noise floor
+      // under 1%. That is the whole reason this argument is a ground speed.
+      expect(cameraTrailMeters("chase", false, 0)).toBe(0);
+      expect(cameraTrailMeters("cinematic", false, 0)).toBe(0);
+    });
+
+    it("matches the steady-state error the old absolute smoothing produced", () => {
+      // A first-order lag chasing a target moving at constant speed settles
+      // speed*tau behind it. Measured in-game before the fix: 7.1 m of lag at
+      // roughly 50 m/s, and 16 m at 140.
+      expect(cameraTrailMeters("chase", false, 50)).toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS, 10);
+      expect(cameraTrailMeters("chase", false, 140)).toBeCloseTo(140 * CAMERA_RESPONSE_SECONDS, 10);
+      expect(cameraTrailMeters("chase", false, 50)).toBeGreaterThan(7);
+      expect(cameraTrailMeters("chase", false, 50)).toBeLessThan(7.5);
+    });
+
+    it("shortens with the faster reduced-motion response", () => {
+      expect(cameraTrailMeters("chase", true, 50))
+        .toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS_REDUCED_MOTION, 10);
+      expect(cameraTrailMeters("chase", true, 50))
+        .toBeLessThan(cameraTrailMeters("chase", false, 50));
+    });
+
+    it("applies only to the rigs that trail the aircraft", () => {
+      expect(cameraTrailMeters("cockpit", false, 140)).toBe(0);
+      expect(cameraTrailMeters("freefly", false, 140)).toBe(0);
+      expect(cameraTrailMeters("cinematic", false, 50))
+        .toBeCloseTo(50 * CAMERA_RESPONSE_SECONDS, 10);
+    });
+
+    it("refuses to trail on a negative or non-finite speed", () => {
+      expect(cameraTrailMeters("chase", false, -20)).toBe(0);
+      expect(cameraTrailMeters("chase", false, Number.NaN)).toBe(0);
+    });
+  });
+
+  describe("the composed chase rig", () => {
+    /** The rig exactly as it stood before the tilt fix. */
+    function legacyOffsets(
+      forward: { x: number; y: number; z: number },
+      up: { x: number; y: number; z: number },
+      distance: number,
+      height: number,
+      aimAhead: number,
+    ) {
+      return {
+        camera: {
+          x: -forward.x * distance + up.x * height,
+          y: -forward.y * distance + up.y * height,
+          z: -forward.z * distance + up.z * height,
+        },
+        target: {
+          x: forward.x * aimAhead + up.x * CHASE_AIM_HEIGHT_METERS,
+          y: forward.y * aimAhead + up.y * CHASE_AIM_HEIGHT_METERS,
+          z: forward.z * aimAhead + up.z * CHASE_AIM_HEIGHT_METERS,
+        },
+      };
+    }
+
+    /** Body axes at a heading, pitch and bank, nose along world +X at zero. */
+    function attitude(heading: number, pitch: number, bank: number) {
+      const nose = { x: Math.cos(pitch), y: Math.sin(pitch), z: 0 };
+      const level = { x: -Math.sin(pitch), y: Math.cos(pitch), z: 0 };
+      const starboard = { x: 0, y: 0, z: 1 };
+      const rolled = {
+        x: level.x * Math.cos(bank) - starboard.x * Math.sin(bank),
+        y: level.y * Math.cos(bank) - starboard.y * Math.sin(bank),
+        z: level.z * Math.cos(bank) - starboard.z * Math.sin(bank),
+      };
+      const yaw = (v: { x: number; y: number; z: number }) => ({
+        x: v.x * Math.cos(heading) - v.z * Math.sin(heading),
+        y: v.y,
+        z: v.x * Math.sin(heading) + v.z * Math.cos(heading),
+      });
+      return { forward: yaw(nose), up: yaw(rolled) };
+    }
+
+    function rig(
+      forward: { x: number; y: number; z: number },
+      up: { x: number; y: number; z: number },
+      follow: number,
+      distance: number,
+      height: number,
+      aimAhead: number,
+      trail: number,
+    ) {
+      const lift = { x: 0, y: 0, z: 0 };
+      cameraRigLiftToRef(forward, up, follow, lift);
+      const camera = { x: 0, y: 0, z: 0 };
+      const target = { x: 0, y: 0, z: 0 };
+      chaseRigOffsetsToRef(
+        forward, lift, distance, height, aimAhead, CHASE_AIM_HEIGHT_METERS, trail, camera, target,
+      );
+      return { camera, target };
+    }
+
+    it("is bit-for-bit the old rig on an unbanked, stationary aeroplane", () => {
+      // The claim the perf captures could not settle: at zero bank and zero
+      // motion this rig IS the pre-fix rig. Two identical capture runs on this
+      // machine moved 30% of a frame at maxima of 170/255, which is far too
+      // blunt to clear a camera change; the arithmetic is not.
+      //
+      // Every perf-capture shot is unbanked by construction —
+      // `orientationFromYawPitchBank(yaw, pitch, 0)` — and holds a fixed
+      // position, so this is the statement that they cannot move.
+      for (const heading of [0, 0.7, -2.1, Math.PI]) {
+        for (const pitch of [0, 0.12, -0.3, 0.45]) {
+          const { forward, up } = attitude(heading, pitch, 0);
+          const fixed = rig(forward, up, cameraBankFollow("chase", false), 13.5, 5.1, 16, 0);
+          const legacy = legacyOffsets(forward, up, 13.5, 5.1, 16);
+          for (const axis of ["x", "y", "z"] as const) {
+            expect(fixed.camera[axis]).toBeCloseTo(legacy.camera[axis], 12);
+            expect(fixed.target[axis]).toBeCloseTo(legacy.target[axis], 12);
+          }
+        }
+      }
+    });
+
+    it("is the old rig at every airframe, attitude and DECLARED airspeed", () => {
+      // The declared-airspeed-with-zero-motion case explicitly, because that
+      // is the one that bit: a perf shot holds a fixed position while naming
+      // an airspeed, and a trail keyed on the declared speed rather than on
+      // observed travel pushed the camera tens of metres back in every chase
+      // shot. `cameraTrailMeters` is fed the OBSERVED speed, which is zero
+      // there however fast the aeroplane claims to be going.
+      for (const kind of AIRCRAFT_KINDS) {
+        for (const airspeed of [0, 40, 56, 120, 155, 210, 260]) {
+          const profile = chaseCameraProfile(kind, airspeed);
+          const trail = cameraTrailMeters("chase", false, 0);
+          expect(trail).toBe(0);
+          for (const heading of [0, 1.9, -0.8]) {
+            for (const pitch of [0, 0.2, -0.15]) {
+              const { forward, up } = attitude(heading, pitch, 0);
+              const fixed = rig(
+                forward, up, cameraBankFollow("chase", false),
+                profile.distance, profile.height, profile.aimAhead, trail,
+              );
+              const legacy = legacyOffsets(
+                forward, up, profile.distance, profile.height, profile.aimAhead,
+              );
+              for (const axis of ["x", "y", "z"] as const) {
+                expect(fixed.camera[axis]).toBeCloseTo(legacy.camera[axis], 12);
+                expect(fixed.target[axis]).toBeCloseTo(legacy.target[axis], 12);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    it("lands a camera cut on the settled pose in one frame", () => {
+      // The offsets are persistent state, so a cut has to seed them or the
+      // first frames of every shot would be a convergence transient rather
+      // than the rig. `cameraPresentationResponse` returns exactly 1 on a cut
+      // and the smoother then writes the desired value through untouched —
+      // which is what makes the first rendered frame the settled one.
+      for (const mode of ["chase", "cinematic"] as const) {
+        expect(cameraPresentationResponse(mode, true, 1 / 60, false)).toBe(1);
+      }
+      const settled = { x: -13.5, y: 5.1, z: 0 };
+      const stale = { x: 900, y: -40, z: 17 };
+      const result = { x: 0, y: 0, z: 0 };
+      smoothCameraVectorToRef(stale, settled, 1, result);
+      // Close, not equal: the smoother is `a + (b - a) * amount`, and at
+      // amount 1 that is b only to within rounding — 5.100000000000001 here,
+      // from a stale value of -40. A nanometre of camera, and worth pinning
+      // as closeness rather than pretending it is exact.
+      for (const axis of ["x", "y", "z"] as const) {
+        expect(result[axis]).toBeCloseTo(settled[axis], 12);
+      }
+    });
+
+    it("carries the trail on both offsets, so the view direction is unchanged", () => {
+      const { forward, up } = attitude(0.4, 0.1, 0);
+      const follow = cameraBankFollow("chase", false);
+      const without = rig(forward, up, follow, 13.5, 5.1, 16, 0);
+      // 10 m of trail against a 16 m aim. This used to read 20, which the aim
+      // clamp now shortens to 12 — 20 m of trail on a 16 m aim is the very
+      // case the clamp exists for, since it aims the camera 4 m BEHIND the
+      // aeroplane. The invariant under test is unchanged: whatever trail is
+      // actually applied goes on both offsets, so the view direction is the
+      // same. The clamped case is covered below.
+      const with20 = rig(forward, up, follow, 13.5, 5.1, 16, 10);
+      const direction = (r: typeof without) => ({
+        x: r.target.x - r.camera.x,
+        y: r.target.y - r.camera.y,
+        z: r.target.z - r.camera.z,
+      });
+      const a = direction(without);
+      const b = direction(with20);
+      for (const axis of ["x", "y", "z"] as const) expect(b[axis]).toBeCloseTo(a[axis], 12);
+      // And the camera really did move back by the trail, along the NOSE.
+      const back = Math.hypot(
+        with20.camera.x - without.camera.x,
+        with20.camera.y - without.camera.y,
+        with20.camera.z - without.camera.z,
+      );
+      expect(back).toBeCloseTo(10, 10);
+    });
+
+    it("keeps the view direction unchanged even when the aim clamp shortens the trail", () => {
+      // The clamp must shorten the trail, not tilt the camera. Both offsets
+      // have to use the SAME shortened value or the rig would swing as an
+      // aeroplane accelerated through the clamp point, which is exactly the
+      // sort of thing a player notices and nobody can describe.
+      const { forward, up } = attitude(0.4, 0.1, 0);
+      const follow = cameraBankFollow("chase", false);
+      const unclamped = rig(forward, up, follow, 13.5, 5.1, 16, 0);
+      const clamped = rig(forward, up, follow, 13.5, 5.1, 16, 40);
+      const direction = (r: typeof unclamped) => ({
+        x: r.target.x - r.camera.x,
+        y: r.target.y - r.camera.y,
+        z: r.target.z - r.camera.z,
+      });
+      const a = direction(unclamped);
+      const b = direction(clamped);
+      for (const axis of ["x", "y", "z"] as const) expect(b[axis]).toBeCloseTo(a[axis], 12);
+      // 40 m of trail on a 16 m aim is shortened to 12, not applied whole.
+      const back = Math.hypot(
+        clamped.camera.x - unclamped.camera.x,
+        clamped.camera.y - unclamped.camera.y,
+        clamped.camera.z - unclamped.camera.z,
+      );
+      expect(back).toBeCloseTo(12, 10);
+    });
+
+    it("does move a banked frame, which is the whole point", () => {
+      // The two shots in the canonical perf set that bank — page-thrash-turn
+      // at 60 degrees and motion-banked-turn at 45 — are expected to move, and
+      // measured at 99.99% of pixels. If this ever stops differing, the fix
+      // has been reverted.
+      const follow = cameraBankFollow("chase", false);
+      for (const bank of [(45 * Math.PI) / 180, (60 * Math.PI) / 180]) {
+        const { forward, up } = attitude(0, 0, bank);
+        const fixed = rig(forward, up, follow, 13.5, 5.1, 16, 0);
+        const legacy = legacyOffsets(forward, up, 13.5, 5.1, 16);
+        const moved = Math.hypot(
+          fixed.camera.x - legacy.camera.x,
+          fixed.camera.y - legacy.camera.y,
+          fixed.camera.z - legacy.camera.z,
+        );
+        // Metres, not millimetres: at these angles the old rig hung the camera
+        // right out to one side of the aeroplane.
+        expect(moved).toBeGreaterThan(1.5);
+      }
+    });
+  });
+
+  describe("the bank-blended height (Jason: raise it)", () => {
+    /** Body axes at a heading, pitch and bank, nose along world +X at zero. */
+    function attitude(heading: number, pitch: number, bank: number) {
+      const nose = { x: Math.cos(pitch), y: Math.sin(pitch), z: 0 };
+      const level = { x: -Math.sin(pitch), y: Math.cos(pitch), z: 0 };
+      const starboard = { x: 0, y: 0, z: 1 };
+      const rolled = {
+        x: level.x * Math.cos(bank) - starboard.x * Math.sin(bank),
+        y: level.y * Math.cos(bank) - starboard.y * Math.sin(bank),
+        z: level.z * Math.cos(bank) - starboard.z * Math.sin(bank),
+      };
+      const yaw = (v: { x: number; y: number; z: number }) => ({
+        x: v.x * Math.cos(heading) - v.z * Math.sin(heading),
+        y: v.y,
+        z: v.x * Math.sin(heading) + v.z * Math.cos(heading),
+      });
+      return { forward: yaw(nose), up: yaw(rolled) };
+    }
+    const degrees = (value: number) => (value * Math.PI) / 180;
+
+    it("is the profile height EXACTLY wings level, so no unbanked frame can move", () => {
+      // The design constraint: the lift is a function of bank alone, and every
+      // wings-level chase frame -- 37 of the 39 perf shots -- is untouched. The
+      // height is compared with toBe, not toBeCloseTo: it is the same number.
+      for (const kind of AIRCRAFT_KINDS) {
+        for (const airspeed of [0, 62, 155, 260]) {
+          const { height } = chaseCameraProfile(kind, airspeed);
+          for (const heading of [0, 0.7, -2.1, Math.PI]) {
+            for (const pitch of [0, 0.12, -0.3, 0.45]) {
+              const { forward, up } = attitude(heading, pitch, 0);
+              expect(chaseBankSinSquared(forward, up)).toBe(0);
+              expect(chaseRigHeightForBank(height, forward, up)).toBe(height);
+            }
+          }
+        }
+      }
+    });
+
+    it("leaves the composed wings-level rig on its old offsets to ten decimals", () => {
+      // The zero-bank pin: lift, height and offsets together, as updateCamera
+      // composes them, against the pre-raise formula.
+      const follow = cameraBankFollow("chase", false);
+      for (const heading of [0, 1.9, -0.8]) {
+        for (const pitch of [0, 0.2, -0.15]) {
+          const { forward, up } = attitude(heading, pitch, 0);
+          const lift = { x: 0, y: 0, z: 0 };
+          cameraRigLiftToRef(forward, up, follow, lift);
+          const raised = { camera: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 } };
+          const before = { camera: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 0 } };
+          chaseRigOffsetsToRef(forward, lift, 13.7, chaseRigHeightForBank(5.1, forward, up), 16,
+            CHASE_AIM_HEIGHT_METERS, 8.9, raised.camera, raised.target);
+          chaseRigOffsetsToRef(forward, lift, 13.7, 5.1, 16, CHASE_AIM_HEIGHT_METERS, 8.9, before.camera, before.target);
+          for (const axis of ["x", "y", "z"] as const) {
+            expect(raised.camera[axis]).toBeCloseTo(before.camera[axis], 10);
+            expect(raised.target[axis]).toBeCloseTo(before.target[axis], 10);
+          }
+        }
+      }
+    });
+
+    it("depends on bank alone: the same at every heading and pitch, and either way round", () => {
+      for (const bankDegrees of [5, 20, 45, 60, 76, 90]) {
+        const expected = Math.sin(degrees(bankDegrees)) ** 2;
+        for (const heading of [0, 1.1, -2.6]) {
+          for (const pitch of [0, 0.25, -0.2]) {
+            for (const sign of [1, -1]) {
+              const { forward, up } = attitude(heading, pitch, sign * degrees(bankDegrees));
+              expect(chaseBankSinSquared(forward, up), `${sign * bankDegrees} deg, pitch ${pitch}, heading ${heading}`)
+                .toBeCloseTo(expected, 12);
+            }
+          }
+        }
+      }
+    });
+
+    it("drops the camera to 2/3 of its height at 45 degrees, 1/2 at 60 and 1/3 at 90 -- never below the aircraft", () => {
+      const at = (bankDegrees: number) => {
+        const { forward, up } = attitude(0.4, 0.05, degrees(bankDegrees));
+        return chaseRigHeightForBank(5.1, forward, up) / 5.1;
+      };
+      expect(CHASE_BANK_HEIGHT_DROP).toBeCloseTo(2 / 3, 12);
+      expect(at(45)).toBeCloseTo(2 / 3, 10);
+      expect(at(60)).toBeCloseTo(1 / 2, 10);
+      expect(at(90)).toBeCloseTo(1 / 3, 10);
+      // Monotone in bank, and positive throughout.
+      let previous = Infinity;
+      for (let bank = 0; bank <= 90; bank += 1) {
+        const scale = at(bank);
+        expect(scale).toBeLessThanOrEqual(previous);
+        expect(scale).toBeGreaterThan(0);
+        previous = scale;
+      }
+    });
+
+    it("keeps a banked airframe centred across the frame, as the blended lift made it", () => {
+      // The raise must not give back the lateral fix. Project the aircraft's
+      // origin through the rig exactly as updateCamera builds it -- blended
+      // lift, bank-blended height, offsets, the camera's own blended up
+      // orthogonalised to the view -- and read its horizontal position.
+      const follow = cameraBankFollow("chase", false);
+      const offCentre = (bankDegrees: number, liftFollow: number) => {
+        const { forward, up } = attitude(0.9, 0, degrees(bankDegrees));
+        const lift = { x: 0, y: 0, z: 0 };
+        cameraRigLiftToRef(forward, up, liftFollow, lift);
+        const camera = { x: 0, y: 0, z: 0 };
+        const target = { x: 0, y: 0, z: 0 };
+        chaseRigOffsetsToRef(forward, lift, 13.7, chaseRigHeightForBank(5.1, forward, up), 16,
+          CHASE_AIM_HEIGHT_METERS, 8.9, camera, target);
+        const view = { x: target.x - camera.x, y: target.y - camera.y, z: target.z - camera.z };
+        const blended = { x: up.x * follow, y: 1 + (up.y - 1) * follow, z: up.z * follow };
+        const cameraUp = { x: 0, y: 0, z: 0 };
+        orthogonalizeCameraUpToRef(blended, view, up, cameraUp);
+        // Screen-right = view x up; the origin sits at -camera relative to the eye.
+        const right = {
+          x: view.y * cameraUp.z - view.z * cameraUp.y,
+          y: view.z * cameraUp.x - view.x * cameraUp.z,
+          z: view.x * cameraUp.y - view.y * cameraUp.x,
+        };
+        const depth = Math.hypot(view.x, view.y, view.z);
+        const sideways = (-camera.x * right.x - camera.y * right.y - camera.z * right.z) / Math.hypot(right.x, right.y, right.z);
+        const along = (-camera.x * view.x - camera.y * view.y - camera.z * view.z) / depth;
+        return Math.abs(sideways / along);
+      };
+      for (const bankDegrees of [0, 20, 45, 60, 76]) {
+        expect(offCentre(bankDegrees, follow), `${bankDegrees} deg: the origin is off the view's vertical plane`)
+          .toBeLessThan(1e-9);
+      }
+      // CONTROL: the pre-09-19 rig, offsets on the aircraft's full up, does
+      // slide a banked origin sideways -- so the check can see the defect.
+      expect(offCentre(45, 1)).toBeGreaterThan(0.01);
+    });
   });
 });

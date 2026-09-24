@@ -6,7 +6,7 @@ import {
   AIRCRAFT_CAST_POOLS,
   aircraftWashLights,
 } from "../src/render/webgpu/lighting/AircraftLighting";
-import type { AircraftKind } from "@/src/sim";
+import { AIRCRAFT_KINDS } from "@/src/sim";
 
 /**
  * `7-15`: the wash lights must sit ON their lamps, on BOTH airframes.
@@ -19,8 +19,9 @@ import type { AircraftKind } from "@/src/sim";
  * built meshes rather than a second copy of the numbers.
  *
  * **Both airframes are asserted because both ship** — `settings/index.ts`
- * accepts `["trainer", "jet"]`, and their lamps are at different coordinates.
- * A trainer-only table would be silently wrong for every jet pilot, and a
+ * accepts every entry in `AIRCRAFT_KINDS`, and their lamps are at different
+ * coordinates. A table covering one airframe would be silently wrong for
+ * everyone flying the others, and a
  * trainer-only test would not say so.
  */
 
@@ -44,7 +45,7 @@ const WASH_TO_LAMP: Readonly<Record<string, string>> = Object.freeze({
 });
 
 describe("7-15: every wash light sits on the lamp it is the spill of", () => {
-  for (const kind of ["trainer", "jet"] as const satisfies readonly AircraftKind[]) {
+  for (const kind of AIRCRAFT_KINDS) {
     it(`${kind}: each wash offset equals its lamp's own position`, () => {
       const fixture = scene();
       try {
@@ -91,7 +92,7 @@ describe("7-15: every wash light sits on the lamp it is the spill of", () => {
   it("wash names never collide with the cast pools, which are a separate claim", () => {
     const poolNames = new Set(AIRCRAFT_CAST_POOLS.map((p) => p.name));
     expect(poolNames.size, "no cast pools to compare against").toBeGreaterThan(0);
-    for (const kind of ["trainer", "jet"] as const) {
+    for (const kind of AIRCRAFT_KINDS) {
       for (const wash of aircraftWashLights(kind)) {
         expect(poolNames.has(wash.name), `"${wash.name}" collides with a cast pool name; `
           + "the container addresses lights by name and one would overwrite the other").toBe(false);

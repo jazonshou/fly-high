@@ -1,13 +1,27 @@
 /// <reference lib="webworker" />
 
+import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   applyFlightAssistance,
   aircraftDefinition,
+  AttractHold,
+  ScenicAltitudeHold,
+  attractScanOffset,
+  attractScanSamples,
+  ATTRACT_SCAN_TRAVEL_METERS,
+  ATTRACT_SCAN_TURN_RADIANS,
+  attractClimbRateFor,
+  attractScanDistance,
+  attractTrackVector,
+  shouldReseedAttract,
+  stallSpeed,
   DEFAULT_CONTROLS,
   DirectPitchRetention,
   FIXED_TIME_STEP,
   FlightSimulator,
+  heldElevator,
   JetStabilityAugmentation,
+  TRIM_ELEVATOR_AUTHORITY,
   type FlightControls,
   type AircraftKind,
   type SpawnOptions,
@@ -19,6 +33,7 @@ import {
   type WorldDefinition,
 } from "@/src/world";
 import {
+  airborneAirspeedForAircraft,
   createCrashRecoverySpawn,
   createSimulationSpawn,
 } from "@/src/game/spawn";
@@ -54,6 +69,31 @@ let weather: WeatherPreset = "breezy";
 let attractMode = false;
 let airborneStartAgl = DEFAULT_AIRBORNE_START_AGL;
 let controls: ControlState = { ...DEFAULT_CONTROLS };
+/**
+ * The attract flight's own pilot inputs. The demo has no pilot, and Scenic's
+ * neutral is a commanded 2.5 degrees nose-up, so "no input" means "climb
+ * forever" -- see src/sim/attract.ts. These are what the supervisor writes and
+ * what `assistedControls` hands to Scenic as `requested` while attractMode is
+ * on. Player flight never reads them.
+ */
+const attractControls: ControlState = { ...DEFAULT_CONTROLS };
+/**
+ * The PLAYER's controls with Scenic's height hold applied to the pitch axis.
+ *
+ * Scenic is attitude-command and its neutral was 2.5 degrees nose-up, so a
+ * centred stick asked to climb. The hold replaces that one axis with
+ * `learnedTrim + stick` -- see src/sim/scenicHold.ts -- and leaves every other
+ * axis exactly as the pilot left it. A separate object because `controls` is
+ * the raw pilot input and other things read it.
+ */
+const scenicControls: ControlState = { ...DEFAULT_CONTROLS };
+const scenicAltitudeHold = new ScenicAltitudeHold();
+const attractOutput = { pitch: 0, roll: 0, throttle: 0 };
+let attractHold: AttractHold | null = null;
+/** Look-ahead scan, refreshed on travel rather than every step (see below). */
+const attractScan = { ahead: 0, left: 0, right: 0, distance: 0 };
+let attractScanX = Number.NaN;
+let attractScanZ = Number.NaN;
 let paused = true;
 let lastTime = performance.now();
 let lastSnapshotTime = 0;
@@ -95,6 +135,17 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
   const aircraft = aircraftDefinition(aircraftKind);
   groundHeadingTarget = kind === "runway" ? (spawn.heading ?? 0) : null;
   controls = { ...DEFAULT_CONTROLS, ...spawn.controls };
+  // A fresh aeroplane must not inherit the last one's trim: the supervisor's
+  // integrator has found ONE airframe's level attitude, and the demo may be
+  // re-seeding into a different aircraft kind entirely. Seeded from the spawn's
+  // own throttle so it starts near-trimmed rather than hunting from zero.
+  attractControls.pitch = 0;
+  attractControls.roll = 0;
+  attractControls.throttle = controls.throttle;
+  attractHold = new AttractHold(controls.throttle);
+  scenicAltitudeHold.reset();
+  attractScanX = Number.NaN;
+  attractScanZ = Number.NaN;
   simulator = new FlightSimulator({
     aircraft,
     spawn,
@@ -102,6 +153,10 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
     environment: {
       terrain: terrainSample,
       terrainHeight: terrainHeightSample,
+      // Telemetry only -- the pilot's AGL reads to the water surface, while
+      // the two samplers above keep describing the sea BED for contact,
+      // friction and crash. Not hardcoded zero: a world sets its own.
+      seaLevel: world?.seaLevel ?? 0,
       wind: { x: 0, y: 0, z: 0 },
     },
   });
@@ -146,15 +201,152 @@ function restartAfterCrash(requestedAirborneStartAgl = airborneStartAgl): void {
   );
 }
 
+/**
+ * Highest surface along a track, sampled forward from the aircraft.
+ *
+ * MAX rather than mean: an average lets one peak hide inside a valley, and the
+ * peak is the thing being avoided. Each sample is maxed against sea level for
+ * the same reason `crashRecoverySurfaceHeight` does it -- the worker's samplers
+ * describe the sea BED, so without it the demo would dive at a coastline.
+ */
+function scanTrack(
+  originX: number,
+  originZ: number,
+  headingX: number,
+  headingZ: number,
+  distance: number,
+  currentAltitude: number,
+  groundSpeed: number,
+): number {
+  const sea = world?.seaLevel ?? 0;
+  const samples = attractScanSamples(distance);
+  let steepest = -Infinity;
+  for (let i = 1; i <= samples; i += 1) {
+    const along = attractScanOffset(i, samples, distance);
+    const sampled = terrainHeightSample(originX + headingX * along, originZ + headingZ * along);
+    const height = Math.max(Number.isFinite(sampled) ? sampled : sea, sea);
+    // Reduce by the climb each point DEMANDS, not by how high it is: a ridge
+    // 500 m ahead and one 4 km ahead are different problems at the same height.
+    steepest = Math.max(
+      steepest,
+      attractClimbRateFor(height, along, currentAltitude, groundSpeed),
+    );
+  }
+  return steepest;
+}
+
+/**
+ * Drives the attract flight: refreshes the terrain look-ahead when the aircraft
+ * has moved far enough to justify it, then lets the supervisor write the pilot
+ * inputs Scenic will fly. Called ONLY from the attract branch of the tick, so
+ * player flight cannot reach any of it.
+ */
+function updateAttractSupervisor(): void {
+  const sim = simulator;
+  if (!sim) return;
+  if (!attractHold) attractHold = new AttractHold(controls.throttle);
+  const telemetry = sim.telemetry();
+  const position = sim.state.position;
+
+  const travelled = Math.hypot(position.x - attractScanX, position.z - attractScanZ);
+  if (!(travelled < ATTRACT_SCAN_TRAVEL_METERS)) {
+    attractScanX = position.x;
+    attractScanZ = position.z;
+    const speed = telemetry.groundSpeed;
+    attractScan.distance = attractScanDistance(speed);
+    // The ground-projected nose, NORMALISED. The chase camera's own clamp uses
+    // the un-normalised forward vector, which shortens its horizon by cos(pitch)
+    // exactly when the aeroplane is climbing and needs it most; that is a bug to
+    // avoid inheriting, not a precedent to copy.
+    // RADIANS. `telemetry.heading` is atan2(forward.x, forward.z) straight out
+    // of the simulator; it is `visualState` below that converts it to degrees
+    // for the HUD, not the telemetry itself. Multiplying by PI/180 here pointed
+    // the whole terrain scan 57 times too close to north: traced, the aeroplane
+    // was tracking 45 degrees while the scan looked down 0.9 degrees, so ridges
+    // appeared in it only once they were a few hundred metres away and the turn
+    // fired far too late to do anything.
+    // One authority for "which way is the aeroplane going", and its docblock is
+    // where the radians-versus-degrees trap is written down.
+    const [hx, hz] = attractTrackVector(telemetry.heading);
+    const turn = ATTRACT_SCAN_TURN_RADIANS;
+    const cos = Math.cos(turn);
+    const sin = Math.sin(turn);
+    const altitude = position.y;
+    const gs = telemetry.groundSpeed;
+    const d = attractScan.distance;
+    attractScan.ahead = scanTrack(position.x, position.z, hx, hz, d, altitude, gs);
+    attractScan.left = scanTrack(
+      position.x, position.z, hx * cos + hz * sin, hz * cos - hx * sin, d, altitude, gs,
+    );
+    attractScan.right = scanTrack(
+      position.x, position.z, hx * cos - hz * sin, hz * cos + hx * sin, d, altitude, gs,
+    );
+  }
+
+  attractHold.update(
+    {
+      clearance: telemetry.altitudeAgl,
+      targetClearance: airborneStartAgl,
+      requiredClimbRate: attractScan.ahead,
+      requiredClimbRateLeft: attractScan.left,
+      requiredClimbRateRight: attractScan.right,
+      verticalSpeed: telemetry.verticalSpeed,
+      groundSpeed: telemetry.groundSpeed,
+      equivalentAirspeed: telemetry.indicatedAirspeed,
+      targetAirspeed: airborneAirspeedForAircraft(aircraftKind),
+      stallSpeed: stallSpeed(sim.aircraft, sim.state.actuators.flaps),
+      dt: FIXED_TIME_STEP,
+    },
+    attractOutput,
+  );
+  attractControls.pitch = attractOutput.pitch;
+  attractControls.roll = attractOutput.roll;
+  attractControls.throttle = attractOutput.throttle;
+}
+
+/** Field-for-field copy, so the hold replaces one axis and inherits the rest. */
+function copyControlState(out: ControlState, from: ControlState): void {
+  out.throttle = from.throttle;
+  out.pitch = from.pitch;
+  out.roll = from.roll;
+  out.yaw = from.yaw;
+  out.trim = from.trim;
+  out.flaps = from.flaps;
+  out.brake = from.brake;
+  out.gear = from.gear;
+}
+
 function assistedControls(): FlightControls {
   const sim = simulator;
   if (!sim) return controls;
   const telemetry = sim.telemetry();
   const selectedMode = attractMode ? "scenic" : mode;
+  // Scenic's centred stick holds height. NOT under attractMode: the menu flight
+  // carries its own complete supervisor (src/sim/attract.ts), and layering a
+  // second altitude hold beneath it would be two controllers arguing over one
+  // elevator. Not in Pilot or Direct either -- those are pass-through laws and
+  // Jason asked for this in Scenic.
+  let requestedControls = attractMode ? attractControls : controls;
+  if (!attractMode && selectedMode === "scenic") {
+    copyControlState(scenicControls, controls);
+    scenicControls.pitch = scenicAltitudeHold.update({
+      pitchStick: controls.pitch,
+      onGround: sim.state.onGround,
+      clearance: telemetry.altitudeAgl,
+      altitude: sim.state.position.y,
+      verticalSpeed: telemetry.verticalSpeed,
+      equivalentAirspeed: telemetry.indicatedAirspeed,
+      stallSpeed: stallSpeed(sim.aircraft, sim.state.actuators.flaps),
+      dt: FIXED_TIME_STEP,
+    });
+    requestedControls = scenicControls;
+  } else if (!attractMode) {
+    scenicAltitudeHold.reset();
+  }
   const selectedControls = applyFlightAssistance(
     assistedTarget,
     selectedMode,
-    controls,
+    requestedControls,
     sim.state,
     telemetry,
     groundHeadingTarget ?? undefined,
@@ -166,10 +358,11 @@ function assistedControls(): FlightControls {
     sim.state,
     telemetry,
   );
-  // The jet's dutch-roll dampers share the Direct-mode doctrine: they run
-  // only on pilot-neutral axes and only for the jet. The trainer's control
-  // path is untouched.
-  return aircraftKind === "jet"
+  // The dutch-roll dampers share the Direct-mode doctrine: they run only on
+  // pilot-neutral axes, and only on an airframe whose own mode is poorly
+  // enough damped to want them — see `dutchRollDamper` in the catalogue, which
+  // is decided per aeroplane rather than by whether it burns kerosene.
+  return aircraftSpec(aircraftKind).dutchRollDamper
     ? jetStabilityAugmentation.apply(retained, controls, sim.state, telemetry)
     : retained;
 }
@@ -198,6 +391,7 @@ function visualState(): FlightVisualState {
     aileron: snapshot.actuators.roll,
     rudder: snapshot.actuators.yaw,
     brake: snapshot.actuators.brake,
+    groundSpoilers: snapshot.actuators.groundSpoilers,
     trim: snapshot.actuators.trim,
     flaps: snapshot.actuators.flaps,
     gear: snapshot.actuators.gear,
@@ -226,18 +420,23 @@ function simulationTick(): void {
     wind.y *= windScale;
     wind.z *= windScale;
     wind.speed *= windScale;
+    if (attractMode) updateAttractSupervisor();
     simulator.setControls(assistedControls());
     simulator.setEnvironment({
       terrain: terrainSample,
       terrainHeight: terrainHeightSample,
+      seaLevel: world?.seaLevel ?? 0,
       wind,
     });
     simulator.step(FIXED_TIME_STEP);
     if (attractMode) {
       const demoState = simulator.telemetry();
-      if (simulator.state.crashed || demoState.altitudeAgl < 65) {
+      if (shouldReseedAttract(simulator.state.crashed, demoState.altitudeAgl)) {
         // The attract flight is disposable automation. Re-seed it before it can
         // disappear behind terrain; ordinary pilot flights are never auto-reset.
+        // Since the supervisor above holds the set altitude and turns away from
+        // ground it cannot out-climb, this is now a last resort rather than the
+        // routine outcome it used to be.
         reset("airborne", airborneStartAgl);
         return;
       }
@@ -298,6 +497,44 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // automation is still enabled, and the existing flight state is untouched.
       mode = command.mode;
       attractMode = false;
+      // The aeroplane the pilot is handed is already trimmed: the menu flight
+      // spent the last minutes learning what attitude holds THIS airframe level
+      // at THIS speed and power, and Scenic's hold runs the identical law. Take
+      // the answer instead of re-learning it from zero, which would walk the
+      // whole trim back into the commanded pitch over the first seconds of the
+      // pilot's flight -- a sag, then a recovery, on the one transition they
+      // are guaranteed to be watching.
+      if (command.mode === "scenic" && attractHold) {
+        scenicAltitudeHold.adopt(attractHold.verticalTrim);
+      } else if (command.mode !== "scenic" && simulator) {
+        // Pilot and Direct have no hold to carry the trim, so it goes onto the
+        // player's TRIM, which is the surface a real pilot would have used.
+        //
+        // The transfer is done on the actuators in one step because the two
+        // slew at wildly different rates -- the pitch actuator at 7 per second,
+        // the trim actuator at 0.45 -- so seeding only the control would let
+        // the elevator collapse and refill over a tenth of a second. Moving
+        // both at once keeps the elevator itself unchanged: what leaves the
+        // pitch actuator arrives on the trim actuator in the same frame.
+        //
+        // The remainder is computed from the elevator the simulation has RIGHT
+        // NOW rather than from the seed, so the elevator is continuous even if
+        // the main thread's snapshot was a frame stale; a slightly stale seed
+        // just leaves a little more in the pitch actuator.
+        const actuators = simulator.state.actuators;
+        const held = heldElevator(actuators.pitch, actuators.trim);
+        // The MAIN THREAD's value is authoritative, because the input
+        // controller owns trim and will re-send exactly this on its next
+        // message; deriving our own here would only make the trim actuator
+        // slew from ours to theirs. Bounded defensively as a protocol value.
+        const seeded = Math.min(1, Math.max(-1, command.trimSeed));
+        actuators.trim = seeded;
+        actuators.pitch = held - seeded * TRIM_ELEVATOR_AUTHORITY;
+        // Hold the same target locally until the input controller's next
+        // message arrives carrying it, so the trim actuator does not spend a
+        // frame slewing back toward a stale zero.
+        controls.trim = seeded;
+      }
       directPitchRetention.reset();
       jetStabilityAugmentation.reset();
     } else if (command.type === "returnToAttract") {

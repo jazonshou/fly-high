@@ -144,7 +144,8 @@ export function terrainWorldRevision(
 export interface TerrainSplatProducer {
   /** `4.5-C3`: this producer's whole-dispatch GPU time, unconsumed. */
   gpuMillisecondsInFrame?(): number | null;
-  bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<number>;
+  /** The slots actually baked: the caller publishes these and releases the rest. */
+  bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<readonly TerrainAtlasSlot[]>;
   consumeMeasuredDispatchCostMs(): number | null;
   dispose(): void;
 }
@@ -528,13 +529,20 @@ export class TerrainClipmapSystem {
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
     );
+    this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
     // the rendered-density law's, carried on the profile since the perf-debt
-    // pass, so terrain reads them as data and never re-derives a radius.
+    // pass, so terrain reads them as data and never re-derives a radius. The
+    // floor is the DRAWN share's (2026-09-13): impostors fill the mid band
+    // from the crossover outward, and the ground carries only what no
+    // representation draws.
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
-      profile.renderedDensityLaw.farFloorShare,
+      Math.max(
+        profile.renderedDensityLaw.farFloorShare,
+        profile.renderedDensityLaw.impostorFloorShare,
+      ),
     );
     this.surfacePlugin.setSeason(this.seasonDayOfYear, world.latitudeDegrees, world.seaLevel);
     // 3-9: the runway is painted into this material by the analytic airport
@@ -799,10 +807,14 @@ export class TerrainClipmapSystem {
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
     );
+    this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
-      profile.renderedDensityLaw.farFloorShare,
+      Math.max(
+        profile.renderedDensityLaw.farFloorShare,
+        profile.renderedDensityLaw.impostorFloorShare,
+      ),
     );
     this.materialArrayEdge = profile.materialArrayEdge;
     this.computeBudget.setProfile(profile);
@@ -1195,11 +1207,13 @@ export class TerrainClipmapSystem {
       if (!this.occlusionBake) return;
       const baked = await this.occlusionBake.bake([channel.slot]);
       if (baked.length === 0 || !this.splatBake) return;
-      await this.splatBake.bake(baked, this.seasonDayOfYear);
-      for (const slot of baked) {
+      const splatted = await this.splatBake.bake(baked, this.seasonDayOfYear);
+      for (const slot of splatted) {
         slot.bakedSeasonDay = this.seasonDayOfYear;
         if (slot.token) this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
       }
+      this.releaseBatch(
+        this.channelAtlas, baked.filter((slot) => !splatted.includes(slot)), "splat bake did not run");
     } catch {
       // Nothing to recover: the pipelines will compile on their first real
       // dispatch, which is exactly the behaviour this method improves on.
@@ -1797,11 +1811,15 @@ export class TerrainClipmapSystem {
         if (ready.length === 0) return;
         const baked = await bake.bake(ready);
         if (baked.length === 0) return;
-        await this.splatBake?.bake(baked, seasonDay);
-        for (const slot of baked) {
+        // Publish ONLY what the splat bake wrote. A slot it did not write reads
+        // as sand, permanently, because it is marked baked for this season.
+        const splatted = this.splatBake ? await this.splatBake.bake(baked, seasonDay) : baked;
+        for (const slot of splatted) {
           slot.bakedSeasonDay = seasonDay;
           if (slot.token) this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
         }
+        this.releaseBatch(
+          this.channelAtlas, baked.filter((slot) => !splatted.includes(slot)), "splat bake did not run");
       } catch {
         this.releaseBatch(this.channelAtlas, batch, "channel bake failed");
       } finally {
@@ -1839,10 +1857,11 @@ export class TerrainClipmapSystem {
     this.splatRebakeInFlight = true;
     const seasonDay = this.seasonDayOfYear;
     void splatBake.bake(batch, seasonDay)
-      .then(() => {
+      .then((splatted) => {
         // The slot never leaves `resident`: its texels are overwritten in
-        // place, so there is no window in which it reads as unbaked.
-        for (const slot of batch) slot.bakedSeasonDay = seasonDay;
+        // place, so there is no window in which it reads as unbaked. Only the
+        // slots actually re-baked move to the new season; the rest stay owed.
+        for (const slot of splatted) slot.bakedSeasonDay = seasonDay;
       })
       .catch(() => undefined)
       .finally(() => {

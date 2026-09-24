@@ -1,13 +1,5 @@
 import type { AircraftKind } from "@/src/sim";
-
-const AIRCRAFT_OPTIONS = [
-  { value: "trainer", name: "Aster T-20", description: "Trainer" },
-  { value: "jet", name: "Vesper J-45", description: "Fast jet" },
-] as const satisfies readonly {
-  value: AircraftKind;
-  name: string;
-  description: string;
-}[];
+import { AIRCRAFT_CATALOGUE } from "@/src/aircraft/catalogue";
 
 interface AircraftPickerProps {
   value: AircraftKind;
@@ -18,20 +10,26 @@ export function AircraftPicker({ value, onChange }: AircraftPickerProps) {
   return (
     <fieldset className="aircraft-picker">
       <legend>Aircraft</legend>
-      {AIRCRAFT_OPTIONS.map((option) => (
+      {AIRCRAFT_CATALOGUE.map((option) => (
         <label
-          className={value === option.value ? "is-selected" : undefined}
-          key={option.value}
+          className={value === option.kind ? "is-selected" : undefined}
+          key={option.kind}
+          title={option.description}
         >
           <input
             type="radio"
             name="aircraft"
-            value={option.value}
-            checked={value === option.value}
-            onChange={() => onChange(option.value)}
+            value={option.kind}
+            checked={value === option.kind}
+            onChange={() => onChange(option.kind)}
           />
+          {/*
+            * Name only. The role ("Trainer", "Fighter") stays in the catalogue
+            * — settings validation and the accessible name both read it — but
+            * Jason asked for it off the face of the picker, and with four
+            * aeroplanes the names alone are unambiguous.
+            */}
           <span>{option.name}</span>
-          <small>{option.description}</small>
         </label>
       ))}
     </fieldset>

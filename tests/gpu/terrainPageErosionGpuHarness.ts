@@ -3,6 +3,11 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { Scene } from "@babylonjs/core/scene";
+import { inspectWebGpuCapabilities } from "../../src/render/webgpu/core/Capabilities";
+import {
+  type DeferredPassTimingOptions,
+  installDeferredPassTiming,
+} from "../../src/render/webgpu/core/DeferredPassTiming";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import {
   EVOLUTION_DOMAIN_SAMPLE_COUNT,
@@ -45,9 +50,35 @@ import { createWorld, type WorldDefinition } from "../../src/world";
 const SEED = "w1d-page-erosion-gpu";
 const SLOTS = 16;
 
+/**
+ * Test-only: behave as an adapter without `timestamp-query`, the case of
+ * GitHub's hosted macOS runners, so a machine that has the counter can show
+ * the timing tests' skip path. `VITE_GPU_NO_TIMESTAMP_QUERY=1` makes
+ * `adapterAdvertisesTimestampQuery` answer no and leaves the feature out of
+ * every timed device's request.
+ */
+export function timestampQueryForcedOff(): boolean {
+  return (import.meta.env as Record<string, string | undefined>).VITE_GPU_NO_TIMESTAMP_QUERY === "1";
+}
+
+/** Why a timing test skips on such an adapter; each test adds what stays unverified. */
+export const NO_TIMESTAMP_QUERY_REASON = "this adapter exposes no timestamp-query, so there is no per-pass counter to read";
+
+/**
+ * Whether the ADAPTER advertises `timestamp-query`: the one question a timing
+ * test may skip on. Never a zero reading: an adapter that advertises the
+ * counter and a device that then measures nothing is the regression those
+ * tests exist to catch, and it must keep failing.
+ */
+export async function adapterAdvertisesTimestampQuery(): Promise<boolean> {
+  if (timestampQueryForcedOff()) return false;
+  return (await inspectWebGpuCapabilities()).features.has("timestamp-query");
+}
+
 export async function withScene<T>(
   run: (engine: WebGPUEngine, scene: Scene) => Promise<T>,
   timed = false,
+  timing: DeferredPassTimingOptions = {},
 ): Promise<T> {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -60,7 +91,7 @@ export async function withScene<T>(
     // The counter has to be asked for at DEVICE creation; Babylon silently
     // drops an unsupported entry rather than letting requestDevice reject, so
     // enabledExtensions is checked below rather than trusted here.
-    ...(timed
+    ...(timed && !timestampQueryForcedOff()
       ? { deviceDescriptor: { requiredFeatures: ["timestamp-query"] as GPUFeatureName[] } }
       : {}),
   });
@@ -74,6 +105,13 @@ export async function withScene<T>(
     // which surfaces downstream as NaN scratch, not as a device problem. Ask
     // the device itself, and only then turn the counters on.
     if (timed) engine.enableGPUTimingMeasurements = gpuTimingAvailable(engine);
+    // Each pass's own time, not the slot's previous occupant (DeferredPassTiming.ts).
+    // `VITE_NO_DEFERRED_TIMING=1` (a probe arm, docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md):
+    // timing on with Babylon's own per-pass read, no deferred resolve.
+    const deferredOff = (import.meta.env as Record<string, string | undefined>).VITE_NO_DEFERRED_TIMING === "1";
+    if (engine.enableGPUTimingMeasurements && !deferredOff && !installDeferredPassTiming(engine, timing)) {
+      throw new Error("GPU timing is on but per-pass timing could not be installed");
+    }
     engine.runRenderLoop(() => {});
     scene = new Scene(engine);
     return await run(engine, scene);

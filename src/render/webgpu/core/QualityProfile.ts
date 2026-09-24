@@ -146,6 +146,20 @@ export interface WebGpuQualityProfile {
    */
   readonly heightBlendMaxMaterials: number;
   /**
+   * `W-1`: whether the ground patchwork runs — the dryness mosaic, the vigour
+   * axis, bare ground and the scrub canopy that give open ground its structure
+   * between one material tile and the kilometre wash.
+   *
+   * It is ALU on every vegetated fragment and nothing else: no binding, no
+   * batch, no permutation. Measured on the M2 Pro it costs 5.4-8.3% of frame
+   * rate on the four capture shots where close vegetated ground fills the
+   * frame, and nothing on the two that are sky- or distance-dominated. Tiers
+   * that have the headroom buy the look; Low does not, and skips the whole
+   * block through a uniform branch rather than a define, so the shader has
+   * exactly as many permutations as it had before.
+   */
+  readonly terrainGroundPatchwork: boolean;
+  /**
    * `4-0`/`4-5`: screen-space error, in pixels, above which a CDLOD node
    * splits. Split when `maxDeviationFromParent × pixelsPerMeter(distance3D)`
    * exceeds this. Monotone decreasing in tier — a smaller threshold splits
@@ -316,6 +330,7 @@ function resolveBaseQualityProfile(
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
+      terrainGroundPatchwork: false,
       cdlodPixelThreshold: 4,
       // `4.5-A1`: 160 -> 224. Low keeps L3 (512 m nodes, 16 m height texels)
       // under the aircraft rather than the L6 the per-level loop converged on.
@@ -402,6 +417,7 @@ function resolveBaseQualityProfile(
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
+      terrainGroundPatchwork: true,
       cdlodPixelThreshold: 3,
       // `4.5-A1`: 240 -> 320, the measured step that reaches L2 (128 m nodes,
       // 4 m height texels) under the aircraft at 500 ft. At 240 the new
@@ -482,6 +498,7 @@ function resolveBaseQualityProfile(
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
+      terrainGroundPatchwork: true,
       cdlodPixelThreshold: 2,
       // `4.5-A1`: 320 -> 448. Same L2 floor as tier 1 with the mid field
       // carried a level finer.
@@ -557,6 +574,7 @@ function resolveBaseQualityProfile(
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
+    terrainGroundPatchwork: true,
     cdlodPixelThreshold: 1.5,
     // `4.5-A1`: 448 -> 640.
     cdlodNodeBudget: 640,

@@ -45,6 +45,12 @@ export interface FlightVisualState {
   aileron: number;
   rudder: number;
   brake: number;
+  /**
+   * Ground-spoiler deployment, 0..1, as the SIM decided it
+   * (`ActuatorState.groundSpoilers`): the 747's and the Global's panels are
+   * drawn from this, never re-derived from the brake and the wheels.
+   */
+  groundSpoilers: number;
   trim: number;
   flaps: number;
   /** 0 is retracted and 1 is down-and-locked. Fixed gear always reports 1. */
@@ -277,6 +283,7 @@ export const INITIAL_VISUAL_STATE: FlightVisualState = {
   aileron: 0,
   rudder: 0,
   brake: 0,
+  groundSpoilers: 0,
   trim: 0,
   flaps: 0,
   gear: 1,

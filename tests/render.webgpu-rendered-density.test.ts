@@ -5,11 +5,14 @@ import {
   VEGETATION_DRAW_COST_MS,
   VEGETATION_DRAW_SUBMISSION_RATIO,
   WOODY_TRIANGLE_BUDGETS,
+  drawnShareAtDistance,
   estimateRenderedWoodyLoad,
   estimateVegetationDrawCalls,
+  impostorFillStartMeters,
   renderedShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
-import { FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
+import { DYNAMIC_ALLOCATIONS, FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
+import { DETAIL_CULL_FADE_MARGIN_METERS } from "../src/render/webgpu/detail/presentationBuild";
 import { DETAIL_PRESENTATION_CHUNK_CELL_SPAN } from "../src/render/webgpu/detail/spatialChunks";
 import { DEFAULT_DETAIL_CELL_SIZE_METERS } from "../src/render/webgpu/detail/types";
 import { IMPOSTOR_SPECIES } from "../src/render/webgpu/detail/ImpostorAtlas";
@@ -142,9 +145,90 @@ describe("rendered-density law (R-21)", () => {
       mid: { outerRadiusMeters: 4_500, trianglesPerPlant: 180 },
       far: { outerRadiusMeters: 4_500, trianglesPerPlant: 180 },
       farFloorShare: 0.04,
+      impostorFloorShare: 0.04,
     };
     const estimate = estimateRenderedWoodyLoad(d2);
     expect(estimate.totalTriangles).toBeGreaterThan(10_000_000);
+  });
+});
+
+/**
+ * 2026-09-13 — the impostor fill. The user's report: trees mostly do not
+ * exist at a distance and pop into place on approach. Cause: the far band
+ * inherited the geometry floor (0.045 at tier 1, ~3.5 stems/ha), and a stem
+ * first appeared when its CELL's rebuild admitted it. The law now carries a
+ * second, higher floor for the share SOME representation draws; the
+ * difference between the two curves is 2D impostors, inside the mid band as
+ * well as beyond it, and the GPU thins per stem against the live range.
+ */
+describe("impostor fill (2026-09-13)", () => {
+  it("draws a floor of the near cap in some representation at every range", () => {
+    RENDERED_DENSITY_LAWS.forEach((law, tier) => {
+      expect(law.impostorFloorShare, `tier ${tier}`).toBeGreaterThanOrEqual(law.farFloorShare);
+      expect(law.impostorFloorShare, `tier ${tier}`).toBeLessThan(1);
+      // Inside the near radius the two shares coincide (nothing to fill).
+      expect(drawnShareAtDistance(law, 0)).toBe(1);
+      expect(drawnShareAtDistance(law, law.near.outerRadiusMeters)).toBe(1);
+      // Beyond it the drawn share never drops below the impostor floor, and
+      // never below the geometry share either.
+      for (let d = law.near.outerRadiusMeters + 1; d <= law.far.outerRadiusMeters; d += 97) {
+        const drawn = drawnShareAtDistance(law, d);
+        expect(drawn, `tier ${tier} at ${d} m`).toBeGreaterThanOrEqual(law.impostorFloorShare);
+        expect(drawn, `tier ${tier} at ${d} m`).toBeGreaterThanOrEqual(
+          renderedShareAtDistance(law, d),
+        );
+      }
+      expect(drawnShareAtDistance(law, law.far.outerRadiusMeters)).toBe(law.impostorFloorShare);
+      // The crossover is where the inverse-square curve meets the floor.
+      const start = impostorFillStartMeters(law);
+      expect(renderedShareAtDistance(law, start)).toBeCloseTo(law.impostorFloorShare, 9);
+      expect(start).toBeGreaterThan(law.near.outerRadiusMeters);
+      expect(start).toBeLessThan(law.mid.outerRadiusMeters);
+    });
+  });
+
+  it("prices every impostor, including the mid-band fill, in the woody integral", () => {
+    RENDERED_DENSITY_LAWS.forEach((law, tier) => {
+      const estimate = estimateRenderedWoodyLoad(law);
+      expect(estimate.impostorStems, `tier ${tier}`).toBeGreaterThanOrEqual(estimate.farStems);
+      expect(estimate.totalStems).toBeCloseTo(
+        estimate.nearStems + estimate.midStems + estimate.impostorStems, 6);
+      expect(estimate.totalTriangles).toBeCloseTo(
+        estimate.nearStems * law.near.trianglesPerPlant
+          + estimate.midStems * law.mid.trianglesPerPlant
+          + estimate.impostorStems * law.far.trianglesPerPlant,
+        3,
+      );
+    });
+  });
+
+  it("fits the saturated packed-record estimate under the memory row that prices it", () => {
+    // `DYNAMIC_ALLOCATIONS.detailInstanceBudget` is a declared ceiling; this
+    // is what keeps it a function of the law rather than a fossil. A stem
+    // carries at most seven 32-byte records (near parts, mid parts, one
+    // coexisting impostor); a mid-geometry stem four; an impostor-only stem
+    // one. 2026-09-14: impostor records have no outer edge, and residency
+    // reaches one cull fade past the impostor radius, so every stem of every
+    // resident cell packs at the floor — out to the far corner of the last
+    // resident cell (residency radius plus a cell diagonal). Those rows are
+    // never drawn (the shader culls them live); they are what lets a far
+    // chunk's record set ignore the observer.
+    RENDERED_DENSITY_LAWS.forEach((law, tier) => {
+      const estimate = estimateRenderedWoodyLoad(law);
+      const farRadius = law.far.outerRadiusMeters;
+      const residencyReach = farRadius + DETAIL_CULL_FADE_MARGIN_METERS
+        + DEFAULT_DETAIL_CELL_SIZE_METERS * Math.SQRT2;
+      const beyondCullHectares = Math.PI * (residencyReach ** 2 - farRadius ** 2) / 10_000;
+      const beyondCullStems = beyondCullHectares * law.nearStemsPerHectare * law.impostorFloorShare;
+      const records = estimate.nearStems * 7
+        + estimate.midStems * 4
+        + estimate.impostorStems
+        + beyondCullStems;
+      const row = DYNAMIC_ALLOCATIONS.detailInstanceBudget[tier as 0 | 1 | 2 | 3];
+      expect(records, `tier ${tier}`).toBeLessThanOrEqual(row);
+      // Non-vacuous: the row is a ceiling being approached, not a formality.
+      expect(records, `tier ${tier} vacuous`).toBeGreaterThan(row * 0.5);
+    });
   });
 });
 

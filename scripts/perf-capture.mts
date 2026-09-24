@@ -10,6 +10,9 @@
  * everything below. Class P: no Babylon, no DOM, no Node APIs.
  */
 
+import { aircraftSpec } from "../src/aircraft/catalogue";
+import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
+
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
 export const PERF_CAPTURE_WIDTH = 1_280;
 export const PERF_CAPTURE_HEIGHT = 720;
@@ -308,6 +311,12 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     // vegetation at eye level against a full water plate is the shape of a new
     // maximum, not of a light shot. Nobody has measured it.
     "lake-island-piercing",
+    // W-11, after the same inventory run. 120 m over open water with the sun
+    // low and ahead. Named rather than folded in for the same reason as the
+    // shot above: a full ocean disk with its cascades resident, a coastline
+    // and its vegetation, and the bathymetry clipmap is not the shape of a
+    // light shot, and nobody has measured it.
+    "water-400ft-glitter",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -595,7 +604,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 261,
+    drawCallCeiling: 247,
   },
   {
     name: "slant-10km",
@@ -610,7 +619,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 222,
+    // 2026-09-14 (tree LOD continuity): +1. Cell residency now reaches one
+    // cull fade past the impostor radius, so on this moving shot the far
+    // band's chunk is published — with records inside the cull, in frame — at
+    // the sample instant, where before the cells just inside the radius were
+    // still generating. Static shots are unchanged (impostor batches rebuild
+    // their bounds from in-cull cells only). Measured identically across every
+    // run on the M2 Pro (223).
+    drawCallCeiling: 209,
   },
   {
     name: "high-10000ft-down",
@@ -628,7 +644,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 223,
+    drawCallCeiling: 72,
   },
   {
     // Z-3: the high-DPR/cap-equivalent lane. A deterministic DPR-1 browser at
@@ -650,7 +666,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 262,
+    drawCallCeiling: 248,
   },
   {
     // Z-3/R-9: the far-plane opacity criterion was only ever measured at
@@ -668,7 +684,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 214,
+    drawCallCeiling: 200,
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -687,7 +703,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 261,
+    drawCallCeiling: 247,
   },
   {
     // R-15: night. Pre-7A this is honestly near-black — the shot pins that
@@ -716,7 +732,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 263,
+    drawCallCeiling: 249,
   },
   {
     name: "night-moonlit",
@@ -773,7 +789,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // sized for a near-black frame; copying it onto a moonlit one would make
     // the assertion vacuous. Pin it from the R4 run.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 263,
+    drawCallCeiling: 249,
     // `drawCallCeiling` likewise omitted rather than null. Draw calls are
     // host-independent and pinned to the measured count exactly, so this
     // gets its value from the R4 run rather than a placeholder.
@@ -885,8 +901,8 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // `PREVIOUS_DRAW_CALL_CEILINGS`, so it has no baseline it moved from and no
     // raise can name it. The ceiling is simply the measurement, which is what
     // the field is defined as.
-    drawCallCeiling: 262,
-    comparesToBaseline: false,
+    drawCallCeiling: 248,
+    comparesToBaseline: true,
   },
   {
     // Z-3: N consecutive rAF frames through a banked turn at 500 ft over the
@@ -912,11 +928,22 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // without any flicker (page-thrash-turn measured 0.6988 at the fix-pack
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
-    temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
+    // 0.67 -> 0.75, PER SHOT, and this one TIGHTENS. Measured 0.7826.
+    //
+    // The honest side of the same table: if the floors are re-pinned from what
+    // each shot measures, the 45-degree shot has been carrying a floor far
+    // looser than its own behaviour and gets a real gate for the first time.
+    // Re-pinning only the one that failed would be choosing the direction.
+    // Margin 0.033, about 75x the run-to-run spread (0.7826-0.7828 shipped).
+    //
+    // It moved -0.0115 at 3f1af43's chase re-centring, against -0.0300 on the
+    // 60-degree shot and 0.0000 on the level one; that bank-scaling is what
+    // identified the rig. See page-thrash-turn below for the full bisect.
+    temporalFloors: { minConsecutiveSsim: 0.75, maxMeanLuminanceDelta: 0.01 },
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 20, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 268,
+    drawCallCeiling: 254,
   },
   {
     // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
@@ -941,7 +968,47 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // without any flicker (page-thrash-turn measured 0.6988 at the fix-pack
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
-    temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
+    // 0.67 -> 0.60, PER SHOT. Measured 0.6300 at bd5d947.
+    //
+    // ONE 0.67 FLOOR AT 0, 45 AND 60 DEGREES OF BANK WAS NEVER MEASURING THE
+    // SAME QUANTITY. On a banked chase shot the consecutive-frame metric
+    // counts CAMERA work as much as flicker, and the three shots sit
+    // naturally at 0.98 (0 deg), 0.78 (45 deg) and 0.63 (60 deg).
+    //
+    // Bisected 2026-09-21, one shot per tree:
+    //   41fc505 water-environment-colour  0.6718  passing by 0.0018
+    //   216d5e4 terrain-ground-texture    0.6674  CROSSED, by 0.0044
+    //   1510b74 water-sun-glitter         0.6673  flat
+    //   3f1af43 chase-rig re-centring     0.6374  -0.0300 in one commit
+    //   bd5d947 today                     0.6300
+    // The crossing was terrain's 0.0044 on a shot already 0.0018 from the
+    // floor; the movement was the chase rig's 0.0300. The rig fix is correct
+    // — it stops the airframe sliding out of frame at 0.155% of frame width
+    // per degree of bank — and what it changes is what the frame CONTAINS, so
+    // a frame-to-frame metric must move. The effect scales with bank: 0.0000
+    // at 0 deg, -0.0115 at 45, -0.0300 at 60.
+    //
+    // Not the far-sward dial: flipping it moves this 0.0002. Not the host:
+    // across fifteen runs fps ranged 38.8-95.3 while this read 0.6373-0.6374,
+    // so it is deterministic (the capture steps SIM time on a fixed schedule).
+    // Filtered-vs-full differs by 1e-4 here, so single-shot runs are valid for
+    // this metric though not for SSIM-against-baseline.
+    //
+    // THAT LICENCE IS FOR THIS METRIC ONLY, AND THE SHOT NEXT DOOR PROVES IT.
+    // Measured across one full 39-shot run and one filtered 3-shot run of the
+    // same tree:
+    //                        full(39)   filtered(3)
+    //   minConsecutiveSsim     0.6299       0.6300     <- 1e-4, usable
+    //   hitchCount                  0           29     <- unusable
+    // motion-banked-turn and cdlod-transition read 0 -> 8 and 0 -> 4 the same
+    // way. Hitching is a property of the streaming history a shot arrives
+    // with, which the shot list decides; consecutive-frame SSIM is a property
+    // of a fixed sim-time step, which it does not. Never read a hitch count,
+    // or anything else streaming-paced, out of a filtered run.
+    //
+    // THE FLICKER DETECTOR THAT MATTERS IS THE ONE BELOW: maxMeanLuminanceDelta
+    // held at 0.0005 against 0.01 throughout. Genuine flicker still fails it.
+    temporalFloors: { minConsecutiveSsim: 0.6, maxMeanLuminanceDelta: 0.01 },
     // The residency ceilings below remain the Phase-4 DESIGN INTENTS — the
     // atlas holds 196 slots at tier 1, and a pump that leaves more than 24
     // pages pending is admitting faster than the meter retires. `4.5-D1`
@@ -955,7 +1022,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 19, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 267,
+    drawCallCeiling: 253,
   },
   {
     // 4-10: the CDLOD-TRANSITION scene. Straight and level outbound from the
@@ -983,6 +1050,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // without any flicker (page-thrash-turn measured 0.6988 at the fix-pack
     // close; the maxMeanLuminanceDelta flicker gate held). Genuine flicker
     // still fails both gates.
+    // 0.67 STAYS HERE, and this shot is why the other two could move: at zero
+    // bank it measures geomorph popping and nothing else, and it reads 0.9755
+    // — 46% above the floor. It is the level control for the pair below.
     temporalFloors: { minConsecutiveSsim: 0.67, maxMeanLuminanceDelta: 0.01 },
     // `4.5-D1`: re-pinned from what the fixed selector actually produces
     // (measured 47-54 resident, 0 pending) rather than the tier's whole atlas
@@ -991,7 +1061,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 208,
+    // 2026-09-14 (tree LOD continuity): +1. Cell residency now reaches one
+    // cull fade past the impostor radius, so on this moving shot the far
+    // band's chunk is published — with records inside the cull, in frame — at
+    // the sample instant, where before the cells just inside the radius were
+    // still generating. Static shots are unchanged (impostor batches rebuild
+    // their bounds from in-cull cells only). Measured identically across every
+    // run on the M2 Pro (209).
+    drawCallCeiling: 195,
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -1009,7 +1086,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 240,
+    drawCallCeiling: 226,
   },
   {
     // Phase 2 §10.2 scene 2: foliage translucency, grass scale reference,
@@ -1029,7 +1106,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 262,
+    drawCallCeiling: 248,
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -1079,7 +1156,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.7 },
-    drawCallCeiling: 235,
+    drawCallCeiling: 219,
   },
   {
     // Phase 2 §10.2 scene 4 — the only capture in the programme taken from
@@ -1098,7 +1175,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.2 },
-    drawCallCeiling: 268,
+    drawCallCeiling: 121,
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -1117,7 +1194,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 18, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 260,
+    drawCallCeiling: 113,
   },
   {
     // Phase 3 §10: the scene 3-9 is judged in. Short final over the threshold,
@@ -1144,7 +1221,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.4 },
-    drawCallCeiling: 269,
+    drawCallCeiling: 255,
     // `7-9`: 60 measured with the daylight attenuation term, against 56 in the
     // pre-lamp baseline and **10,019 without it**. 400 is ~6.7x the measured
     // value and still 25x below the defect — wide enough that ordinary
@@ -1173,7 +1250,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 238,
+    drawCallCeiling: 224,
   },
   {
     // Vegetation overhaul (wave P): the terrain-viewer money shot — a
@@ -1196,7 +1273,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 267,
+    drawCallCeiling: 120,
   },
   {
     // Wave G's own gate: open grassland at eye height with the compute blade
@@ -1217,7 +1294,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 281,
+    drawCallCeiling: 134,
   },
   {
     // Wave Q gate 1: the dusk terrain-glint + tree-band-handoff scene. A low
@@ -1240,7 +1317,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 258,
+    drawCallCeiling: 244,
   },
   {
     // Wave Q gate 2: the close-mountainside scene — the frame that showed
@@ -1262,7 +1339,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 12.3 },
-    drawCallCeiling: 285,
+    drawCallCeiling: 230,
   },
   {
     // Wave R gate 1: the user's tree-line screenshot geometry — a few
@@ -1284,7 +1361,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12.2 },
-    drawCallCeiling: 258,
+    drawCallCeiling: 244,
   },
   {
     // Wave R gate 2: the very-close mountainside — the range where the rock
@@ -1304,7 +1381,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 251,
+    drawCallCeiling: 237,
   },
   {
     // Wave R gate 3: water at standing height — the range where the ocean
@@ -1327,7 +1404,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.7 },
-    drawCallCeiling: 237,
+    drawCallCeiling: 90,
   },
 
   // -------------------------------------------------------------------------
@@ -1444,7 +1521,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "forest",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 102, minWallClockFps: 102 },
-    drawCallCeiling: 255,
+    drawCallCeiling: 108,
   },
   {
     // The secondary seam, and a coverage hole every other shot shares. T1 - the
@@ -1473,7 +1550,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "forest",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 102 },
-    drawCallCeiling: 263,
+    drawCallCeiling: 116,
   },
   {
     // The ground-material shot. Terrain fills the frame - its top edge is 23
@@ -1506,7 +1583,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "mountain",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 102, minWallClockFps: 101 },
-    drawCallCeiling: 282,
+    drawCallCeiling: 87,
   },
   {
     // E-5's far-annulus shot: the horizon-shadow term applied to FAR VEGETATION.
@@ -1615,7 +1692,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     relativeSunBearingDegrees: 161,
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 101 },
-    drawCallCeiling: 238,
+    drawCallCeiling: 91,
   },
   {
     /**
@@ -1696,7 +1773,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "canopy-backlit",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 102 },
-    drawCallCeiling: 246,
+    drawCallCeiling: 102,
   },
   /**
    * NIGHT_LOOK_ARCHITECTURE §2.1, Option B — two PROBE clocks bracketing the
@@ -1724,7 +1801,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     // 19.148 h -> sun sine +0.0872 (+5.0 deg), bisected on day 179 at 45N.
     clock: { dayOfYear: 179, solarTimeHours: 19.148 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1739,7 +1816,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 62,
     // 20.047 h -> sun sine -0.0523 (-3.0 deg), bisected on day 179 at 45N.
     clock: { dayOfYear: 179, solarTimeHours: 20.047 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1784,7 +1861,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // cloud pass's temporal jitter and this shot has never been captured.
     ssimThreshold: 0.96,
     ceilings: null,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
   },
   {
     name: "apron-hangar-variety",
@@ -1833,7 +1910,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * `yawForSunBearing`.
      */
     relativeSunBearingDegrees: -38.92,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1871,7 +1948,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      */
     relativeSunBearingDegrees: 0,
     clock: { dayOfYear: 179, solarTimeHours: 20.047 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1914,7 +1991,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * canonical shot index and moves every baselined wave phase.
      */
     clock: { dayOfYear: 171, solarTimeHours: 9.5 },
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
   },
   {
@@ -1947,8 +2024,61 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: -14_501,
     pitchDownDegrees: 22,
     airspeedMetersPerSecond: 0,
-    comparesToBaseline: false,
+    comparesToBaseline: true,
     ceilings: null,
+  },
+  {
+    name: "water-400ft-glitter",
+    description:
+      "120 m over open water with the sun low and ahead - the sun glitter "
+      + "path at the altitude an aircraft actually flies it",
+    cameraMode: "cockpit",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 120,
+    /**
+     * `W-11`: the regime Jason photographed the sparkle in, and the one gap
+     * in the water coverage. `water-25ft` sits 8 m up, where the ripples are
+     * RESOLVED and the sparkle statistic is faded out; `coast-10km-lowsun`
+     * sits 800 m up with the sun ASTERN, so it frames the matte side of the
+     * sea and no glitter path at all. Between them is the band where a pixel
+     * covers 0.1-1 m of sea - exactly the fade window the far-field sparkle
+     * turns on in - looking INTO the sun. Nothing in the set stood there, so
+     * nothing in the set could show what the sparkle does there.
+     *
+     * Same coast as the other two water shots (the `locate` predicate walks
+     * to the same shoreline), so the three differ only in altitude and sun
+     * bearing.
+     *
+     * APPENDED AT THE END, never inserted: a mid-list insertion renumbers
+     * every canonical shot index and moves every baselined wave phase (the
+     * Wave R trap).
+     */
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 12,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 18.4 },
+    relativeSunBearingDegrees: 12,
+    locate: "coast",
+    /**
+     * Baselined, because it is the gate for `W-11` and the only frame in the
+     * set that can fail when the glitter path regresses. NOT floor-pinned:
+     * floors are derived from three runs on the pinned reference adapter, and
+     * the machine this shot was authored on is not it, so any number measured
+     * here would be a fiction with a provenance line attached. It is declared
+     * as an unpinned probe in `tests/delivery-floors.test.ts` and as an
+     * unmeasured shot in `PERF_CAPTURE_CEILING_PROVENANCE` until somebody
+     * measures it on the reference host.
+     *
+     * The DRAW-CALL ceiling is pinned, and the split is the point: draw counts
+     * are host-INDEPENDENT (byte-identical across both arms of the W-11 A/B and
+     * across every pinning run this programme has done), so measuring one here
+     * is as good as measuring it on the reference adapter. Frame timings are
+     * not. 234 is the measured count from the 2026-09-20T02-53-31.461Z
+     * candidate, pinned at the measurement rather than above it.
+     */
+    ceilings: null,
+    drawCallCeiling: 87,
   },
 ]);
 
@@ -1997,8 +2127,23 @@ export interface CockpitTerrainCoverageInput {
   readonly bankDegrees?: number;
   readonly seaLevelMeters: number;
   readonly terrainHeightAt: (x: number, z: number) => number;
-  /** Shipping cockpit camera uses a horizontal-fixed 56 degree FOV. */
+  /**
+   * Horizontal field of view, in degrees. Defaults to
+   * `PERF_COCKPIT_HORIZONTAL_FOV_DEGREES` (56), the lens the harness pins its
+   * cockpit shots to (`PERF_COCKPIT_RIG`) — NOT the gameplay cockpit lens,
+   * `COCKPIT_HORIZONTAL_FOV_DEGREES` (75), which these shots do not use.
+   */
   readonly horizontalFovDegrees?: number;
+  /**
+   * Where the eye sits, in metres along the nose and up the aircraft's own up
+   * from its origin. Defaults to the trainer's `cockpitEye` — what a capture
+   * flies unless told otherwise — read from the catalogue rather than copied,
+   * which is what this used to do (1.15 / 1.12, from an airframe that no longer
+   * exists, so the oracle sat about a metre above the camera it describes).
+   * There is no lateral term: the perf harness pins the eye to the centreline
+   * (`PERF_COCKPIT_RIG`).
+   */
+  readonly eye?: Readonly<{ forward: number; up: number }>;
   readonly viewportWidth?: number;
   readonly viewportHeight?: number;
   readonly columns?: number;
@@ -2058,7 +2203,7 @@ export function cockpitTerrainCoverage(
   const columns = positiveInteger(input.columns ?? 41, "columns");
   const rows = positiveInteger(input.rows ?? 23, "rows");
   const raySteps = positiveInteger(input.raySteps ?? 256, "raySteps");
-  const horizontalFovDegrees = input.horizontalFovDegrees ?? 56;
+  const horizontalFovDegrees = input.horizontalFovDegrees ?? PERF_COCKPIT_HORIZONTAL_FOV_DEGREES;
   const finiteScalars = [
     ...input.aircraftPosition,
     input.yawDegrees,
@@ -2082,11 +2227,13 @@ export function cockpitTerrainCoverage(
   const forward = rotateCaptureVector([1, 0, 0], orientation);
   const up = rotateCaptureVector([0, 1, 0], orientation);
   const horizontal = rotateCaptureVector([0, 0, 1], orientation);
-  // Keep this paired with FlightRenderer's cockpit rig: 1.15 m through the
-  // nose and 1.12 m above the aircraft origin.
-  const cameraX = input.aircraftPosition[0] + forward[0] * 1.15 + up[0] * 1.12;
-  const cameraY = input.aircraftPosition[1] + forward[1] * 1.15 + up[1] * 1.12;
-  const cameraZ = input.aircraftPosition[2] + forward[2] * 1.15 + up[2] * 1.12;
+  // Paired with FlightRenderer's cockpit rig through the catalogue, not through
+  // a copy of its numbers: the same `cockpitEye` the renderer places the camera
+  // at, minus the lateral term the perf rig pins to zero.
+  const eye = input.eye ?? aircraftSpec("trainer").cockpitEye;
+  const cameraX = input.aircraftPosition[0] + forward[0] * eye.forward + up[0] * eye.up;
+  const cameraY = input.aircraftPosition[1] + forward[1] * eye.forward + up[1] * eye.up;
+  const cameraZ = input.aircraftPosition[2] + forward[2] * eye.forward + up[2] * eye.up;
   const horizontalScale = Math.tan((horizontalFovDegrees * Math.PI) / 360);
   const verticalScale = horizontalScale * viewportHeight / viewportWidth;
 
@@ -2520,6 +2667,18 @@ export interface PerfCaptureShotReport {
 }
 
 export interface PerfCaptureReport {
+  /**
+   * ISO timestamp of the run that wrote this report.
+   *
+   * An A/B that switches arms by checking source in and out reads this file
+   * between runs, and a run that DIES leaves the previous arm's report in
+   * place — a dropped browser connection did exactly that during the water
+   * wave's A/B on 2026-09-17, and the stale numbers were caught only because
+   * eight shots matched the previous arm to 0.1 fps, which is not a thing that
+   * happens. A consumer that checks this field against its own start time
+   * cannot be fooled by it at all.
+   */
+  readonly capturedAtIso: string;
   readonly seed: string;
   readonly width: number;
   readonly height: number;
@@ -2564,6 +2723,13 @@ export interface PerfCaptureReport {
      * plumbing was missing when the run was taken.
      */
     readonly profileOverride: Readonly<Record<string, unknown>> | null;
+    /**
+     * WHICH AEROPLANE FLEW IT, for the same reason as `profileOverride` above
+     * — and this report did not carry it until a same-tree kind comparison had
+     * to establish its own arms from the draw counts and the baseline SSIM,
+     * because nothing in the file named them.
+     */
+    readonly aircraft: string;
     readonly pinnedRenderScale: number;
     /** Whether Babylon's continuous timestamp-query observers were enabled. */
     readonly gpuTimingEnabled: boolean;

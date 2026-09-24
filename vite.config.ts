@@ -2,6 +2,7 @@ import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
+import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -44,6 +45,10 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    // Every worktree shares one node_modules, so Vite's default cache would be
+    // shared too, and a dev server started in one tree re-optimized the deps
+    // under a server already running in another. See scripts/checkoutCacheDir.ts.
+    cacheDir: checkoutCacheDir("dev"),
     ...(isCodexSeatbeltSandbox
       ? { server: { watch: { useFsEvents: false, usePolling: true } } }
       : {}),

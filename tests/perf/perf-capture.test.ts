@@ -1,8 +1,10 @@
 /// <reference types="vite/client" />
 import { afterAll, describe, expect, it } from "vitest";
+import { AIRCRAFT_KINDS } from "@/src/sim";
 import { commands } from "vitest/browser";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../src/render/FlightRenderer";
+import { PERF_COCKPIT_RIG } from "../../src/render/cameraPresentation";
 import {
   ESTIMATE_REPIN_TRIGGER_FRACTION,
   estimateDivergenceFraction,
@@ -81,6 +83,35 @@ const BASELINE_DIR = "tests/perf/baseline";
 const ARTIFACT_DIR = "tests/perf/artifacts";
 const CANDIDATE_ROOT = `${ARTIFACT_DIR}/rebaseline-candidates`;
 const REBASELINE = import.meta.env.VITE_PERF_REBASELINE === "1";
+/**
+ * `VITE_PERF_AIRCRAFT=bizjet` — fly the shot list behind a different airframe.
+ *
+ * Not for baselines: every shipped baseline is the trainer, and comparing one
+ * aircraft's capture against another's baseline would be meaningless. This
+ * exists for the SAME-TREE question "what does choosing the 747 cost a player
+ * compared with the Cessna", which a base-against-branch A/B cannot answer
+ * because no shot flies anything but the trainer.
+ */
+const CAPTURE_AIRCRAFT = (() => {
+  const wanted = String(import.meta.env.VITE_PERF_AIRCRAFT ?? "").trim();
+  if (wanted === "") return "trainer" as const;
+  // THROWS rather than falling back, and that is the whole point of this
+  // branch. It used to return `trainer` for anything it did not recognise, so
+  // `VITE_PERF_AIRCRAFT=trainer,trainer,airliner,airliner` — a perfectly
+  // reasonable-looking attempt at an interleaved kind comparison, since this
+  // variable takes ONE kind — flew four trainer arms and reported them as a
+  // comparison between two aeroplanes. Four numbers that agree beautifully and
+  // measure nothing. A capture that cannot fly what it was asked to must not
+  // run.
+  if (!(AIRCRAFT_KINDS as readonly string[]).includes(wanted)) {
+    throw new Error(
+      `VITE_PERF_AIRCRAFT="${wanted}" is not an aircraft kind. One of `
+      + `${AIRCRAFT_KINDS.join(", ")}, or unset for the trainer. This variable `
+      + "takes a single kind: to compare two, run the capture once per kind.",
+    );
+  }
+  return wanted as (typeof AIRCRAFT_KINDS)[number];
+})();
 /**
  * Diagnostic only; normal captures match shipping's observer-free path.
  *
@@ -573,7 +604,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
     // the initial renderer and any W-7 mode-boundary rebuild.
     const captureRendererOptions = () => ({
       canvas,
-      aircraft: "trainer" as const,
+      aircraft: CAPTURE_AIRCRAFT,
       terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
       world,
       seed: world.sourceSeedHash,
@@ -587,6 +618,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // that tier actually ships, so the governor stays frozen at each.
       pinnedRenderScale: CAPTURE_PROFILE.renderScale,
       captureGpuTiming: GPU_TIMING_ENABLED,
+      // The fourteen cockpit-mode shots were placed for a 56 degree lens with
+      // the eye on the centreline. The gameplay cockpit is now 75 degrees from
+      // the left seat, and they must stay comparable with their baselines, so
+      // this harness renders them with the previous rig. It is the ONLY caller
+      // of the override (tests/render.cockpit-rig.test.ts scans for that).
+      cockpitRigOverride: PERF_COCKPIT_RIG,
       ...(world.airport ? { runway: world.airport } : {}),
     });
 
@@ -1004,8 +1041,18 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // Pin the temporal phase before the settle: the streaming loop above
       // exits after a RUN-DEPENDENT number of frames, so accumulated time
       // would put waves and cloud advection at a different phase every run.
-      // The settle then rebuilds all temporal state (cloud history, foam
-      // decay) at these exact instants.
+      // The settle rebuilds most temporal state at these exact instants, but
+      // two things keep history from before the pin, so identical code does
+      // not always give identical frames:
+      //  - foam: with a 2.8 s half-life about a fifth of it survives to
+      //    capture — a floor on near water between runs whose OWN streaming
+      //    counts differ, growing with the difference (0.007/255 mean at 60
+      //    frames, 0.012 at 150, still rising at 240);
+      //  - cloud jitter: the raymarch and cloud-shadow jitter index is the
+      //    cloud system's own frame count mod 4096, never reset (no sky change
+      //    from it was measurable on the water shots).
+      // The ocean's cascade cadence and the wildlife are pinned separately,
+      // below.
       //
       // Wave R: the phase keys on the shot's index in the CANONICAL list,
       // not its position in the selected subset. Baselines come from full
@@ -1024,6 +1071,21 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // sits on the same lamp phase (see `simulationTimeOffsetSeconds`).
       simulationTime = 500 + canonicalShotIndex * 120
         + (shot.simulationTimeOffsetSeconds ?? 0);
+      // Pinning TIME is not enough for the sea. The ocean decides which wave
+      // cascades to evolve by an absolute FRAME count that one renderer carries
+      // across every shot, so the every-4th-frame cascade's last update before
+      // capture depended on how many frames every earlier shot streamed — two
+      // phase classes per water shot, 0.12-0.40/255 mean apart, flipping
+      // between runs of identical code and wholesale under VITE_PERF_SHOTS.
+      // Restart that count here, with the time.
+      renderer.pinOceanCascadePhaseForCapture();
+      // The birds are integrated agent state, flown on the wildlife system's
+      // own fixed-step clock by every frame of every earlier shot, so two runs
+      // of identical code put them in different places — alone enough to
+      // swing water-400ft-glitter's worst-tile SSIM between 0.9784 and 0.9953
+      // across repeats. Respawn them from the seed and restart their clocks
+      // here, with the time.
+      renderer.pinWildlifeForCapture();
       for (let settle = 0; settle < 150; settle += 1) {
         await nextAnimationFrame();
         simulationTime += 1 / 60;
@@ -1542,6 +1604,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const report: PerfCaptureReport = {
+      capturedAtIso: new Date().toISOString(),
       seed: PERF_CAPTURE_SEED,
       width: PERF_CAPTURE_WIDTH,
       height: PERF_CAPTURE_HEIGHT,
@@ -1564,6 +1627,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // reconstructed from a shell history is one nobody can audit later — and
         // its ABSENCE is how the lost-plumbing incident was detected.
         profileOverride: PROFILE_OVERRIDE,
+        // WHICH AEROPLANE FLEW IT, for exactly the reason above — which this
+        // report did not say until a same-tree kind comparison had to prove its
+        // own arms from the draw counts and the baseline SSIM, because nothing
+        // in the file named them.
+        aircraft: CAPTURE_AIRCRAFT,
         pinnedRenderScale: CAPTURE_PROFILE.renderScale,
         gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
         // Whether the frame-delivery numbers below were contract or diagnostic.

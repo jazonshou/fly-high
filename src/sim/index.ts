@@ -1,4 +1,5 @@
 export {
+  AIRCRAFT_KINDS,
   aircraftDefinition,
   calculateDragCoefficient,
   calculateEngineThrust,
@@ -9,20 +10,70 @@ export {
   type AircraftDefinition,
   type LandingGearDefinition,
   type PropulsionKind,
+  aftExtent,
+  stallSpeed,
 } from "./aircraft";
 export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
+export {
+  ATTRACT_MIN_PREDICTION_SPEED,
+  ATTRACT_TURN_RATE_RADIANS_PER_SECOND,
+  ATTRACT_SCAN_SECONDS,
+  ATTRACT_SCAN_MAX_METERS,
+  ATTRACT_MIN_CLEARANCE_SECONDS,
+  attractScanOffset,
+  attractScanSamples,
+  attractTrackVector,
+  ATTRACT_SCAN_TRAVEL_METERS,
+  ATTRACT_SCAN_TURN_RADIANS,
+  attractScanDistance,
+  attractTurnRoll,
+  ATTRACT_RESEED_CLEARANCE_METERS,
+  AttractHold,
+  attractAchievableClimbRate,
+  attractClimbRateFor,
+  shouldReseedAttract,
+  type AttractHoldInput,
+  type AttractHoldOutput,
+} from "./attract";
+export {
+  handoffPitchRemainder,
+  handoffTrimSeed,
+  heldElevator,
+} from "./handoffTrim";
 export { DirectPitchRetention } from "./pitchRetention";
+export {
+  SCENIC_HOLD_CAPTURE_SECONDS,
+  SCENIC_HOLD_CAPTURE_VERTICAL_SPEED,
+  SCENIC_HOLD_DEADBAND,
+  SCENIC_HOLD_HANDBACK_SECONDS,
+  SCENIC_HOLD_MIN_CLEARANCE,
+  ScenicAltitudeHold,
+  type ScenicHoldInput,
+} from "./scenicHold";
+export {
+  VERTICAL_FLOOR_TRIM_BLEED,
+  VERTICAL_SPEED_FLOOR,
+  VerticalSpeedPitchTrim,
+  type VerticalSpeedPitchInput,
+} from "./verticalSpeedPitch";
 export { JetStabilityAugmentation } from "./stabilityAugmentation";
 export {
   DEFAULT_CONTROLS,
   DEFAULT_ENVIRONMENT,
   FIXED_TIME_STEP,
   FlightSimulator,
+  GROUND_SPOILER_ARMED_SPEED,
+  GROUND_SPOILER_IDLE_THROTTLE,
+  GROUND_SPOILER_RATE,
   getFlightSnapshot,
+  groundSpoilerDemand,
   getFlightTelemetry,
+  pilotSurfaceClearance,
   MAX_STEP_DURATION,
   SEA_LEVEL_DENSITY,
+  TRIM_ELEVATOR_AUTHORITY,
   spawnFlight,
+  speedBrakeLiftDump,
   STANDARD_GRAVITY,
   standardAirDensity,
   stepFlight,

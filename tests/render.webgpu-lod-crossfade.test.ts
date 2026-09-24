@@ -9,7 +9,12 @@ import {
   DetailInstanceMaterialPlugin,
   detailMetricTreeBarkV,
 } from "../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
-import { RENDERED_DENSITY_LAWS } from "../src/render/webgpu/detail/renderedDensity";
+import {
+  RENDERED_DENSITY_LAWS,
+  drawnShareAtDistance,
+  impostorFillStartMeters,
+  renderedShareAtDistance,
+} from "../src/render/webgpu/detail/renderedDensity";
 import {
   DETAIL_CULL_FADE_MARGIN_METERS,
   DETAIL_FADE_MARGIN_METERS,
@@ -39,21 +44,41 @@ function bayer8(x: number, y: number): number {
   return (index + 0.5) / 64;
 }
 
-/** TS mirror of the WGSL `detailBandWindow` thresholds (margins inline in
- * the shader as literals — pinned below against these constants). */
+/**
+ * TS mirror of the WGSL `detailBandWindowEmpty` / `detailBandWindow`
+ * thresholds (margins inline in the shader as literals — pinned below against
+ * these constants).
+ *
+ * 2026-09-13: the window also takes the stem's LOD KEY (the phase lane) and,
+ * for the impostor, whether a geometry record for the stem coexists in the
+ * chunk. Geometry owns a stem while its key is within the geometry share at
+ * the live range; the impostor owns it while the key is within the DRAWN
+ * share but the geometry share has fallen below it (or geometry has switched
+ * out at the hashed far switch, or no geometry record exists at all).
+ */
 function bandWindow(
   bandCode: 0 | 1 | 2,
   range: number,
   farSwitchUnit = 0.5,
+  stemKey = 0,
+  geometryCoexists = true,
 ): [number, number] {
   const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
   const nearSwitch = LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS / 2;
   const farSwitch = LAW.mid.outerRadiusMeters
     - DETAIL_FADE_MARGIN_METERS + farSwitchUnit * DETAIL_FADE_MARGIN_METERS;
   const fCull = clamp01((LAW.far.outerRadiusMeters - range) / DETAIL_CULL_FADE_MARGIN_METERS);
+  const geometryShare = renderedShareAtDistance(LAW, range);
+  const drawnShare = drawnShareAtDistance(LAW, range);
   if (bandCode === 0) return range < nearSwitch ? [0, 1] : [0, 0];
-  if (bandCode === 1) return range >= nearSwitch && range < farSwitch ? [0, 1] : [0, 0];
-  return range >= farSwitch ? [0, fCull] : [0, 0];
+  if (bandCode === 1) {
+    return range >= nearSwitch && range < farSwitch && stemKey <= geometryShare
+      ? [0, 1]
+      : [0, 0];
+  }
+  if (stemKey > drawnShare) return [0, 0];
+  if (geometryCoexists && range < farSwitch && stemKey <= geometryShare) return [0, 0];
+  return [0, fCull];
 }
 
 describe("band memberships (2-17 close)", () => {
@@ -64,14 +89,25 @@ describe("band memberships (2-17 close)", () => {
     // also carries a mid membership whose window the vertex stage keeps
     // closed until the switch. The double-buffered records are a few hundred
     // 32-byte rows; the arbitration is the band window, not the membership.
+    // 2026-09-13: the far (impostor) membership begins where mid does, so an
+    // impostor can stand in for any stem the geometry share rejects; the
+    // builder only EMITS it where geometry does not own the stem across the
+    // whole cell, and the window arbitrates the rest.
     const interior = WorldDetailRuntime.fadeBandMemberships(5, LAW);
-    expect(interior.map((entry) => entry.band)).toEqual(["near", "mid"]);
+    expect(interior.map((entry) => entry.band)).toEqual(["near", "mid", "far"]);
 
     const inMargin = WorldDetailRuntime.fadeBandMemberships(
       nearEdge - DETAIL_FADE_MARGIN_METERS * 0.5,
       LAW,
     );
-    expect(inMargin.map((entry) => entry.band)).toEqual(["near", "mid"]);
+    expect(inMargin.map((entry) => entry.band)).toEqual(["near", "mid", "far"]);
+
+    // A stem deep inside the near band at a tier whose near radius exceeds
+    // margin + slack has no mid or far membership (tier 3: 240 m > 196 m).
+    const ultra = RENDERED_DENSITY_LAWS[3]!;
+    expect(
+      WorldDetailRuntime.fadeBandMemberships(10, ultra).map((entry) => entry.band),
+    ).toEqual(["near"]);
 
     // Just outside the near edge the stem still belongs to near (slack):
     // the window computes to zero there, so it draws nothing — but if the
@@ -83,10 +119,19 @@ describe("band memberships (2-17 close)", () => {
     expect(justOutside.map((entry) => entry.band)).toContain("near");
     expect(justOutside.map((entry) => entry.band)).toContain("mid");
 
+    // 2026-09-14: the far membership has no outer edge — the shader's live
+    // cull owns the far edge, and a record beyond it is four killed vertices.
+    // Cutting records at the cull made that edge a frontier and every chunk
+    // straddling it re-baked per observer quantum with its whole impostor set.
     const cullEdge = LAW.far.outerRadiusMeters;
     expect(
-      WorldDetailRuntime.fadeBandMemberships(cullEdge + DETAIL_MEMBERSHIP_SLACK_METERS + 1, LAW),
-    ).toEqual([]);
+      WorldDetailRuntime.fadeBandMemberships(cullEdge + DETAIL_MEMBERSHIP_SLACK_METERS + 1, LAW)
+        .map((entry) => entry.band),
+    ).toEqual(["far"]);
+    expect(
+      WorldDetailRuntime.fadeBandMemberships(cullEdge * 3, LAW).map((entry) => entry.band),
+    ).toEqual(["far"]);
+    expect(WorldDetailRuntime.fadeBandMemberships(-1, LAW)).toEqual([]);
   });
 
   it("keeps membership slack above the observer signature quantum", () => {
@@ -136,6 +181,47 @@ describe("band-window fades (2-17 close)", () => {
         expect(survivors, `range ${range} level ${level}`).toBe(1);
       }
     }
+  });
+
+  it("hands a stem from geometry to its impostor at the stem's OWN range (2026-09-13)", () => {
+    // A stem's key is its density-normalised canopy rank. Geometry owns it
+    // while the live geometry share still reaches the key; past that range
+    // the impostor owns it, up to the drawn share; beyond THAT nothing draws
+    // it. Every pixel has exactly one owner wherever the stem is drawn, and
+    // the handoff range is the stem's, not its cell's.
+    const nearSwitch = LAW.near.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS / 2;
+    const cullStart = LAW.far.outerRadiusMeters - DETAIL_CULL_FADE_MARGIN_METERS;
+    for (const stemKey of [0.05, 0.12, 0.2, LAW.impostorFloorShare]) {
+      const handoff = LAW.near.outerRadiusMeters / Math.sqrt(stemKey);
+      expect(handoff).toBeGreaterThan(nearSwitch);
+      for (let range = nearSwitch; range < cullStart; range += 3) {
+        const owners = ([0, 1, 2] as const).filter((band) => {
+          const [lo, hi] = bandWindow(band, range, 0.5, stemKey);
+          return hi > lo;
+        });
+        expect(owners, `key ${stemKey} range ${range}`).toHaveLength(1);
+        const expected = range < nearSwitch ? 0
+          : range < Math.min(handoff, LAW.mid.outerRadiusMeters - DETAIL_FADE_MARGIN_METERS / 2)
+            ? 1
+            : 2;
+        expect(owners[0], `key ${stemKey} range ${range}`).toBe(expected);
+      }
+    }
+    // Above the impostor floor a stem vanishes at its geometry threshold and
+    // no representation follows it — that is the law's count, not a gap.
+    const aboveFloor = Math.min(0.9, LAW.impostorFloorShare + 0.2);
+    const vanish = LAW.near.outerRadiusMeters / Math.sqrt(aboveFloor);
+    expect(bandWindow(1, vanish - 1, 0.5, aboveFloor)).toEqual([0, 1]);
+    expect(bandWindow(1, vanish + 1, 0.5, aboveFloor)).toEqual([0, 0]);
+    expect(bandWindow(2, vanish + 1, 0.5, aboveFloor)).toEqual([0, 0]);
+    // The crossover the law publishes is where the fill begins for the
+    // stem whose key sits exactly on the floor.
+    expect(impostorFillStartMeters(LAW)).toBeCloseTo(
+      LAW.near.outerRadiusMeters / Math.sqrt(LAW.impostorFloorShare), 9);
+    // An impostor with NO geometry record resident stands in unconditionally
+    // (a CPU/GPU disagreement about a range can never blank a stem).
+    expect(bandWindow(2, nearSwitch + 1, 0.5, 0.05, false)).toEqual([0, 1]);
+    expect(bandWindow(2, LAW.mid.outerRadiusMeters, 0.5, 0.05, false)).toEqual([0, 1]);
   });
 
   it("hard-switches at the centres of both residency overlaps", () => {
@@ -210,9 +296,14 @@ describe("crossfade shader surface (2-17 close)", () => {
       expect(albedo).toContain("let detailOpaqueSurface = (detailAtlasLayer >= 5.0");
       expect(albedo).toContain("detailAtlasLayer >= 16.0 && detailAtlasLayer <= 17.0");
       expect(albedo).toContain("if (!detailOpaqueSurface)");
-      expect(definitions).toContain("leafed.rgb * leafed.a");
-      expect(definitions).toContain("bare.rgb * bare.a");
-      expect(definitions).toContain("uniforms.detailImpostorSeason > seasonSelector");
+      // The season bucket is chosen per stem, then fetched ONCE (2026-09-13:
+      // the far band is fragment-bound; sampling both buckets and selecting
+      // afterwards doubled its albedo fetches for the same output).
+      expect(definitions).toContain("bucket.rgb * bucket.a");
+      expect(definitions).not.toContain("let bare = textureSample");
+      expect(definitions).toContain(
+        "select(layers.x, layers.y, uniforms.detailImpostorSeason > seasonSelector)",
+      );
       expect(albedo).toContain("impostorVariantByteForSeason");
       expect(albedo).not.toContain("dot(\n  fragmentInputs.detailInstanceTint.rgb");
       expect(albedo).toContain("#ifndef DETAIL_OPAQUE_CROWN");
@@ -224,7 +315,19 @@ describe("crossfade shader surface (2-17 close)", () => {
       expect(vertexDefinitions).toContain(
         `- ${DETAIL_FADE_MARGIN_METERS.toFixed(1)} + farSwitchHash`,
       );
-      expect(vertexDefinitions).toContain("let farSwitchHash = fract(switchSeed)");
+      // 2026-09-13: the switch seed is the stem's LOD key, read through the
+      // per-stem hash — the drawn population is a key prefix, so the raw lane
+      // would collapse the 100 m stagger to a ring.
+      expect(vertexDefinitions).toContain("let farSwitchHash = detailStemHash(stemKey)");
+      expect(vertexDefinitions).toContain("fn detailStemHash(lane: f32) -> f32");
+      expect(vertexDefinitions).toContain("fract(lane * 157.31 + 0.371)");
+      expect(vertexDefinitions).toContain("uniforms.detailBandShares.x");
+      expect(vertexDefinitions).toContain("uniforms.detailBandShares.y");
+      expect(plugin.getUniforms().ubo).toContainEqual({
+        name: "detailBandShares",
+        size: 4,
+        type: "vec4",
+      });
       expect(vertexDefinitions).not.toContain("dot(tintRgb");
       const position = vertex["CUSTOM_VERTEX_UPDATE_POSITION"]!;
       expect(position).not.toContain("detailOpaqueBandScale");

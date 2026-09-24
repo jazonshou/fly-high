@@ -35,6 +35,7 @@ import { startFlightControlPump, type FlightControlPump } from "./controlPump";
 import {
   airborneGearForAircraft,
   airborneThrottleForAircraft,
+  runwayFlapsForAircraft,
   runwayTrimForAircraft,
 } from "./spawn";
 import {
@@ -43,6 +44,7 @@ import {
   type FlightVisualState,
   type RenderDiagnostics,
 } from "./types";
+import { handoffTrimSeed, heldElevator } from "@/src/sim";
 import type { SpawnKind } from "@/src/workers/protocol";
 import {
   beginTransition,
@@ -108,6 +110,15 @@ export function FlightGame() {
   const transitionGateRef = useRef(createTransitionGate());
   const cameraModeRef = useRef<CameraMode>("chase");
   const spawnRef = useRef<SpawnKind>("airborne");
+  /**
+   * The same value as `spawnRef`, as state, because the pause menu RENDERS it
+   * — it names the restart after the spawn the flight began at. A ref read
+   * during render does not re-render when it changes, so the two are kept in
+   * step deliberately rather than one being derived from the other: the ref is
+   * what callbacks and the input pump read on the hot path, the state is what
+   * the markup reads.
+   */
+  const [spawnKind, setSpawnKind] = useState<SpawnKind>("airborne");
   const lastUiUpdateRef = useRef(0);
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
@@ -210,8 +221,28 @@ export function FlightGame() {
       airborneGearForAircraft(settingsRef.current.aircraft),
     );
     inputRef.current?.setThrottle(latestStateRef.current.throttle);
+    // Hand the player an aeroplane that is already trimmed, rather than one
+    // whose surfaces snap to neutral the moment they take it.
+    //
+    // Scenic is excluded and must stay excluded: its own height hold adopts
+    // the menu flight's learned trim (`ScenicAltitudeHold.adopt`), so seeding
+    // trim as well would be two mechanisms carrying the same elevator and the
+    // aeroplane would get twice what it needs.
+    //
+    // This runs BEFORE `handoff` and through `setTrim`, because the input
+    // controller owns trim and re-sends it: seeding anywhere else is undone by
+    // its next message. The same number goes to the worker so the trim
+    // actuator is not slewing toward a value the controller is about to
+    // replace. See `handoffTrimSeed` for the units and the sign.
+    const handoffTrim = settingsRef.current.flightMode === "scenic"
+      ? 0
+      : handoffTrimSeed(
+        heldElevator(latestStateRef.current.elevator, latestStateRef.current.trim),
+      );
+    inputRef.current?.setTrim(handoffTrim);
     spawnRef.current = "airborne";
-    simulationRef.current?.handoff(settingsRef.current.flightMode);
+    setSpawnKind("airborne");
+    simulationRef.current?.handoff(settingsRef.current.flightMode, handoffTrim);
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
   }, [unlockAudio, updatePhase]);
@@ -231,11 +262,12 @@ export function FlightGame() {
     freeFlyRef.current = new FreeFlyController({
       canvas: renderer.domElement,
       groundHeight: (x, z) => renderer.sampleGroundHeight(x, z),
+      seaLevel: world.seaLevel,
       initialState: latestStateRef.current,
     });
     renderer.setViewerMode(true);
     updatePhase("viewer");
-  }, [invalidatePendingTransitions, updatePhase]);
+  }, [invalidatePendingTransitions, updatePhase, world]);
 
   const exitViewer = useCallback(() => {
     if (phaseRef.current !== "viewer") return;
@@ -259,30 +291,51 @@ export function FlightGame() {
   }, [phase, exitViewer]);
 
   /** Starts a deliberate new flight at the chosen spawn. */
+  /**
+   * Starts a deliberate new flight at the chosen spawn.
+   *
+   * `fromMenu` exists because this used to refuse to run while the start
+   * screen was up: the menu's own Start is `takeControl`, a hand-off into the
+   * attract flight already in the air, and this path was only ever reached
+   * from a restart. A runway start needs the menu to reach it, and it needs
+   * the full reset — attract mode torn down, the simulation re-spawned — which
+   * the hand-off deliberately does not do.
+   */
   const startNewFlight = useCallback(
-    async (spawn: SpawnKind) => {
+    async (spawn: SpawnKind, fromMenu = false) => {
       const transition = beginTransition(transitionGateRef.current);
       await unlockAudio();
       if (
         !isCurrentTransition(transitionGateRef.current, transition) ||
-        phaseRef.current === "menu" ||
+        (!fromMenu && phaseRef.current === "menu") ||
         settingsOpenRef.current
       ) return;
       setError(null);
       spawnRef.current = spawn;
+      setSpawnKind(spawn);
       inputRef.current?.resetForSpawn(
         spawn,
         airborneThrottleForAircraft(settingsRef.current.aircraft),
         runwayTrimForAircraft(settingsRef.current.aircraft),
         airborneGearForAircraft(settingsRef.current.aircraft),
+        runwayFlapsForAircraft(settingsRef.current.aircraft),
       );
       simulationRef.current?.setMode(settingsRef.current.flightMode);
       simulationRef.current?.setAttractMode(false);
       simulationRef.current?.reset(spawn, settingsRef.current.airborneStartAgl);
+      // The aeroplane teleports. Without a cut the rig carries a temporal
+      // history — and an observed ground speed — that belong somewhere else.
+      rendererRef.current?.cutCamera();
       simulationRef.current?.setPaused(false);
       updatePhase("flying");
     },
     [unlockAudio, updatePhase],
+  );
+
+  /** The start screen's second door: on the threshold, stopped, ready to go. */
+  const startOnRunway = useCallback(
+    () => startNewFlight("runway", true),
+    [startNewFlight],
   );
 
   const pauseFlight = useCallback(() => {
@@ -357,15 +410,21 @@ export function FlightGame() {
       settingsOpenRef.current
     ) return;
     setError(null);
+    // A CRASH ALWAYS RECOVERS AIRBORNE, however the flight began. Being put
+    // back on the threshold after hitting a mountain forty kilometres away is
+    // worse than a re-entry, and the recovery path is built to find safe air
+    // above the wreck rather than to find the airfield.
     inputRef.current?.resetForSpawn(
       "airborne",
       airborneThrottleForAircraft(settingsRef.current.aircraft),
       runwayTrimForAircraft(settingsRef.current.aircraft),
       airborneGearForAircraft(settingsRef.current.aircraft),
+      runwayFlapsForAircraft(settingsRef.current.aircraft),
     );
     simulationRef.current?.setMode(settingsRef.current.flightMode);
     simulationRef.current?.setAttractMode(false);
     simulationRef.current?.restartAfterCrash(settingsRef.current.airborneStartAgl);
+    rendererRef.current?.cutCamera();
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
   }, [startNewFlight, unlockAudio, updatePhase]);
@@ -380,7 +439,10 @@ export function FlightGame() {
       runwayTrimForAircraft(settingsRef.current.aircraft),
       airborneGearForAircraft(settingsRef.current.aircraft),
     );
+    // A crash recovery IS an airborne start, so the restart the pause menu
+    // offers afterwards has to say so.
     spawnRef.current = "airborne";
+    setSpawnKind("airborne");
     simulationRef.current?.setMode(settingsRef.current.flightMode);
     simulationRef.current?.returnToAttract(settingsRef.current.airborneStartAgl);
     simulationRef.current?.setPaused(false);
@@ -686,6 +748,7 @@ export function FlightGame() {
     audioRef.current?.suspend();
     const nextSeed = createRandomSeed();
     spawnRef.current = "airborne";
+    setSpawnKind("airborne");
     setSeed(nextSeed);
     latestStateRef.current = INITIAL_VISUAL_STATE;
     setVisualState(INITIAL_VISUAL_STATE);
@@ -744,25 +807,81 @@ export function FlightGame() {
               value={settings.aircraft}
               onChange={(aircraft) => applySettings({ ...settingsRef.current, aircraft })}
             />
-            <button className="primary-action start-screen__start" onClick={() => void takeControl()}>
-              <span>Start</span>
-              <small>{CONTROL_MODE_LABELS[settings.flightMode]}</small>
-            </button>
-            <button className="seed-action" onClick={chooseNewWorld} aria-label={`Generate a new world. Current seed ${seedToString(seed)}`}>
-              <small>Seed</small>
-              <strong>{seedToString(seed)}</strong>
-              <span aria-hidden="true">↻</span>
-            </button>
-            <button
-              className="settings-action"
-              type="button"
-              onClick={openSettings}
-              aria-haspopup="dialog"
-              aria-controls="settings-dialog"
-            >
-              <small>Settings</small>
-              <span aria-hidden="true">⚙</span>
-            </button>
+            {/*
+              * One wrapping row of two GROUPS, never four loose buttons. The two
+              * starts are a pair and the seed and settings are a pair, so when the
+              * window gets too narrow the second pair drops to its own row TOGETHER
+              * — settings can never be orphaned on a row by itself, which is the
+              * awkward in-between state Jason photographed. See flight.css.
+              */}
+            <div className="start-screen__actions">
+              <div className="start-screen__starts">
+                {/*
+                  * Names only, at Jason's request. The secondary lines are gone
+                  * from the face but not from the aeroplane: the flight-mode hint
+                  * moves to the accessible name and the tooltip, because it is
+                  * the one piece here a player might have been relying on and it
+                  * is not shown anywhere else on this screen.
+                  */}
+                <button
+                  className="primary-action start-screen__start"
+                  type="button"
+                  onClick={() => void takeControl()}
+                  aria-label={`Start flying. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+                  title={CONTROL_MODE_LABELS[settings.flightMode]}
+                >
+                  <span>Start</span>
+                </button>
+                <button
+                  className="primary-action start-screen__runway"
+                  type="button"
+                  onClick={() => void startOnRunway()}
+                  aria-label="Start on the runway, stopped and ready for take-off"
+                  title="On the threshold"
+                >
+                  <span>Runway start</span>
+                </button>
+              </div>
+              <div className="start-screen__utility">
+                <button className="seed-action" onClick={chooseNewWorld} aria-label={`Generate a new world. Current seed ${seedToString(seed)}`}>
+                  <small>Seed</small>
+                  <strong>{seedToString(seed)}</strong>
+                  <span aria-hidden="true">↻</span>
+                </button>
+                <button
+                  className="settings-action settings-action--icon"
+                  type="button"
+                  onClick={openSettings}
+                  aria-haspopup="dialog"
+                  aria-controls="settings-dialog"
+                  aria-label="Settings"
+                  title="Settings"
+                >
+                  {/*
+                    * A stroked SVG gear rather than U+2699. The font only offers
+                    * that glyph as a solid, heavy shape, and at the size this
+                    * button needs it shouted; a thin stroke on a 24-box reads at
+                    * the same optical size without the weight. The accessible
+                    * name and tooltip carry the meaning, so it is aria-hidden.
+                    *
+                    * The outline is a real cog — eight teeth alternating between a
+                    * 7.15 root radius and a 10.15 tip. The first attempt drew a
+                    * circle with eight radial spokes through it, which renders as
+                    * a SUN, not a gear. Teeth sit ON the rim; spokes stick out of
+                    * it, and that is the whole difference.
+                    */}
+                  <svg
+                    className="settings-action__gear"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path d="M 18.95 10.33 L 22.03 10.41 L 22.03 13.59 L 18.95 13.67 L 18.10 15.74 L 20.21 17.97 L 17.97 20.21 L 15.74 18.10 L 13.67 18.95 L 13.59 22.03 L 10.41 22.03 L 10.33 18.95 L 8.26 18.10 L 6.03 20.21 L 3.79 17.97 L 5.90 15.74 L 5.05 13.67 L 1.97 13.59 L 1.97 10.41 L 5.05 10.33 L 5.90 8.26 L 3.79 6.03 L 6.03 3.79 L 8.26 5.90 L 10.33 5.05 L 10.41 1.97 L 13.59 1.97 L 13.67 5.05 L 15.74 5.90 L 17.97 3.79 L 20.21 6.03 L 18.10 8.26 Z" />
+                    <circle cx="12" cy="12" r="3.6" />
+                  </svg>
+                </button>
+              </div>
+            </div>
             <button
               className="seed-action viewer-action"
               type="button"
@@ -830,7 +949,9 @@ export function FlightGame() {
                 onClick={() => void restartFlight()}
                 aria-label={visualState.crashed
                   ? "Restart airborne above the crash location"
-                  : "Restart flight from the original start"}
+                  : spawnKind === "runway"
+                    ? "Restart on the runway, where this flight began"
+                    : "Restart airborne, where this flight began"}
               >
                 Restart flight
               </button>

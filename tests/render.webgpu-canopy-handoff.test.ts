@@ -31,7 +31,7 @@ import {
   CANOPY_CLOSURE_TARGET,
   RENDERED_DENSITY_LAWS,
   crownCoverFromAreas,
-  renderedShareAtDistance,
+  drawnShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
 import {
   IMPOSTOR_ALPHA_TEST_THRESHOLD,
@@ -218,14 +218,18 @@ describe("6-8 canopy closure is the density field's, on the rendered law's model
 
 describe("6-8 conserves coverage across the whole ramp", () => {
   const law = RENDERED_DENSITY_LAWS[1]!;
+  // 2026-09-13: the floor the ground reads is the DRAWN share's — the law's
+  // impostor floor — because impostors fill the mid band below the geometry
+  // share from the crossover outward, and coverage is conserved across
+  // representations. `TerrainClipmapSystem` hands the plugin exactly this.
   const bands = {
     near: law.near.outerRadiusMeters,
     far: law.far.outerRadiusMeters,
-    floor: law.farFloorShare,
+    floor: Math.max(law.farFloorShare, law.impostorFloorShare),
   };
   const shareAt = (d: number) => canopyRenderedShare(d, bands.near, bands.far, bands.floor);
 
-  it("is the rendered-density law's own falloff times the LIVE impostor cull", () => {
+  it("is the rendered-density law's own drawn falloff times the LIVE impostor cull", () => {
     // Not a ramp invented for this item: both factors are mechanisms already
     // running. Inside the near band the law's share is 1; the cull window is
     // the plugin's band-code-2 dither, read from the shared constant so the
@@ -233,12 +237,12 @@ describe("6-8 conserves coverage across the whole ramp", () => {
     expect(shareAt(0)).toBe(1);
     expect(shareAt(bands.near)).toBe(1);
     for (const d of [200, 600, 1_100, 2_000, 2_400]) {
-      expect(shareAt(d)).toBeCloseTo(renderedShareAtDistance(law, d), 12);
+      expect(shareAt(d)).toBeCloseTo(drawnShareAtDistance(law, d), 12);
     }
     // The cull window opens exactly DETAIL_FAR_CULL_FADE_METERS before the
     // impostor radius and closes exactly at it.
     expect(shareAt(bands.far - DETAIL_FAR_CULL_FADE_METERS)).toBeCloseTo(
-      renderedShareAtDistance(law, bands.far - DETAIL_FAR_CULL_FADE_METERS), 12);
+      drawnShareAtDistance(law, bands.far - DETAIL_FAR_CULL_FADE_METERS), 12);
     expect(shareAt(bands.far)).toBe(0);
     expect(shareAt(bands.far + 1)).toBe(0);
   });
@@ -301,10 +305,17 @@ describe("6-8 conserves coverage across the whole ramp", () => {
     }
     // The ring in particular: crossing the impostor radius moves nothing,
     // because the cull has already reached zero there. Measured at 1 mm, which
-    // is the scale a STEP would show at and a slope would not.
+    // is the scale a STEP would show at and a slope would not — so the bound
+    // is the ramp's own slope over the 2 mm crossed (with a 2× allowance), not
+    // a literal: the 2026-09-13 drawn floor made the cull ramp 6.7× steeper,
+    // and a fixed 1e-6 was silently a slope test.
     const inside = canopyHandoff(closure, shareAt(bands.far - 1e-3));
     const outside = canopyHandoff(closure, shareAt(bands.far + 1e-3));
-    expect(Math.abs(outside.surface - inside.surface)).toBeLessThan(1e-6);
+    const slopePerMeter = Math.abs(
+      canopyHandoff(closure, shareAt(bands.far - 1)).surface
+        - canopyHandoff(closure, shareAt(bands.far - 2)).surface,
+    );
+    expect(Math.abs(outside.surface - inside.surface)).toBeLessThan(slopePerMeter * 4e-3);
     expect(outside.surface).toBeCloseTo(closure, 9);
     console.log(
       `6-8 ramp continuity: worst 1 m surface step ${worstSurface.toExponential(2)} `
@@ -495,7 +506,11 @@ describe("6-8 calibrates the LIT response across the handoff, not the albedo", (
 describe("6-8 adds canopy height at coarse LOD only", () => {
   const law = RENDERED_DENSITY_LAWS[1]!;
   const shareAt = (d: number) => canopyRenderedShare(
-    d, law.near.outerRadiusMeters, law.far.outerRadiusMeters, law.farFloorShare);
+    d,
+    law.near.outerRadiusMeters,
+    law.far.outerRadiusMeters,
+    Math.max(law.farFloorShare, law.impostorFloorShare),
+  );
 
   it("lifts nothing anywhere a stem is still drawn", () => {
     // The APPEARANCE half may take over inside the geometry bands — a forest at
@@ -800,7 +815,30 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // readers, re-pinned. The rejected alternative was applying the floor in
     // the splat path alone, which would split one authority into two — the
     // shape that left the memory estimate and the inventory disagreeing.
-    expect(dark.digest).toBe("2a43cd2c");
+    //
+    // RE-PINNED `2a43cd2c` -> `d127cbd4` for item C, the alpine cover
+    // partition (alpine turf, slope-dependent altitude Rock, repose-angle
+    // scree). **Measured probe by probe, because a moved hash says nothing
+    // about how much moved:** this transect tops out at 521 m, 17 of its 4,096
+    // probes stand above the 420 m `alpine` onset, 15 of those 17 changed their
+    // six-decimal weight key, and **0 of the 4,079 at or below 420 m changed at
+    // all** — item C's terms are all multiplied by `alpine`, which is exactly 0
+    // there (`render.webgpu-land-cover-alpine-partition.test.ts` proves that to
+    // the bit). The DOMINANT material changed at 0 probes, so the classification
+    // the species, wildlife and ecology rules read on this transect is unmoved;
+    // what moved is the minority weights of 15 probes on its highest ground.
+    //
+    // RE-PINNED `d127cbd4` -> `fa77bb72` for wave M, and this time the terrain
+    // moved as well as the law, so the two are separated: M-1 (the massif
+    // shape) changes the HEIGHT at 377 of the 4,096 probes — this transect
+    // crosses a 521 m hill inside the reshaping gate — and the weight key
+    // changes at 349 probes at or below 420 m and at all 17 above it. Every one
+    // of the 349 is a probe whose terrain moved; none is the classifier (the
+    // alpine-partition test proves the law bit-identical down there). The
+    // DOMINANT material changes at 35 probes, all Rock -> ForestFloor: faces
+    // that were cliff on the needle terrain and are not any more. Mean Rock
+    // share 1.01% -> 0.24%.
+    expect(dark.digest).toBe("fa77bb72");
     expect(dark.probes).toBe(EDGE * EDGE);
   });
 
@@ -813,7 +851,15 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // 1.0 by a permanent 0.100 on every wet lowland. Forest litter was painted
     // where there is no forest. Measured on the shipping bake afterwards:
     // ForestFloor 13.6% of baked texels, against 57.7% of land before.
-    expect(live.digest).toBe("266f19ce"); // re-pinned with `2a43cd2c`; same cause, see above
+    // RE-PINNED `266f19ce` -> `d7d70f55` for item C, with `d127cbd4` above and
+    // for the same cause: 14 of the 17 probes above 420 m changed their weight
+    // key, 0 of the 4,079 at or below it did, and the dominant material
+    // changed at 0 probes. (`266f19ce` was itself re-pinned with `2a43cd2c`.)
+    // RE-PINNED `d7d70f55` -> `6b625191` for wave M, with `fa77bb72` above and
+    // for the same cause: 377 probes stand on moved terrain, 347 weight keys
+    // change at or below 420 m (all on moved terrain), the dominant material
+    // changes at 34 probes, all Rock -> Grass.
+    expect(live.digest).toBe("6b625191");
     let changed = 0;
     for (let index = 0; index < dark.reference.length; index += 1) {
       if (dark.reference[index] !== live.reference[index]) changed += 1;

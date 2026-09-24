@@ -11,11 +11,15 @@ const PILOT_COMMAND_THRESHOLD = 0.04;
 const MIN_ENGAGE_INDICATED_AIRSPEED = 30;
 /**
  * Washout high-pass time constant. Steady coordinated-turn yaw rate washes
- * out with tau = 1.2 s, so the damper fights the dutch-roll oscillation
- * (omega_n 2.16-3.82 rad/s on the J-45, so omega*tau >= 2.59 and the
- * high-pass passes >= 93% of the mode) at nearly full gain while a held turn
- * sees the rudder contribution decay to nothing. Re-checked against the
- * J-45's measured omega_n: the fit does not call for a longer constant.
+ * out with tau = 1.2 s, so the damper fights the dutch-roll oscillation at
+ * nearly full gain while a held turn sees the rudder contribution decay to
+ * nothing.
+ *
+ * Re-measured on the F-16C, whose mode sits lower than the fictional airframe
+ * this was first sized against: omega_n 1.84 rad/s at 120 m/s rising to 4.55
+ * at 340, so omega*tau runs 2.21 to 5.46 and the high-pass passes 91% to 98%
+ * of the mode. The J-45's range was 2.16-3.82 rad/s for >= 93%. The worst
+ * corner lost two points and 1.2 s still does not call for a longer constant.
  */
 const WASHOUT_TIME_CONSTANT_SECONDS = 1.2;
 /**
@@ -25,7 +29,7 @@ const WASHOUT_TIME_CONSTANT_SECONDS = 1.2;
  */
 const FILTER_STEP_SECONDS = 1 / 120;
 /**
- * Yaw-damper gain, re-derived for the Vesper J-45's coefficients (Cn_beta
+ * Yaw-damper gain, re-derived for the F-16C's coefficients (Cn_beta
  * 0.13, Cn_r -0.38, Cn_dr 0.082, Iyy 54,000, b 9.6 m, S 25.8 m^2) via the
  * two-DOF dutch-roll model, then sized against the full nonlinear model.
  *
@@ -35,12 +39,14 @@ const FILTER_STEP_SECONDS = 1 / 120;
  *   washout high-pass gain omega*tau/sqrt(1 + (omega*tau)^2).
  * At the binding 120 m/s corner (2,000 m, rho 0.968, q 6,971 Pa):
  *   N_dr = 6971*25.8*9.6*0.082/54000 = 2.62 s^-2 per unit rudder
+ *   (worked for the J-45 this was first sized against; the F-16's own
+ *   measured mode is omega_n 1.84 rad/s and open-loop zeta 0.101 at 120 m/s)
  *   omega_n = 2.16 rad/s measured, H(2.16, tau 1.2) = 0.93
  *   open loop 2*zeta*omega_n = 2*0.163*2.16 = 0.70 s^-1
  *   lifting that to zeta 0.45 needs k_r = 1.24/(2.62*0.93) = 0.51.
- * The sketch ignores roll coupling, and the J-45 couples hard: Cl_beta 0.052
- * into Ixx 11,900 is a far smaller roll inertia than the yaw inertia driving
- * the mode. Measured in the full model (5-degree sideslip release, log
+ * The sketch ignores roll coupling, and this airframe couples hard: Cl_beta
+ * 0.058 into Ixx 12,900 is a far smaller roll inertia than the 85,600 yaw
+ * inertia driving the mode, which is most of why the F-16 rolls at 244 deg/s. Measured in the full model (5-degree sideslip release, log
  * decrement over peaks above 5% of the initial amplitude), k_r 0.51 delivers
  * only zeta 0.385 at 120 m/s. The nonlinear fit sizes the gain at 1.1, where
  * the 120 m/s response has also reached its plateau (1.4 buys nothing) so the
@@ -55,16 +61,18 @@ const FILTER_STEP_SECONDS = 1 / 120;
  * (open-loop zeta is nearly speed-invariant at fixed density and scales with
  * sqrt(rho) at altitude, which is exactly why a rate damper rather than more
  * airframe Cn_r is the right instrument; closed loop clears the zeta >= 0.45
- * floor at 120 m/s and the >= 0.5 floor across the 200-260 m/s cruise band.)
+ * floor at 120 m/s and the >= 0.5 floor across the 200-260 m/s cruise band.
+ * The slow-corner floor is 0.42 for this airframe; see DUTCH_ROLL_POINTS.)
  *
  * This is ~5x the gain the F-22 build carried because that airframe was given
- * Cn_r -0.70 (open-loop zeta 0.32) while the J-45 keeps its original -0.38
- * (open-loop zeta 0.163) - the damper has to supply roughly twice as much.
+ * Cn_r -0.70 (open-loop zeta 0.32) while the F-16 carries -0.36 on a much
+ * larger yaw inertia (open-loop zeta ~0.11) - the damper has to supply roughly
+ * three times as much.
  * The 0.35 limit is never reached by the mode itself: it corresponds to a
  * washed yaw rate of 18 deg/s, and the measured dutch-roll peak at 120 m/s is
  * 8 deg/s, so the limit only bounds a violent departure.
  */
-const YAW_DAMPER_GAIN = 1.1;
+const YAW_DAMPER_GAIN = 1.6;
 const YAW_DAMPER_LIMIT = 0.35;
 /**
  * Small roll-rate damper taking the edge off dutch-roll coupling into roll.

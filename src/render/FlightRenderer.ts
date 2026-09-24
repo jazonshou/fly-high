@@ -60,6 +60,7 @@ import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResourc
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
@@ -71,6 +72,7 @@ import {
   formatGpuUncapturedError,
   GpuUncapturedErrorGuard,
 } from "./webgpu/core/GpuUncapturedErrorGuard";
+import { installDeferredPassTiming } from "./webgpu/core/DeferredPassTiming";
 import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
 import { inventoriedGpuBufferBytes } from "./webgpu/core/GpuBufferInventory";
 import {
@@ -91,8 +93,10 @@ import {
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
 import {
+  DYNAMIC_ALLOCATIONS,
   estimateGpuMemoryMiB,
   estimateInventoriableGpuMemoryMiB,
+  type DynamicAllocationInputs,
 } from "./webgpu/core/PerformanceBudget";
 import {
   CAMERA_FAR_PLANE_METERS,
@@ -134,14 +138,23 @@ type MutableDetailSunShadowSnapshot = {
   -readonly [Key in keyof DetailSunShadowSnapshot]: DetailSunShadowSnapshot[Key];
 };
 import {
+  BATHYMETRY_STORAGE_FORMATS,
   BathymetryClipmap,
   bathymetryErodedPageOverlaySeamFromAtlas,
+  bathymetryStorageBytesPerTexel,
+  selectBathymetryStorageFormat,
 } from "./webgpu/water/BathymetryClipmap";
 import { channelGraphToHydrologyGeometry } from "./webgpu/water/ChannelNetwork";
 import {
   resolveOceanMipGenerator,
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
+import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
+import {
+  sampleTerrainClimate,
+  sampleTerrainMoisture,
+  terrainTemperatureFromClimate,
+} from "@/src/world/terrain";
 import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
@@ -150,6 +163,18 @@ import { attributePresentFrame } from "./frameAttribution";
 import {
   cameraBankFollow,
   cameraPresentationResponse,
+  CHASE_AIM_HEIGHT_METERS,
+  cameraRigLiftToRef,
+  cameraTrailMeters,
+  chaseRigHeightForBank,
+  chaseRigOffsetsToRef,
+  COCKPIT_AIM_DISTANCE_METERS,
+  cockpitEyeForwardUpMetres,
+  cockpitEyeRightMeters,
+  cockpitRigDrawsAircraft,
+  cockpitHorizontalFieldOfViewForAspect,
+  type CockpitRigOverride,
+  cockpitRigPositionsToRef,
   orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
 } from "./cameraPresentation";
@@ -307,30 +332,11 @@ export function chaseCameraProfile(
   airspeed: number,
   out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0, aimAhead: 0 },
 ): ChaseCameraProfile {
-  const jet = aircraft === "jet";
-  if (jet) {
-    // The speed response is the point: the "jet should sit further ahead at
-    // speed" report is answered by pulling the rig back AND pushing the aim
-    // point forward, so the aircraft slides forward in frame and the world
-    // streams past it. The old fixed +2.2 m cap read as a static rig.
-    //
-    // Sized for the ~11 m Vesper J-45 (not the 19 m airframe the fix-pack
-    // briefly flew): the base rig is the original 14.3 m / 5.0 m, and the
-    // response opens above 145 m/s — the J-45's ~260 m/s ceiling gives a
-    // 115 m/s working band, so the slopes are set to reach their caps right
-    // at the top of the envelope (0.07·115 = 8.05 ≥ 8; 0.12·115 = 13.8 ≈ 14;
-    // 0.05·120 = 6.0 = 6 measured from the 140 m/s FOV knee).
-    const speedExcess = Math.max(0, airspeed - 145);
-    out.distance = 14.3 + Math.min(8, speedExcess * 0.07);
-    out.height = 5;
-    out.fieldOfView = 62 + Math.max(0, Math.min(6, (airspeed - 140) * 0.05));
-    out.aimAhead = 16 + Math.min(14, speedExcess * 0.12);
-    return out;
-  }
-  out.distance = 13.5 + Math.max(0, Math.min(2.2, (airspeed - 45) * 0.012));
-  out.height = 5.1;
-  out.fieldOfView = 62 + Math.max(0, Math.min(3, (airspeed - 38) * 0.035));
-  out.aimAhead = 16;
+  const { chase } = aircraftSpec(aircraft);
+  out.distance = rampAtSpeed(chase.distance, airspeed);
+  out.height = chase.height;
+  out.fieldOfView = rampAtSpeed(chase.fieldOfView, airspeed);
+  out.aimAhead = rampAtSpeed(chase.aimAhead, airspeed);
   return out;
 }
 
@@ -425,6 +431,14 @@ export interface FlightRendererOptions {
    * accepted only together with `pinnedRenderScale`.
    */
   captureGpuTiming?: boolean;
+  /**
+   * Replace the gameplay cockpit rig — its lens and its lateral eye — with the
+   * previous one. Perf capture ONLY: its cockpit-mode shots were placed for a
+   * 56 degree lens and have to stay comparable. Interactive sessions leave it
+   * unset, and `tests/render.cockpit-rig.test.ts` fails if anything under
+   * `src/` other than this file and `cameraPresentation.ts` names it.
+   */
+  cockpitRigOverride?: CockpitRigOverride;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -483,8 +497,19 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly aerialReceivers: AerialPerspectiveRegistry;
   private readonly skyProbe: SkyEnvironmentProbe;
   private readonly ocean: SpectralOceanSystem;
+  /** `W-8`: the sea's climate provinces, baked per 50 km of flight. */
+  private readonly waterEnvironment: WaterEnvironmentField;
+  /** `W-8`: skip the first frame's bake — see the frame-graph node. */
+  private waterEnvironmentBakeDeferred = true;
   private readonly hydrology: HydrologySystem;
   private readonly bathymetry: BathymetryClipmap;
+  /**
+   * The estimator's allocation inputs with the bathymetry row at the LIVE
+   * storage format: `DYNAMIC_ALLOCATIONS` itself on a tier1 adapter, and the
+   * rgba16float bytes-per-texel on the core-only fallback, so the reported
+   * estimate is the allocated figure on both.
+   */
+  private readonly dynamicAllocations: DynamicAllocationInputs;
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly groundCover: GroundCoverSystem;
@@ -553,6 +578,16 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly desiredCameraTarget = Vector3.Zero();
   private readonly desiredCamera = Vector3.Zero();
   private readonly desiredCameraUp = Vector3.Up();
+  /** The bank-blended vertical the exterior rigs build their offsets on. */
+  private readonly cameraRigLift = Vector3.Up();
+  /** Camera and aim point relative to the aircraft, which is what is smoothed. */
+  private readonly cameraOffset = Vector3.Zero();
+  private readonly cameraTargetOffset = Vector3.Zero();
+  /** Last frame's aircraft position, for the observed ground speed. */
+  private readonly previousAircraftPosition = Vector3.Zero();
+  private previousAircraftPositionValid = false;
+  /** Observed ground speed in m/s, which is what sets the chase trail. */
+  private observedGroundSpeed = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   private readonly frameIntervalDurations: number[] = [];
@@ -596,6 +631,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
   private pinnedRenderScale: number | null;
+  /** Perf capture only; null for every player. See `FlightRendererOptions`. */
+  private readonly cockpitRigOverride: CockpitRigOverride | null;
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
@@ -631,6 +668,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     aerialReceivers: AerialPerspectiveRegistry,
     skyProbe: SkyEnvironmentProbe,
     ocean: SpectralOceanSystem,
+    waterEnvironment: WaterEnvironmentField,
     hydrology: HydrologySystem,
     bathymetry: BathymetryClipmap,
     airport: AirportSystem | null,
@@ -665,8 +703,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.aerialReceivers = aerialReceivers;
     this.skyProbe = skyProbe;
     this.ocean = ocean;
+    this.waterEnvironment = waterEnvironment;
     this.hydrology = hydrology;
     this.bathymetry = bathymetry;
+    this.dynamicAllocations = bathymetry.storageFormat === "r16float"
+      ? DYNAMIC_ALLOCATIONS
+      : Object.freeze({
+        ...DYNAMIC_ALLOCATIONS,
+        bathymetryClipmapBytesPerTexel: bathymetryStorageBytesPerTexel(bathymetry.storageFormat),
+      });
     this.airport = airport;
     this.detail = detail;
     this.groundCover = groundCover;
@@ -691,6 +736,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
     this.pinnedRenderScale = options.pinnedRenderScale ?? null;
+    this.cockpitRigOverride = options.cockpitRigOverride ?? null;
     this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
@@ -727,6 +773,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     this.domElement.dataset.rendererMode = "webgpu";
     this.domElement.dataset.renderTechnique = "forward-spectral-volumetric";
+    // Which bathymetry storage path the device took, readable from the DOM so
+    // a browser without tier1 (Firefox) can be told apart from the reference.
+    this.domElement.dataset.bathymetryStorageFormat = bathymetry.storageFormat;
   }
 
   private readonly handleDebugKey = (event: KeyboardEvent): void => {
@@ -755,13 +804,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       captureGpuTiming: options.captureGpuTiming,
       pinnedCapture: options.pinnedRenderScale !== undefined,
     });
-    if (!capability.features.has("texture-formats-tier1")) {
-      throw new Error(
-        "This GPU does not expose texture-formats-tier1, required by the R16F bathymetry clipmap.",
-      );
-    }
+    // The bathymetry clipmap's designed r16float storage target needs the
+    // OPTIONAL `texture-formats-tier1` feature. Chrome's adapter exposes it;
+    // Firefox 155's does not, and this used to be a hard refusal ("This GPU
+    // does not expose texture-formats-tier1"). The format is chosen from the
+    // ADAPTER's features here, the feature is requested only when that
+    // choice needs it, and a core-only device gets the rgba16float fallback
+    // (see `BathymetryStorageFormat`).
+    const bathymetryStorageFormat = selectBathymetryStorageFormat(capability.features);
+    const bathymetryStorageFeature =
+      BATHYMETRY_STORAGE_FORMATS[bathymetryStorageFormat].requiredFeature;
     const requiredFeatures: GPUFeatureName[] = [
-      "texture-formats-tier1",
+      ...(bathymetryStorageFeature ? [bathymetryStorageFeature as GPUFeatureName] : []),
       ...(gpuTimingEnabled ? ["timestamp-query" as const] : []),
     ];
     const engine = await awaitRendererStartup(
@@ -803,6 +857,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
       engine.enableGPUTimingMeasurements = gpuTimingEnabled;
+      // Babylon's own per-pass read reports the slot's previous occupant
+      // (DeferredPassTiming.ts). A diagnostic capture that times passes must
+      // read each pass's own time, or it measures nothing it can name.
+      if (engine.enableGPUTimingMeasurements && !installDeferredPassTiming(engine)) {
+        throw new Error("GPU timing is on but per-pass timing could not be installed on this engine");
+      }
       assertStartupInvariants({
         timestampQuerySupported,
         gpuTimingEnabled: engine.enableGPUTimingMeasurements,
@@ -920,6 +980,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         evolutionResult.mode === "eroded"
           ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
           : null,
+        { storageFormat: bathymetryStorageFormat },
       );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
@@ -1031,6 +1092,18 @@ export class FlightRenderer implements FlightRenderingSystem {
           // surfaces. Inland water took its direction from here and its speed
           // from the atmosphere's cloud-layer wind, which can disagree 3x.
           windSpeedMetersPerSecond: options.world.prevailingWindSpeed,
+          // W-8: the climate at an inland water surface, which is what its
+          // chemistry is made of. A pure function of world position and
+          // elevation, so two pages sharing a river derive the same colour.
+          climateSample: (x, z, elevation) => ({
+            temperature: terrainTemperatureFromClimate(
+              options.world,
+              sampleTerrainClimate(options.world, x, z),
+              elevation,
+            ),
+            // Point-sampled: a lake or a station is a point, not a footprint.
+            moisture: sampleTerrainMoisture(options.world, x, z, 0),
+          }),
           ...(channelGraph
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
@@ -1072,6 +1145,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
+      const waterEnvironment = new WaterEnvironmentField(scene, options.world);
+      cleanup.push(() => waterEnvironment.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
       cleanup.push(() => cloudShadowReceivers.dispose());
       // Register each shared PBR material once. Detail and wildlife can render
@@ -1154,6 +1229,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       hydrology.setCloudShadow(initialCloudShadow);
       ocean.setSunShadows(atmosphere.shadows);
       hydrology.setSunShadows(atmosphere.shadows);
+      // Terrain occlusion of the reflected sky: the ground bounce's albedo,
+      // forwarded again with every atmosphere change (see setAtmosphere).
+      hydrology.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
+      ocean.setGroundBounceAlbedo(atmosphere.surfaceAlbedoLuminance);
       cloudShadowReceivers.setProjection(initialCloudShadow, 0, 0);
 
       // 7-3: the star field. Built before the post-process chain so its
@@ -1398,6 +1477,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         aerialReceivers,
         skyProbe,
         ocean,
+        waterEnvironment,
         hydrology,
         bathymetry,
         airport,
@@ -1432,8 +1512,37 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (mode === this.cameraMode) return;
     this.cameraMode = mode;
     this.cameraCut = true;
-    this.aircraft.setCockpitView(mode === "cockpit");
+    const cockpit = mode === "cockpit";
+    this.aircraft.setCockpitView(cockpit);
+    // A WORLD-ONLY RIG (perf capture) draws no part of the aeroplane in cockpit view. Disabling the
+    // visual's ROOT is what does it, rather than walking the meshes: `setCockpitView` and
+    // `configureCockpitOnlyParts` both own per-mesh `isVisible`, and a second writer would fight
+    // them on the way back out. A disabled root draws nothing beneath it whatever those flags say,
+    // and restoring it hands every mesh back in the state its own owner left it in.
+    if (!cockpitRigDrawsAircraft(this.cockpitRigOverride)) {
+      this.aircraft.root.setEnabled(!cockpit);
+    }
     this.graph.invalidateHistory("camera mode changed");
+  }
+
+  /**
+   * Snap the exterior rig onto its settled pose on the next frame.
+   *
+   * `setCameraMode` cannot do this — it early-returns when the mode has not
+   * changed — and a spawn needs it even though the mode is the same. Two
+   * things go wrong across a teleport without it. The frame graph's temporal
+   * history is about somewhere else, and more sharply, the chase trail is
+   * derived from how far the aircraft moved since the last frame: across a
+   * jump to the runway that difference is kilometres, which would read as a
+   * ground speed in the thousands and throw the camera far behind the
+   * aeroplane on its first frame. Forgetting the previous position is what
+   * makes the trail zero until the aircraft has actually moved again.
+   */
+  cutCamera(): void {
+    this.cameraCut = true;
+    this.previousAircraftPositionValid = false;
+    this.observedGroundSpeed = 0;
+    this.graph.invalidateHistory("camera cut");
   }
 
   setViewerMode(enabled: boolean): void {
@@ -1533,6 +1642,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
+    // The snapshot carries no albedo; the occluded lake reflection's ground
+    // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
+    // above, so it rides the same publish.
+    this.hydrology.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
+    this.ocean.setGroundBounceAlbedo(this.atmosphere.surfaceAlbedoLuminance);
     this.graph.invalidateHistory("atmosphere changed");
   }
 
@@ -1726,6 +1840,31 @@ export class FlightRenderer implements FlightRenderingSystem {
   async waitForGpuIdleForCapture(): Promise<void> {
     if (this.disposed || this.deviceLost) return;
     await this.engine._device.queue.onSubmittedWorkDone();
+  }
+
+  /**
+   * Capture-only: restarts the ocean's cascade cadence at the harness's
+   * per-shot time pin. Without it, which frame the every-4th-frame wave
+   * cascade last evolved on depends on how many frames every EARLIER shot
+   * streamed, which is wall-clock paced, so a water shot's waves differ
+   * between runs of identical code. See `OceanCascadeClock`. Production never
+   * calls this; mid-flight it would dispatch the slow cascades out of turn.
+   */
+  pinOceanCascadePhaseForCapture(): void {
+    if (this.disposed) return;
+    this.ocean.pinCascadePhaseForCapture();
+  }
+
+  /**
+   * Capture-only: respawns the wildlife from its seed and restarts its clocks
+   * at the harness's per-shot time pin. Without it the birds in a shot are
+   * wherever every EARLIER shot's frames flew them, so identical code puts
+   * them in different places run to run. See `WildlifeSystem.respawnForCapture`.
+   * Production never calls this; mid-flight it would teleport every animal.
+   */
+  pinWildlifeForCapture(): void {
+    if (this.disposed) return;
+    this.wildlife.respawnForCapture();
   }
 
   /**
@@ -1966,6 +2105,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           type?: number;
           format?: number;
           generateMipMaps?: boolean;
+          mipLevelCount?: number;
         } | null;
       })._texture;
       if (!internal || seenTextures.has(internal)) continue;
@@ -1974,7 +2114,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const height = internal.height ?? 0;
       const depth = Math.max(1, internal.depth ?? 1);
       const bytesPerTexel = this.texelBytes(internal.type, internal.format);
-      const mipFactor = internal.generateMipMaps ? 4 / 3 : 1;
+      // A chain is a chain whoever built it. The hand-built ones (aircraft and
+      // airfield paint, the livery, the terrain/foliage/impostor arrays) carry
+      // their levels with Babylon's generation OFF (`MipChainUpload.ts`, FI-5),
+      // so the flag alone would drop a third of their bytes from a gated number.
+      const mipFactor = internal.generateMipMaps || (internal.mipLevelCount ?? 1) > 1 ? 4 / 3 : 1;
       bytes += width * height * depth * bytesPerTexel * mipFactor;
     }
     const textureBytes = bytes;
@@ -2110,7 +2254,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
-      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(this.profile, estimateViewport),
+      estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
+        this.profile,
+        estimateViewport,
+        this.dynamicAllocations,
+      ),
       // The subset the inventory walk can actually see, for the re-pin trigger.
       // The unrestricted figure above stays the budgeting number — four owners
       // budget through it — and this one exists ONLY to be compared against a
@@ -2119,6 +2267,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.profile,
         estimateViewport,
         { worldEvolution: this.worldDefinition.worldEvolution },
+        this.dynamicAllocations,
       ),
       // ONE walk, both readings. Calling `inventoryGpuMemoryMiB()` here as
       // well would walk the scene twice and let the total disagree with the
@@ -2183,6 +2332,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => {
         delete this.domElement.dataset.rendererMode;
         delete this.domElement.dataset.renderTechnique;
+        delete this.domElement.dataset.bathymetryStorageFormat;
       },
       () => this.engine.dispose(),
       () => this.scene.dispose(),
@@ -2235,6 +2385,24 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       after: ["world-page-visibility"],
       execute: (frame) => {
         void this.bathymetry.recenter(this.cameraWorld.x, this.cameraWorld.z);
+        // W-8: the sea's environment field. A bake is ~9k terrain-climate
+        // samples and happens only when the aircraft has flown 50 km from the
+        // last window centre, so this is a compare per frame and a few
+        // milliseconds twice an hour of flying.
+        //
+        // The FIRST bake is deferred past the first frame. Cold start's
+        // time-to-ready includes the first GPU-complete frame, so anything
+        // done there lands on a path gated in milliseconds; the field is the
+        // one piece of this wave that does real CPU work, and it does not have
+        // to be done then. The cost of waiting is one frame rendered against
+        // the neutral mid-province fallback, which is exactly the province
+        // where the field's own contrast curve is the identity — i.e. nothing
+        // a frame could show.
+        if (this.waterEnvironmentBakeDeferred) {
+          this.waterEnvironmentBakeDeferred = false;
+        } else if (this.waterEnvironment.update(this.cameraWorld.x, this.cameraWorld.z)) {
+          this.ocean.setWaterEnvironmentField(this.waterEnvironment);
+        }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
@@ -2598,6 +2766,31 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   private updateCamera(state: FlightVisualState): void {
     const aircraftPosition = this.aircraft.root.position;
     let fieldOfView = 62;
+    // One vertical reference for the whole rig. The exterior views adopt only
+    // part of the aircraft's bank (`cameraBankFollow`), and the camera's own
+    // up vector already honoured that while its POSITION and aim point did
+    // not — which slid the airframe sideways in frame by 0.155% of the width
+    // per degree of bank. Building every offset on the same blended vertical
+    // removes that exactly, and because the blend starts from wings-level
+    // rather than from world up, an unbanked frame is untouched at any pitch.
+    cameraRigLiftToRef(
+      this.forward,
+      this.up,
+      cameraBankFollow(this.cameraMode, this.reducedMotion),
+      this.cameraRigLift,
+    );
+    // How fast the aeroplane is ACTUALLY moving through the scene, which is
+    // what the chase trail is derived from. A rebase frame moves every
+    // coordinate at once, so the delta across it is meaningless and the
+    // previous value is held instead.
+    if (this.previousAircraftPositionValid && !this.originShifted) {
+      const travelled = Vector3.Distance(aircraftPosition, this.previousAircraftPosition);
+      this.observedGroundSpeed = travelled / Math.max(1e-4, this.currentDeltaSeconds);
+    } else if (!this.previousAircraftPositionValid) {
+      this.observedGroundSpeed = 0;
+    }
+    this.previousAircraftPosition.copyFrom(aircraftPosition);
+    this.previousAircraftPositionValid = true;
     if (this.cameraMode === "freefly") {
       // The synthetic viewer state's position IS the camera; its orientation
       // already produced this.forward/this.up in updatePresentation. The rig
@@ -2610,31 +2803,71 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(200));
     } else if (this.cameraMode === "cockpit") {
-      // Both airframes seat the pilot at the same offsets from the CG: the
-      // J-45's tandem canopy and the trainer's cabin both sit 1.15 m forward
-      // and 1.12 m up, so no per-kind eye point is warranted here.
-      this.desiredCamera.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(1.15))
-        .addInPlace(this.up.scale(1.12));
-      this.desiredCameraTarget.copyFrom(this.desiredCamera)
-        .addInPlace(this.forward.scale(400));
-      // Narrower than chase, as a cockpit must be — the old 72° (vertical!)
-      // was the widest view in the game, which is backwards.
-      fieldOfView = 56;
+      const eye = aircraftSpec(this.aircraft.kind).cockpitEye;
+      // The eye is where the pilot's head is — in the LEFT seat where there
+      // are two — and the aim point carries the same offset, so the view stays
+      // parallel to the body axis. Both are built by one pure function so a
+      // test can hold them to it (`cockpitRigPositionsToRef`).
+      cockpitRigPositionsToRef(
+        aircraftPosition,
+        this.forward,
+        this.up,
+        cockpitEyeForwardUpMetres(eye, this.cockpitRigOverride),
+        cockpitEyeRightMeters(eye, this.cockpitRigOverride),
+        COCKPIT_AIM_DISTANCE_METERS,
+        this.desiredCamera,
+        this.desiredCameraTarget,
+      );
+      // 75 degrees horizontal, wider than chase. The lens is a property of
+      // WHAT IS BEING LOOKED THROUGH: a cockpit is close enough to its own
+      // frame, panel and sill that a 56 degree telephoto (the old value, and
+      // "narrower than chase, as a cockpit must be") could not fit any of
+      // them in view. Perf capture keeps 56 through the override. Wider
+      // than 16:9 the gameplay lens holds its 16:9 vertical field instead,
+      // so a wide window adds width rather than cropping the panel.
+      fieldOfView = cockpitHorizontalFieldOfViewForAspect(
+        this.cockpitRigOverride,
+        this.windowAspectRatio(),
+      );
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
+      const orbit = aircraftSpec(this.aircraft.kind).cinematic;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
-        Math.cos(angle) * 24,
-        8.5 + Math.sin(angle * 0.7) * 2,
-        Math.sin(angle) * 24,
+        Math.cos(angle) * orbit.radiusMeters,
+        orbit.heightMeters + Math.sin(angle * 0.7) * orbit.heightDriftMeters,
+        Math.sin(angle) * orbit.radiusMeters,
       );
-      this.desiredCameraTarget.copyFrom(aircraftPosition).addInPlace(this.up.scale(1.3));
+      this.desiredCameraTarget.copyFrom(aircraftPosition)
+        .addInPlace(this.cameraRigLift.scale(1.3));
       fieldOfView = 58;
     } else {
       const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
-      this.desiredCamera.copyFrom(aircraftPosition)
-        .subtractInPlace(this.forward.scale(profile.distance))
-        .addInPlace(this.up.scale(profile.height));
+      // The trail the old absolute-position smoothing used to produce as a
+      // lag, now asked for explicitly and along the NOSE rather than along the
+      // ground track: the settled framing players know is preserved, without
+      // a crosswind pushing the airframe sideways out of frame. See
+      // `cameraTrailMeters`.
+      const trail = cameraTrailMeters(
+        this.cameraMode,
+        this.reducedMotion,
+        this.observedGroundSpeed,
+      );
+      // The height drops toward the aircraft's level in a bank, and only in a
+      // bank: wings level it is `profile.height` exactly. The blended lift above
+      // keeps a banked airframe centred; this keeps it from sinking in frame.
+      // See `CHASE_BANK_HEIGHT_DROP`.
+      chaseRigOffsetsToRef(
+        this.forward,
+        this.cameraRigLift,
+        profile.distance,
+        chaseRigHeightForBank(profile.height, this.forward, this.up),
+        profile.aimAhead,
+        CHASE_AIM_HEIGHT_METERS,
+        trail,
+        this.desiredCamera,
+        this.desiredCameraTarget,
+      );
+      this.desiredCamera.addInPlace(aircraftPosition);
       // The chase rig trails the aircraft by up to 22 m and is not collided,
       // so a pitched-up pass near the ground can otherwise place the camera
       // under the terrain. Clamp the desired position above the surface for
@@ -2659,9 +2892,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       if (this.desiredCamera.y < cameraGround + 2.5) {
         this.desiredCamera.y = cameraGround + 2.5;
       }
-      this.desiredCameraTarget.copyFrom(aircraftPosition)
-        .addInPlace(this.forward.scale(profile.aimAhead))
-        .addInPlace(this.up.scale(1.25));
+      // Both offsets were produced together above, so the aim point already
+      // carries the same trail the camera does and the view direction is
+      // exactly what it was before the trail became explicit.
+      this.desiredCameraTarget.addInPlace(aircraftPosition);
       fieldOfView = profile.fieldOfView;
     }
     const response = cameraPresentationResponse(
@@ -2670,18 +2904,37 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.currentDeltaSeconds,
       this.reducedMotion,
     );
+    // Smoothed in the AIRCRAFT's frame, not the world's. A first-order lag
+    // chasing an absolute position that is itself translating at flight speed
+    // never converges — it settles `speed * tau` behind, which measured 7.1 m
+    // on the trainer and 16 m on the jet, and left the airframe off-centre for
+    // seconds after every turn. Smoothing the offset instead has no such
+    // steady-state error, so the rig damps ROTATION and manoeuvre (which is
+    // the life in the view) without dragging on straight flight.
+    //
+    // The offsets are STATE, deliberately. Re-deriving them from the camera's
+    // absolute position each frame reintroduces exactly the error this
+    // removes: the stored position is a frame behind the aircraft, so the
+    // implied offset arrives already short by one frame of travel and the
+    // filter settles `((1-r)/r) * speed * dt` — the same `speed * tau` — away
+    // from the offset asked for. Measured at 29.4 m instead of 20.9 m before
+    // this was made persistent.
+    this.desiredCamera.subtractInPlace(aircraftPosition);
+    this.desiredCameraTarget.subtractInPlace(aircraftPosition);
     smoothCameraVectorToRef(
-      this.camera.position,
+      this.cameraOffset,
       this.desiredCamera,
       response,
-      this.camera.position,
+      this.cameraOffset,
     );
     smoothCameraVectorToRef(
-      this.cameraTarget,
+      this.cameraTargetOffset,
       this.desiredCameraTarget,
       response,
-      this.cameraTarget,
+      this.cameraTargetOffset,
     );
+    this.camera.position.copyFrom(aircraftPosition).addInPlace(this.cameraOffset);
+    this.cameraTarget.copyFrom(aircraftPosition).addInPlace(this.cameraTargetOffset);
     // Exterior views communicate a turn without attaching the horizon to
     // every physics/interpolation correction. This restores the restrained
     // 18% chase / 30% cinematic bank used by the playable renderer; cockpit
@@ -2708,6 +2961,21 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     );
     this.camera.setTarget(this.cameraTarget);
     this.camera.fov += (fieldOfView * Math.PI / 180 - this.camera.fov) * response;
+  }
+
+  /**
+   * The window's shape as the player sees it: the canvas's CSS size, which is
+   * what the HUD's stylesheet reads too. Not the render raster: its rounding
+   * under a fractional render scale put a 2560 x 1080 window a hair wider than
+   * that (the cockpit lens measured 91.325 degrees against 91.309), and it could
+   * equally put a 16:9 window past 16:9 and move the 75 degree lens there.
+   */
+  private windowAspectRatio(): number {
+    const canvas = this.engine.getRenderingCanvas();
+    if (canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+      return canvas.clientWidth / canvas.clientHeight;
+    }
+    return this.engine.getAspectRatio(this.camera);
   }
 
   /**
@@ -2811,6 +3079,26 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // field re-bakes on observer travel and publishes a new origin with it.
     const horizonField = this.terrain.globalHorizonField;
     this.detail.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
+    // Terrain occlusion of the reflected sky: inland water asks the same
+    // field whether its REFLECTION direction clears the terrain — the one
+    // snapshot, the same frame, the same origin as the detail consumer.
+    this.hydrology.setHorizonField(
+      horizonField?.layerA ?? null,
+      horizonField?.layerB ?? null,
+      horizonField?.originX ?? 0,
+      horizonField?.originZ ?? 0,
+      horizonField?.spanMeters ?? 0,
+    );
+    // W-10: and so does the sea, which had no terrain occlusion at all — a
+    // bay reflecting bright sky where a dark headland stands is the strongest
+    // "pasted on" cue a coast has.
+    this.ocean.setHorizonField(
       horizonField?.layerA ?? null,
       horizonField?.layerB ?? null,
       horizonField?.originX ?? 0,

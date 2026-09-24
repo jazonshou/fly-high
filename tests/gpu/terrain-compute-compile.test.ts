@@ -14,7 +14,10 @@ import {
 import { terrainPageGenerationWgsl } from "../../src/render/webgpu/terrain/TerrainPageAtlas";
 import { RUNWAY_EARTHWORKS_WGSL } from "../../src/render/webgpu/terrain/RunwayEarthworks";
 import { RUNWAY_SDF_WGSL } from "../../src/render/webgpu/terrain/RunwaySurface";
-import { BATHYMETRY_UPDATE_WGSL } from "../../src/render/webgpu/water/BathymetryClipmap";
+import {
+  BATHYMETRY_UPDATE_WGSL,
+  bathymetryUpdateWgsl,
+} from "../../src/render/webgpu/water/BathymetryClipmap";
 
 /**
  * Every terrain/bathymetry compute module through Phase 5, compiled on a real
@@ -62,6 +65,13 @@ describe("terrain and bathymetry compute modules compile (4-1, 4-3, 4-7, 5-10)",
         // is to catch compile failures.
         ["page-splat", terrainPageSplatWgsl(), "bakeSplat"],
         ["bathymetry-clipmap-update", BATHYMETRY_UPDATE_WGSL, "updateBathymetry"],
+        // The core-only (Firefox) storage target; its no-tier1 device proof
+        // lives in bathymetry-storage-fallback.test.ts.
+        [
+          "bathymetry-clipmap-update-rgba16float",
+          bathymetryUpdateWgsl("rgba16float"),
+          "updateBathymetry",
+        ],
       ] as const;
       for (const [name, source, entryPoint] of modules) {
         const errors: string[] = [];

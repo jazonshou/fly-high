@@ -698,23 +698,50 @@ fn renderCloudShadow(@builtin(global_invocation_id) invocation: vec3<u32>) {
   let radial = normalize(tangent_point - params.planet_center_radius.xyz);
   let surface_position = params.planet_center_radius.xyz + radial * params.planet_center_radius.w;
   let sun_direction = normalize(params.sun_direction_steps.xyz);
+  // wave S: march the cloud SLAB only. The surface point sits below the
+  // cloud base, so the sun ray first crosses empty air; starting at the
+  // base-sphere exit and ending at the top-sphere exit puts every sample
+  // inside the layer instead of spending most of them under it. At a low
+  // sun the slab path is still long (thickness / sin elevation), so the step
+  // count also grows with 1 / elevation, capped at 48.
+  let inner_hit = cloudRaySphere(
+    surface_position,
+    sun_direction,
+    params.planet_center_radius.xyz,
+    params.cloud_radii_density.x,
+  );
   let outer_hit = cloudRaySphere(
     surface_position,
     sun_direction,
     params.planet_center_radius.xyz,
     params.cloud_radii_density.y,
   );
-  let trace_end = max(outer_hit.y, 0.0);
-  let step_count = min(u32(params.sun_direction_steps.w), 64u);
-  let step_length = trace_end / max(f32(step_count), 1.0);
+  let trace_start = max(inner_hit.y, 0.0);
+  let trace_end = max(outer_hit.y, trace_start);
+  let elevation = max(dot(radial, sun_direction), 0.25);
+  let step_count = min(
+    u32(ceil(f32(min(u32(params.sun_direction_steps.w), 64u)) / elevation)),
+    48u,
+  );
+  let step_length = (trace_end - trace_start) / max(f32(step_count), 1.0);
   var optical_depth = 0.0;
-  let jitter = f32((invocation.x * 13u + invocation.y * 71u
-    + u32(params.optical_frame.y) * 17u) & 255u) / 256.0;
-  for (var index = 0u; index < 64u; index += 1u) {
+  // wave S: a STABLE per-texel jitter. The previous linear congruence
+  // (13x + 71y + 17·frame) put its iso-lines almost exactly east-west and
+  // re-phased them by 13% of a period on every shadow render, which the
+  // terrain and the sea received as faint horizontal stripes that scrolled
+  // continuously with the camera parked — the reported "moving lines". A
+  // hashed jitter with no frame term has no structure to scroll; the cloud
+  // shadows still move with the wind, which is the motion that is real.
+  var hash = (invocation.x * 0x27d4eb2du) ^ (invocation.y * 0x165667b1u);
+  hash = hash ^ (hash >> 15u);
+  hash = hash * 0x2c1b3c6du;
+  hash = hash ^ (hash >> 12u);
+  let jitter = f32(hash >> 8u) / 16777216.0;
+  for (var index = 0u; index < 48u; index += 1u) {
     if (index >= step_count) {
       break;
     }
-    let distance = (f32(index) + jitter) * step_length;
+    let distance = trace_start + (f32(index) + jitter) * step_length;
     optical_depth += sampleShadowDensity(surface_position + sun_direction * distance)
       * step_length;
   }

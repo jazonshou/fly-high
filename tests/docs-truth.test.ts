@@ -41,7 +41,7 @@ import { readSource } from "./support/sourceText";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PERFORMANCE_MD = readSource(join(REPO_ROOT, "docs/PERFORMANCE.md"));
-const RENDERING_PLAN_MD = readSource(join(REPO_ROOT, "RENDERING_PLAN.md"));
+const RENDERING_PLAN_MD = readSource(join(REPO_ROOT, "docs/plans/RENDERING_PLAN.md"));
 const BASELINE_DIR = join(REPO_ROOT, "tests/perf/baseline");
 
 /** The (quality, mode) pair resolving to each tier — `QUALITY_WEIGHT + MODE_WEIGHT`. */
@@ -117,6 +117,38 @@ function tierTableRowLabels(): string[] {
  * discriminates the two fields**, since tiers 2-4 are `196/196` and `256/256`.
  * One coincidence between a real check and a permanently half-blind one.
  */
+/**
+ * The boolean twin of `tierRow`, for rows the table writes as words.
+ *
+ * The declaration block below says of its unverifiable list that "four of the
+ * seven could become checkable with a better parser, and saying so is the
+ * point". This is that parser for the `on`/`off`, `yes`/`no` shape: a boolean
+ * row is not unverifiable, it just is not a number.
+ */
+function tierBooleanRow(markdown: string, label: string): boolean[] {
+  const row = markdown
+    .split("\n")
+    .find((line) => line.startsWith("|") && line.split("|")[1]?.includes(label));
+  if (row === undefined) {
+    throw new Error(
+      `docs-truth: no table row whose label contains ${JSON.stringify(label)}. `
+        + "The row was renamed or deleted — update this test WITH the doc, not instead of it.",
+    );
+  }
+  const cells = row.split("|").slice(2, 6).map((cell) => cell.trim().toLowerCase());
+  const flags = cells.map((cell) => {
+    if (cell === "on" || cell === "yes") return true;
+    if (cell === "off" || cell === "no") return false;
+    throw new Error(`docs-truth: cell ${JSON.stringify(cell)} is not a boolean word`);
+  });
+  if (flags.length !== 4) {
+    throw new Error(
+      `docs-truth: row ${JSON.stringify(label)} has ${flags.length} tier cells, expected 4`,
+    );
+  }
+  return flags;
+}
+
 function tierRowPair(markdown: string, label: string): [number[], number[]] {
   const row = markdown
     .split("\n")
@@ -176,6 +208,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Active-animal budget", (p: (typeof PROFILES)[number]) => p.activeAnimalBudget],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
+    ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
     // The doc writes kilometres and the profile holds metres, so this row needs
     // the scale rather than a second parser.
     ["Vegetation radius", (p: (typeof PROFILES)[number]) => p.vegetationDistance / 1000],
@@ -189,6 +222,22 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
         + "Update the doc in this commit — the profile is the authority.",
     ).toEqual(PROFILES.map(read as (p: (typeof PROFILES)[number]) => number));
   });
+
+  const TIER_BOOLEAN_ROW_CHECKS:
+    readonly (readonly [string, (p: (typeof PROFILES)[number]) => boolean])[] = [
+      ["Ground patchwork", (p: (typeof PROFILES)[number]) => p.terrainGroundPatchwork],
+      ["Vegetation casts shadows",
+        (p: (typeof PROFILES)[number]) => p.vegetationCastsShadows],
+    ];
+
+  it.each(TIER_BOOLEAN_ROW_CHECKS)(
+    "boolean row %s matches the shipped profile", (label, read) => {
+      expect(
+        tierBooleanRow(PERFORMANCE_MD, label as string),
+        `docs/PERFORMANCE.md's "${label}" row no longer matches QualityProfile.ts. `
+          + "Update the doc in this commit — the profile is the authority.",
+      ).toEqual(PROFILES.map(read as (p: (typeof PROFILES)[number]) => boolean));
+    });
 
   /**
    * **A GREEN ON THIS BLOCK MUST MEAN "THE TABLE MATCHES THE PROFILE", NOT
@@ -222,9 +271,6 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
       "MIXED UNITS within one row — `900 m | 1.4 km | 1.8 km | 2.4 km` — so a "
       + "single scale factor cannot convert it. Fixable by normalising the doc "
       + "row to metres, which is a doc change and needs its author."],
-    ["Vegetation casts shadows",
-      "Non-numeric (`no` / `yes`). The field is a boolean; comparing it needs a "
-      + "predicate parser rather than a number parser."],
     ["Card-tree LOD radius",
       "No profile field. The near+mid band radius is derived inside the detail "
       + "runtime from renderedDensityLaw, not published as a scalar."],
@@ -244,6 +290,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // a manual step that fails LOUDLY, which is why it is not auto-discovered.
     const checkedKeys = [
       ...TIER_ROW_CHECKS.map((row) => row[0]),
+      ...TIER_BOOLEAN_ROW_CHECKS.map((row) => row[0]),
       "Absolute pixel cap",
       "Height-atlas slots / channel-atlas slots",
     ];
@@ -458,11 +505,18 @@ describe("6-12 documentation truth: the committed capture baseline", () => {
   });
 
   it("has a shot count docs/PERFORMANCE.md agrees with", () => {
+    // Stop at the FIRST non-table line, exactly as the tier-table reader does
+    // and for the identical reason: filtering for "|" over the whole remainder
+    // runs this table into every table below it. It did — a promotion note with
+    // two tables of its own reported 46 rows against 30 PNGs, and the message
+    // blamed a stale index mapping, which would have sent the next reader to
+    // the harness. A row counter must count ONE table.
     const table = PERFORMANCE_MD.slice(PERFORMANCE_MD.indexOf("| Shot | raw wall FPS"));
-    const rows = table
-      .split("\n")
-      .slice(2)
-      .filter((line) => line.startsWith("|"));
+    const rows: string[] = [];
+    for (const line of table.split("\n").slice(2)) {
+      if (!line.startsWith("|")) break;
+      rows.push(line);
+    }
     expect(
       rows.length,
       `docs/PERFORMANCE.md's per-shot table has ${rows.length} rows against ${shots.length} `

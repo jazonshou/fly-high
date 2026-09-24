@@ -27,8 +27,10 @@ import {
 import {
   createCrashRecoverySpawn,
   createSimulationSpawn,
+  runwayStartAlong,
 } from "../src/game/spawn";
-import { FlightSimulator } from "../src/sim";
+import { aftExtent, aircraftDefinition, AIRCRAFT_KINDS, FlightSimulator } from "../src/sim";
+import { aircraftSpec } from "../src/aircraft/catalogue";
 import {
   createWorld,
   sampleTerrainCollision,
@@ -42,10 +44,15 @@ import {
 } from "../src/workers/protocol";
 
 describe("input shaping", () => {
-  it("normalizes piston RPM and jet N2 on their own engine scales", () => {
-    expect(normalizedEngineSpeed("trainer", 2_600)).toBe(1);
+  it("normalizes piston RPM and turbine N2 on their own engine scales", () => {
+    // The piston scale is the O-200's red line, not a round number: the
+    // Cessna 150 turns 2,750 and the sound has to reach full at the same
+    // place the tachometer does.
+    expect(normalizedEngineSpeed("trainer", 2_750)).toBe(1);
+    expect(normalizedEngineSpeed("trainer", 1_375)).toBeCloseTo(0.5, 8);
     expect(normalizedEngineSpeed("jet", 100)).toBe(1);
     expect(normalizedEngineSpeed("jet", 80)).toBeCloseTo(0.8, 8);
+    expect(normalizedEngineSpeed("bizjet", 100)).toBe(1);
   });
 
   it("maps A to left bank and D to right bank for taps and held keys", () => {
@@ -141,7 +148,10 @@ describe("settings", () => {
       mouseFlight: true,
       timeOfDay: "midnight",
       weather: "hurricane",
-      aircraft: "airliner",
+      // Deliberately not an airframe. This was "airliner" until the 747-8
+      // arrived and made it real, which quietly turned this into a test that
+      // a VALID value falls back to the trainer.
+      aircraft: "zeppelin",
     });
     expect(result.quality).toBe(DEFAULT_SETTINGS.quality);
     expect(result.renderingMode).toBe(DEFAULT_SETTINGS.renderingMode);
@@ -151,6 +161,18 @@ describe("settings", () => {
     expect(result.timeOfDay).toBe(DEFAULT_SETTINGS.timeOfDay);
     expect(result.weather).toBe(DEFAULT_SETTINGS.weather);
     expect(result.aircraft).toBe("trainer");
+  });
+
+  it("accepts every airframe the game ships, and only those", () => {
+    // The fallback above is the important half — a saved preference naming an
+    // aeroplane this build does not have must not strand the player on a blank
+    // screen. This is the other half: adding an airframe has to actually make
+    // it loadable, which a fallback test alone would not notice.
+    for (const kind of AIRCRAFT_KINDS) {
+      expect(validateSettings({ aircraft: kind }).aircraft).toBe(kind);
+    }
+    expect(validateSettings({ aircraft: "concorde" }).aircraft)
+      .toBe(DEFAULT_SETTINGS.aircraft);
   });
 
   it("persists explicit flight and WebGPU quality selections in v3 storage", () => {
@@ -336,10 +358,29 @@ describe("flight spawn contract", () => {
         airborneSpawn.position?.x ?? Infinity,
         airborneSpawn.position?.z ?? Infinity,
       );
-      expect(runwayLocal.along).toBeCloseTo(-airport.runwayLength * 0.36, 8);
+      // Runway starts line up on the threshold, and how far forward that is
+      // depends on how long the aeroplane is, so this asserts the contract
+      // function rather than a fraction of the runway. It used to be a flat
+      // 36% back from the midpoint, which wasted 185 m and would have hung a
+      // big airframe's tail over the grass.
+      expect(runwayLocal.along).toBeCloseTo(
+        runwayStartAlong(airport, aircraftDefinition("trainer")),
+        8,
+      );
       expect(runwayLocal.across).toBeCloseTo(0, 8);
       expect(airborneLocal.along).toBeCloseTo(-airport.runwayLength * 0.22, 8);
       expect(airborneLocal.across).toBeCloseTo(0, 8);
+
+      // The invariants the fraction was standing in for, now stated directly
+      // and checked for every airframe rather than only the default one.
+      for (const kind of AIRCRAFT_KINDS) {
+        const aircraft = aircraftDefinition(kind);
+        const along = runwayStartAlong(airport, aircraft);
+        const threshold = -airport.runwayLength * 0.5;
+        expect(along - aftExtent(aircraft), `${kind} tail behind the threshold`)
+          .toBeGreaterThan(threshold);
+        expect(along, `${kind} lined up past the midpoint`).toBeLessThan(0);
+      }
     }
   });
 
@@ -398,7 +439,10 @@ describe("flight spawn contract", () => {
     expect(spawn.position?.z).toBe(crashZ);
     expect(spawn.heading).toBe(heading);
     expect(spawn.onGround).not.toBe(true);
-    expect(spawn.controls?.throttle).toBe(0.68);
+    // From the catalogue: these are measured level-flight spawn settings that
+    // have moved once already, and the contract here is that crash recovery
+    // uses the aircraft's own configuration, not any particular number.
+    expect(spawn.controls?.throttle).toBe(aircraftSpec("trainer").spawn.airborneThrottle);
     expect(spawn.controls?.gear).toBe(1);
     expect(simulator.telemetry().altitudeAgl).toBeCloseTo(recoveryHeight, 8);
   });
@@ -416,8 +460,14 @@ describe("flight spawn contract", () => {
       "jet",
     );
 
-    expect(jetRecovery.airspeed).toBe(155);
-    expect(jetRecovery.controls?.throttle).toBe(0.17);
+    // The catalogue figure is an equivalent airspeed at sea level and the
+    // spawn corrects it for density, so this asserts the CONTRACT — recovery
+    // uses the selected aircraft's own configuration, corrected upward for
+    // the air it restarts in — rather than either raw number.
+    expect(jetRecovery.airspeed).toBeGreaterThan(aircraftSpec("jet").spawn.airborneAirspeed);
+    expect(jetRecovery.airspeed).toBeLessThan(aircraftSpec("jet").spawn.airborneAirspeed * 1.3);
+    expect(jetRecovery.controls?.throttle)
+      .toBeGreaterThanOrEqual(aircraftSpec("jet").spawn.airborneThrottle);
     expect(jetRecovery.controls?.gear).toBe(0);
     expect(invalidRecovery).toEqual(fallback);
   });

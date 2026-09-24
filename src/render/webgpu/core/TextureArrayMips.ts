@@ -2,6 +2,7 @@ import { Constants } from "@babylonjs/core/Engines/constants";
 import { RawTexture2DArray } from "@babylonjs/core/Materials/Textures/rawTexture2DArray";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
+import { takeOverMipChain } from "./MipChainUpload";
 
 /**
  * 2-11 — CPU array-mip reduction (owner: performance; reused by 3-1's
@@ -424,22 +425,31 @@ export interface MippedTextureArrayOptions {
 
 /**
  * GPU boundary: construct the `RawTexture2DArray` and upload a plan's
- * levels. Upload order is load-bearing: the constructor uploads level 0,
- * which retriggers Babylon's built-in mip blit for LAYER 0 ONLY (the
- * hardcoded `faceIndex = 0` this file exists to work around); the
- * `updateMipLevel(_, level > 0)` calls that follow skip that retrigger
- * (`engine.rawTexture.pure.js:319-321`) and overwrite every layer of every
- * level — layer 0's blitted mips included — with the CPU chain. Re-running
- * `update()`/`updateMipLevel(_, 0)` later would re-blit layer 0's mips;
- * re-upload levels 1..N-1 afterwards or do not touch level 0.
+ * levels, without Babylon's own mip generation.
+ *
+ * This used to construct with generation ON and rely on the order of the
+ * calls: the constructor's level-0 upload triggers Babylon's blit for LAYER 0
+ * ONLY (the hardcoded `faceIndex = 0` above), and the `updateMipLevel` calls
+ * after it were meant to overwrite that layer's blitted levels with the CPU
+ * chain. The order is the other way round on WebGPU. The blit is recorded
+ * into the frame's upload encoder and submitted at frame end, AFTER the
+ * `updateMipLevel` writes, so layer 0 kept Babylon's box-filtered levels:
+ * the Toksvig roughness lost on terrain layer 0, and the pine impostor's
+ * alpha coverage gone by level 5 (FI-5, measured by readback on the
+ * production arrays; layers 1+ were always right). `MipChainUpload.ts` has
+ * the mechanism, the order the engine forces (allocate with generation on
+ * and no data, then take the chain over), and the second trap -- a texture
+ * without generation must still be told to SAMPLE its levels.
  */
 export function uploadMippedTextureArrayPlan(
   scene: Scene,
   plan: MippedTextureArrayPlan,
   options?: Pick<MippedTextureArrayOptions, "name" | "samplingMode">,
 ): RawTexture2DArray {
+  // Generation ON and NO data: every layer's chain is allocated and nothing
+  // is uploaded, so no blit is recorded (see `MipChainUpload.ts`).
   const texture = new RawTexture2DArray(
-    plan.packedLevels[0]!,
+    null,
     plan.edge,
     plan.edge,
     plan.layerCount,
@@ -453,8 +463,9 @@ export function uploadMippedTextureArrayPlan(
     plan.mipLevelCount,
   );
   try {
+    takeOverMipChain(texture);
     if (options?.name !== undefined) texture.name = options.name;
-    for (let level = 1; level < plan.mipLevelCount; level += 1) {
+    for (let level = 0; level < plan.mipLevelCount; level += 1) {
       texture.updateMipLevel(plan.packedLevels[level]!, level);
     }
     return texture;

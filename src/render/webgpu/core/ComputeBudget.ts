@@ -302,18 +302,20 @@ export const COMPUTE_DISPATCH_SEED_COST_MS: Readonly<Record<ComputeBudgetClient,
     splatCompute: 0.4,
     // Measured 0.301 ms/page: 16 azimuths × 24 steps over 136² texels.
     occlusionCompute: 0.3,
-    // `W-1d` / `W-4`: the stage table's weighted dispatch is 0.229 ms for the
-    // multi-frame page-erosion DAG at the 384² scratch — 37.4 ms of GPU over
-    // 163 dispatches (48 seed bands, 16 geology bands, 2 breach, 1 decode, 24
-    // stream-power, 64 talus, 8 fine-band). This client seed rounds that up to
-    // 0.24 ms. The producer prices each SUBMIT at its current stage's own
-    // measured figure (TERRAIN_EROSION_STAGE_SEED_COST_MS, next to the
-    // shaders); this client-level number is what the meter reports before the
-    // producer's first submit and what the CPU-worker fallback path books
+    // `W-1d` / `W-4`: the stage table's weighted dispatch is 0.280 ms for the
+    // multi-frame page-erosion DAG at the 384² scratch — 46.4 ms of GPU over
+    // 166 dispatches on the L3 page the cost test prices (48 seed bands, 16
+    // geology bands, the breach's direct and args passes and 3 carve chunks,
+    // 1 decode, 24 stream-power, 64 talus, 8 fine-band), as re-priced on
+    // 2026-09-22 (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md). This
+    // client seed is 0.28 ms. The producer prices each SUBMIT at its current
+    // stage's own measured figure (TERRAIN_EROSION_STAGE_SEED_COST_MS, next to
+    // the shaders); this client-level number is what the meter reports before
+    // the producer's first submit and what the CPU-worker fallback path books
     // against.
     // Re-measured by the concentrated complete-page and grouped one-sided
     // guards in tests/gpu/terrain-page-erosion-cost.test.ts.
-    erosionCompute: 0.24,
+    erosionCompute: 0.28,
     // `6-9`, measured: 0.047-0.096 ms is ONE ring's placement dispatch at
     // tier 1 on the reference adapter (107,592 lanes across the three rings,
     // 64-lane workgroups, the composed archetype law and the compaction

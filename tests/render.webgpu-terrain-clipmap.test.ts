@@ -1318,7 +1318,7 @@ function recordingComputeFactory(): {
         dispose: () => undefined,
       },
       splatBake: {
-        bake: async (slots) => slots.length,
+        bake: async (slots) => slots,
         consumeMeasuredDispatchCostMs: () => null,
         dispose: () => undefined,
       },
@@ -1363,6 +1363,61 @@ async function pump(
 }
 
 describe("terrain streaming lifecycle (4.5-B)", () => {
+  it("publishes a channel page only if its splat bake wrote it, and bakes the rest later", async () => {
+    // The season re-bake race: the splat bake used to drop a request made
+    // while another bake ran and return 0, and the caller published the page
+    // anyway, marked baked for the season: unwritten texels read as sand,
+    // permanently. Here the first bakes write nothing; no page they were
+    // asked for may go resident until a later bake has written it.
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const world = createWorld("quadtree-streaming", { worldEvolution: "analytic" });
+    const recording = recordingComputeFactory();
+    const written = new Set<string>();
+    const dropped = new Set<string>();
+    let drops = 2;
+    const factory: TerrainComputeFactory = (input) => {
+      const producers = recording.factory(input);
+      return {
+        ...producers,
+        splatBake: producers.splatBake && {
+          ...producers.splatBake,
+          bake: async (slots) => {
+            if (drops > 0) {
+              drops -= 1;
+              for (const slot of slots) dropped.add(JSON.stringify(slot.key));
+              return [];
+            }
+            for (const slot of slots) written.add(JSON.stringify(slot.key));
+            return slots;
+          },
+        },
+      };
+    };
+    const system = new TerrainClipmapSystem(
+      scene, world, resolveWebGpuQualityProfile("medium", "balanced"), { computeFactory: factory },
+    );
+    try {
+      await pump(system, 24, { x: 0, y: 200, z: 0, velocityX: 0, velocityZ: 0 });
+      expect(drops).toBe(0);
+      expect(dropped.size).toBeGreaterThan(0);
+      const resident = system.atlases.channel.residency.entries
+        .filter((slot) => slot.lifecycle.state === "resident");
+      expect(resident.length).toBeGreaterThan(0);
+      for (const slot of resident) {
+        expect(written.has(JSON.stringify(slot.key)), `${JSON.stringify(slot.key)} went resident unbaked`)
+          .toBe(true);
+      }
+      // What was dropped was released and requested again, not lost.
+      const residentKeys = new Set(resident.map((slot) => JSON.stringify(slot.key)));
+      expect([...dropped].some((key) => residentKeys.has(key) && written.has(key))).toBe(true);
+    } finally {
+      system.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
   it("5D holds eroded admissions until the canonical macro authority arrives", async () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);

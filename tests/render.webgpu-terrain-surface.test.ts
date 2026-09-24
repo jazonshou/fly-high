@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
@@ -14,11 +15,15 @@ import {
   seasonalSnowlineMeters,
   surfaceSeasonalResponse,
   TERRAIN_FALLBACK_ALPINE_END_METERS,
+  TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE,
+  TERRAIN_FAR_SWARD_READ,
   TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH,
   TERRAIN_FALLBACK_ALPINE_START_METERS,
   TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
+  TERRAIN_OCCLUDED_BOUNCE_SHARE,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
   TERRAIN_PAGE_SPLAT_CONFIDENCE_LOSS_PER_LEVEL,
+  TERRAIN_SEAM_SWARD_COVER_MINIMUM,
   TERRAIN_PAGE_SPLAT_FINEST_TEXEL_METERS,
   TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE,
   TERRAIN_FINE_HEIGHT_GRADIENT_SCALE,
@@ -27,6 +32,8 @@ import {
   TERRAIN_SURFACE_INJECTION_TOKENS,
   TERRAIN_SPARSE_SPLAT_GATHER_WGSL,
   TERRAIN_SURFACE_VERTEX_WGSL,
+  terrainFarSwardEligible,
+  terrainSeamPairShare,
   TerrainSurfacePlugin,
   terrainNodeLocalNormalFromHeightGradients,
   terrainPageClassificationConfidence,
@@ -70,7 +77,18 @@ import { readSource } from "./support/sourceText";
  * run.
  */
 
-const BABYLON_WGSL = join(__dirname, "..", "node_modules", "@babylonjs", "core", "ShadersWGSL");
+/*
+ * Babylon's shipped source is found through MODULE RESOLUTION rather than by
+ * building a path from this repo's root. A git worktree has no `node_modules`
+ * of its own — Node resolves the package by walking up to the main checkout —
+ * so a root-relative path passes in a lived-in clone and fails in every fresh
+ * worktree, which is the tree an end-of-wave promotion runs from.
+ */
+const babylonCoreRoot = dirname(
+  createRequire(import.meta.url).resolve("@babylonjs/core"),
+);
+
+const BABYLON_WGSL = join(babylonCoreRoot, "ShadersWGSL");
 
 function shippedPbrFragmentSource(): string {
   // The anchors span pbr.fragment and one of its includes; the injection runs
@@ -248,6 +266,19 @@ describe("terrain surface plugin (3-2)", () => {
       // Equal-elevation sine strata painted horizontal scan lines across every
       // hill at medium clipmap range. They must not come back.
       expect(beforeLights).not.toContain("sin(terrainAbsolutePosition.y");
+    });
+  });
+
+  it("W-1: the ground patchwork is gated on a uniform, not on a define", () => {
+    // A define would double this plugin's permutation count for a branch that
+    // costs one compare in uniform control flow, and every one of those
+    // permutations is compiled and pinned by the GPU suite. The lane is
+    // terrainSurfaceTuning.y, uploaded and unread since 3-6 inlined the near
+    // height-blend depth as a literal.
+    withPlugin((plugin) => {
+      const beforeLights = fragmentCode(plugin)["CUSTOM_FRAGMENT_BEFORE_LIGHTS"] ?? "";
+      expect(beforeLights).toContain("uniforms.terrainSurfaceTuning.y > 0.5");
+      expect(beforeLights).not.toContain("TERRAIN_SURFACE_GROUND_PATCHWORK");
     });
   });
 
@@ -645,8 +676,15 @@ describe("terrain surface plugin (3-2)", () => {
       const source = Object.values(fragmentCode(plugin)).join("\n");
       expect(source).toContain("let channelTexelMeters");
       expect(source).toContain("log2(max(channelTexelMeters, 4.0)");
-      expect(source).toContain("if (confidence < 0.1 || uv.z <= 0.0)");
-      expect(source).toContain("let terrainUsePageSplat = terrainPageSplat.w >= 0.1;");
+      // Re-stated when a zero-trust page was allowed to name a pair of swards:
+      // an unresident page still returns nothing, the confidence gate is still
+      // 0.1 and still comes before the twelve-load gather, and the trusted
+      // ladder still needs w >= 0.1 (the far pair rides beside it, at w = -1).
+      expect(source).toContain("if (uv.z <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }");
+      expect(source).toContain("if (confidence < 0.1) {");
+      expect(source.indexOf("if (confidence < 0.1) {"))
+        .toBeLessThan(source.indexOf("let sparse = terrainSurfaceSparseSplat(atlasPosition, blend);"));
+      expect(source).toMatch(/let terrainUsePageSplat = terrainPageSplat\.w >= 0\.1\s+\|\| terrainFarSward;/u);
       // The seam feather itself: class strength mottled by the cover noise,
       // fading toward the fallback's own composition in both material paths.
       expect(source).toContain("terrainPageSplat.w + terrainCoverNoise * 0.003");
@@ -677,8 +715,12 @@ describe("terrain surface plugin (3-2)", () => {
     expect(TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH).toBe(0.85);
     expect(terrainFallbackRockCover(0, 0)).toBe(0);
     expect(terrainFallbackRockCover(420, 0)).toBe(0);
-    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425, 12);
-    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85, 12);
+    // M-3: level alpine ground keeps 15% of the alpine strength (turf grows
+    // there now); the rest arrives with slope, all of it by 0.30.
+    expect(terrainFallbackRockCover(700, 0)).toBeCloseTo(0.425 * 0.15, 12);
+    expect(terrainFallbackRockCover(980, 0)).toBeCloseTo(0.85 * 0.15, 12);
+    expect(terrainFallbackRockCover(980, 0.3)).toBeCloseTo(0.85, 12);
+    expect(terrainFallbackRockCover(700, 0.2)).toBeCloseTo(0.425 * (0.15 + 0.85 * 0.5), 12);
     expect(terrainFallbackRockCover(2_000, 1)).toBe(1);
     expect(() => terrainFallbackRockCover(0, 1.01)).toThrow(RangeError);
 
@@ -703,7 +745,9 @@ describe("terrain surface plugin (3-2)", () => {
       expect(source.match(
         /terrainBlend0 = 1\.0 - terrainThirdWeight;/gu,
       )).toHaveLength(2);
-      expect(source.match(/terrainBlend2 = terrainThirdWeight;/gu)).toHaveLength(2);
+      // Three: the no-splat fallback in each material path, and the zero-trust
+      // far sward pair, which has no height evidence to arbitrate either.
+      expect(source.match(/terrainBlend2 = terrainThirdWeight;/gu)).toHaveLength(3);
     });
   });
 
@@ -935,6 +979,153 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
       ]) {
         expect(code).toContain(value.toFixed(2));
       }
+    });
+  });
+});
+
+describe("the seam feather's target: a sward pair keeps its mixture", () => {
+  // From 6,000 ft over dry country every dry/lush lowland was flat-toned brown
+  // regions with vector-drawn outlines (world 1GVEIKQ, 2026-09-20). Wave R fades
+  // an untrusted page toward its PRIMARY alone, which is right for rock against
+  // grass (a coarse texel's sub-texel mixture is wrong) and wrong for two
+  // swards, whose mixture is a climate gradient smooth at any texel size.
+  const sward = [SurfaceMaterial.Grass, SurfaceMaterial.DryGrass, SurfaceMaterial.Shrub];
+  const other = [SurfaceMaterial.Rock, SurfaceMaterial.Gravel, SurfaceMaterial.Snow,
+    SurfaceMaterial.Sand, SurfaceMaterial.ForestFloor, SurfaceMaterial.Asphalt,
+    SurfaceMaterial.Concrete];
+
+  it("returns the mixture for two swards at any fraction", () => {
+    for (const lower of sward) {
+      for (const upper of sward) {
+        for (const fraction of [0, 0.12, 0.37, 0.5]) {
+          expect(terrainSeamPairShare(lower, upper, fraction)).toBe(fraction);
+        }
+      }
+    }
+  });
+
+  it("returns the primary alone as soon as either id is not a sward", () => {
+    for (const mineral of other) {
+      for (const partner of [...sward, ...other]) {
+        expect(terrainSeamPairShare(mineral, partner, 0.4), `${mineral}/${partner}`).toBe(0);
+        expect(terrainSeamPairShare(partner, mineral, 0.4), `${partner}/${mineral}`).toBe(0);
+      }
+    }
+    // The bar sits between shrub (0.9) and forest floor (0.55) on purpose.
+    expect(TERRAIN_SEAM_SWARD_COVER_MINIMUM).toBeGreaterThan(0.55);
+    expect(TERRAIN_SEAM_SWARD_COVER_MINIMUM).toBeLessThanOrEqual(0.9);
+  });
+
+  it("emits that rule, and only in the three-material path", () => {
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      expect(code).toContain("let terrainSeamPair = terrainAxisFraction * select(0.0, 1.0,");
+      expect(code).toContain(
+        `terrainGroundCoverOf(i32(terrainLowerId)).x >= ${TERRAIN_SEAM_SWARD_COVER_MINIMUM}`);
+      // All six lanes fade toward the same target, or a sward pair would be
+      // blended in colour and categorical in its normal and roughness.
+      for (const lane of ["albedo", "normal", "roughness", "cavity", "f0", "diffuseRoughness"]) {
+        expect(code).toContain(
+          `mix(mix(terrainLayer0.${lane}, terrainLayer1.${lane}, terrainSeamPair), terrainLayer2.${lane}, terrainSeamThird)`);
+      }
+      // Low tier never samples layer1: its copy keeps the primary (known limit).
+      expect(code.match(/mix\(terrainLayer0\.albedo, terrainLayer2\.albedo, terrainSeamThird\)/gu))
+        .toHaveLength(1);
+    });
+  });
+});
+
+describe("a page too coarse to trust may still name a pair of swards", () => {
+  // From cruise height in dry country a brown polygon followed the aeroplane:
+  // at level 5 and up (confidence under the minimum) the page said NOTHING and
+  // the fragment fell back to "one continuous Grass base", green in every
+  // biome, while at level 4 the seam feather's target is the page's own dry
+  // pair. The step sat on a page edge because levels are per page (world
+  // LIVERY, 2026-09-20; a tint of "is a splat in use" put it exactly there).
+  const sward = [SurfaceMaterial.Grass, SurfaceMaterial.DryGrass, SurfaceMaterial.Shrub];
+  const other = [SurfaceMaterial.Rock, SurfaceMaterial.Gravel, SurfaceMaterial.Snow,
+    SurfaceMaterial.Sand, SurfaceMaterial.ForestFloor, SurfaceMaterial.Asphalt,
+    SurfaceMaterial.Concrete];
+
+  it("ships on its CHEAP read, behind one dial with three states", () => {
+    // 0 off (the early return), 1 the nearest texel's own top two (3 loads),
+    // 2 the bilinear sparse gather (12). These fragments are most of a cruise
+    // frame, and the early return existed on purpose.
+    expect([0, 1, 2]).toContain(TERRAIN_FAR_SWARD_READ);
+    expect(TERRAIN_FAR_SWARD_READ).toBe(1);
+  });
+
+  it("lets two swards supply the fade target, and nothing with a non-sward in it", () => {
+    for (const primary of sward) {
+      for (const secondary of sward) {
+        expect(terrainFarSwardEligible(primary, secondary, 0.4)).toBe(true);
+      }
+      for (const secondary of other) {
+        // A real share of rock, snow, sand, forest floor ...: today's Grass
+        // base and the fragment-derived third candidate stand, exactly.
+        expect(terrainFarSwardEligible(primary, secondary, 0.4), `${primary}/${secondary}`).toBe(false);
+        // ... but a secondary under the negligible share is not part of the
+        // pair: in pure dry-grass country its id is whatever lane came second.
+        expect(terrainFarSwardEligible(primary, secondary, TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE / 2))
+          .toBe(true);
+      }
+    }
+    for (const primary of other) {
+      for (const secondary of [...sward, ...other]) {
+        expect(terrainFarSwardEligible(primary, secondary, 0), `${primary}/${secondary}`).toBe(false);
+        expect(terrainFarSwardEligible(primary, secondary, 0.5), `${primary}/${secondary}`).toBe(false);
+      }
+    }
+    // The bar is for a lane whose id is noise at weight ~0, not for a real
+    // minority: three per cent of rock is rock, and keeps today's behaviour.
+    expect(TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE).toBeLessThan(0.03);
+    expect(terrainFarSwardEligible(SurfaceMaterial.DryGrass, SurfaceMaterial.Rock, 0.03)).toBe(false);
+    expect(terrainFarSwardEligible(SurfaceMaterial.Grass, SurfaceMaterial.ForestFloor, 0.03)).toBe(false);
+  });
+
+  it("uses such a pair at ZERO trust, mixed linearly, and only in the three-material path", () => {
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      // w = -1 is the flag, so class strength is exactly zero and nothing else
+      // the page says is used; an unresident page still returns nothing.
+      expect(code).toContain("if (uv.z <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }");
+      expect(code).toContain("return vec4f(terrainSurfaceNearestSplat(atlasPosition, blend), -1.0);");
+      expect(code).toContain("let terrainFarSward = terrainPageSplat.w < -0.5");
+      expect(code).toMatch(/let terrainUsePageSplat = terrainPageSplat\.w >= 0\.1\s+\|\| terrainFarSward;/u);
+      // Low tier never samples layer1, so it keeps the Grass base.
+      const far = code.indexOf("return vec4f(terrainSurfaceNearestSplat(");
+      expect(code.lastIndexOf("#ifdef TERRAIN_SURFACE_THREE_MATERIALS", far)).toBeGreaterThan(
+        code.lastIndexOf("fn terrainSurfacePageSplat(", far));
+      // A 128-256 m texel has no texel-scale height evidence: no height winner.
+      expect(code).toContain(
+        "terrainBlend1 = terrainAxisFraction * (1.0 - terrainThirdWeight);");
+      // The cheap read is three loads, not the gather's twelve.
+      const nearest = code.slice(
+        code.indexOf("fn terrainSurfaceNearestSplat("), code.indexOf("fn terrainSurfacePageSplat("));
+      expect([...nearest.matchAll(/textureLoad\(/gu)]).toHaveLength(3);
+    });
+  });
+});
+
+describe("M-4: the hemisphere terrain blocks is lit terrain, not black", () => {
+  it("returns a bounded share of open-sky ambient from the blocked hemisphere", () => {
+    // Ground albedo ~0.18 seen half in sun and half in shade: a floor, never a
+    // fill light. Shot at 0.25 (2026-09-20): night, night-moonlit,
+    // hills-dusk-glint and dusk-mesopic moved <= 0.07/255 against a same-arm
+    // floor of <= 0.007, forests <= 0.12, and a gully wall stayed a shadow.
+    expect(TERRAIN_OCCLUDED_BOUNCE_SHARE).toBeGreaterThan(0.1);
+    expect(TERRAIN_OCCLUDED_BOUNCE_SHARE).toBeLessThanOrEqual(0.3);
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      // Ambient reads the floored visibility ...
+      expect(code).toContain("let terrainSkyVisibility = terrainSkyOpenness");
+      expect(code).toContain(
+        `(1.0 - terrainSkyOpenness) * ${TERRAIN_OCCLUDED_BOUNCE_SHARE}`);
+      // ... but W-1's vigour and direct-light terms are statements about how
+      // much SKY a sward sees, and keep reading the raw openness: the floor
+      // must not re-tune the ground wave through the back door.
+      expect(code.match(/clamp\(terrainSkyOpenness, 0\.0, 1\.0\)/gu)).toHaveLength(2);
+      expect(code).not.toMatch(/clamp\(terrainSkyVisibility, 0\.0, 1\.0\)/u);
     });
   });
 });

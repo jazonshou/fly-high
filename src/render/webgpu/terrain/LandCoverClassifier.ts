@@ -1,5 +1,6 @@
 import { saturate, smoothstep } from "@/src/world/noise";
 import {
+  CANOPY_CLOSURE_FILTER_WIDTH_METERS,
   SOIL_LITTER_DEEP_METERS,
   SOIL_LITTER_THIN_METERS,
   soilLitterFactor,
@@ -226,6 +227,55 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   const lowland = 1 - smoothstep(320, 900, elevation);
   const airfield = saturate(airportInfluence);
 
+  // THE ALPINE COVER PARTITION ("item C").
+  //
+  // **The defect: above ~900 m no vegetated material had any suitability on
+  // gentle ground, so tall mountains rendered grey from base to summit.**
+  // `Grass` and `DryGrass` carry `lowland` (dead by 900 m) and `warm`; `Shrub`
+  // dies over 1,150-1,650 m; and `Rock` was `steep * 1.25 + alpine * 0.55` —
+  // 0.55 on perfectly FLAT alpine ground, an altitude-only claim that needs no
+  // slope at all. The owner's reference photograph shows the opposite law:
+  // light fractured rock ONLY on steep faces, sward on every gentler slope
+  // right up to the rock, and scree aprons below the faces.
+  //
+  // Three terms repair it, and **every one of them is multiplied by `alpine`**.
+  // That is the invariant this block owns, and
+  // `tests/render.webgpu-land-cover-alpine-partition.test.ts` proves it
+  // against a frozen copy of the shipped arithmetic: `alpine` is EXACTLY 0 at
+  // and below 420 m, each new term is then `x + 0`, and IEEE `x + 0 === x`, so
+  // every suitability at or below 420 m is BIT-IDENTICAL to the shipped law.
+  // Nothing here can move a lowland pixel, the airfield, the shore band or the
+  // unclaimed-ground regime (which is cold + gentle + LOW by definition).
+  //
+  // None of the three is an additive constant. This file has been burned
+  // twice by a constant acting as a universal gain (`Sand + 0.02`, then
+  // `Grass + 0.02`); these are gated products like every other claim, and
+  // they are zero wherever their gates are.
+  //
+  // 1. ALPINE TURF: the sward's claim on gentle high ground that is below the
+  //    seasonal snow band and not too cold. `cool` is deliberately a LOWER
+  //    window than `warm` (0.00-0.12 against 0.16-0.34): alpine turf tolerates
+  //    cold that lowland sward does not. `snowBand` hands the ground to Snow
+  //    below the snowline rather than at it, and rides the SAME seasonal and
+  //    aspect-shifted `snowline` the Snow term reads, so winter lowers both
+  //    together. Falling edges are `1 - smoothstep(lo, hi, x)`, never a
+  //    reversed-argument smoothstep.
+  // 2. ROCK NEEDS SLOPE AT ALTITUDE: see the Rock term.
+  // 3. SCREE APRONS: see the Gravel term.
+  const cool = smoothstep(0, 0.12, temperature);
+  const snowBand = smoothstep(snowline - 260, snowline - 40, elevation);
+  // Turf has its OWN slope window, not `gentle`: `gentle` is still 0.5 at 54
+  // degrees (steep's calibrated window), and measured with it turf reached
+  // 45-50 degree ground. A sward holds to about 35 degrees and is gone by 47.
+  const turfSlope = 1 - smoothstep(0.16, 0.32, slope);
+  const alpineTurf = shore * alpine * turfSlope * cool * (1 - snowBand);
+  // A smooth bump over slope centred on the angle of repose (the first cut's
+  // 0.11-0.17 / 0.24-0.32 window measured its peak in the 35-45 degree band, too
+  // steep for loose debris, so it moved down): 0.13 is ~30 deg,
+  // 0.21 is ~38 deg. Loose debris rests here; gentler ground holds soil and
+  // steeper ground sheds the debris onto this band.
+  const screeBand = smoothstep(0.085, 0.145, slope) * (1 - smoothstep(0.2, 0.27, slope));
+
   const closure = saturate(input.canopyClosure ?? 0);
   /**
    * `6-13`: OMISSION IS NOT ZERO CLOSURE, and the gate below is the first term
@@ -331,9 +381,17 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // Grass: the default lowland cover, and what an airfield is mown to. The
   // sward gain rides the CLIMATIC term only — an airfield is mown grass by
   // decree and must not be scaled by whether the wild sward would grow there.
+  //
+  // Item C adds the alpine-turf share as its OWN summand, outside the sward
+  // gain, so the lowland term is left exactly as it shipped. The two windows
+  // overlap across 420-900 m and their envelopes SUM there: measured,
+  // `lowland + 0.9 * alpine` never exceeds lowland Grass's own 1.0 ceiling and
+  // dips to 0.724 at 687 m, so the hand-over is a shallow saddle rather than a
+  // second peak. (Before item C that same envelope fell to 0 by 900 m.)
   suitability[SurfaceMaterial.Grass] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
       * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+    + alpineTurf * (0.35 + wet * 0.65) * 0.9
     + airfield * 2.4;
   // The unclaimed-ground floor, moved here from Sand. Grass is what a temperate
   // lowland looks like when no stronger signal applies; beach is not.
@@ -371,18 +429,43 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   suitability[SurfaceMaterial.Shrub] =
     shore * alpine * (1 - smoothstep(1_150, 1_650, elevation)) * (0.4 + dry * 0.6) * 0.95;
   // Rock: slope first, altitude second. A cliff is rock at any height.
-  suitability[SurfaceMaterial.Rock] = shore * (steep * 1.25 + alpine * 0.55);
-  // Snow: above the seasonal snowline, and shed by steep faces.
+  //
+  // Item C: ROCK NEEDS SLOPE AT ALTITUDE. The altitude share was a flat
+  // `alpine * 0.55`, which claimed perfectly level alpine ground at 0.55 and
+  // is most of why a mountain read grey on its meadows. It is now
+  // `alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope))`: the same 0.55 by
+  // slope 0.30, but only 0.25 on the flat. `steep * 1.25` and steep's
+  // `smoothstep(0.24, 0.58, slope)` window are NOT touched — the coefficient
+  // is calibrated against that exact window (see the `6-13` note above: moving
+  // the window took Rock from 18.77% to 35.40% of land).
+  suitability[SurfaceMaterial.Rock] =
+    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope)));
+  // Snow: above the seasonal snowline, and shed by steep faces. M-3: shed over
+  // 39-55 degrees, where it was 60-72. Dry snow avalanches off anything much
+  // past 40, and at the old threshold a snowfield on the reshaped massifs showed
+  // no rock at all. This is the ONE M-3 term that acts at every altitude.
   suitability[SurfaceMaterial.Snow] =
     smoothstep(snowline - 90, snowline + 130, elevation)
-    * (1 - saturate((slope - 0.5) * 2.2))
+    * (1 - smoothstep(0.22, 0.42, slope))
     * 1.5;
   // Dry grass: the rain-shadow companion to grass, off the ecotone chain.
+  // Item C: the dry half of the alpine turf, as its own summand for the same
+  // reason Grass's is.
   suitability[SurfaceMaterial.DryGrass] =
-    shore * lowland * gentle * dry * warm * 0.8 * (1 + sward * LAND_COVER_GRASS_COVER_GAIN);
+    shore * lowland * gentle * dry * warm * 0.8 * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+    + alpineTurf * dry * 0.95;
   // Gravel: scree below cliffs and the wave-washed band above sand.
+  //
+  // Item C: SCREE APRONS. Gravel's altitude share was `alpine * 0.2`, which
+  // never won anything — scree did not exist as a dominant cover. It gains
+  // `alpine * screeBand * (0.5 + dry * 0.5) * 0.85`: a claim confined to the
+  // repose-angle band, stronger where the ground is dry (wet repose-angle
+  // ground holds turf instead, which is the mosaic the reference shows).
   suitability[SurfaceMaterial.Gravel] =
-    shore * (steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2);
+    shore * (
+      steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2
+      + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
+    );
   // The paved materials are never climatic: `3-9`'s airport SDF paints them.
   suitability[SurfaceMaterial.Asphalt] = 0;
   suitability[SurfaceMaterial.Concrete] = 0;
@@ -634,6 +717,14 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let alpine = kSmoothstep(420.0, 980.0, elevation);
   let lowland = 1.0 - kSmoothstep(320.0, 900.0, elevation);
   let airfield = kSaturate(input.airportInfluence);
+  // Item C, the alpine cover partition — see the TS twin. Every new term is
+  // multiplied by alpine, which is exactly 0.0 at and below 420 m, so the
+  // lowland law is bit-identical to what shipped.
+  let cool = kSmoothstep(0.0, 0.12, input.temperature);
+  let snowBand = kSmoothstep(snowline - 260.0, snowline - 40.0, elevation);
+  let turfSlope = 1.0 - kSmoothstep(0.16, 0.32, slope);
+  let alpineTurf = shore * alpine * turfSlope * cool * (1.0 - snowBand);
+  let screeBand = kSmoothstep(0.085, 0.145, slope) * (1.0 - kSmoothstep(0.2, 0.27, slope));
   let closure = kSaturate(input.canopyClosure);
   let sward = kSaturate(input.grassCover);
 
@@ -660,6 +751,7 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   suitability[${SurfaceMaterial.Grass}] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
       * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+    + alpineTurf * (0.35 + wet * 0.65) * 0.9
     + airfield * 2.4;
   // A FLOOR, not a bonus: \`max\`, not \`+\`, so it raises only ground that had no
   // claimant instead of giving Grass a universal gain over its rivals.
@@ -673,14 +765,19 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   suitability[${SurfaceMaterial.Shrub}] =
     shore * alpine * (1.0 - kSmoothstep(1150.0, 1650.0, elevation))
       * (0.4 + dry * 0.6) * 0.95;
-  suitability[${SurfaceMaterial.Rock}] = shore * (steep * 1.25 + alpine * 0.55);
+  suitability[${SurfaceMaterial.Rock}] =
+    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * kSmoothstep(0.10, 0.30, slope)));
   suitability[${SurfaceMaterial.Snow}] =
     kSmoothstep(snowline - 90.0, snowline + 130.0, elevation)
-      * (1.0 - kSaturate((slope - 0.5) * 2.2)) * 1.5;
+      * (1.0 - kSmoothstep(0.22, 0.42, slope)) * 1.5;
   suitability[${SurfaceMaterial.DryGrass}] =
-    shore * lowland * gentle * dry * warm * 0.8 * (1.0 + sward * LAND_COVER_SWARD_GAIN);
+    shore * lowland * gentle * dry * warm * 0.8 * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+    + alpineTurf * dry * 0.95;
   suitability[${SurfaceMaterial.Gravel}] =
-    shore * (steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2);
+    shore * (
+      steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2
+      + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
+    );
   suitability[${SurfaceMaterial.Asphalt}] = 0.0;
   suitability[${SurfaceMaterial.Concrete}] = 0.0;
   return suitability;
@@ -742,9 +839,35 @@ fn classifyLandCover(input: LandCoverInput) -> LandCoverWeights {
 export const LAND_COVER_SUPERSAMPLE_EDGE = 2;
 
 /**
+ * Channel texel size from which each supersample tap reads its OWN canopy.
+ *
+ * Closure is band-limited at a fixed 60 m whatever the page level, so inside a
+ * texel up to 32 m the four taps (at most 16 m apart) really would read four
+ * copies of one number, and the bake samples it once, at the centre. From a
+ * 64 m texel up the taps sit 32-128 m apart and that stops being true: closure
+ * is a THRESHOLDED function of the 260 m and 130 m glade octaves, so one
+ * centre sample per 128 m texel is a binary field sampled near its own
+ * Nyquist. Forest floor is gated on it, and from cruise height every forest-
+ * floor region had stair-stepped, axis-aligned sides and single-texel
+ * rectangular holes (world 1GVEIKQ, 2026-09-20). With a canopy per tap a coarse
+ * texel holds the stand's COVERAGE in five steps and bilinear filtering does
+ * the rest. Tied to the closure channel's own band limit, not to a level.
+ *
+ * A coarse tap's moisture and climate are evaluated once and shared by its
+ * canopy sample and both of its seasonal classifications, which would
+ * otherwise each recompute the same chain at the same point: 5 moisture
+ * chains per coarse texel where there would be 13, and 4 climate chains where
+ * there would be 8, for the same answer.
+ */
+export const LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS = CANOPY_CLOSURE_FILTER_WIDTH_METERS;
+
+/**
  * The splat bake (`4-6`).
  *
- * **Supersample 2x2 and average the WEIGHT VECTORS, not the argmax.** This is
+ * **Supersample 2x2 and average the WEIGHT VECTORS, not the argmax.** (What
+ * varies across the four taps: position, so slope, moisture and climate, at
+ * every level; and the canopy from `LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS` up.
+ * Below that the taps share the texel centre's canopy, exactly.) This is
  * the prefiltering that per-vertex point classification structurally cannot
  * do, and it is the albedo analogue of band-limiting: averaging four ids and
  * rounding gives you the id nearest their mean, which at a three-way junction
@@ -883,7 +1006,14 @@ fn splatClassify(
   localX: f32,
   localZ: f32,
   shift: f32,
-  canopy: vec2f,
+  // (canopy closure, grass cover, this point's moisture or -1, its climate).
+  // A coarse tap arrives with the moisture and climate its canopy sample and
+  // its other season already paid for, at this exact point: the same function
+  // of the same inputs, so handing them over changes no bit of the answer and
+  // saves 8 of a coarse texel's 13 moisture chains and 4 of its 8 climate
+  // ones. A fine tap arrives with -1 and evaluates both here, as it always has
+  // (moisture is saturated to [0, 1], so -1 cannot be a value).
+  tap: vec4f,
 ) -> LandCoverWeights {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
@@ -925,10 +1055,16 @@ fn splatClassify(
   input.soilDepthMeters =
     textureLoad(splatSoilDepthAtlas, channelTexel, 0).r * SPLAT_SOIL_MAX_METERS;
   input.soilDepthValid = input.flowAccumulationValid;
-  input.canopyClosure = canopy.x;
-  input.grassCover = canopy.y;
-  input.moisture = terrainMoisture(localX, localZ);
-  input.temperature = terrainTemperatureFromClimate(terrainClimate(localX, localZ), elevation);
+  input.canopyClosure = tap.x;
+  input.grassCover = tap.y;
+  var tapClimate = tap.w;
+  if (tap.z >= 0.0) {
+    input.moisture = tap.z;
+  } else {
+    input.moisture = terrainMoisture(localX, localZ);
+    tapClimate = terrainClimate(localX, localZ);
+  }
+  input.temperature = terrainTemperatureFromClimate(tapClimate, elevation);
   input.aspect = 0.0;
   // The airport's graded platform is mown grass (1B-6), and its influence is
   // the same rounded-rectangle field the earthworks key on.
@@ -941,15 +1077,19 @@ fn splatClassify(
 /**
  * 6-8: the canopy the ground carries here - (true closure, grass cover).
  *
- * Evaluated ONCE per channel texel rather than per supersample, and that is a
- * property of the channel rather than a saving: the vegetation lattices are
- * band-limited at a FIXED 60 m (CANOPY_CLOSURE_FILTER_WIDTH_METERS), so four
- * samples 0.5-32 m apart inside one texel would return four copies of the same
- * number. The shore-distance driver is left at its neutral out-of-domain value
+ * Evaluated ONCE per channel texel rather than per supersample wherever the
+ * texel is finer than the closure channel's band limit, and that is a property
+ * of the channel rather than a saving: the vegetation lattices are band-limited
+ * at a FIXED 60 m (CANOPY_CLOSURE_FILTER_WIDTH_METERS), so four samples up to
+ * 16 m apart inside one texel would return four copies of the same number.
+ * From a 64 m texel up that argument fails and each tap samples its own
+ * (LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); the closure LANE stored beside the
+ * weights stays the centre sample at every level, because the far canopy and
+ * the hand-off read it and must agree with the trees actually planted. The shore-distance driver is left at its neutral out-of-domain value
  * because the riparian corridor is 6-50 m wide - an order of magnitude below
  * this channel's own band limit, so it could not survive into it anyway.
  */
-fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
+fn splatCanopyAt(job: SplatJob, localX: f32, localZ: f32, moisture: f32) -> vec2f {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
   // \`shape.y\` over-shifts by \`GUTTER * (channelTexel / heightTexel - 1)\`. The
@@ -974,7 +1114,7 @@ fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
   var drivers: VegetationDensityDrivers;
   drivers.elevationAboveSeaLevel = elevation;
   drivers.slope = slopeAspect.x;
-  drivers.moisture = terrainMoisture(localX, localZ);
+  drivers.moisture = moisture;
   drivers.aspect = slopeAspect.y;
   // The SAME field the classifier reads, and the same one generation.ts feeds
   // the density field: the airfield's woody-stem clearance is what keeps the
@@ -988,23 +1128,30 @@ fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
   return vec2f(sample.canopyClosure, sample.grassCover);
 }
 
+/** The canopy at a point whose moisture nobody has evaluated yet. */
+fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
+  return splatCanopyAt(job, localX, localZ, terrainMoisture(localX, localZ));
+}
+
 /** Average the WEIGHT VECTORS of a 2x2 supersample, not their argmax. */
 fn splatSupersample(
   job: SplatJob,
   localX: f32,
   localZ: f32,
   shift: f32,
-  canopy: vec2f,
+  tapCanopy: array<vec4f, 4>,
 ) -> LandCoverWeights {
   var accumulated: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
     accumulated[index] = 0.0;
   }
   let step = job.shape.x * 0.25;
+  // A value array is indexed dynamically through a var on every toolchain.
+  var taps = tapCanopy;
   for (var sample = 0u; sample < 4u; sample = sample + 1u) {
     let dx = select(-step, step, (sample & 1u) == 1u);
     let dz = select(-step, step, (sample & 2u) == 2u);
-    let weights = splatClassify(job, localX + dx, localZ + dz, shift, canopy);
+    let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample]);
     for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
       accumulated[u32(weights.ids[slot])] =
         accumulated[u32(weights.ids[slot])] + weights.weights[slot] * 0.25;
@@ -1102,8 +1249,28 @@ fn bakeSplat(
   // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
   let canopy = splatCanopy(job, localX, localZ);
-  let lo = splatSupersample(job, localX, localZ, job.placement.z, canopy);
-  let hi = splatSupersample(job, localX, localZ, job.placement.w, canopy);
+  // Coarse texels give each tap its own canopy (see
+  // LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); finer ones hand all four the
+  // centre's, which is bit-for-bit what this bake did before. Same tap order
+  // and offsets as splatSupersample. Sampled once, used by both seasons.
+  let centreTap = vec4f(canopy, -1.0, 0.0);
+  var tapCanopy = array<vec4f, 4>(centreTap, centreTap, centreTap, centreTap);
+  if (job.shape.x >= ${LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS.toFixed(1)}) {
+    let tapStep = job.shape.x * 0.25;
+    for (var tap = 0u; tap < 4u; tap = tap + 1u) {
+      let tapDx = select(-tapStep, tapStep, (tap & 1u) == 1u);
+      let tapDz = select(-tapStep, tapStep, (tap & 2u) == 2u);
+      // One moisture chain and one climate chain per tap, shared by its canopy
+      // sample and by both of its seasonal classifications.
+      let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz);
+      tapCanopy[tap] = vec4f(
+        splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture),
+        tapMoisture,
+        terrainClimate(localX + tapDx, localZ + tapDz));
+    }
+  }
+  let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy);
+  let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy);
   let aligned = splatAlignSeasonalWeights(lo, hi);
   textureStore(splatId, texel, aligned.ids * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in

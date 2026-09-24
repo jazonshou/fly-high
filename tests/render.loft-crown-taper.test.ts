@@ -1,0 +1,378 @@
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Scene } from "@babylonjs/core/scene";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { afterEach, describe, expect, it } from "vitest";
+import { AircraftBuildContext, type LoftSection } from "../src/render/webgpu/aircraft/builders";
+import { createWebGpuAircraft, type AircraftVisual } from "../src/render/webgpu/aircraft";
+
+/**
+ * `crownZRadius` lets a loft section be an EGG rather than an ellipse, and this
+ * holds it to the two things that make that safe.
+ *
+ * WHY IT EXISTS. A wide-body's forward fuselage is widest at the main deck
+ * floor and narrower at the crown, and a superellipse cannot say that —
+ * `zRadius` applies equally above and below the section's centre. The 747's
+ * raised upper deck was therefore built as a SECOND closed loft intersecting
+ * the first, and two intersecting closed surfaces cannot be tangent-continuous:
+ * that airframe's own comment records trading a 41-degree crease for a
+ * 31-degree one by widening the upper lobe. A 31-degree crease is what reads as
+ * a cylinder laid on top of a fuselage.
+ *
+ * THE TWO THINGS THAT MAKE IT SAFE, and both are measured here rather than
+ * asserted in prose:
+ *
+ *  1. It is the IDENTITY when unused. Every loft on every shipped airframe
+ *     omits it, so the feature must not move a single vertex of any of them.
+ *     Checked two ways: against the superellipse formula recomputed
+ *     independently below, and against pinned hashes of the three airframes
+ *     this pass does not touch.
+ *
+ *  2. It is C1 AT THE WATERLINE. The taper runs over the upper half only, so
+ *     the obvious implementation — a linear ramp in `max(0, yShape)` — would
+ *     kink the surface exactly at the widest point, removing a crease at the
+ *     crown by adding one at the equator. The ramp is a smoothstep, whose
+ *     slope is zero at both ends, and the finite-difference check below is
+ *     what says so.
+ */
+
+interface Fixture {
+  engine: NullEngine;
+  scene: Scene;
+  build: AircraftBuildContext;
+  root: TransformNode;
+}
+
+const fixtures: Array<{ engine: NullEngine; scene: Scene; visual?: AircraftVisual }> = [];
+
+afterEach(() => {
+  for (const entry of fixtures.splice(0)) {
+    entry.visual?.dispose();
+    entry.scene.dispose();
+    entry.engine.dispose();
+  }
+});
+
+function context(): Fixture {
+  const engine = new NullEngine();
+  const scene = new Scene(engine);
+  scene.useRightHandedSystem = true;
+  fixtures.push({ engine, scene });
+  const build = new AircraftBuildContext(scene);
+  return { engine, scene, build, root: new TransformNode("root", scene) };
+}
+
+const SECTIONS: readonly LoftSection[] = [
+  { x: -4, yRadius: 0.8, zRadius: 1.1, yOffset: 0.2 },
+  { x: 0, yRadius: 1.4, zRadius: 1.9, yOffset: 0.05, zOffset: 0.1 },
+  { x: 3.5, yRadius: 1.2, zRadius: 1.3, squareness: 3.5 },
+];
+const SEGMENTS = 24;
+
+/** The superellipse the loft drew before `crownZRadius` existed. */
+function priorFormula(section: LoftSection, radial: number): [number, number, number] {
+  const phase = radial / SEGMENTS;
+  const angle = phase * Math.PI * 2;
+  const exponent = 2 / (section.squareness ?? 2);
+  const yShape = Math.sign(Math.cos(angle)) * Math.abs(Math.cos(angle)) ** exponent;
+  const zShape = Math.sign(Math.sin(angle)) * Math.abs(Math.sin(angle)) ** exponent;
+  return [
+    section.x,
+    (section.yOffset ?? 0) + yShape * section.yRadius,
+    (section.zOffset ?? 0) + zShape * section.zRadius,
+  ];
+}
+
+function positionsOf(sections: readonly LoftSection[]): Float32Array {
+  const { build, root, scene } = context();
+  const material = build.material("loft-probe", 0xffffff, { roughness: 1, metallic: 0 });
+  const mesh = build.loft("loft-probe-mesh", sections, SEGMENTS, material, root);
+  void scene;
+  return Float32Array.from(mesh.getVerticesData(VertexBuffer.PositionKind)!);
+}
+
+/** A cheap order-sensitive digest; a moved vertex changes it. */
+function digest(values: ArrayLike<number>): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < values.length; index += 1) {
+    // Quantised to a micrometre so the hash is about geometry, not float noise.
+    const quantised = Math.round(values[index]! * 1e6);
+    hash ^= quantised & 0xffffffff;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+describe("the loft's crown taper", () => {
+  it("draws exactly the prior superellipse when it is not asked for", () => {
+    const positions = positionsOf(SECTIONS);
+    let compared = 0;
+    for (let sectionIndex = 0; sectionIndex < SECTIONS.length; sectionIndex += 1) {
+      for (let radial = 0; radial <= SEGMENTS; radial += 1) {
+        const expected = priorFormula(SECTIONS[sectionIndex]!, radial);
+        const base = (sectionIndex * (SEGMENTS + 1) + radial) * 3;
+        for (let axis = 0; axis < 3; axis += 1) {
+          // `Math.fround`, because the mesh keeps positions in a Float32Array
+          // and this formula computes in doubles. Comparing the two directly
+          // fails on the last two decimal places of a value that is in fact
+          // bit-identical once stored, which is a difference about the
+          // container rather than about the geometry.
+          expect(positions[base + axis]).toBe(Math.fround(expected[axis]!));
+          compared += 1;
+        }
+      }
+    }
+    // The exposure column: a pass means nothing if nothing was compared.
+    expect(compared).toBe(SECTIONS.length * (SEGMENTS + 1) * 3);
+  });
+
+  it("is the identity when the crown radius equals the section's own", () => {
+    const withCrown = SECTIONS.map((section) => ({
+      ...section,
+      crownZRadius: section.zRadius,
+    }));
+    expect(digest(positionsOf(withCrown))).toBe(digest(positionsOf(SECTIONS)));
+  });
+
+  it("narrows only the upper half, leaving the lower lobe untouched", () => {
+    const plain = positionsOf(SECTIONS);
+    const egg = positionsOf(SECTIONS.map((section) => ({
+      ...section,
+      crownZRadius: section.zRadius * 0.6,
+    })));
+    let narrowedAbove = 0;
+    let movedBelow = 0;
+    let checkedBelow = 0;
+    for (let sectionIndex = 0; sectionIndex < SECTIONS.length; sectionIndex += 1) {
+      const section = SECTIONS[sectionIndex]!;
+      const centre = section.yOffset ?? 0;
+      for (let radial = 0; radial <= SEGMENTS; radial += 1) {
+        const base = (sectionIndex * (SEGMENTS + 1) + radial) * 3;
+        const y = plain[base + 1]!;
+        const width = Math.abs(plain[base + 2]! - (section.zOffset ?? 0));
+        const eggWidth = Math.abs(egg[base + 2]! - (section.zOffset ?? 0));
+        // The flanks only: at the keel and the crown the half-width is zero
+        // either way and says nothing about the taper.
+        if (width < 1e-6) continue;
+        if (y > centre + 1e-6) {
+          expect(eggWidth, "a vertex above the waterline did not narrow")
+            .toBeLessThan(width);
+          narrowedAbove += 1;
+        } else if (y < centre - 1e-6) {
+          checkedBelow += 1;
+          if (Math.abs(eggWidth - width) > 1e-9) movedBelow += 1;
+        }
+      }
+    }
+    expect(narrowedAbove, "nothing above the waterline was compared").toBeGreaterThan(6);
+    expect(checkedBelow, "nothing below the waterline was compared").toBeGreaterThan(6);
+    expect(movedBelow, "the lower lobe moved; the taper is not confined to the crown")
+      .toBe(0);
+  });
+
+  it("keeps the surface C1 where the two half-widths meet", () => {
+    // The half-width as the builder computes it, sampled either side of the
+    // waterline. A linear ramp would show a slope discontinuity here; the
+    // smoothstep's slope is zero on both sides, so the difference of the
+    // one-sided slopes must vanish.
+    const halfWidth = (yShape: number): number => {
+      const rise = Math.max(0, yShape);
+      const lift = rise * rise * (3 - 2 * rise);
+      return 1 + (0.5 - 1) * lift;
+    };
+    const step = 1e-4;
+    const below = (halfWidth(0) - halfWidth(-step)) / step;
+    const above = (halfWidth(step) - halfWidth(0)) / step;
+    expect(Math.abs(above - below)).toBeLessThan(1e-3);
+  });
+
+  it("moves no vertex of the airframes that do not use it", () => {
+    // The three this pass does not touch. A change here means a loft's shape
+    // moved: if that was deliberate, re-pin with the reason in the commit;
+    // if it was not, the crown taper has stopped being the identity.
+    const pinned: Readonly<Record<string, string>> = {
+      // RE-PINNED for the trainer and the Global by the cockpit work (jazonshou/cockpit-view),
+      // which replaced their cockpit meshes: the old panel, gauges and needles are gone and
+      // cockpit-only meshes (metadata.cockpitOnly) stand in their place. Nothing else moved: it was
+      // checked mesh by mesh against House-Keeping's own source (positions AND
+      // indices): the jet (76 of 76) and the 747 (91 of 91) are identical, and of the trainer's 62
+      // meshes 51 are bit-identical and of the Global's 99, 88 are; every one that differs is
+      // the old cockpit or the new one. The 747 keeps its pin; the jet's is re-pinned separately, below.
+      // RE-PINNED AGAIN for the trainer by the instruments step (jazonshou/cockpit-instruments):
+      // its five needle meshes now live in a hub-local frame (vertices about the dial's centre,
+      // the mesh's own transform carrying the frame) and have a pointer and a tail. Checked
+      // mesh by mesh against the tip it was cut from (da86f47), positions AND indices: this
+      // step left the trainer's other 63 meshes, the jet's 76, the Global's 99 and the 747's
+      // 91 bit-identical.
+            // RE-PINNED ONCE MORE for the trainer by the Cessna's attitude ball (jazonshou/cockpit-cessna-ball):
+      // its attitude needle mesh is gone and the ball's three pieces (sky, ground, pitch bar) stand in
+      // its place. Checked mesh by mesh against 8a45c97, positions AND indices: the trainer's other 67
+      // meshes, the jet's 78, the Global's 99 and the 747's 91 are bit-identical, which also holds the
+      // Global's ball to be unchanged by its builder moving into cockpitPrimitives.
+      // RE-PINNED YET AGAIN for the trainer by the drawn-faces fix (jazonshou/cockpit-747): the attitude
+      // ball's two halves are `solidPlate`s (three vertices of their own to a triangle, flat normals, a
+      // winding decided by geometry). Checked mesh by mesh against e87d9da, positions and indices,
+      // triangle count and area: only those two of the trainer's 70 meshes moved, and each keeps its 50
+      // unique positions, its 96 triangles and its area. The jet's pin is unchanged.
+      // Re-pinned for the centre frame's tapered tip, on the same evidence as the seam pin above.
+      // RE-PINNED for the trainer when the centre frame stopped ending in the air at EITHER end
+      // (jazonshou/cockpit-cessna-junction): its top turns aft at a ball joint and runs over the glass
+      // crown into the cabin roof's slab, and its foot runs on 0.09 m past the design foot down under
+      // the cowl deck it used to float above. Checked mesh by mesh against ea63db1, positions AND
+      // indices: `windscreen-center-frame` is the ONLY mesh of the trainer's 70 that differs (76 -> 307
+      // vertices, 64 -> 464 triangles, most of it the ball); the other 69 are bit-identical, and so are
+      // all 78 of the jet's, 96 of the Global's and 93 of the 747's.
+      // AND AGAIN, after an independent review found the roof slab's edge walls inside-out (`build.planform`
+      // winds them against its caps) so the frame's buried end showed through them at grazing angles: the
+      // roof is `solidified` now, and the joint is a 16-segment ball 3% over the bars. Against ea63db1, TWO
+      // of the trainer's 70 meshes differ: `trainer-cabin-roof` (the same 28 triangles over the same 16
+      // positions, and the SAME set of position-UV pairs; only winding and flat normals changed, so 16 -> 84
+      // vertices) and `windscreen-center-frame` (76 -> 779 vertices, 64 -> 1,360 triangles). The other 68,
+      // and all of the jet's, the Global's and the 747's, are bit-identical.
+      // RE-PINNED for the trainer when it kept THREE DIALS (jazonshou/trainer-three-dials; Jason, 2026-09-23):
+      // the second row's four meshes are gone (`trainer-vertical-speed-gauge`, `trainer-engine-gauge` and their
+      // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
+      // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
+      // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
+      trainer: "c44794a2",
+      // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
+      // crown taper is still unused on this airframe; what moved is the tail.
+      // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial
+      // and needle meshes gone, the coaming and the board rebuilt, the HUD frame new, the other 66
+      // meshes unmoved against f9d2672 (world positions to the micrometre, and indices). The crown
+      // taper is still unused on this airframe.
+      // Re-pinned for the F-16's MFDs (phase F2: the bezels and the screens, two cockpit-only meshes added).
+      // Re-pinned for the F-16 pass, step 1, on the same evidence as the seam pin: the coaming a rounded rail, the
+      // board the dash under its cove, the MFDs and the HUD frame's feet moved with them; the other 66 bit-identical.
+      // Re-pinned for step 2 on the same evidence: the HUD's housing and combiner new, its frame's rods 5 mm, the jet's
+      // other 70 meshes bit-identical.
+      // Re-pinned for step 3 on the same evidence: the dash leaned 15 degrees, the MFDs framed and recessed on it, the
+      // rail's round smooth-shaded; the jet's other 69 meshes bit-identical against dd66a55.
+      // Re-pinned for step 3b on the same evidence: the MFDs' bezels split into frames and rims, the other 72 bit-identical.
+      // Re-pinned for step 4 on the same evidence: the sills new, the other 74 bit-identical.
+      // Re-pinned for step 5 on the same evidence: the rail's ends swept into the sills, the other 74 bit-identical.
+      // Re-pinned for step 5b on the same evidence: the HUD frame's corners rounded, the panes with them.
+      jet: "b17137a9",
+      // Re-pinned for the Global's cabin window panes, whose single instanced
+      // base mesh is now bowed to the fuselage section. The crown taper is
+      // unused on this airframe too; what moved is the window line's pane.
+      // Re-pinned for the Global's two ball halves (2 of 99 meshes), by the same change and evidence as the trainer's above.
+      // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
+      // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
+      // indices as this digest defines them: of its 99 meshes exactly three are GONE --
+      // bizjet-pfd-sky and -ground (288 vertices, 96 triangles, 50 unique positions each) and
+      // bizjet-pfd-pitch-bar (24, 12, 8) -- none is new, none changed, and the other 96 are
+      // bit-identical. Totals 10,861 -> 10,261 vertices and 17,358 -> 17,154 triangles, which is
+      // those three meshes and nothing else. The trainer keeps its ball and its pin.
+      // RE-PINNED for the Global's cabin windows (phase 3a): the thin-instanced oval
+      // `bizjet-cabin-window-line` (54 vertices, 144 indices, bowed on the CPU copy only --
+      // the GPU drew it flat) is GONE, and `bizjet-cabin-windows` is NEW: 28 panes cast onto
+      // the fuselage's own triangles and merged, 7,896 vertices and 8,512 triangles, one draw.
+      // Checked mesh by mesh against 58f8b28, positions, normals, UVs, indices, world matrix,
+      // material and visibility: the Global's other 95 meshes are bit-identical.
+      // RE-PINNED for the Global's flight deck (phase 3b): the three glass boxes
+      // (`bizjet-windscreen` and the two `*-bizjet-flight-deck-window` slabs, 24 vertices and
+      // 12 triangles each) are GONE, `bizjet-flight-deck-glazing` is NEW -- six panes cast onto
+      // the nose's own triangles and merged, 1,440 vertices and 1,512 triangles --
+      // `bizjet-windscreen-center-post` is re-cast on the skin (a 38-vertex strut -> a 96-vertex
+      // `skinPanel`), and `bizjet-radome` gains a ring at 13.2, the fuselage's last, which takes
+      // out a 3.8 cm lip the windshield crosses (166 -> 207 vertices, 320 -> 400 triangles).
+      // Checked mesh by mesh against 0ba7987, positions, normals, UVs, indices, world matrix,
+      // material and visibility: the Global's other 91 meshes are bit-identical.
+      // RE-PINNED for the Global's nose (phase 3c, part 1): widened to the type's half-widths and
+      // lofted as ONE surface with the cabin. `bizjet-radome` (207 vertices, 400 triangles) is GONE,
+      // its rings now the fuselage's; `bizjet-fuselage` goes from 8 rings to 18 (394 -> 884 vertices);
+      // the flight-deck glazing and post re-cast onto the wider nose (counts unchanged); and
+      // `bizjet-cabin-windows` moves by at most 0.16 mm, the first windows' normals interpolating the
+      // 9.5 ring's, which average the new span forward of it. Checked mesh by mesh against d52ccc2,
+      // positions, normals, UVs, indices, world matrix, material and visibility: the other 89 meshes
+      // are bit-identical, and so is every fuselage vertex to 9.5 m (render.bizjet-nose).
+      // RE-PINNED for the Global's nose, phase 3c part 2: the crown lowered ahead of the flight deck
+      // (0.45 of the camera-solved drop, the keel and the widths held) and two rings added at 11.75
+      // and 12.25 for the brow: `bizjet-fuselage` 884 -> 982 vertices; the flight-deck glazing and
+      // post re-cast onto it (counts unchanged); `bizjet-cabin-windows` moves within render.bizjet-nose's
+      // 0.2 mm (the 9.5 ring's normals average the span forward of it). Checked mesh by mesh against
+      // c252859: the other 89 meshes are bit-identical.
+      // RE-PINNED for the Global's crew seats (phase 3c, part 2): placed from catalogue.cockpitEye
+      // (bizjetSeats.ts), the cushion 0.80 m under the eye. The two seats are rebuilt from the floor to
+      // the cushion, the headrests move, and two seat backs are NEW (24 vertices each). Checked mesh by
+      // mesh against b23d9a0: the other 89 meshes are bit-identical.
+      // RE-PINNED for the Global's nose, phase 3c part 3: the crown to 0.9 of the camera fit and the tip
+      // drooped to the gold line (-0.45), the keel drooping with it forward of 1.8 m aft; ring counts
+      // unchanged. The flight-deck glazing and post re-cast onto it, `bizjet-cabin-windows` moves within
+      // render.bizjet-nose's 0.2 mm. Checked mesh by mesh against 99ab242: the other 91 meshes, the
+      // seats among them, are bit-identical.
+      // RE-PINNED for the Global's nose, phase 3c part 4 (d): the crown under a filleted brow, 0.735 at
+      // the post's head, and straight from the post's foot to a tip dropped to -0.55; `bizjet-fuselage`
+      // 20 rings -> 28 (982 -> 1374 vertices). The flight-deck glazing and post re-cast onto it (counts
+      // unchanged), `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh
+      // against 3d6d97c: the other 91 meshes are bit-identical.
+      // RE-PINNED for the Global's nose, phase 3c part 5: the crown on the p. 29 render's corrected
+      // silhouette (the sky edge), under it at the foot for the aim point on final and up to 0.09 over
+      // it at the brow; ring count unchanged. The flight-deck glazing and post re-cast onto it,
+      // `bizjet-cabin-windows` moves within render.bizjet-nose's 0.2 mm. Checked mesh by mesh against
+      // 3da1899: the other 91 meshes are bit-identical.
+      // RE-PINNED for the Global's cockpit kit, re-solved on the six-pane band (jazonshou/cockpit-bizjet-kit2):
+      // the window frame is a lining cast from R onto the skin round the panes, with a sill cap along the side
+      // panes' bottom edges, merged with the panel board as `bizjet-cockpit-interior` (NEW, 4816 vertices); the
+      // old board, both windscreen posts, the overhead and the side walls are GONE; the lip
+      // (`bizjet-glareshield`), the screens and the bezels move to the new eye and deck line (10.88); and the six
+      // seat meshes follow the eye to 0.55 (bizjetSeats.ts). Checked mesh by mesh against eeb1606 (positions,
+      // normals, UVs, indices, world matrix, material, visibility): the other 81 meshes are bit-identical.
+      // RE-PINNED for the Global's nose section, phase 3c part 6: over the windshield the fuselage's upper
+      // half is a V of flat panes (`crownSquareness` 1.26-1.47, back to the ellipse by 2.75 m aft), fitted
+      // with the crown to both brochure renders; ring count unchanged. `bizjet-fuselage`, the flight-deck
+      // glazing and `bizjet-cabin-windows` (within render.bizjet-nose's 0.2 mm) move; the centre post
+      // gains a third column on the V's ridge (96 -> 120 vertices); and `bizjet-cockpit-interior`, whose
+      // lining is cast along the panes' edges, re-samples (4816 -> 4964 vertices; the kit's own tests
+      // re-pin on the cockpit engineer's commit). Checked mesh by mesh against 6638484: the Global's other
+      // 86 meshes, and every mesh of the trainer, the jet and the 747, are bit-identical.
+      // RE-PINNED for part 6b: the V's crown and waterline filleted (0.15 m) and its upper half sampled by
+      // the normal's angle, the rings either side resampled the same way; ring count unchanged.
+      // `bizjet-fuselage`, the flight-deck glazing, the post and `bizjet-cockpit-interior`'s lining move
+      // (counts unchanged). Checked mesh by mesh against 49916b4: the Global's other 87 meshes, and every
+      // mesh of the trainer, the jet and the 747, are bit-identical.
+      // RE-PINNED for the Global's kit on part 6b (jazonshou/global-nose-repin): the lining's post and the centre
+      // sill and crown take the V's ridge as a column, as the glass post does (`bizjet-cockpit-interior` 4964 -> 5046
+      // vertices), and the lip and the board end 5 cm inside the shell as built, 1.3 cm inboard of the pillars' feet
+      // (`bizjet-glareshield` narrower, its triangles unchanged); the deck line stays 10.88 and hides the V's low
+      // outboard corner by a pinned profile. Checked mesh by mesh against cc16f33 (positions, normals, UVs, indices,
+      // world matrix, material, visibility): the other 89 meshes are bit-identical.
+      // RE-PINNED for the Global's panel integration, P1a (jazonshou/cockpit-panel-integration): the board's face leans
+      // back 15 degrees under a glareshield that is one solid with a rounded aft edge on the deck line, a 45 degree cove
+      // under it and a 12 degree hood (`bizjet-glareshield` 8 -> 52 triangles), and the four screens and bezels ride the
+      // leaned face; `bizjet-cockpit-interior` keeps its 4816 vertices (the board is still a box, turned). Checked mesh
+      // by mesh against 6638484 (positions, normals, UVs, indices, world matrix, material, visibility): the other 87
+      // meshes are bit-identical.
+      // RE-PINNED for P1b, the Global's bezels: each a frame round its screen on a bezel material of its own
+      // (`bizjet-screen-bezels` 48 -> 128 triangles) with a 4 mm 45 degree chamfered rim on the marking material (NEW,
+      // `bizjet-screen-bezel-rims`, 128), the screens recessed 3 mm behind the frames' fronts as 0.5 mm plates, and a
+      // dark well behind each 2 mm gap (NEW, `bizjet-screen-wells`, 48). Checked mesh by mesh against 92ef8e9
+      // (positions, normals, UVs, indices, world matrix, material, visibility): the other 89 meshes are bit-identical.
+      // RE-PINNED for P1a and P1b carried onto 7766139 (the V nose merged), with the hood TAPERED in plan to the V's shell
+      // (the deck at the pillars' feet as cast, 0.789; the hood's forward end 0.745). Checked mesh by mesh against
+      // 7766139: the board (in `bizjet-cockpit-interior`), `bizjet-glareshield`, the screens and the bezels' frames change,
+      // the rims and the wells are new; the other 87 meshes are bit-identical.
+      // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
+      // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
+      // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
+      bizjet: "4036722a",
+    };
+    for (const kind of ["trainer", "jet", "bizjet"] as const) {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      scene.useRightHandedSystem = true;
+      const visual = createWebGpuAircraft(scene, kind);
+      fixtures.push({ engine, scene, visual });
+      const lofts = scene.meshes
+        .filter((mesh) => mesh.getTotalVertices() > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      expect(lofts.length, `${kind} built no meshes`).toBeGreaterThan(0);
+      const all: number[] = [];
+      for (const mesh of lofts) {
+        all.push(...(mesh.getVerticesData(VertexBuffer.PositionKind) ?? []));
+      }
+      expect(digest(all), `${kind} geometry digest`).toBe(pinned[kind]);
+    }
+  });
+});

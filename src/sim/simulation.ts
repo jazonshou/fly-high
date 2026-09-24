@@ -34,6 +34,16 @@ import type {
 } from "./types";
 
 export const FIXED_TIME_STEP = 1 / 120;
+/**
+ * Trim's share of the elevator: `elevator = actuators.pitch + trim * this`.
+ *
+ * **Trim authority is HALF of stick authority**, so carrying a held elevator on
+ * trim alone costs twice as much trim, and a held elevator beyond 0.5 cannot be
+ * carried by trim at all. Both the aerodynamics below and the hand-off seeding
+ * in `handoffTrimSeed` read this, because a seed computed against a different
+ * number than the physics uses is a seed that does not hold the aeroplane.
+ */
+export const TRIM_ELEVATOR_AUTHORITY = 0.5;
 export const MAX_STEP_DURATION = 0.25;
 export const STANDARD_GRAVITY = 9.80665;
 export const SEA_LEVEL_DENSITY = 1.225;
@@ -50,6 +60,21 @@ const MAX_GEAR_COMPRESSION = 0.22;
 const GEAR_DOWN_LOCK_THRESHOLD = 0.98;
 const CRASH_IMPACT_SPEED = 8.5;
 const CRASH_SURFACE_CLEARANCE = 0.006;
+/**
+ * GROUND SPOILERS, the type's rule with the speedbrake always armed: on the
+ * ground they deploy fully once the throttle is back at idle above a walking-
+ * pace-and-then-some ground speed (a touchdown, or a rejected take-off), and
+ * with the wheel brake held at any speed. In the air they stow. The numbers
+ * are chosen, not transcribed: 15 m/s is well above any taxi and well below
+ * any touchdown, and "idle" allows a sliver of lever for a gamepad's slack.
+ */
+export const GROUND_SPOILER_ARMED_SPEED = 15;
+export const GROUND_SPOILER_IDLE_THROTTLE = 0.05;
+/** Full travel per second: out in 0.4 s, which is how quickly the lift goes. */
+export const GROUND_SPOILER_RATE = 2.5;
+/** Lift dumped by the panels: fully deployed on the ground, and as the speed brake. */
+const GROUND_SPOILER_LIFT_DUMP = 0.62;
+const FLIGHT_SPEED_BRAKE_LIFT_DUMP = 0.12;
 // Numerical translational safety envelope. This is a NaN/injection guard, not
 // a flight-shaping limit: it sits far above anything gravity plus the drag
 // polar can reach for either aircraft, so the aerodynamics — never the clamp —
@@ -357,12 +382,84 @@ function couldReachTerrain(
   );
 }
 
-function gearClearanceAboveTerrain(
+/**
+ * The PILOT-FACING AGL rule, in one place because there are TWO readouts.
+ *
+ * The simulator computes one (below, from the aircraft's contact points) and
+ * the terrain viewer computes its own from the camera (`src/game/freeFly.ts`),
+ * and before this function existed they were separate arithmetic that happened
+ * to agree. They did not agree over water, which is how the viewer's HUD came
+ * to show a height above the SEABED in the screenshot that started this.
+ *
+ * @param terrainClearance height of the lowest point above the terrain, unclamped
+ * @param lowestPointY world Y of that same lowest point
+ * @param seaLevel still water height, or undefined for "no water datum known"
+ */
+export function pilotSurfaceClearance(
+  terrainClearance: number,
+  lowestPointY: number,
+  seaLevel: number | undefined,
+): number {
+  // Clearance above TERRAIN is clamped at zero, as it has always been:
+  // suspension compression puts tyre contact points slightly below the ideal
+  // ground plane, and a wheel clearance should read exactly 0 in ground
+  // contact rather than a small negative on a runway.
+  const clamped = Math.max(0, terrainClearance);
+  // No water datum (DEFAULT_ENVIRONMENT, and every caller that passes only
+  // terrain samplers) reports exactly what it always did, to the bit.
+  if (seaLevel === undefined) return clamped;
+  // Clearance above WATER is SIGNED, so a descent into the sea takes the
+  // number through zero instead of continuing to measure a bed nobody can see.
+  // The SMALLER of the two is what makes this right at a coastline straddle
+  // and continuous across the shoreline: as the terrain rises to meet the
+  // datum the two quantities converge, so crossing a shore has no step in it.
+  return Math.min(clamped, lowestPointY - seaLevel);
+}
+
+/**
+ * The PILOT-FACING clearance below the aircraft: height above the terrain, or
+ * above the WATER SURFACE where water stands above the terrain.
+ *
+ * **Display only.** This function has exactly one caller -- the telemetry
+ * assembly below -- and nothing in the contact, impact, friction or crash path
+ * reads it. Those use `terrainAt`, and their broad-phase gate `couldReachTerrain`
+ * uses `terrainHeightAt`; both describe the real surface the aircraft can touch,
+ * which over water is the sea BED. Flying into the sea behaves exactly as it
+ * always has: the aeroplane passes through the surface and keeps going until it
+ * reaches the bottom. What changed is the instrument, not the water.
+ *
+ * TWO MINIMA, and the asymmetry between them is the whole design:
+ *
+ *  - Clearance above TERRAIN is clamped at zero, exactly as it has always been,
+ *    because suspension compression puts tyre contact points slightly below the
+ *    ideal ground plane and a pilot-facing wheel clearance should read exactly
+ *    0 in ground contact rather than a small negative number on a runway.
+ *  - Clearance above the WATER is SIGNED. An aircraft below the surface reports
+ *    how far below, which is what Jason asked for and what a descent into the
+ *    sea should look like: the number goes through zero, instead of continuing
+ *    to measure a seabed the pilot cannot see.
+ *
+ * Taking the SMALLER of the two is what makes this correct at a coastline
+ * straddle -- nose over land, tail over water -- since each minimum is taken
+ * over all contact points independently. It is also continuous across the
+ * waterline: as the terrain rises to meet `seaLevel` the two quantities
+ * converge, so there is no step as the aircraft crosses a shore.
+ *
+ * The water datum is FLAT (the ocean mesh is drawn at `seaLevel`, and the
+ * curvature drop was deliberately withdrawn), so it costs no terrain samples at
+ * all -- one subtraction against the lowest contact point. It is therefore also
+ * blind to waves: the rendered surface oscillates about the datum with a
+ * significant wave height of roughly 0.9-2.6 m, so this reading is right on
+ * average and off by about a metre instantaneously. Matching a crest would mean
+ * reading back GPU displacement.
+ */
+function gearClearanceAboveSurface(
   state: FlightState,
   environment: EnvironmentInput,
   aircraft: AircraftDefinition,
 ): number {
   let minimumClearance = Number.POSITIVE_INFINITY;
+  let lowestContactOffsetY = Number.POSITIVE_INFINITY;
   const offset = vec3();
   const physicalPoint = vec3();
   const centreHeight = terrainHeightAt(
@@ -383,6 +480,7 @@ function gearClearanceAboveTerrain(
       minimumClearance,
       state.position.y + offset.y - surfaceHeight,
     );
+    lowestContactOffsetY = Math.min(lowestContactOffsetY, offset.y);
   };
   for (const point of aircraft.airframeContactPoints) includePoint(point);
   if (!aircraft.retractableGear || state.actuators.gear > 0.015) {
@@ -394,10 +492,9 @@ function gearClearanceAboveTerrain(
   if (!Number.isFinite(minimumClearance)) {
     minimumClearance = state.position.y - (centreHeight ?? 0);
   }
-  // Suspension compression puts tyre contact points slightly below the ideal
-  // terrain plane. AGL is a pilot-facing wheel clearance, so ground contact is
-  // exactly zero rather than the aircraft CG height above the runway.
-  return Math.max(0, minimumClearance);
+  const lowestContactY = state.position.y
+    + (Number.isFinite(lowestContactOffsetY) ? lowestContactOffsetY : 0);
+  return pilotSurfaceClearance(minimumClearance, lowestContactY, environment.seaLevel);
 }
 
 export function createFlightState(
@@ -410,8 +507,14 @@ export function createFlightState(
   const pitch = finiteOr(spawn.pitch, onGround ? groundPose.pitch : (2 * Math.PI) / 180);
   const bank = finiteOr(spawn.bank, 0);
   const orientation = quaternionFromFlightAngles(heading, pitch, bank);
-  const airspeed = clamp(finiteOr(spawn.airspeed, onGround ? 0 : 50), 0, 180);
-  const actuators = normalizedControls(spawn.controls);
+  // Clamped to the same ceiling as every other translational speed in the
+  // solver, not to a separate lower one. This was a bare 180 with no comment,
+  // which silently capped any spawn faster than that: the Global 8000 asks for
+  // 210 m/s and had been starting at 180 since the day it was added, and the
+  // F-16 and the 747-8 ask for more again. A spawn speed that is quietly
+  // ignored makes the catalogue lie about the aeroplane.
+  const airspeed = clamp(finiteOr(spawn.airspeed, onGround ? 0 : 50), 0, MAX_TRANSLATIONAL_SPEED);
+  const actuators: ActuatorState = { ...normalizedControls(spawn.controls), groundSpoilers: 0 };
   actuators.gear = onGround
     ? 1
     : gearExtensionForAircraft(
@@ -456,7 +559,7 @@ export function createFlightState(
         -(
           aircraft.pitchMomentZero +
           aircraft.pitchMomentElevator *
-            (actuators.pitch + actuators.trim * 0.5)
+            (actuators.pitch + actuators.trim * TRIM_ELEVATOR_AUTHORITY)
         ) / aircraft.pitchMomentAlpha,
         (-8 * Math.PI) / 180,
         (8 * Math.PI) / 180,
@@ -520,11 +623,57 @@ export function createFlightState(
 
 export const spawnFlight = createFlightState;
 
+/**
+ * Where the ground spoilers are being driven, 0..1: the type's rule (see
+ * `GROUND_SPOILER_ARMED_SPEED`). Reads the ACTUATORS, so it follows the lever
+ * and the brake the aeroplane actually has, not the ones the pilot is asking for.
+ */
+export function groundSpoilerDemand(
+  aircraft: AircraftDefinition,
+  actuators: ActuatorState,
+  weightOnWheels: boolean,
+  groundSpeed: number,
+): number {
+  if (!aircraft.groundSpoilers || !weightOnWheels) return 0;
+  const armedTouchdown = actuators.throttle <= GROUND_SPOILER_IDLE_THROTTLE
+    && groundSpeed > GROUND_SPOILER_ARMED_SPEED;
+  return armedTouchdown ? 1 : clamp(actuators.brake, 0, 1);
+}
+
+/**
+ * The fraction of lift the panels dump. On an airframe with ground spoilers it
+ * reads their deployment, and the brake only as the flight speed brake, so the
+ * sim dumps lift exactly when (and as far as) the drawn panels stand up. The
+ * others keep the brake-driven dump they always had, bit for bit.
+ */
+export function speedBrakeLiftDump(
+  aircraft: AircraftDefinition,
+  actuators: ActuatorState,
+  onGround: boolean,
+): number {
+  if (!(aircraft.speedBrakeDrag > 0)) return 0;
+  if (!aircraft.groundSpoilers) {
+    return actuators.brake * (onGround ? GROUND_SPOILER_LIFT_DUMP : FLIGHT_SPEED_BRAKE_LIFT_DUMP);
+  }
+  return Math.max(
+    actuators.groundSpoilers * GROUND_SPOILER_LIFT_DUMP,
+    actuators.brake * FLIGHT_SPEED_BRAKE_LIFT_DUMP,
+  );
+}
+
+/** How far the panels stand up for their DRAG: the speed brake, or the ground spoilers if more. */
+function speedBrakeDeployment(aircraft: AircraftDefinition, actuators: ActuatorState): number {
+  return aircraft.groundSpoilers
+    ? Math.max(actuators.brake, actuators.groundSpoilers)
+    : actuators.brake;
+}
+
 function updateActuators(
   actuators: ActuatorState,
   controls: FlightControls,
   aircraft: AircraftDefinition,
   weightOnWheels: boolean,
+  groundSpeed: number,
   dt: number,
 ): void {
   actuators.throttle = moveToward(actuators.throttle, controls.throttle, dt * 1.5);
@@ -534,6 +683,13 @@ function updateActuators(
   actuators.trim = moveToward(actuators.trim, controls.trim, dt * 0.45);
   actuators.flaps = moveToward(actuators.flaps, controls.flaps, dt * 0.28);
   actuators.brake = moveToward(actuators.brake, controls.brake, dt * 5);
+  actuators.groundSpoilers = aircraft.groundSpoilers
+    ? moveToward(
+        actuators.groundSpoilers,
+        groundSpoilerDemand(aircraft, actuators, weightOnWheels, groundSpeed),
+        dt * GROUND_SPOILER_RATE,
+      )
+    : 0;
   actuators.gear = aircraft.retractableGear
     ? moveToward(
         actuators.gear,
@@ -958,7 +1114,14 @@ function integrateSubstep(
     settleCrashedState(state, environment, aircraft, scratch, dt, false);
     return;
   }
-  updateActuators(state.actuators, controls, aircraft, state.onGround, dt);
+  updateActuators(
+    state.actuators,
+    controls,
+    aircraft,
+    state.onGround,
+    Math.hypot(state.velocity.x, state.velocity.z),
+    dt,
+  );
 
   const gravity = clamp(finiteOr(environment.gravity, STANDARD_GRAVITY), 0, 30);
   scratch.relativeWorld.x = state.velocity.x - finiteOr(environment.wind?.x, 0);
@@ -998,13 +1161,13 @@ function integrateSubstep(
     state.actuators.flaps,
     aircraft,
   );
-  // The jet's brake command drives its speed-brake panels in flight and its
-  // lift-dump/spoiler function once weight is on the wheels. Wheel braking is
-  // still applied exclusively by loaded gear contacts below.
-  const speedBrakeLiftDump = aircraft.speedBrakeDrag > 0
-    ? state.actuators.brake * (state.onGround ? 0.62 : 0.12)
-    : 0;
-  const liftCoefficient = baseLiftCoefficient * (1 - speedBrakeLiftDump);
+  // The brake command drives the speed-brake panels in flight and, on the
+  // jet, its lift-dump function once weight is on the wheels; on an airframe
+  // with ground spoilers the dump reads their deployment instead (see
+  // `speedBrakeLiftDump`). Wheel braking is still applied exclusively by
+  // loaded gear contacts below.
+  const liftDump = speedBrakeLiftDump(aircraft, state.actuators, state.onGround);
+  const liftCoefficient = baseLiftCoefficient * (1 - liftDump);
   // Adding the (possibly zero) wave-drag term after the base polar keeps the
   // trainer bit-identical: x + 0 is exact for every positive float.
   const dragCoefficient =
@@ -1014,7 +1177,7 @@ function integrateSubstep(
       state.actuators.flaps,
       aircraft,
       state.actuators.gear,
-      state.actuators.brake,
+      speedBrakeDeployment(aircraft, state.actuators),
     ) + waveDragCoefficient(aircraft, airspeed, airDensity);
   const liftForce = dynamicPressure * aircraft.wingArea * liftCoefficient;
   const dragForce = dynamicPressure * aircraft.wingArea * dragCoefficient;
@@ -1059,7 +1222,8 @@ function integrateSubstep(
   const pitchRate = state.angularVelocity.z;
   const yawRate = state.angularVelocity.y;
   const rollRate = state.angularVelocity.x;
-  const elevator = state.actuators.pitch + state.actuators.trim * 0.5;
+  const elevator = state.actuators.pitch +
+    state.actuators.trim * TRIM_ELEVATOR_AUTHORITY;
   const stallExcess = Math.max(
     0,
     angleOfAttack - aircraft.positiveStallAngle,
@@ -1279,7 +1443,7 @@ export function getFlightTelemetry(
   rotateVectorInto(up, state.orientation, BODY_UP);
   const altitudeAgl = state.crashed
     ? 0
-    : gearClearanceAboveTerrain(state, environment, aircraft);
+    : gearClearanceAboveSurface(state, environment, aircraft);
   const airDensity = Math.max(0.001, state.dynamics.airDensity);
   const equivalentAirspeed = state.dynamics.airspeed * Math.sqrt(airDensity / SEA_LEVEL_DENSITY);
   // Angle of attack and sideslip are undefined when the relative airflow is

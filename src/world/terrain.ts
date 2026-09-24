@@ -18,6 +18,8 @@ import {
   RIDGED_OCTAVE_BAND_LIMIT_MEAN,
   ridgedChannelVarianceKept,
   ridgedFbm2D,
+  ridgedFbmPair2D,
+  type RidgedPair,
   saturate,
   smoothstep,
   valueNoise2D,
@@ -155,6 +157,72 @@ export const RIDGES_INVERSE_POW_31_MEAN = 0.2072;
 export const RIDGES_SMOOTH_42_82_MEAN = 0.1965;
 export const LOCAL_RIDGES_KNOLL_MEAN = 0.1534;
 
+/**
+ * Wave M-1 — what a tall mountain is shaped like.
+ *
+ * MEASURED on the shipped kernel, mountain ground (`mountainRegion` > 0.3,
+ * above 300 m), 30 m baseline, seeds "terra1" / "alps22" / "kilo77": median
+ * slope 45.5 / 53.0 / 53.9 degrees, and 18% / 33% / 36% of it steeper than 60
+ * degrees. Alpine terrain is about 30 degrees at the median with a few per
+ * cent of cliff. The mountain term carried 0.92-1.23 m/m of RMS slope by
+ * itself — 1,390 m of ridged relief on a 2,550 m base wavelength — and the
+ * knoll, crag and fracture terms another 0.7-1.0 between them, all of them
+ * SCALED UP by `mountainRegion`.
+ *
+ * Two things were tried first and measured not to work: rounding the ridge
+ * cusp alone (median 45.5 -> 41-43 degrees) and lowering the 1.58 exponent and
+ * the crag amplitude alone (45.5 -> 44). A needle is relief per wavelength, not
+ * a sharp crest. What works is giving the massif a BODY and taking the relief
+ * out of the ridges: the broad mountain mask lifts the whole massif, so the
+ * ridge term only has to draw the ridges.
+ *
+ * CONTAINMENT. The reshaped height is blended in by `gate` x `heightGate`, both
+ * read off the SHIPPED field, and where that product is zero the function
+ * returns the shipped arithmetic untouched: low ground, low-amplitude hills,
+ * every coastline and every airfield are bit-identical. Measured with the
+ * real kernels, base tree against this one (2026-09-19): 23-30% of land moves
+ * by more than 0.5 m over five seeds; 0 sign flips in 202,005 samples and not
+ * one sample at or below 20 m moved; airfield siting identical for 3,050 seeds
+ * and all 142 catalogue regions in every assessment field. "Airfields do not
+ * move" is NOT "nothing near an airfield moves": 6 of the 142 catalogue
+ * airfields have moved ground inside 3 km (nearest 1,910 m from a runway
+ * centre, at most 13.6 m); none has any inside 1 km, where the platform, its
+ * blend zone and the earthworks live.
+ */
+export const MOUNTAIN_SHAPE = Object.freeze({
+  /** `mountainRegion` band over which the reshaping fades in. */
+  gateLow: 0.2,
+  gateHigh: 0.65,
+  /** Shipped-height band, metres: nothing below the low edge ever moves. */
+  heightGateLowMeters: 20,
+  heightGateHighMeters: 140,
+  /** The ridge term: soft channel, gentler exponent, half the relief. */
+  ridgeCusp: 0.22,
+  ridgePersistence: 0.4,
+  ridgeExponent: 1.15,
+  ridgeAmplitudeMeters: 680,
+  /**
+   * The massif's body: a lift read off the broad mountain FIELD over a band
+   * about twice as wide as the one `mountainRegion` ramps over. It was first
+   * written as `bodyAmplitude * mountainRegion^2`, and measured: that ramps
+   * ~1,100 m in over the 0.29-wide region band, so the body itself drew a
+   * range-front escarpment round every massif (terra1's core: 12% of ground
+   * steeper than 60 degrees, against 9% with this band at the same height).
+   */
+  bodyAmplitudeMeters: 1_150,
+  bodyFieldLow: 0.47,
+  bodyFieldHigh: 0.95,
+  /** How far inland the body takes to reach full height (`continental`). */
+  inlandLow: 0.48,
+  inlandHigh: 0.76,
+  /** Share of knoll, crag and fracture relief removed at `mountainRegion` 1. */
+  reliefDamping: 0.78,
+});
+/** E[soft octave], measured; the soft channel's band-limited resting value. */
+export const RIDGES_SOFT_OCTAVE_MEAN = 0.5494;
+/** E[softRidges ^ ridgeExponent], measured; see RIDGES_POW_158_MEAN's note. */
+export const RIDGES_SOFT_POW_MEAN = 0.5088;
+
 function assertFiniteCoordinate(value: number, label: string): void {
   if (!Number.isFinite(value)) {
     throw new RangeError(`${label} must be finite`);
@@ -225,8 +293,22 @@ export function sampleNaturalTerrainHeight(
   // from a flat plane for tens of kilometres around the starter airport.
   const foothillRegion = smoothstep(0.34, 0.7, mountainField);
   const mountainRegion = smoothstep(0.47, 0.76, mountainField);
-  const ridges =
-    ridgedFbm2D(mixSeed(seedHash, 131), warpedX / 2_550, warpedZ / 2_550, 5, 2_550, filterWidthMeters);
+  // One pass yields both channels: `.hard` is `ridgedFbm2D` bit for bit, and
+  // `.soft` is the same five samples with a rounded cusp and a lower gain.
+  ridgedFbmPair2D(
+    mixSeed(seedHash, 131),
+    warpedX / 2_550,
+    warpedZ / 2_550,
+    5,
+    2_550,
+    filterWidthMeters,
+    MOUNTAIN_SHAPE.ridgeCusp,
+    MOUNTAIN_SHAPE.ridgePersistence,
+    RIDGES_SOFT_OCTAVE_MEAN,
+    RIDGE_PAIR_SCRATCH,
+  );
+  const ridges = RIDGE_PAIR_SCRATCH.hard;
+  const ridgesSoft = RIDGE_PAIR_SCRATCH.soft;
   const localRidges =
     ridgedFbm2D(mixSeed(seedHash, 132), warpedX / 1_050, warpedZ / 1_050, 4, 1_050, filterWidthMeters);
   const ridgesKept = ridgedChannelVarianceKept(5, 2_550, filterWidthMeters);
@@ -278,7 +360,7 @@ export function sampleNaturalTerrainHeight(
   // Plains occur naturally where mountainRegion is low; hills become stronger
   // inland while coastlines retain gentler slopes.
   const hillStrength = land * (34 + 96 * (1 - mountainRegion * 0.55));
-  const height =
+  const shippedHeight =
     continentalShelf +
     rolling * hillStrength +
     fine * (5 + land * 12) +
@@ -288,8 +370,40 @@ export function sampleNaturalTerrainHeight(
     cragDetail -
     valleyCarve +
     geologicalRelief;
+
+  // M-1: see MOUNTAIN_SHAPE. Both gates read the SHIPPED field, and a zero
+  // weight returns the shipped arithmetic untouched.
+  let height = shippedHeight;
+  const shapeWeight = smoothstep(MOUNTAIN_SHAPE.gateLow, MOUNTAIN_SHAPE.gateHigh, mountainRegion)
+    * smoothstep(
+      MOUNTAIN_SHAPE.heightGateLowMeters,
+      MOUNTAIN_SHAPE.heightGateHighMeters,
+      shippedHeight,
+    );
+  if (shapeWeight > 0) {
+    const softKept = ridgedChannelVarianceKept(
+      5, 2_550, filterWidthMeters, MOUNTAIN_SHAPE.ridgePersistence);
+    const massifRidges = blendTowardExpectation(
+      Math.pow(Math.max(0, ridgesSoft), MOUNTAIN_SHAPE.ridgeExponent),
+      RIDGES_SOFT_POW_MEAN,
+      softKept,
+    ) * MOUNTAIN_SHAPE.ridgeAmplitudeMeters;
+    const massifBody = MOUNTAIN_SHAPE.bodyAmplitudeMeters
+      * smoothstep(MOUNTAIN_SHAPE.bodyFieldLow, MOUNTAIN_SHAPE.bodyFieldHigh, mountainField)
+      * smoothstep(MOUNTAIN_SHAPE.inlandLow, MOUNTAIN_SHAPE.inlandHigh, continental);
+    const massifHeight = land * (mountainRegion * massifRidges + massifBody);
+    const reliefKept = 1 - MOUNTAIN_SHAPE.reliefDamping * mountainRegion;
+    const reshapedHeight = shippedHeight
+      - mountainHeight
+      + massifHeight
+      - (rockyKnolls + cragDetail + geologicalRelief) * (1 - reliefKept);
+    height = shippedHeight + (reshapedHeight - shippedHeight) * shapeWeight;
+  }
   return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
 }
+
+/** Per-call scratch for the ridge pair; the kernel runs ~181 lattices per vertex. */
+const RIDGE_PAIR_SCRATCH: RidgedPair = { hard: 0, soft: 0 };
 
 /**
  * Phase 5's pre-erosion tectonic field.

@@ -42,7 +42,68 @@ export const BATHYMETRY_FAR_TEXEL_METERS = 128;
 export const BATHYMETRY_NEAR_CLAMP_METERS = 256;
 export const BATHYMETRY_FAR_CLAMP_METERS = 4_096;
 export const BATHYMETRY_LEVEL_COUNT = 2;
+/** Bytes a texel of the DESIGNED `r16float` format occupies. */
 export const BATHYMETRY_TEXTURE_BYTES_PER_TEXEL = 2;
+
+/**
+ * The storage format the update dispatch writes through, and therefore the
+ * format the water materials sample.
+ *
+ * `r16float` is the designed format (`5-10`: two bytes a texel, ~0.06 m in
+ * the shallow band). But core WebGPU allows STORAGE_BINDING on `r16float`
+ * only behind the OPTIONAL `texture-formats-tier1` feature: Chrome (Dawn)
+ * exposes it on the reference adapter, Firefox 155 (wgpu) does not, and the
+ * renderer used to refuse to start there with "This GPU does not expose
+ * texture-formats-tier1". `rgba16float` is the smallest CORE storage-capable
+ * format that is still half-float and still filterable, so a device without
+ * tier1 writes the same value into `.r` of a four-channel texel and every
+ * consumer (`textureSampleLevel(...).r` in `WATER_DEPTH_OPTICS_WGSL`) is
+ * untouched. The price is four times the memory — 8 bytes a texel, 16 MiB
+ * for both levels instead of 4 — which is why it is the fallback and not the
+ * format. `bathymetryClipmapBytes` and the budget estimator take the live
+ * bytes-per-texel so the reported figure is the allocated one, never the
+ * designed one.
+ */
+export type BathymetryStorageFormat = "r16float" | "rgba16float";
+
+/** The optional feature the designed format needs for STORAGE_BINDING. */
+export const BATHYMETRY_R16F_STORAGE_FEATURE = "texture-formats-tier1";
+
+export interface BathymetryStorageFormatContract {
+  readonly bytesPerTexel: number;
+  /** Device feature the format needs as a storage target, or null for core. */
+  readonly requiredFeature: string | null;
+}
+
+export const BATHYMETRY_STORAGE_FORMATS: Readonly<
+  Record<BathymetryStorageFormat, BathymetryStorageFormatContract>
+> = Object.freeze({
+  r16float: Object.freeze({
+    bytesPerTexel: BATHYMETRY_TEXTURE_BYTES_PER_TEXEL,
+    requiredFeature: BATHYMETRY_R16F_STORAGE_FEATURE,
+  }),
+  rgba16float: Object.freeze({ bytesPerTexel: 8, requiredFeature: null }),
+});
+
+/**
+ * The format a device can host, decided from the ADAPTER's feature set before
+ * the device exists, so the renderer requests `texture-formats-tier1` only
+ * when the choice needs it. Pure: Node tests pin both branches.
+ */
+export function selectBathymetryStorageFormat(
+  adapterFeatures: ReadonlySet<string> | readonly string[],
+): BathymetryStorageFormat {
+  const features = adapterFeatures instanceof Set
+    ? adapterFeatures
+    : new Set(adapterFeatures as readonly string[]);
+  return features.has(BATHYMETRY_R16F_STORAGE_FEATURE) ? "r16float" : "rgba16float";
+}
+
+export function bathymetryStorageBytesPerTexel(format: BathymetryStorageFormat): number {
+  const contract = BATHYMETRY_STORAGE_FORMATS[format];
+  if (!contract) throw new RangeError(`Unknown bathymetry storage format ${String(format)}`);
+  return contract.bytesPerTexel;
+}
 
 const BATHYMETRY_WORKGROUP_EDGE = 8;
 export const BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS = 30_000;
@@ -356,11 +417,15 @@ export function bathymetryUpdateRectangles(
 export function bathymetryClipmapBytes(
   edge = BATHYMETRY_CLIPMAP_EDGE,
   levels = BATHYMETRY_LEVEL_COUNT,
+  bytesPerTexel = BATHYMETRY_TEXTURE_BYTES_PER_TEXEL,
 ): number {
   if (!Number.isInteger(edge) || edge <= 0 || !Number.isInteger(levels) || levels <= 0) {
     throw new RangeError("Bathymetry dimensions must be positive integers");
   }
-  return edge * edge * levels * BATHYMETRY_TEXTURE_BYTES_PER_TEXEL;
+  if (!Number.isInteger(bytesPerTexel) || bytesPerTexel <= 0) {
+    throw new RangeError("Bathymetry bytes per texel must be a positive integer");
+  }
+  return edge * edge * levels * bytesPerTexel;
 }
 
 // ---------------------------------------------------------------------------
@@ -669,7 +734,19 @@ export function bathymetryPageHeightAtlasTexel(
   ];
 }
 
-export const BATHYMETRY_UPDATE_WGSL = /* wgsl */ `
+/**
+ * The update kernel for a given storage target. Only the `textureStore`
+ * target's declared format differs between the two: the value written is the
+ * same `vec4f(bedDelta, 0, 0, 0)` either way, and the `.r` the water samples
+ * is the same half-float.
+ */
+export function bathymetryUpdateWgsl(
+  format: BathymetryStorageFormat = "r16float",
+): string {
+  if (!(format in BATHYMETRY_STORAGE_FORMATS)) {
+    throw new RangeError(`Unknown bathymetry storage format ${String(format)}`);
+  }
+  return /* wgsl */ `
 ${terrainKernelPageBindingWgsl(0, 0)}
 ${TERRAIN_KERNEL_WGSL}
 
@@ -688,7 +765,7 @@ struct BathymetryPageTable {
 };
 
 @group(0) @binding(1) var<storage, read> bathymetryParams: BathymetryUpdateParams;
-@group(0) @binding(2) var bathymetryTarget: texture_storage_2d<r16float, write>;
+@group(0) @binding(2) var bathymetryTarget: texture_storage_2d<${format}, write>;
 @group(0) @binding(3) var<storage, read> bathymetryMacroHeight: array<f32>;
 @group(0) @binding(4) var<storage, read> bathymetryPageTable: BathymetryPageTable;
 // r32float under layout 'auto': textureLoad only, never textureSample.
@@ -855,6 +932,10 @@ fn updateBathymetry(@builtin(global_invocation_id) id: vec3<u32>) {
   textureStore(bathymetryTarget, targetTexel, vec4f(bedDelta, 0.0, 0.0, 0.0));
 }
 `;
+}
+
+/** The designed `r16float` kernel — what the reference adapter dispatches. */
+export const BATHYMETRY_UPDATE_WGSL = bathymetryUpdateWgsl("r16float");
 
 interface BathymetryLevelRuntime {
   readonly definition: BathymetryLevelDefinition;
@@ -866,23 +947,47 @@ interface BathymetryLevelRuntime {
 function createBathymetryTexture(
   scene: Scene,
   definition: BathymetryLevelDefinition,
+  format: BathymetryStorageFormat,
 ): RawTexture | null {
   const engine = scene.getEngine() as { isWebGPU?: boolean };
   if (!engine.isWebGPU) return null;
-  const texture = RawTexture.CreateRStorageTexture(
-    null,
-    BATHYMETRY_CLIPMAP_EDGE,
-    BATHYMETRY_CLIPMAP_EDGE,
-    scene,
-    false,
-    false,
-    Texture.BILINEAR_SAMPLINGMODE,
-    Constants.TEXTURETYPE_HALF_FLOAT,
-  );
+  // Both are STORAGE variants (the update dispatch textureStores into them)
+  // at HALF_FLOAT with a BILINEAR sampler: r16float and rgba16float are both
+  // filterable in core WebGPU, only the storage binding differs (see
+  // `BathymetryStorageFormat`).
+  const texture = format === "r16float"
+    ? RawTexture.CreateRStorageTexture(
+      null,
+      BATHYMETRY_CLIPMAP_EDGE,
+      BATHYMETRY_CLIPMAP_EDGE,
+      scene,
+      false,
+      false,
+      Texture.BILINEAR_SAMPLINGMODE,
+      Constants.TEXTURETYPE_HALF_FLOAT,
+    )
+    : RawTexture.CreateRGBAStorageTexture(
+      null,
+      BATHYMETRY_CLIPMAP_EDGE,
+      BATHYMETRY_CLIPMAP_EDGE,
+      scene,
+      false,
+      false,
+      Texture.BILINEAR_SAMPLINGMODE,
+      Constants.TEXTURETYPE_HALF_FLOAT,
+    );
   texture.name = `bathymetry-l${definition.level}`;
   texture.wrapU = Texture.WRAP_ADDRESSMODE;
   texture.wrapV = Texture.WRAP_ADDRESSMODE;
   return texture;
+}
+
+export interface BathymetryClipmapOptions {
+  /**
+   * Storage format of both levels. Defaults to the designed `r16float`; the
+   * renderer passes `selectBathymetryStorageFormat(adapter features)`.
+   */
+  readonly storageFormat?: BathymetryStorageFormat;
 }
 
 /**
@@ -896,6 +1001,8 @@ function createBathymetryTexture(
  * rects on the per-frame recenter. The consumer binding surface is untouched.
  */
 export class BathymetryClipmap {
+  /** Storage format of both levels — what the dispatch writes and water samples. */
+  readonly storageFormat: BathymetryStorageFormat;
   private readonly levels: [BathymetryLevelRuntime, BathymetryLevelRuntime];
   private readonly engine: WebGPUEngine | null;
   private readonly erodedPageOverlay: BathymetryErodedPageOverlaySeam | null;
@@ -923,19 +1030,34 @@ export class BathymetryClipmap {
     private readonly scene: Scene,
     private readonly world: Readonly<WorldDefinition>,
     erodedPageOverlay: BathymetryErodedPageOverlaySeam | null = null,
+    options: BathymetryClipmapOptions = {},
   ) {
     const engine = scene.getEngine() as WebGPUEngine & { isWebGPU?: boolean };
     this.engine = engine.isWebGPU ? engine : null;
+    const storageFormat = options.storageFormat ?? "r16float";
+    if (!(storageFormat in BATHYMETRY_STORAGE_FORMATS)) {
+      throw new RangeError(`Unknown bathymetry storage format ${String(storageFormat)}`);
+    }
+    this.storageFormat = storageFormat;
     // Mode gate, belt and braces with the wiring gate in FlightRenderer: an
     // analytic world ignores an accidentally supplied seam entirely, so its
     // page table stays the empty sentinel and the WGSL branch stays inert.
     this.erodedPageOverlay = world.worldEvolution === "eroded" ? erodedPageOverlay : null;
     this.levels = BATHYMETRY_LEVELS.map((definition) => ({
       definition,
-      texture: createBathymetryTexture(scene, definition),
+      texture: createBathymetryTexture(scene, definition, storageFormat),
       originTexelX: Number.NaN,
       originTexelZ: Number.NaN,
     })) as [BathymetryLevelRuntime, BathymetryLevelRuntime];
+  }
+
+  /** Bytes the two level textures occupy at the LIVE format. */
+  get textureBytes(): number {
+    return bathymetryClipmapBytes(
+      BATHYMETRY_CLIPMAP_EDGE,
+      BATHYMETRY_LEVEL_COUNT,
+      bathymetryStorageBytesPerTexel(this.storageFormat),
+    );
   }
 
   get isResident(): boolean {
@@ -1274,7 +1396,7 @@ export class BathymetryClipmap {
     this.shader = withoutDispatchTiming(new ComputeShader(
       "bathymetry-clipmap-update",
       this.engine,
-      { computeSource: BATHYMETRY_UPDATE_WGSL },
+      { computeSource: bathymetryUpdateWgsl(this.storageFormat) },
       {
         entryPoint: "updateBathymetry",
         bindingsMapping: {

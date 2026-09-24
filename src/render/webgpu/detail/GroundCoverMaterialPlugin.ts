@@ -49,6 +49,11 @@ function archetypeVertexTableWgsl(): string {
     + `${branches.join("\n")}\n}`;
 }
 
+/** `D-2`: how much of the GROUND's normal a blade carries even at the camera's feet. */
+export const GROUND_COVER_NEAR_NORMAL_BLEND = 0.6;
+/** `D-2`: albedo multiplier at a blade's root; the tip stays at 1.32. */
+export const GROUND_COVER_ROOT_ALBEDO = 0.7;
+
 /**
  * Wave G — the blade material plugin.
  *
@@ -65,6 +70,7 @@ function archetypeVertexTableWgsl(): string {
  * with range (specular anti-aliasing), and wind is a gust wave plus
  * per-blade flutter against the shared detail wind state.
  */
+
 export class GroundCoverMaterialPlugin extends MaterialPluginBase {
   private windDirectionX = 1;
   private windDirectionZ = 0;
@@ -248,7 +254,13 @@ if (groundHeight <= 0.002) {
     cross(groundWidthDir, groundTangent) + groundWidthDir * (groundSide * 0.55),
   );
   let groundRange = distance(groundRoot.xz, uniforms.groundCamera.xz);
-  let groundNormalBlend = smoothstep(7.0, 42.0, groundRange);
+  // D-2: floored. Inside 7 m the blend was ZERO, so an upright blade was lit by
+  // its own ribbon normal — near-horizontal — which under a high sun is N.L of
+  // 0 to 0.37 against ~0.93 for the ground it stands on. Measured in the app at
+  // a 2 m eye: the dark half of the blades rendered at 0.43x the ground and
+  // bluer (sky-lit only), which is the black-spike look on every near meadow.
+  // A blade is lit MOSTLY like its ground and partly like itself.
+  let groundNormalBlend = max(${GROUND_COVER_NEAR_NORMAL_BLEND.toFixed(2)}, smoothstep(7.0, 42.0, groundRange));
   groundBladeNormal = normalize(mix(groundBladeNormal, groundTerrainNormal, groundNormalBlend));
   normalUpdated = groundBladeNormal;
   // The base colour stays the ground's own harmonised albedo — that is what
@@ -271,8 +283,20 @@ varying groundTint: vec4f;
       CUSTOM_FRAGMENT_UPDATE_ALBEDO: /* wgsl */ `
 // Root-to-tip gradient over the harmonised ground albedo: shadowed base,
 // lit tips — the cheap ambient-occlusion read every grass reference uses.
+// D-2: root 0.5 -> 0.7. The root is already darkened by the shadow map and by
+// the ambient term; halving its albedo as well counted the same occlusion twice.
 surfaceAlbedo = fragmentInputs.groundTint.rgb
-  * mix(0.5, 1.32, pow(clamp(fragmentInputs.groundTint.w, 0.0, 1.0), 1.5));
+  * mix(${GROUND_COVER_ROOT_ALBEDO.toFixed(2)}, 1.32, pow(clamp(fragmentInputs.groundTint.w, 0.0, 1.0), 1.5));
+`,
+      CUSTOM_FRAGMENT_BEFORE_LIGHTS: /* wgsl */ `
+// D-2: a blade never takes light from underneath. twoSidedLighting negates the
+// WHOLE normal on a back face, and with the floor above most of that normal is
+// the ground's: every blade seen from behind was lit from below, N.L < 0 under
+// any sun, ambient only. That is the black half of every near meadow, and the
+// floor alone could not reach it. Mirroring the flipped normal back above the
+// horizon keeps the blade's own share reversed (which IS what the back of a
+// ribbon faces) and restores the ground's share: exact on level ground.
+normalW = vec3f(normalW.x, abs(normalW.y), normalW.z);
 `,
     };
   }

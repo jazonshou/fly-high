@@ -10,18 +10,35 @@
  *     ... dispatch ...
  *     if (gpuPerfCounter) { this._timestampQuery.endPass(index, gpuPerfCounter); }
  *
- * `endPass` reaches `WebGPUQuerySet.readTwoValuesAndSubtract`, whose synchronous
- * prefix is `createCommandEncoder` + `resolveQuerySet` + `copyBufferToBuffer` +
- * `device.queue.submit`, followed by an `await buffer.mapAsync`. So each timed
- * dispatch costs an out-of-band queue submit and a GPU->CPU readback, every
- * frame, whether or not anyone ever looks at the number.
+ * Babylon's own `endPass` reaches `WebGPUQuerySet.readTwoValuesAndSubtract`,
+ * whose synchronous prefix is `createCommandEncoder` + `resolveQuerySet` +
+ * `copyBufferToBuffer` + `device.queue.submit`, followed by an `await
+ * buffer.mapAsync`: an out-of-band submit and a GPU->CPU readback per timed
+ * dispatch, every frame. Worse, that resolve runs before the pass it reads, so
+ * the number is the slot's PREVIOUS occupant
+ * (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md). Wherever timing
+ * is on, `DeferredPassTiming` now replaces that read with one resolve and one
+ * readback per frame, after the frame is submitted.
  *
- * A calibrated probe on the reference host puts that at ~0.49 ms per timed pass
- * with a near-zero intercept (20 passes -> 9.9 ms, 44 -> 21.1 ms, 88 -> 43.2 ms).
- * At tier 1 the spectral ocean alone averages 44 dispatches per frame — 14 FFT
- * stages plus evolution and derivation, over four cascades on a 1/1/2/4 cadence —
- * and NOTHING reads their counters. That is the single largest line item in the
- * frame, bought for nothing.
+ * What the per-pass read costs, re-measured 2026-09-23 on the reference host
+ * (M2 Pro, headless Chromium, 8.33 ms base interval; each arm the first WebGPU
+ * engine on its own page, tests/gpu/deferred-pass-timing-babylon-reads.test.ts
+ * and tests/gpu/deferred-pass-timing-deferred-reads.test.ts): Babylon's read at
+ * 20 / 44 / 88 timed passes per frame gave 8.33 / 8.33 / 13.1 ms; the deferred
+ * read gave 8.33-8.34 ms at every count, with exactly one readback per frame.
+ * That run was UNDER LOAD (Firefox's GPU helper at 48-50% of a core, the GPU
+ * 20-36% busy), so re-take the 88-pass figure on a quiet host before quoting
+ * its digits; the claim is the shape, flat for the deferred read and a climb
+ * at 88 for Babylon's. (The 2026-09-22 figures, 8.33 / 8.34 / 12.37, came from
+ * the second and third engines on one page, which inherit the first's
+ * timestamp state.) The earlier synthetic law of ~0.49 ms per timed pass
+ * (20 -> 9.9 ms, 44 -> 21.1, 88 -> 43.2; RESOLUTION_PLAN.md section 3.2) did
+ * not reproduce: here the per-pass reads were free up to 44 and cost ~5 ms at
+ * 88. At tier 1 the spectral ocean alone
+ * averages 44 dispatches per frame — 14 FFT stages plus evolution and
+ * derivation, over four cascades on a 1/1/2/4 cadence — and NOTHING reads
+ * their counters, so they are still dropped: a counter nobody reads costs
+ * query slots and deliveries for nothing.
  *
  * Exactly three counters are consumed when an explicit timing diagnostic is
  * active:

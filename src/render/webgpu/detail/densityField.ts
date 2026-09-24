@@ -327,25 +327,32 @@ export function canopyCrownAreaRatio(closure: number): number {
 }
 
 /**
- * The share of the canopy's crown area that RENDERED stems supply at a range.
+ * The share of the canopy's crown area that DRAWN stems supply at a range.
  *
  * Two live mechanisms, multiplied, and nothing invented: the rendered-density
- * law's own inverse-square falloff with its far floor, and
+ * law's own inverse-square falloff with its floor, and
  * `DetailInstanceMaterialPlugin`'s outer dither fade (band code 2). Beyond the
  * impostor radius it is exactly zero, because beyond it nothing is drawn.
+ *
+ * `drawnFloorShare` is the law's `impostorFloorShare` (2026-09-13): below the
+ * geometry share, 2D impostors stand in for the stems geometry rejects from
+ * the crossover outward, so this is `drawnShareAtDistance` — the share some
+ * representation draws — and the ground carries only the remainder. Callers
+ * that pass the geometry-only `farFloorShare` describe a canopy the impostors
+ * are already drawing, twice.
  */
 export function canopyRenderedShare(
   rangeMeters: number,
   nearRadiusMeters: number,
   farRadiusMeters: number,
-  farFloorShare: number,
+  drawnFloorShare: number,
 ): number {
   if (!Number.isFinite(rangeMeters) || rangeMeters < 0) {
     throw new RangeError("Canopy handoff range must be finite and non-negative");
   }
   const falloff = rangeMeters <= nearRadiusMeters
     ? 1
-    : Math.max((nearRadiusMeters / rangeMeters) ** 2, farFloorShare);
+    : Math.max((nearRadiusMeters / rangeMeters) ** 2, drawnFloorShare);
   return clamp(falloff * canopyImpostorCull(rangeMeters, farRadiusMeters), 0, 1);
 }
 

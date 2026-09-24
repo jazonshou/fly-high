@@ -6,6 +6,7 @@ import {
 import {
   NOISE_LATTICE_WRAP_PERIOD_CELLS,
   RIDGED_OCTAVE_BAND_LIMIT_MEAN,
+  RIDGED_PERSISTENCE,
   ridgedChannelVarianceKept,
   smoothstep,
 } from "@/src/world/noise";
@@ -14,6 +15,9 @@ import {
   LOCAL_RIDGES_KNOLL_MEAN,
   MAX_TERRAIN_HEIGHT,
   MIN_TERRAIN_HEIGHT,
+  MOUNTAIN_SHAPE,
+  RIDGES_SOFT_OCTAVE_MEAN,
+  RIDGES_SOFT_POW_MEAN,
   RIDGES_INVERSE_POW_31_MEAN,
   RIDGES_POW_158_MEAN,
   RIDGES_POW_212_MEAN,
@@ -91,6 +95,8 @@ export const TERRAIN_KERNEL_CONSTANTS = Object.freeze({
   TALUS_RIDGES_MEAN,
   MIN_TERRAIN_HEIGHT,
   MAX_TERRAIN_HEIGHT,
+  RIDGES_SOFT_OCTAVE_MEAN,
+  RIDGES_SOFT_POW_MEAN,
 });
 
 /** WGSL builtins whose rounding differs from the TypeScript source (rule 2). */
@@ -543,6 +549,24 @@ const K_FRACTURE_RAVINE_MEAN: f32 = ${wgslFloat(C.FRACTURE_RAVINE_MEAN)};
 const K_TALUS_RIDGES_MEAN: f32 = ${wgslFloat(C.TALUS_RIDGES_MEAN)};
 const K_MIN_TERRAIN_HEIGHT: f32 = ${wgslFloat(C.MIN_TERRAIN_HEIGHT)};
 const K_MAX_TERRAIN_HEIGHT: f32 = ${wgslFloat(C.MAX_TERRAIN_HEIGHT)};
+// M-1, the massif shape: every figure injected from MOUNTAIN_SHAPE.
+const K_RIDGED_PERSISTENCE: f32 = ${wgslFloat(RIDGED_PERSISTENCE)};
+const K_RIDGES_SOFT_OCTAVE_MEAN: f32 = ${wgslFloat(C.RIDGES_SOFT_OCTAVE_MEAN)};
+const K_RIDGES_SOFT_POW_MEAN: f32 = ${wgslFloat(C.RIDGES_SOFT_POW_MEAN)};
+const K_SHAPE_GATE_LOW: f32 = ${wgslFloat(MOUNTAIN_SHAPE.gateLow)};
+const K_SHAPE_GATE_HIGH: f32 = ${wgslFloat(MOUNTAIN_SHAPE.gateHigh)};
+const K_SHAPE_HEIGHT_LOW: f32 = ${wgslFloat(MOUNTAIN_SHAPE.heightGateLowMeters)};
+const K_SHAPE_HEIGHT_HIGH: f32 = ${wgslFloat(MOUNTAIN_SHAPE.heightGateHighMeters)};
+const K_SHAPE_RIDGE_CUSP: f32 = ${wgslFloat(MOUNTAIN_SHAPE.ridgeCusp)};
+const K_SHAPE_RIDGE_PERSISTENCE: f32 = ${wgslFloat(MOUNTAIN_SHAPE.ridgePersistence)};
+const K_SHAPE_RIDGE_EXPONENT: f32 = ${wgslFloat(MOUNTAIN_SHAPE.ridgeExponent)};
+const K_SHAPE_RIDGE_AMPLITUDE: f32 = ${wgslFloat(MOUNTAIN_SHAPE.ridgeAmplitudeMeters)};
+const K_SHAPE_BODY_AMPLITUDE: f32 = ${wgslFloat(MOUNTAIN_SHAPE.bodyAmplitudeMeters)};
+const K_SHAPE_BODY_FIELD_LOW: f32 = ${wgslFloat(MOUNTAIN_SHAPE.bodyFieldLow)};
+const K_SHAPE_BODY_FIELD_HIGH: f32 = ${wgslFloat(MOUNTAIN_SHAPE.bodyFieldHigh)};
+const K_SHAPE_INLAND_LOW: f32 = ${wgslFloat(MOUNTAIN_SHAPE.inlandLow)};
+const K_SHAPE_INLAND_HIGH: f32 = ${wgslFloat(MOUNTAIN_SHAPE.inlandHigh)};
+const K_SHAPE_RELIEF_DAMPING: f32 = ${wgslFloat(MOUNTAIN_SHAPE.reliefDamping)};
 const K_FABRIC_COS: f32 = ${wgslFloat(FABRIC_COS)};
 const K_FABRIC_SIN: f32 = ${wgslFloat(FABRIC_SIN)};
 const K_WARP_AMPLITUDE: f32 = ${wgslFloat(WARP_AMPLITUDE_METERS)};
@@ -689,6 +713,57 @@ fn kRidgedFbm(first: u32, count: u32, localX: f32, localZ: f32) -> f32 {
   return 0.0;
 }
 
+/**
+ * ridgedFbmPair2D. x = the hard channel, which is kRidgedFbm's arithmetic in
+ * the same order; y = the soft channel from the SAME octave samples; z = the
+ * soft channel's varianceKept, summed here because the soft gain is not the
+ * one the page uniform's kept lanes were built for.
+ */
+fn kRidgedFbmPair(first: u32, count: u32, localX: f32, localZ: f32) -> vec3f {
+  var sum = 0.0;
+  var softSum = 0.0;
+  var amplitudeSum = 0.0;
+  var softAmplitude = 1.0;
+  var softAmplitudeSum = 0.0;
+  var keptSum = 0.0;
+  var keptTotal = 0.0;
+  let softScale = 1.0 / (1.0 - K_SHAPE_RIDGE_CUSP);
+  for (var octave = 0u; octave < count; octave = octave + 1u) {
+    let row = terrainKernelPages[kPageIndex].latticeScale[first + octave];
+    let weight = row.z;
+    let amplitude = row.w;
+    if (weight > 0.0) {
+      let value = kOctaveNoise(first + octave, localX, localZ);
+      let ridge = 1.0 - abs(value);
+      let rounded = max(0.0, 1.0 - sqrt(value * value + K_SHAPE_RIDGE_CUSP * K_SHAPE_RIDGE_CUSP))
+        * softScale;
+      if (weight >= 1.0) {
+        sum = sum + ridge * ridge * amplitude;
+        softSum = softSum + rounded * rounded * softAmplitude;
+      } else {
+        let banded = K_RIDGED_MEAN + (ridge * ridge - K_RIDGED_MEAN) * weight;
+        sum = sum + banded * amplitude;
+        softSum = softSum
+          + (K_RIDGES_SOFT_OCTAVE_MEAN + (rounded * rounded - K_RIDGES_SOFT_OCTAVE_MEAN) * weight)
+            * softAmplitude;
+      }
+    } else {
+      sum = sum + K_RIDGED_MEAN * amplitude;
+      softSum = softSum + K_RIDGES_SOFT_OCTAVE_MEAN * softAmplitude;
+    }
+    amplitudeSum = amplitudeSum + amplitude;
+    softAmplitudeSum = softAmplitudeSum + softAmplitude;
+    keptSum = keptSum + softAmplitude * weight * (softAmplitude * weight);
+    keptTotal = keptTotal + softAmplitude * softAmplitude;
+    softAmplitude = softAmplitude * K_SHAPE_RIDGE_PERSISTENCE;
+  }
+  var result = vec3f(0.0, 0.0, 1.0);
+  if (amplitudeSum > 0.0) { result.x = kSaturate(sum / amplitudeSum); }
+  if (softAmplitudeSum > 0.0) { result.y = kSaturate(softSum / softAmplitudeSum); }
+  if (keptTotal > 0.0) { result.z = keptSum / keptTotal; }
+  return result;
+}
+
 fn kBlendTowardExpectation(value: f32, expectation: f32, varianceKept: f32) -> f32 {
   if (varianceKept >= 1.0) { return value; }
   if (varianceKept <= 0.0) { return expectation; }
@@ -785,7 +860,8 @@ fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
   let mountainField = kFbm(${latticeBase("mountainField")}u, 3u, wx, wz) * 0.5 + 0.5;
   let foothillRegion = kSmoothstep(0.34, 0.7, mountainField);
   let mountainRegion = kSmoothstep(0.47, 0.76, mountainField);
-  let ridges = kRidgedFbm(${latticeBase("ridges")}u, 5u, wx, wz);
+  let ridgePair = kRidgedFbmPair(${latticeBase("ridges")}u, 5u, wx, wz);
+  let ridges = ridgePair.x;
   let localRidges = kRidgedFbm(${latticeBase("localRidges")}u, 4u, wx, wz);
   let ridgesKept = terrainKernelPages[kPageIndex].kept.x;
   let localRidgesKept = terrainKernelPages[kPageIndex].kept.y;
@@ -817,7 +893,7 @@ fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
   let geologicalRelief = terrainGeologicalRelief(wx, wz, land, foothillRegion, mountainRegion);
 
   let hillStrength = land * (34.0 + 96.0 * (1.0 - mountainRegion * 0.55));
-  let height = continentalShelf
+  let shippedHeight = continentalShelf
     + rolling * hillStrength
     + fine * (5.0 + land * 12.0)
     + rockyKnolls
@@ -826,6 +902,26 @@ fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
     + cragDetail
     - valleyCarve
     + geologicalRelief;
+
+  // M-1: see MOUNTAIN_SHAPE in terrain.ts. Both gates read the SHIPPED field.
+  var height = shippedHeight;
+  let shapeWeight = kSmoothstep(K_SHAPE_GATE_LOW, K_SHAPE_GATE_HIGH, mountainRegion)
+    * kSmoothstep(K_SHAPE_HEIGHT_LOW, K_SHAPE_HEIGHT_HIGH, shippedHeight);
+  if (shapeWeight > 0.0) {
+    let massifRidges = kBlendTowardExpectation(
+      pow(max(0.0, ridgePair.y), K_SHAPE_RIDGE_EXPONENT), K_RIDGES_SOFT_POW_MEAN, ridgePair.z)
+      * K_SHAPE_RIDGE_AMPLITUDE;
+    let massifBody = K_SHAPE_BODY_AMPLITUDE
+      * kSmoothstep(K_SHAPE_BODY_FIELD_LOW, K_SHAPE_BODY_FIELD_HIGH, mountainField)
+      * kSmoothstep(K_SHAPE_INLAND_LOW, K_SHAPE_INLAND_HIGH, continental);
+    let massifHeight = land * (mountainRegion * massifRidges + massifBody);
+    let reliefKept = 1.0 - K_SHAPE_RELIEF_DAMPING * mountainRegion;
+    let reshapedHeight = shippedHeight
+      - mountainHeight
+      + massifHeight
+      - (rockyKnolls + cragDetail + geologicalRelief) * (1.0 - reliefKept);
+    height = shippedHeight + (reshapedHeight - shippedHeight) * shapeWeight;
+  }
   return kClamp(height, K_MIN_TERRAIN_HEIGHT, K_MAX_TERRAIN_HEIGHT);
 }
 `;
