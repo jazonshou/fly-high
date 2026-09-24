@@ -5,6 +5,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { COCKPIT_GLOW_NIGHT_MULTIPLE } from "../../lighting/AircraftLighting";
 import type { AircraftBuildContext } from "../builders";
 
 /**
@@ -225,6 +226,209 @@ export function sculptSolid(mesh: Mesh, move: (point: Vector3) => Vector3): void
   data.indices = [...indices];
   data.applyToMesh(mesh, false);
   mesh.refreshBoundingInfo();
+}
+
+/**
+ * A ROUNDED DECK's design: a glareshield whose aft edge is a round on the deck line's sight line, a drop and a 45
+ * degree cove under it to the panel's face, and a hood over the board falling forward (P1a, the Global's first, then
+ * the 747's). Lengths in metres, angles in degrees.
+ */
+export interface RoundedDeckDesign {
+  readonly radius: number;
+  readonly drop: number;
+  /** The cove's run forward, and its fall: 45 degrees. */
+  readonly cove: number;
+  readonly hoodFallDegrees: number;
+  readonly hoodDepth: number;
+  /** Chords round the aft edge, besides the one vertex put on the deck line's tangent. */
+  readonly roundSegments: number;
+}
+
+/** A rounded deck's section in body x and y, and the points the rest of the deck is placed from. */
+export interface RoundedDeckSection {
+  /** The prism's outline, convex, in order round it (`solidPlate` winds it). */
+  readonly outline: readonly { readonly x: number; readonly y: number }[];
+  /** The round's vertices, from the hood's tangent round to the aft face's, the deck line's tangent among them. */
+  readonly round: readonly { readonly x: number; readonly y: number }[];
+  /** The round's centre. */
+  readonly centre: { readonly x: number; readonly y: number };
+  /** Where the deck line's sight line touches the round: the silhouette. */
+  readonly tangent: { readonly x: number; readonly y: number };
+  /** The aft face's foot, where the cove turns under. */
+  readonly coveTop: { readonly x: number; readonly y: number };
+  /** The cove's foot: the panel's face's top edge, and the lowest edge of the deck the pilot sees. */
+  readonly faceTop: { readonly x: number; readonly y: number };
+}
+
+/**
+ * A rounded deck's section from an eye (`forward`, `up`), the aft face's station `aftX` and the deck line (degrees
+ * under the eye). THE ROUND is tangent to the aft face and to the hood's top, and the deck line's sight line is tangent
+ * to it AT A VERTEX, so the silhouette is the deck line exactly: one row of the picture. The cove runs `cove` forward
+ * and `cove` down from the aft face's foot; the hood's top and underside both fall at `hoodFallDegrees`, a plate of
+ * one thickness, so the solid stays convex. `who` names the airframe in what it throws.
+ */
+export function roundedDeckSection(
+  eye: { readonly forward: number; readonly up: number },
+  aftX: number,
+  deckLine: number,
+  g: RoundedDeckDesign,
+  who: string,
+): RoundedDeckSection {
+  const e = eye;
+  const DEGREE = Math.PI / 180;
+  const fall = g.hoodFallDegrees * DEGREE;
+  const sight = deckLine * DEGREE;
+  if (!(deckLine < g.hoodFallDegrees)) {
+    throw new RangeError(`${who}'s hood falls ${g.hoodFallDegrees} degrees, no steeper than the ${deckLine} degree sight line over the deck: its top would show over the round`);
+  }
+  // THE ROUND: its centre `radius` forward of the aft face and `radius` under the sight line (the line through the eye
+  // falling at the deck line, whose upward normal is (sin, cos) of it).
+  const cx = aftX + g.radius;
+  const cy = e.up - (g.radius + Math.sin(sight) * (cx - e.forward)) / Math.cos(sight);
+  const at = (angle: number) => ({ x: cx + g.radius * Math.sin(angle), y: cy + g.radius * Math.cos(angle) });
+  // angles from straight up, forward positive: -90 is the aft face's tangent, +fall the hood's
+  const angles = Array.from({ length: g.roundSegments + 1 }, (_, k) => fall - ((fall + Math.PI / 2) * k) / g.roundSegments);
+  if (sight > -Math.PI / 2 && sight < fall) angles.push(sight);
+  angles.sort((a, b) => b - a);
+  const round = angles.map(at);
+  const coveTop = { x: aftX, y: cy - g.drop };
+  const faceTop = { x: aftX + g.cove, y: coveTop.y - g.cove };
+  // the hood: its top from the round's forward tangent, its underside from the cove's foot, both falling at `fall`
+  const endX = aftX + g.hoodDepth;
+  const hoodTop = round[0]!;
+  const endTop = { x: endX, y: hoodTop.y - (endX - hoodTop.x) * Math.tan(fall) };
+  const endFoot = { x: endX, y: faceTop.y - (endX - faceTop.x) * Math.tan(fall) };
+  if (!(endTop.y - endFoot.y >= 0.001)) {
+    throw new RangeError(`${who}'s hood is ${((endTop.y - endFoot.y) * 1000).toFixed(2)} mm thick: its top meets its underside`);
+  }
+  return {
+    outline: [...(g.drop > 0 ? [coveTop] : []), faceTop, endFoot, endTop, ...round],
+    round,
+    centre: { x: cx, y: cy },
+    tangent: at(sight),
+    coveTop,
+    faceTop,
+  };
+}
+
+/**
+ * THE BEZELS' CHAMFERED RIMS' material, one for every framed screen (the Global's and the 747's), so the two cannot
+ * drift apart: a quiet mid-grey bevel by day, and the panel's night glow.
+ *
+ * DIMMED BY DAY (Jason, "dimmer"). The rim is a 45 degree chamfer, and its top side faces the sky: at 0x2b3237,
+ * roughness 0.5 and a day emissive of 0.175 it read 116 (the Global) and 104 (the 747) against frames of 41 and 36,
+ * 2.8 and 2.9 times, a bright outline round every screen. Swept live (one paused level frame per airframe, every
+ * pixel ray-confirmed), the day emissive alone could not bring it to the asked 1.5 to 2 times the frame (at 0 the rim
+ * still read 2.3 and 2.4 times: the top chamfer catches the sky, emissive or not), nor the emissive and the frame's
+ * roughness together on the 747 (2.14 at 0). With the albedo at 0.6 of it as well, 0.05 of day emissive reads 68 and
+ * 67, 1.72 and 1.90 times: a visible edge that no longer glares. The top chamfer is still the brightest side (2.4 to
+ * 2.5 times; the sides 1.1 to 1.6), because it faces the sky.
+ *
+ * ITS OWN GLOW LAW (`bezelRimEmissive`), not `applyGlow`'s authored-times-multiple: by day the rim's emissive is
+ * `dayEmissiveIntensity`, at night `nightEmissiveIntensity`, and between them it follows the cockpit glow
+ * (`cockpitInstrumentGlow`, 1 by day to `COCKPIT_GLOW_NIGHT_MULTIPLE` at night) linearly. A day value that is the
+ * night's over the multiple is `applyGlow`'s law exactly; any other day value moves the day read and leaves the night
+ * where it was, which is what dimming the rim by day asked (Jason, "dimmer"; the night glow untouched).
+ */
+export const BEZEL_RIM = Object.freeze({
+  /** 0x2b3237 at 0.6, to the nearest integer a channel (the sweep's scale, within 0.8%). */
+  albedo: 0x1a1e21,
+  /** The frames' finish, where the chamfer's 0.5 sheened the sky. */
+  roughness: 0.82,
+  metallic: 0,
+  emissive: 0x4ba8c6,
+  dayEmissiveIntensity: 0.05,
+  /** The rim's night glow as it was under `applyGlow` before it was dimmed: 0.175 times the night multiple. */
+  nightEmissiveIntensity: 0.175 * COCKPIT_GLOW_NIGHT_MULTIPLE,
+});
+
+/** The rim's material, authored at its day emissive. Its visual drives the emissive by `bezelRimEmissive`. */
+export function bezelRimMaterial(build: AircraftBuildContext, name: string): PBRMaterial {
+  const r = BEZEL_RIM;
+  return build.material(name, r.albedo, { roughness: r.roughness, metallic: r.metallic, emissive: r.emissive, emissiveIntensity: r.dayEmissiveIntensity });
+}
+
+/**
+ * The rim's emissive intensity for a cockpit glow multiple (`AircraftLightState.cockpitGlow`): the day value at 1, the
+ * night value at `COCKPIT_GLOW_NIGHT_MULTIPLE`, linear between, and on past the night value if a glow ever exceeds the
+ * multiple. A non-finite glow reads as day, as `applyGlow`'s does.
+ */
+export function bezelRimEmissive(cockpitGlow: number): number {
+  const g = Number.isFinite(cockpitGlow) ? Math.max(0, cockpitGlow) : 1;
+  const r = BEZEL_RIM;
+  return Math.max(0, r.dayEmissiveIntensity + ((r.nightEmissiveIntensity - r.dayEmissiveIntensity) * (g - 1)) / (COCKPIT_GLOW_NIGHT_MULTIPLE - 1));
+}
+
+/**
+ * A FRAMED SCREEN's design (P1b, the Global's first, then the 747's): the screen, its bezel's rim beyond it (the gap,
+ * the frame's flat face, the chamfer), and the depths of the stack square to the panel's face. Metres.
+ */
+export interface FramedScreenDesign {
+  readonly width: number;
+  readonly height: number;
+  /** The bezel's rim beyond the screen: the dark gap, then the frame's flat face, then its chamfer. */
+  readonly bezel: number;
+  /** The frame's front stands this far out of the board's face; its back is 1 mm inside it. */
+  readonly bezelThickness: number;
+  /** The chamfer round the frame's outer edge: this wide across the face and this deep, at 45 degrees. */
+  readonly chamfer: number;
+  /** Between the frame's inner edge and the screen: a dark well. */
+  readonly gap: number;
+  /** The screen's face stands this far BEHIND the frame's front. */
+  readonly recess: number;
+  readonly screenThickness: number;
+}
+
+/** How far out of the board's face each plane of a framed screen's stack stands, square to the face (the face is 0). */
+export function framedScreenStack(s: FramedScreenDesign): { bezelBack: number; bezelFront: number; chamferFoot: number; screenFront: number; screenBack: number } {
+  const bezelBack = -0.001;
+  const bezelFront = bezelBack + s.bezelThickness;
+  const screenFront = bezelFront - s.recess;
+  return { bezelBack, bezelFront, chamferFoot: bezelFront - s.chamfer, screenFront, screenBack: screenFront - s.screenThickness };
+}
+
+/**
+ * A screen's bezel as flat quads about `faceCentre` on a (leaned) panel face whose unit vectors up the face and out of it
+ * toward the pilot are `face.up` and `face.normal` (x and y; the face runs along z), in two CLOSED solids that meet
+ * along the chamfer's shoulder: `frame`, a ring from the opening (the screen and its gap) out to the shoulder, its flat
+ * front toward the pilot; and `rim`, the band from the shoulder out to the bezel's edge, whose front is the 45 degree
+ * chamfer. Each is closed on its own, so wherever a ray meets either first it meets a face the GPU draws (the faces where
+ * they meet face each other inside the bezel and are never seen); the rim is apart so the night glow can be on it alone.
+ */
+export function framedScreenFacets(
+  faceCentre: Vector3,
+  face: { readonly up: { readonly x: number; readonly y: number }; readonly normal: { readonly x: number; readonly y: number } },
+  s: FramedScreenDesign,
+): { frame: FacetQuad[]; rim: FacetQuad[] } {
+  const stack = framedScreenStack(s);
+  const across = new Vector3(0, 0, 1);
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const at = (u: number, v: number, o: number) => faceCentre.add(across.scale(u)).add(up.scale(v)).add(out.scale(o));
+  // a rectangle's corners, bottom-left round to top-left, and each side's outward direction in the face
+  const rect = (x: number, y: number, o: number) => [at(-x, -y, o), at(x, -y, o), at(x, y, o), at(-x, y, o)];
+  const sides = [up.scale(-1), across, up, across.scale(-1)];
+  const ring = (a: Vector3[], b: Vector3[], normal: (k: number) => Vector3): FacetQuad[] =>
+    [0, 1, 2, 3].map((k) => ({ corners: [a[k]!, a[(k + 1) % 4]!, b[(k + 1) % 4]!, b[k]!] as const, normal: normal(k) }));
+  const opening = (o: number) => rect(s.width / 2 + s.gap, s.height / 2 + s.gap, o);
+  const shoulder = (o: number) => rect(s.width / 2 + s.bezel - s.chamfer, s.height / 2 + s.bezel - s.chamfer, o);
+  const edge = (o: number) => rect(s.width / 2 + s.bezel, s.height / 2 + s.bezel, o);
+  const { bezelFront: front, bezelBack: back, chamferFoot: foot } = stack;
+  return {
+    frame: [
+      ...ring(opening(front), shoulder(front), () => out),
+      ...ring(shoulder(front), shoulder(back), (k) => sides[k]!),
+      ...ring(opening(back), shoulder(back), () => out.scale(-1)),
+      ...ring(opening(back), opening(front), (k) => sides[k]!.scale(-1)),
+    ],
+    rim: [
+      // the chamfer runs as far across the face as it falls toward it: its normal is halfway between the side's and the face's
+      ...ring(shoulder(front), edge(foot), (k) => sides[k]!.add(out).normalize()),
+      ...ring(edge(foot), edge(back), (k) => sides[k]!),
+      ...ring(shoulder(back), edge(back), () => out.scale(-1)),
+      ...ring(shoulder(back), shoulder(front), (k) => sides[k]!.scale(-1)),
+    ],
+  };
 }
 
 /** A flat quad of a `facetMesh`: four corners in order round it, and the way its drawn side faces. */

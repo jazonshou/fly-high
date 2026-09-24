@@ -34,7 +34,7 @@ import {
   bizjetSillCapMeshName,
   highestClearLip,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
-import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
+import { BEZEL_RIM, GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { cockpitView, measureDeckLineDegrees } from "./support/cockpitFootprints";
 
@@ -583,12 +583,13 @@ describe("the Global's cockpit parts", () => {
     const luma = (m: PBRMaterial) => m.albedoColor.r + m.albedoColor.g + m.albedoColor.b;
     expect(luma(lip)).toBeLessThan(luma(interior));
     expect(interior).toBe(scene.getMaterialByName("bizjet-interior"));
-    // THE RIMS carry the night glow: the shared marking material, which `applyGlow` drives
+    // THE RIMS carry the night glow: the shared rim (`BEZEL_RIM`, the 747's too), its day emissive faint and its
+    // albedo dark (tests/render.cockpit-bezel-rim.test.ts holds the material, its glow law and its day read)
     const rim = named("bizjet-screen-bezel-rims").material as PBRMaterial;
     expect(rim).toBe(scene.getMaterialByName("bizjet-instrument-marking"));
-    expect(rim.emissiveIntensity).toBeGreaterThan(0.15);
-    expect(rim.emissiveIntensity).toBeLessThan(0.2);
-    for (const channel of [rim.albedoColor.r, rim.albedoColor.g, rim.albedoColor.b]) expect(channel).toBeLessThan(0.25);
+    expect(rim.emissiveIntensity).toBe(BEZEL_RIM.dayEmissiveIntensity);
+    expect(rim.emissiveIntensity).toBeLessThan(0.1);
+    for (const channel of [rim.albedoColor.r, rim.albedoColor.g, rim.albedoColor.b]) expect(channel).toBeLessThan(0.15);
     // THE FRAMES are on the bezels' own material, dark neutral grey, and emit NOTHING: the glow is the rim's alone
     const bezel = named("bizjet-screen-bezels").material as PBRMaterial;
     expect(bezel).toBe(scene.getMaterialByName("bizjet-bezel"));

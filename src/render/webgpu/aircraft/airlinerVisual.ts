@@ -18,7 +18,6 @@ import {
   configureCockpitLayers,
   configureCockpitOnlyParts,
   configureRoot,
-  createGlowApplier,
   createLampApplier,
   hingeAlong,
   yawHingeAlong,
@@ -34,6 +33,7 @@ import {
 } from "./builders";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { AIRLINER_SEAT, airlinerSeatPlacement, buildAirlinerCockpit } from "./cockpit/airlinerCockpit";
+import { bezelRimEmissive, bezelRimMaterial } from "./cockpit/cockpitPrimitives";
 import type { AircraftVisual } from "./types";
 import {
   AIRLINER_LIVERY_STATION_RANGE,
@@ -907,16 +907,14 @@ export function createAirliner(scene: Scene): AircraftVisual {
     roughness: 0.7,
     metallic: 0.05,
   });
-  const instrumentMarking = build.material("airliner-instrument-marking", 0x9fd9e8, {
-    roughness: 0.34,
-    metallic: 0,
-    emissive: 0x4ba8c6,
-    emissiveIntensity: 0.7,
-  });
+  // The screens' bezels' chamfered rims, and nothing else (the frames have their own dark material in the cockpit
+  // kit): the shared rim (`BEZEL_RIM`, the Global's too), a dark-grey edge with a faint lit line by day, where the old
+  // pale 0x9fd9e8 at 0.7 read as a bright box round every screen. Its own glow law (`bezelRimEmissive`) drives it in
+  // `setLightState`.
+  const instrumentMarking = bezelRimMaterial(build, "airliner-instrument-marking");
 
-  // The same six lamps and the same two appliers as the other three airframes.
+  // The same six lamps and the same lamp applier as the other three airframes.
   const applyLamp = createLampApplier();
-  const applyGlow = createGlowApplier();
   const redLamp = build.material("airliner-port-lamp", 0xff493d, {
     emissive: 0xff2018, emissiveIntensity: 2.4,
   });
@@ -2320,7 +2318,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
       applyLamp(beaconLamp, lights.beacon);
       applyLamp(strobeLamp, lights.strobe);
       applyLamp(landingLamp, lights.landing);
-      applyGlow(instrumentMarking, lights.cockpitGlow);
+      // the rims' own law (`bezelRimEmissive`): the day value by day, the night glow at night
+      instrumentMarking.emissiveIntensity = bezelRimEmissive(lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;

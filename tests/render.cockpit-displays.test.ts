@@ -76,7 +76,7 @@ interface Deck {
   readonly pages: Readonly<Record<string, string>>;
   /** The merged bezels mesh beside the screens mesh, and a pattern every screen or bezel part, merged or not, matches. */
   readonly bezelsMesh: string;
-  /** The deck's other meshes round its screens (the Global's bezel rims and wells, P1b): not screens, and not the atlas's. */
+  /** The deck's other meshes round its screens (the bezel rims and wells, P1b): not screens, and not the atlas's. */
   readonly surroundMeshes?: readonly string[];
   readonly screenParts: RegExp;
   /**
@@ -97,6 +97,7 @@ const DECKS: readonly Deck[] = [
     screen: { width: AIRLINER_SCREENS.width, height: AIRLINER_SCREENS.height },
     airframe: AIRLINER_DISPLAY_AIRFRAME,
     bezelsMesh: "airliner-screen-bezels",
+    surroundMeshes: ["airliner-screen-bezel-rims", "airliner-screen-wells"],
     screenParts: /^airliner-screen/,
     engineParts: { first: /fan-spool-fan$/, second: /-engine-inlet$/ },
     pages: {

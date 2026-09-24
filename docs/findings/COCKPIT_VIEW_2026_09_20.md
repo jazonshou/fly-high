@@ -1485,10 +1485,144 @@ capture):
   print): the display is 15 (16 of 16 under fog, drawn), and the bezel, the instrument face (the wells), the
   interior (with the consoles), the glareshield and the marking are 14 (15 under fog). No GPU error in any variant.
 
-**For the 747's turn (noted, not built):** its lip-to-bottom band is only 4.78 degrees with the screens at
-37.8%, so the same deck must cost the screens nothing: the round and the drop at their minimum, and the gap
-0.5 degree. Its bezels need a material of their own: dark, 1.3 to 1.6 times the board by day, with the night
-glow on the rim only. The marking material they use now is shared with the panel's labels.
+## The 747's panel, integrated (P1a, P1b; P1c not needed)
+
+The 747's board was the same kind of object as the Global's (P0): a vertical slab under a flush lip, with square pale
+bezels (164 against its 54). Its band from the lip to the frame's bottom is only 4.78 degrees, and the top row of
+screens' share of it (37.8%, the K3 Jason chose) is this deck's binding constraint.
+
+**The rounded deck is now shared.** The Global's section builder moved into `cockpitPrimitives` as
+`roundedDeckSection`, verbatim and parameterised. All 94 of the Global's meshes are bit-identical against c586870
+(positions, normals, UVs, indices, world matrix, material, visibility).
+
+**The 747's deck** (`airlinerGlareshieldSection`, `airlinerPanelFace`):
+- **The least deck edge that reads:** a round r 0.005 on the deck line (-18.57, the K3 sill rule's; the tangent a
+  vertex), no drop, and a 3 mm cove. That is 0.538 degree straight ahead, where K3's flush lip face was 1.20. It reads
+  as a lit line over a dark hairline: the honest price of the band.
+- **The hood** falls 21 degrees (steeper than the 18.57 sight line) for 0.10 m. The shell is wide here, so it needs no
+  taper; every vertex is at least 5 cm inside it.
+- **The lean does not bind the share.** The smaller edge raised the screens by 0.41 degree, more than any lean lowers
+  them: the top row keeps 39.1% even at the aimed 24 degrees. So the lean is the most upright that faces the pilot as
+  the Global's does, 17 degrees: 7.5 degrees off the eye at the PFD's centre (the bound is 8), against the upright
+  K3 board's 24.
+- **The gap under the deck's edge is 0.65 degree, not 0.5.** At 0.5 the bezels' top rims (10 mm over their screens,
+  0.67 degree at 0.85 m) stood 0.14 degree into the cove over each screen; at 0.65 they reach its foot and stop
+  there.
+- **The top row keeps 38.1% on the test's grid** (K3's 37.8, which read 38.1 on the same grid). The lower EICAS is
+  still under the frame.
+
+**Tests** (tests/render.cockpit-airliner.test.ts, 32): the silhouette on the deck line; the least edge; the hood
+inside the shell untapered; the lean and the aim, with an upright control; the top row 0.65 degree under the cove's
+foot, square to the leaned face; the bezels reaching the cove's foot and no further; the share on the leaned face,
+nothing lost against K3. The seam digest and the 747's geometry census are re-pinned (+120 vertices and indices, the
+glareshield's 24 to 144). Mesh by mesh against c586870, only the four kit meshes changed.
+
+Eight mutations, all caught: lean 0; the spec's 0.5 degree gap; the Global's round; a hood no steeper than the sight
+line (refused at build); the board or the screens unturned; the hood run out through the shell; the flush lip back.
+
+**P1b, the bezels framed and recessed.** The Global's framed screen moved into `cockpitPrimitives`
+(`framedScreenStack`, `framedScreenFacets`), and all 94 of the Global's meshes are again bit-identical against
+c586870. On the 747 each screen now has the Global's stack, square to the leaned face:
+- **The frame** runs from 1 mm inside the board to 6 mm out, with a 4 mm chamfer at 45 degrees round its outer edge.
+- **The screen** is a 0.5 mm plate whose face is **3 mm behind** the frame's front. It stood 1 mm proud until now.
+- **Behind the 2 mm gap** is a well on the instrument face's near-black. By ray, the gap meets the well on both
+  sides of the PFD (it is straight ahead), on the ND's side toward the eye, and over each screen's top.
+- **The frames' tops** now sit 0.005 degree UNDER the cove's foot. K3's square bezels stood 0.008 over it. The pin is
+  now "no higher than the foot", and a 0.6 degree gap fails it.
+- **The share is unchanged:** the top row is still 38.1% in the frame.
+
+**Materials.** The frames are on a 747-only `airliner-bezel`: 0x2c3034, with the board's finish and NO emissive,
+1.41 times the board's luma by albedo. The chamfered rims are on the 747's marking material, retuned to the
+Global's rim: 0x2b3237, with its day emissive at 0.175. Until now that material was pale 0x9fd9e8 with its emissive
+at 0.7, and on it the bezels read 164 against the board's 54. Nothing else in the airframe uses it, so it stays the
+one `applyGlow` drives, and the glow is the rim's alone.
+
+**The count.** The kit is six meshes (the rims and the wells are new): two more draws in cockpit view, 92 from the
+cockpit camera. The airframe has 164 authored parts, up from 152, and its geometry census is re-pinned (+1,152
+vertices and indices exactly). Mesh by mesh against 2432e58, the screens and the frames changed, the rims and wells
+are new, and the other 91 meshes are bit-identical.
+
+**Tests** (36): the frame's size and opening; the stack's planes on all six screens; the chamfer by its built
+normals; by ray, the recess, the gap and the frame's face; the materials. Fifteen mutations, all caught:
+- no chamfer; the screen proud; no gap; no wells; a 30 degree chamfer; the frames placed from the screen's centre;
+- the frames on the marking material, at the old pale tone, as dark as the board, or emissive;
+- the rims on the frames' material, or the old pale marking back;
+- the wells on the frames' material; `facetMesh`'s winding reversed; a 0.6 degree gap under the deck.
+
+**P1c, skipped: no wall shows beside the 747's board.** The Global's side consoles filled a bare wall standing
+beside a board that ended at az -23. From the 747's seat the board's ends are at az -43.2 and +64.6, past both edges
+of the frame. By ray on the built kit, every column sampled (100, one every 16 px) is deck from the frame's bottom
+row up to the deck line (row 800). Above it the frame shows only window frame, and no ray under the glass meets anything outside the
+kit. The window frame is:
+- the sills: at most 1 degree over No.1 (K3's rule), and 1.2 to 2.5 degrees over No.2, whose bottom edge stands
+  higher;
+- the members: the post and the pillars.
+
+A test pins the deck filling the frame under the deck line. With the board narrowed to 0.8 m, which ends at az -19,
+only that test fails.
+
+**The 747's frames** (f5fd631, the pilot's left seat, 16:9, seed g7500k2). Every frame asserts, from the live scene:
+the eye (29.85, 2.93, -0.50), the 75 degree lens, the glareshield's top at 2.6424 (the section's), and the six kit
+meshes. The projection is within 0.1 px of the live post and pillar.
+- **Level.** A thin lit rail (the round's top, 34) over a dark hairline (the cove), then the leaned board (27).
+  - The cove reads **36 to 40% darker** than the board 2 to 5 cm under it. (10 to 13 cm down, the Global's band, is
+    below the frame's bottom on the 747.)
+  - The frames read **1.36 times the board** (36 against 27), inside the design's 1.3 to 1.6; the Global's read 1.46.
+  - The wells read 21. The PFD, the ND and the upper EICAS sit in dark frames.
+- **Rolled** (20.4 degrees right), **final** (scenic, wings at 2.9; the aim point -8.5 under the body axis, in the
+  glass, 907 m out), and **the chase camera**, with no kit in it.
+- **The inter-stage budget, live** (the variants test with its container, restored by sha after a per-material
+  print). The display is 15 (16 of 16 under fog, drawn), as on the Global. The frames' material, the wells', the
+  rims', the glareshield and the interior are 14 (15 under fog). There was no GPU error in any variant.
+
+## The bezels' rims, dimmed on both airframes (Jason: "dimmer")
+
+The chamfered rims read as a bright outline round every screen. Live, they read **116 on the Global and 104 on the
+747, against frames of 41 and 36: 2.8 and 2.9 times**. Jason asked for them dimmer, at about 1.5 to 2 times the
+frame, with the night glow untouched.
+
+**One rim for both, with a glow law of its own** (`BEZEL_RIM`, `bezelRimMaterial` and `bezelRimEmissive`, in
+cockpitPrimitives).
+- Under `applyGlow` the night glow was the day value times the night multiple (3.2). The day read could not move
+  without dragging the night with it.
+- The rim now has a day value and a night value. At a glow of 1 it takes the day value, at 3.2 it takes 0.56 (the
+  night glow as it was), and it is linear in between, so it stays continuous through twilight.
+- Both visuals' `setLightState` set it. The shared applier, and the trainer's and the F-16's glow, are untouched.
+
+**The sweep** (one paused level frame per airframe, the rim material changed live, every pixel ray-confirmed as rim
+or frame). The settings are day emissive / roughness / albedo, and the figures are rim luma over frame luma:
+
+| setting | Global | 747 |
+|---|---|---|
+| 0.175 / 0.5 / 0x2b3237 (as it was) | 116 / 41 = 2.80 | 104 / 36 = 2.86 |
+| 0 / 0.5 / 0x2b3237 | 94 / 41 = 2.31 | 85 / 36 = 2.40 |
+| 0 / 0.82 / 0x2b3237 | 75 / 40 = 1.88 | 75 / 35 = 2.14 |
+| 0.05 / 0.82 / 0x2b3237 | 84 / 40 = 2.08 | 82 / 36 = 2.30 |
+| **0.05 / 0.82 / x0.6 (0x1a1e21)** | **68 / 40 = 1.72** | **67 / 35 = 1.90** |
+| 0 / 0.82 / x0.6 | 58 / 39 = 1.47 | 58 / 35 = 1.67 |
+
+**Why the emissive alone could not do it.** The TOP chamfer faces the sky. It read 168 on the Global (4.2 times the
+frame), where the sides read 80 to 84 (2.2 times). Most of that is sky light and sheen on a 45 degree face tilted up,
+not the emissive, and it does not go away with the emissive:
+- at no emissive the rim still read 2.3 and 2.4 times the frame;
+- with the frames' roughness as well, 1.88 on the Global but 2.14 on the 747.
+Only with the albedo at 0.6 do both land inside the band. The rim keeps a faint day emissive (0.05), so it still reads
+as an edge. The top chamfer remains the brightest side (2.4 to 2.5 times; the sides 1.1 to 1.6), because it faces
+the sky.
+
+**Tests** (tests/render.cockpit-bezel-rim.test.ts, 4):
+- both airframes' rims equal `BEZEL_RIM` and each other, and nothing else wears the material;
+- the glow law: the day value, 0.56 at night through `cockpitInstrumentGlow` itself, linear, and NaN reads as day;
+- each visual's light state drives it;
+- the day read is held at the measured setting or darker: day emissive at most 0.05, roughness at least 0.82, the
+  albedo no lighter than 0x1a1e21, with the old rim's three as the control.
+
+Eight mutations, all caught:
+- the old rim back; the day emissive, the roughness or the albedo back alone;
+- the night dimmed with the day;
+- the 747 on a rim of its own;
+- the Global's rim back on `applyGlow`'s law;
+- the 747's light state not driving the rim.
 
 ## Not done, and one thing to know
 

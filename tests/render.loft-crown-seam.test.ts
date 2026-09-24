@@ -470,7 +470,19 @@ describe("a loft's crown seam", () => {
       // lining, the post's strip for the two gap strips, the board's top), airliner-glareshield (the lip, lower),
       // airliner-screens and airliner-screen-bezels (hung from it). The other 89 are bit-identical, the plane
       // engineer's post included.
-      airliner: "86dfbb0e",
+      // RE-PINNED for the 747's panel integration, P1a (jazonshou/cockpit-panel-747): the glareshield a rounded deck on the
+      // deck line (8 -> 48 triangles), the board, the screens and the bezels leaned back 17 degrees. Checked mesh by mesh
+      // against c586870 (positions, normals, UVs, indices, world matrix, material, visibility): airliner-glareshield,
+      // airliner-cockpit-interior (the board), airliner-screens and airliner-screen-bezels changed; the other 89 are
+      // bit-identical.
+      // RE-PINNED for P1b on the 747, the framed, recessed screens (`framedScreenFacets`, the Global's, moved into
+      // cockpitPrimitives): each bezel's box a frame on the 747's own bezel material (`airliner-screen-bezels` 72 ->
+      // 192 triangles) with a 4 mm 45 degree chamfered rim on the marking (NEW, `airliner-screen-bezel-rims`, 192), the
+      // screens 0.5 mm plates recessed 3 mm behind the frames' fronts, and a dark well behind each 2 mm gap (NEW,
+      // `airliner-screen-wells`, 72). Checked mesh by mesh against 2432e58: none gone, those two new, airliner-screens
+      // and airliner-screen-bezels changed; the other 91 are bit-identical. The Global's 94 are bit-identical against
+      // c586870 after the move.
+      airliner: "6fdfc378",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

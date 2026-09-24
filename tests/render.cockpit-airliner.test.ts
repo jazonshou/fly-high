@@ -18,11 +18,14 @@ import {
   AIRLINER_PANEL,
   AIRLINER_SCREENS,
   AIRLINER_SEAT,
+  airlinerGlareshieldSection,
   airlinerLipY,
   airlinerLiningLines,
+  airlinerPanelFace,
   airlinerPanelFaceX,
+  airlinerScreenPlacements,
 } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
-import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
+import { BEZEL_RIM, GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 import { cockpitView, measureDeckLineDegrees } from "./support/cockpitFootprints";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 
@@ -193,8 +196,8 @@ function firstHit(azimuth: number, elevation: number) {
 function partOf(mesh: AbstractMesh, faceId: number): string {
   const sources = (mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom;
   if (!sources) return mesh.name;
-  // the lip is a three-sided `solidPlate` (two caps and three walls of two); the board, the screens and the bezels are boxes
-  const count = (name: string) => (/^airliner-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles);
+  // the board, the screens and the wells are boxes; a bezel's frame and its rim are 16 quads each (`framedScreenFacets`)
+  const count = (name: string) => (/^airliner-screen-bezel-/.test(name) ? 32 : /^airliner-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles);
   const total = sources.reduce((sum, name) => sum + count(name), 0);
   expect(total, `${mesh.name}: its sources' triangles add up to the mesh's`).toBe(mesh.getTotalIndices() / 3);
   let start = 0;
@@ -456,15 +459,21 @@ describe("the 747's cockpit parts", () => {
     "port-airliner-lining-crown-three", "starboard-airliner-lining-crown-three",
   ];
 
-  it("are the four named cockpit-only meshes, twenty-nine authored parts, and nothing else new", () => {
+  it("are the six named cockpit-only meshes, forty-one authored parts, and nothing else new", () => {
     expect(cockpitOnly.map((part) => part.name).sort()).toEqual([
-      "airliner-cockpit-interior", "airliner-glareshield", "airliner-screen-bezels", "airliner-screens",
+      "airliner-cockpit-interior", "airliner-glareshield", "airliner-screen-bezel-rims", "airliner-screen-bezels", "airliner-screen-wells", "airliner-screens",
     ]);
-    // the lip alone; the board and the fifteen lining strips; six screens; six bezels
+    // the lip alone; the board and the fifteen lining strips; six screens; six frames, six rims and six wells (P1b)
     expect((named("airliner-glareshield").metadata as { mergedFrom?: string[] }).mergedFrom, "the glareshield is the lip, unmerged").toBeUndefined();
     expect((named("airliner-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(INTERIOR);
+    for (const name of ["airliner-screens", "airliner-screen-bezels", "airliner-screen-bezel-rims", "airliner-screen-wells"]) {
+      expect((named(name).metadata as { mergedFrom: string[] }).mergedFrom, name).toHaveLength(6);
+    }
+    // a bezel's frame and its rim are closed solids of 16 quads each (a front, an outer wall, a back and an inner wall a side)
+    expect(named("airliner-screen-bezels").getTotalIndices() / 3).toBe(6 * 16 * 2);
+    expect(named("airliner-screen-bezel-rims").getTotalIndices() / 3).toBe(6 * 16 * 2);
     const sources = cockpitOnly.flatMap((part) => (part.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [part.name]);
-    expect(sources).toHaveLength(1 + 16 + 6 + 6);
+    expect(sources).toHaveLength(1 + 16 + 6 * 4);
     // the old kit's parts are gone: the hood, the dash, the overhead, the pillar plate and the seam post
     for (const gone of ["airliner-hood", "airliner-dash", "airliner-overhead", "airliner-windscreen-pillar", "airliner-windscreen-post-port"]) {
       expect(sources, gone).not.toContain(gone);
@@ -480,15 +489,47 @@ describe("the 747's cockpit parts", () => {
     const interior = named("airliner-cockpit-interior");
     expect(interior.material, "the two draw states differ").not.toBe(glare.material);
     // THE SILLS ARE FRAME: in the interior mesh, on its material, with the crown and the pillars; the glareshield is the
-    // lip's wedge alone (8 triangles, 24 vertices), the deck line's one straight row
+    // rounded deck alone (P1a: one solidPlate, its outline the cove's foot, the hood's forward end and the round's chords
+    // with a vertex on the deck line's tangent; two fanned caps and a wall of two a side), the deck line's one straight row
     const frame = (interior.metadata as { mergedFrom: string[] }).mergedFrom;
     for (const sill of SILLS) expect(frame, `${sill} is window frame`).toContain(sill);
-    expect(glare.getTotalIndices() / 3).toBe(8);
-    expect(glare.getTotalVertices()).toBe(24);
+    const sides = airlinerGlareshieldSection().outline.length;
+    expect(sides, "no drop: the aft face's foot is the round's own tangent").toBe(3 + AIRLINER_GLARESHIELD.roundSegments + 2);
+    expect(glare.getTotalIndices() / 3).toBe(2 * (sides - 2) + 2 * sides);
+    expect(glare.getTotalVertices()).toBe(3 * (2 * (sides - 2) + 2 * sides));
     expect((glare.material as PBRMaterial).metallicF0Factor, "the glareshield reflects nothing").toBe(0);
     expect((glare.material as PBRMaterial).environmentIntensity, "the glareshield is lit by the sky").toBe(GLARESHIELD_IMAGE_LIGHT);
     expect((interior.material as PBRMaterial).environmentIntensity, "the interior's material is lit by the sky").toBeGreaterThan(0);
     expect(interior.material, "the airframe's interior material").toBe(named("airliner-flight-deck-interior").material);
+  });
+
+  it("put the bezels' frames on their own dark grey, lighter than the board by albedo alone, and the chamfered rims on the glowing marking", () => {
+    const interior = named("airliner-cockpit-interior").material as PBRMaterial;
+    // THE RIMS carry the night glow: the shared rim (`BEZEL_RIM`, the Global's too), its day emissive faint and its
+    // albedo dark, where the old pale marking at 0.7 made a bright box of every bezel
+    // (tests/render.cockpit-bezel-rim.test.ts holds the material, its glow law and its day read)
+    const rim = named("airliner-screen-bezel-rims").material as PBRMaterial;
+    expect(rim).toBe(scene.getMaterialByName("airliner-instrument-marking"));
+    expect(rim.emissiveIntensity).toBe(BEZEL_RIM.dayEmissiveIntensity);
+    expect(rim.emissiveIntensity).toBeLessThan(0.1);
+    for (const channel of [rim.albedoColor.r, rim.albedoColor.g, rim.albedoColor.b]) expect(channel).toBeLessThan(0.15);
+    // THE FRAMES are on the 747's own bezel material, dark neutral grey, and emit NOTHING: the glow is the rim's alone
+    const bezel = named("airliner-screen-bezels").material as PBRMaterial;
+    expect(bezel).toBe(scene.getMaterialByName("airliner-bezel"));
+    expect(bezel).not.toBe(rim);
+    expect([bezel.emissiveColor.r, bezel.emissiveColor.g, bezel.emissiveColor.b], "the frame emits nothing").toEqual([0, 0, 0]);
+    expect([bezel.roughness, bezel.metallic], "the board's finish").toEqual([interior.roughness, interior.metallic]);
+    // LIGHTER THAN THE BOARD BY ALBEDO ALONE, in the design's range: with the board's finish and the board's normal, a face
+    // takes the board's light, so its luma against the board's is its albedo's luminance against the board's, in linear
+    // light, carried back to the frame's sRGB (the live frame is the measurement; this holds the material to the aim)
+    const linear = (m: PBRMaterial) => 0.2126 * m.albedoColor.r ** 2.2 + 0.7152 * m.albedoColor.g ** 2.2 + 0.0722 * m.albedoColor.b ** 2.2;
+    const ratio = (linear(bezel) / linear(interior)) ** (1 / 2.2);
+    console.info(`the 747's bezels against the board, by albedo: ${ratio.toFixed(3)} in luma`);
+    expect(ratio).toBeGreaterThanOrEqual(1.3);
+    expect(ratio).toBeLessThanOrEqual(1.6);
+    // the screens and the wells behind them: the instrument face, dark (the screens take the display where there is a canvas)
+    expect(named("airliner-screens").material).toBe(scene.getMaterialByName("airliner-instrument-face"));
+    expect(named("airliner-screen-wells").material).toBe(scene.getMaterialByName("airliner-instrument-face"));
   });
 
   it("replace the old panel, gauges and needles, which are gone", () => {
@@ -508,7 +549,7 @@ describe("the 747's cockpit parts", () => {
     const visual = createWebGpuAircraft(freshScene, "airliner");
     try {
       const parts = visual.cockpitOnlyParts ?? [];
-      expect(parts).toHaveLength(4);
+      expect(parts).toHaveLength(6);
       for (const part of parts) expect(part.isVisible, `${part.name} outside cockpit view`).toBe(false);
       visual.setCockpitView(true);
       for (const part of parts) expect(part.isVisible, `${part.name} in cockpit view`).toBe(true);
@@ -597,11 +638,13 @@ describe("the centre post", () => {
 
 describe("what the pilot sees straight ahead", () => {
   it("has the glareshield's lip at -18.57, and no more than a degree of sill under No.1 anywhere along its bottom edge", () => {
-    const lip = worldVertices(named("airliner-glareshield")).slice(0, 24);
-    const aftTop = lip.filter((v) => Math.abs(v.x - airlinerPanelFaceX()) < 1e-6 && Math.abs(v.y - airlinerLipY()) < 1e-6);
-    expect(aftTop.length, "the lip's aft top edge").toBeGreaterThanOrEqual(2);
-    expect(Math.max(...lip.map((v) => v.y)), "nothing of the lip is higher than its aft top edge").toBeCloseTo(airlinerLipY(), 6);
-    expect(Math.min(...lip.map((v) => v.x)), "and nothing of it is aft of the face: flush").toBeCloseTo(airlinerPanelFaceX(), 6);
+    const lip = worldVertices(named("airliner-glareshield"));
+    // the silhouette is the round's steepest-up vertex from the eye (a line along z reads one row, its slope along x):
+    // the tangent, on the deck line to the bit; nothing of the glareshield rises over it, or stands aft of its aft face
+    const rowSlope = (v: { x: number; y: number }) => (v.y - EYE.up) / (v.x - EYE.forward);
+    expect(Math.max(...lip.map(rowSlope)), "the silhouette on the deck line").toBeCloseTo(Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees / DEG), 6);
+    expect(rowSlope(airlinerGlareshieldSection().tangent)).toBeCloseTo(Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees / DEG), 12);
+    expect(Math.min(...lip.map((v) => v.x)), "its aft face at the deck's own plane").toBeCloseTo(airlinerPanelFaceX(), 5);
     expect(Math.atan2(airlinerLipY() - EYE.up, airlinerPanelFaceX() - EYE.forward) * DEG).toBeCloseTo(AIRLINER_GLARESHIELD.lipElevationDegrees, 6);
     // the sill: the bottom of the view over No.1 (the sill lining's own top edge) less the lip, all along No.1
     const sills = viewBottomOverNoOne().map(({ az, el }) => el - lipElevation(az));
@@ -780,7 +823,11 @@ describe("what the pilot sees straight ahead", () => {
 describe("the 747's screens", () => {
   /** A screen box's own 24 vertices in the merged screens mesh, in slot order. */
   const screenBlock = (k: number) => worldVertices(named("airliner-screens")).slice(k * 24, k * 24 + 24);
-  const bezelBlock = (k: number) => worldVertices(named("airliner-screen-bezels")).slice(k * 24, k * 24 + 24);
+  /** A bezel's frame and its chamfered rim, 96 vertices each (16 quads, unshared), in slot order. */
+  const bezelBlock = (k: number) => [
+    ...worldVertices(named("airliner-screen-bezels")).slice(k * 96, k * 96 + 96),
+    ...worldVertices(named("airliner-screen-bezel-rims")).slice(k * 96, k * 96 + 96),
+  ];
   const centreOf = (vertices: Vector3[]) => vertices.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / vertices.length);
 
   it("are the type's layout: each PFD before its pilot, the ND inboard, the upper EICAS on the centreline and the lower under it", () => {
@@ -796,10 +843,11 @@ describe("the 747's screens", () => {
     expect(nd.z - pfd.z, "the ND a pitch inboard").toBeCloseTo(AIRLINER_SCREENS.pitch, 3);
     expect(starboardPfd.z).toBeCloseTo(-EYE.right, 3);
     expect(starboardPfd.z - starboardNd.z).toBeCloseTo(AIRLINER_SCREENS.pitch, 3);
-    // the centre pair on the centreline, the lower EICAS straight under the upper
+    // the centre pair on the centreline, the lower EICAS straight under the upper, a row DOWN THE LEANED FACE
     expect(upper.z).toBeCloseTo(0, 6);
     expect(lower.z).toBeCloseTo(0, 6);
-    expect(upper.y - lower.y).toBeCloseTo(AIRLINER_SCREENS.height + AIRLINER_SCREENS.bezel * 2 + AIRLINER_SCREENS.rowGap, 6);
+    const face = airlinerPanelFace();
+    expect((upper.x - lower.x) * face.up.x + (upper.y - lower.y) * face.up.y).toBeCloseTo(AIRLINER_SCREENS.height + AIRLINER_SCREENS.bezel * 2 + AIRLINER_SCREENS.rowGap, 5);
     // the top row shares one height
     for (const top of [nd, upper, starboardNd, starboardPfd]) expect(top.y).toBeCloseTo(pfd.y, 6);
     // NO TWO BEZELS OVERLAP (each bezel's box in y and z against every other's)
@@ -817,11 +865,131 @@ describe("the 747's screens", () => {
     }
   });
 
-  it("hang the top row 0.25 degrees under the glareshield's underside at the face", () => {
-    const top = Math.max(...screenBlock(0).map((v) => v.y));
-    const front = Math.min(...screenBlock(0).map((v) => v.x));
-    const underside = Math.atan2(airlinerLipY() - AIRLINER_GLARESHIELD.thickness - EYE.up, airlinerPanelFaceX() - EYE.forward) * DEG;
-    expect(Math.atan2(top - EYE.up, front - EYE.forward) * DEG).toBeCloseTo(underside - AIRLINER_SCREENS.belowGlareshieldDegrees, 4);
+  it("hang the top row 0.65 degree under the cove's foot, and ride the leaned face: screen, frame, rim and well square to it, the screen 3 mm BEHIND the frame's front", () => {
+    const face = airlinerPanelFace();
+    const up = new Vector3(face.up.x, face.up.y, 0);
+    const out = new Vector3(face.normal.x, face.normal.y, 0);
+    const offOf = (v: Vector3) => (v.x - face.top.x) * face.normal.x + (v.y - face.top.y) * face.normal.y;
+    const foot = airlinerGlareshieldSection().faceTop;
+    const edge = Math.atan2(foot.y - EYE.up, foot.x - EYE.forward) * DEG;
+    for (const k of [0, 1, 2, 4, 5]) {
+      const block = screenBlock(k);
+      // the front face: the corners furthest out of the leaned face, the top pair the furthest up it (float32: 2 um)
+      const front = Math.max(...block.map((v) => Vector3.Dot(v, out)));
+      const corners = block.filter((v) => Math.abs(Vector3.Dot(v, out) - front) < 2e-6);
+      const top = corners.reduce((a, b) => (Vector3.Dot(b, up) > Vector3.Dot(a, up) ? b : a));
+      expect(Math.atan2(top.y - EYE.up, top.x - EYE.forward) * DEG, `screen ${k}'s top edge`).toBeCloseTo(edge - AIRLINER_SCREENS.belowDeckEdgeDegrees, 3);
+    }
+    // SQUARE TO THE FACE, every screen (the lower EICAS too), to a hundredth of a millimetre (float32)
+    const levels = (vs: Vector3[]) => [...new Set(vs.map((v) => offOf(v).toFixed(5)))].map(Number).sort((a, b) => a - b);
+    const frames = worldVertices(named("airliner-screen-bezels"));
+    const rims = worldVertices(named("airliner-screen-bezel-rims"));
+    const wells = worldVertices(named("airliner-screen-wells"));
+    for (let k = 0; k < 6; k += 1) {
+      // the frame: its back 1 mm inside the board, its front 6 mm out; the rim the same, and the chamfer's foot 4 mm under
+      expect(levels(frames.slice(k * 96, k * 96 + 96)), `frame ${k}'s planes: back, front`).toEqual([-0.001, 0.006]);
+      expect(levels(rims.slice(k * 96, k * 96 + 96)), `rim ${k}'s planes: back, the chamfer's foot, front`).toEqual([-0.001, 0.002, 0.006]);
+      // the screen: a 0.5 mm plate whose face is 3 mm behind the frame's front (it stood 1 mm proud of it until P1b)
+      expect(levels(screenBlock(k)), `screen ${k}'s planes`).toEqual([0.0025, 0.003]);
+      // the well: straddling the board's face, behind the screen
+      expect(levels(wells.slice(k * 24, k * 24 + 24)), `well ${k}'s planes`).toEqual([-0.0005, 0.0005]);
+    }
+  });
+
+  it("frame each screen: the bezel 10 mm beyond it all round, its opening the screen and a 2 mm gap", () => {
+    // The sizes are the design's, written out here and not read from the builder's constants.
+    const BEZEL = 0.01;
+    const GAP = 0.002;
+    const { width, height } = AIRLINER_SCREENS;
+    const face = airlinerPanelFace();
+    const up = new Vector3(face.up.x, face.up.y, 0);
+    for (const [k, { faceCentre }] of airlinerScreenPlacements().entries()) {
+      const bezel = bezelBlock(k);
+      const across = bezel.map((v) => v.z - faceCentre.z);
+      const along = bezel.map((v) => Vector3.Dot(v.subtract(faceCentre), up));
+      expect(Math.max(...across) - Math.min(...across), `bezel ${k}'s width`).toBeCloseTo(width + 2 * BEZEL, 5);
+      expect(Math.max(...along) - Math.min(...along), `bezel ${k}'s height, up the face`).toBeCloseTo(height + 2 * BEZEL, 5);
+      const opening = across.filter((z) => Math.abs(z) < width / 2 + GAP + 1e-4);
+      expect(Math.max(...opening.map(Math.abs)), `bezel ${k}'s opening, the screen and its gap`).toBeCloseTo(width / 2 + GAP, 5);
+      // and the screen on its bezel's centre
+      const screen = screenBlock(k);
+      expect((Math.max(...screen.map((v) => v.z)) + Math.min(...screen.map((v) => v.z))) / 2, `screen ${k} centred across`).toBeCloseTo(faceCentre.z, 5);
+      const screenUp = screen.map((v) => Vector3.Dot(v.subtract(faceCentre), up));
+      expect((Math.max(...screenUp) + Math.min(...screenUp)) / 2, `screen ${k} centred up the face`).toBeCloseTo(0, 5);
+    }
+  });
+
+  it("bevel each bezel: a 4 mm chamfer at 45 degrees round its outer edge, facing out of the face, by the built normals", () => {
+    const face = airlinerPanelFace();
+    const out = new Vector3(face.normal.x, face.normal.y, 0);
+    const up = new Vector3(face.up.x, face.up.y, 0);
+    const rims = named("airliner-screen-bezel-rims");
+    const normals = rims.getVerticesData(VertexBuffer.NormalKind)!;
+    const vertices = worldVertices(rims);
+    const seen = new Set<string>();
+    let chamfer = 0;
+    for (let i = 0; i < vertices.length; i += 1) {
+      const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
+      // the rim's only faces toward the pilot are the chamfer's (its walls face sideways or into the board)
+      if (Vector3.Dot(n, out) <= 1e-6) continue;
+      chamfer += 1;
+      // 45 degrees off the face's normal, and the rest of it along one of the face's own sides
+      expect(Vector3.Dot(n, out), "45 degrees to the face").toBeCloseTo(Math.SQRT1_2, 5);
+      const side = n.subtract(out.scale(Math.SQRT1_2));
+      const along = [up, up.scale(-1), new Vector3(0, 0, 1), new Vector3(0, 0, -1)].findIndex((d) => Vector3.Dot(side, d) > Math.SQRT1_2 - 1e-5);
+      expect(along, "outward along a side").toBeGreaterThanOrEqual(0);
+      seen.add(`${along}`);
+    }
+    expect(seen.size, "all four sides").toBe(4);
+    expect(chamfer, "four chamfer quads a bezel, two triangles each").toBe(6 * 4 * 2 * 3);
+    // its width across the face: 4 mm (its fall toward the face is pinned by the planes)
+    for (const [k, { faceCentre }] of airlinerScreenPlacements().entries()) {
+      const rim = vertices.slice(k * 96, k * 96 + 96).map((v) => Math.abs(v.z - faceCentre.z));
+      const edges = [...new Set(rim.map((z) => z.toFixed(5)))].map(Number).sort((a, b) => a - b).slice(-2);
+      expect(edges[1]! - edges[0]!, `rim ${k}: 4 mm across the face`).toBeCloseTo(0.004, 5);
+    }
+  });
+
+  it("recess each screen 3 mm behind its bezel in a 2 mm dark well: by ray, the screen's face, the gap, the frame", () => {
+    const face = airlinerPanelFace();
+    const out = new Vector3(face.normal.x, face.normal.y, 0);
+    const up = new Vector3(face.up.x, face.up.y, 0);
+    const offOf = (p: Vector3) => (p.x - face.top.x) * face.normal.x + (p.y - face.top.y) * face.normal.y;
+    const screens = named("airliner-screens");
+    const { width, height } = AIRLINER_SCREENS;
+    // the pilot's PFD and ND, the two the frame shows most of
+    for (const { name, faceCentre } of airlinerScreenPlacements().slice(0, 2)) {
+      // a ray at the screen's middle meets the screen, 3 mm behind the frame's front
+      const middle = faceCentre.add(out.scale(0.003));
+      const hit = firstHitAlong(middle.subtract(EYE_POINT).normalize());
+      expect(hit?.pickedMesh, `${name}: the screen at its middle`).toBe(screens);
+      const at = EYE_POINT.add(middle.subtract(EYE_POINT).normalize().scale(hit!.distance));
+      expect(0.006 - offOf(at), `${name}: the recess, by ray`).toBeCloseTo(0.003, 4);
+      // a ray into the gap, a millimetre off the screen's edge, meets the WELL, dark: on the side toward the eye (both
+      // sides of the PFD, which is straight ahead), and over the screen's top (the eye looks down into it)
+      const toward = Math.sign(EYE.right - faceCentre.z);
+      for (const side of toward === 0 ? [-1, 1] : [toward]) {
+        const gap = faceCentre.add(new Vector3(0, 0, side * (width / 2 + 0.001))).add(out.scale(0.0005));
+        expect(firstHitAlong(gap.subtract(EYE_POINT).normalize())?.pickedMesh?.name, `${name}: the gap at z ${side}`).toBe("airliner-screen-wells");
+      }
+      const top = faceCentre.add(up.scale(height / 2 + 0.001)).add(out.scale(0.0005));
+      expect(firstHitAlong(top.subtract(EYE_POINT).normalize())?.pickedMesh?.name, `${name}: the gap over the screen`).toBe("airliner-screen-wells");
+      // and a ray at the frame's flat face meets the frame, on its front
+      const flat = faceCentre.add(new Vector3(0, 0, width / 2 + 0.002 + 0.002)).add(out.scale(0.006));
+      expect(firstHitAlong(flat.subtract(EYE_POINT).normalize())?.pickedMesh?.name, `${name}: the frame's face`).toBe("airliner-screen-bezels");
+    }
+  });
+
+  it("reach the cove's foot with the bezels' top rims, no further: the gap under the deck's edge is theirs (at 0.5 degree they stood 0.14 into it)", () => {
+    const foot = airlinerGlareshieldSection().faceTop;
+    const edge = Math.atan2(foot.y - EYE.up, foot.x - EYE.forward) * DEG;
+    const bezels = [...worldVertices(named("airliner-screen-bezels")), ...worldVertices(named("airliner-screen-bezel-rims"))];
+    const highest = Math.max(...bezels.map((v) => Math.atan2(v.y - EYE.up, v.x - EYE.forward) * DEG));
+    console.info(`747 bezels' top rims: ${(highest - edge).toFixed(3)} degrees against the cove's foot`);
+    // the gap was solved for the chamfered frames (P1b): their tops sit 0.005 degree under the foot (K3's square bezels
+    // stood 0.008 over it), so the whole cove shows over every screen
+    expect(highest, "the bezels under the deck's edge").toBeLessThanOrEqual(edge);
+    expect(highest, "and not far under it: the gap is theirs").toBeGreaterThan(edge - 0.1);
   });
 
   it("show at least 35% of the pilot's PFD, the ND and the upper EICAS in the 16:9 frame, and nothing of the lower one", () => {
@@ -830,16 +998,23 @@ describe("the 747's screens", () => {
     const screens = named("airliner-screens");
     const names = (screens.metadata as { mergedFrom: string[] }).mergedFrom;
     const fractions: Record<string, number> = {};
+    const face = airlinerPanelFace();
+    const up = new Vector3(face.up.x, face.up.y, 0);
+    const out = new Vector3(face.normal.x, face.normal.y, 0);
     for (const [k, name] of names.entries()) {
+      // the screen's front face ON THE LEANED FACE: its four corners, bottom pair then top pair (float32: 2 um)
       const block = screenBlock(k);
-      const x = Math.min(...block.map((v) => v.x));
-      const [y0, y1] = [Math.min(...block.map((v) => v.y)), Math.max(...block.map((v) => v.y))];
-      const [z0, z1] = [Math.min(...block.map((v) => v.z)), Math.max(...block.map((v) => v.z))];
+      const front = Math.max(...block.map((v) => Vector3.Dot(v, out)));
+      const corners: Vector3[] = [];
+      for (const v of block) if (Math.abs(Vector3.Dot(v, out) - front) < 2e-6 && !corners.some((c) => Vector3.Distance(c, v) < 2e-6)) corners.push(v);
+      expect(corners, `${name}: a box face's four corners`).toHaveLength(4);
+      corners.sort((a, b) => Vector3.Dot(a, up) - Vector3.Dot(b, up) || a.z - b.z);
+      const [b0, b1, t0, t1] = corners as [Vector3, Vector3, Vector3, Vector3];
       let seen = 0;
       let total = 0;
       for (let i = 0; i <= 20; i += 1) {
         for (let j = 0; j <= 20; j += 1) {
-          const p = new Vector3(x, y0 + ((y1 - y0) * (i + 0.5)) / 21, z0 + ((z1 - z0) * (j + 0.5)) / 21);
+          const p = Vector3.Lerp(Vector3.Lerp(b0, b1, (j + 0.5) / 21), Vector3.Lerp(t0, t1, (j + 0.5) / 21), (i + 0.5) / 21);
           total += 1;
           const q = p.subtract(EYE_POINT);
           if (Math.abs(q.z / q.x) > FRAME_U || Math.abs(q.y / q.x) > FRAME_V) continue;
@@ -850,11 +1025,12 @@ describe("the 747's screens", () => {
       fractions[name.replace("airliner-screen-", "")] = seen / total;
     }
     console.info(`747 screens in the frame: ${Object.entries(fractions).map(([n, f]) => `${n} ${(f * 100).toFixed(1)}%`).join(", ")}`);
-    // the floor is 35%; the build gives 37.8% exactly (38.1% on this grid), and a panel back at 0.75 m would give 31.7%.
-    // (It was 43.5% with the lining the glass's own slab: its sill stood 0.04 out and the lip 0.54 degree higher.)
+    // the floor is 35%; K3 gave 37.8% (38.1% on this grid), and P1a must cost the top row nothing of it: the smaller deck
+    // edge raised the screens more than the lean lowers them. (It was 43.5% with the lining the glass's own slab: its
+    // sill stood 0.04 out and the lip 0.54 degree higher.)
     for (const name of ["port-pfd", "port-nd", "port-eicas"]) {
       expect(fractions[name], `${name} in the frame`).toBeGreaterThanOrEqual(0.35);
-      expect(fractions[name], `${name} as built`).toBeGreaterThan(0.37);
+      expect(fractions[name], `${name}: nothing lost against K3`).toBeGreaterThanOrEqual(0.378);
     }
     expect(fractions["starboard-eicas"], "the lower EICAS is under the frame").toBe(0);
     // the starboard pair is beyond the frame's right edge but for a sliver of the ND
@@ -870,13 +1046,14 @@ describe("the 747's cockpit against the shell it stands in", () => {
     return hits.length > 0 ? hits[hits.length - 1]! : Number.NaN;
   }
 
-  it("keeps the board, the lip, the screens and the bezels inside the outer skin with clearance to spare", () => {
+  it("keeps the board, the lip, the screens, the bezels and the wells inside the outer skin with clearance to spare", () => {
     const lines: string[] = [];
     const parts: [string, Vector3[]][] = [
       ["panel board", worldVertices(named("airliner-cockpit-interior")).slice(0, 24)],
       ["glareshield lip", worldVertices(named("airliner-glareshield")).slice(0, 24)],
       ["screens", worldVertices(named("airliner-screens"))],
-      ["bezels", worldVertices(named("airliner-screen-bezels"))],
+      ["bezels", [...worldVertices(named("airliner-screen-bezels")), ...worldVertices(named("airliner-screen-bezel-rims"))]],
+      ["wells", worldVertices(named("airliner-screen-wells"))],
     ];
     for (const [label, vertices] of parts) {
       let tightest = Number.POSITIVE_INFINITY;
@@ -1030,6 +1207,7 @@ describe("the 747's cockpit against the shell it stands in", () => {
   it("puts nothing in the frame that the design did not account for: the kit and the centre post", () => {
     const allowed = new Set([
       "airliner-cockpit-interior", "airliner-glareshield", "airliner-screens", "airliner-screen-bezels",
+      "airliner-screen-bezel-rims", "airliner-screen-wells",
     ]);
     for (let az = -37; az <= 37; az += 2) {
       for (let el = -23; el <= 23; el += 1) {
@@ -1115,13 +1293,79 @@ describe("the fuselage's forward end cap", () => {
 });
 
 describe("the panel", () => {
-  it("stands 0.85 m ahead of the eye, flush with the lip, below the frame", () => {
+  it("stands under a glareshield 0.85 m ahead of the eye, its face at the cove's foot, leaned back, down past the frame", () => {
+    // the glareshield's aft face at the top of the type's range, chosen for the rows of screen it buys over 0.75
+    expect(airlinerPanelFaceX() - EYE.forward).toBeCloseTo(0.85, 12);
+    const face = airlinerPanelFace();
+    const section = airlinerGlareshieldSection();
+    expect(face.top.x - airlinerPanelFaceX(), "the cove's run").toBeCloseTo(AIRLINER_GLARESHIELD.cove, 12);
+    expect(face.top.y).toBeCloseTo(section.faceTop.y, 12);
     const board = worldVertices(named("airliner-cockpit-interior")).slice(0, 24);
-    // the top of the type's range, chosen for the rows of screen it buys over 0.75
-    expect(Math.min(...board.map((v) => v.x)) - EYE.forward).toBeCloseTo(0.85, 6);
-    expect(Math.max(...board.map((v) => v.y))).toBeCloseTo(airlinerLipY() - AIRLINER_GLARESHIELD.thickness, 6);
-    // its bottom is below the frame's bottom in its plane
-    const frameBottom = EYE.up - FRAME_V * AIRLINER_PANEL.faceAheadOfEye;
-    expect(Math.min(...board.map((v) => v.y))).toBeLessThan(frameBottom - 0.1);
+    const out = (v: Vector3) => (v.x - face.top.x) * face.normal.x + (v.y - face.top.y) * face.normal.y;
+    const planes = [...new Set(board.map((v) => (out(v) + 0).toFixed(5)))].map((d) => Number(d) + 0).sort((a, b) => a - b);
+    expect(planes.length, "the board's face and its back").toBe(2);
+    expect(planes[1]!, "the face through the cove's foot").toBeCloseTo(0, 5);
+    expect(planes[1]! - planes[0]!, "the back square to it").toBeCloseTo(AIRLINER_PANEL.thickness, 5);
+    expect(Math.max(...board.map((v) => v.y)), "the board's top at the cove's foot").toBeCloseTo(section.faceTop.y, 5);
+    // its face's foot is below the frame's bottom (the frame's bottom row, v = -FRAME_V)
+    const inFace = board.filter((v) => Math.abs(out(v)) < 2e-6);
+    const foot = inFace.reduce((a, b) => (a.y < b.y ? a : b));
+    expect((foot.y - EYE.up) / (foot.x - EYE.forward)).toBeLessThan(-FRAME_V);
+  });
+
+  it("leans back 17 degrees and faces the pilot: its normal within 8 degrees of the eye from the PFD's centre", () => {
+    expect(AIRLINER_PANEL.leanDegrees).toBe(17);
+    const face = airlinerPanelFace();
+    const normal = new Vector3(face.normal.x, face.normal.y, 0);
+    const pfd = airlinerScreenPlacements()[0]!.centre;
+    const off = Math.acos(Vector3.Dot(normal, EYE_POINT.subtract(pfd).normalize())) * DEG;
+    console.info(`747 panel: leaned ${AIRLINER_PANEL.leanDegrees}; its normal ${off.toFixed(2)} degrees off the eye at the PFD's centre`);
+    expect(off).toBeLessThanOrEqual(8);
+    // CONTROL: the upright board K3 had reads far off
+    expect(Math.acos(Vector3.Dot(new Vector3(-1, 0, 0), EYE_POINT.subtract(pfd).normalize())) * DEG).toBeGreaterThan(20);
+  });
+
+  it("rounds the glareshield on the deck line, with the least round, drop and cove, and a hood that clears the shell untapered", () => {
+    const g = AIRLINER_GLARESHIELD;
+    expect([g.radius, g.drop, g.cove], "the least deck edge that reads").toEqual([0.005, 0, 0.003]);
+    expect(g.hoodFallDegrees, "the hood falls faster than the sight line").toBeGreaterThan(-g.lipElevationDegrees);
+    const section = airlinerGlareshieldSection();
+    const el = (v: { x: number; y: number }) => Math.atan2(v.y - EYE.up, v.x - EYE.forward) * DEG;
+    const edge = el(section.tangent) - el(section.faceTop);
+    console.info(`747 deck edge: ${edge.toFixed(3)} degrees straight ahead`);
+    expect(edge, "the deck's edge, lip to the cove's foot").toBeLessThan(0.6);
+    // every vertex of the glareshield, the hood's forward end included, 5 cm inside the built shell at its own station
+    for (const v of worldVertices(named("airliner-glareshield"))) {
+      const wall = crossings(new Vector3(v.x, v.y, 0), new Vector3(0, 0, v.z < 0 ? -1 : 1), shell).at(-1)!;
+      expect(wall - Math.abs(v.z), `(${v.x.toFixed(3)}, ${v.y.toFixed(3)})`).toBeGreaterThanOrEqual(0.05);
+    }
+  });
+
+  it("fills the frame under the deck line with the deck, edge to edge: no wall beside the board, so no side consoles (P1c)", () => {
+    // The Global's side consoles (P1c) filled a bare wall standing in the frame's lower left BESIDE a board that ended at
+    // az -23. The 747's board runs past both edges of the frame (its ends at az -43 and +65 from the seat), so every
+    // column of the frame, from its bottom row up to the deck line, is deck: the board, the glareshield, a screen and
+    // its bezel. Rays by the frame's own columns and rows (rectilinear), up to a tenth of a degree under the lip's row.
+    const DECK = new Set(["airliner-instrument-panel", "airliner-glareshield"]);
+    const lipRow = Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees / DEG);
+    let rays = 0;
+    for (let i = 0; i <= 40; i += 1) {
+      const u = -FRAME_U + (2 * FRAME_U * i) / 40;
+      for (let j = 0; j <= 12; j += 1) {
+        const v = -FRAME_V + ((lipRow - 0.002 + FRAME_V) * j) / 12;
+        const hit = firstHitAlong(new Vector3(1, v, u).normalize());
+        expect(hit, `column ${i}, row ${j}: something drawn`).not.toBeNull();
+        const part = partOf(hit!.pickedMesh!, hit!.faceId);
+        expect(DECK.has(part) || /^airliner-screen/.test(part), `column ${i}, row ${j}: ${part} under the deck line`).toBe(true);
+        rays += 1;
+      }
+    }
+    expect(rays).toBe(41 * 13);
+    // the board's ends from the eye at the cove's foot, beyond the frame's edge (az 37.5 at the centre row, less below)
+    const foot = airlinerGlareshieldSection().faceTop;
+    const end = (side: 1 | -1) => Math.atan2(side * AIRLINER_PANEL.halfWidth - EYE.right, foot.x - EYE.forward) * DEG;
+    console.info(`747 board's ends from the seat at the cove's foot: az ${end(-1).toFixed(1)} and ${end(1).toFixed(1)}`);
+    expect(end(-1)).toBeLessThan(-37.5);
+    expect(end(1)).toBeGreaterThan(37.5);
   });
 });
