@@ -14,7 +14,9 @@ import {
   sculptSolid,
   smoothRoundNormals,
   solidPlate,
+  sweptSolid,
   type RoundedDeckSection,
+  type SweptSection,
 } from "./cockpitPrimitives";
 import {
   JET_DISPLAYS,
@@ -519,6 +521,105 @@ export function jetMfdPlacements(): readonly { name: "port" | "starboard"; centr
 /** What the pages need of this airframe that the flight state does not carry: one engine, 20 degrees of flap (`animation.ts`). */
 export const JET_DISPLAY_AIRFRAME: DisplayAirframe = Object.freeze({ engineCount: 1, fullFlapDegrees: 20 });
 
+// ---- the sills ------------------------------------------------------------------------------
+
+/**
+ * THE SILLS (the F-16 pass, step 4): a level canopy sill each side, with a console inboard of it. The frame's lower
+ * third held no aircraft from az 27.7 to the frame's edge, 252 of 800 columns: the deck is the width of the canopy's
+ * nose, and beside it the frame looked straight out through the glass. The sill is what the type has there, level
+ * with the glareshield's sides dropping to it.
+ *
+ * THE RAIL: its top level at `topY` (eye - 0.22), `width` wide, its top edges rounded at `radius`, its outer edge
+ * `glassMargin` inside the glass's inner half-width at the top's height, so it curves in with the glass as it runs
+ * forward: from `aftX`, behind the eye, to a bend at `bendX` where the canopy's widest run ends, and on BESIDE the dash
+ * to the board's back, its inner face on the board's side from the side's bend (x 2.93) on, so nothing of it is in the
+ * dash. Ended at the dash's face plane it left a notch: rays over its end dropped under its top and out through the
+ * glass, a wedge of world 1.6 by 0.8 degrees. The frame's edge column at 16:9 (az 37.5) meets the rail's outer edge
+ * 16 mm under its top; at 21:9 (the hybrid lens, az 45.65) a level top this high reaches az 38.9, and the corners
+ * beyond it need up to 0.762.
+ *
+ * THE CONSOLE: its top at `consoleTopY`, `consoleWidth` inboard of the rail's inner face, from `aftX` to the dash's
+ * leaned face, down to the tub. It closes the rail's inner face from below and runs `consoleUnderRail` in under the
+ * rail, whose bottom is 1 cm under the console's top, so their seam cannot open. It is under the frame's bottom at
+ * 16:9 and at 21:9: nothing stands on it (no more instruments).
+ *
+ * Both sides' rails and consoles are ONE cockpit-only mesh (`jet-sills`) on the dash's material: one draw.
+ */
+export const JET_SILL = Object.freeze({
+  topY: 0.72,
+  width: 0.06,
+  radius: 0.01,
+  /** The rail's bottom: 1 cm under the console's top. */
+  bottomY: 0.59,
+  glassMargin: 0.021,
+  aftX: 1.9,
+  bendX: 2.6,
+  /**
+   * The glass's inner half-width at `topY`, by crossings on the built canopy: at `aftX`, at `bendX` (the widest, from
+   * x 2.3 to 2.6), at the board's side's bend (x 2.93) and at the board's back (x 3.03). The test re-measures the
+   * margin at every vertex.
+   */
+  glassHalfWidth: Object.freeze({ aft: 0.4371, bend: 0.4559, dash: 0.4216, back: 0.4088 }),
+  consoleTopY: 0.6,
+  consoleWidth: 0.15,
+  consoleUnderRail: 0.03,
+});
+
+/** The dash's leaned face plane: its x at height y. */
+export function jetPanelFaceX(y: number): number {
+  const face = jetPanelFace();
+  return face.top.x - ((face.top.y - y) * face.up.x) / face.up.y;
+}
+
+/** The rail's section in (u, y), u measured inboard from its outer edge: up the outer face, over the rounded top, down the inner face. */
+export function jetSillSection(): SweptSection {
+  const r = JET_SILL;
+  const shoulder = r.topY - r.radius;
+  const c = Math.SQRT1_2 * r.radius;
+  return {
+    points: [
+      { u: 0, y: r.bottomY },
+      { u: 0, y: shoulder },
+      { u: r.radius - c, y: shoulder + c },
+      { u: r.radius, y: r.topY },
+      { u: r.width - r.radius, y: r.topY },
+      { u: r.width - r.radius + c, y: shoulder + c },
+      { u: r.width, y: shoulder },
+      { u: r.width, y: r.bottomY },
+    ],
+    rounds: [
+      { first: 1, last: 3, centre: { u: r.radius, y: shoulder } },
+      { first: 4, last: 6, centre: { u: r.width - r.radius, y: shoulder } },
+    ],
+  };
+}
+
+/**
+ * The rail's four stations, aft to forward: x, and its outer and inner edges' half-widths. Aft of the dash it is
+ * `width` wide; beside it, its inner edge is the board's side (the hood's plan less the board's inset).
+ */
+export function jetSillStations(): { x: number; outer: number; inner: number }[] {
+  const r = JET_SILL;
+  const g = r.glassHalfWidth;
+  const dashX = jetPanelFace().x;
+  const backX = dashX + JET_PANEL.thickness;
+  const side = (x: number) => jetCoamingHalfWidth(x) - JET_PANEL.sideInset;
+  return [
+    { x: r.aftX, outer: g.aft - r.glassMargin, inner: g.aft - r.glassMargin - r.width },
+    { x: r.bendX, outer: g.bend - r.glassMargin, inner: g.bend - r.glassMargin - r.width },
+    { x: dashX, outer: g.dash - r.glassMargin, inner: side(dashX) },
+    { x: backX, outer: g.back - r.glassMargin, inner: side(backX) },
+  ];
+}
+
+/** The rail's inner edge's half-width at x (linear between the stations). */
+export function jetSillInnerAt(x: number): number {
+  const stations = jetSillStations();
+  const k = Math.max(0, Math.min(stations.length - 2, stations.findIndex((station) => station.x > x) - 1));
+  const [a, b] = [stations[k]!, stations[k + 1]!];
+  return a.inner + ((x - a.x) / (b.x - a.x)) * (b.inner - a.inner);
+}
+
 // ---- the builder ----------------------------------------------------------------------------
 
 /** What `buildJetCockpit` hands back. */
@@ -529,7 +630,7 @@ export interface JetCockpit {
   readonly board: Mesh;
   /**
    * The cockpit-only meshes, unconfigured: the caller marks them (`configureCockpitOnlyParts`). The HUD
-   * frame, its housing, its combiner's panes, the MFDs' frames, their rims and the MFD screens.
+   * frame, its housing, its combiner's panes, the MFDs' frames, their rims, the MFD screens and the sills.
    */
   readonly parts: readonly AbstractMesh[];
   /** Whether the MFDs are drawing pages: false wherever there is no 2D canvas (every Node test). */
@@ -651,6 +752,45 @@ export function buildJetCockpit(
   const framesMesh = build.mergeStatic("jet-mfd-frames", frames, root);
   const rimsMesh = build.mergeStatic("jet-mfd-rims", rims, root);
 
+  // THE SILLS, each side a rail swept along the glass and a console inboard of it, all four one mesh on the dash's
+  // material
+  const sill = JET_SILL;
+  const stations = jetSillStations();
+  // beside the dash the rail narrows: its inner round and face move out with the inner edge, both rounds kept
+  const inset = (station: { outer: number; inner: number }, u: number) => (u <= sill.width / 2 ? u : u - (sill.width - (station.outer - station.inner)));
+  const sills: AbstractMesh[] = [];
+  for (const side of [-1, 1] as const) {
+    const label = side < 0 ? "port" : "starboard";
+    sills.push(sweptSolid(
+      build,
+      `jet-sill-rail-${label}`,
+      jetSillSection(),
+      stations.length,
+      (i, point) => new Vector3(stations[i]!.x, point.y, side * (stations[i]!.outer - inset(stations[i]!, point.u))),
+      (direction) => new Vector3(0, direction.y, -side * direction.u),
+      panelMaterial,
+      root,
+    ));
+    // the console: its side elevation from behind the eye to the dash's face, down to the tub, then its plan: from
+    // `consoleWidth` inboard of the rail's inner face to `consoleUnderRail` under the rail
+    const consoleSection = [
+      { x: sill.aftX, y: JET_PANEL.bottomY },
+      { x: jetPanelFaceX(JET_PANEL.bottomY), y: JET_PANEL.bottomY },
+      { x: jetPanelFaceX(sill.consoleTopY), y: sill.consoleTopY },
+      { x: sill.aftX, y: sill.consoleTopY },
+    ];
+    const across = sill.consoleWidth + sill.consoleUnderRail;
+    const console = solidPlate(build, `jet-sill-console-${label}`, consoleSection, 1, panelMaterial, root);
+    sculptSolid(console, (point) => {
+      const inner = jetSillInnerAt(point.x) - sill.consoleWidth;
+      // port runs the other way across, so the move is not a reflection
+      const fraction = side > 0 ? point.z + 0.5 : 0.5 - point.z;
+      return new Vector3(point.x, point.y, side * (inner + fraction * across));
+    });
+    sills.push(console);
+  }
+  const sillsMesh = build.mergeStatic("jet-sills", sills, root);
+
   // THE PAGES, where there is a 2D canvas; under NullEngine the screens keep their flat material.
   const atlas = createDisplayAtlas(build, JET_DISPLAYS);
   if (atlas !== null) {
@@ -661,7 +801,7 @@ export function buildJetCockpit(
   return {
     coaming,
     board,
-    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh],
+    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh, sillsMesh],
     displaysLive: atlas !== null,
     invalidateDisplays() {
       redraw.invalidate();

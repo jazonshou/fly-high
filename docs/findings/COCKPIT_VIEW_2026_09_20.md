@@ -1832,6 +1832,61 @@ frame face at 0.56 would read as a lit slab.
 - Five mutations, all caught: the frames left on the rim material; the frame tone 1.0 times the board and 1.96 times;
   the rims on the frame material (no night glow); the frames given the rims' day emissive.
 
+**The frames slot after 3b** (16:9, before 55679ba, after 926333b by day and by night):
+- The tint through the panes read 8.7% darker, mid-band.
+- The four materials' shader inputs stay at 14 (15 with fog).
+- The rail's round shades as one gradient.
+- At night the MFDs read as outlines, a bright rim round a dark frame.
+- Two things were found:
+  - The HUD housing, on the rim material since step 2, glows whole at night (luma 217 against the rail's 14).
+  - The frames read 1.24 times the dash's luma live, against 1.41 by the albedo measure: the leaned dash's sky
+    specular is a constant that narrows the ratio.
+  Both are the PM's to decide.
+
+**Step 4, the sills** (`JET_SILL`, `sweptSolid`). The frame's lower third held no aircraft from az 27.7 to the frame's
+edge: 252 of 800 columns (every 2nd pixel at 1600 x 900), 40.0% of it world. The deck is the width of the canopy's
+nose, and beside it the frame looked straight out through the glass.
+- **The rail.**
+  - Its top is level at 0.72 (eye - 0.22), 6 cm wide, with top edges rounded at 1 cm.
+  - Its outer edge is 2.1 cm inside the glass's inner half-width at the top's height. It runs from x 1.9, behind the
+    eye, through a bend at 2.6 (where the canopy's widest run ends), on beside the dash to the board's back (3.03).
+  - Its inner face lies on the board's side from x 2.93. At the face plane it stands 3.1 mm off the board's side, and
+    nothing of it is in the board.
+  - It is a new shared primitive, `sweptSolid`: one convex section carried through stations. A `solidPlate` is one
+    section at one thickness and cannot follow the glass's curve. Its rounds take the radial normal made square to
+    the wall's run (`smoothRoundNormals`' rule), so neighbouring chords turn by 45 degrees and the rounds meet the top
+    and the faces with their own normals.
+  - Ended at the dash's face plane, the rail left a NOTCH: rays skimming its end dropped under its top and out
+    through the glass, a wedge of world about 1.6 by 0.8 degrees (85 of 5,241 rays at 0.1 degree). Beside the dash
+    to the board's back, none.
+- **The console.** Its top is at 0.60, 15 cm inboard of the rail's inner face, from x 1.9 to the dash's leaned face
+  and down to the tub. It runs 3 cm in under the rail, whose bottom is 1 cm under the console's top, so their seam
+  cannot open. It is under the frame's bottom at 16:9 and at 21:9. Without it, a ray under the frame at az 30 sees the
+  world, since the fuselage is hidden in cockpit view.
+- **Both sides' rails and consoles are one cockpit-only mesh** (`jet-sills`, 432 vertices) on the dash's material. That
+  is one opaque draw, and the kit is 7 meshes. It is 432 vertices, not the 400 aimed at: the station beside the dash
+  that closes the notch costs 96.
+- **What it does to the frame.** At 16:9 no column of the lower third is empty (252 before), and the bottom row's
+  aircraft reaches the frame's edge (az 37.45). The lower third is now 31.2% world (40.0% before): dash 28.6%, coaming
+  10.6%, screens 10.5%, sills 8.9%, frames 7.1%, housing 1.6%, rims 1.5%.
+  - At 21:9 under the hybrid lens (91.31 degrees), a level top at 0.72 reaches az 38.9. The corners beyond, to 45.65,
+    would need the top at up to 0.762 there (271 of 1,280 columns stay world). That call is the PM's.
+  - The sills' highest point is the rail's top beside the board's back: el -13.83, row -0.272 against the coaming's
+    -0.180, so it never climbs into the deck line. The deck-line instrument still reads 10.19, and the 2D layout is
+    byte for byte as it was.
+- Mesh by mesh against 926333b, `jet-sills` is new and the jet's other 74 meshes are bit-identical. The loft digests
+  are re-pinned.
+- Nine mutation runs, all caught:
+  - the top at 0.66 (the columns come back);
+  - the outer edge on the glass;
+  - the aft end at x 2.6;
+  - no console, twice: left out of the merge, and gone from the scene (the ray under the frame then sees the world);
+  - a 5 mm gap at the dash, two ways (the console short of the face, the rail off the board's side);
+  - square top edges;
+  - the rail ended at the dash's face (the notch).
+  Of these, the aft end, the console and the two junction gaps are outside what the eye sees, so they are caught by
+  the structure pins and the ray under the frame, not by the frame.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

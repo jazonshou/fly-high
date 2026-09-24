@@ -253,10 +253,10 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     // chase or orbit frame fails here instead of being noticed, or not, in the PNG.
     const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
     // Trainer 15 since it kept three dials (19 with the second row); Global 7 on its P1 panel; 747 6 on its P1 panel
-    // (4 until its framed, recessed screens brought the bezels' rims and the wells); the F-16 6, its HUD frame, its
-    // housing, its combiner's panes and its MFDs' frames, rims and screens. The same counts as
+    // (4 until its framed, recessed screens brought the bezels' rims and the wells); the F-16 7, its HUD frame, its
+    // housing, its combiner's panes, its MFDs' frames, rims and screens, and its sills. The same counts as
     // tests/render.cockpit-drawn-faces.
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 6, jet: 6 };
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 6, jet: 7 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {

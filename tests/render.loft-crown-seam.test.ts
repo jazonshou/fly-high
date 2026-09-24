@@ -330,7 +330,9 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for step 3b: `jet-mfd-bezels` split into `jet-mfd-frames` (on their own grey) and `jet-mfd-rims` (on the
       // rims' glow), the same facets in two meshes (192 vertices each). Checked mesh by mesh against 6407aa4: those
       // three names, and the jet's other 72 meshes bit-identical.
-      jet: "9dafca4b",
+      // RE-PINNED for step 4: `jet-sills` new, both sides' rails and consoles in one cockpit-only mesh (432 vertices).
+      // Checked mesh by mesh against 926333b: that one, and the jet's other 74 meshes bit-identical.
+      jet: "f3a579d7",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

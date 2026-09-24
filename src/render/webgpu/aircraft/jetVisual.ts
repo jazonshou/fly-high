@@ -1121,9 +1121,10 @@ export function createJet(scene: Scene): AircraftVisual {
   // to the dash, on the matte glareshield material. The dash has no dials: it
   // leans back to the pilot with the two MFDs framed and recessed on it (the UFC
   // between them is not built). The HUD rises from a housing on the hood behind
-  // the rail. The HUD's frame, housing and combiner and the MFDs' frames, rims
-  // and screens are cockpit-only: invisible from every other camera and never
-  // shadow casters (`configureCockpitOnlyParts`).
+  // the rail. A level sill runs along the glass each side, a console inboard of
+  // it. The HUD's frame, housing and combiner, the MFDs' frames, rims and
+  // screens, and the sills are cockpit-only: invisible from every other camera
+  // and never shadow casters (`configureCockpitOnlyParts`).
   // The bezel rims' shared material (the Global's and the 747's), on the MFDs' rims and the HUD's housing; its night
   // glow below
   const rim = bezelRimMaterial(build, "jet-bezel-rim");

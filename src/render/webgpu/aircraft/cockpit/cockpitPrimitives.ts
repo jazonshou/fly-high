@@ -525,6 +525,105 @@ export function facetMesh(
   return mesh;
 }
 
+/**
+ * A SWEPT SOLID's section: a convex outline in its own (u, y) plane, in order round it, and its ROUNDS (the points
+ * `first` to `last` lying on a circle about `centre`), whose chords are shaded as the circle.
+ */
+export interface SweptSection {
+  readonly points: readonly { readonly u: number; readonly y: number }[];
+  readonly rounds: readonly { readonly first: number; readonly last: number; readonly centre: { readonly u: number; readonly y: number } }[];
+}
+
+/**
+ * A SWEPT SOLID: one convex section carried through `stations` placements (`place` puts a section point at a station
+ * in the parent's space; `across` carries a direction in the section's plane there), walls between consecutive
+ * stations and a flat cap at each end. For a part whose plan follows a curve (a sill along the canopy's glass) that a
+ * `solidPlate`, one section at one thickness, cannot: the plan bends at every station.
+ *
+ * Wound as `solidPlate` winds (a drawn face's cross product points INTO the solid), three vertices of their own to a
+ * triangle, and flat-shaded but for the ROUNDS: a round's chords take, at each corner, the round's radial normal there
+ * (`smoothRoundNormals`' rule), made square to the wall's run between the two stations, so neighbouring chords meet
+ * with one normal and a round meets the flat face it is tangent to with that face's normal. Which side of a wall is
+ * out is the section's (its convex outline), not a centroid's, so the plan may bend either way.
+ */
+export function sweptSolid(
+  build: AircraftBuildContext,
+  name: string,
+  section: SweptSection,
+  stations: number,
+  place: (station: number, point: { readonly u: number; readonly y: number }) => Vector3,
+  across: (direction: { readonly u: number; readonly y: number }) => Vector3,
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const points = section.points;
+  const n = points.length;
+  if (n < 3 || stations < 2) throw new RangeError(`sweptSolid "${name}": needs a section of three points or more and two stations or more`);
+  const middle = { u: points.reduce((sum, p) => sum + p.u, 0) / n, y: points.reduce((sum, p) => sum + p.y, 0) / n };
+  const rings = Array.from({ length: stations }, (_, i) => points.map((p) => place(i, p)));
+  const centres = Array.from({ length: stations }, (_, i) => place(i, middle));
+  const roundOf = (j: number, k: number) => section.rounds.find((r) => Math.min(j, k) >= r.first && Math.max(j, k) <= r.last && Math.abs(j - k) === 1);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  const push = (corners: [Vector3, Vector3, Vector3], outward: Vector3, shading: [Vector3, Vector3, Vector3] | null) => {
+    const a = corners[0];
+    let [b, c] = [corners[1], corners[2]];
+    let shade = shading;
+    let cross = Vector3.Cross(b.subtract(a), c.subtract(a));
+    if (cross.length() < 1e-12) return;
+    if (Vector3.Dot(cross, outward) > 0) {
+      [b, c] = [c, b];
+      if (shade) shade = [shade[0], shade[2], shade[1]];
+      cross = cross.scale(-1);
+    }
+    const flat = cross.normalize().scale(-1);
+    [a, b, c].forEach((corner, k) => {
+      const normal = shade ? shade[k]! : flat;
+      positions.push(corner.x, corner.y, corner.z);
+      normals.push(normal.x, normal.y, normal.z);
+      indices.push(indices.length);
+    });
+  };
+  for (let i = 0; i + 1 < stations; i += 1) {
+    for (let j = 0; j < n; j += 1) {
+      const k = (j + 1) % n;
+      // the edge's outward normal in the section: square to it, away from the section's middle
+      const edge = { u: points[k]!.u - points[j]!.u, y: points[k]!.y - points[j]!.y };
+      let out = { u: edge.y, y: -edge.u };
+      if (out.u * (points[j]!.u - middle.u) + out.y * (points[j]!.y - middle.y) < 0) out = { u: -out.u, y: -out.y };
+      const outward = across(out).normalize();
+      const round = roundOf(j, k);
+      // a round's corner: its radial, made square to the wall's run from this station to the next at that point
+      const radial = (index: number) => {
+        const p = points[index]!;
+        const r = across({ u: p.u - round!.centre.u, y: p.y - round!.centre.y }).normalize();
+        const run = rings[i + 1]![index]!.subtract(rings[i]![index]!).normalize();
+        return r.subtract(run.scale(Vector3.Dot(r, run))).normalize();
+      };
+      const a = rings[i]![j]!;
+      const b = rings[i]![k]!;
+      const c = rings[i + 1]![k]!;
+      const d = rings[i + 1]![j]!;
+      push([a, b, c], outward, round ? [radial(j), radial(k), radial(k)] : null);
+      push([a, c, d], outward, round ? [radial(j), radial(k), radial(j)] : null);
+    }
+  }
+  for (const [ring, towards] of [[0, 1], [stations - 1, stations - 2]] as const) {
+    const outward = centres[ring]!.subtract(centres[towards]!).normalize();
+    for (let m = 1; m + 1 < n; m += 1) push([rings[ring]![0]!, rings[ring]![m]!, rings[ring]![m + 1]!], outward, null);
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = new Array<number>((positions.length / 3) * 2).fill(0);
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
+}
+
 /** The rotation that takes local X, Y, Z onto the given orthonormal, right-handed basis. */
 export function basisQuaternion(xAxis: Vector3, yAxis: Vector3, zAxis: Vector3): Quaternion {
   const matrix = Matrix.FromValues(
