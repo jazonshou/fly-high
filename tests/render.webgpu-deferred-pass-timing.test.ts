@@ -184,6 +184,40 @@ describe("deferred per-pass timing: each pass reads its own time", () => {
     expect(counter.counter.current).toBe(4_000);
   });
 
+  it("drops a frame whose slots were never rewritten as stale, never as the previous frame's time", async () => {
+    const fake = fakeEngine();
+    const timing = installDeferredPassTiming(fake.asEngine)!;
+    const competitor = new WebGPUPerfCounter();
+    const talus = new WebGPUPerfCounter();
+    const fineBand = new WebGPUPerfCounter();
+    const delivered: Array<[string, number]> = [];
+    for (const [name, counter] of [["competitor", competitor], ["talus", talus], ["fineBand", fineBand]] as const) {
+      const original = counter._addDuration.bind(counter);
+      counter._addDuration = (frameId: number, ns: number) => { delivered.push([name, ns]); original(frameId, ns); };
+    }
+    // Frame 1 writes its three slots.
+    fake.endFrame([fake.recordPass(competitor, 141_873), fake.recordPass(competitor, 134_165), fake.recordPass(talus, 66_874)]);
+    await settle();
+    // Frame 2 times three passes in the same slots, and none of them writes:
+    // the reference host's stale frame, whose last reading reached another shader.
+    fake.recordPass(competitor, 140_000);
+    fake.recordPass(competitor, 135_000);
+    fake.recordPass(fineBand, 70_000);
+    fake.endFrame([]);
+    await settle();
+    // Frame 3 writes again, and reads true.
+    fake.endFrame([fake.recordPass(competitor, 139_000), fake.recordPass(competitor, 133_000), fake.recordPass(fineBand, 71_000)]);
+    await settle();
+    expect(delivered).toEqual([
+      ["competitor", 141_873], ["competitor", 134_165], ["talus", 66_874],
+      ["competitor", 0], ["competitor", 0], ["fineBand", 0],
+      ["competitor", 139_000], ["competitor", 133_000], ["fineBand", 71_000],
+    ]);
+    expect(timing.staleReadings).toBe(3);
+    expect(fineBand.counter.count).toBe(2);
+    expect(fineBand.counter.current).toBe(71_000);
+  });
+
   it("delivers a pair that is not increasing as 0, so a consumer can count it unusable", async () => {
     const fake = fakeEngine();
     installDeferredPassTiming(fake.asEngine);

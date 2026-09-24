@@ -216,6 +216,12 @@ export interface DeferredPassTiming {
   readonly framesTimed: number;
   /** Readbacks issued: one per timed frame, never one per pass. */
   readonly readbacks: number;
+  /**
+   * Readings whose begin/end pair came back exactly as the previous resolve
+   * of the same queries left it: slots nothing rewrote, the previous frame's
+   * time. Each is delivered as 0, unusable, never as a duration.
+   */
+  readonly staleReadings: number;
   dispose(): void;
 }
 
@@ -250,7 +256,18 @@ export function installDeferredPassTiming(
   let passesTimed = 0;
   let framesTimed = 0;
   let readbacks = 0;
+  let staleReadings = 0;
   let disposed = false;
+  // The last value resolved into each query. On the reference host (2026-09-23)
+  // a whole frame's resolve now and then returns the previous frame's values
+  // unchanged, in both the carve's trees, most often where a stage changes:
+  // a frame reading "competitor 141873, competitor 134165, talus-apply
+  // 66874" is followed by one reading "competitor 141873, competitor 134165,
+  // fine-band 66874", the last value delivered to another shader. Why the
+  // slots were not rewritten is open. A 64-bit begin/end pair that repeats
+  // exactly was not written again, so it is dropped as unusable
+  // (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md, open item 5).
+  const lastResolved = new BigUint64Array(querySet.count);
 
   const babylonEndPass = timestamp.endPass;
   const endPass = (index: number, sink?: PassDurationSink | null): void => {
@@ -290,7 +307,17 @@ export function installDeferredPassTiming(
         return;
       }
       const values = new BigUint64Array(target.getMappedRange(0, bytes));
-      const durations = passes.map((pass) => passDurationNs(values, first, pass.slot));
+      const durations = passes.map((pass) => {
+        const at = pass.slot + PASS_QUERY_OFFSET;
+        const begin = values[at - first];
+        if (begin !== undefined && begin !== 0n
+          && begin === lastResolved[at] && values[at + 1 - first] === lastResolved[at + 1]) {
+          staleReadings += 1;
+          return 0;
+        }
+        return passDurationNs(values, first, pass.slot);
+      });
+      lastResolved.set(values, first);
       target.unmap();
       spare.push(target);
       passes.forEach((pass, index) => {
@@ -322,6 +349,7 @@ export function installDeferredPassTiming(
     get passesTimed() { return passesTimed; },
     get framesTimed() { return framesTimed; },
     get readbacks() { return readbacks; },
+    get staleReadings() { return staleReadings; },
     dispose,
   };
 }

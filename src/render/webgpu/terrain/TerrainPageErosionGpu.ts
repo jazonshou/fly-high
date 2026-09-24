@@ -179,82 +179,166 @@ export type TerrainErosionGpuStage =
 
 /**
  * Measured per-dispatch GPU cost by stage, in milliseconds at the 384²
- * production scratch on the reference adapter (Apple silicon, ANGLE Metal,
- * 2026-08-30, seed w1d-page-erosion-gpu, an L3 page; re-measured by the
- * concentrated whole-page and grouped one-sided guards in
- * tests/gpu/terrain-page-erosion-cost.test.ts). Production ships with GPU
+ * production scratch on the reference adapter (Apple silicon, WebGPU on
+ * Metal, seed w1d-page-erosion-gpu, an L3 page). Production ships with GPU
  * timing OFF, so these constants ARE the admission prices for a normal
  * session; the running estimate refines them only on a pinned diagnostic
- * capture.
+ * capture. Held by the concentrated whole-page and grouped one-sided guards in
+ * tests/gpu/terrain-page-erosion-cost.test.ts.
  *
- * Whole page after `W-4`: **38.1-39.9 ms of GPU across 163 dispatches** over
- * three consecutive runs (48 seed bands, 16 geology bands over two passes, 2
- * breach, 1 decode, 24 stream-power, 64 talus, 8 fine-band), amortised at
- * whatever the meter admits. W-4's FINE BAND pass is the whole delta from the
- * recorded 37.4 ms / 155 dispatches: **+8 dispatches and +0.6-0.9 ms**, or
- * 2.4% of the page, for moving the fine bands off the uplift input.
+ * Re-priced 2026-09-22 on the instrument that reads each pass's own time
+ * (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md); every figure
+ * before then was the time of whatever pass last held the query slot. Each is
+ * a clean-room price: at least 20 s of idle GPU before the run
+ * (tests/support/pricingRun.ts), three runs. The stages the breach fix left
+ * alone carry the 22:38 slot's figures, whose three runs agreed within 1-7 %;
+ * the breach passes, rebuilt as a pit list, a chunk-sizing pass and a chunked
+ * carve (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md), are priced from
+ * the 23:47 slot, cold: the first pass on a fresh page.
  *
- * The single-dispatch rows (decode, and stream power at ~20 microseconds each)
- * remain the noisy ones this file already warned about: across five runs on
- * the reference adapter `decode` was measured at 0.085, 0.091, 0.091, 0.198
- * and 0.816 ms, and `streamPower` at 0.066, 0.072, 0.073 and 0.367. Both
- * outliers are the counter, not the shader — the whole-page total moved 4% in
- * the same runs. They deliberately have no individual timing bounds: the gate
- * requires every dispatch to be present, then measures their combined page
- * contribution so counter granularity cannot masquerade as shader drift.
+ * Whole page: **46.4 ms of GPU across 166 dispatches** on the L3 page (48 seed
+ * bands, 16 geology bands over two passes, the breach's direct and args passes
+ * and 3 carve chunks, 1 decode, 24 stream-power, 64 talus, 8 fine-band). The
+ * carve's chunks follow the page's pits, one per 128, so a denser page has
+ * more of them.
  *
  * Two stages sit ABOVE the tier-0 `erosionCompute` row of 0.2 ms — seed at
- * 0.29 and talus at 0.32 — and both are inside tier 1's 0.4 ms row, which is
- * the shipping tier. At tier 0 they are admitted through the surplus pass
- * (eroded mode leaves `terrainCompute` with no demand at all, so its row is
- * surplus every frame) or, failing that, the floor of one. Neither can be
- * banded further without changes outside this item: the seed band is already
- * one workgroup row, and the talus pair is `W-1a`'s shader, not this file's.
+ * 0.40 and talus at 0.39 — and both fit tier 1's 0.4 ms row, which is the
+ * shipping tier, seed exactly. Seed's cold first page reads 0.42-0.46 (23:49),
+ * past that row; it is recorded in the finding rather than priced, because
+ * every stage must fit the tier-1 row (the erosion parent-chain test) and a
+ * finer seed band is outside this item. At tier 0 they are admitted through
+ * the surplus pass (eroded mode leaves `terrainCompute` with no demand at all,
+ * so its row is surplus every frame) or, failing that, the floor of one.
+ * Neither can be banded further without changes outside this item: the seed
+ * band is already one workgroup row, and the talus pair is `W-1a`'s shader,
+ * not this file's.
  */
 export const TERRAIN_EROSION_STAGE_SEED_COST_MS: Readonly<
   Record<
-    "seed" | "geology" | "breachDirect" | "breachPit" | "decode" | "streamPower" | "talus" | "fineBand",
+    | "seed" | "geology" | "breachDirect" | "breachArgs" | "breachPit" | "decode" | "streamPower" | "talus"
+    | "fineBand",
     number
   >
 > = Object.freeze({
   // One 8-row band of the composed analytic+uplift kernel: eight supersampled
   // evaluations of the two ~750-line kernels per texel above L0, plus the
-  // macro-uplift (or parent-filter) leg. 48 bands, 14.0 ms of the page.
-  seed: 0.29,
+  // macro-uplift (or parent-filter) leg. 48 bands, 19.2 ms of the page.
+  seed: 0.4,
   // One 48-row band of the geology sampler: two filtered value-noise octaves
-  // and a fabric angle, once per texel. 8 bands per pass, two passes, 1.3 ms.
-  geology: 0.082,
-  // The breach stage's two passes, priced apart: one price for both could be a
-  // measurement of neither, because on an instrument that reads each pass's
-  // own time they are far apart
-  // (docs/findings/BABYLON_PASS_TIMESTAMP_ORDER_2026_09_22.md). Both still
-  // carry the old single breach figure until they are re-measured.
-  // Direct-receiver gather over 384².
-  breachDirect: 0.067,
-  // The sparse (2r+1)² pit carve over 384².
-  breachPit: 0.067,
+  // and a fabric angle, once per texel. 8 bands per pass, two passes, 0.18 ms.
+  geology: 0.011,
+  // The breach stage's passes, each priced on its own: one price for all of
+  // them would be a measurement of none, because they are far apart.
+  // Direct-receiver gather over 384², which also lists the pits for the carve:
+  // 0.098 ms cold in all three runs.
+  breachDirect: 0.099,
+  // One thread writing each carve chunk's size from the pit count and zeroing
+  // the claim cursor: 0.012-0.015 in the cost test's pages. In the frame it runs in
+  // under the live meter, with the count read at the frame's end, it reads
+  // 0.067-0.104 (median 0.077 over 13; the flushing read's frames read ~0.013).
+  // Priced at what that frame spends. Why the reading is that high is not
+  // shown: its end timestamp may take in the count's copy that follows it
+  // (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md, open item 5).
+  breachArgs: 0.08,
+  // One chunk of the (2r+1)² pit carve: up to `BREACH_PIT_CHUNK_PITS` listed
+  // pits, one workgroup each, dispatched at its CPU-known size.
+  // Cold full chunks on pages of 372, 794 and 1070 pits: median 0.202 ms over
+  // 48 (0.185-0.224), the same on every page. A partial chunk still costs
+  // ~0.16, the slowest pit's own latency, so a page pays that once a chunk.
+  breachPit: 0.21,
   // A single 384² pass, and therefore the one figure here with no averaging
-  // behind it — its counter is a single noisy sample of a 0.09 ms dispatch.
-  decode: 0.089,
-  // One implicit-Jacobi stream-power iteration at 384². 24 of them, ~0.8 ms.
-  // The noisiest row: 0.022-0.049 across four runs on one adapter, because a
-  // 20-microsecond dispatch is near the counter's own resolution. Centred on
-  // the median; the cost gate aggregates all 24 with the other minor stages.
-  streamPower: 0.033,
+  // behind it. On the old instrument it read 0.085-0.816 ms, the slot's
+  // previous occupant; on its own it reads 0.019-0.021.
+  decode: 0.021,
+  // One implicit-Jacobi stream-power iteration at 384². 24 of them, ~1.0 ms.
+  // Centred on the median; the cost gate aggregates all 24 with the other
+  // minor stages.
+  streamPower: 0.041,
   // One talus gather or one talus apply at 384². **The page's dominant cost:
-  // 64 dispatches, 20.7 ms — 55% of the whole DAG.** The gather recomputes
+  // 64 dispatches, 25.0 ms — 54% of the whole DAG.** The gather recomputes
   // every neighbour's full eight-way outflow distribution to stay a pure
   // gather (W-1a's shape, and the reason it is bit-reproducible), which is 64
   // loads per cell. Recorded as the first place to look if the page rate has
   // to improve again.
-  talus: 0.32,
+  talus: 0.39,
   // W-4's FINE BAND band: one 48-row slice of the uplift kernel's fine-band
   // sampler (a fabric angle and three ridged octaves) plus the soil mask's
   // five-tap stencil. Seeded at the geology row it is closest to — geology is
   // two filtered octaves plus a fabric angle over the same band height — and
   // re-measured inside the complete-page aggregate rather than in isolation.
-  fineBand: 0.082,
+  fineBand: 0.043,
 });
+
+/**
+ * Pits one page's breach carve can hold: the list the direct pass fills and
+ * the carve reads, one workgroup per entry. The breach pit survey of
+ * 2026-09-22 found at most 712 pits on a page (mountain-close's region, L5)
+ * over 40 pages, fixture and real, including the named worst valleys and the
+ * airport-masked pages (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md);
+ * the GPU harness's synthetic macro gives more, 1070 on its L5 -1,1 page.
+ * 4096 is about 5.7 times the survey's worst and 3.8 times the harness's, 16
+ * KB. A page with more fails its breach stage LOUDLY (`pitListOverflows`),
+ * before anything is carved, never carves short.
+ */
+export const BREACH_PIT_LIST_CAPACITY = 4096;
+
+/**
+ * Lanes in the pit carve's workgroup. The carve is latency-bound: one serial
+ * thread per pit made the pass as long as its slowest pit (one 8-row band
+ * holding a pit cost 89 % of the whole pass). The lanes stride the pit's
+ * (2r+1)² window and a shared-memory reduction picks the target.
+ */
+export const BREACH_PIT_LANES = 64;
+
+/**
+ * Listed pits per carve chunk. The carve is dispatched in chunks, one admitted
+ * unit each, because one pass over every pit outgrows the
+ * erosion row on a dense page: its time is linear in the pits once the GPU is
+ * full, 0.83-0.98 µs a pit cold over pages of 372, 794 and 1070 pits (three
+ * runs each, 2026-09-22), so 0.88-0.89 ms on the 1070-pit page against tier
+ * 1's 0.4 ms row. A chunk's worst cold pass is held at or under 0.25 ms, 40 %
+ * under that row, because the price is spent under load.
+ */
+export const BREACH_PIT_CHUNK_PITS = 128;
+
+/** Chunks a full list makes, and the size slots the count buffer holds for them. */
+export const BREACH_PIT_CHUNKS = BREACH_PIT_LIST_CAPACITY / BREACH_PIT_CHUNK_PITS;
+
+/** Carve chunks a page of `pits` listed pits dispatches. */
+export function terrainBreachPitChunks(pits: number): number {
+  return Math.ceil(Math.min(pits, BREACH_PIT_LIST_CAPACITY) / BREACH_PIT_CHUNK_PITS);
+}
+
+/**
+ * `BUFFER_CREATIONFLAG_READWRITE` only: the count is read back, and the chunks
+ * are dispatched at CPU-known sizes, so nothing reads this buffer as INDIRECT.
+ * (The indirect form corrupted pages on some runs with no error reported:
+ * docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md.)
+ */
+const PIT_ARGS_CREATION_FLAGS = 3;
+
+/**
+ * Chunk k's size and (1, 1) at u32 4k, a 16-byte stride; the raw pit count in
+ * chunk 0's spare fourth word, [3]. Chunk 0's y is always 1 after the args
+ * pass, which is how a count read that faulted to zeros is recognised. Zeroed
+ * per page.
+ */
+const PIT_ARGS_RESET = new Uint32Array(BREACH_PIT_CHUNKS * 4);
+
+/**
+ * The breach readback's overflow check: a page with more pits than the list
+ * holds was carved short. `onOverflow` counts it; the throw fails the page.
+ */
+export function terrainBreachPitListCheck(pits: number, onOverflow: () => void): void {
+  if (pits <= BREACH_PIT_LIST_CAPACITY) return;
+  onOverflow();
+  throw new Error(
+    `breach pit list overflow: ${pits} pits on one page, capacity ${BREACH_PIT_LIST_CAPACITY}; `
+    + "the page is failed rather than carved short",
+  );
+}
+
 
 /**
  * Frozen measured-criteria contract for CPU-oracle tolerance parity of a
@@ -678,6 +762,8 @@ ${seedParamsWgsl(true)}
 @group(0) @binding(2) var<storage, read> erosionMaskIn: array<u32>;
 @group(0) @binding(3) var<storage, read_write> breachedBits: array<u32>;
 @group(0) @binding(4) var<storage, read_write> receivers: array<i32>;
+@group(0) @binding(5) var<storage, read_write> pitList: array<u32>;
+@group(0) @binding(6) var<storage, read_write> pitArgs: array<atomic<u32>, 4>;
 
 ${ORDERABLE_WGSL}
 
@@ -710,18 +796,51 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
   }
   receivers[index] = directReceiver;
+  // A pit: the cells the carve works on, listed for it. The count keeps
+  // counting past the list, so the readback can fail an overfull page.
+  if (directReceiver < 0) {
+    let slot = atomicAdd(&pitArgs[3], 1u);
+    if (slot < ${BREACH_PIT_LIST_CAPACITY}u) { pitList[slot] = u32(index); }
+  }
 }
 `;
 }
 
 /**
- * BREACH pass B: per-pit (2r+1)² window search and monotone line carve. The
+ * BREACH args: each carve chunk's size, one workgroup per listed pit,
+ * `BREACH_PIT_CHUNK_PITS` to a chunk, zero for a chunk past the list (the CPU
+ * dispatches the same sizes from the count, and the read checks chunk 0's y);
+ * and the claim cursor the carve's workgroups take list slots from, zeroed.
+ */
+function breachArgsWgsl(): string {
+  return /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> pitArgs: array<u32, ${BREACH_PIT_CHUNKS * 4}>;
+@group(0) @binding(1) var<storage, read_write> pitCursor: array<u32, 4>;
+
+@compute @workgroup_size(1, 1, 1)
+fn main() {
+  let listed = min(pitArgs[3], ${BREACH_PIT_LIST_CAPACITY}u);
+  for (var chunk = 0u; chunk < ${BREACH_PIT_CHUNKS}u; chunk = chunk + 1u) {
+    let first = chunk * ${BREACH_PIT_CHUNK_PITS}u;
+    pitArgs[chunk * 4u] = select(0u, min(listed - first, ${BREACH_PIT_CHUNK_PITS}u), listed > first);
+    pitArgs[chunk * 4u + 1u] = 1u;
+    pitArgs[chunk * 4u + 2u] = 1u;
+  }
+  pitCursor[0] = 0u;
+}
+`;
+}
+
+/**
+ * BREACH pass B as it shipped, one serial thread per pit: kept as the control
+ * the parallel carve is held bit-identical to, never dispatched by the DAG.
+ * Per-pit (2r+1)² window search and monotone line carve. The
  * carve is `breached[cell] = min(existing, interp)` — a commutative,
  * associative, idempotent min-combine — so atomicMin over the orderable
  * encoding is deterministic regardless of thread order. Receiver writes touch
  * only the owning pit cell.
  */
-function breachPitWgsl(): string {
+export function breachPitSerialWgsl(): string {
   return /* wgsl */ `
 ${seedParamsWgsl(true)}
 @group(0) @binding(1) var<storage, read> sourceHeight: array<f32>;
@@ -802,6 +921,148 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     atomicMin(&breachedBits[pathCell], pOrderableEncode(descending));
   }
   receivers[index] = bPathIndex(x, z, bestDx, bestDz, 1, bestSteps, edge);
+}
+`;
+}
+
+/**
+ * BREACH pass B, one workgroup per listed pit, dispatched a chunk at a time.
+ * The serial pass gave each pit
+ * one thread searching its (2r+1)² window alone, so the pass lasted as long as
+ * its slowest pit (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md). Here the
+ * lanes stride the window (target t to lane t % LANES) and a shared-memory tree
+ * reduction picks the winner under the serial search's own total order, lower
+ * score then lower target index, so the choice, the carve and the receiver are
+ * the serial pass's bit for bit (held against `breachPitSerialWgsl` on the
+ * device, and by the lane twin in tests/support/breachPitLanes.ts on the CPU).
+ * The score and path expressions are the serial pass's, character for
+ * character.
+ *
+ * Each workgroup claims its pit from a cursor the args pass zeroed. The chunks
+ * run in order and each runs exactly its CPU-known size, so chunk k's
+ * workgroups take list slots [128k, 128k + n_k) and no
+ * chunk needs to be told where it starts. Which workgroup carves which pit
+ * cannot change the result: the carve is a min-combine and each pit writes
+ * only its own receiver.
+ */
+export function breachPitWgsl(): string {
+  return /* wgsl */ `
+${seedParamsWgsl(true)}
+@group(0) @binding(1) var<storage, read> sourceHeight: array<f32>;
+@group(0) @binding(2) var<storage, read> erosionMaskIn: array<u32>;
+@group(0) @binding(3) var<storage, read_write> breachedBits: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> receivers: array<i32>;
+@group(0) @binding(5) var<storage, read> pitList: array<u32>;
+@group(0) @binding(6) var<storage, read_write> pitCursor: array<atomic<u32>, 4>;
+
+${ORDERABLE_WGSL}
+
+/** Math.round (half toward +inf), the CPU path's exact rounding. */
+fn bRound(value: f32) -> f32 {
+  return floor(value + 0.5);
+}
+
+fn bPathIndex(startX: i32, startZ: i32, dx: i32, dz: i32, step: i32, steps: i32, edge: i32) -> i32 {
+  let px = startX + i32(bRound(f32(dx * step) / f32(steps)));
+  let pz = startZ + i32(bRound(f32(dz * step) / f32(steps)));
+  return pz * edge + px;
+}
+
+const LANES: u32 = ${BREACH_PIT_LANES}u;
+var<workgroup> claimedSlot: u32;
+var<workgroup> laneHave: array<u32, ${BREACH_PIT_LANES}>;
+var<workgroup> laneScore: array<f32, ${BREACH_PIT_LANES}>;
+var<workgroup> laneTarget: array<i32, ${BREACH_PIT_LANES}>;
+var<workgroup> laneDx: array<i32, ${BREACH_PIT_LANES}>;
+var<workgroup> laneDz: array<i32, ${BREACH_PIT_LANES}>;
+var<workgroup> laneSteps: array<i32, ${BREACH_PIT_LANES}>;
+
+/** The candidate beats the incumbent: lower score, ties to the lower target index. */
+fn bBeats(haveIncumbent: bool, incumbentScore: f32, incumbentTarget: i32, score: f32, candidateTarget: i32) -> bool {
+  return !haveIncumbent || score < incumbentScore
+    || (score == incumbentScore && candidateTarget < incumbentTarget);
+}
+
+@compute @workgroup_size(${BREACH_PIT_LANES}, 1, 1)
+fn main(@builtin(local_invocation_index) lane: u32) {
+  if (lane == 0u) { claimedSlot = atomicAdd(&pitCursor[0], 1u); }
+  workgroupBarrier();
+  let edge = i32(params.shape.x);
+  let index = i32(pitList[claimedSlot]);
+  let x = index % edge;
+  let z = index / edge;
+  let radius = i32(params.breach.z);
+  let epsilon = params.breach.y;
+  let side = radius * 2 + 1;
+  let cellHeight = sourceHeight[index];
+  var have = false;
+  var bestScore = 0.0;
+  var bestTarget = -1;
+  var bestDx = 0;
+  var bestDz = 0;
+  var bestSteps = 0;
+  for (var t = i32(lane); t < side * side; t = t + i32(LANES)) {
+    let dx = t % side - radius;
+    let dz = t / side - radius;
+    let steps = max(abs(dx), abs(dz));
+    if (steps == 0 || steps > radius) { continue; }
+    let tx = x + dx;
+    let tz = z + dz;
+    if (tx < 0 || tz < 0 || tx >= edge || tz >= edge) { continue; }
+    let targetIndex = tz * edge + tx;
+    let distance = sqrt(f32(dx * dx + dz * dz));
+    let targetHeight = sourceHeight[targetIndex];
+    if (!(targetHeight + epsilon * distance < cellHeight)) { continue; }
+    var clear = true;
+    for (var step = 1; step <= steps; step = step + 1) {
+      if (erosionMaskIn[bPathIndex(x, z, dx, dz, step, steps, edge)] != 0u) {
+        clear = false;
+        break;
+      }
+    }
+    if (!clear) { continue; }
+    let score = targetHeight + epsilon * distance;
+    if (bBeats(have, bestScore, bestTarget, score, targetIndex)) {
+      have = true;
+      bestScore = score;
+      bestTarget = targetIndex;
+      bestDx = dx;
+      bestDz = dz;
+      bestSteps = steps;
+    }
+  }
+  laneHave[lane] = select(0u, 1u, have);
+  laneScore[lane] = bestScore;
+  laneTarget[lane] = bestTarget;
+  laneDx[lane] = bestDx;
+  laneDz[lane] = bestDz;
+  laneSteps[lane] = bestSteps;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      let other = lane + stride;
+      if (laneHave[other] != 0u
+        && bBeats(laneHave[lane] != 0u, laneScore[lane], laneTarget[lane], laneScore[other], laneTarget[other])) {
+        laneHave[lane] = 1u;
+        laneScore[lane] = laneScore[other];
+        laneTarget[lane] = laneTarget[other];
+        laneDx[lane] = laneDx[other];
+        laneDz[lane] = laneDz[other];
+        laneSteps[lane] = laneSteps[other];
+      }
+    }
+    workgroupBarrier();
+  }
+  if (lane != 0u || laneHave[0] == 0u) { return; }
+  let outletHeight = sourceHeight[laneTarget[0]];
+  let bestStepsAll = laneSteps[0];
+  for (var step = 1; step < bestStepsAll; step = step + 1) {
+    let pathCell = bPathIndex(x, z, laneDx[0], laneDz[0], step, bestStepsAll, edge);
+    let descending = cellHeight
+      + (outletHeight - cellHeight) * f32(step) / f32(bestStepsAll);
+    atomicMin(&breachedBits[pathCell], pOrderableEncode(descending));
+  }
+  receivers[index] = bPathIndex(x, z, laneDx[0], laneDz[0], 1, bestStepsAll, edge);
 }
 `;
 }
@@ -979,6 +1240,12 @@ interface GpuBuffers {
   readonly erodibility: StorageBuffer;
   /** Breach/MFD receivers -> talus delta after stream power. */
   readonly receivers: StorageBuffer;
+  /** The pits the direct pass found, one cell index each, for the carve. */
+  readonly pitList: StorageBuffer;
+  /** Each carve chunk's size and the raw pit count; read back, never used as INDIRECT. */
+  readonly pitArgs: StorageBuffer;
+  /** The next list slot a carve workgroup claims. */
+  readonly pitCursor: StorageBuffer;
 }
 
 interface GpuShaders {
@@ -986,6 +1253,7 @@ interface GpuShaders {
   readonly geologyErodibility: ComputeShader;
   readonly geologyRepose: ComputeShader;
   readonly breachDirect: ComputeShader;
+  readonly breachArgs: ComputeShader;
   readonly breachPit: ComputeShader;
   readonly decode: ComputeShader;
   readonly streamPowerFromA: ComputeShader;
@@ -1032,6 +1300,12 @@ interface ActiveJob {
   cancelled: boolean;
   bandIndex: number;
   breachDirectDone: boolean;
+  breachArgsDone: boolean;
+  /** Carve chunks this page needs, from its pit count; 0 until that is read. */
+  breachChunks: number;
+  /** Pits on the list, the count capped at the list's capacity; 0 until read. */
+  breachListed: number;
+  breachChunksDone: number;
   spIteration: number;
   talusIteration: number;
   talusGatherPending: boolean;
@@ -1107,6 +1381,7 @@ export class TerrainPageErosionGpu {
     seed: { milliseconds: 0, dispatches: 0, unusable: 0 },
     geology: { milliseconds: 0, dispatches: 0, unusable: 0 },
     breachDirect: { milliseconds: 0, dispatches: 0, unusable: 0 },
+    breachArgs: { milliseconds: 0, dispatches: 0, unusable: 0 },
     breachPit: { milliseconds: 0, dispatches: 0, unusable: 0 },
     decode: { milliseconds: 0, dispatches: 0, unusable: 0 },
     streamPower: { milliseconds: 0, dispatches: 0, unusable: 0 },
@@ -1114,6 +1389,8 @@ export class TerrainPageErosionGpu {
     fineBand: { milliseconds: 0, dispatches: 0, unusable: 0 },
   };
   private lastPageTiming: TerrainErosionGpuPageTiming | null = null;
+  private pitListOverflowCount = 0;
+  private lastBreachPitCount: number | null = null;
 
   constructor(engine: AbstractEngine, options: TerrainPageErosionGpuOptions) {
     this.engine = engine;
@@ -1133,6 +1410,16 @@ export class TerrainPageErosionGpu {
 
   get activeStage(): TerrainErosionGpuStage {
     return this.job?.stage ?? "idle";
+  }
+
+  /** Pages failed because their pits overflowed the breach list (telemetry). */
+  get pitListOverflows(): number {
+    return this.pitListOverflowCount;
+  }
+
+  /** The last page's pit count as the direct pass counted it (diagnostics). */
+  get lastBreachPits(): number | null {
+    return this.lastBreachPitCount;
   }
 
   get lastCompletedPageTiming(): TerrainErosionGpuPageTiming | null {
@@ -1180,9 +1467,9 @@ export class TerrainPageErosionGpu {
       case "breach":
         // One pass at a time, each at its own price: the two differ too much
         // for one estimate to admit both honestly.
-        return job.breachDirectDone
-          ? { count: 1, costMs: this.stageEstimatesMs.breachPit }
-          : { count: 1, costMs: this.stageEstimatesMs.breachDirect };
+        if (!job.breachDirectDone) return { count: 1, costMs: this.stageEstimatesMs.breachDirect };
+        if (!job.breachArgsDone) return { count: 1, costMs: this.stageEstimatesMs.breachArgs };
+        return { count: job.breachChunks - job.breachChunksDone, costMs: this.stageEstimatesMs.breachPit };
       case "decode":
         return { count: 1, costMs: this.stageEstimatesMs.decode };
       case "stream-power":
@@ -1274,6 +1561,10 @@ export class TerrainPageErosionGpu {
       cancelled: false,
       bandIndex: 0,
       breachDirectDone: false,
+      breachArgsDone: false,
+      breachChunks: 0,
+      breachListed: 0,
+      breachChunksDone: 0,
       spIteration: 0,
       talusIteration: 0,
       talusGatherPending: true,
@@ -1414,12 +1705,36 @@ export class TerrainPageErosionGpu {
 
     if (job.stage === "breach") {
       if (!job.breachDirectDone) {
+        // A fresh count for this page's pit list. A queue write lands before
+        // the encoder that records the direct pass; every earlier pass that
+        // touched the count (the previous page's args and carve, or a
+        // cancelled page's direct pass) was recorded frames ago, so nothing
+        // recorded-but-unsubmitted can overwrite it.
+        buffers.pitArgs.update(PIT_ARGS_RESET);
         await this.dispatch(shaders.breachDirect, "breachDirect", fullGroups, fullGroups, 1, job);
         job.breachDirectDone = true;
         remaining -= 1;
         if (remaining <= 0 || job.cancelled || this.job !== job) return;
       }
-      await this.dispatch(shaders.breachPit, "breachPit", fullGroups, fullGroups, 1, job);
+      if (!job.breachArgsDone) {
+        await this.dispatch(shaders.breachArgs, "breachArgs", 1, 1, 1, job);
+        job.breachArgsDone = true;
+        if (job.cancelled || this.job !== job) return;
+        // How many chunks to carve is the pit count, which only the device
+        // holds: nothing more is dispatched for the page until it is read.
+        job.asyncInFlight = true;
+        void this.runPitCountReadback(job, buffers);
+        return;
+      }
+      while (remaining > 0 && job.breachChunksDone < job.breachChunks) {
+        const first = job.breachChunksDone * BREACH_PIT_CHUNK_PITS;
+        await this.dispatch(
+          shaders.breachPit, "breachPit", Math.min(BREACH_PIT_CHUNK_PITS, job.breachListed - first), 1, 1, job);
+        if (job.cancelled || this.job !== job) return;
+        job.breachChunksDone += 1;
+        remaining -= 1;
+      }
+      if (job.breachChunksDone < job.breachChunks) return;
       job.stage = "readback";
       job.asyncInFlight = true;
       void this.runReadbackAndMfd(job, buffers);
@@ -1572,6 +1887,58 @@ export class TerrainPageErosionGpu {
     if (this.job === job) this.job = null;
     job.stagedJob.cancel();
     job.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+
+  /**
+   * The breach carve's chunk count, from the pit count the direct pass kept.
+   * A page whose pits overflow the list fails here, LOUDLY, before anything
+   * is carved. The count can read back as zeros like the scratch fields (see
+   * `runReadbackAndMfd`), which would carve nothing and publish an uncarved
+   * page; the args pass always writes chunk 0's y as 1, so a zero there is a
+   * faulted read, re-read once, never a page without pits.
+   *
+   * `noDelay: false`, and it is the fix, not a preference: the read's copy
+   * stays in the frame's own encoder and is mapped at `onEndFrameObservable`,
+   * after the frame's submit. With `noDelay: true` the read flushed the frame
+   * mid-way (`flushFramebuffer()`), and with GPU timing on and the deferred
+   * per-pass timing installed, 13 of 20 timed runs lost whole pages' direct
+   * and args passes. The claim cursor was never re-zeroed, the count read
+   * handed back the previous page's (same address, same count, so no guard
+   * sees it) and the carve claimed slots past the list. The end-of-frame read
+   * was 0 of 20 in the same interleaved sample; unstamping the carve's own
+   * passes was 12 of 20 (docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md).
+   * It costs at most one more frame before the page learns its chunk count,
+   * and it always resolves: the game pumps this producer from the render loop,
+   * and every GPU test that drives it runs one (`withScene`).
+   */
+  private async runPitCountReadback(job: ActiveJob, buffers: GpuBuffers): Promise<void> {
+    try {
+      const readHead = async (): Promise<Uint32Array> => {
+        const view = await buffers.pitArgs.read(0, 16, undefined, false);
+        return new Uint32Array(view.buffer.slice(view.byteOffset, view.byteOffset + 16));
+      };
+      let head = await readHead();
+      if (this.disposed || job.cancelled || this.job !== job) return;
+      if (head[1] !== 1) {
+        head = await readHead();
+        if (this.disposed || job.cancelled || this.job !== job) return;
+        if (head[1] !== 1) throw new Error("breach pit count read back as zeros twice");
+      }
+      const pits = head[3]!;
+      this.lastBreachPitCount = pits;
+      terrainBreachPitListCheck(pits, () => { this.pitListOverflowCount += 1; });
+      job.breachChunks = terrainBreachPitChunks(pits);
+      job.breachListed = Math.min(pits, BREACH_PIT_LIST_CAPACITY);
+      if (job.breachChunks > 0) {
+        job.asyncInFlight = false;
+        return;
+      }
+      // No pits: nothing to carve.
+      job.stage = "readback";
+      void this.runReadbackAndMfd(job, buffers);
+    } catch (error) {
+      this.failJob(job, error);
+    }
   }
 
   private async runReadbackAndMfd(job: ActiveJob, buffers: GpuBuffers): Promise<void> {
@@ -1894,6 +2261,9 @@ export class TerrainPageErosionGpu {
       flow: new StorageBuffer(engine, bytes, undefined, "pageErosionFlow"),
       erodibility: new StorageBuffer(engine, bytes, undefined, "pageErosionErodibility"),
       receivers: new StorageBuffer(engine, bytes, undefined, "pageErosionReceivers"),
+      pitList: new StorageBuffer(engine, BREACH_PIT_LIST_CAPACITY * 4, undefined, "pageErosionPitList"),
+      pitArgs: new StorageBuffer(engine, PIT_ARGS_RESET.byteLength, PIT_ARGS_CREATION_FLAGS, "pageErosionPitArgs"),
+      pitCursor: new StorageBuffer(engine, 16, undefined, "pageErosionPitCursor"),
     });
     // `FlightRenderer.inventoryGpuMemoryMiB` walks scene textures and mesh
     // geometry and cannot see a StorageBuffer, so the capture's inventoried
@@ -2002,6 +2372,8 @@ export class TerrainPageErosionGpu {
           erosionMaskIn: { group: 0, binding: 2 },
           breachedBits: { group: 0, binding: 3 },
           receivers: { group: 0, binding: 4 },
+          pitList: { group: 0, binding: 5 },
+          pitArgs: { group: 0, binding: 6 },
         },
       },
     );
@@ -2010,6 +2382,17 @@ export class TerrainPageErosionGpu {
     breachDirect.setStorageBuffer("erosionMaskIn", buffers.mask);
     breachDirect.setStorageBuffer("breachedBits", buffers.heightB);
     breachDirect.setStorageBuffer("receivers", buffers.receivers);
+    breachDirect.setStorageBuffer("pitList", buffers.pitList);
+    breachDirect.setStorageBuffer("pitArgs", buffers.pitArgs);
+
+    const breachArgs = new ComputeShader(
+      "terrain-page-erosion-breach-args",
+      engine,
+      { computeSource: breachArgsWgsl() },
+      { bindingsMapping: { pitArgs: { group: 0, binding: 0 }, pitCursor: { group: 0, binding: 1 } } },
+    );
+    breachArgs.setStorageBuffer("pitArgs", buffers.pitArgs);
+    breachArgs.setStorageBuffer("pitCursor", buffers.pitCursor);
 
     const breachPit = new ComputeShader(
       "terrain-page-erosion-breach-pit",
@@ -2022,6 +2405,8 @@ export class TerrainPageErosionGpu {
           erosionMaskIn: { group: 0, binding: 2 },
           breachedBits: { group: 0, binding: 3 },
           receivers: { group: 0, binding: 4 },
+          pitList: { group: 0, binding: 5 },
+          pitCursor: { group: 0, binding: 6 },
         },
       },
     );
@@ -2030,6 +2415,8 @@ export class TerrainPageErosionGpu {
     breachPit.setStorageBuffer("erosionMaskIn", buffers.mask);
     breachPit.setStorageBuffer("breachedBits", buffers.heightB);
     breachPit.setStorageBuffer("receivers", buffers.receivers);
+    breachPit.setStorageBuffer("pitList", buffers.pitList);
+    breachPit.setStorageBuffer("pitCursor", buffers.pitCursor);
 
     const decode = new ComputeShader(
       "terrain-page-erosion-decode",
@@ -2164,6 +2551,7 @@ export class TerrainPageErosionGpu {
       geologyErodibility,
       geologyRepose,
       breachDirect,
+      breachArgs,
       breachPit,
       decode,
       streamPowerFromA,
@@ -2188,6 +2576,7 @@ export class TerrainPageErosionGpu {
       tracked(geologyErodibility, "geology"),
       tracked(geologyRepose, "geology"),
       tracked(breachDirect, "breachDirect"),
+      tracked(breachArgs, "breachArgs"),
       tracked(breachPit, "breachPit"),
       tracked(decode, "decode"),
       tracked(streamPowerFromA, "streamPower"),
