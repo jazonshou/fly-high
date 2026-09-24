@@ -5,7 +5,17 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
-import { facetMesh, glareshieldMaterial, roundedDeckSection, sculptSolid, solidPlate, type RoundedDeckSection } from "./cockpitPrimitives";
+import {
+  facetMesh,
+  framedScreenFacets,
+  framedScreenStack,
+  glareshieldMaterial,
+  roundedDeckSection,
+  sculptSolid,
+  smoothRoundNormals,
+  solidPlate,
+  type RoundedDeckSection,
+} from "./cockpitPrimitives";
 import {
   JET_DISPLAYS,
   createDisplayAtlas,
@@ -57,8 +67,6 @@ import type { FlightVisualState } from "@/src/game/types";
  */
 
 export interface JetCockpitMaterials {
-  /** The dark matte interior: the panel board (the tub and the seat are on it too). */
-  readonly interior: PBRMaterial;
   /** The screens' flat material where there is no 2D canvas to draw pages on (every Node test). */
   readonly instrumentFace: PBRMaterial;
   /**
@@ -136,22 +144,52 @@ export function jetCoamingHalfWidth(x: number): number {
 // ---- the panel board ---------------------------------------------------------------
 
 /**
- * One board and no dials: the DASH, its face at the cove's foot and its top there, from the tub up. Its plan is the
- * hood's less `sideInset` a side (its sides are never coplanar with the hood's walls), narrowing with the hood over its
- * depth, so its top is inside the hood along its whole depth: over the board the hood's underside falls away forward
- * from the cove's foot while the board's top stays at it. Upright in this step; the lean is step 3's.
+ * One board and no dials: the DASH (the F-16 pass, step 3). Its face runs from the cove's foot, its top edge, down to
+ * the tub, LEANED BACK `leanDegrees` about that edge, so it faces the pilot: its normal at the board's centre (the
+ * MFDs' height, between them) is within 8 degrees of the eye's ray there, as the Global's and the 747's are. Its top
+ * runs back from the cove's foot inside the hood (5 mm over the hood's underside at its back), and its plan is the
+ * hood's less `sideInset` a side (its sides never coplanar with the hood's walls), narrowing with the hood over its
+ * depth. Its face is the panel material the Global's and the 747's boards wear (`jet-panel`), not the tub's blue.
  */
 export const JET_PANEL = Object.freeze({
   thickness: 0.1,
   sideInset: 0.005,
   /** The tub's top. */
   bottomY: 0.3,
+  /** Back from vertical, about the face's top edge at the cove's foot. */
+  leanDegrees: 15,
+  /** The board's back top edge, this far over the hood's underside. */
+  topInHood: 0.005,
 });
 
-/** The board's face: at the cove's foot, and its top there. */
-export function jetPanelFace(): { x: number; topY: number } {
+/** The panel material the Global's and the 747's boards wear (their interior's): dark blue-grey, matte. */
+export const JET_PANEL_MATERIAL = Object.freeze({ albedo: 0x1a2328, roughness: 0.82, metallic: 0.02 });
+
+/** The board's face: its top edge at the cove's foot, up the face, and its outward normal (toward the pilot and up). */
+export function jetPanelFace(): { x: number; topY: number; top: { x: number; y: number }; up: { x: number; y: number }; normal: { x: number; y: number } } {
   const foot = jetGlareshieldSection().faceTop;
-  return { x: foot.x, topY: foot.y };
+  const lean = (JET_PANEL.leanDegrees * Math.PI) / 180;
+  return {
+    x: foot.x,
+    topY: foot.y,
+    top: { x: foot.x, y: foot.y },
+    up: { x: Math.sin(lean), y: Math.cos(lean) },
+    normal: { x: -Math.cos(lean), y: Math.sin(lean) },
+  };
+}
+
+/** The board's side elevation: the face's top, its foot on the tub, the back's foot, and the back's top in the hood. */
+export function jetPanelSection(): { x: number; y: number }[] {
+  const p = JET_PANEL;
+  const face = jetPanelFace();
+  const fall = Math.tan((JET_GLARESHIELD.hoodFallDegrees * Math.PI) / 180);
+  const backX = face.x + p.thickness;
+  return [
+    { x: face.x, y: face.topY },
+    { x: face.x - (face.topY - p.bottomY) * (face.up.x / face.up.y), y: p.bottomY },
+    { x: backX, y: p.bottomY },
+    { x: backX, y: face.topY - (backX - face.x) * fall + p.topInHood },
+  ];
 }
 
 export function jetPanelTopY(): number {
@@ -359,7 +397,9 @@ function jetHudHousingFacets(): { corners: [Vector3, Vector3, Vector3, Vector3];
  * the housing (their bottom edge under its top, so no gap shows over it). Single-sided toward the eye.
  *
  * THE GLASS: a new instance of the canopy glass's kind (alpha-blended PBR, nothing the canopy's shader does not do),
- * green-gold, at an alpha that darkens the world through both panes by 1 - 0.95^2 = 9.75%, in the design's 5 to 15%.
+ * green-gold, at alpha 0.08: by the two-layer rule 1 - 0.92^2 = 15.4% darker through both panes. The glass gives some
+ * of it back as its own reflection: at 0.05 the rule said 9.75% and the live frame read 5.5%, the design band's floor,
+ * so the band (5 to 15%) is held on the pixel read, in the frames.
  * No depth pre-pass and no depth write, as the canopy's: written, the panes' depth would cut the canopy behind them
  * (sorted after them, its bounding centre being nearer the eye), and the combiner would read brighter than its
  * surround, not tinted. The live frame is the measurement (the glass adds its own reflection).
@@ -367,7 +407,7 @@ function jetHudHousingFacets(): { corners: [Vector3, Vector3, Vector3, Vector3];
 export const JET_HUD_COMBINER = Object.freeze({
   paneX: [3.045, 3.055] as const,
   albedo: 0x9fb86a,
-  alpha: 0.05,
+  alpha: 0.08,
   /** The panes' bottom edge, this far under the housing's top at the uprights. */
   intoHousing: 0.005,
 });
@@ -404,76 +444,66 @@ export function jetHudFrameAngles(): { uprightAzimuthDegrees: number; barElevati
 // ---- the MFDs --------------------------------------------------------------------------------
 
 /**
- * Two square MFDs on the board's face (the dash), the type's: a 6-inch bezel round a 4-inch screen, the
- * bezel band being where the real jet's buttons sit. They stand PROUD of the face on their own bezels,
- * TILTED BACK about the top back edge, which lies 1 mm off the face plane, and the bottom stands out
- * toward the pilot, so the screen faces up at an eye that looks down at it. From the eye to the
- * screen's centre that is 15.2 degrees off the face's normal (cos 0.965), measured in 3D at the
- * MFDs' +-14.4 azimuth; tilting the top toward the pilot instead left it 39.3 off (0.774), upright
- * 25.9 (0.900).
+ * Two square MFDs on the leaned dash, the type's 4-inch screens, FRAMED AND RECESSED as the Global's and the 747's are
+ * (the shared `framedScreenStack` and `framedScreenFacets`, step 3): a frame 24 mm wide round each screen with a 4 mm
+ * chamfer at 45 degrees round its outer edge, a 2 mm gap, the screen 3 mm behind the frame's front, all square to the
+ * leaned face. Each frame and its rim are one mesh with the other's (`jet-mfd-bezels`) on the bezel rims' shared
+ * material, so the framing costs no draw. (They stood proud as 20 mm slabs, tilted back 15 degrees on the upright
+ * board, the screen 1 mm proud.)
  *
- * THE CEILING (`jetMfdCeilingY`). Nothing of them may stand above 1 cm under the cove's foot, the
- * lowest edge of the deck the pilot sees, so the round and the cove show whole over them. The FRONT top
- * corner is the highest point (the face leans back, so the front is above the back), so the back top edge
- * sits `thickness * sin(tilt)` lower. Under the wedge the ceiling was 0.735, 4 mm under its near edge.
+ * WHERE: the frame's highest point reads `underFootDegrees` under the cove's foot, so the rail's round and its cove
+ * show whole over them; a line along z reads one row, so that holds at every corner.
  *
- * WHAT OF THEM IS SEEN. The 16:9 frame's bottom at their azimuth (+-14.4) is -22.7, not the -23.35 it
- * is straight ahead (the frame is a rectangle). Under the wedge's near edge at -16 the frame showed 63%
- * of each screen; under the rail's cove at -12.7 they stand 3.5 cm higher, and the frame shows all of it
- * (measured on the built mesh by the test). The ND still puts its own ship higher on a square page
- * (`drawNd`), and the PFD's heading strip still repeats the HUD's heading tape.
+ * WHAT OF THEM IS SEEN: the 16:9 frame's bottom at their azimuth is about -22.7; the test pins the share of each screen
+ * in the frame (98% or more).
  */
 export const JET_MFD = Object.freeze({
-  /** The bezel: square, and its thickness. */
-  bezel: 0.15,
-  bezelThickness: 0.02,
-  /** The screen: square, on the bezel's front face (lifted `screenLift`), standing `screenProud` in front of it. */
-  screen: 0.102,
-  screenThickness: 0.003,
-  screenProud: 0.001,
-  /**
-   * How far the screen's centre stands ABOVE the bezel's centre, up the face: 6 mm, so the border is 18 mm
-   * above the screen and 30 mm below it. That is this game's choice, not the type's (whose bezel carries
-   * buttons on all four sides): centred, the frame's bottom at the MFDs' azimuth left 57% of the screen in
-   * view; lifted, 63%.
-   */
-  screenLift: 0.006,
+  /** The screen: square. */
+  width: 0.102,
+  height: 0.102,
+  /** The frame round it: 0.15 square overall. */
+  bezel: 0.024,
+  bezelThickness: 0.007,
+  chamfer: 0.004,
+  gap: 0.002,
+  recess: 0.003,
+  screenThickness: 0.0005,
   /** Each MFD's centre line; the 0.19 between the bezels is the UFC's (not built). */
   z: 0.17,
-  /** Back from vertical, about the top back edge: the bottom stands out toward the pilot. */
-  tiltDegrees: 15,
-  /** How far under the cove's foot nothing of them may stand. */
-  underCoveFoot: 0.01,
-  /** The bezels' backs stand this far in front of the face plane, so no two faces are coincident. */
-  standOff: 0.001,
+  /** The frames' highest point under the cove's foot, from the eye. */
+  underFootDegrees: 0.3,
 });
 
-/** The MFDs' ceiling: `underCoveFoot` under the cove's foot. */
-export function jetMfdCeilingY(): number {
-  return jetPanelFace().topY - JET_MFD.underCoveFoot;
-}
-
-/** The frame an MFD is built in: its back top edge on the face plane, up the face, and the face's outward normal. */
-export function jetMfdFrame(): { backTop: Vector3; up: Vector3; out: Vector3 } {
+/**
+ * Each MFD's screen-plate centre and its face centre (on the board's face, where its frame is laid out from), port then
+ * starboard: the build order, and the slot order. How far down the face is solved so the frame's highest vertex reads
+ * `underFootDegrees` under the cove's foot.
+ */
+export function jetMfdPlacements(): readonly { name: "port" | "starboard"; centre: Vector3; faceCentre: Vector3 }[] {
   const m = JET_MFD;
-  const t = (m.tiltDegrees * Math.PI) / 180;
-  const up = new Vector3(Math.sin(t), Math.cos(t), 0);
-  const out = new Vector3(-Math.cos(t), Math.sin(t), 0);
-  // the FRONT top corner is at the ceiling: back top = ceiling - thickness * sin(tilt)
-  const backTop = new Vector3(jetPanelFace().x - m.standOff, jetMfdCeilingY() - m.bezelThickness * Math.sin(t), 0);
-  return { backTop, up, out };
-}
-
-/** Each MFD's bezel and screen centres, port then starboard: the build order, and the slot order. */
-export function jetMfdPlacements(): readonly { name: "port" | "starboard"; bezel: Vector3; centre: Vector3 }[] {
-  const m = JET_MFD;
-  const { backTop, up, out } = jetMfdFrame();
-  const bezelFrontCentre = backTop.subtract(up.scale(m.bezel / 2)).add(out.scale(m.bezelThickness));
-  const bezel = bezelFrontCentre.subtract(out.scale(m.bezelThickness / 2));
-  const screen = bezelFrontCentre.add(up.scale(m.screenLift)).add(out.scale(m.screenProud - m.screenThickness / 2));
+  const e = eye();
+  const face = jetPanelFace();
+  const stack = framedScreenStack(m);
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const top = new Vector3(face.top.x, face.top.y, 0);
+  const row = (v: Vector3) => (v.y - e.up) / (v.x - e.forward);
+  const limit = Math.tan(Math.atan(row(top)) - (m.underFootDegrees * Math.PI) / 180);
+  const centreAt = (drop: number) => top.subtract(up.scale(drop + m.height / 2 + m.bezel));
+  const highest = (drop: number) => Math.max(...framedScreenFacets(centreAt(drop), face, m).rim.flatMap((q) => q.corners.map(row)));
+  // the frame's highest row falls as it goes down the face: bisect for the drop that puts it on the limit
+  let lo = 0;
+  let hi = 0.2;
+  for (let k = 0; k < 60; k += 1) {
+    const mid = (lo + hi) / 2;
+    if (highest(mid) > limit) lo = mid;
+    else hi = mid;
+  }
+  const faceCentre = centreAt(hi);
+  const centre = faceCentre.add(out.scale((stack.screenFront + stack.screenBack) / 2));
   return (["port", "starboard"] as const).map((name) => {
     const z = name === "port" ? -m.z : m.z;
-    return { name, bezel: new Vector3(bezel.x, bezel.y, z), centre: new Vector3(screen.x, screen.y, z) };
+    return { name, centre: new Vector3(centre.x, centre.y, z), faceCentre: new Vector3(faceCentre.x, faceCentre.y, z) };
   });
 }
 
@@ -535,25 +565,19 @@ export function buildJetCockpit(
   // with no transform of its own.
   const coaming = solidPlate(build, "jet-glare-shield", jetGlareshieldSection().outline, g.nearHalfWidth * 2, glare, root);
   sculptSolid(coaming, (point) => new Vector3(point.x, point.y, (point.z * jetCoamingHalfWidth(point.x)) / g.nearHalfWidth));
+  // the round shades as a curve (step 3): flat, its eight chords read as bands about 20 px tall
+  const section = jetGlareshieldSection();
+  smoothRoundNormals(coaming, section.round, section.centre);
   coaming.metadata = { ...coaming.metadata, cockpitInterior: true, castsShadow: false };
 
-  // THE BOARD, a plate of its side elevation at the face's width, narrowed with the hood over its depth
+  // THE BOARD, the leaned dash: a plate of its side elevation at the face's width, narrowed with the hood over its
+  // depth, on the panel material the Global's and the 747's boards wear
   const p = JET_PANEL;
   const face = jetPanelFace();
   const faceHalfWidth = g.nearHalfWidth - p.sideInset;
-  const board = solidPlate(
-    build,
-    "jet-instrument-panel",
-    [
-      { x: face.x, y: p.bottomY },
-      { x: face.x + p.thickness, y: p.bottomY },
-      { x: face.x + p.thickness, y: face.topY },
-      { x: face.x, y: face.topY },
-    ],
-    faceHalfWidth * 2,
-    materials.interior,
-    root,
-  );
+  const pm = JET_PANEL_MATERIAL;
+  const panelMaterial = build.material("jet-panel", pm.albedo, { roughness: pm.roughness, metallic: pm.metallic });
+  const board = solidPlate(build, "jet-instrument-panel", jetPanelSection(), faceHalfWidth * 2, panelMaterial, root);
   sculptSolid(board, (point) => new Vector3(point.x, point.y, (point.z * (jetCoamingHalfWidth(point.x) - p.sideInset)) / faceHalfWidth));
   board.metadata = { ...board.metadata, cockpitInterior: true };
 
@@ -590,30 +614,23 @@ export function buildJetCockpit(
   const toward = new Vector3(-1, 0, 0);
   const combiner = facetMesh(build, "jet-hud-combiner", jetHudCombinerPanes().map((corners) => ({ corners, normal: toward })), combinerGlass, root);
 
-  // THE MFDs: two meshes for four boxes, as the Global's are. Each box is built square and turned back
-  // by the tilt about z (its local X is its thickness, pointing away from the pilot; local Y runs up
-  // the face), and its PILOT-FACING face -- local normal -X, which the turn does not change in the
-  // vertex data -- is pointed at its own slot of the atlas before the merge bakes the transforms.
+  // THE MFDs, framed and recessed on the leaned dash: each screen a thin plate turned back with the face, its PILOT-FACING
+  // face (local normal -X, which the turn does not change in the vertex data) pointed at its own slot of the atlas
+  // before the merge bakes the transforms; each frame and its chamfered rim on the bezel rims' shared material, both
+  // MFDs' in one mesh
   const m = JET_MFD;
-  const tilt = (m.tiltDegrees * Math.PI) / 180;
+  const lean = (p.leanDegrees * Math.PI) / 180;
   const screens: AbstractMesh[] = [];
   const bezels: AbstractMesh[] = [];
-  // The bezels' own dark grey, the type's: on the interior grey they read as light slabs against the near-black
-  // coaming (79/255 luma against its 20.5, measured live at one frozen pose). At 0x101010, otherwise the interior's
-  // roughness and metalness, the lit face reads 41 (the side border 39): twice the coaming's face, far below the
-  // screens' text.
-  const bezelMaterial = build.material("jet-mfd-bezel", 0x101010, { roughness: 0.8, metallic: 0.02 });
   const slots = displaySlots(JET_DISPLAYS);
   const atlasWidth = displayAtlasWidth(JET_DISPLAYS);
   const atlasHeight = displayAtlasHeight(JET_DISPLAYS);
-  for (const [index, { name, bezel: bezelCentre, centre }] of jetMfdPlacements().entries()) {
-    const bezel = build.box(`jet-mfd-bezel-${name}`, m.bezelThickness, m.bezel, m.bezel, bezelMaterial, root);
-    bezel.position.copyFrom(bezelCentre);
-    bezel.rotation.z = -tilt;
-    bezels.push(bezel);
-    const screen = build.box(`jet-mfd-screen-${name}`, m.screenThickness, m.screen, m.screen, materials.instrumentFace, root);
+  for (const [index, { name, centre, faceCentre }] of jetMfdPlacements().entries()) {
+    const facets = framedScreenFacets(faceCentre, face, m);
+    bezels.push(facetMesh(build, `jet-mfd-bezel-${name}`, [...facets.frame, ...facets.rim], materials.rim, root));
+    const screen = build.box(`jet-mfd-screen-${name}`, m.screenThickness, m.height, m.width, materials.instrumentFace, root);
     screen.position.copyFrom(centre);
-    screen.rotation.z = -tilt;
+    screen.rotation.z = -lean;
     remapScreenFaceToSlot(screen, slots[index]!, atlasWidth, atlasHeight);
     screens.push(screen);
   }

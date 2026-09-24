@@ -1763,6 +1763,61 @@ Thirteen mutations, all caught:
 The F-16's drawn-faces control moved to the pilot's left MFD screen, a Babylon-wound box, since step 1 made the board
 a narrowed `solidPlate`.
 
+**Step 3, the dash leaned and the MFDs framed** (`JET_PANEL`, `jetPanelSection`, `JET_MFD`; the Global's and the 747's
+rule and primitives).
+- **The lean, by the measure.** The dash leans back 15 degrees about the cove's foot (x 2.93), so the rail and the cove
+  still show whole. At the board's centre (2.910, 0.704) its normal is **3.89 degrees** off the eye's ray, where
+  upright it was 18.6.
+  - The ray there climbs 18.9 degrees aft, so the measure is a V about 19: lean 10 reads 8.8, 20 reads 1.1, 25 reads
+    6.1 and 30 reads 11.2. **The design's "lean 25, normal past 8" mutation does not hold for this eye.** 25 is inside
+    the band, so 30 and 10 are the mutations that cross it.
+  - The face runs down to the tub at x 2.80, 13 cm nearer than its top. Its feet read az +-31.4, under the frame, and
+    the frame's bottom row stays on the dash out to az 27.7 (26.6 upright).
+  - Its top runs back from the cove's foot under the hood. Its front corners are 2.72 cm under the hood's top and 5 mm
+    from its walls; its back corners are 2.78 cm under and 3.9 mm from the walls.
+  - The face is on the panel material the Global's and the 747's boards wear (`jet-panel`: 0x1a2328, roughness 0.82,
+    metallic 0.02), not the tub's blue.
+- **Framed MFDs** (`framedScreenStack` / `framedScreenFacets`).
+  - The frame has a 4 mm 45-degree chamfer round its outer edge, and a 2 mm gap to its screen. Its back is 1 mm in
+    the board and its front 6 mm out; the screen's face is 3 mm behind the frame's front (it stood 1 mm proud).
+  - Both frames and both rims are one mesh, `jet-mfd-bezels` (384 vertices), on the jet's instance of `BEZEL_RIM`
+    (`jet-bezel-rim`, which the housing wears too). Its glow is day 0.05, night by `bezelRimEmissive`. The old
+    `jet-mfd-bezel` slab material is gone, and there is no new draw.
+  - Each MFD is placed down the leaned face (bisected) so that the frames' highest point reads 0.3 degree under the
+    cove's foot (-12.98 against -12.68).
+  - Down their centre lines (az +-14) they read frame top -12.61, screen top -14.45, screen bottom -22.28 and frame
+    bottom -24.08. The frame's bottom is at -22.72 there, so **all of each screen is in view** (98.6% upright). The
+    plain-lens control reads 37.1% of the rows at 21:9 and 100% at 16:9.
+  - **What one mesh costs.** Frame and rim share the rim's material, so by day the frames are nearly the dash's tone
+    (0x1a1e21 on 0x1a2328, where the Global's frames stand 1.3 to 1.6 times their board). At night the whole frame
+    glows at the rim's 0.56, not only its outline. There are no wells, and the dash shows through the 2 mm gap. The
+    frames will show whether this reads.
+- **The rail's round is smooth-shaded** (`smoothRoundNormals`, shared). Each chord's corners take the round's own
+  normal, so adjacent chords turn by the angle between them: 2.81, 10.07, then 12.875 degrees seven times. The eight
+  chords' 20 px bands should go.
+  - There is one normal at every point of the round, and the hood's top meets it at its tangent with the same normal.
+    The only crease left is the 45-degree turn into the cove under the rail.
+  - It has the same 144 vertices; only the chords' normals change.
+- **The combiner's alpha is 0.08** (it was 0.05, which the frame read at 5.5%, the band's floor). By the two-layer rule
+  that is 1 - 0.92^2 = 15.4%. The glass gives some back as its own reflection, so the pixel read should land mid-band.
+  The 5 to 15% band is held on the pixel read, which is the next frames'.
+
+**Tests** (43). The board test covers the lean measure, with the upright control, the section, the plan, the top's
+corners inside the hood and the material by name. The frames are pinned by their planes, widths, opening and chamfer
+normals. Each screen is first surface at nine points, 3 mm behind the frame's front, and with the screen gone the ray
+meets the dash. The dash shows in the gap, the frames stay under the cove's foot, and both reads and shares are pinned.
+The rail's round is pinned by its normals, and the combiner by its alpha and the rule. The display rects model the
+jet's MFDs with the shared `framedScreens`. Mesh by mesh against dd66a55, the board, the bezels, the screens and the
+coaming changed (the coaming only in its normals), and the jet's other 69 meshes are bit-identical. The combiner's mesh
+is unchanged; only its material's alpha changed. The loft digests are re-pinned.
+
+Eleven mutations, all caught:
+- no lean (18.6 off); lean 30 (11.2 off); lean 10 (8.8 off); lean 25, which only the feet's azimuth pin catches;
+- chamfer 0; a bezel corner 0.1 degree over the cove's foot; the frames and rims on the glareshield's matte;
+- gap 0, which at first **survived**. Nothing pinned the gap, so there are now two pins: the frame's opening by vertex,
+  and the dash seen through the gap by ray;
+- the rail's normals left flat; the dash on the tub's material; the combiner back at 0.05.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

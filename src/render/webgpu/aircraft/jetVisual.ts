@@ -1126,7 +1126,7 @@ export function createJet(scene: Scene): AircraftVisual {
   // never shadow casters (`configureCockpitOnlyParts`).
   // The bezel rims' shared material (the Global's and the 747's), here on the HUD's housing; its night glow below
   const rim = bezelRimMaterial(build, "jet-bezel-rim");
-  const cockpit = buildJetCockpit(build, root, { interior, instrumentFace, rim });
+  const cockpit = buildJetCockpit(build, root, { instrumentFace, rim });
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
 

@@ -11,7 +11,7 @@ import {
   bizjetScreenPlacements,
 } from "@/src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { framedScreenFacets, type FramedScreenDesign } from "@/src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
-import { JET_MFD, jetMfdFrame, jetMfdPlacements } from "@/src/render/webgpu/aircraft/cockpit/jetCockpit";
+import { JET_MFD, jetMfdPlacements, jetPanelFace } from "@/src/render/webgpu/aircraft/cockpit/jetCockpit";
 import { TRAINER_DIAL_DIAMETER, trainerDialPlacements } from "@/src/render/webgpu/aircraft/cockpit/trainerCockpit";
 import type { Deck } from "./cockpitFootprints";
 
@@ -44,9 +44,9 @@ const rectangle = (centre: Vector3, side: Vector3, up: Vector3, halfWidth: numbe
   [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => centre.add(side.scale(a! * halfWidth)).add(up.scale(b! * halfHeight)));
 
 /**
- * A leaned deck's screens and bezels (the Global's and the 747's P1 panels): each screen recessed behind a chamfered
- * frame on the board's leaned face. Nothing is re-derived from constants: the face's own axes, each screen plate's
- * centre and each bezel's facets come from the builder's functions, so a panel move carries this with it.
+ * A leaned deck's screens and bezels (the Global's, the 747's and the F-16's panels): each screen recessed behind a
+ * chamfered frame on the board's leaned face. Nothing is re-derived from constants: the face's own axes, each screen
+ * plate's centre and each bezel's facets come from the builder's functions, so a panel move carries this with it.
  */
 function framedScreens(
   s: FramedScreenDesign & { readonly screenThickness: number },
@@ -75,12 +75,9 @@ function framedScreens(
 export function cockpitParts(deck: Deck): CockpitPart[] {
   const parts: CockpitPart[] = [];
   if (deck === "jet") {
-    const m = JET_MFD;
-    const { up, out } = jetMfdFrame();
-    for (const p of jetMfdPlacements()) {
-      parts.push({ name: `${p.name} MFD`, kind: "screen", outline: rectangle(p.centre.add(out.scale(m.screenThickness / 2)), Z, up, m.screen / 2, m.screen / 2) });
-      parts.push({ name: `${p.name} MFD bezel`, kind: "bezel", outline: rectangle(p.bezel.add(out.scale(m.bezelThickness / 2)), Z, up, m.bezel / 2, m.bezel / 2) });
-    }
+    // The F-16's MFDs, since its step 3, are the same kind on its leaned dash
+    const names = new Map([["port", "port MFD"], ["port bezel", "port MFD bezel"], ["starboard", "starboard MFD"], ["starboard bezel", "starboard MFD bezel"]]);
+    parts.push(...framedScreens(JET_MFD, jetPanelFace(), jetMfdPlacements()).map((part) => ({ ...part, name: names.get(part.name)! })));
   } else if (deck === "bizjet") {
     parts.push(...framedScreens(BIZJET_SCREENS, bizjetPanelFace(), bizjetScreenPlacements()));
   } else if (deck === "airliner") {

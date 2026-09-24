@@ -229,6 +229,47 @@ export function sculptSolid(mesh: Mesh, move: (point: Vector3) => Vector3): void
 }
 
 /**
+ * SMOOTH-SHADES A ROUND on a `solidPlate` (or a sculpted one): every triangle of the plate's walls whose three corners
+ * all lie on `round` (its points in the plate's x and y, a line of them along z) takes, at each corner, the round's own
+ * radial normal there, (x - centre.x, y - centre.y) normalised, instead of its chord's flat one. Neighbouring chords
+ * then meet with one normal at their shared edge, and the round shades as a curve rather than as bands. The caps (the
+ * plate's ends, their normals along z) and every other wall keep their flat normals; nothing moves and no vertex is
+ * added. Returns how many triangles it smoothed.
+ */
+export function smoothRoundNormals(mesh: Mesh, round: readonly { readonly x: number; readonly y: number }[], centre: { readonly x: number; readonly y: number }): number {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
+  const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
+  const indices = mesh.getIndices();
+  if (!positions || !normals || !uvs || !indices) throw new Error(`smoothRoundNormals "${mesh.name}": expected positions, normals, uvs and indices`);
+  const onRound = (i: number) => round.some((p) => Math.abs(p.x - positions[i * 3]!) < 1e-6 && Math.abs(p.y - positions[i * 3 + 1]!) < 1e-6);
+  const out = [...normals];
+  let smoothed = 0;
+  for (let t = 0; t + 2 < indices.length; t += 3) {
+    const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+    if (Math.abs(normals[corners[0]! * 3 + 2]!) > 0.5) continue; // a cap: its normal is along z
+    if (!corners.every(onRound)) continue;
+    for (const i of corners) {
+      const dx = positions[i * 3]! - centre.x;
+      const dy = positions[i * 3 + 1]! - centre.y;
+      const length = Math.hypot(dx, dy);
+      out[i * 3] = dx / length;
+      out[i * 3 + 1] = dy / length;
+      out[i * 3 + 2] = 0;
+    }
+    smoothed += 1;
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = out;
+  data.uvs = [...uvs];
+  data.indices = [...indices];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return smoothed;
+}
+
+/**
  * A ROUNDED DECK's design: a glareshield whose aft edge is a round on the deck line's sight line, a drop and a 45
  * degree cove under it to the panel's face, and a hood over the board falling forward (P1a, the Global's first, then
  * the 747's). Lengths in metres, angles in degrees.

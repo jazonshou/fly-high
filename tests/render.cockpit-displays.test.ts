@@ -138,7 +138,7 @@ const DECKS: readonly Deck[] = [
     layout: JET_DISPLAYS,
     flatMaterial: "jet-instrument-face",
     placements: jetMfdPlacements,
-    screen: { width: JET_MFD.screen, height: JET_MFD.screen },
+    screen: { width: JET_MFD.width, height: JET_MFD.height },
     airframe: JET_DISPLAY_AIRFRAME,
     bezelsMesh: "jet-mfd-bezels",
     screenParts: /^jet-(screens|mfd-)/,

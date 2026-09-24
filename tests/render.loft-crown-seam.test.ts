@@ -322,7 +322,12 @@ describe("a loft's crown seam", () => {
       // lofted rounded box, 360 triangles; `jet-hud-combiner`, two tinted panes, 4), and `jet-hud-frame` rebuilt with
       // 5 mm rods, its feet in the housing (same counts). Checked mesh by mesh against 7a5980e: those three, and the
       // jet's other 70 bit-identical.
-      jet: "e9279537",
+      // RE-PINNED for step 3, the dash leaned and the MFDs framed: `jet-instrument-panel` leaned back 15 degrees from
+      // the cove's foot (still 36 vertices), `jet-mfd-bezels` each MFD's chamfered frame and rim (48 -> 384 vertices),
+      // `jet-screens` on the leaned face 3 mm behind the frames (48); `jet-glare-shield`'s round smooth-shaded, its
+      // normals only, which this digest does not see. Checked mesh by mesh against dd66a55 (positions, normals, UVs,
+      // indices, world matrix, material, visibility): those four, and the jet's other 69 bit-identical.
+      jet: "5aec487b",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
