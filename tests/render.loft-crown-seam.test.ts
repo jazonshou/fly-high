@@ -318,7 +318,11 @@ describe("a loft's crown seam", () => {
       // cove (a narrowed `solidPlate`, still 12 triangles, 24 -> 36 vertices), the MFDs 3.5 cm higher under the cove's foot, the HUD frame's feet in
       // the hood. Checked mesh by mesh against 2dacb1c (positions, normals, UVs, indices, world matrix, material,
       // visibility): of the jet's 71 those five changed, and the other 66 are bit-identical; no other airframe moved.
-      jet: "07d7a891",
+      // RE-PINNED for step 2, the HUD's housing and combiner: TWO meshes new, both cockpit-only (`jet-hud-housing`, a
+      // lofted rounded box, 360 triangles; `jet-hud-combiner`, two tinted panes, 4), and `jet-hud-frame` rebuilt with
+      // 5 mm rods, its feet in the housing (same counts). Checked mesh by mesh against 7a5980e: those three, and the
+      // jet's other 70 bit-identical.
+      jet: "e9279537",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

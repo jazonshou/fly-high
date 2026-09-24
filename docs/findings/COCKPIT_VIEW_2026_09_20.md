@@ -1695,6 +1695,74 @@ Ten mutations, all caught:
 - the board not narrowed; the MFDs at the wedge's ceiling, or over the cove's foot; the feet buried 3 cm;
 - no cove; the board's face off the cove's foot; the plan narrowing from the aft face.
 
+**Step 2, the HUD's housing and combiner** (`JET_HUD_HOUSING`, `JET_HUD_COMBINER`). The goalpost read as a black
+doorway with nothing under it; the type's HUD is a body on the glareshield with glass in a thin frame.
+
+**The housing** (`jet-hud-housing`) is a rounded box 0.22 wide (the uprights at +-0.0946 stand in it) on the hood,
+behind the rail. It is built as a loft of rounded side sections across z, on the bezel rims' shared material, which
+the jet's light state now drives by the rims' own glow law.
+- **A hump, not hidden.** At the frame's station the rail's sight line is 5 mm over the hood, so a housing under
+  that line would be a plinth with no pixels. From the seat it is a low hump over the rail:
+  - -8.61 straight ahead, falling to -8.75 at the uprights, then over a round shoulder to the rail's row at az +-7.46;
+  - never rising, no step between 0.01 degree samples, and its last reading over the row 0.16 degree;
+  - its ends, by its own vertices, no more than a millimetre over the row.
+- **Its top falls forward, section by section,** just faster than the sight line over its aft edge at that z, so the
+  aft edge is the silhouette everywhere. Built level, it showed its forward edge instead and read -7.55.
+- **That caps its height where the feet go in.** It is 2.9 cm proud of the hood straight ahead at x 3.05 and 2.6 cm
+  at the uprights. So the feet are buried 1.5 cm and stand 1.1 cm clear of the hood. The design's 2 cm burial with 1
+  cm clear would need the hump at -8.3; at -8.6 the housing can stand at most 2.8 cm tall at the uprights.
+- **Out of the symbology and the deck line.** No vertex reads over -8.4, more than 4 degrees under the heading box
+  (-4.3). It is "structure" to the HUD's layout: the deck-line instrument still reads the rail's 10.19, and the 2D HUD
+  layout's tests are unchanged.
+
+**The frame's rods are 5 mm,** on the same axes: az +-6.5 and +4.5, so the 2D HUD's registration holds. They were 8.
+The uprights' feet are in the housing's mount. From the seat the uprights are now first seen at -8.76, just over the
+housing (-8.745 at az 6.5), where they rose from behind the rail at -10.12.
+
+**The combiner** (`jet-hud-combiner`) is two panes in one cockpit-only mesh.
+- **Placement.** The panes are 1 cm apart at x 3.045 and 3.055. They run from the uprights' and the bar's axes down
+  into the housing, whose top holds their bottom edge all along it, so no gap shows. Both are single-sided toward the
+  eye.
+- **The glass** is a new instance of the canopy glass's kind: alpha-blended PBR, green-gold, alpha 0.05. By the
+  two-layer rule that is 1 - 0.95^2 = 9.75% darker through both, and the live frame is the measurement.
+- **No depth pre-pass and no depth write, set after the material is made.** THE TRAP: the shared builder turns the
+  depth pre-pass ON for every alpha-blended airframe material (right for the propeller disc it was written for).
+  Written, the panes' depth would cut the canopy behind them: it sorts after them, its bounding centre being nearer
+  the eye. The combiner would then read brighter than its surround, not tinted. The canopy turns its own pre-pass off
+  for the same family of reasons. Both flags are pinned, and a mutation with depth write on is caught.
+- **The positive control.** The opaque-ray tests of the symbology's window skip alpha meshes. So a test asks the
+  panes' own triangles: both panes are met at the window's centre and at its four corners, 1 cm apart, and no glass
+  is met outside the frame. From the housing's top up to the bar, the window is still opaque-empty.
+
+**Draws.** Two are added in cockpit view: the housing (opaque) and the combiner (alpha). The kit is 5 meshes (the
+drawn-faces walk and the frame tool count 5). Outside cockpit view, 174 draws as before.
+
+**Tests** (41):
+- the housing's shape, material, glow and clearance, rounded in plan and in section (both top edges turn through 45
+  degrees; the aft round spans its centimetre);
+- its hump from the seat, with its ends pinned by vertex;
+- its place under the symbology by the HUD's own instrument;
+- the feet in the mount;
+- the combiner's glass (both depth flags), outline, facing and rays;
+- together:
+  - the glass is first seen at the hump's arc between the uprights (a pane nearer than any opaque surface, within
+    0.03 degree of the hump), and nowhere outside them;
+  - the window is opaque-empty from -8.4 to +3.55 across its full width (1,440 rays);
+  - the 2D HUD's layout is byte for byte as 55679ba wrote it: `--deck-k` "0.2343", its deck row 625.40 at 1600 x 900
+    and 752.88 at 2560 x 1080.
+Mesh by mesh against step 1, `jet-hud-frame` changed and the housing and the combiner are new; the jet's other 70
+meshes are bit-identical. The jet's loft digests are re-pinned.
+
+Thirteen mutations, all caught:
+- the housing's top at -8.0; its ends 0.5 degree over the rail (two ways: with the plan's rounded corners, the end
+  shrinks to a point, so the ends are pinned by vertex; and with square corners);
+- the housing 0.18 wide; the feet in the hood; the housing not cockpit-only; its top flat (section radius 0);
+- one pane; opaque panes; normals away from the eye;
+- the rods left at 8 mm; the panes writing depth; the housing's top level.
+
+The F-16's drawn-faces control moved to the pilot's left MFD screen, a Babylon-wound box, since step 1 made the board
+a narrowed `solidPlate`.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

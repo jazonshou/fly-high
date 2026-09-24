@@ -27,6 +27,7 @@ import {
 } from "./airframeRig";
 import { AircraftBuildContext } from "./builders";
 import { buildJetCockpit } from "./cockpit/jetCockpit";
+import { bezelRimEmissive, bezelRimMaterial } from "./cockpit/cockpitPrimitives";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftDefinition } from "@/src/sim";
 import type { AircraftVisual } from "./types";
@@ -1123,7 +1124,9 @@ export function createJet(scene: Scene): AircraftVisual {
   // The HUD's combiner frame stands on the coaming. The frame and the MFDs'
   // bezels and screens are cockpit-only: invisible from every other camera and
   // never shadow casters (`configureCockpitOnlyParts`).
-  const cockpit = buildJetCockpit(build, root, { interior, instrumentFace });
+  // The bezel rims' shared material (the Global's and the 747's), here on the HUD's housing; its night glow below
+  const rim = bezelRimMaterial(build, "jet-bezel-rim");
+  const cockpit = buildJetCockpit(build, root, { interior, instrumentFace, rim });
   const cockpitOnlyParts = cockpit.parts;
   configureCockpitOnlyParts(cockpitOnlyParts);
 
@@ -1552,6 +1555,8 @@ export function createJet(scene: Scene): AircraftVisual {
       jetApplyLamp(beaconLamp, lights.beacon);
       jetApplyLamp(strobeLamp, lights.strobe);
       jetApplyLamp(landingLamp, lights.landing);
+      // the rims' own law (`bezelRimEmissive`): the day value by day, the night glow at night
+      rim.emissiveIntensity = bezelRimEmissive(lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;
