@@ -454,5 +454,14 @@ that same window.
    - The args pass reads 0.067-0.104 ms (median 0.077 over 13 readings) in its frame with the count read at the
      frame's end, against 0.012-0.016 with the flushing read. It is priced at 0.08 ms from that frame.
 
-   Still open: why a whole frame's slots go unwritten, and why the args pass reads high. It may be the count's copy
-   that follows it in the same command buffer, taken into its end timestamp.
+   Still open: why a whole frame's slots go unwritten (item 4's neighbour, and not the carve's), and why the args pass
+   reads high, which is item 6.
+6. **The args pass's 0.08 ms is priced, not explained.** The hypothesis: with the count read at the frame's end, the
+   copy of the pit count follows the args pass in the same command buffer, and the barrier that orders it after the
+   pass's write lands inside the pass's end timestamp. With the flushing read, the command buffer was submitted at
+   that point. To settle it (instrument or real GPU time):
+   - read the args frame's whole GPU time (Babylon's frame counter, queries 0 and 1) with the copy after the pass and
+     with it moved to a later frame;
+   - time a trivial pass placed between the args pass and the copy.
+
+   If the frame's total does not move, the reading is the instrument's and the price can return to about 0.015.
