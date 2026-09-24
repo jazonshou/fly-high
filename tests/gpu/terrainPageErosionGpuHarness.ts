@@ -106,7 +106,10 @@ export async function withScene<T>(
     // the device itself, and only then turn the counters on.
     if (timed) engine.enableGPUTimingMeasurements = gpuTimingAvailable(engine);
     // Each pass's own time, not the slot's previous occupant (DeferredPassTiming.ts).
-    if (engine.enableGPUTimingMeasurements && !installDeferredPassTiming(engine, timing)) {
+    // `VITE_NO_DEFERRED_TIMING=1` (a probe arm, docs/findings/BREACH_PIT_ADMISSION_2026_09_22.md):
+    // timing on with Babylon's own per-pass read, no deferred resolve.
+    const deferredOff = (import.meta.env as Record<string, string | undefined>).VITE_NO_DEFERRED_TIMING === "1";
+    if (engine.enableGPUTimingMeasurements && !deferredOff && !installDeferredPassTiming(engine, timing)) {
       throw new Error("GPU timing is on but per-pass timing could not be installed");
     }
     engine.runRenderLoop(() => {});
