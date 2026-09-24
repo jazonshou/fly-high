@@ -93,8 +93,8 @@ export interface AirlinerCockpitMaterials {
   readonly interior: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
   /**
-   * The bezels' chamfered rims (P1b; the frames have their own dark material). It carries the night glow
-   * (`applyGlow(instrumentMarking, ...)`), so it must be the shared one.
+   * The bezels' chamfered rims (P1b; the frames have their own dark material): `bezelRimMaterial`, which carries the
+   * night glow (`bezelRimEmissive`, in the visual's `setLightState`), so it must be the visual's own.
    */
   readonly instrumentMarking: PBRMaterial;
 }

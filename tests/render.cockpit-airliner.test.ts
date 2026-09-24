@@ -25,7 +25,7 @@ import {
   airlinerPanelFaceX,
   airlinerScreenPlacements,
 } from "../src/render/webgpu/aircraft/cockpit/airlinerCockpit";
-import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
+import { BEZEL_RIM, GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 import { cockpitView, measureDeckLineDegrees } from "./support/cockpitFootprints";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 
@@ -505,13 +505,14 @@ describe("the 747's cockpit parts", () => {
 
   it("put the bezels' frames on their own dark grey, lighter than the board by albedo alone, and the chamfered rims on the glowing marking", () => {
     const interior = named("airliner-cockpit-interior").material as PBRMaterial;
-    // THE RIMS carry the night glow: the shared marking material, which `applyGlow` drives. It is the Global's rim now,
-    // dark with a faint lit edge by day, where the old pale marking at 0.7 made a bright box of every bezel
+    // THE RIMS carry the night glow: the shared rim (`BEZEL_RIM`, the Global's too), its day emissive faint and its
+    // albedo dark, where the old pale marking at 0.7 made a bright box of every bezel
+    // (tests/render.cockpit-bezel-rim.test.ts holds the material, its glow law and its day read)
     const rim = named("airliner-screen-bezel-rims").material as PBRMaterial;
     expect(rim).toBe(scene.getMaterialByName("airliner-instrument-marking"));
-    expect(rim.emissiveIntensity).toBeGreaterThan(0.15);
-    expect(rim.emissiveIntensity).toBeLessThan(0.2);
-    for (const channel of [rim.albedoColor.r, rim.albedoColor.g, rim.albedoColor.b]) expect(channel).toBeLessThan(0.25);
+    expect(rim.emissiveIntensity).toBe(BEZEL_RIM.dayEmissiveIntensity);
+    expect(rim.emissiveIntensity).toBeLessThan(0.1);
+    for (const channel of [rim.albedoColor.r, rim.albedoColor.g, rim.albedoColor.b]) expect(channel).toBeLessThan(0.15);
     // THE FRAMES are on the 747's own bezel material, dark neutral grey, and emit NOTHING: the glow is the rim's alone
     const bezel = named("airliner-screen-bezels").material as PBRMaterial;
     expect(bezel).toBe(scene.getMaterialByName("airliner-bezel"));

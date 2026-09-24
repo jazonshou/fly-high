@@ -5,6 +5,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { COCKPIT_GLOW_NIGHT_MULTIPLE } from "../../lighting/AircraftLighting";
 import type { AircraftBuildContext } from "../builders";
 
 /**
@@ -308,6 +309,54 @@ export function roundedDeckSection(
     coveTop,
     faceTop,
   };
+}
+
+/**
+ * THE BEZELS' CHAMFERED RIMS' material, one for every framed screen (the Global's and the 747's), so the two cannot
+ * drift apart: a quiet mid-grey bevel by day, and the panel's night glow.
+ *
+ * DIMMED BY DAY (Jason, "dimmer"). The rim is a 45 degree chamfer, and its top side faces the sky: at 0x2b3237,
+ * roughness 0.5 and a day emissive of 0.175 it read 116 (the Global) and 104 (the 747) against frames of 41 and 36,
+ * 2.8 and 2.9 times, a bright outline round every screen. Swept live (one paused level frame per airframe, every
+ * pixel ray-confirmed), the day emissive alone could not bring it to the asked 1.5 to 2 times the frame (at 0 the rim
+ * still read 2.3 and 2.4 times: the top chamfer catches the sky, emissive or not), nor the emissive and the frame's
+ * roughness together on the 747 (2.14 at 0). With the albedo at 0.6 of it as well, 0.05 of day emissive reads 68 and
+ * 67, 1.72 and 1.90 times: a visible edge that no longer glares. The top chamfer is still the brightest side (2.4 to
+ * 2.5 times; the sides 1.1 to 1.6), because it faces the sky.
+ *
+ * ITS OWN GLOW LAW (`bezelRimEmissive`), not `applyGlow`'s authored-times-multiple: by day the rim's emissive is
+ * `dayEmissiveIntensity`, at night `nightEmissiveIntensity`, and between them it follows the cockpit glow
+ * (`cockpitInstrumentGlow`, 1 by day to `COCKPIT_GLOW_NIGHT_MULTIPLE` at night) linearly. A day value that is the
+ * night's over the multiple is `applyGlow`'s law exactly; any other day value moves the day read and leaves the night
+ * where it was, which is what dimming the rim by day asked (Jason, "dimmer"; the night glow untouched).
+ */
+export const BEZEL_RIM = Object.freeze({
+  /** 0x2b3237 at 0.6, to the nearest integer a channel (the sweep's scale, within 0.8%). */
+  albedo: 0x1a1e21,
+  /** The frames' finish, where the chamfer's 0.5 sheened the sky. */
+  roughness: 0.82,
+  metallic: 0,
+  emissive: 0x4ba8c6,
+  dayEmissiveIntensity: 0.05,
+  /** The rim's night glow as it was under `applyGlow` before it was dimmed: 0.175 times the night multiple. */
+  nightEmissiveIntensity: 0.175 * COCKPIT_GLOW_NIGHT_MULTIPLE,
+});
+
+/** The rim's material, authored at its day emissive. Its visual drives the emissive by `bezelRimEmissive`. */
+export function bezelRimMaterial(build: AircraftBuildContext, name: string): PBRMaterial {
+  const r = BEZEL_RIM;
+  return build.material(name, r.albedo, { roughness: r.roughness, metallic: r.metallic, emissive: r.emissive, emissiveIntensity: r.dayEmissiveIntensity });
+}
+
+/**
+ * The rim's emissive intensity for a cockpit glow multiple (`AircraftLightState.cockpitGlow`): the day value at 1, the
+ * night value at `COCKPIT_GLOW_NIGHT_MULTIPLE`, linear between, and on past the night value if a glow ever exceeds the
+ * multiple. A non-finite glow reads as day, as `applyGlow`'s does.
+ */
+export function bezelRimEmissive(cockpitGlow: number): number {
+  const g = Number.isFinite(cockpitGlow) ? Math.max(0, cockpitGlow) : 1;
+  const r = BEZEL_RIM;
+  return Math.max(0, r.dayEmissiveIntensity + ((r.nightEmissiveIntensity - r.dayEmissiveIntensity) * (g - 1)) / (COCKPIT_GLOW_NIGHT_MULTIPLE - 1));
 }
 
 /**

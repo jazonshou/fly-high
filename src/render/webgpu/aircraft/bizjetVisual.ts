@@ -15,7 +15,6 @@ import {
   hingeAlong,
   yawHingeAlong,
   configureRoot,
-  createGlowApplier,
   createLampApplier,
   node,
   setCockpitVisibility,
@@ -48,6 +47,7 @@ import {
   cabinWindowStations,
 } from "./bizjetCabinWindows";
 import { buildBizjetCockpit } from "./cockpit/bizjetCockpit";
+import { bezelRimEmissive, bezelRimMaterial } from "./cockpit/cockpitPrimitives";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -463,24 +463,17 @@ export function createBizJet(scene: Scene): AircraftVisual {
     roughness: 0.7,
     metallic: 0.05,
   });
-  // The screens' bezels, and nothing else now that the round dials are gone.
-  // A real bezel is dark grey, so by day this is a dark-grey rim with a faint lit
-  // edge: the base colour is dark and the emissive is a quarter of what it was
-  // (0.7 -> 0.175). It stays on the marking material's glow path
-  // (`applyGlow(instrumentMarking, ...)`), which scales it up at night.
-  const instrumentMarking = build.material("bizjet-instrument-marking", 0x2b3237, {
-    roughness: 0.5,
-    metallic: 0,
-    emissive: 0x4ba8c6,
-    emissiveIntensity: 0.175,
-  });
+  // The screens' bezels' chamfered rims, and nothing else now that the round dials
+  // are gone: the shared rim (`BEZEL_RIM`, the 747's too), a dark-grey edge with a
+  // faint lit line by day, driven by its own glow law (`bezelRimEmissive`) in
+  // `setLightState` so the night glow stays where it was when the day read moves.
+  const instrumentMarking = bezelRimMaterial(build, "bizjet-instrument-marking");
 
-  // Same six lamps and the same two appliers as the other two airframes. The
+  // Same six lamps and the same lamp applier as the other airframes. The
   // split-angle nav partition is a property of the lighting law, so a third
   // aeroplane that shipped with four of the six would be the same latent
   // inconsistency `7-8` found on the jet.
   const applyLamp = createLampApplier();
-  const applyGlow = createGlowApplier();
   const redLamp = build.material("bizjet-port-lamp", 0xff493d, {
     emissive: 0xff2018, emissiveIntensity: 2.4,
   });
@@ -1691,7 +1684,8 @@ export function createBizJet(scene: Scene): AircraftVisual {
       applyLamp(beaconLamp, lights.beacon);
       applyLamp(strobeLamp, lights.strobe);
       applyLamp(landingLamp, lights.landing);
-      applyGlow(instrumentMarking, lights.cockpitGlow);
+      // the rims' own law (`bezelRimEmissive`): the day value by day, the night glow at night
+      instrumentMarking.emissiveIntensity = bezelRimEmissive(lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;

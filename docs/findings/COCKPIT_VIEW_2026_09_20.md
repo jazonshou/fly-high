@@ -1561,7 +1561,68 @@ kit. The window frame is:
 A test pins the deck filling the frame under the deck line. With the board narrowed to 0.8 m, which ends at az -19,
 only that test fails.
 
-The frames and the live tone for P1a and P1b come in one GPU slot.
+**The 747's frames** (f5fd631, the pilot's left seat, 16:9, seed g7500k2). Every frame asserts, from the live scene:
+the eye (29.85, 2.93, -0.50), the 75 degree lens, the glareshield's top at 2.6424 (the section's), and the six kit
+meshes. The projection is within 0.1 px of the live post and pillar.
+- **Level.** A thin lit rail (the round's top, 34) over a dark hairline (the cove), then the leaned board (27).
+  - The cove reads **36 to 40% darker** than the board 2 to 5 cm under it. (10 to 13 cm down, the Global's band, is
+    below the frame's bottom on the 747.)
+  - The frames read **1.36 times the board** (36 against 27), inside the design's 1.3 to 1.6; the Global's read 1.46.
+  - The wells read 21. The PFD, the ND and the upper EICAS sit in dark frames.
+- **Rolled** (20.4 degrees right), **final** (scenic, wings at 2.9; the aim point -8.5 under the body axis, in the
+  glass, 907 m out), and **the chase camera**, with no kit in it.
+- **The inter-stage budget, live** (the variants test with its container, restored by sha after a per-material
+  print). The display is 15 (16 of 16 under fog, drawn), as on the Global. The frames' material, the wells', the
+  rims', the glareshield and the interior are 14 (15 under fog). There was no GPU error in any variant.
+
+## The bezels' rims, dimmed on both airframes (Jason: "dimmer")
+
+The chamfered rims read as a bright outline round every screen. Live, they read **116 on the Global and 104 on the
+747, against frames of 41 and 36: 2.8 and 2.9 times**. Jason asked for them dimmer, at about 1.5 to 2 times the
+frame, with the night glow untouched.
+
+**One rim for both, with a glow law of its own** (`BEZEL_RIM`, `bezelRimMaterial` and `bezelRimEmissive`, in
+cockpitPrimitives).
+- Under `applyGlow` the night glow was the day value times the night multiple (3.2). The day read could not move
+  without dragging the night with it.
+- The rim now has a day value and a night value. At a glow of 1 it takes the day value, at 3.2 it takes 0.56 (the
+  night glow as it was), and it is linear in between, so it stays continuous through twilight.
+- Both visuals' `setLightState` set it. The shared applier, and the trainer's and the F-16's glow, are untouched.
+
+**The sweep** (one paused level frame per airframe, the rim material changed live, every pixel ray-confirmed as rim
+or frame). The settings are day emissive / roughness / albedo, and the figures are rim luma over frame luma:
+
+| setting | Global | 747 |
+|---|---|---|
+| 0.175 / 0.5 / 0x2b3237 (as it was) | 116 / 41 = 2.80 | 104 / 36 = 2.86 |
+| 0 / 0.5 / 0x2b3237 | 94 / 41 = 2.31 | 85 / 36 = 2.40 |
+| 0 / 0.82 / 0x2b3237 | 75 / 40 = 1.88 | 75 / 35 = 2.14 |
+| 0.05 / 0.82 / 0x2b3237 | 84 / 40 = 2.08 | 82 / 36 = 2.30 |
+| **0.05 / 0.82 / x0.6 (0x1a1e21)** | **68 / 40 = 1.72** | **67 / 35 = 1.90** |
+| 0 / 0.82 / x0.6 | 58 / 39 = 1.47 | 58 / 35 = 1.67 |
+
+**Why the emissive alone could not do it.** The TOP chamfer faces the sky. It read 168 on the Global (4.2 times the
+frame), where the sides read 80 to 84 (2.2 times). Most of that is sky light and sheen on a 45 degree face tilted up,
+not the emissive, and it does not go away with the emissive:
+- at no emissive the rim still read 2.3 and 2.4 times the frame;
+- with the frames' roughness as well, 1.88 on the Global but 2.14 on the 747.
+Only with the albedo at 0.6 do both land inside the band. The rim keeps a faint day emissive (0.05), so it still reads
+as an edge. The top chamfer remains the brightest side (2.4 to 2.5 times; the sides 1.1 to 1.6), because it faces
+the sky.
+
+**Tests** (tests/render.cockpit-bezel-rim.test.ts, 4):
+- both airframes' rims equal `BEZEL_RIM` and each other, and nothing else wears the material;
+- the glow law: the day value, 0.56 at night through `cockpitInstrumentGlow` itself, linear, and NaN reads as day;
+- each visual's light state drives it;
+- the day read is held at the measured setting or darker: day emissive at most 0.05, roughness at least 0.82, the
+  albedo no lighter than 0x1a1e21, with the old rim's three as the control.
+
+Eight mutations, all caught:
+- the old rim back; the day emissive, the roughness or the albedo back alone;
+- the night dimmed with the day;
+- the 747 on a rim of its own;
+- the Global's rim back on `applyGlow`'s law;
+- the 747's light state not driving the rim.
 
 ## Not done, and one thing to know
 
