@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
+import { readHostLoad } from "./scripts/gpuHostLoad";
 import { chromiumStdioLaunchOptions } from "./scripts/playwrightChromiumLaunch";
 
 /**
@@ -144,6 +145,9 @@ export default defineConfig({
         },
       }),
       instances: [{ browser: "chromium" }],
+      // A timing test reads what else is using the machine (tests/gpu/hostLoad.ts)
+      // so a timing bound can skip under load, naming it, instead of failing.
+      commands: { hostLoad: () => readHostLoad() },
     },
   },
 });

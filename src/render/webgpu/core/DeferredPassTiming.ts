@@ -27,8 +27,9 @@ import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
  *
  * It is also the batching RESOLUTION_PLAN.md section 3.2 recommended: Babylon's
  * one-submit-and-readback per timed pass stretched the reference host's frame
- * from 8.33 to 12.37 ms at 88 timed passes; this stays at 8.33 ms at every
- * count (see GpuTimingPolicy.ts for the numbers).
+ * from 8.33 to 13.1 ms at 88 timed passes (measured under load); this stays
+ * at 8.33 ms at every count (see GpuTimingPolicy.ts for the numbers and the
+ * load).
  *
  * Babylon's whole-frame measure (queries 0 and 1, `getGPUFrameTimeCounter`)
  * is left alone: it is one measurement per frame, so its early read is a lag

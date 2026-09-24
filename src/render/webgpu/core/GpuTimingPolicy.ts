@@ -20,14 +20,21 @@
  * is on, `DeferredPassTiming` now replaces that read with one resolve and one
  * readback per frame, after the frame is submitted.
  *
- * What the per-pass read costs, re-measured 2026-09-22 on the reference host
- * (M2 Pro, headless Chromium, 8.33 ms base interval;
- * tests/gpu/deferred-pass-timing.test.ts): Babylon's read at 20 / 44 / 88 timed
- * passes per frame gave 8.33 / 8.34 / 12.37 ms; the deferred read gave
- * 8.33-8.35 ms at every count, with exactly one readback per frame. The earlier
- * synthetic law of ~0.49 ms per timed pass (20 -> 9.9 ms, 44 -> 21.1, 88 -> 43.2;
- * RESOLUTION_PLAN.md section 3.2) did not reproduce: here the per-pass reads
- * were free up to 44 and cost ~4 ms at 88. At tier 1 the spectral ocean alone
+ * What the per-pass read costs, re-measured 2026-09-23 on the reference host
+ * (M2 Pro, headless Chromium, 8.33 ms base interval; each arm the first WebGPU
+ * engine on its own page, tests/gpu/deferred-pass-timing-babylon-reads.test.ts
+ * and tests/gpu/deferred-pass-timing-deferred-reads.test.ts): Babylon's read at
+ * 20 / 44 / 88 timed passes per frame gave 8.33 / 8.33 / 13.1 ms; the deferred
+ * read gave 8.33-8.34 ms at every count, with exactly one readback per frame.
+ * That run was UNDER LOAD (Firefox's GPU helper at 48-50% of a core, the GPU
+ * 20-36% busy), so re-take the 88-pass figure on a quiet host before quoting
+ * its digits; the claim is the shape, flat for the deferred read and a climb
+ * at 88 for Babylon's. (The 2026-09-22 figures, 8.33 / 8.34 / 12.37, came from
+ * the second and third engines on one page, which inherit the first's
+ * timestamp state.) The earlier synthetic law of ~0.49 ms per timed pass
+ * (20 -> 9.9 ms, 44 -> 21.1, 88 -> 43.2; RESOLUTION_PLAN.md section 3.2) did
+ * not reproduce: here the per-pass reads were free up to 44 and cost ~5 ms at
+ * 88. At tier 1 the spectral ocean alone
  * averages 44 dispatches per frame — 14 FFT stages plus evolution and
  * derivation, over four cascades on a 1/1/2/4 cadence — and NOTHING reads
  * their counters, so they are still dropped: a counter nobody reads costs
