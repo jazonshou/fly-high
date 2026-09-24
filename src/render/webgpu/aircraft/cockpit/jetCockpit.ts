@@ -72,8 +72,8 @@ export interface JetCockpitMaterials {
   /** The screens' flat material where there is no 2D canvas to draw pages on (every Node test). */
   readonly instrumentFace: PBRMaterial;
   /**
-   * The bezel rims' shared material (`bezelRimMaterial`, `BEZEL_RIM`), which the MFDs' rims and the HUD's housing
-   * wear: the visual drives its night glow (`bezelRimEmissive`).
+   * The bezel rims' shared material (`bezelRimMaterial`, `BEZEL_RIM`), which the MFDs' rims wear: the visual drives
+   * its night glow (`bezelRimEmissive`).
    */
   readonly rim: PBRMaterial;
 }
@@ -257,6 +257,10 @@ export const JET_HUD_FRAME = Object.freeze({
  * Built as a loft of rounded side sections across z: each section is the housing's side elevation at one z, its aft
  * and forward faces set in by the plan's rounded corners, its top edges rounded `edgeRadius`, its base buried 1 cm in
  * the hood (falling with it).
+ *
+ * ON THE GLARESHIELD'S MATTE, the coaming's own instance (step 3c): the type's HUD body is black and continuous with the
+ * glareshield. On the bezel rims' material (step 2) it read as a lighter hump by day and, at night, took the rims'
+ * glow over its whole face: a white slab, luma 217 against the rail's 14.
  */
 export const JET_HUD_HOUSING = Object.freeze({
   halfWidth: 0.11,
@@ -479,11 +483,15 @@ export const JET_MFD = Object.freeze({
 });
 
 /**
- * The MFD frames' own material (step 3b): the 747's frame grey with the board's finish and NO emissive, lighter than
- * the dash (`JET_PANEL_MATERIAL`, the same board) by albedo alone, 1.41 times its luma (the design's 1.3 to 1.6; the
- * Global's frames read 1.46 live). The glow is the rims' alone.
+ * The MFD frames' own material (steps 3b and 3c): a neutral grey with the dash's finish and NO emissive, lighter than
+ * the dash (`JET_PANEL_MATERIAL`) by albedo alone. The design's number is the LIVE read, 1.40 to 1.50 times the dash's
+ * luma by day. The albedo measure (linear luminance ratio carried back to sRGB) is not that read: the leaned dash and
+ * the frames share one normal and one finish, so the sky's specular adds the same to both and compresses the live ratio
+ * under the albedo's. At 3b's 0x2c3034 (1.41 by albedo) the frame read 1.24 live; a fit of those two patches (each
+ * face's light a gain on its albedo plus a shared constant, the constant the larger) puts a live 1.40 to 1.50 at 1.67
+ * to 1.82 by albedo, and this grey, 1.76, at about 1.45. The glow is the rims' alone.
  */
-export const JET_MFD_FRAME_MATERIAL = Object.freeze({ albedo: 0x2c3034, roughness: 0.82, metallic: 0.02 });
+export const JET_MFD_FRAME_MATERIAL = Object.freeze({ albedo: 0x373c41, roughness: 0.82, metallic: 0.02 });
 
 /**
  * Each MFD's screen-plate centre and its face centre (on the board's face, where its frame is laid out from), port then
@@ -711,9 +719,8 @@ export function buildJetCockpit(
   const bar = rod("jet-hud-frame-bar", new Vector3(f.x, f.barY, -f.z), new Vector3(f.x, f.barY, f.z));
   const frame = build.mergeStatic("jet-hud-frame", [...uprights, bar], root);
 
-  // THE HOUSING, on the bezel rims' material (dark grey, the faint lit edge by day, the panel's night glow), its own
-  // opaque mesh: the frame is on the glareshield's matte
-  const housing = facetMesh(build, "jet-hud-housing", jetHudHousingFacets(), materials.rim, root);
+  // THE HOUSING, on the glareshield's matte (the coaming's instance, as the frame is), its own opaque mesh
+  const housing = facetMesh(build, "jet-hud-housing", jetHudHousingFacets(), glare, root);
 
   // THE COMBINER: both panes one mesh on a new instance of the canopy glass's kind, single-sided toward the eye (the
   // material is two-sided, as every alpha-blended airframe material is; the winding is what the drawn-faces walk reads)

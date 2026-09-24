@@ -1125,8 +1125,7 @@ export function createJet(scene: Scene): AircraftVisual {
   // it. The HUD's frame, housing and combiner, the MFDs' frames, rims and
   // screens, and the sills are cockpit-only: invisible from every other camera
   // and never shadow casters (`configureCockpitOnlyParts`).
-  // The bezel rims' shared material (the Global's and the 747's), on the MFDs' rims and the HUD's housing; its night
-  // glow below
+  // The bezel rims' shared material (the Global's and the 747's), on the MFDs' rims; its night glow below
   const rim = bezelRimMaterial(build, "jet-bezel-rim");
   const cockpit = buildJetCockpit(build, root, { instrumentFace, rim });
   const cockpitOnlyParts = cockpit.parts;

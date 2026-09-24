@@ -1886,6 +1886,28 @@ nose, and beside it the frame looked straight out through the glass.
   - the rail ended at the dash's face (the notch).
   Of these, the aft end, the console and the two junction gaps are outside what the eye sees, so they are caught by
   the structure pins and the ray under the frame, not by the frame.
+- **21:9's corners (the PM's call: keep 0.72).** Along az 40 the sills are first met 0.56 degree UNDER the frame's
+  bottom, and along az 45.6 3.62 degrees under it. The frame's bottom rises toward its side edge (-16.8 at az 45.6),
+  while the sill falls away outboard. So those columns (az 38.9 to 45.65) hold no aircraft anywhere in their lower
+  third. It is the view out over the side past the sill, not a strip of world under a visible sill.
+
+**Step 3c, the housing and the frames' tone** (the PM's calls on the frames slot's two findings).
+- **The HUD housing is on the glareshield's matte**, the coaming's own instance: the type's HUD body is black and
+  continuous with the glareshield. Its emissive is black at both light states. On the bezel rims' material it read as
+  a lighter hump by day and glowed whole at night.
+- **The frames' grey is 0x373c41, 1.76 by the albedo measure.** The design's number is the LIVE read, 1.40 to 1.50 times
+  the dash's luma by day. The albedo measure is not that read. The leaned dash and the frames share one normal and one
+  finish, so the sky's specular adds the same to both and compresses the live ratio under the albedo's: 3b's 0x2c3034,
+  1.41 by albedo, read 1.24 live. Fitting 3b's two patches (each face's light a gain on its albedo plus a shared
+  constant, the constant the larger) puts a live 1.40 to 1.50 at 1.67 to 1.82 by albedo, and 0x373c41 at about 1.45.
+  The test pins the albedo measure to 1.65 to 1.85. The final frames slot holds the live read.
+- Mesh by mesh against b7ebd5c, `jet-hud-housing` changed its material. The frames' albedo is invisible to that census,
+  which records material names, so the test pins it. The jet's other 74 meshes are bit-identical, and the loft digests
+  (geometry only) are unchanged.
+- Six mutations, all caught:
+  - the housing on the rim material, and on `jet-mfd-frame`;
+  - the housing on a second glareshield instance;
+  - the frames at 1.0 times the board, at 2.74 times, and back at 3b's 1.41.
 
 ## Not done, and one thing to know
 

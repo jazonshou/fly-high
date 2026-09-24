@@ -754,7 +754,7 @@ describe("the HUD's housing (the F-16 pass, step 2)", () => {
   };
   const railAt = (az: number) => Math.atan(-Math.tan(aircraftSpec("jet").cockpitDeckLineDegrees / DEG) * Math.cos(az / DEG)) * DEG;
 
-  it("is a rounded box 0.22 wide on the hood behind the rail, between the uprights, about 3 cm proud where the frame stands, on the bezel rims' material", () => {
+  it("is a rounded box 0.22 wide on the hood behind the rail, between the uprights, about 3 cm proud where the frame stands, on the glareshield's matte", () => {
     const mesh = named("jet-hud-housing");
     const vertices = worldVertices(mesh);
     const zs = vertices.map((v) => v.z);
@@ -792,13 +792,20 @@ describe("the HUD's housing (the F-16 pass, step 2)", () => {
     expect((mesh.metadata as { castsShadow?: boolean }).castsShadow).toBe(false);
     expect((mesh.material as PBRMaterial).needAlphaBlendingForMesh(mesh)).toBe(false);
     expect(mesh.name).not.toMatch(/screens|gauge|needle|bezel|glare-?shield|instrument-panel|hud-frame/);
-    // THE BEZEL RIMS' MATERIAL, the shared `BEZEL_RIM`, driven by the rims' own glow law in the jet's light state
+    // THE GLARESHIELD'S MATTE, the coaming's own instance (step 3c; on the bezel rims' material it glowed whole at
+    // night, a white slab, luma 217 against the rail's 14): black at every light state, the HUD's body continuous with
+    // the glareshield
     const material = mesh.material as PBRMaterial;
-    expect(material.name).toBe("jet-bezel-rim");
-    expect([material.roughness, material.metallic]).toEqual([BEZEL_RIM.roughness, BEZEL_RIM.metallic]);
-    for (const g of [1, COCKPIT_GLOW_NIGHT_MULTIPLE, 1]) {
-      aircraft.setLightState({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow: g });
-      expect(material.emissiveIntensity, `at glow ${g}`).toBeCloseTo(bezelRimEmissive(g), 12);
+    expect(material.name).toBe("jet-glareshield");
+    expect(material, "the coaming's instance").toBe(named("jet-glare-shield").material);
+    expect(material).not.toBe(named("jet-mfd-rims").material);
+    try {
+      for (const g of [1, COCKPIT_GLOW_NIGHT_MULTIPLE]) {
+        aircraft.setLightState({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow: g });
+        expect([material.emissiveColor.r, material.emissiveColor.g, material.emissiveColor.b], `emissive at glow ${g}`).toEqual([0, 0, 0]);
+      }
+    } finally {
+      aircraft.setLightState({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow: 1 });
     }
     // and inside the bubble, clear of the glass, as the rail is
     const nearest = Math.min(...vertices.map((v) => distanceToTriangles(v, canopy)));
@@ -1167,11 +1174,11 @@ describe("the MFDs", () => {
     expect(scene.materials.filter((m) => m.name === "jet-mfd-bezel"), "the old slab material is gone").toHaveLength(0);
   });
 
-  it("put the frames on their own grey, lighter than the dash by albedo alone and never glowing, and the chamfered rims on the bezel rims' material, which glows at night (step 3b)", () => {
-    // THE RIMS: the jet's instance of the shared `BEZEL_RIM` (the housing's too), day 0.05, night by `bezelRimEmissive`
+  it("put the frames on their own grey, lighter than the dash by albedo alone and never glowing, and the chamfered rims on the bezel rims' material, which glows at night (steps 3b, 3c)", () => {
+    // THE RIMS: the jet's instance of the shared `BEZEL_RIM`, day 0.05, night by `bezelRimEmissive`
     const rim = named("jet-mfd-rims").material as PBRMaterial;
-    expect(rim).toBe(named("jet-hud-housing").material);
     expect(rim.name).toBe("jet-bezel-rim");
+    expect([rim.roughness, rim.metallic]).toEqual([BEZEL_RIM.roughness, BEZEL_RIM.metallic]);
     // THE FRAMES: their own material, the dash's finish, and NO emissive
     const frame = named("jet-mfd-frames").material as PBRMaterial;
     const board = named("jet-instrument-panel").material as PBRMaterial;
@@ -1194,14 +1201,16 @@ describe("the MFDs", () => {
     } finally {
       aircraft.setLightState({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow: 1 });
     }
-    // LIGHTER THAN THE DASH BY ALBEDO ALONE, in the design's range, by the Global's and the 747's measure: with the
-    // dash's finish and its normal a frame takes the dash's light, so its luma against the dash's is its albedo's
-    // luminance against the dash's, in linear light, carried back to sRGB (the live frame is the measurement)
+    // LIGHTER THAN THE DASH BY ALBEDO ALONE, by the Global's and the 747's measure (the albedos' linear luminance
+    // ratio carried back to sRGB), in the band the LIVE read implies. The design's number is the live read, 1.40 to 1.50
+    // by day; the leaned dash and the frames share one normal and one finish, so the sky's specular adds the same to
+    // both and compresses the live ratio under the albedo's (3b's 1.41 by albedo read 1.24 live). Fitted from 3b's
+    // two patches, a live 1.40 to 1.50 is 1.67 to 1.82 by albedo; the frames slot holds the live read.
     const linear = (m: PBRMaterial) => 0.2126 * m.albedoColor.r ** 2.2 + 0.7152 * m.albedoColor.g ** 2.2 + 0.0722 * m.albedoColor.b ** 2.2;
     const ratio = (linear(frame) / linear(board)) ** (1 / 2.2);
     console.info(`F-16 MFD frames against the dash, by albedo: ${ratio.toFixed(3)} in luma`);
-    expect(ratio).toBeGreaterThanOrEqual(1.3);
-    expect(ratio).toBeLessThanOrEqual(1.6);
+    expect(ratio).toBeGreaterThanOrEqual(1.65);
+    expect(ratio).toBeLessThanOrEqual(1.85);
   });
 
   it("bevel each frame: a 4 mm chamfer at 45 degrees round its outer edge, facing out of the face, by the built normals", () => {
