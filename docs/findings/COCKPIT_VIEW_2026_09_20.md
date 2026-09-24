@@ -1995,8 +1995,25 @@ shows all of it, and the bottom 39% of the page was blank.
 - **The fix: the combiner's roughness from 0.05 to 0.35,** kit-local. The highlight's lobe spreads and its peak falls
   with roughness to the fourth power. The test pins the roughness and the geometry that makes it needed (the beacon's
   image straight ahead, within the wash's range).
-- One mutation (back at 0.05), caught. The night capture with the beacon forced lit, and the day tint's re-read, are
-  the check.
+- One mutation (back at 0.05), caught.
+- **Verified live (2026-09-24, 8285de8, 1920 x 1080 headed, one page).** A known-good day capture of bb5c054 came first
+  (sky band luma 129). The night frame was taken with the beacon asserted lit (the wash at its full 2.4, the lamp at
+  its full 3). The controls are the final frames slot's: bb5c054 at 0.05 with the beacon lit, and the 3b night frame
+  with it dark.
+  - The red excess, R - (G+B)/2, at the view's centre against the surround inside the combiner: **2.1** (pass 8 or
+    less; at 0.05 lit 63.1 and 63.7, dark 0.5).
+  - The luma of a 40 px patch on the flight-path marker, the marker's own pixels left out, against a patch just inside
+    each upright: **2.7 and 4.2** (pass 12 or less; lit 115.9 to 119.3, dark 1.7 and 3.4).
+  - The day tint through the panes: **8.8%** (in the 5 to 15%).
+  - With the beacon lit, the glint now reads at the beacon-dark level.
+- **Two capture traps on the way.**
+  - A paused sim never advances the beacon's phase, and toggling pause for 90 ms did not advance it either (the wash
+    read 0 on 60 steps). What forces it lit: unpause, read the wash light every 25 ms, and pause the moment it lights.
+    The wash is found through the clustered container's lights, since the container takes its lights out of the
+    scene's list.
+  - The re-pause shows the pause menu over the view again. Measured through it, the menu's dark panel read as a pass
+    (red excess -0.0). The overlay has to be hidden again after every re-pause, and the measured crop looked at before
+    a pass is believed.
 
 ## Not done, and one thing to know
 
