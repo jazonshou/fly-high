@@ -1,6 +1,6 @@
 # fly high
 
-An endless-flight browser simulator. Fly a small aircraft over a procedurally generated world of terrain, forests, rivers, ocean, wildlife, weather, and a real day and night sky. Everything is generated at runtime from a seed, so sharing the URL shares the exact same world.
+![fly high](flyhigh.jpeg)
 
 Built with TypeScript, React, and Babylon.js on WebGPU.
 
