@@ -6,6 +6,7 @@ import {
   PERF_CAPTURE_MAX_FRAME_MS,
   PERF_CAPTURE_MAX_HITCHES,
   PERF_CAPTURE_MIN_WALL_CLOCK_FPS,
+  PERF_CAPTURE_SHOTS,
   deliveryFailuresAgainst,
   perfCaptureDeliveryContract,
   tier1BalancedPerformanceFailures,
@@ -90,12 +91,6 @@ describe("perf-capture baseline policy", () => {
     const capture = "vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts";
     expect(packageJson.scripts["perf:capture"]).toBe(
       `npm run perf:cold-start && ${capture}`,
-    );
-    expect(packageJson.scripts["perf:capture:ci"]).toBe(
-      "npm run perf:cold-start && "
-      + "VITE_PERF_SHOTS=reference-viewport,forest-500ft-sunbehind,"
-      + "ground-2m-lowsun,motion-banked-turn,cdlod-transition,water-3m,"
-      + `water-25ft,coast-10km-lowsun ${capture}`,
     );
     expect(packageJson.scripts["perf:capture:candidate"]).toBe(
       `npm run perf:cold-start && VITE_PERF_REBASELINE=1 ${capture}`,
@@ -277,15 +272,15 @@ describe("perf-capture baseline policy", () => {
     );
     // The local commands stay strict; only the workflow declares its host.
     expect(packageJson.scripts["perf:capture"]).not.toContain("VITE_PERF_UNPINNED_HOST");
-    expect(packageJson.scripts["perf:capture:ci"]).not.toContain("VITE_PERF_UNPINNED_HOST");
     expect(rendererWorkflow).toContain('VITE_PERF_UNPINNED_HOST: "1"');
 
-    // Gate 0-d (Phase 6): the PR subset must cover the water surfaces the
+    // Gate 0-d (Phase 6): pull requests must gate the water surfaces the
     // phase's Wave-1 work touches — without these, every water PR merges with
-    // no pixel gate on the surfaces it changes. Remove only at phase close,
-    // by recorded decision (PHASE_6_EXECUTION_PLAN.md §3).
+    // no pixel gate on the surfaces it changes. PRs run the full list (pinned
+    // by the CI wiring test below), so the full list has to carry them.
+    const shotNames = PERF_CAPTURE_SHOTS.map((shot) => shot.name);
     for (const shot of ["water-3m", "water-25ft", "coast-10km-lowsun"]) {
-      expect(packageJson.scripts["perf:capture:ci"]).toContain(shot);
+      expect(shotNames).toContain(shot);
     }
 
     /** True when this assertion's failure is downgraded on an unpinned host. */
@@ -385,7 +380,11 @@ describe("perf-capture baseline policy", () => {
   it("keeps GPU and non-mutating perf gates wired to automatic CI with artifacts", () => {
     expect(rendererWorkflow).toContain("pull_request:");
     expect(rendererWorkflow).toContain("npm run test:gpu");
-    expect(rendererWorkflow).toContain("npm run perf:capture:ci");
+    // Pull requests run the same full capture as main: no shot subset, and no
+    // step that depends on which event started the run.
+    expect(rendererWorkflow).toContain("run: npm run perf:capture\n");
+    expect(rendererWorkflow).not.toContain("VITE_PERF_SHOTS");
+    expect(rendererWorkflow).not.toContain("github.event_name");
     expect(rendererWorkflow).toContain("git diff --exit-code -- tests/perf/baseline");
     expect(rendererWorkflow).toContain("actions/upload-artifact@v4");
   });

@@ -65,14 +65,12 @@ jobs:
       # renderer-error and settling gates run here and the frame-delivery
       # contract does not; docs/PERFORMANCE.md scopes that contract to the
       # reference adapter, and the run prints every row it declined to gate.
-      - name: Run focused PR capture
-        if: github.event_name == 'pull_request'
-        env:
-          VITE_PERF_UNPINNED_HOST: "1"
-        run: npm run perf:capture:ci
-
+      #
+      # Pull requests run the full list too. A subset changes the streaming
+      # history each shot arrives with, so its frames are not the ones the
+      # baselines were promoted from, and a PR that passes a subset can still
+      # fail the full capture on main.
       - name: Run full capture
-        if: github.event_name != 'pull_request'
         env:
           VITE_PERF_UNPINNED_HOST: "1"
         run: npm run perf:capture
