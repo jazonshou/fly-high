@@ -45,4 +45,4 @@ next-env.d.ts
 tests/perf/artifacts/
 
 # TypeScript incremental build cache — machine-local, regenerates on demand.
-tsconfig.tsbuildinfo
+*.tsbuildinfo

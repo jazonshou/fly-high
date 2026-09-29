@@ -39,20 +39,30 @@ function metaContent(name: string): string {
 
 describe("static shell matches the server-rendered shell", () => {
   it("uses the same document title", () => {
-    const routeTitle = capture(page, /title:\s*"([^"]+)"/, "app/page.tsx title");
+    // A page title is rendered through the layout's template, not as written:
+    // "fly high" under "%s · fly high" renders "fly high · fly high". Without
+    // one, the layout's default renders unchanged.
     const defaultTitle = capture(
       layout,
       /default:\s*"([^"]+)"/,
       "app/layout.tsx default title",
     );
+    const template = capture(
+      layout,
+      /template:\s*"([^"]+)"/,
+      "app/layout.tsx title template",
+    );
+    const pageTitle = page.match(/title:\s*"([^"]+)"/)?.[1];
+    const renderedTitle = pageTitle
+      ? template.replace("%s", pageTitle)
+      : defaultTitle;
     const htmlTitle = capture(
       staticHtml,
       /<title>([^<]+)<\/title>/,
       "static/index.html <title>",
     );
 
-    expect(htmlTitle).toBe(routeTitle);
-    expect(htmlTitle).toBe(defaultTitle);
+    expect(htmlTitle).toBe(renderedTitle);
   });
 
   it("uses the same application name and description", () => {
