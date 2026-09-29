@@ -68,7 +68,11 @@ export default defineConfig({
     // streaming dominates the run. Deliberately no count here: this comment
     // said "sixteen" against a list of 29, and a restated count goes stale on
     // the next append. `PERF_CAPTURE_SHOTS` is the authority.
-    testTimeout: 1_500_000,
+    // 35 minutes: the hosted macOS runner took 25.1-25.6 min for the full list
+    // (2026-09-24..29) and timed out at the old 25. This must stay inside the
+    // job's 45-minute limit and scripts/decompose-draw-calls.sh's 40-minute
+    // watchdog, and match the capture test's own timeout argument.
+    testTimeout: 2_100_000,
     hookTimeout: 120_000,
     browser: {
       enabled: true,

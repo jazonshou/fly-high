@@ -171,7 +171,7 @@ capture() { # <sha> <outdir>
     # down. `run_bounded` returns 0 for any non-timeout exit by design (a
     # capture exits non-zero whenever a gate fails, which is routine), so a
     # keep pass that dies before writing -- a lost WebGPU device, an OOM, or
-    # vitest's own 25-minute testTimeout firing well inside this script's
+    # vitest's own 35-minute testTimeout firing inside this script's
     # 40-minute watchdog -- would leave the WARM-UP's file in place, `cp` would
     # succeed, and provenance would pass because it describes the TREE, which
     # was correct; it is the RUN that was not. The delta would then be computed
