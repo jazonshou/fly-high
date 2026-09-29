@@ -2279,5 +2279,5 @@ describe("perf capture (1A-1c / 2Z)", () => {
       );
       console.info(`Rebaseline candidate PASSED all gates: ${candidateDir}`);
     }
-  }, 1_500_000);
+  }, 2_100_000);
 });

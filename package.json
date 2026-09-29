@@ -21,7 +21,6 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-pages --ignore-pattern .next",
     "perf:cold-start": "vitest run --config vitest.perf.config.ts tests/perf/cold-start.test.ts",
     "perf:capture": "npm run perf:cold-start && vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts",
-    "perf:capture:ci": "npm run perf:cold-start && VITE_PERF_SHOTS=reference-viewport,forest-500ft-sunbehind,ground-2m-lowsun,motion-banked-turn,cdlod-transition,water-3m,water-25ft,coast-10km-lowsun vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts",
     "perf:capture:candidate": "npm run perf:cold-start && VITE_PERF_REBASELINE=1 vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts",
     "perf:capture:rebaseline": "npm run perf:capture:candidate",
     "material:preview": "VITE_MATERIAL_PREVIEW=1 vitest run --config vitest.config.ts tests/render.webgpu-material-arrays.test.ts"
