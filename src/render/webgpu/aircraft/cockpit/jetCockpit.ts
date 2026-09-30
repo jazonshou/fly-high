@@ -766,7 +766,7 @@ export const JET_MFD = Object.freeze({
   gap: 0.002,
   recess: 0.003,
   screenThickness: 0.0005,
-  /** Each MFD's centre line; the 0.19 between the bezels is the UFC's (not built). */
+  /** Each MFD's centre line; the 0.19 between the bezels is the ICP's (`JET_ICP`, S1). */
   z: 0.17,
   /** The frames' highest point under the cove's foot, from the eye. */
   underFootDegrees: 0.3,
@@ -816,6 +816,180 @@ export function jetMfdPlacements(): readonly { name: "port" | "starboard"; centr
     const z = name === "port" ? -m.z : m.z;
     return { name, centre: new Vector3(centre.x, centre.y, z), faceCentre: new Vector3(faceCentre.x, faceCentre.y, z) };
   });
+}
+
+// ---- the ICP ---------------------------------------------------------------------------------
+
+/**
+ * THE ICP (Jason's F-16 wave, S1: "make sure the details are there"): the integrated control panel between the MFDs,
+ * under the HUD, where the frame showed the bare dash (87k px at 1080p, luma 74, std 5.8). A framed recessed panel of
+ * the MFDs' own size and top line (the shared `framedScreenFacets`: its frame on the frames' grey, its chamfered rim on
+ * the rims' material, merged with theirs), its floor `recess` behind the frame's front, on the dash's own material and
+ * merged into the board (the keys stand lighter than it, as the type's do on its dark face; on the frames' grey the
+ * recess read only at its edges). On the floor: the DED, a strip on the rims' material (their law: 0.05 by day, their
+ * glow at night) in a raised lip; the 3 x 4 key block, each key `proud` of the floor with its top edges rounded at
+ * `radius`; and a rocker each side of the block (the DCS and the up/down), each two halves either side of a seam. The
+ * frame, the lip, the keys and the rockers are one mesh on the frames' grey (`jet-icp`), the DED another (`jet-icp-ded`):
+ * two draws, no new material.
+ *
+ * Face coordinates: u across the cockpit (starboard +), v up the leaned face, o out of it toward the pilot; the panel's
+ * centre on the face at z 0, the MFDs' face centre's height, so its top reads their 0.3 degree under the cove's foot.
+ */
+export const JET_ICP = Object.freeze({
+  /** The floor's opening; with the frame round it, 0.17 by 0.15 overall (the MFDs' 0.15 square), 1 cm clear of theirs. */
+  width: 0.13,
+  height: 0.11,
+  bezel: 0.02,
+  bezelThickness: 0.007,
+  chamfer: 0.004,
+  gap: 0.002,
+  recess: 0.003,
+  screenThickness: 0.002,
+  key: Object.freeze({ width: 0.014, height: 0.012, pitchU: 0.019, pitchV: 0.017, columns: 3, rows: 4, centreV: -0.014, proud: 0.004, radius: 0.001 }),
+  /** Each rocker's two halves, either side of a seam, at u +-`u`. */
+  rocker: Object.freeze({ width: 0.01, half: 0.0115, seam: 0.002, u: 0.047, centreV: -0.014, proud: 0.005, radius: 0.001 }),
+  /** The DED: its strip, and the lip round it. */
+  ded: Object.freeze({ width: 0.09, height: 0.02, v: 0.034, proud: 0.001, lip: 0.002, lipProud: 0.002 }),
+  /** Rounds in this many chords (the keys', the rockers'). */
+  roundSegments: 3,
+});
+
+/** The ICP's centre on the dash's face: the MFDs' face centre's height, at z 0. */
+export function jetIcpFaceCentre(): Vector3 {
+  const port = jetMfdPlacements()[0]!;
+  return new Vector3(port.faceCentre.x, port.faceCentre.y, 0);
+}
+
+/** The key block's twelve keys' centres on the floor, (u, v), row by row from the top, each row port to starboard. */
+export function jetIcpKeyCentres(): { u: number; v: number }[] {
+  const k = JET_ICP.key;
+  const keys: { u: number; v: number }[] = [];
+  for (let row = 0; row < k.rows; row += 1) {
+    for (let column = 0; column < k.columns; column += 1) {
+      keys.push({ u: (column - (k.columns - 1) / 2) * k.pitchU, v: k.centreV + ((k.rows - 1) / 2 - row) * k.pitchV });
+    }
+  }
+  return keys;
+}
+
+/** A quad with a shading normal at each corner (a round's), or one for all four. */
+interface ShadedQuad {
+  readonly corners: readonly [Vector3, Vector3, Vector3, Vector3];
+  /** Out of the solid: the drawn side. */
+  readonly normal: Vector3;
+  readonly shading?: readonly [Vector3, Vector3, Vector3, Vector3];
+}
+
+/**
+ * The ICP's parts as quads on the dash's face, the frame's (`framedScreenFacets`) and the rest: `floor` (0.5 mm into the
+ * frame's inner walls all round, so no face of it lies on theirs), `body` (the DED's lip, the keys, the rockers: one
+ * solid each), `ded` (the strip) and `rim` (the frame's chamfered rim).
+ */
+export function jetIcpFacets(): { frame: FacetQuad[]; rim: FacetQuad[]; floor: ShadedQuad[]; body: ShadedQuad[]; ded: ShadedQuad[] } {
+  const d = JET_ICP;
+  const face = jetPanelFace();
+  const centre = jetIcpFaceCentre();
+  const across = new Vector3(0, 0, 1);
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const at = (u: number, v: number, o: number) => centre.add(across.scale(u)).add(up.scale(v)).add(out.scale(o));
+  const stack = framedScreenStack(d);
+  const floorFront = stack.screenFront;
+  const sides = [up.scale(-1), across, up, across.scale(-1)];
+  /** A box on the face from o0 to o1 over u0..u1, v0..v1: six flat quads. */
+  const box = (u0: number, u1: number, v0: number, v1: number, o0: number, o1: number): ShadedQuad[] => {
+    const r = (o: number) => [at(u0, v0, o), at(u1, v0, o), at(u1, v1, o), at(u0, v1, o)];
+    const [back, front] = [r(o0), r(o1)];
+    return [
+      { corners: [front[0]!, front[1]!, front[2]!, front[3]!], normal: out },
+      { corners: [back[0]!, back[1]!, back[2]!, back[3]!], normal: out.scale(-1) },
+      ...[0, 1, 2, 3].map((k) => ({ corners: [back[k]!, back[(k + 1) % 4]!, front[(k + 1) % 4]!, front[k]!] as const, normal: sides[k]! })),
+    ];
+  };
+  /**
+   * A key: its outline w x h about (u, v), from 0.5 mm inside the floor to `proud` out of it, its four top edges rounded
+   * at `radius` in `roundSegments` chords (the outline inset by the round's fall at each chord's height), shaded as the
+   * round: at each corner of a chord, cos of its angle of the side's direction and sin of it out of the face.
+   */
+  const key = (u: number, v: number, w: number, h: number, proud: number, radius: number): ShadedQuad[] => {
+    const layers = [{ o: floorFront - 0.0005, inset: 0, angle: 0 }];
+    for (let k = 0; k <= d.roundSegments; k += 1) {
+      const angle = (k / d.roundSegments) * (Math.PI / 2);
+      layers.push({ o: floorFront + proud - radius + radius * Math.sin(angle), inset: radius * (1 - Math.cos(angle)), angle });
+    }
+    const ring = (layer: { o: number; inset: number }) => {
+      const [a, b] = [w / 2 - layer.inset, h / 2 - layer.inset];
+      return [at(u - a, v - b, layer.o), at(u + a, v - b, layer.o), at(u + a, v + b, layer.o), at(u - a, v + b, layer.o)];
+    };
+    const rings = layers.map(ring);
+    const quads: ShadedQuad[] = [];
+    for (let i = 0; i + 1 < layers.length; i += 1) {
+      for (let k = 0; k < 4; k += 1) {
+        const [la, lb] = [layers[i]!, layers[i + 1]!];
+        const n = (angle: number) => sides[k]!.scale(Math.cos(angle)).add(out.scale(Math.sin(angle))).normalize();
+        const corners = [rings[i]![k]!, rings[i]![(k + 1) % 4]!, rings[i + 1]![(k + 1) % 4]!, rings[i + 1]![k]!] as const;
+        const facet = n((la.angle + lb.angle) / 2);
+        quads.push(i === 0 ? { corners, normal: sides[k]! } : { corners, normal: facet, shading: [n(la.angle), n(la.angle), n(lb.angle), n(lb.angle)] });
+      }
+    }
+    const top = rings[rings.length - 1]!;
+    const bottom = rings[0]!;
+    quads.push({ corners: [top[0]!, top[1]!, top[2]!, top[3]!], normal: out });
+    quads.push({ corners: [bottom[0]!, bottom[1]!, bottom[2]!, bottom[3]!], normal: out.scale(-1) });
+    return quads;
+  };
+  const k = d.key;
+  const r = d.rocker;
+  const ded = d.ded;
+  const [fu, fv] = [d.width / 2 + d.gap + 0.0005, d.height / 2 + d.gap + 0.0005];
+  const floor = box(-fu, fu, -fv, fv, stack.screenBack, floorFront);
+  // the DED's lip: a ring round the strip, from inside the floor to `lipProud` out of it
+  const [iu, iv, ou, ov] = [ded.width / 2, ded.height / 2, ded.width / 2 + ded.lip, ded.height / 2 + ded.lip];
+  const [lo0, lo1] = [floorFront - 0.0005, floorFront + ded.lipProud];
+  const rect = (a: number, b: number, o: number) => [at(-a, ded.v - b, o), at(a, ded.v - b, o), at(a, ded.v + b, o), at(-a, ded.v + b, o)];
+  const ringQuads = (p: Vector3[], q: Vector3[], normal: (k: number) => Vector3): ShadedQuad[] =>
+    [0, 1, 2, 3].map((k) => ({ corners: [p[k]!, p[(k + 1) % 4]!, q[(k + 1) % 4]!, q[k]!] as const, normal: normal(k) }));
+  const lip = [
+    ...ringQuads(rect(iu, iv, lo1), rect(ou, ov, lo1), () => out),
+    ...ringQuads(rect(ou, ov, lo0), rect(ou, ov, lo1), (s) => sides[s]!),
+    ...ringQuads(rect(iu, iv, lo0), rect(ou, ov, lo0), () => out.scale(-1)),
+    ...ringQuads(rect(iu, iv, lo0), rect(iu, iv, lo1), (s) => sides[s]!.scale(-1)),
+  ];
+  const keys = jetIcpKeyCentres().flatMap((c) => key(c.u, c.v, k.width, k.height, k.proud, k.radius));
+  const halves = (side: -1 | 1) => [1, -1].flatMap((sign) => key(side * r.u, r.centreV + sign * (r.seam / 2 + r.half / 2), r.width, r.half, r.proud, r.radius));
+  const framed = framedScreenFacets(centre, face, d);
+  return {
+    frame: framed.frame,
+    rim: framed.rim,
+    floor,
+    body: [...lip, ...keys, ...halves(-1), ...halves(1)],
+    ded: box(-ded.width / 2, ded.width / 2, ded.v - ded.height / 2, ded.v + ded.height / 2, floorFront - 0.0005, floorFront + ded.proud),
+  };
+}
+
+/** A `facetMesh` of shaded quads: each drawn as `facetMesh` winds it, its corners taking their shading normals. */
+function shadedFacetMesh(build: AircraftBuildContext, name: string, quads: readonly ShadedQuad[], material: PBRMaterial, parent: TransformNode): Mesh {
+  const mesh = facetMesh(build, name, quads, material, parent);
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  if (positions.length !== quads.length * 18) throw new RangeError(`shadedFacetMesh "${name}": a quad with no area`);
+  const normals = [...mesh.getVerticesData(VertexBuffer.NormalKind)!];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const quad = quads[Math.floor(v / 6)]!;
+    if (!quad.shading) continue;
+    const corner = quad.corners.findIndex((c) => c.x === positions[v * 3] && c.y === positions[v * 3 + 1] && c.z === positions[v * 3 + 2]);
+    const n = quad.shading[corner]!;
+    normals[v * 3] = n.x;
+    normals[v * 3 + 1] = n.y;
+    normals[v * 3 + 2] = n.z;
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = normals;
+  data.uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  data.indices = [...mesh.getIndices()!];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
 }
 
 /** What the pages need of this airframe that the flight state does not carry: one engine, 20 degrees of flap (`animation.ts`). */
@@ -1240,7 +1414,8 @@ export interface JetCockpit {
   readonly board: Mesh;
   /**
    * The cockpit-only meshes, unconfigured: the caller marks them (`configureCockpitOnlyParts`). The HUD
-   * frame, its housing, its combiner's panes, the MFDs' frames, their rims, the MFD screens and the sills.
+   * frame, its housing, its combiner's panes, the MFDs' frames, their rims (the ICP's with them), the MFD screens, the
+   * sills, the ICP and its DED.
    */
   readonly parts: readonly AbstractMesh[];
   /** Whether the MFDs are drawing pages: false wherever there is no 2D canvas (every Node test). */
@@ -1359,10 +1534,13 @@ export function buildJetCockpit(
   sculptSolid(plate, (point) => new Vector3(point.x, point.y, (point.z * (jetCoamingHalfWidth(point.x) - p.sideInset)) / faceHalfWidth));
   // the cove: the face's top strip shaded from the round's aft normal to the face's
   shadeJetCove(plate);
-  // the fillet's span on the dash's face and the cove, each side, where the ends stand against it (S3)
+  // the fillet's span on the dash's face and the cove, each side, where the ends stand against it (S3), and the ICP's
+  // recessed floor on the dash's material (S1)
+  const icp = jetIcpFacets();
   const boardParts: AbstractMesh[] = [
     plate,
     ...([-1, 1] as const).map((side) => filletMesh(build, `jet-instrument-panel-fillet-${side < 0 ? "port" : "starboard"}`, fillet.slice(0, onRail), side, panelMaterial, root)),
+    shadedFacetMesh(build, "jet-instrument-panel-icp-floor", icp.floor, panelMaterial, root),
   ];
   for (const part of boardParts) part.metadata = { ...part.metadata, cockpitInterior: true };
   const board = build.mergeStatic("jet-instrument-panel", boardParts, root);
@@ -1438,6 +1616,11 @@ export function buildJetCockpit(
   }
   const screensMesh = build.mergeStatic(JET_DISPLAYS.screensMesh, screens, root);
   const framesMesh = build.mergeStatic("jet-mfd-frames", frames, root);
+  // THE ICP (S1): its framed panel, lip, keys and rockers one mesh on the frames' grey (its floor is the board's), its rim
+  // with the MFDs' rims, the DED on the rims' material
+  const icpMesh = build.mergeStatic("jet-icp", [facetMesh(build, "jet-icp-frame", icp.frame, frameMaterial, root), shadedFacetMesh(build, "jet-icp-body", icp.body, frameMaterial, root)], root);
+  rims.push(facetMesh(build, "jet-icp-rim", icp.rim, materials.rim, root));
+  const dedMesh = shadedFacetMesh(build, "jet-icp-ded", icp.ded, materials.rim, root);
   const rimsMesh = build.mergeStatic("jet-mfd-rims", rims, root);
 
   // THE SILLS, each side a rail swept along the glass and a console inboard of it, all four one mesh on the dash's
@@ -1489,7 +1672,7 @@ export function buildJetCockpit(
   return {
     coaming,
     board,
-    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh, sillsMesh],
+    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh, sillsMesh, icpMesh, dedMesh],
     displaysLive: atlas !== null,
     invalidateDisplays() {
       redraw.invalidate();

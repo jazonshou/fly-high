@@ -356,7 +356,12 @@ describe("a loft's crown seam", () => {
       // `jet-instrument-panel` (48 -> 504: the fillet's spans on the dash merged in) and `jet-sills` (432 -> 816: the
       // rails' section in six chords a round) changed; the jet's other 72 and every mesh of the other three airframes
       // are bit-identical.
-      jet: "a6be9a33",
+      // RE-PINNED a6be9a33 -> 0dff8af9 for S1, the ICP: checked mesh by mesh against cb43285 (the same fields, both views):
+      // two meshes new, both cockpit-only (`jet-icp`, the framed panel, the DED's lip, the keys and the rockers;
+      // `jet-icp-ded`), `jet-mfd-rims` 192 -> 288 vertices (the ICP's rim after the MFDs') and `jet-instrument-panel`
+      // 504 -> 540 (the ICP's recessed floor on the dash's material); the jet's other 73 and every mesh of the other
+      // three airframes are bit-identical.
+      jet: "0dff8af9",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

@@ -47,6 +47,9 @@ import {
   jetRailStations,
   JET_RAIL_SIDES,
   jetRailOutlineInset,
+  JET_ICP,
+  jetIcpFaceCentre,
+  jetIcpKeyCentres,
   jetRailEndTopAt,
 } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
 import {
@@ -364,9 +367,10 @@ describe("the coaming", () => {
     expect(highest("radar-nose")).toBeLessThan(-11.2);
     expect(silhouette("jet-glare-shield", 0) - probeTop, "the coaming's edge over the probe's tip, degrees").toBeGreaterThan(0.15);
     // by ray, over the probe's own width: the first surface at every elevation from the tip down is the deck, the rail
-    // and then, under the cove's foot, the dash
+    // and then, under the cove's foot, the dash and the ICP on it (S1: its frame, its rim with the MFDs', its DED)
+    const deck = ["jet-glare-shield", "jet-instrument-panel", "jet-icp", "jet-mfd-rims", "jet-icp-ded"];
     for (let az = -0.3; az <= 0.3; az += 0.05) {
-      for (let e = probeTop + 0.02; e >= -20; e -= 0.05) expect(["jet-glare-shield", "jet-instrument-panel"], `azimuth ${az.toFixed(2)}, elevation ${e.toFixed(2)}`).toContain(firstHit(az, e)?.name);
+      for (let e = probeTop + 0.02; e >= -20; e -= 0.05) expect(deck, `azimuth ${az.toFixed(2)}, elevation ${e.toFixed(2)}`).toContain(firstHit(az, e)?.name);
     }
     // THE CONTROL: the instrument can see the probe -- with the coaming and the HUD's housing (behind the rail, in
     // front of the probe) left out, it is the first surface just under its tip straight ahead
@@ -695,10 +699,10 @@ describe("the coaming", () => {
     }
   });
 
-  it("fills the bottom of the frame straight ahead with the deck: from -10.19 to the frame's bottom every ray meets the rail or the dash", () => {
+  it("fills the bottom of the frame straight ahead with the deck: from -10.19 to the frame's bottom every ray meets the rail, the dash or the ICP on it", () => {
     let rays = 0;
     for (let e = -10.25; e >= -frameLimit(0); e -= 0.05) {
-      expect(["jet-glare-shield", "jet-instrument-panel"], `at elevation ${e.toFixed(2)}`).toContain(firstHit(0, e)?.name);
+      expect(["jet-glare-shield", "jet-instrument-panel", "jet-icp", "jet-mfd-rims", "jet-icp-ded"], `at elevation ${e.toFixed(2)}`).toContain(firstHit(0, e)?.name);
       rays += 1;
     }
     expect(rays).toBeGreaterThan(250);
@@ -710,8 +714,8 @@ describe("the coaming", () => {
 });
 
 describe("the HUD frame", () => {
-  it("is one of the seven cockpit-only meshes (with its housing, its combiner, the MFDs' frames and rims, the screens and the sills), three struts and two rounded corners merged on the shared matte glareshield material", () => {
-    expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills"]);
+  it("is one of the nine cockpit-only meshes (with its housing, its combiner, the MFDs' frames and rims, the screens, the sills, the ICP and its DED), three struts and two rounded corners merged on the shared matte glareshield material", () => {
+    expect(cockpitOnly.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills", "jet-icp", "jet-icp-ded"]);
     const frame = named("jet-hud-frame");
     expect((frame.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(FRAME_SOURCES);
     expect(frame.getTotalVertices()).toBe(FRAME_VERTICES * 3 + CORNER_VERTICES * 2);
@@ -918,7 +922,7 @@ describe("the HUD frame", () => {
     const visual = createWebGpuAircraft(freshScene, "jet");
     try {
       const parts = visual.cockpitOnlyParts ?? [];
-      expect(parts.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills"]);
+      expect(parts.map((part) => part.name)).toEqual(["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills", "jet-icp", "jet-icp-ded"]);
       for (const part of parts) expect(part.isVisible, `${part.name} outside cockpit view`).toBe(false);
       visual.setCockpitView(true);
       for (const part of parts) expect(part.isVisible, `${part.name} in cockpit view`).toBe(true);
@@ -1238,9 +1242,9 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
 describe("the panel board", () => {
   it("is the dash: one bare plate leaned back from the cove's foot to face the pilot, its plan the hood's less 5 mm a side, its top inside the hood along its whole depth", () => {
     const board = named("jet-instrument-panel");
-    // the plate first, then each side's fillet span on the dash (S3)
-    expect((board.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-instrument-panel-board", "jet-instrument-panel-fillet-port", "jet-instrument-panel-fillet-starboard"]);
-    expect(board.getTotalVertices()).toBe(BOARD_VERTICES + 2 * BOARD_FILLET_VERTICES);
+    // the plate first, then each side's fillet span on the dash (S3), then the ICP's recessed floor (S1: a slab, 36)
+    expect((board.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-instrument-panel-board", "jet-instrument-panel-fillet-port", "jet-instrument-panel-fillet-starboard", "jet-instrument-panel-icp-floor"]);
+    expect(board.getTotalVertices()).toBe(BOARD_VERTICES + 2 * BOARD_FILLET_VERTICES + 36);
     const vertices = worldVertices(board).slice(0, BOARD_VERTICES);
     // a pentagon: the face's top (the round's aft tangent), the cove's foot on the face, the foot on the tub, the back's
     // foot and the back's top in the hood
@@ -1359,11 +1363,13 @@ describe("the MFDs", () => {
     const plane = (v: Vector3) => (v.x - face.top.x) * face.normal.x + (v.y - face.top.y) * face.normal.y; // out of the face
     const levels = (vs: Vector3[]) => [...new Set(vs.map((v) => plane(v).toFixed(5)))].map(Number).sort((a, b) => a - b);
     const frames = worldVertices(named("jet-mfd-frames"));
-    const rims = worldVertices(named("jet-mfd-rims"));
+    // (the ICP's rim, S1, is merged after the MFDs': the MFDs' own first)
+    expect((named("jet-mfd-rims").metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-mfd-rim-port", "jet-mfd-rim-starboard", "jet-icp-rim"]);
+    const rims = worldVertices(named("jet-mfd-rims")).slice(0, 2 * 96);
     const screens = worldVertices(named("jet-screens"));
     // each MFD's frame (16 quads) and its rim (16 quads), unshared: 96 vertices each, both MFDs' in each mesh
     expect(frames).toHaveLength(2 * 96);
-    expect(rims).toHaveLength(2 * 96);
+    expect(named("jet-mfd-rims").getTotalVertices()).toBe(3 * 96);
     expect(screens).toHaveLength(48);
     const bezel = (k: number) => [...frames.slice(k * 96, k * 96 + 96), ...rims.slice(k * 96, k * 96 + 96)];
     for (const [k, side] of [[0, -1], [1, 1]] as const) {
@@ -1463,7 +1469,7 @@ describe("the MFDs", () => {
       seen.add(`${which}`);
     }
     expect(seen.size, "all four sides").toBe(4);
-    expect(chamfer, "four chamfer quads a frame, two triangles each, two frames").toBe(2 * 4 * 2 * 3);
+    expect(chamfer, "four chamfer quads a frame, two triangles each, two frames and the ICP's (S1)").toBe(3 * 4 * 2 * 3);
     for (const [k, { faceCentre }] of jetMfdPlacements().entries()) {
       const rim = vertices.slice(k * 96, k * 96 + 96).map((v) => Math.abs(v.z - faceCentre.z));
       const edges = [...new Set(rim.map((z) => z.toFixed(5)))].map(Number).sort((a, b) => a - b).slice(-2);
@@ -1980,7 +1986,7 @@ describe("what the frame's bottom corners see", () => {
       }
     }
     expect(sillTop, "THE CONTROL: the sill is inside the frame straight ahead").toBeGreaterThan(-frameLimit(0));
-    expect(firstHit(0, sillTop - 0.05)?.name, "and the dash is in front of it").toBe("jet-instrument-panel");
+    expect(["jet-instrument-panel", "jet-icp", "jet-mfd-rims", "jet-icp-ded"], "and the deck is in front of it (the dash, or the ICP on it)").toContain(firstHit(0, sillTop - 0.05)?.name);
     let inFrame = 0;
     for (let az = -37; az <= 37; az += 1) {
       for (let el = -23; el <= -5; el += 1) {
@@ -2616,6 +2622,233 @@ describe("the rail end's fillet (Jason's F-16 wave, S3)", () => {
   });
 });
 
+describe("the ICP (Jason's F-16 wave, S1)", () => {
+  const face = () => jetPanelFace();
+  const frameOf = () => {
+    const f = face();
+    return { up: new Vector3(f.up.x, f.up.y, 0), out: new Vector3(f.normal.x, f.normal.y, 0) };
+  };
+  /** A point's place on the ICP: across (u), up the face (v) and out of it (o), from its centre on the face. */
+  const local = (v: Vector3) => {
+    const { up, out } = frameOf();
+    const d = v.subtract(jetIcpFaceCentre());
+    return { u: d.z, v: Vector3.Dot(d, up), o: Vector3.Dot(d, out) };
+  };
+  const floorFront = JET_ICP.bezelThickness - 0.001 - JET_ICP.recess;
+  /** The pixel of a point in a 1920 x 1080 frame through the 75 degree lens. */
+  const pixel = (p: Vector3) => {
+    const d = p.subtract(EYE_POINT);
+    return { x: 960 * (1 + d.z / d.x / TAN_HALF_H), y: 540 * (1 - (d.y / d.x / TAN_HALF_H) * (16 / 9)) };
+  };
+
+  it("is a framed recessed panel between the MFDs, their size and top line, 1 cm clear of theirs: its frame and body on the frames' grey (one mesh), its rim with theirs, its DED on the rims' material; both cockpit-only", () => {
+    const icp = named("jet-icp");
+    const ded = named("jet-icp-ded");
+    expect((icp.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-icp-frame", "jet-icp-body"]);
+    expect(icp.material, "the frames' grey: no new material").toBe(named("jet-mfd-frames").material);
+    expect(ded.material, "the rims' material (their day 0.05, their night glow): no new material").toBe(named("jet-mfd-rims").material);
+    expect((ded.material as PBRMaterial).emissiveIntensity, "by day").toBeCloseTo(BEZEL_RIM.dayEmissiveIntensity, 9);
+    for (const mesh of [icp, ded]) expect((mesh.metadata as { cockpitOnly?: boolean }).cockpitOnly, mesh.name).toBe(true);
+    // the MFDs' size (0.15 overall) and their face centre's height, at z 0
+    expect(JET_ICP.height + 2 * JET_ICP.bezel).toBeCloseTo(JET_MFD.height + 2 * JET_MFD.bezel, 12);
+    expect(JET_ICP.width + 2 * JET_ICP.bezel).toBeCloseTo(0.17, 12);
+    const [port] = jetMfdPlacements();
+    expect(jetIcpFaceCentre().x).toBeCloseTo(port!.faceCentre.x, 12);
+    expect(jetIcpFaceCentre().y).toBeCloseTo(port!.faceCentre.y, 12);
+    const all = [...worldVertices(icp), ...worldVertices(named("jet-mfd-rims")).slice(2 * 96), ...worldVertices(ded)].map(local);
+    const us = all.map((q) => q.u);
+    expect(Math.max(...us)).toBeCloseTo(0.085, 6);
+    expect(Math.min(...us)).toBeCloseTo(-0.085, 6);
+    expect(JET_MFD.z - (JET_MFD.width / 2 + JET_MFD.bezel) - 0.085, "clear of the MFDs' frames").toBeCloseTo(0.01, 9);
+    // the same top and bottom as the MFDs' frames, up the face
+    expect(Math.max(...all.map((q) => q.v))).toBeCloseTo(0.075, 6);
+    expect(Math.min(...all.map((q) => q.v))).toBeCloseTo(-0.075, 6);
+    // RECESSED: the floor's front 3 mm behind the frame's front, on the dash's material (the board's last part, a slab
+    // 0.5 mm into the frame's inner walls all round); nothing of the ICP in front of the frame but the keys' and the
+    // rockers' tops (1 and 2 mm)
+    expect(JET_ICP.bezelThickness - 0.001 - floorFront).toBeCloseTo(0.003, 12);
+    const floor = worldVertices(named("jet-instrument-panel")).slice(-36).map(local);
+    expect(Math.max(...floor.map((q) => q.o))).toBeCloseTo(floorFront, 6);
+    expect(Math.max(...floor.map((q) => q.u))).toBeCloseTo(JET_ICP.width / 2 + JET_ICP.gap + 0.0005, 6);
+    expect(Math.max(...floor.map((q) => q.v))).toBeCloseTo(JET_ICP.height / 2 + JET_ICP.gap + 0.0005, 6);
+    expect(Math.max(...all.map((q) => q.o))).toBeCloseTo(floorFront + JET_ICP.rocker.proud, 6);
+    expect(Math.min(...all.map((q) => q.o)), "its back 1 mm into the dash").toBeCloseTo(-0.001, 6);
+  });
+
+  it("carries the DED in a raised lip, a 3 x 4 key block 4 mm proud with its top edges rounded at 1 mm and shaded as rounds, and a two-way rocker each side, 5 mm proud", () => {
+    const icp = named("jet-icp");
+    const vertices = worldVertices(icp).map(local);
+    const normals = icp.getVerticesData(VertexBuffer.NormalKind)!;
+    const { up, out } = frameOf();
+    const k = JET_ICP.key;
+    expect(jetIcpKeyCentres()).toHaveLength(12);
+    // each key's flat top, inset by its round, at 4 mm proud of the floor
+    for (const [index, c] of jetIcpKeyCentres().entries()) {
+      for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+        const want = { u: c.u + a * (k.width / 2 - k.radius), v: c.v + b * (k.height / 2 - k.radius), o: floorFront + k.proud };
+        expect(vertices.some((q) => Math.abs(q.u - want.u) < 1e-6 && Math.abs(q.v - want.v) < 1e-6 && Math.abs(q.o - want.o) < 1e-6), `key ${index}'s top corner (${a}, ${b})`).toBe(true);
+      }
+    }
+    // THE ROUNDS shaded as rounds: every vertex on a key's round (between its wall's top and its top) takes cos of its
+    // angle of the side's direction and sin of it out of the face
+    let rounded = 0;
+    for (const [i, q] of vertices.entries()) {
+      const rise = q.o - (floorFront + k.proud - k.radius);
+      if (rise < 1e-6 || rise > k.radius - 1e-6) continue;
+      const key = jetIcpKeyCentres().find((c) => Math.abs(q.u - c.u) <= k.width / 2 + 1e-6 && Math.abs(q.v - c.v) <= k.height / 2 + 1e-6);
+      if (!key) continue;
+      const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
+      const angle = Math.asin(Math.min(1, rise / k.radius));
+      expect(Vector3.Dot(n, out), `key vertex ${i}: out of the face`).toBeCloseTo(Math.sin(angle), 5);
+      const sideways = n.subtract(out.scale(Vector3.Dot(n, out)));
+      expect(sideways.length(), `key vertex ${i}: toward its side`).toBeCloseTo(Math.cos(angle), 5);
+      expect(Math.abs(Vector3.Dot(sideways, up)) + Math.abs(sideways.z), "along one side's direction").toBeCloseTo(Math.cos(angle), 5);
+      rounded += 1;
+    }
+    expect(rounded, "the keys' rounds' inner layers").toBeGreaterThan(12 * 4 * 6);
+    // the rockers: each two halves either side of a 2 mm seam, 5 mm proud, at u +-0.047
+    const r = JET_ICP.rocker;
+    for (const side of [-1, 1]) {
+      const tops = vertices.filter((q) => Math.abs(q.o - (floorFront + r.proud)) < 1e-6 && Math.abs(q.u - side * r.u) < r.width / 2);
+      expect(tops.length, `the rocker at ${side}: its halves' tops`).toBeGreaterThanOrEqual(2 * 6);
+      const vs = [...new Set(tops.map((q) => q.v.toFixed(5)))].map(Number).sort((a, b) => a - b);
+      expect(vs[vs.length - 1]! - vs[0]!, "two halves, their tops apart").toBeCloseTo(2 * r.half + r.seam - 2 * r.radius, 5);
+    }
+    // THE DED: a strip 1 mm proud in a lip 2 mm wide and 2 mm proud
+    const d = JET_ICP.ded;
+    const ded = worldVertices(named("jet-icp-ded")).map(local);
+    expect(Math.max(...ded.map((q) => q.u)) - Math.min(...ded.map((q) => q.u))).toBeCloseTo(d.width, 6);
+    expect(Math.max(...ded.map((q) => q.v)) - Math.min(...ded.map((q) => q.v))).toBeCloseTo(d.height, 6);
+    expect(Math.max(...ded.map((q) => q.o))).toBeCloseTo(floorFront + d.proud, 6);
+    const lip = vertices.filter((q) => Math.abs(q.o - (floorFront + d.lipProud)) < 1e-6);
+    expect(Math.max(...lip.map((q) => q.u))).toBeCloseTo(d.width / 2 + d.lip, 6);
+  });
+
+  it("ACCEPT at 1080p: the gap between the MFDs 88% covered (11k px bare, of 35k allowed), twelve keys each 23 px or more, its top under the cove's foot and all of it under the HUD's symbology (CONTROL: without the ICP the gap is bare)", () => {
+    // 0 the dash (the board but its last part), 1 the ICP, 2 its DED, 3 the rims, 4 the MFD frames, 5 the screens, 6 the
+    // ICP's floor (the board's last part, its twelve triangles)
+    const deck = ["jet-instrument-panel", "jet-icp", "jet-icp-ded", "jet-mfd-rims", "jet-mfd-frames", "jet-screens"].map(named);
+    const tris: number[] = [];
+    const ids: number[] = [];
+    deck.forEach((mesh, id) => {
+      const all = worldTriangles(mesh);
+      for (const [k, t] of all.entries()) {
+        tris.push(t.a.x, t.a.y, t.a.z, t.b.x, t.b.y, t.b.z, t.c.x, t.c.y, t.c.z);
+        ids.push(id === 0 && k >= all.length - 12 ? 6 : id);
+      }
+    });
+    // each triangle as its first corner and its two edges from it, precomputed
+    const count = ids.length;
+    const T = new Float64Array(count * 9);
+    for (let t = 0; t < count; t += 1) {
+      const o = t * 9;
+      for (let k = 0; k < 3; k += 1) {
+        T[o + k] = tris[o + k]!;
+        T[o + 3 + k] = tris[o + 3 + k]! - tris[o + k]!;
+        T[o + 6 + k] = tris[o + 6 + k]! - tris[o + k]!;
+      }
+    }
+    const I = Int32Array.from(ids);
+    /** The first of the deck's meshes along `d` from the eye (Moller-Trumbore, either side), its index, or -1, and how far. */
+    let nearest = Number.POSITIVE_INFINITY;
+    const first = (d: Vector3, skipA = -1, skipB = -1, skipC = -1) => {
+      let best = Number.POSITIVE_INFINITY;
+      let which = -1;
+      const dx = d.x;
+      const dy = d.y;
+      const dz = d.z;
+      for (let t = 0; t < count; t += 1) {
+        const id = I[t]!;
+        if (id === skipA || id === skipB || id === skipC) continue;
+        const o = t * 9;
+        const e1x = T[o + 3]!;
+        const e1y = T[o + 4]!;
+        const e1z = T[o + 5]!;
+        const e2x = T[o + 6]!;
+        const e2y = T[o + 7]!;
+        const e2z = T[o + 8]!;
+        const px = dy * e2z - dz * e2y;
+        const py = dz * e2x - dx * e2z;
+        const pz = dx * e2y - dy * e2x;
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (det > -1e-14 && det < 1e-14) continue;
+        const sx = EYE.forward - T[o]!;
+        const sy = EYE.up - T[o + 1]!;
+        const sz = EYE.right - T[o + 2]!;
+        const u = (sx * px + sy * py + sz * pz) / det;
+        if (u < 0 || u > 1) continue;
+        const qx = sy * e1z - sz * e1y;
+        const qy = sz * e1x - sx * e1z;
+        const qz = sx * e1y - sy * e1x;
+        const v = (dx * qx + dy * qy + dz * qz) / det;
+        if (v < 0 || u + v > 1) continue;
+        const distance = (e2x * qx + e2y * qy + e2z * qz) / det;
+        if (distance > 1e-9 && distance < best) {
+          best = distance;
+          which = id;
+        }
+      }
+      nearest = best;
+      return which;
+    };
+    // the gap: between the MFD frames' inner edges on the face (projected, a straight line in the picture), from the
+    // cove's foot's row to the frame's bottom; every other pixel both ways, counted four times
+    const { up } = frameOf();
+    const centre = jetIcpFaceCentre();
+    const inner = JET_MFD.z - (JET_MFD.width / 2 + JET_MFD.bezel);
+    const edge = (u: number) => [pixel(centre.add(new Vector3(0, 0, u)).add(up.scale(-0.3))), pixel(centre.add(new Vector3(0, 0, u)).add(up.scale(0.1)))] as const;
+    const [left, right] = [edge(-inner), edge(inner)];
+    const edgeAt = ([a, b]: readonly [{ x: number; y: number }, { x: number; y: number }], y: number) => a.x + ((y - a.y) * (b.x - a.x)) / (b.y - a.y);
+    const foot = jetCoveFoot();
+    const footRow = Math.ceil(pixel(new Vector3(foot.x, foot.y, 0)).y);
+    const ray = (x: number, y: number) => {
+      const u = ((x + 0.5) / 960 - 1) * TAN_HALF_H;
+      const w = -((y + 0.5) / 540 - 1) * (TAN_HALF_H / (16 / 9));
+      return new Vector3(1, w, u).normalize();
+    };
+    let [gap, bare, control] = [0, 0, 0];
+    for (let y = footRow; y < 1080; y += 2) {
+      const [from, to] = [Math.ceil(edgeAt(left, y + 0.5) - 0.5), Math.floor(edgeAt(right, y + 0.5) - 0.5)];
+      for (let x = from; x <= to; x += 2) {
+        gap += 4;
+        const d = ray(x, y);
+        if (first(d) === 0) bare += 4;
+        // the CONTROL: the ICP's body, its DED and its floor left out
+        if (first(d, 1, 2, 6) === 0) control += 4;
+      }
+    }
+    console.info(`F-16 ICP gap at 1080p: ${gap} px, bare ${bare} (without the ICP ${control})`);
+    expect(gap).toBeGreaterThan(85000);
+    expect(bare, "bare dash in the gap").toBeLessThanOrEqual(35000);
+    expect(control, "CONTROL: the gap bare without the ICP").toBeGreaterThan(80000);
+    // THE KEYS: each whole in the frame, first seen, 18 px or more each way
+    const { out } = frameOf();
+    const at = (u: number, v: number, o: number) => centre.add(new Vector3(0, 0, u)).add(up.scale(v)).add(out.scale(o));
+    const k = JET_ICP.key;
+    const sizes = jetIcpKeyCentres().map((c) => {
+      const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => pixel(at(c.u + (a! * k.width) / 2, c.v + (b! * k.height) / 2, floorFront + k.proud)));
+      // (off the top's diagonal, where its two triangles meet and a ray can pass between them)
+      const middle = at(c.u + k.width / 5, c.v + k.height / 7, floorFront + k.proud);
+      // first seen, at its top: the ray meets the key's own top, not the floor under it
+      expect(first(middle.subtract(EYE_POINT).normalize()), `key (${c.u}, ${c.v}) first seen`).toBe(1);
+      expect(nearest, `key (${c.u}, ${c.v}): its top`).toBeCloseTo(Vector3.Distance(EYE_POINT, middle), 5);
+      expect(Math.max(...corners.map((q) => q.y)), "in the frame").toBeLessThan(1080);
+      return Math.min(Math.max(...corners.map((q) => q.x)) - Math.min(...corners.map((q) => q.x)), Math.max(...corners.map((q) => q.y)) - Math.min(...corners.map((q) => q.y)));
+    });
+    console.info(`F-16 ICP keys at 1080p: the smallest side ${Math.min(...sizes).toFixed(1)} px`);
+    expect(sizes).toHaveLength(12);
+    for (const size of sizes) expect(size).toBeGreaterThanOrEqual(18);
+    // ITS TOP UNDER THE COVE'S FOOT (the MFDs' 0.3 degree), and all of it under the HUD's symbology's lowest box (-4.3)
+    // and the deck line
+    const row = (v: Vector3) => (v.y - EYE.up) / (v.x - EYE.forward);
+    const icp = [...worldVertices(named("jet-icp")), ...worldVertices(named("jet-icp-ded"))];
+    const top = Math.max(...icp.map(row));
+    expect(Math.atan(row(new Vector3(foot.x, foot.y, 0))) * DEG - Math.atan(top) * DEG, "under the cove's foot").toBeGreaterThan(0.29);
+    for (const v of icp) expect(azel(v).el).toBeLessThan(-4.3);
+    expect(Math.atan(top) * DEG).toBeLessThan(-aircraftSpec("jet").cockpitDeckLineDegrees);
+  });
+});
+
 describe("nothing else moved: the gate against f9d2672", () => {
   /**
    * Every jet mesh that phase F1 did NOT set out to touch, with its digest of WORLD positions and indices at
@@ -2696,7 +2929,7 @@ describe("nothing else moved: the gate against f9d2672", () => {
    * F1 rebuilt or added the first three; F2 added the MFDs' two; the F-16 pass's step 2 the housing and the combiner;
    * step 3b split the MFDs' bezels into their frames and their rims; step 4 added the sills.
    */
-  const REBUILT = ["jet-glare-shield", "jet-instrument-panel", "jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills"];
+  const REBUILT = ["jet-glare-shield", "jet-instrument-panel", "jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills", "jet-icp", "jet-icp-ded"];
   const GONE = ["airspeed", "attitude", "altimeter", "engine", "vertical-speed"].flatMap((dial) => [`jet-${dial}-gauge`, `jet-${dial}-needle`]);
   // (There was a second whole-airframe gate here for the trainer, the Global and the 747, pinned at f9d2672.
   // `render.loft-crown-seam.test.ts` already pins those three whole, so every legitimate change to them had to be
@@ -2720,7 +2953,7 @@ describe("nothing else moved: the gate against f9d2672", () => {
     };
   }
 
-  it("keeps every jet mesh outside the cockpit's nine where f9d2672 had it (world positions to the micrometre, and indices), mesh by mesh, and has exactly those nine besides", () => {
+  it("keeps every jet mesh outside the cockpit's eleven where f9d2672 had it (world positions to the micrometre, and indices), mesh by mesh, and has exactly those eleven besides", () => {
     const jet = built("jet");
     try {
       const byName = new Map(jet.meshes.map((mesh) => [mesh.name, mesh]));
@@ -2738,16 +2971,16 @@ describe("nothing else moved: the gate against f9d2672", () => {
       }
       expect(moved, "meshes that moved since f9d2672").toEqual([]);
       for (const name of GONE) expect(byName.has(name), name).toBe(false);
-      // 78 -> 69 -> 71 -> 73 -> 74 -> 75: twelve gone in F1 (the ten dials and needles, the old glare-shield box and
-      // the old panel), three there, F2's two MFD meshes, step 2's HUD housing and its combiner's panes, step 3b's MFD
-      // frames and rims apart, and step 4's sills
-      expect(jet.meshes).toHaveLength(75);
+      // 78 -> 69 -> 71 -> 73 -> 74 -> 75 -> 77: twelve gone in F1 (the ten dials and needles, the old glare-shield box
+      // and the old panel), three there, F2's two MFD meshes, step 2's HUD housing and its combiner's panes, step 3b's
+      // MFD frames and rims apart, step 4's sills, and the wave's S1 the ICP and its DED
+      expect(jet.meshes).toHaveLength(77);
     } finally {
       jet.dispose();
     }
   });
 
-  it("spends 174 draws outside cockpit view (184 at f9d2672: the ten dials and needles are gone), and in it the cockpit camera trades the skin's three for the kit's seven, one of them the combiner's alpha draw", () => {
+  it("spends 174 draws outside cockpit view (184 at f9d2672: the ten dials and needles are gone), and in it the cockpit camera trades the skin's three for the kit's nine (the ICP and its DED two of them, S1), one of them the combiner's alpha draw", () => {
     const jet = built("jet");
     try {
       const casts = (mesh: AbstractMesh) => (mesh.metadata as { castsShadow?: boolean } | null)?.castsShadow !== false;
@@ -2762,18 +2995,18 @@ describe("nothing else moved: the gate against f9d2672", () => {
       expect(outside).toHaveLength(66);
       expect(outside.filter(casts)).toHaveLength(54);
       expect(outside.length + 2 * outside.filter(casts).length).toBe(174);
-      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills"]) expect(outside.map((mesh) => mesh.name), "a cockpit-only mesh outside").not.toContain(name);
+      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills", "jet-icp", "jet-icp-ded"]) expect(outside.map((mesh) => mesh.name), "a cockpit-only mesh outside").not.toContain(name);
       // IN COCKPIT VIEW, through the visual's own setCockpitView and counted by what the COCKPIT camera draws:
       // the frame appears, and the fuselage, radome and dorsal spine drop out of its layer mask (the canopy stays,
       // at the cockpit alpha). (A first version set the
       // frame visible by hand and ignored the mask, and reported a colour-pass count no camera draws.)
       jet.visual.setCockpitView(true);
       const inside = jet.meshes.filter(drawnBy(cockpitMask));
-      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills"]) expect(inside.map((mesh) => mesh.name)).toContain(name);
+      for (const name of ["jet-hud-frame", "jet-hud-housing", "jet-hud-combiner", "jet-mfd-frames", "jet-mfd-rims", "jet-screens", "jet-sills", "jet-icp", "jet-icp-ded"]) expect(inside.map((mesh) => mesh.name)).toContain(name);
       const hiddenByMask = outside.filter((mesh) => (mesh.layerMask & cockpitMask) === 0).map((mesh) => mesh.name).sort();
       expect(hiddenByMask, "what the cockpit camera does not draw").toEqual(jet.visual.cockpitParts.map((mesh) => mesh.name).sort());
       expect(hiddenByMask, "NON-VACUITY: the mask hides something").toHaveLength(3);
-      expect(inside).toHaveLength(outside.length - hiddenByMask.length + 7);
+      expect(inside).toHaveLength(outside.length - hiddenByMask.length + 9);
       // the one alpha draw the kit adds: the combiner's two panes, one mesh (the canopy's is the airframe's own)
       const blended = (mesh: AbstractMesh) => (mesh.material as PBRMaterial | null)?.needAlphaBlendingForMesh(mesh) ?? false;
       expect(inside.filter(blended).map((mesh) => mesh.name).sort()).toEqual(["jet-bubble-canopy", "jet-hud-combiner"]);
