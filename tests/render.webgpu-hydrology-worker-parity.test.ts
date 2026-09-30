@@ -8,6 +8,11 @@ import {
   type HydrologyGenerationResult,
 } from "../src/render/webgpu/water/HydrologyGeneration";
 import { HydrologyGenerationClient } from "../src/render/webgpu/water/HydrologyGenerationClient";
+import { hydrologyClimateSamplerFor } from "../src/render/webgpu/water/hydrologyClimate";
+import {
+  buildAnalyticRegionMeshArrays,
+  packHydrologyMeshArrays,
+} from "../src/render/webgpu/water/hydrologyMeshArrays";
 import {
   resolveHydrologyPagingConfig,
   selectHydrologyRegion,
@@ -59,8 +64,10 @@ beforeAll(async () => {
     addEventListener: (type: string, listener: Listener) => {
       if (type === "message") workerListeners.push(listener);
     },
-    postMessage: (event: unknown) => {
-      workerPosts.push(structuredClone(event) as HydrologyWorkerEvent);
+    // Clone WITH the transfer list, as a real worker boundary does: a bad or
+    // duplicated transferable throws here exactly as it would in a browser.
+    postMessage: (event: unknown, transfer: Transferable[] = []) => {
+      workerPosts.push(structuredClone(event, { transfer }) as HydrologyWorkerEvent);
     },
   });
   await import("../src/workers/hydrology.worker");
@@ -73,6 +80,36 @@ afterAll(() => {
 function sendToWorker(command: HydrologyWorkerCommand): void {
   const cloned = structuredClone(command);
   for (const listener of workerListeners) listener({ data: cloned });
+}
+
+type PackedGeometry = {
+  rivers: ReturnType<typeof packHydrologyMeshArrays>;
+  lakes: ReturnType<typeof packHydrologyMeshArrays>;
+};
+const LANES = ["positions", "normals", "uvs", "indices", "flowData", "waterData", "waterChemistry"] as const;
+
+/**
+ * Byte equality of two packed geometries, lane by lane: same array TYPE (the
+ * index width decides the GPU index format), same length, same bytes.
+ * `toEqual` over ~10^6 typed-array elements was most of this file's runtime.
+ */
+function expectSameGeometry(actual: PackedGeometry | undefined, expected: PackedGeometry, label: string): void {
+  expect(actual, label).toBeDefined();
+  for (const part of ["rivers", "lakes"] as const) {
+    const a = actual![part];
+    const e = expected[part];
+    expect(a === null, `${label} ${part} presence`).toBe(e === null);
+    if (!a || !e) continue;
+    for (const lane of LANES) {
+      const x = a[lane];
+      const y = e[lane];
+      expect(x.constructor.name, `${label} ${part}.${lane} type`).toBe(y.constructor.name);
+      expect(x.length, `${label} ${part}.${lane} length`).toBe(y.length);
+      const same = Buffer.from(x.buffer, x.byteOffset, x.byteLength)
+        .equals(Buffer.from(y.buffer, y.byteOffset, y.byteLength));
+      expect(same, `${label} ${part}.${lane} bytes`).toBe(true);
+    }
+  }
 }
 
 /** What HydrologySystem resolves from FlightRenderer's options (functions included). */
@@ -103,6 +140,7 @@ function regionsAroundAirport(world: WorldDefinition, config: HydrologyGeneratio
 
 describe("hydrology worker parity with the main-thread fallback", () => {
   let featureCount = 0;
+  let geometryVertices = 0;
 
   for (const seed of SEEDS) {
     it(`generates identical water around the spawn airport of "${seed}"`, () => {
@@ -137,14 +175,34 @@ describe("hydrology worker parity with the main-thread fallback", () => {
         );
 
         workerPosts.length = 0;
-        sendToWorker({ type: "generate", requestId: index + 1, generation: index + 1, key: region.key, options });
+        sendToWorker({
+          type: "generate", requestId: index + 1, generation: index + 1, key: region.key, options,
+          buildGeometry: true,
+        });
         const event = workerPosts.at(-1);
         expect(event?.type, `worker failed on region ${region.key}`).toBe("region");
-        const worker = (event as Extract<HydrologyWorkerEvent, { type: "region" }>).hydrology;
+        const region_ = event as Extract<HydrologyWorkerEvent, { type: "region" }>;
+        const worker = region_.hydrology;
 
         expect(main).not.toBeNull();
         expect(worker).toEqual(main);
         featureCount += worker.rivers.length + worker.lakes.length;
+
+        // P2b gate: the worker-built vertex arrays equal the main thread's,
+        // built from the same hydrology with the renderer's ground sampler
+        // (FlightGame's world) and the shared climate sampler.
+        const mainArrays = buildAnalyticRegionMeshArrays(
+          main!,
+          (x, z) => sampleTerrain(world, x, z).height,
+          hydrologyClimateSamplerFor(world),
+          config.seaLevel,
+        );
+        expectSameGeometry(region_.geometry, {
+          rivers: packHydrologyMeshArrays(mainArrays.rivers),
+          lakes: packHydrologyMeshArrays(mainArrays.lakes),
+        }, `${seed} ${region.key}`);
+        geometryVertices += (region_.geometry?.lakes?.positions.length ?? 0) / 3
+          + (region_.geometry?.rivers?.positions.length ?? 0) / 3;
       });
       fallback.dispose();
     }, 60_000);
@@ -154,6 +212,8 @@ describe("hydrology worker parity with the main-thread fallback", () => {
     // Non-vacuity: equal empty results would prove nothing about placement.
     // Measured 2026-09-29: 14 lakes over the 30 regions above, and no rivers.
     expect(featureCount).toBeGreaterThan(0);
+    // And the geometry comparison met real vertices, not empty meshes.
+    expect(geometryVertices).toBeGreaterThan(10_000);
   });
 
   it("traces identical rivers when the config forces the tracer to run", () => {
@@ -184,11 +244,24 @@ describe("hydrology worker parity with the main-thread fallback", () => {
       fallback.dispose();
       sendToWorker({ type: "initialize", worldSeed: world.seed });
       workerPosts.length = 0;
-      sendToWorker({ type: "generate", requestId: 100 + index, generation: 1, key: "0:0", options });
+      sendToWorker({
+        type: "generate", requestId: 100 + index, generation: 1, key: "0:0", options, buildGeometry: true,
+      });
       const event = workerPosts.at(-1) as Extract<HydrologyWorkerEvent, { type: "region" }>;
       expect(event?.type).toBe("region");
       expect(event.hydrology).toEqual(main);
       riverPoints += event.hydrology.rivers.reduce((sum, river) => sum + river.points.length, 0);
+      const mainArrays = buildAnalyticRegionMeshArrays(
+        main!,
+        (x, z) => sampleTerrain(world, x, z).height,
+        hydrologyClimateSamplerFor(world),
+        systemGenerationConfig(world).seaLevel,
+      );
+      expect(event.geometry?.rivers, `${seed}: river ribbons were built`).not.toBeNull();
+      expectSameGeometry(event.geometry, {
+        rivers: packHydrologyMeshArrays(mainArrays.rivers),
+        lakes: packHydrologyMeshArrays(mainArrays.lakes),
+      }, `${seed} rivers`);
     }
     // Measured: 4 rivers, 49 points over the three regions.
     expect(riverPoints).toBeGreaterThan(0);

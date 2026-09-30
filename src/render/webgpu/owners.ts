@@ -690,9 +690,6 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       // shader library so a second copy cannot appear beside HydrologySystem's
       // material — the same rule, applied to a block only one surface uses.
       "WATER_CHANNEL_FLOW_WGSL",
-      "waterChannelGradePayload",
-      "waterLakeFetchPayload",
-      "waterLakeEffectiveFetchMeters",
       "waterStandingWave",
       "waterLakeChop",
       "waterFlowPhase",
@@ -706,6 +703,26 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "channel-flow block and its TypeScript parity oracle: the payload "
       + "encoders are the single authority for what HydrologySystem writes "
       + "into waterData.w and what the shader decodes from it.",
+  },
+  {
+    // P2b (2026-09-29): the per-vertex `waterData.w` payload encodings moved
+    // out of WaterShaders.ts into a Babylon-free module, because the
+    // hydrology WORKER now builds region vertex arrays and must not import
+    // Babylon. WaterShaders imports them back for its WGSL and re-exports
+    // them, so they are still defined exactly once.
+    artifact: "water-vertex-payload",
+    owner: "water",
+    definitionSites: ["src/render/webgpu/water/waterVertexPayload.ts"],
+    consumers: ["water"],
+    ownedSymbols: [
+      "waterChannelGradePayload",
+      "waterLakeFetchPayload",
+      "waterLakeEffectiveFetchMeters",
+    ],
+    notes:
+      "The sentinel and the river-grade / lake-fetch encodings the vertex "
+      + "builders write and WATER_CHANNEL_FLOW_WGSL decodes; one set of "
+      + "numbers for both languages.",
   },
   {
     // 2-11: the CPU array-mip reducer (Babylon mips only layer 0 of a

@@ -37,10 +37,21 @@
  */
 
 import type { WaterOpticalType } from "./WaterShaders";
-import {
-  WATER_PURE_ABSORPTION_PER_METER,
-  WATER_PURE_BACKSCATTER_PER_METER,
-} from "./WaterShaders";
+
+/**
+ * (Defined here, not in WaterShaders.ts, since P2b: the hydrology worker
+ * builds lake vertex chemistry and must not import Babylon. WaterShaders
+ * imports and re-exports these, so they are still typed once.)
+ *
+ * Pure water itself, at those three band centres: Pope & Fry (1997)
+ * absorption (0.2755 / 0.0565 / 0.0098 per metre at 620 / 550 / 460 nm) and
+ * Morel's molecular scattering as Twardowski et al. (2007) fit it,
+ * `b_w = 3.50e-3 (lambda/450)^-4.32`, raised 1.30x for sea salt and halved
+ * into the backward hemisphere. Nothing in the tree may re-type these: every
+ * water type is these numbers plus its own constituents.
+ */
+export const WATER_PURE_ABSORPTION_PER_METER = Object.freeze([0.2755, 0.0565, 0.0098] as const);
+export const WATER_PURE_BACKSCATTER_PER_METER = Object.freeze([0.00057, 0.00096, 0.00207] as const);
 
 /** The four concentrations a water type is made of. */
 export interface WaterConstituents {
