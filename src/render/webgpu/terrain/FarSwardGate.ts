@@ -257,12 +257,28 @@ fn terrainFarSwardEligible(pair: vec3f) -> bool {
       || pair.z < ${TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE});
 }
 
-// The stored gate of a texel for this season blend (farSwardGateDecode).
-fn terrainFarSwardGateAt(texel: vec2i, blend: f32) -> f32 {
-  let code = u32(round(textureLoad(terrainSplatWeightHi, texel, 0).a * 3.0));
+// A stored gate for this season blend (farSwardGateDecode).
+fn terrainFarSwardGateDecode(stored: f32, blend: f32) -> f32 {
+  let code = u32(round(stored * 3.0));
   let low = f32(code & 1u);
   let high = f32((code >> 1u) & 1u);
   return select(low * (1.0 - blend) + high * blend, low, low == high);
+}
+
+// The four corners' stored gates, (0,0), (1,0), (0,1), (1,1) from corner, in
+// ONE gather rather than four loads (V-4 step 2: four loads priced +0.14 ms at
+// cruise against a 0.10 bar). Gathered at the corners' shared point, (corner +
+// 1) / edge, so the footprint is exactly corner..corner + 1 whatever the
+// sampler's sub-texel precision. WGSL returns (umin, vmax), (umax, vmax),
+// (umax, vmin), (umin, vmin).
+fn terrainFarSwardGatesAt(corner: vec2i, blend: f32) -> vec4f {
+  let stored = textureGather(3, terrainSplatWeightHi, terrainSplatWeightHiSampler,
+    (vec2f(corner) + vec2f(1.0)) / uniforms.terrainPageAtlas.x);
+  return vec4f(
+    terrainFarSwardGateDecode(stored.w, blend),
+    terrainFarSwardGateDecode(stored.z, blend),
+    terrainFarSwardGateDecode(stored.x, blend),
+    terrainFarSwardGateDecode(stored.y, blend));
 }
 
 // The pair moved toward Grass by the gate (farSwardTowardGrass).
@@ -274,9 +290,9 @@ fn terrainFarSwardTowardGrass(pair: vec3f, gate: f32) -> vec3f {
   return vec3f(pair.x, grass, 1.0 - 2.0 * gate);
 }
 
-// V-4, the SOFT read (farSwardSoftSplat): four gate loads, the nearest pair's
-// three, and three more only where the nearest texel is refused beside one
-// that is not.
+// V-4, the SOFT read (farSwardSoftSplat): the nearest pair's three loads, one
+// gather of the four corners' gates, and three more loads only where the
+// nearest texel is refused beside one that is not.
 fn terrainSurfaceSoftSplat(atlasPosition: vec2f, blend: f32) -> vec4f {
   let cheap = vec4f(terrainSurfaceNearestSplat(atlasPosition, blend), -1.0);
   // A refused pair at zero trust, as CHEAP hands over a refused texel.
@@ -284,11 +300,7 @@ fn terrainSurfaceSoftSplat(atlasPosition: vec2f, blend: f32) -> vec4f {
   let base = floor(atlasPosition);
   let fraction = atlasPosition - base;
   let corner = vec2i(base);
-  let gates = vec4f(
-    terrainFarSwardGateAt(corner, blend),
-    terrainFarSwardGateAt(corner + vec2i(1, 0), blend),
-    terrainFarSwardGateAt(corner + vec2i(0, 1), blend),
-    terrainFarSwardGateAt(corner + vec2i(1, 1), blend));
+  let gates = terrainFarSwardGatesAt(corner, blend);
   if (all(gates == vec4f(1.0)) || all(gates == vec4f(0.0))) { return cheap; }
   let weights = vec4f(
     (1.0 - fraction.x) * (1.0 - fraction.y),

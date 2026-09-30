@@ -292,7 +292,13 @@ describe("V-4: the soft read in the shaders", () => {
     expect(FAR_SWARD_SOFT_READ_WGSL).toContain(
       "if (all(gates == vec4f(1.0)) || all(gates == vec4f(0.0))) { return cheap; }");
     const soft = FAR_SWARD_SOFT_READ_WGSL.slice(FAR_SWARD_SOFT_READ_WGSL.indexOf("fn terrainSurfaceSoftSplat("));
-    expect([...soft.matchAll(/terrainFarSwardGateAt\(/gu)]).toHaveLength(4);
+    // The four gates in ONE gather at the corners' shared point, mapped out of
+    // WGSL's (umin, vmax), (umax, vmax), (umax, vmin), (umin, vmin) order.
+    expect([...soft.matchAll(/terrainFarSwardGatesAt\(/gu)]).toHaveLength(1);
+    expect(FAR_SWARD_SOFT_READ_WGSL).toContain(
+      "textureGather(3, terrainSplatWeightHi, terrainSplatWeightHiSampler,\n    (vec2f(corner) + vec2f(1.0)) / uniforms.terrainPageAtlas.x);");
+    expect(FAR_SWARD_SOFT_READ_WGSL).toMatch(
+      /terrainFarSwardGateDecode\(stored\.w, blend\),\s+terrainFarSwardGateDecode\(stored\.z, blend\),\s+terrainFarSwardGateDecode\(stored\.x, blend\),\s+terrainFarSwardGateDecode\(stored\.y, blend\)\)/u);
     expect([...soft.matchAll(/terrainSurfaceSplatAt\(/gu)]).toHaveLength(1);
     expect(soft.indexOf("terrainSurfaceSplatAt(")).toBeGreaterThan(soft.indexOf("if (!terrainFarSwardEligible(pair)) {"));
   });

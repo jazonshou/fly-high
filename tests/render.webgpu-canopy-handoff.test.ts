@@ -657,9 +657,10 @@ describe("6-8's closure channel costs no atlas bytes and no fragment sampler", (
       .map((file) => readFileSync(new URL(`../src/render/webgpu/terrain/${file}`, import.meta.url), "utf8"))
       .join("\n");
     // Every read of a high-bucket alpha is the gate's; every closure read is the low bucket's.
-    const highAlpha = [...terrainSource.matchAll(/textureLoad\(terrainSplatWeightHi[^;]*\)\.a|storedHi\.[aw]\b/gu)];
-    expect(highAlpha.map((match) => match[0])).toEqual(["textureLoad(terrainSplatWeightHi, texel, 0).a"]);
-    expect(terrainSource).toContain("fn terrainFarSwardGateAt(texel: vec2i, blend: f32) -> f32 {");
+    const highAlpha = [...terrainSource.matchAll(
+      /textureLoad\(terrainSplatWeightHi[^;]*\)\.a|storedHi\.[aw]\b|textureGather\(3, terrainSplatWeightHi/gu)];
+    expect(highAlpha.map((match) => match[0])).toEqual(["textureGather(3, terrainSplatWeightHi"]);
+    expect(terrainSource).toContain("fn terrainFarSwardGatesAt(corner: vec2i, blend: f32) -> vec4f {");
     expect(terrainSource).not.toMatch(/mix\(storedLo, storedHi/u);
   });
 
