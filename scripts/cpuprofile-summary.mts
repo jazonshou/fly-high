@@ -9,8 +9,9 @@
  * Usage: tsx scripts/cpuprofile-summary.mts <file.cpuprofile> [topN]
  */
 import { readFileSync } from "node:fs";
+import { originOf } from "./sourceMapLookup.mts";
 
-interface CallFrame { functionName: string; url: string; lineNumber: number }
+interface CallFrame { functionName: string; url: string; lineNumber: number; originalSource?: string }
 interface ProfileNode { id: number; callFrame: CallFrame; children?: number[] }
 interface CpuProfile {
   nodes: ProfileNode[];
@@ -38,6 +39,23 @@ for (let i = 0; i < profile.samples.length; i += 1) {
 }
 const totalUs = profile.endTime - profile.startTime;
 
+/** The original source when throttle-probe stamped one, else the served URL. */
+function sourceOf(frame: CallFrame): string {
+  return frame.originalSource ?? frame.url;
+}
+/** Whose code: ours, Babylon, React, other deps, or the engine's own buckets. */
+function origin(frame: CallFrame): string {
+  const name = frame.functionName;
+  if (name === "(idle)") return "(idle)";
+  if (name === "(garbage collector)") return "(garbage collector)";
+  if (name === "(program)") return "(program: browser native)";
+  if (name === "(root)") return "(root)";
+  const source = sourceOf(frame);
+  if (!source) return "(native/builtin)";
+  const dependency = /node_modules/.test(frame.url);
+  if (dependency && !frame.originalSource) return "unmapped dep";
+  return originOf(source, dependency);
+}
 function shortUrl(url: string): string {
   if (!url) return "(native)";
   const clean = url.replace(/\?.*$/, "");
@@ -48,17 +66,21 @@ function shortUrl(url: string): string {
   return clean.split("/").slice(-2).join("/");
 }
 function key(frame: CallFrame): string {
-  return `${frame.functionName || "(anonymous)"} ${shortUrl(frame.url)}:${frame.lineNumber + 1}`;
+  const where = frame.originalSource ? shortUrl(frame.originalSource) : `${shortUrl(frame.url)}:${frame.lineNumber + 1}`;
+  return `${frame.functionName || "(anonymous)"} ${where}`;
 }
 
 const selfByFn = new Map<string, number>();
 const selfByFile = new Map<string, number>();
+const selfByOrigin = new Map<string, number>();
 const inclusiveByFn = new Map<string, number>();
 for (const [id, us] of selfUs) {
   const node = byId.get(id)!;
   selfByFn.set(key(node.callFrame), (selfByFn.get(key(node.callFrame)) ?? 0) + us);
-  const f = shortUrl(node.callFrame.url);
+  const f = shortUrl(sourceOf(node.callFrame));
   selfByFile.set(f, (selfByFile.get(f) ?? 0) + us);
+  const o = origin(node.callFrame);
+  selfByOrigin.set(o, (selfByOrigin.get(o) ?? 0) + us);
   // Inclusive: charge every distinct ancestor function once per sample chain.
   const seen = new Set<string>();
   let cursor: number | undefined = id;
@@ -79,6 +101,7 @@ function table(title: string, map: Map<string, number>, n: number): void {
     console.log(`${(100 * us / totalUs).toFixed(1).padStart(5)}%  ${(us / 1e3).toFixed(0).padStart(6)} ms  ${name}`);
   }
 }
+table("self time by origin (whose code)", selfByOrigin, 12);
 table("self time by function", selfByFn, top);
 table("self time by file", selfByFile, Math.min(top, 30));
 table("inclusive time by function", inclusiveByFn, top);

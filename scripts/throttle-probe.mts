@@ -44,6 +44,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { chromiumStdioLaunchOptions } from "./playwrightChromiumLaunch";
+import { indexSourceMap, lookupSource, type SourceMapV3 } from "./sourceMapLookup.mts";
 
 const [outDir, url, labelArg] = process.argv.slice(2);
 if (!outDir || !url) throw new Error("usage: <outDir> <url> [label]");
@@ -394,6 +395,61 @@ async function measure(seconds: number): Promise<WindowStats> {
   return collect();
 }
 
+/**
+ * The renderer's own RenderDiagnostics (draw calls, governor, CPU p95, top
+ * passes) WITHOUT the overlay, which is a React render every 500 ms. Found by
+ * walking React's fiber from the game canvas up to the component holding the
+ * renderer ref; read-only, a handful of calls per run.
+ */
+async function readRendererDiagnostics(): Promise<Record<string, unknown> | null> {
+  return evaluate(() => {
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.__name ??= (fn: unknown) => fn;
+    type Hook = { memoizedState?: unknown; next?: Hook | null };
+    type Fiber = { memoizedState?: unknown; return?: Fiber | null };
+    const canvas = document.querySelector("canvas") as (HTMLCanvasElement & Record<string, unknown>) | null;
+    if (!canvas) return null;
+    const key = Object.keys(canvas).find((k) => k.startsWith("__reactFiber$"));
+    let fiber = key ? canvas[key] as Fiber | null : null;
+    while (fiber) {
+      let hook = fiber.memoizedState as Hook | null | undefined;
+      for (let guard = 0; hook && typeof hook === "object" && guard < 200; guard += 1) {
+        const state = hook.memoizedState as { current?: { getDiagnostics?: () => unknown } } | null;
+        if (state && typeof state === "object" && typeof state.current?.getDiagnostics === "function") {
+          return JSON.parse(JSON.stringify(state.current.getDiagnostics())) as Record<string, unknown>;
+        }
+        hook = hook.next;
+      }
+      fiber = fiber.return ?? null;
+    }
+    return null;
+  });
+}
+
+/** Five reads a second apart: draw calls vary frame to frame, the governor does not. */
+async function sampleDiagnostics(): Promise<{
+  drawCalls: number[];
+  governor: unknown[];
+  last: Record<string, unknown> | null;
+}> {
+  const drawCalls: number[] = [];
+  const governor: unknown[] = [];
+  let last: Record<string, unknown> | null = null;
+  for (let i = 0; i < 5; i += 1) {
+    const d = await readRendererDiagnostics();
+    if (d) {
+      last = d;
+      drawCalls.push(Number(d.drawCalls));
+      governor.push({
+        active: d.activeGovernor, cpuL: d.cpuWorkLevel, gpuL: d.gpuWorkLevel,
+        cpuLever: d.cpuWorkLever, scale: d.renderScale, insensitive: d.resolutionInsensitive,
+      });
+    }
+    await page.waitForTimeout(1_000);
+  }
+  return { drawCalls, governor, last };
+}
+
 async function latestSnapshot(): Promise<{ ias: number; agl: number; onGround: boolean; crashed: boolean } | null> {
   return evaluate(() => {
     const w = globalThis as unknown as Record<string, unknown>;
@@ -445,10 +501,55 @@ async function profile(seconds: number): Promise<string | null> {
   await pageCdp.send("Profiler.setSamplingInterval", { interval: 200 });
   await pageCdp.send("Profiler.start");
   await page.waitForTimeout(seconds * 1_000);
-  const { profile: data } = await pageCdp.send("Profiler.stop") as { profile: unknown };
+  const { profile: data } = await pageCdp.send("Profiler.stop") as { profile: ProfileData };
+  await attachOriginalSources(data);
   const file = `${outDir}/${label}.cpuprofile`;
   writeFileSync(file, JSON.stringify(data));
   return file;
+}
+
+interface ProfileData {
+  nodes: { callFrame: { url: string; lineNumber: number; columnNumber: number; originalSource?: string } }[];
+}
+
+/**
+ * Stamp each profile frame with its ORIGINAL source file while the dev server
+ * is still up: Vite's dependency bundles are named after one of their
+ * modules, so only the source map can say "Babylon" or "React".
+ */
+async function attachOriginalSources(data: ProfileData): Promise<void> {
+  const maps = new Map<string, { map: SourceMapV3; index: ReturnType<typeof indexSourceMap> } | null>();
+  for (const node of data.nodes) {
+    const frame = node.callFrame;
+    if (!frame.url || !/^https?:/.test(frame.url)) continue;
+    const path = new URL(frame.url).pathname;
+    if (!/node_modules/.test(path)) {
+      frame.originalSource = path.replace(/^\//, "");
+      continue;
+    }
+    if (!maps.has(frame.url)) {
+      maps.set(frame.url, await fetchSourceMap(frame.url).catch(() => null));
+    }
+    const entry = maps.get(frame.url);
+    if (!entry || frame.lineNumber < 0) continue;
+    const source = lookupSource(entry.map, entry.index, frame.lineNumber, Math.max(0, frame.columnNumber));
+    if (source) frame.originalSource = source;
+  }
+}
+
+async function fetchSourceMap(scriptUrl: string) {
+  const code = await (await fetch(scriptUrl)).text();
+  const match = code.match(/\/\/[#@] sourceMappingURL=(\S+)\s*$/);
+  if (!match) return null;
+  const ref = match[1]!;
+  let json: string;
+  if (ref.startsWith("data:")) {
+    json = Buffer.from(ref.slice(ref.indexOf(",") + 1), "base64").toString("utf8");
+  } else {
+    json = await (await fetch(new URL(ref, scriptUrl))).text();
+  }
+  const map = JSON.parse(json) as SourceMapV3;
+  return { map, index: indexSourceMap(map) };
 }
 
 /**
@@ -538,6 +639,7 @@ report.load = await timings();
 if (SCENARIO === "coldstart") {
   // The start screen is a live attract flight: how it runs throttled, too.
   report.attractThrottled = await measure(Math.min(MEASURE_S, 15));
+  report.diagnosticsThrottled = await sampleDiagnostics();
 } else if (SCENARIO === "cruise" || SCENARIO === "latency") {
   await page.waitForTimeout(2_000);
   await page.getByRole("button", { name: /^Start flying/ }).first().click();
@@ -547,12 +649,16 @@ if (SCENARIO === "coldstart") {
   if (SCENARIO === "cruise") {
     report.unthrottled = await measure(MEASURE_S);
     console.log(`[${label}] x1  ${JSON.stringify(summaryOf(report.unthrottled as WindowStats))}`);
+    report.diagnosticsUnthrottled = await sampleDiagnostics();
   }
   await setThrottle(RATE);
   await page.waitForTimeout(SETTLE_S * 1_000);
   if (SCENARIO === "cruise") {
     report.throttled = await measure(MEASURE_S);
     console.log(`[${label}] x${RATE} ${JSON.stringify(summaryOf(report.throttled as WindowStats))}`);
+    report.diagnosticsThrottled = await sampleDiagnostics();
+    const d = report.diagnosticsThrottled as { drawCalls: number[]; governor: unknown[] };
+    console.log(`[${label}] x${RATE} draws ${d.drawCalls.join(",")} governor ${JSON.stringify(d.governor.at(-1))}`);
   } else {
     report.sampler = await installSceneSampler();
     await page.waitForTimeout(1_000);
@@ -608,6 +714,7 @@ if (SCENARIO === "coldstart") {
   report.takeoffEvents = Object.fromEntries(Object.entries(events)
     .map(([k, v]) => [k, v === null ? null : round((v - releasedWall) / 1_000)]));
   report.throttled = await collect(releasedAt);
+  report.diagnosticsThrottled = await sampleDiagnostics();
   console.log(`[${label}] takeoff x${RATE} ${JSON.stringify(summaryOf(report.throttled as WindowStats))} events ${JSON.stringify(report.takeoffEvents)}`);
 }
 
