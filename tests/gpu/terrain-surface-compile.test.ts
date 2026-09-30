@@ -425,7 +425,11 @@ describe("every shipped define combination compiles (3-2)", () => {
    * `#ifdef` silently read false is exactly why the assertions below read the
    * COMPILED source rather than the plugin's strings.
    */
-  it("compiles the CDLOD + page-channel path and lands 6-8's canopy handoff", async () => {
+  // V-4: once per far-sward read, so the soft read's WGSL is compiled by a real
+  // adapter before any capture renders it (Node has no WGSL validator).
+  it.each(["cheap", "soft", "off"] as const)(
+    "compiles the CDLOD + page-channel path (far-sward read %s) and lands 6-8's canopy handoff",
+    async (farSwardRead) => {
     const scene = new Scene(engine);
     scene.clearColor = new Color4(0, 0, 0, 1);
     const disposables: { dispose(): void }[] = [];
@@ -444,6 +448,7 @@ describe("every shipped define combination compiles (3-2)", () => {
       plugin.setArrays(arrays.albedoHeight, arrays.normalMaterial);
       plugin.setSamplingProfile("triplanar", 3);
       plugin.setCanopyBands(150, 3_000, 0.045);
+      plugin.setFarSwardRead(farSwardRead);
 
       // A 1-slot height atlas and a 1-slot channel atlas: the shapes only have
       // to be self-consistent for the addressing arithmetic to compile and run.
@@ -474,9 +479,11 @@ describe("every shipped define combination compiles (3-2)", () => {
       const horizonA = makeChannel(() => 8);
       const horizonB = makeChannel(() => 8);
       const splatId = makeChannel(() => 0);
-      // Lanes 0-2 are the normalised weights; lane 3 is 6-8's closure channel.
+      // Lanes 0-2 are the normalised weights; the low bucket's lane 3 is 6-8's
+      // closure channel, the high bucket's V-4's far-sward gate (255: code 3,
+      // eligible in both season buckets).
       const splatWeightLo = makeChannel((lane) => (lane === 3 ? 235 : 85));
-      const splatWeightHi = makeChannel((lane) => (lane === 3 ? 235 : 85));
+      const splatWeightHi = makeChannel((lane) => (lane === 3 ? 255 : 85));
       plugin.setChannelAtlas(
         occlusion, horizonA, horizonB,
         [splatId, splatWeightLo, splatWeightHi, null],
@@ -572,6 +579,29 @@ describe("every shipped define combination compiles (3-2)", () => {
       // but compiled out, binding and ALU included.
       expect(fragmentSource).not.toContain("terrainLakeDepthAtlas");
       expect(fragmentSource).not.toContain("terrainSurfaceLakeWetness");
+
+      // V-4, on the COMPILED source: the read the dial asked for, and only it.
+      const softDefine = /^#define TERRAIN_FAR_SWARD_SOFT/mu;
+      const offDefine = /^#define TERRAIN_FAR_SWARD_OFF/mu;
+      const softReturn = "return terrainSurfaceSoftSplat(atlasPosition, blend);";
+      const cheapReturn = "return vec4f(terrainSurfaceNearestSplat(atlasPosition, blend), -1.0);";
+      if (farSwardRead === "soft") {
+        expect(defines).toMatch(softDefine);
+        expect(fragmentSource).toContain("fn terrainSurfaceSoftSplat(");
+        expect(fragmentSource).toContain(softReturn);
+        expect(fragmentSource).not.toContain(cheapReturn);
+      } else {
+        expect(defines).not.toMatch(softDefine);
+        expect(fragmentSource).not.toContain("fn terrainSurfaceSoftSplat(");
+        expect(fragmentSource).not.toContain(softReturn);
+        if (farSwardRead === "cheap") {
+          expect(defines).not.toMatch(offDefine);
+          expect(fragmentSource).toContain(cheapReturn);
+        } else {
+          expect(defines).toMatch(offDefine);
+          expect(fragmentSource).not.toContain(cheapReturn);
+        }
+      }
       mesh.dispose(false, false);
       material.dispose(true, false);
     } finally {
@@ -580,7 +610,9 @@ describe("every shipped define combination compiles (3-2)", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(gpuErrors).toEqual([]);
-  }, 300_000);
+    },
+    300_000,
+  );
 
   /**
    * `6-5`: the hydrology permutation, asserted on the COMPILED fragment source.

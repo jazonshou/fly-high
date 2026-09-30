@@ -2730,6 +2730,12 @@ export interface PerfCaptureReport {
      * because nothing in the file named them.
      */
     readonly aircraft: string;
+    /**
+     * V-4: the terrain's far-sward read this run forced (`VITE_PERF_FAR_SWARD`,
+     * off | cheap | soft), or null for the shipped default. Recorded for the
+     * same reason as `profileOverride`: a priced arm must name itself.
+     */
+    readonly farSwardRead: string | null;
     readonly pinnedRenderScale: number;
     /** Whether Babylon's continuous timestamp-query observers were enabled. */
     readonly gpuTimingEnabled: boolean;

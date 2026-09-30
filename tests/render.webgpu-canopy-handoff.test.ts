@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createWorld, sampleTerrain } from "../src/world";
 import {
@@ -642,15 +643,25 @@ describe("6-8 adds canopy height at coarse LOD only", () => {
 // ---------------------------------------------------------------------------
 
 describe("6-8's closure channel costs no atlas bytes and no fragment sampler", () => {
-  it("rides the weight textures' alpha lane in BOTH season buckets", () => {
+  it("rides the LOW season bucket's alpha lane, the only one read as closure", () => {
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
       "textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, canopy.x));");
-    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
-      "textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, canopy.x));");
-    // Closure is season-invariant, so the fragment's seasonal mix() returns it
-    // unchanged; storing a different value per bucket would lerp two different
-    // quantities together.
     expect(LAND_COVER_SPLAT_BAKE_WGSL).not.toContain("canopy.y);");
+    // V-4: closure was written into BOTH buckets, but every reader takes the
+    // low bucket's lane (the vertex stage's corner taps and
+    // terrainSurfaceCanopyClosure) and nothing mixes the alpha lanes, so the
+    // HIGH bucket's alpha now carries the far-sward gate (FarSwardGate.ts).
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
+      "textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, splatFarSwardGateStored(aligned)));");
+    const terrainSource = ["TerrainSurfacePlugin.ts", "FarSwardGate.ts", "TerrainClipmapSystem.ts"]
+      .map((file) => readFileSync(new URL(`../src/render/webgpu/terrain/${file}`, import.meta.url), "utf8"))
+      .join("\n");
+    // Every read of a high-bucket alpha is the gate's; every closure read is the low bucket's.
+    const highAlpha = [...terrainSource.matchAll(
+      /textureLoad\(terrainSplatWeightHi[^;]*\)\.a|storedHi\.[aw]\b|textureGather\(3, terrainSplatWeightHi/gu)];
+    expect(highAlpha.map((match) => match[0])).toEqual(["textureGather(3, terrainSplatWeightHi"]);
+    expect(terrainSource).toContain("fn terrainFarSwardGatesAt(corner: vec2i, blend: f32) -> vec4f {");
+    expect(terrainSource).not.toMatch(/mix\(storedLo, storedHi/u);
   });
 
   it("reconstructs the fourth material weight instead of storing it", () => {

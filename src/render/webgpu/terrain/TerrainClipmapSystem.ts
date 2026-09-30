@@ -74,7 +74,7 @@ import {
   TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
   terrainAtlasGridEdge,
 } from "./TerrainSpineContract";
-import { TerrainSurfacePlugin } from "./TerrainSurfacePlugin";
+import { TerrainSurfacePlugin, type TerrainFarSwardRead } from "./TerrainSurfacePlugin";
 // 6-5: the shore sea state travels as 6-2's own published type — one
 // definition, forwarded, never restated on the terrain side.
 import type { WaterShoreSwell } from "@/src/render/webgpu/water/WaterShaders";
@@ -950,6 +950,11 @@ export class TerrainClipmapSystem {
 
   cycleDebugOverlay(): TerrainDebugOverlayMode {
     return this.debugOverlay.cycleMode();
+  }
+
+  /** V-4: which far-sward read the surface compiles (TerrainFarSwardRead). */
+  setFarSwardRead(read: TerrainFarSwardRead): void {
+    this.surfacePlugin.setFarSwardRead(read);
   }
 
   setDebugOverlay(mode: TerrainDebugOverlayMode): void {
