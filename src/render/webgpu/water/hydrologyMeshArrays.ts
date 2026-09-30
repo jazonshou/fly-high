@@ -747,3 +747,107 @@ export function buildGraphHydrologyMeshArrays(
   }
   return { rivers: riverArrays, lakes: lakeArrays };
 }
+
+/**
+ * A region's water geometry as transferable typed arrays (P2b).
+ *
+ * The hydrology worker builds a region's river and lake arrays beside its
+ * generation and TRANSFERS them, so the main thread no longer clips every
+ * lake against the analytic ground when the region arrives (measured: 290 ms
+ * of a 325 ms frame per 747 region at Chrome's 4x throttle; ~7,500 ground
+ * samples and ~9,600 vertices per lake).
+ *
+ * Packing is exact with respect to what the GPU received before: vertex lanes
+ * as Float32Array (Babylon converts number[] to exactly this), and indices as
+ * Uint16Array unless an index exceeds 65,535, then Uint32Array, which is the
+ * rule Babylon's WebGPU `createIndexBuffer` applies to a number[].
+ */
+export interface PackedHydrologyMeshArrays {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly indices: Uint16Array | Uint32Array;
+  readonly flowData: Float32Array;
+  readonly waterData: Float32Array;
+  readonly waterChemistry: Float32Array;
+}
+
+export interface PackedHydrologyRegionGeometry {
+  readonly rivers: PackedHydrologyMeshArrays | null;
+  readonly lakes: PackedHydrologyMeshArrays | null;
+}
+
+/** Null for an empty build, mirroring the renderer's "no mesh" case. */
+export function packHydrologyMeshArrays(arrays: HydrologyMeshArrays): PackedHydrologyMeshArrays | null {
+  if (arrays.positions.length === 0 || arrays.indices.length === 0) return null;
+  let wide = false;
+  for (const index of arrays.indices) {
+    if (index > 65_535) {
+      wide = true;
+      break;
+    }
+  }
+  return {
+    positions: Float32Array.from(arrays.positions),
+    normals: Float32Array.from(arrays.normals),
+    uvs: Float32Array.from(arrays.uvs),
+    indices: wide ? Uint32Array.from(arrays.indices) : Uint16Array.from(arrays.indices),
+    flowData: Float32Array.from(arrays.flowData),
+    waterData: Float32Array.from(arrays.waterData),
+    waterChemistry: Float32Array.from(arrays.waterChemistry),
+  };
+}
+
+/**
+ * The ANALYTIC region's river and lake arrays, exactly as the renderer builds
+ * them: `appendRiver` per river, `appendContainedLake` per lake. Graph
+ * (eroded) worlds never page, so they never come through here.
+ */
+export function buildAnalyticRegionMeshArrays(
+  hydrology: { readonly rivers: readonly HydrologyRiver[]; readonly lakes: readonly HydrologyLake[] },
+  ground: (x: number, z: number) => number,
+  climate: HydrologyClimateSampler,
+  seaLevel: number,
+): { readonly rivers: HydrologyMeshArrays; readonly lakes: HydrologyMeshArrays } {
+  const rivers = emptyMeshArrays();
+  for (const river of hydrology.rivers) appendRiver(rivers, river, climate, seaLevel);
+  const lakes = emptyMeshArrays();
+  for (const lake of hydrology.lakes) appendContainedLake(lakes, lake, ground, climate, seaLevel);
+  return { rivers, lakes };
+}
+
+/** The buffers to list in `postMessage`'s transfer argument. */
+export function packedRegionGeometryTransferables(
+  geometry: PackedHydrologyRegionGeometry,
+): ArrayBuffer[] {
+  const buffers: ArrayBuffer[] = [];
+  for (const mesh of [geometry.rivers, geometry.lakes]) {
+    if (!mesh) continue;
+    for (const lane of [
+      mesh.positions, mesh.normals, mesh.uvs, mesh.indices,
+      mesh.flowData, mesh.waterData, mesh.waterChemistry,
+    ]) buffers.push(lane.buffer as ArrayBuffer);
+  }
+  return buffers;
+}
+
+function isPackedMesh(value: unknown): value is PackedHydrologyMeshArrays {
+  if (!value || typeof value !== "object") return false;
+  const mesh = value as Record<string, unknown>;
+  const vertexCount = mesh.positions instanceof Float32Array ? mesh.positions.length / 3 : -1;
+  const lane = (name: string, stride: number) =>
+    mesh[name] instanceof Float32Array && (mesh[name] as Float32Array).length === vertexCount * stride;
+  return Number.isInteger(vertexCount) && vertexCount > 0
+    && lane("normals", 3) && lane("uvs", 2)
+    && lane("flowData", 4) && lane("waterData", 4) && lane("waterChemistry", 4)
+    && (mesh.indices instanceof Uint16Array || mesh.indices instanceof Uint32Array)
+    && (mesh.indices as Uint16Array).length % 3 === 0;
+}
+
+/** Structural check for geometry received from a worker. */
+export function isPackedHydrologyRegionGeometry(value: unknown): value is PackedHydrologyRegionGeometry {
+  if (!value || typeof value !== "object") return false;
+  const geometry = value as Record<string, unknown>;
+  return (geometry.rivers === null || isPackedMesh(geometry.rivers))
+    && (geometry.lakes === null || isPackedMesh(geometry.lakes));
+}

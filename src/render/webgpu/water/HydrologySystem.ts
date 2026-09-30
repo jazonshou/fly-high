@@ -110,6 +110,8 @@ import {
   HYDROLOGY_NEUTRAL_CLIMATE,
   type HydrologyClimateSampler,
   type HydrologyMeshArrays,
+  type PackedHydrologyMeshArrays,
+  type PackedHydrologyRegionGeometry,
 } from "./hydrologyMeshArrays";
 
 // The geometry builders moved to hydrologyMeshArrays.ts (P2b); the names this
@@ -849,6 +851,25 @@ function buildMesh(
   if (arrays.positions.length === 0 || arrays.indices.length === 0) {
     return { mesh: null, vertexCount: 0, triangleCount: 0 };
   }
+  return uploadWaterMesh(scene, name, arrays);
+}
+
+/** P2b: a region mesh from vertex arrays the hydrology worker built. */
+function buildPackedMesh(
+  scene: Scene,
+  name: string,
+  packed: PackedHydrologyMeshArrays | null,
+): MeshBuildResult {
+  if (!packed) return { mesh: null, vertexCount: 0, triangleCount: 0 };
+  return uploadWaterMesh(scene, name, packed);
+}
+
+/** The one upload both paths share, so they cannot drift apart. */
+function uploadWaterMesh(
+  scene: Scene,
+  name: string,
+  arrays: MeshArrays | PackedHydrologyMeshArrays,
+): MeshBuildResult {
   const mesh = new Mesh(name, scene);
   const vertexData = new VertexData();
   vertexData.positions = arrays.positions;
@@ -1483,6 +1504,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private buildRegion(
     selection: HydrologyRegionSelection,
     hydrology: HydrologyGenerationResult,
+    geometry?: PackedHydrologyRegionGeometry,
   ): HydrologyRegionRuntime {
     const suffix = selection.key.replaceAll(":", "_");
     const root = new TransformNode(`hydrology-region-${suffix}`, this.scene);
@@ -1496,14 +1518,16 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       // measured "blue slash through the terrain" defect. See
       // appendContainedLake and the amendment note on the pinned-hash test
       // in tests/render.webgpu-hydrology.test.ts.
-      const riverBuild = buildMesh(this.scene, `hydrology-rivers-${suffix}`, (arrays) => {
+      // P2b: the worker built this region's arrays; upload them as they are.
+      const packed = geometry && !this.graphMode ? geometry : null;
+      const riverBuild = packed ? buildPackedMesh(this.scene, `hydrology-rivers-${suffix}`, packed.rivers) : buildMesh(this.scene, `hydrology-rivers-${suffix}`, (arrays) => {
         hydrology.rivers.forEach((river) => (
           this.graphMode
             ? appendGraphRiver(arrays, river, this.climateSample, this.generationConfig.seaLevel)
             : appendRiver(arrays, river, this.climateSample, this.generationConfig.seaLevel)
         ));
       });
-      const lakeBuild = buildMesh(this.scene, `hydrology-lakes-${suffix}`, (arrays) => {
+      const lakeBuild = packed ? buildPackedMesh(this.scene, `hydrology-lakes-${suffix}`, packed.lakes) : buildMesh(this.scene, `hydrology-lakes-${suffix}`, (arrays) => {
         hydrology.lakes.forEach((lake) => (
           this.graphMode
             ? appendGraphLake(arrays, lake, this.climateSample, this.generationConfig.seaLevel)
@@ -1565,7 +1589,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     selection: HydrologyRegionSelection,
     result: HydrologyRegionGenerationResult,
   ): void {
-    const next = this.buildRegion(selection, result.hydrology);
+    const next = this.buildRegion(selection, result.hydrology, result.geometry);
     if (this.previousRegion) disposeRegion(this.previousRegion);
     this.previousRegion = this.currentRegion;
     this.currentRegion = next;
@@ -1640,6 +1664,8 @@ export class HydrologySystem implements PlanarReflectionReceiver {
             centerX: selection.centerX,
             centerZ: selection.centerZ,
           },
+          // P2b: the worker also builds the region's vertex arrays.
+          buildGeometry: true,
           ...(signal ? { signal } : {}),
         },
         (result) => {

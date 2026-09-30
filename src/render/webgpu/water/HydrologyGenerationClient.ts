@@ -11,6 +11,8 @@ import {
 } from "@/src/workers/hydrologyProtocol";
 import type { WorldSeed } from "@/src/world";
 
+import type { PackedHydrologyRegionGeometry } from "./hydrologyMeshArrays";
+
 type WorkerFactory = () => Worker;
 type FallbackScheduler = (callback: () => void) => void;
 
@@ -19,12 +21,19 @@ export interface HydrologyRegionGenerationRequest {
   readonly generation: number;
   readonly options: HydrologyWorkerGenerationOptions;
   readonly signal?: AbortSignal;
+  /**
+   * P2b: ask the worker for the region's river and lake vertex arrays as
+   * well. Ignored on the main-thread fallback, where the caller builds them.
+   */
+  readonly buildGeometry?: boolean;
 }
 
 export interface HydrologyRegionGenerationResult {
   readonly hydrology: HydrologyGenerationResult;
   readonly elapsedMilliseconds: number;
   readonly workerGenerated: boolean;
+  /** The worker-built vertex arrays, when requested (P2b). */
+  readonly geometry?: PackedHydrologyRegionGeometry;
 }
 
 export interface HydrologyGenerationClientLike {
@@ -214,6 +223,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
         generation: request.generation,
         key: request.key,
         options: request.options,
+        ...(request.buildGeometry ? { buildGeometry: true } : {}),
       });
     } catch (error) {
       this.activeRequestId = null;
@@ -270,6 +280,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
           hydrology: event.hydrology,
           elapsedMilliseconds: event.elapsedMilliseconds,
           workerGenerated: true,
+          ...(event.geometry ? { geometry: event.geometry } : {}),
         });
       } else {
         // A worker-specific failure should not remove water. Retry this one
