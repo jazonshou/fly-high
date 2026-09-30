@@ -109,16 +109,22 @@ export const AIRLINER_CLOCK_FACE: DisplayLayout = Object.freeze({
  * Only the PORT pair is ever seen: measured from the built mesh at the solved eye, the port screens
  * sit at azimuth -10.8 and +10.8 and the starboard pair at +54.9 and +61.0, outside the 75 degree
  * frame. The starboard pair is drawn because the aeroplane has it, not because anyone looks at it.
+ *
+ * THE FIFTH, last in build order, is the standby cluster on the centre board (S5, `BIZJET_STANDBY`):
+ * the standby page, attitude and tapes, at two thirds of a pair screen's size, so the same 440 x 300
+ * slot shape. Five slots fill one row of five, 2200 x 300 (a layout fills its rows): a quarter more
+ * texels than the four's 880 x 600, where three rows of two would have been half as many again.
  */
 export const BIZJET_DISPLAYS: DisplayLayout = Object.freeze({
   name: "bizjet-displays",
   screensMesh: "bizjet-screens",
-  columns: 2,
+  columns: 5,
   screens: Object.freeze([
     { screen: "port-outboard", page: "pfd" },
     { screen: "port-inboard", page: "nd" },
     { screen: "starboard-outboard", page: "pfd" },
     { screen: "starboard-inboard", page: "nd" },
+    { screen: "standby", page: "standby" },
   ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
 });
 

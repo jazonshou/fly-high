@@ -364,7 +364,28 @@ describe("the loft's crown taper", () => {
       // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
       // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
       // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
-      bizjet: "4036722a",
+      // RE-PINNED for the Global by the "feel real" wave's S1 (jazonshou/cockpit-global-real): the glareshield's round
+      // at 20 mm with its chords smooth-shaded, no aft face and a 5 mm cove, and a new cove fillet. Checked mesh by mesh
+      // against 0fbc073 (world positions, indices, normals, material, roles, visibility): only the Global's cockpit
+      // moves -- the glareshield, the new fillet, and the board, screens, frames, rims and wells, which stand on the
+      // face's top 0.9 mm higher and 5 mm nearer -- and every mesh of the trainer's 66, the jet's 75 and the 747's 96 is
+      // bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S2: the frames' tops stand 1.2 mm of board under the cove's
+      // fillet (their top border 6 mm, no flat band; the frame a U), the screens 2.1 mm lower on the face. Checked mesh by
+      // mesh against S1: only the Global's screens, frames, rims and wells move; every other mesh of all four is
+      // bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S4: the glareshield's ends close in 20 mm quarter-rounds
+      // outboard of the deck (two swept end pieces merged with the straight lip, one draw). Checked mesh by mesh against
+      // S2: only the Global's glareshield moves; every other mesh of all four is bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S3: every pane's edge rolls into the glass (a round and a
+      // seal, rounded corners; the lining stands nothing proud of the skin), the seals one new mesh on the glareshield's
+      // material, and the pillars' feet filleted onto the sill caps. Checked mesh by mesh against S4: only the Global's
+      // interior moves and its seals are new; every other mesh of all four is bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S5: the side consoles roll their tops into their faces (r 10,
+      // a step outboard of the board's ends) and carry the panel block, its rockers and the tiller; the caps join them on
+      // a second interior instance; a standby display on the centre board. Checked mesh by mesh against S3: only the
+      // Global's cockpit meshes move; every other mesh of all four is bit-identical.
+      bizjet: "bb5a59d1",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

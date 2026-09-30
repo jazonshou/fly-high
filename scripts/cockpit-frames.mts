@@ -215,6 +215,12 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
       });
     }
     const page = await context.newPage();
+    // THE PAGE'S OWN COMPLAINTS, recorded with the frame: a console error or warning, or an uncaught page error, is part of
+    // what the frame shows (a refused pipeline logs one and draws black under a live HUD)
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") console.log(`${label} console.${message.type()}: ${message.text()}`);
+    });
+    page.on("pageerror", (error) => console.log(`${label} pageerror: ${error.message}`));
     // Passed as an ARGUMENT, never closed over: the function is serialised
     // and a captured variable arrives as undefined.
     await page.addInitScript((wanted: { kind: string; timeOfDay: string; quality: string | null }) => {
@@ -264,7 +270,7 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     // (4 until its framed, recessed screens brought the bezels' rims and the wells); the F-16 7, its HUD frame, its
     // housing, its combiner's panes, its MFDs' frames, rims and screens, its sills, and its ICP and DED. The same counts as
     // tests/render.cockpit-drawn-faces.
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 9, jet: 9 };
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 9, airliner: 9, jet: 9 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {
