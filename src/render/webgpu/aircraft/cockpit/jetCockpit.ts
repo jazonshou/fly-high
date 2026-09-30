@@ -1218,6 +1218,164 @@ export function jetRailEndSlope(x: number): number {
   return Math.max(0, d) / Math.sqrt(e.sRadius ** 2 - Math.max(0, d) ** 2);
 }
 
+// ---- the canopy seal ---------------------------------------------------------------------------
+
+/**
+ * THE CANOPY SEAL (Jason's F-16 wave, S4): a dark rounded strip in the glass margin along the outer edge of the rail's
+ * ends and the sills, where the deck met the world with no line (the canopy is one bubble, with no frame at its base on
+ * the type or here). `width` across, its top edges rounded at `radius`, its top at the deck's own top at every station
+ * (so the deck's silhouette keeps its rows and falls monotone as it did), its inner face `into` inside the deck's outer
+ * face, down to the rails' bottom. From the S's top at the round's crown (az 25 on the rail's row) along the S and on
+ * aft along the sill to `aftX` (az 63), past the 21:9 frame's edge. On the glareshield's matte, merged into the coaming:
+ * no draw. Its outer face stands 6 mm or more inside the glass (the PM's exception to the 2 cm for this strip alone, 4 mm
+ * the floor): the margin is 21 mm at the deck's top and widens below it.
+ */
+export const JET_SEAL = Object.freeze({ width: 0.015, radius: 0.007, into: 0.0005, aftX: 2.45 });
+
+/**
+ * The seal's section in (u, y), u out from its inner face: up the inner face, over the rounded top, down the outer face,
+ * each top edge rounded in `JET_SILL.roundSegments` chords; its top at the sills' top height and its bottom at theirs
+ * (the placement lifts the top with the S).
+ */
+export function jetSealSection(): SweptSection {
+  const s = JET_SEAL;
+  const r = JET_SILL;
+  const segments = r.roundSegments;
+  const shoulder = r.topY - s.radius;
+  const arc = (centre: number, from: number, to: number) => Array.from({ length: segments + 1 }, (_, k) => {
+    const angle = from + ((to - from) * k) / segments;
+    return { u: centre + s.radius * Math.cos(angle), y: shoulder + s.radius * Math.sin(angle) };
+  });
+  const inner = arc(s.radius, Math.PI, Math.PI / 2);
+  const outer = arc(s.width - s.radius, Math.PI / 2, 0);
+  inner[0] = { u: 0, y: shoulder };
+  inner[segments] = { u: s.radius, y: r.topY };
+  outer[0] = { u: s.width - s.radius, y: r.topY };
+  outer[segments] = { u: s.width, y: shoulder };
+  return {
+    points: [{ u: 0, y: r.bottomY }, ...inner, ...outer, { u: s.width, y: r.bottomY }],
+    rounds: [
+      { first: 1, last: 1 + segments, centre: { u: s.radius, y: shoulder } },
+      { first: 2 + segments, last: 2 + 2 * segments, centre: { u: s.width - s.radius, y: shoulder } },
+    ],
+  };
+}
+
+/**
+ * The seal's stations, aft to forward: along the sill from `aftX` through its bend (x 2.6) to the S's foot, then the S's
+ * own stations to its top: x, the deck's top there, and the seal's inner face's half-width (the deck's outer edge, less
+ * `into`), and the slope of the deck's top there (the S's; level on the sill).
+ */
+export function jetSealStations(): { x: number; top: number; inner: number; slope: number }[] {
+  const ends = jetRailEndStations();
+  const sill = [JET_SEAL.aftX, JET_SILL.bendX].map((x) => ({ x, top: JET_SILL.topY, inner: sillOuterAt(x) - JET_SEAL.into, slope: 0 }));
+  return [...sill, ...ends.map((e) => ({ x: e.x, top: e.top, inner: e.outer - JET_SEAL.into, slope: jetRailEndSlope(e.x) }))];
+}
+
+/**
+ * The groove between the deck's outer round and the seal's inner round, its bottom a cove (a ball of `cove` rolled along
+ * it, as `jetRailEndFillet` rolls its own), so the two rounds meet with no crease: the line reads as a channel, 3.5 mm
+ * deep, whose walls turn through a round, not as a V (a V is 90 to 130 degrees between two rays). From the S's top the
+ * ball starts large (the groove bridged flat, the S's top and the seal's one surface, so the deck's silhouette keeps its
+ * row there) and comes down to `cove` over `rampIn` of run. Each station's arc is taken in the station's section plane,
+ * where the S and the seal are placed, so the three meet exactly at every station; its two ends start `bury` inside the
+ * rounds (whose chords lie up to 0.09 mm inside their circles: from the circles, the cove's closing faces stood out of
+ * them as dark slivers), and its normals lean with the S's slope as the S's own do. Starboard; port is its mirror.
+ */
+export const JET_SEAL_GROOVE = Object.freeze({ cove: 0.003, rampIn: 0.035, arcSegments: 10, bury: 0.0002 });
+
+export function jetSealGroove(): JetFilletStation[] {
+  const g = JET_SEAL_GROOVE;
+  const rr = JET_SILL.radius;
+  const rs = JET_SEAL.radius;
+  const crown = jetRailEndStations().at(-1)!.x;
+  return jetSealStations().map((station) => {
+    const outer = station.inner + JET_SEAL.into;
+    // the ball's radius: large at the S's top, down to the cove over the ramp
+    const along = Math.min(1, (crown - station.x) / g.rampIn);
+    const rc = g.cove + 0.2 * (1 - along) ** 4;
+    // in the section plane, (z, y): the deck's outer round and the seal's inner round
+    const c1 = { z: outer - rr, y: station.top - rr };
+    const c2 = { z: station.inner + rs, y: station.top - rs };
+    const [a, b] = [rr + rc, rs + rc];
+    const d = Math.hypot(c2.z - c1.z, c2.y - c1.y);
+    const ex = { z: (c2.z - c1.z) / d, y: (c2.y - c1.y) / d };
+    const along1 = (a * a - b * b + d * d) / (2 * d);
+    const up = Math.sqrt(a * a - along1 * along1);
+    // the ball's centre above the line between the two rounds' centres (that line runs outboard, so up is its left)
+    const normal = { z: -ex.y, y: ex.z };
+    const o = { z: c1.z + ex.z * along1 + normal.z * up, y: c1.y + ex.y * along1 + normal.y * up };
+    const n1 = new Vector3(0, o.y - c1.y, o.z - c1.z).normalize();
+    const n2 = new Vector3(0, o.y - c2.y, o.z - c2.z).normalize();
+    const ball = new Vector3(station.x, o.y, o.z);
+    const arc: Vector3[] = [];
+    const normals: Vector3[] = [];
+    for (let k = 0; k <= g.arcSegments; k += 1) {
+      const n = slerpUnit(n1, n2, k / g.arcSegments);
+      const end = k === 0 || k === g.arcSegments;
+      arc.push(ball.subtract(n.scale(rc + (end ? g.bury : 0))));
+      // square to the S's run, as its rounds' normals are made
+      normals.push(new Vector3(-n.y * station.slope, n.y, n.z).normalize());
+    }
+    // inside both solids: under the rounds' meeting, between the deck's outer face and the seal's inner face
+    const corner = new Vector3(station.x, station.top - 0.009, outer - JET_SEAL.into * 0.7);
+    return { arc, normals, corner, onRail: true };
+  });
+}
+
+/**
+ * A round swept along x in its section's plane (the S's rounds, the seal's), at one station: its centre (y, and z out
+ * to starboard), its radius, and how its centre moves along x (the S's slope, the edge's run in plan).
+ */
+interface ShearedRound {
+  readonly cy: number;
+  readonly cz: number;
+  readonly radius: number;
+  readonly dcy: number;
+  readonly dcz: number;
+}
+
+/**
+ * The true normals on the rounds of a sweep whose sections stand in the y-z plane while its path climbs (the S): at a
+ * round's point, its radial (ny, nz) in the section, the normal is (-(ny dcy + nz dcz), ny, nz). `sweptSolid` makes the
+ * radial square to the run instead, which is exact for a tube square to its path and, on the S's 45 degree middle,
+ * leans its rounds up to 24 degrees outboard of true (a groove shaded true beside it stood 46 degrees apart in the
+ * shading). Only the rounds' vertices move their normals; positions and the flat faces are the sweep's.
+ */
+function shearRoundNormals(mesh: Mesh, stations: readonly { readonly x: number; readonly rounds: readonly ShearedRound[] }[], side: -1 | 1): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = [...mesh.getVerticesData(VertexBuffer.NormalKind)!];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const [x, y, z] = [positions[v * 3]!, positions[v * 3 + 1]!, side * positions[v * 3 + 2]!];
+    const station = stations.find((q) => Math.abs(q.x - x) < 1e-9);
+    if (!station) continue;
+    for (const round of station.rounds) {
+      const [ny, nz] = [(y - round.cy) / round.radius, (z - round.cz) / round.radius];
+      if (Math.abs(Math.hypot(ny, nz) - 1) > 1e-6 || ny < -1e-9) continue;
+      const n = new Vector3(-(ny * round.dcy + nz * round.dcz), ny, nz).normalize();
+      normals[v * 3] = n.x;
+      normals[v * 3 + 1] = n.y;
+      normals[v * 3 + 2] = side * n.z;
+      break;
+    }
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = normals;
+  data.uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  data.indices = [...mesh.getIndices()!];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+}
+
+/** A quantity's rate along x at each of a run of stations: central differences, one-sided at the ends. */
+function alongX(stations: readonly { readonly x: number }[], value: (i: number) => number): number[] {
+  return stations.map((_, i) => {
+    const [a, b] = [Math.max(0, i - 1), Math.min(stations.length - 1, i + 1)];
+    return (value(b) - value(a)) / (stations[b]!.x - stations[a]!.x);
+  });
+}
+
 /** The sill rail's outer edge's half-width at x (linear between its stations). */
 function sillOuterAt(x: number): number {
   const stations = jetSillStations();
@@ -1524,7 +1682,7 @@ export function buildJetCockpit(
   for (const side of [-1, 1] as const) {
     const inset = (station: { outer: number; inner: number }, u: number) => (u <= JET_SILL.width / 2 ? u : u - (JET_SILL.width - (station.outer - station.inner)));
     const label = side < 0 ? "port" : "starboard";
-    coamingParts.push(sweptSolid(
+    const end = sweptSolid(
       build,
       `jet-glare-shield-end-${label}`,
       jetSillSection(),
@@ -1538,9 +1696,51 @@ export function buildJetCockpit(
       glare,
       root,
       { smoothAlong: true, tangent: (i) => new Vector3(1, jetRailEndSlope(endStations[i]!.x), 0) },
-    ));
+    );
+    // its rounds shaded true on the sloping S (S4): the outer round's centre follows the outer edge, the inner's the inner
+    const rr = JET_SILL.radius;
+    const outerRun = alongX(endStations, (i) => endStations[i]!.outer);
+    const innerRun = alongX(endStations, (i) => endStations[i]!.inner);
+    shearRoundNormals(end, endStations.map((q, i) => ({
+      x: q.x,
+      rounds: [
+        { cy: q.top - rr, cz: q.outer - rr, radius: rr, dcy: jetRailEndSlope(q.x), dcz: outerRun[i]! },
+        { cy: q.top - rr, cz: q.inner + rr, radius: rr, dcy: jetRailEndSlope(q.x), dcz: innerRun[i]! },
+      ],
+    })), side);
+    coamingParts.push(end);
     // the fillet's span up the round, where the end stands against it (S3)
     coamingParts.push(filletMesh(build, `jet-glare-shield-fillet-${label}`, fillet.slice(onRail - 1), side, glare, root));
+  }
+  // THE CANOPY SEAL (S4), each side along the S and the sill in the glass margin, on the matte with the rest
+  const seal = jetSealStations();
+  for (const side of [-1, 1] as const) {
+    const strip = sweptSolid(
+      build,
+      `jet-glare-shield-seal-${side < 0 ? "port" : "starboard"}`,
+      jetSealSection(),
+      seal.length,
+      (i, point) => new Vector3(
+        seal[i]!.x,
+        point.y <= JET_SILL.bottomY ? point.y : point.y + (seal[i]!.top - JET_SILL.topY),
+        side * (seal[i]!.inner + point.u),
+      ),
+      (direction) => new Vector3(0, direction.y, side * direction.u),
+      glare,
+      root,
+      { smoothAlong: true, tangent: (i) => new Vector3(1, seal[i]!.slope, 0) },
+    );
+    const rs = JET_SEAL.radius;
+    const run = alongX(seal, (i) => seal[i]!.inner);
+    shearRoundNormals(strip, seal.map((q, i) => ({
+      x: q.x,
+      rounds: [
+        { cy: q.top - rs, cz: q.inner + rs, radius: rs, dcy: q.slope, dcz: run[i]! },
+        { cy: q.top - rs, cz: q.inner + JET_SEAL.width - rs, radius: rs, dcy: q.slope, dcz: run[i]! },
+      ],
+    })), side);
+    coamingParts.push(strip);
+    coamingParts.push(filletMesh(build, `jet-glare-shield-seal-groove-${side < 0 ? "port" : "starboard"}`, jetSealGroove(), side, glare, root));
   }
   for (const part of coamingParts) part.metadata = { ...part.metadata, cockpitInterior: true, castsShadow: false };
   const coaming = build.mergeStatic("jet-glare-shield", coamingParts, root);

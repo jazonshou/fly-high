@@ -51,6 +51,10 @@ import {
   jetIcpFaceCentre,
   jetIcpKeyCentres,
   jetRailEndTopAt,
+  JET_SEAL,
+  JET_SEAL_GROOVE,
+  jetSealSection,
+  jetSealStations,
 } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
 import {
   AIRLINER_DISPLAYS,
@@ -140,7 +144,7 @@ const railWholeTo = (x: number) => ((JET_GLARESHIELD.nearHalfWidth - JET_RAIL_SI
 /** The board's own plate, the first part of `jet-instrument-panel` (S3 merged each side's fillet span on the dash after it). */
 const BOARD_VERTICES = 3 * (4 * jetPanelSection().length - 4);
 /** A fillet span's vertices over `stations`: each span's arc chords and two closing faces, and a fanned cap at each end. */
-const filletVertices = (stations: number) => 3 * ((stations - 1) * (2 * JET_RAIL_END_FILLET.arcSegments + 4) + 2 * JET_RAIL_END_FILLET.arcSegments);
+const filletVertices = (stations: number, segments: number = JET_RAIL_END_FILLET.arcSegments) => 3 * ((stations - 1) * (2 * segments + 4) + 2 * segments);
 /** The fillet's stations: those on the dash's face and the cove (the board's), then those up the round (the coaming's). */
 const FILLET = jetRailEndFillet();
 const FILLET_ON_RAIL = FILLET.findIndex((station) => station.onRail);
@@ -148,6 +152,9 @@ const BOARD_FILLET_VERTICES = filletVertices(FILLET_ON_RAIL);
 const RAIL_FILLET_VERTICES = filletVertices(FILLET.length - FILLET_ON_RAIL + 1);
 /** A rail end's vertices: the rail's section swept over the S's stations. */
 const END_VERTICES = sweptVertices(jetSillSection().points.length, JET_RAIL_END.stations);
+/** The canopy seal's (S4): its section swept over its stations, and its groove's cove over the same. */
+const SEAL_VERTICES = sweptVertices(jetSealSection().points.length, jetSealStations().length);
+const SEAL_GROOVE_VERTICES = filletVertices(jetSealStations().length, JET_SEAL_GROOVE.arcSegments);
 function named(name: string): AbstractMesh {
   const found = scene.getMeshByName(name);
   if (!found) throw new Error(`missing mesh ${name}`);
@@ -2139,7 +2146,7 @@ describe("the sills (the F-16 pass, step 4)", () => {
     }
   });
 
-  it("fill every column of the frame's lower third at 16:9, the bottom row's aircraft reaching the frame's edge; at 21:9 (the hybrid lens) it reaches az +-38.9", () => {
+  it("fill every column of the frame's lower third at 16:9, the bottom row's aircraft reaching the frame's edge; at 21:9 (the hybrid lens) it reaches az +-40.2", () => {
     const hitsAircraft = (ray: Ray) => scene.pickWithRay(ray, drawnByCockpitCamera)?.hit === true;
     // 16:9, every second column: a hit somewhere in the lower third (bottom row first)
     const [W, H] = [1600, 900];
@@ -2156,7 +2163,8 @@ describe("the sills (the F-16 pass, step 4)", () => {
     console.info(`F-16 lower third at 16:9: ${empty.length} empty columns of ${W / 2}; ${bySills} columns' bottom rows on the sills`);
     expect(empty, "columns of the lower third with no aircraft (252 of 800 before the sills)").toEqual([]);
     expect(bySills, "THE CONTROL: the sills (and the rail's ends) are what fill the corners").toBeGreaterThan(240);
-    // 21:9 under the hybrid lens: the bottom row's aircraft, from the centre out, reaches az +-38.9
+    // 21:9 under the hybrid lens: the bottom row's aircraft, from the centre out, reaches az +-40.2 (38.9 before the
+    // canopy seal, S4, which stands in the glass margin outboard of the sill)
     const [W2, H2] = [2560, 1080];
     const fov = cockpitHorizontalFieldOfViewForAspect(null, W2 / H2);
     const reach = [-1, 1].map((side) => {
@@ -2168,8 +2176,8 @@ describe("the sills (the F-16 pass, step 4)", () => {
       return Math.atan((((last + 0.5) / W2) * 2 - 1) * Math.tan((fov * Math.PI) / 360)) * DEG;
     });
     console.info(`F-16 at 21:9 (lens ${fov.toFixed(2)}): the bottom row's aircraft reaches az ${reach.map((a) => a.toFixed(2)).join(" / ")}`);
-    expect(Math.abs(reach[0]!)).toBeCloseTo(38.9, 0);
-    expect(reach[1]!).toBeCloseTo(38.9, 0);
+    expect(Math.abs(reach[0]!)).toBeCloseTo(40.2, 0);
+    expect(reach[1]!).toBeCloseTo(40.2, 0);
   });
 
   it("stay under the rail's row everywhere forward of the eye, and put the sill or the console, never the tub, under the frame's corners", () => {
@@ -2238,12 +2246,13 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
    */
   function ends() {
     const all = worldVertices(named("jet-glare-shield"));
-    expect(all.length).toBe(RAIL_ALL_VERTICES + 2 * (END_VERTICES + RAIL_FILLET_VERTICES));
+    expect(all.length).toBe(RAIL_ALL_VERTICES + 2 * (END_VERTICES + RAIL_FILLET_VERTICES + SEAL_VERTICES + SEAL_GROOVE_VERTICES));
+    // the rail's three solids, each side's end and its fillet span, then each side's seal and its groove (S4)
     const port = RAIL_ALL_VERTICES;
     const starboard = port + END_VERTICES + RAIL_FILLET_VERTICES;
     return new Map([
       ["port", { side: -1, vertices: all.slice(port, port + END_VERTICES), from: port, fillet: all.slice(port + END_VERTICES, starboard) }],
-      ["starboard", { side: 1, vertices: all.slice(starboard, starboard + END_VERTICES), from: starboard, fillet: all.slice(starboard + END_VERTICES) }],
+      ["starboard", { side: 1, vertices: all.slice(starboard, starboard + END_VERTICES), from: starboard, fillet: all.slice(starboard + END_VERTICES, starboard + END_VERTICES + RAIL_FILLET_VERTICES) }],
     ] as const);
   }
   /**
@@ -2272,7 +2281,7 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
 
   it("sweep each end of the rail aft and down into its sill: one coaming mesh on the glareshield's matte, the rail and its two ends, beginning at az 25", () => {
     const mesh = named("jet-glare-shield");
-    expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-glare-shield-rail", "jet-glare-shield-side-port", "jet-glare-shield-side-starboard", "jet-glare-shield-end-port", "jet-glare-shield-fillet-port", "jet-glare-shield-end-starboard", "jet-glare-shield-fillet-starboard"]);
+    expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-glare-shield-rail", "jet-glare-shield-side-port", "jet-glare-shield-side-starboard", "jet-glare-shield-end-port", "jet-glare-shield-fillet-port", "jet-glare-shield-end-starboard", "jet-glare-shield-fillet-starboard", "jet-glare-shield-seal-port", "jet-glare-shield-seal-groove-port", "jet-glare-shield-seal-starboard", "jet-glare-shield-seal-groove-starboard"]);
     expect((mesh.material as PBRMaterial).name).toBe("jet-glareshield");
     const stations = jetRailEndStations();
     expect(stations).toHaveLength(21);
@@ -2639,6 +2648,151 @@ describe("the rail end's fillet (Jason's F-16 wave, S3)", () => {
     // CONTROL: the same grid over the port MFD sees its frame's square edges
     const control = creaseGrid(-20, -8, -12, -24, 0.1).pairs.filter((p) => p.geometric > 45);
     expect(control.length, "the MFD frame's edges, seen").toBeGreaterThan(20);
+  });
+});
+
+describe("the canopy seal (Jason's F-16 wave, S4)", () => {
+  /** The seal's parts in the coaming, after the rail's, the ends' and the fillets': each side's strip, then its groove. */
+  function sealParts() {
+    const all = worldVertices(named("jet-glare-shield"));
+    const from = RAIL_ALL_VERTICES + 2 * (END_VERTICES + RAIL_FILLET_VERTICES);
+    const each = SEAL_VERTICES + SEAL_GROOVE_VERTICES;
+    expect(all.length).toBe(from + 2 * each);
+    return ([["port", -1], ["starboard", 1]] as const).map(([name, side], k) => ({
+      name,
+      side,
+      strip: all.slice(from + k * each, from + k * each + SEAL_VERTICES),
+      groove: all.slice(from + k * each + SEAL_VERTICES, from + (k + 1) * each),
+      range: [from + k * each, from + (k + 1) * each] as const,
+    }));
+  }
+
+  it("is a strip 15 mm wide, its top edges rounded at 7 mm, in the glass margin along the S and the sill: its top the deck's at every station, its inner face 0.5 mm into the deck's outer face, from the S's top to x 2.45, past the 21:9 frame's edge; on the matte, merged into the coaming (no draw)", () => {
+    expect([JET_SEAL.width, JET_SEAL.radius, JET_SEAL.into]).toEqual([0.015, 0.007, 0.0005]);
+    const section = jetSealSection();
+    expect(section.rounds.map((r) => [r.first, r.last])).toEqual([[1, 7], [8, 14]]);
+    for (const round of section.rounds) {
+      for (let k = round.first; k <= round.last; k += 1) {
+        expect(Math.hypot(section.points[k]!.u - round.centre.u, section.points[k]!.y - round.centre.y)).toBeCloseTo(JET_SEAL.radius, 12);
+      }
+    }
+    expect((named("jet-glare-shield").metadata as { mergedFrom?: string[] }).mergedFrom?.slice(-4)).toEqual(["jet-glare-shield-seal-port", "jet-glare-shield-seal-groove-port", "jet-glare-shield-seal-starboard", "jet-glare-shield-seal-groove-starboard"]);
+    const stations = jetSealStations();
+    const ends = jetRailEndStations();
+    // aft to forward: the sill from x 2.45 through its bend, then the S's own stations to its top at the round's crown
+    expect(stations[0]!.x).toBe(JET_SEAL.aftX);
+    expect(stations.at(-1)!.x).toBeCloseTo(ends.at(-1)!.x, 12);
+    for (const [name, side, strip] of sealParts().map((q) => [q.name, q.side, q.strip] as const)) {
+      for (const v of strip) expect(Math.sign(v.z), `${name}: its own side`).toBe(side);
+      // at every station: its top the deck's top there, its inner face 0.5 mm inside the deck's outer edge, 15 mm across
+      for (const station of stations) {
+        const at = strip.filter((v) => Math.abs(v.x - station.x) < 1e-6);
+        expect(Math.max(...at.map((v) => v.y)), `${name} at x ${station.x.toFixed(4)}: its top the deck's`).toBeCloseTo(station.top, 6);
+        const zs = at.map((v) => Math.abs(v.z));
+        expect(Math.min(...zs), `${name} at x ${station.x.toFixed(4)}: its inner face`).toBeCloseTo(station.inner, 6);
+        expect(Math.max(...zs) - Math.min(...zs), `${name} at x ${station.x.toFixed(4)}: 15 mm across`).toBeCloseTo(JET_SEAL.width, 6);
+      }
+      // the deck's outer edge there: the S's own outer, or the sill's
+      for (const [i, end] of ends.entries()) expect(stations[i + 2]!.inner + JET_SEAL.into, `S station ${i}`).toBeCloseTo(end.outer, 12);
+      // PAST THE 21:9 EDGE (az 45.65): its aft end's outer top edge
+      const aft = strip.filter((v) => Math.abs(v.x - JET_SEAL.aftX) < 1e-6);
+      const az = Math.max(...aft.map((v) => Math.abs(azel(v).az)));
+      expect(az, `${name}: its aft end`).toBeGreaterThan(cockpitHorizontalFieldOfViewForAspect(null, 21 / 9) / 2 + 5);
+    }
+  });
+
+  it("stands 4 mm or more inside the glass at every vertex, straight out at its own station and height (the PM's exception to the 2 cm for this strip), and never stands proud of the canopy's base", () => {
+    let nearest = Number.POSITIVE_INFINITY;
+    const skin = [...canopy, ...worldTriangles(named("jet-fuselage"))];
+    for (const { name, side, strip, groove } of sealParts()) {
+      for (const v of [...strip, ...groove]) {
+        const out = crossings(v, new Vector3(0, 0, side), canopy);
+        expect(out.length, `${name} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}): the glass straight out`).toBeGreaterThan(0);
+        nearest = Math.min(nearest, out[0]!);
+      }
+      // THE EXTERIOR RAY: from outside, level with the strip's lowest outer vertex and aimed straight in at it, the first
+      // surface met is the canopy's glass, beyond the strip (it is behind the glass, not through the canopy's base)
+      const lowest = strip.reduce((best, v) => (Math.abs(v.z) > Math.abs(best.z) - 1e-9 && v.y < best.y ? v : best));
+      const from = new Vector3(lowest.x, lowest.y, side * 3);
+      const hit = crossings(from, new Vector3(0, 0, -side), skin)[0]!;
+      expect(3 - hit, `${name}: the first skin met from outside, out beyond the strip`).toBeGreaterThan(Math.abs(lowest.z) + 0.004);
+    }
+    console.info(`F-16 canopy seal: nearest glass straight out ${(nearest * 1000).toFixed(1)} mm`);
+    expect(nearest).toBeGreaterThanOrEqual(0.004);
+  });
+
+  it("shows along the whole outer edge at 16:9: in every column from the S's top out to the frame's edge, 3 px or more of the seal are the first thing seen at 1080p, no gaps", () => {
+    const mesh = named("jet-glare-shield");
+    const positions = worldVertices(mesh);
+    const triangles: { a: Vector3; b: Vector3; c: Vector3; seal: boolean }[] = [];
+    const parts = sealParts().map((q) => q.range);
+    for (let t = 0; t < positions.length; t += 3) {
+      triangles.push({ a: positions[t]!, b: positions[t + 1]!, c: positions[t + 2]!, seal: parts.some(([a, b]) => t >= a && t < b) });
+    }
+    // (only what can stand in the columns from az 20 out, either side), as corner and two edges, with a seal flag
+    const outboard = (t: { a: Vector3; b: Vector3; c: Vector3 }) => [t.a, t.b, t.c].some((v) => v.x > EYE.forward && Math.abs(azel(v).az) > 20);
+    const deck = [...triangles, ...worldTriangles(named("jet-sills")).map((t) => ({ ...t, seal: false })), ...worldTriangles(named("jet-instrument-panel")).map((t) => ({ ...t, seal: false }))].filter(outboard);
+    const T = new Float64Array(deck.length * 9);
+    deck.forEach((t, k) => T.set([t.a.x, t.a.y, t.a.z, t.b.x - t.a.x, t.b.y - t.a.y, t.b.z - t.a.z, t.c.x - t.a.x, t.c.y - t.a.y, t.c.z - t.a.z], k * 9));
+    /** The first surface along `d`: -1 none, 1 the seal, 0 anything else. */
+    const first = (d: Vector3) => {
+      let best = Number.POSITIVE_INFINITY;
+      let which = -1;
+      for (let k = 0; k < deck.length; k += 1) {
+        const o = k * 9;
+        const px = d.y * T[o + 8]! - d.z * T[o + 7]!;
+        const py = d.z * T[o + 6]! - d.x * T[o + 8]!;
+        const pz = d.x * T[o + 7]! - d.y * T[o + 6]!;
+        const det = T[o + 3]! * px + T[o + 4]! * py + T[o + 5]! * pz;
+        if (det > -1e-14 && det < 1e-14) continue;
+        const sx = EYE.forward - T[o]!;
+        const sy = EYE.up - T[o + 1]!;
+        const sz = EYE.right - T[o + 2]!;
+        const u = (sx * px + sy * py + sz * pz) / det;
+        if (u < 0 || u > 1) continue;
+        const qx = sy * T[o + 5]! - sz * T[o + 4]!;
+        const qy = sz * T[o + 3]! - sx * T[o + 5]!;
+        const qz = sx * T[o + 4]! - sy * T[o + 3]!;
+        const v = (d.x * qx + d.y * qy + d.z * qz) / det;
+        if (v < 0 || u + v > 1) continue;
+        const distance = (T[o + 6]! * qx + T[o + 7]! * qy + T[o + 8]! * qz) / det;
+        if (distance > 1e-9 && distance < best) {
+          best = distance;
+          which = deck[k]!.seal ? 1 : 0;
+        }
+      }
+      return which;
+    };
+    const pixelDirection = (px: number, py: number) => {
+      const u = ((px + 0.5) / 960 - 1) * TAN_HALF_H;
+      const w = -((py + 0.5) / 540 - 1) * (TAN_HALF_H / (16 / 9));
+      return new Vector3(1, w, u).normalize();
+    };
+    for (const side of [-1, 1]) {
+      // from the column of the S's top's outer edge to the frame's edge
+      const top = jetSealStations().at(-1)!;
+      const start = Math.ceil(960 * (1 + (top.inner + JET_SEAL.width) / (top.x - EYE.forward) / TAN_HALF_H));
+      let [columns, gaps, thinnest] = [0, 0, Number.POSITIVE_INFINITY];
+      for (let px = start; px < 1920; px += 4) {
+        const column = side > 0 ? px : 1919 - px;
+        // down the column to the first surface in 4 px steps, then pixel by pixel: the seal's run as the first surface
+        let py = 400;
+        while (py < 1080 && first(pixelDirection(column, py)) < 0) py += 4;
+        py = Math.max(400, py - 4);
+        while (py < 1080 && first(pixelDirection(column, py)) < 0) py += 1;
+        let seal = 0;
+        while (py < 1080 && first(pixelDirection(column, py)) === 1) {
+          seal += 1;
+          py += 1;
+        }
+        columns += 1;
+        if (seal < 3) gaps += 1;
+        thinnest = Math.min(thinnest, seal);
+      }
+      console.info(`F-16 canopy seal (side ${side}) at 1080p: ${columns} columns from px ${start}, the seal at least ${thinnest} px in each, ${gaps} under 3`);
+      expect(columns).toBeGreaterThan(50);
+      expect(gaps).toBe(0);
+    }
   });
 });
 

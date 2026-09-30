@@ -259,7 +259,8 @@ describe("the loft's crown taper", () => {
       // Re-pinned for S1 on the same evidence: the ICP and its DED new, the ICP's rim with the MFDs', its floor with the
       // dash; the other 73 bit-identical against cb43285.
       // Re-pinned for the S3 amend on the same evidence: the S through 21 stations, `jet-glare-shield` alone moved.
-      jet: "8fd8ffd5",
+      // Re-pinned for S4 on the same evidence: the canopy seal and its groove in the coaming, `jet-glare-shield` alone.
+      jet: "1e70430b",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.

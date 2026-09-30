@@ -364,7 +364,11 @@ describe("a loft's crown seam", () => {
       // RE-PINNED 0dff8af9 -> 4d829e35 for the S3 amend: the S through 21 stations spaced by its arcs' angle, the glass
       // re-measured at them. Checked mesh by mesh against 392e060: `jet-glare-shield` alone (4380 -> 6684 vertices); the
       // jet's other 76 and every mesh of the other three airframes are bit-identical.
-      jet: "4d829e35",
+      // RE-PINNED 4d829e35 -> 39b573ab for S4, the canopy seal: checked mesh by mesh against 4cd8b39: `jet-glare-shield`
+      // alone (6684 -> 14364 vertices: each side's seal strip in the glass margin and its groove's cove, merged in; the
+      // S's rounds' normals made true on its slope, positions unmoved); the jet's other 76 and every mesh of the other
+      // three airframes are bit-identical.
+      jet: "39b573ab",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
