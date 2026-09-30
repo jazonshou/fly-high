@@ -1587,14 +1587,23 @@ export function airlinerHeader(skin: SkinCaster, frame: WindowFrame): { position
 }
 
 /**
- * THE OVERHEAD'S FORWARD END (S5): the overhead's face and the lip it ends in, straight across the flight deck, on the
- * bezels' own grey, a mesh of its own (merged with the frames, the HUD took it for the deck's and kept off the top of the
- * picture). The lip is a round of `lipRadius`, and its underside reads `lipElevationDegrees` from the eye: the
+ * THE OVERHEAD'S FORWARD END (S5): the overhead's face and the lip it ends in, straight across the flight deck, on a
+ * panel grey of its own (`AIRLINER_OVERHEAD_ALBEDO`), a mesh of its own (merged with the frames, the HUD took it for the
+ * deck's and kept off the top of the picture). The lip is a round of `lipRadius`, and its underside reads `lipElevationDegrees` from the eye: the
  * top of the picture from there up (+23.35 at the frame's top edge straight ahead) is the overhead's face. It is a
  * convex section swept straight across (`sweptDeck`): the forward face up from the lip into the roof, the round, the
  * face level aft out of any lens, and up again, so its top is in the roof's skin and past it everywhere. Across, it runs
  * `halfWidth` each way, past the frame's walls at every height it spans: it meets them, and no end of it shows.
  */
+/**
+ * The overhead's own grey: a panel grey lighter than the bezels' (0x2c3034), with their finish. On their material it read
+ * as the crown did from the seat (luma 30 against 26 by day), and its lip did not show.
+ */
+export const AIRLINER_OVERHEAD_ALBEDO = 0x505860;
+function airlinerOverheadMaterial(build: AircraftBuildContext): PBRMaterial {
+  return build.material("airliner-overhead", AIRLINER_OVERHEAD_ALBEDO, { roughness: 0.82, metallic: 0.02 });
+}
+
 export const AIRLINER_OVERHEAD = Object.freeze({
   lipElevationDegrees: 20,
   /** The lip's centre, forward of the eye. */
@@ -1660,8 +1669,8 @@ export interface AirlinerCockpit {
  * TEN meshes, all static: the board and the window frame on the interior material; the glareshield's rounded deck
  * on the glareshield's matte; the window seals round the glass, and the header over the No.1 panes, on the same matte;
  * the six screens; their six bezel frames; the frames' chamfered rims, on the marking (the night glow); the wells
- * behind the gaps round the screens; the clock's face, on its own page; and the overhead's forward end, on the frames'
- * grey.
+ * behind the gaps round the screens; the clock's face, on its own page; and the overhead's forward end, on a panel grey
+ * of its own.
  */
 export function buildAirlinerCockpit(
   build: AircraftBuildContext,
@@ -1727,11 +1736,11 @@ export function buildAirlinerCockpit(
     frames.push(facetMesh(build, `airliner-glareshield-${panel.name}`, panel.plate, bezelMaterial, root));
     rims.push(facetMesh(build, `airliner-glareshield-${panel.name}-windows`, panel.windows.flatMap((w) => w.quads), materials.instrumentMarking, root));
   }
-  // THE OVERHEAD'S FORWARD END (S5), its face and its lip, straight across on the bezels' grey: a mesh of its own, for it
-  // is the flight deck's structure, not the deck's (the HUD reads the frames' mesh as the deck's, and keeps off it)
+  // THE OVERHEAD'S FORWARD END (S5), its face and its lip, straight across on a panel grey of its own: a mesh of its own,
+  // for it is the flight deck's structure, not the deck's (the HUD reads the frames' mesh as the deck's, and keeps off it)
   const overhead = airlinerOverheadSection();
   const across = AIRLINER_OVERHEAD.halfWidth;
-  parts.push(sweptDeck(build, "airliner-overhead-front", overhead.outline, [overhead.round], bezelMaterial, root, [
+  parts.push(sweptDeck(build, "airliner-overhead-front", overhead.outline, [overhead.round], airlinerOverheadMaterial(build), root, [
     { x: 0, z: -across, forward: { x: 1, z: 0 } },
     { x: 0, z: across, forward: { x: 1, z: 0 } },
   ], 0));

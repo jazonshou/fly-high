@@ -37,6 +37,7 @@ import {
   AIRLINER_DECK_WRAP,
   AIRLINER_HEADER,
   AIRLINER_OVERHEAD,
+  AIRLINER_OVERHEAD_ALBEDO,
   airlinerHeaderStations,
   airlinerOverheadSection,
   type FrameStation,
@@ -573,7 +574,13 @@ describe("the 747's cockpit parts", () => {
     // the overhead's front is its section swept straight across (`sweptDeck`, two stations): two triangles a side, two caps
     const overheadSides = airlinerOverheadSection().outline.length;
     expect(named("airliner-overhead-front").getTotalIndices() / 3).toBe(2 * overheadSides + 2 * (overheadSides - 2));
-    expect(named("airliner-overhead-front").material, "on the frames' own grey").toBe(named("airliner-screen-bezels").material);
+    // the overhead on a panel grey of its own, lighter than the frames', with their finish, so its lip reads by day
+    const overheadMaterial = named("airliner-overhead-front").material as PBRMaterial;
+    const framesMaterial = named("airliner-screen-bezels").material as PBRMaterial;
+    expect(overheadMaterial.name).toBe("airliner-overhead");
+    expect(overheadMaterial.albedoColor.toHexString().toLowerCase()).toBe(`#${AIRLINER_OVERHEAD_ALBEDO.toString(16).padStart(6, "0")}`);
+    expect(overheadMaterial.roughness).toBe(framesMaterial.roughness);
+    expect(overheadMaterial.metallic).toBe(framesMaterial.metallic);
     expect(named("airliner-header").material, "on the glareshield's matte").toBe(named("airliner-glareshield").material);
     expect(named("airliner-screen-bezel-rims").getTotalIndices() / 3).toBe(6 * 16 * 2 + 5 * 12 + round);
     const sources = cockpitOnly.flatMap((part) => (part.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [part.name]);

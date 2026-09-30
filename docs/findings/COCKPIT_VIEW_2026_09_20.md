@@ -2297,7 +2297,8 @@ frame (the P0 survey's 25%). Two parts break it now.
     same with the header hidden.
   - The jamb is behind the header but for a hair, under 0.04 degree straight ahead. Over No.1's rounded corners and
     the post, the header's height is held from the nearest straight station.
-- The **overhead's forward end**: its face and a 20 mm lip, straight across the flight deck, on the bezels' grey.
+- The **overhead's forward end**: its face and a 20 mm lip, straight across the flight deck, on a panel grey of its own
+  (0x505860, the bezels' finish).
   - The lip's underside is on the sightline at +20, so it is one row of the picture. From there to the frame's top
     (+23.35 straight ahead), the picture is the overhead.
   - It runs 1.1 m each way, past the frame's walls at every height it spans. The walls end it, never its caps: from
@@ -2322,10 +2323,12 @@ the rim first was the wrong edge: it left 0.3 degree of the return showing under
 
 **The overhead is a mesh of its own, and costs a draw.** Merged with the bezels' frames it cost none. But the HUD's
 instrument reads that mesh as the deck, so a "bezel" stood at the top of the picture and every HUD layout test
-failed at every window size. The overhead is the flight deck's structure, so it gets a mesh of its own on the frames'
-material, and the frames' mesh is bit-identical to S3.
+failed at every window size. The overhead is the flight deck's structure, so it gets a mesh of its own, and the frames'
+mesh is bit-identical to S3.
 - Draws in cockpit view: 95 -> 97, the header and the overhead. The wave's total is +4 of +6.
-- No new draw state.
+- On the frames' own material, the final frames showed the overhead reading as the crown did (day luma 30 against 26
+  at x 960), its lip barely a step. So it has a panel grey of its own, 0x505860 against the bezels' 0x2c3034, with their
+  finish: one material more, no draw more.
 
 **One known flaw.** At its port tip, over the pillar, the header runs into the crown: the face comes forward there by
 up to 16 mm as the nose turns to the side. The survey sees one outline, 2 px long.
