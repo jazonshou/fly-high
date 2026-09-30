@@ -77,7 +77,8 @@ export const TRAINER_PANEL = Object.freeze({
    */
   topRearY: -0.005,
   // NO WIDTH: the board runs wall to wall, each point of it `TRAINER_GLARESHIELD.clearance` inside the cabin at its
-  // own station and height (`trainerCabinHalfWidth`). It was a 0.84 m box, 2.5 cm OUTSIDE the glass at its top.
+  // own station and height (`trainerCabinHalfWidth`). It was a 0.84 m box, 2.8 cm OUTSIDE the glass at its top (the
+  // cabin's half-width there, x 2.08, is 0.3915).
 });
 
 /** Real gauge size. The dials this replaces were 0.17 to 0.20 m across. */

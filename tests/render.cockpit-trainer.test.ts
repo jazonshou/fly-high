@@ -1,4 +1,6 @@
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { Ray } from "@babylonjs/core/Culling/ray";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
@@ -196,8 +198,10 @@ describe("the trainer's cockpit parts", () => {
     // Airspeed left of the attitude indicator, altimeter to its right; the old layout mirrored it.
     expect(z("airspeed")).toBeLessThan(z("attitude"));
     expect(z("attitude")).toBeLessThan(z("altimeter"));
-    // 4 cm inboard of the eye's line since the deck and the board went wall to wall (Jason, 2026-09-29): at the eye's
-    // line the airspeed dial's rim stood outside the cabin; the attitude indicator is 3.3 degrees right of dead ahead.
+    // 4 cm inboard of the eye's line since the deck and the board went wall to wall (Jason and the PM, 2026-09-29): the
+    // cabin's inner line at the panel station, at the dials' height, is 0.3957 out, so on the eye's line the airspeed
+    // dial's rim (|z| 0.40) stood 4.3 mm outside it; at -0.32 it is 3.6 cm inside. The attitude indicator is 3.3 degrees
+    // right of dead ahead.
     expect(z("attitude")).toBeCloseTo(EYE.right + 0.04, 3);
     for (const dial of ["airspeed", "attitude", "altimeter"]) {
       const centre = named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
@@ -876,6 +880,58 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       }
     }
     expect(checked).toBeGreaterThan(200);
+  });
+
+  it("keeps the deck's hood out of sight: its top faces away from the eye and no pixel of it is seen; a level hood would be", () => {
+    // The hood stops at x 2.11 and falls 12 degrees forward of the round, STEEPER than the deck line's 8.31: the eye is
+    // under the plane of its top, so the GPU culls that face wherever it stands, and it is behind the round besides.
+    // The deck's triangles are split in two, the hood's top (the walls between the hood's forward top corner and the
+    // round's forward tangent) and the rest, rasterised in place of the deck, so the hood cannot tie with itself.
+    const deck = named("trainer-glareshield");
+    const section = trainerDeckSection();
+    const [endTop, roundFront] = [section.outline[2]!, section.outline[3]!];
+    const onHoodTop = (p: Vector3) => [endTop, roundFront].some((c) => Math.abs(p.x - c.x) < 1e-6 && Math.abs(p.y - c.y) < 1e-6);
+    const v = worldVertices(deck);
+    const indices = deck.getIndices()!;
+    const hood: number[] = [];
+    const rest: number[] = [];
+    for (let t = 0; t < indices.length; t += 3) {
+      const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+      (corners.every((i) => onHoodTop(v[i]!)) ? hood : rest).push(...corners);
+    }
+    expect(hood.length, "the hood's top triangles").toBeGreaterThanOrEqual(3 * 2);
+    // its top faces AWAY from the eye: a drawn face's cross product points into the solid, so a face the eye sees has
+    // it pointing away from the eye; the hood's points toward it
+    for (let t = 0; t < hood.length; t += 3) {
+      const [A, B, C] = [v[hood[t]!]!, v[hood[t + 1]!]!, v[hood[t + 2]!]!];
+      expect(Vector3.Dot(Vector3.Cross(B.subtract(A), C.subtract(A)), A.subtract(EYE_POINT)), "a hood face drawn toward the eye").toBeLessThan(0);
+    }
+    const part = (name: string, kept: number[], move: (p: Vector3) => Vector3 = (p) => p) => {
+      const mesh = new Mesh(name, scene);
+      const data = new VertexData();
+      data.positions = v.flatMap((p) => { const q = move(p); return [q.x, q.y, q.z]; });
+      data.indices = kept;
+      data.applyToMesh(mesh);
+      return mesh;
+    };
+    const seen = (move?: (p: Vector3) => Vector3) => {
+      const [top, others] = [part("hood-top", hood, move), part("deck-rest", rest)];
+      try {
+        // the two parts are in the scene too, and would otherwise come in twice through `drawn()`
+        const meshes = [...drawn().filter((m) => m !== deck && m !== top && m !== others), others, top];
+        const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+        const index = meshes.indexOf(top);
+        let n = 0;
+        for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === index) n += 1;
+        return n;
+      } finally {
+        top.dispose();
+        others.dispose();
+      }
+    };
+    expect(seen(), "hood pixels").toBe(0);
+    // CONTROL: the same top made LEVEL and 1 cm over the round faces the eye, stands over the deck line and is seen
+    expect(seen((p) => (onHoodTop(p) ? new Vector3(p.x, roundFront.y + 0.01, p.z) : p))).toBeGreaterThan(500);
   });
 
   it("buries every end of the deck and the board in its door frame: with the doors none of their edges shows, and without them their ends do", () => {

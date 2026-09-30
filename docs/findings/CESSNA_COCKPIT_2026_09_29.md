@@ -55,7 +55,8 @@ instances, material and visibility. A step may move only the meshes it names.
 
 **What was there.** Two boxes: a 0.84 m panel and a 2 cm hood slab laid on top.
 Both had square ends that stopped in mid-air short of the walls, or poked through
-them. Their four long edges read as five hard edges, 2,680 px of them. The
+them: the panel's half-width of 0.42 stood 2.8 cm OUTSIDE the glass at its top
+(the cabin's half-width at x 2.08 is 0.3915). Their four long edges read as five hard edges, 2,680 px of them. The
 port door's forward end came across the airspeed dial and hid 9.0% of it.
 
 **What is there now.**
@@ -95,9 +96,13 @@ top face was in view. The old aft edge read 8.35. The new deck is built on the
 catalogue value, so the HUD, the dial rects and the deck-line pins are untouched.
 
 **The dial row moved 4 cm inboard.** Airspeed, attitude and altimeter now sit at
-z -0.32 / -0.22 / -0.12. This was Jason's call, made in the PM's place.
+z -0.32 / -0.22 / -0.12. Jason made the call in the PM's place, and the PM,
+answering later, ruled the same (3.3 degrees off the eye's line is invisible; a
+floating rim is not).
 
-The airspeed rim, at |z| 0.40, stood 4.3 mm OUTSIDE the cabin line. The old
+The cabin's inner line at the panel station, at the dials' height, is 0.3957 out.
+The airspeed rim, at |z| 0.40, stood 4.3 mm OUTSIDE it; at -0.32 it is 3.6 cm
+inside. The old
 0.84 m board carried it only because the camera hid the skin it poked through.
 A board that follows the walls cannot. The instruments tests now find the dial
 plane from the board's own face normals (`builtPanelFace`), not from the panel's
