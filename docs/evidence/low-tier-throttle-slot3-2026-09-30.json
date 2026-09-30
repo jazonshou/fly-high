@@ -1,0 +1,620 @@
+{
+ "note": "Perf slot 3, 2026-09-30 02:23:48-02:37:23, LOADED HOST by PM decision (other sessions' single-file Node tests were the accepted load; one node process at 120% at the start). Every fps/p95 figure here is loaded and not comparable with slot 2. Tier 0, 1920x1080, 4x Chrome CPU throttle (main thread only). Probe: jazonshou/perf-slot3-record (throttle-probe.mts byte-identical to the one run). P2b arm = jazonshou/perf-p2b-region-geometry a35b3c2; before arm = Fix-Cockpits 7fc2280; P9 arm = jazonshou/perf-p9-governor-feedback c61fd8c. Freeze pair and P9 holds: ?seed=water9 (world 1953085941), pose -18620,199,17260 yaw 0 pitch -20.6, clock pinned at 1000 s, governor live.",
+ "hostLog": [
+  "-- host start 02:23:48: 4.61 4.59 4.12",
+  "      %CPU   PID COMM",
+  "     120.2 66825 /opt/homebrew/Cellar/node/26.7.0/bin/node",
+  "      45.7   396 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+  "      35.7 66850 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService",
+  "      25.0 66852 /usr/libexec/ReportMemoryException",
+  "      12.7   364 /usr/libexec/opendirectoryd",
+  "      10.0 66861 /System/Library/PrivateFrameworks/CoreSymbolication.framework/coresymbolicationd",
+  "       8.6 66625 /System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd",
+  "       5.1 61018 /Users/jasonzhou/Library/Application Support/Claude/claude-code/2.1.284/claude.app/Contents/MacOS/claude",
+  "-- host end 02:37:23: 3.97 5.80 5.88",
+  "      %CPU   PID COMM",
+  "      43.7   396 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+  "       5.6   399 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow",
+  "       5.5   366 /System/Library/CoreServices/launchservicesd",
+  "       4.0   615 /System/Library/CoreServices/WindowManager.app/Contents/MacOS/WindowManager",
+  "       2.8 35646 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper",
+  "       2.5   327 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/Support/fseventsd",
+  "       2.3 39022 /Users/jasonzhou/Library/Application Support/Claude/claude-code/2.1.284/claude.app/Contents/MacOS/claude",
+  "       2.2 35664 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)"
+ ],
+ "cruise": {
+  "p2b-cruise-airliner": {
+   "rate": 4,
+   "fpsMedian": 51,
+   "intervalMs": {
+    "p50": 17.4,
+    "p95": 26.6,
+    "p99": 34.1,
+    "max": 48.9
+   },
+   "over250": 0,
+   "over400": 0,
+   "windowLongFrames": [],
+   "hydrologyLongFramesWholeSession": [
+    {
+     "atMs": 2347,
+     "duration": 78,
+     "scripts": [
+      {
+       "invoker": "Worker.onmessage",
+       "invokerType": "event-listener",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "handleMessage",
+       "duration": 75,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "startScreenMs": 3189.5999999940395,
+   "governorEnd": {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   "hydrologyEnd": {
+    "fallback": false,
+    "usedWorker": true,
+    "requests": 8,
+    "swaps": 7,
+    "failed": 0,
+    "lastMs": 80.2999999821186,
+    "region": "3:-2"
+   },
+   "unthrottled": {
+    "fpsMedian": 120,
+    "p95": 9.9
+   }
+  },
+  "p2b-cruise-trainer": {
+   "rate": 4,
+   "fpsMedian": 44,
+   "intervalMs": {
+    "p50": 18.2,
+    "p95": 35.4,
+    "p99": 56.8,
+    "max": 148.4
+   },
+   "over250": 0,
+   "over400": 0,
+   "windowLongFrames": [
+    {
+     "duration": 156,
+     "atS": 6.88,
+     "scripts": [
+      [
+       "renderLoop",
+       "FlightGame.tsx",
+       115
+      ],
+      [
+       "",
+       "",
+       27
+      ]
+     ]
+    }
+   ],
+   "hydrologyLongFramesWholeSession": [
+    {
+     "atMs": 1916,
+     "duration": 85,
+     "scripts": [
+      {
+       "invoker": "Worker.onmessage",
+       "invokerType": "event-listener",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "handleMessage",
+       "duration": 84,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "startScreenMs": 2739.0999999940395,
+   "governorEnd": {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   "hydrologyEnd": {
+    "fallback": false,
+    "usedWorker": true,
+    "requests": 4,
+    "swaps": 3,
+    "failed": 0,
+    "lastMs": 87.39999997615814,
+    "region": "1:0"
+   },
+   "unthrottled": {
+    "fpsMedian": 120,
+    "p95": 9.9
+   }
+  }
+ },
+ "hydrologyLongFramesSameFlightPath": {
+  "747 cruise, slot2 before (quiet, 12bfe1e)": {
+   "framesAtMsAndDuration": [
+    [
+     1518,
+     175
+    ],
+    [
+     2387,
+     112
+    ],
+    [
+     2570,
+     102
+    ],
+    [
+     10168,
+     87
+    ],
+    [
+     21676,
+     82
+    ],
+    [
+     48605,
+     74
+    ],
+    [
+     83354,
+     697
+    ],
+    [
+     87822,
+     324
+    ]
+   ],
+   "regionRequests": 8,
+   "regionSwaps": 7,
+   "startScreenMs": 2532
+  },
+  "747 cruise, slot2 after P1+P3 (quiet, 2b6df41)": {
+   "framesAtMsAndDuration": [
+    [
+     1517,
+     177
+    ],
+    [
+     2389,
+     109
+    ],
+    [
+     2569,
+     102
+    ],
+    [
+     10142,
+     85
+    ],
+    [
+     21643,
+     82
+    ],
+    [
+     48493,
+     74
+    ],
+    [
+     83076,
+     693
+    ],
+    [
+     87514,
+     331
+    ]
+   ],
+   "regionRequests": 8,
+   "regionSwaps": 7,
+   "startScreenMs": 2502
+  },
+  "747 cruise, slot2 with P2 (quiet, 021c5d8)": {
+   "framesAtMsAndDuration": [
+    [
+     2191,
+     93
+    ],
+    [
+     2427,
+     103
+    ],
+    [
+     2530,
+     112
+    ],
+    [
+     2643,
+     93
+    ],
+    [
+     2862,
+     137
+    ],
+    [
+     5308,
+     289
+    ],
+    [
+     83561,
+     325
+    ]
+   ],
+   "regionRequests": 8,
+   "regionSwaps": 7,
+   "startScreenMs": 3062
+  },
+  "747 cruise, slot3 with P2b (loaded, a35b3c2)": {
+   "framesAtMsAndDuration": [
+    [
+     2347,
+     78
+    ]
+   ],
+   "regionRequests": 8,
+   "regionSwaps": 7,
+   "startScreenMs": 3190
+  },
+  "Cessna cruise, slot2 before (quiet)": {
+   "framesAtMsAndDuration": [
+    [
+     2093,
+     175
+    ],
+    [
+     2988,
+     106
+    ],
+    [
+     3205,
+     105
+    ],
+    [
+     63271,
+     358
+    ]
+   ],
+   "regionRequests": 4,
+   "regionSwaps": 3,
+   "startScreenMs": 3134
+  },
+  "Cessna cruise, slot3 with P2b (loaded)": {
+   "framesAtMsAndDuration": [
+    [
+     1916,
+     85
+    ]
+   ],
+   "regionRequests": 4,
+   "regionSwaps": 3,
+   "startScreenMs": 2739
+  }
+ },
+ "freezePairPixels": {
+  "waterMaskPx": 340497,
+  "terrainPatchPx": 109995,
+  "BvsA2": {
+   "water": {
+    "pxDiffering": 0,
+    "max": 0
+   },
+   "terrainPatch": {
+    "pxDiffering": 0
+   },
+   "wholeFrame": {
+    "pxDiffering": 149,
+    "max": 20
+   }
+  },
+  "A1vsA2": {
+   "water": {
+    "pxDiffering": 574,
+    "max": 1
+   },
+   "terrainPatch": {
+    "pxDiffering": 0
+   },
+   "wholeFrame": {
+    "pxDiffering": 863,
+    "max": 22
+   }
+  },
+  "A1vsB": {
+   "water": {
+    "pxDiffering": 574,
+    "max": 1
+   },
+   "terrainPatch": {
+    "pxDiffering": 0
+   },
+   "wholeFrame": {
+    "pxDiffering": 871,
+    "max": 25
+   }
+  },
+  "governorAtShot": {
+   "A1": {
+    "scale": 0.72,
+    "cpuL": 0,
+    "gpuL": 0,
+    "active": "holding"
+   },
+   "B": {
+    "scale": 0.72,
+    "cpuL": 0,
+    "gpuL": 0,
+    "active": "holding"
+   },
+   "A2": {
+    "scale": 0.72,
+    "cpuL": 0,
+    "gpuL": 0,
+    "active": "holding"
+   }
+  },
+  "hydrologyAtShot": {
+   "A1": {
+    "fallback": false,
+    "usedWorker": true,
+    "requests": 3,
+    "swaps": 2,
+    "failed": 0,
+    "lastMs": 168.80000001192093,
+    "region": "0:0"
+   },
+   "B": {
+    "fallback": false,
+    "usedWorker": true,
+    "requests": 3,
+    "swaps": 2,
+    "failed": 0,
+    "lastMs": 269.10000002384186,
+    "region": "0:0"
+   },
+   "A2": {
+    "fallback": false,
+    "usedWorker": true,
+    "requests": 3,
+    "swaps": 2,
+    "failed": 0,
+    "lastMs": 167,
+    "region": "0:0"
+   }
+  }
+ },
+ "governorHolds": {
+  "p9-x1": {
+   "rate": 1,
+   "holdS": 60,
+   "fpsMedian": 120,
+   "samples": 63,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    }
+   ]
+  },
+  "p9-x4-1": {
+   "rate": 4,
+   "holdS": 60,
+   "fpsMedian": 114,
+   "samples": 63,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    }
+   ]
+  },
+  "p9-x4-2": {
+   "rate": 4,
+   "holdS": 60,
+   "fpsMedian": 110,
+   "samples": 63,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    }
+   ]
+  },
+  "p9-x4-3": {
+   "rate": 4,
+   "holdS": 60,
+   "fpsMedian": 108,
+   "samples": 63,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    }
+   ]
+  },
+  "before-x4-1": {
+   "rate": 4,
+   "holdS": 60,
+   "fpsMedian": 113,
+   "samples": 63,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    },
+    {
+     "atS": 18,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "cpu-work"
+    },
+    {
+     "atS": 19,
+     "gpuL": 0,
+     "cpuL": 1,
+     "scale": 0.72,
+     "active": "cpu-work"
+    },
+    {
+     "atS": 21,
+     "gpuL": 0,
+     "cpuL": 1,
+     "scale": 0.72,
+     "active": "holding"
+    }
+   ]
+  },
+  "before-x4-2": {
+   "rate": 4,
+   "holdS": 60,
+   "fpsMedian": 110,
+   "samples": 63,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    },
+    {
+     "atS": 1,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "frame-pacing"
+    },
+    {
+     "atS": 2,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "cpu-work"
+    },
+    {
+     "atS": 4,
+     "gpuL": 0,
+     "cpuL": 0,
+     "scale": 0.72,
+     "active": "holding"
+    }
+   ]
+  }
+ },
+ "governorEndStatesCruiseNoP9": {
+  "slot1 loaded (baseline-0929-2148)": [
+   {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   }
+  ],
+  "slot2 quiet": [
+   {
+    "active": "frame-pacing",
+    "cpuL": 0,
+    "gpuL": 9,
+    "cpuLever": "ground-cover-gate",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 3,
+    "gpuL": 6,
+    "cpuLever": "terrain-page-requests",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 3,
+    "gpuL": 5,
+    "cpuLever": "terrain-page-requests",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 4,
+    "gpuL": 5,
+    "cpuLever": "detail-cell-budget",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 4,
+    "gpuL": 6,
+    "cpuLever": "detail-cell-budget",
+    "scale": 0.72,
+    "insensitive": false
+   }
+  ],
+  "slot3 loaded (P2b arm, no P9)": [
+   {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   },
+   {
+    "active": "cpu-work",
+    "cpuL": 7,
+    "gpuL": 0,
+    "cpuLever": "animal-budget",
+    "scale": 0.72,
+    "insensitive": false
+   }
+  ]
+ }
+}
