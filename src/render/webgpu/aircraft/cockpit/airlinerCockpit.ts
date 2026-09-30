@@ -330,8 +330,11 @@ export const AIRLINER_DECK_WRAP = Object.freeze({
   turnDegrees: 90,
   /** Aft along the side after the turn: its end at az -67 from the seat, out of any lens. */
   aftRun: 0.4,
-  /** Chords round each turn, shaded as the turn. */
-  segments: 9,
+  /**
+   * Chords round each turn, shaded as the turn: 5 degrees each. At 10 the lip's outline across the turn scalloped a chord
+   * at a time, 0.40 px from a smooth curve at 1080p; at 5 it is 0.13.
+   */
+  segments: 18,
 });
 
 /** A station of the deck's plan path: where the section's reference (the face's top edge) is, and where its forward points. */

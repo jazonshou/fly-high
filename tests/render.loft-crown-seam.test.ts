@@ -573,7 +573,9 @@ describe("a loft's crown seam", () => {
       // airliner-header and airliner-overhead-front are new, and the other 98 are bit-identical.
       // RE-PINNED 6fd8be82 -> e7b38db2 for the glareshield's windows 2 px inside the strip's edges (S3's margins): against
       // e0f9c73, airliner-screen-bezel-rims moved, and the other 99 are bit-identical.
-      airliner: "e7b38db2",
+      // RE-PINNED e7b38db2 -> 52aba346 for the deck's turns in 5 degree chords: against 2e48fce, airliner-glareshield and
+      // airliner-cockpit-interior (the board) moved, and the other 98 are bit-identical.
+      airliner: "52aba346",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

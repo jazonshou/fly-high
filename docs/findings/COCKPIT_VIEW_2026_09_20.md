@@ -2239,6 +2239,13 @@ Five mutations, all caught:
 - the round flat-shaded;
 - the chamfer's normals radial.
 
+**The turns in 5 degree chords, after the final frames.** Each turn was nine chords of 10 degrees. The PM read the
+final day frame's lower left as the turned lip scalloping; that shape is terrain seen through No.2 (Node rays meet no
+cockpit part there). But the lip's own outline across the turn, traced by rays to a hundredth of a pixel, did step a
+chord at a time: 0.40 px from a smooth curve at 1080p (a degree-8 fit over x 80 to 620). At 18 chords it is 0.13. The
+glareshield went 690 -> 1,230 vertices and the board 144 more; nothing else moved. The deck line's test takes the
+HUD's instrument over the whole scene and ran 13 to 27 s against a 30 s limit, so it has 90 s now.
+
 ## The 747's glareshield over its displays, with its MCP (S3)
 
 The type's glareshield is a padded coaming that overhangs its displays, with the mode control panel on its aft face.

@@ -794,6 +794,7 @@ describe("what the pilot sees straight ahead", () => {
     expect(firstPart(0, lipElevation(0) - 0.05)).toBe("airliner-glareshield");
   });
 
+  // the HUD's instrument picks the whole scene hundreds of times: 13 to 27 s here, more under a full parallel run
   it("puts the deck line at the catalogue's value: the lip, one row across the frame, with the grey sill above it up to No.1", () => {
     const recorded = aircraftSpec("airliner").cockpitDeckLineDegrees;
     // THE HUD LAYOUT'S OWN INSTRUMENT: the deck's highest row anywhere across the frame (glareshield, panel, screens
@@ -835,7 +836,7 @@ describe("what the pilot sees straight ahead", () => {
     expect(band).toBeGreaterThan(8);
     // and just over No.1's bottom edge, the glass: nothing drawn
     expect(firstHit(0, glassAhead + 0.1)).toBeNull();
-  });
+  }, 90_000);
 
   it("frames every edge of the glass the pilot sees with the kit: no hidden skin shows beside any pane or the post", () => {
     // 0.3 degrees outside each pane's hole in the skin (its grid at skin level: the lining is a thin slab round it),
@@ -1548,6 +1549,73 @@ describe("the window frame's openings, rolled and rounded (S1, S2)", () => {
 });
 
 describe("the deck turned aft and the clock on it (S4)", () => {
+  /** The largest residual of a least-squares polynomial of `degree` through (x, y), on a Chebyshev basis over x's span. */
+  function polyResidual(xs: readonly number[], ys: readonly number[], degree: number): number {
+    const [lo, hi] = [Math.min(...xs), Math.max(...xs)];
+    const basis = (x: number) => {
+      const t = (2 * (x - lo)) / (hi - lo) - 1;
+      const out = [1, t];
+      for (let k = 2; k <= degree; k += 1) out.push(2 * t * out[k - 1]! - out[k - 2]!);
+      return out.slice(0, degree + 1);
+    };
+    const n = degree + 1;
+    const a = Array.from({ length: n }, () => new Array<number>(n + 1).fill(0));
+    xs.forEach((x, i) => {
+      const b = basis(x);
+      for (let r = 0; r < n; r += 1) {
+        for (let c = 0; c < n; c += 1) a[r]![c]! += b[r]! * b[c]!;
+        a[r]![n]! += b[r]! * ys[i]!;
+      }
+    });
+    for (let c = 0; c < n; c += 1) {
+      const pivot = a.slice(c).reduce((best, row, k) => (Math.abs(row[c]!) > Math.abs(a[best]![c]!) ? c + k : best), c);
+      [a[c], a[pivot]] = [a[pivot]!, a[c]!];
+      for (let r = 0; r < n; r += 1) {
+        if (r === c) continue;
+        const f = a[r]![c]! / a[c]![c]!;
+        for (let k = c; k <= n; k += 1) a[r]![k]! -= f * a[c]![k]!;
+      }
+    }
+    const coefficients = a.map((row, r) => row[n]! / row[r]!);
+    return Math.max(...xs.map((x, i) => Math.abs(ys[i]! - basis(x).reduce((sum, b, k) => sum + b * coefficients[k]!, 0))));
+  }
+
+  it("turns the deck in stations 5 degrees apart, so its outline across the turn is fair: within 0.3 px of a smooth curve at 1080p (nine of 10 degrees read 0.40)", () => {
+    // the plan path's stations: each turn in 5 degree steps, and the aft runs straight on
+    const path = airlinerDeckPath();
+    for (let k = 0; k + 1 < path.length; k += 1) {
+      const [a, b] = [path[k]!.forward, path[k + 1]!.forward];
+      const turn = Math.acos(Math.min(1, a.x * b.x + a.z * b.z)) * DEG;
+      expect(turn, `between stations ${k} and ${k + 1}`).toBeLessThanOrEqual(5 + 1e-9);
+    }
+    // the glareshield's top edge in 1080p rows, a column every 2 px across the port turn (x 80 to 620: the turn starts
+    // at az -15, x 625, and leaves the frame's bottom at x 66), each row bisected to a hundredth of a pixel
+    const glare = named("airliner-glareshield");
+    const isGlare = (x: number, y: number) => firstHitAlong(new Vector3(1, (1 - y / 540) * FRAME_V, (x / 960 - 1) * FRAME_U).normalize())?.pickedMesh === glare;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    let guess = 1060;
+    for (let x = 80.5; x <= 620.5; x += 2) {
+      let [above, below] = [guess - 4, guess + 4];
+      while (isGlare(x, above)) above -= 4;
+      while (!isGlare(x, below) && below < 1080) below += 4;
+      expect(isGlare(x, below), `the glareshield under column ${x}`).toBe(true);
+      for (let k = 0; k < 14; k += 1) {
+        const mid = (above + below) / 2;
+        if (isGlare(x, mid)) below = mid;
+        else above = mid;
+      }
+      xs.push(x);
+      ys.push(below);
+      guess = below;
+    }
+    const residual = polyResidual(xs, ys, 8);
+    console.info(`747 glareshield's outline across its turn: rows ${Math.min(...ys).toFixed(1)} to ${Math.max(...ys).toFixed(1)}, ${residual.toFixed(3)} px from a smooth curve at most`);
+    // NON-VACUITY: the outline curves over the span, so a smooth curve is fitted to something
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(60);
+    expect(residual).toBeLessThanOrEqual(0.3);
+  });
+
   it("shades the glareshield's round round: every vertex on it, across the middle, carries the round's radial normal", () => {
     // P0 counted the round's eight chords flat-shaded; swept (S4), the round's chords take the round's radial normals
     const section = airlinerGlareshieldSection();
