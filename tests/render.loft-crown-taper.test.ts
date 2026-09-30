@@ -254,7 +254,9 @@ describe("the loft's crown taper", () => {
       // Re-pinned for step 5b on the same evidence: the HUD frame's corners rounded, the panes with them.
       // Re-pinned for the F-16 wave's S2 on the same evidence: the dash under the round's cove, the MFDs and the consoles'
       // forward ends with it, the other 69 bit-identical.
-      jet: "f311889d",
+      // Re-pinned for S3 on the same evidence: the rail's ends rounded, the ends' and the sills' sections in six chords a
+      // round, the fillet between the ends and the round and the dash; the other 72 bit-identical against 2f16351.
+      jet: "e2a35c13",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.

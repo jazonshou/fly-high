@@ -40,7 +40,14 @@ import {
   jetSillStations,
   JET_SILL,
   JET_RAIL_END,
+  JET_RAIL_END_FILLET,
+  jetRailEndFillet,
+  jetRailEndInnerAt,
   jetRailEndStations,
+  jetRailStations,
+  JET_RAIL_SIDES,
+  jetRailOutlineInset,
+  jetRailEndTopAt,
 } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
 import {
   AIRLINER_DISPLAYS,
@@ -108,17 +115,36 @@ let aircraft: AircraftVisual;
 let cockpitOnly: readonly AbstractMesh[];
 let canopy: Triangle[];
 
+/** A swept solid's vertices: its walls between stations and a fanned cap at each end, three to a triangle. */
+const sweptVertices = (points: number, stations: number) => 3 * (2 * points * (stations - 1) + 2 * (points - 2));
 /**
  * The coaming's own rail, the first part of `jet-glare-shield` (step 5 merged the rail's two swept ends after it): its
- * vertices and its triangles.
+ * vertices and its triangles. S3 rounded its outboard ends: the rail's section whole between them (these), then the
+ * two rounded ends (`RAIL_SIDE_VERTICES` each), then the swept ends.
  */
-const RAIL_VERTICES = 3 * (4 * jetGlareshieldSection().outline.length - 4);
+const RAIL_VERTICES = sweptVertices(jetGlareshieldSection().outline.length, 2);
+const RAIL_SIDE_VERTICES = sweptVertices(jetGlareshieldSection().outline.length, JET_RAIL_SIDES.endSegments + 1);
+const RAIL_ALL_VERTICES = RAIL_VERTICES + 2 * RAIL_SIDE_VERTICES;
 function railVertices(): Vector3[] {
   return worldVertices(named("jet-glare-shield")).slice(0, RAIL_VERTICES);
 }
+/** The rail's triangles, its rounded ends' too: the solid a ray from inside the hood crosses. */
 function railTriangles(): Triangle[] {
-  return worldTriangles(named("jet-glare-shield")).slice(0, RAIL_VERTICES / 3);
+  return worldTriangles(named("jet-glare-shield")).slice(0, RAIL_ALL_VERTICES / 3);
 }
+/** The rail's half-width at x where its section is still whole: short of its rounded outboard ends (S3). */
+const railWholeTo = (x: number) => ((JET_GLARESHIELD.nearHalfWidth - JET_RAIL_SIDES.radius) * jetCoamingHalfWidth(x)) / JET_GLARESHIELD.nearHalfWidth;
+/** The board's own plate, the first part of `jet-instrument-panel` (S3 merged each side's fillet span on the dash after it). */
+const BOARD_VERTICES = 3 * (4 * jetPanelSection().length - 4);
+/** A fillet span's vertices over `stations`: each span's arc chords and two closing faces, and a fanned cap at each end. */
+const filletVertices = (stations: number) => 3 * ((stations - 1) * (2 * JET_RAIL_END_FILLET.arcSegments + 4) + 2 * JET_RAIL_END_FILLET.arcSegments);
+/** The fillet's stations: those on the dash's face and the cove (the board's), then those up the round (the coaming's). */
+const FILLET = jetRailEndFillet();
+const FILLET_ON_RAIL = FILLET.findIndex((station) => station.onRail);
+const BOARD_FILLET_VERTICES = filletVertices(FILLET_ON_RAIL);
+const RAIL_FILLET_VERTICES = filletVertices(FILLET.length - FILLET_ON_RAIL + 1);
+/** A rail end's vertices: the rail's section swept over the S's stations. */
+const END_VERTICES = sweptVertices(jetSillSection().points.length, JET_RAIL_END.stations);
 function named(name: string): AbstractMesh {
   const found = scene.getMeshByName(name);
   if (!found) throw new Error(`missing mesh ${name}`);
@@ -434,7 +460,7 @@ describe("the coaming", () => {
     }
     // the rail's own solid's ends, from its own vertices: the 0.36 half-width, 0.70 ahead of the eye (from az 25 its
     // ends sweep aft and down into the sills, step 5)
-    const rail = railVertices().filter((v) => v.x < JET_GLARESHIELD.aftX + JET_GLARESHIELD.radius * 2);
+    const rail = worldVertices(named("jet-glare-shield")).slice(0, RAIL_ALL_VERTICES).filter((v) => v.x < JET_GLARESHIELD.aftX + JET_GLARESHIELD.radius * 2);
     const ends = Math.max(...rail.map((v) => Math.abs(azel(v).az)));
     expect(ends).toBeGreaterThan(26.5);
     expect(ends).toBeLessThan(27.5);
@@ -444,24 +470,55 @@ describe("the coaming", () => {
     }
   });
 
-  it("is the rounded deck it was designed to be: a solidPlate of the section, 0.36 wide at the rail narrowing to 0.26 at the hood's end, the hood falling 13 degrees, flat-shaded but for the round, inside the bubble by 2 cm", () => {
+  it("is the rounded deck it was designed to be: the section swept across, 0.36 wide at the rail narrowing to 0.26 at the hood's end, its outboard ends rolled over a 1 cm round (S3) and shaded as that roll, the hood falling 13 degrees, flat-shaded but for the round, inside the bubble by 2 cm", () => {
     const g = JET_GLARESHIELD;
     const section = jetGlareshieldSection();
     const mesh = named("jet-glare-shield");
     expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom?.[0], "the rail first, its ends after it").toBe("jet-glare-shield-rail");
-    const vertices = railVertices();
+    expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom?.slice(0, 3), "then its rounded ends").toEqual(["jet-glare-shield-rail", "jet-glare-shield-side-port", "jet-glare-shield-side-starboard"]);
+    const vertices = worldVertices(mesh).slice(0, RAIL_ALL_VERTICES);
     const n = section.outline.length;
     expect(n, "no drop and no chamfer: the round (its aft tangent the dash's top) and the hood's two forward corners").toBe(g.roundSegments + 2 + 2);
-    expect(RAIL_VERTICES / 3, "two fanned caps and a wall of two a side").toBe(2 * (n - 2) + 2 * n);
-    expect(vertices.length).toBe(3 * (2 * (n - 2) + 2 * n));
-    // every vertex on the section, at the plan's half-width for its station (float32)
-    for (const v of vertices) {
-      expect(section.outline.some((o) => Math.abs(o.x - v.x) < 1e-5 && Math.abs(o.y - v.y) < 1e-5), `vertex (${v.x.toFixed(4)}, ${v.y.toFixed(4)}) on the section`).toBe(true);
-      expect(Math.abs(Math.abs(v.z) - jetCoamingHalfWidth(v.x)), `vertex z ${v.z} at x ${v.x}`).toBeLessThan(1e-5);
+    // S3: swept across the cockpit through twelve stations, the section whole between the middle two and inset over 75
+    // degrees of a 1 cm round (the ends' own) in five to each side, three solids (a prism of the section, square at its
+    // sides, before)
+    const stations = jetRailStations();
+    expect([JET_RAIL_SIDES.radius, JET_RAIL_SIDES.endSegments, JET_RAIL_SIDES.endDegrees]).toEqual([JET_SILL.radius, 5, 75]);
+    expect(stations).toHaveLength(12);
+    expect(stations[5]!.z).toBeCloseTo(-(g.nearHalfWidth - JET_RAIL_SIDES.radius), 12);
+    expect(stations[6]!.z).toBeCloseTo(g.nearHalfWidth - JET_RAIL_SIDES.radius, 12);
+    expect(stations[11]!.inset, "7.4 mm in at the cap").toBeCloseTo(JET_RAIL_SIDES.radius * (1 - Math.cos((75 * Math.PI) / 180)), 12);
+    for (const [k, station] of stations.entries()) {
+      // on the round: its fall at its run out from the whole section's edge
+      const out = Math.abs(station.z) - (g.nearHalfWidth - JET_RAIL_SIDES.radius);
+      expect(station.inset, `station ${k}`).toBeCloseTo(JET_RAIL_SIDES.radius - Math.sqrt(Math.max(0, JET_RAIL_SIDES.radius ** 2 - out * out)), 9);
     }
-    expect(Math.max(...vertices.map((v) => Math.abs(v.z)))).toBeCloseTo(0.36, 5);
+    expect(RAIL_VERTICES / 3, "the whole section: two fanned caps and a wall of two a side").toBe(2 * (n - 2) + 2 * n);
+    expect(RAIL_SIDE_VERTICES / 3, "a rounded end: two fanned caps and five walls of two a side").toBe(2 * (n - 2) + 2 * n * 5);
+    // every vertex its section point inset at its station, at the plan's half-width at the point's own x scaled to the
+    // station (float32)
+    const sections = stations.map(({ inset }) => jetRailOutlineInset(inset));
+    for (const v of vertices) {
+      const found = stations.some((station, k) => sections[k]!.some((o, j) => Math.abs(o.x - v.x) < 1e-5 && Math.abs(o.y - v.y) < 1e-5
+        && Math.abs(v.z - (station.z * jetCoamingHalfWidth(section.outline[j]!.x)) / g.nearHalfWidth) < 1e-5));
+      expect(found, `vertex (${v.x.toFixed(4)}, ${v.y.toFixed(4)}, ${v.z.toFixed(4)}) a section point at a station`).toBe(true);
+    }
+    // the inset: the round's points in to its radius less the inset about the same centre, the hood's forward corners in
+    // square to both their edges
+    const inset = jetRailOutlineInset(JET_RAIL_SIDES.radius);
+    for (const [j, p] of section.outline.entries()) {
+      if (section.round.some((r) => Math.hypot(r.x - p.x, r.y - p.y) < 1e-12)) {
+        expect(Math.hypot(inset[j]!.x - section.centre.x, inset[j]!.y - section.centre.y), `round point ${j}, inset`).toBeCloseTo(g.radius - JET_RAIL_SIDES.radius, 9);
+      } else {
+        expect(inset[j]!.x, `forward corner ${j}, 1 cm in from the hood's end`).toBeCloseTo(p.x - JET_RAIL_SIDES.radius, 9);
+      }
+    }
+    // 0.36 wide less the round's last 15 degrees: its cap 0.34 mm in from the plan's half-width
+    const widest = Math.max(...vertices.map((v) => Math.abs(v.z)));
+    expect(widest).toBeCloseTo(g.nearHalfWidth - JET_RAIL_SIDES.radius * (1 - Math.sin((75 * Math.PI) / 180)), 6);
     const endX = g.aftX + g.hoodDepth;
-    expect(Math.max(...vertices.filter((v) => Math.abs(v.x - endX) < 1e-5).map((v) => Math.abs(v.z)))).toBeCloseTo(0.26, 5);
+    expect(Math.max(...vertices.filter((v) => Math.abs(v.x - endX) < 1e-5).map((v) => Math.abs(v.z))), "the whole section's forward corners").toBeCloseTo(railWholeTo(endX), 5);
+    expect(jetCoamingHalfWidth(endX)).toBeCloseTo(0.26, 9);
     // the hood: its top from the round's forward tangent and its underside from the cove's foot, both falling 13
     // degrees, steeper than the 10.19 sight line, so past the round nothing of it rises to the line
     const ends = section.outline.filter((v) => v.x === endX);
@@ -471,30 +528,73 @@ describe("the coaming", () => {
     expect(Math.atan2(section.round[0]!.y - top, endX - section.round[0]!.x) * DEG, "the hood's top falls").toBeCloseTo(13, 9);
     expect(Math.atan2(section.faceTop.y - bottom, endX - section.faceTop.x) * DEG, "its underside falls with it").toBeCloseTo(13, 9);
     expect(g.hoodFallDegrees).toBeGreaterThan(aircraftSpec("jet").cockpitDeckLineDegrees);
-    // flat normals, one per triangle, pointing OUT, the winding agreeing (a drawn face's cross product points INTO the
-    // solid); the sculpted solid is convex (a prism cut by a plan that only narrows), so its centroid is inside. The
-    // round's chords (the next test) take the round's own normal at each corner; their mean is the chord's.
+    // ACROSS THE WHOLE SECTION flat normals, one per triangle, pointing OUT, the winding agreeing (a drawn face's cross
+    // product points INTO the solid); the round's chords (the next test) take the round's own normal at each corner,
+    // their mean the chord's. ON THE ROUNDED ENDS each wall's corners the section's normal there rolled over the end's
+    // round (the round's radial on its chords, the face's own on the hood's faces): cos(angle) of it, sin(angle) out to
+    // the side; the caps flat.
     const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
-    const indices = mesh.getIndices()!.slice(0, RAIL_VERTICES);
+    const indices = mesh.getIndices()!.slice(0, RAIL_ALL_VERTICES);
     const middle = vertices.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / vertices.length);
-    const onRound = (v: Vector3) => section.round.some((r) => Math.abs(r.x - v.x) < 1e-5 && Math.abs(r.y - v.y) < 1e-5);
-    let chords = 0;
+    const roundIndices = section.outline.flatMap((p, j) => (section.round.some((r) => Math.hypot(r.x - p.x, r.y - p.y) < 1e-12) ? [j] : []));
+    const onRound = (v: Vector3) => roundIndices.some((j) => Math.abs(section.outline[j]!.x - v.x) < 1e-5 && Math.abs(section.outline[j]!.y - v.y) < 1e-5);
+    /** A vertex's station and section point: its point inset at its station, its z the station's scaled by the plan at the point's own x. */
+    const placed = (v: Vector3) => {
+      for (const [k, station] of stations.entries()) {
+        for (const [j, o] of sections[k]!.entries()) {
+          if (Math.abs(o.x - v.x) < 1e-6 && Math.abs(o.y - v.y) < 1e-6 && Math.abs(v.z - (station.z * jetCoamingHalfWidth(section.outline[j]!.x)) / g.nearHalfWidth) < 1e-6) return { station: k, point: j };
+        }
+      }
+      return null;
+    };
+    const sectionMiddle = section.outline.reduce((sum, p) => ({ x: sum.x + p.x / n, y: sum.y + p.y / n }), { x: 0, y: 0 });
+    let [chords, rolled] = [0, 0];
     for (let t = 0; t < indices.length; t += 3) {
       const nn = [0, 1, 2].map((k) => new Vector3(normals[indices[t + k]! * 3]!, normals[indices[t + k]! * 3 + 1]!, normals[indices[t + k]! * 3 + 2]!));
       const corners = [0, 1, 2].map((k) => vertices[indices[t + k]!]!);
-      const chord = Math.abs(nn[0]!.z) < 0.5 && corners.every(onRound);
-      if (chord) chords += 1;
-      else {
-        expect(Vector3.Distance(nn[0]!, nn[1]!)).toBeLessThan(1e-6);
-        expect(Vector3.Distance(nn[0]!, nn[2]!)).toBeLessThan(1e-6);
-      }
+      const at = corners.map(placed);
+      for (const [k, a] of at.entries()) expect(a, `triangle ${t / 3} corner ${k} at a station's section point`).not.toBeNull();
+      const whole = t < RAIL_VERTICES;
+      const wall = new Set(at.map((a) => a!.station)).size > 1;
       const mean = nn[0]!.add(nn[1]!).add(nn[2]!).normalize();
       const faceCentre = corners[0]!.add(corners[1]!).add(corners[2]!).scale(1 / 3);
-      expect(Vector3.Dot(mean, faceCentre.subtract(middle)), `triangle ${t / 3}: its normal points out`).toBeGreaterThan(0);
       const inward = Vector3.Cross(corners[1]!.subtract(corners[0]!), corners[2]!.subtract(corners[0]!)).normalize();
-      expect(Vector3.Dot(mean, inward), `triangle ${t / 3}: its winding agrees with its normal`).toBeLessThan(chord ? -0.99 : -0.999);
+      if (whole || !wall) {
+        const chord = whole && wall && corners.every(onRound);
+        if (chord) chords += 1;
+        else {
+          expect(Vector3.Distance(nn[0]!, nn[1]!)).toBeLessThan(1e-6);
+          expect(Vector3.Distance(nn[0]!, nn[2]!)).toBeLessThan(1e-6);
+        }
+        expect(Vector3.Dot(mean, inward), `triangle ${t / 3}: its winding agrees with its normal`).toBeLessThan(chord ? -0.99 : -0.999);
+      } else {
+        rolled += 1;
+        const side = Math.sign(faceCentre.z);
+        const [p0, p1] = [...new Set(at.map((a) => a!.point))].map((j) => section.outline[j]!);
+        let edge = new Vector3(-(p1!.y - p0!.y), p1!.x - p0!.x, 0).normalize();
+        if (edge.x * (sectionMiddle.x - p0!.x) + edge.y * (sectionMiddle.y - p0!.y) > 0) edge = edge.scale(-1);
+        const chord = at.every((a) => roundIndices.includes(a!.point));
+        at.forEach((a, k) => {
+          const p = section.outline[a!.point]!;
+          const m = chord ? new Vector3(p.x - section.centre.x, p.y - section.centre.y, 0).normalize() : edge;
+          const angle = stations[a!.station]!.angle;
+          const want = m.scale(Math.cos(angle)).add(new Vector3(0, 0, side * Math.sin(angle))).normalize();
+          expect(Vector3.Distance(nn[k]!, want), `triangle ${t / 3} corner ${k}: the rolled normal`).toBeLessThan(1e-6);
+        });
+        // the same side as its facet: the hood's long faces on the outer spans twist with the plan's taper (from x 2.93,
+        // inside the rounded ends), up to 45 degrees off the rolled normals there (under the hood's edge, never seen)
+        expect(Vector3.Dot(mean, inward), `triangle ${t / 3}: its winding agrees with its normal`).toBeLessThan(-0.5);
+      }
+      // OUT: away from the section's middle and, on the rounded ends, out to the side (the caps where the three solids
+      // meet face each other, inside the rail, and are left out)
+      const joint = !wall && !whole && at.every((a) => Math.abs(stations[a!.station]!.angle) < 1e-12);
+      if (!joint) {
+        const hint = new Vector3(faceCentre.x - middle.x, faceCentre.y - middle.y, 0).normalize().scale(0.3).add(new Vector3(0, 0, whole ? 0 : Math.sign(faceCentre.z)));
+        expect(Vector3.Dot(mean, whole ? faceCentre.subtract(middle) : hint), `triangle ${t / 3}: its normal points out`).toBeGreaterThan(0);
+      }
     }
-    expect(chords, "the round's nine chords, two triangles each").toBe(2 * (section.round.length - 1));
+    expect(chords, "the round's nine chords across the whole section, two triangles each").toBe(2 * (section.round.length - 1));
+    expect(rolled, "the rounded ends' walls: five spans of the section's twelve edges, two triangles each, both ends").toBe(2 * 5 * n * 2);
     // INSIDE THE BUBBLE, by 2 cm at the least (the rail's top ends, where the canopy closes in: at 0.38 wide they
     // came within 1.1 mm of the glass): every vertex under the glass, and its distance to the nearest glass triangle
     let nearest = Number.POSITIVE_INFINITY;
@@ -506,19 +606,20 @@ describe("the coaming", () => {
     expect(nearest).toBeGreaterThanOrEqual(0.02);
   });
 
-  it("shades its round as a curve: at each of the round's points one normal, the round's own, so adjacent chords differ by the angle between them, not flat, and no hard edge along it (the same 144 vertices)", () => {
+  it("shades its round as a curve: at each of the round's points one normal, the round's own, so adjacent chords differ by the angle between them, not flat, and no hard edge along it (across the whole section)", () => {
     // flat-shaded, the eight chords banded at about 20 px each across the rail (step 3)
     const section = jetGlareshieldSection();
     const mesh = named("jet-glare-shield");
-    expect(railVertices().length, "no vertex added: the chords' own corners re-pointed").toBe(RAIL_VERTICES);
-    // the rail's own part (its swept ends, step 5, are held by their own tests)
+    // the rail's own part (its swept ends, step 5, are held by their own tests), between its rounded ends (S3)
+    expect(railVertices().length, "the whole section: the prism's own count").toBe(132);
     const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!.slice(0, RAIL_VERTICES * 3);
     const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!.slice(0, RAIL_VERTICES * 3);
+    const whole = Array.from({ length: RAIL_VERTICES }, (_, i) => i);
     const radial = (r: { x: number; y: number }) => new Vector3(r.x - section.centre.x, r.y - section.centre.y, 0).normalize();
     /** Every wall vertex (not a cap's) at the round's point `r`, its normal. */
     const at = (r: { x: number; y: number }) => {
       const found: Vector3[] = [];
-      for (let i = 0; i < positions.length / 3; i += 1) {
+      for (const i of whole) {
         if (Math.abs(positions[i * 3]! - r.x) > 1e-6 || Math.abs(positions[i * 3 + 1]! - r.y) > 1e-6) continue;
         const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
         if (Math.abs(n.z) < 0.5) found.push(n);
@@ -1137,7 +1238,10 @@ describe("the HUD's combiner (the F-16 pass, step 2)", () => {
 describe("the panel board", () => {
   it("is the dash: one bare plate leaned back from the cove's foot to face the pilot, its plan the hood's less 5 mm a side, its top inside the hood along its whole depth", () => {
     const board = named("jet-instrument-panel");
-    const vertices = worldVertices(board);
+    // the plate first, then each side's fillet span on the dash (S3)
+    expect((board.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-instrument-panel-board", "jet-instrument-panel-fillet-port", "jet-instrument-panel-fillet-starboard"]);
+    expect(board.getTotalVertices()).toBe(BOARD_VERTICES + 2 * BOARD_FILLET_VERTICES);
+    const vertices = worldVertices(board).slice(0, BOARD_VERTICES);
     // a pentagon: the face's top (the round's aft tangent), the cove's foot on the face, the foot on the tub, the back's
     // foot and the back's top in the hood
     expect(vertices.length, "a solidPlate of a pentagon: 16 triangles").toBe(48);
@@ -1183,10 +1287,13 @@ describe("the panel board", () => {
     for (const v of corners) {
       const up = crossings(v, new Vector3(0, 1, 0), coaming);
       expect(up.length % 2, `board corner (${v.x.toFixed(3)}, ${v.z.toFixed(3)}) inside the hood`).toBe(1);
-      expect(up[0]!, `board corner (${v.x.toFixed(3)}, ${v.z.toFixed(3)}) under the hood's top`).toBeGreaterThanOrEqual(0.02);
+      // 1.89 cm at the back's corners: the rail's rounded sides (S3) take 1.1 mm off the hood's top over them (2 cm
+      // before, the rail square at its sides)
+      expect(up[0]!, `board corner (${v.x.toFixed(3)}, ${v.z.toFixed(3)}) under the hood's top`).toBeGreaterThanOrEqual(0.0185);
       const sideways = crossings(v, new Vector3(0, 0, Math.sign(v.z)), coaming);
       expect(sideways.length, "one wall that way").toBe(1);
-      expect(sideways[0]!, `board corner (${v.x.toFixed(3)}, ${v.z.toFixed(3)}) to the hood's wall`).toBeGreaterThan(0.003);
+      // 2.9 mm at the back's corners, where the rail's side rounds over them (S3); 5 mm to its square side before
+      expect(sideways[0]!, `board corner (${v.x.toFixed(3)}, ${v.z.toFixed(3)}) to the hood's wall`).toBeGreaterThan(0.0025);
     }
     // THE PANEL MATERIAL the Global's and the 747's boards wear (0x1a2328, 0.82, 0.02), not the tub's blue
     const material = board.material as PBRMaterial;
@@ -1848,7 +1955,7 @@ describe("what the frame's bottom corners see", () => {
     // the dash's leaned face stops covering the bottom edge at az +-27.7 by ray (upright, at its near corners' +-26.6;
     // the wedge's near face reached +-28.5, and the rail is narrower, for the canopy): its side edges slant out toward
     // its feet, 13 cm nearer the eye than its top and at az +-31.4, under the frame
-    const board = worldVertices(named("jet-instrument-panel"));
+    const board = worldVertices(named("jet-instrument-panel")).slice(0, BOARD_VERTICES);
     const footX = Math.min(...board.map((v) => v.x));
     const feet = board.filter((v) => v.x < footX + 1e-4);
     expect(feet.length).toBeGreaterThanOrEqual(2);
@@ -1857,10 +1964,11 @@ describe("what the frame's bottom corners see", () => {
     for (const v of feet) expect(azel(v).el, "under the frame's bottom there").toBeLessThan(-frameLimit(Math.abs(azel(v).az)));
     let reach = Number.NaN;
     for (let az = 0; az <= 37.5; az += 0.1) if (firstHit(az, -frameLimit(az) + 0.1)?.name === "jet-instrument-panel") reach = az;
-    // to az 27.5: from there the rail's end (step 5), its inner face 1 to 2 cm inboard of the dash's side where it
-    // rises to the rail, stands over the dash's outer edge (27.7 before it; 27.0 before the cove brought the dash's
+    // to az 27.9: from there the rail's end (step 5), its inner face 1 to 2 cm inboard of the dash's side where it
+    // rises to the rail, stands over the dash's outer edge, and the fillet between them on the dash's material (S3)
+    // carries the dash out to it (27.5 before the fillet; 27.7 before step 5; 27.0 before the cove brought the dash's
     // face 1 cm aft, to the round's aft tangent)
-    expect(reach, "the frame's bottom row on the dash").toBeCloseTo(27.5, 1);
+    expect(reach, "the frame's bottom row on the dash").toBeCloseTo(27.9, 1);
     // The sill IS inside the frame out to about az 22 -- straight ahead its own top reads -14.0, against the frame's
     // -23.35 -- but the dash stands in front of it there, and beyond it drops below the frame's bottom. So it is
     // the first surface nowhere in the frame (and its see-through planform walls are never met from the seat).
@@ -1887,12 +1995,15 @@ describe("what the frame's bottom corners see", () => {
 
 describe("the sills (the F-16 pass, step 4)", () => {
   const sills = () => named("jet-sills");
+  /** A rail: the section (16 points, six chords a round: S3) swept over its four stations. */
+  const SILL_RAIL_VERTICES = sweptVertices(jetSillSection().points.length, jetSillStations().length);
   /** Each part's vertices, in the merge's order: the port rail, the port console, the starboard rail, the starboard console. */
   function parts() {
     const v = worldVertices(sills());
+    const [rail, both] = [SILL_RAIL_VERTICES, SILL_RAIL_VERTICES + 36];
     return new Map([
-      ["port", { side: -1, rail: v.slice(0, 180), consoleVertices: v.slice(180, 216) }],
-      ["starboard", { side: 1, rail: v.slice(216, 396), consoleVertices: v.slice(396, 432) }],
+      ["port", { side: -1, rail: v.slice(0, rail), consoleVertices: v.slice(rail, both) }],
+      ["starboard", { side: 1, rail: v.slice(both, both + rail), consoleVertices: v.slice(both + rail, 2 * both) }],
     ] as const);
   }
   /** A pixel's ray through a horizontal-fixed lens of `fov` on a W x H frame, looking down the body axis from the eye. */
@@ -1903,9 +2014,11 @@ describe("the sills (the F-16 pass, step 4)", () => {
   }
   const boardSide = (x: number) => jetCoamingHalfWidth(x) - JET_PANEL.sideInset;
 
-  it("are one cockpit-only mesh on the dash's own material, each side a rail swept along the glass and a console: 432 vertices", () => {
+  it("are one cockpit-only mesh on the dash's own material, each side a rail swept along the glass and a console: 816 vertices", () => {
     const mesh = sills();
-    expect(mesh.getTotalVertices(), "two rails of 180 (8-point section, 4 stations) and two consoles of 36").toBe(432);
+    // (432 with the section's rounds in two chords, before S3)
+    expect(SILL_RAIL_VERTICES).toBe(372);
+    expect(mesh.getTotalVertices(), "two rails of 372 (16-point section, 4 stations) and two consoles of 36").toBe(816);
     expect(mesh.material, "the dash's instance: no new material").toBe(named("jet-instrument-panel").material);
     expect((mesh.metadata as { cockpitOnly?: boolean }).cockpitOnly).toBe(true);
     expect((mesh.metadata as { castsShadow?: boolean }).castsShadow).toBe(false);
@@ -1948,9 +2061,12 @@ describe("the sills (the F-16 pass, step 4)", () => {
     }
   });
 
-  it("round the rail's top edges at 1 cm and shade them as curves: neighbouring chords' normals 45 degrees apart, and each round meeting the top and its face with their normals (no hard edge along it)", () => {
+  it("round the rail's top edges at 1 cm in six chords (S3) and shade them as curves: neighbouring chords' normals 15 degrees apart, and each round meeting the top and its face with their normals (no hard edge along it)", () => {
     const section = jetSillSection();
-    expect(section.rounds.map((r) => [r.first, r.last])).toEqual([[1, 3], [4, 6]]);
+    // two chords a round, 45 degrees each, before S3: the rail's end read as facets where it sweeps down (the section is
+    // the ends' too)
+    expect(JET_SILL.roundSegments).toBe(6);
+    expect(section.rounds.map((r) => [r.first, r.last])).toEqual([[1, 7], [8, 14]]);
     for (const round of section.rounds) {
       for (let k = round.first; k <= round.last; k += 1) {
         const p = section.points[k]!;
@@ -1972,9 +2088,9 @@ describe("the sills (the F-16 pass, step 4)", () => {
       const interval = stationX.findIndex((x) => x > centreX);
       if (Math.max(Vector3.Distance(ns[0]!, ns[1]!), Vector3.Distance(ns[0]!, ns[2]!)) > 1e-6) {
         smooth += 1;
-        // a chord: its two section points' normals turn by the chord's angle, 45 degrees
+        // a chord: its two section points' normals turn by the chord's angle, 15 degrees
         const angles = ([[0, 1], [0, 2], [1, 2]] as const).map(([a, b]) => Math.acos(Math.min(1, Vector3.Dot(ns[a]!, ns[b]!))) * DEG);
-        expect(Math.max(...angles), `triangle ${t / 3}: a chord's turn`).toBeCloseTo(45, 0);
+        expect(Math.max(...angles), `triangle ${t / 3}: a chord's turn`).toBeCloseTo(15, 0);
       }
       for (const i of corners) {
         const v = vertices[i]!;
@@ -1983,7 +2099,7 @@ describe("the sills (the F-16 pass, step 4)", () => {
         byPlace.set(key, [...(byPlace.get(key) ?? []), normal(i)]);
       }
     }
-    expect(smooth, "two rounds of two chords, two triangles each, over three intervals, both sides").toBe(2 * 2 * 2 * 3 * 2);
+    expect(smooth, "two rounds of six chords, two triangles each, over three intervals, both sides").toBe(2 * 6 * 2 * 3 * 2);
     // NO HARD EDGE over the top: at every place along the top, within an interval, one normal (the plan bends at the
     // stations, where the walls' own normals turn with it)
     let places = 0;
@@ -2110,13 +2226,18 @@ describe("the sills (the F-16 pass, step 4)", () => {
 });
 
 describe("the rail's ends (the F-16 pass, step 5)", () => {
-  /** Each end's vertices, in the merge's order after the rail's own: the port end, then the starboard. */
+  /**
+   * Each end's vertices, in the merge's order after the rail's own: the port end and its fillet span on the round (S3),
+   * then the starboard's.
+   */
   function ends() {
     const all = worldVertices(named("jet-glare-shield"));
-    const each = (all.length - RAIL_VERTICES) / 2;
+    expect(all.length).toBe(RAIL_ALL_VERTICES + 2 * (END_VERTICES + RAIL_FILLET_VERTICES));
+    const port = RAIL_ALL_VERTICES;
+    const starboard = port + END_VERTICES + RAIL_FILLET_VERTICES;
     return new Map([
-      ["port", { side: -1, vertices: all.slice(RAIL_VERTICES, RAIL_VERTICES + each), from: RAIL_VERTICES }],
-      ["starboard", { side: 1, vertices: all.slice(RAIL_VERTICES + each), from: RAIL_VERTICES + each }],
+      ["port", { side: -1, vertices: all.slice(port, port + END_VERTICES), from: port, fillet: all.slice(port + END_VERTICES, starboard) }],
+      ["starboard", { side: 1, vertices: all.slice(starboard, starboard + END_VERTICES), from: starboard, fillet: all.slice(starboard + END_VERTICES) }],
     ] as const);
   }
   /**
@@ -2145,14 +2266,19 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
 
   it("sweep each end of the rail aft and down into its sill: one coaming mesh on the glareshield's matte, the rail and its two ends, beginning at az 25", () => {
     const mesh = named("jet-glare-shield");
-    expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-glare-shield-rail", "jet-glare-shield-end-port", "jet-glare-shield-end-starboard"]);
+    expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-glare-shield-rail", "jet-glare-shield-side-port", "jet-glare-shield-side-starboard", "jet-glare-shield-end-port", "jet-glare-shield-fillet-port", "jet-glare-shield-end-starboard", "jet-glare-shield-fillet-starboard"]);
     expect((mesh.material as PBRMaterial).name).toBe("jet-glareshield");
     const stations = jetRailEndStations();
     expect(stations).toHaveLength(9);
-    const t = jetGlareshieldSection().tangent;
-    // the top at the rail's silhouette, the az-25 line's z there; the foot level on the sill
+    const section = jetGlareshieldSection();
+    const t = { x: section.centre.x, y: section.centre.y + JET_GLARESHIELD.radius };
+    // the top at the rail round's crown (S3; the sight line's tangent, 3.5 mm forward and 0.44 mm lower, before: the
+    // crown came up through the S's top there), 0.2 mm under the sight line; the az-25 line's z there; the foot level
+    // on the sill
     expect(stations[8]!.x).toBeCloseTo(t.x, 12);
     expect(stations[8]!.top).toBeCloseTo(t.y, 12);
+    const sightAtCrown = section.tangent.y + (section.tangent.x - t.x) * Math.tan(aircraftSpec("jet").cockpitDeckLineDegrees / DEG);
+    expect(sightAtCrown - t.y, "the crown under the sight line").toBeGreaterThan(0.0001);
     expect(Math.atan2(stations[8]!.inner, t.x - EYE.forward) * DEG, "the end's inner edge at its top: az 25").toBeCloseTo(25, 9);
     expect(stations[0]!.top).toBeCloseTo(JET_SILL.topY, 12);
     expect(stations[0]!.inner, "the foot: the sill's own section").toBeCloseTo(jetSillInnerAt(stations[0]!.x), 12);
@@ -2162,7 +2288,7 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
       for (const v of vertices.filter((q) => q.y > JET_SILL.topY + 1e-6 && q.x > EYE.forward)) {
         expect(Math.abs(azel(v).az), `${name} vertex (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)})`).toBeGreaterThanOrEqual(25 - 1e-6);
       }
-      expect(Math.max(...vertices.map((v) => v.y)), `${name}: its top at the rail's silhouette`).toBeCloseTo(t.y, 5);
+      expect(Math.max(...vertices.map((v) => v.y)), `${name}: its top at the round's crown`).toBeCloseTo(t.y, 5);
       expect(Math.min(...vertices.map((v) => v.x)), `${name}: its foot`).toBeCloseTo(stations[0]!.x, 5);
     }
   });
@@ -2251,6 +2377,242 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
       expect(rays).toBeGreaterThan(1000);
       expect(world, `side ${side}: world rays under the end's silhouette`).toBe(0);
     }
+  });
+});
+
+describe("the rail end's fillet (Jason's F-16 wave, S3)", () => {
+  /**
+   * A ray grid from the eye over [az0, az1] x [el0, el1] at `step`, against every opaque mesh the cockpit camera draws:
+   * the pairs of neighbouring rays whose hits are on one surface or on two solids meeting (depth-continuous: within four
+   * of the grid's footprints, stretched by the slope), and the angle between their geometric normals and between their
+   * shading normals. Where two solids meet they share no edge, so a walk of a mesh's welded edges cannot see the crease;
+   * this can.
+   */
+  function creaseGrid(az0: number, az1: number, el0: number, el1: number, step: number) {
+    const tri: number[] = [];
+    const nrm: number[] = [];
+    for (const mesh of scene.meshes.filter(drawnByCockpitCamera)) {
+      const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+      const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
+      const indices = mesh.getIndices();
+      if (!positions || !normals || !indices) continue;
+      const world = mesh.getWorldMatrix();
+      const at = (i: number) => Vector3.TransformCoordinates(new Vector3(positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!), world);
+      const turn = (i: number) => Vector3.TransformNormal(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), world).normalize();
+      for (let t = 0; t < indices.length; t += 3) {
+        const corners = [at(indices[t]!), at(indices[t + 1]!), at(indices[t + 2]!)];
+        const az = corners.map((c) => azel(c).az);
+        // left out only when all three corners are on one side of the grid, or behind the eye
+        if (az.every((a) => a < az0 - 2) || az.every((a) => a > az1 + 2) || corners.every((c) => c.x < EYE.forward)) continue;
+        for (const c of corners) tri.push(c.x, c.y, c.z);
+        for (let k = 0; k < 3; k += 1) {
+          const n = turn(indices[t + k]!);
+          nrm.push(n.x, n.y, n.z);
+        }
+      }
+    }
+    const T = Float64Array.from(tri);
+    const count = T.length / 9;
+    const cast = (az: number, el: number) => {
+      const d = direction(az, el);
+      let best = Number.POSITIVE_INFINITY;
+      let hit = -1;
+      let [bu, bv] = [0, 0];
+      for (let t = 0; t < count; t += 1) {
+        const o = t * 9;
+        const [e1x, e1y, e1z] = [T[o + 3]! - T[o]!, T[o + 4]! - T[o + 1]!, T[o + 5]! - T[o + 2]!];
+        const [e2x, e2y, e2z] = [T[o + 6]! - T[o]!, T[o + 7]! - T[o + 1]!, T[o + 8]! - T[o + 2]!];
+        const [px, py, pz] = [d.y * e2z - d.z * e2y, d.z * e2x - d.x * e2z, d.x * e2y - d.y * e2x];
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-14) continue;
+        const [sx, sy, sz] = [EYE_POINT.x - T[o]!, EYE_POINT.y - T[o + 1]!, EYE_POINT.z - T[o + 2]!];
+        const u = (sx * px + sy * py + sz * pz) / det;
+        if (u < 0 || u > 1) continue;
+        const [qx, qy, qz] = [sy * e1z - sz * e1y, sz * e1x - sx * e1z, sx * e1y - sy * e1x];
+        const v = (d.x * qx + d.y * qy + d.z * qz) / det;
+        if (v < 0 || u + v > 1) continue;
+        const distance = (e2x * qx + e2y * qy + e2z * qz) / det;
+        if (distance > 1e-6 && distance < best) [best, hit, bu, bv] = [distance, t, u, v];
+      }
+      if (hit < 0) return null;
+      const o = hit * 9;
+      const corner = (k: number) => new Vector3(T[o + k * 3]!, T[o + k * 3 + 1]!, T[o + k * 3 + 2]!);
+      const normal = (k: number) => new Vector3(nrm[o + k * 3]!, nrm[o + k * 3 + 1]!, nrm[o + k * 3 + 2]!);
+      // a drawn face's cross product points INTO the solid
+      const geometric = Vector3.Cross(corner(1).subtract(corner(0)), corner(2).subtract(corner(0))).normalize().scale(-1);
+      const shading = normal(0).scale(1 - bu - bv).add(normal(1).scale(bu)).add(normal(2).scale(bv)).normalize();
+      return { distance: best, point: EYE_POINT.add(d.scale(best)), geometric, shading, front: Vector3.Dot(geometric, d) < 0, d };
+    };
+    const cols = Math.round((az1 - az0) / step) + 1;
+    const rows = Math.round((el0 - el1) / step) + 1;
+    const grid = Array.from({ length: rows * cols }, (_, k) => {
+      const [az, el] = [az0 + (k % cols) * step, el0 - Math.floor(k / cols) * step];
+      return el < -frameLimit(az) ? null : cast(az, el);
+    });
+    const pairs: { az: number; el: number; geometric: number; shading: number }[] = [];
+    let back = 0;
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const a = grid[r * cols + c];
+        if (!a) continue;
+        if (!a.front) back += 1;
+        for (const [dr, dc] of [[0, 1], [1, 0]] as const) {
+          const b = r + dr < rows && c + dc < cols ? grid[(r + dr) * cols + c + dc] : null;
+          if (!b) continue;
+          const slope = Math.max(0.1, Math.abs(Vector3.Dot(a.geometric, a.d)));
+          if (Vector3.Distance(a.point, b.point) > (4 * a.distance * step) / DEG / slope) continue;
+          const angle = (p: Vector3, q: Vector3) => Math.acos(Math.max(-1, Math.min(1, Vector3.Dot(p, q)))) * DEG;
+          pairs.push({ az: az0 + c * step, el: el0 - r * step, geometric: angle(a.geometric, b.geometric), shading: angle(a.shading, b.shading) });
+        }
+      }
+    }
+    return { rays: grid.filter((g) => g !== null).length, back, pairs };
+  }
+
+  it("rolls a 1.5 cm ball along each end's inner side and the dash's face, the cove and the round: an arc of six chords meeting each with its own normal", () => {
+    const f = JET_RAIL_END_FILLET;
+    expect([f.radius, f.arcSegments]).toEqual([0.015, 6]);
+    const face = jetPanelFace();
+    const coveFoot = jetCoveFoot();
+    const section = jetGlareshieldSection();
+    const [foot, top] = [jetRailEndStations()[0]!.x, jetRailEndStations()[8]!.x];
+    const wall = new Vector3((jetRailEndInnerAt(top) - jetRailEndInnerAt(foot)) / (top - foot), 0, -1).normalize();
+    const angle = (p: Vector3, q: Vector3) => Math.acos(Math.max(-1, Math.min(1, Vector3.Dot(p, q)))) * DEG;
+    // five stations on the dash (under the console's top, the cove's foot, two in the cove, the face's top), then up the
+    // round in 5 degree steps until the ball no longer reaches the end
+    expect(FILLET_ON_RAIL).toBe(5);
+    expect(FILLET.length).toBeGreaterThanOrEqual(FILLET_ON_RAIL + 10);
+    expect(FILLET[0]!.arc[0]!.y, "its foot inside the console").toBeLessThan(JET_SILL.consoleTopY);
+    expect(FILLET[FILLET_ON_RAIL - 1]!.arc[0]!.x).toBeCloseTo(face.top.x, 12);
+    expect(FILLET[FILLET_ON_RAIL - 1]!.arc[0]!.y).toBeCloseTo(face.top.y, 12);
+    const spans: number[] = [];
+    for (const [k, station] of FILLET.entries()) {
+      const [t1, t2] = [station.arc[0]!, station.arc[station.arc.length - 1]!];
+      const [n1, n2] = [station.normals[0]!, station.normals[station.normals.length - 1]!];
+      // ON THE PROFILE, with its normal: the dash's face (the face's normal under the cove, the round's aft one at its
+      // top), or the round (its radial)
+      if (!station.onRail) {
+        expect((t1.x - face.top.x) * face.normal.x + (t1.y - face.top.y) * face.normal.y, `station ${k}: on the dash's face`).toBeCloseTo(0, 9);
+        if (t1.y <= coveFoot.y + 1e-9) expect(angle(n1, new Vector3(face.normal.x, face.normal.y, 0)), `station ${k}: the face's normal`).toBeLessThan(1e-6);
+      } else {
+        expect(Math.hypot(t1.x - section.centre.x, t1.y - section.centre.y), `station ${k}: on the round`).toBeCloseTo(JET_GLARESHIELD.radius, 9);
+        expect(angle(n1, new Vector3(t1.x - section.centre.x, t1.y - section.centre.y, 0).normalize()), `station ${k}: the round's radial`).toBeLessThan(1e-6);
+      }
+      expect(n1.z, `station ${k}: square to the extrusion`).toBeCloseTo(0, 12);
+      // ON THE END'S INNER SIDE, with its normal: the wall (tilted in plan with the edge), or its inner round
+      const shoulder = jetRailEndTopAt(t2.x) - JET_SILL.radius;
+      const inner = jetRailEndInnerAt(t2.x);
+      if (t2.y <= shoulder + 1e-9) {
+        expect(t2.z, `station ${k}: on the wall`).toBeCloseTo(inner, 9);
+        expect(angle(n2, wall), `station ${k}: the wall's normal`).toBeLessThan(1e-6);
+      } else {
+        expect(Math.hypot(t2.y - shoulder, t2.z - (inner + JET_SILL.radius)), `station ${k}: on the inner round`).toBeCloseTo(JET_SILL.radius, 9);
+      }
+      // THE ARC: every point the ball's radius from its centre, six equal turns of the shading normal
+      const ball = t1.add(n1.scale(f.radius));
+      for (const q of station.arc) expect(Vector3.Distance(q, ball), `station ${k}: on the ball`).toBeCloseTo(f.radius, 9);
+      const span = angle(n1, n2);
+      for (let j = 1; j < station.normals.length; j += 1) {
+        expect(angle(station.normals[j - 1]!, station.normals[j]!), `station ${k}: chord ${j}`).toBeCloseTo(span / f.arcSegments, 6);
+      }
+      spans.push(span);
+    }
+    console.info(`F-16 rail-end fillet: ${FILLET.length} stations, spans ${spans.map((a) => a.toFixed(1)).join(", ")} degrees`);
+    // the corner is 82 degrees along the wall; the fillet tapers out where the end meets the round's top
+    expect(Math.max(...spans)).toBeLessThan(82.5);
+    expect(spans[spans.length - 1]!, "tapered out at its top").toBeLessThan(15);
+  });
+
+  it("is built as those arcs, each side, on the dash's material where it runs on the dash and the glareshield's matte on the round, no draw added, outside the rail's own row", () => {
+    const at = (v: Vector3) => `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+    const board = named("jet-instrument-panel");
+    const coaming = named("jet-glare-shield");
+    const lookup = (mesh: AbstractMesh, from: number, length: number) => {
+      const positions = worldVertices(mesh);
+      const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+      const map = new Map<string, Vector3[]>();
+      for (let k = from; k < from + length; k += 1) map.set(at(positions[k]!), [...(map.get(at(positions[k]!)) ?? []), new Vector3(normals[k * 3]!, normals[k * 3 + 1]!, normals[k * 3 + 2]!)]);
+      return { map, vertices: positions.slice(from, from + length) };
+    };
+    for (const [name, side] of [["port", -1], ["starboard", 1]] as const) {
+      const onBoard = lookup(board, BOARD_VERTICES + (side < 0 ? 0 : BOARD_FILLET_VERTICES), BOARD_FILLET_VERTICES);
+      // the coaming: the rail, then each side's end and its span on the round
+      const onRail = lookup(coaming, RAIL_ALL_VERTICES + END_VERTICES + (side < 0 ? 0 : END_VERTICES + RAIL_FILLET_VERTICES), RAIL_FILLET_VERTICES);
+      for (const [k, station] of FILLET.entries()) {
+        const spans = [...(k < FILLET_ON_RAIL ? [onBoard] : []), ...(k >= FILLET_ON_RAIL - 1 ? [onRail] : [])];
+        for (const { map } of spans) {
+          station.arc.forEach((q, j) => {
+            const mirrored = new Vector3(q.x, q.y, side * q.z);
+            const n = station.normals[j]!;
+            const found = map.get(at(mirrored)) ?? [];
+            expect(found.length, `${name} station ${k} point ${j}`).toBeGreaterThan(0);
+            expect(found.some((m) => Vector3.Distance(m, new Vector3(n.x, n.y, side * n.z)) < 1e-6), `${name} station ${k} point ${j}: its arc's normal`).toBe(true);
+          });
+        }
+      }
+      // under the rail's own row (the deck line's, one row from -25 to 25), its foot on the rail's aft face no further
+      // in than az 24.9, and on its own side
+      const want = -Math.tan(aircraftSpec("jet").cockpitDeckLineDegrees / DEG);
+      for (const v of [...onBoard.vertices, ...onRail.vertices]) {
+        expect(Math.sign(v.z), `${name}: its own side`).toBe(side);
+        expect(Math.abs(azel(v).az), `${name}: at az 24.9 or out`).toBeGreaterThanOrEqual(24.9);
+        expect((v.y - EYE.up) / (v.x - EYE.forward), `${name}: under the rail's row`).toBeLessThan(want - 0.0005);
+      }
+    }
+    // no mesh added: the spans are merged into the board and the coaming
+    expect(scene.meshes.filter((m) => /fillet/.test(m.name)).map((m) => m.name)).toEqual([]);
+  });
+
+  it("rounds the rail's ends into the S (the rail-end join): where the rail runs over the S's top, nothing of it stands above the S's section (CONTROL: the square side did, a knob of about 4 mm)", () => {
+    const g = JET_GLARESHIELD;
+    const section = jetGlareshieldSection();
+    const stations = jetRailEndStations();
+    const [foot, crown] = [stations[0]!.x, stations[8]!.x];
+    expect(crown).toBeCloseTo(section.centre.x, 12);
+    /** The S's section's top at (x, |z|): its flat top, or its outer round out to its outer edge (null outboard of it). */
+    const sTop = (x: number, z: number) => {
+      const k = Math.min(7, Math.max(0, Math.floor(((x - foot) / (crown - foot)) * 8)));
+      const f = ((x - foot) / (crown - foot)) * 8 - k;
+      const outer = stations[k]!.outer + (stations[k + 1]!.outer - stations[k]!.outer) * f;
+      const top = jetRailEndTopAt(x);
+      if (z > outer) return null;
+      const from = outer - JET_SILL.radius;
+      return z <= from ? top : top - JET_SILL.radius + Math.sqrt(JET_SILL.radius ** 2 - (z - from) ** 2);
+    };
+    // every vertex of the rail's own three solids over the S's run, outboard of the S's inner edge, under its section
+    const rail = worldVertices(named("jet-glare-shield")).slice(0, RAIL_ALL_VERTICES);
+    let checked = 0;
+    for (const v of rail) {
+      if (v.x < g.aftX || v.x > crown || Math.abs(v.z) < jetRailEndInnerAt(v.x) + JET_SILL.radius) continue;
+      const top = sTop(v.x, Math.abs(v.z));
+      expect(top, `rail vertex (${v.x.toFixed(4)}, ${v.y.toFixed(4)}, ${v.z.toFixed(4)}) inside the S's plan`).not.toBeNull();
+      expect(v.y, `rail vertex (${v.x.toFixed(4)}, ${v.y.toFixed(4)}, ${v.z.toFixed(4)}) under the S`).toBeLessThanOrEqual(top! + 1e-4);
+      checked += 1;
+    }
+    expect(checked, "the rounded ends' vertices over the S").toBeGreaterThan(20);
+    // CONTROL: the square side, the rail's crown at its full half-width, stood 3.9 mm over the S's outer round there
+    const corner = sTop(crown - 0.001, jetCoamingHalfWidth(crown - 0.001));
+    expect(section.centre.y + g.radius - corner!, "the square side's knob").toBeGreaterThan(0.003);
+  });
+
+  it("ACCEPT: no crease over 45 degrees from az 25.7 to 37 either side, by a ray grid that sees where two solids meet (CONTROL: the MFD frames' square edges)", () => {
+    for (const side of [-1, 1]) {
+      const [az0, az1] = side < 0 ? [-37, -25.7] : [25.7, 37];
+      const { rays, back, pairs } = creaseGrid(az0, az1, -8, -23.4, 0.05);
+      const creases = pairs.filter((p) => p.geometric > 45);
+      const worst = (key: "geometric" | "shading") => pairs.reduce((w, p) => (p[key] > w[key] ? p : w));
+      const where = (p: { az: number; el: number; geometric: number; shading: number }) => `${p.geometric.toFixed(1)} geometric (${p.shading.toFixed(1)} shading) at az ${p.az.toFixed(2)} el ${p.el.toFixed(2)}`;
+      console.info(`F-16 rail end (side ${side}), az ${az0} to ${az1}: ${rays} rays, ${pairs.length} depth-continuous pairs; the worst turn ${where(worst("geometric"))}, the worst shading turn ${where(worst("shading"))}; creases over 45: ${creases.length}`);
+      // the rays that meet the aircraft: under the silhouette, down to the frame's bottom
+      expect(rays).toBeGreaterThan(30000);
+      expect(back, "no back face the first thing seen").toBe(0);
+      // before S3: 316 pairs, 70 to 83 degrees, where the end's inner side met the round and the dash's face
+      expect(creases.map((p) => `az ${p.az.toFixed(2)} el ${p.el.toFixed(2)}: ${p.geometric.toFixed(1)}`)).toEqual([]);
+      expect(worst("shading").shading, "the shading's worst turn between two rays").toBeLessThan(45);
+    }
+    // CONTROL: the same grid over the port MFD sees its frame's square edges
+    const control = creaseGrid(-20, -8, -12, -24, 0.1).pairs.filter((p) => p.geometric > 45);
+    expect(control.length, "the MFD frame's edges, seen").toBeGreaterThan(20);
   });
 });
 

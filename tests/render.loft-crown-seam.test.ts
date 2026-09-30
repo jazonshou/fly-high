@@ -350,7 +350,13 @@ describe("a loft's crown seam", () => {
       // `jet-instrument-panel` (36 -> 48, the board a pentagon), `jet-mfd-frames`, `jet-mfd-rims` and `jet-screens` (under
       // the cove's foot) and `jet-sills` (the consoles' forward ends on the dash's face, 12.7 mm aft) changed; the jet's
       // other 69 and every mesh of the other three airframes are bit-identical.
-      jet: "3ca5510d",
+      // RE-PINNED 3ca5510d -> a6be9a33 for S3, the rail's ends: checked mesh by mesh against 2f16351 (the same fields, both
+      // views): `jet-glare-shield` (972 -> 4380 vertices: the rail swept across with its outboard ends rounded, the ends'
+      // sections in six chords a round, the S topped at the round's crown, and the fillet's spans on the round),
+      // `jet-instrument-panel` (48 -> 504: the fillet's spans on the dash merged in) and `jet-sills` (432 -> 816: the
+      // rails' section in six chords a round) changed; the jet's other 72 and every mesh of the other three airframes
+      // are bit-identical.
+      jet: "a6be9a33",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
