@@ -322,7 +322,11 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for S4 (same check, against S2 d2b64ff): `trainer-headliner` new (the headliner and its header, the two
       // visors) and `trainer-panel-fittings` moved (the compass and its stalk joined it); the trainer's other 65 of 67, and
       // every mesh of the jet, the Global and the 747, are bit-identical.
-      trainer: "a8ea15d2",
+      // RE-PINNED for S5 (same check, against S4 bb261f1): `windscreen-center-frame` 779 -> 458 vertices (one tapered
+      // strip round a fillet, where two bars met at a ball), `trainer-cowl-standin` 52 -> 152 (its nose's lip) and
+      // `trainer-panel-fittings` moved (the compass hung under the glass); the trainer's other 64 of 67, and every mesh
+      // of the jet, the Global and the 747, are bit-identical.
+      trainer: "0ab2abdb",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

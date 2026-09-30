@@ -18,10 +18,10 @@ import {
   setCockpitVisibility,
   type CommonRig,
 } from "./airframeRig";
-import { bezelRimEmissive, solidified } from "./cockpit/cockpitPrimitives";
+import { bezelRimEmissive, solidified, sweptTube } from "./cockpit/cockpitPrimitives";
 import { buildTrainerCockpit } from "./cockpit/trainerCockpit";
 import { AircraftBuildContext } from "./builders";
-import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_CENTRE_FRAME, TRAINER_FUSELAGE_SECTIONS, trainerCentreFramePath } from "./trainerShell";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -321,8 +321,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
   ));
   cabinRoof.position.y = 0.205;
   // Visible from the pilot's seat, like the rest of the opaque shell (see the
-  // note on the glass above). It is 24 mm of metal down the middle of the
-  // windscreen, and it is the thing that tells the pilot he is looking
+  // note on the glass above). It is a strip of metal 24 to 34 mm wide down the
+  // middle of the windscreen, and it is the thing that tells the pilot he is looking
   // through one. The pilot sits in the LEFT seat, so it stands to the right of
   // his line of sight, as a centre frame does for the pilot on the left of a
   // real 150.
@@ -341,59 +341,27 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // sunk in the glass, which passes through it) into the roof's front edge, costs 276, none of it within
   // 15 degrees of dead ahead: it is the upper right, where the strut was already going.
   //
-  // THREE PRIMITIVES MERGED under the strut's own name, so the mesh count stays as it was: the bar at
-  // full radius from under the deck to the corner, a ball at the corner (3% over the bars' radius, see
-  // below), and a bar aft to x 1.60. The ball is what joins two round bars whose axes bend 42 degrees
-  // without either a wedge-shaped gap on the outside of the bend or an exposed end disc: both bars' end
-  // discs lie inside it. The aft bar's own end disc is 2 cm inside the roof slab, at its mid-thickness
-  // (the slab is y 0.18..0.23 and the bar 0.181..0.229), and the slab is CLOSED now (see `solidified`
-  // above), so no end of this member is in the open, from the seat or from any exterior angle --
-  // `tests/render.cockpit-trainer.test.ts` holds that with a cap survey that includes grazing views.
+  // ONE TAPERED STRIP since the Cessna pass (S5), where there were three primitives merged under this name: a bar
+  // up the windscreen, a ball at the corner and a bar aft along the crown. The ball closed the gap between two round
+  // bars bending 42 degrees, and it was the knuckle the pilot saw: its octagons' facets and their end rings made six
+  // hard edges and a facet silhouette there, and the 48 mm bars covered 62,000 px of the frame. The strip
+  // (`TRAINER_CENTRE_FRAME`, `trainerCentreFramePath`) keeps the old axis and both ends -- buried under the cowl deck
+  // (see the foot's fault, below), and 2 cm inside the closed roof slab at its mid-thickness -- and turns
+  // the corner on a 6 cm fillet, flattened (34 x 22 mm at its foot, 24 x 16 at its end) as a centre strip is, and
+  // shaded smooth round its ellipse and along it. Held by `tests/render.cockpit-trainer.test.ts`.
   //
-  // THE FOOT HAD THE SAME FAULT, found by that survey rather than by eye: the design foot at
-  // (2.26, -0.02) stands above the cowl deck, whose surface there is y -0.047..-0.050, so the bar's
-  // bottom ring floated 8 to 49 mm clear of it and its end disc faced forward and down at anyone in
-  // front of the aeroplane. The design foot stays where it was, on the axis; the MESH runs on past it
-  // down into the fuselage by `centreFrameBuryMetres` (the 747's seam post does the same into its
-  // overhead). Measured, as least cover of the bottom ring under the deck: 0.082 m only just gets it
-  // under (0.9 mm), 0.089 m is the least for the 5 mm the test asks, and 0.10 m gives 11.8 mm.
-  const centreFrameFoot = new Vector3(2.26, -0.02, 0);
-  const centreFrameBuryMetres = 0.1;
-  const centreFrameCorner = new Vector3(2, 0.21, 0);
-  const centreFrameIntoRoof = new Vector3(1.6, 0.205, 0);
-  const centreFrameRadius = 0.024;
-  const centreFrameJointScale = 1.03;
+  // THE FOOT HAD A FAULT, found by a cap survey rather than by eye: the design foot at (2.26, -0.02) stands above the
+  // cowl deck, whose surface there is y -0.047..-0.050, so a foot there floated 8 to 49 mm clear of it and its end
+  // disc faced forward and down at anyone in front of the aeroplane. The design foot stays where it was, on the axis;
+  // the strip runs on past it down into the fuselage by `bury` (the 747's seam post does the same into its overhead).
   {
-    const up = centreFrameCorner.subtract(centreFrameFoot).normalize();
-    const buriedFoot = centreFrameFoot.subtract(up.scale(centreFrameBuryMetres));
-    const sections: { readonly name: string; readonly from: Vector3; readonly to: Vector3; readonly diameterTop: number; readonly diameterBottom: number }[] = [
-      // up the windscreen from below the deck, 8% fatter at the bottom as `strutBetween` makes a strut
-      { name: "windscreen-center-frame-bar", from: buriedFoot, to: centreFrameCorner, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
-      // aft along the glass crown into the roof, at the same radius so the member does not step
-      { name: "windscreen-center-frame-crown", from: centreFrameCorner, to: centreFrameIntoRoof, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2 },
-    ];
-    const pieces: AbstractMesh[] = sections.map((section) => {
-      const run = section.to.subtract(section.from);
-      const piece = build.cylinder(section.name, run.length(), section.diameterTop, section.diameterBottom, 8, dark, root);
-      piece.position.copyFrom(section.from.add(section.to).scale(0.5));
-      piece.rotationQuaternion = Quaternion.FromUnitVectorsToRef(
-        Vector3.UpReadOnly,
-        run.scale(1 / run.length()),
-        new Quaternion(),
-      );
-      return piece;
-    });
-    // 3% LARGER than the bars, sixteen segments, and both measured. At the bars' own radius the bars'
-    // octagonal end rings lie ON the sphere the faceted ball is inscribed in, so they poke out between its
-    // vertices at ANY tessellation -- 12 of the 14 distinct corner-ring positions, by up to 0.32 mm at
-    // eight segments and 0.12 mm at sixteen -- and a 4x crop of the elbow showed that as a notch. More
-    // segments only shrink it; a larger radius is what closes it. At 1.03 all fourteen are inside by at
-    // least 0.60 mm, and sixteen segments (1,296 triangles, still one draw) keep the knuckle's silhouette
-    // round rather than faceted where it sits in the pilot's upper-right view.
-    const joint = build.sphere("windscreen-center-frame-joint", centreFrameRadius * 2 * centreFrameJointScale, 16, dark, root);
-    joint.position.copyFrom(centreFrameCorner);
-    pieces.push(joint);
-    build.mergeStatic("windscreen-center-frame", pieces, root);
+    const { points, halfWidths, halfDepths } = trainerCentreFramePath();
+    sweptTube(
+      build, "windscreen-center-frame",
+      points.map((p) => new Vector3(p.x, p.y, 0)),
+      halfWidths, TRAINER_CENTRE_FRAME.segments, dark, root,
+      { halfDepths },
+    );
   }
 
   // The wing. Constant chord 1.44 m over the whole 10.17 m span, no taper and

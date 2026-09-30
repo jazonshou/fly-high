@@ -246,7 +246,10 @@ describe("the loft's crown taper", () => {
       // airframe, bit-identical.
       // RE-PINNED for S4 on the same check against S2 (d2b64ff): the headliner new, the fittings with the compass; the
       // trainer's other 65 of 67, and every other airframe, bit-identical.
-      trainer: "6b090dea",
+      // RE-PINNED for S5 on the same check against S4 (bb261f1): the centre frame one strip (779 -> 458 vertices), the
+      // cowl stand-in's lip (52 -> 152), the fittings with the compass under the glass; the trainer's other 64 of 67,
+      // and every other airframe, bit-identical.
+      trainer: "c2acc0f3",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial

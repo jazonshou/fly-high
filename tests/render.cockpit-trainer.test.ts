@@ -14,6 +14,7 @@ import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import {
   TRAINER_A_PILLAR,
   TRAINER_BEZEL,
+  TRAINER_COWL_LIP,
   TRAINER_DIAL_DIAMETER,
   TRAINER_DOOR_FRAME,
   TRAINER_GLARESHIELD,
@@ -47,7 +48,7 @@ import { INITIAL_VISUAL_STATE } from "../src/game/types";
 import { projectPoint, rasteriseClipped, type Pinhole } from "./support/drawnFaceRaster";
 import { SkinCaster } from "../src/render/webgpu/aircraft/airlinerGlazing";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
-import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
 import { worldTriangles as tipWorldTriangles, hitTriangle as tipHitTriangle } from "../scripts/rayCrossings.mts";
 import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 import type { PBRMaterial as PanelMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
@@ -371,23 +372,32 @@ describe("the trainer's cockpit parts", () => {
     }
   });
 
-  it("stand the cowl on the shell it replaces: the same rings, so the same surface", () => {
+  it("stand the cowl on the shell it replaces: the same rings, so the same surface, and a 15 mm round lip past its nose", () => {
     const tube = named("trainer-fuselage");
     const standIn = named("trainer-cowl-standin");
     const forward = TRAINER_FUSELAGE_SECTIONS.filter((section) => section.x >= 2.42);
     expect(forward.map((section) => section.x)).toEqual([2.42, 3.7]);
     const shell = worldVertices(tube).filter((v) => v.x >= 2.42 - 1e-6);
-    const ring = worldVertices(standIn).filter(
+    const vertices = worldVertices(standIn);
+    const ring = vertices.filter(
       // The stand-in's rear cap has a centre vertex on the axis that the
-      // fuselage, which is continuous through 2.42, does not have. Every other
-      // vertex is a point on a ring.
-      (v) => !(v.x < 2.42 + 1e-6 && Math.abs(v.z) < 1e-6 && Math.abs(v.y - -0.34) < 1e-6),
+      // fuselage, which is continuous through 2.42, does not have; the lip (S5)
+      // runs on past the shell's nose. Every other vertex is a point on a ring.
+      (v) => !(v.x < 2.42 + 1e-6 && Math.abs(v.z) < 1e-6 && Math.abs(v.y - -0.34) < 1e-6) && v.x <= 3.7 + 1e-6,
     );
     expect(ring.length).toBeGreaterThan(40);
     for (const vertex of ring) {
       const nearest = Math.min(...shell.map((s) => Vector3.Distance(s, vertex)));
       expect(nearest).toBeLessThan(1e-4);
     }
+    // THE LIP: the nose's rim was a flat cap's 90-degree crease the pilot saw across the cowl (six edges, 175 px). Its
+    // rings run 15 mm on and in, a quarter-round, and stop short of the spinner's back face at 3.74.
+    const lip = vertices.filter((v) => v.x > 3.7 + 1e-6);
+    expect(lip.length, "the lip's vertices").toBeGreaterThan(4 * 24);
+    expect(Math.max(...lip.map((v) => v.x)), "the lip's front").toBeCloseTo(3.7 + TRAINER_COWL_LIP.radius, 5);
+    const noseTop = Math.max(...ring.filter((v) => v.x > 3.7 - 1e-6).map((v) => v.y));
+    const frontTop = Math.max(...lip.filter((v) => v.x > 3.7 + TRAINER_COWL_LIP.radius - 1e-6).map((v) => v.y));
+    expect(noseTop - frontTop, "the lip turns down its radius at the top").toBeCloseTo(TRAINER_COWL_LIP.radius, 4);
   });
 
   it("sit the door panels just inside where the tube's wall was", () => {
@@ -458,20 +468,23 @@ describe("the trainer's cockpit parts", () => {
 });
 
 /**
- * THE WINDSCREEN CENTRE FRAME, which ends in structure at both ends.
+ * THE WINDSCREEN CENTRE FRAME: one strip, ending in structure at both ends (the Cessna pass, S5).
  *
- * `windscreen-center-frame` (trainerVisual.ts) is the exterior strut up the middle of the Cessna's
- * windscreen. Its top used to stop in OPEN AIR, 0.38 m short of the cabin roof: first as a flat end disc
- * that read as a lit octagon against the sky, then as a cone to a point, a spike ending in the sky. Its
- * foot floated 8 to 49 mm above the cowl deck. Now it runs from under the deck up to a corner, turns at a
- * ball joint, and runs aft along the glass crown into the roof slab, which is closed (`solidified`).
+ * `windscreen-center-frame` (trainerVisual.ts) is the exterior strip up the middle of the Cessna's windscreen. Its top
+ * used to stop in OPEN AIR, 0.38 m short of the cabin roof: first as a flat end disc that read as a lit octagon against
+ * the sky, then as a cone to a point. Its foot floated 8 to 49 mm above the cowl deck. The first fix ran it from under
+ * the deck up to a corner, turned it at a ball joint, and ran it aft along the glass crown into the roof slab, which is
+ * closed (`solidified`): two round 48 mm bars and a knuckle, which the pilot saw as 62,278 px with 6 hard edges and a
+ * facet silhouette. S5 keeps the axis and both ends and makes it ONE strip, flattened through the glass and tapering
+ * toward the roof, round a 6 cm fillet where the ball was.
  *
- * What is held: the old axis, and full radius right up to the corner (read off the strut's OWN side
- * triangles, so the crown bar's ring cannot stand in for it); both bars' corner rings AT the corner and
- * inside the ball; the bottom ring under the deck; everything aft of the roof's front edge inside the
- * slab, and the slab's walls facing out; the member's faces drawn from the pilot's seat; and no end disc
- * the nearest drawn surface from the seat or from any exterior angle, INCLUDING grazing ones in the roof's
- * own plane, where the roof's once inside-out walls let the buried end show through.
+ * What is held: every vertex of the built strip on the design ellipse about the design centreline (the old axis, the
+ * fillet, the taper), so a ball, a round bar, a sharp corner or no taper all fail; its faces meeting their neighbours at
+ * under 30 degrees round it and 10 along it (no facet line, no knuckle); at most 45,000 px from the seat; the bottom ring
+ * under the cowl deck; everything aft of the roof's front edge inside the slab, and the slab's walls facing out; the
+ * member's faces drawn from the pilot's seat; and no end disc the nearest drawn surface from the seat or from any
+ * exterior angle, INCLUDING grazing ones in the roof's own plane, where the roof's once inside-out walls let the buried
+ * end show through.
  */
 describe("the Cessna's windscreen centre frame", () => {
   const FOOT = new Vector3(2.26, -0.02, 0);
@@ -479,46 +492,55 @@ describe("the Cessna's windscreen centre frame", () => {
   const BURY = 0.1;
   const CORNER = new Vector3(2, 0.21, 0);
   const INTO_ROOF = new Vector3(1.6, 0.205, 0);
-  const RADIUS = 0.024;
-  const BALL = RADIUS * 1.03;
-  const strutAxis = CORNER.subtract(FOOT).normalize();
-  const strutLength = Vector3.Distance(CORNER, FOOT);
-  const crownAxis = INTO_ROOF.subtract(CORNER).normalize();
-  const crownLength = Vector3.Distance(INTO_ROOF, CORNER);
-  const alongStrut = (p: Vector3) => Vector3.Dot(p.subtract(FOOT), strutAxis);
-  const alongCrown = (p: Vector3) => Vector3.Dot(p.subtract(CORNER), crownAxis);
-  const radialFrom = (origin: Vector3, axis: Vector3) => (p: Vector3) => {
-    const d = p.subtract(origin);
-    return d.subtract(axis.scale(Vector3.Dot(d, axis))).length();
-  };
-  const strutRadial = radialFrom(FOOT, strutAxis);
+  const BEND = 0.06;
+  /** Across the glass and through it, at the buried foot and at the end in the roof. */
+  const WIDTH = { foot: 0.034, end: 0.024 };
+  const DEPTH = { foot: 0.022, end: 0.016 };
+  const up = CORNER.subtract(FOOT).normalize();
+  const aft = INTO_ROOF.subtract(CORNER).normalize();
+  const START = FOOT.subtract(up.scale(BURY));
+  // the fillet, tangent to both runs: its tangent points `BEND * tan(turn / 2)` from the corner, its centre BEND inside
+  const turn = Math.acos(Vector3.Dot(up, aft));
+  const reach = BEND * Math.tan(turn / 2);
+  const IN_TO = CORNER.subtract(up.scale(reach));
+  const OUT_OF = CORNER.add(aft.scale(reach));
+  const inward = aft.subtract(up.scale(Vector3.Dot(aft, up))).normalize();
+  const BEND_CENTRE = IN_TO.add(inward.scale(BEND));
+  const upLength = Vector3.Distance(START, IN_TO);
+  const arcLength = BEND * turn;
+  const aftLength = Vector3.Distance(OUT_OF, INTO_ROOF);
+  const LENGTH = upLength + arcLength + aftLength;
+  /**
+   * A point's place against the DESIGN centreline (in the x-y plane): how far along it from the buried start (`s`), how
+   * far off it in that plane (`through`) and across it (`across`, its z). Nearest of the up run, the fillet and the aft run.
+   */
+  function onCentreline(p: Vector3): { s: number; through: number; across: number } {
+    const q = new Vector3(p.x, p.y, 0);
+    const candidates: { s: number; through: number }[] = [];
+    const tUp = Math.max(0, Math.min(upLength, Vector3.Dot(q.subtract(START), up)));
+    candidates.push({ s: tUp, through: Vector3.Distance(q, START.add(up.scale(tUp))) });
+    const tAft = Math.max(0, Math.min(aftLength, Vector3.Dot(q.subtract(OUT_OF), aft)));
+    candidates.push({ s: upLength + arcLength + tAft, through: Vector3.Distance(q, OUT_OF.add(aft.scale(tAft))) });
+    const from = IN_TO.subtract(BEND_CENTRE).normalize();
+    const radial = q.subtract(BEND_CENTRE);
+    const angle = Math.atan2(Vector3.Dot(Vector3.Cross(from, radial), new Vector3(0, 0, 1)), Vector3.Dot(from, radial));
+    const sweep = Math.abs(angle);
+    const sense = Math.sign(Vector3.Dot(Vector3.Cross(from, OUT_OF.subtract(BEND_CENTRE)), new Vector3(0, 0, 1)));
+    if (Math.sign(angle) === sense && sweep <= turn) candidates.push({ s: upLength + BEND * sweep, through: Math.abs(radial.length() - BEND) });
+    const best = candidates.reduce((a, b) => (b.through < a.through ? b : a));
+    return { ...best, across: Math.abs(p.z) };
+  }
+  const halfWidthAt = (s: number) => (WIDTH.foot + ((WIDTH.end - WIDTH.foot) * s) / LENGTH) / 2;
+  const halfDepthAt = (s: number) => (DEPTH.foot + ((DEPTH.end - DEPTH.foot) * s) / LENGTH) / 2;
   type Tri = { a: Vector3; b: Vector3; c: Vector3 };
   const key = (t: Tri) => `${t.a.x},${t.a.y},${t.a.z}|${t.b.x},${t.b.y},${t.b.z}|${t.c.x},${t.c.y},${t.c.z}`;
   const pointKey = (p: Vector3) => `${p.x.toFixed(7)},${p.y.toFixed(7)},${p.z.toFixed(7)}`;
   const distinct = (points: Vector3[]) => [...new Map(points.map((p) => [pointKey(p), p])).values()];
-
-  /**
-   * One bar's end ring, found by TOPOLOGY rather than by position: the vertices at `atEnd` of the side
-   * triangles that span the bar from end to end. A position filter at the corner also catches the OTHER
-   * bar's ring (its vertices sit in this bar's end plane, some exactly a radius off its axis), which is
-   * how a first version of the full-radius check could never fail.
-   */
-  function barRing(along: (p: Vector3) => number, length: number, from: number, atEnd: "start" | "end"): Vector3[] {
-    const tolerance = 1e-3;
-    const at = (p: Vector3, v: number) => Math.abs(along(p) - v) < tolerance;
-    const out: Vector3[] = [];
-    for (const t of tipWorldTriangles(named("windscreen-center-frame"))) {
-      const corners = [t.a, t.b, t.c];
-      const touchesStart = corners.some((p) => at(p, from));
-      const touchesEnd = corners.some((p) => at(p, length));
-      if (!touchesStart || !touchesEnd) continue;
-      out.push(...corners.filter((p) => at(p, atEnd === "start" ? from : length)));
-    }
-    return distinct(out);
-  }
-  const strutTopRing = () => barRing(alongStrut, strutLength, -BURY, "end");
-  const strutBottomRing = () => barRing(alongStrut, strutLength, -BURY, "start");
-  const crownCornerRing = () => barRing(alongCrown, crownLength, 0, "start");
+  /** The built strip's bottom ring: its vertices at the buried start, off the centreline (the cap's centre is on it). */
+  const bottomRing = () => distinct(worldVertices(named("windscreen-center-frame")).filter((p) => {
+    const at = onCentreline(p);
+    return at.s < 1e-4 && at.through + at.across > 1e-4;
+  }));
 
   /** The roof slab as BUILT: its world bounds and its triangles, not the constants it was built from. */
   function roofSlab() {
@@ -533,17 +555,13 @@ describe("the Cessna's windscreen centre frame", () => {
   }
 
   /**
-   * Every END DISC of the member's two bars: a triangle wholly in the plane that ends a bar (the buried
-   * foot, the corner on either bar, the aft end), within the bar's radius of that end's centre, and FACING
-   * ALONG the bar's axis -- the last because a thin triangle of the ball's pole fan can lie almost in a
-   * bar's end plane, and a plane-and-radius test alone once read a piece of the ball as a disc.
+   * Every END DISC of the strip: a triangle wholly in the plane that ends it (the buried foot, the end in the roof),
+   * within its half-width of that end's centre, and FACING ALONG the centreline there.
    */
   function endDiscs(): Tri[] {
     const ends = [
-      { centre: FOOT.subtract(strutAxis.scale(BURY)), axis: strutAxis, radius: RADIUS * 1.08 },
-      { centre: CORNER, axis: strutAxis, radius: RADIUS },
-      { centre: CORNER, axis: crownAxis, radius: RADIUS },
-      { centre: INTO_ROOF, axis: crownAxis, radius: RADIUS },
+      { centre: START, axis: up, radius: WIDTH.foot / 2 },
+      { centre: INTO_ROOF, axis: aft, radius: WIDTH.end / 2 },
     ];
     return tipWorldTriangles(named("windscreen-center-frame")).filter((t) => {
       const normal = Vector3.Cross(t.b.subtract(t.a), t.c.subtract(t.a));
@@ -571,64 +589,98 @@ describe("the Cessna's windscreen centre frame", () => {
     return found;
   }
 
-  it("runs up the windscreen on its old axis at FULL radius right to the corner, 8% fatter at its buried bottom", () => {
+  it("is ONE strip on the old axis, round a 6 cm fillet at the corner: every vertex on an ellipse 34 to 24 mm across and 22 to 16 through", () => {
     const frame = named("windscreen-center-frame");
-    expect(frame.metadata?.mergedFrom).toEqual(["windscreen-center-frame-bar", "windscreen-center-frame-crown", "windscreen-center-frame-joint"]);
-    const top = strutTopRing();
-    const bottom = strutBottomRing();
-    // NON-VACUITY: an octagonal ring at each end of the strut, found through its own side triangles
-    expect(top.length, "the strut's own top ring").toBeGreaterThanOrEqual(8);
-    expect(bottom.length, "the strut's own bottom ring").toBeGreaterThanOrEqual(8);
-    // every vertex of the strut's top ring is a full radius off the old axis: a taper, a thinner top or a
-    // cone to a point inside the ball all fail here
-    expect(Math.min(...top.map(strutRadial)), "the strut's top ring, least radius").toBeCloseTo(RADIUS, 3);
-    expect(Math.max(...top.map(strutRadial)), "the strut's top ring, greatest radius").toBeCloseTo(RADIUS, 3);
-    expect(Math.max(...bottom.map(strutRadial)), "the strut's bottom ring").toBeCloseTo(RADIUS * 1.08, 3);
-    for (const p of bottom) expect(alongStrut(p), "the bottom ring is BURY past the design foot").toBeCloseTo(-BURY, 3);
-    // the ball: vertices 1.03 radii from the corner, including straight up and forward
-    const onBall = worldVertices(frame).filter((p) => Math.abs(Vector3.Distance(p, CORNER) - BALL) < 1e-3);
-    expect(Math.max(...onBall.map((p) => p.y)), "the ball's top").toBeCloseTo(CORNER.y + BALL, 3);
-    expect(Math.max(...onBall.map((p) => p.x)), "the ball's front").toBeCloseTo(CORNER.x + BALL, 3);
+    expect(frame.metadata?.mergedFrom, "one strip, not bars merged with a joint").toBeUndefined();
     expect((frame.material as PBRMaterial).name).toBe("trainer-dark");
     // it is EXTERIOR, not cockpit-only: that is the whole point of fixing it here rather than hiding it
     expect(cockpitOnly.map((part) => part.name)).not.toContain("windscreen-center-frame");
+    const places = worldVertices(frame).map(onCentreline).filter((at) => at.through + at.across > 1e-4);
+    // every vertex on its station's ellipse: a ball at the corner, a round bar, a sharp corner or an untapered strip
+    // puts vertices off it by far more than this
+    const worst = Math.max(...places.map((at) => Math.abs(Math.hypot(at.across / halfWidthAt(at.s), at.through / halfDepthAt(at.s)) - 1)));
+    expect(worst, "furthest off the design ellipse, as a fraction of it").toBeLessThan(0.02);
+    // NON-VACUITY: it runs the whole centreline, from the buried start to the end in the roof, and round the fillet
+    expect(Math.min(...places.map((at) => at.s))).toBeLessThan(1e-4);
+    expect(Math.max(...places.map((at) => at.s))).toBeGreaterThan(LENGTH - 1e-3);
+    const onFillet = new Set(places.filter((at) => at.s > upLength + 1e-3 && at.s < upLength + arcLength - 1e-3).map((at) => at.s.toFixed(4)));
+    expect(onFillet.size, "rings round the fillet").toBeGreaterThanOrEqual(5);
+    // the section's two axes, where it is widest: at the foot 34 mm across and 22 through
+    const foot = places.filter((at) => at.s < 1e-4);
+    expect(2 * Math.max(...foot.map((at) => at.across)), "34 mm across at the foot").toBeCloseTo(WIDTH.foot, 4);
+    expect(2 * Math.max(...foot.map((at) => at.through)), "22 mm through at the foot").toBeCloseTo(DEPTH.foot, 4);
   });
 
-  it("is a knuckle at the corner, not a notch: BOTH bars' corner rings are at the corner and inside the ball's facets", () => {
-    // At the bars' own radius their octagonal end rings lie on the sphere the faceted ball is inscribed
-    // in, so 12 of their 14 distinct positions poked out between its vertices -- a notch at the elbow in a
-    // 4x crop, with no end disc exposed and every other test green. Containment in the ball's CONVEX
-    // faceted surface is the test, for each ring separately: one ring alone once met a shared vertex
-    // count while the other had drifted a centimetre off the corner and out of the ball.
+  it("has no facet line and no knuckle: its faces meet their neighbours at under 30 degrees round it and 10 along it", () => {
+    // The two bars were octagons, which the pilot saw as a facet silhouette at 45 degrees, and met the ball at 90. Every
+    // edge two of its faces share, but the rim of each end's cap (the end-disc pin below holds those out of sight).
     const frame = named("windscreen-center-frame");
-    const ballTriangles = tipWorldTriangles(frame).filter((t) =>
-      [t.a, t.b, t.c].every((p) => Math.abs(Vector3.Distance(p, CORNER) - BALL) < 1e-3));
-    expect(ballTriangles.length, "the ball's triangles").toBeGreaterThan(500);
-    const outside = (p: Vector3) => {
-      let worst = Number.NEGATIVE_INFINITY;
-      for (const t of ballTriangles) {
-        const n = Vector3.Cross(t.b.subtract(t.a), t.c.subtract(t.a));
-        if (n.length() < 1e-14) continue;
-        n.normalize();
-        if (Vector3.Dot(n, t.a.subtract(CORNER)) < 0) n.scaleInPlace(-1);
-        worst = Math.max(worst, Vector3.Dot(n, p.subtract(t.a)));
+    const v = worldVertices(frame);
+    const indices = frame.getIndices()!;
+    const k = (p: Vector3) => `${Math.round(p.x * 1e6)},${Math.round(p.y * 1e6)},${Math.round(p.z * 1e6)}`;
+    const shared = new Map<string, { a: Vector3; b: Vector3; normals: Vector3[] }>();
+    for (let t = 0; t < indices.length; t += 3) {
+      const [A, B, C] = [v[indices[t]!]!, v[indices[t + 1]!]!, v[indices[t + 2]!]!];
+      const n = Vector3.Cross(B.subtract(A), C.subtract(A));
+      if (n.length() < 1e-14) continue;
+      n.normalize();
+      for (const [p, q] of [[A, B], [B, C], [C, A]] as const) {
+        const edgeKey = [k(p), k(q)].sort().join("|");
+        const edge = shared.get(edgeKey) ?? { a: p, b: q, normals: [] };
+        edge.normals.push(n);
+        shared.set(edgeKey, edge);
       }
-      return worst;
-    };
-    for (const [label, ring] of [["the strut's top ring", strutTopRing()], ["the crown bar's corner ring", crownCornerRing()]] as const) {
-      expect(ring.length, label).toBeGreaterThanOrEqual(8);
-      const centre = ring.reduce((sum, p) => sum.add(p), Vector3.Zero()).scale(1 / ring.length);
-      expect(Vector3.Distance(centre, CORNER), `${label} is centred on the corner`).toBeLessThan(0.0005);
-      // inside every face plane of the ball, by at least half a millimetre
-      expect(Math.max(...ring.map(outside)), `${label}: furthest outside a ball facet, metres`).toBeLessThan(-0.0005);
     }
+    let round = 0;
+    let along = 0;
+    let rounds = 0;
+    let rings = 0;
+    for (const edge of shared.values()) {
+      expect(edge.normals.length, "every edge is shared by two faces: the strip is closed").toBe(2);
+      const angle = Math.acos(Math.max(-1, Math.min(1, Vector3.Dot(edge.normals[0]!, edge.normals[1]!)))) * DEG;
+      const [a, b] = [onCentreline(edge.a), onCentreline(edge.b)];
+      const onRing = Math.abs(a.s - b.s) < 1e-4;
+      if (onRing && (a.s < 1e-4 || a.s > LENGTH - 1e-3)) continue;
+      if (onRing) {
+        along = Math.max(along, angle);
+        rings += 1;
+      } else {
+        round = Math.max(round, angle);
+        rounds += 1;
+      }
+    }
+    expect(rings, "edges round its inner rings").toBeGreaterThan(10 * 8);
+    expect(rounds, "edges along it").toBeGreaterThan(10 * 8);
+    expect(round, "the sharpest turn between two faces round the strip, degrees").toBeLessThan(30);
+    expect(along, "the sharpest turn between two faces along the strip, degrees").toBeLessThan(10);
+  });
+
+  it("keeps within 45,000 px of the pilot's 1080p frame, and is seen there (the bars and knuckle were 62,278)", () => {
+    const W = 1920;
+    const H = 1080;
+    const pin: Pinhole = {
+      eye: EYE_POINT,
+      target: EYE_POINT.add(new Vector3(1, 0, 0)),
+      up: new Vector3(0, 1, 0),
+      fovY: 2 * Math.atan(Math.tan(37.5 / DEG) / (16 / 9)),
+      width: W,
+      height: H,
+    };
+    const meshes = scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+    const index = meshes.indexOf(named("windscreen-center-frame"));
+    expect(index, "the strip is drawn from the seat").toBeGreaterThanOrEqual(0);
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    let px = 0;
+    for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === index) px += 1;
+    expect(px).toBeLessThan(45_000);
+    expect(px).toBeGreaterThan(15_000);
   });
 
   it("starts under the cowl deck: every point of its bottom ring is below the surface above it", () => {
     // The design foot stood 8 to 49 mm ABOVE the deck, so the ring floated and its end disc showed to
     // anyone ahead of the aeroplane. Cast down from high above each point of the bottom ring: the first
     // surface met must be the fuselage, and ABOVE the point, by at least 5 mm.
-    const ring = strutBottomRing();
+    const ring = bottomRing();
     expect(ring.length, "the bottom ring").toBeGreaterThanOrEqual(8);
     const others = scene.meshes.filter((m) => m.getTotalVertices() > 0 && m.isEnabled() && !["trainer-canopy", "windscreen-center-frame"].includes(m.name));
     const triangles = others.flatMap((m) => tipWorldTriangles(m).map((t) => ({ t, name: m.name })));
@@ -728,9 +780,8 @@ describe("the Cessna's windscreen centre frame", () => {
 
   it("shows no end disc from the pilot's seat or from ANY exterior angle, grazing ones included, and the survey can see one when nothing hides it", () => {
     const discs = endDiscs();
-    // NON-VACUITY: a cylinder with two nonzero diameters caps both ends, so the two bars carry four
-    // capped ends between them (the buried foot, both sides of the corner, the aft end)
-    expect(discs.length, "end-disc triangles found").toBeGreaterThanOrEqual(4 * 6);
+    // NON-VACUITY: the strip caps both its ends, the buried foot and the end in the roof, each a fan (of 24)
+    expect(discs.length, "end-disc triangles found").toBeGreaterThanOrEqual(2 * 8);
     const discKeys = new Set(discs.map(key));
     const targets = discs.map((t) => t.a.add(t.b).add(t.c).scale(1 / 3));
     // Occluders in a box round the whole cabin, roof included, for speed: a mesh left out could only
@@ -771,10 +822,9 @@ describe("the Cessna's windscreen centre frame", () => {
         if (discKeys.has(nearestDrawn(memberOnly, eye, target))) controlSeen += 1;
       }
     }
-    // THE POSITIVE CONTROL: with nothing but the member itself in the scene (the ball is part of it, the
-    // roof and the deck are not), discs ARE the nearest drawn surface from some viewpoints -- the aft end's
-    // faces the pilot, the foot's faces the front. A survey that could not see a disc reads zero below for
-    // the wrong reason.
+    // THE POSITIVE CONTROL: with nothing but the member itself in the scene (the roof and the deck are
+    // not), discs ARE the nearest drawn surface from some viewpoints -- the aft end's faces the pilot, the
+    // foot's faces the front. A survey that could not see a disc reads zero below for the wrong reason.
     expect(controlSeen, "discs seen when only the member is in the scene").toBeGreaterThan(0);
     expect(seen, "discs seen in the real scene").toEqual([]);
   });
@@ -836,23 +886,36 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     }
     return { edges: [...found.values()], key };
   }
-  /** The edges the pilot sees that are HARD: two faces at more than 46 degrees, shaded apart, one of them drawn toward him. */
-  function visibleHardEdges(mesh: AbstractMesh, raster: ReturnType<typeof frame>, meshIndex: number) {
+  /**
+   * The edges the pilot sees that are HARD: two faces at more than 46 degrees, shaded apart, one of them drawn toward the
+   * eye. An edge is seen where its own mesh is drawn at its depth within a pixel of it: a SILHOUETTE crease (the cowl's
+   * flat-capped nose, S5, whose cap faces away and is culled) has the mesh on one side of it only, and the pixel under
+   * the line itself is as often what lies beyond.
+   */
+  function visibleHardEdges(mesh: AbstractMesh, raster: ReturnType<typeof frame>, meshIndex: number, shading: "split" | "any" = "split") {
     const { edges: all, key } = edges(mesh);
     return all.filter((e) => {
       if (e.faces.length !== 2) return false;
       const [f, g] = e.faces as [typeof e.faces[0], typeof e.faces[0]];
       if (Vector3.Dot(f.normal, g.normal) > Math.cos(46 / DEG)) return false;
       const split = [e.a, e.b].some((p) => Vector3.Dot(f.at.get(key(p))!, g.at.get(key(p))!) < Math.cos(1 / DEG));
-      if (!split || !(f.toward || g.toward)) return false;
+      if ((shading === "split" && !split) || !(f.toward || g.toward)) return false;
       let seen = 0;
       for (let s = 0; s <= 40; s += 1) {
         const q = projectPoint(pin, Vector3.Lerp(e.a, e.b, s / 40));
         const x = Math.floor(q.x);
         const y = Math.floor(q.y);
-        if (!(q.depth > 0.02) || x < 0 || y < 0 || x >= W || y >= H) continue;
-        const i = y * W + x;
-        if (raster.mesh[i] === meshIndex && Math.abs(raster.depth[i]! - q.depth) < 0.0015 + 0.004 * q.depth) seen += 1;
+        if (!(q.depth > 0.02)) continue;
+        let near = false;
+        for (let dy = -1; dy <= 1 && !near; dy += 1) {
+          for (let dx = -1; dx <= 1 && !near; dx += 1) {
+            const [xx, yy] = [x + dx, y + dy];
+            if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+            const i = yy * W + xx;
+            near = raster.mesh[i] === meshIndex && Math.abs(raster.depth[i]! - q.depth) < 0.0015 + 0.004 * q.depth;
+          }
+        }
+        if (near) seen += 1;
       }
       return seen >= 3;
     });
@@ -874,7 +937,7 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     expect(Math.max(...flatJumps)).toBeGreaterThan(5);
   });
 
-  it("shows the pilot no hard edge on the deck, the board, the port door, the port pillar or the panel's face, outside the deck's designed cove", () => {
+  it("shows the pilot no hard edge on the deck, the board, the port door, the port pillar, the panel's face, the headliner, the centre strip or the cowl's nose, outside the deck's designed cove", () => {
     const raster = frame();
     const meshes = drawn();
     const section = trainerDeckSection();
@@ -886,6 +949,8 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       "trainer-dial-faces", "trainer-dial-bezels", "trainer-panel-fittings",
       // the overhead (S4): the headliner and its header, the visors
       "trainer-headliner",
+      // the windscreen's centre strip and the cowl's nose (S5): a knuckle and a flat cap's rim before
+      "windscreen-center-frame", "trainer-cowl-standin",
     ]) {
       const mesh = named(name);
       expect(meshes.indexOf(mesh), `${name} is drawn`).toBeGreaterThanOrEqual(0);
@@ -895,6 +960,56 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     // CONTROL: the instrument sees a box's hard edges -- the attitude ball's pitch bar is one
     const bar = named("trainer-attitude-pitch-bar");
     expect(visibleHardEdges(bar, raster, meshes.indexOf(bar)).length).toBeGreaterThan(3);
+  });
+
+  it("shows the pilot no crease at all on the centre strip or the cowl's nose, smooth-shaded ones included; a flat nose cap is one", () => {
+    // The pin above asks for SPLIT shading. The cowl's nose was a flat cap sharing its rim's vertices with the cowl, so
+    // one averaged normal there, and a 92-degree crease the pilot saw across the cowl's top all the same: on these two
+    // S5 parts, a crease of any shading counts.
+    const raster = frame();
+    const meshes = drawn();
+    for (const name of ["windscreen-center-frame", "trainer-cowl-standin"]) {
+      const mesh = named(name);
+      const creases = visibleHardEdges(mesh, raster, meshes.indexOf(mesh), "any");
+      expect(creases.map((e) => `(${e.a.x.toFixed(3)}, ${e.a.y.toFixed(3)}, ${e.a.z.toFixed(3)})`), `creases on ${name}`).toEqual([]);
+    }
+    // CONTROL: the stand-in with its lip cut off and its nose ring closed on a flat fan, smooth-shaded, in its place
+    const standIn = named("trainer-cowl-standin");
+    const v = worldVertices(standIn);
+    const indices = standIn.getIndices()!;
+    const kept: number[] = [];
+    for (let t = 0; t < indices.length; t += 3) {
+      const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+      if (corners.every((i) => v[i]!.x <= 3.7 + 1e-6)) kept.push(...corners);
+    }
+    const nose = [...new Set(v.map((p, i) => [p, i] as const).filter(([p]) => Math.abs(p.x - 3.7) < 1e-6).map(([, i]) => i))]
+      .sort((i, j) => Math.atan2(v[i]!.z, v[i]!.y + 0.17) - Math.atan2(v[j]!.z, v[j]!.y + 0.17));
+    const centre = v.length;
+    for (let k = 0; k < nose.length; k += 1) {
+      const [a, b] = [nose[k]!, nose[(k + 1) % nose.length]!];
+      // drawn from ahead: the cross product points into the solid, aft
+      const cross = Vector3.Cross(v[b]!.subtract(v[a]!), new Vector3(3.7, -0.17, 0).subtract(v[a]!));
+      kept.push(...(cross.x < 0 ? [a, b, centre] : [b, a, centre]));
+    }
+    const positions = [...v, new Vector3(3.7, -0.17, 0)].flatMap((p) => [p.x, p.y, p.z]);
+    // one normal a vertex, averaged over its faces, as the loft shades its rim (neither check reads its sign)
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, kept, normals);
+    const data = new VertexData();
+    data.positions = positions;
+    data.indices = kept;
+    data.normals = normals;
+    const capped = new Mesh("cowl-flat-nose-control", scene);
+    data.applyToMesh(capped);
+    try {
+      const withCap = [...meshes.filter((m) => m !== standIn && m !== capped), capped];
+      const controlRaster = rasteriseClipped(pin, withCap, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+      expect(nose.length, "the nose ring").toBeGreaterThanOrEqual(24);
+      expect(visibleHardEdges(capped, controlRaster, withCap.indexOf(capped), "any").length, "the flat nose's creases seen").toBeGreaterThan(3);
+      expect(visibleHardEdges(capped, controlRaster, withCap.indexOf(capped), "split").length, "...none of them split-shaded").toBe(0);
+    } finally {
+      capped.dispose();
+    }
   });
 
   it("keeps every vertex of the deck, the board, the door frames and the headliner inside the cabin: 2 cm inside the glass above the tube, inside the tube below", () => {
@@ -1439,7 +1554,7 @@ describe("the Cessna's overhead", () => {
     expect(firstHit(0, azel(front).el + 0.5)?.mesh.name, "the visor's underside is what the eye meets just over its front").toBe("trainer-headliner");
   });
 
-  it("hangs the compass, a 60 x 60 x 70 mm box with 8 mm round edges, on a short stalk into the centre frame, in the frame over the windscreen", () => {
+  it("hangs the compass, a 60 x 60 x 70 mm box with 8 mm round edges, just under the glass on a stalk up into the centre strip, in the frame over the windscreen", () => {
     const merged = named("trainer-panel-fittings").metadata?.mergedFrom as string[];
     expect(merged).toEqual(expect.arrayContaining(["trainer-compass", "trainer-compass-stalk"]));
     const c = TRAINER_OVERHEAD.compass;
@@ -1452,7 +1567,19 @@ describe("the Cessna's overhead", () => {
     const q = projectPoint(pin, centre);
     expect(q.x).toBeGreaterThan(W / 2);
     expect(q.x).toBeLessThan(W);
-    expect(azel(centre).el, "its centre's elevation (the survey placed it at +3.9; the crown member's underside holds it to this)").toBeGreaterThan(2.5);
+    // its centre's elevation: +2.85 under the S4 crown member; the survey placed it at +3.9 as a screen row, which is
+    // +3.5 here (this is off the eye's own line, 24 degrees right)
+    expect(azel(centre).el, "its centre's elevation").toBeGreaterThan(3.1);
+    // UNDER THE GLASS: its top 5 mm under the glass's crown over its front face. The strip it hangs from stands 7 mm
+    // outside the glass there; hung from the strip's underside, the box would be 3 mm through it.
+    const glassTop = (x: number) => {
+      const i = TRAINER_CANOPY_SECTIONS.findIndex((section) => section.x >= x);
+      const [low, high] = [TRAINER_CANOPY_SECTIONS[i - 1]!, TRAINER_CANOPY_SECTIONS[i]!];
+      const top = (section: typeof low) => (section.yOffset ?? 0) + section.yRadius;
+      return top(low) + ((top(high) - top(low)) * (x - low.x)) / (high.x - low.x);
+    };
+    const boxTop = Math.max(...box.map((p) => p.y));
+    expect(glassTop(centre.x + c.depth / 2) - boxTop, "the box's top under the glass, metres").toBeGreaterThan(0.004);
     // the stalk's top, off the BUILT fittings (its vertices over the box, on its axis), is INSIDE the built centre frame:
     // the frame's top is over it and its underside under it
     const stalk = worldVertices(named("trainer-panel-fittings")).filter((p) => Math.abs(p.x - c.x) <= c.stalkRadius + 1e-6 && Math.abs(p.z) <= c.stalkRadius + 1e-6 && p.y > centre.y + c.height / 2);

@@ -1015,6 +1015,10 @@ export function roundedCylinder(
  * product points INTO the solid). Shaded as `sweptSolid` shades a round: every wall vertex takes its ring's radial
  * normal, tilted along the centreline by the taper, so neighbouring chords share one normal round the tube and along
  * it: no chord bands, and no facet line where the centreline bends. The caps are flat.
+ *
+ * `halfDepths`: an ELLIPTICAL section, `radii[i]` along the first frame normal (the one square to the centreline and
+ * to the world's up, or its right where the centreline starts vertical) and `halfDepths[i]` across it: a flattened strip
+ * rather than a round bar, shaded on the ellipse's own normals.
  */
 export function sweptTube(
   build: AircraftBuildContext,
@@ -1024,9 +1028,12 @@ export function sweptTube(
   segments: number,
   material: PBRMaterial,
   parent: TransformNode,
+  options: { readonly halfDepths?: readonly number[] } = {},
 ): Mesh {
   const n = centres.length;
   if (n < 2 || radii.length !== n || segments < 3) throw new RangeError(`sweptTube "${name}": needs two centres or more, a radius each and three segments or more`);
+  const depths = options.halfDepths ?? radii;
+  if (depths.length !== n) throw new RangeError(`sweptTube "${name}": needs a half-depth a centre`);
   const tangents = centres.map((_, i) => centres[Math.min(n - 1, i + 1)]!.subtract(centres[Math.max(0, i - 1)]!).normalize());
   const first = tangents[0]!;
   const frames: Vector3[] = [Vector3.Cross(first, Math.abs(first.y) < 0.9 ? Vector3.Up() : Vector3.Right()).normalize()];
@@ -1044,20 +1051,25 @@ export function sweptTube(
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
+  const axes = (i: number) => ({ normal: frames[i]!, binormal: Vector3.Cross(tangents[i]!, frames[i]!) });
+  /** A section point's offset from its centre (on the ellipse), and the ellipse's own outward direction there. */
   const ring = (i: number, k: number) => {
     const a = (k / segments) * 2 * Math.PI;
-    const normal = frames[i]!;
-    const binormal = Vector3.Cross(tangents[i]!, normal);
-    return normal.scale(Math.cos(a)).add(binormal.scale(Math.sin(a)));
+    const { normal, binormal } = axes(i);
+    return {
+      offset: normal.scale(radii[i]! * Math.cos(a)).add(binormal.scale(depths[i]! * Math.sin(a))),
+      out: normal.scale(Math.cos(a) / radii[i]!).add(binormal.scale(Math.sin(a) / depths[i]!)).normalize(),
+    };
   };
   for (let i = 0; i < n; i += 1) {
-    // the taper: the wall leans in by the radius's fall along the centreline, so its normal leans forward as much
+    // the taper: the wall leans in by the section's fall along the centreline, so its normal leans forward as much
     const [lo, hi] = [Math.max(0, i - 1), Math.min(n - 1, i + 1)];
-    const slope = (radii[lo]! - radii[hi]!) / Vector3.Distance(centres[lo]!, centres[hi]!);
+    const run = Vector3.Distance(centres[lo]!, centres[hi]!);
     for (let k = 0; k < segments; k += 1) {
-      const out = ring(i, k);
-      const p = centres[i]!.add(out.scale(radii[i]!));
-      const shade = out.add(tangents[i]!.scale(slope)).normalize();
+      const { offset, out } = ring(i, k);
+      const fall = (ring(lo, k).offset.length() - ring(hi, k).offset.length()) / run;
+      const p = centres[i]!.add(offset);
+      const shade = out.add(tangents[i]!.scale(fall)).normalize();
       positions.push(p.x, p.y, p.z);
       normals.push(shade.x, shade.y, shade.z);
     }
@@ -1074,7 +1086,7 @@ export function sweptTube(
   for (const [i, sign] of [[0, -1], [n - 1, 1]] as const) {
     const base = positions.length / 3;
     const facing = tangents[i]!.scale(sign);
-    for (const p of [centres[i]!, ...Array.from({ length: segments }, (_, k) => centres[i]!.add(ring(i, k).scale(radii[i]!)))]) {
+    for (const p of [centres[i]!, ...Array.from({ length: segments }, (_, k) => centres[i]!.add(ring(i, k).offset))]) {
       positions.push(p.x, p.y, p.z);
       normals.push(facing.x, facing.y, facing.z);
     }

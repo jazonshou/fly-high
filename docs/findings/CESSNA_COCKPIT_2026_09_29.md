@@ -1,8 +1,8 @@
 # The Cessna's cockpit: from boxes to a cabin
 
 **Status: steps 1 (the deck and the board), 3 (the A-pillars and the door frames),
-2 (the panel's face) and 4 (the overhead) built. Steps 5 and 6 follow, one commit
-each.**
+2 (the panel's face), 4 (the overhead) and 5 (the centre frame and the cowl's
+nose) built. Step 6 follows, in one commit.**
 
 Jason, 2026-09-29: *"no need to go overboard, but make sure the details are
 there"*; two or three main dials are enough; the cockpit should feel real, with
@@ -514,3 +514,126 @@ hard-edge test could see it; the shading pin was written for it.
 Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
 loft-crown digests are re-pinned on its line: seam a8ea15d2, taper 6b090dea.
 
+## S5: the centre frame and the cowl's nose
+
+**What was there.**
+- **The centre frame** was three primitives merged under one name: a round 48 mm
+  bar up the windscreen, a ball at the corner, and a bar aft along the glass crown
+  into the roof slab. The ball closed the gap where the two bars bend 42 degrees.
+  The pilot saw it as a knuckle: 62,278 px, 6 hard edges (108 px) and a facet
+  silhouette along the crown bar.
+- **The cowl's nose** was the shell's last ring, closed on a flat cap. The pilot
+  saw its rim as a line across the cowl's top at about -3 degrees: six edges,
+  175 px.
+
+**A correction to the plan's wording.** The plan's "the cowl's aft cap" came from
+my P0 survey, which named the wrong end. The rim the pilot sees is the NOSE, at
+x 3.70. The aft cap, at x 2.42, is at -9 degrees, under the deck line, and hidden.
+
+**What is there now.** No new draw and no new material: 16 cockpit meshes, as at S4.
+
+- **`windscreen-center-frame`: one tapered strip.**
+  - **Its path** (`TRAINER_CENTRE_FRAME` and `trainerCentreFramePath`, in
+    `trainerShell.ts`) keeps the old axis and both ends. The foot is buried 10 cm
+    past the design foot, under the cowl deck; the end is 2 cm inside the closed
+    roof slab, at its mid-thickness.
+  - **The corner** is a 6 cm fillet, where the ball was.
+  - **The section** is an ellipse, 34 x 22 mm at the foot, tapering to 24 x 16 at
+    the roof. The wider axis is across the glass, as a windscreen's centre strip
+    is.
+  - **The shading** is smooth, round the ellipse and along the strip.
+  - **How it is built:** by `sweptTube`, which gained an elliptical section (the
+    `halfDepths` option), 24 segments round and 17 rings.
+- **The cowl stand-in's lip.** Four rings run on past the shell's nose, each the
+  nose section shrunk by the fall of a 15 mm quarter-round (`TRAINER_COWL_LIP`).
+  - The first band leaves the shell tangent to it.
+  - The flat cap now faces straight ahead, away from the eye, and is culled.
+  - The lip's front is at x 3.715, short of the spinner's back face at 3.74.
+  - The shell is untouched. The stand-in is drawn only in cockpit view.
+  - Its u coordinate is measured over the shell's own sections, as before, so
+    its paint does not move.
+- **The compass is re-hung.** S4 hung it from the crown bar's underside, which was
+  8 mm inside the glass there. The strip is 18 mm through at the compass and
+  stands 7 mm OUTSIDE the glass, so a box hung from its underside would be 3 mm
+  through the glass. The box is now hung by the glass instead: its top is 5 mm
+  under the glass's crown line over its front face. Its stalk runs up through
+  the glass to the strip's axis.
+
+**Measured**, at 1080p (the census, near-plane clipped):
+
+| | S4 | S5 |
+|---|---|---|
+| centre frame | 62,278 px; 6 hard edges (108 px); 1 facet silhouette | 29,340 px; 0; 0 |
+| cowl's nose rim | 6 creases seen (175 px) | 0 |
+| compass centre | el +2.85, az +24.3 | el +3.24 (screen row +3.56), az +24.3 |
+| cockpit draws | 16 | 16 |
+| trainer build (Node, cold / warm) | 217 / 108 ms | 237 / 114 ms |
+
+The survey placed the compass at +3.9 as a screen row, which is atan(dy/dx). The
+pins' elevation is atan2(dy, the horizontal range): the compass is 24 degrees
+right of the eye's line, so the two differ.
+
+**The census had a bug, found by a mutation.** Its split-shading test paired each
+face's vertex by winding order. A face's winding runs the edge it shares the other
+way from its neighbour's, so the test compared the normal at one end of the edge
+with the normal at the other. Its "hard" therefore meant any seen crease of 45
+degrees or more whose shading varied along the edge, split or smooth. Now fixed.
+Re-run on S4:
+- only two meshes' labels change, the cowl's and the glareshield's;
+- the cowl's six rim creases are SMOOTH-shaded, because the loft's cap shares its
+  rim's vertices: one averaged normal, and a 92-degree crease all the same;
+- no zero reported for S1 to S4 moves: every mesh those steps held at no hard
+  edge still has none. The pins never had the bug; they pair by position.
+
+**Pins** (`tests/render.cockpit-trainer.test.ts`):
+- **"the Cessna's windscreen centre frame"**, rewritten:
+  - One mesh, not merged, exterior, on `trainer-dark`.
+  - **Its shape:** every vertex on the design ellipse about the design centreline,
+    within 2%. That is the axis, the fillet and the taper, and a ball, a round
+    bar, a sharp corner or an untapered strip all fail it. At least five rings run
+    round the fillet, and the foot is 34 x 22 mm.
+  - **No facet line and no knuckle:** neighbouring faces meet at under 30 degrees
+    round the strip and under 10 along it.
+  - **Its size on screen:** between 15,000 and 45,000 px of the frame.
+  - **Kept from before:**
+    - the bottom ring under the cowl deck;
+    - everything aft of the roof's front edge inside the closed slab;
+    - its faces drawn from the seat;
+    - no end disc the nearest drawn surface, from the seat or from any exterior
+      angle, with the member-only positive control.
+- **The hard-edge pin** now covers the strip and the cowl. It also samples each
+  edge within a pixel of the line: a silhouette crease has its mesh on one side
+  only, so the pixel under the line is as often what lies beyond it.
+- **A crease pin for S5's two parts, of ANY shading.** It is needed because the
+  pin above asks for split shading, and the lipless rim is smooth. Its control is
+  the stand-in with its lip cut off and a flat, smooth-shaded fan in its place:
+  the pin sees more than three creases on it, none of them split-shaded.
+- **The cowl stands on the shell:** as before, up to x 3.7. Past it, the lip: its
+  front 15 mm on, and its top 15 mm down.
+- **The compass:** its elevation is above +3.1, and its top is at least 4 mm under
+  the glass.
+
+**Mutations.** Six are caught, each on substance (the non-vacuity counts no longer
+depend on the segment count):
+
+| mutation | caught by |
+|---|---|
+| an octagonal strip (8 segments) | facet pin (65 degrees between faces), crease pin |
+| a sharp corner (a 5 mm fillet) | ellipse pin (45% off), facet pin, crease pin |
+| no taper | ellipse pin (42% off) |
+| the old round 48 mm member, filleted | ellipse pin, 64,775 px, end-disc pin |
+| no lip on the cowl's nose | the crease pin, the lip pin |
+| the compass hung from the strip's underside | the compass pin (its top 5 mm through the glass) |
+
+The lipless nose was first caught by the lip's vertex count alone. The hard-edge
+pin missed it twice, for the two reasons above: the rim is smooth-shaded, and it
+is a silhouette.
+
+**Mesh-by-mesh against S4** (bb261f1). On the trainer, three meshes moved:
+- `windscreen-center-frame`: 779 -> 458 vertices;
+- `trainer-cowl-standin`: 52 -> 152, the lip;
+- `trainer-panel-fittings`: positions only, the compass.
+
+The trainer's other 64 of 67 meshes, and every mesh of the jet, the Global and the
+747, are bit-identical. The trainer's loft-crown digests are re-pinned on its
+line: seam 0ab2abdb, taper c2acc0f3.

@@ -7,7 +7,7 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import { loftSectionPoint, type AircraftBuildContext, type LoftSection } from "../builders";
-import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS, trainerCentreFrameCrownAt } from "../trainerShell";
 import { DISPLAY_STATE_LEVEL } from "./displays/displayState";
 import { TRAINER_DIAL_FACE_FRACTION, TRAINER_RADIO_WINDOW_ASPECT } from "./displays/displayPages";
 import {
@@ -173,6 +173,9 @@ export const TRAINER_SWITCHES = Object.freeze({
   on: Object.freeze([true, false, true, false]),
 });
 
+/** The cowl stand-in's nose lip (S5): a quarter-round of this radius, in this many bands, ahead of the shell's nose. */
+export const TRAINER_COWL_LIP = Object.freeze({ radius: 0.015, steps: 4 });
+
 /**
  * THE OVERHEAD (S4): the headliner, its header, the sun visors and the compass.
  *
@@ -188,9 +191,11 @@ export const TRAINER_SWITCHES = Object.freeze({
  * THE VISORS, two, stowed flat under the ceiling behind the header, their fronts at about +14 degrees straight ahead;
  * each is a plate with a round edge and round corners, its outer end under the headliner's side rim.
  *
- * THE COMPASS hangs on a short stalk under the windscreen centre frame's crown member (`trainerVisual.ts`: from its
- * corner at x 2, y 0.21 aft to x 1.6, y 0.205, radius 0.024), as a 150's does from its windscreen's centre strip: a
- * rounded box with a dark face toward the pilot.
+ * THE COMPASS hangs on a stalk from the windscreen centre strip's run aft along the crown (`trainerCentreFrameCrownAt`,
+ * `trainerShell.ts`), as a 150's does from its windscreen's centre strip: a rounded box with a dark face toward the
+ * pilot, just under the glass. Under the S4 bars it hung from the crown member's underside, 8 mm inside the glass, and
+ * its centre sat at +2.85 degrees; the S5 strip, 18 mm through there, stands 7 mm OUTSIDE the glass, so the box is
+ * hung by the glass instead (`underGlass`), and its stalk runs up through the glass into the strip.
  */
 export const TRAINER_OVERHEAD = Object.freeze({
   aftX: 1.2,
@@ -210,9 +215,8 @@ export const TRAINER_OVERHEAD = Object.freeze({
   buried: 0.012,
   /** 300 wide each, a 5 mm gap between: their outer ends reach the headliner's side rim, under which they are buried. */
   visor: Object.freeze({ width: 0.3, depth: 0.12, thickness: 0.008, corner: 0.01, gap: 0.005, frontX: 1.565 }),
-  compass: Object.freeze({ x: 1.955, width: 0.06, height: 0.06, depth: 0.07, edge: 0.008, stalkRadius: 0.004, stalk: 0.004 }),
-  /** The centre frame's crown member, as `trainerVisual.ts` builds it: its axis's two ends, and its radius. */
-  crown: Object.freeze({ fromX: 2, fromY: 0.21, toX: 1.6, toY: 0.205, radius: 0.024 }),
+  /** `underGlass`: the box's top this far under the glass's crown line over its front face. */
+  compass: Object.freeze({ x: 1.955, width: 0.06, height: 0.06, depth: 0.07, edge: 0.008, stalkRadius: 0.004, underGlass: 0.005 }),
 });
 
 /** The headliner's profile, u outward from its outline and a DOWN from the slab's underside: the ceiling, the fillet, the header's round, up into the slab. */
@@ -276,11 +280,24 @@ function roundedBoxProfile(depth: number, edge: number): LoopProfile {
   };
 }
 
-/** The compass's centre: under the crown member at its station, a stalk's length below the member's underside. */
+/**
+ * The glass's crown line at station `x`: its rings' tops, straight between the two either side, as the loft lays it.
+ * Across the compass's 60 mm the glass falls under 0.1 mm from it.
+ */
+function trainerGlassCrownY(x: number): number {
+  const sections = TRAINER_CANOPY_SECTIONS;
+  const i = sections.findIndex((section) => section.x >= x);
+  if (i <= 0) throw new RangeError(`the glass has no crown between its rings at x ${x}`);
+  const [low, high] = [sections[i - 1]!, sections[i]!];
+  const t = (x - low.x) / (high.x - low.x);
+  return loftSectionPoint(low, 0).y + (loftSectionPoint(high, 0).y - loftSectionPoint(low, 0).y) * t;
+}
+
+/** The compass's centre: its top `underGlass` under the glass's crown over its front face, where the glass is lowest. */
 export function trainerCompassCentre(): Vector3 {
-  const { compass, crown } = TRAINER_OVERHEAD;
-  const axisY = crown.fromY + ((crown.toY - crown.fromY) * (compass.x - crown.fromX)) / (crown.toX - crown.fromX);
-  return new Vector3(compass.x, axisY - crown.radius - compass.stalk - compass.height / 2, 0);
+  const { compass } = TRAINER_OVERHEAD;
+  const top = trainerGlassCrownY(compass.x + compass.depth / 2) - compass.underGlass;
+  return new Vector3(compass.x, top - compass.height / 2, 0);
 }
 
 /**
@@ -975,16 +992,32 @@ export function buildTrainerCockpit(
   // nearest the firewall (x 2.10) forward to the nose, so it lies exactly on the
   // shell it stands in for: the loft has one ring per section and no
   // interpolation, so a loft of the same two rings is the same ruled surface.
+  //
+  // Its NOSE (S5) turns over a quarter-round lip before its cap. The shell's nose ring at x 3.7 closed on a flat disc,
+  // and the pilot saw that rim, a 90-degree crease with split shading, as a hard line across the cowl's top at about
+  // -3 degrees (six edges, 175 px). The lip's rings run on ahead of the shell's last one, each the same section shrunk
+  // by the round's fall, so the first band leaves the shell's surface tangent to it; the flat cap then faces straight
+  // ahead, away from the eye, and is culled. The shell stays as it is: this part is drawn only in cockpit view, and
+  // the spinner's back face is at x 3.74, ahead of the lip.
   const firewall = TRAINER_FUSELAGE_SECTIONS.reduce(
     (best, section, index) => (Math.abs(section.x - 2.1) < Math.abs(TRAINER_FUSELAGE_SECTIONS[best]!.x - 2.1) ? index : best),
     0,
   );
+  const shellSections = TRAINER_FUSELAGE_SECTIONS.slice(firewall);
+  const nose = shellSections[shellSections.length - 1]!;
+  const lip = Array.from({ length: TRAINER_COWL_LIP.steps }, (_, index) => {
+    const turn = (((index + 1) / TRAINER_COWL_LIP.steps) * Math.PI) / 2;
+    const fall = TRAINER_COWL_LIP.radius * (1 - Math.cos(turn));
+    return { ...nose, x: nose.x + TRAINER_COWL_LIP.radius * Math.sin(turn), yRadius: nose.yRadius - fall, zRadius: nose.zRadius - fall };
+  });
   parts.push(build.loft(
     "trainer-cowl-standin",
-    TRAINER_FUSELAGE_SECTIONS.slice(firewall),
+    [...shellSections, ...lip],
     24,
     materials.cowl,
     root,
+    // u as it was over the shell's own sections, so the paint does not move
+    { minimumX: shellSections[0]!.x, length: nose.x - shellSections[0]!.x },
   ));
 
   // THE DECK AND THE BOARD, two meshes, each a section swept across the cabin from one door frame to the other
@@ -1124,8 +1157,8 @@ export function buildTrainerCockpit(
       roundedFrontProfile(sw.paddle.height, sw.paddle.corner, 2 * TRAINER_BEZEL.back), materials.dark, root,
       { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
   });
-  // THE COMPASS (S4), with the fittings: a rounded box under the centre frame's crown, its dark face toward the pilot,
-  // on a short stalk up into the crown member
+  // THE COMPASS (S4), with the fittings: a rounded box under the centre strip's crown run, its dark face toward the
+  // pilot, on a stalk up through the glass to the strip's axis
   {
     const c = TRAINER_OVERHEAD.compass;
     const centre = trainerCompassCentre();
@@ -1134,10 +1167,8 @@ export function buildTrainerCockpit(
       { halfWidth: c.width / 2 - c.edge, halfHeight: c.height / 2 - c.edge, radius: c.edge, cornerSegments: 3 },
       roundedBoxProfile(c.depth, c.edge), materials.dark, root,
       { caps: [{ point: 0, facing: 1 }, { point: 9, facing: -1 }] }));
-    const crown = TRAINER_OVERHEAD.crown;
-    const top = crown.fromY + ((crown.toY - crown.fromY) * (c.x - crown.fromX)) / (crown.toX - crown.fromX);
     fittings.push(sweptTube(build, "trainer-compass-stalk",
-      [centre.add(new Vector3(0, c.height / 2 - 0.006, 0)), new Vector3(c.x, top - crown.radius / 2, 0)],
+      [centre.add(new Vector3(0, c.height / 2 - 0.006, 0)), new Vector3(c.x, trainerCentreFrameCrownAt(c.x).y, 0)],
       [c.stalkRadius, c.stalkRadius], 12, materials.dark, root));
   }
   const facesMesh = build.mergeStatic(TRAINER_DISPLAYS.screensMesh, faces, root);
