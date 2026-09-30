@@ -637,6 +637,8 @@ export function FlightGame() {
         phase: () => phaseRef.current,
         handleActions,
         isForeground: () => !disposed && !rendererTerminal && !document.hidden,
+        // After InputManager (constructed above) so its key listeners run first.
+        keyEvents: window,
       });
 
       const renderLoop = (now: number) => {
