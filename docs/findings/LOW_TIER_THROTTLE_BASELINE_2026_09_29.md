@@ -296,8 +296,10 @@ In both arms this is main-thread `generateHydrology`.
   - 75-234 ms per region, 40-60% of the generation it followed.
 - Moving the vertex-array build into the worker is the proposed P2b.
 
-**The adaptive governor under the throttle.** At the same pose and code, the
-ladders ended anywhere from CPU 0 / GPU 9 to CPU 7 / GPU 3.
+**The adaptive governor under the throttle.** On the same cruise flight path
+and code, the ladders ended anywhere from CPU 0 / GPU 9 to CPU 7 / GPU 3.
+(These were cruise flights on this quiet host, not a held pose. Slot 3 below
+shows why that distinction matters.)
 - Without GPU timers (disabled in gameplay), it cannot tell a CPU-bound frame
   from a GPU-bound one.
 - Under the 4× main-thread throttle it sometimes sheds GPU work (ground cover,
@@ -305,6 +307,99 @@ ladders ended anywhere from CPU 0 / GPU 9 to CPU 7 / GPU 3.
   and costs pixels.
 - This is recorded as a finding, and as a confound for any fps comparison
   between arms.
+
+## Slot 3: a loaded host, P2b on the device, and a P9 check that could not bite
+
+**Window:** 02:23:48 to 02:37:23, 2026-09-30.
+
+**Host: loaded, by the PM's decision.** No quiet host could be had. Other
+sessions' single-file Node tests were the accepted load.
+- Start: load 4.61 / 4.59 / 4.12. One node process was at 120%.
+- End: load 3.97 / 5.80 / 5.88.
+
+**Every fps and p95 below is loaded and not comparable with slot 2.** Quiet-host
+fps figures for P2b and P9 are still owed.
+
+**The arms:**
+- **Before:** Fix-Cockpits `7fc2280`.
+- **P2b:** `jazonshou/perf-p2b-region-geometry` at `a35b3c2`.
+- **P9:** `jazonshou/perf-p9-governor-feedback` at `c61fd8c`.
+- **Probe:** `jazonshou/perf-slot3-record`. Its `throttle-probe.mts` is
+  byte-identical to the one that ran.
+
+**Evidence:** `docs/evidence/low-tier-throttle-slot3-2026-09-30.json`.
+
+### P2b: the region hand-off is off the main thread
+
+The 747's cruise session flies the same path in every slot (8 region requests,
+7 swaps). The long-animation-frame observer covers the whole session, load
+included. Its frames of 50 ms or more that name hydrology:
+
+| 747 cruise, whole session | Hydrology frames ≥ 50 ms (ms) | Worst in flight |
+| --- | --- | --- |
+| Slot 2, before (quiet) | 175, 112, 102, 87, 82, 74, **697**, **324** | **697** |
+| Slot 2, with P2 (quiet) | 93, 103, 112, 93, 137, 289, **325** | **325** |
+| Slot 3, with P2b (loaded) | **78**, once, at load | **none** |
+
+- **The Cessna** (4 requests, 3 swaps) went from 4 frames, including a 358 ms
+  hitch in flight, to one 85 ms frame at load.
+- **The one remaining frame is not in flight.** It lands 1.9–2.3 s after
+  navigation: before the start screen and before the throttle is applied.
+  It is the first region's install (`handleMessage`, 75–84 ms), among
+  everything else that runs at startup.
+  - In Node the same install costs 0.5 ms (NullEngine), so the device time is
+    Babylon mesh and buffer creation or the message's deserialisation. That
+    is not yet attributed.
+  - It counts against the load bar (≤ 20 s), not the hitch bar.
+- **Worst frame in the measured 4× window (loaded):**
+  - 747: 48.9 ms, with no long frame at all.
+  - Cessna: 148 ms. Its one long frame (156 ms) is `renderLoop`, not
+    hydrology.
+  - No frame exceeded 250 ms in either run.
+- **Loaded cruise at 4×:** 747 51 fps / p95 26.6 ms; Cessna 44 fps / p95
+  35.4 ms. Both ladders ended at CPU 7 / GPU 0.
+- **The water is identical.** Same pose and pinned clock as slot 2, 340,497
+  water px. All three arms shot at the same governor state (scale 0.72,
+  CPU 0, GPU 0, holding).
+  - B (P2b) vs A2 (before): **0** water px differ.
+  - A1 vs A2, the same-arm control: 574 water px at ±1. A1 differs from B by
+    the same set of pixels, so that difference is noise between the two
+    "before" runs, not P2b.
+- **Cost moved to the worker.** On the freeze arms at 1×, the last region's
+  generation time on the worker read 168 and 167 ms before and 269 ms with
+  P2b (one reading per arm), because the build now runs there. It is off the
+  main thread, and the throttle does not slow it.
+
+### P9: the held pose never exercised the GPU-work ladder
+
+Slot 3 held the terrain viewer at the water pose for 60 s, three times at 4×
+on the P9 arm, once at 1×, and twice at 4× on the before arm.
+- **Every run held.** No arm took a single GPU-work step, the before arm
+  included. One before run stepped the CPU ladder to 1. The held viewer runs
+  at 108–114 fps under the 4× throttle, so it is not CPU-bound.
+- **The P9 criterion is therefore met on paper and proves nothing.** There was
+  no ineffective step to undo. This is the null-result trap: a check needs a
+  case where the old code misbehaves.
+- **Where the old code does misbehave: cruise flight on a quiet host.** Under
+  load the classifier reads cpu-bound and the GPU ladder never moves. End
+  states on code without P9:
+
+  | Host | Cruise runs at 4× | GPU-work end level |
+  | --- | --- | --- |
+  | Slot 1, loaded | 3 | 0, 0, 0 (CPU 7 each) |
+  | Slot 2, quiet | 5 | 9, 6, 5, 5, 6 |
+  | Slot 3, loaded | 2 | 0, 0 (CPU 7 each) |
+
+  The likely reason is that a busy core lifts `render()`'s own p95 over the
+  classifier's 15.07 ms line, so the window is cpu-bound, and that is the
+  classification the CPU ladder answers. That fits the knife-edge described in
+  P9's design note (`docs/plans/GOVERNOR_CPU_GPU_CLASSIFICATION_NOTE.md` on
+  `jazonshou/perf-p9-governor-feedback`), and every loaded run ended in mode
+  `cpu-work`. It is an inference: the probe does not record `render()`'s p95.
+- **P9's device check is owed:** cruise at 4× on a quiet host, both airframes,
+  three runs per arm. Since this slot the probe keeps the whole 1 Hz
+  governor series in every scenario, so the check can show each GPU step being
+  taken and undone.
 
 ## URL seeds and string seeds are different worlds
 

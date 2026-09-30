@@ -544,6 +544,9 @@ async function installStateSampler(): Promise<boolean> {
       samples.push({
         t: performance.now(),
         cpuL: d.cpuWorkLevel, gpuL: d.gpuWorkLevel, lever: d.cpuWorkLever,
+        // The resolution ladder is a governor lever too: an arm that stepped
+        // it differs in pixels for a reason that is not the change under test.
+        scale: d.renderScale, insensitive: d.resolutionInsensitive, active: d.activeGovernor,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {
@@ -937,6 +940,14 @@ report.stateLast = await evaluate(() => {
   const w = globalThis as unknown as Record<string, unknown>;
   w.__name ??= (fn: unknown) => fn;
   return ((w.__probeState as unknown[] | undefined) ?? []).at(-1) ?? null;
+});
+// The whole 1 Hz series, in every scenario: a governor claim is about the
+// path (a step taken, then undone or kept), not only where the ladder ended,
+// and a hydrology claim needs to know when the region swaps happened.
+report.stateSeries = await evaluate(() => {
+  const w = globalThis as unknown as Record<string, unknown>;
+  w.__name ??= (fn: unknown) => fn;
+  return ((w.__probeState as unknown[] | undefined) ?? []).slice();
 });
 await page.screenshot({ path: `${outDir}/${label}.png`, type: "png" });
 await setThrottle(1).catch(() => undefined);
