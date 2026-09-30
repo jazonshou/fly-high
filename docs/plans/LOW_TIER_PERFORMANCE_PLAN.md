@@ -163,8 +163,8 @@ Rendering these passes at a lower resolution would save nothing on this bar.
 tier-0-only change moves no pinned baseline or draw ceiling.
 
 **Picture pair for Jason.**
-- Use the capture rig at tier 0 through its sweep settings (`SWEEP_QUALITY`,
-  `SWEEP_MODE`), on the before commit and on an experiment commit.
+- Use the capture rig at tier 0 through its sweep settings (`VITE_PERF_QUALITY=low`,
+  `VITE_PERF_MODE=performance`), on the before commit and on an experiment commit.
 - Shots: `runway-on-approach`, `motion-banked-turn`,
   `forest-500ft-sunbehind`, `mountain-close`.
 - Put the throttle probe's 4× fps next to the pictures.
