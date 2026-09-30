@@ -5,6 +5,7 @@
  *
  *   npx tsx scripts/cockpit-crease-survey.mts <outDir> [trainer,jet,bizjet,airliner] [--size 1920x1080]
  *       [--frame <kind>=<png>] [--designed <regex>] [--crease 45] [--normals shading|geometric]
+ *   npx tsx scripts/cockpit-crease-survey.mts --control [--size 1920x1080]
  *
  * HOW. The camera is the renderer's cockpit camera: the catalogue eye, down the body axis, horizontal-fixed at the lens
  * the renderer resolves for the window's aspect (as `tests/support/cockpitFootprints.ts` builds it). Every pixel's ray
@@ -43,10 +44,12 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Scene } from "@babylonjs/core/scene";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import { cockpitHorizontalFieldOfViewForAspect } from "@/src/render/cameraPresentation";
 import { createWebGpuAircraft } from "@/src/render/webgpu/aircraft";
+import { AircraftBuildContext } from "@/src/render/webgpu/aircraft/builders";
 import type { AircraftKind } from "@/src/sim";
 
 const DEG = 180 / Math.PI;
@@ -61,6 +64,7 @@ interface Options {
   designed: RegExp | null;
   creaseDegrees: number;
   shading: boolean;
+  control: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -71,6 +75,7 @@ function parseArgs(argv: readonly string[]): Options {
   let designed: RegExp | null = null;
   let creaseDegrees = 45;
   let shading = true;
+  let control = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const value = () => {
@@ -92,6 +97,8 @@ function parseArgs(argv: readonly string[]): Options {
       designed = new RegExp(value());
     } else if (arg === "--crease") {
       creaseDegrees = Number(value());
+    } else if (arg === "--control") {
+      control = true;
     } else if (arg === "--normals") {
       const which = value();
       if (which !== "shading" && which !== "geometric") throw new Error("--normals is shading or geometric");
@@ -101,12 +108,12 @@ function parseArgs(argv: readonly string[]): Options {
     }
   }
   const [outDir, kindList] = positional;
-  if (!outDir) throw new Error("usage: cockpit-crease-survey.mts <outDir> [kinds] [--size WxH] [--frame kind=png] [--designed regex] [--crease deg]");
+  if (!outDir && !control) throw new Error("usage: cockpit-crease-survey.mts <outDir> [kinds] [--size WxH] [--frame kind=png] [--designed regex] [--crease deg]");
   const kinds = (kindList ?? KINDS.join(",")).split(",").map((kind) => {
     if (!(KINDS as readonly string[]).includes(kind)) throw new Error(`unknown kind ${kind}`);
     return kind as AircraftKind;
   });
-  return { outDir, kinds, width, height, frames, designed, creaseDegrees, shading };
+  return { outDir: outDir ?? "", kinds, width, height, frames, designed, creaseDegrees, shading, control };
 }
 
 // ---- the merge's sources, by triangle count ------------------------------------------------------------------
@@ -153,26 +160,28 @@ interface Grid {
   readonly normal: Float32Array;
   /** The vertex normals interpolated at the hit, outward: what the surface is SHADED with. */
   readonly shading: Float32Array;
+  /** Pixels picked again because a closed part's back face was met first (a silhouette edge the ray slipped through). */
+  readonly repicked: number;
 }
 
-function survey(kind: AircraftKind, width: number, height: number): Grid {
-  const engine = new NullEngine({ renderWidth: width, renderHeight: height, textureSize: 256, deterministicLockstep: false, lockstepMaxSteps: 1 });
-  const scene = new Scene(engine);
-  scene.useRightHandedSystem = true;
-  const spec = aircraftSpec(kind).cockpitEye;
-  const eye = new Vector3(spec.forward, spec.up, spec.right);
-  const camera = new UniversalCamera("crease-survey-camera", eye.clone(), scene);
-  camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
-  const lens = cockpitHorizontalFieldOfViewForAspect(null, width / height);
-  camera.fov = lens / DEG;
-  camera.minZ = 0.08;
-  camera.setTarget(eye.add(new Vector3(1, 0, 0)));
-  scene.activeCamera = camera;
-  const aircraft = createWebGpuAircraft(scene, kind);
-  aircraft.root.computeWorldMatrix(true);
-  for (const mesh of scene.meshes) mesh.computeWorldMatrix(true);
-  aircraft.setCockpitView(true);
+interface DrawnHit {
+  readonly mesh: AbstractMesh;
+  readonly info: PickingInfo;
+  /** The triangle's own outward normal (a two-sided face's turned toward the eye). */
+  readonly outward: Vector3;
+  /** The vertex normals interpolated at the hit, outward. */
+  readonly shaded: Vector3;
+}
 
+/**
+ * The first surface the GPU DRAWS through a point of the window (in pixels, `x + 0.5` its centre): enabled, visible, on
+ * the camera's layers, opaque, and not a culled back face (a drawn face's cross product points along the ray, the rule
+ * `tests/render.cockpit-drawn-faces.test.ts` measured). `suspect` is a CLOSED part (one of `closed`) whose back face
+ * the ray met before anything drawn: a ray cannot leave a closed solid the eye is outside without entering it, so its
+ * front face was missed where the two share a silhouette edge, a precision miss of the ray test that the GPU's
+ * rasterization, watertight along shared edges, does not make.
+ */
+function makePicker(scene: Scene, camera: Camera, closed: ReadonlySet<AbstractMesh>): (x: number, y: number) => { drawn: DrawnHit | null; suspect: AbstractMesh | null } {
   const drawn = (mesh: AbstractMesh) => {
     const material = mesh.material as PBRMaterial | null;
     return mesh.isEnabled() && mesh.isVisible && (mesh.layerMask & camera.layerMask) !== 0
@@ -199,12 +208,6 @@ function survey(kind: AircraftKind, width: number, height: number): Grid {
       return new Vector3(positions![i]!, positions![i + 1]!, positions![i + 2]!);
     });
   };
-  const parts: string[] = [];
-  const partIndex = new Map<string, number>();
-  const label = new Uint16Array(width * height);
-  const point = new Float64Array(width * height * 3);
-  const normal = new Float32Array(width * height * 3);
-  const shading = new Float32Array(width * height * 3);
   const vertexNormals = new Map<AbstractMesh, Float32Array | null>();
   const shadingAt = (mesh: AbstractMesh, hit: PickingInfo, fallback: Vector3): Vector3 => {
     if (!vertexNormals.has(mesh)) {
@@ -221,48 +224,149 @@ function survey(kind: AircraftKind, width: number, height: number): Grid {
       const i = indices[hit.faceId * 3 + k]! * 3;
       local.addInPlace(new Vector3(data[i]!, data[i + 1]!, data[i + 2]!).scale(weights[k]!));
     }
-    const world = Vector3.TransformNormal(local, mesh.getWorldMatrix());
-    return world.length() > 0 ? world.normalize() : fallback;
+    const shaded = Vector3.TransformNormal(local, mesh.getWorldMatrix());
+    return shaded.length() > 0 ? shaded.normalize() : fallback;
   };
+  return (x, y) => {
+    const ray = scene.createPickingRay(x, y, Matrix.Identity(), camera);
+    const hits = (scene.multiPickWithRay(ray, drawn) ?? []).filter((h: PickingInfo) => h.hit && h.pickedMesh).sort((a, b) => a.distance - b.distance);
+    let suspect: AbstractMesh | null = null;
+    for (const info of hits) {
+      const mesh = info.pickedMesh!;
+      const [p0, p1, p2] = corners(mesh, info.faceId);
+      const cross = Vector3.Cross(p1!.subtract(p0!), p2!.subtract(p0!));
+      const twoSided = (mesh.material as PBRMaterial | null)?.backFaceCulling === false;
+      if (!twoSided && Vector3.Dot(cross, ray.direction) <= 0) {
+        if (suspect === null && closed.has(mesh)) suspect = mesh;
+        continue;
+      }
+      // A drawn face's cross product points INTO the solid: the outward normal is its negative. A two-sided face is
+      // turned to face the eye.
+      const outward = cross.normalize().scale(-1);
+      if (twoSided && Vector3.Dot(outward, ray.direction) > 0) outward.scaleInPlace(-1);
+      const shaded = shadingAt(mesh, info, outward);
+      if (twoSided && Vector3.Dot(shaded, ray.direction) > 0) shaded.scaleInPlace(-1);
+      return { drawn: { mesh, info, outward, shaded }, suspect: suspect === mesh ? null : suspect };
+    }
+    return { drawn: null, suspect };
+  };
+}
+
+/**
+ * One pixel, with the silhouette-edge rule: a closed cockpit part's BACK face met first means its front face was missed
+ * on the silhouette edge they share (the eye is never inside one), so the pixel is picked again a quarter-pixel off each
+ * way and keeps that part's drawn face. A real gap meets no back face and is left a gap (`--control` holds that).
+ */
+function pickPixel(pick: ReturnType<typeof makePicker>, x: number, y: number): { drawn: DrawnHit | null; repicked: boolean } {
+  const seen = pick(x + 0.5, y + 0.5);
+  if (!seen.suspect) return { drawn: seen.drawn, repicked: false };
+  for (const [ox, oy] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as const) {
+    const again = pick(x + ox, y + oy);
+    if (again.drawn && again.drawn.mesh === seen.suspect) return { drawn: again.drawn, repicked: true };
+  }
+  return { drawn: seen.drawn, repicked: false };
+}
+
+/**
+ * THE CONTROL for the silhouette-edge rule: two boxes from the kits' own builder, 1 m ahead, with a gap between them 1.3
+ * pixels wide, centred on one column of pixel centres. The rule must leave that column a hole the whole way down, and
+ * put nothing else in the window a hole: a planted real gap is still found.
+ */
+function control(width: number, height: number): boolean {
+  const engine = new NullEngine({ renderWidth: width, renderHeight: height, textureSize: 256, deterministicLockstep: false, lockstepMaxSteps: 1 });
+  const scene = new Scene(engine);
+  scene.useRightHandedSystem = true;
+  const camera = new UniversalCamera("crease-survey-control", Vector3.Zero(), scene);
+  camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+  const lens = cockpitHorizontalFieldOfViewForAspect(null, width / height);
+  camera.fov = lens / DEG;
+  camera.minZ = 0.08;
+  camera.setTarget(new Vector3(1, 0, 0));
+  scene.activeCamera = camera;
+  const build = new AircraftBuildContext(scene);
+  const root = new TransformNode("crease-survey-control-root", scene);
+  const material = build.material("crease-survey-control", 0x808080, { roughness: 1, metallic: 0 });
+  const pitch = 1 / (width / 2 / Math.tan(lens / 2 / DEG)); // one pixel, in metres, 1 m ahead
+  const gap = 1.3 * pitch;
+  const middle = 0.5 * pitch; // the centre of column width / 2
+  const a = build.box("crease-survey-control-a", 0.1, 0.4, 0.3, material, root);
+  a.position.set(1.05, 0, middle - gap / 2 - 0.15);
+  const b = build.box("crease-survey-control-b", 0.1, 0.4, 0.3, material, root);
+  b.position.set(1.05, 0, middle + gap / 2 + 0.15);
+  for (const mesh of scene.meshes) mesh.computeWorldMatrix(true);
+  const pick = makePicker(scene, camera, new Set([a, b]));
+  const column = width / 2;
+  let inGap = 0;
+  let elsewhere = 0;
+  const rows = 81;
+  for (let y = height / 2 - 40; y <= height / 2 + 40; y += 1) {
+    for (let x = column - 3; x <= column + 3; x += 1) {
+      const hole = pickPixel(pick, x, y).drawn === null;
+      if (x === column && hole) inGap += 1;
+      else if (x !== column && hole) elsewhere += 1;
+    }
+  }
+  scene.dispose();
+  engine.dispose();
+  const pass = inGap === rows && elsewhere === 0;
+  console.log(`control: a gap of 1.3 px between two boxes -- ${inGap} of ${rows} pixels of its column found a hole, ${elsewhere} holes beside it: ${pass ? "PASS" : "FAIL"}`);
+  return pass;
+}
+
+function survey(kind: AircraftKind, width: number, height: number): Grid {
+  const engine = new NullEngine({ renderWidth: width, renderHeight: height, textureSize: 256, deterministicLockstep: false, lockstepMaxSteps: 1 });
+  const scene = new Scene(engine);
+  scene.useRightHandedSystem = true;
+  const spec = aircraftSpec(kind).cockpitEye;
+  const eye = new Vector3(spec.forward, spec.up, spec.right);
+  const camera = new UniversalCamera("crease-survey-camera", eye.clone(), scene);
+  camera.fovMode = Camera.FOVMODE_HORIZONTAL_FIXED;
+  const lens = cockpitHorizontalFieldOfViewForAspect(null, width / height);
+  camera.fov = lens / DEG;
+  camera.minZ = 0.08;
+  camera.setTarget(eye.add(new Vector3(1, 0, 0)));
+  scene.activeCamera = camera;
+  const aircraft = createWebGpuAircraft(scene, kind);
+  aircraft.root.computeWorldMatrix(true);
+  for (const mesh of scene.meshes) mesh.computeWorldMatrix(true);
+  aircraft.setCockpitView(true);
+
+  const pick = makePicker(scene, camera, new Set(aircraft.cockpitOnlyParts ?? []));
+  const parts: string[] = [];
+  const partIndex = new Map<string, number>();
+  const label = new Uint16Array(width * height);
+  const point = new Float64Array(width * height * 3);
+  const normal = new Float32Array(width * height * 3);
+  const shading = new Float32Array(width * height * 3);
+  let repicked = 0;
   const started = Date.now();
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const ray = scene.createPickingRay(x + 0.5, y + 0.5, Matrix.Identity(), camera);
-      const hits = (scene.multiPickWithRay(ray, drawn) ?? []).filter((h: PickingInfo) => h.hit && h.pickedMesh).sort((a, b) => a.distance - b.distance);
-      for (const hit of hits) {
-        const mesh = hit.pickedMesh!;
-        const [p0, p1, p2] = corners(mesh, hit.faceId);
-        const cross = Vector3.Cross(p1!.subtract(p0!), p2!.subtract(p0!));
-        const twoSided = (mesh.material as PBRMaterial | null)?.backFaceCulling === false;
-        if (!twoSided && Vector3.Dot(cross, ray.direction) <= 0) continue;
-        const name = `${mesh.name}|${partOf(mesh, hit.faceId)}`;
-        let index = partIndex.get(name);
-        if (index === undefined) {
-          index = parts.length;
-          parts.push(name);
-          partIndex.set(name, index);
-        }
-        const k = y * width + x;
-        label[k] = index + 1;
-        const at = hit.pickedPoint!;
-        point.set([at.x, at.y, at.z], k * 3);
-        // A drawn face's cross product points INTO the solid: the outward normal is its negative. A two-sided face
-        // is turned to face the eye.
-        const outward = cross.normalize().scale(-1);
-        if (twoSided && Vector3.Dot(outward, ray.direction) > 0) outward.scaleInPlace(-1);
-        normal.set([outward.x, outward.y, outward.z], k * 3);
-        const shaded = shadingAt(mesh, hit, outward);
-        if (twoSided && Vector3.Dot(shaded, ray.direction) > 0) shaded.scaleInPlace(-1);
-        shading.set([shaded.x, shaded.y, shaded.z], k * 3);
-        break;
+      const seen = pickPixel(pick, x, y);
+      if (seen.repicked) repicked += 1;
+      const hit = seen.drawn;
+      if (!hit) continue;
+      const name = `${hit.mesh.name}|${partOf(hit.mesh, hit.info.faceId)}`;
+      let index = partIndex.get(name);
+      if (index === undefined) {
+        index = parts.length;
+        parts.push(name);
+        partIndex.set(name, index);
       }
+      const k = y * width + x;
+      label[k] = index + 1;
+      const at = hit.info.pickedPoint!;
+      point.set([at.x, at.y, at.z], k * 3);
+      normal.set([hit.outward.x, hit.outward.y, hit.outward.z], k * 3);
+      shading.set([hit.shaded.x, hit.shaded.y, hit.shaded.z], k * 3);
     }
     if (y % Math.max(1, Math.round(height / 10)) === 0) console.log(`  ${kind}: row ${y} of ${height}, ${((Date.now() - started) / 1000).toFixed(0)} s`);
   }
   aircraft.dispose();
   scene.dispose();
   engine.dispose();
-  return { width, height, focal: width / 2 / Math.tan(lens / 2 / DEG), eye, label, parts, point, normal, shading };
+  if (repicked > 0) console.log(`  ${kind}: ${repicked} pixels picked again on a silhouette edge (a lone back-face hit)`);
+  return { width, height, focal: width / 2 / Math.tan(lens / 2 / DEG), eye, label, parts, point, normal, shading, repicked };
 }
 
 // ---- PNG, just enough ----------------------------------------------------------------------------------------
@@ -560,6 +664,7 @@ function analyse(kind: AircraftKind, grid: Grid, options: Options, frame: { rgb:
 // ---- the report ----------------------------------------------------------------------------------------------
 
 const options = parseArgs(process.argv.slice(2));
+if (options.control) process.exit(control(options.width, options.height) ? 0 : 1);
 mkdirSync(options.outDir, { recursive: true });
 for (const kind of options.kinds) {
   console.log(`${kind}: ${options.width} x ${options.height}, lens ${cockpitHorizontalFieldOfViewForAspect(null, options.width / options.height).toFixed(3)} degrees`);
