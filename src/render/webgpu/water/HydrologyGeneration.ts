@@ -369,6 +369,35 @@ export function resolveHydrologyConfig(
   return config;
 }
 
+/**
+ * The DATA fields of a generation config: exactly the keys of
+ * `DEFAULT_HYDROLOGY_CONFIG`, nothing else. This is what may cross the worker
+ * boundary.
+ *
+ * `HydrologySystem` resolves its config from its whole options bag, so the
+ * resolved object also carries `terrainSample` and `climateSample`, which are
+ * functions, and `worldSeed`. Posting that to the worker threw a
+ * DataCloneError on the first request; the client read the throw as a dead
+ * worker and generated every region on the main thread from then on. That
+ * was true from the WebGPU switch (ee53551, 2026-08-16) until 2026-09-29, when
+ * the 4x-throttle baseline found a 317 ms main-thread task and no hydrology
+ * worker alive. The worker has its own seed (from `initialize`) and builds its
+ * own sampler, so it needs the numbers and only the numbers.
+ */
+export const HYDROLOGY_GENERATION_CONFIG_KEYS: readonly (keyof HydrologyGenerationConfig)[] =
+  Object.freeze(Object.keys(DEFAULT_HYDROLOGY_CONFIG) as (keyof HydrologyGenerationConfig)[]);
+
+export function hydrologyGenerationConfigData(
+  source: Partial<HydrologyGenerationConfig>,
+): Partial<HydrologyGenerationConfig> {
+  const data: Partial<Record<keyof HydrologyGenerationConfig, number>> = {};
+  for (const key of HYDROLOGY_GENERATION_CONFIG_KEYS) {
+    const value = source[key];
+    if (value !== undefined) data[key] = value;
+  }
+  return data;
+}
+
 export function assertHydrologyConfig(config: HydrologyGenerationConfig): void {
   finite(config.centerX, "hydrology.centerX");
   finite(config.centerZ, "hydrology.centerZ");

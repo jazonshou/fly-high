@@ -110,6 +110,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
       activeAnimals: 48,
       riverCount: 9,
       lakeCount: 3,
+      hydrologyMainThreadFallback: false,
+      hydrologyLastGenerationUsedWorker: true,
       residentTerrainPages: 42,
     collisionSamplesServedByFallback: 0,
       cloudResolutionScale: 0.5,
@@ -169,6 +171,23 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("WEBGPU · WEBGPU FORWARD / SPECTRAL / VOLUMETRIC");
     expect(markup).toContain("ULTRA · 4×256² FFT · 72 cloud steps");
     expect(markup).toContain("24,500 detail instances · 48 animals · 9 rivers / 3 lakes");
+    expect(markup).not.toContain("WATER GEN ON MAIN THREAD");
+    // A main-thread hydrology fallback is a standing hitch source: say so.
+    const fallbackMarkup = renderToStaticMarkup(createElement(Hud, {
+      state: INITIAL_VISUAL_STATE,
+      aircraft: "trainer",
+      mode: "full",
+      flightMode: "unassisted",
+      units: "aviation",
+      diagnostics: { ...diagnostics, hydrologyMainThreadFallback: true },
+      showDiagnostics: true,
+      cameraMode: "chase",
+      cameraLabel: "CHASE CAM",
+      seedLabel: "AUD1T0",
+      mouseFlight: false,
+      onRunBudgetProbe: () => undefined,
+    }));
+    expect(fallbackMarkup).toContain("9 rivers / 3 lakes · WATER GEN ON MAIN THREAD");
     expect(markup).toContain("Test GPU");
     expect(markup).toContain("17.2 ms frame");
     expect(markup).toContain("4.2 ms CPU");

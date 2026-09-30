@@ -332,6 +332,7 @@ export function Hud({
           </span>
           <span className="diagnostics__wide">
             {diagnostics.visibleInstances.toLocaleString()} detail instances · {diagnostics.activeAnimals} animals · {diagnostics.riverCount} rivers / {diagnostics.lakeCount} lakes
+            {diagnostics.hydrologyMainThreadFallback ? " · WATER GEN ON MAIN THREAD" : ""}
           </span>
           <span className="diagnostics__wide">
             {diagnostics.adapter}

@@ -69,9 +69,29 @@ const defaultWorkerFactory: WorkerFactory = () => new Worker(
 const defaultFallbackScheduler: FallbackScheduler = (callback) => setTimeout(callback, 0);
 
 /**
+ * Worker crashes (`error` / `messageerror`) survived by restarting the worker
+ * before generation falls back to the main thread for good.
+ */
+export const HYDROLOGY_WORKER_MAXIMUM_RESTARTS = 3;
+
+function isDataCloneError(error: unknown): boolean {
+  return typeof error === "object" && error !== null
+    && (error as { name?: unknown }).name === "DataCloneError";
+}
+
+/**
  * Last-request-wins scheduler. At most one request is generating and one is
  * queued. Cancelling an active worker request terminates that worker, making
  * high-speed region changes and renderer disposal genuinely cancellable.
+ *
+ * The main-thread fallback is the LAST resort, and it is deliberately not
+ * sliced into per-frame pieces: `generateHydrology` is one traced, carved
+ * pass over a 14.4 km region (~80 ms at 1x, 317 ms at Chrome's 4x throttle),
+ * and making it resumable is a rewrite of the generator. It is reached only
+ * when a worker cannot be constructed at all, or has crashed
+ * HYDROLOGY_WORKER_MAXIMUM_RESTARTS + 1 times. Until 2026-09-29 it was reached
+ * on EVERY request, because a DataCloneError on post was mistaken for a dead
+ * worker; that error is now a caller bug and fails loudly outside production.
  */
 export class HydrologyGenerationClient implements HydrologyGenerationClientLike {
   private readonly worldSeed: WorldSeed;
@@ -87,6 +107,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
   private fallbackMode = false;
   private fallbackScheduled = false;
   private disposed = false;
+  private workerRestarts = 0;
 
   constructor(options: HydrologyGenerationClientOptions) {
     this.worldSeed = options.worldSeed;
@@ -194,8 +215,21 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
         key: request.key,
         options: request.options,
       });
-    } catch {
+    } catch (error) {
       this.activeRequestId = null;
+      if (isDataCloneError(error)) {
+        // The command itself cannot cross to a worker: a caller bug, not a
+        // dead worker. Treating it as the latter is how every region ran on
+        // the main thread for six weeks without an error anywhere.
+        if (process.env.NODE_ENV !== "production") {
+          this.finishError(requestId, error as Error);
+          throw error;
+        }
+        console.error(
+          "Hydrology request could not be posted to its worker; generating on the main thread",
+          error,
+        );
+      }
       this.queuedRequestId = requestId;
       this.activateFallback();
       this.pump();
@@ -253,10 +287,33 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
 
   private readonly handleWorkerFailure = (event: ErrorEvent): void => {
     event.preventDefault();
-    this.activateFallback();
+    this.recoverFromWorkerFailure(event.message || "worker error");
   };
 
-  private readonly handleMessageFailure = (): void => this.activateFallback();
+  private readonly handleMessageFailure = (): void => this.recoverFromWorkerFailure("messageerror");
+
+  /** Restart a crashed worker a bounded number of times before falling back. */
+  private recoverFromWorkerFailure(reason: string): void {
+    if (this.disposed || this.fallbackMode) return;
+    if (this.workerRestarts >= HYDROLOGY_WORKER_MAXIMUM_RESTARTS) {
+      console.warn(
+        `Hydrology worker failed ${this.workerRestarts + 1} times (${reason}); `
+        + "generating on the main thread",
+      );
+      this.activateFallback();
+      return;
+    }
+    this.workerRestarts += 1;
+    const active = this.activeRequestId;
+    this.activeRequestId = null;
+    if (active !== null && this.pending.has(active)) {
+      // Last request wins: a newer queued request supersedes the one lost.
+      if (this.queuedRequestId === null) this.queuedRequestId = active;
+      else this.finishError(active, abortError());
+    }
+    this.restartWorker();
+    this.pump();
+  }
 
   private startWorker(): void {
     if (this.disposed || this.workerWorldSeed === undefined) return;
