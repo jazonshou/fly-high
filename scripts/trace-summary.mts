@@ -48,8 +48,13 @@ for (const e of events) {
 
 const timed = events.filter((e) => e.ph === "X" && typeof e.dur === "number");
 if (timed.length === 0) throw new Error("no complete events in trace");
-const t0 = Math.min(...timed.map((e) => e.ts));
-const t1 = Math.max(...timed.map((e) => e.ts + (e.dur ?? 0)));
+// A loop, not Math.min(...spread): a 10 s trace has ~10^6 events.
+let t0 = Infinity;
+let t1 = -Infinity;
+for (const e of timed) {
+  if (e.ts < t0) t0 = e.ts;
+  if (e.ts + e.dur! > t1) t1 = e.ts + e.dur!;
+}
 const spanUs = t1 - t0;
 
 const TOP_LEVEL = new Set([

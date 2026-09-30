@@ -1,0 +1,2664 @@
+{
+ "note": "Compact extract of throttle-probe.mts reports, baseline 2026-09-29 (tier 0 = low+performance, 1920x1080, 4x Chrome CPU throttle, M2 Pro, Playwright Chromium 1234, dev server). Full reports, V8 profiles and traces backed up under the perf engineer's scratch-backup/baseline-2026-09-29/.",
+ "runs": {
+  "r00-warmup-load-x1": {
+   "label": "r00-warmup-load-x1",
+   "scenario": "coldstart",
+   "capturedAtIso": "2026-09-30T04:48:21.917Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 1,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3687,
+   "load": {
+    "firstFrameMs": 1322.5,
+    "startScreenMs": 3473.5
+   },
+   "attractThrottled": {
+    "seconds": 9.44,
+    "frames": 1016,
+    "fpsMean": 107.49,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.3,
+     "p99": 9.3,
+     "max": 959
+    },
+    "over33": 1,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 1,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 154,
+     "maxMs": 93
+    },
+    "worker": {
+     "messagesPerS": 73.18,
+     "snapshotsPerS": 53.91,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     222,
+     222,
+     222,
+     222,
+     215
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 215,
+     "cpuFrameTime": 3.699999988079071,
+     "cpuP95Ms": 4.199999988079071,
+     "frameIntervalP95Ms": 9.199999988079071,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 2.199999988079071
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 1.7000000178813934
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 0.29999998211860657
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 0.20000001788139343
+      }
+     ],
+     "visibleInstances": 6464,
+     "activeAnimals": 16,
+     "residentTerrainPages": 92,
+     "terrainTiles": 222,
+     "triangles": 1068566,
+     "vegetationBatches": 3,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 0
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r01-control-cruise-trainer-w": {
+   "label": "r01-control-cruise-trainer-w",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T04:48:43.409Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": true,
+   "startScreenWallMs": 2954,
+   "load": {
+    "firstFrameMs": 589.6999999880791,
+    "startScreenMs": 2726.2999999821186
+   },
+   "unthrottled": {
+    "seconds": 30,
+    "frames": 3601,
+    "fpsMean": 120,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 10,
+     "p99": 10.3,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 59.5,
+     "snapshotsPerS": 51.97,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     218,
+     218,
+     218,
+     218,
+     218
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 218,
+     "cpuFrameTime": 3.7999999821186066,
+     "cpuP95Ms": 4.4000000059604645,
+     "frameIntervalP95Ms": 10,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 2.300000011920929
+      },
+      {
+       "name": "hdr-present",
+       "p95Ms": 2.300000011920929
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 0.5
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 0.30000001192092896
+      }
+     ],
+     "visibleInstances": 42,
+     "activeAnimals": 16,
+     "residentTerrainPages": 126,
+     "terrainTiles": 222,
+     "triangles": 1081574,
+     "vegetationBatches": 0,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 0
+    }
+   },
+   "throttled": {
+    "seconds": 30.01,
+    "frames": 1533,
+    "fpsMean": 51.05,
+    "fpsMedian": 51,
+    "intervalMs": {
+     "p50": 17.4,
+     "p95": 26.4,
+     "p99": 33.1,
+     "max": 358.7
+    },
+    "over33": 10,
+    "over50": 2,
+    "over66": 2,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 420,
+     "maxMs": 341
+    },
+    "worker": {
+     "messagesPerS": 56.41,
+     "snapshotsPerS": 52.21,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     212,
+     212,
+     212,
+     212,
+     212
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 212,
+     "cpuFrameTime": 20.599999994039536,
+     "cpuP95Ms": 21,
+     "frameIntervalP95Ms": 27.900000005960464,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 10.899999976158142
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 9.400000005960464
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 1.5
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.399999976158142
+      }
+     ],
+     "visibleInstances": 42,
+     "activeAnimals": 16,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224,
+     "triangles": 1080854,
+     "vegetationBatches": 0,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 1,
+     "hitchCount": 38
+    }
+   },
+   "traceFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/baseline-0929-2148/r01-control-cruise-trainer-w.trace.json",
+   "profileFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/baseline-0929-2148/r01-control-cruise-trainer-w.cpuprofile",
+   "workerThrottle": [
+    {
+     "url": "detail.worker.ts?worker_file&type=module",
+     "rate": 4,
+     "ok": false,
+     "error": "Operation is only supported for pages, not workers"
+    },
+    {
+     "url": "simulation.worker.ts?worker_file&type=module",
+     "rate": 4,
+     "ok": false,
+     "error": "Operation is only supported for pages, not workers"
+    },
+    {
+     "url": "materialSynthesis.worker.ts?worker_file&type=module",
+     "rate": 4,
+     "ok": false,
+     "error": "Operation is only supported for pages, not workers"
+    },
+    {
+     "url": "detail.worker.ts?worker_file&type=module",
+     "rate": 1,
+     "ok": false,
+     "error": "Operation is only supported for pages, not workers"
+    },
+    {
+     "url": "simulation.worker.ts?worker_file&type=module",
+     "rate": 1,
+     "ok": false,
+     "error": "Operation is only supported for pages, not workers"
+    },
+    {
+     "url": "materialSynthesis.worker.ts?worker_file&type=module",
+     "rate": 1,
+     "ok": false,
+     "error": "Operation is only supported for pages, not workers"
+    }
+   ],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r03-cruise-airliner-w": {
+   "label": "r03-cruise-airliner-w",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T04:50:48.386Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2924,
+   "load": {
+    "firstFrameMs": 598.0999999940395,
+    "startScreenMs": 2723.300000011921
+   },
+   "unthrottled": {
+    "seconds": 30.01,
+    "frames": 3594,
+    "fpsMean": 119.74,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.3,
+     "max": 76.5
+    },
+    "over33": 1,
+    "over50": 1,
+    "over66": 1,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 78,
+     "maxMs": 78
+    },
+    "worker": {
+     "messagesPerS": 70.32,
+     "snapshotsPerS": 51.99,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     170,
+     164,
+     163,
+     164,
+     164
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "balanced",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "balanced",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 164,
+     "cpuFrameTime": 3.2999999821186066,
+     "cpuP95Ms": 4.700000017881393,
+     "frameIntervalP95Ms": 10.099999994039536,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 2
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 1.9000000059604645
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 0.4000000059604645
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 0.30000001192092896
+      }
+     ],
+     "visibleInstances": 4211,
+     "activeAnimals": 16,
+     "residentTerrainPages": 144,
+     "terrainTiles": 222,
+     "triangles": 1046928,
+     "vegetationBatches": 2,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 1
+    }
+   },
+   "throttled": {
+    "seconds": 30.01,
+    "frames": 1481,
+    "fpsMean": 49.32,
+    "fpsMedian": 49,
+    "intervalMs": {
+     "p50": 17.5,
+     "p95": 26.4,
+     "p99": 33.6,
+     "max": 734.8
+    },
+    "over33": 18,
+    "over50": 3,
+    "over66": 2,
+    "over100": 2,
+    "over250": 2,
+    "over400": 1,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 1009,
+     "maxMs": 697
+    },
+    "worker": {
+     "messagesPerS": 70.61,
+     "snapshotsPerS": 52.29,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     169,
+     169,
+     170,
+     170,
+     170
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 170,
+     "cpuFrameTime": 21.399999976158142,
+     "cpuP95Ms": 20.799999982118607,
+     "frameIntervalP95Ms": 26.19999998807907,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 10.900000005960464
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 9.5
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 2
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.5
+      }
+     ],
+     "visibleInstances": 1149,
+     "activeAnimals": 16,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224,
+     "triangles": 1054520,
+     "vegetationBatches": 2,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 20
+    }
+   },
+   "traceFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/baseline-0929-2148/r03-cruise-airliner-w.trace.json",
+   "profileFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/baseline-0929-2148/r03-cruise-airliner-w.cpuprofile",
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r04-takeoff-trainer-w": {
+   "label": "r04-takeoff-trainer-w",
+   "scenario": "takeoff",
+   "capturedAtIso": "2026-09-30T04:52:51.093Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3515,
+   "load": {
+    "firstFrameMs": 884.2000000178814,
+    "startScreenMs": 3268.9000000059605
+   },
+   "takeoffEvents": {
+    "rotate": 55.79,
+    "liftoff": 86.83,
+    "timeout": null,
+    "crashed": 90.03
+   },
+   "throttled": {
+    "seconds": 90.01,
+    "frames": 2580,
+    "fpsMean": 28.65,
+    "fpsMedian": 29,
+    "intervalMs": {
+     "p50": 33.5,
+     "p95": 42.8,
+     "p99": 48.5,
+     "max": 900.3
+    },
+    "over33": 1377,
+    "over50": 15,
+    "over66": 3,
+    "over100": 3,
+    "over250": 2,
+    "over400": 2,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 67,
+     "maxMs": 67
+    },
+    "worker": {
+     "messagesPerS": 54.21,
+     "snapshotsPerS": 52.32,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     252,
+     252,
+     252,
+     252,
+     252
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 252,
+     "cpuFrameTime": 31.100000023841858,
+     "cpuP95Ms": 34.900000005960464,
+     "frameIntervalP95Ms": 42.5,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 19.400000005960464
+      },
+      {
+       "name": "hdr-present",
+       "p95Ms": 13.800000011920929
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 2.300000011920929
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.300000011920929
+      }
+     ],
+     "visibleInstances": 15954,
+     "activeAnimals": 16,
+     "residentTerrainPages": 111,
+     "terrainTiles": 223,
+     "triangles": 1263150,
+     "vegetationBatches": 29,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 73,
+     "hitchCount": 599
+    }
+   },
+   "traceFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/baseline-0929-2148/r04-takeoff-trainer-w.trace.json",
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r05-takeoff-airliner-w": {
+   "label": "r05-takeoff-airliner-w",
+   "scenario": "takeoff",
+   "capturedAtIso": "2026-09-30T04:54:53.101Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2774,
+   "load": {
+    "firstFrameMs": 503.69999998807907,
+    "startScreenMs": 2586.800000011921
+   },
+   "takeoffEvents": {
+    "rotate": 65.29,
+    "liftoff": 66.84,
+    "timeout": null
+   },
+   "throttled": {
+    "seconds": 127.17,
+    "frames": 4335,
+    "fpsMean": 34.08,
+    "fpsMedian": 31,
+    "intervalMs": {
+     "p50": 26.5,
+     "p95": 41.9,
+     "p99": 43.4,
+     "max": 482.1
+    },
+    "over33": 1239,
+    "over50": 17,
+    "over66": 5,
+    "over100": 4,
+    "over250": 3,
+    "over400": 1,
+    "longTasks": {
+     "count": 4,
+     "totalMs": 835,
+     "maxMs": 354
+    },
+    "worker": {
+     "messagesPerS": 58.69,
+     "snapshotsPerS": 52.29,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     279,
+     279,
+     278,
+     279,
+     284
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 284,
+     "cpuFrameTime": 21.099999994039536,
+     "cpuP95Ms": 26.200000017881393,
+     "frameIntervalP95Ms": 31.100000023841858,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 15.400000005960464
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 10.800000011920929
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 2
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.4000000059604645
+      }
+     ],
+     "visibleInstances": 4440,
+     "activeAnimals": 16,
+     "residentTerrainPages": 144,
+     "terrainTiles": 222,
+     "triangles": 1208252,
+     "vegetationBatches": 19,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 2,
+     "hitchCount": 141
+    }
+   },
+   "traceFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/baseline-0929-2148/r05-takeoff-airliner-w.trace.json",
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r06-latency-trainer-w": {
+   "label": "r06-latency-trainer-w",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T04:57:31.345Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2837,
+   "load": {
+    "firstFrameMs": 552.5999999940395,
+    "startScreenMs": 2636
+   },
+   "sampler": {
+    "surfaceNodes": 7,
+    "ok": true
+   },
+   "latencyWindow": {
+    "seconds": 37.98,
+    "frames": 1883,
+    "fpsMean": 49.55,
+    "fpsMedian": 50,
+    "intervalMs": {
+     "p50": 17.6,
+     "p95": 26.6,
+     "p99": 33.6,
+     "max": 350.3
+    },
+    "over33": 23,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 339,
+     "maxMs": 339
+    },
+    "worker": {
+     "messagesPerS": 58.89,
+     "snapshotsPerS": 52.42,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 15.6,
+      "keyToSnapshotMs": 79.1,
+      "keyToRenderMs": 13.1,
+      "keyToDisplayMs": 34.6
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 2.6,
+      "keyToSnapshotMs": 52.2,
+      "keyToRenderMs": 1.1,
+      "keyToDisplayMs": 2
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 3.8,
+      "keyToSnapshotMs": 21.7,
+      "keyToRenderMs": 2,
+      "keyToDisplayMs": 15.9
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 11.1,
+      "keyToSnapshotMs": 62.9,
+      "keyToRenderMs": 9,
+      "keyToDisplayMs": 10
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 15.8,
+      "keyToSnapshotMs": 32,
+      "keyToRenderMs": 14.2,
+      "keyToDisplayMs": 22.7
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 15.7,
+      "keyToSnapshotMs": 48.9,
+      "keyToRenderMs": 14.3,
+      "keyToDisplayMs": 27.6
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 14.7,
+      "keyToSnapshotMs": 33.6,
+      "keyToRenderMs": 14.5,
+      "keyToDisplayMs": 29
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 14.2,
+      "keyToSnapshotMs": 55.5,
+      "keyToRenderMs": 12.9,
+      "keyToDisplayMs": 27.1
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 18.5,
+      "keyToSnapshotMs": 35.3,
+      "keyToRenderMs": 17.3,
+      "keyToDisplayMs": 27.6
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 11.4,
+      "keyToSnapshotMs": 58.3,
+      "keyToRenderMs": 11.2,
+      "keyToDisplayMs": 29.1
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 7.6,
+      "keyToSnapshotMs": 27.7,
+      "keyToRenderMs": 5.9,
+      "keyToDisplayMs": 25.1
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 1.2,
+      "keyToSnapshotMs": 38.4,
+      "keyToRenderMs": 0.2,
+      "keyToDisplayMs": 12.6
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 1.2,
+      "keyToSnapshotMs": 20.6,
+      "keyToRenderMs": 0.9,
+      "keyToDisplayMs": 14.7
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 10.8,
+      "keyToSnapshotMs": 52.9,
+      "keyToRenderMs": 9.9,
+      "keyToDisplayMs": 22.8
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 0.6,
+      "keyToSnapshotMs": 19.9,
+      "keyToRenderMs": 17.7,
+      "keyToDisplayMs": 35.9
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 8.6,
+      "keyToSnapshotMs": 54.5,
+      "keyToRenderMs": 4.7,
+      "keyToDisplayMs": 5
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 7.6,
+      "keyToSnapshotMs": 22.5,
+      "keyToRenderMs": 7.4,
+      "keyToDisplayMs": 18.8
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 7.4,
+      "keyToSnapshotMs": 47.8,
+      "keyToRenderMs": 5.9,
+      "keyToDisplayMs": 19.5
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 3.4,
+      "keyToSnapshotMs": 26,
+      "keyToRenderMs": 3.2,
+      "keyToDisplayMs": 18.5
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 12.3,
+      "keyToSnapshotMs": 59.9,
+      "keyToRenderMs": 10.8,
+      "keyToDisplayMs": 29.8
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "measured": 20,
+     "displayMedianMs": 22.7,
+     "displayP90Ms": 29.8,
+     "displayMaxMs": 35.9
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r07-latency-airliner-w": {
+   "label": "r07-latency-airliner-w",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T04:58:38.538Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2837,
+   "load": {
+    "firstFrameMs": 536,
+    "startScreenMs": 2706.2999999821186
+   },
+   "sampler": {
+    "surfaceNodes": 18,
+    "ok": true
+   },
+   "latencyWindow": {
+    "seconds": 38.22,
+    "frames": 1693,
+    "fpsMean": 44.27,
+    "fpsMedian": 44,
+    "intervalMs": {
+     "p50": 24.1,
+     "p95": 33.3,
+     "p99": 34.9,
+     "max": 307.4
+    },
+    "over33": 79,
+    "over50": 2,
+    "over66": 2,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 359,
+     "maxMs": 288
+    },
+    "worker": {
+     "messagesPerS": 68.23,
+     "snapshotsPerS": 52.33,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 9.8,
+      "keyToSnapshotMs": 54.6,
+      "keyToRenderMs": 8.6,
+      "keyToDisplayMs": 24.1
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 1.7,
+      "keyToSnapshotMs": 50.5,
+      "keyToRenderMs": 18,
+      "keyToDisplayMs": 37.3
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 19.2,
+      "keyToSnapshotMs": 37.3,
+      "keyToRenderMs": 16.8,
+      "keyToDisplayMs": 36.1
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 6.8,
+      "keyToSnapshotMs": 52.9,
+      "keyToRenderMs": 5.6,
+      "keyToDisplayMs": 22
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 6.7,
+      "keyToSnapshotMs": 32.3,
+      "keyToRenderMs": 3.1,
+      "keyToDisplayMs": 22.9
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 4.5,
+      "keyToSnapshotMs": 63.4,
+      "keyToRenderMs": 3.1,
+      "keyToDisplayMs": 19.2
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 16.8,
+      "keyToSnapshotMs": 36.4,
+      "keyToRenderMs": 14.5,
+      "keyToDisplayMs": 34
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 12,
+      "keyToSnapshotMs": 74.2,
+      "keyToRenderMs": 10.8,
+      "keyToDisplayMs": 28.4
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 6.4,
+      "keyToSnapshotMs": 28.2,
+      "keyToRenderMs": 24.9,
+      "keyToDisplayMs": 48.5
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 14.7,
+      "keyToSnapshotMs": 63.6,
+      "keyToRenderMs": 12.3,
+      "keyToDisplayMs": 35.9
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 2.8,
+      "keyToSnapshotMs": 29.1,
+      "keyToRenderMs": 0.9,
+      "keyToDisplayMs": 3.2
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 15.1,
+      "keyToSnapshotMs": 67.1,
+      "keyToRenderMs": 14,
+      "keyToDisplayMs": 35.3
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 6.3,
+      "keyToSnapshotMs": 27.5,
+      "keyToRenderMs": 3.2,
+      "keyToDisplayMs": 22.9
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 20.3,
+      "keyToSnapshotMs": 66,
+      "keyToRenderMs": 15.9,
+      "keyToDisplayMs": 38.1
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 4,
+      "keyToSnapshotMs": 27.7,
+      "keyToRenderMs": 24.1,
+      "keyToDisplayMs": 24.4
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 0.3,
+      "keyToSnapshotMs": 72.5,
+      "keyToRenderMs": 25,
+      "keyToDisplayMs": 40.6
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 12.2,
+      "keyToSnapshotMs": 35.4,
+      "keyToRenderMs": 10.4,
+      "keyToDisplayMs": 30.6
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 17.5,
+      "keyToSnapshotMs": 64.4,
+      "keyToRenderMs": 16.5,
+      "keyToDisplayMs": 36.4
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 17.3,
+      "keyToSnapshotMs": 40.1,
+      "keyToRenderMs": 14.7,
+      "keyToDisplayMs": 33.4
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 9.5,
+      "keyToSnapshotMs": 49.8,
+      "keyToRenderMs": 7.8,
+      "keyToDisplayMs": 23.7
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "measured": 20,
+     "displayMedianMs": 30.6,
+     "displayP90Ms": 38.1,
+     "displayMaxMs": 48.5
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r08-coldstart-trainer-w": {
+   "label": "r08-coldstart-trainer-w",
+   "scenario": "coldstart",
+   "capturedAtIso": "2026-09-30T04:59:47.305Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 10324,
+   "load": {
+    "firstFrameMs": 1199.199999988079,
+    "startScreenMs": 9655
+   },
+   "attractThrottled": {
+    "seconds": 15,
+    "frames": 721,
+    "fpsMean": 48,
+    "fpsMedian": 49,
+    "intervalMs": {
+     "p50": 18.1,
+     "p95": 31.6,
+     "p99": 34.3,
+     "max": 91.5
+    },
+    "over33": 14,
+    "over50": 2,
+    "over66": 2,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 160,
+     "maxMs": 83
+    },
+    "worker": {
+     "messagesPerS": 65.41,
+     "snapshotsPerS": 52.47,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     215,
+     215,
+     221,
+     221,
+     221
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 221,
+     "cpuFrameTime": 18.80000001192093,
+     "cpuP95Ms": 19.899999976158142,
+     "frameIntervalP95Ms": 24.599999994039536,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 3,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "terrain-page-requests",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 10.900000005960464
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 8.799999982118607
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.5
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 1.0999999940395355
+      }
+     ],
+     "visibleInstances": 4908,
+     "activeAnimals": 16,
+     "residentTerrainPages": 97,
+     "terrainTiles": 223,
+     "triangles": 1077598,
+     "vegetationBatches": 3,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 7
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r09-coldstart-airliner-w": {
+   "label": "r09-coldstart-airliner-w",
+   "scenario": "coldstart",
+   "capturedAtIso": "2026-09-30T05:00:21.395Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 10081,
+   "load": {
+    "firstFrameMs": 1039.5999999940395,
+    "startScreenMs": 9495
+   },
+   "attractThrottled": {
+    "seconds": 15,
+    "frames": 600,
+    "fpsMean": 39.94,
+    "fpsMedian": 39,
+    "intervalMs": {
+     "p50": 24.9,
+     "p95": 33.5,
+     "p99": 35,
+     "max": 358.6
+    },
+    "over33": 31,
+    "over50": 3,
+    "over66": 3,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 3,
+     "totalMs": 514,
+     "maxMs": 338
+    },
+    "worker": {
+     "messagesPerS": 75.47,
+     "snapshotsPerS": 52.27,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     284,
+     284,
+     284,
+     284,
+     284
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 0,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 284,
+     "cpuFrameTime": 20.600000023841858,
+     "cpuP95Ms": 23.80000001192093,
+     "frameIntervalP95Ms": 28.200000017881393,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 3,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "terrain-page-requests",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 11.599999994039536
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 8.5
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.300000011920929
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 1.0999999940395355
+      }
+     ],
+     "visibleInstances": 42,
+     "activeAnimals": 16,
+     "residentTerrainPages": 144,
+     "terrainTiles": 223,
+     "triangles": 1097176,
+     "vegetationBatches": 0,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 47
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r10-control-cruise-trainer-w": {
+   "label": "r10-control-cruise-trainer-w",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T05:00:54.933Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3059,
+   "load": {
+    "firstFrameMs": 689.8000000119209,
+    "startScreenMs": 2867.5
+   },
+   "unthrottled": {
+    "seconds": 30,
+    "frames": 3601,
+    "fpsMean": 120,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.3,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 59.37,
+     "snapshotsPerS": 51.9,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     218,
+     218,
+     218,
+     218,
+     218
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 218,
+     "cpuFrameTime": 3.5,
+     "cpuP95Ms": 3.800000011920929,
+     "frameIntervalP95Ms": 9.900000005960464,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 1.800000011920929
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 1.5999999940395355
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 0.30000001192092896
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 0.29999998211860657
+      }
+     ],
+     "visibleInstances": 42,
+     "activeAnimals": 16,
+     "residentTerrainPages": 126,
+     "terrainTiles": 222,
+     "triangles": 1081574,
+     "vegetationBatches": 0,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 0
+    }
+   },
+   "throttled": {
+    "seconds": 29.99,
+    "frames": 1577,
+    "fpsMean": 52.55,
+    "fpsMedian": 55,
+    "intervalMs": {
+     "p50": 17,
+     "p95": 26.4,
+     "p99": 33.4,
+     "max": 367.9
+    },
+    "over33": 15,
+    "over50": 2,
+    "over66": 2,
+    "over100": 2,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 464,
+     "maxMs": 340
+    },
+    "worker": {
+     "messagesPerS": 56.45,
+     "snapshotsPerS": 52.31,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     212,
+     212,
+     212,
+     212,
+     212
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 212,
+     "cpuFrameTime": 15,
+     "cpuP95Ms": 17.5,
+     "frameIntervalP95Ms": 22.299999982118607,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 8.200000017881393
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 6.9000000059604645
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 1.2999999821186066
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.2000000178813934
+      }
+     ],
+     "visibleInstances": 42,
+     "activeAnimals": 16,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224,
+     "triangles": 1080854,
+     "vegetationBatches": 0,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 2
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r06b-latency-trainer": {
+   "label": "r06b-latency-trainer",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T05:02:58.900Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3571,
+   "load": {
+    "firstFrameMs": 1155.800000011921,
+    "startScreenMs": 3352.9000000059605
+   },
+   "sampler": {
+    "surfaceNodes": 7,
+    "ok": true
+   },
+   "latencyWindow": {
+    "seconds": 38.07,
+    "frames": 1983,
+    "fpsMean": 52.07,
+    "fpsMedian": 53,
+    "intervalMs": {
+     "p50": 17.2,
+     "p95": 26.2,
+     "p99": 33.2,
+     "max": 366.8
+    },
+    "over33": 13,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 345,
+     "maxMs": 345
+    },
+    "worker": {
+     "messagesPerS": 58.64,
+     "snapshotsPerS": 52.12,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 24.7,
+      "keyToSnapshotMs": 78.1,
+      "keyToRenderMs": 98.5,
+      "keyToDisplayMs": 118,
+      "noise": 0,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 11.5,
+      "keyToSnapshotMs": 55.9,
+      "keyToRenderMs": 75.4,
+      "keyToDisplayMs": 95.5,
+      "noise": 0.0004184377155759932,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 7.1,
+      "keyToSnapshotMs": 25.4,
+      "keyToRenderMs": 84.1,
+      "keyToDisplayMs": 98.9,
+      "noise": 5.6855413124635816e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 2.5,
+      "keyToSnapshotMs": 48.7,
+      "keyToRenderMs": 66.4,
+      "keyToDisplayMs": 82.6,
+      "noise": 0.0008753113013073629,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 2.6,
+      "keyToSnapshotMs": 84.8,
+      "keyToRenderMs": null,
+      "keyToDisplayMs": null,
+      "noise": 6.4591909297202765e-06,
+      "causal": false
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 14.2,
+      "keyToSnapshotMs": 73,
+      "keyToRenderMs": 89.4,
+      "keyToDisplayMs": 115.7,
+      "noise": 0.00022413475733067643,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 14.2,
+      "keyToSnapshotMs": 33,
+      "keyToRenderMs": 89.5,
+      "keyToDisplayMs": 106.1,
+      "noise": 3.792777862312441e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 15.1,
+      "keyToSnapshotMs": 77.7,
+      "keyToRenderMs": 98.7,
+      "keyToDisplayMs": 113.3,
+      "noise": 0.0007354949502852886,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 8.4,
+      "keyToSnapshotMs": 71.9,
+      "keyToRenderMs": 91.1,
+      "keyToDisplayMs": 105.4,
+      "noise": 7.894273526976286e-06,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 11.1,
+      "keyToSnapshotMs": 50.1,
+      "keyToRenderMs": 67.4,
+      "keyToDisplayMs": 85.8,
+      "noise": 0.0003040488900306025,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 15.6,
+      "keyToSnapshotMs": 53,
+      "keyToRenderMs": 108.6,
+      "keyToDisplayMs": 108.7,
+      "noise": 2.25121443308959e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 2.6,
+      "keyToSnapshotMs": 45.1,
+      "keyToRenderMs": 77.8,
+      "keyToDisplayMs": 96.9,
+      "noise": 0.00048823772411437944,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 1,
+      "keyToSnapshotMs": 35.6,
+      "keyToRenderMs": 75.6,
+      "keyToDisplayMs": 89.1,
+      "noise": 1.569942188179023e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 14.7,
+      "keyToSnapshotMs": 49.2,
+      "keyToRenderMs": 69.8,
+      "keyToDisplayMs": 70.5,
+      "noise": 0.00025991170802395873,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 16.4,
+      "keyToSnapshotMs": 54.9,
+      "keyToRenderMs": 87.7,
+      "keyToDisplayMs": 99.7,
+      "noise": 1.9396839414830263e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 3.6,
+      "keyToSnapshotMs": 39.7,
+      "keyToRenderMs": 55.4,
+      "keyToDisplayMs": 79.5,
+      "noise": 0.0003794045259450148,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 16.2,
+      "keyToSnapshotMs": 33.7,
+      "keyToRenderMs": 88.4,
+      "keyToDisplayMs": 88.6,
+      "noise": 2.0051054865529317e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 103.4,
+      "keyToSnapshotMs": 141.1,
+      "keyToRenderMs": null,
+      "keyToDisplayMs": null,
+      "noise": 0.00036722955844925185,
+      "causal": false
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 9.5,
+      "keyToSnapshotMs": 28.2,
+      "keyToRenderMs": 62.4,
+      "keyToDisplayMs": 84,
+      "noise": 1.816048128487407e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 14.4,
+      "keyToSnapshotMs": 48,
+      "keyToRenderMs": 62.7,
+      "keyToDisplayMs": 76.6,
+      "noise": 0.0003210865561276907,
+      "causal": true
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "causal": 18,
+     "displayMedianMs": 95.5,
+     "displayP90Ms": 115.7,
+     "displayMaxMs": 118,
+     "snapshotMedianMs": 49.2,
+     "snapshotMaxMs": 141.1
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r07b-latency-airliner": {
+   "label": "r07b-latency-airliner",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T05:04:06.926Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2757,
+   "load": {
+    "firstFrameMs": 522.6999999880791,
+    "startScreenMs": 2568.4000000059605
+   },
+   "sampler": {
+    "surfaceNodes": 18,
+    "ok": true
+   },
+   "latencyWindow": {
+    "seconds": 38,
+    "frames": 1755,
+    "fpsMean": 46.15,
+    "fpsMedian": 48,
+    "intervalMs": {
+     "p50": 23.2,
+     "p95": 33.1,
+     "p99": 34.9,
+     "max": 310.1
+    },
+    "over33": 67,
+    "over50": 4,
+    "over66": 3,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 3,
+     "totalMs": 442,
+     "maxMs": 288
+    },
+    "worker": {
+     "messagesPerS": 69.07,
+     "snapshotsPerS": 52.31,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 2.2,
+      "keyToSnapshotMs": 42.9,
+      "keyToRenderMs": 60.7,
+      "keyToDisplayMs": 78.3,
+      "noise": 0,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 15.6,
+      "keyToSnapshotMs": 56.6,
+      "keyToRenderMs": 93.9,
+      "keyToDisplayMs": 107.5,
+      "noise": 0.0002547708208364696,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 6.7,
+      "keyToSnapshotMs": 29,
+      "keyToRenderMs": 131.7,
+      "keyToDisplayMs": 152.7,
+      "noise": 0.000207416457713272,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 10.5,
+      "keyToSnapshotMs": 65.4,
+      "keyToRenderMs": 95.8,
+      "keyToDisplayMs": 110.1,
+      "noise": 0.001307928430461125,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 10,
+      "keyToSnapshotMs": 27,
+      "keyToRenderMs": 109.9,
+      "keyToDisplayMs": 128.6,
+      "noise": 0.00011540733187231922,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 8.8,
+      "keyToSnapshotMs": 80.7,
+      "keyToRenderMs": 99.3,
+      "keyToDisplayMs": 113.3,
+      "noise": 0.0006203707225944655,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 11.3,
+      "keyToSnapshotMs": 30.6,
+      "keyToRenderMs": 91,
+      "keyToDisplayMs": 101.5,
+      "noise": 9.602446835899059e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 11,
+      "keyToSnapshotMs": 50,
+      "keyToRenderMs": 65.8,
+      "keyToDisplayMs": 88.4,
+      "noise": 0.0008727104309071976,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 10.7,
+      "keyToSnapshotMs": 37.6,
+      "keyToRenderMs": 102.2,
+      "keyToDisplayMs": 123.5,
+      "noise": 0.00011313622559061542,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 9.5,
+      "keyToSnapshotMs": 60.1,
+      "keyToRenderMs": 104.9,
+      "keyToDisplayMs": 106.5,
+      "noise": 0.001447944937112311,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 6.9,
+      "keyToSnapshotMs": 27.5,
+      "keyToRenderMs": 470,
+      "keyToDisplayMs": 485.1,
+      "noise": 0.016471519997471873,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 2.6,
+      "keyToSnapshotMs": 59.8,
+      "keyToRenderMs": 83.5,
+      "keyToDisplayMs": 115.5,
+      "noise": 0.0032346766787290093,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 13.4,
+      "keyToSnapshotMs": 36.8,
+      "keyToRenderMs": 453.1,
+      "keyToDisplayMs": 474.6,
+      "noise": 0.017760804627330096,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 2.3,
+      "keyToSnapshotMs": 41.8,
+      "keyToRenderMs": 78.7,
+      "keyToDisplayMs": 91.5,
+      "noise": 0.00166844794424037,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 5.7,
+      "keyToSnapshotMs": 24.3,
+      "keyToRenderMs": 107.7,
+      "keyToDisplayMs": 119.4,
+      "noise": 0.00011733628092880366,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 11.6,
+      "keyToSnapshotMs": 50.8,
+      "keyToRenderMs": 65.8,
+      "keyToDisplayMs": 87.3,
+      "noise": 0.0013837773950804433,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 18.3,
+      "keyToSnapshotMs": 44.2,
+      "keyToRenderMs": 127.4,
+      "keyToDisplayMs": 142.7,
+      "noise": 0.00015589403325400042,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 14.9,
+      "keyToSnapshotMs": 51.3,
+      "keyToRenderMs": 67.5,
+      "keyToDisplayMs": 85.2,
+      "noise": 0.0016786296290991487,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 8.2,
+      "keyToSnapshotMs": 29.1,
+      "keyToRenderMs": 89.7,
+      "keyToDisplayMs": 109.3,
+      "noise": 0.00011558174464543214,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 24.6,
+      "keyToSnapshotMs": 139.1,
+      "keyToRenderMs": 163.9,
+      "keyToDisplayMs": 164.8,
+      "noise": 0.001349675726418198,
+      "causal": true
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "causal": 20,
+     "displayMedianMs": 110.1,
+     "displayP90Ms": 164.8,
+     "displayMaxMs": 485.1,
+     "snapshotMedianMs": 42.9,
+     "snapshotMaxMs": 139.1
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "r04b-takeoff-trainer": {
+   "label": "r04b-takeoff-trainer",
+   "scenario": "takeoff",
+   "capturedAtIso": "2026-09-30T05:06:03.099Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3460,
+   "load": {
+    "firstFrameMs": 1050.2999999821186,
+    "startScreenMs": 3256.7999999821186
+   },
+   "takeoffEvents": {
+    "rotate": 20.14,
+    "liftoff": 35.98,
+    "timeout": null
+   },
+   "throttled": {
+    "seconds": 96.02,
+    "frames": 3428,
+    "fpsMean": 35.69,
+    "fpsMedian": 37,
+    "intervalMs": {
+     "p50": 25.8,
+     "p95": 41.8,
+     "p99": 49.1,
+     "max": 140.9
+    },
+    "over33": 820,
+    "over50": 22,
+    "over66": 2,
+    "over100": 1,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 4,
+     "totalMs": 280,
+     "maxMs": 115
+    },
+    "worker": {
+     "messagesPerS": 56.26,
+     "snapshotsPerS": 52.21,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     214,
+     214,
+     214,
+     214,
+     214
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 214,
+     "cpuFrameTime": 17.900000005960464,
+     "cpuP95Ms": 21.5,
+     "frameIntervalP95Ms": 27.69999998807907,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "renderPixels": 999750,
+     "topPassesByCpuMs": [
+      {
+       "name": "hdr-present",
+       "p95Ms": 10.199999988079071
+      },
+      {
+       "name": "world-page-visibility",
+       "p95Ms": 8.099999994039536
+      },
+      {
+       "name": "flight-presentation",
+       "p95Ms": 1.5
+      },
+      {
+       "name": "spectral-ocean-compute",
+       "p95Ms": 1.2000000178813934
+      }
+     ],
+     "visibleInstances": 42,
+     "activeAnimals": 16,
+     "residentTerrainPages": 143,
+     "terrainTiles": 222,
+     "triangles": 1146390,
+     "vegetationBatches": 0,
+     "pendingTerrainPages": 0,
+     "pendingDetailWork": 0,
+     "hitchCount": 35
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  }
+ }
+}
