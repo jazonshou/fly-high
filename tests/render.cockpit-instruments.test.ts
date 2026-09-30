@@ -23,6 +23,32 @@ import {
   turnedClockwise,
 } from "./support/cockpitProjection";
 import { flyAt } from "./support/visualStateFromSimulator";
+import { TRAINER_BEZEL, trainerDialPlacements } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
+
+/**
+ * A Cessna dial face's front centre, off the BUILT faces mesh: the front vertex (shaded straight toward the pilot) nearest
+ * the dial's axis. The face is a disc whose front is a fan from its centre, so that vertex IS the centre.
+ */
+function builtFaceCentre(fixture: { mesh(name: string): AbstractMesh }, dial: string): Vector3 {
+  const placement = trainerDialPlacements().find((p) => p.name === dial)!;
+  const mesh = fixture.mesh("trainer-dial-faces");
+  const positions = worldVertices(mesh);
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  let best: Vector3 | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  positions.forEach((p, i) => {
+    const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
+    if (Vector3.Dot(n, placement.normal) < 0.999) return;
+    const off = p.subtract(placement.centre);
+    const radial = off.subtract(placement.normal.scale(Vector3.Dot(off, placement.normal))).length();
+    if (radial < bestDistance) {
+      bestDistance = radial;
+      best = p;
+    }
+  });
+  expect(bestDistance, `${dial}: a face vertex on the dial's axis`).toBeLessThan(1e-6);
+  return best!;
+}
 
 /**
  * THE INSTRUMENTS MOVE, and every one moves the right way ROUND, held to what the
@@ -227,15 +253,15 @@ describe("the Cessna's needles", () => {
   beforeAll(() => { fixture = buildFixture("trainer"); });
   afterAll(() => disposeFixture(fixture));
 
-  it("has each needle's origin on its gauge's centre, with local X the dial's normal, before and after it turns", () => {
+  it("has each needle's origin on its face's centre, with local X the dial's normal, before and after it turns", () => {
     const { normal } = dialPlane();
     for (const dial of ["airspeed", "altimeter"]) {
-      const gauge = fixture.mesh(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
+      const face = builtFaceCentre(fixture, dial);
       for (const readings of [{}, { airspeed: 70, altitude: 900 }]) {
         show(readings);
         const { mesh, hub } = needle(dial);
-        // 1 mm: the origin is the gauge's centre, where a needle turns about
-        expect(Vector3.Distance(hub, gauge), `${dial}: needle origin against its gauge's centre`).toBeLessThan(1e-3);
+        // on the face's front, at its centre, where a needle turns about
+        expect(Vector3.Distance(hub, face), `${dial}: needle origin against its face's centre`).toBeLessThan(1e-4);
         const localX = Vector3.TransformNormal(new Vector3(1, 0, 0), mesh.getWorldMatrix()).normalize();
         expect(Vector3.Dot(localX, normal), `${dial}: needle local X against the dial's normal`).toBeGreaterThan(0.99999);
       }
@@ -252,9 +278,10 @@ describe("the Cessna's needles", () => {
         const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02);
         const tip = far.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / far.length);
         const v = tip.subtract(hub);
-        // in the dial's plane the pointer is straight up the face; out of it, it stands 4.5 mm in front of the origin
+        // in the dial's plane the pointer is straight up the face; out of it, it stands 0.9 mm in front of the origin (on
+        // the face's front): 0.3 mm clear of the face and half its 1.2 mm thickness, inside the bezel's 2 mm well
         expect(Vector3.Dot(v, up), `${dial}: pointer length up the face`).toBeCloseTo(0.028, 4);
-        expect(Vector3.Dot(v, normal), `${dial}: stands in front of its origin, toward the pilot`).toBeCloseTo(0.0045, 4);
+        expect(Vector3.Dot(v, normal), `${dial}: stands in front of its origin, toward the pilot`).toBeCloseTo(0.0009, 5);
         const across = v.subtract(up.scale(Vector3.Dot(v, up))).subtract(normal.scale(Vector3.Dot(v, normal)));
         expect(across.length(), `${dial}: no sideways component`).toBeLessThan(1e-6);
       }
@@ -406,12 +433,12 @@ interface BallCase {
   readonly label: string;
   readonly prefix: string;
   readonly pivotName: string;
-  /** The bar's slide per degree of nose-up, metres: 0.75 mm on the Cessna's 0.036 m ball (it was 1 mm on the glass decks' 0.048 m ones). */
+  /** The bar's slide per degree of nose-up, metres: 0.6 mm on the Cessna's 0.029 m ball (1 mm on the glass decks' 0.048 m ones). */
   readonly metresPerDegree: number;
   readonly radius: number;
 }
 const BALLS: readonly BallCase[] = [
-  { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: 0.00075, radius: 0.036 },
+  { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: (0.001 * 0.029) / 0.048, radius: 0.029 },
 ];
 
 describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball", (_label, ball) => {
@@ -610,26 +637,30 @@ describe("the Cessna's attitude dial", () => {
     }
   });
 
-  it("stands on its dial: radius 0.036 on the 0.08 dial, centred on it, sky and ground 1.5 mm in front of the face, the bar in front of them", () => {
+  it("stands in its dial's well: radius 0.029 inside the 0.034 face, centred on it, sky and ground 0.3 mm in front of the face, the bar in front of them, all behind the bezel's front", () => {
     const { normal, up, right } = plane();
-    const gauge = fixture.mesh("trainer-attitude-gauge");
-    const gaugeCentre = gauge.getBoundingInfo().boundingBox.centerWorld;
-    const along = (v: Vector3) => Vector3.Dot(v.subtract(gaugeCentre), normal);
-    const inPlane = (v: Vector3) => ({ u: Vector3.Dot(v.subtract(gaugeCentre), up), r: Vector3.Dot(v.subtract(gaugeCentre), right) });
+    const face = builtFaceCentre(fixture, "attitude");
+    const along = (v: Vector3) => Vector3.Dot(v.subtract(face), normal);
+    const inPlane = (v: Vector3) => ({ u: Vector3.Dot(v.subtract(face), up), r: Vector3.Dot(v.subtract(face), right) });
     const halves = [...worldVertices(fixture.mesh("trainer-attitude-sky")), ...worldVertices(fixture.mesh("trainer-attitude-ground"))];
-    // the face is 0.04 in radius; the ball 0.036, so 4 mm of face shows round it
-    expect(Math.max(...worldVertices(gauge).map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.04, 4);
-    expect(Math.max(...halves.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.036, 4);
+    // the face the pilot sees is the bezel's opening, 0.034 in radius; the ball 0.029, so a 5 mm ring of face shows round
+    // it, where the bank scale is drawn
+    const bezel = worldVertices(fixture.mesh("trainer-dial-bezels")).filter((v) => Math.hypot(inPlane(v).u, inPlane(v).r) < 0.05);
+    expect(Math.min(...bezel.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r))), "the bezel's opening").toBeCloseTo(TRAINER_BEZEL.faceRadius, 4);
+    expect(Math.max(...halves.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.029, 4);
     // centred on the dial within a millimetre (the bounding box of a disc is centred on it)
     const us = halves.map((v) => inPlane(v).u);
     const rs = halves.map((v) => inPlane(v).r);
     expect(Math.abs((Math.max(...us) + Math.min(...us)) / 2), "centred up the face").toBeLessThan(1e-3);
     expect(Math.abs((Math.max(...rs) + Math.min(...rs)) / 2), "centred across the face").toBeLessThan(1e-3);
-    // the face's front, then the halves' back 1.5 mm in front of it, toward the pilot
-    const faceFront = Math.max(...worldVertices(gauge).map(along));
-    expect(Math.min(...halves.map(along)) - faceFront, "sky and ground stand 1.5 mm proud of the face").toBeCloseTo(0.0015, 5);
+    // the halves' back 0.3 mm in front of the face's front, toward the pilot, and the bar in front of them
+    expect(Math.min(...halves.map(along)), "sky and ground stand 0.3 mm proud of the face").toBeCloseTo(0.0003, 5);
     const bar = worldVertices(fixture.mesh("trainer-attitude-pitch-bar"));
     expect(Math.min(...bar.map(along)), "the bar is in front of the sky and ground").toBeGreaterThan(Math.max(...halves.map(along)));
+    // and all of it inside the well: behind the bezel's front, 2 mm in front of the face
+    const bezelFront = Math.max(...bezel.map(along));
+    expect(bezelFront, "the face is recessed 2 mm behind the bezel's front").toBeCloseTo(TRAINER_BEZEL.faceRecess, 5);
+    expect(Math.max(...[...halves, ...bar].map(along)), "the ball inside the bezel's well").toBeLessThan(bezelFront);
   });
 
   it("hangs its pivot in the frame the builder's turn assumes: X away from the pilot, Y up the dial, Z his right", () => {

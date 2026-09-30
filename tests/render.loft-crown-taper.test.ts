@@ -241,7 +241,10 @@ describe("the loft's crown taper", () => {
       // RE-PINNED for S3 on the same check against S1 (dfa5598): the door frames 72 -> 2,110 vertices, the deck
       // 756 -> 252 and the board 852 -> 276 (buried square ends), the two posts replaced by the two A-pillars; the
       // trainer's other 60 of 66, and every other airframe, bit-identical.
-      trainer: "5e234af0",
+      // RE-PINNED for S2 on the same check against S3 (fc9579e): the three gauges replaced by the faces, the bezels and
+      // the fittings, the needles and the ball restaged into the well; the trainer's other 58 of 66, and every other
+      // airframe, bit-identical.
+      trainer: "592b2530",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial

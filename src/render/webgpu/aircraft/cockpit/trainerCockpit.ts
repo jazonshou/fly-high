@@ -1,18 +1,36 @@
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
 import { loftSectionPoint, type AircraftBuildContext, type LoftSection } from "../builders";
 import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
+import { DISPLAY_STATE_LEVEL } from "./displays/displayState";
+import { TRAINER_DIAL_FACE_FRACTION, TRAINER_RADIO_WINDOW_ASPECT } from "./displays/displayPages";
+import {
+  TRAINER_DISPLAYS,
+  createDisplayAtlas,
+  displayAtlasHeight,
+  displayAtlasWidth,
+  displayMaterial,
+  displaySlots,
+  paintDisplays,
+} from "./displays/displayAtlas";
 import {
   basisQuaternion,
+  bezelRimMaterial,
   buildAttitudeBall,
   glareshieldMaterial,
+  loopSolid,
   roundedDeckSection,
   sweptSolid,
   sweptTube,
+  type LoopProfile,
+  type PartFrame,
+  type PartLoop,
   type AttitudeBall,
   type RoundedDeckSection,
   type SweptSection,
@@ -55,6 +73,8 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
 export interface TrainerCockpitMaterials {
   /** Dark matte interior: the panel board, the door frames and the A-pillars. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
+  /** The panel's fittings: the radios' bodies and knobs, and the switches. */
+  readonly dark: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
   /** Needles. It carries the night glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one. */
   readonly instrumentMarking: PBRMaterial;
@@ -85,27 +105,89 @@ export const TRAINER_PANEL = Object.freeze({
 export const TRAINER_DIAL_DIAMETER = 0.08;
 
 /**
- * A gauge face: a disc 8 mm thick whose centre stands 5 mm off the panel's rear
- * face along the dial's normal, so its front is 9 mm off it.
+ * THE DIALS' BEZELS AND FACES (S2). Each dial is a ring 6 mm wide standing 3 mm proud of the board, its outer edge a
+ * 2 mm 45 degree chamfer and its inner edge a 1 mm one, round a face recessed 2 mm behind its front: the face's front
+ * is 1 mm proud. A ring with a square inner edge would put back the hard 90 degree rim each flat face disc had.
+ *
+ * ONE SOLID A RING, on the shared rim (`BEZEL_RIM`, its material and its glow law), not the Global's two (a flat frame
+ * and a chamfered rim, each closed on its own): each of those closes itself at the chamfer's shoulder with a face at
+ * 135 degrees to its front, and the pilot sees that edge, where one solid has only the chamfer's 45 there.
+ *
+ * The FACE is a disc `faceRadius / TRAINER_DIAL_FACE_FRACTION` in radius, its edge buried under the ring's inner wall
+ * (so its own 90 degree rim is never in the open), and its picture is a page of the display atlas drawn to the face's
+ * visible circle (`TRAINER_DIAL_FACE_FRACTION`).
  */
-const GAUGE_FACE_OFFSET = 0.005;
-const GAUGE_FACE_THICKNESS = 0.008;
+export const TRAINER_BEZEL = Object.freeze({
+  faceRadius: 0.034,
+  ringWidth: 0.006,
+  proud: 0.003,
+  chamfer: 0.002,
+  innerChamfer: 0.001,
+  faceRecess: 0.002,
+  /**
+   * The ring's and the face's back, 6 mm inside the board: further than an edge-visibility test's depth tolerance
+   * (1.5 mm plus 0.4% of the distance, 4.3 mm at the dials), so a buried edge cannot read as one on the surface.
+   */
+  back: -0.006,
+  /** Chords a quarter circle: 48 round. */
+  cornerSegments: 12,
+});
+
+/** The face's front, out of the board's face along the dial's normal. */
+const FACE_FRONT = TRAINER_BEZEL.proud - TRAINER_BEZEL.faceRecess;
+
+/**
+ * THE RADIO STACK (S2): two units, 160 x 40 mm, one above the other at the dials' height, right of them at the
+ * panel's centre as on a 150. Each is a body with 3 mm rounded edges standing `proud` out of the board, a raised
+ * window (its glass) on the left showing a frequency (a page of the display atlas), and two knobs on the right.
+ */
+export const TRAINER_RADIO = Object.freeze({
+  centreZ: 0.03,
+  width: 0.16,
+  height: 0.04,
+  gap: 0.001,
+  corner: 0.003,
+  proud: 0.006,
+  window: Object.freeze({ across: -0.03, width: 0.07, height: 0.016, corner: 0.0015, proud: 0.0005, chamfer: 0.0004 }),
+  knobs: Object.freeze([
+    Object.freeze({ across: 0.045, radius: 0.0065, height: 0.01 }),
+    Object.freeze({ across: 0.066, radius: 0.005, height: 0.008 }),
+  ]),
+  /** Top to bottom, and the atlas screen each one's window shows. */
+  units: Object.freeze(["com", "nav"] as const),
+});
+
+/**
+ * THE SWITCHES (S2): one row of four rockers under the airspeed dial and the attitude indicator. Each is a base with
+ * a chamfered edge and a paddle with a rounded front, tilted one way or the other (on, off).
+ */
+export const TRAINER_SWITCHES = Object.freeze({
+  across: Object.freeze([-0.335, -0.3, -0.265, -0.23]),
+  /** Their centres, down the board's face from the dial row's. */
+  below: 0.064,
+  base: Object.freeze({ halfWidth: 0.005, halfHeight: 0.009, corner: 0.0015, proud: 0.002, chamfer: 0.0008 }),
+  paddle: Object.freeze({ halfWidth: 0.0035, halfHeight: 0.0065, corner: 0.001, height: 0.004, round: 0.001, tiltDegrees: 12 }),
+  /** Which are on (their paddles' tops rocked in). */
+  on: Object.freeze([true, false, true, false]),
+});
 
 /**
  * THE ATTITUDE BALL on the "attitude" dial, which has no needle: the Global's ball
- * (`buildAttitudeBall`) at 0.75 of its size, so 0.036 m on the 0.08 m dial and 4 mm
- * of face left round it. Its sky and ground stand 1.5 mm in front of the face
- * (`proud`); the bar is the Global's 0.07 x 0.003 scaled by the same 0.75, and it
- * slides 0.75 mm a degree (`pitchBarOffsetMetres` takes the radius), so at the 25
- * degree clamp it is still inside the disc.
+ * (`buildAttitudeBall`) at 0.6 of its size since the bezels (S2), 0.029 m inside a
+ * 0.034 face, so the face's bank scale shows in the 5 mm ring round it. Its sky and
+ * ground stand 0.3 mm in front of the face (`proud`) and are 0.6 mm thick, and the
+ * bar 0.2 mm in front of them: all of it inside the bezel's well (its front 3 mm
+ * proud, the bar's front 2.7). The bar is the Global's 0.07 x 0.003 at the same 0.6,
+ * and it slides with the radius (`pitchBarOffsetMetres`), so at the 25 degree clamp it
+ * is still inside the disc.
  */
 export const TRAINER_ATTITUDE_BALL = Object.freeze({
-  radius: 0.036,
-  thickness: 0.002,
-  proud: 0.0015,
-  barOffset: 0.0015,
-  barLength: 0.0525,
-  barHeight: 0.00225,
+  radius: 0.029,
+  thickness: 0.0006,
+  proud: 0.0003,
+  barOffset: 0.0002,
+  barLength: 0.042,
+  barHeight: 0.0018,
   segments: 24,
   pivotName: "trainer-attitude-pivot",
 });
@@ -139,9 +221,10 @@ export const TRAINER_NEEDLE = Object.freeze({
   width: 0.003,
   pointerLength: 0.028,
   tailLength: 0.006,
-  thickness: 0.006,
+  /** Along the dial's axis: thin enough to turn inside the bezel's 2 mm well (S2); the hub stands a little prouder. */
+  thickness: 0.0012,
   hubRadius: 0.006,
-  hubThickness: 0.008,
+  hubThickness: 0.0016,
 });
 
 /**
@@ -151,16 +234,16 @@ export const TRAINER_NEEDLE = Object.freeze({
  */
 export const TRAINER_AIRSPEED_FULL_SCALE_KNOTS = 160;
 
-/** Where a needle's origin stands along the dial's normal: the gauge face's own centre, 5 mm off the panel. */
-const NEEDLE_ORIGIN_OFFSET = 0.005;
+/** Where a needle's origin stands along the dial's normal: on the face's front, at its centre. */
+const NEEDLE_ORIGIN_OFFSET = FACE_FRONT;
 
 /**
- * How far in front of its origin the needle's geometry stands, along the dial's
- * normal: the needle is 9.5 mm off the panel, in front of the face (whose front
- * is at 9 mm). The ORIGIN stays on the dial's axis at the gauge's centre, so the
- * needle turns about the axis; only the geometry stands proud of it.
+ * How far in front of its origin the needle's geometry stands, along the dial's normal: the bar's centre 0.3 mm plus
+ * half its thickness in front of the face's front, so the bar is 1.3 to 2.5 mm proud and the hub to 2.7, inside the
+ * bezel's front at 3. The ORIGIN stays on the dial's axis at the face's centre, so the needle turns about the axis;
+ * only the geometry stands proud of it.
  */
-const NEEDLE_STAND_OFF = 0.0045;
+const NEEDLE_STAND_OFF = FACE_FRONT + 0.0003 + TRAINER_NEEDLE.thickness / 2 - NEEDLE_ORIGIN_OFFSET;
 
 /**
  * The half-width at station `x` and height `y` of a loft's RULED SURFACE between its rings, read the way the loft lays
@@ -646,10 +729,108 @@ export function trainerDialPlacements(): readonly { name: string; centre: Vector
   return TRAINER_DIAL_ROW.dials.map(([name, z]) => ({ name, centre: new Vector3(onFace.x, onFace.y, z), normal: rearFaceNormal.clone() }));
 }
 
+/** A part's plane on the board's rear face: its centre there, across the cabin (+Z), up the face, and out toward the pilot. */
+function faceFrame(origin: Vector3): PartFrame {
+  const out = panelFrame().rearFaceNormal;
+  const across = new Vector3(0, 0, 1);
+  return { origin, across, up: Vector3.Cross(out, across).normalize(), out };
+}
+
+/** The dial row's centre on the board's face, at `z`. */
+function onDialRow(z: number): Vector3 {
+  const at = dialCentreOnPanel(TRAINER_DIAL_ROW.elevationDegrees);
+  return new Vector3(at.x, at.y, z);
+}
+
+/** Each dial's plane: centred on its placement. */
+export function trainerDialFrames(): readonly { name: string; frame: PartFrame }[] {
+  return trainerDialPlacements().map(({ name, centre }) => ({ name, frame: faceFrame(centre) }));
+}
+
+/** Each radio unit's plane, top to bottom: centred on the unit, at the board's face. */
+export function trainerRadioFrames(): readonly { unit: (typeof TRAINER_RADIO.units)[number]; frame: PartFrame }[] {
+  const r = TRAINER_RADIO;
+  const row = faceFrame(onDialRow(r.centreZ));
+  return r.units.map((unit, k) => ({ unit, frame: { ...row, origin: row.origin.add(row.up.scale(((k === 0 ? 1 : -1) * (r.height + r.gap)) / 2)) } }));
+}
+
+/** Each switch's plane: centred on its base, at the board's face. */
+export function trainerSwitchFrames(): readonly PartFrame[] {
+  return TRAINER_SWITCHES.across.map((z) => {
+    const row = faceFrame(onDialRow(z));
+    return { ...row, origin: row.origin.subtract(row.up.scale(TRAINER_SWITCHES.below)) };
+  });
+}
+
+/** The same frame moved `across` and `up` in its plane and `out` of it. */
+function shifted(frame: PartFrame, across: number, up: number, out = 0): PartFrame {
+  return { ...frame, origin: frame.origin.add(frame.across.scale(across)).add(frame.up.scale(up)).add(frame.out.scale(out)) };
+}
+
+/** A profile whose front is a flat cap out to `radius` in from the loop, then a quarter round of `radius` down to its side, the side down to `back`. */
+function roundedFrontProfile(front: number, radius: number, back: number, chords = 4): LoopProfile {
+  const round = Array.from({ length: chords + 1 }, (_, k) => {
+    const angle = (Math.PI / 2) * (1 - k / chords);
+    return { u: -radius + radius * Math.cos(angle), a: front - radius + radius * Math.sin(angle) };
+  });
+  return {
+    points: [...round, { u: 0, a: back }, { u: -radius, a: back }],
+    rounds: [{ first: 0, last: chords, centre: { u: -radius, a: front - radius } }],
+  };
+}
+
+/**
+ * A profile whose front is a flat cap out to `inset` in from the loop, then a 45 degree chamfer of `chamfer` to its side,
+ * the side down to `back`. The chamfer is SHADED AS A ROUND (its two ends take the front's and the side's normals), so
+ * it reads as an eased edge and meets both on one normal: a flat-shaded 45 degree chamfer is a split edge at exactly
+ * the census's threshold.
+ */
+function chamferedFrontProfile(front: number, inset: number, chamfer: number, back: number): LoopProfile {
+  return {
+    points: [{ u: -inset, a: front }, { u: -chamfer, a: front }, { u: 0, a: front - chamfer }, { u: 0, a: back }, { u: -inset, a: back }],
+    rounds: [{ first: 1, last: 2, centre: { u: -chamfer, a: front - chamfer } }],
+  };
+}
+
+/**
+ * Give the front of a face part (its vertices shaded straight out of `frame`) the UVs of a rectangle of the atlas: the
+ * part's `halfWidth` x `halfHeight` about the frame's origin onto `slot`, or onto the band `bandHeight` high across its
+ * middle. U runs with the frame's across (+Z, the pilot's right); V runs AGAINST its up, as the screens' do
+ * (`remapScreenFaceToSlot`: a texture's v and a canvas's y run opposite ways).
+ */
+function mapFaceToSlot(
+  mesh: Mesh,
+  frame: PartFrame,
+  halfWidth: number,
+  halfHeight: number,
+  slot: { readonly x: number; readonly y: number; readonly w: number; readonly h: number },
+  atlas: { readonly width: number; readonly height: number },
+  bandHeight = slot.h,
+): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  const uvs = mesh.getVerticesData(VertexBuffer.UVKind)!;
+  const top = slot.y + (slot.h - bandHeight) / 2;
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const normal = new Vector3(normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!);
+    if (Vector3.Dot(normal, frame.out) < 0.999) continue;
+    const d = new Vector3(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!).subtract(frame.origin);
+    const fx = Vector3.Dot(d, frame.across) / (2 * halfWidth) + 0.5;
+    const fy = Vector3.Dot(d, frame.up) / (2 * halfHeight) + 0.5;
+    uvs[v * 2] = (slot.x + fx * slot.w) / atlas.width;
+    uvs[v * 2 + 1] = (top + (1 - fy) * bandHeight) / atlas.height;
+  }
+  mesh.setVerticesData(VertexBuffer.UVKind, uvs, true);
+}
+
 /** What `buildTrainerCockpit` hands back: the meshes, and the step that turns the needles and the ball. */
 export interface TrainerCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
+  /** The dials' bezels' material (`BEZEL_RIM`): the visual drives its emissive by `bezelRimEmissive`. */
+  readonly bezelMaterial: PBRMaterial;
+  /** True when the dial faces and the radios' windows carry the live atlas: false under `NullEngine`. */
+  readonly displaysLive: boolean;
   /**
    * Turn each driven needle and the attitude ball to what `state` reads. The
    * visual calls this from its `update` ONLY while cockpit view is on: outside it
@@ -742,17 +923,109 @@ export function buildTrainerCockpit(
     ),
   ));
 
-  // THE DIALS. Real size, in front of the left seat, on the panel's rear face
-  // and a millimetre proud of it. The face cylinder's axis is local Y; turning
-  // it a quarter turn and then leaning it with the panel points it at the pilot.
+  // THE DIALS' FACES, BEZELS AND NEEDLES, THE RADIOS AND THE SWITCHES (S2). Three meshes for all of them bar the
+  // needles and the ball, where there were three gauge discs: the faces (the three dial faces and the two radios'
+  // windows, which are the display atlas's screens), the bezels (on the shared rim), and the fittings (the radios'
+  // bodies and knobs, and the switches). Each part gets its atlas UVs before the merge.
+  const atlasSize = { width: displayAtlasWidth(TRAINER_DISPLAYS), height: displayAtlasHeight(TRAINER_DISPLAYS) };
+  const slotOf = new Map(displaySlots(TRAINER_DISPLAYS).map((slot) => [slot.screen, slot]));
+  const faces: Mesh[] = [];
+  const bezels: Mesh[] = [];
+  const fittings: Mesh[] = [];
+  const bezelMaterial = bezelRimMaterial(build, "trainer-dial-bezel");
+  const b = TRAINER_BEZEL;
+  const faceMapRadius = b.faceRadius / TRAINER_DIAL_FACE_FRACTION;
+  const circle = (radius: number): PartLoop => ({ halfWidth: 0, halfHeight: 0, radius, cornerSegments: b.cornerSegments });
+  for (const { name, frame } of trainerDialFrames()) {
+    // the face: a disc whose edge is buried under the ring's inner wall, its front the atlas slot's square
+    const face = loopSolid(build, `trainer-${name}-face`, frame, circle(faceMapRadius), {
+      points: [{ u: -faceMapRadius, a: FACE_FRONT }, { u: 0, a: FACE_FRONT }, { u: 0, a: b.back }, { u: -faceMapRadius, a: b.back }],
+      rounds: [],
+    }, materials.instrumentFace, root);
+    mapFaceToSlot(face, frame, faceMapRadius, faceMapRadius, slotOf.get(name)!, atlasSize);
+    faces.push(face);
+    // the bezel: one ring, inner chamfer, front, outer chamfer, its back in the board; each chamfer shaded as a round
+    // (its ends take the faces' normals either side), so it reads as an eased edge and splits no shading
+    bezels.push(loopSolid(build, `trainer-${name}-bezel`, frame, circle(b.faceRadius), {
+      points: [
+        { u: 0, a: b.back },
+        { u: 0, a: b.proud - b.innerChamfer },
+        { u: b.innerChamfer, a: b.proud },
+        { u: b.ringWidth - b.chamfer, a: b.proud },
+        { u: b.ringWidth, a: b.proud - b.chamfer },
+        { u: b.ringWidth, a: b.back },
+      ],
+      rounds: [
+        { first: 1, last: 2, centre: { u: b.innerChamfer, a: b.proud - b.innerChamfer } },
+        { first: 3, last: 4, centre: { u: b.ringWidth - b.chamfer, a: b.proud - b.chamfer } },
+      ],
+    }, bezelMaterial, root));
+  }
+  const radio = TRAINER_RADIO;
+  for (const { unit, frame } of trainerRadioFrames()) {
+    fittings.push(loopSolid(build, `trainer-${unit}-body`, frame,
+      { halfWidth: radio.width / 2 - radio.corner, halfHeight: radio.height / 2 - radio.corner, radius: radio.corner, cornerSegments: 4 },
+      roundedFrontProfile(radio.proud, radio.corner, TRAINER_BEZEL.back), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
+    // the window: a raised glass with a chamfered edge, its face the atlas slot's band
+    const w = radio.window;
+    const windowHeight = w.width / TRAINER_RADIO_WINDOW_ASPECT;
+    const windowFrame = shifted(frame, w.across, 0);
+    const glass = loopSolid(build, `trainer-${unit}-window`, windowFrame,
+      { halfWidth: w.width / 2 - w.corner, halfHeight: windowHeight / 2 - w.corner, radius: w.corner, cornerSegments: 3 },
+      chamferedFrontProfile(radio.proud + w.proud, w.corner, w.chamfer, radio.proud + TRAINER_BEZEL.back), materials.instrumentFace, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 4, facing: -1 }] });
+    const slot = slotOf.get(unit)!;
+    mapFaceToSlot(glass, windowFrame, w.width / 2, windowHeight / 2, slot, atlasSize, slot.w / TRAINER_RADIO_WINDOW_ASPECT);
+    faces.push(glass);
+    radio.knobs.forEach((knob, k) => {
+      fittings.push(loopSolid(build, `trainer-${unit}-knob-${k}`, shifted(frame, knob.across, 0), circle(knob.radius),
+        // a disc: the front from the axis (u = -radius is the centre) out to a 1 mm round, the side, the back to the axis
+        {
+          points: [
+            { u: -knob.radius, a: radio.proud + knob.height },
+            ...roundedFrontProfile(radio.proud + knob.height, 0.001, radio.proud + TRAINER_BEZEL.back).points.slice(0, 6),
+            { u: -knob.radius, a: radio.proud + TRAINER_BEZEL.back },
+          ],
+          rounds: [{ first: 1, last: 5, centre: { u: -0.001, a: radio.proud + knob.height - 0.001 } }],
+        }, materials.dark, root));
+    });
+  }
+  const sw = TRAINER_SWITCHES;
+  trainerSwitchFrames().forEach((frame, k) => {
+    fittings.push(loopSolid(build, `trainer-switch-${k}-base`, frame,
+      { halfWidth: sw.base.halfWidth - sw.base.corner, halfHeight: sw.base.halfHeight - sw.base.corner, radius: sw.base.corner, cornerSegments: 3 },
+      chamferedFrontProfile(sw.base.proud, sw.base.corner, sw.base.chamfer, TRAINER_BEZEL.back), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 4, facing: -1 }] }));
+    // the paddle, rocked about the across axis: top in when on
+    const tilt = ((sw.on[k] ? 1 : -1) * sw.paddle.tiltDegrees * Math.PI) / 180;
+    const base = shifted(frame, 0, 0, sw.base.proud);
+    const paddleFrame: PartFrame = {
+      origin: base.origin,
+      across: base.across,
+      up: base.up.scale(Math.cos(tilt)).add(base.out.scale(Math.sin(tilt))),
+      out: base.out.scale(Math.cos(tilt)).subtract(base.up.scale(Math.sin(tilt))),
+    };
+    fittings.push(loopSolid(build, `trainer-switch-${k}-paddle`, paddleFrame,
+      { halfWidth: sw.paddle.halfWidth - sw.paddle.corner, halfHeight: sw.paddle.halfHeight - sw.paddle.corner, radius: sw.paddle.corner, cornerSegments: 3 },
+      // its back twice as deep: rocked 12 degrees, the top of a back 6 mm down stood only 4.5 mm under the base's face
+      roundedFrontProfile(sw.paddle.height, sw.paddle.corner, 2 * TRAINER_BEZEL.back), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
+  });
+  const facesMesh = build.mergeStatic(TRAINER_DISPLAYS.screensMesh, faces, root);
+  parts.push(facesMesh);
+  parts.push(build.mergeStatic("trainer-dial-bezels", bezels, root));
+  parts.push(build.mergeStatic("trainer-panel-fittings", fittings, root));
+  // THE ATLAS: live where there is a 2D canvas, drawn ONCE (nothing on the faces moves); under Node the faces keep the
+  // flat instrument-face material they were built with (see `displayAtlas.ts`)
+  const atlas = createDisplayAtlas(build, TRAINER_DISPLAYS);
+  if (atlas !== null) {
+    facesMesh.material = displayMaterial(build, "trainer-display", atlas);
+    paintDisplays(atlas, DISPLAY_STATE_LEVEL);
+  }
+
   for (const placement of trainerDialPlacements()) {
     const { name, centre: at, normal } = placement;
-    const face = build.cylinder(
-      `trainer-${name}-gauge`, GAUGE_FACE_THICKNESS, TRAINER_DIAL_DIAMETER, TRAINER_DIAL_DIAMETER, 24, materials.instrumentFace, root,
-    );
-    face.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
-    face.position.copyFrom(at.add(normal.scale(GAUGE_FACE_OFFSET)));
-    parts.push(face);
     // Up the panel's face, in the vertical plane of the dial's normal.
     const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
     if (name === "attitude") {
@@ -766,15 +1039,13 @@ export function buildTrainerCockpit(
       const away = normal.scale(-1);
       const frame = new TransformNode("trainer-attitude-frame", build.scene);
       frame.parent = root;
-      frame.position.copyFrom(
-        at.add(normal.scale(GAUGE_FACE_OFFSET + GAUGE_FACE_THICKNESS / 2 + ball.proud + ball.thickness / 2)),
-      );
+      frame.position.copyFrom(at.add(normal.scale(FACE_FRONT + ball.proud + ball.thickness / 2)));
       frame.rotationQuaternion = basisQuaternion(away, up, Vector3.Cross(away, up));
       attitudeBall = buildAttitudeBall(build, frame, Vector3.Zero(), { prefix: "trainer-attitude", ...ball });
       parts.push(...attitudeBall.parts);
       continue;
     }
-    // THE NEEDLE, one mesh whose ORIGIN is the gauge's centre and whose local X
+    // THE NEEDLE, one mesh whose ORIGIN is the face's centre and whose local X
     // is the dial's normal, so turning the mesh about its own X turns the needle
     // about the dial's axis. `mergeStatic` bakes the parts' world matrices into
     // vertices in BODY coordinates and leaves the mesh's origin at the aircraft's
@@ -878,6 +1149,8 @@ export function buildTrainerCockpit(
   };
   return {
     parts,
+    bezelMaterial,
+    displaysLive: atlas !== null,
     update(state) {
       turnNeedle("airspeed", airspeedNeedleDegrees(state.airspeed, TRAINER_AIRSPEED_FULL_SCALE_KNOTS));
       turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));

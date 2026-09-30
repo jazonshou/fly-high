@@ -150,6 +150,28 @@ export const JET_DISPLAYS: DisplayLayout = Object.freeze({
 });
 
 /**
+ * The Cessna's (the Cessna pass, S2): its three dial faces and its two radios' windows, as STATIC pages drawn once (the
+ * needles and the attitude ball are geometry in front of them). The slots are SQUARE, the dial faces' shape; a radio's
+ * window samples the band across its slot's middle (`TRAINER_RADIO_WINDOW_ASPECT`). 256 texels a face land on about
+ * 120 screen pixels at 1080p, two a pixel, so the atlas is mipmapped, as the F-16's is.
+ */
+export const TRAINER_DISPLAYS: DisplayLayout = Object.freeze({
+  name: "trainer-displays",
+  screensMesh: "trainer-dial-faces",
+  columns: 3,
+  slotWidth: 256,
+  slotHeight: 256,
+  mipmaps: true,
+  screens: Object.freeze([
+    { screen: "airspeed", page: "trainer-asi" },
+    { screen: "attitude", page: "trainer-attitude-ring" },
+    { screen: "altimeter", page: "trainer-altimeter" },
+    { screen: "com", page: "trainer-com" },
+    { screen: "nav", page: "trainer-nav" },
+  ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
  * A slot is the shape of the SCREEN IT IS DRAWN ON. The 747's and the Global's screens MEASURE
  * 0.22 x 0.15 m on the built mesh -- 1.4667:1 -- and the pages are authored and tested at 440 x 300,
  * the same ratio; the F-16's are square, so its slots are (`JET_DISPLAYS`). A slot of the wrong shape

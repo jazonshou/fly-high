@@ -13,19 +13,42 @@ import { aircraftSpec } from "../src/aircraft/catalogue";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import {
   TRAINER_A_PILLAR,
+  TRAINER_BEZEL,
   TRAINER_DIAL_DIAMETER,
   TRAINER_DOOR_FRAME,
   TRAINER_GLARESHIELD,
+  TRAINER_RADIO,
+  TRAINER_SWITCHES,
   trainerDeckSection,
+  trainerDialFrames,
   trainerDialPlacements,
+  trainerRadioFrames,
   trainerRailCentre,
+  trainerSwitchFrames,
 } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
+import {
+  TRAINER_ASI_MARKINGS,
+  TRAINER_DIAL_FACE_FRACTION,
+  TRAINER_RADIO_WINDOW_ASPECT,
+  drawTrainerAltimeter,
+  drawTrainerAsi,
+  drawTrainerAttitudeRing,
+  drawTrainerCom,
+  type DrawPage,
+} from "../src/render/webgpu/aircraft/cockpit/displays/displayPages";
+import { TRAINER_DISPLAYS, displayAtlasHeight, displayAtlasWidth, displaySlots } from "../src/render/webgpu/aircraft/cockpit/displays/displayAtlas";
+import { DISPLAY_STATE_LEVEL } from "../src/render/webgpu/aircraft/cockpit/displays/displayState";
+import { BEZEL_RIM, bezelRimEmissive } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
+import { KNOTS_PER_METRE_PER_SECOND, FEET_PER_METRE } from "../src/render/webgpu/aircraft/cockpit/instrumentMappings";
+import { createRecordingContext, transformedPoints } from "./support/recordingContext";
+import { INITIAL_VISUAL_STATE } from "../src/game/types";
 import { projectPoint, rasteriseClipped, type Pinhole } from "./support/drawnFaceRaster";
 import { SkinCaster } from "../src/render/webgpu/aircraft/airlinerGlazing";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
 import { worldTriangles as tipWorldTriangles, hitTriangle as tipHitTriangle } from "../scripts/rayCrossings.mts";
 import { GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
+import type { PBRMaterial as PanelMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 
 /**
  * The Cessna's cockpit, held to the angles it was built to and to the shell it
@@ -135,16 +158,20 @@ describe("the trainer's cockpit parts", () => {
     // Jason: "the trainer should only have 3 dials" (2026-09-23). Read off the BUILT meshes and off the
     // placements the HUD survey projects, so a fourth dial left in either place fails here by name.
     const parts = cockpitOnly.map((part) => part.name);
-    expect(parts.filter((name) => /-gauge$/.test(name)).sort()).toEqual(["trainer-airspeed-gauge", "trainer-altimeter-gauge", "trainer-attitude-gauge"]);
+    // the faces are one mesh (the display atlas's screens): the three dials' and the two radios' windows (S2)
+    expect(named("trainer-dial-faces").metadata?.mergedFrom).toEqual([
+      "trainer-airspeed-face", "trainer-attitude-face", "trainer-altimeter-face", "trainer-com-window", "trainer-nav-window",
+    ]);
     expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle"]);
     expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
     expect(parts).toHaveLength(15);
   });
 
-  it("are eight or fewer new meshes beyond the eight dial meshes, and keep the dial names", () => {
-    // three gauge faces, two needles (the attitude dial has a BALL instead: sky, ground, pitch bar)
+  it("are eight or fewer new meshes beyond the dials' seven, and keep the dial names", () => {
+    // the faces and the bezels (one mesh each for all three dials, S2), two needles (the attitude dial has a BALL
+    // instead: sky, ground, pitch bar)
     const dialNames = [
-      ...["airspeed", "attitude", "altimeter"].map((dial) => `trainer-${dial}-gauge`),
+      "trainer-dial-faces", "trainer-dial-bezels",
       ...["airspeed", "altimeter"].map((dial) => `trainer-${dial}-needle`),
       "trainer-attitude-sky", "trainer-attitude-ground", "trainer-attitude-pitch-bar",
     ];
@@ -158,6 +185,7 @@ describe("the trainer's cockpit parts", () => {
       "trainer-door-starboard",
       "trainer-glareshield",
       "trainer-instrument-panel",
+      "trainer-panel-fittings",
     ]);
     expect(others.length).toBeLessThanOrEqual(8);
   });
@@ -182,7 +210,7 @@ describe("the trainer's cockpit parts", () => {
 
   it("put the instrument row at -15 degrees, each dial at least 4.5 degrees across", () => {
     const row = (dials: string[]) => dials.map((dial) => {
-      const centre = named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
+      const centre = trainerDialPlacements().find((p) => p.name === dial)!.centre;
       const distance = Vector3.Distance(centre, EYE_POINT);
       return { dial, el: azel(centre).el, across: 2 * Math.atan(TRAINER_DIAL_DIAMETER / 2 / distance) * DEG };
     });
@@ -194,7 +222,7 @@ describe("the trainer's cockpit parts", () => {
   });
 
   it("have every dial in front of the LEFT seat, in the real order, facing the pilot", () => {
-    const z = (dial: string) => named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld.z;
+    const z = (dial: string) => trainerDialPlacements().find((p) => p.name === dial)!.centre.z;
     // Airspeed left of the attitude indicator, altimeter to its right; the old layout mirrored it.
     expect(z("airspeed")).toBeLessThan(z("attitude"));
     expect(z("attitude")).toBeLessThan(z("altimeter"));
@@ -204,11 +232,11 @@ describe("the trainer's cockpit parts", () => {
     // right of dead ahead.
     expect(z("attitude")).toBeCloseTo(EYE.right + 0.04, 3);
     for (const dial of ["airspeed", "attitude", "altimeter"]) {
-      const centre = named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
-      // Every dial is where the pilot can see it: the first thing a ray toward it meets is the dial, or its needle.
+      const centre = trainerDialPlacements().find((p) => p.name === dial)!.centre;
+      // Every dial is where the pilot can see it: the first thing a ray toward it meets is its face, its needle or its ball.
       const d = centre.subtract(EYE_POINT);
       const hit = scene.pickWithRay(new Ray(EYE_POINT, d.normalize(), 5), drawnByCockpitCamera);
-      expect(hit?.pickedMesh?.name, `${dial} is hidden behind something`).toMatch(new RegExp(`trainer-${dial}-(gauge|needle|sky|ground|pitch-bar)`));
+      expect(hit?.pickedMesh?.name, `${dial} is hidden behind something`).toMatch(new RegExp(`trainer-(dial-faces|${dial}-needle|${dial}-(sky|ground|pitch-bar))`));
     }
   });
 
@@ -842,13 +870,17 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     expect(Math.max(...flatJumps)).toBeGreaterThan(5);
   });
 
-  it("shows the pilot no hard edge on the deck, the board, the port door or the port pillar, outside the deck's designed cove", () => {
+  it("shows the pilot no hard edge on the deck, the board, the port door, the port pillar or the panel's face, outside the deck's designed cove", () => {
     const raster = frame();
     const meshes = drawn();
     const section = trainerDeckSection();
     // the cove, by design: round to cove along (coveTop), cove to board along (faceTop), right across the cabin
     const onCove = (p: Vector3) => [section.coveTop, section.faceTop].some((c) => Math.abs(p.x - c.x) < 2e-4 && Math.abs(p.y - c.y) < 2e-4);
-    for (const name of ["trainer-glareshield", "trainer-instrument-panel", "trainer-door-port", "trainer-a-pillar-port"]) {
+    for (const name of [
+      "trainer-glareshield", "trainer-instrument-panel", "trainer-door-port", "trainer-a-pillar-port",
+      // the panel's face (S2): the dials' faces and the radios' windows, the bezels, the radios' bodies and knobs and the switches
+      "trainer-dial-faces", "trainer-dial-bezels", "trainer-panel-fittings",
+    ]) {
       const mesh = named(name);
       expect(meshes.indexOf(mesh), `${name} is drawn`).toBeGreaterThanOrEqual(0);
       const hard = visibleHardEdges(mesh, raster, meshes.indexOf(mesh)).filter((e) => !(onCove(e.a) && onCove(e.b)));
@@ -1014,8 +1046,11 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       normals: Array.from(board.getVerticesData(VertexBuffer.NormalKind)!),
     }]);
     let checked = 0;
+    const bezels = worldVertices(named("trainer-dial-bezels"));
     for (const dial of ["airspeed", "attitude", "altimeter"]) {
-      for (const p of worldVertices(named(`trainer-${dial}-gauge`))) {
+      const centre = trainerDialPlacements().find((p) => p.name === dial)!.centre;
+      // the dial's bezel, its outermost edge the case's: every vertex of it within 5 cm of the dial's centre
+      for (const p of bezels.filter((v) => Vector3.Distance(v, centre) < 0.05)) {
         const side = p.z < 0 ? -1 : 1;
         const end = caster.exit(new Vector3(p.x + 0.02, p.y, 0), new Vector3(0, 0, side), 2);
         expect(end, `${dial}: no board behind the point at y ${p.y.toFixed(3)}`).not.toBeNull();
@@ -1027,18 +1062,35 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
   });
 
   it("leaves the airspeed dial unobstructed: the door hides none of it, and the check can see an obstruction", () => {
-    const gauge = named("trainer-airspeed-gauge");
+    // the airspeed face's pixels: the faces mesh's, inside the circle the dial's face projects to
+    const faces = named("trainer-dial-faces");
+    const placement = trainerDialPlacements().find((p) => p.name === "airspeed")!;
+    const across = new Vector3(0, 0, 1);
+    const upFace = Vector3.Cross(placement.normal, across).normalize();
+    const rim = Array.from({ length: 36 }, (_, k) => placement.centre.add(across.scale(0.034 * Math.cos((k * Math.PI) / 18))).add(upFace.scale(0.034 * Math.sin((k * Math.PI) / 18))));
+    const ring = rim.map((p) => projectPoint(pin, p));
+    const middle = projectPoint(pin, placement.centre);
+    const inside = (x: number, y: number) => {
+      // inside the projected ring (an ellipse, near enough convex): no ring point's direction is passed
+      const a = Math.atan2(y - middle.y, x - middle.x);
+      const reach = ring.reduce((best, q) => {
+        const qa = Math.atan2(q.y - middle.y, q.x - middle.x);
+        const gap = Math.abs(Math.atan2(Math.sin(qa - a), Math.cos(qa - a)));
+        return gap < best.gap ? { gap, r: Math.hypot(q.x - middle.x, q.y - middle.y) } : best;
+      }, { gap: Infinity, r: 0 }).r;
+      return Math.hypot(x - middle.x, y - middle.y) < reach;
+    };
     const count = (meshes: AbstractMesh[]) => {
       const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
-      const index = meshes.indexOf(gauge);
+      const index = meshes.indexOf(faces);
       let n = 0;
-      for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === index) n += 1;
+      for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === index && inside(i % W, Math.floor(i / W))) n += 1;
       return n;
     };
     const all = drawn();
     const withDoor = count(all);
     const without = count(all.filter((m) => !m.name.startsWith("trainer-door")));
-    expect(withDoor).toBeGreaterThan(10000);
+    expect(withDoor).toBeGreaterThan(8000);
     expect(withDoor, "the door stands in front of the airspeed dial").toBe(without);
     // CONTROL: the port door moved so its rail crosses the dial (15 cm forward, 5 cm inboard, 5 cm down) hides part of
     // it. (A face hung from the rail's inner side, not its underside, stood 2 to 9 mm into the dial's sight line and hid
@@ -1055,3 +1107,240 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     }
   });
 });
+
+/**
+ * THE PANEL'S FACE (the Cessna pass, S2): the dials' bezels and faces, the radio stack, the switches.
+ *
+ * What is held, off the BUILT meshes and the pages as drawn (a recording context under Node, where there is no canvas):
+ * - each dial's bezel: a ring 6 mm wide, 3 mm proud, with a 2 mm 45 degree outer chamfer, round a face 2 mm below its
+ *   front, on the shared rim material and glowing by its law;
+ * - the faces are the display atlas's screens, each face's front carrying its own slot the right way round;
+ * - each dial's page draws at least 12 marks, all resolvable at 1080p (3 px apart, at least 1.2 px wide), at the angles
+ *   its needle turns to: a needle points at the number it reads;
+ * - the radio stack's two 160 x 40 mm units, each a window and two knobs, and the four switches, in the frame;
+ * - the bare board, which the panel's face is there to cover.
+ */
+describe("the Cessna's panel face", () => {
+  const W = 1920;
+  const H = 1080;
+  const pin: Pinhole = {
+    eye: EYE_POINT,
+    target: EYE_POINT.add(new Vector3(1, 0, 0)),
+    up: new Vector3(0, 1, 0),
+    fovY: 2 * Math.atan(Math.tan(37.5 / DEG) / (16 / 9)),
+    width: W,
+    height: H,
+  };
+  const slots = new Map(displaySlots(TRAINER_DISPLAYS).map((slot) => [slot.screen, slot]));
+  const faceMap = TRAINER_BEZEL.faceRadius / TRAINER_DIAL_FACE_FRACTION;
+  const faceFront = TRAINER_BEZEL.proud - TRAINER_BEZEL.faceRecess;
+  const frameOf = (dial: string) => trainerDialFrames().find((f) => f.name === dial)!.frame;
+
+  /** A page's point (its slot's pixels) where it lands on the dial's face: the face disc spans the whole slot. */
+  function onFace(dial: string, x: number, y: number, size: number): Vector3 {
+    const f = frameOf(dial);
+    return f.origin.add(f.across.scale((x / size - 0.5) * 2 * faceMap)).add(f.up.scale((0.5 - y / size) * 2 * faceMap)).add(f.out.scale(faceFront));
+  }
+
+  /** A page's marks: each stroked segment in the scale's colour, its ends and its width, in the slot's pixels. */
+  function marks(page: DrawPage, size: number) {
+    const ctx = createRecordingContext();
+    page(ctx, size, size, DISPLAY_STATE_LEVEL);
+    const calls = ctx.calls;
+    const points = transformedPoints(calls);
+    const found: { from: { x: number; y: number }; to: { x: number; y: number }; width: number }[] = [];
+    for (const p of points) {
+      if (p.method !== "moveTo" || p.strokeStyle !== "#f2f2ee") continue;
+      if (calls[p.index + 1]?.method !== "lineTo" || calls[p.index + 2]?.method !== "stroke") continue;
+      const to = points.find((q) => q.index === p.index + 1)!;
+      let width = 1;
+      for (let i = p.index; i >= 0; i -= 1) if (calls[i]!.method === "set:lineWidth") { width = calls[i]!.args[0] as number; break; }
+      found.push({ from: { x: p.x, y: p.y }, to: { x: to.x, y: to.y }, width });
+    }
+    return { found, texts: points.filter((p) => p.method === "fillText").map((p) => p.text) };
+  }
+
+  it("rings each dial with a bezel 6 mm wide and 3 mm proud, a 2 mm 45 degree chamfer outside, round a face 2 mm below its front", () => {
+    const bezels = worldVertices(named("trainer-dial-bezels"));
+    const faces = worldVertices(named("trainer-dial-faces"));
+    for (const { name, frame } of trainerDialFrames()) {
+      const local = (v: Vector3) => {
+        const d = v.subtract(frame.origin);
+        return { r: Math.hypot(Vector3.Dot(d, frame.across), Vector3.Dot(d, frame.up)), a: Vector3.Dot(d, frame.out) };
+      };
+      const ring = bezels.map(local).filter((p) => p.r < 0.05);
+      expect(Math.min(...ring.map((p) => p.r)), `${name}: the ring's opening`).toBeCloseTo(0.034, 5);
+      expect(Math.max(...ring.map((p) => p.r)), `${name}: the ring's outside`).toBeCloseTo(0.04, 5);
+      expect(Math.max(...ring.map((p) => p.a)), `${name}: 3 mm proud`).toBeCloseTo(0.003, 5);
+      // the chamfer: its shoulder 2 mm in from the edge on the front, its foot at the edge 2 mm down
+      expect(ring.some((p) => Math.abs(p.r - 0.038) < 1e-6 && Math.abs(p.a - 0.003) < 1e-6), `${name}: the chamfer's shoulder`).toBe(true);
+      expect(ring.some((p) => Math.abs(p.r - 0.04) < 1e-6 && Math.abs(p.a - 0.001) < 1e-6), `${name}: the chamfer's foot`).toBe(true);
+      // the face's front 2 mm under the ring's, and its edge under the ring (buried)
+      const face = faces.map(local).filter((p) => p.r < 0.05);
+      expect(Math.max(...face.map((p) => p.a)), `${name}: the face's front`).toBeCloseTo(0.001, 5);
+      expect(Math.max(...face.map((p) => p.r)), `${name}: the face's edge under the ring`).toBeGreaterThan(0.034);
+      expect(Math.max(...face.map((p) => p.r)), `${name}: the face's edge under the ring`).toBeLessThan(0.034 + 0.006 - 0.002);
+    }
+  });
+
+  it("puts the bezels on the shared rim, glowing by its law: the day value by day, the night glow at night", () => {
+    const material = named("trainer-dial-bezels").material as PanelMaterial;
+    expect(material.albedoColor.toHexString().toLowerCase()).toBe(`#${BEZEL_RIM.albedo.toString(16).padStart(6, "0")}`);
+    expect(material.roughness).toBe(BEZEL_RIM.roughness);
+    const lights = (cockpitGlow: number) => ({ portNav: 1, starboardNav: 1, tailNav: 1, beacon: 0, strobe: 0, landing: 0, cockpitGlow });
+    for (const glow of [1, 2.5, 4]) {
+      aircraft.setLightState?.(lights(glow));
+      expect(material.emissiveIntensity, `glow ${glow}`).toBeCloseTo(bezelRimEmissive(glow), 6);
+    }
+    aircraft.setLightState?.(lights(1));
+  });
+
+  it("makes the faces and the radios' windows the display atlas's screens, and keeps them flat where there is no canvas", () => {
+    const faces = named(TRAINER_DISPLAYS.screensMesh);
+    expect(faces.name).toBe("trainer-dial-faces");
+    // headless: no atlas, the faces keep the flat instrument face
+    expect(aircraft.displaysLive).toBe(false);
+    expect((faces.material as PanelMaterial).name).toBe("trainer-instrument-face");
+    // each dial's face carries its own slot: its centre on the slot's centre, u with the pilot's right, v against up
+    const atlas = { w: displayAtlasWidth(TRAINER_DISPLAYS), h: displayAtlasHeight(TRAINER_DISPLAYS) };
+    const positions = worldVertices(faces);
+    const uvs = faces.getVerticesData(VertexBuffer.UVKind)!;
+    const normals = faces.getVerticesData(VertexBuffer.NormalKind)!;
+    for (const { name, frame } of trainerDialFrames()) {
+      const slot = slots.get(name)!;
+      const front = positions.map((p, i) => ({ p, i })).filter(({ p, i }) =>
+        Vector3.Distance(p, frame.origin) < 0.05 && Vector3.Dot(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), frame.out) > 0.999);
+      expect(front.length, `${name}: its face's front`).toBeGreaterThan(40);
+      for (const { p, i } of front) {
+        const d = p.subtract(frame.origin);
+        const u = uvs[i * 2]! * atlas.w;
+        const v = uvs[i * 2 + 1]! * atlas.h;
+        expect(u, `${name}: u`).toBeCloseTo(slot.x + (Vector3.Dot(d, frame.across) / (2 * faceMap) + 0.5) * slot.w, 3);
+        expect(v, `${name}: v`).toBeCloseTo(slot.y + (0.5 - Vector3.Dot(d, frame.up) / (2 * faceMap)) * slot.h, 3);
+        // within its slot, to a thousandth of a texel (UVs are stored single precision)
+        expect(u).toBeGreaterThanOrEqual(slot.x - 1e-3);
+        expect(u).toBeLessThanOrEqual(slot.x + slot.w + 1e-3);
+      }
+    }
+  });
+
+  it("draws at least 12 marks on each dial, inside the face the pilot sees, each resolvable at 1080p: 3 px apart and at least 1.2 px wide", () => {
+    const size = slots.get("airspeed")!.w;
+    for (const [dial, page, least] of [["airspeed", drawTrainerAsi, 25], ["attitude", drawTrainerAttitudeRing, 12], ["altimeter", drawTrainerAltimeter, 50]] as const) {
+      const { found } = marks(page, size);
+      expect(found.length, `${dial}: its marks`).toBeGreaterThanOrEqual(least);
+      const visible = (size / 2) * TRAINER_DIAL_FACE_FRACTION;
+      const outer = found.map((m) => {
+        expect(Math.hypot(m.to.x - size / 2, m.to.y - size / 2), `${dial}: a mark outside the face`).toBeLessThanOrEqual(visible + 1e-6);
+        return projectPoint(pin, onFace(dial, m.to.x, m.to.y, size));
+      });
+      // on the screen: each mark's outer end at least 3 px from the next round the dial
+      const centre = projectPoint(pin, onFace(dial, size / 2, size / 2, size));
+      const order = outer.map((q, k) => ({ q, k, a: Math.atan2(q.y - centre.y, q.x - centre.x) })).sort((x, y) => x.a - y.a);
+      const gaps = order.slice(1).map((o, k) => Math.hypot(o.q.x - order[k]!.q.x, o.q.y - order[k]!.q.y));
+      expect(Math.min(...gaps), `${dial}: marks closer than 3 px on the screen`).toBeGreaterThanOrEqual(3);
+      // each mark's width on the screen: its stroke's width in the page, in metres on the face, in pixels at its distance
+      for (const m of found) {
+        const metres = (m.width / size) * 2 * faceMap;
+        const at = projectPoint(pin, onFace(dial, m.to.x, m.to.y, size));
+        const px = (metres * (H / 2)) / Math.tan(pin.fovY / 2) / at.depth;
+        expect(px, `${dial}: a mark too thin to see`).toBeGreaterThanOrEqual(1.2);
+      }
+    }
+  });
+
+  it("numbers the airspeed dial every 20 knots from 40 and the altimeter 0 to 9, and draws the 150's arcs", () => {
+    const size = slots.get("airspeed")!.w;
+    expect(marks(drawTrainerAsi, size).texts).toEqual(expect.arrayContaining(["40", "60", "80", "100", "120", "140", "160", "KNOTS"]));
+    expect(marks(drawTrainerAltimeter, size).texts).toEqual(expect.arrayContaining(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "ALT"]));
+    const ctx = createRecordingContext();
+    drawTrainerAsi(ctx, size, size, DISPLAY_STATE_LEVEL);
+    const colours = ctx.calls.filter((c) => c.method === "set:strokeStyle").map((c) => c.args[0]);
+    for (const colour of ["#1fa83a", "#e4c21c", "#e6e6e0", "#d22a2a"]) expect(colours, `the arc ${colour}`).toContain(colour);
+    expect(TRAINER_ASI_MARKINGS.fullScale, "the page's scale is the needle's").toBe(160);
+  });
+
+  it("points each needle at the number it reads: 100 knots at the 100 mark, 500 feet at the 5", () => {
+    const size = slots.get("airspeed")!.w;
+    const cases = [
+      { dial: "airspeed", state: { airspeed: 100 / KNOTS_PER_METRE_PER_SECOND }, label: "100", page: drawTrainerAsi },
+      { dial: "altimeter", state: { altitude: 500 / FEET_PER_METRE }, label: "5", page: drawTrainerAltimeter },
+    ] as const;
+    try {
+      for (const c of cases) {
+        aircraft.update({ ...INITIAL_VISUAL_STATE, ...c.state }, 1 / 60);
+        const needle = named(`trainer-${c.dial}-needle`);
+        needle.computeWorldMatrix(true);
+        const hub = needle.getAbsolutePosition();
+        const far = worldVertices(needle).filter((v) => Vector3.Distance(v, hub) > 0.02);
+        const tip = far.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / far.length);
+        const ctx = createRecordingContext();
+        c.page(ctx, size, size, DISPLAY_STATE_LEVEL);
+        const numeral = transformedPoints(ctx.calls).find((p) => p.method === "fillText" && p.text === c.label)!;
+        const onScreen = (p: Vector3) => projectPoint(pin, p);
+        const [h, t, n] = [onScreen(hub), onScreen(tip), onScreen(onFace(c.dial, numeral.x, numeral.y, size))];
+        const angle = (q: { x: number; y: number }) => Math.atan2(q.y - h.y, q.x - h.x);
+        const miss = Math.abs(Math.atan2(Math.sin(angle(t) - angle(n)), Math.cos(angle(t) - angle(n)))) * DEG;
+        expect(miss, `${c.dial}: the needle against its numeral ${c.label}, degrees on the screen`).toBeLessThan(2);
+      }
+    } finally {
+      aircraft.update(INITIAL_VISUAL_STATE, 1 / 60);
+    }
+  });
+
+  it("draws each radio's frequencies in the band its window samples", () => {
+    const size = slots.get("com")!.w;
+    const band = size / TRAINER_RADIO_WINDOW_ASPECT;
+    const ctx = createRecordingContext();
+    drawTrainerCom(ctx, size, size, DISPLAY_STATE_LEVEL);
+    const texts = transformedPoints(ctx.calls).filter((p) => p.method === "fillText");
+    expect(texts.map((p) => p.text)).toEqual(["COM", "122.80", "121.50"]);
+    for (const p of texts) expect(Math.abs(p.y - size / 2), `"${p.text}" in the window's band`).toBeLessThan(band / 2);
+  });
+
+  it("builds the radio stack: two units 160 x 40 mm, each with a window and two knobs, right of the dials, in the frame", () => {
+    const fittings = named("trainer-panel-fittings");
+    const merged = fittings.metadata?.mergedFrom as string[];
+    for (const unit of TRAINER_RADIO.units) {
+      expect(merged).toContain(`trainer-${unit}-body`);
+      expect(merged).toEqual(expect.arrayContaining([`trainer-${unit}-knob-0`, `trainer-${unit}-knob-1`]));
+    }
+    const v = worldVertices(fittings);
+    for (const { unit, frame } of trainerRadioFrames()) {
+      const local = v.map((p) => p.subtract(frame.origin)).map((d) => ({ x: Vector3.Dot(d, frame.across), y: Vector3.Dot(d, frame.up), a: Vector3.Dot(d, frame.out) }));
+      const body = local.filter((p) => Math.abs(p.x) <= 0.08 + 1e-6 && Math.abs(p.y) <= 0.02 + 1e-6 && p.a <= TRAINER_RADIO.proud + 1e-6 && p.a > 0);
+      expect(Math.max(...body.map((p) => p.x)) - Math.min(...body.map((p) => p.x)), `${unit}: 160 mm across`).toBeCloseTo(0.16, 4);
+      expect(Math.max(...body.map((p) => p.y)) - Math.min(...body.map((p) => p.y)), `${unit}: 40 mm high`).toBeCloseTo(0.04, 4);
+      const centre = projectPoint(pin, frame.origin);
+      expect(centre.x, `${unit}: right of the dials`).toBeGreaterThan(projectPoint(pin, frameOf("altimeter").origin).x);
+      for (const q of [centre, projectPoint(pin, frame.origin.add(frame.across.scale(0.08)))]) {
+        expect(q.x).toBeLessThan(W);
+        expect(q.y).toBeLessThan(H);
+      }
+    }
+  });
+
+  it("puts a row of four rocker switches under the dials, in the frame", () => {
+    const merged = named("trainer-panel-fittings").metadata?.mergedFrom as string[];
+    for (let k = 0; k < 4; k += 1) expect(merged).toEqual(expect.arrayContaining([`trainer-switch-${k}-base`, `trainer-switch-${k}-paddle`]));
+    const frames = trainerSwitchFrames();
+    expect(frames).toHaveLength(TRAINER_SWITCHES.across.length);
+    const dialBottom = projectPoint(pin, frameOf("airspeed").origin.subtract(frameOf("airspeed").up.scale(0.04))).y;
+    for (const frame of frames) {
+      const q = projectPoint(pin, frame.origin.subtract(frame.up.scale(TRAINER_SWITCHES.base.halfHeight)));
+      expect(q.y, "below the dials").toBeGreaterThan(dialBottom);
+      expect(q.y, "in the frame").toBeLessThan(H);
+    }
+  });
+
+  it("leaves no more than 240,000 px of bare board at 1080p (it was 323,995; the PM asks 200,000)", () => {
+    const meshes = scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const board = meshes.indexOf(named("trainer-instrument-panel"));
+    let px = 0;
+    for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === board) px += 1;
+    expect(px).toBeLessThanOrEqual(240_000);
+    expect(px).toBeGreaterThan(150_000);
+  });
+});
+

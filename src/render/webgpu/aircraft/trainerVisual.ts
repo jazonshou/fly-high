@@ -18,7 +18,7 @@ import {
   setCockpitVisibility,
   type CommonRig,
 } from "./airframeRig";
-import { solidified } from "./cockpit/cockpitPrimitives";
+import { bezelRimEmissive, solidified } from "./cockpit/cockpitPrimitives";
 import { buildTrainerCockpit } from "./cockpit/trainerCockpit";
 import { AircraftBuildContext } from "./builders";
 import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
@@ -630,6 +630,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // them invisible until cockpit view is entered and never a shadow caster.
   const cockpit = buildTrainerCockpit(build, root, {
     interior,
+    dark,
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,
@@ -870,6 +871,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
     cockpitParts: rig.cockpitParts,
     cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
     meshes: build.meshes,
+    // the dial faces and the radios' windows carry the display atlas where there is a 2D canvas (S2)
+    displaysLive: cockpit.displaysLive,
     update(state, deltaSeconds) {
       if (disposed) return;
       const delta = safeAircraftAnimationDelta(deltaSeconds);
@@ -898,6 +901,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
       applyLamp(strobeLamp, lights.strobe);
       applyLamp(landingLamp, lights.landing);
       applyGlow(instrumentMarking, lights.cockpitGlow);
+      // the dials' bezels: the shared rim's own law (`bezelRimEmissive`), the Global's and the 747's
+      cockpit.bezelMaterial.emissiveIntensity = bezelRimEmissive(lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;

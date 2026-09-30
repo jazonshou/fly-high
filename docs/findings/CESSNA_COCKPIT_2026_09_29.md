@@ -1,7 +1,8 @@
 # The Cessna's cockpit: from boxes to a cabin
 
-**Status: steps 1 (the deck and the board) and 3 (the A-pillars and the door
-frames) built. Steps 2, 4, 5 and 6 follow in that order, one commit each.**
+**Status: steps 1 (the deck and the board), 3 (the A-pillars and the door frames)
+and 2 (the panel's face) built. Steps 4, 5 and 6 follow in that order, one commit
+each.**
 
 Jason, 2026-09-29: *"no need to go overboard, but make sure the details are
 there"*; two or three main dials are enough; the cockpit should feel real, with
@@ -302,4 +303,121 @@ guarantee, and it is not counted.
 
 Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's loft-crown digests are re-pinned on
 its line: seam 27cfab12 -> 69e4f7c8, taper 9d958c4a -> 5e234af0.
+
+## S2: the panel's face
+
+**What was there.** Three flat discs, 8 mm thick with 90 degree rims, their faces
+plain dark with no marks, on an empty board: 283,906 px of bare board after S3.
+
+**What is there now.** The draw count is unchanged: the three gauge meshes became
+three others.
+
+- **`trainer-dial-faces`**, the display atlas's screens: the three dial faces and
+  the two radios' windows.
+  - **The faces** are static pages of a new atlas layout, `TRAINER_DISPLAYS`:
+    square 256-texel slots, mipmapped, drawn once, since nothing on them moves.
+  - **Airspeed:** the 150's handbook arcs (white 42-85, green 47-107, yellow
+    107-141) and the red line at 141, a mark every 5 knots from 40, numerals
+    every 20.
+  - **Altimeter:** a mark every 20 feet, numerals 0 to 9.
+  - **Attitude:** a bank scale (10, 20, 30, 45, 60, 90 each side) and the index,
+    in the 5 mm ring round the ball.
+  - **The marks sit at the needles' angles.** The pages call the same mapping
+    functions the needles are turned by (`airspeedNeedleDegrees`,
+    `altimeterNeedleDegrees`), so a needle points at the number it reads.
+  - **Each part gets its slot's UVs before the merge.** U runs with the pilot's
+    right; V runs against up, as the screens' do.
+- **`trainer-dial-bezels`**, on the shared rim (`BEZEL_RIM`) and its glow law,
+  driven from the trainer's `setLightState`. Each bezel is a ring 6 mm wide, 3 mm
+  proud, with a 2 mm 45 degree chamfer outside and a 1 mm one inside, round a
+  face recessed 2 mm.
+  - **Each is one solid**, not the Global's frame plus rim. Two solids each close
+    themselves at the chamfer's shoulder with a face 135 degrees to their front,
+    and the pilot sees that edge.
+  - **The chamfers are shaded as rounds.** Their ends take the faces' normals
+    either side, so they read as eased edges. A flat-shaded 45 degree chamfer is a
+    split edge exactly at the census's threshold.
+- **`trainer-panel-fittings`**:
+  - **the radio stack:** two units 160 x 40 mm with 3 mm rounded edges at the
+    panel's centre, right of the dials. Each has a raised window (COM 122.80,
+    NAV 110.50 on the atlas) and two knobs.
+  - **four rocker switches** under the airspeed dial and the attitude indicator.
+- **The needles and the ball, restaged into the well.**
+  - **The needles** are 1.2 mm thick (the hub 1.6), 0.3 mm off the face.
+  - **The ball** is 0.029 in radius (it was 0.036), 0.6 mm thick, and its bar
+    stands 2.7 mm proud, under the bezel's front at 3.
+- **One new primitive, `loopSolid`** (cockpitPrimitives, append-only). It carries
+  a profile round a circle or a rounded rectangle, shaded smooth round the loop
+  and flat across the profile, except for rounds. A band between two points at
+  u = -radius is the inside of a capped rectangle and is left out: made, its
+  corners met the visible cap in 90 degree edges.
+
+**Measured** (1080p, the census, near-plane clipped):
+
+| | S3 | S2 |
+|---|---|---|
+| dial rim hard edges | 3 (the discs' rims) | 0 |
+| hard edges on the faces, the bezels, the fittings | none of them existed | 0 |
+| airspeed marks: count, nearest on the screen, thinnest | none | 25, 9.8 px apart, 1.83 px |
+| attitude marks | none | 12, 10.5 px apart, 1.71 px |
+| altimeter marks | none | 50, 7.5 px apart, 1.71 px |
+| visible face | the 80 mm disc | 123 px across |
+| bare board px | 283,906 | 238,996 |
+| cockpit draws | 15 | 15 |
+| trainer build (Node, cold / warm) | 229 / 78 ms | 213 / 101 ms |
+
+**Not met: the bare board, 238,996 against the PM's 200,000.** The two 160 x 40 mm
+units cover about 40,000 px and the four rockers about 2,000; the right third of
+the board is still bare. A 150 carries a tachometer and a small engine cluster
+(oil temperature and pressure, fuel) right of the radios. On the atlas those
+would cost no draw and bring the board to about 190,000. They are asked of the
+PM, not built. The pin ratchets the board at 240,000.
+
+**The census's depth tolerance.** It is 1.5 mm plus 0.4% of the distance, 4.3 mm
+at the dials, and it read BURIED edges within it as seen. The backs 1 mm into the
+board showed 428 false hard edges on the bezels. Everything's back is now 6 mm in,
+the paddles' 12: a paddle's back, rocked 12 degrees, stood only 4.5 mm under its
+base's face. The pins use the same test, so the same margin applies to them.
+
+**Pins** (`tests/render.cockpit-trainer.test.ts`, "the Cessna's panel face"):
+- the bezel's geometry, and its material and glow law;
+- the faces as the atlas's screens, each slot mapped the right way round, and
+  flat where there is no canvas;
+- the marks: at least 12 per dial inside the visible face, 3 px apart and 1.2 px
+  wide on the screen;
+- the numerals and the arcs;
+- the needle against its numeral on the screen: 100 knots at the 100, 500 feet at
+  the 5, within 2 degrees;
+- the radios' text inside their windows' band;
+- the radio stack's size and place, and the switches' row;
+- the bare board;
+- no hard edge on the three new meshes.
+
+The instruments pins moved with the restaging: the needle's origin on the built
+face's centre, its 0.9 mm stand-off, and the ball in its well. The HUD's kit dial
+rectangles (`tests/support/cockpitDisplayRects.ts`) now describe the face as built
+and the bezel round it; the 2D HUD layout did not move.
+
+**Mutations.** Six are caught, each by its pin:
+
+| mutation | caught by |
+|---|---|
+| the airspeed page's scale 150 against the needle's 160 | the marks, numerals and needle pins |
+| the face flush with the bezel's front | the bezel, ball and hard-edge pins |
+| a square inner bezel edge | the hard-edge pin |
+| the atlas's v running with up | the UV pin |
+| hairline minor marks | the marks pin |
+| the capped rectangle's inner wall made | the hard-edge pin |
+
+**Still owed: a GPU check.** Gate A must compile the trainer's new display
+material on the adapter against the 15-of-16 budget, which no Node test can see.
+A live frame is also owed, to see the pages the way the texture draws them.
+
+**Mesh-by-mesh against S3** (fc9579e). On the trainer:
+- the three gauge meshes are gone, and the faces, bezels and fittings are new;
+- the two needles and the ball's three parts moved;
+- the other 58 of 66 meshes are bit-identical.
+
+Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
+loft-crown digests are re-pinned on its line: seam 32cb1a38, taper 592b2530.
 
