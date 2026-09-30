@@ -137,16 +137,44 @@ changes.
   selection that is not bit-identical moves pins, and those can only be
   re-measured by the rig on a quiet host.
 
-### P6 — Shadow-map submission at tier 0 (visual trade-off; needs Jason)
+### P6 — Render-target passes at tier 0 (a visual trade-off; Jason chooses)
 
-- **The cost.** Shadow RTT rendering is 13.5% of the throttled main thread
-  inclusive (2 cascades, 900 m).
-- **Options:**
-  - alternate the cascade updates across frames;
-  - update the far cascade at half rate;
-  - skip casters below a screen-size threshold.
-- **Decision.** Each changes pixels, so Jason chooses. Pins move only through
-  the rig.
+**What the RTT cost is.** The profile attributes the 13.5% "RTT" cost to two
+per-frame passes, both started from the frame graph's `scene.render`:
+
+| Pass | Throttled main thread | Per 4× frame | What it is |
+| --- | ---: | ---: | --- |
+| Cloud-march depth pass | 7.4% | ≈ 1.5 ms | A `DepthRenderer` over bulk terrain every frame (`AtmosphereGpuResources.ts:205`), so the cloud ray march can clip against the ground. |
+| Sun shadow map | 6.1% | ≈ 1.2 ms | CSM, 2 cascades, 1,024², 900 m. |
+
+**Why only frequency and caster count help.** The throttle slows only the
+main thread, and draw submission, not resolution, is what costs CPU here.
+Rendering these passes at a lower resolution would save nothing on this bar.
+
+**Candidates (tier 0 only):**
+
+| Option | Saving (share of throttled main thread) | Visual cost |
+| --- | ---: | --- |
+| (a) Shadow map at half rate (`refreshRate = 2`) | ~3% | Shadows update at half the frame rate; the aircraft's own shadow can visibly lag in a turn. |
+| (b) Cloud-depth pass at half rate | ~3.7% | Where cloud meets terrain, the clip edge lags one frame at speed. |
+| (c) Both | ~7% | ≈ +3-4 fps at 4× cruise, since each 1% of the frame is ≈ 0.5 fps at 50 fps. |
+
+**Rig pins are not affected.** The capture rig shoots at tier 1, so a
+tier-0-only change moves no pinned baseline or draw ceiling.
+
+**Picture pair for Jason.**
+- Use the capture rig at tier 0 through its sweep settings (`SWEEP_QUALITY`,
+  `SWEEP_MODE`), on the before commit and on an experiment commit.
+- Shots: `runway-on-approach`, `motion-banked-turn`,
+  `forest-500ft-sunbehind`, `mountain-close`.
+- Put the throttle probe's 4× fps next to the pictures.
+- There is no runtime toggle: the test-only profile override may not be
+  called from `src/`, and its guard test enforces that.
+
+**Recommendation: defer.**
+- Throughput already passes. P6 buys headroom, not a bar.
+- Take it to Jason only if the take-off margin (31 fps against 24) is still
+  thin after P1-P3 and P5-C.
 
 ### P7 — React HUD cadence (`src/game/FlightGame.tsx`, `src/ui/Hud.tsx`)
 
