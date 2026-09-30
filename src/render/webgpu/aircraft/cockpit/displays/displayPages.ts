@@ -1,5 +1,5 @@
 import type { DisplayContext2D, DisplayPaint, DisplayState } from "./displayState";
-import { airspeedNeedleDegrees, altimeterNeedleDegrees, FEET_PER_METRE, KNOTS_PER_METRE_PER_SECOND } from "../instrumentMappings";
+import { airspeedNeedleDegrees, altimeterNeedleDegrees, FEET_PER_METRE, KNOTS_PER_METRE_PER_SECOND, tachometerNeedleDegrees } from "../instrumentMappings";
 
 /**
  * The 747-400's four glass-cockpit pages, drawn flat onto a 2D canvas context:
@@ -55,7 +55,9 @@ export type DisplayPage =
   | "trainer-attitude-ring"
   | "trainer-altimeter"
   | "trainer-com"
-  | "trainer-nav";
+  | "trainer-nav"
+  | "trainer-tach"
+  | "trainer-engine";
 export type DrawPage = (ctx: DisplayContext2D, w: number, h: number, state: DisplayState) => void;
 
 export interface DisplaySlot {
@@ -986,6 +988,135 @@ function drawTrainerRadio(label: string, active: string, standby: string): DrawP
 export const drawTrainerCom: DrawPage = drawTrainerRadio("COM", "122.80", "121.50");
 export const drawTrainerNav: DrawPage = drawTrainerRadio("NAV", "110.50", "113.90");
 
+/**
+ * THE TACHOMETER AND THE ENGINE CLUSTER (the Cessna pass, S2b): detail on the type's board, not flight instruments. The
+ * tachometer is a round dial like the three (its needle is geometry, turned by the engine's RPM); the cluster is one
+ * static face of four small gauges whose needles are drawn on the page.
+ */
+
+/** The Cessna 150's tachometer (its handbook, the O-200-A): its green arc and red line, RPM, and the needle's full scale. */
+export const TRAINER_TACH_MARKINGS = Object.freeze({
+  greenFrom: 2_000,
+  greenTo: 2_750,
+  /** The catalogue's maximum (`engineReadout.maximum`), which the engine never passes. */
+  redLine: 2_750,
+  fullScale: 3_500,
+});
+
+const tachDegrees = (rpm: number) => tachometerNeedleDegrees(rpm, TRAINER_TACH_MARKINGS.fullScale);
+
+/** The tachometer's marks: every 100 RPM from 0 to 3,500, major and numbered (in hundreds) every 500. */
+export function trainerTachTicks(): readonly DialTick[] {
+  const ticks: DialTick[] = [];
+  for (let rpm = 0; rpm <= TRAINER_TACH_MARKINGS.fullScale; rpm += 100) {
+    ticks.push({ degrees: tachDegrees(rpm), major: rpm % 500 === 0, ...(rpm % 500 === 0 ? { label: String(rpm / 100) } : {}) });
+  }
+  return ticks;
+}
+
+/** The tachometer: the green arc and the red line, a mark every 100 RPM, numerals in hundreds every 500. */
+export const drawTrainerTach: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { cx, cy, r } = trainerDialFace(w, h);
+  const m = TRAINER_TACH_MARKINGS;
+  dialArc(ctx, cx, cy, r, tachDegrees(m.greenFrom), tachDegrees(m.greenTo), 0.83, 0.08, TRAINER_FACE_COLOURS.green);
+  const redFrom = dialPoint(cx, cy, r * 0.72, tachDegrees(m.redLine));
+  const redTo = dialPoint(cx, cy, r * 0.985, tachDegrees(m.redLine));
+  ctx.strokeStyle = TRAINER_FACE_COLOURS.red;
+  ctx.lineWidth = r * 0.05;
+  ctx.beginPath();
+  ctx.moveTo(redFrom.x, redFrom.y);
+  ctx.lineTo(redTo.x, redTo.y);
+  ctx.stroke();
+  const ticks = trainerTachTicks();
+  // wider than the three dials' marks: this face is 27 mm to their 34, and further from the eye
+  dialTicks(ctx, cx, cy, r, ticks, { major: 0.8, minor: 0.88 }, { major: 0.05, minor: 0.036 });
+  dialNumerals(ctx, cx, cy, r, ticks, 0.6, 0.21);
+  dialCaption(ctx, cx, cy - r * 0.3, r, 0.13, "RPM");
+  dialCaption(ctx, cx, cy + r * 0.34, r, 0.11, "x100");
+};
+
+/**
+ * The engine cluster's face, millimetres: its visible width and height, and the margin of it buried under its bezel all
+ * round. The face maps onto a band of its square slot of the buried face's shape (`trainerEngineBand`).
+ */
+export const TRAINER_ENGINE_CLUSTER_MM = Object.freeze({ width: 125, height: 30, bury: 1.5 });
+
+/** The band of a `w` x `h` slot the cluster's face maps onto, and the visible face inside it, in the slot's pixels. */
+export function trainerEngineBand(w: number, h: number): {
+  band: { x: number; y: number; w: number; h: number };
+  face: { x: number; y: number; w: number; h: number };
+} {
+  const c = TRAINER_ENGINE_CLUSTER_MM;
+  const bandHeight = (w * (c.height + 2 * c.bury)) / (c.width + 2 * c.bury);
+  const faceWidth = (w * c.width) / (c.width + 2 * c.bury);
+  const faceHeight = (bandHeight * c.height) / (c.height + 2 * c.bury);
+  return {
+    band: { x: 0, y: (h - bandHeight) / 2, w, h: bandHeight },
+    face: { x: (w - faceWidth) / 2, y: (h - faceHeight) / 2, w: faceWidth, h: faceHeight },
+  };
+}
+
+/** The cluster's four gauges, left to right: their group, their letter, their green range and their fixed reading (0 to 1). */
+export const TRAINER_ENGINE_GAUGES = Object.freeze([
+  Object.freeze({ group: "FUEL", letter: "L", green: [0.25, 1] as const, reading: 0.8 }),
+  Object.freeze({ group: "FUEL", letter: "R", green: [0.25, 1] as const, reading: 0.75 }),
+  Object.freeze({ group: "OIL", letter: "T", green: [0.3, 0.8] as const, reading: 0.55 }),
+  Object.freeze({ group: "OIL", letter: "P", green: [0.3, 0.8] as const, reading: 0.6 }),
+]);
+
+/** Each small gauge's scale sweeps this far either side of 12 o'clock, about a pivot near the face's bottom. */
+const ENGINE_GAUGE_SWEEP_DEGREES = 40;
+
+/** A small gauge's angle for a reading from 0 to 1, degrees clockwise from 12 o'clock. */
+export function trainerEngineGaugeDegrees(reading: number): number {
+  return -ENGINE_GAUGE_SWEEP_DEGREES + 2 * ENGINE_GAUGE_SWEEP_DEGREES * Math.min(1, Math.max(0, reading));
+}
+
+/** The engine cluster: fuel left and right, oil temperature and pressure, each a small arc with its needle drawn on. */
+export const drawTrainerEngine: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { face } = trainerEngineBand(w, h);
+  const cell = face.w / TRAINER_ENGINE_GAUGES.length;
+  const r = face.h * 0.64;
+  TRAINER_ENGINE_GAUGES.forEach((gauge, k) => {
+    const cx = face.x + cell * (k + 0.5);
+    const cy = face.y + face.h * 0.96;
+    dialArc(ctx, cx, cy, r, trainerEngineGaugeDegrees(0), trainerEngineGaugeDegrees(1), 0.93, 0.05, TRAINER_FACE_COLOURS.white);
+    dialArc(ctx, cx, cy, r, trainerEngineGaugeDegrees(gauge.green[0]), trainerEngineGaugeDegrees(gauge.green[1]), 0.84, 0.1, TRAINER_FACE_COLOURS.green);
+    // three marks, empty, half and full, and the needle, in the scale's colour
+    dialTicks(ctx, cx, cy, r, [0, 0.5, 1].map((reading) => ({ degrees: trainerEngineGaugeDegrees(reading), major: true })), { major: 0.74, minor: 0.74 }, { major: 0.06, minor: 0.06 });
+    const tip = dialPoint(cx, cy, r * 0.9, trainerEngineGaugeDegrees(gauge.reading));
+    ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+    ctx.lineWidth = r * 0.08;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+    // the letter low on the empty side, where no needle stands
+    const letter = dialPoint(cx, cy, r * 0.5, trainerEngineGaugeDegrees(0));
+    ctx.font = `bold ${Math.round(face.h * 0.2)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+    ctx.fillText(gauge.letter, letter.x, letter.y);
+  });
+  // the two groups' names over their pairs, and a rule between the pairs
+  for (const [group, from] of [["FUEL", 0], ["OIL", 2]] as const) {
+    ctx.font = `${Math.round(face.h * 0.17)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+    ctx.fillText(group, face.x + cell * (from + 1), face.y + face.h * 0.13);
+  }
+  ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+  ctx.lineWidth = face.h * 0.03;
+  ctx.beginPath();
+  ctx.moveTo(face.x + face.w / 2, face.y + face.h * 0.08);
+  ctx.lineTo(face.x + face.w / 2, face.y + face.h * 0.92);
+  ctx.stroke();
+};
+
 const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
   pfd: drawPfd,
   nd: drawNd,
@@ -998,6 +1129,8 @@ const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
   "trainer-altimeter": drawTrainerAltimeter,
   "trainer-com": drawTrainerCom,
   "trainer-nav": drawTrainerNav,
+  "trainer-tach": drawTrainerTach,
+  "trainer-engine": drawTrainerEngine,
 };
 
 /**

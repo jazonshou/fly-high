@@ -20,7 +20,9 @@ import {
   TRAINER_GLARESHIELD,
   TRAINER_OVERHEAD,
   TRAINER_RADIO,
+  TRAINER_ENGINE_CLUSTER,
   TRAINER_SWITCHES,
+  TRAINER_TACH,
   TRAINER_YOKE,
   trainerCompassCentre,
   trainerYokeHub,
@@ -29,7 +31,9 @@ import {
   trainerDialPlacements,
   trainerRadioFrames,
   trainerRailCentre,
+  trainerEngineClusterFrame,
   trainerSwitchFrames,
+  trainerTachFrame,
 } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
 import {
   TRAINER_ASI_MARKINGS,
@@ -39,6 +43,12 @@ import {
   drawTrainerAsi,
   drawTrainerAttitudeRing,
   drawTrainerCom,
+  drawTrainerEngine,
+  drawTrainerTach,
+  TRAINER_ENGINE_CLUSTER_MM,
+  TRAINER_ENGINE_GAUGES,
+  TRAINER_TACH_MARKINGS,
+  trainerEngineBand,
   type DrawPage,
 } from "../src/render/webgpu/aircraft/cockpit/displays/displayPages";
 import { TRAINER_DISPLAYS, displayAtlasHeight, displayAtlasWidth, displaySlots } from "../src/render/webgpu/aircraft/cockpit/displays/displayAtlas";
@@ -159,19 +169,22 @@ afterAll(() => {
 });
 
 describe("the trainer's cockpit parts", () => {
-  it("have exactly three dials, airspeed, attitude and altimeter, and nothing else on the panel", () => {
+  it("have exactly three main dials, airspeed, attitude and altimeter, and the engine's two gauges as the board's detail", () => {
     // Jason: "the trainer should only have 3 dials" (2026-09-23). Read off the BUILT meshes and off the
-    // placements the HUD survey projects, so a fourth dial left in either place fails here by name.
+    // placements the HUD survey projects, so a fourth MAIN dial left in either place fails here by name. The
+    // tachometer and the engine cluster (S2b, the PM's call) are the type's engine gauges, smaller and off the row.
     const parts = cockpitOnly.map((part) => part.name);
-    // the faces are one mesh (the display atlas's screens): the three dials' and the two radios' windows (S2)
+    // the faces are one mesh (the display atlas's screens): the three dials', the two radios' windows (S2), the
+    // tachometer's and the engine cluster's (S2b)
     expect(named("trainer-dial-faces").metadata?.mergedFrom).toEqual([
       "trainer-airspeed-face", "trainer-attitude-face", "trainer-altimeter-face", "trainer-com-window", "trainer-nav-window",
+      "trainer-tach-face", "trainer-engine-face",
     ]);
-    expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle"]);
+    expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle", "trainer-tach-needle"]);
     expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
-    // 15 when the Cessna pass began, the headliner (S4) and the yokes (S6) since: the PM's budget is 8 more draws over
-    // the pass
-    expect(parts).toHaveLength(17);
+    // 15 when the Cessna pass began, the headliner (S4), the yokes (S6) and the tachometer's needle (S2b) since: the
+    // PM's budget is 8 more draws over the pass
+    expect(parts).toHaveLength(18);
   });
 
   it("are within the pass's budget of eight more meshes than its first 15, and keep the dial names", () => {
@@ -179,7 +192,7 @@ describe("the trainer's cockpit parts", () => {
     // instead: sky, ground, pitch bar)
     const dialNames = [
       "trainer-dial-faces", "trainer-dial-bezels",
-      ...["airspeed", "altimeter"].map((dial) => `trainer-${dial}-needle`),
+      ...["airspeed", "altimeter", "tach"].map((dial) => `trainer-${dial}-needle`),
       "trainer-attitude-sky", "trainer-attitude-ground", "trainer-attitude-pitch-bar",
     ];
     for (const name of dialNames) expect(cockpitOnly.map((part) => part.name)).toContain(name);
@@ -1266,12 +1279,16 @@ describe("the Cessna's panel face", () => {
   const slots = new Map(displaySlots(TRAINER_DISPLAYS).map((slot) => [slot.screen, slot]));
   const faceMap = TRAINER_BEZEL.faceRadius / TRAINER_DIAL_FACE_FRACTION;
   const faceFront = TRAINER_BEZEL.proud - TRAINER_BEZEL.faceRecess;
-  const frameOf = (dial: string) => trainerDialFrames().find((f) => f.name === dial)!.frame;
+  /** A round face's plane: the three dials' and the tachometer's (S2b). */
+  const frameOf = (dial: string) => (dial === "tach" ? trainerTachFrame() : trainerDialFrames().find((f) => f.name === dial)!.frame);
+  /** A round face's disc, which its slot spans: the tachometer's is smaller. */
+  const faceMapOf = (dial: string) => (dial === "tach" ? TRAINER_TACH.faceRadius / TRAINER_DIAL_FACE_FRACTION : faceMap);
 
   /** A page's point (its slot's pixels) where it lands on the dial's face: the face disc spans the whole slot. */
   function onFace(dial: string, x: number, y: number, size: number): Vector3 {
     const f = frameOf(dial);
-    return f.origin.add(f.across.scale((x / size - 0.5) * 2 * faceMap)).add(f.up.scale((0.5 - y / size) * 2 * faceMap)).add(f.out.scale(faceFront));
+    const m = faceMapOf(dial);
+    return f.origin.add(f.across.scale((x / size - 0.5) * 2 * m)).add(f.up.scale((0.5 - y / size) * 2 * m)).add(f.out.scale(faceFront));
   }
 
   /** A page's marks: each stroked segment in the scale's colour, its ends and its width, in the slot's pixels. */
@@ -1358,7 +1375,7 @@ describe("the Cessna's panel face", () => {
 
   it("draws at least 12 marks on each dial, inside the face the pilot sees, each resolvable at 1080p: 3 px apart and at least 1.2 px wide", () => {
     const size = slots.get("airspeed")!.w;
-    for (const [dial, page, least] of [["airspeed", drawTrainerAsi, 25], ["attitude", drawTrainerAttitudeRing, 12], ["altimeter", drawTrainerAltimeter, 50]] as const) {
+    for (const [dial, page, least] of [["airspeed", drawTrainerAsi, 25], ["attitude", drawTrainerAttitudeRing, 12], ["altimeter", drawTrainerAltimeter, 50], ["tach", drawTrainerTach, 36]] as const) {
       const { found } = marks(page, size);
       expect(found.length, `${dial}: its marks`).toBeGreaterThanOrEqual(least);
       const visible = (size / 2) * TRAINER_DIAL_FACE_FRACTION;
@@ -1373,7 +1390,7 @@ describe("the Cessna's panel face", () => {
       expect(Math.min(...gaps), `${dial}: marks closer than 3 px on the screen`).toBeGreaterThanOrEqual(3);
       // each mark's width on the screen: its stroke's width in the page, in metres on the face, in pixels at its distance
       for (const m of found) {
-        const metres = (m.width / size) * 2 * faceMap;
+        const metres = (m.width / size) * 2 * faceMapOf(dial);
         const at = projectPoint(pin, onFace(dial, m.to.x, m.to.y, size));
         const px = (metres * (H / 2)) / Math.tan(pin.fovY / 2) / at.depth;
         expect(px, `${dial}: a mark too thin to see`).toBeGreaterThanOrEqual(1.2);
@@ -1392,11 +1409,12 @@ describe("the Cessna's panel face", () => {
     expect(TRAINER_ASI_MARKINGS.fullScale, "the page's scale is the needle's").toBe(160);
   });
 
-  it("points each needle at the number it reads: 100 knots at the 100 mark, 500 feet at the 5", () => {
+  it("points each needle at the number it reads: 100 knots at the 100 mark, 500 feet at the 5, 2,500 RPM at the 25", () => {
     const size = slots.get("airspeed")!.w;
     const cases = [
       { dial: "airspeed", state: { airspeed: 100 / KNOTS_PER_METRE_PER_SECOND }, label: "100", page: drawTrainerAsi },
       { dial: "altimeter", state: { altitude: 500 / FEET_PER_METRE }, label: "5", page: drawTrainerAltimeter },
+      { dial: "tach", state: { engineRpm: 2_500 }, label: "25", page: drawTrainerTach },
     ] as const;
     try {
       for (const c of cases) {
@@ -1404,7 +1422,8 @@ describe("the Cessna's panel face", () => {
         const needle = named(`trainer-${c.dial}-needle`);
         needle.computeWorldMatrix(true);
         const hub = needle.getAbsolutePosition();
-        const far = worldVertices(needle).filter((v) => Vector3.Distance(v, hub) > 0.02);
+        // the pointer's end: past 0.02 m on the dials' needles, past 0.017 on the tachometer's, scaled with its face
+        const far = worldVertices(needle).filter((v) => Vector3.Distance(v, hub) > (c.dial === "tach" ? 0.017 : 0.02));
         const tip = far.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / far.length);
         const ctx = createRecordingContext();
         c.page(ctx, size, size, DISPLAY_STATE_LEVEL);
@@ -1465,13 +1484,146 @@ describe("the Cessna's panel face", () => {
     }
   });
 
-  it("leaves no more than 240,000 px of bare board at 1080p (it was 323,995; the PM asks 200,000)", () => {
+  // ---- the tachometer and the engine cluster (S2b) ----
+  /** A point's place in a frame's plane: across it, up it, and out of it toward the pilot. */
+  const inFrame = (frame: ReturnType<typeof trainerTachFrame>) => (v: Vector3) => {
+    const d = v.subtract(frame.origin);
+    return { x: Vector3.Dot(d, frame.across), y: Vector3.Dot(d, frame.up), a: Vector3.Dot(d, frame.out) };
+  };
+  const clusterHalf = { x: TRAINER_ENGINE_CLUSTER_MM.width / 2_000, y: TRAINER_ENGINE_CLUSTER_MM.height / 2_000, bury: TRAINER_ENGINE_CLUSTER_MM.bury / 1_000 };
+
+  it("rings the tachometer and the engine cluster on the dials' section, both smaller than the dials: 27 mm to their 34, and 125 x 30 mm", () => {
+    expect(TRAINER_TACH.faceRadius).toBeLessThan(TRAINER_BEZEL.faceRadius);
+    expect(2 * clusterHalf.y, "the cluster's height against a dial's diameter").toBeLessThan(2 * TRAINER_BEZEL.faceRadius);
+    const bezels = worldVertices(named("trainer-dial-bezels"));
+    const faces = worldVertices(named("trainer-dial-faces"));
+    // the tachometer, round like the three
+    const round = (v: Vector3) => {
+      const p = inFrame(trainerTachFrame())(v);
+      return { r: Math.hypot(p.x, p.y), a: p.a };
+    };
+    const ring = bezels.map(round).filter((p) => p.r < 0.04);
+    expect(Math.min(...ring.map((p) => p.r)), "the tachometer's opening").toBeCloseTo(0.027, 5);
+    expect(Math.max(...ring.map((p) => p.r)), "the tachometer's outside").toBeCloseTo(0.033, 5);
+    expect(Math.max(...ring.map((p) => p.a)), "3 mm proud").toBeCloseTo(0.003, 5);
+    const disc = faces.map(round).filter((p) => p.r < 0.04);
+    expect(Math.max(...disc.map((p) => p.a)), "its face's front").toBeCloseTo(0.001, 5);
+    expect(Math.max(...disc.map((p) => p.r)), "its face's edge under the ring").toBeGreaterThan(0.027);
+    expect(Math.max(...disc.map((p) => p.r)), "its face's edge under the ring").toBeLessThan(0.027 + 0.006 - 0.002);
+    // the cluster, a rounded rectangle in a ring of the same section
+    const near = (p: { x: number; y: number; a: number }) => Math.abs(p.x) < clusterHalf.x + 0.012 && Math.abs(p.y) < clusterHalf.y + 0.015 && p.a > -0.01;
+    const box = bezels.map(inFrame(trainerEngineClusterFrame())).filter(near);
+    expect(Math.max(...box.map((p) => Math.abs(p.x))), "the ring's outside, across").toBeCloseTo(clusterHalf.x + 0.006, 5);
+    expect(Math.max(...box.map((p) => Math.abs(p.y))), "the ring's outside, up").toBeCloseTo(clusterHalf.y + 0.006, 5);
+    // the loop's straight runs have vertices only at its corners' ends: the opening's top is where the corners start
+    expect(Math.min(...box.filter((p) => Math.abs(p.x) <= clusterHalf.x - TRAINER_ENGINE_CLUSTER.corner + 1e-6).map((p) => Math.abs(p.y))), "the ring's opening, up").toBeCloseTo(clusterHalf.y, 5);
+    expect(Math.max(...box.map((p) => p.a)), "3 mm proud").toBeCloseTo(0.003, 5);
+    const plate = faces.map(inFrame(trainerEngineClusterFrame())).filter(near);
+    expect(Math.max(...plate.map((p) => p.a)), "the cluster's face's front").toBeCloseTo(0.001, 5);
+    expect(Math.max(...plate.map((p) => Math.abs(p.x))), "its face's edge under the ring, across").toBeCloseTo(clusterHalf.x + clusterHalf.bury, 5);
+    expect(Math.max(...plate.map((p) => Math.abs(p.y))), "its face's edge under the ring, up").toBeCloseTo(clusterHalf.y + clusterHalf.bury, 5);
+  });
+
+  it("keeps both apart from the main row, in the frame and in full view: the tachometer right of the radios and lower, the cluster under the stack", () => {
+    const row = projectPoint(pin, frameOf("attitude").origin);
+    const [com, nav] = trainerRadioFrames().map((unit) => unit.frame);
+    const tach = trainerTachFrame();
+    const cluster = trainerEngineClusterFrame();
+    const tachLeft = projectPoint(pin, tach.origin.subtract(tach.across.scale(TRAINER_TACH.faceRadius + TRAINER_BEZEL.ringWidth)));
+    expect(tachLeft.x, "the tachometer right of the radio stack").toBeGreaterThan(projectPoint(pin, com!.origin.add(com!.across.scale(TRAINER_RADIO.width / 2))).x);
+    expect(projectPoint(pin, tach.origin).y, "the tachometer under the row's centre").toBeGreaterThan(row.y);
+    const clusterTop = projectPoint(pin, cluster.origin.add(cluster.up.scale(clusterHalf.y + TRAINER_BEZEL.ringWidth)));
+    expect(clusterTop.y, "the cluster under the radio stack").toBeGreaterThan(projectPoint(pin, nav!.origin.subtract(nav!.up.scale(TRAINER_RADIO.height / 2))).y);
+    // in full view: over a grid on each face, the first surface the eye meets is the faces mesh (on the tachometer, or
+    // its needle); the pilot's right horn stands in front of the board just left of the cluster
+    const meshes = scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const faces = meshes.indexOf(named("trainer-dial-faces"));
+    const needle = meshes.indexOf(named("trainer-tach-needle"));
+    const share = (frame: typeof tach, inside: (x: number, y: number) => boolean, allowed: number[]) => {
+      let total = 0;
+      let seen = 0;
+      // a grid over the whole face: every sample the predicate keeps
+      for (let x = -0.1; x <= 0.1; x += 0.002) {
+        for (let y = -0.04; y <= 0.04; y += 0.002) {
+          if (!inside(x, y)) continue;
+          const q = projectPoint(pin, frame.origin.add(frame.across.scale(x)).add(frame.up.scale(y)).add(frame.out.scale(faceFront)));
+          expect(q.x >= 0 && q.x < W && q.y >= 0 && q.y < H, "in the frame").toBe(true);
+          total += 1;
+          if (allowed.includes(raster.mesh[Math.floor(q.y) * W + Math.floor(q.x)]!)) seen += 1;
+        }
+      }
+      expect(total).toBeGreaterThan(100);
+      return seen / total;
+    };
+    expect(share(tach, (x, y) => Math.hypot(x, y) < TRAINER_TACH.faceRadius - 0.002, [faces, needle]), "the tachometer's face seen").toBeGreaterThan(0.99);
+    expect(share(cluster, (x, y) => Math.abs(x) < clusterHalf.x - 0.002 && Math.abs(y) < clusterHalf.y - 0.002, [faces]), "the cluster's face seen").toBeGreaterThan(0.99);
+  });
+
+  it("maps the tachometer's face and the engine cluster's onto their own slots, the cluster onto its band", () => {
+    const faces = named(TRAINER_DISPLAYS.screensMesh);
+    const atlas = { w: displayAtlasWidth(TRAINER_DISPLAYS), h: displayAtlasHeight(TRAINER_DISPLAYS) };
+    const positions = worldVertices(faces);
+    const uvs = faces.getVerticesData(VertexBuffer.UVKind)!;
+    const normals = faces.getVerticesData(VertexBuffer.NormalKind)!;
+    const front = (frame: ReturnType<typeof trainerTachFrame>, near: (p: { x: number; y: number }) => boolean) =>
+      positions.map((p, i) => ({ p: inFrame(frame)(p), i })).filter(({ p, i }) =>
+        near(p) && Math.abs(p.a - faceFront) < 1e-5 && Vector3.Dot(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), frame.out) > 0.999);
+    const tachSlot = slots.get("tach")!;
+    const m = faceMapOf("tach");
+    const tachFront = front(trainerTachFrame(), (p) => Math.hypot(p.x, p.y) < 0.03);
+    expect(tachFront.length, "the tachometer's face's front").toBeGreaterThan(40);
+    for (const { p, i } of tachFront) {
+      expect(uvs[i * 2]! * atlas.w, "tachometer: u").toBeCloseTo(tachSlot.x + (p.x / (2 * m) + 0.5) * tachSlot.w, 3);
+      expect(uvs[i * 2 + 1]! * atlas.h, "tachometer: v").toBeCloseTo(tachSlot.y + (0.5 - p.y / (2 * m)) * tachSlot.h, 3);
+    }
+    const slot = slots.get("engine")!;
+    const half = { x: clusterHalf.x + clusterHalf.bury, y: clusterHalf.y + clusterHalf.bury };
+    const { band } = trainerEngineBand(slot.w, slot.h);
+    expect(band.h, "the band has the buried face's shape").toBeCloseTo((slot.w * half.y) / half.x, 6);
+    const clusterFront = front(trainerEngineClusterFrame(), (p) => Math.abs(p.x) < half.x + 0.001 && Math.abs(p.y) < half.y + 0.001);
+    expect(clusterFront.length, "the cluster's face's front").toBeGreaterThan(20);
+    for (const { p, i } of clusterFront) {
+      expect(uvs[i * 2]! * atlas.w, "cluster: u").toBeCloseTo(slot.x + (p.x / (2 * half.x) + 0.5) * slot.w, 3);
+      expect(uvs[i * 2 + 1]! * atlas.h, "cluster: v").toBeCloseTo(slot.y + band.y + (0.5 - p.y / (2 * half.y)) * band.h, 3);
+    }
+  });
+
+  it("numbers the tachometer in hundreds, 0 to 35, with the 150's green arc and a red line at the catalogue's maximum", () => {
+    const size = slots.get("tach")!.w;
+    expect(marks(drawTrainerTach, size).texts).toEqual(expect.arrayContaining(["0", "5", "10", "15", "20", "25", "30", "35", "RPM"]));
+    const ctx = createRecordingContext();
+    drawTrainerTach(ctx, size, size, DISPLAY_STATE_LEVEL);
+    const colours = ctx.calls.filter((c) => c.method === "set:strokeStyle").map((c) => c.args[0]);
+    for (const colour of ["#1fa83a", "#d22a2a"]) expect(colours, `the arc ${colour}`).toContain(colour);
+    expect(TRAINER_TACH_MARKINGS.redLine, "the red line is the engine's maximum").toBe(aircraftSpec("trainer").engineReadout.maximum);
+  });
+
+  it("draws the engine cluster's four gauges, fuel L and R and oil T and P, inside the face the pilot sees", () => {
+    const size = slots.get("engine")!.w;
+    const { face } = trainerEngineBand(size, size);
+    const ctx = createRecordingContext();
+    drawTrainerEngine(ctx, size, size, DISPLAY_STATE_LEVEL);
+    const points = transformedPoints(ctx.calls);
+    expect(points.filter((p) => p.method === "fillText").map((p) => p.text)).toEqual(expect.arrayContaining(["FUEL", "OIL", "L", "R", "T", "P"]));
+    const drawn = points.filter((p) => p.method === "moveTo" || p.method === "lineTo" || p.method === "fillText");
+    expect(drawn.length).toBeGreaterThan(4 * 3);
+    for (const p of drawn) {
+      expect(p.x, `${p.method} inside the face, across`).toBeGreaterThanOrEqual(face.x - 0.5);
+      expect(p.x).toBeLessThanOrEqual(face.x + face.w + 0.5);
+      expect(p.y, `${p.method} inside the face, up`).toBeGreaterThanOrEqual(face.y - 0.5);
+      expect(p.y).toBeLessThanOrEqual(face.y + face.h + 0.5);
+    }
+    expect(TRAINER_ENGINE_GAUGES.map((g) => g.letter)).toEqual(["L", "R", "T", "P"]);
+  });
+
+  it("leaves no more than 200,000 px of bare board at 1080p (it was 323,995; the PM's accept line)", () => {
     const meshes = scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
     const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
     const board = meshes.indexOf(named("trainer-instrument-panel"));
     let px = 0;
     for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === board) px += 1;
-    expect(px).toBeLessThanOrEqual(240_000);
+    expect(px).toBeLessThanOrEqual(200_000);
     expect(px).toBeGreaterThan(150_000);
   });
 });

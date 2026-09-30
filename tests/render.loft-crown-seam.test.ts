@@ -328,7 +328,11 @@ describe("a loft's crown seam", () => {
       // of the jet, the Global and the 747, are bit-identical.
       // RE-PINNED for S6 (same check, against S5 a06be92): `trainer-yokes` new (both seats' wheels, bosses, columns and
       // collars); the trainer's other 67 of 68, and every mesh of the jet, the Global and the 747, are bit-identical.
-      trainer: "d29a2b1f",
+      // RE-PINNED for S2b (same check, against S6 c154cbb): `trainer-tach-needle` new; `trainer-dial-faces` and
+      // `trainer-dial-bezels` moved (the tachometer's and the engine cluster's faces and rings joined them); the
+      // trainer's other 66 of 69, the two dials' needles included, and every mesh of the jet, the Global and the 747,
+      // are bit-identical.
+      trainer: "12714b2c",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

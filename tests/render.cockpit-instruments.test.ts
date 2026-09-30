@@ -23,14 +23,16 @@ import {
   turnedClockwise,
 } from "./support/cockpitProjection";
 import { flyAt } from "./support/visualStateFromSimulator";
-import { TRAINER_BEZEL, trainerDialPlacements } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
+import { TRAINER_BEZEL, TRAINER_TACH, trainerDialPlacements, trainerTachFrame } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
 
 /**
  * A Cessna dial face's front centre, off the BUILT faces mesh: the front vertex (shaded straight toward the pilot) nearest
  * the dial's axis. The face is a disc whose front is a fan from its centre, so that vertex IS the centre.
  */
 function builtFaceCentre(fixture: { mesh(name: string): AbstractMesh }, dial: string): Vector3 {
-  const placement = trainerDialPlacements().find((p) => p.name === dial)!;
+  // the three dials, and the tachometer (the Cessna pass, S2b), whose face is on the same board
+  const tach = trainerTachFrame();
+  const placement = dial === "tach" ? { centre: tach.origin, normal: tach.out } : trainerDialPlacements().find((p) => p.name === dial)!;
   const mesh = fixture.mesh("trainer-dial-faces");
   const positions = worldVertices(mesh);
   const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
@@ -255,9 +257,9 @@ describe("the Cessna's needles", () => {
 
   it("has each needle's origin on its face's centre, with local X the dial's normal, before and after it turns", () => {
     const { normal } = dialPlane();
-    for (const dial of ["airspeed", "altimeter"]) {
+    for (const dial of ["airspeed", "altimeter", "tach"]) {
       const face = builtFaceCentre(fixture, dial);
-      for (const readings of [{}, { airspeed: 70, altitude: 900 }]) {
+      for (const readings of [{}, { airspeed: 70, altitude: 900, engineRpm: 2_300 }]) {
         show(readings);
         const { mesh, hub } = needle(dial);
         // on the face's front, at its centre, where a needle turns about
@@ -272,15 +274,17 @@ describe("the Cessna's needles", () => {
     const fresh = buildFixture("trainer");
     try {
       const { normal, up } = builtPanelFace(fresh.mesh("trainer-instrument-panel"));
-      for (const dial of ["airspeed", "altimeter"]) {
+      for (const dial of ["airspeed", "altimeter", "tach"]) {
+        // the tachometer's needle is the dials' scaled with its face (27 mm to 34)
+        const scale = dial === "tach" ? TRAINER_TACH.faceRadius / TRAINER_BEZEL.faceRadius : 1;
         const mesh = fresh.mesh(`trainer-${dial}-needle`);
         const hub = mesh.getAbsolutePosition();
-        const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02);
+        const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02 * scale);
         const tip = far.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / far.length);
         const v = tip.subtract(hub);
         // in the dial's plane the pointer is straight up the face; out of it, it stands 0.9 mm in front of the origin (on
         // the face's front): 0.3 mm clear of the face and half its 1.2 mm thickness, inside the bezel's 2 mm well
-        expect(Vector3.Dot(v, up), `${dial}: pointer length up the face`).toBeCloseTo(0.028, 4);
+        expect(Vector3.Dot(v, up), `${dial}: pointer length up the face`).toBeCloseTo(0.028 * scale, 4);
         expect(Vector3.Dot(v, normal), `${dial}: stands in front of its origin, toward the pilot`).toBeCloseTo(0.0009, 5);
         const across = v.subtract(up.scale(Vector3.Dot(v, up))).subtract(normal.scale(Vector3.Dot(v, normal)));
         expect(across.length(), `${dial}: no sideways component`).toBeLessThan(1e-6);
@@ -290,10 +294,11 @@ describe("the Cessna's needles", () => {
     }
   });
 
-  it("turns each needle CLOCKWISE ON THE SCREEN as its reading rises (airspeed, altimeter)", () => {
+  it("turns each needle CLOCKWISE ON THE SCREEN as its reading rises (airspeed, altimeter, tachometer)", () => {
     const cases = [
       { dial: "airspeed", low: { airspeed: 60 / KNOTS }, high: { airspeed: 100 / KNOTS } },
       { dial: "altimeter", low: { altitude: 1_100 / FEET }, high: { altitude: 1_350 / FEET } },
+      { dial: "tach", low: { engineRpm: 1_500 }, high: { engineRpm: 2_500 } },
     ] as const;
     for (const { dial, low, high } of cases) {
       show(low);
@@ -310,6 +315,7 @@ describe("the Cessna's needles", () => {
     const sweeps = [
       { dial: "airspeed", make: (v: number) => ({ airspeed: v / KNOTS }), values: [0, 20, 40, 60, 80, 100, 120, 140, 160] },
       { dial: "altimeter", make: (v: number) => ({ altitude: v / FEET }), values: [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 990] },
+      { dial: "tach", make: (v: number) => ({ engineRpm: v }), values: [0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500] },
     ];
     for (const { dial, make, values } of sweeps) {
       const angles = values.map((value) => {
@@ -331,6 +337,8 @@ describe("the Cessna's needles", () => {
       ["airspeed", (v) => ({ airspeed: v / KNOTS }), [[0, -150], [40, -75], [80, 0], [120, 75], [160, 150], [220, 150]]],
       // feet of altitude ABOVE SEA LEVEL -> degrees: 360 per 1,000, wrapping
       ["altimeter", (v) => ({ altitude: v / FEET }), [[0, 0], [250, 90], [500, 180], [750, 270], [1_250, 90], [5_249.3, 89.748]]],
+      // RPM -> degrees: -135 at 0, +135 at 3,500, clamped
+      ["tach", (v) => ({ engineRpm: v }), [[0, -135], [700, -81], [1_750, 0], [2_750, 77.143], [3_500, 135], [4_000, 135]]],
     ];
     for (const [dial, make, points] of cases) {
       for (const [reading, expected] of points) {
@@ -373,10 +381,24 @@ describe("the Cessna's needles", () => {
     }
   });
 
+  it("agrees with the number the HUD renders for the same state: RPM (the tachometer, S2b)", () => {
+    for (const engineRpm of [700, 1_500, 2_213, 2_750]) {
+      const state = stateWith({ engineRpm });
+      const markup = renderHud(state, "trainer");
+      const hud = Number(/<small>RPM<\/small><strong>(\d+)<\/strong>/.exec(markup)?.[1]);
+      expect(Number.isFinite(hud), `${engineRpm}: parsed the HUD's RPM`).toBe(true);
+      show({ engineRpm });
+      // the needle's angle, back to a reading with the literal inverse of the mapping
+      const rpm = ((planeAngle("tach") + 135) / 270) * 3_500;
+      // the HUD rounds to 10 RPM, the needle does not
+      expect(Math.abs(rpm - hud), `${engineRpm}: needle says ${rpm.toFixed(1)} RPM, HUD ${hud}`).toBeLessThanOrEqual(5 + 0.05);
+    }
+  });
+
   it("holds a needle where it was when the reading is not a number, instead of poisoning its transform", () => {
-    show({ airspeed: 50 / KNOTS, altitude: 800 });
-    show({ airspeed: Number.NaN, altitude: Number.POSITIVE_INFINITY });
-    for (const dial of ["airspeed", "altimeter"]) {
+    show({ airspeed: 50 / KNOTS, altitude: 800, engineRpm: 2_000 });
+    show({ airspeed: Number.NaN, altitude: Number.POSITIVE_INFINITY, engineRpm: Number.NaN });
+    for (const dial of ["airspeed", "altimeter", "tach"]) {
       const { mesh } = needle(dial);
       const q = mesh.rotationQuaternion!;
       expect(Number.isFinite(q.x + q.y + q.z + q.w), `${dial} rotation`).toBe(true);

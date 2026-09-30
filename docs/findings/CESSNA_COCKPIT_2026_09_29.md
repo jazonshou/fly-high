@@ -2,7 +2,8 @@
 
 **Status: all six steps built: 1 (the deck and the board), 3 (the A-pillars and the
 door frames), 2 (the panel's face), 4 (the overhead), 5 (the centre frame and the
-cowl's nose) and 6 (the yokes). The final GPU frames wait on the PM's grant.**
+cowl's nose) and 6 (the yokes). Then S2b: the tachometer and the engine cluster
+that meet S2's bare-board line. The final GPU frames follow.**
 
 Jason, 2026-09-29: *"no need to go overboard, but make sure the details are
 there"*; two or three main dials are enough; the cockpit should feel real, with
@@ -740,3 +741,99 @@ d29a2b1f, taper cba133b7.
 - Gate A (the inter-stage audit) is still owed on the GPU for the trainer's
   display material (S2), the one new material with a texture;
 - the deck line held throughout.
+
+## S2b: the tachometer and the engine cluster
+
+**Why.** S2 left 238,996 px of bare board against the PM's 200,000. The PM's answer
+to the question I left then: add the type's engine gauges.
+- Their brief: detail on the board, not new flight instruments. Both are smaller
+  than the three main dials, and lower or outboard, so the main row still reads as
+  the row.
+- Jason's "three dials" (2026-09-23) still holds for the MAIN dials: the pin holds
+  exactly airspeed, attitude and altimeter.
+
+**What is there now.**
+- **The tachometer**, right of the radio stack and 12 mm under the row's line.
+  - Its face is 27 mm in radius, against the dials' 34, in the dials' bezel section
+    on the same rim.
+  - Its page has the 150's green arc (2,000 to 2,750 RPM) and a red line at 2,750,
+    which is the catalogue's maximum. It is marked every 100 RPM and numbered in
+    hundreds, 0 to 35.
+  - Its needle is the dials' scaled with its face, turned by `engineRpm`: -135
+    degrees at 0 to +135 at 3,500 (`tachometerNeedleDegrees`). One more draw
+    (cockpit meshes 17 -> 18).
+- **The engine cluster**, under the radio stack, its right edge on theirs.
+  - One face of 125 x 30 mm, in a rectangular ring of the same section.
+  - It is a static page of four small gauges, fuel L and R and oil T and P, with
+    their needles drawn on it. It needs no draw.
+  - **Why its right edge is on the stack's:** the pilot's inboard horn stands in
+    front of the board to the left, over z -0.037 in the cluster's rows. As built,
+    its ring is 1.6 cm clear of the horn. Centred under the stack, the ring's end
+    would pass 2 mm behind it; a cluster the stack's full width would lose 2 cm.
+- **Both faces are atlas screens,** so the atlas grows from 5 slots to 7 (three rows
+  of 256 px).
+- **The needle builder is one helper now,** shared by the dials and the
+  tachometer. The airspeed and altimeter needles are bit-identical.
+
+**Measured**, at 1080p (the census, near-plane clipped):
+
+| | S6 | S2b |
+|---|---|---|
+| bare board | 225,202 px | 193,764 px (the line is 200,000) |
+| dial faces mesh (faces, windows, tachometer, cluster) | 33,885 px | 54,010 px |
+| bezels | 14,131 px | 24,996 px |
+| hard edges on faces, bezels | 0, 0 | 0, 0 |
+| cockpit draws | 17 | 18 |
+
+**Pins:**
+- **In `tests/render.cockpit-trainer.test.ts`:**
+  - **Size and section:** both rings on the dials' section, the tachometer
+    27 mm to their 34 and the cluster 125 x 30 mm. Their faces sit under the rings.
+  - **Placement:**
+    - the tachometer right of the stack and under the row's centre;
+    - the cluster under the stack;
+    - both in the frame, and 99% or more of each face SEEN (the tachometer's
+      needle counts as seen).
+  - **Atlas:** both faces map onto their own slots, the cluster onto its band.
+  - **Pages:** the tachometer's numerals and arcs, its red line at the catalogue's
+    maximum; the cluster's four gauges and labels inside the face the pilot sees.
+  - **Marks:** the tachometer's 36 resolvable at 1080p.
+  - **Needle to numeral:** 2,500 RPM at the 25.
+  - **The bare board** at 200,000 px or less.
+- **In `tests/render.cockpit-instruments.test.ts`:** the tachometer's needle joins
+  the other needles' pins. Its origin is on its face's centre; it rests at 12
+  o'clock; it turns clockwise on the screen and sweeps without reversing; it sits
+  at the literal angle. It also agrees with the HUD's RPM readout to within the
+  HUD's rounding (10 RPM).
+
+**Mutations.** Six are caught:
+
+| mutation | caught by |
+|---|---|
+| the tachometer's needle never turned | five needle pins (HUD agreement: 1,750 against 700) |
+| the tachometer as big as the dials | the size pin |
+| a cluster the stack's full width | the full-view pin (96.5% of its face seen) |
+| the tachometer on the row's line | the placement pin |
+| the cluster's gauges drawn below its face | the page pin |
+| the cluster's face mapped onto the whole slot | the UV pin |
+
+**Two misses on the way, both corrected.**
+- **The comment overclaimed.** My first cluster-placement mutation (centred under
+  the stack) was missed, and it was right to be: that is not a defect. It exposed
+  a comment that claimed the horn forced the right-aligned placement. The horn's
+  edge was then measured, and the numbers above replaced that claim.
+- **The pins' windows were too narrow.** The full-view pin's sample grid, and the
+  ring and UV pins' windows, were fixed at a 125 mm cluster. A wider cluster
+  therefore fell outside them and was caught by the wrong pins. All three now
+  derive from the cluster's size.
+
+**Mesh-by-mesh against S6** (c154cbb). On the trainer:
+- `trainer-tach-needle` is new;
+- `trainer-dial-faces` and `trainer-dial-bezels` moved (the new faces and rings
+  joined them);
+- the other 66 of 69 meshes are bit-identical, both dial needles included.
+
+Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
+loft-crown digests are re-pinned on its line: seam 12714b2c, taper 3af28e04.
+
+An unused import that S5 left in `trainerVisual.ts` is gone (eslint).

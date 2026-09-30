@@ -9,7 +9,7 @@ import type { FlightVisualState } from "@/src/game/types";
 import { loftSectionPoint, type AircraftBuildContext, type LoftSection } from "../builders";
 import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS, trainerCentreFrameCrownAt } from "../trainerShell";
 import { DISPLAY_STATE_LEVEL } from "./displays/displayState";
-import { TRAINER_DIAL_FACE_FRACTION, TRAINER_RADIO_WINDOW_ASPECT } from "./displays/displayPages";
+import { TRAINER_DIAL_FACE_FRACTION, TRAINER_ENGINE_CLUSTER_MM, TRAINER_RADIO_WINDOW_ASPECT, TRAINER_TACH_MARKINGS } from "./displays/displayPages";
 import {
   TRAINER_DISPLAYS,
   createDisplayAtlas,
@@ -35,7 +35,7 @@ import {
   type RoundedDeckSection,
   type SweptSection,
 } from "./cockpitPrimitives";
-import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
+import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, pitchBarOffsetMetres, tachometerNeedleDegrees } from "./instrumentMappings";
 
 /**
  * What a pilot in a Cessna 150's LEFT seat sees, built to angles.
@@ -172,6 +172,44 @@ export const TRAINER_SWITCHES = Object.freeze({
   /** Which are on (their paddles' tops rocked in). */
   on: Object.freeze([true, false, true, false]),
 });
+
+/**
+ * THE TACHOMETER AND THE ENGINE CLUSTER (S2b; the PM, 2026-09-30): detail on the type's board, not flight instruments,
+ * so both are smaller than the three dials and stand apart from their row, the main row still reading as the row.
+ * - THE TACHOMETER, right of the radio stack and a little under the row: a round dial like the three on the same bezel
+ *   (`TRAINER_BEZEL`), its face 27 mm in radius to their 34, and a live needle scaled with it, turned by the engine's
+ *   RPM (`tachometerNeedleDegrees`).
+ * - THE ENGINE CLUSTER, under the radio stack, its right edge on theirs: one face 125 x 30 mm (`TRAINER_ENGINE_CLUSTER_MM`)
+ *   in a rectangular ring of the same section, four small gauges with their needles drawn on the page. Its right edge
+ *   is on the stack's because the pilot's inboard horn (S6) stands in front of the board to the left, over z -0.037 in
+ *   the cluster's rows: as built its ring is 1.6 cm clear of it; centred under the stack the ring's end would pass 2 mm
+ *   behind it, and a cluster the stack's full width 2 cm.
+ */
+export const TRAINER_TACH = Object.freeze({
+  centreZ: 0.151,
+  /** Its centre, down the board's face from the dial row's. */
+  below: 0.012,
+  faceRadius: 0.027,
+});
+export const TRAINER_ENGINE_CLUSTER = Object.freeze({
+  centreZ: TRAINER_RADIO.centreZ + TRAINER_RADIO.width / 2 - TRAINER_ENGINE_CLUSTER_MM.width / 2_000,
+  /** Its centre, down the board's face from the dial row's: its ring's top 6.5 mm under the radio stack. */
+  below: 0.068,
+  /** The visible face's corner radius. */
+  corner: 0.003,
+});
+
+/** The tachometer's plane, centred on its face, at the board's face. */
+export function trainerTachFrame(): PartFrame {
+  const row = faceFrame(onDialRow(TRAINER_TACH.centreZ));
+  return { ...row, origin: row.origin.subtract(row.up.scale(TRAINER_TACH.below)) };
+}
+
+/** The engine cluster's plane, centred on its face, at the board's face. */
+export function trainerEngineClusterFrame(): PartFrame {
+  const row = faceFrame(onDialRow(TRAINER_ENGINE_CLUSTER.centreZ));
+  return { ...row, origin: row.origin.subtract(row.up.scale(TRAINER_ENGINE_CLUSTER.below)) };
+}
 
 /** The cowl stand-in's nose lip (S5): a quarter-round of this radius, in this many bands, ahead of the shell's nose. */
 export const TRAINER_COWL_LIP = Object.freeze({ radius: 0.015, steps: 4 });
@@ -1180,30 +1218,33 @@ export function buildTrainerCockpit(
   const b = TRAINER_BEZEL;
   const faceMapRadius = b.faceRadius / TRAINER_DIAL_FACE_FRACTION;
   const circle = (radius: number): PartLoop => ({ halfWidth: 0, halfHeight: 0, radius, cornerSegments: b.cornerSegments });
+  // the face's section: from the loop's inside (`inset` in) out to it on the face's front, and back into the board
+  const faceProfile = (inset: number): LoopProfile => ({
+    points: [{ u: -inset, a: FACE_FRONT }, { u: 0, a: FACE_FRONT }, { u: 0, a: b.back }, { u: -inset, a: b.back }],
+    rounds: [],
+  });
+  // the bezel's section: one ring, inner chamfer, front, outer chamfer, its back in the board; each chamfer shaded as a
+  // round (its ends take the faces' normals either side), so it reads as an eased edge and splits no shading
+  const bezelRing: LoopProfile = {
+    points: [
+      { u: 0, a: b.back },
+      { u: 0, a: b.proud - b.innerChamfer },
+      { u: b.innerChamfer, a: b.proud },
+      { u: b.ringWidth - b.chamfer, a: b.proud },
+      { u: b.ringWidth, a: b.proud - b.chamfer },
+      { u: b.ringWidth, a: b.back },
+    ],
+    rounds: [
+      { first: 1, last: 2, centre: { u: b.innerChamfer, a: b.proud - b.innerChamfer } },
+      { first: 3, last: 4, centre: { u: b.ringWidth - b.chamfer, a: b.proud - b.chamfer } },
+    ],
+  };
   for (const { name, frame } of trainerDialFrames()) {
     // the face: a disc whose edge is buried under the ring's inner wall, its front the atlas slot's square
-    const face = loopSolid(build, `trainer-${name}-face`, frame, circle(faceMapRadius), {
-      points: [{ u: -faceMapRadius, a: FACE_FRONT }, { u: 0, a: FACE_FRONT }, { u: 0, a: b.back }, { u: -faceMapRadius, a: b.back }],
-      rounds: [],
-    }, materials.instrumentFace, root);
+    const face = loopSolid(build, `trainer-${name}-face`, frame, circle(faceMapRadius), faceProfile(faceMapRadius), materials.instrumentFace, root);
     mapFaceToSlot(face, frame, faceMapRadius, faceMapRadius, slotOf.get(name)!, atlasSize);
     faces.push(face);
-    // the bezel: one ring, inner chamfer, front, outer chamfer, its back in the board; each chamfer shaded as a round
-    // (its ends take the faces' normals either side), so it reads as an eased edge and splits no shading
-    bezels.push(loopSolid(build, `trainer-${name}-bezel`, frame, circle(b.faceRadius), {
-      points: [
-        { u: 0, a: b.back },
-        { u: 0, a: b.proud - b.innerChamfer },
-        { u: b.innerChamfer, a: b.proud },
-        { u: b.ringWidth - b.chamfer, a: b.proud },
-        { u: b.ringWidth, a: b.proud - b.chamfer },
-        { u: b.ringWidth, a: b.back },
-      ],
-      rounds: [
-        { first: 1, last: 2, centre: { u: b.innerChamfer, a: b.proud - b.innerChamfer } },
-        { first: 3, last: 4, centre: { u: b.ringWidth - b.chamfer, a: b.proud - b.chamfer } },
-      ],
-    }, bezelMaterial, root));
+    bezels.push(loopSolid(build, `trainer-${name}-bezel`, frame, circle(b.faceRadius), bezelRing, bezelMaterial, root));
   }
   const radio = TRAINER_RADIO;
   for (const { unit, frame } of trainerRadioFrames()) {
@@ -1256,6 +1297,28 @@ export function buildTrainerCockpit(
       roundedFrontProfile(sw.paddle.height, sw.paddle.corner, 2 * TRAINER_BEZEL.back), materials.dark, root,
       { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
   });
+  // THE TACHOMETER AND THE ENGINE CLUSTER (S2b): their faces with the others (the atlas's screens), their rings with the
+  // bezels, on the same sections; the tachometer's needle is built with the other two, below
+  {
+    const tachFrame = trainerTachFrame();
+    const tachMapRadius = TRAINER_TACH.faceRadius / TRAINER_DIAL_FACE_FRACTION;
+    const tachFace = loopSolid(build, "trainer-tach-face", tachFrame, circle(tachMapRadius), faceProfile(tachMapRadius), materials.instrumentFace, root);
+    mapFaceToSlot(tachFace, tachFrame, tachMapRadius, tachMapRadius, slotOf.get("tach")!, atlasSize);
+    faces.push(tachFace);
+    bezels.push(loopSolid(build, "trainer-tach-bezel", tachFrame, circle(TRAINER_TACH.faceRadius), bezelRing, bezelMaterial, root));
+    // the cluster: a rounded rectangle, its face buried `bury` under the ring all round like a dial's
+    const c = TRAINER_ENGINE_CLUSTER;
+    const mm = TRAINER_ENGINE_CLUSTER_MM;
+    const [halfWidth, halfHeight, bury] = [mm.width / 2_000, mm.height / 2_000, mm.bury / 1_000];
+    const clusterFrame = trainerEngineClusterFrame();
+    const opening: PartLoop = { halfWidth: halfWidth - c.corner, halfHeight: halfHeight - c.corner, radius: c.corner, cornerSegments: 4 };
+    const clusterFace = loopSolid(build, "trainer-engine-face", clusterFrame, { ...opening, radius: c.corner + bury },
+      faceProfile(c.corner + bury), materials.instrumentFace, root, { caps: [{ point: 0, facing: 1 }, { point: 3, facing: -1 }] });
+    const slot = slotOf.get("engine")!;
+    mapFaceToSlot(clusterFace, clusterFrame, halfWidth + bury, halfHeight + bury, slot, atlasSize, (slot.w * (halfHeight + bury)) / (halfWidth + bury));
+    faces.push(clusterFace);
+    bezels.push(loopSolid(build, "trainer-engine-bezel", clusterFrame, opening, bezelRing, bezelMaterial, root));
+  }
   // THE COMPASS (S4), with the fittings: a rounded box under the centre strip's crown run, its dark face toward the
   // pilot, on a stalk up through the glass to the strip's axis
   {
@@ -1341,27 +1404,11 @@ export function buildTrainerCockpit(
     paintDisplays(atlas, DISPLAY_STATE_LEVEL);
   }
 
-  for (const placement of trainerDialPlacements()) {
-    const { name, centre: at, normal } = placement;
+  // A NEEDLE (`TRAINER_NEEDLE`, its length, width and hub `scale`d with its face) on the face whose centre on the board
+  // is `at`, turned by `turnNeedle` below.
+  const addNeedle = (name: string, at: Vector3, normal: Vector3, scale: number): void => {
     // Up the panel's face, in the vertical plane of the dial's normal.
     const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
-    if (name === "attitude") {
-      // THE BALL, not a needle. Its pivot turns about ITS OWN X, so it hangs from a
-      // frame node whose axes are the pivot's (`buildAttitudeBall`): X AWAY from the
-      // pilot (the dial's normal reversed), Y up the face, Z = X x Y, the pilot's
-      // right. The needles' frames have X TOWARD him instead, which is why their
-      // turn is a negative rotation and the ball's is not; the screen-space test in
-      // `tests/render.cockpit-instruments.test.ts` decides which sign is right.
-      const ball = TRAINER_ATTITUDE_BALL;
-      const away = normal.scale(-1);
-      const frame = new TransformNode("trainer-attitude-frame", build.scene);
-      frame.parent = root;
-      frame.position.copyFrom(at.add(normal.scale(FACE_FRONT + ball.proud + ball.thickness / 2)));
-      frame.rotationQuaternion = basisQuaternion(away, up, Vector3.Cross(away, up));
-      attitudeBall = buildAttitudeBall(build, frame, Vector3.Zero(), { prefix: "trainer-attitude", ...ball });
-      parts.push(...attitudeBall.parts);
-      continue;
-    }
     // THE NEEDLE, one mesh whose ORIGIN is the face's centre and whose local X
     // is the dial's normal, so turning the mesh about its own X turns the needle
     // about the dial's axis. `mergeStatic` bakes the parts' world matrices into
@@ -1383,14 +1430,14 @@ export function buildTrainerCockpit(
     frameNode.computeWorldMatrix(true);
     const bar = build.box(
       `trainer-${name}-needle-bar`, TRAINER_NEEDLE.thickness,
-      TRAINER_NEEDLE.pointerLength + TRAINER_NEEDLE.tailLength, TRAINER_NEEDLE.width,
+      (TRAINER_NEEDLE.pointerLength + TRAINER_NEEDLE.tailLength) * scale, TRAINER_NEEDLE.width * scale,
       materials.instrumentMarking, frameNode,
     );
-    bar.position.set(NEEDLE_STAND_OFF, (TRAINER_NEEDLE.pointerLength - TRAINER_NEEDLE.tailLength) / 2, 0);
+    bar.position.set(NEEDLE_STAND_OFF, ((TRAINER_NEEDLE.pointerLength - TRAINER_NEEDLE.tailLength) * scale) / 2, 0);
     // The hub is a disc about the dial's axis (local X); a cylinder's own axis is Y.
     const hub = build.cylinder(
-      `trainer-${name}-needle-hub`, TRAINER_NEEDLE.hubThickness, TRAINER_NEEDLE.hubRadius * 2,
-      TRAINER_NEEDLE.hubRadius * 2, 16, materials.instrumentMarking, frameNode,
+      `trainer-${name}-needle-hub`, TRAINER_NEEDLE.hubThickness, TRAINER_NEEDLE.hubRadius * 2 * scale,
+      TRAINER_NEEDLE.hubRadius * 2 * scale, 16, materials.instrumentMarking, frameNode,
     );
     hub.rotation.z = Math.PI / 2;
     hub.position.set(NEEDLE_STAND_OFF, 0, 0);
@@ -1401,6 +1448,34 @@ export function buildTrainerCockpit(
     needle.refreshBoundingInfo();
     parts.push(needle);
     needles.set(name, { mesh: needle, frame: frameQ });
+  };
+  for (const placement of trainerDialPlacements()) {
+    const { name, centre: at, normal } = placement;
+    // Up the panel's face, in the vertical plane of the dial's normal.
+    const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
+    if (name === "attitude") {
+      // THE BALL, not a needle. Its pivot turns about ITS OWN X, so it hangs from a
+      // frame node whose axes are the pivot's (`buildAttitudeBall`): X AWAY from the
+      // pilot (the dial's normal reversed), Y up the face, Z = X x Y, the pilot's
+      // right. The needles' frames have X TOWARD him instead, which is why their
+      // turn is a negative rotation and the ball's is not; the screen-space test in
+      // `tests/render.cockpit-instruments.test.ts` decides which sign is right.
+      const ball = TRAINER_ATTITUDE_BALL;
+      const away = normal.scale(-1);
+      const frame = new TransformNode("trainer-attitude-frame", build.scene);
+      frame.parent = root;
+      frame.position.copyFrom(at.add(normal.scale(FACE_FRONT + ball.proud + ball.thickness / 2)));
+      frame.rotationQuaternion = basisQuaternion(away, up, Vector3.Cross(away, up));
+      attitudeBall = buildAttitudeBall(build, frame, Vector3.Zero(), { prefix: "trainer-attitude", ...ball });
+      parts.push(...attitudeBall.parts);
+      continue;
+    }
+    addNeedle(name, at, normal, 1);
+  }
+  // the tachometer's (S2b): its face is 27 mm to the dials' 34, and its needle is scaled with it
+  {
+    const tach = trainerTachFrame();
+    addNeedle("tach", tach.origin, tach.out, TRAINER_TACH.faceRadius / TRAINER_BEZEL.faceRadius);
   }
 
   // THE A-PILLARS, from the rails into the roof slab (`TRAINER_A_PILLAR`), on the door frames' material: the rail and
@@ -1471,6 +1546,7 @@ export function buildTrainerCockpit(
     update(state) {
       turnNeedle("airspeed", airspeedNeedleDegrees(state.airspeed, TRAINER_AIRSPEED_FULL_SCALE_KNOTS));
       turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));
+      turnNeedle("tach", tachometerNeedleDegrees(state.engineRpm, TRAINER_TACH_MARKINGS.fullScale));
       // THE BALL. Its pivot's local X points AWAY from the pilot, so a positive
       // rotation is clockwise to him and the clockwise-as-seen angle (minus the
       // bank) goes in as it is; the bar slides along the pivot's own up.

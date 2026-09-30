@@ -168,6 +168,9 @@ export const TRAINER_DISPLAYS: DisplayLayout = Object.freeze({
     { screen: "altimeter", page: "trainer-altimeter" },
     { screen: "com", page: "trainer-com" },
     { screen: "nav", page: "trainer-nav" },
+    // the tachometer and the engine cluster (the Cessna pass, S2b)
+    { screen: "tach", page: "trainer-tach" },
+    { screen: "engine", page: "trainer-engine" },
   ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
 });
 

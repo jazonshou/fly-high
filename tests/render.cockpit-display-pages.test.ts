@@ -420,6 +420,9 @@ describe("the atlas", () => {
     "trainer-altimeter": "5",
     "trainer-com": "122.80",
     "trainer-nav": "110.50",
+    // its tachometer and engine cluster (S2b)
+    "trainer-tach": "25",
+    "trainer-engine": "FUEL",
   };
 
   it("clips each of six slots to its rectangle and draws its page's text inside it", () => {
