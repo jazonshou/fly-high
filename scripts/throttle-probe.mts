@@ -790,8 +790,10 @@ if (SCENARIO === "freeze") {
       let hook = fiber.memoizedState as Hook | null | undefined;
       for (let guard = 0; hook && typeof hook === "object" && guard < 200; guard += 1) {
         const state = hook.memoizedState as { current?: FreeFly } | null;
-        if (state && typeof state === "object" && state.current && "yawRadians" in state.current
-          && typeof state.current.update === "function") {
+        // Refs hold anything (the phase ref holds a string): test the type
+        // before `in`, which throws on a primitive.
+        if (state && typeof state === "object" && state.current && typeof state.current === "object"
+          && "yawRadians" in state.current && typeof state.current.update === "function") {
           controller = state.current;
           break;
         }
