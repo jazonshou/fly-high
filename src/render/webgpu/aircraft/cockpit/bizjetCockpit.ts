@@ -1260,13 +1260,18 @@ export function bizjetBezelMaterial(build: AircraftBuildContext): PBRMaterial {
  *
  * The console and the caps are on a second instance of the interior material, `tone` of its albedo: the tops face the sky
  * and read 84 to 99 against the board's 48 in the level frame (P0), and the design wants them within 1.3 times the board.
+ * The ratio is mostly the LIGHT's: the board faces aft and read 28 to 75 across three headings from the seat while the
+ * tops held near 60, and the scenic start's heading is not repeatable. So the tone was measured in ONE paused pose with
+ * only this material's albedo changed (live app, HDG 118, the board 37.2 throughout): the tops read 1.50, 1.12 and 1.01
+ * times the board at 1, 0.5 and 0.37, the caps 1.69, 1.36 and 1.25 (their luma answers the albedo less, as a power of
+ * 0.31 against the tops' 0.40: part of their light is specular). 0.37 holds both under 1.3 there.
  */
 export const BIZJET_SIDE_CONSOLE = Object.freeze({
   round: 0.01,
   gap: 0.005,
   /** The console's aft end: the seat's centre, as the design has it (the seat's base stands inboard of the console's face). */
   aftX: 11.85,
-  tone: 0.5,
+  tone: 0.37,
 });
 
 /** The console's material: the interior's own parameters at `tone` of its albedo (no third material). */
