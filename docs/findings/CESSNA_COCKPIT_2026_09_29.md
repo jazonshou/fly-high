@@ -1,7 +1,7 @@
 # The Cessna's cockpit: from boxes to a cabin
 
-**Status: steps 1 (the deck and the board), 3 (the A-pillars and the door frames)
-and 2 (the panel's face) built. Steps 4, 5 and 6 follow in that order, one commit
+**Status: steps 1 (the deck and the board), 3 (the A-pillars and the door frames),
+2 (the panel's face) and 4 (the overhead) built. Steps 5 and 6 follow, one commit
 each.**
 
 Jason, 2026-09-29: *"no need to go overboard, but make sure the details are
@@ -420,4 +420,97 @@ A live frame is also owed, to see the pages the way the texture draws them.
 
 Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
 loft-crown digests are re-pinned on its line: seam 32cb1a38, taper 592b2530.
+
+## S4: the overhead
+
+**What was there.** The roof slab's bare underside and edges were seen from the
+seat, 3 hard edges and 132,209 px, and open sky elsewhere overhead. There was no
+compass and no visors.
+
+**The header's depth, measured before building.** The roof slab's underside edge is
+at x 1.62, y 0.18: 6 cm above the eye and 24 cm ahead of it. Straight ahead, the
+windscreen's top was at +14.0.
+- **As specified,** a full 25 mm-radius bar hung under that edge puts its bottom
+  at y 0.155, and the windscreen's top comes down to about +8. That leaves a
+  16-degree slit between the deck (-8.3) and the header; a 150's header sits
+  nearer +15 to +20.
+- **What was built** (put to the PM before building) keeps the round but lets it
+  stand only 12 mm under the ceiling.
+
+**What is there now.** One more draw (16 cockpit meshes), on a new material, the
+cabin's fabric.
+
+- **`trainer-headliner`**: the headliner, one smooth solid under the slab and the
+  glass crown outboard of it.
+  - **Its shape:** a rounded rectangle in plan, 0.61 m across and 2.5 cm inside
+    the glass at the ceiling's height, from x 1.2 to the slab's front edge. Its
+    ceiling is 2 mm under the slab, so it covers the slab from inside.
+  - **The header is its rim:** a round of 25 mm radius standing 12 mm under the
+    ceiling, run into it by a concave 10 mm fillet (a new option of `loopSolid`),
+    so the ceiling, the fillet and the round meet on one normal each.
+  - **The visors, merged into it:** two, 300 x 120 x 8 mm, with round edges and
+    10 mm corners, stowed flat behind the header. Their outer ends run under the
+    side rim.
+- **The compass**, merged into the dark fittings: a 60 x 60 x 70 mm box with 8 mm
+  round edges and a dark face toward the pilot. It hangs on a 4 mm stalk that runs
+  up into the windscreen centre frame's crown member, as a 150's hangs from its
+  windscreen's centre strip.
+
+**Measured**, at 1080p:
+
+| | S2 | S4 |
+|---|---|---|
+| roof slab seen from the seat | 132,209 px, 3 hard edges | 0 px (the headliner hides it) |
+| hard edges on the headliner | none of it existed | 0 |
+| windscreen's top, straight ahead | +14.0 | +13.25 |
+| visors' front edge, straight ahead | none | +14.83 |
+| compass | none | its centre at el +2.85, az +24.3 |
+| cockpit draws | 15 | 16 |
+| trainer build (Node, cold / warm) | 213 / 101 ms | 217 / 108 ms |
+
+**Two departures from the specification, both measured.**
+- **The compass sits at +2.85, not the survey's +3.9.** That placement put the
+  compass's centre at y 0.16, which leaves no room: the crown member it hangs from
+  has its underside at y 0.185 at that station, and the box is 60 mm high.
+- **The upper-left corner stays open sky.** It is the windscreen's upper-left,
+  between the headliner's port side (|z| 0.305) and the glass (0.38). The
+  headliner cannot run further out there: where its rim rises toward the crown, the
+  glass is only 0.33 out.
+
+**Pins** (`tests/render.cockpit-trainer.test.ts`, "the Cessna's overhead"):
+- **the roof slab:** no pixel of it from the seat. Control: without the headliner,
+  more than 50,000 px of it.
+- **the windscreen's top:** straight ahead, between +12.8 and +13.6.
+- **the visors:** their size, and their front at +13.5 to +15.5 straight ahead,
+  the eye meeting a visor's underside just over it.
+- **the compass:** its size, its place in the frame, and its stalk's top, off the
+  built mesh, inside the built centre frame.
+- **the headliner:** added to the hard-edge pin, and to the 2-cm glass clearance
+  (its top inside the slab is exempt).
+- **every new part's shading:** no vertex normal of the pass's new meshes points
+  into its own solid.
+
+The drawn-faces test's kit size is re-pinned on the trainer's line (15 -> 16).
+
+**Mutations.** Six are caught:
+
+| mutation | caught by |
+|---|---|
+| the headliner 20 cm narrower each side | the roof, windscreen-top and visor pins |
+| a full bar hung 3.7 cm under the edge | the windscreen-top and visor pins |
+| the fillet shaded as a convex round | the new shading pin only |
+| the headliner's top 2 cm up, 13 mm from the glass outboard of the slab | the clearance pin |
+| the visors run on under the header | the visor pin |
+| the stalk stopping under the frame | the compass pin |
+
+The fillet mutation was MISSED at first. Its dark band is geometry-smooth, so no
+hard-edge test could see it; the shading pin was written for it.
+
+**Mesh-by-mesh against S2** (d2b64ff). On the trainer:
+- `trainer-headliner` is new;
+- `trainer-panel-fittings` moved (the compass and its stalk joined it);
+- the other 65 of 67 meshes are bit-identical.
+
+Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
+loft-crown digests are re-pinned on its line: seam a8ea15d2, taper 6b090dea.
 

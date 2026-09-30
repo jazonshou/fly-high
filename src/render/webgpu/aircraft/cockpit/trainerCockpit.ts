@@ -73,8 +73,10 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
 export interface TrainerCockpitMaterials {
   /** Dark matte interior: the panel board, the door frames and the A-pillars. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
-  /** The panel's fittings: the radios' bodies and knobs, and the switches. */
+  /** The panel's fittings: the radios' bodies and knobs, the switches, and the compass. */
   readonly dark: PBRMaterial;
+  /** The headliner and the sun visors: the cabin's fabric. */
+  readonly headliner: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
   /** Needles. It carries the night glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one. */
   readonly instrumentMarking: PBRMaterial;
@@ -170,6 +172,116 @@ export const TRAINER_SWITCHES = Object.freeze({
   /** Which are on (their paddles' tops rocked in). */
   on: Object.freeze([true, false, true, false]),
 });
+
+/**
+ * THE OVERHEAD (S4): the headliner, its header, the sun visors and the compass.
+ *
+ * THE HEADLINER is one smooth solid under the roof slab (`trainer-cabin-roof`, y 0.18 to 0.23) and the glass crown
+ * outboard of it: a rounded rectangle in plan, full width (`halfWidth`, 2.5 cm inside the glass at the ceiling's height)
+ * from `aftX` to `frontX`, the slab's front edge. Its ceiling hangs `ceilingDrop` under the slab's underside, so it
+ * covers the slab from inside. THE HEADER is its rim: a round of `headerRadius` standing `headerDrop` under the ceiling,
+ * run into the ceiling by a concave fillet of `filletRadius`, so the ceiling, the fillet and the round meet on one
+ * normal each. It is NOT a full bar hung under the edge: this cabin's roof edge is 6 cm over the eye and 24 cm ahead of
+ * it, and a 5 cm bar under it brought the windscreen's top down from +14 to about +8 degrees straight ahead; standing
+ * 1.2 cm down it is at +13.25 (measured, a ray up from the horizon straight ahead).
+ *
+ * THE VISORS, two, stowed flat under the ceiling behind the header, their fronts at about +14 degrees straight ahead;
+ * each is a plate with a round edge and round corners, its outer end under the headliner's side rim.
+ *
+ * THE COMPASS hangs on a short stalk under the windscreen centre frame's crown member (`trainerVisual.ts`: from its
+ * corner at x 2, y 0.21 aft to x 1.6, y 0.205, radius 0.024), as a 150's does from its windscreen's centre strip: a
+ * rounded box with a dark face toward the pilot.
+ */
+export const TRAINER_OVERHEAD = Object.freeze({
+  aftX: 1.2,
+  frontX: 1.62,
+  halfWidth: 0.305,
+  cornerRadius: 0.1,
+  /** The slab's underside. */
+  roofY: 0.18,
+  ceilingDrop: 0.002,
+  headerRadius: 0.025,
+  headerDrop: 0.012,
+  filletRadius: 0.01,
+  /**
+   * How far up into the slab the headliner's top reaches (buried). Outboard of the slab's chamfered corners it stands
+   * under the glass crown instead, and at 2 cm up it came within 13 mm of the built glass there; at 12 it is 4 cm off.
+   */
+  buried: 0.012,
+  /** 300 wide each, a 5 mm gap between: their outer ends reach the headliner's side rim, under which they are buried. */
+  visor: Object.freeze({ width: 0.3, depth: 0.12, thickness: 0.008, corner: 0.01, gap: 0.005, frontX: 1.565 }),
+  compass: Object.freeze({ x: 1.955, width: 0.06, height: 0.06, depth: 0.07, edge: 0.008, stalkRadius: 0.004, stalk: 0.004 }),
+  /** The centre frame's crown member, as `trainerVisual.ts` builds it: its axis's two ends, and its radius. */
+  crown: Object.freeze({ fromX: 2, fromY: 0.21, toX: 1.6, toY: 0.205, radius: 0.024 }),
+});
+
+/** The headliner's profile, u outward from its outline and a DOWN from the slab's underside: the ceiling, the fillet, the header's round, up into the slab. */
+function headlinerProfile(): LoopProfile {
+  const o = TRAINER_OVERHEAD;
+  const ceiling = o.ceilingDrop;
+  const round = { u: -o.headerRadius, a: ceiling + o.headerDrop - o.headerRadius };
+  // the fillet: tangent to the ceiling (its centre `filletRadius` under it) and to the round, outside it
+  const fa = ceiling + o.filletRadius;
+  const fu = round.u - Math.sqrt((o.headerRadius + o.filletRadius) ** 2 - (fa - round.a) ** 2);
+  const touch = { u: fu + (o.filletRadius * (round.u - fu)) / (o.headerRadius + o.filletRadius), a: fa + (o.filletRadius * (round.a - fa)) / (o.headerRadius + o.filletRadius) };
+  const fillet = [-Math.PI / 2, (-Math.PI / 2 + Math.atan2(touch.a - fa, touch.u - fu)) / 2].map((t) => ({ u: fu + o.filletRadius * Math.cos(t), a: fa + o.filletRadius * Math.sin(t) }));
+  const from = Math.atan2(touch.a - round.a, touch.u - round.u);
+  const chords = 8;
+  const bead = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = from * (1 - k / chords);
+    return { u: round.u + o.headerRadius * Math.cos(t), a: round.a + o.headerRadius * Math.sin(t) };
+  });
+  const points = [{ u: -o.cornerRadius, a: ceiling }, ...fillet, ...bead, { u: 0, a: -o.buried }, { u: -o.cornerRadius, a: -o.buried }];
+  return {
+    points,
+    rounds: [
+      { first: 1, last: 3, centre: { u: fu, a: fa }, concave: true },
+      { first: 3, last: 3 + chords, centre: round },
+    ],
+  };
+}
+
+/** A plate `thickness` thick whose edge is a half round, about a rounded-rectangle loop; caps at its two faces. */
+function roundEdgedPlate(thickness: number, corner: number): LoopProfile {
+  const r = thickness / 2;
+  const chords = 6;
+  const edge = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = -Math.PI / 2 + (Math.PI * k) / chords;
+    return { u: -r + r * Math.cos(t), a: r * Math.sin(t) };
+  });
+  return {
+    points: [{ u: -corner, a: -r }, ...edge, { u: -corner, a: r }],
+    rounds: [{ first: 1, last: 1 + chords, centre: { u: -r, a: 0 } }],
+  };
+}
+
+/** A box about a rounded-rectangle loop, `depth` deep, its front and back edges rounded at `edge`; caps front and back. */
+function roundedBoxProfile(depth: number, edge: number): LoopProfile {
+  const chords = 4;
+  const half = depth / 2;
+  const front = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = (Math.PI / 2) * (1 - k / chords);
+    return { u: -edge + edge * Math.cos(t), a: half - edge + edge * Math.sin(t) };
+  });
+  const back = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = (-Math.PI / 2) * (k / chords);
+    return { u: -edge + edge * Math.cos(t), a: -half + edge + edge * Math.sin(t) };
+  });
+  return {
+    points: [...front, ...back],
+    rounds: [
+      { first: 0, last: chords, centre: { u: -edge, a: half - edge } },
+      { first: chords + 1, last: 2 * chords + 1, centre: { u: -edge, a: -half + edge } },
+    ],
+  };
+}
+
+/** The compass's centre: under the crown member at its station, a stalk's length below the member's underside. */
+export function trainerCompassCentre(): Vector3 {
+  const { compass, crown } = TRAINER_OVERHEAD;
+  const axisY = crown.fromY + ((crown.toY - crown.fromY) * (compass.x - crown.fromX)) / (crown.toX - crown.fromX);
+  return new Vector3(compass.x, axisY - crown.radius - compass.stalk - compass.height / 2, 0);
+}
 
 /**
  * THE ATTITUDE BALL on the "attitude" dial, which has no needle: the Global's ball
@@ -1012,10 +1124,47 @@ export function buildTrainerCockpit(
       roundedFrontProfile(sw.paddle.height, sw.paddle.corner, 2 * TRAINER_BEZEL.back), materials.dark, root,
       { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
   });
+  // THE COMPASS (S4), with the fittings: a rounded box under the centre frame's crown, its dark face toward the pilot,
+  // on a short stalk up into the crown member
+  {
+    const c = TRAINER_OVERHEAD.compass;
+    const centre = trainerCompassCentre();
+    const frame: PartFrame = { origin: centre, across: new Vector3(0, 0, 1), up: new Vector3(0, 1, 0), out: new Vector3(-1, 0, 0) };
+    fittings.push(loopSolid(build, "trainer-compass", frame,
+      { halfWidth: c.width / 2 - c.edge, halfHeight: c.height / 2 - c.edge, radius: c.edge, cornerSegments: 3 },
+      roundedBoxProfile(c.depth, c.edge), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 9, facing: -1 }] }));
+    const crown = TRAINER_OVERHEAD.crown;
+    const top = crown.fromY + ((crown.toY - crown.fromY) * (c.x - crown.fromX)) / (crown.toX - crown.fromX);
+    fittings.push(sweptTube(build, "trainer-compass-stalk",
+      [centre.add(new Vector3(0, c.height / 2 - 0.006, 0)), new Vector3(c.x, top - crown.radius / 2, 0)],
+      [c.stalkRadius, c.stalkRadius], 12, materials.dark, root));
+  }
   const facesMesh = build.mergeStatic(TRAINER_DISPLAYS.screensMesh, faces, root);
   parts.push(facesMesh);
   parts.push(build.mergeStatic("trainer-dial-bezels", bezels, root));
   parts.push(build.mergeStatic("trainer-panel-fittings", fittings, root));
+  // THE HEADLINER AND THE VISORS (S4), one mesh on the cabin's fabric
+  {
+    const o = TRAINER_OVERHEAD;
+    const down = new Vector3(0, -1, 0);
+    const plan = (x: number, y: number, z: number): PartFrame => ({ origin: new Vector3(x, y, z), across: new Vector3(0, 0, 1), up: new Vector3(1, 0, 0), out: down });
+    const lining = [loopSolid(build, "trainer-headliner-lining", plan((o.aftX + o.frontX) / 2, o.roofY, 0),
+      { halfWidth: o.halfWidth - o.cornerRadius, halfHeight: (o.frontX - o.aftX) / 2 - o.cornerRadius, radius: o.cornerRadius, cornerSegments: 6 },
+      headlinerProfile(), materials.headliner, root,
+      { caps: [{ point: 0, facing: 1 }, { point: headlinerProfile().points.length - 1, facing: -1 }] })];
+    const v = o.visor;
+    const visorY = o.roofY + o.ceilingDrop + 0.001 + v.thickness / 2;
+    for (const side of [-1, 1] as const) {
+      lining.push(loopSolid(build, `trainer-visor-${side < 0 ? "port" : "starboard"}`,
+        plan(v.frontX - v.depth / 2, o.roofY - (visorY - o.roofY), side * (v.gap / 2 + v.width / 2)),
+        { halfWidth: v.width / 2 - v.corner, halfHeight: v.depth / 2 - v.corner, radius: v.corner, cornerSegments: 4 },
+        roundEdgedPlate(v.thickness, v.corner), materials.headliner, root,
+        { caps: [{ point: 0, facing: -1 }, { point: 8, facing: 1 }] }));
+    }
+    parts.push(build.mergeStatic("trainer-headliner", lining, root));
+  }
+
   // THE ATLAS: live where there is a 2D canvas, drawn ONCE (nothing on the faces moves); under Node the faces keep the
   // flat instrument-face material they were built with (see `displayAtlas.ts`)
   const atlas = createDisplayAtlas(build, TRAINER_DISPLAYS);

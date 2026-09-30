@@ -631,6 +631,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const cockpit = buildTrainerCockpit(build, root, {
     interior,
     dark,
+    // the cabin's fabric: a pale warm grey, matte, as a 150's headliner is (S4)
+    headliner: build.material("trainer-headliner", 0x9c9a92, { roughness: 0.95, metallic: 0 }),
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,

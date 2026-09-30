@@ -1115,10 +1115,18 @@ export interface PartLoop {
   readonly cornerSegments: number;
 }
 
-/** A loop solid's profile: a closed outline in (u, a), u OUTWARD from the loop in its plane and a along `out`, with its rounds. */
+/**
+ * A loop solid's profile: a closed outline in (u, a), u OUTWARD from the loop in its plane and a along `out`, with its
+ * rounds. A CONCAVE round (a fillet into a corner, its centre outside the solid) is shaded toward its centre.
+ */
 export interface LoopProfile {
   readonly points: readonly { readonly u: number; readonly a: number }[];
-  readonly rounds: readonly { readonly first: number; readonly last: number; readonly centre: { readonly u: number; readonly a: number } }[];
+  readonly rounds: readonly {
+    readonly first: number;
+    readonly last: number;
+    readonly centre: { readonly u: number; readonly a: number };
+    readonly concave?: boolean;
+  }[];
 }
 
 /**
@@ -1218,7 +1226,7 @@ export function loopSolid(
     const round = roundOf(j, jn);
     const radial = (point: { u: number; a: number }) => {
       const r = { u: point.u - round!.centre.u, a: point.a - round!.centre.a };
-      const l = Math.hypot(r.u, r.a);
+      const l = (round!.concave ? -1 : 1) * Math.hypot(r.u, r.a);
       return { u: r.u / l, a: r.a / l };
     };
     const [np, nq] = round ? [radial(p), radial(q)] : [edgeNormal, edgeNormal];

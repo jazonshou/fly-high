@@ -17,8 +17,10 @@ import {
   TRAINER_DIAL_DIAMETER,
   TRAINER_DOOR_FRAME,
   TRAINER_GLARESHIELD,
+  TRAINER_OVERHEAD,
   TRAINER_RADIO,
   TRAINER_SWITCHES,
+  trainerCompassCentre,
   trainerDeckSection,
   trainerDialFrames,
   trainerDialPlacements,
@@ -164,10 +166,11 @@ describe("the trainer's cockpit parts", () => {
     ]);
     expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle"]);
     expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
-    expect(parts).toHaveLength(15);
+    // 15 when the Cessna pass began, and the headliner (S4) since: the PM's budget is 8 more draws over the pass
+    expect(parts).toHaveLength(16);
   });
 
-  it("are eight or fewer new meshes beyond the dials' seven, and keep the dial names", () => {
+  it("are within the pass's budget of eight more meshes than its first 15, and keep the dial names", () => {
     // the faces and the bezels (one mesh each for all three dials, S2), two needles (the attitude dial has a BALL
     // instead: sky, ground, pitch bar)
     const dialNames = [
@@ -184,10 +187,11 @@ describe("the trainer's cockpit parts", () => {
       "trainer-door-port",
       "trainer-door-starboard",
       "trainer-glareshield",
+      "trainer-headliner",
       "trainer-instrument-panel",
       "trainer-panel-fittings",
     ]);
-    expect(others.length).toBeLessThanOrEqual(8);
+    expect(cockpitOnly.length, "the pass's budget: 15 when it began, 8 more at most").toBeLessThanOrEqual(15 + 8);
   });
 
   it("give the hood a matte near-black material of its own that reflects nothing, darker than the interior", () => {
@@ -880,6 +884,8 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       "trainer-glareshield", "trainer-instrument-panel", "trainer-door-port", "trainer-a-pillar-port",
       // the panel's face (S2): the dials' faces and the radios' windows, the bezels, the radios' bodies and knobs and the switches
       "trainer-dial-faces", "trainer-dial-bezels", "trainer-panel-fittings",
+      // the overhead (S4): the headliner and its header, the visors
+      "trainer-headliner",
     ]) {
       const mesh = named(name);
       expect(meshes.indexOf(mesh), `${name} is drawn`).toBeGreaterThanOrEqual(0);
@@ -891,15 +897,18 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     expect(visibleHardEdges(bar, raster, meshes.indexOf(bar)).length).toBeGreaterThan(3);
   });
 
-  it("keeps every vertex of the deck, the board and the door frames inside the cabin: 2 cm inside the glass above the tube, inside the tube below", () => {
+  it("keeps every vertex of the deck, the board, the door frames and the headliner inside the cabin: 2 cm inside the glass above the tube, inside the tube below", () => {
     const glass = named("trainer-canopy");
     const tube = named("trainer-fuselage");
     // Against the BUILT lofts, whose facets sit inside the surface their rings describe: the canopy's 18 chords round
     // its ring stand up to 6 mm inside it, so 2 cm from the ruled surface is at least 1.4 cm from the drawn glass.
     const FACET_SAG = 0.006;
     let checked = 0;
-    for (const name of ["trainer-glareshield", "trainer-instrument-panel", "trainer-door-port", "trainer-door-starboard"]) {
+    // the headliner's top reaches up into the roof slab (y 0.18 to 0.23), where there is no glass to keep inside of
+    const inRoofSlab = (v: Vector3) => v.y > 0.18 - 1e-6 && Math.abs(v.z) <= 0.31 && v.x <= 1.62 - Math.max(0, Math.abs(v.z) - 0.15) * (0.18 / 0.16) + 1e-6;
+    for (const name of ["trainer-glareshield", "trainer-instrument-panel", "trainer-door-port", "trainer-door-starboard", "trainer-headliner"]) {
       for (const v of worldVertices(named(name))) {
+        if (name === "trainer-headliner" && inRoofSlab(v)) continue;
         const side = v.z < 0 ? -1 : 1;
         const tubeTop = topSkin(v.x, v.z, tube);
         const aboveTube = !(v.y <= tubeTop);
@@ -1341,6 +1350,119 @@ describe("the Cessna's panel face", () => {
     for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === board) px += 1;
     expect(px).toBeLessThanOrEqual(240_000);
     expect(px).toBeGreaterThan(150_000);
+  });
+});
+
+/**
+ * THE OVERHEAD (the Cessna pass, S4): the headliner and its header, the visors, the compass. Off the BUILT meshes, from
+ * the left-seat eye at the 75 degree lens (1920 x 1080).
+ */
+describe("the Cessna's overhead", () => {
+  const W = 1920;
+  const H = 1080;
+  const pin: Pinhole = {
+    eye: EYE_POINT,
+    target: EYE_POINT.add(new Vector3(1, 0, 0)),
+    up: new Vector3(0, 1, 0),
+    fovY: 2 * Math.atan(Math.tan(37.5 / DEG) / (16 / 9)),
+    width: W,
+    height: H,
+  };
+  const drawn = () => scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+  const pixelsOf = (meshes: AbstractMesh[], mesh: AbstractMesh) => {
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const index = meshes.indexOf(mesh);
+    let n = 0;
+    for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === index) n += 1;
+    return n;
+  };
+
+  it("shades every face of the pass's new parts toward its drawn side: no vertex normal points into its own solid", () => {
+    // A normal turned inward (a concave fillet's taken as convex) shades that band as if lit from inside: a dark stripe
+    // no hard-edge test sees, since the geometry is smooth. Every vertex against its triangle's drawn side (whose cross
+    // product points INTO the solid): a round's normal is off its chord by half a chord's angle at most, never across it.
+    for (const name of [
+      "trainer-headliner", "trainer-panel-fittings", "trainer-dial-bezels", "trainer-dial-faces",
+      "trainer-door-port", "trainer-a-pillar-port", "trainer-glareshield", "trainer-instrument-panel",
+    ]) {
+      const mesh = named(name);
+      const v = worldVertices(mesh);
+      const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+      const indices = mesh.getIndices()!;
+      let worst = 1;
+      for (let t = 0; t < indices.length; t += 3) {
+        const [i, j, k] = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+        const cross = Vector3.Cross(v[j]!.subtract(v[i]!), v[k]!.subtract(v[i]!));
+        if (cross.length() < 1e-14) continue;
+        const outward = cross.normalize().scale(-1);
+        for (const vertex of [i, j, k]) {
+          worst = Math.min(worst, Vector3.Dot(new Vector3(normals[vertex * 3]!, normals[vertex * 3 + 1]!, normals[vertex * 3 + 2]!), outward));
+        }
+      }
+      expect(worst, `${name}: a vertex shaded into its own solid`).toBeGreaterThan(0);
+    }
+  });
+
+  it("hides the roof slab from the pilot behind the headliner, and the check sees the slab without it", () => {
+    const roof = named("trainer-cabin-roof");
+    expect(pixelsOf(drawn(), roof), "roof slab pixels (its hard edges were three)").toBe(0);
+    expect(pixelsOf(drawn().filter((m) => m.name !== "trainer-headliner"), roof)).toBeGreaterThan(50_000);
+  });
+
+  it("keeps the windscreen's top at +13.25 degrees straight ahead: the header's round stands 12 mm under the ceiling, not a bar hung under it", () => {
+    // straight ahead, the first elevation up from the horizon at which the headliner is the nearest surface
+    let top: number | null = null;
+    for (let el = 0; el <= 25; el += 0.05) {
+      if (firstHit(0, el)?.mesh.name === "trainer-headliner") { top = el; break; }
+    }
+    expect(top, "the headliner straight ahead").not.toBeNull();
+    // it was +14.0, the roof slab's bare edge; a 5 cm bar hung under that edge would read about +8
+    expect(top!).toBeGreaterThan(12.8);
+    expect(top!).toBeLessThan(13.6);
+  });
+
+  it("stows two visors 300 x 120 x 8 mm under the ceiling behind the header, their fronts at about +14 degrees straight ahead", () => {
+    const merged = named("trainer-headliner").metadata?.mergedFrom as string[];
+    expect(merged).toEqual(["trainer-headliner-lining", "trainer-visor-port", "trainer-visor-starboard"]);
+    // the port visor, rebuilt alone from its constants' mesh name, measured off the merged mesh by region
+    const v = worldVertices(named("trainer-headliner"));
+    const o = TRAINER_OVERHEAD.visor;
+    // its inner part, clear of the headliner's side rim (its fillet starts 5 cm in from the side), which its outer end
+    // runs under
+    const port = v.filter((p) => p.z < -o.gap / 2 && p.z > -0.24 && p.x <= o.frontX + 1e-6 && p.x >= o.frontX - o.depth - 1e-6 && p.y < 0.178);
+    expect(Math.max(...port.map((p) => p.x)) - Math.min(...port.map((p) => p.x)), "120 mm deep").toBeCloseTo(o.depth, 4);
+    expect(Math.max(...port.map((p) => p.y)) - Math.min(...port.map((p) => p.y)), "8 mm thick").toBeCloseTo(o.thickness, 4);
+    // its front edge straight ahead of the eye (z at the eye's)
+    const front = new Vector3(o.frontX, Math.min(...port.map((p) => p.y)), EYE.right);
+    expect(azel(front).el).toBeGreaterThan(13.5);
+    expect(azel(front).el).toBeLessThan(15.5);
+    expect(firstHit(0, azel(front).el + 0.5)?.mesh.name, "the visor's underside is what the eye meets just over its front").toBe("trainer-headliner");
+  });
+
+  it("hangs the compass, a 60 x 60 x 70 mm box with 8 mm round edges, on a short stalk into the centre frame, in the frame over the windscreen", () => {
+    const merged = named("trainer-panel-fittings").metadata?.mergedFrom as string[];
+    expect(merged).toEqual(expect.arrayContaining(["trainer-compass", "trainer-compass-stalk"]));
+    const c = TRAINER_OVERHEAD.compass;
+    const centre = trainerCompassCentre();
+    const box = worldVertices(named("trainer-panel-fittings")).filter((p) => Math.abs(p.x - centre.x) <= c.depth / 2 + 1e-6 && Math.abs(p.y - centre.y) <= c.height / 2 + 1e-6 && Math.abs(p.z) <= c.width / 2 + 1e-6);
+    expect(Math.max(...box.map((p) => p.z)) - Math.min(...box.map((p) => p.z)), "60 mm across").toBeCloseTo(c.width, 4);
+    expect(Math.max(...box.map((p) => p.y)) - Math.min(...box.map((p) => p.y)), "60 mm high").toBeCloseTo(c.height, 4);
+    expect(Math.max(...box.map((p) => p.x)) - Math.min(...box.map((p) => p.x)), "70 mm deep").toBeCloseTo(c.depth, 4);
+    // in the frame, over the windscreen, right of dead ahead
+    const q = projectPoint(pin, centre);
+    expect(q.x).toBeGreaterThan(W / 2);
+    expect(q.x).toBeLessThan(W);
+    expect(azel(centre).el, "its centre's elevation (the survey placed it at +3.9; the crown member's underside holds it to this)").toBeGreaterThan(2.5);
+    // the stalk's top, off the BUILT fittings (its vertices over the box, on its axis), is INSIDE the built centre frame:
+    // the frame's top is over it and its underside under it
+    const stalk = worldVertices(named("trainer-panel-fittings")).filter((p) => Math.abs(p.x - c.x) <= c.stalkRadius + 1e-6 && Math.abs(p.z) <= c.stalkRadius + 1e-6 && p.y > centre.y + c.height / 2);
+    expect(stalk.length, "the stalk's vertices").toBeGreaterThan(8);
+    const stalkTop = new Vector3(c.x, Math.max(...stalk.map((p) => p.y)), 0);
+    const frame = named("windscreen-center-frame");
+    const down = scene.pickWithRay(new Ray(stalkTop.add(new Vector3(0, 0.1, 0)), new Vector3(0, -1, 0), 0.2), (m) => m === frame);
+    const up = scene.pickWithRay(new Ray(stalkTop.subtract(new Vector3(0, 0.1, 0)), new Vector3(0, 1, 0), 0.2), (m) => m === frame);
+    expect(down?.pickedPoint?.y, "the frame's top over the stalk's top").toBeGreaterThan(stalkTop.y);
+    expect(up?.pickedPoint?.y, "the frame's underside under the stalk's top").toBeLessThan(stalkTop.y);
   });
 });
 
