@@ -4,6 +4,10 @@ import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Constants } from "@babylonjs/core/Engines/constants";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
@@ -32,6 +36,7 @@ import {
   remapScreenFaceToSlot,
 } from "./displays/displayAtlas";
 import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
+import { DISPLAY_COLOURS } from "./displays/displayPages";
 import type { FlightVisualState } from "@/src/game/types";
 
 /**
@@ -967,6 +972,119 @@ export function jetIcpFacets(): { frame: FacetQuad[]; rim: FacetQuad[]; floor: S
   };
 }
 
+/**
+ * THE DED'S PAGE (the S1 amend: the ICP read as one grey, the gap's std 17.5 against 20): a dark face with two lines of
+ * green characters as on the type's CNI page, a frequency line and a steerpoint and clock line, drawn ONCE into a
+ * texture of its own at the strip's 4.5 : 1. The characters are a 5 x 7 bitmap font drawn at `scale` on the CPU, so the
+ * page is the same bytes with or without a 2D canvas (every Node test sees it) and needs no redraw. Rows run from the
+ * top, as a canvas's do: the face maps the texture's first row to its top edge (the atlas's measured orientation).
+ */
+export const JET_DED_PAGE = Object.freeze({
+  width: 468,
+  height: 104,
+  scale: 3,
+  lines: Object.freeze(["UHF 305.00  STPT  1 AUTO", "VHF  1      14:32:05"]),
+  /** The first line's top and the second's, in texels; each line's left edge. */
+  lineTops: Object.freeze([22, 61]),
+  left: 18,
+  face: Object.freeze([6, 10, 8]),
+});
+
+/** The 5 x 7 glyphs the page uses, each row five bits from the left. */
+const DED_GLYPHS: Readonly<Record<string, readonly number[]>> = Object.freeze({
+  " ": [0, 0, 0, 0, 0, 0, 0],
+  ".": [0, 0, 0, 0, 0, 0b01100, 0b01100],
+  ":": [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+  "0": [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+  "1": [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  "2": [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+  "3": [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+  "4": [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+  "5": [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+  "6": [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+  "7": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+  "8": [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+  "9": [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+  A: [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  F: [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+  H: [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  O: [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  P: [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+  S: [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+  T: [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+  U: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  V: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+});
+
+/** The DED page's RGBA bytes, first row at the top. */
+export function jetDedPagePixels(): Uint8Array {
+  const p = JET_DED_PAGE;
+  const pixels = new Uint8Array(p.width * p.height * 4);
+  for (let i = 0; i < p.width * p.height; i += 1) pixels.set([p.face[0]!, p.face[1]!, p.face[2]!, 255], i * 4);
+  const green = DISPLAY_COLOURS.green;
+  const ink = [Number.parseInt(green.slice(1, 3), 16), Number.parseInt(green.slice(3, 5), 16), Number.parseInt(green.slice(5, 7), 16)];
+  p.lines.forEach((line, row) => {
+    [...line].forEach((character, column) => {
+      const glyph = DED_GLYPHS[character];
+      if (!glyph) throw new RangeError(`the DED has no glyph for "${character}"`);
+      for (let gy = 0; gy < 7; gy += 1) {
+        for (let gx = 0; gx < 5; gx += 1) {
+          if (((glyph[gy]! >> (4 - gx)) & 1) === 0) continue;
+          for (let sy = 0; sy < p.scale; sy += 1) {
+            for (let sx = 0; sx < p.scale; sx += 1) {
+              const x = p.left + (column * 6 + gx) * p.scale + sx;
+              const y = p.lineTops[row]! + gy * p.scale + sy;
+              pixels.set([ink[0]!, ink[1]!, ink[2]!, 255], (y * p.width + x) * 4);
+            }
+          }
+        }
+      }
+    });
+  });
+  return pixels;
+}
+
+/**
+ * The DED's material: the display's recipe (`displayMaterial`: black albedo, the page as a white-lit emissive image, no
+ * image light, so it reads the same by day and at night), its own instance with the page's texture, owned by the build.
+ */
+function dedMaterial(build: AircraftBuildContext): PBRMaterial {
+  const p = JET_DED_PAGE;
+  const texture = RawTexture.CreateRGBATexture(jetDedPagePixels(), p.width, p.height, build.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE, Constants.TEXTURETYPE_UNSIGNED_BYTE);
+  texture.name = "jet-ded-page";
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  build.textures.push(texture);
+  const material = build.material("jet-ded", 0x000000, { roughness: 1, metallic: 0 });
+  material.emissiveColor = new Color3(1, 1, 1);
+  material.emissiveTexture = texture;
+  material.environmentIntensity = 0;
+  return material;
+}
+
+/** Map the DED strip's face to its page: u across to the pilot's right (+z), v from its top edge down. */
+function mapDedFace(mesh: Mesh): void {
+  const face = jetPanelFace();
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  const uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  const front: number[] = [];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    if (Vector3.Dot(new Vector3(normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!), out) > 0.999) front.push(v);
+  }
+  const along = (v: number) => positions[v * 3 + 2]!;
+  const height = (v: number) => positions[v * 3]! * up.x + positions[v * 3 + 1]! * up.y;
+  const [z0, z1] = [Math.min(...front.map(along)), Math.max(...front.map(along))];
+  const [h0, h1] = [Math.min(...front.map(height)), Math.max(...front.map(height))];
+  for (const v of front) {
+    uvs[v * 2] = (along(v) - z0) / (z1 - z0);
+    uvs[v * 2 + 1] = (h1 - height(v)) / (h1 - h0);
+  }
+  mesh.setVerticesData(VertexBuffer.UVKind, uvs, false);
+}
+
 /** A `facetMesh` of shaded quads: each drawn as `facetMesh` winds it, its corners taking their shading normals. */
 function shadedFacetMesh(build: AircraftBuildContext, name: string, quads: readonly ShadedQuad[], material: PBRMaterial, parent: TransformNode): Mesh {
   const mesh = facetMesh(build, name, quads, material, parent);
@@ -1842,7 +1960,9 @@ export function buildJetCockpit(
   // with the MFDs' rims, the DED on the rims' material
   const icpMesh = build.mergeStatic("jet-icp", [facetMesh(build, "jet-icp-frame", icp.frame, frameMaterial, root), shadedFacetMesh(build, "jet-icp-body", icp.body, frameMaterial, root)], root);
   rims.push(facetMesh(build, "jet-icp-rim", icp.rim, materials.rim, root));
-  const dedMesh = shadedFacetMesh(build, "jet-icp-ded", icp.ded, materials.rim, root);
+  // the DED: its page on a display-class material of its own (the S1 amend)
+  const dedMesh = shadedFacetMesh(build, "jet-icp-ded", icp.ded, dedMaterial(build), root);
+  mapDedFace(dedMesh);
   const rimsMesh = build.mergeStatic("jet-mfd-rims", rims, root);
 
   // THE SILLS, each side a rail swept along the glass and a console inboard of it, all four one mesh on the dash's

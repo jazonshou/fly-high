@@ -48,6 +48,8 @@ import {
   JET_RAIL_SIDES,
   jetRailOutlineInset,
   JET_ICP,
+  JET_DED_PAGE,
+  jetDedPagePixels,
   jetIcpFaceCentre,
   jetIcpKeyCentres,
   jetRailEndTopAt,
@@ -2820,8 +2822,13 @@ describe("the ICP (Jason's F-16 wave, S1)", () => {
     const ded = named("jet-icp-ded");
     expect((icp.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-icp-frame", "jet-icp-body"]);
     expect(icp.material, "the frames' grey: no new material").toBe(named("jet-mfd-frames").material);
-    expect(ded.material, "the rims' material (their day 0.05, their night glow): no new material").toBe(named("jet-mfd-rims").material);
-    expect((ded.material as PBRMaterial).emissiveIntensity, "by day").toBeCloseTo(BEZEL_RIM.dayEmissiveIntensity, 9);
+    // the DED on the display's recipe with its own page (the S1 amend; the rims' material, a dark strip, before)
+    const dedMaterial = ded.material as PBRMaterial;
+    expect(dedMaterial.name).toBe("jet-ded");
+    expect([dedMaterial.albedoColor.r, dedMaterial.albedoColor.g, dedMaterial.albedoColor.b]).toEqual([0, 0, 0]);
+    expect([dedMaterial.emissiveColor.r, dedMaterial.emissiveColor.g, dedMaterial.emissiveColor.b]).toEqual([1, 1, 1]);
+    expect(dedMaterial.environmentIntensity, "no image light: the display's law, the same by day and night").toBe(0);
+    expect(dedMaterial.emissiveTexture?.name).toBe("jet-ded-page");
     for (const mesh of [icp, ded]) expect((mesh.metadata as { cockpitOnly?: boolean }).cockpitOnly, mesh.name).toBe(true);
     // the MFDs' size (0.15 overall) and their face centre's height, at z 0
     expect(JET_ICP.height + 2 * JET_ICP.bezel).toBeCloseTo(JET_MFD.height + 2 * JET_MFD.bezel, 12);
@@ -2896,6 +2903,45 @@ describe("the ICP (Jason's F-16 wave, S1)", () => {
     expect(Math.max(...ded.map((q) => q.o))).toBeCloseTo(floorFront + d.proud, 6);
     const lip = vertices.filter((q) => Math.abs(q.o - (floorFront + d.lipProud)) < 1e-6);
     expect(Math.max(...lip.map((q) => q.u))).toBeCloseTo(d.width / 2 + d.lip, 6);
+  });
+
+  it("shows the DED's page (the S1 amend): a dark face with two lines of the pages' green, as the type's CNI page, mapped with its first row at the strip's top and its left at the pilot's left", () => {
+    const p = JET_DED_PAGE;
+    expect(p.width / p.height, "the strip's 4.5 : 1").toBeCloseTo(JET_ICP.ded.width / JET_ICP.ded.height, 9);
+    expect(p.lines).toEqual(["UHF 305.00  STPT  1 AUTO", "VHF  1      14:32:05"]);
+    const pixels = jetDedPagePixels();
+    expect(pixels.length).toBe(p.width * p.height * 4);
+    // the ink is the pages' green; the face its dark
+    const isInk = (i: number) => pixels[i * 4] === 0x00 && pixels[i * 4 + 1] === 0xff && pixels[i * 4 + 2] === 0x5a;
+    const isFace = (i: number) => pixels[i * 4] === p.face[0] && pixels[i * 4 + 1] === p.face[1] && pixels[i * 4 + 2] === p.face[2];
+    let ink = 0;
+    for (let i = 0; i < p.width * p.height; i += 1) {
+      expect(isInk(i) || isFace(i), `texel ${i}: ink or face`).toBe(true);
+      if (isInk(i)) ink += 1;
+    }
+    // TWO LINES: the rows with ink form exactly two bands, each the glyphs' 7 rows at the scale
+    const inked = Array.from({ length: p.height }, (_, y) => Array.from({ length: p.width }, (__, x) => isInk(y * p.width + x)).some(Boolean));
+    const bands: [number, number][] = [];
+    inked.forEach((on, y) => {
+      if (on && (y === 0 || !inked[y - 1])) bands.push([y, y]);
+      if (on) bands[bands.length - 1]![1] = y;
+    });
+    expect(bands).toEqual(p.lineTops.map((top) => [top, top + 7 * p.scale - 1]));
+    console.info(`F-16 DED page: ${p.width} x ${p.height}, ${ink} texels of ink (${((100 * ink) / (p.width * p.height)).toFixed(1)}%)`);
+    expect(ink / (p.width * p.height)).toBeGreaterThan(0.05);
+    // THE FACE'S MAPPING: its top-left corner (to the pilot) at UV (0, 0), its bottom-right at (1, 1)
+    const ded = named("jet-icp-ded");
+    const positions = worldVertices(ded);
+    const normals = ded.getVerticesData(VertexBuffer.NormalKind)!;
+    const uvs = ded.getVerticesData(VertexBuffer.UVKind)!;
+    const { up, out } = frameOf();
+    const front = positions.map((v, i) => ({ v, i })).filter(({ i }) => Vector3.Dot(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), out) > 0.999);
+    expect(front.length, "the front quad's two triangles").toBe(6);
+    for (const { v, i } of front) {
+      const left = v.z < jetIcpFaceCentre().z;
+      const top = Vector3.Dot(v.subtract(jetIcpFaceCentre()), up) > JET_ICP.ded.v;
+      expect([uvs[i * 2], uvs[i * 2 + 1]], `corner (${left ? "left" : "right"}, ${top ? "top" : "bottom"})`).toEqual([left ? 0 : 1, top ? 0 : 1].map((q) => expect.closeTo(q, 6)));
+    }
   });
 
   it("ACCEPT at 1080p: the gap between the MFDs 88% covered (11k px bare, of 35k allowed), twelve keys each 23 px or more, its top under the cove's foot and all of it under the HUD's symbology (CONTROL: without the ICP the gap is bare)", () => {
