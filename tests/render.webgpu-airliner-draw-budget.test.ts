@@ -684,25 +684,33 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // sum and moment moved most (y +78.8 to -717.2): the old slabs' outer and inner faces cancelled, and the frame is one
     // face, turned into the cabin. The area fell 9.61 m^2 (one face where there were two, and their rims), and the signed
     // volume moved by +56.94 m^3, which an open surface's is not (it is a check, taken about the origin).
+    //
+    // THEN 18,324 TO 20,276 when the frame's openings got round corners (S2, 3 degrees of R's angles): the corners were
+    // mitres, one station each, and each is a round of seven now plus the grid lines it crosses. The frame went 1,856 ->
+    // 2,688 vertices and 3,110 -> 4,926 triangles (its face re-cut round the rounds, and the returns swept on round
+    // them), the seals 2,040 -> 3,160 and 1,608 -> 3,160: +1,952 vertices and +10,104 indices exactly. Checked mesh by
+    // mesh against S1: those two moved, the other 95 are bit-identical. The extents did not move; the sums moved by what
+    // the new stations round the corners weigh, and the normal moment most (15,998 -> 4,775 -> -982), the frame's one
+    // face turned into the cabin at more of its points.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(18_324);
-    expect(census.indices).toBe(78_798);
+    expect(census.vertices).toBe(20_276);
+    expect(census.indices).toBe(88_902);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(242547.1444, 1);
-    expect(census.positionSum.y).toBeCloseTo(-9099.9162, 1);
-    expect(census.positionSum.z).toBeCloseTo(8.8529, 1);
-    expect(census.positionSquares).toBeCloseTo(14024939.09, 0);
-    expect(census.normalSum.x).toBeCloseTo(-528.2438, 2);
-    expect(census.normalSum.y).toBeCloseTo(-717.1889, 2);
-    expect(census.normalSum.z).toBeCloseTo(2.2856, 2);
-    expect(census.normalMoment).toBeCloseTo(4775.3707, 1);
-    expect(census.signedVolume).toBeCloseTo(-3184.5765, 2);
-    expect(census.area).toBeCloseTo(4737.3277, 2);
+    expect(census.positionSum.x).toBeCloseTo(303351.0881, 1);
+    expect(census.positionSum.y).toBeCloseTo(-3599.6219, 1);
+    expect(census.positionSum.z).toBeCloseTo(13.5864, 1);
+    expect(census.positionSquares).toBeCloseTo(15937701.15, 0);
+    expect(census.normalSum.x).toBeCloseTo(-661.3057, 2);
+    expect(census.normalSum.y).toBeCloseTo(-1027.8430, 2);
+    expect(census.normalSum.z).toBeCloseTo(3.6546, 2);
+    expect(census.normalMoment).toBeCloseTo(-981.5546, 1);
+    expect(census.signedVolume).toBeCloseTo(-3184.1149, 2);
+    expect(census.area).toBeCloseTo(4737.3759, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {

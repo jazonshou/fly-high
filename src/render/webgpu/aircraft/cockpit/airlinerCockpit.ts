@@ -427,7 +427,7 @@ export const AIRLINER_FRAME = Object.freeze({
   returnSegments: 6,
   /** How far the frame laps the glass at every opening's two sides (the pillars' and the post's edges), not at its top and bottom. */
   lap: 0.003,
-  cornerRadiusDegrees: 0,
+  cornerRadiusDegrees: 3,
   cornerSegments: 6,
 });
 
@@ -524,7 +524,9 @@ function frameOpenings(): Opening[] {
  * profile swept round the loop; the seal is swept after it, a closed section of its own.
  */
 export function airlinerWindowFrame(skin: SkinCaster): WindowFrame {
-  const { returnRadius: r, cornerRadiusDegrees: rho, cornerSegments } = AIRLINER_FRAME;
+  const { returnRadius: r, cornerSegments } = AIRLINER_FRAME;
+  // a number, not the frozen table's literal: at 0 the corners are square (mitred), and that branch is kept
+  const rho: number = AIRLINER_FRAME.cornerRadiusDegrees;
   const { depth } = AIRLINER_LINING;
   const lines = airlinerLiningLines();
   const A = lines.azimuth;

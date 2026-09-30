@@ -2153,6 +2153,33 @@ and the step to the face's edge not solved.
   by +56.94 m^3 because an open surface's is not a volume, and the normal sum moved because the old slabs' two faces
   cancelled.
 
+## The 747's window corners, rounded (S2)
+
+Each opening's four corners are rounds of 3 degrees of R's angles, about 0.10 m at the glass (all 24; `cornerRadiusDegrees`),
+sampled every 15 degrees round and wherever a grid line crosses them. The return and the seal are swept on round the
+corner, so S1's mitres are gone.
+
+| | S1 | S2 |
+|---|---|---|
+| creases over 45 seen on the frame | 35, in the corners' mitres | **0** (the bezels' control: 17) |
+| No.1 / No.2 pillar, el -8 / 0 / 4 | 2.23 / 2.30 / 2.35 | 2.23 / 2.30 / 2.39 |
+| centre member | 3.75 / 3.71 / 3.69 | unchanged |
+| sill under No.1's straight bottom edge | -0.44..1.00 | -0.09..0.95 |
+| deck line | 18.5700 | 18.5700 |
+
+What the rounds cost:
+- **The glass they cover.** Against S1's opening, No.1 loses 1.15%, No.2 1.10% and No.3 2.05% of its solid angle
+  from R. No.3 is the smallest pane, so the same radius costs it most. The radius that costs exactly 1% is 2.80,
+  2.87 and 2.09 degrees.
+- **The sill at the corners.** No.1's straight bottom edge now ends 3 degrees further out, so its sill tops out at 0.95
+  rather than 0.99. Round the corners the frame rises out of the sill into the post (up to 3.94 degrees over the lip,
+  eye az 6.4 to 9.1) and into the pillar (2.71, eye az -11.1). That is a rounded corner seen from above it. The sill
+  rule is held on the straight edge.
+
+Mesh by mesh against S1: the frame went 1,856 -> 2,688 vertices and 3,110 -> 4,926 triangles, and the seals 2,040 ->
+3,160 and 1,608 -> 3,160. The other 95 meshes are bit-identical. Four mutations, all caught: square corners, a round
+bulging into the glass (the builder's own guard throws), one chord to a corner, and the rounds' topology not grown.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

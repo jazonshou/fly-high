@@ -698,7 +698,7 @@ describe("the centre post", () => {
 });
 
 describe("what the pilot sees straight ahead", () => {
-  it("has the glareshield's lip at -18.57, and no more than a degree of sill under No.1 anywhere along its bottom edge", () => {
+  it("has the glareshield's lip at -18.57, and no more than a degree of sill under No.1 anywhere along its straight bottom edge", () => {
     const lip = worldVertices(named("airliner-glareshield"));
     // the silhouette is the round's steepest-up vertex from the eye (a line along z reads one row, its slope along x):
     // the tangent, on the deck line to the bit; nothing of the glareshield rises over it, or stands aft of its aft face
@@ -707,12 +707,23 @@ describe("what the pilot sees straight ahead", () => {
     expect(rowSlope(airlinerGlareshieldSection().tangent)).toBeCloseTo(Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees / DEG), 12);
     expect(Math.min(...lip.map((v) => v.x)), "its aft face at the deck's own plane").toBeCloseTo(airlinerPanelFaceX(), 5);
     expect(Math.atan2(airlinerLipY() - EYE.up, airlinerPanelFaceX() - EYE.forward) * DEG).toBeCloseTo(AIRLINER_GLARESHIELD.lipElevationDegrees, 6);
-    // the sill: the bottom of the view over No.1 (the sill lining's own top edge) less the lip, all along No.1
+    // the sill: the bottom of the view over No.1 (the sill's return, to its rim) less the lip, along No.1's straight edge
     const sills = viewBottomOverNoOne().map(({ az, el }) => el - lipElevation(az));
     console.info(`747 sill under No.1: ${Math.min(...sills).toFixed(2)}..${Math.max(...sills).toFixed(2)} degrees`);
     expect(Math.max(...sills), "no more than a degree of sill").toBeLessThanOrEqual(1.0);
-    // and it is the LOWEST such lip: the sill reaches the degree somewhere (the inboard end)
-    expect(Math.max(...sills)).toBeGreaterThan(0.95);
+    // and it is (nearly) the LOWEST such lip: the sill comes within a tenth of the degree at the straight edge's inboard
+    // end. It reached 0.99 when that end was No.1's corner; rounded (S2), the straight edge ends 3 degrees further out,
+    // where the lip's line reads a little lower, and the corner's round rises from it into the post (recorded here).
+    expect(Math.max(...sills)).toBeGreaterThan(0.9);
+    const loop = frame.loops.find((l) => l.name === "port-one")!;
+    const profile = airlinerFrameProfile();
+    const corner = loop.stations.filter((st) => st.opening.e > FLIGHT_DECK_PANES[0]!.elevation[0] + 1e-9 && st.opening.e < FLIGHT_DECK_PANES[0]!.elevation[0] + AIRLINER_FRAME.cornerRadiusDegrees + 1e-9)
+      .map((st) => {
+        const seen = [...profile.ret, ...profile.seal].map((q) => azel(st.point.add(st.offset.scale(q.u)).add(st.normal.scale(q.n))));
+        const top = seen.reduce((a, b) => (b.el > a.el ? b : a));
+        return top.el - lipElevation(top.az);
+      });
+    console.info(`747 No.1's bottom corners, rounded: the frame rises ${Math.min(...corner).toFixed(2)}..${Math.max(...corner).toFixed(2)} degrees over the lip into the post and the pillar`);
   });
 
   it("shows nothing of the glareshield or the board behind the lip above it: the lip is the edge the pilot reads", () => {
@@ -844,7 +855,7 @@ describe("what the pilot sees straight ahead", () => {
     }
   });
 
-  it("has a hole in the picture only where there is glass, and covers glass only at the lip and a pane's own edges", () => {
+  it("has a hole in the picture only where there is glass, and covers glass only at the lip, a pane's own edges and its rounded corners", () => {
     const skinShowing: string[] = [];
     const glassCovered: string[] = [];
     let open = 0;
@@ -864,6 +875,15 @@ describe("what the pilot sees straight ahead", () => {
     // half a degree across; the lining's chords and the pane's are also sampled at different points along an edge.
     const nearEdge = (az: number, el: number, what: string) =>
       [[0.5, 0], [-0.5, 0], [0, 0.5], [0, -0.5]].some(([da, de]) => exit(az + da!, el + de!) !== what);
+    // and the frame's rounded corners (S2) cover each pane's corners, inside its rectangle, by design
+    const inRoundedCorner = (p: Vector3) => {
+      const R = FLIGHT_DECK_REFERENCE;
+      const az = Math.atan2(Math.abs(p.z - R.z), p.x - R.x) * DEG;
+      const el = Math.atan2(p.y - R.y, Math.hypot(p.x - R.x, p.z - R.z)) * DEG;
+      const reach = AIRLINER_FRAME.cornerRadiusDegrees + 0.2;
+      return FLIGHT_DECK_PANES.some(({ azimuth: [a0, a1], elevation: [e0, e1] }) =>
+        az > a0 && az < a1 && el > e0 && el < e1 && Math.min(az - a0, a1 - az) < reach && Math.min(el - e0, e1 - el) < reach);
+    };
     for (let az = -37.5 + 0.37; az <= 37.5; az += 1) {
       for (let el = -24 + 0.37; el <= 24; el += 1) {
         if (!inFrame(az, el)) continue;
@@ -872,7 +892,7 @@ describe("what the pilot sees straight ahead", () => {
         if (hit) solid += 1;
         else open += 1;
         if (!hit && what !== "glass" && !nearEdge(az, el, what)) skinShowing.push(`(${az.toFixed(2)}, ${el.toFixed(2)}) ${what}`);
-        if (hit && what === "glass" && el > lipElevation(az) + 0.1 && !nearEdge(az, el, what)) glassCovered.push(`(${az.toFixed(2)}, ${el.toFixed(2)}) by ${hit.pickedMesh!.name}`);
+        if (hit && what === "glass" && el > lipElevation(az) + 0.1 && !nearEdge(az, el, what) && !inRoundedCorner(hit.pickedPoint!)) glassCovered.push(`(${az.toFixed(2)}, ${el.toFixed(2)}) by ${hit.pickedMesh!.name}`);
       }
     }
     console.info(`747 frame from the eye: ${open} rays open, ${solid} on the kit or the post`);
@@ -1277,7 +1297,7 @@ describe("the 747's cockpit against the shell it stands in", () => {
   });
 });
 
-describe("the window frame's openings, rolled (S1)", () => {
+describe("the window frame's openings, rolled and rounded (S1, S2)", () => {
   /**
    * THE CREASES THE PILOT SEES on `meshes` (welded by position): every edge between two triangles sharper than `min`
    * degrees where BOTH triangles are seen at it, each being, 2 mm in from the edge's middle, the very triangle the eye's
@@ -1373,22 +1393,75 @@ describe("the window frame's openings, rolled (S1)", () => {
     }
   });
 
-  it("rolls every edge of every opening: the only creases over 45 degrees the pilot sees on the frame are in the square corners' mitres (S2 rounds them)", () => {
-    const R = FLIGHT_DECK_REFERENCE;
-    const signed = (p: Vector3) => {
-      const [dx, dy, dz] = [p.x - R.x, p.y - R.y, p.z - R.z];
-      return { a: Math.atan2(dz, dx) * DEG, e: Math.atan2(dy, Math.hypot(dx, dz)) * DEG };
-    };
-    const corners = FLIGHT_DECK_PANES.flatMap((pane) => [-1, 1].flatMap((side) => pane.azimuth.flatMap((a) => pane.elevation.map((e) => ({ a: side * a, e })))));
-    const nearCorner = (p: Vector3) => Math.min(...corners.map((c) => Math.hypot(signed(p).a - c.a, signed(p).e - c.e)));
+  it("rolls every edge and every corner of every opening: no crease over 45 degrees the pilot sees on the frame (S1, S2)", () => {
+    // P0: 34 along the openings' edges (their square reveals' inner corners, both faces seen), and S1 left 35 in the
+    // square corners' mitres, which S2 rounds
     const creases = seenCreases([named("airliner-cockpit-interior"), named("airliner-window-seals")], 45);
-    const elsewhere = creases.filter((c) => nearCorner(c.mid) > 1.5).map((c) => `(${c.az.toFixed(2)}, ${c.el.toFixed(2)}) ${c.dihedral.toFixed(1)} deg`);
-    console.info(`747 creases over 45 degrees seen from the seat: ${creases.length} on the frame, all within ${Math.max(0, ...creases.map((c) => nearCorner(c.mid))).toFixed(2)} degrees of a pane's corner`);
-    expect(elsewhere, "a crease along an opening's edge").toEqual([]);
+    console.info(`747 creases over 45 degrees seen from the seat: ${creases.length} on the frame`);
+    expect(creases.map((c) => `(${c.az.toFixed(2)}, ${c.el.toFixed(2)}) ${c.dihedral.toFixed(1)} deg`), "a crease on the frame").toEqual([]);
     // CONTROL: the same instrument sees the creases the kit has on purpose, the bezels' square frames round the screens
     const bezels = seenCreases([named("airliner-screen-bezels")], 45);
     console.info(`747 bezels' seen creases over 45 degrees (the control): ${bezels.length}`);
     expect(bezels.length).toBeGreaterThan(10);
+  });
+
+  it("costs each pane's opening what its four rounds take, and no more: 1.15, 1.10 and 2.05 percent of No.1, No.2 and No.3 (S2)", () => {
+    // Each pane's solid angle from R (its rectangle in R's angles, weighted by the cosine of the elevation), lapped at its
+    // sides (S1), against the same with its corners rounded. No.3, the smallest, pays most for the same radius.
+    const rho = AIRLINER_FRAME.cornerRadiusDegrees;
+    const loss: Record<string, number> = {};
+    for (const loop of frame.loops.filter((l) => l.name.startsWith("starboard-"))) {
+      const [a0, a1] = [Math.min(...loop.stations.map((st) => st.opening.a)), Math.max(...loop.stations.map((st) => st.opening.a))];
+      const [e0, e1] = [Math.min(...loop.stations.map((st) => st.opening.e)), Math.max(...loop.stations.map((st) => st.opening.e))];
+      let square = 0;
+      let rounded = 0;
+      const step = 0.02;
+      for (let a = a0 + step / 2; a < a1; a += step) {
+        for (let e = e0 + step / 2; e < e1; e += step) {
+          const w = Math.cos(e / DEG);
+          square += w;
+          const dx = Math.max(a0 + rho - a, 0, a - (a1 - rho));
+          const dy = Math.max(e0 + rho - e, 0, e - (e1 - rho));
+          if (Math.hypot(dx, dy) <= rho) rounded += w;
+        }
+      }
+      loss[loop.name.replace("starboard-", "")] = 100 * (1 - rounded / square);
+    }
+    console.info(`747 openings' loss to their rounded corners: ${Object.entries(loss).map(([k, v]) => `No.${k} ${v.toFixed(2)}%`).join(", ")}`);
+    expect(loss.one).toBeCloseTo(1.15, 1);
+    expect(loss.two).toBeCloseTo(1.1, 1);
+    expect(loss.three).toBeCloseTo(2.05, 1);
+  });
+
+  it("rounds every opening's four corners by the design's radius in R's angles, and keeps its straight edges where the panes' are (S2)", () => {
+    const rho = AIRLINER_FRAME.cornerRadiusDegrees;
+    expect(rho).toBeGreaterThan(0);
+    for (const loop of frame.loops) {
+      const [side, name] = loop.name.split("-") as ["port" | "starboard", string];
+      const pane = FLIGHT_DECK_PANES.find((p) => p.name === name)!;
+      const [e0, e1] = pane.elevation;
+      const signs = side === "port" ? -1 : 1;
+      const openings = loop.stations.map((st) => st.opening);
+      // the sides are lapped (S1): read them off the stations, the sill's and the crown's are the pane's own
+      const a0 = Math.min(...openings.map((o) => o.a));
+      const a1 = Math.max(...openings.map((o) => o.a));
+      expect(Math.min(...openings.map((o) => o.e)), `${loop.name}'s bottom`).toBeCloseTo(e0, 9);
+      expect(Math.max(...openings.map((o) => o.e)), `${loop.name}'s top, where the pane's is`).toBeCloseTo(e1, 9);
+      expect(Math.abs(signs * (a1 - a0) - signs * (pane.azimuth[1] - pane.azimuth[0])), `${loop.name}: lapped a tenth of a degree a side at most`).toBeLessThan(0.25);
+      let onArcs = 0;
+      for (const o of openings) {
+        const dx = Math.max(a0 + rho - o.a, 0, o.a - (a1 - rho));
+        const dy = Math.max(e0 + rho - o.e, 0, o.e - (e1 - rho));
+        // every opening point is on the rounded rectangle: on a straight edge, or on a corner's round
+        const onEdge = Math.abs(o.a - a0) < 1e-9 || Math.abs(o.a - a1) < 1e-9 || Math.abs(o.e - e0) < 1e-9 || Math.abs(o.e - e1) < 1e-9;
+        if (dx > 1e-9 && dy > 1e-9) {
+          onArcs += 1;
+          expect(Math.hypot(dx, dy), `${loop.name} at (${o.a.toFixed(3)}, ${o.e.toFixed(3)})`).toBeCloseTo(rho, 9);
+        } else expect(onEdge, `${loop.name} at (${o.a.toFixed(3)}, ${o.e.toFixed(3)}): on a straight edge`).toBe(true);
+      }
+      // each of the four rounds is sampled at least every 90 / cornerSegments degrees
+      expect(onArcs, `${loop.name}: points on its four rounds`).toBeGreaterThanOrEqual(4 * (AIRLINER_FRAME.cornerSegments - 1));
+    }
   });
 });
 

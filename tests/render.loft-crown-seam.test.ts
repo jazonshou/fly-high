@@ -557,7 +557,10 @@ describe("a loft's crown seam", () => {
       // panels are one welded surface with each opening rolled into it, and the seals round the glass are new. Checked mesh
       // by mesh against 303372e: airliner-cockpit-interior changed (2,556 -> 1,856 vertices, 2,328 -> 3,110 triangles),
       // airliner-window-seals is new (2,040, 1,608), and the other 95 are bit-identical, every other airframe's too.
-      airliner: "d9605bf4",
+      // RE-PINNED d9605bf4 -> a4eac957 for the frame's rounded corners (S2): against S1, airliner-cockpit-interior
+      // (1,856 -> 2,688 vertices, 3,110 -> 4,926 triangles) and airliner-window-seals (2,040 -> 3,160, 1,608 -> 3,160)
+      // moved, and the other 95 are bit-identical.
+      airliner: "a4eac957",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
