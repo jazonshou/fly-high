@@ -31,6 +31,7 @@ import {
 } from "@/src/render/webgpu/world/pageGeometry";
 import {
   createWorldPageKey,
+  parseWorldPageKey,
   worldPageBounds,
   type WorldPageAddress,
   type WorldPageKey,
@@ -754,6 +755,54 @@ export function seasonSlotKeys(
 /** The season-invariant slot key for a page (variant 0). */
 export function invariantSlotKey(address: WorldPageAddress): TerrainSlotKey {
   return { page: createWorldPageKey(address), variant: 0 };
+}
+
+/**
+ * A page address as a Map key: numeric while it fits the packing, the page
+ * key string beyond it. Exact either way (two addresses never share a key).
+ */
+function pageAddressLookupKey(address: WorldPageAddress): number | string {
+  const limit = 2 ** 20;
+  const { level, x, z } = address;
+  if (level >= 0 && level < 32 && x >= -limit && x < limit && z >= -limit && z < limit) {
+    return (level * 2 * limit + (x + limit)) * 2 * limit + (z + limit);
+  }
+  return createWorldPageKey(address);
+}
+
+/** A slot's own page, from its key (not its `address` field), parsed once per slot. */
+const invariantSlotLookupKeys = new WeakMap<TerrainAtlasSlot, number | string | null>();
+function invariantSlotLookupKey(slot: TerrainAtlasSlot): number | string | null {
+  let key = invariantSlotLookupKeys.get(slot);
+  if (key === undefined) {
+    const address = slot.key.variant === 0 ? parseWorldPageKey(slot.key.page) : null;
+    key = address ? pageAddressLookupKey(address) : null;
+    invariantSlotLookupKeys.set(slot, key);
+  }
+  return key;
+}
+
+/**
+ * The RESIDENT invariant slots, looked up by page address without building a
+ * string. It answers exactly what `residency.get(invariantSlotKey(address))`
+ * answers when that slot is resident, and undefined otherwise: a snapshot,
+ * valid until the residency next changes.
+ *
+ * P5-C (docs/plans/CDLOD_SELECTION_DESIGN_NOTE.md): CDLOD selection asks for
+ * every candidate's deviation and height range every frame, and each ask built
+ * a page-key string, a slot-key string and did a string-keyed Map lookup. One
+ * pass over the atlas's slots per frame replaces all of them.
+ */
+export function createResidentInvariantPageLookup(
+  residency: TerrainAtlasResidency,
+): (address: WorldPageAddress) => TerrainAtlasSlot | undefined {
+  const byPage = new Map<number | string, TerrainAtlasSlot>();
+  for (const slot of residency.entries) {
+    if (slot.lifecycle.state !== "resident") continue;
+    const key = invariantSlotLookupKey(slot);
+    if (key !== null) byPage.set(key, slot);
+  }
+  return (address) => byPage.get(pageAddressLookupKey(address));
 }
 
 // ---------------------------------------------------------------------------

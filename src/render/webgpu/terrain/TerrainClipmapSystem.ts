@@ -45,6 +45,7 @@ import {
   TERRAIN_CHANNEL_TEXTURE_COUNT,
   TerrainPageAtlas,
   TerrainPageGenerator,
+  createResidentInvariantPageLookup,
   invariantSlotKey,
   type TerrainAuxPagePublisher,
   type TerrainCollisionPagePublisher,
@@ -1010,6 +1011,7 @@ export class TerrainClipmapSystem {
       velocityX: observer.velocityX,
       velocityZ: observer.velocityZ,
     };
+    const residentPage = createResidentInvariantPageLookup(this.heightAtlas.residency);
     this.nodes = selectTerrainNodes({
       cameraX: observer.x,
       cameraY: observer.y ?? 0,
@@ -1021,17 +1023,10 @@ export class TerrainClipmapSystem {
       finestResidentLevel: this.profile.finestResidentLevel,
       coarsestLevel: COARSEST_NODE_LEVEL,
       farPlaneMeters: 45_000,
-      deviationFor: (address) => {
-        const slot = this.heightAtlas.residency.get(invariantSlotKey(address));
-        return slot && slot.lifecycle.state === "resident"
-          ? slot.stats.maxDeviationFromParent
-          : null;
-      },
+      deviationFor: (address) => residentPage(address)?.stats.maxDeviationFromParent ?? null,
       heightRangeFor: (address) => {
-        const slot = this.heightAtlas.residency.get(invariantSlotKey(address));
-        return slot && slot.lifecycle.state === "resident"
-          ? [slot.stats.minHeightMeters, slot.stats.maxHeightMeters]
-          : null;
+        const slot = residentPage(address);
+        return slot ? [slot.stats.minHeightMeters, slot.stats.maxHeightMeters] : null;
       },
     });
     this.stepCasterReadiness();

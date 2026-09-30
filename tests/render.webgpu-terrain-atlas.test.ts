@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TerrainAtlasResidency,
+  createResidentInvariantPageLookup,
   invariantSlotKey,
   seasonSlotKeys,
 } from "../src/render/webgpu/terrain/TerrainPageAtlas";
@@ -391,5 +392,56 @@ describe("terrain debug overlay (4-3/5-3)", () => {
       macro,
       seedHash: 123,
     }, 1)[0]).toBe(255);
+  });
+});
+
+describe("resident invariant page lookup (P5-C)", () => {
+  it("answers exactly what the string-keyed residency lookup answers", () => {
+    const atlas = residency(64);
+    atlas.beginFrame(1);
+    const completed: string[] = [];
+    // Resident invariant pages, negative coordinates included, and one beyond
+    // the lookup's numeric packing (2^21) to exercise its string path.
+    const resident = [
+      address(0, 0, 0), address(0, -1, 2), address(1, 3, -3), address(2, -2, -2),
+      address(3, 1, 1), address(0, 2 ** 21, -5),
+    ];
+    resident.forEach((page, index) => {
+      const request = atlas.request(invariantSlotKey(page), page)!;
+      atlas.complete(request.slot.key, request.token!, {
+        minHeightMeters: index, maxHeightMeters: index + 10, maxDeviationFromParent: 0.25 * (index + 1),
+      });
+      completed.push(`${page.level}/${page.x}/${page.z}`);
+    });
+    // Still generating: must read as absent.
+    atlas.request(invariantSlotKey(address(1, 0, 0)), address(1, 0, 0));
+    atlas.request(invariantSlotKey(address(2, 1, -1)), address(2, 1, -1));
+    // A non-invariant variant of a resident page's address: never answers.
+    const variant = atlas.request({ page: invariantSlotKey(address(3, 2, 2)).page, variant: 1 }, address(3, 2, 2))!;
+    atlas.complete(variant.slot.key, variant.token!, {
+      minHeightMeters: 99, maxHeightMeters: 100, maxDeviationFromParent: 9,
+    });
+
+    const lookup = createResidentInvariantPageLookup(atlas);
+    const legacy = (page: ReturnType<typeof address>) => {
+      const slot = atlas.get(invariantSlotKey(page));
+      return slot && slot.lifecycle.state === "resident" ? slot : undefined;
+    };
+    let answered = 0;
+    for (let level = 0; level <= 3; level += 1) {
+      for (let x = -4; x <= 4; x += 1) {
+        for (let z = -4; z <= 4; z += 1) {
+          const page = address(level, x, z);
+          expect(lookup(page)).toBe(legacy(page));
+          if (lookup(page)) answered += 1;
+        }
+      }
+    }
+    const far = address(0, 2 ** 21, -5);
+    expect(lookup(far)).toBe(legacy(far));
+    expect(lookup(far)).toBeDefined();
+    expect(lookup(address(3, 2, 2))).toBeUndefined();
+    // Non-vacuity: the grid met every in-range resident page, and no other.
+    expect(answered).toBe(completed.length - 1);
   });
 });
