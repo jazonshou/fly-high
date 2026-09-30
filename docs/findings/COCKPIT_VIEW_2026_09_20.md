@@ -2180,6 +2180,61 @@ Mesh by mesh against S1: the frame went 1,856 -> 2,688 vertices and 3,110 -> 4,9
 3,160 and 1,608 -> 3,160. The other 95 meshes are bit-identical. Four mutations, all caught: square corners, a round
 bulging into the glass (the builder's own guard throws), one chord to a corner, and the rounds' topology not grown.
 
+## The 747's deck turned aft, and its clock (S4)
+
+**The deck turns aft.** Outboard of the PFD the board ran on flat past the frame's edge: a grey slab 29 degrees wide
+with nothing on it, 4.02% of the frame (P0). Now the whole deck, board and glareshield together, is swept along one
+plan path (`airlinerDeckPath`): straight across between the pilots, then at each end a turn aft of 0.25 m radius through
+90 degrees, starting 15 degrees outboard of each pilot's straight ahead, and a run 0.4 m aft along the side (its end at
+az -67 from the seat, out of every lens).
+- The two turn together because a board turned alone opens the glareshield's underside to the eye. At az -30 a band
+  from el -17.1 to -18.3 would look under the straight glareshield, into the nose beyond.
+- Turned, the lip comes toward the pilot and reads lower, so the deck line (the deck's highest row, straight ahead)
+  stays 18.5700.
+- Where the flat board was, the frame's lower left now shows the side wall's frame under No.2 (44 rays of the test's
+  grid) and No.2's lower corner of glass (32 rays), which the board used to hide. No ray meets hidden skin.
+- Swept, the glareshield's round takes the round's radial normals: its eight flat-shaded facets are shaded round.
+
+**The clock.** It sits on the turn at az -17.17, el -21.51 from the eye, 7.3 degrees round the turn. It is a round dial
+of the screens' family:
+- the frame on the bezels' dark grey, the 45 degree chamfered rim on the marking (the night glow), and a dark well
+  behind the 2 mm gap, all three merged into the screens' own meshes;
+- the face is a static page (`drawClockFace`: sixty ticks, the chronograph's quarters and a UTC window, no needles),
+  drawn once at build into a 256 x 256 texture of its own. That costs one draw and nothing per frame. The displays'
+  atlas has no spare slot, and a fourth column would make every redraw a third dearer (about 1.1 ms more of 3.3).
+- Its bezel's top is level with the screens' bezels'. 73% of the face is in the frame.
+- The turn is concave to the pilot, 5.71 mm deep across the dial. The dial stands that much further out and its frame
+  reaches back into the board, so the board never shows through the rim's sides. That is tested all round the frame
+  and the rim.
+
+**Blank board outboard of the PFD:** 4.02% of the frame -> 1.83%. 0.67% is flat board by the PFD, under the 1% asked;
+1.16% is the turn's own face, seen as it comes toward the pilot.
+
+**Not in S4:** the board's top edge rounded into the cove. The P0 "edge" there is an outline (the board's top is under
+the glareshield), and the corner the eye does see is where the board meets the 3 mm cove. An 8 mm round tangent to both
+needs 4.8 mm of cove, and the cove is 4.24 mm long. It goes with S3, which rebuilds the glareshield's aft edge.
+
+Mesh by mesh against S2:
+
+| mesh | vertices | triangles |
+|---|---|---|
+| `airliner-cockpit-interior` (the board swept) | 2,688 -> 2,848 | 4,926 -> 5,086 |
+| `airliner-glareshield` | 144 -> 598 | 48 -> 568 |
+| `airliner-screen-bezels` (with the clock's frame) | 576 -> 968 | 192 -> 576 |
+| `airliner-screen-bezel-rims` (with the clock's rim) | 576 -> 968 | 192 -> 576 |
+| `airliner-screen-wells` (with the clock's well) | 144 -> 342 | 72 -> 264 |
+| `airliner-clock` | new: 198 | new: 192 |
+
+The other 92 meshes are bit-identical. Cockpit view draws 95 (base 93).
+
+Five mutations, all caught:
+- the turn from az -25 (the builder's own guard throws: the clock's azimuth is not on the turn);
+- the dial not lifted (its rim sinks into the board at the sides; the first version of the test sampled only the flat
+  frame and missed it);
+- the face mirrored;
+- the round flat-shaded;
+- the chamfer's normals radial.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

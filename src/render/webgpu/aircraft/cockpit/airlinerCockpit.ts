@@ -25,6 +25,7 @@ import {
   type RoundedDeckSection,
 } from "./cockpitPrimitives";
 import {
+  AIRLINER_CLOCK_FACE,
   AIRLINER_DISPLAYS,
   createDisplayAtlas,
   displayAtlasHeight,
@@ -34,8 +35,10 @@ import {
   displaySlots,
   paintDisplays,
   remapScreenFaceToSlot,
+  uploadDisplayAtlas,
   type DisplayAtlas,
 } from "./displays/displayAtlas";
+import { drawClockFace } from "./displays/displayPages";
 import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
 
 /**
@@ -230,6 +233,129 @@ export function airlinerPanelFace(): { top: { x: number; y: number }; up: { x: n
   };
 }
 
+// ---- the deck's wrap: the board and the glareshield turn aft to the side walls (S4) ---------------------
+
+/**
+ * THE DECK WRAPS (S4). Outboard of the PFD the board ran on flat to the frame's edge, a grey slab 29 degrees wide with
+ * nothing on it (4.02% of the frame, P0), and past both edges of the frame to the shell. The type's panel turns
+ * toward the pilot at its ends, into the side consoles under the side windows. So here the whole DECK, the board
+ * and the glareshield over it, is swept along one plan path (`airlinerDeckPath`): straight across between the pilots,
+ * then at each end a turn aft of `radius` (at the face's top edge) through `turnDegrees`, and a run aft along the side
+ * past the edge of any lens. The two turn together: a board turned alone would open the glareshield's underside to the
+ * eye, and through it the nose beyond.
+ *
+ * The turn starts `startAzimuthDegrees` outboard of each pilot's straight ahead, read at the face's top edge. The deck
+ * line is the lip straight ahead, where the deck is straight; turned, the lip comes toward the pilot and reads lower,
+ * so the deck line (the HUD's instrument: the deck's highest row anywhere) does not move.
+ */
+export const AIRLINER_DECK_WRAP = Object.freeze({
+  startAzimuthDegrees: 15,
+  radius: 0.25,
+  turnDegrees: 90,
+  /** Aft along the side after the turn: its end at az -67 from the seat, out of any lens. */
+  aftRun: 0.4,
+  /** Chords round each turn, shaded as the turn. */
+  segments: 9,
+});
+
+/** A station of the deck's plan path: where the section's reference (the face's top edge) is, and where its forward points. */
+export interface DeckStation {
+  readonly x: number;
+  readonly z: number;
+  /** The section's +x (forward, away from the pilot) in plan: +x across the middle, outboard at the side. */
+  readonly forward: { readonly x: number; readonly z: number };
+}
+
+/** The deck's plan path, from the port run's aft end round the port turn, across, and round to the starboard run's aft end. */
+export function airlinerDeckPath(): readonly DeckStation[] {
+  const w = AIRLINER_DECK_WRAP;
+  const e = eye();
+  const x0 = airlinerPanelFace().top.x;
+  const start = Math.abs(e.right) + (x0 - e.forward) * Math.tan(w.startAzimuthDegrees * DEG);
+  const turn = w.turnDegrees * DEG;
+  const side = (s: 1 | -1): DeckStation[] => {
+    const out: DeckStation[] = [];
+    for (let k = 0; k <= w.segments; k += 1) {
+      const t = (turn * k) / w.segments;
+      out.push({ x: x0 - w.radius + w.radius * Math.cos(t), z: s * (start + w.radius * Math.sin(t)), forward: { x: Math.cos(t), z: s * Math.sin(t) } });
+    }
+    const end = out.at(-1)!;
+    out.push({ x: end.x - Math.sin(turn) * w.aftRun, z: end.z + s * Math.cos(turn) * w.aftRun, forward: end.forward });
+    return out;
+  };
+  return [...side(-1).reverse(), ...side(1)];
+}
+
+/**
+ * A section in body x and y (as the deck stands across the middle) swept along the deck's plan path. The walls are
+ * shaded as the path turns (each station's normals are the section's, turned with it) and, across the section, flat
+ * but for its ROUNDS (radial normals, `smoothRoundNormals`' rule). A flat cap at each end. Wound as `solidPlate` winds
+ * (a drawn face's cross product points INTO the solid).
+ */
+function sweptDeck(
+  build: AircraftBuildContext,
+  name: string,
+  points: readonly { readonly x: number; readonly y: number }[],
+  rounds: readonly { readonly first: number; readonly last: number; readonly centre: { readonly x: number; readonly y: number } }[],
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const path = airlinerDeckPath();
+  const x0 = airlinerPanelFace().top.x;
+  const n = points.length;
+  const middle = { x: points.reduce((sum, q) => sum + q.x, 0) / n, y: points.reduce((sum, q) => sum + q.y, 0) / n };
+  const place = (st: DeckStation, q: { x: number; y: number }) => new Vector3(st.x + (q.x - x0) * st.forward.x, q.y, st.z + (q.x - x0) * st.forward.z);
+  const turned = (st: DeckStation, d: { x: number; y: number }) => new Vector3(d.x * st.forward.x, d.y, d.x * st.forward.z).normalize();
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  const vertex = (at: Vector3, normal: Vector3) => {
+    positions.push(at.x, at.y, at.z);
+    normals.push(normal.x, normal.y, normal.z);
+    return positions.length / 3 - 1;
+  };
+  const at = (v: number) => new Vector3(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!);
+  const triangle = (a: number, b: number, c: number, outward: Vector3) => {
+    const cross = Vector3.Cross(at(b).subtract(at(a)), at(c).subtract(at(a)));
+    if (cross.length() < 1e-14) return;
+    if (Vector3.Dot(cross, outward) > 0) indices.push(a, c, b);
+    else indices.push(a, b, c);
+  };
+  for (let j = 0; j < n; j += 1) {
+    const k = (j + 1) % n;
+    const [pj, pk] = [points[j]!, points[k]!];
+    let out = { x: pk.y - pj.y, y: -(pk.x - pj.x) };
+    if (out.x * (pj.x - middle.x) + out.y * (pj.y - middle.y) < 0) out = { x: -out.x, y: -out.y };
+    const round = rounds.find((r) => k === j + 1 && j >= r.first && k <= r.last);
+    const shading = (st: DeckStation, q: { x: number; y: number }) => turned(st, round ? { x: q.x - round.centre.x, y: q.y - round.centre.y } : out);
+    const rows = path.map((st) => [vertex(place(st, pj), shading(st, pj)), vertex(place(st, pk), shading(st, pk))] as const);
+    for (let i = 0; i + 1 < path.length; i += 1) {
+      const outward = turned(path[i]!, out).add(turned(path[i + 1]!, out));
+      const [a, b] = rows[i]!;
+      const [d, c] = rows[i + 1]!;
+      triangle(a, b, c, outward);
+      triangle(a, c, d, outward);
+    }
+  }
+  for (const [end, toward] of [[0, 1], [path.length - 1, path.length - 2]] as const) {
+    const outward = place(path[end]!, middle).subtract(place(path[toward]!, middle)).normalize();
+    const cap = points.map((q) => vertex(place(path[end]!, q), outward));
+    for (let m = 1; m + 1 < n; m += 1) triangle(cap[0]!, cap[m]!, cap[m + 1]!, outward);
+  }
+  return dataMesh(build, name, { positions, normals, indices }, material, parent);
+}
+
+/** The board's section in body x and y, as it stands across the middle: its face leaned back from the cove's foot, and its back. */
+export function airlinerBoardSection(): readonly { readonly x: number; readonly y: number }[] {
+  const face = airlinerPanelFace();
+  const length = (face.top.y - face.bottomY) / Math.cos(AIRLINER_PANEL.leanDegrees * DEG);
+  const t = AIRLINER_PANEL.thickness;
+  const top = face.top;
+  const foot = { x: top.x - length * face.up.x, y: top.y - length * face.up.y };
+  const back = (q: { x: number; y: number }) => ({ x: q.x - t * face.normal.x, y: q.y - t * face.normal.y });
+  return [top, foot, back(foot), back(top)];
+}
+
 // ---- the screens -------------------------------------------------------------------
 
 /** What the displays need that the flight state does not carry: four engines, 30 degrees of flap (`animation.ts`'s own table). */
@@ -303,6 +429,141 @@ export function airlinerScreenPlacements(): readonly { name: string; centre: Vec
     const at = z(seat, s.pitch);
     return { name, centre: new Vector3(screen.x, screen.y, at), faceCentre: new Vector3(onFace.x, onFace.y, at) };
   });
+}
+
+// ---- the clock (S4) ---------------------------------------------------------------------------
+
+/**
+ * THE CLOCK, on the captain's side where the deck turns aft (S4), as the type's is: a round dial of the screens' family,
+ * its frame on the bezels' dark grey, its 45 degree chamfered rim on the marking (the night glow), a dark well behind
+ * the gap, and its face a static page (`drawClockFace`, no needles) drawn once into a texture of its own.
+ *
+ * It is `azimuthDegrees` outboard of straight ahead, read at the face's top edge, on the deck's turn, and its bezel's
+ * top is level with the screens' bezels' down the face. The turn is concave to the pilot, so a flat dial on it would
+ * have the board stand through its sides: the dial stands `sag` (the turn's depth across it) further out, and its frame
+ * reaches back that much further into the board, so nothing shows behind it.
+ */
+export const AIRLINER_CLOCK = Object.freeze({
+  azimuthDegrees: 17,
+  /** The face's diameter: the type's 3 1/4 inch instrument. */
+  diameter: 0.083,
+  /** Chords round the dial, shaded round. */
+  segments: 48,
+});
+
+/** Where the clock stands: its centre on the board's face, the face's directions there, and the turn's depth across it. */
+export function airlinerClockPlacement(): { centre: Vector3; across: Vector3; up: Vector3; out: Vector3; sag: number; turnDegrees: number } {
+  const w = AIRLINER_DECK_WRAP;
+  const e = eye();
+  const face = airlinerPanelFace();
+  const x0 = face.top.x;
+  const start = Math.abs(e.right) + (x0 - e.forward) * Math.tan(w.startAzimuthDegrees * DEG);
+  const pointAt = (t: number) => ({ x: x0 - w.radius + w.radius * Math.cos(t), z: -(start + w.radius * Math.sin(t)) });
+  const azimuth = (t: number) => Math.atan2(pointAt(t).z - e.right, pointAt(t).x - e.forward) / DEG;
+  const target = -AIRLINER_CLOCK.azimuthDegrees;
+  let [lo, hi] = [0, w.turnDegrees * DEG];
+  if (!(azimuth(lo) > target && azimuth(hi) < target)) throw new RangeError("747 cockpit clock: its azimuth is not on the deck's turn");
+  for (let k = 0; k < 60; k += 1) {
+    const mid = (lo + hi) / 2;
+    if (azimuth(mid) > target) lo = mid;
+    else hi = mid;
+  }
+  const t = (lo + hi) / 2;
+  const forward = { x: Math.cos(t), z: -Math.sin(t) };
+  const turned = (d: { x: number; y: number }) => new Vector3(d.x * forward.x, d.y, d.x * forward.z).normalize();
+  const up = turned(face.up);
+  const out = turned(face.normal);
+  const across = Vector3.Cross(up, out).normalize();
+  // down the face, its bezel's top level with the screens' bezels' tops
+  const s = AIRLINER_SCREENS;
+  const pfd = airlinerScreenPlacements()[0]!.faceCentre;
+  const pfdDown = (pfd.x - face.top.x) * face.up.x + (pfd.y - face.top.y) * face.up.y;
+  const edge = AIRLINER_CLOCK.diameter / 2 + s.bezel;
+  const along = pfdDown + s.height / 2 + s.bezel - edge;
+  const onFace = { x: face.top.x + along * face.up.x, y: face.top.y + along * face.up.y };
+  const p = pointAt(t);
+  const centre = new Vector3(p.x + (onFace.x - x0) * forward.x, onFace.y, p.z + (onFace.x - x0) * forward.z);
+  const radiusHere = w.radius + (onFace.x - x0);
+  return { centre, across, up, out, sag: radiusHere - Math.sqrt(radiusHere * radiusHere - edge * edge), turnDegrees: t / DEG };
+}
+
+type PieceData = { positions: number[]; normals: number[]; uvs: number[]; indices: number[] };
+
+/**
+ * The clock's four closed solids (each closed on its own, so wherever a ray meets one first it meets a face the GPU
+ * draws), their round walls shaded round: the FRAME (a ring from the gap out to the chamfer's shoulder, its front toward
+ * the pilot), the RIM (the chamfer, out to the bezel's edge), the WELL (a dark disc behind the gap) and the FACE (the
+ * page's disc, recessed as the screens are, UV'd to its texture: +u to the pilot's right, world up to the smaller v).
+ */
+export function airlinerClockPieces(): { frame: PieceData; rim: PieceData; well: PieceData; face: PieceData } {
+  const c = AIRLINER_CLOCK;
+  const s = AIRLINER_SCREENS;
+  const at0 = airlinerClockPlacement();
+  const stack = framedScreenStack(s);
+  const radius = c.diameter / 2;
+  const [open, edge] = [radius + s.gap, radius + s.bezel];
+  const shoulder = edge - s.chamfer;
+  const lift = at0.sag;
+  const [front, foot, back] = [stack.bezelFront + lift, stack.chamferFoot + lift, stack.bezelBack];
+  const [faceFront, faceBack] = [stack.screenFront + lift, stack.screenBack + lift];
+  const [wellFront, wellBack] = [faceBack, faceBack - s.wellThickness];
+  const n = c.segments;
+  const dir = (k: number) => at0.across.scale(Math.cos((2 * Math.PI * k) / n)).add(at0.up.scale(Math.sin((2 * Math.PI * k) / n)));
+  const at = (r: number, offset: number, k: number) => at0.centre.add(dir(k).scale(r)).add(at0.out.scale(offset));
+  const piece = (): PieceData => ({ positions: [], normals: [], uvs: [], indices: [] });
+  const vertex = (data: PieceData, p: Vector3, normal: Vector3, uv: readonly [number, number] = [0, 0]) => {
+    data.positions.push(p.x, p.y, p.z);
+    data.normals.push(normal.x, normal.y, normal.z);
+    data.uvs.push(uv[0], uv[1]);
+    return data.positions.length / 3 - 1;
+  };
+  const point = (data: PieceData, v: number) => new Vector3(data.positions[v * 3]!, data.positions[v * 3 + 1]!, data.positions[v * 3 + 2]!);
+  const triangle = (data: PieceData, a: number, b: number, d: number, outward: Vector3) => {
+    const cross = Vector3.Cross(point(data, b).subtract(point(data, a)), point(data, d).subtract(point(data, a)));
+    if (Vector3.Dot(cross, outward) > 0) data.indices.push(a, d, b);
+    else data.indices.push(a, b, d);
+  };
+  /** A band round the dial from (r1, o1) to (r2, o2), its normal at each chord's corner `normal(k)`. */
+  const band = (data: PieceData, r1: number, o1: number, r2: number, o2: number, normal: (k: number) => Vector3) => {
+    const rows = Array.from({ length: n + 1 }, (_, k) => [vertex(data, at(r1, o1, k), normal(k)), vertex(data, at(r2, o2, k), normal(k))] as const);
+    for (let k = 0; k < n; k += 1) {
+      const outward = normal(k).add(normal(k + 1));
+      triangle(data, rows[k]![0], rows[k]![1], rows[k + 1]![1], outward);
+      triangle(data, rows[k]![0], rows[k + 1]![1], rows[k + 1]![0], outward);
+    }
+  };
+  /** A flat disc facing `facing` times out of the face; the face's front carries the page's UVs. */
+  const disc = (data: PieceData, r: number, offset: number, facing: 1 | -1, mapped = false) => {
+    const normal = at0.out.scale(facing);
+    const uv = (k: number): [number, number] => (mapped ? [0.5 + 0.5 * Math.cos((2 * Math.PI * k) / n), 0.5 - 0.5 * Math.sin((2 * Math.PI * k) / n)] : [0, 0]);
+    const middle = vertex(data, at0.centre.add(at0.out.scale(offset)), normal, mapped ? [0.5, 0.5] : [0, 0]);
+    const ring = Array.from({ length: n + 1 }, (_, k) => vertex(data, at(r, offset, k), normal, uv(k)));
+    for (let k = 0; k < n; k += 1) triangle(data, middle, ring[k]!, ring[k + 1]!, normal);
+  };
+  const outward = () => at0.out;
+  const inward = () => at0.out.scale(-1);
+  const radial = (k: number) => dir(k).normalize();
+  const radialIn = (k: number) => dir(k).normalize().scale(-1);
+  const frame = piece();
+  band(frame, open, front, shoulder, front, outward);
+  band(frame, shoulder, front, shoulder, back, radial);
+  band(frame, shoulder, back, open, back, inward);
+  band(frame, open, back, open, front, radialIn);
+  const rim = piece();
+  // the chamfer runs as far across the face as it falls toward it: its normal halfway between the radial and the face's
+  band(rim, shoulder, front, edge, foot, (k) => radial(k).add(at0.out).normalize());
+  band(rim, edge, foot, edge, back, radial);
+  band(rim, edge, back, shoulder, back, inward);
+  band(rim, shoulder, back, shoulder, front, radialIn);
+  const well = piece();
+  disc(well, open, wellFront, 1);
+  disc(well, open, wellBack, -1);
+  band(well, open, wellFront, open, wellBack, radial);
+  const faceData = piece();
+  disc(faceData, radius, faceFront, 1, true);
+  disc(faceData, radius, faceBack, -1);
+  band(faceData, radius, faceFront, radius, faceBack, radial);
+  return { frame, rim, well, face: faceData };
 }
 
 /**
@@ -886,7 +1147,7 @@ function earClip(points: readonly Angles[]): [number, number, number][] {
 function dataMesh(
   build: AircraftBuildContext,
   name: string,
-  data: { readonly positions: number[]; readonly normals: number[]; readonly indices: number[] },
+  data: { readonly positions: number[]; readonly normals: number[]; readonly indices: number[]; readonly uvs?: number[] },
   material: PBRMaterial,
   parent: TransformNode,
 ): Mesh {
@@ -894,7 +1155,7 @@ function dataMesh(
   const vertexData = new VertexData();
   vertexData.positions = data.positions;
   vertexData.normals = data.normals;
-  vertexData.uvs = new Array<number>((data.positions.length / 3) * 2).fill(0);
+  vertexData.uvs = data.uvs ?? new Array<number>((data.positions.length / 3) * 2).fill(0);
   vertexData.indices = data.indices;
   vertexData.applyToMesh(mesh, false);
   mesh.refreshBoundingInfo();
@@ -951,23 +1212,18 @@ export function buildAirlinerCockpit(
   const frame = dataMesh(build, "airliner-window-frame", windowFrame.frame, materials.interior, root);
   parts.push(dataMesh(build, "airliner-window-seals", windowFrame.seals, glare, root));
 
-  // THE GLARESHIELD, a rounded deck (`airlinerGlareshieldSection`) extruded along z on a material of its own (matte
-  // near-black, no reflection): a glareshield must not reflect in the windscreen. It is the whole deck line, so it is the
-  // mesh named for it.
-  parts.push(solidPlate(build, "airliner-glareshield", airlinerGlareshieldSection().outline, p.halfWidth * 2, glare, root));
+  // THE GLARESHIELD, a rounded deck (`airlinerGlareshieldSection`) on a material of its own (matte near-black, no
+  // reflection): a glareshield must not reflect in the windscreen. It is the whole deck line, so it is the mesh named for
+  // it. Swept with the board along the deck's plan path (S4: across, and round aft to each side), its round shaded round.
+  const section = airlinerGlareshieldSection();
+  const roundFrom = section.outline.length - section.round.length;
+  parts.push(sweptDeck(build, "airliner-glareshield", section.outline, [{ first: roundFrom, last: section.outline.length - 1, centre: section.centre }], glare, root));
 
-  // THE PANEL BOARD, its face leaned back from its top edge at the cove's foot down past the frame's bottom. A box turned
-  // back about z (its local X is its thickness, away from the pilot; its local Y runs up the face).
+  // THE PANEL BOARD, its face leaned back from its top edge at the cove's foot down past the frame's bottom, swept along
+  // the same path: across between the pilots, and round aft to each side.
   const face = airlinerPanelFace();
   const lean = p.leanDegrees * DEG;
-  const faceLength = (face.top.y - face.bottomY) / Math.cos(lean);
-  const board = build.box("airliner-instrument-panel", p.thickness, faceLength, p.halfWidth * 2, materials.interior, root);
-  board.position.set(
-    face.top.x - (faceLength / 2) * face.up.x - (p.thickness / 2) * face.normal.x,
-    face.top.y - (faceLength / 2) * face.up.y - (p.thickness / 2) * face.normal.y,
-    0,
-  );
-  board.rotation.z = -lean;
+  const board = sweptDeck(build, "airliner-instrument-panel", airlinerBoardSection(), [], materials.interior, root);
 
   // THE SCREENS, THEIR BEZELS AND THEIR WELLS: four meshes, turned back with the face. A screen is a thin glass plate
   // RECESSED behind its bezel's front; the bezel a frame round it on its own dark material, its chamfered rim on the
@@ -997,6 +1253,21 @@ export function buildAirlinerCockpit(
   // the vertex data. The boxes are built in `SCREEN_LAYOUT` order and the slots are in the same order, so
   // slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds that pairing by
   // measuring the merged mesh's UVs against each screen's own place.
+  // THE CLOCK (S4): its frame, rim and well with the screens' own (one draw each, as they are), its face a mesh of its own
+  const clock = airlinerClockPieces();
+  frames.push(dataMesh(build, "airliner-clock-bezel", clock.frame, bezelMaterial, root));
+  rims.push(dataMesh(build, "airliner-clock-bezel-rim", clock.rim, materials.instrumentMarking, root));
+  wells.push(dataMesh(build, "airliner-clock-well", clock.well, materials.instrumentFace, root));
+  const clockFace = dataMesh(build, "airliner-clock", clock.face, materials.instrumentFace, root);
+  parts.push(clockFace);
+  const clockAtlas = createDisplayAtlas(build, AIRLINER_CLOCK_FACE);
+  if (clockAtlas !== null) {
+    // drawn once: the page does not move with the flight
+    drawClockFace(clockAtlas.context, clockAtlas.width, clockAtlas.height);
+    uploadDisplayAtlas(clockAtlas);
+    clockFace.material = displayMaterial(build, "airliner-clock-face", clockAtlas);
+  }
+
   const slots = displaySlots(AIRLINER_DISPLAYS);
   const atlasWidth = displayAtlasWidth(AIRLINER_DISPLAYS);
   const atlasHeight = displayAtlasHeight(AIRLINER_DISPLAYS);

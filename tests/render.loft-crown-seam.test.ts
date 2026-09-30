@@ -560,7 +560,10 @@ describe("a loft's crown seam", () => {
       // RE-PINNED d9605bf4 -> a4eac957 for the frame's rounded corners (S2): against S1, airliner-cockpit-interior
       // (1,856 -> 2,688 vertices, 3,110 -> 4,926 triangles) and airliner-window-seals (2,040 -> 3,160, 1,608 -> 3,160)
       // moved, and the other 95 are bit-identical.
-      airliner: "a4eac957",
+      // RE-PINNED a4eac957 -> 456b3e28 for the deck turned aft and the clock (S4): against S2, airliner-glareshield and
+      // airliner-cockpit-interior (their deck swept round to the sides), airliner-screen-bezels, -bezel-rims and -wells (the
+      // clock's frame, rim and well with theirs) moved, airliner-clock is new, and the other 92 are bit-identical.
+      airliner: "456b3e28",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
