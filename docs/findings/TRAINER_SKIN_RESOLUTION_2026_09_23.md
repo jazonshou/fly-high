@@ -182,6 +182,10 @@ The dials, all trainer-only (`src/render/webgpu/aircraft/trainerVisual.ts`):
   - It sets the lines' smoothstep. The door seam takes three quarters of it, as its default does.
   - The height map's groove is built from the same line, so the groove's shading narrows with it.
   - Omitted, the synthesis is byte-identical.
+- **`lineWarp: 0`,** a new recipe dial (default 1), added after the frames (below).
+  - It scales the lines' warp, and at 0 the panel lines, the door seam and their rivets run straight.
+  - The livery is drawn in plain u and v and never took the warp, so its edge is unchanged.
+  - Omitted, the synthesis is byte-identical.
 
 **The line's width is set by its gate, not by its texel count.** The PM asked for a line about 4 cm wide at half
 depth, three texels at 512, with a band of 9 px or less abeam at 6 m. At the frame's true scale, 9 px is 3.2 cm,
@@ -202,9 +206,11 @@ The line beads below two texels: its darkness and width vary row to row as it cr
   - u 0.39: median 2.8 cm, worst 3.2.
   - The door (u 0.63): 2.7 cm, worst 2.9.
   - The default: 10.7 and 9.9 cm.
-- **Grooves.** The span where the normal leans more than 0.1 along u is 5.5 cm (worst 6.8), against 16.4 cm for
-  the default. The floor is the line plus a texel either side, since a central difference leans the texel beyond
-  the slope.
+- **Grooves.** The span where the normal leans more than 0.1 along u, read linearly between texels, is 6.7-7.0 cm
+  (straight; 6.3-6.5 warped), against 16-18 cm for the default. The floor is the line plus a texel either side,
+  since a central difference leans the texel beyond the slope.
+  - Counted in whole texels it read 5.5 cm warped and 6.85 straight. A straight line sits at one phase in its
+    texels and always counts five, where a warped one averaged four, so the pin interpolates.
   - The grooves' peak tilt is unchanged: 19° on the lines, 26° at the door.
   - With the default line at 512 the groove's slope halves (tilt p99 13.9° against 21.2° at 256); the narrower
     line restores it.
@@ -249,11 +255,14 @@ frame's scale comes from its own panel lines (1965-1975 px per u at 6 m, 1150-11
   10 m.
 - **The chase's high pair did not match** (0.95 and 1.0), and at 0.85 its wing-top detector finds few dips. So the
   chase is a look, not a gate.
-- **Seen, not a gate: the door line now meanders.** It is the design's own warp, `u + broad × 0.012` on an 8-cell
-  lattice: about ±4 cm over about 0.4 m round the body. The 10 cm band's centre averaged it away (1.5-1.8 cm peak to
-  peak). The 2.9 cm line shows it at 3.2-3.3 cm, about its own width, as a slow wave most visible at 10 m.
-  - It is smooth: row to row the line moves at most 0.07 texel.
-  - Real panel lines are straight. A trainer-only warp dial would straighten them if that reads hand-drawn.
+- **Seen in the frames, then fixed: the door line meandered.** It was the design's own warp, `u + broad × 0.012` on
+  an 8-cell lattice: about ±4 cm over about 0.4 m round the body. The 10 cm band's centre averaged it away (1.5-1.8 cm
+  peak to peak on screen). The 2.9 cm line showed it at 3.2-3.3 cm, about its own width, as a slow wave most visible
+  at 10 m. It was smooth, but a panel joint runs straight where a painted edge may wander.
+  - The PM's ruling: `lineWarp: 0` on the trainer, the livery keeping its line.
+  - On the map the door line now wanders 0.10 cm peak to peak (0.07 texel), and the line round the body at v 0.49
+    0.11 texel.
+  - Only the lines move, so the frames' widths stand. No new capture was taken.
 
 ## Pins added (`tests/render.aircraft-paint-resolution.test.ts`)
 
@@ -262,8 +271,10 @@ frame's scale comes from its own panel lines (1965-1975 px per u at 6 m, 1150-11
 - **The livery diagonal.** Straight within 0.2 texel.
 - **Panel lines at u 0.39 and 0.63.**
   - Half depth: median 3.2 cm or less, worst 3.6.
-  - Groove: median 6 cm or less, worst 7.5.
-- **`withoutDials`** removes `panelEdge` too, so the legacy-64 hashes still hold.
+  - Groove, read linearly between texels: median 7.5 cm or less, worst 8.
+- **Straight lines.** The door line wanders 0.5 cm or less peak to peak over 1.2 m round the body (three of the
+  warp's waves), and the line at v 0.49 0.5 texel or less.
+- **`withoutDials`** removes `panelEdge` and `lineWarp` too, so the legacy-64 hashes still hold.
 
 Mutations, each run, each caught:
 
@@ -276,3 +287,6 @@ Mutations, each run, each caught:
 | the livery ramp a tenth of a texel | the diagonal pin, the trainer's hash |
 | the edge back to 256 | density, livery edge, diagonal, both line pins, the hash |
 | the three-texel line, `[0.0009, 0.0049]` | both line pins, the trainer's hash |
+| `lineWarp` ignored | the straight-lines pin, the trainer's hash |
+| only u's warp removed, or only v's | the straight-lines pin, the trainer's hash |
+| the default warp moved to 1.01 | the other airframes' hashes, the trainer's legacy-64 hash |

@@ -92,6 +92,14 @@ export interface AircraftPaintRecipe {
    * 6.9 m body. Omitted, byte-identical.
    */
   readonly panelEdge?: readonly [number, number];
+  /**
+   * How far the panel lines, the door seam and their rivets wander, as a scale
+   * on the default warp (1): the vertical lines by `broad * 0.012` of u (about
+   * +-4 cm on the trainer, over about 0.4 m round the body), the horizontal by
+   * `grain * 0.004` of v. At 0 they run straight. The livery is drawn in plain
+   * u and v and never took the warp. Omitted, byte-identical.
+   */
+  readonly lineWarp?: number;
 }
 
 export interface AircraftSurfaceSynthesis {
@@ -244,6 +252,7 @@ export function synthesizeAircraftSurface(
   }
   const [liveryInner, liveryOuter] = recipe.liveryEdge ?? [0.055, 0.085];
   const [panelInner, panelOuter] = recipe.panelEdge ?? [0.004, 0.012];
+  const lineWarp = recipe.lineWarp ?? 1;
   // the seam's own literals when the dial is omitted, so the default is byte for byte what it was
   const [seamInner, seamOuter] = recipe.panelEdge ? [0.75 * recipe.panelEdge[0], 0.75 * recipe.panelEdge[1]] : [0.003, 0.009];
   // A rivet dome's half-sizes along and across its line, in UV: about a lattice
@@ -269,8 +278,8 @@ export function synthesizeAircraftSurface(
       const broad = (lattices
         ? sampleNoise(lattices.broad, u, v)
         : hash2(x >> 3, y >> 3, recipe.seed ^ 0x6a09_e667)) - 0.5;
-      const warpedU = fract(u + broad * 0.012);
-      const warpedV = fract(v + grain * 0.004);
+      const warpedU = fract(u + broad * 0.012 * lineWarp);
+      const warpedV = fract(v + grain * 0.004 * lineWarp);
       const panelDistance = Math.min(
         distanceToNearest(warpedU, verticalPanels),
         distanceToNearest(warpedV, horizontalPanels),

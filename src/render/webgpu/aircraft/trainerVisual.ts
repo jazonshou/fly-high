@@ -86,11 +86,16 @@ const TRAINER_PAINT_EDGE = 512;
  *   (2 cm) flank. Two texels is as narrow as it goes before the line beads,
  *   its darkness varying row to row as it crosses the texels. The groove in
  *   the height map, and so its shading, narrows with it.
+ * - `lineWarp: 0`: the design warps its lines about +-4 cm over about 0.4 m
+ *   round the body. A 10 cm line hid it; a 3 cm one showed it, a panel joint
+ *   wandering like a painted edge. The joints now run straight. The livery's
+ *   edge was never warped.
  */
 const TRAINER_PAINT_DIALS = {
   noiseLattice: 64,
   liveryEdge: [0.069, 0.071],
   panelEdge: [0.0006, 0.0036],
+  lineWarp: 0,
 } as const;
 
 export function createTrainer(scene: Scene): AircraftVisual {

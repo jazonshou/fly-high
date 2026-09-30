@@ -28,10 +28,11 @@ import type { AircraftKind } from "../src/sim";
  * on a 64-cell UV lattice (`noiseLattice`). Its livery band's edge was also
  * soft by design, a 0.21 m ramp, which no texel count sharpens, so it is
  * narrowed to a texel (`liveryEdge`), and its panel lines from 10 cm at half
- * depth to 3 cm, grooves with them (`panelEdge`).
+ * depth to 3 cm, grooves with them (`panelEdge`). Thin, the lines showed the
+ * design's +-4 cm warp, so they run straight (`lineWarp: 0`).
  *
  * The other airframes' paint is pinned byte for byte, and so is the trainer's
- * own 64-texel paint with all three dials removed.
+ * own 64-texel paint with all its dials removed.
  */
 
 const fixtures: { engine: NullEngine; scene: Scene }[] = [];
@@ -99,9 +100,9 @@ const PAINT_SETS: Record<AircraftKind, Record<string, string>> = {
     "airliner-accent@64": "164f1d6ee91b2ab3",
   },
   trainer: {
-    "trainer-body@512": "62c3373a9b97a9e7",
-    "trainer-cowl@512": "42e6103adf652966",
-    "trainer-accent@512": "e087e480f26ca041",
+    "trainer-body@512": "b6fda753ebfee515",
+    "trainer-cowl@512": "670581f65f2bc1bf",
+    "trainer-accent@512": "cca13a712b7f2c6b",
   },
 };
 
@@ -117,6 +118,7 @@ function withoutDials(recipe: AircraftPaintRecipe): AircraftPaintRecipe {
   delete legacy.noiseLattice;
   delete legacy.liveryEdge;
   delete legacy.panelEdge;
+  delete legacy.lineWarp;
   return legacy;
 }
 
@@ -254,8 +256,9 @@ function liveryEdgeResiduals(recipe: AircraftPaintRecipe, edge: number): number[
  * The vertical panel line at `u0` on the trainer body's maps, per row clear of
  * the horizontal lines, the livery and the rivets, in texels: its albedo dip's
  * full width at half depth (read linearly between texels), and its groove's in
- * the normal map, from the first texel to the last whose normal leans more
- * than 0.1 along u within 0.02 of the line.
+ * the normal map: from where the normal first leans more than 0.1 along u to
+ * where it last does, within 0.02 of the line, read linearly between texels
+ * (whole texels would make it depend on where the line falls in its texel).
  */
 function panelLineWidths(recipe: AircraftPaintRecipe, edge: number, u0: number): { band: number[]; groove: number[] } {
   const synthesis = synthesizeAircraftSurface(recipe, edge);
@@ -286,14 +289,59 @@ function panelLineWidths(recipe: AircraftPaintRecipe, edge: number, u0: number):
         if (a < half && b >= half) last = i + (half - a) / (b - a);
       }
       band.push(last - first);
-      const leaning: number[] = [];
-      for (let x = lo; x <= hi; x += 1) {
-        if (Math.abs(normal[(y * edge + x) * 4]! / 127.5 - 1) > 0.1) leaning.push(x);
+      const lean: number[] = [];
+      for (let x = lo; x <= hi; x += 1) lean.push(Math.abs(normal[(y * edge + x) * 4]! / 127.5 - 1));
+      const firstLeaning = lean.findIndex((l) => l > 0.1);
+      const lastLeaning = lean.findLastIndex((l) => l > 0.1);
+      if (firstLeaning < 1 || lastLeaning > lean.length - 2) {
+        groove.push(Number.NaN);
+      } else {
+        const [a0, a1] = [lean[firstLeaning - 1]!, lean[firstLeaning]!];
+        const [b0, b1] = [lean[lastLeaning]!, lean[lastLeaning + 1]!];
+        groove.push((lastLeaning + (b0 - 0.1) / (b0 - b1)) - (firstLeaning - 1 + (0.1 - a0) / (a1 - a0)));
       }
-      groove.push(leaning.length ? leaning.at(-1)! - leaning[0]! + 1 : 0);
     }
   }
   return { band, groove };
+}
+
+/**
+ * Where a panel line runs on the trainer body's albedo, in texels: the
+ * darkness-weighted centre of the line across it, at every row (a vertical
+ * line at `at` of u, over rows in `spans` of v) or column (a horizontal line
+ * at `at` of v, over columns in `spans` of u).
+ */
+function lineCentres(
+  recipe: AircraftPaintRecipe,
+  edge: number,
+  axis: "vertical" | "horizontal",
+  at: number,
+  spans: readonly (readonly [number, number])[],
+): number[] {
+  const albedo = synthesizeAircraftSurface(recipe, edge).albedoMips[0]!;
+  const luminance = (along: number, across: number) => {
+    const [x, y] = axis === "vertical" ? [across, along] : [along, across];
+    const out = (y * edge + x) * 4;
+    return 0.2126 * albedo[out]! + 0.7152 * albedo[out + 1]! + 0.0722 * albedo[out + 2]!;
+  };
+  const lo = Math.floor((at - 0.03) * edge);
+  const hi = Math.ceil((at + 0.03) * edge);
+  const centres: number[] = [];
+  for (const [from, to] of spans) {
+    for (let along = Math.round(edge * from); along < Math.round(edge * to); along += 1) {
+      let brightest = 0;
+      for (let across = lo; across <= hi; across += 1) brightest = Math.max(brightest, luminance(along, across));
+      let weight = 0;
+      let sum = 0;
+      for (let across = lo; across <= hi; across += 1) {
+        const dark = Math.max(0, brightest - luminance(along, across) - 8);
+        weight += dark;
+        sum += dark * across;
+      }
+      centres.push(sum / weight);
+    }
+  }
+  return centres;
 }
 
 /** Row-to-row moves, in texels, of the vertical panel line at u 0.63 on the trainer body's albedo. */
@@ -384,6 +432,23 @@ describe("aircraft paint sets", () => {
     expect(worst).toBeLessThan(0.5);
   });
 
+  it("runs the trainer's panel lines straight: the door line wanders 0.5 cm or less", () => {
+    const scene = build("trainer");
+    const metadata = scene.getMaterialByName("trainer-body")!.metadata as PaintMetadata;
+    const [recipe, edge] = [metadata.aircraftPaintRecipe!, metadata.aircraftPaintEdge!];
+    const density = texelsPerMetreAlongBody(scene, FUSELAGE.trainer);
+    const spread = (centres: number[]) => Math.max(...centres) - Math.min(...centres);
+    // The door line, over rows clear of the horizontal lines, the livery and the soot: about 1.2 m round the body,
+    // three of the warp's 0.4 m waves.
+    const door = spread(lineCentres(recipe, edge, "vertical", 0.63, [[0.03, 0.17], [0.23, 0.46]]));
+    // The line round the body at v 0.49, over columns clear of the vertical lines and the livery (u 0.43-0.57 there).
+    const round = spread(lineCentres(recipe, edge, "horizontal", 0.49, [[0.2, 0.36], [0.66, 0.82]]));
+    console.log(`panel lines, peak to peak: the door line ${(door / density * 100).toFixed(2)} cm (${door.toFixed(2)} texels), the line at v 0.49 ${round.toFixed(2)} texels`);
+    // With the design's warp the door line wanders 3.3 cm peak to peak on screen, about its own width.
+    expect(door / density).toBeLessThanOrEqual(0.005);
+    expect(round).toBeLessThanOrEqual(0.5);
+  });
+
   it("draws the trainer's livery diagonal straight: no row snaps its edge to the texels", () => {
     const scene = build("trainer");
     const metadata = scene.getMaterialByName("trainer-body")!.metadata as PaintMetadata;
@@ -405,13 +470,14 @@ describe("aircraft paint sets", () => {
     const [bandMetres, grooveMetres] = [metres(band), metres(groove)];
     const median = (sorted: number[]) => sorted[sorted.length >> 1]!;
     console.log(`panel line u ${u0} (m): band median ${median(bandMetres).toFixed(4)} max ${bandMetres.at(-1)!.toFixed(4)}, groove median ${median(grooveMetres).toFixed(4)} max ${grooveMetres.at(-1)!.toFixed(4)} over ${band.length} rows`);
-    expect(bandMetres.every(Number.isFinite), "every row found the line").toBe(true);
+    expect(bandMetres.every(Number.isFinite) && grooveMetres.every(Number.isFinite), "every row found the line").toBe(true);
     // The default line is 10-11 cm at half depth (28 px abeam at 6 m), its
-    // groove 16 cm. The groove's floor is the band and a texel either side: a
-    // central difference leans the texel beyond the slope.
+    // groove 16-18 cm. The groove's floor is the band and a texel either side:
+    // a central difference leans the texel beyond the slope. A straight line
+    // sits at one phase in its texels, here 6.7-7.0 cm; warped, it read 6.3-7.0.
     expect(median(bandMetres)).toBeLessThanOrEqual(0.032);
     expect(bandMetres.at(-1)!).toBeLessThanOrEqual(0.036);
-    expect(median(grooveMetres)).toBeLessThanOrEqual(0.06);
-    expect(grooveMetres.at(-1)!).toBeLessThanOrEqual(0.075);
+    expect(median(grooveMetres)).toBeLessThanOrEqual(0.075);
+    expect(grooveMetres.at(-1)!).toBeLessThanOrEqual(0.08);
   });
 });
