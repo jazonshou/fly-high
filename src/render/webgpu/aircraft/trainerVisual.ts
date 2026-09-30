@@ -601,10 +601,12 @@ export function createTrainer(scene: Scene): AircraftVisual {
     dark,
     // the cabin's fabric: a pale warm grey, matte, as a 150's headliner is (S4)
     headliner: build.material("trainer-headliner", 0x9c9a92, { roughness: 0.95, metallic: 0 }),
-    // the yokes (S7): fully matte, 1.2 times the board's colour. At the board's own colour the horns read 1.10 and 1.16
-    // times the board's luma in the day frame, under the PM's 1.2 to 1.4; their sides face the seat as the board does and
-    // only their caps catch the sky. The column's top faces the sky and reads over 2.5 times whatever the colour
-    yoke: build.material("trainer-yoke", 0x202c30, { roughness: 0.95, metallic: 0 }),
+    // the yokes (S7): a 150's black plastic, fully matte and much darker than the board, so their sides read darker
+    // than it and only their sky-lit tops a little above it. The PM's reading of the frame (2026-10-01): at 1.2 times the
+    // board's colour the grips read as grey posts with pale tops, their caps and the column's top 3.5 times the board's
+    // luma; the target is their tops at 1.6 times or less and their sides about half. A matte surface's luma here follows
+    // which way it faces, so one colour sets both (tuned in the frame)
+    yoke: build.material("trainer-yoke", 0x050708, { roughness: 0.95, metallic: 0 }),
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,
