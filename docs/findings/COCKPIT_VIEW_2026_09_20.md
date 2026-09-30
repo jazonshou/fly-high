@@ -2290,74 +2290,58 @@ The other 95 meshes are bit-identical. No draw more (95 in cockpit view). Blank 
 (the strip covers more of it). Four mutations, all caught: no overhang, the nose flat-shaded, the windows shorter than
 12 px, the strip deeper (the share falls under 29%).
 
-## The 747's header and the top of its overhead (S5)
+## The top of the 747's picture: the overhead's front, and a header built and taken out (S5)
 
 From the seat, the crown over the glass was one tone from the panes' tops to the top of the picture: 24.9% of the
-frame (the P0 survey's 25%). Two parts break it now.
-- The **header**, the sun-visor housing across the No.1 panes' tops, on the glareshield's matte. Its section is 100 mm
-  across the frame's face and hangs 50 mm, with both lower edges 25 mm rounds. Each end is that section turned half
-  round: a rounded tip over the No.1 / No.2 pillar.
-  - Each station sits as low as it can while clearing, by 1 mm, the glass's top edge as the eye sees it. That edge is
-    the sightline grazing the jamb's underside, the return's roll. From below, the rim is behind the roll, and the seal
-    is seen edge-on.
-  - So the glass loses nothing: the sky is 55.85% of the frame before and after, and every column's glass top is the
-    same with the header hidden.
-  - The jamb is behind the header but for a hair, under 0.04 degree straight ahead. Over No.1's rounded corners and
-    the post, the header's height is held from the nearest straight station.
-- The **overhead's forward end**: its face and a 20 mm lip, straight across the flight deck, on a panel grey of its own
-  (0x505860, the bezels' finish).
-  - The lip's underside is on the sightline at +20, so it is one row of the picture. From there to the frame's top
-    (+23.35 straight ahead), the picture is the overhead.
-  - It runs 1.1 m each way, past the frame's walls at every height it spans. The walls end it, never its caps: from
-    about -21 at its lip to -27 at the top of the picture, where the roof comes down.
-  - Where the eye sees it, it is inside the skin.
+frame (the P0 survey's 25%). What stands in it now is the **overhead's forward end**: its face and a 20 mm lip,
+straight across the flight deck, on a panel grey of its own.
+- The lip's underside is on the sightline at +20, so it is one row of the picture. From there to the frame's top
+  (+23.35 straight ahead), the picture is the overhead.
+- It runs 1.1 m each way, past the frame's walls at every height it spans. The walls end it, never its caps: from about
+  -21 at its lip to -27 at the top of the picture, where the roof comes down. Where the eye sees it, it is inside the
+  skin. No crease the pilot sees on it.
+- The crown is now **18.62%** of the frame (1080p survey); the overhead takes 6.27. Rays on a 160 x 90 grid read the
+  crown at 18.5%, and at 24.7% with the overhead hidden. There is no threshold: the picture decides.
 
-The crown's single tone is now **14.35%** of the frame. That is the 1080p survey; rays on a 160 x 90 grid read
-14.37%, and 24.69% with both parts hidden (the control).
+**Its own mesh, its own grey.** Merged with the bezels' frames it cost no draw, but the HUD's instrument reads that mesh
+as the deck, so a "bezel" stood at the top of the picture and every HUD layout test failed at every window size. The
+overhead is the flight deck's structure, so it has a mesh of its own (one draw). On the frames' material, the final
+frames showed it reading as the crown did (day luma 30 against 26 at x 960), its lip barely a step. So it has a panel
+grey of its own, 0x505860 against the bezels' 0x2c3034, with their finish: one material more, no draw more.
 
-**How the header came to lie on the face.** Three designs were measured before this one.
-1. A 25 mm half round covered 1.8% of the frame, and the crown read 17.0%. The housing's section roughly doubles
-   the header's share.
-2. Sections laid off the opening's top "up the face", on the skin's shading normal. Where the nose turns its corner
-   (R's azimuth 14 to 19, the normal turning 27 degrees in five) they bunched up and folded 51 to 62 degrees.
-3. Sections cast on the skin, on its point and shading normal. The folds went, but the survey still saw the base's
-   corners. The frame's face is chords of a coarse grid, and mid-cell over the glass it stands up to 27 mm inside the
-   skin's own offset, so a section laid by the skin does not sit on the face.
+**The header over the No.1 panes: built, and taken out.** A sun-visor housing across the No.1 tops (a section 100 mm
+across and 50 mm deep, 25 mm rounds) was built to break the crown's tone, and it took the crown to 14.35% of the
+frame. The final frames showed it lumpy: a wavy top edge and a knob at its port tip. It was taken out (the PM's call),
+because the crown it stands on is lumpy, and any bar there shows the lumps. The record, since the same crown will meet
+the next part put on it:
+1. Laid off the opening's top "up the face", on the skin's shading normal, sections bunched up and folded 51 to 62
+   degrees where the nose turns its corner (R's azimuth 14 to 19: the skin's normal turns 27 degrees in five).
+2. Cast on the skin, on its point and shading normal, sections stood off the frame's face. The face is chords of a
+   coarse grid, and mid-cell over the glass it stands up to 27 mm inside the skin's own offset.
+3. Laid on the frame's face (each foot cast on the face's triangles), the header was clean from close up (no crease)
+   but followed the face's facets along its length. Against a quadratic its lower edge strayed 3.7 px and its upper
+   edge 11.5 px at 1080p.
+4. A fair sweep (one R elevation, the face smoothed along the run, one section) made the lower edge fair: 0.25 px of
+   local lumps. Its upper edge is where it meets the crown, and so it is the crown's shape: 2.3 px of local lumps.
+   - **The crown's own lumps are the skin's.** Along R's rays at R-el 13.5 to 16.5 over the No.1 panes the frame's face
+     strays 3 to 7 mm from a smooth curve (under 2 mm outboard of +-30). A finer frame grid does not help: at 5, 2.5 and
+     1.5 degree steps the worst is 6.6, 3.9 and 7.4 mm. It is the nose's loft (coarse facets, the 33 degree crease under
+     the pillar).
+   - Fairing the crown would do it: frame grid lines added at R-el 13 to 17, and every line from 13 up cast on the skin
+     smoothed along the run (a Gaussian, sigma 6 degrees), put the upper edge within 0.80 px of a smooth curve (local
+     0.76). Sigma 3, or fairing only from 16.67 up, left 1.3 to 2.5 px. It is a frame change, not taken.
+   - Run on past the No.1 / No.2 pillars to leave the frame at 21:9, the bar passes within half a metre of the eye on the
+     port side: a dark wedge some 200 px tall across the upper left, climbing out of the top of the frame and through the
+     overhead's port end, whether at one R elevation or falling off outboard.
+5. Two notes on the measure: a long bar in perspective is not a parabola (the fair lower edge read 2.8 px from a
+   quadratic over the No.1 panes and 10 px over the width), so a smooth curve of degree 6 is the fair test; and a top
+   edge's line from below is the return's roll, not the rim (the seal is seen edge-on there).
 
-Now both feet are the face's own points, 100 mm apart: R's rays cast on the face's triangles. The section lies on the
-chord between them, its flat side sunk behind the chord past the face's farthest fall (4.3 mm) plus 3 mm. Clearing
-the rim first was the wrong edge: it left 0.3 degree of the return showing under the header straight ahead.
-
-**The overhead is a mesh of its own, and costs a draw.** Merged with the bezels' frames it cost none. But the HUD's
-instrument reads that mesh as the deck, so a "bezel" stood at the top of the picture and every HUD layout test
-failed at every window size. The overhead is the flight deck's structure, so it gets a mesh of its own, and the frames'
-mesh is bit-identical to S3.
-- Draws in cockpit view: 95 -> 97, the header and the overhead. The wave's total is +4 of +6.
-- On the frames' own material, the final frames showed the overhead reading as the crown did (day luma 30 against 26
-  at x 960), its lip barely a step. So it has a panel grey of its own, 0x505860 against the bezels' 0x2c3034, with their
-  finish: one material more, no draw more.
-
-**One known flaw.** At its port tip, over the pillar, the header runs into the crown: the face comes forward there by
-up to 16 mm as the nose turns to the side. The survey sees one outline, 2 px long.
-
-Mesh by mesh against 3ac0a0c:
-
-| mesh | vertices | triangles |
-|---|---|---|
-| `airliner-header` (new) | 1,736 | 1,648 |
-| `airliner-overhead-front` (new) | 60 | 36 |
-
-The other 98 meshes are bit-identical. The deck line (18.5700), the eye, the 2D layout, the frame, the pillars (4.62%
-of the frame) and the post (2.69%) did not move.
-- Seen creases: 0 on the header over 45 degrees, the frame's rule (its rounds' chords are 22.5 degrees apart, and at
-  the nose's corner its sections turn up to 8 degrees a station). 0 on the overhead over 30.
-- Five mutations, all caught:
-  - the header taking glass (clearance -2 mm);
-  - its flat side sunk by the margin alone. The first run let this one through, and a test was added for it;
-  - its height not held over the corners and the post;
-  - the lip solved without its radius;
-  - the overhead short of the walls.
-- A sixth was real: the overhead merged with the frames, which the HUD tests caught.
+Mesh by mesh against 3ac0a0c: `airliner-overhead-front` is new (60 vertices, 36 triangles), and the other 98 meshes
+are bit-identical. The deck line (18.5700), the eye, the 2D layout, the frame, the pillars (4.62% of the frame) and the
+post (2.69%) did not move. Draws in cockpit view: 95 -> 96. The wave's total is +3 of +6 (the seals, the clock's face,
+the overhead). Mutations on the overhead, all caught: the lip solved without its radius, and the overhead short of the
+walls; and a real one, the overhead merged with the frames, which the HUD tests caught.
 
 ## Not done, and one thing to know
 

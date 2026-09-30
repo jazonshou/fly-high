@@ -35,10 +35,8 @@ import {
   airlinerWindowFrame,
   AIRLINER_CLOCK,
   AIRLINER_DECK_WRAP,
-  AIRLINER_HEADER,
   AIRLINER_OVERHEAD,
   AIRLINER_OVERHEAD_ALBEDO,
-  airlinerHeaderStations,
   airlinerOverheadSection,
   type FrameStation,
   type WindowFrame,
@@ -546,17 +544,16 @@ describe("the 747's cockpit parts", () => {
   // the board, then the window frame: one welded surface where fifteen lining strips were (S1)
   const INTERIOR = ["airliner-instrument-panel", "airliner-window-frame"];
 
-  it("are the ten named cockpit-only meshes, forty authored parts, and nothing else new", () => {
+  it("are the nine named cockpit-only meshes, thirty-nine authored parts, and nothing else new", () => {
     expect(cockpitOnly.map((part) => part.name).sort()).toEqual([
-      "airliner-clock", "airliner-cockpit-interior", "airliner-glareshield", "airliner-header", "airliner-overhead-front", "airliner-screen-bezel-rims",
+      "airliner-clock", "airliner-cockpit-interior", "airliner-glareshield", "airliner-overhead-front", "airliner-screen-bezel-rims",
       "airliner-screen-bezels", "airliner-screen-wells", "airliner-screens", "airliner-window-seals",
     ]);
     // the lip alone; the board and the window frame; the seals; six screens; six frames, six rims and six wells (P1b),
-    // and the clock's (S4): its face a mesh of its own, its frame, rim and well with the screens'; and the header and the
-    // overhead's forward end, a mesh each (S5)
+    // and the clock's (S4): its face a mesh of its own, its frame, rim and well with the screens'; and the overhead's
+    // forward end, a mesh of its own (S5)
     expect((named("airliner-glareshield").metadata as { mergedFrom?: string[] }).mergedFrom, "the glareshield is the lip, unmerged").toBeUndefined();
     expect((named("airliner-window-seals").metadata as { mergedFrom?: string[] }).mergedFrom, "the seals, one mesh of their own").toBeUndefined();
-    expect((named("airliner-header").metadata as { mergedFrom?: string[] }).mergedFrom, "the header, one mesh of its own").toBeUndefined();
     expect((named("airliner-overhead-front").metadata as { mergedFrom?: string[] }).mergedFrom, "the overhead's front, one mesh of its own").toBeUndefined();
     expect((named("airliner-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(INTERIOR);
     expect((named("airliner-screens").metadata as { mergedFrom: string[] }).mergedFrom, "the screens").toHaveLength(6);
@@ -581,10 +578,12 @@ describe("the 747's cockpit parts", () => {
     expect(overheadMaterial.albedoColor.toHexString().toLowerCase()).toBe(`#${AIRLINER_OVERHEAD_ALBEDO.toString(16).padStart(6, "0")}`);
     expect(overheadMaterial.roughness).toBe(framesMaterial.roughness);
     expect(overheadMaterial.metallic).toBe(framesMaterial.metallic);
-    expect(named("airliner-header").material, "on the glareshield's matte").toBe(named("airliner-glareshield").material);
     expect(named("airliner-screen-bezel-rims").getTotalIndices() / 3).toBe(6 * 16 * 2 + 5 * 12 + round);
     const sources = cockpitOnly.flatMap((part) => (part.metadata as { mergedFrom?: string[] } | null)?.mergedFrom ?? [part.name]);
-    expect(sources).toHaveLength(1 + 2 + 1 + 1 + 1 + 1 + 6 + 10 + 10 + 7);
+    expect(sources).toHaveLength(1 + 2 + 1 + 1 + 1 + 6 + 10 + 10 + 7);
+    // the header over the No.1 panes was built (S5) and taken out: the crown's own skin is lumpy, and any bar on it showed
+    // the lumps (docs/findings/COCKPIT_VIEW_2026_09_20.md)
+    expect(sources).not.toContain("airliner-header");
     // the old kit's parts are gone: the hood, the dash, the overhead, the pillar plate and the seam post; and the lining's
     // fifteen strips (S1)
     for (const gone of ["airliner-hood", "airliner-dash", "airliner-overhead", "airliner-windscreen-pillar", "airliner-windscreen-post-port", "airliner-lining-post", "port-airliner-lining-pillar-one-two"]) {
@@ -666,7 +665,7 @@ describe("the 747's cockpit parts", () => {
     const visual = createWebGpuAircraft(freshScene, "airliner");
     try {
       const parts = visual.cockpitOnlyParts ?? [];
-      expect(parts).toHaveLength(10);
+      expect(parts).toHaveLength(9);
       for (const part of parts) expect(part.isVisible, `${part.name} outside cockpit view`).toBe(false);
       visual.setCockpitView(true);
       for (const part of parts) expect(part.isVisible, `${part.name} in cockpit view`).toBe(true);
@@ -847,8 +846,7 @@ describe("what the pilot sees straight ahead", () => {
       for (const pane of ["one", "two"] as const) {
         const name = `${side}-airliner-flight-deck-window-${pane}`;
         cases.push({ pane: name, edge: "bottom", out: [0, -1], frame: /^airliner-glareshield$|sill/ });
-        // over No.1 the header sits down on the glass's top edge as the eye sees it (S5); over No.2, the crown
-        cases.push({ pane: name, edge: "top", out: [0, 1], frame: pane === "one" ? /^airliner-header$/ : /crown/ });
+        cases.push({ pane: name, edge: "top", out: [0, 1], frame: /crown/ });
         cases.push({ pane: name, edge: "inboard", out: [-outboard, 0], frame: pane === "one" ? /lining-post/ : /pillar-one-two/ });
         cases.push({ pane: name, edge: "outboard", out: [outboard, 0], frame: pane === "one" ? /pillar-one-two/ : /pillar-two-three/ });
       }
@@ -874,20 +872,20 @@ describe("what the pilot sees straight ahead", () => {
     expect(framed).toBeGreaterThan(150);
   });
 
-  it("lines the crown over the glass in three bands at -15, 0 and +25 (S5): the overhead's front to its lip at +20, the crown inside the skin, and over No.1 the header down onto the glass", () => {
+  it("lines the crown over the glass at -20, 0 and +20 in two bands (S5): the overhead's front down to its lip at +20, then the crown inside the skin down to the glass", () => {
     const interior = named("airliner-cockpit-interior");
     const lipRow = Math.tan(AIRLINER_OVERHEAD.lipElevationDegrees / DEG);
-    // (+25 is on No.1's straight top: at +20 its rounded inboard corner drops the glass away under the header)
-    for (const az of [-15, 0, 25]) {
+    for (const az of [-20, 0, 20]) {
       const top = Math.atan(FRAME_V * Math.cos(az / DEG)) * DEG;
       // the overhead's lip is straight across, so its underside is one row of the picture: +20 straight ahead
       const lip = Math.atan(lipRow * Math.cos(az / DEG)) * DEG;
-      // from the frame's top down, in runs of what the eye meets: the overhead, the crown, the header, the seal, glass
+      // from the frame's top down, in runs of what the eye meets: the overhead, the crown (its seal at the glass is
+      // named for it), glass
       const runs: { what: string; from: number; to: number }[] = [];
       for (let e = top - 0.01; e >= 5; e -= 0.02) {
         const hit = firstHit(az, e);
         const part = hit ? partOf(hit.pickedMesh!, hit.faceId) : "glass";
-        const what = hit?.pickedMesh?.name === "airliner-window-seals" ? "seal" : /crown/.test(part) ? "crown" : part.replace(/^airliner-/, "");
+        const what = /crown/.test(part) ? "crown" : part.replace(/^airliner-/, "");
         if (what === "crown") {
           // UNDER the skin, never the shell: the body's outer skin along the same ray is beyond it (the frame's face
           // stands 0.012 in; at the glass its return rolls out to the rim, `proud` out of the skin)
@@ -900,27 +898,13 @@ describe("what the pilot sees straight ahead", () => {
         if (what === "glass") break;
       }
       console.info(`747 crown at azimuth ${az}: ${runs.map((r) => `${r.what} ${r.from.toFixed(2)}..${r.to.toFixed(2)}`).join(", ")}`);
-      // the jamb over the glass (the return's roll and the seal, frame and seal both named for the crown they roll out of
-      // here) is the run just above the glass
-      const jamb = runs.at(-2)!;
-      const order = runs.map((r) => r.what);
-      // over No.1 the header sits down on the glass: the jamb is behind it but for its clearance, a hair (S5); over No.2
-      // the crown runs down to the glass and its jamb is the crown's own roll
-      if (az === -15) {
-        expect(order.filter((what) => what !== "seal"), `the bands at azimuth ${az}`).toEqual(["overhead-front", "crown", "glass"]);
-      } else {
-        const hair = jamb.what === "header" ? 0 : jamb.from - jamb.to + 0.02;
-        expect(hair, `the jamb under the header at azimuth ${az}`).toBeLessThan(0.1);
-        expect(order.slice(0, 3), `the bands at azimuth ${az}`).toEqual(["overhead-front", "crown", "header"]);
-        expect(order.slice(3).every((what) => what === "crown" || what === "seal" || what === "glass"), `under the header at azimuth ${az}: ${order.slice(3).join(", ")}`).toBe(true);
-        expect(runs[2]!.from - runs[2]!.to, `the header's height at azimuth ${az}`).toBeGreaterThan(1.5);
-      }
+      expect(runs.map((r) => r.what), `the bands at azimuth ${az}`).toEqual(["overhead-front", "crown", "glass"]);
       expect(runs[0]!.to, `the overhead's lip at azimuth ${az}`).toBeCloseTo(lip, 1);
-      expect(runs[1]!.from - runs[1]!.to, `the crown between them at azimuth ${az}`).toBeGreaterThan(3);
+      expect(runs[1]!.from - runs[1]!.to, `the crown between the lip and the glass at azimuth ${az}`).toBeGreaterThan(5);
       const opening = runs.at(-1)!.from;
       expect(opening, `the opening's top at azimuth ${az}`).toBeGreaterThan(8);
       expect(opening).toBeLessThan(13);
-      expect(exitsThrough(az, opening - 0.5), `glass just under the frame at azimuth ${az}`).toBe("glass");
+      expect(exitsThrough(az, opening - 0.5), `glass just under the crown at azimuth ${az}`).toBe("glass");
     }
     // CONTROL: without the interior mesh a ray across the crown meets nothing the cockpit camera draws; the crown is what covers it
     interior.isVisible = false;
@@ -1367,8 +1351,7 @@ describe("the 747's cockpit against the shell it stands in", () => {
   it("puts nothing in the frame that the design did not account for: the kit and the centre post", () => {
     const allowed = new Set([
       "airliner-cockpit-interior", "airliner-glareshield", "airliner-screens", "airliner-screen-bezels",
-      "airliner-screen-bezel-rims", "airliner-screen-wells", "airliner-window-seals", "airliner-clock", "airliner-header",
-      "airliner-overhead-front",
+      "airliner-screen-bezel-rims", "airliner-screen-wells", "airliner-window-seals", "airliner-clock", "airliner-overhead-front",
     ]);
     for (let az = -37; az <= 37; az += 2) {
       for (let el = -23; el <= 23; el += 1) {
@@ -1832,7 +1815,7 @@ describe("the glareshield over the displays (S3)", () => {
   });
 });
 
-describe("the header and the overhead's forward end (S5)", () => {
+describe("the overhead's forward end (S5)", () => {
   /** The crown's share of the 16:9 frame: a ray through the middle of each cell of a `cols` by `rows` grid of the picture, named by `partOf`. */
   function crownShare(cols: number, rows: number): number {
     let crown = 0;
@@ -1846,118 +1829,22 @@ describe("the header and the overhead's forward end (S5)", () => {
     }
     return crown / (cols * rows);
   }
-  /** Scanning up from +8 at `az`: where the glass ends, and where the header starts (NaN if it never does below +20). */
-  function overTheGlass(az: number): { glassTop: number; headerFrom: number } {
-    let glassTop = Number.NaN;
-    for (let e = 8; e < 20; e += 0.01) {
-      const hit = firstHit(az, e);
-      if (!hit) continue;
-      if (Number.isNaN(glassTop)) glassTop = e - 0.01;
-      if (hit.pickedMesh!.name === "airliner-header") return { glassTop, headerFrom: e };
-    }
-    return { glassTop, headerFrom: Number.NaN };
-  }
 
-  it("cuts the crown's one tone from a quarter of the frame to 15% or less", () => {
+  it("takes the top of the picture from the crown: its share of the frame, reported, and what the overhead takes of it", () => {
+    // no threshold: the picture decides (the PM, S5). The overhead's front and lip are what break the crown's one tone
     const share = crownShare(160, 90);
-    console.info(`747 crown's share of the frame: ${(share * 100).toFixed(2)}%`);
-    expect(share).toBeLessThanOrEqual(0.15);
-    // CONTROL: without the header and the overhead's front, the same rays find the crown the P0 survey found, a quarter
-    // of the frame
-    const [header, overhead] = [named("airliner-header"), named("airliner-overhead-front")];
-    header.isVisible = false;
+    const overhead = named("airliner-overhead-front");
     overhead.isVisible = false;
+    let bare = Number.NaN;
     try {
-      const bare = crownShare(160, 90);
-      console.info(`747 crown's share without the header and the overhead: ${(bare * 100).toFixed(2)}%`);
-      expect(bare).toBeGreaterThan(0.24);
+      bare = crownShare(160, 90);
     } finally {
-      header.isVisible = true;
       overhead.isVisible = true;
     }
-  });
-
-  it("sits the header down on the glass's top edge over No.1's straight top, and takes none of the glass the eye sees", () => {
-    // No.1's straight tops from the eye: R's azimuths 5.2 to 20.7 each side read about +1 to +11 (port) and +23 to +34
-    const header = named("airliner-header");
-    for (const az of [1, 4, 7, 10, 24, 27, 30, 33]) {
-      const { glassTop, headerFrom } = overTheGlass(az);
-      // the jamb over the glass (the return's roll) is behind it but for its clearance, a hair
-      expect(headerFrom - glassTop, `the jamb between the glass and the header at azimuth ${az}`).toBeLessThan(0.1);
-      header.isVisible = false;
-      try {
-        // and without it the glass ends where it did: the header covers the jamb, never the glass
-        const bare = overTheGlass(az);
-        expect(Math.abs(bare.glassTop - glassTop), `the glass's top at azimuth ${az}, with and without the header`).toBeLessThanOrEqual(0.011);
-      } finally {
-        header.isVisible = true;
-      }
-    }
-    // the stations: solved where No.1's top is straight, held over its rounded corners and the post, and each section's
-    // glass-side foot above the opening's top
-    const { stations } = airlinerHeaderStations(skinCaster, frame);
-    // R's azimuths 6 to 20 each side: No.1's top between its rounds (2.8 degrees in from 1.9 and 24) and half a degree
-    expect(stations.filter((st) => st.solved).map((st) => Math.abs(st.azimuth)).sort((a, b) => a - b)).toEqual([6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20]);
-    for (const st of stations) expect(st.footElevation, `the foot at R's azimuth ${st.azimuth}`).toBeGreaterThan(FLIGHT_DECK_PANES[0]!.elevation[1]);
-    expect(Math.min(...stations.map((st) => st.azimuth))).toBe(-AIRLINER_HEADER.endAzimuthDegrees);
-  });
-
-  it("lays the header on the frame's face, smooth: no crease the pilot sees on it, and only its drawn side in view", () => {
-    const header = named("airliner-header");
-    // the frame's own rule, 45 degrees: its rounds' chords are 22.5 apart, and where the nose turns its corner its
-    // sections turn up to 8 degrees a station more (laid "up the face" off the opening they folded 51 to 62)
-    const creases = seenCreases([header], 45);
-    console.info(`747 header's seen creases over 45 degrees: ${creases.length}`);
-    expect(creases.map((c) => `(${c.az.toFixed(2)}, ${c.el.toFixed(2)}) ${c.dihedral.toFixed(1)} deg`), "a crease on the header").toEqual([]);
-    // every ray that meets it first meets a face turned to the eye: its flat side, sunk behind the face, is never seen
-    const positions = header.getVerticesData(VertexBuffer.PositionKind)!;
-    const indices = header.getIndices()!;
-    let met = 0;
-    for (let az = -7; az <= 37; az += 0.5) {
-      for (let el = 9; el <= 18; el += 0.1) {
-        const d = direction(az, el);
-        const hit = firstHitAlong(d);
-        if (hit?.pickedMesh !== header) continue;
-        met += 1;
-        const corner = (k: number) => {
-          const i = indices[hit.faceId * 3 + k]! * 3;
-          return new Vector3(positions[i]!, positions[i + 1]!, positions[i + 2]!);
-        };
-        // the drawn side: a drawn face's cross product points INTO the solid
-        const into = Vector3.Cross(corner(1).subtract(corner(0)), corner(2).subtract(corner(0)));
-        expect(Vector3.Dot(into, d), `the header's face met at (${az}, ${el.toFixed(1)})`).toBeGreaterThan(0);
-      }
-    }
-    expect(met, "rays that met the header").toBeGreaterThan(500);
-  });
-
-  it("sinks the header's flat side behind the face everywhere under it: past the face's farthest fall from its chords, tips included", () => {
-    const { stations, sunk } = airlinerHeaderStations(skinCaster, frame);
-    const interior = named("airliner-cockpit-interior");
-    const reference = new Vector3(FLIGHT_DECK_REFERENCE.x, FLIGHT_DECK_REFERENCE.y, FLIGHT_DECK_REFERENCE.z);
-    const half = AIRLINER_HEADER.width / 2;
-    /** How far out of a station's chord the frame's face lies under `p` on it: R's ray through p, met on the frame. */
-    const fallAt = (p: Vector3, out: Vector3) => {
-      const d = p.subtract(reference).normalize();
-      const hit = scene.pickWithRay(new Ray(reference, d, 5), (mesh) => mesh === interior);
-      expect(hit?.hit, `the face under (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)})`).toBe(true);
-      return Vector3.Dot(hit!.pickedPoint!.subtract(p), out);
-    };
-    let fall = 0;
-    for (const st of stations) {
-      for (let k = 0; k <= 10; k += 1) fall = Math.max(fall, fallAt(st.middle.add(st.up.scale(-half + (2 * half * k) / 10)), st.out));
-    }
-    for (const [st, sign] of [[stations[0]!, -1], [stations.at(-1)!, 1]] as const) {
-      for (let k = 0; k <= 12; k += 1) {
-        const psi = (Math.PI * k) / 12;
-        const dir = st.up.scale(Math.cos(psi)).add(st.along.scale(sign * Math.sin(psi)));
-        for (const r of [0.5, 1]) fall = Math.max(fall, fallAt(st.middle.add(dir.scale(half * r)), st.out));
-      }
-    }
-    console.info(`747 header: the face falls ${(fall * 1000).toFixed(2)} mm behind its chords at most, its flat side ${(sunk * 1000).toFixed(2)} mm`);
-    // NON-VACUITY: the face does fall away from the chords, by more than the margin, so the sinking is what hides it
-    expect(fall).toBeGreaterThan(AIRLINER_HEADER.bury);
-    expect(sunk).toBeGreaterThanOrEqual(fall + 0.002);
+    console.info(`747 crown's share of the frame: ${(share * 100).toFixed(2)}%, ${(bare * 100).toFixed(2)}% without the overhead's front`);
+    // CONTROL: without it, the same rays find the crown the P0 survey found, a quarter of the frame; it takes 5% or more
+    expect(bare).toBeGreaterThan(0.24);
+    expect(bare - share).toBeGreaterThan(0.05);
   });
 
   it("stands the overhead's lip on +20 straight across, and where the eye sees the overhead it is inside the skin, its ends and top never in view", () => {
