@@ -566,7 +566,10 @@ describe("a loft's crown seam", () => {
       // RE-PINNED 456b3e28 -> 0a12154b for a corner radius a pane (S2, 2.8 / 2.8 / 2.0 where all were 3): against S4,
       // airliner-cockpit-interior (2,848 -> 2,904 vertices) and airliner-window-seals (3,160 -> 3,240) moved, and the
       // other 96 are bit-identical.
-      airliner: "0a12154b",
+      // RE-PINNED 0a12154b -> be50f03f for the glareshield over the displays (S3): against 29a570c, airliner-glareshield
+      // (its new section), airliner-screen-bezels (the MCP's and the EFIS panels' plates) and airliner-screen-bezel-rims
+      // (their windows) moved, and the other 95 are bit-identical, the board and the screens included.
+      airliner: "be50f03f",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

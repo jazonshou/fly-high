@@ -17,12 +17,11 @@ import {
 import type { AircraftBuildContext } from "../builders";
 import {
   facetMesh,
+  type FacetQuad,
   framedScreenFacets,
   framedScreenStack,
   glareshieldMaterial,
-  roundedDeckSection,
   solidPlate,
-  type RoundedDeckSection,
 } from "./cockpitPrimitives";
 import {
   AIRLINER_CLOCK_FACE,
@@ -181,42 +180,119 @@ export function airlinerPanelFaceX(): number {
 
 /**
  * THE GLARESHIELD. Its deck line is the K3 rule's: the LOWEST line along z that keeps the sill -- the strip between the
- * lip and the bottom of the view over No.1 -- no more than 1 degree tall anywhere along No.1. The bottom of the view is
- * the sill lining's own top edge (its rim's outer edge, 0.008 out of the skin; the glass is not drawn), which reads
- * -17.41 at No.1's inboard end (az +8.0) and -18.66 at its outboard end (az -11.8), and a line along z reads shallower
- * off axis, so the sill is 0.99 degree at the inboard end and the lip stands 0.45 degree over the window at the outboard
- * end. Solved against the BUILT lining and held to it by `tests/render.cockpit-airliner.test.ts`.
+ * lip and the bottom of the view over No.1 -- no more than 1 degree tall anywhere along No.1's straight bottom edge.
+ * Solved against the BUILT frame and held to it by `tests/render.cockpit-airliner.test.ts`.
  *
- * Its section is a ROUNDED DECK (P1a, `roundedDeckSection`, the Global's): a round on the deck line's sight line at a
- * vertex, so the silhouette is the deck line exactly; a 45 degree cove under it to the leaned panel's face; a hood
- * falling forward faster than the sight line, so nothing of it shows. On this deck the band from the lip to the frame's
- * bottom is only 4.78 degrees, and the screens' share of it binds, so the round, the drop and the cove are the least that
- * reads (a lit line over a dark hairline, 0.54 degree in all, where K3's flush lip face was 1.20).
+ * ITS SECTION (S3) is the type's glareshield: a PADDED NOSE, `noseRadius`, tangent to the deck line's sight line at a
+ * vertex (so the silhouette is the deck line exactly, one row across the frame) and to the aft face; the AFT FACE, flat
+ * for `stripDegrees` from the eye under the nose, where the mode control panel and the EFIS panels sit; and its bottom
+ * edge turning UNDER in a round of `underRadius` onto a soffit, which the eye never sees. The aft face stands `overhang`
+ * aft of the board's top edge, over the screens' tops, as the type's glareshield overhangs its displays: what shows of
+ * the screens is what is under the round's silhouette. The hood's top falls forward faster than the sight line, so
+ * nothing of it shows.
  *
- * Being a line along z, the silhouette is ONE row of the picture across the whole frame, and it is the deck's top: the
- * value `catalogue.cockpitDeckLineDegrees` records and the 2D HUD keeps above.
+ * WHAT IT COSTS: the band from the lip to the frame's bottom is 4.78 degrees, and the screens' share of it binds. The nose,
+ * the strip and the under-round's visible quarter take 1.90 degrees at 10 mm, 0.7 degree and 8 mm, which leaves the
+ * PFD 30.8% in the frame (37.8% under P1a's 5 mm lip); the strip's 0.7 degree holds windows 12 px tall at 1080p.
  */
 export const AIRLINER_GLARESHIELD = Object.freeze({
   lipElevationDegrees: -18.57,
-  radius: 0.005,
-  drop: 0,
-  cove: 0.003,
-  /** Faster than the 18.57 degree sight line over the round. */
+  noseRadius: 0.01,
+  noseSegments: 6,
+  overhang: 0.025,
+  stripDegrees: 0.7,
+  underRadius: 0.008,
+  underSegments: 4,
+  /** Faster than the 18.57 degree sight line over the nose. */
   hoodFallDegrees: 21,
-  /** The shell is wide here (1.44 m where the board stands, against the deck's 1.3): no taper. */
-  hoodDepth: 0.1,
-  roundSegments: 8,
+  /** The hood's forward end stands this thick over the soffit. */
+  hoodEnd: 0.004,
 });
 
-/** The deck line's height at the aft face: it reads `lipElevationDegrees` straight ahead (the round's silhouette is on it). */
+/** The deck line's height at the board's plane: it reads `lipElevationDegrees` straight ahead (the nose's silhouette is on it). */
 export function airlinerLipY(): number {
   const e = eye();
   return e.up + Math.tan(AIRLINER_GLARESHIELD.lipElevationDegrees * DEG) * (airlinerPanelFaceX() - e.forward);
 }
 
-/** The glareshield's section in body x and y (`roundedDeckSection`). */
-export function airlinerGlareshieldSection(): RoundedDeckSection {
-  return roundedDeckSection(eye(), airlinerPanelFaceX(), -AIRLINER_GLARESHIELD.lipElevationDegrees, AIRLINER_GLARESHIELD, "the 747");
+/**
+ * THE BOARD'S TOP EDGE, where P1a's 5 mm lip's 3 mm cove came down to the leaned face. The screens hang from it and their
+ * share of the frame was solved against it, so it stays where it was when the glareshield grew over them (S3).
+ */
+export const AIRLINER_BOARD_EDGE = Object.freeze({ lipRadius: 0.005, cove: 0.003 });
+export function airlinerBoardTop(): { x: number; y: number } {
+  const e = eye();
+  const aftX = airlinerPanelFaceX();
+  const sight = -AIRLINER_GLARESHIELD.lipElevationDegrees * DEG;
+  const cx = aftX + AIRLINER_BOARD_EDGE.lipRadius;
+  const cy = e.up - (AIRLINER_BOARD_EDGE.lipRadius + Math.sin(sight) * (cx - e.forward)) / Math.cos(sight);
+  return { x: aftX + AIRLINER_BOARD_EDGE.cove, y: cy - AIRLINER_BOARD_EDGE.cove };
+}
+
+/** The glareshield's section in body x and y (as it stands across the middle), its two rounds, and the points it is measured by. */
+export interface AirlinerGlareshieldSection {
+  /** Convex, in order round it: the soffit's forward end, the hood's, the nose (hood to aft face), the under-round (aft face to soffit). */
+  readonly outline: readonly { readonly x: number; readonly y: number }[];
+  readonly rounds: readonly { readonly first: number; readonly last: number; readonly centre: { readonly x: number; readonly y: number } }[];
+  /** The nose's points, hood to aft face, the deck line's tangent among them, and its centre. */
+  readonly round: readonly { readonly x: number; readonly y: number }[];
+  readonly centre: { readonly x: number; readonly y: number };
+  /** Where the deck line's sight line touches the nose: the silhouette. */
+  readonly tangent: { readonly x: number; readonly y: number };
+  /** The aft face's plane, and its flat strip's top (the nose's tangent) and bottom (the under-round's). */
+  readonly aftX: number;
+  readonly stripTop: number;
+  readonly stripBottom: number;
+  /** The soffit's height. */
+  readonly soffitY: number;
+}
+
+export function airlinerGlareshieldSection(): AirlinerGlareshieldSection {
+  const g = AIRLINER_GLARESHIELD;
+  const e = eye();
+  const sight = -g.lipElevationDegrees * DEG;
+  const fall = g.hoodFallDegrees * DEG;
+  if (!(sight < fall)) throw new RangeError("the 747's hood falls no steeper than the sight line over the deck: its top would show");
+  const aftX = airlinerPanelFaceX() - g.overhang;
+  // THE NOSE: its centre a radius forward of the aft face and a radius under the sight line
+  const r = g.noseRadius;
+  const cx = aftX + r;
+  const cy = e.up - (r + Math.sin(sight) * (cx - e.forward)) / Math.cos(sight);
+  const nose = (angle: number) => ({ x: cx + r * Math.sin(angle), y: cy + r * Math.cos(angle) });
+  // angles from straight up, forward positive: +fall is the hood's tangent, -90 the aft face's
+  const angles = Array.from({ length: g.noseSegments + 1 }, (_, k) => fall - ((fall + Math.PI / 2) * k) / g.noseSegments);
+  angles.push(sight);
+  angles.sort((p, q) => q - p);
+  const round = angles.map(nose);
+  // THE STRIP: the aft face, flat, `stripDegrees` from the eye under the nose's tangent
+  const stripTop = cy;
+  const topRow = Math.atan2(stripTop - e.up, aftX - e.forward);
+  const stripBottom = e.up + Math.tan(topRow - g.stripDegrees * DEG) * (aftX - e.forward);
+  // THE UNDER-ROUND: tangent to the aft face at the strip's bottom, turning under to the soffit
+  const u = g.underRadius;
+  const under = Array.from({ length: g.underSegments + 1 }, (_, k) => {
+    const angle = -Math.PI / 2 - (Math.PI / 2) * (k / g.underSegments);
+    return { x: aftX + u + u * Math.sin(angle), y: stripBottom + u * Math.cos(angle) };
+  });
+  const soffitY = stripBottom - u;
+  // THE HOOD: its top from the nose's forward tangent, falling at `fall`, to where it stands `hoodEnd` over the soffit
+  const hoodTop = round[0]!;
+  const endX = hoodTop.x + (hoodTop.y - (soffitY + g.hoodEnd)) / Math.tan(fall);
+  const outline = [{ x: endX, y: soffitY }, { x: endX, y: soffitY + g.hoodEnd }, ...round, ...under];
+  return {
+    outline,
+    rounds: [
+      { first: 2, last: 2 + round.length - 1, centre: { x: cx, y: cy } },
+      { first: 2 + round.length, last: 2 + round.length + under.length - 1, centre: { x: aftX + u, y: stripBottom } },
+    ],
+    round,
+    centre: { x: cx, y: cy },
+    tangent: nose(sight),
+    aftX,
+    stripTop,
+    stripBottom,
+    soffitY,
+  };
 }
 
 /**
@@ -226,7 +302,7 @@ export function airlinerGlareshieldSection(): RoundedDeckSection {
 export function airlinerPanelFace(): { top: { x: number; y: number }; up: { x: number; y: number }; normal: { x: number; y: number }; bottomY: number } {
   const lean = AIRLINER_PANEL.leanDegrees * DEG;
   return {
-    top: airlinerGlareshieldSection().faceTop,
+    top: airlinerBoardTop(),
     up: { x: Math.sin(lean), y: Math.cos(lean) },
     normal: { x: -Math.cos(lean), y: Math.sin(lean) },
     bottomY: AIRLINER_PANEL.bottomY,
@@ -429,6 +505,60 @@ export function airlinerScreenPlacements(): readonly { name: string; centre: Vec
     const at = z(seat, s.pitch);
     return { name, centre: new Vector3(screen.x, screen.y, at), faceCentre: new Vector3(onFace.x, onFace.y, at) };
   });
+}
+
+// ---- the glareshield's panels: the mode control panel and the EFIS panels (S3) ------------------------
+
+/**
+ * THE GLARESHIELD'S PANELS (S3), on its aft face's flat strip across the middle, as the type's are: the MODE CONTROL
+ * PANEL across the centre and an EFIS control panel over each pilot's PFD and ND. Each is a plate on the bezels' dark
+ * grey, `proud` of the aft face and `inset` from the strip's edges, carrying WINDOWS on the marking material, which glow
+ * by the rims' law at night (`bezelRimEmissive`): the MCP's speed, heading and altitude, and one on each EFIS panel. The
+ * windows are the strip's height less `windowMargin` above and below: 12 px or more tall at 1080p. Nothing new is drawn:
+ * the plates go with the bezels' frames and the windows with their rims.
+ *
+ * Spans in z (starboard positive); the port pilot sees the MCP's port part (az +12 to the frame's edge) and his own
+ * EFIS panel straight ahead. The windows are placed where he sees them.
+ */
+export const AIRLINER_GLARESHIELD_PANELS = Object.freeze({
+  proud: 0.0005,
+  inset: 0.0005,
+  windowProud: 0.0003,
+  windowMargin: 0.0012,
+  panels: Object.freeze([
+    { name: "mcp", z: [-0.33, 0.33], windows: [{ name: "ias", z: -0.25, width: 0.03 }, { name: "hdg", z: -0.12, width: 0.03 }, { name: "alt", z: 0.02, width: 0.045 }] },
+    { name: "efis-port", z: [-0.62, -0.38], windows: [{ name: "minimums", z: -0.5, width: 0.035 }] },
+    { name: "efis-starboard", z: [0.38, 0.62], windows: [{ name: "minimums", z: 0.5, width: 0.035 }] },
+  ] as const),
+});
+
+/** The glareshield's panels as closed boxes of flat quads on its aft face: each plate, and each plate's windows. */
+export function airlinerGlareshieldPanels(): readonly { readonly name: string; readonly plate: FacetQuad[]; readonly windows: readonly { readonly name: string; readonly quads: FacetQuad[] }[] }[] {
+  const p = AIRLINER_GLARESHIELD_PANELS;
+  const section = airlinerGlareshieldSection();
+  const out = new Vector3(-1, 0, 0);
+  // a box on the aft face: z from z0 to z1, y from y0 to y1, from `back` to `front` toward the pilot (x = aftX - offset)
+  const box = (z0: number, z1: number, y0: number, y1: number, back: number, front: number): FacetQuad[] => {
+    const at = (z: number, y: number, o: number) => new Vector3(section.aftX - o, y, z);
+    const q = (a: Vector3, b: Vector3, c: Vector3, d: Vector3, normal: Vector3): FacetQuad => ({ corners: [a, b, c, d], normal });
+    return [
+      q(at(z0, y0, front), at(z1, y0, front), at(z1, y1, front), at(z0, y1, front), out),
+      q(at(z0, y0, back), at(z1, y0, back), at(z1, y1, back), at(z0, y1, back), out.scale(-1)),
+      q(at(z0, y0, back), at(z1, y0, back), at(z1, y0, front), at(z0, y0, front), new Vector3(0, -1, 0)),
+      q(at(z0, y1, back), at(z1, y1, back), at(z1, y1, front), at(z0, y1, front), new Vector3(0, 1, 0)),
+      q(at(z0, y0, back), at(z0, y1, back), at(z0, y1, front), at(z0, y0, front), new Vector3(0, 0, -1)),
+      q(at(z1, y0, back), at(z1, y1, back), at(z1, y1, front), at(z1, y0, front), new Vector3(0, 0, 1)),
+    ];
+  };
+  const [top, bottom] = [section.stripTop - p.inset, section.stripBottom + p.inset];
+  return p.panels.map((panel) => ({
+    name: panel.name,
+    plate: box(panel.z[0], panel.z[1], bottom, top, -0.001, p.proud),
+    windows: panel.windows.map((w) => ({
+      name: w.name,
+      quads: box(w.z - w.width / 2, w.z + w.width / 2, section.stripBottom + p.windowMargin, section.stripTop - p.windowMargin, p.proud - 0.0001, p.proud + p.windowProud),
+    })),
+  }));
 }
 
 // ---- the clock (S4) ---------------------------------------------------------------------------
@@ -1220,8 +1350,7 @@ export function buildAirlinerCockpit(
   // reflection): a glareshield must not reflect in the windscreen. It is the whole deck line, so it is the mesh named for
   // it. Swept with the board along the deck's plan path (S4: across, and round aft to each side), its round shaded round.
   const section = airlinerGlareshieldSection();
-  const roundFrom = section.outline.length - section.round.length;
-  parts.push(sweptDeck(build, "airliner-glareshield", section.outline, [{ first: roundFrom, last: section.outline.length - 1, centre: section.centre }], glare, root));
+  parts.push(sweptDeck(build, "airliner-glareshield", section.outline, section.rounds, glare, root));
 
   // THE PANEL BOARD, its face leaned back from its top edge at the cove's foot down past the frame's bottom, swept along
   // the same path: across between the pilots, and round aft to each side.
@@ -1257,6 +1386,11 @@ export function buildAirlinerCockpit(
   // the vertex data. The boxes are built in `SCREEN_LAYOUT` order and the slots are in the same order, so
   // slot i belongs to screen i; `tests/render.cockpit-displays.test.ts` holds that pairing by
   // measuring the merged mesh's UVs against each screen's own place.
+  // THE GLARESHIELD'S PANELS (S3): the MCP's and the EFIS panels' plates with the bezels' frames, their windows with the rims
+  for (const panel of airlinerGlareshieldPanels()) {
+    frames.push(facetMesh(build, `airliner-glareshield-${panel.name}`, panel.plate, bezelMaterial, root));
+    rims.push(facetMesh(build, `airliner-glareshield-${panel.name}-windows`, panel.windows.flatMap((w) => w.quads), materials.instrumentMarking, root));
+  }
   // THE CLOCK (S4): its frame, rim and well with the screens' own (one draw each, as they are), its face a mesh of its own
   const clock = airlinerClockPieces();
   frames.push(dataMesh(build, "airliner-clock-bezel", clock.frame, bezelMaterial, root));

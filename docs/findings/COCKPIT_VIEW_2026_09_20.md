@@ -2239,6 +2239,48 @@ Five mutations, all caught:
 - the round flat-shaded;
 - the chamfer's normals radial.
 
+## The 747's glareshield over its displays, with its MCP (S3)
+
+The type's glareshield is a padded coaming that overhangs its displays, with the mode control panel on its aft face.
+The 747's was a 5 mm lip flush with the board: a line, 0.54 degree in all. Its section now:
+- a **padded nose**, 10 mm radius in six chords, shaded round, tangent to the deck line's sight line at a vertex (so the
+  deck line, 18.5700 by the HUD's instrument, does not move);
+- a flat **strip** 0.7 degree tall on its aft face, the mode control panel across the middle and an EFIS panel over each
+  pilot's PFD and ND. Each panel is a plate on the bezels' grey with windows on the marking, which glow by the rims'
+  law. The MCP has speed, heading and altitude, each EFIS panel one window. Every window in view is 13.6 px tall at
+  1080p;
+- the aft face's bottom edge turning **under** in an 8 mm round onto a soffit, which no ray from the seat meets (the
+  control: one from under it does). The aft face stands 25 mm aft of the board, over the screens' tops, so no top-row
+  bezel shows over the strip: each bezel's top reads 1.3 degree or more above the strip's lowest visible row.
+
+The board and the screens did not move. Their top edge is P1a's cove's foot, now a constant of its own
+(`airlinerBoardTop`). The glareshield and the panels are the only geometry that changed.
+
+**What it costs, and the correction on the way.** The band from the lip to the frame's bottom is 4.78 degrees, and the
+screens' share of it binds. My option table for the PM left out the under-round's visible quarter (about 0.6 degree at
+8 mm), and at the first values (a 12 mm nose, a 0.8 degree strip, an 8 mm under-round) the PFD would have been 27.9% in
+the frame, under the 29% floor. At 10 mm, 0.7 degree and 8 mm it is **30.9%** (measured by rays on an 81-row grid; 37.8%
+under the flush lip), and so are the ND and the upper EICAS. The test's old 21-row grid read in steps of 4.8%, and
+first said 28.6%.
+
+**Two tests changed their meaning, deliberately.**
+- The lens test's control ("each display's top is the first row the grid draws it on") holds for the other decks. For
+  the 747, the rows between the kit's top and the display's first drawn row must be the glareshield or its panels. The
+  HUD keeps off the kit's whole rect, which did not move, so the 2D layout is byte-identical.
+- The recess test's ray over the screen's top meets the strip now, not the well.
+
+Mesh by mesh against 29a570c:
+
+| mesh | vertices | triangles |
+|---|---|---|
+| `airliner-glareshield` | 598 -> 690 | 568 -> 656 |
+| `airliner-screen-bezels` (the three plates) | 968 -> 1,076 | 576 -> 612 |
+| `airliner-screen-bezel-rims` (the five windows) | 968 -> 1,148 | 576 -> 636 |
+
+The other 95 meshes are bit-identical. No draw more (95 in cockpit view). Blank board outboard of the PFD 1.83% -> 0.95%
+(the strip covers more of it). Four mutations, all caught: no overhang, the nose flat-shaded, the windows shorter than
+12 px, the strip deeper (the share falls under 29%).
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

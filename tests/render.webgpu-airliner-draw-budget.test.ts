@@ -144,11 +144,13 @@ const ENCLOSED = new RegExp([
   "-fan-spool-(fan|spinner)$",
   "-engine-inlet$",
   "^airliner-(cabin-window-line|nacelle-chevron|windscreen-center-post)$",
-  // the cockpit's kit: 32 authored parts, all cockpit-only, so all outside the shadow map. The board, the
+  // the cockpit's kit: 38 authored parts, all cockpit-only, so all outside the shadow map. The board, the
   // glareshield (the rounded deck, unmerged), the window frame round the glass (one welded surface, S1) and its seals;
-  // each screen with its bezel's frame, its rim and its well; and the clock with its own (S4)
+  // each screen with its bezel's frame, its rim and its well; the clock with its own (S4); and the glareshield's MCP
+  // and EFIS panels, each a plate and its windows (S3)
   "^airliner-(instrument-panel|glareshield|window-frame|window-seals)$",
   "^airliner-clock(-bezel|-bezel-rim|-well)?$",
+  "^airliner-glareshield-(mcp|efis-port|efis-starboard)(-windows)?$",
 
   "^airliner-(screen|screen-bezel|screen-bezel-rim|screen-well)-(port|starboard)-(pfd|nd|eicas)$",
   "-(seat|headrest)$",
@@ -352,11 +354,12 @@ describe("the 747-8's draw budget", () => {
     // on the screen itself now. The seats and headrests are the same four parts,
     // moved with the pilot. 41 -> 28 with the rolled window frame (S1): the fifteen lining
     // strips are one welded surface, and its seals are one part more. 28 -> 32 with the clock
-    // (S4): its face, and its bezel's frame, rim and well.
+    // (S4): its face, and its bezel's frame, rim and well. 32 -> 38 with the glareshield's
+    // panels (S3): the MCP's and the two EFIS panels' plates, and their windows.
     //
     // +4, DELIBERATELY, by the spoiler bays: one authored plate per spoiler group and wing
     // (the dark well a raised panel uncovers), folded into one mesh.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 32 + 4);
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 38 + 4);
   });
 
   it("keeps the cockpit's eight meshes outside every draw bound: invisible and never casting until cockpit view", () => {
@@ -410,15 +413,16 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const enclosed = [...authoredParts(visual)].filter(([name]) => ENCLOSED.test(name));
     // 4 fans, 4 spinners, 4 inlets, the window line, the chevrons, the centre
-    // post, the cockpit's 32 cockpit-only parts (there were the panel with 5 gauges
+    // post, the cockpit's 38 cockpit-only parts (there were the panel with 5 gauges
     // and 5 needles, 11; the kit was 21 until the 3D attitude ball came out, 18
     // until it was cast round the re-lofted glass, 29 until the framed screens, and 41 until its
-    // fifteen lining strips became one rolled window frame and its seals, S1, and 28 until the clock, S4), 2 seats,
+    // fifteen lining strips became one rolled window frame and its seals, S1, 28 until the clock, S4, and 32 until the
+    // glareshield's panels, S3), 2 seats,
     // 2 headrests, 8 main axle
     // shafts and the nose one, 6 panes of glass, 8 lamps and the 4 spoiler bays. The centre
     // post casts nothing whichever camera draws it: its shadow is the nose's.
     expect(enclosed.map(([name]) => name).sort()).toHaveLength(
-      4 + 4 + 4 + 1 + 1 + 1 + 32 + 2 + 2 + 8 + 1 + 6 + 8 + 4,
+      4 + 4 + 4 + 1 + 1 + 1 + 38 + 2 + 2 + 8 + 1 + 6 + 8 + 4,
     );
     for (const [name, mesh] of enclosed) {
       expect(castsShadow(mesh), `${name} is still in the shadow map`).toBe(false);
@@ -709,25 +713,31 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // all were 3, each pane's opening held to about 1%): smaller rounds cross the grid lines at other points, so the frame
     // went 2,848 -> 2,904 vertices and 5,086 -> 5,190 triangles and the seals 3,160 -> 3,240 (triangles alike), +136 and
     // +552 exactly. Checked mesh by mesh against S4: those two moved, the other 96 are bit-identical.
+    //
+    // THEN 22,206 TO 22,586 with the glareshield over the displays (S3): its section is a padded nose, a flat strip and a
+    // round turning under onto a soffit, 25 mm aft of the board (598 -> 690 vertices, 568 -> 656 triangles); the MCP's and
+    // the EFIS panels' plates go with the bezels' frames (968 -> 1,076 and 576 -> 612: three boxes) and their five windows
+    // with the rims (968 -> 1,148 and 576 -> 636). +380 vertices and +552 indices exactly. The board and the screens did
+    // not move: checked mesh by mesh against 29a570c, those three changed and the other 95 are bit-identical.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(22_206);
-    expect(census.indices).toBe(94_950);
+    expect(census.vertices).toBe(22_586);
+    expect(census.indices).toBe(95_502);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(362596.5480, 1);
-    expect(census.positionSum.y).toBeCloseTo(1354.9914, 1);
-    expect(census.positionSum.z).toBeCloseTo(-878.8056, 1);
-    expect(census.positionSquares).toBeCloseTo(17770541.22, 0);
-    expect(census.normalSum.x).toBeCloseTo(-740.6553, 2);
-    expect(census.normalSum.y).toBeCloseTo(-832.6371, 2);
+    expect(census.positionSum.x).toBeCloseTo(374230.4368, 1);
+    expect(census.positionSum.y).toBeCloseTo(2356.0622, 1);
+    expect(census.positionSum.z).toBeCloseTo(-891.4056, 1);
+    expect(census.positionSquares).toBeCloseTo(18129455.69, 0);
+    expect(census.normalSum.x).toBeCloseTo(-781.4010, 2);
+    expect(census.normalSum.y).toBeCloseTo(-977.1540, 2);
     expect(census.normalSum.z).toBeCloseTo(5.8198, 2);
-    expect(census.normalMoment).toBeCloseTo(-3072.4642, 1);
-    expect(census.signedVolume).toBeCloseTo(-3184.2072, 2);
-    expect(census.area).toBeCloseTo(4737.8493, 2);
+    expect(census.normalMoment).toBeCloseTo(-4723.6373, 1);
+    expect(census.signedVolume).toBeCloseTo(-3184.2087, 2);
+    expect(census.area).toBeCloseTo(4737.7275, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {

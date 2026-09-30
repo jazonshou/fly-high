@@ -93,7 +93,16 @@ describe("what the lens shows of each deck, from the kits' own constants", () =>
               const hit = view.pick(column, y);
               if (hit?.category === "display") { drawn = y; break; }
             }
-            expect(Math.abs(drawn - rect.y0), `${deck} ${part.name} at ${w} x ${h}: kit top ${rect.y0.toFixed(1)}, drawn from ${drawn}`).toBeLessThanOrEqual(2);
+            if (deck === "airliner" && drawn > rect.y0 + 2) {
+              // The 747's glareshield stands over its screens' tops (S3), as the type's overhangs its displays: between
+              // the kit's top and the first row the display is drawn on, the grid draws that deck, its glareshield or the
+              // panels on it, and nothing else. The HUD keeps off the kit's whole rect, which is where it was.
+              for (let y = Math.max(0, Math.ceil(rect.y0)); y < drawn; y += 1) {
+                expect(["glareshield", "bezel"], `${deck} ${part.name} at ${w} x ${h}: row ${y} over it`).toContain(view.pick(column, y)?.category);
+              }
+            } else {
+              expect(Math.abs(drawn - rect.y0), `${deck} ${part.name} at ${w} x ${h}: kit top ${rect.y0.toFixed(1)}, drawn from ${drawn}`).toBeLessThanOrEqual(2);
+            }
             // And the grid calls nothing of the deck the display's own at 2 px above it.
             const above = view.pick(column, Math.floor(rect.y0) - 2);
             expect(above?.category === "display", `${deck} ${part.name}: display above its kit top`).toBe(false);
