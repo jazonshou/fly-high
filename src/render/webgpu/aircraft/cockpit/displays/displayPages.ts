@@ -966,22 +966,36 @@ export const drawTrainerAttitudeRing: DrawPage = (ctx, w, h) => {
   ctx.fill();
 };
 
-/** A radio's window: its label, the active frequency large and the standby smaller, in the band the window samples. */
+/**
+ * A radio's window: its label, the active frequency large and the standby smaller, in the band the window samples.
+ * SIZED FOR A MONOSPACE ADVANCE OF 0.62 EM (the browsers' monospace faces are about 0.6): at 0.62 and 0.42 of the band
+ * the active frequency ran into the standby in the first live frame ("122.80" over "121.50"), which no Node test could
+ * see; `TRAINER_RADIO_TEXT` is what the pin holds apart.
+ */
+export const TRAINER_RADIO_TEXT = Object.freeze({
+  /** Each text's size as a fraction of the band's height, and where it stands across the slot (label and active from their left, standby to its right). */
+  label: Object.freeze({ size: 0.26, x: 0.035 }),
+  active: Object.freeze({ size: 0.5, x: 0.165 }),
+  standby: Object.freeze({ size: 0.36, x: 0.965 }),
+  monospaceAdvance: 0.62,
+});
+
 function drawTrainerRadio(label: string, active: string, standby: string): DrawPage {
   return (ctx, w, h) => {
     clearPage(ctx, w, h);
+    const t = TRAINER_RADIO_TEXT;
     const bandHeight = w / TRAINER_RADIO_WINDOW_ASPECT;
     const middle = h / 2;
     ctx.textBaseline = "middle";
     ctx.fillStyle = TRAINER_FACE_COLOURS.radio;
     ctx.textAlign = "left";
-    ctx.font = `${Math.round(bandHeight * 0.3)}px monospace`;
-    ctx.fillText(label, w * 0.04, middle);
-    ctx.font = `bold ${Math.round(bandHeight * 0.62)}px monospace`;
-    ctx.fillText(active, w * 0.2, middle);
+    ctx.font = `${Math.round(bandHeight * t.label.size)}px monospace`;
+    ctx.fillText(label, w * t.label.x, middle);
+    ctx.font = `bold ${Math.round(bandHeight * t.active.size)}px monospace`;
+    ctx.fillText(active, w * t.active.x, middle);
     ctx.textAlign = "right";
-    ctx.font = `${Math.round(bandHeight * 0.42)}px monospace`;
-    ctx.fillText(standby, w * 0.96, middle);
+    ctx.font = `${Math.round(bandHeight * t.standby.size)}px monospace`;
+    ctx.fillText(standby, w * t.standby.x, middle);
   };
 }
 

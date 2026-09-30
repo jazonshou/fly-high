@@ -872,3 +872,22 @@ when the visors are not excluded, and the in-test lump.
 **The visor pin was hardened** on the way. It measured the port visor off the merged
 mesh inside a box that also held the corner's concave fillet once the corners were
 finer: 8.1 mm read for 8. The box now stops at z -0.2, where the corner begins.
+
+## S2 fix from the live frame: the radios' frequencies
+
+**What the frame showed.** The first live frame (the GPU slot after S6 and S2b)
+showed each radio's large active frequency running into its standby: "122.80" over
+"121.50". The browser's bold monospace is about 0.6 em a character, so at the S2
+sizes (0.62 and 0.42 of the band) the two texts overlapped by 32 px of the slot's
+256. No Node test could see it: the pin checked the texts were in the band, not
+that they were apart.
+
+**The fix.** The label, the active frequency and the standby are re-sized to 0.26,
+0.5 and 0.36 of the band and re-placed (`TRAINER_RADIO_TEXT`). They are sized for a
+0.62 em advance, a little wider than the faces are.
+
+**The pin** (`tests/render.cockpit-trainer.test.ts`) reads each text's extent across
+the slot, from its own font and alignment in the recorded calls, at that advance.
+The label stands at least 2 px clear of the active frequency, and the active at
+least 8 px clear of the standby, on both radios, all inside the window. Control:
+the S2 layout fails it, the active 32 px into the standby.

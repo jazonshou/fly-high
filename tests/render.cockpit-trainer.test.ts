@@ -44,6 +44,8 @@ import {
   drawTrainerAttitudeRing,
   drawTrainerCom,
   drawTrainerEngine,
+  drawTrainerNav,
+  TRAINER_RADIO_TEXT,
   drawTrainerTach,
   TRAINER_ENGINE_CLUSTER_MM,
   TRAINER_ENGINE_GAUGES,
@@ -1439,14 +1441,33 @@ describe("the Cessna's panel face", () => {
     }
   });
 
-  it("draws each radio's frequencies in the band its window samples", () => {
+  it("draws each radio's frequencies in the band its window samples, the label, the active and the standby apart", () => {
     const size = slots.get("com")!.w;
     const band = size / TRAINER_RADIO_WINDOW_ASPECT;
-    const ctx = createRecordingContext();
-    drawTrainerCom(ctx, size, size, DISPLAY_STATE_LEVEL);
-    const texts = transformedPoints(ctx.calls).filter((p) => p.method === "fillText");
-    expect(texts.map((p) => p.text)).toEqual(["COM", "122.80", "121.50"]);
-    for (const p of texts) expect(Math.abs(p.y - size / 2), `"${p.text}" in the window's band`).toBeLessThan(band / 2);
+    for (const [page, expected] of [[drawTrainerCom, ["COM", "122.80", "121.50"]], [drawTrainerNav, ["NAV", "110.50", "113.90"]]] as const) {
+      const ctx = createRecordingContext();
+      page(ctx, size, size, DISPLAY_STATE_LEVEL);
+      const texts = transformedPoints(ctx.calls).filter((p) => p.method === "fillText");
+      expect(texts.map((p) => p.text)).toEqual(expected);
+      for (const p of texts) expect(Math.abs(p.y - size / 2), `"${p.text}" in the window's band`).toBeLessThan(band / 2);
+      // each text's extent across the slot at the monospace advance, from its own font and alignment as set before it:
+      // the first live frame showed the active frequency run into the standby, which a check of the text alone passed
+      const extents = texts.map((p) => {
+        let px = 0;
+        let align = "left";
+        for (let i = p.index; i >= 0; i -= 1) {
+          const call = ctx.calls[i]!;
+          if (px === 0 && call.method === "set:font") px = Number(/(\d+)px/.exec(String(call.args[0]))![1]);
+          if (align === "left" && call.method === "set:textAlign") align = String(call.args[0]);
+        }
+        const width = p.text!.length * TRAINER_RADIO_TEXT.monospaceAdvance * px;
+        return align === "right" ? { from: p.x - width, to: p.x } : { from: p.x, to: p.x + width };
+      });
+      expect(extents[0]!.from, "the label inside the window").toBeGreaterThanOrEqual(0);
+      expect(extents[1]!.from - extents[0]!.to, `${expected[0]}: the label clear of the active frequency, px`).toBeGreaterThanOrEqual(2);
+      expect(extents[2]!.from - extents[1]!.to, `${expected[0]}: the active frequency clear of the standby, px`).toBeGreaterThanOrEqual(8);
+      expect(extents[2]!.to, "the standby inside the window").toBeLessThanOrEqual(size);
+    }
   });
 
   it("builds the radio stack: two units 160 x 40 mm, each with a window and two knobs, right of the dials, in the frame", () => {
