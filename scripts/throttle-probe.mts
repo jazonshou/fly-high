@@ -35,7 +35,7 @@
  *
  * Usage:  tsx scripts/throttle-probe.mts <outDir> <url> [label]
  * Environment: SCENARIO RATE WORKERS QUALITY MODE AIRCRAFT AGL_M WIDTH HEIGHT
- *   SEED DIAGNOSTICS CAMERA CDP_PORT SETTLE_S MEASURE_S ROTATE_KT TRIALS
+ *   SEED DIAGNOSTICS CAMERA SETTLE_S MEASURE_S ROTATE_KT TRIALS
  *   AFTER_LIFTOFF_S TRACE_S PROFILE_S
  *
  * A URL cannot prove which checkout serves it (shared-machine rule): the
@@ -65,7 +65,6 @@ const HEIGHT = Number(env("HEIGHT", "1080"));
 const SEED = env("SEED", "phase1-perf-baseline");
 const DIAGNOSTICS = env("DIAGNOSTICS", "0") === "1";
 const CAMERA = env("CAMERA", "chase");
-const CDP_PORT = Number(env("CDP_PORT", "9340"));
 const SETTLE_S = Number(env("SETTLE_S", "10"));
 const MEASURE_S = Number(env("MEASURE_S", "30"));
 const ROTATE_KT = Number(env("ROTATE_KT", AIRCRAFT === "airliner" ? "160" : "55"));
@@ -86,7 +85,6 @@ const browser = await chromium.launch({
     "--disable-crashpad-for-testing", "--disable-crash-reporter",
     "--enable-unsafe-webgpu", "--use-angle=metal", "--enable-features=WebGPU",
     `--window-size=${WIDTH},${HEIGHT + 100}`,
-    `--remote-debugging-port=${CDP_PORT}`,
   ],
 });
 const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT } });
@@ -206,42 +204,46 @@ await page.addInitScript((opts: {
 
 const pageCdp = await page.context().newCDPSession(page);
 
-interface CdpReply { id?: number; result?: unknown; error?: { message: string } }
-let socketPromise: Promise<{
-  send: (method: string, params?: object, sessionId?: string) => Promise<unknown>;
-  close: () => void;
-}> | null = null;
-function browserSocket() {
-  socketPromise ??= (async () => {
-    const version = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json() as {
-      webSocketDebuggerUrl: string;
-    };
-    const socket = new WebSocket(version.webSocketDebuggerUrl);
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener("open", () => resolve(), { once: true });
-      socket.addEventListener("error", () => reject(new Error("CDP socket failed")), { once: true });
-    });
-    let nextId = 1;
-    const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-    socket.addEventListener("message", (event) => {
-      const reply = JSON.parse(String(event.data)) as CdpReply;
+/**
+ * Worker targets, reached over Playwright's own BROWSER-level CDP session.
+ * (A second `--remote-debugging-port` hangs this machine's Playwright launch;
+ * measured 2026-09-29: 324 ms without it, a 30 s timeout with it.) Playwright
+ * cannot open a session on a dedicated worker, so the worker is attached
+ * non-flattened and addressed through Target.sendMessageToTarget.
+ */
+type BrowserSession = Awaited<ReturnType<typeof browser.newBrowserCDPSession>>;
+let browserSessionPromise: Promise<BrowserSession> | null = null;
+const workerReplies = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+let nextWorkerMessageId = 1;
+function browserSession(): Promise<BrowserSession> {
+  browserSessionPromise ??= (async () => {
+    const session = await browser.newBrowserCDPSession();
+    session.on("Target.receivedMessageFromTarget", (event: { message: string }) => {
+      const reply = JSON.parse(event.message) as { id?: number; error?: { message: string }; result?: unknown };
       if (reply.id === undefined) return;
-      const waiter = pending.get(reply.id);
+      const waiter = workerReplies.get(reply.id);
       if (!waiter) return;
-      pending.delete(reply.id);
+      workerReplies.delete(reply.id);
       if (reply.error) waiter.reject(new Error(reply.error.message));
       else waiter.resolve(reply.result);
     });
-    return {
-      send: (method: string, params: object = {}, sessionId?: string) => new Promise<unknown>((resolve, reject) => {
-        const id = nextId++;
-        pending.set(id, { resolve, reject });
-        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-      }),
-      close: () => socket.close(),
-    };
+    return session;
   })();
-  return socketPromise;
+  return browserSessionPromise;
+}
+async function sendToWorker(sessionId: string, method: string, params: object): Promise<unknown> {
+  const session = await browserSession();
+  const id = nextWorkerMessageId++;
+  const reply = new Promise<unknown>((resolve, reject) => {
+    workerReplies.set(id, { resolve, reject });
+    setTimeout(() => {
+      if (workerReplies.delete(id)) reject(new Error(`${method}: no reply from worker in 5 s`));
+    }, 5_000);
+  });
+  await session.send("Target.sendMessageToTarget", {
+    sessionId, message: JSON.stringify({ id, method, params }),
+  });
+  return reply;
 }
 
 const workerThrottle: { url: string; rate: number; ok: boolean; error?: string }[] = [];
@@ -250,8 +252,8 @@ const workerRates = new Map<string, number>();
 async function setThrottle(rate: number): Promise<void> {
   await pageCdp.send("Emulation.setCPUThrottlingRate", { rate });
   if (!THROTTLE_WORKERS) return;
-  const socket = await browserSocket();
-  const { targetInfos } = await socket.send("Target.getTargets") as {
+  const session = await browserSession();
+  const { targetInfos } = await session.send("Target.getTargets") as {
     targetInfos: { targetId: string; type: string; url: string }[];
   };
   for (const info of targetInfos.filter((t) => t.type === "worker")) {
@@ -260,12 +262,12 @@ async function setThrottle(rate: number): Promise<void> {
     try {
       let sessionId = workerSessions.get(info.targetId);
       if (!sessionId) {
-        ({ sessionId } = await socket.send("Target.attachToTarget", {
-          targetId: info.targetId, flatten: true,
+        ({ sessionId } = await session.send("Target.attachToTarget", {
+          targetId: info.targetId, flatten: false,
         }) as { sessionId: string });
         workerSessions.set(info.targetId, sessionId);
       }
-      await socket.send("Emulation.setCPUThrottlingRate", { rate }, sessionId);
+      await sendToWorker(sessionId, "Emulation.setCPUThrottlingRate", { rate });
       workerThrottle.push({ url: info.url.replace(/^.*\//, ""), rate, ok: true });
     } catch (error) {
       workerThrottle.push({ url: info.url.replace(/^.*\//, ""), rate, ok: false, error: (error as Error).message });
@@ -726,8 +728,6 @@ await page.screenshot({ path: `${outDir}/${label}.png`, type: "png" });
 await setThrottle(1).catch(() => undefined);
 report.consoleErrors = consoleErrors.slice(0, 30);
 writeFileSync(`${outDir}/${label}.json`, JSON.stringify(report, null, 2));
-const openSocket = socketPromise as ReturnType<typeof browserSocket> | null;
-if (openSocket) (await openSocket).close();
 await browser.close();
 console.log(`wrote ${outDir}/${label}.json`);
 
