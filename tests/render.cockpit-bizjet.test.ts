@@ -24,7 +24,9 @@ import {
   BIZJET_SCREENS,
   BIZJET_SIDE_CONSOLE,
   BIZJET_SILL_CAP,
+  BIZJET_WINDOW_TRIM,
   bizjetCoveFillet,
+  bizjetCoveSection,
   bizjetGlareshieldSection,
   bizjetLipY,
   bizjetLiningMeshName,
@@ -34,6 +36,7 @@ import {
   bizjetScreenPlacements,
   bizjetSideConsoleFacets,
   bizjetSillCapMeshName,
+  bizjetTrimSection,
   highestClearLip,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { BEZEL_RIM, GLARESHIELD_IMAGE_LIGHT } from "../src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
@@ -122,6 +125,8 @@ let cockpitOnly: readonly AbstractMesh[];
 let fuselage: AbstractMesh;
 let shell: Triangle[];
 const panels: Panel[] = [];
+/** Every merged mesh's sources in merge order, with each one's triangle count: `partOf` names a face by them. */
+const merges = new Map<string, { name: string; triangles: number }[]>();
 
 function named(name: string): AbstractMesh {
   const found = scene.getMeshByName(name);
@@ -182,6 +187,15 @@ function edgePoints(p: Panel, face: 0 | 1 | "skin", edge: "bottom" | "top" | "in
   }
   out.push(grid.at(-1)!);
   return out;
+}
+let paneEdgeSamples: Vector3[] | null = null;
+/** How far a point is from the nearest edge of any pane's hole in the skin (the panes' own grids, sampled every 5 mm or so). */
+function distanceToPaneEdge(point: Vector3): number {
+  paneEdgeSamples ??= (["port", "starboard"] as const).flatMap((side) => GLOBAL_FLIGHT_DECK_OUTLINES.flatMap((outline) =>
+    (["bottom", "top", "inboard", "outboard"] as const).flatMap((edge) => edgePoints(panel(`${side}-bizjet-flight-deck-window-${outline.name}`), "skin", edge, 24))));
+  let best = Number.POSITIVE_INFINITY;
+  for (const q of paneEdgeSamples) best = Math.min(best, Vector3.Distance(point, q));
+  return best;
 }
 function worldVertices(mesh: AbstractMesh): Vector3[] {
   mesh.computeWorldMatrix(true);
@@ -317,20 +331,13 @@ function deckHalfWidth(): number {
 }
 /** Which authored part of a merged mesh a picked triangle belongs to (an unmerged mesh is its own part). */
 function partOf(mesh: AbstractMesh, faceId: number): string {
-  const sources = (mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom;
+  const sources = merges.get(mesh.name);
   // the glareshield's straight part and its end rounds are one lip
   if (!sources || mesh.name === "bizjet-glareshield") return mesh.name;
-  // the board, the screens and the wells are boxes; a bezel's rim is 16 quads and its frame 12 (a U: its top has no flat
-  // band, S2) (`bizjetBezelFacets`); the lining's strips are the captured panels
-  const count = (name: string) => {
-    if (/^bizjet-side-console-/.test(name)) return named("bizjet-side-consoles").getTotalIndices() / 3 / 2; // the two sides are mirror images
-    if (/^bizjet-screen-bezel-rim-/.test(name)) return 32;
-    return /^bizjet-screen-bezel-/.test(name) ? 24 : /^bizjet-(instrument-panel|screen)/.test(name) ? 12 : panel(name).triangles;
-  };
   let start = 0;
-  for (const name of sources) {
-    if (faceId < start + count(name)) return name;
-    start += count(name);
+  for (const source of sources) {
+    if (faceId < start + source.triangles) return source.name;
+    start += source.triangles;
   }
   throw new Error(`face ${faceId} is beyond ${mesh.name}`);
 }
@@ -371,22 +378,34 @@ function windshieldRun(azimuth: number, from: Vector3 = EYE_POINT): { from: numb
   return best;
 }
 /**
- * THE SILLS' TOP RIMS over the glass: where the pilot sees the glass begin. A rim runs from the lining's inner face
- * (BIZJET_LINING.depth in) to its outer (.proud out), and the edge the eye reads is whichever is higher; sampled along
- * the chords the strip table marks as glass, on every sill built.
+ * WHERE THE PILOT SEES THE GLASS BEGIN over the sills: along the chords the strip table marks as glass, on every sill
+ * built, the steepest-up point from the eye of the WINDOW TRIM's section there (S3). Through S4 it was the sill's rim,
+ * the higher of its inner and outer edge; the trim now rolls the sill's inner face into the glass (`bizjetTrimSection`),
+ * or on a capped side sill its cove seal climbs the glass (`bizjetCoveSection`), laid out as the kit lays it: `into`
+ * square to the skin normal and the edge, away from the sill, the normal from the strip's own faces (the outer on the
+ * skin, the inner BIZJET_LINING.depth in). A corner's arc only raises the trim further, so this is the lower bound.
  */
 function sillRims(per = 20): Vector3[] {
   const out: Vector3[] = [];
   const slope = (p: Vector3) => (p.y - EYE.up) / (p.x - EYE.forward);
+  const trim = bizjetTrimSection();
+  const rolled = [...trim.round, ...trim.bead];
+  const cove = bizjetCoveSection();
   for (const strip of bizjetLiningStrips().filter((s) => s.name.startsWith("sill-"))) {
+    const section = (BIZJET_SILL_CAP.sills as readonly string[]).includes(strip.name) ? cove : rolled;
     for (const side of strip.centre ? [-1 as const] : [-1 as const, 1 as const]) {
       const p = panel(bizjetLiningMeshName(strip, side));
       const top = p.rows - 1;
+      const lerp = (face: 0 | 1, row: number, k: number, f: number) => Vector3.Lerp(gridVertex(p, face, row, k), gridVertex(p, face, row, k + 1), f);
       for (const k of strip.glassChords) {
+        const along = gridVertex(p, 0, top, k + 1).subtract(gridVertex(p, 0, top, k)).normalize();
         for (let s = 0; s <= per; s += 1) {
-          const outer = Vector3.Lerp(gridVertex(p, 0, top, k), gridVertex(p, 0, top, k + 1), s / per);
-          const inner = Vector3.Lerp(gridVertex(p, 1, top, k), gridVertex(p, 1, top, k + 1), s / per);
-          out.push(slope(outer) >= slope(inner) ? outer : inner);
+          const onSkin = lerp(0, top, k, s / per);
+          const normal = onSkin.subtract(lerp(1, top, k, s / per)).normalize();
+          let into = Vector3.Cross(normal, along).normalize();
+          if (Vector3.Dot(into, onSkin.subtract(lerp(0, top - 1, k, s / per))) < 0) into = into.negate();
+          const candidates = section.map((q) => onSkin.add(into.scale(q.a)).subtract(normal.scale(q.h)));
+          out.push(candidates.reduce((best, c) => (slope(c) > slope(best) ? c : best)));
         }
       }
     }
@@ -431,6 +450,13 @@ beforeAll(() => {
       return mesh;
     },
   );
+  const originalMerge = AircraftBuildContext.prototype.mergeStatic;
+  const mergeSpy = vi.spyOn(AircraftBuildContext.prototype, "mergeStatic").mockImplementation(
+    function (this: AircraftBuildContext, ...args: Parameters<typeof originalMerge>) {
+      merges.set(args[0], args[1].map((source) => ({ name: source.name, triangles: source.getTotalIndices() / 3 })));
+      return originalMerge.apply(this, args);
+    },
+  );
   engine = new NullEngine();
   scene = new Scene(engine);
   scene.useRightHandedSystem = true;
@@ -438,6 +464,7 @@ beforeAll(() => {
   scene.activeCamera = camera;
   aircraft = createWebGpuAircraft(scene, "bizjet");
   spy.mockRestore();
+  mergeSpy.mockRestore();
   aircraft.root.computeWorldMatrix(true);
   for (const mesh of scene.meshes) mesh.computeWorldMatrix(true);
   aircraft.setCockpitView(true);
@@ -587,11 +614,23 @@ describe("the Global's eye", () => {
 });
 
 describe("the Global's cockpit parts", () => {
-  it("are eight static meshes: the glareshield and its cove's fillet, the board and the window frame as one, the screens, their frames, rims and wells, the side consoles", () => {
-    expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-cove-fillet", "bizjet-glareshield", "bizjet-screen-bezel-rims", "bizjet-screen-bezels", "bizjet-screen-wells", "bizjet-screens", "bizjet-side-consoles"]);
+  it("are nine static meshes: the glareshield and its cove's fillet, the board and the window frame as one, the screens, their frames, rims and wells, the side consoles, the window seals", () => {
+    expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-cove-fillet", "bizjet-glareshield", "bizjet-screen-bezel-rims", "bizjet-screen-bezels", "bizjet-screen-wells", "bizjet-screens", "bizjet-side-consoles", "bizjet-window-seals"]);
     // the interior is the board, every lining strip the strip table names (a side each or once across the centreline),
-    // and the two side sills' caps a side
-    expect((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["bizjet-instrument-panel", ...frameStripNames()]);
+    // the two side sills' caps a side, and the window trim (S3): a pane's round, then its corners' pockets, four round a
+    // windshield and two round a side pane (its bottom corners are the ledge's)
+    const panes = ["windshield", "forward-side", "aft-side"] as const;
+    const pockets = { "windshield": 4, "forward-side": 2, "aft-side": 2 } as const;
+    const trim = (["port", "starboard"] as const).flatMap((side) => panes.flatMap((pane) => [`${side}-bizjet-trim-${pane}`, ...Array.from({ length: pockets[pane] }, (_, k) => `${side}-bizjet-trim-${pane}-pocket-${k}`)]));
+    // and the pillars' feet (C), filleted onto the forward side sills' caps
+    expect((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["bizjet-instrument-panel", ...frameStripNames(), ...trim, "port-bizjet-pillar-foot", "starboard-bizjet-pillar-foot"]);
+    // the seals: a pane's bead, closed round a windshield; round a side pane an open run capped at each end, and the
+    // cove along its ledge, capped too
+    const capped = (name: string) => [name, `${name}-start`, `${name}-end`];
+    const seals = (["port", "starboard"] as const).flatMap((side) => panes.flatMap((pane) => (pane === "windshield"
+      ? [`${side}-bizjet-seal-${pane}`]
+      : [...capped(`${side}-bizjet-seal-${pane}`), ...capped(`${side}-bizjet-seal-${pane}-cove`)])));
+    expect((named("bizjet-window-seals").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(seals);
     // the glareshield alone on its mesh, one solidPlate: the aft face's foot (none with no drop: the round runs into the
     // cove), the cove's, the hood's forward end (two corners), and the round's chords with a vertex on the deck line's
     // tangent (two fanned caps, and each side of the outline a wall of two)
@@ -611,10 +650,11 @@ describe("the Global's cockpit parts", () => {
     // of 12, round the sides and the foot: its top has no flat band (S2), and the rim's inner wall closes the recess there
     expect(named("bizjet-screen-bezels").getTotalIndices() / 3).toBe(4 * 12 * 2);
     expect(named("bizjet-screen-bezel-rims").getTotalIndices() / 3).toBe(4 * 16 * 2);
-    // the interior's triangles are its sources', so `partOf` can name any of them
-    const interior = named("bizjet-cockpit-interior");
-    const sources = (interior.metadata as { mergedFrom: string[] }).mergedFrom;
-    expect(sources.reduce((sum, name) => sum + (name === "bizjet-instrument-panel" ? 12 : panel(name).triangles), 0)).toBe(interior.getTotalIndices() / 3);
+    // a merged mesh's triangles are its sources', in order, so `partOf` can name any of them
+    for (const name of ["bizjet-cockpit-interior", "bizjet-window-seals"]) {
+      expect(merges.get(name)!.reduce((sum, source) => sum + source.triangles, 0), name).toBe(named(name).getTotalIndices() / 3);
+    }
+    expect(merges.get("bizjet-cockpit-interior")!.map((source) => source.name)).toEqual((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom);
   });
 
   it("put the lip on the glareshield's own matte near-black, the frame on the interior, the bezels on their own, the rims on the glowing marking", () => {
@@ -844,7 +884,8 @@ describe("the frame: the lining round the glass", () => {
         // under the lip line the lip and the board are the frame too
         const underLip = outside[1] < lipElevation(outside[0]);
         framed += 1;
-        if (part === null || (!underLip && !c.frame.test(part))) missing.push(`${c.pane} ${c.edge} at (${az.toFixed(1)}, ${el.toFixed(1)}): ${part ?? "nothing"}`);
+        // the window trim (S3) rolls every edge into the glass: frame too, whichever pane's it is
+        if (part === null || (!underLip && !c.frame.test(part) && !/-bizjet-(trim|seal)-/.test(part))) missing.push(`${c.pane} ${c.edge} at (${az.toFixed(1)}, ${el.toFixed(1)}): ${part ?? "nothing"}`);
       }
     }
     expect(missing.slice(0, 8), `${missing.length} edge samples unframed`).toEqual([]);
@@ -861,6 +902,7 @@ describe("the frame: the lining round the glass", () => {
     const skinShowing: string[] = [];
     const glassCovered: string[] = [];
     let reveal = 0;
+    let trimmed = 0;
     let open = 0;
     let solid = 0;
     const kind = new Map<string, string>();
@@ -886,10 +928,13 @@ describe("the frame: the lining round the glass", () => {
         if (!hit || what !== "glass" || nearEdge(az, el, what) || el < lipElevation(az) + 0.1) continue;
         const part = partOf(hit.mesh, hit.faceId);
         if (/bizjet-lining-/.test(part) && crossings(EYE_POINT, direction(az, el), faceTriangles(panel(part), "skin")).length === 0) reveal += 1;
+        // THE WINDOW TRIM (S3) stands over the glass by design, but only at a pane's edge: 11.2 mm into it along a straight
+        // edge, and across a corner's arc and pocket never further than the corner's radius
+        else if (/-bizjet-(trim|seal)-/.test(part) && distanceToPaneEdge(EYE_POINT.add(direction(az, el).scale(hit.distance))) <= BIZJET_WINDOW_TRIM.corner) trimmed += 1;
         else glassCovered.push(`(${az.toFixed(2)}, ${el.toFixed(2)}) by ${part}`);
       }
     }
-    console.info(`the Global's frame from the eye: ${open} rays open, ${solid} on the kit, ${reveal} of them the frame's reveal over glass`);
+    console.info(`the Global's frame from the eye: ${open} rays open, ${solid} on the kit, ${reveal} of them the frame's reveal over glass, ${trimmed} its trim at a pane's edge`);
     // CONTROL for the footprint test: a ray at the middle of the pillar's own footprint on the skin crosses it
     const pillar = panel("port-bizjet-lining-pillar");
     const middle = liningSkinVertex(pillar, Math.floor(pillar.rows / 2), 0).add(liningSkinVertex(pillar, Math.floor(pillar.rows / 2), 1)).scale(0.5);
@@ -908,12 +953,13 @@ describe("the frame: the lining round the glass", () => {
       for (let e = run.to + 0.5; e <= frameTop; e += 0.5) {
         const hit = kitHit(az, e);
         expect(hit, `the crown at azimuth ${az}, elevation ${e.toFixed(2)}`).not.toBeNull();
-        expect(partOf(hit!.mesh, hit!.faceId), `azimuth ${az}, elevation ${e.toFixed(2)}`).toMatch(/crown/);
+        // the crown, or its window trim rolling into the glass (S3)
+        expect(partOf(hit!.mesh, hit!.faceId), `azimuth ${az}, elevation ${e.toFixed(2)}`).toMatch(/crown|-bizjet-(trim|seal)-windshield/);
       }
       for (let e = run.from - 0.5; e > lipElevation(az) + 0.05; e -= 0.25) {
         const hit = kitHit(az, e);
         expect(hit, `the sill at azimuth ${az}, elevation ${e.toFixed(2)}`).not.toBeNull();
-        expect(partOf(hit!.mesh, hit!.faceId), `azimuth ${az}, elevation ${e.toFixed(2)}`).toMatch(/sill/);
+        expect(partOf(hit!.mesh, hit!.faceId), `azimuth ${az}, elevation ${e.toFixed(2)}`).toMatch(/sill|-bizjet-(trim|seal)-windshield/);
       }
     }
   });
@@ -946,8 +992,9 @@ describe("the frame: the lining round the glass", () => {
     expect(face).toBeGreaterThan(300);
     expect(rim, "the rims are a small part of what shows").toBeLessThan(face / 5);
     // ON the skin: the inner face stands BIZJET_LINING.depth in, less a chord's sag where the skin is convex; where it
-    // is concave the chord can carry it out, but never beyond the lining's own proud
-    expect(tightestFace).toBeGreaterThan(-BIZJET_LINING.proud);
+    // is concave the chord can carry it out, but never out of the skin (S3: nothing of the lining stands proud of it)
+    expect(BIZJET_LINING.proud).toBe(0);
+    expect(tightestFace).toBeGreaterThan(0);
     expect(shadedAway, "lining vertices shaded away from the eye").toBe(0);
   });
 
@@ -1009,12 +1056,11 @@ describe("the frame: the lining round the glass", () => {
     // glass's own 0.10 m it was half the pillar. Measured across the port pillar in 0.01 degree steps, each ray's first
     // drawn triangle classed by where `skinPanel` wrote it: two outer and two inner triangles a grid cell, then the rims.
     const interior = named("bizjet-cockpit-interior");
-    const sources = (interior.metadata as { mergedFrom: string[] }).mergedFrom;
     const strip = "port-bizjet-lining-pillar";
     let start = 0;
-    for (const name of sources) {
-      if (name === strip) break;
-      start += name === "bizjet-instrument-panel" ? 12 : panel(name).triangles;
+    for (const source of merges.get(interior.name)!) {
+      if (source.name === strip) break;
+      start += source.triangles;
     }
     const p = panel(strip);
     const cells = (p.rows - 1) * (p.columns - 1);
@@ -1050,6 +1096,177 @@ describe("the frame: the lining round the glass", () => {
       }
     }
     expect(stray.slice(0, 8)).toEqual([]);
+  });
+});
+
+describe("the window trim (S3): every edge of the glass rolled into it, and sealed", () => {
+  it("is one section, tangent from the inner face to the glass: the round, then the bead, down to the skin", () => {
+    const { round, bead, centres } = bizjetTrimSection();
+    const t = BIZJET_WINDOW_TRIM;
+    // the round leaves the inner face's edge level with it, on its own radius, and turns `roundDegrees`
+    expect(round[0]).toEqual({ a: 0, h: BIZJET_LINING.depth, degrees: 0 });
+    for (const p of round) expect(Math.hypot(p.a - centres.round.a, p.h - centres.round.h)).toBeCloseTo(t.round, 12);
+    expect(round.at(-1)!.degrees).toBeCloseTo(t.roundDegrees, 12);
+    // the bead starts where the round ends, with its turn: internally tangent, its centre on the round's radius there
+    expect(bead[0]).toEqual(round.at(-1));
+    expect(Math.hypot(centres.bead.a - centres.round.a, centres.bead.h - centres.round.h)).toBeCloseTo(t.round - t.bead, 12);
+    for (const p of bead.slice(0, -1)) expect(Math.hypot(p.a - centres.bead.a, p.h - centres.bead.h)).toBeCloseTo(t.bead, 12);
+    // and runs on to the skin, turned past square to it, standing 11.2 mm into the pane at the most
+    expect(bead.at(-1)!.h).toBe(0);
+    expect(bead.at(-1)!.degrees).toBeCloseTo(136.8, 1);
+    expect(Math.max(...bead.map((p) => p.a))).toBeCloseTo(0.0112, 4);
+    // every step turns the normal the same way, no more than the step
+    const turns = [...round, ...bead.slice(1)].map((p) => p.degrees);
+    for (let k = 1; k < turns.length; k += 1) {
+      expect(turns[k]! - turns[k - 1]!).toBeGreaterThan(0);
+      expect(turns[k]! - turns[k - 1]!).toBeLessThanOrEqual(t.stepDegrees + 1e-9);
+    }
+    // the cove: from the ledge to the glass, concave, on its radius
+    const cove = bizjetCoveSection();
+    expect([cove[0]!.a, cove[0]!.h, cove[0]!.degrees]).toEqual([0, t.cove, 90]);
+    expect([cove.at(-1)!.a, cove.at(-1)!.h, cove.at(-1)!.degrees]).toEqual([t.cove, 0, 0]);
+    for (const p of cove) expect(Math.hypot(p.a - t.cove, p.h - t.cove)).toBeCloseTo(t.cove, 12);
+  });
+
+  it("seals every edge of the glass in the frame: the last surface the eye meets before the glass is a seal, and no crease on the way", () => {
+    // Across each edge of each pane in the frame, from 1 degree outside it into the glass in steps of 0.04 degrees (under
+    // a 1080p pixel): the first ray that leaves through the glass meeting nothing, and the surface the ray before it met.
+    // THROUGH S4 that was the lining's rim, square to its face (P0: 4,890 px against the glass, 1,823 px of 90 degree
+    // creases at 1600 x 900). The lip is the edge under its own line (the lip rule's). Corners are crossed on their
+    // diagonal. Along the walk, where two neighbouring rays meet one surface (hit points within 5 mm) and one of them is
+    // the trim's, a seal's, a pillar's or its foot's, the shading normal turns less than the crease survey's 45 degrees.
+    //
+    // A FAR edge, whose section faces the eye (the trim's normal is square to the sightline past 90 degrees of its turn),
+    // shows its seal before the glass. A NEAR edge rolls away from the eye, which meets its section square at 40 to 65
+    // degrees of turn: there the seal, from 35, is under a pixel wide, and the eye sees the trim's round meet the glass
+    // with the seal behind it, as on a real frame. Neither ever shows the lining.
+    type Case = { pane: string; at: Vector3; out: [number, number]; far: boolean };
+    const cases: Case[] = [];
+    for (const side of ["port", "starboard"] as const) {
+      const outboard = side === "port" ? -1 : 1;
+      for (const name of ["windshield", "forward-side", "aft-side"]) {
+        const pane = panel(`${side}-bizjet-flight-deck-window-${name}`);
+        const out = { bottom: [0, -1], top: [0, 1], inboard: [-outboard, 0], outboard: [outboard, 0] } as const;
+        // FAR: at an edge point, a sightline going out through the skin moves away from the pane, square to the edge in
+        // the skin (the trim's `into`, which its section is laid along)
+        const middle = skinVertex(pane, Math.floor(pane.rows / 2), Math.floor(pane.columns / 2));
+        const far = (at: Vector3, along: Vector3) => {
+          // the skin's normal there: the nearest grid point's, from the pane's outer face to its inner
+          let nearest = [0, 0];
+          for (let r = 0; r < pane.rows; r += 1) {
+            for (let k = 0; k < pane.columns; k += 1) {
+              if (Vector3.Distance(skinVertex(pane, r, k), at) < Vector3.Distance(skinVertex(pane, nearest[0]!, nearest[1]!), at)) nearest = [r, k];
+            }
+          }
+          const normal = gridVertex(pane, 0, nearest[0]!, nearest[1]!).subtract(gridVertex(pane, 1, nearest[0]!, nearest[1]!)).normalize();
+          let into = Vector3.Cross(normal, along).normalize();
+          if (Vector3.Dot(into, middle.subtract(at)) < 0) into = into.negate();
+          return Vector3.Dot(at.subtract(EYE_POINT), into) < 0;
+        };
+        for (const edge of ["bottom", "top", "inboard", "outboard"] as const) {
+          const points = edgePoints(pane, "skin", edge, 3);
+          for (let k = 1; k + 1 < points.length; k += 1) {
+            cases.push({ pane: `${side} ${name} ${edge}`, at: points[k]!, out: [...out[edge]], far: far(points[k]!, points[k + 1]!.subtract(points[k - 1]!)) });
+          }
+        }
+        // a corner is crossed on its diagonal, over the trim's arc: its seal or its round (the arc turns the section
+        // through every direction between the two edges')
+        const corner = (row: number, column: number, a: readonly number[], b: readonly number[]) => {
+          const n = Math.hypot(a[0]! + b[0]!, a[1]! + b[1]!);
+          cases.push({ pane: `${side} ${name} corner ${row},${column}`, at: skinVertex(pane, row, column), out: [(a[0]! + b[0]!) / n, (a[1]! + b[1]!) / n], far: false });
+        };
+        corner(0, 0, out.bottom, out.inboard);
+        corner(0, pane.columns - 1, out.bottom, out.outboard);
+        corner(pane.rows - 1, pane.columns - 1, out.top, out.outboard);
+        corner(pane.rows - 1, 0, out.top, out.inboard);
+      }
+    }
+    let walks = 0;
+    let corners = 0;
+    let sealed = 0;
+    let rolled = 0;
+    let worstTurn = 0;
+    let worstAt = "";
+    const bare: string[] = [];
+    for (const c of cases) {
+      const { az, el } = azel(c.at);
+      if (c.at.x <= EYE.forward + 0.1 || !inFrame(az, el)) continue;
+      let before: { part: string; point: Vector3; normal: Vector3 } | null = null;
+      for (let t = 1; t >= -1; t -= 0.04) {
+        const a = az + c.out[0] * t;
+        const e = el + c.out[1] * t;
+        if (!inFrame(a, e)) {
+          before = null;
+          continue;
+        }
+        const hit = kitHit(a, e);
+        if (!hit) {
+          if (before !== null && exitsThrough(a, e).what === "glass") {
+            walks += 1;
+            if (/corner/.test(c.pane)) corners += 1;
+            const lip = /^bizjet-(glareshield|instrument-panel|cove-fillet|screen)/.test(before.part);
+            if (/-bizjet-seal-/.test(before.part)) sealed += 1;
+            else if (!c.far && /-bizjet-trim-/.test(before.part)) rolled += 1;
+            else if (!lip) bare.push(`${c.pane} (${c.far ? "far" : "near"}) at (${a.toFixed(2)}, ${e.toFixed(2)}): ${before.part}`);
+            break;
+          }
+          before = null;
+          continue;
+        }
+        // THE PICKER IS NOT WATERTIGHT where two meshes share an edge (the trim's round and its seal share their
+        // tangent line): a lone ray slips through it and meets the seal's back, just behind, which the GPU, rasterizing
+        // the shared edge watertight, never shows. So each sample reads the majority of three rays 0.003 degrees apart
+        // across the walk (1/17 of a pixel); a slip is one ray.
+        const across = [-c.out[1] * 0.003, c.out[0] * 0.003];
+        const three = [0, 1, -1].map((k) => shadedAt(a + across[0]! * k, e + across[1]! * k)).filter((x) => x !== null);
+        const agree = (x: { normal: Vector3 }, y: { normal: Vector3 }) => Vector3.Dot(x.normal, y.normal) > Math.cos(10 / DEG);
+        const shaded = three.find((x) => three.filter((y) => y !== x && agree(x, y)).length >= 1) ?? three[0]!;
+        const here = { part: partOf(hit.mesh, hit.faceId), point: shaded.point, normal: shaded.normal };
+        // S3's surfaces, and the pillar they flare it onto the ledge at its foot (the cap's own box edges are S4's ledge)
+        const ours = (part: string) => /-bizjet-(trim|seal|pillar-foot)|lining-pillar/.test(part);
+        if (before && (ours(before.part) || ours(here.part)) && Vector3.Distance(before.point, here.point) < 0.005) {
+          const turn = Math.acos(Math.min(1, Vector3.Dot(before.normal, here.normal))) * DEG;
+          if (turn > worstTurn) {
+            worstTurn = turn;
+            worstAt = `${c.pane} at (${a.toFixed(2)}, ${e.toFixed(2)}), ${before.part} to ${here.part}`;
+          }
+        }
+        before = here;
+      }
+    }
+    console.info(`the Global's window trim: ${walks} walks across the glass's edges in the frame (${corners} at corners): ${sealed} end on a seal, ${rolled} on a near edge's round; the shading turns ${worstTurn.toFixed(1)} degrees a step at the most (${worstAt})`);
+    expect(bare.slice(0, 8), `${bare.length} edge crossings where the eye meets something other than a seal just before the glass`).toEqual([]);
+    expect(worstTurn, worstAt).toBeLessThan(45);
+    // NON-VACUITY: the frame holds the port windshield's four edges, the post, the port side pane's forward edges
+    expect(walks).toBeGreaterThan(60);
+    expect(corners).toBeGreaterThan(2);
+    expect(sealed, "the far edges' seals").toBeGreaterThan(30);
+  });
+
+  it("ends its runs at the ledges out of sight: no cap of a seal's run is ever what the eye meets", () => {
+    // the seals' runs round the side panes end, capped, at their bottom corners, where the ledge and its cove meet the
+    // members; over a 3 degree box round every side pane's bottom corner in the frame, at 0.1 degrees, no ray meets a
+    // cap first (the rounded corners' pockets are held by the walk above, which crosses every corner on its diagonal)
+    let rays = 0;
+    const caps: string[] = [];
+    for (const side of ["port", "starboard"] as const) {
+      for (const name of ["forward-side", "aft-side"]) {
+        const pane = panel(`${side}-bizjet-flight-deck-window-${name}`);
+        for (const column of [0, pane.columns - 1]) {
+          const { az, el } = azel(skinVertex(pane, 0, column));
+          for (let a = az - 1.5; a <= az + 1.5; a += 0.1) {
+            for (let e = el - 1.5; e <= el + 1.5; e += 0.1) {
+              if (!inFrame(a, e)) continue;
+              const hit = kitHit(a, e);
+              rays += 1;
+              if (hit && /-(start|end)$/.test(partOf(hit.mesh, hit.faceId))) caps.push(`${name} ${column} at (${a.toFixed(1)}, ${e.toFixed(1)})`);
+            }
+          }
+        }
+      }
+    }
+    expect(caps.slice(0, 8)).toEqual([]);
+    expect(rays, "the port forward side pane's inboard foot is in the frame").toBeGreaterThan(100);
   });
 });
 
@@ -1099,7 +1316,10 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
 
   it("stands the lip at the catalogue's deck line, hiding no more glass than the pinned profile (the BUILT sills)", () => {
     const lipVertices = worldVertices(named("bizjet-glareshield"));
-    const halfWidth = Math.max(...lipVertices.map((v) => Math.abs(v.z)));
+    // the lip's ROW holds over its straight span; past it the end rounds (S4) fall away from the row to nothing in 20 mm,
+    // so glass beyond the straight lip is not under the row (the forward side pane's inboard foot, from the seat, reads
+    // at the end round's very tip)
+    const halfWidth = deckHalfWidth();
     const recorded = aircraftSpec("bizjet").cockpitDeckLineDegrees;
     // the lip as built is the catalogue's line: the glareshield's silhouette is its steepest-up vertex from the eye (a
     // line along z reads one row, its slope along x), and that is the round's tangent, on the line to the bit
@@ -2048,7 +2268,7 @@ describe("the Global's cockpit-only parts outside cockpit view", () => {
     localScene.activeCamera = localCamera;
     const visual = createWebGpuAircraft(localScene, "bizjet");
     const parts = visual.cockpitOnlyParts ?? [];
-    expect(parts.length).toBe(8);
+    expect(parts.length).toBe(9);
     const exteriorMask = localCamera.layerMask;
     for (const part of parts) {
       expect(part.isVisible, `${part.name} at rest`).toBe(false);

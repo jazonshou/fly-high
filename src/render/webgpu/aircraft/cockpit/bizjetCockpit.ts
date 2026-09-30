@@ -110,13 +110,18 @@ const FRAME_HALF_WIDTH = Math.tan((COCKPIT_HORIZONTAL_FOV_DEGREES / 2) * DEG);
 
 /**
  * How far below and above the glass the lining runs, in R's elevation; the widest step between a sill's or a
- * crown's rows; how far it stands out of the skin and in from it (the 747's 2 cm, K3: a deeper lining shows its
- * side as a second, lit face down every pillar); and how many metres of station the aft end member takes.
+ * crown's rows; how far it stands out of the skin and in from it; and how many metres of station the aft end member
+ * takes.
+ *
+ * It stands IN from the skin only (S3): 12 mm, and nothing proud. It stood 8 mm proud as well, the 747's 2 cm in all
+ * (K3: a deeper lining shows its side as a second, lit face down every pillar), but the glass is hidden from the
+ * cockpit, so a strip's outside is never seen, and the part of its rim outside the skin was what a grazing sightline
+ * met past the window trim's seal (`BIZJET_WINDOW_TRIM`), which rolls the inner face down to the skin and no further.
  *
  * The bounds are R's, and the eye is not R: they reach past the 16:9 frame's edges from the eye with room,
  * which `tests/render.cockpit-bizjet.test.ts` holds by casting the whole frame (no hidden skin showing).
  */
-export const BIZJET_LINING = Object.freeze({ bottom: -40, top: 60, maxStepDegrees: 5, proud: 0.008, depth: 0.012, aftEnd: 0.1 });
+export const BIZJET_LINING = Object.freeze({ bottom: -40, top: 60, maxStepDegrees: 5, proud: 0, depth: 0.012, aftEnd: 0.1 });
 
 /** A lining strip as R sees it: its grid of STARBOARD (azimuth, elevation) from R, rows bottom to top, columns in azimuth order. */
 export interface BizjetLiningStrip {
@@ -300,6 +305,450 @@ export function bizjetLiningGrid(skin: SkinCaster, strip: BizjetLiningStrip, sid
     }
     points.push(pointRow);
     normals.push(normalRow);
+  }
+  return { points, normals };
+}
+
+// ---- the window trim ---------------------------------------------------------------------------
+
+/**
+ * THE WINDOW TRIM (S3): where the lining meets the glass, its inner face ROLLS into the glass on a round and a seal
+ * instead of stopping square. Through S4 every strip ended at a pane's edge in its rim, a face square to the inner face
+ * (P0: 1,823 px of 90-degree creases at 1600 x 900), and that rim was what the eye saw against the glass (4,890 px).
+ *
+ * THE SECTION, across a pane's edge: `a` into the pane along the skin, `h` in from the skin along its normal, the
+ * strip's inner face at h = `BIZJET_LINING.depth`. From the inner face the trim turns on the `round` (the members'
+ * rounded section, the lining's material) through `roundDegrees`, and then on the `bead` (the SEAL, the glareshield's
+ * matte) on down to the skin, where the glass is: tangent all the way, so from the inner face to the glass the eye
+ * meets no crease. The round hands over at 35 degrees because the seal must be the last thing the eye sees before
+ * the glass on EVERY edge, and a sightline grazes the section where its normal is square to it: from the seat that is
+ * at 40 degrees at the least (the starboard windshield's inboard edge, which rolls away from the eye) and 166 at the
+ * most (the port windshield's bottom, which faces it). The trim stands on the pane's side of its edge, over the
+ * strip's rim, which it hides, and reaches `a` = 11.2 mm into the pane at the most.
+ *
+ * CORNERS are rounded on `corner` (in the skin at the corner) and the trim swept round the arc; the pocket between the
+ * arc and the pane's own corner is filled flush with the inner face. The side panes' bottom edges are the exception:
+ * the sill cap makes a LEDGE there, level with the edge (the rim of the sill under it is the ledge's outer strip), so
+ * the glass meets it in an inside corner and the seal is a concave `cove`, from the ledge up to the glass. The members'
+ * trim runs down to those corners and stops there, capped, as does the cove: from the seat the ledge and the cove hide
+ * both ends (carrying the runs on into the sill changed none of 90,601 rays over the pillar's foot).
+ *
+ * THE SEAL IS A CLOSED TUBE (`bizjetSealSections`): the bead's arc and a flat back under the round, the cove's arc and its
+ * two legs on the ledge and the glass, capped where a run ends. An open sheet would show its inside to a ray that
+ * reaches it through the lining, which no pixel sees but `tests/render.cockpit-drawn-faces.test.ts` does, rightly: a
+ * part's nearest face must be one the GPU draws. The round needs no back: the lining's slab is in front of its inside.
+ */
+export const BIZJET_WINDOW_TRIM = Object.freeze({
+  round: 0.015,
+  roundDegrees: 35,
+  bead: 0.006,
+  cove: 0.006,
+  corner: 0.025,
+  stepDegrees: 10,
+  cornerStepDegrees: 15,
+});
+
+/** A point of the trim's section: `a` into the pane, `h` in from the skin, and its normal's turn from the inner face's. */
+export interface BizjetTrimPoint {
+  readonly a: number;
+  readonly h: number;
+  readonly degrees: number;
+}
+
+function trimArc(centre: { a: number; h: number }, radius: number, from: number, to: number): BizjetTrimPoint[] {
+  const steps = Math.max(2, Math.ceil(Math.abs(to - from) / DEG / BIZJET_WINDOW_TRIM.stepDegrees));
+  return Array.from({ length: steps + 1 }, (_, k) => {
+    const phi = from + ((to - from) * k) / steps;
+    return { a: centre.a + radius * Math.sin(phi), h: centre.h + radius * Math.cos(phi), degrees: phi / DEG };
+  });
+}
+
+/**
+ * The trim's section: the ROUND from the inner face's edge (its first point exactly that edge), and the BEAD from the
+ * round's last point (exactly it) down to the skin, where its normal has turned `degrees` from the inner face's. A
+ * point's normal is `into` x sin + (-skin normal) x cos of its turn.
+ */
+export function bizjetTrimSection(): { round: BizjetTrimPoint[]; bead: BizjetTrimPoint[]; centres: { round: { a: number; h: number }; bead: { a: number; h: number } } } {
+  const { round, roundDegrees, bead } = BIZJET_WINDOW_TRIM;
+  const depth = BIZJET_LINING.depth;
+  const turn = roundDegrees * DEG;
+  const roundCentre = { a: 0, h: depth - round };
+  const beadCentre = { a: (round - bead) * Math.sin(turn), h: roundCentre.h + (round - bead) * Math.cos(turn) };
+  // the bead meets the skin where its height has run down to nothing
+  const endCos = -beadCentre.h / bead;
+  if (!(endCos > -1 && endCos < Math.cos(turn))) throw new RangeError("the Global's window trim: the bead does not reach the skin past the round");
+  const roundPoints = trimArc(roundCentre, round, 0, turn);
+  roundPoints[0] = { a: 0, h: depth, degrees: 0 };
+  const beadPoints = trimArc(beadCentre, bead, turn, Math.acos(endCos));
+  beadPoints[0] = roundPoints.at(-1)!;
+  beadPoints[beadPoints.length - 1] = { ...beadPoints.at(-1)!, h: 0 };
+  return { round: roundPoints, bead: beadPoints, centres: { round: roundCentre, bead: beadCentre } };
+}
+
+/**
+ * The COVE seal's section on a ledge: tangent to the ledge (a = 0, its normal `into` the pane: a turn of 90 degrees)
+ * `cove` in from the skin, round to tangent to the glass (h = 0, its normal into the cabin: a turn of 0) `cove` into
+ * the pane. Concave: its centre is in the open corner, at (cove, cove).
+ */
+export function bizjetCoveSection(): BizjetTrimPoint[] {
+  const c = BIZJET_WINDOW_TRIM.cove;
+  return trimArc({ a: c, h: c }, -c, Math.PI / 2, 0).map((p, k, all) => (k === 0 ? { ...p, a: 0 } : k === all.length - 1 ? { ...p, h: 0 } : p));
+}
+
+/** A closed section for a seal's sweep: its LOOP (the arc shaded as it turns, then its back's corners, each with its own face's normal), and the fan that caps it. */
+export interface BizjetSealSection {
+  readonly loop: readonly BizjetTrimPoint[];
+  readonly cap: { readonly pivot: { readonly a: number; readonly h: number }; readonly rim: readonly BizjetTrimPoint[] };
+}
+
+/** The turn of a flat face's normal from `from` to `to` in the section, pointed away from `away`. */
+function faceTurn(from: { a: number; h: number }, to: { a: number; h: number }, away: { a: number; h: number }): number {
+  let na = to.h - from.h;
+  let nh = -(to.a - from.a);
+  if (na * (away.a - (from.a + to.a) / 2) + nh * (away.h - (from.h + to.h) / 2) > 0) {
+    na = -na;
+    nh = -nh;
+  }
+  return Math.atan2(na, nh) / DEG;
+}
+
+/**
+ * The seals' closed sections. The BEAD: its arc, then a flat back from the arc's end on the skin up to its start at the
+ * round, under the round (a D, capped by a fan from the back's middle). The COVE: its arc from the ledge to the glass,
+ * then its legs along the glass and up the ledge to the corner between them (capped by a fan from that corner).
+ */
+export function bizjetSealSections(): { bead: BizjetSealSection; cove: BizjetSealSection } {
+  const arc = bizjetTrimSection().bead;
+  const start = arc[0]!;
+  const end = arc.at(-1)!;
+  const back = faceTurn(end, start, arc[Math.floor(arc.length / 2)]!);
+  const coveArc = bizjetCoveSection();
+  const top = coveArc[0]!;
+  const foot = coveArc.at(-1)!;
+  const corner = { a: 0, h: 0 };
+  const glassLeg = faceTurn(foot, corner, top);
+  const ledgeLeg = faceTurn(corner, top, foot);
+  return {
+    bead: {
+      loop: [...arc, { a: end.a, h: end.h, degrees: back }, { a: start.a, h: start.h, degrees: back }],
+      cap: { pivot: { a: (start.a + end.a) / 2, h: (start.h + end.h) / 2 }, rim: arc },
+    },
+    cove: {
+      loop: [...coveArc, { a: foot.a, h: foot.h, degrees: glassLeg }, { ...corner, degrees: glassLeg }, { ...corner, degrees: ledgeLeg }, { a: top.a, h: top.h, degrees: ledgeLeg }],
+      cap: { pivot: corner, rim: coveArc },
+    },
+  };
+}
+
+/** A pane's edge as the lining casts it, corner to corner: the strip's own grid points on the skin and their normals. */
+export interface BizjetPaneEdge {
+  readonly points: readonly Point3[];
+  readonly normals: readonly Point3[];
+  /** The edge runs along a sill cap (a side pane's bottom): its seal is the cove. */
+  readonly ledge: boolean;
+}
+
+/**
+ * Every pane's four edges, in loop order: the bottom inboard to outboard, the outboard side up, the top back inboard,
+ * the inboard side down. Each is READ from the strips' grids as built (`grids`, by mesh name), so the trim starts
+ * exactly on each strip's inner-face edge; neighbouring edges share their corner to the last bit (checked).
+ */
+export function bizjetPaneEdges(
+  grids: ReadonlyMap<string, { readonly points: readonly (readonly Point3[])[]; readonly normals: readonly (readonly Point3[])[] }>,
+): { name: string; side: 1 | -1; edges: BizjetPaneEdge[] }[] {
+  type Run = { points: Point3[]; normals: Point3[] };
+  const strips = bizjetLiningStrips();
+  const grid = (name: string, side: 1 | -1) => {
+    const found = grids.get(bizjetLiningMeshName(strips.find((s) => s.name === name)!, side));
+    if (!found) throw new Error(`the Global's window trim: no ${name} was built`);
+    return found;
+  };
+  const column = (g: ReturnType<typeof grid>, k: number): Run => ({ points: g.points.map((r) => r[k]!), normals: g.normals.map((r) => r[k]!) });
+  const row = (g: ReturnType<typeof grid>, r: number, from: number, to?: number): Run => ({
+    points: g.points.at(r)!.slice(from, to),
+    normals: g.normals.at(r)!.slice(from, to),
+  });
+  const reversed = (run: Run): Run => ({ points: [...run.points].reverse(), normals: [...run.normals].reverse() });
+  const slice = (run: Run, from: number, to?: number): Run => ({ points: run.points.slice(from, to), normals: run.normals.slice(from, to) });
+  const edge = (run: Run, ledge = false): BizjetPaneEdge => ({ ...run, ledge });
+  const g = PANE_GRID;
+  const panes: { name: string; side: 1 | -1; edges: BizjetPaneEdge[] }[] = [];
+  for (const side of [-1, 1] as const) {
+    // the centre strips are cast on the port side: the port windshield is their columns past the post's middle, the
+    // starboard one (mirrored) the columns before it, which run outboard to inboard
+    const half = (run: Run): Run => (side < 0 ? slice(run, g + 1) : reversed(slice(run, 0, g)));
+    panes.push({ name: "windshield", side, edges: [
+      edge(half(row(grid("sill-centre", -1), -1, 0))),
+      edge(column(grid("pillar", side), 0)),
+      edge(reversed(half(row(grid("crown-centre", -1), 0, 0)))),
+      edge(reversed(column(grid("post", -1), side < 0 ? 2 : 0))),
+    ] });
+    panes.push({ name: "forward-side", side, edges: [
+      edge(row(grid("sill-forward-side", side), -1, 1), true),
+      edge(column(grid("mid-post", side), 0)),
+      edge(reversed(row(grid("crown-forward-side", side), 0, 1))),
+      edge(reversed(column(grid("pillar", side), 1))),
+    ] });
+    panes.push({ name: "aft-side", side, edges: [
+      edge(row(grid("sill-aft-side", side), -1, 1, g + 1), true),
+      edge(column(grid("aft-end", side), 0)),
+      edge(reversed(row(grid("crown-aft-side", side), 0, 1, g + 1))),
+      edge(reversed(column(grid("mid-post", side), 1))),
+    ] });
+  }
+  for (const pane of panes) {
+    pane.edges.forEach((e, k) => {
+      const end = e.points.at(-1)!;
+      const start = pane.edges[(k + 1) % pane.edges.length]!.points[0]!;
+      if (end.x !== start.x || end.y !== start.y || end.z !== start.z) {
+        throw new Error(`the Global's window trim: the ${pane.name} pane's edges ${k} and ${(k + 1) % 4} do not share their corner`);
+      }
+    });
+  }
+  return panes;
+}
+
+/** A place along the trim: a point on the skin, the skin's outward normal there, and the trim's direction of run. */
+interface TrimStation {
+  readonly at: Vector3;
+  readonly normal: Vector3;
+  readonly along: Vector3;
+}
+
+const v3 = (p: Point3) => new Vector3(p.x, p.y, p.z);
+
+/**
+ * The stations along a run of a pane's edges, rounded on `corner` at every join between two of them: at the strips'
+ * own grid points between the corners, and round each corner's arc (from its tangent point on the chord into the
+ * corner, in the plane of the two chords there, to its tangent point on the chord out). Closed: the run is the whole
+ * loop, and its first station is repeated at its end. Open: it runs from its first point to its last.
+ *
+ * Returns the stations, and each corner's POCKET: its apex (the pane's own corner) and the arc's stations, whose fan
+ * fills the inner face over the corner of the glass the arc cuts off.
+ */
+function trimStations(edges: readonly BizjetPaneEdge[], closed: boolean): { stations: TrimStation[]; pockets: { apex: TrimStation; arc: TrimStation[] }[] } {
+  const { corner: radius, cornerStepDegrees } = BIZJET_WINDOW_TRIM;
+  const points: Vector3[] = [];
+  const normals: Vector3[] = [];
+  const corners: number[] = [];
+  edges.forEach((e, k) => {
+    if (k > 0) corners.push(points.length - 1);
+    e.points.forEach((p, j) => {
+      if (k > 0 && j === 0) return;
+      points.push(v3(p));
+      normals.push(v3(e.normals[j]!).normalize());
+    });
+  });
+  if (closed) {
+    points.pop();
+    normals.pop();
+    corners.unshift(0);
+  }
+  const n = points.length;
+  const at = (i: number) => points[((i % n) + n) % n]!;
+  const normalAt = (i: number) => normals[((i % n) + n) % n]!;
+  const vertex = (i: number): TrimStation => {
+    const before = closed || i > 0 ? at(i - 1) : at(i);
+    const after = closed || i < n - 1 ? at(i + 1) : at(i);
+    return { at: at(i), normal: normalAt(i), along: after.subtract(before).normalize() };
+  };
+  const arcs = new Map<number, TrimStation[]>();
+  const pockets: { apex: TrimStation; arc: TrimStation[] }[] = [];
+  for (const m of corners) {
+    const k = at(m);
+    const toPrevious = at(m - 1).subtract(k);
+    const toNext = at(m + 1).subtract(k);
+    const u1 = toPrevious.normalizeToNew();
+    const u2 = toNext.normalizeToNew();
+    const half = Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(u1, u2)))) / 2;
+    const reach = radius / Math.tan(half);
+    if (!(reach <= 0.8 * Math.min(toPrevious.length(), toNext.length()))) {
+      throw new RangeError(`the Global's window trim: a ${(half * 2) / DEG} degree corner cannot take a ${radius} m round on its chords`);
+    }
+    const s1 = reach / toPrevious.length();
+    const s2 = reach / toNext.length();
+    const n1 = Vector3.Lerp(normalAt(m), normalAt(m - 1), s1).normalize();
+    const n2 = Vector3.Lerp(normalAt(m), normalAt(m + 1), s2).normalize();
+    const centre = k.add(u1.add(u2).normalize().scale(radius / Math.sin(half)));
+    const w1 = k.add(u1.scale(reach)).subtract(centre).scale(1 / radius);
+    const w2 = k.add(u2.scale(reach)).subtract(centre).scale(1 / radius);
+    const turn = Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(w1, w2))));
+    const steps = Math.max(2, Math.ceil(turn / DEG / cornerStepDegrees));
+    const arc: TrimStation[] = [];
+    for (let j = 0; j <= steps; j += 1) {
+      const f = j / steps;
+      const w = w1.scale(Math.sin((1 - f) * turn)).add(w2.scale(Math.sin(f * turn))).scale(1 / Math.sin(turn));
+      const along = w1.scale(-Math.cos((1 - f) * turn)).add(w2.scale(Math.cos(f * turn))).normalize();
+      arc.push({ at: centre.add(w.scale(radius)), normal: Vector3.Lerp(n1, n2, f).normalize(), along });
+    }
+    arcs.set(m, arc);
+    pockets.push({ apex: vertex(m), arc });
+  }
+  const stations: TrimStation[] = [];
+  if (closed) {
+    for (let c = 0; c < corners.length; c += 1) {
+      stations.push(...arcs.get(corners[c]!)!);
+      const next = c + 1 < corners.length ? corners[c + 1]! : n;
+      for (let i = corners[c]! + 1; i < next; i += 1) stations.push(vertex(i));
+    }
+    stations.push(stations[0]!);
+  } else {
+    for (let i = 0; i < n; i += 1) {
+      if (arcs.has(i)) stations.push(...arcs.get(i)!);
+      else stations.push(vertex(i));
+    }
+  }
+  return { stations, pockets };
+}
+
+/**
+ * A section swept through stations as a smooth sheet's grid: each point `a` along the station's INTO (square to the
+ * skin normal and the run, turned toward the pane's middle, `inside`) and `h` in from the skin, shaded with the
+ * section's normal there.
+ */
+function trimGrid(stations: readonly TrimStation[], section: readonly BizjetTrimPoint[], inside: Vector3): { points: Vector3[][]; normals: Vector3[][]; into: Vector3[] } {
+  const points: Vector3[][] = [];
+  const normals: Vector3[][] = [];
+  const intos: Vector3[] = [];
+  let sign = 0;
+  for (const s of stations) {
+    let into = Vector3.Cross(s.normal, s.along).normalize();
+    const facing = Math.sign(Vector3.Dot(into, inside.subtract(s.at)));
+    if (sign === 0) sign = facing;
+    if (facing !== sign) throw new Error("the Global's window trim: a station's inward side flips along its run");
+    into = into.scale(sign);
+    intos.push(into);
+    points.push(section.map((p) => s.at.add(into.scale(p.a)).subtract(s.normal.scale(p.h))));
+    normals.push(section.map((p) => into.scale(Math.sin(p.degrees * DEG)).subtract(s.normal.scale(Math.cos(p.degrees * DEG)))));
+  }
+  return { points, normals, into: intos };
+}
+
+/** A fan closing a seal's run at a station, flat, facing `outward` along the run. */
+function trimCap(station: TrimStation, into: Vector3, cap: BizjetSealSection["cap"], outward: Vector3): { points: Vector3[][]; normals: Vector3[][] } {
+  const place = (p: { a: number; h: number }) => station.at.add(into.scale(p.a)).subtract(station.normal.scale(p.h));
+  const pivot = place(cap.pivot);
+  return { points: [cap.rim.map(() => pivot), cap.rim.map(place)], normals: [cap.rim.map(() => outward), cap.rim.map(() => outward)] };
+}
+
+/**
+ * THE WINDOW TRIM's meshes for every pane: the rounds and the pockets' fills (the lining's material) and the seals (the
+ * glareshield's), by name `<side>-bizjet-trim-<pane>` (`-pocket-<k>`) and `<side>-bizjet-seal-<pane>` (`-cove`).
+ */
+export function buildBizjetWindowTrim(
+  build: AircraftBuildContext,
+  root: TransformNode,
+  grids: ReadonlyMap<string, { readonly points: readonly (readonly Point3[])[]; readonly normals: readonly (readonly Point3[])[] }>,
+  trimMaterial: PBRMaterial,
+  sealMaterial: PBRMaterial,
+): { trim: Mesh[]; seals: Mesh[] } {
+  const section = bizjetTrimSection();
+  const sealSections = bizjetSealSections();
+  const depth = BIZJET_LINING.depth;
+  const trim: Mesh[] = [];
+  const seals: Mesh[] = [];
+  // a seal's run as a closed tube, and on an open run a cap at each end
+  const seal = (name: string, stations: readonly TrimStation[], closed: BizjetSealSection, inside: Vector3, open: boolean) => {
+    const tube = trimGrid(stations, closed.loop, inside);
+    const parts = [smoothSheet(build, name, tube.points, tube.normals, sealMaterial, root)];
+    if (open) {
+      for (const [k, name2, outward] of [[0, `${name}-start`, -1], [stations.length - 1, `${name}-end`, 1]] as const) {
+        const cap = trimCap(stations[k]!, tube.into[k]!, closed.cap, stations[k]!.along.scale(outward));
+        parts.push(smoothSheet(build, name2, cap.points, cap.normals, sealMaterial, root));
+      }
+    }
+    return parts;
+  };
+  for (const pane of bizjetPaneEdges(grids)) {
+    const prefix = `${pane.side > 0 ? "starboard" : "port"}-bizjet`;
+    const all = pane.edges.flatMap((e) => e.points.map(v3));
+    const inside = all.reduce((sum, p) => sum.add(p), Vector3.Zero()).scale(1 / all.length);
+    const ledge = pane.edges.findIndex((e) => e.ledge);
+    // the trim's run: the whole loop, or from the ledge's outboard corner round to its inboard one
+    const run = ledge < 0 ? pane.edges : [...pane.edges.slice(ledge + 1), ...pane.edges.slice(0, ledge)];
+    const { stations, pockets } = trimStations(run, ledge < 0);
+    const round = trimGrid(stations, section.round, inside);
+    trim.push(smoothSheet(build, `${prefix}-trim-${pane.name}`, round.points, round.normals, trimMaterial, root));
+    pockets.forEach((pocket, k) => {
+      const apex = pocket.apex.at.subtract(pocket.apex.normal.scale(depth));
+      trim.push(smoothSheet(
+        build,
+        `${prefix}-trim-${pane.name}-pocket-${k}`,
+        [pocket.arc.map(() => apex), pocket.arc.map((s) => s.at.subtract(s.normal.scale(depth)))],
+        [pocket.arc.map(() => pocket.apex.normal.negate()), pocket.arc.map((s) => s.normal.negate())],
+        trimMaterial,
+        root,
+      ));
+    });
+    seals.push(...seal(`${prefix}-seal-${pane.name}`, stations, sealSections.bead, inside, ledge >= 0));
+    if (ledge >= 0) {
+      seals.push(...seal(`${prefix}-seal-${pane.name}-cove`, trimStations([pane.edges[ledge]!], false).stations, sealSections.cove, inside, true));
+    }
+  }
+  return { trim, seals };
+}
+
+/**
+ * THE PILLAR'S FOOT (S3, C): where the windshield/side pillar comes down onto the forward side sill's cap, a concave
+ * `radius` fillet along its foot, so the pillar flares onto the ledge instead of standing on it. The pillar's inner face
+ * leans back over the cap, and the two meet at 49 degrees along the foot's chord (the windshield's outboard bottom
+ * corner to the forward side pane's inboard one, 122 mm): through S4 a crease of 131.7 degrees. The fillet touches
+ * each 43.6 mm from the corner (the cap is 50 mm wide, the pillar's lowest band 72 mm tall) and is shaded as its circle.
+ * It TAPERS to nothing over `taper` at each end, where the pillar's own trims start, so it closes on the corner there
+ * instead of ending in a face.
+ */
+export const BIZJET_PILLAR_FOOT = Object.freeze({ radius: 0.02, taper: 0.03, stations: 17, arcSteps: 8 });
+
+/**
+ * The foot's grid from the pillar's strip (on the skin, rows up the pillar, column 0 the windshield's edge) and its
+ * sill's cap (`bizjetSillCapGrid`: row 0 the sill's top row on the lining's inner face, which is the pillar's foot, row
+ * 1 inboard): rows along the foot from the windshield's corner to the side pane's, columns round the fillet from the cap
+ * to the pillar's face, each point shaded toward the fillet's centre.
+ */
+export function bizjetPillarFoot(
+  pillar: { readonly points: readonly (readonly Point3[])[]; readonly normals: readonly (readonly Point3[])[] },
+  cap: { readonly points: readonly (readonly Point3[])[] },
+): { points: Vector3[][]; normals: Vector3[][] } {
+  const { radius, taper, stations, arcSteps } = BIZJET_PILLAR_FOOT;
+  const depth = BIZJET_LINING.depth;
+  const inner = (row: number, column: number) => v3(pillar.points[row]![column]!).subtract(v3(pillar.normals[row]![column]!).scale(depth));
+  const foot = [v3(cap.points[0]![0]!), v3(cap.points[0]![1]!)];
+  for (const k of [0, 1]) {
+    if (Vector3.Distance(foot[k]!, inner(0, k)) > 1e-9) throw new Error("the Global's pillar foot: the cap does not start on the pillar's foot");
+  }
+  const up = [inner(1, 0).subtract(foot[0]!), inner(1, 1).subtract(foot[1]!)];
+  const onCap = [v3(cap.points[1]![0]!).subtract(foot[0]!), v3(cap.points[1]![1]!).subtract(foot[1]!)];
+  const length = Vector3.Distance(foot[0]!, foot[1]!);
+  const chord = foot[1]!.subtract(foot[0]!).normalize();
+  const square = (v: Vector3) => v.subtract(chord.scale(Vector3.Dot(v, chord))).normalize();
+  const points: Vector3[][] = [];
+  const normals: Vector3[][] = [];
+  for (let j = 0; j < stations; j += 1) {
+    const s = j / (stations - 1);
+    const q = Vector3.Lerp(foot[0]!, foot[1]!, s);
+    const u1 = square(Vector3.Lerp(up[0]!, up[1]!, s));
+    const u2 = square(Vector3.Lerp(onCap[0]!, onCap[1]!, s));
+    const opening = Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(u1, u2))));
+    // each face's normal toward the open side: square to the chord and the face, toward the other face
+    let capNormal = Vector3.Cross(chord, u2).normalize();
+    if (Vector3.Dot(capNormal, u1) < 0) capNormal = capNormal.negate();
+    let faceNormal = Vector3.Cross(chord, u1).normalize();
+    if (Vector3.Dot(faceNormal, u2) < 0) faceNormal = faceNormal.negate();
+    const end = Math.min(s, 1 - s) * length;
+    const x = Math.min(1, end / taper);
+    const r = radius * x * x * (3 - 2 * x);
+    const centre = q.add(u1.add(u2).normalize().scale(r / Math.sin(opening / 2)));
+    const turn = Math.PI - opening;
+    const row: Vector3[] = [];
+    const shade: Vector3[] = [];
+    for (let k = 0; k <= arcSteps; k += 1) {
+      const f = k / arcSteps;
+      const n = capNormal.scale(Math.sin((1 - f) * turn)).add(faceNormal.scale(Math.sin(f * turn))).scale(1 / Math.sin(turn));
+      row.push(centre.subtract(n.scale(r)));
+      shade.push(n);
+    }
+    points.push(row);
+    normals.push(shade);
   }
   return { points, normals };
 }
@@ -886,9 +1335,10 @@ export interface BizjetCockpit {
  * (`configureCockpitOnlyParts`) and registers them, so the rule is applied in one place. `skin` is the
  * caster the flight-deck glass was cast with.
  *
- * EIGHT meshes, all static: the board and the window frame's lining on the interior material; the glareshield on its
- * own, and the cove's fillet on the glareshield's material; the four screens; their four bezels' frames; the frames' chamfered rims; the wells behind the screens; the
- * two side consoles, on the interior material.
+ * NINE meshes, all static: the board and the window frame's lining with its trim on the interior material; the
+ * glareshield on its own, and the cove's fillet and the window seals on the glareshield's material; the four screens;
+ * their four bezels' frames; the frames' chamfered rims; the wells behind the screens; the two side consoles, on the
+ * interior material.
  */
 export function buildBizjetCockpit(
   build: AircraftBuildContext,
@@ -898,7 +1348,7 @@ export function buildBizjetCockpit(
 ): BizjetCockpit {
   const parts: AbstractMesh[] = [];
 
-  // THE LINING: one skin panel per strip (a side, or once across the centreline), 2 cm deep about the skin; then the
+  // THE LINING: one skin panel per strip (a side, or once across the centreline), 12 mm in from the skin; then the
   // sill caps on the side sills' top rows.
   const lining: AbstractMesh[] = [];
   const sills = new Map<string, { points: Point3[][]; normals: Point3[][] }>();
@@ -988,6 +1438,21 @@ export function buildBizjetCockpit(
     glareshield.material as PBRMaterial,
     root,
   ));
+
+  // THE WINDOW TRIM round every pane: its rounds and pockets are frame, merged with the lining below; its seals are one
+  // mesh on the glareshield's material.
+  const windowTrim = buildBizjetWindowTrim(build, root, sills, materials.interior, lipMaterial);
+  lining.push(...windowTrim.trim);
+  parts.push(build.mergeStatic("bizjet-window-seals", windowTrim.seals, root));
+  // THE PILLARS' FEET, filleted onto the forward side sills' caps: frame too, merged with the lining below.
+  for (const side of [-1, 1] as const) {
+    const prefix = side > 0 ? "starboard-" : "port-";
+    const pillar = sills.get(`${prefix}bizjet-lining-pillar`);
+    const sill = sills.get(`${prefix}bizjet-lining-sill-forward-side`);
+    if (!pillar || !sill) throw new Error("the Global's pillar foot: no pillar or forward side sill was built");
+    const foot = bizjetPillarFoot(pillar, bizjetSillCapGrid(sill));
+    lining.push(smoothSheet(build, `${prefix}bizjet-pillar-foot`, foot.points, foot.normals, materials.interior, root));
+  }
 
   // THE PANEL BOARD, its face leaned back from its top edge at the cove's foot down past the frame's bottom, as wide as the
   // glareshield. A box turned back about z (its local X is its thickness, away from the pilot; its local Y runs up the face).

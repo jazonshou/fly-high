@@ -377,7 +377,11 @@ describe("the loft's crown taper", () => {
       // RE-PINNED for the Global by the "feel real" wave's S4: the glareshield's ends close in 20 mm quarter-rounds
       // outboard of the deck (two swept end pieces merged with the straight lip, one draw). Checked mesh by mesh against
       // S2: only the Global's glareshield moves; every other mesh of all four is bit-identical.
-      bizjet: "df8d14cc",
+      // RE-PINNED for the Global by the "feel real" wave's S3: every pane's edge rolls into the glass (a round and a
+      // seal, rounded corners; the lining stands nothing proud of the skin), the seals one new mesh on the glareshield's
+      // material, and the pillars' feet filleted onto the sill caps. Checked mesh by mesh against S4: only the Global's
+      // interior moves and its seals are new; every other mesh of all four is bit-identical.
+      bizjet: "63382f27",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
