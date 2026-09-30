@@ -39,6 +39,12 @@ import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
 // W-1: what open ground looks like between one tile and the macro wash is the
 // ground patchwork's question, composed here rather than restated.
 import {
+  FAR_SWARD_SOFT_READ_WGSL,
+  farSwardPairEligible,
+  TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE,
+  TERRAIN_SEAM_SWARD_COVER_MINIMUM,
+} from "./FarSwardGate";
+import {
   GROUND_BARE_ALBEDO,
   GROUND_BARE_LUSH_SHARE,
   GROUND_SCRUB_ALBEDO_DRY,
@@ -260,8 +266,11 @@ export const TERRAIN_OCCLUDED_BOUNCE_SHARE = 0.25;
  * toward the pair's own MIXTURE instead of toward its primary alone. 0.9 admits
  * Grass, DryGrass and Shrub and nothing else: forest floor (0.55), gravel, rock,
  * snow, sand and pavement keep Wave R's primary-only target.
+ *
+ * Lives in `FarSwardGate.ts` with the far-sward gate that shares it (the bake
+ * evaluates the same gate); re-exported here for its existing readers.
  */
-export const TERRAIN_SEAM_SWARD_COVER_MINIMUM = 0.9;
+export { TERRAIN_SEAM_SWARD_COVER_MINIMUM };
 
 /**
  * CPU twin of the feather's pair term: the share of the SECONDARY an untrusted
@@ -303,8 +312,25 @@ export const TERRAIN_SEAM_SWARD_COVER_MINIMUM = 0.9;
  * docs/findings/GROUND_NEAR_FIELD_D.md section 5.
  */
 export const TERRAIN_FAR_SWARD_READ: number = 1;
-/** A secondary under this share is not part of the pair: its id is noise. */
-export const TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE = 0.02;
+/** A secondary under this share is not part of the pair: its id is noise (`FarSwardGate.ts`). */
+export { TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE };
+
+/**
+ * `V-4`: the far-sward read a plugin compiles, chosen at RUNTIME so one build
+ * prices all three (`TerrainSurfacePlugin.setFarSwardRead`):
+ *
+ * - "cheap", the shipped read above: the nearest texel's pair, 3 loads.
+ * - "soft", `FarSwardGate.ts`'s bilinear gate: cheap's 3 plus the four
+ *   corners' stored gates, 7 loads on every zero-trust fragment, and 3 more
+ *   (10) only where the nearest texel is refused beside one that is not.
+ * - "off", the early return.
+ *
+ * The default stays cheap until soft is priced (V-4 step 2). The compile-time
+ * dial above still decides whether the branch exists at all (0) and cheap's
+ * read (1 or 2). The Low tier's two-material path compiles the branch out.
+ */
+export type TerrainFarSwardRead = "off" | "cheap" | "soft";
+export const TERRAIN_FAR_SWARD_READ_DEFAULT: TerrainFarSwardRead = "cheap";
 
 /** CPU twin: may a zero-trust page's pair supply the fade target? */
 export function terrainFarSwardEligible(
@@ -313,9 +339,7 @@ export function terrainFarSwardEligible(
   secondaryShare: number,
 ): boolean {
   if (TERRAIN_FAR_SWARD_READ === 0) return false;
-  const sward = (id: number) => groundCoverOf(id)[0] >= TERRAIN_SEAM_SWARD_COVER_MINIMUM;
-  return sward(primaryId)
-    && (sward(secondaryId) || secondaryShare < TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE);
+  return farSwardPairEligible({ primary: primaryId, secondary: secondaryId, share: secondaryShare });
 }
 
 export function terrainSeamPairShare(
@@ -2092,8 +2116,12 @@ fn terrainSurfaceCanopyClosure(uv: vec4f) -> f32 {
  * ever used at zero trust, to name a pair of swards for the seam feather.
  */
 fn terrainSurfaceNearestSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
+  return terrainSurfaceSplatAt(vec2i(floor(atlasPosition + vec2f(0.5))), blend);
+}
+
+/** One channel texel's own top two materials, as terrainSurfaceNearestSplat returns them. */
+fn terrainSurfaceSplatAt(texel: vec2i, blend: f32) -> vec3f {
   let idScale = f32(${SURFACE_MATERIAL_COUNT - 1});
-  let texel = vec2i(floor(atlasPosition + vec2f(0.5)));
   let ids = textureLoad(terrainSplatId, texel, 0);
   let storedLo = textureLoad(terrainSplatWeightLo, texel, 0);
   let storedHi = textureLoad(terrainSplatWeightHi, texel, 0);
@@ -2146,18 +2174,29 @@ fn terrainSurfacePageSplat(uv: vec4f, blend: f32) -> vec4f {
   // fallback also reduces cost ...
   if (confidence < ${TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE.toFixed(1)}) {
 ${TERRAIN_FAR_SWARD_READ === 0 ? "" : `#ifdef TERRAIN_SURFACE_THREE_MATERIALS
+#ifndef TERRAIN_FAR_SWARD_OFF
     // ... except that a resident one may still name a pair of SWARDS for the
     // seam feather to fade toward, at zero trust (w = -1 says so). See
-    // TERRAIN_FAR_SWARD_READ.
+    // TERRAIN_FAR_SWARD_READ, and V-4's soft read (FarSwardGate.ts), which
+    // blends the gate between texels instead of switching it at the nearest.
+#ifdef TERRAIN_FAR_SWARD_SOFT
+    return terrainSurfaceSoftSplat(atlasPosition, blend);
+#else
     return vec4f(${TERRAIN_FAR_SWARD_READ === 2
       ? "terrainSurfaceSparseSplat(atlasPosition, blend)"
       : "terrainSurfaceNearestSplat(atlasPosition, blend)"}, -1.0);
+#endif
+#endif
 #endif
 `}    return vec4f(0.0, 0.0, 0.0, 0.0);
   }
   let sparse = terrainSurfaceSparseSplat(atlasPosition, blend);
   return vec4f(sparse, confidence * uv.z);
 }
+
+#ifdef TERRAIN_FAR_SWARD_SOFT
+${FAR_SWARD_SOFT_READ_WGSL}
+#endif
 
 /**
  * Atlas UV for this fragment's page, or w = 0 when the page holds no channel
@@ -3670,6 +3709,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     150, 3_000, 0.3, CANOPY_DOMINANT_HEIGHT_METERS,
   ];
   private cdlodEnabled = false;
+  private farSwardRead: TerrainFarSwardRead = TERRAIN_FAR_SWARD_READ_DEFAULT;
 
   constructor(material: PBRMaterial) {
     super(
@@ -3690,6 +3730,10 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         // the compiled fragment source.
         TERRAIN_SURFACE_HYDROLOGY_CHANNELS: false,
         TERRAIN_SURFACE_CDLOD: false,
+        // V-4's runtime far-sward read (setFarSwardRead). Listed here for the
+        // same reason as HYDROLOGY_CHANNELS above.
+        TERRAIN_FAR_SWARD_OFF: false,
+        TERRAIN_FAR_SWARD_SOFT: false,
       },
       true,
       // enable = false at construction, as CloudShadowMaterialPlugin does, so
@@ -4023,6 +4067,22 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     // `#ifdef` reads false in silence.
     defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"] =
       this.shoreDistanceAtlas !== null && this.lakeDepthAtlas !== null;
+    defines["TERRAIN_FAR_SWARD_OFF"] = this.farSwardRead === "off";
+    defines["TERRAIN_FAR_SWARD_SOFT"] = this.farSwardRead === "soft";
+  }
+
+  /** V-4: which far-sward read this material compiles (TerrainFarSwardRead). */
+  getFarSwardRead(): TerrainFarSwardRead {
+    return this.farSwardRead;
+  }
+
+  setFarSwardRead(read: TerrainFarSwardRead): void {
+    if (read !== "off" && read !== "cheap" && read !== "soft") {
+      throw new RangeError(`Unknown far-sward read ${String(read)}`);
+    }
+    if (read === this.farSwardRead) return;
+    this.farSwardRead = read;
+    this.markAllDefinesAsDirty();
   }
 
   override getSamplers(samplers: string[]): void {

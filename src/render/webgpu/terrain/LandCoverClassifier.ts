@@ -10,6 +10,7 @@ import {
   SurfaceMaterial,
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
+import { FAR_SWARD_BAKE_GATE_WGSL } from "./FarSwardGate";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
 import {
   TERRAIN_TWI_DRY,
@@ -1229,7 +1230,7 @@ fn splatAlignSeasonalWeights(
   if (totalHi > 0.0) { result.weightsHi = result.weightsHi / totalHi; }
   return result;
 }
-
+${FAR_SWARD_BAKE_GATE_WGSL}
 @compute @workgroup_size(8, 8, 1)
 fn bakeSplat(
   @builtin(global_invocation_id) id: vec3<u32>,
@@ -1290,7 +1291,12 @@ fn bakeSplat(
   // 1/255 each, so the reconstructed w3 carries at most 3 half-ULPs of error
   // against the stored value's 1, and the reconstructed vector now sums to
   // exactly 1 where the stored one only did up to quantisation.
+  //
+  // V-4: closure is read from the LOW bucket's alpha only (the vertex stage's
+  // corner taps and terrainSurfaceCanopyClosure); nothing mixes the alpha
+  // lanes. So the HIGH bucket's alpha carries the texel's far-sward gate for
+  // both buckets instead (FarSwardGate.ts), for the soft read's neighbours.
   textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, canopy.x));
-  textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, canopy.x));
+  textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, splatFarSwardGateStored(aligned)));
 }
 `;

@@ -113,7 +113,7 @@ import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
-import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
+import { meanSeasonalSurfaceAlbedo, type TerrainFarSwardRead } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
 import {
@@ -435,6 +435,12 @@ export interface FlightRendererOptions {
    * `src/` other than this file and `cameraPresentation.ts` names it.
    */
   cockpitRigOverride?: CockpitRigOverride;
+  /**
+   * V-4: the terrain's far-sward read ("off" | "cheap" | "soft"), so one build
+   * prices all three. Unset keeps TERRAIN_FAR_SWARD_READ_DEFAULT. Development
+   * only: the game passes `?farSward=`, never a saved setting.
+   */
+  terrainFarSwardRead?: TerrainFarSwardRead;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -935,6 +941,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => atmosphere.dispose());
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
+      if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
       checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,

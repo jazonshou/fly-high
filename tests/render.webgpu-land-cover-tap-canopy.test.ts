@@ -81,7 +81,10 @@ describe("the splat bake gives coarse taps their own canopy", () => {
     // trees actually planted; only the material weights may become area-true.
     const source = LAND_COVER_SPLAT_BAKE_WGSL;
     expect(source).toContain("textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, canopy.x));");
-    expect(source).toContain("textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, canopy.x));");
+    // V-4: the HIGH bucket's alpha carries the far-sward gate; closure is read
+    // from the low bucket's lane only (tests/render.webgpu-canopy-handoff).
+    expect(source).toContain(
+      "textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, splatFarSwardGateStored(aligned)));");
     expect(source).not.toMatch(/textureStore\([^;]*tapCanopy/u);
   });
 });
