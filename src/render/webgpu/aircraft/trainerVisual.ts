@@ -606,7 +606,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
     // board's colour the grips read as grey posts with pale tops, their caps and the column's top 3.5 times the board's
     // luma; the target is their tops at 1.6 times or less and their sides about half. A matte surface's luma here follows
     // which way it faces, so one colour sets both (tuned in the frame)
-    yoke: build.material("trainer-yoke", 0x050708, { roughness: 0.95, metallic: 0 }),
+    yoke: build.material("trainer-yoke", 0x0b0f11, { roughness: 0.95, metallic: 0 }),
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,
