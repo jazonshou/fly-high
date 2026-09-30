@@ -345,7 +345,7 @@ describe("a loft's crown seam", () => {
       // nozzle petals (14) and turbine blades (8) are thin instances. Its positions and indices alone still hash to
       // 7d145111; nothing about the jet changed.
       // RE-PINNED 71f87079 -> 3ca5510d for the F-16 wave's S2, the dash taking over at the round's aft tangent through a
-      // 2 cm cove (the 45 degree chamfer gone). Checked mesh by mesh against 6426cd2 (positions, normals, UVs, indices,
+      // 2 cm cove (the 45 degree chamfer gone). Checked mesh by mesh against 303372e (positions, normals, UVs, indices,
       // world matrix, material, visibility, instances, in both views): `jet-glare-shield` (984 -> 972 vertices),
       // `jet-instrument-panel` (36 -> 48, the board a pentagon), `jet-mfd-frames`, `jet-mfd-rims` and `jet-screens` (under
       // the cove's foot) and `jet-sills` (the consoles' forward ends on the dash's face, 12.7 mm aft) changed; the jet's
