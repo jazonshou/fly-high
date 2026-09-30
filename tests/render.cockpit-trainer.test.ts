@@ -1697,6 +1697,50 @@ describe("the Cessna's overhead", () => {
     expect(top!).toBeLessThan(13.6);
   });
 
+  it("draws the header's lower outline as a fair curve at 1080p: within 1 px of a local quadratic wherever it meets the glass", () => {
+    // The PM's caution from the 747: a bar laid on an uneven surface inherits its lumps. The outline is the header's
+    // lowest row in each column that starts in the headliner and meets open glass under it (nothing drawn), so the
+    // centre strip, the compass and the pillar, which meet it elsewhere, do not count. The visors are merged into the
+    // headliner's mesh, and at the port corner the port visor's straight front edge (x 1.565) is lower on the screen
+    // than the header curving aft over it: the header's own outline is where that lowest point is forward of the
+    // visors, read off the raster's depth (along +x on this level lens).
+    const meshes = drawn();
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const lining = meshes.indexOf(named("trainer-headliner"));
+    const outline: { x: number; y: number }[] = [];
+    for (let x = 0; x < W; x += 1) {
+      if (raster.mesh[x] !== lining) continue;
+      let y = 0;
+      while (y + 1 < H && raster.mesh[(y + 1) * W + x] === lining) y += 1;
+      if (y + 1 >= H || raster.mesh[(y + 1) * W + x] !== -1) continue;
+      if (EYE.forward + raster.depth[y * W + x]! < TRAINER_OVERHEAD.visor.frontX + 0.01) continue;
+      outline.push({ x, y: y + 0.5 });
+    }
+    expect(outline.length, "columns where the header meets the glass").toBeGreaterThan(600);
+    /** Each point's distance from the least-squares quadratic through the points within 40 columns of it; the worst. */
+    const unfairness = (points: readonly { x: number; y: number }[]) => {
+      let worst = 0;
+      for (const p of points) {
+        const near = points.filter((q) => Math.abs(q.x - p.x) <= 40);
+        if (near.length < 40) continue;
+        // the normal equations of y = a + b t + c t^2, t = x - p.x, solved by Cramer's rule; a is the fit at p
+        const S = [0, 1, 2, 3, 4].map((k) => near.reduce((sum, q) => sum + (q.x - p.x) ** k, 0));
+        const Y = [0, 1, 2].map((k) => near.reduce((sum, q) => sum + q.y * (q.x - p.x) ** k, 0));
+        const det3 = (m: number[][]) => m[0]![0]! * (m[1]![1]! * m[2]![2]! - m[1]![2]! * m[2]![1]!)
+          - m[0]![1]! * (m[1]![0]! * m[2]![2]! - m[1]![2]! * m[2]![0]!)
+          + m[0]![2]! * (m[1]![0]! * m[2]![1]! - m[1]![1]! * m[2]![0]!);
+        const M = [[S[0]!, S[1]!, S[2]!], [S[1]!, S[2]!, S[3]!], [S[2]!, S[3]!, S[4]!]];
+        const a = det3([[Y[0]!, S[1]!, S[2]!], [Y[1]!, S[2]!, S[3]!], [Y[2]!, S[3]!, S[4]!]]) / det3(M);
+        worst = Math.max(worst, Math.abs(p.y - a));
+      }
+      return worst;
+    };
+    expect(unfairness(outline), "the header's outline off a local quadratic, px").toBeLessThanOrEqual(1);
+    // CONTROL: the same outline with a lump 3 px deep and 12 columns wide in its middle is caught
+    const middle = outline[outline.length >> 1]!.x;
+    expect(unfairness(outline.map((p) => ({ x: p.x, y: p.y + (Math.abs(p.x - middle) < 6 ? 3 : 0) })))).toBeGreaterThan(1);
+  });
+
   it("stows two visors 300 x 120 x 8 mm under the ceiling behind the header, their fronts at about +14 degrees straight ahead", () => {
     const merged = named("trainer-headliner").metadata?.mergedFrom as string[];
     expect(merged).toEqual(["trainer-headliner-lining", "trainer-visor-port", "trainer-visor-starboard"]);
@@ -1704,8 +1748,9 @@ describe("the Cessna's overhead", () => {
     const v = worldVertices(named("trainer-headliner"));
     const o = TRAINER_OVERHEAD.visor;
     // its inner part, clear of the headliner's side rim (its fillet starts 5 cm in from the side), which its outer end
-    // runs under
-    const port = v.filter((p) => p.z < -o.gap / 2 && p.z > -0.24 && p.x <= o.frontX + 1e-6 && p.x >= o.frontX - o.depth - 1e-6 && p.y < 0.178);
+    // runs under, and of the rim's corner, which begins at z -0.205 and whose concave fillet can reach in over the
+    // visor's front (it did at 24 chords a corner: a vertex at z -0.234, 1 mm over the visor's top)
+    const port = v.filter((p) => p.z < -o.gap / 2 && p.z > -0.2 && p.x <= o.frontX + 1e-6 && p.x >= o.frontX - o.depth - 1e-6 && p.y < 0.178);
     expect(Math.max(...port.map((p) => p.x)) - Math.min(...port.map((p) => p.x)), "120 mm deep").toBeCloseTo(o.depth, 4);
     expect(Math.max(...port.map((p) => p.y)) - Math.min(...port.map((p) => p.y)), "8 mm thick").toBeCloseTo(o.thickness, 4);
     // its front edge straight ahead of the eye (z at the eye's)

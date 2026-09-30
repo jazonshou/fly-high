@@ -837,3 +837,38 @@ Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
 loft-crown digests are re-pinned on its line: seam 12714b2c, taper 3af28e04.
 
 An unused import that S5 left in `trainerVisual.ts` is gone (eslint).
+
+## S4 addendum: the header's outline is fair
+
+**The PM's caution** (after S4, from the 747): a bar laid on an uneven surface
+inherits its lumps, so pin the header rim's lower outline within 1 px of a fitted
+smooth curve at 1080p.
+
+**The pin.** In each column that starts in the headliner and meets open glass under
+it, the header's lowest row is its outline. Each point must be within 1 px of a
+least-squares quadratic through the points within 40 columns of it. Control: the
+same outline with a lump 3 px deep and 12 columns wide fails.
+
+**What it found first was not the header.**
+- The first run read 2.46 px, at a sharp kink at column 812.
+- I took that for the corner's 15-degree chords, since the port corner is only
+  0.14 to 0.24 m ahead of the eye. At 24 chords the kink stayed (1.88 px).
+- It is the port visor. The visors are merged into the headliner's mesh. At the
+  port corner the visor's straight front edge (x 1.565) is lower on the screen than
+  the header curving aft over it, so for columns 516 to 812 the "outline" was the
+  visor's edge, meeting the header's curve in a kink.
+- The pin now keeps only points forward of the visors (x = eye + raster depth, at
+  x 1.575 or more).
+- **Measured at S4's own 6 chords: 0.76 px** worst, over 818 columns (915 to 1919).
+  At 24 chords it was 0.55. So the corner stays at 6 and no mesh moves.
+- **For the frames:** the port visor's front edge is seen below the header at the
+  port corner, a straight edge meeting the header's curve. It is a stowed visor
+  seen as it is, not a lump.
+
+**Mutations.** The corners at 6, 8 and 12 chords all pass: the header is fair at
+S4's resolution. What the pin does catch is the visor-and-header junction (2.46 px),
+when the visors are not excluded, and the in-test lump.
+
+**The visor pin was hardened** on the way. It measured the port visor off the merged
+mesh inside a box that also held the corner's concave fillet once the corners were
+finer: 8.1 mm read for 8. The box now stops at z -0.2, where the corner begins.
