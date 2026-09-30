@@ -891,3 +891,26 @@ the slot, from its own font and alignment in the recorded calls, at that advance
 The label stands at least 2 px clear of the active frequency, and the active at
 least 8 px clear of the standby, on both radios, all inside the window. Control:
 the S2 layout fails it, the active 32 px into the standby.
+
+## Rebased onto Fix-Cockpits 7fc2280
+
+The branch was rebased after the final frames, onto Fix-Cockpits 7fc2280: the 747's
+cockpit refinements on top of the trainer's 512 paint (f052e2d) and the F-16's
+wave.
+
+**The conflicts.** Both sides were kept in each.
+- **The display pages** (S2 and S2b): the 747's `clock` page beside the trainer's.
+- **KIT_SIZE** (S4, S6, S2b): the 747's 9 and the F-16's 9, with the trainer's 16,
+  17 and 18 at each step.
+
+**Checks.**
+- The trainer's tests passed on the new base at every step that conflicted.
+- Upstream never changed the trainer's digests (only the jet's and the 747's), so
+  each step's trainer pins stand as they were.
+
+**Re-measured at the tip.**
+- The trainer's 69 meshes are bit-identical to the tip before the rebase: the paint
+  merge is texture only.
+- The census is identical: bare board 193,764 px, and the same hard edges.
+- The repo's cockpit frames script (`scripts/cockpit-frames.mts`) now expects the
+  trainer's 18 cockpit-only meshes.
