@@ -941,6 +941,14 @@ report.stateLast = await evaluate(() => {
   w.__name ??= (fn: unknown) => fn;
   return ((w.__probeState as unknown[] | undefined) ?? []).at(-1) ?? null;
 });
+// The whole 1 Hz series, in every scenario: a governor claim is about the
+// path (a step taken, then undone or kept), not only where the ladder ended,
+// and a hydrology claim needs to know when the region swaps happened.
+report.stateSeries = await evaluate(() => {
+  const w = globalThis as unknown as Record<string, unknown>;
+  w.__name ??= (fn: unknown) => fn;
+  return ((w.__probeState as unknown[] | undefined) ?? []).slice();
+});
 await page.screenshot({ path: `${outDir}/${label}.png`, type: "png" });
 await setThrottle(1).catch(() => undefined);
 report.consoleErrors = consoleErrors.slice(0, 30);
