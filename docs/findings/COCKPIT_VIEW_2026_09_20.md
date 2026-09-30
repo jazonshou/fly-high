@@ -2015,6 +2015,81 @@ shows all of it, and the bottom 39% of the page was blank.
     (red excess -0.0). The overlay has to be hidden again after every re-pause, and the measured crop looked at before
     a pass is believed.
 
+## The F-16's cockpit, "organic, not choppy" (the 2026-09-29 wave: S2, S3, S1, S4)
+
+Jason, via the PM: "no need to go overboard, but make sure the details are there; the cockpit should feel real and
+the dials integrated, not slapped together from play-dough: walls and bars organic, not choppy." Branch
+`jazonshou/cockpit-f16-pass`, one commit a step: S2 2f16351, S3 cb43285 (its amend 4cd8b39), S1 392e060, S4 4a29333.
+
+**P0, on the survey's day frame (1920 x 1080, the 75 degree lens).** 28 undesigned sharp edges:
+- the round into a 45 degree chamfer (51 degrees) and the dash's top edge under it (85): a 15 px band at luma 15
+  straight across the frame under the rail;
+- the rail's ends: their sections' two-chord rounds (46 to 57 degrees) and the rail's square corner over the S
+  (92 to 101).
+The gap between the MFDs was 87k px of bare dash (luma 74, std 5.8). The stick, throttle, pedals and headrest are
+never in view (no head-look), so no dials were added beyond the ICP.
+
+**S2, the cove.** The chamfer is gone. The dash's face starts at the round's aft tangent, and the 15 degree
+inside corner between them is a 2 cm cove, 5.2 mm long, drawn as its chord (0.17 mm off the arc; `solidPlate` builds
+convex outlines only) with the arc's normals: one normal where the round meets it, nothing facing down.
+
+**S3, the rail's ends.**
+- *The instrument that mattered.* A walk of a mesh's welded edges cannot see a crease where two SOLIDS meet (they
+  share no edge). A ray grid can: pair neighbouring rays whose hits are depth-continuous (within four footprints,
+  stretched by the slope) and take the normal turn. It found 316 pairs of 70 to 83 degrees the edge walk called clean:
+  the dash's face against the end's inner wall, and the end's wall standing over the rail's round. Its positive
+  control is the MFD frames' square edges.
+- *The fillet.* A 1.5 cm ball rolled along that corner, on the true surfaces: the wall's tilt in plan and the S's
+  slope. Taken in the section's plane, the ball dipped 0.15 mm into the end, and the two surfaces traded places in
+  patches.
+- *The rest.*
+  - The sections' rounds in six chords (the sills' with them).
+  - The rail's outboard ends rounded over 75 degrees of a 1 cm round, the S's own radius (the square side stood
+    3.9 mm over the S).
+  - The S topped at the round's crown (0.2 mm under the sight line; at the sight tangent the crown came through
+    it).
+  - The amend: 21 stations spaced by angle. The S turns 91 degrees in all, so 16 stations cannot get a station
+    corner under 6.1; 21 give 4.56.
+
+**S1, the ICP.** A framed recessed panel of the MFDs' size and top line between them:
+- its floor on the dash's material, merged into the board, so no draw;
+- a 3 x 4 key block and two rockers (keys 4 mm proud, 1 mm rounds);
+- a DED;
+- two draws (`jet-icp`, `jet-icp-ded`).
+At 1080p the gap is 11k px bare of 91.5k, and the smallest key is 23.4 px.
+
+**S4, the canopy seal.** A 15 mm strip with 7 mm rounds in the 21 mm glass margin. It carries the PM's exception to
+the 2 cm glass rule for this strip only, with 4 mm as its floor; it measures 7.3 mm. Its top is the deck's, so the
+silhouette keeps its rows. The groove between it and the S is a 3 mm rolled cove, bridged flat at the S's top.
+
+**A trap in the shared sweep, found here.** `sweptSolid` makes a round's radial square to the run. That is exact for a
+tube, a section square to its path. The S's sections stand in the y-z plane while it climbs 45 degrees, so its rounds
+leaned up to 24 degrees off true from step 5 on. It showed only when S4's groove, shaded true, stood beside them (a
+46 degree jump). The kit now sets (-(ny dcy + nz dcz), ny, nz) on its sheared sweeps' rounds (`shearRoundNormals`),
+and `sweptSolid`'s own doc says so.
+
+**The frames, day, 1080p, against the survey frame's same measure** (Rec.709 luma):
+
+| criterion | survey | after | ruling |
+|---|---|---|---|
+| the cove: no geometric crease; the 1-px step at its rows | 38 | 24 | accepted: no geometric crease; the step is the two albedos |
+| no band under luma 30 wider than 2 px | 13 px | 0 px | met |
+| the ends' blocks, 1-px step | 35 | 21 | accepted |
+| the gap between the MFDs, luma std | 6.3 | 17.5 | the DED's page added (below) |
+| a dark seal line along the outer edge | none | none | waived: the black coaming is its own edge |
+
+On the cove, 39 to 63 at the round's aft tangent is where the matte meets the panel material. The geometry and the
+shading are continuous across it; the step is the two albedos, about 1.6x.
+
+**The DED's page (the S1 amend).** A dark face with two lines in the pages' green, as on the type's CNI page. It is
+drawn once from a 5 x 7 bitmap font into a texture of its own, on the display's recipe (black albedo, the page as its
+emissive, no image light), and is the same bytes with or without a canvas.
+
+**Seen, not changed: the MFD frames' inboard rims read dashed** at 1080p (frame x 787 and 1131). This is not a
+flush-face fight: no face of the rim lies on the dash. It is the rim's 3 mm outer wall, seen within about 8
+degrees of edge-on, a sub-pixel sliver that aliases. The survey frame shows it too. A fix would change the shared
+`framedScreenFacets` for all three decks.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

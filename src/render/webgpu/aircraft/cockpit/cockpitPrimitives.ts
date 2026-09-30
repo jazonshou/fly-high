@@ -552,6 +552,12 @@ export interface SweptSection {
  * to. The section's hard corners (points on no round) keep one normal a face. `tangent`, with it: the sweep's own
  * direction at a station (a curve's, where the stations only sample it); each round's normals there are made square
  * to it, so a sweep that leaves a station level is shaded level there, not as its first wall's chord.
+ *
+ * THE RADIAL MADE SQUARE TO THE RUN IS EXACT ONLY FOR A SECTION SQUARE TO ITS PATH (a tube). Where `place` stands the
+ * sections in a fixed plane while the path climbs across it (the F-16's rail end, its sections in y-z on a 45 degree S),
+ * the true normal at a round's point of radial (ny, nz) is (-(ny dcy + nz dcz), ny, nz), dcy and dcz the round
+ * centre's rates along the path's axis; the squared radial leans up to 24 degrees off it there. The F-16 kit corrects
+ * its sheared sweeps' rounds after building (`shearRoundNormals` in jetCockpit.ts).
  */
 export function sweptSolid(
   build: AircraftBuildContext,
