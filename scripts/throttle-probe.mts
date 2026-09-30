@@ -544,6 +544,9 @@ async function installStateSampler(): Promise<boolean> {
       samples.push({
         t: performance.now(),
         cpuL: d.cpuWorkLevel, gpuL: d.gpuWorkLevel, lever: d.cpuWorkLever,
+        // The resolution ladder is a governor lever too: an arm that stepped
+        // it differs in pixels for a reason that is not the change under test.
+        scale: d.renderScale, insensitive: d.resolutionInsensitive, active: d.activeGovernor,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {
