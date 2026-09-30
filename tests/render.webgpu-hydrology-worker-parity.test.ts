@@ -34,17 +34,21 @@ import { createWorld, sampleTerrain, type WorldDefinition } from "../src/world";
  * a stand-in `self` that structured-clones every message both ways, and the
  * REAL client's main-thread path, on the regions a pilot meets first: the one
  * over each spawn airport and its four neighbours. Every world has exactly one
- * airport, so "three spawn airports x two seeds" is six seeds.
+ * airport, so "three spawn airports x two seeds" is six seeds; a seventh is the
+ * world the on-device frame pair looks at.
  */
 
-const SEEDS = [
+const SEEDS: readonly (string | number)[] = [
   "phase1-perf-baseline",
   "hydrology-parity-north",
   "hydrology-parity-coast",
   "hydrology-parity-hills",
   "aerolith-ridge",
   "seed-0x51a7e",
-] as const;
+  // The game's world for `?seed=water9` (the URL seed is read base-36): its
+  // lake 3.6 km from the airport is the on-device before/after frame pair's.
+  1_953_085_941,
+];
 
 type Listener = (event: { data: unknown }) => void;
 const workerListeners: Listener[] = [];
