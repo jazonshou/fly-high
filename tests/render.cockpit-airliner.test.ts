@@ -742,7 +742,7 @@ describe("what the pilot sees straight ahead", () => {
     expect(Math.max(...sills)).toBeGreaterThan(0.9);
     const loop = frame.loops.find((l) => l.name === "port-one")!;
     const profile = airlinerFrameProfile();
-    const corner = loop.stations.filter((st) => st.opening.e > FLIGHT_DECK_PANES[0]!.elevation[0] + 1e-9 && st.opening.e < FLIGHT_DECK_PANES[0]!.elevation[0] + AIRLINER_FRAME.cornerRadiusDegrees + 1e-9)
+    const corner = loop.stations.filter((st) => st.opening.e > FLIGHT_DECK_PANES[0]!.elevation[0] + 1e-9 && st.opening.e < FLIGHT_DECK_PANES[0]!.elevation[0] + AIRLINER_FRAME.cornerRadiusDegrees.one! + 1e-9)
       .map((st) => {
         const seen = [...profile.ret, ...profile.seal].map((q) => azel(st.point.add(st.offset.scale(q.u)).add(st.normal.scale(q.n))));
         const top = seen.reduce((a, b) => (b.el > a.el ? b : a));
@@ -905,9 +905,10 @@ describe("what the pilot sees straight ahead", () => {
       const R = FLIGHT_DECK_REFERENCE;
       const az = Math.atan2(Math.abs(p.z - R.z), p.x - R.x) * DEG;
       const el = Math.atan2(p.y - R.y, Math.hypot(p.x - R.x, p.z - R.z)) * DEG;
-      const reach = AIRLINER_FRAME.cornerRadiusDegrees + 0.2;
-      return FLIGHT_DECK_PANES.some(({ azimuth: [a0, a1], elevation: [e0, e1] }) =>
-        az > a0 && az < a1 && el > e0 && el < e1 && Math.min(az - a0, a1 - az) < reach && Math.min(el - e0, e1 - el) < reach);
+      return FLIGHT_DECK_PANES.some(({ name, azimuth: [a0, a1], elevation: [e0, e1] }) => {
+        const reach = AIRLINER_FRAME.cornerRadiusDegrees[name]! + 0.2;
+        return az > a0 && az < a1 && el > e0 && el < e1 && Math.min(az - a0, a1 - az) < reach && Math.min(el - e0, e1 - el) < reach;
+      });
     };
     for (let az = -37.5 + 0.37; az <= 37.5; az += 1) {
       for (let el = -24 + 0.37; el <= 24; el += 1) {
@@ -1433,12 +1434,14 @@ describe("the window frame's openings, rolled and rounded (S1, S2)", () => {
     expect(bezels.length).toBeGreaterThan(10);
   });
 
-  it("costs each pane's opening what its four rounds take, and no more: 1.15, 1.10 and 2.05 percent of No.1, No.2 and No.3 (S2)", () => {
+  it("costs each pane's opening about 1% for its four rounds, a radius a pane (S2)", () => {
     // Each pane's solid angle from R (its rectangle in R's angles, weighted by the cosine of the elevation), lapped at its
-    // sides (S1), against the same with its corners rounded. No.3, the smallest, pays most for the same radius.
-    const rho = AIRLINER_FRAME.cornerRadiusDegrees;
+    // sides (S1), against the same with its corners rounded. The smallest pane pays most for the same radius: at 3 degrees
+    // all round, No.1, No.2 and No.3 lost 1.15, 1.10 and 2.05%. So each has its own, held to about 1%: 2.8, 2.8 and 2.0
+    // degrees (exactly 1% is 2.80, 2.87 and 2.09).
     const loss: Record<string, number> = {};
     for (const loop of frame.loops.filter((l) => l.name.startsWith("starboard-"))) {
+      const rho = AIRLINER_FRAME.cornerRadiusDegrees[loop.name.replace("starboard-", "")]!;
       const [a0, a1] = [Math.min(...loop.stations.map((st) => st.opening.a)), Math.max(...loop.stations.map((st) => st.opening.a))];
       const [e0, e1] = [Math.min(...loop.stations.map((st) => st.opening.e)), Math.max(...loop.stations.map((st) => st.opening.e))];
       let square = 0;
@@ -1455,17 +1458,16 @@ describe("the window frame's openings, rolled and rounded (S1, S2)", () => {
       }
       loss[loop.name.replace("starboard-", "")] = 100 * (1 - rounded / square);
     }
-    console.info(`747 openings' loss to their rounded corners: ${Object.entries(loss).map(([k, v]) => `No.${k} ${v.toFixed(2)}%`).join(", ")}`);
-    expect(loss.one).toBeCloseTo(1.15, 1);
-    expect(loss.two).toBeCloseTo(1.1, 1);
-    expect(loss.three).toBeCloseTo(2.05, 1);
+    console.info(`747 openings' loss to their rounded corners: ${Object.entries(loss).map(([k, v]) => `No.${k} ${v.toFixed(3)}%`).join(", ")}`);
+    for (const [pane, lost] of Object.entries(loss)) expect(lost, `No.${pane}`).toBeLessThanOrEqual(1.005);
   });
 
-  it("rounds every opening's four corners by the design's radius in R's angles, and keeps its straight edges where the panes' are (S2)", () => {
-    const rho = AIRLINER_FRAME.cornerRadiusDegrees;
-    expect(rho).toBeGreaterThan(0);
+  it("rounds every opening's four corners by its pane's radius in R's angles, and keeps its straight edges where the panes' are (S2)", () => {
     for (const loop of frame.loops) {
       const [side, name] = loop.name.split("-") as ["port" | "starboard", string];
+      // none left square
+      const rho = AIRLINER_FRAME.cornerRadiusDegrees[name]!;
+      expect(rho, `${loop.name}'s radius`).toBeGreaterThan(0);
       const pane = FLIGHT_DECK_PANES.find((p) => p.name === name)!;
       const [e0, e1] = pane.elevation;
       const signs = side === "port" ? -1 : 1;

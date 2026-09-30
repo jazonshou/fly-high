@@ -676,8 +676,10 @@ export function airlinerLiningLines(): { azimuth: readonly number[]; elevation: 
  * members read as wide as they did. The sills and the crowns do not lap, so the deck line's sill rule and the panes'
  * tops are where they were.
  *
- * `cornerRadiusDegrees` rounds the openings' corners in R's angles (S2); at 0 they are square and their returns
- * meet in a mitre.
+ * `cornerRadiusDegrees` rounds each pane's opening's corners in R's angles (S2), a radius a pane; at 0 they are square
+ * and their returns meet in a mitre. A pane pays for its rounds in glass, and the smallest pays most for the same
+ * radius: at 3 degrees No.1, No.2 and No.3 lost 1.15, 1.10 and 2.05% of their openings. Each is held to about 1%: 2.8,
+ * 2.8 and 2.0 degrees (the radius for exactly 1% is 2.80, 2.87 and 2.09).
  */
 export const AIRLINER_FRAME = Object.freeze({
   returnRadius: 0.015,
@@ -688,7 +690,7 @@ export const AIRLINER_FRAME = Object.freeze({
   returnSegments: 6,
   /** How far the frame laps the glass at every opening's two sides (the pillars' and the post's edges), not at its top and bottom. */
   lap: 0.003,
-  cornerRadiusDegrees: 3,
+  cornerRadiusDegrees: Object.freeze({ one: 2.8, two: 2.8, three: 2 }) as Readonly<Record<string, number>>,
   cornerSegments: 6,
 });
 
@@ -761,14 +763,16 @@ export interface WindowFrame {
 }
 
 /** A pane's opening in signed azimuth (starboard positive) and elevation. */
-interface Opening { readonly name: string; readonly a0: number; readonly a1: number; readonly e0: number; readonly e1: number }
+interface Opening { readonly name: string; readonly a0: number; readonly a1: number; readonly e0: number; readonly e1: number; readonly rho: number }
 
 function frameOpenings(): Opening[] {
   const out: Opening[] = [];
   for (const pane of FLIGHT_DECK_PANES) {
     for (const side of [-1, 1] as const) {
       const [p, q] = pane.azimuth;
-      out.push({ name: `${side < 0 ? "port" : "starboard"}-${pane.name}`, a0: side < 0 ? -q : p, a1: side < 0 ? -p : q, e0: pane.elevation[0], e1: pane.elevation[1] });
+      const rho = AIRLINER_FRAME.cornerRadiusDegrees[pane.name];
+      if (rho === undefined) throw new RangeError(`747 cockpit frame: no corner radius for pane ${pane.name}`);
+      out.push({ name: `${side < 0 ? "port" : "starboard"}-${pane.name}`, a0: side < 0 ? -q : p, a1: side < 0 ? -p : q, e0: pane.elevation[0], e1: pane.elevation[1], rho });
     }
   }
   return out;
@@ -786,8 +790,6 @@ function frameOpenings(): Opening[] {
  */
 export function airlinerWindowFrame(skin: SkinCaster): WindowFrame {
   const { returnRadius: r, cornerSegments } = AIRLINER_FRAME;
-  // a number, not the frozen table's literal: at 0 the corners are square (mitred), and that branch is kept
-  const rho: number = AIRLINER_FRAME.cornerRadiusDegrees;
   const { depth } = AIRLINER_LINING;
   const lines = airlinerLiningLines();
   const A = lines.azimuth;
@@ -850,6 +852,7 @@ export function airlinerWindowFrame(skin: SkinCaster): WindowFrame {
   /** How far each opening's hole is grown in R's angles: the return's width at the pane's distance from R. */
   const grows = openings.map((o) => (r / Vector3.Distance(cast((o.a0 + o.a1) / 2, (o.e0 + o.e1) / 2).point, reference)) * (180 / Math.PI));
   const insideGrown = (o: Opening, g: number, a: number, e: number): boolean => {
+    const { rho } = o;
     if (rho === 0) return a > o.a0 - g && a < o.a1 + g && e > o.e0 - g && e < o.e1 + g;
     const dx = Math.max(o.a0 + rho - a, 0, a - (o.a1 - rho));
     const dy = Math.max(o.e0 + rho - e, 0, e - (o.e1 - rho));
@@ -858,6 +861,7 @@ export function airlinerWindowFrame(skin: SkinCaster): WindowFrame {
   interface Raw { at: Angles; opening: Angles; out: Angles; mitre?: { outIn: Angles; outOut: Angles } }
   const loops: FrameLoop[] = openings.map((o, index) => {
     const g = grows[index]!;
+    const { rho } = o;
     const raws: Raw[] = [];
     // the four edges, counterclockwise from the bottom, and the corner each ends in
     const edges = [

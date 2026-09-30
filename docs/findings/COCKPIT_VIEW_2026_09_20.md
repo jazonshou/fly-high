@@ -2155,9 +2155,12 @@ and the step to the face's edge not solved.
 
 ## The 747's window corners, rounded (S2)
 
-Each opening's four corners are rounds of 3 degrees of R's angles, about 0.10 m at the glass (all 24; `cornerRadiusDegrees`),
-sampled every 15 degrees round and wherever a grid line crosses them. The return and the seal are swept on round the
-corner, so S1's mitres are gone.
+Each opening's four corners are rounds in R's angles, sampled every 15 degrees round and wherever a grid line crosses
+them, and the return and the seal are swept on round the corner, so S1's mitres are gone. The first build rounded all
+24 at 3 degrees, about 0.10 m at the glass; the table below is that build. **As merged, the radius is a pane's own:
+2.8, 2.8 and 2.0 degrees** (`cornerRadiusDegrees`, the PM's values), so that each pane gives up about 1% of its
+opening: No.1 0.998%, No.2 0.954%, No.3 0.912%. With those, the creases seen on the frame stay 0, the pillar reads 2.23 /
+2.30 / 2.38 and the sill -0.11..0.95, and the frame rises at most 3.74 degrees over the lip at No.1's inboard corner.
 
 | | S1 | S2 |
 |---|---|---|
@@ -2177,7 +2180,8 @@ What the rounds cost:
   rule is held on the straight edge.
 
 Mesh by mesh against S1: the frame went 1,856 -> 2,688 vertices and 3,110 -> 4,926 triangles, and the seals 2,040 ->
-3,160 and 1,608 -> 3,160. The other 95 meshes are bit-identical. Four mutations, all caught: square corners, a round
+3,160 and 1,608 -> 3,160. The other 95 meshes are bit-identical. The radius a pane then moved the same two, against S4:
+the frame 2,848 -> 2,904 vertices, the seals 3,160 -> 3,240. Four mutations, all caught: square corners, a round
 bulging into the glass (the builder's own guard throws), one chord to a corner, and the rounds' topology not grown.
 
 ## The 747's deck turned aft, and its clock (S4)
