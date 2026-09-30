@@ -2223,6 +2223,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       activeAnimals: wildlife.activeAnimals,
       riverCount: hydrology.riverCount,
       lakeCount: hydrology.lakeCount,
+      hydrologyMainThreadFallback: hydrology.usingMainThreadFallback,
+      hydrologyLastGenerationUsedWorker: hydrology.lastGenerationUsedWorker,
       requestedRenderingMode: this.renderingMode,
       renderBackend: "webgpu",
       renderTechnique: "forward-spectral-volumetric",

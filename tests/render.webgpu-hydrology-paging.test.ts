@@ -18,6 +18,7 @@ import {
   type HydrologyTerrainSampler,
 } from "../src/render/webgpu/water/HydrologyGeneration";
 import {
+  HYDROLOGY_WORKER_MAXIMUM_RESTARTS,
   HydrologyGenerationClient,
   type HydrologyGenerationClientLike,
   type HydrologyRegionGenerationRequest,
@@ -87,6 +88,10 @@ class DeferredGenerationClient implements HydrologyGenerationClientLike {
     onResult: (result: HydrologyRegionGenerationResult) => void,
     onError: (error: Error) => void = () => undefined,
   ): number {
+    // What HydrologySystem hands a client is what the real client posts to a
+    // worker. It must survive structured cloning: until 2026-09-29 it carried
+    // two sampler functions and every region silently ran on the main thread.
+    structuredClone(request.options);
     const id = this.nextId++;
     this.pending.set(id, { request, onResult, onError });
     return id;
@@ -131,12 +136,21 @@ class FakeWorker {
     this.listeners.get(type)?.delete(listener as (event: never) => void);
   }
 
+  /**
+   * Clones what it is sent, as a real Worker's postMessage does. A fake that
+   * did not is why a DataCloneError on every request went unnoticed from
+   * 2026-08-16 to 2026-09-29.
+   */
   postMessage(command: unknown): void {
-    this.commands.push(command);
+    this.commands.push(structuredClone(command));
   }
 
   terminate(): void {
     this.terminated = true;
+  }
+
+  emit(type: string, event: object): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event as never);
   }
 }
 
@@ -360,6 +374,110 @@ describe("hydrology generation scheduling", () => {
     expect(workers[1]?.commands[0]).toMatchObject({ type: "initialize" });
     client.dispose();
     expect(workers[1]?.terminated).toBe(true);
+  });
+
+  it("fails loudly, outside production, on a command that cannot be cloned", () => {
+    const workers: FakeWorker[] = [];
+    const errors: Error[] = [];
+    const client = new HydrologyGenerationClient({
+      worldSeed: "clone-guard",
+      workerWorldSeed: "clone-guard",
+      terrainSample: TERRAIN,
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    // The shape of the six-week bug: a sampler function inside the options.
+    const poisoned = { centerX: 0, centerZ: 0, terrainSample: TERRAIN } as unknown as
+      HydrologyRegionGenerationRequest["options"];
+    expect(() => client.request(
+      { key: "0:0", generation: 1, options: poisoned },
+      () => undefined,
+      (error) => errors.push(error),
+    )).toThrow(/could not be cloned/);
+    expect(errors.map((error) => error.name)).toEqual(["DataCloneError"]);
+    // A caller bug is not a dead worker: no termination, no fallback.
+    expect(workers).toHaveLength(1);
+    expect(workers[0]?.terminated).toBe(false);
+    expect(client.isUsingFallback).toBe(false);
+    client.dispose();
+  });
+
+  it("in production, keeps water by falling back on a clone failure", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const scheduled: Array<() => void> = [];
+    const results: HydrologyRegionGenerationResult[] = [];
+    try {
+      const client = new HydrologyGenerationClient({
+        worldSeed: "clone-guard-production",
+        workerWorldSeed: "clone-guard-production",
+        terrainSample: TERRAIN,
+        workerFactory: () => new FakeWorker() as unknown as Worker,
+        fallbackScheduler: (callback) => scheduled.push(callback),
+      });
+      const poisoned = {
+        centerX: 0,
+        centerZ: 0,
+        extentMeters: 1_200,
+        sourceCandidateSpacingMeters: 300,
+        maximumTraceSteps: 20,
+        terrainSample: TERRAIN,
+      } as unknown as HydrologyRegionGenerationRequest["options"];
+      client.request({ key: "0:0", generation: 1, options: poisoned }, (result) => results.push(result));
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(client.isUsingFallback).toBe(true);
+      scheduled[0]?.();
+      expect(results).toHaveLength(1);
+      expect(results[0]?.workerGenerated).toBe(false);
+      client.dispose();
+    } finally {
+      logged.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("restarts a crashed worker within its budget before falling back", () => {
+    const workers: FakeWorker[] = [];
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const client = new HydrologyGenerationClient({
+        worldSeed: "restart-budget",
+        workerWorldSeed: "restart-budget",
+        terrainSample: TERRAIN,
+        workerFactory: () => {
+          const worker = new FakeWorker();
+          workers.push(worker);
+          return worker as unknown as Worker;
+        },
+        fallbackScheduler: () => undefined,
+      });
+      const requestId = client.request({
+        key: "0:0",
+        generation: 1,
+        options: { centerX: 0, centerZ: 0, extentMeters: 1_200 },
+      }, () => undefined);
+      for (let crash = 1; crash <= HYDROLOGY_WORKER_MAXIMUM_RESTARTS; crash += 1) {
+        workers.at(-1)!.emit("error", { message: "boom", preventDefault: () => undefined });
+        expect(workers).toHaveLength(crash + 1);
+        expect(workers.at(-2)?.terminated).toBe(true);
+        // The lost request is re-posted to the replacement worker.
+        expect(workers.at(-1)?.commands).toMatchObject([
+          { type: "initialize", worldSeed: "restart-budget" },
+          { type: "generate", requestId, key: "0:0" },
+        ]);
+        expect(client.isUsingFallback).toBe(false);
+      }
+      workers.at(-1)!.emit("error", { message: "boom", preventDefault: () => undefined });
+      expect(client.isUsingFallback).toBe(true);
+      expect(workers).toHaveLength(HYDROLOGY_WORKER_MAXIMUM_RESTARTS + 1);
+      expect(warned).toHaveBeenCalledTimes(1);
+      client.dispose();
+    } finally {
+      warned.mockRestore();
+    }
   });
 
   it("keeps custom terrain samplers on a cancellable scheduled fallback", () => {

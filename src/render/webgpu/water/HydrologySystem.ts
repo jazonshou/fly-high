@@ -28,6 +28,7 @@ import {
 import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
 import {
   generateHydrology,
+  hydrologyGenerationConfigData,
   type HydrologyGenerationOptions,
   type HydrologyGenerationResult,
   type HydrologyGenerationConfig,
@@ -2332,8 +2333,11 @@ export class HydrologySystem implements PlanarReflectionReceiver {
         {
           key: selection.key,
           generation,
+          // Data only: the resolved config also holds this system's sampler
+          // functions, which cannot be posted to the worker (see
+          // `hydrologyGenerationConfigData`).
           options: {
-            ...this.generationConfig,
+            ...hydrologyGenerationConfigData(this.generationConfig),
             centerX: selection.centerX,
             centerZ: selection.centerZ,
           },
