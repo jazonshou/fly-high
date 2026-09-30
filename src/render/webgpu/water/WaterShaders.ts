@@ -29,6 +29,25 @@ import {
   WATER_RENDERING_GROUP_ID,
   keepOpaqueDepthForRenderingGroup,
 } from "../core/RenderingGroups";
+import {
+  WATER_CHANNEL_SENTINEL_BASE,
+  WATER_LAKE_FETCH_REFERENCE_METERS,
+} from "./waterVertexPayload";
+export {
+  WATER_PURE_ABSORPTION_PER_METER,
+  WATER_PURE_BACKSCATTER_PER_METER,
+} from "./WaterConstituents";
+
+export {
+  WATER_CHANNEL_SENTINEL_BASE,
+  WATER_CHANNEL_GRADE_REFERENCE,
+  WATER_LAKE_FETCH_REFERENCE_METERS,
+  WATER_LAKE_EFFECTIVE_FETCH_FACTOR,
+  WATER_LAKE_FETCH_FLOOR_METERS,
+  waterChannelGradePayload,
+  waterLakeEffectiveFetchMeters,
+  waterLakeFetchPayload,
+} from "./waterVertexPayload";
 
 /**
  * Water is rendered after opaque terrain so its transparent surfaces can be
@@ -81,16 +100,7 @@ export interface WaterOpticalType {
   readonly backscatterPerMeter: readonly [number, number, number];
 }
 
-/**
- * Pure water itself, at those three band centres: Pope & Fry (1997)
- * absorption (0.2755 / 0.0565 / 0.0098 per metre at 620 / 550 / 460 nm) and
- * Morel's molecular scattering as Twardowski et al. (2007) fit it,
- * `b_w = 3.50e-3 (lambda/450)^-4.32`, raised 1.30x for sea salt and halved
- * into the backward hemisphere. Nothing in the tree may re-type these: every
- * water type is these numbers plus its own constituents.
- */
-export const WATER_PURE_ABSORPTION_PER_METER = Object.freeze([0.2755, 0.0565, 0.0098] as const);
-export const WATER_PURE_BACKSCATTER_PER_METER = Object.freeze([0.00057, 0.00096, 0.00207] as const);
+
 
 /**
  * `W-7` stage 1's single water type: clear temperate oceanic water
@@ -1485,46 +1495,7 @@ fn waterCapillaryDetail(
  * ===========================================================================
  */
 
-/** Graph-mode vertices carry `BASE + payload`; analytic vertices carry 0. */
-export const WATER_CHANNEL_SENTINEL_BASE = 1;
 
-/**
- * Channel grade (rise/run) at which the river payload saturates.
- *
- * 6% is a genuinely steep reach: lowland trunk channels run 1e-4 to 1e-3,
- * upland streams 1e-2, and the boulder-garden reaches that actually stand
- * waves up sit at 2e-2 to 6e-2. Above that the exported channel is a
- * waterfall and the standing-wave model (a free-surface gravity wave riding a
- * steady current) has stopped applying anyway.
- */
-export const WATER_CHANNEL_GRADE_REFERENCE = 0.06;
-
-/**
- * Fetch at which the lake payload saturates, metres.
- *
- * 20 km of fetch at 6 m/s of wind is a 0.43 m significant height — real chop,
- * and about where fetch-limited growth stops being the binding constraint
- * (beyond it a lake breeze is duration-limited long before it is
- * fetch-limited). Larger lakes clamp here rather than growing ocean swell on
- * an inland surface.
- */
-export const WATER_LAKE_FETCH_REFERENCE_METERS = 20_000;
-
-/**
- * Effective fetch from the nearest-shore distance a lake vertex already
- * carries.
- *
- * True fetch is directional — the upwind distance to land — and computing it
- * per vertex means a second O(ring) ray cast against the shoreline on a cold
- * path that D-5 already measured at its budget. The Shore Protection Manual's
- * effective-fetch construction averages the fetch over ±45° about the wind,
- * where the short rays dominate the average, so a multiple of the
- * omnidirectional nearest-shore distance is the standard cheap surrogate for
- * exactly that average. The floor keeps the shoreline itself from reading as
- * a glassy rim: a lee shore has the whole lake upwind of it.
- */
-export const WATER_LAKE_EFFECTIVE_FETCH_FACTOR = 4;
-export const WATER_LAKE_FETCH_FLOOR_METERS = 60;
 
 export const WATER_FLOW_GRAVITY = 9.81;
 const TWO_PI = 2 * Math.PI;
@@ -1823,44 +1794,7 @@ export function waterLakeChop(windSpeed: number, fetchFactor: number): WaterLake
   };
 }
 
-/**
- * The river payload written into `waterData.w` by the graph-mode builder.
- * Analytic builders keep pushing a literal 0 and MUST NOT call this.
- */
-export function waterChannelGradePayload(grade: number): number {
-  const normalized = Number.isFinite(grade)
-    ? Math.min(Math.max(grade / WATER_CHANNEL_GRADE_REFERENCE, 0), 1)
-    : 0;
-  return WATER_CHANNEL_SENTINEL_BASE + normalized;
-}
 
-/**
- * The effective fetch at a lake vertex, from the nearest-shore distance the
- * builder has already memoised and the lake's own span.
- */
-export function waterLakeEffectiveFetchMeters(
-  shoreDistanceMeters: number,
-  lakeSpanMeters: number,
-): number {
-  const shore = Number.isFinite(shoreDistanceMeters) ? Math.max(shoreDistanceMeters, 0) : 0;
-  const span = Number.isFinite(lakeSpanMeters) ? Math.max(lakeSpanMeters, 0) : 0;
-  return Math.min(
-    Math.max(span, WATER_LAKE_FETCH_FLOOR_METERS),
-    WATER_LAKE_EFFECTIVE_FETCH_FACTOR * shore + WATER_LAKE_FETCH_FLOOR_METERS,
-  );
-}
-
-/**
- * The lake payload written into `waterData.w`. Stored as `sqrt(F/Fref)` so
- * the interpolated quantity is the significant height (linear in it by the
- * growth law), not the fetch.
- */
-export function waterLakeFetchPayload(fetchMeters: number): number {
-  const normalized = Number.isFinite(fetchMeters)
-    ? Math.min(Math.max(fetchMeters / WATER_LAKE_FETCH_REFERENCE_METERS, 0), 1)
-    : 0;
-  return WATER_CHANNEL_SENTINEL_BASE + Math.sqrt(normalized);
-}
 
 /*
  * ===========================================================================
