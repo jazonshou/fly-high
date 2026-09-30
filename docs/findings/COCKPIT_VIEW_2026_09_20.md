@@ -2092,6 +2092,257 @@ flush-face fight: no face of the rim lies on the dash. It is the rim's 3 mm oute
 degrees of edge-on, a sub-pixel sliver that aliases. The survey frame shows it too. A fix would change the shared
 `framedScreenFacets` for all three decks.
 
+## The 747's window frame, rolled (the cockpits wave, S1)
+
+Jason, for all four decks: *"the cockpit should feel real and the dials integrated, not slapped together from
+play-dough: walls and bars organic, not choppy."* On the 747 the choppiest thing in the frame was the window frame:
+fifteen lining strips, each a 2 cm slab cut square at every pane's edge.
+
+**What was wrong (P0, an item buffer from the eye at 1920 x 1080, the drawn-face rule).** 109 edges of the lining
+sharper than 45 degrees were visible: 34 CREASES, both faces seen (the square reveals' inner corners, down every
+pillar, the post, the sills and the crowns' lower edges), and 75 OUTLINES (the reveals' rims against the sky, where
+the face beyond is one nobody sees). Where two strips met, their rims doubled: 19 such seams showed.
+
+**What changed.**
+- ONE WELDED SURFACE (`airlinerWindowFrame`). The grid in R's angles is the lining's own lines, out to 78 either side
+  so No.3 has frame outboard of it too. Each pane's opening is a loop of stations: its edges' crossings of the grid
+  lines, and its corners. The face is the grid with a hole round each loop, grown by the return's width. A cell the
+  hole cuts is re-cut along the loop and ear-clipped, so the face's edge and the return's first ring are the same
+  vertices. The face's normals are the skin's own, turned in, smooth across the whole frame.
+- THE RETURN: a 15 mm quarter round, tangent to the face and to the opening's wall, in six chords with radial
+  normals. It is carved inside the old square section, so its rim is the pane's edge at the same cast point.
+- THE SEAL (`airliner-window-seals`, on the glareshield's own matte): the profile's last 6 mm, from the return's last
+  millimetre to the rim. It is a closed 1 mm solid, not a sheet, because a ray through a pillar meets the far edge's
+  seal from behind.
+- THE LAP: 3 mm over the glass at every opening's two sides, not its top and bottom. The carve takes the corner that
+  was a member's near edge from the seat: without the lap the No.1 / No.2 pillar read 2.04 / 2.11 / 2.16 degrees
+  (at el -8 / 0 / 4) and the post 3.58 / 3.55 / 3.53. The sills and the crowns do not lap, so the sill rule and the
+  panes' tops are unchanged.
+- THE CORNERS are mitred (S2 rounds them).
+
+**Measured (Node).**
+
+| | base (303372e) | S1 |
+|---|---|---|
+| creases over 45 seen on the frame (both faces seen) | 34 along the edges | 0 along the edges; 35 in the square corners' mitres, all within 0.36 degrees of a corner (S2's) |
+| outlines over 45 (item buffer, 1080p) | 75 | 39 (the rim against the sky) |
+| seams between frame pieces | 19 | 0 (4,503 shared edges; open only at the outer edge, 108, and where the seals meet it, 180) |
+| No.1 / No.2 pillar, el -8 / 0 / 4 | 2.23 / 2.33 / 2.38 | 2.23 / 2.30 / 2.35 |
+| centre member, el -8 / 0 / 4 | 3.69 / 3.67 / 3.66 | 3.75 / 3.71 / 3.69 |
+| sill under No.1 | -0.45..1.00 | -0.44..1.00 |
+| deck line (the HUD's instrument) | 18.5700 | 18.5700 |
+| kit meshes / cockpit-view draws | 6 / 93 | 7 / 94 |
+
+The control for the crease instrument: the same instrument sees 17 creases on the bezels' square frames. Mesh by
+mesh against 303372e: `airliner-cockpit-interior` 2,556 -> 1,856 vertices and 2,328 -> 3,110 triangles,
+`airliner-window-seals` new (2,040 and 1,608), the other 95 bit-identical. Five mutations, all caught: the seals on the
+interior material, no lap, the seal open at the back (drawn faces), the return rolled into the glass (seven tests),
+and the step to the face's edge not solved.
+
+**Four traps.**
+- R's angles are not metres. Stepping an opening point by r over its distance from R lands 15 mm across a side edge
+  and 20 to 26 mm down a sill or a crown, which R sees at a slant. The step is solved: scaled by the chord it
+  reached, three times.
+- The face's edge must be CAST, not offset. Laid in the skin's plane at the edge, it floated up to 8 mm off the skin
+  where the nose's own facet crease (33 degrees at el 8, R's azimuth 24.4) runs across the No.1 / No.2 pillar. The
+  pillar's 3 cm of face then folded 53 degrees, whichever diagonal it was split on, and half-width cells folded as
+  much. Cast, the largest fold anywhere on the face is 33 degrees, the skin's own.
+- A crease is SEEN only if both of its faces are seen at it: each is, 2 mm in from the edge, the very triangle the eye's
+  ray meets first. Judged by facing alone, a seal's buried faces and the board's top under the cove read as creases.
+- The frame is one face, open at the back, which nothing in the cockpit sees. The geometry census's signed volume moved
+  by +56.94 m^3 because an open surface's is not a volume, and the normal sum moved because the old slabs' two faces
+  cancelled.
+
+## The 747's window corners, rounded (S2)
+
+Each opening's four corners are rounds in R's angles, sampled every 15 degrees round and wherever a grid line crosses
+them, and the return and the seal are swept on round the corner, so S1's mitres are gone. The first build rounded all
+24 at 3 degrees, about 0.10 m at the glass; the table below is that build. **As merged, the radius is a pane's own:
+2.8, 2.8 and 2.0 degrees** (`cornerRadiusDegrees`, the PM's values), so that each pane gives up about 1% of its
+opening: No.1 0.998%, No.2 0.954%, No.3 0.912%. With those, the creases seen on the frame stay 0, the pillar reads 2.23 /
+2.30 / 2.38 and the sill -0.11..0.95, and the frame rises at most 3.74 degrees over the lip at No.1's inboard corner.
+
+| | S1 | S2 |
+|---|---|---|
+| creases over 45 seen on the frame | 35, in the corners' mitres | **0** (the bezels' control: 17) |
+| No.1 / No.2 pillar, el -8 / 0 / 4 | 2.23 / 2.30 / 2.35 | 2.23 / 2.30 / 2.39 |
+| centre member | 3.75 / 3.71 / 3.69 | unchanged |
+| sill under No.1's straight bottom edge | -0.44..1.00 | -0.09..0.95 |
+| deck line | 18.5700 | 18.5700 |
+
+What the rounds cost:
+- **The glass they cover.** Against S1's opening, No.1 loses 1.15%, No.2 1.10% and No.3 2.05% of its solid angle
+  from R. No.3 is the smallest pane, so the same radius costs it most. The radius that costs exactly 1% is 2.80,
+  2.87 and 2.09 degrees.
+- **The sill at the corners.** No.1's straight bottom edge now ends 3 degrees further out, so its sill tops out at 0.95
+  rather than 0.99. Round the corners the frame rises out of the sill into the post (up to 3.94 degrees over the lip,
+  eye az 6.4 to 9.1) and into the pillar (2.71, eye az -11.1). That is a rounded corner seen from above it. The sill
+  rule is held on the straight edge.
+
+Mesh by mesh against S1: the frame went 1,856 -> 2,688 vertices and 3,110 -> 4,926 triangles, and the seals 2,040 ->
+3,160 and 1,608 -> 3,160. The other 95 meshes are bit-identical. The radius a pane then moved the same two, against S4:
+the frame 2,848 -> 2,904 vertices, the seals 3,160 -> 3,240. Four mutations, all caught: square corners, a round
+bulging into the glass (the builder's own guard throws), one chord to a corner, and the rounds' topology not grown.
+
+## The 747's deck turned aft, and its clock (S4)
+
+**The deck turns aft.** Outboard of the PFD the board ran on flat past the frame's edge: a grey slab 29 degrees wide
+with nothing on it, 4.02% of the frame (P0). Now the whole deck, board and glareshield together, is swept along one
+plan path (`airlinerDeckPath`): straight across between the pilots, then at each end a turn aft of 0.25 m radius through
+90 degrees, starting 15 degrees outboard of each pilot's straight ahead, and a run 0.4 m aft along the side (its end at
+az -67 from the seat, out of every lens).
+- The two turn together because a board turned alone opens the glareshield's underside to the eye. At az -30 a band
+  from el -17.1 to -18.3 would look under the straight glareshield, into the nose beyond.
+- Turned, the lip comes toward the pilot and reads lower, so the deck line (the deck's highest row, straight ahead)
+  stays 18.5700.
+- Where the flat board was, the frame's lower left now shows the side wall's frame under No.2 (44 rays of the test's
+  grid) and No.2's lower corner of glass (32 rays), which the board used to hide. No ray meets hidden skin.
+- Swept, the glareshield's round takes the round's radial normals: its eight flat-shaded facets are shaded round.
+
+**The clock.** It sits on the turn at az -17.17, el -21.51 from the eye, 7.3 degrees round the turn. It is a round dial
+of the screens' family:
+- the frame on the bezels' dark grey, the 45 degree chamfered rim on the marking (the night glow), and a dark well
+  behind the 2 mm gap, all three merged into the screens' own meshes;
+- the face is a static page (`drawClockFace`: sixty ticks, the chronograph's quarters and a UTC window, no needles),
+  drawn once at build into a 256 x 256 texture of its own. That costs one draw and nothing per frame. The displays'
+  atlas has no spare slot, and a fourth column would make every redraw a third dearer (about 1.1 ms more of 3.3).
+- Its bezel's top is level with the screens' bezels'. 73% of the face is in the frame.
+- The turn is concave to the pilot, 5.71 mm deep across the dial. The dial stands that much further out and its frame
+  reaches back into the board, so the board never shows through the rim's sides. That is tested all round the frame
+  and the rim.
+
+**Blank board outboard of the PFD:** 4.02% of the frame -> 1.83%. 0.67% is flat board by the PFD, under the 1% asked;
+1.16% is the turn's own face, seen as it comes toward the pilot.
+
+**Not in S4:** the board's top edge rounded into the cove. The P0 "edge" there is an outline (the board's top is under
+the glareshield), and the corner the eye does see is where the board meets the 3 mm cove. An 8 mm round tangent to both
+needs 4.8 mm of cove, and the cove is 4.24 mm long. It goes with S3, which rebuilds the glareshield's aft edge.
+
+Mesh by mesh against S2:
+
+| mesh | vertices | triangles |
+|---|---|---|
+| `airliner-cockpit-interior` (the board swept) | 2,688 -> 2,848 | 4,926 -> 5,086 |
+| `airliner-glareshield` | 144 -> 598 | 48 -> 568 |
+| `airliner-screen-bezels` (with the clock's frame) | 576 -> 968 | 192 -> 576 |
+| `airliner-screen-bezel-rims` (with the clock's rim) | 576 -> 968 | 192 -> 576 |
+| `airliner-screen-wells` (with the clock's well) | 144 -> 342 | 72 -> 264 |
+| `airliner-clock` | new: 198 | new: 192 |
+
+The other 92 meshes are bit-identical. Cockpit view draws 95 (base 93).
+
+Five mutations, all caught:
+- the turn from az -25 (the builder's own guard throws: the clock's azimuth is not on the turn);
+- the dial not lifted (its rim sinks into the board at the sides; the first version of the test sampled only the flat
+  frame and missed it);
+- the face mirrored;
+- the round flat-shaded;
+- the chamfer's normals radial.
+
+**The turns in 5 degree chords, after the final frames.** Each turn was nine chords of 10 degrees. The PM read the
+final day frame's lower left as the turned lip scalloping; that shape is terrain seen through No.2 (Node rays meet no
+cockpit part there). But the lip's own outline across the turn, traced by rays to a hundredth of a pixel, did step a
+chord at a time: 0.40 px from a smooth curve at 1080p (a degree-8 fit over x 80 to 620). At 18 chords it is 0.13. The
+glareshield went 690 -> 1,230 vertices and the board 144 more; nothing else moved. The deck line's test takes the
+HUD's instrument over the whole scene and ran 13 to 27 s against a 30 s limit, so it has 90 s now.
+
+## The 747's glareshield over its displays, with its MCP (S3)
+
+The type's glareshield is a padded coaming that overhangs its displays, with the mode control panel on its aft face.
+The 747's was a 5 mm lip flush with the board: a line, 0.54 degree in all. Its section now:
+- a **padded nose**, 10 mm radius in six chords, shaded round, tangent to the deck line's sight line at a vertex (so the
+  deck line, 18.5700 by the HUD's instrument, does not move);
+- a flat **strip** 0.7 degree tall on its aft face, the mode control panel across the middle and an EFIS panel over each
+  pilot's PFD and ND. Each panel is a plate on the bezels' grey with windows on the marking, which glow by the rims'
+  law. The MCP has speed, heading and altitude, each EFIS panel one window. Every window in view is 12.3 px tall at
+  1080p and 2 px or more inside the strip's edges (2.9 above, 2.1 under: the windows stand 0.8 mm proud, so the eye
+  sees them 0.9 px low). They were 13.6 px at first with 1.4 px under them, and the PM's accept is 2 px margins. The
+  1.85 mm margin first estimated would have made them 11.7 px: the strip is 17.3 px tall, and not all of it is margin;
+- the aft face's bottom edge turning **under** in an 8 mm round onto a soffit, which no ray from the seat meets (the
+  control: one from under it does). The aft face stands 25 mm aft of the board, over the screens' tops, so no top-row
+  bezel shows over the strip: each bezel's top reads 1.3 degree or more above the strip's lowest visible row.
+
+The board and the screens did not move. Their top edge is P1a's cove's foot, now a constant of its own
+(`airlinerBoardTop`). The glareshield and the panels are the only geometry that changed.
+
+**What it costs, and the correction on the way.** The band from the lip to the frame's bottom is 4.78 degrees, and the
+screens' share of it binds. My option table for the PM left out the under-round's visible quarter (about 0.6 degree at
+8 mm), and at the first values (a 12 mm nose, a 0.8 degree strip, an 8 mm under-round) the PFD would have been 27.9% in
+the frame, under the 29% floor. At 10 mm, 0.7 degree and 8 mm it is **30.9%** (measured by rays on an 81-row grid; 37.8%
+under the flush lip), and so are the ND and the upper EICAS. The test's old 21-row grid read in steps of 4.8%, and
+first said 28.6%.
+
+**Two tests changed their meaning, deliberately.**
+- The lens test's control ("each display's top is the first row the grid draws it on") holds for the other decks. For
+  the 747, the rows between the kit's top and the display's first drawn row must be the glareshield or its panels. The
+  HUD keeps off the kit's whole rect, which did not move, so the 2D layout is byte-identical.
+- The recess test's ray over the screen's top meets the strip now, not the well.
+
+Mesh by mesh against 29a570c:
+
+| mesh | vertices | triangles |
+|---|---|---|
+| `airliner-glareshield` | 598 -> 690 | 568 -> 656 |
+| `airliner-screen-bezels` (the three plates) | 968 -> 1,076 | 576 -> 612 |
+| `airliner-screen-bezel-rims` (the five windows) | 968 -> 1,148 | 576 -> 636 |
+
+The other 95 meshes are bit-identical. No draw more (95 in cockpit view). Blank board outboard of the PFD 1.83% -> 0.95%
+(the strip covers more of it). Four mutations, all caught: no overhang, the nose flat-shaded, the windows shorter than
+12 px, the strip deeper (the share falls under 29%).
+
+## The top of the 747's picture: the overhead's front, and a header built and taken out (S5)
+
+From the seat, the crown over the glass was one tone from the panes' tops to the top of the picture: 24.9% of the
+frame (the P0 survey's 25%). What stands in it now is the **overhead's forward end**: its face and a 20 mm lip,
+straight across the flight deck, on a panel grey of its own.
+- The lip's underside is on the sightline at +20, so it is one row of the picture. From there to the frame's top
+  (+23.35 straight ahead), the picture is the overhead.
+- It runs 1.1 m each way, past the frame's walls at every height it spans. The walls end it, never its caps: from about
+  -21 at its lip to -27 at the top of the picture, where the roof comes down. Where the eye sees it, it is inside the
+  skin. No crease the pilot sees on it.
+- The crown is now **18.62%** of the frame (1080p survey); the overhead takes 6.27. Rays on a 160 x 90 grid read the
+  crown at 18.5%, and at 24.7% with the overhead hidden. There is no threshold: the picture decides.
+
+**Its own mesh, its own grey.** Merged with the bezels' frames it cost no draw, but the HUD's instrument reads that mesh
+as the deck, so a "bezel" stood at the top of the picture and every HUD layout test failed at every window size. The
+overhead is the flight deck's structure, so it has a mesh of its own (one draw). On the frames' material, the final
+frames showed it reading as the crown did (day luma 30 against 26 at x 960), its lip barely a step. So it has a panel
+grey of its own, 0x505860 against the bezels' 0x2c3034, with their finish: one material more, no draw more.
+
+**The header over the No.1 panes: built, and taken out.** A sun-visor housing across the No.1 tops (a section 100 mm
+across and 50 mm deep, 25 mm rounds) was built to break the crown's tone, and it took the crown to 14.35% of the
+frame. The final frames showed it lumpy: a wavy top edge and a knob at its port tip. It was taken out (the PM's call),
+because the crown it stands on is lumpy, and any bar there shows the lumps. The record, since the same crown will meet
+the next part put on it:
+1. Laid off the opening's top "up the face", on the skin's shading normal, sections bunched up and folded 51 to 62
+   degrees where the nose turns its corner (R's azimuth 14 to 19: the skin's normal turns 27 degrees in five).
+2. Cast on the skin, on its point and shading normal, sections stood off the frame's face. The face is chords of a
+   coarse grid, and mid-cell over the glass it stands up to 27 mm inside the skin's own offset.
+3. Laid on the frame's face (each foot cast on the face's triangles), the header was clean from close up (no crease)
+   but followed the face's facets along its length. Against a quadratic its lower edge strayed 3.7 px and its upper
+   edge 11.5 px at 1080p.
+4. A fair sweep (one R elevation, the face smoothed along the run, one section) made the lower edge fair: 0.25 px of
+   local lumps. Its upper edge is where it meets the crown, and so it is the crown's shape: 2.3 px of local lumps.
+   - **The crown's own lumps are the skin's.** Along R's rays at R-el 13.5 to 16.5 over the No.1 panes the frame's face
+     strays 3 to 7 mm from a smooth curve (under 2 mm outboard of +-30). A finer frame grid does not help: at 5, 2.5 and
+     1.5 degree steps the worst is 6.6, 3.9 and 7.4 mm. It is the nose's loft (coarse facets, the 33 degree crease under
+     the pillar).
+   - Fairing the crown would do it: frame grid lines added at R-el 13 to 17, and every line from 13 up cast on the skin
+     smoothed along the run (a Gaussian, sigma 6 degrees), put the upper edge within 0.80 px of a smooth curve (local
+     0.76). Sigma 3, or fairing only from 16.67 up, left 1.3 to 2.5 px. It is a frame change, not taken.
+   - Run on past the No.1 / No.2 pillars to leave the frame at 21:9, the bar passes within half a metre of the eye on the
+     port side: a dark wedge some 200 px tall across the upper left, climbing out of the top of the frame and through the
+     overhead's port end, whether at one R elevation or falling off outboard.
+5. Two notes on the measure: a long bar in perspective is not a parabola (the fair lower edge read 2.8 px from a
+   quadratic over the No.1 panes and 10 px over the width), so a smooth curve of degree 6 is the fair test; and a top
+   edge's line from below is the return's roll, not the rim (the seal is seen edge-on there).
+
+Mesh by mesh against 3ac0a0c: `airliner-overhead-front` is new (60 vertices, 36 triangles), and the other 98 meshes
+are bit-identical. The deck line (18.5700), the eye, the 2D layout, the frame, the pillars (4.62% of the frame) and the
+post (2.69%) did not move. Draws in cockpit view: 95 -> 96. The wave's total is +3 of +6 (the seals, the clock's face,
+the overhead). Mutations on the overhead, all caught: the lip solved without its radius, and the overhead short of the
+walls; and a real one, the overhead merged with the frames, which the HUD tests caught.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

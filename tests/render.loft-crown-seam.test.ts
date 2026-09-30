@@ -553,7 +553,31 @@ describe("a loft's crown seam", () => {
       // the glazing and the kit included. The instances (the window line x228, flap-track canoes x8, nacelle chevrons
       // x48): dumped against d30bb05, only the window line's changed, every pane onto the drawn facets (median 16 mm,
       // at most 24) and along the skin's cap-free normal (tests/render.airliner-cabin-windows.test.ts).
-      airliner: "5cb70892",
+      // RE-PINNED 5cb70892 -> d9605bf4 for the rolled window frame (S1 of the cockpits wave): the lining's fifteen skin
+      // panels are one welded surface with each opening rolled into it, and the seals round the glass are new. Checked mesh
+      // by mesh against 303372e: airliner-cockpit-interior changed (2,556 -> 1,856 vertices, 2,328 -> 3,110 triangles),
+      // airliner-window-seals is new (2,040, 1,608), and the other 95 are bit-identical, every other airframe's too.
+      // RE-PINNED d9605bf4 -> a4eac957 for the frame's rounded corners (S2): against S1, airliner-cockpit-interior
+      // (1,856 -> 2,688 vertices, 3,110 -> 4,926 triangles) and airliner-window-seals (2,040 -> 3,160, 1,608 -> 3,160)
+      // moved, and the other 95 are bit-identical.
+      // RE-PINNED a4eac957 -> 456b3e28 for the deck turned aft and the clock (S4): against S2, airliner-glareshield and
+      // airliner-cockpit-interior (their deck swept round to the sides), airliner-screen-bezels, -bezel-rims and -wells (the
+      // clock's frame, rim and well with theirs) moved, airliner-clock is new, and the other 92 are bit-identical.
+      // RE-PINNED 456b3e28 -> 0a12154b for a corner radius a pane (S2, 2.8 / 2.8 / 2.0 where all were 3): against S4,
+      // airliner-cockpit-interior (2,848 -> 2,904 vertices) and airliner-window-seals (3,160 -> 3,240) moved, and the
+      // other 96 are bit-identical.
+      // RE-PINNED 0a12154b -> be50f03f for the glareshield over the displays (S3): against 29a570c, airliner-glareshield
+      // (its new section), airliner-screen-bezels (the MCP's and the EFIS panels' plates) and airliner-screen-bezel-rims
+      // (their windows) moved, and the other 95 are bit-identical, the board and the screens included.
+      // RE-PINNED be50f03f -> 6fd8be82 for the header and the overhead's forward end (S5): against 3ac0a0c,
+      // airliner-header and airliner-overhead-front are new, and the other 98 are bit-identical.
+      // RE-PINNED 6fd8be82 -> e7b38db2 for the glareshield's windows 2 px inside the strip's edges (S3's margins): against
+      // e0f9c73, airliner-screen-bezel-rims moved, and the other 99 are bit-identical.
+      // RE-PINNED e7b38db2 -> 52aba346 for the deck's turns in 5 degree chords: against 2e48fce, airliner-glareshield and
+      // airliner-cockpit-interior (the board) moved, and the other 98 are bit-identical.
+      // RE-PINNED 52aba346 -> 6f6e5763 with the header taken out again (S5, the PM's call): against 6a21297, airliner-header
+      // is gone and the other 99 are bit-identical.
+      airliner: "6f6e5763",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

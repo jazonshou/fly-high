@@ -40,7 +40,7 @@ const DEG = Math.PI / 180;
 /** Canvas angles run clockwise from 3 o'clock, so 12 o'clock is a quarter turn back. */
 const TWELVE_OCLOCK = -Math.PI / 2;
 
-export type DisplayPage = "pfd" | "nd" | "eicas-upper" | "eicas-lower";
+export type DisplayPage = "pfd" | "nd" | "eicas-upper" | "eicas-lower" | "clock";
 export type DrawPage = (ctx: DisplayContext2D, w: number, h: number, state: DisplayState) => void;
 
 export interface DisplaySlot {
@@ -709,6 +709,48 @@ export const drawEicasLower: DrawPage = (ctx, w, h, state) => {
   });
 };
 
+// ---- the clock ---------------------------------------------------------------------------
+
+/**
+ * THE 747's CLOCK (S4, on the captain's side of the panel, where the deck turns aft): a face drawn ONCE, not a display the
+ * flight moves (no needles): a dial of sixty minute ticks, every fifth long, the chronograph's numerals at the quarters,
+ * and the window where the type's clock reads UTC. Round in its square slot; the corners are the dial's black.
+ */
+export function drawClockFace(ctx: DisplayContext2D, w: number, h: number): void {
+  clearPage(ctx, w, h);
+  const [cx, cy, r] = [w / 2, h / 2, Math.min(w, h) / 2];
+  const at = (k: number, radius: number) => {
+    const angle = TWELVE_OCLOCK + (k * 2 * Math.PI) / 60;
+    return [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)] as const;
+  };
+  ctx.fillStyle = "#101214";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.fill();
+  ctx.strokeStyle = DISPLAY_COLOURS.white;
+  for (let k = 0; k < 60; k += 1) {
+    const long = k % 5 === 0;
+    ctx.lineWidth = r * (long ? 0.035 : 0.015);
+    ctx.beginPath();
+    ctx.moveTo(...at(k, r * (long ? 0.78 : 0.86)));
+    ctx.lineTo(...at(k, r * 0.94));
+    ctx.stroke();
+  }
+  ctx.fillStyle = DISPLAY_COLOURS.white;
+  ctx.font = `${Math.round(r * 0.16)}px monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const [k, label] of [[0, "60"], [15, "15"], [30, "30"], [45, "45"]] as const) ctx.fillText(label, ...at(k, r * 0.62));
+  ctx.fillStyle = DISPLAY_COLOURS.cyan;
+  ctx.font = `${Math.round(r * 0.11)}px monospace`;
+  ctx.fillText("UTC", cx, cy - r * 0.2);
+  ctx.fillStyle = "#16241a";
+  ctx.fillRect(cx - r * 0.34, cy + r * 0.1, r * 0.68, r * 0.24);
+  ctx.fillStyle = DISPLAY_COLOURS.green;
+  ctx.font = `${Math.round(r * 0.16)}px monospace`;
+  ctx.fillText("12:00", cx, cy + r * 0.22);
+}
+
 // ---- the atlas -------------------------------------------------------------------------
 
 const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
@@ -716,6 +758,7 @@ const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
   nd: drawNd,
   "eicas-upper": drawEicasUpper,
   "eicas-lower": drawEicasLower,
+  clock: (ctx, w, h) => drawClockFace(ctx, w, h),
 };
 
 /**

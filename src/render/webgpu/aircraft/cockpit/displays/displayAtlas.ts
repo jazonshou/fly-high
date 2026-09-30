@@ -81,6 +81,21 @@ export const AIRLINER_DISPLAYS: DisplayLayout = Object.freeze({
 });
 
 /**
+ * The 747's clock (S4): ONE static face, drawn once at build into a texture of its own and never redrawn. Not a slot of
+ * the displays' atlas: none is spare (3 x 2), and a fourth column would make every redraw a third dearer (about 1.1 ms
+ * more of the 3.3). Square, and mipmapped: its 256 texels land on about 140 pixels at this lens.
+ */
+export const AIRLINER_CLOCK_FACE: DisplayLayout = Object.freeze({
+  name: "airliner-clock-face",
+  screensMesh: "airliner-clock",
+  columns: 1,
+  slotWidth: 256,
+  slotHeight: 256,
+  mipmaps: true,
+  screens: Object.freeze([{ screen: "clock", page: "clock" }] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
  * The Global's four, in `bizjetScreenPlacements()` order: each seat's OUTBOARD screen then its
  * inboard one, port pair first. Each pilot gets a PFD outboard and a map inboard.
  *

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   attitudeRotationRadians,
   DISPLAY_COLOURS,
+  drawClockFace,
   drawDisplayAtlas,
   drawEicasLower,
   drawEicasUpper,
@@ -371,6 +372,30 @@ describe("the upper EICAS's N1 dial", () => {
   });
 });
 
+describe("the 747's clock (S4)", () => {
+  it("draws a static face inside its square: sixty ticks, every fifth long, the chronograph's quarters and the UTC window, no needles", () => {
+    const S = 256;
+    const ctx = createRecordingContext();
+    drawClockFace(ctx, S, S);
+    const points = transformedPoints(ctx.calls);
+    // sixty ticks: a moveTo and a lineTo each, all inside the dial (a circle of the slot's own half-width)
+    const moves = points.filter((p) => p.method === "moveTo");
+    expect(moves).toHaveLength(60);
+    for (const p of points.filter((q) => q.method === "moveTo" || q.method === "lineTo")) {
+      expect(Math.hypot(p.x - S / 2, p.y - S / 2), "a tick inside the dial").toBeLessThanOrEqual(S / 2);
+    }
+    // every fifth tick is long: it starts nearer the middle
+    const inner = moves.map((p) => Math.hypot(p.x - S / 2, p.y - S / 2));
+    expect(inner.filter((r) => r < 0.8 * (S / 2)), "the long ticks").toHaveLength(12);
+    const texts = points.filter((p) => p.method === "fillText").map((p) => p.text);
+    expect(texts).toEqual(["60", "15", "30", "45", "UTC", "12:00"]);
+    // STATIC: it takes no flight state; twice drawn is the same drawing
+    const again = createRecordingContext();
+    drawClockFace(again, S, S);
+    expect(JSON.stringify(again.calls)).toBe(JSON.stringify(ctx.calls));
+  });
+});
+
 describe("the atlas", () => {
   const slots: readonly DisplaySlot[] = [
     { page: "pfd", x: 0, y: 0, w: W, h: H },
@@ -380,7 +405,7 @@ describe("the atlas", () => {
     { page: "nd", x: W, y: H, w: W, h: H },
     { page: "pfd", x: 2 * W, y: H, w: W, h: H },
   ];
-  const EXPECTED_TEXT: Readonly<Record<DisplaySlot["page"], string>> = { pfd: "415", nd: "HDG", "eicas-upper": "88.0", "eicas-lower": "OIL PRESS" };
+  const EXPECTED_TEXT: Readonly<Record<DisplaySlot["page"], string>> = { pfd: "415", nd: "HDG", "eicas-upper": "88.0", "eicas-lower": "OIL PRESS", clock: "UTC" };
 
   it("clips each of six slots to its rectangle and draws its page's text inside it", () => {
     const ctx = createRecordingContext();
