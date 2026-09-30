@@ -70,6 +70,13 @@ const MEASURE_S = Number(env("MEASURE_S", "30"));
 const ROTATE_KT = Number(env("ROTATE_KT", AIRCRAFT === "airliner" ? "160" : "55"));
 const TRIALS = Number(env("TRIALS", "10"));
 const AFTER_LIFTOFF_S = Number(env("AFTER_LIFTOFF_S", "60"));
+/**
+ * Key holds for the take-off. The keyboard throttle advances 0.6/s of PUMP
+ * time, and the pump is a main-thread setInterval that drops ticks under a
+ * throttled main thread, so a 4 s hold is not full power at 4x.
+ */
+const THROTTLE_HOLD_S = Number(env("THROTTLE_HOLD_S", "10"));
+const ROTATE_HOLD_S = Number(env("ROTATE_HOLD_S", "0.8"));
 const TRACE_S = Number(env("TRACE_S", "0"));
 const PROFILE_S = Number(env("PROFILE_S", "0"));
 const KNOTS_PER_MPS = 1.943_844_5;
@@ -688,7 +695,7 @@ if (SCENARIO === "coldstart") {
   const releasedWall = Date.now();
   // Full power: Shift held long enough for the lever to reach its stop.
   await page.keyboard.down("ShiftLeft");
-  await page.waitForTimeout(4_000);
+  await page.waitForTimeout(THROTTLE_HOLD_S * 1_000);
   await page.keyboard.up("ShiftLeft");
   const events: { rotate: number | null; liftoff: number | null; timeout: number | null; crashed?: number } = {
     rotate: null, liftoff: null, timeout: null,
@@ -702,7 +709,7 @@ if (SCENARIO === "coldstart") {
       rotated = true;
       events.rotate = Date.now();
       await page.keyboard.down("KeyS");
-      await page.waitForTimeout(1_500);
+      await page.waitForTimeout(ROTATE_HOLD_S * 1_000);
       await page.keyboard.up("KeyS");
     }
     if (rotated && snap && !snap.onGround && snap.agl > 5 && events.liftoff === null) {
