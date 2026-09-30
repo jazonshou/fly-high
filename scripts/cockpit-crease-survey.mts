@@ -4,17 +4,20 @@
  * slab, per part, in pixels of a window of the size asked. Headless (NullEngine), CPU only; any airframe.
  *
  *   npx tsx scripts/cockpit-crease-survey.mts <outDir> [trainer,jet,bizjet,airliner] [--size 1920x1080]
- *       [--frame <kind>=<png>] [--designed <regex>] [--crease 45]
+ *       [--frame <kind>=<png>] [--designed <regex>] [--crease 45] [--normals shading|geometric]
  *
  * HOW. The camera is the renderer's cockpit camera: the catalogue eye, down the body axis, horizontal-fixed at the lens
  * the renderer resolves for the window's aspect (as `tests/support/cockpitFootprints.ts` builds it). Every pixel's ray
  * takes the first surface the GPU DRAWS (enabled, visible, on the camera's layers, opaque, and not a culled back face:
  * a drawn face's cross product points along the ray, the rule `tests/render.cockpit-drawn-faces.test.ts` measured), and
- * records its point, its OUTWARD face normal, its mesh and, inside a merged mesh, the part it came from (the merge's
+ * records its point, its OUTWARD normal, its mesh and, inside a merged mesh, the part it came from (the merge's
  * sources are recorded here by triangle count; `mergeStatic` keeps only their names). Then each pair of neighbouring
  * pixels is one of:
  *  - a CREASE: the surface is continuous (the two points are within three pixel footprints of each other, allowing for
- *    the surface's slant) and the two normals are more than `--crease` degrees apart;
+ *    the surface's slant) and the two normals are more than `--crease` degrees apart. The normals are the SHADING ones
+ *    by default (the vertex normals interpolated across the hit triangle: what the pilot sees as tone, so a smoothed
+ *    round is not a crease however it is faceted), or the triangles' own with `--normals geometric`. Flat slabs are
+ *    always found by the triangles' own normals: planarity is geometry;
  *  - a SEAM: continuous, the part changes, the normals within `--crease`;
  *  - an OCCLUSION: the depth jumps (a silhouette over something behind it);
  *  - an edge AGAINST THE GLASS: one side is a part, the other nothing of the aircraft.
@@ -57,6 +60,7 @@ interface Options {
   frames: Map<string, string>;
   designed: RegExp | null;
   creaseDegrees: number;
+  shading: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -66,6 +70,7 @@ function parseArgs(argv: readonly string[]): Options {
   let height = 1080;
   let designed: RegExp | null = null;
   let creaseDegrees = 45;
+  let shading = true;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const value = () => {
@@ -87,6 +92,10 @@ function parseArgs(argv: readonly string[]): Options {
       designed = new RegExp(value());
     } else if (arg === "--crease") {
       creaseDegrees = Number(value());
+    } else if (arg === "--normals") {
+      const which = value();
+      if (which !== "shading" && which !== "geometric") throw new Error("--normals is shading or geometric");
+      shading = which === "shading";
     } else {
       positional.push(arg);
     }
@@ -97,7 +106,7 @@ function parseArgs(argv: readonly string[]): Options {
     if (!(KINDS as readonly string[]).includes(kind)) throw new Error(`unknown kind ${kind}`);
     return kind as AircraftKind;
   });
-  return { outDir, kinds, width, height, frames, designed, creaseDegrees };
+  return { outDir, kinds, width, height, frames, designed, creaseDegrees, shading };
 }
 
 // ---- the merge's sources, by triangle count ------------------------------------------------------------------
@@ -140,7 +149,10 @@ interface Grid {
   readonly label: Uint16Array;
   readonly parts: string[];
   readonly point: Float64Array;
+  /** The triangles' own outward normals. */
   readonly normal: Float32Array;
+  /** The vertex normals interpolated at the hit, outward: what the surface is SHADED with. */
+  readonly shading: Float32Array;
 }
 
 function survey(kind: AircraftKind, width: number, height: number): Grid {
@@ -192,6 +204,26 @@ function survey(kind: AircraftKind, width: number, height: number): Grid {
   const label = new Uint16Array(width * height);
   const point = new Float64Array(width * height * 3);
   const normal = new Float32Array(width * height * 3);
+  const shading = new Float32Array(width * height * 3);
+  const vertexNormals = new Map<AbstractMesh, Float32Array | null>();
+  const shadingAt = (mesh: AbstractMesh, hit: PickingInfo, fallback: Vector3): Vector3 => {
+    if (!vertexNormals.has(mesh)) {
+      const data = mesh.getVerticesData(VertexBuffer.NormalKind);
+      vertexNormals.set(mesh, data ? Float32Array.from(data) : null);
+    }
+    const data = vertexNormals.get(mesh);
+    if (!data) return fallback;
+    const indices = mesh.getIndices()!;
+    // Babylon's own weights (`PickingInfo.getNormal`): bu on the first corner, bv on the second, the rest on the third
+    const weights = [hit.bu, hit.bv, 1 - hit.bu - hit.bv];
+    const local = new Vector3(0, 0, 0);
+    for (let k = 0; k < 3; k += 1) {
+      const i = indices[hit.faceId * 3 + k]! * 3;
+      local.addInPlace(new Vector3(data[i]!, data[i + 1]!, data[i + 2]!).scale(weights[k]!));
+    }
+    const world = Vector3.TransformNormal(local, mesh.getWorldMatrix());
+    return world.length() > 0 ? world.normalize() : fallback;
+  };
   const started = Date.now();
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -219,6 +251,9 @@ function survey(kind: AircraftKind, width: number, height: number): Grid {
         const outward = cross.normalize().scale(-1);
         if (twoSided && Vector3.Dot(outward, ray.direction) > 0) outward.scaleInPlace(-1);
         normal.set([outward.x, outward.y, outward.z], k * 3);
+        const shaded = shadingAt(mesh, hit, outward);
+        if (twoSided && Vector3.Dot(shaded, ray.direction) > 0) shaded.scaleInPlace(-1);
+        shading.set([shaded.x, shaded.y, shaded.z], k * 3);
         break;
       }
     }
@@ -227,7 +262,7 @@ function survey(kind: AircraftKind, width: number, height: number): Grid {
   aircraft.dispose();
   scene.dispose();
   engine.dispose();
-  return { width, height, focal: width / 2 / Math.tan(lens / 2 / DEG), eye, label, parts, point, normal };
+  return { width, height, focal: width / 2 / Math.tan(lens / 2 / DEG), eye, label, parts, point, normal, shading };
 }
 
 // ---- PNG, just enough ----------------------------------------------------------------------------------------
@@ -360,6 +395,7 @@ function components(width: number, members: readonly number[]): number[][] {
 
 function analyse(kind: AircraftKind, grid: Grid, options: Options, frame: { rgb: Uint8Array } | null) {
   const { width, height, focal, eye, label, parts, point, normal } = grid;
+  const seen = options.shading ? grid.shading : normal;
   const n = width * height;
   const luma = frame ? Float64Array.from({ length: n }, (_, k) => 0.2126 * frame.rgb[k * 3]! + 0.7152 * frame.rgb[k * 3 + 1]! + 0.0722 * frame.rgb[k * 3 + 2]!) : null;
   const partName = (k: number) => {
@@ -417,7 +453,7 @@ function analyse(kind: AircraftKind, grid: Grid, options: Options, frame: { rgb:
           mark(distance[a]! < distance[b]! ? a : b, 40, 90, 255);
           continue;
         }
-        const cos = normal[a * 3]! * normal[b * 3]! + normal[a * 3 + 1]! * normal[b * 3 + 1]! + normal[a * 3 + 2]! * normal[b * 3 + 2]!;
+        const cos = seen[a * 3]! * seen[b * 3]! + seen[a * 3 + 1]! * seen[b * 3 + 1]! + seen[a * 3 + 2]! * seen[b * 3 + 2]!;
         const angle = Math.acos(Math.max(-1, Math.min(1, cos))) * DEG;
         const pair = [pa, pb].sort().join(" / ");
         const tone = luma ? Math.abs(luma[a]! - luma[b]!) : 0;
@@ -526,7 +562,7 @@ for (const kind of options.kinds) {
   const lines: string[] = [];
   const total = grid.width * grid.height;
   lines.push(`${kind} from the seat: eye (${grid.eye.x}, ${grid.eye.y}, ${grid.eye.z}), ${grid.width} x ${grid.height}, focal ${f1(grid.focal)} px${frame ? `, tone from ${framePath}` : ""}`);
-  lines.push(`crease > ${options.creaseDegrees} deg; designed pairs: ${options.designed ?? "none named"}`);
+  lines.push(`crease > ${options.creaseDegrees} deg by ${options.shading ? "SHADING" : "geometric"} normals; designed pairs: ${options.designed ?? "none named"}`);
   lines.push("", "PARTS (px, share of the frame" + (frame ? ", mean luma8, sd" : "") + ")");
   for (const [part, stat] of [...result.partStats].sort((a, b) => b[1].px - a[1].px)) {
     const mean = stat.sum / stat.px;
@@ -553,7 +589,7 @@ for (const kind of options.kinds) {
   const text = `${lines.join("\n")}\n`;
   writeFileSync(`${options.outDir}/${kind}-survey.txt`, text);
   writeFileSync(`${options.outDir}/${kind}-survey.json`, `${JSON.stringify({
-    kind, width: grid.width, height: grid.height, eye: grid.eye.asArray(), creaseDegrees: options.creaseDegrees,
+    kind, width: grid.width, height: grid.height, eye: grid.eye.asArray(), creaseDegrees: options.creaseDegrees, normals: options.shading ? "shading" : "geometric",
     features: result.features, occlusion: Object.fromEntries(result.occlusion), glass: Object.fromEntries(result.glass),
     parts: Object.fromEntries([...result.partStats].map(([p, s]) => [p, { px: s.px, luma: frame ? s.sum / s.px : null }])), slabs: result.slabs,
   }, null, 1)}\n`);
