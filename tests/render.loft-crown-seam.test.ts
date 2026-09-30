@@ -301,7 +301,42 @@ describe("a loft's crown seam", () => {
       // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
       // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
       // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
-      trainer: "1f9a6faa",
+      // RE-PINNED for the Cessna pass, S1 (jazonshou/cessna-cockpit, 2026-09-29): the deck and the board swept wall to
+      // wall. Checked mesh by mesh against 303372e (positions, indices, normals, UVs, world matrix, thin instances,
+      // material, visibility): 12 of the trainer's 66 moved, none gone, none new. `trainer-glareshield` 24 -> 756
+      // vertices (the rounded deck) and `trainer-instrument-panel` 24 -> 852 (the board), both cockpit-only;
+      // `trainer-door-port`/`-starboard` (the sill cap ends at x 1.9); and the eight dial meshes by their world matrix
+      // only, the row 4 cm inboard (their vertices are bit-identical). The other 54, and every mesh of the jet, the
+      // Global and the 747, are bit-identical.
+      // RE-PINNED for the Cessna pass, S3 (same branch, same check, against S1 dfa5598): the door frames, the A-pillars
+      // and the deck's and the board's buried ends. `trainer-door-port`/`-starboard` 72 -> 2,110 vertices (the rail,
+      // the face and the panel), `trainer-glareshield` 756 -> 252 and `trainer-instrument-panel` 852 -> 276 (square
+      // buried ends in place of the fillets); `trainer-windscreen-post-port`/`-starboard` gone, `trainer-a-pillar-port`
+      // /`-starboard` new, all cockpit-only. The trainer's other 60 of 66, and every mesh of the jet, the Global and the
+      // 747, are bit-identical.
+      // RE-PINNED for S2 (same check, against S3 fc9579e): the panel's face. `trainer-airspeed-gauge`, `-attitude-gauge`
+      // and `-altimeter-gauge` gone; `trainer-dial-faces` (the atlas's screens: the three faces and the radios' windows),
+      // `trainer-dial-bezels` and `trainer-panel-fittings` (the radios' bodies and knobs, the switches) new; the two
+      // needles and the attitude ball's three parts moved (thinner, into the bezels' well). The trainer's other 58 of 66,
+      // and every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S4 (same check, against S2 d2b64ff): `trainer-headliner` new (the headliner and its header, the two
+      // visors) and `trainer-panel-fittings` moved (the compass and its stalk joined it); the trainer's other 65 of 67, and
+      // every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S5 (same check, against S4 bb261f1): `windscreen-center-frame` 779 -> 458 vertices (one tapered
+      // strip round a fillet, where two bars met at a ball), `trainer-cowl-standin` 52 -> 152 (its nose's lip) and
+      // `trainer-panel-fittings` moved (the compass hung under the glass); the trainer's other 64 of 67, and every mesh
+      // of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S6 (same check, against S5 a06be92): `trainer-yokes` new (both seats' wheels, bosses, columns and
+      // collars); the trainer's other 67 of 68, and every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S2b (same check, against S6 c154cbb): `trainer-tach-needle` new; `trainer-dial-faces` and
+      // `trainer-dial-bezels` moved (the tachometer's and the engine cluster's faces and rings joined them); the
+      // trainer's other 66 of 69, the two dials' needles included, and every mesh of the jet, the Global and the 747,
+      // are bit-identical.
+      // RE-PINNED for S7 (same check, against the rebased tip 07fae0e): `trainer-compass-card` new; the yokes (grips 22 x
+      // 30 mm, low caps, their own matte), the headliner (24 chords a corner), the fittings (the compass box round its
+      // window and cavity) and the bezels (the window's ring and the lubber line) moved; the trainer's other 65 of 70, and
+      // every mesh of the jet, the Global and the 747, are bit-identical.
+      trainer: "0d9cc1fc",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

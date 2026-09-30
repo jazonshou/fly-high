@@ -234,7 +234,28 @@ describe("the loft's crown taper", () => {
       // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
       // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
       // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
-      trainer: "c44794a2",
+      // RE-PINNED for the Cessna pass, S1 (jazonshou/cessna-cockpit, 2026-09-29), on the same mesh-by-mesh check as
+      // render.loft-crown-seam's: the deck and the board swept wall to wall (`trainer-glareshield` 24 -> 756 vertices,
+      // `trainer-instrument-panel` 24 -> 852), the doors' sill caps shortened, and the eight dial meshes 4 cm inboard
+      // by their world matrix; the trainer's other 54 of 66, and every other airframe, bit-identical.
+      // RE-PINNED for S3 on the same check against S1 (dfa5598): the door frames 72 -> 2,110 vertices, the deck
+      // 756 -> 252 and the board 852 -> 276 (buried square ends), the two posts replaced by the two A-pillars; the
+      // trainer's other 60 of 66, and every other airframe, bit-identical.
+      // RE-PINNED for S2 on the same check against S3 (fc9579e): the three gauges replaced by the faces, the bezels and
+      // the fittings, the needles and the ball restaged into the well; the trainer's other 58 of 66, and every other
+      // airframe, bit-identical.
+      // RE-PINNED for S4 on the same check against S2 (d2b64ff): the headliner new, the fittings with the compass; the
+      // trainer's other 65 of 67, and every other airframe, bit-identical.
+      // RE-PINNED for S5 on the same check against S4 (bb261f1): the centre frame one strip (779 -> 458 vertices), the
+      // cowl stand-in's lip (52 -> 152), the fittings with the compass under the glass; the trainer's other 64 of 67,
+      // and every other airframe, bit-identical.
+      // RE-PINNED for S6 on the same check against S5 (a06be92): the yokes new; the trainer's other 67 of 68, and every
+      // other airframe, bit-identical.
+      // RE-PINNED for S2b on the same check against S6 (c154cbb): the tachometer's needle new, the faces and the bezels
+      // with the tachometer and the engine cluster; the trainer's other 66 of 69, and every other airframe, bit-identical.
+      // RE-PINNED for S7 on the same check against the rebased tip (07fae0e): the compass's card new; the yokes, the
+      // headliner, the fittings and the bezels moved; the trainer's other 65 of 70, and every other airframe, bit-identical.
+      trainer: "412d75a4",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial

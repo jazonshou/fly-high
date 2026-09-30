@@ -23,6 +23,34 @@ import {
   turnedClockwise,
 } from "./support/cockpitProjection";
 import { flyAt } from "./support/visualStateFromSimulator";
+import { TRAINER_BEZEL, TRAINER_TACH, trainerDialPlacements, trainerTachFrame } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
+
+/**
+ * A Cessna dial face's front centre, off the BUILT faces mesh: the front vertex (shaded straight toward the pilot) nearest
+ * the dial's axis. The face is a disc whose front is a fan from its centre, so that vertex IS the centre.
+ */
+function builtFaceCentre(fixture: { mesh(name: string): AbstractMesh }, dial: string): Vector3 {
+  // the three dials, and the tachometer (the Cessna pass, S2b), whose face is on the same board
+  const tach = trainerTachFrame();
+  const placement = dial === "tach" ? { centre: tach.origin, normal: tach.out } : trainerDialPlacements().find((p) => p.name === dial)!;
+  const mesh = fixture.mesh("trainer-dial-faces");
+  const positions = worldVertices(mesh);
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  let best: Vector3 | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  positions.forEach((p, i) => {
+    const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
+    if (Vector3.Dot(n, placement.normal) < 0.999) return;
+    const off = p.subtract(placement.centre);
+    const radial = off.subtract(placement.normal.scale(Vector3.Dot(off, placement.normal))).length();
+    if (radial < bestDistance) {
+      bestDistance = radial;
+      best = p;
+    }
+  });
+  expect(bestDistance, `${dial}: a face vertex on the dial's axis`).toBeLessThan(1e-6);
+  return best!;
+}
 
 /**
  * THE INSTRUMENTS MOVE, and every one moves the right way ROUND, held to what the
@@ -158,6 +186,29 @@ describe("the projection and the clockwise test these tests stand on", () => {
   });
 });
 
+/**
+ * The Cessna's BUILT panel face: the flat normal of the board's pilot-facing triangles, and the direction up that face.
+ * Read off the board's own triangles: it is a section swept across the cabin in body space, with no transform of its
+ * own, so its world matrix says nothing about its lean. Only the face's straight run counts (normals with no sideways
+ * part): each end's fillet turns its normals toward the wall and would bias the lean.
+ */
+function builtPanelFace(panel: AbstractMesh): { normal: Vector3; up: Vector3 } {
+  panel.computeWorldMatrix(true);
+  const data = panel.getVerticesData(VertexBuffer.NormalKind)!;
+  const world = panel.getWorldMatrix();
+  const toward = new Vector3(-1, 0, 0);
+  let sum = Vector3.Zero();
+  for (let i = 0; i + 2 < data.length; i += 3) {
+    const n = Vector3.TransformNormal(new Vector3(data[i]!, data[i + 1]!, data[i + 2]!), world).normalize();
+    if (Math.abs(n.z) < 1e-6 && Vector3.Dot(n, toward) > 0.9) sum = sum.add(n);
+  }
+  expect(sum.length(), "the panel's pilot-facing face was not found").toBeGreaterThan(0);
+  const normal = sum.normalize();
+  const vertical = new Vector3(0, 1, 0);
+  const up = vertical.subtract(normal.scale(Vector3.Dot(vertical, normal))).normalize();
+  return { normal, up };
+}
+
 // ---- the Cessna's needles ------------------------------------------------------------------
 
 describe("the Cessna's needles", () => {
@@ -165,10 +216,7 @@ describe("the Cessna's needles", () => {
 
   /** The dial's own plane, from the BUILT panel: the normal toward the pilot, up the face, and the pilot's right. */
   function dialPlane(): { normal: Vector3; up: Vector3; right: Vector3 } {
-    const panel = fixture.mesh("trainer-instrument-panel");
-    panel.computeWorldMatrix(true);
-    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-    const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    const { normal, up } = builtPanelFace(fixture.mesh("trainer-instrument-panel"));
     // The pilot looks along -normal; right = forward x up in this codebase's right-handed frame.
     const right = Vector3.Cross(normal.scale(-1), up).normalize();
     return { normal, up, right };
@@ -207,15 +255,15 @@ describe("the Cessna's needles", () => {
   beforeAll(() => { fixture = buildFixture("trainer"); });
   afterAll(() => disposeFixture(fixture));
 
-  it("has each needle's origin on its gauge's centre, with local X the dial's normal, before and after it turns", () => {
+  it("has each needle's origin on its face's centre, with local X the dial's normal, before and after it turns", () => {
     const { normal } = dialPlane();
-    for (const dial of ["airspeed", "altimeter"]) {
-      const gauge = fixture.mesh(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
-      for (const readings of [{}, { airspeed: 70, altitude: 900 }]) {
+    for (const dial of ["airspeed", "altimeter", "tach"]) {
+      const face = builtFaceCentre(fixture, dial);
+      for (const readings of [{}, { airspeed: 70, altitude: 900, engineRpm: 2_300 }]) {
         show(readings);
         const { mesh, hub } = needle(dial);
-        // 1 mm: the origin is the gauge's centre, where a needle turns about
-        expect(Vector3.Distance(hub, gauge), `${dial}: needle origin against its gauge's centre`).toBeLessThan(1e-3);
+        // on the face's front, at its centre, where a needle turns about
+        expect(Vector3.Distance(hub, face), `${dial}: needle origin against its face's centre`).toBeLessThan(1e-4);
         const localX = Vector3.TransformNormal(new Vector3(1, 0, 0), mesh.getWorldMatrix()).normalize();
         expect(Vector3.Dot(localX, normal), `${dial}: needle local X against the dial's normal`).toBeGreaterThan(0.99999);
       }
@@ -225,18 +273,19 @@ describe("the Cessna's needles", () => {
   it("points every needle at 12 o'clock before anything turns it (a fresh aircraft, no update yet)", () => {
     const fresh = buildFixture("trainer");
     try {
-      const panel = fresh.mesh("trainer-instrument-panel");
-      const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
-      const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-      for (const dial of ["airspeed", "altimeter"]) {
+      const { normal, up } = builtPanelFace(fresh.mesh("trainer-instrument-panel"));
+      for (const dial of ["airspeed", "altimeter", "tach"]) {
+        // the tachometer's needle is the dials' scaled with its face (27 mm to 34)
+        const scale = dial === "tach" ? TRAINER_TACH.faceRadius / TRAINER_BEZEL.faceRadius : 1;
         const mesh = fresh.mesh(`trainer-${dial}-needle`);
         const hub = mesh.getAbsolutePosition();
-        const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02);
+        const far = worldVertices(mesh).filter((v) => Vector3.Distance(v, hub) > 0.02 * scale);
         const tip = far.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / far.length);
         const v = tip.subtract(hub);
-        // in the dial's plane the pointer is straight up the face; out of it, it stands 4.5 mm in front of the origin
-        expect(Vector3.Dot(v, up), `${dial}: pointer length up the face`).toBeCloseTo(0.028, 4);
-        expect(Vector3.Dot(v, normal), `${dial}: stands in front of its origin, toward the pilot`).toBeCloseTo(0.0045, 4);
+        // in the dial's plane the pointer is straight up the face; out of it, it stands 0.9 mm in front of the origin (on
+        // the face's front): 0.3 mm clear of the face and half its 1.2 mm thickness, inside the bezel's 2 mm well
+        expect(Vector3.Dot(v, up), `${dial}: pointer length up the face`).toBeCloseTo(0.028 * scale, 4);
+        expect(Vector3.Dot(v, normal), `${dial}: stands in front of its origin, toward the pilot`).toBeCloseTo(0.0009, 5);
         const across = v.subtract(up.scale(Vector3.Dot(v, up))).subtract(normal.scale(Vector3.Dot(v, normal)));
         expect(across.length(), `${dial}: no sideways component`).toBeLessThan(1e-6);
       }
@@ -245,10 +294,11 @@ describe("the Cessna's needles", () => {
     }
   });
 
-  it("turns each needle CLOCKWISE ON THE SCREEN as its reading rises (airspeed, altimeter)", () => {
+  it("turns each needle CLOCKWISE ON THE SCREEN as its reading rises (airspeed, altimeter, tachometer)", () => {
     const cases = [
       { dial: "airspeed", low: { airspeed: 60 / KNOTS }, high: { airspeed: 100 / KNOTS } },
       { dial: "altimeter", low: { altitude: 1_100 / FEET }, high: { altitude: 1_350 / FEET } },
+      { dial: "tach", low: { engineRpm: 1_500 }, high: { engineRpm: 2_500 } },
     ] as const;
     for (const { dial, low, high } of cases) {
       show(low);
@@ -265,6 +315,7 @@ describe("the Cessna's needles", () => {
     const sweeps = [
       { dial: "airspeed", make: (v: number) => ({ airspeed: v / KNOTS }), values: [0, 20, 40, 60, 80, 100, 120, 140, 160] },
       { dial: "altimeter", make: (v: number) => ({ altitude: v / FEET }), values: [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 990] },
+      { dial: "tach", make: (v: number) => ({ engineRpm: v }), values: [0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500] },
     ];
     for (const { dial, make, values } of sweeps) {
       const angles = values.map((value) => {
@@ -286,6 +337,8 @@ describe("the Cessna's needles", () => {
       ["airspeed", (v) => ({ airspeed: v / KNOTS }), [[0, -150], [40, -75], [80, 0], [120, 75], [160, 150], [220, 150]]],
       // feet of altitude ABOVE SEA LEVEL -> degrees: 360 per 1,000, wrapping
       ["altimeter", (v) => ({ altitude: v / FEET }), [[0, 0], [250, 90], [500, 180], [750, 270], [1_250, 90], [5_249.3, 89.748]]],
+      // RPM -> degrees: -135 at 0, +135 at 3,500, clamped
+      ["tach", (v) => ({ engineRpm: v }), [[0, -135], [700, -81], [1_750, 0], [2_750, 77.143], [3_500, 135], [4_000, 135]]],
     ];
     for (const [dial, make, points] of cases) {
       for (const [reading, expected] of points) {
@@ -328,10 +381,24 @@ describe("the Cessna's needles", () => {
     }
   });
 
+  it("agrees with the number the HUD renders for the same state: RPM (the tachometer, S2b)", () => {
+    for (const engineRpm of [700, 1_500, 2_213, 2_750]) {
+      const state = stateWith({ engineRpm });
+      const markup = renderHud(state, "trainer");
+      const hud = Number(/<small>RPM<\/small><strong>(\d+)<\/strong>/.exec(markup)?.[1]);
+      expect(Number.isFinite(hud), `${engineRpm}: parsed the HUD's RPM`).toBe(true);
+      show({ engineRpm });
+      // the needle's angle, back to a reading with the literal inverse of the mapping
+      const rpm = ((planeAngle("tach") + 135) / 270) * 3_500;
+      // the HUD rounds to 10 RPM, the needle does not
+      expect(Math.abs(rpm - hud), `${engineRpm}: needle says ${rpm.toFixed(1)} RPM, HUD ${hud}`).toBeLessThanOrEqual(5 + 0.05);
+    }
+  });
+
   it("holds a needle where it was when the reading is not a number, instead of poisoning its transform", () => {
-    show({ airspeed: 50 / KNOTS, altitude: 800 });
-    show({ airspeed: Number.NaN, altitude: Number.POSITIVE_INFINITY });
-    for (const dial of ["airspeed", "altimeter"]) {
+    show({ airspeed: 50 / KNOTS, altitude: 800, engineRpm: 2_000 });
+    show({ airspeed: Number.NaN, altitude: Number.POSITIVE_INFINITY, engineRpm: Number.NaN });
+    for (const dial of ["airspeed", "altimeter", "tach"]) {
       const { mesh } = needle(dial);
       const q = mesh.rotationQuaternion!;
       expect(Number.isFinite(q.x + q.y + q.z + q.w), `${dial} rotation`).toBe(true);
@@ -388,12 +455,12 @@ interface BallCase {
   readonly label: string;
   readonly prefix: string;
   readonly pivotName: string;
-  /** The bar's slide per degree of nose-up, metres: 0.75 mm on the Cessna's 0.036 m ball (it was 1 mm on the glass decks' 0.048 m ones). */
+  /** The bar's slide per degree of nose-up, metres: 0.6 mm on the Cessna's 0.029 m ball (1 mm on the glass decks' 0.048 m ones). */
   readonly metresPerDegree: number;
   readonly radius: number;
 }
 const BALLS: readonly BallCase[] = [
-  { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: 0.00075, radius: 0.036 },
+  { kind: "trainer", label: "Cessna", prefix: "trainer-attitude", pivotName: "trainer-attitude-pivot", metresPerDegree: (0.001 * 0.029) / 0.048, radius: 0.029 },
 ];
 
 describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball", (_label, ball) => {
@@ -437,10 +504,7 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
     // and the pilot looks along its normal reversed, his right being forward x up. (The two PFD
     // balls that used to run through here faced straight aft and could use the body's own axes; they
     // are gone, and assuming their simpler case here would silently mis-measure a leaning dial.)
-    const panel = fixture.mesh("trainer-instrument-panel");
-    panel.computeWorldMatrix(true);
-    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-    const panelUp = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    const { normal, up: panelUp } = builtPanelFace(fixture.mesh("trainer-instrument-panel"));
     plane = { up: panelUp, right: Vector3.Cross(normal.scale(-1), panelUp).normalize() };
     // the diameter's two ends, found at rest in the PIVOT's own frame (the dial may lean): the sky half's vertices on y = 0
     pivot().computeWorldMatrix(true);
@@ -581,10 +645,7 @@ describe("the Cessna's attitude dial", () => {
 
   /** The dial's plane, from the BUILT panel: the normal toward the pilot, up the face, the pilot's right. */
   function plane(): { normal: Vector3; up: Vector3; right: Vector3 } {
-    const panel = fixture.mesh("trainer-instrument-panel");
-    panel.computeWorldMatrix(true);
-    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-    const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    const { normal, up } = builtPanelFace(fixture.mesh("trainer-instrument-panel"));
     return { normal, up, right: Vector3.Cross(normal.scale(-1), up).normalize() };
   }
 
@@ -598,26 +659,30 @@ describe("the Cessna's attitude dial", () => {
     }
   });
 
-  it("stands on its dial: radius 0.036 on the 0.08 dial, centred on it, sky and ground 1.5 mm in front of the face, the bar in front of them", () => {
+  it("stands in its dial's well: radius 0.029 inside the 0.034 face, centred on it, sky and ground 0.3 mm in front of the face, the bar in front of them, all behind the bezel's front", () => {
     const { normal, up, right } = plane();
-    const gauge = fixture.mesh("trainer-attitude-gauge");
-    const gaugeCentre = gauge.getBoundingInfo().boundingBox.centerWorld;
-    const along = (v: Vector3) => Vector3.Dot(v.subtract(gaugeCentre), normal);
-    const inPlane = (v: Vector3) => ({ u: Vector3.Dot(v.subtract(gaugeCentre), up), r: Vector3.Dot(v.subtract(gaugeCentre), right) });
+    const face = builtFaceCentre(fixture, "attitude");
+    const along = (v: Vector3) => Vector3.Dot(v.subtract(face), normal);
+    const inPlane = (v: Vector3) => ({ u: Vector3.Dot(v.subtract(face), up), r: Vector3.Dot(v.subtract(face), right) });
     const halves = [...worldVertices(fixture.mesh("trainer-attitude-sky")), ...worldVertices(fixture.mesh("trainer-attitude-ground"))];
-    // the face is 0.04 in radius; the ball 0.036, so 4 mm of face shows round it
-    expect(Math.max(...worldVertices(gauge).map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.04, 4);
-    expect(Math.max(...halves.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.036, 4);
+    // the face the pilot sees is the bezel's opening, 0.034 in radius; the ball 0.029, so a 5 mm ring of face shows round
+    // it, where the bank scale is drawn
+    const bezel = worldVertices(fixture.mesh("trainer-dial-bezels")).filter((v) => Math.hypot(inPlane(v).u, inPlane(v).r) < 0.05);
+    expect(Math.min(...bezel.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r))), "the bezel's opening").toBeCloseTo(TRAINER_BEZEL.faceRadius, 4);
+    expect(Math.max(...halves.map((v) => Math.hypot(inPlane(v).u, inPlane(v).r)))).toBeCloseTo(0.029, 4);
     // centred on the dial within a millimetre (the bounding box of a disc is centred on it)
     const us = halves.map((v) => inPlane(v).u);
     const rs = halves.map((v) => inPlane(v).r);
     expect(Math.abs((Math.max(...us) + Math.min(...us)) / 2), "centred up the face").toBeLessThan(1e-3);
     expect(Math.abs((Math.max(...rs) + Math.min(...rs)) / 2), "centred across the face").toBeLessThan(1e-3);
-    // the face's front, then the halves' back 1.5 mm in front of it, toward the pilot
-    const faceFront = Math.max(...worldVertices(gauge).map(along));
-    expect(Math.min(...halves.map(along)) - faceFront, "sky and ground stand 1.5 mm proud of the face").toBeCloseTo(0.0015, 5);
+    // the halves' back 0.3 mm in front of the face's front, toward the pilot, and the bar in front of them
+    expect(Math.min(...halves.map(along)), "sky and ground stand 0.3 mm proud of the face").toBeCloseTo(0.0003, 5);
     const bar = worldVertices(fixture.mesh("trainer-attitude-pitch-bar"));
     expect(Math.min(...bar.map(along)), "the bar is in front of the sky and ground").toBeGreaterThan(Math.max(...halves.map(along)));
+    // and all of it inside the well: behind the bezel's front, 2 mm in front of the face
+    const bezelFront = Math.max(...bezel.map(along));
+    expect(bezelFront, "the face is recessed 2 mm behind the bezel's front").toBeCloseTo(TRAINER_BEZEL.faceRecess, 5);
+    expect(Math.max(...[...halves, ...bar].map(along)), "the ball inside the bezel's well").toBeLessThan(bezelFront);
   });
 
   it("hangs its pivot in the frame the builder's turn assumes: X away from the pilot, Y up the dial, Z his right", () => {

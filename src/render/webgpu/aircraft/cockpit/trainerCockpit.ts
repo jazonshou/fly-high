@@ -1,13 +1,43 @@
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
-import type { AircraftBuildContext } from "../builders";
-import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
-import { basisQuaternion, buildAttitudeBall, glareshieldMaterial, slab, strip, type AttitudeBall } from "./cockpitPrimitives";
-import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
+import { loftSectionPoint, type AircraftBuildContext, type LoftSection } from "../builders";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS, trainerCentreFrameCrownAt } from "../trainerShell";
+import { DISPLAY_STATE_LEVEL } from "./displays/displayState";
+import { TRAINER_DIAL_FACE_FRACTION, TRAINER_ENGINE_CLUSTER_MM, TRAINER_RADIO_WINDOW_ASPECT, TRAINER_TACH_MARKINGS } from "./displays/displayPages";
+import {
+  TRAINER_DISPLAYS,
+  createDisplayAtlas,
+  displayAtlasHeight,
+  displayAtlasWidth,
+  displayMaterial,
+  displaySlots,
+  paintDisplays,
+} from "./displays/displayAtlas";
+import {
+  basisQuaternion,
+  bezelRimMaterial,
+  buildAttitudeBall,
+  glareshieldMaterial,
+  loopSolid,
+  roundedDeckSection,
+  solidPlate,
+  sweptSolid,
+  sweptTube,
+  type LoopProfile,
+  type PartFrame,
+  type PartLoop,
+  type AttitudeBall,
+  type RoundedDeckSection,
+  type SweptSection,
+} from "./cockpitPrimitives";
+import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, pitchBarOffsetMetres, tachometerNeedleDegrees } from "./instrumentMappings";
 
 /**
  * What a pilot in a Cessna 150's LEFT seat sees, built to angles.
@@ -30,8 +60,9 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
  *    across. It is the only row: three dials, as Jason asked (2026-09-23). The
  *    second row, vertical speed and engine at -21, is gone, and the panel was
  *    not re-laid out for it;
- *  - the left windscreen post's axis stands at azimuth -35, hugging the left
- *    edge of the frame (the D3 window is -37 to -31);
+ *  - the left A-pillar stands at the frame's left edge, in the vertical plane
+ *    through the eye at azimuth -41, a band 56 to 72 px wide at 1080p
+ *    (`TRAINER_A_PILLAR`; the old post's axis was at -35, in the D3 window);
  *  - the cowl rises above the glareshield to about -4.7, as a Cessna's does.
  *
  * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at
@@ -42,10 +73,17 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
  */
 
 export interface TrainerCockpitMaterials {
-  /** Dark matte interior: the panel board, the door panels and sill caps. (The hood has its own: `glareshieldMaterial`.) */
+  /** Dark matte interior: the panel board, the door frames and the A-pillars. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
-  /** The windscreen posts. */
+  /** The panel's fittings: the radios' bodies and knobs, the switches, and the compass. */
   readonly dark: PBRMaterial;
+  /**
+   * The yokes (S7): matte, a little lighter than the board, with no specular hot spot. On the fittings' glossy dark
+   * they read 1.6 to 1.9 times the board's luma in the day frame, and the column's collar 2.9 times.
+   */
+  readonly yoke: PBRMaterial;
+  /** The headliner and the sun visors: the cabin's fabric. */
+  readonly headliner: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
   /** Needles. It carries the night glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one. */
   readonly instrumentMarking: PBRMaterial;
@@ -67,45 +105,485 @@ export const TRAINER_PANEL = Object.freeze({
    * panel's rear face, so they follow it and stay at -15 degrees.
    */
   topRearY: -0.005,
-  /**
-   * Half its width. It has to carry the dial row, whose left edge is at z -0.40
-   * (`TRAINER_DIAL_ROW`), with a few centimetres to spare. That is wider than
-   * the tube's rounded shoulder (0.38 at x 2.07, y -0.1) and than the greenhouse
-   * glass narrowing toward the nose (0.35 at x 2.18), and it does not matter: the
-   * cockpit camera hides both, and nothing here is visible from any other
-   * camera. The wall itself, below the shoulder, is 0.47 out.
-   */
-  halfWidth: 0.42,
-  /** The hood: 0.02 thick, standing this far aft of the panel's rear face. */
-  hoodThickness: 0.02,
-  hoodOverhang: 0.08,
+  // NO WIDTH: the board runs wall to wall, each point of it `TRAINER_GLARESHIELD.clearance` inside the cabin at its
+  // own station and height (`trainerCabinHalfWidth`). It was a 0.84 m box, 2.8 cm OUTSIDE the glass at its top (the
+  // cabin's half-width there, x 2.08, is 0.3915).
 });
 
 /** Real gauge size. The dials this replaces were 0.17 to 0.20 m across. */
 export const TRAINER_DIAL_DIAMETER = 0.08;
 
 /**
- * A gauge face: a disc 8 mm thick whose centre stands 5 mm off the panel's rear
- * face along the dial's normal, so its front is 9 mm off it.
+ * THE DIALS' BEZELS AND FACES (S2). Each dial is a ring 6 mm wide standing 3 mm proud of the board, its outer edge a
+ * 2 mm 45 degree chamfer and its inner edge a 1 mm one, round a face recessed 2 mm behind its front: the face's front
+ * is 1 mm proud. A ring with a square inner edge would put back the hard 90 degree rim each flat face disc had.
+ *
+ * ONE SOLID A RING, on the shared rim (`BEZEL_RIM`, its material and its glow law), not the Global's two (a flat frame
+ * and a chamfered rim, each closed on its own): each of those closes itself at the chamfer's shoulder with a face at
+ * 135 degrees to its front, and the pilot sees that edge, where one solid has only the chamfer's 45 there.
+ *
+ * The FACE is a disc `faceRadius / TRAINER_DIAL_FACE_FRACTION` in radius, its edge buried under the ring's inner wall
+ * (so its own 90 degree rim is never in the open), and its picture is a page of the display atlas drawn to the face's
+ * visible circle (`TRAINER_DIAL_FACE_FRACTION`).
  */
-const GAUGE_FACE_OFFSET = 0.005;
-const GAUGE_FACE_THICKNESS = 0.008;
+export const TRAINER_BEZEL = Object.freeze({
+  faceRadius: 0.034,
+  ringWidth: 0.006,
+  proud: 0.003,
+  chamfer: 0.002,
+  innerChamfer: 0.001,
+  faceRecess: 0.002,
+  /**
+   * The ring's and the face's back, 6 mm inside the board: further than an edge-visibility test's depth tolerance
+   * (1.5 mm plus 0.4% of the distance, 4.3 mm at the dials), so a buried edge cannot read as one on the surface.
+   */
+  back: -0.006,
+  /** Chords a quarter circle: 48 round. */
+  cornerSegments: 12,
+});
+
+/** The face's front, out of the board's face along the dial's normal. */
+const FACE_FRONT = TRAINER_BEZEL.proud - TRAINER_BEZEL.faceRecess;
+
+/**
+ * THE RADIO STACK (S2): two units, 160 x 40 mm, one above the other at the dials' height, right of them at the
+ * panel's centre as on a 150. Each is a body with 3 mm rounded edges standing `proud` out of the board, a raised
+ * window (its glass) on the left showing a frequency (a page of the display atlas), and two knobs on the right.
+ */
+export const TRAINER_RADIO = Object.freeze({
+  centreZ: 0.03,
+  width: 0.16,
+  height: 0.04,
+  gap: 0.001,
+  corner: 0.003,
+  proud: 0.006,
+  window: Object.freeze({ across: -0.03, width: 0.07, height: 0.016, corner: 0.0015, proud: 0.0005, chamfer: 0.0004 }),
+  knobs: Object.freeze([
+    Object.freeze({ across: 0.045, radius: 0.0065, height: 0.01 }),
+    Object.freeze({ across: 0.066, radius: 0.005, height: 0.008 }),
+  ]),
+  /** Top to bottom, and the atlas screen each one's window shows. */
+  units: Object.freeze(["com", "nav"] as const),
+});
+
+/**
+ * THE SWITCHES (S2): one row of four rockers under the airspeed dial and the attitude indicator. Each is a base with
+ * a chamfered edge and a paddle with a rounded front, tilted one way or the other (on, off).
+ */
+export const TRAINER_SWITCHES = Object.freeze({
+  across: Object.freeze([-0.335, -0.3, -0.265, -0.23]),
+  /** Their centres, down the board's face from the dial row's. */
+  below: 0.064,
+  base: Object.freeze({ halfWidth: 0.005, halfHeight: 0.009, corner: 0.0015, proud: 0.002, chamfer: 0.0008 }),
+  paddle: Object.freeze({ halfWidth: 0.0035, halfHeight: 0.0065, corner: 0.001, height: 0.004, round: 0.001, tiltDegrees: 12 }),
+  /** Which are on (their paddles' tops rocked in). */
+  on: Object.freeze([true, false, true, false]),
+});
+
+/**
+ * THE TACHOMETER AND THE ENGINE CLUSTER (S2b; the PM, 2026-09-30): detail on the type's board, not flight instruments,
+ * so both are smaller than the three dials and stand apart from their row, the main row still reading as the row.
+ * - THE TACHOMETER, right of the radio stack and a little under the row: a round dial like the three on the same bezel
+ *   (`TRAINER_BEZEL`), its face 27 mm in radius to their 34, and a live needle scaled with it, turned by the engine's
+ *   RPM (`tachometerNeedleDegrees`).
+ * - THE ENGINE CLUSTER, under the radio stack, its right edge on theirs: one face 125 x 30 mm (`TRAINER_ENGINE_CLUSTER_MM`)
+ *   in a rectangular ring of the same section, four small gauges with their needles drawn on the page. Its right edge
+ *   is on the stack's because the pilot's inboard horn (S6) stands in front of the board to the left, over z -0.037 in
+ *   the cluster's rows: as built its ring is 1.6 cm clear of it; centred under the stack the ring's end would pass 2 mm
+ *   behind it, and a cluster the stack's full width 2 cm.
+ */
+export const TRAINER_TACH = Object.freeze({
+  centreZ: 0.151,
+  /** Its centre, down the board's face from the dial row's. */
+  below: 0.012,
+  faceRadius: 0.027,
+});
+export const TRAINER_ENGINE_CLUSTER = Object.freeze({
+  centreZ: TRAINER_RADIO.centreZ + TRAINER_RADIO.width / 2 - TRAINER_ENGINE_CLUSTER_MM.width / 2_000,
+  /** Its centre, down the board's face from the dial row's: its ring's top 6.5 mm under the radio stack. */
+  below: 0.068,
+  /** The visible face's corner radius. */
+  corner: 0.003,
+});
+
+/** The tachometer's plane, centred on its face, at the board's face. */
+export function trainerTachFrame(): PartFrame {
+  const row = faceFrame(onDialRow(TRAINER_TACH.centreZ));
+  return { ...row, origin: row.origin.subtract(row.up.scale(TRAINER_TACH.below)) };
+}
+
+/** The engine cluster's plane, centred on its face, at the board's face. */
+export function trainerEngineClusterFrame(): PartFrame {
+  const row = faceFrame(onDialRow(TRAINER_ENGINE_CLUSTER.centreZ));
+  return { ...row, origin: row.origin.subtract(row.up.scale(TRAINER_ENGINE_CLUSTER.below)) };
+}
+
+/** The cowl stand-in's nose lip (S5): a quarter-round of this radius, in this many bands, ahead of the shell's nose. */
+export const TRAINER_COWL_LIP = Object.freeze({ radius: 0.015, steps: 4 });
+
+/**
+ * THE YOKES (S6): a ram's-horn wheel on a column for each seat, as a 150's are, one mesh on a matte of its own (S7).
+ *
+ * ON TYPE the pilot's hub is under the eye, 0.32 m aft of the board and 0.25 m below the eye (y -0.13), and each horn
+ * rises 0.08 over it: the horn tops stand at -24.7 degrees, 35 px under the bottom of the 16:9 frame, and the cockpit
+ * camera, fixed and level, shows no yoke at all. So both yokes are RAISED 4 cm (`raise`), which puts the pilot's horn
+ * tops about 100 px up from the frame's bottom. Nothing else of them is in the frame.
+ *
+ * THE WHEEL is one tube from horn tip to horn tip: each horn a grip standing straight up, capped at its top, bending at
+ * its foot into an arm that rises 15 degrees inboard to the hub, where the two arms meet over a fillet inside the boss.
+ * The grip is a flattened section, 22 mm across the view and 30 mm fore and aft, as a hand holds it, and its cap is a
+ * low ellipsoid, 4 mm high: round 30 mm grips with hemispherical tops read as two domed bollards in the first frame,
+ * about 105 px wide at 1080p (S7, the PM).
+ *
+ * IT IS NARROWER THAN TYPE. The door's inner face stands 12.5 cm outboard of the eye at the horn tops' height (|z|
+ * 0.385 at y -0.01), so horns 0.15 either side of a hub under the eye would be about 3 cm into the door. The hub stays
+ * under the eye, and the horns are `grip` either side of it, their outer faces 1.6 cm off the door.
+ *
+ * THE COLUMN falls about 14 degrees forward from the hub to enter the board under the switch row. Level at the raised
+ * hub's height it would pass between the airspeed's and the attitude's bezels, a gap narrower than its collar; level at
+ * the height on type, through the switches. It is 29 degrees and more under the eye's line, out of the frame.
+ */
+export const TRAINER_YOKE = Object.freeze({
+  /** Each hub under its seat's eye, either side of the centreline. */
+  hubZ: 0.26,
+  /** The hub's height on type, and how far both yokes are raised from it so the horn tops show. */
+  hubY: -0.13,
+  raise: 0.04,
+  /** The hub's distance aft of the board's face at its height. */
+  aftOfBoard: 0.32,
+  /** Each grip's axis this far either side of its hub; the horn's top this far over the hub. */
+  grip: 0.105,
+  gripTop: 0.08,
+  /** The grip's section: across the view (in the wheel's plane) and fore and aft. */
+  gripHalfWidth: 0.011,
+  gripHalfDepth: 0.015,
+  /** The cap's height over the grip's full section: 0.36 of its half-width, a low ellipsoid. */
+  capHeight: 0.004,
+  armRadius: 0.011,
+  /** The arms' rise from the bends to the hub, degrees. */
+  armRise: 15,
+  bendRadius: 0.025,
+  hubFillet: 0.04,
+  boss: Object.freeze({ radius: 0.022, length: 0.035, round: 0.005 }),
+  /**
+   * The column enters the board at `entryY`, under the switch row, and runs `bury` on into it: its end and its collar's
+   * are 17 mm or more behind the board's face at every vertex, though the end is square to the column, which falls 14
+   * degrees, and the board leans its top forward.
+   */
+  column: Object.freeze({ radius: 0.0125, entryY: -0.17, bury: 0.02 }),
+  collar: Object.freeze({ radius: 0.02, length: 0.015, round: 0.005 }),
+  segments: 20,
+});
+
+/** A yoke's hub, as built: under its seat's eye, raised, `aftOfBoard` aft of the board. `side` -1 is the pilot's. */
+export function trainerYokeHub(side: -1 | 1): Vector3 {
+  const y = TRAINER_YOKE.hubY + TRAINER_YOKE.raise;
+  return new Vector3(rearFaceXAt(y) - TRAINER_YOKE.aftOfBoard, y, side * TRAINER_YOKE.hubZ);
+}
+
+/**
+ * A yoke's wheel as one tube's centreline and radii, from the port horn's tip to the starboard horn's, in the vertical
+ * plane through its hub: each half a hub fillet, an arm, a bend, a grip and a dome.
+ */
+export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii: number[]; halfDepths: number[] } {
+  const y = TRAINER_YOKE;
+  const hub = trainerYokeHub(side);
+  const rise = (y.armRise * Math.PI) / 180;
+  const out = { u: Math.cos(rise), v: -Math.sin(rise) };
+  // each station's half-width in the wheel's plane (r) and fore and aft (d)
+  const half: { u: number; v: number; r: number; d: number }[] = [];
+  // the fillet over the hub, from its middle (straight up from its centre) to where it meets the arm
+  const hubCentre = { u: 0, v: -y.hubFillet / Math.cos(rise) };
+  for (const a of [Math.PI / 2, Math.PI / 2 - rise / 2, Math.PI / 2 - rise]) {
+    half.push({ u: hubCentre.u + y.hubFillet * Math.cos(a), v: hubCentre.v + y.hubFillet * Math.sin(a), r: y.armRadius, d: y.armRadius });
+  }
+  // the arm, to the bend
+  const corner = { u: y.grip, v: -y.grip * Math.tan(rise) };
+  const turn = Math.PI / 2 + rise;
+  const reach = y.bendRadius * Math.tan(turn / 2);
+  const bendIn = { u: corner.u - out.u * reach, v: corner.v - out.v * reach };
+  const armStart = half[half.length - 1]!;
+  for (const t of [1 / 3, 2 / 3, 1]) {
+    half.push({ u: armStart.u + (bendIn.u - armStart.u) * t, v: armStart.v + (bendIn.v - armStart.v) * t, r: y.armRadius, d: y.armRadius });
+  }
+  // the bend, turning up into the grip, thickening from the arm's radius to the grip's
+  const bendOut = { u: corner.u, v: corner.v + reach };
+  const bendCentre = { u: y.grip - y.bendRadius, v: bendOut.v };
+  const from = Math.atan2(bendIn.v - bendCentre.v, bendIn.u - bendCentre.u);
+  for (let k = 1; k <= 6; k += 1) {
+    const a = from + (-from * k) / 6;
+    half.push({
+      u: bendCentre.u + y.bendRadius * Math.cos(a), v: bendCentre.v + y.bendRadius * Math.sin(a),
+      r: y.armRadius + ((y.gripHalfWidth - y.armRadius) * k) / 6, d: y.armRadius + ((y.gripHalfDepth - y.armRadius) * k) / 6,
+    });
+  }
+  // the grip, straight up to the cap's base, and the cap: a quarter of an ellipse in each plane, `capHeight` high
+  const base = y.gripTop - y.capHeight;
+  for (const t of [1 / 3, 2 / 3, 1]) half.push({ u: y.grip, v: bendOut.v + (base - bendOut.v) * t, r: y.gripHalfWidth, d: y.gripHalfDepth });
+  for (const degrees of [11.25, 22.5, 33.75, 45, 56.25, 67.5, 78.75, 87]) {
+    const a = (degrees * Math.PI) / 180;
+    half.push({ u: y.grip, v: base + y.capHeight * Math.sin(a), r: y.gripHalfWidth * Math.cos(a), d: y.gripHalfDepth * Math.cos(a) });
+  }
+  const whole = [...half.slice(1).reverse().map((p) => ({ ...p, u: -p.u })), ...half];
+  return {
+    centres: whole.map((p) => new Vector3(hub.x, hub.y + p.v, hub.z + p.u)),
+    radii: whole.map((p) => p.r),
+    halfDepths: whole.map((p) => p.d),
+  };
+}
+
+/**
+ * THE OVERHEAD (S4): the headliner, its header, the sun visors and the compass.
+ *
+ * THE HEADLINER is one smooth solid under the roof slab (`trainer-cabin-roof`, y 0.18 to 0.23) and the glass crown
+ * outboard of it: a rounded rectangle in plan, full width (`halfWidth`, 2.5 cm inside the glass at the ceiling's height)
+ * from `aftX` to `frontX`, the slab's front edge. Its ceiling hangs `ceilingDrop` under the slab's underside, so it
+ * covers the slab from inside. THE HEADER is its rim: a round of `headerRadius` standing `headerDrop` under the ceiling,
+ * run into the ceiling by a concave fillet of `filletRadius`, so the ceiling, the fillet and the round meet on one
+ * normal each. It is NOT a full bar hung under the edge: this cabin's roof edge is 6 cm over the eye and 24 cm ahead of
+ * it, and a 5 cm bar under it brought the windscreen's top down from +14 to about +8 degrees straight ahead; standing
+ * 1.2 cm down it is at +13.25 (measured, a ray up from the horizon straight ahead).
+ *
+ * THE VISORS, two, stowed flat under the ceiling behind the header, their fronts at about +14 degrees straight ahead;
+ * each is a plate with a round edge and round corners, its outer end under the headliner's side rim.
+ *
+ * THE COMPASS hangs on a stalk from the windscreen centre strip's run aft along the crown (`trainerCentreFrameCrownAt`,
+ * `trainerShell.ts`), as a 150's does from its windscreen's centre strip: a rounded box just under the glass. Since S7
+ * its aft face has a window, ringed in the dials' bezel section, with a lubber line down its middle, and behind it the
+ * card: a drum turning about the vertical with the heading, its numerals on the display atlas (`drawTrainerCompassCard`).
+ * It was a blank box, 185 x 135 px in the first frame. Under the S4 bars it hung from the crown member's underside, 8 mm inside the glass, and
+ * its centre sat at +2.85 degrees; the S5 strip, 18 mm through there, stands 7 mm OUTSIDE the glass, so the box is
+ * hung by the glass instead (`underGlass`), and its stalk runs up through the glass into the strip.
+ */
+export const TRAINER_OVERHEAD = Object.freeze({
+  aftX: 1.2,
+  frontX: 1.62,
+  halfWidth: 0.305,
+  cornerRadius: 0.1,
+  /**
+   * Chords round each corner. The port corner is 0.14 to 0.24 m ahead of the eye, and at 6 (15 degrees each) its chords
+   * read as short straight runs in the frame's 2x crop; at 24 the header's outline forward of the visors is 0.55 px off a
+   * fair curve, where it was 0.76 (S7, the PM).
+   */
+  cornerSegments: 24,
+  /** The slab's underside. */
+  roofY: 0.18,
+  ceilingDrop: 0.002,
+  headerRadius: 0.025,
+  headerDrop: 0.012,
+  filletRadius: 0.01,
+  /**
+   * How far up into the slab the headliner's top reaches (buried). Outboard of the slab's chamfered corners it stands
+   * under the glass crown instead, and at 2 cm up it came within 13 mm of the built glass there; at 12 it is 4 cm off.
+   */
+  buried: 0.012,
+  /** 300 wide each, a 5 mm gap between: their outer ends reach the headliner's side rim, under which they are buried. */
+  visor: Object.freeze({ width: 0.3, depth: 0.12, thickness: 0.008, corner: 0.01, gap: 0.005, frontX: 1.565 }),
+  /**
+   * `underGlass`: the box's top this far under the glass's crown line over its front face. Since S7 the box is swept
+   * round its WINDOW (`compassBoxProfile`), so its height follows from its width and the window's: 2 x (the window's
+   * half-height + the box's half-width - the window's half-width), 46 mm.
+   */
+  compass: Object.freeze({
+    x: 1.955, width: 0.06, height: 0.046, depth: 0.07, edge: 0.006, stalkRadius: 0.004, underGlass: 0.005,
+    /** The window's opening in the aft face, 32 x 18 mm, its corners 4 mm round; a ring of the dials' section round it. */
+    window: Object.freeze({ halfWidth: 0.016, halfHeight: 0.009, corner: 0.004 }),
+    /** The card's drum: its radius and height, how far its aft face stands behind the box's, and its chords round. */
+    drum: Object.freeze({ radius: 0.022, height: 0.03, recess: 0.007, segments: 72 }),
+    /** The lubber line: a rod down the window's middle, just in front of the card. */
+    lubber: Object.freeze({ width: 0.0012 }),
+  }),
+});
+
+/** The headliner's profile, u outward from its outline and a DOWN from the slab's underside: the ceiling, the fillet, the header's round, up into the slab. */
+function headlinerProfile(): LoopProfile {
+  const o = TRAINER_OVERHEAD;
+  const ceiling = o.ceilingDrop;
+  const round = { u: -o.headerRadius, a: ceiling + o.headerDrop - o.headerRadius };
+  // the fillet: tangent to the ceiling (its centre `filletRadius` under it) and to the round, outside it
+  const fa = ceiling + o.filletRadius;
+  const fu = round.u - Math.sqrt((o.headerRadius + o.filletRadius) ** 2 - (fa - round.a) ** 2);
+  const touch = { u: fu + (o.filletRadius * (round.u - fu)) / (o.headerRadius + o.filletRadius), a: fa + (o.filletRadius * (round.a - fa)) / (o.headerRadius + o.filletRadius) };
+  const fillet = [-Math.PI / 2, (-Math.PI / 2 + Math.atan2(touch.a - fa, touch.u - fu)) / 2].map((t) => ({ u: fu + o.filletRadius * Math.cos(t), a: fa + o.filletRadius * Math.sin(t) }));
+  const from = Math.atan2(touch.a - round.a, touch.u - round.u);
+  const chords = 8;
+  const bead = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = from * (1 - k / chords);
+    return { u: round.u + o.headerRadius * Math.cos(t), a: round.a + o.headerRadius * Math.sin(t) };
+  });
+  const points = [{ u: -o.cornerRadius, a: ceiling }, ...fillet, ...bead, { u: 0, a: -o.buried }, { u: -o.cornerRadius, a: -o.buried }];
+  return {
+    points,
+    rounds: [
+      { first: 1, last: 3, centre: { u: fu, a: fa }, concave: true },
+      { first: 3, last: 3 + chords, centre: round },
+    ],
+  };
+}
+
+/** A plate `thickness` thick whose edge is a half round, about a rounded-rectangle loop; caps at its two faces. */
+function roundEdgedPlate(thickness: number, corner: number): LoopProfile {
+  const r = thickness / 2;
+  const chords = 6;
+  const edge = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = -Math.PI / 2 + (Math.PI * k) / chords;
+    return { u: -r + r * Math.cos(t), a: r * Math.sin(t) };
+  });
+  return {
+    points: [{ u: -corner, a: -r }, ...edge, { u: -corner, a: r }],
+    rounds: [{ first: 1, last: 1 + chords, centre: { u: -r, a: 0 } }],
+  };
+}
+
+/**
+ * The glass's crown line at station `x`: its rings' tops, straight between the two either side, as the loft lays it.
+ * Across the compass's 60 mm the glass falls under 0.1 mm from it.
+ */
+function trainerGlassCrownY(x: number): number {
+  const sections = TRAINER_CANOPY_SECTIONS;
+  const i = sections.findIndex((section) => section.x >= x);
+  if (i <= 0) throw new RangeError(`the glass has no crown between its rings at x ${x}`);
+  const [low, high] = [sections[i - 1]!, sections[i]!];
+  const t = (x - low.x) / (high.x - low.x);
+  return loftSectionPoint(low, 0).y + (loftSectionPoint(high, 0).y - loftSectionPoint(low, 0).y) * t;
+}
+
+/**
+ * The compass box's section, swept round its WINDOW's outline (u outward from it, a toward the pilot from the aft face),
+ * one closed solid from its cavity's middle to its front face's: the cavity's back, facing the window; the cavity's side,
+ * 6 mm inside the box's; the lip under the window's ring, facing forward into the cavity; the window's wall up to the aft
+ * face, 2 mm out from the opening and so behind the ring's inner wall; the aft face out to a round, the side, a round,
+ * and the front face in. Both ends are on the outline's core, which caps close, so the section closes on nothing. The
+ * cavity holds the card with 2 mm to spare, and a ray through the window meets the card or the cavity, never the world
+ * behind the compass.
+ */
+function compassBoxProfile(): LoopProfile {
+  const c = TRAINER_OVERHEAD.compass;
+  const out = c.width / 2 - c.window.halfWidth;
+  if (Math.abs(2 * (c.window.halfHeight + out) - c.height) > 1e-9) throw new RangeError("the compass's height is not its width's and its window's");
+  const [lip, cavity, cavityBack] = [-TRAINER_BEZEL.back, out - 0.006, c.depth - 0.006];
+  const e = c.edge;
+  const chords = 4;
+  const aftRound = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = (Math.PI / 2) * (1 - k / chords);
+    return { u: out - e + e * Math.cos(t), a: -e + e * Math.sin(t) };
+  });
+  const frontRound = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = (-Math.PI / 2) * (k / chords);
+    return { u: out - e + e * Math.cos(t), a: -c.depth + e + e * Math.sin(t) };
+  });
+  return {
+    points: [
+      { u: -c.window.corner, a: -cavityBack }, { u: cavity, a: -cavityBack }, { u: cavity, a: -lip },
+      { u: 0.002, a: -lip }, { u: 0.002, a: 0 },
+      ...aftRound, ...frontRound,
+      { u: -c.window.corner, a: -c.depth },
+    ],
+    rounds: [
+      { first: 5, last: 5 + chords, centre: { u: out - e, a: -e } },
+      { first: 6 + chords, last: 6 + 2 * chords, centre: { u: out - e, a: -c.depth + e } },
+    ],
+  };
+}
+
+/**
+ * THE COMPASS'S CARD: an open drum about the vertical through `centre`, its local x forward and z to the pilot's right,
+ * the point at angle phi (from forward toward the right) at (r cos phi, y, r sin phi). Its first half (phi 0 to 180)
+ * carries the slot's top row and its second the bottom row, each row running from its right end at the half's start to
+ * its left end, so its numerals read left to right from the seat (`drawTrainerCompassCard`). Wound as the rest (a drawn
+ * face's cross product points into the solid), shaded on its radial normals, and its two seams have a vertex each side.
+ */
+function compassCardMesh(
+  build: AircraftBuildContext,
+  name: string,
+  centre: Vector3,
+  slot: { readonly x: number; readonly y: number; readonly w: number; readonly h: number },
+  atlas: { readonly width: number; readonly height: number },
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const d = TRAINER_OVERHEAD.compass.drum;
+  const half = d.segments / 2;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (const [row, from] of [[0, 0], [1, 180]] as const) {
+    const base = positions.length / 3;
+    const rowTop = slot.y + (row * slot.h) / 2;
+    for (let k = 0; k <= half; k += 1) {
+      const phi = ((from + (180 * k) / half) * Math.PI) / 180;
+      const [c, s] = [Math.cos(phi), Math.sin(phi)];
+      for (const up of [-1, 1]) {
+        positions.push(d.radius * c, (up * d.height) / 2, d.radius * s);
+        normals.push(c, 0, s);
+        uvs.push((slot.x + (1 - k / half) * slot.w) / atlas.width, (rowTop + (up > 0 ? 0 : slot.h / 2)) / atlas.height);
+      }
+    }
+    for (let k = 0; k < half; k += 1) {
+      const [b0, t0, b1, t1] = [base + 2 * k, base + 2 * k + 1, base + 2 * k + 2, base + 2 * k + 3];
+      indices.push(b0, b1, t0, t0, b1, t1);
+    }
+  }
+  // its ends, flat discs on the card's black (a corner of the slot's top row, left of every mark): the eye is below
+  // the compass, and an open drum's inside would be the nearest face of it along some rays, under the box
+  for (const up of [-1, 1]) {
+    const centreIndex = positions.length / 3;
+    const u0 = (slot.x + 1) / atlas.width;
+    const v0 = (slot.y + 1) / atlas.height;
+    positions.push(0, (up * d.height) / 2, 0);
+    normals.push(0, up, 0);
+    uvs.push(u0, v0);
+    for (let k = 0; k < d.segments; k += 1) {
+      const phi = (2 * Math.PI * k) / d.segments;
+      positions.push(d.radius * Math.cos(phi), (up * d.height) / 2, d.radius * Math.sin(phi));
+      normals.push(0, up, 0);
+      uvs.push(u0, v0);
+    }
+    for (let k = 0; k < d.segments; k += 1) {
+      const [p, q] = [centreIndex + 1 + k, centreIndex + 1 + ((k + 1) % d.segments)];
+      // drawn from outside: the cross product into the drum, down through the top and up through the bottom
+      if (up > 0) indices.push(centreIndex, p, q);
+      else indices.push(centreIndex, q, p);
+    }
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = uvs;
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.position.copyFrom(centre);
+  mesh.rotationQuaternion = Quaternion.Identity();
+  mesh.refreshBoundingInfo();
+  return mesh;
+}
+
+/** The compass's centre: its top `underGlass` under the glass's crown over its front face, where the glass is lowest. */
+export function trainerCompassCentre(): Vector3 {
+  const { compass } = TRAINER_OVERHEAD;
+  const top = trainerGlassCrownY(compass.x + compass.depth / 2) - compass.underGlass;
+  return new Vector3(compass.x, top - compass.height / 2, 0);
+}
 
 /**
  * THE ATTITUDE BALL on the "attitude" dial, which has no needle: the Global's ball
- * (`buildAttitudeBall`) at 0.75 of its size, so 0.036 m on the 0.08 m dial and 4 mm
- * of face left round it. Its sky and ground stand 1.5 mm in front of the face
- * (`proud`); the bar is the Global's 0.07 x 0.003 scaled by the same 0.75, and it
- * slides 0.75 mm a degree (`pitchBarOffsetMetres` takes the radius), so at the 25
- * degree clamp it is still inside the disc.
+ * (`buildAttitudeBall`) at 0.6 of its size since the bezels (S2), 0.029 m inside a
+ * 0.034 face, so the face's bank scale shows in the 5 mm ring round it. Its sky and
+ * ground stand 0.3 mm in front of the face (`proud`) and are 0.6 mm thick, and the
+ * bar 0.2 mm in front of them: all of it inside the bezel's well (its front 3 mm
+ * proud, the bar's front 2.7). The bar is the Global's 0.07 x 0.003 at the same 0.6,
+ * and it slides with the radius (`pitchBarOffsetMetres`), so at the 25 degree clamp it
+ * is still inside the disc.
  */
 export const TRAINER_ATTITUDE_BALL = Object.freeze({
-  radius: 0.036,
-  thickness: 0.002,
-  proud: 0.0015,
-  barOffset: 0.0015,
-  barLength: 0.0525,
-  barHeight: 0.00225,
+  radius: 0.029,
+  thickness: 0.0006,
+  proud: 0.0003,
+  barOffset: 0.0002,
+  barLength: 0.042,
+  barHeight: 0.0018,
   segments: 24,
   pivotName: "trainer-attitude-pivot",
 });
@@ -120,7 +598,11 @@ export const TRAINER_ATTITUDE_BALL = Object.freeze({
  */
 export const TRAINER_DIAL_ROW = Object.freeze({
   elevationDegrees: -15,
-  dials: Object.freeze([["airspeed", -0.36], ["attitude", -0.26], ["altimeter", -0.16]] as const),
+  // 4 cm INBOARD of the eye's line since the deck went wall to wall (Jason, 2026-09-29): at -0.36 the airspeed dial's
+  // outer edge stood 4.3 mm OUTSIDE the cabin at its own height (the tube's shoulder, 0.3957 there), so a board kept
+  // 2 cm inside the wall left the dial's rim hanging off the board's end. At -0.32 its bezel's edge lands about 1 cm
+  // inside the board at every height; the attitude indicator sits 3.3 degrees right of straight ahead.
+  dials: Object.freeze([["airspeed", -0.32], ["attitude", -0.22], ["altimeter", -0.12]] as const),
 });
 
 /**
@@ -135,9 +617,10 @@ export const TRAINER_NEEDLE = Object.freeze({
   width: 0.003,
   pointerLength: 0.028,
   tailLength: 0.006,
-  thickness: 0.006,
+  /** Along the dial's axis: thin enough to turn inside the bezel's 2 mm well (S2); the hub stands a little prouder. */
+  thickness: 0.0012,
   hubRadius: 0.006,
-  hubThickness: 0.008,
+  hubThickness: 0.0016,
 });
 
 /**
@@ -147,67 +630,464 @@ export const TRAINER_NEEDLE = Object.freeze({
  */
 export const TRAINER_AIRSPEED_FULL_SCALE_KNOTS = 160;
 
-/** Where a needle's origin stands along the dial's normal: the gauge face's own centre, 5 mm off the panel. */
-const NEEDLE_ORIGIN_OFFSET = 0.005;
+/** Where a needle's origin stands along the dial's normal: on the face's front, at its centre. */
+const NEEDLE_ORIGIN_OFFSET = FACE_FRONT;
 
 /**
- * How far in front of its origin the needle's geometry stands, along the dial's
- * normal: the needle is 9.5 mm off the panel, in front of the face (whose front
- * is at 9 mm). The ORIGIN stays on the dial's axis at the gauge's centre, so the
- * needle turns about the axis; only the geometry stands proud of it.
+ * How far in front of its origin the needle's geometry stands, along the dial's normal: the bar's centre 0.3 mm plus
+ * half its thickness in front of the face's front, so the bar is 1.3 to 2.5 mm proud and the hub to 2.7, inside the
+ * bezel's front at 3. The ORIGIN stays on the dial's axis at the face's centre, so the needle turns about the axis;
+ * only the geometry stands proud of it.
  */
-const NEEDLE_STAND_OFF = 0.0045;
+const NEEDLE_STAND_OFF = FACE_FRONT + 0.0003 + TRAINER_NEEDLE.thickness / 2 - NEEDLE_ORIGIN_OFFSET;
 
 /**
- * The left windscreen post's AXIS lies in the vertical plane through the eye at
- * this azimuth (degrees, negative to port). A vertical plane through the eye
- * projects to a vertical LINE on screen, so the whole post reads at one column.
- * At -35 the post hugs the left edge of the frame (-37.5 at 16:9) and reads as a
- * window frame instead of a bar standing in the view; its own thickness spreads
- * it about 2.7 degrees either side of the axis (0.012 m at 0.276 m), so its outer
- * edge touches the frame edge.
+ * The half-width at station `x` and height `y` of a loft's RULED SURFACE between its rings, read the way the loft lays
+ * it: each ring's point at one phase, straight between the two rings either side of `x`. Rings past either end are
+ * held. NaN where `y` is above the crown or below the keel there. The loft's own facets (a ring's points joined by
+ * chords) sit up to a few millimetres inside this, which every clearance below leaves room for.
  */
-export const TRAINER_LEFT_POST_AZIMUTH_DEGREES = -35;
-export const TRAINER_POST_RADIUS = 0.012;
-const POST_RADIUS = TRAINER_POST_RADIUS;
-
-/**
- * The cabin's inner half-widths, measured off the built meshes (metres from the
- * centreline): the tube's flat wall, and the greenhouse glass's base at the sill.
- * Piecewise linear in x between the stations measured.
- */
-const WALL_HALF_WIDTH: readonly (readonly [number, number])[] = [
-  [0.95, 0.5015], [1.62, 0.5005], [1.8, 0.488], [2, 0.4685], [2.05, 0.463],
-];
-const SILL_HALF_WIDTH: readonly (readonly [number, number])[] = [
-  [0.95, 0.437], [1.4, 0.437], [1.62, 0.435], [1.8, 0.424], [2, 0.411], [2.05, 0.395],
-];
-function interpolate(table: readonly (readonly [number, number])[], x: number): number {
-  const first = table[0]!;
-  if (x <= first[0]) return first[1];
-  for (let i = 1; i < table.length; i += 1) {
-    const a = table[i - 1]!;
-    const b = table[i]!;
-    if (x <= b[0]) return a[1] + ((b[1] - a[1]) * (x - a[0])) / (b[0] - a[0]);
+export function loftHalfWidthAt(sections: readonly LoftSection[], x: number, y: number): number {
+  let low = sections[0]!;
+  let high = low;
+  if (x > low.x) {
+    high = sections[sections.length - 1]!;
+    low = high;
+    for (let i = 1; i < sections.length; i += 1) {
+      if (x <= sections[i]!.x) {
+        low = sections[i - 1]!;
+        high = sections[i]!;
+        break;
+      }
+    }
   }
-  return table[table.length - 1]![1];
+  const t = high.x === low.x ? 0 : (x - low.x) / (high.x - low.x);
+  const at = (phase: number) => {
+    const a = loftSectionPoint(low, phase);
+    const b = loftSectionPoint(high, phase);
+    return { y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+  };
+  if (y > at(0).y || y < at(Math.PI).y) return Number.NaN;
+  // down the starboard flank from the crown (phase 0) to the keel (pi), where the height only falls
+  let crown = 0;
+  let keel = Math.PI;
+  for (let step = 0; step < 50; step += 1) {
+    const middle = (crown + keel) / 2;
+    if (at(middle).y > y) crown = middle;
+    else keel = middle;
+  }
+  return at((crown + keel) / 2).z;
 }
 
-/** The door panels and sill caps: how far in from the wall, and how they run. */
-const DOOR = Object.freeze({
-  fromX: 0.95,
-  toX: 2.05,
-  /** The panel's mid-plane sits this far inside the measured wall (the outer face is 5 mm nearer it). */
-  inset: 0.015,
-  thickness: 0.01,
-  bottomY: -0.6,
-  /** Where the vertical wall panel ends and the panel begins to lean in toward the sill. */
-  kneeY: -0.2,
-  /** The sill cap: 0.04 wide, 0.02 thick, its outer edge just inside the glass's base. */
-  capWidth: 0.04,
-  capThickness: 0.02,
-  capInset: 0.005,
+/**
+ * The cabin's inner half-width at (x, y): the tube's wall where the tube is, the greenhouse's glass where the glass
+ * is, the wider where the two closed bodies overlap (the glass's foot is buried in the tube). The cockpit camera hides
+ * both (`cockpitParts`), so what bounds a part the pilot sees is this, less a clearance.
+ */
+export function trainerCabinHalfWidth(x: number, y: number): number {
+  const widths = [loftHalfWidthAt(TRAINER_FUSELAGE_SECTIONS, x, y), loftHalfWidthAt(TRAINER_CANOPY_SECTIONS, x, y)].filter(Number.isFinite);
+  return widths.length > 0 ? Math.max(...widths) : Number.NaN;
+}
+
+/**
+ * THE DECK: a rounded glareshield (`roundedDeckSection`, the Global's, the 747's and the F-16's), WALL TO WALL. Its
+ * round stands on the deck line's sight line (`deckLineDegrees`): a horizontal line across the cabin projects to one
+ * row of the picture at any distance, so the round is the same silhouette the old hood was, and the 2D HUD, laid out
+ * on the deck line, does not move. Under the round
+ * a 45 degree cove turns in 1 cm to the board's face; forward of it the hood falls 12 degrees, steeper than the sight
+ * line, so none of its top is seen from the seat. Across the cabin it runs from one door frame's rail to the other's,
+ * each end buried in its rail (`TRAINER_DOOR_FRAME`): no end of it is in the open.
+ */
+export const TRAINER_GLARESHIELD = Object.freeze({
+  /**
+   * The catalogue's deck line (`cockpitDeckLineDegrees`, 8.31), which the 2D HUD is laid out above: the OLD hood's
+   * silhouette. That hood's top face sloped less than the sight line, so the pilot saw its front edge, 0.04 degrees
+   * over its aft edge's 8.35 straight ahead; the round stands on the silhouette, so the HUD does not move.
+   */
+  deckLineDegrees: aircraftSpec("trainer").cockpitDeckLineDegrees,
+  radius: 0.025,
+  drop: 0,
+  cove: 0.01,
+  hoodFallDegrees: 12,
+  /**
+   * Where the hood stops: just forward of the round. Out of sight behind the round wherever it ends, and a longer hood
+   * would have to narrow with the windscreen, which turns the deck's ends toward the pilot.
+   */
+  hoodEndX: 2.11,
+  roundSegments: 6,
+  /** How far inside the glass or the wall every point of the deck and the board stands. */
+  clearance: 0.02,
 });
+
+/** The board's rear (pilot-facing) face as a line in body x and y: its x at height y. */
+function rearFaceXAt(y: number): number {
+  const { centre, local } = panelFrame();
+  const bottom = centre.add(local(-TRAINER_PANEL.thickness / 2, -TRAINER_PANEL.height / 2));
+  const top = centre.add(local(-TRAINER_PANEL.thickness / 2, TRAINER_PANEL.height / 2));
+  return bottom.x + ((top.x - bottom.x) * (y - bottom.y)) / (top.y - bottom.y);
+}
+
+/**
+ * The deck's section in body x and y. Its aft face is SOLVED, not chosen: the cove's foot has to land on the board's
+ * rear face as it stands, so the board and the dials solved against it (-15 degrees) stay where they are.
+ */
+export function trainerDeckSection(): RoundedDeckSection {
+  const g = TRAINER_GLARESHIELD;
+  const eye = aircraftSpec("trainer").cockpitEye;
+  const section = (aftX: number) => roundedDeckSection(eye, aftX, g.deckLineDegrees, { ...g, hoodDepth: g.hoodEndX - aftX }, "the Cessna");
+  const miss = (aftX: number) => { const foot = section(aftX).faceTop; return foot.x - rearFaceXAt(foot.y); };
+  let aft = 1.9;
+  let fore = 2.15;
+  for (let step = 0; step < 60; step += 1) {
+    const middle = (aft + fore) / 2;
+    if (miss(middle) < 0) aft = middle;
+    else fore = middle;
+  }
+  return section((aft + fore) / 2);
+}
+
+/**
+ * A section swept ACROSS the cabin, from one door frame to the other: a station at each end, each section point out to
+ * its own `half` there (the rail runs in with the glass as it goes forward, so an end follows it), and one `END_LEAD_IN`
+ * inboard of each. The ends are square, flat and BURIED, inside the rail and the face under it (`TRAINER_DOOR_FRAME`).
+ * They were filleted into the walls on a 2 cm round (S1), and those rounds still met the door panels along creases the
+ * pilot saw.
+ *
+ * WHY THE LEAD-INS: `sweptSolid` averages a round's end point over the triangles that meet there, and at a sweep's end
+ * station its two walls meet it unequally (one triangle of one, two of the other, and the other way about at the far
+ * end). With the two end stations alone, the deck's cove line was shaded 15 degrees differently at its two ends. A
+ * station one millimetre in from each end is met equally from both sides, so the whole run between them shades alike.
+ */
+function sweptAcross(
+  build: AircraftBuildContext,
+  name: string,
+  section: SweptSection,
+  material: PBRMaterial,
+  root: TransformNode,
+  half: (point: { readonly u: number; readonly y: number }) => number,
+) {
+  const stations = [{ side: -1, inset: 0 }, { side: -1, inset: END_LEAD_IN }, { side: 1, inset: END_LEAD_IN }, { side: 1, inset: 0 }];
+  return sweptSolid(
+    build,
+    name,
+    section,
+    stations.length,
+    (i, point) => {
+      const out = half(point);
+      if (!Number.isFinite(out)) throw new RangeError(`${name}: no cabin wall for the point at x ${point.u.toFixed(3)}, y ${point.y.toFixed(3)}`);
+      const { side, inset } = stations[i]!;
+      return new Vector3(point.u, point.y, side * (out - inset));
+    },
+    (direction) => new Vector3(direction.u, direction.y, 0),
+    material,
+    root,
+    // a round's end points take the mean of its last chord and the face it meets, as S1's did: the deck's round meets
+    // its cove on one normal, a designed line and not a split one
+    { smoothAlong: true },
+  );
+}
+
+/** The lead-in stations' distance inboard of each end (`sweptAcross`): inside the rail, with the end. */
+const END_LEAD_IN = 0.001;
+
+/** Points down the board's rear face, besides its top and foot, for its ends to follow the wall's curve by. */
+const BOARD_FACE_POINTS = 8;
+
+/**
+ * THE DOOR FRAMES (S3), one a side, in place of three boxes (a panel up to a knee at -0.2, a slab leaning in from there
+ * to the sill, and a 40 x 20 mm cap along it) and the seam where the two slabs met. Each is three pieces on the same
+ * stations along x, following the cabin line at every one, merged into one mesh:
+ *  - THE RAIL, a round of `railRadius` along the sill (`sweptTube`), its top `railOverDeck` over the deck's, and the
+ *    glass's clearance (`TRAINER_GLARESHIELD.clearance`) inside it at every point of its round. Forward of the deck's
+ *    round it falls under the deck line (`railCentre`), so none of it shows past the deck's end.
+ *  - THE FACE under it, a `sweptSolid` tucked up into the rail, down to the NOTCH, where the glass's foot meets the
+ *    tube's shoulder (the cabin line turns in there, so no one convex section can run past it).
+ *  - THE PANEL, the notch to the floor, `wallClearance` inside the tube's wall; its inner face is the face's run on in
+ *    one straight line from the rail's underside to the floor, so neither the notch nor the old knee is a seam.
+ * The face leaves the rail at its underside, not its inner side: 1.5 cm further out, which keeps it off the airspeed
+ * dial's left edge (a face from the rail's inner side stood 2 to 9 mm into that dial's sight line and hid 3.2% of it).
+ * The deck's ends and the board's are buried in the rails and the faces: the deck runs into its door frames as the
+ * F-16's rail runs into its sills (Jason, 2026-09-29: "sweep into the door frame"). The pillars stand in the rails
+ * (`TRAINER_A_PILLAR`).
+ */
+export const TRAINER_DOOR_FRAME = Object.freeze({
+  fromX: 0.95,
+  /** The hood's end: forward of the board's rear face at every height, so both ends are buried to there. */
+  toX: 2.11,
+  railRadius: 0.015,
+  /** The rail's top over the deck's top, so the deck's end is inside the rail. */
+  railOverDeck: 0.0005,
+  /**
+   * How far outboard of the rail's centre line the deck's and the board's ends stand where they are under the rail's
+   * centre: inside the face, not at its inner edge. Above it the deck's end is at the rail's crest, under its top.
+   */
+  endInset: 0.005,
+  floorY: -0.6,
+  /** Below the sill, where the cabin line is the tube's wall: the old panels' outer face's 1 cm. */
+  wallClearance: 0.01,
+  /** The panel at the floor. The inner face leans out from the rail's underside to here. */
+  floorThickness: 0.02,
+  railSegments: 16,
+});
+
+/**
+ * The door frames' stations along x: 0.25 m apart aft, where the cabin runs straight, 0.04 m forward, where it narrows,
+ * and one where the rail's crest stops running level and starts down the deck line's sight plane (`trainerRailCentre`):
+ * the crest is straight between stations, and without that one it dipped 0.1 mm under the deck's round, whose end then
+ * showed over it.
+ */
+export function trainerDoorStations(): number[] {
+  const f = TRAINER_DOOR_FRAME;
+  // the kink: the last x at which the crest is still level (it only falls from there)
+  const level = deckTopY() + f.railOverDeck;
+  let before: number = f.fromX;
+  let after: number = f.toX;
+  for (let step = 0; step < 50; step += 1) {
+    const middle = (before + after) / 2;
+    if (railCrestAt(middle) >= level) before = middle;
+    else after = middle;
+  }
+  const kink = before;
+  const stations = [f.fromX, 1.2, 1.4];
+  for (let x = 1.5; x < f.toX - 1e-9; x += 0.04) stations.push(x);
+  stations.push(f.toX);
+  if (kink > f.fromX && kink < f.toX && stations.every((x) => Math.abs(x - kink) > 1e-4)) stations.push(kink);
+  return stations.sort((a, b) => a - b);
+}
+
+let deckTopMemo: number | null = null;
+/** The deck's top: the round's highest point, on the deck line straight ahead. */
+function deckTopY(): number {
+  deckTopMemo ??= Math.max(...trainerDeckSection().outline.map((p) => p.y));
+  return deckTopMemo;
+}
+
+/** The clearance a point of a door frame keeps inside the cabin line: the glass's 2 cm at and above the sill, the wall's 1 cm below it. */
+function doorClearance(y: number): number {
+  return y >= 0 ? TRAINER_GLARESHIELD.clearance : TRAINER_DOOR_FRAME.wallClearance;
+}
+
+/** Points round a section's round that `insetOutboard` holds inside the cabin line. */
+const ROUND_SAMPLES = 32;
+
+/**
+ * The largest outboard distance (|z|) of the centre of a round of radius `r` in the cross-section at (x, y) with every
+ * point of the round the clearance (`doorClearance`) inside the cabin line at its own height; 0 where some point of it
+ * has no cabin line (above the crown). In closed form: a point's allowance does not depend on the centre's u, so the
+ * centre may go out as far as the tightest point allows, and no search is needed.
+ */
+function insetOutboard(x: number, y: number, r: number): number {
+  let out = Number.POSITIVE_INFINITY;
+  for (let k = 0; k < ROUND_SAMPLES; k += 1) {
+    const a = (k / ROUND_SAMPLES) * 2 * Math.PI;
+    const py = y + r * Math.sin(a);
+    const half = trainerCabinHalfWidth(x, py);
+    if (!Number.isFinite(half)) return 0;
+    out = Math.min(out, half - doorClearance(py) - r * Math.cos(a));
+  }
+  return Math.max(0, out);
+}
+
+/**
+ * The rail's centre at station x, in (u, y), u outboard. Its height: its crest `railOverDeck` over the deck's top, or on
+ * the deck line's sight plane there (0.3 mm over it, a fiftieth of a degree), whichever is lower: a level rail run on
+ * past the deck's round rises over the deck line, and the round's top is ON that line where it is tangent to it, so the
+ * crest cannot be lower and still cover the deck's end. Its u: as far out as it goes with every point of its round the
+ * clearance (`doorClearance`) inside the cabin line at its own height.
+ */
+/**
+ * The rail's crest at station x: `railOverDeck` over the deck's top, level, until it meets the deck line's sight plane
+ * (0.3 mm over it, a fiftieth of a degree: the deck's round touches that plane, and the crest has to cover its end);
+ * forward of the round's touching point it falls under the plane, halfway to the hood's top, which falls away faster
+ * (12 degrees to the plane's 8.31), so the rail's forward end is hidden behind the round and still covers the deck's.
+ * The deck line is a ROW of the picture: a point is on it where its height over its depth along the view (x, not the
+ * distance) is the deck line's slope, at any azimuth.
+ */
+function railCrestAt(x: number): number {
+  const eye = aircraftSpec("trainer").cockpitEye;
+  const slope = Math.tan((TRAINER_GLARESHIELD.deckLineDegrees * Math.PI) / 180);
+  const touch = trainerDeckSection().tangent.x;
+  const under = (Math.tan((TRAINER_GLARESHIELD.hoodFallDegrees * Math.PI) / 180) - slope) / 2;
+  const sight = eye.up - (x - eye.forward) * slope + 0.0003 - under * Math.max(0, x - touch);
+  return Math.min(deckTopY() + TRAINER_DOOR_FRAME.railOverDeck, sight);
+}
+
+const railCentres = new Map<number, { u: number; y: number }>();
+export function trainerRailCentre(x: number): { u: number; y: number } {
+  const known = railCentres.get(x);
+  if (known) return { ...known };
+  const r = TRAINER_DOOR_FRAME.railRadius;
+  const y = railCrestAt(x) - r;
+  const centre = { u: insetOutboard(x, y, r), y };
+  railCentres.set(x, centre);
+  return { ...centre };
+}
+
+/** Heights the panel's outer face is laid down the tube's wall at, under the notch. */
+const PANEL_WALL_HEIGHTS = [-0.1, -0.15, -0.2, -0.3, -0.4, -0.5];
+
+/** The NOTCH's height at station x: under the rail, where the tube's shoulder first stands out past the glass's foot. */
+function doorNotchY(x: number): number {
+  let y = -0.01;
+  for (; y > -0.1; y -= 0.0025) {
+    const tube = loftHalfWidthAt(TRAINER_FUSELAGE_SECTIONS, x, y);
+    const glass = loftHalfWidthAt(TRAINER_CANOPY_SECTIONS, x, y);
+    if (Number.isFinite(tube) && (!Number.isFinite(glass) || tube >= glass)) break;
+  }
+  return y;
+}
+
+/**
+ * A door frame at a station, in (u, y) with u outboard: the rail's centre; THE FACE, its notch corners (inner, outer)
+ * and its top corners (outer, inner) up inside the rail; and THE PANEL, the floor's corners (inner, outer), up the
+ * wall, and the notch's corners (outer, inner). The face's inner edge and the panel's are one straight line, from the
+ * rail's lowest point to the floor's inner corner.
+ */
+export function trainerDoorSections(x: number): { rail: { u: number; y: number }; face: { u: number; y: number }[]; panel: { u: number; y: number }[] } {
+  const f = TRAINER_DOOR_FRAME;
+  const r = f.railRadius;
+  const rail = trainerRailCentre(x);
+  const notchY = doorNotchY(x);
+  const floorOut = { u: trainerCabinHalfWidth(x, f.floorY) - f.wallClearance, y: f.floorY };
+  const floorIn = { u: floorOut.u - f.floorThickness, y: f.floorY };
+  const under = { u: rail.u, y: rail.y - r };
+  const inner = (y: number) => ({ u: under.u + ((floorIn.u - under.u) * (under.y - y)) / (under.y - floorIn.y), y });
+  // the face's outer edge: straight down from inside the rail's round to the notch, the glass's clearance inside it
+  const outerU = Math.min(rail.u + 0.7 * r, trainerCabinHalfWidth(x, notchY + 0.0025) - TRAINER_GLARESHIELD.clearance);
+  const notchOut = { u: outerU, y: notchY };
+  const notchIn = inner(notchY);
+  const wall = PANEL_WALL_HEIGHTS.map((y) => ({ u: trainerCabinHalfWidth(x, y) - f.wallClearance, y }));
+  return {
+    rail,
+    face: [notchIn, notchOut, { u: outerU, y: rail.y }, inner(rail.y)],
+    panel: [floorIn, floorOut, ...wall.slice().reverse(), notchOut, notchIn],
+  };
+}
+
+/**
+ * THE A-PILLARS (S3), one a side, in place of two 8-sided struts that stood vertical at azimuth -35 and stopped in
+ * mid-air above the frame. Each is one `sweptTube`, `footRadius` at its foot in the rail, tapering to `topRadius`
+ * where it ends inside the roof slab, and it is the door's frame round the window:
+ *  - THE PILLAR rises along the glass, the clearance inside it, from the rail to `glassTopY`, its centreline in the
+ *    vertical plane through the eye at `azimuthDegrees`, so from the seat it stands as one column at the frame's edge;
+ *  - it then bends aft into THE CANT RAIL, along the crown over the door at `railY`, the clearance inside the glass,
+ *    from `railFromX` to `railToX`;
+ *  - and turns in and up into the roof slab's side (the slab is y 0.18 to 0.23, its side edge at |z| 0.31) behind
+ *    the eye, ending at `end`, at the slab's mid-thickness.
+ * Only the pillar is in the frame: the bend and the cant rail are at azimuth -45 to -90, and the lens is
+ * horizontal-fixed, so the frame's edge is -37.5 at every aspect.
+ *
+ * WHY THERE, and not up the windscreen's forward edge from the deck's end: the glass stands only 0.14 m outboard of the
+ * eye, and the roof's outboard front corner is 6 cm ahead of it, so a pillar from the deck's end into the roof crosses
+ * the view. Measured through the cockpit camera (rasterised, near-plane clipped): feet at x 1.7 to 2.0 cover 110,000 to
+ * 295,000 px and cut the windscreen at azimuth -11 to -35. In the plane at -41 the pillar covers 49,192 px, a band 56
+ * to 72 px wide up the frame's left edge from its bottom to row 220 of 1080: the window's frame at the edge of the view,
+ * as the old post was (172,800 px), at under a third of its area. And WHY THE CANT RAIL: the crown is too low over the pilot to turn into the
+ * roof ahead of him (the slab's edge stands only 2.5 cm under the glass), and a pillar that bent into it along its own
+ * plane, which runs through the eye, passed 10 cm from the eye: 165,000 px.
+ */
+export const TRAINER_A_PILLAR = Object.freeze({
+  azimuthDegrees: -41,
+  footRadius: 0.02,
+  topRadius: 0.014,
+  /** Its foot's centre, inside the rail. */
+  footY: -0.005,
+  /** How high the pillar follows the glass in its plane. */
+  glassTopY: 0.13,
+  glassStations: 14,
+  /** The cant rail's height, and where it runs, aft along the crown (x). */
+  railY: 0.15,
+  railFromX: 1.4,
+  railToX: 1.26,
+  /** The roof slab's underside (`trainer-cabin-roof`, 0.05 thick at y 0.205): under it the pillar keeps inside the glass. */
+  roofUnderY: 0.18,
+  /** Its end's centre, inside the roof slab behind the eye: |z| 0.285, its ring 1.1 cm inside the slab's edge. */
+  end: Object.freeze({ x: 1.18, y: 0.205, u: 0.285 }),
+  bendStations: 10,
+  segments: 16,
+});
+
+/**
+ * The root of an increasing `f` between `lo` and `hi` (f(lo) < 0 < f(hi)), by regula falsi with the Illinois step: a
+ * few evaluations where a bisection to the same 0.1 micron takes 30, and each one here samples the cabin line 32 times.
+ */
+function increasingRoot(f: (x: number) => number, lo: number, hi: number): number {
+  let [a, b] = [lo, hi];
+  let [fa, fb] = [f(a), f(b)];
+  if (!(fa < 0 && fb > 0)) throw new RangeError(`no root between ${lo} and ${hi}`);
+  let side = 0;
+  for (let step = 0; step < 60 && b - a > 1e-7; step += 1) {
+    const c = (a * fb - b * fa) / (fb - fa);
+    const fc = f(c);
+    // ON the root: stop. A step that lands on it with a rounding-positive value leaves `a` where it was, and the
+    // halvings then walk the next steps back into the bracket, to wherever the step count runs out.
+    if (Math.abs(fc) < 1e-12) return c;
+    if (fc < 0) {
+      [a, fa] = [c, fc];
+      if (side === -1) fb /= 2;
+      side = -1;
+    } else {
+      [b, fb] = [c, fc];
+      if (side === 1) fa /= 2;
+      side = 1;
+    }
+  }
+  return a;
+}
+
+let pillarMemo: { centres: Vector3[]; radii: number[] } | null = null;
+/** A pillar's centreline and its radius at each point, foot to end (port; the starboard one is its mirror). */
+export function trainerPillarPath(side: -1 | 1): { centres: Vector3[]; radii: number[] } {
+  pillarMemo ??= portPillarPath();
+  return {
+    centres: pillarMemo.centres.map((c) => new Vector3(c.x, c.y, side < 0 ? c.z : -c.z)),
+    radii: pillarMemo.radii.slice(),
+  };
+}
+
+function portPillarPath(): { centres: Vector3[]; radii: number[] } {
+  const p = TRAINER_A_PILLAR;
+  const eye = aircraftSpec("trainer").cockpitEye;
+  const slope = Math.tan((p.azimuthDegrees * Math.PI) / 180);
+  const zAt = (x: number) => eye.right + slope * (x - eye.forward);
+  // radii are laid by arc length afterwards; the solve needs one, and the foot's is the largest
+  const r = p.footRadius;
+  // up the glass, evenly: at each height, the station in the plane where the pillar's round is the clearance inside
+  // the glass. (Bunched toward the top, the last two stood 0.7 mm apart where the tube turns into its bend, and the
+  // turn tilted one ring 2 mm behind the other: a fold.)
+  const glass: Vector3[] = [];
+  for (let i = 0; i <= p.glassStations; i += 1) {
+    const y = p.footY + ((p.glassTopY - p.footY) * i) / p.glassStations;
+    const x = increasingRoot((at) => Math.abs(zAt(at)) - insetOutboard(at, y, r), eye.forward + 0.01, 2.2);
+    glass.push(new Vector3(x, y, zAt(x)));
+  }
+  const cubic = (a: Vector3, b: Vector3, c: Vector3, d: Vector3, count: number) => Array.from({ length: count }, (_, k) => {
+    const t = (k + 1) / count;
+    const u = 1 - t;
+    return a.scale(u ** 3).add(b.scale(3 * u * u * t)).add(c.scale(3 * u * t * t)).add(d.scale(t ** 3));
+  });
+  const aft = new Vector3(-1, 0, 0);
+  // the cant rail's two ends, the clearance inside the glass at its height
+  const railAt = (x: number) => new Vector3(x, p.railY, -insetOutboard(x, p.railY, r));
+  const [railFrom, railTo] = [railAt(p.railFromX), railAt(p.railToX)];
+  const top = glass[glass.length - 1]!;
+  const up = top.subtract(glass[glass.length - 2]!).normalize();
+  const over = Vector3.Distance(top, railFrom);
+  // the glass's crown is convex, so a curve between two points on its inset runs outside it: each station under the
+  // roof is held in to the inset at its own height as well (in the roof there is no glass to keep inside of)
+  const held = (c: Vector3) => (c.y + r < p.roofUnderY ? new Vector3(c.x, c.y, -Math.min(Math.abs(c.z), insetOutboard(c.x, c.y, r))) : c);
+  const bend = cubic(top, top.add(up.scale(0.25 * over)), railFrom.subtract(aft.scale(0.4 * over)), railFrom, p.bendStations).map(held);
+  const run = [0.25, 0.5, 0.75, 1].map((t) => Vector3.Lerp(railFrom, railTo, t));
+  const end = new Vector3(p.end.x, p.end.y, -p.end.u);
+  const into = Vector3.Distance(railTo, end);
+  const turn = cubic(railTo, railTo.add(aft.scale(0.4 * into)), end.subtract(new Vector3(0, 0.5 * into, 0)), end, p.bendStations).map(held);
+  const centres = [...glass, ...bend, ...run, ...turn];
+  // the taper, by arc length: `footRadius` at the foot to `topRadius` at the end
+  const along = [0];
+  for (let i = 1; i < centres.length; i += 1) along.push(along[i - 1]! + Vector3.Distance(centres[i]!, centres[i - 1]!));
+  const length = along[along.length - 1]!;
+  return { centres, radii: along.map((s) => p.footRadius + ((p.topRadius - p.footRadius) * s) / length) };
+}
 
 /** Rotation about Z of the panel and everything mounted on it. */
 function panelFrame() {
@@ -245,37 +1125,108 @@ export function trainerDialPlacements(): readonly { name: string; centre: Vector
   return TRAINER_DIAL_ROW.dials.map(([name, z]) => ({ name, centre: new Vector3(onFace.x, onFace.y, z), normal: rearFaceNormal.clone() }));
 }
 
+/** A part's plane on the board's rear face: its centre there, across the cabin (+Z), up the face, and out toward the pilot. */
+function faceFrame(origin: Vector3): PartFrame {
+  const out = panelFrame().rearFaceNormal;
+  const across = new Vector3(0, 0, 1);
+  return { origin, across, up: Vector3.Cross(out, across).normalize(), out };
+}
+
+/** The dial row's centre on the board's face, at `z`. */
+function onDialRow(z: number): Vector3 {
+  const at = dialCentreOnPanel(TRAINER_DIAL_ROW.elevationDegrees);
+  return new Vector3(at.x, at.y, z);
+}
+
+/** Each dial's plane: centred on its placement. */
+export function trainerDialFrames(): readonly { name: string; frame: PartFrame }[] {
+  return trainerDialPlacements().map(({ name, centre }) => ({ name, frame: faceFrame(centre) }));
+}
+
+/** Each radio unit's plane, top to bottom: centred on the unit, at the board's face. */
+export function trainerRadioFrames(): readonly { unit: (typeof TRAINER_RADIO.units)[number]; frame: PartFrame }[] {
+  const r = TRAINER_RADIO;
+  const row = faceFrame(onDialRow(r.centreZ));
+  return r.units.map((unit, k) => ({ unit, frame: { ...row, origin: row.origin.add(row.up.scale(((k === 0 ? 1 : -1) * (r.height + r.gap)) / 2)) } }));
+}
+
+/** Each switch's plane: centred on its base, at the board's face. */
+export function trainerSwitchFrames(): readonly PartFrame[] {
+  return TRAINER_SWITCHES.across.map((z) => {
+    const row = faceFrame(onDialRow(z));
+    return { ...row, origin: row.origin.subtract(row.up.scale(TRAINER_SWITCHES.below)) };
+  });
+}
+
+/** The same frame moved `across` and `up` in its plane and `out` of it. */
+function shifted(frame: PartFrame, across: number, up: number, out = 0): PartFrame {
+  return { ...frame, origin: frame.origin.add(frame.across.scale(across)).add(frame.up.scale(up)).add(frame.out.scale(out)) };
+}
+
+/** A profile whose front is a flat cap out to `radius` in from the loop, then a quarter round of `radius` down to its side, the side down to `back`. */
+function roundedFrontProfile(front: number, radius: number, back: number, chords = 4): LoopProfile {
+  const round = Array.from({ length: chords + 1 }, (_, k) => {
+    const angle = (Math.PI / 2) * (1 - k / chords);
+    return { u: -radius + radius * Math.cos(angle), a: front - radius + radius * Math.sin(angle) };
+  });
+  return {
+    points: [...round, { u: 0, a: back }, { u: -radius, a: back }],
+    rounds: [{ first: 0, last: chords, centre: { u: -radius, a: front - radius } }],
+  };
+}
+
 /**
- * The two ends of a windscreen post, vertical, in the plane through the eye at
- * `TRAINER_LEFT_POST_AZIMUTH_DEGREES`.
- *
- * NOT raked to the roof's outboard corner, which was the first design: that
- * corner is 0.06 m ahead of the eye and 0.05 m to port, so a post ending there
- * swelled toward the top into a dark wedge across 22% of the frame. Standing the
- * post about 0.28 m away instead keeps it a bar of uniform width from bottom to
- * top. It runs from just below the sill to 0.27, which is above the top of the
- * frame at that azimuth (+19.5 degrees is 0.10 m over 0.28), because the roof
- * slab is narrower than the greenhouse (0.31 against 0.44) and there is nothing
- * up there for a post ending at the roof's height to meet: it would stop in
- * mid-air 15 degrees above the horizon.
+ * A profile whose front is a flat cap out to `inset` in from the loop, then a 45 degree chamfer of `chamfer` to its side,
+ * the side down to `back`. The chamfer is SHADED AS A ROUND (its two ends take the front's and the side's normals), so
+ * it reads as an eased edge and meets both on one normal: a flat-shaded 45 degree chamfer is a split edge at exactly
+ * the census's threshold.
  */
-export function trainerPostEndpoints(side: -1 | 1): { bottom: Vector3; top: Vector3 } {
-  const eye = aircraftSpec("trainer").cockpitEye;
-  const slope = Math.tan((TRAINER_LEFT_POST_AZIMUTH_DEGREES * Math.PI) / 180); // dz / dx from the eye, port negative
-  // Just inside the greenhouse's base: the post's outer surface 5 mm within it.
-  const z = -(interpolate(SILL_HALF_WIDTH, 1.62) - POST_RADIUS - 0.005);
-  const x = eye.forward + (z - eye.right) / slope;
-  const bottom = new Vector3(x, -0.02, z);
-  const top = new Vector3(x, 0.27, z);
-  if (side < 0) return { bottom, top };
-  // The starboard post is the mirror image across the centreline, not a second solve: nothing is asked of it.
-  return { bottom: new Vector3(x, bottom.y, -z), top: new Vector3(x, top.y, -z) };
+function chamferedFrontProfile(front: number, inset: number, chamfer: number, back: number): LoopProfile {
+  return {
+    points: [{ u: -inset, a: front }, { u: -chamfer, a: front }, { u: 0, a: front - chamfer }, { u: 0, a: back }, { u: -inset, a: back }],
+    rounds: [{ first: 1, last: 2, centre: { u: -chamfer, a: front - chamfer } }],
+  };
+}
+
+/**
+ * Give the front of a face part (its vertices shaded straight out of `frame`) the UVs of a rectangle of the atlas: the
+ * part's `halfWidth` x `halfHeight` about the frame's origin onto `slot`, or onto the band `bandHeight` high across its
+ * middle. U runs with the frame's across (+Z, the pilot's right); V runs AGAINST its up, as the screens' do
+ * (`remapScreenFaceToSlot`: a texture's v and a canvas's y run opposite ways).
+ */
+function mapFaceToSlot(
+  mesh: Mesh,
+  frame: PartFrame,
+  halfWidth: number,
+  halfHeight: number,
+  slot: { readonly x: number; readonly y: number; readonly w: number; readonly h: number },
+  atlas: { readonly width: number; readonly height: number },
+  bandHeight = slot.h,
+): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  const uvs = mesh.getVerticesData(VertexBuffer.UVKind)!;
+  const top = slot.y + (slot.h - bandHeight) / 2;
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const normal = new Vector3(normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!);
+    if (Vector3.Dot(normal, frame.out) < 0.999) continue;
+    const d = new Vector3(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!).subtract(frame.origin);
+    const fx = Vector3.Dot(d, frame.across) / (2 * halfWidth) + 0.5;
+    const fy = Vector3.Dot(d, frame.up) / (2 * halfHeight) + 0.5;
+    uvs[v * 2] = (slot.x + fx * slot.w) / atlas.width;
+    uvs[v * 2 + 1] = (top + (1 - fy) * bandHeight) / atlas.height;
+  }
+  mesh.setVerticesData(VertexBuffer.UVKind, uvs, true);
 }
 
 /** What `buildTrainerCockpit` hands back: the meshes, and the step that turns the needles and the ball. */
 export interface TrainerCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
   readonly parts: readonly AbstractMesh[];
+  /** The dials' bezels' material (`BEZEL_RIM`): the visual drives its emissive by `bezelRimEmissive`. */
+  readonly bezelMaterial: PBRMaterial;
+  /** True when the dial faces and the radios' windows carry the live atlas: false under `NullEngine`. */
+  readonly displaysLive: boolean;
   /**
    * Turn each driven needle and the attitude ball to what `state` reads. The
    * visual calls this from its `update` ONLY while cockpit view is on: outside it
@@ -289,9 +1240,10 @@ export interface TrainerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Fifteen meshes in five groups: the cowl stand-in (1), the panel and its hood
- * (2), the windscreen posts (2), the door panels with their sill caps (2), and the
- * dials (8: three gauge faces, two needles, and the attitude ball's three pieces).
+ * Fifteen meshes in five groups: the cowl stand-in (1), the deck and the board
+ * (2), the A-pillars (2), the door frames (2: each its rail, face and panel
+ * merged), and the dials (8: three gauge faces, two needles, and the attitude
+ * ball's three pieces).
  */
 export function buildTrainerCockpit(
   build: AircraftBuildContext,
@@ -307,70 +1259,314 @@ export function buildTrainerCockpit(
   // nearest the firewall (x 2.10) forward to the nose, so it lies exactly on the
   // shell it stands in for: the loft has one ring per section and no
   // interpolation, so a loft of the same two rings is the same ruled surface.
+  //
+  // Its NOSE (S5) turns over a quarter-round lip before its cap. The shell's nose ring at x 3.7 closed on a flat disc,
+  // and the pilot saw that rim, a 90-degree crease with split shading, as a hard line across the cowl's top at about
+  // -3 degrees (six edges, 175 px). The lip's rings run on ahead of the shell's last one, each the same section shrunk
+  // by the round's fall, so the first band leaves the shell's surface tangent to it; the flat cap then faces straight
+  // ahead, away from the eye, and is culled. The shell stays as it is: this part is drawn only in cockpit view, and
+  // the spinner's back face is at x 3.74, ahead of the lip.
   const firewall = TRAINER_FUSELAGE_SECTIONS.reduce(
     (best, section, index) => (Math.abs(section.x - 2.1) < Math.abs(TRAINER_FUSELAGE_SECTIONS[best]!.x - 2.1) ? index : best),
     0,
   );
+  const shellSections = TRAINER_FUSELAGE_SECTIONS.slice(firewall);
+  const nose = shellSections[shellSections.length - 1]!;
+  const lip = Array.from({ length: TRAINER_COWL_LIP.steps }, (_, index) => {
+    const turn = (((index + 1) / TRAINER_COWL_LIP.steps) * Math.PI) / 2;
+    const fall = TRAINER_COWL_LIP.radius * (1 - Math.cos(turn));
+    return { ...nose, x: nose.x + TRAINER_COWL_LIP.radius * Math.sin(turn), yRadius: nose.yRadius - fall, zRadius: nose.zRadius - fall };
+  });
   parts.push(build.loft(
     "trainer-cowl-standin",
-    TRAINER_FUSELAGE_SECTIONS.slice(firewall),
+    [...shellSections, ...lip],
     24,
     materials.cowl,
     root,
+    // u as it was over the shell's own sections, so the paint does not move
+    { minimumX: shellSections[0]!.x, length: nose.x - shellSections[0]!.x },
   ));
 
-  // THE PANEL AND ITS HOOD, two meshes: the hood is a thin plate on the panel's
-  // top, standing 0.08 m aft of the rear face, leaning with it, and it wears a
-  // material of its own (matte near-black, no reflection) because on the interior
-  // material its top face read as the brightest surface in the frame.
+  // THE DECK AND THE BOARD, two meshes, each a section swept across the cabin from one door frame to the other
+  // (`sweptAcross`): the deck the rounded glareshield (`trainerDeckSection`) on its own matte near-black, which reflects
+  // nothing (on the interior material its top read as the brightest surface in the frame); the board the leaned panel
+  // under it, its rear face exactly where the old box's was, from its foot up to the cove's, with extra points down that
+  // face so each end can follow the wall's curve at every height. Every end is buried in a door frame.
   const { centre, local } = panelFrame();
   const panel = TRAINER_PANEL;
-  const board = build.box("trainer-instrument-panel", panel.thickness, panel.height, panel.halfWidth * 2, materials.interior, root);
-  board.position.copyFrom(centre);
-  board.rotation.z = panel.lean;
-  parts.push(board);
-  const hoodLength = panel.thickness + panel.hoodOverhang;
-  const hood = build.box("trainer-glareshield", hoodLength, panel.hoodThickness, panel.halfWidth * 2, glareshieldMaterial(build, "trainer-glareshield"), root);
-  // Its centre in the panel's own frame: half a hood length forward of its aft
-  // edge, which is `hoodOverhang` aft of the rear face, and half its thickness
-  // above the panel's top.
-  hood.position.copyFrom(centre.add(local(-panel.thickness / 2 - panel.hoodOverhang + hoodLength / 2, panel.height / 2 + panel.hoodThickness / 2)));
-  hood.rotation.z = panel.lean;
-  parts.push(hood);
+  const deck = trainerDeckSection();
+  parts.push(sweptAcross(
+    build,
+    "trainer-glareshield",
+    {
+      points: deck.outline.map((p) => ({ u: p.x, y: p.y })),
+      rounds: [{ first: 3, last: deck.outline.length - 1, centre: { u: deck.centre.x, y: deck.centre.y } }],
+    },
+    glareshieldMaterial(build, "trainer-glareshield"),
+    root,
+    // at the point's own station: the rail's crest line over its centre (under the rail's top), outboard of it below
+    // (inside the face)
+    (point) => {
+      const rail = trainerRailCentre(point.u);
+      return rail.u + (point.y < rail.y ? TRAINER_DOOR_FRAME.endInset : 0);
+    },
+  ));
+  const along = new Vector3(Math.cos(panel.lean), Math.sin(panel.lean), 0);
+  const rearBottom = centre.add(local(-panel.thickness / 2, -panel.height / 2));
+  const frontBottom = centre.add(local(panel.thickness / 2, -panel.height / 2));
+  const rearTop = new Vector3(deck.faceTop.x, deck.faceTop.y, 0);
+  const frontTop = rearTop.add(along.scale(panel.thickness));
+  const downTheFace = Array.from({ length: BOARD_FACE_POINTS }, (_, k) => Vector3.Lerp(rearTop, rearBottom, (k + 1) / (BOARD_FACE_POINTS + 1)));
+  parts.push(sweptAcross(
+    build,
+    "trainer-instrument-panel",
+    // from its front foot round: `sweptSolid` caps an end with a fan from the section's first point, and a fan from a
+    // point ON the rear face (whose points all lie on one line, each out to its own end) laid slivers in that face's
+    // plane, inboard of its end
+    { points: [frontBottom, frontTop, rearTop, ...downTheFace, rearBottom].map((p) => ({ u: p.x, y: p.y })), rounds: [] },
+    materials.interior,
+    root,
+    // under the deck the board ends where the deck does, inside the rail; below that it flares out toward its wall at
+    // 45 degrees, into the door frame's face
+    (point) => Math.min(
+      // at the point's OWN station: the windscreen narrows over the board's 10 cm depth
+      trainerCabinHalfWidth(point.u, point.y) - TRAINER_GLARESHIELD.clearance,
+      trainerRailCentre(point.u).u + TRAINER_DOOR_FRAME.endInset + Math.max(0, deck.faceTop.y - point.y),
+    ),
+  ));
 
-  // THE DIALS. Real size, in front of the left seat, on the panel's rear face
-  // and a millimetre proud of it. The face cylinder's axis is local Y; turning
-  // it a quarter turn and then leaning it with the panel points it at the pilot.
-  for (const placement of trainerDialPlacements()) {
-    const { name, centre: at, normal } = placement;
-    const face = build.cylinder(
-      `trainer-${name}-gauge`, GAUGE_FACE_THICKNESS, TRAINER_DIAL_DIAMETER, TRAINER_DIAL_DIAMETER, 24, materials.instrumentFace, root,
-    );
-    face.rotation.z = Math.PI / 2 + TRAINER_PANEL.lean;
-    face.position.copyFrom(at.add(normal.scale(GAUGE_FACE_OFFSET)));
-    parts.push(face);
+  // THE DIALS' FACES, BEZELS AND NEEDLES, THE RADIOS AND THE SWITCHES (S2). Three meshes for all of them bar the
+  // needles and the ball, where there were three gauge discs: the faces (the three dial faces and the two radios'
+  // windows, which are the display atlas's screens), the bezels (on the shared rim), and the fittings (the radios'
+  // bodies and knobs, and the switches). Each part gets its atlas UVs before the merge.
+  const atlasSize = { width: displayAtlasWidth(TRAINER_DISPLAYS), height: displayAtlasHeight(TRAINER_DISPLAYS) };
+  const slotOf = new Map(displaySlots(TRAINER_DISPLAYS).map((slot) => [slot.screen, slot]));
+  const faces: Mesh[] = [];
+  const bezels: Mesh[] = [];
+  const fittings: Mesh[] = [];
+  const bezelMaterial = bezelRimMaterial(build, "trainer-dial-bezel");
+  const b = TRAINER_BEZEL;
+  const faceMapRadius = b.faceRadius / TRAINER_DIAL_FACE_FRACTION;
+  const circle = (radius: number): PartLoop => ({ halfWidth: 0, halfHeight: 0, radius, cornerSegments: b.cornerSegments });
+  // the face's section: from the loop's inside (`inset` in) out to it on the face's front, and back into the board
+  const faceProfile = (inset: number): LoopProfile => ({
+    points: [{ u: -inset, a: FACE_FRONT }, { u: 0, a: FACE_FRONT }, { u: 0, a: b.back }, { u: -inset, a: b.back }],
+    rounds: [],
+  });
+  // the bezel's section: one ring, inner chamfer, front, outer chamfer, its back in the board; each chamfer shaded as a
+  // round (its ends take the faces' normals either side), so it reads as an eased edge and splits no shading
+  const bezelRing: LoopProfile = {
+    points: [
+      { u: 0, a: b.back },
+      { u: 0, a: b.proud - b.innerChamfer },
+      { u: b.innerChamfer, a: b.proud },
+      { u: b.ringWidth - b.chamfer, a: b.proud },
+      { u: b.ringWidth, a: b.proud - b.chamfer },
+      { u: b.ringWidth, a: b.back },
+    ],
+    rounds: [
+      { first: 1, last: 2, centre: { u: b.innerChamfer, a: b.proud - b.innerChamfer } },
+      { first: 3, last: 4, centre: { u: b.ringWidth - b.chamfer, a: b.proud - b.chamfer } },
+    ],
+  };
+  for (const { name, frame } of trainerDialFrames()) {
+    // the face: a disc whose edge is buried under the ring's inner wall, its front the atlas slot's square
+    const face = loopSolid(build, `trainer-${name}-face`, frame, circle(faceMapRadius), faceProfile(faceMapRadius), materials.instrumentFace, root);
+    mapFaceToSlot(face, frame, faceMapRadius, faceMapRadius, slotOf.get(name)!, atlasSize);
+    faces.push(face);
+    bezels.push(loopSolid(build, `trainer-${name}-bezel`, frame, circle(b.faceRadius), bezelRing, bezelMaterial, root));
+  }
+  const radio = TRAINER_RADIO;
+  for (const { unit, frame } of trainerRadioFrames()) {
+    fittings.push(loopSolid(build, `trainer-${unit}-body`, frame,
+      { halfWidth: radio.width / 2 - radio.corner, halfHeight: radio.height / 2 - radio.corner, radius: radio.corner, cornerSegments: 4 },
+      roundedFrontProfile(radio.proud, radio.corner, TRAINER_BEZEL.back), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
+    // the window: a raised glass with a chamfered edge, its face the atlas slot's band
+    const w = radio.window;
+    const windowHeight = w.width / TRAINER_RADIO_WINDOW_ASPECT;
+    const windowFrame = shifted(frame, w.across, 0);
+    const glass = loopSolid(build, `trainer-${unit}-window`, windowFrame,
+      { halfWidth: w.width / 2 - w.corner, halfHeight: windowHeight / 2 - w.corner, radius: w.corner, cornerSegments: 3 },
+      chamferedFrontProfile(radio.proud + w.proud, w.corner, w.chamfer, radio.proud + TRAINER_BEZEL.back), materials.instrumentFace, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 4, facing: -1 }] });
+    const slot = slotOf.get(unit)!;
+    mapFaceToSlot(glass, windowFrame, w.width / 2, windowHeight / 2, slot, atlasSize, slot.w / TRAINER_RADIO_WINDOW_ASPECT);
+    faces.push(glass);
+    radio.knobs.forEach((knob, k) => {
+      fittings.push(loopSolid(build, `trainer-${unit}-knob-${k}`, shifted(frame, knob.across, 0), circle(knob.radius),
+        // a disc: the front from the axis (u = -radius is the centre) out to a 1 mm round, the side, the back to the axis
+        {
+          points: [
+            { u: -knob.radius, a: radio.proud + knob.height },
+            ...roundedFrontProfile(radio.proud + knob.height, 0.001, radio.proud + TRAINER_BEZEL.back).points.slice(0, 6),
+            { u: -knob.radius, a: radio.proud + TRAINER_BEZEL.back },
+          ],
+          rounds: [{ first: 1, last: 5, centre: { u: -0.001, a: radio.proud + knob.height - 0.001 } }],
+        }, materials.dark, root));
+    });
+  }
+  const sw = TRAINER_SWITCHES;
+  trainerSwitchFrames().forEach((frame, k) => {
+    fittings.push(loopSolid(build, `trainer-switch-${k}-base`, frame,
+      { halfWidth: sw.base.halfWidth - sw.base.corner, halfHeight: sw.base.halfHeight - sw.base.corner, radius: sw.base.corner, cornerSegments: 3 },
+      chamferedFrontProfile(sw.base.proud, sw.base.corner, sw.base.chamfer, TRAINER_BEZEL.back), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 4, facing: -1 }] }));
+    // the paddle, rocked about the across axis: top in when on
+    const tilt = ((sw.on[k] ? 1 : -1) * sw.paddle.tiltDegrees * Math.PI) / 180;
+    const base = shifted(frame, 0, 0, sw.base.proud);
+    const paddleFrame: PartFrame = {
+      origin: base.origin,
+      across: base.across,
+      up: base.up.scale(Math.cos(tilt)).add(base.out.scale(Math.sin(tilt))),
+      out: base.out.scale(Math.cos(tilt)).subtract(base.up.scale(Math.sin(tilt))),
+    };
+    fittings.push(loopSolid(build, `trainer-switch-${k}-paddle`, paddleFrame,
+      { halfWidth: sw.paddle.halfWidth - sw.paddle.corner, halfHeight: sw.paddle.halfHeight - sw.paddle.corner, radius: sw.paddle.corner, cornerSegments: 3 },
+      // its back twice as deep: rocked 12 degrees, the top of a back 6 mm down stood only 4.5 mm under the base's face
+      roundedFrontProfile(sw.paddle.height, sw.paddle.corner, 2 * TRAINER_BEZEL.back), materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: 6, facing: -1 }] }));
+  });
+  // THE TACHOMETER AND THE ENGINE CLUSTER (S2b): their faces with the others (the atlas's screens), their rings with the
+  // bezels, on the same sections; the tachometer's needle is built with the other two, below
+  {
+    const tachFrame = trainerTachFrame();
+    const tachMapRadius = TRAINER_TACH.faceRadius / TRAINER_DIAL_FACE_FRACTION;
+    const tachFace = loopSolid(build, "trainer-tach-face", tachFrame, circle(tachMapRadius), faceProfile(tachMapRadius), materials.instrumentFace, root);
+    mapFaceToSlot(tachFace, tachFrame, tachMapRadius, tachMapRadius, slotOf.get("tach")!, atlasSize);
+    faces.push(tachFace);
+    bezels.push(loopSolid(build, "trainer-tach-bezel", tachFrame, circle(TRAINER_TACH.faceRadius), bezelRing, bezelMaterial, root));
+    // the cluster: a rounded rectangle, its face buried `bury` under the ring all round like a dial's
+    const c = TRAINER_ENGINE_CLUSTER;
+    const mm = TRAINER_ENGINE_CLUSTER_MM;
+    const [halfWidth, halfHeight, bury] = [mm.width / 2_000, mm.height / 2_000, mm.bury / 1_000];
+    const clusterFrame = trainerEngineClusterFrame();
+    const opening: PartLoop = { halfWidth: halfWidth - c.corner, halfHeight: halfHeight - c.corner, radius: c.corner, cornerSegments: 4 };
+    const clusterFace = loopSolid(build, "trainer-engine-face", clusterFrame, { ...opening, radius: c.corner + bury },
+      faceProfile(c.corner + bury), materials.instrumentFace, root, { caps: [{ point: 0, facing: 1 }, { point: 3, facing: -1 }] });
+    const slot = slotOf.get("engine")!;
+    mapFaceToSlot(clusterFace, clusterFrame, halfWidth + bury, halfHeight + bury, slot, atlasSize, (slot.w * (halfHeight + bury)) / (halfWidth + bury));
+    faces.push(clusterFace);
+    bezels.push(loopSolid(build, "trainer-engine-bezel", clusterFrame, opening, bezelRing, bezelMaterial, root));
+  }
+  // THE COMPASS (S4), with the fittings: a rounded box under the centre strip's crown run, on a stalk up through the
+  // glass to the strip's axis. Since S7: a window in its aft face, ringed with the bezels, with a lubber line down it,
+  // and the card behind it, a drum of its own that `update` turns with the heading.
+  let compassCard: Mesh | null = null;
+  {
+    const c = TRAINER_OVERHEAD.compass;
+    const w = c.window;
+    const centre = trainerCompassCentre();
+    const aft = centre.add(new Vector3(-c.depth / 2, 0, 0));
+    const frame: PartFrame = { origin: aft, across: new Vector3(0, 0, 1), up: new Vector3(0, 1, 0), out: new Vector3(-1, 0, 0) };
+    const window: PartLoop = { halfWidth: w.halfWidth - w.corner, halfHeight: w.halfHeight - w.corner, radius: w.corner, cornerSegments: 6 };
+    const profile = compassBoxProfile();
+    fittings.push(loopSolid(build, "trainer-compass", frame, window, profile, materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: profile.points.length - 1, facing: -1 }] }));
+    // the ring: the dials' section, its back on the cavity's lip. On a dial the corner where its inner wall meets its back
+    // is buried in the board; here it is the edge of the window's tunnel over the cavity, so it is rounded (1 mm)
+    const rho = 0.001;
+    const tunnelFoot = [270, 240, 210, 180].map((degrees) => {
+      const t = (degrees * Math.PI) / 180;
+      return { u: rho + rho * Math.cos(t), a: b.back + rho + rho * Math.sin(t) };
+    });
+    const compassRing: LoopProfile = {
+      points: [...tunnelFoot, ...bezelRing.points.slice(1)],
+      rounds: [{ first: 0, last: 3, centre: { u: rho, a: b.back + rho } }, ...bezelRing.rounds.map((r) => ({ ...r, first: r.first + 3, last: r.last + 3 }))],
+    };
+    bezels.push(loopSolid(build, "trainer-compass-bezel", frame, window, compassRing, bezelMaterial, root));
+    // the lubber line: a round rod down the window's middle, 1 mm in front of the card, its ends buried in the ring
+    const lubberAt = aft.add(new Vector3(c.drum.recess - 0.001 - c.lubber.width / 2, 0, 0));
+    const lubberHalf = w.halfHeight + 0.0015;
+    bezels.push(sweptTube(build, "trainer-compass-lubber",
+      [lubberAt.add(new Vector3(0, -lubberHalf, 0)), lubberAt, lubberAt.add(new Vector3(0, lubberHalf, 0))],
+      [c.lubber.width / 2, c.lubber.width / 2, c.lubber.width / 2], 8, bezelMaterial, root));
+    compassCard = compassCardMesh(build, "trainer-compass-card", aft.add(new Vector3(c.drum.recess + c.drum.radius, 0, 0)),
+      slotOf.get("compass")!, atlasSize, materials.instrumentFace, root);
+    parts.push(compassCard);
+    fittings.push(sweptTube(build, "trainer-compass-stalk",
+      [centre.add(new Vector3(0, c.height / 2 - 0.006, 0)), new Vector3(c.x, trainerCentreFrameCrownAt(c.x).y, 0)],
+      [c.stalkRadius, c.stalkRadius], 12, materials.dark, root));
+  }
+  const facesMesh = build.mergeStatic(TRAINER_DISPLAYS.screensMesh, faces, root);
+  parts.push(facesMesh);
+  parts.push(build.mergeStatic("trainer-dial-bezels", bezels, root));
+  parts.push(build.mergeStatic("trainer-panel-fittings", fittings, root));
+  // THE HEADLINER AND THE VISORS (S4), one mesh on the cabin's fabric
+  {
+    const o = TRAINER_OVERHEAD;
+    const down = new Vector3(0, -1, 0);
+    const plan = (x: number, y: number, z: number): PartFrame => ({ origin: new Vector3(x, y, z), across: new Vector3(0, 0, 1), up: new Vector3(1, 0, 0), out: down });
+    const lining = [loopSolid(build, "trainer-headliner-lining", plan((o.aftX + o.frontX) / 2, o.roofY, 0),
+      { halfWidth: o.halfWidth - o.cornerRadius, halfHeight: (o.frontX - o.aftX) / 2 - o.cornerRadius, radius: o.cornerRadius, cornerSegments: o.cornerSegments },
+      headlinerProfile(), materials.headliner, root,
+      { caps: [{ point: 0, facing: 1 }, { point: headlinerProfile().points.length - 1, facing: -1 }] })];
+    const v = o.visor;
+    const visorY = o.roofY + o.ceilingDrop + 0.001 + v.thickness / 2;
+    for (const side of [-1, 1] as const) {
+      lining.push(loopSolid(build, `trainer-visor-${side < 0 ? "port" : "starboard"}`,
+        plan(v.frontX - v.depth / 2, o.roofY - (visorY - o.roofY), side * (v.gap / 2 + v.width / 2)),
+        { halfWidth: v.width / 2 - v.corner, halfHeight: v.depth / 2 - v.corner, radius: v.corner, cornerSegments: 4 },
+        roundEdgedPlate(v.thickness, v.corner), materials.headliner, root,
+        { caps: [{ point: 0, facing: -1 }, { point: 8, facing: 1 }] }));
+    }
+    parts.push(build.mergeStatic("trainer-headliner", lining, root));
+  }
+  // THE YOKES (S6), one mesh on their own matte (S7): each a wheel, its boss, its column down into the board and a collar
+  // round the column there
+  {
+    const y = TRAINER_YOKE;
+    const yokeParts: Mesh[] = [];
+    for (const side of [-1, 1] as const) {
+      const name = `trainer-yoke-${side < 0 ? "port" : "starboard"}`;
+      const hub = trainerYokeHub(side);
+      const wheel = trainerYokeWheelPath(side);
+      yokeParts.push(sweptTube(build, `${name}-wheel`, wheel.centres, wheel.radii, y.segments, materials.yoke, root, { halfDepths: wheel.halfDepths }));
+      // the boss along x round the hub, its aft face's edge rounded
+      const b = y.boss;
+      const aftX = hub.x - b.length / 2;
+      const bossStations = [0, 30, 60, 90].map((degrees) => {
+        const a = (degrees * Math.PI) / 180;
+        return { x: aftX + b.round * (1 - Math.cos(a)), r: b.radius - b.round + b.round * Math.sin(a) };
+      });
+      bossStations.push({ x: hub.x + b.length / 2, r: b.radius });
+      yokeParts.push(sweptTube(build, `${name}-boss`, bossStations.map((p) => new Vector3(p.x, hub.y, hub.z)),
+        bossStations.map((p) => p.r), y.segments, materials.yoke, root));
+      // the column, from inside the boss down to the board and on into it
+      const entry = new Vector3(rearFaceXAt(y.column.entryY), y.column.entryY, hub.z);
+      const along = entry.subtract(hub).normalize();
+      const end = entry.add(along.scale(y.column.bury));
+      yokeParts.push(sweptTube(build, `${name}-column`, [hub, Vector3.Lerp(hub, end, 0.5), end],
+        [y.column.radius, y.column.radius, y.column.radius], y.segments, materials.yoke, root));
+      // the collar where the column enters, its aft edge rounded, its front buried with the column
+      const c = y.collar;
+      const collarStations = [0, 30, 60, 90].map((degrees) => {
+        const a = (degrees * Math.PI) / 180;
+        return { at: -c.length + c.round * (1 - Math.cos(a)), r: c.radius - c.round + c.round * Math.sin(a) };
+      });
+      collarStations.push({ at: y.column.bury, r: c.radius });
+      yokeParts.push(sweptTube(build, `${name}-collar`, collarStations.map((p) => entry.add(along.scale(p.at))),
+        collarStations.map((p) => p.r), y.segments, materials.yoke, root));
+    }
+    parts.push(build.mergeStatic("trainer-yokes", yokeParts, root));
+  }
+
+  // THE ATLAS: live where there is a 2D canvas, drawn ONCE (nothing on the faces moves); under Node the faces keep the
+  // flat instrument-face material they were built with (see `displayAtlas.ts`)
+  const atlas = createDisplayAtlas(build, TRAINER_DISPLAYS);
+  if (atlas !== null) {
+    facesMesh.material = displayMaterial(build, "trainer-display", atlas);
+    // the compass's card turns, so it is a mesh of its own, on the same material
+    if (compassCard) compassCard.material = facesMesh.material;
+    paintDisplays(atlas, DISPLAY_STATE_LEVEL);
+  }
+
+  // A NEEDLE (`TRAINER_NEEDLE`, its length, width and hub `scale`d with its face) on the face whose centre on the board
+  // is `at`, turned by `turnNeedle` below.
+  const addNeedle = (name: string, at: Vector3, normal: Vector3, scale: number): void => {
     // Up the panel's face, in the vertical plane of the dial's normal.
     const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
-    if (name === "attitude") {
-      // THE BALL, not a needle. Its pivot turns about ITS OWN X, so it hangs from a
-      // frame node whose axes are the pivot's (`buildAttitudeBall`): X AWAY from the
-      // pilot (the dial's normal reversed), Y up the face, Z = X x Y, the pilot's
-      // right. The needles' frames have X TOWARD him instead, which is why their
-      // turn is a negative rotation and the ball's is not; the screen-space test in
-      // `tests/render.cockpit-instruments.test.ts` decides which sign is right.
-      const ball = TRAINER_ATTITUDE_BALL;
-      const away = normal.scale(-1);
-      const frame = new TransformNode("trainer-attitude-frame", build.scene);
-      frame.parent = root;
-      frame.position.copyFrom(
-        at.add(normal.scale(GAUGE_FACE_OFFSET + GAUGE_FACE_THICKNESS / 2 + ball.proud + ball.thickness / 2)),
-      );
-      frame.rotationQuaternion = basisQuaternion(away, up, Vector3.Cross(away, up));
-      attitudeBall = buildAttitudeBall(build, frame, Vector3.Zero(), { prefix: "trainer-attitude", ...ball });
-      parts.push(...attitudeBall.parts);
-      continue;
-    }
-    // THE NEEDLE, one mesh whose ORIGIN is the gauge's centre and whose local X
+    // THE NEEDLE, one mesh whose ORIGIN is the face's centre and whose local X
     // is the dial's normal, so turning the mesh about its own X turns the needle
     // about the dial's axis. `mergeStatic` bakes the parts' world matrices into
     // vertices in BODY coordinates and leaves the mesh's origin at the aircraft's
@@ -391,14 +1587,14 @@ export function buildTrainerCockpit(
     frameNode.computeWorldMatrix(true);
     const bar = build.box(
       `trainer-${name}-needle-bar`, TRAINER_NEEDLE.thickness,
-      TRAINER_NEEDLE.pointerLength + TRAINER_NEEDLE.tailLength, TRAINER_NEEDLE.width,
+      (TRAINER_NEEDLE.pointerLength + TRAINER_NEEDLE.tailLength) * scale, TRAINER_NEEDLE.width * scale,
       materials.instrumentMarking, frameNode,
     );
-    bar.position.set(NEEDLE_STAND_OFF, (TRAINER_NEEDLE.pointerLength - TRAINER_NEEDLE.tailLength) / 2, 0);
+    bar.position.set(NEEDLE_STAND_OFF, ((TRAINER_NEEDLE.pointerLength - TRAINER_NEEDLE.tailLength) * scale) / 2, 0);
     // The hub is a disc about the dial's axis (local X); a cylinder's own axis is Y.
     const hub = build.cylinder(
-      `trainer-${name}-needle-hub`, TRAINER_NEEDLE.hubThickness, TRAINER_NEEDLE.hubRadius * 2,
-      TRAINER_NEEDLE.hubRadius * 2, 16, materials.instrumentMarking, frameNode,
+      `trainer-${name}-needle-hub`, TRAINER_NEEDLE.hubThickness, TRAINER_NEEDLE.hubRadius * 2 * scale,
+      TRAINER_NEEDLE.hubRadius * 2 * scale, 16, materials.instrumentMarking, frameNode,
     );
     hub.rotation.z = Math.PI / 2;
     hub.position.set(NEEDLE_STAND_OFF, 0, 0);
@@ -409,47 +1605,80 @@ export function buildTrainerCockpit(
     needle.refreshBoundingInfo();
     parts.push(needle);
     needles.set(name, { mesh: needle, frame: frameQ });
+  };
+  for (const placement of trainerDialPlacements()) {
+    const { name, centre: at, normal } = placement;
+    // Up the panel's face, in the vertical plane of the dial's normal.
+    const up = Vector3.Cross(normal, new Vector3(0, 0, 1)).normalize();
+    if (name === "attitude") {
+      // THE BALL, not a needle. Its pivot turns about ITS OWN X, so it hangs from a
+      // frame node whose axes are the pivot's (`buildAttitudeBall`): X AWAY from the
+      // pilot (the dial's normal reversed), Y up the face, Z = X x Y, the pilot's
+      // right. The needles' frames have X TOWARD him instead, which is why their
+      // turn is a negative rotation and the ball's is not; the screen-space test in
+      // `tests/render.cockpit-instruments.test.ts` decides which sign is right.
+      const ball = TRAINER_ATTITUDE_BALL;
+      const away = normal.scale(-1);
+      const frame = new TransformNode("trainer-attitude-frame", build.scene);
+      frame.parent = root;
+      frame.position.copyFrom(at.add(normal.scale(FACE_FRONT + ball.proud + ball.thickness / 2)));
+      frame.rotationQuaternion = basisQuaternion(away, up, Vector3.Cross(away, up));
+      attitudeBall = buildAttitudeBall(build, frame, Vector3.Zero(), { prefix: "trainer-attitude", ...ball });
+      parts.push(...attitudeBall.parts);
+      continue;
+    }
+    addNeedle(name, at, normal, 1);
+  }
+  // the tachometer's (S2b): its face is 27 mm to the dials' 34, and its needle is scaled with it
+  {
+    const tach = trainerTachFrame();
+    addNeedle("tach", tach.origin, tach.out, TRAINER_TACH.faceRadius / TRAINER_BEZEL.faceRadius);
   }
 
-  // THE WINDSCREEN POSTS, sill to roof, each in one vertical plane through the
-  // eye so the left one stands at one screen column.
+  // THE A-PILLARS, from the rails into the roof slab (`TRAINER_A_PILLAR`), on the door frames' material: the rail and
+  // the pillar read as one frame round the side window.
   for (const side of [-1, 1] as const) {
-    const { bottom, top } = trainerPostEndpoints(side);
-    parts.push(build.strutBetween(
-      side < 0 ? "trainer-windscreen-post-port" : "trainer-windscreen-post-starboard",
-      bottom, top, POST_RADIUS, materials.dark, root,
+    const { centres, radii } = trainerPillarPath(side);
+    parts.push(sweptTube(
+      build, side < 0 ? "trainer-a-pillar-port" : "trainer-a-pillar-starboard",
+      centres, radii, TRAINER_A_PILLAR.segments, materials.interior, root,
     ));
   }
 
-  // THE DOOR PANELS and their SILL CAPS, one mesh a side. Without them the
-  // pilot would see the ground through the cabin's side: the tube's wall is
-  // culled from inside and, with the tube hidden, there is no wall at all. The
-  // lower panel stands just inside where the wall was; the upper one leans in
-  // to the glass's base; the cap makes the sill a ledge and not a knife edge.
-  for (const side of [-1, 1] as const) {
-    const wall = (x: number) => side * (interpolate(WALL_HALF_WIDTH, x) - DOOR.inset);
-    const sill = (x: number) => side * (interpolate(SILL_HALF_WIDTH, x) - DOOR.capInset);
-    const { fromX: x0, toX: x1 } = DOOR;
-    const sideName = side < 0 ? "port" : "starboard";
-    const lower = slab(
-      build, `trainer-door-${sideName}-lower`, materials.interior, root,
-      new Vector3(x0, DOOR.bottomY, wall(x0)), new Vector3(x1, DOOR.bottomY, wall(x1)),
-      new Vector3(x0, DOOR.kneeY, wall(x0)), new Vector3(x1, DOOR.kneeY, wall(x1)),
-      DOOR.thickness,
-    );
-    const upper = slab(
-      build, `trainer-door-${sideName}-upper`, materials.interior, root,
-      new Vector3(x0, DOOR.kneeY, wall(x0)), new Vector3(x1, DOOR.kneeY, wall(x1)),
-      new Vector3(x0, 0, sill(x0)), new Vector3(x1, 0, sill(x1)),
-      DOOR.thickness,
-    );
-    const cap = strip(
-      build, `trainer-sill-${sideName}`, materials.interior, root,
-      new Vector3(x0, 0, sill(x0) - side * (DOOR.capWidth / 2)),
-      new Vector3(x1, 0, sill(x1) - side * (DOOR.capWidth / 2)),
-      DOOR.capWidth, DOOR.capThickness,
-    );
-    parts.push(build.mergeStatic(`trainer-door-${sideName}`, [lower, upper, cap], root));
+  // THE DOOR FRAMES (`TRAINER_DOOR_FRAME`), one mesh a side: the rail, the face and the panel. Without them the pilot
+  // would see the ground through the cabin's side: the tube's wall is culled from inside and, with the tube hidden,
+  // there is no wall at all.
+  {
+    const stations = trainerDoorStations();
+    const sections = stations.map(trainerDoorSections);
+    for (const side of [-1, 1] as const) {
+      const sideName = side < 0 ? "port" : "starboard";
+      const at = (x: number, point: { u: number; y: number }) => new Vector3(x, point.y, side * point.u);
+      const sweep = (name: string, which: "face" | "panel") => {
+        const canonical = sections[0]![which];
+        return sweptSolid(
+          build, name, { points: canonical, rounds: [] }, stations.length,
+          (i, point) => {
+            const own = sections[i]![which];
+            const index = canonical.indexOf(point as { u: number; y: number });
+            // one of the section's points, or its middle (for its caps)
+            if (index >= 0) return at(stations[i]!, own[index]!);
+            return at(stations[i]!, { u: own.reduce((sum, p) => sum + p.u, 0) / own.length, y: own.reduce((sum, p) => sum + p.y, 0) / own.length });
+          },
+          (direction) => new Vector3(0, direction.y, side * direction.u),
+          materials.interior, root, { smoothAlong: true },
+        );
+      };
+      const rail = sweptTube(
+        build, `trainer-door-${sideName}-rail`,
+        stations.map((x, i) => at(x, sections[i]!.rail)),
+        stations.map(() => TRAINER_DOOR_FRAME.railRadius),
+        TRAINER_DOOR_FRAME.railSegments, materials.interior, root,
+      );
+      const face = sweep(`trainer-door-${sideName}-face`, "face");
+      const doorPanel = sweep(`trainer-door-${sideName}-panel`, "panel");
+      parts.push(build.mergeStatic(`trainer-door-${sideName}`, [rail, face, doorPanel], root));
+    }
   }
 
   // THE NEEDLES' STEP. Two dials have a needle; the third, "attitude", has the
@@ -461,6 +1690,7 @@ export function buildTrainerCockpit(
   // the cockpit camera: a flipped sign here passes every test of the angle alone.
   const spin = new Quaternion();
   const dialAxis = new Vector3(1, 0, 0);
+  const compassAxis = new Vector3(0, 1, 0);
   const turnNeedle = (name: string, clockwiseDegrees: number): void => {
     const needle = needles.get(name);
     if (!needle) return;
@@ -469,9 +1699,18 @@ export function buildTrainerCockpit(
   };
   return {
     parts,
+    bezelMaterial,
+    displaysLive: atlas !== null,
     update(state) {
       turnNeedle("airspeed", airspeedNeedleDegrees(state.airspeed, TRAINER_AIRSPEED_FULL_SCALE_KNOTS));
       turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));
+      turnNeedle("tach", tachometerNeedleDegrees(state.engineRpm, TRAINER_TACH_MARKINGS.fullScale));
+      // THE COMPASS'S CARD keeps its north: the aeroplane turns about it. A turn of the heading about the vertical (up)
+      // carries the card's point at phi to the aeroplane's phi - heading, so the card's side that faces the seat (phi 180)
+      // is the point printed with the heading (`compassCardMesh`); a heading that is not a number holds it where it is.
+      if (compassCard && Number.isFinite(state.heading)) {
+        Quaternion.RotationAxisToRef(compassAxis, (state.heading * Math.PI) / 180, compassCard.rotationQuaternion!);
+      }
       // THE BALL. Its pivot's local X points AWAY from the pilot, so a positive
       // rotation is clockwise to him and the clockwise-as-seen angle (minus the
       // bank) goes in as it is; the bar slides along the pivot's own up.

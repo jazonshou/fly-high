@@ -58,7 +58,7 @@ const OFFSETS = [0.37, 0.61] as const;
 
 /** Meshes beyond the 75 degree frame's edge: checked over their own angular extent instead, not left out of the checking. */
 const BEYOND_THE_FRAME: Readonly<Record<AircraftKind, readonly string[]>> = {
-  trainer: ["trainer-windscreen-post-starboard", "trainer-door-starboard"],
+  trainer: ["trainer-a-pillar-starboard", "trainer-door-starboard"],
   jet: [],
   bizjet: [],
   airliner: [],
@@ -98,7 +98,9 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
 // its rolled window frame (S1): the seals round the glass, a closed thin solid on the glareshield's matte; and 7 -> 8 with
 // its clock's face (S4), a mesh of its own on a static page.
 // The Global's went 7 -> 8 with its cove's fillet (the "feel real" wave's S1).
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 15, bizjet: 9, airliner: 9, jet: 9 };
+// the trainer 16 since its headliner (the Cessna pass, S4), 17 since its yokes (S6), 18 since its tachometer's needle (S2b),
+// 19 since its compass's card (S7)
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 9, airliner: 9, jet: 9 };
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed

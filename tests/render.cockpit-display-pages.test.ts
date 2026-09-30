@@ -407,7 +407,24 @@ describe("the atlas", () => {
     { page: "nd", x: W, y: H, w: W, h: H },
     { page: "pfd", x: 2 * W, y: H, w: W, h: H },
   ];
-  const EXPECTED_TEXT: Readonly<Record<DisplaySlot["page"], string>> = { pfd: "415", nd: "HDG", "eicas-upper": "88.0", "eicas-lower": "OIL PRESS", clock: "UTC", standby: "415" };
+  const EXPECTED_TEXT: Readonly<Record<DisplaySlot["page"], string>> = {
+    pfd: "415",
+    nd: "HDG",
+    "eicas-upper": "88.0",
+    "eicas-lower": "OIL PRESS",
+    clock: "UTC",
+    standby: "415",
+    // the Cessna's static pages (held in tests/render.cockpit-trainer.test.ts; not in this six-slot atlas)
+    "trainer-asi": "120",
+    "trainer-attitude-ring": "",
+    "trainer-altimeter": "5",
+    "trainer-com": "122.80",
+    "trainer-nav": "110.50",
+    // its tachometer and engine cluster (S2b)
+    "trainer-tach": "25",
+    "trainer-engine": "FUEL",
+    "trainer-compass": "N",
+  };
 
   it("clips each of six slots to its rectangle and draws its page's text inside it", () => {
     const ctx = createRecordingContext();

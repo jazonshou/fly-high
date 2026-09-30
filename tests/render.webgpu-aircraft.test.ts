@@ -117,8 +117,9 @@ describe("Babylon WebGPU aircraft visual", () => {
       "starboard-aileron-surface",
       "windscreen-center-frame",
       "trainer-instrument-panel",
-      "trainer-airspeed-gauge",
-      "trainer-attitude-gauge",
+      // the dials' faces and bezels, one mesh each since the Cessna pass's S2
+      "trainer-dial-faces",
+      "trainer-dial-bezels",
       "engine-cowling-band",
       "pitot-tube",
       "landing-light",
