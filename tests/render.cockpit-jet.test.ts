@@ -2275,17 +2275,18 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
     expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom).toEqual(["jet-glare-shield-rail", "jet-glare-shield-side-port", "jet-glare-shield-side-starboard", "jet-glare-shield-end-port", "jet-glare-shield-fillet-port", "jet-glare-shield-end-starboard", "jet-glare-shield-fillet-starboard"]);
     expect((mesh.material as PBRMaterial).name).toBe("jet-glareshield");
     const stations = jetRailEndStations();
-    expect(stations).toHaveLength(9);
+    expect(stations).toHaveLength(21);
+    const last = stations.length - 1;
     const section = jetGlareshieldSection();
     const t = { x: section.centre.x, y: section.centre.y + JET_GLARESHIELD.radius };
     // the top at the rail round's crown (S3; the sight line's tangent, 3.5 mm forward and 0.44 mm lower, before: the
     // crown came up through the S's top there), 0.2 mm under the sight line; the az-25 line's z there; the foot level
     // on the sill
-    expect(stations[8]!.x).toBeCloseTo(t.x, 12);
-    expect(stations[8]!.top).toBeCloseTo(t.y, 12);
+    expect(stations[last]!.x).toBeCloseTo(t.x, 12);
+    expect(stations[last]!.top).toBeCloseTo(t.y, 12);
     const sightAtCrown = section.tangent.y + (section.tangent.x - t.x) * Math.tan(aircraftSpec("jet").cockpitDeckLineDegrees / DEG);
     expect(sightAtCrown - t.y, "the crown under the sight line").toBeGreaterThan(0.0001);
-    expect(Math.atan2(stations[8]!.inner, t.x - EYE.forward) * DEG, "the end's inner edge at its top: az 25").toBeCloseTo(25, 9);
+    expect(Math.atan2(stations[last]!.inner, t.x - EYE.forward) * DEG, "the end's inner edge at its top: az 25").toBeCloseTo(25, 9);
     expect(stations[0]!.top).toBeCloseTo(JET_SILL.topY, 12);
     expect(stations[0]!.inner, "the foot: the sill's own section").toBeCloseTo(jetSillInnerAt(stations[0]!.x), 12);
     for (const [name, { side, vertices }] of ends()) {
@@ -2299,19 +2300,31 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
     }
   });
 
-  it("fall along an S of R 0.15, level at the sill's top at its foot (tangent within 0.5 degree) and flush with the sill's section there", () => {
+  it("fall along an S of R 0.15 through 21 stations spaced by its arcs' angle, no station turning it more than 5 degrees (the S3 amend), level at the sill's top at its foot (tangent within 0.5 degree) and flush with the sill's section there", () => {
     const stations = jetRailEndStations();
     const R = JET_RAIL_END.sRadius;
+    const last = stations.length - 1;
     // the S's top at every station: on one of its two arcs, level at both ends
     const footX = stations[0]!.x;
-    const topX = stations[8]!.x;
+    const topX = stations[last]!.x;
     const mid = (footX + topX) / 2;
     for (const s of stations) {
       const onArc = s.x >= mid
-        ? stations[8]!.top - (R - Math.sqrt(R * R - (topX - s.x) ** 2))
+        ? stations[last]!.top - (R - Math.sqrt(R * R - (topX - s.x) ** 2))
         : JET_SILL.topY + (R - Math.sqrt(R * R - (s.x - footX) ** 2));
       expect(s.top, `the S at x ${s.x.toFixed(3)}`).toBeCloseTo(onArc, 9);
     }
+    // ONE CURVE: the turn of the S's top at every station, the level sill and rail beyond its ends (4.57 at most; at 9
+    // stations spaced in x, the CONTROL, a corner turned 12.4)
+    const turns = (xs: readonly { x: number; top: number }[]) => {
+      const heading = xs.slice(1).map((q, k) => Math.atan2(q.top - xs[k]!.top, q.x - xs[k]!.x));
+      return [0, ...heading, 0].slice(1).map((h, k) => Math.abs(h - [0, ...heading][k]!) * DEG);
+    };
+    const worst = Math.max(...turns(stations));
+    console.info(`F-16 rail end: ${stations.length} stations, the S's top turning at most ${worst.toFixed(2)} degrees at a station`);
+    expect(worst).toBeLessThanOrEqual(5);
+    const nine = Array.from({ length: 9 }, (_, i) => footX + ((topX - footX) * i) / 8).map((x) => ({ x, top: jetRailEndTopAt(x) }));
+    expect(Math.max(...turns(nine)), "CONTROL: nine stations spaced in x").toBeGreaterThan(12);
     // at the foot the end's top is the sill's, level: the foot's top normals (the flat top between the rounds) within
     // 0.5 degree of straight up
     const mesh = named("jet-glare-shield");
@@ -2348,7 +2361,14 @@ describe("the rail's ends (the F-16 pass, step 5)", () => {
     }
   });
 
-  it("stand 2 cm or more inside the glass at every vertex, straight out at its own height", () => {
+  it("stand 2 cm or more inside the glass at every vertex, straight out at its own height, the outer edge the margin inside the glass MEASURED at every station", () => {
+    // the widths are the canopy's own at each station's top (re-measured at the S3 amend's 21), not a guess that
+    // clears the floor: the outer edge the sill's 2.1 cm margin inside the glass there, to the constants' 0.05 mm
+    for (const [i, station] of jetRailEndStations().entries()) {
+      if (i === 0) continue; // the foot is the sill's own section
+      const glass = crossings(new Vector3(station.x, station.top, 0), new Vector3(0, 0, 1), canopy)[0]!;
+      expect(glass - station.outer, `station ${i}`).toBeCloseTo(JET_SILL.glassMargin, 4);
+    }
     for (const [name, { side, vertices }] of ends()) {
       const nearest = Math.min(...vertices.map((v) => crossings(v, new Vector3(0, 0, side), canopy)[0]!));
       console.info(`F-16 ${name} rail end: nearest glass straight out ${nearest.toFixed(4)} m`);
@@ -2573,12 +2593,12 @@ describe("the rail end's fillet (Jason's F-16 wave, S3)", () => {
     const g = JET_GLARESHIELD;
     const section = jetGlareshieldSection();
     const stations = jetRailEndStations();
-    const [foot, crown] = [stations[0]!.x, stations[8]!.x];
+    const crown = stations[stations.length - 1]!.x;
     expect(crown).toBeCloseTo(section.centre.x, 12);
     /** The S's section's top at (x, |z|): its flat top, or its outer round out to its outer edge (null outboard of it). */
     const sTop = (x: number, z: number) => {
-      const k = Math.min(7, Math.max(0, Math.floor(((x - foot) / (crown - foot)) * 8)));
-      const f = ((x - foot) / (crown - foot)) * 8 - k;
+      const k = Math.min(stations.length - 2, Math.max(0, stations.findIndex((q) => q.x > x) - 1));
+      const f = (x - stations[k]!.x) / (stations[k + 1]!.x - stations[k]!.x);
       const outer = stations[k]!.outer + (stations[k + 1]!.outer - stations[k]!.outer) * f;
       const top = jetRailEndTopAt(x);
       if (z > outer) return null;

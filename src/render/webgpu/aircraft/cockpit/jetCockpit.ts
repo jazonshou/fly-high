@@ -1132,28 +1132,50 @@ export function jetSillInnerAt(x: number): number {
 export const JET_RAIL_END = Object.freeze({
   startAzimuthDegrees: 25,
   sRadius: 0.15,
-  /** Stations along the S, foot to top: 8 walls. */
-  stations: 9,
   /**
-   * The glass's inner half-width at each station's top, foot to top, by crossings on the built canopy (re-measured for
-   * S3, the S topped at the round's crown: its stations 3.5 to 3.9 mm aft, the glass 0.3 to 0.5 mm wider there).
+   * Stations along the S, foot to top: 20 walls, 10 on each arc, spaced by the arc's angle (the S3 amend), so no
+   * station turns the S's top more than 4.6 degrees and the sweep reads as one curve. At 9 stations spaced in x a corner
+   * turned 12.4; the S turns 91 degrees in all, so 16 stations cannot get under 6.1.
    */
-  glassHalfWidth: Object.freeze([0.4439, 0.4411, 0.4367, 0.4275, 0.4147, 0.4019, 0.3927, 0.386, 0.3816]),
+  stations: 21,
+  /**
+   * The glass's inner half-width at each station's top, foot to top, by crossings on the built canopy (re-measured at
+   * the 21 stations of the S3 amend).
+   */
+  glassHalfWidth: Object.freeze([
+    0.4439, 0.4427, 0.4414, 0.44, 0.4385, 0.4353, 0.4318, 0.4279, 0.4238, 0.4193, 0.4147,
+    0.4101, 0.4057, 0.4015, 0.3976, 0.3941, 0.3908, 0.388, 0.3854, 0.3833, 0.3816,
+  ]),
 });
 
 /**
+ * The S's spine, foot to top: each station's x and the S's top there, the stations spaced by the angle along each of
+ * the S's two arcs (half of them on each, the middle station on the join).
+ */
+export function jetRailEndSpine(): { x: number; top: number }[] {
+  const e = JET_RAIL_END;
+  const { foot, arc, t } = railEndS();
+  const sweep = Math.asin(arc / e.sRadius);
+  const walls = e.stations - 1;
+  return Array.from({ length: e.stations }, (_, i) => {
+    if (i === 0) return { x: foot, top: JET_SILL.topY };
+    if (i === walls) return { x: t.x, top: t.y };
+    const s = i / walls;
+    const x = s <= 0.5 ? foot + e.sRadius * Math.sin(sweep * 2 * s) : t.x - e.sRadius * Math.sin(sweep * (2 - 2 * s));
+    return { x, top: jetRailEndTopAt(x) };
+  });
+}
+
+/**
  * The rail end's stations, foot to top: x, the S's top there, and the outer and inner edges' half-widths. The foot is
- * the sill's own section; the top is at the rail's silhouette (the round's tangent on the deck line), from az 25 out.
+ * the sill's own section; the top is at the rail round's crown, from az 25 out.
  */
 export function jetRailEndStations(): { x: number; top: number; outer: number; inner: number }[] {
   const e = JET_RAIL_END;
-  const { foot, t } = railEndS();
-  const low = JET_SILL.topY;
-  return Array.from({ length: e.stations }, (_, i) => {
-    const x = foot + ((t.x - foot) * i) / (e.stations - 1);
+  return jetRailEndSpine().map(({ x, top }, i) => {
     // the foot is the sill's own section, so the S leaves it level and flush
-    if (i === 0) return { x, top: low, outer: sillOuterAt(foot), inner: jetRailEndInnerAt(foot) };
-    return { x, top: i === e.stations - 1 ? t.y : jetRailEndTopAt(x), outer: e.glassHalfWidth[i]! - JET_SILL.glassMargin, inner: jetRailEndInnerAt(x) };
+    if (i === 0) return { x, top, outer: sillOuterAt(x), inner: jetRailEndInnerAt(x) };
+    return { x, top, outer: e.glassHalfWidth[i]! - JET_SILL.glassMargin, inner: jetRailEndInnerAt(x) };
   });
 }
 
