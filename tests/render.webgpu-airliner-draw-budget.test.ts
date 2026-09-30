@@ -729,6 +729,10 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // swept straight across, and its two caps). +1,796 vertices and +5,052 indices exactly. Checked mesh by mesh against
     // 3ac0a0c: those two are new and the other 98 are bit-identical. The extents did not move; the position sum's y rose
     // by 5,876 (both stand over the eye, 3.2 to 3.6 m up).
+    //
+    // THEN the glareshield's windows 2 px inside the strip's edges (S3, the PM's accept): each window 0.45 mm shorter
+    // above and below, in airliner-screen-bezel-rims alone (the other 99 bit-identical). No count moved, the sums
+    // not at their pins; the normal moment by 0.027 and the area by 0.0003 m^2.
     const census = geometryCensus(build().visual);
     expect(census.vertices).toBe(24_382);
     expect(census.indices).toBe(100_554);
@@ -745,9 +749,9 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     expect(census.normalSum.x).toBeCloseTo(-1043.1354, 2);
     expect(census.normalSum.y).toBeCloseTo(-1535.7279, 2);
     expect(census.normalSum.z).toBeCloseTo(10.0123, 2);
-    expect(census.normalMoment).toBeCloseTo(-14708.0138, 1);
+    expect(census.normalMoment).toBeCloseTo(-14708.0408, 1);
     expect(census.signedVolume).toBeCloseTo(-3184.5334, 2);
-    expect(census.area).toBeCloseTo(4741.7753, 2);
+    expect(census.area).toBeCloseTo(4741.7750, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {

@@ -1726,9 +1726,10 @@ describe("the glareshield over the displays (S3)", () => {
     expect(up?.hit && facingDown(up.faceId), "the control: the soffit from under it").toBe(true);
   });
 
-  it("puts the MCP's speed, heading and altitude and the EFIS panel's window in view, each 12 px tall or more at 1080p", () => {
+  it("puts the MCP's speed, heading and altitude and the EFIS panel's window in view, each 12 px tall or more at 1080p and 2 px or more inside the strip's edges", () => {
     // the image plane's rows at 1920 x 1080: a point's row from its height over its distance ahead
     const pxRow = (p: Vector3) => 540 * (1 - (p.y - EYE.up) / (p.x - EYE.forward) / FRAME_V);
+    const section = airlinerGlareshieldSection();
     const report: string[] = [];
     for (const panel of airlinerGlareshieldPanels()) {
       for (const w of panel.windows) {
@@ -1740,8 +1741,12 @@ describe("the glareshield over the displays (S3)", () => {
         const { az, el } = azel(centre);
         if (!inFrame(az, el)) continue;
         const tall = pxRow(bottom) - pxRow(top);
-        report.push(`${panel.name}/${w.name} ${tall.toFixed(1)} px at az ${az.toFixed(1)}`);
+        // the strip's own edges at the window's middle, on the glareshield's aft face: the plate reads round the window
+        const edge = (y: number) => pxRow(new Vector3(section.aftX, y, centre.z));
+        const [above, below] = [pxRow(top) - edge(section.stripTop), edge(section.stripBottom) - pxRow(bottom)];
+        report.push(`${panel.name}/${w.name} ${tall.toFixed(1)} px (margins ${above.toFixed(2)} and ${below.toFixed(2)}) at az ${az.toFixed(1)}`);
         expect(tall, `${panel.name}'s ${w.name} window`).toBeGreaterThanOrEqual(12);
+        expect(Math.min(above, below), `${panel.name}'s ${w.name} window, inside the strip's edges`).toBeGreaterThanOrEqual(2);
         const hit = firstHit(az, el);
         expect(hit && partOf(hit.pickedMesh!, hit.faceId), `${panel.name}'s ${w.name} window, seen`).toBe(`airliner-glareshield-${panel.name}-windows`);
       }

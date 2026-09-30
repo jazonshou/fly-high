@@ -515,7 +515,9 @@ export function airlinerScreenPlacements(): readonly { name: string; centre: Vec
  * PANEL across the centre and an EFIS control panel over each pilot's PFD and ND. Each is a plate on the bezels' dark
  * grey, `proud` of the aft face and `inset` from the strip's edges, carrying WINDOWS on the marking material, which glow
  * by the rims' law at night (`bezelRimEmissive`): the MCP's speed, heading and altitude, and one on each EFIS panel. The
- * windows are the strip's height less `windowMargin` above and below: 12 px or more tall at 1080p. Nothing new is drawn:
+ * windows are the strip's height less `windowMargin` above and below: 12 px or more tall at 1080p, and 2 px or more
+ * inside the strip's edges, so the plate reads round them (they stand 0.8 mm proud, so the eye sees them 0.9 px low:
+ * 2.9 px above, 2.1 under; at 1.2 mm they were 13.6 px tall with 1.4 px under them). Nothing new is drawn:
  * the plates go with the bezels' frames and the windows with their rims.
  *
  * Spans in z (starboard positive); the port pilot sees the MCP's port part (az +12 to the frame's edge) and his own
@@ -525,7 +527,7 @@ export const AIRLINER_GLARESHIELD_PANELS = Object.freeze({
   proud: 0.0005,
   inset: 0.0005,
   windowProud: 0.0003,
-  windowMargin: 0.0012,
+  windowMargin: 0.00165,
   panels: Object.freeze([
     { name: "mcp", z: [-0.33, 0.33], windows: [{ name: "ias", z: -0.25, width: 0.03 }, { name: "hdg", z: -0.12, width: 0.03 }, { name: "alt", z: 0.02, width: 0.045 }] },
     { name: "efis-port", z: [-0.62, -0.38], windows: [{ name: "minimums", z: -0.5, width: 0.035 }] },

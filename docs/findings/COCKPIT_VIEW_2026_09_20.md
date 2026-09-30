@@ -2247,8 +2247,10 @@ The 747's was a 5 mm lip flush with the board: a line, 0.54 degree in all. Its s
   deck line, 18.5700 by the HUD's instrument, does not move);
 - a flat **strip** 0.7 degree tall on its aft face, the mode control panel across the middle and an EFIS panel over each
   pilot's PFD and ND. Each panel is a plate on the bezels' grey with windows on the marking, which glow by the rims'
-  law. The MCP has speed, heading and altitude, each EFIS panel one window. Every window in view is 13.6 px tall at
-  1080p;
+  law. The MCP has speed, heading and altitude, each EFIS panel one window. Every window in view is 12.3 px tall at
+  1080p and 2 px or more inside the strip's edges (2.9 above, 2.1 under: the windows stand 0.8 mm proud, so the eye
+  sees them 0.9 px low). They were 13.6 px at first with 1.4 px under them, and the PM's accept is 2 px margins. The
+  1.85 mm margin first estimated would have made them 11.7 px: the strip is 17.3 px tall, and not all of it is margin;
 - the aft face's bottom edge turning **under** in an 8 mm round onto a soffit, which no ray from the seat meets (the
   control: one from under it does). The aft face stands 25 mm aft of the board, over the screens' tops, so no top-row
   bezel shows over the strip: each bezel's top reads 1.3 degree or more above the strip's lowest visible row.
