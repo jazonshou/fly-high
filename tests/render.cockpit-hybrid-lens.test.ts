@@ -129,10 +129,11 @@ describe("what the lens shows of each deck, from the kits' own constants", () =>
     // board; its P1 panel stands the screens higher, 72.5 % of their rows in a 16:9 frame. A plain 75 degree ray
     // grid reads the Global's two at 29.6 % and 72.6 %. The F-16's read none at 21:9 and 62 % at 16:9 under the
     // wedge's near edge at -16; under the rail's cove at -12.7 they stood 3.5 cm higher, 31.4 % and 98.6 %; on the
-    // dash leaned 15 degrees (step 3) its lower part comes nearer the eye, 37.1 % and all of it.)
+    // dash leaned 15 degrees (step 3) its lower part comes nearer the eye, 37.1 % and all of it; under the round's
+    // own cove (Jason's F-16 wave), the dash's face 1 cm aft and the frames under the cove's foot, 38.3 %.)
     const share = (deck: (typeof DECKS)[number], name: string, w: number, h: number, lens: number) =>
       rowShareInFrame(projectPart(deck, cockpitParts(deck).find((p) => p.name === name)!, w, h, lens), h);
-    expect(share("jet", "port MFD", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.371, 2);
+    expect(share("jet", "port MFD", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.383, 2);
     expect(share("airliner", "port-pfd", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBe(0);
     expect(share("bizjet", "port-outboard", 2560, 1080, COCKPIT_HORIZONTAL_FOV_DEGREES)).toBeCloseTo(0.295, 2);
     // The same parts at 16:9: 100 %, 36.5 % and 72.5 % of their rows. (The 747's was 38 % on K3's upright board; on

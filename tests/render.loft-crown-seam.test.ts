@@ -344,7 +344,13 @@ describe("a loft's crown seam", () => {
       // RE-PINNED 7d145111 -> 71f87079 when this digest began reading thin-instance matrices (2026-09-24): the jet's
       // nozzle petals (14) and turbine blades (8) are thin instances. Its positions and indices alone still hash to
       // 7d145111; nothing about the jet changed.
-      jet: "71f87079",
+      // RE-PINNED 71f87079 -> 3ca5510d for the F-16 wave's S2, the dash taking over at the round's aft tangent through a
+      // 2 cm cove (the 45 degree chamfer gone). Checked mesh by mesh against 6426cd2 (positions, normals, UVs, indices,
+      // world matrix, material, visibility, instances, in both views): `jet-glare-shield` (984 -> 972 vertices),
+      // `jet-instrument-panel` (36 -> 48, the board a pentagon), `jet-mfd-frames`, `jet-mfd-rims` and `jet-screens` (under
+      // the cove's foot) and `jet-sills` (the consoles' forward ends on the dash's face, 12.7 mm aft) changed; the jet's
+      // other 69 and every mesh of the other three airframes are bit-identical.
+      jet: "3ca5510d",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

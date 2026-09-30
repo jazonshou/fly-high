@@ -1,3 +1,4 @@
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -91,8 +92,8 @@ const DEG = 180 / Math.PI;
  * A ROUNDED RAIL, not a wedge (the F-16 pass, step 1; the Global's deck, P1a). The deck line is the catalogue's
  * (10.19 degrees under the eye, over the nose probe's tip at -10.41), and it is the rail's ROUND at the aft face that
  * stands on it: the round is tangent to the sight line at a vertex, so the silhouette is one row of the picture. Under
- * the round a 45 degree cove turns in to the board's face (the dash); forward of it the hood falls away faster than the
- * sight line, so no part of its top is seen from the seat.
+ * the round the board's face (the dash) takes over at the round's aft tangent through a 2 cm cove (`JET_COVE`); forward
+ * of it the hood falls away faster than the sight line, so no part of its top is seen from the seat.
  *
  * WHY. The wedge's top was a flat, sky-facing plane that the pilot saw as a 5.8 degree band, the brightest thing on
  * the deck (58 luma against the near face's 20, uniform from front to back) with razor edges (57 to 24 in one pixel):
@@ -106,11 +107,19 @@ const DEG = 180 / Math.PI;
  * the glass; at 0.36 it clears it by 2 cm, and the narrowing hood by 3 to 4 cm all the way forward.
  */
 export const JET_GLARESHIELD = Object.freeze({
-  /** The aft face, where the round turns under into the cove: 0.70 ahead of the eye. */
+  /** The aft face, where the round's aft tangent meets the dash's top (the cove): 0.70 ahead of the eye. */
   aftX: 2.92,
   radius: 0.02,
   drop: 0,
-  cove: 0.01,
+  /**
+   * No chamfer under the round (Jason's F-16 wave: "walls and bars organic, not choppy"): the dash's top is the round's
+   * aft tangent, and the 15 degree inside corner between them is the cove (`JET_COVE`). The 45 degree chamfer this
+   * was (1 cm forward and down) faced down and aft and read luma 15 under the rail, a 15 px black band straight
+   * across the frame between a 51 degree crease (the round into it) and an 85 degree one (the dash's top edge).
+   */
+  cove: 0,
+  /** Where the plan starts narrowing: the old cove's foot, so the plan (and the rail's ends) are unchanged. */
+  narrowFromX: 2.93,
   /** Steeper than the 10.19 degree sight line, so the hood's top never shows over the round. */
   hoodFallDegrees: 13,
   /** To x 3.50, the wedge's far edge: from outside it is still the dark hood over the panel. */
@@ -121,9 +130,33 @@ export const JET_GLARESHIELD = Object.freeze({
   farHalfWidth: 0.26,
 });
 
-/** The rail's section in body x and y: the round on the deck line, the cove, the hood (`roundedDeckSection`). */
+/**
+ * The rail's section in body x and y: the round on the deck line, down to its aft tangent, then the hood's underside
+ * (`roundedDeckSection` with no drop and no chamfer, so its cove's foot IS the round's aft tangent; the shared builder
+ * lists that point twice, and the prism takes it once).
+ */
 export function jetGlareshieldSection(): RoundedDeckSection {
-  return roundedDeckSection(eye(), JET_GLARESHIELD.aftX, aircraftSpec("jet").cockpitDeckLineDegrees, JET_GLARESHIELD, "the F-16");
+  const section = roundedDeckSection(eye(), JET_GLARESHIELD.aftX, aircraftSpec("jet").cockpitDeckLineDegrees, JET_GLARESHIELD, "the F-16");
+  const first = section.outline[0]!;
+  const last = section.outline[section.outline.length - 1]!;
+  const twice = Math.hypot(first.x - last.x, first.y - last.y) < 1e-9;
+  return twice ? { ...section, outline: section.outline.slice(0, -1) } : section;
+}
+
+/**
+ * THE COVE (Jason's F-16 wave): the inside corner where the rail's round, its aft tangent vertical, meets the dash's
+ * face, leaned back `JET_PANEL.leanDegrees` from vertical and facing the pilot. It is a concave turn of that lean, drawn
+ * on a `radius` (2 cm): 15 degrees of it is 5.2 mm, the top strip of the dash's face, which carries the arc's normals from
+ * the round's (aft, level) at its top to the face's at its foot, so the round runs into the dash with one normal at
+ * the tangent and no crease in the shading. It is drawn as its chord: a 2 cm arc over 15 degrees stands 0.17 mm off it,
+ * and the dash's plate stays convex (`solidPlate` winds convex outlines only). No face in it faces down, so nothing
+ * under the rail falls into shadow: the band it replaces read luma 15 by day.
+ */
+export const JET_COVE = Object.freeze({ radius: 0.02 });
+
+/** The cove's length down the dash's face: its radius times the turn (the dash's lean), 5.2 mm. */
+export function jetCoveLength(): number {
+  return JET_COVE.radius * ((JET_PANEL.leanDegrees * Math.PI) / 180);
 }
 
 /** Height of the hood's top at a station forward of the round (where the HUD frame stands). */
@@ -139,7 +172,7 @@ export function jetCoamingTopY(x: number): number {
  */
 export function jetCoamingHalfWidth(x: number): number {
   const g = JET_GLARESHIELD;
-  const from = g.aftX + g.cove;
+  const from = g.narrowFromX;
   if (x <= from) return g.nearHalfWidth;
   return g.nearHalfWidth + ((g.farHalfWidth - g.nearHalfWidth) * (x - from)) / (g.aftX + g.hoodDepth - from);
 }
@@ -187,8 +220,11 @@ export function jetPanelSection(): { x: number; y: number }[] {
   const face = jetPanelFace();
   const fall = Math.tan((JET_GLARESHIELD.hoodFallDegrees * Math.PI) / 180);
   const backX = face.x + p.thickness;
+  const coveFoot = jetCoveFoot();
   return [
     { x: face.x, y: face.topY },
+    // on the face's plane: the cove's strip above it, the flat face below
+    { x: coveFoot.x, y: coveFoot.y },
     { x: face.x - (face.topY - p.bottomY) * (face.up.x / face.up.y), y: p.bottomY },
     { x: backX, y: p.bottomY },
     { x: backX, y: face.topY - (backX - face.x) * fall + p.topInHood },
@@ -197,6 +233,59 @@ export function jetPanelSection(): { x: number; y: number }[] {
 
 export function jetPanelTopY(): number {
   return jetPanelFace().topY;
+}
+
+/** The cove's foot: `jetCoveLength` down the dash's leaned face from its top (the round's aft tangent). */
+export function jetCoveFoot(): { x: number; y: number } {
+  const face = jetPanelFace();
+  const length = jetCoveLength();
+  return { x: face.top.x - length * face.up.x, y: face.top.y - length * face.up.y };
+}
+
+/**
+ * Shades the cove (`JET_COVE`) on the built board: every triangle of the face's top strip, from the face's top to the
+ * cove's foot, takes at each corner the arc's normal there: the round's aft normal (level, aft) at the top, the face's
+ * at the foot. Nothing moves. Returns how many triangles it shaded.
+ */
+export function shadeJetCove(board: Mesh): number {
+  const positions = board.getVerticesData(VertexBuffer.PositionKind);
+  const normals = board.getVerticesData(VertexBuffer.NormalKind);
+  const uvs = board.getVerticesData(VertexBuffer.UVKind);
+  const indices = board.getIndices();
+  if (!positions || !normals || !uvs || !indices) throw new Error("shadeJetCove: expected positions, normals, uvs and indices");
+  const face = jetPanelFace();
+  const foot = jetCoveFoot();
+  const top = new Vector3(-1, 0, 0);
+  const faceNormal = new Vector3(face.normal.x, face.normal.y, 0);
+  // on the face's plane, between its top and the cove's foot
+  const inStrip = (i: number) => {
+    const x = positions[i * 3]!;
+    const y = positions[i * 3 + 1]!;
+    const off = (x - face.top.x) * face.normal.x + (y - face.top.y) * face.normal.y;
+    return Math.abs(off) < 1e-7 && y >= foot.y - 1e-7 && y <= face.top.y + 1e-7;
+  };
+  const out = [...normals];
+  let shaded = 0;
+  for (let t = 0; t + 2 < indices.length; t += 3) {
+    const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+    if (!corners.every(inStrip)) continue;
+    for (const i of corners) {
+      const along = (face.top.y - positions[i * 3 + 1]!) / (face.top.y - foot.y);
+      const n = Vector3.Lerp(top, faceNormal, Math.max(0, Math.min(1, along))).normalize();
+      out[i * 3] = n.x;
+      out[i * 3 + 1] = n.y;
+      out[i * 3 + 2] = n.z;
+    }
+    shaded += 1;
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = out;
+  data.uvs = [...uvs];
+  data.indices = [...indices];
+  data.applyToMesh(board, false);
+  board.refreshBoundingInfo();
+  return shaded;
 }
 
 // ---- the HUD combiner frame ---------------------------------------------------------------
@@ -546,8 +635,9 @@ function hudFrameCorner(build: AircraftBuildContext, name: string, side: -1 | 1,
  * rims' material, whose frames read the board's tone by day and glowed whole at night). (They stood proud as 20 mm
  * slabs, tilted back 15 degrees on the upright board, the screen 1 mm proud.)
  *
- * WHERE: the frame's highest point reads `underFootDegrees` under the cove's foot, so the rail's round and its cove
- * show whole over them; a line along z reads one row, so that holds at every corner.
+ * WHERE: the frame's highest point reads `underFootDegrees` under the cove's foot (`jetCoveFoot`, the end of the
+ * dash's cove strip under the round's aft tangent), so the rail's round and its cove show whole over them; a line
+ * along z reads one row, so that holds at every corner.
  *
  * WHAT OF THEM IS SEEN: the 16:9 frame's bottom at their azimuth is about -22.7; the test pins the share of each screen
  * in the frame (98% or more).
@@ -592,7 +682,9 @@ export function jetMfdPlacements(): readonly { name: "port" | "starboard"; centr
   const stack = framedScreenStack(m);
   const up = new Vector3(face.up.x, face.up.y, 0);
   const out = new Vector3(face.normal.x, face.normal.y, 0);
-  const top = new Vector3(face.top.x, face.top.y, 0);
+  // under the COVE's foot, not the dash's top: the cove's strip (`JET_COVE`) shows whole over the frames
+  const coveFoot = jetCoveFoot();
+  const top = new Vector3(coveFoot.x, coveFoot.y, 0);
   const row = (v: Vector3) => (v.y - e.up) / (v.x - e.forward);
   const limit = Math.tan(Math.atan(row(top)) - (m.underFootDegrees * Math.PI) / 180);
   const centreAt = (drop: number) => top.subtract(up.scale(drop + m.height / 2 + m.bezel));
@@ -651,10 +743,18 @@ export const JET_SILL = Object.freeze({
   bendX: 2.6,
   /**
    * The glass's inner half-width at `topY`, by crossings on the built canopy: at `aftX`, at `bendX` (the widest, from
-   * x 2.3 to 2.6), at the board's side's bend (x 2.93) and at the board's back (x 3.03). The test re-measures the
-   * margin at every vertex.
+   * x 2.3 to 2.6), at the board's side's bend (x 2.93) and at `backX` (x 3.03). The test re-measures the margin at
+   * every vertex.
    */
   glassHalfWidth: Object.freeze({ aft: 0.4371, bend: 0.4559, dash: 0.4216, back: 0.4088 }),
+  /**
+   * The rail's stations beside the dash: the board's side's bend (the hood's plan starts narrowing, x 2.93) and 1 dm on.
+   * They were the board's face and back; the cove raised the face's top to the round's aft tangent, 1 cm aft (x 2.92),
+   * and the rails keep their run: the rail ends 1 cm past the board's back, its end cap facing forward, unseen. The
+   * consoles' forward ends stay on the face (`jetPanelFaceX`), 12.7 mm aft with it at every height.
+   */
+  dashX: 2.93,
+  backX: 3.03,
   consoleTopY: 0.6,
   consoleWidth: 0.15,
   consoleUnderRail: 0.03,
@@ -696,8 +796,8 @@ export function jetSillSection(): SweptSection {
 export function jetSillStations(): { x: number; outer: number; inner: number }[] {
   const r = JET_SILL;
   const g = r.glassHalfWidth;
-  const dashX = jetPanelFace().x;
-  const backX = dashX + JET_PANEL.thickness;
+  const dashX = r.dashX;
+  const backX = r.backX;
   const side = (x: number) => jetCoamingHalfWidth(x) - JET_PANEL.sideInset;
   return [
     { x: r.aftX, outer: g.aft - r.glassMargin, inner: g.aft - r.glassMargin - r.width },
@@ -871,6 +971,8 @@ export function buildJetCockpit(
   const panelMaterial = build.material("jet-panel", pm.albedo, { roughness: pm.roughness, metallic: pm.metallic });
   const board = solidPlate(build, "jet-instrument-panel", jetPanelSection(), faceHalfWidth * 2, panelMaterial, root);
   sculptSolid(board, (point) => new Vector3(point.x, point.y, (point.z * (jetCoamingHalfWidth(point.x) - p.sideInset)) / faceHalfWidth));
+  // the cove: the face's top strip shaded from the round's aft normal to the face's
+  shadeJetCove(board);
   board.metadata = { ...board.metadata, cockpitInterior: true };
 
   const f = JET_HUD_FRAME;

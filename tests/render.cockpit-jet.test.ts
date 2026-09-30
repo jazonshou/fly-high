@@ -18,6 +18,9 @@ import {
   JET_HUD_FRAME,
   JET_MFD,
   JET_PANEL,
+  JET_COVE,
+  jetCoveFoot,
+  jetCoveLength,
   jetCoamingHalfWidth,
   jetCoamingTopY,
   jetGlareshieldSection,
@@ -67,8 +70,9 @@ import { cockpitDeckK, cockpitDeckKStyleValue, cockpitDeckLineY } from "../src/u
  * The EYE is the catalogue's (2.22, 0.94, 0), which this phase does not move.
  * Everything is asserted as angles from it at the 75 degree lens, measured on the
  * BUILT meshes by ray or by vertex, never derived from the builder's constants:
- * the deck line, the coaming's rounded rail, at -10.19 straight ahead, over the nose probe, with a 45 degree
- * cove under it down to the dash at -12.68 (the F-16 pass, step 1: it was a wedge whose flat top showed as a
+ * the deck line, the coaming's rounded rail, at -10.19 straight ahead, over the nose probe, the dash taking
+ * over at the round's aft tangent, -12.07, through a 2 cm cove to its foot at -12.49 (Jason's F-16 wave; a 45
+ * degree chamfer down to -12.68 before it, and in the F-16 pass's step 1 a wedge whose flat top showed as a
  * 5.8 degree band down to -16.0); the HUD frame's uprights at az +-6.5 and its bar at +4.5, the box containing
  * (0, 0); the uprights' feet buried in the hood behind the rail; the board, the dash, bare under it;
  * the canopy two-sided from the seat.
@@ -108,7 +112,7 @@ let canopy: Triangle[];
  * The coaming's own rail, the first part of `jet-glare-shield` (step 5 merged the rail's two swept ends after it): its
  * vertices and its triangles.
  */
-const RAIL_VERTICES = 144;
+const RAIL_VERTICES = 3 * (4 * jetGlareshieldSection().outline.length - 4);
 function railVertices(): Vector3[] {
   return worldVertices(named("jet-glare-shield")).slice(0, RAIL_VERTICES);
 }
@@ -344,47 +348,72 @@ describe("the coaming", () => {
     expect(withoutCoaming?.pickedMesh?.name).toBe("jet-air-data-probe");
   });
 
-  it("turns a 45 degree cove under the round down to the dash at -12.68: the deck's edge 2.5 degrees, by ray the rail, the cove, then the board", () => {
-    const g = JET_GLARESHIELD;
+  it("runs the round into the dash through its cove: the dash's top at the round's aft tangent, one normal where they meet, nothing under the rail facing down", () => {
     const section = jetGlareshieldSection();
-    const coaming = named("jet-glare-shield");
-    const vertices = worldVertices(coaming);
-    const normals = coaming.getVerticesData(VertexBuffer.NormalKind)!;
-    // the cove by its built normals (flat-shaded, three vertices a triangle): facing down and aft at 45 degrees
-    const cove: Vector3[] = [];
-    let coveNormal: Vector3 | null = null;
-    for (let i = 0; i < vertices.length; i += 1) {
-      const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
-      if (Math.abs(n.x + Math.SQRT1_2) < 1e-6 && Math.abs(n.y + Math.SQRT1_2) < 1e-6) {
-        cove.push(vertices[i]!);
-        coveNormal = n;
+    const el = (v: { x: number; y: number }) => Math.atan2(v.y - EYE.up, v.x - EYE.forward) * DEG;
+    const aftTangent = section.round[section.round.length - 1]!;
+    // no chamfer: the cove's foot of the shared section IS the round's aft tangent, and the rail's prism takes it once
+    expect(section.faceTop.x).toBeCloseTo(aftTangent.x, 12);
+    expect(section.faceTop.y).toBeCloseTo(aftTangent.y, 12);
+    expect(section.faceTop.x).toBeCloseTo(JET_GLARESHIELD.aftX, 12);
+    const foot = el(section.faceTop);
+    console.info(`F-16 deck: the rail at ${el(section.tangent).toFixed(3)}, the dash's top (the round's aft tangent) at ${foot.toFixed(3)}, the edge ${(el(section.tangent) - foot).toFixed(3)} degrees; the cove's foot at ${el(jetCoveFoot()).toFixed(3)}`);
+    expect(foot).toBeCloseTo(-12.07, 2);
+    expect(el(section.tangent) - foot).toBeLessThan(2.0);
+    // THE COVE: the dash's top strip, a 2 cm radius over its 15 degree lean (5.2 mm), its normals from the round's aft
+    // one at its top to the face's at its foot
+    expect(jetCoveLength()).toBeCloseTo(JET_COVE.radius * (JET_PANEL.leanDegrees / DEG), 12);
+    expect(jetCoveLength() * 1000).toBeCloseTo(5.24, 2);
+    const board = named("jet-instrument-panel");
+    const bv = worldVertices(board);
+    const bn = board.getVerticesData(VertexBuffer.NormalKind)!;
+    const face = jetPanelFace();
+    const coveFoot = jetCoveFoot();
+    const onFace = (v: Vector3) => Math.abs((v.x - face.top.x) * face.normal.x + (v.y - face.top.y) * face.normal.y) < 2e-6;
+    let tops = 0;
+    let feet = 0;
+    for (let i = 0; i < bv.length; i += 1) {
+      const v = bv[i]!;
+      if (!onFace(v)) continue;
+      const n = new Vector3(bn[i * 3]!, bn[i * 3 + 1]!, bn[i * 3 + 2]!);
+      if (Math.abs(n.z) > 0.5) continue; // a side wall's corner on the face's edge
+      if (n.x > -0.5) continue; // the board's top, back into the hood from the face's top edge
+      if (Math.abs(v.y - face.top.y) < 1e-5) {
+        tops += 1;
+        expect(Vector3.Dot(n, new Vector3(-1, 0, 0)), "at the dash's top, the round's aft normal: one normal where they meet").toBeGreaterThan(1 - 1e-6);
+      } else if (Math.abs(v.y - coveFoot.y) < 1e-5) {
+        feet += 1;
+        const faceNormal = new Vector3(face.normal.x, face.normal.y, 0);
+        expect(Vector3.Dot(n, faceNormal), "at the cove's foot, the face's own normal").toBeGreaterThan(1 - 1e-6);
       }
     }
-    expect(cove.length, "the cove's vertices: a quad, two triangles").toBe(6);
-    // (float32: a micrometre at these stations)
-    expect(Math.min(...cove.map((v) => v.x))).toBeCloseTo(g.aftX, 5);
-    expect(Math.max(...cove.map((v) => v.x)) - g.aftX, "the cove's run").toBeCloseTo(g.cove, 5);
-    expect(Math.max(...cove.map((v) => v.y)) - Math.min(...cove.map((v) => v.y)), "the cove's fall").toBeCloseTo(g.cove, 5);
-    for (const v of cove) expect(Vector3.Dot(coveNormal!, EYE_POINT.subtract(v)), "the cove faces the eye").toBeGreaterThan(0);
-    // the deck's edge the pilot reads, from the rail's tangent to the cove's foot: the least round and cove that read
-    const el = (v: { x: number; y: number }) => Math.atan2(v.y - EYE.up, v.x - EYE.forward) * DEG;
-    const foot = el(section.faceTop);
-    console.info(`F-16 deck: the rail at ${el(section.tangent).toFixed(3)}, the cove's foot at ${foot.toFixed(3)}, the edge ${(el(section.tangent) - foot).toFixed(3)} degrees`);
-    expect(foot).toBeCloseTo(-12.68, 2);
-    expect(el(section.tangent) - foot).toBeLessThan(2.6);
-    // by ray, straight ahead: the rail down to the cove's foot (the cove's middle ON the cove), then the board, the dash
-    const coveMiddle = (el(section.coveTop) + foot) / 2;
-    const hit = firstHitInfo(0, coveMiddle);
-    expect(hit?.pickedMesh?.name, "straight ahead, the cove's middle").toBe("jet-glare-shield");
-    expect(hit!.pickedPoint!.x - g.aftX, "and the hit is on the cove").toBeGreaterThan(0.0005);
-    for (let e = -10.25; e > foot + 0.02; e -= 0.05) expect(firstHit(0, e)?.name, `at elevation ${e.toFixed(2)}`).toBe("jet-glare-shield");
-    for (let e = foot - 0.02; e >= -20; e -= 0.1) {
-      const board = firstHitInfo(0, e);
-      expect(board?.pickedMesh?.name, `at elevation ${e.toFixed(2)}`).toBe("jet-instrument-panel");
-      // on the leaned face: the plane through the cove's foot, square to the face's normal
-      const face = jetPanelFace();
-      const q = board!.pickedPoint!;
-      expect((q.x - face.top.x) * face.normal.x + (q.y - face.top.y) * face.normal.y, `the point at elevation ${e.toFixed(2)} is on the board's face`).toBeCloseTo(0, 3);
+    expect(tops, "the cove's top row").toBeGreaterThanOrEqual(2);
+    expect(feet, "the cove's foot row").toBeGreaterThanOrEqual(2);
+    // the rail's round, at its aft tangent: the same normal
+    const coaming = named("jet-glare-shield");
+    const cv = railVertices();
+    const cn = coaming.getVerticesData(VertexBuffer.NormalKind)!;
+    const roundAft = cv.map((v, i) => ({ v, n: new Vector3(cn[i * 3]!, cn[i * 3 + 1]!, cn[i * 3 + 2]!) }))
+      .filter(({ v, n }) => Math.abs(v.x - aftTangent.x) < 1e-5 && Math.abs(v.y - aftTangent.y) < 1e-5 && Math.abs(n.z) < 0.5 && n.x < -0.9);
+    expect(roundAft.length, "the round's chord ends at its aft tangent").toBeGreaterThanOrEqual(2);
+    for (const { n } of roundAft) expect(Vector3.Dot(n, new Vector3(-1, 0, 0))).toBeGreaterThan(1 - 1e-6);
+    // BY RAY, straight ahead and at az +-23 (outside the MFDs' frames, inboard of the rail's ends), from the deck line
+    // down past the cove's foot: the rail, then the dash; every surface seen faces the eye and none faces down, and the
+    // shading normal never turns more than 5 degrees in 0.05 degrees of the picture (the chamfer's crease turned 45,
+    // and a flat dash under the round 15)
+    for (const az of [-23, 0, 23]) {
+      let previous: Vector3 | null = null;
+      let worst = 0;
+      for (let e = -10.3; e >= -12.7; e -= 0.05) {
+        const hit = firstHitInfo(az, e);
+        expect(["jet-glare-shield", "jet-instrument-panel"], `az ${az} el ${e.toFixed(2)}`).toContain(hit?.pickedMesh?.name);
+        const n = hit!.getNormal(true, true)!;
+        expect(n.y, `az ${az} el ${e.toFixed(2)}: nothing under the rail faces down`).toBeGreaterThan(-0.05);
+        if (previous) worst = Math.max(worst, Math.acos(Math.min(1, Vector3.Dot(previous, n))) * DEG);
+        previous = n;
+      }
+      console.info(`F-16 cove at az ${az}: the shading normal turns at most ${worst.toFixed(2)} degrees in 0.05`);
+      expect(worst).toBeLessThan(5);
     }
   });
 
@@ -422,7 +451,7 @@ describe("the coaming", () => {
     expect((mesh.metadata as { mergedFrom?: string[] }).mergedFrom?.[0], "the rail first, its ends after it").toBe("jet-glare-shield-rail");
     const vertices = railVertices();
     const n = section.outline.length;
-    expect(n, "no drop: the round, the cove's foot, the hood's two forward corners").toBe(g.roundSegments + 2 + 3);
+    expect(n, "no drop and no chamfer: the round (its aft tangent the dash's top) and the hood's two forward corners").toBe(g.roundSegments + 2 + 2);
     expect(RAIL_VERTICES / 3, "two fanned caps and a wall of two a side").toBe(2 * (n - 2) + 2 * n);
     expect(vertices.length).toBe(3 * (2 * (n - 2) + 2 * n));
     // every vertex on the section, at the plan's half-width for its station (float32)
@@ -481,7 +510,7 @@ describe("the coaming", () => {
     // flat-shaded, the eight chords banded at about 20 px each across the rail (step 3)
     const section = jetGlareshieldSection();
     const mesh = named("jet-glare-shield");
-    expect(railVertices().length, "no vertex added: the chords' own corners re-pointed").toBe(144);
+    expect(railVertices().length, "no vertex added: the chords' own corners re-pointed").toBe(RAIL_VERTICES);
     // the rail's own part (its swept ends, step 5, are held by their own tests)
     const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!.slice(0, RAIL_VERTICES * 3);
     const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!.slice(0, RAIL_VERTICES * 3);
@@ -499,9 +528,10 @@ describe("the coaming", () => {
     const last = section.round.length - 1;
     section.round.forEach((r, k) => {
       const found = at(r);
-      // two chords meet at an inner point (four vertices a side); the round's ends are where it meets the hood's top and the cove
+      // two chords meet at an inner point (four vertices a side); the round's ends are where it meets the hood's top and,
+      // at its aft tangent, the hood's underside (which faces down, inside the rail over the dash, and is never seen)
       expect(found.length, `round point ${k}: its vertices`).toBeGreaterThanOrEqual(4);
-      // the round's own normal at every one of them but, at the aft end, the cove's (the crease under the rail, 45 degrees)
+      // the round's own normal at every one of them but, at the aft end, the underside's
       const own = found.filter((n) => Vector3.Dot(n, radial(r)) > 1 - 1e-6);
       expect(own.length, `round point ${k}: the round's normal on its chords (the hood's top too, at the hood's tangent)`).toBe(k === last ? found.length / 2 : found.length);
     });
@@ -513,9 +543,10 @@ describe("the coaming", () => {
       expect(turn, `chord ${k}: its ends' normals turn by the chord's angle`).toBeCloseTo(chordAngle, 3);
       expect(turn, `chord ${k}: not flat`).toBeGreaterThan(2);
     }
-    // the crease the round keeps: under the rail into the 45 degree cove, a quarter turn and a half from the aft face
-    const cove = at(section.round[last]!).filter((n) => Vector3.Dot(n, radial(section.round[last]!)) < 1 - 1e-6);
-    for (const n of cove) expect(Math.atan2(n.y, n.x) * DEG).toBeCloseTo(-135, 3);
+    // at the aft tangent the round meets the hood's underside, falling 13 degrees (its normal 103 degrees from forward,
+    // down and aft): hidden, over the dash's top; the dash's cove carries the round's normal on down (the cove's test)
+    const underside = at(section.round[last]!).filter((n) => Vector3.Dot(n, radial(section.round[last]!)) < 1 - 1e-6);
+    for (const n of underside) expect(Math.atan2(n.y, n.x) * DEG).toBeCloseTo(-90 - JET_GLARESHIELD.hoodFallDegrees, 3);
   });
 
   it("keeps its exterior job on the MATTE glareshield material: an ordinary part, cockpitInterior, never a caster, visible from outside", () => {
@@ -1107,7 +1138,9 @@ describe("the panel board", () => {
   it("is the dash: one bare plate leaned back from the cove's foot to face the pilot, its plan the hood's less 5 mm a side, its top inside the hood along its whole depth", () => {
     const board = named("jet-instrument-panel");
     const vertices = worldVertices(board);
-    expect(vertices.length, "a solidPlate of a quadrilateral: 12 triangles").toBe(36);
+    // a pentagon: the face's top (the round's aft tangent), the cove's foot on the face, the foot on the tub, the back's
+    // foot and the back's top in the hood
+    expect(vertices.length, "a solidPlate of a pentagon: 16 triangles").toBe(48);
     const section = jetGlareshieldSection();
     const face = jetPanelFace();
     // the face through the cove's foot, from it down to the tub: the plane square to the leaned normal
@@ -1135,10 +1168,18 @@ describe("the panel board", () => {
     // over the hood's underside: square to a leaned face it would run out under the hood's underside, which falls at 13
     // degrees to the face's 15. Against the rail's own solid: its ends (step 5) stand over the board's outer edge.
     const coaming = railTriangles();
-    const tops = jetPanelSection().filter((q) => q.y > 0.5);
+    // the face's top and the back's top (the cove's foot is on the face, under the face's top)
+    const coveFoot = jetCoveFoot();
+    const tops = jetPanelSection().filter((q) => q.y > 0.5 && Math.hypot(q.x - coveFoot.x, q.y - coveFoot.y) > 1e-9);
     expect(tops).toHaveLength(2);
-    const corners = vertices.filter((v) => tops.some((q) => Math.abs(q.x - v.x) < 1e-5 && Math.abs(q.y - v.y) < 1e-5));
-    expect(corners.length, "the top edges' corners").toBeGreaterThanOrEqual(4);
+    // THE FACE'S TOP IS THE ROUND'S AFT TANGENT (the cove): its corners on the rail's aft line, the two meshes meeting
+    // there with no gap; the BACK's top is the one inside the hood
+    const aftTangent = section.round[section.round.length - 1]!;
+    const faceTopCorners = vertices.filter((v) => Math.abs(v.x - aftTangent.x) < 1e-5 && Math.abs(v.y - aftTangent.y) < 1e-5);
+    expect(faceTopCorners.length, "the face's top corners, on the round's aft tangent").toBeGreaterThanOrEqual(2);
+    const backTop = tops.find((q) => q.x > aftTangent.x + 1e-6)!;
+    const corners = vertices.filter((v) => Math.abs(backTop.x - v.x) < 1e-5 && Math.abs(backTop.y - v.y) < 1e-5);
+    expect(corners.length, "the back's top edge's corners").toBeGreaterThanOrEqual(2);
     for (const v of corners) {
       const up = crossings(v, new Vector3(0, 1, 0), coaming);
       expect(up.length % 2, `board corner (${v.x.toFixed(3)}, ${v.z.toFixed(3)}) inside the hood`).toBe(1);
@@ -1177,7 +1218,8 @@ describe("the MFDs", () => {
    * What the eye reads straight down each MFD's centre line, measured on the built mesh by scanning the
    * first surface from the eye in 0.01 degree steps. Pinned to +-0.2.
    */
-  const READS = { bezelTop: -12.61, screenTop: -14.45, screenBottom: -22.28, bezelBottom: -24.08 };
+  // Under the cove's foot (Jason's F-16 wave; the chamfer's foot, -12.68, before): the frames 0.3 under it
+  const READS = { bezelTop: -12.42, screenTop: -14.29, screenBottom: -22.26, bezelBottom: -24.09 };
   /**
    * Of the screen's height as the eye reads it, how much is inside the 16:9 frame at the MFDs' azimuth: all of it, on
    * the leaned dash (98.6% upright under the rail's cove; 63% under the wedge's near edge at -16).
@@ -1190,10 +1232,13 @@ describe("the MFDs", () => {
     const c = vs.reduce((sum, v) => sum.add(v), Vector3.Zero()).scale(1 / vs.length);
     return azel(c).az;
   };
-  /** Down one azimuth: the first and last elevation at which each mesh is the first surface. */
+  /**
+   * Down one azimuth: the first and last elevation at which each mesh is the first surface. From -10, over the rail's
+   * round (the dash's top, the round's aft tangent, reads -12.07 straight ahead and higher off it since the cove).
+   */
   function scan(az: number): Map<string, [number, number]> {
     const seen = new Map<string, [number, number]>();
-    for (let e = -12; e >= -32; e -= 0.01) {
+    for (let e = -10; e >= -32; e -= 0.01) {
       const name = firstHit(az, e)?.name ?? "-";
       const range = seen.get(name);
       if (!range) seen.set(name, [e, e]);
@@ -1244,7 +1289,7 @@ describe("the MFDs", () => {
     }
     // UNDER THE COVE'S FOOT: every frame and rim vertex reads 0.3 degree or more under it (a line along z reads one row)
     const row = (v: { x: number; y: number }) => (v.y - EYE.up) / (v.x - EYE.forward);
-    const footRow = Math.atan(row(jetGlareshieldSection().faceTop)) * DEG;
+    const footRow = Math.atan(row(jetCoveFoot())) * DEG;
     const highest = Math.max(...bezels.map((v) => Math.atan(row(v)) * DEG));
     expect(footRow - highest, "the frames' highest point under the cove's foot").toBeGreaterThanOrEqual(0.3 - 1e-3);
     expect(scene.getMeshByName("jet-mfd-bezels"), "the one mesh of step 3 is split").toBeNull();
@@ -1357,7 +1402,7 @@ describe("the MFDs", () => {
     }
   });
 
-  it("read, straight down each centre line (az +-14), frame top -12.6, screen top -14.5 and bottom -22.3, frame bottom -24.1: the frame's bottom (-22.7 there) leaves all of the screen in view", () => {
+  it("read, straight down each centre line (az +-14), frame top -12.4, screen top -14.3 and bottom -22.3, frame bottom -24.1: the frame's bottom (-22.7 there) leaves all of the screen in view", () => {
     for (const [name, side] of sides) {
       const az = centreAzimuth(side);
       // about 14: on the leaned dash under the rail's cove
@@ -1369,6 +1414,7 @@ describe("the MFDs", () => {
       const bezel: [number, number] | undefined = parts.length ? [Math.max(...parts.map((r) => r[0])), Math.min(...parts.map((r) => r[1]))] : undefined;
       const screen = seen.get("jet-screens");
       expect(bezel && screen, `${name}: both found`).toBeTruthy();
+      console.info(`F-16 ${name} MFD down az ${az.toFixed(2)}: bezel ${bezel![0].toFixed(2)} to ${bezel![1].toFixed(2)}, screen ${screen![0].toFixed(2)} to ${screen![1].toFixed(2)}`);
       expect(Math.abs(bezel![0] - READS.bezelTop), `${name}: bezel top ${bezel![0].toFixed(2)}`).toBeLessThan(0.2);
       expect(Math.abs(screen![0] - READS.screenTop), `${name}: screen top ${screen![0].toFixed(2)}`).toBeLessThan(0.2);
       expect(Math.abs(screen![1] - READS.screenBottom), `${name}: screen bottom ${screen![1].toFixed(2)}`).toBeLessThan(0.2);
@@ -1806,13 +1852,15 @@ describe("what the frame's bottom corners see", () => {
     const footX = Math.min(...board.map((v) => v.x));
     const feet = board.filter((v) => v.x < footX + 1e-4);
     expect(feet.length).toBeGreaterThanOrEqual(2);
-    expect(Math.max(...feet.map((v) => Math.abs(azel(v).az))), "from the mesh's own feet").toBeCloseTo(31.4, 1);
+    // (the cove raised the face's top 1 cm aft to the round's aft tangent, so its feet are 1.2 cm nearer: 31.4 before)
+    expect(Math.max(...feet.map((v) => Math.abs(azel(v).az))), "from the mesh's own feet").toBeCloseTo(32.0, 1);
     for (const v of feet) expect(azel(v).el, "under the frame's bottom there").toBeLessThan(-frameLimit(Math.abs(azel(v).az)));
     let reach = Number.NaN;
     for (let az = 0; az <= 37.5; az += 0.1) if (firstHit(az, -frameLimit(az) + 0.1)?.name === "jet-instrument-panel") reach = az;
-    // to az 27.0: from there the rail's end (step 5), its inner face 1 to 2 cm inboard of the dash's side where it
-    // rises to the rail, stands over the dash's outer edge (27.7 before it)
-    expect(reach, "the frame's bottom row on the dash").toBeCloseTo(27.0, 1);
+    // to az 27.5: from there the rail's end (step 5), its inner face 1 to 2 cm inboard of the dash's side where it
+    // rises to the rail, stands over the dash's outer edge (27.7 before it; 27.0 before the cove brought the dash's
+    // face 1 cm aft, to the round's aft tangent)
+    expect(reach, "the frame's bottom row on the dash").toBeCloseTo(27.5, 1);
     // The sill IS inside the frame out to about az 22 -- straight ahead its own top reads -14.0, against the frame's
     // -23.35 -- but the dash stands in front of it there, and beyond it drops below the frame's bottom. So it is
     // the first surface nowhere in the frame (and its see-through planform walls are never met from the seat).
@@ -1876,7 +1924,10 @@ describe("the sills (the F-16 pass, step 4)", () => {
       expect(Math.max(...rail.map((v) => v.y))).toBeCloseTo(JET_SILL.topY, 6);
       expect(JET_SILL.topY).toBeCloseTo(EYE.up - 0.22, 12);
       expect(Math.min(...rail.map((v) => v.x)), `${name}: its aft end, 0.32 behind the eye`).toBeCloseTo(1.9, 6);
-      expect(Math.max(...rail.map((v) => v.x)), `${name}: its forward end at the board's back`).toBeCloseTo(jetPanelFace().x + JET_PANEL.thickness, 6);
+      // the sills keep their run (`JET_SILL.backX`, x 3.03): the cove moved the board's face and back 1 cm aft, and the
+      // rail now ends 1 cm past the board's back, its end cap facing forward
+      expect(Math.max(...rail.map((v) => v.x)), `${name}: its forward end at the sills' own station`).toBeCloseTo(JET_SILL.backX, 6);
+      expect(JET_SILL.backX - (jetPanelFace().x + JET_PANEL.thickness), `${name}: 1 cm past the board's back`).toBeCloseTo(0.01, 6);
       // INSIDE THE GLASS: every vertex, straight out along z, 2 cm or more short of it
       const nearest = Math.min(...[...rail, ...consoleVertices].map((v) => crossings(v, new Vector3(0, 0, side), canopy)[0]!));
       console.info(`F-16 ${name} sill: nearest glass straight out ${nearest.toFixed(4)} m`);
@@ -2035,7 +2086,7 @@ describe("the sills (the F-16 pass, step 4)", () => {
       const clearance = jetSillInnerAt(jetPanelFaceX(JET_SILL.bottomY)) - boardSide(jetPanelFaceX(JET_SILL.bottomY));
       console.info(`F-16 ${name} sill: ${(clearance * 1000).toFixed(2)} mm from the board's side at the face plane, 0 from x 2.93`);
       expect(clearance).toBeGreaterThanOrEqual(0);
-      expect(clearance).toBeLessThanOrEqual(0.0032);
+      expect(clearance).toBeLessThanOrEqual(0.0039);
     }
     // THE JUNCTION, by ray: from the coaming's row down to the frame's bottom, az 26 to 32 each side, any ray that
     // reaches the world is over the rail's top where it crosses the rail's plan (ended at the dash's face plane, 85 of
