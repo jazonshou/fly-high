@@ -73,7 +73,7 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
 export interface TrainerCockpitMaterials {
   /** Dark matte interior: the panel board, the door frames and the A-pillars. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
-  /** The panel's fittings: the radios' bodies and knobs, the switches, and the compass. */
+  /** The panel's fittings: the radios' bodies and knobs, the switches, and the compass; and the yokes. */
   readonly dark: PBRMaterial;
   /** The headliner and the sun visors: the cabin's fabric. */
   readonly headliner: PBRMaterial;
@@ -175,6 +175,105 @@ export const TRAINER_SWITCHES = Object.freeze({
 
 /** The cowl stand-in's nose lip (S5): a quarter-round of this radius, in this many bands, ahead of the shell's nose. */
 export const TRAINER_COWL_LIP = Object.freeze({ radius: 0.015, steps: 4 });
+
+/**
+ * THE YOKES (S6): a ram's-horn wheel on a column for each seat, as a 150's are, one mesh on the fittings' dark.
+ *
+ * ON TYPE the pilot's hub is under the eye, 0.32 m aft of the board and 0.25 m below the eye (y -0.13), and each horn
+ * rises 0.08 over it: the horn tops stand at -24.7 degrees, 35 px under the bottom of the 16:9 frame, and the cockpit
+ * camera, fixed and level, shows no yoke at all. So both yokes are RAISED 4 cm (`raise`), which puts the pilot's horn
+ * tops about 100 px up from the frame's bottom. Nothing else of them is in the frame.
+ *
+ * THE WHEEL is one tube from horn tip to horn tip: each horn a grip standing straight up, domed at its top, bending at
+ * its foot into an arm that rises 15 degrees inboard to the hub, where the two arms meet over a fillet inside the boss.
+ *
+ * IT IS NARROWER THAN TYPE. The door's inner face stands 12.5 cm outboard of the eye at the horn tops' height (|z|
+ * 0.385 at y -0.01), so horns 0.15 either side of a hub under the eye would be about 3 cm into the door. The hub stays
+ * under the eye, and the horns are `grip` either side of it, their outer faces 1.6 cm off the door.
+ *
+ * THE COLUMN falls about 14 degrees forward from the hub to enter the board under the switch row. Level at the raised
+ * hub's height it would pass between the airspeed's and the attitude's bezels, a gap narrower than its collar; level at
+ * the height on type, through the switches. It is 29 degrees and more under the eye's line, out of the frame.
+ */
+export const TRAINER_YOKE = Object.freeze({
+  /** Each hub under its seat's eye, either side of the centreline. */
+  hubZ: 0.26,
+  /** The hub's height on type, and how far both yokes are raised from it so the horn tops show. */
+  hubY: -0.13,
+  raise: 0.04,
+  /** The hub's distance aft of the board's face at its height. */
+  aftOfBoard: 0.32,
+  /** Each grip's axis this far either side of its hub; the horn's top this far over the hub. */
+  grip: 0.105,
+  gripTop: 0.08,
+  gripRadius: 0.015,
+  armRadius: 0.011,
+  /** The arms' rise from the bends to the hub, degrees. */
+  armRise: 15,
+  bendRadius: 0.025,
+  hubFillet: 0.04,
+  boss: Object.freeze({ radius: 0.022, length: 0.035, round: 0.005 }),
+  /**
+   * The column enters the board at `entryY`, under the switch row, and runs `bury` on into it: its end and its collar's
+   * are 17 mm or more behind the board's face at every vertex, though the end is square to the column, which falls 14
+   * degrees, and the board leans its top forward.
+   */
+  column: Object.freeze({ radius: 0.0125, entryY: -0.17, bury: 0.02 }),
+  collar: Object.freeze({ radius: 0.02, length: 0.015, round: 0.005 }),
+  segments: 20,
+});
+
+/** A yoke's hub, as built: under its seat's eye, raised, `aftOfBoard` aft of the board. `side` -1 is the pilot's. */
+export function trainerYokeHub(side: -1 | 1): Vector3 {
+  const y = TRAINER_YOKE.hubY + TRAINER_YOKE.raise;
+  return new Vector3(rearFaceXAt(y) - TRAINER_YOKE.aftOfBoard, y, side * TRAINER_YOKE.hubZ);
+}
+
+/**
+ * A yoke's wheel as one tube's centreline and radii, from the port horn's tip to the starboard horn's, in the vertical
+ * plane through its hub: each half a hub fillet, an arm, a bend, a grip and a dome.
+ */
+export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii: number[] } {
+  const y = TRAINER_YOKE;
+  const hub = trainerYokeHub(side);
+  const rise = (y.armRise * Math.PI) / 180;
+  const out = { u: Math.cos(rise), v: -Math.sin(rise) };
+  const half: { u: number; v: number; r: number }[] = [];
+  // the fillet over the hub, from its middle (straight up from its centre) to where it meets the arm
+  const hubCentre = { u: 0, v: -y.hubFillet / Math.cos(rise) };
+  for (const a of [Math.PI / 2, Math.PI / 2 - rise / 2, Math.PI / 2 - rise]) {
+    half.push({ u: hubCentre.u + y.hubFillet * Math.cos(a), v: hubCentre.v + y.hubFillet * Math.sin(a), r: y.armRadius });
+  }
+  // the arm, to the bend
+  const corner = { u: y.grip, v: -y.grip * Math.tan(rise) };
+  const turn = Math.PI / 2 + rise;
+  const reach = y.bendRadius * Math.tan(turn / 2);
+  const bendIn = { u: corner.u - out.u * reach, v: corner.v - out.v * reach };
+  const armStart = half[half.length - 1]!;
+  for (const t of [1 / 3, 2 / 3, 1]) {
+    half.push({ u: armStart.u + (bendIn.u - armStart.u) * t, v: armStart.v + (bendIn.v - armStart.v) * t, r: y.armRadius });
+  }
+  // the bend, turning up into the grip, thickening from the arm's radius to the grip's
+  const bendOut = { u: corner.u, v: corner.v + reach };
+  const bendCentre = { u: y.grip - y.bendRadius, v: bendOut.v };
+  const from = Math.atan2(bendIn.v - bendCentre.v, bendIn.u - bendCentre.u);
+  for (let k = 1; k <= 6; k += 1) {
+    const a = from + (-from * k) / 6;
+    half.push({ u: bendCentre.u + y.bendRadius * Math.cos(a), v: bendCentre.v + y.bendRadius * Math.sin(a), r: y.armRadius + ((y.gripRadius - y.armRadius) * k) / 6 });
+  }
+  // the grip, straight up to the dome's base, and the dome
+  const base = y.gripTop - y.gripRadius;
+  for (const t of [1 / 3, 2 / 3, 1]) half.push({ u: y.grip, v: bendOut.v + (base - bendOut.v) * t, r: y.gripRadius });
+  for (const degrees of [22.5, 45, 67.5, 85]) {
+    const a = (degrees * Math.PI) / 180;
+    half.push({ u: y.grip, v: base + y.gripRadius * Math.sin(a), r: y.gripRadius * Math.cos(a) });
+  }
+  const whole = [...half.slice(1).reverse().map((p) => ({ ...p, u: -p.u })), ...half];
+  return {
+    centres: whole.map((p) => new Vector3(hub.x, hub.y + p.v, hub.z + p.u)),
+    radii: whole.map((p) => p.r),
+  };
+}
 
 /**
  * THE OVERHEAD (S4): the headliner, its header, the sun visors and the compass.
@@ -1194,6 +1293,44 @@ export function buildTrainerCockpit(
         { caps: [{ point: 0, facing: -1 }, { point: 8, facing: 1 }] }));
     }
     parts.push(build.mergeStatic("trainer-headliner", lining, root));
+  }
+  // THE YOKES (S6), one mesh on the fittings' dark: each a wheel, its boss, its column down into the board and a collar
+  // round the column there
+  {
+    const y = TRAINER_YOKE;
+    const yokeParts: Mesh[] = [];
+    for (const side of [-1, 1] as const) {
+      const name = `trainer-yoke-${side < 0 ? "port" : "starboard"}`;
+      const hub = trainerYokeHub(side);
+      const wheel = trainerYokeWheelPath(side);
+      yokeParts.push(sweptTube(build, `${name}-wheel`, wheel.centres, wheel.radii, y.segments, materials.dark, root));
+      // the boss along x round the hub, its aft face's edge rounded
+      const b = y.boss;
+      const aftX = hub.x - b.length / 2;
+      const bossStations = [0, 30, 60, 90].map((degrees) => {
+        const a = (degrees * Math.PI) / 180;
+        return { x: aftX + b.round * (1 - Math.cos(a)), r: b.radius - b.round + b.round * Math.sin(a) };
+      });
+      bossStations.push({ x: hub.x + b.length / 2, r: b.radius });
+      yokeParts.push(sweptTube(build, `${name}-boss`, bossStations.map((p) => new Vector3(p.x, hub.y, hub.z)),
+        bossStations.map((p) => p.r), y.segments, materials.dark, root));
+      // the column, from inside the boss down to the board and on into it
+      const entry = new Vector3(rearFaceXAt(y.column.entryY), y.column.entryY, hub.z);
+      const along = entry.subtract(hub).normalize();
+      const end = entry.add(along.scale(y.column.bury));
+      yokeParts.push(sweptTube(build, `${name}-column`, [hub, Vector3.Lerp(hub, end, 0.5), end],
+        [y.column.radius, y.column.radius, y.column.radius], y.segments, materials.dark, root));
+      // the collar where the column enters, its aft edge rounded, its front buried with the column
+      const c = y.collar;
+      const collarStations = [0, 30, 60, 90].map((degrees) => {
+        const a = (degrees * Math.PI) / 180;
+        return { at: -c.length + c.round * (1 - Math.cos(a)), r: c.radius - c.round + c.round * Math.sin(a) };
+      });
+      collarStations.push({ at: y.column.bury, r: c.radius });
+      yokeParts.push(sweptTube(build, `${name}-collar`, collarStations.map((p) => entry.add(along.scale(p.at))),
+        collarStations.map((p) => p.r), y.segments, materials.dark, root));
+    }
+    parts.push(build.mergeStatic("trainer-yokes", yokeParts, root));
   }
 
   // THE ATLAS: live where there is a 2D canvas, drawn ONCE (nothing on the faces moves); under Node the faces keep the

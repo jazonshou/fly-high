@@ -1,8 +1,8 @@
 # The Cessna's cockpit: from boxes to a cabin
 
-**Status: steps 1 (the deck and the board), 3 (the A-pillars and the door frames),
-2 (the panel's face), 4 (the overhead) and 5 (the centre frame and the cowl's
-nose) built. Step 6 follows, in one commit.**
+**Status: all six steps built: 1 (the deck and the board), 3 (the A-pillars and the
+door frames), 2 (the panel's face), 4 (the overhead), 5 (the centre frame and the
+cowl's nose) and 6 (the yokes). The final GPU frames wait on the PM's grant.**
 
 Jason, 2026-09-29: *"no need to go overboard, but make sure the details are
 there"*; two or three main dials are enough; the cockpit should feel real, with
@@ -637,3 +637,106 @@ is a silhouette.
 The trainer's other 64 of 67 meshes, and every mesh of the jet, the Global and the
 747, are bit-identical. The trainer's loft-crown digests are re-pinned on its
 line: seam 0ab2abdb, taper c2acc0f3.
+
+## S6: the yokes
+
+**What was there.** No yokes. The cockpit camera is fixed and level, so the frame's
+bottom is -23.35 degrees. On type, the pilot's yoke hub is under the eye, 0.32 m aft
+of the board and 0.25 m below the eye (y -0.13), and its horns rise 0.08 over it. The
+horn tops would then stand at -24.7 degrees, 35 px under the bottom of the 16:9
+frame, and the pilot would see no yoke at all.
+
+**What is there now:** one mesh, `trainer-yokes`, on the fittings' dark (no new
+material). Each seat has:
+- **a ram's-horn wheel**, one tube from horn tip to horn tip: each horn a 30 mm
+  grip standing straight up and domed at its top, bending at its foot into a 22 mm
+  arm that rises 15 degrees inboard to the hub, the two arms meeting over a fillet
+  inside the boss;
+- **a boss** round the hub, its aft edge rounded;
+- **a column**, and **a collar** where the column enters the board.
+
+**The 4 cm.** Both yokes are RAISED 4 cm from type (`TRAINER_YOKE.raise`), as the PM
+asked, so the pilot's horn tops show. They are now 100 px above the frame's bottom
+at 16:9; the bar was 15.
+
+**Two departures from type, both forced by the cabin, both measured.**
+- **The wheel is narrower.** The door's inner face stands 12.5 cm outboard of the
+  eye at the horn tops' height (|z| 0.385 at y -0.01). The survey's horns, 0.15
+  either side of a hub under the eye, would be about 3 cm into the door. The hub
+  stays under the eye, and the horns are 0.105 either side of it, their outer faces
+  1.6 cm off the door. The grips are 21 cm apart, against about 30 on type. The
+  other way to fit was a type-width wheel with its hub 3 cm inboard of the eye,
+  which puts the yoke off-centre in the frame. That choice is put to the PM.
+- **The column falls about 14 degrees forward** from the hub, and enters the board
+  under the switch row (at y -0.17). There is no level route:
+  - at the raised hub's height, a column would pass between the airspeed's and the
+    attitude's bezels, a gap narrower than its 40 mm collar;
+  - at the height on type, it would pass through the switches.
+
+  The column is 29 degrees and more under the eye's line. Only the top of its
+  collar shows, at the frame's bottom centre, as a column's boot at the panel does;
+  the copilot's collar clips the bottom-right corner.
+
+**Measured**, at 1080p (the census, near-plane clipped):
+
+| | S5 | S6 |
+|---|---|---|
+| pilot's horn tops above the frame's bottom | none built (on type: 35 px under it) | 100 px (the outboard at col 609, the inboard at 1311) |
+| yokes | none | 23,320 px; 0 hard edges; 0 facet silhouettes |
+| bare board | 238,996 px | 225,202 px (the yokes' collar and horn cover part of it) |
+| horns off the door | none | 1.64 cm at least |
+| columns' ends behind the board's face | none | 17.3 mm at least |
+| cockpit draws | 16 | 17 |
+| trainer build (Node, cold / warm) | 237 / 114 ms | 224 / 114 ms |
+
+**Pins** (`tests/render.cockpit-trainer.test.ts`, "the Cessna's yokes"):
+- **Built as designed:** one mesh of both seats' wheels, bosses, columns and collars,
+  on `trainer-dark`. Each hub is midway between its horns, under its seat's eye.
+  The horn tops are at the height on type plus the 4 cm, 0.32 m aft of the board's
+  face (read off the built board).
+- **The PM's accept line:** the pilot's two horn tops SEEN at least 15 px above the
+  frame's bottom at 16:9, off the raster. Control: the same tops 4 cm lower, on
+  type, project under the frame.
+- **The door:** every vertex of the outboard horn at least 1.5 cm inside the door's
+  inner face.
+- **The column:** every yoke vertex within 3 cm of the board at least 5 mm under the
+  switch row (the collars' rounded aft rims are the highest, 9.9 mm under). Each
+  column's end ring, vertex by vertex, is 6 mm or more behind the board's face.
+- **Added to the existing lists:** the hard-edge pin, the any-shading crease pin
+  and the shading pin now cover the yokes.
+
+The buried-ends pin's control now leaves the yokes out as well as the doors: the
+outboard horn stands in front of the board's port end and hid one of the edges
+that control counts. The drawn-faces test's kit size is re-pinned on the trainer's
+line (16 -> 17).
+
+**Mutations.** Six are caught:
+
+| mutation | caught by |
+|---|---|
+| no raise (the yokes on type) | the accept-line pin (0 px above the bottom), the hub pin |
+| the survey's width (horns 0.15 either side) | the door pin (2.9 cm into the door) |
+| a level column at the raised hub's height | the column pin (7 cm above where it may be) |
+| flat-topped horns (no dome) | the hard-edge and crease pins (40 edges), the hub and door pins |
+| the hub 3 cm inboard of the eye | the hub pin |
+| the column stopping at the board's face | the burial pin (-2.7 mm), the hard-edge and crease pins |
+
+The burial pin first measured at the column's centre. It caught an unburied column
+by 0.01 mm: the column's end is square to the column, which falls 14 degrees, and
+the board leans its top forward. It now measures every vertex of the end ring.
+- **The bury went from 12 to 20 mm**, on my estimate that the collar's top edge was
+  only about 4.5 mm in.
+- **Measured, it was 9.3 mm in**, already past the 6 mm the depth tolerance asks. So
+  the deeper bury is margin, not a fix; it is now 17.3 mm at least.
+
+**Mesh-by-mesh against S5** (a06be92). On the trainer, `trainer-yokes` is new; the
+other 67 of 68 meshes, and every mesh of the jet, the Global and the 747, are
+bit-identical. The trainer's loft-crown digests are re-pinned on its line: seam
+d29a2b1f, taper cba133b7.
+
+**Across the six steps:**
+- cockpit draws 15 -> 17, within the PM's +8;
+- no new material since S4's headliner fabric, which carries no texture;
+- Gate A (the inter-stage audit) is still owed on the GPU for the trainer's
+  display material (S2), the one new material with a texture;
+- the deck line held throughout.

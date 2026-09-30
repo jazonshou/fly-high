@@ -21,7 +21,9 @@ import {
   TRAINER_OVERHEAD,
   TRAINER_RADIO,
   TRAINER_SWITCHES,
+  TRAINER_YOKE,
   trainerCompassCentre,
+  trainerYokeHub,
   trainerDeckSection,
   trainerDialFrames,
   trainerDialPlacements,
@@ -167,8 +169,9 @@ describe("the trainer's cockpit parts", () => {
     ]);
     expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle"]);
     expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
-    // 15 when the Cessna pass began, and the headliner (S4) since: the PM's budget is 8 more draws over the pass
-    expect(parts).toHaveLength(16);
+    // 15 when the Cessna pass began, the headliner (S4) and the yokes (S6) since: the PM's budget is 8 more draws over
+    // the pass
+    expect(parts).toHaveLength(17);
   });
 
   it("are within the pass's budget of eight more meshes than its first 15, and keep the dial names", () => {
@@ -191,6 +194,7 @@ describe("the trainer's cockpit parts", () => {
       "trainer-headliner",
       "trainer-instrument-panel",
       "trainer-panel-fittings",
+      "trainer-yokes",
     ]);
     expect(cockpitOnly.length, "the pass's budget: 15 when it began, 8 more at most").toBeLessThanOrEqual(15 + 8);
   });
@@ -951,6 +955,8 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       "trainer-headliner",
       // the windscreen's centre strip and the cowl's nose (S5): a knuckle and a flat cap's rim before
       "windscreen-center-frame", "trainer-cowl-standin",
+      // the yokes (S6): the horn tops the pilot sees, and the collar where the column enters the board
+      "trainer-yokes",
     ]) {
       const mesh = named(name);
       expect(meshes.indexOf(mesh), `${name} is drawn`).toBeGreaterThanOrEqual(0);
@@ -968,7 +974,8 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
     // S5 parts, a crease of any shading counts.
     const raster = frame();
     const meshes = drawn();
-    for (const name of ["windscreen-center-frame", "trainer-cowl-standin"]) {
+    // and the yokes (S6), whose horns end in domes rather than flat caps
+    for (const name of ["windscreen-center-frame", "trainer-cowl-standin", "trainer-yokes"]) {
       const mesh = named(name);
       const creases = visibleHardEdges(mesh, raster, meshes.indexOf(mesh), "any");
       expect(creases.map((e) => `(${e.a.x.toFixed(3)}, ${e.a.y.toFixed(3)}, ${e.a.z.toFixed(3)})`), `creases on ${name}`).toEqual([]);
@@ -1103,8 +1110,9 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       });
     };
     expect(edgesShown(drawn()), "an end's edge in the open").toEqual([0, 0]);
-    // CONTROL: without the door frames both ends' edges are in plain sight
-    for (const count of edgesShown(drawn().filter((m) => !m.name.startsWith("trainer-door")))) expect(count).toBeGreaterThan(2);
+    // CONTROL: without the door frames both ends' edges are in plain sight -- without the yokes too, whose outboard horn
+    // (S6) stands in front of the board's port end and hides one of its edges
+    for (const count of edgesShown(drawn().filter((m) => !m.name.startsWith("trainer-door") && m.name !== "trainer-yokes"))) expect(count).toBeGreaterThan(2);
   });
 
   it("closes the cabin's side under the rail: every pixel under the port rail, left of the board, is a cockpit surface", () => {
@@ -1499,6 +1507,7 @@ describe("the Cessna's overhead", () => {
     for (const name of [
       "trainer-headliner", "trainer-panel-fittings", "trainer-dial-bezels", "trainer-dial-faces",
       "trainer-door-port", "trainer-a-pillar-port", "trainer-glareshield", "trainer-instrument-panel",
+      "trainer-yokes",
     ]) {
       const mesh = named(name);
       const v = worldVertices(mesh);
@@ -1593,3 +1602,123 @@ describe("the Cessna's overhead", () => {
   });
 });
 
+/**
+ * THE YOKES (the Cessna pass, S6): a ram's-horn wheel on a column for each seat, one mesh (`trainer-yokes`).
+ *
+ * The cockpit camera is fixed and level, and on type the pilot's horn tops stand at -24.7 degrees, 35 px under the
+ * frame's bottom at 16:9: no yoke is seen. The PM's call: build on type, then raise 4 cm so the horn tops show.
+ * What is held: each hub under its seat's eye, 0.32 m aft of the board, raised 4 cm from its height on type; the
+ * pilot's two horn tops seen at least 15 px above the frame's bottom, and not without the raise; the horns 1.5 cm or
+ * more off the door; the column into the board under the switch row, clear of it, and buried.
+ */
+describe("the Cessna's yokes", () => {
+  const W = 1920;
+  const H = 1080;
+  const pin: Pinhole = {
+    eye: EYE_POINT,
+    target: EYE_POINT.add(new Vector3(1, 0, 0)),
+    up: new Vector3(0, 1, 0),
+    fovY: 2 * Math.atan(Math.tan(37.5 / DEG) / (16 / 9)),
+    width: W,
+    height: H,
+  };
+  const yokes = () => worldVertices(named("trainer-yokes"));
+  /** The board's face at height y, straight ahead of the pilot's seat, off the BUILT board. */
+  const boardFaceAt = (y: number) => {
+    const board = named("trainer-instrument-panel");
+    const hit = scene.pickWithRay(new Ray(new Vector3(1.5, y, EYE.right), new Vector3(1, 0, 0), 1), (m) => m === board);
+    expect(hit?.pickedPoint, `the board ahead at y ${y}`).toBeTruthy();
+    return hit!.pickedPoint!.x;
+  };
+  /** Each yoke's two horn tops: the highest vertex either side of its hub. */
+  const hornTops = (side: -1 | 1) => {
+    const own = yokes().filter((p) => Math.sign(p.z) === side);
+    const hubZ = side * TRAINER_YOKE.hubZ;
+    const top = (list: Vector3[]) => list.reduce((a, b) => (b.y > a.y ? b : a));
+    return [top(own.filter((p) => p.z < hubZ)), top(own.filter((p) => p.z > hubZ))] as const;
+  };
+
+  it("builds a yoke for each seat, one mesh on the fittings' dark: each hub under its eye, 0.32 m aft of the board, raised 4 cm", () => {
+    const mesh = named("trainer-yokes");
+    expect((mesh.material as PBRMaterial).name).toBe("trainer-dark");
+    expect(mesh.metadata?.mergedFrom).toEqual([
+      ...["port", "starboard"].flatMap((side) => ["wheel", "boss", "column", "collar"].map((part) => `trainer-yoke-${side}-${part}`)),
+    ]);
+    for (const side of [-1, 1] as const) {
+      const [outboardOrInboard, other] = hornTops(side);
+      // the hub is midway between its horns, under the seat's eye
+      expect((outboardOrInboard.z + other.z) / 2, "the hub under the eye").toBeCloseTo(side * -EYE.right, 3);
+      // the horn tops: the hub's height on type, the raise, and the horns' rise over the hub
+      for (const top of [outboardOrInboard, other]) {
+        expect(top.y, "a horn's top").toBeCloseTo(TRAINER_YOKE.hubY + TRAINER_YOKE.raise + TRAINER_YOKE.gripTop, 3);
+      }
+      expect(TRAINER_YOKE.raise, "the raise the PM asked for, stated in the finding").toBe(0.04);
+      // 0.32 m aft of the board's face at the hub's height, read off the built board
+      expect(boardFaceAt(TRAINER_YOKE.hubY + TRAINER_YOKE.raise) - outboardOrInboard.x, "aft of the board").toBeCloseTo(0.32, 3);
+    }
+  });
+
+  it("shows the pilot both horn tops at least 15 px above the frame's bottom at 16:9, and neither without the 4 cm raise", () => {
+    const meshes = scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+    const index = meshes.indexOf(named("trainer-yokes"));
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const tops = hornTops(-1);
+    for (const [label, top] of [["the outboard horn", tops[0]], ["the inboard horn", tops[1]]] as const) {
+      // the highest row the yokes are SEEN at, within 40 px of the horn's top's column
+      const column = Math.round(projectPoint(pin, top).x);
+      let highest = H;
+      for (let x = Math.max(0, column - 40); x <= Math.min(W - 1, column + 40); x += 1) {
+        for (let y = 0; y < H; y += 1) {
+          if (raster.mesh[y * W + x] === index) {
+            highest = Math.min(highest, y);
+            break;
+          }
+        }
+      }
+      expect(H - highest, `${label}'s top, px above the frame's bottom`).toBeGreaterThanOrEqual(15);
+      // CONTROL: on type, 4 cm lower, the same top projects under the frame's bottom
+      expect(projectPoint(pin, top.subtract(new Vector3(0, TRAINER_YOKE.raise, 0))).y, `${label} on type, row`).toBeGreaterThan(H);
+    }
+  });
+
+  it("keeps the pilot's horns 1.5 cm or more off the door's inner face", () => {
+    const door = named("trainer-door-port");
+    let least = Number.POSITIVE_INFINITY;
+    const outboard = yokes().filter((p) => p.z < -TRAINER_YOKE.hubZ - TRAINER_YOKE.grip + 0.02);
+    expect(outboard.length, "the outboard horn's vertices").toBeGreaterThan(50);
+    for (const p of outboard) {
+      const hit = scene.pickWithRay(new Ray(new Vector3(p.x, p.y, EYE.right), new Vector3(0, 0, -1), 1), (m) => m === door);
+      if (hit?.pickedPoint) least = Math.min(least, p.z - hit.pickedPoint.z);
+    }
+    expect(least, "least gap to the door, metres").toBeGreaterThan(0.015);
+  });
+
+  it("brings each column into the board under the switch row, clear of it and of the dials, and buries it there", () => {
+    // Level at the raised hub's height a column would pass between the airspeed's and the attitude's bezels; level at
+    // the height on type, through the switches. So it falls forward to enter under them.
+    const switchesBottom = Math.min(...trainerSwitchFrames().map((frame) => frame.origin.y)) - TRAINER_SWITCHES.base.halfHeight;
+    const face = boardFaceAt(TRAINER_YOKE.column.entryY);
+    const nearBoard = yokes().filter((p) => p.x > face - 0.03);
+    expect(nearBoard.length, "the collars' and columns' vertices by the board").toBeGreaterThan(50);
+    // (the collars' rounded aft rims are the highest, 9.9 mm under the switches' bases)
+    expect(Math.max(...nearBoard.map((p) => p.y)), "the highest of them, under the switch row by 5 mm").toBeLessThan(switchesBottom - 0.005);
+    // BURIED: each column's end and its collar's, one plane square to the column, is behind the board's face at every
+    // vertex's own height and place -- 6 mm or more, past the census's depth tolerance there
+    const board = named("trainer-instrument-panel");
+    for (const side of [-1, 1] as const) {
+      const hub = trainerYokeHub(side);
+      const along = new Vector3(boardFaceAt(TRAINER_YOKE.column.entryY), TRAINER_YOKE.column.entryY, hub.z).subtract(hub).normalize();
+      const own = yokes().filter((p) => Math.sign(p.z) === side);
+      const reach = Math.max(...own.map((p) => Vector3.Dot(p.subtract(hub), along)));
+      const end = own.filter((p) => Vector3.Dot(p.subtract(hub), along) > reach - 1e-4);
+      expect(end.length, "the end ring's vertices").toBeGreaterThanOrEqual(20);
+      let shallowest = Number.POSITIVE_INFINITY;
+      for (const p of end) {
+        const hit = scene.pickWithRay(new Ray(new Vector3(p.x - 0.2, p.y, p.z), new Vector3(1, 0, 0), 0.4), (m) => m === board);
+        expect(hit?.pickedPoint, "the board over the end").toBeTruthy();
+        shallowest = Math.min(shallowest, p.x - hit!.pickedPoint!.x);
+      }
+      expect(shallowest, "the end's least depth behind the board's face, metres").toBeGreaterThan(0.006);
+    }
+  });
+});
