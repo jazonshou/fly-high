@@ -1,0 +1,5204 @@
+{
+ "note": "Perf slot 2, 2026-09-29 23:25:45-23:47:02, quiet host (PM-granted; Firefox GPU helper 0.0%, load 2.3). Tier 0, 1920x1080, 4x Chrome CPU throttle (main thread only). Before = P1 files at 12bfe1e on perf-low-tier; after = P1+P3 at 2b6df41; P2 = jazonshou/perf-p2-hydrology-worker 021c5d8. Freeze pair: ?seed=water9 (world 1953085941), pose -18620,199,17260 yaw 0 pitch -20.6, clock pinned at 1000 s; arms A1/A2 = P2 files at 6426cd2, B = P2.",
+ "freezePairPixels": {
+  "waterMaskPx": 340497,
+  "waterMaskShareOfFrame": 0.164,
+  "terrainPatchPx": 109995,
+  "A1vsB": {
+   "water": {
+    "max": 0,
+    "pxDiffering": 0
+   },
+   "terrainPatch": {
+    "max": 0,
+    "pxDiffering": 0
+   },
+   "wholeFrame": {
+    "max": 1,
+    "pxDiffering": 11
+   }
+  },
+  "A1vsA2": {
+   "water": {
+    "max": 0,
+    "pxDiffering": 0
+   },
+   "terrainPatch": {
+    "max": 0,
+    "pxDiffering": 0
+   },
+   "wholeFrame": {
+    "max": 28,
+    "pxDiffering": 166
+   }
+  },
+  "hydrologyState": {
+   "A1": "fallback true, usedWorker false",
+   "B": "fallback false, usedWorker true",
+   "A2": "fallback true, usedWorker false"
+  }
+ },
+ "rigPairLakeIslandPiercing": {
+  "note": "committed baseline frames no water; kept for terrain/streaming identity only",
+  "A1vsA2": {
+   "max": 0,
+   "pxDiffering": 0
+  },
+  "A1vsB": {
+   "max": 1,
+   "pxDiffering": 27,
+   "where": "scattered single pixels rows 15-670"
+  },
+  "drawCalls": [
+   91,
+   91,
+   91
+  ]
+ },
+ "p2TraceWorkers": [
+  "materialSynthesis.worker.ts",
+  "detail.worker.ts",
+  "hydrology.worker.ts",
+  "simulation.worker.ts"
+ ],
+ "runs": {
+  "before cruise-trainer": {
+   "label": "b1-cruise-trainer",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T06:25:53.800Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3328,
+   "load": {
+    "firstFrameMs": 991.6999999880791,
+    "startScreenMs": 3134.0999999940395
+   },
+   "stateSampler": true,
+   "unthrottled": {
+    "longFrames": [],
+    "seconds": 30,
+    "frames": 3601,
+    "fpsMean": 120,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.3,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 59.47,
+     "snapshotsPerS": 51.97,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     218,
+     218,
+     218,
+     218,
+     218
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 218,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "residentTerrainPages": 126,
+     "terrainTiles": 222
+    }
+   },
+   "throttled": {
+    "longFrames": [
+     {
+      "start": 63270.59999999404,
+      "duration": 357.90000000596046,
+      "blockingDuration": 307.8,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 343,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 15,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 2.45,
+      "state": {
+       "t": 63704.59999999404,
+       "cpuL": 0,
+       "gpuL": 2,
+       "lever": "compute-budget",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 136,
+       "drawCalls": 212,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 4,
+        "swaps": 3,
+        "failed": 0,
+        "lastMs": 341.90000000596046,
+        "region": "1:0"
+       }
+      }
+     }
+    ],
+    "seconds": 29.99,
+    "frames": 2157,
+    "fpsMean": 71.88,
+    "fpsMedian": 74,
+    "intervalMs": {
+     "p50": 15.4,
+     "p95": 23.2,
+     "p99": 25.9,
+     "max": 357.8
+    },
+    "over33": 2,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 342,
+     "maxMs": 342
+    },
+    "worker": {
+     "messagesPerS": 56.44,
+     "snapshotsPerS": 52.24,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     212,
+     212,
+     212,
+     212,
+     212
+    ],
+    "governor": [
+     {
+      "active": "frame-pacing",
+      "cpuL": 0,
+      "gpuL": 7,
+      "cpuLever": "vegetation-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "frame-pacing",
+      "cpuL": 0,
+      "gpuL": 8,
+      "cpuLever": "ground-cover-gate",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "frame-pacing",
+      "cpuL": 0,
+      "gpuL": 8,
+      "cpuLever": "ground-cover-gate",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "frame-pacing",
+      "cpuL": 0,
+      "gpuL": 8,
+      "cpuLever": "ground-cover-gate",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "frame-pacing",
+      "cpuL": 0,
+      "gpuL": 9,
+      "cpuLever": "ground-cover-gate",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 212,
+     "activeGovernor": "frame-pacing",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 9,
+     "cpuWorkLever": "ground-cover-gate",
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 2093,
+     "duration": 175,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 174,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2988,
+     "duration": 106,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 88,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 3205,
+     "duration": 105,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 96,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 7,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 63271,
+     "duration": 358,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 343,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 95712.69999998808,
+    "cpuL": 0,
+    "gpuL": 9,
+    "lever": "ground-cover-gate",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 144,
+    "drawCalls": 212,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 4,
+     "swaps": 3,
+     "failed": 0,
+     "lastMs": 341.90000000596046,
+     "region": "1:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "before cruise-airliner": {
+   "label": "b2-cruise-airliner",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T06:27:32.097Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2689,
+   "load": {
+    "firstFrameMs": 458.09999999403954,
+    "startScreenMs": 2532
+   },
+   "stateSampler": true,
+   "unthrottled": {
+    "longFrames": [],
+    "seconds": 30,
+    "frames": 3595,
+    "fpsMean": 119.82,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.2,
+     "max": 74.3
+    },
+    "over33": 1,
+    "over50": 1,
+    "over66": 1,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 78,
+     "maxMs": 78
+    },
+    "worker": {
+     "messagesPerS": 70.04,
+     "snapshotsPerS": 51.87,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     170,
+     164,
+     163,
+     163,
+     164
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 164,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 222
+    }
+   },
+   "throttled": {
+    "longFrames": [
+     {
+      "start": 83353.5,
+      "duration": 697.4000000059605,
+      "blockingDuration": 646.7,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 664,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 32,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 23.21,
+      "state": {
+       "t": 83060.09999999404,
+       "cpuL": 2,
+       "gpuL": 5,
+       "lever": "shadow-caster-distance",
+       "pendingTerrainPages": 4,
+       "pendingDetailWork": 1,
+       "residentTerrainPages": 142,
+       "drawCalls": 163,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 6,
+        "swaps": 5,
+        "failed": 0,
+        "lastMs": 68.59999999403954,
+        "region": "2:-1"
+       }
+      }
+     },
+     {
+      "start": 87822,
+      "duration": 324.40000000596046,
+      "blockingDuration": 274.2,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 310,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 14,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 27.68,
+      "state": {
+       "t": 88150.19999998808,
+       "cpuL": 2,
+       "gpuL": 6,
+       "lever": "shadow-caster-distance",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 144,
+       "drawCalls": 170,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 8,
+        "swaps": 7,
+        "failed": 0,
+        "lastMs": 309.19999998807907,
+        "region": "3:-2"
+       }
+      }
+     }
+    ],
+    "seconds": 29.99,
+    "frames": 2063,
+    "fpsMean": 68.75,
+    "fpsMedian": 72,
+    "intervalMs": {
+     "p50": 15.6,
+     "p95": 23.7,
+     "p99": 25.9,
+     "max": 699.4
+    },
+    "over33": 3,
+    "over50": 2,
+    "over66": 2,
+    "over100": 2,
+    "over250": 2,
+    "over400": 1,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 972,
+     "maxMs": 663
+    },
+    "worker": {
+     "messagesPerS": 71.11,
+     "snapshotsPerS": 52.28,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     169,
+     169,
+     169,
+     170,
+     170
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 6,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 6,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 6,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 6,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 6,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 170,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 3,
+     "gpuWorkLevel": 6,
+     "cpuWorkLever": "terrain-page-requests",
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1518,
+     "duration": 175,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 174,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2387,
+     "duration": 112,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 92,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2570,
+     "duration": 102,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 93,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 10168,
+     "duration": 87,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 83,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 21676,
+     "duration": 82,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 78,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 48605,
+     "duration": 74,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 69,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 83354,
+     "duration": 697,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 664,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 32,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 87822,
+     "duration": 324,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 310,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 95023.5,
+    "cpuL": 3,
+    "gpuL": 6,
+    "lever": "terrain-page-requests",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 144,
+    "drawCalls": 170,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 8,
+     "swaps": 7,
+     "failed": 0,
+     "lastMs": 309.19999998807907,
+     "region": "3:-2"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "before latency-trainer": {
+   "label": "b3-latency-trainer",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T06:29:09.857Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2712,
+   "load": {
+    "firstFrameMs": 467.80000001192093,
+    "startScreenMs": 2514.800000011921
+   },
+   "stateSampler": true,
+   "sampler": {
+    "surfaceNodes": 7,
+    "ok": true
+   },
+   "latencyWindow": {
+    "longFrames": [
+     {
+      "start": 60822.80000001192,
+      "duration": 349.69999998807907,
+      "blockingDuration": 299.4,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 335,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 15,
+        "forcedStyleAndLayoutDuration": 1
+       }
+      ],
+      "atS": 34.76,
+      "state": {
+       "t": 61177.09999999404,
+       "cpuL": 0,
+       "gpuL": 9,
+       "lever": "ground-cover-gate",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 131,
+       "drawCalls": 212,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 4,
+        "swaps": 3,
+        "failed": 0,
+        "lastMs": 333.89999997615814,
+        "region": "1:0"
+       }
+      }
+     }
+    ],
+    "seconds": 37.87,
+    "frames": 2666,
+    "fpsMean": 70.38,
+    "fpsMedian": 70,
+    "intervalMs": {
+     "p50": 15.6,
+     "p95": 24.4,
+     "p99": 26.1,
+     "max": 350.1
+    },
+    "over33": 2,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 334,
+     "maxMs": 334
+    },
+    "worker": {
+     "messagesPerS": 58.07,
+     "snapshotsPerS": 52.21,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 14,
+      "keyToSnapshotMs": 54.5,
+      "keyToRenderMs": 72.9,
+      "keyToDisplayMs": 72.9,
+      "noise": 0,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 3.8,
+      "keyToSnapshotMs": 45.5,
+      "keyToRenderMs": 56.8,
+      "keyToDisplayMs": 71,
+      "noise": 0.00017689621037605616,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 10.5,
+      "keyToSnapshotMs": 70.8,
+      "keyToRenderMs": 83.6,
+      "keyToDisplayMs": 84,
+      "noise": 1.8212023040540485e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 4.7,
+      "keyToSnapshotMs": 35.9,
+      "keyToRenderMs": 46.7,
+      "keyToDisplayMs": 55,
+      "noise": 0.00025512090513914436,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 11.6,
+      "keyToSnapshotMs": 43.4,
+      "keyToRenderMs": 77.8,
+      "keyToDisplayMs": 87.2,
+      "noise": 5.0125662382673707e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 0.8,
+      "keyToSnapshotMs": 31.8,
+      "keyToRenderMs": 59.9,
+      "keyToDisplayMs": 70.5,
+      "noise": 0.00020385951903258148,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 3.3,
+      "keyToSnapshotMs": 60.6,
+      "keyToRenderMs": 72.9,
+      "keyToDisplayMs": 82.9,
+      "noise": 7.41983935389004e-06,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 5.2,
+      "keyToSnapshotMs": 34.7,
+      "keyToRenderMs": 58.8,
+      "keyToDisplayMs": 69.5,
+      "noise": 0.0003085836357926922,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 5.1,
+      "keyToSnapshotMs": 48.9,
+      "keyToRenderMs": 74.1,
+      "keyToDisplayMs": 83.7,
+      "noise": 2.8283176257189006e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 1.1,
+      "keyToSnapshotMs": 26.3,
+      "keyToRenderMs": 37.7,
+      "keyToDisplayMs": 42,
+      "noise": 0.0001772205440904867,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 0.2,
+      "keyToSnapshotMs": 25.1,
+      "keyToRenderMs": 62.4,
+      "keyToDisplayMs": 76.2,
+      "noise": 2.1201468866781543e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 13.2,
+      "keyToSnapshotMs": 48.7,
+      "keyToRenderMs": 60,
+      "keyToDisplayMs": 69.2,
+      "noise": 0.00027585610143610745,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 7.7,
+      "keyToSnapshotMs": 50.9,
+      "keyToRenderMs": 63.3,
+      "keyToDisplayMs": 73.9,
+      "noise": 2.7757219799629566e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 10.1,
+      "keyToSnapshotMs": 51.4,
+      "keyToRenderMs": 63.9,
+      "keyToDisplayMs": 73.3,
+      "noise": 0.0001446579920590628,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 8,
+      "keyToSnapshotMs": 41.4,
+      "keyToRenderMs": 67.3,
+      "keyToDisplayMs": 88.1,
+      "noise": 2.9488276552008547e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 2.2,
+      "keyToSnapshotMs": 55.5,
+      "keyToRenderMs": 68.3,
+      "keyToDisplayMs": 74.3,
+      "noise": 0.0002914991921042064,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 9.5,
+      "keyToSnapshotMs": 67.3,
+      "keyToRenderMs": 79.6,
+      "keyToDisplayMs": 87.6,
+      "noise": 1.975565409627388e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 6,
+      "keyToSnapshotMs": 60.8,
+      "keyToRenderMs": 73.5,
+      "keyToDisplayMs": 80.7,
+      "noise": 0.00023227625570507691,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 10.6,
+      "keyToSnapshotMs": 36.5,
+      "keyToRenderMs": 70.7,
+      "keyToDisplayMs": 86.2,
+      "noise": 2.3287258669097788e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 0.2,
+      "keyToSnapshotMs": 36.2,
+      "keyToRenderMs": 46.9,
+      "keyToDisplayMs": 55.9,
+      "noise": 0.0001982039746844435,
+      "causal": true
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "causal": 20,
+     "displayMedianMs": 73.9,
+     "displayP90Ms": 87.2,
+     "displayMaxMs": 88.1,
+     "snapshotMedianMs": 45.5,
+     "snapshotMaxMs": 70.8
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1539,
+     "duration": 179,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 178,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2405,
+     "duration": 106,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 89,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2594,
+     "duration": 103,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 95,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 60823,
+     "duration": 350,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 335,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 1
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 64032.09999999404,
+    "cpuL": 0,
+    "gpuL": 9,
+    "lever": "ground-cover-gate",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 136,
+    "drawCalls": 212,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 4,
+     "swaps": 3,
+     "failed": 0,
+     "lastMs": 333.89999997615814,
+     "region": "1:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "before latency-airliner": {
+   "label": "b4-latency-airliner",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T06:30:16.600Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2695,
+   "load": {
+    "firstFrameMs": 450,
+    "startScreenMs": 2490.600000023842
+   },
+   "stateSampler": true,
+   "sampler": {
+    "surfaceNodes": 18,
+    "ok": true
+   },
+   "latencyWindow": {
+    "longFrames": [
+     {
+      "start": 48523,
+      "duration": 295.40000000596046,
+      "blockingDuration": 245.3,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 279,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 15,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 22.46,
+      "state": {
+       "t": 48024.5,
+       "cpuL": 2,
+       "gpuL": 5,
+       "lever": "terrain-page-requests",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 144,
+       "drawCalls": 169,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 5,
+        "swaps": 4,
+        "failed": 0,
+        "lastMs": 316.59999999403954,
+        "region": "1:-1"
+       }
+      }
+     },
+     {
+      "start": 63164.40000000596,
+      "duration": 115.90000000596046,
+      "blockingDuration": 59.7,
+      "scripts": [
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 81,
+        "forcedStyleAndLayoutDuration": 1
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "",
+        "sourceFunctionName": "",
+        "duration": 27,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 37.1,
+      "state": {
+       "t": 63042.90000000596,
+       "cpuL": 3,
+       "gpuL": 7,
+       "lever": "terrain-page-requests",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 2,
+       "residentTerrainPages": 144,
+       "drawCalls": 169,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 6,
+        "swaps": 5,
+        "failed": 0,
+        "lastMs": 278.7999999821186,
+        "region": "2:-1"
+       }
+      }
+     }
+    ],
+    "seconds": 37.85,
+    "frames": 2487,
+    "fpsMean": 65.68,
+    "fpsMedian": 67,
+    "intervalMs": {
+     "p50": 16.3,
+     "p95": 24.9,
+     "p99": 26.4,
+     "max": 298.6
+    },
+    "over33": 2,
+    "over50": 2,
+    "over66": 2,
+    "over100": 2,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 388,
+     "maxMs": 279
+    },
+    "worker": {
+     "messagesPerS": 69.48,
+     "snapshotsPerS": 52.36,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 9.3,
+      "keyToSnapshotMs": 50.5,
+      "keyToRenderMs": 61.6,
+      "keyToDisplayMs": 79.3,
+      "noise": 0,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 0.2,
+      "keyToSnapshotMs": 27.5,
+      "keyToRenderMs": 52.9,
+      "keyToDisplayMs": 62.5,
+      "noise": 0.00020452198202836058,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 0.1,
+      "keyToSnapshotMs": 13.5,
+      "keyToRenderMs": 80.4,
+      "keyToDisplayMs": 87.1,
+      "noise": 6.611638097986372e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 2.6,
+      "keyToSnapshotMs": 53.3,
+      "keyToRenderMs": 65.2,
+      "keyToDisplayMs": 77.2,
+      "noise": 0.0002073020812130011,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 1.7,
+      "keyToSnapshotMs": 15.1,
+      "keyToRenderMs": 61.3,
+      "keyToDisplayMs": 68.1,
+      "noise": 7.716867070595157e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 13.3,
+      "keyToSnapshotMs": 47.9,
+      "keyToRenderMs": 62.3,
+      "keyToDisplayMs": 76.9,
+      "noise": 0.00021925409761003323,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 10.7,
+      "keyToSnapshotMs": 24.2,
+      "keyToRenderMs": 82.9,
+      "keyToDisplayMs": 91.7,
+      "noise": 6.558305581982893e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 11.5,
+      "keyToSnapshotMs": 47.7,
+      "keyToRenderMs": 60.5,
+      "keyToDisplayMs": 70.9,
+      "noise": 0.00018139413738094134,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 5.8,
+      "keyToSnapshotMs": 32.8,
+      "keyToRenderMs": 66,
+      "keyToDisplayMs": 79.6,
+      "noise": 6.075421661932978e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 15.1,
+      "keyToSnapshotMs": 65.7,
+      "keyToRenderMs": 79.5,
+      "keyToDisplayMs": 81.8,
+      "noise": 0.00023540656656617642,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 6.4,
+      "keyToSnapshotMs": 20,
+      "keyToRenderMs": 66.6,
+      "keyToDisplayMs": 74.3,
+      "noise": 9.468610944018963e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 11,
+      "keyToSnapshotMs": 46.7,
+      "keyToRenderMs": 62.9,
+      "keyToDisplayMs": 71.7,
+      "noise": 0.00018048020044414415,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 4.6,
+      "keyToSnapshotMs": 17.5,
+      "keyToRenderMs": 76,
+      "keyToDisplayMs": 87.8,
+      "noise": 7.781821277585976e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 11.5,
+      "keyToSnapshotMs": 38,
+      "keyToRenderMs": 50.7,
+      "keyToDisplayMs": 59.5,
+      "noise": 0.00017027919209056108,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 4.4,
+      "keyToSnapshotMs": 21.4,
+      "keyToRenderMs": 78.3,
+      "keyToDisplayMs": 94.6,
+      "noise": 5.613871736276366e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 3.3,
+      "keyToSnapshotMs": 29.5,
+      "keyToRenderMs": 56.6,
+      "keyToDisplayMs": 57.8,
+      "noise": 0.00016660407033430857,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 2.2,
+      "keyToSnapshotMs": 17,
+      "keyToRenderMs": 62.8,
+      "keyToDisplayMs": 73,
+      "noise": 4.904919510906325e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 2.7,
+      "keyToSnapshotMs": 46.5,
+      "keyToRenderMs": 59.9,
+      "keyToDisplayMs": 71.9,
+      "noise": 0.0001419847788888262,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 3,
+      "keyToSnapshotMs": 37.9,
+      "keyToRenderMs": 69.3,
+      "keyToDisplayMs": 81.2,
+      "noise": 5.4039337094025086e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 11.3,
+      "keyToSnapshotMs": 55.3,
+      "keyToRenderMs": 66.9,
+      "keyToDisplayMs": 77.7,
+      "noise": 0.0001631379722653037,
+      "causal": true
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "causal": 20,
+     "displayMedianMs": 76.9,
+     "displayP90Ms": 87.8,
+     "displayMaxMs": 94.6,
+     "snapshotMedianMs": 32.8,
+     "snapshotMaxMs": 65.7
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1511,
+     "duration": 175,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 174,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2382,
+     "duration": 106,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 88,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2559,
+     "duration": 102,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 94,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 10131,
+     "duration": 86,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 80,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 21652,
+     "duration": 337,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 317,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 48523,
+     "duration": 295,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 279,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 64024.90000000596,
+    "cpuL": 3,
+    "gpuL": 7,
+    "lever": "terrain-page-requests",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 2,
+    "residentTerrainPages": 144,
+    "drawCalls": 169,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 6,
+     "swaps": 5,
+     "failed": 0,
+     "lastMs": 278.7999999821186,
+     "region": "2:-1"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "before takeoff-trainer-4s-hold": {
+   "label": "b5-takeoff-trainer-4s-hold",
+   "scenario": "takeoff",
+   "capturedAtIso": "2026-09-30T06:31:23.311Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2762,
+   "load": {
+    "firstFrameMs": 458.40000000596046,
+    "startScreenMs": 2563.0999999940395
+   },
+   "stateSampler": true,
+   "takeoffEvents": {
+    "rotate": 29.94,
+    "liftoff": 43.18,
+    "timeout": null,
+    "crashed": 71.14
+   },
+   "throttled": {
+    "longFrames": [],
+    "seconds": 71.11,
+    "frames": 2742,
+    "fpsMean": 38.54,
+    "fpsMedian": 38,
+    "intervalMs": {
+     "p50": 25.2,
+     "p95": 34.1,
+     "p99": 35.1,
+     "max": 76.4
+    },
+    "over33": 280,
+    "over50": 1,
+    "over66": 1,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 51,
+     "maxMs": 51
+    },
+    "worker": {
+     "messagesPerS": 55.31,
+     "snapshotsPerS": 52.41,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     262,
+     261,
+     261,
+     261,
+     261
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 0,
+      "cpuLever": "animal-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 261,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": "animal-budget",
+     "renderScale": 0.72,
+     "residentTerrainPages": 113,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1564,
+     "duration": 176,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 175,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2445,
+     "duration": 114,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 93,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 19,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2644,
+     "duration": 104,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 95,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 7,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 87489,
+    "cpuL": 7,
+    "gpuL": 0,
+    "lever": "animal-budget",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 203,
+    "residentTerrainPages": 113,
+    "drawCalls": 261,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 95.09999999403954,
+     "region": "0:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "after cruise-trainer": {
+   "label": "a1-cruise-trainer",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T06:32:59.282Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3244,
+   "load": {
+    "firstFrameMs": 886.5999999940395,
+    "startScreenMs": 3050.4000000059605
+   },
+   "stateSampler": true,
+   "unthrottled": {
+    "longFrames": [],
+    "seconds": 30,
+    "frames": 3602,
+    "fpsMean": 120.03,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.2,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 59.43,
+     "snapshotsPerS": 52.03,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     218,
+     218,
+     218,
+     218,
+     218
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 218,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "residentTerrainPages": 126,
+     "terrainTiles": 222
+    }
+   },
+   "throttled": {
+    "longFrames": [
+     {
+      "start": 63179,
+      "duration": 353.80000001192093,
+      "blockingDuration": 303.5,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 338,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 15,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 2.48,
+      "state": {
+       "t": 63601.40000000596,
+       "cpuL": 2,
+       "gpuL": 1,
+       "lever": "terrain-page-requests",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 136,
+       "drawCalls": 212,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 4,
+        "swaps": 3,
+        "failed": 0,
+        "lastMs": 337.2999999821186,
+        "region": "1:0"
+       }
+      }
+     }
+    ],
+    "seconds": 30,
+    "frames": 2189,
+    "fpsMean": 72.93,
+    "fpsMedian": 74,
+    "intervalMs": {
+     "p50": 15.3,
+     "p95": 18.5,
+     "p99": 25.8,
+     "max": 351.5
+    },
+    "over33": 2,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 338,
+     "maxMs": 338
+    },
+    "worker": {
+     "messagesPerS": 56.66,
+     "snapshotsPerS": 52.36,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     212,
+     212,
+     212,
+     212,
+     212
+    ],
+    "governor": [
+     {
+      "active": "frame-pacing",
+      "cpuL": 2,
+      "gpuL": 5,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 5,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 2,
+      "gpuL": 5,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 5,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 5,
+      "cpuLever": "terrain-page-requests",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 212,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 3,
+     "gpuWorkLevel": 5,
+     "cpuWorkLever": "terrain-page-requests",
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 2035,
+     "duration": 183,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 181,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2939,
+     "duration": 108,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 89,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 3127,
+     "duration": 103,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 95,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 63179,
+     "duration": 354,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 338,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 95599.59999999404,
+    "cpuL": 3,
+    "gpuL": 5,
+    "lever": "terrain-page-requests",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 144,
+    "drawCalls": 212,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 4,
+     "swaps": 3,
+     "failed": 0,
+     "lastMs": 337.2999999821186,
+     "region": "1:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "after cruise-airliner": {
+   "label": "a2-cruise-airliner",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T06:34:37.620Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2685,
+   "load": {
+    "firstFrameMs": 466.30000001192093,
+    "startScreenMs": 2502.4000000059605
+   },
+   "stateSampler": true,
+   "unthrottled": {
+    "longFrames": [],
+    "seconds": 30,
+    "frames": 3594,
+    "fpsMean": 119.77,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.8,
+     "p99": 10.2,
+     "max": 74
+    },
+    "over33": 1,
+    "over50": 1,
+    "over66": 1,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 78,
+     "maxMs": 78
+    },
+    "worker": {
+     "messagesPerS": 70.47,
+     "snapshotsPerS": 52.07,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     170,
+     164,
+     163,
+     163,
+     164
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 164,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 222
+    }
+   },
+   "throttled": {
+    "longFrames": [
+     {
+      "start": 83076.09999999404,
+      "duration": 693,
+      "blockingDuration": 642.2,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 661,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 31,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 22.96,
+      "state": {
+       "t": 83015.09999999404,
+       "cpuL": 3,
+       "gpuL": 4,
+       "lever": "cloud-shadow-cadence",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 4,
+       "residentTerrainPages": 144,
+       "drawCalls": 163,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 6,
+        "swaps": 5,
+        "failed": 0,
+        "lastMs": 69.40000000596046,
+        "region": "2:-1"
+       }
+      }
+     },
+     {
+      "start": 87514,
+      "duration": 331.09999999403954,
+      "blockingDuration": 280.1,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 311,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 18,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 27.4,
+      "state": {
+       "t": 88009.5,
+       "cpuL": 3,
+       "gpuL": 5,
+       "lever": "shadow-caster-distance",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 2,
+       "residentTerrainPages": 144,
+       "drawCalls": 170,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 8,
+        "swaps": 7,
+        "failed": 0,
+        "lastMs": 310.5,
+        "region": "3:-2"
+       }
+      }
+     }
+    ],
+    "seconds": 29.99,
+    "frames": 2054,
+    "fpsMean": 68.46,
+    "fpsMedian": 71,
+    "intervalMs": {
+     "p50": 15.7,
+     "p95": 23.8,
+     "p99": 26.2,
+     "max": 690.5
+    },
+    "over33": 3,
+    "over50": 2,
+    "over66": 2,
+    "over100": 2,
+    "over250": 2,
+    "over400": 1,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 970,
+     "maxMs": 660
+    },
+    "worker": {
+     "messagesPerS": 71.32,
+     "snapshotsPerS": 52.45,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     169,
+     169,
+     170,
+     170,
+     170
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 5,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 5,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 4,
+      "gpuL": 5,
+      "cpuLever": "detail-cell-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 4,
+      "gpuL": 5,
+      "cpuLever": "detail-cell-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 4,
+      "gpuL": 5,
+      "cpuLever": "detail-cell-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 170,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 4,
+     "gpuWorkLevel": 5,
+     "cpuWorkLever": "detail-cell-budget",
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1517,
+     "duration": 177,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 176,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2389,
+     "duration": 109,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 89,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2569,
+     "duration": 102,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 94,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 10142,
+     "duration": 85,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 81,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 21643,
+     "duration": 82,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 78,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 48493,
+     "duration": 74,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 70,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 83076,
+     "duration": 693,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 661,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 31,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 87514,
+     "duration": 331,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 311,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 95033.69999998808,
+    "cpuL": 5,
+    "gpuL": 5,
+    "lever": "detail-cell-budget",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 144,
+    "drawCalls": 170,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 8,
+     "swaps": 7,
+     "failed": 0,
+     "lastMs": 310.5,
+     "region": "3:-2"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "after latency-trainer": {
+   "label": "a3-latency-trainer",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T06:36:15.330Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2804,
+   "load": {
+    "firstFrameMs": 474.80000001192093,
+    "startScreenMs": 2604.5
+   },
+   "stateSampler": true,
+   "sampler": {
+    "surfaceNodes": 7,
+    "ok": true
+   },
+   "latencyWindow": {
+    "longFrames": [
+     {
+      "start": 60627.59999999404,
+      "duration": 353.10000002384186,
+      "blockingDuration": 302.8,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 338,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 14,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 34.48,
+      "state": {
+       "t": 60137.59999999404,
+       "cpuL": 7,
+       "gpuL": 0,
+       "lever": "animal-budget",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 131,
+       "drawCalls": 212,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 3,
+        "swaps": 2,
+        "failed": 0,
+        "lastMs": 95,
+        "region": "0:0"
+       }
+      }
+     }
+    ],
+    "seconds": 38.12,
+    "frames": 2171,
+    "fpsMean": 56.93,
+    "fpsMedian": 57,
+    "intervalMs": {
+     "p50": 16.8,
+     "p95": 25.8,
+     "p99": 27.5,
+     "max": 351.7
+    },
+    "over33": 8,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 337,
+     "maxMs": 337
+    },
+    "worker": {
+     "messagesPerS": 58.84,
+     "snapshotsPerS": 52.28,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 14.9,
+      "keyToSnapshotMs": 56.6,
+      "keyToRenderMs": 72.6,
+      "keyToDisplayMs": 89.3,
+      "noise": 0,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 11.7,
+      "keyToSnapshotMs": 51,
+      "keyToRenderMs": 72.2,
+      "keyToDisplayMs": 78.5,
+      "noise": 0.0004810315299635451,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 12.8,
+      "keyToSnapshotMs": 29.9,
+      "keyToRenderMs": 45.1,
+      "keyToDisplayMs": 68,
+      "noise": 1.433054799566437e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 15.5,
+      "keyToSnapshotMs": 31.4,
+      "keyToRenderMs": 63.3,
+      "keyToDisplayMs": 82.1,
+      "noise": 0.0005564662726723953,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 2.2,
+      "keyToSnapshotMs": 21.2,
+      "keyToRenderMs": 59.4,
+      "keyToDisplayMs": 81,
+      "noise": 8.399829106636465e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 8.4,
+      "keyToSnapshotMs": 27.7,
+      "keyToRenderMs": 41.1,
+      "keyToDisplayMs": 56.3,
+      "noise": 0.00033707398561927046,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 6.5,
+      "keyToSnapshotMs": 23.5,
+      "keyToRenderMs": 37,
+      "keyToDisplayMs": 46,
+      "noise": 2.3952679613699346e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 5.7,
+      "keyToSnapshotMs": 24,
+      "keyToRenderMs": 51.5,
+      "keyToDisplayMs": 59.8,
+      "noise": 0.0008463535434620976,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 9,
+      "keyToSnapshotMs": 24.3,
+      "keyToRenderMs": 45.8,
+      "keyToDisplayMs": 56,
+      "noise": 7.05901138547925e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 0.9,
+      "keyToSnapshotMs": 17.7,
+      "keyToRenderMs": 31.6,
+      "keyToDisplayMs": 46,
+      "noise": 0.0004451104117962901,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 13.4,
+      "keyToSnapshotMs": 30.5,
+      "keyToRenderMs": 67.6,
+      "keyToDisplayMs": 78,
+      "noise": 5.702320417833896e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 15.8,
+      "keyToSnapshotMs": 35.3,
+      "keyToRenderMs": 68.9,
+      "keyToDisplayMs": 79.1,
+      "noise": 0.0005568953021552157,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 15.2,
+      "keyToSnapshotMs": 31,
+      "keyToRenderMs": 44.4,
+      "keyToDisplayMs": 55.6,
+      "noise": 4.879633554184131e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 12,
+      "keyToSnapshotMs": 29.5,
+      "keyToRenderMs": 42.8,
+      "keyToDisplayMs": 58.5,
+      "noise": 0.0003723928304582916,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 0.5,
+      "keyToSnapshotMs": 40.5,
+      "keyToRenderMs": 55.5,
+      "keyToDisplayMs": 70.5,
+      "noise": 4.623731566408447e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 4.7,
+      "keyToSnapshotMs": 27.2,
+      "keyToRenderMs": 59.5,
+      "keyToDisplayMs": 67.3,
+      "noise": 0.00043709260144010956,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 4.1,
+      "keyToSnapshotMs": 44.6,
+      "keyToRenderMs": 58,
+      "keyToDisplayMs": 65.6,
+      "noise": 3.8036527321499806e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 11.4,
+      "keyToSnapshotMs": 41.3,
+      "keyToRenderMs": 59.2,
+      "keyToDisplayMs": 59.8,
+      "noise": 0.000655161027451185,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 5.8,
+      "keyToSnapshotMs": 22.4,
+      "keyToRenderMs": 54.3,
+      "keyToDisplayMs": 70,
+      "noise": 5.253737651174985e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 5.4,
+      "keyToSnapshotMs": 21.2,
+      "keyToRenderMs": 35.8,
+      "keyToDisplayMs": 47.2,
+      "noise": 0.00046820298173676916,
+      "causal": true
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "causal": 20,
+     "displayMedianMs": 65.6,
+     "displayP90Ms": 81,
+     "displayMaxMs": 89.3,
+     "snapshotMedianMs": 29.5,
+     "snapshotMaxMs": 56.6
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1601,
+     "duration": 178,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 176,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2490,
+     "duration": 110,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 91,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2677,
+     "duration": 103,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 95,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 60628,
+     "duration": 353,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 338,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 64125.70000001788,
+    "cpuL": 7,
+    "gpuL": 0,
+    "lever": "animal-budget",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 131,
+    "drawCalls": 213,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 4,
+     "swaps": 3,
+     "failed": 0,
+     "lastMs": 336.59999999403954,
+     "region": "1:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "after latency-airliner": {
+   "label": "a4-latency-airliner",
+   "scenario": "latency",
+   "capturedAtIso": "2026-09-30T06:37:22.453Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2684,
+   "load": {
+    "firstFrameMs": 467.5,
+    "startScreenMs": 2497.9000000059605
+   },
+   "stateSampler": true,
+   "sampler": {
+    "surfaceNodes": 18,
+    "ok": true
+   },
+   "latencyWindow": {
+    "longFrames": [
+     {
+      "start": 48820.60000002384,
+      "duration": 307.5,
+      "blockingDuration": 257.4,
+      "scripts": [
+       {
+        "invoker": "TimerHandler:setTimeout",
+        "invokerType": "user-callback",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "",
+        "duration": 290,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 17,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 22.74,
+      "state": {
+       "t": 49132.10000002384,
+       "cpuL": 2,
+       "gpuL": 5,
+       "lever": "shadow-caster-distance",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 144,
+       "drawCalls": 170,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 6,
+        "swaps": 5,
+        "failed": 0,
+        "lastMs": 288.89999997615814,
+        "region": "2:-1"
+       }
+      }
+     }
+    ],
+    "seconds": 37.85,
+    "frames": 2464,
+    "fpsMean": 65.06,
+    "fpsMedian": 66,
+    "intervalMs": {
+     "p50": 16.3,
+     "p95": 25.1,
+     "p99": 26.5,
+     "max": 308.5
+    },
+    "over33": 6,
+    "over50": 3,
+    "over66": 3,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 3,
+     "totalMs": 453,
+     "maxMs": 289
+    },
+    "worker": {
+     "messagesPerS": 69.92,
+     "snapshotsPerS": 52.49,
+     "simToWallRatio": 1
+    }
+   },
+   "latency": {
+    "rows": [
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 10.9,
+      "keyToSnapshotMs": 39.1,
+      "keyToRenderMs": 50.8,
+      "keyToDisplayMs": 59.7,
+      "noise": 0,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 2.9,
+      "keyToSnapshotMs": 31.4,
+      "keyToRenderMs": 43.2,
+      "keyToDisplayMs": 49.5,
+      "noise": 0.0003307159295093953,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 7.9,
+      "keyToSnapshotMs": 20.1,
+      "keyToRenderMs": 51.6,
+      "keyToDisplayMs": 67.3,
+      "noise": 0.0002854725358503174,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 5.2,
+      "keyToSnapshotMs": 23.5,
+      "keyToRenderMs": 36.2,
+      "keyToDisplayMs": 43,
+      "noise": 0.0002827679812700268,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 4.6,
+      "keyToSnapshotMs": 20.4,
+      "keyToRenderMs": 44.8,
+      "keyToDisplayMs": 56.5,
+      "noise": 9.453647288548694e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 2,
+      "keyToSnapshotMs": 17.2,
+      "keyToRenderMs": 30.4,
+      "keyToDisplayMs": 44.3,
+      "noise": 0.00031452335359016814,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 4.9,
+      "keyToSnapshotMs": 17.9,
+      "keyToRenderMs": 47.8,
+      "keyToDisplayMs": 48.8,
+      "noise": 0.00010110749847225264,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 4.1,
+      "keyToSnapshotMs": 36,
+      "keyToRenderMs": 49,
+      "keyToDisplayMs": 61,
+      "noise": 0.00026897235804312913,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 16.1,
+      "keyToSnapshotMs": 38,
+      "keyToRenderMs": 53.1,
+      "keyToDisplayMs": 67.5,
+      "noise": 0.00011270223350035025,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 0.5,
+      "keyToSnapshotMs": 34.4,
+      "keyToRenderMs": 47.9,
+      "keyToDisplayMs": 57.5,
+      "noise": 0.0002731032492366836,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 9.3,
+      "keyToSnapshotMs": 23.6,
+      "keyToRenderMs": 49.3,
+      "keyToDisplayMs": 56.3,
+      "noise": 8.694711268120159e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 0.7,
+      "keyToSnapshotMs": 33.6,
+      "keyToRenderMs": 47.6,
+      "keyToDisplayMs": 61.3,
+      "noise": 0.0002587132395426295,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 0.5,
+      "keyToSnapshotMs": 13,
+      "keyToRenderMs": 55,
+      "keyToDisplayMs": 56,
+      "noise": 0.0014084643489749027,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 7.9,
+      "keyToSnapshotMs": 21.4,
+      "keyToRenderMs": 33.7,
+      "keyToDisplayMs": 42.3,
+      "noise": 0.00021039590127447383,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 5.7,
+      "keyToSnapshotMs": 29.2,
+      "keyToRenderMs": 50.6,
+      "keyToDisplayMs": 66.3,
+      "noise": 9.752397037310345e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 9.9,
+      "keyToSnapshotMs": 29,
+      "keyToRenderMs": 60.4,
+      "keyToDisplayMs": 72.4,
+      "noise": 0.0003290360577183904,
+      "causal": true
+     },
+     {
+      "code": "KeyS",
+      "keyToHandlerMs": 4,
+      "keyToSnapshotMs": 15.7,
+      "keyToRenderMs": 37.5,
+      "keyToDisplayMs": 49.5,
+      "noise": 8.357844048934027e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyD",
+      "keyToHandlerMs": 13.5,
+      "keyToSnapshotMs": 32.5,
+      "keyToRenderMs": 59.3,
+      "keyToDisplayMs": 59.9,
+      "noise": 0.0001846912098075748,
+      "causal": true
+     },
+     {
+      "code": "KeyW",
+      "keyToHandlerMs": 12,
+      "keyToSnapshotMs": 23.6,
+      "keyToRenderMs": 34.5,
+      "keyToDisplayMs": 41.5,
+      "noise": 8.33431183790978e-05,
+      "causal": true
+     },
+     {
+      "code": "KeyA",
+      "keyToHandlerMs": 3.5,
+      "keyToSnapshotMs": 19.3,
+      "keyToRenderMs": 34,
+      "keyToDisplayMs": 48.8,
+      "noise": 0.00023259330548253132,
+      "causal": true
+     }
+    ],
+    "summary": {
+     "trials": 20,
+     "causal": 20,
+     "displayMedianMs": 56.3,
+     "displayP90Ms": 67.3,
+     "displayMaxMs": 72.4,
+     "snapshotMedianMs": 23.6,
+     "snapshotMaxMs": 39.1
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1522,
+     "duration": 177,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 176,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2386,
+     "duration": 107,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 88,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2565,
+     "duration": 102,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 93,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 10137,
+     "duration": 85,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 81,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 21662,
+     "duration": 335,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 315,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 19,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 48821,
+     "duration": 308,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 290,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 64035.20000001788,
+    "cpuL": 4,
+    "gpuL": 7,
+    "lever": "vegetation-distance",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 144,
+    "drawCalls": 169,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 6,
+     "swaps": 5,
+     "failed": 0,
+     "lastMs": 288.89999997615814,
+     "region": "2:-1"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "after takeoff-trainer-4s-hold": {
+   "label": "a5-takeoff-trainer-4s-hold",
+   "scenario": "takeoff",
+   "capturedAtIso": "2026-09-30T06:38:28.936Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 2672,
+   "load": {
+    "firstFrameMs": 443.40000000596046,
+    "startScreenMs": 2486.5
+   },
+   "stateSampler": true,
+   "takeoffEvents": {
+    "rotate": 15.94,
+    "liftoff": 18.84,
+    "timeout": null
+   },
+   "throttled": {
+    "longFrames": [
+     {
+      "start": 80930.59999999404,
+      "duration": 106.60000002384186,
+      "blockingDuration": 48.2,
+      "scripts": [
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 75,
+        "forcedStyleAndLayoutDuration": 2
+       }
+      ],
+      "atS": 69.52,
+      "state": {
+       "t": 81412.90000000596,
+       "cpuL": 7,
+       "gpuL": 3,
+       "lever": "cloud-shadow-cadence",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 1,
+       "residentTerrainPages": 110,
+       "drawCalls": 260,
+       "hydrology": {
+        "fallback": true,
+        "usedWorker": false,
+        "requests": 3,
+        "swaps": 2,
+        "failed": 0,
+        "lastMs": 93.5,
+        "region": "0:0"
+       }
+      }
+     }
+    ],
+    "seconds": 78.9,
+    "frames": 4252,
+    "fpsMean": 53.88,
+    "fpsMedian": 60,
+    "intervalMs": {
+     "p50": 17,
+     "p95": 32.3,
+     "p99": 34.5,
+     "max": 98.4
+    },
+    "over33": 121,
+    "over50": 2,
+    "over66": 2,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 2,
+     "totalMs": 148,
+     "maxMs": 98
+    },
+    "worker": {
+     "messagesPerS": 55.17,
+     "snapshotsPerS": 52.23,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     242,
+     240,
+     235,
+     231,
+     227
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 3,
+      "cpuLever": "cloud-shadow-cadence",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 3,
+      "cpuLever": "cloud-shadow-cadence",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 3,
+      "cpuLever": "cloud-shadow-cadence",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 3,
+      "cpuLever": "cloud-shadow-cadence",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 7,
+      "gpuL": 3,
+      "cpuLever": "cloud-shadow-cadence",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 227,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 7,
+     "gpuWorkLevel": 3,
+     "cpuWorkLever": "cloud-shadow-cadence",
+     "renderScale": 0.72,
+     "residentTerrainPages": 120,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1503,
+     "duration": 178,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 177,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2376,
+     "duration": 108,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 90,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2556,
+     "duration": 101,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 94,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 95384.30000001192,
+    "cpuL": 7,
+    "gpuL": 3,
+    "lever": "cloud-shadow-cadence",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 120,
+    "drawCalls": 226,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 93.5,
+     "region": "0:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "P2 cruise-airliner": {
+   "label": "p2-cruise-airliner",
+   "scenario": "cruise",
+   "capturedAtIso": "2026-09-30T06:40:12.984Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "airliner",
+    "camera": "chase",
+    "seed": "phase1-perf-baseline",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 4,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3255,
+   "load": {
+    "firstFrameMs": 980.6999999880791,
+    "startScreenMs": 3061.800000011921
+   },
+   "stateSampler": true,
+   "unthrottled": {
+    "longFrames": [],
+    "seconds": 30,
+    "frames": 3603,
+    "fpsMean": 120.05,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 10,
+     "p99": 10.2,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 70.09,
+     "snapshotsPerS": 51.66,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsUnthrottled": {
+    "drawCalls": [
+     170,
+     164,
+     163,
+     164,
+     164
+    ],
+    "governor": [
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "holding",
+      "cpuL": 0,
+      "gpuL": 0,
+      "cpuLever": null,
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 164,
+     "activeGovernor": "holding",
+     "cpuWorkLevel": 0,
+     "gpuWorkLevel": 0,
+     "cpuWorkLever": null,
+     "renderScale": 0.72,
+     "residentTerrainPages": 144,
+     "terrainTiles": 222
+    }
+   },
+   "throttled": {
+    "longFrames": [
+     {
+      "start": 83560.5,
+      "duration": 324.5,
+      "blockingDuration": 273.6,
+      "scripts": [
+       {
+        "invoker": "Worker.onmessage",
+        "invokerType": "event-listener",
+        "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+        "sourceFunctionName": "handleMessage",
+        "duration": 290,
+        "forcedStyleAndLayoutDuration": 0
+       },
+       {
+        "invoker": "FrameRequestCallback",
+        "invokerType": "user-callback",
+        "sourceURL": "src/game/FlightGame.tsx",
+        "sourceFunctionName": "renderLoop",
+        "duration": 32,
+        "forcedStyleAndLayoutDuration": 0
+       }
+      ],
+      "atS": 22.82,
+      "state": {
+       "t": 83888.90000000596,
+       "cpuL": 3,
+       "gpuL": 5,
+       "lever": "shadow-caster-distance",
+       "pendingTerrainPages": 0,
+       "pendingDetailWork": 0,
+       "residentTerrainPages": 144,
+       "drawCalls": 164,
+       "hydrology": {
+        "fallback": false,
+        "usedWorker": true,
+        "requests": 7,
+        "swaps": 6,
+        "failed": 0,
+        "lastMs": 93.09999999403954,
+        "region": "2:-2"
+       }
+      }
+     }
+    ],
+    "seconds": 29.99,
+    "frames": 2095,
+    "fpsMean": 69.82,
+    "fpsMedian": 71,
+    "intervalMs": {
+     "p50": 15.7,
+     "p95": 23.7,
+     "p99": 26,
+     "max": 325.1
+    },
+    "over33": 5,
+    "over50": 1,
+    "over66": 1,
+    "over100": 1,
+    "over250": 1,
+    "over400": 0,
+    "longTasks": {
+     "count": 1,
+     "totalMs": 290,
+     "maxMs": 290
+    },
+    "worker": {
+     "messagesPerS": 71.45,
+     "snapshotsPerS": 52.38,
+     "simToWallRatio": 1
+    }
+   },
+   "diagnosticsThrottled": {
+    "drawCalls": [
+     169,
+     169,
+     170,
+     170,
+     170
+    ],
+    "governor": [
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 6,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 3,
+      "gpuL": 6,
+      "cpuLever": "shadow-caster-distance",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 4,
+      "gpuL": 6,
+      "cpuLever": "detail-cell-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 4,
+      "gpuL": 6,
+      "cpuLever": "detail-cell-budget",
+      "scale": 0.72,
+      "insensitive": false
+     },
+     {
+      "active": "cpu-work",
+      "cpuL": 4,
+      "gpuL": 6,
+      "cpuLever": "detail-cell-budget",
+      "scale": 0.72,
+      "insensitive": false
+     }
+    ],
+    "last": {
+     "drawCalls": 170,
+     "activeGovernor": "cpu-work",
+     "cpuWorkLevel": 4,
+     "gpuWorkLevel": 6,
+     "cpuWorkLever": "detail-cell-budget",
+     "renderScale": 0.72,
+     "residentTerrainPages": 142,
+     "terrainTiles": 224
+    }
+   },
+   "traceFile": "/private/tmp/claude-501/-Users-jasonzhou-Documents-Code-Projects-fly-high/725f9c94-41fa-47d6-b7c7-a008da6358d4/scratchpad/runs/p2-probe-0929-2340/p2-cruise-airliner.trace.json",
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 2191,
+     "duration": 93,
+     "scripts": [
+      {
+       "invoker": "Worker.onmessage",
+       "invokerType": "event-listener",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "handleMessage",
+       "duration": 85,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2427,
+     "duration": 103,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 22,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 16,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 16,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2530,
+     "duration": 112,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2643,
+     "duration": 93,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 11,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2862,
+     "duration": 137,
+     "scripts": [
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 125,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "TimerHandler:setInterval",
+       "invokerType": "user-callback",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/timingTools-29eIlRRb.js",
+       "sourceFunctionName": "",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 5308,
+     "duration": 289,
+     "scripts": [
+      {
+       "invoker": "#document.onclick",
+       "invokerType": "event-listener",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/react-dom_client.js",
+       "sourceFunctionName": "dispatchDiscreteEvent",
+       "duration": 253,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 83561,
+     "duration": 325,
+     "scripts": [
+      {
+       "invoker": "Worker.onmessage",
+       "invokerType": "event-listener",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "handleMessage",
+       "duration": 290,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 32,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 107639,
+    "cpuL": 6,
+    "gpuL": 6,
+    "lever": "animal-budget",
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 2,
+    "residentTerrainPages": 144,
+    "drawCalls": 163,
+    "hydrology": {
+     "fallback": false,
+     "usedWorker": true,
+     "requests": 8,
+     "swaps": 7,
+     "failed": 0,
+     "lastMs": 74.5,
+     "region": "3:-2"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "P2 freeze A1": {
+   "label": "freeze-A1",
+   "scenario": "freeze",
+   "capturedAtIso": "2026-09-30T06:44:25.099Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "water9",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 1,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3279,
+   "load": {
+    "firstFrameMs": 898.7999999821186,
+    "startScreenMs": 3007
+   },
+   "freeze": {
+    "ok": true,
+    "pose": [
+     -18620,
+     199,
+     17260,
+     0,
+     -20.6
+    ],
+    "time": 1000
+   },
+   "stateSampler": true,
+   "freezeWindow": {
+    "longFrames": [],
+    "seconds": 2.99,
+    "frames": 360,
+    "fpsMean": 119.95,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.3,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 0,
+     "snapshotsPerS": 0,
+     "simToWallRatio": null
+    }
+   },
+   "stateLastAtShot": {
+    "t": 34377,
+    "cpuL": 0,
+    "gpuL": 0,
+    "lever": null,
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 112,
+    "drawCalls": 86,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 99.69999998807907,
+     "region": "0:0"
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 1967,
+     "duration": 250,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 249,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2348,
+     "duration": 110,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 18,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 16,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2458,
+     "duration": 112,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 21,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 11,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2569,
+     "duration": 93,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2788,
+     "duration": 121,
+     "scripts": [
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 110,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "TimerHandler:setInterval",
+       "invokerType": "user-callback",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/timingTools-29eIlRRb.js",
+       "sourceFunctionName": "",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2909,
+     "duration": 93,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 77,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 3084,
+     "duration": 179,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 172,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 34377,
+    "cpuL": 0,
+    "gpuL": 0,
+    "lever": null,
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 112,
+    "drawCalls": 86,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 99.69999998807907,
+     "region": "0:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "P2 freeze B": {
+   "label": "freeze-B",
+   "scenario": "freeze",
+   "capturedAtIso": "2026-09-30T06:45:07.304Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "water9",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 1,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3328,
+   "load": {
+    "firstFrameMs": 904.5,
+    "startScreenMs": 3087.5999999940395
+   },
+   "freeze": {
+    "ok": true,
+    "pose": [
+     -18620,
+     199,
+     17260,
+     0,
+     -20.6
+    ],
+    "time": 1000
+   },
+   "stateSampler": true,
+   "freezeWindow": {
+    "longFrames": [],
+    "seconds": 3,
+    "frames": 361,
+    "fpsMean": 120.03,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.9,
+     "p99": 10.3,
+     "max": 10.4
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 0,
+     "snapshotsPerS": 0,
+     "simToWallRatio": null
+    }
+   },
+   "stateLastAtShot": {
+    "t": 34411.90000000596,
+    "cpuL": 0,
+    "gpuL": 0,
+    "lever": null,
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 112,
+    "drawCalls": 86,
+    "hydrology": {
+     "fallback": false,
+     "usedWorker": true,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 152.80000001192093,
+     "region": "0:0"
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 2159,
+     "duration": 153,
+     "scripts": [
+      {
+       "invoker": "Worker.onmessage",
+       "invokerType": "event-listener",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "handleMessage",
+       "duration": 146,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2459,
+     "duration": 101,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 25,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 16,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2560,
+     "duration": 108,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 16,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 15,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2668,
+     "duration": 100,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 11,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2907,
+     "duration": 124,
+     "scripts": [
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 108,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "TimerHandler:setInterval",
+       "invokerType": "user-callback",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/timingTools-29eIlRRb.js",
+       "sourceFunctionName": "",
+       "duration": 7,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 3355,
+     "duration": 89,
+     "scripts": [
+      {
+       "invoker": "Worker.onmessage",
+       "invokerType": "event-listener",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "handleMessage",
+       "duration": 83,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 34411.90000000596,
+    "cpuL": 0,
+    "gpuL": 0,
+    "lever": null,
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 112,
+    "drawCalls": 86,
+    "hydrology": {
+     "fallback": false,
+     "usedWorker": true,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 152.80000001192093,
+     "region": "0:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  },
+  "P2 freeze A2": {
+   "label": "freeze-A2",
+   "scenario": "freeze",
+   "capturedAtIso": "2026-09-30T06:45:49.886Z",
+   "settings": {
+    "quality": "low",
+    "mode": "performance",
+    "aircraft": "trainer",
+    "camera": "chase",
+    "seed": "water9",
+    "aglM": 914,
+    "width": 1920,
+    "height": 1080
+   },
+   "rate": 1,
+   "throttleWorkers": false,
+   "startScreenWallMs": 3417,
+   "load": {
+    "firstFrameMs": 987.3000000119209,
+    "startScreenMs": 3119.199999988079
+   },
+   "freeze": {
+    "ok": true,
+    "pose": [
+     -18620,
+     199,
+     17260,
+     0,
+     -20.6
+    ],
+    "time": 1000
+   },
+   "stateSampler": true,
+   "freezeWindow": {
+    "longFrames": [],
+    "seconds": 3,
+    "frames": 361,
+    "fpsMean": 120.02,
+    "fpsMedian": 120,
+    "intervalMs": {
+     "p50": 8.3,
+     "p95": 9.8,
+     "p99": 10.2,
+     "max": 10.3
+    },
+    "over33": 0,
+    "over50": 0,
+    "over66": 0,
+    "over100": 0,
+    "over250": 0,
+    "over400": 0,
+    "longTasks": {
+     "count": 0,
+     "totalMs": 0,
+     "maxMs": 0
+    },
+    "worker": {
+     "messagesPerS": 0,
+     "snapshotsPerS": 0,
+     "simToWallRatio": null
+    }
+   },
+   "stateLastAtShot": {
+    "t": 34536.5,
+    "cpuL": 0,
+    "gpuL": 0,
+    "lever": null,
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 112,
+    "drawCalls": 86,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 99.39999997615814,
+     "region": "0:0"
+    }
+   },
+   "traceFile": null,
+   "profileFile": null,
+   "workerThrottle": [],
+   "hydrologyLongFrames": [
+    {
+     "atMs": 2063,
+     "duration": 249,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 247,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2445,
+     "duration": 105,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 24,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 20,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2550,
+     "duration": 106,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 17,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 14,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 12,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2657,
+     "duration": 102,
+     "scripts": [
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 13,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "import.then",
+       "invokerType": "resolve-promise",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/@babylonjs_core_Materials_PBR_pbrMaterial.js",
+       "sourceFunctionName": "",
+       "duration": 11,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2884,
+     "duration": 112,
+     "scripts": [
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 101,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "TimerHandler:setInterval",
+       "invokerType": "user-callback",
+       "sourceURL": "node_modules/.vite-dev-perf-p2-hydrology-f87b3a50d9/deps/timingTools-29eIlRRb.js",
+       "sourceFunctionName": "",
+       "duration": 6,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 2996,
+     "duration": 116,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 94,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 21,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    },
+    {
+     "atMs": 3218,
+     "duration": 183,
+     "scripts": [
+      {
+       "invoker": "TimerHandler:setTimeout",
+       "invokerType": "user-callback",
+       "sourceURL": "src/render/webgpu/water/HydrologyGenerationClient.ts",
+       "sourceFunctionName": "",
+       "duration": 175,
+       "forcedStyleAndLayoutDuration": 0
+      },
+      {
+       "invoker": "FrameRequestCallback",
+       "invokerType": "user-callback",
+       "sourceURL": "src/game/FlightGame.tsx",
+       "sourceFunctionName": "renderLoop",
+       "duration": 7,
+       "forcedStyleAndLayoutDuration": 0
+      }
+     ]
+    }
+   ],
+   "stateLast": {
+    "t": 34536.5,
+    "cpuL": 0,
+    "gpuL": 0,
+    "lever": null,
+    "pendingTerrainPages": 0,
+    "pendingDetailWork": 0,
+    "residentTerrainPages": 112,
+    "drawCalls": 86,
+    "hydrology": {
+     "fallback": true,
+     "usedWorker": false,
+     "requests": 3,
+     "swaps": 2,
+     "failed": 0,
+     "lastMs": 99.39999997615814,
+     "region": "0:0"
+    }
+   },
+   "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+   ]
+  }
+ }
+}

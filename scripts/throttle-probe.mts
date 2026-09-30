@@ -928,7 +928,9 @@ report.hydrologyLongFrames = await evaluate(() => {
   const w = globalThis as unknown as Record<string, unknown>;
   w.__name ??= (fn: unknown) => fn;
   return ((w.__probeLongFrames as { start: number; duration: number; scripts: { sourceURL: string; sourceFunctionName: string; duration: number }[] }[] | undefined) ?? [])
-    .filter((f) => f.scripts.some((x) => /hydrology/i.test(`${x.sourceURL} ${x.sourceFunctionName}`)))
+    // Match the script's FILE name: a worktree or cache path can itself
+    // contain "hydrology" (perf-p2-hydrology), which matched every dependency.
+    .filter((f) => f.scripts.some((x) => /hydrology/i.test(`${x.sourceURL.split("/").pop() ?? ""} ${x.sourceFunctionName}`)))
     .map((f) => ({ atMs: Math.round(f.start), duration: Math.round(f.duration), scripts: f.scripts }));
 });
 report.stateLast = await evaluate(() => {

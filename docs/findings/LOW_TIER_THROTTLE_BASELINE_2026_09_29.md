@@ -228,6 +228,84 @@ tick.**
 - The same defect hits any player whose main thread is slow, throttled or
   not.
 
+## Slot 2: a quiet host, and the first fixes on the device
+
+**Window:** 23:25:45 to 23:47:02. The PM collected an idle ack from all four
+cockpit engineers first. At the start, load read 2.3 and Firefox's GPU helper
+0.0%.
+
+**The arms:**
+- **Before:** P1's files at `12bfe1e`.
+- **After:** P1 + P3 at `2b6df41`.
+- **P2:** `jazonshou/perf-p2-hydrology-worker` at `021c5d8`.
+
+**Evidence:** `docs/evidence/low-tier-throttle-slot2-2026-09-29.json`.
+
+| 4×, tier 0, 1920×1080 | Before (quiet) | After P1 + P3 | With P2 |
+| --- | --- | --- | --- |
+| Cessna cruise: fps / p95 / max | 74 / 23.2 / **358** | 74 / 18.5 / **352** | – |
+| 747 cruise: fps / p95 / max | 72 / 23.7 / **699** | 71 / 23.8 / **691** | 71 / 23.7 / **325** |
+| Cessna input: median / p90 / max | 74 / 87 / 88 ms | **66 / 81 / 89 ms** | – |
+| 747 input: median / p90 / max | 77 / 88 / 95 ms | **56 / 67 / 72 ms** | – |
+| Cessna take-off, 4 s Shift hold | rotated 29.9 s, lift-off 43.2 s, **crashed** 28 s later | **rotated 15.9 s, lift-off 18.8 s, 60 s climb flown** | – |
+
+**What changed from the loaded baseline.** The loaded baseline (one busy
+background core) read ~50 fps. On this quiet host the throttled frame rate is
+about 1.5× that. Input latency before P1 already passed the 100 ms bar here;
+the loaded baseline's 96/116 ms and 485 ms came from the load and from
+hydrology.
+
+**Every cruise hitch over 250 ms is hydrology.** The long-animation-frame
+attribution (P3) names `HydrologyGenerationClient.ts`:
+- Cessna: 343 ms of a 358 ms frame;
+- 747: 664 ms of a 697 ms frame.
+
+In both arms this is main-thread `generateHydrology`.
+
+**P1 on the device.**
+- With the same 4 s Shift hold, the Cessna now reaches full power and flies
+  the take-off.
+- Key-to-physics latency dropped by 16 ms (Cessna) and 9 ms (747), because a
+  key edge now posts at once.
+
+**P2 on the device.** All three of the PM's checks pass.
+1. **A `hydrology.worker.ts` thread** is present in the P2 trace. It was
+   absent from the baseline trace.
+2. **No main-thread `generateHydrology`** ran at any time in the P2 session,
+   load included. The live state reads `fallback: false, usedWorker: true`,
+   with 7 region swaps.
+3. **Identical water, by pixel difference.**
+   - Pose: the terrain viewer held over the lake 3.6 km from `?seed=water9`'s
+     airport, with the clock pinned.
+   - Water mask: 340,497 px (16.4% of the frame). Terrain-only control patch:
+     109,995 px.
+   - A1 (before) vs B (after): 0 px differ in the water, and 0 in the patch.
+   - Whole frame: 11 px differ by at most 1. The A1 vs A2 same-arm control is
+     noisier (166 px, max 28, all outside the lake and the patch).
+   - The rig's `lake-island-piercing` pair differs by 27 scattered pixels at
+     ±1 (A1 vs A2: 0). Its committed baseline frames no water, so it is
+     terrain and streaming identity only.
+
+**What remains: the region hand-off.**
+- With P2 the 747's worst frame is `handleMessage` (290 ms of a 325 ms
+  frame). That is the main thread receiving the worker's region and building
+  its meshes in `HydrologySystem.buildRegion`.
+- The lake builder (`appendContainedLake`) clips each lake against the
+  analytic ground. Measured in Node on real regions of the frame-pair world:
+  - ~7,500 ground samples and ~9,600 vertices per lake;
+  - 75-234 ms per region, 40-60% of the generation it followed.
+- Moving the vertex-array build into the worker is the proposed P2b.
+
+**The adaptive governor under the throttle.** At the same pose and code, the
+ladders ended anywhere from CPU 0 / GPU 9 to CPU 7 / GPU 3.
+- Without GPU timers (disabled in gameplay), it cannot tell a CPU-bound frame
+  from a GPU-bound one.
+- Under the 4× main-thread throttle it sometimes sheds GPU work (ground cover,
+  vegetation distance, shadow casters), which cannot help a CPU-bound frame
+  and costs pixels.
+- This is recorded as a finding, and as a confound for any fps comparison
+  between arms.
+
 ## URL seeds and string seeds are different worlds
 
 `readSeedFromUrl` reads `?seed=` as a **base-36 integer**
