@@ -215,6 +215,12 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
       });
     }
     const page = await context.newPage();
+    // THE PAGE'S OWN COMPLAINTS, recorded with the frame: a console error or warning, or an uncaught page error, is part of
+    // what the frame shows (a refused pipeline logs one and draws black under a live HUD)
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") console.log(`${label} console.${message.type()}: ${message.text()}`);
+    });
+    page.on("pageerror", (error) => console.log(`${label} pageerror: ${error.message}`));
     // Passed as an ARGUMENT, never closed over: the function is serialised
     // and a captured variable arrives as undefined.
     await page.addInitScript((wanted: { kind: string; timeOfDay: string; quality: string | null }) => {
