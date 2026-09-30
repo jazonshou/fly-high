@@ -361,6 +361,18 @@ interface Feature {
   readonly rows: readonly [number, number];
 }
 
+/** The least and the greatest of a list, by a loop: a spread into Math.min overflows the stack past about 125,000 values. */
+function minOf(values: readonly number[]): number {
+  let least = Infinity;
+  for (const v of values) if (v < least) least = v;
+  return least;
+}
+function maxOf(values: readonly number[]): number {
+  let most = -Infinity;
+  for (const v of values) if (v > most) most = v;
+  return most;
+}
+
 /** Connected components (8-neighbour) of the pixels in `members`, by union-find. */
 function components(width: number, members: readonly number[]): number[][] {
   const at = new Map<number, number>();
@@ -484,10 +496,10 @@ function analyse(kind: AircraftKind, grid: Grid, options: Options, frame: { rgb:
         const xs = group.map((k) => k % width);
         const ys = group.map((k) => Math.floor(k / width));
         const at = group.map((k) => index.get(k)!);
-        const x0 = Math.min(...xs);
-        const x1 = Math.max(...xs);
-        const y0 = Math.min(...ys);
-        const y1 = Math.max(...ys);
+        const x0 = minOf(xs);
+        const x1 = maxOf(xs);
+        const y0 = minOf(ys);
+        const y1 = maxOf(ys);
         const [az0, el0] = angles(x0, y1);
         const [az1, el1] = angles(x1, y0);
         features.push({
@@ -533,8 +545,8 @@ function analyse(kind: AircraftKind, grid: Grid, options: Options, frame: { rgb:
       const xs = group.map((k) => k % width);
       const ys = group.map((k) => Math.floor(k / width));
       const mean = [0, 1, 2].map((c) => group.reduce((s, k) => s + normal[k * 3 + c]!, 0) / group.length);
-      const [az0, el0] = angles(Math.min(...xs), Math.max(...ys));
-      const [az1, el1] = angles(Math.max(...xs), Math.min(...ys));
+      const [az0, el0] = angles(minOf(xs), maxOf(ys));
+      const [az1, el1] = angles(maxOf(xs), minOf(ys));
       slabs.push({
         part: key.split("#")[0]!, px: group.length, share: group.length / n, normal: mean,
         luma: luma ? group.reduce((s, k) => s + luma[k]!, 0) / group.length : null, az: [az0, az1], el: [el0, el1],
