@@ -198,6 +198,23 @@ export function terrainNodeVertexMorphK(
  * parents before any new admission, and writing the records in that frame.
  * Keeping the guard here makes arbitrary unit-test callers memory-safe too.
  */
+const CORNER_LATTICE_METERS = 64;
+const CORNER_INDEX_LIMIT = 2 ** 25;
+
+function cornerVertexKey(x: number, z: number): CellKey {
+  const ix = x / CORNER_LATTICE_METERS;
+  const iz = z / CORNER_LATTICE_METERS;
+  if (
+    Number.isInteger(ix) && Number.isInteger(iz)
+    && ix >= -CORNER_INDEX_LIMIT && ix < CORNER_INDEX_LIMIT
+    && iz >= -CORNER_INDEX_LIMIT && iz < CORNER_INDEX_LIMIT
+  ) {
+    // -0 and 0 share a key here exactly as they shared "0" in the string key.
+    return (ix + CORNER_INDEX_LIMIT) * 2 * CORNER_INDEX_LIMIT + (iz + CORNER_INDEX_LIMIT);
+  }
+  return `${x}:${z}`;
+}
+
 export function resolveTerrainResidentCornerMorphs(
   nodes: readonly TerrainNode[],
   slotFor: (address: WorldPageAddress) => number,
@@ -212,15 +229,17 @@ export function resolveTerrainResidentCornerMorphs(
   const parentSlots = nodes.map((node) => slotFor(
     parentWorldPageAddress(node.address) ?? node.address,
   ));
-  const vertices = new Map<string, Array<{
-    readonly nodeIndex: number;
-    readonly corner: number;
-  }>>();
+  // Keyed by corner position: a number in 64 m units while the corner sits
+  // on that lattice and inside the packing (every node origin does, since a
+  // node spans 64 m x 2^level), the legacy `x:z` string otherwise. Entries
+  // pack (nodeIndex, corner) as nodeIndex * 4 + corner. P5-C: this pass ran a
+  // string build and an object allocation per corner per frame.
+  const vertices = new Map<CellKey, number[]>();
   const add = (nodeIndex: number, corner: number, x: number, z: number): void => {
-    const key = `${x}:${z}`;
-    const entries = vertices.get(key) ?? [];
-    entries.push({ nodeIndex, corner });
-    vertices.set(key, entries);
+    const key = cornerVertexKey(x, z);
+    const entries = vertices.get(key);
+    if (entries) entries.push(nodeIndex * 4 + corner);
+    else vertices.set(key, [nodeIndex * 4 + corner]);
   };
   nodes.forEach((node, nodeIndex) => {
     const x1 = node.originX + node.spanMeters;
@@ -232,9 +251,9 @@ export function resolveTerrainResidentCornerMorphs(
   });
 
   for (const entries of vertices.values()) {
-    const firstLevel = nodes[entries[0]!.nodeIndex]!.level;
+    const firstLevel = nodes[entries[0]! >> 2]!.level;
     const sameLevel = entries.every(
-      (entry) => nodes[entry.nodeIndex]!.level === firstLevel,
+      (entry) => nodes[entry >> 2]!.level === firstLevel,
     );
     if (!sameLevel) continue;
     // Fix-pack T8: the complementary transient. A node whose PARENT page is
@@ -244,14 +263,14 @@ export function resolveTerrainResidentCornerMorphs(
     // residency lags, flashing sky or dark far terrain through as lines.
     // Force every same-level participant at that corner to K=0 so the edge
     // agrees on the fine lattice until the parent arrives.
-    const parentMissing = entries.some((entry) => parentSlots[entry.nodeIndex]! < 0);
+    const parentMissing = entries.some((entry) => parentSlots[entry >> 2]! < 0);
     if (parentMissing) {
-      for (const entry of entries) resolved[entry.nodeIndex]![entry.corner] = 0;
+      for (const entry of entries) resolved[entry >> 2]![entry & 3] = 0;
       continue;
     }
-    const fineMissing = entries.some((entry) => ownSlots[entry.nodeIndex]! < 0);
+    const fineMissing = entries.some((entry) => ownSlots[entry >> 2]! < 0);
     if (!fineMissing) continue;
-    for (const entry of entries) resolved[entry.nodeIndex]![entry.corner] = 1;
+    for (const entry of entries) resolved[entry >> 2]![entry & 3] = 1;
   }
   return resolved;
 }
@@ -301,9 +320,38 @@ function distanceToNode(
   return Math.sqrt(dx * dx + dz * dz + verticalMeters * verticalMeters);
 }
 
+/**
+ * A quadtree cell's identity: numeric while the cell index fits the packing,
+ * the legacy `level:nodeX:nodeZ` string beyond it. Both are exact, so keying
+ * can never merge two cells; the number exists because this runs for every
+ * candidate every frame, and the string was measurably the selector's cost
+ * (P5-C, docs/plans/CDLOD_SELECTION_DESIGN_NOTE.md). ±2^20 cells is ±67,000 km
+ * at the finest level, so the string path is for pathological inputs only.
+ */
+type CellKey = number | string;
+const CELL_INDEX_LIMIT = 2 ** 20;
+const CELL_LEVEL_LIMIT = 32;
+
+function cellKey(level: number, nodeX: number, nodeZ: number): CellKey {
+  if (
+    level >= 0 && level < CELL_LEVEL_LIMIT
+    && nodeX >= -CELL_INDEX_LIMIT && nodeX < CELL_INDEX_LIMIT
+    && nodeZ >= -CELL_INDEX_LIMIT && nodeZ < CELL_INDEX_LIMIT
+  ) {
+    return (level * 2 * CELL_INDEX_LIMIT + (nodeX + CELL_INDEX_LIMIT)) * 2 * CELL_INDEX_LIMIT
+      + (nodeZ + CELL_INDEX_LIMIT);
+  }
+  return `${level}:${nodeX}:${nodeZ}`;
+}
+
+/** The human-readable cell identity, for errors only. */
+function cellLabel(candidate: { level: number; nodeX: number; nodeZ: number }): string {
+  return `${candidate.level}:${candidate.nodeX}:${candidate.nodeZ}`;
+}
+
 interface Candidate {
-  /** `level:nodeX:nodeZ` — the quadtree identity, not the page identity. */
-  readonly key: string;
+  /** The quadtree identity (`cellKey`), not the page identity. */
+  readonly key: CellKey;
   readonly nodeX: number;
   readonly nodeZ: number;
   readonly address: WorldPageAddress;
@@ -330,7 +378,7 @@ function makeCandidate(
   level: number,
   nodeX: number,
   nodeZ: number,
-  key: string,
+  key: CellKey,
 ): Candidate | null {
   const span = terrainNodeSpanMeters(level);
   const originX = nodeX * span;
@@ -502,9 +550,9 @@ export function selectTerrainNodes(
 
   // One candidate object per quadtree cell, so identity comparisons are valid
   // and `deviationFor` is asked at most once per cell per frame.
-  const candidates = new Map<string, Candidate | null>();
+  const candidates = new Map<CellKey, Candidate | null>();
   const candidateAt = (level: number, nodeX: number, nodeZ: number): Candidate | null => {
-    const key = `${level}:${nodeX}:${nodeZ}`;
+    const key = cellKey(level, nodeX, nodeZ);
     const cached = candidates.get(key);
     if (cached !== undefined) return cached;
     const made = makeCandidate(input, level, nodeX, nodeZ, key);
@@ -513,9 +561,9 @@ export function selectTerrainNodes(
   };
 
   /** The current leaves — exactly the node set that will be drawn. */
-  const leaves = new Map<string, Candidate>();
+  const leaves = new Map<CellKey, Candidate>();
   /** Nodes that have been replaced by their four children. */
-  const split = new Set<string>();
+  const split = new Set<CellKey>();
   const heap = createErrorHeap();
 
   for (let dz = -reach; dz <= reach; dz += 1) {
@@ -537,14 +585,14 @@ export function selectTerrainNodes(
     level: number,
     nodeX: number,
     nodeZ: number,
-    planned: ReadonlySet<string>,
+    planned: ReadonlySet<CellKey>,
   ): Candidate[] | null => {
     const chain: Candidate[] = [];
     for (let ancestorLevel = coarsest; ancestorLevel > level; ancestorLevel -= 1) {
       const step = 2 ** (ancestorLevel - level);
       const ancestorX = Math.floor(nodeX / step);
       const ancestorZ = Math.floor(nodeZ / step);
-      const key = `${ancestorLevel}:${ancestorX}:${ancestorZ}`;
+      const key = cellKey(ancestorLevel, ancestorX, ancestorZ);
       // Already split (or about to be): its children exist, so descend.
       if (split.has(key) || planned.has(key)) continue;
       // The first ancestor that is not split is the leaf covering this ground.
@@ -564,7 +612,7 @@ export function selectTerrainNodes(
    * page, or more splits than `maximumSplits` can pay for).
    */
   const planSplit = (target: Candidate, maximumSplits: number): Candidate[] | null => {
-    const planned = new Set<string>();
+    const planned = new Set<CellKey>();
     const ordered: Candidate[] = [];
     const work: Candidate[] = [target];
     while (work.length > 0) {
@@ -793,10 +841,10 @@ export function selectTerrainNodes(
     }
     if (!hasMixedLevel) return;
     if (hasSameLevel) {
-      throw new Error(`Terrain side mixes same-level and split neighbours for ${candidate.key}`);
+      throw new Error(`Terrain side mixes same-level and split neighbours for ${cellLabel(candidate)}`);
     }
     if (maximumLevel - minimumLevel > 1) {
-      throw new Error(`Terrain side balance failed for ${candidate.key}`);
+      throw new Error(`Terrain side balance failed for ${cellLabel(candidate)}`);
     }
     const target = candidate.level === minimumLevel ? 1 : 0;
     const base = candidate.emittedIndex * 4;
@@ -806,7 +854,7 @@ export function selectTerrainNodes(
     const previousSecond = forcedCorners[secondOffset]!;
     if ((previousFirst >= 0 && previousFirst !== target)
       || (previousSecond >= 0 && previousSecond !== target)) {
-      throw new Error(`Terrain corner has contradictory edge targets for ${candidate.key}`);
+      throw new Error(`Terrain corner has contradictory edge targets for ${cellLabel(candidate)}`);
     }
     forcedCorners[firstOffset] = target;
     forcedCorners[secondOffset] = target;
