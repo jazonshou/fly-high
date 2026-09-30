@@ -295,7 +295,8 @@ the horizon. What remains is texels whose pair holds a non-sward (hills, forest
 edge, shore): they keep the Grass base, with stair-stepped outlines at 128-256 m
 in the TINT, and in lush hill country they draw no visible edge because the
 sward mixture there is nearly Grass anyway. In dry hills they could; not seen in
-the frames shot, and logged.
+the frames shot, and logged. (Seen 2026-09-30 at a shore, world V4HYQQ:
+`docs/findings/FAR_SWARD_SOFT_GATE_2026_09_30.md`.)
 
 **Price: FULL decided, CHEAP NOT YET PRICED, and that is a condition of the
 merge.** One tree, dial toggled, four interleaved rounds of off / cheap / full on

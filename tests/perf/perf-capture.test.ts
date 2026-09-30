@@ -336,6 +336,24 @@ if (HIDE_VEGETATION && REBASELINE) {
   );
 }
 
+/**
+ * `VITE_PERF_FAR_SWARD` — V-4: force the terrain's far-sward read to `off`,
+ * `cheap` or `soft` (`FlightRendererOptions.terrainFarSwardRead`), so one build
+ * prices all three arms and diffs soft against cheap. Unset renders the
+ * shipped default. Diagnostic only, and mutually exclusive with rebaseline for
+ * the same reason as the detail-irradiance arm below.
+ */
+const FAR_SWARD_OVERRIDE = String(import.meta.env.VITE_PERF_FAR_SWARD ?? "").trim();
+if (FAR_SWARD_OVERRIDE !== "" && !["off", "cheap", "soft"].includes(FAR_SWARD_OVERRIDE)) {
+  throw new Error(`VITE_PERF_FAR_SWARD must be off, cheap or soft, got "${FAR_SWARD_OVERRIDE}"`);
+}
+if (FAR_SWARD_OVERRIDE !== "" && REBASELINE) {
+  throw new Error(
+    "VITE_PERF_FAR_SWARD and VITE_PERF_REBASELINE are mutually exclusive: "
+    + "a priced arm is under evaluation, never the reference the other arm is judged against.",
+  );
+}
+
 if (DETAIL_SH_OVERRIDE !== "" && REBASELINE) {
   throw new Error(
     "VITE_PERF_DETAIL_SH_IN_FRAGMENT and VITE_PERF_REBASELINE are mutually exclusive: "
@@ -625,6 +643,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // of the override (tests/render.cockpit-rig.test.ts scans for that).
       cockpitRigOverride: PERF_COCKPIT_RIG,
       ...(world.airport ? { runway: world.airport } : {}),
+      ...(FAR_SWARD_OVERRIDE !== ""
+        ? { terrainFarSwardRead: FAR_SWARD_OVERRIDE as "off" | "cheap" | "soft" }
+        : {}),
     });
 
     // 7-4b: before creation, so each detail material is BUILT without the
@@ -1632,6 +1653,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         // own arms from the draw counts and the baseline SSIM, because nothing
         // in the file named them.
         aircraft: CAPTURE_AIRCRAFT,
+        farSwardRead: FAR_SWARD_OVERRIDE === "" ? null : FAR_SWARD_OVERRIDE,
         pinnedRenderScale: CAPTURE_PROFILE.renderScale,
         gpuTimingEnabled: renderer.getGpuTimingStatusForCapture().enabled,
         // Whether the frame-delivery numbers below were contract or diagnostic.
