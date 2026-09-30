@@ -1048,6 +1048,28 @@ digests are re-pinned on its line: seam 0d9cc1fc, taper 412d75a4.
   - A matte surface's luma here follows which way it faces, so one shared colour
     cannot put the horns and the column in the band together. The option, put to the
     PM: the columns and collars on a darker matte of their own, one more draw.
+- **The PM's re-read, which withdrew that band.** At 1.2 times the board's colour
+  the grips read as grey posts with pale tops. A 150's yoke is black plastic:
+  darker than the board on its sides, its sky-lit tops only a little above it. The
+  target became the tops (the caps and the column's top) at 1.2 to 1.6 times the
+  board, and the sides at 0.4 to 0.7. It stays one shared matte, with no extra draw;
+  two tunes were allowed.
+
+| yokes' colour | frame's heading | board | caps | column's top | sides |
+|---|---|---|---|---|---|
+| 0x202c30 | 161 | 27.6 | 3.59x | 3.53x | 1.06x |
+| 0x050708 | 87 | 43.2 | 0.91x | 0.87x | 0.44x |
+| **0x0b0f11** (kept) | 92 | 41.5 | **1.35x** | **1.29x** | **0.60x** |
+
+  - The tunes were sized from the power law the frames fit: luma goes as the albedo
+    to 0.43 to 0.61, lowest for the sky-lit tops and highest for the sides.
+  - The ratio is to the board in the same frame, and the scenic start's heading is
+    random. At headings 87 and 92 the board is in the sun (41 to 43); at 161 it is
+    not (27.6). The tops, lit by the sky, change much less, so at 161 the same black
+    would read about twice the board on its tops.
+  - Nothing pins the colour; the matte's roughness (0.95) and metallic (0) are
+    pinned. At heading 92 the compass reads E under the lubber line, with 12 to its
+    left and 6 to its right.
 - **The compass**, at headings 163 and 161: the lubber line stands between S (left)
   and 15 (right), 11 to 13 degrees from 15, where those headings fall on a card
   that reads backwards. The card is legible at 2x.
