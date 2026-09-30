@@ -97,7 +97,7 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
 // housing and its combiner (the F-16 pass, step 2: two panes, one mesh), walked with the frame. The 747's went 6 -> 7 with
 // its rolled window frame (S1): the seals round the glass, a closed thin solid on the glareshield's matte; and 7 -> 8 with
 // its clock's face (S4), a mesh of its own on a static page.
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 15, bizjet: 7, airliner: 8, jet: 9 };
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 15, bizjet: 7, airliner: 10, jet: 9 };
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed

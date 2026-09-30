@@ -569,7 +569,9 @@ describe("a loft's crown seam", () => {
       // RE-PINNED 0a12154b -> be50f03f for the glareshield over the displays (S3): against 29a570c, airliner-glareshield
       // (its new section), airliner-screen-bezels (the MCP's and the EFIS panels' plates) and airliner-screen-bezel-rims
       // (their windows) moved, and the other 95 are bit-identical, the board and the screens included.
-      airliner: "be50f03f",
+      // RE-PINNED be50f03f -> 6fd8be82 for the header and the overhead's forward end (S5): against 3ac0a0c,
+      // airliner-header and airliner-overhead-front are new, and the other 98 are bit-identical.
+      airliner: "6fd8be82",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
