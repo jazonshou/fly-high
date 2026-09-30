@@ -19,7 +19,6 @@ import {
 import type { AircraftBuildContext } from "../builders";
 import {
   facetMesh,
-  framedScreenFacets,
   framedScreenStack,
   glareshieldMaterial,
   roundedDeckSection,
@@ -622,12 +621,22 @@ export function bizjetPanelFace(): { top: { x: number; y: number }; up: { x: num
 export const BIZJET_SCREENS = Object.freeze({
   width: 0.22,
   height: 0.15,
-  /** The bezel's rim beyond the screen: the dark gap, then the bezel's flat face, then its chamfer. */
+  /** The bezel's rim beyond the screen at its sides and foot: the dark gap, then the bezel's flat face, then its chamfer. */
   bezel: 0.01,
+  /**
+   * ITS TOP: the gap and the chamfer only, no flat band (S2). The frames' tops were a millimetre into the cove, a 105
+   * degree crease along both pairs; standing them clear of the cove's fillet took the headroom from here, not from the
+   * screens.
+   */
+  topBorder: 0.006,
   /** Centre to centre inside a pair. The bezels leave 5 mm between them. */
   pitch: 0.245,
-  /** The screens' top edge reads this far below the cove's foot (the lowest edge of the deck the pilot sees). */
-  belowDeckEdgeDegrees: 0.8,
+  /**
+   * THE FRAMES' TOP stands this much board under the cove's fillet's foot (`BIZJET_COVE_FILLET`), along the face: the
+   * rule is on the frame's top, where it was on the screen's (0.8 degrees under the cove's foot, which put the frames'
+   * tops 0.5 mm INTO the cove). 1.2 mm is 2.2 pixels of a 1080p frame from the seat.
+   */
+  boardUnderFillet: 0.0012,
   /** The bezel's front stands this far out of the board's face; its back is 1 mm inside it, so nothing is coincident. */
   bezelThickness: 0.007,
   /** The chamfer round the bezel's outer edge: this wide across the face and this deep, at 45 degrees. */
@@ -658,11 +667,11 @@ export function bizjetScreenPlacements(): readonly { name: string; centre: Vecto
   const e = eye();
   const face = bizjetPanelFace();
   const along = (h: number, out: number) => ({ x: face.top.x + h * face.up.x + out * face.normal.x, y: face.top.y + h * face.up.y + out * face.normal.y });
-  // the screen's front top edge, as far up the face (h) as puts it `belowDeckEdgeDegrees` under the deck's edge: a line
-  // along z reads one row wherever it is, so the row is the slope (y - eye.y) / (x - eye.x)
-  const slope = Math.tan(Math.atan2(face.top.y - e.up, face.top.x - e.forward) - s.belowDeckEdgeDegrees * DEG);
-  const front = along(0, stack.screenFront);
-  const h = (slope * (front.x - e.forward) - (front.y - e.up)) / (face.up.y - slope * face.up.x);
+  // the frames' top edge (h, up the face from its top): `boardUnderFillet` under the fillet's foot; the screen's top edge
+  // the frame's top border under that
+  const filletFoot = bizjetCoveFillet().points.at(-1)!;
+  const frameTop = (filletFoot.x - face.top.x) * face.up.x + (filletFoot.y - face.top.y) * face.up.y - s.boardUnderFillet;
+  const h = frameTop - s.topBorder;
   const screen = along(h - s.height / 2, (stack.screenFront + stack.screenBack) / 2);
   const onFace = along(h - s.height / 2, 0);
   const out: { name: string; centre: Vector3; faceCentre: Vector3 }[] = [];
@@ -685,7 +694,45 @@ export function bizjetScreenPlacements(): readonly { name: string; centre: Vecto
  * face each other inside the bezel and are never seen); the rim is apart so the night glow can be on it alone.
  */
 export function bizjetBezelFacets(faceCentre: Vector3): { frame: FacetQuad[]; rim: FacetQuad[] } {
-  return framedScreenFacets(faceCentre, bizjetPanelFace(), BIZJET_SCREENS);
+  // `framedScreenFacets`' bezel (the 747's too), with its own top border: where the top has no flat band the frame is a
+  // U round the sides and foot, and the rim's own inner wall closes the recess's top (the frame's top segment would
+  // have no front and its two walls would lie on the rim's).
+  const s = BIZJET_SCREENS;
+  const stack = bizjetScreenStack();
+  const face = bizjetPanelFace();
+  const across = new Vector3(0, 0, 1);
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const at = (u: number, v: number, o: number) => faceCentre.add(across.scale(u)).add(up.scale(v)).add(out.scale(o));
+  // a rectangle's corners, bottom-left round to top-left, its half-width, its foot and its top; each side's outward direction
+  const rect = (x: number, foot: number, top: number, o: number) => [at(-x, -foot, o), at(x, -foot, o), at(x, top, o), at(-x, top, o)];
+  const sides = [up.scale(-1), across, up, across.scale(-1)];
+  const ring = (a: Vector3[], b: Vector3[], normal: (k: number) => Vector3, which: readonly number[]): FacetQuad[] =>
+    which.map((k) => ({ corners: [a[k]!, a[(k + 1) % 4]!, b[(k + 1) % 4]!, b[k]!] as const, normal: normal(k) }));
+  const w = s.width / 2;
+  const h = s.height / 2;
+  const opening = (o: number) => rect(w + s.gap, h + s.gap, h + s.gap, o);
+  const shoulder = (o: number) => rect(w + s.bezel - s.chamfer, h + s.bezel - s.chamfer, h + s.topBorder - s.chamfer, o);
+  const edge = (o: number) => rect(w + s.bezel, h + s.bezel, h + s.topBorder, o);
+  const topBand = s.topBorder - s.chamfer - s.gap;
+  const frameSides = topBand > 1e-9 ? [0, 1, 2, 3] : [0, 1, 3];
+  const all = [0, 1, 2, 3];
+  const { bezelFront: front, bezelBack: back, chamferFoot: foot } = stack;
+  return {
+    frame: [
+      ...ring(opening(front), shoulder(front), () => out, frameSides),
+      ...ring(shoulder(front), shoulder(back), (k) => sides[k]!, frameSides),
+      ...ring(opening(back), shoulder(back), () => out.scale(-1), frameSides),
+      ...ring(opening(back), opening(front), (k) => sides[k]!.scale(-1), frameSides),
+    ],
+    rim: [
+      // the chamfer runs as far across the face as it falls toward it: its normal is halfway between the side's and the face's
+      ...ring(shoulder(front), edge(foot), (k) => sides[k]!.add(out).normalize(), all),
+      ...ring(edge(foot), edge(back), (k) => sides[k]!, all),
+      ...ring(shoulder(back), edge(back), () => out.scale(-1), all),
+      ...ring(shoulder(back), shoulder(front), (k) => sides[k]!.scale(-1), all),
+    ],
+  };
 }
 
 /**

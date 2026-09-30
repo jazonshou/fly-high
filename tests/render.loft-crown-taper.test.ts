@@ -370,7 +370,11 @@ describe("the loft's crown taper", () => {
       // moves -- the glareshield, the new fillet, and the board, screens, frames, rims and wells, which stand on the
       // face's top 0.9 mm higher and 5 mm nearer -- and every mesh of the trainer's 66, the jet's 75 and the 747's 96 is
       // bit-identical.
-      bizjet: "c4979b70",
+      // RE-PINNED for the Global by the "feel real" wave's S2: the frames' tops stand 1.2 mm of board under the cove's
+      // fillet (their top border 6 mm, no flat band; the frame a U), the screens 2.1 mm lower on the face. Checked mesh by
+      // mesh against S1: only the Global's screens, frames, rims and wells move; every other mesh of all four is
+      // bit-identical.
+      bizjet: "5d1fd948",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
