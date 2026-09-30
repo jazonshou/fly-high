@@ -125,6 +125,8 @@ interface SceneReading {
   readonly hud: string;
   /** `isVisible` of every cockpit-only mesh (`metadata.cockpitOnly`) present in the scene, by name. */
   readonly cockpitOnly: Readonly<Record<string, boolean>>;
+  readonly renderWidth: number;
+  readonly canvasWidth: number | null;
 }
 
 async function readScene(page: import("playwright").Page): Promise<SceneReading> {
@@ -144,6 +146,7 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       activeCamera: { position: Vec; fov: number; fovMode: number; minZ: number; layerMask: number } | null;
       transformNodes: { name: string; position: Vec; rotationQuaternion: Quat | null; metadata: { aircraftVisual?: boolean; aircraftKind?: string } | null }[];
       meshes: { name: string; isVisible: boolean; metadata: { cockpitOnly?: boolean } | null }[];
+      getEngine(): { getRenderWidth(): number };
     }
     const scenes = holder.Instances.flatMap((engine) => engine.scenes as SceneLike[]);
     const scene = scenes.find((s) => s.transformNodes.some((n) => n.metadata?.aircraftVisual));
@@ -174,6 +177,9 @@ async function readScene(page: import("playwright").Page): Promise<SceneReading>
       eyeInBodyFrame: [body.x, body.y, body.z] as const,
       rootQuaternion: [q.x, q.y, q.z, q.w] as const,
       hud: document.body.innerText.replace(/\s+/g, " ").slice(0, 160),
+      // the adaptive render scale this frame was drawn at: the engine's render width over the canvas's
+      renderWidth: scene.getEngine().getRenderWidth(),
+      canvasWidth: document.querySelector("canvas")?.clientWidth ?? null,
       cockpitOnly: Object.fromEntries(
         scene.meshes
           .filter((m) => m.metadata?.cockpitOnly === true)
@@ -189,7 +195,7 @@ function hudView(hud: string): string {
 }
 
 async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
-  const label = `${kind}-${pose}${VIEW === "cockpit" ? "" : `-${VIEW}`}${LENS_REQUEST === null ? "" : `-lens${LENS_REQUEST}`}`;
+  const label = `${kind}-${pose}${VIEW === "cockpit" ? "" : `-${VIEW}`}${LENS_REQUEST === null ? "" : `-lens${LENS_REQUEST}`}${process.env.QUALITY ? `-${process.env.QUALITY}` : ""}`;
   const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: 1 });
   let lensRewrites = 0;
   try {
@@ -211,16 +217,18 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     const page = await context.newPage();
     // Passed as an ARGUMENT, never closed over: the function is serialised
     // and a captured variable arrives as undefined.
-    await page.addInitScript((wanted: { kind: string }) => {
+    await page.addInitScript((wanted: { kind: string; timeOfDay: string; quality: string | null }) => {
       localStorage.setItem("aerolith.settings.v3", JSON.stringify({
         aircraft: wanted.kind,
         flightMode: "scenic",
         showDiagnostics: false,
         weather: "clear",
-        timeOfDay: "day",
+        timeOfDay: wanted.timeOfDay,
         airborneStartAgl: 900,
+        // the Graphics setting (render scale, MSAA/FXAA) when asked for: QUALITY=low|medium|high
+        ...(wanted.quality ? { quality: wanted.quality } : {}),
       }));
-    }, { kind });
+    }, { kind, timeOfDay: process.env.TIME_OF_DAY ?? "day", quality: process.env.QUALITY ?? null });
     await page.goto(url!, { waitUntil: "domcontentloaded" });
     await page.locator('[aria-label="fly high start"]').waitFor({ timeout: 180_000 });
     await page.waitForTimeout(2_500);
@@ -254,9 +262,9 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     const cockpitOnlyNames = Object.keys(reading.cockpitOnly);
     // Trainer 15 since it kept three dials (19 with the second row); Global 7 on its P1 panel; 747 6 on its P1 panel
     // (4 until its framed, recessed screens brought the bezels' rims and the wells); the F-16 7, its HUD frame, its
-    // housing, its combiner's panes, its MFDs' frames, rims and screens, and its sills. The same counts as
+    // housing, its combiner's panes, its MFDs' frames, rims and screens, its sills, and its ICP and DED. The same counts as
     // tests/render.cockpit-drawn-faces.
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 6, jet: 7 };
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 6, jet: 9 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {

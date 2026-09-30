@@ -344,7 +344,31 @@ describe("a loft's crown seam", () => {
       // RE-PINNED 7d145111 -> 71f87079 when this digest began reading thin-instance matrices (2026-09-24): the jet's
       // nozzle petals (14) and turbine blades (8) are thin instances. Its positions and indices alone still hash to
       // 7d145111; nothing about the jet changed.
-      jet: "71f87079",
+      // RE-PINNED 71f87079 -> 3ca5510d for the F-16 wave's S2, the dash taking over at the round's aft tangent through a
+      // 2 cm cove (the 45 degree chamfer gone). Checked mesh by mesh against 303372e (positions, normals, UVs, indices,
+      // world matrix, material, visibility, instances, in both views): `jet-glare-shield` (984 -> 972 vertices),
+      // `jet-instrument-panel` (36 -> 48, the board a pentagon), `jet-mfd-frames`, `jet-mfd-rims` and `jet-screens` (under
+      // the cove's foot) and `jet-sills` (the consoles' forward ends on the dash's face, 12.7 mm aft) changed; the jet's
+      // other 69 and every mesh of the other three airframes are bit-identical.
+      // RE-PINNED 3ca5510d -> a6be9a33 for S3, the rail's ends: checked mesh by mesh against 2f16351 (the same fields, both
+      // views): `jet-glare-shield` (972 -> 4380 vertices: the rail swept across with its outboard ends rounded, the ends'
+      // sections in six chords a round, the S topped at the round's crown, and the fillet's spans on the round),
+      // `jet-instrument-panel` (48 -> 504: the fillet's spans on the dash merged in) and `jet-sills` (432 -> 816: the
+      // rails' section in six chords a round) changed; the jet's other 72 and every mesh of the other three airframes
+      // are bit-identical.
+      // RE-PINNED a6be9a33 -> 0dff8af9 for S1, the ICP: checked mesh by mesh against cb43285 (the same fields, both views):
+      // two meshes new, both cockpit-only (`jet-icp`, the framed panel, the DED's lip, the keys and the rockers;
+      // `jet-icp-ded`), `jet-mfd-rims` 192 -> 288 vertices (the ICP's rim after the MFDs') and `jet-instrument-panel`
+      // 504 -> 540 (the ICP's recessed floor on the dash's material); the jet's other 73 and every mesh of the other
+      // three airframes are bit-identical.
+      // RE-PINNED 0dff8af9 -> 4d829e35 for the S3 amend: the S through 21 stations spaced by its arcs' angle, the glass
+      // re-measured at them. Checked mesh by mesh against 392e060: `jet-glare-shield` alone (4380 -> 6684 vertices); the
+      // jet's other 76 and every mesh of the other three airframes are bit-identical.
+      // RE-PINNED 4d829e35 -> 39b573ab for S4, the canopy seal: checked mesh by mesh against 4cd8b39: `jet-glare-shield`
+      // alone (6684 -> 14364 vertices: each side's seal strip in the glass margin and its groove's cove, merged in; the
+      // S's rounds' normals made true on its slope, positions unmoved); the jet's other 76 and every mesh of the other
+      // three airframes are bit-identical.
+      jet: "39b573ab",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND

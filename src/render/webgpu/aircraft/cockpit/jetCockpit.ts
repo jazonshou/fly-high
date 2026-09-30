@@ -1,8 +1,13 @@
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Constants } from "@babylonjs/core/Engines/constants";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { AircraftBuildContext } from "../builders";
@@ -13,9 +18,9 @@ import {
   glareshieldMaterial,
   roundedDeckSection,
   sculptSolid,
-  smoothRoundNormals,
   solidPlate,
   sweptSolid,
+  type FacetQuad,
   type RoundedDeckSection,
   type SweptSection,
 } from "./cockpitPrimitives";
@@ -31,6 +36,7 @@ import {
   remapScreenFaceToSlot,
 } from "./displays/displayAtlas";
 import { displayStateFromVisual, type DisplayAirframe } from "./displays/displayStateFromVisual";
+import { DISPLAY_COLOURS } from "./displays/displayPages";
 import type { FlightVisualState } from "@/src/game/types";
 
 /**
@@ -91,8 +97,8 @@ const DEG = 180 / Math.PI;
  * A ROUNDED RAIL, not a wedge (the F-16 pass, step 1; the Global's deck, P1a). The deck line is the catalogue's
  * (10.19 degrees under the eye, over the nose probe's tip at -10.41), and it is the rail's ROUND at the aft face that
  * stands on it: the round is tangent to the sight line at a vertex, so the silhouette is one row of the picture. Under
- * the round a 45 degree cove turns in to the board's face (the dash); forward of it the hood falls away faster than the
- * sight line, so no part of its top is seen from the seat.
+ * the round the board's face (the dash) takes over at the round's aft tangent through a 2 cm cove (`JET_COVE`); forward
+ * of it the hood falls away faster than the sight line, so no part of its top is seen from the seat.
  *
  * WHY. The wedge's top was a flat, sky-facing plane that the pilot saw as a 5.8 degree band, the brightest thing on
  * the deck (58 luma against the near face's 20, uniform from front to back) with razor edges (57 to 24 in one pixel):
@@ -106,11 +112,19 @@ const DEG = 180 / Math.PI;
  * the glass; at 0.36 it clears it by 2 cm, and the narrowing hood by 3 to 4 cm all the way forward.
  */
 export const JET_GLARESHIELD = Object.freeze({
-  /** The aft face, where the round turns under into the cove: 0.70 ahead of the eye. */
+  /** The aft face, where the round's aft tangent meets the dash's top (the cove): 0.70 ahead of the eye. */
   aftX: 2.92,
   radius: 0.02,
   drop: 0,
-  cove: 0.01,
+  /**
+   * No chamfer under the round (Jason's F-16 wave: "walls and bars organic, not choppy"): the dash's top is the round's
+   * aft tangent, and the 15 degree inside corner between them is the cove (`JET_COVE`). The 45 degree chamfer this
+   * was (1 cm forward and down) faced down and aft and read luma 15 under the rail, a 15 px black band straight
+   * across the frame between a 51 degree crease (the round into it) and an 85 degree one (the dash's top edge).
+   */
+  cove: 0,
+  /** Where the plan starts narrowing: the old cove's foot, so the plan (and the rail's ends) are unchanged. */
+  narrowFromX: 2.93,
   /** Steeper than the 10.19 degree sight line, so the hood's top never shows over the round. */
   hoodFallDegrees: 13,
   /** To x 3.50, the wedge's far edge: from outside it is still the dark hood over the panel. */
@@ -121,9 +135,146 @@ export const JET_GLARESHIELD = Object.freeze({
   farHalfWidth: 0.26,
 });
 
-/** The rail's section in body x and y: the round on the deck line, the cove, the hood (`roundedDeckSection`). */
+/**
+ * The rail's section in body x and y: the round on the deck line, down to its aft tangent, then the hood's underside
+ * (`roundedDeckSection` with no drop and no chamfer, so its cove's foot IS the round's aft tangent; the shared builder
+ * lists that point twice, and the prism takes it once).
+ */
 export function jetGlareshieldSection(): RoundedDeckSection {
-  return roundedDeckSection(eye(), JET_GLARESHIELD.aftX, aircraftSpec("jet").cockpitDeckLineDegrees, JET_GLARESHIELD, "the F-16");
+  const section = roundedDeckSection(eye(), JET_GLARESHIELD.aftX, aircraftSpec("jet").cockpitDeckLineDegrees, JET_GLARESHIELD, "the F-16");
+  const first = section.outline[0]!;
+  const last = section.outline[section.outline.length - 1]!;
+  const twice = Math.hypot(first.x - last.x, first.y - last.y) < 1e-9;
+  return twice ? { ...section, outline: section.outline.slice(0, -1) } : section;
+}
+
+/**
+ * THE RAIL'S OUTBOARD ENDS ROUNDED (Jason's F-16 wave, S3: the fillet at the rail's join with its ends). The rail was a
+ * prism of its section across the cockpit, square at its sides: where each end's S leaves it, the end's top edge is
+ * rounded at 1 cm (`JET_SILL.radius`) and the rail's square corner stood over that round, a knob 0.5 by 0.4 degrees
+ * at az +-26.5 on the deck row. Now the rail's section runs unchanged to `nearHalfWidth` less that radius and rolls over
+ * `endDegrees` of a round of it to the side: at each of `endSegments` stations out, the section inset by the round's
+ * fall there, and capped. So the rail's end is the end's own round and lies inside the end where they meet (2.6 mm
+ * inboard of it; 7.4 mm down at the cap, the end's round 4.7 there); forward of the S's top it is under the sight line,
+ * unseen from the seat, and from outside the hood's corners are round. Not the last 15 degrees: there the walls lie
+ * nearly flat to the cap, and where the plan narrows (from x 2.93) the sweep cannot tell their outside (`sweptSolid`
+ * sides a wall by its edge in the section, and two of them turned inside out).
+ *
+ * Each station's z, unscaled (the plan's narrowing scales it after, `jetCoamingHalfWidth` over `nearHalfWidth`), and
+ * how far the section is inset there, port end to starboard end.
+ */
+export const JET_RAIL_SIDES = Object.freeze({ radius: 0.01, endSegments: 5, endDegrees: 75 });
+
+export function jetRailStations(): { z: number; inset: number; angle: number }[] {
+  const { radius, endSegments, endDegrees } = JET_RAIL_SIDES;
+  const half = JET_GLARESHIELD.nearHalfWidth;
+  const side = Array.from({ length: endSegments + 1 }, (_, k) => {
+    const angle = (k / endSegments) * ((endDegrees * Math.PI) / 180);
+    return { z: half - radius + radius * Math.sin(angle), inset: radius * (1 - Math.cos(angle)), angle };
+  });
+  return [...side.slice().reverse().map(({ z, inset, angle }) => ({ z: -z, inset, angle })), ...side];
+}
+
+/**
+ * The rail's outline (`jetGlareshieldSection`) inset by `inset`: the round's points in toward its centre (its radius less
+ * the inset, so it stays a round for any inset short of its 2 cm), the hood's two forward corners where their edges'
+ * lines, each moved in square to itself, meet. (Every point by its edges' lines turned the round's last chord, 4.5 mm
+ * long at the aft corner, inside out past an inset of about 7 mm.)
+ */
+export function jetRailOutlineInset(inset: number): { x: number; y: number }[] {
+  const section = jetGlareshieldSection();
+  const outline = section.outline;
+  const n = outline.length;
+  const onRound = (p: { x: number; y: number }) => section.round.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 1e-12);
+  const middle = outline.reduce((sum, p) => ({ x: sum.x + p.x / n, y: sum.y + p.y / n }), { x: 0, y: 0 });
+  const inward = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    let m = { x: -(b.y - a.y) / length, y: (b.x - a.x) / length };
+    if (m.x * (middle.x - a.x) + m.y * (middle.y - a.y) < 0) m = { x: -m.x, y: -m.y };
+    return m;
+  };
+  return outline.map((p, j) => {
+    if (onRound(p)) {
+      const [dx, dy] = [p.x - section.centre.x, p.y - section.centre.y];
+      const scale = (Math.hypot(dx, dy) - inset) / Math.hypot(dx, dy);
+      return { x: section.centre.x + dx * scale, y: section.centre.y + dy * scale };
+    }
+    const a = inward(outline[(j - 1 + n) % n]!, p);
+    const b = inward(p, outline[(j + 1) % n]!);
+    const k = inset / (1 + a.x * b.x + a.y * b.y);
+    return { x: p.x + (a.x + b.x) * k, y: p.y + (a.y + b.y) * k };
+  });
+}
+
+/**
+ * Shades a rounded end of the rail (built by `buildJetCockpit` over `jetRailStations` from `from`) as its section rolled
+ * over the end's round: at each wall vertex, cos(angle) of the section's outward normal there (the round's radial on the
+ * round's chords, the edge's own on the hood's flat faces, so the hard corner at the aft tangent stays one) and
+ * sin(angle) out to the side. The caps keep their flat normals; nothing moves.
+ */
+function rollRailSideNormals(mesh: Mesh, from: number, side: -1 | 1): void {
+  const section = jetGlareshieldSection();
+  const outline = section.outline;
+  const n = outline.length;
+  const stations = jetRailStations();
+  const insets = stations.map(({ inset }) => jetRailOutlineInset(inset));
+  const onRound = (j: number) => section.round.some((q) => Math.hypot(q.x - outline[j]!.x, q.y - outline[j]!.y) < 1e-9);
+  const middle = outline.reduce((sum, p) => ({ x: sum.x + p.x / n, y: sum.y + p.y / n }), { x: 0, y: 0 });
+  // where each (station, point) was placed, as the sweep placed it
+  const place = new Map<string, { station: number; point: number }>();
+  const key = (x: number, y: number, z: number) => `${x},${y},${z}`;
+  for (let i = from; i < from + JET_RAIL_SIDES.endSegments + 1; i += 1) {
+    outline.forEach((q, j) => {
+      const at = insets[i]![j]!;
+      const z = (stations[i]!.z * jetCoamingHalfWidth(q.x)) / JET_GLARESHIELD.nearHalfWidth;
+      place.set(key(at.x, at.y, z), { station: i, point: j });
+    });
+  }
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = [...mesh.getVerticesData(VertexBuffer.NormalKind)!];
+  const at = (v: number) => place.get(key(positions[v * 3]!, positions[v * 3 + 1]!, positions[v * 3 + 2]!));
+  for (let t = 0; t < positions.length / 3; t += 3) {
+    const corners = [at(t), at(t + 1), at(t + 2)];
+    if (corners.some((c) => c === undefined) || new Set(corners.map((c) => c!.station)).size < 2) continue; // a cap
+    const pts = [...new Set(corners.map((c) => c!.point))];
+    if (pts.length !== 2) continue;
+    const [a, b] = [outline[pts[0]!]!, outline[pts[1]!]!];
+    let edge = { x: -(b.y - a.y), y: b.x - a.x };
+    if (edge.x * (middle.x - a.x) + edge.y * (middle.y - a.y) > 0) edge = { x: -edge.x, y: -edge.y };
+    const chord = onRound(pts[0]!) && onRound(pts[1]!);
+    corners.forEach((c, k) => {
+      const p = outline[c!.point]!;
+      const m = chord ? new Vector3(p.x - section.centre.x, p.y - section.centre.y, 0).normalize() : new Vector3(edge.x, edge.y, 0).normalize();
+      const angle = stations[c!.station]!.angle;
+      const rolled = m.scale(Math.cos(angle)).add(new Vector3(0, 0, side * Math.sin(angle))).normalize();
+      normals[(t + k) * 3] = rolled.x;
+      normals[(t + k) * 3 + 1] = rolled.y;
+      normals[(t + k) * 3 + 2] = rolled.z;
+    });
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = normals;
+  data.uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  data.indices = [...mesh.getIndices()!];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+}
+
+/**
+ * THE COVE (Jason's F-16 wave): the inside corner where the rail's round, its aft tangent vertical, meets the dash's
+ * face, leaned back `JET_PANEL.leanDegrees` from vertical and facing the pilot. It is a concave turn of that lean, drawn
+ * on a `radius` (2 cm): 15 degrees of it is 5.2 mm, the top strip of the dash's face, which carries the arc's normals from
+ * the round's (aft, level) at its top to the face's at its foot, so the round runs into the dash with one normal at
+ * the tangent and no crease in the shading. It is drawn as its chord: a 2 cm arc over 15 degrees stands 0.17 mm off it,
+ * and the dash's plate stays convex (`solidPlate` winds convex outlines only). No face in it faces down, so nothing
+ * under the rail falls into shadow: the band it replaces read luma 15 by day.
+ */
+export const JET_COVE = Object.freeze({ radius: 0.02 });
+
+/** The cove's length down the dash's face: its radius times the turn (the dash's lean), 5.2 mm. */
+export function jetCoveLength(): number {
+  return JET_COVE.radius * ((JET_PANEL.leanDegrees * Math.PI) / 180);
 }
 
 /** Height of the hood's top at a station forward of the round (where the HUD frame stands). */
@@ -139,7 +290,7 @@ export function jetCoamingTopY(x: number): number {
  */
 export function jetCoamingHalfWidth(x: number): number {
   const g = JET_GLARESHIELD;
-  const from = g.aftX + g.cove;
+  const from = g.narrowFromX;
   if (x <= from) return g.nearHalfWidth;
   return g.nearHalfWidth + ((g.farHalfWidth - g.nearHalfWidth) * (x - from)) / (g.aftX + g.hoodDepth - from);
 }
@@ -187,8 +338,11 @@ export function jetPanelSection(): { x: number; y: number }[] {
   const face = jetPanelFace();
   const fall = Math.tan((JET_GLARESHIELD.hoodFallDegrees * Math.PI) / 180);
   const backX = face.x + p.thickness;
+  const coveFoot = jetCoveFoot();
   return [
     { x: face.x, y: face.topY },
+    // on the face's plane: the cove's strip above it, the flat face below
+    { x: coveFoot.x, y: coveFoot.y },
     { x: face.x - (face.topY - p.bottomY) * (face.up.x / face.up.y), y: p.bottomY },
     { x: backX, y: p.bottomY },
     { x: backX, y: face.topY - (backX - face.x) * fall + p.topInHood },
@@ -197,6 +351,59 @@ export function jetPanelSection(): { x: number; y: number }[] {
 
 export function jetPanelTopY(): number {
   return jetPanelFace().topY;
+}
+
+/** The cove's foot: `jetCoveLength` down the dash's leaned face from its top (the round's aft tangent). */
+export function jetCoveFoot(): { x: number; y: number } {
+  const face = jetPanelFace();
+  const length = jetCoveLength();
+  return { x: face.top.x - length * face.up.x, y: face.top.y - length * face.up.y };
+}
+
+/**
+ * Shades the cove (`JET_COVE`) on the built board: every triangle of the face's top strip, from the face's top to the
+ * cove's foot, takes at each corner the arc's normal there: the round's aft normal (level, aft) at the top, the face's
+ * at the foot. Nothing moves. Returns how many triangles it shaded.
+ */
+export function shadeJetCove(board: Mesh): number {
+  const positions = board.getVerticesData(VertexBuffer.PositionKind);
+  const normals = board.getVerticesData(VertexBuffer.NormalKind);
+  const uvs = board.getVerticesData(VertexBuffer.UVKind);
+  const indices = board.getIndices();
+  if (!positions || !normals || !uvs || !indices) throw new Error("shadeJetCove: expected positions, normals, uvs and indices");
+  const face = jetPanelFace();
+  const foot = jetCoveFoot();
+  const top = new Vector3(-1, 0, 0);
+  const faceNormal = new Vector3(face.normal.x, face.normal.y, 0);
+  // on the face's plane, between its top and the cove's foot
+  const inStrip = (i: number) => {
+    const x = positions[i * 3]!;
+    const y = positions[i * 3 + 1]!;
+    const off = (x - face.top.x) * face.normal.x + (y - face.top.y) * face.normal.y;
+    return Math.abs(off) < 1e-7 && y >= foot.y - 1e-7 && y <= face.top.y + 1e-7;
+  };
+  const out = [...normals];
+  let shaded = 0;
+  for (let t = 0; t + 2 < indices.length; t += 3) {
+    const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+    if (!corners.every(inStrip)) continue;
+    for (const i of corners) {
+      const along = (face.top.y - positions[i * 3 + 1]!) / (face.top.y - foot.y);
+      const n = Vector3.Lerp(top, faceNormal, Math.max(0, Math.min(1, along))).normalize();
+      out[i * 3] = n.x;
+      out[i * 3 + 1] = n.y;
+      out[i * 3 + 2] = n.z;
+    }
+    shaded += 1;
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = out;
+  data.uvs = [...uvs];
+  data.indices = [...indices];
+  data.applyToMesh(board, false);
+  board.refreshBoundingInfo();
+  return shaded;
 }
 
 // ---- the HUD combiner frame ---------------------------------------------------------------
@@ -546,8 +753,9 @@ function hudFrameCorner(build: AircraftBuildContext, name: string, side: -1 | 1,
  * rims' material, whose frames read the board's tone by day and glowed whole at night). (They stood proud as 20 mm
  * slabs, tilted back 15 degrees on the upright board, the screen 1 mm proud.)
  *
- * WHERE: the frame's highest point reads `underFootDegrees` under the cove's foot, so the rail's round and its cove
- * show whole over them; a line along z reads one row, so that holds at every corner.
+ * WHERE: the frame's highest point reads `underFootDegrees` under the cove's foot (`jetCoveFoot`, the end of the
+ * dash's cove strip under the round's aft tangent), so the rail's round and its cove show whole over them; a line
+ * along z reads one row, so that holds at every corner.
  *
  * WHAT OF THEM IS SEEN: the 16:9 frame's bottom at their azimuth is about -22.7; the test pins the share of each screen
  * in the frame (98% or more).
@@ -563,7 +771,7 @@ export const JET_MFD = Object.freeze({
   gap: 0.002,
   recess: 0.003,
   screenThickness: 0.0005,
-  /** Each MFD's centre line; the 0.19 between the bezels is the UFC's (not built). */
+  /** Each MFD's centre line; the 0.19 between the bezels is the ICP's (`JET_ICP`, S1). */
   z: 0.17,
   /** The frames' highest point under the cove's foot, from the eye. */
   underFootDegrees: 0.3,
@@ -592,7 +800,9 @@ export function jetMfdPlacements(): readonly { name: "port" | "starboard"; centr
   const stack = framedScreenStack(m);
   const up = new Vector3(face.up.x, face.up.y, 0);
   const out = new Vector3(face.normal.x, face.normal.y, 0);
-  const top = new Vector3(face.top.x, face.top.y, 0);
+  // under the COVE's foot, not the dash's top: the cove's strip (`JET_COVE`) shows whole over the frames
+  const coveFoot = jetCoveFoot();
+  const top = new Vector3(coveFoot.x, coveFoot.y, 0);
   const row = (v: Vector3) => (v.y - e.up) / (v.x - e.forward);
   const limit = Math.tan(Math.atan(row(top)) - (m.underFootDegrees * Math.PI) / 180);
   const centreAt = (drop: number) => top.subtract(up.scale(drop + m.height / 2 + m.bezel));
@@ -611,6 +821,293 @@ export function jetMfdPlacements(): readonly { name: "port" | "starboard"; centr
     const z = name === "port" ? -m.z : m.z;
     return { name, centre: new Vector3(centre.x, centre.y, z), faceCentre: new Vector3(faceCentre.x, faceCentre.y, z) };
   });
+}
+
+// ---- the ICP ---------------------------------------------------------------------------------
+
+/**
+ * THE ICP (Jason's F-16 wave, S1: "make sure the details are there"): the integrated control panel between the MFDs,
+ * under the HUD, where the frame showed the bare dash (87k px at 1080p, luma 74, std 5.8). A framed recessed panel of
+ * the MFDs' own size and top line (the shared `framedScreenFacets`: its frame on the frames' grey, its chamfered rim on
+ * the rims' material, merged with theirs), its floor `recess` behind the frame's front, on the dash's own material and
+ * merged into the board (the keys stand lighter than it, as the type's do on its dark face; on the frames' grey the
+ * recess read only at its edges). On the floor: the DED, a strip on the rims' material (their law: 0.05 by day, their
+ * glow at night) in a raised lip; the 3 x 4 key block, each key `proud` of the floor with its top edges rounded at
+ * `radius`; and a rocker each side of the block (the DCS and the up/down), each two halves either side of a seam. The
+ * frame, the lip, the keys and the rockers are one mesh on the frames' grey (`jet-icp`), the DED another (`jet-icp-ded`):
+ * two draws, no new material.
+ *
+ * Face coordinates: u across the cockpit (starboard +), v up the leaned face, o out of it toward the pilot; the panel's
+ * centre on the face at z 0, the MFDs' face centre's height, so its top reads their 0.3 degree under the cove's foot.
+ */
+export const JET_ICP = Object.freeze({
+  /** The floor's opening; with the frame round it, 0.17 by 0.15 overall (the MFDs' 0.15 square), 1 cm clear of theirs. */
+  width: 0.13,
+  height: 0.11,
+  bezel: 0.02,
+  bezelThickness: 0.007,
+  chamfer: 0.004,
+  gap: 0.002,
+  recess: 0.003,
+  screenThickness: 0.002,
+  key: Object.freeze({ width: 0.014, height: 0.012, pitchU: 0.019, pitchV: 0.017, columns: 3, rows: 4, centreV: -0.014, proud: 0.004, radius: 0.001 }),
+  /** Each rocker's two halves, either side of a seam, at u +-`u`. */
+  rocker: Object.freeze({ width: 0.01, half: 0.0115, seam: 0.002, u: 0.047, centreV: -0.014, proud: 0.005, radius: 0.001 }),
+  /** The DED: its strip, and the lip round it. */
+  ded: Object.freeze({ width: 0.09, height: 0.02, v: 0.034, proud: 0.001, lip: 0.002, lipProud: 0.002 }),
+  /** Rounds in this many chords (the keys', the rockers'). */
+  roundSegments: 3,
+});
+
+/** The ICP's centre on the dash's face: the MFDs' face centre's height, at z 0. */
+export function jetIcpFaceCentre(): Vector3 {
+  const port = jetMfdPlacements()[0]!;
+  return new Vector3(port.faceCentre.x, port.faceCentre.y, 0);
+}
+
+/** The key block's twelve keys' centres on the floor, (u, v), row by row from the top, each row port to starboard. */
+export function jetIcpKeyCentres(): { u: number; v: number }[] {
+  const k = JET_ICP.key;
+  const keys: { u: number; v: number }[] = [];
+  for (let row = 0; row < k.rows; row += 1) {
+    for (let column = 0; column < k.columns; column += 1) {
+      keys.push({ u: (column - (k.columns - 1) / 2) * k.pitchU, v: k.centreV + ((k.rows - 1) / 2 - row) * k.pitchV });
+    }
+  }
+  return keys;
+}
+
+/** A quad with a shading normal at each corner (a round's), or one for all four. */
+interface ShadedQuad {
+  readonly corners: readonly [Vector3, Vector3, Vector3, Vector3];
+  /** Out of the solid: the drawn side. */
+  readonly normal: Vector3;
+  readonly shading?: readonly [Vector3, Vector3, Vector3, Vector3];
+}
+
+/**
+ * The ICP's parts as quads on the dash's face, the frame's (`framedScreenFacets`) and the rest: `floor` (0.5 mm into the
+ * frame's inner walls all round, so no face of it lies on theirs), `body` (the DED's lip, the keys, the rockers: one
+ * solid each), `ded` (the strip) and `rim` (the frame's chamfered rim).
+ */
+export function jetIcpFacets(): { frame: FacetQuad[]; rim: FacetQuad[]; floor: ShadedQuad[]; body: ShadedQuad[]; ded: ShadedQuad[] } {
+  const d = JET_ICP;
+  const face = jetPanelFace();
+  const centre = jetIcpFaceCentre();
+  const across = new Vector3(0, 0, 1);
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const at = (u: number, v: number, o: number) => centre.add(across.scale(u)).add(up.scale(v)).add(out.scale(o));
+  const stack = framedScreenStack(d);
+  const floorFront = stack.screenFront;
+  const sides = [up.scale(-1), across, up, across.scale(-1)];
+  /** A box on the face from o0 to o1 over u0..u1, v0..v1: six flat quads. */
+  const box = (u0: number, u1: number, v0: number, v1: number, o0: number, o1: number): ShadedQuad[] => {
+    const r = (o: number) => [at(u0, v0, o), at(u1, v0, o), at(u1, v1, o), at(u0, v1, o)];
+    const [back, front] = [r(o0), r(o1)];
+    return [
+      { corners: [front[0]!, front[1]!, front[2]!, front[3]!], normal: out },
+      { corners: [back[0]!, back[1]!, back[2]!, back[3]!], normal: out.scale(-1) },
+      ...[0, 1, 2, 3].map((k) => ({ corners: [back[k]!, back[(k + 1) % 4]!, front[(k + 1) % 4]!, front[k]!] as const, normal: sides[k]! })),
+    ];
+  };
+  /**
+   * A key: its outline w x h about (u, v), from 0.5 mm inside the floor to `proud` out of it, its four top edges rounded
+   * at `radius` in `roundSegments` chords (the outline inset by the round's fall at each chord's height), shaded as the
+   * round: at each corner of a chord, cos of its angle of the side's direction and sin of it out of the face.
+   */
+  const key = (u: number, v: number, w: number, h: number, proud: number, radius: number): ShadedQuad[] => {
+    const layers = [{ o: floorFront - 0.0005, inset: 0, angle: 0 }];
+    for (let k = 0; k <= d.roundSegments; k += 1) {
+      const angle = (k / d.roundSegments) * (Math.PI / 2);
+      layers.push({ o: floorFront + proud - radius + radius * Math.sin(angle), inset: radius * (1 - Math.cos(angle)), angle });
+    }
+    const ring = (layer: { o: number; inset: number }) => {
+      const [a, b] = [w / 2 - layer.inset, h / 2 - layer.inset];
+      return [at(u - a, v - b, layer.o), at(u + a, v - b, layer.o), at(u + a, v + b, layer.o), at(u - a, v + b, layer.o)];
+    };
+    const rings = layers.map(ring);
+    const quads: ShadedQuad[] = [];
+    for (let i = 0; i + 1 < layers.length; i += 1) {
+      for (let k = 0; k < 4; k += 1) {
+        const [la, lb] = [layers[i]!, layers[i + 1]!];
+        const n = (angle: number) => sides[k]!.scale(Math.cos(angle)).add(out.scale(Math.sin(angle))).normalize();
+        const corners = [rings[i]![k]!, rings[i]![(k + 1) % 4]!, rings[i + 1]![(k + 1) % 4]!, rings[i + 1]![k]!] as const;
+        const facet = n((la.angle + lb.angle) / 2);
+        quads.push(i === 0 ? { corners, normal: sides[k]! } : { corners, normal: facet, shading: [n(la.angle), n(la.angle), n(lb.angle), n(lb.angle)] });
+      }
+    }
+    const top = rings[rings.length - 1]!;
+    const bottom = rings[0]!;
+    quads.push({ corners: [top[0]!, top[1]!, top[2]!, top[3]!], normal: out });
+    quads.push({ corners: [bottom[0]!, bottom[1]!, bottom[2]!, bottom[3]!], normal: out.scale(-1) });
+    return quads;
+  };
+  const k = d.key;
+  const r = d.rocker;
+  const ded = d.ded;
+  const [fu, fv] = [d.width / 2 + d.gap + 0.0005, d.height / 2 + d.gap + 0.0005];
+  const floor = box(-fu, fu, -fv, fv, stack.screenBack, floorFront);
+  // the DED's lip: a ring round the strip, from inside the floor to `lipProud` out of it
+  const [iu, iv, ou, ov] = [ded.width / 2, ded.height / 2, ded.width / 2 + ded.lip, ded.height / 2 + ded.lip];
+  const [lo0, lo1] = [floorFront - 0.0005, floorFront + ded.lipProud];
+  const rect = (a: number, b: number, o: number) => [at(-a, ded.v - b, o), at(a, ded.v - b, o), at(a, ded.v + b, o), at(-a, ded.v + b, o)];
+  const ringQuads = (p: Vector3[], q: Vector3[], normal: (k: number) => Vector3): ShadedQuad[] =>
+    [0, 1, 2, 3].map((k) => ({ corners: [p[k]!, p[(k + 1) % 4]!, q[(k + 1) % 4]!, q[k]!] as const, normal: normal(k) }));
+  const lip = [
+    ...ringQuads(rect(iu, iv, lo1), rect(ou, ov, lo1), () => out),
+    ...ringQuads(rect(ou, ov, lo0), rect(ou, ov, lo1), (s) => sides[s]!),
+    ...ringQuads(rect(iu, iv, lo0), rect(ou, ov, lo0), () => out.scale(-1)),
+    ...ringQuads(rect(iu, iv, lo0), rect(iu, iv, lo1), (s) => sides[s]!.scale(-1)),
+  ];
+  const keys = jetIcpKeyCentres().flatMap((c) => key(c.u, c.v, k.width, k.height, k.proud, k.radius));
+  const halves = (side: -1 | 1) => [1, -1].flatMap((sign) => key(side * r.u, r.centreV + sign * (r.seam / 2 + r.half / 2), r.width, r.half, r.proud, r.radius));
+  const framed = framedScreenFacets(centre, face, d);
+  return {
+    frame: framed.frame,
+    rim: framed.rim,
+    floor,
+    body: [...lip, ...keys, ...halves(-1), ...halves(1)],
+    ded: box(-ded.width / 2, ded.width / 2, ded.v - ded.height / 2, ded.v + ded.height / 2, floorFront - 0.0005, floorFront + ded.proud),
+  };
+}
+
+/**
+ * THE DED'S PAGE (the S1 amend: the ICP read as one grey, the gap's std 17.5 against 20): a dark face with two lines of
+ * green characters as on the type's CNI page, a frequency line and a steerpoint and clock line, drawn ONCE into a
+ * texture of its own at the strip's 4.5 : 1. The characters are a 5 x 7 bitmap font drawn at `scale` on the CPU, so the
+ * page is the same bytes with or without a 2D canvas (every Node test sees it) and needs no redraw. Rows run from the
+ * top, as a canvas's do: the face maps the texture's first row to its top edge (the atlas's measured orientation).
+ */
+export const JET_DED_PAGE = Object.freeze({
+  width: 468,
+  height: 104,
+  scale: 3,
+  lines: Object.freeze(["UHF 305.00  STPT  1 AUTO", "VHF  1      14:32:05"]),
+  /** The first line's top and the second's, in texels; each line's left edge. */
+  lineTops: Object.freeze([22, 61]),
+  left: 18,
+  face: Object.freeze([6, 10, 8]),
+});
+
+/** The 5 x 7 glyphs the page uses, each row five bits from the left. */
+const DED_GLYPHS: Readonly<Record<string, readonly number[]>> = Object.freeze({
+  " ": [0, 0, 0, 0, 0, 0, 0],
+  ".": [0, 0, 0, 0, 0, 0b01100, 0b01100],
+  ":": [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+  "0": [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+  "1": [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+  "2": [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+  "3": [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
+  "4": [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+  "5": [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+  "6": [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+  "7": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+  "8": [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+  "9": [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+  A: [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  F: [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+  H: [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+  O: [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  P: [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+  S: [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+  T: [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+  U: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+  V: [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+});
+
+/** The DED page's RGBA bytes, first row at the top. */
+export function jetDedPagePixels(): Uint8Array {
+  const p = JET_DED_PAGE;
+  const pixels = new Uint8Array(p.width * p.height * 4);
+  for (let i = 0; i < p.width * p.height; i += 1) pixels.set([p.face[0]!, p.face[1]!, p.face[2]!, 255], i * 4);
+  const green = DISPLAY_COLOURS.green;
+  const ink = [Number.parseInt(green.slice(1, 3), 16), Number.parseInt(green.slice(3, 5), 16), Number.parseInt(green.slice(5, 7), 16)];
+  p.lines.forEach((line, row) => {
+    [...line].forEach((character, column) => {
+      const glyph = DED_GLYPHS[character];
+      if (!glyph) throw new RangeError(`the DED has no glyph for "${character}"`);
+      for (let gy = 0; gy < 7; gy += 1) {
+        for (let gx = 0; gx < 5; gx += 1) {
+          if (((glyph[gy]! >> (4 - gx)) & 1) === 0) continue;
+          for (let sy = 0; sy < p.scale; sy += 1) {
+            for (let sx = 0; sx < p.scale; sx += 1) {
+              const x = p.left + (column * 6 + gx) * p.scale + sx;
+              const y = p.lineTops[row]! + gy * p.scale + sy;
+              pixels.set([ink[0]!, ink[1]!, ink[2]!, 255], (y * p.width + x) * 4);
+            }
+          }
+        }
+      }
+    });
+  });
+  return pixels;
+}
+
+/**
+ * The DED's material: the display's recipe (`displayMaterial`: black albedo, the page as a white-lit emissive image, no
+ * image light, so it reads the same by day and at night), its own instance with the page's texture, owned by the build.
+ */
+function dedMaterial(build: AircraftBuildContext): PBRMaterial {
+  const p = JET_DED_PAGE;
+  const texture = RawTexture.CreateRGBATexture(jetDedPagePixels(), p.width, p.height, build.scene, true, false, Texture.TRILINEAR_SAMPLINGMODE, Constants.TEXTURETYPE_UNSIGNED_BYTE);
+  texture.name = "jet-ded-page";
+  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  build.textures.push(texture);
+  const material = build.material("jet-ded", 0x000000, { roughness: 1, metallic: 0 });
+  material.emissiveColor = new Color3(1, 1, 1);
+  material.emissiveTexture = texture;
+  material.environmentIntensity = 0;
+  return material;
+}
+
+/** Map the DED strip's face to its page: u across to the pilot's right (+z), v from its top edge down. */
+function mapDedFace(mesh: Mesh): void {
+  const face = jetPanelFace();
+  const up = new Vector3(face.up.x, face.up.y, 0);
+  const out = new Vector3(face.normal.x, face.normal.y, 0);
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  const uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  const front: number[] = [];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    if (Vector3.Dot(new Vector3(normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!), out) > 0.999) front.push(v);
+  }
+  const along = (v: number) => positions[v * 3 + 2]!;
+  const height = (v: number) => positions[v * 3]! * up.x + positions[v * 3 + 1]! * up.y;
+  const [z0, z1] = [Math.min(...front.map(along)), Math.max(...front.map(along))];
+  const [h0, h1] = [Math.min(...front.map(height)), Math.max(...front.map(height))];
+  for (const v of front) {
+    uvs[v * 2] = (along(v) - z0) / (z1 - z0);
+    uvs[v * 2 + 1] = (h1 - height(v)) / (h1 - h0);
+  }
+  mesh.setVerticesData(VertexBuffer.UVKind, uvs, false);
+}
+
+/** A `facetMesh` of shaded quads: each drawn as `facetMesh` winds it, its corners taking their shading normals. */
+function shadedFacetMesh(build: AircraftBuildContext, name: string, quads: readonly ShadedQuad[], material: PBRMaterial, parent: TransformNode): Mesh {
+  const mesh = facetMesh(build, name, quads, material, parent);
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  if (positions.length !== quads.length * 18) throw new RangeError(`shadedFacetMesh "${name}": a quad with no area`);
+  const normals = [...mesh.getVerticesData(VertexBuffer.NormalKind)!];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const quad = quads[Math.floor(v / 6)]!;
+    if (!quad.shading) continue;
+    const corner = quad.corners.findIndex((c) => c.x === positions[v * 3] && c.y === positions[v * 3 + 1] && c.z === positions[v * 3 + 2]);
+    const n = quad.shading[corner]!;
+    normals[v * 3] = n.x;
+    normals[v * 3 + 1] = n.y;
+    normals[v * 3 + 2] = n.z;
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = normals;
+  data.uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  data.indices = [...mesh.getIndices()!];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
 }
 
 /** What the pages need of this airframe that the flight state does not carry: one engine, 20 degrees of flap (`animation.ts`). */
@@ -644,6 +1141,11 @@ export const JET_SILL = Object.freeze({
   topY: 0.72,
   width: 0.06,
   radius: 0.01,
+  /**
+   * Chords each top edge's round over its 90 degrees (Jason's F-16 wave, S3). At 2, each chord turned 45 degrees and
+   * the S read as facets; the ends and the sills they leave share the section, so the sills went to 6 with them.
+   */
+  roundSegments: 6,
   /** The rail's bottom: 1 cm under the console's top. */
   bottomY: 0.59,
   glassMargin: 0.021,
@@ -651,10 +1153,18 @@ export const JET_SILL = Object.freeze({
   bendX: 2.6,
   /**
    * The glass's inner half-width at `topY`, by crossings on the built canopy: at `aftX`, at `bendX` (the widest, from
-   * x 2.3 to 2.6), at the board's side's bend (x 2.93) and at the board's back (x 3.03). The test re-measures the
-   * margin at every vertex.
+   * x 2.3 to 2.6), at the board's side's bend (x 2.93) and at `backX` (x 3.03). The test re-measures the margin at
+   * every vertex.
    */
   glassHalfWidth: Object.freeze({ aft: 0.4371, bend: 0.4559, dash: 0.4216, back: 0.4088 }),
+  /**
+   * The rail's stations beside the dash: the board's side's bend (the hood's plan starts narrowing, x 2.93) and 1 dm on.
+   * They were the board's face and back; the cove raised the face's top to the round's aft tangent, 1 cm aft (x 2.92),
+   * and the rails keep their run: the rail ends 1 cm past the board's back, its end cap facing forward, unseen. The
+   * consoles' forward ends stay on the face (`jetPanelFaceX`), 12.7 mm aft with it at every height.
+   */
+  dashX: 2.93,
+  backX: 3.03,
   consoleTopY: 0.6,
   consoleWidth: 0.15,
   consoleUnderRail: 0.03,
@@ -666,25 +1176,31 @@ export function jetPanelFaceX(y: number): number {
   return face.top.x - ((face.top.y - y) * face.up.x) / face.up.y;
 }
 
-/** The rail's section in (u, y), u measured inboard from its outer edge: up the outer face, over the rounded top, down the inner face. */
+/**
+ * The rail's section in (u, y), u measured inboard from its outer edge: up the outer face, over the rounded top, down the
+ * inner face, each top edge rounded in `roundSegments` chords over its 90 degrees. A round's first and last points are
+ * its tangents to the faces beside it. The sills and their ends share it, so an end leaves its sill flush.
+ */
 export function jetSillSection(): SweptSection {
   const r = JET_SILL;
+  const segments = r.roundSegments;
   const shoulder = r.topY - r.radius;
-  const c = Math.SQRT1_2 * r.radius;
+  const arc = (centre: number, from: number, to: number) => Array.from({ length: segments + 1 }, (_, k) => {
+    const angle = from + ((to - from) * k) / segments;
+    return { u: centre + r.radius * Math.cos(angle), y: shoulder + r.radius * Math.sin(angle) };
+  });
+  // the tangents exact, not by cos and sin: the outer face's top, the flat top's two ends, the inner face's top
+  const outer = arc(r.radius, Math.PI, Math.PI / 2);
+  const inner = arc(r.width - r.radius, Math.PI / 2, 0);
+  outer[0] = { u: 0, y: shoulder };
+  outer[segments] = { u: r.radius, y: r.topY };
+  inner[0] = { u: r.width - r.radius, y: r.topY };
+  inner[segments] = { u: r.width, y: shoulder };
   return {
-    points: [
-      { u: 0, y: r.bottomY },
-      { u: 0, y: shoulder },
-      { u: r.radius - c, y: shoulder + c },
-      { u: r.radius, y: r.topY },
-      { u: r.width - r.radius, y: r.topY },
-      { u: r.width - r.radius + c, y: shoulder + c },
-      { u: r.width, y: shoulder },
-      { u: r.width, y: r.bottomY },
-    ],
+    points: [{ u: 0, y: r.bottomY }, ...outer, ...inner, { u: r.width, y: r.bottomY }],
     rounds: [
-      { first: 1, last: 3, centre: { u: r.radius, y: shoulder } },
-      { first: 4, last: 6, centre: { u: r.width - r.radius, y: shoulder } },
+      { first: 1, last: 1 + segments, centre: { u: r.radius, y: shoulder } },
+      { first: 2 + segments, last: 2 + 2 * segments, centre: { u: r.width - r.radius, y: shoulder } },
     ],
   };
 }
@@ -696,8 +1212,8 @@ export function jetSillSection(): SweptSection {
 export function jetSillStations(): { x: number; outer: number; inner: number }[] {
   const r = JET_SILL;
   const g = r.glassHalfWidth;
-  const dashX = jetPanelFace().x;
-  const backX = dashX + JET_PANEL.thickness;
+  const dashX = r.dashX;
+  const backX = r.backX;
   const side = (x: number) => jetCoamingHalfWidth(x) - JET_PANEL.sideInset;
   return [
     { x: r.aftX, outer: g.aft - r.glassMargin, inner: g.aft - r.glassMargin - r.width },
@@ -720,9 +1236,11 @@ export function jetSillInnerAt(x: number): number {
 /**
  * THE RAIL'S ENDS (the F-16 pass, step 5; Jason: "make the front rim / black rectangle more rounded"). The rail ended
  * square at az +-26.45, a black bar with cut ends over the sills. Each end now sweeps aft and down into its sill: from
- * the rail's silhouette at az 25 (so the deck row stays one row from -25 to +25) the sill rises along x in an S of two
- * arcs of `sRadius`, level at both ends, to the silhouette's height, on the glareshield's matte and merged into the
- * coaming, so the black of the rail runs on down into the sill.
+ * the rail at az 25 (so the deck row stays one row from -25 to +25) the sill rises along x in an S of two arcs of
+ * `sRadius`, level at both ends, to the rail round's crown (S3; the silhouette's tangent before), on the glareshield's
+ * matte and merged into the coaming, so the black of the rail runs on down into the sill. Its section is the sill's,
+ * its top edges rounded in six chords (S3), and a fillet (`JET_RAIL_END_FILLET`) runs its inner side into the round
+ * and the dash.
  *
  * WHY ALONG X: the glass is 2 cm outboard of the rail's end. From az 25 to the glass less 2 cm there are 2.8 cm of run
  * across z for a 9 cm drop, so a round across z (or a round in plan of 0.10) does not fit; along the canopy it does,
@@ -732,44 +1250,248 @@ export function jetSillInnerAt(x: number): number {
 export const JET_RAIL_END = Object.freeze({
   startAzimuthDegrees: 25,
   sRadius: 0.15,
-  /** Stations along the S, foot to top: 8 walls. */
-  stations: 9,
-  /** The glass's inner half-width at each station's top, foot to top, by crossings on the built canopy. */
-  glassHalfWidth: Object.freeze([0.4436, 0.4407, 0.4362, 0.427, 0.4143, 0.4016, 0.3924, 0.3857, 0.3813]),
+  /**
+   * Stations along the S, foot to top: 20 walls, 10 on each arc, spaced by the arc's angle (the S3 amend), so no
+   * station turns the S's top more than 4.6 degrees and the sweep reads as one curve. At 9 stations spaced in x a corner
+   * turned 12.4; the S turns 91 degrees in all, so 16 stations cannot get under 6.1.
+   */
+  stations: 21,
+  /**
+   * The glass's inner half-width at each station's top, foot to top, by crossings on the built canopy (re-measured at
+   * the 21 stations of the S3 amend).
+   */
+  glassHalfWidth: Object.freeze([
+    0.4439, 0.4427, 0.4414, 0.44, 0.4385, 0.4353, 0.4318, 0.4279, 0.4238, 0.4193, 0.4147,
+    0.4101, 0.4057, 0.4015, 0.3976, 0.3941, 0.3908, 0.388, 0.3854, 0.3833, 0.3816,
+  ]),
 });
 
 /**
+ * The S's spine, foot to top: each station's x and the S's top there, the stations spaced by the angle along each of
+ * the S's two arcs (half of them on each, the middle station on the join).
+ */
+export function jetRailEndSpine(): { x: number; top: number }[] {
+  const e = JET_RAIL_END;
+  const { foot, arc, t } = railEndS();
+  const sweep = Math.asin(arc / e.sRadius);
+  const walls = e.stations - 1;
+  return Array.from({ length: e.stations }, (_, i) => {
+    if (i === 0) return { x: foot, top: JET_SILL.topY };
+    if (i === walls) return { x: t.x, top: t.y };
+    const s = i / walls;
+    const x = s <= 0.5 ? foot + e.sRadius * Math.sin(sweep * 2 * s) : t.x - e.sRadius * Math.sin(sweep * (2 - 2 * s));
+    return { x, top: jetRailEndTopAt(x) };
+  });
+}
+
+/**
  * The rail end's stations, foot to top: x, the S's top there, and the outer and inner edges' half-widths. The foot is
- * the sill's own section; the top is at the rail's silhouette (the round's tangent on the deck line), from az 25 out.
+ * the sill's own section; the top is at the rail round's crown, from az 25 out.
  */
 export function jetRailEndStations(): { x: number; top: number; outer: number; inner: number }[] {
   const e = JET_RAIL_END;
-  const t = jetGlareshieldSection().tangent;
-  const low = JET_SILL.topY;
-  const half = (t.y - low) / 2;
-  const arc = Math.sqrt(2 * e.sRadius * half - half * half);
-  const foot = t.x - 2 * arc;
-  const top = (x: number) => (x >= foot + arc ? t.y - (e.sRadius - Math.sqrt(e.sRadius ** 2 - (t.x - x) ** 2)) : low + (e.sRadius - Math.sqrt(e.sRadius ** 2 - (x - foot) ** 2)));
-  const startZ = (t.x - eye().forward) * Math.tan((e.startAzimuthDegrees * Math.PI) / 180);
-  const footInner = jetSillInnerAt(foot);
-  return Array.from({ length: e.stations }, (_, i) => {
-    const f = i / (e.stations - 1);
-    const x = foot + (t.x - foot) * f;
+  return jetRailEndSpine().map(({ x, top }, i) => {
     // the foot is the sill's own section, so the S leaves it level and flush
-    if (i === 0) return { x, top: low, outer: sillOuterAt(foot), inner: footInner };
-    return { x, top: i === e.stations - 1 ? t.y : top(x), outer: e.glassHalfWidth[i]! - JET_SILL.glassMargin, inner: footInner + (startZ - footInner) * f };
+    if (i === 0) return { x, top, outer: sillOuterAt(x), inner: jetRailEndInnerAt(x) };
+    return { x, top, outer: e.glassHalfWidth[i]! - JET_SILL.glassMargin, inner: jetRailEndInnerAt(x) };
   });
+}
+
+/**
+ * The S's run: its foot on the sill, its top at the rail round's crown, and the length of each arc. The crown, not the
+ * sight line's tangent 3.5 mm forward of it (S3): the round stands 0.44 mm over the tangent's height there, and ended at
+ * the tangent the S's top let the round's crown through it at the join, patches of the two surfaces. The crown is
+ * 0.2 mm under the sight line, so the end never shows over the rail's row, and aft of it the S (R 0.15) stays over the
+ * round (R 0.02).
+ */
+function railEndS(): { foot: number; arc: number; t: { x: number; y: number } } {
+  const section = jetGlareshieldSection();
+  const t = { x: section.centre.x, y: section.centre.y + JET_GLARESHIELD.radius };
+  const half = (t.y - JET_SILL.topY) / 2;
+  const arc = Math.sqrt(2 * JET_RAIL_END.sRadius * half - half * half);
+  return { foot: t.x - 2 * arc, arc, t };
+}
+
+/** The rail end's top at x: the sill's top at its foot, rising in the S of two arcs to the rail's silhouette. */
+export function jetRailEndTopAt(x: number): number {
+  const e = JET_RAIL_END;
+  const { foot, arc, t } = railEndS();
+  const low = JET_SILL.topY;
+  return x >= foot + arc ? t.y - (e.sRadius - Math.sqrt(e.sRadius ** 2 - (t.x - x) ** 2)) : low + (e.sRadius - Math.sqrt(e.sRadius ** 2 - (x - foot) ** 2));
+}
+
+/** The rail end's inner edge's half-width at x: the sill's inner edge at its foot, in straight to az 25 at its top. */
+export function jetRailEndInnerAt(x: number): number {
+  const { foot, t } = railEndS();
+  const startZ = (t.x - eye().forward) * Math.tan((JET_RAIL_END.startAzimuthDegrees * Math.PI) / 180);
+  const footInner = jetSillInnerAt(foot);
+  return footInner + ((startZ - footInner) * (x - foot)) / (t.x - foot);
 }
 
 /** The rail end's S: its slope (dy/dx) at x, 0 at its foot and at its top. */
 export function jetRailEndSlope(x: number): number {
   const e = JET_RAIL_END;
-  const t = jetGlareshieldSection().tangent;
-  const half = (t.y - JET_SILL.topY) / 2;
-  const arc = Math.sqrt(2 * e.sRadius * half - half * half);
-  const foot = t.x - 2 * arc;
+  const { foot, arc, t } = railEndS();
   const d = x >= foot + arc ? t.x - x : x - foot;
   return Math.max(0, d) / Math.sqrt(e.sRadius ** 2 - Math.max(0, d) ** 2);
+}
+
+// ---- the canopy seal ---------------------------------------------------------------------------
+
+/**
+ * THE CANOPY SEAL (Jason's F-16 wave, S4): a dark rounded strip in the glass margin along the outer edge of the rail's
+ * ends and the sills, where the deck met the world with no line (the canopy is one bubble, with no frame at its base on
+ * the type or here). `width` across, its top edges rounded at `radius`, its top at the deck's own top at every station
+ * (so the deck's silhouette keeps its rows and falls monotone as it did), its inner face `into` inside the deck's outer
+ * face, down to the rails' bottom. From the S's top at the round's crown (az 25 on the rail's row) along the S and on
+ * aft along the sill to `aftX` (az 63), past the 21:9 frame's edge. On the glareshield's matte, merged into the coaming:
+ * no draw. Its outer face stands 6 mm or more inside the glass (the PM's exception to the 2 cm for this strip alone, 4 mm
+ * the floor): the margin is 21 mm at the deck's top and widens below it.
+ */
+export const JET_SEAL = Object.freeze({ width: 0.015, radius: 0.007, into: 0.0005, aftX: 2.45 });
+
+/**
+ * The seal's section in (u, y), u out from its inner face: up the inner face, over the rounded top, down the outer face,
+ * each top edge rounded in `JET_SILL.roundSegments` chords; its top at the sills' top height and its bottom at theirs
+ * (the placement lifts the top with the S).
+ */
+export function jetSealSection(): SweptSection {
+  const s = JET_SEAL;
+  const r = JET_SILL;
+  const segments = r.roundSegments;
+  const shoulder = r.topY - s.radius;
+  const arc = (centre: number, from: number, to: number) => Array.from({ length: segments + 1 }, (_, k) => {
+    const angle = from + ((to - from) * k) / segments;
+    return { u: centre + s.radius * Math.cos(angle), y: shoulder + s.radius * Math.sin(angle) };
+  });
+  const inner = arc(s.radius, Math.PI, Math.PI / 2);
+  const outer = arc(s.width - s.radius, Math.PI / 2, 0);
+  inner[0] = { u: 0, y: shoulder };
+  inner[segments] = { u: s.radius, y: r.topY };
+  outer[0] = { u: s.width - s.radius, y: r.topY };
+  outer[segments] = { u: s.width, y: shoulder };
+  return {
+    points: [{ u: 0, y: r.bottomY }, ...inner, ...outer, { u: s.width, y: r.bottomY }],
+    rounds: [
+      { first: 1, last: 1 + segments, centre: { u: s.radius, y: shoulder } },
+      { first: 2 + segments, last: 2 + 2 * segments, centre: { u: s.width - s.radius, y: shoulder } },
+    ],
+  };
+}
+
+/**
+ * The seal's stations, aft to forward: along the sill from `aftX` through its bend (x 2.6) to the S's foot, then the S's
+ * own stations to its top: x, the deck's top there, and the seal's inner face's half-width (the deck's outer edge, less
+ * `into`), and the slope of the deck's top there (the S's; level on the sill).
+ */
+export function jetSealStations(): { x: number; top: number; inner: number; slope: number }[] {
+  const ends = jetRailEndStations();
+  const sill = [JET_SEAL.aftX, JET_SILL.bendX].map((x) => ({ x, top: JET_SILL.topY, inner: sillOuterAt(x) - JET_SEAL.into, slope: 0 }));
+  return [...sill, ...ends.map((e) => ({ x: e.x, top: e.top, inner: e.outer - JET_SEAL.into, slope: jetRailEndSlope(e.x) }))];
+}
+
+/**
+ * The groove between the deck's outer round and the seal's inner round, its bottom a cove (a ball of `cove` rolled along
+ * it, as `jetRailEndFillet` rolls its own), so the two rounds meet with no crease: the line reads as a channel, 3.5 mm
+ * deep, whose walls turn through a round, not as a V (a V is 90 to 130 degrees between two rays). From the S's top the
+ * ball starts large (the groove bridged flat, the S's top and the seal's one surface, so the deck's silhouette keeps its
+ * row there) and comes down to `cove` over `rampIn` of run. Each station's arc is taken in the station's section plane,
+ * where the S and the seal are placed, so the three meet exactly at every station; its two ends start `bury` inside the
+ * rounds (whose chords lie up to 0.09 mm inside their circles: from the circles, the cove's closing faces stood out of
+ * them as dark slivers), and its normals lean with the S's slope as the S's own do. Starboard; port is its mirror.
+ */
+export const JET_SEAL_GROOVE = Object.freeze({ cove: 0.003, rampIn: 0.035, arcSegments: 10, bury: 0.0002 });
+
+export function jetSealGroove(): JetFilletStation[] {
+  const g = JET_SEAL_GROOVE;
+  const rr = JET_SILL.radius;
+  const rs = JET_SEAL.radius;
+  const crown = jetRailEndStations().at(-1)!.x;
+  return jetSealStations().map((station) => {
+    const outer = station.inner + JET_SEAL.into;
+    // the ball's radius: large at the S's top, down to the cove over the ramp
+    const along = Math.min(1, (crown - station.x) / g.rampIn);
+    const rc = g.cove + 0.2 * (1 - along) ** 4;
+    // in the section plane, (z, y): the deck's outer round and the seal's inner round
+    const c1 = { z: outer - rr, y: station.top - rr };
+    const c2 = { z: station.inner + rs, y: station.top - rs };
+    const [a, b] = [rr + rc, rs + rc];
+    const d = Math.hypot(c2.z - c1.z, c2.y - c1.y);
+    const ex = { z: (c2.z - c1.z) / d, y: (c2.y - c1.y) / d };
+    const along1 = (a * a - b * b + d * d) / (2 * d);
+    const up = Math.sqrt(a * a - along1 * along1);
+    // the ball's centre above the line between the two rounds' centres (that line runs outboard, so up is its left)
+    const normal = { z: -ex.y, y: ex.z };
+    const o = { z: c1.z + ex.z * along1 + normal.z * up, y: c1.y + ex.y * along1 + normal.y * up };
+    const n1 = new Vector3(0, o.y - c1.y, o.z - c1.z).normalize();
+    const n2 = new Vector3(0, o.y - c2.y, o.z - c2.z).normalize();
+    const ball = new Vector3(station.x, o.y, o.z);
+    const arc: Vector3[] = [];
+    const normals: Vector3[] = [];
+    for (let k = 0; k <= g.arcSegments; k += 1) {
+      const n = slerpUnit(n1, n2, k / g.arcSegments);
+      const end = k === 0 || k === g.arcSegments;
+      arc.push(ball.subtract(n.scale(rc + (end ? g.bury : 0))));
+      // square to the S's run, as its rounds' normals are made
+      normals.push(new Vector3(-n.y * station.slope, n.y, n.z).normalize());
+    }
+    // inside both solids: under the rounds' meeting, between the deck's outer face and the seal's inner face
+    const corner = new Vector3(station.x, station.top - 0.009, outer - JET_SEAL.into * 0.7);
+    return { arc, normals, corner, onRail: true };
+  });
+}
+
+/**
+ * A round swept along x in its section's plane (the S's rounds, the seal's), at one station: its centre (y, and z out
+ * to starboard), its radius, and how its centre moves along x (the S's slope, the edge's run in plan).
+ */
+interface ShearedRound {
+  readonly cy: number;
+  readonly cz: number;
+  readonly radius: number;
+  readonly dcy: number;
+  readonly dcz: number;
+}
+
+/**
+ * The true normals on the rounds of a sweep whose sections stand in the y-z plane while its path climbs (the S): at a
+ * round's point, its radial (ny, nz) in the section, the normal is (-(ny dcy + nz dcz), ny, nz). `sweptSolid` makes the
+ * radial square to the run instead, which is exact for a tube square to its path and, on the S's 45 degree middle,
+ * leans its rounds up to 24 degrees outboard of true (a groove shaded true beside it stood 46 degrees apart in the
+ * shading). Only the rounds' vertices move their normals; positions and the flat faces are the sweep's.
+ */
+function shearRoundNormals(mesh: Mesh, stations: readonly { readonly x: number; readonly rounds: readonly ShearedRound[] }[], side: -1 | 1): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = [...mesh.getVerticesData(VertexBuffer.NormalKind)!];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const [x, y, z] = [positions[v * 3]!, positions[v * 3 + 1]!, side * positions[v * 3 + 2]!];
+    const station = stations.find((q) => Math.abs(q.x - x) < 1e-9);
+    if (!station) continue;
+    for (const round of station.rounds) {
+      const [ny, nz] = [(y - round.cy) / round.radius, (z - round.cz) / round.radius];
+      if (Math.abs(Math.hypot(ny, nz) - 1) > 1e-6 || ny < -1e-9) continue;
+      const n = new Vector3(-(ny * round.dcy + nz * round.dcz), ny, nz).normalize();
+      normals[v * 3] = n.x;
+      normals[v * 3 + 1] = n.y;
+      normals[v * 3 + 2] = side * n.z;
+      break;
+    }
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = normals;
+  data.uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  data.indices = [...mesh.getIndices()!];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+}
+
+/** A quantity's rate along x at each of a run of stations: central differences, one-sided at the ends. */
+function alongX(stations: readonly { readonly x: number }[], value: (i: number) => number): number[] {
+  return stations.map((_, i) => {
+    const [a, b] = [Math.max(0, i - 1), Math.min(stations.length - 1, i + 1)];
+    return (value(b) - value(a)) / (stations[b]!.x - stations[a]!.x);
+  });
 }
 
 /** The sill rail's outer edge's half-width at x (linear between its stations). */
@@ -778,6 +1500,206 @@ function sillOuterAt(x: number): number {
   const k = Math.max(0, Math.min(stations.length - 2, stations.findIndex((station) => station.x > x) - 1));
   const [a, b] = [stations[k]!, stations[k + 1]!];
   return a.outer + ((x - a.x) / (b.x - a.x)) * (b.outer - a.outer);
+}
+
+// ---- the rail end's fillet ------------------------------------------------------------------
+
+/**
+ * THE RAIL END'S FILLET (Jason's F-16 wave, S3: "walls and bars organic, not choppy"). Each rail end's inner side is a
+ * wall facing inboard, and the rail's aft round and the dash's face, which run across the cockpit, stop against it: from
+ * the seat an inside corner of 82 degrees from the deck line down past the frame's bottom (az 25.5 to 27.5), and one of
+ * 70 to 83 where the end stands proud of the round. A ray grid finds both; the edge walk cannot, since the solids meet
+ * without sharing an edge.
+ *
+ * A ball of `radius` rolled along the corner: at each station of the rail's profile (the dash's face from under the
+ * console's top, the cove, the round up to where the ball no longer reaches the end) its centre stands `radius` off the
+ * profile along its shading normal and `radius` off the end's inner side (its wall, or higher up its inner round), and
+ * the fillet is the arc between its two contacts in `arcSegments` chords, shaded from the profile's normal to the end's.
+ * So it meets both with their own normals. The profile is extruded across the cockpit, so the contact on it is exact;
+ * the end's is taken in its section's plane, which puts the arc's far end at most 8 degrees off the wall's tilt in plan,
+ * and the shading takes the end's own normal there.
+ *
+ * Each station's arc closes on a point 3 mm into the corner, so each span between stations is a solid whose faces
+ * other than the arc's are inside the dash, the rail or the end. The span on the dash (under the round's aft tangent)
+ * is on the dash's material and merged into it, the span on the round on the glareshield's matte and merged into the
+ * coaming: the material seam runs on where the rail and the dash already meet. No draw.
+ */
+export const JET_RAIL_END_FILLET = Object.freeze({
+  radius: 0.015,
+  arcSegments: 6,
+  /** Its foot: 5 mm under the console's top, so its end is inside the console. */
+  bottomY: 0.595,
+  /** The stations up the rail's round, from its aft tangent, this far apart. */
+  roundStepDegrees: 5,
+});
+
+/** A fillet station, starboard: its arc from the profile to the end, each point's shading normal, and its buried corner. */
+export interface JetFilletStation {
+  readonly arc: readonly Vector3[];
+  readonly normals: readonly Vector3[];
+  readonly corner: Vector3;
+  /** On the rail's round (the coaming's), not the dash's face or the cove (the board's). */
+  readonly onRail: boolean;
+}
+
+/** The starboard fillet's stations, up the corner; port is its mirror in z. */
+export function jetRailEndFillet(): JetFilletStation[] {
+  const f = JET_RAIL_END_FILLET;
+  const r = f.radius;
+  const face = jetPanelFace();
+  const coveFoot = jetCoveFoot();
+  const { foot, t } = railEndS();
+  const tilt = (jetRailEndInnerAt(t.x) - jetRailEndInnerAt(foot)) / (t.x - foot);
+  const profile: { p: { x: number; y: number }; m: { x: number; y: number }; onRail: boolean }[] = [];
+  // the dash's face and the cove: its normal turns from the face's to the round's aft one over the cove (`shadeJetCove`)
+  for (const y of [f.bottomY, coveFoot.y, coveFoot.y + (face.top.y - coveFoot.y) / 3, coveFoot.y + (2 * (face.top.y - coveFoot.y)) / 3, face.top.y]) {
+    const along = Math.max(0, Math.min(1, (face.top.y - y) / (face.top.y - coveFoot.y)));
+    const m = new Vector3(-1 + (face.normal.x + 1) * along, face.normal.y * along, 0).normalize();
+    profile.push({ p: { x: y === face.top.y ? face.top.x : jetPanelFaceX(y), y }, m: { x: m.x, y: m.y }, onRail: false });
+  }
+  // the round, up from its aft tangent (the face's top, the station above)
+  const section = jetGlareshieldSection();
+  const centre = section.centre;
+  const radius = JET_GLARESHIELD.radius;
+  for (let degrees = 180 - f.roundStepDegrees; degrees > 90; degrees -= f.roundStepDegrees) {
+    const a = (degrees * Math.PI) / 180;
+    profile.push({ p: { x: centre.x + radius * Math.cos(a), y: centre.y + radius * Math.sin(a) }, m: { x: Math.cos(a), y: Math.sin(a) }, onRail: true });
+  }
+  const stations: JetFilletStation[] = [];
+  for (const { p, m, onRail } of profile) {
+    const o = { x: p.x + r * m.x, y: p.y + r * m.y };
+    if (o.x <= foot || o.x >= t.x) break;
+    const contact = railEndContact(o, r, tilt);
+    if (contact === null) break;
+    const { oz, reach } = contact;
+    const n1 = new Vector3(m.x, m.y, 0);
+    const ball = new Vector3(o.x, o.y, oz);
+    const arc: Vector3[] = [];
+    const normals: Vector3[] = [];
+    for (let k = 0; k <= f.arcSegments; k += 1) {
+      arc.push(ball.subtract(slerpUnit(n1, reach, k / f.arcSegments).scale(r)));
+      normals.push(slerpUnit(n1, reach, k / f.arcSegments));
+    }
+    const both = n1.add(reach);
+    const corner = ball.subtract(both.scale(r / (1 + Vector3.Dot(n1, reach)))).subtract(both.normalize().scale(0.003));
+    stations.push({ arc, normals, corner, onRail });
+  }
+  return stations;
+}
+
+/**
+ * Where a ball of radius `r` whose centre is at (o.x, o.y) touches the starboard end's inner side from inboard: the
+ * centre's z, and the side's outward normal at the contact. On the true surfaces, so the fillet is tangent to them and
+ * the end's chords fall inside it: the wall (a plane, its inner edge straight in plan, `tilt`) in closed form; above
+ * the wall's top, the inner round (a circle in the section's plane swept along the S and the edge) by Newton on the
+ * contact's place along the end and round the round. Null where the ball does not reach the end (it is over its top).
+ */
+function railEndContact(o: { x: number; y: number }, r: number, tilt: number): { oz: number; reach: Vector3 } | null {
+  const rr = JET_SILL.radius;
+  const wall = new Vector3(tilt, 0, -1).normalize();
+  const oz = jetRailEndInnerAt(o.x) - r * Math.hypot(1, tilt);
+  const onWall = new Vector3(o.x, o.y, oz).subtract(wall.scale(r));
+  if (onWall.y <= jetRailEndTopAt(onWall.x) - rr) return { oz, reach: wall };
+  // the round: its point at (x, angle) and its normal there; the ball's centre that far out along it
+  const surface = (x: number, angle: number) => {
+    const [cy, cz] = [Math.cos(angle), Math.sin(angle)];
+    const point = new Vector3(x, jetRailEndTopAt(x) - rr + rr * cy, jetRailEndInnerAt(x) + rr + rr * cz);
+    const normal = new Vector3(-(tilt * cz + jetRailEndSlope(x) * cy), cy, cz).normalize();
+    return { point, normal, centre: point.add(normal.scale(r)) };
+  };
+  // start in the section's plane at the ball's x
+  const dy = o.y - (jetRailEndTopAt(o.x) - rr);
+  if (dy >= r + rr) return null;
+  let [x, angle] = [o.x, Math.atan2(-Math.sqrt((r + rr) ** 2 - dy * dy), dy)];
+  for (let step = 0; step < 20; step += 1) {
+    const at = surface(x, angle).centre;
+    const [fx, fy] = [at.x - o.x, at.y - o.y];
+    if (Math.hypot(fx, fy) < 1e-12) break;
+    const h = 1e-7;
+    const ax = surface(x + h, angle).centre;
+    const aa = surface(x, angle + h).centre;
+    const [j11, j12, j21, j22] = [(ax.x - at.x) / h, (aa.x - at.x) / h, (ax.y - at.y) / h, (aa.y - at.y) / h];
+    const det = j11 * j22 - j12 * j21;
+    x -= (j22 * fx - j12 * fy) / det;
+    angle -= (-j21 * fx + j11 * fy) / det;
+  }
+  const { centre, normal } = surface(x, angle);
+  // on the inner round's quarter (inboard and up), and the end there
+  if (Math.abs(centre.x - o.x) > 1e-9 || Math.abs(centre.y - o.y) > 1e-9 || normal.y < -1e-9 || normal.z > 1e-9) return null;
+  if (x <= railEndS().foot || x >= railEndS().t.x) return null;
+  return { oz: centre.z, reach: normal };
+}
+
+/** Spherical interpolation between two unit vectors. */
+function slerpUnit(a: Vector3, b: Vector3, t: number): Vector3 {
+  const angle = Math.acos(Math.max(-1, Math.min(1, Vector3.Dot(a, b))));
+  if (angle < 1e-6) return a.scale(1 - t).add(b.scale(t)).normalize();
+  return a.scale(Math.sin((1 - t) * angle)).add(b.scale(Math.sin(t * angle))).scale(1 / Math.sin(angle)).normalize();
+}
+
+/**
+ * One side's fillet, the stations `from` to `to` (inclusive) as solids: the arc's chords (shaded by the stations'
+ * normals), the two faces closing each span on its buried corner, and a cap at each end, all one mesh.
+ */
+function filletMesh(
+  build: AircraftBuildContext,
+  name: string,
+  stations: readonly JetFilletStation[],
+  side: -1 | 1,
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const mirror = (v: Vector3) => new Vector3(v.x, v.y, side * v.z);
+  const quads: FacetQuad[] = [];
+  const shading = new Map<string, Vector3>();
+  const at = (v: Vector3) => `${v.x},${v.y},${v.z}`;
+  for (let i = 0; i + 1 < stations.length; i += 1) {
+    const [a, b] = [stations[i]!, stations[i + 1]!];
+    const count = a.arc.length;
+    for (let k = 0; k + 1 < count; k += 1) {
+      const corners = [a.arc[k]!, a.arc[k + 1]!, b.arc[k + 1]!, b.arc[k]!].map(mirror) as [Vector3, Vector3, Vector3, Vector3];
+      const normal = mirror(a.normals[k]!.add(a.normals[k + 1]!).add(b.normals[k]!).add(b.normals[k + 1]!).normalize());
+      quads.push({ corners, normal });
+    }
+    // the two closing faces, each facing away from the other contact
+    for (const [edge, other] of [[0, count - 1], [count - 1, 0]] as const) {
+      const corners = [a.arc[edge]!, a.corner, b.corner, b.arc[edge]!].map(mirror) as [Vector3, Vector3, Vector3, Vector3];
+      let normal = Vector3.Cross(corners[1].subtract(corners[0]), corners[3].subtract(corners[0])).normalize();
+      if (Vector3.Dot(normal, mirror(a.arc[other]!).subtract(corners[0])) > 0) normal = normal.scale(-1);
+      quads.push({ corners, normal });
+    }
+  }
+  for (const [end, towards] of [[0, 1], [stations.length - 1, stations.length - 2]] as const) {
+    const station = stations[end]!;
+    const outward = mirror(station.corner.subtract(stations[towards]!.corner).normalize());
+    for (let k = 0; k + 1 < station.arc.length; k += 1) {
+      const corners = [station.corner, station.arc[k]!, station.arc[k + 1]!, station.arc[k + 1]!].map(mirror) as [Vector3, Vector3, Vector3, Vector3];
+      quads.push({ corners, normal: outward });
+    }
+  }
+  const mesh = facetMesh(build, name, quads, material, parent);
+  // the arc's chords take the arc's normals at their corners; the closing faces and the caps stay flat
+  for (const station of stations) station.arc.forEach((point, k) => shading.set(at(mirror(point)), mirror(station.normals[k]!)));
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+  const normals = [...mesh.getVerticesData(VertexBuffer.NormalKind)!];
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const smooth = shading.get(`${positions[v * 3]},${positions[v * 3 + 1]},${positions[v * 3 + 2]}`);
+    const flat = new Vector3(normals[v * 3]!, normals[v * 3 + 1]!, normals[v * 3 + 2]!);
+    // only on the arc's own faces: a closing face or a cap shares the arc's end points and keeps its flat normal
+    if (smooth && Vector3.Dot(smooth, flat) > 0.5) {
+      normals[v * 3] = smooth.x;
+      normals[v * 3 + 1] = smooth.y;
+      normals[v * 3 + 2] = smooth.z;
+    }
+  }
+  const data = new VertexData();
+  data.positions = [...positions];
+  data.normals = normals;
+  data.uvs = [...mesh.getVerticesData(VertexBuffer.UVKind)!];
+  data.indices = [...mesh.getIndices()!];
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
 }
 
 // ---- the builder ----------------------------------------------------------------------------
@@ -790,7 +1712,8 @@ export interface JetCockpit {
   readonly board: Mesh;
   /**
    * The cockpit-only meshes, unconfigured: the caller marks them (`configureCockpitOnlyParts`). The HUD
-   * frame, its housing, its combiner's panes, the MFDs' frames, their rims, the MFD screens and the sills.
+   * frame, its housing, its combiner's panes, the MFDs' frames, their rims (the ICP's with them), the MFD screens, the
+   * sills, the ICP and its DED.
    */
   readonly parts: readonly AbstractMesh[];
   /** Whether the MFDs are drawing pages: false wherever there is no 2D canvas (every Node test). */
@@ -833,31 +1756,109 @@ export function buildJetCockpit(
   // The rail's section, extruded across the full width; then the plan is narrowed forward
   // of the board's back. Local space is body space here: the mesh hangs from the root
   // with no transform of its own.
-  const rail = solidPlate(build, "jet-glare-shield-rail", jetGlareshieldSection().outline, g.nearHalfWidth * 2, glare, root);
-  sculptSolid(rail, (point) => new Vector3(point.x, point.y, (point.z * jetCoamingHalfWidth(point.x)) / g.nearHalfWidth));
-  // the round shades as a curve (step 3): flat, its eight chords read as bands about 20 px tall
+  // Swept across the cockpit (S3), its outboard ends rolled over a round (`JET_RAIL_SIDES`), the plan narrowed in the
+  // placement: the whole section between the rounded ends, the round shading as a curve (step 3: flat, its eight chords
+  // read as bands about 20 px tall), its points listed from the hood's tangent round to the aft one, which the outline
+  // starts on; each rounded end shaded as the section rolled over its round (`rollRailSideNormals`: the sweep's own rule,
+  // the round's radial made square to the run, stops being a normal where the run turns out to the side).
   const section = jetGlareshieldSection();
-  smoothRoundNormals(rail, section.round, section.centre);
+  const outline = section.outline;
+  const onRound = (p: { x: number; y: number }) => section.round.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 1e-9);
+  const start = outline.findIndex((p, j) => onRound(p) && !onRound(outline[(j - 1 + outline.length) % outline.length]!));
+  const order = outline.map((_, j) => (start + j) % outline.length);
+  const roundCount = order.filter((j) => onRound(outline[j]!)).length;
+  const points = order.map((j) => ({ u: outline[j]!.x, y: outline[j]!.y }));
+  const railStations = jetRailStations();
+  const insets = railStations.map(({ inset }) => jetRailOutlineInset(inset));
+  const railPart = (name: string, from: number, to: number, rounds: SweptSection["rounds"]) => sweptSolid(
+    build,
+    name,
+    { points, rounds },
+    to - from + 1,
+    (i, point) => {
+      // an outline point, inset at this station (or the section's middle, which the sweep places to face its caps), its
+      // z scaled by the plan at its own x: the same scale at every station, so the rounded end's thin outer spans cannot
+      // cross over where the plan starts narrowing (x 2.93, inside the rounded ends)
+      const j = outline.findIndex((q) => q.x === point.u && q.y === point.y);
+      const at = j < 0 ? { x: point.u, y: point.y } : insets[from + i]![j]!;
+      return new Vector3(at.x, at.y, (railStations[from + i]!.z * jetCoamingHalfWidth(point.u)) / g.nearHalfWidth);
+    },
+    (direction) => new Vector3(direction.u, direction.y, 0),
+    glare,
+    root,
+  );
+  const ends = JET_RAIL_SIDES.endSegments;
+  const rail = railPart("jet-glare-shield-rail", ends, ends + 1, [{ first: 0, last: roundCount - 1, centre: { u: section.centre.x, y: section.centre.y } }]);
+  const railSides = [railPart("jet-glare-shield-side-port", 0, ends, []), railPart("jet-glare-shield-side-starboard", ends + 1, 2 * ends + 1, [])];
+  railSides.forEach((part, k) => rollRailSideNormals(part, k === 0 ? 0 : ends + 1, k === 0 ? -1 : 1));
   // THE RAIL'S ENDS (step 5), each sweeping aft and down into its sill, merged with it on the glareshield's matte
-  const ends = jetRailEndStations();
-  const coamingParts: AbstractMesh[] = [rail];
+  const endStations = jetRailEndStations();
+  const coamingParts: AbstractMesh[] = [rail, ...railSides];
+  const fillet = jetRailEndFillet();
+  const onRail = fillet.findIndex((station) => station.onRail);
+  if (onRail < 1) throw new RangeError("the F-16's rail-end fillet reaches neither the dash nor the round");
   for (const side of [-1, 1] as const) {
     const inset = (station: { outer: number; inner: number }, u: number) => (u <= JET_SILL.width / 2 ? u : u - (JET_SILL.width - (station.outer - station.inner)));
-    coamingParts.push(sweptSolid(
+    const label = side < 0 ? "port" : "starboard";
+    const end = sweptSolid(
       build,
-      `jet-glare-shield-end-${side < 0 ? "port" : "starboard"}`,
+      `jet-glare-shield-end-${label}`,
       jetSillSection(),
-      ends.length,
+      endStations.length,
       (i, point) => new Vector3(
-        ends[i]!.x,
-        point.y <= JET_SILL.bottomY ? point.y : point.y + (ends[i]!.top - JET_SILL.topY),
-        side * (ends[i]!.outer - inset(ends[i]!, point.u)),
+        endStations[i]!.x,
+        point.y <= JET_SILL.bottomY ? point.y : point.y + (endStations[i]!.top - JET_SILL.topY),
+        side * (endStations[i]!.outer - inset(endStations[i]!, point.u)),
       ),
       (direction) => new Vector3(0, direction.y, -side * direction.u),
       glare,
       root,
-      { smoothAlong: true, tangent: (i) => new Vector3(1, jetRailEndSlope(ends[i]!.x), 0) },
-    ));
+      { smoothAlong: true, tangent: (i) => new Vector3(1, jetRailEndSlope(endStations[i]!.x), 0) },
+    );
+    // its rounds shaded true on the sloping S (S4): the outer round's centre follows the outer edge, the inner's the inner
+    const rr = JET_SILL.radius;
+    const outerRun = alongX(endStations, (i) => endStations[i]!.outer);
+    const innerRun = alongX(endStations, (i) => endStations[i]!.inner);
+    shearRoundNormals(end, endStations.map((q, i) => ({
+      x: q.x,
+      rounds: [
+        { cy: q.top - rr, cz: q.outer - rr, radius: rr, dcy: jetRailEndSlope(q.x), dcz: outerRun[i]! },
+        { cy: q.top - rr, cz: q.inner + rr, radius: rr, dcy: jetRailEndSlope(q.x), dcz: innerRun[i]! },
+      ],
+    })), side);
+    coamingParts.push(end);
+    // the fillet's span up the round, where the end stands against it (S3)
+    coamingParts.push(filletMesh(build, `jet-glare-shield-fillet-${label}`, fillet.slice(onRail - 1), side, glare, root));
+  }
+  // THE CANOPY SEAL (S4), each side along the S and the sill in the glass margin, on the matte with the rest
+  const seal = jetSealStations();
+  for (const side of [-1, 1] as const) {
+    const strip = sweptSolid(
+      build,
+      `jet-glare-shield-seal-${side < 0 ? "port" : "starboard"}`,
+      jetSealSection(),
+      seal.length,
+      (i, point) => new Vector3(
+        seal[i]!.x,
+        point.y <= JET_SILL.bottomY ? point.y : point.y + (seal[i]!.top - JET_SILL.topY),
+        side * (seal[i]!.inner + point.u),
+      ),
+      (direction) => new Vector3(0, direction.y, side * direction.u),
+      glare,
+      root,
+      { smoothAlong: true, tangent: (i) => new Vector3(1, seal[i]!.slope, 0) },
+    );
+    const rs = JET_SEAL.radius;
+    const run = alongX(seal, (i) => seal[i]!.inner);
+    shearRoundNormals(strip, seal.map((q, i) => ({
+      x: q.x,
+      rounds: [
+        { cy: q.top - rs, cz: q.inner + rs, radius: rs, dcy: q.slope, dcz: run[i]! },
+        { cy: q.top - rs, cz: q.inner + JET_SEAL.width - rs, radius: rs, dcy: q.slope, dcz: run[i]! },
+      ],
+    })), side);
+    coamingParts.push(strip);
+    coamingParts.push(filletMesh(build, `jet-glare-shield-seal-groove-${side < 0 ? "port" : "starboard"}`, jetSealGroove(), side, glare, root));
   }
   for (const part of coamingParts) part.metadata = { ...part.metadata, cockpitInterior: true, castsShadow: false };
   const coaming = build.mergeStatic("jet-glare-shield", coamingParts, root);
@@ -869,9 +1870,20 @@ export function buildJetCockpit(
   const faceHalfWidth = g.nearHalfWidth - p.sideInset;
   const pm = JET_PANEL_MATERIAL;
   const panelMaterial = build.material("jet-panel", pm.albedo, { roughness: pm.roughness, metallic: pm.metallic });
-  const board = solidPlate(build, "jet-instrument-panel", jetPanelSection(), faceHalfWidth * 2, panelMaterial, root);
-  sculptSolid(board, (point) => new Vector3(point.x, point.y, (point.z * (jetCoamingHalfWidth(point.x) - p.sideInset)) / faceHalfWidth));
-  board.metadata = { ...board.metadata, cockpitInterior: true };
+  const plate = solidPlate(build, "jet-instrument-panel-board", jetPanelSection(), faceHalfWidth * 2, panelMaterial, root);
+  sculptSolid(plate, (point) => new Vector3(point.x, point.y, (point.z * (jetCoamingHalfWidth(point.x) - p.sideInset)) / faceHalfWidth));
+  // the cove: the face's top strip shaded from the round's aft normal to the face's
+  shadeJetCove(plate);
+  // the fillet's span on the dash's face and the cove, each side, where the ends stand against it (S3), and the ICP's
+  // recessed floor on the dash's material (S1)
+  const icp = jetIcpFacets();
+  const boardParts: AbstractMesh[] = [
+    plate,
+    ...([-1, 1] as const).map((side) => filletMesh(build, `jet-instrument-panel-fillet-${side < 0 ? "port" : "starboard"}`, fillet.slice(0, onRail), side, panelMaterial, root)),
+    shadedFacetMesh(build, "jet-instrument-panel-icp-floor", icp.floor, panelMaterial, root),
+  ];
+  for (const part of boardParts) part.metadata = { ...part.metadata, cockpitInterior: true };
+  const board = build.mergeStatic("jet-instrument-panel", boardParts, root);
 
   const f = JET_HUD_FRAME;
   const footY = jetHudFrameFootY();
@@ -944,6 +1956,13 @@ export function buildJetCockpit(
   }
   const screensMesh = build.mergeStatic(JET_DISPLAYS.screensMesh, screens, root);
   const framesMesh = build.mergeStatic("jet-mfd-frames", frames, root);
+  // THE ICP (S1): its framed panel, lip, keys and rockers one mesh on the frames' grey (its floor is the board's), its rim
+  // with the MFDs' rims, the DED on the rims' material
+  const icpMesh = build.mergeStatic("jet-icp", [facetMesh(build, "jet-icp-frame", icp.frame, frameMaterial, root), shadedFacetMesh(build, "jet-icp-body", icp.body, frameMaterial, root)], root);
+  rims.push(facetMesh(build, "jet-icp-rim", icp.rim, materials.rim, root));
+  // the DED: its page on a display-class material of its own (the S1 amend)
+  const dedMesh = shadedFacetMesh(build, "jet-icp-ded", icp.ded, dedMaterial(build), root);
+  mapDedFace(dedMesh);
   const rimsMesh = build.mergeStatic("jet-mfd-rims", rims, root);
 
   // THE SILLS, each side a rail swept along the glass and a console inboard of it, all four one mesh on the dash's
@@ -995,7 +2014,7 @@ export function buildJetCockpit(
   return {
     coaming,
     board,
-    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh, sillsMesh],
+    parts: [frame, housing, combiner, framesMesh, rimsMesh, screensMesh, sillsMesh, icpMesh, dedMesh],
     displaysLive: atlas !== null,
     invalidateDisplays() {
       redraw.invalidate();
