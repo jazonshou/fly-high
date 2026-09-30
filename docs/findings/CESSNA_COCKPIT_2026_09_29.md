@@ -1027,8 +1027,50 @@ nothing. It is gone, and the half turn is mutated in the page itself.
 Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
 digests are re-pinned on its line: seam 0d9cc1fc, taper 412d75a4.
 
-**Owed on the GPU:**
-- Gate A for the two new or changed materials: the yokes' matte, and the card on
-  the display material;
-- a frame, with the yokes' luma against the board's;
-- 2x crops of the yokes, the compass and the header's corner.
+**The GPU slot** (the PM's grant, 2026-10-01).
+- **Gate A:** 8/8 pass. `trainer-yoke` is 13/16 in the rig, 14 live. The card now
+  leads `trainer-display` at 14/16 in the rig, 15 live.
+- **Two frames:** the trainer's air pose at 1080p by day. Both have HUD COCKPIT, the
+  eye and the lens asserted, 19 cockpit-only meshes, no page errors, and the same
+  two resource 404s as every earlier frame.
+- **The yokes' luma against the bare board's (27.6):**
+
+| | horns | the column's collar patch |
+|---|---|---|
+| on the fittings' glossy dark (7be1ef7) | 1.6 to 1.9x | 2.9x |
+| on the board's own colour, matte (9114774) | 1.10 and 1.16x | 2.51x |
+| on 1.2 times the board's colour (the one tune the slot allows) | **1.23 and 1.30x** | 2.72x |
+
+  - The horns are in the PM's 1.2 to 1.4. Their sides read 1.04 to 1.07 times the
+    board and their caps 3.6 times.
+  - The collar's patch is mostly the column's top, which faces the sky: 3.53
+    times. The collar ring's sides read 2.17 times.
+  - A matte surface's luma here follows which way it faces, so one shared colour
+    cannot put the horns and the column in the band together. The option, put to the
+    PM: the columns and collars on a darker matte of their own, one more draw.
+- **The compass**, at headings 163 and 161: the lubber line stands between S (left)
+  and 15 (right), 11 to 13 degrees from 15, where those headings fall on a card
+  that reads backwards. The card is legible at 2x.
+  - Through the window's right side, the tunnel's wall shows at the 24 degree angle
+    it is seen at.
+- **The header's port corner** is a curve at 2x; its straight runs are gone.
+
+## Rebased again, onto Fix-Cockpits d86e6b3
+
+d86e6b3 has the Global's cockpit refinements, on top of 2917372 (the performance
+work) and 7fc2280.
+
+**The conflicts.** Both sides were kept in each.
+- **`cockpitPrimitives.ts`:** the Global appended `smoothSheet`, `roundedBox` and
+  `roundedCylinder` where S3 appended `sweptTube`. The file is resolved as the
+  Global's, with exactly S3's appended lines after it (S3's change is a pure append).
+- **The display pages:** the Global's `standby` page, beside the 747's `clock` and the
+  trainer's pages.
+- **KIT_SIZE and the cockpit frames script:** the Global's 9 with the trainer's own
+  count at each step.
+
+**Re-measured at the tip.**
+- The trainer's tests passed at every step that conflicted.
+- The trainer's 70 meshes are bit-identical to before this rebase, and the census is
+  identical (bare board 195,128 px).
+- 218 trainer-touching tests pass; tsc and eslint are clean.
