@@ -12,7 +12,8 @@ fuselage's triangles times the albedo's width (`tests/render.aircraft-paint-reso
 | airframe | albedo | texels / m along the body |
 |---|---|---|
 | trainer, before | 64² procedural | 9.1 |
-| trainer, now | 256² procedural | 36.5 |
+| trainer, 2026-09-23 | 256² procedural | 36.5 |
+| trainer, 2026-09-30 | 512² procedural | 73.0 |
 | Global (bizjet) | 1024 × 256 livery | 29.7 |
 | 747 (airliner) | 2048 × 512 livery | 33.4 |
 | jet | 64² procedural | 5.5 |
@@ -142,3 +143,117 @@ Mutations, each run, each caught:
 | `noiseLattice` removed | the panel-line pin, the trainer's hash |
 | the default ramp moved to 0.056 | the other airframes' hashes, the trainer's legacy-64 hash |
 | legacy noise routed through the lattice | the same four |
+
+## 512, and the panel lines drawn narrow (2026-09-30)
+
+Branch `jazonshou/trainer-paint-512`, the PM's option A after a GPU survey of the 256 paint. Every edge on the
+skin drew about a texel wide however sharp its ramp, so the widths were the texture's, not the renderer's.
+
+**Take the frame's scale from the frame.** The survey first turned px into cm with a 75° horizontal lens at the
+nominal distance. That was wrong on both counts:
+- The capture parks the camera 6 m from the fuselage's axis, not from its skin.
+- The chase lens is 62.4° horizontal (the chase frame records `cameraFovDegrees`), not 75°: 75° is the cockpit's.
+
+The panel lines give the scale directly. Abeam at 6 m and 1080p, the lines at u 0.39, 0.63 and 0.84 sit at 531,
+1001 and 1411 px, spaced in the map's 0.24 : 0.21. That is 1958 px per unit of u: 283.7 px/m, or 3.52 mm/px on
+the skin. At 10 m it is about 1150 px per u, 6.0 mm/px. (The 0.011 m/px quoted above for 10 m does not match
+this frame's lines.) The lens-based figures were 36 % wide. The widths in px were right.
+
+The 256 paint, abeam at 6 m, 1080p, render scale 0.85, in px from the frames and in cm from the lines:
+
+| edge | 6 m | 10 m | on the skin |
+|---|---|---|---|
+| livery, 10-90 % | 8.3 | 5.0 | 2.9 cm |
+| a panel line's flank, 10-90 % | 11-12 | | 4.2 cm |
+| the door line at half depth | 28 | 17 | 9.8 cm |
+
+- **The renderer adds almost nothing to the line.** The CPU map's door line is 3.7 texels at half depth. At the
+  frame's 7.65 px a texel that predicts 28.6 px at 6 m and 16.7 px at 10 m, as measured.
+- **A render model agrees.** It uses the albedo, the cavity and the groove's normal, resampled and blurred, and
+  fits the frame's profile to 4.9 levels rms with a blur of σ 1.4 px.
+- **The livery's width splits into a texel term and a screen blur.** From the two distances: 1.06 texels, and
+  2.1 px of screen blur at 10-90 %.
+
+The dials, all trainer-only (`src/render/webgpu/aircraft/trainerVisual.ts`):
+
+- **Edge 512.** 73.0 texels a metre along the body.
+- **`liveryEdge: [0.069, 0.071]`.** A ramp of one texel at 512, as `[0.068, 0.072]` was at 256.
+- **`panelEdge: [0.0006, 0.0036]`,** a new recipe dial (default `[0.004, 0.012]`).
+  - It sets the lines' smoothstep. The door seam takes three quarters of it, as its default does.
+  - The height map's groove is built from the same line, so the groove's shading narrows with it.
+  - Omitted, the synthesis is byte-identical.
+
+**The line's width is set by its gate, not by its texel count.** The PM asked for a line about 4 cm wide at half
+depth, three texels at 512, with a band of 9 px or less abeam at 6 m. At the frame's true scale, 9 px is 3.2 cm,
+and three texels render about 10.2 px at the door. So the line is 2.9 cm, two texels.
+
+The line beads below two texels: its darkness and width vary row to row as it crosses the texels.
+
+| body paint | door line at half depth | px at 6 m (predicted) | row-to-row darkness sd | width sd |
+|---|---|---|---|---|
+| 256, default line | 3.7 texels (9.9 cm) | 28 (measured) | 1.9 at the door, 3.9 at u 0.39 | 0.13-0.19 texel |
+| 512, `[0.0009, 0.0049]` | 2.7 texels (3.6 cm) | 10.2 | 1.8 / 4.5 | 0.13-0.14 |
+| 512, `[0.0006, 0.0036]`, shipped | 1.9 texels (2.7 cm) | 7.4 | 2.7 / 5.0 | 0.11-0.14 |
+| 512, `[0.0005, 0.0025]` | 1.5 texels (2.0 cm) | 5.5 | 6.2 / 7.1 | 0.26-0.27 |
+
+## Measured on the 512 maps
+
+- **Panel lines at half depth.**
+  - u 0.39: median 2.8 cm, worst 3.2.
+  - The door (u 0.63): 2.7 cm, worst 2.9.
+  - The default: 10.7 and 9.9 cm.
+- **Grooves.** The span where the normal leans more than 0.1 along u is 5.5 cm (worst 6.8), against 16.4 cm for
+  the default. The floor is the line plus a texel either side, since a central difference leans the texel beyond
+  the slope.
+  - The grooves' peak tilt is unchanged: 19° on the lines, 26° at the door.
+  - With the default line at 512 the groove's slope halves (tilt p99 13.9° against 21.2° at 256); the narrower
+    line restores it.
+- **Livery edge, 10-90 % along the body.** Median 1.7 cm, worst 2.2 (4 cm at 256).
+- **The livery's diagonal is straight.** Each row's half-way crossing, read linearly between texels, sits within
+  0.16 texel of a fitted line (rms 0.115). That is 0.2 cm on the skin, against 0.4 cm at 256.
+  - A ramp of a tenth of a texel snaps rows up to 0.46 texel off the line: a staircase.
+  - The PM's ramp is the sharpest that stays straight.
+- **The door line, row to row.** It moves at most 0.07 texel.
+- **Normal-map tilt of the body paint.** p50 0.3°, p90 4.7°, p99 19.0°, against 0.7° / 11.6° / 21.2° at 256. The
+  p90 falls because the grooves, which carry the tilt, cover a third of the area they did.
+
+## Cost at 512
+
+- **GPU memory: +9 MiB.** The trainer's three materials go from 3.0 to 12.0 MiB, three RGBA8 maps each with
+  full mips.
+- **Build time: +144 ms.** The three paints take 47.8 ms at 256 and 192.0 ms at 512 (Node, median of 7, host
+  load 3.4). The PM's limit is +0.2 s.
+
+## The frames at 512
+
+Pending the PM's GPU grant: abeam at 6 m and 10 m and the chase, at a matched render scale, against the 256
+frames. The gates are:
+- livery 4.8 px or less at 6 m and 3.3 px or less at 10 m, at render scale 0.85, with the diagonal straight
+  within 0.2 texel;
+- a panel line's flanks 6.5 px or less, and its band 9 px or less, at 6 m.
+
+The livery gates were first 4.5 and 3 px. From the split above the livery predicts 4.4-4.6 px at 6 m and
+3.1-3.2 px at 10 m, since the screen's 2.1 px is a floor no paint can remove. The PM moved the gates to that
+floor.
+
+## Pins added (`tests/render.aircraft-paint-resolution.test.ts`)
+
+- **Density.** 70 texels a metre or more.
+- **Livery edge.** 2.5 cm or less.
+- **The livery diagonal.** Straight within 0.2 texel.
+- **Panel lines at u 0.39 and 0.63.**
+  - Half depth: median 3.2 cm or less, worst 3.6.
+  - Groove: median 6 cm or less, worst 7.5.
+- **`withoutDials`** removes `panelEdge` too, so the legacy-64 hashes still hold.
+
+Mutations, each run, each caught:
+
+| mutation | caught by |
+|---|---|
+| the seam ignores `panelEdge` | the door line's width pin, the trainer's hash |
+| the groove keeps the default line | both line pins, the trainer's hash |
+| `panelEdge` ignored | both line pins, the trainer's hash |
+| the default line moved to 0.0121 | the other airframes' hashes, the trainer's legacy-64 hash |
+| the livery ramp a tenth of a texel | the diagonal pin, the trainer's hash |
+| the edge back to 256 | density, livery edge, diagonal, both line pins, the hash |
+| the three-texel line, `[0.0009, 0.0049]` | both line pins, the trainer's hash |

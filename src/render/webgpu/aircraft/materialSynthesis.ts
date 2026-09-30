@@ -82,6 +82,16 @@ export interface AircraftPaintRecipe {
    * design, which no texel count sharpens. Omitted, byte-identical.
    */
   readonly liveryEdge?: readonly [number, number];
+  /**
+   * The panel lines' profile, as the smoothstep's two ends in UV distance from
+   * the line (default [0.004, 0.012]): dark to `[0]`, clear from `[1]`, so the
+   * line is `[0] + [1]` wide at half depth. The seam on the door's line takes
+   * three quarters of it, as its default [0.003, 0.009] is of the default. The
+   * groove in the height map follows the line, so the relief narrows with it.
+   * The default is 0.016 of the map at half depth, 11 cm along the trainer's
+   * 6.9 m body. Omitted, byte-identical.
+   */
+  readonly panelEdge?: readonly [number, number];
 }
 
 export interface AircraftSurfaceSynthesis {
@@ -233,6 +243,9 @@ export function synthesizeAircraftSurface(
     throw new RangeError(`Aircraft paint noiseLattice must be a power of two >= 8, got ${lattice}`);
   }
   const [liveryInner, liveryOuter] = recipe.liveryEdge ?? [0.055, 0.085];
+  const [panelInner, panelOuter] = recipe.panelEdge ?? [0.004, 0.012];
+  // the seam's own literals when the dial is omitted, so the default is byte for byte what it was
+  const [seamInner, seamOuter] = recipe.panelEdge ? [0.75 * recipe.panelEdge[0], 0.75 * recipe.panelEdge[1]] : [0.003, 0.009];
   // A rivet dome's half-sizes along and across its line, in UV: about a lattice
   // cell across, as a rivet reads at the lattice's own size.
   const rivetAlong = lattice === undefined ? 0 : 0.6 / lattice;
@@ -262,8 +275,8 @@ export function synthesizeAircraftSurface(
         distanceToNearest(warpedU, verticalPanels),
         distanceToNearest(warpedV, horizontalPanels),
       );
-      const panelLine = (1 - smoothstep(0.004, 0.012, panelDistance)) * panelStrength;
-      const seam = (1 - smoothstep(0.003, 0.009, Math.abs(warpedU - 0.63))) * panelStrength;
+      const panelLine = (1 - smoothstep(panelInner, panelOuter, panelDistance)) * panelStrength;
+      const seam = (1 - smoothstep(seamInner, seamOuter, Math.abs(warpedU - 0.63))) * panelStrength;
       const nearVerticalPanel = distanceToNearest(warpedU, verticalPanels) < 0.012;
       const nearHorizontalPanel = distanceToNearest(warpedV, horizontalPanels) < 0.012;
       const rivetPhase = nearVerticalPanel ? fract(v * 30) : fract(u * 30);

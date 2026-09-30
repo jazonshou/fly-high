@@ -53,7 +53,7 @@ interface TrainerPropellerRig {
  * clearance at the spinner.
  */
 /**
- * The trainer's paint maps are 256 texels on a side, not the shared 64
+ * The trainer's paint maps are 512 texels on a side, not the shared 64
  * (docs/findings/TRAINER_SKIN_RESOLUTION_2026_09_23.md).
  *
  * The loft lays one map over the WHOLE 6.9 m fuselage and its full
@@ -61,27 +61,36 @@ interface TrainerPropellerRig {
  * 9.3 texels a metre along the body and 12.6 along the span, against 30.6 on
  * the Global's livery and 34.1 on the 747's. A 10 m chase then magnifies a
  * texel to 6.5 px at 720p, so the panel lines and rivets smear and no mip or
- * bias can help. At 256: 37 along the body, 78 around it, 50 along the span,
- * for 1 MiB of GPU memory per paint material and about 10-13 ms of synthesis
+ * bias can help. 256 fixed that, but an edge still drew about a texel wide on
+ * the skin however sharp its ramp: the livery 2.9 cm, 8 px abeam at 6 m. At
+ * 512: 74 along the body, 156 around it, 100 along the span, for 4 MiB of GPU
+ * memory per paint material (three of them) and about 45 ms more synthesis
  * each at build.
  */
-const TRAINER_PAINT_EDGE = 256;
+const TRAINER_PAINT_EDGE = 512;
 
 /**
- * What 256 texels need from the recipe, both of them trainer-only dials:
+ * What the trainer's texel count needs from the recipe, all trainer-only dials:
  *
  * - `noiseLattice: 64`: the synthesis indexed its noise in texels, so at 256
  *   it drew another design. The panel lines' 8-texel jitter blocks stepped
  *   each line sideways every 10 cm (a "totem pole" at the cabin door), and the
- *   rivets became dashes across the lines. On a 64-cell lattice, 256 draws the
- *   64-texel design, sharper.
- * - `liveryEdge: [0.068, 0.072]`: the green band's default edge is a 0.21 m
- *   ramp, soft by design, which no texel count sharpens. 0.004 of the length
- *   is 2.8 cm, about one texel at 256.
+ *   rivets became dashes across the lines. On a 64-cell lattice, any edge
+ *   draws the 64-texel design, sharper.
+ * - `liveryEdge: [0.069, 0.071]`: the green band's default edge is a 0.21 m
+ *   ramp, soft by design, which no texel count sharpens. 0.002 of the length
+ *   is 1.4 cm, about one texel at 512.
+ * - `panelEdge: [0.0006, 0.0036]`: the default line is 0.016 of the map at
+ *   half depth, 11 cm along the body: 28 px abeam at 6 m, heavy. This one is
+ *   0.0042, 2.9 cm or two texels at 512, about 7.5 px at 6 m, over a 0.003
+ *   (2 cm) flank. Two texels is as narrow as it goes before the line beads,
+ *   its darkness varying row to row as it crosses the texels. The groove in
+ *   the height map, and so its shading, narrows with it.
  */
 const TRAINER_PAINT_DIALS = {
   noiseLattice: 64,
-  liveryEdge: [0.068, 0.072],
+  liveryEdge: [0.069, 0.071],
+  panelEdge: [0.0006, 0.0036],
 } as const;
 
 export function createTrainer(scene: Scene): AircraftVisual {

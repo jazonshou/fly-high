@@ -20,16 +20,18 @@ import type { AircraftKind } from "../src/sim";
  *
  * The trainer read blurry at a 10 m chase. Its paint had no livery image: one
  * 64-texel map was laid over the whole 6.9 m fuselage, 9.3 texels a metre
- * against the Global's 30.6. It now paints at 256. The synthesis's noise was
+ * against the Global's 30.6. It painted at 256, and now at 512, where an edge
+ * drawn a texel wide is half as wide on the skin. The synthesis's noise was
  * indexed in TEXELS, so at 256 it drew a different design: the panel lines'
  * 8-texel jitter blocks stepped the lines sideways every 10 cm (the "totem
  * pole" at the cabin door). The trainer's recipes therefore draw their noise
  * on a 64-cell UV lattice (`noiseLattice`). Its livery band's edge was also
  * soft by design, a 0.21 m ramp, which no texel count sharpens, so it is
- * narrowed to 3 cm (`liveryEdge`).
+ * narrowed to a texel (`liveryEdge`), and its panel lines from 10 cm at half
+ * depth to 3 cm, grooves with them (`panelEdge`).
  *
  * The other airframes' paint is pinned byte for byte, and so is the trainer's
- * own 64-texel paint with both dials removed.
+ * own 64-texel paint with all three dials removed.
  */
 
 const fixtures: { engine: NullEngine; scene: Scene }[] = [];
@@ -85,7 +87,7 @@ function paintSet(kind: AircraftKind): Record<string, string> {
 
 /**
  * Taken on b4f89bd, before the trainer's dials existed, for every airframe but
- * the trainer; the trainer's are its 256-texel paint with the dials.
+ * the trainer; the trainer's are its 512-texel paint with the dials.
  */
 const PAINT_SETS: Record<AircraftKind, Record<string, string>> = {
   jet: { "jet-body@64": "012025a1c45afef0", "jet-underside@64": "ec454eb9f37de2f6", "jet-accent@64": "d5c363fbfcba8fec" },
@@ -97,9 +99,9 @@ const PAINT_SETS: Record<AircraftKind, Record<string, string>> = {
     "airliner-accent@64": "164f1d6ee91b2ab3",
   },
   trainer: {
-    "trainer-body@256": "427a4e3a4a4af238",
-    "trainer-cowl@256": "d5bd6010227ab8ef",
-    "trainer-accent@256": "e266ec5ace4e9d0f",
+    "trainer-body@512": "62c3373a9b97a9e7",
+    "trainer-cowl@512": "42e6103adf652966",
+    "trainer-accent@512": "e087e480f26ca041",
   },
 };
 
@@ -114,6 +116,7 @@ function withoutDials(recipe: AircraftPaintRecipe): AircraftPaintRecipe {
   const legacy: { -readonly [K in keyof AircraftPaintRecipe]: AircraftPaintRecipe[K] } = { ...recipe };
   delete legacy.noiseLattice;
   delete legacy.liveryEdge;
+  delete legacy.panelEdge;
   return legacy;
 }
 
@@ -205,6 +208,94 @@ function liveryEdgeTexels(recipe: AircraftPaintRecipe, edge: number): number[] {
   return widths;
 }
 
+/**
+ * The livery band's trailing edge per row of the trainer body's albedo, where
+ * the texels cross half way (read linearly between them, as the sampler does),
+ * less a straight line fitted through them: in texels along the row. A ramp
+ * sharper than a texel draws the diagonal as a staircase, each row's edge
+ * snapped towards a texel boundary.
+ */
+function liveryEdgeResiduals(recipe: AircraftPaintRecipe, edge: number): number[] {
+  const albedo = synthesizeAircraftSurface(recipe, edge).albedoMips[0]!;
+  const greenness = (x: number, y: number) => {
+    const out = (y * edge + (((x % edge) + edge) % edge)) * 4;
+    return albedo[out + 1]! - albedo[out + 2]!;
+  };
+  const rows: number[] = [];
+  const crossings: number[] = [];
+  // The rows `liveryEdgeTexels` reads.
+  for (let y = Math.round(edge * 0.28); y <= Math.round(edge * 0.42); y += 1) {
+    const edgeU = 0.39 + 0.37 * ((y + 0.5) / edge);
+    const inside = greenness(Math.floor((edgeU - 0.035) * edge), y);
+    const outside = greenness(Math.floor((edgeU + 0.035) * edge), y);
+    const level = (x: number) => (greenness(x, y) - outside) / (inside - outside);
+    for (let x = Math.floor((edgeU - 0.03) * edge); x < (edgeU + 0.03) * edge; x += 1) {
+      const [l0, l1] = [level(x), level(x + 1)];
+      if (l0 >= 0.5 && l1 < 0.5) {
+        rows.push(y);
+        crossings.push(x + (l0 - 0.5) / (l0 - l1));
+        break;
+      }
+    }
+  }
+  const meanRow = rows.reduce((sum, y) => sum + y, 0) / rows.length;
+  const meanX = crossings.reduce((sum, x) => sum + x, 0) / crossings.length;
+  let covariance = 0;
+  let variance = 0;
+  rows.forEach((y, i) => {
+    covariance += (y - meanRow) * (crossings[i]! - meanX);
+    variance += (y - meanRow) ** 2;
+  });
+  const slope = covariance / variance;
+  return crossings.map((x, i) => x - (meanX + slope * (rows[i]! - meanRow)));
+}
+
+/**
+ * The vertical panel line at `u0` on the trainer body's maps, per row clear of
+ * the horizontal lines, the livery and the rivets, in texels: its albedo dip's
+ * full width at half depth (read linearly between texels), and its groove's in
+ * the normal map, from the first texel to the last whose normal leans more
+ * than 0.1 along u within 0.02 of the line.
+ */
+function panelLineWidths(recipe: AircraftPaintRecipe, edge: number, u0: number): { band: number[]; groove: number[] } {
+  const synthesis = synthesizeAircraftSurface(recipe, edge);
+  const albedo = synthesis.albedoMips[0]!;
+  const normal = synthesis.normalMips[0]!;
+  const luminance = (x: number, y: number) => {
+    const out = (y * edge + x) * 4;
+    return 0.2126 * albedo[out]! + 0.7152 * albedo[out + 1]! + 0.0722 * albedo[out + 2]!;
+  };
+  const band: number[] = [];
+  const groove: number[] = [];
+  for (const [from, to] of [[0.03, 0.17], [0.23, 0.46]] as const) {
+    for (let y = Math.round(edge * from); y < Math.round(edge * to); y += 1) {
+      // A rivet is a dome on the line every 1/30 of v, 0.6/64 of v in half-length.
+      const phase = ((y + 0.5) / edge) * 30 % 1;
+      if (Math.min(phase, 1 - phase) / 30 < 0.6 / 64) continue;
+      const lo = Math.floor((u0 - 0.02) * edge);
+      const hi = Math.ceil((u0 + 0.02) * edge);
+      const profile: number[] = [];
+      for (let x = lo; x <= hi; x += 1) profile.push(luminance(x, y));
+      const clear = (profile[0]! + profile[1]! + profile.at(-1)! + profile.at(-2)!) / 4;
+      const half = (clear + Math.min(...profile)) / 2;
+      let first = Number.NaN;
+      let last = Number.NaN;
+      for (let i = 0; i < profile.length - 1; i += 1) {
+        const [a, b] = [profile[i]!, profile[i + 1]!];
+        if (Number.isNaN(first) && a >= half && b < half) first = i + (a - half) / (a - b);
+        if (a < half && b >= half) last = i + (half - a) / (b - a);
+      }
+      band.push(last - first);
+      const leaning: number[] = [];
+      for (let x = lo; x <= hi; x += 1) {
+        if (Math.abs(normal[(y * edge + x) * 4]! / 127.5 - 1) > 0.1) leaning.push(x);
+      }
+      groove.push(leaning.length ? leaning.at(-1)! - leaning[0]! + 1 : 0);
+    }
+  }
+  return { band, groove };
+}
+
 /** Row-to-row moves, in texels, of the vertical panel line at u 0.63 on the trainer body's albedo. */
 function panelLineMoves(recipe: AircraftPaintRecipe, edge: number): number[] {
   const albedo = synthesizeAircraftSurface(recipe, edge).albedoMips[0]!;
@@ -260,14 +351,15 @@ describe("aircraft paint sets", () => {
     expect(density).toBeCloseTo(DENSITY[kind], 2);
   });
 
-  it("paints the trainer's fuselage at 30 texels a metre or more along the body", () => {
+  it("paints the trainer's fuselage at 70 texels a metre or more along the body", () => {
     const density = texelsPerMetreAlongBody(build("trainer"), FUSELAGE.trainer);
     console.log(`density trainer ${density.toFixed(2)}`);
-    // 64 texels over the 6.9 m body was 9.3: a texel a 10 m chase magnified to 6.5 px at 720p.
-    expect(density).toBeGreaterThanOrEqual(30);
+    // 64 texels over the 6.9 m body was 9.3: a texel a 10 m chase magnified to
+    // 6.5 px at 720p. 256 was 37, and an edge still drew a texel wide.
+    expect(density).toBeGreaterThanOrEqual(70);
   });
 
-  it("draws the trainer's livery edge within 5 cm of the body", () => {
+  it("draws the trainer's livery edge within 2.5 cm of the body", () => {
     const scene = build("trainer");
     const material = scene.getMaterialByName("trainer-body")!;
     const metadata = material.metadata as PaintMetadata;
@@ -276,8 +368,9 @@ describe("aircraft paint sets", () => {
     const metres = widths.map((width) => width / density).sort((a, b) => a - b);
     console.log(`livery edge (m, 10-90 %): median ${metres[metres.length >> 1]!.toFixed(3)} max ${metres.at(-1)!.toFixed(3)}`);
     expect(metres.every(Number.isFinite), "every row found the edge").toBe(true);
-    // The default ramp is 0.21 m across the body, 0.13 m between 10 % and 90 %.
-    expect(metres.at(-1)!).toBeLessThanOrEqual(0.05);
+    // The default ramp is 0.21 m across the body, 0.13 m between 10 % and 90 %;
+    // at 256 with a one-texel ramp it was 4 cm.
+    expect(metres.at(-1)!).toBeLessThanOrEqual(0.025);
   });
 
   it("keeps the trainer's panel lines continuous: no row steps the line a texel sideways", () => {
@@ -289,5 +382,36 @@ describe("aircraft paint sets", () => {
     // Texel-indexed noise jitters the line in 8-texel blocks: at 256 it jumps
     // up to 3 texels (8 cm) every 8 rows, the "totem pole" seam.
     expect(worst).toBeLessThan(0.5);
+  });
+
+  it("draws the trainer's livery diagonal straight: no row snaps its edge to the texels", () => {
+    const scene = build("trainer");
+    const metadata = scene.getMaterialByName("trainer-body")!.metadata as PaintMetadata;
+    const residuals = liveryEdgeResiduals(metadata.aircraftPaintRecipe!, metadata.aircraftPaintEdge!);
+    const worst = Math.max(...residuals.map(Math.abs));
+    const rms = Math.sqrt(residuals.reduce((sum, r) => sum + r * r, 0) / residuals.length);
+    console.log(`livery edge off a straight line: worst ${worst.toFixed(3)}, rms ${rms.toFixed(3)} texels over ${residuals.length} rows`);
+    expect(residuals.length).toBeGreaterThan(60);
+    // A ramp of a tenth of a texel snaps each row's edge up to 0.46 texels off the line.
+    expect(worst).toBeLessThanOrEqual(0.2);
+  });
+
+  it.each([0.39, 0.63])("draws the trainer's panel line at u %s 3 cm wide, its groove with it", (u0) => {
+    const scene = build("trainer");
+    const metadata = scene.getMaterialByName("trainer-body")!.metadata as PaintMetadata;
+    const density = texelsPerMetreAlongBody(scene, FUSELAGE.trainer);
+    const { band, groove } = panelLineWidths(metadata.aircraftPaintRecipe!, metadata.aircraftPaintEdge!, u0);
+    const metres = (texels: number[]) => texels.map((texels) => texels / density).sort((a, b) => a - b);
+    const [bandMetres, grooveMetres] = [metres(band), metres(groove)];
+    const median = (sorted: number[]) => sorted[sorted.length >> 1]!;
+    console.log(`panel line u ${u0} (m): band median ${median(bandMetres).toFixed(4)} max ${bandMetres.at(-1)!.toFixed(4)}, groove median ${median(grooveMetres).toFixed(4)} max ${grooveMetres.at(-1)!.toFixed(4)} over ${band.length} rows`);
+    expect(bandMetres.every(Number.isFinite), "every row found the line").toBe(true);
+    // The default line is 10-11 cm at half depth (28 px abeam at 6 m), its
+    // groove 16 cm. The groove's floor is the band and a texel either side: a
+    // central difference leans the texel beyond the slope.
+    expect(median(bandMetres)).toBeLessThanOrEqual(0.032);
+    expect(bandMetres.at(-1)!).toBeLessThanOrEqual(0.036);
+    expect(median(grooveMetres)).toBeLessThanOrEqual(0.06);
+    expect(grooveMetres.at(-1)!).toBeLessThanOrEqual(0.075);
   });
 });
