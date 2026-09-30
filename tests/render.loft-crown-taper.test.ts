@@ -238,7 +238,10 @@ describe("the loft's crown taper", () => {
       // render.loft-crown-seam's: the deck and the board swept wall to wall (`trainer-glareshield` 24 -> 756 vertices,
       // `trainer-instrument-panel` 24 -> 852), the doors' sill caps shortened, and the eight dial meshes 4 cm inboard
       // by their world matrix; the trainer's other 54 of 66, and every other airframe, bit-identical.
-      trainer: "9d958c4a",
+      // RE-PINNED for S3 on the same check against S1 (dfa5598): the door frames 72 -> 2,110 vertices, the deck
+      // 756 -> 252 and the board 852 -> 276 (buried square ends), the two posts replaced by the two A-pillars; the
+      // trainer's other 60 of 66, and every other airframe, bit-identical.
+      trainer: "5e234af0",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial

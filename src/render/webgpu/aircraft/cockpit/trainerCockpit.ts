@@ -11,9 +11,8 @@ import {
   buildAttitudeBall,
   glareshieldMaterial,
   roundedDeckSection,
-  slab,
-  strip,
   sweptSolid,
+  sweptTube,
   type AttitudeBall,
   type RoundedDeckSection,
   type SweptSection,
@@ -41,8 +40,9 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
  *    across. It is the only row: three dials, as Jason asked (2026-09-23). The
  *    second row, vertical speed and engine at -21, is gone, and the panel was
  *    not re-laid out for it;
- *  - the left windscreen post's axis stands at azimuth -35, hugging the left
- *    edge of the frame (the D3 window is -37 to -31);
+ *  - the left A-pillar stands at the frame's left edge, in the vertical plane
+ *    through the eye at azimuth -41, a band 56 to 72 px wide at 1080p
+ *    (`TRAINER_A_PILLAR`; the old post's axis was at -35, in the D3 window);
  *  - the cowl rises above the glareshield to about -4.7, as a Cessna's does.
  *
  * Body coordinates: +X nose, +Y up, +Z starboard, so the pilot's seat is at
@@ -53,10 +53,8 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
  */
 
 export interface TrainerCockpitMaterials {
-  /** Dark matte interior: the panel board, the door panels and sill caps. (The hood has its own: `glareshieldMaterial`.) */
+  /** Dark matte interior: the panel board, the door frames and the A-pillars. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
-  /** The windscreen posts. */
-  readonly dark: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
   /** Needles. It carries the night glow (`applyGlow(instrumentMarking, ...)`), so it must be the shared one. */
   readonly instrumentMarking: PBRMaterial;
@@ -164,41 +162,6 @@ const NEEDLE_ORIGIN_OFFSET = 0.005;
 const NEEDLE_STAND_OFF = 0.0045;
 
 /**
- * The left windscreen post's AXIS lies in the vertical plane through the eye at
- * this azimuth (degrees, negative to port). A vertical plane through the eye
- * projects to a vertical LINE on screen, so the whole post reads at one column.
- * At -35 the post hugs the left edge of the frame (-37.5 at 16:9) and reads as a
- * window frame instead of a bar standing in the view; its own thickness spreads
- * it about 2.7 degrees either side of the axis (0.012 m at 0.276 m), so its outer
- * edge touches the frame edge.
- */
-export const TRAINER_LEFT_POST_AZIMUTH_DEGREES = -35;
-export const TRAINER_POST_RADIUS = 0.012;
-const POST_RADIUS = TRAINER_POST_RADIUS;
-
-/**
- * The cabin's inner half-widths, measured off the built meshes (metres from the
- * centreline): the tube's flat wall, and the greenhouse glass's base at the sill.
- * Piecewise linear in x between the stations measured.
- */
-const WALL_HALF_WIDTH: readonly (readonly [number, number])[] = [
-  [0.95, 0.5015], [1.62, 0.5005], [1.8, 0.488], [2, 0.4685], [2.05, 0.463],
-];
-const SILL_HALF_WIDTH: readonly (readonly [number, number])[] = [
-  [0.95, 0.437], [1.4, 0.437], [1.62, 0.435], [1.8, 0.424], [2, 0.411], [2.05, 0.395],
-];
-function interpolate(table: readonly (readonly [number, number])[], x: number): number {
-  const first = table[0]!;
-  if (x <= first[0]) return first[1];
-  for (let i = 1; i < table.length; i += 1) {
-    const a = table[i - 1]!;
-    const b = table[i]!;
-    if (x <= b[0]) return a[1] + ((b[1] - a[1]) * (x - a[0])) / (b[0] - a[0]);
-  }
-  return table[table.length - 1]![1];
-}
-
-/**
  * The half-width at station `x` and height `y` of a loft's RULED SURFACE between its rings, read the way the loft lays
  * it: each ring's point at one phase, straight between the two rings either side of `x`. Rings past either end are
  * held. NaN where `y` is above the crown or below the keel there. The loft's own facets (a ring's points joined by
@@ -252,8 +215,8 @@ export function trainerCabinHalfWidth(x: number, y: number): number {
  * row of the picture at any distance, so the round is the same silhouette the old hood was, and the 2D HUD, laid out
  * on the deck line, does not move. Under the round
  * a 45 degree cove turns in 1 cm to the board's face; forward of it the hood falls 12 degrees, steeper than the sight
- * line, so none of its top is seen from the seat. Across the cabin it runs to 2 cm inside the glass at every point of
- * its section, and each end turns into its wall on a 2 cm round in plan: no square end anywhere.
+ * line, so none of its top is seen from the seat. Across the cabin it runs from one door frame's rail to the other's,
+ * each end buried in its rail (`TRAINER_DOOR_FRAME`): no end of it is in the open.
  */
 export const TRAINER_GLARESHIELD = Object.freeze({
   /**
@@ -274,9 +237,6 @@ export const TRAINER_GLARESHIELD = Object.freeze({
   roundSegments: 6,
   /** How far inside the glass or the wall every point of the deck and the board stands. */
   clearance: 0.02,
-  /** The plan round each end turns into its wall on, and the stations it takes. */
-  endRadius: 0.02,
-  endStations: 4,
 });
 
 /** The board's rear (pilot-facing) face as a line in body x and y: its x at height y. */
@@ -307,15 +267,16 @@ export function trainerDeckSection(): RoundedDeckSection {
 }
 
 /**
- * A section swept ACROSS the cabin, wall to wall, each end FILLETED into its wall: the prism trimmed, at each end, by
- * a vertical round of `endRadius` about the corner where its aft face meets its end. Stations along z: the straight
- * run between the two ends, then `endStations` more at each end, down the fillet's quarter-circle; at each of those
- * every section point aft of the round is carried forward onto it (x at least `aft + r - r cos(theta)`), so the aft
- * face turns into the end on the round and everything forward of the round runs on to the flat end. The section keeps
- * its attitude, so the end caps face outboard (from the left seat the left one is culled) and plain `sweptSolid` builds
- * it, smooth-shaded along the stations so the fillet shades as a curve. `aftU` is a section point's aft face (its
- * station: the board's leans), `half` how far out its end is: each point's own, so an end can follow a wall that is
- * not straight.
+ * A section swept ACROSS the cabin, from one door frame to the other: a station at each end, each section point out to
+ * its own `half` there (the rail runs in with the glass as it goes forward, so an end follows it), and one `END_LEAD_IN`
+ * inboard of each. The ends are square, flat and BURIED, inside the rail and the face under it (`TRAINER_DOOR_FRAME`).
+ * They were filleted into the walls on a 2 cm round (S1), and those rounds still met the door panels along creases the
+ * pilot saw.
+ *
+ * WHY THE LEAD-INS: `sweptSolid` averages a round's end point over the triangles that meet there, and at a sweep's end
+ * station its two walls meet it unequally (one triangle of one, two of the other, and the other way about at the far
+ * end). With the two end stations alone, the deck's cove line was shaded 15 degrees differently at its two ends. A
+ * station one millimetre in from each end is met equally from both sides, so the whole run between them shades alike.
  */
 function sweptAcross(
   build: AircraftBuildContext,
@@ -323,69 +284,330 @@ function sweptAcross(
   section: SweptSection,
   material: PBRMaterial,
   root: TransformNode,
-  aftU: (point: { readonly u: number; readonly y: number }) => number,
   half: (point: { readonly u: number; readonly y: number }) => number,
 ) {
-  const g = TRAINER_GLARESHIELD;
-  const r = g.endRadius;
-  const turns = Array.from({ length: g.endStations + 1 }, (_, k) => (Math.PI / 2) * (k / g.endStations));
-  // a station 1 mm inboard of each fillet as well: the straight run between them then averages flat with flat along
-  // the stations and shades flat, and the fillet's blend stays within that millimetre
-  const stations = [
-    ...turns.slice().reverse().map((theta) => ({ side: -1, theta, inset: 0 })),
-    { side: -1, theta: 0, inset: FILLET_LEAD_IN },
-    { side: 1, theta: 0, inset: FILLET_LEAD_IN },
-    ...turns.map((theta) => ({ side: 1, theta, inset: 0 })),
-  ];
+  const stations = [{ side: -1, inset: 0 }, { side: -1, inset: END_LEAD_IN }, { side: 1, inset: END_LEAD_IN }, { side: 1, inset: 0 }];
   return sweptSolid(
     build,
     name,
     section,
     stations.length,
     (i, point) => {
-      const { side, theta, inset } = stations[i]!;
       const out = half(point);
       if (!Number.isFinite(out)) throw new RangeError(`${name}: no cabin wall for the point at x ${point.u.toFixed(3)}, y ${point.y.toFixed(3)}`);
-      const clip = aftU(point) + r - r * Math.cos(theta);
-      return new Vector3(Math.max(point.u, clip), point.y, side * (out - r - inset + r * Math.sin(theta)));
+      const { side, inset } = stations[i]!;
+      return new Vector3(point.u, point.y, side * (out - inset));
     },
     (direction) => new Vector3(direction.u, direction.y, 0),
     material,
     root,
+    // a round's end points take the mean of its last chord and the face it meets, as S1's did: the deck's round meets
+    // its cove on one normal, a designed line and not a split one
     { smoothAlong: true },
   );
 }
 
-/** The straight run's last millimetre before each fillet (`sweptAcross`). */
-const FILLET_LEAD_IN = 0.001;
+/** The lead-in stations' distance inboard of each end (`sweptAcross`): inside the rail, with the end. */
+const END_LEAD_IN = 0.001;
 
 /** Points down the board's rear face, besides its top and foot, for its ends to follow the wall's curve by. */
 const BOARD_FACE_POINTS = 8;
 
-/** Solved in `tests/render.cockpit-trainer.test.ts` ("keeps the sill cap clear of the airspeed dial"). */
-const CAP_TO_X = 1.9;
-
-/** The door panels and sill caps: how far in from the wall, and how they run. */
-const DOOR = Object.freeze({
+/**
+ * THE DOOR FRAMES (S3), one a side, in place of three boxes (a panel up to a knee at -0.2, a slab leaning in from there
+ * to the sill, and a 40 x 20 mm cap along it) and the seam where the two slabs met. Each is three pieces on the same
+ * stations along x, following the cabin line at every one, merged into one mesh:
+ *  - THE RAIL, a round of `railRadius` along the sill (`sweptTube`), its top `railOverDeck` over the deck's, and the
+ *    glass's clearance (`TRAINER_GLARESHIELD.clearance`) inside it at every point of its round. Forward of the deck's
+ *    round it falls under the deck line (`railCentre`), so none of it shows past the deck's end.
+ *  - THE FACE under it, a `sweptSolid` tucked up into the rail, down to the NOTCH, where the glass's foot meets the
+ *    tube's shoulder (the cabin line turns in there, so no one convex section can run past it).
+ *  - THE PANEL, the notch to the floor, `wallClearance` inside the tube's wall; its inner face is the face's run on in
+ *    one straight line from the rail's underside to the floor, so neither the notch nor the old knee is a seam.
+ * The face leaves the rail at its underside, not its inner side: 1.5 cm further out, which keeps it off the airspeed
+ * dial's left edge (a face from the rail's inner side stood 2 to 9 mm into that dial's sight line and hid 3.2% of it).
+ * The deck's ends and the board's are buried in the rails and the faces: the deck runs into its door frames as the
+ * F-16's rail runs into its sills (Jason, 2026-09-29: "sweep into the door frame"). The pillars stand in the rails
+ * (`TRAINER_A_PILLAR`).
+ */
+export const TRAINER_DOOR_FRAME = Object.freeze({
   fromX: 0.95,
-  toX: 2.05,
-  /** The panel's mid-plane sits this far inside the measured wall (the outer face is 5 mm nearer it). */
-  inset: 0.015,
-  thickness: 0.01,
-  bottomY: -0.6,
-  /** Where the vertical wall panel ends and the panel begins to lean in toward the sill. */
-  kneeY: -0.2,
-  /** The sill cap: 0.04 wide, 0.02 thick, its outer edge just inside the glass's base. */
-  capWidth: 0.04,
-  capThickness: 0.02,
-  capInset: 0.005,
+  /** The hood's end: forward of the board's rear face at every height, so both ends are buried to there. */
+  toX: 2.11,
+  railRadius: 0.015,
+  /** The rail's top over the deck's top, so the deck's end is inside the rail. */
+  railOverDeck: 0.0005,
   /**
-   * Where the sill cap ENDS, short of the door's own fore end. Run to x 2.05 its 4 cm inboard lip stood in front of
-   * the airspeed dial's upper-left (1,496 px of it at 1080p, 9.0%); the door's slabs, outboard of the dial's
-   * sightline, still run on to the panel, so nothing opens below the sill.
+   * How far outboard of the rail's centre line the deck's and the board's ends stand where they are under the rail's
+   * centre: inside the face, not at its inner edge. Above it the deck's end is at the rail's crest, under its top.
    */
-  capToX: CAP_TO_X,
+  endInset: 0.005,
+  floorY: -0.6,
+  /** Below the sill, where the cabin line is the tube's wall: the old panels' outer face's 1 cm. */
+  wallClearance: 0.01,
+  /** The panel at the floor. The inner face leans out from the rail's underside to here. */
+  floorThickness: 0.02,
+  railSegments: 16,
 });
+
+/**
+ * The door frames' stations along x: 0.25 m apart aft, where the cabin runs straight, 0.04 m forward, where it narrows,
+ * and one where the rail's crest stops running level and starts down the deck line's sight plane (`trainerRailCentre`):
+ * the crest is straight between stations, and without that one it dipped 0.1 mm under the deck's round, whose end then
+ * showed over it.
+ */
+export function trainerDoorStations(): number[] {
+  const f = TRAINER_DOOR_FRAME;
+  // the kink: the last x at which the crest is still level (it only falls from there)
+  const level = deckTopY() + f.railOverDeck;
+  let before: number = f.fromX;
+  let after: number = f.toX;
+  for (let step = 0; step < 50; step += 1) {
+    const middle = (before + after) / 2;
+    if (railCrestAt(middle) >= level) before = middle;
+    else after = middle;
+  }
+  const kink = before;
+  const stations = [f.fromX, 1.2, 1.4];
+  for (let x = 1.5; x < f.toX - 1e-9; x += 0.04) stations.push(x);
+  stations.push(f.toX);
+  if (kink > f.fromX && kink < f.toX && stations.every((x) => Math.abs(x - kink) > 1e-4)) stations.push(kink);
+  return stations.sort((a, b) => a - b);
+}
+
+let deckTopMemo: number | null = null;
+/** The deck's top: the round's highest point, on the deck line straight ahead. */
+function deckTopY(): number {
+  deckTopMemo ??= Math.max(...trainerDeckSection().outline.map((p) => p.y));
+  return deckTopMemo;
+}
+
+/** The clearance a point of a door frame keeps inside the cabin line: the glass's 2 cm at and above the sill, the wall's 1 cm below it. */
+function doorClearance(y: number): number {
+  return y >= 0 ? TRAINER_GLARESHIELD.clearance : TRAINER_DOOR_FRAME.wallClearance;
+}
+
+/** Points round a section's round that `insetOutboard` holds inside the cabin line. */
+const ROUND_SAMPLES = 32;
+
+/**
+ * The largest outboard distance (|z|) of the centre of a round of radius `r` in the cross-section at (x, y) with every
+ * point of the round the clearance (`doorClearance`) inside the cabin line at its own height; 0 where some point of it
+ * has no cabin line (above the crown). In closed form: a point's allowance does not depend on the centre's u, so the
+ * centre may go out as far as the tightest point allows, and no search is needed.
+ */
+function insetOutboard(x: number, y: number, r: number): number {
+  let out = Number.POSITIVE_INFINITY;
+  for (let k = 0; k < ROUND_SAMPLES; k += 1) {
+    const a = (k / ROUND_SAMPLES) * 2 * Math.PI;
+    const py = y + r * Math.sin(a);
+    const half = trainerCabinHalfWidth(x, py);
+    if (!Number.isFinite(half)) return 0;
+    out = Math.min(out, half - doorClearance(py) - r * Math.cos(a));
+  }
+  return Math.max(0, out);
+}
+
+/**
+ * The rail's centre at station x, in (u, y), u outboard. Its height: its crest `railOverDeck` over the deck's top, or on
+ * the deck line's sight plane there (0.3 mm over it, a fiftieth of a degree), whichever is lower: a level rail run on
+ * past the deck's round rises over the deck line, and the round's top is ON that line where it is tangent to it, so the
+ * crest cannot be lower and still cover the deck's end. Its u: as far out as it goes with every point of its round the
+ * clearance (`doorClearance`) inside the cabin line at its own height.
+ */
+/**
+ * The rail's crest at station x: `railOverDeck` over the deck's top, level, until it meets the deck line's sight plane
+ * (0.3 mm over it, a fiftieth of a degree: the deck's round touches that plane, and the crest has to cover its end);
+ * forward of the round's touching point it falls under the plane, halfway to the hood's top, which falls away faster
+ * (12 degrees to the plane's 8.31), so the rail's forward end is hidden behind the round and still covers the deck's.
+ * The deck line is a ROW of the picture: a point is on it where its height over its depth along the view (x, not the
+ * distance) is the deck line's slope, at any azimuth.
+ */
+function railCrestAt(x: number): number {
+  const eye = aircraftSpec("trainer").cockpitEye;
+  const slope = Math.tan((TRAINER_GLARESHIELD.deckLineDegrees * Math.PI) / 180);
+  const touch = trainerDeckSection().tangent.x;
+  const under = (Math.tan((TRAINER_GLARESHIELD.hoodFallDegrees * Math.PI) / 180) - slope) / 2;
+  const sight = eye.up - (x - eye.forward) * slope + 0.0003 - under * Math.max(0, x - touch);
+  return Math.min(deckTopY() + TRAINER_DOOR_FRAME.railOverDeck, sight);
+}
+
+const railCentres = new Map<number, { u: number; y: number }>();
+export function trainerRailCentre(x: number): { u: number; y: number } {
+  const known = railCentres.get(x);
+  if (known) return { ...known };
+  const r = TRAINER_DOOR_FRAME.railRadius;
+  const y = railCrestAt(x) - r;
+  const centre = { u: insetOutboard(x, y, r), y };
+  railCentres.set(x, centre);
+  return { ...centre };
+}
+
+/** Heights the panel's outer face is laid down the tube's wall at, under the notch. */
+const PANEL_WALL_HEIGHTS = [-0.1, -0.15, -0.2, -0.3, -0.4, -0.5];
+
+/** The NOTCH's height at station x: under the rail, where the tube's shoulder first stands out past the glass's foot. */
+function doorNotchY(x: number): number {
+  let y = -0.01;
+  for (; y > -0.1; y -= 0.0025) {
+    const tube = loftHalfWidthAt(TRAINER_FUSELAGE_SECTIONS, x, y);
+    const glass = loftHalfWidthAt(TRAINER_CANOPY_SECTIONS, x, y);
+    if (Number.isFinite(tube) && (!Number.isFinite(glass) || tube >= glass)) break;
+  }
+  return y;
+}
+
+/**
+ * A door frame at a station, in (u, y) with u outboard: the rail's centre; THE FACE, its notch corners (inner, outer)
+ * and its top corners (outer, inner) up inside the rail; and THE PANEL, the floor's corners (inner, outer), up the
+ * wall, and the notch's corners (outer, inner). The face's inner edge and the panel's are one straight line, from the
+ * rail's lowest point to the floor's inner corner.
+ */
+export function trainerDoorSections(x: number): { rail: { u: number; y: number }; face: { u: number; y: number }[]; panel: { u: number; y: number }[] } {
+  const f = TRAINER_DOOR_FRAME;
+  const r = f.railRadius;
+  const rail = trainerRailCentre(x);
+  const notchY = doorNotchY(x);
+  const floorOut = { u: trainerCabinHalfWidth(x, f.floorY) - f.wallClearance, y: f.floorY };
+  const floorIn = { u: floorOut.u - f.floorThickness, y: f.floorY };
+  const under = { u: rail.u, y: rail.y - r };
+  const inner = (y: number) => ({ u: under.u + ((floorIn.u - under.u) * (under.y - y)) / (under.y - floorIn.y), y });
+  // the face's outer edge: straight down from inside the rail's round to the notch, the glass's clearance inside it
+  const outerU = Math.min(rail.u + 0.7 * r, trainerCabinHalfWidth(x, notchY + 0.0025) - TRAINER_GLARESHIELD.clearance);
+  const notchOut = { u: outerU, y: notchY };
+  const notchIn = inner(notchY);
+  const wall = PANEL_WALL_HEIGHTS.map((y) => ({ u: trainerCabinHalfWidth(x, y) - f.wallClearance, y }));
+  return {
+    rail,
+    face: [notchIn, notchOut, { u: outerU, y: rail.y }, inner(rail.y)],
+    panel: [floorIn, floorOut, ...wall.slice().reverse(), notchOut, notchIn],
+  };
+}
+
+/**
+ * THE A-PILLARS (S3), one a side, in place of two 8-sided struts that stood vertical at azimuth -35 and stopped in
+ * mid-air above the frame. Each is one `sweptTube`, `footRadius` at its foot in the rail, tapering to `topRadius`
+ * where it ends inside the roof slab, and it is the door's frame round the window:
+ *  - THE PILLAR rises along the glass, the clearance inside it, from the rail to `glassTopY`, its centreline in the
+ *    vertical plane through the eye at `azimuthDegrees`, so from the seat it stands as one column at the frame's edge;
+ *  - it then bends aft into THE CANT RAIL, along the crown over the door at `railY`, the clearance inside the glass,
+ *    from `railFromX` to `railToX`;
+ *  - and turns in and up into the roof slab's side (the slab is y 0.18 to 0.23, its side edge at |z| 0.31) behind
+ *    the eye, ending at `end`, at the slab's mid-thickness.
+ * Only the pillar is in the frame: the bend and the cant rail are at azimuth -45 to -90, and the lens is
+ * horizontal-fixed, so the frame's edge is -37.5 at every aspect.
+ *
+ * WHY THERE, and not up the windscreen's forward edge from the deck's end: the glass stands only 0.14 m outboard of the
+ * eye, and the roof's outboard front corner is 6 cm ahead of it, so a pillar from the deck's end into the roof crosses
+ * the view. Measured through the cockpit camera (rasterised, near-plane clipped): feet at x 1.7 to 2.0 cover 110,000 to
+ * 295,000 px and cut the windscreen at azimuth -11 to -35. In the plane at -41 the pillar covers 49,192 px, a band 56
+ * to 72 px wide up the frame's left edge from its bottom to row 220 of 1080: the window's frame at the edge of the view,
+ * as the old post was (172,800 px), at under a third of its area. And WHY THE CANT RAIL: the crown is too low over the pilot to turn into the
+ * roof ahead of him (the slab's edge stands only 2.5 cm under the glass), and a pillar that bent into it along its own
+ * plane, which runs through the eye, passed 10 cm from the eye: 165,000 px.
+ */
+export const TRAINER_A_PILLAR = Object.freeze({
+  azimuthDegrees: -41,
+  footRadius: 0.02,
+  topRadius: 0.014,
+  /** Its foot's centre, inside the rail. */
+  footY: -0.005,
+  /** How high the pillar follows the glass in its plane. */
+  glassTopY: 0.13,
+  glassStations: 14,
+  /** The cant rail's height, and where it runs, aft along the crown (x). */
+  railY: 0.15,
+  railFromX: 1.4,
+  railToX: 1.26,
+  /** The roof slab's underside (`trainer-cabin-roof`, 0.05 thick at y 0.205): under it the pillar keeps inside the glass. */
+  roofUnderY: 0.18,
+  /** Its end's centre, inside the roof slab behind the eye: |z| 0.285, its ring 1.1 cm inside the slab's edge. */
+  end: Object.freeze({ x: 1.18, y: 0.205, u: 0.285 }),
+  bendStations: 10,
+  segments: 16,
+});
+
+/**
+ * The root of an increasing `f` between `lo` and `hi` (f(lo) < 0 < f(hi)), by regula falsi with the Illinois step: a
+ * few evaluations where a bisection to the same 0.1 micron takes 30, and each one here samples the cabin line 32 times.
+ */
+function increasingRoot(f: (x: number) => number, lo: number, hi: number): number {
+  let [a, b] = [lo, hi];
+  let [fa, fb] = [f(a), f(b)];
+  if (!(fa < 0 && fb > 0)) throw new RangeError(`no root between ${lo} and ${hi}`);
+  let side = 0;
+  for (let step = 0; step < 60 && b - a > 1e-7; step += 1) {
+    const c = (a * fb - b * fa) / (fb - fa);
+    const fc = f(c);
+    // ON the root: stop. A step that lands on it with a rounding-positive value leaves `a` where it was, and the
+    // halvings then walk the next steps back into the bracket, to wherever the step count runs out.
+    if (Math.abs(fc) < 1e-12) return c;
+    if (fc < 0) {
+      [a, fa] = [c, fc];
+      if (side === -1) fb /= 2;
+      side = -1;
+    } else {
+      [b, fb] = [c, fc];
+      if (side === 1) fa /= 2;
+      side = 1;
+    }
+  }
+  return a;
+}
+
+let pillarMemo: { centres: Vector3[]; radii: number[] } | null = null;
+/** A pillar's centreline and its radius at each point, foot to end (port; the starboard one is its mirror). */
+export function trainerPillarPath(side: -1 | 1): { centres: Vector3[]; radii: number[] } {
+  pillarMemo ??= portPillarPath();
+  return {
+    centres: pillarMemo.centres.map((c) => new Vector3(c.x, c.y, side < 0 ? c.z : -c.z)),
+    radii: pillarMemo.radii.slice(),
+  };
+}
+
+function portPillarPath(): { centres: Vector3[]; radii: number[] } {
+  const p = TRAINER_A_PILLAR;
+  const eye = aircraftSpec("trainer").cockpitEye;
+  const slope = Math.tan((p.azimuthDegrees * Math.PI) / 180);
+  const zAt = (x: number) => eye.right + slope * (x - eye.forward);
+  // radii are laid by arc length afterwards; the solve needs one, and the foot's is the largest
+  const r = p.footRadius;
+  // up the glass, evenly: at each height, the station in the plane where the pillar's round is the clearance inside
+  // the glass. (Bunched toward the top, the last two stood 0.7 mm apart where the tube turns into its bend, and the
+  // turn tilted one ring 2 mm behind the other: a fold.)
+  const glass: Vector3[] = [];
+  for (let i = 0; i <= p.glassStations; i += 1) {
+    const y = p.footY + ((p.glassTopY - p.footY) * i) / p.glassStations;
+    const x = increasingRoot((at) => Math.abs(zAt(at)) - insetOutboard(at, y, r), eye.forward + 0.01, 2.2);
+    glass.push(new Vector3(x, y, zAt(x)));
+  }
+  const cubic = (a: Vector3, b: Vector3, c: Vector3, d: Vector3, count: number) => Array.from({ length: count }, (_, k) => {
+    const t = (k + 1) / count;
+    const u = 1 - t;
+    return a.scale(u ** 3).add(b.scale(3 * u * u * t)).add(c.scale(3 * u * t * t)).add(d.scale(t ** 3));
+  });
+  const aft = new Vector3(-1, 0, 0);
+  // the cant rail's two ends, the clearance inside the glass at its height
+  const railAt = (x: number) => new Vector3(x, p.railY, -insetOutboard(x, p.railY, r));
+  const [railFrom, railTo] = [railAt(p.railFromX), railAt(p.railToX)];
+  const top = glass[glass.length - 1]!;
+  const up = top.subtract(glass[glass.length - 2]!).normalize();
+  const over = Vector3.Distance(top, railFrom);
+  // the glass's crown is convex, so a curve between two points on its inset runs outside it: each station under the
+  // roof is held in to the inset at its own height as well (in the roof there is no glass to keep inside of)
+  const held = (c: Vector3) => (c.y + r < p.roofUnderY ? new Vector3(c.x, c.y, -Math.min(Math.abs(c.z), insetOutboard(c.x, c.y, r))) : c);
+  const bend = cubic(top, top.add(up.scale(0.25 * over)), railFrom.subtract(aft.scale(0.4 * over)), railFrom, p.bendStations).map(held);
+  const run = [0.25, 0.5, 0.75, 1].map((t) => Vector3.Lerp(railFrom, railTo, t));
+  const end = new Vector3(p.end.x, p.end.y, -p.end.u);
+  const into = Vector3.Distance(railTo, end);
+  const turn = cubic(railTo, railTo.add(aft.scale(0.4 * into)), end.subtract(new Vector3(0, 0.5 * into, 0)), end, p.bendStations).map(held);
+  const centres = [...glass, ...bend, ...run, ...turn];
+  // the taper, by arc length: `footRadius` at the foot to `topRadius` at the end
+  const along = [0];
+  for (let i = 1; i < centres.length; i += 1) along.push(along[i - 1]! + Vector3.Distance(centres[i]!, centres[i - 1]!));
+  const length = along[along.length - 1]!;
+  return { centres, radii: along.map((s) => p.footRadius + ((p.topRadius - p.footRadius) * s) / length) };
+}
 
 /** Rotation about Z of the panel and everything mounted on it. */
 function panelFrame() {
@@ -423,33 +645,6 @@ export function trainerDialPlacements(): readonly { name: string; centre: Vector
   return TRAINER_DIAL_ROW.dials.map(([name, z]) => ({ name, centre: new Vector3(onFace.x, onFace.y, z), normal: rearFaceNormal.clone() }));
 }
 
-/**
- * The two ends of a windscreen post, vertical, in the plane through the eye at
- * `TRAINER_LEFT_POST_AZIMUTH_DEGREES`.
- *
- * NOT raked to the roof's outboard corner, which was the first design: that
- * corner is 0.06 m ahead of the eye and 0.05 m to port, so a post ending there
- * swelled toward the top into a dark wedge across 22% of the frame. Standing the
- * post about 0.28 m away instead keeps it a bar of uniform width from bottom to
- * top. It runs from just below the sill to 0.27, which is above the top of the
- * frame at that azimuth (+19.5 degrees is 0.10 m over 0.28), because the roof
- * slab is narrower than the greenhouse (0.31 against 0.44) and there is nothing
- * up there for a post ending at the roof's height to meet: it would stop in
- * mid-air 15 degrees above the horizon.
- */
-export function trainerPostEndpoints(side: -1 | 1): { bottom: Vector3; top: Vector3 } {
-  const eye = aircraftSpec("trainer").cockpitEye;
-  const slope = Math.tan((TRAINER_LEFT_POST_AZIMUTH_DEGREES * Math.PI) / 180); // dz / dx from the eye, port negative
-  // Just inside the greenhouse's base: the post's outer surface 5 mm within it.
-  const z = -(interpolate(SILL_HALF_WIDTH, 1.62) - POST_RADIUS - 0.005);
-  const x = eye.forward + (z - eye.right) / slope;
-  const bottom = new Vector3(x, -0.02, z);
-  const top = new Vector3(x, 0.27, z);
-  if (side < 0) return { bottom, top };
-  // The starboard post is the mirror image across the centreline, not a second solve: nothing is asked of it.
-  return { bottom: new Vector3(x, bottom.y, -z), top: new Vector3(x, top.y, -z) };
-}
-
 /** What `buildTrainerCockpit` hands back: the meshes, and the step that turns the needles and the ball. */
 export interface TrainerCockpit {
   /** Every mesh it made, unconfigured: the caller marks them cockpit-only. */
@@ -467,9 +662,10 @@ export interface TrainerCockpit {
  * them cockpit-only (`configureCockpitOnlyParts`) and registers them, so the
  * rule is applied in one place.
  *
- * Fifteen meshes in five groups: the cowl stand-in (1), the panel and its hood
- * (2), the windscreen posts (2), the door panels with their sill caps (2), and the
- * dials (8: three gauge faces, two needles, and the attitude ball's three pieces).
+ * Fifteen meshes in five groups: the cowl stand-in (1), the deck and the board
+ * (2), the A-pillars (2), the door frames (2: each its rail, face and panel
+ * merged), and the dials (8: three gauge faces, two needles, and the attitude
+ * ball's three pieces).
  */
 export function buildTrainerCockpit(
   build: AircraftBuildContext,
@@ -497,18 +693,14 @@ export function buildTrainerCockpit(
     root,
   ));
 
-  // THE DECK AND THE BOARD, two meshes, each a section swept across the cabin wall to wall (`sweptAcross`): the deck
-  // the rounded glareshield (`trainerDeckSection`) on its own matte near-black, which reflects nothing (on the interior
-  // material its top read as the brightest surface in the frame); the board the leaned panel under it, its rear face
-  // exactly where the old box's was, from its foot up to the cove's, with extra points down that face so each end can
-  // follow the wall's curve at every height. Neither has a square end: each turns into its wall on a 2 cm round.
+  // THE DECK AND THE BOARD, two meshes, each a section swept across the cabin from one door frame to the other
+  // (`sweptAcross`): the deck the rounded glareshield (`trainerDeckSection`) on its own matte near-black, which reflects
+  // nothing (on the interior material its top read as the brightest surface in the frame); the board the leaned panel
+  // under it, its rear face exactly where the old box's was, from its foot up to the cove's, with extra points down that
+  // face so each end can follow the wall's curve at every height. Every end is buried in a door frame.
   const { centre, local } = panelFrame();
   const panel = TRAINER_PANEL;
   const deck = trainerDeckSection();
-  // the deck's ends are straight along x, at its narrowest: the glass narrows forward, and an end that followed it
-  // would turn toward the pilot
-  const deckTop = Math.max(...deck.outline.map((p) => p.y));
-  const deckHalf = Math.min(...deck.outline.map((p) => trainerCabinHalfWidth(p.x, deckTop))) - TRAINER_GLARESHIELD.clearance;
   parts.push(sweptAcross(
     build,
     "trainer-glareshield",
@@ -518,8 +710,12 @@ export function buildTrainerCockpit(
     },
     glareshieldMaterial(build, "trainer-glareshield"),
     root,
-    () => deck.coveTop.x,
-    () => deckHalf,
+    // at the point's own station: the rail's crest line over its centre (under the rail's top), outboard of it below
+    // (inside the face)
+    (point) => {
+      const rail = trainerRailCentre(point.u);
+      return rail.u + (point.y < rail.y ? TRAINER_DOOR_FRAME.endInset : 0);
+    },
   ));
   const along = new Vector3(Math.cos(panel.lean), Math.sin(panel.lean), 0);
   const rearBottom = centre.add(local(-panel.thickness / 2, -panel.height / 2));
@@ -530,16 +726,18 @@ export function buildTrainerCockpit(
   parts.push(sweptAcross(
     build,
     "trainer-instrument-panel",
-    { points: [rearBottom, frontBottom, frontTop, rearTop, ...downTheFace].map((p) => ({ u: p.x, y: p.y })), rounds: [] },
+    // from its front foot round: `sweptSolid` caps an end with a fan from the section's first point, and a fan from a
+    // point ON the rear face (whose points all lie on one line, each out to its own end) laid slivers in that face's
+    // plane, inboard of its end
+    { points: [frontBottom, frontTop, rearTop, ...downTheFace, rearBottom].map((p) => ({ u: p.x, y: p.y })), rounds: [] },
     materials.interior,
     root,
-    (point) => rearFaceXAt(point.y),
-    // under the deck the board ends where the deck does, so no step of its top shows beyond the deck's end; below
-    // that it flares out to its wall at 45 degrees
+    // under the deck the board ends where the deck does, inside the rail; below that it flares out toward its wall at
+    // 45 degrees, into the door frame's face
     (point) => Math.min(
       // at the point's OWN station: the windscreen narrows over the board's 10 cm depth
       trainerCabinHalfWidth(point.u, point.y) - TRAINER_GLARESHIELD.clearance,
-      deckHalf + Math.max(0, deck.faceTop.y - point.y),
+      trainerRailCentre(point.u).u + TRAINER_DOOR_FRAME.endInset + Math.max(0, deck.faceTop.y - point.y),
     ),
   ));
 
@@ -616,45 +814,50 @@ export function buildTrainerCockpit(
     needles.set(name, { mesh: needle, frame: frameQ });
   }
 
-  // THE WINDSCREEN POSTS, sill to roof, each in one vertical plane through the
-  // eye so the left one stands at one screen column.
+  // THE A-PILLARS, from the rails into the roof slab (`TRAINER_A_PILLAR`), on the door frames' material: the rail and
+  // the pillar read as one frame round the side window.
   for (const side of [-1, 1] as const) {
-    const { bottom, top } = trainerPostEndpoints(side);
-    parts.push(build.strutBetween(
-      side < 0 ? "trainer-windscreen-post-port" : "trainer-windscreen-post-starboard",
-      bottom, top, POST_RADIUS, materials.dark, root,
+    const { centres, radii } = trainerPillarPath(side);
+    parts.push(sweptTube(
+      build, side < 0 ? "trainer-a-pillar-port" : "trainer-a-pillar-starboard",
+      centres, radii, TRAINER_A_PILLAR.segments, materials.interior, root,
     ));
   }
 
-  // THE DOOR PANELS and their SILL CAPS, one mesh a side. Without them the
-  // pilot would see the ground through the cabin's side: the tube's wall is
-  // culled from inside and, with the tube hidden, there is no wall at all. The
-  // lower panel stands just inside where the wall was; the upper one leans in
-  // to the glass's base; the cap makes the sill a ledge and not a knife edge.
-  for (const side of [-1, 1] as const) {
-    const wall = (x: number) => side * (interpolate(WALL_HALF_WIDTH, x) - DOOR.inset);
-    const sill = (x: number) => side * (interpolate(SILL_HALF_WIDTH, x) - DOOR.capInset);
-    const { fromX: x0, toX: x1 } = DOOR;
-    const sideName = side < 0 ? "port" : "starboard";
-    const lower = slab(
-      build, `trainer-door-${sideName}-lower`, materials.interior, root,
-      new Vector3(x0, DOOR.bottomY, wall(x0)), new Vector3(x1, DOOR.bottomY, wall(x1)),
-      new Vector3(x0, DOOR.kneeY, wall(x0)), new Vector3(x1, DOOR.kneeY, wall(x1)),
-      DOOR.thickness,
-    );
-    const upper = slab(
-      build, `trainer-door-${sideName}-upper`, materials.interior, root,
-      new Vector3(x0, DOOR.kneeY, wall(x0)), new Vector3(x1, DOOR.kneeY, wall(x1)),
-      new Vector3(x0, 0, sill(x0)), new Vector3(x1, 0, sill(x1)),
-      DOOR.thickness,
-    );
-    const cap = strip(
-      build, `trainer-sill-${sideName}`, materials.interior, root,
-      new Vector3(x0, 0, sill(x0) - side * (DOOR.capWidth / 2)),
-      new Vector3(DOOR.capToX, 0, sill(DOOR.capToX) - side * (DOOR.capWidth / 2)),
-      DOOR.capWidth, DOOR.capThickness,
-    );
-    parts.push(build.mergeStatic(`trainer-door-${sideName}`, [lower, upper, cap], root));
+  // THE DOOR FRAMES (`TRAINER_DOOR_FRAME`), one mesh a side: the rail, the face and the panel. Without them the pilot
+  // would see the ground through the cabin's side: the tube's wall is culled from inside and, with the tube hidden,
+  // there is no wall at all.
+  {
+    const stations = trainerDoorStations();
+    const sections = stations.map(trainerDoorSections);
+    for (const side of [-1, 1] as const) {
+      const sideName = side < 0 ? "port" : "starboard";
+      const at = (x: number, point: { u: number; y: number }) => new Vector3(x, point.y, side * point.u);
+      const sweep = (name: string, which: "face" | "panel") => {
+        const canonical = sections[0]![which];
+        return sweptSolid(
+          build, name, { points: canonical, rounds: [] }, stations.length,
+          (i, point) => {
+            const own = sections[i]![which];
+            const index = canonical.indexOf(point as { u: number; y: number });
+            // one of the section's points, or its middle (for its caps)
+            if (index >= 0) return at(stations[i]!, own[index]!);
+            return at(stations[i]!, { u: own.reduce((sum, p) => sum + p.u, 0) / own.length, y: own.reduce((sum, p) => sum + p.y, 0) / own.length });
+          },
+          (direction) => new Vector3(0, direction.y, side * direction.u),
+          materials.interior, root, { smoothAlong: true },
+        );
+      };
+      const rail = sweptTube(
+        build, `trainer-door-${sideName}-rail`,
+        stations.map((x, i) => at(x, sections[i]!.rail)),
+        stations.map(() => TRAINER_DOOR_FRAME.railRadius),
+        TRAINER_DOOR_FRAME.railSegments, materials.interior, root,
+      );
+      const face = sweep(`trainer-door-${sideName}-face`, "face");
+      const doorPanel = sweep(`trainer-door-${sideName}-panel`, "panel");
+      parts.push(build.mergeStatic(`trainer-door-${sideName}`, [rail, face, doorPanel], root));
+    }
   }
 
   // THE NEEDLES' STEP. Two dials have a needle; the third, "attitude", has the

@@ -621,8 +621,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
     );
     headrest.position.set(1.02, -0.08, side * 0.26);
   }
-  // The panel, the dials, the cowl the pilot sees, the door panels and the
-  // windscreen posts are COCKPIT-ONLY parts, built to angles from the pilot's
+  // The deck and the board, the dials, the cowl the pilot sees, the door frames
+  // and the A-pillars are COCKPIT-ONLY parts, built to angles from the pilot's
   // left-seat eye in `cockpit/trainerCockpit.ts`. They have to be, because the
   // fuselage tube is hidden from the cockpit camera (its top skin is the sill
   // and the eye is above it), so anything that used to show only by being
@@ -630,7 +630,6 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // them invisible until cockpit view is entered and never a shadow caster.
   const cockpit = buildTrainerCockpit(build, root, {
     interior,
-    dark,
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,

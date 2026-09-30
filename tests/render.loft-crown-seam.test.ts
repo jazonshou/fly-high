@@ -308,7 +308,13 @@ describe("a loft's crown seam", () => {
       // `trainer-door-port`/`-starboard` (the sill cap ends at x 1.9); and the eight dial meshes by their world matrix
       // only, the row 4 cm inboard (their vertices are bit-identical). The other 54, and every mesh of the jet, the
       // Global and the 747, are bit-identical.
-      trainer: "27cfab12",
+      // RE-PINNED for the Cessna pass, S3 (same branch, same check, against S1 dfa5598): the door frames, the A-pillars
+      // and the deck's and the board's buried ends. `trainer-door-port`/`-starboard` 72 -> 2,110 vertices (the rail,
+      // the face and the panel), `trainer-glareshield` 756 -> 252 and `trainer-instrument-panel` 852 -> 276 (square
+      // buried ends in place of the fillets); `trainer-windscreen-post-port`/`-starboard` gone, `trainer-a-pillar-port`
+      // /`-starboard` new, all cockpit-only. The trainer's other 60 of 66, and every mesh of the jet, the Global and the
+      // 747, are bit-identical.
+      trainer: "69e4f7c8",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

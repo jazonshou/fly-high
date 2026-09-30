@@ -1004,3 +1004,93 @@ export function roundedCylinder(
   }
   return smoothSheet(build, name, points, normals, material, parent);
 }
+
+/**
+ * A SWEPT TUBE: a round section of `radii[i]` about each point `centres[i]` of a centreline that may turn, and a flat
+ * cap at each end. For a member whose section has to TURN with it (a pillar rising along the glass and running aft
+ * into the roof) where `sweptSolid`, whose section keeps one plane (`across`), cannot follow.
+ *
+ * The rings are carried by ROTATION-MINIMISING frames (double reflection, Wang et al. 2008), so they do not twist
+ * about the centreline and the walls between them stay square. Wound as `solidPlate` winds (a drawn face's cross
+ * product points INTO the solid). Shaded as `sweptSolid` shades a round: every wall vertex takes its ring's radial
+ * normal, tilted along the centreline by the taper, so neighbouring chords share one normal round the tube and along
+ * it: no chord bands, and no facet line where the centreline bends. The caps are flat.
+ */
+export function sweptTube(
+  build: AircraftBuildContext,
+  name: string,
+  centres: readonly Vector3[],
+  radii: readonly number[],
+  segments: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const n = centres.length;
+  if (n < 2 || radii.length !== n || segments < 3) throw new RangeError(`sweptTube "${name}": needs two centres or more, a radius each and three segments or more`);
+  const tangents = centres.map((_, i) => centres[Math.min(n - 1, i + 1)]!.subtract(centres[Math.max(0, i - 1)]!).normalize());
+  const first = tangents[0]!;
+  const frames: Vector3[] = [Vector3.Cross(first, Math.abs(first.y) < 0.9 ? Vector3.Up() : Vector3.Right()).normalize()];
+  for (let i = 0; i + 1 < n; i += 1) {
+    const r = frames[i]!;
+    const t = tangents[i]!;
+    const v1 = centres[i + 1]!.subtract(centres[i]!);
+    const c1 = Vector3.Dot(v1, v1);
+    const rL = r.subtract(v1.scale((2 / c1) * Vector3.Dot(v1, r)));
+    const tL = t.subtract(v1.scale((2 / c1) * Vector3.Dot(v1, t)));
+    const v2 = tangents[i + 1]!.subtract(tL);
+    const c2 = Vector3.Dot(v2, v2);
+    frames.push((c2 < 1e-12 ? rL : rL.subtract(v2.scale((2 / c2) * Vector3.Dot(v2, rL)))).normalize());
+  }
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  const ring = (i: number, k: number) => {
+    const a = (k / segments) * 2 * Math.PI;
+    const normal = frames[i]!;
+    const binormal = Vector3.Cross(tangents[i]!, normal);
+    return normal.scale(Math.cos(a)).add(binormal.scale(Math.sin(a)));
+  };
+  for (let i = 0; i < n; i += 1) {
+    // the taper: the wall leans in by the radius's fall along the centreline, so its normal leans forward as much
+    const [lo, hi] = [Math.max(0, i - 1), Math.min(n - 1, i + 1)];
+    const slope = (radii[lo]! - radii[hi]!) / Vector3.Distance(centres[lo]!, centres[hi]!);
+    for (let k = 0; k < segments; k += 1) {
+      const out = ring(i, k);
+      const p = centres[i]!.add(out.scale(radii[i]!));
+      const shade = out.add(tangents[i]!.scale(slope)).normalize();
+      positions.push(p.x, p.y, p.z);
+      normals.push(shade.x, shade.y, shade.z);
+    }
+  }
+  for (let i = 0; i + 1 < n; i += 1) {
+    for (let k = 0; k < segments; k += 1) {
+      const a = i * segments + k;
+      const b = i * segments + ((k + 1) % segments);
+      const c = (i + 1) * segments + ((k + 1) % segments);
+      const d = (i + 1) * segments + k;
+      indices.push(a, c, b, a, d, c);
+    }
+  }
+  for (const [i, sign] of [[0, -1], [n - 1, 1]] as const) {
+    const base = positions.length / 3;
+    const facing = tangents[i]!.scale(sign);
+    for (const p of [centres[i]!, ...Array.from({ length: segments }, (_, k) => centres[i]!.add(ring(i, k).scale(radii[i]!)))]) {
+      positions.push(p.x, p.y, p.z);
+      normals.push(facing.x, facing.y, facing.z);
+    }
+    for (let k = 0; k < segments; k += 1) {
+      const [p, q] = [base + 1 + k, base + 1 + ((k + 1) % segments)];
+      if (sign < 0) indices.push(base, p, q);
+      else indices.push(base, q, p);
+    }
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = new Array<number>((positions.length / 3) * 2).fill(0);
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
+}

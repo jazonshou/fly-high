@@ -58,7 +58,7 @@ const OFFSETS = [0.37, 0.61] as const;
 
 /** Meshes beyond the 75 degree frame's edge: checked over their own angular extent instead, not left out of the checking. */
 const BEYOND_THE_FRAME: Readonly<Record<AircraftKind, readonly string[]>> = {
-  trainer: ["trainer-windscreen-post-starboard", "trainer-door-starboard"],
+  trainer: ["trainer-a-pillar-starboard", "trainer-door-starboard"],
   jet: [],
   bizjet: [],
   airliner: [],
