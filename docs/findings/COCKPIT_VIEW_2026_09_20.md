@@ -2075,7 +2075,7 @@ and `sweptSolid`'s own doc says so.
 | the cove: no geometric crease; the 1-px step at its rows | 38 | 24 | accepted: no geometric crease; the step is the two albedos |
 | no band under luma 30 wider than 2 px | 13 px | 0 px | met |
 | the ends' blocks, 1-px step | 35 | 21 | accepted |
-| the gap between the MFDs, luma std | 6.3 | 17.5 | the DED's page added (below) |
+| the gap between the MFDs, luma std (gate 20 or more) | 6.3 | 17.5; with the DED's page, 25.3 | met |
 | a dark seal line along the outer edge | none | none | waived: the black coaming is its own edge |
 
 On the cove, 39 to 63 at the round's aft tangent is where the matte meets the panel material. The geometry and the
@@ -2083,7 +2083,9 @@ shading are continuous across it; the step is the two albedos, about 1.6x.
 
 **The DED's page (the S1 amend).** A dark face with two lines in the pages' green, as on the type's CNI page. It is
 drawn once from a 5 x 7 bitmap font into a texture of its own, on the display's recipe (black albedo, the page as its
-emissive, no image light), and is the same bytes with or without a canvas.
+emissive, no image light), and is the same bytes with or without a canvas. The re-capture (day, 1080p, on this branch
+rebased onto 4e5e62f, render scale 0.81) reads both lines, and takes the gap's std from 17.5 to 25.3 (mean 89.3 to
+87.0).
 
 **Seen, not changed: the MFD frames' inboard rims read dashed** at 1080p (frame x 787 and 1131). This is not a
 flush-face fight: no face of the rim lies on the dash. It is the rim's 3 mm outer wall, seen within about 8
