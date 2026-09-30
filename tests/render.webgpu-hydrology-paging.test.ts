@@ -29,9 +29,11 @@ import {
   selectHydrologyRegion,
 } from "../src/render/webgpu/water/HydrologyPaging";
 import { HydrologySystem } from "../src/render/webgpu/water/HydrologySystem";
+import { hydrologyClimateSamplerFor } from "../src/render/webgpu/water/hydrologyClimate";
+import { readSeedFromUrl } from "../src/settings";
+import { createWorld, sampleTerrain } from "../src/world";
 import {
   buildAnalyticRegionMeshArrays,
-  HYDROLOGY_NEUTRAL_CLIMATE,
   isPackedHydrologyRegionGeometry,
   packHydrologyMeshArrays,
   type PackedHydrologyRegionGeometry,
@@ -802,35 +804,35 @@ describe("paged Babylon hydrology residency", () => {
 });
 
 describe("worker-built region geometry (P2b)", () => {
-  const SYSTEM_CONFIG = {
-    atmosphere: ATMOSPHERE,
-    worldSeed: "paged-geometry",
-    extentMeters: 1_200,
-    sourceCandidateSpacingMeters: 300,
-    minimumSourceElevationAboveSeaMeters: 0,
-    minimumSourceSeparationMeters: 220,
-    traceStepMeters: 55,
-    maximumTraceSteps: 36,
-    minimumRiverPoints: 4,
-    maximumRivers: 12,
-    maximumLakes: 3,
-    paging: { transitionSeconds: 0.5 },
-  } as const;
-
   it("installs worker geometry exactly as the main thread would have built it, without sampling the ground", () => {
+    // The real world of ?seed=water9: its airport region holds a lake, and a
+    // lake is what the main thread clips against the ground. (The synthetic
+    // plane above forms no lakes, which would make this assertion vacuous.)
+    const world = createWorld(readSeedFromUrl("http://local/?seed=water9"));
+    const airport = world.airport!;
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const camera = new FreeCamera("geometry-camera", new Vector3(0, 300, -400), scene);
     let groundCalls = 0;
     const counted: HydrologyTerrainSampler = (x, z) => {
       groundCalls += 1;
-      return TERRAIN(x, z);
+      return sampleTerrain(world, x, z);
+    };
+    const options = {
+      atmosphere: ATMOSPHERE,
+      worldSeed: world.seed,
+      terrainSample: counted,
+      seaLevel: world.seaLevel,
+      centerX: airport.centerX,
+      centerZ: airport.centerZ,
+      climateSample: hydrologyClimateSamplerFor(world),
     };
     const mainClient = new DeferredGenerationClient();
     const workerClient = new DeferredGenerationClient();
-    const main = new HydrologySystem(scene, camera, { ...SYSTEM_CONFIG, terrainSample: counted, generationClient: mainClient });
-    const worker = new HydrologySystem(scene, camera, { ...SYSTEM_CONFIG, terrainSample: counted, generationClient: workerClient });
-    const observer = { x: 380, z: 0, velocityX: 0, velocityZ: 0 };
+    // No synchronous first region: both systems request it through the client.
+    const main = new HydrologySystem(scene, camera, { ...options, generationClient: mainClient }, false);
+    const worker = new HydrologySystem(scene, camera, { ...options, generationClient: workerClient }, false);
+    const observer = { x: airport.centerX, z: airport.centerZ, velocityX: 0, velocityZ: 0 };
     main.update(10, camera.position, observer);
     worker.update(10, camera.position, observer);
     const mainRequest = mainClient.latest!;
@@ -838,13 +840,14 @@ describe("worker-built region geometry (P2b)", () => {
     expect(workerRequest.request.buildGeometry).toBe(true);
     const hydrology = generateHydrology({
       ...workerRequest.request.options,
-      worldSeed: "paged-geometry",
-      terrainSample: TERRAIN,
+      worldSeed: world.seed,
+      terrainSample: (x, z) => sampleTerrain(world, x, z),
     });
+    expect(hydrology.lakes.length, "the fixture region must hold a lake").toBeGreaterThan(0);
     const arrays = buildAnalyticRegionMeshArrays(
       hydrology,
-      (x, z) => TERRAIN(x, z).height,
-      () => HYDROLOGY_NEUTRAL_CLIMATE,
+      (x, z) => sampleTerrain(world, x, z).height,
+      hydrologyClimateSamplerFor(world),
       hydrology.config.seaLevel,
     );
     const geometry = { rivers: packHydrologyMeshArrays(arrays.rivers), lakes: packHydrologyMeshArrays(arrays.lakes) };
@@ -854,8 +857,8 @@ describe("worker-built region geometry (P2b)", () => {
     const mainGroundCalls = groundCalls;
     groundCalls = 0;
     workerClient.complete(workerRequest.id, hydrology, geometry);
+    expect(mainGroundCalls, "the main path clips lakes against the ground").toBeGreaterThan(1_000);
     expect(groundCalls, "the worker path must not clip lakes on the main thread").toBe(0);
-    if (hydrology.lakes.length > 0) expect(mainGroundCalls).toBeGreaterThan(0);
 
     for (const kind of ["riverMesh", "lakeMesh"] as const) {
       const a = main[kind];
@@ -869,18 +872,17 @@ describe("worker-built region geometry (P2b)", () => {
       }
       expect(Array.from(b.getIndices()!), `${kind} indices`).toEqual(Array.from(a.getIndices()!));
     }
+    expect(main.lakeMesh, "the lake mesh was compared").not.toBeNull();
     expect(worker.getStatistics()).toMatchObject({
       vertexCount: main.getStatistics().vertexCount,
       triangleCount: main.getStatistics().triangleCount,
       lastGenerationUsedWorker: true,
     });
-    // Non-vacuity: the region drew water.
-    expect(main.getStatistics().vertexCount).toBeGreaterThan(0);
     main.dispose();
     worker.dispose();
     scene.dispose();
     engine.dispose();
-  });
+  }, 30_000);
 
   it("packs indices at the width Babylon would choose for the same numbers", () => {
     const small = packHydrologyMeshArrays({
