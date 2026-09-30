@@ -2,7 +2,7 @@
 
 Reported by the PM from a Cessna mid-course frame (world V4HYQQ, scenic, in the air, cockpit view): a faint, lighter,
 smoother rectangle on the ground at a shore, with straight edges. Branch `jazonshou/far-sward-soft-gate` from
-Fix-Cockpits 7fc2280. Step 1 (Node) is 9663f2e. Step 2 (GPU) is pending.
+Fix-Cockpits 7fc2280. Step 1 (Node) is 9663f2e; step 2 (GPU, the PM's slot, 2026-09-30 03:14-03:44) is cb9eb1c.
 
 ## Where the patch is
 
@@ -78,10 +78,13 @@ can differ from the twin.
 
 **Loads on the zero-trust branch:**
 - cheap: 3 (ids and both weight buckets);
-- soft: 7 (the same 3 and the four gate alphas);
-- 10 only in a cell where a refused nearest texel sits beside an eligible one.
+- soft: the same 3, and ONE gather of the four corners' gate alphas (step 1 used four loads; see the price
+  below);
+- 3 more only in a cell where a refused nearest texel sits beside an eligible one.
 
-All are texel loads, with no new texture, sampler or atlas byte. These fragments are most of a cruise frame. **The Low
+No new texture, sampler or atlas byte: the gather uses the high weight bucket's existing sampler. It is taken at
+the corners' shared point, (corner + 1) / edge, so the footprint is exactly the four corners whatever the sampler's
+sub-texel precision, and mapped out of WGSL's (umin, vmax), (umax, vmax), (umax, vmin), (umin, vmin) order. These fragments are most of a cruise frame. **The Low
 tier does not take the branch at all**: its two-material cap leaves `TERRAIN_SURFACE_THREE_MATERIALS` undefined, so the
 far read compiles out for cheap and soft alike, and nothing here interacts with the Low-tier performance work.
 
@@ -111,7 +114,8 @@ Cheap is the positive control, pinned above 4. Soft is pinned at 1 or less.
 - Soft is bit-identical to cheap where all four texels are eligible (LIVERY's dry pairs, a negligible Dry/Sand pair
   among them) and where all four are refused, over 28 fractions.
 - The season bits, and the gate on the quantised weights: a near-tie that flips the pair when decoded.
-- The soft read's load structure: four gate loads, and a second pair only behind a refused nearest texel.
+- The soft read's load structure: one gather of the four gates at their shared point, in WGSL's corner order, and a
+  second pair only behind a refused nearest texel.
 - `tests/gpu/terrain-surface-compile.test.ts` compiles the CDLOD + page-channel path once per read (cheap, soft, off)
   and checks the compiled source for the read the dial asked for, and only that one. It runs on the GPU in step 2.
 
@@ -134,18 +138,60 @@ pair read's own limit, not the gate's. At V4HYQQ, Grass/DryGrass 0.50 against Dr
 levels. Removing it needs a bilinear pair read (the 12-load gather) or GROUND_NEAR_FIELD_D's biome-tone map. It is out
 of V-4's scope by the PM's ruling, and recorded here.
 
-## Step 2 (GPU): pending the PM's grant
+## Step 2 (GPU, the PM's slot, 2026-09-30)
 
-1. The compile test above, with the soft define.
-2. Price off, cheap and soft at cruise, 1080p medium. The bar is soft minus cheap at 0.10 ms GPU or less. If the
-   7-load read misses it, try one `textureGather` of the four gate alphas (3 + 1) before the no-load fallback, a
-   noise-mottled threshold.
-3. One frame at `?seed=v4hyqq&farSward=soft`, and the same pose at cheap.
-4. One soft-against-cheap capture on the same build, for the true list of shots that move, with per-shot deltas
-   against the gates and no promotion.
+Host load average 3.6 at the start, 2.3-4.4 while pricing, 2.3-3.0 during the full captures, 2.5 at the end.
 
-Estimated before measuring, from each shot's height, pitch and view: soft changes pixels only within about ±64 m of an
-eligible/refused line on level-5 and coarser pages, so in thin bands at least about 2 km out.
-- **Likely to trip a gate:** coast-10km-lowsun, slant-10km, cruise-horizon, cruise-sun-30, high-10000ft-down,
-  horizon-shadow-far-annulus, sunset-sunward, golden-hour.
-- **Not expected to move:** the three night shots, and the ground and near shots.
+**Compile.** `tests/gpu/terrain-surface-compile.test.ts` passes 9 of 9, with the CDLOD + page-channel path compiled
+for cheap, soft and off. Each compiled source holds only its own read, with no GPU errors. It passes again after the
+gather change.
+
+**Price.** cruise-horizon at 1920 × 1080, medium (render scale 0.86), `VITE_PERF_GPU_TIMING=1`, one build, rounds of
+12 interleaved runs. The figure is the median of the main pass's GPU milliseconds. Three runs of 24 read 1.4-1.7 ms,
+the known per-pass timing drop-out, and are excluded.
+
+| read | off | cheap | soft | soft - cheap |
+|---|---|---|---|---|
+| soft by four loads | 4.94 | 5.11 | 5.25 | +0.14 (misses the 0.10 bar) |
+| soft by one gather | 4.92 | 5.21 | 5.23 | +0.016 (cheap 5.06-5.28, soft 5.19-5.25) |
+
+The gather passes, so the no-load fallback was not needed.
+
+Wall-clock frame time disagrees. The fps medians were cheap 88.3 and soft 86.8, +0.19 ms a frame, and the same run to
+run; the four-load round gave +0.245. This host is not GPU-bound (a frame about 11.4 ms against about 5.9 ms of GPU
+work), and these numbers cannot attribute the difference to the GPU pass. It is recorded, not explained.
+
+On the same runs cheap costs +0.29 ms of GPU over off: its own price, which GROUND_NEAR_FIELD_D still lists as
+unpriced.
+
+**Frames.** Taken at `?seed=v4hyqq`, with the camera parked at the mid-course frame's recorded camera: render
+position (1640.00, 951.02, -441.98), the aircraft's attitude, a 75° horizontal lens. The simulation was paused 16 s
+in, under the same 2048 m origin, at medium quality and render scale 0.850 in both arms.
+- The cheap frame reproduces the reported rectangle exactly.
+- In the soft frame the coastal strip fades into the mottled ground with no straight edge.
+- The whole-frame difference is 11 031 pixels over 3/255, the largest 33. All of it lies in thin bands along
+  coastlines (the patch, the inlet's shore, distant coasts near the horizon), except animated sea foam, which moves
+  between any two captures.
+
+**The shots that move.** The full canonical capture was taken once per arm on one build (`VITE_PERF_FAR_SWARD`,
+unpinned host), with no promotion and no baseline written.
+- Both arms pass every gate on all 39 shots: SSIM, RGB, lower-frame and worst-tile, against the committed baselines.
+- Arm to arm (`scripts/perf-arm-compare.mts`), lake-island-piercing is bit-identical and 38 shots move, all in thin
+  bands:
+  - cruise-horizon 4.2 % of pixels (largest 25/255);
+  - high-10000ft-down 3.0 %;
+  - cruise-sun-30 2.6 %;
+  - slant-10km 1.8 % (largest 26/255);
+  - forest-500ft-sunbehind 1.4 %;
+  - the rest 0.1-1.1 %, and seven under 0.1 %.
+- canopy-1200ft, grove-forest-2m and veg-seam-near-500ft moved by 2/255 or less on under 0.01 % of pixels. Only a
+  cheap-against-cheap control could say whether that is noise.
+- The largest SSIM drop, soft against cheap, is -0.0032 on high-10000ft-down's worst tile (gate 0.72). Whole-frame SSIM
+  moves by 0.0004 at most.
+- The tightest soft margin anywhere is +0.0094 (forest-500ft-sunbehind, whole-frame SSIM against 0.985), the same as
+  cheap's.
+
+The estimate made before measuring, about eight gate trips, was too pessimistic: none trip.
+
+**Default.** Still cheap. Whether soft becomes the default, and any promotion after it, is the PM's decision on these
+numbers. No gate forces a promotion, though 38 frames differ from the committed baselines pixel for pixel.
