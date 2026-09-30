@@ -96,7 +96,8 @@ far read compiles out for cheap and soft alike, and nothing here interacts with 
 - `VITE_PERF_FAR_SWARD` in the perf harness. The report records it as `farSwardRead`, and it is refused together with
   `VITE_PERF_REBASELINE`.
 
-The default stays cheap until soft is priced.
+Soft is the default since step 2 (the PM's decision on the price below). Cheap and off stay selectable; the
+step-1 four-load form of soft is gone, replaced by the gather.
 
 ## Pins (`tests/render.far-sward-soft-gate.test.ts`)
 
@@ -157,12 +158,17 @@ the known per-pass timing drop-out, and are excluded.
 
 The gather passes, so the no-load fallback was not needed.
 
-Wall-clock frame time disagrees. The fps medians were cheap 88.3 and soft 86.8, +0.19 ms a frame, and the same run to
-run; the four-load round gave +0.245. This host is not GPU-bound (a frame about 11.4 ms against about 5.9 ms of GPU
-work), and these numbers cannot attribute the difference to the GPU pass. It is recorded, not explained.
+**OPEN: wall-clock frame time disagrees, unexplained.**
+- The fps medians were cheap 88.3 and soft 86.8: +0.19 ms a frame, the same run to run. The four-load round gave
+  +0.245.
+- This host is not GPU-bound: a frame is about 11.4 ms against about 5.9 ms of GPU work. The main pass moves 0.016 ms,
+  so these numbers cannot attribute the difference to it.
+- What would settle it: first a cheap-against-cheap A/A on the same harness and shot, to find the fps floor between
+  identical arms. Then, if the difference outlives that floor, a per-pass breakdown of soft against cheap.
+- It was not run. It would not change the decision: the Low tier compiles the branch out, and the defect showed from
+  every cruise.
 
-On the same runs cheap costs +0.29 ms of GPU over off: its own price, which GROUND_NEAR_FIELD_D still lists as
-unpriced.
+On the same runs cheap costs +0.17 and +0.29 ms of GPU over off, its own price, now recorded in GROUND_NEAR_FIELD_D.
 
 **Frames.** Taken at `?seed=v4hyqq`, with the camera parked at the mid-course frame's recorded camera: render
 position (1640.00, 951.02, -441.98), the aircraft's attitude, a 75° horizontal lens. The simulation was paused 16 s
@@ -193,5 +199,18 @@ unpinned host), with no promotion and no baseline written.
 
 The estimate made before measuring, about eight gate trips, was too pessimistic: none trip.
 
-**Default.** Still cheap. Whether soft becomes the default, and any promotion after it, is the PM's decision on these
-numbers. No gate forces a promotion, though 38 frames differ from the committed baselines pixel for pixel.
+**Decided (the PM, 2026-09-30): soft ships as the default, and NO baseline is promoted.** Both arms pass every gate on
+all 39 shots, so the committed baselines stand.
+
+The five largest movers, soft against cheap:
+
+| shot | pixels changed | largest change |
+|---|---|---|
+| cruise-horizon | 4.2 % | 25/255 |
+| high-10000ft-down | 3.0 % | 11/255 |
+| cruise-sun-30 | 2.6 % | 19/255 |
+| slant-10km | 1.8 % | 26/255 |
+| forest-500ft-sunbehind | 1.4 % | 14/255 |
+
+The tightest margin to any gate under soft is +0.0094 (forest-500ft-sunbehind, whole-frame SSIM against 0.985), the
+same as cheap's. The largest SSIM drop is -0.0032 on high-10000ft-down's worst tile (gate 0.72).
