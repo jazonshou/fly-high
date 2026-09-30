@@ -423,6 +423,7 @@ describe("the atlas", () => {
     // its tachometer and engine cluster (S2b)
     "trainer-tach": "25",
     "trainer-engine": "FUEL",
+    "trainer-compass": "N",
   };
 
   it("clips each of six slots to its rectangle and draws its page's text inside it", () => {

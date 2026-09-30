@@ -43,6 +43,7 @@ import {
   drawTrainerAsi,
   drawTrainerAttitudeRing,
   drawTrainerCom,
+  drawTrainerCompassCard,
   drawTrainerEngine,
   drawTrainerNav,
   TRAINER_RADIO_TEXT,
@@ -184,9 +185,9 @@ describe("the trainer's cockpit parts", () => {
     ]);
     expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle", "trainer-tach-needle"]);
     expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
-    // 15 when the Cessna pass began, the headliner (S4), the yokes (S6) and the tachometer's needle (S2b) since: the
-    // PM's budget is 8 more draws over the pass
-    expect(parts).toHaveLength(18);
+    // 15 when the Cessna pass began, the headliner (S4), the yokes (S6), the tachometer's needle (S2b) and the compass's
+    // card (S7) since: the PM's budget is 8 more draws over the pass
+    expect(parts).toHaveLength(19);
   });
 
   it("are within the pass's budget of eight more meshes than its first 15, and keep the dial names", () => {
@@ -202,6 +203,7 @@ describe("the trainer's cockpit parts", () => {
     expect(others).toEqual([
       "trainer-a-pillar-port",
       "trainer-a-pillar-starboard",
+      "trainer-compass-card",
       "trainer-cowl-standin",
       "trainer-door-port",
       "trainer-door-starboard",
@@ -1665,6 +1667,7 @@ describe("the Cessna's overhead", () => {
     height: H,
   };
   const drawn = () => scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+  const slots = new Map(displaySlots(TRAINER_DISPLAYS).map((slot) => [slot.screen, slot]));
   const pixelsOf = (meshes: AbstractMesh[], mesh: AbstractMesh) => {
     const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
     const index = meshes.indexOf(mesh);
@@ -1680,11 +1683,15 @@ describe("the Cessna's overhead", () => {
     for (const name of [
       "trainer-headliner", "trainer-panel-fittings", "trainer-dial-bezels", "trainer-dial-faces",
       "trainer-door-port", "trainer-a-pillar-port", "trainer-glareshield", "trainer-instrument-panel",
-      "trainer-yokes",
+      "trainer-yokes", "trainer-compass-card",
     ]) {
       const mesh = named(name);
       const v = worldVertices(mesh);
-      const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+      // the normals in the world as the positions are: the compass's card (S7) turns with the heading
+      const local = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+      const world = mesh.getWorldMatrix();
+      const normals = Array.from({ length: local.length / 3 }, (_, i) => Vector3.TransformNormal(new Vector3(local[i * 3]!, local[i * 3 + 1]!, local[i * 3 + 2]!), world).normalize())
+        .flatMap((n) => [n.x, n.y, n.z]);
       const indices = mesh.getIndices()!;
       let worst = 1;
       for (let t = 0; t < indices.length; t += 3) {
@@ -1781,22 +1788,22 @@ describe("the Cessna's overhead", () => {
     expect(firstHit(0, azel(front).el + 0.5)?.mesh.name, "the visor's underside is what the eye meets just over its front").toBe("trainer-headliner");
   });
 
-  it("hangs the compass, a 60 x 60 x 70 mm box with 8 mm round edges, just under the glass on a stalk up into the centre strip, in the frame over the windscreen", () => {
+  it("hangs the compass, a 60 x 46 x 70 mm box, just under the glass on a stalk up into the centre strip, in the frame over the windscreen", () => {
     const merged = named("trainer-panel-fittings").metadata?.mergedFrom as string[];
     expect(merged).toEqual(expect.arrayContaining(["trainer-compass", "trainer-compass-stalk"]));
     const c = TRAINER_OVERHEAD.compass;
     const centre = trainerCompassCentre();
     const box = worldVertices(named("trainer-panel-fittings")).filter((p) => Math.abs(p.x - centre.x) <= c.depth / 2 + 1e-6 && Math.abs(p.y - centre.y) <= c.height / 2 + 1e-6 && Math.abs(p.z) <= c.width / 2 + 1e-6);
     expect(Math.max(...box.map((p) => p.z)) - Math.min(...box.map((p) => p.z)), "60 mm across").toBeCloseTo(c.width, 4);
-    expect(Math.max(...box.map((p) => p.y)) - Math.min(...box.map((p) => p.y)), "60 mm high").toBeCloseTo(c.height, 4);
+    expect(Math.max(...box.map((p) => p.y)) - Math.min(...box.map((p) => p.y)), "46 mm high (60 before S7)").toBeCloseTo(c.height, 4);
     expect(Math.max(...box.map((p) => p.x)) - Math.min(...box.map((p) => p.x)), "70 mm deep").toBeCloseTo(c.depth, 4);
     // in the frame, over the windscreen, right of dead ahead
     const q = projectPoint(pin, centre);
     expect(q.x).toBeGreaterThan(W / 2);
     expect(q.x).toBeLessThan(W);
-    // its centre's elevation: +2.85 under the S4 crown member; the survey placed it at +3.9 as a screen row, which is
-    // +3.5 here (this is off the eye's own line, 24 degrees right)
-    expect(azel(centre).el, "its centre's elevation").toBeGreaterThan(3.1);
+    // its centre's elevation: +2.85 under the S4 crown member, +3.24 hung by the glass (S5), and higher since the box is
+    // 46 mm high (S7), its top where it was; the survey placed it at +3.9 as a screen row
+    expect(azel(centre).el, "its centre's elevation").toBeGreaterThan(3.5);
     // UNDER THE GLASS: its top 5 mm under the glass's crown over its front face. The strip it hangs from stands 7 mm
     // outside the glass there; hung from the strip's underside, the box would be 3 mm through it.
     const glassTop = (x: number) => {
@@ -1817,6 +1824,105 @@ describe("the Cessna's overhead", () => {
     const up = scene.pickWithRay(new Ray(stalkTop.subtract(new Vector3(0, 0.1, 0)), new Vector3(0, 1, 0), 0.2), (m) => m === frame);
     expect(down?.pickedPoint?.y, "the frame's top over the stalk's top").toBeGreaterThan(stalkTop.y);
     expect(up?.pickedPoint?.y, "the frame's underside under the stalk's top").toBeLessThan(stalkTop.y);
+  });
+
+  // ---- the compass's face (S7) ----
+  const compass = () => {
+    const c = TRAINER_OVERHEAD.compass;
+    const centre = trainerCompassCentre();
+    return { c, centre, aft: centre.add(new Vector3(-c.depth / 2, 0, 0)) };
+  };
+
+  it("gives the compass a window in its aft face, ringed in the dials' section 8 mm inside the face, and a lubber line down it", () => {
+    const { c, centre, aft } = compass();
+    const w = c.window;
+    expect(named("trainer-dial-bezels").metadata?.mergedFrom).toEqual(expect.arrayContaining(["trainer-compass-bezel", "trainer-compass-lubber"]));
+    expect(w.corner, "the window's corners, round").toBeGreaterThanOrEqual(0.003);
+    // the ring, off the built bezels mesh: its vertices on the box's aft face and forward of it, round the window
+    const ring = worldVertices(named("trainer-dial-bezels")).filter((p) => Math.abs(p.x - aft.x - 0.006) < 0.0101 && Math.abs(p.z) < c.width / 2 && Math.abs(p.y - centre.y) < c.height / 2);
+    expect(ring.length, "the ring's vertices").toBeGreaterThan(50);
+    const outer = { z: Math.max(...ring.map((p) => Math.abs(p.z))), y: Math.max(...ring.map((p) => Math.abs(p.y - centre.y))) };
+    expect(c.width / 2 - outer.z, "the ring inside the aft face, across, metres").toBeGreaterThanOrEqual(0.003);
+    expect(c.height / 2 - outer.y, "the ring inside the aft face, up, metres").toBeGreaterThanOrEqual(0.003);
+    // the proud front of the ring round an opening 32 x 18 mm: its front vertices (3 mm out of the face) run from the
+    // opening's edge, inside by the inner chamfer
+    // (its straight runs have vertices only at their ends, where the corners start)
+    const front = ring.filter((p) => Math.abs(p.x - (aft.x - TRAINER_BEZEL.proud)) < 1e-5);
+    const sides = front.filter((p) => Math.abs(p.y - centre.y) <= w.halfHeight - w.corner + 1e-6);
+    expect(sides.length, "the front's vertices along the opening's sides").toBeGreaterThanOrEqual(4);
+    expect(Math.min(...sides.map((p) => Math.abs(p.z))), "the opening's half-width at the front").toBeCloseTo(w.halfWidth + TRAINER_BEZEL.innerChamfer, 5);
+    // the lubber line: a rod down the window's middle, in front of the card's face and behind the box's
+    const lubber = worldVertices(named("trainer-dial-bezels")).filter((p) => Math.abs(p.z) < c.lubber.width && Math.abs(p.y - centre.y) < w.halfHeight && p.x > aft.x + 0.003 && p.x < aft.x + c.drum.recess);
+    // (its middle ring of 8; its ends are buried in the ring, above and below the window)
+    expect(lubber.length, "the lubber line's vertices in the window").toBeGreaterThanOrEqual(8);
+  });
+
+  it("turns the card with the heading: N under the lubber line at 0, and 3, E, S, W and 33 at 30, 90, 180, 270 and 330", () => {
+    const card = named("trainer-compass-card");
+    expect(card.material, "the card is on the faces' material").toBe(named(TRAINER_DISPLAYS.screensMesh).material);
+    const slot = slots.get("compass")!;
+    const atlas = { w: displayAtlasWidth(TRAINER_DISPLAYS), h: displayAtlasHeight(TRAINER_DISPLAYS) };
+    // the page's numerals, each with its row (0 the slot's top half, 1 its bottom) and x in the slot
+    const ctx = createRecordingContext();
+    drawTrainerCompassCard(ctx, slot.w, slot.h, DISPLAY_STATE_LEVEL);
+    const labels = transformedPoints(ctx.calls).filter((p) => p.method === "fillText").map((p) => ({ text: p.text!, row: p.y < slot.h / 2 ? 0 : 1, x: p.x }));
+    expect(labels.length).toBeGreaterThanOrEqual(12);
+    const positions = card.getVerticesData(VertexBuffer.PositionKind)!;
+    const normals = card.getVerticesData(VertexBuffer.NormalKind)!;
+    const uvs = card.getVerticesData(VertexBuffer.UVKind)!;
+    try {
+      for (const [heading, expected] of [[0, "N"], [30, "3"], [90, "E"], [180, "S"], [270, "W"], [330, "33"]] as const) {
+        aircraft.update({ ...INITIAL_VISUAL_STATE, heading }, 1 / 60);
+        card.computeWorldMatrix(true);
+        const world = card.getWorldMatrix();
+        // the card's side under the lubber line: its most-aft wall vertex (the lubber line is on the drum's aft line)
+        let best = -1;
+        let aftMost = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < positions.length / 3; i += 1) {
+          // the wall's top rim: its v is its row's top, clear of the boundary between the rows its bottom rim sits on
+          if (Math.abs(normals[i * 3 + 1]!) > 0.5 || positions[i * 3 + 1]! < 0) continue;
+          const p = Vector3.TransformCoordinates(new Vector3(positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!), world);
+          if (p.x < aftMost - 1e-9) { aftMost = p.x; best = i; }
+        }
+        const u = uvs[best * 2]! * atlas.w - slot.x;
+        const row = uvs[best * 2 + 1]! * atlas.h - slot.y < slot.h / 2 ? 0 : 1;
+        const nearest = labels.filter((l) => l.row === row).reduce((a, b) => (Math.abs(b.x - u) < Math.abs(a.x - u) ? b : a));
+        expect(nearest.text, `heading ${heading}: under the lubber line`).toBe(expected);
+        expect(Math.abs(nearest.x - u), `heading ${heading}: the numeral's offset from the lubber line, px of the slot`).toBeLessThan(2);
+      }
+    } finally {
+      aircraft.update(INITIAL_VISUAL_STATE, 1 / 60);
+    }
+  });
+
+  it("keeps the card inside the compass: every vertex within its walls, and from the seat seen only through the window", () => {
+    const { c, centre, aft } = compass();
+    const card = named("trainer-compass-card");
+    for (const heading of [0, 45]) {
+      aircraft.update({ ...INITIAL_VISUAL_STATE, heading }, 1 / 60);
+      for (const p of worldVertices(card)) {
+        expect(Math.abs(p.z - centre.z), "inside the box, across").toBeLessThan(c.width / 2 - 0.002);
+        expect(Math.abs(p.y - centre.y), "inside the box, up").toBeLessThan(c.height / 2 - 0.002);
+        expect(p.x, "behind the box's aft face").toBeGreaterThan(aft.x + 0.002);
+        expect(p.x, "ahead of its front").toBeLessThan(aft.x + c.depth - 0.002);
+      }
+    }
+    aircraft.update(INITIAL_VISUAL_STATE, 1 / 60);
+    const meshes = drawn();
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const index = meshes.indexOf(card);
+    const corners = [-1, 1].flatMap((sz) => [-1, 1].map((sy) => projectPoint(pin, aft.add(new Vector3(0, sy * c.window.halfHeight, sz * c.window.halfWidth)))));
+    const box = { x0: Math.min(...corners.map((q) => q.x)) - 2, x1: Math.max(...corners.map((q) => q.x)) + 2, y0: Math.min(...corners.map((q) => q.y)) - 2, y1: Math.max(...corners.map((q) => q.y)) + 2 };
+    let seen = 0;
+    let outside = 0;
+    for (let i = 0; i < raster.mesh.length; i += 1) {
+      if (raster.mesh[i] !== index) continue;
+      seen += 1;
+      const [x, y] = [i % W, Math.floor(i / W)];
+      if (x < box.x0 || x > box.x1 || y < box.y0 || y > box.y1) outside += 1;
+    }
+    expect(seen, "the card's pixels through the window").toBeGreaterThan(500);
+    expect(outside, "card pixels outside the window's opening").toBe(0);
   });
 });
 
@@ -1856,9 +1962,13 @@ describe("the Cessna's yokes", () => {
     return [top(own.filter((p) => p.z < hubZ)), top(own.filter((p) => p.z > hubZ))] as const;
   };
 
-  it("builds a yoke for each seat, one mesh on the fittings' dark: each hub under its eye, 0.32 m aft of the board, raised 4 cm", () => {
+  it("builds a yoke for each seat, one mesh on a matte of its own: each hub under its eye, 0.32 m aft of the board, raised 4 cm", () => {
     const mesh = named("trainer-yokes");
-    expect((mesh.material as PBRMaterial).name).toBe("trainer-dark");
+    // matte (S7): on the fittings' glossy dark the horns carried a specular hot spot
+    const material = mesh.material as PBRMaterial;
+    expect(material.name).toBe("trainer-yoke");
+    expect(material.roughness, "matte").toBeGreaterThanOrEqual(0.9);
+    expect(material.metallic, "not metal").toBe(0);
     expect(mesh.metadata?.mergedFrom).toEqual([
       ...["port", "starboard"].flatMap((side) => ["wheel", "boss", "column", "collar"].map((part) => `trainer-yoke-${side}-${part}`)),
     ]);
@@ -1899,7 +2009,44 @@ describe("the Cessna's yokes", () => {
     }
   });
 
-  it("keeps the pilot's horns 1.5 cm or more off the door's inner face", () => {
+  it("shapes each horn as a grip 22 mm across the view and 30 fore and aft, capped low, and no wider than 85 px at 1080p", () => {
+    // S7, the PM: round 30 mm grips with hemispherical tops read as two domed bollards, about 105 px wide
+    const y = TRAINER_YOKE;
+    const hub = trainerYokeHub(-1);
+    for (const gz of [hub.z - y.grip, hub.z + y.grip]) {
+      const horn = yokes().filter((p) => Math.abs(p.z - gz) < 0.03 && p.y > hub.y + 0.02);
+      const grip = horn.filter((p) => p.y < hub.y + 0.06);
+      expect(Math.max(...grip.map((p) => Math.abs(p.z - gz))), "across the view").toBeCloseTo(y.gripHalfWidth, 5);
+      expect(Math.max(...grip.map((p) => Math.abs(p.x - hub.x))), "fore and aft").toBeCloseTo(y.gripHalfDepth, 5);
+      // the cap: from the highest vertex of the full section to the top, at most 0.4 of the half-width
+      const top = Math.max(...horn.map((p) => p.y));
+      const full = Math.max(...horn.filter((p) => Math.abs(p.z - gz) >= y.gripHalfWidth - 1e-5).map((p) => p.y));
+      expect((top - full) / y.gripHalfWidth, "the cap's height over the half-width").toBeLessThanOrEqual(0.4);
+      // (the cap's last ring is at 87 degrees, 5 microns under the ellipse's top)
+      expect(top - hub.y, "the horn's top where it was").toBeCloseTo(y.gripTop, 4);
+    }
+    // on the screen: each horn's widest run of yoke pixels, over its rows in the frame
+    const meshes = scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+    const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+    const index = meshes.indexOf(named("trainer-yokes"));
+    for (const top of hornTops(-1)) {
+      const column = Math.round(projectPoint(pin, top).x);
+      let widest = 0;
+      for (let row = Math.ceil(projectPoint(pin, top).y); row < H; row += 1) {
+        let run = 0;
+        for (let x = Math.max(0, column - 80); x <= Math.min(W - 1, column + 80); x += 1) {
+          run = raster.mesh[row * W + x] === index ? run + 1 : 0;
+          widest = Math.max(widest, run);
+        }
+      }
+      expect(widest, "a horn's width on the screen, px").toBeGreaterThan(40);
+      expect(widest, "a horn's width on the screen, px").toBeLessThanOrEqual(85);
+    }
+  });
+
+  it("keeps the pilot's horns 1.3 cm or more off the door's inner face", () => {
+    // 1.64 cm with S6's hemispherical tops; 1.40 since the flatter caps (S7) keep the grip's full width to 4 mm under its
+    // top, where the door's rail comes a centimetre inboard
     const door = named("trainer-door-port");
     let least = Number.POSITIVE_INFINITY;
     const outboard = yokes().filter((p) => p.z < -TRAINER_YOKE.hubZ - TRAINER_YOKE.grip + 0.02);
@@ -1908,7 +2055,7 @@ describe("the Cessna's yokes", () => {
       const hit = scene.pickWithRay(new Ray(new Vector3(p.x, p.y, EYE.right), new Vector3(0, 0, -1), 1), (m) => m === door);
       if (hit?.pickedPoint) least = Math.min(least, p.z - hit.pickedPoint.z);
     }
-    expect(least, "least gap to the door, metres").toBeGreaterThan(0.015);
+    expect(least, "least gap to the door, metres").toBeGreaterThan(0.013);
   });
 
   it("brings each column into the board under the switch row, clear of it and of the dials, and buries it there", () => {

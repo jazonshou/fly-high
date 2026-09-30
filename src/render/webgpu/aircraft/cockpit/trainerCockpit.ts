@@ -2,6 +2,7 @@ import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
@@ -26,6 +27,7 @@ import {
   glareshieldMaterial,
   loopSolid,
   roundedDeckSection,
+  solidPlate,
   sweptSolid,
   sweptTube,
   type LoopProfile,
@@ -73,8 +75,13 @@ import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, 
 export interface TrainerCockpitMaterials {
   /** Dark matte interior: the panel board, the door frames and the A-pillars. (The hood has its own: `glareshieldMaterial`.) */
   readonly interior: PBRMaterial;
-  /** The panel's fittings: the radios' bodies and knobs, the switches, and the compass; and the yokes. */
+  /** The panel's fittings: the radios' bodies and knobs, the switches, and the compass. */
   readonly dark: PBRMaterial;
+  /**
+   * The yokes (S7): matte, a little lighter than the board, with no specular hot spot. On the fittings' glossy dark
+   * they read 1.6 to 1.9 times the board's luma in the day frame, and the column's collar 2.9 times.
+   */
+  readonly yoke: PBRMaterial;
   /** The headliner and the sun visors: the cabin's fabric. */
   readonly headliner: PBRMaterial;
   readonly instrumentFace: PBRMaterial;
@@ -215,15 +222,18 @@ export function trainerEngineClusterFrame(): PartFrame {
 export const TRAINER_COWL_LIP = Object.freeze({ radius: 0.015, steps: 4 });
 
 /**
- * THE YOKES (S6): a ram's-horn wheel on a column for each seat, as a 150's are, one mesh on the fittings' dark.
+ * THE YOKES (S6): a ram's-horn wheel on a column for each seat, as a 150's are, one mesh on a matte of its own (S7).
  *
  * ON TYPE the pilot's hub is under the eye, 0.32 m aft of the board and 0.25 m below the eye (y -0.13), and each horn
  * rises 0.08 over it: the horn tops stand at -24.7 degrees, 35 px under the bottom of the 16:9 frame, and the cockpit
  * camera, fixed and level, shows no yoke at all. So both yokes are RAISED 4 cm (`raise`), which puts the pilot's horn
  * tops about 100 px up from the frame's bottom. Nothing else of them is in the frame.
  *
- * THE WHEEL is one tube from horn tip to horn tip: each horn a grip standing straight up, domed at its top, bending at
+ * THE WHEEL is one tube from horn tip to horn tip: each horn a grip standing straight up, capped at its top, bending at
  * its foot into an arm that rises 15 degrees inboard to the hub, where the two arms meet over a fillet inside the boss.
+ * The grip is a flattened section, 22 mm across the view and 30 mm fore and aft, as a hand holds it, and its cap is a
+ * low ellipsoid, 4 mm high: round 30 mm grips with hemispherical tops read as two domed bollards in the first frame,
+ * about 105 px wide at 1080p (S7, the PM).
  *
  * IT IS NARROWER THAN TYPE. The door's inner face stands 12.5 cm outboard of the eye at the horn tops' height (|z|
  * 0.385 at y -0.01), so horns 0.15 either side of a hub under the eye would be about 3 cm into the door. The hub stays
@@ -244,7 +254,11 @@ export const TRAINER_YOKE = Object.freeze({
   /** Each grip's axis this far either side of its hub; the horn's top this far over the hub. */
   grip: 0.105,
   gripTop: 0.08,
-  gripRadius: 0.015,
+  /** The grip's section: across the view (in the wheel's plane) and fore and aft. */
+  gripHalfWidth: 0.011,
+  gripHalfDepth: 0.015,
+  /** The cap's height over the grip's full section: 0.36 of its half-width, a low ellipsoid. */
+  capHeight: 0.004,
   armRadius: 0.011,
   /** The arms' rise from the bends to the hub, degrees. */
   armRise: 15,
@@ -271,16 +285,17 @@ export function trainerYokeHub(side: -1 | 1): Vector3 {
  * A yoke's wheel as one tube's centreline and radii, from the port horn's tip to the starboard horn's, in the vertical
  * plane through its hub: each half a hub fillet, an arm, a bend, a grip and a dome.
  */
-export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii: number[] } {
+export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii: number[]; halfDepths: number[] } {
   const y = TRAINER_YOKE;
   const hub = trainerYokeHub(side);
   const rise = (y.armRise * Math.PI) / 180;
   const out = { u: Math.cos(rise), v: -Math.sin(rise) };
-  const half: { u: number; v: number; r: number }[] = [];
+  // each station's half-width in the wheel's plane (r) and fore and aft (d)
+  const half: { u: number; v: number; r: number; d: number }[] = [];
   // the fillet over the hub, from its middle (straight up from its centre) to where it meets the arm
   const hubCentre = { u: 0, v: -y.hubFillet / Math.cos(rise) };
   for (const a of [Math.PI / 2, Math.PI / 2 - rise / 2, Math.PI / 2 - rise]) {
-    half.push({ u: hubCentre.u + y.hubFillet * Math.cos(a), v: hubCentre.v + y.hubFillet * Math.sin(a), r: y.armRadius });
+    half.push({ u: hubCentre.u + y.hubFillet * Math.cos(a), v: hubCentre.v + y.hubFillet * Math.sin(a), r: y.armRadius, d: y.armRadius });
   }
   // the arm, to the bend
   const corner = { u: y.grip, v: -y.grip * Math.tan(rise) };
@@ -289,7 +304,7 @@ export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii:
   const bendIn = { u: corner.u - out.u * reach, v: corner.v - out.v * reach };
   const armStart = half[half.length - 1]!;
   for (const t of [1 / 3, 2 / 3, 1]) {
-    half.push({ u: armStart.u + (bendIn.u - armStart.u) * t, v: armStart.v + (bendIn.v - armStart.v) * t, r: y.armRadius });
+    half.push({ u: armStart.u + (bendIn.u - armStart.u) * t, v: armStart.v + (bendIn.v - armStart.v) * t, r: y.armRadius, d: y.armRadius });
   }
   // the bend, turning up into the grip, thickening from the arm's radius to the grip's
   const bendOut = { u: corner.u, v: corner.v + reach };
@@ -297,19 +312,23 @@ export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii:
   const from = Math.atan2(bendIn.v - bendCentre.v, bendIn.u - bendCentre.u);
   for (let k = 1; k <= 6; k += 1) {
     const a = from + (-from * k) / 6;
-    half.push({ u: bendCentre.u + y.bendRadius * Math.cos(a), v: bendCentre.v + y.bendRadius * Math.sin(a), r: y.armRadius + ((y.gripRadius - y.armRadius) * k) / 6 });
+    half.push({
+      u: bendCentre.u + y.bendRadius * Math.cos(a), v: bendCentre.v + y.bendRadius * Math.sin(a),
+      r: y.armRadius + ((y.gripHalfWidth - y.armRadius) * k) / 6, d: y.armRadius + ((y.gripHalfDepth - y.armRadius) * k) / 6,
+    });
   }
-  // the grip, straight up to the dome's base, and the dome
-  const base = y.gripTop - y.gripRadius;
-  for (const t of [1 / 3, 2 / 3, 1]) half.push({ u: y.grip, v: bendOut.v + (base - bendOut.v) * t, r: y.gripRadius });
-  for (const degrees of [22.5, 45, 67.5, 85]) {
+  // the grip, straight up to the cap's base, and the cap: a quarter of an ellipse in each plane, `capHeight` high
+  const base = y.gripTop - y.capHeight;
+  for (const t of [1 / 3, 2 / 3, 1]) half.push({ u: y.grip, v: bendOut.v + (base - bendOut.v) * t, r: y.gripHalfWidth, d: y.gripHalfDepth });
+  for (const degrees of [11.25, 22.5, 33.75, 45, 56.25, 67.5, 78.75, 87]) {
     const a = (degrees * Math.PI) / 180;
-    half.push({ u: y.grip, v: base + y.gripRadius * Math.sin(a), r: y.gripRadius * Math.cos(a) });
+    half.push({ u: y.grip, v: base + y.capHeight * Math.sin(a), r: y.gripHalfWidth * Math.cos(a), d: y.gripHalfDepth * Math.cos(a) });
   }
   const whole = [...half.slice(1).reverse().map((p) => ({ ...p, u: -p.u })), ...half];
   return {
     centres: whole.map((p) => new Vector3(hub.x, hub.y + p.v, hub.z + p.u)),
     radii: whole.map((p) => p.r),
+    halfDepths: whole.map((p) => p.d),
   };
 }
 
@@ -329,8 +348,10 @@ export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii:
  * each is a plate with a round edge and round corners, its outer end under the headliner's side rim.
  *
  * THE COMPASS hangs on a stalk from the windscreen centre strip's run aft along the crown (`trainerCentreFrameCrownAt`,
- * `trainerShell.ts`), as a 150's does from its windscreen's centre strip: a rounded box with a dark face toward the
- * pilot, just under the glass. Under the S4 bars it hung from the crown member's underside, 8 mm inside the glass, and
+ * `trainerShell.ts`), as a 150's does from its windscreen's centre strip: a rounded box just under the glass. Since S7
+ * its aft face has a window, ringed in the dials' bezel section, with a lubber line down its middle, and behind it the
+ * card: a drum turning about the vertical with the heading, its numerals on the display atlas (`drawTrainerCompassCard`).
+ * It was a blank box, 185 x 135 px in the first frame. Under the S4 bars it hung from the crown member's underside, 8 mm inside the glass, and
  * its centre sat at +2.85 degrees; the S5 strip, 18 mm through there, stands 7 mm OUTSIDE the glass, so the box is
  * hung by the glass instead (`underGlass`), and its stalk runs up through the glass into the strip.
  */
@@ -339,6 +360,12 @@ export const TRAINER_OVERHEAD = Object.freeze({
   frontX: 1.62,
   halfWidth: 0.305,
   cornerRadius: 0.1,
+  /**
+   * Chords round each corner. The port corner is 0.14 to 0.24 m ahead of the eye, and at 6 (15 degrees each) its chords
+   * read as short straight runs in the frame's 2x crop; at 24 the header's outline forward of the visors is 0.55 px off a
+   * fair curve, where it was 0.76 (S7, the PM).
+   */
+  cornerSegments: 24,
   /** The slab's underside. */
   roofY: 0.18,
   ceilingDrop: 0.002,
@@ -352,8 +379,20 @@ export const TRAINER_OVERHEAD = Object.freeze({
   buried: 0.012,
   /** 300 wide each, a 5 mm gap between: their outer ends reach the headliner's side rim, under which they are buried. */
   visor: Object.freeze({ width: 0.3, depth: 0.12, thickness: 0.008, corner: 0.01, gap: 0.005, frontX: 1.565 }),
-  /** `underGlass`: the box's top this far under the glass's crown line over its front face. */
-  compass: Object.freeze({ x: 1.955, width: 0.06, height: 0.06, depth: 0.07, edge: 0.008, stalkRadius: 0.004, underGlass: 0.005 }),
+  /**
+   * `underGlass`: the box's top this far under the glass's crown line over its front face. Since S7 the box is swept
+   * round its WINDOW (`compassBoxProfile`), so its height follows from its width and the window's: 2 x (the window's
+   * half-height + the box's half-width - the window's half-width), 46 mm.
+   */
+  compass: Object.freeze({
+    x: 1.955, width: 0.06, height: 0.046, depth: 0.07, edge: 0.006, stalkRadius: 0.004, underGlass: 0.005,
+    /** The window's opening in the aft face, 32 x 18 mm, its corners 4 mm round; a ring of the dials' section round it. */
+    window: Object.freeze({ halfWidth: 0.016, halfHeight: 0.009, corner: 0.004 }),
+    /** The card's drum: its radius and height, how far its aft face stands behind the box's, and its chords round. */
+    drum: Object.freeze({ radius: 0.022, height: 0.03, recess: 0.007, segments: 72 }),
+    /** The lubber line: a rod down the window's middle, just in front of the card. */
+    lubber: Object.freeze({ width: 0.0012 }),
+  }),
 });
 
 /** The headliner's profile, u outward from its outline and a DOWN from the slab's underside: the ceiling, the fillet, the header's round, up into the slab. */
@@ -396,27 +435,6 @@ function roundEdgedPlate(thickness: number, corner: number): LoopProfile {
   };
 }
 
-/** A box about a rounded-rectangle loop, `depth` deep, its front and back edges rounded at `edge`; caps front and back. */
-function roundedBoxProfile(depth: number, edge: number): LoopProfile {
-  const chords = 4;
-  const half = depth / 2;
-  const front = Array.from({ length: chords + 1 }, (_, k) => {
-    const t = (Math.PI / 2) * (1 - k / chords);
-    return { u: -edge + edge * Math.cos(t), a: half - edge + edge * Math.sin(t) };
-  });
-  const back = Array.from({ length: chords + 1 }, (_, k) => {
-    const t = (-Math.PI / 2) * (k / chords);
-    return { u: -edge + edge * Math.cos(t), a: -half + edge + edge * Math.sin(t) };
-  });
-  return {
-    points: [...front, ...back],
-    rounds: [
-      { first: 0, last: chords, centre: { u: -edge, a: half - edge } },
-      { first: chords + 1, last: 2 * chords + 1, centre: { u: -edge, a: -half + edge } },
-    ],
-  };
-}
-
 /**
  * The glass's crown line at station `x`: its rings' tops, straight between the two either side, as the loft lays it.
  * Across the compass's 60 mm the glass falls under 0.1 mm from it.
@@ -428,6 +446,118 @@ function trainerGlassCrownY(x: number): number {
   const [low, high] = [sections[i - 1]!, sections[i]!];
   const t = (x - low.x) / (high.x - low.x);
   return loftSectionPoint(low, 0).y + (loftSectionPoint(high, 0).y - loftSectionPoint(low, 0).y) * t;
+}
+
+/**
+ * The compass box's section, swept round its WINDOW's outline (u outward from it, a toward the pilot from the aft face),
+ * one closed solid from its cavity's middle to its front face's: the cavity's back, facing the window; the cavity's side,
+ * 6 mm inside the box's; the lip under the window's ring, facing forward into the cavity; the window's wall up to the aft
+ * face, 2 mm out from the opening and so behind the ring's inner wall; the aft face out to a round, the side, a round,
+ * and the front face in. Both ends are on the outline's core, which caps close, so the section closes on nothing. The
+ * cavity holds the card with 2 mm to spare, and a ray through the window meets the card or the cavity, never the world
+ * behind the compass.
+ */
+function compassBoxProfile(): LoopProfile {
+  const c = TRAINER_OVERHEAD.compass;
+  const out = c.width / 2 - c.window.halfWidth;
+  if (Math.abs(2 * (c.window.halfHeight + out) - c.height) > 1e-9) throw new RangeError("the compass's height is not its width's and its window's");
+  const [lip, cavity, cavityBack] = [-TRAINER_BEZEL.back, out - 0.006, c.depth - 0.006];
+  const e = c.edge;
+  const chords = 4;
+  const aftRound = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = (Math.PI / 2) * (1 - k / chords);
+    return { u: out - e + e * Math.cos(t), a: -e + e * Math.sin(t) };
+  });
+  const frontRound = Array.from({ length: chords + 1 }, (_, k) => {
+    const t = (-Math.PI / 2) * (k / chords);
+    return { u: out - e + e * Math.cos(t), a: -c.depth + e + e * Math.sin(t) };
+  });
+  return {
+    points: [
+      { u: -c.window.corner, a: -cavityBack }, { u: cavity, a: -cavityBack }, { u: cavity, a: -lip },
+      { u: 0.002, a: -lip }, { u: 0.002, a: 0 },
+      ...aftRound, ...frontRound,
+      { u: -c.window.corner, a: -c.depth },
+    ],
+    rounds: [
+      { first: 5, last: 5 + chords, centre: { u: out - e, a: -e } },
+      { first: 6 + chords, last: 6 + 2 * chords, centre: { u: out - e, a: -c.depth + e } },
+    ],
+  };
+}
+
+/**
+ * THE COMPASS'S CARD: an open drum about the vertical through `centre`, its local x forward and z to the pilot's right,
+ * the point at angle phi (from forward toward the right) at (r cos phi, y, r sin phi). Its first half (phi 0 to 180)
+ * carries the slot's top row and its second the bottom row, each row running from its right end at the half's start to
+ * its left end, so its numerals read left to right from the seat (`drawTrainerCompassCard`). Wound as the rest (a drawn
+ * face's cross product points into the solid), shaded on its radial normals, and its two seams have a vertex each side.
+ */
+function compassCardMesh(
+  build: AircraftBuildContext,
+  name: string,
+  centre: Vector3,
+  slot: { readonly x: number; readonly y: number; readonly w: number; readonly h: number },
+  atlas: { readonly width: number; readonly height: number },
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const d = TRAINER_OVERHEAD.compass.drum;
+  const half = d.segments / 2;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (const [row, from] of [[0, 0], [1, 180]] as const) {
+    const base = positions.length / 3;
+    const rowTop = slot.y + (row * slot.h) / 2;
+    for (let k = 0; k <= half; k += 1) {
+      const phi = ((from + (180 * k) / half) * Math.PI) / 180;
+      const [c, s] = [Math.cos(phi), Math.sin(phi)];
+      for (const up of [-1, 1]) {
+        positions.push(d.radius * c, (up * d.height) / 2, d.radius * s);
+        normals.push(c, 0, s);
+        uvs.push((slot.x + (1 - k / half) * slot.w) / atlas.width, (rowTop + (up > 0 ? 0 : slot.h / 2)) / atlas.height);
+      }
+    }
+    for (let k = 0; k < half; k += 1) {
+      const [b0, t0, b1, t1] = [base + 2 * k, base + 2 * k + 1, base + 2 * k + 2, base + 2 * k + 3];
+      indices.push(b0, b1, t0, t0, b1, t1);
+    }
+  }
+  // its ends, flat discs on the card's black (a corner of the slot's top row, left of every mark): the eye is below
+  // the compass, and an open drum's inside would be the nearest face of it along some rays, under the box
+  for (const up of [-1, 1]) {
+    const centreIndex = positions.length / 3;
+    const u0 = (slot.x + 1) / atlas.width;
+    const v0 = (slot.y + 1) / atlas.height;
+    positions.push(0, (up * d.height) / 2, 0);
+    normals.push(0, up, 0);
+    uvs.push(u0, v0);
+    for (let k = 0; k < d.segments; k += 1) {
+      const phi = (2 * Math.PI * k) / d.segments;
+      positions.push(d.radius * Math.cos(phi), (up * d.height) / 2, d.radius * Math.sin(phi));
+      normals.push(0, up, 0);
+      uvs.push(u0, v0);
+    }
+    for (let k = 0; k < d.segments; k += 1) {
+      const [p, q] = [centreIndex + 1 + k, centreIndex + 1 + ((k + 1) % d.segments)];
+      // drawn from outside: the cross product into the drum, down through the top and up through the bottom
+      if (up > 0) indices.push(centreIndex, p, q);
+      else indices.push(centreIndex, q, p);
+    }
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = uvs;
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.position.copyFrom(centre);
+  mesh.rotationQuaternion = Quaternion.Identity();
+  mesh.refreshBoundingInfo();
+  return mesh;
 }
 
 /** The compass's centre: its top `underGlass` under the glass's crown over its front face, where the glass is lowest. */
@@ -1319,16 +1449,41 @@ export function buildTrainerCockpit(
     faces.push(clusterFace);
     bezels.push(loopSolid(build, "trainer-engine-bezel", clusterFrame, opening, bezelRing, bezelMaterial, root));
   }
-  // THE COMPASS (S4), with the fittings: a rounded box under the centre strip's crown run, its dark face toward the
-  // pilot, on a stalk up through the glass to the strip's axis
+  // THE COMPASS (S4), with the fittings: a rounded box under the centre strip's crown run, on a stalk up through the
+  // glass to the strip's axis. Since S7: a window in its aft face, ringed with the bezels, with a lubber line down it,
+  // and the card behind it, a drum of its own that `update` turns with the heading.
+  let compassCard: Mesh | null = null;
   {
     const c = TRAINER_OVERHEAD.compass;
+    const w = c.window;
     const centre = trainerCompassCentre();
-    const frame: PartFrame = { origin: centre, across: new Vector3(0, 0, 1), up: new Vector3(0, 1, 0), out: new Vector3(-1, 0, 0) };
-    fittings.push(loopSolid(build, "trainer-compass", frame,
-      { halfWidth: c.width / 2 - c.edge, halfHeight: c.height / 2 - c.edge, radius: c.edge, cornerSegments: 3 },
-      roundedBoxProfile(c.depth, c.edge), materials.dark, root,
-      { caps: [{ point: 0, facing: 1 }, { point: 9, facing: -1 }] }));
+    const aft = centre.add(new Vector3(-c.depth / 2, 0, 0));
+    const frame: PartFrame = { origin: aft, across: new Vector3(0, 0, 1), up: new Vector3(0, 1, 0), out: new Vector3(-1, 0, 0) };
+    const window: PartLoop = { halfWidth: w.halfWidth - w.corner, halfHeight: w.halfHeight - w.corner, radius: w.corner, cornerSegments: 6 };
+    const profile = compassBoxProfile();
+    fittings.push(loopSolid(build, "trainer-compass", frame, window, profile, materials.dark, root,
+      { caps: [{ point: 0, facing: 1 }, { point: profile.points.length - 1, facing: -1 }] }));
+    // the ring: the dials' section, its back on the cavity's lip. On a dial the corner where its inner wall meets its back
+    // is buried in the board; here it is the edge of the window's tunnel over the cavity, so it is rounded (1 mm)
+    const rho = 0.001;
+    const tunnelFoot = [270, 240, 210, 180].map((degrees) => {
+      const t = (degrees * Math.PI) / 180;
+      return { u: rho + rho * Math.cos(t), a: b.back + rho + rho * Math.sin(t) };
+    });
+    const compassRing: LoopProfile = {
+      points: [...tunnelFoot, ...bezelRing.points.slice(1)],
+      rounds: [{ first: 0, last: 3, centre: { u: rho, a: b.back + rho } }, ...bezelRing.rounds.map((r) => ({ ...r, first: r.first + 3, last: r.last + 3 }))],
+    };
+    bezels.push(loopSolid(build, "trainer-compass-bezel", frame, window, compassRing, bezelMaterial, root));
+    // the lubber line: a round rod down the window's middle, 1 mm in front of the card, its ends buried in the ring
+    const lubberAt = aft.add(new Vector3(c.drum.recess - 0.001 - c.lubber.width / 2, 0, 0));
+    const lubberHalf = w.halfHeight + 0.0015;
+    bezels.push(sweptTube(build, "trainer-compass-lubber",
+      [lubberAt.add(new Vector3(0, -lubberHalf, 0)), lubberAt, lubberAt.add(new Vector3(0, lubberHalf, 0))],
+      [c.lubber.width / 2, c.lubber.width / 2, c.lubber.width / 2], 8, bezelMaterial, root));
+    compassCard = compassCardMesh(build, "trainer-compass-card", aft.add(new Vector3(c.drum.recess + c.drum.radius, 0, 0)),
+      slotOf.get("compass")!, atlasSize, materials.instrumentFace, root);
+    parts.push(compassCard);
     fittings.push(sweptTube(build, "trainer-compass-stalk",
       [centre.add(new Vector3(0, c.height / 2 - 0.006, 0)), new Vector3(c.x, trainerCentreFrameCrownAt(c.x).y, 0)],
       [c.stalkRadius, c.stalkRadius], 12, materials.dark, root));
@@ -1343,7 +1498,7 @@ export function buildTrainerCockpit(
     const down = new Vector3(0, -1, 0);
     const plan = (x: number, y: number, z: number): PartFrame => ({ origin: new Vector3(x, y, z), across: new Vector3(0, 0, 1), up: new Vector3(1, 0, 0), out: down });
     const lining = [loopSolid(build, "trainer-headliner-lining", plan((o.aftX + o.frontX) / 2, o.roofY, 0),
-      { halfWidth: o.halfWidth - o.cornerRadius, halfHeight: (o.frontX - o.aftX) / 2 - o.cornerRadius, radius: o.cornerRadius, cornerSegments: 6 },
+      { halfWidth: o.halfWidth - o.cornerRadius, halfHeight: (o.frontX - o.aftX) / 2 - o.cornerRadius, radius: o.cornerRadius, cornerSegments: o.cornerSegments },
       headlinerProfile(), materials.headliner, root,
       { caps: [{ point: 0, facing: 1 }, { point: headlinerProfile().points.length - 1, facing: -1 }] })];
     const v = o.visor;
@@ -1357,7 +1512,7 @@ export function buildTrainerCockpit(
     }
     parts.push(build.mergeStatic("trainer-headliner", lining, root));
   }
-  // THE YOKES (S6), one mesh on the fittings' dark: each a wheel, its boss, its column down into the board and a collar
+  // THE YOKES (S6), one mesh on their own matte (S7): each a wheel, its boss, its column down into the board and a collar
   // round the column there
   {
     const y = TRAINER_YOKE;
@@ -1366,7 +1521,7 @@ export function buildTrainerCockpit(
       const name = `trainer-yoke-${side < 0 ? "port" : "starboard"}`;
       const hub = trainerYokeHub(side);
       const wheel = trainerYokeWheelPath(side);
-      yokeParts.push(sweptTube(build, `${name}-wheel`, wheel.centres, wheel.radii, y.segments, materials.dark, root));
+      yokeParts.push(sweptTube(build, `${name}-wheel`, wheel.centres, wheel.radii, y.segments, materials.yoke, root, { halfDepths: wheel.halfDepths }));
       // the boss along x round the hub, its aft face's edge rounded
       const b = y.boss;
       const aftX = hub.x - b.length / 2;
@@ -1376,13 +1531,13 @@ export function buildTrainerCockpit(
       });
       bossStations.push({ x: hub.x + b.length / 2, r: b.radius });
       yokeParts.push(sweptTube(build, `${name}-boss`, bossStations.map((p) => new Vector3(p.x, hub.y, hub.z)),
-        bossStations.map((p) => p.r), y.segments, materials.dark, root));
+        bossStations.map((p) => p.r), y.segments, materials.yoke, root));
       // the column, from inside the boss down to the board and on into it
       const entry = new Vector3(rearFaceXAt(y.column.entryY), y.column.entryY, hub.z);
       const along = entry.subtract(hub).normalize();
       const end = entry.add(along.scale(y.column.bury));
       yokeParts.push(sweptTube(build, `${name}-column`, [hub, Vector3.Lerp(hub, end, 0.5), end],
-        [y.column.radius, y.column.radius, y.column.radius], y.segments, materials.dark, root));
+        [y.column.radius, y.column.radius, y.column.radius], y.segments, materials.yoke, root));
       // the collar where the column enters, its aft edge rounded, its front buried with the column
       const c = y.collar;
       const collarStations = [0, 30, 60, 90].map((degrees) => {
@@ -1391,7 +1546,7 @@ export function buildTrainerCockpit(
       });
       collarStations.push({ at: y.column.bury, r: c.radius });
       yokeParts.push(sweptTube(build, `${name}-collar`, collarStations.map((p) => entry.add(along.scale(p.at))),
-        collarStations.map((p) => p.r), y.segments, materials.dark, root));
+        collarStations.map((p) => p.r), y.segments, materials.yoke, root));
     }
     parts.push(build.mergeStatic("trainer-yokes", yokeParts, root));
   }
@@ -1401,6 +1556,8 @@ export function buildTrainerCockpit(
   const atlas = createDisplayAtlas(build, TRAINER_DISPLAYS);
   if (atlas !== null) {
     facesMesh.material = displayMaterial(build, "trainer-display", atlas);
+    // the compass's card turns, so it is a mesh of its own, on the same material
+    if (compassCard) compassCard.material = facesMesh.material;
     paintDisplays(atlas, DISPLAY_STATE_LEVEL);
   }
 
@@ -1533,6 +1690,7 @@ export function buildTrainerCockpit(
   // the cockpit camera: a flipped sign here passes every test of the angle alone.
   const spin = new Quaternion();
   const dialAxis = new Vector3(1, 0, 0);
+  const compassAxis = new Vector3(0, 1, 0);
   const turnNeedle = (name: string, clockwiseDegrees: number): void => {
     const needle = needles.get(name);
     if (!needle) return;
@@ -1547,6 +1705,12 @@ export function buildTrainerCockpit(
       turnNeedle("airspeed", airspeedNeedleDegrees(state.airspeed, TRAINER_AIRSPEED_FULL_SCALE_KNOTS));
       turnNeedle("altimeter", altimeterNeedleDegrees(state.altitude));
       turnNeedle("tach", tachometerNeedleDegrees(state.engineRpm, TRAINER_TACH_MARKINGS.fullScale));
+      // THE COMPASS'S CARD keeps its north: the aeroplane turns about it. A turn of the heading about the vertical (up)
+      // carries the card's point at phi to the aeroplane's phi - heading, so the card's side that faces the seat (phi 180)
+      // is the point printed with the heading (`compassCardMesh`); a heading that is not a number holds it where it is.
+      if (compassCard && Number.isFinite(state.heading)) {
+        Quaternion.RotationAxisToRef(compassAxis, (state.heading * Math.PI) / 180, compassCard.rotationQuaternion!);
+      }
       // THE BALL. Its pivot's local X points AWAY from the pilot, so a positive
       // rotation is clockwise to him and the clockwise-as-seen angle (minus the
       // bank) goes in as it is; the bar slides along the pivot's own up.

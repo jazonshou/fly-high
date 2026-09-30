@@ -57,7 +57,8 @@ export type DisplayPage =
   | "trainer-com"
   | "trainer-nav"
   | "trainer-tach"
-  | "trainer-engine";
+  | "trainer-engine"
+  | "trainer-compass";
 export type DrawPage = (ctx: DisplayContext2D, w: number, h: number, state: DisplayState) => void;
 
 export interface DisplaySlot {
@@ -967,6 +968,55 @@ export const drawTrainerAttitudeRing: DrawPage = (ctx, w, h) => {
 };
 
 /**
+ * THE COMPASS'S CARD (the Cessna pass, S7): the band round a drum that turns inside the compass with the heading, so a
+ * STATIC page: the drum turns, not the page. The drum carries it in two halves, its first 180 degrees on the slot's top
+ * row and its second on the bottom row, so the card has a slot's width to each half circle.
+ *
+ * As on a 150's: the pilot reads the heading under the lubber line from the card's side that faces the seat, which is
+ * the drum's side opposite the heading, so each heading is printed a half turn round from it. Headings therefore run from
+ * right to left across the window (a right turn brings the higher numbers in from the left), marked every 5 degrees,
+ * longer every 10, and numbered every 30: N 3 6 E 12 15 S 21 24 W 30 33.
+ */
+export const TRAINER_COMPASS_LABELS: Readonly<Record<number, string>> = Object.freeze({
+  0: "N", 30: "3", 60: "6", 90: "E", 120: "12", 150: "15", 180: "S", 210: "21", 240: "24", 270: "W", 300: "30", 330: "33",
+});
+
+export const drawTrainerCompassCard: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const rowHeight = h / 2;
+  // the top row holds headings 180 to 360 and the bottom row 0 to 180, each from the row's right end to its left: the
+  // drum's first half carries the top row (`compassCardMesh`), a half turn from the headings the seat reads on it
+  for (const [row, from] of [[0, 180], [1, 0]] as const) {
+    const top = row * rowHeight;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, top, w, rowHeight);
+    ctx.clip();
+    // every mark within a label's width past each end too, so the card runs on across the two seams
+    for (let heading = from - 40; heading <= from + 220; heading += 5) {
+      const x = (1 - (heading - from) / 180) * w;
+      const major = heading % 10 === 0;
+      ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+      ctx.lineWidth = rowHeight * (major ? 0.03 : 0.022);
+      ctx.beginPath();
+      ctx.moveTo(x, top + rowHeight * 0.22);
+      ctx.lineTo(x, top + rowHeight * (major ? 0.4 : 0.32));
+      ctx.stroke();
+      const label = TRAINER_COMPASS_LABELS[((heading % 360) + 360) % 360];
+      if (label !== undefined) {
+        const cardinal = label.length === 1 && Number.isNaN(Number(label));
+        ctx.font = `bold ${Math.round(rowHeight * (cardinal ? 0.26 : 0.22))}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+        ctx.fillText(label, x, top + rowHeight * 0.6);
+      }
+    }
+    ctx.restore();
+  }
+};
+
+/**
  * A radio's window: its label, the active frequency large and the standby smaller, in the band the window samples.
  * SIZED FOR A MONOSPACE ADVANCE OF 0.62 EM (the browsers' monospace faces are about 0.6): at 0.62 and 0.42 of the band
  * the active frequency ran into the standby in the first live frame ("122.80" over "121.50"), which no Node test could
@@ -1145,6 +1195,7 @@ const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
   "trainer-nav": drawTrainerNav,
   "trainer-tach": drawTrainerTach,
   "trainer-engine": drawTrainerEngine,
+  "trainer-compass": drawTrainerCompassCard,
 };
 
 /**

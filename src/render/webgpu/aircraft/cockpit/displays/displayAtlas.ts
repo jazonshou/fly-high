@@ -171,6 +171,8 @@ export const TRAINER_DISPLAYS: DisplayLayout = Object.freeze({
     // the tachometer and the engine cluster (the Cessna pass, S2b)
     { screen: "tach", page: "trainer-tach" },
     { screen: "engine", page: "trainer-engine" },
+    // the compass's card, round its drum (S7)
+    { screen: "compass", page: "trainer-compass" },
   ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
 });
 

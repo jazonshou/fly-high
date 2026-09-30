@@ -332,7 +332,11 @@ describe("a loft's crown seam", () => {
       // `trainer-dial-bezels` moved (the tachometer's and the engine cluster's faces and rings joined them); the
       // trainer's other 66 of 69, the two dials' needles included, and every mesh of the jet, the Global and the 747,
       // are bit-identical.
-      trainer: "12714b2c",
+      // RE-PINNED for S7 (same check, against the rebased tip 07fae0e): `trainer-compass-card` new; the yokes (grips 22 x
+      // 30 mm, low caps, their own matte), the headliner (24 chords a corner), the fittings (the compass box round its
+      // window and cavity) and the bezels (the window's ring and the lubber line) moved; the trainer's other 65 of 70, and
+      // every mesh of the jet, the Global and the 747, are bit-identical.
+      trainer: "0d9cc1fc",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

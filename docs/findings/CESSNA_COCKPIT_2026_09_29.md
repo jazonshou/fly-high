@@ -914,3 +914,121 @@ wave.
 - The census is identical: bare board 193,764 px, and the same hard edges.
 - The repo's cockpit frames script (`scripts/cockpit-frames.mts`) now expects the
   trainer's 18 cockpit-only meshes.
+
+## S7: the yokes' grips, the compass's face, the headliner's corners
+
+**The PM's review of the final frame (7be1ef7).** Everything else was accepted.
+Three things were asked of this step.
+
+**1. The yokes.** The horns read as two domed bollards with a glossy hot spot,
+about 105 px wide.
+- **The grip section** is now 22 mm across the view and 30 mm fore and aft,
+  a flattened grip as a hand holds it. The hub stays under the eye (look call A)
+  and the horn tops stay at the same height.
+- **The cap** is a low ellipsoid 4 mm high: 0.36 of the half-width, where the old
+  hemisphere was 1.0.
+- **The material** is the yokes' own matte (`trainer-yoke`): the board's colour at
+  roughness 0.95 and metallic 0. On the fittings' glossy dark, the horns read 1.6 to
+  1.9 times the board's luma in the day frame, and the column's collar 2.9 times.
+  The target, 1.2 to 1.4 times, is read in the GPU frame.
+- **Measured:**
+  - each horn is 79 px wide on the screen (the pin is 85 or less);
+  - the yokes take 20,592 px (23,320 before);
+  - the least gap to the door is 1.40 cm (1.64 before). The flatter caps keep the
+    grip's full width to 4 mm under its top, where the door's rail comes a
+    centimetre inboard. The pin is now 1.3 cm.
+
+**2. The compass.** It was a blank box, 185 x 135 px.
+- **The box** is now 60 x 46 x 70 mm, swept round its window (`compassBoxProfile`):
+  - the window is 32 x 18 mm with corners 4 mm round, and a ring of the dials'
+    bezel section on the dials' rim material, 8 mm inside the aft face;
+  - behind the window is a cavity 6 mm inside the box's walls, so a ray through
+    the window meets the card or the cavity, never the world behind the compass;
+  - the box's height follows from its width and its window's; it was 60.
+- **The lubber line** is a 1.2 mm rod down the window's middle, 1 mm in front of the
+  card, on the rim material. Its ends are buried in the ring.
+- **The card** is a drum 22 mm in radius and 30 mm tall, its face 7 mm behind the
+  box's. It is one more draw (19 cockpit meshes), on the display material.
+  - It turns about the vertical with the heading: the card keeps its north and the
+    aeroplane turns about it.
+  - Its numerals are a static page of the atlas: two rows of 180 degrees, marked
+    every 5 and numbered every 30 (N 3 6 E 12 15 S 21 24 W 30 33).
+  - Each heading is printed a half turn from where it faces the seat, so the
+    heading reads under the lubber line and the card reads backwards, as a 150's
+    does.
+- **Its centre** is at +3.88 degrees (+3.24 before; the survey's +3.9). Only the
+  box's height changed; its top is where it was.
+- **Measured:** the card is 2,252 px, all of it through the window. The fittings
+  (with the smaller box) are 64,023 -> 50,951 px.
+
+**3. The headliner's corners** now have 24 chords, where they had 6. The header's
+outline forward of the visors is 0.55 px off a fair curve, where it was 0.76.
+
+**Across the frame:**
+- no hard edge on the yokes, the bezels, the fittings or the card;
+- bare board 195,128 px (the narrower horns uncover 1,364 of it);
+- cockpit draws 18 -> 19.
+
+**Four traps, each met on the way:**
+- **`loopSolid` closes every section.** A profile that does not start and end on
+  its loop's core (u at minus the radius) gets a band from its last point to its
+  first. My first box's band cut diagonally through the box. The box's section now
+  starts at the cavity's middle and ends at the front face's, both capped.
+- **A ring's back edge.** On a dial it is buried in the board; in the compass's
+  window it was a hard edge over the cavity. The compass's ring rounds that corner
+  (1 mm), where the window's tunnel meets the cavity.
+- **An open drum.** The eye is under the compass, so along some rays the nearest
+  face of an open drum is its inside. The drum is capped.
+- **A turning mesh.** The shading pin paired world positions with local normals, and
+  read the card, turned by the heading, as shaded into itself. It now turns the
+  normals with the mesh.
+
+**Pins** (`tests/render.cockpit-trainer.test.ts`):
+- **The yokes:**
+  - their matte;
+  - each horn's section and cap off the built mesh: 22 x 30 mm, the cap at most
+    0.4 of the half-width, the top where it was;
+  - each horn's width on the screen, 85 px or less, off the raster.
+- **The compass:**
+  - the ring 3 mm or more inside the aft face, across and up;
+  - the window's corners 3 mm or more round, and its opening's width at the front;
+  - the lubber line in the window;
+  - the card on the faces' material;
+  - the card under the lubber line reading N, 3, E, S, W and 33 at 0, 30, 90, 180,
+    270 and 330;
+  - every vertex of the card within the box's walls, and every card pixel from the
+    seat within the window's opening.
+- **Kept:**
+  - the hard-edge pin now covers the compass's ring and lubber line (in the bezels);
+  - the drawn-faces walk covers the card;
+  - the shading pin covers the card, with world normals;
+  - the header's fairness pin.
+
+**Mutations.** Six are caught:
+
+| mutation | caught by |
+|---|---|
+| round 30 mm grips (as S6) | the horn's width (105 px), the door gap |
+| hemispherical caps (as S6) | the cap's height (1.0 of the half-width) |
+| the yokes on the fittings' glossy dark | the matte |
+| the card turned the wrong way | the heading (33 under the lubber line at 30) |
+| the card printed without its half turn | the heading (S at 0) |
+| a drum too big for the box | inside the box |
+
+One mutation was first MISSED, and it found dead code. A helper giving a heading's
+place on the card was exported but never used by the page, so mutating it changed
+nothing. It is gone, and the half turn is mutated in the page itself.
+
+**Mesh-by-mesh against the rebased tip** (07fae0e). On the trainer:
+- `trainer-compass-card` is new;
+- the yokes, the headliner, the fittings and the bezels moved;
+- the other 65 of 70 meshes are bit-identical.
+
+Every mesh of the jet, the Global and the 747 is bit-identical. The trainer's
+digests are re-pinned on its line: seam 0d9cc1fc, taper 412d75a4.
+
+**Owed on the GPU:**
+- Gate A for the two new or changed materials: the yokes' matte, and the card on
+  the display material;
+- a frame, with the yokes' luma against the board's;
+- 2x crops of the yokes, the compass and the header's corner.
