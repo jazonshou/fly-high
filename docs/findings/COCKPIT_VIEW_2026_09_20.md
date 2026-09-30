@@ -2092,6 +2092,67 @@ flush-face fight: no face of the rim lies on the dash. It is the rim's 3 mm oute
 degrees of edge-on, a sub-pixel sliver that aliases. The survey frame shows it too. A fix would change the shared
 `framedScreenFacets` for all three decks.
 
+## The 747's window frame, rolled (the cockpits wave, S1)
+
+Jason, for all four decks: *"the cockpit should feel real and the dials integrated, not slapped together from
+play-dough: walls and bars organic, not choppy."* On the 747 the choppiest thing in the frame was the window frame:
+fifteen lining strips, each a 2 cm slab cut square at every pane's edge.
+
+**What was wrong (P0, an item buffer from the eye at 1920 x 1080, the drawn-face rule).** 109 edges of the lining
+sharper than 45 degrees were visible: 34 CREASES, both faces seen (the square reveals' inner corners, down every
+pillar, the post, the sills and the crowns' lower edges), and 75 OUTLINES (the reveals' rims against the sky, where
+the face beyond is one nobody sees). Where two strips met, their rims doubled: 19 such seams showed.
+
+**What changed.**
+- ONE WELDED SURFACE (`airlinerWindowFrame`). The grid in R's angles is the lining's own lines, out to 78 either side
+  so No.3 has frame outboard of it too. Each pane's opening is a loop of stations: its edges' crossings of the grid
+  lines, and its corners. The face is the grid with a hole round each loop, grown by the return's width. A cell the
+  hole cuts is re-cut along the loop and ear-clipped, so the face's edge and the return's first ring are the same
+  vertices. The face's normals are the skin's own, turned in, smooth across the whole frame.
+- THE RETURN: a 15 mm quarter round, tangent to the face and to the opening's wall, in six chords with radial
+  normals. It is carved inside the old square section, so its rim is the pane's edge at the same cast point.
+- THE SEAL (`airliner-window-seals`, on the glareshield's own matte): the profile's last 6 mm, from the return's last
+  millimetre to the rim. It is a closed 1 mm solid, not a sheet, because a ray through a pillar meets the far edge's
+  seal from behind.
+- THE LAP: 3 mm over the glass at every opening's two sides, not its top and bottom. The carve takes the corner that
+  was a member's near edge from the seat: without the lap the No.1 / No.2 pillar read 2.04 / 2.11 / 2.16 degrees
+  (at el -8 / 0 / 4) and the post 3.58 / 3.55 / 3.53. The sills and the crowns do not lap, so the sill rule and the
+  panes' tops are unchanged.
+- THE CORNERS are mitred (S2 rounds them).
+
+**Measured (Node).**
+
+| | base (303372e) | S1 |
+|---|---|---|
+| creases over 45 seen on the frame (both faces seen) | 34 along the edges | 0 along the edges; 35 in the square corners' mitres, all within 0.36 degrees of a corner (S2's) |
+| outlines over 45 (item buffer, 1080p) | 75 | 39 (the rim against the sky) |
+| seams between frame pieces | 19 | 0 (4,503 shared edges; open only at the outer edge, 108, and where the seals meet it, 180) |
+| No.1 / No.2 pillar, el -8 / 0 / 4 | 2.23 / 2.33 / 2.38 | 2.23 / 2.30 / 2.35 |
+| centre member, el -8 / 0 / 4 | 3.69 / 3.67 / 3.66 | 3.75 / 3.71 / 3.69 |
+| sill under No.1 | -0.45..1.00 | -0.44..1.00 |
+| deck line (the HUD's instrument) | 18.5700 | 18.5700 |
+| kit meshes / cockpit-view draws | 6 / 93 | 7 / 94 |
+
+The control for the crease instrument: the same instrument sees 17 creases on the bezels' square frames. Mesh by
+mesh against 303372e: `airliner-cockpit-interior` 2,556 -> 1,856 vertices and 2,328 -> 3,110 triangles,
+`airliner-window-seals` new (2,040 and 1,608), the other 95 bit-identical. Five mutations, all caught: the seals on the
+interior material, no lap, the seal open at the back (drawn faces), the return rolled into the glass (seven tests),
+and the step to the face's edge not solved.
+
+**Four traps.**
+- R's angles are not metres. Stepping an opening point by r over its distance from R lands 15 mm across a side edge
+  and 20 to 26 mm down a sill or a crown, which R sees at a slant. The step is solved: scaled by the chord it
+  reached, three times.
+- The face's edge must be CAST, not offset. Laid in the skin's plane at the edge, it floated up to 8 mm off the skin
+  where the nose's own facet crease (33 degrees at el 8, R's azimuth 24.4) runs across the No.1 / No.2 pillar. The
+  pillar's 3 cm of face then folded 53 degrees, whichever diagonal it was split on, and half-width cells folded as
+  much. Cast, the largest fold anywhere on the face is 33 degrees, the skin's own.
+- A crease is SEEN only if both of its faces are seen at it: each is, 2 mm in from the edge, the very triangle the eye's
+  ray meets first. Judged by facing alone, a seal's buried faces and the board's top under the cove read as creases.
+- The frame is one face, open at the back, which nothing in the cockpit sees. The geometry census's signed volume moved
+  by +56.94 m^3 because an open surface's is not a volume, and the normal sum moved because the old slabs' two faces
+  cancelled.
+
 ## Not done, and one thing to know
 
 **The Global's perf-rig eye.** The perf harness puts the eye on the centreline,

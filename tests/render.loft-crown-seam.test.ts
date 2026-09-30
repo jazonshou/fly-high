@@ -553,7 +553,11 @@ describe("a loft's crown seam", () => {
       // the glazing and the kit included. The instances (the window line x228, flap-track canoes x8, nacelle chevrons
       // x48): dumped against d30bb05, only the window line's changed, every pane onto the drawn facets (median 16 mm,
       // at most 24) and along the skin's cap-free normal (tests/render.airliner-cabin-windows.test.ts).
-      airliner: "5cb70892",
+      // RE-PINNED 5cb70892 -> d9605bf4 for the rolled window frame (S1 of the cockpits wave): the lining's fifteen skin
+      // panels are one welded surface with each opening rolled into it, and the seals round the glass are new. Checked mesh
+      // by mesh against 303372e: airliner-cockpit-interior changed (2,556 -> 1,856 vertices, 2,328 -> 3,110 triangles),
+      // airliner-window-seals is new (2,040, 1,608), and the other 95 are bit-identical, every other airframe's too.
+      airliner: "d9605bf4",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

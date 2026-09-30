@@ -144,11 +144,10 @@ const ENCLOSED = new RegExp([
   "-fan-spool-(fan|spinner)$",
   "-engine-inlet$",
   "^airliner-(cabin-window-line|nacelle-chevron|windscreen-center-post)$",
-  // the cockpit's kit: 41 authored parts, all cockpit-only, so all outside the shadow map. The board, the
-  // glareshield (the rounded deck, unmerged), and the lining round the glass: three strips across the centreline (the
-  // sill, the crown and the post) and six a side; and each screen with its bezel's frame, its rim and its well
-  "^airliner-(instrument-panel|glareshield)$",
-  "^((port|starboard)-)?airliner-lining-",
+  // the cockpit's kit: 28 authored parts, all cockpit-only, so all outside the shadow map. The board, the
+  // glareshield (the rounded deck, unmerged), the window frame round the glass (one welded surface, S1) and its seals;
+  // and each screen with its bezel's frame, its rim and its well
+  "^airliner-(instrument-panel|glareshield|window-frame|window-seals)$",
 
   "^airliner-(screen|screen-bezel|screen-bezel-rim|screen-well)-(port|starboard)-(pfd|nd|eicas)$",
   "-(seat|headrest)$",
@@ -350,23 +349,25 @@ describe("the 747-8's draw budget", () => {
     // the dash, the pillar and the seam post, and the twelve screens and bezels), and
     // 21 before that, until the 3D attitude ball came out: the PFD page draws attitude
     // on the screen itself now. The seats and headrests are the same four parts,
-    // moved with the pilot.
+    // moved with the pilot. 41 -> 28 with the rolled window frame (S1): the fifteen lining
+    // strips are one welded surface, and its seals are one part more.
     //
     // +4, DELIBERATELY, by the spoiler bays: one authored plate per spoiler group and wing
     // (the dark well a raised panel uncovers), folded into one mesh.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 41 + 4);
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 28 + 4);
   });
 
-  it("keeps the cockpit's six meshes outside every draw bound: invisible and never casting until cockpit view", () => {
+  it("keeps the cockpit's seven meshes outside every draw bound: invisible and never casting until cockpit view", () => {
     const { visual } = build();
     const kit = visual.cockpitOnlyParts ?? [];
-    // Six: the interior (the board and the whole window frame's lining on one material), the glareshield (the
+    // Seven: the interior (the board and the whole window frame on one material), the glareshield (the
     // rounded deck alone), the six screens, their six frames, the frames' six chamfered rims (on the glowing
-    // marking) and the six wells behind the screens. The last two came with the framed, recessed screens (P1b):
+    // marking), the six wells behind the screens, and the window's seals (S1, on the glareshield's own matte: a
+    // draw, not a new draw state). The rims and wells came with the framed, recessed screens (P1b):
     // 4 -> 6, two draws on two draw states the frames' own material could not share (the rims glow at night, the
     // wells are the screens' dark face). It was seven until the 3D attitude ball came out -- its sky, ground and
     // pitch bar were three meshes AND three draws standing in front of a PFD that draws its own attitude now.
-    expect(kit).toHaveLength(6);
+    expect(kit).toHaveLength(7);
     for (const part of kit) {
       expect(issuesDraw(part), `${part.name} is counted as a draw outside cockpit view`).toBe(false);
       expect(castsShadow(part), `${part.name} casts a shadow`).toBe(false);
@@ -377,9 +378,9 @@ describe("the 747-8's draw budget", () => {
     // fourteen perf capture shots run `PERF_COCKPIT_RIG`, which disables the aircraft's root
     // entirely in cockpit view, so the aeroplane contributes 0 draws there -- kit, skin, framing and
     // propeller disc alike (`tests/render.cockpit-rig.test.ts`).
-    // in cockpit view they are drawn: six draws, no shadow passes
+    // in cockpit view they are drawn: seven draws, no shadow passes
     const during = visual.meshes.filter(issuesDraw);
-    expect(during.length - before).toBe(6);
+    expect(during.length - before).toBe(7);
     expect(during.filter(castsShadow).length).toBe(visual.meshes.filter((mesh) => issuesDraw(mesh) && castsShadow(mesh) && !kit.includes(mesh)).length);
     visual.setCockpitView(false);
     expect(visual.meshes.filter(issuesDraw)).toHaveLength(before);
@@ -406,13 +407,14 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const enclosed = [...authoredParts(visual)].filter(([name]) => ENCLOSED.test(name));
     // 4 fans, 4 spinners, 4 inlets, the window line, the chevrons, the centre
-    // post, the cockpit's 41 cockpit-only parts (there were the panel with 5 gauges
+    // post, the cockpit's 28 cockpit-only parts (there were the panel with 5 gauges
     // and 5 needles, 11; the kit was 21 until the 3D attitude ball came out, 18
-    // until it was cast round the re-lofted glass, and 29 until the framed screens), 2 seats, 2 headrests, 8 main axle
+    // until it was cast round the re-lofted glass, 29 until the framed screens, and 41 until its
+    // fifteen lining strips became one rolled window frame and its seals, S1), 2 seats, 2 headrests, 8 main axle
     // shafts and the nose one, 6 panes of glass, 8 lamps and the 4 spoiler bays. The centre
     // post casts nothing whichever camera draws it: its shadow is the nose's.
     expect(enclosed.map(([name]) => name).sort()).toHaveLength(
-      4 + 4 + 4 + 1 + 1 + 1 + 41 + 2 + 2 + 8 + 1 + 6 + 8 + 4,
+      4 + 4 + 4 + 1 + 1 + 1 + 28 + 2 + 2 + 8 + 1 + 6 + 8 + 4,
     );
     for (const [name, mesh] of enclosed) {
       expect(castsShadow(mesh), `${name} is still in the shadow map`).toBe(false);
@@ -670,25 +672,37 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // mirrors the wrong way on one flank (positionSum.z -0.429: mirrored panes -2.0 to +3.2 mm apart, 0.16 on
     // average; they were exactly mirrored on the ideal section). x and y sums, normals, volume and area are
     // unchanged.
+    //
+    // THEN 16,984 TO 18,324 with the rolled window frame (S1 of the cockpits wave): the lining's fifteen skin panels
+    // (2,532 vertices and 2,316 triangles: closed slabs 2 cm thick, both faces and their rims) became ONE welded surface,
+    // the face the pilot sees with each pane's opening rolled into it by a 15 mm quarter round (1,832 and 3,098: the face
+    // and the returns, open at the back, which nothing sees), and the seals round the glass came (a closed thin solid,
+    // 2,040 and 1,608): +1,340 vertices and +7,170 indices exactly. Checked mesh by mesh against 303372e:
+    // airliner-cockpit-interior changed, airliner-window-seals is new, and the other 95 are bit-identical. The extents did
+    // not move. The position sum rose by what 1,340 vertices at the flight deck weigh (x +42,134.8, about 31.4 each); its z
+    // by +3.4, the skin's loft splitting its quads on one diagonal that mirrors the wrong way on the port side. The normal
+    // sum and moment moved most (y +78.8 to -717.2): the old slabs' outer and inner faces cancelled, and the frame is one
+    // face, turned into the cabin. The area fell 9.61 m^2 (one face where there were two, and their rims), and the signed
+    // volume moved by +56.94 m^3, which an open surface's is not (it is a check, taken about the origin).
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(16_984);
-    expect(census.indices).toBe(71_628);
+    expect(census.vertices).toBe(18_324);
+    expect(census.indices).toBe(78_798);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(200412.3591, 1);
-    expect(census.positionSum.y).toBeCloseTo(-12867.8963, 1);
-    expect(census.positionSum.z).toBeCloseTo(5.4175, 1);
-    expect(census.positionSquares).toBeCloseTo(12688157.61, 0);
-    expect(census.normalSum.x).toBeCloseTo(-294.6042, 2);
-    expect(census.normalSum.y).toBeCloseTo(78.8021, 2);
-    expect(census.normalSum.z).toBeCloseTo(-0.3751, 2);
-    expect(census.normalMoment).toBeCloseTo(15998.0733, 1);
-    expect(census.signedVolume).toBeCloseTo(-3241.5120, 2);
-    expect(census.area).toBeCloseTo(4746.9383, 2);
+    expect(census.positionSum.x).toBeCloseTo(242547.1444, 1);
+    expect(census.positionSum.y).toBeCloseTo(-9099.9162, 1);
+    expect(census.positionSum.z).toBeCloseTo(8.8529, 1);
+    expect(census.positionSquares).toBeCloseTo(14024939.09, 0);
+    expect(census.normalSum.x).toBeCloseTo(-528.2438, 2);
+    expect(census.normalSum.y).toBeCloseTo(-717.1889, 2);
+    expect(census.normalSum.z).toBeCloseTo(2.2856, 2);
+    expect(census.normalMoment).toBeCloseTo(4775.3707, 1);
+    expect(census.signedVolume).toBeCloseTo(-3184.5765, 2);
+    expect(census.area).toBeCloseTo(4737.3277, 2);
   });
 
   it("keeps every instance of the three thin-instanced parts", () => {
@@ -806,13 +820,13 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
       expect(mesh.isVisible, mesh.name).toBe(true);
     }
     // WHAT THE COCKPIT CAMERA DRAWS: everything the exterior camera does, less the shell, the post and the glazing,
-    // plus the kit's six: 93. (It was 92 before the spoiler bays added their one mesh to both cameras, 90 with the
-    // kit's four, before the framed screens' rims and wells, and 91 while the post was drawn from the seat, before
-    // the kit lined it. The exterior camera's own count was 89 until the bays.)
+    // plus the kit's seven: 94. (It was 93 before the window's seals (S1), 92 before the spoiler bays added their one mesh
+    // to both cameras, 90 with the kit's four, before the framed screens' rims and wells, and 91 while the post was drawn
+    // from the seat, before the kit lined it. The exterior camera's own count was 89 until the bays.)
     const cockpitDraws = visual.meshes.filter((mesh) => issuesDraw(mesh) && (mesh.layerMask & camera.layerMask) !== 0);
     expect(cockpitDraws.length).toBe(exteriorDraws.length - visual.cockpitParts.length + (visual.cockpitOnlyParts ?? []).length);
     expect(exteriorDraws.length).toBe(90);
-    expect(cockpitDraws.length).toBe(93);
+    expect(cockpitDraws.length).toBe(94);
     expect(cockpitDraws.map((mesh) => mesh.name)).not.toContain("airliner-windscreen-center-post");
     for (const part of formerCockpitParts) {
       expect(part.layerMask).toBe(AIRCRAFT_EXTERIOR_LAYER_MASK);
