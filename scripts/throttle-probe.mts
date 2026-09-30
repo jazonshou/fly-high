@@ -161,6 +161,41 @@ await page.addInitScript((opts: {
     }).observe({ type: "longtask", buffered: false });
   } catch { /* unsupported */ }
 
+  // Long animation frames (Chrome 123+): which scripts a >50 ms frame ran,
+  // at negligible cost, so every hitch in every window can be attributed.
+  interface LoafScript {
+    invoker: string; invokerType: string; sourceURL: string; sourceFunctionName: string;
+    duration: number; forcedStyleAndLayoutDuration: number;
+  }
+  const longFrames: {
+    start: number; duration: number; blockingDuration: number; scripts: LoafScript[];
+  }[] = [];
+  w.__probeLongFrames = longFrames;
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries() as unknown as {
+        startTime: number; duration: number; blockingDuration: number;
+        scripts: LoafScript[];
+      }[]) {
+        if (longFrames.length >= 5_000) break;
+        longFrames.push({
+          start: entry.startTime,
+          duration: entry.duration,
+          blockingDuration: entry.blockingDuration,
+          scripts: [...entry.scripts]
+            .sort((a, b) => b.duration - a.duration)
+            .slice(0, 4)
+            .map((x) => ({
+              invoker: x.invoker, invokerType: x.invokerType,
+              sourceURL: String(x.sourceURL).replace(/\?.*$/, "").replace(/^.*\/(src|node_modules)\//, "$1/"),
+              sourceFunctionName: x.sourceFunctionName,
+              duration: Math.round(x.duration), forcedStyleAndLayoutDuration: Math.round(x.forcedStyleAndLayoutDuration),
+            })),
+        });
+      }
+    }).observe({ type: "long-animation-frame", buffered: false });
+  } catch { /* unsupported */ }
+
   // Keys as the page received them: timeStamp is when the browser took the
   // input event, so the queueing delay a throttled main thread adds is inside.
   const keys: { code: string; down: boolean; t: number; handled: number }[] = [];
@@ -306,6 +341,7 @@ function quantile(sorted: number[], q: number): number {
 const round = (v: number) => Math.round(v * 100) / 100;
 
 interface WindowStats {
+  longFrames: unknown[];
   seconds: number;
   frames: number;
   fpsMean: number;
@@ -333,6 +369,9 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
       now: performance.now(),
       frames: (w.__probeFrames as number[]).slice(),
       longTasks: (w.__probeLongTasks as { start: number; duration: number }[]).slice(),
+      longFrames: ((w.__probeLongFrames as { start: number; duration: number }[] | undefined) ?? [])
+        .filter((f) => f.duration >= 100),
+      state: ((w.__probeState as { t: number }[] | undefined) ?? []).slice(),
       messages: ws.messages,
       snapshots: ws.snapshots,
       simTimes: ws.log.map((s) => [s.t, s.sim] as [number, number]),
@@ -367,7 +406,21 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
   const lt = (fromMs === null ? raw.longTasks : raw.longTasks.filter((t) => t.start >= fromMs))
     .map((t) => t.duration);
   const seconds = Number.isFinite(span) ? span : 1;
+  const windowStart = frames[0] ?? 0;
+  const windowFrames = (fromMs === null
+    ? raw.longFrames.filter((f) => f.start >= windowStart)
+    : raw.longFrames.filter((f) => f.start >= fromMs)) as { start: number; duration: number }[];
+  const stateNear = (t: number) => {
+    let best: { t: number } | null = null;
+    for (const sample of raw.state) if (sample.t <= t + 1_000 && (!best || Math.abs(sample.t - t) < Math.abs(best.t - t))) best = sample;
+    return best;
+  };
+  const longFrames = windowFrames
+    .sort((a, b) => b.duration - a.duration)
+    .slice(0, 12)
+    .map((f) => ({ ...f, atS: round((f.start - windowStart) / 1_000), state: stateNear(f.start) }));
   return {
+    longFrames,
     seconds: round(seconds),
     frames: frames.length,
     fpsMean: round(intervals.length / seconds),
@@ -432,6 +485,64 @@ async function readRendererDiagnostics(): Promise<Record<string, unknown> | null
       fiber = fiber.return ?? null;
     }
     return null;
+  });
+}
+
+/**
+ * A 1 Hz page-side sampler of the state a hitch might line up with: the
+ * governor's ladder levels, streaming queues, and the hydrology client's
+ * worker/fallback statistics (P2). Reads the renderer through the canvas's
+ * React fiber once, then keeps the reference.
+ */
+async function installStateSampler(): Promise<boolean> {
+  return evaluate(() => {
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.__name ??= (fn: unknown) => fn;
+    type Hook = { memoizedState?: unknown; next?: Hook | null };
+    type Fiber = { memoizedState?: unknown; return?: Fiber | null };
+    type Renderer = {
+      getDiagnostics: () => Record<string, unknown>;
+      hydrology?: { getStatistics?: () => Record<string, unknown> };
+    };
+    const canvas = document.querySelector("canvas") as (HTMLCanvasElement & Record<string, unknown>) | null;
+    if (!canvas) return false;
+    const key = Object.keys(canvas).find((k) => k.startsWith("__reactFiber$"));
+    let fiber = key ? canvas[key] as Fiber | null : null;
+    let renderer: Renderer | null = null;
+    while (fiber && !renderer) {
+      let hook = fiber.memoizedState as Hook | null | undefined;
+      for (let guard = 0; hook && typeof hook === "object" && guard < 200; guard += 1) {
+        const state = hook.memoizedState as { current?: Renderer } | null;
+        if (state && typeof state === "object" && typeof state.current?.getDiagnostics === "function") {
+          renderer = state.current;
+          break;
+        }
+        hook = hook.next;
+      }
+      fiber = fiber.return ?? null;
+    }
+    if (!renderer) return false;
+    const samples: Record<string, unknown>[] = [];
+    w.__probeState = samples;
+    const found = renderer;
+    setInterval(() => {
+      if (samples.length >= 2_000) return;
+      const d = found.getDiagnostics();
+      const h = found.hydrology?.getStatistics?.() ?? null;
+      samples.push({
+        t: performance.now(),
+        cpuL: d.cpuWorkLevel, gpuL: d.gpuWorkLevel, lever: d.cpuWorkLever,
+        pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
+        residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
+        hydrology: h ? {
+          fallback: h.usingMainThreadFallback, usedWorker: h.lastGenerationUsedWorker,
+          requests: h.pagingRequestCount, swaps: h.regionSwapCount,
+          failed: h.failedGenerationCount, lastMs: h.lastGenerationMilliseconds,
+          region: h.activeRegionKey,
+        } : null,
+      });
+    }, 1_000);
+    return true;
   });
 }
 
@@ -646,6 +757,7 @@ report.startScreenWallMs = Date.now() - navStarted;
 report.load = await timings();
 
 if (SCENARIO === "coldstart") {
+  report.stateSampler = await installStateSampler();
   // The start screen is a live attract flight: how it runs throttled, too.
   report.attractThrottled = await measure(Math.min(MEASURE_S, 15));
   report.diagnosticsThrottled = await sampleDiagnostics();
@@ -654,6 +766,7 @@ if (SCENARIO === "coldstart") {
   await page.getByRole("button", { name: /^Start flying/ }).first().click();
   await blur();
   if (CAMERA === "cockpit") await page.keyboard.press("c");
+  report.stateSampler = await installStateSampler();
   await page.waitForTimeout(SETTLE_S * 1_000);
   if (SCENARIO === "cruise") {
     report.unthrottled = await measure(MEASURE_S);
@@ -690,6 +803,7 @@ if (SCENARIO === "coldstart") {
   await page.waitForTimeout(5_000);
   await page.getByRole("button", { name: /^Start on the runway/ }).first().click();
   await blur();
+  report.stateSampler = await installStateSampler();
   await page.waitForTimeout(3_000);
   const releasedAt = await resetCollectors();
   const releasedWall = Date.now();
@@ -739,9 +853,15 @@ await browser.close();
 console.log(`wrote ${outDir}/${label}.json`);
 
 function summaryOf(w: WindowStats) {
+  const worst = w.longFrames[0] as {
+    duration: number; scripts: { sourceFunctionName: string; sourceURL: string; duration: number }[];
+  } | undefined;
   return {
     fpsMedian: w.fpsMedian, p95: w.intervalMs.p95, max: w.intervalMs.max,
     over250: w.over250, simToWall: w.worker.simToWallRatio, longTasks: w.longTasks.count,
+    worstFrame: worst
+      ? `${Math.round(worst.duration)} ms: ${worst.scripts.map((x) => `${x.sourceFunctionName || "?"}@${x.sourceURL.split("/").pop()} ${x.duration}`).join(", ")}`
+      : null,
   };
 }
 
