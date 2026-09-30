@@ -264,7 +264,7 @@ async function capture(kind: string, pose: "air" | "runway"): Promise<void> {
     // (4 until its framed, recessed screens brought the bezels' rims and the wells); the F-16 7, its HUD frame, its
     // housing, its combiner's panes, its MFDs' frames, rims and screens, its sills, and its ICP and DED. The same counts as
     // tests/render.cockpit-drawn-faces.
-    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 7, airliner: 9, jet: 9 };
+    const expectedCockpitOnly: Readonly<Record<string, number>> = { trainer: 15, bizjet: 8, airliner: 9, jet: 9 };
     const expectedCount = expectedCockpitOnly[kind];
     if (expectedCount !== undefined) {
       if (cockpitOnlyNames.length !== expectedCount) {

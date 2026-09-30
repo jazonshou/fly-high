@@ -364,7 +364,13 @@ describe("the loft's crown taper", () => {
       // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
       // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
       // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
-      bizjet: "4036722a",
+      // RE-PINNED for the Global by the "feel real" wave's S1 (jazonshou/cockpit-global-real): the glareshield's round
+      // at 20 mm with its chords smooth-shaded, no aft face and a 5 mm cove, and a new cove fillet. Checked mesh by mesh
+      // against 0fbc073 (world positions, indices, normals, material, roles, visibility): only the Global's cockpit
+      // moves -- the glareshield, the new fillet, and the board, screens, frames, rims and wells, which stand on the
+      // face's top 0.9 mm higher and 5 mm nearer -- and every mesh of the trainer's 66, the jet's 75 and the 747's 96 is
+      // bit-identical.
+      bizjet: "c4979b70",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();

@@ -469,7 +469,13 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
       // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
       // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
-      bizjet: "0d9b6dba",
+      // RE-PINNED for the Global by the "feel real" wave's S1 (jazonshou/cockpit-global-real): the glareshield's round
+      // at 20 mm with its chords smooth-shaded, no aft face and a 5 mm cove, and a new cove fillet. Checked mesh by mesh
+      // against 0fbc073 (world positions, indices, normals, material, roles, visibility): only the Global's cockpit
+      // moves -- the glareshield, the new fillet, and the board, screens, frames, rims and wells, which stand on the
+      // face's top 0.9 mm higher and 5 mm nearer -- and every mesh of the trainer's 66, the jet's 75 and the 747's 96 is
+      // bit-identical.
+      bizjet: "fd4b3020",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

@@ -837,3 +837,67 @@ export function buildAttitudeBall(
   bar.position.set(-(spec.thickness / 2 + spec.barOffset + spec.thickness / 2), 0, 0);
   return { pivot, sky: halves[0]!, ground: halves[1]!, bar, parts: [halves[0]!, halves[1]!, bar] };
 }
+
+/**
+ * A SMOOTH SHEET: an open, one-sided surface through a grid of points (`points[row][column]`), shaded with the normals
+ * GIVEN at each point. The vertices are shared, so the shading runs on across the rows with no break. It is drawn on the
+ * side those normals face: each triangle is wound by `solidPlate`'s rule (a drawn face's cross product points against
+ * the outward normal) against the mean of its corners' normals.
+ *
+ * NO RIM AND NO BACK. It is for a surface whose back is enclosed and never seen: a fillet in an inside corner. A closed
+ * slab's rim there lies ON the surfaces the fillet is tangent to, and trades pixels with them along the tangent line. UVs
+ * are the grid's 0..1.
+ */
+export function smoothSheet(
+  build: AircraftBuildContext,
+  name: string,
+  points: readonly (readonly Vector3[])[],
+  normals: readonly (readonly Vector3[])[],
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const rows = points.length;
+  const columns = points[0]?.length ?? 0;
+  if (rows < 2 || columns < 2) throw new RangeError(`smoothSheet "${name}": needs a grid of at least 2 x 2`);
+  if (normals.length !== rows || [...points, ...normals].some((row) => row.length !== columns)) {
+    throw new RangeError(`smoothSheet "${name}": the points and the normals must be the same rectangular grid`);
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const positions: number[] = [];
+  const shading: number[] = [];
+  const uvs: number[] = [];
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const p = points[row]![column]!;
+      const n = normals[row]![column]!.normalizeToNew();
+      positions.push(p.x, p.y, p.z);
+      shading.push(n.x, n.y, n.z);
+      uvs.push(column / (columns - 1), row / (rows - 1));
+    }
+  }
+  const at = (row: number, column: number) => row * columns + column;
+  const indices: number[] = [];
+  const corner = (i: number) => new Vector3(positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!);
+  const normalAt = (i: number) => new Vector3(shading[i * 3]!, shading[i * 3 + 1]!, shading[i * 3 + 2]!);
+  for (let row = 0; row + 1 < rows; row += 1) {
+    for (let column = 0; column + 1 < columns; column += 1) {
+      const quad = [at(row, column), at(row, column + 1), at(row + 1, column + 1), at(row + 1, column)] as const;
+      for (const [a, b, c] of [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]] as const) {
+        const cross = Vector3.Cross(corner(b).subtract(corner(a)), corner(c).subtract(corner(a)));
+        if (cross.length() < 1e-14) continue;
+        const outward = normalAt(a).add(normalAt(b)).add(normalAt(c));
+        if (Vector3.Dot(cross, outward) > 0) indices.push(a, c, b);
+        else indices.push(a, b, c);
+      }
+    }
+  }
+  if (indices.length === 0) throw new RangeError(`smoothSheet "${name}": no cell has any area`);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = shading;
+  data.uvs = uvs;
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
+}

@@ -17,12 +17,14 @@ import { GLOBAL_CENTRE_POST, GLOBAL_FLIGHT_DECK_OUTLINES, GLOBAL_PANE_DEPTH, GLO
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import { globalSeatPlacement } from "../src/render/webgpu/aircraft/bizjetSeats";
 import {
+  BIZJET_COVE_FILLET,
   BIZJET_GLARESHIELD,
   BIZJET_LINING,
   BIZJET_PANEL,
   BIZJET_SCREENS,
   BIZJET_SIDE_CONSOLE,
   BIZJET_SILL_CAP,
+  bizjetCoveFillet,
   bizjetGlareshieldSection,
   bizjetLipY,
   bizjetLiningMeshName,
@@ -248,6 +250,38 @@ function firstHitAlong(d: Vector3, from: Vector3 = EYE_POINT): Hit | null {
   }
   return best;
 }
+/**
+ * The first drawn surface along a sightline and its SHADING normal there: the hit triangle's vertex normals interpolated
+ * at the hit (outward), which is what the surface is shaded with. A flat-shaded face's is its own; a smoothed round's
+ * turns across each chord.
+ */
+function shadedAt(azimuth: number, elevation: number): { mesh: string; point: Vector3; normal: Vector3 } | null {
+  const ray = new Ray(EYE_POINT, direction(azimuth, elevation), 60);
+  const culls = (mesh: AbstractMesh) => (mesh.material as PBRMaterial | null)?.backFaceCulling ?? false;
+  const hits = [
+    ...(scene.multiPickWithRay(ray, (m) => drawnByCockpitCamera(m) && culls(m), frontFacing(cullSign)) ?? []),
+    ...(scene.multiPickWithRay(ray, (m) => drawnByCockpitCamera(m) && !culls(m)) ?? []),
+  ].filter((h) => h.hit && h.pickedMesh).sort((a, b) => a.distance - b.distance);
+  const hit = hits[0];
+  if (!hit) return null;
+  const mesh = hit.pickedMesh!;
+  const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+  const indices = mesh.getIndices()!;
+  // Babylon's own weights (`PickingInfo.getNormal`): bu on the first corner, bv on the second, the rest on the third
+  const weights = [hit.bu, hit.bv, 1 - hit.bu - hit.bv];
+  let normal = Vector3.Zero();
+  for (let k = 0; k < 3; k += 1) {
+    const i = indices[hit.faceId * 3 + k]! * 3;
+    normal = normal.add(new Vector3(normals[i]!, normals[i + 1]!, normals[i + 2]!).scale(weights[k]!));
+  }
+  return { mesh: mesh.name, point: EYE_POINT.add(ray.direction.scale(hit.distance)), normal: Vector3.TransformNormal(normal, mesh.getWorldMatrix()).normalize() };
+}
+/** The elevation at which a line along z through body (x, y) crosses azimuth `az` from the eye (a level line reads flatter off-centre). */
+function lineElevation(v: { x: number; y: number }, az: number): number {
+  return Math.atan2((v.y - EYE.up) * Math.cos(az / DEG), v.x - EYE.forward) * DEG;
+}
+/** One pixel of a 1920 x 1080 frame at the 75 degree lens, at the frame's centre, in degrees. */
+const PIXEL_1080P = Math.atan(1 / (960 / Math.tan(37.5 / DEG))) * DEG;
 /** Where a ray from the eye leaves the body: its last crossing of the fuselage (the body is star-shaped from the seat). */
 function skinExit(d: Vector3): number {
   return crossings(EYE_POINT, d.normalizeToNew(), shell).at(-1) ?? Number.NaN;
@@ -544,17 +578,17 @@ describe("the Global's eye", () => {
 });
 
 describe("the Global's cockpit parts", () => {
-  it("are seven static meshes: the glareshield, the board and the window frame as one, the screens, their frames, rims and wells, the side consoles", () => {
-    expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-glareshield", "bizjet-screen-bezel-rims", "bizjet-screen-bezels", "bizjet-screen-wells", "bizjet-screens", "bizjet-side-consoles"]);
+  it("are eight static meshes: the glareshield and its cove's fillet, the board and the window frame as one, the screens, their frames, rims and wells, the side consoles", () => {
+    expect(cockpitOnly.map((part) => part.name).sort()).toEqual(["bizjet-cockpit-interior", "bizjet-cove-fillet", "bizjet-glareshield", "bizjet-screen-bezel-rims", "bizjet-screen-bezels", "bizjet-screen-wells", "bizjet-screens", "bizjet-side-consoles"]);
     // the interior is the board, every lining strip the strip table names (a side each or once across the centreline),
     // and the two side sills' caps a side
     expect((named("bizjet-cockpit-interior").metadata as { mergedFrom: string[] }).mergedFrom).toEqual(["bizjet-instrument-panel", ...frameStripNames()]);
-    // the glareshield alone on its mesh, one solidPlate: the aft face's foot, the cove's, the hood's forward end (two
-    // corners), and the round's chords with a vertex on the deck line's tangent (two fanned caps, and each side of the
-    // outline a wall of two)
+    // the glareshield alone on its mesh, one solidPlate: the aft face's foot (none with no drop: the round runs into the
+    // cove), the cove's, the hood's forward end (two corners), and the round's chords with a vertex on the deck line's
+    // tangent (two fanned caps, and each side of the outline a wall of two)
     expect((named("bizjet-glareshield").metadata as { mergedFrom?: string[] } | null)?.mergedFrom).toBeUndefined();
     const sides = bizjetGlareshieldSection().outline.length;
-    expect(sides).toBe(4 + BIZJET_GLARESHIELD.roundSegments + 2);
+    expect(sides).toBe((BIZJET_GLARESHIELD.drop > 0 ? 4 : 3) + BIZJET_GLARESHIELD.roundSegments + 2 + BIZJET_GLARESHIELD.jointSegments);
     expect(named("bizjet-glareshield").getTotalIndices() / 3).toBe(2 * (sides - 2) + 2 * sides);
     for (const name of ["bizjet-screens", "bizjet-screen-bezels", "bizjet-screen-bezel-rims", "bizjet-screen-wells"]) {
       expect(named(name).metadata?.mergedFrom, name).toHaveLength(4);
@@ -1057,7 +1091,8 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     const rowSlope = (v: { x: number; y: number }) => (v.y - EYE.up) / (v.x - EYE.forward);
     expect(Math.max(...lipVertices.map(rowSlope)), "the silhouette on the catalogue's line").toBeCloseTo(-Math.tan(recorded / DEG), 12);
     expect(rowSlope(bizjetGlareshieldSection().tangent)).toBeCloseTo(-Math.tan(recorded / DEG), 12);
-    expect(Math.min(...lipVertices.map((v) => v.x)), "its aft face at the deck's own plane").toBeCloseTo(bizjetPanelFaceX(), 6);
+    // its aft face at the deck's own plane, to the joint's cut: the 4 mm round into the cove takes the corner's last 0.1 mm
+    expect(Math.min(...lipVertices.map((v) => v.x)), "its aft face at the deck's own plane").toBeCloseTo(bizjetPanelFaceX(), 3);
     expect(Math.atan2(bizjetLipY() - EYE.up, bizjetPanelFaceX() - EYE.forward) * DEG).toBeCloseTo(-recorded, 9);
     // THE GLASS IT HIDES: every rim point in the frame and over the lip's span that reads under the lip's row, by how
     // far (a line along z is one row, the row of its slope along x; a rim point's row is its own slope's)
@@ -1151,7 +1186,10 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
       expect(section.outline.some((v) => v.x === tangent.x && v.y === tangent.y), "the tangent is a vertex").toBe(true);
       const { round } = section;
       expect(round.length).toBe(g.roundSegments + 2);
-      expect(section.outline.slice(-round.length), "the round closes the outline").toEqual(round);
+      // the round, then the joint's round into the cove, close the outline
+      const joint = section.joint.points;
+      expect(section.outline.slice(-(round.length + joint.length - 1)), "the round and the joint close the outline").toEqual([...round, ...joint.slice(1)]);
+      expect(joint[0], "the joint leaves the round at the round's own last vertex").toEqual(round.at(-1));
       for (const v of round) expect(Math.hypot(v.x - centre.x, v.y - centre.y)).toBeCloseTo(g.radius, 12);
       // the hood: its top from the round's forward tangent and its underside from the cove's foot, both falling at the
       // hood's angle, faster than the sight line, so past the round nothing of it rises to the line
@@ -1175,8 +1213,13 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
   it("is built inside the PM's numbers (P1a), written out here and not read from the builder's constants", () => {
     const section = bizjetGlareshieldSection();
     const radius = Math.hypot(section.tangent.x - section.centre.x, section.tangent.y - section.centre.y);
-    expect(radius, "the round's radius, 0.010 to 0.015").toBeGreaterThanOrEqual(0.01 - 1e-12);
-    expect(radius).toBeLessThanOrEqual(0.015 + 1e-12);
+    // 20 mm, smooth-shaded (the "feel real" wave's S1; 12.5 before, on flat chords). With the round at 20 the drop and
+    // the cove are not taste: the 2.5 degree deck-edge ceiling and the screens' placement from the face's top decide
+    // them. The old 5 mm drop and 10 mm cove under a 20 mm round read 3.09 degrees and took the face, and the screens
+    // placed from it, 9.1 mm down; no drop and a 5 mm cove read 2.36 with the face's top 0.9 mm higher.
+    expect(radius, "the round's radius, 0.020").toBeCloseTo(0.02, 12);
+    expect(BIZJET_GLARESHIELD.drop, "no aft face under the round").toBe(0);
+    expect(BIZJET_GLARESHIELD.cove, "the cove, 5 mm").toBe(0.005);
     expect(section.centre.y - section.coveTop.y, "the aft face's drop under the round, at most 0.010").toBeLessThanOrEqual(0.01 + 1e-12);
     expect(section.coveTop.x - section.faceTop.x, "the cove at 45 degrees").toBeCloseTo(section.faceTop.y - section.coveTop.y, 12);
     expect(Math.max(...section.outline.map((v) => v.x)) - bizjetPanelFaceX(), "the hood's depth").toBeCloseTo(0.18, 12);
@@ -1197,28 +1240,35 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     const lip = named("bizjet-glareshield");
     const vertices = worldVertices(lip);
     const normals = lip.getVerticesData(VertexBuffer.NormalKind)!;
-    // flat-shaded (three vertices a triangle): the faces by their built normals
+    // three vertices a triangle: the flat faces by their built normals, a triangle whose three corners all carry the
+    // cove's normal (the joint's round meets the cove with that normal too, at one or two corners of its last chord)
     const cove: Vector3[] = [];
     const aft: Vector3[] = [];
     let coveNormal: Vector3 | null = null;
-    for (let i = 0; i < vertices.length; i += 1) {
-      const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
-      if (Math.abs(n.x + Math.SQRT1_2) < 1e-6 && Math.abs(n.y + Math.SQRT1_2) < 1e-6) {
-        cove.push(vertices[i]!);
-        coveNormal = n;
+    const isCove = (i: number) => Math.abs(normals[i * 3]! + Math.SQRT1_2) < 1e-6 && Math.abs(normals[i * 3 + 1]! + Math.SQRT1_2) < 1e-6;
+    for (let i = 0; i + 2 < vertices.length; i += 3) {
+      if (isCove(i) && isCove(i + 1) && isCove(i + 2)) {
+        cove.push(vertices[i]!, vertices[i + 1]!, vertices[i + 2]!);
+        coveNormal = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
       }
-      if (n.x < -0.999999) aft.push(vertices[i]!);
+      for (const k of [i, i + 1, i + 2]) if (normals[k * 3]! < -0.999999) aft.push(vertices[k]!);
     }
     expect(cove.length, "the cove's vertices: a quad, two triangles").toBe(6);
-    // (vertex data is float32: a micrometre at these stations)
-    expect(Math.min(...cove.map((v) => v.x))).toBeCloseTo(bizjetPanelFaceX(), 5);
-    expect(Math.max(...cove.map((v) => v.x)) - bizjetPanelFaceX(), "the cove's run").toBeCloseTo(g.cove, 5);
-    expect(Math.max(...cove.map((v) => v.y)) - Math.min(...cove.map((v) => v.y)), "the cove's fall").toBeCloseTo(g.cove, 5);
+    // (vertex data is float32: a micrometre at these stations) the flat cove runs from the joint's round down to the
+    // face's top, on the cove's 45 degree line through the corner the round met it at
+    const jointEnd = section.joint.points.at(-1)!;
+    for (const v of cove) expect((v.x - section.coveTop.x) + (v.y - section.coveTop.y), "on the cove's line").toBeCloseTo(0, 5);
+    expect(Math.min(...cove.map((v) => v.x)), "from the joint's end").toBeCloseTo(jointEnd.x, 5);
+    expect(Math.max(...cove.map((v) => v.x)), "to the face's top").toBeCloseTo(section.faceTop.x, 5);
+    expect(section.faceTop.x - section.coveTop.x, "the cove's run, corner to foot").toBeCloseTo(g.cove, 12);
+    expect(section.coveTop.y - section.faceTop.y, "the cove's fall, corner to foot").toBeCloseTo(g.cove, 12);
     // the pilot SEES it: its normal has a component toward the eye at every one of its corners (a flat underside's did not)
     for (const v of cove) expect(Vector3.Dot(coveNormal!, EYE_POINT.subtract(v)), "the cove faces the eye").toBeGreaterThan(0);
-    // the aft face: vertical, from the cove's top up to the round's aft tangent, `drop` tall
+    // the aft face: vertical under the round's aft tangent, `drop` tall; at 0 there is none, and the corner the cove's
+    // line meets the round at (`coveTop`) is the round's aft tangent, which the joint's round then cuts
+    expect(section.coveTop.x, "the corner on the aft face's plane").toBeCloseTo(bizjetPanelFaceX(), 12);
+    expect(section.centre.y - section.coveTop.y, "the drop under the round").toBeCloseTo(g.drop, 12);
     for (const v of aft) expect(v.x).toBeCloseTo(bizjetPanelFaceX(), 5);
-    expect(Math.max(...aft.map((v) => v.y)) - Math.min(...aft.map((v) => v.y)), "the drop under the round").toBeCloseTo(g.drop, 5);
     // the panel's face begins at the cove's foot: the board's top edge, no gap
     const board = worldVertices(named("bizjet-cockpit-interior")).slice(0, 24);
     expect(Math.max(...board.map((v) => v.y)), "the board's top at the cove's foot").toBeCloseTo(section.faceTop.y, 5);
@@ -1226,12 +1276,176 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     expect(Math.min(...top.map((v) => v.x)) - bizjetPanelFaceX(), "the cove's run to the face").toBeCloseTo(g.cove, 5);
     // and by ray: straight ahead, just under the deck's edge the eye meets the cove, just under that the board
     const el = (v: { x: number; y: number }) => Math.atan2(v.y - EYE.up, v.x - EYE.forward) * DEG;
-    const coveMiddle = (el(section.coveTop) + el(section.faceTop)) / 2;
+    // (the middle of the FLAT cove: between the joint's round above and the cove's fillet below)
+    const filletTop = bizjetCoveFillet().points[0]!;
+    const coveMiddle = el({ x: (jointEnd.x + filletTop.x) / 2, y: (jointEnd.y + filletTop.y) / 2 });
     const hit = kitHit(0, coveMiddle);
     expect(hit?.mesh.name, "straight ahead, the cove's middle").toBe("bizjet-glareshield");
     const at = EYE_POINT.add(direction(0, coveMiddle).scale(hit!.distance));
     expect(at.x - bizjetPanelFaceX(), "and the hit is on the cove").toBeGreaterThan(0.0005);
-    expect(firstPart(0, el(section.faceTop) - 0.3), "under the cove's foot").toBe("bizjet-instrument-panel");
+    // (under the fillet's foot: 3.6 mm down the face, about 0.3 degrees)
+    expect(firstPart(0, el(section.faceTop) - 0.45), "under the cove's foot and its fillet").toBe("bizjet-instrument-panel");
+  });
+
+  it("shades the round as the circle: every chord's corners take the round's radial normal", () => {
+    const section = bizjetGlareshieldSection();
+    const lip = named("bizjet-glareshield");
+    const positions = lip.getVerticesData(VertexBuffer.PositionKind)!;
+    const normals = lip.getVerticesData(VertexBuffer.NormalKind)!;
+    const indices = lip.getIndices()!;
+    const onRound = (i: number) => section.round.some((p) => Math.abs(p.x - positions[i * 3]!) < 1e-6 && Math.abs(p.y - positions[i * 3 + 1]!) < 1e-6);
+    let chords = 0;
+    let radial = 0;
+    for (let t = 0; t < indices.length; t += 3) {
+      const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+      if (Math.abs(normals[corners[0]! * 3 + 2]!) > 0.5 || !corners.every(onRound)) continue; // a cap, or not a chord
+      chords += 1;
+      for (const i of corners) {
+        const r = new Vector3(positions[i * 3]! - section.centre.x, positions[i * 3 + 1]! - section.centre.y, 0).normalize();
+        if (Vector3.Dot(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), r) > 1 - 1e-6) radial += 1; // float32 normals
+      }
+    }
+    // each of the round's chords is a wall of two triangles, and every one of their corners carries the radial
+    expect(chords, "the round's chord triangles").toBe((section.round.length - 1) * 2);
+    expect(radial, "their corners carrying the radial normal").toBe(chords * 3);
+  });
+
+  it("rounds the round's turn into the cove: a 4 mm convex round tangent to both, shaded as its own circle, the deck's edge unmoved", () => {
+    const section = bizjetGlareshieldSection();
+    const g = BIZJET_GLARESHIELD;
+    const { points, centre, radius } = section.joint;
+    expect(radius, "the joint's round, 4 mm").toBe(0.004);
+    for (const p of points) expect(Math.hypot(p.x - centre.x, p.y - centre.y)).toBeCloseTo(radius, 12);
+    // tangent to the round (inside it, R - rho from its centre) and to the cove's line (rho from it, on the solid's side)
+    expect(Math.hypot(centre.x - section.centre.x, centre.y - section.centre.y)).toBeCloseTo(g.radius - radius, 12);
+    const fromCove = ((centre.x - section.coveTop.x) + (centre.y - section.coveTop.y)) * Math.SQRT1_2;
+    expect(fromCove, "rho above the cove's line").toBeCloseTo(radius, 12);
+    // the deck's edge is the round's tangent above and the cove's foot below: neither moves
+    const el = (v: { x: number; y: number }) => Math.atan2(v.y - EYE.up, v.x - EYE.forward) * DEG;
+    expect(el(section.tangent) - el(section.faceTop), "the deck's edge").toBeLessThanOrEqual(TARGETS.deckEdge);
+    // shaded as its circle: every chord's corners carry its radial
+    const lip = named("bizjet-glareshield");
+    const positions = lip.getVerticesData(VertexBuffer.PositionKind)!;
+    const normals = lip.getVerticesData(VertexBuffer.NormalKind)!;
+    const indices = lip.getIndices()!;
+    const onJoint = (i: number) => points.some((p) => Math.abs(p.x - positions[i * 3]!) < 1e-6 && Math.abs(p.y - positions[i * 3 + 1]!) < 1e-6);
+    let chords = 0;
+    for (let t = 0; t < indices.length; t += 3) {
+      const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+      if (Math.abs(normals[corners[0]! * 3 + 2]!) > 0.5 || !corners.every(onJoint)) continue;
+      chords += 1;
+      for (const i of corners) {
+        const r = new Vector3(positions[i * 3]! - centre.x, positions[i * 3 + 1]! - centre.y, 0).normalize();
+        expect(Vector3.Dot(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), r), "a joint corner's normal").toBeGreaterThan(1 - 1e-6);
+      }
+    }
+    expect(chords, "the joint's chord triangles").toBe(g.jointSegments * 2);
+  });
+
+  it("leaves no crease where the round turns into the cove: down the round's lower half, through the joint into the flat cove", () => {
+    const section = bizjetGlareshieldSection();
+    const steps: number[] = [];
+    for (const az of [-20, 0, 21, 30]) {
+      let previous: Vector3 | null = null;
+      const start = lineElevation(section.round[section.round.length - 3]!, az);
+      for (let e = start; e > lineElevation(section.faceTop, az) + 0.05; e -= PIXEL_1080P) {
+        const seen = shadedAt(az, e);
+        if (!seen || seen.mesh !== "bizjet-glareshield") break;
+        if (previous) steps.push(Math.acos(Math.min(1, Vector3.Dot(previous, seen.normal))) * DEG);
+        previous = seen.normal;
+      }
+    }
+    console.info(`round -> joint -> cove, row to row: ${steps.length} steps, largest ${Math.max(...steps).toFixed(2)} degrees`);
+    expect(steps.length).toBeGreaterThan(20);
+    expect(Math.max(...steps), "no crease where the round turns into the cove").toBeLessThan(45);
+  });
+
+  it("turns the round into one gradient as the pilot sees it: a pixel apart, the shading turns 8 degrees at most", () => {
+    const section = bizjetGlareshieldSection();
+    const radius = BIZJET_GLARESHIELD.radius;
+    // the round ends where the joint's round leaves it (its own test holds the joint)
+    const jointStart = Math.atan2(section.joint.points[0]!.y - section.centre.y, section.joint.points[0]!.x - section.centre.x) * DEG;
+    const steps: number[] = [];
+    for (const az of [-20, -8, 0, 12, 30]) {
+      // from a pixel under the silhouette down the round, one 1080p pixel at a time, while the hit is on the circle
+      let previous: Vector3 | null = null;
+      const tangent = lineElevation(section.tangent, az);
+      for (let el = tangent - PIXEL_1080P; el > tangent - 3; el -= PIXEL_1080P) {
+        const seen = shadedAt(az, el);
+        if (!seen || seen.mesh !== "bizjet-glareshield") break;
+        // on the circle and within the round's own span (from the hood's tangent round to the aft one, 90 to 180 degrees
+        // from +x about the centre): past the aft tangent is the cove, a designed 45 degree turn
+        const off = Math.hypot(seen.point.x - section.centre.x, seen.point.y - section.centre.y) - radius;
+        const polar = Math.atan2(seen.point.y - section.centre.y, seen.point.x - section.centre.x) * DEG;
+        if (Math.abs(off) > 0.0005 || polar < 0 || polar > jointStart) break;
+        if (previous) steps.push(Math.acos(Math.min(1, Vector3.Dot(previous, seen.normal))) * DEG);
+        previous = seen.normal;
+      }
+    }
+    console.info(`the round, row to row: ${steps.length} steps, largest ${Math.max(...steps).toFixed(2)} degrees, mean ${(steps.reduce((a, b) => a + b, 0) / steps.length).toFixed(2)}`);
+    expect(steps.length, "rows sampled across the round").toBeGreaterThan(40);
+    expect(Math.max(...steps)).toBeLessThanOrEqual(8);
+  });
+
+  it("fillets the cove's foot into the panel's face: a 5 mm round tangent to both, shaded as the circle", () => {
+    const fillet = bizjetCoveFillet();
+    const face = bizjetPanelFace();
+    const section = bizjetGlareshieldSection();
+    const r = BIZJET_COVE_FILLET.radius;
+    expect(r, "the fillet's radius: 7.5 mm, the smallest (to half a millimetre) that reads under 8 degrees a 1080p pixel from the seat").toBe(0.0075);
+    for (const p of fillet.points) expect(Math.hypot(p.x - fillet.centre.x, p.y - fillet.centre.y)).toBeCloseTo(r, 12);
+    // the centre stands on the pilot's side of both surfaces, `r` from each
+    const coveOff = ((fillet.centre.x - section.faceTop.x) * -Math.SQRT1_2 + (fillet.centre.y - section.faceTop.y) * -Math.SQRT1_2);
+    const faceOff = (fillet.centre.x - face.top.x) * face.normal.x + (fillet.centre.y - face.top.y) * face.normal.y;
+    expect(coveOff, "the centre r out from the cove's plane").toBeCloseTo(r, 12);
+    expect(faceOff, "the centre r out from the face's plane").toBeCloseTo(r, 12);
+    // tangent: its first row on the cove with the cove's normal, its last on the face with the face's
+    const first = fillet.points[0]!;
+    const last = fillet.points.at(-1)!;
+    expect((first.x - section.faceTop.x) + (first.y - section.faceTop.y), "the first row on the cove's line").toBeCloseTo(0, 12);
+    expect((last.x - face.top.x) * face.normal.x + (last.y - face.top.y) * face.normal.y, "the last row on the face's plane").toBeCloseTo(0, 12);
+    expect(fillet.normals[0]!.x).toBeCloseTo(-Math.SQRT1_2, 12);
+    expect(fillet.normals[0]!.y).toBeCloseTo(-Math.SQRT1_2, 12);
+    expect(fillet.normals.at(-1)!.x).toBeCloseTo(face.normal.x, 12);
+    expect(fillet.normals.at(-1)!.y).toBeCloseTo(face.normal.y, 12);
+    // the mesh: on the glareshield's material, as wide as the deck, and smooth (its faces share their vertices)
+    const mesh = named("bizjet-cove-fillet");
+    expect(mesh.material).toBe(named("bizjet-glareshield").material);
+    const halfWidth = Math.max(...worldVertices(named("bizjet-cockpit-interior")).slice(0, 24).map((v) => Math.abs(v.z)));
+    expect(Math.max(...worldVertices(mesh).map((v) => Math.abs(v.z))), "across the deck").toBeCloseTo(halfWidth, 9);
+    expect(mesh.getTotalVertices(), "smooth faces share vertices: fewer than three a triangle").toBeLessThan(mesh.getTotalIndices());
+    // an open sheet (no rim along the tangent lines to trade pixels with the cove and the face), shaded with the circle's
+    // normal at every row: its first row's IS the cove's and its last row's the face's, as built
+    expect(mesh.getTotalVertices(), "a grid of rows by two columns, no rim").toBe(BIZJET_COVE_FILLET.rows * 2);
+    const built = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const rowNormal = (row: number) => new Vector3(built[row * 6]!, built[row * 6 + 1]!, built[row * 6 + 2]!);
+    expect(Vector3.Dot(rowNormal(0), new Vector3(-Math.SQRT1_2, -Math.SQRT1_2, 0)), "the first row shaded as the cove").toBeGreaterThan(1 - 1e-6);
+    expect(Vector3.Dot(rowNormal(BIZJET_COVE_FILLET.rows - 1), new Vector3(face.normal.x, face.normal.y, 0)), "the last row shaded as the face").toBeGreaterThan(1 - 1e-6);
+  });
+
+  it("leaves no crease at the cove's foot: sighting down through cove, fillet and face, the shading turns 8 degrees a pixel at most", () => {
+    // The cove met the face at 60 degrees: 60 in one pixel. A 5 mm fillet turned up to 11.9 a 1080p pixel from the seat
+    // (its cove end is seen obliquely, so the arc crowds there), 6.2 mm 9.8, 7 mm 8.1; 7.5 mm keeps it under 8.
+    const section = bizjetGlareshieldSection();
+    const steps: number[] = [];
+    let crossed = 0;
+    // over the bare board, outboard of the pilot's pair and between it and the first officer's (over the screens their
+    // bezels meet the foot, which is the bezels' clearance, held apart)
+    for (const az of [-22, -21, 21, 25, 30, 35]) {
+      let previous: { mesh: string; normal: Vector3 } | null = null;
+      for (let e = lineElevation(section.joint.points.at(-1)!, az) - PIXEL_1080P / 2; e > lineElevation(section.faceTop, az) - 0.6; e -= PIXEL_1080P) {
+        const seen = shadedAt(az, e);
+        if (!seen) break;
+        if (previous) {
+          steps.push(Math.acos(Math.min(1, Vector3.Dot(previous.normal, seen.normal))) * DEG);
+          if (previous.mesh === "bizjet-cove-fillet" && seen.mesh !== previous.mesh) crossed += 1;
+        }
+        previous = seen;
+      }
+    }
+    console.info(`the cove's foot, row to row: ${steps.length} steps, largest ${Math.max(...steps).toFixed(2)} degrees; ${crossed} sightlines left the fillet for the face`);
+    expect(crossed, "every sightline crossed the fillet into the face").toBe(6);
+    expect(Math.max(...steps)).toBeLessThanOrEqual(8);
   });
 
   it("shows nothing of the glareshield or the board over the lip: the lip is the edge the pilot reads", () => {
@@ -1494,7 +1708,8 @@ describe("the Global's cockpit against the shell it stands in", () => {
 
   it("stands the glareshield's aft face the design's distance ahead of the eye, the board's face under the cove and down past the frame", () => {
     expect(bizjetPanelFaceX() - EYE.forward).toBeCloseTo(BIZJET_PANEL.faceAheadOfEye, 9);
-    expect(Math.min(...worldVertices(named("bizjet-glareshield")).map((v) => v.x))).toBeCloseTo(bizjetPanelFaceX(), 9);
+    // (to the joint's cut: the 4 mm round into the cove takes the corner's last 0.1 mm)
+    expect(Math.min(...worldVertices(named("bizjet-glareshield")).map((v) => v.x))).toBeCloseTo(bizjetPanelFaceX(), 3);
     const face = bizjetPanelFace();
     const board = worldVertices(named("bizjet-cockpit-interior")).slice(0, 24);
     // the face's top edge is the cove's foot, and the face runs down past where the frame's bottom crosses it
@@ -1697,7 +1912,7 @@ describe("the Global's cockpit-only parts outside cockpit view", () => {
     localScene.activeCamera = localCamera;
     const visual = createWebGpuAircraft(localScene, "bizjet");
     const parts = visual.cockpitOnlyParts ?? [];
-    expect(parts.length).toBe(7);
+    expect(parts.length).toBe(8);
     const exteriorMask = localCamera.layerMask;
     for (const part of parts) {
       expect(part.isVisible, `${part.name} at rest`).toBe(false);

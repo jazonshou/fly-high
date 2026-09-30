@@ -24,6 +24,8 @@ import {
   glareshieldMaterial,
   roundedDeckSection,
   sculptSolid,
+  smoothRoundNormals,
+  smoothSheet,
   solidPlate,
   type FacetQuad,
   type RoundedDeckSection,
@@ -408,39 +410,138 @@ export function bizjetLipY(): number {
 }
 
 /**
- * THE GLARESHIELD, one convex solid along z: a ROUNDED aft edge, a short aft face under it, a COVE turning under at 45
- * degrees to the panel's face, and the hood over the board, falling forward.
+ * THE GLARESHIELD, one convex solid along z: a ROUNDED aft edge, a COVE turning under it at 45 degrees to the panel's
+ * face, and the hood over the board, falling forward.
  *
- *  - THE ROUND is tangent to the aft face and to the hood's top, and the catalogue's sight line over the deck
+ *  - THE ROUND is tangent to the aft face's plane and to the hood's top, and the catalogue's sight line over the deck
  *    (`cockpitDeckLineDegrees` under the eye) is tangent to it: that tangent is a vertex, so the silhouette the pilot
  *    reads is the deck line exactly, one row of the picture across the frame, and the lip rule is unchanged. Its upper
- *    side faces the sky, so the deck's edge reads as a lit rim.
- *  - THE COVE faces down and aft at 45 degrees, `cove` forward and `cove` down, from the aft face's foot to the panel's
- *    face. A flat underside there was 0.16 m under the eye and never seen; the cove is seen, and it faces the image
+ *    side faces the sky, so the deck's edge reads as a lit rim. It is SMOOTH-SHADED (`smoothRoundNormals`, as the F-16's
+ *    rail): at 12.5 mm on flat chords it read as seven bands, 1.6 to 10.7 of luma apart, a pipe of flat strips (P0 of
+ *    the "feel real" wave); at 20 mm, shaded as the circle, it reads as one gradient.
+ *  - NO AFT FACE UNDER IT (`drop` 0), and a 5 mm cove. The bigger round sits 9.1 mm lower under the same tangent, and
+ *    with the old 5 mm drop and 10 mm cove the deck's edge read 3.09 degrees and took the panel's face, and the screens
+ *    placed from it, down 9.1 mm; without the drop and with half the cove it reads 2.36 and the face's top is 0.9 mm
+ *    HIGHER than it was. The round's aft tangent runs straight into the cove: a 45 degree turn, as the aft face's was.
+ *  - THE COVE faces down and aft at 45 degrees, `cove` forward and `cove` down, from the round's aft tangent to the
+ *    panel's face. A flat underside there was 0.16 m under the eye and never seen; the cove is seen, and it faces the image
  *    light's lower half, so it reads darker than the panel under it by its normal alone: the shade under a glareshield,
  *    from geometry. The panel's face begins at its foot, which is the lowest edge of the deck the pilot reads.
- *  - THE DECK'S EDGE, from the tangent to the cove's foot, reads 2.34 degrees straight ahead (the design's ceiling is
+ *  - THE DECK'S EDGE, from the tangent to the cove's foot, reads 2.36 degrees straight ahead (the design's ceiling is
  *    2.5): the radius, the drop and the cove are what it is made of.
+ *  - THE COVE'S FOOT is FILLETED into the panel's face (`BIZJET_COVE_FILLET`): the two met there at 60 degrees, a line
+ *    across the whole deck 21 to 26 of luma deep.
  *  - THE HOOD's top falls forward at `hoodFallDegrees`, steeper than the sight line over the round, so nothing of it
  *    shows past the round and it covers no glass. Its underside falls with it from the cove's foot, a plate of one
  *    thickness, so the solid stays convex (the prism `solidPlate` fans needs it) at any depth.
  */
 export const BIZJET_GLARESHIELD = Object.freeze({
-  radius: 0.0125,
-  drop: 0.005,
+  radius: 0.02,
+  drop: 0,
   /** The cove's run forward, and its fall: 45 degrees. */
-  cove: 0.01,
+  cove: 0.005,
   hoodFallDegrees: 12,
   hoodDepth: 0.18,
   /** Chords round the aft edge, besides the one vertex put on the deck line's tangent. */
   roundSegments: 8,
+  /**
+   * The CONVEX round where the round's aft tangent turns into the cove (45 degrees), and its chords. With no drop the
+   * round ran straight into the cove there, a 45 degree corner the crease survey read as 45.9 along the whole deck;
+   * rounded, the corner moves no edge the pilot reads (the deck line is the round's own tangent above it, and the cove
+   * still ends at the face's top), and it is shaded as its own circle.
+   */
+  jointRadius: 0.004,
+  jointSegments: 4,
 });
 
-/** The glareshield's section in body x and y, and the points the rest of the deck is placed from (`roundedDeckSection`). */
-export type BizjetGlareshieldSection = RoundedDeckSection;
+/**
+ * The glareshield's section in body x and y, and the points the rest of the deck is placed from (`roundedDeckSection`):
+ * the round (its last vertex now where the joint's round leaves it) and the JOINT, the small convex round from the
+ * round into the cove. `coveTop` stays the corner the two met at, on the cove's line; the flat cove begins at the
+ * joint's last point.
+ */
+export type BizjetGlareshieldSection = RoundedDeckSection & {
+  readonly joint: { readonly points: readonly { x: number; y: number }[]; readonly centre: { x: number; y: number }; readonly radius: number };
+};
 
 export function bizjetGlareshieldSection(deckLine: number = aircraftSpec("bizjet").cockpitDeckLineDegrees): BizjetGlareshieldSection {
-  return roundedDeckSection(eye(), bizjetPanelFaceX(), deckLine, BIZJET_GLARESHIELD, "the Global");
+  const g = BIZJET_GLARESHIELD;
+  const base = roundedDeckSection(eye(), bizjetPanelFaceX(), deckLine, g, "the Global");
+  if (g.drop !== 0) throw new RangeError("the Global's joint round is between the round and the cove: it needs no drop");
+  // The small circle inside the corner, `rho` from the cove's line and `R - rho` from the round's centre (tangent to both).
+  // With the corner P (the round's aft tangent, on the cove's line) and the cove running down it along d, into the solid
+  // along m: the centre is P + t d + rho m, and |centre - C|^2 = (R - rho)^2 is a quadratic in t.
+  const R = g.radius;
+  const rho = g.jointRadius;
+  const P = base.round.at(-1)!;
+  const C = base.centre;
+  const d = { x: Math.SQRT1_2, y: -Math.SQRT1_2 };
+  const m = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+  const ox = P.x - C.x + rho * m.x;
+  const oy = P.y - C.y + rho * m.y;
+  const b = 2 * (ox * d.x + oy * d.y);
+  const c = ox * ox + oy * oy - (R - rho) ** 2;
+  // the nearer root: the circle in the corner (the farther one touches the round again 26 mm down the cove's line)
+  const t = (-b - Math.sqrt(b * b - 4 * c)) / 2;
+  const S = { x: P.x + t * d.x + rho * m.x, y: P.y + t * d.y + rho * m.y };
+  const onCircle = { x: C.x + ((S.x - C.x) * R) / (R - rho), y: C.y + ((S.y - C.y) * R) / (R - rho) };
+  const onCove = { x: P.x + t * d.x, y: P.y + t * d.y };
+  const from = Math.atan2(onCircle.y - S.y, onCircle.x - S.x);
+  const to = Math.atan2(onCove.y - S.y, onCove.x - S.x);
+  const sweep = ((to - from + 3 * Math.PI) % (2 * Math.PI)) - Math.PI;
+  const joint = Array.from({ length: g.jointSegments + 1 }, (_, k) => {
+    const angle = from + (sweep * k) / g.jointSegments;
+    return { x: S.x + rho * Math.cos(angle), y: S.y + rho * Math.sin(angle) };
+  });
+  joint[0] = onCircle;
+  joint[g.jointSegments] = onCove;
+  const round = [...base.round.slice(0, -1), onCircle];
+  const outline = [...base.outline.slice(0, base.outline.length - base.round.length), ...round, ...joint.slice(1)];
+  return { ...base, round, outline, joint: { points: joint, centre: S, radius: rho } };
+}
+
+/**
+ * THE COVE'S FILLET: a concave round in the corner where the cove (facing down and aft at 45 degrees) meets the panel's
+ * face (leaned back 15), tangent to both, `radius` of it about a centre on the pilot's side of the corner. It is its own
+ * mesh, not part of the glareshield, whose convex prism cannot hold a concave face.
+ *
+ * It is an open sheet (`smoothSheet`) with its back in the corner, never seen. A closed thin slab (`skinPanel`) was
+ * tried first, and its rim's top edge lay ON the cove along the tangent line and traded pixels with it (a 90 degree
+ * normal along a 15 px line, by the crease survey). SMOOTH-SHADED with the circle's own normal at every row, so the
+ * first row's is exactly the cove's and the last's the face's: the cove shades into the face with no line between them.
+ */
+/**
+ * 7.5 mm: the smallest round that turns under 8 degrees a 1080p pixel from the seat (measured over the bare board: 5 mm
+ * read 11.9, 6.2 read 9.8, 7 read 8.1, 7.5 reads 7.4; its cove end is seen obliquely, so the arc crowds there).
+ */
+export const BIZJET_COVE_FILLET = Object.freeze({ radius: 0.0075, rows: 13 });
+
+/**
+ * The fillet's section in body x and y: its rows from the cove's tangent round to the face's, each with its outward
+ * (toward the pilot) normal, and the centre. The corner turns by the angle between the cove's and the face's normals,
+ * and each tangent stands `radius * tan(half that)` from the corner along its own line.
+ */
+export function bizjetCoveFillet(): { points: { x: number; y: number }[]; normals: { x: number; y: number }[]; centre: { x: number; y: number } } {
+  const f = BIZJET_COVE_FILLET;
+  const section = bizjetGlareshieldSection();
+  const face = bizjetPanelFace();
+  const corner = section.faceTop;
+  const coveNormal = { x: -Math.SQRT1_2, y: -Math.SQRT1_2 };
+  const turn = Math.acos(coveNormal.x * face.normal.x + coveNormal.y * face.normal.y);
+  const along = f.radius * Math.tan(turn / 2);
+  // up the cove from its foot (toward its top: back and up), and down the face from its top
+  const onCove = { x: corner.x - along * Math.SQRT1_2, y: corner.y + along * Math.SQRT1_2 };
+  const centre = { x: onCove.x + f.radius * coveNormal.x, y: onCove.y + f.radius * coveNormal.y };
+  const from = Math.atan2(-coveNormal.y, -coveNormal.x);
+  const to = Math.atan2(-face.normal.y, -face.normal.x);
+  const points: { x: number; y: number }[] = [];
+  const normals: { x: number; y: number }[] = [];
+  for (let k = 0; k < f.rows; k += 1) {
+    const angle = from + ((to - from) * k) / (f.rows - 1);
+    points.push({ x: centre.x + f.radius * Math.cos(angle), y: centre.y + f.radius * Math.sin(angle) });
+    normals.push({ x: -Math.cos(angle), y: -Math.sin(angle) });
+  }
+  return { points, normals, centre };
 }
 
 /**
@@ -725,8 +826,8 @@ export interface BizjetCockpit {
  * (`configureCockpitOnlyParts`) and registers them, so the rule is applied in one place. `skin` is the
  * caster the flight-deck glass was cast with.
  *
- * SEVEN meshes, all static: the board and the window frame's lining on the interior material; the glareshield on its
- * own, alone; the four screens; their four bezels' frames; the frames' chamfered rims; the wells behind the screens; the
+ * EIGHT meshes, all static: the board and the window frame's lining on the interior material; the glareshield on its
+ * own, and the cove's fillet on the glareshield's material; the four screens; their four bezels' frames; the frames' chamfered rims; the wells behind the screens; the
  * two side consoles, on the interior material.
  */
 export function buildBizjetCockpit(
@@ -768,7 +869,23 @@ export function buildBizjetCockpit(
     const t = Math.min(1, Math.max(0, (point.x - taper.from) / (taper.to - taper.from)));
     return new Vector3(point.x, point.y, point.z * (1 + (taper.endHalfWidth / halfWidth - 1) * t));
   });
+  // The round shades as the circle (the taper starts forward of it, so its corners are still on the round in x and y).
+  const lipSection = bizjetGlareshieldSection();
+  smoothRoundNormals(glareshield, lipSection.round, lipSection.centre);
+  smoothRoundNormals(glareshield, lipSection.joint.points, lipSection.joint.centre);
   parts.push(glareshield);
+
+  // THE COVE'S FILLET, on the glareshield's own material, across the deck's width.
+  const fillet = bizjetCoveFillet();
+  const across = [-halfWidth, halfWidth];
+  parts.push(smoothSheet(
+    build,
+    "bizjet-cove-fillet",
+    fillet.points.map((p) => across.map((z) => new Vector3(p.x, p.y, z))),
+    fillet.normals.map((n) => across.map(() => new Vector3(n.x, n.y, 0))),
+    glareshield.material as PBRMaterial,
+    root,
+  ));
 
   // THE PANEL BOARD, its face leaned back from its top edge at the cove's foot down past the frame's bottom, as wide as the
   // glareshield. A box turned back about z (its local X is its thickness, away from the pilot; its local Y runs up the face).
