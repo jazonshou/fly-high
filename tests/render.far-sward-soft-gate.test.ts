@@ -278,8 +278,11 @@ describe("V-4: the stored gate", () => {
 });
 
 describe("V-4: the soft read in the shaders", () => {
-  it("is compiled only when asked for, CHEAP staying the default", () => {
-    expect(TERRAIN_FAR_SWARD_READ_DEFAULT).toBe("cheap");
+  it("ships the soft read by default", () => {
+    // RE-PINNED cheap -> soft (V-4 step 2): priced +0.016 ms of main-pass GPU over
+    // cheap at cruise, 1080p medium, against a 0.10 ms bar, and every perf shot
+    // passes every gate in both arms, so no baseline was promoted.
+    expect(TERRAIN_FAR_SWARD_READ_DEFAULT).toBe("soft");
   });
 
   it("stores the gate in the high bucket's alpha from the bake", () => {

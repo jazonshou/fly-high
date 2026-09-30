@@ -319,18 +319,23 @@ export { TERRAIN_FAR_SWARD_NEGLIGIBLE_SHARE };
  * `V-4`: the far-sward read a plugin compiles, chosen at RUNTIME so one build
  * prices all three (`TerrainSurfacePlugin.setFarSwardRead`):
  *
- * - "cheap", the shipped read above: the nearest texel's pair, 3 loads.
- * - "soft", `FarSwardGate.ts`'s bilinear gate: cheap's 3 plus the four
- *   corners' stored gates, 7 loads on every zero-trust fragment, and 3 more
- *   (10) only where the nearest texel is refused beside one that is not.
+ * - "soft", the SHIPPED read: `FarSwardGate.ts`'s bilinear gate, cheap's 3
+ *   loads plus ONE gather of the four corners' stored gates on every
+ *   zero-trust fragment, and 3 more loads only where the nearest texel is
+ *   refused beside one that is not.
+ * - "cheap", the read above: the nearest texel's pair gated all or nothing,
+ *   3 loads. It drew coasts and treelines as straight 128 m texel lines.
  * - "off", the early return.
  *
- * The default stays cheap until soft is priced (V-4 step 2). The compile-time
- * dial above still decides whether the branch exists at all (0) and cheap's
- * read (1 or 2). The Low tier's two-material path compiles the branch out.
+ * Soft became the default after V-4 step 2 priced it at cruise (1080p medium):
+ * +0.016 ms of main-pass GPU over cheap, against a 0.10 ms bar, with every one
+ * of the 39 perf shots passing every gate in both arms
+ * (docs/findings/FAR_SWARD_SOFT_GATE_2026_09_30.md). The compile-time dial
+ * above still decides whether the branch exists at all (0) and cheap's read
+ * (1 or 2). The Low tier's two-material path compiles the branch out.
  */
 export type TerrainFarSwardRead = "off" | "cheap" | "soft";
-export const TERRAIN_FAR_SWARD_READ_DEFAULT: TerrainFarSwardRead = "cheap";
+export const TERRAIN_FAR_SWARD_READ_DEFAULT: TerrainFarSwardRead = "soft";
 
 /** CPU twin: may a zero-trust page's pair supply the fade target? */
 export function terrainFarSwardEligible(
