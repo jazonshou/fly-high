@@ -26,6 +26,8 @@
  *             control-surface or attitude digest moves.
  *   coldstart throttled from navigation: navigation -> first WebGPU
  *             getCurrentTexture() (first frame drawn), and -> the start screen.
+ *   freeze    the terrain viewer held at POSE with a pinned clock, for a
+ *             same-pose before/after frame pair (unthrottled unless RATE set).
  *
  * Attribution (optional, at RATE, separate windows because each perturbs fps):
  *   TRACE_S>0    Chrome trace, all processes -> <label>.trace.json
@@ -49,8 +51,8 @@ import { indexSourceMap, lookupSource, type SourceMapV3 } from "./sourceMapLooku
 const [outDir, url, labelArg] = process.argv.slice(2);
 if (!outDir || !url) throw new Error("usage: <outDir> <url> [label]");
 const env = (name: string, fallback: string): string => process.env[name] ?? fallback;
-const SCENARIO = env("SCENARIO", "cruise") as "cruise" | "takeoff" | "latency" | "coldstart";
-if (!["cruise", "takeoff", "latency", "coldstart"].includes(SCENARIO)) {
+const SCENARIO = env("SCENARIO", "cruise") as "cruise" | "takeoff" | "latency" | "coldstart" | "freeze";
+if (!["cruise", "takeoff", "latency", "coldstart", "freeze"].includes(SCENARIO)) {
   throw new Error(`unknown SCENARIO ${SCENARIO}`);
 }
 const RATE = Number(env("RATE", "4"));
@@ -79,6 +81,16 @@ const THROTTLE_HOLD_S = Number(env("THROTTLE_HOLD_S", "10"));
 const ROTATE_HOLD_S = Number(env("ROTATE_HOLD_S", "0.8"));
 const TRACE_S = Number(env("TRACE_S", "0"));
 const PROFILE_S = Number(env("PROFILE_S", "0"));
+/**
+ * SCENARIO=freeze: the terrain viewer held at one pose, for a before/after
+ * frame pair. POSE = "x,y,z,yawDeg,pitchDeg" in WORLD metres (the free-fly
+ * convention: yaw 0 looks +x, negative pitch looks down). The clock is pinned
+ * to FREEZE_TIME_S in every frame so water, clouds and wind cannot animate
+ * between arms; HOLD_S is the settle before the screenshot.
+ */
+const POSE = env("POSE", "");
+const HOLD_S = Number(env("HOLD_S", "20"));
+const FREEZE_TIME_S = Number(env("FREEZE_TIME_S", "1000"));
 const KNOTS_PER_MPS = 1.943_844_5;
 const label = labelArg
   ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}-x${RATE}${THROTTLE_WORKERS ? "w" : ""}`;
@@ -756,7 +768,70 @@ await workerCatcher;
 report.startScreenWallMs = Date.now() - navStarted;
 report.load = await timings();
 
-if (SCENARIO === "coldstart") {
+if (SCENARIO === "freeze") {
+  const pose = POSE.split(",").map(Number);
+  if (pose.length !== 5 || pose.some((v) => !Number.isFinite(v))) throw new Error("POSE must be x,y,z,yawDeg,pitchDeg");
+  await page.waitForTimeout(2_000);
+  await page.getByRole("button", { name: /^Enter the beta terrain viewer/ }).first().click();
+  await blur();
+  await page.waitForTimeout(1_000);
+  report.freeze = await page.evaluate((args: { pose: number[]; time: number }) => {
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.__name ??= (fn: unknown) => fn;
+    type Hook = { memoizedState?: unknown; next?: Hook | null };
+    type Fiber = { memoizedState?: unknown; return?: Fiber | null };
+    type FreeFly = Record<string, unknown> & { update: (now: number) => { simulationTime: number } };
+    const canvas = document.querySelector("canvas") as (HTMLCanvasElement & Record<string, unknown>) | null;
+    if (!canvas) return { ok: false, reason: "no canvas" };
+    const key = Object.keys(canvas).find((k) => k.startsWith("__reactFiber$"));
+    let fiber = key ? canvas[key] as Fiber | null : null;
+    let controller: FreeFly | null = null;
+    while (fiber && !controller) {
+      let hook = fiber.memoizedState as Hook | null | undefined;
+      for (let guard = 0; hook && typeof hook === "object" && guard < 200; guard += 1) {
+        const state = hook.memoizedState as { current?: FreeFly } | null;
+        if (state && typeof state === "object" && state.current && "yawRadians" in state.current
+          && typeof state.current.update === "function") {
+          controller = state.current;
+          break;
+        }
+        hook = hook.next;
+      }
+      fiber = fiber.return ?? null;
+    }
+    if (!controller) return { ok: false, reason: "no free-fly controller" };
+    const [x, y, z, yawDeg, pitchDeg] = args.pose as [number, number, number, number, number];
+    const hold = () => {
+      controller!.positionX = x; controller!.positionY = y; controller!.positionZ = z;
+      controller!.yawRadians = (yawDeg * Math.PI) / 180;
+      controller!.pitchRadians = (pitchDeg * Math.PI) / 180;
+      controller!.velocityX = 0; controller!.velocityY = 0; controller!.velocityZ = 0;
+      (controller!.pressed as Set<string>).clear();
+    };
+    hold();
+    const update = controller.update.bind(controller);
+    controller.update = (now: number) => {
+      hold();
+      const state = update(now);
+      state.simulationTime = args.time;
+      return state;
+    };
+    const style = document.createElement("style");
+    style.textContent = ".viewer-hud, .hud, .diagnostics { display: none !important; }";
+    document.head.appendChild(style);
+    return { ok: true, pose: args.pose, time: args.time };
+  }, { pose, time: FREEZE_TIME_S });
+  report.stateSampler = await installStateSampler();
+  if (RATE !== 1) await setThrottle(RATE);
+  await page.waitForTimeout(HOLD_S * 1_000);
+  report.freezeWindow = await measure(3);
+  report.stateLastAtShot = await evaluate(() => {
+    const w = globalThis as unknown as Record<string, unknown>;
+    w.__name ??= (fn: unknown) => fn;
+    return ((w.__probeState as unknown[] | undefined) ?? []).at(-1) ?? null;
+  });
+  console.log(`[${label}] freeze ${JSON.stringify(report.freeze)} state ${JSON.stringify(report.stateLastAtShot)}`);
+} else if (SCENARIO === "coldstart") {
   report.stateSampler = await installStateSampler();
   // The start screen is a live attract flight: how it runs throttled, too.
   report.attractThrottled = await measure(Math.min(MEASURE_S, 15));
