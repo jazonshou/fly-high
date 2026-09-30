@@ -301,7 +301,14 @@ describe("a loft's crown seam", () => {
       // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
       // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
       // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
-      trainer: "1f9a6faa",
+      // RE-PINNED for the Cessna pass, S1 (jazonshou/cessna-cockpit, 2026-09-29): the deck and the board swept wall to
+      // wall. Checked mesh by mesh against 303372e (positions, indices, normals, UVs, world matrix, thin instances,
+      // material, visibility): 12 of the trainer's 66 moved, none gone, none new. `trainer-glareshield` 24 -> 756
+      // vertices (the rounded deck) and `trainer-instrument-panel` 24 -> 852 (the board), both cockpit-only;
+      // `trainer-door-port`/`-starboard` (the sill cap ends at x 1.9); and the eight dial meshes by their world matrix
+      // only, the row 4 cm inboard (their vertices are bit-identical). The other 54, and every mesh of the jet, the
+      // Global and the 747, are bit-identical.
+      trainer: "27cfab12",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

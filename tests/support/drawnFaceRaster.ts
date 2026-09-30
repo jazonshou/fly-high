@@ -226,3 +226,69 @@ export function planeNormal(points: readonly Vector3[]): Vector3 {
 export function planeAngleDegrees(a: Vector3, b: Vector3): number {
   return (Math.acos(Math.min(1, Math.abs(Vector3.Dot(a, b)))) * 180) / Math.PI;
 }
+
+/**
+ * `rasterise` with NEAR-PLANE CLIPPING, for cockpits whose parts run past the eye.
+ *
+ * `rasterise` skips any triangle with a vertex within 5 cm of the eye or behind it, which is right for a part that
+ * stands wholly ahead of the pilot and wrong for one that does not: the Cessna's door panels and sill caps run from
+ * behind the eye to the panel, so every one of their triangles has a vertex behind it, and `rasterise` drew no door
+ * at all (the GPU clips them and draws the rest). This clips each drawn triangle at `near` along the view axis
+ * (Sutherland-Hodgman, then a fan) before it is rasterised, with the same drawn-face rule and the same depth. Only the
+ * nearest mesh and depth come back; the `broad` census is `rasterise`'s alone.
+ */
+export function rasteriseClipped(
+  camera: Pinhole,
+  meshes: readonly AbstractMesh[],
+  rect: PixelRect,
+  near = 0.02,
+): { rect: PixelRect; width: number; mesh: Int32Array; depth: Float64Array } {
+  const b = basis(camera);
+  const width = rect.x1 - rect.x0 + 1;
+  const height = rect.y1 - rect.y0 + 1;
+  const depth = new Float64Array(width * height).fill(Infinity);
+  const nearest = new Int32Array(width * height).fill(-1);
+  meshes.forEach((mesh, meshIndex) => {
+    const indices = mesh.getIndices();
+    if (!indices) return;
+    const world = worldVertices(mesh);
+    const mirrored = mesh.getWorldMatrix().determinant() < 0;
+    for (let t = 0; t < indices.length; t += 3) {
+      const A = world[indices[t]!]!; const B = world[indices[t + 1]!]!; const C = world[indices[t + 2]!]!;
+      const into = Vector3.Cross(B.subtract(A), C.subtract(A));
+      if ((mirrored ? -1 : 1) * Vector3.Dot(into, A.subtract(camera.eye)) <= 0) continue;
+      const along = (p: Vector3) => Vector3.Dot(p.subtract(camera.eye), b.forward);
+      const polygon: Vector3[] = [];
+      const corners = [A, B, C];
+      for (let k = 0; k < 3; k += 1) {
+        const p = corners[k]!; const q = corners[(k + 1) % 3]!;
+        const dp = along(p); const dq = along(q);
+        if (dp >= near) polygon.push(p);
+        if ((dp >= near) !== (dq >= near)) polygon.push(Vector3.Lerp(p, q, (near - dp) / (dq - dp)));
+      }
+      for (let k = 1; k + 1 < polygon.length; k += 1) {
+        const a = projectWith(camera, b, polygon[0]!); const bb = projectWith(camera, b, polygon[k]!); const c = projectWith(camera, b, polygon[k + 1]!);
+        const minX = Math.max(rect.x0, Math.floor(Math.min(a.x, bb.x, c.x)));
+        const maxX = Math.min(rect.x1, Math.ceil(Math.max(a.x, bb.x, c.x)));
+        const minY = Math.max(rect.y0, Math.floor(Math.min(a.y, bb.y, c.y)));
+        const maxY = Math.min(rect.y1, Math.ceil(Math.max(a.y, bb.y, c.y)));
+        if (minX > maxX || minY > maxY) continue;
+        const area = (bb.x - a.x) * (c.y - a.y) - (c.x - a.x) * (bb.y - a.y);
+        if (area === 0) continue;
+        for (let y = minY; y <= maxY; y += 1) {
+          for (let x = minX; x <= maxX; x += 1) {
+            const px = x + 0.5; const py = y + 0.5;
+            const w0 = ((bb.x - px) * (c.y - py) - (c.x - px) * (bb.y - py)) / area;
+            const w1 = ((c.x - px) * (a.y - py) - (a.x - px) * (c.y - py)) / area;
+            const w2 = 1 - w0 - w1;
+            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+            const z = 1 / (w0 / a.depth + w1 / bb.depth + w2 / c.depth);
+            const k2 = (y - rect.y0) * width + (x - rect.x0);
+            if (z < depth[k2]!) { depth[k2] = z; nearest[k2] = meshIndex; }
+          }
+        }
+      }
+    }
+  });
+  return { rect, width, mesh: nearest, depth };
+}

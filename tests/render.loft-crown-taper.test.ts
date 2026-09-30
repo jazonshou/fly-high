@@ -234,7 +234,11 @@ describe("the loft's crown taper", () => {
       // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
       // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
       // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
-      trainer: "c44794a2",
+      // RE-PINNED for the Cessna pass, S1 (jazonshou/cessna-cockpit, 2026-09-29), on the same mesh-by-mesh check as
+      // render.loft-crown-seam's: the deck and the board swept wall to wall (`trainer-glareshield` 24 -> 756 vertices,
+      // `trainer-instrument-panel` 24 -> 852), the doors' sill caps shortened, and the eight dial meshes 4 cm inboard
+      // by their world matrix; the trainer's other 54 of 66, and every other airframe, bit-identical.
+      trainer: "9d958c4a",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial

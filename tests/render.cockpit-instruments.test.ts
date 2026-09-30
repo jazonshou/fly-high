@@ -158,6 +158,29 @@ describe("the projection and the clockwise test these tests stand on", () => {
   });
 });
 
+/**
+ * The Cessna's BUILT panel face: the flat normal of the board's pilot-facing triangles, and the direction up that face.
+ * Read off the board's own triangles: it is a section swept across the cabin in body space, with no transform of its
+ * own, so its world matrix says nothing about its lean. Only the face's straight run counts (normals with no sideways
+ * part): each end's fillet turns its normals toward the wall and would bias the lean.
+ */
+function builtPanelFace(panel: AbstractMesh): { normal: Vector3; up: Vector3 } {
+  panel.computeWorldMatrix(true);
+  const data = panel.getVerticesData(VertexBuffer.NormalKind)!;
+  const world = panel.getWorldMatrix();
+  const toward = new Vector3(-1, 0, 0);
+  let sum = Vector3.Zero();
+  for (let i = 0; i + 2 < data.length; i += 3) {
+    const n = Vector3.TransformNormal(new Vector3(data[i]!, data[i + 1]!, data[i + 2]!), world).normalize();
+    if (Math.abs(n.z) < 1e-6 && Vector3.Dot(n, toward) > 0.9) sum = sum.add(n);
+  }
+  expect(sum.length(), "the panel's pilot-facing face was not found").toBeGreaterThan(0);
+  const normal = sum.normalize();
+  const vertical = new Vector3(0, 1, 0);
+  const up = vertical.subtract(normal.scale(Vector3.Dot(vertical, normal))).normalize();
+  return { normal, up };
+}
+
 // ---- the Cessna's needles ------------------------------------------------------------------
 
 describe("the Cessna's needles", () => {
@@ -165,10 +188,7 @@ describe("the Cessna's needles", () => {
 
   /** The dial's own plane, from the BUILT panel: the normal toward the pilot, up the face, and the pilot's right. */
   function dialPlane(): { normal: Vector3; up: Vector3; right: Vector3 } {
-    const panel = fixture.mesh("trainer-instrument-panel");
-    panel.computeWorldMatrix(true);
-    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-    const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    const { normal, up } = builtPanelFace(fixture.mesh("trainer-instrument-panel"));
     // The pilot looks along -normal; right = forward x up in this codebase's right-handed frame.
     const right = Vector3.Cross(normal.scale(-1), up).normalize();
     return { normal, up, right };
@@ -225,9 +245,7 @@ describe("the Cessna's needles", () => {
   it("points every needle at 12 o'clock before anything turns it (a fresh aircraft, no update yet)", () => {
     const fresh = buildFixture("trainer");
     try {
-      const panel = fresh.mesh("trainer-instrument-panel");
-      const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
-      const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
+      const { normal, up } = builtPanelFace(fresh.mesh("trainer-instrument-panel"));
       for (const dial of ["airspeed", "altimeter"]) {
         const mesh = fresh.mesh(`trainer-${dial}-needle`);
         const hub = mesh.getAbsolutePosition();
@@ -437,10 +455,7 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
     // and the pilot looks along its normal reversed, his right being forward x up. (The two PFD
     // balls that used to run through here faced straight aft and could use the body's own axes; they
     // are gone, and assuming their simpler case here would silently mis-measure a leaning dial.)
-    const panel = fixture.mesh("trainer-instrument-panel");
-    panel.computeWorldMatrix(true);
-    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-    const panelUp = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    const { normal, up: panelUp } = builtPanelFace(fixture.mesh("trainer-instrument-panel"));
     plane = { up: panelUp, right: Vector3.Cross(normal.scale(-1), panelUp).normalize() };
     // the diameter's two ends, found at rest in the PIVOT's own frame (the dial may lean): the sky half's vertices on y = 0
     pivot().computeWorldMatrix(true);
@@ -581,10 +596,7 @@ describe("the Cessna's attitude dial", () => {
 
   /** The dial's plane, from the BUILT panel: the normal toward the pilot, up the face, the pilot's right. */
   function plane(): { normal: Vector3; up: Vector3; right: Vector3 } {
-    const panel = fixture.mesh("trainer-instrument-panel");
-    panel.computeWorldMatrix(true);
-    const normal = Vector3.TransformNormal(new Vector3(-1, 0, 0), panel.getWorldMatrix()).normalize();
-    const up = Vector3.TransformNormal(new Vector3(0, 1, 0), panel.getWorldMatrix()).normalize();
+    const { normal, up } = builtPanelFace(fixture.mesh("trainer-instrument-panel"));
     return { normal, up, right: Vector3.Cross(normal.scale(-1), up).normalize() };
   }
 

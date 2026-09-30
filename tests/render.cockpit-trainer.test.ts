@@ -11,10 +11,14 @@ import { aircraftSpec } from "../src/aircraft/catalogue";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import {
   TRAINER_DIAL_DIAMETER,
+  TRAINER_GLARESHIELD,
   TRAINER_LEFT_POST_AZIMUTH_DEGREES,
   TRAINER_POST_RADIUS,
+  trainerDeckSection,
   trainerDialPlacements,
 } from "../src/render/webgpu/aircraft/cockpit/trainerCockpit";
+import { projectPoint, rasteriseClipped, type Pinhole } from "./support/drawnFaceRaster";
+import { SkinCaster } from "../src/render/webgpu/aircraft/airlinerGlazing";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import { TRAINER_FUSELAGE_SECTIONS } from "../src/render/webgpu/aircraft/trainerShell";
 import { worldTriangles as tipWorldTriangles, hitTriangle as tipHitTriangle } from "../scripts/rayCrossings.mts";
@@ -191,7 +195,9 @@ describe("the trainer's cockpit parts", () => {
     // Airspeed left of the attitude indicator, altimeter to its right; the old layout mirrored it.
     expect(z("airspeed")).toBeLessThan(z("attitude"));
     expect(z("attitude")).toBeLessThan(z("altimeter"));
-    expect(z("attitude")).toBeCloseTo(EYE.right, 2);
+    // 4 cm inboard of the eye's line since the deck and the board went wall to wall (Jason, 2026-09-29): at the eye's
+    // line the airspeed dial's rim stood outside the cabin; the attitude indicator is 3.3 degrees right of dead ahead.
+    expect(z("attitude")).toBeCloseTo(EYE.right + 0.04, 3);
     for (const dial of ["airspeed", "attitude", "altimeter"]) {
       const centre = named(`trainer-${dial}-gauge`).getBoundingInfo().boundingBox.centerWorld;
       // Every dial is where the pilot can see it: the first thing a ray toward it meets is the dial, or its needle.
@@ -668,5 +674,219 @@ describe("the Cessna's windscreen centre frame", () => {
     // the wrong reason.
     expect(controlSeen, "discs seen when only the member is in the scene").toBeGreaterThan(0);
     expect(seen, "discs seen in the real scene").toEqual([]);
+  });
+});
+
+/**
+ * THE DECK AND THE BOARD (the Cessna pass, S1): a rounded glareshield and the panel under it, each swept across the
+ * cabin wall to wall (`sweptAcross` in trainerCockpit.ts), where they were a box hood and a box board 0.84 wide.
+ *
+ * What is held:
+ * - the deck's round shades as a curve, with no chord bands;
+ * - no hard edge the pilot can see on either, outside the designed cove and the end junctions, which step 3 builds
+ *   out (the deck's ends sweep into the door frame there, Jason 2026-09-29), and those are held to their count;
+ * - every vertex inside the cabin: 2 cm inside the glass above the tube's top, inside the tube below it;
+ * - the airspeed dial unobstructed: the door hides none of it.
+ * Read off the BUILT meshes, from the left-seat eye at the 75 degree lens (1920 x 1080).
+ */
+describe("the Cessna's deck and board", () => {
+  const W = 1920;
+  const H = 1080;
+  const pin: Pinhole = {
+    eye: EYE_POINT,
+    target: EYE_POINT.add(new Vector3(1, 0, 0)),
+    up: new Vector3(0, 1, 0),
+    fovY: 2 * Math.atan(Math.tan(37.5 / DEG) / (16 / 9)),
+    width: W,
+    height: H,
+  };
+  const drawn = () => scene.meshes.filter((m) => m.getTotalVertices() > 0 && drawnByCockpitCamera(m));
+  const frame = () => rasteriseClipped(pin, drawn(), { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+
+  /** Every edge two faces share, keyed by its end points, with the faces' geometric normals and their shading at the ends. */
+  function edges(mesh: AbstractMesh) {
+    const v = worldVertices(mesh);
+    const normals = mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    const world = mesh.getWorldMatrix();
+    const shade = (i: number) => Vector3.TransformNormal(new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!), world).normalize();
+    const indices = mesh.getIndices()!;
+    const key = (p: Vector3) => `${Math.round(p.x * 1e5)},${Math.round(p.y * 1e5)},${Math.round(p.z * 1e5)}`;
+    const found = new Map<string, { a: Vector3; b: Vector3; faces: { normal: Vector3; toward: boolean; at: Map<string, Vector3> }[] }>();
+    for (let t = 0; t < indices.length; t += 3) {
+      const corners = [indices[t]!, indices[t + 1]!, indices[t + 2]!];
+      const [A, B, C] = corners.map((i) => v[i]!) as [Vector3, Vector3, Vector3];
+      const into = Vector3.Cross(B.subtract(A), C.subtract(A));
+      if (into.length() < 1e-12) continue;
+      const face = { normal: into.normalize().scale(-1), toward: Vector3.Dot(into, A.subtract(EYE_POINT)) > 0, at: new Map(corners.map((i) => [key(v[i]!), shade(i)])) };
+      for (const [p, q] of [[A, B], [B, C], [C, A]] as const) {
+        const k = [key(p), key(q)].sort().join("|");
+        const edge = found.get(k) ?? { a: p, b: q, faces: [] };
+        edge.faces.push(face);
+        found.set(k, edge);
+      }
+    }
+    return { edges: [...found.values()], key };
+  }
+  /** The edges the pilot sees that are HARD: two faces at more than 46 degrees, shaded apart, one of them drawn toward him. */
+  function visibleHardEdges(mesh: AbstractMesh, raster: ReturnType<typeof frame>, meshIndex: number) {
+    const { edges: all, key } = edges(mesh);
+    return all.filter((e) => {
+      if (e.faces.length !== 2) return false;
+      const [f, g] = e.faces as [typeof e.faces[0], typeof e.faces[0]];
+      if (Vector3.Dot(f.normal, g.normal) > Math.cos(46 / DEG)) return false;
+      const split = [e.a, e.b].some((p) => Vector3.Dot(f.at.get(key(p))!, g.at.get(key(p))!) < Math.cos(1 / DEG));
+      if (!split || !(f.toward || g.toward)) return false;
+      let seen = 0;
+      for (let s = 0; s <= 40; s += 1) {
+        const q = projectPoint(pin, Vector3.Lerp(e.a, e.b, s / 40));
+        const x = Math.floor(q.x);
+        const y = Math.floor(q.y);
+        if (!(q.depth > 0.02) || x < 0 || y < 0 || x >= W || y >= H) continue;
+        const i = y * W + x;
+        if (raster.mesh[i] === meshIndex && Math.abs(raster.depth[i]! - q.depth) < 0.0015 + 0.004 * q.depth) seen += 1;
+      }
+      return seen >= 3;
+    });
+  }
+  /** Within `r` plus 2 mm of the mesh's own lateral extreme at that height: its end junction, which step 3 builds out. */
+  function inEndJunction(mesh: AbstractMesh, point: Vector3): boolean {
+    const extreme = Math.max(...worldVertices(mesh).filter((v) => Math.abs(v.y - point.y) < 0.004).map((v) => Math.abs(v.z)));
+    return Math.abs(point.z) > extreme - TRAINER_GLARESHIELD.endRadius - 0.002;
+  }
+
+  it("shades the deck's round as a curve: every chord meets the next with one normal (no chord bands)", () => {
+    const deck = named("trainer-glareshield");
+    const { edges: all, key } = edges(deck);
+    const section = trainerDeckSection();
+    const straightRun = Math.max(...worldVertices(deck).map((v) => Math.abs(v.z))) - TRAINER_GLARESHIELD.endRadius - 0.0005;
+    // the edges between the round's chords across the straight run: each runs along z at one of the round's points
+    const onRound = (p: Vector3) => Math.abs(Math.hypot(p.x - section.centre.x, p.y - section.centre.y) - TRAINER_GLARESHIELD.radius) < 1e-4 && Math.abs(p.z) < straightRun;
+    const smooth = all.filter((e) => e.faces.length === 2 && onRound(e.a) && onRound(e.b) && Math.abs(e.a.x - e.b.x) < 1e-6 && Math.abs(e.a.y - e.b.y) < 1e-6);
+    expect(smooth.length, "no chord edges found on the deck's round").toBeGreaterThanOrEqual(TRAINER_GLARESHIELD.roundSegments);
+    const jumps = smooth.map((e) => Math.max(...[e.a, e.b].map((p) => Math.acos(Math.min(1, Vector3.Dot(e.faces[0]!.at.get(key(p))!, e.faces[1]!.at.get(key(p))!))) * DEG)));
+    expect(Math.max(...jumps), "a chord band: two chords shaded apart at their shared edge").toBeLessThan(0.5);
+    // CONTROL: the same chords flat-shaded (each face its geometric normal) jump by the chord angle
+    const flatJumps = smooth.map((e) => Math.acos(Math.min(1, Vector3.Dot(e.faces[0]!.normal, e.faces[1]!.normal))) * DEG);
+    expect(Math.max(...flatJumps)).toBeGreaterThan(5);
+  });
+
+  it("shows the pilot no hard edge on the deck or the board outside the designed cove and the end junctions", () => {
+    const raster = frame();
+    const meshes = drawn();
+    const section = trainerDeckSection();
+    // the cove, by design: round to cove along (coveTop), cove to board along (faceTop), right across the cabin
+    const onCove = (p: Vector3) => [section.coveTop, section.faceTop].some((c) => Math.abs(p.x - c.x) < 2e-4 && Math.abs(p.y - c.y) < 2e-4);
+    const counts: Record<string, { open: number; junction: number }> = {};
+    for (const name of ["trainer-glareshield", "trainer-instrument-panel"]) {
+      const mesh = named(name);
+      const hard = visibleHardEdges(mesh, raster, meshes.indexOf(mesh));
+      const notCove = hard.filter((e) => !(onCove(e.a) && onCove(e.b)));
+      const junction = notCove.filter((e) => inEndJunction(mesh, e.a) || inEndJunction(mesh, e.b));
+      counts[name] = { open: notCove.length - junction.length, junction: junction.length };
+    }
+    expect(counts["trainer-glareshield"]!.open, "a hard edge across the deck").toBe(0);
+    expect(counts["trainer-instrument-panel"]!.open, "a hard edge across the board").toBe(0);
+    // the end junctions, until step 3 sweeps the deck's ends into the door frame and walls the board's in: at most
+    // what they are now (5 on the deck's fillet corner, 5 where the board's end follows the wall's shoulder)
+    expect(counts["trainer-glareshield"]!.junction).toBeLessThanOrEqual(6);
+    expect(counts["trainer-instrument-panel"]!.junction).toBeLessThanOrEqual(6);
+    // CONTROL: the instrument sees a box's hard edges -- the attitude ball's pitch bar is one
+    const bar = named("trainer-attitude-pitch-bar");
+    expect(visibleHardEdges(bar, raster, meshes.indexOf(bar)).length).toBeGreaterThan(3);
+  });
+
+  it("keeps every vertex of the deck and the board inside the cabin: 2 cm inside the glass above the tube, inside the tube below", () => {
+    const glass = named("trainer-canopy");
+    const tube = named("trainer-fuselage");
+    // Against the BUILT lofts, whose facets sit inside the surface their rings describe: the canopy's 18 chords round
+    // its ring stand up to 6 mm inside it, so 2 cm from the ruled surface is at least 1.4 cm from the drawn glass.
+    const FACET_SAG = 0.006;
+    let checked = 0;
+    for (const name of ["trainer-glareshield", "trainer-instrument-panel"]) {
+      for (const v of worldVertices(named(name))) {
+        const side = v.z < 0 ? -1 : 1;
+        const tubeTop = topSkin(v.x, v.z, tube);
+        const aboveTube = !(v.y <= tubeTop);
+        const wall = aboveTube ? halfWidth(v.x, v.y, side, [glass]) : halfWidth(v.x, v.y, side, [tube]);
+        if (!Number.isFinite(wall)) continue;
+        checked += 1;
+        const margin = wall - Math.abs(v.z);
+        if (aboveTube) expect(margin, `${name} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}) against the glass`).toBeGreaterThanOrEqual(TRAINER_GLARESHIELD.clearance - FACET_SAG);
+        else expect(margin, `${name} (${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)}) against the tube`).toBeGreaterThanOrEqual(0);
+      }
+    }
+    expect(checked).toBeGreaterThan(200);
+  });
+
+  it("turns each end of the deck into its wall on a round: the aft face's shading swings from the pilot to the wall in steps", () => {
+    const deck = named("trainer-glareshield");
+    const section = trainerDeckSection();
+    const v = worldVertices(deck);
+    const normals = deck.getVerticesData(VertexBuffer.NormalKind)!;
+    // the aft face's tangent line (the round's lowest point, where the aft face is vertical) at the LEFT end: its
+    // vertices' shading, read as the angle round from facing aft (-x) to facing the wall (-z)
+    const turn = new Map<number, number>();
+    v.forEach((p, i) => {
+      if (Math.abs(p.y - section.coveTop.y) > 1e-4 || p.z > 0) return;
+      const n = new Vector3(normals[i * 3]!, normals[i * 3 + 1]!, normals[i * 3 + 2]!);
+      if (n.x > 0) return; // the hood's end, not the aft face
+      turn.set(Math.round(p.z * 1e5), Math.atan2(-n.z, -n.x) * DEG);
+    });
+    const swings = [...turn.entries()].sort((a, b) => b[0] - a[0]).map(([, angle]) => angle);
+    expect(swings.length, "the aft face's end stations").toBeGreaterThanOrEqual(TRAINER_GLARESHIELD.endStations);
+    expect(Math.min(...swings), "the straight run faces the pilot").toBeLessThan(1);
+    // the last station takes its last wall's normal alone, 90 degrees less half a step
+    expect(Math.max(...swings), "the end turns to face the wall").toBeGreaterThan(75);
+    const steps = swings.slice(1).map((angle, k) => Math.abs(angle - swings[k]!));
+    expect(Math.max(...steps), "a square end: the aft face jumps to the wall").toBeLessThan(25);
+  });
+
+  it("sets every dial on the board: no rim past the board's end at its own height", () => {
+    // the board's end at a dial point's own height, by a ray sideways through the board from 2 cm inside its face
+    const board = named("trainer-instrument-panel");
+    const caster = new SkinCaster([{
+      positions: worldVertices(board).flatMap((p) => [p.x, p.y, p.z]),
+      indices: Array.from(board.getIndices()!),
+      normals: Array.from(board.getVerticesData(VertexBuffer.NormalKind)!),
+    }]);
+    let checked = 0;
+    for (const dial of ["airspeed", "attitude", "altimeter"]) {
+      for (const p of worldVertices(named(`trainer-${dial}-gauge`))) {
+        const side = p.z < 0 ? -1 : 1;
+        const end = caster.exit(new Vector3(p.x + 0.02, p.y, 0), new Vector3(0, 0, side), 2);
+        expect(end, `${dial}: no board behind the point at y ${p.y.toFixed(3)}`).not.toBeNull();
+        expect(Math.abs(p.z), `${dial}: a rim past the board's end at y ${p.y.toFixed(3)}`).toBeLessThanOrEqual(end!.distance);
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
+  });
+
+  it("leaves the airspeed dial unobstructed: the door hides none of it, and the check can see an obstruction", () => {
+    const gauge = named("trainer-airspeed-gauge");
+    const count = (meshes: AbstractMesh[]) => {
+      const raster = rasteriseClipped(pin, meshes, { x0: 0, y0: 0, x1: W - 1, y1: H - 1 });
+      const index = meshes.indexOf(gauge);
+      let n = 0;
+      for (let i = 0; i < raster.mesh.length; i += 1) if (raster.mesh[i] === index) n += 1;
+      return n;
+    };
+    const all = drawn();
+    const withDoor = count(all);
+    const without = count(all.filter((m) => !m.name.startsWith("trainer-door")));
+    expect(withDoor).toBeGreaterThan(10000);
+    expect(withDoor, "the door stands in front of the airspeed dial").toBe(without);
+    // CONTROL: the port door moved so its sill cap crosses the dial (15 cm forward, 5 cm inboard, 5 cm down) hides part
+    // of it. (Its old reach, x 2.05, no longer would: with the row 4 cm inboard the cap stands 2.4 degrees above it.)
+    const door = named("trainer-door-port");
+    const moved = new Vector3(0.15, -0.05, 0.05);
+    door.position.addInPlace(moved);
+    door.computeWorldMatrix(true);
+    try {
+      expect(count(all)).toBeLessThan(withDoor - 500);
+    } finally {
+      door.position.subtractInPlace(moved);
+      door.computeWorldMatrix(true);
+    }
   });
 });

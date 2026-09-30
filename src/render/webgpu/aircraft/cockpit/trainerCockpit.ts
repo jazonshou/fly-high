@@ -4,9 +4,20 @@ import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import type { FlightVisualState } from "@/src/game/types";
-import type { AircraftBuildContext } from "../builders";
-import { TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
-import { basisQuaternion, buildAttitudeBall, glareshieldMaterial, slab, strip, type AttitudeBall } from "./cockpitPrimitives";
+import { loftSectionPoint, type AircraftBuildContext, type LoftSection } from "../builders";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "../trainerShell";
+import {
+  basisQuaternion,
+  buildAttitudeBall,
+  glareshieldMaterial,
+  roundedDeckSection,
+  slab,
+  strip,
+  sweptSolid,
+  type AttitudeBall,
+  type RoundedDeckSection,
+  type SweptSection,
+} from "./cockpitPrimitives";
 import { airspeedNeedleDegrees, altimeterNeedleDegrees, attitudeHorizonDegrees, pitchBarOffsetMetres } from "./instrumentMappings";
 
 /**
@@ -67,18 +78,8 @@ export const TRAINER_PANEL = Object.freeze({
    * panel's rear face, so they follow it and stay at -15 degrees.
    */
   topRearY: -0.005,
-  /**
-   * Half its width. It has to carry the dial row, whose left edge is at z -0.40
-   * (`TRAINER_DIAL_ROW`), with a few centimetres to spare. That is wider than
-   * the tube's rounded shoulder (0.38 at x 2.07, y -0.1) and than the greenhouse
-   * glass narrowing toward the nose (0.35 at x 2.18), and it does not matter: the
-   * cockpit camera hides both, and nothing here is visible from any other
-   * camera. The wall itself, below the shoulder, is 0.47 out.
-   */
-  halfWidth: 0.42,
-  /** The hood: 0.02 thick, standing this far aft of the panel's rear face. */
-  hoodThickness: 0.02,
-  hoodOverhang: 0.08,
+  // NO WIDTH: the board runs wall to wall, each point of it `TRAINER_GLARESHIELD.clearance` inside the cabin at its
+  // own station and height (`trainerCabinHalfWidth`). It was a 0.84 m box, 2.5 cm OUTSIDE the glass at its top.
 });
 
 /** Real gauge size. The dials this replaces were 0.17 to 0.20 m across. */
@@ -120,7 +121,11 @@ export const TRAINER_ATTITUDE_BALL = Object.freeze({
  */
 export const TRAINER_DIAL_ROW = Object.freeze({
   elevationDegrees: -15,
-  dials: Object.freeze([["airspeed", -0.36], ["attitude", -0.26], ["altimeter", -0.16]] as const),
+  // 4 cm INBOARD of the eye's line since the deck went wall to wall (Jason, 2026-09-29): at -0.36 the airspeed dial's
+  // outer edge stood 4.3 mm OUTSIDE the cabin at its own height (the tube's shoulder, 0.3957 there), so a board kept
+  // 2 cm inside the wall left the dial's rim hanging off the board's end. At -0.32 its bezel's edge lands about 1 cm
+  // inside the board at every height; the attitude indicator sits 3.3 degrees right of straight ahead.
+  dials: Object.freeze([["airspeed", -0.32], ["attitude", -0.22], ["altimeter", -0.12]] as const),
 });
 
 /**
@@ -193,6 +198,173 @@ function interpolate(table: readonly (readonly [number, number])[], x: number): 
   return table[table.length - 1]![1];
 }
 
+/**
+ * The half-width at station `x` and height `y` of a loft's RULED SURFACE between its rings, read the way the loft lays
+ * it: each ring's point at one phase, straight between the two rings either side of `x`. Rings past either end are
+ * held. NaN where `y` is above the crown or below the keel there. The loft's own facets (a ring's points joined by
+ * chords) sit up to a few millimetres inside this, which every clearance below leaves room for.
+ */
+export function loftHalfWidthAt(sections: readonly LoftSection[], x: number, y: number): number {
+  let low = sections[0]!;
+  let high = low;
+  if (x > low.x) {
+    high = sections[sections.length - 1]!;
+    low = high;
+    for (let i = 1; i < sections.length; i += 1) {
+      if (x <= sections[i]!.x) {
+        low = sections[i - 1]!;
+        high = sections[i]!;
+        break;
+      }
+    }
+  }
+  const t = high.x === low.x ? 0 : (x - low.x) / (high.x - low.x);
+  const at = (phase: number) => {
+    const a = loftSectionPoint(low, phase);
+    const b = loftSectionPoint(high, phase);
+    return { y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+  };
+  if (y > at(0).y || y < at(Math.PI).y) return Number.NaN;
+  // down the starboard flank from the crown (phase 0) to the keel (pi), where the height only falls
+  let crown = 0;
+  let keel = Math.PI;
+  for (let step = 0; step < 50; step += 1) {
+    const middle = (crown + keel) / 2;
+    if (at(middle).y > y) crown = middle;
+    else keel = middle;
+  }
+  return at((crown + keel) / 2).z;
+}
+
+/**
+ * The cabin's inner half-width at (x, y): the tube's wall where the tube is, the greenhouse's glass where the glass
+ * is, the wider where the two closed bodies overlap (the glass's foot is buried in the tube). The cockpit camera hides
+ * both (`cockpitParts`), so what bounds a part the pilot sees is this, less a clearance.
+ */
+export function trainerCabinHalfWidth(x: number, y: number): number {
+  const widths = [loftHalfWidthAt(TRAINER_FUSELAGE_SECTIONS, x, y), loftHalfWidthAt(TRAINER_CANOPY_SECTIONS, x, y)].filter(Number.isFinite);
+  return widths.length > 0 ? Math.max(...widths) : Number.NaN;
+}
+
+/**
+ * THE DECK: a rounded glareshield (`roundedDeckSection`, the Global's, the 747's and the F-16's), WALL TO WALL. Its
+ * round stands on the deck line's sight line (`deckLineDegrees`): a horizontal line across the cabin projects to one
+ * row of the picture at any distance, so the round is the same silhouette the old hood was, and the 2D HUD, laid out
+ * on the deck line, does not move. Under the round
+ * a 45 degree cove turns in 1 cm to the board's face; forward of it the hood falls 12 degrees, steeper than the sight
+ * line, so none of its top is seen from the seat. Across the cabin it runs to 2 cm inside the glass at every point of
+ * its section, and each end turns into its wall on a 2 cm round in plan: no square end anywhere.
+ */
+export const TRAINER_GLARESHIELD = Object.freeze({
+  /**
+   * The catalogue's deck line (`cockpitDeckLineDegrees`, 8.31), which the 2D HUD is laid out above: the OLD hood's
+   * silhouette. That hood's top face sloped less than the sight line, so the pilot saw its front edge, 0.04 degrees
+   * over its aft edge's 8.35 straight ahead; the round stands on the silhouette, so the HUD does not move.
+   */
+  deckLineDegrees: aircraftSpec("trainer").cockpitDeckLineDegrees,
+  radius: 0.025,
+  drop: 0,
+  cove: 0.01,
+  hoodFallDegrees: 12,
+  /**
+   * Where the hood stops: just forward of the round. Out of sight behind the round wherever it ends, and a longer hood
+   * would have to narrow with the windscreen, which turns the deck's ends toward the pilot.
+   */
+  hoodEndX: 2.11,
+  roundSegments: 6,
+  /** How far inside the glass or the wall every point of the deck and the board stands. */
+  clearance: 0.02,
+  /** The plan round each end turns into its wall on, and the stations it takes. */
+  endRadius: 0.02,
+  endStations: 4,
+});
+
+/** The board's rear (pilot-facing) face as a line in body x and y: its x at height y. */
+function rearFaceXAt(y: number): number {
+  const { centre, local } = panelFrame();
+  const bottom = centre.add(local(-TRAINER_PANEL.thickness / 2, -TRAINER_PANEL.height / 2));
+  const top = centre.add(local(-TRAINER_PANEL.thickness / 2, TRAINER_PANEL.height / 2));
+  return bottom.x + ((top.x - bottom.x) * (y - bottom.y)) / (top.y - bottom.y);
+}
+
+/**
+ * The deck's section in body x and y. Its aft face is SOLVED, not chosen: the cove's foot has to land on the board's
+ * rear face as it stands, so the board and the dials solved against it (-15 degrees) stay where they are.
+ */
+export function trainerDeckSection(): RoundedDeckSection {
+  const g = TRAINER_GLARESHIELD;
+  const eye = aircraftSpec("trainer").cockpitEye;
+  const section = (aftX: number) => roundedDeckSection(eye, aftX, g.deckLineDegrees, { ...g, hoodDepth: g.hoodEndX - aftX }, "the Cessna");
+  const miss = (aftX: number) => { const foot = section(aftX).faceTop; return foot.x - rearFaceXAt(foot.y); };
+  let aft = 1.9;
+  let fore = 2.15;
+  for (let step = 0; step < 60; step += 1) {
+    const middle = (aft + fore) / 2;
+    if (miss(middle) < 0) aft = middle;
+    else fore = middle;
+  }
+  return section((aft + fore) / 2);
+}
+
+/**
+ * A section swept ACROSS the cabin, wall to wall, each end FILLETED into its wall: the prism trimmed, at each end, by
+ * a vertical round of `endRadius` about the corner where its aft face meets its end. Stations along z: the straight
+ * run between the two ends, then `endStations` more at each end, down the fillet's quarter-circle; at each of those
+ * every section point aft of the round is carried forward onto it (x at least `aft + r - r cos(theta)`), so the aft
+ * face turns into the end on the round and everything forward of the round runs on to the flat end. The section keeps
+ * its attitude, so the end caps face outboard (from the left seat the left one is culled) and plain `sweptSolid` builds
+ * it, smooth-shaded along the stations so the fillet shades as a curve. `aftU` is a section point's aft face (its
+ * station: the board's leans), `half` how far out its end is: each point's own, so an end can follow a wall that is
+ * not straight.
+ */
+function sweptAcross(
+  build: AircraftBuildContext,
+  name: string,
+  section: SweptSection,
+  material: PBRMaterial,
+  root: TransformNode,
+  aftU: (point: { readonly u: number; readonly y: number }) => number,
+  half: (point: { readonly u: number; readonly y: number }) => number,
+) {
+  const g = TRAINER_GLARESHIELD;
+  const r = g.endRadius;
+  const turns = Array.from({ length: g.endStations + 1 }, (_, k) => (Math.PI / 2) * (k / g.endStations));
+  // a station 1 mm inboard of each fillet as well: the straight run between them then averages flat with flat along
+  // the stations and shades flat, and the fillet's blend stays within that millimetre
+  const stations = [
+    ...turns.slice().reverse().map((theta) => ({ side: -1, theta, inset: 0 })),
+    { side: -1, theta: 0, inset: FILLET_LEAD_IN },
+    { side: 1, theta: 0, inset: FILLET_LEAD_IN },
+    ...turns.map((theta) => ({ side: 1, theta, inset: 0 })),
+  ];
+  return sweptSolid(
+    build,
+    name,
+    section,
+    stations.length,
+    (i, point) => {
+      const { side, theta, inset } = stations[i]!;
+      const out = half(point);
+      if (!Number.isFinite(out)) throw new RangeError(`${name}: no cabin wall for the point at x ${point.u.toFixed(3)}, y ${point.y.toFixed(3)}`);
+      const clip = aftU(point) + r - r * Math.cos(theta);
+      return new Vector3(Math.max(point.u, clip), point.y, side * (out - r - inset + r * Math.sin(theta)));
+    },
+    (direction) => new Vector3(direction.u, direction.y, 0),
+    material,
+    root,
+    { smoothAlong: true },
+  );
+}
+
+/** The straight run's last millimetre before each fillet (`sweptAcross`). */
+const FILLET_LEAD_IN = 0.001;
+
+/** Points down the board's rear face, besides its top and foot, for its ends to follow the wall's curve by. */
+const BOARD_FACE_POINTS = 8;
+
+/** Solved in `tests/render.cockpit-trainer.test.ts` ("keeps the sill cap clear of the airspeed dial"). */
+const CAP_TO_X = 1.9;
+
 /** The door panels and sill caps: how far in from the wall, and how they run. */
 const DOOR = Object.freeze({
   fromX: 0.95,
@@ -207,6 +379,12 @@ const DOOR = Object.freeze({
   capWidth: 0.04,
   capThickness: 0.02,
   capInset: 0.005,
+  /**
+   * Where the sill cap ENDS, short of the door's own fore end. Run to x 2.05 its 4 cm inboard lip stood in front of
+   * the airspeed dial's upper-left (1,496 px of it at 1080p, 9.0%); the door's slabs, outboard of the dial's
+   * sightline, still run on to the panel, so nothing opens below the sill.
+   */
+  capToX: CAP_TO_X,
 });
 
 /** Rotation about Z of the panel and everything mounted on it. */
@@ -319,24 +497,51 @@ export function buildTrainerCockpit(
     root,
   ));
 
-  // THE PANEL AND ITS HOOD, two meshes: the hood is a thin plate on the panel's
-  // top, standing 0.08 m aft of the rear face, leaning with it, and it wears a
-  // material of its own (matte near-black, no reflection) because on the interior
-  // material its top face read as the brightest surface in the frame.
+  // THE DECK AND THE BOARD, two meshes, each a section swept across the cabin wall to wall (`sweptAcross`): the deck
+  // the rounded glareshield (`trainerDeckSection`) on its own matte near-black, which reflects nothing (on the interior
+  // material its top read as the brightest surface in the frame); the board the leaned panel under it, its rear face
+  // exactly where the old box's was, from its foot up to the cove's, with extra points down that face so each end can
+  // follow the wall's curve at every height. Neither has a square end: each turns into its wall on a 2 cm round.
   const { centre, local } = panelFrame();
   const panel = TRAINER_PANEL;
-  const board = build.box("trainer-instrument-panel", panel.thickness, panel.height, panel.halfWidth * 2, materials.interior, root);
-  board.position.copyFrom(centre);
-  board.rotation.z = panel.lean;
-  parts.push(board);
-  const hoodLength = panel.thickness + panel.hoodOverhang;
-  const hood = build.box("trainer-glareshield", hoodLength, panel.hoodThickness, panel.halfWidth * 2, glareshieldMaterial(build, "trainer-glareshield"), root);
-  // Its centre in the panel's own frame: half a hood length forward of its aft
-  // edge, which is `hoodOverhang` aft of the rear face, and half its thickness
-  // above the panel's top.
-  hood.position.copyFrom(centre.add(local(-panel.thickness / 2 - panel.hoodOverhang + hoodLength / 2, panel.height / 2 + panel.hoodThickness / 2)));
-  hood.rotation.z = panel.lean;
-  parts.push(hood);
+  const deck = trainerDeckSection();
+  // the deck's ends are straight along x, at its narrowest: the glass narrows forward, and an end that followed it
+  // would turn toward the pilot
+  const deckTop = Math.max(...deck.outline.map((p) => p.y));
+  const deckHalf = Math.min(...deck.outline.map((p) => trainerCabinHalfWidth(p.x, deckTop))) - TRAINER_GLARESHIELD.clearance;
+  parts.push(sweptAcross(
+    build,
+    "trainer-glareshield",
+    {
+      points: deck.outline.map((p) => ({ u: p.x, y: p.y })),
+      rounds: [{ first: 3, last: deck.outline.length - 1, centre: { u: deck.centre.x, y: deck.centre.y } }],
+    },
+    glareshieldMaterial(build, "trainer-glareshield"),
+    root,
+    () => deck.coveTop.x,
+    () => deckHalf,
+  ));
+  const along = new Vector3(Math.cos(panel.lean), Math.sin(panel.lean), 0);
+  const rearBottom = centre.add(local(-panel.thickness / 2, -panel.height / 2));
+  const frontBottom = centre.add(local(panel.thickness / 2, -panel.height / 2));
+  const rearTop = new Vector3(deck.faceTop.x, deck.faceTop.y, 0);
+  const frontTop = rearTop.add(along.scale(panel.thickness));
+  const downTheFace = Array.from({ length: BOARD_FACE_POINTS }, (_, k) => Vector3.Lerp(rearTop, rearBottom, (k + 1) / (BOARD_FACE_POINTS + 1)));
+  parts.push(sweptAcross(
+    build,
+    "trainer-instrument-panel",
+    { points: [rearBottom, frontBottom, frontTop, rearTop, ...downTheFace].map((p) => ({ u: p.x, y: p.y })), rounds: [] },
+    materials.interior,
+    root,
+    (point) => rearFaceXAt(point.y),
+    // under the deck the board ends where the deck does, so no step of its top shows beyond the deck's end; below
+    // that it flares out to its wall at 45 degrees
+    (point) => Math.min(
+      // at the point's OWN station: the windscreen narrows over the board's 10 cm depth
+      trainerCabinHalfWidth(point.u, point.y) - TRAINER_GLARESHIELD.clearance,
+      deckHalf + Math.max(0, deck.faceTop.y - point.y),
+    ),
+  ));
 
   // THE DIALS. Real size, in front of the left seat, on the panel's rear face
   // and a millimetre proud of it. The face cylinder's axis is local Y; turning
@@ -446,7 +651,7 @@ export function buildTrainerCockpit(
     const cap = strip(
       build, `trainer-sill-${sideName}`, materials.interior, root,
       new Vector3(x0, 0, sill(x0) - side * (DOOR.capWidth / 2)),
-      new Vector3(x1, 0, sill(x1) - side * (DOOR.capWidth / 2)),
+      new Vector3(DOOR.capToX, 0, sill(DOOR.capToX) - side * (DOOR.capWidth / 2)),
       DOOR.capWidth, DOOR.capThickness,
     );
     parts.push(build.mergeStatic(`trainer-door-${sideName}`, [lower, upper, cap], root));

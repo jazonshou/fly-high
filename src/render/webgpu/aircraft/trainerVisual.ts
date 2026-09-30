@@ -21,7 +21,7 @@ import {
 import { solidified } from "./cockpit/cockpitPrimitives";
 import { buildTrainerCockpit } from "./cockpit/trainerCockpit";
 import { AircraftBuildContext } from "./builders";
-import { TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -187,17 +187,15 @@ export function createTrainer(scene: Scene): AircraftVisual {
    * PM explicitly and authorised: a cosmetic loss inside against a real defect
    * outside, where the aeroplane is seen far more often.
    *
-   * THE SKIN IS NOT HIDDEN, and it used to be. This list once held the whole
-   * opaque shell -- the fuselage loft, the cabin roof and the windscreen frame --
-   * on the theory that anything around the pilot would block his view. It did
-   * the opposite: with the shell excluded the pilot saw a slab and three
-   * propeller fragments floating in the sky, with no cowl, no roof line and no
-   * frame to say he was sitting inside an aeroplane. The shell needs no hiding.
-   * Its materials cull back faces, so from inside it draws only what FACES the
-   * pilot -- the top of the cowl ahead of the windscreen, the underside of the
-   * roof, the centre frame -- and its own inside disappears by itself. That is
-   * also why the cabin's side walls show the world: their insides are culled, so
-   * the cockpit has to put its own door panels where they were.
+   * THE FUSELAGE LOFT IS HIDDEN TOO; the rest of the opaque shell is not
+   * (`cockpitParts` below: the fuselage and the canopy). The pilot's eye is above
+   * the tube's top skin, which is the window sill, so from the seat the tube
+   * showed its OUTSIDE: the cockpit builds the cowl it stands in for
+   * (`trainer-cowl-standin`) and its own walls (the door panels, the deck and
+   * the board, wall to wall) on this side of it. The cabin roof and the
+   * windscreen frame stay in both views: with the whole shell excluded, as it
+   * once was, the pilot saw a slab and three propeller fragments floating in the
+   * sky, with no roof line and no frame to say he was inside an aeroplane.
    *
    * `render.webgpu-aircraft` pins all of it -- the glass hidden from the
    * cockpit camera and visible to an exterior one, the shell visible to both,
@@ -290,20 +288,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // the door windows (the sides, standing about 0.03 m proud of the sill) and
   // that rear window (the aft sections, which stand proud of a shell that has
   // already begun climbing towards the tailcone).
-  const canopy = build.loft(
-    "trainer-canopy",
-    [
-      { x: -0.7, yRadius: 0.12, zRadius: 0.205, yOffset: 0.055, squareness: 2.6 },
-      { x: -0.3, yRadius: 0.2, zRadius: 0.415, yOffset: 0.01, squareness: 3.2 },
-      { x: 0.26, yRadius: 0.22, zRadius: 0.44, squareness: 4 },
-      { x: 1.6, yRadius: 0.22, zRadius: 0.44, squareness: 4 },
-      { x: 2, yRadius: 0.2, zRadius: 0.415, yOffset: -0.01, squareness: 3.6 },
-      { x: 2.24, yRadius: 0.105, zRadius: 0.345, yOffset: -0.06, squareness: 3 },
-    ],
-    18,
-    glass,
-    root,
-  );
+  const canopy = build.loft("trainer-canopy", TRAINER_CANOPY_SECTIONS, 18, glass, root);
   canopy.metadata = { ...canopy.metadata, castsShadow: false };
   // The opaque roof skin between the windscreen and the rear window — the one
   // part of the greenhouse that is aluminium. It covers only the span over

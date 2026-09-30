@@ -31,3 +31,18 @@ export const TRAINER_FUSELAGE_SECTIONS: readonly LoftSection[] = Object.freeze([
   { x: 2.42, yRadius: 0.28, zRadius: 0.45, yOffset: -0.34, squareness: 4.5 },
   { x: 3.7, yRadius: 0.17, zRadius: 0.29, yOffset: -0.17, squareness: 2.6 },
 ].map((section) => Object.freeze(section)));
+
+/**
+ * The greenhouse's glass loft, section by section (18 segments round): windscreen, door windows and the
+ * "omni-vision" rear window in one closed body (`trainerVisual`). Here for the same reason as the fuselage's: the
+ * cockpit keeps every part it builds a set distance INSIDE the glass (the deck, the board, the pillars), and it has
+ * to measure against the numbers the glass is lofted from, not a copy of them.
+ */
+export const TRAINER_CANOPY_SECTIONS: readonly LoftSection[] = Object.freeze([
+  { x: -0.7, yRadius: 0.12, zRadius: 0.205, yOffset: 0.055, squareness: 2.6 },
+  { x: -0.3, yRadius: 0.2, zRadius: 0.415, yOffset: 0.01, squareness: 3.2 },
+  { x: 0.26, yRadius: 0.22, zRadius: 0.44, squareness: 4 },
+  { x: 1.6, yRadius: 0.22, zRadius: 0.44, squareness: 4 },
+  { x: 2, yRadius: 0.2, zRadius: 0.415, yOffset: -0.01, squareness: 3.6 },
+  { x: 2.24, yRadius: 0.105, zRadius: 0.345, yOffset: -0.06, squareness: 3 },
+].map((section) => Object.freeze(section)));
