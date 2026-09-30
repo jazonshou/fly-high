@@ -37,8 +37,20 @@ fails too. Two defects found on the way are real bugs at any speed:
   attribute the time.
 - **Throttle:** CDP `Emulation.setCPUThrottlingRate`, the call the DevTools
   Performance panel makes.
-- **Host state:** the host was quiet. Firefox's GPU helper read 0.0% before
-  every run, and no other session used the GPU (PM-granted slot).
+- **Host state: a baseline under one background core.** Firefox's GPU helper
+  read 0.0% before every run, and no other session used the GPU (PM-granted
+  slot). But the CPU was not quiet. From the PM's host check and the other
+  sessions' own logs (disclosed 22:05-22:10):
+  - the Global engineer's Node crease survey ran at ~100% of one core,
+    21:44:40-21:53 and 21:54:15-22:04:04, with a 15-file vitest at
+    21:44:40-21:45:15 and mutation runs at 21:43:13-21:44:23;
+  - the F-16 engineer's two-file vitest ran at ~22:05, inside the latency and
+    take-off re-runs;
+  - load average read 5.7 / 8.6 / 9.6 on 10 cores at 22:05.
+
+  Both control runs sat under the same load, which is why they agree. The
+  before/after for any fix is therefore taken from a **quiet re-baseline**
+  (every session idle-acked through the PM), not against these numbers.
 
 **Windows:**
 - 21:48:13-22:02:31: warm-up plus runs.
@@ -164,12 +176,22 @@ thread).** `TerrainQuadtree.ts` alone is 19.4% self time on the Cessna.
   - **The hydrology worker is absent from the trace.** Only the detail,
     material-synthesis and simulation workers exist, although the renderer
     passes `workerWorldSeed`.
-  - `/src/workers/hydrology.worker.ts?worker_file&type=module` serves 200, so
-    the worker script is not missing. The client reached its main-thread path
-    either through `activateFallback()` (worker `error`/`messageerror`) or
-    through the per-request retry after a worker-reported error. **Which one
-    is not yet known.** `HydrologySystem.getStatistics().usingMainThreadFallback`
-    answers it, but it is not in `RenderDiagnostics`.
+  - **Root cause (found after the slot, CPU-only): a DataCloneError.**
+    - `HydrologySystem`'s `generationConfig` still carries `terrainSample` and
+      `climateSample`, which are functions: `resolveHydrologyConfig` spreads
+      its input unfiltered.
+    - Every request posts `{...generationConfig, centerX, centerZ}` to the
+      worker, so `postMessage` throws a synchronous DataCloneError.
+    - `HydrologyGenerationClient.pump()`'s catch treats any post failure as a
+      dead worker, calls `activateFallback()`, terminates the worker and falls
+      back for good. The worker is built and killed by its first request.
+    - A Node check with the real `resolveHydrologyConfig` reproduces it:
+      function-valued keys `[terrainSample, climateSample]`, and
+      `structuredClone(command)` throws.
+    - This has been true since the WebGPU switch (`ee53551`, 2026-08-16).
+      Tests missed it because the paging test's fake worker does not clone
+      what it is sent.
+    - (The worker script itself serves 200.)
   - Regions are 14.4 km wide with 7.2 km spacing, so a swap comes about every
     2.4 min at Cessna cruise speed and about every minute in the 747.
 - **Not yet attributed:**
