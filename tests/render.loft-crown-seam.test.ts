@@ -336,7 +336,11 @@ describe("a loft's crown seam", () => {
       // 30 mm, low caps, their own matte), the headliner (24 chords a corner), the fittings (the compass box round its
       // window and cavity) and the bezels (the window's ring and the lubber line) moved; the trainer's other 65 of 70, and
       // every mesh of the jet, the Global and the 747, are bit-identical.
-      trainer: "0d9cc1fc",
+      // RE-PINNED for gate 40 on the Cessna's merge (same check, against a0b2c3c): the compass's ring and lubber line out
+      // of `trainer-dial-bezels` (back to its S2b state, bit-identical) into `trainer-compass-rim`, new; the cowl stand-in
+      // bit-identical, its UVs included, now without a station range; the trainer's other 68, and every mesh of the jet,
+      // the Global and the 747, are bit-identical.
+      trainer: "82f775ec",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global

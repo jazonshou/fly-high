@@ -99,8 +99,8 @@ const CONTROL: Readonly<Record<AircraftKind, { readonly mesh: string; readonly b
 // its clock's face (S4), a mesh of its own on a static page.
 // The Global's went 7 -> 8 with its cove's fillet (the "feel real" wave's S1).
 // the trainer 16 since its headliner (the Cessna pass, S4), 17 since its yokes (S6), 18 since its tachometer's needle (S2b),
-// 19 since its compass's card (S7)
-const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 19, bizjet: 9, airliner: 9, jet: 9 };
+// 19 since its compass's card (S7), 20 since its compass's rim, a mesh of its own (S7, gate 40)
+const KIT_SIZE: Readonly<Record<AircraftKind, number>> = { trainer: 20, bizjet: 9, airliner: 9, jet: 9 };
 /**
  * Meshes that are NOT cockpit-only but frame the pilot's view all the same, walked with the kit: the F-16's
  * coaming is an ordinary airframe part (from outside it is the hood over the panel), a `solidPlate` narrowed

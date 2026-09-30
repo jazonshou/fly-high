@@ -185,9 +185,9 @@ describe("the trainer's cockpit parts", () => {
     ]);
     expect(parts.filter((name) => /-needle$/.test(name)).sort()).toEqual(["trainer-airspeed-needle", "trainer-altimeter-needle", "trainer-tach-needle"]);
     expect(trainerDialPlacements().map((dial) => dial.name)).toEqual(["airspeed", "attitude", "altimeter"]);
-    // 15 when the Cessna pass began, the headliner (S4), the yokes (S6), the tachometer's needle (S2b) and the compass's
-    // card (S7) since: the PM's budget is 8 more draws over the pass
-    expect(parts).toHaveLength(19);
+    // 15 when the Cessna pass began, the headliner (S4), the yokes (S6), the tachometer's needle (S2b), the compass's
+    // card and its rim (S7) since: the PM's budget is 8 more draws over the pass
+    expect(parts).toHaveLength(20);
   });
 
   it("are within the pass's budget of eight more meshes than its first 15, and keep the dial names", () => {
@@ -204,6 +204,7 @@ describe("the trainer's cockpit parts", () => {
       "trainer-a-pillar-port",
       "trainer-a-pillar-starboard",
       "trainer-compass-card",
+      "trainer-compass-rim",
       "trainer-cowl-standin",
       "trainer-door-port",
       "trainer-door-starboard",
@@ -974,6 +975,8 @@ describe("the Cessna's deck, board, door frames and pillars", () => {
       "windscreen-center-frame", "trainer-cowl-standin",
       // the yokes (S6): the horn tops the pilot sees, and the collar where the column enters the board
       "trainer-yokes",
+      // the compass's window ring and lubber line (S7)
+      "trainer-compass-rim",
     ]) {
       const mesh = named(name);
       expect(meshes.indexOf(mesh), `${name} is drawn`).toBeGreaterThanOrEqual(0);
@@ -1683,7 +1686,7 @@ describe("the Cessna's overhead", () => {
     for (const name of [
       "trainer-headliner", "trainer-panel-fittings", "trainer-dial-bezels", "trainer-dial-faces",
       "trainer-door-port", "trainer-a-pillar-port", "trainer-glareshield", "trainer-instrument-panel",
-      "trainer-yokes", "trainer-compass-card",
+      "trainer-yokes", "trainer-compass-card", "trainer-compass-rim",
     ]) {
       const mesh = named(name);
       const v = worldVertices(mesh);
@@ -1836,10 +1839,14 @@ describe("the Cessna's overhead", () => {
   it("gives the compass a window in its aft face, ringed in the dials' section 8 mm inside the face, and a lubber line down it", () => {
     const { c, centre, aft } = compass();
     const w = c.window;
-    expect(named("trainer-dial-bezels").metadata?.mergedFrom).toEqual(expect.arrayContaining(["trainer-compass-bezel", "trainer-compass-lubber"]));
+    // a mesh of its own on the bezels' rim, not in the dials' bezels: the HUD's footprint takes a bezels mesh as the deck
+    const rimMesh = named("trainer-compass-rim");
+    expect(rimMesh.metadata?.mergedFrom).toEqual(["trainer-compass-ring", "trainer-compass-lubber"]);
+    expect(rimMesh.material, "on the dials' rim material").toBe(named("trainer-dial-bezels").material);
+    expect(named("trainer-dial-bezels").metadata?.mergedFrom, "nothing of the compass in the dials' bezels").not.toEqual(expect.arrayContaining(["trainer-compass-ring"]));
     expect(w.corner, "the window's corners, round").toBeGreaterThanOrEqual(0.003);
     // the ring, off the built bezels mesh: its vertices on the box's aft face and forward of it, round the window
-    const ring = worldVertices(named("trainer-dial-bezels")).filter((p) => Math.abs(p.x - aft.x - 0.006) < 0.0101 && Math.abs(p.z) < c.width / 2 && Math.abs(p.y - centre.y) < c.height / 2);
+    const ring = worldVertices(rimMesh).filter((p) => Math.abs(p.x - aft.x - 0.006) < 0.0101 && Math.abs(p.z) < c.width / 2 && Math.abs(p.y - centre.y) < c.height / 2);
     expect(ring.length, "the ring's vertices").toBeGreaterThan(50);
     const outer = { z: Math.max(...ring.map((p) => Math.abs(p.z))), y: Math.max(...ring.map((p) => Math.abs(p.y - centre.y))) };
     expect(c.width / 2 - outer.z, "the ring inside the aft face, across, metres").toBeGreaterThanOrEqual(0.003);
@@ -1852,7 +1859,7 @@ describe("the Cessna's overhead", () => {
     expect(sides.length, "the front's vertices along the opening's sides").toBeGreaterThanOrEqual(4);
     expect(Math.min(...sides.map((p) => Math.abs(p.z))), "the opening's half-width at the front").toBeCloseTo(w.halfWidth + TRAINER_BEZEL.innerChamfer, 5);
     // the lubber line: a rod down the window's middle, in front of the card's face and behind the box's
-    const lubber = worldVertices(named("trainer-dial-bezels")).filter((p) => Math.abs(p.z) < c.lubber.width && Math.abs(p.y - centre.y) < w.halfHeight && p.x > aft.x + 0.003 && p.x < aft.x + c.drum.recess);
+    const lubber = worldVertices(rimMesh).filter((p) => Math.abs(p.z) < c.lubber.width && Math.abs(p.y - centre.y) < w.halfHeight && p.x > aft.x + 0.003 && p.x < aft.x + c.drum.recess);
     // (its middle ring of 8; its ends are buried in the ring, above and below the window)
     expect(lubber.length, "the lubber line's vertices in the window").toBeGreaterThanOrEqual(8);
   });
