@@ -109,8 +109,8 @@ describe("FI-5: hand-built mip chains", () => {
     const paintMetadata = body.metadata as { aircraftPaintRecipe: AircraftPaintRecipe; aircraftPaintEdge?: number };
     const paint = synthesizeAircraftSurface(paintMetadata.aircraftPaintRecipe, paintMetadata.aircraftPaintEdge);
     // The CPU side is re-synthesised at the edge the build RECORDED (the trainer
-    // paints at 256, not the shared 64); a build that stopped recording it would
-    // compare a 64-texel control against 256-texel maps.
+    // paints at 512, not the shared 64); a build that stopped recording it would
+    // compare a 64-texel control against 512-texel maps.
     expect(paintMetadata.aircraftPaintEdge, "the trainer body records the edge it was built at").toBe(body.albedoTexture!.getSize().width);
     expect(paint.edge).toBe(paintMetadata.aircraftPaintEdge);
     for (const [slot, mips, srgb] of [
