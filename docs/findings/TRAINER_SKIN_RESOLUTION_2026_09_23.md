@@ -226,15 +226,34 @@ The line beads below two texels: its darkness and width vary row to row as it cr
 
 ## The frames at 512
 
-Pending the PM's GPU grant: abeam at 6 m and 10 m and the chase, at a matched render scale, against the 256
-frames. The gates are:
-- livery 4.8 px or less at 6 m and 3.3 px or less at 10 m, at render scale 0.85, with the diagonal straight
-  within 0.2 texel;
-- a panel line's flanks 6.5 px or less, and its band 9 px or less, at 6 m.
+The PM's GPU slot, abeam at 6 m and 10 m and the chase, at 1080p. Widths are in px, 10-90 % for edges; each
+frame's scale comes from its own panel lines (1965-1975 px per u at 6 m, 1150-1154 at 10 m, in every frame).
 
-The livery gates were first 4.5 and 3 px. From the split above the livery predicts 4.4-4.6 px at 6 m and
-3.1-3.2 px at 10 m, since the screen's 2.1 px is a floor no paint can remove. The PM moved the gates to that
-floor.
+- **Medium: 0.850 in both arms,** the P0 frames against 07dbc6c. This is the gates' pair.
+- **High: 0.900 in both arms.** The 256 arm was re-captured at 4e5e62f, since P0's high frames came at 0.849.
+
+| medium, scale 0.85 | 256 | 512 | gate |
+|---|---|---|---|
+| 6 m: the door line at half depth | 26.8 | 6.7 | 9 or less |
+| 6 m: the line's flanks, left / right | 12.0 / 11.7 | 4.8 / 5.4 | 6.5 or less |
+| 6 m: the livery edge, across it | 8.3 | 4.6 | 4.8 or less |
+| 6 m: the livery diagonal off a straight line, rms / worst | 0.82 / 1.94 | 0.44 / 1.03 | |
+| 10 m: the door line / its flanks | 15.5 / 7.0, 7.1 | 3.8 / 2.7, 3.1 | |
+| 10 m: the livery edge | 5.3 | 3.0 | 3.3 or less |
+| the chase: dips across the wing's top, flank / half depth | 3.1 / 4.6 | 2.6 / 4.5 | |
+
+- **The high pair reads the same, within 0.1 px.** At 6 m: line 26.7 → 6.7, flanks 11.9 / 11.8 → 4.9 / 5.4, livery
+  8.4 → 4.5, diagonal rms 0.81 → 0.42. At 10 m: line 15.4 → 3.8, livery 5.3 → 2.9.
+- **The render scale barely moves the widths,** 0.85 against 0.90; the paint sets them.
+- **The Node predictions held.** They were 7.4 px for the line at 6 m, 4.4-4.6 for the livery at 6 m and 3.1-3.2 at
+  10 m.
+- **The chase's high pair did not match** (0.95 and 1.0), and at 0.85 its wing-top detector finds few dips. So the
+  chase is a look, not a gate.
+- **Seen, not a gate: the door line now meanders.** It is the design's own warp, `u + broad × 0.012` on an 8-cell
+  lattice: about ±4 cm over about 0.4 m round the body. The 10 cm band's centre averaged it away (1.5-1.8 cm peak to
+  peak). The 2.9 cm line shows it at 3.2-3.3 cm, about its own width, as a slow wave most visible at 10 m.
+  - It is smooth: row to row the line moves at most 0.07 texel.
+  - Real panel lines are straight. A trainer-only warp dial would straighten them if that reads hand-drawn.
 
 ## Pins added (`tests/render.aircraft-paint-resolution.test.ts`)
 
