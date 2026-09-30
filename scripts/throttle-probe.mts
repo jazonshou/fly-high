@@ -738,6 +738,17 @@ function summaryOf(w: WindowStats) {
   };
 }
 
+/**
+ * Key -> first frame that SHOWS the input.
+ *
+ * Detection reads the control-surface digest only. The first cut also read
+ * the aircraft's attitude, which drifts every frame in flight, so every trial
+ * "responded" 0-17 ms after the key, before the key handler had even run and
+ * 20-80 ms before the physics moved the surface (baseline 2026-09-29). Two
+ * guards now: a per-trial noise floor from the 400 ms before the key, and
+ * causality: a render change earlier than the physics snapshot's change is
+ * rejected, not counted. The raw logs are kept so this can be redone offline.
+ */
 async function latencyAnalysis() {
   const raw = await evaluate(() => {
     const w = globalThis as unknown as Record<string, unknown>;
@@ -745,47 +756,57 @@ async function latencyAnalysis() {
     return {
       keys: (w.__probeKeys as { code: string; down: boolean; t: number; handled: number }[]).slice(),
       scene: ((w.__probeSceneLog as [number, number, number][] | undefined) ?? []).slice(),
-      snaps: (w.__probeWorkers as { log: { t: number; elevator: number; aileron: number }[] }).log.slice(),
+      snaps: (w.__probeWorkers as { log: { t: number; elevator: number; aileron: number }[] }).log
+        .map((s) => ({ t: s.t, elevator: s.elevator, aileron: s.aileron })),
       frames: (w.__probeFrames as number[]).slice(),
     };
   });
+  report.latencyRaw = raw;
   const EPS = 1e-5;
   const rows: {
     code: string; keyToHandlerMs: number; keyToSnapshotMs: number | null;
-    keyToRenderMs: number | null; keyToDisplayMs: number | null;
+    keyToRenderMs: number | null; keyToDisplayMs: number | null; noise: number; causal: boolean;
   }[] = [];
   const downs = raw.keys.filter((k) => k.down && /Key[SWDA]/.test(k.code));
   for (const key of downs) {
-    const before = raw.scene.filter((f) => f[0] <= key.t).at(-1);
-    const after = raw.scene.filter((f) => f[0] > key.t && f[0] < key.t + 1_200);
+    const pre = raw.scene.filter((f) => f[0] > key.t - 400 && f[0] <= key.t);
+    let noise = 0;
+    for (let i = 1; i < pre.length; i += 1) noise = Math.max(noise, Math.abs(pre[i]![1] - pre[i - 1]![1]));
+    const threshold = Math.max(EPS, 3 * noise);
+    const before = pre.at(-1);
     const moved = before
-      ? after.find((f) => Math.abs(f[1] - before[1]) > EPS || Math.abs(f[2] - before[2]) > EPS)
+      ? raw.scene.find((f) => f[0] > key.t && f[0] < key.t + 1_200 && Math.abs(f[1] - before[1]) > threshold)
       : undefined;
     const field = /Key[SW]/.test(key.code) ? "elevator" : "aileron";
     const snapBefore = raw.snaps.filter((s) => s.t <= key.t).at(-1);
     const snapMoved = snapBefore
-      ? raw.snaps.find((s) => s.t > key.t && Math.abs(s[field] - snapBefore[field]) > EPS)
+      ? raw.snaps.find((s) => s.t > key.t && Math.abs(s[field] - snapBefore[field]) > 1e-4)
       : undefined;
-    // Presentation: the frame rendered at `moved` reaches the screen at the
-    // next rAF boundary; use the following frame timestamp as the display time.
-    const display = moved ? raw.frames.find((t) => t > moved[0]) : undefined;
+    const causal = moved !== undefined && snapMoved !== undefined && moved[0] >= snapMoved.t;
+    // The frame rendered at `moved` reaches the screen at the next rAF boundary.
+    const display = causal ? raw.frames.find((t) => t > moved![0]) : undefined;
     rows.push({
       code: key.code,
       keyToHandlerMs: round(key.handled - key.t),
       keyToSnapshotMs: snapMoved ? round(snapMoved.t - key.t) : null,
-      keyToRenderMs: moved ? round(moved[0] - key.t) : null,
+      keyToRenderMs: causal ? round(moved![0] - key.t) : null,
       keyToDisplayMs: display !== undefined ? round(display - key.t) : null,
+      noise,
+      causal,
     });
   }
   const shown = rows.map((r) => r.keyToDisplayMs).filter((v): v is number => v !== null).sort((a, b) => a - b);
+  const snapshots = rows.map((r) => r.keyToSnapshotMs).filter((v): v is number => v !== null).sort((a, b) => a - b);
   return {
     rows,
     summary: {
       trials: rows.length,
-      measured: shown.length,
+      causal: rows.filter((r) => r.causal).length,
       displayMedianMs: quantile(shown, 0.5),
       displayP90Ms: quantile(shown, 0.9),
       displayMaxMs: shown.at(-1) ?? null,
+      snapshotMedianMs: quantile(snapshots, 0.5),
+      snapshotMaxMs: snapshots.at(-1) ?? null,
     },
   };
 }
