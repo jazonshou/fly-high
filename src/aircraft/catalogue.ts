@@ -122,7 +122,11 @@ export interface EngineSoundSpec {
   /** Engine gain at idle, and how far it climbs at full power. */
   readonly gainBase: number;
   readonly gainSpan: number;
-  /** Low-pass shaping the harmonics. */
+  /**
+   * Low-pass shaping the harmonics. Jason found the engines too high-pitched
+   * (2026-09-29): every cutoff sits about 0.6x its first value and no Q rises
+   * above 0.7, so the second harmonic is felt more than heard.
+   */
   readonly filterHz: number;
   readonly filterQ: number;
   /** Waveform of the first and second harmonic. */
@@ -225,8 +229,8 @@ const TRAINER: AircraftSpec = Object.freeze({
     spanHz: 58,
     gainBase: 0.035,
     gainSpan: 0.1,
-    filterHz: 720,
-    filterQ: 1.1,
+    filterHz: 440,
+    filterQ: 0.7,
     waveforms: Object.freeze(["sawtooth", "triangle"]) as readonly [OscillatorType, OscillatorType],
   }),
   retractableGear: false,
@@ -316,11 +320,11 @@ const JET: AircraftSpec = Object.freeze({
   engineReadout: Object.freeze({ label: "N2", unit: "%", maximum: 100, roundTo: 1 }),
   engineSound: Object.freeze({
     baseHz: 88,
-    spanHz: 205,
+    spanHz: 170,
     gainBase: 0.045,
     gainSpan: 0.082,
-    filterHz: 1_450,
-    filterQ: 0.72,
+    filterHz: 900,
+    filterQ: 0.6,
     waveforms: Object.freeze(["triangle", "sine"]) as readonly [OscillatorType, OscillatorType],
   }),
   retractableGear: true,
@@ -412,8 +416,8 @@ const BIZJET: AircraftSpec = Object.freeze({
     spanHz: 120,
     gainBase: 0.05,
     gainSpan: 0.09,
-    filterHz: 900,
-    filterQ: 0.8,
+    filterHz: 560,
+    filterQ: 0.7,
     waveforms: Object.freeze(["triangle", "sine"]) as readonly [OscillatorType, OscillatorType],
   }),
   retractableGear: true,
@@ -496,8 +500,8 @@ const AIRLINER: AircraftSpec = Object.freeze({
     spanHz: 92,
     gainBase: 0.06,
     gainSpan: 0.1,
-    filterHz: 680,
-    filterQ: 0.75,
+    filterHz: 430,
+    filterQ: 0.65,
     waveforms: Object.freeze(["triangle", "sine"]) as readonly [OscillatorType, OscillatorType],
   }),
   retractableGear: true,

@@ -12,6 +12,9 @@ export interface FlightAudioOptions extends AudioLevels {
   aircraft?: AircraftKind;
 }
 
+/** Level of the engine's second harmonic against its fundamental. */
+export const ENGINE_SECOND_HARMONIC_GAIN = 0.55;
+
 export function normalizedEngineSpeed(aircraft: AircraftKind, engineRpm: number): number {
   return Math.min(1.2, Math.max(0, engineRpm / aircraftSpec(aircraft).engineReadout.maximum));
 }
@@ -181,7 +184,15 @@ export class FlightAudio {
       const oscillator = context.createOscillator();
       oscillator.type = sound.waveforms[harmonic - 1]!;
       oscillator.frequency.value = 40 * harmonic;
-      oscillator.connect(this.engineGain);
+      if (harmonic === 1) {
+        oscillator.connect(this.engineGain);
+      } else {
+        // The second harmonic carries the "whine": it rides at just over half
+        // the fundamental's level so the tone stays low and round.
+        const harmonicGain = context.createGain();
+        harmonicGain.gain.value = ENGINE_SECOND_HARMONIC_GAIN;
+        oscillator.connect(harmonicGain).connect(this.engineGain);
+      }
       oscillator.start();
       this.engineOscillators.push(oscillator);
     }

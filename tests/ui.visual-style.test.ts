@@ -44,6 +44,13 @@ describe("flight interface visual system", () => {
 
     expect(rule(".pause-panel")).toContain("backdrop-filter: blur(28px)");
     expect(rule(".settings-panel")).toContain("backdrop-filter: blur(30px)");
+    // Jason, 2026-09-29: the settings panel read too transparent, its scrollbar
+    // ran past the rounded corner, and the Graphics/Instruments menus opened a
+    // row's worth below their buttons (the field grid stretched the select).
+    expect(rule(".settings-panel")).toMatch(/background:\s*linear-gradient\([^;]*rgba\([^)]*,\s*0\.9\)[^;]*rgba\([^)]*,\s*0\.84\)/);
+    expect(rule(".settings-panel")).toContain("clip-path: inset(0 round var(--radius-panel))");
+    expect(rule(".settings-screen")).toMatch(/rgba\(3, 13, 18, 0\.46\)/);
+    expect(rule(".setting-field,\n.setting-toggle")).toContain("align-content: start");
     expect(rule(".aircraft-picker")).toContain("backdrop-filter: blur(22px)");
     expect(rule(".aircraft-picker")).toMatch(/background:\s*rgba\([^)]*,\s*0\.22\)/);
     expect(rule(".instrument-strip")).toContain("backdrop-filter: blur(16px)");
