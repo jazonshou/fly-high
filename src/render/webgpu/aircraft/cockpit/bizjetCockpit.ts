@@ -26,7 +26,9 @@ import {
   smoothRoundNormals,
   smoothSheet,
   solidPlate,
+  sweptSolid,
   type FacetQuad,
+  type SweptSection,
   type RoundedDeckSection,
 } from "./cockpitPrimitives";
 import {
@@ -451,6 +453,17 @@ export const BIZJET_GLARESHIELD = Object.freeze({
    */
   jointRadius: 0.004,
   jointSegments: 4,
+  /**
+   * THE END ROUNDS (S4). The deck ended square at its ends, a cut through its section 54 rows tall from the seat.
+   * Outboard of each end, the section now closes over `endRound` in a quarter-round of `endStations` steps, scaled down
+   * about the cove's foot. That corner's lines are its own under the scaling, so the cove stays on its line and the
+   * board's top stays covered to the end. The lit round falls in a curve to the corner, and no end faces the pilot.
+   *
+   * It is OUTBOARD of the deck's width: a round inside it would bare the board's top face, which the glareshield's
+   * underside covers. It stands in front of the pillar's band, 3 cm inside the shell where the deck keeps 5.
+   */
+  endRound: 0.02,
+  endStations: 6,
 });
 
 /**
@@ -910,16 +923,58 @@ export function buildBizjetCockpit(
   // THE GLARESHIELD, its round's silhouette on the catalogue's deck line, as wide as the pillars and the shell let it be;
   // the hood forward of the round and the cove tapered in plan to the shell (`bizjetHoodTaper`).
   const halfWidth = bizjetPanelHalfWidth(skin);
-  const glareshield = solidPlate(build, "bizjet-glareshield", bizjetGlareshieldSection().outline, halfWidth * 2, glareshieldMaterial(build, "bizjet-glareshield"), root);
+  const lipMaterial = glareshieldMaterial(build, "bizjet-glareshield");
+  const straight = solidPlate(build, "bizjet-glareshield-straight", bizjetGlareshieldSection().outline, halfWidth * 2, lipMaterial, root);
   const taper = bizjetHoodTaper(skin, halfWidth);
-  sculptSolid(glareshield, (point) => {
-    const t = Math.min(1, Math.max(0, (point.x - taper.from) / (taper.to - taper.from)));
-    return new Vector3(point.x, point.y, point.z * (1 + (taper.endHalfWidth / halfWidth - 1) * t));
-  });
+  const tapered = (x: number, z: number) => z * (1 + (taper.endHalfWidth / halfWidth - 1) * Math.min(1, Math.max(0, (x - taper.from) / (taper.to - taper.from))));
+  sculptSolid(straight, (point) => new Vector3(point.x, point.y, tapered(point.x, point.z)));
   // The round shades as the circle (the taper starts forward of it, so its corners are still on the round in x and y).
   const lipSection = bizjetGlareshieldSection();
-  smoothRoundNormals(glareshield, lipSection.round, lipSection.centre);
-  smoothRoundNormals(glareshield, lipSection.joint.points, lipSection.joint.centre);
+  smoothRoundNormals(straight, lipSection.round, lipSection.centre);
+  smoothRoundNormals(straight, lipSection.joint.points, lipSection.joint.centre);
+  // THE END ROUNDS, a quarter-round outboard of each end: the section scaled about the cove's foot by sin(phi) as it
+  // steps out cos(phi) of `endRound`, from the tip (phi 0, the section a point) to the deck's end (phi 90, full).
+  const g = BIZJET_GLARESHIELD;
+  const outline = lipSection.outline;
+  const roundFirst = outline.indexOf(lipSection.round[0]!);
+  const roundLast = roundFirst + lipSection.round.length - 1;
+  const jointLast = roundLast + lipSection.joint.points.length - 1;
+  const corner = lipSection.faceTop;
+  const section: SweptSection = {
+    points: outline.map((p) => ({ u: p.x, y: p.y })),
+    rounds: [
+      { first: roundFirst, last: roundLast, centre: { u: lipSection.centre.x, y: lipSection.centre.y } },
+      { first: roundLast, last: jointLast, centre: { u: lipSection.joint.centre.x, y: lipSection.joint.centre.y } },
+    ],
+  };
+  const ends = ([-1, 1] as const).map((side) => {
+    const phi = (i: number) => (Math.PI / 2) * (i / g.endStations);
+    return sweptSolid(
+      build,
+      `bizjet-glareshield-end-${side < 0 ? "port" : "starboard"}`,
+      section,
+      g.endStations + 1,
+      (i, point) => {
+        const scale = Math.sin(phi(i));
+        const x = corner.x + (point.u - corner.x) * scale;
+        return new Vector3(x, corner.y + (point.y - corner.y) * scale, tapered(x, side * (halfWidth + g.endRound * Math.cos(phi(i)))));
+      },
+      (direction) => new Vector3(direction.u, direction.y, 0),
+      lipMaterial,
+      root,
+      {
+        smoothAlong: true,
+        // the round's own run: in from the tip, then straight along the deck at its end, where the straight part's
+        // round is shaded as the circle square to z
+        tangent: (i) => new Vector3(
+          (lipSection.centre.x - corner.x) * Math.cos(phi(i)),
+          (lipSection.centre.y - corner.y) * Math.cos(phi(i)),
+          -side * g.endRound * Math.sin(phi(i)),
+        ).normalize(),
+      },
+    );
+  });
+  const glareshield = build.mergeStatic("bizjet-glareshield", [straight, ...ends], root);
   parts.push(glareshield);
 
   // THE COVE'S FILLET, on the glareshield's own material, across the deck's width.

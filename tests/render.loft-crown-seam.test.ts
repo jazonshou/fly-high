@@ -479,7 +479,10 @@ describe("a loft's crown seam", () => {
       // fillet (their top border 6 mm, no flat band; the frame a U), the screens 2.1 mm lower on the face. Checked mesh by
       // mesh against S1: only the Global's screens, frames, rims and wells move; every other mesh of all four is
       // bit-identical.
-      bizjet: "9a4c7bf8",
+      // RE-PINNED for the Global by the "feel real" wave's S4: the glareshield's ends close in 20 mm quarter-rounds
+      // outboard of the deck (two swept end pieces merged with the straight lip, one draw). Checked mesh by mesh against
+      // S2: only the Global's glareshield moves; every other mesh of all four is bit-identical.
+      bizjet: "0f9d9d2c",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh

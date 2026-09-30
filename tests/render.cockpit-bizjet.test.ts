@@ -308,10 +308,18 @@ function insideSkin(d: Vector3, distance: number): number {
   const off = distanceToTriangles(EYE_POINT.add(d.scale(distance)), shell);
   return distance < skinExit(d) ? off : -off;
 }
+/**
+ * The deck's straight half-width: the board's, which the glareshield's straight part shares. Its END ROUNDS (S4) stand
+ * `endRound` outboard of it, so the glareshield's own widest vertex is not the deck's width.
+ */
+function deckHalfWidth(): number {
+  return Math.max(...worldVertices(named("bizjet-cockpit-interior")).slice(0, 24).map((v) => Math.abs(v.z)));
+}
 /** Which authored part of a merged mesh a picked triangle belongs to (an unmerged mesh is its own part). */
 function partOf(mesh: AbstractMesh, faceId: number): string {
   const sources = (mesh.metadata as { mergedFrom?: string[] } | null)?.mergedFrom;
-  if (!sources) return mesh.name;
+  // the glareshield's straight part and its end rounds are one lip
+  if (!sources || mesh.name === "bizjet-glareshield") return mesh.name;
   // the board, the screens and the wells are boxes; a bezel's rim is 16 quads and its frame 12 (a U: its top has no flat
   // band, S2) (`bizjetBezelFacets`); the lining's strips are the captured panels
   const count = (name: string) => {
@@ -587,10 +595,15 @@ describe("the Global's cockpit parts", () => {
     // the glareshield alone on its mesh, one solidPlate: the aft face's foot (none with no drop: the round runs into the
     // cove), the cove's, the hood's forward end (two corners), and the round's chords with a vertex on the deck line's
     // tangent (two fanned caps, and each side of the outline a wall of two)
-    expect((named("bizjet-glareshield").metadata as { mergedFrom?: string[] } | null)?.mergedFrom).toBeUndefined();
+    // (S4: the straight part and its two end rounds, merged, one draw)
+    expect((named("bizjet-glareshield").metadata as { mergedFrom?: string[] } | null)?.mergedFrom).toEqual(["bizjet-glareshield-straight", "bizjet-glareshield-end-port", "bizjet-glareshield-end-starboard"]);
     const sides = bizjetGlareshieldSection().outline.length;
     expect(sides).toBe((BIZJET_GLARESHIELD.drop > 0 ? 4 : 3) + BIZJET_GLARESHIELD.roundSegments + 2 + BIZJET_GLARESHIELD.jointSegments);
-    expect(named("bizjet-glareshield").getTotalIndices() / 3).toBe(2 * (sides - 2) + 2 * sides);
+    // the straight part's prism, then each end round: its walls a band of quads between stations (the tip's band a fan,
+    // its first triangles degenerate) and the deck-end cap; the tip cap is a point
+    const n = sides;
+    const N = BIZJET_GLARESHIELD.endStations;
+    expect(named("bizjet-glareshield").getTotalIndices() / 3).toBe(2 * (sides - 2) + 2 * sides + 2 * (2 * n * N - n + (n - 2)));
     for (const name of ["bizjet-screens", "bizjet-screen-bezels", "bizjet-screen-bezel-rims", "bizjet-screen-wells"]) {
       expect(named(name).metadata?.mergedFrom, name).toHaveLength(4);
     }
@@ -964,7 +977,7 @@ describe("the frame: the lining round the glass", () => {
         // where it is in the frame (the port forward side pane's, from the left seat), the eye meets its top face; UNDER
         // THE LIP'S LINE, within the lip's span, the board is nearer and the lip rule decides (a V nose puts the side
         // pane's forward foot there)
-        const lipHalfWidth = Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z)));
+        const lipHalfWidth = deckHalfWidth();
         for (let c = 0; c + 1 < cap.columns; c += 1) {
           const middle = Vector3.Lerp(Vector3.Lerp(gridVertex(cap, 1, 0, c), gridVertex(cap, 1, 0, c + 1), 0.5), Vector3.Lerp(gridVertex(cap, 1, 1, c), gridVertex(cap, 1, 1, c + 1), 0.5), 0.5);
           const { az, el } = azel(middle);
@@ -1136,8 +1149,9 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     // low corners, whose glass then held it down (11.49 against 3.96). Past the pillars the side sills are lining. On
     // part 6's V the shell narrows fast forward of the face, and 5 cm inside it ends the lip a little inboard of the
     // pillars' feet; the pillar's lining covers the rest (the whole-frame test finds no hidden skin showing).
-    const lip = worldVertices(named("bizjet-glareshield"));
-    const halfWidth = Math.max(...lip.map((v) => Math.abs(v.z)));
+    // the straight lip spans the posts; its end rounds (S4) close outboard of that, under the posts' feet
+    const halfWidth = deckHalfWidth();
+    expect(Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z))) - halfWidth, "the end rounds").toBeCloseTo(BIZJET_GLARESHIELD.endRound, 5);
     const port = panel("port-bizjet-flight-deck-window-windshield");
     const pillarFoot = Math.abs(skinVertex(port, 0, port.columns - 1).z);
     // the built shell where the deck's full width stands: the round and the cove, at the round's top and the cove's foot
@@ -1156,7 +1170,10 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
 
   it("tapers the hood in plan to the shell: the round, the aft face and the cove keep the deck's width, every vertex 5 cm inside", () => {
     // On part 6's V the shell at the hood's forward end is narrower than the deck; the hood cannot be seen from the seat
-    const lip = worldVertices(named("bizjet-glareshield"));
+    const all = worldVertices(named("bizjet-glareshield"));
+    const deckWidth = deckHalfWidth();
+    // the straight part (the end rounds, S4, stand outboard of the deck's width, and are held below)
+    const lip = all.filter((v) => Math.abs(v.z) <= deckWidth + 1e-6);
     const section = bizjetGlareshieldSection();
     const aftEnd = Math.max(section.faceTop.x, section.round[0]!.x);
     const aft = lip.filter((v) => v.x <= aftEnd + 1e-6);
@@ -1170,6 +1187,11 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     for (const v of lip) {
       const wall = crossings(new Vector3(v.x, v.y, 0), new Vector3(0, 0, v.z < 0 ? -1 : 1), worldTriangles(fuselage)).at(-1)!;
       expect(wall - Math.abs(v.z), `(${v.x.toFixed(3)}, ${v.y.toFixed(3)})`).toBeGreaterThanOrEqual(BIZJET_PANEL.shellMargin - 0.003);
+    }
+    // the end rounds: inside the shell by the margin less their own reach
+    for (const v of all.filter((w) => Math.abs(w.z) > deckWidth + 1e-6)) {
+      const wall = crossings(new Vector3(v.x, v.y, 0), new Vector3(0, 0, v.z < 0 ? -1 : 1), worldTriangles(fuselage)).at(-1)!;
+      expect(wall - Math.abs(v.z), `end round (${v.x.toFixed(3)}, ${v.y.toFixed(3)})`).toBeGreaterThanOrEqual(BIZJET_PANEL.shellMargin - BIZJET_GLARESHIELD.endRound - 0.003);
     }
   });
 
@@ -1454,11 +1476,91 @@ describe("the lip rule: the highest straight lip that covers no glass", () => {
     expect(Math.max(...steps)).toBeLessThanOrEqual(8);
   });
 
+  it("closes the deck's ends in a quarter-round: the tip at the cove's foot, the deck's end the full section, outboard of the deck", () => {
+    const g = BIZJET_GLARESHIELD;
+    const section = bizjetGlareshieldSection();
+    const deck = deckHalfWidth();
+    const lip = worldVertices(named("bizjet-glareshield"));
+    for (const side of [-1, 1] as const) {
+      const tip = lip.filter((v) => Math.abs(v.z - side * (deck + g.endRound)) < 1e-5);
+      expect(tip.length, "the tip's vertices").toBeGreaterThan(0);
+      // the section scaled to nothing about the cove's foot: every vertex at the tip IS that corner
+      for (const v of tip) {
+        expect(v.x, "the tip at the cove's foot").toBeCloseTo(section.faceTop.x, 5);
+        expect(v.y).toBeCloseTo(section.faceTop.y, 5);
+      }
+      // nothing of it further out, nothing of it higher than the straight lip's round
+      expect(Math.max(...lip.map((v) => side * v.z)), "the round's reach").toBeCloseTo(deck + g.endRound, 5);
+    }
+    expect(Math.max(...lip.map((v) => v.y)), "no higher than the round's top").toBeLessThanOrEqual(Math.max(...section.round.map((p) => p.y)) + 1e-6);
+  });
+
+  it("shades the end rounds smoothly: outboard along a row through the port end's round, 8 degrees a pixel at most", () => {
+    // Rows across the round's lit upper half, walked outboard a 1080p pixel at a time from the straight lip into its end
+    // round and off it: every step on the lip turns the shading 8 degrees at most (the round's stations are 15 apart,
+    // so a flat-shaded end would step 15 at each).
+    const section = bizjetGlareshieldSection();
+    const steps: number[] = [];
+    for (const el of [lineElevation(section.tangent, -22) - 0.15, lineElevation(section.tangent, -22) - 0.4, lineElevation(section.tangent, -22) - 0.7]) {
+      let previous: Vector3 | null = null;
+      for (let az = -21.5; az > -24.5; az -= PIXEL_1080P) {
+        const seen = shadedAt(az, el);
+        if (!seen || seen.mesh !== "bizjet-glareshield") {
+          if (previous) break;
+          continue;
+        }
+        if (previous) steps.push(Math.acos(Math.min(1, Vector3.Dot(previous, seen.normal))) * DEG);
+        previous = seen.normal;
+      }
+    }
+    console.info(`the port end round, outboard: ${steps.length} steps, largest ${Math.max(...steps).toFixed(2)} degrees`);
+    expect(steps.length).toBeGreaterThan(30);
+    expect(Math.max(...steps)).toBeLessThanOrEqual(8);
+  });
+
+  it("falls the lit round away at the port end in a curve, not a cut: no straight run down the end's silhouette", () => {
+    // The end's silhouette row by row (1080p pitch), from the straight lip's top down to the cove's foot: the outermost
+    // azimuth at which the eye meets the lip on that row. A square end is one azimuth down its whole height (54 rows);
+    // a round steps out row by row.
+    const section = bizjetGlareshieldSection();
+    const top = lineElevation(section.tangent, -22);
+    const foot = lineElevation(section.faceTop, -22);
+    const outermost = (el: number) => {
+      let inside = -18;
+      let outside = -30;
+      if (firstPart(inside, el) !== "bizjet-glareshield") return Number.NaN;
+      for (let k = 0; k < 30; k += 1) {
+        const mid = (inside + outside) / 2;
+        if (firstPart(mid, el) === "bizjet-glareshield") inside = mid;
+        else outside = mid;
+      }
+      return inside;
+    };
+    const profile: number[] = [];
+    for (let el = top - PIXEL_1080P; el > foot + PIXEL_1080P; el -= PIXEL_1080P) profile.push(outermost(el));
+    // the silhouette down the end, from the lip's top to where it reaches the tip (under that the cove and its fillet)
+    const finite = profile.filter(Number.isFinite);
+    const rows = finite.slice(0, finite.indexOf(Math.min(...finite)) + 1);
+    // a square end holds one azimuth row after row; the round leans out a little every row, and only its tip, where the
+    // quarter-round closes to a point, stands straight for a few rows
+    let straight = 1;
+    let run = 1;
+    for (let k = 1; k < rows.length; k += 1) {
+      run = Math.abs(rows[k]! - rows[k - 1]!) < PIXEL_1080P / 10 ? run + 1 : 1;
+      straight = Math.max(straight, run);
+    }
+    const extent = (rows[0]! - Math.min(...rows)) / PIXEL_1080P;
+    console.info(`the port end's silhouette: ${rows.length} rows, outermost azimuth ${rows[0]!.toFixed(2)} at the top to ${Math.min(...rows).toFixed(2)} (${extent.toFixed(1)} px out); longest straight run ${straight} rows`);
+    expect(rows.length, "rows down the end").toBeGreaterThan(30);
+    expect(extent, "the end leans out, 1080p pixels").toBeGreaterThanOrEqual(15);
+    expect(straight, "the longest run of rows on one column (a tenth of a pixel)").toBeLessThanOrEqual(5);
+  });
+
   it("shows nothing of the glareshield or the board over the lip: the lip is the edge the pilot reads", () => {
     let rays = 0;
-    const halfWidth = Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z)));
+    const halfWidth = deckHalfWidth();
     for (let az = -35.63; az <= 35; az += 1.5) {
-      // only where the lip is: its ends are at the shell's width
+      // only where the straight lip is (its end rounds fall away outboard of it, S4)
       const z = EYE.right + (bizjetPanelFaceX() - EYE.forward) * Math.tan(az / DEG);
       if (Math.abs(z) > halfWidth - 0.01) continue;
       const part = firstPart(az, lipElevation(az) + 0.05);
@@ -1879,7 +1981,7 @@ describe("the Global's side consoles", () => {
     const inboard = facing(new Vector3(0, 0, 1));
     const cove = facing(new Vector3(0, -Math.SQRT1_2, Math.SQRT1_2));
     const planes = [...new Set(inboard.map((k) => vertices[k]!.z.toFixed(4)))].map(Number).sort((a, b) => a - b);
-    const deck = Math.max(...worldVertices(named("bizjet-glareshield")).map((v) => Math.abs(v.z)));
+    const deck = deckHalfWidth();
     expect(planes, "the lip's face flush with the board's end, the face under it 2 cm outboard").toEqual([-(deck + 0.02), -deck].map((z) => Number(z.toFixed(4))));
     expect(cove.length, "the cove's faces").toBeGreaterThan(0);
     for (const k of cove) expect(vertices[k]!.z).toBeGreaterThanOrEqual(-(deck + 0.02) - 1e-4);
