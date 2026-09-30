@@ -1096,3 +1096,49 @@ work) and 7fc2280.
 - The trainer's 70 meshes are bit-identical to before this rebase, and the census is
   identical (bare board 195,128 px).
 - 218 trainer-touching tests pass; tsc and eslint are clean.
+
+## Gate 40 on the merge: two tests my filter did not run
+
+The full Node suite on the merge (Fix-Cockpits 23902de) failed 8 tests in 2 files.
+Both were caused by this branch, and neither file carries the trainer's name, so
+my "trainer-touching" filter never ran them.
+
+**1. `ui.hud-cockpit-layout`** (7 window sizes). The trainer's deck read at the
+compass: (1528, 408) at 1920 x 1080.
+- **The cause:** S7 merged the compass window's ring and its lubber line into
+  `trainer-dial-bezels`. The HUD's footprint (`tests/support/cockpitFootprints.ts`)
+  takes every pixel of a mesh by the MESH's name, and a bezels mesh is the deck.
+  The compass hangs above the deck line, where the 2D HUD is laid out.
+- **The fix:** the ring and the lubber line are now a mesh of their own,
+  `trainer-compass-rim`, on the same rim material, so they look the same and glow
+  the same at night. That is one more draw: cockpit meshes 19 -> 20, inside the
+  pass's 23.
+- `trainer-dial-bezels` is back to its S2b state, bit for bit.
+
+**2. `render.airliner-livery-mesh`** ("changes nothing but the shell's UVs across
+the whole fleet"). The lofts that take a station range were the 747's two and
+`trainer-cowl-standin`.
+- **The cause:** S5 built the cowl stand-in, lip included, with the station range
+  { first shell section, nose - first }. That keeps its u exactly as it was over
+  the shell before the lip. The range only ever enters u, so it was harmless. But
+  it is the 747 livery's shared range, and the fleet test holds it to that
+  airframe alone.
+- **The fix:** the stand-in is lofted with no range, and its u is written after the
+  loft by the same formula. Each vertex takes its section's x, not the buffer's
+  float32 x (which would put 6e-8 where the loft puts 0).
+- The stand-in is bit-identical to what it was, UVs included.
+
+**Checked:**
+- every test that imports the flight renderer, the aircraft or cockpit builders, or
+  the cockpit footprints (73 files, 992 tests) passes;
+- tsc and eslint are clean;
+- mesh by mesh against a0b2c3c, only three trainer meshes changed:
+  - `trainer-dial-bezels` is back to its S2b state;
+  - `trainer-compass-rim` is new;
+  - the cowl stand-in is identical.
+  Every other mesh of every airframe is bit-identical.
+- The trainer's digests are re-pinned on its line: seam 82f775ec, taper 272f8d14.
+
+**The rule, from here:** before an MR, the file filter takes every test that imports
+the flight renderer, the cockpit builders or `cockpitFootprints`, not only the files
+with the airframe's name.

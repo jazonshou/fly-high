@@ -349,7 +349,8 @@ export function trainerYokeWheelPath(side: -1 | 1): { centres: Vector3[]; radii:
  *
  * THE COMPASS hangs on a stalk from the windscreen centre strip's run aft along the crown (`trainerCentreFrameCrownAt`,
  * `trainerShell.ts`), as a 150's does from its windscreen's centre strip: a rounded box just under the glass. Since S7
- * its aft face has a window, ringed in the dials' bezel section, with a lubber line down its middle, and behind it the
+ * its aft face has a window, ringed in the dials' bezel section (a mesh of its own, `trainer-compass-rim`, on their rim
+ * material), with a lubber line down its middle, and behind it the
  * card: a drum turning about the vertical with the heading, its numerals on the display atlas (`drawTrainerCompassCard`).
  * It was a blank box, 185 x 135 px in the first frame. Under the S4 bars it hung from the crown member's underside, 8 mm inside the glass, and
  * its centre sat at +2.85 degrees; the S5 strip, 18 mm through there, stands 7 mm OUTSIDE the glass, so the box is
@@ -1277,15 +1278,24 @@ export function buildTrainerCockpit(
     const fall = TRAINER_COWL_LIP.radius * (1 - Math.cos(turn));
     return { ...nose, x: nose.x + TRAINER_COWL_LIP.radius * Math.sin(turn), yRadius: nose.yRadius - fall, zRadius: nose.zRadius - fall };
   });
-  parts.push(build.loft(
-    "trainer-cowl-standin",
-    [...shellSections, ...lip],
-    24,
-    materials.cowl,
-    root,
-    // u as it was over the shell's own sections, so the paint does not move
-    { minimumX: shellSections[0]!.x, length: nose.x - shellSections[0]!.x },
-  ));
+  const standInSections = [...shellSections, ...lip];
+  const standIn = build.loft("trainer-cowl-standin", standInSections, 24, materials.cowl, root);
+  // ITS u, as it was over the shell's own sections before the lip, so the paint does not move: u = (x - first) / (nose -
+  // first) at every vertex, the lip's running on just past 1. Written here rather than through the loft's station range,
+  // which gives exactly these numbers but is the 747 livery's, and which a fleet test holds to that airframe alone
+  // (`render.airliner-livery-mesh`, gate 40 on the merge). Each vertex's x is its SECTION's, as the loft takes it (the
+  // buffer's float32 x is not), in the loft's order: a ring of 25 a section, then the start cap's centre and the end's.
+  // The buffer is set anew, not changed in place.
+  {
+    const uvs = standIn.getVerticesData(VertexBuffer.UVKind)!;
+    const ring = 24 + 1;
+    const stationOf = [...standInSections.flatMap((section) => Array<number>(ring).fill(section.x)), standInSections[0]!.x, standInSections[standInSections.length - 1]!.x];
+    if (stationOf.length !== uvs.length / 2) throw new RangeError("the cowl stand-in's loft is not the rings and two caps it was");
+    const [first, span] = [shellSections[0]!.x, nose.x - shellSections[0]!.x];
+    stationOf.forEach((x, v) => { uvs[v * 2] = (x - first) / span; });
+    standIn.setVerticesData(VertexBuffer.UVKind, uvs, true);
+  }
+  parts.push(standIn);
 
   // THE DECK AND THE BOARD, two meshes, each a section swept across the cabin from one door frame to the other
   // (`sweptAcross`): the deck the rounded glareshield (`trainerDeckSection`) on its own matte near-black, which reflects
@@ -1474,13 +1484,17 @@ export function buildTrainerCockpit(
       points: [...tunnelFoot, ...bezelRing.points.slice(1)],
       rounds: [{ first: 0, last: 3, centre: { u: rho, a: b.back + rho } }, ...bezelRing.rounds.map((r) => ({ ...r, first: r.first + 3, last: r.last + 3 }))],
     };
-    bezels.push(loopSolid(build, "trainer-compass-bezel", frame, window, compassRing, bezelMaterial, root));
+    // The ring and the lubber line are a mesh of their own on the bezels' rim, NOT merged with the dials' bezels: the
+    // cockpit's footprint (`tests/support/cockpitFootprints.ts`) takes every pixel of a mesh named for bezels as the
+    // deck, and the compass hangs above the deck line, where the 2D HUD is laid out (gate 40 on the merge)
+    const rim: Mesh[] = [loopSolid(build, "trainer-compass-ring", frame, window, compassRing, bezelMaterial, root)];
     // the lubber line: a round rod down the window's middle, 1 mm in front of the card, its ends buried in the ring
     const lubberAt = aft.add(new Vector3(c.drum.recess - 0.001 - c.lubber.width / 2, 0, 0));
     const lubberHalf = w.halfHeight + 0.0015;
-    bezels.push(sweptTube(build, "trainer-compass-lubber",
+    rim.push(sweptTube(build, "trainer-compass-lubber",
       [lubberAt.add(new Vector3(0, -lubberHalf, 0)), lubberAt, lubberAt.add(new Vector3(0, lubberHalf, 0))],
       [c.lubber.width / 2, c.lubber.width / 2, c.lubber.width / 2], 8, bezelMaterial, root));
+    parts.push(build.mergeStatic("trainer-compass-rim", rim, root));
     compassCard = compassCardMesh(build, "trainer-compass-card", aft.add(new Vector3(c.drum.recess + c.drum.radius, 0, 0)),
       slotOf.get("compass")!, atlasSize, materials.instrumentFace, root);
     parts.push(compassCard);
