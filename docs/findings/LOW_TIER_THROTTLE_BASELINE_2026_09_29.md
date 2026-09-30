@@ -228,6 +228,23 @@ tick.**
 - The same defect hits any player whose main thread is slow, throttled or
   not.
 
+## URL seeds and string seeds are different worlds
+
+`readSeedFromUrl` reads `?seed=` as a **base-36 integer**
+(`parseInt(value, 36) >>> 0`), and `parseInt` stops at the first character
+that is not a base-36 digit.
+
+**Consequences:**
+- `?seed=phase1-perf-baseline` builds the world for `phase1` (parsing stops at
+  the hyphen). That is not the capture rig's world, which calls
+  `createWorld("phase1-perf-baseline")` with the string.
+- This baseline's probe runs therefore flew the numeric `phase1` world. That is
+  consistent across all of them, but it is a different landscape from the
+  rig's.
+- Any test or probe that names a place (a lake, a ridge) must compute it on the
+  world the game actually builds from the URL. The P2 frame pair's seed,
+  `?seed=water9`, is world `1953085941`, and it was chosen that way.
+
 ## Instrument corrections, disclosed
 
 1. **The first latency detector was void.** It also read the aircraft's
