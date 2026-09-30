@@ -8,6 +8,7 @@ import {
   drawEicasUpper,
   drawNd,
   drawPfd,
+  drawStandby,
   eicasDialLayout,
   pfdGeometry,
   pfdHorizonOffsetPx,
@@ -47,6 +48,7 @@ const PAGES: readonly (readonly [string, DrawPage])[] = [
   ["nd", drawNd],
   ["eicas-upper", drawEicasUpper],
   ["eicas-lower", drawEicasLower],
+  ["standby", drawStandby],
 ];
 
 function stateWith(overrides: Partial<DisplayState>): DisplayState {
@@ -405,7 +407,7 @@ describe("the atlas", () => {
     { page: "nd", x: W, y: H, w: W, h: H },
     { page: "pfd", x: 2 * W, y: H, w: W, h: H },
   ];
-  const EXPECTED_TEXT: Readonly<Record<DisplaySlot["page"], string>> = { pfd: "415", nd: "HDG", "eicas-upper": "88.0", "eicas-lower": "OIL PRESS", clock: "UTC" };
+  const EXPECTED_TEXT: Readonly<Record<DisplaySlot["page"], string>> = { pfd: "415", nd: "HDG", "eicas-upper": "88.0", "eicas-lower": "OIL PRESS", clock: "UTC", standby: "415" };
 
   it("clips each of six slots to its rectangle and draws its page's text inside it", () => {
     const ctx = createRecordingContext();

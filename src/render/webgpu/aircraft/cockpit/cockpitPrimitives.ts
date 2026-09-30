@@ -901,3 +901,106 @@ export function smoothSheet(
   mesh.refreshBoundingInfo();
   return mesh;
 }
+
+/**
+ * A ROUNDED BOX: a box with every edge and corner rounded on `radius`, the box of `halfExtents` grown by a sphere (the
+ * Minkowski sum), so its flat faces are exactly flat and its rounds exactly round, and each point is shaded with the
+ * sphere's normal there. Built as one closed `smoothSheet` over a latitude-longitude grid of that sphere, each quadrant
+ * sampled to its own edges, so the flat faces are the cells between two quadrants' samples of one normal (the top and
+ * foot: a row at each face's middle). `axes` are the
+ * box's unit axes (x, y, z) in the parent's space; `halfExtents` include the rounds.
+ */
+export function roundedBox(
+  build: AircraftBuildContext,
+  name: string,
+  centre: Vector3,
+  axes: readonly [Vector3, Vector3, Vector3],
+  halfExtents: readonly [number, number, number],
+  radius: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+  steps = 4,
+): Mesh {
+  if (!(radius > 0) || halfExtents.some((h) => !(h >= radius))) throw new RangeError(`roundedBox "${name}": the round must fit the box`);
+  const inner = halfExtents.map((h) => h - radius);
+  // longitude round y (the box's second axis), latitude from -y to +y; each quadrant from its first edge to its last
+  const around: { angle: number; sx: number; sz: number }[] = [];
+  for (let q = 0; q < 4; q += 1) {
+    for (let k = 0; k <= steps; k += 1) {
+      const angle = (q + k / steps) * (Math.PI / 2);
+      around.push({ angle, sx: q === 0 || q === 3 ? 1 : -1, sz: q < 2 ? 1 : -1 });
+    }
+  }
+  // and round again to the first quadrant's first sample: the flat face between the last quadrant and the first
+  around.push({ ...around[0]! });
+  const up: { angle: number; sy: number }[] = [];
+  for (const [sy, from] of [[-1, -Math.PI / 2], [1, 0]] as const) {
+    for (let k = 0; k <= steps; k += 1) up.push({ angle: from + (k / steps) * (Math.PI / 2), sy });
+  }
+  const points: Vector3[][] = [];
+  const normals: Vector3[][] = [];
+  for (const { angle: lat, sy } of up) {
+    const row: Vector3[] = [];
+    const shade: Vector3[] = [];
+    for (const { angle: lon, sx, sz } of around) {
+      const n = [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
+      const local = [sx * inner[0]! + radius * n[0]!, sy * inner[1]! + radius * n[1]!, sz * inner[2]! + radius * n[2]!];
+      row.push(centre.add(axes[0].scale(local[0]!)).add(axes[1].scale(local[1]!)).add(axes[2].scale(local[2]!)));
+      shade.push(axes[0].scale(n[0]!).add(axes[1].scale(n[1]!)).add(axes[2].scale(n[2]!)).normalize());
+    }
+    points.push(row);
+    normals.push(shade);
+  }
+  // the poles are the flat top's and foot's four corners: close each with a row at its middle
+  const middle = (sy: number) => centre.add(axes[1].scale(sy * halfExtents[1]));
+  points.unshift(around.map(() => middle(-1)));
+  normals.unshift(around.map(() => axes[1].scale(-1)));
+  points.push(around.map(() => middle(1)));
+  normals.push(around.map(() => axes[1].scale(1)));
+  return smoothSheet(build, name, points, normals, material, parent);
+}
+
+/**
+ * A ROUNDED CYLINDER standing on `base` along `axis`: `radius` round and `height` tall, its top and foot edges rounded
+ * on `edge`, shaded as its section turns. A lathe of that section (closed, from the foot's centre round to the top's) as
+ * one closed `smoothSheet`, `segments` round the axis.
+ */
+export function roundedCylinder(
+  build: AircraftBuildContext,
+  name: string,
+  base: Vector3,
+  axis: Vector3,
+  radius: number,
+  height: number,
+  edge: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+  segments = 24,
+  steps = 4,
+): Mesh {
+  if (!(edge > 0) || !(radius >= edge) || !(height >= 2 * edge)) throw new RangeError(`roundedCylinder "${name}": the round must fit`);
+  const up = axis.normalizeToNew();
+  const side = Math.abs(up.y) < 0.9 ? new Vector3(0, 1, 0) : new Vector3(1, 0, 0);
+  const u = Vector3.Cross(up, side).normalize();
+  const v = Vector3.Cross(up, u).normalize();
+  // the section in (r, h) with its normal's turn from down (0) round to up (pi): foot centre, foot round, wall, top round, top centre
+  const section: { r: number; h: number; turn: number }[] = [{ r: 0, h: 0, turn: 0 }];
+  for (let k = 0; k <= steps; k += 1) {
+    const a = (k / steps) * (Math.PI / 2);
+    section.push({ r: radius - edge + edge * Math.sin(a), h: edge - edge * Math.cos(a), turn: a });
+  }
+  for (let k = 0; k <= steps; k += 1) {
+    const a = Math.PI / 2 + (k / steps) * (Math.PI / 2);
+    section.push({ r: radius - edge + edge * Math.sin(a), h: height - edge - edge * Math.cos(a), turn: a });
+  }
+  section.push({ r: 0, h: height, turn: Math.PI });
+  const points: Vector3[][] = [];
+  const normals: Vector3[][] = [];
+  for (let j = 0; j <= segments; j += 1) {
+    const phi = (j / segments) * Math.PI * 2;
+    const out = u.scale(Math.cos(phi)).add(v.scale(Math.sin(phi)));
+    points.push(section.map((p) => base.add(out.scale(p.r)).add(up.scale(p.h))));
+    normals.push(section.map((p) => out.scale(Math.sin(p.turn)).add(up.scale(-Math.cos(p.turn))).normalize()));
+  }
+  return smoothSheet(build, name, points, normals, material, parent);
+}

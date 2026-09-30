@@ -40,7 +40,7 @@ const DEG = Math.PI / 180;
 /** Canvas angles run clockwise from 3 o'clock, so 12 o'clock is a quarter turn back. */
 const TWELVE_OCLOCK = -Math.PI / 2;
 
-export type DisplayPage = "pfd" | "nd" | "eicas-upper" | "eicas-lower" | "clock";
+export type DisplayPage = "pfd" | "nd" | "eicas-upper" | "eicas-lower" | "clock" | "standby";
 export type DrawPage = (ctx: DisplayContext2D, w: number, h: number, state: DisplayState) => void;
 
 export interface DisplaySlot {
@@ -430,6 +430,20 @@ export const drawPfd: DrawPage = (ctx, w, h, state) => {
   drawFma(ctx, w, h);
 };
 
+/**
+ * A STANDBY display (the Global's standby cluster, S5): the PFD's attitude, its roll scale and symbol, and its two tapes,
+ * and nothing that flies the aeroplane from it: no vertical speed, no heading strip, no mode annunciations. A second
+ * PFD is what it must not read as.
+ */
+export const drawStandby: DrawPage = (ctx, w, h, state) => {
+  clearPage(ctx, w, h);
+  drawAttitudeBall(ctx, w, h, state);
+  drawRollScale(ctx, w, h, state.bankDeg);
+  drawAircraftSymbol(ctx, w, h);
+  drawAirspeedTape(ctx, w, h, state.airspeedKt);
+  drawAltitudeTape(ctx, w, h, state.altitudeFtMsl);
+};
+
 // ---- the ND ----------------------------------------------------------------------------
 
 /**
@@ -759,6 +773,7 @@ const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
   "eicas-upper": drawEicasUpper,
   "eicas-lower": drawEicasLower,
   clock: (ctx, w, h) => drawClockFace(ctx, w, h),
+  standby: drawStandby,
 };
 
 /**

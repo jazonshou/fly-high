@@ -17,6 +17,7 @@ import {
   BIZJET_DISPLAY_AIRFRAME,
   BIZJET_SCREENS,
   bizjetScreenPlacements,
+  bizjetStandbyPlacement,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import { JET_DISPLAY_AIRFRAME, JET_MFD, jetMfdPlacements } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
@@ -121,7 +122,8 @@ const DECKS: readonly Deck[] = [
     label: "Global",
     layout: BIZJET_DISPLAYS,
     flatMaterial: "bizjet-instrument-face",
-    placements: bizjetScreenPlacements,
+    // the pairs, and the standby on the centre board last (S5): two thirds their size, the same shape
+    placements: () => [...bizjetScreenPlacements(), { name: "standby", centre: bizjetStandbyPlacement().centre }],
     screen: { width: BIZJET_SCREENS.width, height: BIZJET_SCREENS.height },
     airframe: BIZJET_DISPLAY_AIRFRAME,
     bezelsMesh: "bizjet-screen-bezels",
@@ -134,6 +136,8 @@ const DECKS: readonly Deck[] = [
       "port-inboard": "nd",
       "starboard-outboard": "pfd",
       "starboard-inboard": "nd",
+      // the type's standby cluster: attitude and tapes, not a third PFD
+      standby: "standby",
     },
   },
   {
@@ -919,7 +923,10 @@ describe("the atlas's shape, for layouts no aeroplane has yet", () => {
  * from the same instructions.
  */
 describe("the 747's and the Global's atlases, pinned before the slot size became per-deck", () => {
-  const PINNED: Readonly<Record<string, string>> = { "747": "0e7fe4d8:2090", Global: "d7144cad:1263" };
+  // RE-PINNED for the Global by the "feel real" wave's S5: a fifth slot, the standby page, and the five in one row of
+  // five, so the pairs' slots stand at new x in the atlas and the painter makes 312 more calls (1,263 -> 1,575). The
+  // 747's is unchanged.
+  const PINNED: Readonly<Record<string, string>> = { "747": "0e7fe4d8:2090", Global: "ca984a3a:1575" };
   const digest = (layout: DisplayLayout, airframe: DisplayAirframe): string => {
     const context = createRecordingContext();
     const state = displayStateFromVisual(

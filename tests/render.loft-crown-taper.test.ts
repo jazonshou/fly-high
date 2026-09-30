@@ -381,7 +381,11 @@ describe("the loft's crown taper", () => {
       // seal, rounded corners; the lining stands nothing proud of the skin), the seals one new mesh on the glareshield's
       // material, and the pillars' feet filleted onto the sill caps. Checked mesh by mesh against S4: only the Global's
       // interior moves and its seals are new; every other mesh of all four is bit-identical.
-      bizjet: "63382f27",
+      // RE-PINNED for the Global by the "feel real" wave's S5: the side consoles roll their tops into their faces (r 10,
+      // a step outboard of the board's ends) and carry the panel block, its rockers and the tiller; the caps join them on
+      // a second interior instance; a standby display on the centre board. Checked mesh by mesh against S3: only the
+      // Global's cockpit meshes move; every other mesh of all four is bit-identical.
+      bizjet: "bb5a59d1",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
