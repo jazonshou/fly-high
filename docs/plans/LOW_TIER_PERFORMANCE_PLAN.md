@@ -26,6 +26,67 @@ All four are measured on the Cessna 150 and on the 747.
 **Baseline:**
 [`LOW_TIER_THROTTLE_BASELINE_2026_09_29.md`](../findings/LOW_TIER_THROTTLE_BASELINE_2026_09_29.md).
 
+## Status (2026-09-30)
+
+The sections below are the plan as proposed on 2026-09-29. This section
+records what happened. The numbers and their host states are in the baseline
+finding's slot 2, slot 3 and P9 sections.
+
+### What is merged into Fix-Cockpits
+
+| Item | Commit | Result on the device (4×, tier 0) |
+| --- | --- | --- |
+| **P1** control pump on wall time | `e9274d0` | With the same 4 s Shift hold, the Cessna rotates at 15.9 s (was 29.9 s) and flies the climb (it crashed before). Input: Cessna 66 / 81 / 89 ms, 747 56 / 67 / 72 ms (median / p90 / max). |
+| **P2** hydrology generation on its worker | `021c5d8` | No main-thread generation. The 747's worst cruise frame fell from 699 to 325 ms. |
+| **P2b** region water geometry built in the worker | `a35b3c2` | No hydrology frame of 50 ms or more in flight. Worst cruise frame: 747 48.9 ms, Cessna 148 ms (loaded host). |
+| **P3** long-frame attribution in the probe | `1717602` | Named hydrology as every cruise hitch over 250 ms. |
+| **P5, option C** selection without strings | `3fb9fdc` | Bit-identical output. Selection plus corner morphs cost 22–24% less in Node (about 0.8 ms per 4× frame). |
+
+P1 was built differently from the proposal below: fixed 1/120 s steps, as
+many as wall time has elapsed (at most 6 per tick), with a key edge running a
+tick at once.
+
+### What is not merged
+
+- **P9, GPU-work effectiveness feedback in the governor: built on a branch,
+  NOT merged. A defect was found, and the fix is a follow-up.**
+  - Branch: `jazonshou/perf-p9-governor-feedback`.
+  - It was meant to stop the governor shedding GPU levers that cannot help a
+    CPU-bound frame.
+  - The device slot showed it keeps such a step whenever the step is taken in
+    a pacing-bound window and judged in a cpu-bound one: one metric label
+    covers two different signals. See the baseline finding, "P9 quiet-cruise
+    slot".
+  - Leaving it out changes nothing from today's behaviour.
+
+### Against the bar, by the latest measurement of each
+
+| Bar | State | Latest measurement |
+| --- | --- | --- |
+| (1) Cruise fps and p95 | Pass | 71–74 fps, p95 18.5–23.8 ms (slot 2, quiet host). |
+| (1) Cruise, no hitch > 250 ms | Pass on a loaded host | With P2b: 747 worst 48.9 ms, Cessna 148 ms (slot 3). A quiet-host figure is owed. |
+| (2) Take-off | **Not re-measured since P2 and P2b** | Baseline: Cessna max 141 ms (pass); 747 three hitches over 250 ms, max 482 ms (fail, unattributed). |
+| (3) Input ≤ 100 ms | Pass | After P1, slot 2, quiet host: see P1 above. |
+| (4) Load ≤ 20 s | Pass | 9.5–9.7 s at 4× on the dev server (baseline). |
+
+### Follow-ups, none started
+
+1. **P9 label fix.** Give the pacing interval and the `interval − cpu` proxy
+   distinct metric labels, so a pacing step judged in a cpu-bound window is a
+   change of label and is undone and latched.
+   - The P9 branch carries the Node reproduction as an expected-failure test.
+   - Device rule for the re-check: on the fixed arm, every GPU-work step must
+     be followed by an undo.
+2. **The same label in the resolution-step feedback** (older code).
+   Unverified. It needs its own Node reproduction before anything else.
+3. **P2c: attribute the first region's install frame at load.** It costs
+   78–85 ms on the device and 0.5 ms in Node (slot 3). It lands before the
+   start screen, so it counts against the load bar, not the hitch bar.
+4. **Quiet-host fps for P2b.** Slot 3's figures are from a loaded host.
+5. **Take-off re-measured on both airframes** (bar item 2), since nothing has
+   measured it after the hydrology fixes.
+6. **P4's presentation-delay check, and P6, P7 and P8,** as described below.
+
 ## What the baseline changed about the plan
 
 - **The DevTools throttle slows only the main thread.** Chrome refuses the

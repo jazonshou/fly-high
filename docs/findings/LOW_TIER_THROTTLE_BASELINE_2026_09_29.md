@@ -15,6 +15,11 @@ fails too. Two defects found on the way are real bugs at any speed:
 - **Hydrology generation.** River and lake generation runs on the main thread,
   through the client's fallback path.
 
+**Where it stands (2026-09-30):** this page starts with the baseline and then
+records each device slot in order. For what is merged, what is not (P9), and
+what is still owed, see the Status section of
+[`LOW_TIER_PERFORMANCE_PLAN.md`](../plans/LOW_TIER_PERFORMANCE_PLAN.md).
+
 **Evidence:**
 - `docs/evidence/low-tier-throttle-baseline-2026-09-29.json`: a compact
   extract of all 13 reports.
@@ -396,10 +401,108 @@ on the P9 arm, once at 1×, and twice at 4× on the before arm.
   P9's design note (`docs/plans/GOVERNOR_CPU_GPU_CLASSIFICATION_NOTE.md` on
   `jazonshou/perf-p9-governor-feedback`), and every loaded run ended in mode
   `cpu-work`. It is an inference: the probe does not record `render()`'s p95.
-- **P9's device check is owed:** cruise at 4× on a quiet host, both airframes,
-  three runs per arm. Since this slot the probe keeps the whole 1 Hz
-  governor series in every scenario, so the check can show each GPU step being
-  taken and undone.
+- **P9's device check was owed after this slot:** cruise at 4× on a quiet
+  host, both airframes, three runs per arm. Since this slot the probe keeps
+  the whole 1 Hz governor series in every scenario. **It ran later the same
+  day and found a defect: see the next section. P9 is not merged.**
+
+## P9 quiet-cruise slot: a pass on paper that exposed a defect
+
+**P9 is not merged.** It is built on `jazonshou/perf-p9-governor-feedback`.
+This slot showed it does not do what it claims, and the fix is a follow-up.
+
+**Window:** 09:28:45 to 09:40:57, 2026-09-30, plus an interrupted rerun to
+09:45:18.
+
+**Host: semi-quiet.**
+- The PM collected idle acks from every engineer.
+- Load read 2.50 / 6.44 / 6.65 at the start (the 5- and 15-minute figures
+  carry the PM's gate), 3.33 at 09:32, and 7.53 / 4.37 / 4.90 at the end.
+- The 747 ran at 63–65 fps at 4×. Slot 2's quiet host read 71–72 and slot 3's
+  loaded host 51, so this host sat between them.
+
+**The arms** (interleaved before, P9, before, P9, …):
+- **Before:** Fix-Cockpits `2917372`, which is P9's base.
+- **P9:** `5b6c490`.
+
+**Protocol:** slot 2's cruise. 10 s settle, 30 s at 1×, about 5 s of
+diagnostics, throttle on, 10 s settle, 30 s measured.
+
+**Evidence:** `docs/evidence/low-tier-throttle-p9-cruise-2026-09-30.json`.
+
+### The verdict, by rules written before the slot
+
+- **Control:** valid if at least 2 of the 3 before runs take a GPU-work step
+  at 4×. Otherwise the airframe is void.
+- **Pass:** a valid control; every P9 run ends at GPU-work level ≤ 1; the
+  three end levels are within one; no P9 run steps at 1×.
+
+| 747, 4× cruise | Run 1 | Run 2 | Run 3 | fps |
+| --- | --- | --- | --- | --- |
+| Before: GPU-work end level | 0 | 2 | 1 | 64–65 |
+| P9: GPU-work end level | 0 | 1 | 1 | 63–64 |
+
+- **747: PASS as written.** The control is valid (2 of 3), and the P9 arm
+  meets every clause. Every run ended at CPU level 7.
+- **Cessna: incomplete, no verdict.** Only before run 1 exists (it ended at
+  GPU 1, 47 fps).
+  - At 09:40:56 the slot's own GPU-busy guard refused the other five runs.
+    Jason's Firefox had become active (a content process at 100%, the GPU
+    helper at 3–45%), above the guard's 3% limit.
+  - A rerun waited for quiet and started one run at 09:43:37. The session
+    running it stopped before the report was written.
+
+### Why the pass is not trusted
+
+- **P9 never undid a step.** In runs 2 and 3 it took one GPU-work step (at
+  65 s and 63 s) and kept it to the end. Its whole claim is that such a step
+  is undone.
+- **The arms are not told apart:** 0 / 2 / 1 against 0 / 1 / 1.
+- **The rule was too weak.** "Ends at level ≤ 1" passes when the old code
+  happens to take few steps. Here it took at most 2; in slot 2 it took 5–9.
+
+### The defect: one label, two signals
+
+`resolveSignals` (`AdaptiveGovernor.ts`) returns `metric: "interval"` for two
+different quantities:
+- in a **pacing-bound** window, the whole interval (about 23 ms at 4×);
+- in a **cpu-bound** window, the interval minus `render()`'s time
+  (23 − 16 = 7 ms).
+
+P9's "same signal" check compares the labels. So:
+1. A GPU-work step is taken in a pacing-bound window and records 23 ms.
+2. The next window is cpu-bound and reports 7 ms.
+3. The probe reads (23 − 7) / 23 = **70% better**, keeps the step, and never
+   latches. The interval did not move.
+
+**On the device** every GPU-work step, in all seven traces, was a
+`frame-pacing` window followed by a `cpu-work` window.
+
+**In Node** the same three windows (pacing, pacing, cpu-bound, with the
+interval at 23 ms throughout) reproduce it: the step stays at level 1 with no
+latch. The P9 branch carries this as an expected-failure test
+(`it.fails`, "KNOWN DEFECT: undoes a pacing-bound GPU step that is judged in
+a cpu-bound window"), which turns red when the fix lands.
+
+**Why the tests missed it.** Every P9 test fed one constant signal per trace.
+The judging window was therefore never of a different class from the stepping
+window, and that alternation is the case P9 exists for.
+
+### For next time
+
+- **The device rule:** on the fixed arm, every GPU-work step must be followed
+  by an undo. The end level alone is not evidence.
+- **The guard:** Jason's Firefox is allowed background. The guard's Firefox
+  limit must be set from the grant, and a refused run must be retried after a
+  wait, not skipped.
+- **The same label is used by the resolution-step probe** (older code). On
+  tiers where resolution can move, a downscale taken in a pacing-bound window
+  could be kept the same way. That is unverified: it needs its own Node
+  reproduction first.
+- **What leaving P9 out costs:** nothing changes from today. Under a CPU bind
+  the GPU-work ladder sometimes sheds levers that cannot help (0–2 levels in
+  this slot, 5–9 in slot 2). The bar's failures were hitches and input
+  latency, and those fixes are merged.
 
 ## URL seeds and string seeds are different worlds
 
