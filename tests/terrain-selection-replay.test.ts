@@ -29,7 +29,12 @@ import type { WorldPageAddress } from "../src/render/webgpu/world/pageKey";
  * finest). Tiers 0 and 1, whose budgets, thresholds and finest levels differ.
  */
 
-const PIXELS_PER_METER = 1_080 / (2 * Math.tan((60 * Math.PI) / 360));
+/**
+ * 1,080 px over a 60 degree vertical field: 1080 / (2 tan 30). Written as the
+ * number, not computed: see `takeoff` for why this file calls no transcendental
+ * function to build its inputs.
+ */
+const PIXELS_PER_METER = 935.3074360871938;
 const COARSEST_LEVEL = 9;
 const FRAMES = 360;
 const FRAME_SECONDS = 1 / 50;
@@ -66,18 +71,31 @@ function cruise(frame: number): Pose {
   return [1_234 + t * 60, 914, -777 + t * 12];
 }
 
-/** Ground roll from rest, lift-off at 30 m/s, then a climbing right turn. */
+/**
+ * Ground roll from rest, lift-off at 30 m/s, then a climbing right turn.
+ *
+ * EXACT ARITHMETIC ONLY (+, -, *, /): the turn's sine and versine are Taylor
+ * polynomials, not `Math.sin` and `Math.cos`, and the roll is a product, not
+ * `**`. ECMAScript does not require the transcendental functions to round the
+ * same way on every machine, and they do not: the first take-off pins, recorded
+ * on an arm64 Mac, failed on the x64 Linux CI runner in all four take-off cases
+ * and no cruise case, with every node count equal. The path is this test's
+ * INPUT, so it has to be the same numbers everywhere; the selector itself uses
+ * nothing but exact operations. The heading stays under 0.44 rad over the
+ * replay, where these polynomials are within 2e-8 of the functions, which is
+ * neither here nor there: any climbing turn would do.
+ */
 function takeoff(frame: number): Pose {
   const t = frame * FRAME_SECONDS * 4;
-  const rollX = 0.5 * 1.5 * Math.min(t, 20) ** 2;
+  const roll = Math.min(t, 20);
+  const rollX = 0.75 * roll * roll;
   if (t <= 20) return [3_000 + rollX, 2, 500];
   const air = t - 20;
   const heading = 0.05 * air;
-  return [
-    3_000 + rollX + (30 / 0.05) * Math.sin(heading),
-    2 + 5 * air,
-    500 + (30 / 0.05) * (1 - Math.cos(heading)),
-  ];
+  const h2 = heading * heading;
+  const sine = heading * (1 - (h2 / 6) * (1 - h2 / 20));
+  const versine = (h2 / 2) * (1 - (h2 / 12) * (1 - h2 / 30));
+  return [3_000 + rollX + 600 * sine, 2 + 5 * air, 500 + 600 * versine];
 }
 
 function replayDigest(seed: number, path: (frame: number) => Pose, tier: 0 | 1): { digest: string; nodes: number } {
@@ -125,16 +143,22 @@ function replayDigest(seed: number, path: (frame: number) => Pose, tier: 0 | 1):
  * Recorded on the pre-refactor selector. A change here is a change to what
  * the terrain draws: it must be a decision, re-measured on the rig, never a
  * digest update to make this pass.
+ *
+ * The four take-off digests were re-recorded on 2026-09-30 when the take-off
+ * PATH lost its `Math.sin` and `Math.cos` (see `takeoff`): on the same
+ * pre-refactor selector (this file run in a worktree at 7a6e75a, where the
+ * four cruise digests still reproduced as the control), not on the code under
+ * test. The node counts did not move.
  */
 const PINNED: Record<string, { digest: string; nodes: number }> = {
   "seed 7 cruise tier 0": { digest: "6f15dcd9034222911ffea8fd", nodes: 80326 },
-  "seed 7 takeoff tier 0": { digest: "4a3739e1541ec7db6a14b4b5", nodes: 79920 },
+  "seed 7 takeoff tier 0": { digest: "b13384e956224c8bce9310b2", nodes: 79920 },
   "seed 7 cruise tier 1": { digest: "bb7ed0aa960ad2fd93ab86bb", nodes: 114964 },
-  "seed 7 takeoff tier 1": { digest: "680123933b931494fbc83052", nodes: 114691 },
+  "seed 7 takeoff tier 1": { digest: "51cef809c6bd5b845247204b", nodes: 114691 },
   "seed 1234567 cruise tier 0": { digest: "f89bda051310d459ded7f258", nodes: 63394 },
-  "seed 1234567 takeoff tier 0": { digest: "dd38b354222bf7b51f94c6e2", nodes: 57208 },
+  "seed 1234567 takeoff tier 0": { digest: "bea0c83f8db965f7ad0455e1", nodes: 57208 },
   "seed 1234567 cruise tier 1": { digest: "565d78d9408d8eafb59d5997", nodes: 85801 },
-  "seed 1234567 takeoff tier 1": { digest: "08067cac8ba1fd9b4a561da8", nodes: 75649 },
+  "seed 1234567 takeoff tier 1": { digest: "ecd4420129be884963d59c59", nodes: 75649 },
 };
 
 describe("CDLOD selection replay (bit-identity pin for the per-frame selector)", () => {

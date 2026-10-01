@@ -20,12 +20,15 @@ export default defineConfig({
     passWithNoTests: false,
     reporters: ["default"],
     // A timeout catches a hung test; it is not a performance budget. Vitest's
-    // 5 s default is one, in effect: the heaviest deterministic sweeps here run
-    // ~2.6 s locally, and shared CI runners are roughly 3x slower, so they
-    // cross 5 s on hardware speed alone. Raising it costs nothing — a genuinely
-    // hung test never finishes — and stops the suite failing by machine.
-    // Sweeps needing more than this set their own (see tests/world.test.ts).
-    testTimeout: 30_000,
+    // 5 s default is one, in effect, and so was the 30 s this stood at until
+    // 2026-09-30: the cockpit ray-grid tests run 11 to 23 s each inside the
+    // full suite on the M2 Pro, shared CI runners are two to three times
+    // slower, and three of them crossed 30 s there on hardware speed alone
+    // (31.8 s for one that takes 15.7 s here). Raising it costs nothing — a
+    // genuinely hung test never finishes — and stops the suite failing by
+    // machine. Sweeps needing more than this set their own (see
+    // tests/world.test.ts).
+    testTimeout: 120_000,
   },
 });
 
