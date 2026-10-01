@@ -1,0 +1,746 @@
+{
+ "note": "P9 quiet-cruise slot, 2026-09-30 09:28:45-09:40:57 (plus an interrupted rerun 09:42:16-09:45:18). Tier 0, 1920x1080, 4x Chrome CPU throttle (main thread only), cruise scenario (10 s settle, 30 s at 1x, ~5 s diagnostics, throttle on, 10 s settle, 30 s measured). Arms interleaved before/P9. Before arm = Fix-Cockpits 2917372 (P9's base); P9 arm = jazonshou/perf-p9-governor-feedback 5b6c490 (NOT merged). Probe: scripts/throttle-probe.mts as merged at 2917372. Host SEMI-QUIET: idle acks from every engineer and load 2.5 at the start, but the 747 read 63-65 fps at 4x against slot 2's quiet 71-72 and slot 3's loaded 51, and Jason's Firefox became active at about 09:40.",
+ "verdictRulesWrittenBeforeTheSlot": {
+  "control": "valid if at least 2 of the 3 before runs take a GPU-work step at 4x, else VOID",
+  "pass": "valid control AND every P9 run ends at GPU-work level <= 1 AND the three P9 end levels are within one AND no P9 run steps any ladder in its 1x window"
+ },
+ "hostLog": [
+  "-- host start 09:28:45: 2.50 6.44 6.65",
+  "      %CPU   PID COMM",
+  "      45.1  4840 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService",
+  "      44.4   396 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+  "      24.6 35664 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)",
+  "      17.5 35646 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper",
+  "      13.7  4842 /usr/libexec/ReportMemoryException",
+  "       7.0  4841 /System/Library/CoreServices/ReportCrash",
+  "       5.9  4703 /Users/jasonzhou/Library/Application Support/Claude/claude-code/2.1.284/claude.app/Contents/MacOS/claude",
+  "       5.0   403 /usr/libexec/trustd",
+  "-- host end 09:40:57: 7.53 4.37 4.90",
+  "      %CPU   PID COMM",
+  "      40.9   396 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+  "      34.2 32869 /Applications/Firefox.app/Contents/MacOS/firefox",
+  "      21.5 35664 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)",
+  "      20.7 84420 /Users/jasonzhou/Library/Application Support/Claude/claude-code/2.1.284/claude.app/Contents/MacOS/claude",
+  "      18.2  4634 /usr/libexec/sysmond",
+  "      16.3  4112 /usr/libexec/spotlightknowledged.updater",
+  "      10.9  4163 /usr/libexec/duetexpertd",
+  "       9.1   391 /usr/libexec/corebrightnessd",
+  "== cessna rerun start 09:42:16"
+ ],
+ "runs": {
+  "before-airliner-1": {
+   "capturedAtIso": "2026-09-30T16:28:53.663Z",
+   "samples": 90,
+   "endGpuL": 0,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 0,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 64,
+   "p95MsAt4x": 25,
+   "maxMsAt4x": 58.9,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "balanced"
+    },
+    {
+     "atS": 3,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 53,
+     "gpuL": 0,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 57,
+     "gpuL": 0,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 61,
+     "gpuL": 0,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 64,
+     "gpuL": 0,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 68,
+     "gpuL": 0,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 72,
+     "gpuL": 0,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  },
+  "before-airliner-2": {
+   "capturedAtIso": "2026-09-30T16:32:21.782Z",
+   "samples": 90,
+   "endGpuL": 2,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 2,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 65,
+   "p95MsAt4x": 25.1,
+   "maxMsAt4x": 41.6,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 1,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "balanced"
+    },
+    {
+     "atS": 2,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 53,
+     "gpuL": 0,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 57,
+     "gpuL": 0,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 61,
+     "gpuL": 1,
+     "cpuL": 3,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 64,
+     "gpuL": 1,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 66,
+     "gpuL": 1,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 70,
+     "gpuL": 1,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 73,
+     "gpuL": 2,
+     "cpuL": 5,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 75,
+     "gpuL": 2,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 77,
+     "gpuL": 2,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 81,
+     "gpuL": 2,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  },
+  "before-airliner-3": {
+   "capturedAtIso": "2026-09-30T16:35:49.575Z",
+   "samples": 90,
+   "endGpuL": 1,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 1,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 64,
+   "p95MsAt4x": 25.2,
+   "maxMsAt4x": 35,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 1,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "balanced"
+    },
+    {
+     "atS": 3,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 53,
+     "gpuL": 0,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 57,
+     "gpuL": 0,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 61,
+     "gpuL": 0,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 65,
+     "gpuL": 0,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 69,
+     "gpuL": 0,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 72,
+     "gpuL": 0,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 74,
+     "gpuL": 1,
+     "cpuL": 7,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 76,
+     "gpuL": 1,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  },
+  "before-trainer-1": {
+   "capturedAtIso": "2026-09-30T16:39:18.632Z",
+   "samples": 90,
+   "endGpuL": 1,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 1,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 47,
+   "p95MsAt4x": 25.9,
+   "maxMsAt4x": 174.6,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 50,
+     "gpuL": 1,
+     "cpuL": 0,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 51,
+     "gpuL": 1,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 54,
+     "gpuL": 1,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 58,
+     "gpuL": 1,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 63,
+     "gpuL": 1,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 66,
+     "gpuL": 1,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 70,
+     "gpuL": 1,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 75,
+     "gpuL": 1,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 81,
+     "gpuL": 1,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  },
+  "p9-airliner-1": {
+   "capturedAtIso": "2026-09-30T16:30:37.720Z",
+   "samples": 90,
+   "endGpuL": 0,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 0,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 63,
+   "p95MsAt4x": 25.1,
+   "maxMsAt4x": 56.5,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 1,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "balanced"
+    },
+    {
+     "atS": 3,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 52,
+     "gpuL": 0,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 57,
+     "gpuL": 0,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 61,
+     "gpuL": 0,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 65,
+     "gpuL": 0,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 68,
+     "gpuL": 0,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 72,
+     "gpuL": 0,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  },
+  "p9-airliner-2": {
+   "capturedAtIso": "2026-09-30T16:34:05.692Z",
+   "samples": 90,
+   "endGpuL": 1,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 1,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 64,
+   "p95MsAt4x": 25.1,
+   "maxMsAt4x": 41.6,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 1,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "balanced"
+    },
+    {
+     "atS": 3,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 53,
+     "gpuL": 0,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 57,
+     "gpuL": 0,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 61,
+     "gpuL": 0,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 65,
+     "gpuL": 1,
+     "cpuL": 4,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 66,
+     "gpuL": 1,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 68,
+     "gpuL": 1,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 72,
+     "gpuL": 1,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 74,
+     "gpuL": 1,
+     "cpuL": 6,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 76,
+     "gpuL": 1,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 77,
+     "gpuL": 1,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  },
+  "p9-airliner-3": {
+   "capturedAtIso": "2026-09-30T16:37:33.928Z",
+   "samples": 90,
+   "endGpuL": 1,
+   "endCpuL": 7,
+   "gpuStepsUpAt4x": 1,
+   "gpuStepsUndoneAt4x": 0,
+   "fpsMedianAt4x": 63,
+   "p95MsAt4x": 25.7,
+   "maxMsAt4x": 43.4,
+   "fpsMedianAt1x": 120,
+   "path": [
+    {
+     "atS": 0,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 1,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "balanced"
+    },
+    {
+     "atS": 3,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "holding"
+    },
+    {
+     "atS": 46,
+     "gpuL": 0,
+     "cpuL": 0,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 48,
+     "gpuL": 0,
+     "cpuL": 1,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 52,
+     "gpuL": 0,
+     "cpuL": 2,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 57,
+     "gpuL": 0,
+     "cpuL": 3,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 61,
+     "gpuL": 0,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 63,
+     "gpuL": 1,
+     "cpuL": 4,
+     "mode": "frame-pacing"
+    },
+    {
+     "atS": 65,
+     "gpuL": 1,
+     "cpuL": 4,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 67,
+     "gpuL": 1,
+     "cpuL": 5,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 70,
+     "gpuL": 1,
+     "cpuL": 6,
+     "mode": "cpu-work"
+    },
+    {
+     "atS": 74,
+     "gpuL": 1,
+     "cpuL": 7,
+     "mode": "cpu-work"
+    }
+   ]
+  }
+ },
+ "verdict": {
+  "airliner": {
+   "verdict": "PASS by the rule as written",
+   "controlBeforeRunsThatSteppedGpu": "2 of 3",
+   "beforeEndGpuLevels": [
+    0,
+    2,
+    1
+   ],
+   "p9EndGpuLevels": [
+    0,
+    1,
+    1
+   ],
+   "p9StepsTaken": 2,
+   "p9StepsUndone": 0,
+   "caveat": "The rule was too weak. P9 took a GPU step in two runs and undid neither; the arms are not told apart."
+  },
+  "trainer": {
+   "verdict": "INCOMPLETE",
+   "runsCompleted": "1 of 6 (before run 1: end GPU 1)",
+   "why": "At 09:40:56 the slot's own GPU-busy guard refused the other five runs: Jason's Firefox became active (a content process at 100%, GPU helper 3-45%), above the guard's 3% limit. A rerun waited for quiet and started p9-trainer-1 at 09:43:37; the session running it stopped at 09:45:18 before the report was written. Its console line read 52 fps / p95 26 ms / max 224 ms at 4x; no governor series survives."
+  }
+ },
+ "defect": {
+  "summary": "resolveSignals labels two different quantities metric 'interval': the whole interval in a pacing-bound window, and interval - cpu in a cpu-bound (or proxy gpu-bound) window. A GPU-work step taken in the first and judged in the second passes the same-metric check and reads as an improvement that did not happen, so the step is kept and never latched.",
+  "onDevice": "In all seven traces every GPU-work step was taken in a frame-pacing window and the next window was cpu-work.",
+  "nodeReproduction": {
+   "config": "tier 0 (low + performance)",
+   "signals": {
+    "pacing": {
+     "gpuP95Ms": null,
+     "cpuP95Ms": 14,
+     "intervalP95Ms": 23
+    },
+    "cpuBound": {
+     "gpuP95Ms": null,
+     "cpuP95Ms": 16,
+     "intervalP95Ms": 23
+    }
+   },
+   "trace": [
+    {
+     "window": "pacing",
+     "mode": "frame-pacing",
+     "gpuL": 0,
+     "latched": false,
+     "probe": null
+    },
+    {
+     "window": "pacing",
+     "mode": "frame-pacing",
+     "gpuL": 1,
+     "latched": false,
+     "probe": {
+      "preStepGpuP95Ms": 23,
+      "preStepLevel": 0,
+      "metric": "interval"
+     }
+    },
+    {
+     "window": "cpuBound",
+     "mode": "cpu-work",
+     "gpuL": 1,
+     "latched": false,
+     "probe": null
+    },
+    {
+     "window": "cpuBound",
+     "mode": "cpu-work",
+     "gpuL": 1,
+     "cpuL": 1,
+     "latched": false,
+     "probe": null
+    }
+   ],
+   "readsAs": "(23 - 7) / 23 = 70% improvement; the interval was 23 ms in every window",
+   "regressionTest": "tests/render.webgpu-governor.test.ts on the P9 branch (efc7ca0): it.fails 'KNOWN DEFECT: undoes a pacing-bound GPU step that is judged in a cpu-bound window'"
+  },
+  "whyTheTestsMissedIt": "Every P9 test fed one constant signal per trace, so the judging window was never of a different class from the stepping window.",
+  "strongerDeviceRule": "On the fixed arm, every GPU-work step must be followed by an undo."
+ }
+}

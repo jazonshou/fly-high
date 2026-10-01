@@ -1,6 +1,19 @@
-# CDLOD node selection per frame — design note (P5, no code yet)
+# CDLOD node selection per frame — design note (P5)
 
-**Status:** a proposal for the PM, 2026-09-29. Nothing is implemented.
+**Status (2026-09-30):** option C is implemented and merged (`3fb9fdc`).
+Options A and B are not started.
+- **What C did:** numeric keys in place of per-candidate strings in the
+  selector, the corner-morph pass and the clipmap's residency lookup.
+- **Output:** bit-identical. `tests/terrain-selection-replay.test.ts` pins 8
+  digests (two seeds, cruise and take-off, tiers 0 and 1), recorded before the
+  change.
+- **Measured in Node** (old and new interleaved in one process): select plus
+  corner morphs 0.89–0.94 → 0.69–0.72 ms per frame at tier 0 (22–24%, about
+  0.8 ms per 4× frame), and 1.34 → 1.02 ms at tier 1.
+- **Not done from C's list below:** reusing the candidate map, heap and sets
+  across frames, and skipping unchanged corner morphs.
+
+The rest of this note is the proposal as written on 2026-09-29.
 
 **Parent documents:**
 - [`LOW_TIER_PERFORMANCE_PLAN.md`](LOW_TIER_PERFORMANCE_PLAN.md) (item P5)
