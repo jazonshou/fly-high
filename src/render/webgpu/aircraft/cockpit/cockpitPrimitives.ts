@@ -552,6 +552,12 @@ export interface SweptSection {
  * to. The section's hard corners (points on no round) keep one normal a face. `tangent`, with it: the sweep's own
  * direction at a station (a curve's, where the stations only sample it); each round's normals there are made square
  * to it, so a sweep that leaves a station level is shaded level there, not as its first wall's chord.
+ *
+ * THE RADIAL MADE SQUARE TO THE RUN IS EXACT ONLY FOR A SECTION SQUARE TO ITS PATH (a tube). Where `place` stands the
+ * sections in a fixed plane while the path climbs across it (the F-16's rail end, its sections in y-z on a 45 degree S),
+ * the true normal at a round's point of radial (ny, nz) is (-(ny dcy + nz dcz), ny, nz), dcy and dcz the round
+ * centre's rates along the path's axis; the squared radial leans up to 24 degrees off it there. The F-16 kit corrects
+ * its sheared sweeps' rounds after building (`shearRoundNormals` in jetCockpit.ts).
  */
 export function sweptSolid(
   build: AircraftBuildContext,
@@ -830,4 +836,438 @@ export function buildAttitudeBall(
   const bar = build.box(`${spec.prefix}-pitch-bar`, spec.thickness, spec.barHeight, spec.barLength, white, pivot);
   bar.position.set(-(spec.thickness / 2 + spec.barOffset + spec.thickness / 2), 0, 0);
   return { pivot, sky: halves[0]!, ground: halves[1]!, bar, parts: [halves[0]!, halves[1]!, bar] };
+}
+
+/**
+ * A SMOOTH SHEET: an open, one-sided surface through a grid of points (`points[row][column]`), shaded with the normals
+ * GIVEN at each point. The vertices are shared, so the shading runs on across the rows with no break. It is drawn on the
+ * side those normals face: each triangle is wound by `solidPlate`'s rule (a drawn face's cross product points against
+ * the outward normal) against the mean of its corners' normals.
+ *
+ * NO RIM AND NO BACK. It is for a surface whose back is enclosed and never seen: a fillet in an inside corner. A closed
+ * slab's rim there lies ON the surfaces the fillet is tangent to, and trades pixels with them along the tangent line. UVs
+ * are the grid's 0..1.
+ */
+export function smoothSheet(
+  build: AircraftBuildContext,
+  name: string,
+  points: readonly (readonly Vector3[])[],
+  normals: readonly (readonly Vector3[])[],
+  material: PBRMaterial,
+  parent: TransformNode,
+): Mesh {
+  const rows = points.length;
+  const columns = points[0]?.length ?? 0;
+  if (rows < 2 || columns < 2) throw new RangeError(`smoothSheet "${name}": needs a grid of at least 2 x 2`);
+  if (normals.length !== rows || [...points, ...normals].some((row) => row.length !== columns)) {
+    throw new RangeError(`smoothSheet "${name}": the points and the normals must be the same rectangular grid`);
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const positions: number[] = [];
+  const shading: number[] = [];
+  const uvs: number[] = [];
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const p = points[row]![column]!;
+      const n = normals[row]![column]!.normalizeToNew();
+      positions.push(p.x, p.y, p.z);
+      shading.push(n.x, n.y, n.z);
+      uvs.push(column / (columns - 1), row / (rows - 1));
+    }
+  }
+  const at = (row: number, column: number) => row * columns + column;
+  const indices: number[] = [];
+  const corner = (i: number) => new Vector3(positions[i * 3]!, positions[i * 3 + 1]!, positions[i * 3 + 2]!);
+  const normalAt = (i: number) => new Vector3(shading[i * 3]!, shading[i * 3 + 1]!, shading[i * 3 + 2]!);
+  for (let row = 0; row + 1 < rows; row += 1) {
+    for (let column = 0; column + 1 < columns; column += 1) {
+      const quad = [at(row, column), at(row, column + 1), at(row + 1, column + 1), at(row + 1, column)] as const;
+      for (const [a, b, c] of [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]] as const) {
+        const cross = Vector3.Cross(corner(b).subtract(corner(a)), corner(c).subtract(corner(a)));
+        if (cross.length() < 1e-14) continue;
+        const outward = normalAt(a).add(normalAt(b)).add(normalAt(c));
+        if (Vector3.Dot(cross, outward) > 0) indices.push(a, c, b);
+        else indices.push(a, b, c);
+      }
+    }
+  }
+  if (indices.length === 0) throw new RangeError(`smoothSheet "${name}": no cell has any area`);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = shading;
+  data.uvs = uvs;
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
+}
+
+/**
+ * A ROUNDED BOX: a box with every edge and corner rounded on `radius`, the box of `halfExtents` grown by a sphere (the
+ * Minkowski sum), so its flat faces are exactly flat and its rounds exactly round, and each point is shaded with the
+ * sphere's normal there. Built as one closed `smoothSheet` over a latitude-longitude grid of that sphere, each quadrant
+ * sampled to its own edges, so the flat faces are the cells between two quadrants' samples of one normal (the top and
+ * foot: a row at each face's middle). `axes` are the
+ * box's unit axes (x, y, z) in the parent's space; `halfExtents` include the rounds.
+ */
+export function roundedBox(
+  build: AircraftBuildContext,
+  name: string,
+  centre: Vector3,
+  axes: readonly [Vector3, Vector3, Vector3],
+  halfExtents: readonly [number, number, number],
+  radius: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+  steps = 4,
+): Mesh {
+  if (!(radius > 0) || halfExtents.some((h) => !(h >= radius))) throw new RangeError(`roundedBox "${name}": the round must fit the box`);
+  const inner = halfExtents.map((h) => h - radius);
+  // longitude round y (the box's second axis), latitude from -y to +y; each quadrant from its first edge to its last
+  const around: { angle: number; sx: number; sz: number }[] = [];
+  for (let q = 0; q < 4; q += 1) {
+    for (let k = 0; k <= steps; k += 1) {
+      const angle = (q + k / steps) * (Math.PI / 2);
+      around.push({ angle, sx: q === 0 || q === 3 ? 1 : -1, sz: q < 2 ? 1 : -1 });
+    }
+  }
+  // and round again to the first quadrant's first sample: the flat face between the last quadrant and the first
+  around.push({ ...around[0]! });
+  const up: { angle: number; sy: number }[] = [];
+  for (const [sy, from] of [[-1, -Math.PI / 2], [1, 0]] as const) {
+    for (let k = 0; k <= steps; k += 1) up.push({ angle: from + (k / steps) * (Math.PI / 2), sy });
+  }
+  const points: Vector3[][] = [];
+  const normals: Vector3[][] = [];
+  for (const { angle: lat, sy } of up) {
+    const row: Vector3[] = [];
+    const shade: Vector3[] = [];
+    for (const { angle: lon, sx, sz } of around) {
+      const n = [Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon)];
+      const local = [sx * inner[0]! + radius * n[0]!, sy * inner[1]! + radius * n[1]!, sz * inner[2]! + radius * n[2]!];
+      row.push(centre.add(axes[0].scale(local[0]!)).add(axes[1].scale(local[1]!)).add(axes[2].scale(local[2]!)));
+      shade.push(axes[0].scale(n[0]!).add(axes[1].scale(n[1]!)).add(axes[2].scale(n[2]!)).normalize());
+    }
+    points.push(row);
+    normals.push(shade);
+  }
+  // the poles are the flat top's and foot's four corners: close each with a row at its middle
+  const middle = (sy: number) => centre.add(axes[1].scale(sy * halfExtents[1]));
+  points.unshift(around.map(() => middle(-1)));
+  normals.unshift(around.map(() => axes[1].scale(-1)));
+  points.push(around.map(() => middle(1)));
+  normals.push(around.map(() => axes[1].scale(1)));
+  return smoothSheet(build, name, points, normals, material, parent);
+}
+
+/**
+ * A ROUNDED CYLINDER standing on `base` along `axis`: `radius` round and `height` tall, its top and foot edges rounded
+ * on `edge`, shaded as its section turns. A lathe of that section (closed, from the foot's centre round to the top's) as
+ * one closed `smoothSheet`, `segments` round the axis.
+ */
+export function roundedCylinder(
+  build: AircraftBuildContext,
+  name: string,
+  base: Vector3,
+  axis: Vector3,
+  radius: number,
+  height: number,
+  edge: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+  segments = 24,
+  steps = 4,
+): Mesh {
+  if (!(edge > 0) || !(radius >= edge) || !(height >= 2 * edge)) throw new RangeError(`roundedCylinder "${name}": the round must fit`);
+  const up = axis.normalizeToNew();
+  const side = Math.abs(up.y) < 0.9 ? new Vector3(0, 1, 0) : new Vector3(1, 0, 0);
+  const u = Vector3.Cross(up, side).normalize();
+  const v = Vector3.Cross(up, u).normalize();
+  // the section in (r, h) with its normal's turn from down (0) round to up (pi): foot centre, foot round, wall, top round, top centre
+  const section: { r: number; h: number; turn: number }[] = [{ r: 0, h: 0, turn: 0 }];
+  for (let k = 0; k <= steps; k += 1) {
+    const a = (k / steps) * (Math.PI / 2);
+    section.push({ r: radius - edge + edge * Math.sin(a), h: edge - edge * Math.cos(a), turn: a });
+  }
+  for (let k = 0; k <= steps; k += 1) {
+    const a = Math.PI / 2 + (k / steps) * (Math.PI / 2);
+    section.push({ r: radius - edge + edge * Math.sin(a), h: height - edge - edge * Math.cos(a), turn: a });
+  }
+  section.push({ r: 0, h: height, turn: Math.PI });
+  const points: Vector3[][] = [];
+  const normals: Vector3[][] = [];
+  for (let j = 0; j <= segments; j += 1) {
+    const phi = (j / segments) * Math.PI * 2;
+    const out = u.scale(Math.cos(phi)).add(v.scale(Math.sin(phi)));
+    points.push(section.map((p) => base.add(out.scale(p.r)).add(up.scale(p.h))));
+    normals.push(section.map((p) => out.scale(Math.sin(p.turn)).add(up.scale(-Math.cos(p.turn))).normalize()));
+  }
+  return smoothSheet(build, name, points, normals, material, parent);
+}
+
+/**
+ * A SWEPT TUBE: a round section of `radii[i]` about each point `centres[i]` of a centreline that may turn, and a flat
+ * cap at each end. For a member whose section has to TURN with it (a pillar rising along the glass and running aft
+ * into the roof) where `sweptSolid`, whose section keeps one plane (`across`), cannot follow.
+ *
+ * The rings are carried by ROTATION-MINIMISING frames (double reflection, Wang et al. 2008), so they do not twist
+ * about the centreline and the walls between them stay square. Wound as `solidPlate` winds (a drawn face's cross
+ * product points INTO the solid). Shaded as `sweptSolid` shades a round: every wall vertex takes its ring's radial
+ * normal, tilted along the centreline by the taper, so neighbouring chords share one normal round the tube and along
+ * it: no chord bands, and no facet line where the centreline bends. The caps are flat.
+ *
+ * `halfDepths`: an ELLIPTICAL section, `radii[i]` along the first frame normal (the one square to the centreline and
+ * to the world's up, or its right where the centreline starts vertical) and `halfDepths[i]` across it: a flattened strip
+ * rather than a round bar, shaded on the ellipse's own normals.
+ */
+export function sweptTube(
+  build: AircraftBuildContext,
+  name: string,
+  centres: readonly Vector3[],
+  radii: readonly number[],
+  segments: number,
+  material: PBRMaterial,
+  parent: TransformNode,
+  options: { readonly halfDepths?: readonly number[] } = {},
+): Mesh {
+  const n = centres.length;
+  if (n < 2 || radii.length !== n || segments < 3) throw new RangeError(`sweptTube "${name}": needs two centres or more, a radius each and three segments or more`);
+  const depths = options.halfDepths ?? radii;
+  if (depths.length !== n) throw new RangeError(`sweptTube "${name}": needs a half-depth a centre`);
+  const tangents = centres.map((_, i) => centres[Math.min(n - 1, i + 1)]!.subtract(centres[Math.max(0, i - 1)]!).normalize());
+  const first = tangents[0]!;
+  const frames: Vector3[] = [Vector3.Cross(first, Math.abs(first.y) < 0.9 ? Vector3.Up() : Vector3.Right()).normalize()];
+  for (let i = 0; i + 1 < n; i += 1) {
+    const r = frames[i]!;
+    const t = tangents[i]!;
+    const v1 = centres[i + 1]!.subtract(centres[i]!);
+    const c1 = Vector3.Dot(v1, v1);
+    const rL = r.subtract(v1.scale((2 / c1) * Vector3.Dot(v1, r)));
+    const tL = t.subtract(v1.scale((2 / c1) * Vector3.Dot(v1, t)));
+    const v2 = tangents[i + 1]!.subtract(tL);
+    const c2 = Vector3.Dot(v2, v2);
+    frames.push((c2 < 1e-12 ? rL : rL.subtract(v2.scale((2 / c2) * Vector3.Dot(v2, rL)))).normalize());
+  }
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  const axes = (i: number) => ({ normal: frames[i]!, binormal: Vector3.Cross(tangents[i]!, frames[i]!) });
+  /** A section point's offset from its centre (on the ellipse), and the ellipse's own outward direction there. */
+  const ring = (i: number, k: number) => {
+    const a = (k / segments) * 2 * Math.PI;
+    const { normal, binormal } = axes(i);
+    return {
+      offset: normal.scale(radii[i]! * Math.cos(a)).add(binormal.scale(depths[i]! * Math.sin(a))),
+      out: normal.scale(Math.cos(a) / radii[i]!).add(binormal.scale(Math.sin(a) / depths[i]!)).normalize(),
+    };
+  };
+  for (let i = 0; i < n; i += 1) {
+    // the taper: the wall leans in by the section's fall along the centreline, so its normal leans forward as much
+    const [lo, hi] = [Math.max(0, i - 1), Math.min(n - 1, i + 1)];
+    const run = Vector3.Distance(centres[lo]!, centres[hi]!);
+    for (let k = 0; k < segments; k += 1) {
+      const { offset, out } = ring(i, k);
+      const fall = (ring(lo, k).offset.length() - ring(hi, k).offset.length()) / run;
+      const p = centres[i]!.add(offset);
+      const shade = out.add(tangents[i]!.scale(fall)).normalize();
+      positions.push(p.x, p.y, p.z);
+      normals.push(shade.x, shade.y, shade.z);
+    }
+  }
+  for (let i = 0; i + 1 < n; i += 1) {
+    for (let k = 0; k < segments; k += 1) {
+      const a = i * segments + k;
+      const b = i * segments + ((k + 1) % segments);
+      const c = (i + 1) * segments + ((k + 1) % segments);
+      const d = (i + 1) * segments + k;
+      indices.push(a, c, b, a, d, c);
+    }
+  }
+  for (const [i, sign] of [[0, -1], [n - 1, 1]] as const) {
+    const base = positions.length / 3;
+    const facing = tangents[i]!.scale(sign);
+    for (const p of [centres[i]!, ...Array.from({ length: segments }, (_, k) => centres[i]!.add(ring(i, k).offset))]) {
+      positions.push(p.x, p.y, p.z);
+      normals.push(facing.x, facing.y, facing.z);
+    }
+    for (let k = 0; k < segments; k += 1) {
+      const [p, q] = [base + 1 + k, base + 1 + ((k + 1) % segments)];
+      if (sign < 0) indices.push(base, p, q);
+      else indices.push(base, q, p);
+    }
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = new Array<number>((positions.length / 3) * 2).fill(0);
+  data.indices = indices;
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
+}
+
+/** A panel part's plane: its centre, and unit vectors across it, up it and out of it toward the viewer. */
+export interface PartFrame {
+  readonly origin: Vector3;
+  readonly across: Vector3;
+  readonly up: Vector3;
+  readonly out: Vector3;
+}
+
+/**
+ * A closed loop in a `PartFrame`'s plane: a rounded rectangle whose straight sides run `halfWidth` either side of the
+ * centre across and `halfHeight` up, joined by quarter circles of `radius`, `cornerSegments` chords each. With both
+ * halves 0 it is a circle of `radius`.
+ */
+export interface PartLoop {
+  readonly halfWidth: number;
+  readonly halfHeight: number;
+  readonly radius: number;
+  readonly cornerSegments: number;
+}
+
+/**
+ * A loop solid's profile: a closed outline in (u, a), u OUTWARD from the loop in its plane and a along `out`, with its
+ * rounds. A CONCAVE round (a fillet into a corner, its centre outside the solid) is shaded toward its centre.
+ */
+export interface LoopProfile {
+  readonly points: readonly { readonly u: number; readonly a: number }[];
+  readonly rounds: readonly {
+    readonly first: number;
+    readonly last: number;
+    readonly centre: { readonly u: number; readonly a: number };
+    readonly concave?: boolean;
+  }[];
+}
+
+/**
+ * A LOOP SOLID: a closed profile carried round a closed loop in a plane (`PartLoop`), for the round and
+ * rounded-rectangle parts of a panel -- a dial's bezel ring, a radio's body, a knob -- that `sweptSolid`, whose section
+ * keeps one plane, cannot make: here the section turns with the loop.
+ *
+ * A point of the profile at (u, a) lies u outward of the loop, in its plane, and a out of it. On a circle's loop u =
+ * -radius is the centre, so a profile running in to it closes a solid disc (the triangles that collapse there are left
+ * out). A rounded rectangle's loop at u = -radius is the flat rectangle inside it: `caps` fills that rectangle at the
+ * profile points named, facing out (+1) or back (-1). A band between two profile points BOTH at u = -radius is the
+ * inside of that capped rectangle, not a face, and is left out: made, it hung a wall down from the cap's edge inside
+ * the solid, and its corners met the visible cap in 90 degree edges.
+ *
+ * Wound as `solidPlate` winds (a drawn face's cross product points INTO the solid), three vertices of their own to a
+ * triangle. Shaded smooth ALONG the loop, a vertex's normal turning with the loop's own outward direction (so a ring is
+ * round, not a polygon of flats), and flat ACROSS the profile, but for its ROUNDS (the points `first` to `last` on a
+ * circle about `centre`), whose chords take the round's radial normal, as `sweptSolid`'s do: a round and the faces it
+ * is tangent to meet on one normal.
+ */
+export function loopSolid(
+  build: AircraftBuildContext,
+  name: string,
+  frame: PartFrame,
+  loop: PartLoop,
+  profile: LoopProfile,
+  material: PBRMaterial,
+  parent: TransformNode,
+  options: { readonly caps?: readonly { readonly point: number; readonly facing: 1 | -1 }[] } = {},
+): Mesh {
+  const points = profile.points;
+  const n = points.length;
+  if (n < 3 || loop.cornerSegments < 1) throw new RangeError(`loopSolid "${name}": needs a profile of three points or more and a chord a corner`);
+  // the loop's stations, counter-clockwise from the right side's foot: each a point on the loop and its outward unit normal
+  const stations: { x: number; y: number; nx: number; ny: number }[] = [];
+  const corners = [
+    { cx: loop.halfWidth, cy: -loop.halfHeight, from: -Math.PI / 2 },
+    { cx: loop.halfWidth, cy: loop.halfHeight, from: 0 },
+    { cx: -loop.halfWidth, cy: loop.halfHeight, from: Math.PI / 2 },
+    { cx: -loop.halfWidth, cy: -loop.halfHeight, from: Math.PI },
+  ];
+  for (const { cx, cy, from } of corners) {
+    for (let s = 0; s <= loop.cornerSegments; s += 1) {
+      const angle = from + (Math.PI / 2) * (s / loop.cornerSegments);
+      const station = { x: cx + loop.radius * Math.cos(angle), y: cy + loop.radius * Math.sin(angle), nx: Math.cos(angle), ny: Math.sin(angle) };
+      const last = stations[stations.length - 1];
+      // where the straight halves are 0 a corner's last station is the next one's first
+      if (last && Math.hypot(last.x - station.x, last.y - station.y) < 1e-12) continue;
+      stations.push(station);
+    }
+  }
+  const first = stations[0]!;
+  const end = stations[stations.length - 1]!;
+  if (Math.hypot(first.x - end.x, first.y - end.y) < 1e-12) stations.pop();
+  const m = stations.length;
+  const { origin, across, up, out } = frame;
+  const outward = (k: number) => across.scale(stations[k]!.nx).add(up.scale(stations[k]!.ny));
+  const at = (k: number, p: { readonly u: number; readonly a: number }) => {
+    const s = stations[k]!;
+    return origin.add(across.scale(s.x + p.u * s.nx)).add(up.scale(s.y + p.u * s.ny)).add(out.scale(p.a));
+  };
+  // which way round the profile runs, so each edge's outward normal is known without a centroid
+  let area = 0;
+  for (let j = 0; j < n; j += 1) {
+    const [p, q] = [points[j]!, points[(j + 1) % n]!];
+    area += p.u * q.a - q.u * p.a;
+  }
+  const turn = area > 0 ? 1 : -1;
+  const roundOf = (j: number, k: number) => profile.rounds.find((r) => Math.min(j, k) >= r.first && Math.max(j, k) <= r.last && Math.abs(j - k) === 1);
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const push = (corners3: [Vector3, Vector3, Vector3], shade: [Vector3, Vector3, Vector3], facing: Vector3) => {
+    const a = corners3[0];
+    let [b, c] = [corners3[1], corners3[2]];
+    let s = shade;
+    const cross = Vector3.Cross(b.subtract(a), c.subtract(a));
+    if (cross.length() < 1e-14) return;
+    if (Vector3.Dot(cross, facing) > 0) {
+      [b, c] = [c, b];
+      s = [s[0], s[2], s[1]];
+    }
+    [a, b, c].forEach((corner, i) => {
+      positions.push(corner.x, corner.y, corner.z);
+      normals.push(s[i]!.x, s[i]!.y, s[i]!.z);
+    });
+  };
+  for (let j = 0; j < n; j += 1) {
+    const jn = (j + 1) % n;
+    const [p, q] = [points[j]!, points[jn]!];
+    if (Math.abs(p.u + loop.radius) < 1e-9 && Math.abs(q.u + loop.radius) < 1e-9) continue;
+    // the edge's outward normal in (u, a)
+    const du = q.u - p.u;
+    const da = q.a - p.a;
+    const length = Math.hypot(du, da);
+    if (length < 1e-12) continue;
+    const edgeNormal = { u: (turn * da) / length, a: (-turn * du) / length };
+    const round = roundOf(j, jn);
+    const radial = (point: { u: number; a: number }) => {
+      const r = { u: point.u - round!.centre.u, a: point.a - round!.centre.a };
+      const l = (round!.concave ? -1 : 1) * Math.hypot(r.u, r.a);
+      return { u: r.u / l, a: r.a / l };
+    };
+    const [np, nq] = round ? [radial(p), radial(q)] : [edgeNormal, edgeNormal];
+    const shadeAt = (k: number, v: { u: number; a: number }) => outward(k).scale(v.u).add(out.scale(v.a)).normalize();
+    for (let k = 0; k < m; k += 1) {
+      const kn = (k + 1) % m;
+      const facing = outward(k).add(outward(kn)).normalize().scale(edgeNormal.u).add(out.scale(edgeNormal.a));
+      const [A, B, C, D] = [at(k, p), at(k, q), at(kn, q), at(kn, p)];
+      push([A, B, C], [shadeAt(k, np), shadeAt(k, nq), shadeAt(kn, nq)], facing);
+      push([A, C, D], [shadeAt(k, np), shadeAt(kn, nq), shadeAt(kn, np)], facing);
+    }
+  }
+  for (const cap of options.caps ?? []) {
+    const p = points[cap.point]!;
+    if (Math.abs(p.u + loop.radius) > 1e-9) throw new RangeError(`loopSolid "${name}": a cap's point must lie at u = -radius`);
+    const c = (x: number, y: number) => origin.add(across.scale(x)).add(up.scale(y)).add(out.scale(p.a));
+    const [w, h] = [loop.halfWidth, loop.halfHeight];
+    const facing = out.scale(cap.facing);
+    for (const tri of [[c(-w, -h), c(w, -h), c(w, h)], [c(-w, -h), c(w, h), c(-w, h)]] as [Vector3, Vector3, Vector3][]) {
+      push(tri, [facing, facing, facing], facing);
+    }
+  }
+  const mesh = solidPlate(build, name, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }], 1, material, parent);
+  const data = new VertexData();
+  data.positions = positions;
+  data.normals = normals;
+  data.uvs = new Array<number>((positions.length / 3) * 2).fill(0);
+  data.indices = Array.from({ length: positions.length / 3 }, (_, i) => i);
+  data.applyToMesh(mesh, false);
+  mesh.refreshBoundingInfo();
+  return mesh;
 }

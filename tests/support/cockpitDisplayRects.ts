@@ -12,7 +12,7 @@ import {
 } from "@/src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { framedScreenFacets, type FramedScreenDesign } from "@/src/render/webgpu/aircraft/cockpit/cockpitPrimitives";
 import { JET_MFD, jetMfdPlacements, jetPanelFace } from "@/src/render/webgpu/aircraft/cockpit/jetCockpit";
-import { TRAINER_DIAL_DIAMETER, trainerDialPlacements } from "@/src/render/webgpu/aircraft/cockpit/trainerCockpit";
+import { TRAINER_BEZEL, trainerDialPlacements } from "@/src/render/webgpu/aircraft/cockpit/trainerCockpit";
 import type { Deck } from "./cockpitFootprints";
 
 /**
@@ -88,13 +88,15 @@ export function cockpitParts(deck: Deck): CockpitPart[] {
       const n = d.normal.normalize();
       const side = Vector3.Cross(Y, n).normalize();
       const up = Vector3.Cross(n, side).normalize();
-      // The gauge is a disc 8 mm thick whose centre stands 5 mm off the panel along the dial's
-      // normal (trainerCockpit.ts), so both rims, 1 and 9 mm off: from above the eye its side
-      // shows over the front rim.
-      const r = TRAINER_DIAL_DIAMETER / 2;
-      const rim = (off: number) => Array.from({ length: 48 }, (_, i) =>
+      // Since the bezels (the Cessna pass, S2): the DIAL is the face the pilot sees, the bezel's opening
+      // (`TRAINER_BEZEL.faceRadius`) on the face's front, 1 mm proud of the board; its BEZEL is the ring round it, out
+      // to the case's edge, its chamfer's shoulder on its 3 mm front and its foot 2 mm down (trainerCockpit.ts).
+      const b = TRAINER_BEZEL;
+      const rim = (r: number, off: number) => Array.from({ length: 48 }, (_, i) =>
         d.centre.add(n.scale(off)).add(side.scale(r * Math.cos((i * Math.PI) / 24))).add(up.scale(r * Math.sin((i * Math.PI) / 24))));
-      parts.push({ name: `${d.name} dial`, kind: "dial", outline: [...rim(0.009), ...rim(0.001)] });
+      parts.push({ name: `${d.name} dial`, kind: "dial", outline: rim(b.faceRadius, b.proud - b.faceRecess) });
+      const edge = b.faceRadius + b.ringWidth;
+      parts.push({ name: `${d.name} bezel`, kind: "bezel", outline: [...rim(edge - b.chamfer, b.proud), ...rim(edge, b.proud - b.chamfer)] });
     }
   }
   return parts;

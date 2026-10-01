@@ -295,7 +295,8 @@ the horizon. What remains is texels whose pair holds a non-sward (hills, forest
 edge, shore): they keep the Grass base, with stair-stepped outlines at 128-256 m
 in the TINT, and in lush hill country they draw no visible edge because the
 sward mixture there is nearly Grass anyway. In dry hills they could; not seen in
-the frames shot, and logged.
+the frames shot, and logged. (Seen 2026-09-30 at a shore, world V4HYQQ:
+`docs/findings/FAR_SWARD_SOFT_GATE_2026_09_30.md`.)
 
 **Price: FULL decided, CHEAP NOT YET PRICED, and that is a condition of the
 merge.** One tree, dial toggled, four interleaved rounds of off / cheap / full on
@@ -316,6 +317,13 @@ renderer was on the GPU throughout and the OFF arm's spread against itself was
   that 5-7 % floor. Not distinguishable from zero; nothing up to about 4-5 %
   excluded. It is a quarter of FULL's texture work with none of its ten-way
   accumulate, which is an argument and not a measurement.
+
+**CHEAP, measured (2026-09-30, V-4 step 2; `docs/findings/FAR_SWARD_SOFT_GATE_2026_09_30.md`).**
+- Measured on cruise-horizon at 1920x1080, medium, GPU timing on: the main pass's median GPU milliseconds over rounds of
+  interleaved runs on one build.
+- cheap - off is +0.17 ms and +0.29 ms in the two rounds (off 4.94 / 4.92, cheap 5.11 / 5.21).
+- The shipped read is now V-4's soft gate, +0.016 ms over cheap. It removes the straight 128 m edges this read drew at
+  coasts and treelines.
 
 CHEAP merged ON, on the condition that it be priced on a machine with nothing
 else rendering before any baseline promotion. It has been, twice, the same

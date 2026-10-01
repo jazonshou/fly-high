@@ -113,7 +113,7 @@ import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
-import { meanSeasonalSurfaceAlbedo } from "./webgpu/terrain/TerrainSurfacePlugin";
+import { meanSeasonalSurfaceAlbedo, type TerrainFarSwardRead } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
 import {
@@ -150,11 +150,7 @@ import {
   SpectralOceanSystem,
 } from "./webgpu/water/SpectralOceanSystem";
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
-import {
-  sampleTerrainClimate,
-  sampleTerrainMoisture,
-  terrainTemperatureFromClimate,
-} from "@/src/world/terrain";
+import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
@@ -439,6 +435,12 @@ export interface FlightRendererOptions {
    * `src/` other than this file and `cameraPresentation.ts` names it.
    */
   cockpitRigOverride?: CockpitRigOverride;
+  /**
+   * V-4: the terrain's far-sward read ("off" | "cheap" | "soft"), so one build
+   * prices all three. Unset keeps TERRAIN_FAR_SWARD_READ_DEFAULT ("soft").
+   * Development only: the game passes `?farSward=`, never a saved setting.
+   */
+  terrainFarSwardRead?: TerrainFarSwardRead;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -939,6 +941,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => atmosphere.dispose());
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
+      if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
       checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,
@@ -1095,15 +1098,8 @@ export class FlightRenderer implements FlightRenderingSystem {
           // W-8: the climate at an inland water surface, which is what its
           // chemistry is made of. A pure function of world position and
           // elevation, so two pages sharing a river derive the same colour.
-          climateSample: (x, z, elevation) => ({
-            temperature: terrainTemperatureFromClimate(
-              options.world,
-              sampleTerrainClimate(options.world, x, z),
-              elevation,
-            ),
-            // Point-sampled: a lake or a station is a point, not a footprint.
-            moisture: sampleTerrainMoisture(options.world, x, z, 0),
-          }),
+          // (Shared with the hydrology worker, which builds the same arrays.)
+          climateSample: hydrologyClimateSamplerFor(options.world),
           ...(channelGraph
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
@@ -2223,6 +2219,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       activeAnimals: wildlife.activeAnimals,
       riverCount: hydrology.riverCount,
       lakeCount: hydrology.lakeCount,
+      hydrologyMainThreadFallback: hydrology.usingMainThreadFallback,
+      hydrologyLastGenerationUsedWorker: hydrology.lastGenerationUsedWorker,
       requestedRenderingMode: this.renderingMode,
       renderBackend: "webgpu",
       renderTechnique: "forward-spectral-volumetric",

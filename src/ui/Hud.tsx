@@ -104,6 +104,16 @@ export function Hud({
     : state.gear <= 0.02
       ? "UP"
       : "TRANSIT";
+  // The flap lever has three detents (`InputManager`: 0, 0.5, 1) and the panels
+  // take seconds to run between them; this reads the PANELS, as the gear block
+  // reads the legs, so "FULL" means the lift is there and not merely asked for.
+  const flapLabel = state.flaps <= 0.02
+    ? "UP"
+    : state.flaps >= 0.98
+      ? "FULL"
+      : Math.abs(state.flaps - 0.5) <= 0.02
+        ? "HALF"
+        : "MOVING";
 
   // Cockpit view keeps the HUD above the deck line (src/ui/cockpitHudLayout.ts);
   // the class and `--deck-k` exist ONLY there, so every other camera's HUD is
@@ -210,6 +220,11 @@ export function Hud({
                 <em>{gearLabel === "TRANSIT" ? `${Math.round(state.gear * 100)}%` : "G TOGGLE"}</em>
               </div>
             ) : null}
+            <div className="instrument-readout" aria-label={`Flaps ${flapLabel.toLowerCase()}`}>
+              <small>FLAPS</small>
+              <strong>{flapLabel}</strong>
+              <em>{flapLabel === "MOVING" ? `${Math.round(state.flaps * 100)}%` : "F DN · V UP"}</em>
+            </div>
           </div>
         ) : null}
 
@@ -274,6 +289,7 @@ export function Hud({
         {spec.retractableGear
           ? <span>G gear · Space speed / wheel brake</span>
           : <span>Space wheel brake</span>}
+        <span>F flaps down · V up</span>
         <span>C view</span>
         <span>Esc pause</span>
         {mouseFlight ? <span className="hud-help__active">Click view for mouse yoke</span> : null}
@@ -332,6 +348,7 @@ export function Hud({
           </span>
           <span className="diagnostics__wide">
             {diagnostics.visibleInstances.toLocaleString()} detail instances · {diagnostics.activeAnimals} animals · {diagnostics.riverCount} rivers / {diagnostics.lakeCount} lakes
+            {diagnostics.hydrologyMainThreadFallback ? " · WATER GEN ON MAIN THREAD" : ""}
           </span>
           <span className="diagnostics__wide">
             {diagnostics.adapter}

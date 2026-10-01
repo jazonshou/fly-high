@@ -71,9 +71,12 @@ export const HUD_SIZES = {
   controlStatus: { inset: 28, width: 290, height: 91 },
   hints: { height: 9 },
 } as const;
-/** Width of the instrument strip and of the hint text, by airframe: the trainer has no gear readout and a shorter brake hint. */
-const STRIP_WIDTH: Record<AircraftKind, number> = { trainer: 334, jet: 416, bizjet: 416, airliner: 416 };
-const HINTS_WIDTH: Record<AircraftKind, number> = { trainer: 718, jet: 805, bizjet: 805, airliner: 805 };
+/**
+ * Width of the instrument strip and of the hint text, by airframe: the trainer has no gear readout and a shorter brake hint.
+ * Re-measured in Chromium on 2026-09-30 with the FLAPS readout (one more 78 px cell and its 4 px gap) and the flap hint.
+ */
+const STRIP_WIDTH: Record<AircraftKind, number> = { trainer: 416, jet: 498, bizjet: 498, airliner: 498 };
+const HINTS_WIDTH: Record<AircraftKind, number> = { trainer: 835, jet: 922, bizjet: 922, airliner: 922 };
 
 export interface HudBox {
   readonly name: string;

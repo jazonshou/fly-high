@@ -18,6 +18,7 @@ import {
   type HydrologyTerrainSampler,
 } from "../src/render/webgpu/water/HydrologyGeneration";
 import {
+  HYDROLOGY_WORKER_MAXIMUM_RESTARTS,
   HydrologyGenerationClient,
   type HydrologyGenerationClientLike,
   type HydrologyRegionGenerationRequest,
@@ -28,6 +29,15 @@ import {
   selectHydrologyRegion,
 } from "../src/render/webgpu/water/HydrologyPaging";
 import { HydrologySystem } from "../src/render/webgpu/water/HydrologySystem";
+import { hydrologyClimateSamplerFor } from "../src/render/webgpu/water/hydrologyClimate";
+import { readSeedFromUrl } from "../src/settings";
+import { createWorld, sampleTerrain } from "../src/world";
+import {
+  buildAnalyticRegionMeshArrays,
+  isPackedHydrologyRegionGeometry,
+  packHydrologyMeshArrays,
+  type PackedHydrologyRegionGeometry,
+} from "../src/render/webgpu/water/hydrologyMeshArrays";
 import type { ChannelHydrologyGeometry } from "../src/render/webgpu/water/ChannelNetwork";
 import { isHydrologyWorkerEvent } from "../src/workers/hydrologyProtocol";
 
@@ -87,6 +97,10 @@ class DeferredGenerationClient implements HydrologyGenerationClientLike {
     onResult: (result: HydrologyRegionGenerationResult) => void,
     onError: (error: Error) => void = () => undefined,
   ): number {
+    // What HydrologySystem hands a client is what the real client posts to a
+    // worker. It must survive structured cloning: until 2026-09-29 it carried
+    // two sampler functions and every region silently ran on the main thread.
+    structuredClone(request.options);
     const id = this.nextId++;
     this.pending.set(id, { request, onResult, onError });
     return id;
@@ -99,11 +113,17 @@ class DeferredGenerationClient implements HydrologyGenerationClientLike {
     pending.onError(abortError());
   }
 
-  complete(requestId: number, hydrology: HydrologyGenerationResult): void {
+  complete(
+    requestId: number,
+    hydrology: HydrologyGenerationResult,
+    geometry?: PackedHydrologyRegionGeometry,
+  ): void {
     const pending = this.pending.get(requestId);
     if (!pending) throw new Error(`Unknown deferred request ${requestId}`);
     this.pending.delete(requestId);
-    pending.onResult({ hydrology, elapsedMilliseconds: 12.5, workerGenerated: true });
+    pending.onResult({
+      hydrology, elapsedMilliseconds: 12.5, workerGenerated: true, ...(geometry ? { geometry } : {}),
+    });
   }
 
   dispose(): void {
@@ -131,12 +151,21 @@ class FakeWorker {
     this.listeners.get(type)?.delete(listener as (event: never) => void);
   }
 
+  /**
+   * Clones what it is sent, as a real Worker's postMessage does. A fake that
+   * did not is why a DataCloneError on every request went unnoticed from
+   * 2026-08-16 to 2026-09-29.
+   */
   postMessage(command: unknown): void {
-    this.commands.push(command);
+    this.commands.push(structuredClone(command));
   }
 
   terminate(): void {
     this.terminated = true;
+  }
+
+  emit(type: string, event: object): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event as never);
   }
 }
 
@@ -360,6 +389,110 @@ describe("hydrology generation scheduling", () => {
     expect(workers[1]?.commands[0]).toMatchObject({ type: "initialize" });
     client.dispose();
     expect(workers[1]?.terminated).toBe(true);
+  });
+
+  it("fails loudly, outside production, on a command that cannot be cloned", () => {
+    const workers: FakeWorker[] = [];
+    const errors: Error[] = [];
+    const client = new HydrologyGenerationClient({
+      worldSeed: "clone-guard",
+      workerWorldSeed: "clone-guard",
+      terrainSample: TERRAIN,
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    // The shape of the six-week bug: a sampler function inside the options.
+    const poisoned = { centerX: 0, centerZ: 0, terrainSample: TERRAIN } as unknown as
+      HydrologyRegionGenerationRequest["options"];
+    expect(() => client.request(
+      { key: "0:0", generation: 1, options: poisoned },
+      () => undefined,
+      (error) => errors.push(error),
+    )).toThrow(/could not be cloned/);
+    expect(errors.map((error) => error.name)).toEqual(["DataCloneError"]);
+    // A caller bug is not a dead worker: no termination, no fallback.
+    expect(workers).toHaveLength(1);
+    expect(workers[0]?.terminated).toBe(false);
+    expect(client.isUsingFallback).toBe(false);
+    client.dispose();
+  });
+
+  it("in production, keeps water by falling back on a clone failure", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const scheduled: Array<() => void> = [];
+    const results: HydrologyRegionGenerationResult[] = [];
+    try {
+      const client = new HydrologyGenerationClient({
+        worldSeed: "clone-guard-production",
+        workerWorldSeed: "clone-guard-production",
+        terrainSample: TERRAIN,
+        workerFactory: () => new FakeWorker() as unknown as Worker,
+        fallbackScheduler: (callback) => scheduled.push(callback),
+      });
+      const poisoned = {
+        centerX: 0,
+        centerZ: 0,
+        extentMeters: 1_200,
+        sourceCandidateSpacingMeters: 300,
+        maximumTraceSteps: 20,
+        terrainSample: TERRAIN,
+      } as unknown as HydrologyRegionGenerationRequest["options"];
+      client.request({ key: "0:0", generation: 1, options: poisoned }, (result) => results.push(result));
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(client.isUsingFallback).toBe(true);
+      scheduled[0]?.();
+      expect(results).toHaveLength(1);
+      expect(results[0]?.workerGenerated).toBe(false);
+      client.dispose();
+    } finally {
+      logged.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("restarts a crashed worker within its budget before falling back", () => {
+    const workers: FakeWorker[] = [];
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const client = new HydrologyGenerationClient({
+        worldSeed: "restart-budget",
+        workerWorldSeed: "restart-budget",
+        terrainSample: TERRAIN,
+        workerFactory: () => {
+          const worker = new FakeWorker();
+          workers.push(worker);
+          return worker as unknown as Worker;
+        },
+        fallbackScheduler: () => undefined,
+      });
+      const requestId = client.request({
+        key: "0:0",
+        generation: 1,
+        options: { centerX: 0, centerZ: 0, extentMeters: 1_200 },
+      }, () => undefined);
+      for (let crash = 1; crash <= HYDROLOGY_WORKER_MAXIMUM_RESTARTS; crash += 1) {
+        workers.at(-1)!.emit("error", { message: "boom", preventDefault: () => undefined });
+        expect(workers).toHaveLength(crash + 1);
+        expect(workers.at(-2)?.terminated).toBe(true);
+        // The lost request is re-posted to the replacement worker.
+        expect(workers.at(-1)?.commands).toMatchObject([
+          { type: "initialize", worldSeed: "restart-budget" },
+          { type: "generate", requestId, key: "0:0" },
+        ]);
+        expect(client.isUsingFallback).toBe(false);
+      }
+      workers.at(-1)!.emit("error", { message: "boom", preventDefault: () => undefined });
+      expect(client.isUsingFallback).toBe(true);
+      expect(workers).toHaveLength(HYDROLOGY_WORKER_MAXIMUM_RESTARTS + 1);
+      expect(warned).toHaveBeenCalledTimes(1);
+      client.dispose();
+    } finally {
+      warned.mockRestore();
+    }
   });
 
   it("keeps custom terrain samplers on a cancellable scheduled fallback", () => {
@@ -667,5 +800,139 @@ describe("paged Babylon hydrology residency", () => {
     expect(system.getStatistics().disposed).toBe(true);
     scene.dispose();
     engine.dispose();
+  });
+});
+
+describe("worker-built region geometry (P2b)", () => {
+  it("installs worker geometry exactly as the main thread would have built it, without sampling the ground", () => {
+    // The real world of ?seed=water9: its airport region holds a lake, and a
+    // lake is what the main thread clips against the ground. (The synthetic
+    // plane above forms no lakes, which would make this assertion vacuous.)
+    const world = createWorld(readSeedFromUrl("http://local/?seed=water9"));
+    const airport = world.airport!;
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("geometry-camera", new Vector3(0, 300, -400), scene);
+    let groundCalls = 0;
+    const counted: HydrologyTerrainSampler = (x, z) => {
+      groundCalls += 1;
+      return sampleTerrain(world, x, z);
+    };
+    const options = {
+      atmosphere: ATMOSPHERE,
+      worldSeed: world.seed,
+      terrainSample: counted,
+      seaLevel: world.seaLevel,
+      centerX: airport.centerX,
+      centerZ: airport.centerZ,
+      climateSample: hydrologyClimateSamplerFor(world),
+    };
+    const mainClient = new DeferredGenerationClient();
+    const workerClient = new DeferredGenerationClient();
+    // No synchronous first region: both systems request it through the client.
+    const main = new HydrologySystem(scene, camera, { ...options, generationClient: mainClient }, false);
+    const worker = new HydrologySystem(scene, camera, { ...options, generationClient: workerClient }, false);
+    const observer = { x: airport.centerX, z: airport.centerZ, velocityX: 0, velocityZ: 0 };
+    main.update(10, camera.position, observer);
+    worker.update(10, camera.position, observer);
+    const mainRequest = mainClient.latest!;
+    const workerRequest = workerClient.latest!;
+    expect(workerRequest.request.buildGeometry).toBe(true);
+    const hydrology = generateHydrology({
+      ...workerRequest.request.options,
+      worldSeed: world.seed,
+      terrainSample: (x, z) => sampleTerrain(world, x, z),
+    });
+    expect(hydrology.lakes.length, "the fixture region must hold a lake").toBeGreaterThan(0);
+    const arrays = buildAnalyticRegionMeshArrays(
+      hydrology,
+      (x, z) => sampleTerrain(world, x, z).height,
+      hydrologyClimateSamplerFor(world),
+      hydrology.config.seaLevel,
+    );
+    const geometry = { rivers: packHydrologyMeshArrays(arrays.rivers), lakes: packHydrologyMeshArrays(arrays.lakes) };
+
+    groundCalls = 0;
+    mainClient.complete(mainRequest.id, hydrology);
+    const mainGroundCalls = groundCalls;
+    groundCalls = 0;
+    workerClient.complete(workerRequest.id, hydrology, geometry);
+    expect(mainGroundCalls, "the main path clips lakes against the ground").toBeGreaterThan(1_000);
+    expect(groundCalls, "the worker path must not clip lakes on the main thread").toBe(0);
+
+    for (const kind of ["riverMesh", "lakeMesh"] as const) {
+      const a = main[kind];
+      const b = worker[kind];
+      expect(b === null, kind).toBe(a === null);
+      if (!a || !b) continue;
+      for (const lane of ["position", "normal", "uv", "flowData", "waterData", "waterChemistry"]) {
+        // Float32 is what either path hands the GPU.
+        expect(Float32Array.from(b.getVerticesData(lane)!), `${kind}.${lane}`)
+          .toEqual(Float32Array.from(a.getVerticesData(lane)!));
+      }
+      expect(Array.from(b.getIndices()!), `${kind} indices`).toEqual(Array.from(a.getIndices()!));
+    }
+    expect(main.lakeMesh, "the lake mesh was compared").not.toBeNull();
+    expect(worker.getStatistics()).toMatchObject({
+      vertexCount: main.getStatistics().vertexCount,
+      triangleCount: main.getStatistics().triangleCount,
+      lastGenerationUsedWorker: true,
+    });
+    main.dispose();
+    worker.dispose();
+    scene.dispose();
+    engine.dispose();
+  }, 30_000);
+
+  it("packs indices at the width Babylon would choose for the same numbers", () => {
+    const small = packHydrologyMeshArrays({
+      positions: [0, 0, 0, 1, 0, 0, 0, 0, 1], normals: Array(9).fill(0), uvs: Array(6).fill(0),
+      indices: [0, 1, 2], flowData: Array(12).fill(0), waterData: Array(12).fill(0), waterChemistry: Array(12).fill(0),
+    })!;
+    expect(small.indices).toBeInstanceOf(Uint16Array);
+    const wide = packHydrologyMeshArrays({
+      positions: [0, 0, 0, 1, 0, 0, 0, 0, 1], normals: Array(9).fill(0), uvs: Array(6).fill(0),
+      indices: [0, 1, 70_000], flowData: Array(12).fill(0), waterData: Array(12).fill(0), waterChemistry: Array(12).fill(0),
+    })!;
+    // WebGPU createIndexBuffer: a number[] with any index > 65,535 goes 32-bit.
+    expect(wide.indices).toBeInstanceOf(Uint32Array);
+    expect(packHydrologyMeshArrays({
+      positions: [], normals: [], uvs: [], indices: [], flowData: [], waterData: [], waterChemistry: [],
+    })).toBeNull();
+  });
+
+  it("validates worker geometry and forwards the geometry request", () => {
+    const packed = packHydrologyMeshArrays({
+      positions: [0, 0, 0, 1, 0, 0, 0, 0, 1], normals: Array(9).fill(0), uvs: Array(6).fill(0),
+      indices: [0, 1, 2], flowData: Array(12).fill(0), waterData: Array(12).fill(0), waterChemistry: Array(12).fill(0),
+    })!;
+    const base = { type: "region", requestId: 1, generation: 1, key: "0:0", elapsedMilliseconds: 3, hydrology: {} };
+    expect(isHydrologyWorkerEvent({ ...base, geometry: { rivers: packed, lakes: null } })).toBe(true);
+    expect(isHydrologyWorkerEvent({ ...base, geometry: { rivers: { ...packed, indices: [0, 1, 2] }, lakes: null } })).toBe(false);
+    expect(isHydrologyWorkerEvent({ ...base, geometry: { rivers: { ...packed, uvs: new Float32Array(5) }, lakes: null } })).toBe(false);
+    expect(isPackedHydrologyRegionGeometry({ rivers: null, lakes: null })).toBe(true);
+
+    const workers: FakeWorker[] = [];
+    const results: HydrologyRegionGenerationResult[] = [];
+    const client = new HydrologyGenerationClient({
+      worldSeed: "geometry-forward",
+      workerWorldSeed: "geometry-forward",
+      terrainSample: TERRAIN,
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    const requestId = client.request({
+      key: "0:0", generation: 1, options: { centerX: 0, centerZ: 0 }, buildGeometry: true,
+    }, (result) => results.push(result));
+    expect(workers[0]?.commands[1]).toMatchObject({ type: "generate", requestId, buildGeometry: true });
+    // The payload is not under test here; the validator requires an object.
+    workers[0]!.emit("message", {
+      data: { ...base, requestId, geometry: { rivers: packed, lakes: null } },
+    });
+    expect(results[0]?.geometry?.rivers).toBe(packed);
+    client.dispose();
   });
 });

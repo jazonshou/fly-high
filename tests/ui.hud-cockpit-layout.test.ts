@@ -29,8 +29,8 @@ import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMa
  *
  * What is held here:
  *  - every other camera's HUD is byte for byte the markup captured before the
- *    cockpit layout existed (de91cef), and the cockpit's differs from it by the
- *    class and `--deck-k` alone;
+ *    cockpit layout existed (de91cef) plus the FLAPS readout and flap hint added on
+ *    2026-09-30, and the cockpit's differs from it by the class and `--deck-k` alone;
  *  - the stylesheet's cockpit rules are scoped to the cockpit class and carry the
  *    layout module's numbers;
  *  - on SEVEN window shapes (16:9 at three sizes, 4:3 and 21:9 at three), every
@@ -53,7 +53,8 @@ describe("the HUD's markup", () => {
     const golden = JSON.parse(readFileSync(join(ROOT, "tests/fixtures/hud-exterior-markup.json"), "utf8")) as {
       capturedOn: string; cases: Record<string, string>;
     };
-    expect(golden.capturedOn).toBe("de91cef");
+    // "de91cef+flaps": that capture, plus the two insertions the flap block made (checked when it was re-captured).
+    expect(golden.capturedOn).toBe("de91cef+flaps");
     const cases = hudMarkupCases(EXTERIOR_CAMERAS);
     expect(cases.length).toBe(Object.keys(golden.cases).length);
     for (const c of cases) expect(renderHudCase(c), c.name).toBe(golden.cases[c.name]);

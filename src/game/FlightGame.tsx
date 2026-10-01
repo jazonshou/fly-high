@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS,
   loadSettings,
   readSeedFromUrl,
+  readTerrainFarSwardFromUrl,
   readWorldEvolutionFromUrl,
   saveSettings,
   seedToString,
@@ -535,6 +536,7 @@ export function FlightGame() {
     const initialize = async (): Promise<void> => {
       try {
       const activeSettings = settingsRef.current;
+      const urlFarSward = readTerrainFarSwardFromUrl();
       const rendererOptions = {
         canvas,
         aircraft: activeSettings.aircraft,
@@ -560,6 +562,7 @@ export function FlightGame() {
           );
         },
         ...(world.airport ? { runway: world.airport } : {}),
+        ...(urlFarSward ? { terrainFarSwardRead: urlFarSward } : {}),
       };
       const renderer: FlightRenderingSystem = await FlightRenderer.create(rendererOptions);
       if (disposed) {
@@ -637,6 +640,8 @@ export function FlightGame() {
         phase: () => phaseRef.current,
         handleActions,
         isForeground: () => !disposed && !rendererTerminal && !document.hidden,
+        // After InputManager (constructed above) so its key listeners run first.
+        keyEvents: window,
       });
 
       const renderLoop = (now: number) => {

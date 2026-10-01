@@ -1,4 +1,4 @@
-import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import type { Scene } from "@babylonjs/core/scene";
@@ -18,10 +18,10 @@ import {
   setCockpitVisibility,
   type CommonRig,
 } from "./airframeRig";
-import { solidified } from "./cockpit/cockpitPrimitives";
+import { bezelRimEmissive, solidified, sweptTube } from "./cockpit/cockpitPrimitives";
 import { buildTrainerCockpit } from "./cockpit/trainerCockpit";
 import { AircraftBuildContext } from "./builders";
-import { TRAINER_FUSELAGE_SECTIONS } from "./trainerShell";
+import { TRAINER_CANOPY_SECTIONS, TRAINER_CENTRE_FRAME, TRAINER_FUSELAGE_SECTIONS, trainerCentreFramePath } from "./trainerShell";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AircraftVisual } from "./types";
 
@@ -53,7 +53,7 @@ interface TrainerPropellerRig {
  * clearance at the spinner.
  */
 /**
- * The trainer's paint maps are 256 texels on a side, not the shared 64
+ * The trainer's paint maps are 512 texels on a side, not the shared 64
  * (docs/findings/TRAINER_SKIN_RESOLUTION_2026_09_23.md).
  *
  * The loft lays one map over the WHOLE 6.9 m fuselage and its full
@@ -61,27 +61,41 @@ interface TrainerPropellerRig {
  * 9.3 texels a metre along the body and 12.6 along the span, against 30.6 on
  * the Global's livery and 34.1 on the 747's. A 10 m chase then magnifies a
  * texel to 6.5 px at 720p, so the panel lines and rivets smear and no mip or
- * bias can help. At 256: 37 along the body, 78 around it, 50 along the span,
- * for 1 MiB of GPU memory per paint material and about 10-13 ms of synthesis
+ * bias can help. 256 fixed that, but an edge still drew about a texel wide on
+ * the skin however sharp its ramp: the livery 2.9 cm, 8 px abeam at 6 m. At
+ * 512: 74 along the body, 156 around it, 100 along the span, for 4 MiB of GPU
+ * memory per paint material (three of them) and about 45 ms more synthesis
  * each at build.
  */
-const TRAINER_PAINT_EDGE = 256;
+const TRAINER_PAINT_EDGE = 512;
 
 /**
- * What 256 texels need from the recipe, both of them trainer-only dials:
+ * What the trainer's texel count needs from the recipe, all trainer-only dials:
  *
  * - `noiseLattice: 64`: the synthesis indexed its noise in texels, so at 256
  *   it drew another design. The panel lines' 8-texel jitter blocks stepped
  *   each line sideways every 10 cm (a "totem pole" at the cabin door), and the
- *   rivets became dashes across the lines. On a 64-cell lattice, 256 draws the
- *   64-texel design, sharper.
- * - `liveryEdge: [0.068, 0.072]`: the green band's default edge is a 0.21 m
- *   ramp, soft by design, which no texel count sharpens. 0.004 of the length
- *   is 2.8 cm, about one texel at 256.
+ *   rivets became dashes across the lines. On a 64-cell lattice, any edge
+ *   draws the 64-texel design, sharper.
+ * - `liveryEdge: [0.069, 0.071]`: the green band's default edge is a 0.21 m
+ *   ramp, soft by design, which no texel count sharpens. 0.002 of the length
+ *   is 1.4 cm, about one texel at 512.
+ * - `panelEdge: [0.0006, 0.0036]`: the default line is 0.016 of the map at
+ *   half depth, 11 cm along the body: 28 px abeam at 6 m, heavy. This one is
+ *   0.0042, 2.9 cm or two texels at 512, about 7.5 px at 6 m, over a 0.003
+ *   (2 cm) flank. Two texels is as narrow as it goes before the line beads,
+ *   its darkness varying row to row as it crosses the texels. The groove in
+ *   the height map, and so its shading, narrows with it.
+ * - `lineWarp: 0`: the design warps its lines about +-4 cm over about 0.4 m
+ *   round the body. A 10 cm line hid it; a 3 cm one showed it, a panel joint
+ *   wandering like a painted edge. The joints now run straight. The livery's
+ *   edge was never warped.
  */
 const TRAINER_PAINT_DIALS = {
   noiseLattice: 64,
-  liveryEdge: [0.068, 0.072],
+  liveryEdge: [0.069, 0.071],
+  panelEdge: [0.0006, 0.0036],
+  lineWarp: 0,
 } as const;
 
 export function createTrainer(scene: Scene): AircraftVisual {
@@ -173,17 +187,15 @@ export function createTrainer(scene: Scene): AircraftVisual {
    * PM explicitly and authorised: a cosmetic loss inside against a real defect
    * outside, where the aeroplane is seen far more often.
    *
-   * THE SKIN IS NOT HIDDEN, and it used to be. This list once held the whole
-   * opaque shell -- the fuselage loft, the cabin roof and the windscreen frame --
-   * on the theory that anything around the pilot would block his view. It did
-   * the opposite: with the shell excluded the pilot saw a slab and three
-   * propeller fragments floating in the sky, with no cowl, no roof line and no
-   * frame to say he was sitting inside an aeroplane. The shell needs no hiding.
-   * Its materials cull back faces, so from inside it draws only what FACES the
-   * pilot -- the top of the cowl ahead of the windscreen, the underside of the
-   * roof, the centre frame -- and its own inside disappears by itself. That is
-   * also why the cabin's side walls show the world: their insides are culled, so
-   * the cockpit has to put its own door panels where they were.
+   * THE FUSELAGE LOFT IS HIDDEN TOO; the rest of the opaque shell is not
+   * (`cockpitParts` below: the fuselage and the canopy). The pilot's eye is above
+   * the tube's top skin, which is the window sill, so from the seat the tube
+   * showed its OUTSIDE: the cockpit builds the cowl it stands in for
+   * (`trainer-cowl-standin`) and its own walls (the door panels, the deck and
+   * the board, wall to wall) on this side of it. The cabin roof and the
+   * windscreen frame stay in both views: with the whole shell excluded, as it
+   * once was, the pilot saw a slab and three propeller fragments floating in the
+   * sky, with no roof line and no frame to say he was inside an aeroplane.
    *
    * `render.webgpu-aircraft` pins all of it -- the glass hidden from the
    * cockpit camera and visible to an exterior one, the shell visible to both,
@@ -276,20 +288,7 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // the door windows (the sides, standing about 0.03 m proud of the sill) and
   // that rear window (the aft sections, which stand proud of a shell that has
   // already begun climbing towards the tailcone).
-  const canopy = build.loft(
-    "trainer-canopy",
-    [
-      { x: -0.7, yRadius: 0.12, zRadius: 0.205, yOffset: 0.055, squareness: 2.6 },
-      { x: -0.3, yRadius: 0.2, zRadius: 0.415, yOffset: 0.01, squareness: 3.2 },
-      { x: 0.26, yRadius: 0.22, zRadius: 0.44, squareness: 4 },
-      { x: 1.6, yRadius: 0.22, zRadius: 0.44, squareness: 4 },
-      { x: 2, yRadius: 0.2, zRadius: 0.415, yOffset: -0.01, squareness: 3.6 },
-      { x: 2.24, yRadius: 0.105, zRadius: 0.345, yOffset: -0.06, squareness: 3 },
-    ],
-    18,
-    glass,
-    root,
-  );
+  const canopy = build.loft("trainer-canopy", TRAINER_CANOPY_SECTIONS, 18, glass, root);
   canopy.metadata = { ...canopy.metadata, castsShadow: false };
   // The opaque roof skin between the windscreen and the rear window — the one
   // part of the greenhouse that is aluminium. It covers only the span over
@@ -322,8 +321,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
   ));
   cabinRoof.position.y = 0.205;
   // Visible from the pilot's seat, like the rest of the opaque shell (see the
-  // note on the glass above). It is 24 mm of metal down the middle of the
-  // windscreen, and it is the thing that tells the pilot he is looking
+  // note on the glass above). It is a strip of metal 24 to 34 mm wide down the
+  // middle of the windscreen, and it is the thing that tells the pilot he is looking
   // through one. The pilot sits in the LEFT seat, so it stands to the right of
   // his line of sight, as a centre frame does for the pilot on the left of a
   // real 150.
@@ -342,59 +341,27 @@ export function createTrainer(scene: Scene): AircraftVisual {
   // sunk in the glass, which passes through it) into the roof's front edge, costs 276, none of it within
   // 15 degrees of dead ahead: it is the upper right, where the strut was already going.
   //
-  // THREE PRIMITIVES MERGED under the strut's own name, so the mesh count stays as it was: the bar at
-  // full radius from under the deck to the corner, a ball at the corner (3% over the bars' radius, see
-  // below), and a bar aft to x 1.60. The ball is what joins two round bars whose axes bend 42 degrees
-  // without either a wedge-shaped gap on the outside of the bend or an exposed end disc: both bars' end
-  // discs lie inside it. The aft bar's own end disc is 2 cm inside the roof slab, at its mid-thickness
-  // (the slab is y 0.18..0.23 and the bar 0.181..0.229), and the slab is CLOSED now (see `solidified`
-  // above), so no end of this member is in the open, from the seat or from any exterior angle --
-  // `tests/render.cockpit-trainer.test.ts` holds that with a cap survey that includes grazing views.
+  // ONE TAPERED STRIP since the Cessna pass (S5), where there were three primitives merged under this name: a bar
+  // up the windscreen, a ball at the corner and a bar aft along the crown. The ball closed the gap between two round
+  // bars bending 42 degrees, and it was the knuckle the pilot saw: its octagons' facets and their end rings made six
+  // hard edges and a facet silhouette there, and the 48 mm bars covered 62,000 px of the frame. The strip
+  // (`TRAINER_CENTRE_FRAME`, `trainerCentreFramePath`) keeps the old axis and both ends -- buried under the cowl deck
+  // (see the foot's fault, below), and 2 cm inside the closed roof slab at its mid-thickness -- and turns
+  // the corner on a 6 cm fillet, flattened (34 x 22 mm at its foot, 24 x 16 at its end) as a centre strip is, and
+  // shaded smooth round its ellipse and along it. Held by `tests/render.cockpit-trainer.test.ts`.
   //
-  // THE FOOT HAD THE SAME FAULT, found by that survey rather than by eye: the design foot at
-  // (2.26, -0.02) stands above the cowl deck, whose surface there is y -0.047..-0.050, so the bar's
-  // bottom ring floated 8 to 49 mm clear of it and its end disc faced forward and down at anyone in
-  // front of the aeroplane. The design foot stays where it was, on the axis; the MESH runs on past it
-  // down into the fuselage by `centreFrameBuryMetres` (the 747's seam post does the same into its
-  // overhead). Measured, as least cover of the bottom ring under the deck: 0.082 m only just gets it
-  // under (0.9 mm), 0.089 m is the least for the 5 mm the test asks, and 0.10 m gives 11.8 mm.
-  const centreFrameFoot = new Vector3(2.26, -0.02, 0);
-  const centreFrameBuryMetres = 0.1;
-  const centreFrameCorner = new Vector3(2, 0.21, 0);
-  const centreFrameIntoRoof = new Vector3(1.6, 0.205, 0);
-  const centreFrameRadius = 0.024;
-  const centreFrameJointScale = 1.03;
+  // THE FOOT HAD A FAULT, found by a cap survey rather than by eye: the design foot at (2.26, -0.02) stands above the
+  // cowl deck, whose surface there is y -0.047..-0.050, so a foot there floated 8 to 49 mm clear of it and its end
+  // disc faced forward and down at anyone in front of the aeroplane. The design foot stays where it was, on the axis;
+  // the strip runs on past it down into the fuselage by `bury` (the 747's seam post does the same into its overhead).
   {
-    const up = centreFrameCorner.subtract(centreFrameFoot).normalize();
-    const buriedFoot = centreFrameFoot.subtract(up.scale(centreFrameBuryMetres));
-    const sections: { readonly name: string; readonly from: Vector3; readonly to: Vector3; readonly diameterTop: number; readonly diameterBottom: number }[] = [
-      // up the windscreen from below the deck, 8% fatter at the bottom as `strutBetween` makes a strut
-      { name: "windscreen-center-frame-bar", from: buriedFoot, to: centreFrameCorner, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2.16 },
-      // aft along the glass crown into the roof, at the same radius so the member does not step
-      { name: "windscreen-center-frame-crown", from: centreFrameCorner, to: centreFrameIntoRoof, diameterTop: centreFrameRadius * 2, diameterBottom: centreFrameRadius * 2 },
-    ];
-    const pieces: AbstractMesh[] = sections.map((section) => {
-      const run = section.to.subtract(section.from);
-      const piece = build.cylinder(section.name, run.length(), section.diameterTop, section.diameterBottom, 8, dark, root);
-      piece.position.copyFrom(section.from.add(section.to).scale(0.5));
-      piece.rotationQuaternion = Quaternion.FromUnitVectorsToRef(
-        Vector3.UpReadOnly,
-        run.scale(1 / run.length()),
-        new Quaternion(),
-      );
-      return piece;
-    });
-    // 3% LARGER than the bars, sixteen segments, and both measured. At the bars' own radius the bars'
-    // octagonal end rings lie ON the sphere the faceted ball is inscribed in, so they poke out between its
-    // vertices at ANY tessellation -- 12 of the 14 distinct corner-ring positions, by up to 0.32 mm at
-    // eight segments and 0.12 mm at sixteen -- and a 4x crop of the elbow showed that as a notch. More
-    // segments only shrink it; a larger radius is what closes it. At 1.03 all fourteen are inside by at
-    // least 0.60 mm, and sixteen segments (1,296 triangles, still one draw) keep the knuckle's silhouette
-    // round rather than faceted where it sits in the pilot's upper-right view.
-    const joint = build.sphere("windscreen-center-frame-joint", centreFrameRadius * 2 * centreFrameJointScale, 16, dark, root);
-    joint.position.copyFrom(centreFrameCorner);
-    pieces.push(joint);
-    build.mergeStatic("windscreen-center-frame", pieces, root);
+    const { points, halfWidths, halfDepths } = trainerCentreFramePath();
+    sweptTube(
+      build, "windscreen-center-frame",
+      points.map((p) => new Vector3(p.x, p.y, 0)),
+      halfWidths, TRAINER_CENTRE_FRAME.segments, dark, root,
+      { halfDepths },
+    );
   }
 
   // The wing. Constant chord 1.44 m over the whole 10.17 m span, no taper and
@@ -622,8 +589,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
     );
     headrest.position.set(1.02, -0.08, side * 0.26);
   }
-  // The panel, the dials, the cowl the pilot sees, the door panels and the
-  // windscreen posts are COCKPIT-ONLY parts, built to angles from the pilot's
+  // The deck and the board, the dials, the cowl the pilot sees, the door frames
+  // and the A-pillars are COCKPIT-ONLY parts, built to angles from the pilot's
   // left-seat eye in `cockpit/trainerCockpit.ts`. They have to be, because the
   // fuselage tube is hidden from the cockpit camera (its top skin is the sill
   // and the eye is above it), so anything that used to show only by being
@@ -632,6 +599,14 @@ export function createTrainer(scene: Scene): AircraftVisual {
   const cockpit = buildTrainerCockpit(build, root, {
     interior,
     dark,
+    // the cabin's fabric: a pale warm grey, matte, as a 150's headliner is (S4)
+    headliner: build.material("trainer-headliner", 0x9c9a92, { roughness: 0.95, metallic: 0 }),
+    // the yokes (S7): a 150's black plastic, fully matte and much darker than the board, so their sides read darker
+    // than it and only their sky-lit tops a little above it. The PM's reading of the frame (2026-10-01): at 1.2 times the
+    // board's colour the grips read as grey posts with pale tops, their caps and the column's top 3.5 times the board's
+    // luma; the target is their tops at 1.6 times or less and their sides about half. A matte surface's luma here follows
+    // which way it faces, so one colour sets both (tuned in the frame)
+    yoke: build.material("trainer-yoke", 0x0b0f11, { roughness: 0.95, metallic: 0 }),
     instrumentFace,
     instrumentMarking,
     cowl: cowlPaint,
@@ -872,6 +847,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
     cockpitParts: rig.cockpitParts,
     cockpitOnlyParts: rig.cockpitOnlyParts ?? [],
     meshes: build.meshes,
+    // the dial faces and the radios' windows carry the display atlas where there is a 2D canvas (S2)
+    displaysLive: cockpit.displaysLive,
     update(state, deltaSeconds) {
       if (disposed) return;
       const delta = safeAircraftAnimationDelta(deltaSeconds);
@@ -900,6 +877,8 @@ export function createTrainer(scene: Scene): AircraftVisual {
       applyLamp(strobeLamp, lights.strobe);
       applyLamp(landingLamp, lights.landing);
       applyGlow(instrumentMarking, lights.cockpitGlow);
+      // the dials' bezels: the shared rim's own law (`bezelRimEmissive`), the Global's and the 747's
+      cockpit.bezelMaterial.emissiveIntensity = bezelRimEmissive(lights.cockpitGlow);
     },
     setCockpitView(enabled) {
       if (disposed) return;

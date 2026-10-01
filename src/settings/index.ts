@@ -272,6 +272,21 @@ export function readWorldEvolutionFromUrl(url?: string): "eroded" | undefined {
   }
 }
 
+/**
+ * V-4: the terrain's far-sward read for one review session (`?farSward=off`,
+ * `cheap` or `soft`). URL only and never persisted, like `?world=`: absence
+ * keeps the shipped read.
+ */
+export function readTerrainFarSwardFromUrl(url?: string): "off" | "cheap" | "soft" | undefined {
+  const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
+  try {
+    const value = new URL(source).searchParams.get("farSward");
+    return value === "off" || value === "cheap" || value === "soft" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function seedToString(seed: number): string {
   return (seed >>> 0).toString(36).toUpperCase().padStart(6, "0");
 }

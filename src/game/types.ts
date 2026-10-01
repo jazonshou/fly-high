@@ -139,6 +139,14 @@ export interface RenderDiagnostics {
   activeAnimals: number;
   riverCount: number;
   lakeCount: number;
+  /**
+   * Inland water generation has fallen back to the MAIN thread for good (the
+   * worker could not be built, or crashed past its restart budget). Every new
+   * region is then a long main-thread task: ~80 ms at 1x, 317 ms at 4x.
+   */
+  hydrologyMainThreadFallback: boolean;
+  /** The last completed hydrology region came from the worker. */
+  hydrologyLastGenerationUsedWorker: boolean;
   residentTerrainPages: number;
   /**
    * Why those pages are resident, counted per reason.

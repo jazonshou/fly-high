@@ -48,7 +48,8 @@ export interface CockpitHit {
 }
 
 function categoryOf(name: string): CockpitCategory {
-  if (/screens|gauge|needle|attitude-(sky|ground|pitch)/.test(name)) return "display";
+  // the Cessna's dial faces (and its radios' windows) are one mesh since its bezels (S2): `trainer-dial-faces`
+  if (/screens|gauge|dial-faces|needle|attitude-(sky|ground|pitch)/.test(name)) return "display";
   if (/bezel/.test(name)) return "bezel";
   if (/glare-?shield/.test(name)) return "glareshield";
   if (/instrument-panel/.test(name)) return "panel";

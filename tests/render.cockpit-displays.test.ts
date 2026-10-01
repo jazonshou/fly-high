@@ -17,10 +17,12 @@ import {
   BIZJET_DISPLAY_AIRFRAME,
   BIZJET_SCREENS,
   bizjetScreenPlacements,
+  bizjetStandbyPlacement,
 } from "../src/render/webgpu/aircraft/cockpit/bizjetCockpit";
 import { AircraftBuildContext } from "../src/render/webgpu/aircraft/builders";
 import { JET_DISPLAY_AIRFRAME, JET_MFD, jetMfdPlacements } from "../src/render/webgpu/aircraft/cockpit/jetCockpit";
 import {
+  AIRLINER_CLOCK_FACE,
   AIRLINER_DISPLAYS,
   BIZJET_DISPLAYS,
   JET_DISPLAYS,
@@ -78,6 +80,8 @@ interface Deck {
   readonly bezelsMesh: string;
   /** The deck's other meshes round its screens (the bezel rims and wells, P1b): not screens, and not the atlas's. */
   readonly surroundMeshes?: readonly string[];
+  /** Static faces the deck draws ONCE at build, each on a canvas of its own beside the atlas's (the 747's clock, S4). */
+  readonly staticFaces?: readonly DisplayLayout[];
   readonly screenParts: RegExp;
   /**
    * Two independent counts of the engines, over authored part names: one part per engine each. The
@@ -98,6 +102,7 @@ const DECKS: readonly Deck[] = [
     airframe: AIRLINER_DISPLAY_AIRFRAME,
     bezelsMesh: "airliner-screen-bezels",
     surroundMeshes: ["airliner-screen-bezel-rims", "airliner-screen-wells"],
+    staticFaces: [AIRLINER_CLOCK_FACE],
     screenParts: /^airliner-screen/,
     engineParts: { first: /fan-spool-fan$/, second: /-engine-inlet$/ },
     pages: {
@@ -117,7 +122,8 @@ const DECKS: readonly Deck[] = [
     label: "Global",
     layout: BIZJET_DISPLAYS,
     flatMaterial: "bizjet-instrument-face",
-    placements: bizjetScreenPlacements,
+    // the pairs, and the standby on the centre board last (S5): two thirds their size, the same shape
+    placements: () => [...bizjetScreenPlacements(), { name: "standby", centre: bizjetStandbyPlacement().centre }],
     screen: { width: BIZJET_SCREENS.width, height: BIZJET_SCREENS.height },
     airframe: BIZJET_DISPLAY_AIRFRAME,
     bezelsMesh: "bizjet-screen-bezels",
@@ -130,6 +136,8 @@ const DECKS: readonly Deck[] = [
       "port-inboard": "nd",
       "starboard-outboard": "pfd",
       "starboard-inboard": "nd",
+      // the type's standby cluster: attitude and tapes, not a third PFD
+      standby: "standby",
     },
   },
   {
@@ -600,31 +608,41 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
     uploads: number[];
     /** One entry per `getImageData` the upload read the canvas with. */
     readbacks: number;
+    /** Every canvas the build asked for, the atlas's among them. */
+    made: readonly { canvas: StubCanvas; context: ReturnType<typeof createRecordingContext> }[];
   }
 
   /** Build one aircraft with the stub in place, hand it to `body`, and put the world back. */
   function withLiveCanvas<T>(body: (live: Live) => T): T {
-    const context = createRecordingContext();
     const live = { uploads: [] as number[], readbacks: 0 } as Live;
-    const canvas: StubCanvas = {
-      width: 0,
-      height: 0,
-      getContext(kind: string) {
-        if (kind !== "2d") return null;
-        // `uploadDisplayAtlas` asks the canvas for its pixels: count the reads, and hand back bytes of
-        // the canvas's size so the upload's size can be checked against the atlas's
-        return Object.assign(context, {
-          getImageData: (_x: number, _y: number, w: number, h: number) => {
-            live.readbacks += 1;
-            return { data: new Uint8ClampedArray(w * h * 4) };
-          },
-        });
-      },
+    // a canvas of its own for every one asked for (the 747 makes its clock's face beside its atlas, S4); the ATLAS's is
+    // the one sized to the layout, and only its reads are counted
+    const [atlasWidth, atlasHeight] = [displayAtlasWidth(deck.layout), displayAtlasHeight(deck.layout)];
+    const made: { canvas: StubCanvas; context: ReturnType<typeof createRecordingContext> }[] = [];
+    const makeCanvas = (): StubCanvas => {
+      const context = createRecordingContext();
+      const canvas: StubCanvas = {
+        width: 0,
+        height: 0,
+        getContext(kind: string) {
+          if (kind !== "2d") return null;
+          // `uploadDisplayAtlas` asks the canvas for its pixels: count the atlas's reads, and hand back bytes of the
+          // canvas's size so the upload's size can be checked against the atlas's
+          return Object.assign(context, {
+            getImageData: (_x: number, _y: number, w: number, h: number) => {
+              if (canvas.width === atlasWidth && canvas.height === atlasHeight) live.readbacks += 1;
+              return { data: new Uint8ClampedArray(w * h * 4) };
+            },
+          });
+        },
+      };
+      made.push({ canvas, context });
+      return canvas;
     };
     const globals = globalThis as { document?: unknown };
     const had = Object.prototype.hasOwnProperty.call(globals, "document");
     const previous = globals.document;
-    globals.document = { createElement: (tag: string) => (tag === "canvas" ? canvas : null) };
+    globals.document = { createElement: (tag: string) => (tag === "canvas" ? makeCanvas() : null) };
     const engine = new NullEngine();
     const scene = new Scene(engine);
     scene.useRightHandedSystem = true;
@@ -642,7 +660,10 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
         live.uploads.push(data.byteLength);
         upload(data);
       };
-      Object.assign(live, { aircraft, scene, canvas, context });
+      const atlas = made.filter(({ canvas }) => canvas.width === atlasWidth && canvas.height === atlasHeight);
+      if (atlas.length !== 1) throw new Error(`${atlas.length} canvases sized to ${deck.layout.name}`);
+      expect(made, "the atlas's canvas and one for each static face").toHaveLength(1 + (deck.staticFaces?.length ?? 0));
+      Object.assign(live, { aircraft, scene, canvas: atlas[0]!.canvas, context: atlas[0]!.context, made });
       return body(live);
     } finally {
       if (had) globals.document = previous;
@@ -781,9 +802,34 @@ describe.each(DECKS.map((deck) => [deck.label, deck] as const))("the %s's displa
         const left = scene.textures.filter((t) => !before.has(t) && t !== scene.environmentBRDFTexture);
         expect(left.map((t) => t.name), `cycle ${cycle}: textures the aircraft left behind`).toEqual([]);
       }
-      // and each build's canvas was sized to nothing when its texture went, releasing its backing store
-      expect(canvases, "one atlas canvas per build").toHaveLength(2);
+      // and each build's canvases (its atlas's, and its static faces': the 747's clock, S4) were sized to nothing when their
+      // textures went, releasing their backing stores
+      expect(canvases, "one atlas canvas per build, and one per static face").toHaveLength(2 * (1 + (deck.staticFaces?.length ?? 0)));
       for (const canvas of canvases) expect([canvas.width, canvas.height], "a disposed atlas's canvas").toEqual([0, 0]);
+    });
+  });
+
+  it.runIf((deck.staticFaces?.length ?? 0) > 0)("draws each static face ONCE, at build, onto its own mesh alone, and never again in flight (the 747's clock, S4)", () => {
+    withLiveCanvas(({ aircraft, scene, made }) => {
+      for (const face of deck.staticFaces ?? []) {
+        const [w, h] = [displayAtlasWidth(face), displayAtlasHeight(face)];
+        const own = made.find(({ canvas }) => canvas.width === w && canvas.height === h)!;
+        expect(own, `${face.name}'s canvas`).toBeDefined();
+        const texts = () => own.context.calls.filter((call) => call.method === "fillText").map((call) => String(call.args[0]));
+        // drawn at build: the page's text is there before any update
+        expect(texts(), `${face.name} drawn at build`).toContain("UTC");
+        const drawnAtBuild = own.context.calls.length;
+        // and worn by its own mesh alone, as its emissive image
+        const texture = scene.textures.find((t) => t.name === face.name);
+        expect(texture, `${face.name}'s texture`).toBeDefined();
+        const wearers = scene.meshes.filter((mesh) => (mesh.material as { emissiveTexture?: unknown } | null)?.emissiveTexture === texture);
+        expect(wearers.map((mesh) => mesh.name)).toEqual([face.screensMesh]);
+        // NEVER AGAIN: a second of cockpit frames redraws the displays fifteen times and the face not once
+        aircraft.setCockpitView(true);
+        for (let frame = 0; frame < 60; frame += 1) aircraft.update({ ...INITIAL_VISUAL_STATE, bank: frame }, 1 / 60);
+        aircraft.setCockpitView(false);
+        expect(own.context.calls.length, `${face.name} redrawn in flight`).toBe(drawnAtBuild);
+      }
     });
   });
 
@@ -877,7 +923,10 @@ describe("the atlas's shape, for layouts no aeroplane has yet", () => {
  * from the same instructions.
  */
 describe("the 747's and the Global's atlases, pinned before the slot size became per-deck", () => {
-  const PINNED: Readonly<Record<string, string>> = { "747": "0e7fe4d8:2090", Global: "d7144cad:1263" };
+  // RE-PINNED for the Global by the "feel real" wave's S5: a fifth slot, the standby page, and the five in one row of
+  // five, so the pairs' slots stand at new x in the atlas and the painter makes 312 more calls (1,263 -> 1,575). The
+  // 747's is unchanged.
+  const PINNED: Readonly<Record<string, string>> = { "747": "0e7fe4d8:2090", Global: "ca984a3a:1575" };
   const digest = (layout: DisplayLayout, airframe: DisplayAirframe): string => {
     const context = createRecordingContext();
     const state = displayStateFromVisual(

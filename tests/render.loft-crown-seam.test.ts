@@ -301,7 +301,46 @@ describe("a loft's crown seam", () => {
       // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
       // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
       // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
-      trainer: "1f9a6faa",
+      // RE-PINNED for the Cessna pass, S1 (jazonshou/cessna-cockpit, 2026-09-29): the deck and the board swept wall to
+      // wall. Checked mesh by mesh against 303372e (positions, indices, normals, UVs, world matrix, thin instances,
+      // material, visibility): 12 of the trainer's 66 moved, none gone, none new. `trainer-glareshield` 24 -> 756
+      // vertices (the rounded deck) and `trainer-instrument-panel` 24 -> 852 (the board), both cockpit-only;
+      // `trainer-door-port`/`-starboard` (the sill cap ends at x 1.9); and the eight dial meshes by their world matrix
+      // only, the row 4 cm inboard (their vertices are bit-identical). The other 54, and every mesh of the jet, the
+      // Global and the 747, are bit-identical.
+      // RE-PINNED for the Cessna pass, S3 (same branch, same check, against S1 dfa5598): the door frames, the A-pillars
+      // and the deck's and the board's buried ends. `trainer-door-port`/`-starboard` 72 -> 2,110 vertices (the rail,
+      // the face and the panel), `trainer-glareshield` 756 -> 252 and `trainer-instrument-panel` 852 -> 276 (square
+      // buried ends in place of the fillets); `trainer-windscreen-post-port`/`-starboard` gone, `trainer-a-pillar-port`
+      // /`-starboard` new, all cockpit-only. The trainer's other 60 of 66, and every mesh of the jet, the Global and the
+      // 747, are bit-identical.
+      // RE-PINNED for S2 (same check, against S3 fc9579e): the panel's face. `trainer-airspeed-gauge`, `-attitude-gauge`
+      // and `-altimeter-gauge` gone; `trainer-dial-faces` (the atlas's screens: the three faces and the radios' windows),
+      // `trainer-dial-bezels` and `trainer-panel-fittings` (the radios' bodies and knobs, the switches) new; the two
+      // needles and the attitude ball's three parts moved (thinner, into the bezels' well). The trainer's other 58 of 66,
+      // and every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S4 (same check, against S2 d2b64ff): `trainer-headliner` new (the headliner and its header, the two
+      // visors) and `trainer-panel-fittings` moved (the compass and its stalk joined it); the trainer's other 65 of 67, and
+      // every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S5 (same check, against S4 bb261f1): `windscreen-center-frame` 779 -> 458 vertices (one tapered
+      // strip round a fillet, where two bars met at a ball), `trainer-cowl-standin` 52 -> 152 (its nose's lip) and
+      // `trainer-panel-fittings` moved (the compass hung under the glass); the trainer's other 64 of 67, and every mesh
+      // of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S6 (same check, against S5 a06be92): `trainer-yokes` new (both seats' wheels, bosses, columns and
+      // collars); the trainer's other 67 of 68, and every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for S2b (same check, against S6 c154cbb): `trainer-tach-needle` new; `trainer-dial-faces` and
+      // `trainer-dial-bezels` moved (the tachometer's and the engine cluster's faces and rings joined them); the
+      // trainer's other 66 of 69, the two dials' needles included, and every mesh of the jet, the Global and the 747,
+      // are bit-identical.
+      // RE-PINNED for S7 (same check, against the rebased tip 07fae0e): `trainer-compass-card` new; the yokes (grips 22 x
+      // 30 mm, low caps, their own matte), the headliner (24 chords a corner), the fittings (the compass box round its
+      // window and cavity) and the bezels (the window's ring and the lubber line) moved; the trainer's other 65 of 70, and
+      // every mesh of the jet, the Global and the 747, are bit-identical.
+      // RE-PINNED for gate 40 on the Cessna's merge (same check, against a0b2c3c): the compass's ring and lubber line out
+      // of `trainer-dial-bezels` (back to its S2b state, bit-identical) into `trainer-compass-rim`, new; the cowl stand-in
+      // bit-identical, its UVs included, now without a station range; the trainer's other 68, and every mesh of the jet,
+      // the Global and the 747, are bit-identical.
+      trainer: "82f775ec",
       // Re-pinned when the F-16 gained its airbrake shelves and its four
       // petals were rebuilt to lie on them. A DELIBERATE geometry change on
       // one airframe, merged alongside the cockpit work's trainer and Global
@@ -344,7 +383,31 @@ describe("a loft's crown seam", () => {
       // RE-PINNED 7d145111 -> 71f87079 when this digest began reading thin-instance matrices (2026-09-24): the jet's
       // nozzle petals (14) and turbine blades (8) are thin instances. Its positions and indices alone still hash to
       // 7d145111; nothing about the jet changed.
-      jet: "71f87079",
+      // RE-PINNED 71f87079 -> 3ca5510d for the F-16 wave's S2, the dash taking over at the round's aft tangent through a
+      // 2 cm cove (the 45 degree chamfer gone). Checked mesh by mesh against 303372e (positions, normals, UVs, indices,
+      // world matrix, material, visibility, instances, in both views): `jet-glare-shield` (984 -> 972 vertices),
+      // `jet-instrument-panel` (36 -> 48, the board a pentagon), `jet-mfd-frames`, `jet-mfd-rims` and `jet-screens` (under
+      // the cove's foot) and `jet-sills` (the consoles' forward ends on the dash's face, 12.7 mm aft) changed; the jet's
+      // other 69 and every mesh of the other three airframes are bit-identical.
+      // RE-PINNED 3ca5510d -> a6be9a33 for S3, the rail's ends: checked mesh by mesh against 2f16351 (the same fields, both
+      // views): `jet-glare-shield` (972 -> 4380 vertices: the rail swept across with its outboard ends rounded, the ends'
+      // sections in six chords a round, the S topped at the round's crown, and the fillet's spans on the round),
+      // `jet-instrument-panel` (48 -> 504: the fillet's spans on the dash merged in) and `jet-sills` (432 -> 816: the
+      // rails' section in six chords a round) changed; the jet's other 72 and every mesh of the other three airframes
+      // are bit-identical.
+      // RE-PINNED a6be9a33 -> 0dff8af9 for S1, the ICP: checked mesh by mesh against cb43285 (the same fields, both views):
+      // two meshes new, both cockpit-only (`jet-icp`, the framed panel, the DED's lip, the keys and the rockers;
+      // `jet-icp-ded`), `jet-mfd-rims` 192 -> 288 vertices (the ICP's rim after the MFDs') and `jet-instrument-panel`
+      // 504 -> 540 (the ICP's recessed floor on the dash's material); the jet's other 73 and every mesh of the other
+      // three airframes are bit-identical.
+      // RE-PINNED 0dff8af9 -> 4d829e35 for the S3 amend: the S through 21 stations spaced by its arcs' angle, the glass
+      // re-measured at them. Checked mesh by mesh against 392e060: `jet-glare-shield` alone (4380 -> 6684 vertices); the
+      // jet's other 76 and every mesh of the other three airframes are bit-identical.
+      // RE-PINNED 4d829e35 -> 39b573ab for S4, the canopy seal: checked mesh by mesh against 4cd8b39: `jet-glare-shield`
+      // alone (6684 -> 14364 vertices: each side's seal strip in the glass margin and its groove's cove, merged in; the
+      // S's rounds' normals made true on its slope, positions unmoved); the jet's other 76 and every mesh of the other
+      // three airframes are bit-identical.
+      jet: "39b573ab",
       // RE-PINNED for the Global's two ball halves, by the same change and on the same evidence as the trainer's above.
       // RE-PINNED for the Global when its 3D attitude ball came out (its PFD page draws attitude on
       // the screen now, as the 747's does). Checked mesh by mesh against f9d2672, positions AND
@@ -445,7 +508,28 @@ describe("a loft's crown seam", () => {
       // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
       // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
       // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
-      bizjet: "0d9b6dba",
+      // RE-PINNED for the Global by the "feel real" wave's S1 (jazonshou/cockpit-global-real): the glareshield's round
+      // at 20 mm with its chords smooth-shaded, no aft face and a 5 mm cove, and a new cove fillet. Checked mesh by mesh
+      // against 0fbc073 (world positions, indices, normals, material, roles, visibility): only the Global's cockpit
+      // moves -- the glareshield, the new fillet, and the board, screens, frames, rims and wells, which stand on the
+      // face's top 0.9 mm higher and 5 mm nearer -- and every mesh of the trainer's 66, the jet's 75 and the 747's 96 is
+      // bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S2: the frames' tops stand 1.2 mm of board under the cove's
+      // fillet (their top border 6 mm, no flat band; the frame a U), the screens 2.1 mm lower on the face. Checked mesh by
+      // mesh against S1: only the Global's screens, frames, rims and wells move; every other mesh of all four is
+      // bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S4: the glareshield's ends close in 20 mm quarter-rounds
+      // outboard of the deck (two swept end pieces merged with the straight lip, one draw). Checked mesh by mesh against
+      // S2: only the Global's glareshield moves; every other mesh of all four is bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S3: every pane's edge rolls into the glass (a round and a
+      // seal, rounded corners; the lining stands nothing proud of the skin), the seals one new mesh on the glareshield's
+      // material, and the pillars' feet filleted onto the sill caps. Checked mesh by mesh against S4: only the Global's
+      // interior moves and its seals are new; every other mesh of all four is bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S5: the side consoles roll their tops into their faces (r 10,
+      // a step outboard of the board's ends) and carry the panel block, its rockers and the tiller; the caps join them on
+      // a second interior instance; a standby display on the centre board. Checked mesh by mesh against S3: only the
+      // Global's cockpit meshes move; every other mesh of all four is bit-identical.
+      bizjet: "9d0d9b29",
       // RE-PINNED for the 747 by its cockpit (jazonshou/cockpit-747): the old panel, gauge
       // faces and needle meshes are gone, the seats and headrests moved forward with the
       // pilot, and eight cockpit-only meshes stand in their place. Checked mesh by mesh
@@ -529,7 +613,31 @@ describe("a loft's crown seam", () => {
       // the glazing and the kit included. The instances (the window line x228, flap-track canoes x8, nacelle chevrons
       // x48): dumped against d30bb05, only the window line's changed, every pane onto the drawn facets (median 16 mm,
       // at most 24) and along the skin's cap-free normal (tests/render.airliner-cabin-windows.test.ts).
-      airliner: "5cb70892",
+      // RE-PINNED 5cb70892 -> d9605bf4 for the rolled window frame (S1 of the cockpits wave): the lining's fifteen skin
+      // panels are one welded surface with each opening rolled into it, and the seals round the glass are new. Checked mesh
+      // by mesh against 303372e: airliner-cockpit-interior changed (2,556 -> 1,856 vertices, 2,328 -> 3,110 triangles),
+      // airliner-window-seals is new (2,040, 1,608), and the other 95 are bit-identical, every other airframe's too.
+      // RE-PINNED d9605bf4 -> a4eac957 for the frame's rounded corners (S2): against S1, airliner-cockpit-interior
+      // (1,856 -> 2,688 vertices, 3,110 -> 4,926 triangles) and airliner-window-seals (2,040 -> 3,160, 1,608 -> 3,160)
+      // moved, and the other 95 are bit-identical.
+      // RE-PINNED a4eac957 -> 456b3e28 for the deck turned aft and the clock (S4): against S2, airliner-glareshield and
+      // airliner-cockpit-interior (their deck swept round to the sides), airliner-screen-bezels, -bezel-rims and -wells (the
+      // clock's frame, rim and well with theirs) moved, airliner-clock is new, and the other 92 are bit-identical.
+      // RE-PINNED 456b3e28 -> 0a12154b for a corner radius a pane (S2, 2.8 / 2.8 / 2.0 where all were 3): against S4,
+      // airliner-cockpit-interior (2,848 -> 2,904 vertices) and airliner-window-seals (3,160 -> 3,240) moved, and the
+      // other 96 are bit-identical.
+      // RE-PINNED 0a12154b -> be50f03f for the glareshield over the displays (S3): against 29a570c, airliner-glareshield
+      // (its new section), airliner-screen-bezels (the MCP's and the EFIS panels' plates) and airliner-screen-bezel-rims
+      // (their windows) moved, and the other 95 are bit-identical, the board and the screens included.
+      // RE-PINNED be50f03f -> 6fd8be82 for the header and the overhead's forward end (S5): against 3ac0a0c,
+      // airliner-header and airliner-overhead-front are new, and the other 98 are bit-identical.
+      // RE-PINNED 6fd8be82 -> e7b38db2 for the glareshield's windows 2 px inside the strip's edges (S3's margins): against
+      // e0f9c73, airliner-screen-bezel-rims moved, and the other 99 are bit-identical.
+      // RE-PINNED e7b38db2 -> 52aba346 for the deck's turns in 5 degree chords: against 2e48fce, airliner-glareshield and
+      // airliner-cockpit-interior (the board) moved, and the other 98 are bit-identical.
+      // RE-PINNED 52aba346 -> 6f6e5763 with the header taken out again (S5, the PM's call): against 6a21297, airliner-header
+      // is gone and the other 99 are bit-identical.
+      airliner: "6f6e5763",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

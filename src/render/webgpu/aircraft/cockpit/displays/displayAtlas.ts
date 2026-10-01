@@ -81,6 +81,21 @@ export const AIRLINER_DISPLAYS: DisplayLayout = Object.freeze({
 });
 
 /**
+ * The 747's clock (S4): ONE static face, drawn once at build into a texture of its own and never redrawn. Not a slot of
+ * the displays' atlas: none is spare (3 x 2), and a fourth column would make every redraw a third dearer (about 1.1 ms
+ * more of the 3.3). Square, and mipmapped: its 256 texels land on about 140 pixels at this lens.
+ */
+export const AIRLINER_CLOCK_FACE: DisplayLayout = Object.freeze({
+  name: "airliner-clock-face",
+  screensMesh: "airliner-clock",
+  columns: 1,
+  slotWidth: 256,
+  slotHeight: 256,
+  mipmaps: true,
+  screens: Object.freeze([{ screen: "clock", page: "clock" }] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
  * The Global's four, in `bizjetScreenPlacements()` order: each seat's OUTBOARD screen then its
  * inboard one, port pair first. Each pilot gets a PFD outboard and a map inboard.
  *
@@ -94,16 +109,22 @@ export const AIRLINER_DISPLAYS: DisplayLayout = Object.freeze({
  * Only the PORT pair is ever seen: measured from the built mesh at the solved eye, the port screens
  * sit at azimuth -10.8 and +10.8 and the starboard pair at +54.9 and +61.0, outside the 75 degree
  * frame. The starboard pair is drawn because the aeroplane has it, not because anyone looks at it.
+ *
+ * THE FIFTH, last in build order, is the standby cluster on the centre board (S5, `BIZJET_STANDBY`):
+ * the standby page, attitude and tapes, at two thirds of a pair screen's size, so the same 440 x 300
+ * slot shape. Five slots fill one row of five, 2200 x 300 (a layout fills its rows): a quarter more
+ * texels than the four's 880 x 600, where three rows of two would have been half as many again.
  */
 export const BIZJET_DISPLAYS: DisplayLayout = Object.freeze({
   name: "bizjet-displays",
   screensMesh: "bizjet-screens",
-  columns: 2,
+  columns: 5,
   screens: Object.freeze([
     { screen: "port-outboard", page: "pfd" },
     { screen: "port-inboard", page: "nd" },
     { screen: "starboard-outboard", page: "pfd" },
     { screen: "starboard-inboard", page: "nd" },
+    { screen: "standby", page: "standby" },
   ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
 });
 
@@ -125,6 +146,33 @@ export const JET_DISPLAYS: DisplayLayout = Object.freeze({
   screens: Object.freeze([
     { screen: "port", page: "pfd" },
     { screen: "starboard", page: "nd" },
+  ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
+});
+
+/**
+ * The Cessna's (the Cessna pass, S2): its three dial faces and its two radios' windows, as STATIC pages drawn once (the
+ * needles and the attitude ball are geometry in front of them). The slots are SQUARE, the dial faces' shape; a radio's
+ * window samples the band across its slot's middle (`TRAINER_RADIO_WINDOW_ASPECT`). 256 texels a face land on about
+ * 120 screen pixels at 1080p, two a pixel, so the atlas is mipmapped, as the F-16's is.
+ */
+export const TRAINER_DISPLAYS: DisplayLayout = Object.freeze({
+  name: "trainer-displays",
+  screensMesh: "trainer-dial-faces",
+  columns: 3,
+  slotWidth: 256,
+  slotHeight: 256,
+  mipmaps: true,
+  screens: Object.freeze([
+    { screen: "airspeed", page: "trainer-asi" },
+    { screen: "attitude", page: "trainer-attitude-ring" },
+    { screen: "altimeter", page: "trainer-altimeter" },
+    { screen: "com", page: "trainer-com" },
+    { screen: "nav", page: "trainer-nav" },
+    // the tachometer and the engine cluster (the Cessna pass, S2b)
+    { screen: "tach", page: "trainer-tach" },
+    { screen: "engine", page: "trainer-engine" },
+    // the compass's card, round its drum (S7)
+    { screen: "compass", page: "trainer-compass" },
   ] as const satisfies readonly { screen: string; page: DisplayPage }[]),
 });
 

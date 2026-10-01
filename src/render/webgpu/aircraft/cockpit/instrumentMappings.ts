@@ -61,6 +61,14 @@ export function altimeterNeedleDegrees(metresAboveSeaLevel: number): number {
 }
 
 /**
+ * Tachometer: -135 degrees at 0 RPM sweeping clockwise to +135 at `fullScaleRpm`, clamped. It reads `engineRpm`, the
+ * number the HUD's RPM readout rounds (to 10 on the trainer); the needle does not round.
+ */
+export function tachometerNeedleDegrees(rpm: number, fullScaleRpm: number): number {
+  return -135 + 270 * clamp(finiteOr(rpm, 0) / fullScaleRpm, 0, 1);
+}
+
+/**
  * The attitude ball's horizon turns by MINUS the bank, as seen by the pilot: in a
  * right bank (bank > 0, right wing down) the real horizon in the windscreen
  * tilts anticlockwise, and so does the ball's. Returned as degrees CLOCKWISE AS

@@ -57,7 +57,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
     const markup = renderHud("chase");
     expect(markup).toContain("Shift power · Ctrl reduce");
     expect(markup).not.toContain("+ power · − reduce");
-    expect(markup).not.toContain(">FLAP<");
+    // The flap block came back on 2026-09-30 (Jason): the keys worked and nothing on screen said so.
+    expect(markup).toContain("F flaps down · V up");
     expect(markup).not.toContain(">BRK<");
     expect(markup).not.toContain("hud-brand");
     expect(markup).not.toContain("AEROLITH");
@@ -88,6 +89,31 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(rollout).toContain("SPEED + WHEEL BRAKE");
   });
 
+  it("shows where the flap panels are on every airframe, and the keys that move them", () => {
+    const flapBlock = (flaps: number, aircraft: AircraftKind = "airliner") => {
+      const markup = renderHud("chase", false, aircraft, { flaps });
+      const match = /<div class="instrument-readout" aria-label="Flaps ([a-z]+)"><small>FLAPS<\/small><strong>([A-Z]+)<\/strong><em>([^<]+)<\/em><\/div>/.exec(markup);
+      expect(match, `${aircraft} at flaps ${flaps}`).not.toBeNull();
+      return { spoken: match![1], shown: match![2], under: match![3] };
+    };
+    // The three detents the lever has, read off the panels.
+    expect(flapBlock(0)).toEqual({ spoken: "up", shown: "UP", under: "F DN · V UP" });
+    expect(flapBlock(0.5)).toEqual({ spoken: "half", shown: "HALF", under: "F DN · V UP" });
+    expect(flapBlock(1)).toEqual({ spoken: "full", shown: "FULL", under: "F DN · V UP" });
+    // Between detents the panels are still running: say so, with how far.
+    expect(flapBlock(0.76)).toEqual({ spoken: "moving", shown: "MOVING", under: "76%" });
+    expect(flapBlock(0.25)).toEqual({ spoken: "moving", shown: "MOVING", under: "25%" });
+    // Every airframe has flaps, the fixed-gear trainer included.
+    for (const aircraft of ["trainer", "jet", "bizjet", "airliner"] as const) {
+      expect(flapBlock(0.5, aircraft).shown).toBe("HALF");
+      expect(renderHud("chase", false, aircraft)).toContain("<span>F flaps down · V up</span>");
+    }
+    // The block sits last in the strip, after the gear where there is one.
+    const jet = renderHud("chase", false, "jet");
+    expect(jet.indexOf("<small>GEAR</small>")).toBeGreaterThan(0);
+    expect(jet.indexOf("<small>FLAPS</small>")).toBeGreaterThan(jet.indexOf("<small>GEAR</small>"));
+  });
+
   it("reports the active WebGPU profile and compute workloads", () => {
     const diagnostics: RenderDiagnostics = {
       residencyReasons: { drawn: 0, parent: 0, collision: 0, seed: 0, drawnBeyondShadowDistance: 0 },
@@ -110,6 +136,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
       activeAnimals: 48,
       riverCount: 9,
       lakeCount: 3,
+      hydrologyMainThreadFallback: false,
+      hydrologyLastGenerationUsedWorker: true,
       residentTerrainPages: 42,
     collisionSamplesServedByFallback: 0,
       cloudResolutionScale: 0.5,
@@ -169,6 +197,23 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("WEBGPU · WEBGPU FORWARD / SPECTRAL / VOLUMETRIC");
     expect(markup).toContain("ULTRA · 4×256² FFT · 72 cloud steps");
     expect(markup).toContain("24,500 detail instances · 48 animals · 9 rivers / 3 lakes");
+    expect(markup).not.toContain("WATER GEN ON MAIN THREAD");
+    // A main-thread hydrology fallback is a standing hitch source: say so.
+    const fallbackMarkup = renderToStaticMarkup(createElement(Hud, {
+      state: INITIAL_VISUAL_STATE,
+      aircraft: "trainer",
+      mode: "full",
+      flightMode: "unassisted",
+      units: "aviation",
+      diagnostics: { ...diagnostics, hydrologyMainThreadFallback: true },
+      showDiagnostics: true,
+      cameraMode: "chase",
+      cameraLabel: "CHASE CAM",
+      seedLabel: "AUD1T0",
+      mouseFlight: false,
+      onRunBudgetProbe: () => undefined,
+    }));
+    expect(fallbackMarkup).toContain("9 rivers / 3 lakes · WATER GEN ON MAIN THREAD");
     expect(markup).toContain("Test GPU");
     expect(markup).toContain("17.2 ms frame");
     expect(markup).toContain("4.2 ms CPU");

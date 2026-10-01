@@ -1,4 +1,5 @@
 import type { DisplayContext2D, DisplayPaint, DisplayState } from "./displayState";
+import { airspeedNeedleDegrees, altimeterNeedleDegrees, FEET_PER_METRE, KNOTS_PER_METRE_PER_SECOND, tachometerNeedleDegrees } from "../instrumentMappings";
 
 /**
  * The 747-400's four glass-cockpit pages, drawn flat onto a 2D canvas context:
@@ -40,7 +41,24 @@ const DEG = Math.PI / 180;
 /** Canvas angles run clockwise from 3 o'clock, so 12 o'clock is a quarter turn back. */
 const TWELVE_OCLOCK = -Math.PI / 2;
 
-export type DisplayPage = "pfd" | "nd" | "eicas-upper" | "eicas-lower";
+export type DisplayPage =
+  | "pfd"
+  | "nd"
+  | "eicas-upper"
+  | "eicas-lower"
+  // the 747's clock (on its deck)
+  | "clock"
+  // the Global's standby (on its centre board)
+  | "standby"
+  // the Cessna's round dials and its radios' windows: STATIC pages, drawn once (see "the Cessna's dial faces" below)
+  | "trainer-asi"
+  | "trainer-attitude-ring"
+  | "trainer-altimeter"
+  | "trainer-com"
+  | "trainer-nav"
+  | "trainer-tach"
+  | "trainer-engine"
+  | "trainer-compass";
 export type DrawPage = (ctx: DisplayContext2D, w: number, h: number, state: DisplayState) => void;
 
 export interface DisplaySlot {
@@ -430,6 +448,20 @@ export const drawPfd: DrawPage = (ctx, w, h, state) => {
   drawFma(ctx, w, h);
 };
 
+/**
+ * A STANDBY display (the Global's standby cluster, S5): the PFD's attitude, its roll scale and symbol, and its two tapes,
+ * and nothing that flies the aeroplane from it: no vertical speed, no heading strip, no mode annunciations. A second
+ * PFD is what it must not read as.
+ */
+export const drawStandby: DrawPage = (ctx, w, h, state) => {
+  clearPage(ctx, w, h);
+  drawAttitudeBall(ctx, w, h, state);
+  drawRollScale(ctx, w, h, state.bankDeg);
+  drawAircraftSymbol(ctx, w, h);
+  drawAirspeedTape(ctx, w, h, state.airspeedKt);
+  drawAltitudeTape(ctx, w, h, state.altitudeFtMsl);
+};
+
 // ---- the ND ----------------------------------------------------------------------------
 
 /**
@@ -709,13 +741,461 @@ export const drawEicasLower: DrawPage = (ctx, w, h, state) => {
   });
 };
 
+// ---- the clock ---------------------------------------------------------------------------
+
+/**
+ * THE 747's CLOCK (S4, on the captain's side of the panel, where the deck turns aft): a face drawn ONCE, not a display the
+ * flight moves (no needles): a dial of sixty minute ticks, every fifth long, the chronograph's numerals at the quarters,
+ * and the window where the type's clock reads UTC. Round in its square slot; the corners are the dial's black.
+ */
+export function drawClockFace(ctx: DisplayContext2D, w: number, h: number): void {
+  clearPage(ctx, w, h);
+  const [cx, cy, r] = [w / 2, h / 2, Math.min(w, h) / 2];
+  const at = (k: number, radius: number) => {
+    const angle = TWELVE_OCLOCK + (k * 2 * Math.PI) / 60;
+    return [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)] as const;
+  };
+  ctx.fillStyle = "#101214";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.fill();
+  ctx.strokeStyle = DISPLAY_COLOURS.white;
+  for (let k = 0; k < 60; k += 1) {
+    const long = k % 5 === 0;
+    ctx.lineWidth = r * (long ? 0.035 : 0.015);
+    ctx.beginPath();
+    ctx.moveTo(...at(k, r * (long ? 0.78 : 0.86)));
+    ctx.lineTo(...at(k, r * 0.94));
+    ctx.stroke();
+  }
+  ctx.fillStyle = DISPLAY_COLOURS.white;
+  ctx.font = `${Math.round(r * 0.16)}px monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const [k, label] of [[0, "60"], [15, "15"], [30, "30"], [45, "45"]] as const) ctx.fillText(label, ...at(k, r * 0.62));
+  ctx.fillStyle = DISPLAY_COLOURS.cyan;
+  ctx.font = `${Math.round(r * 0.11)}px monospace`;
+  ctx.fillText("UTC", cx, cy - r * 0.2);
+  ctx.fillStyle = "#16241a";
+  ctx.fillRect(cx - r * 0.34, cy + r * 0.1, r * 0.68, r * 0.24);
+  ctx.fillStyle = DISPLAY_COLOURS.green;
+  ctx.font = `${Math.round(r * 0.16)}px monospace`;
+  ctx.fillText("12:00", cx, cy + r * 0.22);
+}
+
 // ---- the atlas -------------------------------------------------------------------------
+
+// ---- the Cessna's dial faces ------------------------------------------------------------
+
+/**
+ * THE CESSNA'S DIAL FACES AND RADIO WINDOWS (the Cessna pass, S2): STATIC pages of its display atlas, drawn once, since
+ * nothing on them moves (the needles and the attitude ball are geometry in front of them).
+ *
+ * A dial's page is a square slot, and the face disc maps onto the WHOLE slot; the face the pilot sees is the inner
+ * `TRAINER_DIAL_FACE_FRACTION` of it, the rest buried under the bezel's inner wall, so everything is drawn inside that
+ * circle. A radio's window is `TRAINER_RADIO_WINDOW_ASPECT` wide to high and maps onto the band of its slot of that
+ * shape across the slot's middle.
+ *
+ * THE ANGLES ARE THE NEEDLES': a reading's tick is drawn at the angle its needle is turned to for that reading
+ * (`airspeedNeedleDegrees`, `altimeterNeedleDegrees`), so a needle points at the number it reads. The colours are a
+ * 150's: white scales and numerals on black, and the airspeed arcs of its handbook.
+ */
+export const TRAINER_DIAL_FACE_FRACTION = 0.96;
+export const TRAINER_RADIO_WINDOW_ASPECT = 70 / 16;
+
+/** The Cessna 150's airspeed markings, knots indicated (its handbook): flaps white, normal green, caution yellow, the red line. */
+export const TRAINER_ASI_MARKINGS = Object.freeze({
+  whiteFrom: 42,
+  whiteTo: 85,
+  greenFrom: 47,
+  greenTo: 107,
+  yellowTo: 141,
+  redLine: 141,
+  /** The needle's full scale (`TRAINER_AIRSPEED_FULL_SCALE_KNOTS`): the page's scale must be the needle's. */
+  fullScale: 160,
+});
+
+const TRAINER_FACE_COLOURS = Object.freeze({
+  face: "#0b1013",
+  scale: "#f2f2ee",
+  white: "#e6e6e0",
+  green: "#1fa83a",
+  yellow: "#e4c21c",
+  red: "#d22a2a",
+  radio: "#ff8a1c",
+});
+
+/** One mark of a round dial: its angle, degrees CLOCKWISE FROM 12 O'CLOCK as the pilot sees it, whether it is major, and its numeral. */
+export interface DialTick {
+  readonly degrees: number;
+  readonly major: boolean;
+  readonly label?: string;
+}
+
+const asiDegrees = (knots: number) => airspeedNeedleDegrees(knots / KNOTS_PER_METRE_PER_SECOND, TRAINER_ASI_MARKINGS.fullScale);
+
+/** The airspeed dial's marks: every 5 knots from 40 to 160, major every 10, numbered every 20. */
+export function trainerAsiTicks(): readonly DialTick[] {
+  const ticks: DialTick[] = [];
+  for (let knots = 40; knots <= TRAINER_ASI_MARKINGS.fullScale; knots += 5) {
+    ticks.push({ degrees: asiDegrees(knots), major: knots % 10 === 0, ...(knots % 20 === 0 ? { label: String(knots) } : {}) });
+  }
+  return ticks;
+}
+
+/** The altimeter's marks: every 20 feet round its 1,000, major and numbered every 100 (0 to 9). */
+export function trainerAltimeterTicks(): readonly DialTick[] {
+  const ticks: DialTick[] = [];
+  for (let feet = 0; feet < 1_000; feet += 20) {
+    ticks.push({ degrees: altimeterNeedleDegrees(feet / FEET_PER_METRE), major: feet % 100 === 0, ...(feet % 100 === 0 ? { label: String(feet / 100) } : {}) });
+  }
+  return ticks;
+}
+
+/** The attitude indicator's bank scale round the ball: 10, 20, 30, 45, 60 and 90 degrees either side of the top, major at 30, 60 and 90. */
+export function trainerBankTicks(): readonly DialTick[] {
+  return [-90, -60, -45, -30, -20, -10, 10, 20, 30, 45, 60, 90].map((bank) => ({ degrees: bank, major: Math.abs(bank) % 30 === 0 }));
+}
+
+/** A dial page's centre and the radius of the face the pilot sees, in the slot's pixels. */
+export function trainerDialFace(w: number, h: number): { cx: number; cy: number; r: number } {
+  return { cx: w / 2, cy: h / 2, r: (Math.min(w, h) / 2) * TRAINER_DIAL_FACE_FRACTION };
+}
+
+/** A point `radius` out from the centre at `degrees` clockwise from 12 o'clock (canvas y runs down). */
+function dialPoint(cx: number, cy: number, radius: number, degrees: number): { x: number; y: number } {
+  return { x: cx + radius * Math.sin(degrees * DEG), y: cy - radius * Math.cos(degrees * DEG) };
+}
+
+function dialTicks(ctx: DisplayContext2D, cx: number, cy: number, r: number, ticks: readonly DialTick[], inner: { major: number; minor: number }, width: { major: number; minor: number }): void {
+  ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+  for (const tick of ticks) {
+    const from = dialPoint(cx, cy, r * (tick.major ? inner.major : inner.minor), tick.degrees);
+    const to = dialPoint(cx, cy, r * 0.985, tick.degrees);
+    ctx.lineWidth = r * (tick.major ? width.major : width.minor);
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  }
+}
+
+function dialNumerals(ctx: DisplayContext2D, cx: number, cy: number, r: number, ticks: readonly DialTick[], radius: number, size: number): void {
+  ctx.font = `bold ${Math.round(r * size)}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+  for (const tick of ticks) {
+    if (tick.label === undefined) continue;
+    const at = dialPoint(cx, cy, r * radius, tick.degrees);
+    ctx.fillText(tick.label, at.x, at.y);
+  }
+}
+
+/** A band of the dial between two readings' angles, `middle` out from the centre and `width` across (fractions of r). */
+function dialArc(ctx: DisplayContext2D, cx: number, cy: number, r: number, fromDegrees: number, toDegrees: number, middle: number, width: number, colour: string): void {
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = r * width;
+  ctx.beginPath();
+  // canvas angles run clockwise from 3 o'clock
+  ctx.arc(cx, cy, r * middle, fromDegrees * DEG + TWELVE_OCLOCK, toDegrees * DEG + TWELVE_OCLOCK);
+  ctx.stroke();
+}
+
+function dialCaption(ctx: DisplayContext2D, cx: number, y: number, r: number, size: number, s: string): void {
+  ctx.font = `${Math.round(r * size)}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+  ctx.fillText(s, cx, y);
+}
+
+function faceBackground(ctx: DisplayContext2D, w: number, h: number): void {
+  ctx.setLineDash([]);
+  ctx.fillStyle = TRAINER_FACE_COLOURS.face;
+  ctx.fillRect(0, 0, w, h);
+}
+
+/** The airspeed indicator: the 150's arcs and red line, a mark every 5 knots from 40, numerals every 20. */
+export const drawTrainerAsi: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { cx, cy, r } = trainerDialFace(w, h);
+  const m = TRAINER_ASI_MARKINGS;
+  dialArc(ctx, cx, cy, r, asiDegrees(m.whiteFrom), asiDegrees(m.whiteTo), 0.74, 0.05, TRAINER_FACE_COLOURS.white);
+  dialArc(ctx, cx, cy, r, asiDegrees(m.greenFrom), asiDegrees(m.greenTo), 0.83, 0.08, TRAINER_FACE_COLOURS.green);
+  dialArc(ctx, cx, cy, r, asiDegrees(m.greenTo), asiDegrees(m.yellowTo), 0.83, 0.08, TRAINER_FACE_COLOURS.yellow);
+  const redFrom = dialPoint(cx, cy, r * 0.72, asiDegrees(m.redLine));
+  const redTo = dialPoint(cx, cy, r * 0.985, asiDegrees(m.redLine));
+  ctx.strokeStyle = TRAINER_FACE_COLOURS.red;
+  ctx.lineWidth = r * 0.04;
+  ctx.beginPath();
+  ctx.moveTo(redFrom.x, redFrom.y);
+  ctx.lineTo(redTo.x, redTo.y);
+  ctx.stroke();
+  const ticks = trainerAsiTicks();
+  // the minor marks 0.03 of the face's radius wide: about 1.8 px at 1080p, where 0.022 was 1.3 before the atlas's mips soften it
+  dialTicks(ctx, cx, cy, r, ticks, { major: 0.8, minor: 0.88 }, { major: 0.04, minor: 0.03 });
+  dialNumerals(ctx, cx, cy, r, ticks, 0.6, 0.19);
+  dialCaption(ctx, cx, cy - r * 0.3, r, 0.11, "AIRSPEED");
+  dialCaption(ctx, cx, cy + r * 0.34, r, 0.11, "KNOTS");
+};
+
+/** The altimeter: a mark every 20 feet, numerals 0 to 9 every 100 (the needle turns once a thousand). */
+export const drawTrainerAltimeter: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { cx, cy, r } = trainerDialFace(w, h);
+  const ticks = trainerAltimeterTicks();
+  dialTicks(ctx, cx, cy, r, ticks, { major: 0.8, minor: 0.89 }, { major: 0.04, minor: 0.028 });
+  dialNumerals(ctx, cx, cy, r, ticks, 0.64, 0.22);
+  dialCaption(ctx, cx, cy - r * 0.3, r, 0.12, "ALT");
+  dialCaption(ctx, cx, cy + r * 0.34, r, 0.1, "100 FEET");
+};
+
+/** The attitude indicator's face: its bank scale in the ring round the ball, and the index at the top. */
+export const drawTrainerAttitudeRing: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { cx, cy, r } = trainerDialFace(w, h);
+  dialTicks(ctx, cx, cy, r, trainerBankTicks(), { major: 0.86, minor: 0.91 }, { major: 0.04, minor: 0.028 });
+  // the zero index: a white triangle pointing down at the top of the ring
+  const tip = dialPoint(cx, cy, r * 0.87, 0);
+  ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+  ctx.beginPath();
+  ctx.moveTo(tip.x, tip.y);
+  ctx.lineTo(tip.x - r * 0.06, cy - r * 0.985);
+  ctx.lineTo(tip.x + r * 0.06, cy - r * 0.985);
+  ctx.closePath();
+  ctx.fill();
+};
+
+/**
+ * THE COMPASS'S CARD (the Cessna pass, S7): the band round a drum that turns inside the compass with the heading, so a
+ * STATIC page: the drum turns, not the page. The drum carries it in two halves, its first 180 degrees on the slot's top
+ * row and its second on the bottom row, so the card has a slot's width to each half circle.
+ *
+ * As on a 150's: the pilot reads the heading under the lubber line from the card's side that faces the seat, which is
+ * the drum's side opposite the heading, so each heading is printed a half turn round from it. Headings therefore run from
+ * right to left across the window (a right turn brings the higher numbers in from the left), marked every 5 degrees,
+ * longer every 10, and numbered every 30: N 3 6 E 12 15 S 21 24 W 30 33.
+ */
+export const TRAINER_COMPASS_LABELS: Readonly<Record<number, string>> = Object.freeze({
+  0: "N", 30: "3", 60: "6", 90: "E", 120: "12", 150: "15", 180: "S", 210: "21", 240: "24", 270: "W", 300: "30", 330: "33",
+});
+
+export const drawTrainerCompassCard: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const rowHeight = h / 2;
+  // the top row holds headings 180 to 360 and the bottom row 0 to 180, each from the row's right end to its left: the
+  // drum's first half carries the top row (`compassCardMesh`), a half turn from the headings the seat reads on it
+  for (const [row, from] of [[0, 180], [1, 0]] as const) {
+    const top = row * rowHeight;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, top, w, rowHeight);
+    ctx.clip();
+    // every mark within a label's width past each end too, so the card runs on across the two seams
+    for (let heading = from - 40; heading <= from + 220; heading += 5) {
+      const x = (1 - (heading - from) / 180) * w;
+      const major = heading % 10 === 0;
+      ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+      ctx.lineWidth = rowHeight * (major ? 0.03 : 0.022);
+      ctx.beginPath();
+      ctx.moveTo(x, top + rowHeight * 0.22);
+      ctx.lineTo(x, top + rowHeight * (major ? 0.4 : 0.32));
+      ctx.stroke();
+      const label = TRAINER_COMPASS_LABELS[((heading % 360) + 360) % 360];
+      if (label !== undefined) {
+        const cardinal = label.length === 1 && Number.isNaN(Number(label));
+        ctx.font = `bold ${Math.round(rowHeight * (cardinal ? 0.26 : 0.22))}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+        ctx.fillText(label, x, top + rowHeight * 0.6);
+      }
+    }
+    ctx.restore();
+  }
+};
+
+/**
+ * A radio's window: its label, the active frequency large and the standby smaller, in the band the window samples.
+ * SIZED FOR A MONOSPACE ADVANCE OF 0.62 EM (the browsers' monospace faces are about 0.6): at 0.62 and 0.42 of the band
+ * the active frequency ran into the standby in the first live frame ("122.80" over "121.50"), which no Node test could
+ * see; `TRAINER_RADIO_TEXT` is what the pin holds apart.
+ */
+export const TRAINER_RADIO_TEXT = Object.freeze({
+  /** Each text's size as a fraction of the band's height, and where it stands across the slot (label and active from their left, standby to its right). */
+  label: Object.freeze({ size: 0.26, x: 0.035 }),
+  active: Object.freeze({ size: 0.5, x: 0.165 }),
+  standby: Object.freeze({ size: 0.36, x: 0.965 }),
+  monospaceAdvance: 0.62,
+});
+
+function drawTrainerRadio(label: string, active: string, standby: string): DrawPage {
+  return (ctx, w, h) => {
+    clearPage(ctx, w, h);
+    const t = TRAINER_RADIO_TEXT;
+    const bandHeight = w / TRAINER_RADIO_WINDOW_ASPECT;
+    const middle = h / 2;
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = TRAINER_FACE_COLOURS.radio;
+    ctx.textAlign = "left";
+    ctx.font = `${Math.round(bandHeight * t.label.size)}px monospace`;
+    ctx.fillText(label, w * t.label.x, middle);
+    ctx.font = `bold ${Math.round(bandHeight * t.active.size)}px monospace`;
+    ctx.fillText(active, w * t.active.x, middle);
+    ctx.textAlign = "right";
+    ctx.font = `${Math.round(bandHeight * t.standby.size)}px monospace`;
+    ctx.fillText(standby, w * t.standby.x, middle);
+  };
+}
+
+export const drawTrainerCom: DrawPage = drawTrainerRadio("COM", "122.80", "121.50");
+export const drawTrainerNav: DrawPage = drawTrainerRadio("NAV", "110.50", "113.90");
+
+/**
+ * THE TACHOMETER AND THE ENGINE CLUSTER (the Cessna pass, S2b): detail on the type's board, not flight instruments. The
+ * tachometer is a round dial like the three (its needle is geometry, turned by the engine's RPM); the cluster is one
+ * static face of four small gauges whose needles are drawn on the page.
+ */
+
+/** The Cessna 150's tachometer (its handbook, the O-200-A): its green arc and red line, RPM, and the needle's full scale. */
+export const TRAINER_TACH_MARKINGS = Object.freeze({
+  greenFrom: 2_000,
+  greenTo: 2_750,
+  /** The catalogue's maximum (`engineReadout.maximum`), which the engine never passes. */
+  redLine: 2_750,
+  fullScale: 3_500,
+});
+
+const tachDegrees = (rpm: number) => tachometerNeedleDegrees(rpm, TRAINER_TACH_MARKINGS.fullScale);
+
+/** The tachometer's marks: every 100 RPM from 0 to 3,500, major and numbered (in hundreds) every 500. */
+export function trainerTachTicks(): readonly DialTick[] {
+  const ticks: DialTick[] = [];
+  for (let rpm = 0; rpm <= TRAINER_TACH_MARKINGS.fullScale; rpm += 100) {
+    ticks.push({ degrees: tachDegrees(rpm), major: rpm % 500 === 0, ...(rpm % 500 === 0 ? { label: String(rpm / 100) } : {}) });
+  }
+  return ticks;
+}
+
+/** The tachometer: the green arc and the red line, a mark every 100 RPM, numerals in hundreds every 500. */
+export const drawTrainerTach: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { cx, cy, r } = trainerDialFace(w, h);
+  const m = TRAINER_TACH_MARKINGS;
+  dialArc(ctx, cx, cy, r, tachDegrees(m.greenFrom), tachDegrees(m.greenTo), 0.83, 0.08, TRAINER_FACE_COLOURS.green);
+  const redFrom = dialPoint(cx, cy, r * 0.72, tachDegrees(m.redLine));
+  const redTo = dialPoint(cx, cy, r * 0.985, tachDegrees(m.redLine));
+  ctx.strokeStyle = TRAINER_FACE_COLOURS.red;
+  ctx.lineWidth = r * 0.05;
+  ctx.beginPath();
+  ctx.moveTo(redFrom.x, redFrom.y);
+  ctx.lineTo(redTo.x, redTo.y);
+  ctx.stroke();
+  const ticks = trainerTachTicks();
+  // wider than the three dials' marks: this face is 27 mm to their 34, and further from the eye
+  dialTicks(ctx, cx, cy, r, ticks, { major: 0.8, minor: 0.88 }, { major: 0.05, minor: 0.036 });
+  dialNumerals(ctx, cx, cy, r, ticks, 0.6, 0.21);
+  dialCaption(ctx, cx, cy - r * 0.3, r, 0.13, "RPM");
+  dialCaption(ctx, cx, cy + r * 0.34, r, 0.11, "x100");
+};
+
+/**
+ * The engine cluster's face, millimetres: its visible width and height, and the margin of it buried under its bezel all
+ * round. The face maps onto a band of its square slot of the buried face's shape (`trainerEngineBand`).
+ */
+export const TRAINER_ENGINE_CLUSTER_MM = Object.freeze({ width: 125, height: 30, bury: 1.5 });
+
+/** The band of a `w` x `h` slot the cluster's face maps onto, and the visible face inside it, in the slot's pixels. */
+export function trainerEngineBand(w: number, h: number): {
+  band: { x: number; y: number; w: number; h: number };
+  face: { x: number; y: number; w: number; h: number };
+} {
+  const c = TRAINER_ENGINE_CLUSTER_MM;
+  const bandHeight = (w * (c.height + 2 * c.bury)) / (c.width + 2 * c.bury);
+  const faceWidth = (w * c.width) / (c.width + 2 * c.bury);
+  const faceHeight = (bandHeight * c.height) / (c.height + 2 * c.bury);
+  return {
+    band: { x: 0, y: (h - bandHeight) / 2, w, h: bandHeight },
+    face: { x: (w - faceWidth) / 2, y: (h - faceHeight) / 2, w: faceWidth, h: faceHeight },
+  };
+}
+
+/** The cluster's four gauges, left to right: their group, their letter, their green range and their fixed reading (0 to 1). */
+export const TRAINER_ENGINE_GAUGES = Object.freeze([
+  Object.freeze({ group: "FUEL", letter: "L", green: [0.25, 1] as const, reading: 0.8 }),
+  Object.freeze({ group: "FUEL", letter: "R", green: [0.25, 1] as const, reading: 0.75 }),
+  Object.freeze({ group: "OIL", letter: "T", green: [0.3, 0.8] as const, reading: 0.55 }),
+  Object.freeze({ group: "OIL", letter: "P", green: [0.3, 0.8] as const, reading: 0.6 }),
+]);
+
+/** Each small gauge's scale sweeps this far either side of 12 o'clock, about a pivot near the face's bottom. */
+const ENGINE_GAUGE_SWEEP_DEGREES = 40;
+
+/** A small gauge's angle for a reading from 0 to 1, degrees clockwise from 12 o'clock. */
+export function trainerEngineGaugeDegrees(reading: number): number {
+  return -ENGINE_GAUGE_SWEEP_DEGREES + 2 * ENGINE_GAUGE_SWEEP_DEGREES * Math.min(1, Math.max(0, reading));
+}
+
+/** The engine cluster: fuel left and right, oil temperature and pressure, each a small arc with its needle drawn on. */
+export const drawTrainerEngine: DrawPage = (ctx, w, h) => {
+  faceBackground(ctx, w, h);
+  const { face } = trainerEngineBand(w, h);
+  const cell = face.w / TRAINER_ENGINE_GAUGES.length;
+  const r = face.h * 0.64;
+  TRAINER_ENGINE_GAUGES.forEach((gauge, k) => {
+    const cx = face.x + cell * (k + 0.5);
+    const cy = face.y + face.h * 0.96;
+    dialArc(ctx, cx, cy, r, trainerEngineGaugeDegrees(0), trainerEngineGaugeDegrees(1), 0.93, 0.05, TRAINER_FACE_COLOURS.white);
+    dialArc(ctx, cx, cy, r, trainerEngineGaugeDegrees(gauge.green[0]), trainerEngineGaugeDegrees(gauge.green[1]), 0.84, 0.1, TRAINER_FACE_COLOURS.green);
+    // three marks, empty, half and full, and the needle, in the scale's colour
+    dialTicks(ctx, cx, cy, r, [0, 0.5, 1].map((reading) => ({ degrees: trainerEngineGaugeDegrees(reading), major: true })), { major: 0.74, minor: 0.74 }, { major: 0.06, minor: 0.06 });
+    const tip = dialPoint(cx, cy, r * 0.9, trainerEngineGaugeDegrees(gauge.reading));
+    ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+    ctx.lineWidth = r * 0.08;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+    // the letter low on the empty side, where no needle stands
+    const letter = dialPoint(cx, cy, r * 0.5, trainerEngineGaugeDegrees(0));
+    ctx.font = `bold ${Math.round(face.h * 0.2)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+    ctx.fillText(gauge.letter, letter.x, letter.y);
+  });
+  // the two groups' names over their pairs, and a rule between the pairs
+  for (const [group, from] of [["FUEL", 0], ["OIL", 2]] as const) {
+    ctx.font = `${Math.round(face.h * 0.17)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = TRAINER_FACE_COLOURS.scale;
+    ctx.fillText(group, face.x + cell * (from + 1), face.y + face.h * 0.13);
+  }
+  ctx.strokeStyle = TRAINER_FACE_COLOURS.scale;
+  ctx.lineWidth = face.h * 0.03;
+  ctx.beginPath();
+  ctx.moveTo(face.x + face.w / 2, face.y + face.h * 0.08);
+  ctx.lineTo(face.x + face.w / 2, face.y + face.h * 0.92);
+  ctx.stroke();
+};
 
 const PAGES: Readonly<Record<DisplayPage, DrawPage>> = {
   pfd: drawPfd,
   nd: drawNd,
   "eicas-upper": drawEicasUpper,
   "eicas-lower": drawEicasLower,
+  clock: (ctx, w, h) => drawClockFace(ctx, w, h),
+  standby: drawStandby,
+  "trainer-asi": drawTrainerAsi,
+  "trainer-attitude-ring": drawTrainerAttitudeRing,
+  "trainer-altimeter": drawTrainerAltimeter,
+  "trainer-com": drawTrainerCom,
+  "trainer-nav": drawTrainerNav,
+  "trainer-tach": drawTrainerTach,
+  "trainer-engine": drawTrainerEngine,
+  "trainer-compass": drawTrainerCompassCard,
 };
 
 /**

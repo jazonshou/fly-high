@@ -234,7 +234,30 @@ describe("the loft's crown taper", () => {
       // needles, all cockpit-only). Checked mesh by mesh against c586870 (world positions, indices, material,
       // cockpit roles, visibility in both views): the trainer's other 66 of 70 are bit-identical, and so are
       // all 71 of the jet's, 94 of the Global's and 93 of the 747's.
-      trainer: "c44794a2",
+      // RE-PINNED for the Cessna pass, S1 (jazonshou/cessna-cockpit, 2026-09-29), on the same mesh-by-mesh check as
+      // render.loft-crown-seam's: the deck and the board swept wall to wall (`trainer-glareshield` 24 -> 756 vertices,
+      // `trainer-instrument-panel` 24 -> 852), the doors' sill caps shortened, and the eight dial meshes 4 cm inboard
+      // by their world matrix; the trainer's other 54 of 66, and every other airframe, bit-identical.
+      // RE-PINNED for S3 on the same check against S1 (dfa5598): the door frames 72 -> 2,110 vertices, the deck
+      // 756 -> 252 and the board 852 -> 276 (buried square ends), the two posts replaced by the two A-pillars; the
+      // trainer's other 60 of 66, and every other airframe, bit-identical.
+      // RE-PINNED for S2 on the same check against S3 (fc9579e): the three gauges replaced by the faces, the bezels and
+      // the fittings, the needles and the ball restaged into the well; the trainer's other 58 of 66, and every other
+      // airframe, bit-identical.
+      // RE-PINNED for S4 on the same check against S2 (d2b64ff): the headliner new, the fittings with the compass; the
+      // trainer's other 65 of 67, and every other airframe, bit-identical.
+      // RE-PINNED for S5 on the same check against S4 (bb261f1): the centre frame one strip (779 -> 458 vertices), the
+      // cowl stand-in's lip (52 -> 152), the fittings with the compass under the glass; the trainer's other 64 of 67,
+      // and every other airframe, bit-identical.
+      // RE-PINNED for S6 on the same check against S5 (a06be92): the yokes new; the trainer's other 67 of 68, and every
+      // other airframe, bit-identical.
+      // RE-PINNED for S2b on the same check against S6 (c154cbb): the tachometer's needle new, the faces and the bezels
+      // with the tachometer and the engine cluster; the trainer's other 66 of 69, and every other airframe, bit-identical.
+      // RE-PINNED for S7 on the same check against the rebased tip (07fae0e): the compass's card new; the yokes, the
+      // headliner, the fittings and the bezels moved; the trainer's other 65 of 70, and every other airframe, bit-identical.
+      // RE-PINNED for gate 40 on the same check against a0b2c3c: the compass's rim a mesh of its own, out of the bezels;
+      // the cowl stand-in bit-identical without its station range; every other airframe bit-identical.
+      trainer: "272f8d14",
       // Re-pinned for the F-16's airbrake shelves and rebuilt petals. The
       // crown taper is still unused on this airframe; what moved is the tail.
       // Re-pinned for the F-16's cockpit, phase F1, on the same evidence as the seam pin: ten dial
@@ -252,7 +275,15 @@ describe("the loft's crown taper", () => {
       // Re-pinned for step 4 on the same evidence: the sills new, the other 74 bit-identical.
       // Re-pinned for step 5 on the same evidence: the rail's ends swept into the sills, the other 74 bit-identical.
       // Re-pinned for step 5b on the same evidence: the HUD frame's corners rounded, the panes with them.
-      jet: "b17137a9",
+      // Re-pinned for the F-16 wave's S2 on the same evidence: the dash under the round's cove, the MFDs and the consoles'
+      // forward ends with it, the other 69 bit-identical.
+      // Re-pinned for S3 on the same evidence: the rail's ends rounded, the ends' and the sills' sections in six chords a
+      // round, the fillet between the ends and the round and the dash; the other 72 bit-identical against 2f16351.
+      // Re-pinned for S1 on the same evidence: the ICP and its DED new, the ICP's rim with the MFDs', its floor with the
+      // dash; the other 73 bit-identical against cb43285.
+      // Re-pinned for the S3 amend on the same evidence: the S through 21 stations, `jet-glare-shield` alone moved.
+      // Re-pinned for S4 on the same evidence: the canopy seal and its groove in the coaming, `jet-glare-shield` alone.
+      jet: "1e70430b",
       // Re-pinned for the Global's cabin window panes, whose single instanced
       // base mesh is now bowed to the fuselage section. The crown taper is
       // unused on this airframe too; what moved is the window line's pane.
@@ -356,7 +387,28 @@ describe("the loft's crown taper", () => {
       // RE-PINNED for P1c, the Global's side consoles (NEW, `bizjet-side-consoles`: the sill caps widened into consoles'
       // tops, flush with the board's ends, a 2 cm lip over a 45 degree cove, down to the board's foot). Checked mesh by mesh
       // against 43d360d: nothing else changes (the other 93 meshes are bit-identical).
-      bizjet: "4036722a",
+      // RE-PINNED for the Global by the "feel real" wave's S1 (jazonshou/cockpit-global-real): the glareshield's round
+      // at 20 mm with its chords smooth-shaded, no aft face and a 5 mm cove, and a new cove fillet. Checked mesh by mesh
+      // against 0fbc073 (world positions, indices, normals, material, roles, visibility): only the Global's cockpit
+      // moves -- the glareshield, the new fillet, and the board, screens, frames, rims and wells, which stand on the
+      // face's top 0.9 mm higher and 5 mm nearer -- and every mesh of the trainer's 66, the jet's 75 and the 747's 96 is
+      // bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S2: the frames' tops stand 1.2 mm of board under the cove's
+      // fillet (their top border 6 mm, no flat band; the frame a U), the screens 2.1 mm lower on the face. Checked mesh by
+      // mesh against S1: only the Global's screens, frames, rims and wells move; every other mesh of all four is
+      // bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S4: the glareshield's ends close in 20 mm quarter-rounds
+      // outboard of the deck (two swept end pieces merged with the straight lip, one draw). Checked mesh by mesh against
+      // S2: only the Global's glareshield moves; every other mesh of all four is bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S3: every pane's edge rolls into the glass (a round and a
+      // seal, rounded corners; the lining stands nothing proud of the skin), the seals one new mesh on the glareshield's
+      // material, and the pillars' feet filleted onto the sill caps. Checked mesh by mesh against S4: only the Global's
+      // interior moves and its seals are new; every other mesh of all four is bit-identical.
+      // RE-PINNED for the Global by the "feel real" wave's S5: the side consoles roll their tops into their faces (r 10,
+      // a step outboard of the board's ends) and carry the panel block, its rockers and the tiller; the caps join them on
+      // a second interior instance; a standby display on the centre board. Checked mesh by mesh against S3: only the
+      // Global's cockpit meshes move; every other mesh of all four is bit-identical.
+      bizjet: "bb5a59d1",
     };
     for (const kind of ["trainer", "jet", "bizjet"] as const) {
       const engine = new NullEngine();
