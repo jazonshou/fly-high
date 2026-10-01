@@ -57,7 +57,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
     const markup = renderHud("chase");
     expect(markup).toContain("Shift power · Ctrl reduce");
     expect(markup).not.toContain("+ power · − reduce");
-    expect(markup).not.toContain(">FLAP<");
+    // The flap block came back on 2026-09-30 (Jason): the keys worked and nothing on screen said so.
+    expect(markup).toContain("F flaps down · V up");
     expect(markup).not.toContain(">BRK<");
     expect(markup).not.toContain("hud-brand");
     expect(markup).not.toContain("AEROLITH");
@@ -86,6 +87,31 @@ describe("flight HUD camera and terminal-state presentation", () => {
     const rollout = renderHud("chase", false, "jet", { gear: 1, brake: 1, onGround: true });
     expect(rollout).toContain("DOWN");
     expect(rollout).toContain("SPEED + WHEEL BRAKE");
+  });
+
+  it("shows where the flap panels are on every airframe, and the keys that move them", () => {
+    const flapBlock = (flaps: number, aircraft: AircraftKind = "airliner") => {
+      const markup = renderHud("chase", false, aircraft, { flaps });
+      const match = /<div class="instrument-readout" aria-label="Flaps ([a-z]+)"><small>FLAPS<\/small><strong>([A-Z]+)<\/strong><em>([^<]+)<\/em><\/div>/.exec(markup);
+      expect(match, `${aircraft} at flaps ${flaps}`).not.toBeNull();
+      return { spoken: match![1], shown: match![2], under: match![3] };
+    };
+    // The three detents the lever has, read off the panels.
+    expect(flapBlock(0)).toEqual({ spoken: "up", shown: "UP", under: "F DN · V UP" });
+    expect(flapBlock(0.5)).toEqual({ spoken: "half", shown: "HALF", under: "F DN · V UP" });
+    expect(flapBlock(1)).toEqual({ spoken: "full", shown: "FULL", under: "F DN · V UP" });
+    // Between detents the panels are still running: say so, with how far.
+    expect(flapBlock(0.76)).toEqual({ spoken: "moving", shown: "MOVING", under: "76%" });
+    expect(flapBlock(0.25)).toEqual({ spoken: "moving", shown: "MOVING", under: "25%" });
+    // Every airframe has flaps, the fixed-gear trainer included.
+    for (const aircraft of ["trainer", "jet", "bizjet", "airliner"] as const) {
+      expect(flapBlock(0.5, aircraft).shown).toBe("HALF");
+      expect(renderHud("chase", false, aircraft)).toContain("<span>F flaps down · V up</span>");
+    }
+    // The block sits last in the strip, after the gear where there is one.
+    const jet = renderHud("chase", false, "jet");
+    expect(jet.indexOf("<small>GEAR</small>")).toBeGreaterThan(0);
+    expect(jet.indexOf("<small>FLAPS</small>")).toBeGreaterThan(jet.indexOf("<small>GEAR</small>"));
   });
 
   it("reports the active WebGPU profile and compute workloads", () => {
