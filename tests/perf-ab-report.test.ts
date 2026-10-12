@@ -284,6 +284,24 @@ describe("perf-ab Markdown report", () => {
     expect(cleared).not.toContain("Not cleared");
   });
 
+  it("says how many rounds would clear an inconclusive run if nothing changed, unless its estimate is the problem", () => {
+    const inconclusive = (rounds: number, ratioLow: number, ratioHigh: number): PerfAbReport => {
+      const wall = metric("wall", "inconclusive");
+      const shots = [shot({ metrics: [metric("cpu", "same"), { ...wall, comparison: { ...wall.comparison, rounds, ratioLow, ratioHigh } }] })];
+      return {
+        ...report({ rounds, timedMetrics: ["cpu", "wall"], gatedMetrics: ["wall", "cpu"] }, shots),
+        summary: { verdict: "inconclusive", reasons: ["cruise-horizon: Frame wall time inconclusive"], geometricMeanRatio: { gpu: 1, cpu: 1, wall: 1 } },
+      };
+    };
+    // Half-width (ln 1.081 - ln 0.889) / 2 = 0.0978 against ln(1.05) / 2:
+    // 20 * 4.008^2 = 321.3 rounds, to the next ten.
+    expect(renderMarkdown(inconclusive(20, 0.889, 1.081))).toContain(
+      "If nothing changed, about 330 rounds would clear these (`--rounds 330`): an interval narrows with the square root of the rounds.",
+    );
+    // Narrow already, but straddling +5%: more rounds will not make it SAME.
+    expect(renderMarkdown(inconclusive(200, 1.02, 1.06))).not.toContain("If nothing changed");
+  });
+
   it("says a counts-only run measured no timing, and shows a cadence's draw-call range", () => {
     const counts = renderMarkdown(report({ rounds: 0 }, [
       shot({

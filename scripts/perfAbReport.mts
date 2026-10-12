@@ -9,7 +9,7 @@ import type {
   ImageComparison,
   ShotDiagnostics,
 } from "../tests/perf/ab/protocol.ts";
-import { comparePaired, median, type PairedComparison, type Verdict } from "./perfAbStats.mts";
+import { comparePaired, median, roundsToClear, type PairedComparison, type Verdict } from "./perfAbStats.mts";
 
 export type ArmName = "base" | "head";
 
@@ -375,6 +375,19 @@ const VERDICT_HEADLINE: Readonly<Record<RunVerdict, string>> = {
   failed: "FAILED: the comparison could not be completed",
 };
 
+/**
+ * Rounds that would clear every inconclusive gated timing if nothing changed,
+ * to the next ten; null when none needs more than the run had, which leaves
+ * an estimate near its threshold rather than an interval too wide.
+ */
+function roundsToClearRun(report: PerfAbReport): number | null {
+  const needed = report.shots.flatMap((shot) => shot.metrics
+    .filter((metric) => metric.gated && !metric.guard && metric.verdict === "inconclusive")
+    .map((metric) => roundsToClear(metric.comparison, report.settings.thresholds[metric.metric]) ?? 0))
+    .filter((rounds) => rounds > report.settings.rounds);
+  return needed.length > 0 ? Math.ceil(Math.max(...needed) / 10) * 10 : null;
+}
+
 /** Guards whose verdict did not resolve, as `shot: metric (interval)`. */
 function unresolvedGuards(report: PerfAbReport): string[] {
   return report.shots.flatMap((shot) => shot.metrics
@@ -428,6 +441,14 @@ export function renderMarkdown(report: PerfAbReport): string {
   if (report.summary.reasons.length > 0) {
     lines.push("");
     for (const reason of report.summary.reasons) lines.push(`- ${markdownText(reason)}`);
+    const toClear = report.summary.verdict === "inconclusive" ? roundsToClearRun(report) : null;
+    if (toClear !== null) {
+      lines.push("");
+      lines.push(
+        `If nothing changed, about ${toClear} rounds would clear these (\`--rounds ${toClear}\`): `
+        + "an interval narrows with the square root of the rounds.",
+      );
+    }
   }
   if (report.summary.verdict !== "failed" && unresolved.length > 0) {
     lines.push("");

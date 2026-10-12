@@ -7,6 +7,7 @@ import {
   hodgesLehmannInterval,
   holmAdjust,
   roundOrder,
+  roundsToClear,
   signedRankCdf,
   verdict,
   walshAverages,
@@ -149,6 +150,37 @@ describe("perf-ab statistics", () => {
     }
     expect(detected / trials).toBeGreaterThan(0.8);
     expect(falseAlarms / trials).toBeLessThan(0.05);
+  });
+
+  it("sizes a no-change run from a measured interval, and that many rounds then read SAME", () => {
+    const measured = { ...comparePaired([1, 1], [1, 1]), rounds: 20, ratioLow: Math.exp(-0.1), ratioHigh: Math.exp(0.1) };
+    // Half-width 0.1 against half of ln(1.05): 20 * (0.1 / 0.024395)^2 = 336.04.
+    expect(roundsToClear(measured, 0.05)).toBe(337);
+    expect(roundsToClear({ ...measured, ratioLow: null, ratioHigh: null }, 0.05)).toBeNull();
+
+    // A 16-round pilot with no real change, round ratios scattered by 8%:
+    // the median of its estimates, then no-change runs of that length.
+    const random = lcg(20_261_013);
+    const run = (rounds: number) => {
+      const base: number[] = [];
+      const head: number[] = [];
+      for (let round = 0; round < rounds; round += 1) {
+        base.push(1_000);
+        head.push(1_000 * Math.exp(0.08 * normal(random)));
+      }
+      return comparePaired(base, head);
+    };
+    const estimates = Array.from({ length: 41 }, () => roundsToClear(run(16), 0.05)!).sort((a, b) => a - b);
+    const rounds = estimates[20]!;
+    expect(rounds).toBeGreaterThan(30);
+    expect(rounds).toBeLessThan(70);
+    let same = 0;
+    const trials = 200;
+    for (let trial = 0; trial < trials; trial += 1) {
+      const comparison = run(rounds);
+      if (verdict({ comparison, pSlowerAdjusted: comparison.pSlower, pFasterAdjusted: comparison.pFaster }, 0.05) === "same") same += 1;
+    }
+    expect(same / trials).toBeGreaterThan(0.85);
   });
 
   it("averages ratios geometrically", () => {

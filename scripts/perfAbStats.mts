@@ -246,6 +246,22 @@ export function verdict(input: VerdictInput, threshold: number, alpha = 0.05): V
 }
 
 /**
+ * About how many rounds a run with no real change needs for its interval to
+ * clear ±threshold, judged from an interval already measured on the same
+ * host. The interval narrows with the square root of the rounds, and a
+ * no-change estimate wanders about as far from 1 as the interval reaches, so
+ * its half-width has to come down to half the threshold (on the tighter,
+ * upper side). On rounds resampled from the macOS runner's first A/A, runs
+ * of this length read SAME 93-98% of the time. Null without an interval.
+ */
+export function roundsToClear(comparison: PairedComparison, threshold: number): number | null {
+  if (comparison.ratioLow === null || comparison.ratioHigh === null) return null;
+  const halfWidth = (Math.log(comparison.ratioHigh) - Math.log(comparison.ratioLow)) / 2;
+  const target = Math.log(1 + threshold) / 2;
+  return Math.ceil(comparison.rounds * (halfWidth / target) ** 2);
+}
+
+/**
  * The run order of one round's four frames. ABBA then BAAB, alternating: each
  * arm's mean position in time is the round's midpoint either way, so a drift
  * that is linear across a round cancels, and alternating the lead stops either
