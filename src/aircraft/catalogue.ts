@@ -400,7 +400,9 @@ const BIZJET: AircraftSpec = Object.freeze({
     airborneThrottle: 0.40,
     runwayTrim: 0.02,
     airborneGear: 0,
-    // Half flap, which is what its 942 m take-off roll was measured at.
+    // Half flap. `scripts/aircraft-performance.mts` measures its take-off roll
+    // at 1,185 m with a gentle rotation (942 m before the engines lost thrust
+    // with speed, as real fans do); a firm one lifts off in about 940 m.
     runwayFlaps: 0.5,
   }),
   engineReadout: Object.freeze({ label: "N2", unit: "%", maximum: 100, roundTo: 1 }),
@@ -488,7 +490,8 @@ const AIRLINER: AircraftSpec = Object.freeze({
     airborneThrottle: 0.40,
     runwayTrim: 0.02,
     airborneGear: 0,
-    // Half flap, the setting its measured 855 m take-off was flown at.
+    // Half flap. `scripts/aircraft-performance.mts` measures its take-off roll
+    // at 955 m (775 m before the engines lost thrust with speed).
     runwayFlaps: 0.5,
   }),
   engineReadout: Object.freeze({ label: "N1", unit: "%", maximum: 100, roundTo: 1 }),

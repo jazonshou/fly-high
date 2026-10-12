@@ -498,9 +498,14 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   // area/span, which would describe a rectangular wing.
   meanChord: 3.4,
   // Principal moments around body roll (+X), yaw (+Y), and pitch (+Z), from
-  // the usual radius-of-gyration fractions for a swept-wing transport:
-  // roll off the semi-span, pitch off the half-length, yaw off both.
-  inertia: Object.freeze({ x: 620_000, y: 1_100_000, z: 820_000 }),
+  // the nondimensional radii of gyration of a jet with its engines on the rear
+  // fuselage: 0.25 of the semi-span in roll, 0.35 of the half-length in pitch
+  // and 0.44 of the mean half-dimension in yaw (I = m (R b/2)^2, the Roskam
+  // form). No wing engines keeps the roll figure low; two engines 15 m aft of
+  // the CG make pitch and yaw large. The previous 820,000 and 1,100,000 were
+  // radii of 0.27 and 0.32, under every published value for a jet transport,
+  // which made the aeroplane pitch and yaw like one half its size.
+  inertia: Object.freeze({ x: 630_000, y: 2_080_000, z: 1_400_000 }),
   maxEnginePower: 0,
   // Two GE Passport 20-19BB1A at 18,920 lbf.
   maxStaticThrust: 168_000,
@@ -614,11 +619,11 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
  * Flown at 250 tonnes rather than its 447,700 kg maximum take-off mass, for
  * the same reason the Global is flown light: the airfield in this game has a
  * 1,320 m runway, and at MTOW this aeroplane needs 2,383 m to reach 5 m AGL —
- * it simply does not fit. At 250 t it reaches 5 m in 855 m of the 1,272 m
- * available from the threshold and lands in 696 m, which is MORE margin than
- * the Global 8000 has. The heaviest aeroplane in the game being the one with
- * the most comfortable field performance is counter-intuitive, and it is what
- * four 296 kN engines on 554 m^2 of wing produce.
+ * it simply does not fit. At 250 t `scripts/aircraft-performance.mts` lifts it
+ * off in 955 m and stops it in 747 m, which is MORE margin than the Global
+ * 8000 has (1,185 m and 465 m). The heaviest aeroplane in the game being the
+ * one with the most comfortable field performance is counter-intuitive, and it
+ * is what four 296 kN engines on 554 m^2 of wing produce.
  *
  * Every figure here was flown through the same harness as the other three
  * before the aeroplane had any geometry, precisely so the question "does it
@@ -632,7 +637,16 @@ export const BOEING_747_8: Readonly<AircraftDefinition> = Object.freeze({
   wingArea: 554,
   wingSpan: 68.4,
   meanChord: 9,
-  inertia: Object.freeze({ x: 17_550_000, y: 32_825_000, z: 25_480_000 }),
+  // Roll (+X), yaw (+Y) and pitch (+Z), from the 747's published inertias
+  // (NASA CR-2144, Heffley & Jewell, quoted in Nelson's appendix B: 18.2, 33.1
+  // and 49.7 million slug ft^2 about roll, pitch and yaw at 636,600 lb, a
+  // 747-100). Kept as the radii of gyration those imply (0.311 of the
+  // semi-span, 0.353 of the half-length, 0.469 of the mean half-dimension) and
+  // applied to this aeroplane's mass, span and length. The figures this
+  // replaces were 62%, 56% and 46% of that, so the aeroplane rotated in pitch
+  // and yaw about a third faster than a 747 can, and its dutch roll had the
+  // period of a business jet's.
+  inertia: Object.freeze({ x: 28_100_000, y: 71_900_000, z: 45_300_000 }),
   maxEnginePower: 0,
   // 4 x GEnx-2B67 at 296 kN.
   maxStaticThrust: 1_184_000,
