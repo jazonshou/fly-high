@@ -162,6 +162,7 @@ describe("perf-ab Markdown report", () => {
       quality: "medium",
       renderingMode: "balanced",
       aircraft: "trainer",
+      offCanonical: [],
       ...overrides,
     },
     shots,
@@ -220,5 +221,17 @@ describe("perf-ab Markdown report", () => {
     ]));
     expect(counts).toContain("no timing (`--rounds 0`)");
     expect(counts).toContain("200 → 198–200 (varies by frame)");
+  });
+
+  it("says a run off the capture's settings does not gate its ceilings", () => {
+    const pinned = renderMarkdown(report());
+    expect(pinned).toContain("Ceilings: draw calls 200 / 200");
+    expect(pinned).not.toContain("off the capture's own settings");
+    const airliner = renderMarkdown(report({ aircraft: "airliner", offCanonical: ["--aircraft airliner"] }, [
+      shot({ ceilings: { ...shot().ceilings!, baseDrawCalls: 321, headDrawCalls: 321, baseDrawCallsMin: 321, headDrawCallsMin: 321 } }),
+    ]));
+    expect(airliner).toContain("Run with `--aircraft airliner`, off the capture's own settings");
+    expect(airliner).toContain("the ceilings are shown but not gated, and no shot is compared with its baseline.");
+    expect(airliner).toContain("Ceilings (not gated off the capture's settings): draw calls 321 / 200");
   });
 });

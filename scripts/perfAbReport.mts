@@ -174,6 +174,13 @@ export interface PerfAbReport {
     readonly quality: string;
     readonly renderingMode: string;
     readonly aircraft: string;
+    /**
+     * The options that take the run off the capture's own settings (the
+     * trainer, medium, balanced, each shot's render scale), for which every
+     * ceiling and baseline is pinned. When any, ceilings are not gated and no
+     * baseline is compared.
+     */
+    readonly offCanonical: readonly string[];
   };
   readonly shots: readonly ShotResult[];
   readonly errors: Readonly<Record<ArmName, AgentErrors>>;
@@ -325,6 +332,13 @@ export function renderMarkdown(report: PerfAbReport): string {
             + "interval too wide to clear a change does not hold the run inconclusive.")
           .join("")),
   );
+  if (report.settings.offCanonical.length > 0) {
+    lines.push(
+      `Run with ${report.settings.offCanonical.map((option) => `\`${option}\``).join(", ")}, off the capture's own settings `
+      + "(the trainer, medium quality, balanced mode, each shot's render scale) for which every ceiling and "
+      + "baseline is pinned: the ceilings are shown but not gated, and no shot is compared with its baseline.",
+    );
+  }
   if (report.summary.reasons.length > 0) {
     lines.push("");
     for (const reason of report.summary.reasons) lines.push(`- ${markdownText(reason)}`);
@@ -436,7 +450,8 @@ export function renderMarkdown(report: PerfAbReport): string {
       const ceiling = shot.ceilings.drawCallCeiling;
       lines.push("");
       lines.push(
-        `Ceilings: draw calls ${drawCallRange(shot.ceilings.headDrawCallsMin, shot.ceilings.headDrawCalls)}`
+        `Ceilings${report.settings.offCanonical.length > 0 ? " (not gated off the capture's settings)" : ""}: `
+        + `draw calls ${drawCallRange(shot.ceilings.headDrawCallsMin, shot.ceilings.headDrawCalls)}`
         + `${ceiling !== null ? ` / ${ceiling}` : " (no ceiling)"}, `
         + `inventoried GPU memory ${shot.ceilings.headMemoryMiB.toFixed(1)} / ${shot.ceilings.memoryCeilingMiB} MiB.`
         + (shot.ceilings.newBreaches.length > 0 ? ` NEW BREACH: ${shot.ceilings.newBreaches.join("; ")}.` : ""),

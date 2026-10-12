@@ -1175,7 +1175,10 @@ replacements.
 
 - a GPU-time or CPU-time verdict of SLOWER on any shot;
 - a draw-call or inventoried-memory ceiling that the head breaches and the
-  base did not;
+  base did not. The ceilings, like the baselines, are pinned for the
+  capture's own settings (the trainer, medium quality, balanced mode, each
+  shot's render scale), so a run with `--aircraft`, `--quality`, `--mode` or
+  `--render-scale` shows them without gating on them;
 - a renderer error in the head, or a shot that does not settle.
 
 Each round gives one paired observation per metric, the log ratio of the

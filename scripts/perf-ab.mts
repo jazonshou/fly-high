@@ -147,7 +147,9 @@ const USAGE = `usage: npm run perf:ab -- [options]
   --out <dir>               output directory (default tests/perf/artifacts/ab/<timestamp>)
   --head-profile-override <json>, --base-profile-override <json>
                             force quality-profile fields in one arm (positive controls)
-  --quality, --mode, --aircraft   renderer settings (default medium, balanced, trainer)
+  --quality, --mode, --aircraft   renderer settings (default medium, balanced, trainer). These and
+                            --render-scale are the capture's own settings by default; off them,
+                            ceilings are shown but not gated, and no baseline is compared
   --open-frames, --settle-frames, --count-frames, --min-stream-frames, --max-stream-frames
   --base-install auto|link|ci   base dependencies (default auto: npm ci only if the lockfile differs)
   --no-fail                 always exit 0 after a completed run
@@ -383,6 +385,17 @@ async function main(): Promise<number> {
     : parseNumber("render-scale", values["render-scale"], 1, (value) => value >= 0.1 && value <= 2);
   if (!QUALITY_LEVELS.includes(values.quality)) throw new UsageError(`--quality ${values.quality} is not ${QUALITY_LEVELS.join(", ")}`);
   if (!RENDERING_MODES.includes(values.mode)) throw new UsageError(`--mode ${values.mode} is not ${RENDERING_MODES.join(", ")}`);
+  // Every ceiling and baseline image is pinned for the capture's own settings:
+  // the trainer, medium quality, balanced mode and each shot's own render
+  // scale. Any other setting draws a different world (the capture's sweeps do
+  // not gate the ceilings either), so off them the A/B shows the ceilings
+  // without gating on them and does not compare with the baselines.
+  const offCanonical = [
+    values.aircraft === "trainer" ? null : `--aircraft ${values.aircraft}`,
+    values.quality === "medium" ? null : `--quality ${values.quality}`,
+    values.mode === "balanced" ? null : `--mode ${values.mode}`,
+    renderScale === null ? null : `--render-scale ${renderScale}`,
+  ].filter((option): option is string => option !== null);
   const requestedShots = values.shots === undefined || values.shots === "all"
     ? null
     : values.shots.split(",").map((name) => name.trim()).filter(Boolean);
@@ -483,6 +496,9 @@ async function main(): Promise<number> {
     log(`timing ${timed.join(", ")}; gating ${gatedMetrics
       .map((metric) => (guardMetrics.includes(metric) ? `${metric} (as a guard)` : metric))
       .join(", ")}`);
+    if (offCanonical.length > 0) {
+      log(`${offCanonical.join(" ")} is off the capture's settings: ceilings are shown but not gated, and no baseline is compared`);
+    }
     for (const arm of ARMS) {
       const config: AgentConfig = {
         quality: values.quality,
@@ -524,7 +540,7 @@ async function main(): Promise<number> {
     for (const { shot, index } of selected) {
       const result = await runShot(arms, shot, index, catalog, {
         rounds, framesPerTurn, timed, gated: gatedMetrics, renderScale, openFrames, settleFrames,
-        countFrames, minStreamFrames, maxStreamFrames, outDir, root,
+        countFrames, minStreamFrames, maxStreamFrames, pinned: offCanonical.length === 0, outDir, root,
       });
       shots.push(result.shot);
       for (const metric of result.metrics) pending.push({ ...metric, shot: shots.length - 1 });
@@ -615,6 +631,7 @@ async function main(): Promise<number> {
         quality: values.quality,
         renderingMode: values.mode,
         aircraft: values.aircraft,
+        offCanonical,
       },
       shots: finalShots,
       errors,
@@ -660,6 +677,8 @@ interface ShotSettings {
   readonly countFrames: number;
   readonly minStreamFrames: number;
   readonly maxStreamFrames: number;
+  /** On the capture's own settings, where its ceilings and baselines apply. */
+  readonly pinned: boolean;
   readonly outDir: string;
   readonly root: string;
 }
@@ -764,7 +783,7 @@ async function runShot(
     const pixels = await arms.head.call("compareImages", baseCapture.pngBase64, headCapture.pngBase64, width, height);
     const baselinePath = join(settings.root, "tests/perf/baseline", `${shot.name}.png`);
     let baseline: Record<ArmName, ImageComparison | null> | null = null;
-    if (existsSync(baselinePath)) {
+    if (settings.pinned && existsSync(baselinePath)) {
       const reference = readFileSync(baselinePath).toString("base64");
       const against = async (capture: string) => {
         try {
@@ -790,11 +809,12 @@ async function runShot(
     const mostDraws = (settle: SettleReport) => Math.max(settle.diagnostics.drawCalls, ...settle.drawCallsPerFrame);
     const fewestDraws = (settle: SettleReport) => Math.min(settle.diagnostics.drawCalls, ...settle.drawCallsPerFrame);
     const newBreaches: string[] = [];
-    if (ceiling !== null && mostDraws(headSettle) > ceiling && mostDraws(baseSettle) <= ceiling) {
+    if (settings.pinned && ceiling !== null && mostDraws(headSettle) > ceiling && mostDraws(baseSettle) <= ceiling) {
       newBreaches.push(`draw calls ${mostDraws(headSettle)} exceed the shot's ceiling of ${ceiling}`);
     }
     if (
-      headSettle.diagnostics.inventoriedGpuMemoryMiB > catalog.inventoriedMemoryCeilingMiB
+      settings.pinned
+      && headSettle.diagnostics.inventoriedGpuMemoryMiB > catalog.inventoriedMemoryCeilingMiB
       && baseSettle.diagnostics.inventoriedGpuMemoryMiB <= catalog.inventoriedMemoryCeilingMiB
     ) {
       newBreaches.push(
