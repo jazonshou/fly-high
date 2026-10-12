@@ -165,6 +165,11 @@ describe("the pin is capture-only and sits at the time pin", () => {
     return found;
   }
   const PIN_NAMES = /pinOceanCascadePhaseForCapture|pinCascadePhaseForCapture|pinCascadeClockForCapture|\bpinForCapture\b/;
+  // The capture and the cloud A/B's agent page, each with its settle loop.
+  const PERF_HARNESS_SETTLE_LOOPS: Readonly<Record<string, string>> = {
+    "tests/perf/ab/agent.ts": "for (let settle = 0; settle < request.settleFrames; settle += 1)",
+    "tests/perf/perf-capture.test.ts": "for (let settle = 0; settle < 150; settle += 1)",
+  };
 
   it("the ocean counts frames only through the clock", () => {
     const ocean = read("src/render/webgpu/water/SpectralOceanSystem.ts");
@@ -187,12 +192,12 @@ describe("the pin is capture-only and sits at the time pin", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("outside src/, is called by the perf harness alone", () => {
+  it("outside src/, is called by the perf harnesses alone", () => {
     const callers = [...sourceFiles(join(ROOT, "tests")), ...sourceFiles(join(ROOT, "scripts"))]
       .map(rel)
       .filter((path) => path !== THIS_FILE && !path.startsWith("tests/gpu/ocean-cascade-pin"))
       .filter((path) => PIN_NAMES.test(read(path)));
-    expect(callers).toEqual(["tests/perf/perf-capture.test.ts"]);
+    expect(callers.sort()).toEqual(Object.keys(PERF_HARNESS_SETTLE_LOOPS).sort());
   });
 
   it("the ocean's frame-graph pass runs on every frame the renderer renders", () => {
@@ -218,13 +223,15 @@ describe("the pin is capture-only and sits at the time pin", () => {
     // Before the time pin, the streaming loop would count on past it; after
     // the first settle frame, the settle would start on a history-dependent
     // phase. Either way the fix silently stops working.
-    const harness = read("tests/perf/perf-capture.test.ts");
-    const timePin = harness.indexOf("simulationTime = 500 + canonicalShotIndex * 120");
-    const cadencePin = harness.indexOf("renderer.pinOceanCascadePhaseForCapture();");
-    const settle = harness.indexOf("for (let settle = 0; settle < 150; settle += 1)");
-    expect(timePin).toBeGreaterThan(-1);
-    expect(cadencePin).toBeGreaterThan(timePin);
-    expect(settle).toBeGreaterThan(cadencePin);
-    expect(harness.match(/renderer\.pinOceanCascadePhaseForCapture\(\)/g)).toHaveLength(1);
+    for (const [path, settleLoop] of Object.entries(PERF_HARNESS_SETTLE_LOOPS)) {
+      const harness = read(path);
+      const timePin = harness.indexOf("simulationTime = 500 + canonicalShotIndex * 120");
+      const cadencePin = harness.indexOf("renderer.pinOceanCascadePhaseForCapture();");
+      const settle = harness.indexOf(settleLoop);
+      expect(timePin, path).toBeGreaterThan(-1);
+      expect(cadencePin, path).toBeGreaterThan(timePin);
+      expect(settle, path).toBeGreaterThan(cadencePin);
+      expect(harness.match(/renderer\.pinOceanCascadePhaseForCapture\(\)/g), path).toHaveLength(1);
+    }
   });
 });
