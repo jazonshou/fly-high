@@ -1298,25 +1298,30 @@ a cloud session, so the figures are read from the job logs
   Per second of runner time that is about three times the precision. Wall
   time still read INCONCLUSIVE on all three, +2.1% to +5.3% with intervals
   of ±4–5%; CPU time read SAME on two.
-- **One frame a turn, 320 rounds**, the default since, dispatched on the
-  branch: frame wall time SAME on all five shots, −1.5% to +2.1%, every
-  interval within ±1.8–2.4%, in 12.6 minutes, two to three a shot. CPU time
-  read SAME on four shots, and on `approach-500ft` the head 8.7% faster
-  (−12.5% to −4.7%): an offset between two browsers running one renderer,
-  whose cause the run cannot tell, and which more rounds would only measure
-  more precisely. It is why CPU time is a guard at 15% here as on
-  SwiftShader, under which this run reads "no regression".
+- **One frame a turn, 320 rounds**, the default since, twice: dispatched on
+  the branch, then on the pull request. Frame wall time read SAME on nine of
+  the ten shots, from −1.6% to +2.1% with intervals of ±1.4–3.0%; the tenth,
+  `cruise-horizon` in the second run, read INCONCLUSIVE at +1.5% (−2.0% to
+  +5.2%), and its report asked for about 670 rounds. Each run took about 13
+  minutes. In the first, CPU time read the head 8.7% faster on
+  `approach-500ft` (−12.5% to −4.7%) with both arms one renderer; in the
+  second the same shot read +1.2% (−2.8% to +5.4%), and `ground-2m-lowsun`
+  the head 3.4% slower (+0.2% to +6.6%). Such offsets belong to a run's pair
+  of browsers, not to the shot, and more rounds would only measure them more
+  precisely, so CPU time is a guard at 15% here as on SwiftShader. Every CPU
+  interval of both runs sits inside it.
 - **One or two more resident terrain pages.** In every five-shot run the
   head arm came to rest holding one or two more terrain pages than the base,
-  on 14 of the 15 shots (`residentTerrainPages: 35 → 36` and so on); in the
+  on 19 of the 20 shots (`residentTerrainPages: 36 → 37` and so on); in the
   three-shot run never, nor in any SwiftShader run so far. A page stays in
   the atlas until its slot is needed, so the count includes pages an arm's
   stream wanted earlier and no longer does, and two browsers sharing three
-  CPUs need not stream alike. Draw calls and GPU work counts were identical
-  throughout, and at most 0.04% of a frame's pixels differed (SSIM 1.0000).
-  The report now gives the pages each arm wants (`wantedTerrainPages`)
-  beside a resident-page difference: when both want the same, the extra
-  pages are left over from the stream.
+  CPUs need not stream alike. The report now gives the pages each arm wants
+  (`wantedTerrainPages`) beside a resident-page difference, and in the
+  second 320-round run both arms wanted the same pages on every shot (22 to
+  32): the extra page was left over from the head's stream. Draw calls and
+  GPU work counts were identical throughout, and at most 0.04% of a frame's
+  pixels differed (SSIM 1.0000).
 
 **Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
 pull request that touches the renderer: `swiftshader` gates, and `hardware`

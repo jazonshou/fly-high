@@ -112,12 +112,13 @@ const ARMS: readonly ArmName[] = ["base", "head"];
  * more: one round's ratio by 13-23% at four frames a turn, and by 16-26% at
  * one frame a turn in a sixth of the time. Neighbouring frames move together,
  * so short turns buy about three times the precision per second of runner
- * time; 320 of them held five A/A shots' intervals to ±1.8-2.4%, all SAME at
- * 5%, in under 13 minutes. CPU time is a guard at 15% there too, for another
- * reason: in that run one shot's CPU time read the head 8.7% faster (-12.5%
- * to -4.7%) with both arms the same renderer, an offset between the two
- * browsers that no number of rounds averages away. The runs are in
- * docs/PERFORMANCE.md, "Cloud A/B".
+ * time; 320 of them read SAME at 5% on nine of ten A/A shots over two runs,
+ * with intervals of ±1.4-3.0%, in about 13 minutes a run. CPU time is a guard
+ * at 15% there too, for another reason: in one of those runs a shot's CPU
+ * time read the head 8.7% faster (-12.5% to -4.7%), in the other +1.2%, with
+ * both arms the same renderer, an offset between the two browsers that no
+ * number of rounds averages away. The runs are in docs/PERFORMANCE.md,
+ * "Cloud A/B".
  */
 const BACKEND_DEFAULTS: Readonly<Record<GpuBackend, {
   readonly rounds: number;
