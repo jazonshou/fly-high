@@ -265,9 +265,11 @@ function passChanges(base: GpuWorkCounters, head: GpuWorkCounters): CountChange[
 }
 
 function diagnosticsChanges(base: ShotDiagnostics, head: ShotDiagnostics): CountChange[] {
+  // -1 is a build that does not report its wanted pages, not a count.
+  const wanted = base.wantedTerrainPages >= 0 && head.wantedTerrainPages >= 0;
   const exact = countChanges(
-    { ...base, inventoriedGpuMemoryMiB: 0, estimatedGpuMemoryMiB: 0 },
-    { ...head, inventoriedGpuMemoryMiB: 0, estimatedGpuMemoryMiB: 0 },
+    { ...base, inventoriedGpuMemoryMiB: 0, estimatedGpuMemoryMiB: 0, wantedTerrainPages: wanted ? base.wantedTerrainPages : 0 },
+    { ...head, inventoriedGpuMemoryMiB: 0, estimatedGpuMemoryMiB: 0, wantedTerrainPages: wanted ? head.wantedTerrainPages : 0 },
   );
   const memory = countChanges(
     { inventoriedGpuMemoryMiB: base.inventoriedGpuMemoryMiB, estimatedGpuMemoryMiB: base.estimatedGpuMemoryMiB },

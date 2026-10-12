@@ -95,7 +95,19 @@ export interface ShotDiagnostics {
   readonly triangles: number;
   readonly visibleInstances: number;
   readonly vegetationBatches: number;
+  /**
+   * Every page in the height atlas. A page stays there until its slot is
+   * needed, so this also counts pages the arm's stream wanted earlier and no
+   * longer does, and two arms of one build can rest on different counts.
+   */
   readonly residentTerrainPages: number;
+  /**
+   * The pages the terrain wants on the settle's last frame (drawn, their
+   * morph parents, the collision ring, erosion seeds): what the pose asks
+   * for, without that history. -1 from a build before the renderer reported
+   * it (2026-09-02).
+   */
+  readonly wantedTerrainPages: number;
   readonly renderPixels: number;
   readonly inventoriedGpuMemoryMiB: number;
   readonly estimatedGpuMemoryMiB: number;

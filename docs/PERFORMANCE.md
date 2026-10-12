@@ -1314,6 +1314,9 @@ a cloud session, so the figures are read from the job logs
   stream wanted earlier and no longer does, and two browsers sharing three
   CPUs need not stream alike. Draw calls and GPU work counts were identical
   throughout, and at most 0.04% of a frame's pixels differed (SSIM 1.0000).
+  The report now gives the pages each arm wants (`wantedTerrainPages`)
+  beside a resident-page difference: when both want the same, the extra
+  pages are left over from the stream.
 
 **Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
 pull request that touches the renderer: `swiftshader` gates, and `hardware`

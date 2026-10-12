@@ -555,10 +555,19 @@ export function renderMarkdown(report: PerfAbReport): string {
       if (shot.work.passChanges.length > 20) lines.push(`  - …and ${shot.work.passChanges.length - 20} more in report.json`);
     }
     if (shot.diagnostics && shot.diagnostics.changes.length > 0) {
+      const { base, head } = shot.diagnostics;
+      // The same pages wanted: the extra resident ones are each arm's history.
+      const wanted = base.wantedTerrainPages >= 0 && base.wantedTerrainPages === head.wantedTerrainPages
+        ? base.wantedTerrainPages
+        : null;
       lines.push("");
       lines.push("Renderer diagnostics that differ:");
       for (const change of shot.diagnostics.changes) {
-        lines.push(`- ${change.key}: ${formatCount(change.base)} → ${formatCount(change.head)}`);
+        const note = change.key === "residentTerrainPages" && wanted !== null
+          ? ` (both arms want ${formatCount(wanted)}: the rest were wanted earlier in each arm's stream, `
+            + "and stay until their slots are needed)"
+          : "";
+        lines.push(`- ${change.key}: ${formatCount(change.base)} → ${formatCount(change.head)}${note}`);
       }
     }
     if (shot.ceilings) {

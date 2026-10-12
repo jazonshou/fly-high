@@ -336,12 +336,17 @@ function advanceFrameState(shot: ShotContext): FlightVisualState {
 
 function shotDiagnostics(): ShotDiagnostics {
   const diagnostics = requireRenderer().getDiagnostics();
+  // The reasons partition the wanted set, one reason a page. An older base
+  // build reports none.
+  const reasons: { drawn: number; parent: number; collision: number; seed: number } | undefined =
+    diagnostics.residencyReasons;
   return {
     drawCalls: diagnostics.drawCalls,
     triangles: diagnostics.triangles,
     visibleInstances: diagnostics.visibleInstances,
     vegetationBatches: diagnostics.vegetationBatches,
     residentTerrainPages: diagnostics.residentTerrainPages,
+    wantedTerrainPages: reasons ? reasons.drawn + reasons.parent + reasons.collision + reasons.seed : -1,
     renderPixels: diagnostics.renderPixels,
     inventoriedGpuMemoryMiB: diagnostics.inventoriedGpuMemoryMiB,
     estimatedGpuMemoryMiB: diagnostics.estimatedGpuMemoryMiB,

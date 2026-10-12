@@ -340,4 +340,40 @@ describe("perf-ab Markdown report", () => {
       "- `compute:rare`: 2.5 → 2.2 (on a cadence; per run -14.0%, over the 3 rounds both arms ran it, too few for an interval)",
     );
   });
+
+  it("says when arms that differ in resident terrain pages want the same ones", () => {
+    const diagnostics = (resident: number, wanted: number) => ({
+      drawCalls: 247, triangles: 1_800_000, visibleInstances: 82_000, vegetationBatches: 21,
+      residentTerrainPages: resident, wantedTerrainPages: wanted, renderPixels: 680_900,
+      inventoriedGpuMemoryMiB: 265.9, estimatedGpuMemoryMiB: 380,
+    });
+    const history = renderMarkdown(report({}, [shot({
+      diagnostics: {
+        base: diagnostics(35, 33),
+        head: diagnostics(36, 33),
+        changes: [{ key: "residentTerrainPages", base: 35, head: 36 }],
+      },
+    })]));
+    expect(history).toContain(
+      "- residentTerrainPages: 35 → 36 (both arms want 33: the rest were wanted earlier in each arm's stream, "
+      + "and stay until their slots are needed)",
+    );
+    const asked = renderMarkdown(report({}, [shot({
+      diagnostics: {
+        base: diagnostics(35, 33),
+        head: diagnostics(37, 35),
+        changes: [{ key: "residentTerrainPages", base: 35, head: 37 }, { key: "wantedTerrainPages", base: 33, head: 35 }],
+      },
+    })]));
+    expect(asked).toContain("- residentTerrainPages: 35 → 37\n- wantedTerrainPages: 33 → 35\n");
+    // A base too old to report its wanted pages says -1, which explains nothing.
+    const old = renderMarkdown(report({}, [shot({
+      diagnostics: {
+        base: diagnostics(35, -1),
+        head: diagnostics(36, -1),
+        changes: [{ key: "residentTerrainPages", base: 35, head: 36 }],
+      },
+    })]));
+    expect(old).toContain("- residentTerrainPages: 35 → 36\n");
+  });
 });
