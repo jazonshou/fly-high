@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
@@ -97,7 +97,12 @@ export function installBaseDependencies(baseRoot: string): void {
  * way whatever that way is.
  */
 export async function buildAgent(checkout: string, outDir: string, cacheDir?: string): Promise<void> {
-  const root = join(checkout, "tests/perf/ab");
+  // Resolved through symlinks, as Rolldown resolves the page: Vite names the
+  // page relative to the root as given, so under macOS's temporary directory
+  // (/var links to /private/var) the two would disagree and the build would
+  // refuse the page's name.
+  const canonical = realpathSync(checkout);
+  const root = join(canonical, "tests/perf/ab");
   await build({
     configFile: false,
     root,
@@ -106,8 +111,8 @@ export async function buildAgent(checkout: string, outDir: string, cacheDir?: st
     logLevel: "warn",
     // A worktree's own cache would land in the linked node_modules under a
     // new name per base commit; the caller passes one inside its output.
-    cacheDir: cacheDir ?? cacheDirFor("perf-ab", checkout),
-    resolve: { alias: { "@": checkout } },
+    cacheDir: cacheDir ?? cacheDirFor("perf-ab", canonical),
+    resolve: { alias: { "@": canonical } },
     build: {
       outDir,
       emptyOutDir: true,

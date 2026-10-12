@@ -396,6 +396,7 @@ async function main(): Promise<number> {
   // Build. The instrument (HARNESS_PATHS) always comes from THIS checkout.
   const worktrees: string[] = [];
   const builds: Record<ArmName, string> = { base: join(outDir, "build", "base"), head: join(outDir, "build", "head") };
+  let building: ArmName = "head";
   try {
     // Each arm's own dependencies when its lockfile is not this checkout's.
     const install = (arm: ArmName, checkout: string) => {
@@ -420,6 +421,7 @@ async function main(): Promise<number> {
       await buildAgent(root, builds.head, join(outDir, "build", "vite-cache-head"));
     }
     log("built the head arm");
+    building = "base";
     if (aa) {
       builds.base = builds.head;
     } else {
@@ -432,8 +434,8 @@ async function main(): Promise<number> {
     }
   } catch (error) {
     throw new Error(
-      `perf-ab: building an arm failed. A base older than the A/B tooling cannot be built with it; `
-      + `choose a newer --base. (${error instanceof Error ? error.message : String(error)})`,
+      `perf-ab: building the ${building} arm failed: ${error instanceof Error ? error.message : String(error)}`
+      + (building === "base" ? "\nA base older than the A/B tooling may not build with it; if so, choose a newer --base." : ""),
     );
   } finally {
     if (!values["keep-worktrees"]) for (const checkout of worktrees) removeArmCheckout(root, checkout);
