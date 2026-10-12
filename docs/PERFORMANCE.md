@@ -1188,19 +1188,22 @@ Holm-adjusted across every gated shot and metric, is below 0.05 AND the
 Hodges–Lehmann estimate of head/base is at least 1 + threshold. SAME needs the
 whole distribution-free interval inside ±threshold. Anything else is
 INCONCLUSIVE: the run exits 0 with a warning that says to run more rounds,
-because an inconclusive result is not a pass. The thresholds are 5% in GPU
-time and, on SwiftShader, 15% in CPU time; `--threshold` and `--cpu-threshold`
-change them. `scripts/perfAbStats.mts` holds the method and
+because an inconclusive result is not a pass, and says about how many rounds
+would clear it if nothing changed: an interval narrows with the square root
+of the rounds. The thresholds are 5% in GPU time (in the frame's wall time
+where passes cannot be timed) and 15% in CPU time; `--threshold` and
+`--cpu-threshold` change them. `scripts/perfAbStats.mts` holds the method and
 `tests/perf-ab-stats.test.ts` pins it, including its power and false-alarm
 rate on simulated runs.
 
-On SwiftShader, CPU time is a guard (`--cpu-gate`): a slowdown it resolves
-fails the run, but an interval too wide to clear a change is listed as not
-cleared instead of holding the run inconclusive. It is too noisy there to do
-more: in three A/A runs, 32 rounds in all, one round's ratio scattered by
-11–26% in CPU time against 4% in GPU time, and 2,000 sixteen-round A/A runs
-resampled from those rounds read SAME in 99.7% of cases for GPU time at 5%,
-but in only 57% for CPU time at 15%. So on SwiftShader a CPU-side change is
+CPU time is a guard (`--cpu-gate`): a slowdown it resolves fails the run, but
+an interval too wide to clear a change is listed as not cleared instead of
+holding the run inconclusive. On SwiftShader it is too noisy to do more: in
+three A/A runs, 32 rounds in all, one round's ratio scattered by 11–26% in
+CPU time against 4% in GPU time, and 2,000 sixteen-round A/A runs resampled
+from those rounds read SAME in 99.7% of cases for GPU time at 5%, but in only
+57% for CPU time at 15%. On the macOS runner the two browsers' CPU times can
+sit apart with both running one renderer (below). So a CPU-side change is
 caught when it is large, and a small one is not ruled out.
 
 **What it reports besides the verdict**, each of which is exact rather than
@@ -1230,9 +1233,11 @@ reads as SAME.
   render-target traffic are nearly free. A SwiftShader verdict on a change of
   that kind is a lead to confirm on the macOS runner, not a ruling.
 - **The hosted macOS runner's GPU** (`--gpu hardware`, the default on macOS)
-  is Metal on Apple silicon, the same family as the reference adapter, at
-  about a quarter of its frame rate. Where its adapter cannot time passes, the
-  fenced frame's wall time is gated instead of GPU time.
+  is Metal on Apple silicon, the same family as the reference adapter: a
+  virtual M1 with 3 CPUs, at about a quarter of its frame rate. It offers no
+  timestamp queries, so no pass is timed there. The fenced frame's wall time,
+  from `render()` to GPU idle, is gated instead of GPU time, and it is far
+  noisier (below).
 
 **Measured** (2026-10-12, a cloud session: 4 CPUs, Chromium 141, SwiftShader,
 16 rounds, on `cruise-horizon` unless another shot is named):
@@ -1270,14 +1275,56 @@ reads as SAME.
   runner rather than a ruling
   (`docs/evidence/perf-ab-pr20-sharpen-grain-2026-10-12.json`).
 
+**Measured on the macOS runner** (2026-10-12, `macos-latest`: Apple M1
+(Virtual), 3 CPUs, Chromium 151, Metal, on the five default shots unless
+fewer are named). Every run below is an A/A in effect: the base is `main`,
+and the head is the A/B's own branch, which adds the harness both arms share
+and changes no renderer code. The runner's artifacts cannot be fetched from
+a cloud session, so the figures are read from the job logs
+(`docs/evidence/perf-ab-macos-runner-2026-10-12.json`).
+
+- **Twenty rounds of four frames a turn**, the first default, on the pull
+  request twice: every verdict INCONCLUSIVE. One round's wall-time ratio
+  scattered by 13–23% (18% pooled) and its CPU-time ratio by 23–44%, at
+  1.4–1.7 s a round, so the wall-time intervals were 11–23 points wide,
+  around estimates from −8.1% to +2.0%. Between the two runs the host's own
+  speed moved far more than that: a shot's median frame differed by up to
+  1.7 times, in either direction (`cruise-horizon` 74 then 43 ms,
+  `forest-500ft-sunbehind` 95 then 113 ms), and the paired ratio absorbs
+  it.
+- **One frame a turn, 120 rounds**, on `cruise-horizon`, `ground-2m-lowsun`
+  and `water-25ft`: a round scattered by 20–26%, barely more, in a sixth of
+  the time (0.28 s a round), because neighbouring frames move together.
+  Per second of runner time that is about three times the precision. Wall
+  time still read INCONCLUSIVE on all three, +2.1% to +5.3% with intervals
+  of ±4–5%; CPU time read SAME on two.
+- **One frame a turn, 320 rounds**, the default since, dispatched on the
+  branch: frame wall time SAME on all five shots, −1.5% to +2.1%, every
+  interval within ±1.8–2.4%, in 12.6 minutes, two to three a shot. CPU time
+  read SAME on four shots, and on `approach-500ft` the head 8.7% faster
+  (−12.5% to −4.7%): an offset between two browsers running one renderer,
+  whose cause the run cannot tell, and which more rounds would only measure
+  more precisely. It is why CPU time is a guard at 15% here as on
+  SwiftShader, under which this run reads "no regression".
+- **One or two more resident terrain pages.** In every five-shot run the
+  head arm came to rest holding one or two more terrain pages than the base,
+  on 14 of the 15 shots (`residentTerrainPages: 35 → 36` and so on); in the
+  three-shot run never, nor in any SwiftShader run so far. A page stays in
+  the atlas until its slot is needed, so the count includes pages an arm's
+  stream wanted earlier and no longer does, and two browsers sharing three
+  CPUs need not stream alike. Draw calls and GPU work counts were identical
+  throughout, and at most 0.04% of a frame's pixels differed (SSIM 1.0000).
+
 **Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
 pull request that touches the renderer: `swiftshader` gates, and `hardware`
-is advisory until its noise floor has been measured over enough runs to set
-its thresholds. Either can be started by hand (`workflow_dispatch`) with a
-base, a shot list, a round count and further options. In `args`, a JSON value
-is written without quotes or spaces, for example
-`--head-profile-override {"cloudResolutionScale":0.9}`. The report is at the
-end of the A/B step's log and in the job summary.
+is advisory. Its rounds are set from the A/A runs above, but it times whole
+frames on a virtual GPU whose speed differs from one runner to the next, so
+it is a second opinion on SwiftShader's verdicts, from the GPU family that
+matters, rather than a gate. Either can be started by hand
+(`workflow_dispatch`) with a base, a shot list, a round count and further
+options. In `args`, a JSON value is written without quotes or spaces, for
+example `--head-profile-override {"cloudResolutionScale":0.9}`. The report is
+at the end of the A/B step's log and in the job summary.
 
 **Draw-call ceilings.** A draw call is counted, not timed, so the A/B's counts
 are exact on any host once both arms have streamed to rest, and its base →

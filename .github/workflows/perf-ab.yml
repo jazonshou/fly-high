@@ -106,8 +106,9 @@ jobs:
 
   hardware:
     # The same A/B on the macOS runner's GPU (Metal), which is closer to the
-    # reference Mac than SwiftShader is. Advisory until its noise floor has
-    # been measured over enough runs to set its threshold; see
+    # reference Mac than SwiftShader is. It cannot time passes, and its
+    # frames scatter widely, so it runs 320 short rounds a shot and is
+    # advisory: a second opinion on the SwiftShader verdict. See
     # docs/PERFORMANCE.md, "Cloud A/B".
     name: A/B on the macOS runner's GPU (advisory)
     runs-on: macos-latest

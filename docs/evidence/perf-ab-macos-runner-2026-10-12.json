@@ -1,0 +1,1672 @@
+{
+ "note": "Cloud A/B on GitHub's macOS runner: macos-latest, Apple M1 (Virtual), 3 CPUs, Chromium 151 from Playwright, Metal. The adapter offers no timestamp-query, so no pass is timed and the gated metric is the frame's wall time, render() to GPU idle. Four runs on 2026-10-12, each an A/A in effect: the base is main (c1b54913ac) and the head the A/B's own branch, which adds the harness both arms share and changes no renderer code. The runner's artifacts (report.json, screenshots) cannot be downloaded from a cloud session, whose proxy refuses the artifact storage host, so every figure here is read from the job logs: run1's round totals are in full (its log printed every round), the others are their reports' summaries. run1 and run2 are the pull request's own runs at the first defaults (20 rounds of four frames a turn): every verdict inconclusive. e1 (120 one-frame rounds, three shots) showed a round scatters little more at one frame a turn than at four, in a sixth of the time. e2 (320 one-frame rounds, the default since) read wall time SAME on all five shots; CPU time read the head 8.7% faster on approach-500ft with both arms one renderer, which is why CPU time is a guard at 15% on this host. In every five-shot run the head rested on one or two more resident terrain pages than the base (14 of 15 shots), in e1 never; draw calls, work counts and pixels were identical throughout. docs/PERFORMANCE.md, Cloud A/B, Measured on the macOS runner, reads these.",
+ "tool": "perf-ab",
+ "host": {
+  "runner": "macos-latest",
+  "cpuModel": "Apple M1 (Virtual)",
+  "cpus": 3,
+  "browser": "Chromium 151.0.7922.34 (Playwright)",
+  "backend": "hardware GPU (Metal)",
+  "timestampQuery": false
+ },
+ "runs": {
+  "run1": {
+   "what": "PR #21's own A/B on the macOS runner, an A/A in effect (the pull request changes no renderer code): the defaults of the time, 20 rounds of four frames per turn",
+   "workflowRun": 38294656837,
+   "job": 114962850510,
+   "commits": {
+    "base": "c1b54913ac (HEAD^1 of the merge commit)",
+    "head": "b3427da3ae (merge of b33e1c7 into main)"
+   },
+   "settings": {
+    "rounds": 20,
+    "framesPerTurn": 4,
+    "framesPerArmPerRound": 8,
+    "thresholds": {
+     "wall": 0.05,
+     "cpu": 0.1
+    },
+    "cpuGate": "full"
+   },
+   "secondsPerRound": 1.7,
+   "verdict": "inconclusive",
+   "shots": {
+    "approach-500ft": {
+     "wall": "inconclusive -4.9% (-11.2% to +2.1%)",
+     "cpu": "inconclusive -5.4% (-14.6% to +6.1%)",
+     "drawCalls": "247 -> 247",
+     "work": "identical",
+     "pixels": "0.01% differ, SSIM 1.0000, max channel delta 10",
+     "medianFrameMs": {
+      "cpu": [
+       12.5,
+       11.9
+      ],
+      "wall": [
+       82.3,
+       83.0
+      ]
+     },
+     "streamed": [
+      390,
+      510
+     ],
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       36,
+       37
+      ]
+     },
+     "baselineSsim": 0.9584,
+     "roundTotalsMs": [
+      {
+       "base": {
+        "wall": 1019.8,
+        "cpu": 177.4
+       },
+       "head": {
+        "wall": 681.1,
+        "cpu": 146.2
+       }
+      },
+      {
+       "base": {
+        "wall": 640.3,
+        "cpu": 100.5
+       },
+       "head": {
+        "wall": 651.6,
+        "cpu": 100.3
+       }
+      },
+      {
+       "base": {
+        "wall": 619.1,
+        "cpu": 81.7
+       },
+       "head": {
+        "wall": 549.6,
+        "cpu": 89.4
+       }
+      },
+      {
+       "base": {
+        "wall": 614.4,
+        "cpu": 99.0
+       },
+       "head": {
+        "wall": 538.9,
+        "cpu": 87.6
+       }
+      },
+      {
+       "base": {
+        "wall": 637.8,
+        "cpu": 107.8
+       },
+       "head": {
+        "wall": 574.8,
+        "cpu": 77.2
+       }
+      },
+      {
+       "base": {
+        "wall": 624.0,
+        "cpu": 68.6
+       },
+       "head": {
+        "wall": 546.8,
+        "cpu": 98.3
+       }
+      },
+      {
+       "base": {
+        "wall": 691.6,
+        "cpu": 78.6
+       },
+       "head": {
+        "wall": 715.8,
+        "cpu": 75.8
+       }
+      },
+      {
+       "base": {
+        "wall": 627.3,
+        "cpu": 79.9
+       },
+       "head": {
+        "wall": 568.0,
+        "cpu": 78.3
+       }
+      },
+      {
+       "base": {
+        "wall": 701.6,
+        "cpu": 131.2
+       },
+       "head": {
+        "wall": 570.6,
+        "cpu": 61.8
+       }
+      },
+      {
+       "base": {
+        "wall": 601.4,
+        "cpu": 113.4
+       },
+       "head": {
+        "wall": 613.2,
+        "cpu": 96.8
+       }
+      },
+      {
+       "base": {
+        "wall": 544.3,
+        "cpu": 70.6
+       },
+       "head": {
+        "wall": 691.5,
+        "cpu": 96.5
+       }
+      },
+      {
+       "base": {
+        "wall": 672.2,
+        "cpu": 105.4
+       },
+       "head": {
+        "wall": 654.3,
+        "cpu": 94.7
+       }
+      },
+      {
+       "base": {
+        "wall": 659.8,
+        "cpu": 103.0
+       },
+       "head": {
+        "wall": 733.3,
+        "cpu": 129.2
+       }
+      },
+      {
+       "base": {
+        "wall": 761.3,
+        "cpu": 133.0
+       },
+       "head": {
+        "wall": 692.3,
+        "cpu": 84.6
+       }
+      },
+      {
+       "base": {
+        "wall": 564.3,
+        "cpu": 95.8
+       },
+       "head": {
+        "wall": 628.2,
+        "cpu": 97.5
+       }
+      },
+      {
+       "base": {
+        "wall": 657.2,
+        "cpu": 114.0
+       },
+       "head": {
+        "wall": 701.2,
+        "cpu": 95.7
+       }
+      },
+      {
+       "base": {
+        "wall": 714.1,
+        "cpu": 98.2
+       },
+       "head": {
+        "wall": 849.6,
+        "cpu": 93.8
+       }
+      },
+      {
+       "base": {
+        "wall": 950.8,
+        "cpu": 104.1
+       },
+       "head": {
+        "wall": 674.1,
+        "cpu": 99.2
+       }
+      },
+      {
+       "base": {
+        "wall": 834.6,
+        "cpu": 89.8
+       },
+       "head": {
+        "wall": 756.5,
+        "cpu": 81.9
+       }
+      },
+      {
+       "base": {
+        "wall": 813.8,
+        "cpu": 82.9
+       },
+       "head": {
+        "wall": 723.0,
+        "cpu": 98.9
+       }
+      }
+     ]
+    },
+    "cruise-horizon": {
+     "wall": "inconclusive -1.8% (-11.1% to +8.1%)",
+     "cpu": "inconclusive -0.1% (-14.5% to +16.6%)",
+     "drawCalls": "200 -> 200",
+     "work": "identical",
+     "pixels": "identical",
+     "medianFrameMs": {
+      "cpu": [
+       12.9,
+       12.7
+      ],
+      "wall": [
+       73.9,
+       74.5
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       39,
+       40
+      ]
+     },
+     "baselineSsim": 0.9753,
+     "roundTotalsMs": [
+      {
+       "base": {
+        "wall": 741.1,
+        "cpu": 114.5
+       },
+       "head": {
+        "wall": 700.1,
+        "cpu": 105.3
+       }
+      },
+      {
+       "base": {
+        "wall": 897.6,
+        "cpu": 107.1
+       },
+       "head": {
+        "wall": 793.5,
+        "cpu": 113.1
+       }
+      },
+      {
+       "base": {
+        "wall": 616.8,
+        "cpu": 108.9
+       },
+       "head": {
+        "wall": 687.3,
+        "cpu": 107.0
+       }
+      },
+      {
+       "base": {
+        "wall": 928.6,
+        "cpu": 137.7
+       },
+       "head": {
+        "wall": 1428.3,
+        "cpu": 223.6
+       }
+      },
+      {
+       "base": {
+        "wall": 706.2,
+        "cpu": 103.9
+       },
+       "head": {
+        "wall": 610.2,
+        "cpu": 85.2
+       }
+      },
+      {
+       "base": {
+        "wall": 819.5,
+        "cpu": 117.9
+       },
+       "head": {
+        "wall": 627.7,
+        "cpu": 125.8
+       }
+      },
+      {
+       "base": {
+        "wall": 446.7,
+        "cpu": 68.1
+       },
+       "head": {
+        "wall": 557.7,
+        "cpu": 112.4
+       }
+      },
+      {
+       "base": {
+        "wall": 523.9,
+        "cpu": 72.8
+       },
+       "head": {
+        "wall": 699.2,
+        "cpu": 136.3
+       }
+      },
+      {
+       "base": {
+        "wall": 557.7,
+        "cpu": 90.1
+       },
+       "head": {
+        "wall": 537.2,
+        "cpu": 102.7
+       }
+      },
+      {
+       "base": {
+        "wall": 608.5,
+        "cpu": 114.8
+       },
+       "head": {
+        "wall": 681.0,
+        "cpu": 83.4
+       }
+      },
+      {
+       "base": {
+        "wall": 510.3,
+        "cpu": 115.5
+       },
+       "head": {
+        "wall": 584.2,
+        "cpu": 84.1
+       }
+      },
+      {
+       "base": {
+        "wall": 669.9,
+        "cpu": 90.1
+       },
+       "head": {
+        "wall": 618.0,
+        "cpu": 131.2
+       }
+      },
+      {
+       "base": {
+        "wall": 501.6,
+        "cpu": 87.2
+       },
+       "head": {
+        "wall": 391.8,
+        "cpu": 59.7
+       }
+      },
+      {
+       "base": {
+        "wall": 734.2,
+        "cpu": 106.3
+       },
+       "head": {
+        "wall": 607.1,
+        "cpu": 105.6
+       }
+      },
+      {
+       "base": {
+        "wall": 549.4,
+        "cpu": 202.0
+       },
+       "head": {
+        "wall": 471.7,
+        "cpu": 98.2
+       }
+      },
+      {
+       "base": {
+        "wall": 636.2,
+        "cpu": 79.2
+       },
+       "head": {
+        "wall": 556.8,
+        "cpu": 92.4
+       }
+      },
+      {
+       "base": {
+        "wall": 489.9,
+        "cpu": 99.1
+       },
+       "head": {
+        "wall": 511.5,
+        "cpu": 101.1
+       }
+      },
+      {
+       "base": {
+        "wall": 480.4,
+        "cpu": 87.8
+       },
+       "head": {
+        "wall": 567.9,
+        "cpu": 89.5
+       }
+      },
+      {
+       "base": {
+        "wall": 573.9,
+        "cpu": 101.9
+       },
+       "head": {
+        "wall": 487.8,
+        "cpu": 74.0
+       }
+      },
+      {
+       "base": {
+        "wall": 539.9,
+        "cpu": 92.9
+       },
+       "head": {
+        "wall": 482.4,
+        "cpu": 79.7
+       }
+      }
+     ]
+    },
+    "forest-500ft-sunbehind": {
+     "wall": "inconclusive +1.5% (-6.0% to +8.3%)",
+     "cpu": "inconclusive +4.1% (-5.3% to +20.2%)",
+     "drawCalls": "248 -> 248",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       11.8,
+       11.9
+      ],
+      "wall": [
+       93.9,
+       96.6
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       41,
+       42
+      ]
+     },
+     "baselineSsim": 0.9687,
+     "roundTotalsMs": [
+      {
+       "base": {
+        "wall": 749.9,
+        "cpu": 93.4
+       },
+       "head": {
+        "wall": 659.2,
+        "cpu": 89.8
+       }
+      },
+      {
+       "base": {
+        "wall": 725.3,
+        "cpu": 94.2
+       },
+       "head": {
+        "wall": 671.9,
+        "cpu": 135.1
+       }
+      },
+      {
+       "base": {
+        "wall": 733.9,
+        "cpu": 104.8
+       },
+       "head": {
+        "wall": 844.9,
+        "cpu": 124.8
+       }
+      },
+      {
+       "base": {
+        "wall": 753.1,
+        "cpu": 86.4
+       },
+       "head": {
+        "wall": 653.6,
+        "cpu": 93.1
+       }
+      },
+      {
+       "base": {
+        "wall": 705.3,
+        "cpu": 104.5
+       },
+       "head": {
+        "wall": 714.8,
+        "cpu": 97.5
+       }
+      },
+      {
+       "base": {
+        "wall": 766.5,
+        "cpu": 112.7
+       },
+       "head": {
+        "wall": 858.3,
+        "cpu": 92.8
+       }
+      },
+      {
+       "base": {
+        "wall": 766.0,
+        "cpu": 99.8
+       },
+       "head": {
+        "wall": 665.0,
+        "cpu": 100.8
+       }
+      },
+      {
+       "base": {
+        "wall": 747.3,
+        "cpu": 109.1
+       },
+       "head": {
+        "wall": 692.7,
+        "cpu": 88.5
+       }
+      },
+      {
+       "base": {
+        "wall": 705.6,
+        "cpu": 89.4
+       },
+       "head": {
+        "wall": 664.4,
+        "cpu": 87.4
+       }
+      },
+      {
+       "base": {
+        "wall": 684.6,
+        "cpu": 71.1
+       },
+       "head": {
+        "wall": 941.0,
+        "cpu": 110.6
+       }
+      },
+      {
+       "base": {
+        "wall": 947.7,
+        "cpu": 86.9
+       },
+       "head": {
+        "wall": 846.8,
+        "cpu": 83.2
+       }
+      },
+      {
+       "base": {
+        "wall": 795.9,
+        "cpu": 90.1
+       },
+       "head": {
+        "wall": 925.8,
+        "cpu": 109.5
+       }
+      },
+      {
+       "base": {
+        "wall": 661.7,
+        "cpu": 100.5
+       },
+       "head": {
+        "wall": 585.0,
+        "cpu": 67.8
+       }
+      },
+      {
+       "base": {
+        "wall": 695.9,
+        "cpu": 73.2
+       },
+       "head": {
+        "wall": 841.5,
+        "cpu": 83.0
+       }
+      },
+      {
+       "base": {
+        "wall": 767.9,
+        "cpu": 93.8
+       },
+       "head": {
+        "wall": 781.1,
+        "cpu": 89.3
+       }
+      },
+      {
+       "base": {
+        "wall": 641.3,
+        "cpu": 72.4
+       },
+       "head": {
+        "wall": 763.8,
+        "cpu": 116.2
+       }
+      },
+      {
+       "base": {
+        "wall": 760.3,
+        "cpu": 126.4
+       },
+       "head": {
+        "wall": 711.4,
+        "cpu": 105.0
+       }
+      },
+      {
+       "base": {
+        "wall": 811.7,
+        "cpu": 83.3
+       },
+       "head": {
+        "wall": 843.9,
+        "cpu": 86.1
+       }
+      },
+      {
+       "base": {
+        "wall": 882.6,
+        "cpu": 100.1
+       },
+       "head": {
+        "wall": 852.2,
+        "cpu": 151.8
+       }
+      },
+      {
+       "base": {
+        "wall": 792.3,
+        "cpu": 98.5
+       },
+       "head": {
+        "wall": 914.0,
+        "cpu": 99.3
+       }
+      }
+     ]
+    },
+    "ground-2m-lowsun": {
+     "wall": "inconclusive +2.0% (-5.5% to +9.1%)",
+     "cpu": "inconclusive +1.1% (-8.0% to +12.1%)",
+     "drawCalls": "121 -> 121",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 5",
+     "medianFrameMs": {
+      "cpu": [
+       9.8,
+       10.2
+      ],
+      "wall": [
+       93.7,
+       92.1
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       45,
+       46
+      ]
+     },
+     "baselineSsim": 0.8984,
+     "roundTotalsMs": [
+      {
+       "base": {
+        "wall": 608.9,
+        "cpu": 77.5
+       },
+       "head": {
+        "wall": 651.2,
+        "cpu": 80.3
+       }
+      },
+      {
+       "base": {
+        "wall": 737.1,
+        "cpu": 82.6
+       },
+       "head": {
+        "wall": 704.2,
+        "cpu": 77.7
+       }
+      },
+      {
+       "base": {
+        "wall": 585.9,
+        "cpu": 77.2
+       },
+       "head": {
+        "wall": 675.8,
+        "cpu": 73.6
+       }
+      },
+      {
+       "base": {
+        "wall": 642.1,
+        "cpu": 73.1
+       },
+       "head": {
+        "wall": 790.4,
+        "cpu": 78.6
+       }
+      },
+      {
+       "base": {
+        "wall": 675.7,
+        "cpu": 82.1
+       },
+       "head": {
+        "wall": 826.0,
+        "cpu": 93.0
+       }
+      },
+      {
+       "base": {
+        "wall": 756.3,
+        "cpu": 79.2
+       },
+       "head": {
+        "wall": 689.6,
+        "cpu": 64.2
+       }
+      },
+      {
+       "base": {
+        "wall": 760.7,
+        "cpu": 69.7
+       },
+       "head": {
+        "wall": 727.7,
+        "cpu": 87.2
+       }
+      },
+      {
+       "base": {
+        "wall": 746.1,
+        "cpu": 76.5
+       },
+       "head": {
+        "wall": 649.8,
+        "cpu": 79.9
+       }
+      },
+      {
+       "base": {
+        "wall": 811.2,
+        "cpu": 64.2
+       },
+       "head": {
+        "wall": 788.2,
+        "cpu": 85.7
+       }
+      },
+      {
+       "base": {
+        "wall": 710.6,
+        "cpu": 152.6
+       },
+       "head": {
+        "wall": 934.4,
+        "cpu": 83.3
+       }
+      },
+      {
+       "base": {
+        "wall": 787.9,
+        "cpu": 81.7
+       },
+       "head": {
+        "wall": 759.7,
+        "cpu": 63.1
+       }
+      },
+      {
+       "base": {
+        "wall": 957.0,
+        "cpu": 71.5
+       },
+       "head": {
+        "wall": 644.0,
+        "cpu": 64.7
+       }
+      },
+      {
+       "base": {
+        "wall": 757.3,
+        "cpu": 70.2
+       },
+       "head": {
+        "wall": 707.9,
+        "cpu": 78.4
+       }
+      },
+      {
+       "base": {
+        "wall": 752.7,
+        "cpu": 74.4
+       },
+       "head": {
+        "wall": 687.3,
+        "cpu": 60.9
+       }
+      },
+      {
+       "base": {
+        "wall": 705.6,
+        "cpu": 81.4
+       },
+       "head": {
+        "wall": 747.6,
+        "cpu": 86.8
+       }
+      },
+      {
+       "base": {
+        "wall": 725.9,
+        "cpu": 80.2
+       },
+       "head": {
+        "wall": 895.7,
+        "cpu": 110.5
+       }
+      },
+      {
+       "base": {
+        "wall": 803.4,
+        "cpu": 104.9
+       },
+       "head": {
+        "wall": 746.0,
+        "cpu": 95.7
+       }
+      },
+      {
+       "base": {
+        "wall": 1263.8,
+        "cpu": 328.2
+       },
+       "head": {
+        "wall": 1433.8,
+        "cpu": 304.5
+       }
+      },
+      {
+       "base": {
+        "wall": 853.0,
+        "cpu": 103.0
+       },
+       "head": {
+        "wall": 829.9,
+        "cpu": 104.6
+       }
+      },
+      {
+       "base": {
+        "wall": 584.4,
+        "cpu": 60.7
+       },
+       "head": {
+        "wall": 635.6,
+        "cpu": 107.6
+       }
+      }
+     ]
+    },
+    "water-25ft": {
+     "wall": "inconclusive -5.3% (-16.1% to +4.9%)",
+     "cpu": "inconclusive +1.9% (-10.5% to +12.0%)",
+     "drawCalls": "224 -> 224",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       12.4,
+       12.6
+      ],
+      "wall": [
+       79.6,
+       73.8
+      ]
+     },
+     "streamed": [
+      570,
+      570
+     ],
+     "diagnosticsThatDiffer": {},
+     "baselineSsim": 0.7061,
+     "roundTotalsMs": [
+      {
+       "base": {
+        "wall": 657.2,
+        "cpu": 107.9
+       },
+       "head": {
+        "wall": 634.6,
+        "cpu": 137.0
+       }
+      },
+      {
+       "base": {
+        "wall": 752.7,
+        "cpu": 80.2
+       },
+       "head": {
+        "wall": 584.3,
+        "cpu": 89.4
+       }
+      },
+      {
+       "base": {
+        "wall": 575.1,
+        "cpu": 84.6
+       },
+       "head": {
+        "wall": 477.7,
+        "cpu": 81.0
+       }
+      },
+      {
+       "base": {
+        "wall": 707.8,
+        "cpu": 73.3
+       },
+       "head": {
+        "wall": 612.7,
+        "cpu": 70.3
+       }
+      },
+      {
+       "base": {
+        "wall": 444.2,
+        "cpu": 64.3
+       },
+       "head": {
+        "wall": 513.7,
+        "cpu": 76.2
+       }
+      },
+      {
+       "base": {
+        "wall": 415.5,
+        "cpu": 56.0
+       },
+       "head": {
+        "wall": 482.5,
+        "cpu": 72.4
+       }
+      },
+      {
+       "base": {
+        "wall": 1288.2,
+        "cpu": 587.8
+       },
+       "head": {
+        "wall": 605.0,
+        "cpu": 102.0
+       }
+      },
+      {
+       "base": {
+        "wall": 687.5,
+        "cpu": 137.9
+       },
+       "head": {
+        "wall": 834.6,
+        "cpu": 110.3
+       }
+      },
+      {
+       "base": {
+        "wall": 671.2,
+        "cpu": 82.9
+       },
+       "head": {
+        "wall": 457.1,
+        "cpu": 62.8
+       }
+      },
+      {
+       "base": {
+        "wall": 655.6,
+        "cpu": 100.3
+       },
+       "head": {
+        "wall": 513.9,
+        "cpu": 103.8
+       }
+      },
+      {
+       "base": {
+        "wall": 714.9,
+        "cpu": 127.6
+       },
+       "head": {
+        "wall": 609.2,
+        "cpu": 106.5
+       }
+      },
+      {
+       "base": {
+        "wall": 679.1,
+        "cpu": 104.5
+       },
+       "head": {
+        "wall": 770.9,
+        "cpu": 126.6
+       }
+      },
+      {
+       "base": {
+        "wall": 514.6,
+        "cpu": 97.6
+       },
+       "head": {
+        "wall": 569.4,
+        "cpu": 108.0
+       }
+      },
+      {
+       "base": {
+        "wall": 540.0,
+        "cpu": 114.8
+       },
+       "head": {
+        "wall": 616.3,
+        "cpu": 134.4
+       }
+      },
+      {
+       "base": {
+        "wall": 617.5,
+        "cpu": 108.0
+       },
+       "head": {
+        "wall": 657.6,
+        "cpu": 99.5
+       }
+      },
+      {
+       "base": {
+        "wall": 581.4,
+        "cpu": 83.6
+       },
+       "head": {
+        "wall": 581.0,
+        "cpu": 120.6
+       }
+      },
+      {
+       "base": {
+        "wall": 550.1,
+        "cpu": 69.8
+       },
+       "head": {
+        "wall": 597.2,
+        "cpu": 74.3
+       }
+      },
+      {
+       "base": {
+        "wall": 516.8,
+        "cpu": 108.5
+       },
+       "head": {
+        "wall": 523.6,
+        "cpu": 72.5
+       }
+      },
+      {
+       "base": {
+        "wall": 783.2,
+        "cpu": 109.5
+       },
+       "head": {
+        "wall": 616.0,
+        "cpu": 119.1
+       }
+      },
+      {
+       "base": {
+        "wall": 590.7,
+        "cpu": 86.5
+       },
+       "head": {
+        "wall": 487.9,
+        "cpu": 85.1
+       }
+      }
+     ]
+    }
+   },
+   "perRoundScatter": {
+    "how": "standard deviation over rounds of ln(head total / base total), per shot, from roundTotalsMs",
+    "wall": {
+     "approach-500ft": 0.159,
+     "cruise-horizon": 0.19,
+     "forest-500ft-sunbehind": 0.135,
+     "ground-2m-lowsun": 0.155,
+     "water-25ft": 0.233,
+     "pooled": 0.178
+    },
+    "cpu": {
+     "approach-500ft": 0.256,
+     "cruise-horizon": 0.333,
+     "forest-500ft-sunbehind": 0.233,
+     "ground-2m-lowsun": 0.246,
+     "water-25ft": 0.442,
+     "pooled": 0.309
+    }
+   }
+  },
+  "run2": {
+   "what": "PR #21's own A/B on the macOS runner after 4867088, an A/A in effect: the defaults of the time, 20 rounds of four frames per turn",
+   "workflowRun": 38299270908,
+   "job": 114978143910,
+   "commits": {
+    "base": "c1b54913ac (HEAD^1 of the merge commit)",
+    "head": "2d2f493642 (merge of 4867088 into main)"
+   },
+   "settings": {
+    "rounds": 20,
+    "framesPerTurn": 4,
+    "framesPerArmPerRound": 8,
+    "thresholds": {
+     "wall": 0.05,
+     "cpu": 0.1
+    },
+    "cpuGate": "full"
+   },
+   "secondsPerRound": 1.4,
+   "abStepSeconds": 391,
+   "verdict": "inconclusive",
+   "roundsToClearLine": "If nothing changed, about 480 rounds would clear these (`--rounds 480`)",
+   "shots": {
+    "approach-500ft": {
+     "wall": "inconclusive -0.2% (-7.8% to +3.5%)",
+     "cpu": "inconclusive -1.5% (-10.4% to +7.9%)",
+     "drawCalls": "247 -> 247",
+     "work": "identical",
+     "pixels": "0.04% differ, SSIM 1.0000, max channel delta 12",
+     "medianFrameMs": {
+      "cpu": [
+       7.4,
+       7.1
+      ],
+      "wall": [
+       54.4,
+       55.1
+      ]
+     },
+     "streamed": [
+      360,
+      540
+     ],
+     "streamSeconds": [
+      35,
+      39
+     ],
+     "shotSeconds": 117,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       34,
+       35
+      ]
+     },
+     "baselineSsim": 0.9584
+    },
+    "cruise-horizon": {
+     "wall": "inconclusive +1.6% (-3.8% to +7.3%)",
+     "cpu": "inconclusive +3.6% (-5.5% to +13.3%)",
+     "drawCalls": "200 -> 200",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       7.1,
+       7.8
+      ],
+      "wall": [
+       41.7,
+       43.7
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      18,
+      18
+     ],
+     "shotSeconds": 43,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       38,
+       39
+      ]
+     },
+     "baselineSsim": 0.9753
+    },
+    "forest-500ft-sunbehind": {
+     "wall": "inconclusive -5.4% (-12.9% to +4.5%)",
+     "cpu": "inconclusive -6.9% (-16.0% to +2.7%)",
+     "drawCalls": "248 -> 248",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       17.8,
+       17.2
+      ],
+      "wall": [
+       115,
+       111
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      40,
+      41
+     ],
+     "shotSeconds": 92,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       41,
+       42
+      ]
+     },
+     "baselineSsim": 0.9687
+    },
+    "ground-2m-lowsun": {
+     "wall": "inconclusive -8.1% (-17.4% to -0.6%)",
+     "cpu": "inconclusive -1.3% (-15.8% to +15.0%)",
+     "drawCalls": "121 -> 121",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       9.9,
+       9.8
+      ],
+      "wall": [
+       82.1,
+       71.8
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      22,
+      23
+     ],
+     "shotSeconds": 64,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       45,
+       46
+      ]
+     },
+     "baselineSsim": 0.8984
+    },
+    "water-25ft": {
+     "wall": "inconclusive -3.8% (-14.9% to +7.8%)",
+     "cpu": "inconclusive -0.8% (-12.5% to +8.9%)",
+     "drawCalls": "224 -> 224",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       9.4,
+       9.0
+      ],
+      "wall": [
+       58.4,
+       55.6
+      ]
+     },
+     "streamed": [
+      570,
+      570
+     ],
+     "streamSeconds": [
+      25,
+      26
+     ],
+     "shotSeconds": 56,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       52,
+       53
+      ]
+     },
+     "baselineSsim": 0.7061
+    }
+   }
+  },
+  "e1": {
+   "what": "Dispatched on the branch to test shorter turns: one frame per turn, 120 rounds, three shots, an A/A in effect",
+   "workflowRun": 38298522326,
+   "job": 114975431393,
+   "commits": {
+    "base": "c1b54913ac (merge-base with origin/main)",
+    "head": "b33e1c7"
+   },
+   "settings": {
+    "rounds": 120,
+    "framesPerTurn": 1,
+    "framesPerArmPerRound": 2,
+    "thresholds": {
+     "wall": 0.05,
+     "cpu": 0.1
+    },
+    "cpuGate": "full"
+   },
+   "secondsPerRound": 0.28,
+   "verdict": "inconclusive",
+   "shots": {
+    "cruise-horizon": {
+     "wall": "inconclusive +2.7% (-1.0% to +6.5%)",
+     "cpu": "same +1.9% (-3.2% to +7.5%)",
+     "drawCalls": "200 -> 200",
+     "work": "identical",
+     "pixels": "identical",
+     "medianFrameMs": {
+      "cpu": [
+       6.5,
+       6.5
+      ],
+      "wall": [
+       38.8,
+       39.3
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "baselineSsim": 0.9764,
+     "diagnosticsThatDiffer": {}
+    },
+    "ground-2m-lowsun": {
+     "wall": "inconclusive +5.3% (+0.1% to +10.1%)",
+     "cpu": "inconclusive +3.1% (-5.4% to +12.4%)",
+     "drawCalls": "121 -> 121",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       9.9,
+       10.0
+      ],
+      "wall": [
+       76.9,
+       79.1
+      ]
+     },
+     "streamed": [
+      750,
+      570
+     ],
+     "baselineSsim": 0.863,
+     "diagnosticsThatDiffer": {}
+    },
+    "water-25ft": {
+     "wall": "inconclusive +2.1% (-1.8% to +6.5%)",
+     "cpu": "same -1.4% (-7.0% to +4.5%)",
+     "drawCalls": "224 -> 224",
+     "work": "identical",
+     "pixels": "identical",
+     "medianFrameMs": {
+      "cpu": [
+       7.6,
+       8.1
+      ],
+      "wall": [
+       48.2,
+       49.6
+      ]
+     },
+     "streamed": [
+      570,
+      570
+     ],
+     "baselineSsim": 0.6977,
+     "diagnosticsThatDiffer": {}
+    }
+   }
+  },
+  "e2": {
+   "what": "Dispatched on the branch to check the new default: one frame per turn, 320 rounds, the five default shots, an A/A in effect",
+   "workflowRun": 38299371035,
+   "job": 114978727529,
+   "commits": {
+    "base": "c1b54913ac (merge-base with origin/main)",
+    "head": "4867088"
+   },
+   "settings": {
+    "rounds": 320,
+    "framesPerTurn": 1,
+    "framesPerArmPerRound": 2,
+    "thresholds": {
+     "wall": 0.05,
+     "cpu": 0.1
+    },
+    "cpuGate": "full"
+   },
+   "abStepSeconds": 754,
+   "verdict": "inconclusive, on approach-500ft's CPU time alone",
+   "verdictUnderCurrentDefaults": "no regression: wall time SAME on all five shots at 5%, and CPU time, a guard at 15% since, inside it on all five",
+   "shots": {
+    "approach-500ft": {
+     "wall": "same -1.5% (-3.7% to +0.8%)",
+     "cpu": "inconclusive -8.7% (-12.5% to -4.7%)",
+     "drawCalls": "247 -> 247",
+     "work": "identical",
+     "pixels": "0.02% differ, SSIM 1.0000, max channel delta 10",
+     "medianFrameMs": {
+      "cpu": [
+       10.4,
+       9.5
+      ],
+      "wall": [
+       68.1,
+       66.4
+      ]
+     },
+     "streamed": [
+      390,
+      360
+     ],
+     "streamSeconds": [
+      30,
+      17
+     ],
+     "shotSeconds": 193,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       35,
+       36
+      ]
+     },
+     "baselineSsim": 0.9574
+    },
+    "cruise-horizon": {
+     "wall": "same +1.6% (-0.8% to +4.1%)",
+     "cpu": "same +0.2% (-3.8% to +4.4%)",
+     "drawCalls": "200 -> 200",
+     "work": "identical",
+     "pixels": "identical",
+     "medianFrameMs": {
+      "cpu": [
+       8.2,
+       8.1
+      ],
+      "wall": [
+       48.1,
+       48.9
+      ]
+     },
+     "streamed": [
+      360,
+      540
+     ],
+     "streamSeconds": [
+      20,
+      15
+     ],
+     "shotSeconds": 125,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       38,
+       39
+      ]
+     },
+     "baselineSsim": 0.979
+    },
+    "forest-500ft-sunbehind": {
+     "wall": "same +2.1% (-0.1% to +4.2%)",
+     "cpu": "same -2.5% (-6.0% to +1.3%)",
+     "drawCalls": "248 -> 248",
+     "work": "identical",
+     "pixels": "0.01% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       9.5,
+       9.2
+      ],
+      "wall": [
+       76.0,
+       76.4
+      ]
+     },
+     "streamed": [
+      360,
+      900
+     ],
+     "streamSeconds": [
+      30,
+      24
+     ],
+     "shotSeconds": 172,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       40,
+       42
+      ]
+     },
+     "baselineSsim": 0.969
+    },
+    "ground-2m-lowsun": {
+     "wall": "same -0.3% (-2.3% to +1.9%)",
+     "cpu": "same -0.9% (-4.4% to +2.6%)",
+     "drawCalls": "121 -> 121",
+     "work": "identical",
+     "pixels": "0.02% differ, SSIM 1.0000, max channel delta 18",
+     "medianFrameMs": {
+      "cpu": [
+       8.2,
+       8.2
+      ],
+      "wall": [
+       67.7,
+       66.7
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      17,
+      14
+     ],
+     "shotSeconds": 139,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       44,
+       46
+      ]
+     },
+     "baselineSsim": 0.9359
+    },
+    "water-25ft": {
+     "wall": "same -0.3% (-2.1% to +1.5%)",
+     "cpu": "same +0.1% (-2.7% to +3.2%)",
+     "drawCalls": "224 -> 224",
+     "work": "identical",
+     "pixels": "identical",
+     "medianFrameMs": {
+      "cpu": [
+       6.8,
+       6.8
+      ],
+      "wall": [
+       41.4,
+       42.0
+      ]
+     },
+     "streamed": [
+      570,
+      570
+     ],
+     "streamSeconds": [
+      20,
+      14
+     ],
+     "shotSeconds": 113,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       52,
+       53
+      ]
+     },
+     "baselineSsim": 0.7087
+    }
+   }
+  }
+ }
+}
