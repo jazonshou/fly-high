@@ -1,0 +1,1659 @@
+{
+ "note": "Cloud A/B of a real change, pull request #20 (\"Sharper scenery\": a final RCAS sharpen and a multi-scale ground grain) against main: `npm run perf:ab -- --base origin/main --head origin/claude/project-thread-xp7i45 --shots cruise-horizon,ground-2m-lowsun --chromium /opt/pw-browsers/chromium --no-fail`, 2026-10-12 10:09-10:50 UTC, same host as perf-ab-aa-cruise-horizon-2026-10-12.json, with the tool as committed in 8671a9e. Base c1b5491, head 4ae62d1. Verdict: REGRESSION. Draw calls 200 -> 201 on cruise-horizon and 121 -> 122 on ground-2m-lowsun, each one render pass more (the sharpen's input target, 680,900 pixels), breaching both committed ceilings, as the PR's own macOS capture measured on every shot. GPU time SLOWER +13.7% (+10.4% to +15.7%) and +9.0% (+7.1% to +10.9%), nearly all of it in the main scene pass (`render:hdr-present > PostProcessRTT-bloom-bright`, +14.6% and +9.1%), where the grain's terrain material work lands; the sharpen pass itself stays under the report's 0.5%-of-frame cutoff. SwiftShader over-weights texture filtering, so this is a lead for the macOS runner, not a ruling. CPU time, a guard, not cleared on either shot.",
+ "tool": "perf-ab",
+ "reportVersion": 1,
+ "startedAt": "2026-10-12T10:09:32.960Z",
+ "finishedAt": "2026-10-12T10:50:28.198Z",
+ "mode": "ab",
+ "base": {
+  "ref": "origin/main",
+  "sha": "c1b54913ac37a0db182f27357f0bf1db6f832a2a",
+  "dirty": false,
+  "profileOverride": null
+ },
+ "head": {
+  "ref": "origin/claude/project-thread-xp7i45",
+  "sha": "4ae62d183a24b8f9e7fb87b3bfe10665f1245948",
+  "dirty": false,
+  "profileOverride": null
+ },
+ "host": {
+  "platform": "linux-x64",
+  "cpus": 4,
+  "cpuModel": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "memoryGiB": 16,
+  "node": "v22.22.0",
+  "browser": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36",
+  "backend": "SwiftShader (CPU WebGPU)",
+  "adapter": "google swiftshader"
+ },
+ "settings": {
+  "rounds": 16,
+  "framesPerArmPerRound": 2,
+  "timedMetrics": [
+   "gpu",
+   "cpu",
+   "wall"
+  ],
+  "gatedMetrics": [
+   "gpu",
+   "cpu"
+  ],
+  "guardMetrics": [
+   "cpu"
+  ],
+  "thresholds": {
+   "gpu": 0.05,
+   "wall": 0.05,
+   "cpu": 0.15
+  },
+  "alpha": 0.05,
+  "renderScale": null,
+  "openFrames": 2,
+  "settleFrames": 12,
+  "countFrames": 8,
+  "minStreamFrames": 240,
+  "maxStreamFrames": 6000,
+  "quality": "medium",
+  "renderingMode": "balanced",
+  "aircraft": "trainer"
+ },
+ "shots": [
+  {
+   "name": "cruise-horizon",
+   "canonicalShotIndex": 4,
+   "status": "measured",
+   "failure": null,
+   "elapsedSeconds": 884.353395801,
+   "viewport": {
+    "width": 1280,
+    "height": 720
+   },
+   "raster": {
+    "width": 1100,
+    "height": 619
+   },
+   "renderScale": 0.86,
+   "streaming": {
+    "base": {
+     "frames": 360,
+     "settled": true,
+     "seconds": 292.65559999999965,
+     "bakedWhileClosed": {
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level1": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level2": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level3": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level4": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level5": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level6": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level7": 1260,
+      "MainRenderPass": 720
+     }
+    },
+    "head": {
+     "frames": 360,
+     "settled": true,
+     "seconds": 291.92620000000113,
+     "bakedWhileClosed": {
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level1": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level2": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level3": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level4": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level5": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level6": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level7": 1260,
+      "MainRenderPass": 720
+     }
+    }
+   },
+   "padded": null,
+   "metrics": [
+    {
+     "metric": "gpu",
+     "gated": true,
+     "guard": false,
+     "comparison": {
+      "rounds": 16,
+      "ratio": 1.1372092414651127,
+      "ratioLow": 1.1036191467040133,
+      "ratioHigh": 1.1568537435964938,
+      "intervalConfidence": 0.9556884765625,
+      "pSlower": 1.52587890625e-05,
+      "pFaster": 1,
+      "baseMedian": 10990.5240485,
+      "headMedian": 12426.1933045
+     },
+     "pSlowerAdjusted": 6.103515625e-05,
+     "pFasterAdjusted": 1,
+     "verdict": "slower"
+    },
+    {
+     "metric": "cpu",
+     "gated": true,
+     "guard": true,
+     "comparison": {
+      "rounds": 16,
+      "ratio": 1.0495691432943388,
+      "ratioLow": 0.9587000005313252,
+      "ratioHigh": 1.172538360426127,
+      "intervalConfidence": 0.9556884765625,
+      "pSlower": 0.1261138916015625,
+      "pFaster": 0.8843994140625,
+      "baseMedian": 22.649999999441206,
+      "headMedian": 24.75
+     },
+     "pSlowerAdjusted": 0.252227783203125,
+     "pFasterAdjusted": 1,
+     "verdict": "inconclusive"
+    },
+    {
+     "metric": "wall",
+     "gated": false,
+     "guard": false,
+     "comparison": {
+      "rounds": 16,
+      "ratio": 1.1360406358509592,
+      "ratioLow": 1.1031372176311258,
+      "ratioHigh": 1.1556126866279828,
+      "intervalConfidence": 0.9556884765625,
+      "pSlower": 1.52587890625e-05,
+      "pFaster": 1,
+      "baseMedian": 11057.049999999814,
+      "headMedian": 12490.050000000745
+     },
+     "pSlowerAdjusted": null,
+     "pFasterAdjusted": null,
+     "verdict": null
+    }
+   ],
+   "passes": [
+    {
+     "key": "render:hdr-present \u203a PostProcessRTT-bloom-bright",
+     "baseMs": 5005.98670825,
+     "headMs": 5707.53709475,
+     "ratio": 1.1458583468083723,
+     "ratioLow": 1.106435446960039,
+     "ratioHigh": 1.1650707371323148
+    },
+    {
+     "key": "compute:volumetric-cloud-integration \u203a nature/cloud-shadow",
+     "baseMs": 38.34419375,
+     "headMs": 41.30332425,
+     "ratio": 1.0771728444544488,
+     "ratioLow": null,
+     "ratioHigh": null
+    },
+    {
+     "key": "render:hdr-present \u203a PostProcessRTT-bloom-composite",
+     "baseMs": 61.7912125,
+     "headMs": 64.26090525000001,
+     "ratio": 1.0379417425861075,
+     "ratioLow": 0.9434676872080586,
+     "ratioHigh": 1.1423847091006705
+    },
+    {
+     "key": "compute:volumetric-cloud-integration \u203a nature/cloud-raymarch",
+     "baseMs": 144.455604,
+     "headMs": 146.2226115,
+     "ratio": 1.0203384046890425,
+     "ratioLow": 0.973013236429045,
+     "ratioHigh": 1.0702984213519078
+    },
+    {
+     "key": "render:hdr-present \u203a MainRenderPass",
+     "baseMs": 27.7632235,
+     "headMs": 26.03376025,
+     "ratio": 0.9667627001089242,
+     "ratioLow": 0.864653243300092,
+     "ratioHigh": 1.0701486422932731
+    },
+    {
+     "key": "render:hdr-present \u203a cloud-scene-depth",
+     "baseMs": 102.26880225,
+     "headMs": 103.981027,
+     "ratio": 0.9889601122368563,
+     "ratioLow": 0.9302593553521029,
+     "ratioHigh": 1.0357183364163802
+    }
+   ],
+   "work": {
+    "base": {
+     "submits": 2,
+     "commandBuffers": 4,
+     "renderPasses": 52.5,
+     "computePasses": 46.375,
+     "draws": 40.5,
+     "indirectDraws": 0,
+     "vertices": 238090,
+     "instances": 40.5,
+     "dispatches": 46.375,
+     "indirectDispatches": 0,
+     "workgroups": 12212,
+     "attachmentPixels": 14345731.5,
+     "pipelineSwitches": 86.875,
+     "bindGroupSets": 88.875,
+     "bundlesExecuted": 200,
+     "bufferUploadBytes": 194648,
+     "textureUploadBytes": 2560,
+     "copyCommands": 0,
+     "copyBytes": 0,
+     "pipelinesCreated": 0,
+     "shaderModulesCreated": 0,
+     "texturesCreated": 0,
+     "textureBytesCreated": 0,
+     "buffersCreated": 0,
+     "bufferBytesCreated": 0,
+     "bindGroupsCreated": 1
+    },
+    "head": {
+     "submits": 2,
+     "commandBuffers": 4,
+     "renderPasses": 53.5,
+     "computePasses": 46.375,
+     "draws": 40.5,
+     "indirectDraws": 0,
+     "vertices": 238090,
+     "instances": 40.5,
+     "dispatches": 46.375,
+     "indirectDispatches": 0,
+     "workgroups": 12212,
+     "attachmentPixels": 15026631.5,
+     "pipelineSwitches": 86.875,
+     "bindGroupSets": 88.875,
+     "bundlesExecuted": 201,
+     "bufferUploadBytes": 194648,
+     "textureUploadBytes": 2560,
+     "copyCommands": 0,
+     "copyBytes": 0,
+     "pipelinesCreated": 0,
+     "shaderModulesCreated": 0,
+     "texturesCreated": 0,
+     "textureBytesCreated": 0,
+     "buffersCreated": 0,
+     "bufferBytesCreated": 0,
+     "bindGroupsCreated": 1
+    },
+    "changes": [
+     {
+      "key": "attachmentPixels",
+      "base": 14345731.5,
+      "head": 15026631.5
+     },
+     {
+      "key": "bundlesExecuted",
+      "base": 200,
+      "head": 201
+     },
+     {
+      "key": "renderPasses",
+      "base": 52.5,
+      "head": 53.5
+     }
+    ],
+    "passChanges": [
+     {
+      "key": "render:hdr-present \u203a PostProcessRTT-final-rcas-sharpen \u203a passes",
+      "base": 0,
+      "head": 1
+     },
+     {
+      "key": "render:hdr-present \u203a PostProcessRTT-final-rcas-sharpen \u203a attachmentPixels",
+      "base": 0,
+      "head": 680900
+     }
+    ]
+   },
+   "diagnostics": {
+    "base": {
+     "drawCalls": 200,
+     "triangles": 1509302,
+     "visibleInstances": 13611,
+     "vegetationBatches": 1,
+     "residentTerrainPages": 30,
+     "renderPixels": 680900,
+     "inventoriedGpuMemoryMiB": 277.85916392008465,
+     "estimatedGpuMemoryMiB": 382.34083806518555
+    },
+    "head": {
+     "drawCalls": 201,
+     "triangles": 1509302,
+     "visibleInstances": 13611,
+     "vegetationBatches": 1,
+     "residentTerrainPages": 30,
+     "renderPixels": 680900,
+     "inventoriedGpuMemoryMiB": 280.5258305867513,
+     "estimatedGpuMemoryMiB": 388.39768149475094
+    },
+    "changes": [
+     {
+      "key": "drawCalls",
+      "base": 200,
+      "head": 201
+     },
+     {
+      "key": "estimatedGpuMemoryMiB",
+      "base": 382.34083806518555,
+      "head": 388.39768149475094
+     },
+     {
+      "key": "inventoriedGpuMemoryMiB",
+      "base": 277.85916392008465,
+      "head": 280.5258305867513
+     }
+    ]
+   },
+   "ceilings": {
+    "drawCallCeiling": 200,
+    "baseDrawCalls": 200,
+    "headDrawCalls": 201,
+    "baseDrawCallsMin": 200,
+    "headDrawCallsMin": 201,
+    "memoryCeilingMiB": 495,
+    "headMemoryMiB": 280.5258305867513,
+    "newBreaches": [
+     "draw calls 201 exceed the shot's ceiling of 200"
+    ]
+   },
+   "pixels": {
+    "width": 1280,
+    "height": 720,
+    "ssim": 0.9865006149276403,
+    "rgbSsim": 0.9873400585826904,
+    "worstTileRgbSsim": 0.9355222454685439,
+    "differingPixels": 402154,
+    "maxChannelDelta": 31,
+    "meanAbsoluteChannelDelta": 0.5932450810185185
+   },
+   "baseline": {
+    "base": {
+     "width": 1280,
+     "height": 720,
+     "ssim": 0.9856626532192436,
+     "rgbSsim": 0.9856810917264207,
+     "worstTileRgbSsim": 0.9308762213771894,
+     "differingPixels": 328770,
+     "maxChannelDelta": 70,
+     "meanAbsoluteChannelDelta": 0.5268688512731482
+    },
+    "head": {
+     "width": 1280,
+     "height": 720,
+     "ssim": 0.9703914166732429,
+     "rgbSsim": 0.9715874097340332,
+     "worstTileRgbSsim": 0.9001103288544116,
+     "differingPixels": 496567,
+     "maxChannelDelta": 73,
+     "meanAbsoluteChannelDelta": 0.9793312355324074
+    }
+   },
+   "measuredFrameCreations": {
+    "base": {
+     "pipelines": 0,
+     "shaderModules": 0
+    },
+    "head": {
+     "pipelines": 0,
+     "shaderModules": 0
+    }
+   },
+   "invalidPasses": {
+    "base": 0,
+    "head": 0
+   },
+   "samples": [
+    {
+     "round": 0,
+     "arm": "base",
+     "gpuMs": 5416.192666,
+     "renderMs": 15.200000001117587,
+     "wallMs": 5486.800000000745
+    },
+    {
+     "round": 0,
+     "arm": "head",
+     "gpuMs": 5868.351337,
+     "renderMs": 14.299999998882413,
+     "wallMs": 5923.89999999851
+    },
+    {
+     "round": 0,
+     "arm": "head",
+     "gpuMs": 6044.224969,
+     "renderMs": 14.699999999254942,
+     "wallMs": 6077.799999998882
+    },
+    {
+     "round": 0,
+     "arm": "base",
+     "gpuMs": 5197.923736,
+     "renderMs": 12.399999998509884,
+     "wallMs": 5228.299999998882
+    },
+    {
+     "round": 1,
+     "arm": "head",
+     "gpuMs": 6061.416248,
+     "renderMs": 11.100000001490116,
+     "wallMs": 6092
+    },
+    {
+     "round": 1,
+     "arm": "base",
+     "gpuMs": 5383.730973,
+     "renderMs": 9.800000000745058,
+     "wallMs": 5411.5999999996275
+    },
+    {
+     "round": 1,
+     "arm": "base",
+     "gpuMs": 5605.403348,
+     "renderMs": 11.400000000372529,
+     "wallMs": 5643.4000000003725
+    },
+    {
+     "round": 1,
+     "arm": "head",
+     "gpuMs": 6576.591056,
+     "renderMs": 18.09999999962747,
+     "wallMs": 6610.700000001118
+    },
+    {
+     "round": 2,
+     "arm": "base",
+     "gpuMs": 5547.898923,
+     "renderMs": 12.099999999627471,
+     "wallMs": 5579.299999998882
+    },
+    {
+     "round": 2,
+     "arm": "head",
+     "gpuMs": 6091.212438,
+     "renderMs": 9.599999999627471,
+     "wallMs": 6118.9000000003725
+    },
+    {
+     "round": 2,
+     "arm": "head",
+     "gpuMs": 6393.542379,
+     "renderMs": 11.199999999254942,
+     "wallMs": 6425.800000000745
+    },
+    {
+     "round": 2,
+     "arm": "base",
+     "gpuMs": 5211.547383,
+     "renderMs": 11.5,
+     "wallMs": 5242.800000000745
+    },
+    {
+     "round": 3,
+     "arm": "head",
+     "gpuMs": 5906.034888,
+     "renderMs": 14.5,
+     "wallMs": 5939.299999998882
+    },
+    {
+     "round": 3,
+     "arm": "base",
+     "gpuMs": 5491.132897,
+     "renderMs": 14.299999998882413,
+     "wallMs": 5524
+    },
+    {
+     "round": 3,
+     "arm": "base",
+     "gpuMs": 5584.589882,
+     "renderMs": 11.400000000372529,
+     "wallMs": 5616.9000000003725
+    },
+    {
+     "round": 3,
+     "arm": "head",
+     "gpuMs": 6823.220275,
+     "renderMs": 11.200000001117587,
+     "wallMs": 6859.300000000745
+    },
+    {
+     "round": 4,
+     "arm": "base",
+     "gpuMs": 5699.157098,
+     "renderMs": 17.899999998509884,
+     "wallMs": 5738.0999999996275
+    },
+    {
+     "round": 4,
+     "arm": "head",
+     "gpuMs": 6578.02162,
+     "renderMs": 11.399999998509884,
+     "wallMs": 6607.0999999996275
+    },
+    {
+     "round": 4,
+     "arm": "head",
+     "gpuMs": 6426.599348,
+     "renderMs": 16.90000000037253,
+     "wallMs": 6464.300000000745
+    },
+    {
+     "round": 4,
+     "arm": "base",
+     "gpuMs": 5741.266733,
+     "renderMs": 12,
+     "wallMs": 5777
+    },
+    {
+     "round": 5,
+     "arm": "head",
+     "gpuMs": 6765.042385,
+     "renderMs": 14.299999998882413,
+     "wallMs": 6795.699999999255
+    },
+    {
+     "round": 5,
+     "arm": "base",
+     "gpuMs": 5150.908785,
+     "renderMs": 10.5,
+     "wallMs": 5177.300000000745
+    },
+    {
+     "round": 5,
+     "arm": "base",
+     "gpuMs": 5592.583859,
+     "renderMs": 10.599999999627471,
+     "wallMs": 5624.699999999255
+    },
+    {
+     "round": 5,
+     "arm": "head",
+     "gpuMs": 5822.180743,
+     "renderMs": 16.59999999962747,
+     "wallMs": 5860.199999999255
+    },
+    {
+     "round": 6,
+     "arm": "base",
+     "gpuMs": 5325.181281,
+     "renderMs": 10.100000001490116,
+     "wallMs": 5354.5
+    },
+    {
+     "round": 6,
+     "arm": "head",
+     "gpuMs": 6396.187684,
+     "renderMs": 9.799999998882413,
+     "wallMs": 6430.89999999851
+    },
+    {
+     "round": 6,
+     "arm": "head",
+     "gpuMs": 6614.687695,
+     "renderMs": 10.800000000745058,
+     "wallMs": 6649.699999999255
+    },
+    {
+     "round": 6,
+     "arm": "base",
+     "gpuMs": 5883.312855,
+     "renderMs": 14.800000000745058,
+     "wallMs": 5916.0999999996275
+    },
+    {
+     "round": 7,
+     "arm": "head",
+     "gpuMs": 6085.952323,
+     "renderMs": 10.800000000745058,
+     "wallMs": 6114.5999999996275
+    },
+    {
+     "round": 7,
+     "arm": "base",
+     "gpuMs": 5353.597324,
+     "renderMs": 11.099999999627471,
+     "wallMs": 5384.700000001118
+    },
+    {
+     "round": 7,
+     "arm": "base",
+     "gpuMs": 5788.917949,
+     "renderMs": 9.899999998509884,
+     "wallMs": 5816.799999998882
+    },
+    {
+     "round": 7,
+     "arm": "head",
+     "gpuMs": 6106.744887,
+     "renderMs": 11.800000000745058,
+     "wallMs": 6137.5
+    },
+    {
+     "round": 8,
+     "arm": "base",
+     "gpuMs": 5716.78067,
+     "renderMs": 10.099999999627471,
+     "wallMs": 5748.300000000745
+    },
+    {
+     "round": 8,
+     "arm": "head",
+     "gpuMs": 6048.391382,
+     "renderMs": 12.199999999254942,
+     "wallMs": 6082.699999999255
+    },
+    {
+     "round": 8,
+     "arm": "head",
+     "gpuMs": 5859.6296,
+     "renderMs": 13.699999999254942,
+     "wallMs": 5891.300000000745
+    },
+    {
+     "round": 8,
+     "arm": "base",
+     "gpuMs": 5710.972709,
+     "renderMs": 11.599999999627471,
+     "wallMs": 5746.9000000003725
+    },
+    {
+     "round": 9,
+     "arm": "head",
+     "gpuMs": 6250.211431,
+     "renderMs": 13.5,
+     "wallMs": 6282.60000000149
+    },
+    {
+     "round": 9,
+     "arm": "base",
+     "gpuMs": 5447.543335,
+     "renderMs": 12.099999999627471,
+     "wallMs": 5479
+    },
+    {
+     "round": 9,
+     "arm": "base",
+     "gpuMs": 5678.842245,
+     "renderMs": 15.099999999627471,
+     "wallMs": 5715.0999999996275
+    },
+    {
+     "round": 9,
+     "arm": "head",
+     "gpuMs": 6849.310127,
+     "renderMs": 15.900000000372529,
+     "wallMs": 6886.5999999996275
+    },
+    {
+     "round": 10,
+     "arm": "base",
+     "gpuMs": 5566.911858,
+     "renderMs": 13.800000000745058,
+     "wallMs": 5598.5999999996275
+    },
+    {
+     "round": 10,
+     "arm": "head",
+     "gpuMs": 6042.273169,
+     "renderMs": 11,
+     "wallMs": 6075
+    },
+    {
+     "round": 10,
+     "arm": "head",
+     "gpuMs": 6132.648453,
+     "renderMs": 10.699999999254942,
+     "wallMs": 6162
+    },
+    {
+     "round": 10,
+     "arm": "base",
+     "gpuMs": 5291.095886,
+     "renderMs": 11.5,
+     "wallMs": 5319.4000000003725
+    },
+    {
+     "round": 11,
+     "arm": "head",
+     "gpuMs": 5965.395087,
+     "renderMs": 9.699999999254942,
+     "wallMs": 5993.0999999996275
+    },
+    {
+     "round": 11,
+     "arm": "base",
+     "gpuMs": 5608.529711,
+     "renderMs": 9.299999998882413,
+     "wallMs": 5637.699999999255
+    },
+    {
+     "round": 11,
+     "arm": "base",
+     "gpuMs": 6215.501827,
+     "renderMs": 10.400000000372529,
+     "wallMs": 6246.800000000745
+    },
+    {
+     "round": 11,
+     "arm": "head",
+     "gpuMs": 6024.139156,
+     "renderMs": 14,
+     "wallMs": 6061.200000001118
+    },
+    {
+     "round": 12,
+     "arm": "base",
+     "gpuMs": 5247.092016,
+     "renderMs": 10.199999999254942,
+     "wallMs": 5278.299999998882
+    },
+    {
+     "round": 12,
+     "arm": "head",
+     "gpuMs": 6127.306552,
+     "renderMs": 10.399999998509884,
+     "wallMs": 6158.799999998882
+    },
+    {
+     "round": 12,
+     "arm": "head",
+     "gpuMs": 6220.944207,
+     "renderMs": 10.5,
+     "wallMs": 6250.60000000149
+    },
+    {
+     "round": 12,
+     "arm": "base",
+     "gpuMs": 5300.290021,
+     "renderMs": 10.299999998882413,
+     "wallMs": 5332.5
+    },
+    {
+     "round": 13,
+     "arm": "head",
+     "gpuMs": 5987.105428,
+     "renderMs": 9.699999999254942,
+     "wallMs": 6017
+    },
+    {
+     "round": 13,
+     "arm": "base",
+     "gpuMs": 5457.895307,
+     "renderMs": 10.099999999627471,
+     "wallMs": 5491.199999999255
+    },
+    {
+     "round": 13,
+     "arm": "base",
+     "gpuMs": 5471.277933,
+     "renderMs": 11.399999998509884,
+     "wallMs": 5503.699999999255
+    },
+    {
+     "round": 13,
+     "arm": "head",
+     "gpuMs": 6380.526364,
+     "renderMs": 12.300000000745058,
+     "wallMs": 6418.4000000003725
+    },
+    {
+     "round": 14,
+     "arm": "base",
+     "gpuMs": 5683.465572,
+     "renderMs": 9.900000000372529,
+     "wallMs": 5715.199999999255
+    },
+    {
+     "round": 14,
+     "arm": "head",
+     "gpuMs": 6300.997449,
+     "renderMs": 13.700000001117587,
+     "wallMs": 6332.200000001118
+    },
+    {
+     "round": 14,
+     "arm": "head",
+     "gpuMs": 5871.0586,
+     "renderMs": 13,
+     "wallMs": 5904.10000000149
+    },
+    {
+     "round": 14,
+     "arm": "base",
+     "gpuMs": 5308.448204,
+     "renderMs": 11,
+     "wallMs": 5343.9000000003725
+    },
+    {
+     "round": 15,
+     "arm": "head",
+     "gpuMs": 6264.658833,
+     "renderMs": 11.099999999627471,
+     "wallMs": 6300.89999999851
+    },
+    {
+     "round": 15,
+     "arm": "base",
+     "gpuMs": 5394.956655,
+     "renderMs": 13.400000000372529,
+     "wallMs": 5424.300000000745
+    },
+    {
+     "round": 15,
+     "arm": "base",
+     "gpuMs": 5530.999993,
+     "renderMs": 13,
+     "wallMs": 5565.200000001118
+    },
+    {
+     "round": 15,
+     "arm": "head",
+     "gpuMs": 6506.173233,
+     "renderMs": 12.699999999254942,
+     "wallMs": 6537.5999999996275
+    }
+   ]
+  },
+  {
+   "name": "ground-2m-lowsun",
+   "canonicalShotIndex": 15,
+   "status": "measured",
+   "failure": null,
+   "elapsedSeconds": 1562.3695618259999,
+   "viewport": {
+    "width": 1280,
+    "height": 720
+   },
+   "raster": {
+    "width": 1100,
+    "height": 619
+   },
+   "renderScale": 0.86,
+   "streaming": {
+    "base": {
+     "frames": 360,
+     "settled": true,
+     "seconds": 216.5762000000011,
+     "bakedWhileClosed": {
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level1": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level2": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level3": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level4": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level5": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level6": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level7": 1260,
+      "MainRenderPass": 720
+     }
+    },
+    "head": {
+     "frames": 360,
+     "settled": true,
+     "seconds": 214.89169999999925,
+     "bakedWhileClosed": {
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level1": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level2": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level3": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level4": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level5": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level6": 1260,
+      "BabylonWebGPUDevice0_generateMipmaps_rgba16float_faceIndex0_level7": 1260,
+      "MainRenderPass": 720
+     }
+    }
+   },
+   "padded": null,
+   "metrics": [
+    {
+     "metric": "gpu",
+     "gated": true,
+     "guard": false,
+     "comparison": {
+      "rounds": 16,
+      "ratio": 1.0898238395311612,
+      "ratioLow": 1.0705587916331172,
+      "ratioHigh": 1.1092797214979873,
+      "intervalConfidence": 0.9556884765625,
+      "pSlower": 1.52587890625e-05,
+      "pFaster": 1,
+      "baseMedian": 27966.897426,
+      "headMedian": 30558.414807
+     },
+     "pSlowerAdjusted": 6.103515625e-05,
+     "pFasterAdjusted": 1,
+     "verdict": "slower"
+    },
+    {
+     "metric": "cpu",
+     "gated": true,
+     "guard": true,
+     "comparison": {
+      "rounds": 16,
+      "ratio": 1.0411242280769515,
+      "ratioLow": 0.9441099757496854,
+      "ratioHigh": 1.1603971243453168,
+      "intervalConfidence": 0.9556884765625,
+      "pSlower": 0.247711181640625,
+      "pFaster": 0.76812744140625,
+      "baseMedian": 25.799999999813735,
+      "headMedian": 28.249999999068677
+     },
+     "pSlowerAdjusted": 0.252227783203125,
+     "pFasterAdjusted": 1,
+     "verdict": "inconclusive"
+    },
+    {
+     "metric": "wall",
+     "gated": false,
+     "guard": false,
+     "comparison": {
+      "rounds": 16,
+      "ratio": 1.0897949804489446,
+      "ratioLow": 1.0704482463037546,
+      "ratioHigh": 1.109316264784392,
+      "intervalConfidence": 0.9556884765625,
+      "pSlower": 1.52587890625e-05,
+      "pFaster": 1,
+      "baseMedian": 28032.599999998696,
+      "headMedian": 30630.25
+     },
+     "pSlowerAdjusted": null,
+     "pFasterAdjusted": null,
+     "verdict": null
+    }
+   ],
+   "passes": [
+    {
+     "key": "render:hdr-present \u203a PostProcessRTT-bloom-bright",
+     "baseMs": 13349.887764,
+     "headMs": 14531.19718525,
+     "ratio": 1.09098106338424,
+     "ratioLow": 1.0711448924804068,
+     "ratioHigh": 1.1132177440863698
+    },
+    {
+     "key": "render:hdr-present \u203a sun_CSMShadowMap",
+     "baseMs": 189.97101725,
+     "headMs": 195.7836515,
+     "ratio": 1.0172429591843315,
+     "ratioLow": 0.9676559709995509,
+     "ratioHigh": 1.0637861481112687
+    },
+    {
+     "key": "render:hdr-present \u203a cloud-scene-depth",
+     "baseMs": 99.52127775,
+     "headMs": 102.94276675,
+     "ratio": 1.0367957899007372,
+     "ratioLow": 0.9703259685108386,
+     "ratioHigh": 1.0892500908862943
+    },
+    {
+     "key": "compute:volumetric-cloud-integration \u203a nature/cloud-shadow",
+     "baseMs": 122.6805175,
+     "headMs": 122.43352625,
+     "ratio": 0.9979867117042444,
+     "ratioLow": null,
+     "ratioHigh": null
+    }
+   ],
+   "work": {
+    "base": {
+     "submits": 2,
+     "commandBuffers": 4,
+     "renderPasses": 51.5,
+     "computePasses": 49.375,
+     "draws": 40.5,
+     "indirectDraws": 0,
+     "vertices": 238090,
+     "instances": 40.5,
+     "dispatches": 49.375,
+     "indirectDispatches": 0,
+     "workgroups": 13895,
+     "attachmentPixels": 12983931.5,
+     "pipelineSwitches": 89.875,
+     "bindGroupSets": 91.875,
+     "bundlesExecuted": 121,
+     "bufferUploadBytes": 132840,
+     "textureUploadBytes": 2560,
+     "copyCommands": 1,
+     "copyBytes": 48,
+     "pipelinesCreated": 0,
+     "shaderModulesCreated": 0,
+     "texturesCreated": 0,
+     "textureBytesCreated": 0,
+     "buffersCreated": 1,
+     "bufferBytesCreated": 48,
+     "bindGroupsCreated": 1
+    },
+    "head": {
+     "submits": 2,
+     "commandBuffers": 4,
+     "renderPasses": 52.5,
+     "computePasses": 49.375,
+     "draws": 40.5,
+     "indirectDraws": 0,
+     "vertices": 238090,
+     "instances": 40.5,
+     "dispatches": 49.375,
+     "indirectDispatches": 0,
+     "workgroups": 13895,
+     "attachmentPixels": 13664831.5,
+     "pipelineSwitches": 89.875,
+     "bindGroupSets": 91.875,
+     "bundlesExecuted": 122,
+     "bufferUploadBytes": 132840,
+     "textureUploadBytes": 2560,
+     "copyCommands": 1,
+     "copyBytes": 48,
+     "pipelinesCreated": 0,
+     "shaderModulesCreated": 0,
+     "texturesCreated": 0,
+     "textureBytesCreated": 0,
+     "buffersCreated": 1,
+     "bufferBytesCreated": 48,
+     "bindGroupsCreated": 1
+    },
+    "changes": [
+     {
+      "key": "attachmentPixels",
+      "base": 12983931.5,
+      "head": 13664831.5
+     },
+     {
+      "key": "bundlesExecuted",
+      "base": 121,
+      "head": 122
+     },
+     {
+      "key": "renderPasses",
+      "base": 51.5,
+      "head": 52.5
+     }
+    ],
+    "passChanges": [
+     {
+      "key": "render:hdr-present \u203a PostProcessRTT-final-rcas-sharpen \u203a passes",
+      "base": 0,
+      "head": 1
+     },
+     {
+      "key": "render:hdr-present \u203a PostProcessRTT-final-rcas-sharpen \u203a attachmentPixels",
+      "base": 0,
+      "head": 680900
+     }
+    ]
+   },
+   "diagnostics": {
+    "base": {
+     "drawCalls": 121,
+     "triangles": 1978558,
+     "visibleInstances": 110302,
+     "vegetationBatches": 31,
+     "residentTerrainPages": 42,
+     "renderPixels": 680900,
+     "inventoriedGpuMemoryMiB": 278.03169504801434,
+     "estimatedGpuMemoryMiB": 382.34083806518555
+    },
+    "head": {
+     "drawCalls": 122,
+     "triangles": 1978558,
+     "visibleInstances": 110302,
+     "vegetationBatches": 31,
+     "residentTerrainPages": 42,
+     "renderPixels": 680900,
+     "inventoriedGpuMemoryMiB": 280.69836171468097,
+     "estimatedGpuMemoryMiB": 388.39768149475094
+    },
+    "changes": [
+     {
+      "key": "drawCalls",
+      "base": 121,
+      "head": 122
+     },
+     {
+      "key": "estimatedGpuMemoryMiB",
+      "base": 382.34083806518555,
+      "head": 388.39768149475094
+     },
+     {
+      "key": "inventoriedGpuMemoryMiB",
+      "base": 278.03169504801434,
+      "head": 280.69836171468097
+     }
+    ]
+   },
+   "ceilings": {
+    "drawCallCeiling": 121,
+    "baseDrawCalls": 121,
+    "headDrawCalls": 122,
+    "baseDrawCallsMin": 121,
+    "headDrawCallsMin": 122,
+    "memoryCeilingMiB": 495,
+    "headMemoryMiB": 280.69836171468097,
+    "newBreaches": [
+     "draw calls 122 exceed the shot's ceiling of 121"
+    ]
+   },
+   "pixels": {
+    "width": 1280,
+    "height": 720,
+    "ssim": 0.9814819869836373,
+    "rgbSsim": 0.9827487626209486,
+    "worstTileRgbSsim": 0.9301880002412873,
+    "differingPixels": 761043,
+    "maxChannelDelta": 41,
+    "meanAbsoluteChannelDelta": 1.1557454427083333
+   },
+   "baseline": {
+    "base": {
+     "width": 1280,
+     "height": 720,
+     "ssim": 0.8309876810638052,
+     "rgbSsim": 0.8545136558513157,
+     "worstTileRgbSsim": 0.6547591522392238,
+     "differingPixels": 798840,
+     "maxChannelDelta": 130,
+     "meanAbsoluteChannelDelta": 3.1730873842592593
+    },
+    "head": {
+     "width": 1280,
+     "height": 720,
+     "ssim": 0.7928999964367847,
+     "rgbSsim": 0.8207795560303884,
+     "worstTileRgbSsim": 0.604463635339094,
+     "differingPixels": 877761,
+     "maxChannelDelta": 133,
+     "meanAbsoluteChannelDelta": 3.7907635271990743
+    }
+   },
+   "measuredFrameCreations": {
+    "base": {
+     "pipelines": 0,
+     "shaderModules": 0
+    },
+    "head": {
+     "pipelines": 0,
+     "shaderModules": 0
+    }
+   },
+   "invalidPasses": {
+    "base": 0,
+    "head": 0
+   },
+   "samples": [
+    {
+     "round": 0,
+     "arm": "base",
+     "gpuMs": 14474.234322,
+     "renderMs": 14.5,
+     "wallMs": 14508.400000000373
+    },
+    {
+     "round": 0,
+     "arm": "head",
+     "gpuMs": 15439.648289,
+     "renderMs": 13.600000001490116,
+     "wallMs": 15475.800000000745
+    },
+    {
+     "round": 0,
+     "arm": "head",
+     "gpuMs": 16140.890525,
+     "renderMs": 11.600000001490116,
+     "wallMs": 16172.400000000373
+    },
+    {
+     "round": 0,
+     "arm": "base",
+     "gpuMs": 14920.479396,
+     "renderMs": 12.800000000745058,
+     "wallMs": 14958.599999999627
+    },
+    {
+     "round": 1,
+     "arm": "head",
+     "gpuMs": 19930.278873,
+     "renderMs": 15,
+     "wallMs": 19970.299999998882
+    },
+    {
+     "round": 1,
+     "arm": "base",
+     "gpuMs": 14211.225348,
+     "renderMs": 10.699999999254942,
+     "wallMs": 14241.699999999255
+    },
+    {
+     "round": 1,
+     "arm": "base",
+     "gpuMs": 13765.435024,
+     "renderMs": 12,
+     "wallMs": 13800.799999998882
+    },
+    {
+     "round": 1,
+     "arm": "head",
+     "gpuMs": 14639.40741,
+     "renderMs": 17.40000000037253,
+     "wallMs": 14676.599999999627
+    },
+    {
+     "round": 2,
+     "arm": "base",
+     "gpuMs": 14328.030489,
+     "renderMs": 11.799999998882413,
+     "wallMs": 14362.39999999851
+    },
+    {
+     "round": 2,
+     "arm": "head",
+     "gpuMs": 14390.656917,
+     "renderMs": 12.199999999254942,
+     "wallMs": 14425.39999999851
+    },
+    {
+     "round": 2,
+     "arm": "head",
+     "gpuMs": 15152.748552,
+     "renderMs": 11.199999999254942,
+     "wallMs": 15183.599999999627
+    },
+    {
+     "round": 2,
+     "arm": "base",
+     "gpuMs": 14248.602284,
+     "renderMs": 14,
+     "wallMs": 14284.5
+    },
+    {
+     "round": 3,
+     "arm": "head",
+     "gpuMs": 15695.246333,
+     "renderMs": 13.200000001117587,
+     "wallMs": 15730.800000000745
+    },
+    {
+     "round": 3,
+     "arm": "base",
+     "gpuMs": 13337.783673,
+     "renderMs": 10.099999999627471,
+     "wallMs": 13370.199999999255
+    },
+    {
+     "round": 3,
+     "arm": "base",
+     "gpuMs": 13647.451782,
+     "renderMs": 12.699999999254942,
+     "wallMs": 13681.799999998882
+    },
+    {
+     "round": 3,
+     "arm": "head",
+     "gpuMs": 14624.304177,
+     "renderMs": 13.300000000745058,
+     "wallMs": 14657.099999999627
+    },
+    {
+     "round": 4,
+     "arm": "base",
+     "gpuMs": 13731.305477,
+     "renderMs": 15.899999998509884,
+     "wallMs": 13772.5
+    },
+    {
+     "round": 4,
+     "arm": "head",
+     "gpuMs": 14870.055462,
+     "renderMs": 11.200000001117587,
+     "wallMs": 14905
+    },
+    {
+     "round": 4,
+     "arm": "head",
+     "gpuMs": 14872.499249,
+     "renderMs": 22.699999999254942,
+     "wallMs": 14915.599999999627
+    },
+    {
+     "round": 4,
+     "arm": "base",
+     "gpuMs": 13309.763466,
+     "renderMs": 18,
+     "wallMs": 13348.300000000745
+    },
+    {
+     "round": 5,
+     "arm": "head",
+     "gpuMs": 14698.02023,
+     "renderMs": 11,
+     "wallMs": 14735.299999998882
+    },
+    {
+     "round": 5,
+     "arm": "base",
+     "gpuMs": 13593.181234,
+     "renderMs": 10.699999999254942,
+     "wallMs": 13623.5
+    },
+    {
+     "round": 5,
+     "arm": "base",
+     "gpuMs": 13507.775379,
+     "renderMs": 13.299999998882413,
+     "wallMs": 13542.099999999627
+    },
+    {
+     "round": 5,
+     "arm": "head",
+     "gpuMs": 14327.698348,
+     "renderMs": 12.900000000372529,
+     "wallMs": 14366.299999998882
+    },
+    {
+     "round": 6,
+     "arm": "base",
+     "gpuMs": 13542.902969,
+     "renderMs": 11.100000001490116,
+     "wallMs": 13573.5
+    },
+    {
+     "round": 6,
+     "arm": "head",
+     "gpuMs": 15509.431845,
+     "renderMs": 11,
+     "wallMs": 15546.099999999627
+    },
+    {
+     "round": 6,
+     "arm": "head",
+     "gpuMs": 14643.498289,
+     "renderMs": 11.699999999254942,
+     "wallMs": 14681.5
+    },
+    {
+     "round": 6,
+     "arm": "base",
+     "gpuMs": 13857.66392,
+     "renderMs": 18.5,
+     "wallMs": 13894.400000000373
+    },
+    {
+     "round": 7,
+     "arm": "head",
+     "gpuMs": 14464.202019,
+     "renderMs": 10.700000001117587,
+     "wallMs": 14499.700000001118
+    },
+    {
+     "round": 7,
+     "arm": "base",
+     "gpuMs": 13775.46703,
+     "renderMs": 9.600000001490116,
+     "wallMs": 13807.800000000745
+    },
+    {
+     "round": 7,
+     "arm": "base",
+     "gpuMs": 13376.026782,
+     "renderMs": 14.300000000745058,
+     "wallMs": 13411.199999999255
+    },
+    {
+     "round": 7,
+     "arm": "head",
+     "gpuMs": 15172.692163,
+     "renderMs": 22.5,
+     "wallMs": 15215.099999999627
+    },
+    {
+     "round": 8,
+     "arm": "base",
+     "gpuMs": 13678.222548,
+     "renderMs": 10.199999999254942,
+     "wallMs": 13711.89999999851
+    },
+    {
+     "round": 8,
+     "arm": "head",
+     "gpuMs": 15205.664954,
+     "renderMs": 9.799999998882413,
+     "wallMs": 15238
+    },
+    {
+     "round": 8,
+     "arm": "head",
+     "gpuMs": 14906.516268,
+     "renderMs": 17.300000000745058,
+     "wallMs": 14946.199999999255
+    },
+    {
+     "round": 8,
+     "arm": "base",
+     "gpuMs": 14640.710101,
+     "renderMs": 13.400000000372529,
+     "wallMs": 14681.400000000373
+    },
+    {
+     "round": 9,
+     "arm": "head",
+     "gpuMs": 15494.799736,
+     "renderMs": 15.400000000372529,
+     "wallMs": 15531.900000000373
+    },
+    {
+     "round": 9,
+     "arm": "base",
+     "gpuMs": 13334.582568,
+     "renderMs": 12.300000000745058,
+     "wallMs": 13368
+    },
+    {
+     "round": 9,
+     "arm": "base",
+     "gpuMs": 13996.178127,
+     "renderMs": 13.5,
+     "wallMs": 14031.5
+    },
+    {
+     "round": 9,
+     "arm": "head",
+     "gpuMs": 15472.540197,
+     "renderMs": 18.40000000037253,
+     "wallMs": 15510.099999999627
+    },
+    {
+     "round": 10,
+     "arm": "base",
+     "gpuMs": 14067.455176,
+     "renderMs": 10.400000000372529,
+     "wallMs": 14101
+    },
+    {
+     "round": 10,
+     "arm": "head",
+     "gpuMs": 15489.565462,
+     "renderMs": 10.299999998882413,
+     "wallMs": 15523.5
+    },
+    {
+     "round": 10,
+     "arm": "head",
+     "gpuMs": 15320.792802,
+     "renderMs": 14.100000001490116,
+     "wallMs": 15354.800000000745
+    },
+    {
+     "round": 10,
+     "arm": "base",
+     "gpuMs": 13707.848961,
+     "renderMs": 14.099999999627471,
+     "wallMs": 13751.699999999255
+    },
+    {
+     "round": 11,
+     "arm": "head",
+     "gpuMs": 15204.080512,
+     "renderMs": 11.099999999627471,
+     "wallMs": 15236.300000000745
+    },
+    {
+     "round": 11,
+     "arm": "base",
+     "gpuMs": 14111.485997,
+     "renderMs": 11.400000000372529,
+     "wallMs": 14143.799999998882
+    },
+    {
+     "round": 11,
+     "arm": "base",
+     "gpuMs": 13845.648483,
+     "renderMs": 12.799999998882413,
+     "wallMs": 13878.900000000373
+    },
+    {
+     "round": 11,
+     "arm": "head",
+     "gpuMs": 15738.615958,
+     "renderMs": 19.90000000037253,
+     "wallMs": 15784.60000000149
+    },
+    {
+     "round": 12,
+     "arm": "base",
+     "gpuMs": 14095.088752,
+     "renderMs": 15.299999998882413,
+     "wallMs": 14130.799999998882
+    },
+    {
+     "round": 12,
+     "arm": "head",
+     "gpuMs": 15110.765308,
+     "renderMs": 16.5,
+     "wallMs": 15152.200000001118
+    },
+    {
+     "round": 12,
+     "arm": "head",
+     "gpuMs": 16101.176251,
+     "renderMs": 12.899999998509884,
+     "wallMs": 16147.299999998882
+    },
+    {
+     "round": 12,
+     "arm": "base",
+     "gpuMs": 14645.17963,
+     "renderMs": 17.40000000037253,
+     "wallMs": 14685.200000001118
+    },
+    {
+     "round": 13,
+     "arm": "head",
+     "gpuMs": 16090.774867,
+     "renderMs": 11.099999999627471,
+     "wallMs": 16127.900000000373
+    },
+    {
+     "round": 13,
+     "arm": "base",
+     "gpuMs": 15707.682421,
+     "renderMs": 14.900000000372529,
+     "wallMs": 15748.200000001118
+    },
+    {
+     "round": 13,
+     "arm": "base",
+     "gpuMs": 13474.735316,
+     "renderMs": 16.90000000037253,
+     "wallMs": 13516.599999999627
+    },
+    {
+     "round": 13,
+     "arm": "head",
+     "gpuMs": 14706.504237,
+     "renderMs": 18.90000000037253,
+     "wallMs": 14744.699999999255
+    },
+    {
+     "round": 14,
+     "arm": "base",
+     "gpuMs": 14224.599973,
+     "renderMs": 16.59999999962747,
+     "wallMs": 14254.300000000745
+    },
+    {
+     "round": 14,
+     "arm": "head",
+     "gpuMs": 15739.714812,
+     "renderMs": 11.099999999627471,
+     "wallMs": 15773.699999999255
+    },
+    {
+     "round": 14,
+     "arm": "head",
+     "gpuMs": 15468.842868,
+     "renderMs": 26,
+     "wallMs": 15515.300000000745
+    },
+    {
+     "round": 14,
+     "arm": "base",
+     "gpuMs": 14319.393496,
+     "renderMs": 18.09999999962747,
+     "wallMs": 14361.099999999627
+    },
+    {
+     "round": 15,
+     "arm": "head",
+     "gpuMs": 14522.359933,
+     "renderMs": 11,
+     "wallMs": 14554.10000000149
+    },
+    {
+     "round": 15,
+     "arm": "base",
+     "gpuMs": 14586.18386,
+     "renderMs": 15.800000000745058,
+     "wallMs": 14620.800000000745
+    },
+    {
+     "round": 15,
+     "arm": "base",
+     "gpuMs": 14150.32336,
+     "renderMs": 14.199999999254942,
+     "wallMs": 14188.10000000149
+    },
+    {
+     "round": 15,
+     "arm": "head",
+     "gpuMs": 15306.628822,
+     "renderMs": 14.399999998509884,
+     "wallMs": 15343.79999999702
+    }
+   ]
+  }
+ ],
+ "errors": {
+  "base": {
+   "console": [],
+   "logger": [],
+   "gpu": [],
+   "page": []
+  },
+  "head": {
+   "console": [],
+   "logger": [],
+   "gpu": [],
+   "page": []
+  }
+ },
+ "summary": {
+  "verdict": "regression",
+  "reasons": [
+   "cruise-horizon: GPU time 1.137x slower",
+   "cruise-horizon: draw calls 201 exceed the shot's ceiling of 200",
+   "ground-2m-lowsun: GPU time 1.090x slower",
+   "ground-2m-lowsun: draw calls 122 exceed the shot's ceiling of 121"
+  ],
+  "geometricMeanRatio": {
+   "gpu": 1.1132644528070716,
+   "cpu": 1.0453381577870893,
+   "wall": 1.1126775734849708
+  }
+ }
+}

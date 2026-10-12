@@ -1090,11 +1090,14 @@ reference-adapter run is still owed before any floor moves.
 ### Where this contract is enforced
 
 The table above is a **reference-adapter** contract, and only the reference
-adapter is held to it. A GitHub-hosted macOS runner renders the identical
-frame — `reference-viewport` scored the same SSIM to four decimals on both
-machines — but delivers it at roughly a third of the rate, and its detail
-Worker does not come up at all, so every chunk is synthesised inline. Gating
-that host against these rows would measure the runner rather than the change.
+adapter is held to it. A GitHub-hosted macOS runner renders the same frames —
+every SSIM gate passes there against the committed baselines — but delivers
+them at about a quarter of the rate: 12.9–50.0 wall-clock fps, mean 27.8, on
+the 31 shots with floors (run 37346470016, 2026-10-05). Its detail Worker does
+run; an earlier note here said it never came up, but the same run's motion
+shots publish 8, 13 and 22 Worker builds with no inline fallback. Gating that
+host against these rows would measure the runner rather than the change, which
+is what the cloud A/B below measures instead.
 
 So the renderer workflow sets `VITE_PERF_UNPINNED_HOST=1`, which reports the
 delivery rows instead of asserting them and names every row it declined to
@@ -1104,6 +1107,188 @@ blank-or-structureless frames, the render-scale pin, the settling fences, the
 resident-slot capacity bound, the temporal-stability floors and every SSIM
 comparison. A local `npm run perf:capture` never sets the flag and stays fully
 strict, and a rebaseline candidate is refused outright on an unpinned host.
+
+## Cloud A/B
+
+The delivery floors can only be measured on the reference adapter, but a
+regression check does not need them. It needs to know whether a change makes
+the same frames cost more, and that is a relative question any machine can
+answer by running the change and its base side by side. `npm run perf:ab`
+does that on any host that runs Chromium: a cloud session, a hosted Linux or
+macOS runner, or a laptop.
+
+```
+npm run perf:ab                                   # working tree vs its merge-base with origin/main
+npm run perf:ab -- --base main --shots cruise-horizon,approach-500ft
+npm run perf:ab -- --base origin/main --head <branch>   # a pushed branch, from any checkout
+npm run perf:ab -- --aa                           # both arms the head: this host's noise floor
+npm run perf:ab -- --rounds 0 --shots all         # counts, draw calls and pixels only
+npm run perf:ab -- --help
+```
+
+It writes `report.md`, `report.json` and both arms' screenshots under
+`tests/perf/artifacts/ab/`, and prints the report. The default shots are one
+per major system: `cruise-horizon` (terrain, sky and clouds to the horizon),
+`forest-500ft-sunbehind` (canopy and impostors), `ground-2m-lowsun` (ground
+cover), `approach-500ft` (aircraft and airport) and `water-25ft` (ocean).
+
+**How it measures.** Each arm is a production build of
+`tests/perf/ab/agent.html`, made from that arm's source with the running
+checkout's harness copied in, so the two differ only in the code under test.
+Each arm runs in a headless Chromium of its own (below). Per shot, in
+canonical order, both arms:
+
+1. place the shot exactly as the capture does: seed, renderer options, cockpit
+   rig, render scale, clock, placement (`tests/perf/shotPlacement.ts`, shared
+   with the capture), pose and camera;
+2. stream to rest under the capture's stability rule, with the frame's own
+   draws dropped (`tests/perf/gpuDrawGate.ts`). Bakes, such as the sky probe,
+   the cloud ambient LUT and mip chains, still draw, so the world that results
+   is the world the capture streams;
+3. render the difference if one arm streamed fewer frames, because every
+   cadence in the renderer keys on the frame index;
+4. apply the capture's time, ocean and wildlife pins, and settle 12 frames,
+   counting the GPU work of the last 8 exactly (`tests/perf/gpuWorkCounters.ts`);
+5. take turns, ABBA then BAAB, rendering frames fenced to GPU idle. Every pass
+   is timed by timestamp queries the harness injects
+   (`tests/perf/gpuPassTiming.ts`) and named for the frame-graph pass and the
+   render target or compute shader that issued it, and `renderer.render()` is
+   timed on the main thread;
+6. photograph the same final frame.
+
+**A browser per arm.** With both arms as pages of one browser, their WebGPU
+devices share a GPU process, and there the A/A's two arms did not render the
+same frame: in four runs out of four, one arm's terrain horizon bake waited on
+a compute pipeline that became ready only after Babylon's `dispatchWhenReady`
+had stopped polling. It gives up after 3,000 tries, about 30 s, and settles
+neither way, so `GlobalHeightPyramid.bakeHorizon` stayed in flight for the rest
+of the session, that arm never published the horizon field, and its water lost
+its terrain occlusion: 279,159 pixels of `cruise-horizon`, every one of them
+water, up to 22 levels in 255 brighter. With a browser each, the two arms'
+frames are identical. The latch itself is a renderer hazard on any host whose
+first compile of that pipeline is that slow, and `recenter`,
+`PageOcclusionBake`, `TerrainPageAtlas` and `TerrainPageErosionGpu` await the
+same call; the ocean, bathymetry and macro-erosion paths already use bounded
+replacements.
+
+**What fails the run** (exit 1):
+
+- a GPU-time or CPU-time verdict of SLOWER on any shot;
+- a draw-call or inventoried-memory ceiling that the head breaches and the
+  base did not;
+- a renderer error in the head, or a shot that does not settle.
+
+Each round gives one paired observation per metric, the log ratio of the
+arms' totals. Consecutive frames of one arm are not independent, so the round
+is the unit. A verdict is SLOWER only when Wilcoxon's exact signed-rank test,
+Holm-adjusted across every gated shot and metric, is below 0.05 AND the
+Hodges–Lehmann estimate of head/base is at least 1 + threshold. SAME needs the
+whole distribution-free interval inside ±threshold. Anything else is
+INCONCLUSIVE: the run exits 0 with a warning that says to run more rounds,
+because an inconclusive result is not a pass. The thresholds are 5% in GPU
+time and, on SwiftShader, 15% in CPU time; `--threshold` and `--cpu-threshold`
+change them. `scripts/perfAbStats.mts` holds the method and
+`tests/perf-ab-stats.test.ts` pins it, including its power and false-alarm
+rate on simulated runs.
+
+On SwiftShader, CPU time is a guard (`--cpu-gate`): a slowdown it resolves
+fails the run, but an interval too wide to clear a change is listed as not
+cleared instead of holding the run inconclusive. It is too noisy there to do
+more: in three A/A runs, 32 rounds in all, one round's ratio scattered by
+11–26% in CPU time against 4% in GPU time, and 2,000 sixteen-round A/A runs
+resampled from those rounds read SAME in 99.7% of cases for GPU time at 5%,
+but in only 57% for CPU time at 15%. So on SwiftShader a CPU-side change is
+caught when it is large, and a small one is not ruled out.
+
+**What it reports besides the verdict**, each of which is exact rather than
+statistical: per-frame work counts (draws, vertices, instances, dispatches,
+workgroups, attachment pixels, pipeline switches, uploads, creations) per pass
+for both arms; the renderer's diagnostics; the passes whose GPU time moved
+most; a pixel diff of head against base on the same frame and rasteriser; and
+each arm's SSIM against the committed baseline. A pass is named for its
+render target, which is not always its shader: Babylon renders the scene into
+the first post-process's input, so on `cruise-horizon` the main scene is the
+pass `render:hdr-present › PostProcessRTT-bloom-bright`.
+
+**What it does not time.** A frame here is `renderer.render()` and the GPU
+work it submits. The flight model, the detail Worker and anything else off
+the render path are outside it, so a change that only moves simulation cost
+reads as SAME.
+
+**What each host can see.**
+
+- **SwiftShader**, Chrome's CPU implementation of Vulkan, is what every Linux
+  host without a GPU runs, including hosted runners and cloud sessions. It is
+  the default off macOS. It ranks shading, fill, overdraw, vertex and dispatch
+  work the way a GPU does, so more pixels, heavier shaders, extra passes and
+  extra draws all show. It over-weights texture filtering, MSAA and
+  transcendentals, and it cannot see memory bandwidth or tile memory: the
+  reference adapter is a tile-based Apple GPU, where MSAA and some
+  render-target traffic are nearly free. A SwiftShader verdict on a change of
+  that kind is a lead to confirm on the macOS runner, not a ruling.
+- **The hosted macOS runner's GPU** (`--gpu hardware`, the default on macOS)
+  is Metal on Apple silicon, the same family as the reference adapter, at
+  about a quarter of its frame rate. Where its adapter cannot time passes, the
+  fenced frame's wall time is gated instead of GPU time.
+
+**Measured** (2026-10-12, a cloud session: 4 CPUs, Chromium 141, SwiftShader,
+`cruise-horizon`, 16 rounds):
+
+- **A/A** (`--aa`, both arms one build): GPU time SAME, −0.8% (−2.7% to
+  +1.3%); CPU time SAME, +0.0% (−12.6% to +14.3%); draw calls 200 → 200;
+  every work count and every pixel identical. A frame cost 5.8 s of
+  SwiftShader GPU time, and the shot 14 minutes
+  (`docs/evidence/perf-ab-aa-cruise-horizon-2026-10-12.json`).
+- **A known regression**, the head's clouds at twice tier 1's resolution
+  (`--aa --head-profile-override {"cloudResolutionScale":0.9}`): GPU time
+  SLOWER, +8.1% (+5.5% to +11.3%). The cloud raymarch went from 153 to 601 ms
+  per frame and its workgroups from exactly 2,170 to 8,680, and the two
+  frames stayed identical, because the shot's sky has no cloud in view
+  (`docs/evidence/perf-ab-positive-control-cruise-horizon-2026-10-12.json`).
+- **The A/A with both arms in one browser**, as the first version ran it
+  (8 rounds): the same timings, but 279,159 pixels differ
+  (`docs/evidence/perf-ab-shared-browser-aa-cruise-horizon-2026-10-12.json`;
+  "A browser per arm" above).
+- **A real change**, pull request #20 (a final RCAS sharpen and a
+  multi-scale ground grain) against main, on `cruise-horizon` and
+  `ground-2m-lowsun`: REGRESSION. Draw calls 200 → 201 and 121 → 122, each
+  one render pass more, breaching both ceilings; GPU time SLOWER, +13.7%
+  (+10.4% to +15.7%) and +9.0% (+7.1% to +10.9%), nearly all of it in the main
+  scene pass, where the grain's terrain material work lands, while the
+  sharpen's own pass stays under half a per cent of the frame. Texture work
+  is what SwiftShader over-weights, so that cost is a lead for the macOS
+  runner rather than a ruling
+  (`docs/evidence/perf-ab-pr20-sharpen-grain-2026-10-12.json`).
+
+**Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
+pull request that touches the renderer: `swiftshader` gates, and `hardware`
+is advisory until its noise floor has been measured over enough runs to set
+its thresholds. Either can be started by hand (`workflow_dispatch`) with a
+base, a shot list, a round count and further options. In `args`, a JSON value
+is written without quotes or spaces, for example
+`--head-profile-override {"cloudResolutionScale":0.9}`. The report is at the
+end of the A/B step's log and in the job summary.
+
+**Draw-call ceilings.** A draw call is counted, not timed, so the A/B's counts
+are exact on any host once both arms have streamed to rest, and its base →
+head column is the change's own draw-call delta: the Mac-free counterpart of
+`scripts/decompose-draw-calls.sh` for a `MEASURED_DRAW_DELTAS` entry, with
+`--rounds 0` to skip the timing. Pull request #20 above reads `200 → 201`
+and `121 → 122`, the +1 its full macOS capture had measured on every shot,
+and its work counts name the pass that draws it.
+
+**What still needs the reference Mac.**
+
+- **Moving a delivery floor.** The A/B says whether a change is slower, not
+  how fast the reference adapter runs it.
+- **Promoting baseline images.** A candidate is refused on an unpinned host,
+  and the A/B's photographs are not candidates: they are taken at another
+  instant than the capture's (after a 12-frame settle and the measured
+  rounds, not 150 settle frames) and on another rasteriser. Against the
+  committed baselines they score SSIM 0.986 on `cruise-horizon` but 0.83 on
+  `ground-2m-lowsun`, whose grass and foliage sway with time. What the A/B
+  does show is exactly which pixels a change moved, which is what a reviewer
+  needs before any promotion.
 
 ## Capture harness
 
