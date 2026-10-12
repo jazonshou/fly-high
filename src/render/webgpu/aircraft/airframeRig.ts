@@ -78,6 +78,90 @@ export function node(name: string, parent: TransformNode, scene: Scene): Transfo
 }
 
 /**
+ * One retractable gear leg: everything that swings up with it hangs from
+ * `node`, which turns about the leg's trunnion as the gear travels.
+ *
+ * The gear used to retract by SCALING the whole undercarriage to 8% of its
+ * height, so every leg on the F-16, the Global and the 747 shrank into a flat
+ * smear instead of folding: at half travel the 747's 1.24 m wing-gear tyre was
+ * 0.67 m tall and had slid 2.2 m sideways. A real leg is rigid and swings
+ * about a trunnion pin, forward, aft or inboard depending on the type.
+ *
+ * A leg is described by where it hangs and where it goes: the trunnion
+ * `pivot`, the `foot` it carries (the axle), and the direction from the pivot
+ * the foot points once stowed. The swing is the shortest rotation between the
+ * two directions, so a leg can go forward and inboard at once, as the F-16's
+ * mains do, without a hand-worked compound axis.
+ *
+ * The node is an exact identity with the gear down, so every part built under
+ * it sits precisely where its airframe's file put it in landing-gear space.
+ */
+export interface GearLeg {
+  readonly node: TransformNode;
+  readonly pivot: Vector3;
+  /** Unit hinge axis, in landing-gear space. */
+  readonly axis: Vector3;
+  /** The swing in radians from locked down to stowed. */
+  readonly stowedAngle: number;
+  /**
+   * A multi-wheel truck at the foot of a leg that swings fore and aft. It
+   * pitches against the leg about `pivot` so it stays level and goes into the
+   * well lying flat, as a real truck is tilted by its pitch trimmer; carried
+   * rigidly, a 747 body-gear truck stood on end and hung its aft axle a metre
+   * below the belly. `null` where the wheels simply ride the leg.
+   */
+  readonly truck: { readonly node: TransformNode; readonly pivot: Vector3 } | null;
+}
+
+export function gearLeg(
+  name: string,
+  parent: TransformNode,
+  scene: Scene,
+  pivot: Vector3,
+  foot: Vector3,
+  stowedDirection: Vector3,
+  truckPivot: Vector3 | null = null,
+): GearLeg {
+  const hanging = foot.subtract(pivot).normalize();
+  const stowed = stowedDirection.normalizeToNew();
+  const axis = Vector3.Cross(hanging, stowed).normalize();
+  const stowedAngle = Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(hanging, stowed))));
+  const legNode = node(name, parent, scene);
+  return {
+    node: legNode,
+    pivot: pivot.clone(),
+    axis,
+    stowedAngle,
+    truck: truckPivot
+      ? { node: node(`${name}-truck`, legNode, scene), pivot: truckPivot.clone() }
+      : null,
+  };
+}
+
+const legRotation = new Quaternion();
+const swungPivot = new Vector3();
+
+/** Turn `target` by `rotation` about `pivot`: p' = R p + (P - R P). */
+function turnAbout(target: TransformNode, pivot: Vector3, rotation: Quaternion): void {
+  target.rotationQuaternion ??= new Quaternion();
+  target.rotationQuaternion.copyFrom(rotation);
+  pivot.rotateByQuaternionToRef(rotation, swungPivot);
+  target.position.copyFrom(pivot).subtractInPlace(swungPivot);
+}
+
+/** Swing every leg to `fold`: 0 locked down, 1 stowed. */
+export function foldGearLegs(legs: readonly GearLeg[], fold: number): void {
+  for (const leg of legs) {
+    Quaternion.RotationAxisToRef(leg.axis, leg.stowedAngle * fold, legRotation);
+    turnAbout(leg.node, leg.pivot, legRotation);
+    if (leg.truck) {
+      Quaternion.RotationAxisToRef(leg.axis, -leg.stowedAngle * fold, legRotation);
+      turnAbout(leg.truck.node, leg.truck.pivot, legRotation);
+    }
+  }
+}
+
+/**
  * Point a control surface's hinge node along the line it actually hinges about.
  *
  * `applyCommonPose` deflects a surface by writing `rotation.z`, and Babylon

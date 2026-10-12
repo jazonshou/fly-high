@@ -19,11 +19,14 @@ import {
   configureRoot,
   createGlowApplier,
   createLampApplier,
+  foldGearLegs,
+  gearLeg,
   hingeAlong,
   yawHingeAlong,
   node,
   setCockpitVisibility,
   type CommonRig,
+  type GearLeg,
 } from "./airframeRig";
 import { AircraftBuildContext } from "./builders";
 import { buildJetCockpit } from "./cockpit/jetCockpit";
@@ -1236,19 +1239,33 @@ export function createJet(scene: Scene): AircraftVisual {
   // where the rubber meets the pavement and the node is the axle. Babylon's
   // torus outer radius is diameter/2 + thickness/2, so the 0.50/0.15 main tyre
   // gives 0.325 and 0.325 - 1.92 = -1.595.
+  //
+  // Each leg swings about its trunnion as the real ones do: the mains FORWARD
+  // and inboard into the bays beside the inlet duct, the nose leg AFT into
+  // its bay under the duct.
   const landingGear = node("retractable-landing-gear", root, scene);
+  const gearLegs: GearLeg[] = [];
   const mainWheels: TransformNode[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
+    const leg = gearLeg(
+      `${sideName}-main-gear-leg`,
+      landingGear,
+      scene,
+      new Vector3(-0.55, -0.7, side * 0.55),
+      new Vector3(-0.62, -1.595, side * 1.18),
+      new Vector3(1, 0.1, -side * 0.35),
+    );
+    gearLegs.push(leg);
     build.strutBetween(
       `${sideName}-main-strut`,
       new Vector3(-0.55, -0.7, side * 0.55),
       new Vector3(-0.62, -1.595, side * 1.18),
       0.08,
       hub,
-      landingGear,
+      leg.node,
     );
-    const wheel = node(`${sideName}-main-wheel`, landingGear, scene);
+    const wheel = node(`${sideName}-main-wheel`, leg.node, scene);
     wheel.position.set(-0.62, -1.595, side * 1.18);
     build.torus(`${wheel.name}-tire`, 0.5, 0.15, 16, tire, wheel);
     const wheelHub = build.cylinder(`${wheel.name}-hub`, 0.17, 0.26, 0.26, 12, hub, wheel);
@@ -1258,15 +1275,24 @@ export function createJet(scene: Scene): AircraftVisual {
   // The nose leg is SHORT because the inlet above it is low: only 0.48 m of it
   // is outside the duct. That is the real aeroplane and it is why the nose tyre
   // looks tucked up under the chin.
+  const noseLeg = gearLeg(
+    "nose-gear-leg",
+    landingGear,
+    scene,
+    new Vector3(3.18, -1.15, 0),
+    new Vector3(3.18, -1.63, 0),
+    new Vector3(-1, 0.3, 0),
+  );
+  gearLegs.push(noseLeg);
   build.strutBetween(
     "jet-nose-strut",
     new Vector3(3.18, -1.15, 0),
     new Vector3(3.18, -1.63, 0),
     0.06,
     hub,
-    landingGear,
+    noseLeg.node,
   );
-  const noseSteer = node("nose-wheel-steering", landingGear, scene);
+  const noseSteer = node("nose-wheel-steering", noseLeg.node, scene);
   noseSteer.position.set(3.18, -1.63, 0);
   const noseWheel = node("nose-wheel", noseSteer, scene);
   build.torus("nose-wheel-tire", 0.34, 0.12, 14, tire, noseWheel);
@@ -1522,8 +1548,7 @@ export function createJet(scene: Scene): AircraftVisual {
       propeller.rotation.x = pose.rotorRadiansPerSecond * state.simulationTime;
       applyCommonPose(rig, pose, delta);
       landingGear.setEnabled(pose.gearVisible);
-      landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
-      landingGear.position.y = pose.gearOffsetY;
+      foldGearLegs(gearLegs, pose.gearFold);
       rig.gearDoors.forEach((door, index) => {
         door.rotation.x = (index === 1 ? -1 : 1) * pose.gearDoorTravel;
       });

@@ -20,11 +20,14 @@ import {
   configureCockpitOnlyParts,
   configureRoot,
   createLampApplier,
+  foldGearLegs,
+  gearLeg,
   hingeAlong,
   yawHingeAlong,
   node,
   setCockpitVisibility,
   type CommonRig,
+  type GearLeg,
 } from "./airframeRig";
 import {
   AircraftBuildContext,
@@ -2037,20 +2040,44 @@ export function createAirliner(scene: Scene): AircraftVisual {
   withoutShadow(chevron);
 
   // ---------------------------------------------------------------- GEAR ---
+  //
+  // Each leg swings about its trunnion the way the 747's do: the wing gear
+  // INBOARD into the wells behind the wing root, the body gear and the nose
+  // gear FORWARD. A little past square, so the stowed bogies sit up in the
+  // body instead of hanging below the belly fairing.
   const landingGear = node("airliner-retractable-landing-gear", root, scene);
+  const gearLegs: GearLeg[] = [];
   const mainWheels: TransformNode[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
     for (const bogie of MAIN_BOGIES) {
       const z = side * bogie.z;
       const prefix = `${sideName}-airliner-${bogie.name}-gear`;
+      const trunnion = new Vector3(bogie.x + 0.25, bogie.trunnionY, z * 0.95);
+      const leg = gearLeg(
+        `${prefix}-leg`,
+        landingGear,
+        scene,
+        // The body gear's pin is up inside the fuselage above its well, not at
+        // the fairing skin where the strut comes into view: swung about the
+        // skin, the stowed truck hung 0.9 m below the belly.
+        bogie.name === "body" ? new Vector3(trunnion.x, -2.2, trunnion.z) : trunnion,
+        new Vector3(bogie.x, MAIN_AXLE_Y, z),
+        bogie.name === "wing" ? new Vector3(-0.1, 0.15, -side) : new Vector3(1, 0.15, 0),
+        // The body gear swings fore and aft, so its truck is levelled; the
+        // wing gear swings sideways about a fore-and-aft line, which already
+        // keeps its truck's beam fore and aft.
+        bogie.name === "body" ? new Vector3(bogie.x, MAIN_AXLE_Y + 0.5, z) : null,
+      );
+      gearLegs.push(leg);
+      const truck = leg.truck?.node ?? leg.node;
       build.strutBetween(
         `${prefix}-strut`,
-        new Vector3(bogie.x + 0.25, bogie.trunnionY, z * 0.95),
+        trunnion,
         new Vector3(bogie.x, MAIN_AXLE_Y + 0.5, z),
         0.26,
         hub,
-        landingGear,
+        leg.node,
       );
       // A side brace on the wing gear only. The body gear retracts forward
       // into the fairing and carries its bracing inside the bay.
@@ -2061,10 +2088,10 @@ export function createAirliner(scene: Scene): AircraftVisual {
           new Vector3(bogie.x - 0.05, MAIN_AXLE_Y + 0.85, z * 0.98),
           0.15,
           hub,
-          landingGear,
+          leg.node,
         );
       }
-      const beam = build.box(`${prefix}-bogie-beam`, 2.3, 0.3, 0.34, hub, landingGear);
+      const beam = build.box(`${prefix}-bogie-beam`, 2.3, 0.3, 0.34, hub, truck);
       beam.position.set(bogie.x, MAIN_AXLE_Y + 0.34, z);
       // FOUR wheels on two axles, and one node PER AXLE rather than per bogie:
       // `applyCommonPose` rolls a wheel node about body Z, and a node at the
@@ -2073,7 +2100,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       for (const end of [1, -1] as const) {
         const axle = node(
           `${prefix}-${end > 0 ? "forward" : "aft"}-axle`,
-          landingGear,
+          truck,
           scene,
         );
         axle.position.set(bogie.x + end * BOGIE_HALF_BASE, MAIN_AXLE_Y, z);
@@ -2105,13 +2132,22 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // The drag brace running forward to the bulkhead is what ties the wheels to
   // the aeroplane rather than leaving them hanging in open air, which is how
   // they read before it was added.
+  const noseLeg = gearLeg(
+    "airliner-nose-gear-leg",
+    landingGear,
+    scene,
+    new Vector3(22.6, -3, 0),
+    new Vector3(22.6, NOSE_AXLE_Y, 0),
+    new Vector3(1, 0.12, 0),
+  );
+  gearLegs.push(noseLeg);
   build.strutBetween(
     "airliner-nose-strut",
     new Vector3(22.6, -3, 0),
     new Vector3(22.6, NOSE_AXLE_Y + 0.25, 0),
     0.26,
     hub,
-    landingGear,
+    noseLeg.node,
   );
   build.strutBetween(
     "airliner-nose-drag-brace",
@@ -2119,9 +2155,9 @@ export function createAirliner(scene: Scene): AircraftVisual {
     new Vector3(22.6, NOSE_AXLE_Y + 0.55, 0),
     0.14,
     hub,
-    landingGear,
+    noseLeg.node,
   );
-  const noseSteer = node("nose-wheel-steering", landingGear, scene);
+  const noseSteer = node("nose-wheel-steering", noseLeg.node, scene);
   noseSteer.position.set(22.6, NOSE_AXLE_Y, 0);
   const noseWheel = node("airliner-nose-wheel", noseSteer, scene);
   // The first tyre carries the bare name the side test steers by; the mate is
@@ -2358,8 +2394,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       rig.inboardAilerons[0].rotation.z = pose.starboardAileron;
       rig.inboardAilerons[1].rotation.z = pose.portAileron;
       landingGear.setEnabled(pose.gearVisible);
-      landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
-      landingGear.position.y = pose.gearOffsetY;
+      foldGearLegs(gearLegs, pose.gearFold);
       for (const door of rig.gearDoors) {
         door.hinge.rotation.x = door.sign * pose.gearDoorTravel;
       }
