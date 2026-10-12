@@ -255,7 +255,8 @@ both airframes.
   MTOW, because the world's only runway is 1,320 m and the type needs about
   1,890 m at maximum weight. Both numbers are in `src/sim/aircraft.ts`.
   Measured at 40 t: a **942 m take-off roll** (378 m of margin) and a **436 m
-  landing roll** (884 m). Its 31.7 m span on 34 m of pavement leaves 1.15 m
+  landing roll** (884 m). Since jet thrust lapses with Mach (2026-10-12) the
+  same gentle rotation needs 1,185 m (135 m of margin); a firm one, about 940 m. Its 31.7 m span on 34 m of pavement leaves 1.15 m
   under each wingtip, and more than **11.1 degrees of bank on the runway
   strikes a winglet** — both fair consequences of bringing this aeroplane to a
   light field, and both deliberate.
@@ -387,11 +388,13 @@ complaining. If it starts failing in isolation, that is a different bug.
   `crashed` and nothing tells the pilot. A HUD or audio cue is the natural
   answer. Margins are comfortable today: a full-back-stick rotation reaches
   10.4 of 11.2 degrees in the Global and 7.4 of 10.4 in the 747-8 at 250 t.
-- **Jet thrust lapses with density only.** `calculateEngineThrust` uses
-  `rho^0.72` with no ram recovery, which outruns the drag fall with altitude.
-  The F-16 therefore reaches M 1.21 at sea level, correctly, but only M 1.17 at
-  11 km where the real aeroplane does about M 2.0. Changing the exponent moves
-  every jet in the game, so it was left alone.
+- ~~**Jet thrust lapses with density only.**~~ Fixed 2026-10-12: jet thrust
+  now follows Mattingly's installed-thrust lapse with Mach and altitude over a
+  standard atmosphere (`docs/FLIGHT_MODEL.md`). The M 1.21 and M 1.17 above
+  were a measurement artefact of an altitude hold that had not settled: flown
+  steady, that F-16 reached M 1.71 on the deck and M 2.47 at 11 km. It now
+  makes M 1.19 and M 1.97 in full reheat, and the Global and the 747 stop at
+  about M 0.92-0.93 with ceilings near 45,000 ft.
 - **The shared glass material links refraction to transparency.**
   `subSurface.isRefractionEnabled` with `linkRefractionWithTransparency` turns
   alpha from a blend opacity into a refraction weight, so the surface returns
