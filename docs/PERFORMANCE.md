@@ -1294,11 +1294,14 @@ and its work counts name the pass that draws it.
 - **Promoting baseline images.** A candidate is refused on an unpinned host,
   and the A/B's photographs are not candidates: they are taken at another
   instant than the capture's (after a 12-frame settle and the measured
-  rounds, not 150 settle frames) and on another rasteriser. Against the
-  committed baselines they score SSIM 0.986 on `cruise-horizon` but 0.83 on
-  `ground-2m-lowsun`, whose grass and foliage sway with time. What the A/B
-  does show is exactly which pixels a change moved, which is what a reviewer
-  needs before any promotion.
+  rounds, not 150 settle frames), and on SwiftShader on another rasteriser
+  too. The instant is most of the difference. Against the committed
+  baselines they score SSIM 0.986 on `cruise-horizon` but 0.83 on
+  `ground-2m-lowsun`, whose grass and foliage sway with time, and on the
+  macOS runner's Metal they score about the same as on SwiftShader:
+  `water-25ft` reads 0.706 on both. What the A/B does show is exactly which
+  pixels a change moved, which is what a reviewer needs before any
+  promotion.
 
 ## Capture harness
 

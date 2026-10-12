@@ -247,6 +247,25 @@ describe("perf-ab Markdown report", () => {
     expect(renderMarkdown(report())).toContain(
       "a change is called at 5% in GPU time and 15% in CPU time, with Holm-adjusted alpha 0.05.",
     );
+    const fractional = renderMarkdown(report(
+      { timedMetrics: ["cpu", "wall"], gatedMetrics: ["wall", "cpu"], thresholds: { gpu: 0.05, cpu: 0.15, wall: 0.075 } },
+      [shot({ metrics: [metric("cpu", "same"), metric("wall", "same")] })],
+    ));
+    expect(fractional).toContain("a change is called at 7.5% in Frame wall time and 15% in CPU time");
+  });
+
+  it("says the baseline is another instant on any host, and another rasteriser only on SwiftShader", () => {
+    const comparison = {
+      width: 1_100, height: 619, ssim: 0.7061, rgbSsim: 0.7115, worstTileRgbSsim: -0.0048,
+      differingPixels: 600_000, maxChannelDelta: 200, meanAbsoluteChannelDelta: 9,
+    };
+    const shots = [shot({ baseline: { base: comparison, head: comparison } })];
+    expect(renderMarkdown(report({}, shots))).toContain(
+      "Against the committed Mac baseline (another instant than the capture's, on another rasteriser, so not a gate): "
+      + "base SSIM 0.7061, RGB 0.7115, worst tile -0.0048;",
+    );
+    const metal = { ...report({}, shots), host: { ...report().host, backend: "hardware GPU" } };
+    expect(renderMarkdown(metal)).toContain("Against the committed Mac baseline (another instant than the capture's, so not a gate): ");
   });
 
   it("names a guard, and lists where it did not clear a change without calling the run clean", () => {

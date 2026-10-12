@@ -410,7 +410,7 @@ export function renderMarkdown(report: PerfAbReport): string {
       ? "no timing (`--rounds 0`): work counts, draw calls, ceilings and pixels only."
       : `${report.settings.rounds} rounds of ABBA-interleaved frames per shot; a change is called at `
         + report.settings.gatedMetrics
-          .map((metric) => `${(report.settings.thresholds[metric] * 100).toFixed(0)}% in ${metricName(metric)}`)
+          .map((metric) => `${Number((report.settings.thresholds[metric] * 100).toFixed(1))}% in ${metricName(metric)}`)
           .join(" and ")
         + `, with Holm-adjusted alpha ${report.settings.alpha}.`
         + report.settings.guardMetrics
@@ -562,8 +562,14 @@ export function renderMarkdown(report: PerfAbReport): string {
     if (shot.baseline && (shot.baseline.head || shot.baseline.base)) {
       const describe = (comparison: ImageComparison | null) =>
         comparison ? `SSIM ${comparison.ssim.toFixed(4)}, RGB ${comparison.rgbSsim.toFixed(4)}, worst tile ${comparison.worstTileRgbSsim.toFixed(4)}` : "n/a";
+      // The instant first: on the macOS runner's GPU these frames score about
+      // as they do on SwiftShader (water-25ft 0.706 on both), so the instant
+      // is most of what separates them from the baseline.
+      const unlike = report.host.backend.startsWith("SwiftShader")
+        ? "another instant than the capture's, on another rasteriser"
+        : "another instant than the capture's";
       lines.push(
-        `Against the committed Mac baseline (different rasteriser, so not a gate): base ${describe(shot.baseline.base)}; head ${describe(shot.baseline.head)}.`,
+        `Against the committed Mac baseline (${unlike}, so not a gate): base ${describe(shot.baseline.base)}; head ${describe(shot.baseline.head)}.`,
       );
     }
     const created = shot.measuredFrameCreations;
