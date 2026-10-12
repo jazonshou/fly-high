@@ -97,6 +97,7 @@ import {
   terrainTurfMesoGainWgsl,
 } from "./TurfRelief";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
+import { GROUND_GRAIN_LAYER } from "./GroundGrainSynthesis";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
 import {
@@ -1572,6 +1573,157 @@ fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
 }
 `;
 
+/**
+ * The ground grain's three read scales (`GroundGrainSynthesis.ts` holds the
+ * layer and the reasoning). One texture, three rotated world periods, so the
+ * hardware mip chain puts octaves right at the pixel at every footprint from
+ * the 2 m shots to 10,000 ft, and none above it: no fade law, no shimmer.
+ *
+ * Periods step by ~6.3x, not a power of two, so no scale's lattice lines up
+ * with another's; the rotations avoid the de-tile warp's 13.7/61.2 degrees and
+ * the meso band's 28/37. The finest period (26 m) puts the layer's broadest
+ * patches at ~6.5 m and its clumps at grass-tuft size; the broadest (1,031 m)
+ * reaches 260 m patches, copses and outcrops, where the macro wash and the
+ * patchwork take over.
+ */
+export const GROUND_GRAIN_SCALES = Object.freeze([
+  Object.freeze({ periodMeters: 26, rotationDegrees: 17, offset: [0.37, 0.71] as const }),
+  Object.freeze({ periodMeters: 163, rotationDegrees: 71, offset: [0.13, 0.52] as const }),
+  Object.freeze({ periodMeters: 1_031, rotationDegrees: 133, offset: [0.83, 0.29] as const }),
+]);
+
+/**
+ * Strength of the grain on each kind of cover, as a fraction of albedo per
+ * unit of the (2x-centred) channel. Vegetation carries the most: open pasture
+ * and meadow is where the flying reports said the ground read as paint.
+ * Snow is nearly untouched; pavement is painted over after the grain lands.
+ */
+export const GROUND_GRAIN_GAINS = Object.freeze({
+  tone: Object.freeze({ vegetation: 0.26, rock: 0.15, snow: 0.03, other: 0.13 }),
+  clumps: Object.freeze({ vegetation: 0.3, rock: 0.12, snow: 0, other: 0.14 }),
+  normal: Object.freeze({ vegetation: 0.35, rock: 0.5, snow: 0.2, other: 0.32 }),
+  /** Lush/cool vs dry/straw, per unit moisture, vegetation only. */
+  moistureHue: Object.freeze([0.16, 0.02, -0.2] as const),
+  /** The distant canopy's crown mottling, where the handoff paints forest. */
+  canopyTone: 0.24,
+});
+
+function groundGrainScaleWgsl(index: number): string {
+  const scale = GROUND_GRAIN_SCALES[index]!;
+  const radians = (scale.rotationDegrees * Math.PI) / 180;
+  const cos = Math.cos(radians).toFixed(9);
+  const sin = Math.sin(radians).toFixed(9);
+  const inverse = (1 / scale.periodMeters).toFixed(9);
+  return `
+fn terrainGroundGrainFrame${index}() -> mat2x2f {
+  return mat2x2f(${cos}, ${sin}, -${sin}, ${cos}) * ${inverse};
+}
+
+fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
+  // fract before the fetch: the layer wraps, and a small UV keeps the f32
+  // product precise kilometres from the origin. Gradients are explicit, so
+  // the wrap cannot reach the mip selection.
+  return fract(terrainGroundGrainFrame${index}() * worldXz
+    + vec2f(${scale.offset[0].toFixed(3)}, ${scale.offset[1].toFixed(3)}));
+}
+`;
+}
+
+/**
+ * The grain's fetches. Each returns the layer centred on zero and doubled, so
+ * a channel reads in about [-1, 1] at mip 0 and converges to 0 as the mip
+ * chain averages it away. The normal fetch returns the height GRADIENT in
+ * world xz, carried back through the scale's rotation; its magnitude falls
+ * with the Toksvig-shortened mips the same way.
+ */
+const GROUND_GRAIN_WGSL = /* wgsl */ `
+${GROUND_GRAIN_SCALES.map((_, index) => groundGrainScaleWgsl(index)).join("")}
+
+fn terrainGroundGrainFetch(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec4f {
+  let texel = terrainSurfaceFetchAlbedo(${GROUND_GRAIN_LAYER}, uv, frame * ddx, frame * ddy);
+  return (texel - vec4f(0.5)) * 2.0;
+}
+
+fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec2f {
+  let texel = terrainSurfaceFetchNormal(${GROUND_GRAIN_LAYER}, uv, frame * ddx, frame * ddy);
+  let normal = terrainSurfaceDecodeNormal(texel.xy);
+  let gradientUv = -normal.xy / max(normal.z, 0.3);
+  // The frame's rotation part, transposed, is its inverse; its scale is left
+  // out on purpose, so a gradient is in the layer's own units at every period
+  // and the gains alone set the relief.
+  let rotation = frame * (1.0 / max(length(frame[0]), 1e-9));
+  return transpose(rotation) * gradientUv;
+}
+`;
+
+/**
+ * Applied right after the macro wash and before the runway paint (paint is a
+ * constant colour; a grain across a marking reads as a stain). Every term is
+ * multiplicative and centred on zero, so it adds structure without moving the
+ * mean colour of any cover at range.
+ */
+const GROUND_GRAIN_COMPOSITE_WGSL = /* wgsl */ `
+// The ground grain (GroundGrainSynthesis.ts). Uniform lane: tuning.z is 1
+// exactly when the arrays carry the layer, so a build without it never reads
+// past the ten materials.
+var terrainGrainCanopy = vec3f(1.0);
+if (uniforms.terrainSurfaceTuning.z > 0.5) {
+  let terrainGrainXz = terrainAbsolutePosition.xz + terrainWarp;
+  let terrainGrainDdx = terrainWorldDdx.xz;
+  let terrainGrainDdy = terrainWorldDdy.xz;
+  let terrainGrainUv0 = terrainGroundGrainUv0(terrainGrainXz);
+  let terrainGrainUv1 = terrainGroundGrainUv1(terrainGrainXz);
+  let terrainGrainUv2 = terrainGroundGrainUv2(terrainGrainXz);
+  let terrainGrain0 = terrainGroundGrainFetch(
+    terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+  let terrainGrain1 = terrainGroundGrainFetch(
+    terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+  let terrainGrain2 = terrainGroundGrainFetch(
+    terrainGrainUv2, terrainGroundGrainFrame2(), terrainGrainDdx, terrainGrainDdy);
+  // A planar xz read smears down a steep face, and on one the xz footprint
+  // also understates the pixel; cliffs keep the material's triplanar detail.
+  let terrainGrainFlat = 1.0 - smoothstep(0.45, 0.8, terrainSlope);
+  let terrainGrainVegetation = terrainGroundVegetation;
+  let terrainGrainRock = clamp(terrainRockCover, 0.0, 1.0);
+  let terrainGrainSnow = clamp(terrainSnowShare, 0.0, 1.0);
+  let terrainGrainOther = clamp(
+    1.0 - terrainGrainVegetation - terrainGrainRock - terrainGrainSnow, 0.0, 1.0)
+    * (1.0 - 0.6 * terrainGroundAirfield);
+  let terrainGrainCover = vec4f(
+    terrainGrainVegetation, terrainGrainRock, terrainGrainSnow, terrainGrainOther) * terrainGrainFlat;
+  let terrainGrainToneGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.tone)}));
+  let terrainGrainClumpGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.clumps)}));
+  let terrainGrainNormalGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.normal)}));
+  let terrainGrainTone = terrainGrain0.x + 0.85 * terrainGrain1.x + 0.6 * terrainGrain2.x;
+  let terrainGrainClump = 0.6 * terrainGrain0.z + terrainGrain1.z + 0.6 * terrainGrain2.z;
+  let terrainGrainMoisture = 0.7 * terrainGrain1.y + terrainGrain2.y;
+  let terrainGrainHue = vec3f(1.0)
+    + vec3f(${GROUND_GRAIN_GAINS.moistureHue.map((v) => v.toFixed(3)).join(", ")})
+      * (terrainGrainMoisture * terrainGrainCover.x);
+  terrainAlbedo *= max(
+    vec3f(0.35),
+    terrainGrainHue * (1.0 + terrainGrainToneGain * terrainGrainTone
+      - terrainGrainClumpGain * terrainGrainClump));
+  // Relief from the two finer scales only: the broadest is hill-sized, and
+  // the terrain mesh already shades hills.
+  let terrainGrainSlope = terrainGroundGrainGradient(
+      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy)
+    + 0.7 * terrainGroundGrainGradient(
+      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+  terrainNormal = normalize(terrainNormal)
+    + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;
+  // Distant forest: the canopy handoff below paints one colour; this is the
+  // crown-to-crown and stand-to-stand variation it would otherwise lack.
+  let terrainGrainCanopyTone = 0.6 * terrainGrain1.x + 0.8 * terrainGrain2.x - 0.4 * terrainGrain1.z;
+  terrainGrainCanopy = max(vec3f(0.5), (1.0 + ${GROUND_GRAIN_GAINS.canopyTone.toFixed(3)} * terrainGrainCanopyTone)
+    * (vec3f(1.0) + vec3f(0.06, 0.0, -0.08) * terrainGrainMoisture));
+}
+`;
+
+function wgslGains(row: { vegetation: number; rock: number; snow: number; other: number }): string {
+  return [row.vegetation, row.rock, row.snow, row.other].map((v) => v.toFixed(3)).join(", ");
+}
+
 const FRAGMENT_DEFINITIONS = /* wgsl */ `
 varying terrainSplat: vec4f;
 varying terrainPageLocal: vec2f;
@@ -1741,6 +1893,8 @@ fn terrainSurfaceFetchNormal(layer: i32, uv: vec2f, ddx: vec2f, ddy: vec2f) -> v
   return textureSampleGrad(
     terrainSurfaceNormal, terrainSurfaceNormalSampler, uv, layer, limited[0], limited[1]);
 }
+
+${GROUND_GRAIN_WGSL}
 
 fn terrainSurfaceSample(
   materialIndex: i32,
@@ -3148,7 +3302,7 @@ if (terrainGroundVegetation > 0.05 && terrainGroundPatchworkOn > 0.5) {
 // colour, and a kilometre-scale brightness ramp across a marking reads as a
 // stain rather than as weather.
 terrainAlbedo *= terrainMacroVariation * terrainMacroHue;
-
+${GROUND_GRAIN_COMPOSITE_WGSL}
 // W-1: pavement coverage, so the scrub below is not planted on a runway. Zero
 // in every build without an airport, which is the right answer for ground the
 // paint never reached.
@@ -3423,7 +3577,7 @@ var terrainCanopyShade = 0.0;
     let canopySurface = canopySplit.surface;
     terrainAlbedo = mix(
       terrainAlbedo,
-      vec3f(${TERRAIN_CANOPY_ALBEDO}),
+      vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy,
       canopySurface);
     terrainRoughness = mix(
       terrainRoughness, ${TERRAIN_CANOPY_ROUGHNESS}, canopySurface);
@@ -3670,6 +3824,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
   private detileWarp = DEFAULT_DETILE_WARP;
   private groundPatchwork = 1;
+  /** 1 when the bound arrays carry the ground grain layer (see setArrays). */
+  private groundGrain = 0;
   /**
    * `6-5`'s field drivers, replacing `3-7`'s never-driven constant.
    *
@@ -3776,10 +3932,15 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     this.originZ = Number.isFinite(z) ? z : 0;
   }
 
-  /** `3-1`'s two arrays. Enabling here is what keeps the samplers bound. */
-  setArrays(albedoHeight: BaseTexture, normalMaterial: BaseTexture): void {
+  /**
+   * `3-1`'s two arrays. Enabling here is what keeps the samplers bound.
+   * `groundGrain` says whether they carry the grain layer after the ten
+   * materials; the shader reads that layer only when they do.
+   */
+  setArrays(albedoHeight: BaseTexture, normalMaterial: BaseTexture, groundGrain = false): void {
     this.albedoHeightArray = albedoHeight;
     this.normalMaterialArray = normalMaterial;
+    this.groundGrain = groundGrain ? 1 : 0;
     this._enable(true);
     this.markAllDefinesAsDirty();
   }
@@ -4231,7 +4392,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       // y: W-1's patchwork switch. It carried HEIGHT_BLEND_DEPTH_NEAR, which
       // the shader has always inlined as a literal and never read from here.
       this.groundPatchwork,
-      HEIGHT_BLEND_DEPTH_FAR,
+      // z: the ground grain switch. It carried HEIGHT_BLEND_DEPTH_FAR, which
+      // the shader inlines as a literal too and never read from here.
+      this.groundGrain,
       this.snowlineMeters,
     );
     uniformBuffer.updateFloat4(

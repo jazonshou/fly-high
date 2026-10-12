@@ -266,6 +266,7 @@ export interface DynamicAllocationInputs {
    */
   readonly materialArrayCount: number;
   readonly materialArrayLayers: number;
+  readonly groundGrainLayers: number;
   readonly materialArrayBytesPerTexel: number;
   /**
    * `4-0`: the page-atlas SHAPE, for the same reason the material arrays are
@@ -371,6 +372,9 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // no-subsystem-imports shape.
   materialArrayCount: 2,
   materialArrayLayers: 10,
+  // The ground grain: one more layer in each array, built only where the
+  // patchwork runs (`GroundGrainSynthesis.ts`).
+  groundGrainLayers: 1,
   materialArrayBytesPerTexel: 4,
   // 4-0/4-2: 256 height core + 2x4 gutter.
   heightSlotStoredEdge: 264,
@@ -774,7 +778,8 @@ export function estimateGpuMemoryBreakdown(
   const otherDetailMiB = OTHER_DETAIL_ALLOWANCE_MIB[tier];
   const materialArraysMiB =
     (inputs.materialArrayCount
-      * inputs.materialArrayLayers
+      * (inputs.materialArrayLayers
+        + (profile.terrainGroundPatchwork ? inputs.groundGrainLayers : 0))
       * profile.materialArrayEdge * profile.materialArrayEdge
       * inputs.materialArrayBytesPerTexel
       * mipChainByteFactor(profile.materialArrayEdge))

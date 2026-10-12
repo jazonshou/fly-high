@@ -21,7 +21,10 @@ export interface MaterialSynthesisRequest {
   readonly requestId: number;
   readonly seed: WorldSeed;
   readonly edge: number;
-  /** `SurfaceMaterial` ids, in the order the arrays layer them. */
+  /**
+   * Array layer ids, in the order the arrays layer them: `SurfaceMaterial`
+   * ids, then `GROUND_GRAIN_LAYER` when the grain is built.
+   */
   readonly materialIds: readonly number[];
 }
 

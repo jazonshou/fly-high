@@ -31,7 +31,7 @@ import {
 } from "@/src/render/webgpu/world/streamingPriority";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type WorldDefinition } from "@/src/world";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
-import { synthesizeSurfaceMaterial } from "./MaterialArraySynthesis";
+import { surfaceArrayLayerIds, synthesizeSurfaceArrayLayer } from "./GroundGrainSynthesis";
 import {
   uploadSurfaceMaterialArrays,
   type SurfaceMaterialArrays,
@@ -449,9 +449,17 @@ export class TerrainClipmapSystem {
   private canBuildArrays = false;
   /** The edge the arrays SHOULD have; the build runs until they do. */
   private materialArrayEdge = 0;
+  /**
+   * Whether the arrays SHOULD carry the ground grain after the ten materials:
+   * exactly where the patchwork runs, so tier 0 pays neither its memory nor
+   * its fetches.
+   */
+  private materialArrayGrain = false;
   /** One material's synthesis per frame, in flight. */
   private materialArrayBuild: {
     readonly edge: number;
+    /** Layer ids in array order (`surfaceArrayLayerIds`). */
+    readonly layerIds: readonly number[];
     readonly albedoHeight: Uint8Array[];
     readonly normalMaterial: Uint8Array[];
     index: number;
@@ -552,6 +560,7 @@ export class TerrainClipmapSystem {
     const engineFlags = scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     this.canBuildArrays = Boolean(engineFlags.isWebGPU || engineFlags._gl);
     this.materialArrayEdge = profile.materialArrayEdge;
+    this.materialArrayGrain = profile.terrainGroundPatchwork;
     this.cloudShadowPlugin = new CloudShadowMaterialPlugin(this.material);
 
     this.heightAtlas = new TerrainPageAtlas(scene, profile, {
@@ -636,25 +645,31 @@ export class TerrainClipmapSystem {
    */
   private stepMaterialArrayBuild(): void {
     if (!this.canBuildArrays) return;
+    const wantedLayerIds = surfaceArrayLayerIds(this.materialArrayGrain);
     if (this.materialArrayBuild === null) {
-      if (this.materialArrays?.edge === this.materialArrayEdge) return;
+      if (
+        this.materialArrays?.edge === this.materialArrayEdge
+        && this.materialArrays.layerCount === wantedLayerIds.length
+      ) return;
       this.materialArrayBuild = {
         edge: this.materialArrayEdge,
+        layerIds: wantedLayerIds,
         albedoHeight: [],
         normalMaterial: [],
         index: 0,
       };
-      this.requestMaterialSynthesis(this.materialArrayEdge);
+      this.requestMaterialSynthesis(this.materialArrayEdge, wantedLayerIds);
     }
     const build = this.materialArrayBuild;
-    if (build.edge !== this.materialArrayEdge) {
-      // A profile change superseded it; the next frame restarts at the new edge.
+    if (build.edge !== this.materialArrayEdge || build.layerIds.length !== wantedLayerIds.length) {
+      // A profile change superseded it; the next frame restarts at the new
+      // edge and layer list.
       this.materialArrayBuild = null;
       this.synthesisClient?.cancel();
       return;
     }
-    const spec = SURFACE_MATERIALS[build.index];
-    if (spec) {
+    const layerId = build.layerIds[build.index];
+    if (layerId !== undefined) {
       const offThread = this.synthesisClient?.requestedEdge === build.edge
         ? this.synthesisClient.take(build.index)
         : null;
@@ -669,14 +684,14 @@ export class TerrainClipmapSystem {
           build.index += 1;
           layer = this.synthesisClient?.take(build.index) ?? null;
         }
-        if (build.index < SURFACE_MATERIALS.length) return;
+        if (build.index < build.layerIds.length) return;
       } else {
         // No worker, or its layer has not landed yet. The inline path is the
         // fallback AND the Node/headless path; it stays one layer per frame.
         if (this.synthesisClient?.isAvailable && this.synthesisClient.requestedEdge === build.edge) {
           return;
         }
-        const inline = synthesizeSurfaceMaterial(spec.id, this.world.seed, build.edge);
+        const inline = synthesizeSurfaceArrayLayer(layerId, this.world.seed, build.edge);
         build.albedoHeight.push(inline.albedoHeight);
         build.normalMaterial.push(inline.normalMaterial);
         build.index += 1;
@@ -692,7 +707,11 @@ export class TerrainClipmapSystem {
     const previous = this.materialArrays;
     this.materialArrays = replacement;
     this.materialArrayBuild = null;
-    this.surfacePlugin.setArrays(replacement.albedoHeight, replacement.normalMaterial);
+    this.surfacePlugin.setArrays(
+      replacement.albedoHeight,
+      replacement.normalMaterial,
+      replacement.layerCount > SURFACE_MATERIALS.length,
+    );
     // Enabling the plugin recompiles the shared material, but a mesh that has
     // already been drawn holds its own cached draw wrapper and render bundle
     // against the OLD effect — and keeps using it. The first capture after
@@ -818,6 +837,7 @@ export class TerrainClipmapSystem {
       ),
     );
     this.materialArrayEdge = profile.materialArrayEdge;
+    this.materialArrayGrain = profile.terrainGroundPatchwork;
     this.computeBudget.setProfile(profile);
     if (atlasReshaped) {
       // A slot index addresses a different texel in a reshaped atlas, so
@@ -1227,10 +1247,10 @@ export class TerrainClipmapSystem {
    * rather than a request per layer, which would put a message round-trip
    * between every 110 ms of work and lose most of the win.
    */
-  private requestMaterialSynthesis(edge: number): void {
+  private requestMaterialSynthesis(edge: number, layerIds: readonly number[]): void {
     const client = this.synthesisClient;
     if (!client?.isAvailable) return;
-    client.request(this.world.seed, edge, SURFACE_MATERIALS.map((spec) => spec.id));
+    client.request(this.world.seed, edge, layerIds);
   }
 
   private bindAtlasesToPlugin(): void {
