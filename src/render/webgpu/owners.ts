@@ -1165,6 +1165,23 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "per site.",
   },
   {
+    // The final sharpen. Lighting owns it beside bloom: both are display-side
+    // passes that act on the tone-mapped image rather than on the scene.
+    artifact: "final-sharpen",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/SharpenPass.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["SharpenPass", "RCAS_SHARPEN_WGSL", "rcasSharpen"],
+    notes:
+      "RCAS (AMD FidelityFX's contrast-adaptive sharpen) restores the acutance "
+      + "FXAA and the browser's bilinear canvas upscale take away. It must be "
+      + "the LAST pass: `applyProfile` detaches it before re-attaching FXAA and "
+      + "re-attaches it after, because Babylon appends. Its strength is the "
+      + "profile's `sharpenAmount`; zero detaches it rather than running an "
+      + "identity draw. `rcasSharpen` is the CPU twin of the WGSL that the "
+      + "bounded-output tests run against.",
+  },
+  {
     // 7-13: the airfield's furniture. Arithmetic and geometry only -- the
     // windsock's siting, its wind response, and the tanks/fence/signage
     // surfaces. It owns no material and no light: signage rides 7-5's

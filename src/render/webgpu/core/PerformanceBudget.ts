@@ -705,6 +705,9 @@ export function estimateGpuMemoryBreakdown(
     + DEPTH_BYTES
     + 2 * LDR_COLOR_BYTES
     + (msaaSamples > 1 ? (HDR_COLOR_BYTES + DEPTH_BYTES) * msaaSamples : 0)
+    // The final sharpen's input: whatever was last before it (FXAA, or the
+    // tone map at multisampled tiers) now renders here, not to the swapchain.
+    + (profile.sharpenAmount > 0 ? LDR_COLOR_BYTES : 0)
   );
 
   const shadowBytes =
