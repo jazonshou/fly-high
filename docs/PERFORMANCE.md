@@ -1235,7 +1235,7 @@ reads as SAME.
   fenced frame's wall time is gated instead of GPU time.
 
 **Measured** (2026-10-12, a cloud session: 4 CPUs, Chromium 141, SwiftShader,
-`cruise-horizon`, 16 rounds):
+16 rounds, on `cruise-horizon` unless another shot is named):
 
 - **A/A** (`--aa`, both arms one build): GPU time SAME, −0.8% (−2.7% to
   +1.3%); CPU time SAME, +0.0% (−12.6% to +14.3%); draw calls 200 → 200;
@@ -1248,6 +1248,13 @@ reads as SAME.
   per frame and its workgroups from exactly 2,170 to 8,680, and the two
   frames stayed identical, because the shot's sky has no cloud in view
   (`docs/evidence/perf-ab-positive-control-cruise-horizon-2026-10-12.json`).
+- **A/A on two more default shots**, `forest-500ft-sunbehind` and
+  `water-25ft`: GPU time SAME on both, +2.0% (−0.7% to +3.6%) and −0.9%
+  (−3.8% to +1.8%); draw calls, work counts and pixels identical. CPU time
+  did not clear `water-25ft`, +7.2% (+0.6% to +19.7%), which is the case
+  the guard is for: the run reads "no regression found" rather than
+  inconclusive. The shots took 21 and 20 minutes
+  (`docs/evidence/perf-ab-aa-forest-water-2026-10-12.json`).
 - **The A/A with both arms in one browser**, as the first version ran it
   (8 rounds): the same timings, but 279,159 pixels differ
   (`docs/evidence/perf-ab-shared-browser-aa-cruise-horizon-2026-10-12.json`;
