@@ -637,7 +637,14 @@ describe("a loft's crown seam", () => {
       // airliner-cockpit-interior (the board) moved, and the other 98 are bit-identical.
       // RE-PINNED 52aba346 -> 6f6e5763 with the header taken out again (S5, the PM's call): against 6a21297, airliner-header
       // is gone and the other 99 are bit-identical.
-      airliner: "6f6e5763",
+      // RE-PINNED 6f6e5763 -> 95fbd1fb for the Fowler flaps: against db2ca92, both fixed wings (450 -> 630 vertices, the
+      // trailing-edge fillers folded in), the four flaps (54 -> 78, tucked noses) and the canoe (38 -> 29, its fore half)
+      // changed; the inboard flaps' two aft elements and airliner-flap-track-canoe-tail (x8) are new; the four ailerons,
+      // the four spoiler panels, airliner-spoiler-bays and airliner-body-exterior (its pylons) sit on the new section's
+      // skin and moved without changing count. The other 82, and every mesh of the other three airframes, are
+      // bit-identical. The canoes' eight placements moved down 85 to 210 mm with the lower skin they hang from, which
+      // is deeper at 60% chord now.
+      airliner: "95fbd1fb",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();

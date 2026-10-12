@@ -8,6 +8,7 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import {
@@ -323,10 +324,26 @@ const WING_RAKE_Y = -0.25;
 const WING_RAKE_OUTER_Y = 0.16;
 const WING_TIP_Y = 0.5;
 
-/** Thickness ratios: a supercritical section, thicker inboard where the fuel is. */
-const WING_INBOARD_THICKNESS = 0.115;
-const WING_OUTBOARD_THICKNESS = 0.095;
-const WING_CAMBER = 0.006;
+/**
+ * Thickness ratios and camber of the ONE section the whole wing is cut from,
+ * fixed metal and every surface behind it alike, over the TRUE chord: thicker
+ * inboard where the fuel is.
+ *
+ * They were 0.115, 0.095 and 0.006 of a section drawn over the 70% WING BOX,
+ * closing to a point on the hinge line, with each flap and aileron a separate
+ * 6.5-7% section starting from a point of its own. That pinched the wing to
+ * nothing all along the hinge, a groove you could see from the chase camera,
+ * and it left no room for a Fowler flap to tuck under: the flaps could only
+ * rotate in place. These are the same three numbers times 0.7, so the wing's
+ * greatest depth and how high its camber stands are unchanged in metres; the
+ * deepest point moves from 21% to 30% of the true chord, where a 4-digit
+ * section puts it. What changes is that the wing stays deep to the rear spar,
+ * as a real one does, and is cut there with a blunt trailing edge the flap
+ * continues.
+ */
+const WING_INBOARD_THICKNESS = 0.0805;
+const WING_OUTBOARD_THICKNESS = 0.0665;
+const WING_CAMBER = 0.0042;
 
 /** Linear interpolation along one of the three panels. */
 function alongPanel(rootValue: number, tipValue: number, fraction: number): number {
@@ -395,24 +412,44 @@ function chordPlaneAt(z: number): number {
  * of the skin they are supposed to lie in.
  */
 function wingSkinY(z: number, chordFraction: number, upper: boolean): number {
-  // THE SECTION IS DRAWN OVER THE WING BOX, NOT OVER THE CHORD. `wingPanels`
-  // hands `airfoilWing` a trailing edge at the HINGE LINE, because aft of it
-  // the metal is flap. So the fixed wing is a complete aerofoil of 70% of the
-  // local chord, and a fraction of the true chord has to be rescaled into that
-  // box before the thickness law sees it. Evaluating the law on the full chord
-  // instead puts the skin about 3% of chord too high — 540 mm at the inboard
-  // spoiler station, which is how the first attempt at this repair managed to
-  // seat the panels WORSE than the boxes it replaced.
-  const boxChord = leadingAt(z) - hingeAt(z);
-  const ratio = insideKink(z) ? WING_INBOARD_THICKNESS : WING_OUTBOARD_THICKNESS;
-  const local = Math.min(1, Math.max(0, chordFraction / HINGE_CHORD_FRACTION));
-  const camber = 4 * WING_CAMBER * local * (1 - local) * boxChord;
-  const halfThickness = nacaThickness(local, ratio) * boxChord;
-  // And the section stands off the CHORD PLANE, which is tilted: each panel is
+  // The section stands off the CHORD PLANE, which is tilted: each panel is
   // built inside a node rolled to the local dihedral, so a half-thickness of h
   // reaches h*cos(dihedral) in body y.
-  const offset = camber + (upper ? halfThickness : -halfThickness);
-  return chordPlaneAt(z) + offset * Math.cos(dihedralAt(z));
+  return chordPlaneAt(z) + sectionOffset(z, chordFraction, upper) * Math.cos(dihedralAt(z));
+}
+
+/** The section's thickness ratio at a station, by the panel it lies in. */
+function thicknessAt(z: number): number {
+  return insideKink(z) ? WING_INBOARD_THICKNESS : WING_OUTBOARD_THICKNESS;
+}
+
+/**
+ * The skin's height above the local chord plane, in the plane's own frame —
+ * the frame every panel, flap and aileron node is rolled into.
+ *
+ * ONE LAW OVER THE TRUE CHORD. It was drawn over the wing box, leading edge to
+ * hinge line, because the fixed wing stopped there and closed to a point; the
+ * first attempt at seating the spoilers learned that the hard way, evaluating
+ * the full-chord law against a box-chord mesh and missing the skin by 540 mm.
+ * Now the fixed wing is cut from THIS law and stops blunt at the hinge, and
+ * every surface behind it is cut from the same law, so there is one skin to
+ * seat things on and it carries straight across every hinge.
+ *
+ * `ratio` is passed by a piece whose own thickness is fixed — a panel built
+ * either side of the Yehudi break must not change section at its own root row
+ * because `insideKink` answers for the panel next door.
+ */
+function sectionOffset(
+  z: number,
+  chordFraction: number,
+  upper: boolean,
+  ratio = thicknessAt(z),
+): number {
+  const chord = leadingAt(z) - trailingAt(z);
+  const fraction = Math.min(1, Math.max(0, chordFraction));
+  const camber = 4 * WING_CAMBER * fraction * (1 - fraction) * chord;
+  const halfThickness = nacaThickness(fraction, ratio) * chord;
+  return camber + (upper ? halfThickness : -halfThickness);
 }
 
 /** Where a station's chord fraction lands in body x. */
@@ -424,6 +461,174 @@ function chordFractionX(z: number, chordFraction: number): number {
 /** The LOWER surface at 60% chord, which is what a pylon hangs from. */
 function lowerSurfaceY(z: number): number {
   return wingSkinY(z, 0.6, false);
+}
+
+/**
+ * FOWLER FLAPS, the way the 747-8 has them: a DOUBLE-slotted inboard flap and
+ * a SINGLE-slotted outboard one, where the 747-400 had triple slots on both.
+ *
+ * A Fowler flap runs aft on its tracks before it turns down, so it adds wing
+ * area as well as camber; the take-off settings are mostly that travel and
+ * the landing ones mostly the turn. The shared pose carries one flap number,
+ * in radians of rotation with 30 degrees as full (`SURFACE_TRAVEL.airliner`),
+ * so the travel is read off the same fraction and EASED OUT: three quarters
+ * of it is done by half flap while the turn is half done.
+ *
+ * `aft` and `down` are the travel at full flap, in body x and y, the same for
+ * the whole panel because a panel is rigid. A real track set swings a tapered
+ * flap in plan as it runs; this one translates. `aft` is about a third of the
+ * panel's mean visible chord, on the order a track this size gives.
+ *
+ * `split` is the chord fraction where the inboard flap's aft element begins.
+ */
+const FULL_FLAP_RADIANS = (30 * Math.PI) / 180;
+const FOWLER_FLAPS = [
+  // Tip stations sized to leave 0.5 m of fixed trailing edge before the
+  // aileron rather than the 1.7 m the first version left, which showed in
+  // the plan view as a notch cut out of the wing between the two surfaces.
+  // The inner flap drops only 0.12 m on its tracks: its root chord is the
+  // Yehudi's, so its turn alone lowers the trailing edge nearly 3 m, and at
+  // 0.25 m with a 15-degree aft element the root sat 0.7 m off the runway
+  // with the gear down, below the wing-gear axles. Now it is 0.93 m.
+  { name: "inner", rootZ: 4.4, tipZ: 11.9, aft: 1.1, down: 0.12, split: 0.9 },
+  { name: "outer", rootZ: 16.6, tipZ: 23.1, aft: 0.7, down: 0.15, split: null },
+] as const;
+/**
+ * The inboard flap's aft element, moving on the main one: its own run aft and
+ * down, and 12 degrees more turn at full flap than the main element has. That
+ * extra turn is what makes a double-slotted flap read as two at landing.
+ */
+const AFT_FLAP_TRAVEL = { aft: 0.25, down: 0.04, turn: (12 * Math.PI) / 180 } as const;
+/**
+ * How far a flap reaches UNDER the metal ahead of it, beyond its own travel.
+ *
+ * A Fowler flap that slides out from behind a trailing edge opens a hole the
+ * length of its travel unless it was tucked under that edge by more than the
+ * travel to begin with: the Global's flaps hung behind its wing with open sky
+ * between until theirs were. So each flap's nose is `aft` plus this ahead of
+ * the hinge line, and is still this far under the fixed wing at full flap.
+ */
+const FLAP_TUCK_MARGIN = 0.25;
+const AFT_FLAP_TUCK_MARGIN = 0.15;
+/**
+ * How much of the section the tucked part of a flap may fill: 1 at the edge it
+ * tucks under, falling linearly to 0.45 at its nose. A tucked part has to lie
+ * INSIDE the wing rather than on it, or 1.35 m of flap would share its skin
+ * with 1.35 m of wing and the two would fight for every pixel; as the flap
+ * runs out, this taper becomes the nose it shows in its slot. The Global's
+ * flaps settled the same two numbers.
+ */
+const FLAP_TUCK_NOSE_SCALE = 0.45;
+/**
+ * The slot between an aileron's nose and the fixed wing's blunt trailing
+ * edge. Both faces are blunt, square and face away from each other; flush,
+ * they would be coincident. 30 mm is under a pixel at the chase camera.
+ */
+const CONTROL_SURFACE_COVE = 0.03;
+/**
+ * Fixed trailing edge between the moving surfaces, where the aeroplane has
+ * metal and this one had a 30%-chord notch of sky: inboard of the inner flap,
+ * either side of the inboard aileron, outboard of the outer flap and between
+ * the outboard aileron and the raked tip.
+ */
+const TRAILING_EDGE_FILLERS = [
+  { rootZ: 3, tipZ: 4.4 },
+  { rootZ: 11.9, tipZ: 12.4 },
+  { rootZ: 16, tipZ: 16.6 },
+  { rootZ: 23.1, tipZ: 23.6 },
+  { rootZ: 28.2, tipZ: WING_RAKE_Z },
+] as const;
+
+/**
+ * How a piece of the wing is re-cut from the one section law.
+ *
+ * `airfoilWing` closes every section it draws to a point at its own trailing
+ * edge, so it cannot draw a fixed wing that stops blunt at the hinge, a flap
+ * that continues it, or a flap nose tucked under it. It is still the right
+ * tool for the TOPOLOGY — top and bottom grids, closed at both edges and both
+ * ends — so pieces are built with it and then every vertex is moved.
+ */
+interface WingCut {
+  /** Body x of the piece's own x = 0. */
+  readonly originX: number;
+  /** The wing station of the piece's own z = 0, and stations per metre of |z|. */
+  readonly rootZ: number;
+  readonly stationsPerMetre: number;
+  /** A fixed ratio for a piece wholly one side of the Yehudi break. */
+  readonly ratio?: number;
+  /** Keep the builder's chordwise placement and move vertices only in y. */
+  readonly keepX?: boolean;
+  /** The piece's front and back edges, as body x at a station. */
+  readonly frontX: (z: number) => number;
+  readonly backX: (z: number) => number;
+  /**
+   * The trailing edge this piece's nose tucks under, and how many of its
+   * chord segments lie ahead of it. A vertex lands exactly on that edge at
+   * every station, so the taper starts there and nowhere else.
+   */
+  readonly tuck?: { readonly underX: (z: number) => number; readonly segments: number };
+}
+
+/** The texture u every trailing-edge piece wore: 0 on the hinge line, 1 at the trailing edge. */
+function trailingU(z: number, x: number): number {
+  const hinge = hingeAt(z);
+  return (hinge - x) / (hinge - trailingAt(z));
+}
+
+function recutWingPiece(mesh: Mesh, cut: WingCut): void {
+  const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+  const uvs = mesh.getVerticesData(VertexBuffer.UVKind);
+  const indices = mesh.getIndices();
+  const metadata = mesh.metadata as { chordSegments?: number; spanSegments?: number } | null;
+  if (!positions || !uvs || !indices || !metadata?.chordSegments || !metadata.spanSegments) {
+    throw new Error(`${mesh.name} is not an airfoil piece this can re-cut`);
+  }
+  const chordSegments = metadata.chordSegments;
+  const rowSize = chordSegments + 1;
+  // The builder emits the whole top surface, then the whole bottom one.
+  const surfaceSize = (metadata.spanSegments + 1) * rowSize;
+  for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+    const chordIndex = (vertex % surfaceSize) % rowSize;
+    const localZ = positions[vertex * 3 + 2]!;
+    const z = cut.rootZ + Math.abs(localZ) * cut.stationsPerMetre;
+    const front = cut.frontX(z);
+    const back = cut.backX(z);
+    let x: number;
+    if (cut.keepX) {
+      x = positions[vertex * 3]! + cut.originX;
+    } else if (cut.tuck) {
+      const under = cut.tuck.underX(z);
+      const ahead = cut.tuck.segments;
+      x = chordIndex <= ahead
+        ? front + (under - front) * (chordIndex / ahead)
+        : under + (back - under) * ((chordIndex - ahead) / (chordSegments - ahead));
+    } else {
+      x = front + (back - front) * (chordIndex / chordSegments);
+    }
+    let scale = 1;
+    if (cut.tuck) {
+      const under = cut.tuck.underX(z);
+      if (x > under) {
+        scale = 1 - (1 - FLAP_TUCK_NOSE_SCALE) * Math.min(1, (x - under) / (front - under));
+      }
+    }
+    const chord = leadingAt(z) - trailingAt(z);
+    const fraction = (leadingAt(z) - x) / chord;
+    positions[vertex * 3] = x - cut.originX;
+    positions[vertex * 3 + 1] = scale * sectionOffset(z, fraction, vertex < surfaceSize, cut.ratio);
+    if (!cut.keepX) uvs[vertex * 2] = trailingU(z, x);
+  }
+  mesh.setVerticesData(VertexBuffer.PositionKind, positions, false);
+  mesh.setVerticesData(VertexBuffer.UVKind, uvs, false);
+  // Normals from the two SKINS only. The closing strips and end caps share
+  // their vertices, and a blunt trailing edge is a real face now: averaged in,
+  // it would bend the last row of every panel toward the vertical and shade a
+  // dark band along the whole trailing edge.
+  const skins = Array.from(indices).slice(0, 2 * metadata.spanSegments * chordSegments * 6);
+  const normals: number[] = [];
+  VertexData.ComputeNormals(positions, skins, normals);
+  mesh.setVerticesData(VertexBuffer.NormalKind, normals, false);
+  mesh.refreshBoundingInfo();
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,6 +1357,12 @@ export function createAirliner(scene: Scene): AircraftVisual {
   };
   const fixedTail: AbstractMesh[] = [];
   const flaps: TransformNode[] = [];
+  /** Every main flap node with the rest pose its Fowler travel departs from. */
+  const fowlerTracks: { node: TransformNode; rest: Vector3; aft: number; down: number }[] = [];
+  /** The inboard flaps' aft elements, each with its rest pose on its main panel. */
+  const aftFlaps: { node: TransformNode; rest: Vector3 }[] = [];
+  /** Which main flap carries the canoe tails at a station. */
+  const flapCarriages: { node: TransformNode; side: 1 | -1; rootZ: number; tipZ: number }[] = [];
   const speedBrakes: TransformNode[] = [];
   /**
    * The same nodes, but knowing which GROUP and which WING each one is.
@@ -1243,18 +1454,35 @@ export function createAirliner(scene: Scene): AircraftVisual {
     },
   ] as const;
 
-  /** A node on the wing's own surface, rolled to the local dihedral. */
+  /**
+   * A node on the chord plane at `rootZ`, rolled into that plane as it runs
+   * out to `tipZ`. Within one panel that is the local dihedral. The inboard
+   * aileron starts 0.1 m inboard of the Yehudi break, and rolled to the
+   * dihedral at its root it stood 146 mm below the trailing edge beside its
+   * tip; the plane through both of its ends misses the wing by 4 mm.
+   */
   function wingHinge(
     name: string,
     side: 1 | -1,
-    z: number,
+    rootZ: number,
+    tipZ: number,
     x: number,
-    y: number,
   ): TransformNode {
     const hinge = node(name, root, scene);
-    hinge.position.set(x, y, side * z);
-    hinge.rotation.x = -side * dihedralAt(z);
+    hinge.position.set(x, chordPlaneAt(rootZ), side * rootZ);
+    hinge.rotation.x = -side * Math.atan2(chordPlaneAt(tipZ) - chordPlaneAt(rootZ), tipZ - rootZ);
     return hinge;
+  }
+
+  /**
+   * How far a piece hung from `wingHinge` reaches in its own rolled frame to
+   * END at `tipZ`, and the stations it crosses per metre of that reach. Plain
+   * `tipZ - rootZ` falls short by (1 - cos dihedral) of it: 33 mm at the outer
+   * flap's tip, a slit of daylight beside the fixed trailing edge there.
+   */
+  function reachTo(rootZ: number, tipZ: number): { reach: number; stationsPerMetre: number } {
+    const reach = Math.hypot(tipZ - rootZ, chordPlaneAt(tipZ) - chordPlaneAt(rootZ));
+    return { reach, stationsPerMetre: (tipZ - rootZ) / reach };
   }
 
   for (const side of [1, -1] as const) {
@@ -1266,7 +1494,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
       anchor.position.set(0, panel.rootY, side * panel.rootZ);
       anchor.rotation.x = -side * Math.atan2(rise, reach);
       fixedWing[sideName].anchors.push(anchor);
-      fixedWing[sideName].panels.push(build.airfoilWing(
+      const wing = build.airfoilWing(
         `${sideName}-airliner-${panel.name}-wing`,
         {
           rootLeadingX: panel.rootLeadingX,
@@ -1282,52 +1510,116 @@ export function createAirliner(scene: Scene): AircraftVisual {
         },
         body,
         anchor,
-      ));
+      );
+      // The two panels that end at the hinge line are RE-CUT from the full-
+      // chord law, which leaves them blunt there and as deep as the flap
+      // behind them. The raked tip carries no surface and is drawn whole.
+      if (panel.name === "inboard" || panel.name === "outboard") {
+        recutWingPiece(wing, {
+          originX: 0,
+          rootZ: panel.rootZ,
+          stationsPerMetre: reach / Math.hypot(reach, rise),
+          ratio: panel.thickness,
+          keepX: true,
+          frontX: leadingAt,
+          backX: hingeAt,
+        });
+      }
+      fixedWing[sideName].panels.push(wing);
     }
+
+    // The fixed trailing edge between the moving surfaces (see
+    // `TRAILING_EDGE_FILLERS`), on static anchors rolled to the local
+    // dihedral exactly as the panels are, and folded into the same mesh.
+    TRAILING_EDGE_FILLERS.forEach((filler, index) => {
+      const dihedral = dihedralAt(filler.rootZ);
+      const anchor = node(`${sideName}-airliner-trailing-edge-${index}`, root, scene);
+      anchor.position.set(0, chordPlaneAt(filler.rootZ), side * filler.rootZ);
+      anchor.rotation.x = -side * dihedral;
+      fixedWing[sideName].anchors.push(anchor);
+      const piece = build.airfoilWing(
+        `${sideName}-airliner-trailing-edge-${index}-wing`,
+        {
+          rootLeadingX: hingeAt(filler.rootZ),
+          rootTrailingX: trailingAt(filler.rootZ),
+          tipLeadingX: hingeAt(filler.tipZ),
+          tipTrailingX: trailingAt(filler.tipZ),
+          rootZ: 0,
+          tipZ: side * ((filler.tipZ - filler.rootZ) / Math.cos(dihedral)),
+          thicknessRatio: 0.07,
+          chordSegments: 8,
+          spanSegments: 1,
+        },
+        body,
+        anchor,
+      );
+      recutWingPiece(piece, {
+        originX: 0,
+        rootZ: filler.rootZ,
+        stationsPerMetre: Math.cos(dihedral),
+        ratio: thicknessAt(filler.rootZ),
+        frontX: hingeAt,
+        backX: trailingAt,
+      });
+      fixedWing[sideName].panels.push(piece);
+    });
   }
 
-  // Triple-slotted Fowler flaps, two panels a side as the aeroplane has them:
-  // one inboard of the inboard engine, one between the engines. The sim leans
-  // on these harder than on any other airframe's — `flapLift: 1.1` is what
-  // brings 250 tonnes inside an 855 m take-off roll — so they are real panels
-  // on real hinges.
+  // Fowler flaps, two panels a side as the aeroplane has them: one inboard of
+  // the inboard engine, one between the engines (see `FOWLER_FLAPS`). The sim
+  // leans on these harder than on any other airframe's — `flapLift: 1.1` is
+  // what brings 250 tonnes inside an 855 m take-off roll — so they are real
+  // panels on real tracks.
   //
-  // Each hinge node sits ON the hinge line at the panel's inboard end, rolled
-  // to the local dihedral, and the panel is parented to it in local
-  // coordinates. Babylon composes local rotation as yaw, then pitch, then
-  // ROLL INNERMOST, so `applyCommonPose` setting `rotation.z` hinges the panel
-  // in the wing's own plane and the dihedral this node already carries
-  // survives untouched.
-  const flapPanels = [
-    // Tip stations sized to leave 0.5 m of fixed trailing edge before the
-    // aileron rather than the 1.7 m the first version left, which showed in
-    // the plan view as a notch cut out of the wing between the two surfaces.
-    { name: "inner", rootZ: 4.4, tipZ: 11.9 },
-    { name: "outer", rootZ: 16.6, tipZ: 23.1 },
-  ] as const;
+  // Each node sits on the panel's NOSE line at its inboard end, rolled to the
+  // local dihedral, and the panel is parented to it in local coordinates. The
+  // nose, not the hinge line: a flap that turned about the old hinge would
+  // lift the part tucked ahead of it straight up through the wing's skin, so
+  // it turns about the front of the tuck and everything aft of that goes
+  // down. Babylon composes local rotation as yaw, then pitch, then ROLL
+  // INNERMOST, so `applyCommonPose` setting `rotation.z` turns the panel in
+  // the wing's own plane and the dihedral this node already carries survives
+  // untouched; `update` moves the node down its tracks.
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
-    for (const flap of flapPanels) {
-      const hingeX = hingeAt(flap.rootZ);
+    for (const flap of FOWLER_FLAPS) {
+      const ratio = thicknessAt(flap.rootZ);
+      const backX = flap.split === null
+        ? trailingAt
+        : (z: number): number => chordFractionX(z, flap.split);
+      // The nose line runs PARALLEL to the line the panel's aft element turns
+      // about, where it has one, or to the hinge line where it does not, and
+      // stands `aft` plus the margin ahead of the hinge at the panel's root.
+      // Two elements turning about parallel lines compose to a turn about a
+      // parallel line, so the aft element's axis stays its own nose line in
+      // the world; turning about lines 6 degrees apart, as the hinge line
+      // and the split line are inboard, it measured 4.1 degrees off. The
+      // split line is the LESS swept of the two, so the tuck only grows
+      // outboard of the root: 1.35 m there, 2.22 m at the panel's tip.
+      const sweepLineX = flap.split === null ? hingeAt : backX;
+      const noseOffset = hingeAt(flap.rootZ) + flap.aft + FLAP_TUCK_MARGIN
+        - sweepLineX(flap.rootZ);
+      const noseX = (z: number): number => sweepLineX(z) + noseOffset;
+      const rootNoseX = noseX(flap.rootZ);
+      const span = reachTo(flap.rootZ, flap.tipZ);
       const hinge = wingHinge(
         `${sideName}-airliner-${flap.name}-flap`,
         side,
         flap.rootZ,
-        hingeX,
-        chordPlaneAt(flap.rootZ),
+        flap.tipZ,
+        rootNoseX,
       );
       const surface = build.airfoilWing(
         `${sideName}-airliner-${flap.name}-flap-surface`,
         {
           rootLeadingX: 0,
-          rootTrailingX: trailingAt(flap.rootZ) - hingeX,
-          tipLeadingX: hingeAt(flap.tipZ) - hingeX,
-          tipTrailingX: trailingAt(flap.tipZ) - hingeX,
+          rootTrailingX: backX(flap.rootZ) - rootNoseX,
+          tipLeadingX: noseX(flap.tipZ) - rootNoseX,
+          tipTrailingX: backX(flap.tipZ) - rootNoseX,
           rootZ: 0,
-          tipZ: side * (flap.tipZ - flap.rootZ),
+          tipZ: side * span.reach,
           thicknessRatio: 0.07,
-          camberRatio: 0.014,
-          chordSegments: 8,
+          chordSegments: 12,
           spanSegments: 2,
         },
         // WING paint, not the accent. An airline's wing is one white surface
@@ -1338,19 +1630,78 @@ export function createAirliner(scene: Scene): AircraftVisual {
         body,
         hinge,
       );
+      recutWingPiece(surface, {
+        originX: rootNoseX,
+        rootZ: flap.rootZ,
+        stationsPerMetre: span.stationsPerMetre,
+        ratio,
+        frontX: noseX,
+        backX,
+        tuck: { underX: hingeAt, segments: 4 },
+      });
       flaps.push(hinge);
       wingSurfaces.push(surface);
-      // The hinge LINE. This is the worst case in the fleet: the inner panel
-      // spans 7.5 m on a hinge line swept back with the wing, so its outboard
-      // end stands metres aft of the node's own z axis and turning it about
-      // that axis would wring the panel out along its span. The direction
-      // carries the dihedral through `chordPlaneAt`, which is what lets
-      // `hingeAlong` subsume the roll `wingHinge` already applied.
+      fowlerTracks.push({ node: hinge, rest: hinge.position.clone(), aft: flap.aft, down: flap.down });
+      flapCarriages.push({ node: hinge, side, rootZ: flap.rootZ, tipZ: flap.tipZ });
+
+      // The inboard flap's aft element rides on the main one. It is parented
+      // to the main node BEFORE that node's axis is set, so `hingeAlong` moves
+      // it into the main panel's frame along with the main panel, and its
+      // position here is in the main panel's own coordinates.
+      let aftAxis: (() => void) | null = null;
+      if (flap.split !== null) {
+        const splitX = backX;
+        const aftNoseX = (z: number): number =>
+          splitX(z) + AFT_FLAP_TRAVEL.aft + AFT_FLAP_TUCK_MARGIN;
+        const rootAftNoseX = aftNoseX(flap.rootZ);
+        const aftHinge = node(`${sideName}-airliner-${flap.name}-aft-flap`, hinge, scene);
+        aftHinge.position.set(rootAftNoseX - rootNoseX, 0, 0);
+        const aftSurface = build.airfoilWing(
+          `${sideName}-airliner-${flap.name}-aft-flap-surface`,
+          {
+            rootLeadingX: 0,
+            rootTrailingX: trailingAt(flap.rootZ) - rootAftNoseX,
+            tipLeadingX: aftNoseX(flap.tipZ) - rootAftNoseX,
+            tipTrailingX: trailingAt(flap.tipZ) - rootAftNoseX,
+            rootZ: 0,
+            tipZ: side * span.reach,
+            thicknessRatio: 0.07,
+            chordSegments: 7,
+            spanSegments: 2,
+          },
+          body,
+          aftHinge,
+        );
+        recutWingPiece(aftSurface, {
+          originX: rootAftNoseX,
+          rootZ: flap.rootZ,
+          stationsPerMetre: span.stationsPerMetre,
+          ratio,
+          frontX: aftNoseX,
+          backX: trailingAt,
+          tuck: { underX: splitX, segments: 3 },
+        });
+        wingSurfaces.push(aftSurface);
+        aftFlaps.push({ node: aftHinge, rest: aftHinge.position.clone() });
+        // Its own axis: its nose line, in the main panel's frame.
+        aftAxis = () => hingeAlong(aftHinge, new Vector3(
+          aftNoseX(flap.tipZ) - rootAftNoseX,
+          0,
+          side * span.reach,
+        ), scene);
+      }
+      // The axis is the NOSE LINE. This is the worst case in the fleet: the
+      // inner panel spans 7.5 m on a line swept back with the wing, so its
+      // outboard end stands metres aft of the node's own z axis and turning it
+      // about that axis would wring the panel out along its span. The
+      // direction carries the dihedral through `chordPlaneAt`, which is what
+      // lets `hingeAlong` subsume the roll `wingHinge` already applied.
       hingeAlong(hinge, new Vector3(
-        hingeAt(flap.tipZ) - hingeX,
+        noseX(flap.tipZ) - rootNoseX,
         0,
-        side * (flap.tipZ - flap.rootZ),
+        side * span.reach,
       ), scene);
+      aftAxis?.();
     }
 
     /**
@@ -1464,14 +1815,15 @@ export function createAirliner(scene: Scene): AircraftVisual {
     tipZ: number,
   ): TransformNode {
     const hingeX = hingeAt(rootZ);
+    const span = reachTo(rootZ, tipZ);
     const hinge = wingHinge(
       side > 0 ? `starboard-${label}` : `port-${label}`,
       side,
       rootZ,
+      tipZ,
       hingeX,
-      chordPlaneAt(rootZ),
     );
-    wingSurfaces.push(build.airfoilWing(
+    const surface = build.airfoilWing(
       side > 0 ? `starboard-${label}-surface` : `port-${label}-surface`,
       {
         rootLeadingX: 0,
@@ -1479,7 +1831,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         tipLeadingX: hingeAt(tipZ) - hingeX,
         tipTrailingX: trailingAt(tipZ) - hingeX,
         rootZ: 0,
-        tipZ: side * (tipZ - rootZ),
+        tipZ: side * span.reach,
         thicknessRatio: 0.065,
         chordSegments: 8,
         spanSegments: 2,
@@ -1487,7 +1839,18 @@ export function createAirliner(scene: Scene): AircraftVisual {
       // Wing paint, for the reason the flaps carry it.
       body,
       hinge,
-    ));
+    );
+    // The wing's own section carried on behind the hinge, a cove short of
+    // it. The inboard pair straddle the Yehudi break, so the ratio is read
+    // station by station rather than fixed.
+    recutWingPiece(surface, {
+      originX: hingeX,
+      rootZ,
+      stationsPerMetre: span.stationsPerMetre,
+      frontX: (z) => hingeAt(z) - CONTROL_SURFACE_COVE,
+      backX: trailingAt,
+    });
+    wingSurfaces.push(surface);
     // All four ailerons sit on the same swept hinge line as the flaps, so they
     // take their axis from it the same way. An aileron deflects both ways, so
     // a panel wrung out along its span reads as a twisting wing in every turn
@@ -1495,7 +1858,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
     hingeAlong(hinge, new Vector3(
       hingeAt(tipZ) - hingeX,
       0,
-      side * (tipZ - rootZ),
+      side * span.reach,
     ), scene);
     return hinge;
   }
@@ -1514,16 +1877,22 @@ export function createAirliner(scene: Scene): AircraftVisual {
   const portInboardAileron = buildAileron("inboard-aileron", -1, 12.4, 16.0);
 
   // FLAP TRACK CANOES. Not decoration on this type: Fowler tracks long enough
-  // to move a 4.5 m flap aft as well as down will not fit inside an 11%
-  // section, so the aeroplane wears them externally and they are the most
-  // visible thing under the wing from the chase camera. Ten of one shape, so
-  // one tapered fairing thin-instanced ten times — 640 triangles in a single
-  // draw call rather than ten of them.
+  // to move a 4.5 m flap aft as well as down will not fit inside the section,
+  // so the aeroplane wears them externally and they are the most visible
+  // thing under the wing from the chase camera. Eight of one shape, so one
+  // tapered fairing thin-instanced eight times, in a single draw call rather
+  // than eight of them.
+  //
+  // IN TWO PIECES, because the flaps now run down their tracks. The front of
+  // each fairing is bolted to the wing; its tail rides the flap's carriage and
+  // swings down with it, as the aeroplane's do. The tail carries a slimmer
+  // neck forward, nested inside the front piece at rest, so the two stay
+  // joined however far the flap has run. Both are thin-instanced; the tails'
+  // matrices are rewritten only when the flap setting changes.
   const flapCanoe = build.loft(
     "airliner-flap-track-canoe",
     [
-      { x: -1.8, yRadius: 0.14, zRadius: 0.12 },
-      { x: -0.6, yRadius: 0.38, zRadius: 0.32 },
+      { x: 0.3, yRadius: 0.332, zRadius: 0.284 },
       { x: 0.9, yRadius: 0.3, zRadius: 0.26 },
       { x: 2, yRadius: 0.08, zRadius: 0.08 },
     ],
@@ -1533,35 +1902,89 @@ export function createAirliner(scene: Scene): AircraftVisual {
     body,
     root,
   );
+  const canoeTail = build.loft(
+    "airliner-flap-track-canoe-tail",
+    [
+      { x: -1.8, yRadius: 0.14, zRadius: 0.12 },
+      { x: -0.6, yRadius: 0.38, zRadius: 0.32 },
+      { x: 0.3, yRadius: 0.332, zRadius: 0.284 },
+      // The neck: 85% of the front piece's own section, so it is strictly
+      // inside it at rest, and long enough to stay inside it at full travel.
+      { x: 0.301, yRadius: 0.282, zRadius: 0.241 },
+      { x: 0.9, yRadius: 0.255, zRadius: 0.221 },
+      { x: 1.4, yRadius: 0.17, zRadius: 0.151 },
+    ],
+    8,
+    body,
+    root,
+  );
+  const canoeStations = [
+    { z: 5.6, scale: 1.25 },
+    { z: 9.6, scale: 1.15 },
+    { z: 17.8, scale: 1 },
+    { z: 22.2, scale: 0.9 },
+  ] as const;
+  /** Each tail with its rest matrix and the carriage it rides. */
+  const canoeTails: { rest: Matrix; carriage: TransformNode; carriageRestInverse: Matrix }[] = [];
+  const canoeTailMatrices = new Float32Array(canoeStations.length * 2 * 16);
   {
-    const canoeStations = [
-      { z: 5.6, scale: 1.25 },
-      { z: 9.6, scale: 1.15 },
-      { z: 17.8, scale: 1 },
-      { z: 22.2, scale: 0.9 },
-    ] as const;
     const matrices = new Float32Array(canoeStations.length * 2 * 16);
     let offset = 0;
     for (const side of [1, -1] as const) {
       for (const station of canoeStations) {
-        Matrix.Compose(
+        const rest = Matrix.Compose(
           new Vector3(station.scale, station.scale, station.scale),
           // Rolled to the local dihedral so the canoe lies along the wing
           // rather than crossing it, exactly as the hinges are.
-          Quaternion.RotationYawPitchRoll(0, -side * (insideKink(station.z)
-            ? Math.atan2(WING_KINK_Y - WING_ROOT_Y, WING_KINK_Z - WING_ROOT_Z)
-            : Math.atan2(WING_RAKE_Y - WING_KINK_Y, WING_RAKE_Z - WING_KINK_Z)), 0),
+          Quaternion.RotationYawPitchRoll(0, -side * dihedralAt(station.z), 0),
           new Vector3(
             hingeAt(station.z) + 0.5,
             lowerSurfaceY(station.z) - 0.22 * station.scale,
             side * station.z,
           ),
-        ).copyToArray(matrices, offset);
+        );
+        rest.copyToArray(matrices, offset);
+        rest.copyToArray(canoeTailMatrices, offset);
         offset += 16;
+        const carriage = flapCarriages.find((flap) => flap.side === side
+          && station.z >= flap.rootZ && station.z <= flap.tipZ);
+        if (!carriage) throw new Error(`No flap carries the canoe at z = ${station.z}`);
+        canoeTails.push({
+          rest,
+          carriage: carriage.node,
+          carriageRestInverse: carriageMatrix(carriage.node).invert(),
+        });
       }
     }
     flapCanoe.thinInstanceSetBuffer("matrix", matrices, 16, true);
     flapCanoe.thinInstanceRefreshBoundingInfo(true);
+    canoeTail.thinInstanceSetBuffer("matrix", canoeTailMatrices, 16, false);
+    canoeTail.thinInstanceRefreshBoundingInfo(true);
+  }
+  /**
+   * A carriage's own transform in the root's frame. Only its position and the
+   * turn the pose writes ever change; the frame `hingeAlong` inserted below
+   * it is fixed, so it cancels out of rest-to-now and is not read.
+   */
+  function carriageMatrix(carriage: TransformNode): Matrix {
+    return Matrix.Compose(
+      Vector3.One(),
+      Quaternion.RotationYawPitchRoll(carriage.rotation.y, carriage.rotation.x, carriage.rotation.z),
+      carriage.position,
+    );
+  }
+  let canoeTailsAt = 0;
+  function moveCanoeTails(flapFraction: number): void {
+    if (flapFraction === canoeTailsAt) return;
+    canoeTailsAt = flapFraction;
+    canoeTails.forEach((tail, index) => {
+      tail.rest
+        .multiply(tail.carriageRestInverse)
+        .multiply(carriageMatrix(tail.carriage))
+        .copyToArray(canoeTailMatrices, index * 16);
+    });
+    canoeTail.thinInstanceBufferUpdated("matrix");
+    canoeTail.thinInstanceRefreshBoundingInfo(true);
   }
 
   // ------------------------------------------------------------------ TAIL --
@@ -2386,6 +2809,26 @@ export function createAirliner(scene: Scene): AircraftVisual {
       for (const spool of fanSpools) spool.rotation.x = spin;
       applyCommonPose(rig, pose, delta);
       if (cockpitViewOn) cockpit.update(state, delta);
+      // Down the tracks: the travel eased out against the turn the pose
+      // already gave every main panel (see `FOWLER_FLAPS`).
+      const flapFraction = Math.min(1, Math.max(0, pose.flap / FULL_FLAP_RADIANS));
+      const travel = 1 - (1 - flapFraction) * (1 - flapFraction);
+      for (const track of fowlerTracks) {
+        track.node.position.set(
+          track.rest.x - track.aft * travel,
+          track.rest.y - track.down * travel,
+          track.rest.z,
+        );
+      }
+      for (const element of aftFlaps) {
+        element.node.position.set(
+          element.rest.x - AFT_FLAP_TRAVEL.aft * travel,
+          element.rest.y - AFT_FLAP_TRAVEL.down * travel,
+          element.rest.z,
+        );
+        element.node.rotation.z = AFT_FLAP_TRAVEL.turn * flapFraction;
+      }
+      moveCanoeTails(flapFraction);
       // The inboard ailerons follow the outboard pair exactly. The real
       // aeroplane locks them out above about 200 kt; the sim has no gain
       // schedule to read that from, and an inboard aileron frozen at neutral

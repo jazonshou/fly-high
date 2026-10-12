@@ -245,8 +245,11 @@ const EXPECTED_DEFLECTING: Readonly<Record<AircraftKind, number>> = {
   bizjet: 17,
   // Eleven plus the 747's four spoiler GROUPS: six panels a side, but the two
   // inboard share one hinge line and the four outboard share another, so they
-  // are four hinged nodes rather than twelve.
-  airliner: 15,
+  // are four hinged nodes rather than twelve. And two more since the inboard
+  // flaps became double-slotted, as the 747-8's are: each aft element turns
+  // about its own nose line, riding on the main panel, and is measured here
+  // by the composite turn it makes in the world.
+  airliner: 17,
 };
 
 /**

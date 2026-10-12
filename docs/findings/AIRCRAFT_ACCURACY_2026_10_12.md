@@ -30,6 +30,19 @@ service ceiling at 100 ft/min). Take-off and landing figures come from
 5. **Airborne spawn throttles** were re-swept for the new engines, and two
    tests that flew the jets gear-down at 200+ m/s now fly them as the game
    does, gear up.
+6. **Landing gear folds instead of squashing** (F-16, Global, 747). Each leg
+   swings rigidly about its trunnion in the type's own direction. Gear-down
+   geometry is unchanged vertex for vertex.
+7. **The 747's flaps are Fowler flaps.** The wing is one 4-digit section over
+   the true chord, cut blunt at the 70% hinge line, and every surface behind
+   it continues that section; fixed trailing-edge pieces fill the notches
+   between the flaps and ailerons. The inboard flaps are double-slotted and
+   the outboard single-slotted, as on the -8. At full flap they run 1.1 m and
+   0.7 m aft on their tracks and turn 30 degrees (the inboard aft element 12
+   more), and the flap-track canoes' tails ride down with them. With the gear
+   down the inboard trailing edge stays 0.93 m off the ground at full flap.
+   Cost: three meshes and three shadow casters (206 to 215 predicted draws,
+   against the unchanged ceiling of 225).
 
 ## Before and after, against the real aeroplanes
 
@@ -74,7 +87,7 @@ rotation, and lifting off in about 940 m with a firm one.
 - **No compressibility effect on lift slope or pitching moment**, only on drag
   and thrust.
 
-## Visual audit (built meshes at c1b5491, not changed here)
+## Visual audit (built meshes at c1b5491; items 2 and 3 fixed since)
 
 Measured on the built meshes, ranked by how visible each is in the chase and
 cinematic cameras. [M] measured, [K] real-aircraft figure to verify before
@@ -85,12 +98,12 @@ acting.
    ahead of the leading edge instead of under the wing; tail arm 2.81 m
    against about 4.2 m [K]. Code: `trainerShell.ts`, `trainerVisual.ts`, and
    the matching gear and contact points in `src/sim/aircraft.ts`.
-2. **Gear retraction squashes the gear instead of folding it** (F-16, Global,
-   747). `animation.ts` scales the gear node to y 0.08: at half travel the
+2. **Fixed (item 6 above).** Gear retraction squashed the gear instead of
+   folding it (F-16, Global, 747). `animation.ts` scales the gear node to y 0.08: at half travel the
    747's wing-gear tyre is 0.67 m tall instead of 1.24 m.
-3. **The 747's flaps only rotate.** At full flap the inboard trailing edge
-   moves 0.345 m forward; the real Fowlers travel metres aft. The Global's
-   Fowler travel is the pattern to port.
+3. **Fixed (item 7 above).** The 747's flaps only rotated: at full flap the
+   inboard trailing edge moved 0.345 m forward, where the real Fowlers travel
+   metres aft.
 4. **Fins are flat 8-vertex slabs** on the 747 (30% thick at the tip), the
    F-16 and the Cessna. The Global's is already an aerofoil.
 5. **The 747 is 4.3 m short** (72.0 m against 76.25 m), almost all of it
@@ -99,6 +112,10 @@ acting.
 Smaller: control-surface travel is 50-70% of real and symmetric, and the
 F-16's flaperon sum is unclamped; no leading-edge devices on any type; the
 747's 37.5 degrees of sweep is applied at the leading edge rather than the
-quarter chord, and its wing-gear track is 12.6 m against 11.0; the F-16 is 5%
+quarter chord, and its wing-gear track is 12.6 m against 11.0; the 747's
+wing-gear legs stand 1.5 to 2.4 m aft of the hinge line, under the inboard
+flap, so at landing flap the flap passes through the legs and their door (it
+did before the Fowler change too; the real legs hang from the rear spar,
+ahead of the flaps [K]); the F-16 is 5%
 wide over its rails; the Cessna's wing is untapered with no dihedral; the
 Global has one nose wheel instead of two.
