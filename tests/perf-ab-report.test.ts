@@ -169,6 +169,8 @@ describe("perf-ab per-pass changes", () => {
     expect(shadow.baseMs).toBeCloseTo(3.75, 1);
     expect(shadow.ratio).toBeCloseTo(1, 2);
     expect(shadow.ratioLow).not.toBeNull();
+    // Rounds 0, 1, 3, 4, 6 and 7 hold one of each arm's runs.
+    expect(shadow.rounds).toBe(6);
   });
 
   it("drops a pass below half a per cent of the frame", () => {
@@ -288,11 +290,17 @@ describe("perf-ab Markdown report", () => {
 
   it("says when a pass's change is per run because it runs on a cadence", () => {
     const passes = [
-      { key: "render:scene", baseMs: 100, headMs: 101, ratio: 1.01, ratioLow: 0.99, ratioHigh: 1.03, cadenced: false },
-      { key: "compute:shadow", baseMs: 3.75, headMs: 3.8, ratio: 1.012, ratioLow: 0.98, ratioHigh: 1.04, cadenced: true },
+      { key: "render:scene", baseMs: 100, headMs: 101, ratio: 1.01, ratioLow: 0.99, ratioHigh: 1.03, cadenced: false, rounds: 8 },
+      { key: "compute:shadow", baseMs: 3.75, headMs: 3.8, ratio: 1.012, ratioLow: 0.98, ratioHigh: 1.04, cadenced: true, rounds: 6 },
+      { key: "compute:rare", baseMs: 2.5, headMs: 2.2, ratio: 0.86, ratioLow: null, ratioHigh: null, cadenced: true, rounds: 3 },
     ];
     const markdown = renderMarkdown(report({}, [shot({ passes })]));
     expect(markdown).toContain("- `render:scene`: 100.0 → 101.0 (+1.0%, -1.0% to +3.0%)");
-    expect(markdown).toContain("- `compute:shadow`: 3.8 → 3.8 (on a cadence; per run +1.2%, -2.0% to +4.0%)");
+    expect(markdown).toContain(
+      "- `compute:shadow`: 3.8 → 3.8 (on a cadence; per run +1.2%, -2.0% to +4.0%, over the 6 rounds both arms ran it)",
+    );
+    expect(markdown).toContain(
+      "- `compute:rare`: 2.5 → 2.2 (on a cadence; per run -14.0%, over the 3 rounds both arms ran it, too few for an interval)",
+    );
   });
 });

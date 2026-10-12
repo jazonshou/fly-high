@@ -70,6 +70,8 @@ export interface PassTimingChange {
    * rounds in which both arms ran it.
    */
   readonly cadenced: boolean;
+  /** Rounds behind the ratio: every round, or those in which both arms ran a cadenced pass. */
+  readonly rounds: number;
 }
 
 /** One measured frame of one arm. */
@@ -115,6 +117,7 @@ export function passTimingChanges(
     const headMs = cadenced ? sum(head) / (rounds * framesPerArmPerRound) : median(head) / framesPerArmPerRound;
     if (Math.max(baseMs, headMs) < frameGpu * 0.005) continue;
     let comparison: PairedComparison | null = null;
+    let paired = rounds;
     if (!cadenced) {
       comparison = comparePaired(base, head);
     } else {
@@ -123,13 +126,14 @@ export function passTimingChanges(
       const ran = (arm: ArmName) => roundTotals(samples, arm, rounds, (sample) => (key in sample.passes ? 1 : 0));
       const baseRuns = ran("base");
       const headRuns = ran("head");
-      const paired = base
+      const both = base
         .map((_, round) => round)
         .filter((round) => base[round]! > 0 && head[round]! > 0);
-      if (paired.length >= 2) {
+      paired = both.length;
+      if (both.length >= 2) {
         comparison = comparePaired(
-          paired.map((round) => base[round]! / baseRuns[round]!),
-          paired.map((round) => head[round]! / headRuns[round]!),
+          both.map((round) => base[round]! / baseRuns[round]!),
+          both.map((round) => head[round]! / headRuns[round]!),
         );
       }
     }
@@ -141,6 +145,7 @@ export function passTimingChanges(
       ratioLow: comparison?.ratioLow ?? null,
       ratioHigh: comparison?.ratioHigh ?? null,
       cadenced,
+      rounds: paired,
     });
   }
   return changes.sort((a, b) => Math.abs(b.headMs - b.baseMs) - Math.abs(a.headMs - a.baseMs));
@@ -503,10 +508,17 @@ export function renderMarkdown(report: PerfAbReport): string {
       lines.push("");
       lines.push("Largest per-pass GPU time changes (ms per frame, base → head):");
       for (const pass of movers) {
+        const interval = pass.ratioLow !== null && pass.ratioHigh !== null
+          ? `, ${formatPercent(pass.ratioLow - 1)} to ${formatPercent(pass.ratioHigh - 1)}`
+          : "";
+        // A cadenced pass is compared over fewer rounds, sometimes too few to
+        // bound; say how many, so a lone ratio is not read as a change.
+        const cadence = pass.cadenced
+          ? `, over the ${pass.rounds} rounds both arms ran it${interval === "" ? ", too few for an interval" : ""}`
+          : "";
         lines.push(
           `- \`${pass.key}\`: ${pass.baseMs.toFixed(1)} → ${pass.headMs.toFixed(1)} `
-          + `(${pass.cadenced ? "on a cadence; per run " : ""}${formatPercent(pass.ratio - 1)}`
-          + `${pass.ratioLow !== null && pass.ratioHigh !== null ? `, ${formatPercent(pass.ratioLow - 1)} to ${formatPercent(pass.ratioHigh - 1)}` : ""})`,
+          + `(${pass.cadenced ? "on a cadence; per run " : ""}${formatPercent(pass.ratio - 1)}${interval}${cadence})`,
         );
       }
     }
