@@ -47,13 +47,15 @@ import {
 import {
   chooseMetrics,
   oneLine,
+  passTimingChanges,
   renderMarkdown,
+  roundTotals,
   summarize,
   type ArmIdentity,
   type ArmName,
   type CountChange,
+  type MeasuredSample,
   type MetricResult,
-  type PassTimingChange,
   type PerfAbReport,
   type ShotResult,
   type TimingMetric,
@@ -62,7 +64,6 @@ import {
   comparePaired,
   geometricMean,
   holmAdjust,
-  median,
   roundOrder,
   verdict,
   type PairedComparison,
@@ -71,7 +72,6 @@ import type {
   AgentCatalog,
   AgentConfig,
   AgentErrors,
-  FrameSample,
   ImageComparison,
   SettleReport,
   ShotDiagnostics,
@@ -267,17 +267,6 @@ function diagnosticsChanges(base: ShotDiagnostics, head: ShotDiagnostics): Count
   return [...exact, ...memory];
 }
 
-interface MeasuredSample extends FrameSample {
-  readonly round: number;
-  readonly arm: ArmName;
-}
-
-function roundTotals(samples: readonly MeasuredSample[], arm: ArmName, rounds: number, read: (sample: MeasuredSample) => number): number[] {
-  const totals = new Array<number>(rounds).fill(0);
-  for (const sample of samples) if (sample.arm === arm) totals[sample.round] = totals[sample.round]! + read(sample);
-  return totals;
-}
-
 function read(sample: MeasuredSample, metric: TimingMetric): number {
   switch (metric) {
     case "gpu":
@@ -287,33 +276,6 @@ function read(sample: MeasuredSample, metric: TimingMetric): number {
     case "wall":
       return sample.wallMs;
   }
-}
-
-function passTimingChanges(samples: readonly MeasuredSample[], rounds: number, framesPerArmPerRound: number): PassTimingChange[] {
-  const keys = new Set<string>();
-  for (const sample of samples) for (const key of Object.keys(sample.passes)) keys.add(key);
-  if (keys.size === 0) return [];
-  const frameGpu = median(roundTotals(samples, "base", rounds, (sample) => sample.gpuMs)) / framesPerArmPerRound;
-  const changes: PassTimingChange[] = [];
-  for (const key of keys) {
-    const base = roundTotals(samples, "base", rounds, (sample) => sample.passes[key] ?? 0);
-    const head = roundTotals(samples, "head", rounds, (sample) => sample.passes[key] ?? 0);
-    const baseMs = median(base) / framesPerArmPerRound;
-    const headMs = median(head) / framesPerArmPerRound;
-    // Passes below half a per cent of the frame are noise at this resolution.
-    if (Math.max(baseMs, headMs) < frameGpu * 0.005) continue;
-    const comparable = base.every((value) => value > 0) && head.every((value) => value > 0);
-    const comparison = comparable ? comparePaired(base, head) : null;
-    changes.push({
-      key,
-      baseMs,
-      headMs,
-      ratio: comparison?.ratio ?? (baseMs > 0 ? headMs / baseMs : Number.POSITIVE_INFINITY),
-      ratioLow: comparison?.ratioLow ?? null,
-      ratioHigh: comparison?.ratioHigh ?? null,
-    });
-  }
-  return changes.sort((a, b) => Math.abs(b.headMs - b.baseMs) - Math.abs(a.headMs - a.baseMs));
 }
 
 interface PendingMetric {

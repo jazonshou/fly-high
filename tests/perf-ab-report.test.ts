@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   chooseMetrics,
+  passTimingChanges,
   renderMarkdown,
   summarize,
+  type MeasuredSample,
   type MetricResult,
   type PerfAbReport,
   type ShotResult,
@@ -126,6 +128,55 @@ describe("perf-ab metric choice", () => {
   });
 });
 
+describe("perf-ab per-pass changes", () => {
+  /**
+   * Eight rounds of two frames an arm. `scene` runs every frame at 100 ms in
+   * the base and 100 * `sceneRatio` in the head, with a little noise; `shadow`
+   * runs every third frame of each arm's own count at 10 ms, the same in both.
+   */
+  const samples = (sceneRatio: number): MeasuredSample[] => {
+    const list: MeasuredSample[] = [];
+    for (const arm of ["base", "head"] as const) {
+      for (let round = 0; round < 8; round += 1) {
+        for (let turn = 0; turn < 2; turn += 1) {
+          const frame = round * 2 + turn;
+          const noise = 1 + 0.002 * ((frame * 7 + (arm === "head" ? 3 : 0)) % 5);
+          const scene = 100 * (arm === "head" ? sceneRatio : 1) * noise;
+          const passes: Record<string, number> = { scene };
+          if (frame % 3 === 0) passes.shadow = 10 * noise;
+          list.push({
+            round, arm, renderMs: 10, gpuMs: scene + (passes.shadow ?? 0), wallMs: scene + 1,
+            passes, invalidPasses: 0, pipelinesCreated: 0, shaderModulesCreated: 0,
+          });
+        }
+      }
+    }
+    return list;
+  };
+
+  it("pairs an every-frame pass by round and gives it an interval", () => {
+    const scene = passTimingChanges(samples(1.1), 8, 2).find((change) => change.key === "scene")!;
+    expect(scene.cadenced).toBe(false);
+    expect(scene.ratio).toBeCloseTo(1.1, 2);
+    expect(scene.ratioLow).not.toBeNull();
+    expect(scene.ratioHigh).not.toBeNull();
+  });
+
+  it("compares a pass on a cadence per run, not by the rhythm of its round totals", () => {
+    const shadow = passTimingChanges(samples(1.1), 8, 2).find((change) => change.key === "shadow")!;
+    expect(shadow.cadenced).toBe(true);
+    // Six of sixteen frames run it: 10 ms a run is 3.75 ms a frame.
+    expect(shadow.baseMs).toBeCloseTo(3.75, 1);
+    expect(shadow.ratio).toBeCloseTo(1, 2);
+    expect(shadow.ratioLow).not.toBeNull();
+  });
+
+  it("drops a pass below half a per cent of the frame", () => {
+    const tiny = samples(1).map((sample) => ({ ...sample, passes: { ...sample.passes, tiny: 0.1 } }));
+    expect(passTimingChanges(tiny, 8, 2).map((change) => change.key)).not.toContain("tiny");
+  });
+});
+
 describe("perf-ab Markdown report", () => {
   const report = (overrides: Partial<PerfAbReport["settings"]> = {}, shots = [shot()]): PerfAbReport => ({
     tool: "perf-ab",
@@ -233,5 +284,15 @@ describe("perf-ab Markdown report", () => {
     expect(airliner).toContain("Run with `--aircraft airliner`, off the capture's own settings");
     expect(airliner).toContain("the ceilings are shown but not gated, and no shot is compared with its baseline.");
     expect(airliner).toContain("Ceilings (not gated off the capture's settings): draw calls 321 / 200");
+  });
+
+  it("says when a pass's change is per run because it runs on a cadence", () => {
+    const passes = [
+      { key: "render:scene", baseMs: 100, headMs: 101, ratio: 1.01, ratioLow: 0.99, ratioHigh: 1.03, cadenced: false },
+      { key: "compute:shadow", baseMs: 3.75, headMs: 3.8, ratio: 1.012, ratioLow: 0.98, ratioHigh: 1.04, cadenced: true },
+    ];
+    const markdown = renderMarkdown(report({}, [shot({ passes })]));
+    expect(markdown).toContain("- `render:scene`: 100.0 → 101.0 (+1.0%, -1.0% to +3.0%)");
+    expect(markdown).toContain("- `compute:shadow`: 3.8 → 3.8 (on a cadence; per run +1.2%, -2.0% to +4.0%)");
   });
 });

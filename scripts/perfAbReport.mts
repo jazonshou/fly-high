@@ -5,10 +5,11 @@
 
 import type {
   AgentErrors,
+  FrameSample,
   ImageComparison,
   ShotDiagnostics,
 } from "../tests/perf/ab/protocol.ts";
-import type { PairedComparison, Verdict } from "./perfAbStats.mts";
+import { comparePaired, median, type PairedComparison, type Verdict } from "./perfAbStats.mts";
 
 export type ArmName = "base" | "head";
 
@@ -57,12 +58,92 @@ export interface MetricResult {
 
 export interface PassTimingChange {
   readonly key: string;
-  /** Median per frame, milliseconds. */
+  /** Per frame, milliseconds: the median, or the mean for a pass on a cadence. */
   readonly baseMs: number;
   readonly headMs: number;
   readonly ratio: number;
   readonly ratioLow: number | null;
   readonly ratioHigh: number | null;
+  /**
+   * The pass skipped some rounds, as one on a cadence does (the cloud shadow,
+   * every few frames). Its ratio and interval are then per run, over the
+   * rounds in which both arms ran it.
+   */
+  readonly cadenced: boolean;
+}
+
+/** One measured frame of one arm. */
+export interface MeasuredSample extends FrameSample {
+  readonly round: number;
+  readonly arm: ArmName;
+}
+
+/** Each round's total for one arm: the round, not the frame, is the paired unit. */
+export function roundTotals(
+  samples: readonly MeasuredSample[],
+  arm: ArmName,
+  rounds: number,
+  read: (sample: MeasuredSample) => number,
+): number[] {
+  const totals = new Array<number>(rounds).fill(0);
+  for (const sample of samples) if (sample.arm === arm) totals[sample.round] = totals[sample.round]! + read(sample);
+  return totals;
+}
+
+/**
+ * Where the GPU time moved, pass by pass, largest change first. Passes below
+ * half a per cent of the frame are dropped as noise at this resolution.
+ */
+export function passTimingChanges(
+  samples: readonly MeasuredSample[],
+  rounds: number,
+  framesPerArmPerRound: number,
+): PassTimingChange[] {
+  const keys = new Set<string>();
+  for (const sample of samples) for (const key of Object.keys(sample.passes)) keys.add(key);
+  if (keys.size === 0) return [];
+  const frameGpu = median(roundTotals(samples, "base", rounds, (sample) => sample.gpuMs)) / framesPerArmPerRound;
+  const changes: PassTimingChange[] = [];
+  for (const key of keys) {
+    const base = roundTotals(samples, "base", rounds, (sample) => sample.passes[key] ?? 0);
+    const head = roundTotals(samples, "head", rounds, (sample) => sample.passes[key] ?? 0);
+    const cadenced = !base.every((value) => value > 0) || !head.every((value) => value > 0);
+    const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0);
+    // A median of round totals would read a cadence's own rhythm, so a pass
+    // that skips rounds is shown as its mean per frame instead.
+    const baseMs = cadenced ? sum(base) / (rounds * framesPerArmPerRound) : median(base) / framesPerArmPerRound;
+    const headMs = cadenced ? sum(head) / (rounds * framesPerArmPerRound) : median(head) / framesPerArmPerRound;
+    if (Math.max(baseMs, headMs) < frameGpu * 0.005) continue;
+    let comparison: PairedComparison | null = null;
+    if (!cadenced) {
+      comparison = comparePaired(base, head);
+    } else {
+      // Per run, over the rounds both arms ran it. Every cadence keys on the
+      // frame index, which the arms share, so those are usually the same rounds.
+      const ran = (arm: ArmName) => roundTotals(samples, arm, rounds, (sample) => (key in sample.passes ? 1 : 0));
+      const baseRuns = ran("base");
+      const headRuns = ran("head");
+      const paired = base
+        .map((_, round) => round)
+        .filter((round) => base[round]! > 0 && head[round]! > 0);
+      if (paired.length >= 2) {
+        comparison = comparePaired(
+          paired.map((round) => base[round]! / baseRuns[round]!),
+          paired.map((round) => head[round]! / headRuns[round]!),
+        );
+      }
+    }
+    changes.push({
+      key,
+      baseMs,
+      headMs,
+      ratio: comparison?.ratio ?? (baseMs > 0 ? headMs / baseMs : Number.POSITIVE_INFINITY),
+      ratioLow: comparison?.ratioLow ?? null,
+      ratioHigh: comparison?.ratioHigh ?? null,
+      cadenced,
+    });
+  }
+  return changes.sort((a, b) => Math.abs(b.headMs - b.baseMs) - Math.abs(a.headMs - a.baseMs));
 }
 
 export interface CountChange {
@@ -424,7 +505,8 @@ export function renderMarkdown(report: PerfAbReport): string {
       for (const pass of movers) {
         lines.push(
           `- \`${pass.key}\`: ${pass.baseMs.toFixed(1)} → ${pass.headMs.toFixed(1)} `
-          + `(${formatPercent(pass.ratio - 1)}${pass.ratioLow !== null && pass.ratioHigh !== null ? `, ${formatPercent(pass.ratioLow - 1)} to ${formatPercent(pass.ratioHigh - 1)}` : ""})`,
+          + `(${pass.cadenced ? "on a cadence; per run " : ""}${formatPercent(pass.ratio - 1)}`
+          + `${pass.ratioLow !== null && pass.ratioHigh !== null ? `, ${formatPercent(pass.ratioLow - 1)} to ${formatPercent(pass.ratioHigh - 1)}` : ""})`,
         );
       }
     }
