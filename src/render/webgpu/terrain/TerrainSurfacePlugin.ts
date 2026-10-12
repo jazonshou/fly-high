@@ -1608,6 +1608,21 @@ export const GROUND_GRAIN_GAINS = Object.freeze({
   canopyTone: 0.24,
 });
 
+/**
+ * Most anisotropy the grain's fetches ask the sampler for, where the
+ * materials ask for the full `DEFAULT_ANISOTROPY_LIMIT`. The grain is
+ * zero-mean noise: past a 4:1 footprint, the extra taps only resolve noise
+ * along the line of sight at grazing angles, which the eye cannot see, while
+ * each one is a full filtered read on every distant terrain pixel. The cloud
+ * A/B put the first cut of the grain at +9 to +14% of GPU time, worst on the
+ * grazing `cruise-horizon`. Capping at 4 pushes those reads 2 mips coarser
+ * along the minor axis, which averages the grain toward its mean (no change)
+ * rather than aliasing it. Measured on the same harness: -2.7% GPU time on
+ * cruise-horizon, -3.0% on ground-2m-lowsun, frames SSIM 0.9999 against the
+ * uncapped grain.
+ */
+export const GROUND_GRAIN_ANISOTROPY_LIMIT = 4;
+
 function groundGrainScaleWgsl(index: number): string {
   const scale = GROUND_GRAIN_SCALES[index]!;
   const radians = (scale.rotationDegrees * Math.PI) / 180;
@@ -1639,13 +1654,23 @@ fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
 const GROUND_GRAIN_WGSL = /* wgsl */ `
 ${GROUND_GRAIN_SCALES.map((_, index) => groundGrainScaleWgsl(index)).join("")}
 
+// ddx/ddy arrive already limited (terrainGroundGrainLimit): each frame is a
+// rotation times a uniform scale, which leaves a footprint's anisotropy
+// unchanged, so one limit in world space serves all five fetches.
+fn terrainGroundGrainLimit(worldDdx: vec2f, worldDdy: vec2f) -> mat2x2f {
+  return terrainSurfaceLimitAnisotropyTo(
+    worldDdx, worldDdy, ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(1)});
+}
+
 fn terrainGroundGrainFetch(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec4f {
-  let texel = terrainSurfaceFetchAlbedo(${GROUND_GRAIN_LAYER}, uv, frame * ddx, frame * ddy);
+  let texel = textureSampleGrad(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
+    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
   return (texel - vec4f(0.5)) * 2.0;
 }
 
 fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec2f {
-  let texel = terrainSurfaceFetchNormal(${GROUND_GRAIN_LAYER}, uv, frame * ddx, frame * ddy);
+  let texel = textureSampleGrad(terrainSurfaceNormal, terrainSurfaceNormalSampler,
+    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
   let normal = terrainSurfaceDecodeNormal(texel.xy);
   let gradientUv = -normal.xy / max(normal.z, 0.3);
   // The frame's rotation part, transposed, is its inverse; its scale is left
@@ -1669,8 +1694,9 @@ const GROUND_GRAIN_COMPOSITE_WGSL = /* wgsl */ `
 var terrainGrainCanopy = vec3f(1.0);
 if (uniforms.terrainSurfaceTuning.z > 0.5) {
   let terrainGrainXz = terrainAbsolutePosition.xz + terrainWarp;
-  let terrainGrainDdx = terrainWorldDdx.xz;
-  let terrainGrainDdy = terrainWorldDdy.xz;
+  let terrainGrainLimited = terrainGroundGrainLimit(terrainWorldDdx.xz, terrainWorldDdy.xz);
+  let terrainGrainDdx = terrainGrainLimited[0];
+  let terrainGrainDdy = terrainGrainLimited[1];
   let terrainGrainUv0 = terrainGroundGrainUv0(terrainGrainXz);
   let terrainGrainUv1 = terrainGroundGrainUv1(terrainGrainXz);
   let terrainGrainUv2 = terrainGroundGrainUv2(terrainGrainXz);
@@ -1868,14 +1894,18 @@ fn terrainSurfaceTangent(normal: vec3f) -> vec3f {
  * has no resolution in at a grazing angle anyway — and it costs nothing in
  * bandwidth, because the coarser mip is the cheaper fetch.
  */
-fn terrainSurfaceLimitAnisotropy(ddx: vec2f, ddy: vec2f) -> mat2x2f {
+fn terrainSurfaceLimitAnisotropyTo(ddx: vec2f, ddy: vec2f, limit: f32) -> mat2x2f {
   let lengthX = max(length(ddx), 1e-8);
   let lengthY = max(length(ddy), 1e-8);
   let major = max(lengthX, lengthY);
-  let minimumMinor = major / ${DEFAULT_ANISOTROPY_LIMIT.toFixed(1)};
+  let minimumMinor = major / limit;
   let scaleX = max(1.0, minimumMinor / lengthX);
   let scaleY = max(1.0, minimumMinor / lengthY);
   return mat2x2f(ddx * scaleX, ddy * scaleY);
+}
+
+fn terrainSurfaceLimitAnisotropy(ddx: vec2f, ddy: vec2f) -> mat2x2f {
+  return terrainSurfaceLimitAnisotropyTo(ddx, ddy, ${DEFAULT_ANISOTROPY_LIMIT.toFixed(1)});
 }
 
 // Every sample in this file uses EXPLICIT gradients. House rule since 2-8:

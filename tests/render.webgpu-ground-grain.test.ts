@@ -12,6 +12,8 @@ import { SURFACE_MATERIALS } from "../src/render/webgpu/terrain/surfaceMaterials
 import { planMippedTextureArray } from "../src/render/webgpu/core/TextureArrayMips";
 import { TOKSVIG_ROUGHNESS_GAIN } from "../src/render/webgpu/terrain/MaterialArraySynthesis";
 import {
+  DEFAULT_ANISOTROPY_LIMIT,
+  GROUND_GRAIN_ANISOTROPY_LIMIT,
   GROUND_GRAIN_GAINS,
   GROUND_GRAIN_SCALES,
 } from "../src/render/webgpu/terrain/TerrainSurfacePlugin";
@@ -159,12 +161,70 @@ describe("the shader reads the grain safely", () => {
     expect(plugin).toContain("vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy");
   });
 
-  it("samples with explicit gradients through the anisotropy limiter", () => {
+  it("samples with explicit gradients, limited to the grain's own anisotropy", () => {
     // House rule since 2-8: any sample under a branch carries explicit
-    // gradients. The grain's fetches go through the same helpers the
-    // materials use, which limit anisotropy to what the sampler will spend.
-    expect(plugin).toMatch(/terrainSurfaceFetchAlbedo\(\$\{GROUND_GRAIN_LAYER\}, uv, frame \* ddx, frame \* ddy\)/);
-    expect(plugin).toMatch(/terrainSurfaceFetchNormal\(\$\{GROUND_GRAIN_LAYER\}, uv, frame \* ddx, frame \* ddy\)/);
+    // gradients. The grain's fetches go through the materials' limiter, at
+    // a lower cap: past 4:1 the extra taps only resolve zero-mean noise along
+    // the line of sight, and they were most of the grain's cost.
+    expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeLessThan(DEFAULT_ANISOTROPY_LIMIT);
+    expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeGreaterThanOrEqual(2);
+    // Limited once, in world space, then carried through each scale's frame
+    // (a rotation times a uniform scale, which keeps the ratio).
+    expect(plugin).toContain(
+      "terrainSurfaceLimitAnisotropyTo(\n    worldDdx, worldDdy, ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(1)});",
+    );
+    expect(plugin).toContain(
+      "let terrainGrainLimited = terrainGroundGrainLimit(terrainWorldDdx.xz, terrainWorldDdy.xz);",
+    );
+    expect(plugin).toContain(
+      "textureSampleGrad(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,\n    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);",
+    );
+    expect(plugin).toContain(
+      "textureSampleGrad(terrainSurfaceNormal, terrainSurfaceNormalSampler,\n    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);",
+    );
+    // The materials keep the full cap: only the grain is coarsened.
+    expect(plugin).toContain(
+      "return terrainSurfaceLimitAnisotropyTo(ddx, ddy, ${DEFAULT_ANISOTROPY_LIMIT.toFixed(1)});",
+    );
+  });
+
+  it("limiting once in world space equals limiting each scale's footprint", () => {
+    // The WGSL limiter, transcribed: inflate the shorter axis until the
+    // ratio is within the cap. Each scale's frame is a rotation times a
+    // uniform scale, so it commutes with the limiter; that is what lets one
+    // limit in world space serve all five fetches.
+    type V = readonly [number, number];
+    const len = (v: V) => Math.hypot(v[0], v[1]);
+    const limit = (dx: V, dy: V, cap: number): [V, V] => {
+      const lx = Math.max(len(dx), 1e-8);
+      const ly = Math.max(len(dy), 1e-8);
+      const minor = Math.max(lx, ly) / cap;
+      const sx = Math.max(1, minor / lx);
+      const sy = Math.max(1, minor / ly);
+      return [[dx[0] * sx, dx[1] * sx], [dy[0] * sy, dy[1] * sy]];
+    };
+    for (const scale of GROUND_GRAIN_SCALES) {
+      const a = (scale.rotationDegrees * Math.PI) / 180;
+      const k = 1 / scale.periodMeters;
+      // Column-major like WGSL's mat2x2f(cos, sin, -sin, cos).
+      const frame = (v: V): V => [
+        k * (Math.cos(a) * v[0] - Math.sin(a) * v[1]),
+        k * (Math.sin(a) * v[0] + Math.cos(a) * v[1]),
+      ];
+      for (const [dx, dy] of [
+        [[0.4, 0.1], [0.3, 9.5]],
+        [[2.0, -0.3], [0.05, 0.02]],
+        [[1.0, 1.0], [-1.0, 1.0]],
+      ] as [V, V][]) {
+        const once = limit(dx, dy, GROUND_GRAIN_ANISOTROPY_LIMIT).map(frame);
+        const each = limit(frame(dx), frame(dy), GROUND_GRAIN_ANISOTROPY_LIMIT);
+        for (let axis = 0; axis < 2; axis += 1) {
+          for (let c = 0; c < 2; c += 1) {
+            expect(once[axis]![c]!).toBeCloseTo(each[axis]![c]!, 12);
+          }
+        }
+      }
+    }
   });
 
   it("uses three incommensurate scales and keeps snow nearly untouched", () => {
