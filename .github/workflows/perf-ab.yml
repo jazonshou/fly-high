@@ -1,0 +1,158 @@
+name: Performance A/B
+
+# Is this pull request slower than its base? Both builds run side by side on
+# one machine and take turns frame by frame, so the answer does not depend on
+# the machine's own speed, and no reference Mac is needed. The method, its
+# limits and how to read the report: docs/PERFORMANCE.md, "Cloud A/B".
+#
+# The report is printed at the end of the A/B step's log and written to the
+# job summary; report.json and both arms' screenshots are in the artifact.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "public/**"
+      - "tests/perf/**"
+      - "scripts/perf-ab.mts"
+      - "scripts/perfAb*.mts"
+      - "scripts/perf-capture.mts"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/perf-ab.yml"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base ref (default: the merge-base with origin/main)"
+        required: false
+        default: ""
+      shots:
+        description: "Comma-separated canonical shot names, or all (default: the five-shot set)"
+        required: false
+        default: ""
+      rounds:
+        description: "ABBA rounds per shot; 0 = work counts, draw calls and pixels only"
+        required: false
+        default: ""
+      args:
+        description: "Further perf-ab options, e.g. --aa or --head-profile-override {\"msaaSamples\":4} (JSON without quotes or spaces)"
+        required: false
+        default: ""
+
+concurrency:
+  group: perf-ab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  swiftshader:
+    # Hosted Linux runners have no GPU, so WebGPU runs on SwiftShader, a CPU
+    # implementation of Vulkan. A frame costs seconds rather than milliseconds
+    # (6 s on cruise-horizon, 14 s on ground-2m-lowsun, on 4 CPUs), so a shot
+    # takes 15-30 minutes and the five-shot run about two hours. Its counts
+    # and pixels are exact all the same, and its GPU timings steady.
+    name: A/B on SwiftShader (Linux, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The base commit has to be in the clone to be built.
+          fetch-depth: 0
+
+      # Node 24 for npm 11; see the note in ci.yml.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the A/B
+        env:
+          # A pull request's head is its merge commit, and its base is that
+          # commit's first parent: the base branch exactly as merged. The
+          # branch itself moves on, and a re-run would then race the change
+          # against commits it does not contain.
+          BASE: ${{ inputs.base || (github.event_name == 'pull_request' && 'HEAD^1') || '' }}
+          SHOTS: ${{ inputs.shots }}
+          ROUNDS: ${{ inputs.rounds }}
+          EXTRA_ARGS: ${{ inputs.args }}
+        # Each value is one argument, so a shot list may hold spaces; the
+        # further options are split on spaces, unglobbed.
+        run: |
+          set -f
+          set -- --gpu swiftshader --out tests/perf/artifacts/ab/swiftshader
+          if [ -n "$BASE" ]; then set -- "$@" --base "$BASE"; fi
+          if [ -n "$SHOTS" ]; then set -- "$@" --shots "$SHOTS"; fi
+          if [ -n "$ROUNDS" ]; then set -- "$@" --rounds "$ROUNDS"; fi
+          npm run perf:ab -- "$@" $EXTRA_ARGS
+
+      - name: Upload the report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-ab-swiftshader-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tests/perf/artifacts/ab/swiftshader/report.*
+            tests/perf/artifacts/ab/swiftshader/progress.json
+            tests/perf/artifacts/ab/swiftshader/*/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  hardware:
+    # The same A/B on the macOS runner's GPU (Metal), which is closer to the
+    # reference Mac than SwiftShader is. Advisory until its noise floor has
+    # been measured over enough runs to set its threshold; see
+    # docs/PERFORMANCE.md, "Cloud A/B".
+    name: A/B on the macOS runner's GPU (advisory)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the A/B
+        env:
+          # As above: the merge commit's first parent.
+          BASE: ${{ inputs.base || (github.event_name == 'pull_request' && 'HEAD^1') || '' }}
+          SHOTS: ${{ inputs.shots }}
+          ROUNDS: ${{ inputs.rounds }}
+          EXTRA_ARGS: ${{ inputs.args }}
+        # Each value is one argument, so a shot list may hold spaces; the
+        # further options are split on spaces, unglobbed.
+        run: |
+          set -f
+          set -- --gpu hardware --out tests/perf/artifacts/ab/hardware
+          if [ -n "$BASE" ]; then set -- "$@" --base "$BASE"; fi
+          if [ -n "$SHOTS" ]; then set -- "$@" --shots "$SHOTS"; fi
+          if [ -n "$ROUNDS" ]; then set -- "$@" --rounds "$ROUNDS"; fi
+          npm run perf:ab -- "$@" $EXTRA_ARGS
+
+      - name: Upload the report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-ab-hardware-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tests/perf/artifacts/ab/hardware/report.*
+            tests/perf/artifacts/ab/hardware/progress.json
+            tests/perf/artifacts/ab/hardware/*/*.png
+          if-no-files-found: warn
+          retention-days: 14
