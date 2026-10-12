@@ -20,7 +20,11 @@ import {
   type EnvironmentInput,
   type FlightControls,
 } from "../src/sim";
-import { airborneAirspeedForAircraft, airborneThrottleForAircraft } from "../src/game/spawn";
+import {
+  airborneAirspeedForAircraft,
+  airborneGearForAircraft,
+  airborneThrottleForAircraft,
+} from "../src/game/spawn";
 
 /**
  * Scenic's centred stick holds height.
@@ -76,7 +80,16 @@ function fly(
     environment,
   });
   const hold = new ScenicAltitudeHold();
-  const requested: FlightControls = { ...DEFAULT_CONTROLS, throttle };
+  // The gear as an airborne start has it. `DEFAULT_CONTROLS` puts it DOWN,
+  // which the fixed-gear Cessna needs and which flew every jet here with its
+  // undercarriage hanging out at 200 m/s: the F-16 then needs more power than
+  // its catalogue cruise throttle to hold height at any speed, and the test
+  // was measuring gear drag rather than the hold.
+  const requested: FlightControls = {
+    ...DEFAULT_CONTROLS,
+    throttle,
+    gear: airborneGearForAircraft(kind),
+  };
   const assisted: FlightControls = { ...DEFAULT_CONTROLS };
   let minimumSpeedMargin = Infinity;
   let maximumAltitude = -Infinity;

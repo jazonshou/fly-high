@@ -5,9 +5,11 @@ export {
   calculateEngineThrust,
   calculateLiftCoefficient,
   FAST_JET,
+  jetThrustLapse,
   LIGHT_TRAINER,
   type AircraftKind,
   type AircraftDefinition,
+  type JetLapseDefinition,
   type LandingGearDefinition,
   type PropulsionKind,
   aftExtent,
@@ -70,16 +72,21 @@ export {
   getFlightTelemetry,
   pilotSurfaceClearance,
   MAX_STEP_DURATION,
-  SEA_LEVEL_DENSITY,
   TRIM_ELEVATOR_AUTHORITY,
   spawnFlight,
   speedBrakeLiftDump,
   STANDARD_GRAVITY,
-  standardAirDensity,
   stepFlight,
   createFlightState,
   type FlightSimulatorOptions,
 } from "./simulation";
+export {
+  pressureForDensity,
+  SEA_LEVEL_DENSITY,
+  speedOfSoundForDensity,
+  standardAirDensity,
+  standardTemperatureForDensity,
+} from "./atmosphere";
 export { quaternionFromFlightAngles } from "./math";
 export type {
   ActuatorState,

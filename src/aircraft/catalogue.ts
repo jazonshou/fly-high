@@ -300,18 +300,18 @@ const JET: AircraftSpec = Object.freeze({
     // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
     // 180 s for the phugoid, because the two horizons disagree and only the
     // short one is flattering.
-    // 0.20, not the 0.65 this started at. 0.65 is most of a 76 kN engine under
-    // 11 tonnes, and hands-off it pitched to 20 degrees and climbed at 83 m/s
-    // — the aeroplane running away from the player. I first tried to trim that
-    // out, which was the wrong lever and a dangerous one: -0.05 trim looks
-    // calmer for a few seconds and then dives 4,172 m, and -0.10 puts the nose
-    // at 90 degrees. The right lever was the throttle all along. At 0.20 the
-    // pitch never leaves the 2.4-degree spawn attitude, the aeroplane gains
-    // 74 m in 20 s and the deepest point of the phugoid is 31 m down.
+    // 0.16. It was 0.20 until the engine model learned ram recovery
+    // (2026-10-12): an F110 at Mach 0.62 near the ground makes about 30% more
+    // dry thrust than standing still, so the old figure climbed away. Swept on
+    // the 600 m open-skies spawn and the 450 / 1,500 / 3,000 m start heights,
+    // 180 s hands-off: 0.12 sinks 435 m when the phugoid comes round, 0.14 dips
+    // 25 m from 450 m, and 0.16 never goes below its spawn height while gaining
+    // 168-325 m in the first 20 s, about what 0.20 gained before.
     //
-    // 0.16 and 0.18 look better still over 20 s and are traps: they dip 516 m
-    // and 180 m respectively once the phugoid comes round.
-    airborneThrottle: 0.20,
+    // (It began at 0.65, most of a 76 kN engine under 11 tonnes, which pitched
+    // to 20 degrees and climbed at 83 m/s. Elevator trim is the wrong lever for
+    // that and a dangerous one: -0.05 dives 4,172 m. The throttle is the lever.)
+    airborneThrottle: 0.16,
     runwayTrim: 0.015,
     airborneGear: 0,
     runwayFlaps: 0.5,
@@ -391,17 +391,13 @@ const BIZJET: AircraftSpec = Object.freeze({
     // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
     // 180 s for the phugoid, because the two horizons disagree and only the
     // short one is flattering.
-    // 0.28 at 200 m/s: pitch stays at the 2.4-degree spawn attitude, 64 m
-    // gained in 20 s, 11 m the deepest the phugoid goes. The old 210/0.62
-    // climbed 248 m.
-    //
-    // This number previously carried a long explanation about the Global's
-    // first phugoid swing being downward and 423 m deep, with less throttle
-    // making it worse. Those measurements were real; the cause was not
-    // aerodynamic. `createFlightState` clamped every spawn airspeed to 180 m/s
-    // against a bare constant, so this aeroplane had been starting 30 m/s
-    // slower than its catalogue said and buying the difference back by diving.
-    airborneThrottle: 0.28,
+    // 0.40 at 200 m/s. It was 0.28 until the engine model learned that a big
+    // fan loses thrust with speed (2026-10-12): at Mach 0.59 a Passport makes
+    // about 70% of its static thrust, not 96%. Swept the same way as the
+    // F-16's: 0.30 sinks 365 m from the 600 m spawn, 0.34 sinks 52 m, 0.36
+    // dips 5 m from 450 m, and 0.40 never goes below its spawn height while
+    // gaining 144-296 m in 20 s, a little less than 0.28 gained before.
+    airborneThrottle: 0.40,
     runwayTrim: 0.02,
     airborneGear: 0,
     // Half flap, which is what its 942 m take-off roll was measured at.
@@ -484,9 +480,12 @@ const AIRLINER: AircraftSpec = Object.freeze({
     // restart. Measured, not trimmed: 20 s hands-off for the excursion, then
     // 180 s for the phugoid, because the two horizons disagree and only the
     // short one is flattering.
-    // 0.28 at 205 m/s: 2.4 degrees, 68 m gained in 20 s, 48 m the deepest the
-    // phugoid reaches. The old 230/0.75 climbed 394 m.
-    airborneThrottle: 0.28,
+    // 0.40 at 205 m/s, for the same reason and swept the same way as the
+    // Global's: a GEnx at Mach 0.6 makes about 70% of its static thrust. 0.30
+    // sinks 432 m from the 600 m spawn, 0.36 sinks 35 m (73 m from 450 m), and
+    // 0.40 never goes below its spawn height while gaining 128-243 m in 20 s,
+    // against the 133-260 m that 0.28 gained before.
+    airborneThrottle: 0.40,
     runwayTrim: 0.02,
     airborneGear: 0,
     // Half flap, the setting its measured 855 m take-off was flown at.
