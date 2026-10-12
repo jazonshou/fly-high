@@ -1022,6 +1022,27 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "uniform on 34 of 34. Its uniformity is what eliminated furniture as the "
       + "cause of the +24/+12 split.",
   }),
+  Object.freeze({
+    owner: "sharper scenery (PR #20)",
+    feature: "final-sharpen",
+    baseRef: "c1b5491", headRef: "3d96334",
+    shotsMeasured: 32,
+    delta: 1,
+    note:
+      "The final RCAS sharpen (`lighting/SharpenPass.ts`) is one more "
+      + "post-process on the camera at tier 1, with no content gating, so one "
+      + "full-screen quad per frame. The ground grain in the same range adds "
+      + "texture fetches to the existing terrain draw and no mesh, so it "
+      + "contributes 0. PREDICTED as +1 uniform before measuring. "
+      + "MEASURED by the PR's full macOS capture (gpu-tests run 38217280044, "
+      + "hosted runner, full shot list): all 32 shots that carry a ceiling read "
+      + "EXACTLY their committed ceiling plus one, no shot at +0 or +2. The base "
+      + "arm is the committed ceilings, which `DRAW_CALL_SAMPLES` pins as "
+      + "c1b5491's measured counts (three identical runs); the base was not "
+      + "re-captured in the same pair. A SwiftShader A/B in a cloud container "
+      + "was NOT used: with the world only part streamed (UNDRAINED_FRAMES=30) "
+      + "the two arms' counts differ by streaming state, not just by feature.",
+  }),
 ]);
 
 /**
