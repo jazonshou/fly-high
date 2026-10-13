@@ -477,7 +477,16 @@ function lowerSurfaceY(z: number): number {
  * `aft` and `down` are the travel at full flap, in body x and y, the same for
  * the whole panel because a panel is rigid. A real track set swings a tapered
  * flap in plan as it runs; this one translates. `aft` is about a third of the
- * panel's mean visible chord, on the order a track this size gives.
+ * panel's mean chord, on the order a track this size gives.
+ *
+ * Each flap is the aft 30% of the chord, nose on the hinge line, and the
+ * front `aft` plus `FLAP_TUCK_MARGIN` of it lies under a fixed SHROUD
+ * (`shroudAt`): what shows with the flaps up starts there, and the rest comes
+ * out as the flap runs aft. The flaps used to start at the hinge line and
+ * carry that tuck AHEAD of it, so with the tuck they were 39-53% of the chord
+ * where the 747's 78.7 m^2 of flap is about 30%, and they turned down from a
+ * nose up to 2.2 m inside the wing: the inboard trailing edge hung 3.4 m below
+ * the wing, a sheet rather than a flap.
  *
  * `split` is the chord fraction where the inboard flap's aft element begins.
  */
@@ -487,9 +496,11 @@ const FOWLER_FLAPS = [
   // aileron rather than the 1.7 m the first version left, which showed in
   // the plan view as a notch cut out of the wing between the two surfaces.
   // The inner flap drops only 0.12 m on its tracks: its root chord is the
-  // Yehudi's, so its turn alone lowers the trailing edge nearly 3 m, and at
-  // 0.25 m with a 15-degree aft element the root sat 0.7 m off the runway
-  // with the gear down, below the wing-gear axles. Now it is 0.93 m.
+  // Yehudi's, so its turn alone lowers the trailing edge over 2 m. With the
+  // gear down and full flap its aft element clears the runway by 1.54 m; the
+  // flap that carried its tuck ahead of the hinge cleared it by 0.81 m, and
+  // with 0.25 m of drop and a 15-degree aft element by 0.7 m, below the
+  // wing-gear axles.
   { name: "inner", rootZ: 4.4, tipZ: 11.9, aft: 1.1, down: 0.12, split: 0.9 },
   { name: "outer", rootZ: 16.6, tipZ: 23.1, aft: 0.7, down: 0.15, split: null },
 ] as const;
@@ -506,19 +517,53 @@ const AFT_FLAP_TRAVEL = { aft: 0.25, down: 0.04, turn: (12 * Math.PI) / 180 } as
  * length of its travel unless it was tucked under that edge by more than the
  * travel to begin with: the Global's flaps hung behind its wing with open sky
  * between until theirs were. So each flap's nose is `aft` plus this ahead of
- * the hinge line, and is still this far under the fixed wing at full flap.
+ * the shroud's trailing edge, and is still this far under it at full flap.
  */
 const FLAP_TUCK_MARGIN = 0.25;
 const AFT_FLAP_TUCK_MARGIN = 0.15;
 /**
- * How much of the section the tucked part of a flap may fill: 1 at the edge it
- * tucks under, falling linearly to 0.45 at its nose. A tucked part has to lie
- * INSIDE the wing rather than on it, or 1.35 m of flap would share its skin
- * with 1.35 m of wing and the two would fight for every pixel; as the flap
- * runs out, this taper becomes the nose it shows in its slot. The Global's
- * flaps settled the same two numbers.
+ * Where a flap's nose stands behind the hinge line. Not ON it: the fixed
+ * panel's blunt trailing edge and the shroud's front face meet there, inside
+ * the wing, and a nose on the same line would share it.
  */
-const FLAP_TUCK_NOSE_SCALE = 0.45;
+const FLAP_NOSE_SETBACK = 0.02;
+
+/** The shroud's trailing edge over one flap: where the flap shows with the flaps up. */
+function shroudAt(flap: (typeof FOWLER_FLAPS)[number], z: number): number {
+  return hingeAt(z) - FLAP_NOSE_SETBACK - flap.aft - FLAP_TUCK_MARGIN;
+}
+
+/** The Fowler flap spanning a station. */
+function fowlerFlapAt(z: number): (typeof FOWLER_FLAPS)[number] {
+  const flap = FOWLER_FLAPS.find((candidate) =>
+    Math.abs(z) >= candidate.rootZ && Math.abs(z) <= candidate.tipZ);
+  if (!flap) throw new Error(`No flap spans z = ${z}`);
+  return flap;
+}
+/**
+ * THE FLAP'S NOSE: how much of the section the tucked part of a flap fills.
+ * A tucked part has to lie INSIDE the wing rather than on it, or 1.35 m of
+ * flap would share its skin with 1.35 m of wing and the two would fight for
+ * every pixel. So the tuck is the section scaled to 0.88, growing back to the
+ * whole of it at the edge it tucks under, and rounded off over its first
+ * 0.4 m into a nose (`tuckScale`).
+ *
+ * It was a straight taper from the whole section at the edge to 0.45 of it at
+ * a square nose. Run out on its tracks, a flap then showed a long thin wedge
+ * behind the slot, with its thickest point 1.1 m back where the old trailing
+ * edge had been: from the chase camera, a sheet hanging off the wing. A flap
+ * is thickest just behind a round nose, and these now are.
+ */
+const FLAP_TUCK_BODY_SCALE = 0.88;
+const FLAP_NOSE_LENGTH = 0.4;
+
+/** The section scale `fromNose` metres behind the nose of a tuck `length` long. */
+function tuckScale(fromNose: number, length: number): number {
+  const along = Math.min(1, Math.max(0, fromNose / length));
+  const body = FLAP_TUCK_BODY_SCALE + (1 - FLAP_TUCK_BODY_SCALE) * along * along;
+  const round = Math.min(1, Math.max(0, fromNose / Math.min(FLAP_NOSE_LENGTH, length)));
+  return body * Math.sqrt(1 - (1 - round) ** 2);
+}
 /**
  * The slot between an aileron's nose and the fixed wing's blunt trailing
  * edge. Both faces are blunt, square and face away from each other; flush,
@@ -599,8 +644,9 @@ function recutWingPiece(mesh: Mesh, cut: WingCut): void {
     } else if (cut.tuck) {
       const under = cut.tuck.underX(z);
       const ahead = cut.tuck.segments;
+      // Bunched toward the nose, where the section turns round.
       x = chordIndex <= ahead
-        ? front + (under - front) * (chordIndex / ahead)
+        ? front + (under - front) * (1 - Math.cos((Math.PI / 2) * (chordIndex / ahead)))
         : under + (back - under) * ((chordIndex - ahead) / (chordSegments - ahead));
     } else {
       x = front + (back - front) * (chordIndex / chordSegments);
@@ -608,9 +654,7 @@ function recutWingPiece(mesh: Mesh, cut: WingCut): void {
     let scale = 1;
     if (cut.tuck) {
       const under = cut.tuck.underX(z);
-      if (x > under) {
-        scale = 1 - (1 - FLAP_TUCK_NOSE_SCALE) * Math.min(1, (x - under) / (front - under));
-      }
+      if (x > under) scale = tuckScale(front - x, front - under);
     }
     const chord = leadingAt(z) - trailingAt(z);
     const fraction = (leadingAt(z) - x) / chord;
@@ -875,12 +919,13 @@ const NACELLE_NOZZLE_RADIUS = 1.3;
  * FIVE LEGS AND EIGHTEEN WHEELS, which is what the aeroplane has and what
  * `gearCycleRate: 0.1` in the sim is an apology for.
  *
- * The flight model carries three legs: two wing gears at (-3, -6.4, +/-6.3)
- * standing in for four bogies, and the nose at (22.6, -6.4, 0). Those three
- * are built at EXACTLY those contact points and are the ones the pose drives.
- * The body pair at x = -6.9, z = +/-1.9 is mesh only — it carries no contact
- * point, retracts with the rest and exists because a 747 with two main bogies
- * is missing the most-photographed thing under it.
+ * The flight model carries three legs: two main contacts at (-3, -6.4, +/-6.3)
+ * standing in for four bogies, and the nose at (22.6, -6.4, 0). The nose leg
+ * and the wing gear's track and height are built at exactly those contact
+ * points; the main bogies' STATIONS are the aeroplane's own (`MAIN_BOGIES`).
+ * The body pair at z = +/-1.9 carries no contact point of its own, retracts
+ * with the rest and exists because a 747 with two main bogies is missing the
+ * most-photographed thing under it.
  *
  * -6.4, not the -5.2 this file was first built against. At -5.2 the belly
  * fairing stood 1.60 m off the pavement — 2.2% of the aeroplane's length,
@@ -921,16 +966,49 @@ const BOGIE_HALF_BASE = 0.8;
 const BOGIE_HALF_TRACK = 0.55;
 
 /**
- * `trunnionY` is where the leg leaves the airframe: the wing gear off the
+ * `trunnionY` is where the leg leaves the airframe: the wing gear inside the
  * wing's own lower surface at its rear spar, the body gear out of the belly
  * fairing. These are airframe stations and did not move when the contact table
  * dropped to -6.4; the legs simply grew by the 1.2 m, to 2.8 m and 1.8 m of
  * visible strut, which is what a leg this size should look like.
+ *
+ * THE STATIONS. A 747's wing gear hangs from the rear spar and its gear beam,
+ * AHEAD of the inboard flap, and the body gear stands 3.07 m behind it: the
+ * -400's planning figures are 78 ft 11.5 in from the nose gear to the wing
+ * gear and 89 ft 0.5 in to the body gear. Both pairs stood 3-4 m further aft,
+ * the wing gear on the sim's x = -3 at 85% of its local chord. That is under
+ * the inboard flap, so once the flaps ran out on their tracks the strut, the
+ * side brace and the bay door stood through the deployed flap. The wing gear
+ * is now at 62% chord, just aft of the spar, and the body gear 3.1 m behind
+ * it at the sim's own -3, which is where the aeroplane pivots when it rotates
+ * and where the tail-strike limit is measured from.
+ *
+ * Only the BODY gear has a hinged bay door here. The wing gear's door is the
+ * one on its leg (`WING_GEAR_STRUT_DOOR`).
  */
 const MAIN_BOGIES = [
-  { name: "wing", x: -3, z: 6.3, trunnionY: -2.5, doorZ: 4.9, doorWidth: 3.6 },
-  { name: "body", x: -6.9, z: 1.9, trunnionY: -3.45, doorZ: 0.9, doorWidth: 3 },
+  { name: "wing", x: 0, z: 6.3, trunnionY: -2.4 },
+  { name: "body", x: -3.1, z: 1.9, trunnionY: -3.45 },
 ] as const;
+/**
+ * The body gear's bay doors: hinged along `doorZ`, `doorWidth` fore and aft,
+ * and shut at `roll`, outboard edge up, because that is how the belly fairing
+ * curves across them: its underside rises 0.19 m from 0.9 to 2.4 m off the
+ * centreline. Shut flat, a door's outboard edge stood 0.12 m below the skin
+ * and every gear-down frame showed a plate under the belly.
+ */
+const BODY_GEAR_DOOR = { doorZ: 0.9, doorWidth: 3, roll: (7.1 * Math.PI) / 180 } as const;
+/**
+ * The wing gear's STRUT DOOR. A 747's wing gear swings inboard into the wing
+ * root, and the slot its leg folds into is closed by a panel on the leg
+ * itself: down, it stands on the outboard face of the strut; stowed, the same
+ * fold turns it flat under the leg, across the slot. It used to be a 3.6 x 1.5 m
+ * plate hinged under the wing at the leg's station and shut with the gear down,
+ * so it hung flat under the inboard flap and showed the moment the flap ran
+ * aft. `length` runs down the strut from the trunnion; `standOff` is from the
+ * strut's axis to the panel's middle.
+ */
+const WING_GEAR_STRUT_DOOR = { length: 1.9, width: 1.2, thickness: 0.06, standOff: 0.31 } as const;
 
 /**
  * Take a part out of the sun shadow map, keeping whatever else it carries.
@@ -1563,6 +1641,46 @@ export function createAirliner(scene: Scene): AircraftVisual {
       });
       fixedWing[sideName].panels.push(piece);
     });
+
+    // The SHROUD over each flap's nose (`shroudAt`), built and folded the
+    // same way: fixed trailing edge from the hinge line back to where the
+    // flap shows, blunt at its back edge for the flap to come out from under.
+    // Each lies within one wing panel, so one dihedral serves it.
+    FOWLER_FLAPS.forEach((flap) => {
+      const dihedral = dihedralAt(flap.rootZ);
+      const anchor = node(`${sideName}-airliner-${flap.name}-shroud`, root, scene);
+      anchor.position.set(0, chordPlaneAt(flap.rootZ), side * flap.rootZ);
+      anchor.rotation.x = -side * dihedral;
+      fixedWing[sideName].anchors.push(anchor);
+      const shroud = (z: number): number => shroudAt(flap, z);
+      const piece = build.airfoilWing(
+        `${sideName}-airliner-${flap.name}-shroud-wing`,
+        {
+          rootLeadingX: hingeAt(flap.rootZ),
+          rootTrailingX: shroud(flap.rootZ),
+          tipLeadingX: hingeAt(flap.tipZ),
+          tipTrailingX: shroud(flap.tipZ),
+          rootZ: 0,
+          tipZ: side * ((flap.tipZ - flap.rootZ) / Math.cos(dihedral)),
+          thicknessRatio: 0.07,
+          chordSegments: 6,
+          // Its back edge is a fixed distance off the hinge line, not a fixed
+          // chord fraction, so the skin along it is not straight in z.
+          spanSegments: 4,
+        },
+        body,
+        anchor,
+      );
+      recutWingPiece(piece, {
+        originX: 0,
+        rootZ: flap.rootZ,
+        stationsPerMetre: Math.cos(dihedral),
+        ratio: thicknessAt(flap.rootZ),
+        frontX: hingeAt,
+        backX: shroud,
+      });
+      fixedWing[sideName].panels.push(piece);
+    });
   }
 
   // Fowler flaps, two panels a side as the aeroplane has them: one inboard of
@@ -1573,10 +1691,10 @@ export function createAirliner(scene: Scene): AircraftVisual {
   //
   // Each node sits on the panel's NOSE line at its inboard end, rolled to the
   // local dihedral, and the panel is parented to it in local coordinates. The
-  // nose, not the hinge line: a flap that turned about the old hinge would
-  // lift the part tucked ahead of it straight up through the wing's skin, so
-  // it turns about the front of the tuck and everything aft of that goes
-  // down. Babylon composes local rotation as yaw, then pitch, then ROLL
+  // nose, not the shroud's edge: a flap that turned about the edge would lift
+  // the part tucked ahead of it straight up through the wing's skin, so it
+  // turns about the front of the tuck and everything aft of that goes down.
+  // Babylon composes local rotation as yaw, then pitch, then ROLL
   // INNERMOST, so `applyCommonPose` setting `rotation.z` turns the panel in
   // the wing's own plane and the dihedral this node already carries survives
   // untouched; `update` moves the node down its tracks.
@@ -1587,19 +1705,20 @@ export function createAirliner(scene: Scene): AircraftVisual {
       const backX = flap.split === null
         ? trailingAt
         : (z: number): number => chordFractionX(z, flap.split);
-      // The nose line runs PARALLEL to the line the panel's aft element turns
-      // about, where it has one, or to the hinge line where it does not, and
-      // stands `aft` plus the margin ahead of the hinge at the panel's root.
-      // Two elements turning about parallel lines compose to a turn about a
-      // parallel line, so the aft element's axis stays its own nose line in
-      // the world; turning about lines 6 degrees apart, as the hinge line
-      // and the split line are inboard, it measured 4.1 degrees off. The
-      // split line is the LESS swept of the two, so the tuck only grows
-      // outboard of the root: 1.35 m there, 2.22 m at the panel's tip.
-      const sweepLineX = flap.split === null ? hingeAt : backX;
-      const noseOffset = hingeAt(flap.rootZ) + flap.aft + FLAP_TUCK_MARGIN
-        - sweepLineX(flap.rootZ);
-      const noseX = (z: number): number => sweepLineX(z) + noseOffset;
+      // The nose line is the HINGE line, `aft` plus the margin ahead of the
+      // shroud's trailing edge at every station, so at full travel the whole
+      // nose sits the margin under the shroud and the panel turns about a
+      // line just inside the slot. It used to run parallel to the inboard
+      // panel's split line instead, 6 degrees less swept, and the tuck grew
+      // from 1.35 m at the root to 2.22 m at the tip: turned about a nose
+      // still 1.1 m inside the wing, the outboard end came out through the
+      // wing's lower skin 0.6 m below its trailing edge and opened a slot as
+      // deep. The aft element turns about its OWN nose line on the panel
+      // that carries it, as the -8's does on its main flap; that the two
+      // lines are 6 degrees apart only means the pair's composite turn in
+      // the world is about neither.
+      const noseX = (z: number): number => hingeAt(z) - FLAP_NOSE_SETBACK;
+      const shroudX = (z: number): number => shroudAt(flap, z);
       const rootNoseX = noseX(flap.rootZ);
       const span = reachTo(flap.rootZ, flap.tipZ);
       const hinge = wingHinge(
@@ -1619,7 +1738,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           rootZ: 0,
           tipZ: side * span.reach,
           thicknessRatio: 0.07,
-          chordSegments: 12,
+          chordSegments: 14,
           spanSegments: 2,
         },
         // WING paint, not the accent. An airline's wing is one white surface
@@ -1637,7 +1756,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
         ratio,
         frontX: noseX,
         backX,
-        tuck: { underX: hingeAt, segments: 4 },
+        tuck: { underX: shroudX, segments: 6 },
       });
       flaps.push(hinge);
       wingSurfaces.push(surface);
@@ -1666,7 +1785,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
             rootZ: 0,
             tipZ: side * span.reach,
             thicknessRatio: 0.07,
-            chordSegments: 7,
+            chordSegments: 9,
             spanSegments: 2,
           },
           body,
@@ -1679,7 +1798,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           ratio,
           frontX: aftNoseX,
           backX: trailingAt,
-          tuck: { underX: splitX, segments: 3 },
+          tuck: { underX: splitX, segments: 5 },
         });
         wingSurfaces.push(aftSurface);
         aftFlaps.push({ node: aftHinge, rest: aftHinge.position.clone() });
@@ -1919,7 +2038,8 @@ export function createAirliner(scene: Scene): AircraftVisual {
     root,
   );
   const canoeStations = [
-    { z: 5.6, scale: 1.25 },
+    // Outboard of the wing gear's leg, which stands at 5.7-6.6 under the wing.
+    { z: 7, scale: 1.25 },
     { z: 9.6, scale: 1.15 },
     { z: 17.8, scale: 1 },
     { z: 22.2, scale: 0.9 },
@@ -1938,7 +2058,7 @@ export function createAirliner(scene: Scene): AircraftVisual {
           // rather than crossing it, exactly as the hinges are.
           Quaternion.RotationYawPitchRoll(0, -side * dihedralAt(station.z), 0),
           new Vector3(
-            hingeAt(station.z) + 0.5,
+            shroudAt(fowlerFlapAt(station.z), station.z) + 0.5,
             lowerSurfaceY(station.z) - 0.22 * station.scale,
             side * station.z,
           ),
@@ -2494,25 +2614,39 @@ export function createAirliner(scene: Scene): AircraftVisual {
       );
       gearLegs.push(leg);
       const truck = leg.truck?.node ?? leg.node;
-      build.strutBetween(
-        `${prefix}-strut`,
-        trunnion,
-        new Vector3(bogie.x, MAIN_AXLE_Y + 0.5, z),
-        0.26,
-        hub,
-        leg.node,
-      );
+      const strutFoot = new Vector3(bogie.x, MAIN_AXLE_Y + 0.5, z);
+      build.strutBetween(`${prefix}-strut`, trunnion, strutFoot, 0.26, hub, leg.node);
       // A side brace on the wing gear only. The body gear retracts forward
-      // into the fairing and carries its bracing inside the bay.
+      // into the fairing and carries its bracing inside the bay. The brace
+      // meets the wing level with the trunnion, not behind it: behind it, it
+      // stood in the path of the inboard flap's nose.
       if (bogie.name === "wing") {
         build.strutBetween(
           `${prefix}-side-brace`,
-          new Vector3(bogie.x - 0.35, bogie.trunnionY - 0.2, z * 0.72),
-          new Vector3(bogie.x - 0.05, MAIN_AXLE_Y + 0.85, z * 0.98),
+          new Vector3(bogie.x + 0.25, bogie.trunnionY - 0.2, z * 0.72),
+          new Vector3(bogie.x + 0.05, MAIN_AXLE_Y + 0.85, z * 0.98),
           0.15,
           hub,
           leg.node,
         );
+        // The strut door, on the leg so the fold that stows the leg closes
+        // the slot (`WING_GEAR_STRUT_DOOR`). Laid along the strut, faced
+        // outboard, its top edge at the trunnion inside the wing.
+        const down = strutFoot.subtract(trunnion).normalize();
+        const outboard = Vector3.Cross(down, Vector3.Right()).normalize().scaleInPlace(side);
+        const door = build.box(
+          `${sideName}-airliner-wing-gear-door-leaf`,
+          WING_GEAR_STRUT_DOOR.width,
+          WING_GEAR_STRUT_DOOR.length,
+          WING_GEAR_STRUT_DOOR.thickness,
+          body,
+          leg.node,
+        );
+        door.rotationQuaternion = Quaternion.FromUnitVectorsToRef(
+          new Vector3(0, -1, 0), down, new Quaternion());
+        door.position = trunnion
+          .add(down.scale(WING_GEAR_STRUT_DOOR.length / 2))
+          .addInPlace(outboard.scale(WING_GEAR_STRUT_DOOR.standOff));
       }
       const beam = build.box(`${prefix}-bogie-beam`, 2.3, 0.3, 0.34, hub, truck);
       beam.position.set(bogie.x, MAIN_AXLE_Y + 0.34, z);
@@ -2602,17 +2736,21 @@ export function createAirliner(scene: Scene): AircraftVisual {
   // the Global does and what made its third door a special case.
   const gearDoorRoot = node("airliner-landing-gear-doors", root, scene);
   const gearDoors: { hinge: TransformNode; sign: number }[] = [];
+  const bodyGear = MAIN_BOGIES[1];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
-    for (const bogie of MAIN_BOGIES) {
-      const hinge = node(`${sideName}-airliner-${bogie.name}-gear-door`, gearDoorRoot, scene);
-      hinge.position.set(bogie.x, bogie.trunnionY - 0.05, side * bogie.doorZ);
-      const leaf = build.box(`${hinge.name}-leaf`, bogie.doorWidth, 0.09, 1.5, body, hinge);
-      // Hinged along its INBOARD edge, so the leaf lies outboard of the node
-      // and the side's own sign swings its free edge down and out of the bay.
-      leaf.position.z = side * 0.75;
-      gearDoors.push({ hinge, sign: side });
-    }
+    const hinge = node(`${sideName}-airliner-${bodyGear.name}-gear-door`, gearDoorRoot, scene);
+    hinge.position.set(bodyGear.x, bodyGear.trunnionY - 0.05, side * BODY_GEAR_DOOR.doorZ);
+    const leaf = build.box(`${hinge.name}-leaf`, BODY_GEAR_DOOR.doorWidth, 0.09, 1.5, body, hinge);
+    // Hinged along its INBOARD edge, so the leaf lies outboard of the node
+    // and the side's own sign swings its free edge down and out of the bay.
+    leaf.position.set(
+      0,
+      0.75 * Math.sin(BODY_GEAR_DOOR.roll),
+      side * 0.75 * Math.cos(BODY_GEAR_DOOR.roll),
+    );
+    leaf.rotation.x = -side * BODY_GEAR_DOOR.roll;
+    gearDoors.push({ hinge, sign: side });
   }
   // TWO nose doors, one a side. The Global carries a single leaf and this
   // airframe copied it, which left the only unmirrored geometry on the whole

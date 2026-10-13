@@ -369,7 +369,11 @@ describe("the 747-8's draw budget", () => {
     // metal aft of the hinge line between and beyond the flaps and ailerons, folded into
     // each fixed wing), the inboard flaps' two aft elements, and the canoe tails that ride
     // the flap carriages, one thin-instanced mesh.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 39 + 4 + 13);
+    //
+    // +4, DELIBERATELY, by the shrouds: the fixed strip over each flap's nose, aft of the
+    // hinge line, that the flap tucks under (one per flap and wing, folded into each
+    // fixed wing like the fillers).
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 39 + 4 + 13 + 4);
   });
 
   it("keeps the cockpit's nine meshes outside every draw bound: invisible and never casting until cockpit view", () => {
@@ -407,13 +411,13 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const outline = [...authoredParts(visual)].filter(([name]) => SILHOUETTE.test(name));
     // NON-VACUITY: 4 fuselage lofts -- it was 5 until the upper deck stopped
-    // being its own loft -- 8 wing panels and 10 trailing-edge fillers,
-    // 2 tailplanes, fin and dorsal fin, 4 nacelles and 4 pylons, 6 flap
+    // being its own loft -- 8 wing panels, 10 trailing-edge fillers and
+    // 4 flap shrouds, 2 tailplanes, fin and dorsal fin, 4 nacelles and 4 pylons, 6 flap
     // elements (the inboard flaps are double-slotted), 4 spoiler meshes,
     // 4 ailerons, 2 elevators, the rudder, 4 legs, 2 side braces, 4 bogie
     // beams, 6 doors, 2 nose members and 18 tyres.
     expect(outline.map(([name]) => name).sort()).toHaveLength(
-      4 + 8 + 10 + 2 + 2 + 4 + 4 + 6 + 4 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
+      4 + 8 + 10 + 4 + 2 + 2 + 4 + 4 + 6 + 4 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
     );
     for (const [name, mesh] of outline) {
       expect(issuesDraw(mesh), `${name} is not drawn`).toBe(true);
@@ -765,25 +769,34 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // the four spoiler panels, the spoiler bays and airliner-body-exterior (its pylons) sit on the new section's skin
     // and moved without changing count; the other 82 are bit-identical. The extents did not move; the area grew by
     // 213 m^2, all of it new skin: the tucked noses, the fillers, the aft elements and the canoe tails.
+    //
+    // THEN 23,929 TO 24,281 with the flaps cut to 30% of the chord under a fixed shroud, and the main gear moved to the
+    // 747's own stations. Each fixed wing 630 -> 770 vertices and 3,672 -> 4,488 indices (its two shrouds folded in),
+    // each inner and outer flap 78 -> 90 and 456 -> 528 and each inboard aft element 48 -> 60 and 276 -> 348 (a rounded
+    // nose on cosine-clustered stations). +352 vertices and +2,064 indices exactly. Checked mesh by mesh against 17d8cbe:
+    // besides those, the canoes and canoe tails (new instance placements), every body-gear part (moved 3.8 m forward, its
+    // door leaf rolled flush with the belly fairing), and every wing-gear part (moved 3 m forward; the door leaf is a
+    // strut door now, the strut and side brace re-cut) moved; the other 54 are bit-identical. The extents did not move;
+    // the area fell by 9.5 m^2: the smaller flaps lost more skin than the shrouds added.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(23_929);
-    expect(census.indices).toBe(101_070);
+    expect(census.vertices).toBe(24_281);
+    expect(census.indices).toBe(103_134);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(392321.1122, 1);
-    expect(census.positionSum.y).toBeCloseTo(2797.0975, 1);
+    expect(census.positionSum.x).toBeCloseTo(401284.9487, 1);
+    expect(census.positionSum.y).toBeCloseTo(2216.3662, 1);
     expect(census.positionSum.z).toBeCloseTo(-891.4056, 1);
-    expect(census.positionSquares).toBeCloseTo(19119643.73, 0);
-    expect(census.normalSum.x).toBeCloseTo(-741.5337, 2);
-    expect(census.normalSum.y).toBeCloseTo(-871.3717, 2);
+    expect(census.positionSquares).toBeCloseTo(19143147.83, 0);
+    expect(census.normalSum.x).toBeCloseTo(-705.7205, 2);
+    expect(census.normalSum.y).toBeCloseTo(-874.0868, 2);
     expect(census.normalSum.z).toBeCloseTo(5.9629, 2);
-    expect(census.normalMoment).toBeCloseTo(-6324.6203, 1);
-    expect(census.signedVolume).toBeCloseTo(-3243.8915, 2);
-    expect(census.area).toBeCloseTo(4954.6142, 2);
+    expect(census.normalMoment).toBeCloseTo(-6330.1323, 1);
+    expect(census.signedVolume).toBeCloseTo(-3245.3712, 2);
+    expect(census.area).toBeCloseTo(4945.1393, 2);
   });
 
   it("keeps every instance of the four thin-instanced parts", () => {

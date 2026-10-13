@@ -39,10 +39,23 @@ service ceiling at 100 ft/min). Take-off and landing figures come from
    between the flaps and ailerons. The inboard flaps are double-slotted and
    the outboard single-slotted, as on the -8. At full flap they run 1.1 m and
    0.7 m aft on their tracks and turn 30 degrees (the inboard aft element 12
-   more), and the flap-track canoes' tails ride down with them. With the gear
-   down the inboard trailing edge stays 0.93 m off the ground at full flap.
-   Cost: three meshes and three shadow casters (206 to 215 predicted draws,
-   against the unchanged ceiling of 225).
+   more), and the flap-track canoes' tails ride down with them. Each flap is
+   the aft 30% of the chord, as the real 78.7 m^2 of flap is, and its rounded
+   nose slides out from under a fixed shroud. (The first version carried that
+   tuck ahead of the hinge line instead, which made the flaps 39-53% of the
+   chord and hung the inboard trailing edge 3.4 m below the wing at full flap.)
+   With the gear down the inboard flap's lowest point stays 1.54 m off the
+   ground at full flap. Cost: three meshes and three shadow casters (206 to
+   215 predicted draws, against the unchanged ceiling of 225); the shrouds
+   fold into the fixed wings.
+8. **The 747's main gear stands at the real stations.** The wing gear hangs at
+   62% of the chord, behind the rear spar and ahead of the inboard flap, and
+   the body gear 3.1 m behind it (the -400's 3.07 m). The wing gear used to
+   stand 1.5 to 2.4 m aft of the hinge line, so the flaps passed through the
+   legs. The flat door plate under each wing-gear leg, which stuck out level
+   with the wing whenever the gear was down, is now a door on the strut that
+   folds away with the leg, and the body-gear doors shut flush with the belly
+   fairing. The simulator's contact points did not move.
 
 ## Before and after, against the real aeroplanes
 
@@ -112,10 +125,6 @@ acting.
 Smaller: control-surface travel is 50-70% of real and symmetric, and the
 F-16's flaperon sum is unclamped; no leading-edge devices on any type; the
 747's 37.5 degrees of sweep is applied at the leading edge rather than the
-quarter chord, and its wing-gear track is 12.6 m against 11.0; the 747's
-wing-gear legs stand 1.5 to 2.4 m aft of the hinge line, under the inboard
-flap, so at landing flap the flap passes through the legs and their door (it
-did before the Fowler change too; the real legs hang from the rear spar,
-ahead of the flaps [K]); the F-16 is 5%
+quarter chord, and its wing-gear track is 12.6 m against 11.0; the F-16 is 5%
 wide over its rails; the Cessna's wing is untapered with no dihedral; the
 Global has one nose wheel instead of two.

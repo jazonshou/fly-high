@@ -644,7 +644,13 @@ describe("a loft's crown seam", () => {
       // skin and moved without changing count. The other 82, and every mesh of the other three airframes, are
       // bit-identical. The canoes' eight placements moved down 85 to 210 mm with the lower skin they hang from, which
       // is deeper at 60% chord now.
-      airliner: "95fbd1fb",
+      // RE-PINNED 95fbd1fb -> b6643e5b for the flaps at 30% of the chord under a shroud, and the main gear at the
+      // 747's own stations: against 17d8cbe, both fixed wings (630 -> 770 vertices, the four shrouds folded in), the
+      // four flaps (78 -> 90) and the two aft elements (48 -> 60, both with rounded noses) changed; the wing gear's
+      // strut, side brace and door leaf (a door on the strut, where it was a plate under the wing) were re-cut; and the
+      // canoes' and canoe tails' sixteen placements moved to the shroud's edge. The body gear moved on its nodes alone.
+      // The other 86, and every mesh of the other three airframes, are bit-identical.
+      airliner: "b6643e5b",
     };
     for (const kind of AIRCRAFT_KINDS) {
       const engine = new NullEngine();
