@@ -1,5 +1,5 @@
 {
- "note": "Cloud A/B on GitHub's macOS runner: macos-latest, Apple M1 (Virtual), 3 CPUs, Chromium 151 from Playwright, Metal. The adapter offers no timestamp-query, so no pass is timed and the gated metric is the frame's wall time, render() to GPU idle. Six runs on 2026-10-12, each an A/A in effect: the base is main (c1b54913ac) and the head the A/B's own branch, which adds the harness both arms share and changes no renderer code. The runner's artifacts (report.json, screenshots) cannot be downloaded from a cloud session, whose proxy refuses the artifact storage host, so every figure here is read from the job logs: run1's round totals are in full (its log printed every round), the others are their reports' summaries. run1 and run2 are the pull request's own runs at the first defaults (20 rounds of four frames a turn): every verdict inconclusive. e1 (120 one-frame rounds, three shots) showed a round scatters little more at one frame a turn than at four, in a sixth of the time. e2 (320 one-frame rounds, the default since) read wall time SAME on all five shots; CPU time read the head 8.7% faster on approach-500ft with both arms one renderer, which is why CPU time is a guard at 15% on this host. run3 is the pull request's own run at those defaults: wall time SAME on four shots and inconclusive on cruise-horizon, +1.5% (-2.0% to +5.2%); approach-500ft's CPU time read +1.2% this time, so e2's offset belonged to that run's pair of browsers, not to the shot. run4, the pull request's run after 7fff2ec at the same defaults, read wall time SAME on three shots and inconclusive on two whose intervals exclude zero, cruise-horizon +3.0% (+0.4% to +5.8%) and forest-500ft-sunbehind -2.9% (-5.4% to -0.5%): offsets between the run's two browsers, which more rounds narrow the interval around without moving. Over e2, run3 and run4 the 15 wall-time estimates spread more than their intervals allow (chi-squared 27.3 on 15 degrees of freedom), by an offset of about 0.9% (standard deviation), and the CPU-time estimates by about 3.3% (54.8 on 15). In run1, run2, e2 and run3 the head rested on one or two more resident terrain pages than the base (19 of 20 shots), in e1 never, and in run4 the base held two to five more on every shot; run3 and run4, whose reports give the pages each arm wants, show both arms wanting the same pages on every shot, so the difference is what each arm's stream left behind. Draw calls and work counts were identical throughout, and at most 0.04% of a frame's pixels differed (SSIM 1.0000). docs/PERFORMANCE.md, Cloud A/B, Measured on the macOS runner, reads these.",
+ "note": "Cloud A/B on GitHub's macOS runner: macos-latest, Apple M1 (Virtual), 3 CPUs, Chromium 151 from Playwright, Metal. The adapter offers no timestamp-query, so no pass is timed and the gated metric is the frame's wall time, render() to GPU idle. Seven runs on 2026-10-12, the last ending early on the 13th (UTC), each an A/A in effect: the base is main (c1b54913ac) and the head the A/B's own branch, which adds the harness both arms share and changes no renderer code. The runner's artifacts (report.json, screenshots) cannot be downloaded from a cloud session, whose proxy refuses the artifact storage host, so every figure here is read from the job logs: run1's round totals are in full (its log printed every round), the others are their reports' summaries. run1 and run2 are the pull request's own runs at the first defaults (20 rounds of four frames a turn): every verdict inconclusive. e1 (120 one-frame rounds, three shots) showed a round scatters little more at one frame a turn than at four, in a sixth of the time. e2 (320 one-frame rounds, the second default) read wall time SAME on all five shots; CPU time read the head 8.7% faster on approach-500ft with both arms one renderer, which is why CPU time is a guard at 15% on this host. run3 is the pull request's own run at those defaults: wall time SAME on four shots and inconclusive on cruise-horizon, +1.5% (-2.0% to +5.2%); approach-500ft's CPU time read +1.2% this time, so e2's offset belonged to that run's pair of browsers, not to the shot. run4, the pull request's run after 7fff2ec at the same defaults, read wall time SAME on three shots and inconclusive on two whose intervals exclude zero, cruise-horizon +3.0% (+0.4% to +5.8%) and forest-500ft-sunbehind -2.9% (-5.4% to -0.5%): estimates the rounds' scatter and an offset between the run's two browsers can produce together. e3 (640 one-frame rounds, the default since) read wall time SAME on all five shots, within +-0.8-1.6%, and CPU time SAME on all five, in 1,234 s. Over e2, run3, run4 and e3 the 20 wall-time estimates spread a little more than their intervals allow (chi-squared 31.2 on 20 degrees of freedom), by an offset of about 0.8% (standard deviation), and the CPU-time estimates clearly more, by about 2.9% (66.6 on 20). In run1, run2, e2, run3 and e3 the head rested on one or two more resident terrain pages than the base (24 of 25 shots), in e1 never, and in run4 the base held two to five more on every shot; run3, run4 and e3, whose reports give the pages each arm wants, show both arms wanting the same pages on every shot, so the difference is what each arm's stream left behind. Draw calls and work counts were identical throughout, and at most 0.04% of a frame's pixels differed (SSIM 1.0000). docs/PERFORMANCE.md, Cloud A/B, Measured on the macOS runner, reads these.",
  "tool": "perf-ab",
  "host": {
   "runner": "macos-latest",
@@ -2083,6 +2083,214 @@
       32
      ],
      "baselineSsim": 0.7087
+    }
+   }
+  },
+  "e3": {
+   "what": "Dispatched on the branch at 7fff2ec to test twice run4's rounds, after run4 read two shots inconclusive on offsets: 640 rounds of one frame per turn, the five default shots, an A/A in effect",
+   "workflowRun": 38324983698,
+   "job": 115061463801,
+   "commits": {
+    "base": "c1b54913ac (merge-base with origin/main)",
+    "head": "7fff2ec626"
+   },
+   "settings": {
+    "rounds": 640,
+    "framesPerTurn": 1,
+    "framesPerArmPerRound": 2,
+    "thresholds": {
+     "wall": 0.05,
+     "cpu": 0.15
+    },
+    "cpuGate": "guard"
+   },
+   "abStepSeconds": 1234,
+   "verdict": "no regression: every gated timing is within the threshold, and no ceiling is newly breached",
+   "shots": {
+    "approach-500ft": {
+     "wall": "same -0.8% (-2.3% to +0.8%)",
+     "cpu": "same +2.3% (-0.3% to +4.9%)",
+     "drawCalls": "247 -> 247",
+     "work": "identical",
+     "pixels": "0.01% differ, SSIM 1.0000, max channel delta 5",
+     "medianFrameMs": {
+      "cpu": [
+       9.5,
+       9.6
+      ],
+      "wall": [
+       73.0,
+       72.3
+      ]
+     },
+     "streamed": [
+      480,
+      390
+     ],
+     "streamSeconds": [
+      39,
+      35
+     ],
+     "shotSeconds": 344,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       34,
+       36
+      ]
+     },
+     "wantedTerrainPages": [
+      24,
+      24
+     ],
+     "baselineSsim": 0.9568
+    },
+    "cruise-horizon": {
+     "wall": "same +0.4% (-0.4% to +1.3%)",
+     "cpu": "same -1.2% (-2.8% to +0.3%)",
+     "drawCalls": "200 -> 200",
+     "work": "identical",
+     "pixels": "identical",
+     "medianFrameMs": {
+      "cpu": [
+       5.6,
+       5.6
+      ],
+      "wall": [
+       35.8,
+       36.3
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      19,
+      19
+     ],
+     "shotSeconds": 189,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       38,
+       39
+      ]
+     },
+     "wantedTerrainPages": [
+      22,
+      22
+     ],
+     "baselineSsim": 0.9796
+    },
+    "forest-500ft-sunbehind": {
+     "wall": "same -0.0% (-0.8% to +0.7%)",
+     "cpu": "same -0.1% (-1.3% to +1.0%)",
+     "drawCalls": "248 -> 248",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       5.9,
+       5.9
+      ],
+      "wall": [
+       49.6,
+       49.4
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      28,
+      27
+     ],
+     "shotSeconds": 221,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       41,
+       42
+      ]
+     },
+     "wantedTerrainPages": [
+      24,
+      24
+     ],
+     "baselineSsim": 0.9679
+    },
+    "ground-2m-lowsun": {
+     "wall": "same +0.6% (-0.3% to +1.4%)",
+     "cpu": "same -1.8% (-3.5% to -0.0%)",
+     "drawCalls": "121 -> 121",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 1",
+     "medianFrameMs": {
+      "cpu": [
+       6.4,
+       6.4
+      ],
+      "wall": [
+       55.5,
+       55.8
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      16,
+      15
+     ],
+     "shotSeconds": 224,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       45,
+       46
+      ]
+     },
+     "wantedTerrainPages": [
+      30,
+      30
+     ],
+     "baselineSsim": 0.8941
+    },
+    "water-25ft": {
+     "wall": "same -0.2% (-1.7% to +1.3%)",
+     "cpu": "same -1.7% (-3.8% to +0.5%)",
+     "drawCalls": "224 -> 224",
+     "work": "identical",
+     "pixels": "0.00% differ, SSIM 1.0000, max channel delta 4",
+     "medianFrameMs": {
+      "cpu": [
+       8.0,
+       7.8
+      ],
+      "wall": [
+       51.1,
+       50.9
+      ]
+     },
+     "streamed": [
+      570,
+      570
+     ],
+     "streamSeconds": [
+      26,
+      25
+     ],
+     "shotSeconds": 228,
+     "diagnosticsThatDiffer": {
+      "residentTerrainPages": [
+       52,
+       53
+      ]
+     },
+     "wantedTerrainPages": [
+      32,
+      32
+     ],
+     "baselineSsim": 0.7043
     }
    }
   }

@@ -114,13 +114,15 @@ const ARMS: readonly ArmName[] = ["base", "head"];
  * more: one round's ratio by 13-23% at four frames a turn, and by 16-26% at
  * one frame a turn in a sixth of the time. Neighbouring frames move together,
  * so short turns buy about three times the precision per second of runner
- * time; 320 of them read SAME at 5% on nine of ten A/A shots over two runs,
- * with intervals of ±1.4-3.0%, in about 13 minutes a run. CPU time is a guard
- * at 15% there too, for another reason: in one of those runs a shot's CPU
- * time read the head 8.7% faster (-12.5% to -4.7%), in the other +1.2%, with
- * both arms the same renderer, an offset between the two browsers that no
- * number of rounds averages away. The runs are in docs/PERFORMANCE.md,
- * "Cloud A/B".
+ * time. 320 of them read SAME at 5% on 12 of 15 A/A shots over three runs,
+ * with intervals of ±1.4-3.0%; the other three sat 1.5-3.0% off, where an
+ * interval that wide reaches 5%. 640, twice the rounds and an interval
+ * narrower by √2, read SAME on all five shots, within ±0.8-1.6%, in 21
+ * minutes, still well inside the SwiftShader job's time. CPU time is a guard
+ * at 15% there too, for another reason: a shot's CPU time read the head 8.7%
+ * faster in one run (-12.5% to -4.7%) and 1.2% slower in the next, with both
+ * arms the same renderer, an offset between the two browsers that no number
+ * of rounds averages away. The runs are in docs/PERFORMANCE.md, "Cloud A/B".
  */
 const BACKEND_DEFAULTS: Readonly<Record<GpuBackend, {
   readonly rounds: number;
@@ -129,7 +131,7 @@ const BACKEND_DEFAULTS: Readonly<Record<GpuBackend, {
   readonly cpuGate: CpuGate;
 }>> = {
   swiftshader: { rounds: 16, framesPerTurn: 1, cpuThreshold: 0.15, cpuGate: "guard" },
-  hardware: { rounds: 320, framesPerTurn: 1, cpuThreshold: 0.15, cpuGate: "guard" },
+  hardware: { rounds: 640, framesPerTurn: 1, cpuThreshold: 0.15, cpuGate: "guard" },
 };
 
 /** `full`: CPU time can fail the run or hold it inconclusive. `guard`: only fail it. */
@@ -143,7 +145,7 @@ const USAGE = `usage: npm run perf:ab -- [options]
   --shots <a,b,...>|all     canonical shot names (default: ${DEFAULT_SHOTS.join(",")})
   --part <i>/<n>            run only the i-th of n parts of those shots (every n-th, in canonical
                             order from the i-th), one per parallel job; each part tests at alpha / n
-  --rounds <n>              ABBA rounds per shot (default 16 on SwiftShader, 320 on a GPU; 0 = no
+  --rounds <n>              ABBA rounds per shot (default 16 on SwiftShader, 640 on a GPU; 0 = no
                             timing: work counts, draw calls, ceilings and pixels only). Fewer than
                             log2(gated comparisons / alpha) + 1 is refused: no slowdown could be
                             called (8 for the default five shots)

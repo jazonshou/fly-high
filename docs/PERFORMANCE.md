@@ -1213,14 +1213,12 @@ and by another fraction in the next. On GitHub's Linux runner, where one
 round's GPU-time ratio scatters by only 0.1–0.3% on SwiftShader, the head's
 GPU time sat from −0.2% to +0.8% off the base's over nine A/A shots in two
 runs, and its CPU time 2–7% slower on every shot of one run and 0–7% faster on
-every shot of the other. On the macOS runner such offsets spread by about 1%
-in wall time and 3% in CPU time (standard deviations, over 15 A/A shots at 320
-rounds). More rounds measure an offset more precisely but do not shrink it, so
-the thresholds sit well clear of them: 5% is six times the largest offset in
-SwiftShader GPU time, while a threshold of 1% would be calling the browsers
-rather than the change. On the macOS runner an offset of 2–3% with an interval
-around it can still reach 5%, which is how an A/A shot reads INCONCLUSIVE
-there (below).
+every shot of the other. On the macOS runner they spread by about 0.8% in wall
+time, less than its rounds' own scatter, and by about 3% in CPU time (standard
+deviations over 20 A/A shots). More rounds measure an offset more precisely
+but do not shrink it, so the thresholds sit well clear of them: 5% is six
+times the largest offset in SwiftShader GPU time, while a threshold of 1%
+would be calling the browsers rather than the change.
 
 **What it reports besides the verdict**, each of which is exact rather than
 statistical: per-frame work counts (draws, vertices, instances, dispatches,
@@ -1313,12 +1311,12 @@ the job logs, which print every round
   8,993 s, which is why the workflow now runs them as five parts in parallel
   (below).
 
-**Measured on the macOS runner** (2026-10-12, `macos-latest`: Apple M1
-(Virtual), 3 CPUs, Chromium 151, Metal, on the five default shots unless
-fewer are named). Every run below is an A/A in effect: the base is `main`,
-and the head is the A/B's own branch, which adds the harness both arms share
-and changes no renderer code. The runner's artifacts cannot be fetched from
-a cloud session, so the figures are read from the job logs
+**Measured on the macOS runner** (2026-10-12 and 13, `macos-latest`: Apple M1
+(Virtual), 3 CPUs, Chromium 151, Metal, on the five default shots unless fewer
+are named). Every run below is an A/A in effect: the base is `main`, and the
+head is the A/B's own branch, which adds the harness both arms share and
+changes no renderer code. The runner's artifacts cannot be fetched from a
+cloud session, so the figures are read from the job logs
 (`docs/evidence/perf-ab-macos-runner-2026-10-12.json`).
 
 - **Twenty rounds of four frames a turn**, the first default, on the pull
@@ -1336,33 +1334,39 @@ a cloud session, so the figures are read from the job logs
   Per second of runner time that is about three times the precision. Wall
   time still read INCONCLUSIVE on all three, +2.1% to +5.3% with intervals
   of ±4–5%; CPU time read SAME on two.
-- **One frame a turn, 320 rounds**, the default since, three times: dispatched
-  on the branch, then twice on the pull request. Frame wall time read SAME on
-  12 of the 15 shots, from −1.8% to +2.1% with intervals of ±1.4–3.0%. The
-  other three read INCONCLUSIVE: `cruise-horizon` in the second run, +1.5%
-  (−2.0% to +5.2%), and in the third `cruise-horizon`, +3.0% (+0.4% to +5.8%),
-  and `forest-500ft-sunbehind`, −2.9% (−5.4% to −0.5%). Both of those
-  intervals exclude zero, the mark of an offset between the run's two browsers
-  (above), and more rounds narrow the interval around an offset without moving
-  it. Each run took 13–14 minutes. CPU time read the head 8.7% faster on
-  `approach-500ft` in the first run (−12.5% to −4.7%), 1.2% slower in the
-  second and 7.2% faster in the third, with both arms one renderer: offsets
-  again, which is why CPU time is a guard at 15% here as on SwiftShader. Every
-  CPU interval of the three runs sits inside it.
-- **Resident terrain pages differ; wanted pages do not.** In the first four
+- **One frame a turn, 320 rounds**, the second default, three times:
+  dispatched on the branch, then twice on the pull request. Frame wall time
+  read SAME on 12 of the 15 shots, from −1.8% to +2.1% with intervals of
+  ±1.4–3.0%. The other three read INCONCLUSIVE: `cruise-horizon` in the second
+  run, +1.5% (−2.0% to +5.2%), and in the third `cruise-horizon`, +3.0% (+0.4%
+  to +5.8%), and `forest-500ft-sunbehind`, −2.9% (−5.4% to −0.5%): estimates
+  1.5–3% off, which the rounds' scatter and an offset between the run's
+  browsers (above) can produce together, with intervals too wide around them
+  to stay inside 5%. Each run took 13–14 minutes. CPU time read the head 8.7%
+  faster on `approach-500ft` in the first run (−12.5% to −4.7%), 1.2% slower
+  in the second and 7.2% faster in the third, with both arms one renderer:
+  offsets again, which is why CPU time is a guard at 15% here as on
+  SwiftShader. Every CPU interval of the three runs sits inside it.
+- **One frame a turn, 640 rounds**, the default since, dispatched on the
+  branch: frame wall time SAME on all five shots, from −0.8% to +0.6% with
+  intervals of ±0.8–1.6%, and CPU time SAME on all five, in 21 minutes. Twice
+  the rounds narrow an interval by √2, which around the same estimates would
+  have read the three INCONCLUSIVE shots above SAME, and the job still ends
+  well before the SwiftShader parts (below).
+- **Resident terrain pages differ; wanted pages do not.** In five of the six
   five-shot runs the head arm came to rest holding one or two more terrain
-  pages than the base on 19 of the 20 shots (`residentTerrainPages: 36 → 37`
-  and so on), and in the fifth the base held two to five more on all five;
-  in the three-shot run they never differed, nor in any SwiftShader run so
-  far. A page stays in the atlas until its slot is needed, so the count
-  includes pages an arm's stream wanted earlier and no longer does, and two
-  browsers sharing three CPUs need not stream alike: in the fifth run
-  `approach-500ft` streamed 420 frames in the base and 540 in the head. The
-  report gives the pages each arm wants (`wantedTerrainPages`) beside a
-  resident-page difference, and in both runs that had it, the two arms
-  wanted the same pages on every shot (22 to 32). Draw calls and GPU work
-  counts were identical throughout, and at most 0.04% of a frame's pixels
-  differed (SSIM 1.0000).
+  pages than the base, on 24 of their 25 shots
+  (`residentTerrainPages: 36 → 37` and so on), and in the other the base held
+  two to five more on all five; in the three-shot run they never differed, nor
+  in any SwiftShader run so far. A page stays in the atlas until its slot is
+  needed, so the count includes pages an arm's stream wanted earlier and no
+  longer does, and two browsers sharing three CPUs need not stream alike:
+  `approach-500ft` streamed 420 frames in the base and 540 in the head in one
+  run, 480 and 390 in another. The report gives the pages each arm wants
+  (`wantedTerrainPages`) beside a resident-page difference, and in all three
+  runs that had it the two arms wanted the same pages on every shot (22 to
+  32). Draw calls and GPU work counts were identical throughout, and at most
+  0.04% of a frame's pixels differed (SSIM 1.0000).
 
 **Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
 pull request that touches the renderer: `swiftshader` gates, and `hardware` is
@@ -1373,15 +1377,15 @@ parts, Holm within each). With the default shots each job takes one, so the
 gate waits on the slowest shot, which took 36 minutes in the single job,
 rather than on all five. A part opens its two browsers afresh, so its shots
 stream after only the earlier shots of that part, in both arms alike.
-`hardware` runs its five shots in one job. Its rounds are set from the A/A
-runs above, but it times whole frames on a virtual GPU whose speed differs
-from one runner to the next, so it is a second opinion on SwiftShader's
-verdicts, from the GPU family that matters, rather than a gate. Either can be
-started by hand (`workflow_dispatch`) with a base, a shot list, a round count
-and further options; a shot list is split between the five parts the same way.
-In `args`, a JSON value is written without quotes or spaces, for example
-`--head-profile-override {"cloudResolutionScale":0.9}`. The report is at the
-end of the A/B step's log and in the job summary.
+`hardware` runs its five shots in one job, in about 21 minutes. Its rounds are
+set from the A/A runs above, but it times whole frames on a virtual GPU whose
+speed differs from one runner to the next, so it is a second opinion on
+SwiftShader's verdicts, from the GPU family that matters, rather than a gate.
+Either can be started by hand (`workflow_dispatch`) with a base, a shot list,
+a round count and further options; a shot list is split between the five parts
+the same way. In `args`, a JSON value is written without quotes or spaces, for
+example `--head-profile-override {"cloudResolutionScale":0.9}`. The report is
+at the end of the A/B step's log and in the job summary.
 
 **Draw-call ceilings.** A draw call is counted, not timed, so the A/B's counts
 are exact on any host once both arms have streamed to rest, and its base →

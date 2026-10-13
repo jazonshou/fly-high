@@ -115,9 +115,9 @@ jobs:
   hardware:
     # The same A/B on the macOS runner's GPU (Metal), which is closer to the
     # reference Mac than SwiftShader is. It cannot time passes, and its
-    # frames scatter widely, so it runs 320 short rounds a shot and is
-    # advisory: a second opinion on the SwiftShader verdict. See
-    # docs/PERFORMANCE.md, "Cloud A/B".
+    # frames scatter widely, so it runs 640 short rounds a shot, about 21
+    # minutes for five, and is advisory: a second opinion on the SwiftShader
+    # verdict. See docs/PERFORMANCE.md, "Cloud A/B".
     name: A/B on the macOS runner's GPU (advisory)
     runs-on: macos-latest
     timeout-minutes: 60
