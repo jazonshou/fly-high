@@ -1,0 +1,1413 @@
+{
+ "note": "Cloud A/B on GitHub's Linux runner: ubuntu-latest, 4 CPUs, no GPU, so WebGPU runs on SwiftShader. Two of pull request #21's own runs on 2026-10-12, each an A/A in effect: the base is main (c1b54913ac) and the head the A/B's own branch, which adds the harness both arms share and changes no renderer code. The runner's artifacts cannot be downloaded from a cloud session, so every figure here is read from the job logs, which print each round's totals; those are here in full, as [base, head] per round, the sum of the arm's two frames. run6 was cancelled by the next push after four shots, the fourth at 5 of its 16 rounds, so it has no report: its estimates are the Hodges-Lehmann estimates of those rounds. run7 is the first complete run of the gating job on GitHub: no regression, GPU time SAME on all five shots, and draw calls, work counts and pixels identical. One round's GPU-time ratio scattered by 0.10-0.33%, against 3.7-4.1% in a cloud session, so each GPU interval is a few tenths of a per cent wide, and all five of run7's exclude zero: the head's GPU time sat -0.2% to +0.8% from the base's, an offset between the run's two browsers that changed from one run to the other (approach-500ft +0.66% in run6, +0.20% in run7). CPU time read the head 2-7% slower on run6's four shots and 0-7% faster on run7's five, each of run7's intervals inside the 15% guard. A frame cost 6.6-16 s of GPU time on run6's runner and 9.4-20 s on run7's, so runners differ in speed by about a third. run7's A/B step took 8,993 s, about two and a half hours, for five shots of 20-36 minutes each, which is why the workflow now runs them as five parallel parts. docs/PERFORMANCE.md, Cloud A/B, reads these.",
+ "tool": "perf-ab",
+ "host": {
+  "runner": "ubuntu-latest",
+  "cpuModel": "AMD EPYC 7763 64-Core Processor (run7; run6's runner did not report one)",
+  "cpus": 4,
+  "browser": "Chromium from Playwright",
+  "backend": "SwiftShader (CPU WebGPU)",
+  "timestampQuery": true
+ },
+ "runs": {
+  "run6": {
+   "what": "PR #21's own A/B on the Linux runner after 2292675, cancelled at 21:29:56 by the push of 7fff2ec",
+   "workflowRun": 38302502423,
+   "job": 114989064917,
+   "commits": {
+    "base": "c1b54913ac (HEAD^1 of the merge commit)",
+    "head": "merge of 2292675 into main"
+   },
+   "settings": {
+    "rounds": 16,
+    "framesPerTurn": 1,
+    "framesPerArmPerRound": 2,
+    "thresholds": {
+     "gpu": 0.05,
+     "cpu": 0.15
+    },
+    "cpuGate": "guard"
+   },
+   "abStepSecondsBeforeCancel": 4615,
+   "shots": {
+    "approach-500ft": {
+     "roundsMeasured": 16,
+     "estimatePercent": {
+      "gpu": 0.66,
+      "cpu": 2.05
+     },
+     "roundScatterPercent": {
+      "gpu": 0.15,
+      "cpu": 8.7
+     },
+     "medianFrameGpuMs": [
+      13187,
+      13268
+     ],
+     "rounds": {
+      "gpuMs": [
+       [
+        26398.0,
+        26529.4
+       ],
+       [
+        26280.7,
+        26453.4
+       ],
+       [
+        26349.7,
+        26551.3
+       ],
+       [
+        26381.4,
+        26610.5
+       ],
+       [
+        26380.1,
+        26457.4
+       ],
+       [
+        26363.4,
+        26557.3
+       ],
+       [
+        26395.8,
+        26544.4
+       ],
+       [
+        26257.9,
+        26454.0
+       ],
+       [
+        26411.5,
+        26513.5
+       ],
+       [
+        26368.9,
+        26518.3
+       ],
+       [
+        26276.8,
+        26461.3
+       ],
+       [
+        26340.9,
+        26543.0
+       ],
+       [
+        26400.7,
+        26561.3
+       ],
+       [
+        26296.0,
+        26495.3
+       ],
+       [
+        26390.6,
+        26546.8
+       ],
+       [
+        26388.6,
+        26572.6
+       ]
+      ],
+      "cpuMs": [
+       [
+        19.6,
+        22.2
+       ],
+       [
+        18.3,
+        19.8
+       ],
+       [
+        18.2,
+        19.2
+       ],
+       [
+        17.3,
+        19.1
+       ],
+       [
+        22.6,
+        18.3
+       ],
+       [
+        17.1,
+        18.4
+       ],
+       [
+        18.6,
+        18.9
+       ],
+       [
+        19.2,
+        19.4
+       ],
+       [
+        19.8,
+        18.6
+       ],
+       [
+        17.6,
+        18.0
+       ],
+       [
+        19.1,
+        18.1
+       ],
+       [
+        19.7,
+        18.7
+       ],
+       [
+        18.5,
+        18.9
+       ],
+       [
+        19.4,
+        19.5
+       ],
+       [
+        18.6,
+        18.8
+       ],
+       [
+        17.5,
+        20.4
+       ]
+      ]
+     }
+    },
+    "cruise-horizon": {
+     "roundsMeasured": 16,
+     "estimatePercent": {
+      "gpu": 0.01,
+      "cpu": 3.68
+     },
+     "roundScatterPercent": {
+      "gpu": 0.25,
+      "cpu": 8.44
+     },
+     "medianFrameGpuMs": [
+      6581,
+      6590
+     ],
+     "rounds": {
+      "gpuMs": [
+       [
+        13171.2,
+        13190.6
+       ],
+       [
+        13092.9,
+        13089.9
+       ],
+       [
+        13163.5,
+        13187.5
+       ],
+       [
+        13194.6,
+        13185.0
+       ],
+       [
+        13160.7,
+        13105.7
+       ],
+       [
+        13141.0,
+        13182.6
+       ],
+       [
+        13208.0,
+        13212.2
+       ],
+       [
+        13075.6,
+        13135.4
+       ],
+       [
+        13196.6,
+        13176.6
+       ],
+       [
+        13209.9,
+        13175.5
+       ],
+       [
+        13146.7,
+        13102.6
+       ],
+       [
+        13179.6,
+        13196.5
+       ],
+       [
+        13187.4,
+        13191.6
+       ],
+       [
+        13098.6,
+        13078.2
+       ],
+       [
+        13145.1,
+        13191.4
+       ],
+       [
+        13139.3,
+        13139.0
+       ]
+      ],
+      "cpuMs": [
+       [
+        11.4,
+        14.6
+       ],
+       [
+        13.8,
+        14.3
+       ],
+       [
+        15.7,
+        15.7
+       ],
+       [
+        14.0,
+        14.3
+       ],
+       [
+        12.9,
+        14.3
+       ],
+       [
+        14.3,
+        14.8
+       ],
+       [
+        15.0,
+        14.0
+       ],
+       [
+        13.2,
+        13.4
+       ],
+       [
+        13.4,
+        13.2
+       ],
+       [
+        12.6,
+        13.5
+       ],
+       [
+        13.9,
+        14.3
+       ],
+       [
+        13.5,
+        14.1
+       ],
+       [
+        14.6,
+        12.9
+       ],
+       [
+        14.0,
+        15.2
+       ],
+       [
+        12.7,
+        14.8
+       ],
+       [
+        13.2,
+        13.8
+       ]
+      ]
+     }
+    },
+    "forest-500ft-sunbehind": {
+     "roundsMeasured": 16,
+     "estimatePercent": {
+      "gpu": 0.52,
+      "cpu": 7.2
+     },
+     "roundScatterPercent": {
+      "gpu": 0.29,
+      "cpu": 12.95
+     },
+     "medianFrameGpuMs": [
+      12122,
+      12188
+     ],
+     "rounds": {
+      "gpuMs": [
+       [
+        24235.5,
+        24407.6
+       ],
+       [
+        24126.5,
+        24262.9
+       ],
+       [
+        24257.1,
+        24357.7
+       ],
+       [
+        24240.8,
+        24369.9
+       ],
+       [
+        24166.2,
+        24233.7
+       ],
+       [
+        24248.5,
+        24379.8
+       ],
+       [
+        24284.8,
+        24389.7
+       ],
+       [
+        24127.0,
+        24241.9
+       ],
+       [
+        24262.3,
+        24380.3
+       ],
+       [
+        24238.3,
+        24370.7
+       ],
+       [
+        24180.0,
+        24303.6
+       ],
+       [
+        24274.6,
+        24397.4
+       ],
+       [
+        24274.0,
+        24408.9
+       ],
+       [
+        24393.2,
+        24258.1
+       ],
+       [
+        24273.8,
+        24434.2
+       ],
+       [
+        24234.7,
+        24406.6
+       ]
+      ],
+      "cpuMs": [
+       [
+        15.5,
+        16.6
+       ],
+       [
+        14.9,
+        19.6
+       ],
+       [
+        15.5,
+        18.1
+       ],
+       [
+        16.2,
+        17.0
+       ],
+       [
+        15.8,
+        18.5
+       ],
+       [
+        16.0,
+        17.7
+       ],
+       [
+        17.1,
+        17.6
+       ],
+       [
+        16.2,
+        15.7
+       ],
+       [
+        15.4,
+        16.9
+       ],
+       [
+        15.6,
+        16.8
+       ],
+       [
+        17.9,
+        17.4
+       ],
+       [
+        15.5,
+        17.2
+       ],
+       [
+        16.0,
+        17.3
+       ],
+       [
+        16.1,
+        18.5
+       ],
+       [
+        22.2,
+        16.3
+       ],
+       [
+        18.4,
+        16.8
+       ]
+      ]
+     }
+    },
+    "ground-2m-lowsun": {
+     "roundsMeasured": 5,
+     "estimatePercent": {
+      "gpu": 0.65,
+      "cpu": 6.28
+     },
+     "roundScatterPercent": {
+      "gpu": 0.1,
+      "cpu": 8.97
+     },
+     "medianFrameGpuMs": [
+      16028,
+      16135
+     ],
+     "rounds": {
+      "gpuMs": [
+       [
+        32100.9,
+        32270.5
+       ],
+       [
+        31834.4,
+        32002.0
+       ],
+       [
+        32056.1,
+        32278.4
+       ],
+       [
+        32060.2,
+        32305.9
+       ],
+       [
+        31875.9,
+        32083.4
+       ]
+      ],
+      "cpuMs": [
+       [
+        19.7,
+        18.6
+       ],
+       [
+        16.1,
+        17.7
+       ],
+       [
+        17.5,
+        17.6
+       ],
+       [
+        16.3,
+        19.5
+       ],
+       [
+        15.8,
+        16.9
+       ]
+      ]
+     }
+    }
+   }
+  },
+  "run7": {
+   "what": "PR #21's own A/B on the Linux runner after 7fff2ec, the first to complete",
+   "workflowRun": 38310904303,
+   "job": 115016450458,
+   "commits": {
+    "base": "c1b54913ac (HEAD^1 of the merge commit)",
+    "head": "1093b82534 (merge of 7fff2ec into main)"
+   },
+   "settings": {
+    "rounds": 16,
+    "framesPerTurn": 1,
+    "framesPerArmPerRound": 2,
+    "thresholds": {
+     "gpu": 0.05,
+     "cpu": 0.15
+    },
+    "cpuGate": "guard",
+    "alpha": 0.05
+   },
+   "abStepSeconds": 8993,
+   "verdict": "no regression: every gated timing is within the threshold, and no ceiling is newly breached",
+   "shots": {
+    "approach-500ft": {
+     "gpu": "same +0.2% (+0.1% to +0.3%)",
+     "cpu": "same -2.2% (-6.6% to +2.0%)",
+     "drawCalls": "247 -> 247",
+     "medianFrameMs": {
+      "gpu": [
+       17375,
+       17400
+      ],
+      "cpu": [
+       11.4,
+       10.9
+      ],
+      "wall": [
+       17404,
+       17431
+      ]
+     },
+     "streamed": [
+      390,
+      390
+     ],
+     "streamSeconds": [
+      354,
+      353
+     ],
+     "shotSeconds": 2046,
+     "baselineSsim": 0.9385,
+     "work": "identical",
+     "pixels": "identical",
+     "roundScatterPercent": {
+      "gpu": 0.23,
+      "cpu": 7.83
+     },
+     "rounds": {
+      "gpuMs": [
+       [
+        34775.6,
+        34762.1
+       ],
+       [
+        34587.4,
+        34689.7
+       ],
+       [
+        34764.5,
+        34755.9
+       ],
+       [
+        34713.4,
+        34722.1
+       ],
+       [
+        34588.1,
+        34715.5
+       ],
+       [
+        34685.9,
+        34833.7
+       ],
+       [
+        34687.3,
+        34825.5
+       ],
+       [
+        34577.2,
+        34649.5
+       ],
+       [
+        34634.1,
+        34933.6
+       ],
+       [
+        34796.4,
+        34786.6
+       ],
+       [
+        34735.1,
+        34797.5
+       ],
+       [
+        34891.5,
+        34967.0
+       ],
+       [
+        34804.6,
+        34863.4
+       ],
+       [
+        34780.2,
+        34801.4
+       ],
+       [
+        34832.4,
+        34876.5
+       ],
+       [
+        34770.6,
+        34867.5
+       ]
+      ],
+      "cpuMs": [
+       [
+        27.5,
+        24.6
+       ],
+       [
+        23.6,
+        20.8
+       ],
+       [
+        23.0,
+        21.7
+       ],
+       [
+        20.0,
+        22.6
+       ],
+       [
+        23.2,
+        22.6
+       ],
+       [
+        21.4,
+        22.3
+       ],
+       [
+        22.5,
+        21.4
+       ],
+       [
+        19.6,
+        20.0
+       ],
+       [
+        24.1,
+        22.1
+       ],
+       [
+        19.4,
+        21.0
+       ],
+       [
+        22.4,
+        23.9
+       ],
+       [
+        20.1,
+        20.4
+       ],
+       [
+        23.4,
+        23.1
+       ],
+       [
+        22.5,
+        22.8
+       ],
+       [
+        23.5,
+        20.4
+       ],
+       [
+        22.9,
+        20.8
+       ]
+      ]
+     }
+    },
+    "cruise-horizon": {
+     "gpu": "same -0.2% (-0.4% to -0.1%)",
+     "cpu": "same -6.0% (-10.3% to -2.0%)",
+     "drawCalls": "200 -> 200",
+     "medianFrameMs": {
+      "gpu": [
+       9359,
+       9347
+      ],
+      "cpu": [
+       8.8,
+       8.3
+      ],
+      "wall": [
+       9386,
+       9373
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      267,
+      268
+     ],
+     "shotSeconds": 1185,
+     "baselineSsim": 0.9825,
+     "work": "identical",
+     "pixels": "identical",
+     "roundScatterPercent": {
+      "gpu": 0.27,
+      "cpu": 7.98
+     },
+     "rounds": {
+      "gpuMs": [
+       [
+        18857.6,
+        18777.0
+       ],
+       [
+        18671.6,
+        18699.2
+       ],
+       [
+        18921.6,
+        18795.3
+       ],
+       [
+        18814.8,
+        18834.8
+       ],
+       [
+        18713.9,
+        18690.1
+       ],
+       [
+        18850.1,
+        18779.9
+       ],
+       [
+        18841.5,
+        18855.3
+       ],
+       [
+        18616.1,
+        18620.5
+       ],
+       [
+        18699.2,
+        18688.1
+       ],
+       [
+        18696.0,
+        18611.5
+       ],
+       [
+        18633.3,
+        18545.4
+       ],
+       [
+        18723.9,
+        18704.8
+       ],
+       [
+        18733.2,
+        18732.6
+       ],
+       [
+        18647.7,
+        18587.1
+       ],
+       [
+        18788.2,
+        18670.1
+       ],
+       [
+        18699.1,
+        18638.2
+       ]
+      ],
+      "cpuMs": [
+       [
+        19.1,
+        16.6
+       ],
+       [
+        17.8,
+        16.6
+       ],
+       [
+        17.4,
+        15.0
+       ],
+       [
+        20.0,
+        15.9
+       ],
+       [
+        17.6,
+        15.1
+       ],
+       [
+        17.7,
+        18.2
+       ],
+       [
+        17.3,
+        15.4
+       ],
+       [
+        16.9,
+        16.1
+       ],
+       [
+        16.5,
+        15.4
+       ],
+       [
+        17.4,
+        17.7
+       ],
+       [
+        17.1,
+        17.6
+       ],
+       [
+        17.7,
+        17.8
+       ],
+       [
+        17.8,
+        16.6
+       ],
+       [
+        17.7,
+        17.1
+       ],
+       [
+        18.7,
+        17.3
+       ],
+       [
+        17.0,
+        18.0
+       ]
+      ]
+     }
+    },
+    "forest-500ft-sunbehind": {
+     "gpu": "same +0.2% (+0.1% to +0.2%)",
+     "cpu": "same -2.8% (-5.5% to -0.1%)",
+     "drawCalls": "248 -> 248",
+     "medianFrameMs": {
+      "gpu": [
+       16270,
+       16295
+      ],
+      "cpu": [
+       10.3,
+       10.2
+      ],
+      "wall": [
+       16299,
+       16323
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      195,
+      196
+     ],
+     "shotSeconds": 1751,
+     "baselineSsim": 0.9472,
+     "work": "identical",
+     "pixels": "identical",
+     "roundScatterPercent": {
+      "gpu": 0.15,
+      "cpu": 4.46
+     },
+     "rounds": {
+      "gpuMs": [
+       [
+        32931.5,
+        32839.8
+       ],
+       [
+        32692.3,
+        32806.1
+       ],
+       [
+        32863.3,
+        32878.4
+       ],
+       [
+        32949.2,
+        33007.4
+       ],
+       [
+        32631.7,
+        32720.6
+       ],
+       [
+        32698.3,
+        32767.5
+       ],
+       [
+        32559.5,
+        32620.6
+       ],
+       [
+        32369.1,
+        32387.0
+       ],
+       [
+        32555.6,
+        32587.0
+       ],
+       [
+        32501.4,
+        32592.8
+       ],
+       [
+        32382.7,
+        32416.5
+       ],
+       [
+        32515.7,
+        32572.3
+       ],
+       [
+        32476.7,
+        32582.7
+       ],
+       [
+        32324.6,
+        32355.6
+       ],
+       [
+        32526.3,
+        32544.1
+       ],
+       [
+        32477.0,
+        32556.0
+       ]
+      ],
+      "cpuMs": [
+       [
+        22.3,
+        20.9
+       ],
+       [
+        23.3,
+        22.7
+       ],
+       [
+        23.2,
+        24.1
+       ],
+       [
+        20.9,
+        21.2
+       ],
+       [
+        22.9,
+        22.2
+       ],
+       [
+        21.2,
+        19.9
+       ],
+       [
+        23.0,
+        21.2
+       ],
+       [
+        20.7,
+        20.9
+       ],
+       [
+        19.2,
+        18.5
+       ],
+       [
+        20.4,
+        20.4
+       ],
+       [
+        19.0,
+        19.8
+       ],
+       [
+        19.4,
+        18.8
+       ],
+       [
+        20.3,
+        19.2
+       ],
+       [
+        20.0,
+        20.5
+       ],
+       [
+        20.4,
+        18.7
+       ],
+       [
+        20.5,
+        18.7
+       ]
+      ]
+     }
+    },
+    "ground-2m-lowsun": {
+     "gpu": "same +0.8% (+0.7% to +1.0%)",
+     "cpu": "same -6.9% (-14.7% to +0.7%)",
+     "drawCalls": "121 -> 121",
+     "medianFrameMs": {
+      "gpu": [
+       20193,
+       20342
+      ],
+      "cpu": [
+       11.6,
+       11.0
+      ],
+      "wall": [
+       20223,
+       20372
+      ]
+     },
+     "streamed": [
+      360,
+      360
+     ],
+     "streamSeconds": [
+      249,
+      250
+     ],
+     "shotSeconds": 2155,
+     "baselineSsim": 0.8423,
+     "work": "identical",
+     "pixels": "identical",
+     "roundScatterPercent": {
+      "gpu": 0.33,
+      "cpu": 16.92
+     },
+     "rounds": {
+      "gpuMs": [
+       [
+        40073.5,
+        40219.0
+       ],
+       [
+        39680.2,
+        39939.7
+       ],
+       [
+        40432.6,
+        40829.8
+       ],
+       [
+        40990.0,
+        41220.5
+       ],
+       [
+        40295.1,
+        40904.8
+       ],
+       [
+        40732.4,
+        41004.5
+       ],
+       [
+        40525.2,
+        41058.8
+       ],
+       [
+        39902.5,
+        40289.8
+       ],
+       [
+        40359.1,
+        40642.5
+       ],
+       [
+        40509.6,
+        40790.5
+       ],
+       [
+        39976.4,
+        40458.6
+       ],
+       [
+        40405.1,
+        40709.6
+       ],
+       [
+        40537.9,
+        40660.1
+       ],
+       [
+        40201.3,
+        40510.0
+       ],
+       [
+        40560.6,
+        41023.8
+       ],
+       [
+        40366.9,
+        40657.5
+       ]
+      ],
+      "cpuMs": [
+       [
+        21.6,
+        24.9
+       ],
+       [
+        21.7,
+        19.4
+       ],
+       [
+        22.4,
+        21.4
+       ],
+       [
+        24.2,
+        23.4
+       ],
+       [
+        32.2,
+        22.8
+       ],
+       [
+        25.3,
+        20.9
+       ],
+       [
+        28.9,
+        26.9
+       ],
+       [
+        19.3,
+        20.1
+       ],
+       [
+        23.3,
+        19.4
+       ],
+       [
+        24.2,
+        22.3
+       ],
+       [
+        28.9,
+        17.7
+       ],
+       [
+        23.4,
+        20.6
+       ],
+       [
+        21.3,
+        25.6
+       ],
+       [
+        23.2,
+        22.0
+       ],
+       [
+        22.5,
+        21.9
+       ],
+       [
+        20.4,
+        22.0
+       ]
+      ]
+     }
+    },
+    "water-25ft": {
+     "gpu": "same +0.2% (+0.1% to +0.3%)",
+     "cpu": "same -0.3% (-5.4% to +5.4%)",
+     "drawCalls": "224 -> 224",
+     "medianFrameMs": {
+      "gpu": [
+       14837,
+       14849
+      ],
+      "cpu": [
+       9.3,
+       9.4
+      ],
+      "wall": [
+       14865,
+       14876
+      ]
+     },
+     "streamed": [
+      570,
+      570
+     ],
+     "streamSeconds": [
+      426,
+      425
+     ],
+     "shotSeconds": 1850,
+     "baselineSsim": 0.6599,
+     "work": "identical",
+     "pixels": "identical",
+     "roundScatterPercent": {
+      "gpu": 0.28,
+      "cpu": 9.64
+     },
+     "rounds": {
+      "gpuMs": [
+       [
+        29980.9,
+        30085.5
+       ],
+       [
+        29619.5,
+        29665.7
+       ],
+       [
+        29884.8,
+        30196.9
+       ],
+       [
+        29866.3,
+        29934.1
+       ],
+       [
+        29524.1,
+        29577.6
+       ],
+       [
+        29878.1,
+        29994.9
+       ],
+       [
+        29898.3,
+        29984.6
+       ],
+       [
+        29534.6,
+        29520.0
+       ],
+       [
+        29617.2,
+        29658.2
+       ],
+       [
+        29654.6,
+        29573.4
+       ],
+       [
+        29244.3,
+        29303.6
+       ],
+       [
+        29641.6,
+        29621.1
+       ],
+       [
+        29695.2,
+        29730.1
+       ],
+       [
+        29398.0,
+        29507.1
+       ],
+       [
+        29757.3,
+        29863.4
+       ],
+       [
+        29703.1,
+        29744.5
+       ]
+      ],
+      "cpuMs": [
+       [
+        18.6,
+        19.4
+       ],
+       [
+        19.2,
+        18.8
+       ],
+       [
+        19.2,
+        18.6
+       ],
+       [
+        17.3,
+        19.3
+       ],
+       [
+        18.7,
+        19.1
+       ],
+       [
+        17.2,
+        19.5
+       ],
+       [
+        17.0,
+        16.6
+       ],
+       [
+        19.5,
+        19.1
+       ],
+       [
+        18.8,
+        17.6
+       ],
+       [
+        19.5,
+        17.1
+       ],
+       [
+        20.3,
+        17.0
+       ],
+       [
+        19.2,
+        17.7
+       ],
+       [
+        17.8,
+        20.7
+       ],
+       [
+        16.8,
+        19.2
+       ],
+       [
+        18.2,
+        16.8
+       ],
+       [
+        17.9,
+        18.2
+       ]
+      ]
+     }
+    }
+   }
+  }
+ }
+}
