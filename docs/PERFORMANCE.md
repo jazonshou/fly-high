@@ -1181,17 +1181,18 @@ replacements.
   `--render-scale` shows them without gating on them;
 - a renderer error in the head, or a shot that does not settle.
 
-Each round gives one paired observation per metric, the log ratio of the
-arms' totals. Consecutive frames of one arm are not independent, so the round
-is the unit. A verdict is SLOWER only when Wilcoxon's exact signed-rank test,
-Holm-adjusted across every gated shot and metric, is below 0.05 AND the
-Hodges–Lehmann estimate of head/base is at least 1 + threshold. SAME needs the
-whole distribution-free interval inside ±threshold. Anything else is
-INCONCLUSIVE: the run exits 0 with a warning that says to run more rounds,
-because an inconclusive result is not a pass, and says about how many rounds
-would clear it if nothing changed: an interval narrows with the square root
-of the rounds. The thresholds are 5% in GPU time (in the frame's wall time
-where passes cannot be timed) and 15% in CPU time; `--threshold` and
+Each round gives one paired observation per metric, the log ratio of the arms'
+totals. Consecutive frames of one arm are not independent, so the round is the
+unit. A verdict is SLOWER only when Wilcoxon's exact signed-rank test,
+Holm-adjusted across every gated shot and metric, is below 0.05 (below 0.05 /
+n in each part of a run split n ways with `--part`, so that the parts together
+keep 0.05) AND the Hodges–Lehmann estimate of head/base is at least 1 +
+threshold. SAME needs the whole distribution-free interval inside ±threshold.
+Anything else is INCONCLUSIVE: the run exits 0 with a warning that says to run
+more rounds, because an inconclusive result is not a pass, and says about how
+many rounds would clear it if nothing changed: an interval narrows with the
+square root of the rounds. The thresholds are 5% in GPU time (in the frame's
+wall time where passes cannot be timed) and 15% in CPU time; `--threshold` and
 `--cpu-threshold` change them. `scripts/perfAbStats.mts` holds the method and
 `tests/perf-ab-stats.test.ts` pins it, including its power and false-alarm
 rate on simulated runs.
@@ -1309,7 +1310,8 @@ the job logs, which print every round
 - **Two and a half hours in one job.** A frame cost 9.4–20 s of GPU time on
   that runner, and 6.6–16 s on the cancelled run's, so a shot took 20–36
   minutes: streaming, the settle and 16 rounds of four frames. The five took
-  8,993 s.
+  8,993 s, which is why the workflow now runs them as five parts in parallel
+  (below).
 
 **Measured on the macOS runner** (2026-10-12, `macos-latest`: Apple M1
 (Virtual), 3 CPUs, Chromium 151, Metal, on the five default shots unless
@@ -1363,15 +1365,23 @@ a cloud session, so the figures are read from the job logs
   differed (SSIM 1.0000).
 
 **Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
-pull request that touches the renderer: `swiftshader` gates, and `hardware`
-is advisory. Its rounds are set from the A/A runs above, but it times whole
-frames on a virtual GPU whose speed differs from one runner to the next, so
-it is a second opinion on SwiftShader's verdicts, from the GPU family that
-matters, rather than a gate. Either can be started by hand
-(`workflow_dispatch`) with a base, a shot list, a round count and further
-options. In `args`, a JSON value is written without quotes or spaces, for
-example `--head-profile-override {"cloudResolutionScale":0.9}`. The report is
-at the end of the A/B step's log and in the job summary.
+pull request that touches the renderer: `swiftshader` gates, and `hardware` is
+advisory. `swiftshader` runs as five jobs in parallel, each given
+`--part i/5`: every fifth shot in canonical order from the i-th, tested at
+0.05 / 5 so that the five together keep the run's 0.05 (Bonferroni across the
+parts, Holm within each). With the default shots each job takes one, so the
+gate waits on the slowest shot, which took 36 minutes in the single job,
+rather than on all five. A part opens its two browsers afresh, so its shots
+stream after only the earlier shots of that part, in both arms alike.
+`hardware` runs its five shots in one job. Its rounds are set from the A/A
+runs above, but it times whole frames on a virtual GPU whose speed differs
+from one runner to the next, so it is a second opinion on SwiftShader's
+verdicts, from the GPU family that matters, rather than a gate. Either can be
+started by hand (`workflow_dispatch`) with a base, a shot list, a round count
+and further options; a shot list is split between the five parts the same way.
+In `args`, a JSON value is written without quotes or spaces, for example
+`--head-profile-override {"cloudResolutionScale":0.9}`. The report is at the
+end of the A/B step's log and in the job summary.
 
 **Draw-call ceilings.** A draw call is counted, not timed, so the A/B's counts
 are exact on any host once both arms have streamed to rest, and its base →

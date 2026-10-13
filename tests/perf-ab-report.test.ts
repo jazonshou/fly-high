@@ -206,6 +206,7 @@ describe("perf-ab Markdown report", () => {
       guardMetrics: [],
       thresholds: { gpu: 0.05, cpu: 0.15, wall: 0.05 },
       alpha: 0.05,
+      part: null,
       renderScale: null,
       openFrames: 2,
       settleFrames: 12,
@@ -252,6 +253,12 @@ describe("perf-ab Markdown report", () => {
       [shot({ metrics: [metric("cpu", "same"), metric("wall", "same")] })],
     ));
     expect(fractional).toContain("a change is called at 7.5% in Frame wall time and 15% in CPU time");
+  });
+
+  it("says when the run is one part of several, and the alpha that part tests at", () => {
+    expect(renderMarkdown(report({ alpha: 0.01, part: { index: 2, count: 5, runAlpha: 0.05 } }))).toContain(
+      "with Holm-adjusted alpha 0.01: this is part 2 of 5 of the run, whose alpha of 0.05 is split between its parts.",
+    );
   });
 
   it("says the baseline is another instant on any host, and another rasteriser only on SwiftShader", () => {

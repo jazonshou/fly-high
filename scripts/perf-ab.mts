@@ -64,6 +64,8 @@ import {
   comparePaired,
   geometricMean,
   holmAdjust,
+  partAlpha,
+  partOf,
   roundOrder,
   verdict,
   type PairedComparison,
@@ -139,6 +141,8 @@ const USAGE = `usage: npm run perf:ab -- [options]
   --head <ref>              head commit (default: the working tree, uncommitted changes included)
   --aa                      A/A: both arms are the head; measures this host's noise floor
   --shots <a,b,...>|all     canonical shot names (default: ${DEFAULT_SHOTS.join(",")})
+  --part <i>/<n>            run only the i-th of n parts of those shots (every n-th, in canonical
+                            order from the i-th), one per parallel job; each part tests at alpha / n
   --rounds <n>              ABBA rounds per shot (default 16 on SwiftShader, 320 on a GPU; 0 = no
                             timing: work counts, draw calls, ceilings and pixels only). Fewer than
                             log2(gated comparisons / alpha) + 1 is refused: no slowdown could be
@@ -304,6 +308,7 @@ async function main(): Promise<number> {
       head: { type: "string" },
       aa: { type: "boolean", default: false },
       shots: { type: "string" },
+      part: { type: "string" },
       rounds: { type: "string" },
       "frames-per-turn": { type: "string" },
       threshold: { type: "string" },
@@ -375,6 +380,11 @@ async function main(): Promise<number> {
     ? null
     : values.shots.split(",").map((name) => name.trim()).filter(Boolean);
   if (requestedShots !== null && requestedShots.length === 0) throw new UsageError(`--shots "${values.shots}" names no shot`);
+  const partMatch = values.part === undefined ? null : /^(\d+)\/(\d+)$/u.exec(values.part.trim());
+  const part = partMatch ? { index: Number(partMatch[1]), count: Number(partMatch[2]) } : null;
+  if (values.part !== undefined && !(part && part.index >= 1 && part.index <= part.count && part.count <= 64)) {
+    throw new UsageError(`--part ${values.part} is not i/n with 1 <= i <= n <= 64`);
+  }
   const openFrames = parseNumber("open-frames", values["open-frames"], 2, (value) => Number.isInteger(value) && value >= 2);
   const settleFrames = parseNumber("settle-frames", values["settle-frames"], 12, (value) => Number.isInteger(value) && value >= 2);
   const countFrames = parseNumber("count-frames", values["count-frames"], 8, (value) => Number.isInteger(value) && value >= 1 && value <= settleFrames);
@@ -495,22 +505,35 @@ async function main(): Promise<number> {
     if (unknown.length > 0) {
       throw new UsageError(`not in PERF_CAPTURE_SHOTS: ${unknown.join(", ")}`);
     }
+    // Canonical order, as the capture runs them: a shot's streaming history
+    // includes every earlier shot's, and both arms must share it. A part of
+    // a run (`--part`) takes every n-th of them and tests at alpha / n.
+    const everyShot = catalog.shots
+      .map((shot, index) => ({ shot, index }))
+      .filter(({ shot }) => wanted.includes(shot.name));
+    const selected = part ? partOf(everyShot, part.index, part.count) : everyShot;
+    const familyAlpha = part ? partAlpha(alpha, part.count) : alpha;
+    if (part) {
+      log(`part ${part.index} of ${part.count}: ${selected.map(({ shot }) => shot.name).join(", ") || "no shot"}`
+        + ` of ${everyShot.length}, at alpha ${familyAlpha}`);
+    }
+    if (selected.length === 0) {
+      if (process.env.GITHUB_STEP_SUMMARY) {
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Part ${part!.index} of ${part!.count} of the A/B: no shot falls in it.\n`);
+      }
+      return 0;
+    }
     // The smallest one-sided p of n rounds is 2^-n, and Holm multiplies the
     // smallest of m by m: below this many rounds no change can be called
     // SLOWER, so even a large regression would read INCONCLUSIVE.
-    const family = wanted.length * gatedMetrics.length;
-    const fewestRounds = Math.floor(Math.log2(family / alpha)) + 1;
+    const family = selected.length * gatedMetrics.length;
+    const fewestRounds = Math.floor(Math.log2(family / familyAlpha)) + 1;
     if (rounds > 0 && rounds < fewestRounds) {
       throw new UsageError(
-        `--rounds ${rounds} cannot call a slowdown across ${family} gated comparisons at alpha ${alpha}; `
+        `--rounds ${rounds} cannot call a slowdown across ${family} gated comparisons at alpha ${familyAlpha}; `
         + `use at least ${fewestRounds}, or --rounds 0 for no timing`,
       );
     }
-    // Canonical order, as the capture runs them: a shot's streaming history
-    // includes every earlier shot's, and both arms must share it.
-    const selected = catalog.shots
-      .map((shot, index) => ({ shot, index }))
-      .filter(({ shot }) => wanted.includes(shot.name));
 
     const shots: ShotResult[] = [];
     const pending: PendingMetric[] = [];
@@ -553,7 +576,7 @@ async function main(): Promise<number> {
             comparison: metric.comparison,
             pSlowerAdjusted,
             pFasterAdjusted,
-            verdict: verdict({ comparison: metric.comparison, pSlowerAdjusted, pFasterAdjusted }, thresholds[metric.metric], alpha),
+            verdict: verdict({ comparison: metric.comparison, pSlowerAdjusted, pFasterAdjusted }, thresholds[metric.metric], familyAlpha),
           };
         });
       return { ...shot, metrics };
@@ -598,7 +621,8 @@ async function main(): Promise<number> {
         gatedMetrics,
         guardMetrics,
         thresholds,
-        alpha,
+        alpha: familyAlpha,
+        part: part ? { ...part, runAlpha: alpha } : null,
         renderScale,
         openFrames,
         settleFrames,

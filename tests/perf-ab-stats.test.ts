@@ -6,6 +6,8 @@ import {
   hodgesLehmann,
   hodgesLehmannInterval,
   holmAdjust,
+  partAlpha,
+  partOf,
   roundOrder,
   roundsToClear,
   signedRankCdf,
@@ -186,5 +188,18 @@ describe("perf-ab statistics", () => {
   it("averages ratios geometrically", () => {
     expect(geometricMean([2, 0.5])).toBeCloseTo(1, 12);
     expect(geometricMean([1.1, 1.1, 1.1])).toBeCloseTo(1.1, 12);
+  });
+
+  it("splits a run into disjoint parts that cover it, and its alpha between them", () => {
+    const shots = ["a", "b", "c", "d", "e", "f", "g"];
+    const parts = [1, 2, 3].map((index) => partOf(shots, index, 3));
+    expect(parts).toEqual([["a", "d", "g"], ["b", "e"], ["c", "f"]]);
+    expect(parts.flat().sort()).toEqual(shots);
+    expect(partOf(["a", "b"], 5, 5)).toEqual([]);
+    expect(partOf(shots, 1, 1)).toEqual(shots);
+    expect(() => partOf(shots, 0, 3)).toThrow(RangeError);
+    expect(() => partOf(shots, 4, 3)).toThrow(RangeError);
+    // Bonferroni across parts: five at 0.01 call a false slowdown at most 5% of the time together.
+    expect(partAlpha(0.05, 5)).toBeCloseTo(0.01, 12);
   });
 });

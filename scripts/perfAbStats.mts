@@ -278,3 +278,23 @@ export function geometricMean(values: readonly number[]): number {
   if (values.length === 0) return Number.NaN;
   return Math.exp(values.reduce((sum, value) => sum + Math.log(value), 0) / values.length);
 }
+
+/**
+ * One of `count` parts of a run, for as many parallel jobs: every count-th
+ * item from the `index`-th (1-based), so the parts are disjoint, cover every
+ * item, and differ in size by at most one. Each part decides its own verdicts,
+ * so a part tests at `alpha / count` (`partAlpha`): by Bonferroni across the
+ * parts, Holm within each, the parts together still call a false slowdown at
+ * most alpha of the time, under any dependence between them.
+ */
+export function partOf<T>(items: readonly T[], index: number, count: number): T[] {
+  if (!(Number.isInteger(index) && Number.isInteger(count) && index >= 1 && index <= count)) {
+    throw new RangeError(`perf-ab: part ${index} of ${count} does not exist`);
+  }
+  return items.filter((_, position) => position % count === index - 1);
+}
+
+/** The alpha one of `count` parts tests at; see `partOf`. */
+export function partAlpha(alpha: number, count: number): number {
+  return alpha / count;
+}

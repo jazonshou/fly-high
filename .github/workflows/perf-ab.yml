@@ -49,12 +49,19 @@ jobs:
   swiftshader:
     # Hosted Linux runners have no GPU, so WebGPU runs on SwiftShader, a CPU
     # implementation of Vulkan. A frame costs seconds rather than milliseconds
-    # (6 s on cruise-horizon, 14 s on ground-2m-lowsun, on 4 CPUs), so a shot
-    # takes 15-30 minutes and the five-shot run about two hours. Its counts
-    # and pixels are exact all the same, and its GPU timings steady.
-    name: A/B on SwiftShader (Linux, no GPU)
+    # (9 s on cruise-horizon and 20 s on ground-2m-lowsun, on the runner's 4
+    # CPUs), so a shot takes 20-36 minutes, but its counts and pixels are
+    # exact all the same, and its GPU timings steady. Five shots in one job
+    # took two and a half hours, so the shots run as five parallel parts
+    # (`--part`), each taking every fifth shot and testing at alpha / 5, so
+    # that together they keep the run's alpha.
+    name: A/B on SwiftShader (Linux, no GPU), part ${{ matrix.part }} of ${{ strategy.job-total }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -82,11 +89,12 @@ jobs:
           SHOTS: ${{ inputs.shots }}
           ROUNDS: ${{ inputs.rounds }}
           EXTRA_ARGS: ${{ inputs.args }}
+          PART: ${{ matrix.part }}/${{ strategy.job-total }}
         # Each value is one argument, so a shot list may hold spaces; the
         # further options are split on spaces, unglobbed.
         run: |
           set -f
-          set -- --gpu swiftshader --out tests/perf/artifacts/ab/swiftshader
+          set -- --gpu swiftshader --part "$PART" --out tests/perf/artifacts/ab/swiftshader
           if [ -n "$BASE" ]; then set -- "$@" --base "$BASE"; fi
           if [ -n "$SHOTS" ]; then set -- "$@" --shots "$SHOTS"; fi
           if [ -n "$ROUNDS" ]; then set -- "$@" --rounds "$ROUNDS"; fi
@@ -96,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-ab-swiftshader-${{ github.run_id }}-${{ github.run_attempt }}
+          name: perf-ab-swiftshader-${{ github.run_id }}-${{ github.run_attempt }}-part${{ matrix.part }}
           path: |
             tests/perf/artifacts/ab/swiftshader/report.*
             tests/perf/artifacts/ab/swiftshader/progress.json

@@ -251,6 +251,12 @@ export interface PerfAbReport {
     /** The smallest change each metric's verdict calls; see `perf-ab.mts`'s defaults. */
     readonly thresholds: Readonly<Record<TimingMetric, number>>;
     readonly alpha: number;
+    /**
+     * A part of a run split across parallel jobs (`--part`): every
+     * `count`-th shot from the `index`-th, tested at `alpha` above, the run's
+     * alpha divided by `count`. Null for a whole run.
+     */
+    readonly part: { readonly index: number; readonly count: number; readonly runAlpha: number } | null;
     readonly renderScale: number | null;
     readonly openFrames: number;
     readonly settleFrames: number;
@@ -425,7 +431,11 @@ export function renderMarkdown(report: PerfAbReport): string {
         + report.settings.gatedMetrics
           .map((metric) => `${Number((report.settings.thresholds[metric] * 100).toFixed(1))}% in ${metricName(metric)}`)
           .join(" and ")
-        + `, with Holm-adjusted alpha ${report.settings.alpha}.`
+        + `, with Holm-adjusted alpha ${report.settings.alpha}`
+        + (report.settings.part
+          ? `: this is part ${report.settings.part.index} of ${report.settings.part.count} of the run, `
+            + `whose alpha of ${report.settings.part.runAlpha} is split between its parts.`
+          : ".")
         + report.settings.guardMetrics
           .map((metric) => ` ${metricName(metric)} is a guard: a slowdown it resolves fails the run, but an `
             + "interval too wide to clear a change does not hold the run inconclusive.")
