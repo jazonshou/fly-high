@@ -15,7 +15,10 @@ import {
   DEFAULT_ANISOTROPY_LIMIT,
   GROUND_GRAIN_ANISOTROPY_LIMIT,
   GROUND_GRAIN_GAINS,
+  GROUND_GRAIN_RELIEF_FADE,
   GROUND_GRAIN_SCALES,
+  GROUND_GRAIN_SEABED_FADE,
+  GROUND_GRAIN_TONE_FADE,
 } from "../src/render/webgpu/terrain/TerrainSurfacePlugin";
 
 /**
@@ -140,7 +143,7 @@ describe("the shader reads the grain safely", () => {
     // tuning.z is 1 exactly when the bound arrays carry the layer; a build
     // without it must never read past the ten materials.
     const gate = plugin.indexOf("if (uniforms.terrainSurfaceTuning.z > 0.5) {");
-    const firstFetch = plugin.indexOf("terrainGroundGrainFetch(\n    terrainGrainUv0");
+    const firstFetch = plugin.indexOf("terrainGroundGrainFetch(\n      terrainGrainUv0");
     expect(gate).toBeGreaterThan(-1);
     expect(firstFetch).toBeGreaterThan(gate);
     expect(plugin).toContain("setArrays(albedoHeight: BaseTexture, normalMaterial: BaseTexture, groundGrain = false)");
@@ -157,6 +160,46 @@ describe("the shader reads the grain safely", () => {
     expect(runway).toBeGreaterThan(grain);
   });
 
+  it("skips each fetch where it could not show, and fades into the skip", () => {
+    // Every fetch sits behind its own share: a zero share costs no read, and
+    // a skipped scale reads as zero, which the composite takes as no change.
+    for (const index of [0, 1, 2]) {
+      const branch = plugin.indexOf(`if (terrainGrainShare${index} > 0.0) {`);
+      const fetch = plugin.indexOf(`terrainGroundGrainFetch(\n      terrainGrainUv${index}`);
+      expect(branch).toBeGreaterThan(-1);
+      expect(fetch).toBeGreaterThan(branch);
+    }
+    for (const index of [0, 1]) {
+      const branch = plugin.indexOf(`if (terrainGrainRelief${index} > 0.0) {`);
+      const fetch = plugin.indexOf(`terrainGroundGrainGradient(\n      terrainGrainUv${index}`);
+      expect(branch).toBeGreaterThan(-1);
+      expect(fetch).toBeGreaterThan(branch);
+    }
+    // The relief flattens in the mips long before the tone does, so it goes
+    // first; both fades are ramps, not cuts, so nothing pops at the boundary.
+    expect(GROUND_GRAIN_RELIEF_FADE.start).toBeLessThan(GROUND_GRAIN_RELIEF_FADE.end);
+    expect(GROUND_GRAIN_RELIEF_FADE.end).toBeLessThan(GROUND_GRAIN_TONE_FADE.start);
+    expect(GROUND_GRAIN_TONE_FADE.start).toBeLessThan(GROUND_GRAIN_TONE_FADE.end);
+    // Past one period per footprint the layer's last mip is its mean.
+    expect(GROUND_GRAIN_TONE_FADE.end).toBeLessThan(1);
+    // Under the sea, by the still water level the wetness block also reads.
+    expect(GROUND_GRAIN_SEABED_FADE.start).toBeLessThan(GROUND_GRAIN_SEABED_FADE.end);
+    expect(plugin).toContain("uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);");
+  });
+
+  it("measures the footprint the sampler's mip choice follows", () => {
+    // Area over the major axis: the minor axis of the (limited) footprint.
+    expect(plugin).toContain(
+      "return abs(ddx.x * ddy.y - ddx.y * ddy.x) / max(major, 1e-9);",
+    );
+    const footprint = (dx: readonly [number, number], dy: readonly [number, number]) =>
+      Math.abs(dx[0] * dy[1] - dx[1] * dy[0]) / Math.max(Math.hypot(...dx), Math.hypot(...dy));
+    // An axis-aligned 1 x 8 footprint: the minor axis is 1.
+    expect(footprint([1, 0], [0, 8])).toBeCloseTo(1, 12);
+    // A circle stays its radius at any rotation.
+    expect(footprint([0.6, 0.8], [-0.8, 0.6])).toBeCloseTo(1, 12);
+  });
+
   it("mottles the distant canopy the handoff paints", () => {
     expect(plugin).toContain("vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy");
   });
@@ -164,10 +207,11 @@ describe("the shader reads the grain safely", () => {
   it("samples with explicit gradients, limited to the grain's own anisotropy", () => {
     // House rule since 2-8: any sample under a branch carries explicit
     // gradients. The grain's fetches go through the materials' limiter, at
-    // a lower cap: past 4:1 the extra taps only resolve zero-mean noise along
-    // the line of sight, and they were most of the grain's cost.
+    // a lower cap: the extra taps only resolve zero-mean noise along the line
+    // of sight, and they were most of the grain's cost. At 1 the reads are
+    // isotropic, one filtered tap each.
     expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeLessThan(DEFAULT_ANISOTROPY_LIMIT);
-    expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeGreaterThanOrEqual(2);
+    expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeGreaterThanOrEqual(1);
     // Limited once, in world space, then carried through each scale's frame
     // (a rotation times a uniform scale, which keeps the ratio).
     expect(plugin).toContain(

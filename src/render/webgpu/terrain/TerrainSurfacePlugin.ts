@@ -1579,6 +1579,10 @@ fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
  * hardware mip chain puts octaves right at the pixel at every footprint from
  * the 2 m shots to 10,000 ft, and none above it: no fade law, no shimmer.
  *
+ * The one fade law sits at the top of the chain, where the mips have already
+ * averaged a scale to its mean: it lets the shader skip the read there (see
+ * GROUND_GRAIN_TONE_FADE and GROUND_GRAIN_RELIEF_FADE), not hide shimmer.
+ *
  * Periods step by ~6.3x, not a power of two, so no scale's lattice lines up
  * with another's; the rotations avoid the de-tile warp's 13.7/61.2 degrees and
  * the meso band's 28/37. The finest period (26 m) puts the layer's broadest
@@ -1610,18 +1614,47 @@ export const GROUND_GRAIN_GAINS = Object.freeze({
 
 /**
  * Most anisotropy the grain's fetches ask the sampler for, where the
- * materials ask for the full `DEFAULT_ANISOTROPY_LIMIT`. The grain is
- * zero-mean noise: past a 4:1 footprint, the extra taps only resolve noise
- * along the line of sight at grazing angles, which the eye cannot see, while
- * each one is a full filtered read on every distant terrain pixel. The cloud
- * A/B put the first cut of the grain at +9 to +14% of GPU time, worst on the
- * grazing `cruise-horizon`. Capping at 4 pushes those reads 2 mips coarser
- * along the minor axis, which averages the grain toward its mean (no change)
- * rather than aliasing it. Measured on the same harness: -2.7% GPU time on
- * cruise-horizon, -3.0% on ground-2m-lowsun, frames SSIM 0.9999 against the
- * uncapped grain.
+ * materials ask for the full `DEFAULT_ANISOTROPY_LIMIT`. At 1 the reads are
+ * isotropic: one filtered tap each, at the mip the footprint's long axis
+ * picks. The grain is zero-mean noise, so along the line of sight at grazing
+ * angles the extra taps only resolve noise the eye cannot see, while each one
+ * is a full filtered read on every distant terrain pixel; the coarser mip
+ * averages the grain toward its mean (no change) rather than aliasing it.
+ * The materials keep their anisotropy, so ground detail at grazing angles is
+ * theirs, as it was before the grain.
+ *
+ * Measured on the cloud A/B (SwiftShader), main against the grain: the first
+ * cut cost +13.7% GPU time on `cruise-horizon`; a cap of 4 took that to
+ * +8.0%, and a cap of 1 with the relief fade to +4.0%, its frames 0.11/255
+ * from the cap-4 frames with no pixel past 4/255.
  */
-export const GROUND_GRAIN_ANISOTROPY_LIMIT = 4;
+export const GROUND_GRAIN_ANISOTROPY_LIMIT = 1;
+
+/**
+ * Where a scale's relief fades out, as its footprint (the limited minor axis,
+ * which sets the mip) in fractions of its period: from 1/32 to 1/8, mips 4 to
+ * 6 of a 512 layer. The relief is the grain's highest-frequency channel, and
+ * the box mips flatten it fast: the normal's x/y spread is 21% of mip 0's at
+ * mip 4, 13% at mip 5 and 4% at mip 6. Past the fade the gradient fetch is
+ * skipped, not just weighted to zero, so distant ground pays for tone only.
+ */
+export const GROUND_GRAIN_RELIEF_FADE = Object.freeze({ start: 1 / 32, end: 1 / 8 });
+
+/**
+ * Where a scale's tone, moisture and clumps fade out, by the same measure:
+ * from 0.35 to 0.71 of its period, mips 7.5 to 8.5 of a 512 layer. Tone keeps
+ * 46% of its mip-0 spread at mip 7 and 20% at mip 8 (moisture more, but the
+ * finest scale does not read it), and mip 9 is the single mean texel. Past
+ * the fade the albedo fetch is skipped too.
+ */
+export const GROUND_GRAIN_TONE_FADE = Object.freeze({ start: 0.35, end: 0.71 });
+
+/**
+ * Metres of sea over the ground across which the grain fades out. The water
+ * shades over the seabed and absorbs it, so past this the grain cannot show,
+ * and on the open-water shots the seabed is most of the terrain drawn.
+ */
+export const GROUND_GRAIN_SEABED_FADE = Object.freeze({ start: 1, end: 3 });
 
 function groundGrainScaleWgsl(index: number): string {
   const scale = GROUND_GRAIN_SCALES[index]!;
@@ -1662,6 +1695,13 @@ fn terrainGroundGrainLimit(worldDdx: vec2f, worldDdy: vec2f) -> mat2x2f {
     worldDdx, worldDdy, ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(1)});
 }
 
+// The limited footprint's minor axis in metres, which is what the sampler's
+// mip choice follows: the parallelogram's area over its major axis.
+fn terrainGroundGrainFootprint(ddx: vec2f, ddy: vec2f) -> f32 {
+  let major = max(length(ddx), length(ddy));
+  return abs(ddx.x * ddy.y - ddx.y * ddy.x) / max(major, 1e-9);
+}
+
 fn terrainGroundGrainFetch(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec4f {
   let texel = textureSampleGrad(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
     uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
@@ -1700,12 +1740,33 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   let terrainGrainUv0 = terrainGroundGrainUv0(terrainGrainXz);
   let terrainGrainUv1 = terrainGroundGrainUv1(terrainGrainXz);
   let terrainGrainUv2 = terrainGroundGrainUv2(terrainGrainXz);
-  let terrainGrain0 = terrainGroundGrainFetch(
-    terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
-  let terrainGrain1 = terrainGroundGrainFetch(
-    terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
-  let terrainGrain2 = terrainGroundGrainFetch(
-    terrainGrainUv2, terrainGroundGrainFrame2(), terrainGrainDdx, terrainGrainDdy);
+  // Each scale's share of the grain: none under a few metres of sea
+  // (GROUND_GRAIN_SEABED_FADE), and fading as its mips average it to the mean
+  // (GROUND_GRAIN_TONE_FADE). A zero share skips the fetch, and a skipped
+  // scale reads as zero, which every term below takes as "no change". The
+  // fetches take explicit gradients, so they are legal in these branches.
+  let terrainGrainFootprint = terrainGroundGrainFootprint(terrainGrainDdx, terrainGrainDdy);
+  let terrainGrainShown = 1.0 - smoothstep(
+    ${GROUND_GRAIN_SEABED_FADE.start.toFixed(1)}, ${GROUND_GRAIN_SEABED_FADE.end.toFixed(1)},
+    uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);
+  let terrainGrainShare0 = terrainGrainShown * (1.0 - smoothstep(${grainFade(0, GROUND_GRAIN_TONE_FADE)}, terrainGrainFootprint));
+  let terrainGrainShare1 = terrainGrainShown * (1.0 - smoothstep(${grainFade(1, GROUND_GRAIN_TONE_FADE)}, terrainGrainFootprint));
+  let terrainGrainShare2 = terrainGrainShown * (1.0 - smoothstep(${grainFade(2, GROUND_GRAIN_TONE_FADE)}, terrainGrainFootprint));
+  var terrainGrain0 = vec4f(0.0);
+  var terrainGrain1 = vec4f(0.0);
+  var terrainGrain2 = vec4f(0.0);
+  if (terrainGrainShare0 > 0.0) {
+    terrainGrain0 = terrainGrainShare0 * terrainGroundGrainFetch(
+      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+  }
+  if (terrainGrainShare1 > 0.0) {
+    terrainGrain1 = terrainGrainShare1 * terrainGroundGrainFetch(
+      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+  }
+  if (terrainGrainShare2 > 0.0) {
+    terrainGrain2 = terrainGrainShare2 * terrainGroundGrainFetch(
+      terrainGrainUv2, terrainGroundGrainFrame2(), terrainGrainDdx, terrainGrainDdy);
+  }
   // A planar xz read smears down a steep face, and on one the xz footprint
   // also understates the pixel; cliffs keep the material's triplanar detail.
   let terrainGrainFlat = 1.0 - smoothstep(0.45, 0.8, terrainSlope);
@@ -1731,11 +1792,22 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
     terrainGrainHue * (1.0 + terrainGrainToneGain * terrainGrainTone
       - terrainGrainClumpGain * terrainGrainClump));
   // Relief from the two finer scales only: the broadest is hill-sized, and
-  // the terrain mesh already shades hills.
-  let terrainGrainSlope = terrainGroundGrainGradient(
-      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy)
-    + 0.7 * terrainGroundGrainGradient(
+  // the terrain mesh already shades hills. Each fades out as its mips flatten
+  // it (GROUND_GRAIN_RELIEF_FADE), well before its tone does, and is not
+  // fetched past that.
+  let terrainGrainRelief0 = terrainGrainShown
+    * (1.0 - smoothstep(${grainFade(0, GROUND_GRAIN_RELIEF_FADE)}, terrainGrainFootprint));
+  let terrainGrainRelief1 = 0.7 * terrainGrainShown
+    * (1.0 - smoothstep(${grainFade(1, GROUND_GRAIN_RELIEF_FADE)}, terrainGrainFootprint));
+  var terrainGrainSlope = vec2f(0.0);
+  if (terrainGrainRelief0 > 0.0) {
+    terrainGrainSlope += terrainGrainRelief0 * terrainGroundGrainGradient(
+      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+  }
+  if (terrainGrainRelief1 > 0.0) {
+    terrainGrainSlope += terrainGrainRelief1 * terrainGroundGrainGradient(
       terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+  }
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;
   // Distant forest: the canopy handoff below paints one colour; this is the
@@ -1745,6 +1817,12 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
     * (vec3f(1.0) + vec3f(0.06, 0.0, -0.08) * terrainGrainMoisture));
 }
 `;
+
+/** A scale's fade bounds in metres of footprint, as smoothstep's first two arguments. */
+function grainFade(index: number, fade: { readonly start: number; readonly end: number }): string {
+  const period = GROUND_GRAIN_SCALES[index]!.periodMeters;
+  return `${(period * fade.start).toFixed(4)}, ${(period * fade.end).toFixed(4)}`;
+}
 
 function wgslGains(row: { vegetation: number; rock: number; snow: number; other: number }): string {
   return [row.vegetation, row.rock, row.snow, row.other].map((v) => v.toFixed(3)).join(", ");
