@@ -1206,6 +1206,21 @@ from those rounds read SAME in 99.7% of cases for GPU time at 5%, but in only
 sit apart with both running one renderer (below). So a CPU-side change is
 caught when it is large, and a small one is not ruled out.
 
+**Two browsers of one build differ a little.** With both arms one build, one
+browser can still sit a fixed fraction faster than the other for a whole run,
+and by another fraction in the next. On GitHub's Linux runner, where one
+round's GPU-time ratio scatters by only 0.1–0.3% on SwiftShader, the head's
+GPU time sat from −0.2% to +0.8% off the base's over nine A/A shots in two
+runs, and its CPU time 2–7% slower on every shot of one run and 0–7% faster on
+every shot of the other. On the macOS runner such offsets spread by about 1%
+in wall time and 3% in CPU time (standard deviations, over 15 A/A shots at 320
+rounds). More rounds measure an offset more precisely but do not shrink it, so
+the thresholds sit well clear of them: 5% is six times the largest offset in
+SwiftShader GPU time, while a threshold of 1% would be calling the browsers
+rather than the change. On the macOS runner an offset of 2–3% with an interval
+around it can still reach 5%, which is how an A/A shot reads INCONCLUSIVE
+there (below).
+
 **What it reports besides the verdict**, each of which is exact rather than
 statistical: per-frame work counts (draws, vertices, instances, dispatches,
 workgroups, attachment pixels, pipeline switches, uploads, creations) per pass
@@ -1275,6 +1290,27 @@ reads as SAME.
   runner rather than a ruling
   (`docs/evidence/perf-ab-pr20-sharpen-grain-2026-10-12.json`).
 
+**Measured on the Linux runner** (2026-10-12, `ubuntu-latest`: 4 CPUs,
+SwiftShader, 16 rounds, the five default shots). Like the macOS runner's
+below, both runs are A/As in effect: the base is `main`, and the head is the
+A/B's own branch, which changes no renderer code. Their figures are read from
+the job logs, which print every round
+(`docs/evidence/perf-ab-swiftshader-runner-2026-10-12.json`).
+
+- **The pull request's first complete run**: no regression. GPU time read SAME
+  on all five shots, from −0.2% to +0.8%; draw calls, work counts and pixels
+  were identical; CPU time read from −6.9% to −0.3%, inside the guard. One
+  round's GPU-time ratio scattered by 0.15–0.33%, a tenth or less of what it
+  does in a cloud session, so every interval was a few tenths of a point wide
+  and excluded zero: what they resolve there is the offset between the run's
+  two browsers (above). An earlier run, cancelled by a push after four shots,
+  read those four shots' GPU time 0.0% to +0.7% off and their CPU time 2–7%
+  slower.
+- **Two and a half hours in one job.** A frame cost 9.4–20 s of GPU time on
+  that runner, and 6.6–16 s on the cancelled run's, so a shot took 20–36
+  minutes: streaming, the settle and 16 rounds of four frames. The five took
+  8,993 s.
+
 **Measured on the macOS runner** (2026-10-12, `macos-latest`: Apple M1
 (Virtual), 3 CPUs, Chromium 151, Metal, on the five default shots unless
 fewer are named). Every run below is an A/A in effect: the base is `main`,
@@ -1298,30 +1334,33 @@ a cloud session, so the figures are read from the job logs
   Per second of runner time that is about three times the precision. Wall
   time still read INCONCLUSIVE on all three, +2.1% to +5.3% with intervals
   of ±4–5%; CPU time read SAME on two.
-- **One frame a turn, 320 rounds**, the default since, twice: dispatched on
-  the branch, then on the pull request. Frame wall time read SAME on nine of
-  the ten shots, from −1.6% to +2.1% with intervals of ±1.4–3.0%; the tenth,
-  `cruise-horizon` in the second run, read INCONCLUSIVE at +1.5% (−2.0% to
-  +5.2%), and its report asked for about 670 rounds. Each run took about 13
-  minutes. In the first, CPU time read the head 8.7% faster on
-  `approach-500ft` (−12.5% to −4.7%) with both arms one renderer; in the
-  second the same shot read +1.2% (−2.8% to +5.4%), and `ground-2m-lowsun`
-  the head 3.4% slower (+0.2% to +6.6%). Such offsets belong to a run's pair
-  of browsers, not to the shot, and more rounds would only measure them more
-  precisely, so CPU time is a guard at 15% here as on SwiftShader. Every CPU
-  interval of both runs sits inside it.
-- **One or two more resident terrain pages.** In every five-shot run the
-  head arm came to rest holding one or two more terrain pages than the base,
-  on 19 of the 20 shots (`residentTerrainPages: 36 → 37` and so on); in the
-  three-shot run never, nor in any SwiftShader run so far. A page stays in
-  the atlas until its slot is needed, so the count includes pages an arm's
-  stream wanted earlier and no longer does, and two browsers sharing three
-  CPUs need not stream alike. The report now gives the pages each arm wants
-  (`wantedTerrainPages`) beside a resident-page difference, and in the
-  second 320-round run both arms wanted the same pages on every shot (22 to
-  32): the extra page was left over from the head's stream. Draw calls and
-  GPU work counts were identical throughout, and at most 0.04% of a frame's
-  pixels differed (SSIM 1.0000).
+- **One frame a turn, 320 rounds**, the default since, three times: dispatched
+  on the branch, then twice on the pull request. Frame wall time read SAME on
+  12 of the 15 shots, from −1.8% to +2.1% with intervals of ±1.4–3.0%. The
+  other three read INCONCLUSIVE: `cruise-horizon` in the second run, +1.5%
+  (−2.0% to +5.2%), and in the third `cruise-horizon`, +3.0% (+0.4% to +5.8%),
+  and `forest-500ft-sunbehind`, −2.9% (−5.4% to −0.5%). Both of those
+  intervals exclude zero, the mark of an offset between the run's two browsers
+  (above), and more rounds narrow the interval around an offset without moving
+  it. Each run took 13–14 minutes. CPU time read the head 8.7% faster on
+  `approach-500ft` in the first run (−12.5% to −4.7%), 1.2% slower in the
+  second and 7.2% faster in the third, with both arms one renderer: offsets
+  again, which is why CPU time is a guard at 15% here as on SwiftShader. Every
+  CPU interval of the three runs sits inside it.
+- **Resident terrain pages differ; wanted pages do not.** In the first four
+  five-shot runs the head arm came to rest holding one or two more terrain
+  pages than the base on 19 of the 20 shots (`residentTerrainPages: 36 → 37`
+  and so on), and in the fifth the base held two to five more on all five;
+  in the three-shot run they never differed, nor in any SwiftShader run so
+  far. A page stays in the atlas until its slot is needed, so the count
+  includes pages an arm's stream wanted earlier and no longer does, and two
+  browsers sharing three CPUs need not stream alike: in the fifth run
+  `approach-500ft` streamed 420 frames in the base and 540 in the head. The
+  report gives the pages each arm wants (`wantedTerrainPages`) beside a
+  resident-page difference, and in both runs that had it, the two arms
+  wanted the same pages on every shot (22 to 32). Draw calls and GPU work
+  counts were identical throughout, and at most 0.04% of a frame's pixels
+  differed (SSIM 1.0000).
 
 **Where it runs.** `.github/workflows/perf-ab.yml` runs both hosts on every
 pull request that touches the renderer: `swiftshader` gates, and `hardware`
