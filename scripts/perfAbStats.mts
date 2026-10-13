@@ -4,11 +4,12 @@
  *
  * THE DESIGN, AND WHY.
  *
- * - **Paired, interleaved, same machine.** Both arms run in one browser on one
- *   host and take turns frame by frame (ABBA, then BAAB), so a host that slows
- *   down slows both arms, and a linear drift within a round cancels. A hosted
- *   runner's absolute speed varies by tens of per cent between machines; the
- *   ratio between two arms measured side by side does not.
+ * - **Paired, interleaved, same machine.** Both arms run on one host, in a
+ *   browser each, and take turns frame by frame (ABBA, then BAAB), so a host
+ *   that slows down slows both arms, and a linear drift within a round
+ *   cancels. A hosted runner's absolute speed varies by tens of per cent
+ *   between machines; the ratio between two arms measured side by side does
+ *   not.
  * - **The round is the unit, not the frame.** Consecutive frames of one arm
  *   share caches, clocks and whatever else the host is doing, so they are not
  *   independent samples, and treating 40 of them as 40 would make the test
