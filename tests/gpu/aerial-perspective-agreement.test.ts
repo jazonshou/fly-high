@@ -49,13 +49,19 @@ struct AerialUniforms {
 
 ${AERIAL_PERSPECTIVE_FUNCTIONS_WGSL}
 
+const TILTED_HORIZONTAL: f32 = 0.8;
+
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= arrayLength(&probes)) { return; }
   let probe = probes[id.x];
   let aerial = aerialPerspective(probe.x, probe.y, probe.z);
-  results[id.x * 2u] = vec4f(aerial.transmittance, 0.0);
-  results[id.x * 2u + 1u] = vec4f(aerial.inScatter, 0.0);
+  results[id.x * 4u] = vec4f(aerial.transmittance, 0.0);
+  results[id.x * 4u + 1u] = vec4f(aerial.inScatter, 0.0);
+  // The sky's form: the curvature tilt along the heading, two-point sun.
+  let tilted = aerialIntegral(probe.x, probe.y, probe.z, TILTED_HORIZONTAL, probe.w, true);
+  results[id.x * 4u + 2u] = vec4f(tilted.transmittance, 0.0);
+  results[id.x * 4u + 3u] = vec4f(tilted.inScatter, 0.0);
 }
 `;
 
@@ -92,14 +98,18 @@ interface Probe {
   readonly fragmentAltitude: number;
   readonly distance: number;
   readonly viewDotSun: number;
+  /** The heading's horizontal agreement with the sun, for the tilted form. */
+  readonly sunAlong: number;
 }
+
+const TILTED_HORIZONTAL = 0.8;
 
 function buildProbeGrid(): Probe[] {
   const probes: Probe[] = [];
   for (const fragmentAltitude of [0, 45, 1_500, 4_200, 11_000]) {
     for (const distance of [12, 900, 6_000, 21_000, 45_000]) {
       for (const viewDotSun of [-0.9, -0.2, 0.35, 0.97]) {
-        probes.push({ fragmentAltitude, distance, viewDotSun });
+        probes.push({ fragmentAltitude, distance, viewDotSun, sunAlong: viewDotSun });
       }
     }
   }
@@ -126,16 +136,19 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
         probeData[index * 4] = probe.fragmentAltitude;
         probeData[index * 4 + 1] = probe.distance;
         probeData[index * 4 + 2] = probe.viewDotSun;
+        probeData[index * 4 + 3] = probe.sunAlong;
       });
 
-      // Two camera altitudes: on the deck and in cruise. Each is one
-      // uniform payload and one dispatch over the whole probe grid.
-      for (const [cameraAltitude, weather] of [
-        [12, "clear"],
-        [8_500, "cloudy"],
+      // Two camera altitudes, on the deck and in cruise, and a +3 deg sun,
+      // where each point's own sun differs most from the camera's. Each is
+      // one uniform payload and one dispatch over the whole probe grid.
+      for (const [cameraAltitude, weather, solarTimeHours] of [
+        [12, "clear", 15],
+        [8_500, "cloudy", 15],
+        [12, "clear", 19.3788],
       ] as const) {
         const state = resolveEnvironmentState({
-          clock: { dayOfYear: 171, solarTimeHours: 15 },
+          clock: { dayOfYear: 171, solarTimeHours },
           latitudeDegrees: 45,
           weather,
         });
@@ -155,10 +168,10 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
         uniformBuffer.update(packedUniforms);
         const probeBuffer = new StorageBuffer(engine, probeData.byteLength);
         probeBuffer.update(probeData);
-        const resultBuffer = new StorageBuffer(engine, probes.length * 2 * 4 * 4);
+        const resultBuffer = new StorageBuffer(engine, probes.length * 4 * 4 * 4);
 
         const shader = new ComputeShader(
-          `aerial-agreement-${weather}`,
+          `aerial-agreement-${weather}-${solarTimeHours}`,
           engine,
           { computeSource: KERNEL_WGSL },
           {
@@ -177,35 +190,53 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
         await shader.dispatchWhenReady(Math.ceil(probes.length / 64), 1, 1);
         const view = await resultBuffer.read();
         engine.stopRenderLoop();
-        const gpu = new Float32Array(view.buffer, view.byteOffset, probes.length * 8);
+        const gpu = new Float32Array(view.buffer, view.byteOffset, probes.length * 16);
 
         probes.forEach((probe, index) => {
-          const expected = evaluateAerialPerspective(
-            binding.coefficients,
-            binding.cameraAltitudeMeters,
-            probe.fragmentAltitude,
-            probe.distance,
-            probe.viewDotSun,
-            binding.sunRadiance,
-            binding.ambient,
-            binding.sunDirection[1],
-          );
-          const context = `${weather} camera ${cameraAltitude} probe ${index}`;
-          for (let channel = 0; channel < 3; channel += 1) {
-            const gpuTransmittance = gpu[index * 8 + channel]!;
-            const gpuInScatter = gpu[index * 8 + 4 + channel]!;
-            // Transmittance lives in [0, 1]: 1% absolute IS 1% of full scale.
-            expect(
-              Math.abs(gpuTransmittance - expected.transmittance[channel]!),
-              `transmittance ${context} channel ${channel}`,
-            ).toBeLessThan(0.01);
-            // In-scatter is HDR: relative with a small absolute floor.
-            const tolerance = Math.max(0.01 * Math.abs(expected.inScatter[channel]!), 0.0015);
-            expect(
-              Math.abs(gpuInScatter - expected.inScatter[channel]!),
-              `inScatter ${context} channel ${channel}`,
-            ).toBeLessThan(tolerance);
-          }
+          const forms = [
+            evaluateAerialPerspective(
+              binding.coefficients,
+              binding.cameraAltitudeMeters,
+              probe.fragmentAltitude,
+              probe.distance,
+              probe.viewDotSun,
+              binding.sunRadiance,
+              binding.ambient,
+              binding.sunDirection[1],
+            ),
+            evaluateAerialPerspective(
+              binding.coefficients,
+              binding.cameraAltitudeMeters,
+              probe.fragmentAltitude,
+              probe.distance,
+              probe.viewDotSun,
+              binding.sunRadiance,
+              binding.ambient,
+              binding.sunDirection[1],
+              { horizontal: TILTED_HORIZONTAL, sunAlong: probe.sunAlong },
+              2,
+            ),
+          ];
+          forms.forEach((expected, form) => {
+            const context = `${weather} ${solarTimeHours} h camera ${cameraAltitude} probe ${index}`
+              + (form === 1 ? " (tilted)" : "");
+            const base = index * 16 + form * 8;
+            for (let channel = 0; channel < 3; channel += 1) {
+              const gpuTransmittance = gpu[base + channel]!;
+              const gpuInScatter = gpu[base + 4 + channel]!;
+              // Transmittance lives in [0, 1]: 1% absolute IS 1% of full scale.
+              expect(
+                Math.abs(gpuTransmittance - expected.transmittance[channel]!),
+                `transmittance ${context} channel ${channel}`,
+              ).toBeLessThan(0.01);
+              // In-scatter is HDR: relative with a small absolute floor.
+              const tolerance = Math.max(0.01 * Math.abs(expected.inScatter[channel]!), 0.0015);
+              expect(
+                Math.abs(gpuInScatter - expected.inScatter[channel]!),
+                `inScatter ${context} channel ${channel}`,
+              ).toBeLessThan(tolerance);
+            }
+          });
         });
 
         uniformBuffer.dispose();
