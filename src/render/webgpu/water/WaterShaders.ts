@@ -3770,6 +3770,26 @@ export const WATER_SUN_SPECULAR_WGSL = /* wgsl */ `fn sunSpecular(normal: vec3f,
  *     makes the roughness lanes VISIBLE (a rougher lane is a darker, bluer
  *     lane, the classic cat's paw) and what puts the horizon sea below the
  *     horizon sky in brightness, as it is in every photograph.
+ *
+ * (5) THE VISIBLE FACETS' SKY. The same bias moves WHERE the sea looks, not
+ *     only how much it reflects. The facets a grazing viewer sees are tilted
+ *     toward it, and a facet tilted by s turns the reflected ray up by 2s, so
+ *     a rough sea at the horizon reflects the sky well above the horizon, not
+ *     the horizon itself. A Monte Carlo over Gaussian slopes, weighting each
+ *     visible facet by its projected area, its Schlick Fresnel and the Smith
+ *     masking of its reflected ray, puts the mean reflected elevation of a
+ *     5 m/s sea (RMS 0.169) at 13.9° for a 0.5° depression, 14.8° at 10° and
+ *     18.6° at 20°, joining the mirror (a little below it, where the Fresnel
+ *     favours the facets tilted away) by 45°. Reflecting the horizon instead
+ *     is why the far sea read as the colour of the haze, a grey slate, where
+ *     every photograph shows it as the bluer sky some degrees up.
+ *     `waterFacetReflectionSine` is a fit to that table over RMS 0.03-0.3:
+ *     a fourth-power smooth maximum of the mirror (pulled down by the
+ *     Fresnel bias) and a plateau of 2.08·σ/(1 + 2.74·σ), within 0.72° below
+ *     a 14° depression and 2.0° anywhere. It is exact at σ = 0, where the sea
+ *     is a mirror. The ocean's sky probe and terrain occlusion read the
+ *     lifted ray; the sun lobe keeps its own microfacet distribution, which
+ *     already integrates the same facets.
  * ===========================================================================
  */
 
@@ -4020,6 +4040,15 @@ export const WATER_ROUGH_FRESNEL_WINDOW = Object.freeze([0.05, 0.45] as const);
  * not past what any wind produces.
  */
 export const WATER_ROUGH_FRESNEL_MAX_VARIANCE = 0.09;
+/**
+ * The visible-facet reflection fit (see WATER_FAR_FIELD_WGSL (5)): the
+ * plateau a rough sea's reflected sky sits at near the horizon, in sine units,
+ * is PLATEAU·σ/(1 + KNEE·σ), and the mirror branch is pulled down by
+ * FRESNEL_PULL·σ·(1 − sin) where the Fresnel favours the facets tilted away.
+ */
+export const WATER_FACET_REFLECTION_PLATEAU = 2.08;
+export const WATER_FACET_REFLECTION_KNEE = 2.74;
+export const WATER_FACET_REFLECTION_FRESNEL_PULL = 1.09;
 
 /** CPU mirror of `waterSparkleExponent`. */
 export function waterSparkleExponent(expectedCount: number): number {
@@ -4204,6 +4233,15 @@ export function waterRoughFresnelCosine(cosTheta: number, rmsSlope: number): num
   ), 1);
   const grazing = 1 - t * t * (3 - 2 * t);
   return Math.min(cos + tilt * (1 - cos) * grazing, 1);
+}
+
+/** CPU mirror of `waterFacetReflectionSine`. */
+export function waterFacetReflectionSine(mirrorSine: number, rmsSlope: number): number {
+  const sine = Math.min(Math.max(mirrorSine, 0), 1);
+  const rms = Math.max(rmsSlope, 0);
+  const mirror = sine * (1 - WATER_FACET_REFLECTION_FRESNEL_PULL * rms * (1 - sine));
+  const plateau = WATER_FACET_REFLECTION_PLATEAU * rms / (1 + WATER_FACET_REFLECTION_KNEE * rms);
+  return Math.min(Math.sqrt(Math.sqrt(mirror ** 4 + plateau ** 4)), 1);
 }
 
 /**
@@ -4501,6 +4539,29 @@ fn waterRoughInterfaceFresnel(normal: vec3f, view: vec3f, cameraBelow: bool, rms
     return waterInterfaceFresnel(normal, view, cameraBelow);
   }
   return fresnelSchlick(waterRoughFresnelCosine(dot(normal, view), rmsSlope), vec3f(0.0204));
+}
+
+// The sine of the mean sky a rough interface reflects, above the plane of the
+// resolved normal, for a mirror ray at mirrorSine. See (5).
+fn waterFacetReflectionSine(mirrorSine: f32, rmsSlope: f32) -> f32 {
+  let sine = clamp(mirrorSine, 0.0, 1.0);
+  let rms = max(rmsSlope, 0.0);
+  let mirror = sine * (1.0 - ${WATER_FACET_REFLECTION_FRESNEL_PULL.toFixed(2)} * rms * (1.0 - sine));
+  let plateau = ${WATER_FACET_REFLECTION_PLATEAU.toFixed(2)} * rms / (1.0 + ${WATER_FACET_REFLECTION_KNEE.toFixed(2)} * rms);
+  let mirror2 = mirror * mirror;
+  let plateau2 = plateau * plateau;
+  return min(sqrt(sqrt(mirror2 * mirror2 + plateau2 * plateau2)), 1.0);
+}
+
+// The mirror ray turned, in its own plane of incidence, to the visible
+// facets' mean elevation. At normal incidence the tangent vanishes and the
+// lifted sine is 1, so the ray is the normal either way.
+fn waterFacetReflection(mirror: vec3f, normal: vec3f, rmsSlope: f32) -> vec3f {
+  let sine = clamp(dot(mirror, normal), 0.0, 1.0);
+  let lifted = waterFacetReflectionSine(sine, rmsSlope);
+  let tangent = mirror - normal * sine;
+  let scale = sqrt(max(1.0 - lifted * lifted, 0.0)) / max(length(tangent), 1e-6);
+  return normalize(tangent * scale + normal * lifted);
 }`;
 
 /**

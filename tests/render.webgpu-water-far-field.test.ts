@@ -4,6 +4,9 @@ import {
   WATER_VERTEX_WGSL,
 } from "../src/render/webgpu/water/SpectralOceanSystem";
 import {
+  WATER_FACET_REFLECTION_FRESNEL_PULL,
+  WATER_FACET_REFLECTION_KNEE,
+  WATER_FACET_REFLECTION_PLATEAU,
   WATER_FAR_FIELD_WGSL,
   WATER_FAR_GUST_COARSE_METERS,
   WATER_FAR_GUST_DRIFT_FRACTION,
@@ -27,6 +30,7 @@ import {
   WATER_WHITECAP_FOOTPRINT_LOW,
   WATER_WHITECAP_LIFETIME_SECONDS,
   WATER_WHITECAP_PATCH_AREA_M2,
+  waterFacetReflectionSine,
   waterFarHash,
   waterGgxDistribution,
   waterGlintCell,
@@ -449,5 +453,61 @@ describe("lattice fade keyed on ring radius", () => {
     expect(WATER_VERTEX_WGSL).toContain("let meshFade4 = fade4 * cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadius4);");
     expect(WATER_VERTEX_WGSL).toContain("cascadeFade(slantRange, uniforms.cascadeFadeRadii0.x)");
     expect(WATER_VERTEX_WGSL).not.toContain("cascadeFade(slantRange, min(");
+  });
+});
+
+describe("the visible facets' sky", () => {
+  const degrees = (sine: number) => (Math.asin(sine) * 180) / Math.PI;
+  const sine = (deg: number) => Math.sin((deg * Math.PI) / 180);
+  // Mean reflected elevation (deg) of Gaussian slopes at RMS σ, each visible
+  // facet weighted by its projected area, its Schlick Fresnel and the Smith
+  // masking of its reflected ray: 300 000 facets per entry.
+  const MONTE_CARLO: ReadonlyArray<readonly [rms: number, depression: number, elevation: number]> = [
+    [0.06, 0.5, 5.72], [0.06, 5, 7.11], [0.06, 10, 10.29], [0.06, 20, 19.26],
+    [0.1, 0.5, 9.0], [0.1, 10, 11.74],
+    [0.169, 0.5, 13.85], [0.169, 2, 13.71], [0.169, 5, 13.88], [0.169, 10, 14.84],
+    [0.169, 14, 16.07], [0.169, 20, 18.6], [0.169, 30, 25.56], [0.169, 45, 43.22],
+    [0.25, 0.5, 18.17], [0.25, 10, 18.14],
+    [0.3, 0.5, 20.39], [0.3, 7, 19.78], [0.3, 14, 20.4], [0.3, 30, 26.74],
+  ];
+
+  it("is the mirror on a smooth interface", () => {
+    for (const s of [0, 0.01, 0.2, 0.5, 0.9, 1]) {
+      expect(waterFacetReflectionSine(s, 0)).toBeCloseTo(s, 12);
+    }
+  });
+
+  it("follows the Monte Carlo: within 0.75 deg below a 14 deg depression and 2 deg anywhere", () => {
+    for (const [rms, depression, elevation] of MONTE_CARLO) {
+      const fitted = degrees(waterFacetReflectionSine(sine(depression), rms));
+      expect(Math.abs(fitted - elevation)).toBeLessThan(depression <= 14 ? 0.75 : 2.0);
+    }
+  });
+
+  it("lifts a grazing ray further on a rougher sea, and never past the zenith", () => {
+    const grazing = (rms: number) => waterFacetReflectionSine(sine(0.5), rms);
+    expect(grazing(0.1)).toBeGreaterThan(grazing(0.05));
+    expect(grazing(0.2)).toBeGreaterThan(grazing(0.1));
+    expect(grazing(0.3)).toBeGreaterThan(grazing(0.2));
+    // A 5 m/s sea (Cox-Munk RMS 0.169) at the horizon reflects the sky ~14 deg up.
+    expect(degrees(grazing(Math.sqrt(0.003 + 0.00512 * 5)))).toBeGreaterThan(13);
+    for (const s of [0.9, 0.99, 1]) {
+      expect(waterFacetReflectionSine(s, 0.3)).toBeLessThanOrEqual(1);
+    }
+    expect(WATER_FACET_REFLECTION_PLATEAU).toBeGreaterThan(WATER_FACET_REFLECTION_KNEE * 0.5);
+    expect(WATER_FACET_REFLECTION_FRESNEL_PULL).toBeGreaterThan(0);
+  });
+
+  it("feeds the ocean's sky probe, fallback and terrain occlusion the lifted ray, and keeps the mirror from below", () => {
+    expect(WATER_FAR_FIELD_WGSL).toContain("fn waterFacetReflectionSine(mirrorSine: f32, rmsSlope: f32) -> f32 {");
+    expect(WATER_FAR_FIELD_WGSL).toContain("let mirror = sine * (1.0 - 1.09 * rms * (1.0 - sine));");
+    expect(WATER_FAR_FIELD_WGSL).toContain("let plateau = 2.08 * rms / (1.0 + 2.74 * rms);");
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "let skyDirection = select(\n    waterFacetReflection(\n      reflectionDirection,\n      normal,\n      sqrt(min(slopeVariance, 0.090)),\n    ),\n    reflectionDirection,\n    cameraBelow,\n  );",
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain("let analyticSky = reflectedSky(skyDirection);");
+    expect(WATER_FRAGMENT_WGSL).toContain("environmentCubeSampler,\n    skyDirection,\n    environmentRoughnessToMip(roughness),");
+    expect(WATER_FRAGMENT_WGSL).toContain("let terrainVisibility = oceanTerrainVisibility(\n    skyDirection,");
+    expect(WATER_FRAGMENT_WGSL).not.toContain("reflectedSky(reflectionDirection)");
   });
 });
