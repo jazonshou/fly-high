@@ -2015,3 +2015,37 @@ So the grain is the cost and the sharpen is noise; the cost is spread across the
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery, so this PR's frame time on the reference adapter is still unmeasured.
 
 What a re-baseline needs to confirm: the tier-1 frame p95 on the terrain-heavy shots (`terrain-material-1600ft-down`, `veg-seam-1600ft-oblique`, `high-10000ft-down`, `approach-500ft`) moves by no more than the sharpen pass plus five fetches, and every shot's draw count rises by exactly one (now pinned, above).
+
+## Re-promotion 2026-10-17 — sunset sky (each point's own sun)
+
+PR #22 lights each point of the haze and the sky with the sun that point sees, instead of one sun transmittance taken at the camera. At a low sun this turns main's brown and pink smog into a blue zenith over a gold horizon. Across sun sines 0.45-0.55 (26.7-33.4°) every path's sun blends to the camera's, so above that window noon frames are main's again.
+
+- **What it costs.** All of it is in the shared aerial block (`atmosphere/AerialPerspective.ts`), which the sky dome, terrain, ocean, rivers, the cloud composite and light points all include. Each species' sun is evaluated at its scattering centroid: a Chapman column for both species from one exponential, an ozone slant, and the Earth's curvature tilt by series terms. That is two evaluations per fragment for a surface or a cloud, and four for the sky (a two-point Gauss-Laguerre pair per species). A real GPU skips them above the window, where a uniform branch takes the camera's sun; SwiftShader does not skip them. No new uniforms, textures, passes or memory.
+- **Draw calls unchanged**: all 32 ceiling shots read exactly their ceiling (run 39005416151).
+
+**The A/B gate** (perf-ab on GitHub's Linux runner, SwiftShader GPU time against main):
+
+| head | `approach-500ft` | `cruise-horizon` | `forest-500ft-sunbehind` | `ground-2m-lowsun` | `water-25ft` |
+| --- | --- | --- | --- | --- | --- |
+| `4d4a7ab` (run 38993059756): per-point sun at every sun height | +2.9% | +4.7% | +4.3% | +3.0% | +3.9% |
+| `42bf9f6` (run 38997844652): the sky's pair switched off above 30° on a uniform | | +5.1%, failed | | | |
+| `d19b591` (run 39001012484): the haze's shortcuts switched on uniforms too | +7.7% | +10.1% | +9.3% | +7.5% | +9.9% |
+| `e1407b8` (run 39005416166): no runtime branches, cheaper evaluations | +1.4% | +4.5% | +2.4% | +1.9% | +3.7% |
+
+The lesson: **SwiftShader executes both sides of every branch, a uniform's included** (a zero-trip loop as well, measured on a compute microbenchmark). So the 30° switches, written to save work on a real GPU, added the shortcut's work to the full evaluation on CI. `e1407b8` removes every runtime branch from the per-point sun: the sky's pair is a literal, the Chapman column selects its side, and series terms and squarings replace trig and `pow`. It also shares one exponential between the two species' densities, since their scale heights split 24 km into 3 and 20. The macOS runner's advisory A/B on the same head read +0.8% to +2.2%, all SAME.
+
+**All thirty-nine baselines promoted 2026-10-17 from the hosted macOS runner**, the same way as 2026-10-13. Source: PR #22's capture at `e1407b8` (gpu-tests run 39005416151, artifact `perf-capture-39005416151-1`, zip sha256 `c37db853dc412c29…`). Jason approved the low-sun look from the PR's before/after frames. Reproducibility: every shot with a sun below the window is identical, at 0.012/255 or less, to the capture at `42bf9f6` (run 38997844652), whose per-point sun there is the same math before the cost rewrite.
+
+By shot, committed baselines → this capture:
+
+| shots | mean abs diff /255 | pixels past 4/255 |
+| --- | --- | --- |
+| the largest five, all low sun: `hills-dusk-glint`, `coast-10km-lowsun`, `water-400ft-glitter`, `water-25ft`, `winter-noon` | 17.5-21.8 | 95-99.9% |
+| the other shots with a sun below 33°: `water-3m`, `golden-hour`, `forest-500ft-sunbehind`, `horizon-shadow-far-annulus`, `canopy-backlit-lowsun`, `grove-meadow-2m`, `ground-2m-lowsun`, `mountain-close`, `cruise-sun-30` | 3.8-14.0 | 69-99.9% |
+| the high-sun shots: approach, cruise, terrain, vegetation, airport | 0.24-1.82 | 0.06-9.2% |
+| `night-moonlit`, `night-beacon-offset`: the moon's light through the same per-point column | 1.06 | 20% |
+| `night`, `blue-hour`, `sunset-sunward`, `dusk-mesopic` | 0.03-0.32 | 0.34% or less |
+
+**Why all thirty-nine.** The window changes every shot with a sun below 33°, and the high-sun shots carry the runner's own drift since `7eca23c`. Promoting from one capture keeps the set consistent, as on 2026-10-13.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
