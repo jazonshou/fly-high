@@ -269,17 +269,19 @@ describe("water shader extraction (2-8a)", () => {
     // warm, sun-reddened haze. Deliberate, named, reviewed. Re-pinned again
     // when the sky integral kept its two-point sun only below a 30 deg sun:
     // skyRadiance lives in the same shared block, and above 30 deg the sky
-    // moves by under 1.2%. Re-pinned a third time when surfaces above a
-    // 30 deg sun took the camera's sun for their haze (aerialHazeSunSamples):
-    // the ocean's own haze moves by under 1.5% of its in-scatter. The same
-    // commit swapped the curvature trig, the path centroid and the visible
-    // fraction for series on short paths, exact in f32 where the closed
-    // forms lost digits.
+    // moves by under 1.2%. Re-pinned a third time when every path's sun
+    // blended to the camera's above a 27 deg sun (aerialCameraSunWeight; the
+    // ocean's own haze moves by under 2.2% of its in-scatter) and the block
+    // was rewritten for SwiftShader, which runs both sides of every branch:
+    // the sky's two-point sun is a literal, the Chapman column selects its
+    // side, one exponential gives both species' density, and series terms
+    // and squarings replace the curvature trig and pow. Below the window the
+    // water moves by float rounding only.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "8305baf390f66cc01635738f0d1f02af7656f8cb98490cf2fa06a4410089f67d",
+      "e320868c558072061b88b7ba1ad58f94538841b239420d11e6721a74aa5ac6e7",
     );
   });
 

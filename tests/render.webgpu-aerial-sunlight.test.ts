@@ -8,14 +8,14 @@ import {
   sunTransmittanceAt,
 } from "../src/render/webgpu/atmosphere/AerialSunlight";
 import {
-  AERIAL_HAZE_PER_POINT_SINE,
+  AERIAL_CAMERA_SUN_WINDOW,
+  AERIAL_NO_TRAVEL,
   AERIAL_PERSPECTIVE_WGSL,
   AERIAL_PHYSICAL_RELEASE_SINE,
   AERIAL_REFERENCE_SUN_COS,
   AERIAL_SCENE_PEAK_SUN,
   AERIAL_SKY_SHELL_METERS,
-  AERIAL_SKY_TWO_POINT_SINE,
-  aerialHazeSunSamples,
+  aerialCameraSunWeight,
   aerialPerspectiveCoefficients,
   aerialPhysicalBalance,
   aerialPhysicalGate,
@@ -220,77 +220,136 @@ describe("the low-sun sky", () => {
   });
 });
 
-describe("the sky's two-point sun", () => {
-  it("is mirrored in WGSL and switched on a uniform", () => {
-    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
-      `const AERIAL_SKY_TWO_POINT_SINE: f32 = ${AERIAL_SKY_TWO_POINT_SINE.toFixed(1)};`,
+describe("the GPU's sun, cheap on a software rasteriser", () => {
+  // SwiftShader (the CI's GPU) runs both sides of every branch, a uniform's
+  // included, so the per-point sun is written without any it can't fold.
+  it("picks the sky's two-point quadrature with a literal, never a uniform", () => {
+    expect(AERIAL_PERSPECTIVE_WGSL).not.toContain("AERIAL_SKY_TWO_POINT_SINE");
+    const sky = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("let aerial = aerialIntegral(", AERIAL_PERSPECTIVE_WGSL.indexOf("fn skyRadiance(")),
     );
-    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
-      "uniforms.aerialSunDirection.y < AERIAL_SKY_TWO_POINT_SINE",
-    );
+    expect(sky.slice(0, sky.indexOf(");")).trimEnd()).toMatch(/,\s*true,$/);
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("return aerialIntegral(fragmentAltitude, distanceMeters, viewDotSun, 0.0, 0.0, false);");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("dot(viewDirection, uniforms.aerialSunDirection), horizontal, sunAlong, false);");
+    // The TS mirror: the sky is the two-point integral at every sun.
+    for (const elevationDegrees of [3, 45]) {
+      const binding = resolveAerialPerspectiveBinding(stateWithSunAt(elevationDegrees), 150, [1, 0.9, 0.8], [0.6, 0.7, 0.9], 0.9);
+      const direction: Rgb = [0.6, 0.8, 0];
+      const mu = direction[0] * binding.sunDirection[0] + direction[1] * binding.sunDirection[1];
+      const twoPoint = evaluateAerialPerspective(
+        binding.coefficients,
+        150,
+        AERIAL_SKY_SHELL_METERS,
+        (AERIAL_SKY_SHELL_METERS - 150) / 0.8,
+        mu,
+        binding.sunRadiance,
+        binding.ambient,
+        binding.sunDirection[1],
+        { horizontal: 0.6, sunAlong: aerialTravelFor(direction, binding.sunDirection).sunAlong },
+        2,
+      ).inScatter;
+      expect(evaluateSkyRadiance(binding, direction)).toEqual(twoPoint);
+    }
   });
 
-  it("switches to one point above 30 deg without a visible step", () => {
-    // Just either side of the switch: the same sky to within 1.5% anywhere.
-    const below = Math.asin(AERIAL_SKY_TWO_POINT_SINE - 1e-6) * (180 / Math.PI);
-    const above = Math.asin(AERIAL_SKY_TWO_POINT_SINE + 1e-6) * (180 / Math.PI);
-    const twoPoint = resolveAerialPerspectiveBinding(stateWithSunAt(below), 150, [1, 0.9, 0.8], [0.6, 0.7, 0.9], 0.9);
-    const onePoint = resolveAerialPerspectiveBinding(stateWithSunAt(above), 150, [1, 0.9, 0.8], [0.6, 0.7, 0.9], 0.9);
-    for (const elevation of [1, 5, 20, 35, 60, 90]) {
-      for (const azimuth of [0, 45, 90, 180]) {
-        const e = (elevation * Math.PI) / 180;
-        const a = (azimuth * Math.PI) / 180;
-        const direction: Rgb = [Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a)];
-        const ratio = luminance(evaluateSkyRadiance(onePoint, direction))
-          / luminance(evaluateSkyRadiance(twoPoint, direction));
-        expect(Math.abs(ratio - 1), `elevation ${elevation} azimuth ${azimuth}`).toBeLessThan(0.015);
-      }
+  it("tilts each point's sun with series terms, not trig", () => {
+    const sun = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialSunAtFraction("),
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialSunAlongPath("),
+    );
+    expect(sun).toContain("min(distanceMeters * fraction * horizontal / AERIAL_PLANET_RADIUS, 1.0)");
+    expect(sun).not.toMatch(/\b(cos|sin)\(/);
+    expect(sun).not.toContain("if (");
+    // At the 1 rad clamp the terms are within 0.0014 of cos and 0.0002 of sin.
+    const cosAngle = 1 - (0.5 - 1 / 24);
+    const sinAngle = 1 - (1 / 6 - 1 / 120);
+    expect(Math.abs(cosAngle - Math.cos(1))).toBeLessThan(0.0014);
+    expect(Math.abs(sinAngle - Math.sin(1))).toBeLessThan(0.0002);
+  });
+
+  it("selects the Chapman column's side instead of branching to it", () => {
+    const sun = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialSunTransmittanceAt("),
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPathCentroids("),
+    );
+    expect(sun).not.toContain("if (");
+    expect(sun).toContain("let column = select(below, slant, cosZenith >= 0.0);");
+    // Both sides share one slant toward |mu|: below the horizon it is the
+    // column the ray would carry looking back up.
+    for (const scaleHeight of [RAYLEIGH_SCALE_HEIGHT_METERS, MIE_SCALE_HEIGHT_METERS]) {
+      const up = chapmanColumn(scaleHeight, 10_000, 0.02);
+      const down = chapmanColumn(scaleHeight, 10_000, -0.02);
+      const radius = AERIAL_PLANET_RADIUS_METERS + 10_000;
+      const tangentRadius = radius * Math.sqrt(1 - 0.02 * 0.02);
+      const tangent = Math.sqrt((Math.PI * tangentRadius) / (2 * scaleHeight))
+        * Math.exp(-(tangentRadius - AERIAL_PLANET_RADIUS_METERS) / scaleHeight);
+      expect(down).toBeCloseTo(2 * tangent - up, 9);
     }
-    // Above the switch the sky IS the one-point integral.
-    const direction: Rgb = [0.6, 0.8, 0];
-    const mu = direction[0] * onePoint.sunDirection[0] + direction[1] * onePoint.sunDirection[1];
-    const single = evaluateAerialPerspective(
-      onePoint.coefficients,
-      150,
-      AERIAL_SKY_SHELL_METERS,
-      (AERIAL_SKY_SHELL_METERS - 150) / 0.8,
-      mu,
-      onePoint.sunRadiance,
-      onePoint.ambient,
-      onePoint.sunDirection[1],
-      { horizontal: 0.6, sunAlong: aerialTravelFor(direction, onePoint.sunDirection).sunAlong },
-      1,
-    ).inScatter;
-    expect(evaluateSkyRadiance(onePoint, direction)).toEqual(single);
+  });
+
+  it("gets both species' density from one exponential, since their scale heights split 24 km", () => {
+    expect(24_000 / RAYLEIGH_SCALE_HEIGHT_METERS).toBe(3);
+    expect(24_000 / MIE_SCALE_HEIGHT_METERS).toBe(20);
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      `const AERIAL_SPECIES_SCALE: vec2f = vec2f(${RAYLEIGH_SCALE_HEIGHT_METERS}.0, ${MIE_SCALE_HEIGHT_METERS}.0);`,
+    );
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("const AERIAL_DECAY_UNIT: f32 = 24000.0;");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("let rayleigh = unit2 * unit;");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("let mie = unit10 * unit10;");
+    const tangent = /const AERIAL_SPECIES_TANGENT: vec2f = vec2f\(([\d.]+), ([\d.]+)\);/
+      .exec(AERIAL_PERSPECTIVE_WGSL);
+    expect(Number(tangent![1])).toBeCloseTo(Math.sqrt(Math.PI / (2 * RAYLEIGH_SCALE_HEIGHT_METERS)), 9);
+    expect(Number(tangent![2])).toBeCloseTo(Math.sqrt(Math.PI / (2 * MIE_SCALE_HEIGHT_METERS)), 9);
+    // No pow: it is a log and an exponential per call on SwiftShader.
+    expect(AERIAL_PERSPECTIVE_WGSL).not.toMatch(/\bpow\(/);
   });
 });
 
-describe("the surface haze above a 30 deg sun", () => {
-  it("is mirrored in WGSL, switched on a uniform, and leaves clouds and sky per point", () => {
-    expect(AERIAL_HAZE_PER_POINT_SINE).toBe(0.5);
-    expect(aerialHazeSunSamples(0.5)).toBe(0);
-    expect(aerialHazeSunSamples(0.4999)).toBe(1);
-    expect(AERIAL_PERSPECTIVE_WGSL).toContain("const AERIAL_HAZE_PER_POINT_SINE: f32 = 0.5;");
+describe("the camera's sun above a 27 deg sun", () => {
+  it("is mirrored in WGSL and blends on a uniform, so no draw diverges and above 33 deg a GPU skips it", () => {
+    expect(AERIAL_CAMERA_SUN_WINDOW).toEqual([0.45, 0.55]);
+    expect(aerialCameraSunWeight(0.45)).toBe(0);
+    expect(aerialCameraSunWeight(0.3)).toBe(0);
+    expect(aerialCameraSunWeight(0.5)).toBeCloseTo(0.5, 12);
+    expect(aerialCameraSunWeight(0.55)).toBe(1);
+    expect(aerialCameraSunWeight(0.9)).toBe(1);
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("const AERIAL_CAMERA_SUN_LOW: f32 = 0.45;");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("const AERIAL_CAMERA_SUN_HIGH: f32 = 0.55;");
     expect(AERIAL_PERSPECTIVE_WGSL).toContain(
-      "select(1, 0, uniforms.aerialSunDirection.y >= AERIAL_HAZE_PER_POINT_SINE)",
+      "smoothstep(AERIAL_CAMERA_SUN_LOW, AERIAL_CAMERA_SUN_HIGH, uniforms.aerialSunDirection.y)",
     );
-    const along = AERIAL_PERSPECTIVE_WGSL.slice(
-      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPerspectiveAlong("),
-      AERIAL_PERSPECTIVE_WGSL.indexOf("fn applyAerialPerspective("),
-    );
-    expect(along).toContain("aerialHazeSunSamples()");
-    const plain = AERIAL_PERSPECTIVE_WGSL.slice(
-      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPerspective("),
-      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPerspectiveAlong("),
-    );
-    expect(plain).toContain("aerialIntegral(fragmentAltitude, distanceMeters, viewDotSun, 0.0, 0.0, false)");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("if (cameraWeight < 1.0) {");
+    // One integral for every consumer: surfaces, clouds and light points, the sky.
+    expect(AERIAL_PERSPECTIVE_WGSL).not.toContain("aerialIntegralSampled");
+    // Defined once and read once.
+    expect(AERIAL_PERSPECTIVE_WGSL.split("aerialCameraSunWeight()").length).toBe(3);
   });
 
-  // Worst: a hill 600 m above a camera on the ground, 2 km sunward, at 30 deg
-  // (2.4%); level and descending paths stay under 1.5%.
-  it("lights a surface's path with the camera's sun within 3% of each point's own", () => {
-    let worst = 0;
-    for (const elevation of [30, 45, 68]) {
+  it("does not step as the sun crosses the window", () => {
+    const sunColor: Rgb = [1, 0.96, 0.88];
+    const skyHorizon: Rgb = [0.58, 0.77, 0.96];
+    const direction: Rgb = [0.94, 0.34, 0];
+    for (const sine of [0.45, 0.55]) {
+      const elevation = (degrees: number) => resolveAerialPerspectiveBinding(
+        stateWithSunAt(degrees), 152, sunColor, skyHorizon, 1,
+      );
+      const at = (Math.asin(sine) * 180) / Math.PI;
+      const a = luminance(evaluateSkyRadiance(elevation(at - 0.01), direction));
+      const b = luminance(evaluateSkyRadiance(elevation(at + 0.01), direction));
+      expect(Math.abs(b / a - 1)).toBeLessThan(0.002);
+    }
+  });
+
+  // What the blend gives up against each point's own sun, from the window's
+  // foot to noon: a surface's path 2.2% at most (a hill above a camera on the
+  // ground, at 45 deg), a path climbing to a cloud 5.7%, and the sky 7.2%,
+  // in the aureole of a sun at the window's top. Measured with the blend's
+  // own weight, so the window's foot costs nothing.
+  it("costs a surface 2.5%, a cloud's haze 6% and the sky's aureole 8% at most", () => {
+    let surface = 0;
+    let cloud = 0;
+    let sky = 0;
+    for (const elevation of [27, 30, 33.4, 45, 68]) {
       const state = stateWithSunAt(elevation);
       for (const camera of [2, 152, 3_048]) {
         const binding = resolveAerialPerspectiveBinding(
@@ -301,6 +360,20 @@ describe("the surface haze above a 30 deg sun", () => {
           1,
         );
         const sun = binding.sunDirection;
+        const gap = (
+          target: number,
+          length: number,
+          view: Rgb,
+          travel: { horizontal: number; sunAlong: number },
+          quadrature: 1 | 2,
+        ) => {
+          const viewDotSun = view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2];
+          const run = (weight: number) => evaluateAerialPerspective(
+            binding.coefficients, camera, target, length, viewDotSun,
+            binding.sunRadiance, binding.ambient, sun[1], travel, quadrature, weight,
+          ).inScatter;
+          return Math.abs(luminance(run(aerialCameraSunWeight(sun[1]))) / luminance(run(0)) - 1);
+        };
         for (const azimuth of [0, 60, 90, 135, 180]) {
           const radians = (azimuth * Math.PI) / 180;
           const heading = [Math.cos(radians), Math.sin(radians)] as const;
@@ -312,20 +385,45 @@ describe("the surface haze above a 30 deg sun", () => {
                 (target - camera) / length,
                 (heading[1] * distance) / length,
               ];
-              const viewDotSun = view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2];
-              const travel = aerialTravelFor(view, sun);
-              const run = (quadrature: 0 | 1) => evaluateAerialPerspective(
-                binding.coefficients, camera, target, length, viewDotSun,
-                binding.sunRadiance, binding.ambient, sun[1], travel, quadrature,
-              ).inScatter;
-              worst = Math.max(worst, Math.abs(luminance(run(0)) / luminance(run(1)) - 1));
+              surface = Math.max(surface, gap(target, length, view, aerialTravelFor(view, sun), 1));
             }
+            for (const base of [1_500, 3_000]) {
+              if (base <= camera) continue;
+              const length = Math.hypot(distance, base - camera);
+              const view: Rgb = [
+                (heading[0] * distance) / length,
+                (base - camera) / length,
+                (heading[1] * distance) / length,
+              ];
+              cloud = Math.max(cloud, gap(base, length, view, AERIAL_NO_TRAVEL, 1));
+            }
+          }
+          for (const up of [0.0025, 0.05, 0.2, 0.5, 0.9]) {
+            const across = Math.sqrt(1 - up * up);
+            const direction: Rgb = [across * heading[0], up, across * heading[1]];
+            const ratio = (weight: number) => {
+              const shell = Math.min(Math.max(camera, 0), AERIAL_SKY_SHELL_METERS - 1);
+              const viewDotSun = direction[0] * sun[0] + direction[1] * sun[1] + direction[2] * sun[2];
+              return evaluateAerialPerspective(
+                binding.coefficients, camera, AERIAL_SKY_SHELL_METERS,
+                (AERIAL_SKY_SHELL_METERS - shell) / up, viewDotSun,
+                binding.sunRadiance, binding.ambient, sun[1],
+                { horizontal: across, sunAlong: aerialTravelFor(direction, sun).sunAlong },
+                2, weight,
+              ).inScatter;
+            };
+            sky = Math.max(
+              sky,
+              Math.abs(luminance(ratio(aerialCameraSunWeight(sun[1]))) / luminance(ratio(0)) - 1),
+            );
           }
         }
       }
     }
-    expect(worst).toBeLessThan(0.03);
-    expect(worst).toBeGreaterThan(0);
+    expect(surface).toBeLessThan(0.025);
+    expect(cloud).toBeLessThan(0.06);
+    expect(sky).toBeLessThan(0.08);
+    expect(Math.min(surface, cloud, sky)).toBeGreaterThan(0);
   });
 });
 

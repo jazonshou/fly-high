@@ -21,7 +21,8 @@ import {
  * at the altitude where that species actually scatters.
  *
  * Class P: no Babylon import. AerialPerspective's WGSL mirrors the Chapman
- * and ozone functions line for line (pinned by the agreement tests).
+ * and ozone functions (the Chapman column for both species at once, from
+ * one exponential), pinned by the agreement tests.
  */
 
 /** Must equal EnvironmentState's planet radius; pinned by test. */
@@ -54,15 +55,15 @@ export function chapmanColumn(
   const radius = AERIAL_PLANET_RADIUS_METERS + h;
   const grazing = 8 / (Math.PI * (radius / scaleHeightMeters));
   const decay = Math.exp(-h / scaleHeightMeters);
-  if (cosZenith >= 0) {
-    return (2 / (cosZenith + Math.sqrt(cosZenith * cosZenith + grazing))) * decay;
-  }
+  // Both sides share the slant toward |μ|: the WGSL evaluates both on every
+  // fragment and selects, so it only pays for one of these square roots.
+  const slant = (2 / (Math.abs(cosZenith) + Math.sqrt(cosZenith * cosZenith + grazing))) * decay;
+  if (cosZenith >= 0) return slant;
   const tangentRadius = radius * Math.sqrt(Math.max(1 - cosZenith * cosZenith, 0));
   if (tangentRadius < AERIAL_PLANET_RADIUS_METERS) return AERIAL_SHADOWED_COLUMN;
   const tangent = Math.sqrt((Math.PI * tangentRadius) / (2 * scaleHeightMeters))
     * Math.exp(-(tangentRadius - AERIAL_PLANET_RADIUS_METERS) / scaleHeightMeters);
-  return 2 * tangent
-    - (2 / (-cosZenith + Math.sqrt(cosZenith * cosZenith + grazing))) * decay;
+  return 2 * tangent - slant;
 }
 
 /** Vertical ozone column above an altitude: the tent's area left overhead. */
@@ -87,10 +88,9 @@ function ozoneColumnAbove(altitudeMeters: number): number {
 export function ozoneSunColumn(altitudeMeters: number, cosZenith: number): number {
   const h = Math.max(altitudeMeters, 0);
   const shell = AERIAL_PLANET_RADIUS_METERS + Math.max(OZONE_CENTER_METERS, h);
-  const sine = ((AERIAL_PLANET_RADIUS_METERS + h) / shell)
-    * Math.sqrt(Math.max(1 - cosZenith * cosZenith, 0));
-  const slant = 1 / Math.sqrt(Math.max(1 - sine * sine, 1e-3));
-  return ozoneColumnAbove(h) * slant;
+  const ratio = (AERIAL_PLANET_RADIUS_METERS + h) / shell;
+  const squaredSine = ratio * ratio * Math.max(1 - cosZenith * cosZenith, 0);
+  return ozoneColumnAbove(h) / Math.sqrt(Math.max(1 - squaredSine, 1e-3));
 }
 
 /** Spectral optical depth from a point to the sun, through the turbid air. */

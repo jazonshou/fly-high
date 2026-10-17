@@ -245,22 +245,28 @@ const LAGUERRE_NEAR_WEIGHT = (2 + Math.SQRT2) / 4;
 const LAGUERRE_FAR_WEIGHT = (2 - Math.SQRT2) / 4;
 
 /**
- * At and above this sun sine (30°) the haze on a surface lights its whole
- * path with the camera's own sun instead of one point per species: a high
- * sun reddens so little along a path that the two differ by under 1.5% of
- * the in-scatter on level and descending paths (cameras to 3 km, paths to
- * 100 km) and 2.4% on a hill 600 m above the camera, and the per-point sun
- * was most of the rework's GPU cost on a noon frame. Only surfaces (WGSL
- * aerialPerspectiveAlong) take it: the sky keeps its per-point sun, where
- * the camera's would move the aureole by up to 6.5%, and so does the haze
- * in front of clouds, whose climbing paths it would dim by 4%. WGSL mirrors
- * it as AERIAL_HAZE_PER_POINT_SINE.
+ * Across this window of sun sines (26.7°–33.4°) every path's sun blends from
+ * the per-point sun to the camera's own, and above it a GPU skips the
+ * per-point sun (a uniform branch). A high sun reddens so little along a
+ * path that the camera's sun is within 2.2% of the per-point in-scatter on
+ * a surface's path, 5.7% on a path climbing to a cloud and 7.2% in the sky,
+ * where the worst is the aureole of a sun at the window's top; above the
+ * window the sun term is the camera's, as it was before the rework, so noon
+ * costs what it did. SwiftShader runs the skipped side anyway: on CI the
+ * per-point sun is paid at every sun height, which is why it is written
+ * without trig, pow or a branch it cannot fold. The smoothstep keeps a sun
+ * crossing the window from stepping. WGSL mirrors it as
+ * AERIAL_CAMERA_SUN_LOW / AERIAL_CAMERA_SUN_HIGH.
  */
-export const AERIAL_HAZE_PER_POINT_SINE = 0.5;
+export const AERIAL_CAMERA_SUN_WINDOW = Object.freeze([0.45, 0.55] as const);
 
-/** The `quadrature` the WGSL surface haze uses at this source elevation. */
-export function aerialHazeSunSamples(sunCosZenith: number): 0 | 1 {
-  return sunCosZenith >= AERIAL_HAZE_PER_POINT_SINE ? 0 : 1;
+/** The camera's sun's share of every path's sun at this source sine: 0 below the window, 1 above. */
+export function aerialCameraSunWeight(sunCosZenith: number): number {
+  const t = Math.min(Math.max(
+    (sunCosZenith - AERIAL_CAMERA_SUN_WINDOW[0]) / (AERIAL_CAMERA_SUN_WINDOW[1] - AERIAL_CAMERA_SUN_WINDOW[0]),
+    0,
+  ), 1);
+  return t * t * (3 - 2 * t);
 }
 
 function sunAtPathFraction(
@@ -274,12 +280,18 @@ function sunAtPathFraction(
 ): [number, number, number] {
   // The planet's curvature tilts the local vertical by s/R over a ground
   // distance s: sunward the sun stands higher, anti-sunward lower.
-  const angle = (distanceMeters * fraction * travel.horizontal) / AERIAL_PLANET_RADIUS_METERS;
-  // Under 0.1 rad (640 km of ground, past any surface) two series terms are
-  // exact in f32 and spare the GPU two transcendentals per sample.
+  // Every path that reaches a sample tilts it under 0.1 rad (640 km of
+  // ground); the clamp keeps a horizon ray's plane-parallel length from
+  // running the series past 1 rad, where it is still within 0.0014 of cos.
+  // Taylor terms instead of cos/sin: no transcendental on the GPU, where a
+  // software rasteriser pays for both sides of any branch around them.
+  const angle = Math.min(
+    (distanceMeters * fraction * travel.horizontal) / AERIAL_PLANET_RADIUS_METERS,
+    1,
+  );
   const squared = angle * angle;
-  const cosAngle = angle < 0.1 ? 1 - 0.5 * squared + (squared * squared) / 24 : Math.cos(angle);
-  const sinAngle = angle < 0.1 ? angle * (1 - squared / 6) : Math.sin(angle);
+  const cosAngle = 1 - squared * (0.5 - squared / 24);
+  const sinAngle = angle * (1 - squared * (1 / 6 - squared / 120));
   const cosZenith = sunCosZenith * cosAngle + travel.sunAlong * sinAngle;
   return sunTransmittanceAt(
     coefficients,
@@ -335,9 +347,10 @@ function sunAlongPath(
  * horizon (sunward low, anti-sunward high) — against a factor of 3–10 for
  * the single camera-altitude transmittance at a 5° sun. `quadrature` 2
  * splits each sun sample into a two-point Gauss–Laguerre pair, which the
- * sky uses (it carries the long, steep paths where one point is coarse);
- * 0 lights the whole path with the sun at its start, the camera's, which
- * the surface haze uses above a 30° sun (aerialHazeSunSamples).
+ * sky uses (it carries the long, steep paths where one point is coarse).
+ * Above a 27° sun the per-point sun gives way to the camera's
+ * (aerialCameraSunWeight); `cameraSunWeight` overrides that share, for
+ * measuring what the blend gives up.
  */
 export function evaluateAerialPerspective(
   coefficients: AerialPerspectiveCoefficients,
@@ -349,7 +362,8 @@ export function evaluateAerialPerspective(
   ambient: [number, number, number],
   sunCosZenith: number,
   travel: AerialTravel = AERIAL_NO_TRAVEL,
-  quadrature: 0 | 1 | 2 = 1,
+  quadrature: 1 | 2 = 1,
+  cameraSunWeight: number = aerialCameraSunWeight(sunCosZenith),
 ): AerialPerspectiveSample {
   if (distanceMeters <= 0) {
     return { transmittance: [1, 1, 1], inScatter: [0, 0, 0] };
@@ -379,19 +393,24 @@ export function evaluateAerialPerspective(
   const visibleM = visibleScatterFraction(
     depthMie + depthRayleigh * (MIE_SCALE_HEIGHT_METERS / RAYLEIGH_SCALE_HEIGHT_METERS),
   );
-  const cameraSun = quadrature === 0
-    ? sunTransmittanceAt(coefficients, startAltitude, sunCosZenith)
-    : null;
-  const sunR = cameraSun ?? sunAlongPath(
-    coefficients, startAltitude, rise, distanceMeters,
-    exponentialPathCentroid(rise, RAYLEIGH_SCALE_HEIGHT_METERS) * visibleR,
-    sunCosZenith, travel, quadrature as 1 | 2,
-  );
-  const sunM = cameraSun ?? sunAlongPath(
-    coefficients, startAltitude, rise, distanceMeters,
-    exponentialPathCentroid(rise, MIE_SCALE_HEIGHT_METERS) * visibleM,
-    sunCosZenith, travel, quadrature as 1 | 2,
-  );
+  const cameraWeight = cameraSunWeight;
+  const cameraSun = sunTransmittanceAt(coefficients, startAltitude, sunCosZenith);
+  const pathSun = (scaleHeight: number, visible: number): [number, number, number] => {
+    if (cameraWeight >= 1) return cameraSun;
+    const perPoint = sunAlongPath(
+      coefficients, startAltitude, rise, distanceMeters,
+      exponentialPathCentroid(rise, scaleHeight) * visible,
+      sunCosZenith, travel, quadrature,
+    );
+    return [0, 1, 2].map((channel) =>
+      perPoint[channel]! + (cameraSun[channel]! - perPoint[channel]!) * cameraWeight) as [
+      number,
+      number,
+      number,
+    ];
+  };
+  const sunR = pathSun(RAYLEIGH_SCALE_HEIGHT_METERS, visibleR);
+  const sunM = pathSun(MIE_SCALE_HEIGHT_METERS, visibleM);
 
   const transmittance: [number, number, number] = [0, 0, 0];
   const inScatter: [number, number, number] = [0, 0, 0];
@@ -419,15 +438,6 @@ export function evaluateAerialPerspective(
 
 /** Top of the useful atmosphere for the sky integral (both species ~0 past it). */
 export const AERIAL_SKY_SHELL_METERS = 60_000;
-
-/**
- * Below this sun sine (30°) the sky splits each sun sample into its two-point
- * Gauss–Laguerre pair; above it one point is within 0.25% on average (1.2%
- * worst) and the pair only costs time (+4.7% GPU on cruise-horizon). The
- * switch reads a uniform, so it never diverges within a draw. WGSL mirrors it
- * as AERIAL_SKY_TWO_POINT_SINE.
- */
-export const AERIAL_SKY_TWO_POINT_SINE = 0.5;
 
 /**
  * The sky, as the same integral (1C-5) — the TS mirror of WGSL skyRadiance.
@@ -458,7 +468,7 @@ export function evaluateSkyRadiance(
     binding.ambient,
     binding.sunDirection[1],
     { horizontal: Math.sqrt(1 - up * up), sunAlong: heading.sunAlong },
-    binding.sunDirection[1] < AERIAL_SKY_TWO_POINT_SINE ? 2 : 1,
+    2,
   ).inScatter;
   // §2.6 sky-path arch — mirrors the WGSL line for line.
   const shape = 1 - TWILIGHT_ARCH_ZENITH_FALLOFF * Math.min(Math.max(direction[1], 0), 1);
@@ -513,16 +523,36 @@ const AERIAL_LAGUERRE_NEAR: f32 = 0.58578644;
 const AERIAL_LAGUERRE_FAR: f32 = 3.41421356;
 const AERIAL_LAGUERRE_NEAR_WEIGHT: f32 = 0.85355339;
 const AERIAL_LAGUERRE_FAR_WEIGHT: f32 = 0.14644661;
+// Rayleigh and Mie scale heights (aerialParams.x/y carry the same), and
+// the unit they split into 3 and 20: one exponential of it gives both
+// species' density decay (aerialSpeciesDecay).
+const AERIAL_SPECIES_SCALE: vec2f = vec2f(8000.0, 1200.0);
+const AERIAL_DECAY_UNIT: f32 = 24000.0;
+// sqrt(pi / (2 H)) per species: the Chapman column's tangent-point factor.
+const AERIAL_SPECIES_TANGENT: vec2f = vec2f(0.0140124780, 0.0361800627);
 
-fn aerialExponentialPathIntegral(h0in: f32, h1in: f32, d: f32, scaleHeight: f32) -> f32 {
+// exp(-h / H) for both species at two altitudes (xy: Rayleigh, Mie at
+// altitude.x; zw: at altitude.y), from one exponential per altitude.
+// SwiftShader, the CI's GPU, pays for every transcendental on every
+// fragment, and this halves them; u^20 holds f32 to 2e-6.
+fn aerialSpeciesDecay(altitude: vec2f) -> vec4f {
+  let unit = exp(altitude * (-1.0 / AERIAL_DECAY_UNIT));
+  let unit2 = unit * unit;
+  let unit5 = unit2 * unit2 * unit;
+  let unit10 = unit5 * unit5;
+  let rayleigh = unit2 * unit;
+  let mie = unit10 * unit10;
+  return vec4f(rayleigh.x, mie.x, rayleigh.y, mie.y);
+}
+
+// exponentialPathIntegral for Rayleigh (x) and Mie (y) at once.
+fn aerialSpeciesPathIntegrals(h0in: f32, h1in: f32, d: f32) -> vec2f {
   let h0 = max(h0in, 0.0);
   let h1 = max(h1in, 0.0);
   let dh = h1 - h0;
-  if (abs(dh) < 1.0) {
-    return d * exp(-h0 / scaleHeight);
-  }
-  let slope = dh / d;
-  return (scaleHeight / slope) * (exp(-h0 / scaleHeight) - exp(-h1 / scaleHeight));
+  let decay = aerialSpeciesDecay(vec2f(h0, h1));
+  let sloped = (AERIAL_SPECIES_SCALE * (d / dh)) * (decay.xy - decay.zw);
+  return select(sloped, d * decay.xy, abs(dh) < 1.0);
 }
 
 fn aerialOzoneTentIntegral(altitude: f32) -> f32 {
@@ -554,26 +584,9 @@ fn aerialRayleighPhase(mu: f32) -> f32 {
 
 fn aerialMiePhase(mu: f32, g: f32) -> f32 {
   let g2 = g * g;
-  return (1.0 - g2) / (4.0 * AERIAL_PI * pow(max(1.0 + g2 - 2.0 * g * mu, 0.001), 1.5));
-}
-
-// AerialSunlight.chapmanColumn, line for line: air mass of an exponential
-// species toward the sun from an altitude, in scale heights of sea-level
-// density, on the spherical planet.
-fn aerialChapman(scaleHeight: f32, altitude: f32, cosZenith: f32) -> f32 {
-  let h = max(altitude, 0.0);
-  let radius = AERIAL_PLANET_RADIUS + h;
-  let grazing = 8.0 / (AERIAL_PI * (radius / scaleHeight));
-  let decay = exp(-h / scaleHeight);
-  if (cosZenith >= 0.0) {
-    return (2.0 / (cosZenith + sqrt(cosZenith * cosZenith + grazing))) * decay;
-  }
-  let tangentRadius = radius * sqrt(max(1.0 - cosZenith * cosZenith, 0.0));
-  if (tangentRadius < AERIAL_PLANET_RADIUS) { return AERIAL_SHADOWED_COLUMN; }
-  let tangent = sqrt((AERIAL_PI * tangentRadius) / (2.0 * scaleHeight))
-    * exp(-(tangentRadius - AERIAL_PLANET_RADIUS) / scaleHeight);
-  return 2.0 * tangent
-    - (2.0 / (-cosZenith + sqrt(cosZenith * cosZenith + grazing))) * decay;
+  // x^1.5 as x * sqrt(x): pow is a log and an exponential on SwiftShader.
+  let base = max(1.0 + g2 - 2.0 * g * mu, 0.001);
+  return (1.0 - g2) / (4.0 * AERIAL_PI * base * sqrt(base));
 }
 
 fn aerialOzoneColumnAbove(altitude: f32) -> f32 {
@@ -591,29 +604,46 @@ fn aerialOzoneColumnAbove(altitude: f32) -> f32 {
 fn aerialOzoneSunColumn(altitude: f32, cosZenith: f32) -> f32 {
   let h = max(altitude, 0.0);
   let shell = AERIAL_PLANET_RADIUS + max(AERIAL_OZONE_CENTER, h);
-  let sine = ((AERIAL_PLANET_RADIUS + h) / shell)
-    * sqrt(max(1.0 - cosZenith * cosZenith, 0.0));
-  let slant = 1.0 / sqrt(max(1.0 - sine * sine, 0.001));
-  return aerialOzoneColumnAbove(h) * slant;
+  let ratio = (AERIAL_PLANET_RADIUS + h) / shell;
+  let squaredSine = ratio * ratio * max(1.0 - cosZenith * cosZenith, 0.0);
+  return aerialOzoneColumnAbove(h) * inverseSqrt(max(1.0 - squaredSine, 0.001));
 }
 
-// The sun a point at this altitude sees, through the same turbid air.
+// The sun a point at this altitude sees, through the same turbid air:
+// AerialSunlight.sunTransmittanceAt, with chapmanColumn for both species
+// at once (x Rayleigh, y Mie). Both of its sides are evaluated and one is
+// selected; above the horizontal the slant toward |mu| is the column, below
+// it the ray's tangent point doubles back (or the planet shadows it).
 fn aerialSunTransmittanceAt(altitude: f32, cosZenith: f32) -> vec3f {
-  let rayleigh = uniforms.aerialParams.x
-    * aerialChapman(uniforms.aerialParams.x, altitude, cosZenith);
-  let mie = uniforms.aerialParams.y
-    * aerialChapman(uniforms.aerialParams.y, altitude, cosZenith);
-  let ozone = aerialOzoneSunColumn(altitude, cosZenith);
-  return exp(-(uniforms.aerialRayleigh * rayleigh
-    + uniforms.aerialMieExtinction * mie
+  let h = max(altitude, 0.0);
+  let radius = AERIAL_PLANET_RADIUS + h;
+  let squared = cosZenith * cosZenith;
+  let tangentRadius = radius * sqrt(max(1.0 - squared, 0.0));
+  let decay = aerialSpeciesDecay(vec2f(h, max(tangentRadius - AERIAL_PLANET_RADIUS, 0.0)));
+  let grazing = (8.0 / AERIAL_PI) * AERIAL_SPECIES_SCALE / radius;
+  let slant = (2.0 * AERIAL_SPECIES_SCALE) / (abs(cosZenith) + sqrt(squared + grazing)) * decay.xy;
+  let tangent = (AERIAL_SPECIES_SCALE * AERIAL_SPECIES_TANGENT) * sqrt(tangentRadius) * decay.zw;
+  let below = select(
+    2.0 * tangent - slant,
+    AERIAL_SHADOWED_COLUMN * AERIAL_SPECIES_SCALE,
+    tangentRadius < AERIAL_PLANET_RADIUS,
+  );
+  let column = select(below, slant, cosZenith >= 0.0);
+  let ozone = aerialOzoneSunColumn(h, cosZenith);
+  return exp(-(uniforms.aerialRayleigh * column.x
+    + uniforms.aerialMieExtinction * column.y
     + uniforms.aerialOzone * ozone));
 }
 
-fn aerialPathCentroid(rise: f32, scaleHeight: f32) -> f32 {
-  if (abs(rise) < 1.0) { return 0.5; }
-  let x = clamp(rise / scaleHeight, -80.0, 80.0);
-  if (abs(x) < 0.1) { return 0.5 - x / 12.0 + x * x * x / 720.0; }
-  return 1.0 / x - 1.0 / (exp(x) - 1.0);
+// exponentialPathCentroid for Rayleigh (x) and Mie (y) at once. The clamp
+// keeps Mie's e^x finite (x <= 80); no path in the shell comes near it.
+fn aerialPathCentroids(riseIn: f32) -> vec2f {
+  let rise = clamp(riseIn, -96000.0, 96000.0);
+  let x = rise / AERIAL_SPECIES_SCALE;
+  let growth = aerialSpeciesDecay(vec2f(-rise, 0.0)).xy;
+  let series = 0.5 - x / 12.0 + x * x * x / 720.0;
+  let closed = 1.0 / x - 1.0 / (growth - 1.0);
+  return select(select(closed, series, abs(x) < vec2f(0.1)), vec2f(0.5), abs(riseIn) < 1.0);
 }
 
 fn aerialVisibleFraction(opticalDepth: f32) -> f32 {
@@ -626,15 +656,11 @@ fn aerialVisibleFraction(opticalDepth: f32) -> f32 {
 
 fn aerialSunAtFraction(h0: f32, rise: f32, distanceMeters: f32, fraction: f32, horizontal: f32, sunAlong: f32) -> vec3f {
   // Earth curvature tilts the local vertical by s/R over ground distance s;
-  // under 0.1 rad two series terms are exact in f32 and skip the trig.
-  let angle = distanceMeters * fraction * horizontal / AERIAL_PLANET_RADIUS;
+  // Taylor terms to 1 rad, no trig (sunAtPathFraction says why).
+  let angle = min(distanceMeters * fraction * horizontal / AERIAL_PLANET_RADIUS, 1.0);
   let squared = angle * angle;
-  var cosAngle = 1.0 - 0.5 * squared + squared * squared / 24.0;
-  var sinAngle = angle * (1.0 - squared / 6.0);
-  if (angle >= 0.1) {
-    cosAngle = cos(angle);
-    sinAngle = sin(angle);
-  }
+  let cosAngle = 1.0 - squared * (0.5 - squared / 24.0);
+  let sinAngle = angle * (1.0 - squared * (1.0 / 6.0 - squared / 120.0));
   let cosZenith = uniforms.aerialSunDirection.y * cosAngle + sunAlong * sinAngle;
   return aerialSunTransmittanceAt(h0 + rise * fraction, cosZenith);
 }
@@ -654,13 +680,21 @@ struct AerialPerspectiveResult {
   inScatter: vec3f,
 };
 
-const AERIAL_HAZE_PER_POINT_SINE: f32 = 0.5;
+const AERIAL_CAMERA_SUN_LOW: f32 = 0.45;
+const AERIAL_CAMERA_SUN_HIGH: f32 = 0.55;
+
+// aerialCameraSunWeight: a uniform, so the per-point branch below never
+// diverges within a draw, and above a 33 deg sun a GPU skips it.
+fn aerialCameraSunWeight() -> f32 {
+  return smoothstep(AERIAL_CAMERA_SUN_LOW, AERIAL_CAMERA_SUN_HIGH, uniforms.aerialSunDirection.y);
+}
 
 // evaluateAerialPerspective, line for line. horizontal/sunAlong describe
-// the heading for the curvature tilt (0, 0 = none); sunSamples is its
-// quadrature: 0 the camera's own sun for the whole path (surface haze above
-// a 30 deg sun), 1 one point per species, 2 the Gauss-Laguerre pair.
-fn aerialIntegralSampled(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, sunSamples: i32) -> AerialPerspectiveResult {
+// the heading for the curvature tilt (0, 0 = none); twoPoint picks the
+// Gauss-Laguerre pair for each species' sun. Callers pass it as a literal:
+// SwiftShader runs both sides of a branch on a uniform, so a runtime switch
+// costs the pair AND the single point.
+fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, twoPoint: bool) -> AerialPerspectiveResult {
   var result: AerialPerspectiveResult;
   if (distanceMeters <= 0.0 || uniforms.aerialParams.w <= 0.0) {
     result.transmittance = vec3f(1.0);
@@ -669,8 +703,9 @@ fn aerialIntegralSampled(fragmentAltitude: f32, distanceMeters: f32, viewDotSun:
   }
   let h0 = uniforms.aerialCameraAltitude;
   let h1 = fragmentAltitude;
-  let rayleighPath = aerialExponentialPathIntegral(h0, h1, distanceMeters, uniforms.aerialParams.x);
-  let miePath = aerialExponentialPathIntegral(h0, h1, distanceMeters, uniforms.aerialParams.y);
+  let paths = aerialSpeciesPathIntegrals(h0, h1, distanceMeters);
+  let rayleighPath = paths.x;
+  let miePath = paths.y;
   let ozonePath = aerialOzonePathIntegral(h0, h1, distanceMeters);
 
   let phaseR = aerialRayleighPhase(viewDotSun);
@@ -683,13 +718,17 @@ fn aerialIntegralSampled(fragmentAltitude: f32, distanceMeters: f32, viewDotSun:
   let visibleR = aerialVisibleFraction(depthRayleigh + depthMie);
   let visibleM = aerialVisibleFraction(
     depthMie + depthRayleigh * (uniforms.aerialParams.y / uniforms.aerialParams.x));
+  let centroids = aerialPathCentroids(rise);
   var sunR = uniforms.aerialSunTransmittance;
   var sunM = sunR;
-  if (sunSamples > 0) {
-    sunR = aerialSunAlongPath(startAltitude, rise, distanceMeters,
-      aerialPathCentroid(rise, uniforms.aerialParams.x) * visibleR, horizontal, sunAlong, sunSamples == 2);
-    sunM = aerialSunAlongPath(startAltitude, rise, distanceMeters,
-      aerialPathCentroid(rise, uniforms.aerialParams.y) * visibleM, horizontal, sunAlong, sunSamples == 2);
+  let cameraWeight = aerialCameraSunWeight();
+  if (cameraWeight < 1.0) {
+    sunR = mix(aerialSunAlongPath(startAltitude, rise, distanceMeters,
+      centroids.x * visibleR, horizontal, sunAlong, twoPoint),
+      sunR, cameraWeight);
+    sunM = mix(aerialSunAlongPath(startAltitude, rise, distanceMeters,
+      centroids.y * visibleM, horizontal, sunAlong, twoPoint),
+      sunM, cameraWeight);
   }
 
   let tauRayleigh = uniforms.aerialRayleigh * rayleighPath;
@@ -707,29 +746,18 @@ fn aerialIntegralSampled(fragmentAltitude: f32, distanceMeters: f32, viewDotSun:
   return result;
 }
 
-fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, twoPoint: bool) -> AerialPerspectiveResult {
-  return aerialIntegralSampled(fragmentAltitude, distanceMeters, viewDotSun, horizontal, sunAlong,
-    select(1, 2, twoPoint));
-}
-
-// aerialHazeSunSamples: a uniform, so it never diverges within a draw.
-fn aerialHazeSunSamples() -> i32 {
-  return select(1, 0, uniforms.aerialSunDirection.y >= AERIAL_HAZE_PER_POINT_SINE);
-}
-
 // No heading: for consumers that only know the view-sun cosine (cloud
-// composite, light points). Always per point: a path climbing to a cloud
-// is where the camera's sun is furthest off (4% at noon).
+// composite, light points).
 fn aerialPerspective(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32) -> AerialPerspectiveResult {
   return aerialIntegral(fragmentAltitude, distanceMeters, viewDotSun, 0.0, 0.0, false);
 }
 
-// Surfaces (terrain, ocean, rivers): the camera's sun above 30 deg.
+// Surfaces (terrain, ocean, rivers): the heading carries the curvature tilt.
 fn aerialPerspectiveAlong(fragmentAltitude: f32, distanceMeters: f32, viewDirection: vec3f) -> AerialPerspectiveResult {
   let horizontal = length(viewDirection.xz);
   let sunAlong = dot(viewDirection.xz / max(horizontal, 1e-4), uniforms.aerialSunDirection.xz);
-  return aerialIntegralSampled(fragmentAltitude, distanceMeters,
-    dot(viewDirection, uniforms.aerialSunDirection), horizontal, sunAlong, aerialHazeSunSamples());
+  return aerialIntegral(fragmentAltitude, distanceMeters,
+    dot(viewDirection, uniforms.aerialSunDirection), horizontal, sunAlong, false);
 }
 
 fn applyAerialPerspective(color: vec3f, fragmentAltitude: f32, distanceMeters: f32, viewDirection: vec3f) -> vec3f {
@@ -738,7 +766,6 @@ fn applyAerialPerspective(color: vec3f, fragmentAltitude: f32, distanceMeters: f
 }
 
 const AERIAL_SKY_SHELL: f32 = 60000.0;
-const AERIAL_SKY_TWO_POINT_SINE: f32 = 0.5;
 
 fn skyRadiance(direction: vec3f) -> vec3f {
   // 1C-5: the sky IS this same integral, run out to the top of the useful
@@ -756,7 +783,7 @@ fn skyRadiance(direction: vec3f) -> vec3f {
     dot(direction, uniforms.aerialSunDirection),
     sqrt(1.0 - up * up),
     dot(direction.xz / headingLength, uniforms.aerialSunDirection.xz),
-    uniforms.aerialSunDirection.y < AERIAL_SKY_TWO_POINT_SINE,
+    true,
   );
   // NIGHT_LOOK_ARCHITECTURE 2.6: the twilight arch is a SKY-PATH term. It
   // lives here, not in aerialAmbient, so the dome and the IBL probe receive
@@ -778,8 +805,11 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   // a broad glow - its own fold at half the lobe's. The falloff constants
   // mirror TWILIGHT_WARM_ELEVATION_FOLD and TWILIGHT_BELT_ELEVATION_FOLD.
   let beltHug = exp(-max(direction.y, 0.0) / 0.06);
-  let warmLobe = pow(max(viewAz, 0.0), 4.0);
-  let beltLobe = pow(max(-viewAz, 0.0), 4.0);
+  // The lobes' fourth power, by two squarings: pow is a log and an exp.
+  let warm2 = max(viewAz, 0.0) * max(viewAz, 0.0);
+  let belt2 = max(-viewAz, 0.0) * max(-viewAz, 0.0);
+  let warmLobe = warm2 * warm2;
+  let beltLobe = belt2 * belt2;
   let sunset = uniforms.aerialTwilightWarm * warmLobe * horizonHug
     + uniforms.aerialTwilightBelt * beltLobe * beltHug;
   // Round G: the night zenith fade - the sky glow transitions to black the
