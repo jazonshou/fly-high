@@ -28,12 +28,18 @@ import {
   TWILIGHT_ARCH_ZENITH_FALLOFF,
   TWILIGHT_ARCH_KEY_FACTOR,
   TWILIGHT_AMBIENT_FLOOR_CUT,
+  AERIAL_REFERENCE_SUN_COS,
+  AERIAL_REFERENCE_SKY_HORIZON,
+  skyHorizonForHumidity,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import {
   SKY_FRAGMENT_WGSL,
   sunDirectionalHorizonGate,
 } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
-import { DEFAULT_ENVIRONMENT_STATE } from "../src/render/webgpu/nature/EnvironmentState";
+import {
+  DEFAULT_ENVIRONMENT_STATE,
+  createEnvironmentState,
+} from "../src/render/webgpu/nature/EnvironmentState";
 import {
   FOG_MODE_NONE,
   collectStartupInvariantFailures,
@@ -148,7 +154,7 @@ describe("the TS mirror's behaviour (1C-4)", () => {
       mu,
       binding.sunRadiance,
       binding.ambient,
-      binding.sunTransmittance,
+      binding.sunDirection[1],
     );
   }
 
@@ -208,7 +214,7 @@ describe("turbidity calibration and the far plane (assertion 33)", () => {
       0.2,
       [1, 1, 1],
       [0, 0, 0],
-      [1, 1, 1],
+      CLEAR_NOON.sun.direction[1],
     );
     const luminance = 0.2126 * transmittance[0]
       + 0.7152 * transmittance[1]
@@ -223,7 +229,7 @@ describe("turbidity calibration and the far plane (assertion 33)", () => {
       0.2,
       [1, 1, 1],
       [0, 0, 0],
-      [1, 1, 1],
+      CLEAR_NOON.sun.direction[1],
     );
     const nearLuminance = 0.2126 * near.transmittance[0]
       + 0.7152 * near.transmittance[1]
@@ -329,7 +335,7 @@ describe("the physical sky (1C-5)", () => {
       mu,
       binding.sunRadiance,
       binding.ambient,
-      binding.sunTransmittance,
+      binding.sunDirection[1],
     ).inScatter;
     for (let channel = 0; channel < 3; channel += 1) {
       expect(Math.abs(sky[channel]! - haze[channel]!)).toBeLessThan(0.02);
@@ -676,11 +682,21 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     );
     expect(night.ambient).toEqual([0, 0, 0]);
     expect(night.twilightArch).toEqual([0, 0, 0]);
-    // Noon: arch zero, ambient is the daylight expression untouched.
+    // Noon: arch zero; at the reference key the ambient is the approved
+    // daylight expression (the humid reference horizon × 0.9), untouched.
+    const noonState = createEnvironmentState({
+      sun: { direction: [Math.sqrt(1 - AERIAL_REFERENCE_SUN_COS ** 2), AERIAL_REFERENCE_SUN_COS, 0] },
+    });
     const noon = resolveAerialPerspectiveBinding(
-      DEFAULT_ENVIRONMENT_STATE, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
+      noonState, 0, [1, 0.96, 0.88], [0.58, 0.77, 0.96], 1,
     );
-    expect(noon.ambient[0]).toBeCloseTo(0.58 * 0.9, 6);
+    const approved = skyHorizonForHumidity(
+      AERIAL_REFERENCE_SKY_HORIZON,
+      noonState.weather.relativeHumidity,
+    );
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(noon.ambient[channel]).toBeCloseTo(approved[channel]! * 0.9, 6);
+    }
     expect(noon.twilightArch).toEqual([0, 0, 0]);
   });
 
