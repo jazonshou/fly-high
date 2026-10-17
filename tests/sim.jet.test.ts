@@ -9,6 +9,8 @@ import {
   FIXED_TIME_STEP,
   FlightSimulator,
   LIGHT_TRAINER,
+  aircraftDefinition,
+  standardAirDensity,
   type AircraftDefinition,
   type FlightControls,
   type FlightState,
@@ -186,27 +188,41 @@ describe("fast jet flight model", () => {
     expect(braking.telemetry().airspeed).toBeLessThan(clean.telemetry().airspeed - 10);
   });
 
-  it("has linear dry throttle response, density lapse, and bounded inlet loss", () => {
+  it("has linear dry throttle response and the low-bypass engine's lapse", () => {
     // Everything here is measured at or below the reheat gate, so it describes
     // the CORE engine. The afterburner has its own test below; mixing the two
     // is what makes a thrust curve impossible to reason about.
+    //
+    // The expected ratios are Mattingly's low-bypass mixed-flow correlation
+    // worked by hand against the standard atmosphere, with the F110's 1.10
+    // throttle ratio: theta0 = theta (1 + 0.2 M^2), delta0 = delta (1 + 0.2 M^2)^3.5,
+    // and dry thrust delta0 [1 - 3.8 (theta0 - 1.10) / theta0] once theta0 passes
+    // the ratio.
     const gate = FAST_JET.afterburner?.engageThrottle ?? 1;
     const seaLevelStatic = calculateEngineThrust(FAST_JET, gate, 1.225, 0);
-    const halfThrottle = calculateEngineThrust(FAST_JET, gate * 0.5, 1.225, 0);
-    const halfDensityStatic = calculateEngineThrust(FAST_JET, gate, 1.225 * 0.5, 0);
-    const transonicEntry = calculateEngineThrust(FAST_JET, gate, 1.225, 300);
-    const highSpeed = calculateEngineThrust(FAST_JET, gate, 1.225, 400);
-    const beyondModelEnvelope = calculateEngineThrust(FAST_JET, gate, 1.225, 800);
-    const nearVacuum = calculateEngineThrust(FAST_JET, gate, 0.01225, 0);
+    const ratio = (density: number, speed: number) =>
+      calculateEngineThrust(FAST_JET, gate, density, speed) / seaLevelStatic;
+    const tropopause = standardAirDensity(11_000);
 
-    // 76.3 kN of F110-GE-129 dry thrust, at the gate.
+    // 76.3 kN of F110-GE-129 dry thrust, at the gate, standing still.
     expect(seaLevelStatic).toBeCloseTo(FAST_JET.maxStaticThrust * gate, 8);
-    expect(halfThrottle).toBeCloseTo(seaLevelStatic * 0.5, 8);
-    expect(halfDensityStatic / seaLevelStatic).toBeCloseTo(0.5 ** 0.72, 8);
-    expect(transonicEntry / seaLevelStatic).toBeCloseTo(0.9466666667, 8);
-    expect(highSpeed / seaLevelStatic).toBeCloseTo(0.88, 8);
-    expect(beyondModelEnvelope).toBeCloseTo(highSpeed, 8);
-    expect(nearVacuum / seaLevelStatic).toBeCloseTo(0.01 ** 0.72, 8);
+    expect(calculateEngineThrust(FAST_JET, gate * 0.5, 1.225, 0))
+      .toBeCloseTo(seaLevelStatic * 0.5, 8);
+    // Standing still the engine sees static pressure: 22,632 Pa of 101,325 at
+    // the tropopause.
+    expect(ratio(tropopause, 0)).toBeCloseTo(0.2234, 4);
+    // Ram recovery. At Mach 0.6 on the deck theta0 is 1.072, under the limit,
+    // so thrust follows delta0 = 1.072^3.5: a quarter more than static. This
+    // is what the old density-only model could not do, and why the F-16
+    // could not reach Mach 2.
+    expect(ratio(1.225, 0.6 * 340.294)).toBeCloseTo(1.2755, 3);
+    // Past the limit it falls: Mach 1.2 on the deck is theta0 1.288.
+    expect(ratio(1.225, 1.2 * 340.294)).toBeCloseTo(1.08, 3);
+    // And at Mach 2 above the tropopause, theta0 1.353, about half static.
+    expect(ratio(tropopause, 2 * 295.07)).toBeCloseTo(0.504, 3);
+    // Far enough past the limit the correlation reaches zero; it never goes
+    // below it.
+    expect(ratio(1.225, 750)).toBe(0);
     expect(calculateEngineThrust(FAST_JET, gate, 0, 0)).toBe(0);
     expect(calculateEngineThrust(FAST_JET, 0, 1.225, 0)).toBe(0);
   });
@@ -237,10 +253,43 @@ describe("fast jet flight model", () => {
     );
     // The gate is worth having: full power is materially more than the core.
     expect(full).toBeGreaterThan(dryAtGate * 1.9);
-    // Reheat lapses with density like the core does. An afterburner is not a
-    // rocket and must not become one as the air thins.
-    expect(calculateEngineThrust(FAST_JET, 1, 1.225 * 0.5, 0) / full)
-      .toBeCloseTo(0.5 ** 0.72, 8);
+    // Reheat lapses with the air like the core does. An afterburner is not a
+    // rocket and must not become one as the air thins: standing still at the
+    // tropopause, full reheat is the same 22% of its sea-level figure.
+    expect(calculateEngineThrust(FAST_JET, 1, standardAirDensity(11_000), 0) / full)
+      .toBeCloseTo(0.2234, 4);
+    // But reheat lapses more gently with Mach than the dry engine (3.5 per
+    // unit of theta0 over the limit, not 3.8), so at Mach 2 up high the
+    // nozzle's share of the thrust has grown.
+    const machTwo = 2 * 295.07;
+    const highWet = calculateEngineThrust(FAST_JET, 1, standardAirDensity(11_000), machTwo);
+    const highDry = calculateEngineThrust(FAST_JET, burner.engageThrottle, standardAirDensity(11_000), machTwo);
+    expect(highWet / highDry).toBeGreaterThan(full / dryAtGate);
+  });
+
+  it("gives the airliner and the Global a big fan's thrust lapse", () => {
+    // Mattingly's high-bypass correlation, delta0 (1 - 0.49 sqrt(M)), checked
+    // against what the real engines do rather than against itself: about a
+    // fifth of the sea-level static rating is left for the climb at 35,000 ft
+    // and Mach 0.85, and about a fifth of it is gone by rotation.
+    for (const aircraft of [aircraftDefinition("airliner"), aircraftDefinition("bizjet")]) {
+      const staticThrust = calculateEngineThrust(aircraft, 1, 1.225, 0);
+      expect(staticThrust).toBeCloseTo(aircraft.maxStaticThrust, 6);
+      const cruiseDensity = standardAirDensity(10_668);
+      const cruise = calculateEngineThrust(aircraft, 1, cruiseDensity, 0.85 * 296.54);
+      expect(cruise / staticThrust).toBeGreaterThan(0.18);
+      expect(cruise / staticThrust).toBeLessThan(0.24);
+      const rotation = calculateEngineThrust(aircraft, 1, 1.225, 75);
+      expect(rotation / staticThrust).toBeGreaterThan(0.75);
+      expect(rotation / staticThrust).toBeLessThan(0.85);
+      // A fan never gains thrust with speed at a fixed altitude.
+      let previous = staticThrust;
+      for (let speed = 10; speed <= 300; speed += 10) {
+        const thrust = calculateEngineThrust(aircraft, 1, 1.225, speed);
+        expect(thrust).toBeLessThanOrEqual(previous);
+        previous = thrust;
+      }
+    }
   });
 
   it("sustains materially more speed than the unchanged trainer", () => {
@@ -256,9 +305,11 @@ describe("fast jet flight model", () => {
     expect(trainerTelemetry.airspeed).toBeGreaterThan(50);
     expect(trainerTelemetry.airspeed).toBeLessThan(70);
     // A clean F-16 settles faster than the fictional sport jet this replaced,
-    // which topped out near 260.
+    // which topped out near 260. The ceiling was 320 against 295 measured;
+    // with ram recovery in the engine model (2026-10-12) the same 30 s at
+    // 3,000 m and 0.9 throttle, a little reheat, reaches 337, so it is 360.
     expect(jetTelemetry.airspeed).toBeGreaterThan(240);
-    expect(jetTelemetry.airspeed).toBeLessThan(320);
+    expect(jetTelemetry.airspeed).toBeLessThan(360);
     expect(jetTelemetry.airspeed).toBeGreaterThan(trainerTelemetry.airspeed * 3.3);
   });
 
@@ -399,7 +450,10 @@ describe("fast jet flight model", () => {
     expect(liftoffTime ?? 99).toBeLessThan(15);
     expect(liftoffDistance ?? 9_999).toBeLessThan(650);
     expect(liftoffAirspeed ?? 0).toBeGreaterThan(75);
-    expect(liftoffAirspeed ?? 999).toBeLessThan(100);
+    // 99.4 m/s against a 100 ceiling before ram recovery; the reheat roll now
+    // gains a little more speed during the rotation and lifts off at 100.1,
+    // over essentially the same 434 m (442 before).
+    expect(liftoffAirspeed ?? 999).toBeLessThan(103);
     expect(simulator.state.crashed).toBe(false);
     expect(simulator.state.onGround).toBe(false);
     expect(simulator.state.peakImpactSpeed).toBeLessThan(1);

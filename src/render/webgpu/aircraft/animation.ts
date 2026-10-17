@@ -11,8 +11,11 @@ export interface AircraftAnimationPose {
   readonly mainWheelRadiansPerSecond: number;
   readonly noseWheelRadiansPerSecond: number;
   readonly gearVisible: boolean;
-  readonly gearScale: Readonly<{ x: number; y: number; z: number }>;
-  readonly gearOffsetY: number;
+  /**
+   * How far each leg has swung about its trunnion: 0 locked down, 1 stowed
+   * (`foldGearLegs`). Eased, so a leg leaves and enters its lock gently.
+   */
+  readonly gearFold: number;
   readonly gearDoorTravel: number;
   readonly speedBrake: number;
   /**
@@ -256,12 +259,7 @@ export function resolveAircraftAnimationPose(
       mainWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.mainWheelRadius : 0,
       noseWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.noseWheelRadius : 0,
       gearVisible: gearTravel > 0.012,
-      gearScale: {
-        x: 0.9 + easedGear * 0.1,
-        y: 0.08 + easedGear * 0.92,
-        z: 0.36 + easedGear * 0.64,
-      },
-      gearOffsetY: -0.24 * (1 - easedGear),
+      gearFold: 1 - easedGear,
       gearDoorTravel: Math.sin(Math.PI * gearTravel) * 1.05,
       speedBrake: -brake * 0.68,
       spoilers: resolveSpoilers(kind, aileron, brake, clamp(finite(state.groundSpoilers), 0, 1)),
@@ -293,8 +291,7 @@ export function resolveAircraftAnimationPose(
     mainWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.mainWheelRadius : 0,
     noseWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.noseWheelRadius : 0,
     gearVisible: true,
-    gearScale: { x: 1, y: 1, z: 1 },
-    gearOffsetY: 0,
+    gearFold: 0,
     gearDoorTravel: 0,
     speedBrake: 0,
     spoilers: SPOILERS_STOWED,

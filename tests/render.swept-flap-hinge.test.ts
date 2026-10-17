@@ -245,8 +245,11 @@ const EXPECTED_DEFLECTING: Readonly<Record<AircraftKind, number>> = {
   bizjet: 17,
   // Eleven plus the 747's four spoiler GROUPS: six panels a side, but the two
   // inboard share one hinge line and the four outboard share another, so they
-  // are four hinged nodes rather than twelve.
-  airliner: 15,
+  // are four hinged nodes rather than twelve. And two more since the inboard
+  // flaps became double-slotted, as the 747-8's are: each aft element turns
+  // about its own nose line, riding on the main panel, and is measured here
+  // by the turn it makes ON that panel (see `carrierOf`).
+  airliner: 17,
 };
 
 /**
@@ -288,16 +291,40 @@ function measure(kind: AircraftKind): Measured[] {
     }))
     .filter((candidate) => candidate.surface !== undefined);
 
+  // A surface that RIDES ON another — a double-slotted flap's aft element on
+  // its main panel — is hinged to that panel, not to the airframe, so its turn
+  // is measured in its carrier's frame. In the world it is the composite of
+  // two turns about two lines, which is about neither once the lines are not
+  // parallel: the 747's aft element reads 4.4 degrees off in the world
+  // because its main panel turns about the hinge line, 6 degrees more swept
+  // than the split line the aft element hangs on. That is the mechanism, the
+  // way the -8's aft flap rides its main flap, not a wrung panel.
+  const measuredNodes = new Set<unknown>(candidates.map((candidate) => candidate.node));
+  const carrierOf = (node: TransformNode): TransformNode | null => {
+    for (let walk = node.parent; walk; walk = walk.parent) {
+      if (measuredNodes.has(walk)) return walk as TransformNode;
+    }
+    return null;
+  };
+  // Row vectors: a node's rotation is its rotation on its carrier times the
+  // carrier's, so on the carrier it is R * P^-1.
+  const onCarrier = (rotation: Matrix, carrier: Matrix): Matrix =>
+    rotation.multiply(carrier.clone().invert());
+
   const measured: Measured[] = [];
   for (const candidate of candidates) {
+    const carrier = carrierOf(candidate.node);
     deflect(visual, 0);
     const rest = leadingEdgeByStation(scene, candidate.surface!.name);
     const restRotation = worldRotation(candidate.node);
+    const carrierRest = carrier ? worldRotation(carrier) : Matrix.Identity();
     deflect(visual, 1);
     const moved = leadingEdgeByStation(scene, candidate.surface!.name);
     const movedRotation = worldRotation(candidate.node);
+    const carrierMoved = carrier ? worldRotation(carrier) : Matrix.Identity();
 
-    const relative = restRotation.clone().invert().multiply(movedRotation);
+    const relative = onCarrier(restRotation, carrierRest).invert()
+      .multiply(onCarrier(movedRotation, carrierMoved));
     const m = relative.m;
     const turned = Math.acos(
       Math.min(1, Math.max(-1, (m[0]! + m[5]! + m[10]! - 1) / 2)),
@@ -308,8 +335,11 @@ function measure(kind: AircraftKind): Measured[] {
     const stations = [...rest.keys()].sort(
       (a, b) => Math.abs(Number(a)) - Math.abs(Number(b)),
     );
-    const hingeLine = rest.get(stations[stations.length - 1]!)!
-      .subtract(rest.get(stations[0]!)!).normalize();
+    // Read at rest, in the frame the turn is measured in.
+    const hingeLine = Vector3.TransformNormal(
+      rest.get(stations[stations.length - 1]!)!.subtract(rest.get(stations[0]!)!),
+      carrierRest.clone().invert(),
+    ).normalize();
     // Sign is not meaningful: a line has two directions, and the two wings
     // recover opposite ones.
     const axis = new Vector3(m[6]! - m[9]!, m[8]! - m[2]!, m[1]! - m[4]!).normalize();

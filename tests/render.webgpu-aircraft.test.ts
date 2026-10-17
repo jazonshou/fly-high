@@ -42,6 +42,22 @@ function transform(scene: Scene, name: string): TransformNode {
   return result;
 }
 
+/**
+ * A node's world-space x, recomputed down its whole ancestry. Babylon caches a
+ * world matrix per render id and no frame renders between these updates, so a
+ * plain `getAbsolutePosition` can hand back the previous pose.
+ */
+function worldX(scene: Scene, name: string): number {
+  const chain: TransformNode[] = [];
+  // Every ancestor of an aircraft part is a TransformNode or a mesh.
+  for (let node = transform(scene, name) as TransformNode | null; node;
+    node = node.parent as TransformNode | null) {
+    chain.unshift(node);
+  }
+  for (const node of chain) node.computeWorldMatrix(true);
+  return chain[chain.length - 1]!.getAbsolutePosition().x;
+}
+
 function mesh(scene: Scene, name: string): AbstractMesh {
   const result = scene.getMeshByName(name);
   if (!result) throw new Error(`Missing mesh ${name}`);
@@ -321,8 +337,13 @@ describe("Babylon WebGPU aircraft visual", () => {
       1 / 30,
     );
     expect(gear.isEnabled()).toBe(true);
-    expect(gear.scaling.y).toBeGreaterThan(0.08);
-    expect(gear.scaling.y).toBeLessThan(1);
+    // The gear FOLDS rather than shrinking: it keeps its size and each leg
+    // swings about its trunnion, the mains forward and the nose leg aft, as an
+    // F-16's do. Half-way, a main wheel is well forward of where it stands
+    // with the gear down and the nose wheel well aft.
+    expect(gear.scaling.y).toBe(1);
+    const halfMainX = worldX(fixture.scene, "starboard-main-wheel");
+    const halfNoseX = worldX(fixture.scene, "nose-wheel");
     // The two main doors tip in opposite senses, which is what makes them a
     // mirrored pair, and both return to closed at each end of the cycle.
     // Asserted as a pair rather than as a fixed sign per side: the sign is
@@ -341,6 +362,13 @@ describe("Babylon WebGPU aircraft visual", () => {
     );
     expect(gear.scaling.y).toBe(1);
     expect(gear.position.y).toBeCloseTo(0, 10);
+    expect(halfMainX - worldX(fixture.scene, "starboard-main-wheel")).toBeGreaterThan(0.5);
+    expect(halfNoseX - worldX(fixture.scene, "nose-wheel")).toBeLessThan(-0.2);
+    // Locked down, every leg is back on an exact identity, so the wheels are
+    // where the airframe's file and the sim's contact table put them.
+    for (const leg of ["starboard-main-gear-leg", "port-main-gear-leg", "nose-gear-leg"]) {
+      expect(transform(fixture.scene, leg).position.length()).toBe(0);
+    }
     const canopy = mesh(fixture.scene, "jet-bubble-canopy");
     expect(aircraft.cockpitParts).not.toContain(canopy);
     expectVisibleToCamera(canopy, fixture.camera);
@@ -386,9 +414,8 @@ describe("Babylon WebGPU aircraft visual", () => {
       gear: 0.5,
       brake: 1,
     });
-    expect(jet.gearScale.x).toBeCloseTo(0.95, 10);
-    expect(jet.gearScale.y).toBeCloseTo(0.54, 10);
-    expect(jet.gearScale.z).toBeCloseTo(0.68, 10);
+    // Half travel is half folded: the eased swing is symmetric about it.
+    expect(jet.gearFold).toBeCloseTo(0.5, 10);
     expect(jet.gearDoorTravel).toBeCloseTo(1.05, 8);
     expect(jet.speedBrake).toBe(-0.68);
     expect(safeAircraftAnimationDelta(Number.NaN)).toBe(0);

@@ -1,6 +1,7 @@
 import {
   aftExtent,
   aircraftDefinition,
+  calculateEngineThrust,
   standardAirDensity,
   DEFAULT_CONTROLS,
   type AircraftDefinition,
@@ -38,10 +39,14 @@ const SEA_LEVEL_DENSITY = 1.225;
  *
  *   TAS = EAS / sqrt(sigma)   — same dynamic pressure, so the same angle of
  *                               attack and the same lift at any altitude.
- *   throttle = throttle0 / sigma  — for a JET only. `calculateEngineThrust`
- *                               lapses jet thrust with density, so thrust
- *                               required over thrust available scales exactly
- *                               this way.
+ *   throttle = throttle0 * T(SL, EAS) / T(h, TAS)
+ *                             — for a JET only. Same dynamic pressure means the
+ *                               same drag, so the same thrust REQUIRED; the
+ *                               throttle that gives it is scaled by how much
+ *                               thrust the engine has lost between the two
+ *                               flight conditions (`calculateEngineThrust`,
+ *                               which lapses with altitude and Mach). Dry thrust
+ *                               is linear in throttle, so the ratio is exact.
  *
  * The propeller branch is power-limited rather than density-limited, so it is
  * deliberately left alone: the Cessna already holds level within 50 ft across
@@ -58,11 +63,27 @@ function altitudeCorrectedSpawn(
     0.05,
     standardAirDensity(spawnAltitude) / SEA_LEVEL_DENSITY,
   );
+  const airspeed = equivalentAirspeed / Math.sqrt(sigma);
+  if (aircraft.propulsion !== "jet") return { airspeed, throttle: seaLevelThrottle };
+  // Compared at the top of the dry range, where thrust is still linear.
+  const dryGate = aircraft.afterburner?.engageThrottle ?? 1;
+  const seaLevelThrust = calculateEngineThrust(
+    aircraft,
+    dryGate,
+    SEA_LEVEL_DENSITY,
+    equivalentAirspeed,
+  );
+  const altitudeThrust = calculateEngineThrust(
+    aircraft,
+    dryGate,
+    sigma * SEA_LEVEL_DENSITY,
+    airspeed,
+  );
   return {
-    airspeed: equivalentAirspeed / Math.sqrt(sigma),
-    throttle: aircraft.propulsion === "jet"
-      ? Math.min(1, seaLevelThrottle / sigma)
-      : seaLevelThrottle,
+    airspeed,
+    throttle: altitudeThrust > 0
+      ? Math.min(1, (seaLevelThrottle * seaLevelThrust) / altitudeThrust)
+      : 1,
   };
 }
 

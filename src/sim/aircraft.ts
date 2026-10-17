@@ -1,5 +1,11 @@
 import type { Vec3 } from "./types";
 import { clamp } from "./math";
+import {
+  SEA_LEVEL_DENSITY,
+  SEA_LEVEL_TEMPERATURE,
+  speedOfSoundForDensity,
+  standardTemperatureForDensity,
+} from "./atmosphere";
 
 export interface LandingGearDefinition {
   /** Position of the tyre contact point in aircraft body coordinates. */
@@ -20,9 +26,6 @@ export interface LandingGearDefinition {
  * a `Record<AircraftKind, ...>` will not compile until a new entry is answered
  * everywhere it matters.
  */
-/** Sea-level ISA density, the reference every published stall speed uses. */
-const SEA_LEVEL_DENSITY = 1.225;
-
 /**
  * Level-flight stall speed in m/s at sea level, for the given flap setting.
  *
@@ -79,6 +82,45 @@ export interface AfterburnerDefinition {
   readonly thrustBoost: number;
   /** Throttle fraction at which the nozzle lights. */
   readonly engageThrottle: number;
+}
+
+/**
+ * How a turbofan's thrust falls away with altitude and rises or falls with
+ * flight Mach: Mattingly's installed-thrust lapse correlations (Mattingly,
+ * Heiser & Pratt, *Aircraft Engine Design*, 2nd ed., section 2.3.2), which are
+ * fitted to real engines of each cycle and are the standard first-order model
+ * in conceptual design.
+ *
+ * Both read the flight condition through the TOTAL (stagnation) temperature
+ * and pressure ratios the engine face actually sees,
+ *
+ *   theta0 = (T / T_SL) * (1 + 0.2 M^2)      delta0 = (p / p_SL) * (1 + 0.2 M^2)^3.5
+ *
+ * so ram compression is in the model, not just density:
+ *
+ * - `"high-bypass"` (the Passport, the GEnx): a big fan's thrust falls steeply
+ *   with speed, `delta0 * (1 - 0.49 sqrt(M))`, less a temperature-limit term
+ *   once theta0 passes the throttle ratio. Full power at 35,000 ft and M 0.85 is
+ *   about a fifth of the sea-level static figure, which is the real engines'
+ *   maximum-climb rating; and an airliner has lost about a fifth of its thrust
+ *   by rotation.
+ * - `"low-bypass-mixed"` (the F110): ram recovery holds thrust up with Mach until
+ *   the turbine-inlet limit at theta0 = throttle ratio, then it falls. Dry and
+ *   reheat lapse differently (3.8 and 3.5 per unit of theta0 over the ratio).
+ *
+ * Replaces `rho^0.72` times an ad hoc inlet loss, which gave every jet 40% of its
+ * static thrust at airliner cruise (twice the real figure: the 747 cruised past
+ * Mach 0.96) and gave the F-16 no ram recovery at all.
+ */
+export interface JetLapseDefinition {
+  readonly cycle: "high-bypass" | "low-bypass-mixed";
+  /**
+   * The engine's throttle ratio: the theta0 at which the turbine-inlet
+   * temperature limit starts to bind, so above it thrust falls with theta0.
+   * About 1.0 for a civil turbofan, and somewhat above it for a fighter engine
+   * whose design point is supersonic.
+   */
+  readonly throttleRatio: number;
 }
 
 export interface AircraftDefinition {
@@ -152,6 +194,11 @@ export interface AircraftDefinition {
    * a physics bug later.
    */
   afterburner: AfterburnerDefinition | null;
+  /**
+   * The jet's thrust lapse with altitude and Mach, or `null` on a propeller.
+   * Nullable and required for the same reason as `afterburner`.
+   */
+  jetLapse: JetLapseDefinition | null;
   gear: readonly LandingGearDefinition[];
   /** Visible airframe extremities used for terrain strikes and wreck clearance. */
   airframeContactPoints: readonly Readonly<Vec3>[];
@@ -252,6 +299,7 @@ export const LIGHT_TRAINER: Readonly<AircraftDefinition> = Object.freeze({
   // airframe's in proportion to a quarter less aeroplane sitting on them.
   // A Continental O-200 has no jet pipe to burn fuel in.
   afterburner: null,
+  jetLapse: null,
   gear: Object.freeze([
     Object.freeze({
       position: Object.freeze({ x: -0.26, y: -1.22, z: -1.2 }),
@@ -315,15 +363,9 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   // Shaft power/efficiency are not used by the jet thrust branch. Keeping the
   // fields explicit avoids optional values in the hot simulation loop.
   maxEnginePower: 0,
-  // F110-GE-129: 76.3 kN dry, 131 kN in full reheat. The boost below is the
-  // difference, so full throttle gives the published installed figure.
-  //
-  // Down low this flies like the real aeroplane, at M 1.04 dry and M 1.21 in
-  // reheat. UP HIGH IT DOES NOT: the real F-16 reaches about M 2.0 at 11 km
-  // and this one reaches M 1.17, because the shared jet-thrust model lapses
-  // with density as rho^0.72 and that outruns the drag fall. Changing the
-  // exponent for one airframe would move every jet in the game, so it is left
-  // alone and written down instead.
+  // F110-GE-129: 76.3 kN dry, 131 kN in full reheat, at sea level standing
+  // still. The boost below is the difference, so full throttle gives the
+  // published installed figure there; everywhere else `jetLapse` decides.
   maxStaticThrust: 76_300,
   propellerEfficiency: 0,
   // Jet engine telemetry is percent N2 rather than literal crankshaft RPM.
@@ -345,18 +387,22 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   groundSpoilers: false,
   retractableGear: true,
   gearCycleRate: 0.42,
-  // Unlike the aeroplane this replaces, the F-16 genuinely goes supersonic, so
-  // the wave-drag term is live. Both numbers are measured against the top
-  // speed they produce, not picked for plausibility: wave drag peaks at onset
-  // plus 0.17, so too steep a rise parks the aeroplane on the peak and reheat
-  // buys nothing. At 0.95/0.052 it managed M 1.03 dry and M 1.07 wet — the
-  // afterburner was worth 15 m/s and felt like nothing. Sweeping onset and
-  // rise together at sea level: 0.95/0.030 gives M 1.11 wet, 0.95/0.018 gives
-  // M 1.17, 0.90/0.016 gives M 1.19, and 0.90/0.012 gives M 1.04 dry against
-  // M 1.21 wet. That last pair is this aeroplane's real signature — a clean
-  // F-16 is about M 1.2 on the deck — so it is the one flown here.
+  // The F-16 genuinely goes supersonic, so the wave-drag term is live, and the
+  // drag hump and the engine's throttle ratio (`jetLapse`) were fitted
+  // TOGETHER to the type's four signature speeds, flown as steady level flight
+  // against the shared ISA: full reheat M 1.19 at sea level (the type: about
+  // 1.2) and M 1.97 at 11 km (about 2.0); dry, M 1.01 at sea level and M 1.05
+  // at 11 km, because an F-16 cannot supercruise. A shallower hump lets the dry
+  // engine punch through it and cruise at M 1.5; a lower throttle ratio cannot
+  // reach Mach 2. The peak zero-lift drag (0.057 at M 1.07) is an effective
+  // figure for an aeroplane carrying its wingtip rails.
+  //
+  // The 0.012 rise this replaces was fitted against a thrust model with no ram
+  // recovery, using an altitude hold that had not settled: flown properly, that
+  // F-16 reached M 1.71 at sea level and M 2.47 at 11 km, and the "M 1.21 on
+  // the deck, M 1.17 up high" written here was a measurement artefact.
   transonicOnsetMach: 0.9,
-  transonicDragRise: 0.012,
+  transonicDragRise: 0.04,
   sideForceBeta: 0.78,
   sideForceRudder: 0.14,
   pitchMomentZero: 0.004,
@@ -371,6 +417,13 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   yawMomentBeta: 0.128,
   yawDamping: -0.36,
   afterburner: Object.freeze({ thrustBoost: 54_700, engageThrottle: 0.85 }),
+  // The F110 is a low-bypass (0.76) mixed-flow turbofan. Its throttle ratio is
+  // that of an engine designed to make its best thrust supersonic: ram recovery
+  // keeps adding thrust until theta0 reaches 1.10, which is Mach 0.71 at sea
+  // level and Mach 1.33 above the tropopause. At 1.10 full reheat at sea level
+  // and Mach 0.9 is 1.37 times the static figure, which is what the F-16's own
+  // published engine tables give (Stevens & Lewis, from NASA TP-1538).
+  jetLapse: Object.freeze({ cycle: "low-bypass-mixed", throttleRatio: 1.1 }),
   // A 2.36 m main-gear track under a 9.96 m span: narrow, which is why the
   // real aeroplane is a handful in a crosswind and why the mains sit close in.
   gear: Object.freeze([
@@ -445,9 +498,14 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   // area/span, which would describe a rectangular wing.
   meanChord: 3.4,
   // Principal moments around body roll (+X), yaw (+Y), and pitch (+Z), from
-  // the usual radius-of-gyration fractions for a swept-wing transport:
-  // roll off the semi-span, pitch off the half-length, yaw off both.
-  inertia: Object.freeze({ x: 620_000, y: 1_100_000, z: 820_000 }),
+  // the nondimensional radii of gyration of a jet with its engines on the rear
+  // fuselage: 0.25 of the semi-span in roll, 0.35 of the half-length in pitch
+  // and 0.44 of the mean half-dimension in yaw (I = m (R b/2)^2, the Roskam
+  // form). No wing engines keeps the roll figure low; two engines 15 m aft of
+  // the CG make pitch and yaw large. The previous 820,000 and 1,100,000 were
+  // radii of 0.27 and 0.32, under every published value for a jet transport,
+  // which made the aeroplane pitch and yaw like one half its size.
+  inertia: Object.freeze({ x: 630_000, y: 2_080_000, z: 1_400_000 }),
   maxEnginePower: 0,
   // Two GE Passport 20-19BB1A at 18,920 lbf.
   maxStaticThrust: 168_000,
@@ -502,6 +560,8 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   // Wheelbase 13.9 m, track 4.28 m, with the datum at the centre of gravity.
   // Business jets do not carry reheat; range is the whole point of them.
   afterburner: null,
+  // The Passport is a 5.6:1 bypass turbofan.
+  jetLapse: Object.freeze({ cycle: "high-bypass", throttleRatio: 1 }),
   gear: Object.freeze([
     Object.freeze({
       position: Object.freeze({ x: -1.9, y: -2.7, z: -2.14 }),
@@ -559,11 +619,11 @@ export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
  * Flown at 250 tonnes rather than its 447,700 kg maximum take-off mass, for
  * the same reason the Global is flown light: the airfield in this game has a
  * 1,320 m runway, and at MTOW this aeroplane needs 2,383 m to reach 5 m AGL —
- * it simply does not fit. At 250 t it reaches 5 m in 855 m of the 1,272 m
- * available from the threshold and lands in 696 m, which is MORE margin than
- * the Global 8000 has. The heaviest aeroplane in the game being the one with
- * the most comfortable field performance is counter-intuitive, and it is what
- * four 296 kN engines on 554 m^2 of wing produce.
+ * it simply does not fit. At 250 t `scripts/aircraft-performance.mts` lifts it
+ * off in 955 m and stops it in 747 m, which is MORE margin than the Global
+ * 8000 has (1,185 m and 465 m). The heaviest aeroplane in the game being the
+ * one with the most comfortable field performance is counter-intuitive, and it
+ * is what four 296 kN engines on 554 m^2 of wing produce.
  *
  * Every figure here was flown through the same harness as the other three
  * before the aeroplane had any geometry, precisely so the question "does it
@@ -577,7 +637,16 @@ export const BOEING_747_8: Readonly<AircraftDefinition> = Object.freeze({
   wingArea: 554,
   wingSpan: 68.4,
   meanChord: 9,
-  inertia: Object.freeze({ x: 17_550_000, y: 32_825_000, z: 25_480_000 }),
+  // Roll (+X), yaw (+Y) and pitch (+Z), from the 747's published inertias
+  // (NASA CR-2144, Heffley & Jewell, quoted in Nelson's appendix B: 18.2, 33.1
+  // and 49.7 million slug ft^2 about roll, pitch and yaw at 636,600 lb, a
+  // 747-100). Kept as the radii of gyration those imply (0.311 of the
+  // semi-span, 0.353 of the half-length, 0.469 of the mean half-dimension) and
+  // applied to this aeroplane's mass, span and length. The figures this
+  // replaces were 62%, 56% and 46% of that, so the aeroplane rotated in pitch
+  // and yaw about a third faster than a 747 can, and its dutch roll had the
+  // period of a business jet's.
+  inertia: Object.freeze({ x: 28_100_000, y: 71_900_000, z: 45_300_000 }),
   maxEnginePower: 0,
   // 4 x GEnx-2B67 at 296 kN.
   maxStaticThrust: 1_184_000,
@@ -614,6 +683,8 @@ export const BOEING_747_8: Readonly<AircraftDefinition> = Object.freeze({
   yawMomentBeta: 0.15,
   yawDamping: -0.55,
   afterburner: null,
+  // The GEnx-2B is a 7.4:1 bypass turbofan.
+  jetLapse: Object.freeze({ cycle: "high-bypass", throttleRatio: 1 }),
   // The real aeroplane has four main bogies; two wing-root legs stand in for
   // them, at the track the outer pair actually sits at.
   //
@@ -698,9 +769,37 @@ export function aircraftDefinition(kind: AircraftKind): Readonly<AircraftDefinit
 }
 
 /**
+ * Mattingly's installed-thrust lapse: thrust available at this flight
+ * condition as a fraction of the sea-level static figure. See
+ * `JetLapseDefinition` for the model and its source.
+ *
+ * `reheat` selects the low-bypass engine's maximum (afterburning) rating
+ * rather than its military (dry) one; each is a fraction of ITS OWN sea-level
+ * static thrust, so both read exactly 1 standing still at sea level.
+ */
+export function jetThrustLapse(
+  lapse: JetLapseDefinition,
+  airDensity: number,
+  forwardAirspeed: number,
+  reheat = false,
+): number {
+  if (!(airDensity > 0)) return 0;
+  const mach = Math.max(0, forwardAirspeed) / speedOfSoundForDensity(airDensity);
+  const ram = 1 + 0.2 * mach * mach;
+  const theta0 = (standardTemperatureForDensity(airDensity) / SEA_LEVEL_TEMPERATURE) * ram;
+  // p / p_SL = (rho / rho_SL) * (T / T_SL), which is exactly 1 at sea level.
+  const delta0 = (airDensity / SEA_LEVEL_DENSITY) * (theta0 / ram) * ram ** 3.5;
+  const overLimit = Math.max(0, theta0 - lapse.throttleRatio);
+  const lapseFraction = lapse.cycle === "high-bypass"
+    ? 1 - 0.49 * Math.sqrt(mach) - (3 * overLimit) / (1.5 + mach)
+    : 1 - ((reheat ? 3.5 : 3.8) * overLimit) / theta0;
+  return Math.max(0, delta0 * lapseFraction);
+}
+
+/**
  * Returns installed thrust without conflating propeller shaft power and jet
- * thrust. Propeller output remains power-limited at speed; a jet instead uses
- * a smooth density lapse and mild inlet recovery loss at very high speed.
+ * thrust. Propeller output remains power-limited at speed; a jet follows its
+ * engine cycle's lapse with altitude and Mach (`jetThrustLapse`).
  */
 export function calculateEngineThrust(
   aircraft: AircraftDefinition,
@@ -713,22 +812,27 @@ export function calculateEngineThrust(
     // A turbine cannot produce thrust without mass flow. Unlike the legacy
     // propeller branch, do not retain the low-density numerical floor as the
     // atmosphere approaches vacuum.
-    const densityRatio = clamp(airDensity / 1.225, 0, 1.2);
-    const densityLapse = densityRatio ** 0.72;
-    const inletRecovery = 1 - 0.12 * clamp((forwardAirspeed - 220) / 180, 0, 1);
-    const dry = commandedThrottle * aircraft.maxStaticThrust;
+    const lapse = aircraft.jetLapse;
+    if (!lapse) return 0;
+    const dryLapse = jetThrustLapse(lapse, airDensity, forwardAirspeed);
+    const dry = commandedThrottle * aircraft.maxStaticThrust * dryLapse;
+    if (!aircraft.afterburner) return dry;
     // Reheat ramps across the throttle remaining above the gate, so the last
-    // fraction of travel is where the aeroplane transforms. It lapses with
-    // density like the core does: an afterburner is not a rocket.
-    const reheat = aircraft.afterburner
-      ? clamp(
-          (commandedThrottle - aircraft.afterburner.engageThrottle)
-            / Math.max(1e-6, 1 - aircraft.afterburner.engageThrottle),
-          0,
-          1,
-        ) * aircraft.afterburner.thrustBoost
-      : 0;
-    return (dry + reheat) * densityLapse * inletRecovery;
+    // fraction of travel is where the aeroplane transforms. What it adds is the
+    // gap between the engine's wet and dry ratings at THIS flight condition,
+    // which lapse differently: the nozzle's share grows with ram. Never
+    // negative, because lighting the burner does not take thrust away.
+    const reheatFraction = clamp(
+      (commandedThrottle - aircraft.afterburner.engageThrottle)
+        / Math.max(1e-6, 1 - aircraft.afterburner.engageThrottle),
+      0,
+      1,
+    );
+    if (!(reheatFraction > 0)) return dry;
+    const wetRated = (aircraft.maxStaticThrust + aircraft.afterburner.thrustBoost)
+      * jetThrustLapse(lapse, airDensity, forwardAirspeed, true);
+    const dryRated = aircraft.maxStaticThrust * dryLapse;
+    return dry + reheatFraction * Math.max(0, wetRated - dryRated);
   }
 
   const densityRatio = clamp(airDensity / 1.225, 0.1, 1.2);
