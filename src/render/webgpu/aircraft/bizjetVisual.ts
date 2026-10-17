@@ -16,9 +16,12 @@ import {
   yawHingeAlong,
   configureRoot,
   createLampApplier,
+  foldGearLegs,
+  gearLeg,
   node,
   setCockpitVisibility,
   type CommonRig,
+  type GearLeg,
 } from "./airframeRig";
 import { AircraftBuildContext, type LoftSection } from "./builders";
 import {
@@ -1481,17 +1484,32 @@ export function createBizJet(scene: Scene): AircraftVisual {
   // the sim's y is where the rubber meets the pavement and the node is the
   // axle. Babylon's torus outer radius is diameter/2 + thickness/2, so the
   // 0.86/0.26 main tyre gives 0.56 and 0.56 - 2.70 = -2.14.
+  //
+  // Each leg swings about its trunnion as the real ones do: the mains INBOARD
+  // into the wing-root bays, the nose leg FORWARD into its bay. Slightly past
+  // square, so the stowed wheels sit up in the body rather than hanging below
+  // the belly.
   const landingGear = node("bizjet-retractable-landing-gear", root, scene);
+  const gearLegs: GearLeg[] = [];
   const mainWheels: TransformNode[] = [];
   for (const side of [1, -1] as const) {
     const sideName = side > 0 ? "starboard" : "port";
+    const leg = gearLeg(
+      `${sideName}-bizjet-main-gear-leg`,
+      landingGear,
+      scene,
+      new Vector3(-1.55, -1.15, side * 2.05),
+      new Vector3(-1.9, -2.14, side * 2.14),
+      new Vector3(-0.35, 0.2, -side),
+    );
+    gearLegs.push(leg);
     build.strutBetween(
       `${sideName}-bizjet-main-strut`,
       new Vector3(-1.55, -1.15, side * 2.05),
       new Vector3(-1.9, -2.14, side * 2.14),
       0.14,
       hub,
-      landingGear,
+      leg.node,
     );
     build.strutBetween(
       `${sideName}-bizjet-main-side-brace`,
@@ -1499,9 +1517,9 @@ export function createBizJet(scene: Scene): AircraftVisual {
       new Vector3(-1.88, -2, side * 2.1),
       0.09,
       hub,
-      landingGear,
+      leg.node,
     );
-    const wheel = node(side > 0 ? "starboard-main-wheel" : "port-main-wheel", landingGear, scene);
+    const wheel = node(side > 0 ? "starboard-main-wheel" : "port-main-wheel", leg.node, scene);
     wheel.position.set(-1.9, -2.14, side * 2.14);
     // Two wheels per leg. Forty tonnes on two main tyres would be a tyre
     // pressure no runway accepts, and the twin bogie is plainly visible.
@@ -1519,15 +1537,24 @@ export function createBizJet(scene: Scene): AircraftVisual {
     axle.rotation.x = Math.PI / 2;
     mainWheels.push(wheel);
   }
+  const noseLeg = gearLeg(
+    "bizjet-nose-gear-leg",
+    landingGear,
+    scene,
+    new Vector3(12, -1.3, 0),
+    new Vector3(12, -2.28, 0),
+    new Vector3(1, 0.7, 0),
+  );
+  gearLegs.push(noseLeg);
   build.strutBetween(
     "bizjet-nose-strut",
     new Vector3(12, -1.3, 0),
     new Vector3(12, -2.28, 0),
     0.11,
     hub,
-    landingGear,
+    noseLeg.node,
   );
-  const noseSteer = node("nose-wheel-steering", landingGear, scene);
+  const noseSteer = node("nose-wheel-steering", noseLeg.node, scene);
   noseSteer.position.set(12, -2.28, 0);
   const noseWheel = node("bizjet-nose-wheel", noseSteer, scene);
   build.torus("nose-wheel-tire", 0.64, 0.2, 16, tire, noseWheel);
@@ -1658,8 +1685,7 @@ export function createBizJet(scene: Scene): AircraftVisual {
       applyCommonPose(rig, pose, delta);
       if (cockpitViewOn) cockpit.update(state, delta);
       landingGear.setEnabled(pose.gearVisible);
-      landingGear.scaling.set(pose.gearScale.x, pose.gearScale.y, pose.gearScale.z);
-      landingGear.position.y = pose.gearOffsetY;
+      foldGearLegs(gearLegs, pose.gearFold);
       rig.gearDoors.forEach((door, index) => {
         door.rotation.x = (index === 1 ? -1 : 1) * pose.gearDoorTravel;
       });

@@ -330,6 +330,10 @@ describe("the 747-8's draw budget", () => {
     // mesh, which already existed and already had one material; the atlas changes which material that
     // is (an emissive one) in cockpit view only, not how many meshes or draws there are. Where there
     // is no 2D canvas -- every run of this test -- the screens keep their flat material entirely.
+    // THE FOWLER FLAPS SPEND 9 OF THE HEADROOM: the inboard flaps' two aft elements
+    // and the canoe tails that ride the flaps are three meshes, all casting (90 -> 93
+    // drawn, 58 -> 61 casters, 206 -> 215 draws). The trailing-edge fillers are folded
+    // into the fixed wings and cost nothing. The bounds did not move.
     expect(drawn.length).toBeLessThanOrEqual(97);
     expect(casters.length).toBeLessThanOrEqual(64);
     expect(draws).toBeLessThanOrEqual(225);
@@ -360,7 +364,16 @@ describe("the 747-8's draw budget", () => {
     //
     // +4, DELIBERATELY, by the spoiler bays: one authored plate per spoiler group and wing
     // (the dark well a raised panel uncovers), folded into one mesh.
-    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 39 + 4);
+    //
+    // +13, DELIBERATELY, by the Fowler flaps: five trailing-edge fillers a side (the fixed
+    // metal aft of the hinge line between and beyond the flaps and ailerons, folded into
+    // each fixed wing), the inboard flaps' two aft elements, and the canoe tails that ride
+    // the flap carriages, one thin-instanced mesh.
+    //
+    // +4, DELIBERATELY, by the shrouds: the fixed strip over each flap's nose, aft of the
+    // hinge line, that the flap tucks under (one per flap and wing, folded into each
+    // fixed wing like the fillers).
+    expect(authoredParts(visual).size).toBe(BEFORE.meshes - 11 + 39 + 4 + 13 + 4);
   });
 
   it("keeps the cockpit's nine meshes outside every draw bound: invisible and never casting until cockpit view", () => {
@@ -398,12 +411,13 @@ describe("the 747-8's draw budget", () => {
     const { visual } = build();
     const outline = [...authoredParts(visual)].filter(([name]) => SILHOUETTE.test(name));
     // NON-VACUITY: 4 fuselage lofts -- it was 5 until the upper deck stopped
-    // being its own loft -- 8 wing panels, 2 tailplanes, fin and dorsal fin,
-    // 4 nacelles and 4 pylons, 4 flaps, 4 spoiler meshes, 4 ailerons, 2 elevators,
-    // the rudder, 4 legs, 2 side braces, 4 bogie beams, 6 doors, 2 nose
-    // members and 18 tyres.
+    // being its own loft -- 8 wing panels, 10 trailing-edge fillers and
+    // 4 flap shrouds, 2 tailplanes, fin and dorsal fin, 4 nacelles and 4 pylons, 6 flap
+    // elements (the inboard flaps are double-slotted), 4 spoiler meshes,
+    // 4 ailerons, 2 elevators, the rudder, 4 legs, 2 side braces, 4 bogie
+    // beams, 6 doors, 2 nose members and 18 tyres.
     expect(outline.map(([name]) => name).sort()).toHaveLength(
-      4 + 8 + 2 + 2 + 4 + 4 + 4 + 4 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
+      4 + 8 + 10 + 4 + 2 + 2 + 4 + 4 + 6 + 4 + 4 + 2 + 1 + 4 + 2 + 4 + 6 + 2 + 18,
     );
     for (const [name, mesh] of outline) {
       expect(issuesDraw(mesh), `${name} is not drawn`).toBe(true);
@@ -434,9 +448,10 @@ describe("the 747-8's draw budget", () => {
   it("sorts every part into exactly one of the two lists", () => {
     // The two patterns above are hand-written, so a part matching NEITHER
     // would be a part nobody decided about. The remainder is named: the
-    // beacon blister, the flap track canoes and the four core exhausts are
-    // not the outline, but each stands clear of the part it hangs from, so
-    // they were left casting rather than argued out of the shadow map.
+    // beacon blister, the flap track canoes (fore halves and the tails that
+    // ride the flaps) and the four core exhausts are not the outline, but each
+    // stands clear of the part it hangs from, so they were left casting rather
+    // than argued out of the shadow map.
     const { visual } = build();
     const undecided = [...authoredParts(visual)]
       .filter(([name]) => !SILHOUETTE.test(name) && !ENCLOSED.test(name))
@@ -448,6 +463,7 @@ describe("the 747-8's draw budget", () => {
     expect(undecided.sort()).toEqual([
       "airliner-beacon-fairing",
       "airliner-flap-track-canoe",
+      "airliner-flap-track-canoe-tail",
       ...["port", "starboard"].flatMap((side) => ["inboard", "outboard"].map(
         (engine) => `${side}-airliner-${engine}-engine-core`,
       )),
@@ -743,34 +759,54 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // THEN 25,066 TO 23,330 with the header taken out again (the PM's call, S5: the crown's own skin is lumpy, and any bar
     // on it showed the lumps): airliner-header's 1,736 vertices and 1,648 triangles are gone, and the other 99 meshes are
     // bit-identical against 6a21297.
+    //
+    // THEN 23,330 TO 23,929 with the Fowler flaps. The wing is one section over the true chord now, cut blunt at
+    // the hinge line: each fixed wing 450 -> 630 vertices and 2,652 -> 3,672 indices (its five trailing-edge fillers
+    // folded in), each inner and outer flap 54 -> 78 and 312 -> 456 (a tucked nose ahead of the hinge), and each inner
+    // flap gains an aft element (airliner-inner-aft-flap-surface, 48 and 276). The canoe is cut in two: its fore half
+    // 38 -> 29 and 192 -> 144, and the tail that rides the flap is new (airliner-flap-track-canoe-tail, 56 and 288).
+    // +599 vertices and +3,408 indices exactly. Checked mesh by mesh against db2ca92: besides those, the four ailerons,
+    // the four spoiler panels, the spoiler bays and airliner-body-exterior (its pylons) sit on the new section's skin
+    // and moved without changing count; the other 82 are bit-identical. The extents did not move; the area grew by
+    // 213 m^2, all of it new skin: the tucked noses, the fillers, the aft elements and the canoe tails.
+    //
+    // THEN 23,929 TO 24,281 with the flaps cut to 30% of the chord under a fixed shroud, and the main gear moved to the
+    // 747's own stations. Each fixed wing 630 -> 770 vertices and 3,672 -> 4,488 indices (its two shrouds folded in),
+    // each inner and outer flap 78 -> 90 and 456 -> 528 and each inboard aft element 48 -> 60 and 276 -> 348 (a rounded
+    // nose on cosine-clustered stations). +352 vertices and +2,064 indices exactly. Checked mesh by mesh against 17d8cbe:
+    // besides those, the canoes and canoe tails (new instance placements), every body-gear part (moved 3.8 m forward, its
+    // door leaf rolled flush with the belly fairing), and every wing-gear part (moved 3 m forward; the door leaf is a
+    // strut door now, the strut and side brace re-cut) moved; the other 54 are bit-identical. The extents did not move;
+    // the area fell by 9.5 m^2: the smaller flaps lost more skin than the shrouds added.
     const census = geometryCensus(build().visual);
-    expect(census.vertices).toBe(23_330);
-    expect(census.indices).toBe(97_662);
+    expect(census.vertices).toBe(24_281);
+    expect(census.indices).toBe(103_134);
     expect(census.minimum.x).toBeCloseTo(-38.0000, 4);
     expect(census.minimum.y).toBeCloseTo(-6.4000, 4);
     expect(census.minimum.z).toBeCloseTo(-34.3500, 4);
     expect(census.maximum.x).toBeCloseTo(34.0000, 4);
     expect(census.maximum.y).toBeCloseTo(13.0000, 4);
     expect(census.maximum.z).toBeCloseTo(34.3500, 4);
-    expect(census.positionSum.x).toBeCloseTo(396999.3059, 1);
-    expect(census.positionSum.y).toBeCloseTo(4325.3920, 1);
+    expect(census.positionSum.x).toBeCloseTo(401284.9487, 1);
+    expect(census.positionSum.y).toBeCloseTo(2216.3662, 1);
     expect(census.positionSum.z).toBeCloseTo(-891.4056, 1);
-    expect(census.positionSquares).toBeCloseTo(18832121.68, 0);
-    expect(census.normalSum.x).toBeCloseTo(-874.1322, 2);
-    expect(census.normalSum.y).toBeCloseTo(-900.9706, 2);
-    expect(census.normalSum.z).toBeCloseTo(5.8198, 2);
-    expect(census.normalMoment).toBeCloseTo(-7417.7414, 1);
-    expect(census.signedVolume).toBeCloseTo(-3184.5255, 2);
-    expect(census.area).toBeCloseTo(4741.3385, 2);
+    expect(census.positionSquares).toBeCloseTo(19143147.83, 0);
+    expect(census.normalSum.x).toBeCloseTo(-705.7205, 2);
+    expect(census.normalSum.y).toBeCloseTo(-874.0868, 2);
+    expect(census.normalSum.z).toBeCloseTo(5.9629, 2);
+    expect(census.normalMoment).toBeCloseTo(-6330.1323, 1);
+    expect(census.signedVolume).toBeCloseTo(-3245.3712, 2);
+    expect(census.area).toBeCloseTo(4945.1393, 2);
   });
 
-  it("keeps every instance of the three thin-instanced parts", () => {
+  it("keeps every instance of the four thin-instanced parts", () => {
     // `MergeMeshes` reads base geometry and drops the instance buffer, so
-    // these three must never have been offered to it.
+    // these four must never have been offered to it.
     const { scene } = build();
     for (const [name, count] of [
       ["airliner-cabin-window-line", 228],
       ["airliner-flap-track-canoe", 8],
+      ["airliner-flap-track-canoe-tail", 8],
       ["airliner-nacelle-chevron", 48],
     ] as const) {
       const part = scene.getMeshByName(name);
@@ -796,8 +832,9 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     // 68 again, from 71: the attitude ball's three pieces hung from the PIVOT the cockpit's
     // update turned, exactly as a hinged surface hangs from its hinge. The ball is gone (the PFD
     // page draws attitude), and with it the only cockpit part that was not bolted to the root.
+    // 70 with the inboard flaps' aft elements, each hung from its own hinge on the main one.
     const hung = visual.meshes.filter((mesh) => mesh.parent !== visual.root);
-    expect(hung).toHaveLength(68);
+    expect(hung).toHaveLength(70);
     for (const mesh of hung) {
       expect(mesh.metadata?.mergedFrom, `${mesh.name} moves and was folded`).toBeUndefined();
     }
@@ -835,7 +872,8 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
     const names = scene.meshes.map((mesh) => mesh.name);
     expect(names.filter((name) => /wing$/.test(name) && !/flap|aileron/.test(name)))
       .toEqual(["starboard-airliner-fixed-wing", "port-airliner-fixed-wing"]);
-    expect(names.filter((name) => /-(flap|aileron)-surface$/.test(name))).toHaveLength(8);
+    // 10: four flaps, the inboard ones' two aft elements, and four ailerons.
+    expect(names.filter((name) => /-(flap|aileron)-surface$/.test(name))).toHaveLength(10);
   });
 
   it("hides the same skin from the cockpit camera, and nothing more", () => {
@@ -879,13 +917,14 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
       expect(mesh.isVisible, mesh.name).toBe(true);
     }
     // WHAT THE COCKPIT CAMERA DRAWS: everything the exterior camera does, less the shell, the post and the glazing,
-    // plus the kit's nine: 96. (It was 95 before the overhead's front (S5), 94 before the clock (S4), 93 before the window's seals (S1), 92 before the spoiler bays added their one mesh
+    // plus the kit's nine: 99. (It was 96 before the inboard flaps' two aft elements and the canoe tails, 95 before the overhead's front (S5), 94 before the clock (S4), 93 before the window's seals (S1), 92 before the spoiler bays added their one mesh
     // to both cameras, 90 with the kit's four, before the framed screens' rims and wells, and 91 while the post was drawn
-    // from the seat, before the kit lined it. The exterior camera's own count was 89 until the bays.)
+    // from the seat, before the kit lined it. The exterior camera's own count was 89 until the bays, and 90 until the
+    // aft elements and canoe tails.)
     const cockpitDraws = visual.meshes.filter((mesh) => issuesDraw(mesh) && (mesh.layerMask & camera.layerMask) !== 0);
     expect(cockpitDraws.length).toBe(exteriorDraws.length - visual.cockpitParts.length + (visual.cockpitOnlyParts ?? []).length);
-    expect(exteriorDraws.length).toBe(90);
-    expect(cockpitDraws.length).toBe(96);
+    expect(exteriorDraws.length).toBe(93);
+    expect(cockpitDraws.length).toBe(99);
     expect(cockpitDraws.map((mesh) => mesh.name)).not.toContain("airliner-windscreen-center-post");
     for (const part of formerCockpitParts) {
       expect(part.layerMask).toBe(AIRCRAFT_EXTERIOR_LAYER_MASK);
@@ -918,8 +957,9 @@ describe("folding the 747-8's static parts changes how it is drawn, not what is 
         ].join("|")).test(name))
         .map(([, mesh]) => mesh),
     );
-    // 2 folded wings and the folded tail, 4 flaps, 4 ailerons, 2 elevators.
-    expect(carriers.size).toBe(2 + 1 + 4 + 4 + 2);
+    // 2 folded wings and the folded tail, 4 flaps and the inboard ones' 2 aft
+    // elements, 4 ailerons, 2 elevators.
+    expect(carriers.size).toBe(2 + 1 + 6 + 4 + 2);
     for (const mesh of carriers) mesh.isVisible = false;
     visual.setCockpitView(true);
     for (const mesh of carriers) {

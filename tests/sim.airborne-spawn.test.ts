@@ -72,8 +72,9 @@ describe("airborne spawns", () => {
    *
    * `createSimulationSpawn` now reads the catalogue figure as an EQUIVALENT
    * airspeed and converts: TAS = EAS / sqrt(sigma), and for a JET, throttle =
-   * throttle0 / sigma, because jet thrust in this model lapses with density
-   * and so thrust-required over thrust-available scales exactly that way.
+   * throttle0 * T(sea level, EAS) / T(altitude, TAS), because the same
+   * dynamic pressure needs the same thrust and the engine has lost some of it
+   * to altitude and Mach in between.
    *
    * The propeller is deliberately NOT corrected — its thrust is power-limited
    * rather than density-limited — so the Cessna is expected to sink at the top

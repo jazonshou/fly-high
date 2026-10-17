@@ -20,7 +20,11 @@ import {
   type FlightControls,
   type StabilityAssistMode,
 } from "../src/sim";
-import { airborneAirspeedForAircraft, airborneThrottleForAircraft } from "../src/game/spawn";
+import {
+  airborneAirspeedForAircraft,
+  airborneGearForAircraft,
+  airborneThrottleForAircraft,
+} from "../src/game/spawn";
 
 /**
  * Pressing Start hands the player an aeroplane that is already trimmed.
@@ -129,7 +133,16 @@ function handOver(
   });
   const attract = new AttractHold(spawnThrottle);
   const supervisor: AttractHoldOutput = { pitch: 0, roll: 0, throttle: spawnThrottle };
-  const requested: FlightControls = { ...DEFAULT_CONTROLS, throttle: spawnThrottle };
+  // The gear as an airborne start has it, which is how the menu flight flies.
+  // `DEFAULT_CONTROLS` has it DOWN (the Cessna's fixed gear), and once jet
+  // thrust lapsed with Mach the big jets could not reach a fifth over cruise
+  // with it hanging out: they sat at full throttle short of the target, near
+  // their trim point, and the scenario stopped creating exposure.
+  const requested: FlightControls = {
+    ...DEFAULT_CONTROLS,
+    throttle: spawnThrottle,
+    gear: airborneGearForAircraft(kind),
+  };
   const assisted: FlightControls = { ...DEFAULT_CONTROLS };
   const elevator = () =>
     heldElevator(simulator.state.actuators.pitch, simulator.state.actuators.trim);
@@ -189,6 +202,9 @@ function handOver(
     ...DEFAULT_CONTROLS,
     throttle: simulator.state.actuators.throttle,
     trim: seededTrim,
+    // And the gear stays where the menu flight had it, rather than dropping
+    // into a 250 m/s airflow the moment the player takes over.
+    gear: requested.gear,
   };
   let settledDrift = 0;
   let stepAtHandoff = 0;

@@ -6,6 +6,11 @@ import {
   type AircraftDefinition,
 } from "./aircraft";
 import {
+  SEA_LEVEL_DENSITY,
+  speedOfSoundForDensity,
+  standardAirDensity,
+} from "./atmosphere";
+import {
   clamp,
   crossInto,
   dot3,
@@ -46,7 +51,6 @@ export const FIXED_TIME_STEP = 1 / 120;
 export const TRIM_ELEVATOR_AUTHORITY = 0.5;
 export const MAX_STEP_DURATION = 0.25;
 export const STANDARD_GRAVITY = 9.80665;
-export const SEA_LEVEL_DENSITY = 1.225;
 
 const WORLD_UP: Readonly<Vec3> = Object.freeze({ x: 0, y: 1, z: 0 });
 // Babylon's rendered aircraft uses body +Z for the physical starboard side;
@@ -81,13 +85,18 @@ const FLIGHT_SPEED_BRAKE_LIFT_DUMP = 0.12;
 // decide top speed.
 const MAX_TRANSLATIONAL_SPEED = 750;
 // Wave-drag hump shape shared by every aircraft that declares a transonic
-// onset: a smoothstep^2 rise over 0.17 Mach to the peak, then the classic
-// supersonic decay of the wave-drag coefficient beyond the hump. No shipped
-// aircraft currently declares one (both sit far below their critical Mach),
-// so the term is inert; it stays for the next airframe that needs it.
+// onset: a smoothstep^2 rise over 0.17 Mach to the peak, then a slow
+// supersonic decline. Three airframes declare one; the Cessna does not.
+//
+// The decline was 5.5 per Mach, which left a fighter at Mach 2 with a sixth of
+// its peak wave drag and a zero-lift drag barely above subsonic. A real
+// fighter's falls only gently past the hump (the F-16's is roughly 0.038 at
+// M 1.2, 0.036 at 1.5 and 0.034 at 2.0 against 0.017 subsonic), and with the
+// old decline and a thrust model that could not reach supersonic speeds the
+// error stayed hidden. 0.4 per Mach keeps about three quarters of the peak at
+// Mach 2.
 const TRANSONIC_PEAK_MACH_OFFSET = 0.17;
-const TRANSONIC_SUPERSONIC_DECAY = 5.5;
-const SEA_LEVEL_SPEED_OF_SOUND = 340.29;
+const TRANSONIC_SUPERSONIC_DECAY = 0.4;
 // The coefficient model remains valid through a stall, but at very high true
 // airspeed in thin air it can otherwise request non-structural frame-to-frame
 // accelerations and reach the old numerical safety clamp of 20 rad/s. These
@@ -285,38 +294,49 @@ function calculateGroundSpawnPose(
   return { pitch, cgHeight };
 }
 
-export function standardAirDensity(altitudeMetres: number): number {
-  // A bounded exponential atmosphere is sufficient at the light trainer's envelope.
-  return SEA_LEVEL_DENSITY * Math.exp(-clamp(altitudeMetres, -500, 20_000) / 8_500);
-}
-
 /**
- * Incremental transonic wave-drag coefficient. Mach is inferred from density
- * through the ISA troposphere relation T/T0 = (rho/rho0)^(1/4.256), so the
- * term needs no separate temperature model and honours test density
- * overrides. Aircraft with `transonicDragRise` 0 — currently both of them —
- * return exactly 0, keeping their drag bit-identical to the pre-wave-drag
- * model.
+ * Incremental transonic wave-drag coefficient. Mach is read from density
+ * through the standard atmosphere (`speedOfSoundForDensity`), so the term
+ * needs no separate temperature model and honours test density overrides.
+ * An aircraft with `transonicDragRise` 0 (the Cessna) returns exactly 0,
+ * keeping its drag bit-identical to the pre-wave-drag model.
+ *
+ * Supersonic, it also carries the wave drag DUE TO LIFT. Past Mach 1 a wing
+ * loses its leading-edge suction and the drag of lifting rises to the
+ * thin-wing value CL^2 * sqrt(M^2 - 1) / 4, so the drag-due-to-lift factor is
+ * the larger of the subsonic `inducedDrag` and that. It is what stops a
+ * fighter climbing supersonic into ever thinner air at a lift coefficient
+ * that would cost it nothing subsonic.
  */
 function waveDragCoefficient(
   aircraft: AircraftDefinition,
   airspeed: number,
   airDensity: number,
+  liftCoefficient: number,
 ): number {
   const rise = aircraft.transonicDragRise;
   if (!(rise > 0)) return 0;
-  const speedOfSound =
-    SEA_LEVEL_SPEED_OF_SOUND * (airDensity / SEA_LEVEL_DENSITY) ** 0.1175;
-  const mach = airspeed / Math.max(1, speedOfSound);
+  const mach = airspeed / Math.max(1, speedOfSoundForDensity(airDensity));
   const onset = aircraft.transonicOnsetMach;
   if (!(mach > onset)) return 0;
   const peakMach = onset + TRANSONIC_PEAK_MACH_OFFSET;
   if (mach < peakMach) {
     const progress = (mach - onset) / TRANSONIC_PEAK_MACH_OFFSET;
     const smooth = progress * progress * (3 - 2 * progress);
-    return rise * smooth * smooth;
+    return rise * smooth * smooth + supersonicLiftWaveDrag(aircraft, mach, liftCoefficient);
   }
-  return rise / (1 + TRANSONIC_SUPERSONIC_DECAY * (mach - peakMach));
+  return rise / (1 + TRANSONIC_SUPERSONIC_DECAY * (mach - peakMach))
+    + supersonicLiftWaveDrag(aircraft, mach, liftCoefficient);
+}
+
+function supersonicLiftWaveDrag(
+  aircraft: AircraftDefinition,
+  mach: number,
+  liftCoefficient: number,
+): number {
+  if (!(mach > 1)) return 0;
+  const supersonicFactor = Math.sqrt(mach * mach - 1) / 4;
+  return Math.max(0, supersonicFactor - aircraft.inducedDrag) * liftCoefficient * liftCoefficient;
 }
 
 function terrainAt(
@@ -1178,7 +1198,7 @@ function integrateSubstep(
       aircraft,
       state.actuators.gear,
       speedBrakeDeployment(aircraft, state.actuators),
-    ) + waveDragCoefficient(aircraft, airspeed, airDensity);
+    ) + waveDragCoefficient(aircraft, airspeed, airDensity, liftCoefficient);
   const liftForce = dynamicPressure * aircraft.wingArea * liftCoefficient;
   const dragForce = dynamicPressure * aircraft.wingArea * dragCoefficient;
 

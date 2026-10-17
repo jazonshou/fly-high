@@ -28,6 +28,12 @@
  * removed and satisfy yourself that the same sweep reports the hole.
  *
  *   KIND=jet RANGES=24,38 AILERON=1 npx tsx scripts/wing-slot-sweep.mts
+ *
+ * TARGET (x,y,z in metres) aims the sweep at another part of the wing and
+ * SPREAD sets the frame's half-width as a fraction of range; the defaults are
+ * the Global's inner flap. The 747's flaps, for example:
+ *
+ *   KIND=airliner TARGET=-3,-2,8 SPREAD=0.12 RANGES=30,45,60 npx tsx scripts/wing-slot-sweep.mts
  */
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
@@ -51,7 +57,8 @@ function kind(name: string | undefined): string {
 }
 
 const GRID = 110;
-const TARGET = new Vector3(-2.2, -1.0, 4.6);
+const TARGET = Vector3.FromArray((process.env.TARGET ?? "-2.2,-1.0,4.6").split(",").map(Number));
+const SPREAD = Number(process.env.SPREAD ?? 0.09);
 
 function worst(fraction: number) {
   const roll = Number(process.env.AILERON ?? 0);
@@ -85,7 +92,7 @@ function worst(fraction: number) {
         const forward = TARGET.subtract(eye).normalize();
         const right = Vector3.Cross(forward, new Vector3(0, 1, 0)).normalize();
         const up = Vector3.Cross(right, forward).normalize();
-        const half = range * 0.09;
+        const half = range * SPREAD;
         const cols: string[][] = [];
         const zs: number[][] = [];
         for (let c = 0; c < GRID; c += 1) {
@@ -144,7 +151,7 @@ function worst(fraction: number) {
   return { worstPx, worstAt, worstZ, bands, seen };
 }
 
-console.log(`### ${KIND}, aileron ${process.env.AILERON ?? 0}${process.env.NO_COVE ? " [CONTROL: seal removed]" : ""} ###`);
+console.log(`### ${KIND} at (${TARGET.asArray().join(", ")}), aileron ${process.env.AILERON ?? 0}${process.env.NO_COVE ? " [CONTROL: seal removed]" : ""} ###`);
 for (const [label, f] of [["flaps 0", 0], ["take-off", 0.5], ["full flap", 1]] as const) {
   const w = worst(f);
   console.log(

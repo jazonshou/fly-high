@@ -1,6 +1,6 @@
 # Flight model
 
-fly high models a fictional four-seat piston trainer as a deterministic six-degree-of-freedom rigid body. The goal is a coherent, light-trainer-like response—not certification fidelity to a named aircraft.
+fly high models four real aeroplanes (a Cessna 150, an F-16C, a Bombardier Global 8000 and a Boeing 747-8) as deterministic six-degree-of-freedom rigid bodies. Each is one `AircraftDefinition` in `src/sim/aircraft.ts`, built from the type's published dimensions, wing, engines and inertias, and flown against its real speeds, ceilings and field lengths where the game's single runway allows. Where a figure is deliberately not the real one (the Global and 747 are flown light, the Cessna climbs faster than the book), the definition says so and why.
 
 ## Coordinate and sign conventions
 
@@ -26,7 +26,7 @@ beta  = atan2(-V_body.z, V_body.x)
 qbar  = 0.5 * rho * |V_air|²
 ```
 
-Positive beta is motion toward the starboard wing. The atmosphere uses an exponential density approximation based on mean-sea-level altitude.
+Positive beta is motion toward the starboard wing. The atmosphere is the International Standard Atmosphere to 32 km (`src/sim/atmosphere.ts`): a 6.5 K/km troposphere to 11 km, isothermal to 20 km, then warming at 1 K/km. Temperature, pressure and the speed of sound are derived from the air DENSITY the simulator carries rather than from altitude, so an `EnvironmentInput.airDensity` override moves the engines and the Mach number along with the wing.
 
 Lift is linear through the normal operating range, reaches its critical angle at approximately +15°/-13°, and then decays smoothly. Drag combines profile, induced, flap, and post-stall terms. Lift remains perpendicular to the local velocity/span plane, drag opposes air-relative velocity, and side force opposes sideslip and rudder deflection.
 
@@ -39,6 +39,19 @@ yaw   = qbar*S*b * (Cn_dr*rudder + Cn_beta*beta + Cn_r*r*b/(2V))
 ```
 
 Control authority falls progressively after the critical angle instead of disappearing abruptly. Propeller thrust is bounded by both static thrust and available shaft power, and engine power falls with air density.
+
+Jet thrust follows Mattingly's installed-thrust lapse correlations (*Aircraft Engine Design*, section 2.3.2), which read the total temperature and pressure the engine actually sees, so thrust falls with Mach as well as with altitude:
+
+```text
+theta0 = T/T_SL * (1 + 0.2 M²)      delta0 = p/p_SL * (1 + 0.2 M²)^3.5
+high-bypass fan:     alpha = delta0 * (1 - 0.49 sqrt(M) - 3 (theta0 - TR) / (1.5 + M))
+low-bypass, dry:     alpha = delta0 * (1 - 3.8 (theta0 - TR) / theta0)
+low-bypass, reheat:  alpha = delta0 * (1 - 3.5 (theta0 - TR) / theta0)
+```
+
+The `(theta0 - TR)` terms apply only above the throttle ratio TR. The Global's and the 747's fans make about 80% of static thrust at take-off speed and 70% at Mach 0.6; the F-16's reheat makes about 1.37 times its static figure at Mach 0.9 on the deck, which is what Stevens and Lewis's F-16 engine tables give.
+
+Above each definition's `transonicOnsetMach` a wave-drag hump rises over 0.17 Mach and decays past Mach 1, and above Mach 1 the lift-dependent wave drag `CL² sqrt(M² - 1) / 4` takes over from subsonic induced drag. The F-16's coefficients are fitted to its real top speeds: Mach 1.2 on the deck and Mach 2 at altitude in reheat.
 
 Airborne spawns begin at the trim-consistent angle of attack rather than with velocity exactly through the nose. This removes the artificial sink transient that previously occurred during the first several seconds of a flight. Their wheel-clearance AGL is user-configurable and is converted to the exact centre-of-gravity height from the rotated landing-gear geometry; there is no hidden fixed elevation or altitude-hold loop.
 
@@ -72,4 +85,4 @@ The simulation worker advances at 120 Hz with a bounded accumulator and emits vi
 
 ## Deliberate limitations
 
-The model does not yet include fuel burn, propeller torque/P-factor, compressibility, icing, retractable gear, independent wheel brakes, or a detailed propeller map. Terrain contact is a penalty/contact model rather than a general-purpose collision solver. Constants should be tuned through the measured scenarios in `tests/sim.rebuild.test.ts` and `tests/sim.envelope.test.ts`, not by weakening their assertions.
+The model does not yet include fuel burn, propeller torque/P-factor, compressibility effects on lift slope or pitching moment (only on drag and thrust), icing, independent wheel brakes, or a detailed propeller map. Terrain contact is a penalty/contact model rather than a general-purpose collision solver. Constants should be tuned through the measured scenarios in `tests/sim.rebuild.test.ts` and `tests/sim.envelope.test.ts`, not by weakening their assertions.
