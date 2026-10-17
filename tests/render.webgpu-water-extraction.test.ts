@@ -258,11 +258,20 @@ describe("water shader extraction (2-8a)", () => {
     // through the tone map. Those shots rebaseline with this wave, and shots
     // with no glitter path in frame do not move at all -- `night-moonlit` is
     // bit-identical across the change at an identical shot list.
+    //
+    // Re-pinned by the sunset rework. FRAGMENT ONLY, and nothing in the water
+    // shader itself changed: the shared AERIAL_PERSPECTIVE_WGSL block it
+    // includes now attenuates the sun at each species' own scattering point
+    // (a Chapman column with the Earth's curvature tilting the sun along the
+    // path) instead of at the camera, and the sky shares that integral. Water
+    // pixels move by the haze laid over them and nothing else; at noon that
+    // is within a couple of percent, at a low sun the distant sea takes the
+    // warm, sun-reddened haze. Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "f29919337f93a01f199e96fd49e8d64f64f5826265d58c06ab606e13bbd0b5a1",
+      "18cf2b98a3965d37b7094bd61b6760118ff503172dc171031f9122314fed9771",
     );
   });
 

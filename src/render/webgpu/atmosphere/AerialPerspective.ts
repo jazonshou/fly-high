@@ -11,13 +11,23 @@ import {
   RAYLEIGH_SCALE_HEIGHT_METERS,
   evaluateTransmittance,
 } from "./AtmosphereLuts";
+import {
+  AERIAL_PLANET_RADIUS_METERS,
+  skyMultipleScattering,
+  sunTransmittanceAt,
+} from "./AerialSunlight";
 
 // Deviation from the plan's "~60 ALU + 2 LUT fetches", recorded: the sun
-// transmittance rides as a per-frame uniform evaluated at the camera's
-// altitude by the shared CPU model, instead of a per-fragment LUT fetch.
-// One fewer sampler in every consumer, exact TS/WGSL agreement, and the
-// error (sun transmittance varying along the path) is second-order for the
-// path lengths a 45 km far plane allows.
+// transmittance is evaluated in-shader from closed forms (AerialSunlight's
+// Chapman and ozone columns) instead of a per-fragment LUT fetch. One fewer
+// sampler in every consumer and exact TS/WGSL agreement.
+//
+// SUNSET REWORK (2026-10): the transmittance used to be ONE per-frame value
+// at the camera's altitude. That was "second-order" for a high sun and
+// first-order wrong for a low one: every scattering point inherited the
+// camera's deeply reddened sunset sun, so the zenith turned the colour of
+// the horizon and sunsets read brown. Each species now sees the sun from
+// where it actually scatters — see `evaluateAerialPerspective`.
 
 /**
  * The aerial-perspective include (1C-4) — the single definition of haze.
@@ -169,11 +179,134 @@ export interface AerialPerspectiveSample {
 }
 
 /**
+ * Which way a path runs relative to the sun, for the Earth-curvature tilt
+ * of the sun's local elevation along it: `horizontal` is the horizontal
+ * length of the unit view vector, `sunAlong` the sun direction's component
+ * along that horizontal heading. Zero for both means "no tilt".
+ */
+export interface AerialTravel {
+  readonly horizontal: number;
+  readonly sunAlong: number;
+}
+
+export const AERIAL_NO_TRAVEL: AerialTravel = Object.freeze({ horizontal: 0, sunAlong: 0 });
+
+export function aerialTravelFor(
+  viewDirection: readonly [number, number, number],
+  sunDirection: readonly [number, number, number],
+): AerialTravel {
+  const horizontal = Math.hypot(viewDirection[0], viewDirection[2]);
+  const length = Math.max(horizontal, 1e-4);
+  return {
+    horizontal,
+    sunAlong: (viewDirection[0] / length) * sunDirection[0]
+      + (viewDirection[2] / length) * sunDirection[2],
+  };
+}
+
+/**
+ * Where along a straight path an exponential species' scattering sits, as
+ * a fraction of the path: its density-weighted centroid. 1/2 for a level
+ * path; near the bottom of a slanted one (x = rise/H).
+ */
+export function exponentialPathCentroid(
+  riseMeters: number,
+  scaleHeightMeters: number,
+): number {
+  if (Math.abs(riseMeters) < 1) return 0.5;
+  const x = Math.min(Math.max(riseMeters / scaleHeightMeters, -80), 80);
+  if (Math.abs(x) < 1e-3) return 0.5 - x / 12;
+  return 1 / x - 1 / (Math.exp(x) - 1);
+}
+
+/**
+ * The share of a path's scattering the camera actually sees through the
+ * path's own extinction, (1 − e^−τ)/τ: 1 on a thin path, 1/τ on a thick
+ * one, where only the first optical depth reaches the eye. It pulls each
+ * species' sun sample toward the camera and re-weights the species mix:
+ * on a horizon path the air nearest the camera (Mie-heavy) is what shows,
+ * not the path-total ratio (Rayleigh-heavy) the old weighting used.
+ */
+export function visibleScatterFraction(opticalDepth: number): number {
+  return opticalDepth < 1e-4
+    ? 1 - opticalDepth / 2
+    : (1 - Math.exp(-opticalDepth)) / opticalDepth;
+}
+
+/** Two-point Gauss–Laguerre nodes and weights (exponential weighting). */
+const LAGUERRE_NEAR = 2 - Math.SQRT2;
+const LAGUERRE_FAR = 2 + Math.SQRT2;
+const LAGUERRE_NEAR_WEIGHT = (2 + Math.SQRT2) / 4;
+const LAGUERRE_FAR_WEIGHT = (2 - Math.SQRT2) / 4;
+
+function sunAtPathFraction(
+  coefficients: AerialPerspectiveCoefficients,
+  fromAltitudeMeters: number,
+  riseMeters: number,
+  distanceMeters: number,
+  fraction: number,
+  sunCosZenith: number,
+  travel: AerialTravel,
+): [number, number, number] {
+  // The planet's curvature tilts the local vertical by s/R over a ground
+  // distance s: sunward the sun stands higher, anti-sunward lower.
+  const angle = (distanceMeters * fraction * travel.horizontal) / AERIAL_PLANET_RADIUS_METERS;
+  const cosZenith = sunCosZenith * Math.cos(angle) + travel.sunAlong * Math.sin(angle);
+  return sunTransmittanceAt(
+    coefficients,
+    fromAltitudeMeters + riseMeters * fraction,
+    cosZenith,
+  );
+}
+
+function sunAlongPath(
+  coefficients: AerialPerspectiveCoefficients,
+  fromAltitudeMeters: number,
+  riseMeters: number,
+  distanceMeters: number,
+  fraction: number,
+  sunCosZenith: number,
+  travel: AerialTravel,
+  quadrature: 1 | 2,
+): [number, number, number] {
+  if (quadrature === 1) {
+    return sunAtPathFraction(
+      coefficients, fromAltitudeMeters, riseMeters, distanceMeters, fraction, sunCosZenith, travel,
+    );
+  }
+  const near = sunAtPathFraction(
+    coefficients, fromAltitudeMeters, riseMeters, distanceMeters,
+    Math.min(fraction * LAGUERRE_NEAR, 1), sunCosZenith, travel,
+  );
+  const far = sunAtPathFraction(
+    coefficients, fromAltitudeMeters, riseMeters, distanceMeters,
+    Math.min(fraction * LAGUERRE_FAR, 1), sunCosZenith, travel,
+  );
+  return [0, 1, 2].map((channel) =>
+    near[channel]! * LAGUERRE_NEAR_WEIGHT + far[channel]! * LAGUERRE_FAR_WEIGHT) as [
+    number,
+    number,
+    number,
+  ];
+}
+
+/**
  * The TS mirror of the WGSL — same closed forms, same approximations. Used
  * by the IBL bake, exposure reasoning, and the CI agreement tests.
- * `sunRadiance` is the scene-scale sun term (colour × normalized
- * illuminance × the shared radiance scale); `ambient` the multiple-
- * scattering floor.
+ * `sunRadiance` is the source above the air (the binding's calibrated
+ * top-of-atmosphere radiance); `ambient` the multiple-scattering floor;
+ * `sunCosZenith` the source's elevation sine.
+ *
+ * Sun transmittance per species: Rayleigh and Mie each light their in-
+ * scatter with the sun seen from that species' scattering centroid on the
+ * path (pulled toward the camera by the path's visible fraction), with the
+ * Earth-curvature tilt of the sun's elevation at that distance. Measured
+ * against a 64-step spherical march with per-sample sun transmittance:
+ * within ~10% above 3° of view elevation at every sun height, ~20% at the
+ * horizon (sunward low, anti-sunward high) — against a factor of 3–10 for
+ * the single camera-altitude transmittance at a 5° sun. `quadrature` 2
+ * splits each sun sample into a two-point Gauss–Laguerre pair, which the
+ * sky uses (it carries the long, steep paths where one point is coarse).
  */
 export function evaluateAerialPerspective(
   coefficients: AerialPerspectiveCoefficients,
@@ -183,7 +316,9 @@ export function evaluateAerialPerspective(
   viewDotSun: number,
   sunRadiance: [number, number, number],
   ambient: [number, number, number],
-  sunTransmittance: [number, number, number],
+  sunCosZenith: number,
+  travel: AerialTravel = AERIAL_NO_TRAVEL,
+  quadrature: 1 | 2 = 1,
 ): AerialPerspectiveSample {
   if (distanceMeters <= 0) {
     return { transmittance: [1, 1, 1], inScatter: [0, 0, 0] };
@@ -205,6 +340,25 @@ export function evaluateAerialPerspective(
   const phaseR = rayleighPhase(viewDotSun);
   const phaseM = henyeyGreensteinPhase(viewDotSun, coefficients.mieAnisotropy);
 
+  const startAltitude = Math.max(fromAltitudeMeters, 0);
+  const rise = Math.max(toAltitudeMeters, 0) - startAltitude;
+  const depthRayleigh = coefficients.rayleighScattering[1] * rayleighPath;
+  const depthMie = coefficients.mieExtinction[1] * miePath;
+  const visibleR = visibleScatterFraction(depthRayleigh + depthMie);
+  const visibleM = visibleScatterFraction(
+    depthMie + depthRayleigh * (MIE_SCALE_HEIGHT_METERS / RAYLEIGH_SCALE_HEIGHT_METERS),
+  );
+  const sunR = sunAlongPath(
+    coefficients, startAltitude, rise, distanceMeters,
+    exponentialPathCentroid(rise, RAYLEIGH_SCALE_HEIGHT_METERS) * visibleR,
+    sunCosZenith, travel, quadrature,
+  );
+  const sunM = sunAlongPath(
+    coefficients, startAltitude, rise, distanceMeters,
+    exponentialPathCentroid(rise, MIE_SCALE_HEIGHT_METERS) * visibleM,
+    sunCosZenith, travel, quadrature,
+  );
+
   const transmittance: [number, number, number] = [0, 0, 0];
   const inScatter: [number, number, number] = [0, 0, 0];
   for (let channel = 0; channel < 3; channel += 1) {
@@ -216,10 +370,14 @@ export function evaluateAerialPerspective(
     const t = Math.exp(-tauTotal);
     transmittance[channel] = t;
     const scatterWeight =
-      (phaseR * tauRayleigh + phaseM * tauMieScatter) / Math.max(tauTotal, 1e-6);
+      (phaseR * tauRayleigh * visibleR * sunR[channel]!
+        + phaseM * tauMieScatter * visibleM * sunM[channel]!)
+      / Math.max(
+        (tauRayleigh + tauOzone) * visibleR + tauMieExtinction * visibleM,
+        1e-6,
+      );
     inScatter[channel] =
-      (sunRadiance[channel]! * sunTransmittance[channel]! * scatterWeight
-        + ambient[channel]!)
+      (sunRadiance[channel]! * scatterWeight + ambient[channel]!)
       * (1 - t);
   }
   return { transmittance, inScatter };
@@ -245,6 +403,8 @@ export function evaluateSkyRadiance(
   const mu = direction[0] * binding.sunDirection[0]
     + direction[1] * binding.sunDirection[1]
     + direction[2] * binding.sunDirection[2];
+  // The clamped ray: a below-horizon direction reads the horizon path.
+  const heading = aerialTravelFor(direction, binding.sunDirection);
   const inScatter = evaluateAerialPerspective(
     binding.coefficients,
     binding.cameraAltitudeMeters,
@@ -253,7 +413,9 @@ export function evaluateSkyRadiance(
     mu,
     binding.sunRadiance,
     binding.ambient,
-    binding.sunTransmittance,
+    binding.sunDirection[1],
+    { horizontal: Math.sqrt(1 - up * up), sunAlong: heading.sunAlong },
+    2,
   ).inScatter;
   // §2.6 sky-path arch — mirrors the WGSL line for line.
   const shape = 1 - TWILIGHT_ARCH_ZENITH_FALLOFF * Math.min(Math.max(direction[1], 0), 1);
@@ -302,6 +464,12 @@ uniform aerialSunsetDir: vec3f;
 const AERIAL_PI: f32 = 3.14159265359;
 const AERIAL_OZONE_CENTER: f32 = 25000.0;
 const AERIAL_OZONE_HALF_WIDTH: f32 = 15000.0;
+const AERIAL_PLANET_RADIUS: f32 = 6360000.0;
+const AERIAL_SHADOWED_COLUMN: f32 = 1e9;
+const AERIAL_LAGUERRE_NEAR: f32 = 0.58578644;
+const AERIAL_LAGUERRE_FAR: f32 = 3.41421356;
+const AERIAL_LAGUERRE_NEAR_WEIGHT: f32 = 0.85355339;
+const AERIAL_LAGUERRE_FAR_WEIGHT: f32 = 0.14644661;
 
 fn aerialExponentialPathIntegral(h0in: f32, h1in: f32, d: f32, scaleHeight: f32) -> f32 {
   let h0 = max(h0in, 0.0);
@@ -346,12 +514,96 @@ fn aerialMiePhase(mu: f32, g: f32) -> f32 {
   return (1.0 - g2) / (4.0 * AERIAL_PI * pow(max(1.0 + g2 - 2.0 * g * mu, 0.001), 1.5));
 }
 
+// AerialSunlight.chapmanColumn, line for line: air mass of an exponential
+// species toward the sun from an altitude, in scale heights of sea-level
+// density, on the spherical planet.
+fn aerialChapman(scaleHeight: f32, altitude: f32, cosZenith: f32) -> f32 {
+  let h = max(altitude, 0.0);
+  let radius = AERIAL_PLANET_RADIUS + h;
+  let grazing = 8.0 / (AERIAL_PI * (radius / scaleHeight));
+  let decay = exp(-h / scaleHeight);
+  if (cosZenith >= 0.0) {
+    return (2.0 / (cosZenith + sqrt(cosZenith * cosZenith + grazing))) * decay;
+  }
+  let tangentRadius = radius * sqrt(max(1.0 - cosZenith * cosZenith, 0.0));
+  if (tangentRadius < AERIAL_PLANET_RADIUS) { return AERIAL_SHADOWED_COLUMN; }
+  let tangent = sqrt((AERIAL_PI * tangentRadius) / (2.0 * scaleHeight))
+    * exp(-(tangentRadius - AERIAL_PLANET_RADIUS) / scaleHeight);
+  return 2.0 * tangent
+    - (2.0 / (-cosZenith + sqrt(cosZenith * cosZenith + grazing))) * decay;
+}
+
+fn aerialOzoneColumnAbove(altitude: f32) -> f32 {
+  let lower = AERIAL_OZONE_CENTER - AERIAL_OZONE_HALF_WIDTH;
+  let upper = AERIAL_OZONE_CENTER + AERIAL_OZONE_HALF_WIDTH;
+  let h = clamp(altitude, lower, upper);
+  if (h <= AERIAL_OZONE_CENTER) {
+    let x = h - lower;
+    return AERIAL_OZONE_HALF_WIDTH - (x * x) / (2.0 * AERIAL_OZONE_HALF_WIDTH);
+  }
+  let x = upper - h;
+  return (x * x) / (2.0 * AERIAL_OZONE_HALF_WIDTH);
+}
+
+fn aerialOzoneSunColumn(altitude: f32, cosZenith: f32) -> f32 {
+  let h = max(altitude, 0.0);
+  let shell = AERIAL_PLANET_RADIUS + max(AERIAL_OZONE_CENTER, h);
+  let sine = ((AERIAL_PLANET_RADIUS + h) / shell)
+    * sqrt(max(1.0 - cosZenith * cosZenith, 0.0));
+  let slant = 1.0 / sqrt(max(1.0 - sine * sine, 0.001));
+  return aerialOzoneColumnAbove(h) * slant;
+}
+
+// The sun a point at this altitude sees, through the same turbid air.
+fn aerialSunTransmittanceAt(altitude: f32, cosZenith: f32) -> vec3f {
+  let rayleigh = uniforms.aerialParams.x
+    * aerialChapman(uniforms.aerialParams.x, altitude, cosZenith);
+  let mie = uniforms.aerialParams.y
+    * aerialChapman(uniforms.aerialParams.y, altitude, cosZenith);
+  let ozone = aerialOzoneSunColumn(altitude, cosZenith);
+  return exp(-(uniforms.aerialRayleigh * rayleigh
+    + uniforms.aerialMieExtinction * mie
+    + uniforms.aerialOzone * ozone));
+}
+
+fn aerialPathCentroid(rise: f32, scaleHeight: f32) -> f32 {
+  if (abs(rise) < 1.0) { return 0.5; }
+  let x = clamp(rise / scaleHeight, -80.0, 80.0);
+  if (abs(x) < 0.001) { return 0.5 - x / 12.0; }
+  return 1.0 / x - 1.0 / (exp(x) - 1.0);
+}
+
+fn aerialVisibleFraction(opticalDepth: f32) -> f32 {
+  if (opticalDepth < 0.0001) { return 1.0 - opticalDepth * 0.5; }
+  return (1.0 - exp(-opticalDepth)) / opticalDepth;
+}
+
+fn aerialSunAtFraction(h0: f32, rise: f32, distanceMeters: f32, fraction: f32, horizontal: f32, sunAlong: f32) -> vec3f {
+  // Earth curvature tilts the local vertical by s/R over ground distance s.
+  let angle = distanceMeters * fraction * horizontal / AERIAL_PLANET_RADIUS;
+  let cosZenith = uniforms.aerialSunDirection.y * cos(angle) + sunAlong * sin(angle);
+  return aerialSunTransmittanceAt(h0 + rise * fraction, cosZenith);
+}
+
+fn aerialSunAlongPath(h0: f32, rise: f32, distanceMeters: f32, fraction: f32, horizontal: f32, sunAlong: f32, twoPoint: bool) -> vec3f {
+  if (!twoPoint) {
+    return aerialSunAtFraction(h0, rise, distanceMeters, fraction, horizontal, sunAlong);
+  }
+  return aerialSunAtFraction(h0, rise, distanceMeters, min(fraction * AERIAL_LAGUERRE_NEAR, 1.0), horizontal, sunAlong)
+      * AERIAL_LAGUERRE_NEAR_WEIGHT
+    + aerialSunAtFraction(h0, rise, distanceMeters, min(fraction * AERIAL_LAGUERRE_FAR, 1.0), horizontal, sunAlong)
+      * AERIAL_LAGUERRE_FAR_WEIGHT;
+}
+
 struct AerialPerspectiveResult {
   transmittance: vec3f,
   inScatter: vec3f,
 };
 
-fn aerialPerspective(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32) -> AerialPerspectiveResult {
+// evaluateAerialPerspective, line for line. horizontal/sunAlong describe
+// the heading for the curvature tilt (0, 0 = none); twoPoint selects the
+// Gauss-Laguerre sun pair the sky uses.
+fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, twoPoint: bool) -> AerialPerspectiveResult {
   var result: AerialPerspectiveResult;
   if (distanceMeters <= 0.0 || uniforms.aerialParams.w <= 0.0) {
     result.transmittance = vec3f(1.0);
@@ -367,23 +619,47 @@ fn aerialPerspective(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32
   let phaseR = aerialRayleighPhase(viewDotSun);
   let phaseM = aerialMiePhase(viewDotSun, uniforms.aerialParams.z);
 
+  let startAltitude = max(h0, 0.0);
+  let rise = max(h1, 0.0) - startAltitude;
+  let depthRayleigh = uniforms.aerialRayleigh.y * rayleighPath;
+  let depthMie = uniforms.aerialMieExtinction.y * miePath;
+  let visibleR = aerialVisibleFraction(depthRayleigh + depthMie);
+  let visibleM = aerialVisibleFraction(
+    depthMie + depthRayleigh * (uniforms.aerialParams.y / uniforms.aerialParams.x));
+  let sunR = aerialSunAlongPath(startAltitude, rise, distanceMeters,
+    aerialPathCentroid(rise, uniforms.aerialParams.x) * visibleR, horizontal, sunAlong, twoPoint);
+  let sunM = aerialSunAlongPath(startAltitude, rise, distanceMeters,
+    aerialPathCentroid(rise, uniforms.aerialParams.y) * visibleM, horizontal, sunAlong, twoPoint);
+
   let tauRayleigh = uniforms.aerialRayleigh * rayleighPath;
   let tauMieScatter = uniforms.aerialMieScatter * miePath;
   let tauMieExtinction = uniforms.aerialMieExtinction * miePath;
   let tauOzone = uniforms.aerialOzone * ozonePath;
   let tauTotal = tauRayleigh + tauMieExtinction + tauOzone;
   let transmittance = exp(-tauTotal);
-  let scatterWeight = (phaseR * tauRayleigh + phaseM * tauMieScatter)
-    / max(tauTotal, vec3f(0.000001));
+  let scatterWeight = (phaseR * tauRayleigh * visibleR * sunR
+      + phaseM * tauMieScatter * visibleM * sunM)
+    / max((tauRayleigh + tauOzone) * visibleR + tauMieExtinction * visibleM, vec3f(0.000001));
   result.transmittance = transmittance;
-  result.inScatter = (uniforms.aerialSunRadiance * uniforms.aerialSunTransmittance * scatterWeight
-    + uniforms.aerialAmbient) * (vec3f(1.0) - transmittance);
+  result.inScatter = (uniforms.aerialSunRadiance * scatterWeight + uniforms.aerialAmbient)
+    * (vec3f(1.0) - transmittance);
   return result;
 }
 
+// No heading: for consumers that only know the view-sun cosine.
+fn aerialPerspective(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32) -> AerialPerspectiveResult {
+  return aerialIntegral(fragmentAltitude, distanceMeters, viewDotSun, 0.0, 0.0, false);
+}
+
+fn aerialPerspectiveAlong(fragmentAltitude: f32, distanceMeters: f32, viewDirection: vec3f) -> AerialPerspectiveResult {
+  let horizontal = length(viewDirection.xz);
+  let sunAlong = dot(viewDirection.xz / max(horizontal, 1e-4), uniforms.aerialSunDirection.xz);
+  return aerialIntegral(fragmentAltitude, distanceMeters,
+    dot(viewDirection, uniforms.aerialSunDirection), horizontal, sunAlong, false);
+}
+
 fn applyAerialPerspective(color: vec3f, fragmentAltitude: f32, distanceMeters: f32, viewDirection: vec3f) -> vec3f {
-  let mu = dot(viewDirection, uniforms.aerialSunDirection);
-  let aerial = aerialPerspective(fragmentAltitude, distanceMeters, mu);
+  let aerial = aerialPerspectiveAlong(fragmentAltitude, distanceMeters, viewDirection);
   return color * aerial.transmittance + aerial.inScatter;
 }
 
@@ -398,10 +674,14 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   let up = max(direction.y, 0.0025);
   let cameraAltitude = clamp(uniforms.aerialCameraAltitude, 0.0, AERIAL_SKY_SHELL - 1.0);
   let distanceToShell = (AERIAL_SKY_SHELL - cameraAltitude) / up;
-  let aerial = aerialPerspective(
+  let headingLength = max(length(direction.xz), 1e-4);
+  let aerial = aerialIntegral(
     AERIAL_SKY_SHELL,
     distanceToShell,
     dot(direction, uniforms.aerialSunDirection),
+    sqrt(1.0 - up * up),
+    dot(direction.xz / headingLength, uniforms.aerialSunDirection.xz),
+    true,
   );
   // NIGHT_LOOK_ARCHITECTURE 2.6: the twilight arch is a SKY-PATH term. It
   // lives here, not in aerialAmbient, so the dome and the IBL probe receive
@@ -879,6 +1159,113 @@ export function nightZenithFade(sunDirectionY: number): number {
  */
 export const MOON_TWILIGHT_RECESSION = 0.9;
 
+/**
+ * The haze-horizon colour for a palette horizon: humid air greys it. ONE
+ * formula, shared by AtmosphereSystem's snapshot and the reference ambient
+ * below, so the two cannot drift.
+ */
+export const HUMID_HORIZON_GREY: readonly [number, number, number] = [0.52, 0.56, 0.60];
+
+export function skyHorizonForHumidity(
+  paletteHorizon: readonly [number, number, number],
+  relativeHumidity: number,
+): [number, number, number] {
+  const t = relativeHumidity * 0.42;
+  return [
+    paletteHorizon[0] + (HUMID_HORIZON_GREY[0] - paletteHorizon[0]) * t,
+    paletteHorizon[1] + (HUMID_HORIZON_GREY[1] - paletteHorizon[1]) * t,
+    paletteHorizon[2] + (HUMID_HORIZON_GREY[2] - paletteHorizon[2]) * t,
+  ];
+}
+
+/** Cloud cover's dimming of the sun — AtmosphereSystem's own law, shared. */
+export function overcastSunDimming(cloudCoverage: number): number {
+  return 1 - cloudCoverage * 0.42;
+}
+
+/**
+ * The reference day+clear key the haze source is calibrated at: a 55° sun
+ * at sea level. AtmosphereSystem's top palette row is built from these.
+ */
+export const AERIAL_REFERENCE_SUN_COS = Math.sin((55 * Math.PI) / 180);
+export const AERIAL_REFERENCE_SUN_COLOR: readonly [number, number, number] = [1, 0.96, 0.88];
+export const AERIAL_REFERENCE_SKY_HORIZON: readonly [number, number, number] = [0.58, 0.77, 0.96];
+/** The scene's clear-noon sun intensity — must equal PEAK_SUN_INTENSITY. */
+export const AERIAL_SCENE_PEAK_SUN = 5.2;
+
+/**
+ * SUNSET REWORK — how far the haze balance has moved from the approved
+ * daytime look to the physical one, by sun elevation sine: 0 at and above
+ * 30° (sine 0.5), 1 at the horizon, smooth between.
+ *
+ * The daytime look is AMBIENT-HEAVY: a sun term ~4.6× under the scene's
+ * own sun and a palette-horizon ambient ~4× over the physical multiple
+ * scattering — a flat, bright haze that was approved and stays. Physically
+ * the low sun is the opposite (single scattering dominates; that is what
+ * puts a gold glow at the sun and keeps the rest of the sky blue), so the
+ * balance hands over to the physical source and ambient as the sun drops.
+ */
+export const AERIAL_PHYSICAL_BALANCE_SINE = 0.5;
+
+export function aerialPhysicalBalance(sunDirectionY: number): number {
+  const t = Math.min(1, Math.max(0, sunDirectionY / AERIAL_PHYSICAL_BALANCE_SINE));
+  return 1 - t * t * (3 - 2 * t);
+}
+
+/**
+ * The window below the horizon over which the physical source hands back
+ * to the shipped twilight model: 1 at sunset, 0 by sine −0.05 (−2.9°).
+ * Blue hour, dusk and night are art-directed (arch, warm lobe, Belt, moon
+ * source) and approved; below this window their camera-level source,
+ * transmittance and ambient are reproduced exactly, so those frames move
+ * only by the per-point sun the integral now evaluates.
+ */
+export const AERIAL_PHYSICAL_RELEASE_SINE = -0.05;
+
+export function aerialPhysicalGate(sunDirectionY: number): number {
+  const t = Math.min(1, Math.max(0, (sunDirectionY - AERIAL_PHYSICAL_RELEASE_SINE)
+    / -AERIAL_PHYSICAL_RELEASE_SINE));
+  return t * t * (3 - 2 * t);
+}
+
+const luminanceOf = (rgb: readonly [number, number, number]): number =>
+  0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+/**
+ * The two calibrated top-of-atmosphere sources, for one atmosphere:
+ *
+ * - `daytime`: today's haze source at the reference key re-expressed above
+ *   the air — palette sun × AERIAL_SUN_RADIANCE_SCALE × the LUT
+ *   transmittance the old integral used, over the turbid transmittance the
+ *   new one applies — so the reference key's in-scatter is unchanged.
+ * - `physical`: the sun's own colour, scaled so that its direct beam at the
+ *   reference key, through the same turbid air, carries the luminance of
+ *   the scene's noon directional light (PEAK × palette sun). Sky and the
+ *   light that shades the ground then share one sun.
+ */
+function calibratedSources(
+  state: EnvironmentState,
+  coefficients: AerialPerspectiveCoefficients,
+): { daytime: [number, number, number]; physical: [number, number, number] } {
+  const lutTransmittance = evaluateTransmittance(
+    state.atmosphere,
+    0,
+    AERIAL_REFERENCE_SUN_COS,
+    12,
+  );
+  const turbidTransmittance = sunTransmittanceAt(coefficients, 0, AERIAL_REFERENCE_SUN_COS);
+  const daytime = [0, 1, 2].map((channel) =>
+    AERIAL_REFERENCE_SUN_COLOR[channel]! * AERIAL_SUN_RADIANCE_SCALE
+    * lutTransmittance[channel]! / turbidTransmittance[channel]!) as [number, number, number];
+  const beam = [0, 1, 2].map((channel) =>
+    state.sun.color[channel]! * turbidTransmittance[channel]!) as [number, number, number];
+  const scale = (AERIAL_SCENE_PEAK_SUN * luminanceOf(AERIAL_REFERENCE_SUN_COLOR))
+    / Math.max(luminanceOf(beam), 1e-6);
+  const physical = [0, 1, 2].map((channel) =>
+    state.sun.color[channel]! * scale) as [number, number, number];
+  return { daytime, physical };
+}
+
 export function resolveAerialPerspectiveBinding(
   state: EnvironmentState,
   cameraAltitudeMeters: number,
@@ -889,46 +1276,22 @@ export function resolveAerialPerspectiveBinding(
   moonIlluminanceNormalizedToFull = 0,
 ): AerialPerspectiveBinding {
   const coefficients = aerialPerspectiveCoefficients(state);
+  const sunY = state.sun.direction[1];
+  const camera = Math.max(cameraAltitudeMeters, 0);
   // A moonless night never swaps: the sun stays the source with its own
   // near-zero radiance, and the sky is honestly dark.
   const nightness = moonIlluminanceNormalizedToFull > 0
-    ? aerialNightness(state.sun.direction[1])
+    ? aerialNightness(sunY)
     : 0;
   // Blend the SOURCE the integral runs on. Direction is a normalized lerp —
   // both endpoints are unit vectors and the blend window is narrow, so the
   // path never degenerates; radiance and transmittance blend per source.
-  const sunTransmittance = evaluateTransmittance(
-    state.atmosphere,
-    Math.max(cameraAltitudeMeters, 0),
-    state.sun.direction[1],
-    12,
-  );
-  const sunScale = sunIlluminanceNormalized * AERIAL_SUN_RADIANCE_SCALE;
-  const daylight = Math.min(1, Math.max(0, (state.sun.direction[1] + 0.08) / 0.4));
   let sourceDirection: [number, number, number] = [
     state.sun.direction[0],
-    state.sun.direction[1],
+    sunY,
     state.sun.direction[2],
   ];
-  let sourceRadiance: [number, number, number] = [
-    sunColor[0] * sunScale,
-    sunColor[1] * sunScale,
-    sunColor[2] * sunScale,
-  ];
-  let sourceTransmittance: [number, number, number] = [
-    sunTransmittance[0],
-    sunTransmittance[1],
-    sunTransmittance[2],
-  ];
   if (nightness > 0) {
-    const moonScale = moonIlluminanceNormalizedToFull
-      * NIGHT_SKY_MOON_STRENGTH * AERIAL_SUN_RADIANCE_SCALE;
-    const moonTransmittance = evaluateTransmittance(
-      state.atmosphere,
-      Math.max(cameraAltitudeMeters, 0),
-      moonDirection[1],
-      12,
-    );
     const blended: [number, number, number] = [
       sourceDirection[0] * (1 - nightness) + moonDirection[0] * nightness,
       sourceDirection[1] * (1 - nightness) + moonDirection[1] * nightness,
@@ -936,37 +1299,91 @@ export function resolveAerialPerspectiveBinding(
     ];
     const length = Math.hypot(blended[0], blended[1], blended[2]) || 1;
     sourceDirection = [blended[0] / length, blended[1] / length, blended[2] / length];
-    sourceRadiance = [
-      sourceRadiance[0] * (1 - nightness) + NIGHT_SKY_MOON_TINT[0] * moonScale * nightness,
-      sourceRadiance[1] * (1 - nightness) + NIGHT_SKY_MOON_TINT[1] * moonScale * nightness,
-      sourceRadiance[2] * (1 - nightness) + NIGHT_SKY_MOON_TINT[2] * moonScale * nightness,
-    ];
-    sourceTransmittance = [
-      sourceTransmittance[0] * (1 - nightness) + moonTransmittance[0] * nightness,
-      sourceTransmittance[1] * (1 - nightness) + moonTransmittance[1] * nightness,
-      sourceTransmittance[2] * (1 - nightness) + moonTransmittance[2] * nightness,
-    ];
   }
+  // The shader lights every scattering point with the sun IT sees; this is
+  // the one at the camera (the sun disc's own reddening, and the anchor the
+  // twilight source is matched at).
+  const sourceTransmittance = sunTransmittanceAt(coefficients, camera, sourceDirection[1]);
+
+  // Twilight and night — the shipped source, matched at the camera: the old
+  // integral's product (palette or moon radiance × LUT transmittance at the
+  // camera) divided by the new camera transmittance, so below the release
+  // window the camera-level in-scatter is exactly the approved one.
+  const sunScale = sunIlluminanceNormalized * AERIAL_SUN_RADIANCE_SCALE;
+  const sunLut = evaluateTransmittance(state.atmosphere, camera, sunY, 12);
+  let legacyRadiance: [number, number, number] = [
+    sunColor[0] * sunScale,
+    sunColor[1] * sunScale,
+    sunColor[2] * sunScale,
+  ];
+  let legacyTransmittance: [number, number, number] = [sunLut[0], sunLut[1], sunLut[2]];
+  if (nightness > 0) {
+    const moonScale = moonIlluminanceNormalizedToFull
+      * NIGHT_SKY_MOON_STRENGTH * AERIAL_SUN_RADIANCE_SCALE;
+    const moonLut = evaluateTransmittance(state.atmosphere, camera, moonDirection[1], 12);
+    legacyRadiance = [0, 1, 2].map((channel) =>
+      legacyRadiance[channel]! * (1 - nightness)
+      + NIGHT_SKY_MOON_TINT[channel]! * moonScale * nightness) as [number, number, number];
+    legacyTransmittance = [0, 1, 2].map((channel) =>
+      legacyTransmittance[channel]! * (1 - nightness)
+      + moonLut[channel]! * nightness) as [number, number, number];
+  }
+  const legacyMatched = [0, 1, 2].map((channel) => {
+    const now = sourceTransmittance[channel]!;
+    const ratio = now > 1e-6 ? Math.min(legacyTransmittance[channel]! / now, 50) : 0;
+    return legacyRadiance[channel]! * ratio;
+  }) as [number, number, number];
+
+  // Day and sunset — the calibrated top-of-atmosphere sun (see
+  // calibratedSources), balanced from the approved daytime look to the
+  // physical one as the sun drops, with the multiple-scattering ambient
+  // scaled by Hillaire's Ψ: physically dimmer and bluer as the sun sets
+  // instead of the palette horizon's orange smeared over the whole dome.
+  const gate = aerialPhysicalGate(sunY);
+  const balance = aerialPhysicalBalance(sunY);
+  const overcast = overcastSunDimming(state.weather.cloudCoverage);
+  const sources = calibratedSources(state, coefficients);
+  const multiple = skyMultipleScattering(coefficients, sunY);
+  const multipleReference = skyMultipleScattering(coefficients, AERIAL_REFERENCE_SUN_COS);
+  const referenceHorizon = skyHorizonForHumidity(
+    AERIAL_REFERENCE_SKY_HORIZON,
+    state.weather.relativeHumidity,
+  );
+  // Ψ is per unit SCATTERING; the closed form's ambient multiplies the
+  // path's (1 − T), i.e. extinction — the single-scattering albedo converts.
+  const albedo = [0, 1, 2].map((channel) =>
+    (coefficients.rayleighScattering[channel]! + coefficients.mieScattering[channel]!)
+    / (coefficients.rayleighScattering[channel]! + coefficients.mieExtinction[channel]!
+      + coefficients.ozoneAbsorption[channel]!)) as [number, number, number];
+  const daylight = Math.min(1, Math.max(0, (sunY + 0.08) / 0.4));
+  const sunRadiance = [0, 1, 2].map((channel) => {
+    const physical = (sources.daytime[channel]! * (1 - balance)
+      + sources.physical[channel]! * balance) * overcast;
+    return physical * gate + legacyMatched[channel]! * (1 - gate);
+  }) as [number, number, number];
   // §2.6 — the twilight arch is a SKY-PATH term (see TWILIGHT_ARCH_STRENGTH
   // for why it must not ride the ambient slot): skyRadiance() adds it, so
   // the dome and the IBL probe receive it while the terrain-haze path does
   // not. Zero outside its window by shape.
-  const ambient: [number, number, number] = [
-    skyHorizonColor[0] * AERIAL_AMBIENT_SCALE * daylight,
-    skyHorizonColor[1] * AERIAL_AMBIENT_SCALE * daylight,
-    skyHorizonColor[2] * AERIAL_AMBIENT_SCALE * daylight,
-  ];
+  const ambient = [0, 1, 2].map((channel) => {
+    const daytime = referenceHorizon[channel]! * AERIAL_AMBIENT_SCALE
+      * (multiple[channel]! / multipleReference[channel]!);
+    const physical = sources.physical[channel]! * overcast * multiple[channel]!
+      * albedo[channel]!;
+    const legacy = skyHorizonColor[channel]! * AERIAL_AMBIENT_SCALE * daylight;
+    return (daytime * (1 - balance) + physical * balance) * gate + legacy * (1 - gate);
+  }) as [number, number, number];
   return {
     cameraAltitudeMeters,
     sunDirection: sourceDirection,
     coefficients,
-    sunRadiance: sourceRadiance,
+    sunRadiance,
     ambient,
     sunTransmittance: sourceTransmittance,
-    twilightArch: twilightArchRadiance(state.sun.direction[1]),
-    nightZenithFade: nightZenithFade(state.sun.direction[1]),
-    twilightWarm: twilightWarmRadiance(state.sun.direction[1]),
-    twilightBelt: twilightBeltRadiance(state.sun.direction[1]),
+    twilightArch: twilightArchRadiance(sunY),
+    nightZenithFade: nightZenithFade(sunY),
+    twilightWarm: twilightWarmRadiance(sunY),
+    twilightBelt: twilightBeltRadiance(sunY),
     sunsetDirection: ((): [number, number] => {
       const h = Math.hypot(state.sun.direction[0], state.sun.direction[2]);
       return h > 1e-4
@@ -975,6 +1392,123 @@ export function resolveAerialPerspectiveBinding(
     })(),
     strength: 1,
   };
+}
+
+/**
+ * SUNSET REWORK — the light rig's low-sun colours, from this sky.
+ *
+ * The palette (AtmosphereSystem) lights the ground, the water body and the
+ * clouds with art-directed rows whose low-sun colours were tuned to match
+ * the old brown sky: an orange horizon, a red-orange sun. Under the new
+ * sky those rows would light a blue-and-gold scene orange. This gives each
+ * row's PHYSICAL counterpart — the direct sun's colour at sea level, and
+ * the zenith and horizon-ring radiance relative to the same sky at the
+ * reference key (so the palette's own 55° saturation is kept) — for the
+ * palette to move toward by `aerialPhysicalBalance × aerialPhysicalGate`,
+ * chroma only (see `towardPhysicalChroma`): brightness stays the approved
+ * ramp's.
+ */
+export interface PhysicalSkyColours {
+  /** Direct sun at sea level, top-of-atmosphere colour × transmittance. */
+  readonly sun: [number, number, number];
+  /** Zenith radiance over the reference key's, per channel. */
+  readonly zenithRatio: [number, number, number];
+  /** Mean radiance of the 4° ring over the reference key's, per channel. */
+  readonly horizonRatio: [number, number, number];
+}
+
+const PHYSICAL_RING_ELEVATION = Math.sin((4 * Math.PI) / 180);
+const PHYSICAL_RING_AZIMUTHS = 16;
+const physicalReferenceCache = new Map<string, { zenith: number[]; horizon: number[] }>();
+
+function zenithAndRing(binding: AerialPerspectiveBinding): { zenith: number[]; horizon: number[] } {
+  const zenith = evaluateSkyRadiance(binding, [0, 1, 0]);
+  const horizon = [0, 0, 0];
+  const across = Math.sqrt(1 - PHYSICAL_RING_ELEVATION * PHYSICAL_RING_ELEVATION);
+  for (let index = 0; index < PHYSICAL_RING_AZIMUTHS; index += 1) {
+    const azimuth = (2 * Math.PI * index) / PHYSICAL_RING_AZIMUTHS;
+    const radiance = evaluateSkyRadiance(binding, [
+      Math.cos(azimuth) * across,
+      PHYSICAL_RING_ELEVATION,
+      Math.sin(azimuth) * across,
+    ]);
+    for (let channel = 0; channel < 3; channel += 1) {
+      horizon[channel]! += radiance[channel]! / PHYSICAL_RING_AZIMUTHS;
+    }
+  }
+  return { zenith, horizon };
+}
+
+export function physicalSkyColours(
+  state: EnvironmentState,
+  sunColor: [number, number, number],
+  skyHorizonColor: [number, number, number],
+  sunIlluminanceNormalized: number,
+): PhysicalSkyColours {
+  const coefficients = aerialPerspectiveCoefficients(state);
+  const key = [
+    ...coefficients.mieScattering,
+    state.weather.cloudCoverage,
+    state.weather.relativeHumidity,
+    ...state.sun.color,
+  ].join("|");
+  let reference = physicalReferenceCache.get(key);
+  if (!reference) {
+    const across = Math.sqrt(1 - AERIAL_REFERENCE_SUN_COS * AERIAL_REFERENCE_SUN_COS);
+    const referenceState: EnvironmentState = {
+      ...state,
+      sun: { ...state.sun, direction: [across, AERIAL_REFERENCE_SUN_COS, 0] },
+    };
+    reference = zenithAndRing(resolveAerialPerspectiveBinding(
+      referenceState,
+      0,
+      [...AERIAL_REFERENCE_SUN_COLOR],
+      skyHorizonForHumidity(AERIAL_REFERENCE_SKY_HORIZON, state.weather.relativeHumidity),
+      overcastSunDimming(state.weather.cloudCoverage),
+    ));
+    if (physicalReferenceCache.size >= 8) physicalReferenceCache.clear();
+    physicalReferenceCache.set(key, reference);
+  }
+  const now = zenithAndRing(resolveAerialPerspectiveBinding(
+    state,
+    0,
+    sunColor,
+    skyHorizonColor,
+    sunIlluminanceNormalized,
+  ));
+  const sunTransmittance = sunTransmittanceAt(coefficients, 0, state.sun.direction[1]);
+  const ratio = (value: number, base: number): number => (base > 0 ? value / base : 0);
+  return {
+    sun: [0, 1, 2].map((channel) =>
+      state.sun.color[channel]! * sunTransmittance[channel]!) as [number, number, number],
+    zenithRatio: [0, 1, 2].map((channel) =>
+      ratio(now.zenith[channel]!, reference.zenith[channel]!)) as [number, number, number],
+    horizonRatio: [0, 1, 2].map((channel) =>
+      ratio(now.horizon[channel]!, reference.horizon[channel]!)) as [number, number, number],
+  };
+}
+
+/**
+ * Move a palette colour toward a physical one by `weight`, CHROMA ONLY:
+ * the target is rescaled to the palette colour's own luminance first, so
+ * the approved brightness ramp (exposure, σ, the ground's key) is kept and
+ * only the hue and saturation follow the sky.
+ */
+export function towardPhysicalChroma(
+  palette: readonly [number, number, number],
+  physical: readonly [number, number, number],
+  weight: number,
+): [number, number, number] {
+  const target = luminanceOf(physical as [number, number, number]);
+  const scale = target > 1e-9
+    ? luminanceOf(palette as [number, number, number]) / target
+    : 0;
+  return [0, 1, 2].map((channel) =>
+    palette[channel]! + (physical[channel]! * scale - palette[channel]!) * weight) as [
+    number,
+    number,
+    number,
+  ];
 }
 
 export const AERIAL_PERSPECTIVE_PLUGIN_NAME = "aerial-perspective-receiver";

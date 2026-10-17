@@ -43,8 +43,16 @@ import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   AERIAL_PERSPECTIVE_UNIFORMS,
   AERIAL_PERSPECTIVE_WGSL,
+  AERIAL_REFERENCE_SKY_HORIZON,
+  AERIAL_REFERENCE_SUN_COLOR,
   aerialNightness,
+  aerialPhysicalBalance,
+  aerialPhysicalGate,
   applyAerialPerspectiveToShaderMaterial,
+  overcastSunDimming,
+  physicalSkyColours,
+  skyHorizonForHumidity,
+  towardPhysicalChroma,
   twilightAmbientFloorFactor,
   twilightArchRadiance,
   twilightArchStrength,
@@ -452,10 +460,13 @@ const PALETTE_ANCHORS: readonly (AtmospherePalette & { readonly elevationDegrees
     intensity: 4.1,
   },
   {
+    // The aerial integral's calibration key (AERIAL_REFERENCE_SUN_COS is
+    // sin 55°): the haze source is sized against this row, so it is built
+    // from the same constants.
     elevationDegrees: 55,
-    sunColor: new Color3(1, 0.96, 0.88),
+    sunColor: Color3.FromArray(AERIAL_REFERENCE_SUN_COLOR),
     zenith: new Color3(0.1, 0.36, 0.78),
-    horizon: new Color3(0.58, 0.77, 0.96),
+    horizon: Color3.FromArray(AERIAL_REFERENCE_SKY_HORIZON),
     intensity: 5.2,
   },
 ];
@@ -484,6 +495,65 @@ function paletteForElevation(elevationDegrees: number): AtmospherePalette {
     };
   }
   return last;
+}
+
+type Rgb = [number, number, number];
+const rgbOf = (color: Color3): Rgb => [color.r, color.g, color.b];
+
+let physicalPaletteMemo: { key: string; palette: AtmospherePalette } | null = null;
+
+/**
+ * SUNSET REWORK — the palette's colours, moved toward the sky the aerial
+ * integral now renders (`physicalSkyColours`) by the same balance × gate
+ * the haze uses: 0 at and above 30° and below −2.9° (day and twilight rows
+ * exactly as approved), 1 around sunset. Chroma only — every row keeps its
+ * luminance, so exposure, σ and the ground's key do not move. The zenith
+ * and horizon targets are the TOP row's colours scaled by the sky's own
+ * ratio to the reference key, so their saturation is the palette's.
+ *
+ * Memoised on the sun sine (to 1e-4) and the weather: the inputs move only
+ * with the clock, and the sky evaluations are a few hundred microseconds.
+ */
+function withPhysicalSkyColours(
+  palette: AtmospherePalette,
+  state: EnvironmentState,
+): AtmospherePalette {
+  const sunY = state.sun.direction[1];
+  const weight = aerialPhysicalBalance(sunY) * aerialPhysicalGate(sunY);
+  if (weight <= 0) return palette;
+  const key = [
+    Math.round(sunY * 1e4),
+    state.weather.relativeHumidity,
+    state.weather.cloudCoverage,
+  ].join("|");
+  if (physicalPaletteMemo?.key === key) return physicalPaletteMemo.palette;
+  const reference = PALETTE_ANCHORS[PALETTE_ANCHORS.length - 1]!;
+  const physical = physicalSkyColours(
+    state,
+    rgbOf(palette.sunColor),
+    skyHorizonForHumidity(rgbOf(palette.horizon), state.weather.relativeHumidity),
+    (palette.intensity * overcastSunDimming(state.weather.cloudCoverage)) / PEAK_SUN_INTENSITY,
+  );
+  const scaled = (color: Color3, ratio: Rgb): Rgb =>
+    [color.r * ratio[0], color.g * ratio[1], color.b * ratio[2]];
+  const result: AtmospherePalette = {
+    sunColor: Color3.FromArray(
+      towardPhysicalChroma(rgbOf(palette.sunColor), physical.sun, weight),
+    ),
+    zenith: Color3.FromArray(towardPhysicalChroma(
+      rgbOf(palette.zenith),
+      scaled(reference.zenith, physical.zenithRatio),
+      weight,
+    )),
+    horizon: Color3.FromArray(towardPhysicalChroma(
+      rgbOf(palette.horizon),
+      scaled(reference.horizon, physical.horizonRatio),
+      weight,
+    )),
+    intensity: palette.intensity,
+  };
+  physicalPaletteMemo = { key, palette: result };
+  return result;
 }
 
 export interface AtmosphereSnapshot {
@@ -775,14 +845,14 @@ export class AtmosphereSystem {
       state.sun.direction[2],
     ).normalize();
     const elevationDegrees = Math.asin(Math.min(1, Math.max(-1, sunDirection.y))) * 180 / Math.PI;
-    const palette = paletteForElevation(elevationDegrees);
+    const palette = withPhysicalSkyColours(paletteForElevation(elevationDegrees), state);
     const cloudCoverage = state.weather.cloudCoverage;
     const humidity = state.weather.relativeHumidity;
     const windSpeed = Math.hypot(
       state.windLayers[0]?.velocityMetersPerSecond[0] ?? 6,
       state.windLayers[0]?.velocityMetersPerSecond[1] ?? 0,
     ) / 0.56;
-    const overcastDimming = 1 - cloudCoverage * 0.42;
+    const overcastDimming = overcastSunDimming(cloudCoverage);
     // §2.6 round S — the SPLIT is the point: the palette ramp keeps feeding
     // the SCATTER path ungated (the sky's sunset afterglow, high clouds and
     // the water's dusk glint are real physics — the atmosphere and clouds DO
@@ -877,11 +947,7 @@ export class AtmosphereSystem {
       new Color3(0.20, 0.24, 0.29),
       cloudCoverage * 0.5,
     );
-    const skyHorizon = Color3.Lerp(
-      palette.horizon,
-      new Color3(0.52, 0.56, 0.60),
-      humidity * 0.42,
-    );
+    const skyHorizon = Color3.FromArray(skyHorizonForHumidity(rgbOf(palette.horizon), humidity));
     this.sun.direction.copyFrom(sunDirection).scaleInPlace(-1);
     this.sun.diffuse = palette.sunColor;
     // Wave Q: Babylon's light.specular defaults to WHITE and PBR ignores it,

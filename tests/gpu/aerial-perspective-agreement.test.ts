@@ -188,7 +188,7 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
             probe.viewDotSun,
             binding.sunRadiance,
             binding.ambient,
-            binding.sunTransmittance,
+            binding.sunDirection[1],
           );
           const context = `${weather} camera ${cameraAltitude} probe ${index}`;
           for (let channel = 0; channel < 3; channel += 1) {
