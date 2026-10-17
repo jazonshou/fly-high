@@ -250,6 +250,27 @@ describe("the sky's two-point sun", () => {
   });
 });
 
+describe("the approved daytime look", () => {
+  it("keeps the haze ambient flat above the 55 deg key, as the palette's top row is", () => {
+    const sunColor: Rgb = [1, 0.96, 0.88];
+    const skyHorizon: Rgb = [0.58, 0.77, 0.96];
+    const key = resolveAerialPerspectiveBinding(stateWithSunAt(55), 3_048, sunColor, skyHorizon, 1);
+    for (const elevation of [56, 68, 90]) {
+      const binding = resolveAerialPerspectiveBinding(
+        stateWithSunAt(elevation),
+        3_048,
+        sunColor,
+        skyHorizon,
+        1,
+      );
+      for (let channel = 0; channel < 3; channel += 1) {
+        expect(binding.ambient[channel], `${elevation} deg channel ${channel}`)
+          .toBeCloseTo(key.ambient[channel]!, 12);
+      }
+    }
+  });
+});
+
 describe("the hand-back to the shipped twilight model", () => {
   it("is fully physical at sunset and fully shipped by the release sine", () => {
     expect(aerialPhysicalGate(0)).toBe(1);

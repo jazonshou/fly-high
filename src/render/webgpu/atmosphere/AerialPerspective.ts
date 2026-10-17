@@ -1355,6 +1355,9 @@ export function resolveAerialPerspectiveBinding(
   const sources = calibratedSources(state, coefficients);
   const multiple = skyMultipleScattering(coefficients, sunY);
   const multipleReference = skyMultipleScattering(coefficients, AERIAL_REFERENCE_SUN_COS);
+  // The approved daytime ambient is flat above the key, as the palette's top
+  // row is; following Ψ up to noon brightened a 68° haze and sky by 10%.
+  const multipleDaytime = sunY < AERIAL_REFERENCE_SUN_COS ? multiple : multipleReference;
   const referenceHorizon = skyHorizonForHumidity(
     AERIAL_REFERENCE_SKY_HORIZON,
     state.weather.relativeHumidity,
@@ -1377,7 +1380,7 @@ export function resolveAerialPerspectiveBinding(
   // not. Zero outside its window by shape.
   const ambient = [0, 1, 2].map((channel) => {
     const daytime = referenceHorizon[channel]! * AERIAL_AMBIENT_SCALE
-      * (multiple[channel]! / multipleReference[channel]!);
+      * (multipleDaytime[channel]! / multipleReference[channel]!);
     const physical = sources.physical[channel]! * overcast * multiple[channel]!
       * albedo[channel]!;
     const legacy = skyHorizonColor[channel]! * AERIAL_AMBIENT_SCALE * daylight;
