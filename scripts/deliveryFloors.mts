@@ -648,43 +648,48 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // into its measured 102 here and is no longer an exception. It was never the
   // cockpit's: after the cockpit's 151 draws went away it still sat 3 higher
   // relative to its old ceiling than the other eleven.
-  "approach-500ft":              [247, 247, 247],
-  "slant-10km":                  [209, 209, 209], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
-  "high-10000ft-down":           [72, 72, 72],
-  "reference-viewport":          [248, 248, 248],
-  "cruise-horizon":              [200, 200, 200],
-  "winter-noon":                 [247, 247, 247],
-  "night":                       [249, 249, 249],
-  "night-moonlit":               [249, 249, 249],
-  "dusk-mesopic":                [248, 248, 248],
-  "motion-banked-turn":          [254, 254, 254],
-  "page-thrash-turn":            [253, 253, 253],
-  "cdlod-transition":            [195, 195, 195], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
-  "cruise-sun-30":               [226, 226, 226],
-  "forest-500ft-sunbehind":      [248, 248, 248],
-  "coast-10km-lowsun":           [219, 219, 219],
-  "ground-2m-lowsun":            [121, 121, 121],
-  "canopy-1200ft":               [113, 113, 113],
-  "runway-on-approach":          [255, 255, 255],
-  "water-25ft":                  [224, 224, 224],
-  "grove-forest-2m":             [120, 120, 120],
-  "grove-meadow-2m":             [134, 134, 134],
-  "hills-dusk-glint":            [244, 244, 244],
-  "mountain-close":              [230, 230, 230],
-  "forest-line-highsun":         [244, 244, 244],
-  "cliff-60m":                   [237, 237, 237],
-  "water-3m":                    [90, 90, 90],
-  "veg-seam-1600ft-oblique":     [108, 108, 108],
-  "veg-seam-near-500ft":         [116, 116, 116],
-  "terrain-material-1600ft-down":[87, 87, 87],
-  "horizon-shadow-far-annulus":  [91, 91, 91],
-  "canopy-backlit-lowsun":       [102, 102, 102],
+  //
+  // ALL 32 RE-PINNED +1 2026-10-12 for PR #20's final sharpen, from three full
+  // macOS captures that agree on every shot (see DRAW_CALL_RAISES,
+  // "final-sharpen"). The twelve shots outside PREVIOUS_DRAW_CALL_CEILINGS
+  // moved by the same +1; they sit outside the raise mechanism, as above.
+  "approach-500ft":              [248, 248, 248],
+  "slant-10km":                  [210, 210, 210], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
+  "high-10000ft-down":           [73, 73, 73],
+  "reference-viewport":          [249, 249, 249],
+  "cruise-horizon":              [201, 201, 201],
+  "winter-noon":                 [248, 248, 248],
+  "night":                       [250, 250, 250],
+  "night-moonlit":               [250, 250, 250],
+  "dusk-mesopic":                [249, 249, 249],
+  "motion-banked-turn":          [255, 255, 255],
+  "page-thrash-turn":            [254, 254, 254],
+  "cdlod-transition":            [196, 196, 196], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
+  "cruise-sun-30":               [227, 227, 227],
+  "forest-500ft-sunbehind":      [249, 249, 249],
+  "coast-10km-lowsun":           [220, 220, 220],
+  "ground-2m-lowsun":            [122, 122, 122],
+  "canopy-1200ft":               [114, 114, 114],
+  "runway-on-approach":          [256, 256, 256],
+  "water-25ft":                  [225, 225, 225],
+  "grove-forest-2m":             [121, 121, 121],
+  "grove-meadow-2m":             [135, 135, 135],
+  "hills-dusk-glint":            [245, 245, 245],
+  "mountain-close":              [231, 231, 231],
+  "forest-line-highsun":         [245, 245, 245],
+  "cliff-60m":                   [238, 238, 238],
+  "water-3m":                    [91, 91, 91],
+  "veg-seam-1600ft-oblique":     [109, 109, 109],
+  "veg-seam-near-500ft":         [117, 117, 117],
+  "terrain-material-1600ft-down":[88, 88, 88],
+  "horizon-shadow-far-annulus":  [92, 92, 92],
+  "canopy-backlit-lowsun":       [103, 103, 103],
   // W-11, 2026-09-19. FIVE identical readings rather than three, and they span
   // both arms of the W-11 A/B -- two on the branch, two on House-Keeping with
   // src/render/webgpu/water reverted, and the full candidate. A count that does
   // not move when the shading under it is replaced is the host-independence
   // claim being exercised rather than assumed.
-  "water-400ft-glitter":         [87, 87, 87],
+  "water-400ft-glitter":         [88, 88, 88],
 });
 
 /**
@@ -815,7 +820,26 @@ export type DrawCallRaise =
  * Adding either to a raise's `shots` list fails with "which has no previous
  * ceiling", which is correct and reads like a bug in the entry.
  */
-export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([]);
+export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
+  Object.freeze({
+    kind: "uniform",
+    feature: "final-sharpen",
+    commit: "ea99c02",
+    reason:
+      "The final RCAS sharpen (`lighting/SharpenPass.ts`, PR #20) is one more "
+      + "post-process on the camera at tier 1 with no content gating: one "
+      + "full-screen quad per frame on every shot. The ground grain in the same PR "
+      + "adds texture fetches to the existing terrain draw and no mesh, so it "
+      + "contributes 0. Predicted +1 uniform, then measured by three full macOS "
+      + "captures on the hosted runner (gpu-tests runs 38217280044, "
+      + "38221252437 and 38263651854 at 3d96334, 4ae62d1 and 5dc696c): all 32 "
+      + "shots that carry a ceiling read exactly their previous ceiling plus one "
+      + "in all three, no shot at +0 or +2. Promoted out of MEASURED_DRAW_DELTAS, "
+      + "where it was staged at 4ae62d1.",
+    delta: 1,
+    shots: Object.freeze(Object.keys(PREVIOUS_DRAW_CALL_CEILINGS)),
+  }),
+]);
 
 /**
  * **Measured draw-call deltas that have not yet become raise entries.**

@@ -92,6 +92,24 @@ export interface WebGpuQualityProfile {
   readonly bloomEnabled: boolean;
   readonly msaaSamples: number;
   /**
+   * Strength of the final contrast-adaptive sharpen (`SharpenPass`, RCAS), in
+   * [0, 1]; 0 detaches the pass.
+   *
+   * Every tier presents a softer image than its raster: the browser stretches
+   * the capped raster to the panel bilinearly (tier 1 draws ~1.5 Mpx for a
+   * 7.7 Mpx Retina panel), and the FXAA tiers blur every edge they find.
+   * RCAS's lobe shrinks as local contrast grows, so it restores soft detail
+   * without the halos an unsharp mask puts on hard edges.
+   *
+   * Per row: tier 1 sits highest because FXAA is part of what it undoes. The
+   * multisampled tiers keep a lighter touch for the canvas stretch alone.
+   * Tier 0 is OFF, not for want of need: the pass costs one LDR target, and
+   * tier 0 already estimates 259.6 of its 260 MiB ceiling at 2560x1440@2.
+   *
+   * DATA, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly sharpenAmount: number;
+  /**
    * The tier's controllable frame-time target (Z-2), mirrored from
    * `FRAME_TARGET_MS` so consumers read a profile datum instead of a tier
    * table. A hitch is a frame slower than twice this number.
@@ -321,6 +339,8 @@ function resolveBaseQualityProfile(
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
       msaaSamples: 1,
+      // Off: no memory headroom for its target (see the field).
+      sharpenAmount: 0,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[0]!,
       groundCoverLaw: GROUND_COVER_LAWS[0]!,
@@ -398,6 +418,7 @@ function resolveBaseQualityProfile(
       // cadence rather than hardware MSAA; higher tiers retain multisampling.
       bloomEnabled: true,
       msaaSamples: 1,
+      sharpenAmount: 0.7,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[1]!,
       groundCoverLaw: GROUND_COVER_LAWS[1]!,
@@ -489,6 +510,7 @@ function resolveBaseQualityProfile(
       // It is not a refund, and the D3 table carries it as a cost.
       bloomEnabled: false,
       msaaSamples: 4,
+      sharpenAmount: 0.4,
       frameTargetMs: 13.7,
       renderedDensityLaw: RENDERED_DENSITY_LAWS[2]!,
       groundCoverLaw: GROUND_COVER_LAWS[2]!,
@@ -565,6 +587,7 @@ function resolveBaseQualityProfile(
     maxDevicePixelRatio: 2,
     bloomEnabled: false,
     msaaSamples: 4,
+    sharpenAmount: 0.4,
     frameTargetMs: 30,
     renderedDensityLaw: RENDERED_DENSITY_LAWS[3]!,
       groundCoverLaw: GROUND_COVER_LAWS[3]!,

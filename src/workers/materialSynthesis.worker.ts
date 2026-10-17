@@ -1,7 +1,6 @@
 /// <reference lib="webworker" />
 
-import { synthesizeSurfaceMaterial } from "@/src/render/webgpu/terrain/MaterialArraySynthesis";
-import type { SurfaceMaterialId } from "@/src/render/webgpu/terrain/surfaceMaterials";
+import { synthesizeSurfaceArrayLayer } from "@/src/render/webgpu/terrain/GroundGrainSynthesis";
 import type {
   MaterialSynthesisCommand,
   MaterialSynthesisEvent,
@@ -32,7 +31,7 @@ workerScope.addEventListener("message", (event: MessageEvent<MaterialSynthesisCo
   for (let index = 0; index < command.materialIds.length; index += 1) {
     const id = command.materialIds[index]!;
     try {
-      const layer = synthesizeSurfaceMaterial(id as SurfaceMaterialId, command.seed, command.edge);
+      const layer = synthesizeSurfaceArrayLayer(id, command.seed, command.edge);
       const message: MaterialSynthesisEvent = {
         type: "layer",
         requestId: command.requestId,

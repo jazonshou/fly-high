@@ -44,6 +44,7 @@ import {
   HANGAR_FLOOD_INTENSITY,
 } from "./webgpu/lighting/ObstructionLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
+import { SharpenPass } from "./webgpu/lighting/SharpenPass";
 import {
   rodFractionForAdaptedLuminance,
   shouldRunScotopicPass,
@@ -570,6 +571,12 @@ export class FlightRenderer implements FlightRenderingSystem {
    * exists at some tiers could never be inserted in the right place later.
    */
   private readonly bloom: BloomPass;
+  /**
+   * The final contrast-adaptive sharpen, LAST in the chain; detached at a zero
+   * `sharpenAmount`. See `SharpenPass` for why every tier presents softer than
+   * its raster.
+   */
+  private readonly sharpen: SharpenPass;
   private readonly resizeObserver: ResizeObserver;
   private readonly atmosphereTracker = new AtmosphereChangeTracker();
   private readonly bodyMatrix = Matrix.Identity();
@@ -686,6 +693,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     airfieldLighting: AirfieldLightingSystem | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
+    sharpen: SharpenPass,
     atmosphereResources: AtmosphereGpuResources,
     adapterLabel: string,
   ) {
@@ -727,6 +735,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.airfieldLighting = airfieldLighting;
     this.scotopic = scotopic;
     this.bloom = bloom;
+    this.sharpen = sharpen;
     this.adapterLabel = adapterLabel;
     this.seaLevel = options.world.seaLevel;
     this.aircraftKind = options.aircraft;
@@ -1399,6 +1408,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => fxaa.dispose(camera));
       // FXAA is the no-MSAA fallback only; running both softens the image.
       if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
+      // Constructed after FXAA so it is last: it sharpens the display image,
+      // and FXAA's edge blur is part of what it takes back.
+      const sharpen = new SharpenPass(camera, engine, profile.sharpenAmount);
+      cleanup.push(() => sharpen.dispose(camera));
+      if (profile.sharpenAmount <= 0) sharpen.setEnabled(camera, false);
 
       checkpointRendererStartup("presentation systems construction", "sync");
 
@@ -1489,6 +1503,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         airfieldLighting,
         scotopic,
         bloom,
+        sharpen,
         atmosphereResources,
         `${info.vendor} ${info.renderer}`.trim(),
       );
@@ -2356,6 +2371,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.atmosphereResources.dispose(),
       () => this.toneMap.dispose(this.camera),
       () => this.fxaa.dispose(this.camera),
+      () => this.sharpen.dispose(this.camera),
       () => this.graph.dispose(),
       () => this.resizeObserver.disconnect(),
     ], "Unable to completely release the WebGPU renderer");
@@ -2680,6 +2696,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.bloom.composite,
       this.toneMap,
       this.fxaa,
+      this.sharpen.postProcess,
     ]) {
       pass.markTextureDirty();
     }
@@ -3231,8 +3248,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // depends on what is attached.
     this.bloom.setEnabled(this.camera, this.profile.bloomEnabled, this.scotopic.enabled ? 1 : 0);
     this.applyFirstPassOwnership();
+    // Babylon APPENDS on attach, so the sharpen comes off first and goes back
+    // on after FXAA: it must stay the last pass in the chain.
+    this.sharpen.setEnabled(this.camera, false);
     this.camera.detachPostProcess(this.fxaa);
     if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
+    this.sharpen.setAmount(this.profile.sharpenAmount);
+    this.sharpen.setEnabled(this.camera, this.profile.sharpenAmount > 0);
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");

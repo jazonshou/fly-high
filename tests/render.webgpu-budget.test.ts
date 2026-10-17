@@ -229,9 +229,20 @@ describe("performance budget (1A-2)", () => {
     const withDoubleLayers = estimateGpuMemoryBreakdown(profile, viewport, {
       ...DYNAMIC_ALLOCATIONS,
       materialArrayLayers: DYNAMIC_ALLOCATIONS.materialArrayLayers * 2,
+      groundGrainLayers: DYNAMIC_ALLOCATIONS.groundGrainLayers * 2,
     });
     expect(withDoubleLayers.materialArraysMiB).toBeCloseTo(base.materialArraysMiB * 2, 5);
     expect(withDoubleLayers.totalMiB).toBeGreaterThan(base.totalMiB + base.materialArraysMiB);
+
+    // The ground grain is one more layer per array, and only where the
+    // patchwork runs: the row must move with it, and not without it.
+    const layers = DYNAMIC_ALLOCATIONS.materialArrayLayers;
+    const grain = DYNAMIC_ALLOCATIONS.groundGrainLayers;
+    expect(profile.terrainGroundPatchwork).toBe(true);
+    const withoutGrain = estimateGpuMemoryBreakdown(
+      { ...profile, terrainGroundPatchwork: false }, viewport);
+    expect(base.materialArraysMiB / withoutGrain.materialArraysMiB)
+      .toBeCloseTo((layers + grain) / layers, 6);
   });
 
   it("moves the material-array row when the tier's array edge moves (assertion 56)", () => {

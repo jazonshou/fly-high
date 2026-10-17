@@ -546,6 +546,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       // `4.5-C2b` split the GPU boundary out so the recipes can be imported
       // by a worker; both halves are the same owned artifact.
       "src/render/webgpu/terrain/MaterialArrayUpload.ts",
+      // The ground grain: one more layer in the SAME two arrays, built by the
+      // same worker, so it is this artifact rather than a second one.
+      "src/render/webgpu/terrain/GroundGrainSynthesis.ts",
     ],
     consumers: ["terrain-material"],
     ownedSymbols: [
@@ -555,11 +558,18 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "createSurfaceMaterialArrays",
       "composeSurfaceMaterialContactSheet",
       "TOKSVIG_ROUGHNESS_GAIN",
+      "synthesizeGroundGrainLayer",
+      "synthesizeSurfaceArrayLayer",
+      "surfaceArrayLayerIds",
+      "GROUND_GRAIN_LAYER",
     ],
     notes:
       "The repo ships zero image assets by design; a second synthesiser, or an "
       + "imported texture, is the audit's root cause #1 reopening from the "
-      + "other side.",
+      + "other side. The ground grain is not a second one: it is one more "
+      + "layer of these arrays (index 10, after the ten materials), built only "
+      + "where the patchwork runs, and the terrain fragment reads it at three "
+      + "world scales so the mip chain, not a footprint fade, band-limits it.",
   },
   {
     // 3-2 (C1): TerrainMaterialPlugin is DELETED, not neighboured. Both
@@ -1163,6 +1173,23 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "most of the day. MSAA ownership across the three possible chain heads "
       + "is derived in `FlightRenderer.applyFirstPassOwnership`, not branched "
       + "per site.",
+  },
+  {
+    // The final sharpen. Lighting owns it beside bloom: both are display-side
+    // passes that act on the tone-mapped image rather than on the scene.
+    artifact: "final-sharpen",
+    owner: "lighting",
+    definitionSites: ["src/render/webgpu/lighting/SharpenPass.ts"],
+    consumers: ["lighting"],
+    ownedSymbols: ["SharpenPass", "RCAS_SHARPEN_WGSL", "rcasSharpen"],
+    notes:
+      "RCAS (AMD FidelityFX's contrast-adaptive sharpen) restores the acutance "
+      + "FXAA and the browser's bilinear canvas upscale take away. It must be "
+      + "the LAST pass: `applyProfile` detaches it before re-attaching FXAA and "
+      + "re-attaches it after, because Babylon appends. Its strength is the "
+      + "profile's `sharpenAmount`; zero detaches it rather than running an "
+      + "identity draw. `rcasSharpen` is the CPU twin of the WGSL that the "
+      + "bounded-output tests run against.",
   },
   {
     // 7-13: the airfield's furniture. Arithmetic and geometry only -- the

@@ -604,7 +604,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 247,
+    drawCallCeiling: 248,
   },
   {
     name: "slant-10km",
@@ -626,7 +626,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // still generating. Static shots are unchanged (impostor batches rebuild
     // their bounds from in-cull cells only). Measured identically across every
     // run on the M2 Pro (223).
-    drawCallCeiling: 209,
+    drawCallCeiling: 210,
   },
   {
     name: "high-10000ft-down",
@@ -644,7 +644,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 72,
+    drawCallCeiling: 73,
   },
   {
     // Z-3: the high-DPR/cap-equivalent lane. A deterministic DPR-1 browser at
@@ -666,7 +666,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 248,
+    drawCallCeiling: 249,
   },
   {
     // Z-3/R-9: the far-plane opacity criterion was only ever measured at
@@ -684,7 +684,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 200,
+    drawCallCeiling: 201,
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -703,7 +703,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 247,
+    drawCallCeiling: 248,
   },
   {
     // R-15: night. Pre-7A this is honestly near-black — the shot pins that
@@ -732,7 +732,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 249,
+    drawCallCeiling: 250,
   },
   {
     name: "night-moonlit",
@@ -789,7 +789,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // sized for a near-black frame; copying it onto a moonlit one would make
     // the assertion vacuous. Pin it from the R4 run.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 249,
+    drawCallCeiling: 250,
     // `drawCallCeiling` likewise omitted rather than null. Draw calls are
     // host-independent and pinned to the measured count exactly, so this
     // gets its value from the R4 run rather than a placeholder.
@@ -901,7 +901,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // `PREVIOUS_DRAW_CALL_CEILINGS`, so it has no baseline it moved from and no
     // raise can name it. The ceiling is simply the measurement, which is what
     // the field is defined as.
-    drawCallCeiling: 248,
+    drawCallCeiling: 249,
     comparesToBaseline: true,
   },
   {
@@ -943,7 +943,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 20, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 254,
+    drawCallCeiling: 255,
   },
   {
     // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
@@ -1022,7 +1022,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 19, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 253,
+    drawCallCeiling: 254,
   },
   {
     // 4-10: the CDLOD-TRANSITION scene. Straight and level outbound from the
@@ -1068,7 +1068,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // still generating. Static shots are unchanged (impostor batches rebuild
     // their bounds from in-cull cells only). Measured identically across every
     // run on the M2 Pro (209).
-    drawCallCeiling: 195,
+    drawCallCeiling: 196,
   },
   {
     // Phase 2 §10.2 scene 1: cloud shape, silver lining, shadowed sides.
@@ -1086,7 +1086,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 226,
+    drawCallCeiling: 227,
   },
   {
     // Phase 2 §10.2 scene 2: foliage translucency, grass scale reference,
@@ -1106,7 +1106,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 248,
+    drawCallCeiling: 249,
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -1156,7 +1156,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.7 },
-    drawCallCeiling: 219,
+    drawCallCeiling: 220,
   },
   {
     // Phase 2 §10.2 scene 4 — the only capture in the programme taken from
@@ -1175,7 +1175,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.2 },
-    drawCallCeiling: 121,
+    drawCallCeiling: 122,
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -1194,7 +1194,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 18, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 113,
+    drawCallCeiling: 114,
   },
   {
     // Phase 3 §10: the scene 3-9 is judged in. Short final over the threshold,
@@ -1221,7 +1221,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.4 },
-    drawCallCeiling: 255,
+    drawCallCeiling: 256,
     // `7-9`: 60 measured with the daylight attenuation term, against 56 in the
     // pre-lamp baseline and **10,019 without it**. 400 is ~6.7x the measured
     // value and still 25x below the defect — wide enough that ordinary
@@ -1250,7 +1250,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 224,
+    drawCallCeiling: 225,
   },
   {
     // Vegetation overhaul (wave P): the terrain-viewer money shot — a
@@ -1273,7 +1273,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 120,
+    drawCallCeiling: 121,
   },
   {
     // Wave G's own gate: open grassland at eye height with the compute blade
@@ -1294,7 +1294,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 134,
+    drawCallCeiling: 135,
   },
   {
     // Wave Q gate 1: the dusk terrain-glint + tree-band-handoff scene. A low
@@ -1317,7 +1317,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 244,
+    drawCallCeiling: 245,
   },
   {
     // Wave Q gate 2: the close-mountainside scene — the frame that showed
@@ -1339,7 +1339,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 12.3 },
-    drawCallCeiling: 230,
+    drawCallCeiling: 231,
   },
   {
     // Wave R gate 1: the user's tree-line screenshot geometry — a few
@@ -1361,7 +1361,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12.2 },
-    drawCallCeiling: 244,
+    drawCallCeiling: 245,
   },
   {
     // Wave R gate 2: the very-close mountainside — the range where the rock
@@ -1381,7 +1381,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.6 },
-    drawCallCeiling: 237,
+    drawCallCeiling: 238,
   },
   {
     // Wave R gate 3: water at standing height — the range where the ocean
@@ -1404,7 +1404,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.7 },
-    drawCallCeiling: 90,
+    drawCallCeiling: 91,
   },
 
   // -------------------------------------------------------------------------
@@ -1521,7 +1521,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "forest",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 102, minWallClockFps: 102 },
-    drawCallCeiling: 108,
+    drawCallCeiling: 109,
   },
   {
     // The secondary seam, and a coverage hole every other shot shares. T1 - the
@@ -1550,7 +1550,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "forest",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 102 },
-    drawCallCeiling: 116,
+    drawCallCeiling: 117,
   },
   {
     // The ground-material shot. Terrain fills the frame - its top edge is 23
@@ -1583,7 +1583,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "mountain",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 102, minWallClockFps: 101 },
-    drawCallCeiling: 87,
+    drawCallCeiling: 88,
   },
   {
     // E-5's far-annulus shot: the horizon-shadow term applied to FAR VEGETATION.
@@ -1692,7 +1692,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     relativeSunBearingDegrees: 161,
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 101 },
-    drawCallCeiling: 91,
+    drawCallCeiling: 92,
   },
   {
     /**
@@ -1773,7 +1773,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "canopy-backlit",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 102 },
-    drawCallCeiling: 102,
+    drawCallCeiling: 103,
   },
   /**
    * NIGHT_LOOK_ARCHITECTURE §2.1, Option B — two PROBE clocks bracketing the
@@ -2078,7 +2078,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      * candidate, pinned at the measurement rather than above it.
      */
     ceilings: null,
-    drawCallCeiling: 87,
+    drawCallCeiling: 88,
   },
 ]);
 
