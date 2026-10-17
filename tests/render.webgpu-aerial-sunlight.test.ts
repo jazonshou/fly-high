@@ -8,9 +8,12 @@ import {
   sunTransmittanceAt,
 } from "../src/render/webgpu/atmosphere/AerialSunlight";
 import {
+  AERIAL_PERSPECTIVE_WGSL,
   AERIAL_PHYSICAL_RELEASE_SINE,
   AERIAL_REFERENCE_SUN_COS,
   AERIAL_SCENE_PEAK_SUN,
+  AERIAL_SKY_SHELL_METERS,
+  AERIAL_SKY_TWO_POINT_SINE,
   aerialPerspectiveCoefficients,
   aerialPhysicalBalance,
   aerialPhysicalGate,
@@ -199,6 +202,51 @@ describe("the low-sun sky", () => {
         expect(ratio, `${elevation} deg, azimuth ${azimuth}`).toBeLessThan(1.5);
       }
     }
+  });
+});
+
+describe("the sky's two-point sun", () => {
+  it("is mirrored in WGSL and switched on a uniform", () => {
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      `const AERIAL_SKY_TWO_POINT_SINE: f32 = ${AERIAL_SKY_TWO_POINT_SINE.toFixed(1)};`,
+    );
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      "uniforms.aerialSunDirection.y < AERIAL_SKY_TWO_POINT_SINE",
+    );
+  });
+
+  it("switches to one point above 30 deg without a visible step", () => {
+    // Just either side of the switch: the same sky to within 1.5% anywhere.
+    const below = Math.asin(AERIAL_SKY_TWO_POINT_SINE - 1e-6) * (180 / Math.PI);
+    const above = Math.asin(AERIAL_SKY_TWO_POINT_SINE + 1e-6) * (180 / Math.PI);
+    const twoPoint = resolveAerialPerspectiveBinding(stateWithSunAt(below), 150, [1, 0.9, 0.8], [0.6, 0.7, 0.9], 0.9);
+    const onePoint = resolveAerialPerspectiveBinding(stateWithSunAt(above), 150, [1, 0.9, 0.8], [0.6, 0.7, 0.9], 0.9);
+    for (const elevation of [1, 5, 20, 35, 60, 90]) {
+      for (const azimuth of [0, 45, 90, 180]) {
+        const e = (elevation * Math.PI) / 180;
+        const a = (azimuth * Math.PI) / 180;
+        const direction: Rgb = [Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a)];
+        const ratio = luminance(evaluateSkyRadiance(onePoint, direction))
+          / luminance(evaluateSkyRadiance(twoPoint, direction));
+        expect(Math.abs(ratio - 1), `elevation ${elevation} azimuth ${azimuth}`).toBeLessThan(0.015);
+      }
+    }
+    // Above the switch the sky IS the one-point integral.
+    const direction: Rgb = [0.6, 0.8, 0];
+    const mu = direction[0] * onePoint.sunDirection[0] + direction[1] * onePoint.sunDirection[1];
+    const single = evaluateAerialPerspective(
+      onePoint.coefficients,
+      150,
+      AERIAL_SKY_SHELL_METERS,
+      (AERIAL_SKY_SHELL_METERS - 150) / 0.8,
+      mu,
+      onePoint.sunRadiance,
+      onePoint.ambient,
+      onePoint.sunDirection[1],
+      { horizontal: 0.6, sunAlong: aerialTravelFor(direction, onePoint.sunDirection).sunAlong },
+      1,
+    ).inScatter;
+    expect(evaluateSkyRadiance(onePoint, direction)).toEqual(single);
   });
 });
 

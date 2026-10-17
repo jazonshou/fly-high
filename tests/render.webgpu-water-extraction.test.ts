@@ -266,12 +266,15 @@ describe("water shader extraction (2-8a)", () => {
     // path) instead of at the camera, and the sky shares that integral. Water
     // pixels move by the haze laid over them and nothing else; at noon that
     // is within a couple of percent, at a low sun the distant sea takes the
-    // warm, sun-reddened haze. Deliberate, named, reviewed.
+    // warm, sun-reddened haze. Deliberate, named, reviewed. Re-pinned again
+    // when the sky integral kept its two-point sun only below a 30 deg sun:
+    // skyRadiance lives in the same shared block, and above 30 deg the sky
+    // moves by under 1.2%.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "18cf2b98a3965d37b7094bd61b6760118ff503172dc171031f9122314fed9771",
+      "ae01bfe2ac273e538fc3241182751102c2726c811bde34dcb859cb59e93f7e80",
     );
   });
 

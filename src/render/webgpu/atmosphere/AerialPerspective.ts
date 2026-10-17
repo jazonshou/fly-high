@@ -387,6 +387,15 @@ export function evaluateAerialPerspective(
 export const AERIAL_SKY_SHELL_METERS = 60_000;
 
 /**
+ * Below this sun sine (30°) the sky splits each sun sample into its two-point
+ * Gauss–Laguerre pair; above it one point is within 0.25% on average (1.2%
+ * worst) and the pair only costs time (+4.7% GPU on cruise-horizon). The
+ * switch reads a uniform, so it never diverges within a draw. WGSL mirrors it
+ * as AERIAL_SKY_TWO_POINT_SINE.
+ */
+export const AERIAL_SKY_TWO_POINT_SINE = 0.5;
+
+/**
  * The sky, as the same integral (1C-5) — the TS mirror of WGSL skyRadiance.
  * Used by the IBL bake (1C-6) and the sky/haze agreement tests.
  */
@@ -415,7 +424,7 @@ export function evaluateSkyRadiance(
     binding.ambient,
     binding.sunDirection[1],
     { horizontal: Math.sqrt(1 - up * up), sunAlong: heading.sunAlong },
-    2,
+    binding.sunDirection[1] < AERIAL_SKY_TWO_POINT_SINE ? 2 : 1,
   ).inScatter;
   // §2.6 sky-path arch — mirrors the WGSL line for line.
   const shape = 1 - TWILIGHT_ARCH_ZENITH_FALLOFF * Math.min(Math.max(direction[1], 0), 1);
@@ -664,6 +673,7 @@ fn applyAerialPerspective(color: vec3f, fragmentAltitude: f32, distanceMeters: f
 }
 
 const AERIAL_SKY_SHELL: f32 = 60000.0;
+const AERIAL_SKY_TWO_POINT_SINE: f32 = 0.5;
 
 fn skyRadiance(direction: vec3f) -> vec3f {
   // 1C-5: the sky IS this same integral, run out to the top of the useful
@@ -681,7 +691,7 @@ fn skyRadiance(direction: vec3f) -> vec3f {
     dot(direction, uniforms.aerialSunDirection),
     sqrt(1.0 - up * up),
     dot(direction.xz / headingLength, uniforms.aerialSunDirection.xz),
-    true,
+    uniforms.aerialSunDirection.y < AERIAL_SKY_TWO_POINT_SINE,
   );
   // NIGHT_LOOK_ARCHITECTURE 2.6: the twilight arch is a SKY-PATH term. It
   // lives here, not in aerialAmbient, so the dome and the IBL probe receive
