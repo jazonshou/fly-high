@@ -290,6 +290,11 @@ describe("the pin is capture-only and sits at the time pin", () => {
     return found;
   }
   const PIN_NAMES = /pinWildlifeForCapture|respawnForCapture|restartStepCountForCapture/;
+  // The capture and the cloud A/B's agent page, each with its settle loop.
+  const PERF_HARNESS_SETTLE_LOOPS: Readonly<Record<string, string>> = {
+    "tests/perf/ab/agent.ts": "for (let settle = 0; settle < request.settleFrames; settle += 1)",
+    "tests/perf/perf-capture.test.ts": "for (let settle = 0; settle < 150; settle += 1)",
+  };
   const count = (text: string, pattern: RegExp) => text.match(new RegExp(pattern, "g"))?.length ?? 0;
 
   it("under src/, is named only along the renderer -> wildlife -> simulation chain, once per link", () => {
@@ -315,35 +320,38 @@ describe("the pin is capture-only and sits at the time pin", () => {
     expect(count(simulation, /restartStepCountForCapture\(\)/)).toBe(1);
   });
 
-  it("outside src/, is called by the perf harness alone", () => {
+  it("outside src/, is called by the perf harnesses alone", () => {
     const callers = [...sourceFiles(join(ROOT, "tests")), ...sourceFiles(join(ROOT, "scripts"))]
       .map(rel)
       .filter((path) => path !== THIS_FILE)
       .filter((path) => PIN_NAMES.test(read(path)));
-    expect(callers).toEqual(["tests/perf/perf-capture.test.ts"]);
+    expect(callers.sort()).toEqual(Object.keys(PERF_HARNESS_SETTLE_LOOPS).sort());
   });
 
   it("pins once per shot, after the time pin and before the settle", () => {
     // Before the time pin, the streaming loop would fly the birds on past it;
     // after the first settle frame, the settle would start from history.
-    const harness = read("tests/perf/perf-capture.test.ts");
-    const timePin = harness.indexOf("simulationTime = 500 + canonicalShotIndex * 120");
-    const pin = harness.indexOf("renderer.pinWildlifeForCapture();");
-    const settle = harness.indexOf("for (let settle = 0; settle < 150; settle += 1)");
-    expect(timePin).toBeGreaterThan(-1);
-    expect(pin).toBeGreaterThan(timePin);
-    expect(settle).toBeGreaterThan(pin);
-    expect(count(harness, /renderer\.pinWildlifeForCapture\(\)/)).toBe(1);
+    for (const [path, settleLoop] of Object.entries(PERF_HARNESS_SETTLE_LOOPS)) {
+      const harness = read(path);
+      const timePin = harness.indexOf("simulationTime = 500 + canonicalShotIndex * 120");
+      const pin = harness.indexOf("renderer.pinWildlifeForCapture();");
+      const settle = harness.indexOf(settleLoop);
+      expect(timePin, path).toBeGreaterThan(-1);
+      expect(pin, path).toBeGreaterThan(timePin);
+      expect(settle, path).toBeGreaterThan(pin);
+      expect(count(harness, /renderer\.pinWildlifeForCapture\(\)/), path).toBe(1);
+    }
   });
 
   it("the pinned frames are the ones this file models: every render steps the wildlife at 1/60 s", () => {
     // The wildlife advances by the delta the harness hands `render`, and
     // determinism after the pin rests on it being a constant. A wall-clock
     // delta would make the capture depend on timing again.
-    const harness = read("tests/perf/perf-capture.test.ts");
-    const renders = harness.match(/renderer\.render\([^;]*\);/g) ?? [];
-    expect(renders.length).toBeGreaterThan(0);
-    for (const call of renders) expect(call, call).toMatch(/,\s*1 \/ 60\)\s*;$/);
+    for (const path of Object.keys(PERF_HARNESS_SETTLE_LOOPS)) {
+      const renders = read(path).match(/\.render\([^;]*\);/g) ?? [];
+      expect(renders.length, path).toBeGreaterThan(0);
+      for (const call of renders) expect(call, `${path}: ${call}`).toMatch(/,\s*1 \/ 60\)\s*;$/);
+    }
     // And the renderer steps the wildlife on every render: its pass has no
     // cadence or enabled predicate (the frame graph's own frame index is not
     // pinned), and nothing returns early between the pass and the update.

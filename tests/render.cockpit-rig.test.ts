@@ -92,15 +92,18 @@ describe("only the perf harness may override the cockpit rig", () => {
     expect(renderer).not.toMatch(/fieldOfView\s*=\s*56\b/);
   });
 
-  it("has exactly one caller outside src/: the perf harness, passing the perf rig", () => {
+  it("has exactly two callers outside src/: the perf harnesses, each passing the perf rig", () => {
+    // The capture and the cloud A/B's agent page render the same shots, so
+    // both must frame them through the same rig.
+    const harnesses = ["tests/perf/ab/agent.ts", "tests/perf/perf-capture.test.ts"];
     const callers = [...sourceFiles(join(ROOT, "tests")), ...sourceFiles(join(ROOT, "scripts"))]
       .map(rel)
       .filter((path) => path !== THIS_FILE)
       .filter((path) => /cockpitRigOverride/.test(read(join(ROOT, path))));
-    expect(callers).toEqual(["tests/perf/perf-capture.test.ts"]);
-    expect(read(join(ROOT, "tests/perf/perf-capture.test.ts"))).toMatch(
-      /cockpitRigOverride:\s*PERF_COCKPIT_RIG/,
-    );
+    expect(callers.sort()).toEqual(harnesses);
+    for (const harness of harnesses) {
+      expect(read(join(ROOT, harness)), harness).toMatch(/cockpitRigOverride:\s*PERF_COCKPIT_RIG/);
+    }
   });
 });
 

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>fly-high perf A/B agent</title>
+    <!-- No favicon request: a 404 would read as a page error in the run log. -->
+    <link rel="icon" href="data:," />
+    <style>
+      html,
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+
+      canvas {
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Driven by scripts/perf-ab.mts; see tests/perf/ab/agent.ts. -->
+    <script type="module" src="./agent.ts"></script>
+  </body>
+</html>

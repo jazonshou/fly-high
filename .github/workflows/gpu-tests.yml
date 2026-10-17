@@ -59,12 +59,12 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # A hosted runner is not the pinned reference adapter: it renders the
-      # same pixels (reference-viewport scores an identical SSIM here and on
-      # the M3 Pro) but delivers them at roughly a third of the frame rate,
-      # and its detail Worker does not come up at all. So the visual,
-      # renderer-error and settling gates run here and the frame-delivery
-      # contract does not; docs/PERFORMANCE.md scopes that contract to the
-      # reference adapter, and the run prints every row it declined to gate.
+      # same frames (every SSIM gate passes here) but delivers them at about a
+      # quarter of the reference frame rate. So the visual, renderer-error and
+      # settling gates run here and the frame-delivery contract does not;
+      # docs/PERFORMANCE.md scopes that contract to the reference adapter, and
+      # the run prints every row it declined to gate. Whether a change is
+      # slower is answered by perf-ab.yml, which races it against its base.
       #
       # Pull requests run the full list too. A subset changes the streaming
       # history each shot arrives with, so its frames are not the ones the
