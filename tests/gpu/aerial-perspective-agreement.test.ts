@@ -56,12 +56,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= arrayLength(&probes)) { return; }
   let probe = probes[id.x];
   let aerial = aerialPerspective(probe.x, probe.y, probe.z);
-  results[id.x * 4u] = vec4f(aerial.transmittance, 0.0);
-  results[id.x * 4u + 1u] = vec4f(aerial.inScatter, 0.0);
+  results[id.x * 6u] = vec4f(aerial.transmittance, 0.0);
+  results[id.x * 6u + 1u] = vec4f(aerial.inScatter, 0.0);
   // The sky's form: the curvature tilt along the heading, two-point sun.
   let tilted = aerialIntegral(probe.x, probe.y, probe.z, TILTED_HORIZONTAL, probe.w, true);
-  results[id.x * 4u + 2u] = vec4f(tilted.transmittance, 0.0);
-  results[id.x * 4u + 3u] = vec4f(tilted.inScatter, 0.0);
+  results[id.x * 6u + 2u] = vec4f(tilted.transmittance, 0.0);
+  results[id.x * 6u + 3u] = vec4f(tilted.inScatter, 0.0);
+  // A high sun's surface form: the camera's own sun for the whole path.
+  let surface = aerialIntegralSampled(probe.x, probe.y, probe.z, TILTED_HORIZONTAL, probe.w, 0);
+  results[id.x * 6u + 4u] = vec4f(surface.transmittance, 0.0);
+  results[id.x * 6u + 5u] = vec4f(surface.inScatter, 0.0);
 }
 `;
 
@@ -168,7 +172,7 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
         uniformBuffer.update(packedUniforms);
         const probeBuffer = new StorageBuffer(engine, probeData.byteLength);
         probeBuffer.update(probeData);
-        const resultBuffer = new StorageBuffer(engine, probes.length * 4 * 4 * 4);
+        const resultBuffer = new StorageBuffer(engine, probes.length * 6 * 4 * 4);
 
         const shader = new ComputeShader(
           `aerial-agreement-${weather}-${solarTimeHours}`,
@@ -190,7 +194,7 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
         await shader.dispatchWhenReady(Math.ceil(probes.length / 64), 1, 1);
         const view = await resultBuffer.read();
         engine.stopRenderLoop();
-        const gpu = new Float32Array(view.buffer, view.byteOffset, probes.length * 16);
+        const gpu = new Float32Array(view.buffer, view.byteOffset, probes.length * 24);
 
         probes.forEach((probe, index) => {
           const forms = [
@@ -216,11 +220,23 @@ describe("TS/WGSL aerial-perspective agreement (assertion 31)", () => {
               { horizontal: TILTED_HORIZONTAL, sunAlong: probe.sunAlong },
               2,
             ),
+            evaluateAerialPerspective(
+              binding.coefficients,
+              binding.cameraAltitudeMeters,
+              probe.fragmentAltitude,
+              probe.distance,
+              probe.viewDotSun,
+              binding.sunRadiance,
+              binding.ambient,
+              binding.sunDirection[1],
+              { horizontal: TILTED_HORIZONTAL, sunAlong: probe.sunAlong },
+              0,
+            ),
           ];
           forms.forEach((expected, form) => {
             const context = `${weather} ${solarTimeHours} h camera ${cameraAltitude} probe ${index}`
-              + (form === 1 ? " (tilted)" : "");
-            const base = index * 16 + form * 8;
+              + ["", " (tilted)", " (camera sun)"][form];
+            const base = index * 24 + form * 8;
             for (let channel = 0; channel < 3; channel += 1) {
               const gpuTransmittance = gpu[base + channel]!;
               const gpuInScatter = gpu[base + 4 + channel]!;

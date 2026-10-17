@@ -215,7 +215,9 @@ export function exponentialPathCentroid(
 ): number {
   if (Math.abs(riseMeters) < 1) return 0.5;
   const x = Math.min(Math.max(riseMeters / scaleHeightMeters, -80), 80);
-  if (Math.abs(x) < 1e-3) return 0.5 - x / 12;
+  // The series is exact in f32 below 0.1, where the closed form loses most
+  // of its digits to e^x − 1, and spares the GPU an exp on most surfaces.
+  if (Math.abs(x) < 0.1) return 0.5 - x / 12 + (x * x * x) / 720;
   return 1 / x - 1 / (Math.exp(x) - 1);
 }
 
@@ -228,9 +230,12 @@ export function exponentialPathCentroid(
  * not the path-total ratio (Rayleigh-heavy) the old weighting used.
  */
 export function visibleScatterFraction(opticalDepth: number): number {
-  return opticalDepth < 1e-4
-    ? 1 - opticalDepth / 2
-    : (1 - Math.exp(-opticalDepth)) / opticalDepth;
+  // Series below 0.1 (a few km of low air), exact in f32, as for the centroid.
+  if (opticalDepth < 0.1) {
+    const t = opticalDepth;
+    return 1 - t / 2 + (t * t) / 6 - (t * t * t) / 24 + (t * t * t * t) / 120;
+  }
+  return (1 - Math.exp(-opticalDepth)) / opticalDepth;
 }
 
 /** Two-point Gauss–Laguerre nodes and weights (exponential weighting). */
@@ -238,6 +243,25 @@ const LAGUERRE_NEAR = 2 - Math.SQRT2;
 const LAGUERRE_FAR = 2 + Math.SQRT2;
 const LAGUERRE_NEAR_WEIGHT = (2 + Math.SQRT2) / 4;
 const LAGUERRE_FAR_WEIGHT = (2 - Math.SQRT2) / 4;
+
+/**
+ * At and above this sun sine (30°) the haze on a surface lights its whole
+ * path with the camera's own sun instead of one point per species: a high
+ * sun reddens so little along a path that the two differ by under 1.5% of
+ * the in-scatter on level and descending paths (cameras to 3 km, paths to
+ * 100 km) and 2.4% on a hill 600 m above the camera, and the per-point sun
+ * was most of the rework's GPU cost on a noon frame. Only surfaces (WGSL
+ * aerialPerspectiveAlong) take it: the sky keeps its per-point sun, where
+ * the camera's would move the aureole by up to 6.5%, and so does the haze
+ * in front of clouds, whose climbing paths it would dim by 4%. WGSL mirrors
+ * it as AERIAL_HAZE_PER_POINT_SINE.
+ */
+export const AERIAL_HAZE_PER_POINT_SINE = 0.5;
+
+/** The `quadrature` the WGSL surface haze uses at this source elevation. */
+export function aerialHazeSunSamples(sunCosZenith: number): 0 | 1 {
+  return sunCosZenith >= AERIAL_HAZE_PER_POINT_SINE ? 0 : 1;
+}
 
 function sunAtPathFraction(
   coefficients: AerialPerspectiveCoefficients,
@@ -251,7 +275,12 @@ function sunAtPathFraction(
   // The planet's curvature tilts the local vertical by s/R over a ground
   // distance s: sunward the sun stands higher, anti-sunward lower.
   const angle = (distanceMeters * fraction * travel.horizontal) / AERIAL_PLANET_RADIUS_METERS;
-  const cosZenith = sunCosZenith * Math.cos(angle) + travel.sunAlong * Math.sin(angle);
+  // Under 0.1 rad (640 km of ground, past any surface) two series terms are
+  // exact in f32 and spare the GPU two transcendentals per sample.
+  const squared = angle * angle;
+  const cosAngle = angle < 0.1 ? 1 - 0.5 * squared + (squared * squared) / 24 : Math.cos(angle);
+  const sinAngle = angle < 0.1 ? angle * (1 - squared / 6) : Math.sin(angle);
+  const cosZenith = sunCosZenith * cosAngle + travel.sunAlong * sinAngle;
   return sunTransmittanceAt(
     coefficients,
     fromAltitudeMeters + riseMeters * fraction,
@@ -306,7 +335,9 @@ function sunAlongPath(
  * horizon (sunward low, anti-sunward high) — against a factor of 3–10 for
  * the single camera-altitude transmittance at a 5° sun. `quadrature` 2
  * splits each sun sample into a two-point Gauss–Laguerre pair, which the
- * sky uses (it carries the long, steep paths where one point is coarse).
+ * sky uses (it carries the long, steep paths where one point is coarse);
+ * 0 lights the whole path with the sun at its start, the camera's, which
+ * the surface haze uses above a 30° sun (aerialHazeSunSamples).
  */
 export function evaluateAerialPerspective(
   coefficients: AerialPerspectiveCoefficients,
@@ -318,7 +349,7 @@ export function evaluateAerialPerspective(
   ambient: [number, number, number],
   sunCosZenith: number,
   travel: AerialTravel = AERIAL_NO_TRAVEL,
-  quadrature: 1 | 2 = 1,
+  quadrature: 0 | 1 | 2 = 1,
 ): AerialPerspectiveSample {
   if (distanceMeters <= 0) {
     return { transmittance: [1, 1, 1], inScatter: [0, 0, 0] };
@@ -348,15 +379,18 @@ export function evaluateAerialPerspective(
   const visibleM = visibleScatterFraction(
     depthMie + depthRayleigh * (MIE_SCALE_HEIGHT_METERS / RAYLEIGH_SCALE_HEIGHT_METERS),
   );
-  const sunR = sunAlongPath(
+  const cameraSun = quadrature === 0
+    ? sunTransmittanceAt(coefficients, startAltitude, sunCosZenith)
+    : null;
+  const sunR = cameraSun ?? sunAlongPath(
     coefficients, startAltitude, rise, distanceMeters,
     exponentialPathCentroid(rise, RAYLEIGH_SCALE_HEIGHT_METERS) * visibleR,
-    sunCosZenith, travel, quadrature,
+    sunCosZenith, travel, quadrature as 1 | 2,
   );
-  const sunM = sunAlongPath(
+  const sunM = cameraSun ?? sunAlongPath(
     coefficients, startAltitude, rise, distanceMeters,
     exponentialPathCentroid(rise, MIE_SCALE_HEIGHT_METERS) * visibleM,
-    sunCosZenith, travel, quadrature,
+    sunCosZenith, travel, quadrature as 1 | 2,
   );
 
   const transmittance: [number, number, number] = [0, 0, 0];
@@ -578,19 +612,30 @@ fn aerialSunTransmittanceAt(altitude: f32, cosZenith: f32) -> vec3f {
 fn aerialPathCentroid(rise: f32, scaleHeight: f32) -> f32 {
   if (abs(rise) < 1.0) { return 0.5; }
   let x = clamp(rise / scaleHeight, -80.0, 80.0);
-  if (abs(x) < 0.001) { return 0.5 - x / 12.0; }
+  if (abs(x) < 0.1) { return 0.5 - x / 12.0 + x * x * x / 720.0; }
   return 1.0 / x - 1.0 / (exp(x) - 1.0);
 }
 
 fn aerialVisibleFraction(opticalDepth: f32) -> f32 {
-  if (opticalDepth < 0.0001) { return 1.0 - opticalDepth * 0.5; }
+  if (opticalDepth < 0.1) {
+    let t = opticalDepth;
+    return 1.0 - t / 2.0 + t * t / 6.0 - t * t * t / 24.0 + t * t * t * t / 120.0;
+  }
   return (1.0 - exp(-opticalDepth)) / opticalDepth;
 }
 
 fn aerialSunAtFraction(h0: f32, rise: f32, distanceMeters: f32, fraction: f32, horizontal: f32, sunAlong: f32) -> vec3f {
-  // Earth curvature tilts the local vertical by s/R over ground distance s.
+  // Earth curvature tilts the local vertical by s/R over ground distance s;
+  // under 0.1 rad two series terms are exact in f32 and skip the trig.
   let angle = distanceMeters * fraction * horizontal / AERIAL_PLANET_RADIUS;
-  let cosZenith = uniforms.aerialSunDirection.y * cos(angle) + sunAlong * sin(angle);
+  let squared = angle * angle;
+  var cosAngle = 1.0 - 0.5 * squared + squared * squared / 24.0;
+  var sinAngle = angle * (1.0 - squared / 6.0);
+  if (angle >= 0.1) {
+    cosAngle = cos(angle);
+    sinAngle = sin(angle);
+  }
+  let cosZenith = uniforms.aerialSunDirection.y * cosAngle + sunAlong * sinAngle;
   return aerialSunTransmittanceAt(h0 + rise * fraction, cosZenith);
 }
 
@@ -609,10 +654,13 @@ struct AerialPerspectiveResult {
   inScatter: vec3f,
 };
 
+const AERIAL_HAZE_PER_POINT_SINE: f32 = 0.5;
+
 // evaluateAerialPerspective, line for line. horizontal/sunAlong describe
-// the heading for the curvature tilt (0, 0 = none); twoPoint selects the
-// Gauss-Laguerre sun pair the sky uses.
-fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, twoPoint: bool) -> AerialPerspectiveResult {
+// the heading for the curvature tilt (0, 0 = none); sunSamples is its
+// quadrature: 0 the camera's own sun for the whole path (surface haze above
+// a 30 deg sun), 1 one point per species, 2 the Gauss-Laguerre pair.
+fn aerialIntegralSampled(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, sunSamples: i32) -> AerialPerspectiveResult {
   var result: AerialPerspectiveResult;
   if (distanceMeters <= 0.0 || uniforms.aerialParams.w <= 0.0) {
     result.transmittance = vec3f(1.0);
@@ -635,10 +683,14 @@ fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, h
   let visibleR = aerialVisibleFraction(depthRayleigh + depthMie);
   let visibleM = aerialVisibleFraction(
     depthMie + depthRayleigh * (uniforms.aerialParams.y / uniforms.aerialParams.x));
-  let sunR = aerialSunAlongPath(startAltitude, rise, distanceMeters,
-    aerialPathCentroid(rise, uniforms.aerialParams.x) * visibleR, horizontal, sunAlong, twoPoint);
-  let sunM = aerialSunAlongPath(startAltitude, rise, distanceMeters,
-    aerialPathCentroid(rise, uniforms.aerialParams.y) * visibleM, horizontal, sunAlong, twoPoint);
+  var sunR = uniforms.aerialSunTransmittance;
+  var sunM = sunR;
+  if (sunSamples > 0) {
+    sunR = aerialSunAlongPath(startAltitude, rise, distanceMeters,
+      aerialPathCentroid(rise, uniforms.aerialParams.x) * visibleR, horizontal, sunAlong, sunSamples == 2);
+    sunM = aerialSunAlongPath(startAltitude, rise, distanceMeters,
+      aerialPathCentroid(rise, uniforms.aerialParams.y) * visibleM, horizontal, sunAlong, sunSamples == 2);
+  }
 
   let tauRayleigh = uniforms.aerialRayleigh * rayleighPath;
   let tauMieScatter = uniforms.aerialMieScatter * miePath;
@@ -655,16 +707,29 @@ fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, h
   return result;
 }
 
-// No heading: for consumers that only know the view-sun cosine.
+fn aerialIntegral(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32, horizontal: f32, sunAlong: f32, twoPoint: bool) -> AerialPerspectiveResult {
+  return aerialIntegralSampled(fragmentAltitude, distanceMeters, viewDotSun, horizontal, sunAlong,
+    select(1, 2, twoPoint));
+}
+
+// aerialHazeSunSamples: a uniform, so it never diverges within a draw.
+fn aerialHazeSunSamples() -> i32 {
+  return select(1, 0, uniforms.aerialSunDirection.y >= AERIAL_HAZE_PER_POINT_SINE);
+}
+
+// No heading: for consumers that only know the view-sun cosine (cloud
+// composite, light points). Always per point: a path climbing to a cloud
+// is where the camera's sun is furthest off (4% at noon).
 fn aerialPerspective(fragmentAltitude: f32, distanceMeters: f32, viewDotSun: f32) -> AerialPerspectiveResult {
   return aerialIntegral(fragmentAltitude, distanceMeters, viewDotSun, 0.0, 0.0, false);
 }
 
+// Surfaces (terrain, ocean, rivers): the camera's sun above 30 deg.
 fn aerialPerspectiveAlong(fragmentAltitude: f32, distanceMeters: f32, viewDirection: vec3f) -> AerialPerspectiveResult {
   let horizontal = length(viewDirection.xz);
   let sunAlong = dot(viewDirection.xz / max(horizontal, 1e-4), uniforms.aerialSunDirection.xz);
-  return aerialIntegral(fragmentAltitude, distanceMeters,
-    dot(viewDirection, uniforms.aerialSunDirection), horizontal, sunAlong, false);
+  return aerialIntegralSampled(fragmentAltitude, distanceMeters,
+    dot(viewDirection, uniforms.aerialSunDirection), horizontal, sunAlong, aerialHazeSunSamples());
 }
 
 fn applyAerialPerspective(color: vec3f, fragmentAltitude: f32, distanceMeters: f32, viewDirection: vec3f) -> vec3f {

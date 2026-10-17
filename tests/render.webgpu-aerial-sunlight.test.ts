@@ -8,12 +8,14 @@ import {
   sunTransmittanceAt,
 } from "../src/render/webgpu/atmosphere/AerialSunlight";
 import {
+  AERIAL_HAZE_PER_POINT_SINE,
   AERIAL_PERSPECTIVE_WGSL,
   AERIAL_PHYSICAL_RELEASE_SINE,
   AERIAL_REFERENCE_SUN_COS,
   AERIAL_SCENE_PEAK_SUN,
   AERIAL_SKY_SHELL_METERS,
   AERIAL_SKY_TWO_POINT_SINE,
+  aerialHazeSunSamples,
   aerialPerspectiveCoefficients,
   aerialPhysicalBalance,
   aerialPhysicalGate,
@@ -136,6 +138,19 @@ describe("the sun a point sees", () => {
     expect(visibleScatterFraction(0)).toBe(1);
     expect(visibleScatterFraction(10)).toBeCloseTo(0.1, 4);
   });
+
+  it("switches to its short-path series without a step", () => {
+    // Below 0.1 both use a series (exact in f32, where e^x − 1 is not); in
+    // double precision the series and the closed form agree to 2e-8 there,
+    // a third of an f32 step.
+    for (const x of [0.02, 0.0999, -0.0999]) {
+      expect(exponentialPathCentroid(x * RAYLEIGH_SCALE_HEIGHT_METERS, RAYLEIGH_SCALE_HEIGHT_METERS))
+        .toBeCloseTo(1 / x - 1 / (Math.exp(x) - 1), 7);
+    }
+    for (const depth of [0.0005, 0.02, 0.0999]) {
+      expect(visibleScatterFraction(depth)).toBeCloseTo((1 - Math.exp(-depth)) / depth, 7);
+    }
+  });
 });
 
 describe("multiple scattering (Hillaire's transfer)", () => {
@@ -247,6 +262,70 @@ describe("the sky's two-point sun", () => {
       1,
     ).inScatter;
     expect(evaluateSkyRadiance(onePoint, direction)).toEqual(single);
+  });
+});
+
+describe("the surface haze above a 30 deg sun", () => {
+  it("is mirrored in WGSL, switched on a uniform, and leaves clouds and sky per point", () => {
+    expect(AERIAL_HAZE_PER_POINT_SINE).toBe(0.5);
+    expect(aerialHazeSunSamples(0.5)).toBe(0);
+    expect(aerialHazeSunSamples(0.4999)).toBe(1);
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("const AERIAL_HAZE_PER_POINT_SINE: f32 = 0.5;");
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      "select(1, 0, uniforms.aerialSunDirection.y >= AERIAL_HAZE_PER_POINT_SINE)",
+    );
+    const along = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPerspectiveAlong("),
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn applyAerialPerspective("),
+    );
+    expect(along).toContain("aerialHazeSunSamples()");
+    const plain = AERIAL_PERSPECTIVE_WGSL.slice(
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPerspective("),
+      AERIAL_PERSPECTIVE_WGSL.indexOf("fn aerialPerspectiveAlong("),
+    );
+    expect(plain).toContain("aerialIntegral(fragmentAltitude, distanceMeters, viewDotSun, 0.0, 0.0, false)");
+  });
+
+  // Worst: a hill 600 m above a camera on the ground, 2 km sunward, at 30 deg
+  // (2.4%); level and descending paths stay under 1.5%.
+  it("lights a surface's path with the camera's sun within 3% of each point's own", () => {
+    let worst = 0;
+    for (const elevation of [30, 45, 68]) {
+      const state = stateWithSunAt(elevation);
+      for (const camera of [2, 152, 3_048]) {
+        const binding = resolveAerialPerspectiveBinding(
+          state,
+          camera,
+          [1, 0.96, 0.88],
+          [0.58, 0.77, 0.96],
+          1,
+        );
+        const sun = binding.sunDirection;
+        for (const azimuth of [0, 60, 90, 135, 180]) {
+          const radians = (azimuth * Math.PI) / 180;
+          const heading = [Math.cos(radians), Math.sin(radians)] as const;
+          for (const distance of [500, 2_000, 8_000, 30_000, 100_000]) {
+            for (const target of [0, camera, camera + 600]) {
+              const length = Math.hypot(distance, target - camera);
+              const view: Rgb = [
+                (heading[0] * distance) / length,
+                (target - camera) / length,
+                (heading[1] * distance) / length,
+              ];
+              const viewDotSun = view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2];
+              const travel = aerialTravelFor(view, sun);
+              const run = (quadrature: 0 | 1) => evaluateAerialPerspective(
+                binding.coefficients, camera, target, length, viewDotSun,
+                binding.sunRadiance, binding.ambient, sun[1], travel, quadrature,
+              ).inScatter;
+              worst = Math.max(worst, Math.abs(luminance(run(0)) / luminance(run(1)) - 1));
+            }
+          }
+        }
+      }
+    }
+    expect(worst).toBeLessThan(0.03);
+    expect(worst).toBeGreaterThan(0);
   });
 });
 
