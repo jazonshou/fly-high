@@ -45,6 +45,7 @@ import {
   AERIAL_PERSPECTIVE_WGSL,
   AERIAL_REFERENCE_SKY_HORIZON,
   AERIAL_REFERENCE_SUN_COLOR,
+  aerialAtmosphereKey,
   aerialNightness,
   aerialPhysicalBalance,
   aerialPhysicalGate,
@@ -511,8 +512,9 @@ let physicalPaletteMemo: { key: string; palette: AtmospherePalette } | null = nu
  * and horizon targets are the TOP row's colours scaled by the sky's own
  * ratio to the reference key, so their saturation is the palette's.
  *
- * Memoised on the sun sine (to 1e-4) and the weather: the inputs move only
- * with the clock, and the sky evaluations are a few hundred microseconds.
+ * Memoised on the sun sine (to 1e-4), the atmosphere, the weather and the
+ * sun's colour: the inputs move only with the clock, and the sky
+ * evaluations are a few hundred microseconds.
  */
 function withPhysicalSkyColours(
   palette: AtmospherePalette,
@@ -521,11 +523,7 @@ function withPhysicalSkyColours(
   const sunY = state.sun.direction[1];
   const weight = aerialPhysicalBalance(sunY) * aerialPhysicalGate(sunY);
   if (weight <= 0) return palette;
-  const key = [
-    Math.round(sunY * 1e4),
-    state.weather.relativeHumidity,
-    state.weather.cloudCoverage,
-  ].join("|");
+  const key = `${Math.round(sunY * 1e4)}|${aerialAtmosphereKey(state)}`;
   if (physicalPaletteMemo?.key === key) return physicalPaletteMemo.palette;
   const reference = PALETTE_ANCHORS[PALETTE_ANCHORS.length - 1]!;
   const physical = physicalSkyColours(

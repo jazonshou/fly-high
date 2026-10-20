@@ -1321,9 +1321,12 @@ export function aerialPhysicalBalance(sunDirectionY: number): number {
  * The window below the horizon over which the physical source hands back
  * to the shipped twilight model: 1 at sunset, 0 by sine −0.05 (−2.9°).
  * Blue hour, dusk and night are art-directed (arch, warm lobe, Belt, moon
- * source) and approved; below this window their camera-level source,
- * transmittance and ambient are reproduced exactly, so those frames move
- * only by the per-point sun the integral now evaluates.
+ * source) and approved; below this window their ambient is reproduced
+ * exactly, and so is their camera-level source wherever the camera still
+ * sees the sun. A camera in the planet's shadow (every ground camera once
+ * the sun has set) gets no single scattering from it: the old LUT's grazing
+ * transmittance has no counterpart there. The twilight and night baselines
+ * moved 0.32/255 or less against main for it.
  */
 export const AERIAL_PHYSICAL_RELEASE_SINE = -0.05;
 
@@ -1335,6 +1338,28 @@ export function aerialPhysicalGate(sunDirectionY: number): number {
 
 const luminanceOf = (rgb: readonly [number, number, number]): number =>
   0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+/**
+ * Every input of the sunset palette's cached sky evaluations but the sun's
+ * direction: the atmosphere, the weather that scales its haze, and the
+ * sun's colour. A fresh EnvironmentState is a fresh object, so the key is
+ * by value.
+ */
+export function aerialAtmosphereKey(state: EnvironmentState): string {
+  const atmosphere = state.atmosphere;
+  return [
+    atmosphere.planetRadiusMeters,
+    atmosphere.atmosphereRadiusMeters,
+    ...atmosphere.rayleighScatteringPerMeter,
+    ...atmosphere.mieScatteringPerMeter,
+    ...atmosphere.mieExtinctionPerMeter,
+    ...atmosphere.absorptionExtinctionPerMeter,
+    atmosphere.miePhaseG,
+    state.weather.relativeHumidity,
+    state.weather.cloudCoverage,
+    ...state.sun.color,
+  ].join("|");
+}
 
 /**
  * The two calibrated top-of-atmosphere sources, for one atmosphere:
@@ -1413,7 +1438,8 @@ export function resolveAerialPerspectiveBinding(
   // Twilight and night — the shipped source, matched at the camera: the old
   // integral's product (palette or moon radiance × LUT transmittance at the
   // camera) divided by the new camera transmittance, so below the release
-  // window the camera-level in-scatter is exactly the approved one.
+  // window the camera-level in-scatter is exactly the approved one wherever
+  // the camera sees the source; in the planet's shadow both are zero.
   const sunScale = sunIlluminanceNormalized * AERIAL_SUN_RADIANCE_SCALE;
   const sunLut = evaluateTransmittance(state.atmosphere, camera, sunY, 12);
   let legacyRadiance: [number, number, number] = [
@@ -1554,12 +1580,7 @@ export function physicalSkyColours(
   sunIlluminanceNormalized: number,
 ): PhysicalSkyColours {
   const coefficients = aerialPerspectiveCoefficients(state);
-  const key = [
-    ...coefficients.mieScattering,
-    state.weather.cloudCoverage,
-    state.weather.relativeHumidity,
-    ...state.sun.color,
-  ].join("|");
+  const key = aerialAtmosphereKey(state);
   let reference = physicalReferenceCache.get(key);
   if (!reference) {
     const across = Math.sqrt(1 - AERIAL_REFERENCE_SUN_COS * AERIAL_REFERENCE_SUN_COS);
@@ -1584,7 +1605,14 @@ export function physicalSkyColours(
     skyHorizonColor,
     sunIlluminanceNormalized,
   ));
-  const sunTransmittance = sunTransmittanceAt(coefficients, 0, state.sun.direction[1]);
+  // Below the horizon the ground sits in the planet's shadow and its sun is
+  // black, but the palette's sun still lights the scene through its horizon
+  // gate: it keeps the last sunlight's chroma until the gate hands it back.
+  const sunTransmittance = sunTransmittanceAt(
+    coefficients,
+    0,
+    Math.max(state.sun.direction[1], 0),
+  );
   const ratio = (value: number, base: number): number => (base > 0 ? value / base : 0);
   return {
     sun: [0, 1, 2].map((channel) =>
@@ -1608,9 +1636,9 @@ export function towardPhysicalChroma(
   weight: number,
 ): [number, number, number] {
   const target = luminanceOf(physical as [number, number, number]);
-  const scale = target > 1e-9
-    ? luminanceOf(palette as [number, number, number]) / target
-    : 0;
+  // A black target has no chroma to follow.
+  if (target <= 1e-9) return [palette[0], palette[1], palette[2]];
+  const scale = luminanceOf(palette as [number, number, number]) / target;
   return [0, 1, 2].map((channel) =>
     palette[channel]! + (physical[channel]! * scale - palette[channel]!) * weight) as [
     number,

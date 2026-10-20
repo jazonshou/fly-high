@@ -284,12 +284,13 @@ describe("water shader extraction (2-8a)", () => {
     // of the mirror's, so a rough sea near the horizon reflects the sky
     // 6-20 deg up (by its RMS slope) instead of the horizon haze. Exact at
     // zero slope variance and from below; the sun lobe, the Fresnel and the
-    // planar capture are untouched.
+    // planar capture are untouched. Re-pinned once more, text only, when its
+    // three copies of the clamped RMS slope became one `roughRmsSlope`.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "e2de3a17216d651944ebd4e13f01f3c8c07fbff5da4791c37ef3b3fa1261c2de",
+      "272044dd7580c11bd68ee3b339953fcf78921cc4419ccdf04fb54c9ffdb1502f",
     );
   });
 

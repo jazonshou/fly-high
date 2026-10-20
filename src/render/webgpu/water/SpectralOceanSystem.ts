@@ -1215,6 +1215,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let nDotL = max(dot(normal, light), 0.0);
   let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   let reflectionDirection = reflect(-view, normal);
+  let roughRmsSlope = sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)}));
   // wave S: the mean Fresnel of a ROUGH interface — the grazing sea reflects
   // far less of the sky than Schlick on the resolved normal claims, and a
   // rougher gust lane reflects less still. See WATER_FAR_FIELD_WGSL (4).
@@ -1222,7 +1223,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     normal,
     view,
     cameraBelow,
-    sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+    roughRmsSlope,
   );
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
@@ -1260,7 +1261,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     waterFacetReflection(
       reflectionDirection,
       normal,
-      sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+      roughRmsSlope,
     ),
     reflectionDirection,
     cameraBelow,
@@ -1281,7 +1282,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     skyDirection,
     input.oceanHorizonPackedA,
     input.oceanHorizonPackedB,
-    2.0 * sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+    2.0 * roughRmsSlope,
   );
   // The occluded value is the sky this fragment would have seen, DARKENED by
   // the ground's albedo — a hillside is lit by the sky above it, so its

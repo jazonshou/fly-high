@@ -23,7 +23,9 @@ import {
   evaluateAerialPerspective,
   evaluateSkyRadiance,
   exponentialPathCentroid,
+  physicalSkyColours,
   resolveAerialPerspectiveBinding,
+  towardPhysicalChroma,
   visibleScatterFraction,
 } from "../src/render/webgpu/atmosphere/AerialPerspective";
 import { PEAK_SUN_INTENSITY } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
@@ -474,6 +476,53 @@ describe("the hand-back to the shipped twilight model", () => {
           expect(now / shipped, `camera ${camera} channel ${channel}`).toBeCloseTo(1, 6);
         }
         expect(binding.ambient[channel]).toBeCloseTo(skyHorizon[channel]! * 0.9 * daylight, 9);
+      }
+    }
+  });
+
+  it("keeps the palette sun's brightness, and the last sunlight's chroma, after sunset", () => {
+    const palette: Rgb = [1, 0.42, 0.18];
+    const sunAt = (sunY: number): Rgb => {
+      const state = createEnvironmentState({
+        sun: { direction: [Math.sqrt(1 - sunY * sunY), sunY, 0] },
+      });
+      const physical = physicalSkyColours(state, palette, [0.7, 0.24, 0.12], 0.2);
+      const weight = aerialPhysicalBalance(sunY) * aerialPhysicalGate(sunY);
+      return towardPhysicalChroma(palette, physical.sun, weight);
+    };
+    const sunset = sunAt(0);
+    for (const sunY of [-0.001, -0.01, -0.03, -0.049]) {
+      const sun = sunAt(sunY);
+      // The ground's own sun is shadowed here; the palette's must not go black.
+      expect(luminance(sun), `sine ${sunY}`).toBeCloseTo(luminance(palette), 9);
+      expect(sun[0]).toBeGreaterThan(sun[1]);
+      expect(sun[1]).toBeGreaterThan(sun[2]);
+    }
+    const justAfter = sunAt(-0.001);
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(Math.abs(justAfter[channel]! - sunset[channel]!)).toBeLessThan(0.01);
+    }
+    expect(towardPhysicalChroma(palette, [0, 0, 0], 0.9)).toEqual(palette);
+  });
+
+  it("caches the palette's reference sky per atmosphere, not only per weather", () => {
+    const across = Math.sqrt(1 - AERIAL_REFERENCE_SUN_COS * AERIAL_REFERENCE_SUN_COS);
+    const sun = { direction: [across, AERIAL_REFERENCE_SUN_COS, 0] as Rgb };
+    const clear = createEnvironmentState({ sun });
+    const denser = createEnvironmentState({
+      sun,
+      atmosphere: {
+        rayleighScatteringPerMeter: clear.atmosphere.rayleighScatteringPerMeter
+          .map((value) => value * 2) as Rgb,
+      },
+    });
+    for (const state of [clear, denser]) {
+      // At the reference key the sky is its own reference: a stale entry
+      // from the other atmosphere would move these off 1.
+      const physical = physicalSkyColours(state, [1, 1, 1], [0.6, 0.6, 0.7], 1);
+      for (let channel = 0; channel < 3; channel += 1) {
+        expect(physical.zenithRatio[channel]).toBeCloseTo(1, 9);
+        expect(physical.horizonRatio[channel]).toBeCloseTo(1, 9);
       }
     }
   });

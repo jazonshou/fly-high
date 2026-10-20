@@ -503,7 +503,10 @@ describe("the visible facets' sky", () => {
     expect(WATER_FAR_FIELD_WGSL).toContain("let mirror = sine * (1.0 - 1.09 * rms * (1.0 - sine));");
     expect(WATER_FAR_FIELD_WGSL).toContain("let plateau = 2.08 * rms / (1.0 + 2.74 * rms);");
     expect(WATER_FRAGMENT_WGSL).toContain(
-      "let skyDirection = select(\n    waterFacetReflection(\n      reflectionDirection,\n      normal,\n      sqrt(min(slopeVariance, 0.090)),\n    ),\n    reflectionDirection,\n    cameraBelow,\n  );",
+      "let roughRmsSlope = sqrt(min(slopeVariance, 0.090));",
+    );
+    expect(WATER_FRAGMENT_WGSL).toContain(
+      "let skyDirection = select(\n    waterFacetReflection(\n      reflectionDirection,\n      normal,\n      roughRmsSlope,\n    ),\n    reflectionDirection,\n    cameraBelow,\n  );",
     );
     expect(WATER_FRAGMENT_WGSL).toContain("let analyticSky = reflectedSky(skyDirection);");
     expect(WATER_FRAGMENT_WGSL).toContain("environmentCubeSampler,\n    skyDirection,\n    environmentRoughnessToMip(roughness),");
