@@ -2049,3 +2049,33 @@ By shot, committed baselines → this capture:
 **Why all thirty-nine.** The window changes every shot with a sun below 33°, and the high-sun shots carry the runner's own drift since `7eca23c`. Promoting from one capture keeps the set consistent, as on 2026-10-13.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
+
+### The sea's visible-facet sky (`4218a35`), promoted 2026-10-20
+
+The ocean reflects the mean ray of the facets a viewer sees (`waterFacetReflection`, WATER_FAR_FIELD_WGSL (5)) instead of the mirror ray, so a rough far sea reflects the sky some degrees up rather than the horizon haze. It adds a few square roots and divisions to the ocean fragment, and no texture reads, passes or uniforms.
+
+**The A/B gate** at `4218a35` (perf-ab run 39009665124, against main, SwiftShader GPU time):
+
+| shot | GPU | runner CPU | the same shot at `e1407b8` |
+| --- | --- | --- | --- |
+| `approach-500ft` | +1.6% | Intel Xeon 8573C | +1.4%, same CPU |
+| `cruise-horizon` | +4.7% | AMD EPYC 7763 | +4.5%, same CPU |
+| `forest-500ft-sunbehind` | +4.7% (+4.2% to +5.0%), inconclusive | AMD EPYC 9V45 | +2.4% on an EPYC 9V74 |
+| `ground-2m-lowsun` | +1.5% | AMD EPYC 7763 | +1.9%, same CPU |
+| `water-25ft` | +1.9% | AMD EPYC 7763 | +3.7% on an EPYC 9V45 |
+
+On the same CPU model each shot moved by 0.4% or less; the two larger moves swap CPU models, and `water-25ft`, which shows the most sea, fell. So the sea's cost is within the runners' spread, and the 9V45 weighs the per-point sun more than the other models. `forest-500ft-sunbehind` is the shot closest to the 5% gate. The macOS runner's advisory A/B read +0.8% to +2.0%, all SAME.
+
+**Draw calls unchanged**: the capture at `4218a35` (gpu-tests run 39009665122) matches `e1407b8`'s on every shot.
+
+**All thirty-nine baselines promoted 2026-10-20** from that capture (artifact `perf-capture-39009665122-1`, zip sha256 `1106474601fd7fe8…385f`). Jason approved the sea from its before/after frames. Committed baselines → this capture:
+
+| shots | mean abs diff /255 |
+| --- | --- |
+| `water-3m` (the white flecks on the far lake gone) | 3.18 |
+| the other shots with sea in view: `motion-banked-turn`, `water-25ft`, `forest-line-highsun`, `forest-500ft-sunbehind`, `hills-dusk-glint`, `water-400ft-glitter` | 1.03-1.87, on sea pixels only |
+| everything else | 0.56 or less |
+
+Before promotion the capture failed the visual gates on `water-3m`, `water-25ft`, `forest-line-highsun` and `forest-500ft-sunbehind` (whole-frame SSIM 0.916-0.984 against 0.985), all from sea pixels.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
