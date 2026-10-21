@@ -258,11 +258,39 @@ describe("water shader extraction (2-8a)", () => {
     // through the tone map. Those shots rebaseline with this wave, and shots
     // with no glitter path in frame do not move at all -- `night-moonlit` is
     // bit-identical across the change at an identical shot list.
+    //
+    // Re-pinned by the sunset rework. FRAGMENT ONLY, and nothing in the water
+    // shader itself changed: the shared AERIAL_PERSPECTIVE_WGSL block it
+    // includes now attenuates the sun at each species' own scattering point
+    // (a Chapman column with the Earth's curvature tilting the sun along the
+    // path) instead of at the camera, and the sky shares that integral. Water
+    // pixels move by the haze laid over them and nothing else; at noon that
+    // is within a couple of percent, at a low sun the distant sea takes the
+    // warm, sun-reddened haze. Deliberate, named, reviewed. Re-pinned again
+    // when the sky integral kept its two-point sun only below a 30 deg sun:
+    // skyRadiance lives in the same shared block, and above 30 deg the sky
+    // moves by under 1.2%. Re-pinned a third time when every path's sun
+    // blended to the camera's above a 27 deg sun (aerialCameraSunWeight; the
+    // ocean's own haze moves by under 2.2% of its in-scatter) and the block
+    // was rewritten for SwiftShader, which runs both sides of every branch:
+    // the sky's two-point sun is a literal, the Chapman column selects its
+    // side, one exponential gives both species' density, and series terms
+    // and squarings replace the curvature trig and pow. Below the window the
+    // water moves by float rounding only.
+    //
+    // Re-pinned by the visible-facet sky (WATER_FAR_FIELD_WGSL (5)), and this
+    // one IS the water shader: the sky probe, the analytic fallback and the
+    // terrain occlusion read the visible facets' mean reflected ray instead
+    // of the mirror's, so a rough sea near the horizon reflects the sky
+    // 6-20 deg up (by its RMS slope) instead of the horizon haze. Exact at
+    // zero slope variance and from below; the sun lobe, the Fresnel and the
+    // planar capture are untouched. Re-pinned once more, text only, when its
+    // three copies of the clamped RMS slope became one `roughRmsSlope`.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "f29919337f93a01f199e96fd49e8d64f64f5826265d58c06ab606e13bbd0b5a1",
+      "272044dd7580c11bd68ee3b339953fcf78921cc4419ccdf04fb54c9ffdb1502f",
     );
   });
 

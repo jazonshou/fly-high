@@ -1215,6 +1215,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let nDotL = max(dot(normal, light), 0.0);
   let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   let reflectionDirection = reflect(-view, normal);
+  let roughRmsSlope = sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)}));
   // wave S: the mean Fresnel of a ROUGH interface — the grazing sea reflects
   // far less of the sky than Schlick on the resolved normal claims, and a
   // rougher gust lane reflects less still. See WATER_FAR_FIELD_WGSL (4).
@@ -1222,7 +1223,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     normal,
     view,
     cameraBelow,
-    sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+    roughRmsSlope,
   );
   let cloudShadow = sampleCloudShadowReceiver(input.worldPosition);
   let sunShadow = sampleSunShadowReceiver(
@@ -1252,11 +1253,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // the analytic zenith/horizon mix remains only as the not-yet-valid
   // fallback, and no fake sun disc is painted into either — the sun's
   // reflection is solely the physical lobe below.
-  let analyticSky = reflectedSky(reflectionDirection);
+  // The facets a grazing viewer sees are tilted toward it, so a rough sea
+  // reflects the sky some degrees above the horizon, not the horizon's haze:
+  // the mean ray of the visible facets, not the mirror. See
+  // WATER_FAR_FIELD_WGSL (5). From below, the interface stays a mirror.
+  let skyDirection = select(
+    waterFacetReflection(
+      reflectionDirection,
+      normal,
+      roughRmsSlope,
+    ),
+    reflectionDirection,
+    cameraBelow,
+  );
+  let analyticSky = reflectedSky(skyDirection);
   let environmentSky = textureSampleLevel(
     environmentCube,
     environmentCubeSampler,
-    reflectionDirection,
+    skyDirection,
     environmentRoughnessToMip(roughness),
   ).rgb;
   let unoccludedSky = mix(analyticSky, environmentSky, uniforms.environmentValid);
@@ -1265,10 +1279,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // and the one inland water has had since 6-11. A sea reflecting bright sky
   // where a dark mountain stands is what makes a bay read as a blue decal.
   let terrainVisibility = oceanTerrainVisibility(
-    reflectionDirection,
+    skyDirection,
     input.oceanHorizonPackedA,
     input.oceanHorizonPackedB,
-    2.0 * sqrt(min(slopeVariance, ${WATER_ROUGH_FRESNEL_MAX_VARIANCE.toFixed(3)})),
+    2.0 * roughRmsSlope,
   );
   // The occluded value is the sky this fragment would have seen, DARKENED by
   // the ground's albedo — a hillside is lit by the sky above it, so its
@@ -1287,7 +1301,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     unoccludedSky * uniforms.oceanGroundBounceAlbedo,
     input.worldPosition.y,
     cameraDistance,
-    reflectionDirection,
+    skyDirection,
   );
   let skyReflection = mix(occludedGround, unoccludedSky, terrainVisibility);
   let reflected = samplePlanarSceneReflection(
