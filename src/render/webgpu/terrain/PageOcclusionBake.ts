@@ -331,7 +331,9 @@ export class PageOcclusionBake {
    *
    * A page is only baked once its HEIGHT slot is resident: the march reads the
    * height atlas, and baking against an unwritten slot would produce a page
-   * whose shadows are of nothing.
+   * whose shadows are of nothing. A slot is either being generated (it holds
+   * a token) or resident, re-baked in place after its height page was
+   * refreshed (`TERRAIN_LANDFORM_REFRESH`).
    */
   async bake(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]> {
     if (this.disposed || this.running) return [];
@@ -341,7 +343,7 @@ export class PageOcclusionBake {
 
     const bakeable = slots.filter((slot) => {
       const heightSlot = this.heightAtlas.residency.slotIndexOf(slot.key);
-      return heightSlot >= 0 && slot.token !== null;
+      return heightSlot >= 0 && (slot.token !== null || slot.lifecycle.state === "resident");
     });
     if (bakeable.length === 0) return [];
     this.ensureCapacity(bakeable.length, pyramidTexture);

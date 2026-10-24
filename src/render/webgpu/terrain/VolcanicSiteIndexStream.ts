@@ -31,10 +31,12 @@ import {
  * cover it. A write lands before the frame's dispatches execute, so the
  * consumers' coverage checks (`covers`) are made against what they will read.
  *
- * COVERAGE IS A GATE. A bake outside the index would draw no volcanoes and be
- * cached that way, so consumers hold any dispatch whose footprint `covers`
- * rejects until the index arrives (after a teleport; `prime` builds the
- * spawn's index synchronously behind the load screen).
+ * COVERAGE IS A GATE WHILE BUILDING. A bake outside the index draws no
+ * volcanoes there and is cached that way, so the page generator holds back a
+ * page `covers` rejects while a build is under way (after a teleport; `prime`
+ * builds the spawn's index synchronously behind the load screen). Pages wider
+ * than any index (the 262 km roots) bake once it settles, recording
+ * `coverage`, and the clipmap refreshes them in place as the observer moves.
  *
  * BUDGETS. Steady state costs one distance check a frame and allocates
  * nothing. A rebuild reuses the builder's arrays; the buffer only grows (by
@@ -76,11 +78,14 @@ export class VolcanicSiteIndexStream<B extends VolcanicIndexBuffer = StorageBuff
   private capacityBytes: number;
   private version = 0;
   private uploads = 0;
-  // The uploaded index's bin grid, world metres; empty (min > max) until the first upload.
-  private gridMinX = Number.POSITIVE_INFINITY;
-  private gridMinZ = Number.POSITIVE_INFINITY;
-  private gridMaxX = Number.NEGATIVE_INFINITY;
-  private gridMaxZ = Number.NEGATIVE_INFINITY;
+  // The uploaded index's bin grid, world metres [minX, minZ, maxX, maxZ]:
+  // empty (min > max) until the first upload, the whole plane without volcanism.
+  private readonly grid = Float64Array.of(
+    Number.POSITIVE_INFINITY,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  );
   private siteCount = 0;
   private disposed = false;
 
@@ -90,6 +95,7 @@ export class VolcanicSiteIndexStream<B extends VolcanicIndexBuffer = StorageBuff
     options: VolcanicSiteIndexStreamOptions<B> = {},
   ) {
     this.enabled = volcanicActivityFrame(world).mode !== 0;
+    if (!this.enabled) this.grid.set([-Infinity, -Infinity, Infinity, Infinity]);
     this.builder = new VolcanicSiteIndexBuilder(world);
     this.createBuffer = options.createBuffer
       ?? ((bytes) => new StorageBuffer(engine as WebGPUEngine, bytes, undefined, "volcanic-site-index") as unknown as B);
@@ -125,8 +131,18 @@ export class VolcanicSiteIndexStream<B extends VolcanicIndexBuffer = StorageBuff
     return this.siteCount;
   }
 
+  /** True while an index is being packed (a teleport, a drift rebuild). */
   get building(): boolean {
     return this.builder.building;
+  }
+
+  /**
+   * The uploaded index's bin grid, world metres [minX, minZ, maxX, maxZ],
+   * written in place on upload: empty before the first, the whole plane
+   * without volcanism.
+   */
+  get coverage(): Readonly<Float64Array> {
+    return this.grid;
   }
 
   /**
@@ -134,8 +150,8 @@ export class VolcanicSiteIndexStream<B extends VolcanicIndexBuffer = StorageBuff
    * Always true without volcanism: the empty index is the right answer there.
    */
   covers(minX: number, minZ: number, maxX: number, maxZ: number): boolean {
-    if (!this.enabled) return true;
-    return minX >= this.gridMinX && minZ >= this.gridMinZ && maxX <= this.gridMaxX && maxZ <= this.gridMaxZ;
+    const grid = this.grid;
+    return minX >= grid[0]! && minZ >= grid[1]! && maxX <= grid[2]! && maxZ <= grid[3]!;
   }
 
   /** Build and upload the index round (x, z) now (load time: spawn, teleport behind a screen). */
@@ -187,9 +203,9 @@ export class VolcanicSiteIndexStream<B extends VolcanicIndexBuffer = StorageBuff
     // The bin grid the index lists, in world metres.
     const range = volcanicIndexBinRange(index.centerX, index.centerZ);
     const size = VOLCANISM.binMeters;
-    this.gridMinX = range.bi0 * size;
-    this.gridMinZ = range.bj0 * size;
-    this.gridMaxX = (range.bi0 + range.binsX) * size;
-    this.gridMaxZ = (range.bj0 + range.binsZ) * size;
+    this.grid[0] = range.bi0 * size;
+    this.grid[1] = range.bj0 * size;
+    this.grid[2] = (range.bi0 + range.binsX) * size;
+    this.grid[3] = (range.bj0 + range.binsZ) * size;
   }
 }

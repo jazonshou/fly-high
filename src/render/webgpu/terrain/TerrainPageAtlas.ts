@@ -169,6 +169,14 @@ export interface TerrainAtlasSlot {
    * so it cannot outlive the slot it describes.
    */
   bakedSeasonDay: number | null;
+  /**
+   * The landform coverage (`TerrainLandformDataSource.coverage`) a height page
+   * was last baked against, when that did not cover the whole page; null when
+   * it did, or when the page reads no landform data. A page wider than any
+   * site index (the 262 km roots) always records one, and the clipmap
+   * refreshes it in place once its part near the observer leaves it.
+   */
+  landformCoverage: Float64Array | null;
 }
 
 export interface TerrainAtlasResidencyOptions {
@@ -302,6 +310,7 @@ export class TerrainAtlasResidency {
       hydrologyReady: !this.options.requireHydrology,
       hydrologySubmitted: false,
       bakedSeasonDay: null,
+      landformCoverage: null,
     };
     this.slots.set(keyString, slot);
     return { slot, token };
@@ -1427,21 +1436,44 @@ export class TerrainPageGenerator {
       return;
     }
     if (slots.length === 0) return;
-    // A page the landform data does not cover yet is DEFERRED, not baked
-    // without the sites that reach it: it stays generating and unsubmitted,
-    // so the clipmap offers it again next frame (and reclaims it if the
-    // aircraft turns away first). The placeholder covers everything.
-    slots = this.landformCoveredSlots(slots);
+    // A page the landform data does not cover yet is DEFERRED while the data
+    // is being built, not baked without the sites that reach it: it stays
+    // generating and unsubmitted, so the clipmap offers it again next frame
+    // (and reclaims it if the aircraft turns away first). The placeholder
+    // covers everything.
+    slots = this.landformReadySlots(slots);
     if (slots.length === 0) return;
+    await this.dispatchPages(slots);
+  }
+
+  /**
+   * Re-bake RESIDENT pages in place, with the landform data as it is now: the
+   * pages that recorded a partial `landformCoverage`, once the clipmap finds
+   * the data covers what matters of them. The slot stays resident throughout
+   * (its texels are overwritten by one dispatch, so nothing reads a half-made
+   * page) and takes the new stats when the readback lands. Level-0 pages are
+   * never refreshed: they publish collision, and no index is narrower than
+   * one. Returns the slots dispatched.
+   */
+  async refresh(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]> {
+    if (this.disposed || !this.atlas.hasTextures || this.world?.worldEvolution === "eroded") return [];
+    const resident = slots.filter((slot) =>
+      slot.lifecycle.state === "resident" && slot.address.level > 0 && !slot.generationSubmitted);
+    if (resident.length === 0) return [];
+    return (await this.dispatchPages(resident)) ? resident : [];
+  }
+
+  /** One dispatch over `slots`, completed (or, for a refresh, re-statted) from the readback. */
+  private async dispatchPages(slots: readonly TerrainAtlasSlot[]): Promise<boolean> {
     // Never overwrite a bounds buffer whose read has not landed: that is what
     // silently completes a page at zero deviation. See BOUNDS_BUFFER_RING.
-    if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return;
+    if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return false;
     this.ensureCapacity(slots.length);
     const shader = this.shader;
     const jobBuffer = this.jobBuffer;
     const pageBuffer = this.pageBuffer;
     const boundsBuffer = this.boundsRing[this.boundsRingIndex];
-    if (!shader || !jobBuffer || !pageBuffer || !boundsBuffer) return;
+    if (!shader || !jobBuffer || !pageBuffer || !boundsBuffer) return false;
     this.boundsRingIndex = (this.boundsRingIndex + 1) % BOUNDS_BUFFER_RING;
 
     const jobs = new Float32Array(slots.length * 12);
@@ -1489,7 +1521,10 @@ export class TerrainPageGenerator {
     shader.setStorageBuffer("pageBounds", boundsBuffer);
     this.landformBinding.bind(this.engine as WebGPUEngine, shader);
     this.inFlight = slots;
-    for (const slot of slots) slot.generationSubmitted = true;
+    for (const slot of slots) {
+      slot.generationSubmitted = true;
+      slot.landformCoverage = this.partialLandformCoverage(slot);
+    }
     try {
       await shader.dispatchWhenReady(
         TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE,
@@ -1508,6 +1543,7 @@ export class TerrainPageGenerator {
     const readback = this.collectBounds(boundsBuffer, slots);
     this.pendingReadbacks.add(readback);
     void readback.finally(() => this.pendingReadbacks.delete(readback));
+    return true;
   }
 
   /**
@@ -1739,8 +1775,19 @@ export class TerrainPageGenerator {
       );
       const publications: Promise<void>[] = [];
       slots.forEach((slot, index) => {
-        if (!slot.token) return;
         const base = index * TERRAIN_PAGE_BOUNDS_SLOTS;
+        if (!slot.token) {
+          // A refresh: the page never left residency; only its stats move.
+          if (isRefreshing(slot)) {
+            slot.stats = {
+              minHeightMeters: decodeOrderableFloat(read[base]!),
+              maxHeightMeters: decodeOrderableFloat(read[base + 1]!),
+              maxDeviationFromParent: decodeOrderableFloat(read[base + 2]!),
+            };
+            slot.generationSubmitted = false;
+          }
+          return;
+        }
         const stats = {
           minHeightMeters: decodeOrderableFloat(read[base]!),
           maxHeightMeters: decodeOrderableFloat(read[base + 1]!),
@@ -1751,6 +1798,8 @@ export class TerrainPageGenerator {
       await Promise.all(publications);
     } catch {
       for (const slot of slots) {
+        // A refresh keeps its old stats, and may be offered again.
+        if (isRefreshing(slot)) slot.generationSubmitted = false;
         if (!slot.token) continue;
         if (this.collisionPagePublisher && slot.address.level === 0) {
           this.atlas.residency.fail(slot.key, slot.token, "collision readback failed");
@@ -1913,15 +1962,25 @@ export class TerrainPageGenerator {
   }
 
   /**
-   * The slots whose pages the landform data covers: `slots` itself, with no
-   * allocation, unless one is not covered yet. A page without a landform input
-   * never reads the data (gain 0 returns before it), and the placeholder
-   * covers everything, so neither defers anything.
+   * The slots not waiting on landform data still being built: `slots`
+   * itself, with no allocation, unless one is. A page without a landform
+   * input never reads the data (gain 0 returns before it), and the
+   * placeholder covers everything, so neither defers anything; nor does any
+   * page once the data is built, covered or not (`TerrainLandformDataSource`).
    */
-  private landformCoveredSlots(slots: readonly TerrainAtlasSlot[]): readonly TerrainAtlasSlot[] {
+  private landformReadySlots(slots: readonly TerrainAtlasSlot[]): readonly TerrainAtlasSlot[] {
     if (!this.landform || !this.landformBinding.hasSource) return slots;
-    if (slots.every((slot) => this.landformCovers(slot))) return slots;
-    return slots.filter((slot) => this.landformCovers(slot));
+    if (!slots.some((slot) => this.landformHoldsBack(slot))) return slots;
+    return slots.filter((slot) => !this.landformHoldsBack(slot));
+  }
+
+  /**
+   * The coverage to record on a page about to be baked: null when the data
+   * covers all of it (or it reads none), else a copy of the data's coverage.
+   */
+  private partialLandformCoverage(slot: TerrainAtlasSlot): Float64Array | null {
+    if (!this.landform || !this.landformBinding.hasSource || this.landformCovers(slot)) return null;
+    return Float64Array.from(this.landformBinding.coverage);
   }
 
   /**
@@ -1931,7 +1990,7 @@ export class TerrainPageGenerator {
    */
   private landformCovers(slot: TerrainAtlasSlot): boolean {
     const bounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
-    const margin = (WORLD_PAGE_GUTTER + 1) * terrainTexelSizeMeters(slot.address.level);
+    const margin = terrainPageLandformMargin(slot.address.level);
     return this.landformBinding.covers(
       bounds.minX - margin,
       bounds.minZ - margin,
@@ -1939,4 +1998,30 @@ export class TerrainPageGenerator {
       bounds.maxZ + margin,
     );
   }
+
+  /** Whether a page waits for landform data still being built (`holdsBack`). */
+  private landformHoldsBack(slot: TerrainAtlasSlot): boolean {
+    const bounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
+    const margin = terrainPageLandformMargin(slot.address.level);
+    return this.landformBinding.holdsBack(
+      bounds.minX - margin,
+      bounds.minZ - margin,
+      bounds.maxX + margin,
+      bounds.maxZ + margin,
+    );
+  }
+}
+
+/**
+ * How far past its bounds a page's bake samples: its gutter texels, the
+ * bounds apron one texel further out, and the supersample taps within half a
+ * texel of those.
+ */
+export function terrainPageLandformMargin(level: number): number {
+  return (WORLD_PAGE_GUTTER + 1) * terrainTexelSizeMeters(level);
+}
+
+/** A resident page re-dispatched by `refresh`, whose readback has not landed. */
+function isRefreshing(slot: TerrainAtlasSlot): boolean {
+  return slot.token === null && slot.generationSubmitted && slot.lifecycle.state === "resident";
 }

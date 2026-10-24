@@ -449,10 +449,15 @@ describe("TerrainLandformDataBinding", () => {
     } as unknown as ComputeShader;
     return { shader, calls };
   }
-  function fakeSource(
-    covers: TerrainLandformDataSource["covers"] = () => true,
-  ): { bufferVersion: number; buffer: StorageBuffer; covers: TerrainLandformDataSource["covers"] } {
-    return { buffer: {} as StorageBuffer, bufferVersion: 0, covers };
+  interface FakeSource {
+    bufferVersion: number;
+    buffer: StorageBuffer;
+    covers: TerrainLandformDataSource["covers"];
+    building: boolean;
+    coverage: Float64Array;
+  }
+  function fakeSource(covers: TerrainLandformDataSource["covers"] = () => true): FakeSource {
+    return { buffer: {} as StorageBuffer, bufferVersion: 0, covers, building: false, coverage: new Float64Array(4) };
   }
 
   it("binds a source once, and again only when its buffer, version or shader changes", () => {
@@ -496,5 +501,21 @@ describe("TerrainLandformDataBinding", () => {
     binding.setSource(null);
     expect(binding.hasSource).toBe(false);
     expect(binding.covers(-1, 2, 3, 4)).toBe(true);
+  });
+
+  it("holds a bake back only while the source builds something that may cover it", () => {
+    const source = fakeSource((minX) => minX > 0);
+    source.coverage = Float64Array.of(0, -5, 10, 5);
+    const binding = new TerrainLandformDataBinding(source);
+    // Settled: nothing better is coming, so even an uncovered page bakes.
+    expect(binding.holdsBack(-1, 2, 3, 4)).toBe(false);
+    source.building = true;
+    expect(binding.holdsBack(-1, 2, 3, 4)).toBe(true);
+    expect(binding.holdsBack(1, 2, 3, 4)).toBe(false);
+    expect([...binding.coverage]).toEqual([0, -5, 10, 5]);
+    // The placeholder never holds back, and covers the plane.
+    binding.setSource(null);
+    expect(binding.holdsBack(-1, 2, 3, 4)).toBe(false);
+    expect([...binding.coverage]).toEqual([-Infinity, -Infinity, Infinity, Infinity]);
   });
 });

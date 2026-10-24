@@ -152,15 +152,33 @@ export function createTerrainLandformPlaceholderBuffer(engine: WebGPUEngine): St
  * `bufferVersion` changes whenever `buffer` is replaced, so a consumer
  * re-binds by comparing a number before each dispatch instead of being told.
  * `covers` says whether the index holds every site that can reach a world
- * rectangle; a consumer that bakes a page with known bounds defers it while
- * this is false, so the page is baked once, with its volcanoes, rather than
- * first without them.
+ * rectangle, and `coverage` is that rectangle.
+ *
+ * NOT EVERY PAGE CAN BE COVERED. The index is 144 km across and the terrain's
+ * roots are 262 km pages (level 9), with level 7-9 nodes drawn inside the
+ * 45 km far plane. So a page baker holds a page back only while `building`
+ * (a build that will cover more is under way: a teleport, a drift rebuild);
+ * otherwise it bakes, and a page baked without full coverage records the
+ * coverage it had, for the clipmap to refresh in place once the part of it
+ * near the observer leaves that coverage (`TerrainClipmapSystem`).
  */
 export interface TerrainLandformDataSource {
   readonly buffer: StorageBuffer;
   readonly bufferVersion: number;
   covers(minX: number, minZ: number, maxX: number, maxZ: number): boolean;
+  /** True while a build that will cover more than `coverage` is under way. */
+  readonly building: boolean;
+  /** The covered world rectangle, [minX, minZ, maxX, maxZ], written in place. */
+  readonly coverage: Readonly<Float64Array>;
 }
+
+/** The whole plane: the placeholder's coverage. */
+export const TERRAIN_LANDFORM_FULL_COVERAGE: Readonly<Float64Array> = Float64Array.of(
+  Number.NEGATIVE_INFINITY,
+  Number.NEGATIVE_INFINITY,
+  Number.POSITIVE_INFINITY,
+  Number.POSITIVE_INFINITY,
+);
 
 /** The placeholder as a source, which owns its buffer and its inventory bytes. */
 export interface TerrainLandformPlaceholderSource extends TerrainLandformDataSource {
@@ -178,6 +196,8 @@ export function createTerrainLandformPlaceholderSource(
     buffer,
     bufferVersion: 0,
     covers: () => true,
+    building: false,
+    coverage: TERRAIN_LANDFORM_FULL_COVERAGE,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -221,6 +241,20 @@ export class TerrainLandformDataBinding {
   /** Whether the current source covers a world rectangle (the placeholder always does). */
   covers(minX: number, minZ: number, maxX: number, maxZ: number): boolean {
     return this.source ? this.source.covers(minX, minZ, maxX, maxZ) : true;
+  }
+
+  /**
+   * Whether a bake of this rectangle should wait: only while the source is
+   * building something that may cover it. See `TerrainLandformDataSource`.
+   */
+  holdsBack(minX: number, minZ: number, maxX: number, maxZ: number): boolean {
+    const source = this.source;
+    return source !== null && source.building && !source.covers(minX, minZ, maxX, maxZ);
+  }
+
+  /** The current source's coverage (the whole plane for the placeholder). */
+  get coverage(): Readonly<Float64Array> {
+    return this.source?.coverage ?? TERRAIN_LANDFORM_FULL_COVERAGE;
   }
 
   /** Bind the current source's buffer to shader, if it is not already bound. Before every dispatch. */
