@@ -9,7 +9,8 @@ export type InputAction =
   | "flapsDown"
   | "gearToggle"
   | "trimUp"
-  | "trimDown";
+  | "trimDown"
+  | "nearestAirport";
 
 export interface InputOptions {
   sensitivity: number;
@@ -102,6 +103,7 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
   KeyF: "flapsDown",
   KeyV: "flapsUp",
   KeyG: "gearToggle",
+  KeyN: "nearestAirport",
   ArrowUp: "trimUp",
   ArrowDown: "trimDown",
 };
