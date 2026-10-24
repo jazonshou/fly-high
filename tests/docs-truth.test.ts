@@ -206,6 +206,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Requested cloud primary steps", (p: (typeof PROFILES)[number]) => p.cloudPrimarySteps],
     ["Cloud light-step", (p: (typeof PROFILES)[number]) => p.cloudLightSteps],
     ["Active-animal budget", (p: (typeof PROFILES)[number]) => p.activeAnimalBudget],
+    ["Volcanic steam wisp cap", (p: (typeof PROFILES)[number]) => p.volcanicSteamMaxWisps],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],

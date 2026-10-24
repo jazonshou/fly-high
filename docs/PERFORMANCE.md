@@ -125,6 +125,7 @@ audit is why it now carries all four tiers):
 | Impostor floor share (fraction of the near cap drawn in SOME representation beyond the near radius; the gap under the geometry share is 2D impostors) | 0.20 | 0.30 | 0.35 | 0.40 |
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
+| Volcanic steam wisp cap (`volcanicSteamMaxWisps`; 0 = no mesh) | 0 | 128 | 192 | 256 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`
@@ -351,6 +352,14 @@ The planar scene-reflection capture is retired (2-10): with the sky environment 
 - Atmosphere, clouds, ocean, and hydrology share sun direction/color, sky and ambient response, fog, coverage, humidity, and surface advection from one time/weather snapshot. The FFT spectrum deliberately retains its construction-time prevailing swell until a topology rebuild instead of resetting long ocean waves with every gust.
 
 Cloud cost is primarily fill rate multiplied by ray steps and density-light sampling. Tier 2 is capped at 0.60 resolution, 96 primary steps, and 6 light steps because every output pixel is still integrated each frame; checkerboard reconstruction is not yet active. At 1080p this reduces the upper-bound nested density/light sample opportunity by roughly half versus the former 0.67/112/8 profile before early exits. Measure actual GPU time at multiple altitudes and view angles; a clear horizon and a camera inside dense cloud are not equivalent workloads.
+
+### Volcanic steam
+
+`VolcanicSteamSystem` draws steam over volcanic vents as camera-facing sprites in ONE instanced draw, and only while a vent is within 15 km of the camera; otherwise the mesh is disabled, so it is never submitted. The temperate core has no vents, so every core baseline gains no draw. Tier 0's `volcanicSteamMaxWisps` is 0, which builds no mesh or material at all. The first frame after load draws once with a collapsed, transparent instance so the WebGPU render pipeline exists before any vent comes into range.
+
+- The vent query (`volcanicVentsInBounds`, reusing one `out` array) runs only when the camera crosses a 2 km cell. It keeps the 48 vents nearest the cell centre within 15 km plus half the cell's diagonal. A new vent's ground height costs one terrain sample, at most 8 a frame. The old wisps stay live until the new set is written in one 12 KiB upload.
+- The per-frame update is a cell check, a range check over at most 48 vents and a clock write. It does no instance writes and allocates nothing. Rise, downwind drift, growth and fade are evaluated in the vertex shader.
+- Each wisp is lit per vertex with the cloud model, so the fragment work is two value-noise octaves and one scene-depth load. Near-camera wisps fade out and collapse, which bounds overdraw when the camera flies through a plume.
 
 ## Detail and wildlife
 

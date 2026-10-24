@@ -709,6 +709,29 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "raymarch/temporal/shadow definition fails the boundary test.",
   },
   {
+    // Volcanic phase 5: steam over vents. Owned by clouds because it is the
+    // same participating medium, lit by `cloudLighting`'s terms with the
+    // cloud config's constants rather than a second scattering model.
+    artifact: "volcanic-steam",
+    owner: "clouds",
+    definitionSites: ["src/render/webgpu/volcanic/VolcanicSteamSystem.ts"],
+    consumers: ["clouds"],
+    ownedSymbols: [
+      "VolcanicSteamSystem",
+      "VOLCANIC_STEAM_VERTEX_WGSL",
+      "VOLCANIC_STEAM_FRAGMENT_WGSL",
+      "steamWispCount",
+      "writeSteamWisps",
+    ],
+    notes:
+      "ONE instanced draw while a vent is within 15 km, and a DISABLED mesh "
+      + "otherwise, so the temperate core adds no draw. The tier cap "
+      + "`volcanicSteamMaxWisps` is 0 on tier 0, which builds no mesh at all. "
+      + "Vents are re-queried only on a 2 km camera cell change; the wisps "
+      + "animate in the vertex shader from the simulation clock, so the "
+      + "per-frame update writes no instance data and allocates nothing.",
+  },
+  {
     // 2-8a: the §3.6 drift closed. One definition of fresnel/GGX/reflectedSky
     // for every water surface; the genuinely divergent constants are named
     // WaterReflectedSkyParameters at the two call sites.

@@ -40,6 +40,7 @@ creates the file — the ownership decision is already binding.
 | Rich terrain-sample authority adapter — evolved height/normal/slope for detail and wildlife | terrain-geometry | `src/render/webgpu/terrain/TerrainConsumerAuthority.ts` | live (`5-2` consumer closure) |
 | Aerial-perspective WGSL include | lighting | `src/render/webgpu/atmosphere/AerialPerspective.ts` | live (`1C-4`) |
 | Volumetric cloud shader modules — raymarch, temporal resolve, shadow | clouds | `src/render/webgpu/nature/CloudShaders.ts` | live (`2-0`) |
+| Volcanic steam — vent wisps, one instanced draw lit by the cloud model | clouds | `src/render/webgpu/volcanic/VolcanicSteamSystem.ts` | live (volcanic phase 5) |
 | Atmosphere GPU resources — transmittance LUT texture, sky-ambient LUT, blue noise, scene depth | lighting | `src/render/webgpu/atmosphere/AtmosphereGpuResources.ts` | live (`2-0a`) |
 | Sky environment probe / IBL | lighting | `src/render/webgpu/atmosphere/SkyEnvironmentProbe.ts` | live (`1C-6`) |
 | Celestial ephemeris — solar right ascension, moon position/phase/illuminance, the clock's Julian date | lighting | `src/render/webgpu/atmosphere/Ephemeris.ts` | live (`7-1`) |

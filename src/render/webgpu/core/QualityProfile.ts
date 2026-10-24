@@ -320,6 +320,19 @@ export interface WebGpuQualityProfile {
    */
   readonly vegetationCastsShadows: boolean;
   readonly activeAnimalBudget: number;
+  /**
+   * Volcanic phase 5: the instance cap on steam wisps over vents within 15 km
+   * (`VolcanicSteamSystem`). One instanced draw while a vent is in range and
+   * none otherwise, so the temperate core pays nothing at any tier.
+   *
+   * 0 is OFF and means no mesh, no material and no draw at all — the low
+   * tier's whole cost is this field. The cap only binds over a dense vent
+   * field: one vigorous crater emits 24 wisps, so 128 covers five, and the
+   * nearest vents keep their wisps when it binds.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly volcanicSteamMaxWisps: number;
 }
 
 const QUALITY_WEIGHT: Readonly<Record<QualityLevel, number>> = {
@@ -421,6 +434,7 @@ function resolveBaseQualityProfile(
       // modelled draws.
       vegetationCastsShadows: false,
       activeAnimalBudget: 16,
+      volcanicSteamMaxWisps: 0,
     };
   }
   if (tier === 1) {
@@ -513,6 +527,7 @@ function resolveBaseQualityProfile(
       // 9.02 ms row.
       vegetationCastsShadows: false,
       activeAnimalBudget: 48,
+      volcanicSteamMaxWisps: 128,
     };
   }
   if (tier === 2) {
@@ -594,6 +609,7 @@ function resolveBaseQualityProfile(
       // spending pixels, and D15 already cut this tier's cascade count once.
       vegetationCastsShadows: true,
       activeAnimalBudget: 128,
+      volcanicSteamMaxWisps: 192,
     };
   }
   // Tier 3 (Ultra, high+ultra): a 30 fps tier that spends its frame on
@@ -678,6 +694,7 @@ function resolveBaseQualityProfile(
     vegetationDensity: 1,
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
+    volcanicSteamMaxWisps: 256,
   };
 }
 
