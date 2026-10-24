@@ -20,6 +20,11 @@
  */
 
 import { CLIMATE_PROVINCE_METERS_PER_TEMPERATURE } from "@/src/world/climateProvince";
+import {
+  TUNDRA_COLD_FULL,
+  TUNDRA_COLD_ONSET,
+  TUNDRA_SHRUB_BELT_METERS,
+} from "@/src/world/coldBiomes";
 import type { TerrainKernelLattice } from "../terrain/TerrainKernel";
 import {
   CANOPY_CLOSURE_FILTER_WIDTH_METERS,
@@ -414,7 +419,14 @@ fn vegetationDensity(
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
   let shrubSlope = 1.0 - kSmoothstep(0.09, 0.26, drivers.slope);
-  let shrubTreeline = 1.0 - kSmoothstep(treeline - 80.0, treeline + 140.0, thermal);
+  // The arctic shrub belt; see the TS twin. \`+ 0.0\` in the temperate core.
+  let shrubLine = treeline + 140.0
+    + kSmoothstep(
+      ${wgslMeters(TUNDRA_COLD_ONSET)},
+      ${wgslMeters(TUNDRA_COLD_FULL)},
+      -drivers.temperatureOffset,
+    ) * ${wgslMeters(TUNDRA_SHRUB_BELT_METERS)};
+  let shrubTreeline = 1.0 - kSmoothstep(treeline - 80.0, shrubLine, thermal);
   let openness = 0.45 + 0.55 * (1.0 - glade * 0.7);
   let shrubForestGate = 0.28 + province * 0.72;
   let edgeShrubGain = 1.0 + forestEdge * 0.45;

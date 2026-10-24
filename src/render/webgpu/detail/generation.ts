@@ -7,7 +7,11 @@ import {
   type TerrainEvolutionGeologySample,
 } from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
-import { terrainSnowlineThermalHeight } from "@/src/world/climateProvince";
+import { borealShare, splitColdDraw, tundraShare } from "@/src/world/coldBiomes";
+import {
+  terrainSnowlineThermalHeight,
+  terrainThermalHeight,
+} from "@/src/world/climateProvince";
 import {
   classifyLandCover,
   landCoverHabitat,
@@ -262,6 +266,54 @@ const ZERO_VEGETATION_DENSITY: VegetationDensitySample = Object.freeze({
  * picking the argmax species would make every forest a monoculture.
  */
 function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
+  // The cold biomes split the draw rather than reweighting one table: at
+  // share 0 the temperate table receives `choice` itself, bit for bit.
+  const split = splitColdDraw(borealShare(sample.temperatureOffset ?? 0), choice);
+  return split.cold
+    ? chooseBorealTreeSpecies(sample, split.choice)
+    : chooseTemperateTreeSpecies(sample, split.choice);
+}
+
+/**
+ * The boreal forest's species: spruce, pine and birch, and nothing else.
+ *
+ * The taiga is one of the least diverse forests on Earth, and that is its
+ * look: dark spire-shaped conifers in near-monoculture, broken by pale birch
+ * (Betula pubescens, B. papyrifera; aspen reads the same from the air). Each
+ * rule is the boreal answer to the same habitat the temperate table reads:
+ * - wet ground is black-spruce muskeg with birch on its drier margins;
+ * - dry ground is pine — Scots and jack pine own sandy eskers and burns;
+ * - mesic ground is spruce-dominated with pine and birch through it;
+ * - rocky upland is spruce, and the birch that forms the treeline itself in
+ *   Fennoscandia's mountain-birch belt.
+ * No oak, maple, cedar or willow. Willow in the taiga is a SHRUB of fens and
+ * river bars (the shrub table carries it), and leaving it out keeps a boreal
+ * chunk on two tree families, pine and oak, against the temperate wet table's
+ * three, so the biome cannot add tree draws where it grows.
+ */
+function chooseBorealTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
+  const habitat = landCoverHabitat(classifyDetailSample(sample));
+  const upland = habitat.scrub + habitat.barren;
+  if (upland > habitat.canopy + habitat.open) {
+    if (choice < 0.5) return "spruce";
+    if (choice < 0.74) return "pine";
+    return "birch";
+  }
+  if (sample.moisture > 0.78) {
+    if (choice < 0.64) return "spruce";
+    return "birch";
+  }
+  if (sample.moisture < 0.35) {
+    if (choice < 0.72) return "pine";
+    if (choice < 0.86) return "spruce";
+    return "birch";
+  }
+  if (choice < 0.5) return "spruce";
+  if (choice < 0.74) return "pine";
+  return "birch";
+}
+
+function chooseTemperateTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
   const habitat = landCoverHabitat(classifyDetailSample(sample));
   // Upland: conifer-dominated, and the classifier's scrub/barren shares are
   // what "upland" MEANS here rather than a height threshold.
@@ -371,6 +423,42 @@ function treeDimensions(
     case "birch": return dimensions(3.4, 24, 0.22, 0.014, 0.9);
     case "willow": return dimensions(2.8, 21, 0.37, 0.023, 0.94);
   }
+}
+
+/**
+ * The boreal tree FORM: the same species, grown in a short, cold season.
+ *
+ * - Stature: taiga canopies stand 10-25 m (black spruce 5-15 m, white spruce
+ *   and Scots pine 15-25 m), lower than the temperate forest's, so every stem
+ *   is 15% shorter, trunk with it.
+ * - Crown: KEPT, though real boreal conifers are narrow spires. A drawn crown
+ *   is a closure proxy, not one tree: the renderer draws at most 55-79 stems
+ *   per hectare (`renderedDensity.ts`), each standing in for the several real
+ *   stems around it, so a narrower crown opens the canopy rather than
+ *   sharpening it. Measured on the perf seed (128 cells, medium density), a
+ *   crown 25% and then 18% narrower took the drawn crown cover of forest
+ *   blocks from 0.42 to 0.12, a lichen woodland where a closed taiga should
+ *   be. The spires come from the species instead: 79% of a boreal stand
+ *   draws the conifer prototype, against 45% of a temperate one. Keeping the
+ *   crown is also why the stature loss stops at 15%: more would turn the
+ *   spires stubby.
+ * - Value: from the air the taiga is the darkest forest there is — dense,
+ *   blue-black conifer crowns over a shaded floor — so conifers lose 12% of
+ *   their tint value. Birch stays as light as it is anywhere.
+ *
+ * Both are exactly 1 at share 0 (`1 - 0 * k`), so the temperate core's trees
+ * do not move by one bit.
+ */
+const BOREAL_STATURE_LOSS = 0.15;
+const BOREAL_CONIFER_VALUE_LOSS = 0.12;
+
+function borealTreeForm(
+  species: TreeSpecies,
+  share: number,
+): { readonly stature: number; readonly value: number } {
+  const stature = 1 - share * BOREAL_STATURE_LOSS;
+  if (!CONIFER_SPECIES.has(species)) return { stature, value: 1 };
+  return { stature, value: 1 - share * BOREAL_CONIFER_VALUE_LOSS };
 }
 
 const TREE_TINT_BASE: Readonly<Record<TreeSpecies, readonly [number, number, number]>> = {
@@ -526,6 +614,8 @@ function treeColor(
   random: RandomSource,
   tintCentre: number,
   individualAge: number,
+  /** `borealTreeForm`'s value scale; 1 outside the cold biomes. */
+  valueScale = 1,
 ): readonly [number, number, number, number] {
   const base = TREE_TINT_BASE[species];
   const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
@@ -539,7 +629,7 @@ function treeColor(
     baseVal * (1 + triangular() * 0.12 * Math.sqrt(6) * 0.5 - ageDarkening),
     0.2,
     1.1,
-  );
+  ) * valueScale;
   const [r, g, b] = hsvToRgb(hue, saturation, Math.min(value, 1));
   const gain = value > 1 ? value : 1;
   return [r * gain, g * gain, b * gain, 1];
@@ -894,8 +984,9 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       species = coniferRoll < -field.aspect * 0.15 ? "spruce" : "pine";
     }
     const dimensions = treeDimensions(species, random, stand.standAge);
+    const boreal = borealTreeForm(species, borealShare(blockSample.temperatureOffset ?? 0));
     // Krummholz: near the treeline trees shrink before they disappear.
-    const height = dimensions.height * field.heightFactor;
+    const height = dimensions.height * field.heightFactor * boreal.stature;
     // Gate B forest-edge margin: the density authority shortens edge stems
     // through heightFactor and publishes the same margin for crown form.
     // Species and stand selection remain untouched; only silhouette changes.
@@ -914,11 +1005,11 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       yawRadians: random() * TAU,
       heightMeters: height,
       crownRadiusMeters: crown,
-      trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor),
+      trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor) * boreal.stature,
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
       color: applyFoliageSeason(
-        treeColor(species, random, stand.tintCentre, dimensions.individualAge),
+        treeColor(species, random, stand.tintCentre, dimensions.individualAge, boreal.value),
         species,
         context.season,
         random(),
@@ -940,10 +1031,26 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       speciesRoll < 0.7 ? stand.dominantChoice : random(),
     );
     const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
+    const temperatureOffset = blockSample.temperatureOffset ?? 0;
+    const cold = borealShare(temperatureOffset);
+    const tundra = tundraShare(temperatureOffset);
+    // Dwarf shrubs are not krummholz. The density field's height factor is
+    // the treeline stunting the TREES, and above it the shrubs it lets through
+    // (the arctic belt, `TUNDRA_SHRUB_BELT_METERS`) would stand 5-15 cm:
+    // instances nobody can see. A tundra shrub's height is set by the winter
+    // snowpack it lives under, so the tundra share lifts the factor back to 1
+    // and `coldStature` alone makes it dwarf. `+ 0` in the temperate core.
+    const heightFactor = field.heightFactor + (1 - field.heightFactor) * tundra;
     const height = (species === "sage"
       ? 0.35 + maturity * 1.05
-      : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1)) * field.heightFactor;
+      : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1)) * heightFactor;
     const radius = height * (species === "hazel" ? 0.72 : 0.62) * (0.82 + random() * 0.3);
+    // Cold scrub is low scrub: taiga willow thickets stand 1-3 m and tundra
+    // willow and dwarf birch under a metre. Exactly 1 in the temperate core.
+    // The exclusion radius below keeps the UNSCALED radius, so a cold stand
+    // places the same shrubs and only their size changes.
+    const coldStature = (1 - cold * BOREAL_STATURE_LOSS)
+      * (1 - tundra * TUNDRA_SHRUB_STATURE_LOSS);
     push(kernelClamp(radius * 1.3, 1, 5), priority, () => ({
       kind: "shrub",
       id: `understory:${x.toFixed(2)}:${z.toFixed(2)}`,
@@ -952,12 +1059,12 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       y,
       z,
       yawRadians: random() * TAU,
-      heightMeters: height,
-      radiusMeters: radius,
+      heightMeters: height * coldStature,
+      radiusMeters: radius * coldStature,
       windPhaseRadians: random() * TAU,
       windResponse: 0.78 + random() * 0.38,
       color: applyFoliageSeason(
-        shrubColor(species, random, stand.tintCentre, maturity),
+        shrubColor(species, random, stand.tintCentre, maturity, cold),
         species,
         context.season,
         random(),
@@ -971,6 +1078,31 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
 
 /** `R-27`: the understory reads the same weight vector the canopy does. */
 function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
+  const split = splitColdDraw(borealShare(sample.temperatureOffset ?? 0), choice);
+  return split.cold
+    ? chooseColdShrubSpecies(sample, split.choice)
+    : chooseTemperateShrubSpecies(sample, split.choice);
+}
+
+/**
+ * The cold biomes' understory: juniper and willow-birch scrub, no sage.
+ *
+ * Common juniper is circumboreal and the commonest shrub of dry taiga and
+ * tundra heath alike. The broadleaf shrub that `hazel` draws is, in the cold
+ * biomes, the willow and dwarf-birch scrub of fens, river bars and the
+ * forest-tundra (`shrubColor` gives it their grey-olive leaf). Sagebrush is a
+ * shrub of the arid steppe and has no place here.
+ */
+function chooseColdShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
+  if (sample.moisture > 0.64) return choice < 0.72 ? "hazel" : "juniper";
+  const habitat = landCoverHabitat(classifyDetailSample(sample));
+  if (habitat.scrub + habitat.barren > habitat.canopy + habitat.open) {
+    return choice < 0.75 ? "juniper" : "hazel";
+  }
+  return choice < 0.55 ? "juniper" : "hazel";
+}
+
+function chooseTemperateShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
   if (sample.moisture > 0.64) return choice < 0.68 ? "hazel" : "juniper";
   const habitat = landCoverHabitat(classifyDetailSample(sample));
   if (habitat.scrub + habitat.barren > habitat.canopy + habitat.open) {
@@ -988,6 +1120,22 @@ const SHRUB_TINT_BASE: Readonly<Record<ShrubSpecies, readonly [number, number, n
 };
 
 /**
+ * The same three meshes, in the cold biomes. The broadleaf shrub is willow
+ * and dwarf birch there, whose small, often grey-pubescent leaves read
+ * greyer and darker than hazel's; juniper keeps its blue-grey. Sage does not
+ * grow in the cold biomes (`chooseColdShrubSpecies`), so its row only keeps
+ * the table total.
+ */
+const COLD_SHRUB_TINT_BASE: Readonly<Record<ShrubSpecies, readonly [number, number, number]>> = {
+  juniper: [0.64, 0.8, 0.7],
+  hazel: [0.72, 0.82, 0.62],
+  sage: [0.78, 0.84, 0.74],
+};
+
+/** Tundra willow and dwarf birch stand under a metre (see `scatterShrubs`). */
+const TUNDRA_SHRUB_STATURE_LOSS = 0.55;
+
+/**
  * 2-12b — the 2-12 tint treatment applied to the understory: the old single
  * scalar was brightness jitter with zero hue variance (the exact flight-test
  * complaint the tree distribution fixed). Real hue variance per species,
@@ -1001,8 +1149,17 @@ function shrubColor(
   random: RandomSource,
   tintCentre: number,
   maturity: number,
+  /** `borealShare` at the shrub; 0 outside the cold biomes. */
+  coldShare = 0,
 ): readonly [number, number, number, number] {
-  const base = SHRUB_TINT_BASE[species];
+  const temperate = SHRUB_TINT_BASE[species];
+  const coldBase = COLD_SHRUB_TINT_BASE[species];
+  // `t + (c - t) * 0` is `t` exactly, so the temperate tint is untouched.
+  const base = [
+    temperate[0] + (coldBase[0] - temperate[0]) * coldShare,
+    temperate[1] + (coldBase[1] - temperate[1]) * coldShare,
+    temperate[2] + (coldBase[2] - temperate[2]) * coldShare,
+  ] as const;
   const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
   const triangular = (): number => random() + random() - 1;
   const hueSigmaTurns = 9.5 / 360;
@@ -1231,6 +1388,11 @@ function litterDriver(sample: DetailTerrainSample): number {
 
 export const GROUND_COVER_GRID = 8;
 
+/** Wetter tundra than this is sedge meadow rather than dwarf-shrub heath. */
+const TUNDRA_SEDGE_MOISTURE = 0.6;
+const TUNDRA_HEATH_COLOR: readonly [number, number, number] = [0.44, 0.42, 0.3];
+const TUNDRA_SEDGE_COLOR: readonly [number, number, number] = [0.53, 0.54, 0.31];
+
 /**
  * 2-16 — the ground-cover habitat grid: WHAT grows at each 16 m node, so
  * the ground layer has variable CHARACTER, not just variable amount. The
@@ -1292,8 +1454,14 @@ function buildGroundCoverGrid(
           // Mown, not bare: the apron keeps ~40% of its cover (1B-6).
           * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1))
           * riparianVegetationFactors(sample.shoreDistanceMeters).clearance;
+      // Exposure reads THERMAL height: a cold province's lowland is as exposed
+      // as the temperate world's uplands, which is where heath takes over from
+      // grass. `- 0` in the temperate core.
+      const temperatureOffset = sample.temperatureOffset ?? 0;
+      const tundra = tundraShare(temperatureOffset);
       const exposure = clamp(
-        (sample.height - context.seaLevelMeters) / 900 + sample.slope * 1.6,
+        terrainThermalHeight(sample.height - context.seaLevelMeters, temperatureOffset) / 900
+          + sample.slope * 1.6,
         0,
         1,
       );
@@ -1310,7 +1478,10 @@ function buildGroundCoverGrid(
         (sample.moisture > 0.72 || bank > 0.35) && sample.slope < 0.06 ? "reed"
         : (closure > 0.45 && sample.moisture > 0.5) || (bank > 0.2 && closure > 0.18)
           ? "fern"
-        : closure < 0.2 && exposure > 0.55 ? "heather"
+        // Wet tundra is sedge meadow and cotton grass, not heath: the dwarf
+        // shrubs hold the drier hummocks and ridges.
+        : closure < 0.2 && exposure > 0.55
+          && !(tundra > 0.5 && sample.moisture > TUNDRA_SEDGE_MOISTURE) ? "heather"
         : "grass";
       // Habitat tint: wet ground deepens green, dry ground bleaches; grass
       // yellows toward straw with the season; snow whitens everything.
@@ -1318,13 +1489,26 @@ function buildGroundCoverGrid(
         ? smootherStep(0.25, 0.7, context.season.winterFraction)
         : smootherStep(0.45, 0.85, context.season.winterFraction) * 0.5;
       const wet = clamp(sample.moisture, 0, 1);
-      const baseColor: [number, number, number] = archetype === "fern"
+      const temperateColor: readonly [number, number, number] = archetype === "fern"
         ? [0.34, 0.5, 0.3]
         : archetype === "heather"
           ? [0.5, 0.44, 0.5]
           : archetype === "reed"
             ? [0.55, 0.58, 0.38]
             : [0.42 + (1 - wet) * 0.18, 0.56 + wet * 0.1, 0.3];
+      // Tundra heath is crowberry, bilberry and dwarf birch rather than
+      // purple Calluna, and its sedge is a yellower olive than a meadow's
+      // grass. Fern and reed keep their colours. `t + (c - t) * 0 === t`.
+      const tundraColor = archetype === "heather"
+        ? TUNDRA_HEATH_COLOR
+        : archetype === "grass"
+          ? TUNDRA_SEDGE_COLOR
+          : temperateColor;
+      const baseColor: [number, number, number] = [
+        temperateColor[0] + (tundraColor[0] - temperateColor[0]) * tundra,
+        temperateColor[1] + (tundraColor[1] - temperateColor[1]) * tundra,
+        temperateColor[2] + (tundraColor[2] - temperateColor[2]) * tundra,
+      ];
       const jittered: [number, number, number] = [
         clamp(baseColor[0] * (0.9 + jitter * 0.2), 0, 1),
         clamp(baseColor[1] * (0.9 + jitter * 0.2), 0, 1),

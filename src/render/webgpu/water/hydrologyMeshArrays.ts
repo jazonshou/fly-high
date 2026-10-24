@@ -54,6 +54,12 @@ export interface HydrologyClimateSample {
   readonly temperature: number;
   /** Terrain moisture field, 0..1. */
   readonly moisture: number;
+  /**
+   * The climate province's raw temperature offset (`sampleClimateProvince`),
+   * negative colder, exactly 0 in the temperate core. `temperature` already
+   * includes it; the cold biomes' chemistry keys on it. Omitted reads 0.
+   */
+  readonly temperatureOffset?: number;
 }
 
 export type HydrologyClimateSampler = (
@@ -142,6 +148,9 @@ function riverStationChemistry(
       elevationAboveSeaMeters,
       temperature: sample.temperature,
       moisture: sample.moisture,
+      ...(sample.temperatureOffset !== undefined
+        ? { temperatureOffset: sample.temperatureOffset }
+        : {}),
     },
     widthMeters,
     flowSpeedMetersPerSecond,
@@ -281,6 +290,9 @@ function lakeChemistry(
       elevationAboveSeaMeters: Math.max(lake.surfaceHeight - seaLevel, 0),
       temperature: sample.temperature,
       moisture: sample.moisture,
+      ...(sample.temperatureOffset !== undefined
+        ? { temperatureOffset: sample.temperatureOffset }
+        : {}),
     },
     lake.maximumDepthMeters,
     lake.areaSquareMeters,

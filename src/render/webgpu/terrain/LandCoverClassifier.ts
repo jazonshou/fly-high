@@ -1,4 +1,5 @@
 import { saturate, smoothstep } from "@/src/world/noise";
+import { COLD_BIOME_WGSL, tundraShare } from "@/src/world/coldBiomes";
 import {
   applyClimateProvinceDryness,
   CLIMATE_PROVINCE_METERS_PER_TEMPERATURE,
@@ -168,6 +169,44 @@ export const LAND_COVER_CANOPY_CLOSURE_GAIN = 0.55;
 export const LAND_COVER_GRASS_COVER_GAIN = 0.45;
 
 /**
+ * THE TUNDRA PARTITION — what open ground is made of once a province is too
+ * cold for trees (`tundraShare`, `src/world/coldBiomes.ts`).
+ *
+ * Thermal height already puts a tundra province's lowland in the alpine band,
+ * so its ground starts from the alpine law item C tuned for mountain tops:
+ * turf on the gentle ground, rock on the steep, scree between. Three things
+ * about that law are true of a mountain and false of the Arctic, and each is
+ * a gated product here:
+ *
+ * 1. TURF IS COLD-HARDY. Item C's `cool` gate (temperature 0.00-0.12) hands
+ *    turf to bare ground at the very top of a temperate mountain, because
+ *    there it is the last vegetation below the summit. Arctic sedge, moss and
+ *    dwarf herbs cover ground colder than that for thousands of kilometres,
+ *    so the tundra share lifts the gate toward 1.
+ * 2. FLAT GROUND IS NOT BEDROCK. Rock's flat `alpine * 0.25` claim stands for
+ *    a summit's wind-scoured pavement; the low-arctic plain is vegetated
+ *    tundra over permafrost, with frost-sorted gravel where it is bare. The
+ *    flat claim loses `TUNDRA_FLAT_ROCK_LOSS` of itself. The slope share is
+ *    untouched: an arctic cliff is still rock.
+ * 3. HEATH DOES NOT STOP AT 1,650 m. Shrub's upper altitude cut is a mountain
+ *    fact (the heath band gives out under the summit). Dwarf-shrub heath —
+ *    crowberry, bilberry, dwarf birch, Labrador tea — is the commonest cover
+ *    of the low Arctic, so the tundra share restores the cut toward
+ *    `TUNDRA_HEATH_CUT_FLOOR`.
+ *
+ * Measured in the tundra preset (-0.65) on flat open ground 20 m above the
+ * sea, the top four come out turf 0.56, heath 0.24, dry grass 0.11, gravel
+ * 0.09 at moisture 0.5; at 0.25 dry grass 0.59 and heath 0.33 lead, and at
+ * 0.8 turf takes 0.79. Repose-angle ground is scree (gravel 0.56-0.63) and
+ * snow claims the hills from ~800 m. Every term is `x + 0` or `x * 1` at
+ * share 0, so the temperate core is bit-identical — the frozen law of
+ * `render.webgpu-land-cover-alpine-partition` holds it, and
+ * `render.webgpu-cold-biomes` checks offset 0 against omission.
+ */
+export const TUNDRA_FLAT_ROCK_LOSS = 0.6;
+export const TUNDRA_HEATH_CUT_FLOOR = 0.85;
+
+/**
  * One classifier seam: real drainage when available, climatic proxy otherwise.
  *
  * Climatic moisture already carries the province's dryness. Real drainage does
@@ -304,7 +343,10 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   //    reversed-argument smoothstep.
   // 2. ROCK NEEDS SLOPE AT ALTITUDE: see the Rock term.
   // 3. SCREE APRONS: see the Gravel term.
-  const cool = smoothstep(0, 0.12, temperature);
+  // The tundra partition's turf gate (1): `cool + 0` in the temperate core.
+  const tundra = tundraShare(temperatureOffset);
+  const coolTemperate = smoothstep(0, 0.12, temperature);
+  const cool = coolTemperate + (1 - coolTemperate) * tundra;
   const snowBand = smoothstep(snowline - 260, snowline - 40, snowHeight);
   // Turf has its OWN slope window, not `gentle`: `gentle` is still 0.5 at 54
   // degrees (steep's calibrated window), and measured with it turf reached
@@ -467,9 +509,12 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
     shore * wet * warm * (1 - smoothstep(900, 1_350, thermal)) * (1 - steep * 0.8) * 1.1
     * (1 + landCoverLitter(input) * LAND_COVER_FOREST_FLOOR_LITTER_GAIN)
     * closureGate;
-  // Shrub: the highland band — drier, cooler, tolerant of slope.
+  // Shrub: the highland band — drier, cooler, tolerant of slope. The tundra
+  // partition (3) lifts its altitude cut toward the heath floor.
+  const heathCut = 1 - smoothstep(1_150, 1_650, thermal);
   suitability[SurfaceMaterial.Shrub] =
-    shore * alpine * (1 - smoothstep(1_150, 1_650, thermal)) * (0.4 + dry * 0.6) * 0.95;
+    shore * alpine * (heathCut + Math.max(0, TUNDRA_HEATH_CUT_FLOOR - heathCut) * tundra)
+      * (0.4 + dry * 0.6) * 0.95;
   // Rock: slope first, altitude second. A cliff is rock at any height.
   //
   // Item C: ROCK NEEDS SLOPE AT ALTITUDE. The altitude share was a flat
@@ -480,8 +525,15 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // `smoothstep(0.24, 0.58, slope)` window are NOT touched — the coefficient
   // is calibrated against that exact window (see the `6-13` note above: moving
   // the window took Rock from 18.77% to 35.40% of land).
+  //
+  // The tundra partition (2): the FLAT claim gives up `TUNDRA_FLAT_ROCK_LOSS`
+  // of its 0.25, and the slope share stays. Written as a subtraction so item
+  // C's own product stays as calibrated: `- 0` in the temperate core.
   suitability[SurfaceMaterial.Rock] =
-    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope)));
+    shore * (
+      steep * 1.25 + alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope))
+        - alpine * 0.25 * tundra * TUNDRA_FLAT_ROCK_LOSS
+    );
   // Snow: above the seasonal snowline, and shed by steep faces. M-3: shed over
   // 39-55 degrees, where it was 60-72. Dry snow avalanches off anything much
   // past 40, and at the old threshold a snowfield on the reshaped massifs showed
@@ -711,7 +763,7 @@ struct LandCoverInput {
   temperatureOffset: f32,
   dryness: f32,
 };
-
+${COLD_BIOME_WGSL}
 const LAND_COVER_COUNT: u32 = ${SURFACE_MATERIAL_COUNT}u;
 const LAND_COVER_TOP: u32 = ${LAND_COVER_TOP_MATERIALS}u;
 const LAND_COVER_SOFTMAX_BASE: f32 = ${LAND_COVER_SOFTMAX_BASE_TEMPERATURE};
@@ -728,6 +780,8 @@ const LAND_COVER_THERMAL_METERS: f32 = ${wgslConstant(CLIMATE_PROVINCE_METERS_PE
 const LAND_COVER_SNOWLINE_THERMAL_METERS: f32 = ${
   wgslConstant(CLIMATE_PROVINCE_SNOWLINE_METERS_PER_TEMPERATURE)
 };
+const LAND_COVER_TUNDRA_FLAT_ROCK_LOSS: f32 = ${wgslConstant(TUNDRA_FLAT_ROCK_LOSS)};
+const LAND_COVER_TUNDRA_HEATH_CUT_FLOOR: f32 = ${wgslConstant(TUNDRA_HEATH_CUT_FLOOR)};
 
 /** Transliteration of densityField.ts's soilLitterFactor, injected constants. */
 fn landCoverLitter(input: LandCoverInput) -> f32 {
@@ -777,7 +831,10 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   // Item C, the alpine cover partition — see the TS twin. Every new term is
   // multiplied by alpine, which is exactly 0.0 at and below 420 m, so the
   // lowland law is bit-identical to what shipped.
-  let cool = kSmoothstep(0.0, 0.12, input.temperature);
+  // The tundra partition — see the TS twin. Exactly x + 0 / x * 1 at share 0.
+  let tundra = coldTundraShare(input.temperatureOffset);
+  let coolTemperate = kSmoothstep(0.0, 0.12, input.temperature);
+  let cool = coolTemperate + (1.0 - coolTemperate) * tundra;
   let snowBand = kSmoothstep(snowline - 260.0, snowline - 40.0, snowHeight);
   let turfSlope = 1.0 - kSmoothstep(0.16, 0.32, slope);
   let alpineTurf = shore * alpine * turfSlope * cool * (1.0 - snowBand);
@@ -819,11 +876,15 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
       * (1.0 + landCoverLitter(input) * LAND_COVER_FLOOR_LITTER_GAIN)
       // 6-13: closure GATES the litter rather than gaining it — see TS twin.
       * (closure * (1.0 + LAND_COVER_CLOSURE_GAIN));
+  let heathCut = 1.0 - kSmoothstep(1150.0, 1650.0, thermal);
   suitability[${SurfaceMaterial.Shrub}] =
-    shore * alpine * (1.0 - kSmoothstep(1150.0, 1650.0, thermal))
+    shore * alpine * (heathCut + max(0.0, LAND_COVER_TUNDRA_HEATH_CUT_FLOOR - heathCut) * tundra)
       * (0.4 + dry * 0.6) * 0.95;
   suitability[${SurfaceMaterial.Rock}] =
-    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * kSmoothstep(0.10, 0.30, slope)));
+    shore * (
+      steep * 1.25 + alpine * (0.25 + 0.30 * kSmoothstep(0.10, 0.30, slope))
+        - alpine * 0.25 * tundra * LAND_COVER_TUNDRA_FLAT_ROCK_LOSS
+    );
   suitability[${SurfaceMaterial.Snow}] =
     kSmoothstep(snowline - 90.0, snowline + 130.0, snowHeight)
       * (1.0 - kSmoothstep(0.22, 0.42, slope)) * 1.5;
