@@ -194,6 +194,30 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "how coarse-page mean height moves by metres.",
   },
   {
+    // The volcanic overlay's GPU half: the site index (the landform data
+    // binding's contents), its packer and the stream that keeps it round the
+    // observer. One index, one layout; a consumer binds the stream's buffer
+    // and gates its dispatches on `covers`, it never packs its own.
+    artifact: "volcanic-site-index",
+    owner: "terrain-geometry",
+    definitionSites: [
+      "src/render/webgpu/terrain/VolcanicOverlayKernel.ts",
+      "src/render/webgpu/terrain/VolcanicSiteIndexStream.ts",
+    ],
+    consumers: ["terrain-geometry", "terrain-material", "water"],
+    ownedSymbols: [
+      "VOLCANIC_OVERLAY_WGSL",
+      "VOLCANIC_INDEX",
+      "VolcanicSiteIndexBuilder",
+      "packVolcanicSiteIndex",
+      "VolcanicSiteIndexStream",
+    ],
+    notes:
+      "A transliteration of src/world/volcanism.ts. The index origin is the "
+      + "landform core centre, so overlapping indexes pack a site into the same "
+      + "bits and an in-place upload never changes a bake both cover.",
+  },
+  {
     artifact: "terrain-page-atlas",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainPageAtlas.ts"],
