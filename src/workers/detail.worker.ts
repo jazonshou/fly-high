@@ -30,6 +30,10 @@ import {
   type StructureExclusionSite,
 } from "@/src/render/webgpu/airfield/StructureExclusion";
 import {
+  spawnedAirportsOf,
+  withSpawnedAirportGround,
+} from "@/src/render/webgpu/airfield/SpawnedAirportGround";
+import {
   detailWorkerEventTransferables,
   type DetailRetainedCellDescriptor,
   type DetailWorkerCommand,
@@ -193,10 +197,15 @@ export class DetailWorkerRuntime {
   /** Install a world and everything derived from it, in one place. */
   private adoptWorld(world: WorldDefinition): void {
     this.world = world;
-    this.terrainSample = terrainConsumerSampleFromAuthority(
-      world,
-      (x, z) => sampleTerrain(world, x, z),
-      this.terrainAuthority,
+    const analytic = (x: number, z: number) => sampleTerrain(world, x, z);
+    // A spawned airport's earthworks are authored, like the home field's, so
+    // inside its influence the analytic sample answers here too — the
+    // consumer authority only bypasses `world.airport`. No spawned airport:
+    // the consumer sampler itself, unchanged.
+    this.terrainSample = withSpawnedAirportGround(
+      spawnedAirportsOf(world),
+      terrainConsumerSampleFromAuthority(world, analytic, this.terrainAuthority),
+      analytic,
     );
     // `airports` is absent only on a world built by hand before it existed.
     const airports = world.airports ?? (world.airport ? [world.airport] : []);
