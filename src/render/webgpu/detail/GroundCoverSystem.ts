@@ -672,6 +672,11 @@ export class GroundCoverSystem {
         // Sand seas: the same cover the world biome read, so the grass lane
         // falls with it and the tile wears the sand the terrain shows.
         sandCover: sample.sandCover,
+        // Volcanic land: bare Basalt and Tephra take the Grass weight, and
+        // with it the blades.
+        lavaCover: sample.lavaCover ?? 0,
+        tephraCover: sample.tephraCover ?? 0,
+        volcanicAge: sample.volcanicAge ?? 0,
       });
       let albedoR = 0;
       let albedoG = 0;

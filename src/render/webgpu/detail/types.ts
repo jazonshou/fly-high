@@ -67,6 +67,14 @@ export interface DetailTerrainSample {
    * TerrainSample carries it; omitted reads 0.
    */
   readonly sandCover?: number;
+  /**
+   * Volcanic land: lava and tephra cover and their age, exactly 0 off
+   * volcanic ground. Omitted reads 0. The world-layer TerrainSample carries
+   * them, so the live sampler provides them for free.
+   */
+  readonly lavaCover?: number;
+  readonly tephraCover?: number;
+  readonly volcanicAge?: number;
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;

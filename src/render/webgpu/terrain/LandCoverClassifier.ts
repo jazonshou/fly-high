@@ -22,6 +22,7 @@ import {
   soilLitterFactor,
 } from "../detail/densityField";
 import {
+  SURFACE_MATERIAL_BASE_COUNT,
   SURFACE_MATERIAL_COUNT,
   SurfaceMaterial,
   type SurfaceMaterialId,
@@ -136,6 +137,18 @@ export interface LandCoverInput {
    * zero-initialised input reads 0 until the bake samples the landform cover.
    */
   readonly sandCover?: number;
+  /**
+   * Volcanic land (`sampleVolcanicGround`): the share of the ground that is
+   * lava rock, [0, 1]. Exactly 0 outside every volcanic footprint, and with
+   * `tephraCover` also 0 (or omitted) the two volcanic suitabilities are left
+   * out of the softmax ENTIRELY, so the classification is bit-identical to
+   * what shipped before volcanic land existed. See `landCoverIsVolcanic`.
+   */
+  readonly lavaCover?: number;
+  /** Share of the ground that is tephra: cinder, scoria, ash, black sand. */
+  readonly tephraCover?: number;
+  /** Age of the dominant volcanic cover: 0 fresh, 1 old. Omission reads 0. */
+  readonly volcanicAge?: number;
 }
 
 export interface LandCoverWeights {
@@ -227,6 +240,93 @@ export const LAND_COVER_GRASS_COVER_GAIN = 0.45;
  */
 export const TUNDRA_FLAT_ROCK_LOSS = 0.6;
 export const TUNDRA_HEATH_CUT_FLOOR = 0.85;
+
+/**
+ * VOLCANIC LAND (phase 2): the rules, as data.
+ *
+ * Volcanism is geology, not climate, so its inputs arrive beside the climate
+ * rather than through it: lava cover, tephra cover and the age of whichever
+ * dominates, all exactly 0 outside a footprint. The age decides how much of
+ * the climate's own cover has come back:
+ *
+ * - FRESH (age under ~0.3): bare Basalt or Tephra. Loose scoria stands at its
+ *   angle of repose, ~34 degrees, so on a cone Tephra holds the ground up to
+ *   it and Rock takes over above it (crater walls).
+ * - MIDDLE (~0.3 to ~0.7): pioneers. Where the ground is moist Grass and Shrub
+ *   creep in (a cold wet province reads as Iceland's moss heath); where it is
+ *   dry it stays bare (Craters of the Moon).
+ * - OLD (over ~0.7): the climate's normal cover is back, and fertile — a warm
+ *   wet province grows dense forest on it — with Rock left on the flow fronts.
+ *
+ * Snow is the existing snowline's, untouched. And the shoreline's Sand hands
+ * over to Tephra inside volcanic ground, whatever its age: black sand.
+ *
+ * Every age window is a smoothstep, like every other driver here: the ages
+ * are ecotones, not thresholds.
+ */
+export const LAND_COVER_VOLCANIC_FRESH_AGE: readonly [number, number] = Object.freeze([0.2, 0.4]);
+export const LAND_COVER_VOLCANIC_OLD_AGE: readonly [number, number] = Object.freeze([0.6, 0.8]);
+/** How much of the climate's cover a moist middle-aged surface has back. */
+export const LAND_COVER_VOLCANIC_MOIST_COLONISATION = 0.75;
+/**
+ * Bare lava's claim: above every cover the volcanic ground does not take
+ * (gentle Rock, the shore's bands), so fresh flows are Basalt — and under
+ * Snow's 1.5, so a volcano's snow cap is the existing snowline's, no new code.
+ */
+export const LAND_COVER_BASALT_GAIN = 1.4;
+/** Bare tephra's claim below its angle of repose; under Snow's too. */
+export const LAND_COVER_TEPHRA_GAIN = 1.35;
+/**
+ * The angle of repose of loose scoria, 34 degrees, as normalised steepness
+ * (`1 - cos`), and the half-width of the hand-over to Rock around it.
+ */
+export const LAND_COVER_TEPHRA_REPOSE_SLOPE = 1 - Math.cos((34 * Math.PI) / 180);
+export const LAND_COVER_TEPHRA_REPOSE_HALF_WIDTH = 0.017;
+/** The pioneers' claims on moist middle-aged ground. */
+export const LAND_COVER_VOLCANIC_PIONEER_GRASS = 0.9;
+export const LAND_COVER_VOLCANIC_PIONEER_SHRUB = 0.6;
+/** Old volcanic soil (andosol) is fertile: forest floor's gain on it. */
+export const LAND_COVER_VOLCANIC_FERTILITY_GAIN = 0.3;
+/** Rock on the steep fronts of an old flow. */
+export const LAND_COVER_VOLCANIC_FRONT_SLOPE: readonly [number, number] = Object.freeze([0.12, 0.3]);
+export const LAND_COVER_VOLCANIC_FRONT_GAIN = 1.4;
+
+/**
+ * Whether a point is volcanic ground at all: the one predicate both the
+ * suitabilities and the softmax read. False wherever both covers are 0 or
+ * omitted, which is every point of a world before volcanic land existed.
+ */
+export function landCoverIsVolcanic(input: LandCoverInput): boolean {
+  return (input.lavaCover ?? 0) > 0 || (input.tephraCover ?? 0) > 0;
+}
+
+/**
+ * How much of the climate's own cover has come back to volcanic ground of
+ * this age, [0, 1]. `wet` is the classifier's `smoothstep(0.3, 0.64, wetness)`.
+ */
+export function landCoverVolcanicColonisation(age: number, wet: number): number {
+  const fresh = 1 - smoothstep(LAND_COVER_VOLCANIC_FRESH_AGE[0], LAND_COVER_VOLCANIC_FRESH_AGE[1], age);
+  const old = smoothstep(LAND_COVER_VOLCANIC_OLD_AGE[0], LAND_COVER_VOLCANIC_OLD_AGE[1], age);
+  const middle = saturate(1 - fresh - old);
+  return saturate(middle * wet * LAND_COVER_VOLCANIC_MOIST_COLONISATION + old);
+}
+
+/**
+ * The share of the ground that is BARE volcanic rock or tephra, [0, 1]: the
+ * volcanic cover times what colonisation has not reclaimed. Exactly 0 off
+ * volcanic ground.
+ *
+ * This is what vegetation follows. Trees and shrubs are thinned by it
+ * (`detail/generation.ts`), the bake's canopy lane is cut by it so the far
+ * canopy agrees with the trees actually planted, and the grass blades follow
+ * the classifier's own Grass weight, which this same share suppresses.
+ */
+export function landCoverVolcanicBareShare(input: LandCoverInput): number {
+  if (!landCoverIsVolcanic(input)) return 0;
+  const share = saturate(saturate(input.lavaCover ?? 0) + saturate(input.tephraCover ?? 0));
+  const wet = smoothstep(0.3, 0.64, landCoverWetness(input));
+  return share * (1 - landCoverVolcanicColonisation(saturate(input.volcanicAge ?? 0), wet));
+}
 
 /**
  * One classifier seam: real drainage when available, climatic proxy otherwise.
@@ -781,7 +881,67 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // Nor is volcanic ground: only the volcanic inputs claim it.
   suitability[SurfaceMaterial.Basalt] = 0;
   suitability[SurfaceMaterial.Tephra] = 0;
+  // VOLCANIC LAND: every term below is inside this branch, so ground with no
+  // volcanic cover runs exactly the arithmetic it ran before (and the softmax
+  // leaves Basalt and Tephra out; see classifyLandCover).
+  if (landCoverIsVolcanic(input)) {
+    applyVolcanicGround(input, suitability, slope, wet, shore);
+  }
   return suitability;
+}
+
+/**
+ * The volcanic rules (see `LAND_COVER_VOLCANIC_FRESH_AGE` for the law in
+ * words), applied over the climatic suitabilities in place.
+ *
+ * Everything is a product with the volcanic share, so as the cover falls to 0
+ * every suitability returns continuously to its climatic value and the two
+ * volcanic claims to 0: a footprint's edge is an ecotone like any other.
+ */
+function applyVolcanicGround(
+  input: LandCoverInput,
+  suitability: number[],
+  slope: number,
+  wet: number,
+  shore: number,
+): void {
+  const lava = saturate(input.lavaCover ?? 0);
+  const tephra = saturate(input.tephraCover ?? 0);
+  const age = saturate(input.volcanicAge ?? 0);
+  const share = saturate(lava + tephra);
+  const fresh = 1 - smoothstep(LAND_COVER_VOLCANIC_FRESH_AGE[0], LAND_COVER_VOLCANIC_FRESH_AGE[1], age);
+  const old = smoothstep(LAND_COVER_VOLCANIC_OLD_AGE[0], LAND_COVER_VOLCANIC_OLD_AGE[1], age);
+  const middle = saturate(1 - fresh - old);
+  const bare = 1 - landCoverVolcanicColonisation(age, wet);
+  // The climate's cover keeps what the bare rock does not take.
+  const keep = 1 - share * bare;
+  // Black sand: the shoreline's Sand score hands over to Tephra.
+  const shoreSand = suitability[SurfaceMaterial.Sand]!;
+  suitability[SurfaceMaterial.Sand] = shoreSand * (1 - share);
+  // Pioneers on moist middle-aged ground; none on dry, none on fresh.
+  const pioneer = share * middle * wet * shore;
+  suitability[SurfaceMaterial.Grass] = suitability[SurfaceMaterial.Grass]! * keep
+    + pioneer * LAND_COVER_VOLCANIC_PIONEER_GRASS;
+  suitability[SurfaceMaterial.Shrub] = suitability[SurfaceMaterial.Shrub]! * keep
+    + pioneer * LAND_COVER_VOLCANIC_PIONEER_SHRUB;
+  // Old ground is fertile: forest where the climate grows forest.
+  suitability[SurfaceMaterial.ForestFloor] = suitability[SurfaceMaterial.ForestFloor]! * keep
+    * (1 + share * old * LAND_COVER_VOLCANIC_FERTILITY_GAIN);
+  suitability[SurfaceMaterial.DryGrass] = suitability[SurfaceMaterial.DryGrass]! * keep;
+  suitability[SurfaceMaterial.Gravel] = suitability[SurfaceMaterial.Gravel]! * keep;
+  // Tephra holds its angle of repose; above it the cone is Rock.
+  const repose = 1 - smoothstep(
+    LAND_COVER_TEPHRA_REPOSE_SLOPE - LAND_COVER_TEPHRA_REPOSE_HALF_WIDTH,
+    LAND_COVER_TEPHRA_REPOSE_SLOPE + LAND_COVER_TEPHRA_REPOSE_HALF_WIDTH,
+    slope,
+  );
+  const tephraClaim = tephra * bare * LAND_COVER_TEPHRA_GAIN;
+  suitability[SurfaceMaterial.Basalt] = lava * bare * LAND_COVER_BASALT_GAIN;
+  suitability[SurfaceMaterial.Tephra] = tephraClaim * repose + shoreSand * share;
+  suitability[SurfaceMaterial.Rock] = suitability[SurfaceMaterial.Rock]!
+    + tephraClaim * (1 - repose)
+    + lava * old * smoothstep(LAND_COVER_VOLCANIC_FRONT_SLOPE[0], LAND_COVER_VOLCANIC_FRONT_SLOPE[1], slope)
+      * LAND_COVER_VOLCANIC_FRONT_GAIN;
 }
 
 /**
@@ -807,6 +967,10 @@ export function landCoverSoftmaxTemperature(input: LandCoverInput): number {
  */
 export function classifyLandCover(input: LandCoverInput): LandCoverWeights {
   const suitability = landCoverSuitabilities(input);
+  // Volcanic land: off volcanic ground the two volcanic suitabilities are not
+  // in the softmax at all — not as zeros, absent — so every weight is the one
+  // the ten-material classifier produced, bit for bit.
+  if (!landCoverIsVolcanic(input)) suitability.length = SURFACE_MATERIAL_BASE_COUNT;
   const temperature = Math.max(0.02, landCoverSoftmaxTemperature(input));
   let peak = -Infinity;
   for (const value of suitability) peak = Math.max(peak, value);
@@ -990,9 +1154,16 @@ struct LandCoverInput {
   dryness: f32,
   // Sand seas: the landform sand cover, 0 off the sand seas. See the TS twin.
   sandCover: f32,
+  // Volcanic land: lava and tephra cover and the age, all exactly 0 outside a
+  // footprint. With both covers 0 the two volcanic suitabilities stay out of
+  // the softmax, as in the TS twin.
+  lavaCover: f32,
+  tephraCover: f32,
+  volcanicAge: f32,
 };
 ${COLD_BIOME_WGSL}
 const LAND_COVER_COUNT: u32 = ${SURFACE_MATERIAL_COUNT}u;
+const LAND_COVER_BASE_COUNT: u32 = ${SURFACE_MATERIAL_BASE_COUNT}u;
 const LAND_COVER_TOP: u32 = ${LAND_COVER_TOP_MATERIALS}u;
 const LAND_COVER_SOFTMAX_BASE: f32 = ${LAND_COVER_SOFTMAX_BASE_TEMPERATURE};
 const LAND_COVER_SNOWLINE_REFERENCE: f32 = ${SNOWLINE_REFERENCE_METERS}.0;
@@ -1083,6 +1254,75 @@ fn landCoverDryProvinceTerms(dryness: f32, slope: f32, wetness: f32) -> LandCove
 }
 
 ${TROPICAL_COAST_WGSL}
+
+fn landCoverIsVolcanic(input: LandCoverInput) -> bool {
+  return input.lavaCover > 0.0 || input.tephraCover > 0.0;
+}
+
+/** Transliteration of landCoverVolcanicColonisation. */
+fn landCoverVolcanicColonisation(age: f32, wet: f32) -> f32 {
+  let fresh = 1.0 - kSmoothstep(
+    ${wgslConstant(LAND_COVER_VOLCANIC_FRESH_AGE[0])}, ${wgslConstant(LAND_COVER_VOLCANIC_FRESH_AGE[1])}, age);
+  let old = kSmoothstep(
+    ${wgslConstant(LAND_COVER_VOLCANIC_OLD_AGE[0])}, ${wgslConstant(LAND_COVER_VOLCANIC_OLD_AGE[1])}, age);
+  let middle = kSaturate(1.0 - fresh - old);
+  return kSaturate(middle * wet * ${wgslConstant(LAND_COVER_VOLCANIC_MOIST_COLONISATION)} + old);
+}
+
+/** Transliteration of landCoverVolcanicBareShare. */
+fn landCoverVolcanicBareShare(input: LandCoverInput) -> f32 {
+  if (!landCoverIsVolcanic(input)) { return 0.0; }
+  let share = kSaturate(kSaturate(input.lavaCover) + kSaturate(input.tephraCover));
+  let wet = kSmoothstep(0.3, 0.64, landCoverWetness(input));
+  return share * (1.0 - landCoverVolcanicColonisation(kSaturate(input.volcanicAge), wet));
+}
+
+/** Transliteration of applyVolcanicGround, returning the rewritten scores. */
+fn landCoverVolcanicGround(
+  input: LandCoverInput,
+  climatic: array<f32, ${SURFACE_MATERIAL_COUNT}>,
+  slope: f32,
+  wet: f32,
+  shore: f32,
+) -> array<f32, ${SURFACE_MATERIAL_COUNT}> {
+  var suitability = climatic;
+  let lava = kSaturate(input.lavaCover);
+  let tephra = kSaturate(input.tephraCover);
+  let age = kSaturate(input.volcanicAge);
+  let share = kSaturate(lava + tephra);
+  let fresh = 1.0 - kSmoothstep(
+    ${wgslConstant(LAND_COVER_VOLCANIC_FRESH_AGE[0])}, ${wgslConstant(LAND_COVER_VOLCANIC_FRESH_AGE[1])}, age);
+  let old = kSmoothstep(
+    ${wgslConstant(LAND_COVER_VOLCANIC_OLD_AGE[0])}, ${wgslConstant(LAND_COVER_VOLCANIC_OLD_AGE[1])}, age);
+  let middle = kSaturate(1.0 - fresh - old);
+  let bare = 1.0 - landCoverVolcanicColonisation(age, wet);
+  let keep = 1.0 - share * bare;
+  let shoreSand = suitability[${SurfaceMaterial.Sand}];
+  suitability[${SurfaceMaterial.Sand}] = shoreSand * (1.0 - share);
+  let pioneer = share * middle * wet * shore;
+  suitability[${SurfaceMaterial.Grass}] = suitability[${SurfaceMaterial.Grass}] * keep
+    + pioneer * ${wgslConstant(LAND_COVER_VOLCANIC_PIONEER_GRASS)};
+  suitability[${SurfaceMaterial.Shrub}] = suitability[${SurfaceMaterial.Shrub}] * keep
+    + pioneer * ${wgslConstant(LAND_COVER_VOLCANIC_PIONEER_SHRUB)};
+  suitability[${SurfaceMaterial.ForestFloor}] = suitability[${SurfaceMaterial.ForestFloor}] * keep
+    * (1.0 + share * old * ${wgslConstant(LAND_COVER_VOLCANIC_FERTILITY_GAIN)});
+  suitability[${SurfaceMaterial.DryGrass}] = suitability[${SurfaceMaterial.DryGrass}] * keep;
+  suitability[${SurfaceMaterial.Gravel}] = suitability[${SurfaceMaterial.Gravel}] * keep;
+  let repose = 1.0 - kSmoothstep(
+    ${wgslConstant(LAND_COVER_TEPHRA_REPOSE_SLOPE - LAND_COVER_TEPHRA_REPOSE_HALF_WIDTH)},
+    ${wgslConstant(LAND_COVER_TEPHRA_REPOSE_SLOPE + LAND_COVER_TEPHRA_REPOSE_HALF_WIDTH)},
+    slope);
+  let tephraClaim = tephra * bare * ${wgslConstant(LAND_COVER_TEPHRA_GAIN)};
+  suitability[${SurfaceMaterial.Basalt}] = lava * bare * ${wgslConstant(LAND_COVER_BASALT_GAIN)};
+  suitability[${SurfaceMaterial.Tephra}] = tephraClaim * repose + shoreSand * share;
+  suitability[${SurfaceMaterial.Rock}] = suitability[${SurfaceMaterial.Rock}]
+    + tephraClaim * (1.0 - repose)
+    + lava * old * kSmoothstep(
+      ${wgslConstant(LAND_COVER_VOLCANIC_FRONT_SLOPE[0])}, ${wgslConstant(LAND_COVER_VOLCANIC_FRONT_SLOPE[1])}, slope)
+      * ${wgslConstant(LAND_COVER_VOLCANIC_FRONT_GAIN)};
+  return suitability;
+}
+
 fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIAL_COUNT}> {
   let elevation = input.elevationMeters;
   let slope = input.slope;
@@ -1197,6 +1437,9 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   }
   suitability[${SurfaceMaterial.Basalt}] = 0.0;
   suitability[${SurfaceMaterial.Tephra}] = 0.0;
+  if (landCoverIsVolcanic(input)) {
+    return landCoverVolcanicGround(input, suitability, slope, wet, shore);
+  }
   return suitability;
 }
 
@@ -1215,12 +1458,15 @@ struct LandCoverWeights {
 fn classifyLandCover(input: LandCoverInput) -> LandCoverWeights {
   var suitability = landCoverSuitabilities(input);
   let temperature = max(0.02, landCoverSoftmaxTemperature(input));
+  // Volcanic land: off volcanic ground the two volcanic scores stay out of
+  // the softmax entirely, as in the TS twin.
+  let count = select(LAND_COVER_BASE_COUNT, LAND_COVER_COUNT, landCoverIsVolcanic(input));
   var peak = -1e30;
-  for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+  for (var index = 0u; index < count; index = index + 1u) {
     peak = max(peak, suitability[index]);
   }
   var exponentials: array<f32, ${SURFACE_MATERIAL_COUNT}>;
-  for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+  for (var index = 0u; index < count; index = index + 1u) {
     exponentials[index] = exp((suitability[index] - peak) / temperature);
   }
   var ids = vec4f(0.0);
@@ -1229,7 +1475,7 @@ fn classifyLandCover(input: LandCoverInput) -> LandCoverWeights {
   for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
     var bestIndex = 0u;
     var bestValue = -1.0;
-    for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
+    for (var index = 0u; index < count; index = index + 1u) {
       if (exponentials[index] > bestValue) {
         bestValue = exponentials[index];
         bestIndex = index;

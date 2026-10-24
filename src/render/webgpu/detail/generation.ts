@@ -16,6 +16,8 @@ import { TROPICAL_COAST, tropicalCoastWeight } from "@/src/world/tropicalCoast";
 import {
   classifyLandCover,
   landCoverHabitat,
+  landCoverVolcanicBareShare,
+  type LandCoverInput,
 } from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import {
   terrainSlopeAngleFromNormalizedSteepness,
@@ -444,9 +446,14 @@ function chooseTropicalTreeSpecies(
  * and only the paint migrates with the calendar.
  */
 function classifyDetailSample(sample: DetailTerrainSample) {
+  return classifyLandCover(detailLandCoverInput(sample));
+}
+
+/** The classifier's input for a detail sample (see classifyDetailSample). */
+function detailLandCoverInput(sample: DetailTerrainSample): LandCoverInput {
   const normalY = sample.normal?.y ?? 1;
   const horizontal = Math.hypot(sample.normal?.x ?? 0, sample.normal?.z ?? 0);
-  return classifyLandCover({
+  return {
     elevationMeters: sample.height,
     slope: sample.slope,
     moisture: sample.moisture,
@@ -469,7 +476,21 @@ function classifyDetailSample(sample: DetailTerrainSample) {
     airportInfluence: sample.airportInfluence ?? 0,
     dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
     seasonalTemperatureShift: 0,
-  });
+    lavaCover: sample.lavaCover ?? 0,
+    tephraCover: sample.tephraCover ?? 0,
+    volcanicAge: sample.volcanicAge ?? 0,
+  };
+}
+
+/**
+ * Volcanic land: the share of a block's stems that bare lava or tephra leaves
+ * standing, from the classifier's own bare share — so trees are absent on
+ * fresh lava and return with age exactly where the ground's cover does.
+ * Exactly 1, without evaluating anything, off volcanic ground.
+ */
+function detailVolcanicStemShare(sample: DetailTerrainSample): number {
+  if (!((sample.lavaCover ?? 0) > 0 || (sample.tephraCover ?? 0) > 0)) return 1;
+  return 1 - landCoverVolcanicBareShare(detailLandCoverInput(sample));
 }
 
 /**
@@ -1050,7 +1071,7 @@ function scatterLayer(
       field: field ?? ZERO_VEGETATION_DENSITY,
       stems: field === null ? 0 : (layer === "canopy"
         ? field.treeStemsPerSquareMeter
-        : field.shrubStemsPerSquareMeter) * context.density,
+        : field.shrubStemsPerSquareMeter) * context.density * detailVolcanicStemShare(sample),
     };
     stemsAt.set(key, info);
     return info;

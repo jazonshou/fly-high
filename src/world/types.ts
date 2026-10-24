@@ -152,6 +152,14 @@ export interface TerrainSample {
   airportInfluence: number;
   /** True only over the paved runway rectangle. */
   isRunway: boolean;
+  /**
+   * Volcanic land (`sampleVolcanicGround`): lava and tephra cover and their
+   * age, exactly 0 outside every footprint. `sampleTerrainSurface` fills them;
+   * a sample built by hand may omit them, which reads 0.
+   */
+  lavaCover?: number;
+  tephraCover?: number;
+  volcanicAge?: number;
 }
 
 /** Minimal terrain data required by the flight contact solver. */

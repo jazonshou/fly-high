@@ -42,6 +42,7 @@ import {
   type ClimateProvinceSample,
 } from "./climateProvince";
 import { mixSeed } from "./seed";
+import { createVolcanicGroundSample, sampleVolcanicGround } from "./volcanism";
 import {
   TERRAIN_BIOME_NAMES,
   TerrainBiome,
@@ -1094,6 +1095,8 @@ export function sampleTerrainMoisture(
 
 /** Per-call scratch for the province sample; these samplers run per texel. */
 const PROVINCE_SCRATCH: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
+/** The same, for the volcanic ground the classifier reads. */
+const VOLCANIC_SCRATCH = createVolcanicGroundSample();
 
 /** The smooth 11 km climate field feeding temperature; interpolable at tile scale. */
 export function sampleTerrainClimate(
@@ -1270,6 +1273,9 @@ function classifyBiome(
   temperatureOffset: number,
   dryness: number,
   sandCover: number,
+  lavaCover: number,
+  tephraCover: number,
+  volcanicAge: number,
 ): TerrainBiomeId {
   if (runway) return TerrainBiome.RUNWAY;
   if (height <= world.seaLevel) return TerrainBiome.WATER;
@@ -1294,6 +1300,11 @@ function classifyBiome(
     temperatureOffset,
     dryness,
     sandCover,
+    // Volcanic land: exactly 0 off volcanic ground, where the classifier then
+    // runs bit for bit the law it ran before.
+    lavaCover,
+    tephraCover,
+    volcanicAge,
   });
   return BIOME_FOR_DOMINANT_MATERIAL[dominantLandCover(weights)] ?? TerrainBiome.GRASSLAND;
 }
@@ -1451,6 +1462,9 @@ function createTerrainSampleTarget(): TerrainSample {
     color: { r: 0, g: 0, b: 0 },
     airportInfluence: 0,
     isRunway: false,
+    lavaCover: 0,
+    tephraCover: 0,
+    volcanicAge: 0,
   };
 }
 
@@ -1496,9 +1510,12 @@ export function sampleTerrainSurface(
   );
   const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
   const airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
+  // Volcanic land: a point sample, like the province above.
+  const volcanic = sampleVolcanicGround(world, x, z, 0, VOLCANIC_SCRATCH);
   const biome = classifyBiome(
     world, height, slope, resolvedMoisture, resolvedTemperature, runway, airportInfluence,
     temperatureOffset, dryness, cover.sandCover,
+    volcanic.lavaCover, volcanic.tephraCover, volcanic.age,
   );
 
   target.height = height;
@@ -1513,6 +1530,9 @@ export function sampleTerrainSurface(
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
   target.airportInfluence = airportInfluence;
   target.isRunway = runway;
+  target.lavaCover = volcanic.lavaCover;
+  target.tephraCover = volcanic.tephraCover;
+  target.volcanicAge = volcanic.age;
   writeTerrainColor(
     world, x, z, biome, resolvedMoisture, slope, height, resolvedTemperature, dayOfYear,
     temperatureOffset, target.color,
