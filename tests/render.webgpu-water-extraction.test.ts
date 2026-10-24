@@ -293,9 +293,11 @@ describe("water shader extraction (2-8a)", () => {
     // and the fragment hands `.w` to the bed, whose albedo mixes by it toward
     // a near-white coral sand. The field's B channel is 0 outside the tropics
     // and every new term is `mix(x, y, 0)` there, so no other sea moves:
-    // tests/gpu/water-bed-carbonate.test.ts measures the bed bit-identical at
-    // 0 on a real adapter (a first cut that shifted smoothstep's edges by the
-    // carbonate was not, which is why the fades are two literal-edged ones).
+    // tests/gpu/water-bed-carbonate.test.ts measures the bed at 0 on a real
+    // adapter: bit-identical on SwiftShader (a first cut that shifted
+    // smoothstep's edges by the carbonate was not, which is why the fades are
+    // two literal-edged ones), and within last-bit rounding on Metal, which
+    // reassociates.
     // Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "7a22f44586e782bb4373d85e8a6f7ff21adaba05660f9d7849e7731ef344eab4",

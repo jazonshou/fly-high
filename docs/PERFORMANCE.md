@@ -626,11 +626,19 @@ species branch draws its extra random only where the weight is above zero.
   0 outside the tropics; inland water passes a literal 0.0.
   `tests/gpu/water-bed-carbonate.test.ts` runs the shipped bed beside the
   pre-carbonate one on a real adapter, with the carbonate read from a buffer
-  so no compiler folds it, and they agree to the bit on all 360 probes. A
-  first cut that shifted the silt fade's smoothstep edges by the carbonate
-  did NOT (last-bit differences at 18 m: runtime edges lower differently
-  from literal ones), so the fade is two literal-edged smoothsteps mixed by
-  the carbonate.
+  so no compiler folds it. On SwiftShader they agree to the bit on all 360
+  probes; a first cut that shifted the silt fade's smoothstep edges by the
+  carbonate did NOT (last-bit differences at 18 m: runtime edges lower
+  differently from literal ones), so the fade is two literal-edged
+  smoothsteps mixed by the carbonate. **Metal is the exception:** its
+  compiler contracts and reassociates f32, so on the macOS suite 20 of 1,080
+  channels round apart in the last bits even at a carbonate of 0, and the
+  test holds Metal to 1e-4 of albedo (a fortieth of a display level; a
+  0.001 carbonate leak would show as ~3e-4). So the core sea is
+  bit-identical on SwiftShader (water-25ft and cruise-horizon rendered
+  identical frames) and within that rounding on Metal, where no source-level
+  gate can promise bits: any edit to a shader can change how Metal rounds
+  it.
 - **Timing** (cloud A/B, SwiftShader, 16 rounds; GPU gated at 5%, CPU a 15%
   guard). Against the climate provinces head before the dry and cold merges
   (5053f6b, this branch's first cut of the bed): GPU SAME on all six:
