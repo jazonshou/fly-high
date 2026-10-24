@@ -152,7 +152,7 @@ import {
 } from "./webgpu/water/SpectralOceanSystem";
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
-import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
+import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -630,6 +630,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private reducedMotion: boolean;
   private originX = 0;
   private originZ = 0;
+  /** The world's airports, home field first; replaced by `setAirports`. */
+  private airports: readonly Readonly<AirportDefinition>[];
   private originShifted = true;
   private cameraCut = true;
   private frameIndex = 0;
@@ -742,6 +744,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.latitudeDegrees = options.world.latitudeDegrees;
     this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
+    this.airports = options.world.airports;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
@@ -1569,6 +1572,36 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   sampleGroundHeight(x: number, z: number): number {
     return this.cameraTerrainSample(x, z).height;
+  }
+
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
+    if (this.disposed) return;
+    this.airports = airports;
+  }
+
+  projectWorldPoint(x: number, y: number, z: number): ScreenPoint | null {
+    const canvas = this.domElement;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (width <= 0 || height <= 0) return null;
+    // Row-vector convention: clip = (local, 1) * view * projection.
+    const m = this.camera.getTransformationMatrix().m;
+    const lx = x - this.originX;
+    const lz = z - this.originZ;
+    const clipX = lx * m[0]! + y * m[4]! + lz * m[8]! + m[12]!;
+    const clipY = lx * m[1]! + y * m[5]! + lz * m[9]! + m[13]!;
+    const clipW = lx * m[3]! + y * m[7]! + lz * m[11]! + m[15]!;
+    const inFront = clipW > 1e-6;
+    // Behind the camera the divide mirrors the point; dividing by |w| keeps
+    // the direction to turn toward instead.
+    const w = Math.max(Math.abs(clipW), 1e-6);
+    return {
+      x: (clipX / w * 0.5 + 0.5) * width,
+      y: (0.5 - clipY / w * 0.5) * height,
+      inFront,
+      width,
+      height,
+    };
   }
 
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {

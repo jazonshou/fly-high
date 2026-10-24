@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
+import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
 import type {
   TerrainMacroGrid,
@@ -15,6 +16,15 @@ import type {
 export interface TerrainAuthorityPublisher {
   publishTerrainPage(page: TerrainPagePublication): void;
   publishTerrainMacro(macro: TerrainMacroGrid): void;
+}
+
+export interface ScreenPoint {
+  readonly x: number;
+  readonly y: number;
+  readonly inFront: boolean;
+  /** Canvas size the point was projected into, CSS pixels. */
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface FlightRenderingSystem {
@@ -45,6 +55,18 @@ export interface FlightRenderingSystem {
   setQuality(quality: QualityLevel): void;
   setRenderingMode(mode: RenderingMode): void;
   setReducedMotion(reducedMotion: boolean): void;
+  /**
+   * The world's airport list changed (an airport spawned or retired), home
+   * field first. Every airport in it is graded, painted and lit; work for a
+   * new one streams in over the following frames rather than in this call.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): void;
+  /**
+   * Where a world point lands on the canvas this frame, in CSS pixels from
+   * its top-left corner, or null before the first frame. `inFront` is false
+   * for a point behind the camera; `x`/`y` then point the way to turn.
+   */
+  projectWorldPoint(x: number, y: number, z: number): ScreenPoint | null;
   /** Attach the worker-owned height authority after renderer startup. */
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */
