@@ -281,8 +281,32 @@ const COLD_PARKLAND_FULL = 0.2;
  * picking the argmax species would make every forest a monoculture.
  */
 function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
-  // The cold biomes split the draw rather than reweighting one table: at
-  // share 0 the temperate table receives `choice` itself, bit for bit.
+  // The dry provinces' own stands come first, drawn against their shares so
+  // the ecotone is a mixture rather than a contour. The roll is re-stretched
+  // over what is left, so the temperate draw below stays uniform.
+  const dry = sampleDryShares(sample);
+  if (choice < dry.arid) {
+    // Pinyon-juniper: pinyon pine, and the tree-form juniper the "cedar"
+    // prototype stands in for.
+    return choice / dry.arid < 0.78 ? "pine" : "cedar";
+  }
+  const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
+  if (afterArid < dry.parkland) {
+    const parklandRoll = afterArid / dry.parkland;
+    // A cold province's parkland is aspen parkland, not oak savanna: the
+    // prairie-boreal ecotone's aspen clumps ("birch" stands in for them) and
+    // lodgepole. Exactly 0 at a temperature offset of 0 or warmer.
+    const cold = smoothstep(
+      COLD_PARKLAND_ONSET, COLD_PARKLAND_FULL, -(sample.temperatureOffset ?? 0));
+    if (parklandRoll < cold) return parklandRoll / cold < 0.72 ? "birch" : "pine";
+    // Oak savanna: open-grown oaks with the odd grey pine.
+    return (parklandRoll - cold) / (1 - cold) < 0.84 ? "oak" : "pine";
+  }
+  choice = dry.parkland > 0 ? (afterArid - dry.parkland) / (1 - dry.parkland) : afterArid;
+  // Then the cold biomes split what is left rather than reweighting one
+  // table: at share 0 the temperate table receives `choice` itself, bit for
+  // bit. Dry first, so a cold semi-arid province is aspen parkland with taiga
+  // between the clumps rather than unbroken taiga.
   const split = splitColdDraw(borealShare(sample.temperatureOffset ?? 0), choice);
   return split.cold
     ? chooseBorealTreeSpecies(sample, split.choice)
@@ -329,28 +353,6 @@ function chooseBorealTreeSpecies(sample: DetailTerrainSample, choice: number): T
 }
 
 function chooseTemperateTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
-  // The dry provinces' own stands come first, drawn against their shares so
-  // the ecotone is a mixture rather than a contour. The roll is re-stretched
-  // over what is left, so the temperate draw below stays uniform.
-  const dry = sampleDryShares(sample);
-  if (choice < dry.arid) {
-    // Pinyon-juniper: pinyon pine, and the tree-form juniper the "cedar"
-    // prototype stands in for.
-    return choice / dry.arid < 0.78 ? "pine" : "cedar";
-  }
-  const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
-  if (afterArid < dry.parkland) {
-    const parklandRoll = afterArid / dry.parkland;
-    // A cold province's parkland is aspen parkland, not oak savanna: the
-    // prairie-boreal ecotone's aspen clumps ("birch" stands in for them) and
-    // lodgepole. Exactly 0 at a temperature offset of 0 or warmer.
-    const cold = smoothstep(
-      COLD_PARKLAND_ONSET, COLD_PARKLAND_FULL, -(sample.temperatureOffset ?? 0));
-    if (parklandRoll < cold) return parklandRoll / cold < 0.72 ? "birch" : "pine";
-    // Oak savanna: open-grown oaks with the odd grey pine.
-    return (parklandRoll - cold) / (1 - cold) < 0.84 ? "oak" : "pine";
-  }
-  choice = dry.parkland > 0 ? (afterArid - dry.parkland) / (1 - dry.parkland) : afterArid;
   const habitat = landCoverHabitat(classifyDetailSample(sample));
   // Upland: conifer-dominated, and the classifier's scrub/barren shares are
   // what "upland" MEANS here rather than a height threshold.
@@ -1123,6 +1125,16 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
 
 /** `R-27`: the understory reads the same weight vector the canopy does. */
 function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
+  // Dry provinces first, drawn against their shares as the canopy is.
+  const dry = sampleDryShares(sample);
+  if (choice < dry.arid) return choice / dry.arid < 0.74 ? "sage" : "juniper";
+  const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
+  if (afterArid < dry.parkland) {
+    const parklandRoll = afterArid / dry.parkland;
+    return parklandRoll < 0.4 ? "juniper" : parklandRoll < 0.7 ? "sage" : "hazel";
+  }
+  choice = dry.parkland > 0 ? (afterArid - dry.parkland) / (1 - dry.parkland) : afterArid;
+  // Then the cold split, as the canopy does.
   const split = splitColdDraw(borealShare(sample.temperatureOffset ?? 0), choice);
   return split.cold
     ? chooseColdShrubSpecies(sample, split.choice)
@@ -1148,15 +1160,6 @@ function chooseColdShrubSpecies(sample: DetailTerrainSample, choice: number): Sh
 }
 
 function chooseTemperateShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
-  // Dry provinces first, drawn against their shares as the canopy is.
-  const dry = sampleDryShares(sample);
-  if (choice < dry.arid) return choice / dry.arid < 0.74 ? "sage" : "juniper";
-  const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
-  if (afterArid < dry.parkland) {
-    const parklandRoll = afterArid / dry.parkland;
-    return parklandRoll < 0.4 ? "juniper" : parklandRoll < 0.7 ? "sage" : "hazel";
-  }
-  choice = dry.parkland > 0 ? (afterArid - dry.parkland) / (1 - dry.parkland) : afterArid;
   if (sample.moisture > 0.64) return choice < 0.68 ? "hazel" : "juniper";
   const habitat = landCoverHabitat(classifyDetailSample(sample));
   if (habitat.scrub + habitat.barren > habitat.canopy + habitat.open) {
