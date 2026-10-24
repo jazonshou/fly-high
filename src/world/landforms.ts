@@ -1,5 +1,13 @@
 import { climateProvinceCoreCenter } from "./climateProvince";
-import { applyDuneStage, duneErgWeight, duneRelief, sampleDuneField, type DuneSample } from "./dunes";
+import {
+  applyDuneStage,
+  duneClimateFactors,
+  duneErgWeight,
+  duneRelief,
+  sampleDuneField,
+  type DuneClimateFactors,
+  type DuneSample,
+} from "./dunes";
 import { smoothstep } from "./noise";
 import { sampleNaturalTerrainIntermediates, type NaturalTerrainIntermediates } from "./terrain";
 import type { WorldDefinition } from "./types";
@@ -200,4 +208,38 @@ function landformCover(
   const erg = duneErgWeight(world, x, z, coreMask, at, duneRelief(at), volcanicActivity);
   if (erg <= 0) return target;
   return sampleDuneField(world, x, z, erg, filterWidthMeters, at, target);
+}
+
+/** The far field's texel: its erg weight is band-limited at this half-width. */
+const ERG_FAR_FILTER_WIDTH_METERS = 1_250;
+
+/**
+ * `sampleErgFarWeight`'s "no erg, and the kernel was never evaluated": the far
+ * province field's lane contract, where a negative value is a cheap early out
+ * that costs its frame budget nothing.
+ */
+export const ERG_FAR_WEIGHT_SKIPPED = -1;
+
+const FAR_CLIMATE_SCRATCH: DuneClimateFactors = { arid: 0, patch: 0 };
+
+/**
+ * The erg weight as the far ground sees it: the same factors as the dune
+ * stage, with the natural kernel band-limited at the far field's 1.25 km
+ * texel (which also skips every octave shorter than ~2.5 km, so it is cheap).
+ * For the CPU-baked far province field (ClimateProvinceField.ts), which turns
+ * it into a sand tone past the fine channel pages; allocates nothing.
+ *
+ * Returns `ERG_FAR_WEIGHT_SKIPPED` (-1, read as a weight of 0) wherever the
+ * erg is ruled out BEFORE the natural kernel: eroded worlds, the landform
+ * core, and ground whose province is not arid or lies outside every erg
+ * patch. Otherwise the weight in [0, 1].
+ */
+export function sampleErgFarWeight(world: WorldDefinition, x: number, z: number): number {
+  if (world.worldEvolution === "eroded") return ERG_FAR_WEIGHT_SKIPPED;
+  const coreMask = landformCoreMask(world, x, z);
+  if (coreMask <= 0) return ERG_FAR_WEIGHT_SKIPPED;
+  const climate = duneClimateFactors(world, x, z, FAR_CLIMATE_SCRATCH);
+  if (climate.arid <= 0 || climate.patch <= 0) return ERG_FAR_WEIGHT_SKIPPED;
+  const natural = sampleNaturalTerrainIntermediates(world.seedHash, x, z, ERG_FAR_FILTER_WIDTH_METERS);
+  return duneErgWeight(world, x, z, coreMask, natural, duneRelief(natural), volcanicActivity, climate);
 }

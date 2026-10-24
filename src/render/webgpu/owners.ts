@@ -172,7 +172,10 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     // failure the audit found, in the artifact the phase creates.
     artifact: "terrain-height-kernel-wgsl",
     owner: "terrain-geometry",
-    definitionSites: ["src/render/webgpu/terrain/TerrainKernel.ts"],
+    definitionSites: [
+      "src/render/webgpu/terrain/TerrainKernel.ts",
+      "src/render/webgpu/terrain/TerrainLandformKernel.ts",
+    ],
     consumers: ["terrain-geometry", "terrain-material"],
     ownedSymbols: [
       "TERRAIN_KERNEL_WGSL",
@@ -181,11 +184,14 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "TERRAIN_KERNEL_LATTICES",
       "buildTerrainKernelPageUniform",
       "TERRAIN_KERNEL_FORBIDDEN_BUILTINS",
+      "TERRAIN_LANDFORM_WGSL",
     ],
     notes:
       "A transliteration of src/world/{seed,noise,geology,terrain}.ts, not a "
-      + "second kernel. Every expectation constant is INJECTED from the TS "
-      + "source; retyping one is how coarse-page mean height moves by metres.",
+      + "second kernel, and of the landform stages that run after it "
+      + "(src/world/{landforms,dunes}.ts, in TerrainLandformKernel.ts). Every "
+      + "expectation constant is INJECTED from the TS source; retyping one is "
+      + "how coarse-page mean height moves by metres.",
   },
   {
     artifact: "terrain-page-atlas",

@@ -32,6 +32,13 @@ const DESERT = createWorld("dune-lab", {
   climateProvince: "high-desert",
 });
 
+/**
+ * The same sand seas forced into a wet province (a forced erg does not read
+ * the province): the climate grows forest on the low ground, so the sand has
+ * plants to remove, where the high desert grows sand on its own driest floors.
+ */
+const WET_DUNES = createWorld("dune-lab", { landforms: { dunes: true }, climateProvince: "tropical" });
+
 interface Probe {
   readonly x: number;
   readonly z: number;
@@ -104,30 +111,32 @@ describe("sand cover on the terrain sample", () => {
     }
   });
 
-  it("names a dune sand (BEACH, the bare-sand biome) where the climate grew grass", () => {
-    let wasVegetated = 0;
-    for (const { x, z } of DUNE_PROBES) {
-      const sample = sampleTerrain(DESERT, x, z);
-      expect(sample.sandCover).toBe(1);
-      expect(sample.biome).toBe(TerrainBiome.BEACH);
-      expect(sample.biomeName).toBe("beach");
-      // The same point classified with the cover withheld: what it was before.
-      const withoutCover = sampleTerrainSurface(
-        DESERT, x, z, sample.height, sample.slope,
-        { ...sample, color: { r: 0, g: 0, b: 0 } } as TerrainSample,
-        undefined, undefined, undefined,
-        { ergWeight: 0, duneHeight: 0, sandCover: 0 },
-      );
-      if (withoutCover.biome !== TerrainBiome.BEACH) wasVegetated += 1;
+  it("names a dune sand (BEACH, the bare-sand biome) whatever the climate grew there", () => {
+    for (const world of [DESERT, WET_DUNES]) {
+      let wasVegetated = 0;
+      for (const { x, z } of DUNE_PROBES) {
+        const sample = sampleTerrain(world, x, z);
+        expect(sample.sandCover).toBe(1);
+        expect(sample.biome).toBe(TerrainBiome.BEACH);
+        expect(sample.biomeName).toBe("beach");
+        // The same point classified with the cover withheld: what it was before.
+        const withoutCover = sampleTerrainSurface(
+          world, x, z, sample.height, sample.slope,
+          { ...sample, color: { r: 0, g: 0, b: 0 } } as TerrainSample,
+          undefined, undefined, undefined,
+          { ergWeight: 0, duneHeight: 0, sandCover: 0 },
+        );
+        if (withoutCover.biome !== TerrainBiome.BEACH) wasVegetated += 1;
+      }
+      // The high desert's own Sand claim takes some of the flat, driest floors;
+      // the wet province grows plants on every one of them.
+      if (world === WET_DUNES) expect(wasVegetated).toBe(DUNE_PROBES.length);
+      else expect(wasVegetated).toBeGreaterThan(0);
     }
-    expect(wasVegetated).toBe(DUNE_PROBES.length);
   });
 });
 
 describe("sand cover in the vegetation", () => {
-  // Dunes forced into a wet province: the climate grows forest on the low
-  // ground, so the sand seas have trees to remove (a high desert has none).
-  const WET_DUNES = createWorld("dune-lab", { landforms: { dunes: true }, climateProvince: "tropical" });
   const CELL_METERS = 256;
   const live = (world: WorldDefinition) => (x: number, z: number) => sampleTerrain(world, x, z);
   const coverAt = (point: Probe) => sampleLandformCover(WET_DUNES, point.x, point.z, 0).sandCover;

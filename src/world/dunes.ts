@@ -1,4 +1,4 @@
-import { sampleClimateProvinceUnmasked, type ClimateProvinceSample } from "./climateProvince";
+import { CLIMATE_PROVINCE, climateProvinceStaircase } from "./climateProvince";
 import { FRACTURE_EXPOSURE_MEAN, FRACTURE_RAVINE_MEAN } from "./geology";
 import { fbm2D, filteredValueNoise2D, octaveBandWeight, smoothstep } from "./noise";
 import { mixSeed } from "./seed";
@@ -93,7 +93,7 @@ export const DUNES = Object.freeze({
   /** Mean windward slope; the convex profile peaks at 4/3 of it. */
   stossDegrees: 8,
   /** The slipface: sand's angle of repose. */
-  slipDegrees: 30,
+  slipDegrees: 29,
   /** Polynomial smooth-min height band that rounds the brink (about 4 m wide). */
   brinkRoundingMeters: 3,
   /** Crest sinuosity: a ~1.5 km field and a ~450 m one, amplitudes in periods. */
@@ -107,9 +107,9 @@ export const DUNES = Object.freeze({
    */
   scallopWidthMeters: 520,
   scallopAmplitudePeriods: 0.22,
-  scallopStagger: 0.37,
+  scallopStagger: 0.12,
   /** How far the two meander fields push the crescent joints sideways, crescents. */
-  scallopJitter: 0.35,
+  scallopJitter: 0.45,
   /** Crest continuity: a ~700 m field. */
   crest: Object.freeze({ channel: 222, wavelengthMeters: 700 }),
   /** Crest threshold at full supply and at the thinnest sand, on the [0, 1] crest field. */
@@ -219,13 +219,82 @@ export interface DuneSample {
   sandCover: number;
 }
 
-const PROVINCE_SCRATCH: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
 const DUNE_SCRATCH: DuneSample = { ergWeight: 0, duneHeight: 0, sandCover: 0 };
+
+/**
+ * The natural province's dryness before the climate core: the dryness half of
+ * `sampleClimateProvinceUnmasked`, the same arithmetic, without evaluating the
+ * temperature field or allocating (this runs on physics' height samples).
+ * WGSL twin: `kProvinceDrynessStaircase` over the `provinceDryness` lattices.
+ */
+export function unmaskedProvinceDryness(seedHash: number, x: number, z: number): number {
+  const field = CLIMATE_PROVINCE.dryness;
+  return climateProvinceStaircase(
+    fbm2D(
+      mixSeed(seedHash, field.channel),
+      x / field.baseWavelengthMeters,
+      z / field.baseWavelengthMeters,
+      field.octaves,
+      field.lacunarity,
+      field.persistence,
+    ),
+    field.levels,
+    field.thresholds,
+  );
+}
+
+/** The erg's two climate factors, each in [0, 1]. */
+export interface DuneClimateFactors {
+  /** The arid province: smoothstep over the unmasked dryness. */
+  arid: number;
+  /** The erg patch: which arid ground is a sand sea. */
+  patch: number;
+}
+
+/**
+ * The erg's climate factors, read WITHOUT the natural kernel: a reader that
+ * has not evaluated the kernel yet (the far field) gates on these first and
+ * skips the kernel wherever the erg cannot exist. Both 1 in a world that
+ * forces dunes; the patch is 0, unread, where the province is not arid.
+ */
+export function duneClimateFactors(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  target: DuneClimateFactors,
+): DuneClimateFactors {
+  if (dunesForced(world)) {
+    target.arid = 1;
+    target.patch = 1;
+    return target;
+  }
+  target.arid = smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, unmaskedProvinceDryness(world.seedHash, x, z));
+  target.patch = target.arid > 0 ? ergPatchFactor(world.seedHash, x, z) : 0;
+  return target;
+}
+
+function ergPatchFactor(seedHash: number, x: number, z: number): number {
+  const patch = DUNES.ergPatch;
+  return smoothstep(
+    patch.low,
+    patch.high,
+    fbm2D(
+      mixSeed(seedHash, patch.channel),
+      x / patch.baseWavelengthMeters,
+      z / patch.baseWavelengthMeters,
+      patch.octaves,
+      patch.lacunarity,
+      patch.persistence,
+    ),
+  );
+}
 
 /**
  * The erg weight from the factors the kernel already computed (`coreMask`,
  * low ground, no hills), then the province and the erg patch. Returns 0
- * before reading a lattice wherever a cheap factor is already 0.
+ * before reading a lattice wherever a cheap factor is already 0. `climate`,
+ * when the caller already has it (`duneClimateFactors`), replaces the two
+ * lattice reads; the arithmetic is the same either way.
  */
 export function duneErgWeight(
   world: WorldDefinition,
@@ -235,6 +304,7 @@ export function duneErgWeight(
   natural: Readonly<NaturalTerrainIntermediates>,
   relief: Readonly<DuneRelief>,
   volcanicActivity: (world: WorldDefinition, x: number, z: number) => number,
+  climate?: Readonly<DuneClimateFactors>,
 ): number {
   // Low ground is read off the BASE height, the shipped height without its
   // relief: a gate on the shipped height itself follows every knoll, and a
@@ -246,22 +316,11 @@ export function duneErgWeight(
   let weight = coreMask * lowGround * flat;
   if (weight <= 0) return 0;
   if (!dunesForced(world)) {
-    const province = sampleClimateProvinceUnmasked(world.seedHash, x, z, PROVINCE_SCRATCH);
-    weight *= smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, province.dryness);
+    weight *= climate
+      ? climate.arid
+      : smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, unmaskedProvinceDryness(world.seedHash, x, z));
     if (weight <= 0) return 0;
-    const patch = DUNES.ergPatch;
-    weight *= smoothstep(
-      patch.low,
-      patch.high,
-      fbm2D(
-        mixSeed(world.seedHash, patch.channel),
-        x / patch.baseWavelengthMeters,
-        z / patch.baseWavelengthMeters,
-        patch.octaves,
-        patch.lacunarity,
-        patch.persistence,
-      ),
-    );
+    weight *= climate ? climate.patch : ergPatchFactor(world.seedHash, x, z);
     if (weight <= 0) return 0;
   }
   return weight * (1 - volcanicActivity(world, x, z));

@@ -16,7 +16,7 @@ import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 
 /**
  * Sand seas in the classifier: `sandCover` overrides the climate on dune
- * ground (Sand rises, plants and dune-angle Rock fall) and is invisible
+ * ground (Sand rises, plants and dune-angle Rock and Gravel fall) and is invisible
  * everywhere else. The first block is the contract that keeps every perf
  * baseline still: a zero cover is the shipped classifier bit for bit.
  */
@@ -124,12 +124,13 @@ describe("sand cover on the sand seas", () => {
           const suitability = landCoverSuitabilities({ ...input, sandCover: 1 });
           for (const id of VEGETATED) expect(suitability[id]).toBe(0);
           expect(suitability[SurfaceMaterial.Rock]).toBe(0);
+          expect(suitability[SurfaceMaterial.Gravel]).toBe(0);
         }
       }
     }
   });
 
-  it("fades the plants with the cover and leaves steep ground its Rock", () => {
+  it("fades the plants with the cover and leaves steep ground its Rock and scree", () => {
     const input = { ...BASE, elevationMeters: 120, moisture: 0.25, slope: 0.05 };
     let previousSand = -Infinity;
     let previousPlants = Infinity;
@@ -141,12 +142,13 @@ describe("sand cover on the sand seas", () => {
       previousSand = suitability[SurfaceMaterial.Sand]!;
       previousPlants = plants;
     }
-    // A cliff inside an erg: past the dune band Rock and Sand are the shipped ones.
+    // A cliff inside an erg: past the dune band Rock, Gravel and Sand are the shipped ones.
     for (const slope of [LAND_COVER_SAND_SLOPE_HIGH, 0.4, 0.7]) {
       const cliff = { ...input, slope, elevationMeters: 600 };
       const shipped = landCoverSuitabilities(cliff);
       const covered = landCoverSuitabilities({ ...cliff, sandCover: 1 });
       expect(covered[SurfaceMaterial.Rock]).toBe(shipped[SurfaceMaterial.Rock]);
+      expect(covered[SurfaceMaterial.Gravel]).toBe(shipped[SurfaceMaterial.Gravel]);
       expect(covered[SurfaceMaterial.Sand]).toBe(shipped[SurfaceMaterial.Sand]);
       // The plants still go: whatever wins a covered cliff is mineral.
       expect(VEGETATED as readonly number[])
@@ -154,10 +156,10 @@ describe("sand cover on the sand seas", () => {
     }
   });
 
-  it("releases Rock fully on dune-angle ground and not at all past the band", () => {
-    expect(landCoverSandCoverTerms(1, SLIPFACE).rock).toBe(0);
-    expect(landCoverSandCoverTerms(1, LAND_COVER_SAND_SLOPE_LOW).rock).toBe(0);
-    expect(landCoverSandCoverTerms(1, LAND_COVER_SAND_SLOPE_HIGH).rock).toBe(1);
+  it("buries Rock and Gravel fully on dune-angle ground and not at all past the band", () => {
+    expect(landCoverSandCoverTerms(1, SLIPFACE).stone).toBe(0);
+    expect(landCoverSandCoverTerms(1, LAND_COVER_SAND_SLOPE_LOW).stone).toBe(0);
+    expect(landCoverSandCoverTerms(1, LAND_COVER_SAND_SLOPE_HIGH).stone).toBe(1);
     expect(landCoverSandCoverTerms(0.4, 0.05).vegetation).toBeCloseTo(0.6, 12);
     expect(landCoverSandCoverTerms(2, 0).sand).toBe(LAND_COVER_SAND_COVER_GAIN);
   });

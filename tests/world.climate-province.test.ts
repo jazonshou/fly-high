@@ -296,8 +296,11 @@ describe("the province on the GPU page uniform", () => {
   it("appends its lattices after every existing one, unfiltered at any level", () => {
     expect(PROVINCE_LATTICES).toHaveLength(
       CLIMATE_PROVINCE.temperature.octaves + CLIMATE_PROVINCE.dryness.octaves);
-    // Appended, so every lattice index the kernel already used is unchanged.
-    expect(PROVINCE_LATTICES[0]!.index).toBe(TERRAIN_KERNEL_LATTICE_COUNT - PROVINCE_LATTICES.length);
+    // Appended right after the climate chain, so every lattice index the
+    // kernel already used is unchanged (the landforms' come after them).
+    const climateEnd = TERRAIN_KERNEL_LATTICES.findIndex((lattice) => lattice.name === "climate[2]");
+    expect(PROVINCE_LATTICES[0]!.index).toBe(climateEnd + 1);
+    expect(PROVINCE_LATTICES.at(-1)!.index).toBeLessThan(TERRAIN_KERNEL_LATTICE_COUNT);
     for (const { lattice } of PROVINCE_LATTICES) {
       expect(lattice.filterWidthMetersOverride, lattice.name).toBe(0);
     }

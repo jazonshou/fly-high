@@ -7,6 +7,7 @@ import {
   NOISE_LATTICE_WRAP_PERIOD_CELLS,
   RIDGED_OCTAVE_BAND_LIMIT_MEAN,
   RIDGED_PERSISTENCE,
+  octaveBandWeight,
   ridgedChannelVarianceKept,
   smoothstep,
 } from "@/src/world/noise";
@@ -16,6 +17,8 @@ import {
   climateProvinceCoreCenter,
   type ClimateProvinceSample,
 } from "@/src/world/climateProvince";
+import { DUNES, duneAcrossPhase, duneWindPhase } from "@/src/world/dunes";
+import { landformCoreCenter, landformCoreRadii } from "@/src/world/landforms";
 import type { WorldDefinition } from "@/src/world/types";
 import {
   LOCAL_RIDGES_KNOLL_MEAN,
@@ -262,8 +265,10 @@ const FABRIC_COS = 0.819;
 const FABRIC_SIN = 0.574;
 
 /**
- * All 43 lattices, in the order the WGSL indexes them. The base offsets below
- * are compiled into the emitted source, so a reordering here cannot silently
+ * Every lattice, in the order the WGSL indexes them: the 34 of the height
+ * chain, then the climate chain, the provinces and the dune stage, each
+ * APPENDED by the work that added it. The base offsets below are compiled
+ * into the emitted source, so a reordering here cannot silently
  * desynchronise the shader from the uniform builder.
  */
 export const TERRAIN_KERNEL_LATTICES: readonly TerrainKernelLattice[] = Object.freeze([
@@ -303,7 +308,43 @@ export const TERRAIN_KERNEL_LATTICES: readonly TerrainKernelLattice[] = Object.f
   // boundary would move when a page changes LOD.
   ...provinceRun("provinceTemperature", CLIMATE_PROVINCE.temperature),
   ...provinceRun("provinceDryness", CLIMATE_PROVINCE.dryness),
+  // ——— landforms: the dune stage (src/world/dunes.ts) ———
+  //
+  // Appended after the provinces, so every lattice above keeps its index and
+  // split origin. Every figure is DUNES' own. The erg patch is an fbm the CPU
+  // calls UNFILTERED (`fbm2D` with no wavelength), so it carries a zero
+  // band-limit override exactly like the provinces: a sand sea's outline may
+  // not move when a page changes level. The meanders and the crest field are
+  // `filteredValueNoise2D` on the CPU, keyed on the page's own width, so they
+  // band-limit per page like every terrain lattice.
+  ...terrainKernelFbmRun(
+    "duneErgPatch",
+    "world",
+    DUNES.ergPatch.channel,
+    DUNES.ergPatch.octaves,
+    DUNES.ergPatch.baseWavelengthMeters,
+    DUNES.ergPatch.lacunarity,
+    DUNES.ergPatch.persistence,
+  ).map((lattice) => ({ ...lattice, filterWidthMetersOverride: 0 })),
+  duneLattice("duneMeander", DUNES.meander),
+  duneLattice("duneMeanderFine", DUNES.meanderFine),
+  duneLattice("duneCrest", DUNES.crest),
 ]);
+
+/** A bare world-space dune field: `filteredValueNoise2D(x / w, z / w, w)`. */
+function duneLattice(
+  name: string,
+  field: { readonly channel: number; readonly wavelengthMeters: number },
+): TerrainKernelLattice {
+  return terrainKernelBareLattice(
+    name,
+    "world",
+    field.channel,
+    field.wavelengthMeters,
+    field.wavelengthMeters,
+    field.wavelengthMeters,
+  );
+}
 
 function provinceRun(
   name: string,
@@ -327,6 +368,20 @@ function latticeBase(name: string): number {
   return index;
 }
 
+/**
+ * The base index of a lattice (or of an fbm run's first octave) by its exact
+ * name, for an include composed OUTSIDE this file that indexes the kernel's
+ * own table (the landform include). Exact, unlike the prefix match above,
+ * because "duneMeander" is a prefix of "duneMeanderFine".
+ */
+export function terrainKernelLatticeBase(name: string): number {
+  const index = TERRAIN_KERNEL_LATTICES.findIndex(
+    (lattice) => lattice.name === name || lattice.name === `${name}[0]`,
+  );
+  if (index < 0) throw new Error(`Terrain kernel has no lattice named ${name}`);
+  return index;
+}
+
 export const TERRAIN_KERNEL_LATTICE_COUNT = TERRAIN_KERNEL_LATTICES.length;
 
 // ---------------------------------------------------------------------------
@@ -335,10 +390,10 @@ export const TERRAIN_KERNEL_LATTICE_COUNT = TERRAIN_KERNEL_LATTICES.length;
 
 /**
  * Float32 slots the page buffer holds before the seed table: the `kept` row,
- * then the two climate-province rows. Laid out so the `vec4f` arrays stay
- * 16-byte aligned in the storage address space.
+ * the two climate-province rows, then the four landform rows. Laid out so
+ * the `vec4f` arrays stay 16-byte aligned in the storage address space.
  */
-const KEPT_FLOATS = 12;
+const KEPT_FLOATS = 28;
 /** Padded to a multiple of four so the buffer stays 16-byte sized. */
 function seedFloatsFor(latticeCount: number): number {
   return Math.ceil(latticeCount / 4) * 4;
@@ -415,6 +470,27 @@ export interface TerrainKernelPageInput {
    * what every consumer that does not classify the ground wants.
    */
   readonly climateProvince?: TerrainKernelProvinceInput;
+  /**
+   * The world's landforms (`terrainLandformInput`). Omitted or null, the page's
+   * landform gain is 0 and `terrainLandforms` returns the natural height itself
+   * everywhere: what every consumer that does not draw landforms (and the
+   * shelved eroded path) wants, with today's arithmetic.
+   */
+  readonly landform?: TerrainKernelLandformInput | null;
+}
+
+/** What the page uniform needs to evaluate `terrainLandforms` (TerrainLandformKernel.ts). */
+export interface TerrainKernelLandformInput {
+  /** Centre of the landform core, world metres (f64 here, never on the GPU). */
+  readonly coreCenterX: number;
+  readonly coreCenterZ: number;
+  /** `landformCoreRadii`: the natural core, or a forced world's runway clearance. */
+  readonly innerRadiusMeters: number;
+  readonly outerRadiusMeters: number;
+  /** A world that forces dunes drops the province and erg-patch factors. */
+  readonly forcedDunes: boolean;
+  /** `world.prevailingWindRadians`: the dunes line up across it. */
+  readonly windRadians: number;
 }
 
 /** What the page uniform needs to evaluate `terrainClimateProvince`. */
@@ -518,6 +594,49 @@ export function buildTerrainKernelPageUniform(
   floats[keptBase + 9] = forced?.dryness ?? 0;
   floats[keptBase + 10] = 0;
   floats[keptBase + 11] = 0;
+  // Landforms, four rows, all 0 without an input (gain 0: natural height).
+  // Row one: the page origin's offset from the landform core's centre
+  // (subtracted in f64, like the province's), the gain and the forced-dunes
+  // flag. Row two: the core's radii and the dune profile's band weight, a page
+  // constant by rule 4 because the dune spacing is fixed (the page's filter
+  // width itself is `kept.w`). Row three: the
+  // wind's (sin, cos) and the two dune phases AT THE PAGE ORIGIN, reduced to
+  // [0, 1) in f64: rule 1 for a phase. The CPU's phases are linear in the
+  // warped coordinate, so origin + local splits them exactly, and only the
+  // fractional part of the origin's phase can reach a periodic profile. The
+  // across phase also carries the wind phase's stagger, whose integer part
+  // DOES matter (a stagger times 2,300 periods is not a whole crescent), so
+  // it is folded in here at full f64 precision before the reduction. Row
+  // four: the same core offset split hi/lo in f64 (hi = fround(d), lo = d -
+  // hi), for the volcanic overlay, whose site lattice needs more of the
+  // offset than one f32 holds.
+  const landform = input.landform ?? null;
+  if (landform) {
+    const wind = landform.windRadians;
+    const windPhase = duneWindPhase(wind, input.originX, input.originZ);
+    const acrossPhase = duneAcrossPhase(wind, input.originX, input.originZ)
+      + windPhase * DUNES.scallopStagger;
+    floats[keptBase + 12] = input.originX - landform.coreCenterX;
+    floats[keptBase + 13] = input.originZ - landform.coreCenterZ;
+    floats[keptBase + 14] = 1;
+    floats[keptBase + 15] = landform.forcedDunes ? 1 : 0;
+    floats[keptBase + 16] = landform.innerRadiusMeters;
+    floats[keptBase + 17] = landform.outerRadiusMeters;
+    floats[keptBase + 18] = octaveBandWeight(DUNES.spacingMeters, input.filterWidthMeters);
+    floats[keptBase + 19] = 0;
+    floats[keptBase + 20] = Math.sin(wind);
+    floats[keptBase + 21] = Math.cos(wind);
+    floats[keptBase + 22] = windPhase - Math.floor(windPhase);
+    floats[keptBase + 23] = acrossPhase - Math.floor(acrossPhase);
+    const baseX = input.originX - landform.coreCenterX;
+    const baseZ = input.originZ - landform.coreCenterZ;
+    const hiX = Math.fround(baseX);
+    const hiZ = Math.fround(baseZ);
+    floats[keptBase + 24] = hiX;
+    floats[keptBase + 25] = hiZ;
+    floats[keptBase + 26] = baseX - hiX;
+    floats[keptBase + 27] = baseZ - hiZ;
+  }
   return buffer;
 }
 
@@ -530,6 +649,27 @@ export function terrainClimateProvinceInput(
     coreCenterX: center.x,
     coreCenterZ: center.z,
     forced: world.climateProvince ?? null,
+  };
+}
+
+/**
+ * The landform input for a world's page uniforms, or null for an eroded world:
+ * its GPU path has no landform stage, matching `applyTerrainLandforms`' early
+ * return, so its pages keep gain 0.
+ */
+export function terrainLandformInput(
+  world: Pick<WorldDefinition, "airport" | "landforms" | "prevailingWindRadians" | "worldEvolution">,
+): TerrainKernelLandformInput | null {
+  if (world.worldEvolution === "eroded") return null;
+  const center = landformCoreCenter(world);
+  const radii = landformCoreRadii(world);
+  return {
+    coreCenterX: center.x,
+    coreCenterZ: center.z,
+    innerRadiusMeters: radii.inner,
+    outerRadiusMeters: radii.outer,
+    forcedDunes: world.landforms?.dunes === true,
+    windRadians: world.prevailingWindRadians,
   };
 }
 
@@ -627,6 +767,32 @@ export const TERRAIN_KERNEL_WGSL = /* wgsl */ `
 
 /** Which page of the bound batch the following calls resolve against. */
 var<private> kPageIndex: u32 = 0u;
+
+/**
+ * NaturalTerrainIntermediates (terrain.ts): the natural kernel's intermediates
+ * at the point of its LAST call, which the landform stages read instead of
+ * evaluating the kernel again (TerrainLandformKernel.ts). The warped
+ * coordinate is the LOCAL warped offset (local + warp, rule 1); the CPU's is
+ * absolute, and the landform rows carry the page origin's share of anything
+ * that reads it.
+ */
+struct KNaturalIntermediates {
+  warpedX: f32,
+  warpedZ: f32,
+  continental: f32,
+  land: f32,
+  foothillRegion: f32,
+  mountainRegion: f32,
+  rolling: f32,
+  hillStrength: f32,
+  fine: f32,
+  rockyKnolls: f32,
+  foothillHeight: f32,
+  valleyCarve: f32,
+  geologicalRelief: f32,
+  shippedHeight: f32,
+};
+var<private> kNatural: KNaturalIntermediates;
 
 fn kSelectPage(index: u32) {
   kPageIndex = index;
@@ -1059,6 +1225,22 @@ fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
       - (rockyKnolls + cragDetail + geologicalRelief) * (1.0 - reliefKept);
     height = shippedHeight + (reshapedHeight - shippedHeight) * shapeWeight;
   }
+  // Landforms read these off the call that produced the height; writing them
+  // cannot change the returned value.
+  kNatural.warpedX = wx;
+  kNatural.warpedZ = wz;
+  kNatural.continental = continental;
+  kNatural.land = land;
+  kNatural.foothillRegion = foothillRegion;
+  kNatural.mountainRegion = mountainRegion;
+  kNatural.rolling = rolling;
+  kNatural.hillStrength = hillStrength;
+  kNatural.fine = fine;
+  kNatural.rockyKnolls = rockyKnolls;
+  kNatural.foothillHeight = foothillHeight;
+  kNatural.valleyCarve = valleyCarve;
+  kNatural.geologicalRelief = geologicalRelief;
+  kNatural.shippedHeight = shippedHeight;
   return kClamp(height, K_MIN_TERRAIN_HEIGHT, K_MAX_TERRAIN_HEIGHT);
 }
 `;
@@ -1083,6 +1265,14 @@ struct TerrainKernelPage {
   // (forced temperature offset, forced dryness, 0, 0).
   province: vec4f,
   provinceForced: vec4f,
+  // Landforms: (page origin - core centre xz, gain, forced dunes),
+  // (core inner radius, outer radius, dune profile band weight, 0),
+  // (wind sin, wind cos, wind phase at the origin, across phase at the origin)
+  // and the core offset again, split in f64: (hi x, hi z, lo x, lo z).
+  landform: vec4f,
+  landformRadii: vec4f,
+  landformWind: vec4f,
+  landformBase: vec4f,
   seeds: array<u32, ${seedFloatsFor(count)}>,
 };
 @group(${group}) @binding(${binding}) var<storage, read> terrainKernelPages: array<TerrainKernelPage>;
