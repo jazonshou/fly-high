@@ -51,7 +51,7 @@ workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerComm
       worldSeed: world.seed,
       terrainSample: (x, z) => {
         const sample = sampleTerrain(world as WorldDefinition, x, z, sampleTarget);
-        return { height: sample.height, moisture: sample.moisture };
+        return { height: sample.height, moisture: sample.moisture, ergWeight: sample.ergWeight };
       },
     });
     // P2b: the region's vertex arrays, built here and transferred, so the

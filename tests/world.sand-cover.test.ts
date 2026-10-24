@@ -9,6 +9,12 @@ import {
 } from "../src/world/terrain";
 import { TerrainBiome, type TerrainSample, type WorldDefinition } from "../src/world/types";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
+import {
+  HYDROLOGY_SAND_SEA_ERG_WEIGHT,
+  generateHydrology,
+  traceDownhillPath,
+  type HydrologyTerrainSampler,
+} from "../src/render/webgpu/water/HydrologyGeneration";
 
 /**
  * Sand cover from the sand seas, read by everything that classifies, plants or
@@ -183,5 +189,121 @@ describe("sand cover in the vegetation", () => {
     }
     // Non-vacuity: equal empty cells would prove nothing.
     expect(stems).toBeGreaterThan(100);
+  });
+});
+
+describe("sand seas in the hydrology", () => {
+  // The river tracer's own test plane (520 m falling 7.5% toward +x), with a
+  // sand sea over x > 0.
+  const smooth = (low: number, high: number, value: number) => {
+    const t = Math.max(0, Math.min(1, (value - low) / (high - low)));
+    return t * t * (3 - 2 * t);
+  };
+  const SANDY_SLOPE: HydrologyTerrainSampler = (x, z) => ({
+    height: 520 - x * 0.075 + Math.sin(z * 0.004) * 3,
+    moisture: 0.64,
+    ergWeight: smooth(-300, 300, x),
+  });
+
+  it("ends a river where it reaches a sand sea", () => {
+    const trace = traceDownhillPath({
+      worldSeed: "sand-sink",
+      terrainSample: SANDY_SLOPE,
+      startX: -1_800,
+      startZ: 35,
+      bounds: { minX: -2_500, maxX: 2_500, minZ: -2_500, maxZ: 2_500 },
+      seaLevel: 0,
+      stepMeters: 50,
+      maximumSteps: 120,
+      minimumDropMeters: 0.02,
+    });
+    expect(trace.termination).toBe("sand");
+    const last = trace.points.at(-1)!;
+    expect(last.ergWeight).toBeGreaterThan(HYDROLOGY_SAND_SEA_ERG_WEIGHT);
+    for (const point of trace.points.slice(0, -1)) {
+      expect(point.ergWeight).toBeLessThanOrEqual(HYDROLOGY_SAND_SEA_ERG_WEIGHT);
+    }
+  });
+
+  it("generates exactly the same water with a zero erg weight and with none", () => {
+    const plain: HydrologyTerrainSampler = (x, z) => ({
+      height: 520 - x * 0.075 + Math.sin(z * 0.004) * 3,
+      moisture: 0.64,
+    });
+    const options = {
+      worldSeed: "sand-free",
+      centerX: 0,
+      centerZ: 0,
+      extentMeters: 4_000,
+      seaLevel: 0,
+      sourceCandidateSpacingMeters: 500,
+      minimumSourceElevationAboveSeaMeters: 0,
+      minimumSourceSeparationMeters: 350,
+      traceStepMeters: 70,
+      maximumTraceSteps: 80,
+      minimumRiverPoints: 6,
+      maximumRivers: 5,
+      maximumLakes: 2,
+    };
+    const shipped = generateHydrology({ ...options, terrainSample: plain });
+    const zeroed = generateHydrology({
+      ...options,
+      terrainSample: (x, z) => ({ ...plain(x, z), ergWeight: 0 }),
+    });
+    expect(shipped.rivers.length).toBeGreaterThan(0);
+    expect(zeroed).toEqual(shipped);
+    // And on the world's own sampler, around a natural world's airport.
+    const world = createWorld("phase1-perf-baseline");
+    const airport = world.airport!;
+    const live = generateHydrology({
+      worldSeed: world.seed,
+      seaLevel: world.seaLevel,
+      centerX: airport.centerX,
+      centerZ: airport.centerZ,
+      terrainSample: (x, z) => sampleTerrain(world, x, z),
+    });
+    const stripped = generateHydrology({
+      worldSeed: world.seed,
+      seaLevel: world.seaLevel,
+      centerX: airport.centerX,
+      centerZ: airport.centerZ,
+      terrainSample: (x, z) => {
+        const sample = sampleTerrain(world, x, z);
+        return { height: sample.height, moisture: sample.moisture };
+      },
+    });
+    expect(live).toEqual(stripped);
+  });
+
+  it("puts no lake and no river source in a forced world's sand sea", () => {
+    // A region east of the forced desert's runway whose sand sea, without the
+    // gate, holds a lake in an interdune hollow and a river source (relaxed
+    // river thresholds, as the worker parity suite uses, so the tracer runs).
+    const airport = DESERT.airport!;
+    const options = {
+      worldSeed: DESERT.seed,
+      seaLevel: DESERT.seaLevel,
+      centerX: airport.centerX + 14_400,
+      centerZ: airport.centerZ,
+      maximumRiverGrade: 0.5,
+      minimumSourceElevationAboveSeaMeters: 10,
+      minimumRiverPoints: 4,
+      minimumDownhillDropMeters: 0.01,
+    };
+    const erg = (x: number, z: number) => sampleLandformCover(DESERT, x, z, 0).ergWeight;
+    const inSand = (x: number, z: number) => erg(x, z) > HYDROLOGY_SAND_SEA_ERG_WEIGHT;
+    const control = generateHydrology({
+      ...options,
+      terrainSample: (x, z) => ({ ...sampleTerrain(DESERT, x, z), ergWeight: 0 }),
+    });
+    const gated = generateHydrology({ ...options, terrainSample: (x, z) => sampleTerrain(DESERT, x, z) });
+    // Non-vacuity: the gate had something to remove.
+    expect(control.lakes.some((lake) => inSand(lake.centerX, lake.centerZ))).toBe(true);
+    expect(control.rivers.some((river) => inSand(river.points[0]!.x, river.points[0]!.z))).toBe(true);
+    for (const lake of gated.lakes) expect(inSand(lake.centerX, lake.centerZ)).toBe(false);
+    for (const river of gated.rivers) {
+      // The smoothed tail (three points) of a river that sank may sit on sand.
+      for (const point of river.points.slice(0, -3)) expect(inSand(point.x, point.z)).toBe(false);
+    }
   });
 });
