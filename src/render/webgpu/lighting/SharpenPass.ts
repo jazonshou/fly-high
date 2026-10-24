@@ -49,8 +49,8 @@ import "@babylonjs/core/ShadersWGSL/fxaa.vertex";
  *    2560x1440@2 panel). The one difference from sharpening FXAA's output:
  *    the cross is the image before FXAA, so near an edge FXAA smoothed, the
  *    lobe is solved against the unsmoothed neighbours. Those are higher
- *    contrast, so the lobe is the same or smaller there, and the push away
- *    from them moves an FXAA-blended centre back toward its own colour.
+ *    contrast, so the lobe comes out smaller there; the pixels FXAA moved
+ *    get `FXAA_MOVED_SHARPEN_GAIN` more of it to make that up.
  *  - Where FXAA does not run (MSAA tiers 2 and 3), the sharpen is a pass of
  *    its own after the tone map (`SharpenPass`), as before.
  *
@@ -137,6 +137,18 @@ export function rcasSharpen(
     (lobe * (north[c]! + west[c]! + east[c]! + south[c]!) + centre[c]!) / denominator,
   ) as [number, number, number];
 }
+
+/**
+ * Extra strength for the pixels FXAA moved, in the fused pass. Their lobe is
+ * solved against the cross before FXAA, which has more contrast than the
+ * smoothed cross the separate pass saw, so it comes out smaller. Calibrated
+ * on real tier-1 frames taken before FXAA (2026-10-24, `ground-2m-lowsun` and
+ * `approach-500ft`, FXAA moving 19% and 17% of their pixels): with no gain
+ * the fused image held 2.3% and 4.5% less fine contrast (mean absolute luma
+ * Laplacian) than FXAA then RCAS; at 1.15 it is +1.0% and -0.3%, and the
+ * frames sit 0.48/255 and 0.62/255 from the two-pass frames on average.
+ */
+export const FXAA_MOVED_SHARPEN_GAIN = 1.15;
 
 /**
  * The kernel, shared by both forms. `e` is the centre and `b`, `d`, `f`, `h`
@@ -395,17 +407,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let rangeMaxScaled = rangeMax * fxaaQualityEdgeThreshold;
   let range = rangeMax - rangeMin;
   let rangeMaxClamped = max(fxaaQualityEdgeThresholdMin, rangeMaxScaled);
+  let fxaaMoved = !(range < rangeMaxClamped);
   var colour = rgbyM;
-  if (!(range < rangeMaxClamped)) {
+  if (fxaaMoved) {
     colour = fxaaTap(fxaaEdgePosition(
       fragmentInputs.vUV, uniforms.texelSize, lumaM, lumaN, lumaS, lumaE, lumaW, range,
       fragmentInputs.sampleCoordNW, fragmentInputs.sampleCoordSE,
       fragmentInputs.sampleCoordNE, fragmentInputs.sampleCoordSW));
   }
 #ifdef ${FXAA_SHARPEN_DEFINE}
-  // The cross is FXAA's input, not its output: see the header.
-  colour = vec4f(
-    rcasSharpen(colour.rgb, rgbN.rgb, rgbW.rgb, rgbE.rgb, rgbS.rgb, uniforms.sharpenAmount), 1.0);
+  // The cross is FXAA's input, not its output: see the header and
+  // FXAA_MOVED_SHARPEN_GAIN.
+  let amount = select(
+    uniforms.sharpenAmount,
+    min(1.0, uniforms.sharpenAmount * ${FXAA_MOVED_SHARPEN_GAIN.toFixed(2)}),
+    fxaaMoved);
+  colour = vec4f(rcasSharpen(colour.rgb, rgbN.rgb, rgbW.rgb, rgbE.rgb, rgbS.rgb, amount), 1.0);
 #endif
   fragmentOutputs.color = colour;
   return fragmentOutputs;

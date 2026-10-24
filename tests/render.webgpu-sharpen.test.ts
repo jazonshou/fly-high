@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { readSource } from "./support/sourceText";
 import {
+  FXAA_MOVED_SHARPEN_GAIN,
   FXAA_QUALITY,
   FXAA_RCAS_WGSL,
   RCAS_LIMIT,
@@ -154,6 +155,13 @@ describe("the shipped shader and the chain", () => {
       expect(shader).toContain("1.0 - 0.5 * noise");
       expect(shader).toContain("uniforms.sharpenAmount");
     }
+    // The fused pass's make-up gain on the pixels FXAA moved, capped at full
+    // strength so the lobe stays inside the range RCAS is solved for.
+    expect(FXAA_MOVED_SHARPEN_GAIN).toBeGreaterThan(1);
+    expect(FXAA_MOVED_SHARPEN_GAIN).toBeLessThan(1.5);
+    expect(FXAA_RCAS_WGSL).toContain(
+      `min(1.0, uniforms.sharpenAmount * ${FXAA_MOVED_SHARPEN_GAIN.toFixed(2)})`,
+    );
   });
 
   it("is ratio 1 and single-sampled", () => {
@@ -276,10 +284,12 @@ describe("the fused FXAA pass is Babylon's FXAA", () => {
 
   it("compiles RCAS in only when asked, so a zero amount is FXAA alone", () => {
     const rcasCall = FXAA_RCAS_WGSL.indexOf("rcasSharpen(colour.rgb");
+    const gain = FXAA_RCAS_WGSL.indexOf("let amount = select(");
     const ifdef = FXAA_RCAS_WGSL.lastIndexOf("#ifdef RCAS_SHARPEN", rcasCall);
     const endif = FXAA_RCAS_WGSL.indexOf("#endif", rcasCall);
     expect(rcasCall).toBeGreaterThan(-1);
     expect(ifdef, "the RCAS call is not inside #ifdef RCAS_SHARPEN").toBeGreaterThan(-1);
+    expect(gain, "the make-up gain is not inside #ifdef RCAS_SHARPEN").toBeGreaterThan(ifdef);
     expect(endif).toBeGreaterThan(rcasCall);
   });
 });
