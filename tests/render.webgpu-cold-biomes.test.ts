@@ -18,6 +18,7 @@ import {
 } from "../src/render/webgpu/terrain/LandCoverClassifier";
 import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
+import { densityField } from "../src/render/webgpu/detail/densityField";
 import type { DetailTerrainSampler } from "../src/render/webgpu/detail/types";
 import {
   resolveLakeConstituents,
@@ -224,6 +225,41 @@ describe("cold biomes: trees, shrubs and ground cover", () => {
       expect(boreal.shrubs.length).toBeLessThanOrEqual(Math.ceil(temperate.shrubs.length * 1.34));
       for (const shrub of boreal.shrubs) expect(["juniper", "hazel"]).toContain(shrub.species);
     }
+  });
+
+  it("keeps an arctic dwarf-shrub belt where the alpine one would be bare", () => {
+    // The density field's shrub line: on a mountain the shrubs give out
+    // 140 m above the treeline; in the arctic they run on as a whole zone.
+    // Positive control: a temperate mountain at the SAME thermal height
+    // (120 m in tundra is 1,712 m of thermal) carries none.
+    const field = (heightMeters: number, temperatureOffset: number) => densityField(0x5eed, {
+      x: 1_200,
+      z: -800,
+      heightMeters,
+      seaLevelMeters: 0,
+      slope: 0.05,
+      moisture: 0.5,
+      dayOfYear: REFERENCE_DAY,
+      filterWidthMeters: 0,
+      temperatureOffset,
+    });
+    const thermal = 120 - TUNDRA * 2_450;
+    expect(field(thermal, 0).shrubStemsPerSquareMeter).toBe(0);
+    expect(field(120, TUNDRA).shrubStemsPerSquareMeter).toBeGreaterThan(0);
+    expect(field(120, TUNDRA).treeStemsPerSquareMeter).toBe(0);
+
+    // In a cell: no trees, fewer shrubs than the temperate ground, and every
+    // one a dwarf, though tall enough to be seen (not the treeline's 10 cm).
+    const tundra = generateDetailCell({ ...shared, terrainSample: rollingTerrain(0.5, TUNDRA) });
+    const temperate = generateDetailCell({ ...shared, terrainSample: rollingTerrain(0.5) });
+    expect(temperate.trees.length).toBeGreaterThan(0);
+    expect(tundra.trees.length).toBe(0);
+    expect(tundra.shrubs.length).toBeGreaterThan(0);
+    expect(tundra.shrubs.length).toBeLessThan(temperate.shrubs.length);
+    const heights = tundra.shrubs.map((shrub) => shrub.heightMeters);
+    expect(Math.max(...heights)).toBeLessThan(1.4);
+    expect(heights.reduce((sum, height) => sum + height, 0) / heights.length)
+      .toBeGreaterThan(0.3);
   });
 
   it("turns open tundra ground cover to heath and sedge", () => {

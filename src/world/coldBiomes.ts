@@ -52,6 +52,23 @@ export const BOREAL_COLD_FULL = 0.2;
 export const TUNDRA_COLD_ONSET = 0.4;
 export const TUNDRA_COLD_FULL = 0.62;
 
+/**
+ * The arctic shrub belt: metres of THERMAL height that a full tundra share
+ * adds to the density field's shrub line (`densityField`, `shrubTreeline`).
+ *
+ * A mountain's shrub belt is narrow. Krummholz and dwarf pine give out about
+ * 140 m above the treeline, because on a slope a kelvin of cooling is only
+ * 150 m away. The arctic's is a whole zone: low shrub tundra (dwarf birch,
+ * willow, alder in the gullies) runs hundreds of kilometres poleward of the
+ * forest, several kelvin colder than the treeline, before the high arctic's
+ * fell field begins. 700 m is about 4.5 K. At the -0.65 plateau the shrubs
+ * stand thinly on the lowland and give out near 600 m, which leaves the
+ * hills below the ~880 m snowline as bare fell field. Without it the tundra
+ * would place no shrub at all: its whole lowland sits above the alpine shrub
+ * line. 0 in the temperate core (`+ 0 * k`).
+ */
+export const TUNDRA_SHRUB_BELT_METERS = 700;
+
 /** 0 in the temperate core, 1 from a full boreal province onward. */
 export function borealShare(temperatureOffset: number): number {
   return smoothstep(BOREAL_COLD_ONSET, BOREAL_COLD_FULL, -temperatureOffset);

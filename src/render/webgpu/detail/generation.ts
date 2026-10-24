@@ -1031,18 +1031,26 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       speciesRoll < 0.7 ? stand.dominantChoice : random(),
     );
     const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
-    const height = (species === "sage"
-      ? 0.35 + maturity * 1.05
-      : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1)) * field.heightFactor;
-    const radius = height * (species === "hazel" ? 0.72 : 0.62) * (0.82 + random() * 0.3);
     const temperatureOffset = blockSample.temperatureOffset ?? 0;
     const cold = borealShare(temperatureOffset);
+    const tundra = tundraShare(temperatureOffset);
+    // Dwarf shrubs are not krummholz. The density field's height factor is
+    // the treeline stunting the TREES, and above it the shrubs it lets through
+    // (the arctic belt, `TUNDRA_SHRUB_BELT_METERS`) would stand 5-15 cm:
+    // instances nobody can see. A tundra shrub's height is set by the winter
+    // snowpack it lives under, so the tundra share lifts the factor back to 1
+    // and `coldStature` alone makes it dwarf. `+ 0` in the temperate core.
+    const heightFactor = field.heightFactor + (1 - field.heightFactor) * tundra;
+    const height = (species === "sage"
+      ? 0.35 + maturity * 1.05
+      : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1)) * heightFactor;
+    const radius = height * (species === "hazel" ? 0.72 : 0.62) * (0.82 + random() * 0.3);
     // Cold scrub is low scrub: taiga willow thickets stand 1-3 m and tundra
     // willow and dwarf birch under a metre. Exactly 1 in the temperate core.
     // The exclusion radius below keeps the UNSCALED radius, so a cold stand
     // places the same shrubs and only their size changes.
     const coldStature = (1 - cold * BOREAL_STATURE_LOSS)
-      * (1 - tundraShare(temperatureOffset) * TUNDRA_SHRUB_STATURE_LOSS);
+      * (1 - tundra * TUNDRA_SHRUB_STATURE_LOSS);
     push(kernelClamp(radius * 1.3, 1, 5), priority, () => ({
       kind: "shrub",
       id: `understory:${x.toFixed(2)}:${z.toFixed(2)}`,

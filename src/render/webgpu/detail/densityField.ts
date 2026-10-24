@@ -1,4 +1,5 @@
 import { terrainThermalHeight } from "@/src/world/climateProvince";
+import { TUNDRA_SHRUB_BELT_METERS, tundraShare } from "@/src/world/coldBiomes";
 import {
   clamp,
   fbm2D,
@@ -758,10 +759,13 @@ export function densityField(
   const treeStems = BASE_TREE_STEMS * moistureFactor * habitat;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
-  // and persist a little above the canopy treeline.
+  // and persist a little above the canopy treeline: on a mountain 140 m, in
+  // the arctic a whole zone (`TUNDRA_SHRUB_BELT_METERS`, `+ 0` in the core).
   const shrubMoisture = smoothstep(0.2, 0.5, input.moisture);
   const shrubSlope = 1 - smoothstep(0.09, 0.26, input.slope);
-  const shrubTreeline = 1 - smoothstep(treeline - 80, treeline + 140, thermal);
+  const shrubLine = treeline + 140
+    + tundraShare(input.temperatureOffset ?? 0) * TUNDRA_SHRUB_BELT_METERS;
+  const shrubTreeline = 1 - smoothstep(treeline - 80, shrubLine, thermal);
   const openness = 0.45 + 0.55 * (1 - forest.glade * 0.7);
   const shrubForestGate = 0.28 + forest.forestFraction * 0.72;
   const edgeShrubGain = 1 + forest.forestEdge * 0.45;
