@@ -59,6 +59,13 @@ export interface DetailTerrainSample {
    */
   readonly temperatureOffset?: number;
   readonly dryness?: number;
+  /**
+   * Sand seas: the landform sand cover, exactly 0 inside the landform core and
+   * off the sand seas. Trees, shrubs, ground cover and litter thin with it
+   * (`sandCoverTreeFactor`, `sandCoverGroundFactor`). The world-layer
+   * TerrainSample carries it; omitted reads 0.
+   */
+  readonly sandCover?: number;
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;

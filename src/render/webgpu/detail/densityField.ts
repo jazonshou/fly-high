@@ -604,6 +604,32 @@ export function riparianVegetationFactors(
   };
 }
 
+/**
+ * Sand seas: what the landform sand cover (`sampleLandformCover`) leaves of
+ * each vegetation layer, as factors on placement.
+ *
+ * Trees need a stable rooting bed, which a moving dune is not, so the canopy
+ * is gone by the time a fifth of the ground is sand: an erg's edge keeps its
+ * trees on the gravel between the first barchans and loses them as the sand
+ * closes up. Shrubs, ground cover and litter thin in proportion to the sand
+ * (interdune hollows keep a sparse scrub until the sheet covers them).
+ *
+ * These are factors, not density-field inputs: the CPU placement applies them
+ * per stem (generation.ts), so the field, its WGSL twin and the baked canopy
+ * closure are untouched. Both are exactly 1 at zero cover, so every point off
+ * the sand seas places what it always did.
+ */
+export const SAND_COVER_TREE_LOW = 0.05;
+export const SAND_COVER_TREE_HIGH = 0.2;
+
+export function sandCoverTreeFactor(sandCover: number): number {
+  return sandCover > 0 ? 1 - smoothstep(SAND_COVER_TREE_LOW, SAND_COVER_TREE_HIGH, sandCover) : 1;
+}
+
+export function sandCoverGroundFactor(sandCover: number): number {
+  return sandCover > 0 ? 1 - saturate(sandCover) : 1;
+}
+
 /** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
 export function forestFraction(
   seedHash: number,

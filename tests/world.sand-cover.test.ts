@@ -8,6 +8,7 @@ import {
   sampleTerrainSurface,
 } from "../src/world/terrain";
 import { TerrainBiome, type TerrainSample, type WorldDefinition } from "../src/world/types";
+import { generateDetailCell } from "../src/render/webgpu/detail/generation";
 
 /**
  * Sand cover from the sand seas, read by everything that classifies, plants or
@@ -111,5 +112,76 @@ describe("sand cover on the terrain sample", () => {
       if (withoutCover.biome !== TerrainBiome.BEACH) wasVegetated += 1;
     }
     expect(wasVegetated).toBe(DUNE_PROBES.length);
+  });
+});
+
+describe("sand cover in the vegetation", () => {
+  // Dunes forced into a wet province: the climate grows forest on the low
+  // ground, so the sand seas have trees to remove (a high desert has none).
+  const WET_DUNES = createWorld("dune-lab", { landforms: { dunes: true }, climateProvince: "tropical" });
+  const CELL_METERS = 256;
+  const live = (world: WorldDefinition) => (x: number, z: number) => sampleTerrain(world, x, z);
+  const coverAt = (point: Probe) => sampleLandformCover(WET_DUNES, point.x, point.z, 0).sandCover;
+
+  function cellAt(x: number, z: number, sampler: (x: number, z: number) => TerrainSample) {
+    return generateDetailCell({
+      worldSeed: WET_DUNES.seed,
+      cellX: Math.floor(x / CELL_METERS),
+      cellZ: Math.floor(z / CELL_METERS),
+      cellSizeMeters: CELL_METERS,
+      terrainSample: sampler,
+      seaLevelMeters: WET_DUNES.seaLevel,
+    });
+  }
+
+  it("plants no trees on dune sand, and fewer shrubs, where the climate grows forest", () => {
+    // An erg's thin edge: lone dunes on a floor that still grows forest.
+    const edges = findProbes(WET_DUNES, 6, (x, z) => {
+      const erg = sampleLandformCover(WET_DUNES, x, z, 0).ergWeight;
+      return erg > 0.2 && erg < 0.7;
+    });
+    let compared = 0;
+    for (const { x, z } of edges) {
+      // The control withholds the cover: what the scatter placed before.
+      const control = cellAt(x, z, (px, pz) => ({ ...sampleTerrain(WET_DUNES, px, pz), sandCover: 0 }));
+      const controlOnSand = control.trees.filter((tree) => coverAt(tree) > 0.2).length;
+      if (controlOnSand < 50) continue;
+      const cell = cellAt(x, z, live(WET_DUNES));
+      // ~0.2: the gate reads the 16 m grid's corners, so a curved dune edge
+      // can let a stem stand a little past the threshold (measured 0.25).
+      for (const tree of cell.trees) expect(coverAt(tree)).toBeLessThan(0.3);
+      expect(cell.trees.length).toBeLessThan(control.trees.length);
+      expect(cell.shrubs.length).toBeLessThan(control.shrubs.length);
+      compared += 1;
+    }
+    expect(compared).toBeGreaterThan(0);
+  });
+
+  it("places identical detail with zero sand cover and with none", () => {
+    const world = createWorld("phase1-perf-baseline");
+    const center = landformCoreCenter(world);
+    let stems = 0;
+    for (const [dx, dz] of [[1_500, 900], [-4_200, 2_600], [6_000, -7_500], [-9_000, -3_000]] as const) {
+      const options = {
+        worldSeed: world.seed,
+        cellX: Math.floor((center.x + dx) / CELL_METERS),
+        cellZ: Math.floor((center.z + dz) / CELL_METERS),
+        cellSizeMeters: CELL_METERS,
+        seaLevelMeters: world.seaLevel,
+      };
+      const covered = generateDetailCell({ ...options, terrainSample: live(world) });
+      const uncovered = generateDetailCell({
+        ...options,
+        terrainSample: (x, z) => {
+          const sample: Partial<TerrainSample> = { ...sampleTerrain(world, x, z) };
+          delete sample.sandCover;
+          return sample as TerrainSample;
+        },
+      });
+      expect(covered).toEqual(uncovered);
+      stems += covered.trees.length + covered.shrubs.length + covered.clutter.length;
+    }
+    // Non-vacuity: equal empty cells would prove nothing.
+    expect(stems).toBeGreaterThan(100);
   });
 });
