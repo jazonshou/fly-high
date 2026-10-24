@@ -1,7 +1,7 @@
 import { climateProvinceCoreCenter } from "./climateProvince";
-import { applyDuneStage } from "./dunes";
+import { applyDuneStage, duneErgWeight, duneRelief, sampleDuneField, type DuneSample } from "./dunes";
 import { smoothstep } from "./noise";
-import type { NaturalTerrainIntermediates } from "./terrain";
+import { sampleNaturalTerrainIntermediates, type NaturalTerrainIntermediates } from "./terrain";
 import type { WorldDefinition } from "./types";
 
 /**
@@ -97,15 +97,21 @@ export function landformCoreRadii(
   };
 }
 
-/** 0 inside the landform core, exactly; 1 from the outer radius out. */
+/**
+ * 0 inside the landform core, exactly; 1 from the outer radius out. Runs on
+ * every CPU height sample (physics included), so it allocates nothing.
+ */
 export function landformCoreMask(
   world: Pick<WorldDefinition, "airport" | "landforms">,
   x: number,
   z: number,
 ): number {
-  const center = landformCoreCenter(world);
-  const radii = landformCoreRadii(world);
-  return smoothstep(radii.inner, radii.outer, Math.hypot(x - center.x, z - center.z));
+  const airport = world.airport;
+  const dx = airport ? x - airport.centerX : x;
+  const dz = airport ? z - airport.centerZ : z;
+  const inner = world.landforms ? LANDFORM_CORE.forcedClearanceMeters : LANDFORM_CORE.innerRadiusMeters;
+  const ramp = world.landforms ? LANDFORM_CORE.forcedClearanceRampMeters : LANDFORM_CORE.rampMeters;
+  return smoothstep(inner, inner + ramp, Math.hypot(dx, dz));
 }
 
 /**
@@ -141,4 +147,29 @@ export function applyTerrainLandforms(
   if (coreMask <= 0) return naturalHeight;
   return applyDuneStage(
     world, x, z, naturalHeight, filterWidthMeters, coreMask, natural, volcanicActivity);
+}
+
+/**
+ * The ground cover the landforms leave at a point, for readers that classify
+ * or plant the ground rather than draw it: sand cover and the erg weight. All
+ * zero inside the landform core (and in eroded worlds). Evaluates the natural
+ * kernel once.
+ */
+export function sampleLandformCover(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+  target: DuneSample = { ergWeight: 0, duneHeight: 0, sandCover: 0 },
+): DuneSample {
+  target.ergWeight = 0;
+  target.duneHeight = 0;
+  target.sandCover = 0;
+  if (world.worldEvolution === "eroded") return target;
+  const coreMask = landformCoreMask(world, x, z);
+  if (coreMask <= 0) return target;
+  const natural = sampleNaturalTerrainIntermediates(world.seedHash, x, z, filterWidthMeters);
+  const erg = duneErgWeight(world, x, z, coreMask, natural, duneRelief(natural), volcanicActivity);
+  if (erg <= 0) return target;
+  return sampleDuneField(world, x, z, erg, filterWidthMeters, natural, target);
 }

@@ -5,7 +5,12 @@ import { mixSeed } from "./seed";
 // A value import of terrain.ts, which imports this module through
 // landforms.ts: safe because the constant is only read inside functions,
 // after both modules have evaluated.
-import { LOCAL_RIDGES_KNOLL_MEAN, type NaturalTerrainIntermediates } from "./terrain";
+import {
+  LOCAL_RIDGES_KNOLL_MEAN,
+  RIDGES_INVERSE_POW_31_MEAN,
+  RIDGES_POW_212_MEAN,
+  type NaturalTerrainIntermediates,
+} from "./terrain";
 import type { WorldDefinition } from "./types";
 
 /**
@@ -19,7 +24,8 @@ import type { WorldDefinition } from "./types";
  *   dunes),
  * - an erg patch (`ergPatch`, a ~36 km field: an arid province holds a few sand
  *   seas with rocky desert and gravel plains between them),
- * - low ground (sand collects in basins, and the low edge keeps it off beaches),
+ * - low ground (sand collects in basins, and the low edge keeps it off
+ *   beaches), read off the height WITHOUT its relief so the weight is smooth,
  * - no hills (`foothillRegion`, read off the natural kernel),
  *
  * times `1 - volcanicActivity` and the landform core. A world that forces dunes
@@ -76,9 +82,9 @@ export const DUNES = Object.freeze({
   hillLow: 0.2,
   hillHigh: 0.55,
   /** Share of the kernel's short relief (310 m, knolls, geology) removed under a full erg. */
-  reliefDamping: 0.78,
-  /** Share of the 1.65 km rolling hills removed under a full erg. */
-  rollingDamping: 0.6,
+  reliefDamping: 0.95,
+  /** Share of the 1.65 km rolling hills and the 2.55 km foothill relief removed under a full erg. */
+  rollingDamping: 0.85,
   /** Crest-to-crest spacing of the transverse dunes, metres. */
   spacingMeters: 260,
   /** Crest height at full supply and at the thinnest sand, metres. */
@@ -87,19 +93,31 @@ export const DUNES = Object.freeze({
   /** Mean windward slope; the convex profile peaks at 4/3 of it. */
   stossDegrees: 8,
   /** The slipface: sand's angle of repose. */
-  slipDegrees: 32,
+  slipDegrees: 30,
   /** Polynomial smooth-min height band that rounds the brink (about 4 m wide). */
   brinkRoundingMeters: 3,
-  /** Crest sinuosity: a ~1.5 km field, amplitude in periods. */
-  meander: Object.freeze({ channel: 221, wavelengthMeters: 1_500, amplitudePeriods: 0.32 }),
+  /** Crest sinuosity: a ~1.5 km field and a ~450 m one, amplitudes in periods. */
+  meander: Object.freeze({ channel: 221, wavelengthMeters: 1_500, amplitudePeriods: 0.3 }),
+  meanderFine: Object.freeze({ channel: 223, wavelengthMeters: 450, amplitudePeriods: 0.1 }),
+  /**
+   * Linked crescents: each ridge is a chain of crescents `scallopWidthMeters`
+   * wide whose middles sit upwind and whose joints (the horns) reach
+   * `scallopAmplitudePeriods` downwind. Successive ridges are staggered by
+   * `scallopStagger` of a crescent so the joints do not line up downwind.
+   */
+  scallopWidthMeters: 520,
+  scallopAmplitudePeriods: 0.22,
+  scallopStagger: 0.37,
+  /** How far the two meander fields push the crescent joints sideways, crescents. */
+  scallopJitter: 0.35,
   /** Crest continuity: a ~700 m field. */
   crest: Object.freeze({ channel: 222, wavelengthMeters: 700 }),
   /** Crest threshold at full supply and at the thinnest sand, on the [0, 1] crest field. */
   crestThresholdFull: 0.18,
   crestThresholdThin: 0.82,
-  crestHalfWidth: 0.22,
+  crestHalfWidth: 0.3,
   /** How far a fading crest's ends are pushed downwind, periods. */
-  hornShift: 0.4,
+  hornShift: 0.32,
   /** Sand cover: dune height (m) over which a dune body reads as sand. */
   sandCoverLowMeters: 0.4,
   sandCoverHighMeters: 2.5,
@@ -177,6 +195,20 @@ export function duneWindPhase(windRadians: number, warpedX: number, warpedZ: num
   return (warpedX * Math.sin(windRadians) + warpedZ * Math.cos(windRadians)) / DUNES.spacingMeters;
 }
 
+/** The across-wind coordinate in crescents (positive to the wind's right). */
+export function duneAcrossPhase(windRadians: number, warpedX: number, warpedZ: number): number {
+  return (warpedX * Math.cos(windRadians) - warpedZ * Math.sin(windRadians)) / DUNES.scallopWidthMeters;
+}
+
+/**
+ * The linked-crescent shape: 0 at a crescent's middle, 1 at its joints, a
+ * parabola in between, so the joint is a downwind-pointing cusp.
+ */
+export function duneScallop(across: number): number {
+  const offset = 2 * (across - Math.floor(across)) - 1;
+  return offset * offset;
+}
+
 /** Scratch the stage hands the sand-cover reader; one per module, no allocation. */
 export interface DuneSample {
   /** The erg weight at the point, [0, 1]. */
@@ -201,11 +233,15 @@ export function duneErgWeight(
   z: number,
   coreMask: number,
   natural: Readonly<NaturalTerrainIntermediates>,
+  relief: Readonly<DuneRelief>,
   volcanicActivity: (world: WorldDefinition, x: number, z: number) => number,
 ): number {
-  const shipped = natural.shippedHeight;
-  const lowGround = smoothstep(DUNES.lowGroundRiseLowMeters, DUNES.lowGroundRiseHighMeters, shipped)
-    * (1 - smoothstep(DUNES.lowGroundFallLowMeters, DUNES.lowGroundFallHighMeters, shipped));
+  // Low ground is read off the BASE height, the shipped height without its
+  // relief: a gate on the shipped height itself follows every knoll, and a
+  // weight that steps over 20 m multiplies a 20 m dune into a cliff.
+  const base = natural.shippedHeight - relief.short - relief.broad;
+  const lowGround = smoothstep(DUNES.lowGroundRiseLowMeters, DUNES.lowGroundRiseHighMeters, base)
+    * (1 - smoothstep(DUNES.lowGroundFallLowMeters, DUNES.lowGroundFallHighMeters, base));
   const flat = 1 - smoothstep(DUNES.hillLow, DUNES.hillHigh, natural.foothillRegion);
   let weight = coreMask * lowGround * flat;
   if (weight <= 0) return 0;
@@ -268,14 +304,29 @@ export function sampleDuneField(
       + (DUNES.crestHeightMaxMeters - DUNES.crestHeightMinMeters) * supply)
       * (0.8 + 0.2 * crestNoise),
   );
-  const phase = duneWindPhase(world.prevailingWindRadians, natural.warpedX, natural.warpedZ)
-    + filteredValueNoise2D(
-      mixSeed(world.seedHash, meander.channel),
-      x / meander.wavelengthMeters,
-      z / meander.wavelengthMeters,
-      meander.wavelengthMeters,
-      filterWidthMeters,
-    ) * meander.amplitudePeriods
+  const meanderFine = DUNES.meanderFine;
+  const meanderNoise = filteredValueNoise2D(
+    mixSeed(world.seedHash, meander.channel),
+    x / meander.wavelengthMeters,
+    z / meander.wavelengthMeters,
+    meander.wavelengthMeters,
+    filterWidthMeters,
+  );
+  const meanderFineNoise = filteredValueNoise2D(
+    mixSeed(world.seedHash, meanderFine.channel),
+    x / meanderFine.wavelengthMeters,
+    z / meanderFine.wavelengthMeters,
+    meanderFine.wavelengthMeters,
+    filterWidthMeters,
+  );
+  const windPhase = duneWindPhase(world.prevailingWindRadians, natural.warpedX, natural.warpedZ);
+  const across = duneAcrossPhase(world.prevailingWindRadians, natural.warpedX, natural.warpedZ)
+    + windPhase * DUNES.scallopStagger
+    + meanderNoise * DUNES.scallopJitter;
+  const phase = windPhase
+    + meanderNoise * meander.amplitudePeriods
+    + meanderFineNoise * meanderFine.amplitudePeriods
+    - DUNES.scallopAmplitudePeriods * (0.65 + 0.35 * crestNoise) * duneScallop(across)
     - DUNES.hornShift * (1 - crest);
   const metersIntoPeriod = (phase - Math.floor(phase)) * DUNES.spacingMeters;
   const mean = duneProfileMeanMeters(crestHeight);
@@ -293,30 +344,53 @@ export function sampleDuneField(
   return target;
 }
 
+/** The natural kernel's relief, measured from its own expectations. */
+export interface DuneRelief {
+  /** 310 m fbm, rocky knolls, geological relief: damped by `reliefDamping`. */
+  short: number;
+  /** 1.65 km rolling hills, foothill ridges and valleys: damped by `rollingDamping`. */
+  broad: number;
+}
+
 /**
- * The floor flattening under an erg weight `erg`: the kernel's short relief
- * (310 m fbm, rocky knolls, geological relief) taken toward its expectation by
- * `reliefDamping`, the 1.65 km rolling hills by `rollingDamping`. Mean-free:
- * every damped term is measured from its own expectation.
+ * The kernel's relief at a point, each term measured from the kernel's own
+ * expectation (terrain.ts, geology.ts), so a band-limited page, whose terms
+ * already sit on them, has none.
  */
-export function duneFloorFlattening(erg: number, natural: Readonly<NaturalTerrainIntermediates>): number {
+export function duneRelief(
+  natural: Readonly<NaturalTerrainIntermediates>,
+  target: DuneRelief = RELIEF_SCRATCH,
+): DuneRelief {
   const land = natural.land;
   const foothill = natural.foothillRegion;
   const mountain = natural.mountainRegion;
-  // The kernel's own expectations (terrain.ts, geology.ts), so a band-limited
-  // page, whose terms already sit on them, is flattened by exactly 0.
   const knollMean = land * (0.34 + foothill * 0.66) * LOCAL_RIDGES_KNOLL_MEAN
     * (72 + foothill * 115);
   const geologyMean = land <= 0.0001
     ? 0
     : land * (foothill * 0.52 + mountain * 0.78) * FRACTURE_EXPOSURE_MEAN * (17 + mountain * 66)
       - land * (foothill * 0.32 + mountain * 0.7) * FRACTURE_RAVINE_MEAN * (9 + mountain * 48);
-  const shortRelief = natural.fine * (5 + land * 12)
+  const foothillMean = land * foothill * RIDGES_POW_212_MEAN * 285;
+  const valleyMean = land * foothill * RIDGES_INVERSE_POW_31_MEAN * (55 + mountain * 105);
+  target.short = natural.fine * (5 + land * 12)
     + (natural.rockyKnolls - knollMean)
     + (natural.geologicalRelief - geologyMean);
-  return -erg * (DUNES.reliefDamping * shortRelief
-    + DUNES.rollingDamping * natural.rolling * natural.hillStrength);
+  target.broad = natural.rolling * natural.hillStrength
+    + (natural.foothillHeight - foothillMean)
+    - (natural.valleyCarve - valleyMean);
+  return target;
 }
+
+/**
+ * The floor flattening under an erg weight `erg`: the short relief taken
+ * toward its expectation by `reliefDamping`, the broad relief by
+ * `rollingDamping`. Mean-free, because the relief is.
+ */
+export function duneFloorFlattening(erg: number, relief: Readonly<DuneRelief>): number {
+  return -erg * (DUNES.reliefDamping * relief.short + DUNES.rollingDamping * relief.broad);
+}
+
+const RELIEF_SCRATCH: DuneRelief = { short: 0, broad: 0 };
 
 /**
  * The dune stage: `height` untouched (the same number, not `+ 0`) wherever the
@@ -332,8 +406,9 @@ export function applyDuneStage(
   natural: Readonly<NaturalTerrainIntermediates>,
   volcanicActivity: (world: WorldDefinition, x: number, z: number) => number,
 ): number {
-  const erg = duneErgWeight(world, x, z, coreMask, natural, volcanicActivity);
+  const relief = duneRelief(natural);
+  const erg = duneErgWeight(world, x, z, coreMask, natural, relief, volcanicActivity);
   if (erg <= 0) return height;
   const dunes = sampleDuneField(world, x, z, erg, filterWidthMeters, natural);
-  return height + duneFloorFlattening(erg, natural) + dunes.duneHeight;
+  return height + duneFloorFlattening(erg, relief) + dunes.duneHeight;
 }

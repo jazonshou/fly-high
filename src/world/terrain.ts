@@ -419,6 +419,8 @@ export function sampleNaturalTerrainHeight(
   intermediates.hillStrength = hillStrength;
   intermediates.fine = fine;
   intermediates.rockyKnolls = rockyKnolls;
+  intermediates.foothillHeight = foothillHeight;
+  intermediates.valleyCarve = valleyCarve;
   intermediates.geologicalRelief = geologicalRelief;
   intermediates.shippedHeight = shippedHeight;
   return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
@@ -448,9 +450,28 @@ export interface NaturalTerrainIntermediates {
   /** The 310 m fbm, before its `5 + land * 12` amplitude. */
   fine: number;
   rockyKnolls: number;
+  foothillHeight: number;
+  /** Subtracted from the height (it carves). */
+  valleyCarve: number;
   geologicalRelief: number;
   /** The height before M-1's massif reshaping and the clamp. */
   shippedHeight: number;
+}
+
+/**
+ * Run the natural kernel at a point for its intermediates (landform readers
+ * that need the erg weight or sand cover without a height: the classifier,
+ * hydrology, vegetation). The returned object is shared scratch, valid until
+ * the next kernel call.
+ */
+export function sampleNaturalTerrainIntermediates(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): Readonly<NaturalTerrainIntermediates> {
+  sampleNaturalTerrainHeight(seedHash, x, z, filterWidthMeters);
+  return NATURAL_INTERMEDIATES;
 }
 
 const NATURAL_INTERMEDIATES: NaturalTerrainIntermediates = {
@@ -464,6 +485,8 @@ const NATURAL_INTERMEDIATES: NaturalTerrainIntermediates = {
   hillStrength: 0,
   fine: 0,
   rockyKnolls: 0,
+  foothillHeight: 0,
+  valleyCarve: 0,
   geologicalRelief: 0,
   shippedHeight: 0,
 };
