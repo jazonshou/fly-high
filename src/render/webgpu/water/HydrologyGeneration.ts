@@ -175,11 +175,18 @@ export interface HydrologyAuthoredBasin {
   readonly id: string;
   readonly centerX: number;
   readonly centerZ: number;
-  /** The water level, world metres, or NaN for a basin authored dry. */
+  /**
+   * The water level, world metres, or NaN for a basin authored dry. A
+   * ceiling: a level over the rim's lowest point drains down to it.
+   */
   readonly levelMeters: number;
   /** The basin's lowest ground, world metres: the lake's deepest point. */
   readonly floorMeters: number;
-  /** The rim. The shore is never found past it, so the lake cannot spill out. */
+  /**
+   * The farthest the rim's crest stands from the centre. The shore march
+   * starts here, so the lake never reaches past it, and no basin lake is made
+   * inside it.
+   */
   readonly rimRadiusMeters: number;
 }
 
