@@ -105,6 +105,7 @@ import {
   PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS,
   TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
   TERRAIN_PROVINCE_FAR_TONE_WGSL,
+  TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL,
   provinceFarTundraFromLift,
 } from "./ProvinceFarTone";
 import { TUNDRA_COLD_FULL, TUNDRA_COLD_ONSET } from "@/src/world/coldBiomes";
@@ -3810,11 +3811,15 @@ var terrainCanopyShade = 0.0;
     let canopySurface = canopySplit.surface;
     // Climate provinces: the paint takes the colour of the crowns the
     // province draws (ProvinceFarTone.ts), so a taiga's canopy does not
-    // brighten where its stems hand over. x + x * 0 in the temperate core.
+    // brighten, nor a tropical one dull, where its stems hand over. The
+    // share is signed (taiga and desert above 0, tropics below), and
+    // x + x * 0 in the temperate core.
     var canopyAlbedo = vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy;
 #ifdef TERRAIN_PROVINCE_FIELD
-    canopyAlbedo = canopyAlbedo
-      + canopyAlbedo * (fragmentInputs.terrainPageLocal.w * ${TERRAIN_PROVINCE_CANOPY_DELTA_WGSL});
+    let provinceCanopyShare = fragmentInputs.terrainPageLocal.w;
+    canopyAlbedo = canopyAlbedo + canopyAlbedo * (
+      max(provinceCanopyShare, 0.0) * ${TERRAIN_PROVINCE_CANOPY_DELTA_WGSL}
+      + max(-provinceCanopyShare, 0.0) * ${TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL});
 #endif
     terrainAlbedo = mix(terrainAlbedo, canopyAlbedo, canopySurface);
     terrainRoughness = mix(

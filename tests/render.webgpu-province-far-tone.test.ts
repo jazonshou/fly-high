@@ -11,11 +11,13 @@ import {
 import {
   PROVINCE_FAR_BASE_DELTAS,
   PROVINCE_FAR_CANOPY_PAINT_DELTA,
+  PROVINCE_FAR_CANOPY_TROPICAL_DELTA,
   PROVINCE_FAR_CANOPY_PAINT_RATIO,
   PROVINCE_FAR_CANOPY_RATIOS,
   PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE,
   PROVINCE_FAR_SWARD_MIXES,
   TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
+  TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL,
   TERRAIN_PROVINCE_FAR_TONE_WGSL,
   provinceFarTone,
   provinceFarTundraFromLift,
@@ -37,6 +39,7 @@ import {
   type ClimateProvinceSample,
 } from "../src/world/climateProvince";
 import { borealShare, tundraShare } from "../src/world/coldBiomes";
+import { tropicalCoastWeight } from "../src/world/tropicalCoast";
 import { dryProvinceShares } from "../src/render/webgpu/detail/densityField";
 import { createWorld, sampleTerrain } from "../src/world";
 
@@ -86,11 +89,15 @@ describe("the temperate core stays bit-identical", () => {
   });
 
   it("keeps the shares exactly 0 until each biome's onset", () => {
-    for (const offset of [0, -0.03, -0.059, 0.05, 0.4]) {
+    for (const offset of [0, -0.03, -0.059, 0.05, 0.12, 0.14]) {
       const tone = provinceFarTone(offset, 0);
       expect(tone.canopy.every(isZero), `T=${offset}`).toBe(true);
       expect(tone.base.every(isZero), `T=${offset}`).toBe(true);
     }
+    // A hot, wet province greens the canopy paint and leaves the sward alone.
+    const tropical = provinceFarTone(0.4, 0);
+    expect(tropical.canopyShare).toBe(-1);
+    expect(tropical.base.every(isZero)).toBe(true);
     for (const dryness of [0, 0.05, -0.2]) {
       const tone = provinceFarTone(0, dryness);
       expect(tone.base.every(isZero), `D=${dryness}`).toBe(true);
@@ -255,13 +262,18 @@ describe("the streamed province field", () => {
 
 describe("the far tones are the biomes' own", () => {
   it("weights each tone by the share the near ground and the trees use", () => {
-    for (const [offset, dryness] of [[-0.22, 0], [-0.55, 0], [0, 0.5], [0.12, 0.25], [-0.5, 0.4]] as const) {
+    for (const [offset, dryness] of [
+      [-0.22, 0], [-0.55, 0], [0, 0.5], [0.12, 0.25], [-0.5, 0.4], [0.28, -0.15], [0.2, 0.1],
+    ] as const) {
       const tone = provinceFarTone(offset, dryness);
       const boreal = borealShare(offset);
       const tundra = tundraShare(offset);
       const { arid, parkland } = dryProvinceShares(dryness);
       const baseScale = 1 / Math.max(1, tundra + arid + parkland);
-      const canopyShare = (boreal + arid) / Math.max(1, boreal + arid + parkland);
+      const tropical = tropicalCoastWeight(offset, dryness);
+      // Signed: the tropics never share a point with a taiga or a desert.
+      expect(tropical === 0 || boreal + arid === 0).toBe(true);
+      const canopyShare = (boreal + arid) / Math.max(1, boreal + arid + parkland) - tropical;
       expect(tone.canopyShare).toBeCloseTo(canopyShare, 12);
       for (let channel = 0; channel < 3; channel += 1) {
         expect(tone.base[channel]).toBeCloseTo((
@@ -269,7 +281,8 @@ describe("the far tones are the biomes' own", () => {
           + arid * PROVINCE_FAR_BASE_DELTAS.arid[channel]!
           + parkland * PROVINCE_FAR_BASE_DELTAS.parkland[channel]!) * baseScale, 12);
         expect(tone.canopy[channel]).toBeCloseTo(
-          canopyShare * PROVINCE_FAR_CANOPY_PAINT_DELTA[channel]!, 12);
+          Math.max(canopyShare, 0) * PROVINCE_FAR_CANOPY_PAINT_DELTA[channel]!
+          + Math.max(-canopyShare, 0) * PROVINCE_FAR_CANOPY_TROPICAL_DELTA[channel]!, 12);
       }
       expect(tone.thermalLiftMeters).toBeCloseTo(-offset * PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE, 9);
       expect(provinceFarTundraFromLift(tone.thermalLiftMeters)).toBeCloseTo(tundra, 9);
@@ -337,7 +350,7 @@ describe("the far tones are the biomes' own", () => {
       }
       speciesAlbedo.set(species, [sum[0]! / covered, sum[1]! / covered, sum[2]! / covered]);
     });
-    const drawnCrowns = (province: "temperate" | "boreal" | "high-desert" | "savanna") => {
+    const drawnCrowns = (province: "temperate" | "boreal" | "high-desert" | "savanna" | "tropical") => {
       const world = createWorld("open-skies", { climateProvince: province });
       const sampler = (x: number, z: number) =>
         sampleTerrain(world, x, z) as unknown as DetailTerrainSample;
@@ -368,6 +381,7 @@ describe("the far tones are the biomes' own", () => {
       ["boreal", PROVINCE_FAR_CANOPY_RATIOS.boreal],
       ["high-desert", PROVINCE_FAR_CANOPY_RATIOS.arid],
       ["savanna", PROVINCE_FAR_CANOPY_RATIOS.parkland],
+      ["tropical", PROVINCE_FAR_CANOPY_RATIOS.tropical],
     ] as const;
     for (const [province, ratios] of cases) {
       const drawn = drawnCrowns(province);
@@ -404,9 +418,16 @@ describe("the far tones are the biomes' own", () => {
         expect(wgsl).toContain(String(Number(value.toPrecision(9))));
       }
     }
-    expect(wgsl).toContain("tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland);");
+    expect(wgsl).toContain(
+      "tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland) - tropical;");
+    expect(wgsl).toContain("smoothstep(\n    0.14, 0.26, province.x)");
+    expect(wgsl).toContain("smoothstep(\n      0.04, 0.2, province.y)");
     for (const value of PROVINCE_FAR_CANOPY_PAINT_DELTA) {
       expect(TERRAIN_PROVINCE_CANOPY_DELTA_WGSL).toContain(String(Number(value.toPrecision(9))));
+    }
+    for (const value of PROVINCE_FAR_CANOPY_TROPICAL_DELTA) {
+      expect(TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL)
+        .toContain(String(Number(value.toPrecision(9))));
     }
   });
 });

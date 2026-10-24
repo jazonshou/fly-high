@@ -19,6 +19,7 @@ import {
   DRY_PROVINCE_PARKLAND_ONSET,
   dryProvinceShares,
 } from "@/src/render/webgpu/detail/densityField";
+import { TROPICAL_COAST, tropicalCoastWeight } from "@/src/world/tropicalCoast";
 import {
   SurfaceMaterial,
   surfaceMaterialSpec,
@@ -48,8 +49,13 @@ import {
  *   same split the classifier makes.
  * - **base tone**, a per-channel delta on the Grass-by-assumption albedo: the
  *   colour of the province's OPEN SWARD over the colour of Grass, minus one.
- * - **canopy share**, how far the canopy paint darkens toward the province's
- *   drawn crowns (one measured ratio, `PROVINCE_FAR_CANOPY_PAINT_RATIO`).
+ * - **canopy share**, SIGNED: above 0, how far the canopy paint darkens toward
+ *   a taiga's or a desert's drawn crowns (`PROVINCE_FAR_CANOPY_PAINT_RATIO`);
+ *   below 0, how far it greens toward a tropical forest's
+ *   (`PROVINCE_FAR_CANOPY_TROPICAL_RATIO`). One lane carries both because no
+ *   point has both: the tropics need a warm province (boreal needs a cold one)
+ *   that is not dry (a desert needs a dry one), so an interpolated share
+ *   crosses 0 between them, which is the temperate paint.
  *
  * FIVE FLOATS, BECAUSE THERE IS NO SPARE INTERPOLATOR. The terrain's beauty
  * pipeline already spends all 16 of WebGPU's fragment inputs (a new varying
@@ -68,7 +74,7 @@ import {
  * desert (arid) and parkland are `densityField.ts`'s `dryProvinceShares`, so
  * the far ground turns where the near ground and the trees turn. Overlapping
  * shares (a cold desert) are averaged, never stacked: weights are the shares
- * divided by `max(1, sum)`.
+ * divided by `max(1, sum)`. The tropical share is `tropicalCoast.ts`'s weight.
  *
  * Class P: pure numbers with a WGSL twin for the terrain vertex stage.
  */
@@ -125,6 +131,8 @@ export const PROVINCE_FAR_SWARD_MIXES: Readonly<Record<"tundra" | "arid" | "park
  *   0.64/0.59, 0.83/0.80, 0.94/0.93.
  * - arid (pinyon 70-73%, juniper 25-27%): 0.63/0.61, 0.81/0.80, 0.88/0.87.
  * - parkland (oak 90%): 1.07/1.03, 0.98/0.97, 0.99/0.98.
+ * - tropical (oak 44%, maple 33%, birch 12-13%, palm 10-11%: the tropical
+ *   thread's greener broadleaf tints): 0.95/0.92, 1.08/1.07, 1.04/1.04.
  *
  * The constants are the means; `tests/render.webgpu-province-far-tone.test.ts`
  * re-measures them on a smaller sample, so a change to a biome's species table
@@ -134,14 +142,17 @@ export const PROVINCE_FAR_SWARD_MIXES: Readonly<Record<"tundra" | "arid" | "park
  * by the boreal and arid shares, for the lane reason above: arid's crowns sit
  * within 6% of boreal's in every channel, and parkland's +5% red is left out,
  * since an oak savanna's lone trees close so little canopy that the paint
- * barely shows there.
+ * barely shows there. The tropical crowns lean the other way from boreal's
+ * (greener, not darker), so no share of that ratio can carry them: they get
+ * their own, on the negative half of the same lane.
  */
 export const PROVINCE_FAR_CANOPY_RATIOS: Readonly<
-  Record<"boreal" | "arid" | "parkland", readonly [number, number, number]>
+  Record<"boreal" | "arid" | "parkland" | "tropical", readonly [number, number, number]>
 > = Object.freeze({
   boreal: Object.freeze([0.613, 0.818, 0.93] as const),
   arid: Object.freeze([0.618, 0.8, 0.875] as const),
   parkland: Object.freeze([1.048, 0.974, 0.986] as const),
+  tropical: Object.freeze([0.933, 1.073, 1.045] as const),
 });
 
 /** Linear albedo of a sward mix, from the materials' reference albedos. */
@@ -186,6 +197,10 @@ export const PROVINCE_FAR_BASE_DELTAS = Object.freeze({
 export const PROVINCE_FAR_CANOPY_PAINT_RATIO = PROVINCE_FAR_CANOPY_RATIOS.boreal;
 /** Its delta over the temperate paint. */
 export const PROVINCE_FAR_CANOPY_PAINT_DELTA = deltaOver(PROVINCE_FAR_CANOPY_PAINT_RATIO, [1, 1, 1]);
+/** The ratio a NEGATIVE canopy share of -1 paints: the tropical forest's. */
+export const PROVINCE_FAR_CANOPY_TROPICAL_RATIO = PROVINCE_FAR_CANOPY_RATIOS.tropical;
+/** Its delta over the temperate paint. */
+export const PROVINCE_FAR_CANOPY_TROPICAL_DELTA = deltaOver(PROVINCE_FAR_CANOPY_TROPICAL_RATIO, [1, 1, 1]);
 
 /** Thermal height per unit of temperature offset, and the snowline's share of it. */
 export const PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE = CLIMATE_PROVINCE_METERS_PER_TEMPERATURE;
@@ -202,7 +217,10 @@ export interface ProvinceFarTone {
   /** Metres thermal height adds to real height; the snowline reads `x 0.4` of it. */
   thermalLiftMeters: number;
   base: [number, number, number];
-  /** 0..1: the paint's share of `PROVINCE_FAR_CANOPY_PAINT_DELTA`. */
+  /**
+   * -1..1: above 0 the paint's share of `PROVINCE_FAR_CANOPY_PAINT_DELTA`,
+   * below 0 (negated) its share of `PROVINCE_FAR_CANOPY_TROPICAL_DELTA`.
+   */
   canopyShare: number;
   /** The canopy paint's per-channel delta that share makes (for audits). */
   canopy: [number, number, number];
@@ -227,12 +245,16 @@ export function provinceFarTone(
   const baseScale = 1 / Math.max(1, tundra + arid + parkland);
   const b = PROVINCE_FAR_BASE_DELTAS;
   const erg = Math.min(1, Math.max(0, sand));
-  target.canopyShare = (boreal + arid) / Math.max(1, boreal + arid + parkland);
+  target.canopyShare = (boreal + arid) / Math.max(1, boreal + arid + parkland)
+    - tropicalCoastWeight(temperatureOffset, dryness);
+  const darker = Math.max(target.canopyShare, 0);
+  const greener = Math.max(-target.canopyShare, 0);
   for (let channel = 0; channel < 3; channel += 1) {
     const sward = (tundra * b.tundra[channel]! + arid * b.arid[channel]!
       + parkland * b.parkland[channel]!) * baseScale;
     target.base[channel] = sward + (b.sand[channel]! - sward) * erg;
-    target.canopy[channel] = target.canopyShare * PROVINCE_FAR_CANOPY_PAINT_DELTA[channel]!;
+    target.canopy[channel] = darker * PROVINCE_FAR_CANOPY_PAINT_DELTA[channel]!
+      + greener * PROVINCE_FAR_CANOPY_TROPICAL_DELTA[channel]!;
   }
   target.thermalLiftMeters = -temperatureOffset * PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE;
   return target;
@@ -260,7 +282,8 @@ function wgslVec3(value: readonly [number, number, number]): string {
 /**
  * The vertex stage's half. Requires nothing but WGSL builtins; every
  * identifier carries the `terrainProvince` prefix. The fragment applies the
- * canopy share as `share * TERRAIN_PROVINCE_CANOPY_DELTA_WGSL`.
+ * signed canopy share as `max(share, 0) * TERRAIN_PROVINCE_CANOPY_DELTA_WGSL +
+ * max(-share, 0) * TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL`.
  */
 export const TERRAIN_PROVINCE_FAR_TONE_WGSL = /* wgsl */ `
 struct TerrainProvinceFarTone {
@@ -285,7 +308,12 @@ fn terrainProvinceFarTone(province: vec3f) -> TerrainProvinceFarTone {
   // A sand sea takes the base over from the sward (lane z, the erg weight).
   tone.base = sward + (${wgslVec3(PROVINCE_FAR_BASE_DELTAS.sand)} - sward)
     * clamp(province.z, 0.0, 1.0);
-  tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland);
+  // tropicalCoast.ts's weight, exactly 0.0 at and below its warm onset.
+  let tropical = smoothstep(
+    ${wgslFloat(TROPICAL_COAST.temperatureStart)}, ${wgslFloat(TROPICAL_COAST.temperatureFull)}, province.x)
+    * (1.0 - smoothstep(
+      ${wgslFloat(TROPICAL_COAST.drynessStart)}, ${wgslFloat(TROPICAL_COAST.drynessEnd)}, province.y));
+  tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland) - tropical;
   tone.thermalLift = -province.x * ${wgslFloat(PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE)};
   return tone;
 }
@@ -293,6 +321,8 @@ fn terrainProvinceFarTone(province: vec3f) -> TerrainProvinceFarTone {
 
 /** `PROVINCE_FAR_CANOPY_PAINT_DELTA` as a WGSL literal, for the fragment. */
 export const TERRAIN_PROVINCE_CANOPY_DELTA_WGSL = wgslVec3(PROVINCE_FAR_CANOPY_PAINT_DELTA);
+/** `PROVINCE_FAR_CANOPY_TROPICAL_DELTA` as a WGSL literal, for the fragment. */
+export const TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL = wgslVec3(PROVINCE_FAR_CANOPY_TROPICAL_DELTA);
 
 /** The canopy paint the far fallback uses at a province, for tests and audits. */
 export function provinceFarCanopyAlbedo(temperatureOffset: number, dryness: number): [number, number, number] {
