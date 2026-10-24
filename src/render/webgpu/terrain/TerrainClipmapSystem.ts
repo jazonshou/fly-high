@@ -1,5 +1,6 @@
 import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 // Side-effect import: Babylon 9 tree-shakes the thin-instance API, and
 // `Mesh.prototype.thinInstanceSetBuffer` / `thinInstanceCount` do not exist
 // without it. Missing, they are `undefined` rather than an error — the mesh
@@ -42,6 +43,7 @@ import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { ClimateProvinceField } from "./ClimateProvinceField";
 import { SURFACE_MATERIALS } from "./surfaceMaterials";
 import { terrainClimateProvinceInput, terrainLandformInput } from "./TerrainKernel";
+import type { TerrainLandformDataSource } from "./TerrainLandformKernel";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import {
   TERRAIN_CHANNEL_TEXTURES,
@@ -50,6 +52,7 @@ import {
   TerrainPageGenerator,
   createResidentInvariantPageLookup,
   invariantSlotKey,
+  terrainPageLandformMargin,
   type TerrainAuxPagePublisher,
   type TerrainCollisionPagePublisher,
   type TerrainAtlasSlot,
@@ -82,6 +85,7 @@ import { TerrainSurfacePlugin, type TerrainFarSwardRead } from "./TerrainSurface
 // definition, forwarded, never restated on the terrain side.
 import type { WaterShoreSwell } from "@/src/render/webgpu/water/WaterShaders";
 import type { TerrainMacroEvolutionExport } from "./TerrainEvolutionContract";
+import { VolcanicSiteIndexStream } from "./VolcanicSiteIndexStream";
 
 /**
  * The four terrain compute producers, as the clipmap uses them (`4.5-B4`).
@@ -102,6 +106,11 @@ export interface TerrainPageProducer {
    * erosion DAG spends it on DAG stages instead of pages.
    */
   generate(slots: readonly TerrainAtlasSlot[], admittedDispatches?: number): Promise<void>;
+  /**
+   * Re-bake resident pages in place against the landform data as it is now,
+   * returning the slots dispatched (`TerrainPageGenerator.refresh`).
+   */
+  refresh?(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]>;
   /** Fill Phase-5 aux fields for channel slots admitted after height. */
   ensureHydrology?(slots: readonly TerrainAtlasSlot[]): Promise<void>;
   setCollisionPagePublisher?(publisher: TerrainCollisionPagePublisher | null): void;
@@ -200,6 +209,24 @@ export interface TerrainClipmapSystemOptions {
    * falls back to inline synthesis wherever no `Worker` exists.
    */
   readonly materialSynthesisClient?: MaterialSynthesisClient;
+  /**
+   * The landform data the bakes bind, as the clipmap drives it (prime at
+   * warm-up, follow the observer, refresh what it only partly covered).
+   * Omitted, the real producers build a `VolcanicSiteIndexStream`; tests that
+   * inject `computeFactory` pass one here to drive the refresh.
+   */
+  readonly landformIndex?: TerrainLandformIndex;
+}
+
+/** `VolcanicSiteIndexStream` as the clipmap uses it. */
+export interface TerrainLandformIndex extends TerrainLandformDataSource {
+  /** False without volcanism: nothing is ever partial, so nothing is refreshed. */
+  readonly enabled: boolean;
+  /** Bumped on every upload. */
+  readonly uploadCount: number;
+  prime(x: number, z: number): void;
+  update(observerX: number, observerZ: number): void;
+  dispose(): void;
 }
 
 /**
@@ -338,6 +365,56 @@ const DEFAULT_PIXELS_PER_METER_AT_UNIT_DISTANCE = 1_080 / (2 * Math.tan((60 * Ma
  * 160-node budget spent on ground at the horizon.
  */
 const COARSEST_NODE_LEVEL = 9;
+
+/**
+ * Refreshing pages baked with only part of the landform data (the volcanic
+ * site index, `VolcanicSiteIndexStream`).
+ *
+ * The index is 144 km across and follows the observer; a level-6 page is
+ * 33 km and a root 262 km, so the coarse pages are baked with whatever part
+ * the index covered (`TerrainAtlasSlot.landformCoverage`). Their texels near
+ * the observer are what gets drawn, and those were inside the index when the
+ * page was baked; fly 20-odd km and they no longer are, so a volcano that was
+ * beyond the index then would be missing from the far ground now. A page is
+ * refreshed in place, height then occlusion and splat, once its part within
+ * `reachMeters` of the observer leaves the coverage it was baked with. That
+ * is about once per page per 23 km of travel, a page or two at a time.
+ */
+export const TERRAIN_LANDFORM_REFRESH = Object.freeze({
+  /** The 45 km far plane, the index's 4 km rebuild distance, and a margin. */
+  reachMeters: 50_000,
+  /** Resident pages are scanned again after this much travel, or a new index. */
+  scanMeters: 1_000,
+  /** Pages refreshed in one frame, height or channel. */
+  maxPagesPerFrame: 2,
+});
+
+const NO_SLOTS: readonly TerrainAtlasSlot[] = Object.freeze([]);
+
+/**
+ * Whether a page baked against `baked` coverage is due a refresh for an
+ * observer at (x, z): its part within `TERRAIN_LANDFORM_REFRESH.reachMeters`
+ * (plus the margin its bake samples) is outside `baked` and inside `current`.
+ * Allocation-free.
+ */
+export function terrainLandformRefreshDue(
+  address: WorldPageAddress,
+  baked: Readonly<Float64Array>,
+  current: Readonly<Float64Array>,
+  x: number,
+  z: number,
+): boolean {
+  const extent = WORLD_PAGE_BASE_EXTENT_METERS * 2 ** address.level;
+  const margin = terrainPageLandformMargin(address.level);
+  const reach = TERRAIN_LANDFORM_REFRESH.reachMeters;
+  const minX = Math.max(address.x * extent - margin, x - reach);
+  const minZ = Math.max(address.z * extent - margin, z - reach);
+  const maxX = Math.min((address.x + 1) * extent + margin, x + reach);
+  const maxZ = Math.min((address.z + 1) * extent + margin, z + reach);
+  if (minX >= maxX || minZ >= maxZ) return false;
+  const stale = minX < baked[0]! || minZ < baked[1]! || maxX > baked[2]! || maxZ > baked[3]!;
+  return stale && minX >= current[0]! && minZ >= current[1]! && maxX <= current[2]! && maxZ <= current[3]!;
+}
 
 /**
  * Tuning of the shared flight-corridor streaming priority (0-3). The module
@@ -534,6 +611,20 @@ export class TerrainClipmapSystem {
   private shadowCasterDistanceMeters = Number.POSITIVE_INFINITY;
   private seasonDayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR;
   private readonly worldRevision: string;
+  /**
+   * The volcanic site index every landform consumer binds as
+   * `terrainLandformData` (null off WebGPU and under an injected factory).
+   * Built with the first real producers and kept across quality switches,
+   * like the pyramid; it follows the terrain observer.
+   */
+  private landformStream: TerrainLandformIndex | null;
+  /** Resident height pages due a landform refresh, from the last scan. */
+  private readonly landformRefreshes: TerrainAtlasSlot[] = [];
+  /** Resident channel pages whose height page was refreshed under them. */
+  private readonly landformChannelRebakes: TerrainAtlasSlot[] = [];
+  private landformScanX = Number.NaN;
+  private landformScanZ = Number.NaN;
+  private landformScanUploads = -1;
   private disposed = false;
 
   constructor(
@@ -544,6 +635,7 @@ export class TerrainClipmapSystem {
   ) {
     this.profile = profile;
     this.worldRevision = terrainWorldRevision(world);
+    this.landformStream = options.landformIndex ?? null;
     this.material = createTerrainMaterial(scene);
     this.surfacePlugin = attachTerrainSurfacePlugin(this.material, scene);
     this.surfacePlugin.setSamplingProfile(
@@ -851,6 +943,15 @@ export class TerrainClipmapSystem {
     return parts.length === 0 ? null : parts.reduce((total, value) => total + value, 0);
   }
 
+  /**
+   * The volcanic site index the terrain bakes bind (`terrainLandformData`),
+   * for the other landform consumers (the sea-depth bake) and the steam's
+   * vent gate. Null until the WebGPU producers exist.
+   */
+  get landformData(): TerrainLandformDataSource | null {
+    return this.landformStream;
+  }
+
   /** 4-2/4-3: the GPU page atlases, for the generator and the surface plugin. */
   get atlases(): { readonly height: TerrainPageAtlas; readonly channel: TerrainPageAtlas } {
     return { height: this.heightAtlas, channel: this.channelAtlas };
@@ -1103,6 +1204,9 @@ export class TerrainClipmapSystem {
     this.stepCasterReadiness();
     this.updateAtlasResidency();
     this.writeNodeBuffers();
+    // Before the pump, so this frame's coverage checks see this frame's upload.
+    this.landformStream?.update(observer.x, observer.z);
+    this.scanLandformRefreshes(observer);
     this.pumpComputeClients(observer);
     this.debugOverlay.update(this.heightAtlas);
   }
@@ -1138,6 +1242,7 @@ export class TerrainClipmapSystem {
     this.pyramid?.dispose();
     this.provinceField?.dispose();
     this.provinceField = null;
+    this.landformStream?.dispose();
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
     this.channelAtlas.dispose();
@@ -1194,17 +1299,20 @@ export class TerrainClipmapSystem {
     const engine = this.scene.getEngine();
     // The landform stage reaches every height a page bake reads: the pages
     // (through the world the generator is given), the pyramid beyond them,
-    // and the splat bake's page uniform.
+    // and the splat bake's page uniform. All of them read the volcanic site
+    // index; the page generator holds back a page the index does not cover.
     const landform = terrainLandformInput(this.world);
+    this.landformStream ??= new VolcanicSiteIndexStream(engine as WebGPUEngine, this.world);
+    const landformData = this.landformStream;
     const pyramid = input.existingPyramid
-      ?? new GlobalHeightPyramid(this.scene, engine, this.world.seedHash, { landform });
+      ?? new GlobalHeightPyramid(this.scene, engine, this.world.seedHash, { landform, landformData });
     return {
       pageGenerator: new TerrainPageGenerator(
         engine,
         input.heightAtlas,
         this.world.seedHash,
         this.world.airport ?? null,
-        { world: this.world, channelAtlas: input.channelAtlas },
+        { world: this.world, channelAtlas: input.channelAtlas, landformData },
       ),
       pyramid,
       occlusionBake: new PageOcclusionBake(
@@ -1230,6 +1338,7 @@ export class TerrainClipmapSystem {
         this.world.airport ?? null,
         terrainClimateProvinceInput(this.world),
         landform,
+        landformData,
       ),
     };
   };
@@ -1259,6 +1368,9 @@ export class TerrainClipmapSystem {
     const generator = this.pageGenerator;
     const pyramid = this.pyramid;
     if (!generator || !pyramid) return;
+    // The spawn's site index, built now rather than in 1 ms slices: the
+    // page generator would hold back every page it does not cover.
+    this.landformStream?.prime(observerX, observerZ);
     try {
       await pyramid.recenter(observerX, observerZ);
       const extent = WORLD_PAGE_BASE_EXTENT_METERS * 2 ** COARSEST_NODE_LEVEL;
@@ -1698,6 +1810,9 @@ export class TerrainClipmapSystem {
     const heightPending = this.pendingHeightGeneration();
     const channelPending = this.pendingChannelBake(observer);
     const splatRebakes = this.pendingSplatRebakes();
+    // Landform refreshes take what new pages leave: none while any wait.
+    const heightRefreshes = heightPending.length === 0 ? this.pendingLandformRefreshes() : NO_SLOTS;
+    const channelRebakes = channelPending.length === 0 ? this.pendingLandformChannelRebakes() : NO_SLOTS;
     const heightClient = this.world.worldEvolution === "eroded"
       ? "erosionCompute"
       : "terrainCompute";
@@ -1717,12 +1832,15 @@ export class TerrainClipmapSystem {
           erosionDagDemand.costMs,
         );
       }
-    } else if (heightPending.length > 0) {
+    } else if (heightPending.length > 0 || heightRefreshes.length > 0) {
       // The activated worker pass is the Phase-5 erosion client even though
       // its final bytes upload through the height atlas. Booking it as
       // terrainCompute would silently bypass the only tier pacing lever the
       // evolution contract permits (D11 / assertion 105).
-      this.computeBudget.submit(heightClient, heightPending.length);
+      this.computeBudget.submit(
+        heightClient,
+        heightPending.length || Math.min(heightRefreshes.length, TERRAIN_LANDFORM_REFRESH.maxPagesPerFrame),
+      );
     }
     // `6-11`: the global horizon bake shares the OCCLUSION row rather than
     // taking one of its own, and the reason is a wall the row table records
@@ -1739,7 +1857,9 @@ export class TerrainClipmapSystem {
     const horizonOwed = this.pyramid?.needsHorizonBake ?? false;
     const channelPairCostMs = this.computeBudget.estimatedCostMs("occlusionCompute")
       + this.computeBudget.estimatedCostMs("splatCompute");
-    if (channelPending.length > 0 || horizonOwed) {
+    const channelWork = channelPending.length
+      || Math.min(channelRebakes.length, TERRAIN_LANDFORM_REFRESH.maxPagesPerFrame);
+    if (channelWork > 0 || horizonOwed) {
       // A channel slot's TWO bakes are ONE admission: occlusion writes three
       // textures, the splat writes four, both into the same slot, and the slot
       // is published only once both have run — publishing between them puts
@@ -1749,7 +1869,7 @@ export class TerrainClipmapSystem {
       // of work must not jump the queue on the strength of its cheaper half.
       this.computeBudget.submit(
         "occlusionCompute",
-        channelPending.length + (horizonOwed ? 1 : 0),
+        channelWork + (horizonOwed ? 1 : 0),
         channelPairCostMs,
       );
     }
@@ -1758,7 +1878,7 @@ export class TerrainClipmapSystem {
       // geometry-only and never goes stale.
       this.computeBudget.submit("splatCompute", splatRebakes.length);
     }
-    this.dispatchPageGeneration(heightPending, erosionDagDemand !== null);
+    this.dispatchPageGeneration(heightPending, erosionDagDemand !== null, heightRefreshes);
     // Read ONCE — `admitted` settles the client, so a second read would report
     // a plan this frame has already dispatched against (`6-9`'s rule).
     let occlusionAdmitted = this.computeBudget.admitted("occlusionCompute");
@@ -1769,7 +1889,8 @@ export class TerrainClipmapSystem {
       occlusionAdmitted -= 1;
       void this.pyramid?.bakeHorizon?.().catch(() => undefined);
     }
-    this.dispatchChannelBake(channelPending, occlusionAdmitted);
+    if (channelPending.length > 0) this.dispatchChannelBake(channelPending, occlusionAdmitted);
+    else this.dispatchLandformChannelRebake(channelRebakes, occlusionAdmitted);
     this.dispatchSplatRebake(splatRebakes);
   }
 
@@ -1826,6 +1947,7 @@ export class TerrainClipmapSystem {
   private dispatchPageGeneration(
     pending: readonly TerrainAtlasSlot[],
     dagProducer: boolean,
+    refreshes: readonly TerrainAtlasSlot[] = NO_SLOTS,
   ): void {
     const generator = this.pageGenerator;
     if (!generator) return;
@@ -1836,7 +1958,10 @@ export class TerrainClipmapSystem {
     // no pending admissions left — otherwise the page that is 90% eroded stops
     // the moment the atlas runs out of new work and the slot never converges.
     const dagActive = dagProducer && (generator.hasActiveErosionDag?.() ?? false);
-    if (pending.length === 0 && !dagActive) return;
+    if (pending.length === 0 && !dagActive) {
+      if (!dagProducer) this.dispatchLandformRefresh(refreshes, admitted);
+      return;
+    }
     const ranked = this.rankForDispatch(pending);
     // The erosion producer takes ONE page at a time and needs the whole ranked
     // set to choose it; the analytic batch is sliced to its admitted count.
@@ -1852,6 +1977,136 @@ export class TerrainClipmapSystem {
       .finally(() => {
         this.generationInFlight = false;
       });
+  }
+
+  /**
+   * Queue the resident height pages due a landform refresh
+   * (`TERRAIN_LANDFORM_REFRESH`). Runs after a kilometre of travel or a new
+   * index, and only while the index is settled: a page refreshed against an
+   * index still being built would only need it again.
+   */
+  private scanLandformRefreshes(observer: TerrainObserver): void {
+    const stream = this.landformStream;
+    if (!stream || !stream.enabled || stream.building) return;
+    const moved = Math.hypot(observer.x - this.landformScanX, observer.z - this.landformScanZ);
+    if (moved < TERRAIN_LANDFORM_REFRESH.scanMeters && stream.uploadCount === this.landformScanUploads) return;
+    this.landformScanX = observer.x;
+    this.landformScanZ = observer.z;
+    this.landformScanUploads = stream.uploadCount;
+    const queue = this.landformRefreshes;
+    queue.length = 0;
+    for (const slot of this.heightAtlas.residency.entries) {
+      if (this.landformRefreshPending(slot)) queue.push(slot);
+    }
+  }
+
+  /** Whether a height slot is resident, idle, and due a refresh for the last scan's observer. */
+  private landformRefreshPending(slot: TerrainAtlasSlot): boolean {
+    const stream = this.landformStream;
+    return stream !== null
+      && slot.landformCoverage !== null
+      && slot.lifecycle.state === "resident"
+      && slot.address.level > 0
+      && !slot.generationSubmitted
+      && terrainLandformRefreshDue(
+        slot.address, slot.landformCoverage, stream.coverage, this.landformScanX, this.landformScanZ);
+  }
+
+  /** The queued refreshes still due, compacted in place (no allocation). */
+  private pendingLandformRefreshes(): readonly TerrainAtlasSlot[] {
+    const queue = this.landformRefreshes;
+    if (queue.length === 0 || this.generationInFlight || !this.pageGenerator?.refresh) return NO_SLOTS;
+    if (this.landformStream?.building) return NO_SLOTS;
+    let kept = 0;
+    for (let index = 0; index < queue.length; index += 1) {
+      const slot = queue[index]!;
+      if (this.landformRefreshPending(slot)) queue[kept++] = slot;
+    }
+    queue.length = kept;
+    return queue;
+  }
+
+  private dispatchLandformRefresh(pending: readonly TerrainAtlasSlot[], admitted: number): void {
+    const generator = this.pageGenerator;
+    if (!generator?.refresh || pending.length === 0) return;
+    const batch = this.rankForDispatch(pending)
+      .slice(0, Math.min(admitted, TERRAIN_LANDFORM_REFRESH.maxPagesPerFrame));
+    this.generationInFlight = true;
+    void generator.refresh(batch)
+      .then((refreshed) => {
+        // The height texels changed under the channel page's occlusion,
+        // horizon and splat (which reads the volcanic ground too).
+        for (const slot of refreshed) {
+          const channel = this.channelAtlas.residency.get(slot.key);
+          if (channel?.lifecycle.state === "resident" && !this.landformChannelRebakes.includes(channel)) {
+            this.landformChannelRebakes.push(channel);
+          }
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.generationInFlight = false;
+      });
+  }
+
+  /** Channel pages owed a re-bake whose height page is resident and settled, compacted in place. */
+  private pendingLandformChannelRebakes(): readonly TerrainAtlasSlot[] {
+    const queue = this.landformChannelRebakes;
+    if (queue.length === 0 || this.occlusionInFlight || !this.occlusionBake) return NO_SLOTS;
+    let kept = 0;
+    for (let index = 0; index < queue.length; index += 1) {
+      const slot = queue[index]!;
+      if (slot.lifecycle.state !== "resident") continue;
+      const height = this.heightAtlas.residency.get(slot.key);
+      if (!height || height.lifecycle.state !== "resident") continue;
+      queue[kept++] = slot;
+    }
+    queue.length = kept;
+    // Wait out a height refresh still in flight; its rebake follows it.
+    for (const slot of queue) {
+      if (this.heightAtlas.residency.get(slot.key)?.generationSubmitted) return NO_SLOTS;
+    }
+    return queue;
+  }
+
+  /**
+   * Re-bake channel pages in place after their height page was refreshed:
+   * occlusion then splat, the pair a new page gets, without the slot ever
+   * leaving residency (as the season splat re-bake does).
+   */
+  private dispatchLandformChannelRebake(pending: readonly TerrainAtlasSlot[], admitted: number): void {
+    const bake = this.occlusionBake;
+    if (!bake || pending.length === 0 || admitted <= 0) return;
+    const batch = this.rankForDispatch(pending)
+      .slice(0, Math.min(admitted, TERRAIN_LANDFORM_REFRESH.maxPagesPerFrame));
+    const queue = this.landformChannelRebakes;
+    let kept = 0;
+    for (let index = 0; index < queue.length; index += 1) {
+      if (!batch.includes(queue[index]!)) queue[kept++] = queue[index]!;
+    }
+    queue.length = kept;
+    this.occlusionInFlight = true;
+    const seasonDay = this.seasonDayOfYear;
+    void (async () => {
+      try {
+        const baked = await bake.bake(batch);
+        const splatted = this.splatBake && baked.length > 0
+          ? await this.splatBake.bake(baked, seasonDay)
+          : baked;
+        for (const slot of splatted) slot.bakedSeasonDay = seasonDay;
+        // Whatever did not run is owed still.
+        for (const slot of batch) {
+          if (!splatted.includes(slot) && !queue.includes(slot)) queue.push(slot);
+        }
+      } catch {
+        // Owed still; the next frame offers it again.
+        for (const slot of batch) {
+          if (!queue.includes(slot)) queue.push(slot);
+        }
+      } finally {
+        this.occlusionInFlight = false;
+      }
+    })();
   }
 
   private pendingChannelBake(observer: TerrainObserver): readonly TerrainAtlasSlot[] {

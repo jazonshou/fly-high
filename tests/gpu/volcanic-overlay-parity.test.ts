@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
+import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import { Scene } from "@babylonjs/core/scene";
+import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import {
   TERRAIN_KERNEL_PAGE_BYTES,
   TERRAIN_KERNEL_WGSL,
@@ -14,9 +17,23 @@ import {
   TERRAIN_LANDFORM_WGSL,
   terrainLandformDataBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainLandformKernel";
-import { packVolcanicSiteIndex } from "../../src/render/webgpu/terrain/VolcanicOverlayKernel";
-import { sampleNaturalTerrainHeight } from "../../src/world/terrain";
 import {
+  TerrainPageAtlas,
+  TerrainPageGenerator,
+  invariantSlotKey,
+} from "../../src/render/webgpu/terrain/TerrainPageAtlas";
+import {
+  TERRAIN_HEIGHT_PARITY_CRITERIA,
+  TERRAIN_HEIGHT_SLOT_EDGE,
+  terrainTexelSizeMeters,
+} from "../../src/render/webgpu/terrain/TerrainSpineContract";
+import { packVolcanicSiteIndex } from "../../src/render/webgpu/terrain/VolcanicOverlayKernel";
+import { VolcanicSiteIndexStream } from "../../src/render/webgpu/terrain/VolcanicSiteIndexStream";
+import { WORLD_PAGE_GUTTER } from "../../src/render/webgpu/world/pageGeometry";
+import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
+import { sampleNaturalTerrainHeight, sampleTerrainHeight } from "../../src/world/terrain";
+import {
+  VolcanicSiteKind,
   applyVolcanicOverlay,
   sampleVolcanicGround,
   volcanicActivity,
@@ -262,4 +279,91 @@ describe("volcanic overlay CPU/GPU parity", () => {
     const raw = await runOnGpu(world, airport.centerX, airport.centerZ, probes);
     compare(probes, raw, "forced start");
   }, 240_000);
+
+  it("bakes a volcano into an atlas page through the streamed index, and waits for it", async () => {
+    // The wiring end to end: the page generator binds the stream's buffer,
+    // holds a page back while the index that covers it is being built, bakes
+    // natural -> dunes -> volcanic overlay -> earthworks, and the texels are
+    // the CPU authority's to the physics bound.
+    const world = createWorld("kilo77", { landforms: { volcanic: true } });
+    const airport = world.airport!;
+    const strato = volcanicSitesInBounds(
+      world, airport.centerX - 45_000, airport.centerZ - 45_000, airport.centerX + 45_000, airport.centerZ + 45_000)
+      .find((site) => site.kind === VolcanicSiteKind.Strato)!;
+    expect(strato).toBeDefined();
+    // An L0 page on the flank, half a radius from the summit.
+    const pageMeters = 512;
+    const originX = Math.floor((strato.x + strato.radiusMeters * 0.5) / pageMeters) * pageMeters;
+    const originZ = Math.floor(strato.z / pageMeters) * pageMeters;
+    const address = createWorldPageAddress(0, originX / pageMeters, originZ / pageMeters);
+    const texel = terrainTexelSizeMeters(0);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
+    let heights: Float32Array;
+    let heldBack = false;
+    let recorded: Float64Array | null = new Float64Array(1);
+    try {
+      await engine.initAsync();
+      engine.runRenderLoop(() => {});
+      const scene = new Scene(engine);
+      const stream = new VolcanicSiteIndexStream(engine, world);
+      const atlas = new TerrainPageAtlas(scene, resolveWebGpuQualityProfile("medium", "balanced"), {
+        kind: "height",
+        worldRevision: "volcanic-page",
+      });
+      const generator = new TerrainPageGenerator(
+        engine, atlas, world.seedHash, world.airport ?? null, { world, landformData: stream });
+      atlas.residency.beginFrame(1);
+      const request = atlas.residency.request(invariantSlotKey(address), address)!;
+      // Building an index that does not yet cover the page: held back.
+      stream.update(originX + 300_000, originZ);
+      expect(stream.building).toBe(true);
+      await generator.generate([request.slot]);
+      heldBack = !request.slot.generationSubmitted;
+      // Primed round the page: baked, and covered whole, so nothing recorded.
+      stream.prime(originX, originZ);
+      await generator.generate([request.slot]);
+      await generator.settle();
+      recorded = request.slot.landformCoverage;
+      const origin = atlas.slotOrigin(request.slot.slotIndex);
+      heights = await atlas.texture()!.readPixels(
+        0, 0, undefined, true, false,
+        origin.u, origin.v, TERRAIN_HEIGHT_SLOT_EDGE, TERRAIN_HEIGHT_SLOT_EDGE,
+      ) as Float32Array;
+      engine.stopRenderLoop();
+      generator.dispose();
+      atlas.dispose();
+      stream.dispose();
+      scene.dispose();
+    } finally {
+      engine.dispose();
+      canvas.remove();
+    }
+    expect(heldBack, "a page the building index does not cover waits").toBe(true);
+    expect(recorded, "a covered page records no partial coverage").toBeNull();
+    let worst = 0;
+    let moved = 0;
+    let compared = 0;
+    for (let row = 0; row < pageMeters / texel; row += 9) {
+      for (let column = 0; column < pageMeters / texel; column += 9) {
+        const x = originX + column * texel;
+        const z = originZ + row * texel;
+        const expected = sampleTerrainHeight(world, x, z);
+        const stored = heights![(row + WORLD_PAGE_GUTTER) * TERRAIN_HEIGHT_SLOT_EDGE + column + WORLD_PAGE_GUTTER]!;
+        worst = Math.max(worst, Math.abs(stored - expected));
+        if (Math.abs(expected - sampleNaturalTerrainHeight(world.seedHash, x, z, 0)) > 1) moved += 1;
+        compared += 1;
+      }
+    }
+    console.log(
+      `volcanic L0 page (${originX}, ${originZ}) vs sampleTerrainHeight over ${compared} texels: `
+      + `max |dh| = ${(worst * 1_000).toFixed(3)} mm; ${moved} raised by the volcano`,
+    );
+    expect(moved, "texels the volcano moved").toBeGreaterThan(compared * 0.9);
+    expect(worst).toBeLessThan(TERRAIN_HEIGHT_PARITY_CRITERIA.physicsToleranceMeters);
+  }, 300_000);
 });

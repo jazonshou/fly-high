@@ -17,9 +17,9 @@ import {
 } from "../../src/render/webgpu/terrain/TerrainKernel";
 import {
   TERRAIN_LANDFORM_WGSL,
-  createTerrainLandformPlaceholderSource,
   terrainLandformDataBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainLandformKernel";
+import { packVolcanicSiteIndex } from "../../src/render/webgpu/terrain/VolcanicOverlayKernel";
 import {
   TerrainPageAtlas,
   TerrainPageGenerator,
@@ -258,18 +258,36 @@ async function withEngine<T>(run: (engine: WebGPUEngine) => Promise<T>): Promise
   }
 }
 
-/** RESULT_FLOATS per probe, from one dispatch. */
+/**
+ * The volcanic site index round a page, as a bake binds the stream's: built
+ * once per page and reused at every width. The CPU oracle runs volcanism too,
+ * so the GPU must see the sites near a sand sea (an empty index would draw a
+ * natural erg without the volcano beside it, or the erg at full strength
+ * where volcanism thins it).
+ */
+const SITE_INDEXES = new Map<string, Float32Array>();
+function siteIndexAround(world: WorldDefinition, originX: number, originZ: number): Float32Array {
+  const key = `${world.seed}|${JSON.stringify(world.landforms ?? null)}|${originX},${originZ}`;
+  let data = SITE_INDEXES.get(key);
+  if (!data) {
+    data = packVolcanicSiteIndex(world, originX + PAGE_METERS / 2, originZ + PAGE_METERS / 2).data;
+    SITE_INDEXES.set(key, data);
+  }
+  return data;
+}
+
+/**
+ * RESULT_FLOATS per probe. One pipeline, one dispatch per page: a natural
+ * world's sand seas lie 150-600 km apart, wider than one site index reaches,
+ * so each page binds the index round itself.
+ */
 async function dispatch(
   engine: WebGPUEngine,
   set: ProbeSet,
   filterWidthMeters: number,
 ): Promise<Float32Array> {
-  const pageBuffer = new StorageBuffer(engine, set.pageOrigins.length * TERRAIN_KERNEL_PAGE_BYTES);
-  pageBuffer.update(packPages(set, filterWidthMeters));
-  const probeBuffer = new StorageBuffer(engine, set.probes.byteLength);
-  probeBuffer.update(new Uint8Array(set.probes.buffer));
-  const resultBuffer = new StorageBuffer(engine, set.count * RESULT_FLOATS * 4);
-  const data = createTerrainLandformPlaceholderSource(engine);
+  const perPage = set.count / set.pageOrigins.length;
+  const results = new Float32Array(set.count * RESULT_FLOATS);
   const shader = new ComputeShader(
     `terrain-landform-parity-${set.name}-${filterWidthMeters}`,
     engine,
@@ -283,18 +301,32 @@ async function dispatch(
       },
     },
   );
-  shader.setStorageBuffer("terrainKernelPages", pageBuffer);
-  shader.setStorageBuffer("probes", probeBuffer);
-  shader.setStorageBuffer("results", resultBuffer);
-  shader.setStorageBuffer("terrainLandformData", data.buffer);
-  await shader.dispatchWhenReady(Math.ceil(set.count / 64), 1, 1);
-  const view = await resultBuffer.read();
-  const results = new Float32Array(
-    view.buffer.slice(view.byteOffset, view.byteOffset + set.count * RESULT_FLOATS * 4));
-  pageBuffer.dispose();
-  probeBuffer.dispose();
-  resultBuffer.dispose();
-  data.dispose();
+  for (let page = 0; page < set.pageOrigins.length; page += 1) {
+    const [originX, originZ] = set.pageOrigins[page]!;
+    const one = buildProbeSet(set.name, set.world, set.landform, [[originX, originZ]], perPage);
+    const pageBuffer = new StorageBuffer(engine, TERRAIN_KERNEL_PAGE_BYTES);
+    pageBuffer.update(packPages(one, filterWidthMeters));
+    const probeBuffer = new StorageBuffer(engine, one.probes.byteLength);
+    probeBuffer.update(new Uint8Array(one.probes.buffer));
+    const resultBuffer = new StorageBuffer(engine, one.count * RESULT_FLOATS * 4);
+    const index = siteIndexAround(set.world, originX, originZ);
+    const data = new StorageBuffer(engine, index.byteLength);
+    data.update(index);
+    shader.setStorageBuffer("terrainKernelPages", pageBuffer);
+    shader.setStorageBuffer("probes", probeBuffer);
+    shader.setStorageBuffer("results", resultBuffer);
+    shader.setStorageBuffer("terrainLandformData", data);
+    await shader.dispatchWhenReady(Math.ceil(one.count / 64), 1, 1);
+    const view = await resultBuffer.read();
+    results.set(
+      new Float32Array(view.buffer.slice(view.byteOffset, view.byteOffset + one.count * RESULT_FLOATS * 4)),
+      page * perPage * RESULT_FLOATS,
+    );
+    pageBuffer.dispose();
+    probeBuffer.dispose();
+    resultBuffer.dispose();
+    data.dispose();
+  }
   return results;
 }
 

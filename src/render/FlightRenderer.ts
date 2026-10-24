@@ -1001,7 +1001,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         evolutionResult.mode === "eroded"
           ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
           : null,
-        { storageFormat: bathymetryStorageFormat },
+        { storageFormat: bathymetryStorageFormat, landformData: terrain.landformData },
       );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
@@ -1296,10 +1296,16 @@ export class FlightRenderer implements FlightRenderingSystem {
       // first frame then draws one collapsed instance so the render pipeline
       // exists before the first vent comes into range. The ground under a
       // vent is the consumer surface the player sees, never below the sea.
+      // A vent query waits until the terrain's site index covers it: building
+      // the index is what builds the vents' site cells, in 1 ms slices.
+      const steamSiteIndex = terrain.landformData;
       const steam = new VolcanicSteamSystem(scene, options.world, {
         maxWisps: profile.volcanicSteamMaxWisps,
         groundHeight: (x, z) => consumerTerrainSample(x, z).height,
         sceneDepth: atmosphereResources.sceneDepth,
+        ...(steamSiteIndex
+          ? { ventsReady: (minX, minZ, maxX, maxZ) => steamSiteIndex.covers(minX, minZ, maxX, maxZ) }
+          : {}),
       });
       cleanup.push(() => steam.dispose());
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
