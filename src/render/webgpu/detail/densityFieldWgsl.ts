@@ -468,10 +468,11 @@ fn vegetationDensity(
   let openness = 0.45 + 0.55 * (1.0 - glade * 0.7);
   let shrubForestGate = 0.28 + province * 0.72;
   let edgeShrubGain = 1.0 + forestEdge * 0.45;
+  let understoryKeep = 1.0 - VEG_PARKLAND_CLOSED_FOREST_CUT * parkland * (1.0 - riparianBand);
   result.shrubStemsPerSquareMeter = kSaturate(
     VEG_BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness
       * shoreline * disturbance * shrubForestGate * edgeShrubGain * clearance
-      * channelClearance * (1.0 + riparianBand * 0.65)
+      * channelClearance * (1.0 + riparianBand * 0.65) * understoryKeep
     + VEG_BASE_SHRUB_STEMS
       * (VEG_DESERT_SHRUB_SHARE * arid + VEG_PARKLAND_SHRUB_SHARE * parkland)
       * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * glade),

@@ -360,6 +360,8 @@ describe("a forced dry province reads as its ecology", () => {
     // The closed forest is cut, so this is the lone oaks and the galleries.
     expect(savanna.treesPerHectare).toBeGreaterThan(10);
     expect(savanna.treesPerHectare).toBeLessThan(40);
+    // The forest's understory went with it: bush clumps in the grass remain.
+    expect(savanna.shrubsPerHectare).toBeLessThan(temperate.shrubsPerHectare * 0.5);
     // Lone trees grow the spreading edge form; the temperate stands do not.
     expect(savanna.treeEdge).toBeGreaterThan(temperate.treeEdge + 0.2);
   });
@@ -449,6 +451,9 @@ describe("the WGSL twins carry the same dry laws", () => {
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
       "(arid + VEG_PARKLAND_CLOSED_FOREST_CUT * parkland) * (1.0 - riparianBand)");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("moistureFactor * habitat * closedForestKeep");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
+      "1.0 - VEG_PARKLAND_CLOSED_FOREST_CUT * parkland * (1.0 - riparianBand)");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("(1.0 + riparianBand * 0.65) * understoryKeep");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
       "max(forestEdge, parkland * VEG_PARKLAND_OPEN_GROWN_EDGE)");
     for (const value of [

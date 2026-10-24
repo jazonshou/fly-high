@@ -586,15 +586,16 @@ export function dryProvinceGroundCoverKeep(drynessOffset: number): number {
 /**
  * The lone-tree and pinyon stands, as shares of the closed-forest base.
  *
- * Parkland: 0.045 of 800 is 36 stems/ha at full share, and the glade field
- * clumps it to ~22/ha on average, the 10-40 trees/ha a grazed oak savanna
- * carries. These do NOT ride the moisture gate or the forest province: that is
+ * Parkland: 0.025 of 800 is 20 stems/ha at full share, and the glade field
+ * clumps it to ~12/ha on average; with the closed forest's remnant that is
+ * the 10-40 trees/ha and 10-30 % crown cover of a grazed oak savanna (an
+ * open-grown crown here is ~90 m^2; 0.045 read as 30-40 % cover, a woodland). These do NOT ride the moisture gate or the forest province: that is
  * what "lone tree" means, a tree the climate allows but no stand surrounds.
  * Desert: pinyon only on the 7-24 degree slopes, ~15/ha where it grows. Both
  * sit far under the near band's rendered cap, so a dry province never draws
  * more trees than a temperate forest does.
  */
-export const PARKLAND_TREE_SHARE = 0.045;
+export const PARKLAND_TREE_SHARE = 0.025;
 export const DESERT_TREE_SHARE = 0.03;
 /**
  * How much of the closed forest a full parkland share keeps: the woodland
@@ -604,7 +605,7 @@ export const DESERT_TREE_SHARE = 0.03;
  * desert keeps none of it. The riparian bank keeps all of it in both: the
  * gallery forest along a dry country's rivers.
  */
-export const PARKLAND_CLOSED_FOREST_KEEP = 0.15;
+export const PARKLAND_CLOSED_FOREST_KEEP = 0.06;
 
 /** The closed-forest term's keep, 1 at zero dryness exactly (`1 - 0 * x`). */
 export function dryProvinceClosedForestKeep(
@@ -907,10 +908,13 @@ export function densityField(
   const dryShrubStems = BASE_SHRUB_STEMS
     * (DESERT_SHRUB_SHARE * arid + PARKLAND_SHRUB_SHARE * parkland)
     * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * forest.glade);
+  // The parkland's understory goes with the forest it grew under; the
+  // desert keeps its moisture-gated scrub, which is sage and juniper there.
+  const understoryKeep = dryProvinceClosedForestKeep(0, parkland, riparian.bankBand);
   const shrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
     * forest.disturbance * shrubForestGate * edgeShrubGain * clearance
-    * riparian.clearance * riparian.shrubDensityGain
+    * riparian.clearance * riparian.shrubDensityGain * understoryKeep
     + dryShrubStems;
 
   const groundCover = groundCoverWeights(

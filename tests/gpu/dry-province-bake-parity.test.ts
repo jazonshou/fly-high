@@ -303,7 +303,7 @@ describe("dry-province bake parity", () => {
     const near = merge(await bakeProvince("savanna", LOWLAND_L4));
     report("savanna L4", near);
     expect(near.compared).toBeGreaterThan(500);
-    // Measured on SwiftShader (2026-10-24): 94.8%.
+    // Measured on SwiftShader (2026-10-24): 95.1%.
     expect(near.agreed / near.compared).toBeGreaterThan(0.85);
     expect(near.bake[SurfaceMaterial.DryGrass]! / near.compared).toBeGreaterThan(0.75);
   }, 300_000);
