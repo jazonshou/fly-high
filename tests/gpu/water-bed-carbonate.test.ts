@@ -17,9 +17,11 @@ import { WATER_DEPTH_OPTICS_WGSL } from "../../src/render/webgpu/water/WaterShad
  * shipped include and run beside the bed as it stood before the carbonate
  * (pinned verbatim below), with the carbonate read from a storage buffer so
  * no compiler can fold the zero away, and the two must agree to the bit on
- * the hardware's own f32 across depth, wetness and position. That makes the
- * temperate sea pixel-identical by construction: the field's B channel is
- * an exact 0 there, and everything else the ocean reads is unchanged.
+ * the hardware's own f32 across depth, wetness and position (within a bound
+ * on Metal, which reassociates; see `METAL_REASSOCIATES`). That makes the
+ * temperate sea pixel-identical where the back end keeps source order: the
+ * field's B channel is an exact 0 there, and everything else the ocean reads
+ * is unchanged.
  *
  * It also pins the direction of the change at full weight: a paler bed that
  * stays pale deeper, which is what turns clear shallows turquoise.
@@ -172,21 +174,47 @@ function rgbAt(results: Uint32Array, probe: number, which: "shipped" | "legacy")
 
 const luminance = ([r, g, b]: number[]) => 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
 
+/**
+ * Chrome on macOS runs WebGPU on Metal, whose compiler contracts and
+ * reassociates f32 arithmetic (SwiftShader keeps source order). It folds the
+ * bed's shared terms (the mineral weight, the sand mix) differently once the
+ * function has more uses of them, so two textually different functions that
+ * are equal in exact arithmetic can round apart in the last bits even where
+ * every carbonate term is `mix(x, y, 0)`. The macOS suite measured 20 of 1,080 channels apart at a
+ * carbonate of 0. Metal is held to a bound instead: 1e-4 of albedo is a
+ * fortieth of one display level before the water column dims it further, and
+ * a leak of 0.001 carbonate would move the bed by about 3e-4. Every other
+ * back end keeps source order and must agree to the bit (SwiftShader does).
+ */
+const METAL_REASSOCIATES = /Macintosh|Mac OS X/.test(navigator.userAgent);
+const METAL_BED_TOLERANCE = 1e-4;
+
 describe("tropical coast reef carbonate (GPU)", () => {
-  it("leaves the bed bit-identical wherever the carbonate is 0", async () => {
+  it("leaves the bed unchanged wherever the carbonate is 0 (to the bit off Metal)", async () => {
     const probes = sweep(0);
     const results = await evaluate(probes);
     const mismatches: string[] = [];
+    let largestGap = 0;
     probes.forEach((probe, index) => {
       const base = index * RESULT_WORDS_PER_PROBE;
+      const shipped = rgbAt(results, index, "shipped");
+      const legacy = rgbAt(results, index, "legacy");
       for (let channel = 0; channel < 3; channel += 1) {
-        if (results[base + channel] !== results[base + 4 + channel]) {
+        if (results[base + channel] === results[base + 4 + channel]) continue;
+        const gap = Math.abs(shipped[channel]! - legacy[channel]!);
+        largestGap = Math.max(largestGap, gap);
+        if (!METAL_REASSOCIATES || !(gap <= METAL_BED_TOLERANCE)) {
           mismatches.push(
-            `(${probe.x}, ${probe.z}) bed ${probe.bedElevation} m wet ${probe.wetness} channel ${channel}`,
+            `(${probe.x}, ${probe.z}) bed ${probe.bedElevation} m wet ${probe.wetness} channel ${channel}: `
+              + `${shipped[channel]} vs ${legacy[channel]}`,
           );
         }
       }
     });
+    console.log(
+      `reef carbonate at 0: largest bed gap ${largestGap} `
+        + `(${METAL_REASSOCIATES ? `Metal, bound ${METAL_BED_TOLERANCE}` : "exact required"})`,
+    );
     expect(mismatches).toEqual([]);
   });
 
