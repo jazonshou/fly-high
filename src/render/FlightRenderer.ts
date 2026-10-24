@@ -1437,7 +1437,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           lamps: lightPoints,
           floods: clusteredLighting,
           floodSlots: spawnedFloodSlots.map((slot) => slot.map((light) => light.name)),
-          tier: profile.spawnedAirfields,
+          limits: profile.spawnedAirfields,
           // Their materials are the home field's, already in both registries,
           // so this registers nothing — and says so if that ever stops being
           // true, rather than leaving a spawned hangar unhazed.
@@ -3409,7 +3409,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
-    this.spawnedAirfields?.setTier(this.profile.spawnedAirfields);
+    this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;

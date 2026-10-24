@@ -109,7 +109,7 @@ function rig(tier: SpawnedAirfieldTier = HIGH, seed = "alpha"): Rig {
     lamps: lightPoints,
     floods,
     floodSlots: reserve.map((slot) => slot.map((light) => light.name)),
-    tier,
+    limits: tier,
   });
   return {
     scene, world, next, spawned, home, lightPoints, floods, ground, manager,
@@ -359,7 +359,7 @@ describe("an airport spawned in flight gets the home field's airfield", () => {
       expect([...low.floods.intensities.values()].every((value) => value === 0)).toBe(true);
 
       // Raised to medium in flight: the field it already knows is lit and built.
-      low.manager.setTier(MEDIUM);
+      low.manager.setLimits(MEDIUM);
       settle(low, low.spawned.centerX, low.spawned.centerZ);
       expect(low.manager.statistics.structureFields).toBe(1);
       expect(spawnedMeshes(low.scene)).toHaveLength(7);
@@ -368,7 +368,7 @@ describe("an airport spawned in flight gets the home field's airfield", () => {
         .toBeGreaterThan(new AirfieldLightingSystem(low.spawned).fixtures.length);
 
       // And dropped back: its meshes are released and its lamps leave the draw.
-      low.manager.setTier(LOW);
+      low.manager.setLimits(LOW);
       settle(low, low.spawned.centerX, low.spawned.centerZ);
       expect(spawnedMeshes(low.scene)).toHaveLength(0);
       expect(low.lightPoints.extraFixtureCount).toBe(0);

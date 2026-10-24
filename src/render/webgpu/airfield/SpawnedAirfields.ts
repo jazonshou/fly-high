@@ -177,7 +177,8 @@ export interface SpawnedAirfieldOptions {
   readonly floods: SpawnedFloodSink | null;
   /** Reserve flood names per slot, from `spawnedFloodReserve`. */
   readonly floodSlots: readonly (readonly string[])[];
-  readonly tier: SpawnedAirfieldTier;
+  /** The current quality profile's `spawnedAirfields` row. */
+  readonly limits: SpawnedAirfieldTier;
   /** Called once per finished structure build with every mesh it made. */
   readonly onStructuresBuilt?: (meshes: readonly Mesh[]) => void;
   /** Clock for the frame budget and the ranking cadence; `performance.now` by default. */
@@ -469,7 +470,7 @@ export class SpawnedAirfieldManager {
   private readonly onStructuresBuilt: ((meshes: readonly Mesh[]) => void) | undefined;
   private readonly now: () => number;
   private readonly frameBudgetMs: number;
-  private tier: SpawnedAirfieldTier;
+  private limits: SpawnedAirfieldTier;
 
   private readonly fields: SpawnedField[] = [];
   private readonly jobs: Job[] = [];
@@ -507,7 +508,7 @@ export class SpawnedAirfieldManager {
     this.onStructuresBuilt = options.onStructuresBuilt;
     this.now = options.now ?? (() => performance.now());
     this.frameBudgetMs = options.frameBudgetMs ?? SPAWNED_AIRFIELD_FRAME_BUDGET_MS;
-    this.tier = options.tier;
+    this.limits = options.limits;
     // A slot whose lights the container refused (no clustered support) is not
     // a slot: drop it rather than "light" a name that does not exist.
     this.floodSlotNames = this.floods
@@ -547,24 +548,27 @@ export class SpawnedAirfieldManager {
       };
       this.nextId += 1;
       this.fields.push(field);
-      if (this.tier.lamps) this.jobs.push({ field, kind: "lamps", steps: this.lampSteps(field) });
+      if (this.limits.lamps) this.jobs.push({ field, kind: "lamps", steps: this.lampSteps(field) });
     }
     this.lampsDirty = true;
     this.lastRefresh = Number.NEGATIVE_INFINITY;
   }
 
-  /** A tier change: re-rank now, re-cull, rebuild lamps. Built meshes are kept. */
-  setTier(tier: SpawnedAirfieldTier): void {
+  /**
+   * A quality change: the new profile's row. Re-ranks now (a field the row no
+   * longer builds is released), re-culls, rebuilds the lamps.
+   */
+  setLimits(limits: SpawnedAirfieldTier): void {
     if (this.disposed) return;
-    const previous = this.tier;
-    this.tier = tier;
-    if (tier.structureCullMeters !== previous.structureCullMeters) {
+    const previous = this.limits;
+    this.limits = limits;
+    if (limits.structureCullMeters !== previous.structureCullMeters) {
       for (const field of this.fields) {
         if (!field.structures) continue;
         for (const mesh of field.structures.meshes) this.applyCull(mesh);
       }
     }
-    if (tier.lamps && !previous.lamps) {
+    if (limits.lamps && !previous.lamps) {
       for (const field of this.fields) {
         if (!field.lighting) this.jobs.push({ field, kind: "lamps", steps: this.lampSteps(field) });
       }
@@ -638,7 +642,7 @@ export class SpawnedAirfieldManager {
 
   /** Add the casting meshes of built fields near enough to be seen, when the tier casts. */
   addShadowCasters(collect: (mesh: Mesh) => void): void {
-    if (!this.tier.structuresCastShadows) return;
+    if (!this.limits.structuresCastShadows) return;
     for (let index = 0; index < this.casterFields.length; index += 1) {
       const structures = this.casterFields[index]!.structures;
       if (!structures) continue;
@@ -665,7 +669,7 @@ export class SpawnedAirfieldManager {
       structureFields,
       structureMeshes,
       pendingJobs: this.jobs.length + (this.lampsDirty ? 1 : 0),
-      spawnedLamps: this.tier.lamps ? spawnedLamps : 0,
+      spawnedLamps: this.limits.lamps ? spawnedLamps : 0,
       floodSlots: this.floodSlotNames.length,
       litFloodFields: this.slotField.filter((field) => field !== null).length,
       groundCacheMisses,
@@ -738,15 +742,15 @@ export class SpawnedAirfieldManager {
 
     // Structures: the nearest few within the build radius, at most
     // `maxStructureFields` built or building at once.
-    const tier = this.tier;
+    const limits = this.limits;
     let kept = 0;
     for (let rank = 0; rank < ranked.length; rank += 1) {
       const field = ranked[rank]!;
-      const wanted = kept < tier.maxStructureFields
-        && field.distance <= tier.structureBuildRadiusMeters;
-      const keep = kept < tier.maxStructureFields
+      const wanted = kept < limits.maxStructureFields
+        && field.distance <= limits.structureBuildRadiusMeters;
+      const keep = kept < limits.maxStructureFields
         && (field.structures !== null || field.building !== null)
-        && field.distance <= tier.structureBuildRadiusMeters * STRUCTURE_RELEASE_FACTOR;
+        && field.distance <= limits.structureBuildRadiusMeters * STRUCTURE_RELEASE_FACTOR;
       if (wanted || keep) {
         kept += 1;
         if (!field.structures && !field.building) {
@@ -763,13 +767,13 @@ export class SpawnedAirfieldManager {
     this.papiFields.length = 0;
     this.sockFields.length = 0;
     this.casterFields.length = 0;
-    const visibleReach = tier.structureCullMeters + 2_000;
+    const visibleReach = limits.structureCullMeters + 2_000;
     for (let rank = 0; rank < ranked.length; rank += 1) {
       const field = ranked[rank]!;
       // Only while the tier draws spawned lamps: a field keeps its lighting
       // system across a drop to low, but its lamps leave the draw.
       if (
-        tier.lamps
+        limits.lamps
         && this.papiFields.length < SPAWNED_PAPI_FIELDS
         && field.lighting
         && field.distance <= SPAWNED_PAPI_RADIUS_METERS
@@ -782,7 +786,7 @@ export class SpawnedAirfieldManager {
 
     // Floods: the `lit` nearest fields that have their hangars, one slot each.
     // A field keeps the slot it has, so its lights never jump between slots.
-    const lit = Math.min(tier.floodFields, this.floodSlotNames.length);
+    const lit = Math.min(limits.floodFields, this.floodSlotNames.length);
     const desired = this.floodDesired;
     desired.length = 0;
     for (let rank = 0; rank < ranked.length && desired.length < lit; rank += 1) {
@@ -861,7 +865,7 @@ export class SpawnedAirfieldManager {
 
   private obstructionOf(field: SpawnedField): readonly LightPointFixture[] {
     // Obstruction lamps mark buildings, so a tier that builds none shows none.
-    return field.sites && this.tier.maxStructureFields > 0 ? field.sites.obstruction : [];
+    return field.sites && this.limits.maxStructureFields > 0 ? field.sites.obstruction : [];
   }
 
   /** Every spawned field's lamps, in field order, into the home light-point draw. */
@@ -869,7 +873,7 @@ export class SpawnedAirfieldManager {
     this.lampsDirty = false;
     const fixtures: LightPointFixture[] = [];
     const colours: (readonly [number, number, number])[] = [];
-    if (this.tier.lamps) {
+    if (this.limits.lamps) {
       for (const field of this.fields) {
         if (!field.lighting) continue;
         field.lampStart = fixtures.length;
@@ -1120,8 +1124,8 @@ export class SpawnedAirfieldManager {
 
   private applyCull(mesh: Mesh): void {
     mesh.removeLODLevel(null);
-    if (this.tier.structureCullMeters > 0) {
-      mesh.addLODLevel(this.tier.structureCullMeters, null);
+    if (this.limits.structureCullMeters > 0) {
+      mesh.addLODLevel(this.limits.structureCullMeters, null);
     }
   }
 }
