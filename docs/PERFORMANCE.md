@@ -562,6 +562,93 @@ no draw on the static shots, and their ceilings stand. The three moving shots
 gain one real draw each (the far band's chunk is now published, with in-cull
 records in frame, at the sample instant) and their ceilings move by one.
 
+### The tropical coast's palms (2026-10-24)
+
+The tropical coast biome (`src/world/tropicalCoast.ts`, one weight from the
+climate province's raw offsets, exactly 0 in the temperate core and on the
+warm and dry plateaus) adds a fourth tree prototype family, the palm, and
+moves nothing inside the core: every new term is `x + 0 * k` there, and the
+species branch draws its extra random only where the weight is above zero.
+
+- **Draws: one cohort per chunk, so the families stay at three.** Palms grow
+  only with oak, maple and birch (`TREE_SPECIES_COHORTS`); conifers and willow
+  fade out over the weight's first 0.3 and palms only begin at 0.7, so a
+  broadleaf-only belt lies between them. A tropical chunk submits two
+  families (oak, palm) where a temperate one submits three, and the draw
+  model prices the costlier cohort, so `VEGETATION_DRAW_CEILING` and the
+  submission ratios are unchanged. The exception is a band disk that reaches
+  across a steep province ecotone and sees both cohorts: there a chunk can
+  submit all four families (tier 0 models 54.2 draws against its 50 ceiling).
+  Measured on five seeds over 400 km squares, tier 1's 1.1 km mid disk does
+  so on 0.05-2.0% of the world, 4-12% of the places that see a palm
+  (`tests/world.tropical-coast.test.ts` re-measures one seed).
+- **A closed canopy from wider crowns, not more stems.** The tropical
+  broadleaf's crown radius is 1.22× at full weight while its exclusion
+  kernel keeps the unspread crown, so the stand and the rendered-density
+  caps keep their stems and instance counts; the cost is crown fill, which
+  the forced-tropical timing below measures. Palms take up to 85% of the
+  stems on the beach ridge and a tenth of the forest above 16 m.
+- **Triangles inside the law's allowances**: near palms 848-944 (≤ 1,500),
+  mid 300-316 (≤ 340). The mid mesh keeps every other frond and every other
+  rachis segment, widened 1.2× to hold its coverage.
+- **Memory falls, though three layers were added.** The palm needs a frond
+  card and a bark layer in the foliage atlas (18 → 20 layers, 6.0 → 6.67 MiB)
+  and the eighth and last impostor row (the variant byte's three species bits
+  are now full). Evergreens bake ONE impostor layer for both season buckets,
+  since their bare bake was byte-identical to the leafed one, so the impostor
+  arrays go from 14 to 12 layers (9.33 → 8.0 MiB). Net: tier 0 at
+  2560×1440@2 estimates 258.87 MiB against its 260 ceiling (259.63 before),
+  every tier 0.76 MiB lower. Conifer impostors are pixel-identical.
+- **The far band: one shader edit, no new work.** Its season bucket was chosen
+  by three `season > selector` comparisons (one per blended view); it is now
+  one comparison and a tint test (`season > selector && tint.a < 0.999`)
+  shared by the three, so a stem the generator kept in full leaf (an
+  evergreen, or a tropical broadleaf with no cold season) never reads its
+  bare bucket. No baseline moves: summer shots never select bare, and on
+  `winter-noon` (day 355) every deciduous stem's leaf fraction is 0.
+- **Ground is bake time only.** The land-cover bake's beach band reaches
+  8 m instead of 3 m at full weight and its wave-washed gravel strip fades
+  out (CPU and WGSL twins). No new material layer: the beach is the
+  existing Sand.
+- **The sea: data, plus one per-pixel bed term (the biome's only new
+  per-pixel work).** The environment field (a 96² CPU bake) carries 20% of
+  a tropical coast's runoff, so its water is clear, and its unused B channel
+  carries the tropical weight as reef carbonate. The ocean vertex reads
+  `.xyz` of the sample it already took (its province varying goes vec3 →
+  vec4: the same inter-stage location), and `analyticWaterBedAlbedo` mixes
+  by it toward a near-white coral sand that covers 70-95% of the bed instead
+  of 0-32% and stays pale to 18-60 m instead of 8-45 m. **Cost, per ocean
+  fragment: three mixes, one extra smoothstep and two multiply-adds**,
+  beside the bed's existing sin and the radiance model's exps; SwiftShader
+  runs it on every ocean fragment whatever the carbonate, so the core shots
+  measure it: water-25ft −0.3%, cruise-horizon +0.5% GPU, both SAME (below).
+  **Identity at 0:** every term is `mix(x, y, carbonate)` and the channel is
+  0 outside the tropics; inland water passes a literal 0.0.
+  `tests/gpu/water-bed-carbonate.test.ts` runs the shipped bed beside the
+  pre-carbonate one on a real adapter, with the carbonate read from a buffer
+  so no compiler folds it, and they agree to the bit on all 360 probes. A
+  first cut that shifted the silt fade's smoothstep edges by the carbonate
+  did NOT (last-bit differences at 18 m: runtime edges lower differently
+  from literal ones), so the fade is two literal-edged smoothsteps mixed by
+  the carbonate.
+- **Timing** (cloud A/B, SwiftShader, 16 rounds; GPU gated at 5%, CPU a 15%
+  guard). Against the climate provinces head before the dry and cold merges
+  (5053f6b, this branch's first cut of the bed): GPU SAME on all six:
+  approach-500ft −0.1%, cruise-horizon −1.1%, forest-500ft-sunbehind −0.2%,
+  ground-2m-lowsun +0.3%, water-25ft +0.4%, and forest-500ft-sunbehind's
+  framing inside a forced tropical province +0.3% (palms and the spread
+  crowns). Draws identical on every shot (248, 201, 249, 122, 225; 266
+  forced). The CPU guard was SAME on three and unresolved on three
+  (water-25ft +11.1%, interval +0.7% to +22.3%; ground −6.7%; forest
+  +1.2%), none clearing its 15%; nothing in this branch runs on the main
+  thread per frame. Pixels: identical on approach, cruise, ground and water;
+  forest-500ft-sunbehind 0.16% (26 px over 8/255, all on the horizon band,
+  where a natural tropical province lies ~96 km out). With the final bed,
+  against the cold and dry merges (069b496, so this branch's whole change
+  on top of them): water-25ft GPU SAME −0.3% (−1.1% to +0.5%), CPU SAME;
+  cruise-horizon GPU SAME +0.5% (−0.5% to +1.4%), CPU unresolved +5.4%;
+  draws 225 and 201 unchanged, and both shots rendered identical frames.
+
 ## Visual fix-pack (2026-08-25)
 
 The four flight-test reports of 2026-08-25 (plastic foliage/ground, plastic
