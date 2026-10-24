@@ -206,13 +206,20 @@ const SAFE_FLIGHT_REGIONS = [
   [1309239386, -23599.109717337684, 21864.11977919556, 1.8469886605325367],
 ] as const satisfies readonly SafeFlightRegionTuple[];
 
-interface CoarseCandidate {
+/**
+ * A candidate centre's cheap five-probe survey: the natural gradient across
+ * 1.6 km and a score that ranks dry, low, gentle ground first. Lower is
+ * better. Exported for the mid-flight spawn search (`airportNetwork.ts`).
+ */
+export interface CoarseAirportCandidate {
   readonly centerX: number;
   readonly centerZ: number;
   readonly gradientX: number;
   readonly gradientZ: number;
   readonly score: number;
 }
+
+type CoarseCandidate = CoarseAirportCandidate;
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const PRIMARY_CANDIDATE_COUNT = 192;
@@ -342,6 +349,37 @@ const FINAL_CERTIFICATION = Object.freeze({
   approachAcross: 32,
 } satisfies CertificationResolution);
 
+/**
+ * The thresholds a site is held to. The starter airport's contract is the
+ * constants above, gathered here so the mid-flight spawn search can hold its
+ * runways to a looser envelope through the same sampling code: the starter
+ * search can afford to scan a whole region and fall back to a catalogue, a
+ * spawn has to find ground within a few kilometres of the aircraft.
+ */
+export interface AirportSiteLimits {
+  /** Sparse pass: lowest natural ground under the platform above sea level. */
+  readonly dryPlatformClearance: number;
+  readonly maxPlatformRelief: number;
+  readonly maxLongitudinalGrade: number;
+  readonly maxCrossGrade: number;
+  readonly maxBlendRelief: number;
+  readonly maxAirportElevation: number;
+  /** Sparse pass: lowest blend and near-approach ground above sea level. */
+  readonly blendClearance: number;
+  readonly approachClearance: number;
+  /** Sparse pass: metres the worst obstacle may enter the 3-degree surface. */
+  readonly approachObstruction: number;
+  /** The certified (dense) pass's own, slightly tighter, thresholds. */
+  readonly certifiedPlatformClearance: number;
+  readonly certifiedBlendClearance: number;
+  readonly certifiedPlatformRelief: number;
+  readonly certifiedBlendRelief: number;
+  readonly certifiedLongitudinalGrade: number;
+  readonly certifiedCrossGrade: number;
+  readonly certifiedApproachClearance: number;
+  readonly certifiedApproachObstruction: number;
+}
+
 const LONGITUDINAL_GRADE_BASELINE = 160;
 const CERTIFIED_PLATFORM_CLEARANCE = 9;
 const CERTIFIED_BLEND_CLEARANCE = 3;
@@ -351,6 +389,27 @@ const CERTIFIED_LONGITUDINAL_GRADE = 0.062;
 const CERTIFIED_CROSS_GRADE = 0.11;
 const CERTIFIED_APPROACH_CLEARANCE = 3;
 const CERTIFIED_APPROACH_OBSTRUCTION = -6;
+
+/** The starter airport's contract: exactly the constants above. */
+export const STARTER_AIRPORT_SITE_LIMITS: Readonly<AirportSiteLimits> = Object.freeze({
+  dryPlatformClearance: DRY_PLATFORM_CLEARANCE,
+  maxPlatformRelief: MAX_PLATFORM_RELIEF,
+  maxLongitudinalGrade: MAX_LONGITUDINAL_GRADE,
+  maxCrossGrade: MAX_CROSS_GRADE,
+  maxBlendRelief: MAX_BLEND_RELIEF,
+  maxAirportElevation: MAX_AIRPORT_ELEVATION,
+  blendClearance: 2,
+  approachClearance: 2,
+  approachObstruction: 0,
+  certifiedPlatformClearance: CERTIFIED_PLATFORM_CLEARANCE,
+  certifiedBlendClearance: CERTIFIED_BLEND_CLEARANCE,
+  certifiedPlatformRelief: CERTIFIED_PLATFORM_RELIEF,
+  certifiedBlendRelief: CERTIFIED_BLEND_RELIEF,
+  certifiedLongitudinalGrade: CERTIFIED_LONGITUDINAL_GRADE,
+  certifiedCrossGrade: CERTIFIED_CROSS_GRADE,
+  certifiedApproachClearance: CERTIFIED_APPROACH_CLEARANCE,
+  certifiedApproachObstruction: CERTIFIED_APPROACH_OBSTRUCTION,
+});
 
 function axisSamples(minimum: number, maximum: number, maximumSpacing: number): number[] {
   const extent = Math.max(0, maximum - minimum);
@@ -384,6 +443,7 @@ function sampleCertifiedFootprint(
   footprint: Readonly<AirportFootprint>,
   resolution: Readonly<CertificationResolution>,
   rejectEarly: boolean,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): AirportSiteAssessment | null {
   const halfPlatformLength = footprint.runwayLength * 0.5 + footprint.endSafetyArea;
   const halfPlatformWidth = footprint.runwayWidth * 0.5 + footprint.shoulderWidth;
@@ -413,8 +473,8 @@ function sampleCertifiedFootprint(
       platformMaximum = Math.max(platformMaximum, height);
       if (
         rejectEarly &&
-        (platformMinimum < seaLevel + CERTIFIED_PLATFORM_CLEARANCE ||
-          platformMaximum - platformMinimum > CERTIFIED_PLATFORM_RELIEF)
+        (platformMinimum < seaLevel + limits.certifiedPlatformClearance ||
+          platformMaximum - platformMinimum > limits.certifiedPlatformRelief)
       ) {
         return null;
       }
@@ -449,9 +509,9 @@ function sampleCertifiedFootprint(
   }
   if (
     rejectEarly &&
-    (elevation > seaLevel + MAX_AIRPORT_ELEVATION ||
-      longitudinalGrade > CERTIFIED_LONGITUDINAL_GRADE ||
-      crossGrade > CERTIFIED_CROSS_GRADE)
+    (elevation > seaLevel + limits.maxAirportElevation ||
+      longitudinalGrade > limits.certifiedLongitudinalGrade ||
+      crossGrade > limits.certifiedCrossGrade)
   ) {
     return null;
   }
@@ -476,8 +536,8 @@ function sampleCertifiedFootprint(
       blendMaximum = Math.max(blendMaximum, height);
       if (
         rejectEarly &&
-        (blendMinimum < seaLevel + CERTIFIED_BLEND_CLEARANCE ||
-          blendMaximum - blendMinimum > CERTIFIED_BLEND_RELIEF)
+        (blendMinimum < seaLevel + limits.certifiedBlendClearance ||
+          blendMaximum - blendMinimum > limits.certifiedBlendRelief)
       ) {
         return null;
       }
@@ -504,13 +564,13 @@ function sampleCertifiedFootprint(
           minimumApproachHeight = Math.min(minimumApproachHeight, height);
           if (
             rejectEarly &&
-            minimumApproachHeight < seaLevel + CERTIFIED_APPROACH_CLEARANCE
+            minimumApproachHeight < seaLevel + limits.certifiedApproachClearance
           ) {
             return null;
           }
         }
         approachObstruction = Math.max(approachObstruction, height - permittedHeight);
-        if (rejectEarly && approachObstruction > CERTIFIED_APPROACH_OBSTRUCTION) return null;
+        if (rejectEarly && approachObstruction > limits.certifiedApproachObstruction) return null;
       }
     }
   }
@@ -532,17 +592,17 @@ function sampleCertifiedFootprint(
     minimumHeight: minimumApproachHeight,
     obstruction: approachObstruction,
   } satisfies ApproachAssessment;
-  const assessment = buildAssessment(seaLevel, platform, blend, approaches);
+  const assessment = buildAssessment(seaLevel, platform, blend, approaches, limits);
   const suitable =
     assessment.suitable &&
-    assessment.minimumPlatformClearance >= CERTIFIED_PLATFORM_CLEARANCE &&
-    assessment.platformRelief <= CERTIFIED_PLATFORM_RELIEF &&
-    assessment.longitudinalGrade <= CERTIFIED_LONGITUDINAL_GRADE &&
-    assessment.crossGrade <= CERTIFIED_CROSS_GRADE &&
-    blend.minimum >= seaLevel + CERTIFIED_BLEND_CLEARANCE &&
-    assessment.blendRelief <= CERTIFIED_BLEND_RELIEF &&
-    assessment.minimumApproachClearance >= CERTIFIED_APPROACH_CLEARANCE &&
-    assessment.approachObstruction <= CERTIFIED_APPROACH_OBSTRUCTION;
+    assessment.minimumPlatformClearance >= limits.certifiedPlatformClearance &&
+    assessment.platformRelief <= limits.certifiedPlatformRelief &&
+    assessment.longitudinalGrade <= limits.certifiedLongitudinalGrade &&
+    assessment.crossGrade <= limits.certifiedCrossGrade &&
+    blend.minimum >= seaLevel + limits.certifiedBlendClearance &&
+    assessment.blendRelief <= limits.certifiedBlendRelief &&
+    assessment.minimumApproachClearance >= limits.certifiedApproachClearance &&
+    assessment.approachObstruction <= limits.certifiedApproachObstruction;
   if (rejectEarly && !suitable) return null;
   return suitable === assessment.suitable
     ? assessment
@@ -557,6 +617,7 @@ function samplePlatform(
   headingRadians: number,
   footprint: Readonly<AirportFootprint>,
   rejectEarly: boolean,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): PlatformAssessment | null {
   const halfPlatformLength = footprint.runwayLength * 0.5 + footprint.endSafetyArea;
   const halfPlatformWidth = footprint.runwayWidth * 0.5 + footprint.shoulderWidth;
@@ -577,25 +638,25 @@ function samplePlatform(
     for (const across of [-halfPlatformWidth, 0, halfPlatformWidth]) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
       const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
-      if (rejectEarly && height < seaLevel + DRY_PLATFORM_CLEARANCE) return null;
+      if (rejectEarly && height < seaLevel + limits.dryPlatformClearance) return null;
       row.push(height);
       platformHeights.push(height);
       platformMinimum = Math.min(platformMinimum, height);
       platformMaximum = Math.max(platformMaximum, height);
-      if (rejectEarly && platformMaximum - platformMinimum > MAX_PLATFORM_RELIEF) return null;
+      if (rejectEarly && platformMaximum - platformMinimum > limits.maxPlatformRelief) return null;
     }
     crossGrade = Math.max(
       crossGrade,
       Math.abs((row[2] ?? 0) - (row[0] ?? 0)) / acrossSpacing,
     );
-    if (rejectEarly && crossGrade > MAX_CROSS_GRADE) return null;
+    if (rejectEarly && crossGrade > limits.maxCrossGrade) return null;
     const previousCenter = platformRows.at(-1)?.[1];
     if (previousCenter !== undefined) {
       longitudinalGrade = Math.max(
         longitudinalGrade,
         Math.abs((row[1] ?? 0) - previousCenter) / alongSpacing,
       );
-      if (rejectEarly && longitudinalGrade > MAX_LONGITUDINAL_GRADE) return null;
+      if (rejectEarly && longitudinalGrade > limits.maxLongitudinalGrade) return null;
     }
     platformRows.push(row);
   }
@@ -604,10 +665,10 @@ function samplePlatform(
   const relief = platformMaximum - platformMinimum;
   if (
     rejectEarly &&
-    (elevation > seaLevel + MAX_AIRPORT_ELEVATION ||
-      relief > MAX_PLATFORM_RELIEF ||
-      longitudinalGrade > MAX_LONGITUDINAL_GRADE ||
-      crossGrade > MAX_CROSS_GRADE)
+    (elevation > seaLevel + limits.maxAirportElevation ||
+      relief > limits.maxPlatformRelief ||
+      longitudinalGrade > limits.maxLongitudinalGrade ||
+      crossGrade > limits.maxCrossGrade)
   ) {
     return null;
   }
@@ -623,6 +684,7 @@ function sampleBlend(
   footprint: Readonly<AirportFootprint>,
   platform: Readonly<PlatformAssessment>,
   rejectEarly: boolean,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): BlendAssessment | null {
   const halfPlatformLength = footprint.runwayLength * 0.5 + footprint.endSafetyArea;
   const halfPlatformWidth = footprint.runwayWidth * 0.5 + footprint.shoulderWidth;
@@ -638,7 +700,7 @@ function sampleBlend(
       maximum = Math.max(maximum, height);
       if (
         rejectEarly &&
-        (minimum < seaLevel + 2 || maximum - minimum > MAX_BLEND_RELIEF)
+        (minimum < seaLevel + limits.blendClearance || maximum - minimum > limits.maxBlendRelief)
       ) {
         return null;
       }
@@ -656,6 +718,7 @@ function sampleApproaches(
   footprint: Readonly<AirportFootprint>,
   elevation: number,
   rejectEarly: boolean,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): ApproachAssessment | null {
   const halfPlatformLength = footprint.runwayLength * 0.5 + footprint.endSafetyArea;
   let obstruction = Number.NEGATIVE_INFINITY;
@@ -671,10 +734,10 @@ function sampleApproaches(
         const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
         if (distance <= 520) {
           minimumHeight = Math.min(minimumHeight, height);
-          if (rejectEarly && minimumHeight < seaLevel + 2) return null;
+          if (rejectEarly && minimumHeight < seaLevel + limits.approachClearance) return null;
         }
         obstruction = Math.max(obstruction, height - permittedHeight);
-        if (rejectEarly && obstruction > 0) return null;
+        if (rejectEarly && obstruction > limits.approachObstruction) return null;
       }
     }
   }
@@ -686,19 +749,20 @@ function buildAssessment(
   platform: Readonly<PlatformAssessment>,
   blend: Readonly<BlendAssessment>,
   approaches: Readonly<ApproachAssessment>,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): AirportSiteAssessment {
   const minimumPlatformClearance = platform.minimum - seaLevel;
   const minimumApproachClearance = approaches.minimumHeight - seaLevel;
   const suitable =
-    minimumPlatformClearance >= DRY_PLATFORM_CLEARANCE &&
-    blend.minimum >= seaLevel + 2 &&
-    platform.elevation <= seaLevel + MAX_AIRPORT_ELEVATION &&
-    platform.relief <= MAX_PLATFORM_RELIEF &&
-    platform.longitudinalGrade <= MAX_LONGITUDINAL_GRADE &&
-    platform.crossGrade <= MAX_CROSS_GRADE &&
-    blend.relief <= MAX_BLEND_RELIEF &&
-    minimumApproachClearance >= 2 &&
-    approaches.obstruction <= 0;
+    minimumPlatformClearance >= limits.dryPlatformClearance &&
+    blend.minimum >= seaLevel + limits.blendClearance &&
+    platform.elevation <= seaLevel + limits.maxAirportElevation &&
+    platform.relief <= limits.maxPlatformRelief &&
+    platform.longitudinalGrade <= limits.maxLongitudinalGrade &&
+    platform.crossGrade <= limits.maxCrossGrade &&
+    blend.relief <= limits.maxBlendRelief &&
+    minimumApproachClearance >= limits.approachClearance &&
+    approaches.obstruction <= limits.approachObstruction;
   const score =
     Math.max(0, DRY_PLATFORM_CLEARANCE - minimumPlatformClearance) * 240 +
     Math.max(0, seaLevel + 2 - blend.minimum) * 180 +
@@ -780,6 +844,7 @@ function assessSuitableAirportSite(
   centerZ: number,
   headingRadians: number,
   footprint: Readonly<AirportFootprint>,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): AirportSiteAssessment | null {
   airportSiteEvaluationCount += 1;
   const platform = samplePlatform(
@@ -790,6 +855,7 @@ function assessSuitableAirportSite(
     headingRadians,
     footprint,
     true,
+    limits,
   );
   if (!platform) return null;
   const blend = sampleBlend(
@@ -801,6 +867,7 @@ function assessSuitableAirportSite(
     footprint,
     platform,
     true,
+    limits,
   );
   if (!blend) return null;
   const approaches = sampleApproaches(
@@ -812,9 +879,10 @@ function assessSuitableAirportSite(
     footprint,
     platform.elevation,
     true,
+    limits,
   );
   if (!approaches) return null;
-  const sparseAssessment = buildAssessment(seaLevel, platform, blend, approaches);
+  const sparseAssessment = buildAssessment(seaLevel, platform, blend, approaches, limits);
   if (!sparseAssessment.suitable) return null;
 
   const intermediate = sampleCertifiedFootprint(
@@ -826,6 +894,7 @@ function assessSuitableAirportSite(
     footprint,
     INTERMEDIATE_CERTIFICATION,
     true,
+    limits,
   );
   if (!intermediate) return null;
 
@@ -838,6 +907,7 @@ function assessSuitableAirportSite(
     footprint,
     FINAL_CERTIFICATION,
     true,
+    limits,
   );
   return certified;
 }
@@ -858,29 +928,39 @@ function createCoarseCandidates(
     // the origin instead of jumping between widely separated mountain cells.
     const radius = index === 0 ? 0 : 1_150 * Math.sqrt(index) * radialJitter;
     const angle = angleOffset + index * GOLDEN_ANGLE;
-    const centerX = Math.cos(angle) * radius;
-    const centerZ = Math.sin(angle) * radius;
-    const probeDistance = 820;
-    const center = sampleNaturalTerrainHeight(seedHash, centerX, centerZ, 0);
-    const west = sampleNaturalTerrainHeight(seedHash, centerX - probeDistance, centerZ, 0);
-    const east = sampleNaturalTerrainHeight(seedHash, centerX + probeDistance, centerZ, 0);
-    const south = sampleNaturalTerrainHeight(seedHash, centerX, centerZ - probeDistance, 0);
-    const north = sampleNaturalTerrainHeight(seedHash, centerX, centerZ + probeDistance, 0);
-    const minimum = Math.min(center, west, east, south, north);
-    const maximum = Math.max(center, west, east, south, north);
-    const relief = maximum - minimum;
-    const dryPenalty = Math.max(0, seaLevel + 10 - minimum) * 260;
-    const alpinePenalty = Math.max(0, center - (seaLevel + 220)) * 4;
-    candidates.push({
-      centerX,
-      centerZ,
-      gradientX: (east - west) / (probeDistance * 2),
-      gradientZ: (north - south) / (probeDistance * 2),
-      score: dryPenalty + alpinePenalty + relief * 3.4 + Math.max(0, center - seaLevel) * 0.025,
-    });
+    candidates.push(
+      surveyAirportCandidate(seedHash, seaLevel, Math.cos(angle) * radius, Math.sin(angle) * radius),
+    );
   }
 
   return candidates.sort((left, right) => left.score - right.score);
+}
+
+/** The five-probe survey `createCoarseCandidates` ranks its spiral by. */
+export function surveyAirportCandidate(
+  seedHash: number,
+  seaLevel: number,
+  centerX: number,
+  centerZ: number,
+): CoarseAirportCandidate {
+  const probeDistance = 820;
+  const center = sampleNaturalTerrainHeight(seedHash, centerX, centerZ, 0);
+  const west = sampleNaturalTerrainHeight(seedHash, centerX - probeDistance, centerZ, 0);
+  const east = sampleNaturalTerrainHeight(seedHash, centerX + probeDistance, centerZ, 0);
+  const south = sampleNaturalTerrainHeight(seedHash, centerX, centerZ - probeDistance, 0);
+  const north = sampleNaturalTerrainHeight(seedHash, centerX, centerZ + probeDistance, 0);
+  const minimum = Math.min(center, west, east, south, north);
+  const maximum = Math.max(center, west, east, south, north);
+  const relief = maximum - minimum;
+  const dryPenalty = Math.max(0, seaLevel + 10 - minimum) * 260;
+  const alpinePenalty = Math.max(0, center - (seaLevel + 220)) * 4;
+  return {
+    centerX,
+    centerZ,
+    gradientX: (east - west) / (probeDistance * 2),
+    gradientZ: (north - south) / (probeDistance * 2),
+    score: dryPenalty + alpinePenalty + relief * 3.4 + Math.max(0, center - seaLevel) * 0.025,
+  };
 }
 
 function axisDifference(left: number, right: number): number {
@@ -895,6 +975,7 @@ function findDetailedCandidate(
   preferredHeading: number,
   coarseCandidates: readonly CoarseCandidate[],
   limit: number,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): GeneratedAirportSite | null {
   const detailedCandidates = coarseCandidates.slice(0, limit);
   for (let candidateIndex = 0; candidateIndex < detailedCandidates.length; candidateIndex += 1) {
@@ -913,6 +994,7 @@ function findDetailedCandidate(
         candidate.centerZ,
         normalizedHeading,
         footprint,
+        limits,
       );
       if (!assessment) continue;
       // Crosswind is a tie-breaker after terrain work and obstacle clearance.
@@ -958,6 +1040,27 @@ export function findGeneratedAirportSite(
   );
   if (primarySuitable) return rememberSite(key, primarySuitable);
   return rememberSite(key, null);
+}
+
+/**
+ * Assesses one surveyed candidate the way the starter search assesses each of
+ * its detailed candidates: the contour-following heading, that heading turned
+ * 45 deg, and the preferred heading, each through the full sparse-then-
+ * certified envelope. Returns the safest suitable orientation, or null.
+ *
+ * `airportNetwork.ts` uses it to place airports spawned mid-flight, so a
+ * spawned runway is held to exactly the same dry-ground, grade, earthwork
+ * and approach-clearance contract as the home field.
+ */
+export function findAirportSiteForCandidate(
+  seedHash: number,
+  seaLevel: number,
+  footprint: Readonly<AirportFootprint>,
+  preferredHeading: number,
+  candidate: Readonly<CoarseAirportCandidate>,
+  limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
+): GeneratedAirportSite | null {
+  return findDetailedCandidate(seedHash, seaLevel, footprint, preferredHeading, [candidate], 1, limits);
 }
 
 function preferredHeadingForRegion(seedHash: number): number {

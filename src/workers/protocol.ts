@@ -5,7 +5,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
-import type { WorldDefinition } from "@/src/world";
+import type { AirportDefinition, WorldDefinition } from "@/src/world";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 export type SpawnKind = "airborne" | "runway";
@@ -48,7 +48,14 @@ export type SimulationCommand =
   /** Final L0 core from the render atlas; its ArrayBuffer is transferred. */
   | { type: "terrainPage"; page: TerrainPagePublication }
   /** Once-per-world macro fallback; its ArrayBuffer is transferred. */
-  | { type: "terrainMacro"; macro: TerrainMacroGrid };
+  | { type: "terrainMacro"; macro: TerrainMacroGrid }
+  /**
+   * The world's whole airport list, home field first, sent whenever an
+   * airport spawns (`src/world/airportNetwork.ts`). The worker installs it
+   * with `withAirports`, so collision, `nearestAirport` and anything else
+   * reading `world.airports` sees the new runway from the next step.
+   */
+  | { type: "airports"; airports: readonly AirportDefinition[] };
 
 export type SimulationEvent =
   | { type: "ready"; state: FlightVisualState }

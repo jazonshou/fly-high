@@ -28,6 +28,7 @@ import {
 } from "@/src/sim";
 import {
   sampleWind,
+  withAirports,
   type TerrainCollisionSample,
   type WindSample,
   type WorldDefinition,
@@ -474,6 +475,10 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     if (command.type === "terrainMacro") {
       terrainAuthority.publishMacro(command.macro);
+      return;
+    }
+    if (command.type === "airports") {
+      if (world) world = withAirports(world, command.airports);
       return;
     }
     if (command.type === "controls") controls = { ...command.controls };

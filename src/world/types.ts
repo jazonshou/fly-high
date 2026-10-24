@@ -52,7 +52,18 @@ export interface WorldDefinition {
   /** Terrain-region hash resolved from the public seed. */
   readonly seedHash: number;
   readonly seaLevel: number;
+  /** The home field the flight starts at: always `airports[0]` when present. */
   readonly airport: Readonly<AirportDefinition> | null;
+  /**
+   * Every airport in the world, the home field first. A world comes out of
+   * `createWorld` with just the home field; airports spawned during a flight
+   * (`src/world/airportNetwork.ts`) are added with `withAirports`, which
+   * returns a new world rather than mutating this list. Centres are kept at
+   * least `AIRPORT_SPAWN_POLICY.minSeparationMeters` apart, so no two
+   * airports' earthworks ever overlap and the airport nearest a point is the
+   * only one that can shape the ground there.
+   */
+  readonly airports: readonly Readonly<AirportDefinition>[];
   /** Prevailing wind direction (towards), clockwise from north. */
   readonly prevailingWindRadians: number;
   /** Prevailing wind magnitude before local gusts, in metres per second. */
