@@ -464,7 +464,12 @@ describe("the WGSL twins carry the same dry laws", () => {
   });
 });
 
-function dryTerrain(dryness: number, temperatureOffset: number, moisture: number): DetailTerrainSampler {
+function dryTerrain(
+  dryness: number,
+  temperatureOffset: number,
+  moisture: number,
+  normal?: { readonly x: number; readonly y: number; readonly z: number },
+): DetailTerrainSampler {
   return (x, z) => ({
     height: 160 + Math.sin(x * 0.002) * 3 + Math.cos(z * 0.0025) * 2,
     slope: 0.05,
@@ -472,6 +477,7 @@ function dryTerrain(dryness: number, temperatureOffset: number, moisture: number
     biome: TerrainBiome.GRASSLAND,
     dryness,
     temperatureOffset,
+    ...(normal ? { normal } : {}),
   });
 }
 
@@ -505,6 +511,17 @@ describe("the dry provinces draw their own species", () => {
     const shrubTotal = [...shrubs.values()].reduce((a, b) => a + b, 0);
     expect(shrubs.get("sage") ?? 0).toBeGreaterThan(shrubTotal * 0.6);
     expect(shrubs.get("hazel") ?? 0).toBe(0);
+  });
+
+  it("keeps a desert's north faces pinyon-juniper, where the core turns them to spruce", () => {
+    // A north-facing 12-degree slope: the aspect shift's home ground.
+    const north = { x: 0, y: 0.95, z: 0.31 };
+    const desert = cells(dryTerrain(0.5, 0, 0.25, north)).trees;
+    expect([...desert.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    expect([...desert.keys()].sort()).toEqual(["cedar", "pine"]);
+    // Non-vacuity: the same face at zero dryness does take the spruce.
+    const core = cells(dryTerrain(0, 0, 0.6, north)).trees;
+    expect(core.get("spruce") ?? 0).toBeGreaterThan(0);
   });
 
   it("grows open oaks in the warm savanna", () => {
