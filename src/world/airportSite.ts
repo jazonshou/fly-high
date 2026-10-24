@@ -2,6 +2,17 @@ import { sampleNaturalTerrainHeight } from "./terrain";
 import { mixSeed, unitFloatFromHash } from "./seed";
 import type { AirportDefinition } from "./types";
 
+/**
+ * The ground a site is surveyed and graded against: the world's height before
+ * any airport's earthworks, at a world point.
+ */
+export type AirportSiteHeight = (x: number, z: number) => number;
+
+/** The natural kernel's height: the ground the home field is chosen on. */
+export function naturalAirportSiteHeight(seedHash: number): AirportSiteHeight {
+  return (x, z) => sampleNaturalTerrainHeight(seedHash, x, z, 0);
+}
+
 export type AirportFootprint = Pick<
   AirportDefinition,
   | "runwayLength"
@@ -435,7 +446,7 @@ function roundedPlatformDistance(
 }
 
 function sampleCertifiedFootprint(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   centerX: number,
   centerZ: number,
@@ -466,7 +477,7 @@ function sampleCertifiedFootprint(
     const row: number[] = [];
     for (const across of platformAcross) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
+      const height = heightAt(x, z);
       row.push(height);
       platformHeights.push(height);
       platformMinimum = Math.min(platformMinimum, height);
@@ -531,7 +542,7 @@ function sampleCertifiedFootprint(
         continue;
       }
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
+      const height = heightAt(x, z);
       blendMinimum = Math.min(blendMinimum, height);
       blendMaximum = Math.max(blendMaximum, height);
       if (
@@ -559,7 +570,7 @@ function sampleCertifiedFootprint(
       for (const across of acrossSamples) {
         const along = end * (halfPlatformLength + distance);
         const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-        const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
+        const height = heightAt(x, z);
         if (distance <= 520) {
           minimumApproachHeight = Math.min(minimumApproachHeight, height);
           if (
@@ -610,7 +621,7 @@ function sampleCertifiedFootprint(
 }
 
 function samplePlatform(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   centerX: number,
   centerZ: number,
@@ -637,7 +648,7 @@ function samplePlatform(
     const row: number[] = [];
     for (const across of [-halfPlatformWidth, 0, halfPlatformWidth]) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
+      const height = heightAt(x, z);
       if (rejectEarly && height < seaLevel + limits.dryPlatformClearance) return null;
       row.push(height);
       platformHeights.push(height);
@@ -676,7 +687,7 @@ function samplePlatform(
 }
 
 function sampleBlend(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   centerX: number,
   centerZ: number,
@@ -695,7 +706,7 @@ function sampleBlend(
   for (const along of [-blendLength, -blendLength * 0.5, 0, blendLength * 0.5, blendLength]) {
     for (const across of [-blendWidth, 0, blendWidth]) {
       const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-      const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
+      const height = heightAt(x, z);
       minimum = Math.min(minimum, height);
       maximum = Math.max(maximum, height);
       if (
@@ -710,7 +721,7 @@ function sampleBlend(
 }
 
 function sampleApproaches(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   centerX: number,
   centerZ: number,
@@ -731,7 +742,7 @@ function sampleApproaches(
       for (const across of [-corridorHalfWidth, 0, corridorHalfWidth]) {
         const along = end * (halfPlatformLength + distance);
         const [x, z] = pointAt(centerX, centerZ, headingRadians, along, across);
-        const height = sampleNaturalTerrainHeight(seedHash, x, z, 0);
+        const height = heightAt(x, z);
         if (distance <= 520) {
           minimumHeight = Math.min(minimumHeight, height);
           if (rejectEarly && minimumHeight < seaLevel + limits.approachClearance) return null;
@@ -826,7 +837,7 @@ export function assessAirportSite(
 ): AirportSiteAssessment {
   airportSiteEvaluationCount += 1;
   return sampleCertifiedFootprint(
-    seedHash,
+    naturalAirportSiteHeight(seedHash),
     seaLevel,
     centerX,
     centerZ,
@@ -838,7 +849,7 @@ export function assessAirportSite(
 }
 
 function assessSuitableAirportSite(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   centerX: number,
   centerZ: number,
@@ -848,7 +859,7 @@ function assessSuitableAirportSite(
 ): AirportSiteAssessment | null {
   airportSiteEvaluationCount += 1;
   const platform = samplePlatform(
-    seedHash,
+    heightAt,
     seaLevel,
     centerX,
     centerZ,
@@ -859,7 +870,7 @@ function assessSuitableAirportSite(
   );
   if (!platform) return null;
   const blend = sampleBlend(
-    seedHash,
+    heightAt,
     seaLevel,
     centerX,
     centerZ,
@@ -871,7 +882,7 @@ function assessSuitableAirportSite(
   );
   if (!blend) return null;
   const approaches = sampleApproaches(
-    seedHash,
+    heightAt,
     seaLevel,
     centerX,
     centerZ,
@@ -886,7 +897,7 @@ function assessSuitableAirportSite(
   if (!sparseAssessment.suitable) return null;
 
   const intermediate = sampleCertifiedFootprint(
-    seedHash,
+    heightAt,
     seaLevel,
     centerX,
     centerZ,
@@ -899,7 +910,7 @@ function assessSuitableAirportSite(
   if (!intermediate) return null;
 
   const certified = sampleCertifiedFootprint(
-    seedHash,
+    heightAt,
     seaLevel,
     centerX,
     centerZ,
@@ -921,6 +932,7 @@ function createCoarseCandidates(
   const candidates: CoarseCandidate[] = [];
   const angleOffset = unitFloatFromHash(mixSeed(seedHash, 714)) * Math.PI * 2;
   const radialJitter = 0.82 + unitFloatFromHash(mixSeed(seedHash, 715)) * 0.36;
+  const heightAt = naturalAirportSiteHeight(seedHash);
 
   for (let localIndex = 0; localIndex < count; localIndex += 1) {
     const index = startIndex + localIndex;
@@ -929,7 +941,7 @@ function createCoarseCandidates(
     const radius = index === 0 ? 0 : 1_150 * Math.sqrt(index) * radialJitter;
     const angle = angleOffset + index * GOLDEN_ANGLE;
     candidates.push(
-      surveyAirportCandidate(seedHash, seaLevel, Math.cos(angle) * radius, Math.sin(angle) * radius),
+      surveyAirportCandidate(heightAt, seaLevel, Math.cos(angle) * radius, Math.sin(angle) * radius),
     );
   }
 
@@ -938,17 +950,17 @@ function createCoarseCandidates(
 
 /** The five-probe survey `createCoarseCandidates` ranks its spiral by. */
 export function surveyAirportCandidate(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   centerX: number,
   centerZ: number,
 ): CoarseAirportCandidate {
   const probeDistance = 820;
-  const center = sampleNaturalTerrainHeight(seedHash, centerX, centerZ, 0);
-  const west = sampleNaturalTerrainHeight(seedHash, centerX - probeDistance, centerZ, 0);
-  const east = sampleNaturalTerrainHeight(seedHash, centerX + probeDistance, centerZ, 0);
-  const south = sampleNaturalTerrainHeight(seedHash, centerX, centerZ - probeDistance, 0);
-  const north = sampleNaturalTerrainHeight(seedHash, centerX, centerZ + probeDistance, 0);
+  const center = heightAt(centerX, centerZ);
+  const west = heightAt(centerX - probeDistance, centerZ);
+  const east = heightAt(centerX + probeDistance, centerZ);
+  const south = heightAt(centerX, centerZ - probeDistance);
+  const north = heightAt(centerX, centerZ + probeDistance);
   const minimum = Math.min(center, west, east, south, north);
   const maximum = Math.max(center, west, east, south, north);
   const relief = maximum - minimum;
@@ -969,7 +981,7 @@ function axisDifference(left: number, right: number): number {
 }
 
 function findDetailedCandidate(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   footprint: Readonly<AirportFootprint>,
   preferredHeading: number,
@@ -988,7 +1000,7 @@ function findDetailedCandidate(
     for (const heading of headings) {
       const normalizedHeading = ((heading % Math.PI) + Math.PI) % Math.PI;
       const assessment = assessSuitableAirportSite(
-        seedHash,
+        heightAt,
         seaLevel,
         candidate.centerX,
         candidate.centerZ,
@@ -1031,7 +1043,7 @@ export function findGeneratedAirportSite(
   if (siteCache.has(key)) return siteCache.get(key) ?? null;
   const primary = createCoarseCandidates(seedHash, seaLevel, PRIMARY_CANDIDATE_COUNT, 0);
   const primarySuitable = findDetailedCandidate(
-    seedHash,
+    naturalAirportSiteHeight(seedHash),
     seaLevel,
     footprint,
     preferredHeading,
@@ -1049,18 +1061,19 @@ export function findGeneratedAirportSite(
  * certified envelope. Returns the safest suitable orientation, or null.
  *
  * `airportNetwork.ts` uses it to place airports spawned mid-flight, so a
- * spawned runway is held to exactly the same dry-ground, grade, earthwork
- * and approach-clearance contract as the home field.
+ * spawned runway is held to the same kind of dry-ground, grade, earthwork
+ * and approach-clearance contract as the home field, on the ground `heightAt`
+ * reads.
  */
 export function findAirportSiteForCandidate(
-  seedHash: number,
+  heightAt: AirportSiteHeight,
   seaLevel: number,
   footprint: Readonly<AirportFootprint>,
   preferredHeading: number,
   candidate: Readonly<CoarseAirportCandidate>,
   limits: Readonly<AirportSiteLimits> = STARTER_AIRPORT_SITE_LIMITS,
 ): GeneratedAirportSite | null {
-  return findDetailedCandidate(seedHash, seaLevel, footprint, preferredHeading, [candidate], 1, limits);
+  return findDetailedCandidate(heightAt, seaLevel, footprint, preferredHeading, [candidate], 1, limits);
 }
 
 function preferredHeadingForRegion(seedHash: number): number {

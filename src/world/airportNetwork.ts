@@ -1,8 +1,10 @@
 import { runwayToWorld } from "./airport";
 import {
   findAirportSiteForCandidate,
+  naturalAirportSiteHeight,
   surveyAirportCandidate,
   type AirportFootprint,
+  type AirportSiteHeight,
   type AirportSiteLimits,
   type CoarseAirportCandidate,
 } from "./airportSite";
@@ -19,9 +21,11 @@ import type { AirportDefinition, RunwayPoint, WorldDefinition } from "./types";
  * runs `findSpawnedAirport` (a bounded batch of candidate sites per call,
  * cheap enough to spread over frames) until one passes or it returns
  * `"exhausted"`, and installs the result with `withAirports`. A spawned
- * runway passes exactly the site contract the home field does
- * (`findAirportSiteForCandidate`), so it is dry, graded, and has clear
- * 3-degree approaches at both ends.
+ * runway passes the home field's site assessment
+ * (`findAirportSiteForCandidate`) under `SPAWNED_AIRPORT_SITE_LIMITS`, so it
+ * is dry, graded, and has clear 3-degree approaches at both ends, on the
+ * ground `spawnedAirportSiteHeight` reads and `spawnedAirportGroundAllowed`
+ * accepts.
  */
 export const AIRPORT_SPAWN_POLICY = Object.freeze({
   /** A new airport is due once the aircraft is this far from every airport. */
@@ -228,6 +232,33 @@ interface SpawnSurvey {
 /** The last survey: one spawn search re-reads it on every attempt. */
 let lastSpawnSurvey: SpawnSurvey | null = null;
 
+/**
+ * The ground a spawned airport is surveyed, assessed and set on: the world's
+ * height before any airport's earthworks.
+ *
+ * Here that is the natural kernel, the ground the home field is chosen on.
+ * A world stage that moves the height between the natural kernel and the
+ * earthworks (the landforms: sand seas, volcanic fields) must be applied here
+ * too, or a runway is chosen on ground the world neither draws nor collides
+ * with.
+ */
+export function spawnedAirportSiteHeight(world: WorldDefinition): AirportSiteHeight {
+  return naturalAirportSiteHeight(world.seedHash);
+}
+
+/**
+ * Whether a spawned airport may stand on the ground at a world point. This
+ * world has no ground to refuse; a landform no runway belongs on (a sand sea,
+ * a volcanic field) refuses it here. It is asked at every surveyed centre
+ * before its assessment, and at both thresholds of a site that passed.
+ */
+export function spawnedAirportGroundAllowed(world: WorldDefinition, x: number, z: number): boolean {
+  void world;
+  void x;
+  void z;
+  return true;
+}
+
 function spawnSurvey(
   world: WorldDefinition,
   x: number,
@@ -244,6 +275,7 @@ function spawnSurvey(
   const arc = TWO_PI - policy.noseExclusionRadians * 2;
   const separation = policy.minSeparationMeters * policy.minSeparationMeters;
   const surveyed: CoarseAirportCandidate[] = [];
+  const heightAt = spawnedAirportSiteHeight(world);
   for (let candidate = 0; candidate < policy.surveyedCandidates; candidate += 1) {
     const hash = mixSeed(stream, candidate);
     const bearing = headingRadians + policy.noseExclusionRadians
@@ -258,7 +290,8 @@ function spawnSurvey(
     if (world.airports.some((airport) => horizontalDistanceSquared(airport, centerX, centerZ) < separation)) {
       continue;
     }
-    surveyed.push(surveyAirportCandidate(world.seedHash, world.seaLevel, centerX, centerZ));
+    if (!spawnedAirportGroundAllowed(world, centerX, centerZ)) continue;
+    surveyed.push(surveyAirportCandidate(heightAt, world.seaLevel, centerX, centerZ));
   }
   surveyed.sort((left, right) => left.score - right.score);
   lastSpawnSurvey = { key, ranked: surveyed };
@@ -288,9 +321,10 @@ export function findSpawnedAirport(
   const first = Math.max(0, Math.floor(attempt)) * batch;
   if (first >= ranked.length) return "exhausted";
   const footprint = footprintOf(home);
+  const heightAt = spawnedAirportSiteHeight(world);
   for (const candidate of ranked.slice(first, first + batch)) {
     const site = findAirportSiteForCandidate(
-      world.seedHash,
+      heightAt,
       world.seaLevel,
       footprint,
       world.prevailingWindRadians,
@@ -298,7 +332,7 @@ export function findSpawnedAirport(
       SPAWNED_AIRPORT_SITE_LIMITS,
     );
     if (!site) continue;
-    return Object.freeze({
+    const airport: Readonly<AirportDefinition> = Object.freeze({
       ...footprint,
       centerX: site.centerX,
       centerZ: site.centerZ,
@@ -306,6 +340,10 @@ export function findSpawnedAirport(
       // The home field's datum rule (`createWorld`'s buildAirport).
       elevation: Math.max(world.seaLevel + 10, Math.round(site.assessment.elevation * 4) / 4),
     });
+    if (!getRunwayEnds(airport).every(({ threshold }) => spawnedAirportGroundAllowed(world, threshold.x, threshold.z))) {
+      continue;
+    }
+    return airport;
   }
   return null;
 }
