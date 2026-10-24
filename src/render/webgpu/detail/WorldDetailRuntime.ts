@@ -673,9 +673,24 @@ export { DETAIL_DENSITY_SHARE_REFRESH_EPSILON };
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS = 8_000;
-/** Retained-cell authority must make accepted-cell progress inside the same envelope. */
+/**
+ * Retained-cell authority must answer an outstanding request inside the same
+ * envelope. The update count applies once the worker has answered at least
+ * once: before that it is still building its world, which takes seconds and
+ * is 240 updates in two of them on a 120 Hz display.
+ */
 export const DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES = 240;
 export const DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS = 8_000;
+/**
+ * Both watchdogs time the WORKER, so a span in which this runtime was not
+ * updated at all is not charged to it beyond one slow frame's worth: a hidden
+ * tab stops requestAnimationFrame, and a long main-thread stall cannot accept
+ * a result either. Before this, eight seconds in another tab with cells still
+ * missing tripped the generation deadline on the first update back, and
+ * vegetation was generated on the main thread for the rest of the session,
+ * a 30-300 ms stall every few frames in flight (2026-10-24).
+ */
+export const DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS = 100;
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
   "pine",
@@ -856,6 +871,9 @@ export class WorldDetailRuntime {
   private workerPresentationProgressMilliseconds: number | null = null;
   private workerGenerationProgressUpdate: number | null = null;
   private workerGenerationProgressMilliseconds: number | null = null;
+  /** The generation worker has answered a request at least once (it is initialized). */
+  private workerGenerationAnswered = false;
+  private lastUpdateMilliseconds: number | null = null;
   private lastPublicationObserverDriftMeters = 0;
   private windTimeSeconds = 0;
   private updateSequence = 0;
@@ -997,10 +1015,33 @@ export class WorldDetailRuntime {
     this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
   }
 
-  /** An accepted, current descriptor is the only worker-generation progress signal. */
+  /**
+   * Any descriptor the worker returns is progress, current or stale: the
+   * watchdog detects a worker that has stopped answering, not one working
+   * through requests the observer has since flown past.
+   */
   private recordWorkerGenerationProgress(): void {
+    this.workerGenerationAnswered = true;
     this.workerGenerationProgressUpdate = this.updateSequence;
     this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
+  }
+
+  /** Lifts a gap between updates, past the allowance, off both worker deadlines. */
+  private excludeUpdateGapFromWorkerDeadlines(): void {
+    // Inline, there is no worker to time (and no clock read to spend).
+    if (this.client === null) return;
+    const now = this.presentationNowMilliseconds();
+    const previous = this.lastUpdateMilliseconds;
+    this.lastUpdateMilliseconds = now;
+    if (previous === null) return;
+    const excess = now - previous - DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS;
+    if (!(excess > 0)) return;
+    if (this.workerGenerationProgressMilliseconds !== null) {
+      this.workerGenerationProgressMilliseconds += excess;
+    }
+    if (this.workerPresentationProgressMilliseconds !== null) {
+      this.workerPresentationProgressMilliseconds += excess;
+    }
   }
 
   private resetWorkerGenerationProgress(): void {
@@ -1025,8 +1066,11 @@ export class WorldDetailRuntime {
     return this.workerGenerationProgressUpdate !== null
       && this.workerGenerationProgressMilliseconds !== null
       && (
-        this.updateSequence - this.workerGenerationProgressUpdate
-          >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
+        (
+          this.workerGenerationAnswered
+          && this.updateSequence - this.workerGenerationProgressUpdate
+            >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
+        )
         || Math.max(
           0,
           this.presentationNowMilliseconds() - this.workerGenerationProgressMilliseconds,
@@ -1396,6 +1440,7 @@ export class WorldDetailRuntime {
   ): void {
     if (this.disposed) return;
     this.updateSequence += 1;
+    this.excludeUpdateGapFromWorkerDeadlines();
     this.vegetationCastsShadows = profile.vegetationCastsShadows;
     this.disposeExpiredBatches();
     // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
@@ -1561,7 +1606,10 @@ export class WorldDetailRuntime {
           + (this.residentIsCurrentAndAccessible(this.cells.get(desired.key)) ? 0 : 1),
         0,
       );
-      if (missingWorkerCells === 0) {
+      // Only a request the worker holds can be late: with none outstanding
+      // (all answered, or dropped at the queue's capacity and refiled
+      // below), there is nothing to time.
+      if (missingWorkerCells === 0 || this.pendingCells.size === 0) {
         this.resetWorkerGenerationProgress();
       } else {
         this.beginWorkerGenerationProgress();
@@ -1983,6 +2031,7 @@ export class WorldDetailRuntime {
     descriptor: DetailRetainedCellDescriptor,
   ): void {
     this.pendingCells.delete(key);
+    this.recordWorkerGenerationProgress();
     const desired = this.desiredCells.find((candidate) => candidate.key === key);
     if (
       this.disposed
@@ -2010,7 +2059,6 @@ export class WorldDetailRuntime {
       distance: desired.distance,
       invalidated: false,
     });
-    this.recordWorkerGenerationProgress();
     this.cumulativeGeneratedCells += 1;
     this.batchesDirty = true;
   }
