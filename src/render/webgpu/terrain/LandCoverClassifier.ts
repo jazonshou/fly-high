@@ -1671,7 +1671,7 @@ fn splatVolcanicBase() -> vec4f {
  * Volcanic land on a profile whose arrays carry neither volcanic layer
  * (\`WebGpuQualityProfile.volcanicMaterials\` false): Basalt bakes as Rock and
  * Tephra as Gravel (\`volcanicFallbackMaterial\`), so that tier's ten-layer
- * arrays and ten-case gather never meet an id they lack. Data, not a define:
+ * arrays and ten-material gather never meet an id they lack. Data, not a define:
  * the job lane says which. Every other id passes through, so a profile with
  * the layers, and all ground without volcanic cover, bakes what it baked.
  */

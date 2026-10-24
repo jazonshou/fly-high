@@ -205,10 +205,11 @@ export interface WebGpuQualityProfile {
    * within ~1 MiB of its memory ceiling, and they are 1.3 MiB at its 256²
    * edge), the splat bake remaps volcanic ground to the nearest shipped
    * material (Basalt to Rock, Tephra to Gravel) so no page ever stores an id
-   * the arrays lack, and the fragment's sparse gather compiles the case count
-   * it had before the two were appended. On, the gather carries two more
-   * switch cases, which is the only per-pixel cost volcanic ground adds where
-   * there is none.
+   * the arrays lack, and the fragment's sparse gather compiles the ten
+   * materials it had before the two were appended. On, the gather scans two
+   * more candidates (the same three vec4 buckets hold all twelve totals),
+   * which is the only per-pixel cost volcanic ground adds where there is
+   * none.
    */
   readonly volcanicMaterials: boolean;
   /**

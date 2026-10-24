@@ -848,7 +848,7 @@ export class TerrainClipmapSystem {
       replacement.normalMaterial,
       build.layerIds.includes(GROUND_GRAIN_LAYER),
     );
-    // Volcanic land: the gather's case count follows the layers BOUND, not the
+    // Volcanic land: the gather's material count follows the layers BOUND, not the
     // profile, so a quality change never reads a volcanic id from arrays that
     // do not carry it yet. Unchanged ids leave the defines alone.
     this.surfacePlugin.setVolcanicMaterials(build.layerIds.includes(SurfaceMaterial.Basalt));

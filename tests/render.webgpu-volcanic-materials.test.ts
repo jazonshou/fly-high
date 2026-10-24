@@ -108,14 +108,16 @@ describe("volcanic materials (phase 2): the appended axis", () => {
   it("generates the gather for any prefix of the axis, decoding over the whole axis", () => {
     const base = terrainSparseSplatGatherWgsl(PREVIOUS_MATERIAL_COUNT);
     expect(base).toContain(`let idScale = f32(${SURFACE_MATERIAL_COUNT - 1});`);
-    expect(base.match(/case \d+u:/gu)).toHaveLength(PREVIOUS_MATERIAL_COUNT);
     expect(base.match(/if \(candidateWeight > primaryWeight\)/gu)).toHaveLength(
       PREVIOUS_MATERIAL_COUNT);
-    expect(base).not.toContain(`accumulated${SurfaceMaterial.Basalt}`);
+    // Basalt and Tephra share the third bucket's unused lanes there: they
+    // accumulate, but no candidate reads them.
+    expect(base).not.toContain(`candidateId = ${SurfaceMaterial.Basalt}u;`);
     expect(TERRAIN_SPARSE_SPLAT_GATHER_WGSL).toBe(
       terrainSparseSplatGatherWgsl(SURFACE_MATERIAL_COUNT));
-    expect(TERRAIN_SPARSE_SPLAT_GATHER_WGSL.match(/case \d+u:/gu)).toHaveLength(
-      SURFACE_MATERIAL_COUNT);
+    expect(TERRAIN_SPARSE_SPLAT_GATHER_WGSL.match(/if \(candidateWeight > primaryWeight\)/gu))
+      .toHaveLength(SURFACE_MATERIAL_COUNT);
+    expect(TERRAIN_SPARSE_SPLAT_GATHER_WGSL).toContain(`candidateId = ${SurfaceMaterial.Tephra}u;`);
     expect(() => terrainSparseSplatGatherWgsl(SURFACE_MATERIAL_COUNT + 1)).toThrow(RangeError);
     expect(() => terrainSparseSplatGatherWgsl(1)).toThrow(RangeError);
   });
@@ -178,9 +180,9 @@ describe("volcanic materials (phase 2): tier 0 carries none", () => {
     }
   });
 
-  it("compiles tier 0's gather with today's case count, by define", () => {
-    expect(TERRAIN_BASE_SPARSE_SPLAT_GATHER_WGSL.match(/case \d+u:/gu)).toHaveLength(
-      SURFACE_MATERIAL_BASE_COUNT);
+  it("compiles tier 0's gather with today's candidates, by define", () => {
+    expect(TERRAIN_BASE_SPARSE_SPLAT_GATHER_WGSL.match(/if \(candidateWeight > primaryWeight\)/gu))
+      .toHaveLength(SURFACE_MATERIAL_BASE_COUNT);
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const material = new PBRMaterial("volcanic-define-test", scene);
