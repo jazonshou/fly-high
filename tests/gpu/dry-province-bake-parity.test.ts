@@ -271,7 +271,7 @@ describe("dry-province bake parity", () => {
 
     expect(near.compared).toBeGreaterThan(500);
     // Measured on SwiftShader (2026-10-24): 97.8% on the L2 pages, 99.9% on
-    // L4 and 99.1% on L5, against 85% on the temperate pages. Bunchgrass
+    // L4 and 99.6% on L5, against 85% on the temperate pages. Bunchgrass
     // dominates the steppe by a wide margin, so the argmax rarely turns on the
     // bake's band-limited heights and f32 fields; what disagreement is left
     // sits on the edges of the sand flats and the rock outcrops.
