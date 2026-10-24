@@ -86,10 +86,13 @@ describe("D-5 the gate", () => {
     const classifier = readFileSync(
       join(__dirname, "..", "src", "render", "webgpu", "terrain", "LandCoverClassifier.ts"), "utf8");
     // Both twins of the classifier, so neither can drift away from this gate.
+    // The classifier reads THERMAL height (climate provinces), which is the
+    // elevation itself in the temperate core; this gate stays per-pixel on
+    // real elevation, so it adds no shader work for the provinces.
     expect(classifier).toContain(
-      `smoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}, ${TURF_RELIEF_ALPINE_HIGH_METERS}, elevation)`);
+      `smoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}, ${TURF_RELIEF_ALPINE_HIGH_METERS}, thermal)`);
     expect(classifier).toContain(
-      `kSmoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}.0, ${TURF_RELIEF_ALPINE_HIGH_METERS}.0, elevation)`);
+      `kSmoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}.0, ${TURF_RELIEF_ALPINE_HIGH_METERS}.0, thermal)`);
     expect(classifier).toContain(`smoothstep(${TURF_RELIEF_GENTLE_HIGH}, 0.58, slope)`);
     expect(TURF_RELIEF_GENTLE_LOW).toBeLessThan(TURF_RELIEF_GENTLE_HIGH);
   });

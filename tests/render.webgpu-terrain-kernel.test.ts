@@ -76,14 +76,17 @@ describe("terrain height kernel WGSL (4-1)", () => {
     // wrapping u32 multiplies. That is the number `4-3`'s compute budget row
     // derives from, and it must not drift when `4-6` appends its own channels.
     const heightChain = TERRAIN_KERNEL_LATTICES.filter(
-      (lattice) => !lattice.name.startsWith("moisture") && !lattice.name.startsWith("climate"),
+      (lattice) => !lattice.name.startsWith("moisture")
+        && !lattice.name.startsWith("climate")
+        && !lattice.name.startsWith("province"),
     );
     expect(heightChain).toHaveLength(34);
     // `4-6` (D5) moved the climate chain here from `4-1`: four moisture-broad
     // octaves, the local and rain-shadow channels, and three climate octaves.
-    expect(TERRAIN_KERNEL_LATTICE_COUNT).toBe(43);
+    // Climate provinces appended two octaves each of temperature and dryness.
+    expect(TERRAIN_KERNEL_LATTICE_COUNT).toBe(47);
     const names = TERRAIN_KERNEL_LATTICES.map((lattice) => lattice.name);
-    expect(new Set(names).size).toBe(43);
+    expect(new Set(names).size).toBe(47);
     for (const lattice of TERRAIN_KERNEL_LATTICES) {
       expect(lattice.divisorX, lattice.name).toBeGreaterThan(0);
       expect(lattice.divisorZ, lattice.name).toBeGreaterThan(0);
@@ -172,7 +175,9 @@ describe("terrain height kernel WGSL (4-1)", () => {
     const buffer = buildTerrainKernelPageUniform({
       seedHash: SEED_HASH, originX: 0, originZ: 0, filterWidthMeters: 0,
     });
-    const seedOffset = (TERRAIN_KERNEL_LATTICE_COUNT * 8 + 4) * 4;
+    // Twelve kept floats: three variance-kept scalars and the filter width,
+    // then the climate province's two rows.
+    const seedOffset = (TERRAIN_KERNEL_LATTICE_COUNT * 8 + 12) * 4;
     const seeds = new Uint32Array(buffer, seedOffset, TERRAIN_KERNEL_LATTICE_COUNT);
     TERRAIN_KERNEL_LATTICES.forEach((lattice, index) => {
       const channelSeed = mixSeed(SEED_HASH, lattice.channel);
