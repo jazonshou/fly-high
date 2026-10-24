@@ -235,8 +235,14 @@ describe("terrain surface plugin (3-2)", () => {
         // whoever adds the next one updates this arithmetic before adding it.
         "terrainShoreDistanceAtlas",
         "terrainLakeDepthAtlas",
+        // The climate-province field (ClimateProvinceField.ts) is the second
+        // VERTEX-only name: read by textureLoad per vertex, no companion
+        // sampler, so the fragment arithmetic above does not move (ten
+        // declared, eight shipping) and the vertex stage holds two where
+        // TERRAIN_PROVINCE_FIELD is on (tiers 1-3), one where it is off.
+        "terrainProvinceField",
       ]);
-      expect(samplers).toHaveLength(11);
+      expect(samplers).toHaveLength(12);
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);
       expect(uniformNames).toContain("terrainMaterialTiling");
       expect(uniformNames).toContain("terrainMaterialSeason");
@@ -723,6 +729,18 @@ describe("terrain surface plugin (3-2)", () => {
     expect(terrainFallbackRockCover(700, 0.2)).toBeCloseTo(0.425 * (0.15 + 0.85 * 0.5), 12);
     expect(terrainFallbackRockCover(2_000, 1)).toBe(1);
     expect(() => terrainFallbackRockCover(0, 1.01)).toThrow(RangeError);
+    // Climate provinces: a zero lift is the law above exactly, a cold lift
+    // raises the alpine driver, and full tundra gives up 60% of the LEVEL
+    // share (flat arctic ground is turf, as the classifier says) while the
+    // slope share keeps all of it.
+    for (const [elevation, slope] of [[700, 0], [980, 0.2], [450, 0.3]] as const) {
+      expect(terrainFallbackRockCover(elevation, slope, 0))
+        .toBe(terrainFallbackRockCover(elevation, slope));
+    }
+    expect(terrainFallbackRockCover(0, 0, 980)).toBeCloseTo(0.85 * 0.15, 12);
+    expect(terrainFallbackRockCover(0, 0, 0.62 * 2450)).toBeCloseTo(0.85 * 0.15 * 0.4, 12);
+    expect(terrainFallbackRockCover(0, 0.3, 0.62 * 2450)).toBeCloseTo(0.85, 12);
+    expect(() => terrainFallbackRockCover(0, 0, Number.NaN)).toThrow(RangeError);
 
     withPlugin((plugin) => {
       const source = Object.values(fragmentCode(plugin)).join("\n");
@@ -741,7 +759,17 @@ describe("terrain surface plugin (3-2)", () => {
       // Wave Q: the alpine term left its no-splat if-block (it now scales by
     // the class complement), so the pinned indentation moved with it.
     expect(source).toContain("420.0,\n    980.0,");
-      expect(source).not.toContain("fragmentInputs.terrainSplat.x");
+      // The splat's xyz lanes carry no provisional ids for the fallback to
+      // key on: their one reader is the canopy paint's province tone
+      // (ProvinceFarTone.ts), compiled only with TERRAIN_PROVINCE_FIELD, where
+      // the vertex stage writes them as a delta that is 0 in the temperate core.
+      expect(source.match(/fragmentInputs\.terrainSplat\.[xyzw]+/gu)).toEqual([
+        "fragmentInputs.terrainSplat.w",
+        "fragmentInputs.terrainSplat.xyz",
+      ]);
+      expect(source).toContain(
+        "#ifdef TERRAIN_PROVINCE_FIELD\n    canopyAlbedo = canopyAlbedo + canopyAlbedo * fragmentInputs.terrainSplat.xyz;\n#endif",
+      );
       expect(source.match(
         /terrainBlend0 = 1\.0 - terrainThirdWeight;/gu,
       )).toHaveLength(2);
@@ -956,6 +984,57 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
       plugin.prepareDefines(defines as never);
       expect(defines["TERRAIN_SURFACE_PAGE_CHANNELS"]).toBe(false);
       expect(defines["TERRAIN_SURFACE_HYDROLOGY_CHANNELS"]).toBe(false);
+    });
+  });
+
+  it("compiles the climate province in only on the CDLOD path with a field bound", () => {
+    withPlugin((plugin, material) => {
+      const scene = material.getScene();
+      const texture = (): RawTexture => RawTexture.CreateRGBATexture(
+        new Uint8Array(4), 1, 1, scene, false, false, Texture.NEAREST_SAMPLINGMODE,
+      );
+      const field = { texture: texture(), inverseTexelMeters: 1 / 1_250, resolution: 128 };
+      const shape = { atlasEdge: 1, slotEdge: 1, gutter: 0, gridEdge: 1 };
+      const defines: Record<string, boolean> = {};
+      // A field with no CDLOD path: the tile path never reads one.
+      plugin.setClimateProvinceField(field);
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_PROVINCE_FIELD"]).toBe(false);
+      plugin.setHeightAtlas(texture(), shape);
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_PROVINCE_FIELD"]).toBe(true);
+      // The tier switch (QualityProfile terrainProvinceField off): compiled out.
+      plugin.setClimateProvinceField(null);
+      plugin.prepareDefines(defines as never);
+      expect(defines["TERRAIN_PROVINCE_FIELD"]).toBe(false);
+
+      // Every province read sits under the define, so the off build is the
+      // shader without provinces: the vertex read, the varying, and each
+      // fragment term.
+      const vertex = Object.values(
+        plugin.getCustomCode("vertex", ShaderLanguage.WGSL) as Record<string, string>,
+      ).join("\n");
+      const fragment = Object.values(fragmentCode(plugin)).join("\n");
+      for (const source of [vertex, fragment]) {
+        const lines = source.split("\n");
+        let depth = 0;
+        const open: boolean[] = [];
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("#if")) {
+            open.push(trimmed.includes("TERRAIN_PROVINCE_FIELD"));
+          } else if (trimmed.startsWith("#else")) {
+            open.push(!open.pop()! && false);
+          } else if (trimmed.startsWith("#endif")) {
+            open.pop();
+          }
+          depth = open.filter(Boolean).length;
+          if (/terrainProvince(Field|At|FarTone)?\b|fragmentInputs\.terrainProvince|terrainSplat\.xyz/u
+            .test(trimmed) && !trimmed.startsWith("//") && !trimmed.startsWith("#")) {
+            expect(depth, `ungated province read: ${trimmed}`).toBeGreaterThan(0);
+          }
+        }
+      }
     });
   });
 

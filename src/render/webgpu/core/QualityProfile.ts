@@ -178,6 +178,23 @@ export interface WebGpuQualityProfile {
    */
   readonly terrainGroundPatchwork: boolean;
   /**
+   * Whether the terrain's FAR FALLBACK follows the climate province
+   * (`ClimateProvinceField.ts`, `ProvinceFarTone.ts`): ground no trusted page
+   * classifies takes the province's sward tone, thermal snowline and alpine
+   * bands, and the canopy paint its crowns' colour, so a biome does not change
+   * with the distance it is seen from.
+   *
+   * Its cost is a 128x128 RGBA32F texture (256 KiB), one bilinear read of it per
+   * terrain VERTEX, one more vec4 varying, and a few multiply-adds per terrain
+   * fragment; the CPU bakes at most 512 province samples a frame (~0.8 ms) and
+   * only when the window moves, about one 128-sample row per 1.25 km of flight.
+   * Off compiles all of it out (`TERRAIN_PROVINCE_FIELD`, a define set with the
+   * tier's others, so it never compiles mid-flight) and allocates no texture:
+   * Low has no memory headroom, and its far ground keeps the temperate
+   * fallback, so a non-temperate biome still changes at its coarsest pages there.
+   */
+  readonly terrainProvinceField: boolean;
+  /**
    * `4-0`/`4-5`: screen-space error, in pixels, above which a CDLOD node
    * splits. Split when `maxDeviationFromParent × pixelsPerMeter(distance3D)`
    * exceeds this. Monotone decreasing in tier — a smaller threshold splits
@@ -351,6 +368,7 @@ function resolveBaseQualityProfile(
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
       terrainGroundPatchwork: false,
+      terrainProvinceField: false,
       cdlodPixelThreshold: 4,
       // `4.5-A1`: 160 -> 224. Low keeps L3 (512 m nodes, 16 m height texels)
       // under the aircraft rather than the L6 the per-level loop converged on.
@@ -439,6 +457,7 @@ function resolveBaseQualityProfile(
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
       terrainGroundPatchwork: true,
+      terrainProvinceField: true,
       cdlodPixelThreshold: 3,
       // `4.5-A1`: 240 -> 320, the measured step that reaches L2 (128 m nodes,
       // 4 m height texels) under the aircraft at 500 ft. At 240 the new
@@ -521,6 +540,7 @@ function resolveBaseQualityProfile(
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
       terrainGroundPatchwork: true,
+      terrainProvinceField: true,
       cdlodPixelThreshold: 2,
       // `4.5-A1`: 320 -> 448. Same L2 floor as tier 1 with the mid field
       // carried a level finer.
@@ -598,6 +618,7 @@ function resolveBaseQualityProfile(
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
     terrainGroundPatchwork: true,
+    terrainProvinceField: true,
     cdlodPixelThreshold: 1.5,
     // `4.5-A1`: 448 -> 640.
     cdlodNodeBudget: 640,
