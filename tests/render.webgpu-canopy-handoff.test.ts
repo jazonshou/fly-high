@@ -36,7 +36,8 @@ import {
 } from "../src/render/webgpu/detail/renderedDensity";
 import {
   IMPOSTOR_ALPHA_TEST_THRESHOLD,
-  IMPOSTOR_SEASON_BUCKETS,
+  IMPOSTOR_SPECIES,
+  impostorLayerIndex,
   leafDissolveSurvives,
   planImpostorAtlas,
 } from "../src/render/webgpu/detail/ImpostorAtlas";
@@ -374,15 +375,18 @@ function litLuminance(surface: {
 describe("6-8 calibrates the LIT response across the handoff, not the albedo", () => {
   const impostorAlbedo = (() => {
     // Measured from the bake, not trusted from the constant: the coverage-
-    // weighted mean of the leafed bucket over all species and all sixteen
-    // hemi-octahedral views. The atlas is a linear RGBA8 custom texture times
-    // an all-white impostor albedoColor, so its raw bytes ARE the albedo.
+    // weighted mean of the leafed bucket over the temperate species and all
+    // sixteen hemi-octahedral views. The palm is left out: it grows only on
+    // warm coasts, and the terrain's far canopy is the temperate forest's.
+    // The atlas is a linear RGBA8 custom texture times an all-white impostor
+    // albedoColor, so its raw bytes ARE the albedo.
     const plans = planImpostorAtlas(CLOSURE_SEED);
     let r = 0;
     let g = 0;
     let b = 0;
     let layers = 0;
-    for (let layer = 0; layer < plans.albedo.layerCount; layer += IMPOSTOR_SEASON_BUCKETS) {
+    for (const species of IMPOSTOR_SPECIES.filter((name) => name !== "palm")) {
+      const layer = impostorLayerIndex(species, 0);
       const level0 = plans.albedo.layerChains[layer]![0]!;
       let lr = 0;
       let lg = 0;

@@ -9,6 +9,7 @@ import {
   uploadMippedTextureArrayPlan,
   type MippedTextureArrayPlan,
 } from "../core/TextureArrayMips";
+import { PALM_FROND_RAKE, palmLeafletProfile } from "./treeSkeleton";
 
 /**
  * 2-11 — the foliage texture atlas (owner: vegetation).
@@ -64,6 +65,12 @@ export const FOLIAGE_LAYERS = Object.freeze({
   // Append-only: existing card/bark indices are part of prototype data.
   crownBroadleafDense: 16,
   crownConiferDense: 17,
+  // Tropical coast: the palm family's pinnate frond (a card, alpha-tested)
+  // and its ringed trunk (opaque). Outside the 5..7 bark selector span on
+  // purpose — the palm family is one species, so its trunk geometry names
+  // its bark directly and no other card or bark index moves.
+  palmFrond: 18,
+  barkPalm: 19,
 } as const);
 
 export type FoliageLayerName = keyof typeof FOLIAGE_LAYERS;
@@ -1127,6 +1134,122 @@ function synthesizeLitterTwig(raster: FoliageRaster, random: RandomSource): void
   }
 }
 
+/**
+ * Coconut frond, laid out in FROND space: v runs from the petiole (row 0) to
+ * the tip (row 255) and u spans the widest leaflet pair, so texels map
+ * uniformly onto the strip `buildCrownFringePrototype` folds along the
+ * rachis. Leaflet reach follows `palmLeafletProfile`, the same curve the
+ * strip's edge follows, so tips end just inside the geometry instead of
+ * being clipped square; each leaflet rakes toward the tip at the authored
+ * world angle (`PALM_FROND_RAKE`). The bare petiole keeps a wide rachis.
+ */
+function synthesizePalmFrond(raster: FoliageRaster, random: RandomSource): void {
+  const edge = raster.edge;
+  const center = edge / 2;
+  const rachisRadius = (v: number): number => 4.2 - 3.3 * v;
+  const leafletsPerSide = 46;
+  for (const side of [-1, 1] as const) {
+    for (let leaflet = 0; leaflet < leafletsPerSide; leaflet += 1) {
+      const slot = leaflet + (side < 0 ? 0.25 : 0.75) + (random() - 0.5) * 0.3;
+      const v = 0.07 + (slot / leafletsPerSide) * 0.93;
+      const missing = random() < 0.05;
+      const lengthJitter = 0.9 + random() * 0.08;
+      const curl = (random() - 0.35) * 0.08;
+      const hue = 0.235 + (random() - 0.5) * 0.03;
+      const saturation = 0.58 + (random() - 0.5) * 0.16;
+      const value = 0.38 + random() * 0.15;
+      if (missing) continue;
+      let reach = 0.5 * edge * palmLeafletProfile(v) * lengthJitter;
+      // The tip lands further along the frond, where the strip is narrower.
+      const tipV = Math.min(1, v + (PALM_FROND_RAKE * reach) / edge);
+      reach = Math.min(reach, 0.5 * edge * palmLeafletProfile(tipV) * 0.98);
+      if (reach < 3) continue;
+      const x0 = center + side * rachisRadius(v) * 0.6;
+      const y0 = v * edge;
+      const x1 = center + side * reach;
+      const y1 = y0 + PALM_FROND_RAKE * reach;
+      const line = curveQuadratic(
+        x0,
+        y0,
+        (x0 + x1) * 0.5,
+        (y0 + y1) * 0.5 + reach * curl,
+        x1,
+        y1,
+        8,
+      );
+      strokePolyline(raster, line, 1.9, 0.55, hsvToRgb(hue, saturation, value));
+    }
+  }
+  // Rachis last, over the leaflet bases: yellow-green, tapering to the tip.
+  const rachisColor = hsvToRgb(0.165, 0.46, 0.5);
+  const segments = 16;
+  for (let segment = 0; segment < segments; segment += 1) {
+    const v0 = segment / segments;
+    const v1 = (segment + 1) / segments;
+    strokeTapered(
+      raster,
+      center,
+      v0 * edge,
+      center,
+      Math.min(edge - 1, v1 * edge),
+      rachisRadius(v0),
+      rachisRadius(v1),
+      rachisColor,
+    );
+  }
+}
+
+/**
+ * Coconut trunk: smooth grey-tan bark crossed by the scar every fallen frond
+ * leaves. The ring count is a whole number per tile and the ring waviness a
+ * whole number of periods around u, so both wraps close exactly; the shared
+ * seam heal then only has to reconcile the streak noise.
+ */
+function synthesizeBarkPalm(
+  raster: FoliageRaster,
+  random: RandomSource,
+  noiseSeed: number,
+): void {
+  const { edge, rgba } = raster;
+  const ringCount = 22;
+  const ringPitch = edge / ringCount;
+  const phaseA = random() * Math.PI * 2;
+  const phaseB = random() * Math.PI * 2;
+  const ringOffset = Array.from({ length: ringCount }, () => (random() - 0.5) * ringPitch * 0.28);
+  const ringDepth = Array.from({ length: ringCount }, () => 0.65 + random() * 0.35);
+  const streakSeed = mixSeed(noiseSeed, 31);
+  const mottleSeed = mixSeed(noiseSeed, 32);
+  const grainSeed = mixSeed(noiseSeed, 33);
+  for (let y = 0; y < edge; y += 1) {
+    for (let x = 0; x < edge; x += 1) {
+      const around = (x / edge) * Math.PI * 2;
+      const wave = 1.1 * Math.sin(around * 2 + phaseA) + 0.6 * Math.sin(around * 3 + phaseB);
+      const local = y + wave;
+      const ring = Math.round(local / ringPitch);
+      const slot = ((ring % ringCount) + ringCount) % ringCount;
+      const distance = local - (ring * ringPitch + ringOffset[slot]!);
+      // A dark groove with the scar's raised, paler lip just above it.
+      const groove = Math.exp(-(distance * distance) / 1.6) * ringDepth[slot]!;
+      const lip = Math.exp(-((distance - 2.2) ** 2) / 3.4);
+      const streak = fbm2D(streakSeed, x * 0.12, y * 0.02, 3);
+      const mottle = valueNoise2D(mottleSeed, x * 0.03, y * 0.03);
+      const grain = texelNoise(x, y, grainSeed);
+      const value = clamp(
+        0.42 + streak * 0.07 + mottle * 0.05 + grain * 0.05 + lip * 0.05 - groove * 0.19,
+        0.12,
+        0.64,
+      );
+      const color = hsvToRgb(0.085 + mottle * 0.012, 0.17 + streak * 0.04, value);
+      const at = (y * edge + x) * 4;
+      rgba[at] = color[0];
+      rgba[at + 1] = color[1];
+      rgba[at + 2] = color[2];
+      // Closed trunk: the scars are albedo, never coverage.
+      rgba[at + 3] = 255;
+    }
+  }
+}
+
 const SYNTHESIZERS: Readonly<Record<FoliageLayerName, FoliageSynthesizer>> = Object.freeze({
   broadleafOak: synthesizeBroadleafOak,
   broadleafMaple: synthesizeBroadleafMaple,
@@ -1146,6 +1269,8 @@ const SYNTHESIZERS: Readonly<Record<FoliageLayerName, FoliageSynthesizer>> = Obj
   litterTwig: synthesizeLitterTwig,
   crownBroadleafDense: synthesizeDenseBroadleaf,
   crownConiferDense: synthesizeDenseConifer,
+  palmFrond: synthesizePalmFrond,
+  barkPalm: synthesizeBarkPalm,
 });
 
 // ---------------------------------------------------------------------------

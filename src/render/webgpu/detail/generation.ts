@@ -370,6 +370,14 @@ function treeDimensions(
     case "maple": return dimensions(3.2, 26, 0.3, 0.023, 0.88);
     case "birch": return dimensions(3.4, 24, 0.22, 0.014, 0.9);
     case "willow": return dimensions(2.8, 21, 0.37, 0.023, 0.94);
+    case "palm": {
+      // The crown radius maps onto the prototype's envelope (frond reach
+      // plus the trunk's lean), ~0.47 of its height, so a mature palm scales
+      // uniformly. A coconut's fronds reach ~5 m whatever its trunk height,
+      // so a young palm carries a crown wide for its height.
+      const palm = dimensions(4.5, 24, 0.47, 0.011, 0.96);
+      return { ...palm, crown: palm.crown * (1.6 - 0.6 * individualAge) };
+    }
   }
 }
 
@@ -381,6 +389,8 @@ const TREE_TINT_BASE: Readonly<Record<TreeSpecies, readonly [number, number, num
   maple: [0.98, 0.94, 0.63],
   birch: [0.88, 1.02, 0.75],
   willow: [0.88, 0.98, 0.7],
+  // Coconut fronds read yellower and brighter than temperate broadleaf.
+  palm: [0.93, 0.99, 0.64],
 };
 
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {

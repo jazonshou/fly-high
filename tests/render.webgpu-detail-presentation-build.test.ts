@@ -91,6 +91,7 @@ function buildCatalog(useImpostors: boolean): DetailPresentationBuildCatalog {
     maple: "oak",
     birch: "oak",
     willow: "willow",
+    palm: "palm",
   };
   const trees = Object.fromEntries(TREE_SPECIES.map((species, index) => [
     species,
