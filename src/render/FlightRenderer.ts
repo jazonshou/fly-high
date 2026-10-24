@@ -648,8 +648,6 @@ export class FlightRenderer implements FlightRenderingSystem {
   private reducedMotion: boolean;
   private originX = 0;
   private originZ = 0;
-  /** The world's airports, home field first; replaced by `setAirports`. */
-  private airports: readonly Readonly<AirportDefinition>[];
   /**
    * The world as it stands now: the starting world with every airport spawned
    * since (`withAirports`). Only its airport list ever differs from
@@ -784,7 +782,6 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.latitudeDegrees = options.world.latitudeDegrees;
     this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
-    this.airports = options.world.airports;
     this.liveWorld = options.world;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
@@ -1678,7 +1675,6 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
     if (this.disposed) return;
-    this.airports = airports;
     const previous = this.liveWorld;
     const next = withAirports(previous, airports);
     if (next === previous) return;
