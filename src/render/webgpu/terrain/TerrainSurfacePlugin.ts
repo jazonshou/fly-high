@@ -103,6 +103,7 @@ import {
   PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE,
   PROVINCE_FAR_SNOWLINE_RESPONSE,
   PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS,
+  TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
   TERRAIN_PROVINCE_FAR_TONE_WGSL,
   provinceFarTundraFromLift,
 } from "./ProvinceFarTone";
@@ -1225,11 +1226,11 @@ fn terrainVertexCanopyClosure(lane: f32, pageLocalMeters: vec2f) -> f32 {
 #if defined(TERRAIN_SURFACE_CDLOD) && defined(TERRAIN_PROVINCE_FIELD)
 // The climate province around the camera (ClimateProvinceField.ts): RGBA32F,
 // (temperature offset, dryness, sand-sea weight, reserved), a toroidal window
-// of whole texels. textureLoad
-// only, like the height atlas, and the vertex stage only: the fragment gets
-// what it needs through the terrainSplat and terrainProvince varyings. The
-// define is the tier's (QualityProfile terrainProvinceField): off, none of
-// this, the varying or the fragment's province terms is compiled.
+// of whole texels. textureLoad only, like the height atlas, and the vertex
+// stage only: the fragment gets what it needs through lanes of the
+// terrainSplat and terrainPageLocal varyings. The define is the tier's
+// (QualityProfile terrainProvinceField): off, none of this, the widened lanes
+// or the fragment's province terms is compiled.
 var terrainProvinceField: texture_2d<f32>;
 
 fn terrainProvinceAt(absoluteXZ: vec2f) -> vec3f {
@@ -1251,18 +1252,19 @@ fn terrainProvinceAt(absoluteXZ: vec2f) -> vec3f {
 }
 ${TERRAIN_PROVINCE_FAR_TONE_WGSL}
 #endif
-#ifdef TERRAIN_PROVINCE_FIELD
-// The far fallback's province (ProvinceFarTone.ts): xyz = the base tone's
-// per-channel delta, w = the thermal lift in metres. All exactly 0 in the
-// temperate core.
-varying terrainProvince: vec4f;
-#endif
 varying terrainSplat: vec4f;
 // 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
 // built page-local and positioned by their world matrix, so this is free —
 // and it is what lets the fragment address the channel atlas without a
 // per-mesh uniform on a material every page shares.
+#ifdef TERRAIN_PROVINCE_FIELD
+// Widened for the climate province (ProvinceFarTone.ts): z = the thermal lift
+// in metres, w = the canopy share. The beauty pipeline has no fragment input
+// to spare (16 of 16), so the province rides lanes, never a new varying.
+varying terrainPageLocal: vec4f;
+#else
 varying terrainPageLocal: vec2f;
+#endif
 `,
   /**
    * `4-4`: displacement at `CUSTOM_VERTEX_UPDATE_POSITION`, and the hook
@@ -1418,15 +1420,13 @@ varying terrainPageLocal: vec2f;
   // channelSlot*32 + level, or -1 when the page holds no channel slot.
 #ifdef TERRAIN_PROVINCE_FIELD
   // Lanes xyz were idle constants (the provisional ids no fragment reads any
-  // more) and now carry the CANOPY tone's per-channel delta for the climate
-  // province (ProvinceFarTone.ts), so the distant canopy paint takes the
-  // colour of the crowns the province draws. The base tone and the thermal
-  // lift ride terrainProvince. One field read per vertex; the province moves
+  // more) and now carry the far BASE tone's per-channel delta for the climate
+  // province (ProvinceFarTone.ts); the thermal lift and the canopy share ride
+  // terrainPageLocal.zw below. One field read per vertex; the province moves
   // over kilometres, so vertex interpolation is exact to the field.
   let provinceTone = terrainProvinceFarTone(
     terrainProvinceAt(vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin));
-  vertexOutputs.terrainSplat = vec4f(provinceTone.canopy, vertexInputs.terrainNodeB.z);
-  vertexOutputs.terrainProvince = vec4f(provinceTone.base, provinceTone.thermalLift);
+  vertexOutputs.terrainSplat = vec4f(provinceTone.base, vertexInputs.terrainNodeB.z);
 #else
   // Lane y is -1 for the same reason the page path returns -1: no secondary
   // id is supplied, and 0 would silently mean sand.
@@ -1443,8 +1443,14 @@ varying terrainPageLocal: vec2f;
   // which renders as a flawless uniform desert. The CPU tile path fed metres
   // here and this path has to as well.
   let nodeSpanOut = 64.0 * exp2(vertexInputs.terrainNodeA.z);
+#ifdef TERRAIN_PROVINCE_FIELD
+  vertexOutputs.terrainPageLocal = vec4f((vec2f(subXOut, subZOut)
+    + vec2f(positionUpdated.x, positionUpdated.z)) * nodeSpanOut,
+    provinceTone.thermalLift, provinceTone.canopyShare);
+#else
   vertexOutputs.terrainPageLocal = (vec2f(subXOut, subZOut)
     + vec2f(positionUpdated.x, positionUpdated.z)) * nodeSpanOut;
+#endif
 }
 #else
 vertexOutputs.terrainSplat = vertexInputs.color;
@@ -1898,9 +1904,10 @@ function wgslGains(row: { vegetation: number; rock: number; snow: number; other:
 const FRAGMENT_DEFINITIONS = /* wgsl */ `
 varying terrainSplat: vec4f;
 #ifdef TERRAIN_PROVINCE_FIELD
-varying terrainProvince: vec4f;
-#endif
+varying terrainPageLocal: vec4f;
+#else
 varying terrainPageLocal: vec2f;
+#endif
 var terrainSurfaceAlbedoSampler: sampler;
 var terrainSurfaceAlbedo: texture_2d_array<f32>;
 var terrainSurfaceNormalSampler: sampler;
@@ -2674,7 +2681,7 @@ let terrainSamplePosition = vec3f(
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 let terrainPageUv = terrainSurfacePageUv(
   fragmentInputs.terrainSplat.w,
-  fragmentInputs.terrainPageLocal,
+  fragmentInputs.terrainPageLocal.xy,
 );
 // textureSampleLevel, not textureSample: the house rule since 2-8 is that no
 // sample under a branch or a wrap takes implicit derivatives, and the channel
@@ -2795,7 +2802,7 @@ let terrainElevationDriver = terrainAbsolutePosition.y
 // x + 0 is x. The snowline follows only part of the shift, as it does in the
 // classifier.
 #ifdef TERRAIN_PROVINCE_FIELD
-let terrainThermalLift = fragmentInputs.terrainProvince.w;
+let terrainThermalLift = fragmentInputs.terrainPageLocal.z;
 let terrainThermalDriver = terrainElevationDriver + terrainThermalLift;
 #else
 let terrainThermalLift = 0.0;
@@ -3069,7 +3076,7 @@ if (!terrainUsePageSplat) {
   // x + x * 0 in the temperate core.
 #ifdef TERRAIN_PROVINCE_FIELD
   terrainLayer0.albedo = terrainLayer0.albedo
-    + terrainLayer0.albedo * fragmentInputs.terrainProvince.xyz;
+    + terrainLayer0.albedo * fragmentInputs.terrainSplat.xyz;
 #endif
 }
 if (terrainFarSward) {
@@ -3208,7 +3215,7 @@ if (!terrainUsePageSplat) {
   // Climate provinces: the base's province tone, as on the three-material path.
 #ifdef TERRAIN_PROVINCE_FIELD
   terrainLayer0.albedo = terrainLayer0.albedo
-    + terrainLayer0.albedo * fragmentInputs.terrainProvince.xyz;
+    + terrainLayer0.albedo * fragmentInputs.terrainSplat.xyz;
 #endif
 }
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0 + terrainLayer2.albedo * terrainBlend2;
@@ -3798,7 +3805,8 @@ var terrainCanopyShade = 0.0;
     // brighten where its stems hand over. x + x * 0 in the temperate core.
     var canopyAlbedo = vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy;
 #ifdef TERRAIN_PROVINCE_FIELD
-    canopyAlbedo = canopyAlbedo + canopyAlbedo * fragmentInputs.terrainSplat.xyz;
+    canopyAlbedo = canopyAlbedo
+      + canopyAlbedo * (fragmentInputs.terrainPageLocal.w * ${TERRAIN_PROVINCE_CANOPY_DELTA_WGSL});
 #endif
     terrainAlbedo = mix(terrainAlbedo, canopyAlbedo, canopySurface);
     terrainRoughness = mix(

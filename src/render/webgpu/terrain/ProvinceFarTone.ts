@@ -48,8 +48,15 @@ import {
  *   same split the classifier makes.
  * - **base tone**, a per-channel delta on the Grass-by-assumption albedo: the
  *   colour of the province's OPEN SWARD over the colour of Grass, minus one.
- * - **canopy tone**, the same for the canopy paint: the province's drawn crowns
- *   over the temperate impostor mean, minus one.
+ * - **canopy share**, how far the canopy paint darkens toward the province's
+ *   drawn crowns (one measured ratio, `PROVINCE_FAR_CANOPY_PAINT_RATIO`).
+ *
+ * FIVE FLOATS, BECAUSE THERE IS NO SPARE INTERPOLATOR. The terrain's beauty
+ * pipeline already spends all 16 of WebGPU's fragment inputs (a new varying
+ * failed pipeline creation: 17 = 16 + front_facing), so the province rides
+ * lanes the terrain already interpolates: the base tone in `terrainSplat.xyz`
+ * (idle provisional ids), the lift and the canopy share in `terrainPageLocal`'s
+ * z and w (a vec2 widened to a vec4 under the define).
  *
  * DELTAS, NOT RATIOS. A varying that is 1.0 at three vertices need not
  * interpolate to exactly 1.0, but one that is 0 at three vertices is exactly 0,
@@ -105,7 +112,7 @@ export const PROVINCE_FAR_SWARD_MIXES: Readonly<Record<"tundra" | "arid" | "park
 
 /**
  * The province's drawn crowns over the temperate drawn crowns, per channel:
- * what the canopy paint (`CANOPY_SURFACE_ALBEDO`) must be multiplied by so the
+ * what the canopy paint (`CANOPY_SURFACE_ALBEDO`) would be multiplied by so the
  * step at the handoff ring is the temperate one in every province.
  *
  * MEASURED, not chosen (2026-10-24): crown-area-weighted mean of impostor
@@ -122,6 +129,12 @@ export const PROVINCE_FAR_SWARD_MIXES: Readonly<Record<"tundra" | "arid" | "park
  * The constants are the means; `tests/render.webgpu-province-far-tone.test.ts`
  * re-measures them on a smaller sample, so a change to a biome's species table
  * or tints that moves its crowns fails there instead of reopening the ring.
+ *
+ * The paint applies ONE of them (`PROVINCE_FAR_CANOPY_PAINT_RATIO`), weighted
+ * by the boreal and arid shares, for the lane reason above: arid's crowns sit
+ * within 6% of boreal's in every channel, and parkland's +5% red is left out,
+ * since an oak savanna's lone trees close so little canopy that the paint
+ * barely shows there.
  */
 export const PROVINCE_FAR_CANOPY_RATIOS: Readonly<
   Record<"boreal" | "arid" | "parkland", readonly [number, number, number]>
@@ -169,12 +182,10 @@ export const PROVINCE_FAR_BASE_DELTAS = Object.freeze({
   sand: deltaOver(surfaceMaterialSpec(SurfaceMaterial.Sand).referenceAlbedo, GRASS_ALBEDO),
 });
 
-/** Canopy-tone deltas over the temperate paint, per province share. */
-export const PROVINCE_FAR_CANOPY_DELTAS = Object.freeze({
-  boreal: deltaOver(PROVINCE_FAR_CANOPY_RATIOS.boreal, [1, 1, 1]),
-  arid: deltaOver(PROVINCE_FAR_CANOPY_RATIOS.arid, [1, 1, 1]),
-  parkland: deltaOver(PROVINCE_FAR_CANOPY_RATIOS.parkland, [1, 1, 1]),
-});
+/** The one ratio the canopy paint darkens by, at a canopy share of 1: the taiga's. */
+export const PROVINCE_FAR_CANOPY_PAINT_RATIO = PROVINCE_FAR_CANOPY_RATIOS.boreal;
+/** Its delta over the temperate paint. */
+export const PROVINCE_FAR_CANOPY_PAINT_DELTA = deltaOver(PROVINCE_FAR_CANOPY_PAINT_RATIO, [1, 1, 1]);
 
 /** Thermal height per unit of temperature offset, and the snowline's share of it. */
 export const PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE = CLIMATE_PROVINCE_METERS_PER_TEMPERATURE;
@@ -191,6 +202,9 @@ export interface ProvinceFarTone {
   /** Metres thermal height adds to real height; the snowline reads `x 0.4` of it. */
   thermalLiftMeters: number;
   base: [number, number, number];
+  /** 0..1: the paint's share of `PROVINCE_FAR_CANOPY_PAINT_DELTA`. */
+  canopyShare: number;
+  /** The canopy paint's per-channel delta that share makes (for audits). */
   canopy: [number, number, number];
 }
 
@@ -202,23 +216,23 @@ export interface ProvinceFarTone {
 export function provinceFarTone(
   temperatureOffset: number,
   dryness: number,
-  target: ProvinceFarTone = { thermalLiftMeters: 0, base: [0, 0, 0], canopy: [0, 0, 0] },
+  target: ProvinceFarTone = {
+    thermalLiftMeters: 0, base: [0, 0, 0], canopyShare: 0, canopy: [0, 0, 0],
+  },
   sand = 0,
 ): ProvinceFarTone {
   const boreal = borealShare(temperatureOffset);
   const tundra = tundraShare(temperatureOffset);
   const { arid, parkland } = dryProvinceShares(dryness);
   const baseScale = 1 / Math.max(1, tundra + arid + parkland);
-  const canopyScale = 1 / Math.max(1, boreal + arid + parkland);
   const b = PROVINCE_FAR_BASE_DELTAS;
-  const c = PROVINCE_FAR_CANOPY_DELTAS;
   const erg = Math.min(1, Math.max(0, sand));
+  target.canopyShare = (boreal + arid) / Math.max(1, boreal + arid + parkland);
   for (let channel = 0; channel < 3; channel += 1) {
     const sward = (tundra * b.tundra[channel]! + arid * b.arid[channel]!
       + parkland * b.parkland[channel]!) * baseScale;
     target.base[channel] = sward + (b.sand[channel]! - sward) * erg;
-    target.canopy[channel] = (boreal * c.boreal[channel]! + arid * c.arid[channel]!
-      + parkland * c.parkland[channel]!) * canopyScale;
+    target.canopy[channel] = target.canopyShare * PROVINCE_FAR_CANOPY_PAINT_DELTA[channel]!;
   }
   target.thermalLiftMeters = -temperatureOffset * PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE;
   return target;
@@ -245,12 +259,13 @@ function wgslVec3(value: readonly [number, number, number]): string {
 
 /**
  * The vertex stage's half. Requires nothing but WGSL builtins; every
- * identifier carries the `terrainProvince` prefix.
+ * identifier carries the `terrainProvince` prefix. The fragment applies the
+ * canopy share as `share * TERRAIN_PROVINCE_CANOPY_DELTA_WGSL`.
  */
 export const TERRAIN_PROVINCE_FAR_TONE_WGSL = /* wgsl */ `
 struct TerrainProvinceFarTone {
   base: vec3f,
-  canopy: vec3f,
+  canopyShare: f32,
   thermalLift: f32,
 };
 
@@ -270,14 +285,14 @@ fn terrainProvinceFarTone(province: vec3f) -> TerrainProvinceFarTone {
   // A sand sea takes the base over from the sward (lane z, the erg weight).
   tone.base = sward + (${wgslVec3(PROVINCE_FAR_BASE_DELTAS.sand)} - sward)
     * clamp(province.z, 0.0, 1.0);
-  tone.canopy = (boreal * ${wgslVec3(PROVINCE_FAR_CANOPY_DELTAS.boreal)}
-    + arid * ${wgslVec3(PROVINCE_FAR_CANOPY_DELTAS.arid)}
-    + parkland * ${wgslVec3(PROVINCE_FAR_CANOPY_DELTAS.parkland)})
-    / max(1.0, boreal + arid + parkland);
+  tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland);
   tone.thermalLift = -province.x * ${wgslFloat(PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE)};
   return tone;
 }
 `;
+
+/** `PROVINCE_FAR_CANOPY_PAINT_DELTA` as a WGSL literal, for the fragment. */
+export const TERRAIN_PROVINCE_CANOPY_DELTA_WGSL = wgslVec3(PROVINCE_FAR_CANOPY_PAINT_DELTA);
 
 /** The canopy paint the far fallback uses at a province, for tests and audits. */
 export function provinceFarCanopyAlbedo(temperatureOffset: number, dryness: number): [number, number, number] {

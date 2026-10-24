@@ -10,10 +10,12 @@ import {
 } from "../src/render/webgpu/terrain/ClimateProvinceField";
 import {
   PROVINCE_FAR_BASE_DELTAS,
-  PROVINCE_FAR_CANOPY_DELTAS,
+  PROVINCE_FAR_CANOPY_PAINT_DELTA,
+  PROVINCE_FAR_CANOPY_PAINT_RATIO,
   PROVINCE_FAR_CANOPY_RATIOS,
   PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE,
   PROVINCE_FAR_SWARD_MIXES,
+  TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
   TERRAIN_PROVINCE_FAR_TONE_WGSL,
   provinceFarTone,
   provinceFarTundraFromLift,
@@ -259,16 +261,15 @@ describe("the far tones are the biomes' own", () => {
       const tundra = tundraShare(offset);
       const { arid, parkland } = dryProvinceShares(dryness);
       const baseScale = 1 / Math.max(1, tundra + arid + parkland);
-      const canopyScale = 1 / Math.max(1, boreal + arid + parkland);
+      const canopyShare = (boreal + arid) / Math.max(1, boreal + arid + parkland);
+      expect(tone.canopyShare).toBeCloseTo(canopyShare, 12);
       for (let channel = 0; channel < 3; channel += 1) {
         expect(tone.base[channel]).toBeCloseTo((
           tundra * PROVINCE_FAR_BASE_DELTAS.tundra[channel]!
           + arid * PROVINCE_FAR_BASE_DELTAS.arid[channel]!
           + parkland * PROVINCE_FAR_BASE_DELTAS.parkland[channel]!) * baseScale, 12);
-        expect(tone.canopy[channel]).toBeCloseTo((
-          boreal * PROVINCE_FAR_CANOPY_DELTAS.boreal[channel]!
-          + arid * PROVINCE_FAR_CANOPY_DELTAS.arid[channel]!
-          + parkland * PROVINCE_FAR_CANOPY_DELTAS.parkland[channel]!) * canopyScale, 12);
+        expect(tone.canopy[channel]).toBeCloseTo(
+          canopyShare * PROVINCE_FAR_CANOPY_PAINT_DELTA[channel]!, 12);
       }
       expect(tone.thermalLiftMeters).toBeCloseTo(-offset * PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE, 9);
       expect(provinceFarTundraFromLift(tone.thermalLiftMeters)).toBeCloseTo(tundra, 9);
@@ -370,13 +371,23 @@ describe("the far tones are the biomes' own", () => {
     ] as const;
     for (const [province, ratios] of cases) {
       const drawn = drawnCrowns(province);
+      const preset = CLIMATE_PROVINCE_PRESETS[province];
+      // What the paint actually applies there, from the one shared ratio.
+      const paint = provinceFarTone(preset.temperatureOffset, preset.dryness).canopy;
       for (let c = 0; c < 3; c += 1) {
+        const measured = drawn[c]! / temperate[c]!;
         expect(
-          Math.abs(drawn[c]! / temperate[c]! - ratios[c]!),
-          `${province} channel ${c}: measured ${(drawn[c]! / temperate[c]!).toFixed(3)}`,
+          Math.abs(measured - ratios[c]!),
+          `${province} channel ${c}: measured ${measured.toFixed(3)} vs table ${ratios[c]}`,
         ).toBeLessThan(0.07);
+        // The paint's single ratio stays within 8% of every province's crowns.
+        expect(
+          Math.abs(measured - (1 + paint[c]!)),
+          `${province} channel ${c}: measured ${measured.toFixed(3)} vs paint ${(1 + paint[c]!).toFixed(3)}`,
+        ).toBeLessThan(0.08);
       }
     }
+    expect(PROVINCE_FAR_CANOPY_PAINT_RATIO).toBe(PROVINCE_FAR_CANOPY_RATIOS.boreal);
   }, 60_000);
 
   it("emits the same constants and the same share laws into WGSL", () => {
@@ -388,12 +399,14 @@ describe("the far tones are the biomes' own", () => {
     expect(wgsl).toContain("/ max(1.0, tundra + arid + parkland)");
     expect(wgsl).toContain("/ max(1.0, boreal + arid + parkland)");
     expect(wgsl).toContain("tone.thermalLift = -province.x * 2450.0;");
-    for (const deltas of [PROVINCE_FAR_BASE_DELTAS, PROVINCE_FAR_CANOPY_DELTAS]) {
-      for (const delta of Object.values(deltas)) {
-        for (const value of delta) {
-          expect(wgsl).toContain(String(Number(value.toPrecision(9))));
-        }
+    for (const delta of Object.values(PROVINCE_FAR_BASE_DELTAS)) {
+      for (const value of delta) {
+        expect(wgsl).toContain(String(Number(value.toPrecision(9))));
       }
+    }
+    expect(wgsl).toContain("tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland);");
+    for (const value of PROVINCE_FAR_CANOPY_PAINT_DELTA) {
+      expect(TERRAIN_PROVINCE_CANOPY_DELTA_WGSL).toContain(String(Number(value.toPrecision(9))));
     }
   });
 });

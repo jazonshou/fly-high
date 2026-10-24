@@ -760,16 +760,17 @@ describe("terrain surface plugin (3-2)", () => {
     // the class complement), so the pinned indentation moved with it.
     expect(source).toContain("420.0,\n    980.0,");
       // The splat's xyz lanes carry no provisional ids for the fallback to
-      // key on: their one reader is the canopy paint's province tone
+      // key on: their one reader is the far base's province tone
       // (ProvinceFarTone.ts), compiled only with TERRAIN_PROVINCE_FIELD, where
       // the vertex stage writes them as a delta that is 0 in the temperate core.
       expect(source.match(/fragmentInputs\.terrainSplat\.[xyzw]+/gu)).toEqual([
         "fragmentInputs.terrainSplat.w",
         "fragmentInputs.terrainSplat.xyz",
+        "fragmentInputs.terrainSplat.xyz",
       ]);
-      expect(source).toContain(
-        "#ifdef TERRAIN_PROVINCE_FIELD\n    canopyAlbedo = canopyAlbedo + canopyAlbedo * fragmentInputs.terrainSplat.xyz;\n#endif",
-      );
+      expect(source.match(
+        /#ifdef TERRAIN_PROVINCE_FIELD\n {2}terrainLayer0\.albedo = terrainLayer0\.albedo\n {4}\+ terrainLayer0\.albedo \* fragmentInputs\.terrainSplat\.xyz;\n#endif/gu,
+      )).toHaveLength(2);
       expect(source.match(
         /terrainBlend0 = 1\.0 - terrainThirdWeight;/gu,
       )).toHaveLength(2);
@@ -1029,7 +1030,7 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
             open.pop();
           }
           depth = open.filter(Boolean).length;
-          if (/terrainProvince(Field|At|FarTone)?\b|fragmentInputs\.terrainProvince|terrainSplat\.xyz/u
+          if (/terrainProvince(Field|At|FarTone)?\b|terrainSplat\.xyz|terrainPageLocal\.[zw]|provinceTone/u
             .test(trimmed) && !trimmed.startsWith("//") && !trimmed.startsWith("#")) {
             expect(depth, `ungated province read: ${trimmed}`).toBeGreaterThan(0);
           }
