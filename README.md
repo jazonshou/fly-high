@@ -32,8 +32,11 @@ Open [http://localhost:3000](http://localhost:3000) and press **Start**.
 | `Space` | Wheel brakes |
 | `C` | Cycle camera |
 | `H` | Cycle HUD |
+| `N` | Show / hide the nearest airport |
 | `R` | Restart |
 | `Esc` or `P` | Pause / resume |
+
+Fly 14 km from every airport and a new one is built 5 to 9 km away, so there is always somewhere to land; the nearest-airport marker (or the button at the top right of the HUD) points to whichever is closest.
 
 Gamepads and joysticks are supported too. Sensitivity, dead zone, pitch inversion, and mouse flight can be changed in settings.
 
