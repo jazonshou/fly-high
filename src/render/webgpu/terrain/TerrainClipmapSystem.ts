@@ -33,7 +33,11 @@ import {
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type WorldDefinition } from "@/src/world";
 import { sampleErgFarWeight } from "@/src/world/landforms";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
-import { surfaceArrayLayerIds, synthesizeSurfaceArrayLayer } from "./GroundGrainSynthesis";
+import {
+  GROUND_GRAIN_LAYER,
+  surfaceArrayLayerIds,
+  synthesizeSurfaceArrayLayer,
+} from "./GroundGrainSynthesis";
 import {
   uploadSurfaceMaterialArrays,
   type SurfaceMaterialArrays,
@@ -41,7 +45,6 @@ import {
 import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { ClimateProvinceField } from "./ClimateProvinceField";
-import { SURFACE_MATERIALS } from "./surfaceMaterials";
 import { terrainClimateProvinceInput, terrainLandformInput } from "./TerrainKernel";
 import type { TerrainLandformDataSource } from "./TerrainLandformKernel";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
@@ -544,6 +547,12 @@ export class TerrainClipmapSystem {
    * its fetches.
    */
   private materialArrayGrain = false;
+  /**
+   * Volcanic land: whether the arrays carry Basalt and Tephra. The profile's
+   * `volcanicMaterials`, read as data; `surfaceArrayLayerIds` keeps them
+   * wherever the grain is built.
+   */
+  private materialArrayVolcanic = true;
   /** One material's synthesis per frame, in flight. */
   private materialArrayBuild: {
     readonly edge: number;
@@ -644,6 +653,7 @@ export class TerrainClipmapSystem {
     );
     this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     this.applyProvinceField(profile);
+    this.surfacePlugin.setVolcanicMaterials(profile.volcanicMaterials);
     // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
     // the rendered-density law's, carried on the profile since the perf-debt
     // pass, so terrain reads them as data and never re-derives a radius. The
@@ -666,6 +676,7 @@ export class TerrainClipmapSystem {
     this.canBuildArrays = Boolean(engineFlags.isWebGPU || engineFlags._gl);
     this.materialArrayEdge = profile.materialArrayEdge;
     this.materialArrayGrain = profile.terrainGroundPatchwork;
+    this.materialArrayVolcanic = profile.volcanicMaterials;
     this.cloudShadowPlugin = new CloudShadowMaterialPlugin(this.material);
 
     this.heightAtlas = new TerrainPageAtlas(scene, profile, {
@@ -750,7 +761,8 @@ export class TerrainClipmapSystem {
    */
   private stepMaterialArrayBuild(): void {
     if (!this.canBuildArrays) return;
-    const wantedLayerIds = surfaceArrayLayerIds(this.materialArrayGrain);
+    const wantedLayerIds = surfaceArrayLayerIds(
+      this.materialArrayGrain, this.materialArrayVolcanic);
     if (this.materialArrayBuild === null) {
       if (
         this.materialArrays?.edge === this.materialArrayEdge
@@ -815,7 +827,7 @@ export class TerrainClipmapSystem {
     this.surfacePlugin.setArrays(
       replacement.albedoHeight,
       replacement.normalMaterial,
-      replacement.layerCount > SURFACE_MATERIALS.length,
+      build.layerIds.includes(GROUND_GRAIN_LAYER),
     );
     // Enabling the plugin recompiles the shared material, but a mesh that has
     // already been drawn holds its own cached draw wrapper and render bundle
@@ -974,6 +986,7 @@ export class TerrainClipmapSystem {
     );
     this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     this.applyProvinceField(profile);
+    this.surfacePlugin.setVolcanicMaterials(profile.volcanicMaterials);
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
@@ -984,6 +997,7 @@ export class TerrainClipmapSystem {
     );
     this.materialArrayEdge = profile.materialArrayEdge;
     this.materialArrayGrain = profile.terrainGroundPatchwork;
+    this.materialArrayVolcanic = profile.volcanicMaterials;
     this.computeBudget.setProfile(profile);
     if (atlasReshaped) {
       // A slot index addresses a different texel in a reshaped atlas, so

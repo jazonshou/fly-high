@@ -30,6 +30,7 @@ import {
 import {
   landCoverShare,
   meanSurfaceAlbedo,
+  SURFACE_MATERIAL_BASE_COUNT,
   SURFACE_MATERIAL_COUNT,
   SURFACE_MATERIALS,
   SurfaceMaterial,
@@ -1473,8 +1474,34 @@ vertexOutputs.terrainPageLocal = vertexInputs.position.xz;
  * the real-adapter regression oracle. Keeping one WGSL definition prevents a
  * test-only sampler from validating behaviour the renderer does not execute.
  * Return = (primary id, secondary id, secondary share).
+ *
+ * Generated for the first `materialCount` materials, so a profile that never
+ * bakes the appended volcanic ids (`WebGpuQualityProfile.volcanicMaterials`)
+ * keeps today's case count while the decode scale stays the full axis: ids are
+ * stored as `id / (SURFACE_MATERIAL_COUNT - 1)` whichever variant reads them.
+ * An id past `materialCount` falls to `default` and accumulates nowhere.
  */
-export const TERRAIN_SPARSE_SPLAT_GATHER_WGSL = /* wgsl */ `
+export function terrainSparseSplatGatherWgsl(materialCount: number): string {
+  if (!Number.isInteger(materialCount) || materialCount < 2
+    || materialCount > SURFACE_MATERIAL_COUNT) {
+    throw new RangeError(`Sparse splat gather needs 2..${SURFACE_MATERIAL_COUNT} materials`);
+  }
+  const ids = Array.from({ length: materialCount }, (_, id) => id);
+  const accumulators = ids.map((id) => `  var accumulated${id} = 0.0;`).join("\n");
+  const cases = ids
+    .map((id) => `        case ${id}u: { accumulated${id} = accumulated${id} + weights[lane]; }`)
+    .join("\n");
+  const candidates = ids.map((id) => `${id === 0 ? "  var candidateId = 0u;\n  var candidateWeight = accumulated0;" : `  candidateId = ${id}u;\n  candidateWeight = accumulated${id};`}
+  if (candidateWeight > primaryWeight) {
+    secondaryId = primaryId;
+    secondaryWeight = primaryWeight;
+    primaryId = candidateId;
+    primaryWeight = candidateWeight;
+  } else if (candidateWeight > secondaryWeight) {
+    secondaryId = candidateId;
+    secondaryWeight = candidateWeight;
+  }`).join("\n");
+  return /* wgsl */ `
 fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
   let idScale = f32(${SURFACE_MATERIAL_COUNT - 1});
   let base = vec2i(floor(atlasPosition));
@@ -1487,19 +1514,10 @@ fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
     (1.0 - fraction.x) * fraction.y,
     fraction.x * fraction.y,
   );
-  // Keep the ten totals as named scalars. A dynamically indexed private
-  // array made this fragment path spill on otherwise-inexpensive adapters;
-  // the switch retains the exact corner-major/lane-major addition order.
-  var accumulated0 = 0.0;
-  var accumulated1 = 0.0;
-  var accumulated2 = 0.0;
-  var accumulated3 = 0.0;
-  var accumulated4 = 0.0;
-  var accumulated5 = 0.0;
-  var accumulated6 = 0.0;
-  var accumulated7 = 0.0;
-  var accumulated8 = 0.0;
-  var accumulated9 = 0.0;
+  // Keep the totals as named scalars. A dynamically indexed private array
+  // made this fragment path spill on otherwise-inexpensive adapters; the
+  // switch retains the exact corner-major/lane-major addition order.
+${accumulators}
   for (var cornerIndex = 0u; cornerIndex < 4u; cornerIndex = cornerIndex + 1u) {
     let texel = base + offsets[cornerIndex];
     let ids = textureLoad(terrainSplatId, texel, 0);
@@ -1519,16 +1537,7 @@ fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
       let materialId = u32(clamp(floor(ids[lane] * idScale + 0.5),
         0.0, idScale));
       switch materialId {
-        case 0u: { accumulated0 = accumulated0 + weights[lane]; }
-        case 1u: { accumulated1 = accumulated1 + weights[lane]; }
-        case 2u: { accumulated2 = accumulated2 + weights[lane]; }
-        case 3u: { accumulated3 = accumulated3 + weights[lane]; }
-        case 4u: { accumulated4 = accumulated4 + weights[lane]; }
-        case 5u: { accumulated5 = accumulated5 + weights[lane]; }
-        case 6u: { accumulated6 = accumulated6 + weights[lane]; }
-        case 7u: { accumulated7 = accumulated7 + weights[lane]; }
-        case 8u: { accumulated8 = accumulated8 + weights[lane]; }
-        case 9u: { accumulated9 = accumulated9 + weights[lane]; }
+${cases}
         default: {}
       }
     }
@@ -1538,122 +1547,24 @@ fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32) -> vec3f {
   var secondaryId = 0u;
   var primaryWeight = -1.0;
   var secondaryWeight = -1.0;
-  var candidateId = 0u;
-  var candidateWeight = accumulated0;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 1u;
-  candidateWeight = accumulated1;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 2u;
-  candidateWeight = accumulated2;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 3u;
-  candidateWeight = accumulated3;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 4u;
-  candidateWeight = accumulated4;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 5u;
-  candidateWeight = accumulated5;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 6u;
-  candidateWeight = accumulated6;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 7u;
-  candidateWeight = accumulated7;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 8u;
-  candidateWeight = accumulated8;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
-  candidateId = 9u;
-  candidateWeight = accumulated9;
-  if (candidateWeight > primaryWeight) {
-    secondaryId = primaryId;
-    secondaryWeight = primaryWeight;
-    primaryId = candidateId;
-    primaryWeight = candidateWeight;
-  } else if (candidateWeight > secondaryWeight) {
-    secondaryId = candidateId;
-    secondaryWeight = candidateWeight;
-  }
+${candidates}
   secondaryWeight = max(secondaryWeight, 0.0);
   let secondaryShare = secondaryWeight
     / max(1e-6, max(primaryWeight, 0.0) + secondaryWeight);
   return vec3f(f32(primaryId), f32(secondaryId), secondaryShare);
 }
 `;
+}
+
+/** The full-axis gather: every material, volcanic ground included. */
+export const TERRAIN_SPARSE_SPLAT_GATHER_WGSL = terrainSparseSplatGatherWgsl(
+  SURFACE_MATERIAL_COUNT,
+);
+
+/** The gather a tier without volcanic ground compiles: the base materials only. */
+export const TERRAIN_BASE_SPARSE_SPLAT_GATHER_WGSL = terrainSparseSplatGatherWgsl(
+  SURFACE_MATERIAL_BASE_COUNT,
+);
 
 /**
  * The ground grain's three read scales (`GroundGrainSynthesis.ts` holds the
@@ -2437,7 +2348,14 @@ fn terrainSurfaceLakeWetness(uv: vec4f, beachSlope: f32) -> vec2f {
 }
 #endif
 
+// Volcanic land: a tier without volcanic ground never bakes ids past the
+// base materials (the bake remaps them), so its gather keeps the case count it
+// had before Basalt and Tephra were appended. Both decode over the whole axis.
+#ifdef TERRAIN_SURFACE_VOLCANIC
 ${TERRAIN_SPARSE_SPLAT_GATHER_WGSL}
+#else
+${TERRAIN_BASE_SPARSE_SPLAT_GATHER_WGSL}
+#endif
 ${VEGETATION_CANOPY_HANDOFF_WGSL}
 
 /**
@@ -4067,6 +3985,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
   private detileWarp = DEFAULT_DETILE_WARP;
   private groundPatchwork = 1;
+  /** Volcanic land: the profile's `volcanicMaterials` (see setVolcanicMaterials). */
+  private volcanicMaterials = true;
   /** 1 when the bound arrays carry the ground grain layer (see setArrays). */
   private groundGrain = 0;
   /**
@@ -4143,6 +4063,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         // The climate province window (setClimateProvinceField). Listed for
         // the same reason again.
         TERRAIN_PROVINCE_FIELD: false,
+        // Volcanic land (setVolcanicMaterials). Listed for the same reason.
+        TERRAIN_SURFACE_VOLCANIC: false,
       },
       true,
       // enable = false at construction, as CloudShadowMaterialPlugin does, so
@@ -4182,7 +4104,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
 
   /**
    * `3-1`'s two arrays. Enabling here is what keeps the samplers bound.
-   * `groundGrain` says whether they carry the grain layer after the ten
+   * `groundGrain` says whether they carry the grain layer after the
    * materials; the shader reads that layer only when they do.
    */
   setArrays(albedoHeight: BaseTexture, normalMaterial: BaseTexture, groundGrain = false): void {
@@ -4269,6 +4191,19 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
    */
   setGroundPatchwork(enabled: boolean): void {
     this.groundPatchwork = enabled ? 1 : 0;
+  }
+
+  /**
+   * Volcanic land: whether this tier carries Basalt and Tephra
+   * (`WebGpuQualityProfile.volcanicMaterials`). A DEFINE, unlike the
+   * patchwork, because what it changes is the sparse gather's case count, and
+   * a count is a compile-time property. It moves with the tier's other
+   * shader-shaping rows, so it adds no permutation a tier did not have.
+   */
+  setVolcanicMaterials(enabled: boolean): void {
+    if (enabled === this.volcanicMaterials) return;
+    this.volcanicMaterials = enabled;
+    this.markAllDefinesAsDirty();
   }
 
   setDetileWarp(amount: number): void {
@@ -4482,6 +4417,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     defines["TERRAIN_SURFACE_THREE_MATERIALS"] = this.heightBlendMaxMaterials >= 3;
     defines["TERRAIN_SURFACE_RUNWAY"] = this.runwayEnabled;
     defines["TERRAIN_SURFACE_CDLOD"] = this.cdlodEnabled;
+    defines["TERRAIN_SURFACE_VOLCANIC"] = this.volcanicMaterials;
     defines["TERRAIN_SURFACE_PAGE_CHANNELS"] =
       this.occlusionAtlas !== null && this.horizonAtlasA !== null && this.horizonAtlasB !== null;
     // 6-6: implies PAGE_CHANNELS by construction (setChannelAtlas clears the

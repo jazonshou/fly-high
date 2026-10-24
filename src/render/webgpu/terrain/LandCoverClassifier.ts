@@ -778,6 +778,9 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
     suitability[SurfaceMaterial.Rock] = suitability[SurfaceMaterial.Rock]! * sand.stone;
     suitability[SurfaceMaterial.Gravel] = suitability[SurfaceMaterial.Gravel]! * sand.stone;
   }
+  // Nor is volcanic ground: only the volcanic inputs claim it.
+  suitability[SurfaceMaterial.Basalt] = 0;
+  suitability[SurfaceMaterial.Tephra] = 0;
   return suitability;
 }
 
@@ -901,7 +904,8 @@ export function alignSeasonalLandCoverWeights(
  * read THIS — the classifier's weight vector — rather than each deciding for
  * itself what "forest" means. The canopy share is the forest-floor weight; the
  * open share is grass plus dry grass; the barren share is rock plus gravel
- * plus snow. One number each, and they sum with the shrub weight to 1.
+ * plus snow plus bare volcanic ground. One number each, and they sum with the
+ * shrub weight to 1.
  */
 export interface LandCoverHabitat {
   readonly canopy: number;
@@ -919,7 +923,9 @@ export function landCoverHabitat(weights: LandCoverWeights): LandCoverHabitat {
     scrub: landCoverWeightOf(weights, SurfaceMaterial.Shrub),
     barren: landCoverWeightOf(weights, SurfaceMaterial.Rock)
       + landCoverWeightOf(weights, SurfaceMaterial.Gravel)
-      + landCoverWeightOf(weights, SurfaceMaterial.Snow),
+      + landCoverWeightOf(weights, SurfaceMaterial.Snow)
+      + landCoverWeightOf(weights, SurfaceMaterial.Basalt)
+      + landCoverWeightOf(weights, SurfaceMaterial.Tephra),
     shore: landCoverWeightOf(weights, SurfaceMaterial.Sand),
   };
 }
@@ -1189,6 +1195,8 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
     suitability[${SurfaceMaterial.Rock}] = suitability[${SurfaceMaterial.Rock}] * sand.z;
     suitability[${SurfaceMaterial.Gravel}] = suitability[${SurfaceMaterial.Gravel}] * sand.z;
   }
+  suitability[${SurfaceMaterial.Basalt}] = 0.0;
+  suitability[${SurfaceMaterial.Tephra}] = 0.0;
   return suitability;
 }
 
@@ -1772,7 +1780,7 @@ fn bakeSplat(
   let localZ = job.placement.y + (f32(id.y) + 0.5) * job.shape.x;
   let texel = vec2i(job.slots.xy) + vec2i(i32(id.x), i32(id.y));
 
-  // Ids are categorical values encoded as unorm over the ten-material axis.
+  // Ids are categorical values encoded as unorm over the whole material axis.
   // The surface shader loads them exactly; it never filters between ids.
   // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);

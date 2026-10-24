@@ -635,7 +635,7 @@ describe("terrain surface plugin (3-2)", () => {
     // Dynamic private-array indexing is the regression this implementation
     // avoids. Every material has one scalar switch arm and one statically
     // ordered top-two candidate, with the original strict tie comparison.
-    expect(gather).not.toMatch(/array<f32,\s*10>/u);
+    expect(gather).not.toMatch(new RegExp(`array<f32,\\s*${SURFACE_MATERIAL_COUNT}>`, "u"));
     expect(gather).not.toContain("accumulated[materialId]");
     expect(gather).not.toContain("accumulated[materialIndex]");
     let precedingCandidate = -1;

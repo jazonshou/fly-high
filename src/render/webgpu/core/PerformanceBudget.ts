@@ -266,6 +266,8 @@ export interface DynamicAllocationInputs {
    */
   readonly materialArrayCount: number;
   readonly materialArrayLayers: number;
+  /** The volcanic pair: absent where `volcanicMaterials` and the grain both are. */
+  readonly volcanicMaterialLayers: number;
   readonly groundGrainLayers: number;
   readonly materialArrayBytesPerTexel: number;
   /**
@@ -374,7 +376,11 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // SURFACE_MATERIALS by test rather than imported, so core/ keeps its
   // no-subsystem-imports shape.
   materialArrayCount: 2,
-  materialArrayLayers: 10,
+  materialArrayLayers: 12,
+  // Volcanic land: Basalt and Tephra, the last two of those layers. A tier
+  // without volcanic ground (and without the grain, whose index follows them)
+  // builds its arrays without them.
+  volcanicMaterialLayers: 2,
   // The ground grain: one more layer in each array, built only where the
   // patchwork runs (`GroundGrainSynthesis.ts`).
   groundGrainLayers: 1,
@@ -779,9 +785,12 @@ export function estimateGpuMemoryBreakdown(
   const impostorAtlasMiB = inputs.impostorAtlasMiB;
   const groundCoverMiB = inputs.groundCoverMiB[tier];
   const otherDetailMiB = OTHER_DETAIL_ALLOWANCE_MIB[tier];
+  const volcanicLayersOmitted = profile.volcanicMaterials || profile.terrainGroundPatchwork
+    ? 0
+    : inputs.volcanicMaterialLayers;
   const materialArraysMiB =
     (inputs.materialArrayCount
-      * (inputs.materialArrayLayers
+      * (inputs.materialArrayLayers - volcanicLayersOmitted
         + (profile.terrainGroundPatchwork ? inputs.groundGrainLayers : 0))
       * profile.materialArrayEdge * profile.materialArrayEdge
       * inputs.materialArrayBytesPerTexel

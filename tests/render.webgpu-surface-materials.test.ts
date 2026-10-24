@@ -62,7 +62,7 @@ describe("surface material contract (3-0)", () => {
     expect(worstRealignmentMeters).toBeGreaterThan(60);
   });
 
-  it("keeps ten materials, in the order both texture arrays index by", () => {
+  it("keeps twelve materials, in the order both texture arrays index by", () => {
     expect(SURFACE_MATERIALS).toHaveLength(SURFACE_MATERIAL_COUNT);
     expect(SURFACE_MATERIAL_ARRAY_COUNT).toBe(2);
     expect(SURFACE_ARRAY_A_CHANNELS).toHaveLength(4);
@@ -72,7 +72,7 @@ describe("surface material contract (3-0)", () => {
       expect(surfaceMaterialSpec(spec.id)).toBe(spec);
     });
     // The first six indices ARE the ecotone chain, in climatic order; the
-    // three off-chain materials and the two paved ones follow.
+    // off-chain materials, the two paved ones and the two volcanic ones follow.
     expect([
       SurfaceMaterial.Sand,
       SurfaceMaterial.Grass,
@@ -81,11 +81,14 @@ describe("surface material contract (3-0)", () => {
       SurfaceMaterial.Rock,
       SurfaceMaterial.Snow,
     ]).toEqual([0, 1, 2, 3, 4, 5]);
-    expect(SurfaceMaterial.Concrete).toBe(SURFACE_MATERIAL_COUNT - 1);
+    // Volcanic ground was APPENDED: every id before it is unchanged.
+    expect(SurfaceMaterial.Concrete).toBe(9);
+    expect(SurfaceMaterial.Basalt).toBe(10);
+    expect(SurfaceMaterial.Tephra).toBe(SURFACE_MATERIAL_COUNT - 1);
     expect(() => surfaceMaterialSpec(SURFACE_MATERIAL_COUNT as 0)).toThrow(RangeError);
   });
 
-  it("assertion 61 (contract half): ten distinct, physically ordered roughness values", () => {
+  it("assertion 61 (contract half): distinct, physically ordered roughness values", () => {
     // The shader half of assertion 61 is a GPU test; this is the half that
     // can fail in Node, and it is the one that would let the uniform-0.93
     // failure return by another route — ten materials that all round to the
@@ -123,9 +126,14 @@ describe("surface material contract (3-0)", () => {
     for (const id of [SurfaceMaterial.Grass, SurfaceMaterial.Shrub]) {
       expect(surfaceMaterialSpec(id).seasonal).toBe(true);
     }
-    // 3-5: rock and gravel are the projected materials.
+    // Lava is geology, not vegetation: no seasonal tint on either volcanic ground.
+    for (const id of [SurfaceMaterial.Basalt, SurfaceMaterial.Tephra]) {
+      expect(surfaceMaterialSpec(id).seasonal, `${surfaceMaterialSpec(id).name}`).toBe(false);
+    }
+    // 3-5: rock, gravel and lava rock are the projected materials. Tephra
+    // stands at the angle of repose, under the slope the projection engages at.
     expect(SURFACE_MATERIALS.filter((spec) => spec.triplanar).map((spec) => spec.name).sort())
-      .toEqual(["Gravel", "Rock"]);
+      .toEqual(["Basalt", "Gravel", "Rock"]);
   });
 
   it("maps every biome to an adjacent pair on the material axis", () => {

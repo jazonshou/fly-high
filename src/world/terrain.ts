@@ -1323,6 +1323,11 @@ const BIOME_FOR_DOMINANT_MATERIAL: Readonly<Record<number, TerrainBiomeId>> = Ob
   [SurfaceMaterial.Gravel]: TerrainBiome.ALPINE,
   [SurfaceMaterial.Asphalt]: TerrainBiome.RUNWAY,
   [SurfaceMaterial.Concrete]: TerrainBiome.RUNWAY,
+  // Bare volcanic ground is barren ground: ALPINE is the legacy id whose
+  // consumers (rock lag, no turf) treat it as such. Neither is any biome's
+  // primary, like DryGrass and Gravel above.
+  [SurfaceMaterial.Basalt]: TerrainBiome.ALPINE,
+  [SurfaceMaterial.Tephra]: TerrainBiome.ALPINE,
 });
 
 const PALETTES: Readonly<Record<TerrainBiomeId, readonly [number, number, number]>> = {

@@ -197,6 +197,21 @@ export interface WebGpuQualityProfile {
    */
   readonly terrainProvinceField: boolean;
   /**
+   * Volcanic land, phase 2: whether the two volcanic ground materials (Basalt
+   * and Tephra, appended after Concrete) exist on this tier. DATA, not a
+   * `profile.tier` branch.
+   *
+   * Off, the material arrays are built without the two layers (tier 0 sits
+   * within ~1 MiB of its memory ceiling, and they are 1.3 MiB at its 256²
+   * edge), the splat bake remaps volcanic ground to the nearest shipped
+   * material (Basalt to Rock, Tephra to Gravel) so no page ever stores an id
+   * the arrays lack, and the fragment's sparse gather compiles the case count
+   * it had before the two were appended. On, the gather carries two more
+   * switch cases, which is the only per-pixel cost volcanic ground adds where
+   * there is none.
+   */
+  readonly volcanicMaterials: boolean;
+  /**
    * `4-0`/`4-5`: screen-space error, in pixels, above which a CDLOD node
    * splits. Split when `maxDeviationFromParent × pixelsPerMeter(distance3D)`
    * exceeds this. Monotone decreasing in tier — a smaller threshold splits
@@ -384,6 +399,7 @@ function resolveBaseQualityProfile(
       heightBlendMaxMaterials: 2,
       terrainGroundPatchwork: false,
       terrainProvinceField: false,
+      volcanicMaterials: false,
       cdlodPixelThreshold: 4,
       // `4.5-A1`: 160 -> 224. Low keeps L3 (512 m nodes, 16 m height texels)
       // under the aircraft rather than the L6 the per-level loop converged on.
@@ -474,6 +490,7 @@ function resolveBaseQualityProfile(
       heightBlendMaxMaterials: 3,
       terrainGroundPatchwork: true,
       terrainProvinceField: true,
+      volcanicMaterials: true,
       cdlodPixelThreshold: 3,
       // `4.5-A1`: 240 -> 320, the measured step that reaches L2 (128 m nodes,
       // 4 m height texels) under the aircraft at 500 ft. At 240 the new
@@ -558,6 +575,7 @@ function resolveBaseQualityProfile(
       heightBlendMaxMaterials: 4,
       terrainGroundPatchwork: true,
       terrainProvinceField: true,
+      volcanicMaterials: true,
       cdlodPixelThreshold: 2,
       // `4.5-A1`: 320 -> 448. Same L2 floor as tier 1 with the mid field
       // carried a level finer.
@@ -637,6 +655,7 @@ function resolveBaseQualityProfile(
     heightBlendMaxMaterials: 4,
     terrainGroundPatchwork: true,
     terrainProvinceField: true,
+    volcanicMaterials: true,
     cdlodPixelThreshold: 1.5,
     // `4.5-A1`: 448 -> 640.
     cdlodNodeBudget: 640,

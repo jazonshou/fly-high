@@ -1,7 +1,11 @@
 import { hashSeed, normalizeSeed } from "@/src/world/seed";
 import type { WorldSeed } from "@/src/world/types";
 import { synthesizeSurfaceMaterial } from "./MaterialArraySynthesis";
-import { SURFACE_MATERIALS, type SurfaceMaterialId } from "./surfaceMaterials";
+import {
+  SURFACE_MATERIAL_BASE_COUNT,
+  SURFACE_MATERIALS,
+  type SurfaceMaterialId,
+} from "./surfaceMaterials";
 
 /**
  * The ground grain: one extra layer at the END of both terrain material arrays
@@ -36,20 +40,27 @@ import { SURFACE_MATERIALS, type SurfaceMaterialId } from "./surfaceMaterials";
  *            B 0.5       neutral roughness (unread; Toksvig writes into it)
  *            A 1.0       no cavity (unread)
  *
- * Cost: one layer per array, ~10% on top of the ten materials' memory, built
+ * Cost: one layer per array, ~8% on top of the materials' memory, built
  * once in the synthesis worker. Built only where `terrainGroundPatchwork` is
  * on, so tier 0 pays neither the memory nor the fetches.
  */
 
-/** Array layer index of the grain: directly after the ten materials. */
+/** Array layer index of the grain: directly after every material. */
 export const GROUND_GRAIN_LAYER = SURFACE_MATERIALS.length;
 
 /**
  * The layer ids the arrays hold, in layer order. A material id is its own
  * index; the grain, when present, is `GROUND_GRAIN_LAYER`.
+ *
+ * The volcanic layers are left off where the tier has no volcanic ground
+ * (`WebGpuQualityProfile.volcanicMaterials`), and kept wherever the grain is
+ * built whatever that flag says: the grain's index sits after them, and a
+ * layer index is a layer index.
  */
-export function surfaceArrayLayerIds(groundGrain: boolean): number[] {
-  const ids = SURFACE_MATERIALS.map((spec) => spec.id as number);
+export function surfaceArrayLayerIds(groundGrain: boolean, volcanicMaterials: boolean): number[] {
+  const ids = SURFACE_MATERIALS
+    .filter((spec) => volcanicMaterials || groundGrain || spec.id < SURFACE_MATERIAL_BASE_COUNT)
+    .map((spec) => spec.id as number);
   if (groundGrain) ids.push(GROUND_GRAIN_LAYER);
   return ids;
 }

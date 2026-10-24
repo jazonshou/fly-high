@@ -554,7 +554,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "SurfaceMaterial",
       "SURFACE_MATERIALS",
       "SURFACE_MATERIAL_COUNT",
+      "SURFACE_MATERIAL_BASE_COUNT",
       "SURFACE_MATERIAL_ARRAY_COUNT",
+      "volcanicFallbackMaterial",
       "SURFACE_MATERIALS_BY_BIOME",
       "SURFACE_ALBEDO_STORAGE_GAMMA",
       "meanSurfaceAlbedo",
@@ -597,7 +599,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "The repo ships zero image assets by design; a second synthesiser, or an "
       + "imported texture, is the audit's root cause #1 reopening from the "
       + "other side. The ground grain is not a second one: it is one more "
-      + "layer of these arrays (index 10, after the ten materials), built only "
+      + "layer of these arrays (index 12, after every material), built only "
       + "where the patchwork runs, and the terrain fragment reads it at three "
       + "world scales so the mip chain, not a footprint fade, band-limits it.",
   },

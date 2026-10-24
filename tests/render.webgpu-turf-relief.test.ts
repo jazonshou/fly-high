@@ -73,6 +73,7 @@ describe("D-5 the gate", () => {
     for (const excluded of [
       SurfaceMaterial.ForestFloor, SurfaceMaterial.Gravel, SurfaceMaterial.Rock,
       SurfaceMaterial.Snow, SurfaceMaterial.Sand, SurfaceMaterial.Asphalt, SurfaceMaterial.Concrete,
+      SurfaceMaterial.Basalt, SurfaceMaterial.Tephra,
     ]) {
       expect(turfReliefShareOf(excluded)).toBe(0);
       expect(TERRAIN_TURF_RELIEF_WGSL).not.toContain(`if (materialIndex == ${excluded}) { return 1.0; }`);
