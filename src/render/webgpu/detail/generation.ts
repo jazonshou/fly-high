@@ -429,33 +429,36 @@ function treeDimensions(
  * The boreal tree FORM: the same species, grown in a short, cold season.
  *
  * - Stature: taiga canopies stand 10-25 m (black spruce 5-15 m, white spruce
- *   and Scots pine 15-25 m) against the 25-35 m `treeDimensions` grows in the
- *   temperate world, so every stem is 25% shorter, trunk and crown with it.
- * - Crown: boreal conifers are narrow spires that shed snow, so they lose a
- *   further 18% of crown radius. Birch keeps its proportions.
+ *   and Scots pine 15-25 m), lower than the temperate forest's, so every stem
+ *   is 15% shorter, trunk with it.
+ * - Crown: KEPT, though real boreal conifers are narrow spires. A drawn crown
+ *   is a closure proxy, not one tree: the renderer draws at most 55-79 stems
+ *   per hectare (`renderedDensity.ts`), each standing in for the several real
+ *   stems around it, so a narrower crown opens the canopy rather than
+ *   sharpening it. Measured on the perf seed (128 cells, medium density), a
+ *   crown 25% and then 18% narrower took the drawn crown cover of forest
+ *   blocks from 0.42 to 0.12, a lichen woodland where a closed taiga should
+ *   be. The spires come from the species instead: 79% of a boreal stand
+ *   draws the conifer prototype, against 45% of a temperate one. Keeping the
+ *   crown is also why the stature loss stops at 15%: more would turn the
+ *   spires stubby.
  * - Value: from the air the taiga is the darkest forest there is — dense,
  *   blue-black conifer crowns over a shaded floor — so conifers lose 12% of
  *   their tint value. Birch stays as light as it is anywhere.
  *
- * All three are exactly 1 at share 0 (`1 - 0 * k`), so the temperate core's
- * trees do not move by one bit. Placement is untouched: the stand places the
- * same stems, and only their silhouette changes.
+ * Both are exactly 1 at share 0 (`1 - 0 * k`), so the temperate core's trees
+ * do not move by one bit.
  */
-const BOREAL_STATURE_LOSS = 0.25;
-const BOREAL_CONIFER_CROWN_LOSS = 0.18;
+const BOREAL_STATURE_LOSS = 0.15;
 const BOREAL_CONIFER_VALUE_LOSS = 0.12;
 
 function borealTreeForm(
   species: TreeSpecies,
   share: number,
-): { readonly stature: number; readonly crown: number; readonly value: number } {
+): { readonly stature: number; readonly value: number } {
   const stature = 1 - share * BOREAL_STATURE_LOSS;
-  if (!CONIFER_SPECIES.has(species)) return { stature, crown: stature, value: 1 };
-  return {
-    stature,
-    crown: stature * (1 - share * BOREAL_CONIFER_CROWN_LOSS),
-    value: 1 - share * BOREAL_CONIFER_VALUE_LOSS,
-  };
+  if (!CONIFER_SPECIES.has(species)) return { stature, value: 1 };
+  return { stature, value: 1 - share * BOREAL_CONIFER_VALUE_LOSS };
 }
 
 const TREE_TINT_BASE: Readonly<Record<TreeSpecies, readonly [number, number, number]>> = {
@@ -992,10 +995,6 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       * (1 + field.forestEdge * 0.48);
     // Half a crown: real closed-canopy forests overlap crowns; a full-crown
     // exclusion zone thins the stand far below its ecological density.
-    //
-    // The exclusion radius reads the crown BEFORE the boreal form narrows it,
-    // so a taiga stand places exactly the stems a temperate one would: a
-    // narrower spire must not pack more instances into the same ground.
     push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({
       kind: "tree",
       id: `canopy:${x.toFixed(2)}:${z.toFixed(2)}`,
@@ -1005,7 +1004,7 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       z,
       yawRadians: random() * TAU,
       heightMeters: height,
-      crownRadiusMeters: crown * boreal.crown,
+      crownRadiusMeters: crown,
       trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor) * boreal.stature,
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
