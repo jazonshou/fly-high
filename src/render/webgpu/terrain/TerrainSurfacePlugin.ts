@@ -1613,13 +1613,16 @@ export const GROUND_GRAIN_GAINS = Object.freeze({
 });
 
 /**
- * Most anisotropy the grain's fetches ask the sampler for, where the
- * materials ask for the full `DEFAULT_ANISOTROPY_LIMIT`. At 1 the reads are
- * isotropic: one filtered tap each, at the mip the footprint's long axis
- * picks. The grain is zero-mean noise, so along the line of sight at grazing
- * angles the extra taps only resolve noise the eye cannot see, while each one
- * is a full filtered read on every distant terrain pixel; the coarser mip
- * averages the grain toward its mean (no change) rather than aliasing it.
+ * Most anisotropy the grain's fetches use, where the materials ask for the
+ * full `DEFAULT_ANISOTROPY_LIMIT`. At 1 the reads are isotropic: one
+ * trilinear tap each, at the mip the footprint's long axis picks, which the
+ * shader computes and passes as an explicit level (2026-10-24; before, it
+ * passed gradients limited to this ratio and left the level, and any
+ * remaining anisotropy, to the sampler on every read). The grain is
+ * zero-mean noise, so along the line of sight at grazing angles extra taps
+ * only resolve noise the eye cannot see, while each one is a full filtered
+ * read on every distant terrain pixel; the coarser mip averages the grain
+ * toward its mean (no change) rather than aliasing it.
  * The materials keep their anisotropy, so ground detail at grazing angles is
  * theirs, as it was before the grain.
  *
@@ -1667,6 +1670,12 @@ fn terrainGroundGrainFrame${index}() -> mat2x2f {
   return mat2x2f(${cos}, ${sin}, -${sin}, ${cos}) * ${inverse};
 }
 
+// The mip this scale's reads land on, from the footprint in metres and the
+// layer's edge in texels: log2 of the footprint in texels.
+fn terrainGroundGrainLevel${index}(footprintMeters: f32, edgeTexels: f32) -> f32 {
+  return log2(footprintMeters * edgeTexels * ${inverse});
+}
+
 fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
   // fract before the fetch: the layer wraps, and a small UV keeps the f32
   // product precise kilometres from the origin. Gradients are explicit, so
@@ -1687,30 +1696,27 @@ fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
 const GROUND_GRAIN_WGSL = /* wgsl */ `
 ${GROUND_GRAIN_SCALES.map((_, index) => groundGrainScaleWgsl(index)).join("")}
 
-// ddx/ddy arrive already limited (terrainGroundGrainLimit): each frame is a
-// rotation times a uniform scale, which leaves a footprint's anisotropy
-// unchanged, so one limit in world space serves all five fetches.
-fn terrainGroundGrainLimit(worldDdx: vec2f, worldDdy: vec2f) -> mat2x2f {
-  return terrainSurfaceLimitAnisotropyTo(
-    worldDdx, worldDdy, ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(1)});
+// The footprint's major axis in metres. The grain reads at anisotropy
+// ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(0)} (GROUND_GRAIN_ANISOTROPY_LIMIT): one trilinear tap
+// at the mip this axis picks, so it is both the mip and the fades' measure.
+// Each scale's frame is a rotation times a uniform scale, so one footprint
+// in world space serves all five reads, each scaled by its period.
+fn terrainGroundGrainFootprint(worldDdx: vec2f, worldDdy: vec2f) -> f32 {
+  return max(max(length(worldDdx), length(worldDdy)), 1e-9);
 }
 
-// The limited footprint's minor axis in metres, which is what the sampler's
-// mip choice follows: the parallelogram's area over its major axis.
-fn terrainGroundGrainFootprint(ddx: vec2f, ddy: vec2f) -> f32 {
-  let major = max(length(ddx), length(ddy));
-  return abs(ddx.x * ddy.y - ddx.y * ddy.x) / max(major, 1e-9);
-}
-
-fn terrainGroundGrainFetch(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec4f {
-  let texel = textureSampleGrad(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
-    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
+// Explicit level, not gradients: at anisotropy 1 a gradient read is one
+// trilinear tap at the major axis's mip, which this computes once per scale
+// instead of the sampler working it out (and its anisotropy) on every read.
+fn terrainGroundGrainFetch(uv: vec2f, level: f32) -> vec4f {
+  let texel = textureSampleLevel(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
+    uv, ${GROUND_GRAIN_LAYER}, level);
   return (texel - vec4f(0.5)) * 2.0;
 }
 
-fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec2f {
-  let texel = textureSampleGrad(terrainSurfaceNormal, terrainSurfaceNormalSampler,
-    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
+fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, level: f32) -> vec2f {
+  let texel = textureSampleLevel(terrainSurfaceNormal, terrainSurfaceNormalSampler,
+    uv, ${GROUND_GRAIN_LAYER}, level);
   let normal = terrainSurfaceDecodeNormal(texel.xy);
   let gradientUv = -normal.xy / max(normal.z, 0.3);
   // The frame's rotation part, transposed, is its inverse; its scale is left
@@ -1734,9 +1740,6 @@ const GROUND_GRAIN_COMPOSITE_WGSL = /* wgsl */ `
 var terrainGrainCanopy = vec3f(1.0);
 if (uniforms.terrainSurfaceTuning.z > 0.5) {
   let terrainGrainXz = terrainAbsolutePosition.xz + terrainWarp;
-  let terrainGrainLimited = terrainGroundGrainLimit(terrainWorldDdx.xz, terrainWorldDdy.xz);
-  let terrainGrainDdx = terrainGrainLimited[0];
-  let terrainGrainDdy = terrainGrainLimited[1];
   let terrainGrainUv0 = terrainGroundGrainUv0(terrainGrainXz);
   let terrainGrainUv1 = terrainGroundGrainUv1(terrainGrainXz);
   let terrainGrainUv2 = terrainGroundGrainUv2(terrainGrainXz);
@@ -1744,8 +1747,13 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   // (GROUND_GRAIN_SEABED_FADE), and fading as its mips average it to the mean
   // (GROUND_GRAIN_TONE_FADE). A zero share skips the fetch, and a skipped
   // scale reads as zero, which every term below takes as "no change". The
-  // fetches take explicit gradients, so they are legal in these branches.
-  let terrainGrainFootprint = terrainGroundGrainFootprint(terrainGrainDdx, terrainGrainDdy);
+  // fetches take explicit levels, so they are legal in these branches.
+  let terrainGrainFootprint = terrainGroundGrainFootprint(terrainWorldDdx.xz, terrainWorldDdy.xz);
+  // Both arrays are built at the profile's one material edge.
+  let terrainGrainEdge = f32(textureDimensions(terrainSurfaceAlbedo).x);
+  let terrainGrainLevel0 = terrainGroundGrainLevel0(terrainGrainFootprint, terrainGrainEdge);
+  let terrainGrainLevel1 = terrainGroundGrainLevel1(terrainGrainFootprint, terrainGrainEdge);
+  let terrainGrainLevel2 = terrainGroundGrainLevel2(terrainGrainFootprint, terrainGrainEdge);
   let terrainGrainShown = 1.0 - smoothstep(
     ${GROUND_GRAIN_SEABED_FADE.start.toFixed(1)}, ${GROUND_GRAIN_SEABED_FADE.end.toFixed(1)},
     uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);
@@ -1757,15 +1765,15 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   var terrainGrain2 = vec4f(0.0);
   if (terrainGrainShare0 > 0.0) {
     terrainGrain0 = terrainGrainShare0 * terrainGroundGrainFetch(
-      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv0, terrainGrainLevel0);
   }
   if (terrainGrainShare1 > 0.0) {
     terrainGrain1 = terrainGrainShare1 * terrainGroundGrainFetch(
-      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv1, terrainGrainLevel1);
   }
   if (terrainGrainShare2 > 0.0) {
     terrainGrain2 = terrainGrainShare2 * terrainGroundGrainFetch(
-      terrainGrainUv2, terrainGroundGrainFrame2(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv2, terrainGrainLevel2);
   }
   // A planar xz read smears down a steep face, and on one the xz footprint
   // also understates the pixel; cliffs keep the material's triplanar detail.
@@ -1802,11 +1810,11 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   var terrainGrainSlope = vec2f(0.0);
   if (terrainGrainRelief0 > 0.0) {
     terrainGrainSlope += terrainGrainRelief0 * terrainGroundGrainGradient(
-      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainLevel0);
   }
   if (terrainGrainRelief1 > 0.0) {
     terrainGrainSlope += terrainGrainRelief1 * terrainGroundGrainGradient(
-      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainLevel1);
   }
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;

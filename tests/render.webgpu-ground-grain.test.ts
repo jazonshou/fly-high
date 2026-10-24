@@ -187,70 +187,58 @@ describe("the shader reads the grain safely", () => {
     expect(plugin).toContain("uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);");
   });
 
-  it("measures the footprint the sampler's mip choice follows", () => {
-    // Area over the major axis: the minor axis of the (limited) footprint.
+  it("measures the footprint by its major axis, which is what sets an isotropic read's mip", () => {
+    expect(plugin).toContain("return max(max(length(worldDdx), length(worldDdy)), 1e-9);");
     expect(plugin).toContain(
-      "return abs(ddx.x * ddy.y - ddx.y * ddy.x) / max(major, 1e-9);",
+      "let terrainGrainFootprint = terrainGroundGrainFootprint(terrainWorldDdx.xz, terrainWorldDdy.xz);",
     );
-    const footprint = (dx: readonly [number, number], dy: readonly [number, number]) =>
-      Math.abs(dx[0] * dy[1] - dx[1] * dy[0]) / Math.max(Math.hypot(...dx), Math.hypot(...dy));
-    // An axis-aligned 1 x 8 footprint: the minor axis is 1.
-    expect(footprint([1, 0], [0, 8])).toBeCloseTo(1, 12);
-    // A circle stays its radius at any rotation.
-    expect(footprint([0.6, 0.8], [-0.8, 0.6])).toBeCloseTo(1, 12);
   });
 
   it("mottles the distant canopy the handoff paints", () => {
     expect(plugin).toContain("vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy");
   });
 
-  it("samples with explicit gradients, limited to the grain's own anisotropy", () => {
+  it("samples at an explicit level, isotropic, one trilinear tap per read", () => {
     // House rule since 2-8: any sample under a branch carries explicit
-    // gradients. The grain's fetches go through the materials' limiter, at
-    // a lower cap: the extra taps only resolve zero-mean noise along the line
-    // of sight, and they were most of the grain's cost. At 1 the reads are
-    // isotropic, one filtered tap each.
+    // derivatives or an explicit level. The grain's extra anisotropic taps
+    // would only resolve zero-mean noise along the line of sight, and they were
+    // most of its cost, so it reads isotropically: one trilinear tap at the
+    // mip the footprint's major axis picks, which is what a gradient read
+    // limited to anisotropy 1 does, computed once per scale rather than by the
+    // sampler on every read.
+    expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBe(1);
     expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeLessThan(DEFAULT_ANISOTROPY_LIMIT);
-    expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeGreaterThanOrEqual(1);
-    // Limited once, in world space, then carried through each scale's frame
-    // (a rotation times a uniform scale, which keeps the ratio).
     expect(plugin).toContain(
-      "terrainSurfaceLimitAnisotropyTo(\n    worldDdx, worldDdy, ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(1)});",
+      "textureSampleLevel(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,\n    uv, ${GROUND_GRAIN_LAYER}, level);",
     );
     expect(plugin).toContain(
-      "let terrainGrainLimited = terrainGroundGrainLimit(terrainWorldDdx.xz, terrainWorldDdy.xz);",
+      "textureSampleLevel(terrainSurfaceNormal, terrainSurfaceNormalSampler,\n    uv, ${GROUND_GRAIN_LAYER}, level);",
     );
-    expect(plugin).toContain(
-      "textureSampleGrad(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,\n    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);",
-    );
-    expect(plugin).toContain(
-      "textureSampleGrad(terrainSurfaceNormal, terrainSurfaceNormalSampler,\n    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);",
-    );
+    // A scale's level is log2 of the footprint in its own texels: the
+    // frame's uniform scale is 1 / period.
+    expect(plugin).toContain("return log2(footprintMeters * edgeTexels * ${inverse});");
+    for (const index of [0, 1, 2]) {
+      expect(plugin).toContain(
+        `let terrainGrainLevel${index} = terrainGroundGrainLevel${index}(terrainGrainFootprint, terrainGrainEdge);`,
+      );
+    }
     // The materials keep the full cap: only the grain is coarsened.
     expect(plugin).toContain(
       "return terrainSurfaceLimitAnisotropyTo(ddx, ddy, ${DEFAULT_ANISOTROPY_LIMIT.toFixed(1)});",
     );
   });
 
-  it("limiting once in world space equals limiting each scale's footprint", () => {
-    // The WGSL limiter, transcribed: inflate the shorter axis until the
-    // ratio is within the cap. Each scale's frame is a rotation times a
-    // uniform scale, so it commutes with the limiter; that is what lets one
-    // limit in world space serve all five fetches.
+  it("picks the mip a gradient read limited to anisotropy 1 would", () => {
+    // The limiter inflates the shorter axis to the longer one, so the
+    // limited footprint's axes are both the major axis, and an isotropic
+    // read's level is log2 of that length in texels. Each scale's frame is a
+    // rotation times 1 / period, which leaves lengths scaled by 1 / period.
     type V = readonly [number, number];
     const len = (v: V) => Math.hypot(v[0], v[1]);
-    const limit = (dx: V, dy: V, cap: number): [V, V] => {
-      const lx = Math.max(len(dx), 1e-8);
-      const ly = Math.max(len(dy), 1e-8);
-      const minor = Math.max(lx, ly) / cap;
-      const sx = Math.max(1, minor / lx);
-      const sy = Math.max(1, minor / ly);
-      return [[dx[0] * sx, dx[1] * sx], [dy[0] * sy, dy[1] * sy]];
-    };
+    const edge = 512;
     for (const scale of GROUND_GRAIN_SCALES) {
       const a = (scale.rotationDegrees * Math.PI) / 180;
       const k = 1 / scale.periodMeters;
-      // Column-major like WGSL's mat2x2f(cos, sin, -sin, cos).
       const frame = (v: V): V => [
         k * (Math.cos(a) * v[0] - Math.sin(a) * v[1]),
         k * (Math.sin(a) * v[0] + Math.cos(a) * v[1]),
@@ -260,13 +248,14 @@ describe("the shader reads the grain safely", () => {
         [[2.0, -0.3], [0.05, 0.02]],
         [[1.0, 1.0], [-1.0, 1.0]],
       ] as [V, V][]) {
-        const once = limit(dx, dy, GROUND_GRAIN_ANISOTROPY_LIMIT).map(frame);
-        const each = limit(frame(dx), frame(dy), GROUND_GRAIN_ANISOTROPY_LIMIT);
-        for (let axis = 0; axis < 2; axis += 1) {
-          for (let c = 0; c < 2; c += 1) {
-            expect(once[axis]![c]!).toBeCloseTo(each[axis]![c]!, 12);
-          }
-        }
+        const major = Math.max(len(dx), len(dy));
+        const limited = [dx, dy].map((v) => {
+          const s = major / Math.max(len(v), 1e-8);
+          return frame([v[0] * s, v[1] * s]);
+        });
+        const gradientLevel = Math.log2(Math.max(len(limited[0]!), len(limited[1]!)) * edge);
+        const explicitLevel = Math.log2(major * edge * k);
+        expect(explicitLevel).toBeCloseTo(gradientLevel, 9);
       }
     }
   });
