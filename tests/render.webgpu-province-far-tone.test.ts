@@ -25,8 +25,8 @@ import { surfaceMaterialSpec, SurfaceMaterial } from "../src/render/webgpu/terra
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
 import {
   IMPOSTOR_ALPHA_TEST_THRESHOLD,
-  IMPOSTOR_SEASON_BUCKETS,
   IMPOSTOR_SPECIES,
+  impostorLayerIndex,
   planImpostorAtlas,
 } from "../src/render/webgpu/detail/ImpostorAtlas";
 import type { DetailTerrainSample } from "../src/render/webgpu/detail/types";
@@ -326,8 +326,8 @@ describe("the far tones are the biomes' own", () => {
     // species table or tints fails here rather than reopening the ring.
     const plans = planImpostorAtlas("canopy-handoff");
     const speciesAlbedo = new Map<string, readonly [number, number, number]>();
-    IMPOSTOR_SPECIES.forEach((species, index) => {
-      const level0 = plans.albedo.layerChains[index * IMPOSTOR_SEASON_BUCKETS]![0]!;
+    IMPOSTOR_SPECIES.forEach((species) => {
+      const level0 = plans.albedo.layerChains[impostorLayerIndex(species, 0)]![0]!;
       const sum = [0, 0, 0];
       let covered = 0;
       for (let i = 0; i < level0.length; i += 4) {

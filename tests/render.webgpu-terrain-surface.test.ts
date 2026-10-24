@@ -1036,6 +1036,11 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
           }
         }
       }
+      // Shadow-depth passes (SM_FLOAT, defined by every Babylon shadow
+      // generator) write no colour, so they never read the field.
+      expect(vertex).toMatch(
+        /#ifdef SM_FLOAT\n {2}let provinceTone = TerrainProvinceFarTone\(\);\n#else\n {2}let provinceTone = terrainProvinceFarTone\(/u,
+      );
     });
   });
 

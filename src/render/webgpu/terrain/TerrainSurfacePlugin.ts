@@ -1424,8 +1424,16 @@ varying terrainPageLocal: vec2f;
   // province (ProvinceFarTone.ts); the thermal lift and the canopy share ride
   // terrainPageLocal.zw below. One field read per vertex; the province moves
   // over kilometres, so vertex interpolation is exact to the field.
+  // Shadow-depth passes skip the read: the ShadowDepthWrapper reuses this
+  // vertex stage once per cascade, defines SM_FLOAT in every one, and writes
+  // depth rather than colour, so the tone would be interpolated and dropped.
+  // Measured before the skip: the CSM pass +8% to +18% on SwiftShader.
+#ifdef SM_FLOAT
+  let provinceTone = TerrainProvinceFarTone();
+#else
   let provinceTone = terrainProvinceFarTone(
     terrainProvinceAt(vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin));
+#endif
   vertexOutputs.terrainSplat = vec4f(provinceTone.base, vertexInputs.terrainNodeB.z);
 #else
   // Lane y is -1 for the same reason the page path returns -1: no secondary
