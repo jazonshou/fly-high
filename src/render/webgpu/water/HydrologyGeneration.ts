@@ -165,10 +165,52 @@ export interface HydrologyGenerationConfig {
   readonly lakeBoundarySegments: number;
 }
 
+/**
+ * A basin whose water the WORLD authors rather than the river tracer: a crater
+ * or caldera lake, or a crater authored dry. Plain numbers, so a world-aware
+ * caller (the hydrology worker) builds them and this module stays world-free.
+ */
+export interface HydrologyAuthoredBasin {
+  /** Stable for the world, whichever region asks; the lake's id is built from it. */
+  readonly id: string;
+  readonly centerX: number;
+  readonly centerZ: number;
+  /** The water level, world metres, or NaN for a basin authored dry. */
+  readonly levelMeters: number;
+  /** The basin's lowest ground, world metres: the lake's deepest point. */
+  readonly floorMeters: number;
+  /** The rim. The shore is never found past it, so the lake cannot spill out. */
+  readonly rimRadiusMeters: number;
+}
+
 export interface HydrologyGenerationOptions extends Partial<HydrologyGenerationConfig> {
   readonly worldSeed: string | number;
   readonly terrainSample: HydrologyTerrainSampler;
+  /**
+   * Basins the world authors. The caller lists every one whose rim comes
+   * within `maximumLakeRadiusMeters` of the region; each is shored on this
+   * region's sampler and kept whole if it touches the region, as basin lakes
+   * are, so a crater straddling two regions is one lake in both. No basin
+   * lake is made inside an authored rim. Omitted, nothing changes.
+   */
+  readonly authoredBasins?: readonly HydrologyAuthoredBasin[];
+  /**
+   * True where the ground swallows rain (fresh cinder, young lava): no river
+   * rises there. Omitted, every source stands.
+   */
+  readonly sourceExcluded?: (x: number, z: number) => boolean;
 }
+
+/** What a world adds to one region's generation, beyond its terrain. */
+export type HydrologyWorldInputs = Pick<
+  HydrologyGenerationOptions,
+  "authoredBasins" | "sourceExcluded"
+>;
+
+/** A world's inputs for the region a resolved config describes. */
+export type HydrologyWorldInputsProvider = (
+  config: HydrologyGenerationConfig,
+) => HydrologyWorldInputs;
 
 export interface HydrologyGenerationStatistics {
   readonly terrainSampleCount: number;
@@ -603,6 +645,7 @@ function buildSourceCandidates(
   bounds: HydrologyBounds,
   terrainSample: HydrologyTerrainSampler,
   hash: number,
+  sourceExcluded: ((x: number, z: number) => boolean) | undefined,
 ): SourceCandidateBuildResult {
   // The source lattice is anchored to absolute world coordinates. A region's
   // bounds only select cells; they never change jitter, score, or identity.
@@ -667,6 +710,9 @@ function buildSourceCandidates(
       const x = (cellX + 0.18 + unitHash(cellHash, 1) * 0.64) * cellWidth;
       const z = (cellZ + 0.18 + unitHash(cellHash, 2) * 0.64) * cellWidth;
       if (!inBounds(bounds, x, z)) continue;
+      // Porous ground: the cell keeps its lattice slot (ownership never
+      // moves) but holds no source, and so no basin lake either.
+      if (sourceExcluded?.(x, z)) continue;
       const center = readTerrainSample(terrainSample, x, z);
       // No springs in a sand sea; skipped before the neighbours are sampled.
       if (center.ergWeight > HYDROLOGY_SAND_SEA_ERG_WEIGHT) continue;
@@ -1003,6 +1049,101 @@ function buildBasinLake(
   });
 }
 
+const NO_AUTHORED_BASINS: readonly HydrologyAuthoredBasin[] = Object.freeze([]);
+
+function assertAuthoredBasin(basin: HydrologyAuthoredBasin): void {
+  finite(basin.centerX, `authoredBasins[${basin.id}].centerX`);
+  finite(basin.centerZ, `authoredBasins[${basin.id}].centerZ`);
+  finite(basin.floorMeters, `authoredBasins[${basin.id}].floorMeters`);
+  positive(basin.rimRadiusMeters, `authoredBasins[${basin.id}].rimRadiusMeters`);
+  if (Number.isFinite(basin.levelMeters) || Number.isNaN(basin.levelMeters)) return;
+  throw new RangeError(`authoredBasins[${basin.id}].levelMeters must be finite or NaN`);
+}
+
+/** Is (x, z) inside an authored rim? That basin's water is the world's, not the tracer's. */
+function insideAuthoredBasin(
+  basins: readonly HydrologyAuthoredBasin[],
+  x: number,
+  z: number,
+): boolean {
+  for (const basin of basins) {
+    const dx = x - basin.centerX;
+    const dz = z - basin.centerZ;
+    if (dx * dx + dz * dz < basin.rimRadiusMeters * basin.rimRadiusMeters) return true;
+  }
+  return false;
+}
+
+/**
+ * An authored basin's lake. The world chose the level, so only the shore is
+ * found here, on the region's own sampler.
+ *
+ * Each ray marches INWARD from the rim and stops at the first ground under
+ * the level: the OUTER shore. Marching out from the centre would stop at an
+ * island instead (a cone on a caldera floor, which can stand on the centre)
+ * and leave the floor behind it dry; here an island is a hole the contained
+ * plate cuts by itself. The vertex is the dry sample just outside the shore,
+ * pushed out by a chord's sag so the polygon's edges clear the water between
+ * rays, and never past the rim: the polygon only OWNS ground, and the plate
+ * draws water exactly where that ground is under the level. A ray that meets
+ * no water keeps the rim; a basin with no water on any ray has no lake.
+ */
+function buildAuthoredLake(
+  id: string,
+  basin: HydrologyAuthoredBasin,
+  config: HydrologyGenerationConfig,
+  terrainSample: HydrologyTerrainSampler,
+  hash: number,
+): HydrologyLake | null {
+  const level = basin.levelMeters;
+  const rim = basin.rimRadiusMeters;
+  const segments = config.lakeBoundarySegments;
+  // Samples at exactly the rim and every `radialStep` inside it, the basin
+  // lakes' spacing.
+  const radialSteps = Math.max(1, Math.ceil(rim / Math.max(config.traceStepMeters * 0.35, 12)));
+  const sag = 1 / Math.cos(Math.PI / segments);
+  const boundary: HydrologyLakeBoundaryPoint[] = [];
+  let radiusSum = 0;
+  let wetRays = 0;
+  for (let segment = 0; segment < segments; segment += 1) {
+    const angle = segment * TAU / segments;
+    const directionX = Math.cos(angle);
+    const directionZ = Math.sin(angle);
+    let shoreRadius = rim;
+    for (let step = radialSteps; step >= 1; step -= 1) {
+      const radius = rim * step / radialSteps;
+      const ground = readTerrainSample(
+        terrainSample,
+        basin.centerX + directionX * radius,
+        basin.centerZ + directionZ * radius,
+      ).terrainHeight;
+      if (ground >= level) continue;
+      wetRays += 1;
+      if (step < radialSteps) shoreRadius = Math.min(rim, rim * (step + 1) / radialSteps * sag);
+      break;
+    }
+    radiusSum += shoreRadius;
+    boundary.push(Object.freeze({
+      x: basin.centerX + directionX * shoreRadius,
+      y: level + config.riverSurfaceOffsetMeters,
+      z: basin.centerZ + directionZ * shoreRadius,
+    }));
+  }
+  if (wetRays === 0) return null;
+  const flowAngle = unitHash(mixHash(hash, hashText(basin.id)), 71) * TAU;
+  return Object.freeze({
+    id,
+    centerX: basin.centerX,
+    centerZ: basin.centerZ,
+    // The same lift every lake and river surface gets over its waterline.
+    surfaceHeight: level + config.riverSurfaceOffsetMeters,
+    maximumDepthMeters: Math.max(level - basin.floorMeters, config.minimumLakeDepthMeters),
+    radiusMeters: radiusSum / segments,
+    areaSquareMeters: polygonArea(boundary),
+    flowDirection: Object.freeze([Math.cos(flowAngle), Math.sin(flowAngle)]) as readonly [number, number],
+    boundary: Object.freeze(boundary),
+  });
+}
 
 /** `R-24b`: lowest ground below a stalled trace's floor, or null if truly closed. */
 function findSpillPoint(
@@ -1038,8 +1179,17 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
       + "tracing the carve makes the generator consume its own output.",
     );
   }
-  const { worldSeed, terrainSample: sourceTerrainSample, ...configInput } = options;
+  // The world's inputs are taken out BEFORE the config is resolved: the config
+  // is data, and it crosses back from the worker inside the result.
+  const {
+    worldSeed,
+    terrainSample: sourceTerrainSample,
+    authoredBasins = NO_AUTHORED_BASINS,
+    sourceExcluded,
+    ...configInput
+  } = options;
   const config = resolveHydrologyConfig(configInput);
+  for (const basin of authoredBasins) assertAuthoredBasin(basin);
   const hash = seedHash(worldSeed);
   const bounds: HydrologyBounds = Object.freeze({
     minX: config.centerX - config.extentMeters * 0.5,
@@ -1060,12 +1210,38 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
     const point = readTerrainSample(sourceTerrainSample, x, z);
     return { height: point.terrainHeight, moisture: point.moisture, ergWeight: point.ergWeight };
   };
-  const sourceBuild = buildSourceCandidates(config, sourceBounds, terrainSample, hash);
+  const sourceBuild = buildSourceCandidates(
+    config,
+    sourceBounds,
+    terrainSample,
+    hash,
+    sourceExcluded,
+  );
   const candidates = sourceBuild.candidates;
   const rivers: HydrologyRiver[] = [];
   const lakes: HydrologyLake[] = [];
   let tracedSourceCount = 0;
   let rawRiverPointCount = 0;
+
+  // Authored lakes are shored whole and kept when they touch the region,
+  // exactly as basin lakes are, so every region that keeps one keeps the
+  // same one. A rim clear of the region cannot hold a lake that touches it.
+  for (const basin of authoredBasins) {
+    if (!(basin.levelMeters > config.seaLevel + 0.5)) continue;
+    const rim = basin.rimRadiusMeters;
+    if (
+      basin.centerX + rim < bounds.minX || basin.centerX - rim > bounds.maxX
+      || basin.centerZ + rim < bounds.minZ || basin.centerZ - rim > bounds.maxZ
+    ) continue;
+    const lake = buildAuthoredLake(
+      `${hash.toString(16)}:lake:${basin.id}`,
+      basin,
+      config,
+      terrainSample,
+      hash,
+    );
+    if (lake && lakeIntersectsBounds(lake, bounds)) lakes.push(lake);
+  }
 
   for (const candidate of candidates) {
     tracedSourceCount += 1;
@@ -1122,7 +1298,10 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
 
     if (candidate.lakeEligible && trace.termination === "basin") {
       const basin = trace.points.at(-1);
-      if (basin && basin.terrainHeight > config.seaLevel + 0.5) {
+      if (
+        basin && basin.terrainHeight > config.seaLevel + 0.5
+        && !insideAuthoredBasin(authoredBasins, basin.x, basin.z)
+      ) {
         const lake = buildBasinLake(
           `${hash.toString(16)}:lake:${candidate.cellX}:${candidate.cellZ}`,
           basin,
