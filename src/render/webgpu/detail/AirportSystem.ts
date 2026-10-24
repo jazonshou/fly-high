@@ -5,20 +5,14 @@ import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Scene } from "@babylonjs/core/scene";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { runwayToWorld, type AirportDefinition } from "@/src/world";
-import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
 import {
-  WINDSOCK_LATERAL_OFFSET_METERS,
   WINDSOCK_MAST_HEIGHT_METERS,
   WINDSOCK_PART_KINDS,
   buildWindsockPart,
-  windsockAxisDirection,
   windsockWorldPosition,
-  windsockBoreScale,
   buildPerimeterFenceGeometry,
   buildFuelFarmGeometry,
   buildSignageGeometry,
-  windsockDroopRadians,
-  windsockInflation,
 } from "./AirfieldFurniture";
 import {
   buildTowerGeometry,
@@ -26,28 +20,17 @@ import {
   type TowerAttachments,
 } from "./towerGeometry";
 import { createAirfieldMaterials, type AirfieldMaterialSet } from "../airfield/AirfieldMaterials";
-import { TOWER_ALONG_FRACTION, TOWER_LATERAL_OFFSET_METERS } from "./AirfieldFurniture";
 import {
   HANGAR_SITING,
-  MINIMUM_SKIRT_METERS,
   buildHangar,
-  hangarAttachments,
-  hangarFootprint,
-  hangarFootprintSamples,
-  hangarYawRadians,
-  hangarPlanFrom,
-  hangarSeatingFrom,
   type HangarAttachments,
 } from "../airfield/AirfieldStructures";
-
-/**
- * Ground-sample spacing under a hangar footprint.
- *
- * 2 m over 46 x 34 m is 408 samples per hangar. That is the resolution the
- * relief figures behind `7-10`'s seating rule were measured at, so the rule and
- * the bridge agree about what "the ground under it" means.
- */
-const GROUND_SAMPLE_STEP_METERS = 2;
+import {
+  hangarSite,
+  poseWindsock,
+  towerSite,
+  windsockNodePosition,
+} from "../airfield/AirfieldPlacement";
 
 /**
  * The authored detail around the starter airport — which, since `3-9`, is the
@@ -94,6 +77,8 @@ export class AirportSystem {
    */
   readonly hangarAttachments: readonly HangarAttachments[];
   private readonly airfieldMaterials: AirfieldMaterialSet;
+  /** Scratch for the per-frame sock pose, so it allocates nothing. */
+  private readonly windsockAxis = new Vector3();
 
   /**
    * `groundHeight` samples the shipped terrain at a WORLD coordinate. It is
@@ -128,42 +113,19 @@ export class AirportSystem {
     const hangarCasters: Mesh[] = [];
     const attachments: HangarAttachments[] = [];
     for (let index = 0; index < HANGAR_SITING.count; index += 1) {
-      const footprint = hangarFootprint(definition, index);
-      // THE FOOTPRINT, NOT A CENTRE SAMPLE. A 46 x 34 m box on the earthworks
-      // batter sits over 2.86-5.52 m of relief; seating on one point buried a
-      // corner by up to 2.70 m and floated another by up to 2.85 m.
-      const ground: number[] = [];
-      for (const local of hangarFootprintSamples(footprint, GROUND_SAMPLE_STEP_METERS)) {
-        const world = runwayToWorld(definition, local.along, local.across);
-        const height = groundHeight(world.x, world.z);
-        // Non-finite means the terrain query failed for that sample. Dropping
-        // it is deliberate: `hangarSeatingFrom` THROWS on a non-finite input,
-        // which is right for a pure function and wrong here, where it would
-        // stop the flight from starting over one bad sample.
-        if (Number.isFinite(height)) ground.push(height);
-      }
-      // If EVERY sample failed there is no ground to stand on, so fall back to
-      // the datum — the pre-7-10 behaviour. Recorded rather than silent,
-      // because a hangar at the datum on fallen ground looks like a modelling
-      // bug rather than a failed query.
-      const seating = ground.length > 0
-        ? hangarSeatingFrom(ground)
-        : { baseAltitudeMeters: definition.elevation, skirtHeightMeters: MINIMUM_SKIRT_METERS, reliefMeters: 0 };
-      const plan = hangarPlanFrom(seedHash, index, seating.skirtHeightMeters);
-      const mounts = hangarAttachments(definition, index, plan, seating.baseAltitudeMeters);
+      // Seated on the ground under its WHOLE footprint, by the placement
+      // `AirfieldPlacement.hangarSite` shares with every spawned airfield.
+      const site = hangarSite(definition, index, seedHash, groundHeight);
+      const mounts = site.attachments;
       const node = new TransformNode(`airport-hangar-${index}`, scene);
       node.parent = this.root;
       // `root` sits at the datum, so a child's local y is measured from it.
-      node.position.set(
-        footprint.across,
-        seating.baseAltitudeMeters - definition.elevation,
-        footprint.along,
-      );
+      node.position.set(site.position[0], site.position[1], site.position[2]);
       // Set out by eye, not by instancing. The mesh is unchanged — this is a
       // node rotation, so it costs nothing in the draw budget or the vertex
       // count, and it is the one cue that survives however much the roofs vary.
-      node.rotation.y = hangarYawRadians(seedHash, index);
-      const built = buildHangar(scene, node, index, plan, mounts, this.airfieldMaterials);
+      node.rotation.y = site.yawRadians;
+      const built = buildHangar(scene, node, index, site.plan, mounts, this.airfieldMaterials);
       hangars.push(...built.meshes);
       // `7-10` detail: the CASTER list is the builder's, not this loop's. The
       // clerestory glazing is a mesh that draws and does not cast, so the two
@@ -185,19 +147,14 @@ export class AirportSystem {
     const towerNode = new TransformNode("airport-tower", scene);
     towerNode.parent = this.root;
 
-    // Placed on the hangar side, nearer the runway than the hangars (+95 m
-    // against their +118) and offset along it, so on final approach it reads as
-    // a separate structure at a different range rather than a fourth hangar.
-    const towerAcross = definition.runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS;
-    const towerAlong = definition.runwayLength * TOWER_ALONG_FRACTION;
-    const towerWorld = runwayToWorld(definition, towerAlong, towerAcross);
-    const towerGround = groundHeight(towerWorld.x, towerWorld.z);
-    // Same rule as the hangars: the root sits at the datum, so the tower's
-    // local y is however far the ground has fallen from it. The earthworks
-    // batter is 118 m across the centreline and the tower stands inside that,
-    // so this is not a formality.
-    const towerSit = Number.isFinite(towerGround) ? towerGround - definition.elevation : 0;
-    towerNode.position.set(towerAcross, towerSit, towerAlong);
+    // Placed on the hangar side, nearer the runway than the hangars and offset
+    // along it, standing on the ground it reads (`AirfieldPlacement.towerSite`).
+    const towerPlacement = towerSite(definition, tower, groundHeight);
+    towerNode.position.set(
+      towerPlacement.position[0],
+      towerPlacement.position[1],
+      towerPlacement.position[2],
+    );
 
     // `7-11` third pass: ALL SEVEN PARTS ARE NOW ON THE SHARED SET. The
     // stand-ins are gone and no tower-local material remains.
@@ -225,6 +182,9 @@ export class AirportSystem {
     // `render.tower-uv-contract.test.ts` therefore asserts every band, and
     // samples the synthesized texture at the emitted UVs rather than reasoning
     // about the numbers.
+    // (`AirfieldPlacement.TOWER_PART_SURFACES` is this table for the merged
+    // spawned towers; the spawned-airfield test holds the two to the same
+    // triangles per material.)
     const towerMaterials: Readonly<Record<string, PBRMaterial>> = {
       base: this.airfieldMaterials.concrete,
       shaft: this.airfieldMaterials.concrete,
@@ -252,14 +212,7 @@ export class AirportSystem {
 
     // Attachment points carry the tower's placement so a consumer does not have
     // to know it. Still runway-local — `root` supplies heading and elevation.
-    const offset = (p: readonly [number, number, number]): readonly [number, number, number] =>
-      [p[0] + towerAcross, p[1] + towerSit, p[2] + towerAlong];
-    this.towerAttachments = Object.freeze({
-      beaconMount: offset(tower.attachments.beaconMount),
-      mastTip: offset(tower.attachments.mastTip),
-      cabRoofRing: Object.freeze(tower.attachments.cabRoofRing.map(offset)),
-      heightMeters: tower.attachments.heightMeters,
-    });
+    this.towerAttachments = towerPlacement.attachments;
 
     // `7-13`: the windsock. Built here for the same reason the hangars and the
     // tower are — parented under `root` before the constructor returns, so it
@@ -267,11 +220,8 @@ export class AirportSystem {
     // aerial registrations that read `root.getChildMeshes()`.
     const windsockNode = new TransformNode("airport-windsock", scene);
     windsockNode.parent = this.root;
-    windsockNode.position.set(
-      WINDSOCK_LATERAL_OFFSET_METERS,
-      runwayPlatformHeight(definition, WINDSOCK_LATERAL_OFFSET_METERS) - definition.elevation,
-      0,
-    );
+    const windsockAt = windsockNodePosition(definition);
+    windsockNode.position.set(windsockAt[0], windsockAt[1], windsockAt[2]);
     const windsockMeshes: Mesh[] = [];
     for (const kind of WINDSOCK_PART_KINDS) {
       const mesh = new Mesh(`airport-windsock-${kind}`, scene);
@@ -375,23 +325,15 @@ export class AirportSystem {
   setWindsockState(windHeadingRadians: number, windSpeedMetersPerSecond: number): void {
     if (!this.windsockSock) return;
     // Droop and inflation are BOTH functions of speed, so the caller passes
-    // speed and this derives them. Taking them as separate arguments would let
-    // a caller pass a droop that disagreed with its inflation — a sock hanging
-    // slack while fully open — and nothing would catch it.
-    const droopRadians = windsockDroopRadians(windSpeedMetersPerSecond);
-    const inflation = windsockInflation(windSpeedMetersPerSecond);
-    const [x, y, z] = windsockAxisDirection(
-      windHeadingRadians - this.definition.headingRadians,
-      droopRadians,
+    // speed and `poseWindsock` derives them — one implementation shared with
+    // every spawned airfield's sock.
+    poseWindsock(
+      this.windsockSock,
+      this.definition.headingRadians,
+      windHeadingRadians,
+      windSpeedMetersPerSecond,
+      this.windsockAxis,
     );
-    // The mesh is built along +y, so the rotation is +y onto the axis.
-    Quaternion.FromUnitVectorsToRef(
-      Vector3.Up(),
-      new Vector3(x, y, z),
-      this.windsockSock.rotationQuaternion!,
-    );
-    const bore = windsockBoreScale(inflation);
-    this.windsockSock.scaling.set(bore, 1, bore);
   }
 
   setFloatingOrigin(x: number, z: number): void {
@@ -400,6 +342,16 @@ export class AirportSystem {
       this.definition.elevation,
       this.definition.centerZ - z,
     );
+  }
+
+  /**
+   * The structure materials this field built and owns. Airports spawned in
+   * flight draw with THESE — sharing them is what keeps a spawn from creating a
+   * material, a texture or a shader pipeline mid-flight — and never dispose
+   * them; this system does, last.
+   */
+  get materials(): AirfieldMaterialSet {
+    return this.airfieldMaterials;
   }
 
   dispose(): void {
