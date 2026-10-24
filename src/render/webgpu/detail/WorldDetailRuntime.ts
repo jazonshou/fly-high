@@ -40,7 +40,12 @@ import {
   IMPOSTOR_SPECIES,
   type ImpostorAtlas,
 } from "./ImpostorAtlas";
-import { seasonalWinterFraction, type WorldDefinition } from "@/src/world";
+import {
+  seasonalWinterFraction,
+  withAirports,
+  type AirportDefinition,
+  type WorldDefinition,
+} from "@/src/world";
 import {
   TERRAIN_READBACK_RING_CAPACITY,
   type TerrainMacroGrid,
@@ -63,7 +68,12 @@ import {
   TREE_VARIANT_COUNTS,
   type PrototypeGeometry,
 } from "./prototypeGeometry";
-import { detailCellKey, generateDetailCell, GROUND_COVER_GRID } from "./generation";
+import {
+  DETAIL_CELL_SAMPLE_MARGIN_METERS,
+  detailCellKey,
+  generateDetailCell,
+  GROUND_COVER_GRID,
+} from "./generation";
 import {
   canGenerateNextDetailCell,
   resolveDetailGenerationBudget,
@@ -94,9 +104,14 @@ import {
   CANOPY_SURFACE_SPECULAR,
 } from "./densityField";
 import {
-  airfieldStructureExclusions,
-  type StructureExclusionBox,
+  airfieldStructureExclusionSites,
+  type StructureExclusionSite,
 } from "../airfield/StructureExclusion";
+import {
+  airportReachIntersectsBounds,
+  airportVegetationReach,
+  changedAirports,
+} from "../airfield/AirportFootprint";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
@@ -886,12 +901,18 @@ export class WorldDetailRuntime {
   private dayOfYear = 0;
 
   /**
-   * Airfield structures vegetation must not grow through, built ONCE from the
-   * world this runtime was given. Uses `seedHash` — the terrain authority the
-   * hangars' own siting reads — not the seed string's hash, which is a
-   * different number on any guaranteed-airport world.
+   * The live world, for its airport list: `options.workerWorld` until
+   * `setAirports` swaps in a world with a different list. Null when the runtime
+   * was built without one (tests, headless tools), which means no airports.
    */
-  private readonly structureExclusions: readonly StructureExclusionBox[];
+  private world: Readonly<WorldDefinition> | null;
+  /**
+   * Airfield structures vegetation must not grow through, one site per airport,
+   * rebuilt only when the airport list changes. Uses `seedHash` — the terrain
+   * authority the hangars' own siting reads — not the seed string's hash, which
+   * is a different number on any guaranteed-airport world.
+   */
+  private structureSites: readonly StructureExclusionSite[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -915,8 +936,12 @@ export class WorldDetailRuntime {
     this.groundCoverBladesActive =
       (scene.getEngine().getCaps() as { supportComputeShaders?: boolean })
         .supportComputeShaders === true;
-    this.structureExclusions = options.workerWorld?.airport
-      ? airfieldStructureExclusions(options.workerWorld.airport, options.workerWorld.seedHash)
+    this.world = options.workerWorld ?? null;
+    this.structureSites = this.world
+      ? airfieldStructureExclusionSites(
+        this.world.airports ?? (this.world.airport ? [this.world.airport] : []),
+        this.world.seedHash,
+      )
       : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
@@ -1189,9 +1214,68 @@ export class WorldDetailRuntime {
         && cellMinimumZ < maximumZ
         && cellMinimumZ + this.cellSizeMeters > minimumZ;
     };
-    let invalidated = false;
+    this.invalidateCellsWhere(overlapsPage);
+  }
+
+  /**
+   * The world's airport list changed: an airport spawned, or the oldest spawned
+   * one was retired. Home field first, as `withAirports` requires.
+   *
+   * **ONLY THE CELLS THE CHANGE CAN REACH ARE REGENERATED.** A new runway
+   * changes the ground under its platform and blend (`sampleTerrain` reads the
+   * nearest airport) and adds hard exclusions round its hangars and approach
+   * rows; outside that reach both worlds sample identically and every site's
+   * clearance is exactly 1, so a cell there would regenerate to the same bytes.
+   * A cell is invalidated when its rectangle, grown by the furthest its own
+   * generation reads the ground (`DETAIL_CELL_SAMPLE_MARGIN_METERS`), meets
+   * a changed airport's vegetation reach.
+   *
+   * **AND NOTHING IS DROPPED IN THE MEANTIME.** The same epoch-free pattern as a
+   * terrain page publication: an invalidated resident keeps drawing its old
+   * trees until the ordinary bounded generator replaces it, and the presentation
+   * chunk, impostors and canopy ranks are rebuilt from the replacement through
+   * the existing budgets — so a spawn costs one regeneration per reached cell,
+   * spread like any other streaming work, and never a frame-sized hole.
+   *
+   * Returns how many residents and in-flight requests were invalidated.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): number {
+    if (this.disposed || !this.world) return 0;
+    const previous = this.world;
+    const next = withAirports(previous, airports);
+    if (next === previous) return 0;
+    const changed = changedAirports(previous.airports ?? [], next.airports);
+    this.world = next;
+    this.structureSites = airfieldStructureExclusionSites(next.airports, next.seedHash);
+    // Posted BEFORE any regeneration request below can be dispatched, so the
+    // worker swaps worlds first; message order does the rest.
+    this.client?.setAirports(next.airports);
+    if (changed.length === 0) return 0;
+    const reaches = changed.map((airport) => airportVegetationReach(airport, next.seedHash));
+    const margin = DETAIL_CELL_SAMPLE_MARGIN_METERS;
+    return this.invalidateCellsWhere((cellX, cellZ) => {
+      const minX = cellX * this.cellSizeMeters - margin;
+      const minZ = cellZ * this.cellSizeMeters - margin;
+      const bounds = {
+        minX,
+        minZ,
+        maxX: minX + this.cellSizeMeters + 2 * margin,
+        maxZ: minZ + this.cellSizeMeters + 2 * margin,
+      };
+      return reaches.some((reach) => airportReachIntersectsBounds(reach, bounds));
+    });
+  }
+
+  /**
+   * Mark every resident cell the predicate selects stale and cancel the
+   * in-flight requests it selects; returns how many of either it touched.
+   */
+  private invalidateCellsWhere(
+    overlaps: (cellX: number, cellZ: number) => boolean,
+  ): number {
+    let count = 0;
     for (const resident of this.cells.values()) {
-      if (!overlapsPage(resident.cellX, resident.cellZ)) continue;
+      if (!overlaps(resident.cellX, resident.cellZ)) continue;
       if (resident.invalidated) continue;
       // Defect B fix — the epoch pattern (`setDayOfYear`), page-scoped:
       // release the worker token (exactly once; `replaceResident` and every
@@ -1204,17 +1288,18 @@ export class WorldDetailRuntime {
       // omitted a 512 m block of trees for the whole regeneration latency.
       this.releaseResidentToken(resident);
       resident.invalidated = true;
-      invalidated = true;
+      count += 1;
     }
     for (const desired of this.desiredCells) {
-      if (!overlapsPage(desired.cellX, desired.cellZ)) continue;
+      if (!overlaps(desired.cellX, desired.cellZ)) continue;
       const requestId = this.pendingCells.get(desired.key);
       if (requestId === undefined) continue;
       this.client?.cancel(requestId);
       this.pendingCells.delete(desired.key);
-      invalidated = true;
+      count += 1;
     }
-    if (invalidated) this.batchesDirty = true;
+    if (count > 0) this.batchesDirty = true;
+    return count;
   }
 
   /**
@@ -1684,11 +1769,8 @@ export class WorldDetailRuntime {
           latitudeDegrees: this.options.latitudeDegrees ?? 45,
           // The inline path needs the same exclusions as the worker path, or
           // the fix is only present on whichever one happens to run.
-          ...(this.options.workerWorld?.airport
-            ? {
-              structureExclusions: this.structureExclusions,
-              exclusionAirport: this.options.workerWorld.airport,
-            }
+          ...(this.structureSites.length > 0
+            ? { structureExclusionSites: this.structureSites }
             : {}),
         });
         this.replaceResident(desired.key, {
