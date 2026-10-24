@@ -120,11 +120,12 @@ function digest(classify: (input: LandCoverInput) => {
 const SWEEP = randomInputs(40_000);
 
 /**
- * The digest of the same sweep through the classifier at `bb7b6b1`, the
- * commit this work started from (ten materials, no volcanic inputs). Captured
- * by running this file's `digest` against an export of that tree.
+ * The digest of the same sweep through the classifier this work stacks on: the
+ * dunes branch at `4d0ee74` (ten materials, sand cover, the tropical coast, no
+ * volcanic inputs). Captured by running this file's `digest` against an export
+ * of that tree.
  */
-const BASE_TREE_DIGEST = "618153d6";
+const BASE_TREE_DIGEST = "32a5eb92";
 
 describe("volcanic classifier inputs (phase 2): parity off volcanic ground", () => {
   const classify = (input: LandCoverInput) => ({
