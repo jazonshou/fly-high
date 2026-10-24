@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DESERT_GROUND_COVER_KEEP,
   DESERT_SHRUB_SHARE,
   DESERT_TREE_SHARE,
   DRY_PROVINCE_DESERT_FULL,
@@ -8,6 +9,7 @@ import {
   PARKLAND_TREE_SHARE,
   canopyClosure,
   densityField,
+  dryProvinceGroundCoverKeep,
   dryProvinceShares,
   type VegetationDensityInput,
 } from "../src/render/webgpu/detail/densityField";
@@ -17,10 +19,12 @@ import type { DetailTerrainSampler } from "../src/render/webgpu/detail/types";
 import {
   LAND_COVER_CLASSIFIER_WGSL,
   LAND_COVER_DRY_PROVINCE,
-  LAND_COVER_FAR_DESERT_MIN_TEXEL_METERS,
+  LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS,
+  LAND_COVER_FAR_DESERT_START_TEXEL_METERS,
   LAND_COVER_SPLAT_BAKE_WGSL,
   classifyLandCover,
   landCoverDryProvinceTerms,
+  landCoverFarDesertRamp,
   landCoverFarDesertWeights,
   landCoverSuitabilities,
   type LandCoverInput,
@@ -141,6 +145,13 @@ describe("the dry provinces leave the temperate core bit-identical", () => {
     }
   });
 
+  it("keeps every blade and card of ground cover outside a desert", () => {
+    for (const dryness of [-0.15, 0, 0.1, 0.25, CLIMATE_PROVINCE_PRESETS.savanna.dryness]) {
+      expect(dryProvinceGroundCoverKeep(dryness)).toBe(1);
+    }
+    expect(dryProvinceGroundCoverKeep(0.5)).toBeCloseTo(DESERT_GROUND_COVER_KEEP, 12);
+  });
+
   it("muddies no river with dryness 0", () => {
     const environment: InlandWaterEnvironment = {
       elevationAboveSeaMeters: 140, temperature: 0.55, moisture: 0.48,
@@ -152,8 +163,9 @@ describe("the dry provinces leave the temperate core bit-identical", () => {
   it("leaves the far bake alone at zero dryness and on trusted pages", () => {
     const weights = [0.1, 0.05, 0.2, 0.05, 0.1, 0.1, 0.15, 0.1, 0.1, 0.05];
     expect(landCoverFarDesertWeights(weights, 0, 128)).toEqual(weights);
-    expect(landCoverFarDesertWeights(weights, 0.5, LAND_COVER_FAR_DESERT_MIN_TEXEL_METERS / 2))
+    expect(landCoverFarDesertWeights(weights, 0.5, LAND_COVER_FAR_DESERT_START_TEXEL_METERS))
       .toEqual(weights);
+    expect(landCoverFarDesertWeights(weights, 0.5, 4)).toEqual(weights);
   });
 });
 
@@ -320,7 +332,7 @@ describe("the far desert keeps its colour where the fragment trusts only swards"
     weights[SurfaceMaterial.Shrub] = 0.35;
     weights[SurfaceMaterial.Gravel] = 0.1;
     weights[SurfaceMaterial.Rock] = 0.15;
-    const far = landCoverFarDesertWeights(weights, 0.5, 128);
+    const far = landCoverFarDesertWeights(weights, 0.5, LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS);
     expect(far[SurfaceMaterial.Sand]).toBe(0);
     expect(far[SurfaceMaterial.Gravel]).toBe(0);
     expect(far[SurfaceMaterial.Rock]).toBe(0);
@@ -329,11 +341,29 @@ describe("the far desert keeps its colour where the fragment trusts only swards"
     expect(far.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 12);
   });
 
-  it("is the bake's own branch, gated on the same texel size and desert share", () => {
+  it("ramps over the levels instead of switching at one, so it draws no ring", () => {
+    // Linear in level: none at L2's 16 m texels, a third at L3, two thirds at
+    // L4, all of it from L5's 128 m.
+    expect(landCoverFarDesertRamp(16)).toBe(0);
+    expect(landCoverFarDesertRamp(32)).toBeCloseTo(1 / 3, 12);
+    expect(landCoverFarDesertRamp(64)).toBeCloseTo(2 / 3, 12);
+    expect(landCoverFarDesertRamp(128)).toBe(1);
+    expect(landCoverFarDesertRamp(512)).toBe(1);
+    const weights = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+    weights[SurfaceMaterial.Sand] = 0.6;
+    weights[SurfaceMaterial.DryGrass] = 0.4;
+    const l4 = landCoverFarDesertWeights(weights, 0.5, 64);
+    expect(l4[SurfaceMaterial.Sand]).toBeCloseTo(0.2, 12);
+    expect(l4[SurfaceMaterial.DryGrass]).toBeCloseTo(0.8, 12);
+  });
+
+  it("is the bake's own branch, gated on the same ramp and desert share", () => {
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
-      `if (job.shape.x >= ${LAND_COVER_FAR_DESERT_MIN_TEXEL_METERS.toFixed(1)}) {`);
+      `if (job.shape.x > ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)}) {`);
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
-      "let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y);");
+      `let farRamp = kSaturate(log2(job.shape.x / ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)})`);
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
+      "let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;");
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
       `accumulated[${SurfaceMaterial.DryGrass}] = accumulated[${SurfaceMaterial.DryGrass}] + moved;`);
   });
