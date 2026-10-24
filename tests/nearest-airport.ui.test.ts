@@ -13,6 +13,7 @@ import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../src/game/types"
 import { Hud } from "../src/ui/Hud";
 import {
   AIRPORT_MARKER_EDGE_MARGIN,
+  airportMarkerSideMargin,
   formatAirportDistance,
   placeAirportMarker,
 } from "../src/ui/airportMarker";
@@ -145,12 +146,14 @@ describe("nearest airport marker", () => {
   it("rides the screen edge, pointing the way to turn, when out of view or behind", () => {
     const right = placeAirportMarker({ x: 5_000, y: 450, inFront: true, ...size });
     expect(right.mode).toBe("edge");
-    expect(right.x).toBeCloseTo(size.width - AIRPORT_MARKER_EDGE_MARGIN, 9);
+    // Inboard of the altitude tape, not on top of it.
+    expect(right.x).toBeCloseTo(size.width - airportMarkerSideMargin(size.width), 9);
+    expect(airportMarkerSideMargin(size.width)).toBeGreaterThan(146 + 50);
     expect(right.angle).toBeCloseTo(0, 9);
     // Behind and to the left, but projected inside the frame: still the edge.
     const behind = placeAirportMarker({ x: 300, y: 450, inFront: false, ...size });
     expect(behind.mode).toBe("edge");
-    expect(behind.x).toBeCloseTo(AIRPORT_MARKER_EDGE_MARGIN, 9);
+    expect(behind.x).toBeCloseTo(airportMarkerSideMargin(size.width), 9);
     // Dead astern: point down, "turn around".
     const astern = placeAirportMarker({ x: 800, y: 450, inFront: false, ...size });
     expect(astern.y).toBeCloseTo(size.height - AIRPORT_MARKER_EDGE_MARGIN, 9);

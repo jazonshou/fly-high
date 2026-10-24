@@ -838,6 +838,13 @@ export function FlightGame() {
       />
       <div className="flight-vignette" aria-hidden="true" />
 
+      {/* Before the HUD, so the instruments draw over the marker where they meet. */}
+      <div ref={airportMarkerRef} className="airport-marker" hidden aria-hidden="true">
+        <span className="airport-marker__diamond" />
+        <span className="airport-marker__arrow" />
+        <span className="airport-marker__label" data-airport-marker-label />
+      </div>
+
       {phase === "flying" || phase === "paused" ? (
         <Hud
           state={visualState}
@@ -857,11 +864,6 @@ export function FlightGame() {
           onToggleNearestAirport={toggleNearestAirport}
         />
       ) : null}
-      <div ref={airportMarkerRef} className="airport-marker" hidden aria-hidden="true">
-        <span className="airport-marker__diamond" />
-        <span className="airport-marker__arrow" />
-        <span className="airport-marker__label" data-airport-marker-label />
-      </div>
 
       {!ready ? (
         <div className="loading-card" role="status">

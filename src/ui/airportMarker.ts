@@ -1,7 +1,16 @@
 import type { ScreenPoint } from "@/src/render/types";
 
-/** Inset from the canvas edge inside which an on-screen marker is drawn. */
+/** Inset from the top and bottom edges inside which the marker is drawn. */
 export const AIRPORT_MARKER_EDGE_MARGIN = 64;
+
+/**
+ * Inset from the left and right edges: wide enough that an arrow riding the
+ * side, label and all, stays inboard of the speed and altitude tapes (146 px
+ * from the edge on desktop, 90 px at the narrow layout's 820 px breakpoint).
+ */
+export function airportMarkerSideMargin(width: number): number {
+  return width > 820 ? 200 : 150;
+}
 
 export interface AirportMarkerPlacement {
   /** "on" draws the diamond over the airport; "edge" pins an arrow to the screen edge. */
@@ -18,14 +27,15 @@ export interface AirportMarkerPlacement {
  * pointing the way to turn.
  */
 export function placeAirportMarker(point: ScreenPoint): AirportMarkerPlacement {
-  const margin = AIRPORT_MARKER_EDGE_MARGIN;
+  const marginX = airportMarkerSideMargin(point.width);
+  const marginY = AIRPORT_MARKER_EDGE_MARGIN;
   const centerX = point.width * 0.5;
   const centerY = point.height * 0.5;
   let dx = point.x - centerX;
   let dy = point.y - centerY;
   const inside = point.inFront
-    && point.x >= margin && point.x <= point.width - margin
-    && point.y >= margin && point.y <= point.height - margin;
+    && point.x >= marginX && point.x <= point.width - marginX
+    && point.y >= marginY && point.y <= point.height - marginY;
   if (inside) return { mode: "on", x: point.x, y: point.y, angle: Math.atan2(dy, dx) };
   // Directly behind, the projection collapses toward the centre: point down,
   // which reads as "turn around".
@@ -33,8 +43,8 @@ export function placeAirportMarker(point: ScreenPoint): AirportMarkerPlacement {
     dx = 0;
     dy = 1;
   }
-  const halfWidth = Math.max(1, centerX - margin);
-  const halfHeight = Math.max(1, centerY - margin);
+  const halfWidth = Math.max(1, centerX - marginX);
+  const halfHeight = Math.max(1, centerY - marginY);
   const scale = Math.min(
     dx === 0 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx),
     dy === 0 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy),
