@@ -7,6 +7,7 @@ import {
   type TerrainEvolutionGeologySample,
 } from "@/src/world";
 import { clamp as kernelClamp } from "@/src/world/noise";
+import { terrainSnowlineThermalHeight } from "@/src/world/climateProvince";
 import {
   classifyLandCover,
   landCoverHabitat,
@@ -303,14 +304,35 @@ function classifyDetailSample(sample: DetailTerrainSample) {
     elevationMeters: sample.height,
     slope: sample.slope,
     moisture: sample.moisture,
-    // The detail sampler carries no temperature; the classifier's warmth term
-    // is a lowland/upland gate here, which slope and elevation already supply.
-    temperature: 0.66 - Math.max(0, sample.height) / 2_450,
+    // The height-only stand-in, plus the climate province's offset so a cold
+    // or hot province reaches the species exactly as it reaches the ground.
+    //
+    // NOT the full climate temperature (`sample.temperature`), though the
+    // ground's bake reads that one, and deliberately. The 11 km climate field
+    // moves temperature by up to ±0.12 inside the temperate core too, and
+    // measured on the perf seed (2026-10-24, every 200 m within 66 km of the
+    // airport) it flips the upland/lowland species split on 288 of 13,816
+    // stand-bearing points above 450 m, 1.2% of those stems: far trees on the
+    // mountains in the baselines would change. Switching is a one-line change
+    // with a rebaseline, not part of the province work, whose rule is that the
+    // core stays bit-identical (`x + 0`).
+    temperature: 0.66 - Math.max(0, sample.height) / 2_450 + (sample.temperatureOffset ?? 0),
+    temperatureOffset: sample.temperatureOffset ?? 0,
+    dryness: sample.dryness ?? 0,
     aspect: horizontal > 1e-6 ? (-(sample.normal?.z ?? 0) / horizontal) * (1 - normalY) : 0,
     airportInfluence: sample.airportInfluence ?? 0,
     dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
     seasonalTemperatureShift: 0,
   });
+}
+
+/**
+ * Climate provinces: the height the canopy, rock and ground snow rules compare
+ * against the snowline. The snowline thermal height, `height - 0` in the
+ * temperate core.
+ */
+function snowlineHeight(heightMeters: number, sample: DetailTerrainSample): number {
+  return terrainSnowlineThermalHeight(heightMeters, sample.temperatureOffset ?? 0);
 }
 
 function treeDimensions(
@@ -640,6 +662,7 @@ function fieldAt(
     seaLevelMeters: context.seaLevelMeters,
     slope: sample.slope,
     moisture: sample.moisture,
+    temperatureOffset: sample.temperatureOffset ?? 0,
     ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
     ...(sample.airportInfluence !== undefined
       ? { airportInfluence: sample.airportInfluence }
@@ -899,7 +922,7 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
         species,
         context.season,
         random(),
-        y,
+        snowlineHeight(y, blockSample),
         blockSample.slope,
       ),
       standAge: stand.standAge,
@@ -938,7 +961,7 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
         species,
         context.season,
         random(),
-        y,
+        snowlineHeight(y, blockSample),
         blockSample.slope,
       ),
       selection: random(),
@@ -1137,7 +1160,8 @@ function generateRocks(
           reposeDegrees,
           soilDepthMeters: screeSoilDepthMeters(sample),
           probe: probeTalusSupply(x, z, sample, reposeDegrees, sampleTerrain),
-          metersAbovePermanentSnowline: sample.height - permanentSnowlineMeters,
+          metersAbovePermanentSnowline:
+            snowlineHeight(sample.height, sample) - permanentSnowlineMeters,
         })
         : TALUS_NO_PLACEMENT;
     if (acceptance >= rockProbability(sample, reposeDegrees, talus.density)) continue;
@@ -1159,7 +1183,7 @@ function generateRocks(
       [tint, tint * (variant === "limestone" ? 1.03 : 0.92), tint * 0.86],
       season,
       winter,
-      sample.height,
+      snowlineHeight(sample.height, sample),
       sample.slope,
     );
     rocks.push({
@@ -1249,6 +1273,7 @@ function buildGroundCoverGrid(
         seaLevelMeters: context.seaLevelMeters,
         slope: sample.slope,
         moisture: sample.moisture,
+        temperatureOffset: sample.temperatureOffset ?? 0,
         dayOfYear: context.dayOfYear,
         ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
         ...(sample.airportInfluence !== undefined
@@ -1314,7 +1339,7 @@ function buildGroundCoverGrid(
         strawed,
         context.season,
         context.season.winterFraction,
-        sample.height,
+        snowlineHeight(sample.height, sample),
         sample.slope,
       );
       nodes.push({
@@ -1370,6 +1395,7 @@ function scatterClutter(
       seaLevelMeters: context.seaLevelMeters,
       slope: sample.slope,
       moisture: sample.moisture,
+      temperatureOffset: sample.temperatureOffset ?? 0,
       dayOfYear: context.dayOfYear,
       ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
       ...(sample.airportInfluence !== undefined
@@ -1413,7 +1439,13 @@ function scatterClutter(
     const base: readonly [number, number, number] = kind === "mossCushion"
       ? [0.5 * valueJitter, 0.72 * valueJitter, 0.42 * valueJitter]
       : [0.72 * valueJitter, 0.66 * valueJitter, 0.56 * valueJitter];
-    const snowed = applySnowCover(base, context.season, context.season.winterFraction, sample.height, sample.slope);
+    const snowed = applySnowCover(
+      base,
+      context.season,
+      context.season.winterFraction,
+      snowlineHeight(sample.height, sample),
+      sample.slope,
+    );
     placements.push({
       kind: "clutter",
       id: `${context.seed}/clutter/${index}/${x.toFixed(1)}/${z.toFixed(1)}`,

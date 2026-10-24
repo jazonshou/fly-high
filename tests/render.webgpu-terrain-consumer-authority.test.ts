@@ -25,6 +25,8 @@ function analyticForestSample(height = -50): TerrainSample {
     slope: 0,
     moisture: 0.68,
     temperature: 286,
+    temperatureOffset: 0,
+    dryness: 0,
     biome: TerrainBiome.FOREST,
     biomeName: "forest",
     color: { r: 0.2, g: 0.4, b: 0.16 },

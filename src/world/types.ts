@@ -118,6 +118,12 @@ export interface TerrainSample {
   slope: number;
   moisture: number;
   temperature: number;
+  /**
+   * The climate province's raw offsets (`sampleClimateProvince`), exactly 0
+   * in the temperate core. `moisture` and `temperature` already include them.
+   */
+  temperatureOffset: number;
+  dryness: number;
   biome: TerrainBiomeId;
   biomeName: TerrainBiomeName;
   color: TerrainColor;

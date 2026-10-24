@@ -667,6 +667,8 @@ export class GroundCoverSystem {
         airportInfluence: sample.airportInfluence,
         dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
         seasonalTemperatureShift: 0,
+        temperatureOffset: sample.temperatureOffset,
+        dryness: sample.dryness,
       });
       let albedoR = 0;
       let albedoG = 0;
@@ -744,6 +746,7 @@ export class GroundCoverSystem {
       airportInfluence: sample.airportInfluence,
       dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
       filterWidthMeters: 0,
+      temperatureOffset: sample.temperatureOffset,
     });
     // The shade term the archetype law takes, exactly as densityField.ts and
     // the WGSL mirror define it: stems relative to the base canopy density.
