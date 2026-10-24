@@ -243,10 +243,58 @@ export function unmaskedProvinceDryness(seedHash: number, x: number, z: number):
   );
 }
 
+/** The erg's two climate factors, each in [0, 1]. */
+export interface DuneClimateFactors {
+  /** The arid province: smoothstep over the unmasked dryness. */
+  arid: number;
+  /** The erg patch: which arid ground is a sand sea. */
+  patch: number;
+}
+
+/**
+ * The erg's climate factors, read WITHOUT the natural kernel: a reader that
+ * has not evaluated the kernel yet (the far field) gates on these first and
+ * skips the kernel wherever the erg cannot exist. Both 1 in a world that
+ * forces dunes; the patch is 0, unread, where the province is not arid.
+ */
+export function duneClimateFactors(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  target: DuneClimateFactors,
+): DuneClimateFactors {
+  if (dunesForced(world)) {
+    target.arid = 1;
+    target.patch = 1;
+    return target;
+  }
+  target.arid = smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, unmaskedProvinceDryness(world.seedHash, x, z));
+  target.patch = target.arid > 0 ? ergPatchFactor(world.seedHash, x, z) : 0;
+  return target;
+}
+
+function ergPatchFactor(seedHash: number, x: number, z: number): number {
+  const patch = DUNES.ergPatch;
+  return smoothstep(
+    patch.low,
+    patch.high,
+    fbm2D(
+      mixSeed(seedHash, patch.channel),
+      x / patch.baseWavelengthMeters,
+      z / patch.baseWavelengthMeters,
+      patch.octaves,
+      patch.lacunarity,
+      patch.persistence,
+    ),
+  );
+}
+
 /**
  * The erg weight from the factors the kernel already computed (`coreMask`,
  * low ground, no hills), then the province and the erg patch. Returns 0
- * before reading a lattice wherever a cheap factor is already 0.
+ * before reading a lattice wherever a cheap factor is already 0. `climate`,
+ * when the caller already has it (`duneClimateFactors`), replaces the two
+ * lattice reads; the arithmetic is the same either way.
  */
 export function duneErgWeight(
   world: WorldDefinition,
@@ -256,6 +304,7 @@ export function duneErgWeight(
   natural: Readonly<NaturalTerrainIntermediates>,
   relief: Readonly<DuneRelief>,
   volcanicActivity: (world: WorldDefinition, x: number, z: number) => number,
+  climate?: Readonly<DuneClimateFactors>,
 ): number {
   // Low ground is read off the BASE height, the shipped height without its
   // relief: a gate on the shipped height itself follows every knoll, and a
@@ -267,21 +316,11 @@ export function duneErgWeight(
   let weight = coreMask * lowGround * flat;
   if (weight <= 0) return 0;
   if (!dunesForced(world)) {
-    weight *= smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, unmaskedProvinceDryness(world.seedHash, x, z));
+    weight *= climate
+      ? climate.arid
+      : smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, unmaskedProvinceDryness(world.seedHash, x, z));
     if (weight <= 0) return 0;
-    const patch = DUNES.ergPatch;
-    weight *= smoothstep(
-      patch.low,
-      patch.high,
-      fbm2D(
-        mixSeed(world.seedHash, patch.channel),
-        x / patch.baseWavelengthMeters,
-        z / patch.baseWavelengthMeters,
-        patch.octaves,
-        patch.lacunarity,
-        patch.persistence,
-      ),
-    );
+    weight *= climate ? climate.patch : ergPatchFactor(world.seedHash, x, z);
     if (weight <= 0) return 0;
   }
   return weight * (1 - volcanicActivity(world, x, z));

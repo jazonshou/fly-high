@@ -95,11 +95,13 @@ describe("forced landforms option", () => {
 });
 
 describe("the far erg weight", () => {
-  it("is 0 inside the core and tracks the near erg weight at range", async () => {
-    const { sampleErgFarWeight, sampleLandformCover } = await import("../src/world/landforms");
+  it("skips the core and tracks the near erg weight at range", async () => {
+    const { ERG_FAR_WEIGHT_SKIPPED, sampleErgFarWeight, sampleLandformCover } = await import("../src/world/landforms");
     const world = createWorld("open-skies");
     const center = landformCoreCenter(world);
-    expect(sampleErgFarWeight(world, center.x + 119_000, center.z)).toBe(0);
+    expect(sampleErgFarWeight(world, center.x + 119_000, center.z)).toBe(ERG_FAR_WEIGHT_SKIPPED);
+    expect(sampleErgFarWeight({ ...world, worldEvolution: "eroded" }, center.x + 300_000, center.z))
+      .toBe(ERG_FAR_WEIGHT_SKIPPED);
     // Where the near weight is a full erg, the 1.25 km band-limited weight
     // agrees within its blur; where there is no erg at all it is near 0.
     let full = 0;
@@ -112,7 +114,11 @@ describe("the far erg weight", () => {
         const x = center.x + gx;
         const z = center.z + gz;
         const near = sampleLandformCover(world, x, z, 0).ergWeight;
-        const far = sampleErgFarWeight(world, x, z);
+        const raw = sampleErgFarWeight(world, x, z);
+        // A skip is a weight of 0 that never evaluated the kernel; it may
+        // only happen where the near weight is 0 too.
+        if (raw === ERG_FAR_WEIGHT_SKIPPED) expect(near).toBe(0);
+        const far = Math.max(0, raw);
         if (near > 0.95) { full += 1; fullFar += far; }
         if (near === 0) { none += 1; noneFar += far; }
       }
