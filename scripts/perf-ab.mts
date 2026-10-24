@@ -167,6 +167,10 @@ const USAGE = `usage: npm run perf:ab -- [options]
   --quality, --mode, --aircraft   renderer settings (default medium, balanced, trainer). These and
                             --render-scale are the capture's own settings by default; off them,
                             ceilings are shown but not gated, and no baseline is compared
+  --climate-province <name> force every shot's world into one climate province (boreal, tundra,
+                            high-desert, savanna, tropical, temperate): before/after pairs inside
+                            a biome. Off the capture's settings, as above; both arms need climate
+                            provinces
   --open-frames, --settle-frames, --count-frames, --min-stream-frames, --max-stream-frames
   --base-install auto|link|ci   base dependencies (default auto: npm ci only if the lockfile differs)
   --no-fail                 always exit 0 after a completed run
@@ -326,6 +330,7 @@ async function main(): Promise<number> {
       quality: { type: "string", default: "medium" },
       mode: { type: "string", default: "balanced" },
       aircraft: { type: "string", default: "trainer" },
+      "climate-province": { type: "string" },
       "open-frames": { type: "string" },
       "settle-frames": { type: "string" },
       "count-frames": { type: "string" },
@@ -367,6 +372,13 @@ async function main(): Promise<number> {
     : parseNumber("render-scale", values["render-scale"], 1, (value) => value >= 0.1 && value <= 2);
   if (!QUALITY_LEVELS.includes(values.quality)) throw new UsageError(`--quality ${values.quality} is not ${QUALITY_LEVELS.join(", ")}`);
   if (!RENDERING_MODES.includes(values.mode)) throw new UsageError(`--mode ${values.mode} is not ${RENDERING_MODES.join(", ")}`);
+  // A forced climate province for every shot: a preset name, checked by each
+  // arm's own `createWorld` (an arm that predates climate provinces fails the
+  // shot rather than render the temperate world).
+  const climateProvince = values["climate-province"] ?? null;
+  if (climateProvince !== null && !/^[a-z][a-z-]*$/u.test(climateProvince)) {
+    throw new UsageError(`--climate-province ${climateProvince} is not a province preset name`);
+  }
   // Every ceiling and baseline image is pinned for the capture's own settings:
   // the trainer, medium quality, balanced mode and each shot's own render
   // scale. Any other setting draws a different world (the capture's sweeps do
@@ -377,6 +389,7 @@ async function main(): Promise<number> {
     values.quality === "medium" ? null : `--quality ${values.quality}`,
     values.mode === "balanced" ? null : `--mode ${values.mode}`,
     renderScale === null ? null : `--render-scale ${renderScale}`,
+    climateProvince === null ? null : `--climate-province ${climateProvince}`,
   ].filter((option): option is string => option !== null);
   const requestedShots = values.shots === undefined || values.shots === "all"
     ? null
@@ -539,7 +552,10 @@ async function main(): Promise<number> {
 
     const shots: ShotResult[] = [];
     const pending: PendingMetric[] = [];
-    for (const { shot, index } of selected) {
+    for (const { shot: canonical, index } of selected) {
+      const shot: PerfCaptureShotDefinition = climateProvince === null
+        ? canonical
+        : { ...canonical, climateProvince: climateProvince as NonNullable<PerfCaptureShotDefinition["climateProvince"]> };
       const result = await runShot(arms, shot, index, catalog, {
         rounds, framesPerTurn, timed, gated: gatedMetrics, renderScale, openFrames, settleFrames,
         countFrames, minStreamFrames, maxStreamFrames, pinned: offCanonical.length === 0, outDir, root,

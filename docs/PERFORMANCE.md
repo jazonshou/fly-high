@@ -1124,6 +1124,7 @@ npm run perf:ab -- --base main --shots cruise-horizon,approach-500ft
 npm run perf:ab -- --base origin/main --head <branch>   # a pushed branch, from any checkout
 npm run perf:ab -- --aa                           # both arms the head: this host's noise floor
 npm run perf:ab -- --rounds 0 --shots all         # counts, draw calls and pixels only
+npm run perf:ab -- --climate-province boreal --shots approach-500ft   # inside a forced biome
 npm run perf:ab -- --help
 ```
 
@@ -1132,6 +1133,17 @@ It writes `report.md`, `report.json` and both arms' screenshots under
 per major system: `cruise-horizon` (terrain, sky and clouds to the horizon),
 `forest-500ft-sunbehind` (canopy and impostors), `ground-2m-lowsun` (ground
 cover), `approach-500ft` (aircraft and airport) and `water-25ft` (ocean).
+
+Every canonical shot sits in the temperate core around the airport, where the
+climate provinces are exactly 0, so none of them can see a biome. To time or
+photograph one, `--climate-province <preset>` forces every shot's world into
+that province in both arms (a shot's own `climateProvince` field does the same
+for one appended scratch shot; no canonical shot carries one). Both arms need
+climate provinces: an arm whose `createWorld` ignores the option fails the shot
+rather than render the temperate world. The run is off the capture's settings,
+so the ceilings are shown, not gated, and no baseline is compared. The cold
+biomes' before/after pairs were taken this way (base: the province branch
+without them; four poses at medium, GPU time the same or faster on all four).
 
 **How it measures.** Each arm is a production build of
 `tests/perf/ab/agent.html`, made from that arm's source with the running
@@ -1178,8 +1190,8 @@ replacements.
 - a draw-call or inventoried-memory ceiling that the head breaches and the
   base did not. The ceilings, like the baselines, are pinned for the
   capture's own settings (the trainer, medium quality, balanced mode, each
-  shot's render scale), so a run with `--aircraft`, `--quality`, `--mode` or
-  `--render-scale` shows them without gating on them;
+  shot's render scale), so a run with `--aircraft`, `--quality`, `--mode`,
+  `--render-scale` or `--climate-province` shows them without gating on them;
 - a renderer error in the head, or a shot that does not settle.
 
 Each round gives one paired observation per metric, the log ratio of the arms'
