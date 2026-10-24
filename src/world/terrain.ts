@@ -29,6 +29,13 @@ import {
   dominantLandCover,
 } from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import { SurfaceMaterial } from "@/src/render/webgpu/terrain/surfaceMaterials";
+import {
+  applyClimateProvinceDryness,
+  sampleClimateProvince,
+  terrainSnowlineThermalHeight,
+  terrainThermalHeight,
+  type ClimateProvinceSample,
+} from "./climateProvince";
 import { mixSeed } from "./seed";
 import {
   TERRAIN_BIOME_NAMES,
@@ -961,8 +968,17 @@ export function sampleTerrainMoisture(
     9_500,
     filterWidthMeters,
   );
-  return saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
+  // Climate provinces: the dryness scales the saturated moisture (see
+  // applyClimateProvinceDryness); it is exactly 0 in the temperate core, where
+  // `m - 0 * m === m`.
+  return applyClimateProvinceDryness(
+    saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17),
+    sampleClimateProvince(world, x, z, PROVINCE_SCRATCH).dryness,
+  );
 }
+
+/** Per-call scratch for the province sample; these samplers run per texel. */
+const PROVINCE_SCRATCH: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
 
 /** The smooth 11 km climate field feeding temperature; interpolable at tile scale. */
 export function sampleTerrainClimate(
@@ -1083,16 +1099,24 @@ export function seasonalHumidityMultiplier(
   return 1 - 0.4 * seasonalWinterFraction(dayOfYear, latitudeDegrees);
 }
 
-/** Temperature from a precomputed climate value plus exact per-point cooling. */
+/**
+ * Temperature from a precomputed climate value plus exact per-point cooling.
+ *
+ * `temperatureOffset` is the climate province's (`sampleClimateProvince`),
+ * added inside the saturate. It is exactly 0 in the temperate core, and
+ * `x + 0 === x`, so omitting it is the shipped law bit for bit.
+ */
 export function terrainTemperatureFromClimate(
   world: WorldDefinition,
   climate: number,
   height: number,
+  temperatureOffset = 0,
 ): number {
   const elevationCooling = Math.max(0, height - world.seaLevel) / 2_450;
-  return saturate(0.66 + climate * 0.2 - elevationCooling);
+  return saturate(0.66 + climate * 0.2 - elevationCooling + temperatureOffset);
 }
 
+/** The province-adjusted climate temperature at a point. */
 export function sampleTerrainTemperature(
   world: WorldDefinition,
   x: number,
@@ -1101,7 +1125,12 @@ export function sampleTerrainTemperature(
   height = sampleTerrainHeight(world, x, z),
 ): number {
   assertFilterWidth(filterWidthMeters);
-  return terrainTemperatureFromClimate(world, sampleTerrainClimate(world, x, z), height);
+  return terrainTemperatureFromClimate(
+    world,
+    sampleTerrainClimate(world, x, z),
+    height,
+    sampleClimateProvince(world, x, z, PROVINCE_SCRATCH).temperatureOffset,
+  );
 }
 
 /**

@@ -1,5 +1,6 @@
 import { DEFAULT_AIRPORT } from "./airport";
 import { resolveGuaranteedAirportRegion } from "./airportSite";
+import { resolveClimateProvinceOption } from "./climateProvince";
 import { unitFloatFromHash, hashSeed, mixSeed, normalizeSeed } from "./seed";
 import { sampleNaturalTerrainHeight } from "./terrain";
 import type { AirportFootprint, GeneratedAirportSite } from "./airportSite";
@@ -132,6 +133,7 @@ export function createWorld(
   if (latitudeDegrees < -90 || latitudeDegrees > 90) {
     throw new RangeError("latitudeDegrees must be in [-90, 90]");
   }
+  const climateProvince = resolveClimateProvinceOption(options.climateProvince);
   let seedHash = sourceSeedHash;
   let airport: Readonly<AirportDefinition> | null = null;
 
@@ -161,5 +163,6 @@ export function createWorld(
     prevailingWindRadians,
     prevailingWindSpeed: 3.5 + unitFloatFromHash(speedHash) * 7.5,
     latitudeDegrees,
+    climateProvince,
   });
 }

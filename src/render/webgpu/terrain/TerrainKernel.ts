@@ -12,6 +12,12 @@ import {
 } from "@/src/world/noise";
 import { mixSeed } from "@/src/world/seed";
 import {
+  CLIMATE_PROVINCE,
+  climateProvinceCoreCenter,
+  type ClimateProvinceSample,
+} from "@/src/world/climateProvince";
+import type { WorldDefinition } from "@/src/world/types";
+import {
   LOCAL_RIDGES_KNOLL_MEAN,
   MAX_TERRAIN_HEIGHT,
   MIN_TERRAIN_HEIGHT,
@@ -289,7 +295,30 @@ export const TERRAIN_KERNEL_LATTICES: readonly TerrainKernelLattice[] = Object.f
   // built for the SHEARED frame by the uniform builder's `shear` field.
   terrainKernelBareLattice("moistureRainShadow", "sheared", 203, 18_000, 9_500, 9_500),
   ...terrainKernelFbmRun("climate", "world", 211, 3, 11_000, 2, 0.5),
+  // ——— climate provinces (src/world/climateProvince.ts) ———
+  //
+  // Appended, so every lattice above keeps its index and split origin. The
+  // band-limit override is 0: at 60 km and up no page level would filter them
+  // anyway, and the province must be the same number at every level or a biome
+  // boundary would move when a page changes LOD.
+  ...provinceRun("provinceTemperature", CLIMATE_PROVINCE.temperature),
+  ...provinceRun("provinceDryness", CLIMATE_PROVINCE.dryness),
 ]);
+
+function provinceRun(
+  name: string,
+  field: typeof CLIMATE_PROVINCE.temperature | typeof CLIMATE_PROVINCE.dryness,
+): TerrainKernelLattice[] {
+  return terrainKernelFbmRun(
+    name,
+    "world",
+    field.channel,
+    field.octaves,
+    field.baseWavelengthMeters,
+    field.lacunarity,
+    field.persistence,
+  ).map((lattice) => ({ ...lattice, filterWidthMetersOverride: 0 }));
+}
 
 /** Base indices the emitted WGSL uses; derived so the two cannot disagree. */
 function latticeBase(name: string): number {
@@ -305,10 +334,11 @@ export const TERRAIN_KERNEL_LATTICE_COUNT = TERRAIN_KERNEL_LATTICES.length;
 // ---------------------------------------------------------------------------
 
 /**
- * Float32 slots the page buffer holds before the seed table. Laid out so the
- * `vec4f` arrays stay 16-byte aligned in the storage address space.
+ * Float32 slots the page buffer holds before the seed table: the `kept` row,
+ * then the two climate-province rows. Laid out so the `vec4f` arrays stay
+ * 16-byte aligned in the storage address space.
  */
-const KEPT_FLOATS = 4;
+const KEPT_FLOATS = 12;
 /** Padded to a multiple of four so the buffer stays 16-byte sized. */
 function seedFloatsFor(latticeCount: number): number {
   return Math.ceil(latticeCount / 4) * 4;
@@ -379,6 +409,21 @@ export interface TerrainKernelPageInput {
   readonly originZ: number;
   /** The page's band-limit half-width; 0 at L0, by construction (`4-0`). */
   readonly filterWidthMeters: number;
+  /**
+   * The world's climate provinces (`terrainClimateProvinceInput`). Omitted, the
+   * page reads offsets of exactly 0 everywhere: the shipped climate, which is
+   * what every consumer that does not classify the ground wants.
+   */
+  readonly climateProvince?: TerrainKernelProvinceInput;
+}
+
+/** What the page uniform needs to evaluate `terrainClimateProvince`. */
+export interface TerrainKernelProvinceInput {
+  /** Centre of the temperate core, world metres (f64 here, never on the GPU). */
+  readonly coreCenterX: number;
+  readonly coreCenterZ: number;
+  /** A forced province, or null for the natural field. */
+  readonly forced: Readonly<ClimateProvinceSample> | null;
 }
 
 /**
@@ -458,7 +503,34 @@ export function buildTerrainKernelPageUniform(
   floats[keptBase + 1] = ridgedChannelVarianceKept(4, 1_050, input.filterWidthMeters);
   floats[keptBase + 2] = ridgedChannelVarianceKept(3, 390, input.filterWidthMeters);
   floats[keptBase + 3] = input.filterWidthMeters;
+  // Climate provinces. Row one: the page origin's offset from the temperate
+  // core's centre (subtracted in f64, so only a <= 1e6 m difference reaches
+  // f32) and the natural field's gain. Row two: the forced offsets. Natural:
+  // gain 1, forced 0. Forced: gain 0, the forced offsets everywhere. Absent:
+  // gain 0 and 0 offsets, the shipped climate.
+  const province = input.climateProvince;
+  const forced = province?.forced ?? null;
+  floats[keptBase + 4] = province ? input.originX - province.coreCenterX : 0;
+  floats[keptBase + 5] = province ? input.originZ - province.coreCenterZ : 0;
+  floats[keptBase + 6] = province && !forced ? 1 : 0;
+  floats[keptBase + 7] = 0;
+  floats[keptBase + 8] = forced?.temperatureOffset ?? 0;
+  floats[keptBase + 9] = forced?.dryness ?? 0;
+  floats[keptBase + 10] = 0;
+  floats[keptBase + 11] = 0;
   return buffer;
+}
+
+/** The province input for a world's page uniforms. */
+export function terrainClimateProvinceInput(
+  world: Pick<WorldDefinition, "airport" | "climateProvince">,
+): TerrainKernelProvinceInput {
+  const center = climateProvinceCoreCenter(world);
+  return {
+    coreCenterX: center.x,
+    coreCenterZ: center.z,
+    forced: world.climateProvince ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +538,26 @@ export function buildTerrainKernelPageUniform(
 // ---------------------------------------------------------------------------
 
 const C = TERRAIN_KERNEL_CONSTANTS;
+
+/** climateProvinceStaircase, unrolled with its levels and thresholds injected. */
+function provinceStaircaseWgsl(
+  name: string,
+  field: { readonly levels: readonly number[]; readonly thresholds: readonly number[] },
+): string {
+  const halfWidth = CLIMATE_PROVINCE.ecotoneHalfWidth;
+  const steps = field.thresholds.map((threshold, step) => {
+    const rise = field.levels[step + 1]! - field.levels[step]!;
+    return `  result = result + ${wgslFloat(rise)} * kSmoothstep(`
+      + `${wgslFloat(threshold - halfWidth)}, ${wgslFloat(threshold + halfWidth)}, value);`;
+  });
+  return [
+    `fn ${name}(value: f32) -> f32 {`,
+    `  var result = ${wgslFloat(field.levels[0]!)};`,
+    ...steps,
+    "  return result;",
+    "}",
+  ].join("\n");
+}
 
 /** Emit a float literal WGSL accepts and a test can find verbatim. */
 function wgslFloat(value: number): string {
@@ -507,6 +599,11 @@ fn kSmoothstep(low: f32, high: f32, value: f32) -> f32 {
   }
   let t = kSaturate((value - low) / (high - low));
   return t * t * (3.0 - 2.0 * t);
+}
+
+/** applyClimateProvinceDryness (climateProvince.ts): m - 0 * k == m at zero dryness. */
+fn kProvinceDryness(moisture: f32, dryness: f32) -> f32 {
+  return moisture - dryness * select(1.0 - moisture, moisture, dryness > 0.0);
 }
 `;
 
@@ -828,20 +925,54 @@ fn terrainGeologicalRelief(
  * metres from the page origin the uniform was built for. The absolute
  * coordinate never reaches the GPU — that is the whole of rule 1.
  */
-fn terrainMoisture(localX: f32, localZ: f32) -> f32 {
+/** sampleTerrainMoisture, with the province's dryness (0.0 in the temperate core). */
+fn terrainMoisture(localX: f32, localZ: f32, dryness: f32) -> f32 {
   let broad = kFbm(${latticeBase("moistureBroad")}u, 4u, localX, localZ);
   let local = kFilteredNoise(${latticeBase("moistureLocal")}u, localX, localZ);
   let rainShadow = kFilteredNoise(${latticeBase("moistureRainShadow")}u, localX, localZ);
-  return kSaturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
+  return kProvinceDryness(
+    kSaturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17), dryness);
 }
 
 fn terrainClimate(localX: f32, localZ: f32) -> f32 {
   return kFbm(${latticeBase("climate")}u, 3u, localX, localZ);
 }
 
-/** terrainTemperatureFromClimate: exact per-point cooling above sea level. */
-fn terrainTemperatureFromClimate(climate: f32, heightAboveSeaLevel: f32) -> f32 {
-  return kSaturate(0.66 + climate * 0.2 - max(0.0, heightAboveSeaLevel) / 2450.0);
+/**
+ * terrainTemperatureFromClimate: exact per-point cooling above sea level, plus
+ * the climate province's temperature offset (0.0 in the temperate core).
+ */
+fn terrainTemperatureFromClimate(
+  climate: f32,
+  heightAboveSeaLevel: f32,
+  temperatureOffset: f32,
+) -> f32 {
+  return kSaturate(
+    0.66 + climate * 0.2 - max(0.0, heightAboveSeaLevel) / 2450.0 + temperatureOffset);
+}
+
+${provinceStaircaseWgsl("kProvinceTemperatureStaircase", CLIMATE_PROVINCE.temperature)}
+${provinceStaircaseWgsl("kProvinceDrynessStaircase", CLIMATE_PROVINCE.dryness)}
+/**
+ * sampleClimateProvince (climateProvince.ts): (temperature offset, dryness).
+ * Exactly (0, 0) inside a natural world's temperate core and on a page built
+ * without a province; the forced offsets everywhere in a forced world.
+ */
+fn terrainClimateProvince(localX: f32, localZ: f32) -> vec2f {
+  let core = terrainKernelPages[kPageIndex].province;
+  var offsets = terrainKernelPages[kPageIndex].provinceForced.xy;
+  let mask = core.z * kSmoothstep(
+    ${wgslFloat(CLIMATE_PROVINCE.coreRadiusMeters)},
+    ${wgslFloat(CLIMATE_PROVINCE.coreRadiusMeters + CLIMATE_PROVINCE.rampMeters)},
+    length(core.xy + vec2f(localX, localZ)));
+  if (mask > 0.0) {
+    let temperature = kFbm(${latticeBase("provinceTemperature")}u, ${CLIMATE_PROVINCE.temperature.octaves}u, localX, localZ);
+    let dryness = kFbm(${latticeBase("provinceDryness")}u, ${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ);
+    offsets = offsets + vec2f(
+      mask * kProvinceTemperatureStaircase(temperature),
+      mask * kProvinceDrynessStaircase(dryness));
+  }
+  return offsets;
 }
 
 fn terrainNaturalHeight(localX: f32, localZ: f32) -> f32 {
@@ -942,6 +1073,10 @@ struct TerrainKernelPage {
   latticeOrigin: array<vec4f, ${count}>,
   latticeScale: array<vec4f, ${count}>,
   kept: vec4f,
+  // Climate provinces: (page origin - core centre xz, natural gain, 0) and
+  // (forced temperature offset, forced dryness, 0, 0).
+  province: vec4f,
+  provinceForced: vec4f,
   seeds: array<u32, ${seedFloatsFor(count)}>,
 };
 @group(${group}) @binding(${binding}) var<storage, read> terrainKernelPages: array<TerrainKernelPage>;

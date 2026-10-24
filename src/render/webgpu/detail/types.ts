@@ -44,6 +44,20 @@ export interface DetailTerrainSample {
    * world-layer TerrainSample carries it. Omitted reads as flat ground.
    */
   readonly normal?: { readonly x: number; readonly y: number; readonly z: number };
+  /**
+   * The climate temperature (`sampleTerrainTemperature`: climate field,
+   * lapse and province offset), normalised. Omitted, the species classifier
+   * falls back to its height-only stand-in. The world-layer TerrainSample
+   * carries it, so the live sampler provides it for free.
+   */
+  readonly temperature?: number;
+  /**
+   * The climate province's raw offsets (`sampleClimateProvince`), exactly 0 in
+   * the temperate core. `temperature` and `moisture` already include them;
+   * these drive thermal height and province-gated rules. Omitted reads 0.
+   */
+  readonly temperatureOffset?: number;
+  readonly dryness?: number;
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;

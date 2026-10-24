@@ -16,6 +16,7 @@ import {
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
   terrainKernelPageBytes,
+  type TerrainKernelProvinceInput,
 } from "./TerrainKernel";
 import {
   VEGETATION_DENSITY_FIELD_WGSL,
@@ -489,6 +490,11 @@ export class PageSplatBake {
     private readonly seaLevelMeters: number,
     private readonly latitudeDegrees: number,
     private readonly airport: Readonly<AirportDefinition> | null,
+    /**
+     * The world's climate provinces (`terrainClimateProvinceInput`). Null
+     * bakes the shipped climate everywhere: offsets of exactly 0.
+     */
+    private readonly climateProvince: TerrainKernelProvinceInput | null = null,
   ) {}
 
   get isBaking(): boolean {
@@ -623,6 +629,7 @@ export class PageSplatBake {
           originX: bounds.minX,
           originZ: bounds.minZ,
           filterWidthMeters: channelTexel,
+          ...(this.climateProvince ? { climateProvince: this.climateProvince } : {}),
         }, VEGETATION_DENSITY_KERNEL_LATTICES)),
         index * SPLAT_KERNEL_PAGE_BYTES,
       );

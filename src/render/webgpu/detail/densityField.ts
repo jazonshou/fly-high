@@ -1,3 +1,4 @@
+import { terrainThermalHeight } from "@/src/world/climateProvince";
 import {
   clamp,
   fbm2D,
@@ -61,6 +62,13 @@ export interface VegetationDensityInput {
    * width.
    */
   readonly filterWidthMeters: number;
+  /**
+   * The climate province's temperature offset (`sampleClimateProvince`),
+   * normalised units, negative colder. The treeline, the altitude lapse and the
+   * ground-cover lowland read THERMAL height from it; the shoreline stays on
+   * real height. Omitted reads 0, which is exactly the temperate core.
+   */
+  readonly temperatureOffset?: number;
 }
 
 export interface VegetationDensitySample {
@@ -690,6 +698,9 @@ export function densityField(
   const elevation = input.heightMeters - input.seaLevelMeters;
   // Continuous shoreline: underwater and wave-washed sand carry nothing.
   const shoreline = smoothstep(1.5, 7, elevation);
+  // Climate provinces: the altitude bands below read thermal height. Exactly
+  // `elevation - 0` in the temperate core.
+  const thermal = terrainThermalHeight(elevation, input.temperatureOffset ?? 0);
   if (shoreline <= 0) return ZERO_DENSITY;
   const riparian = riparianVegetationFactors(input.shoreDistanceMeters);
   if (riparian.clearance <= 0) return ZERO_DENSITY;
@@ -712,11 +723,11 @@ export function densityField(
     2_400, input.filterWidthMeters,
   );
   const treeline = TREELINE_BASE_METERS + aspect * 120 + shelter * 80 + treelineWander * 90;
-  const treelineFactor = 1 - smoothstep(treeline - 220, treeline + 40, elevation);
+  const treelineFactor = 1 - smoothstep(treeline - 220, treeline + 40, thermal);
   // Height taper begins below the density taper: trees become 2 m krummholz
   // before they disappear.
   const heightFactor = clamp(
-    1 - smoothstep(treeline - 320, treeline - 30, elevation) * 0.88,
+    1 - smoothstep(treeline - 320, treeline - 30, thermal) * 0.88,
     0.12,
     1,
   );
@@ -727,7 +738,7 @@ export function densityField(
   // growth with altitude below the treeline.
   const moistureFactor = Math.pow(smoothstep(0.3, 0.62, input.moisture), 1.6);
   const slopeFactor = 1 - smoothstep(0.05, 0.212, input.slope);
-  const lapse = 1 - smoothstep(500, Math.max(501, treeline), elevation) * 0.45;
+  const lapse = 1 - smoothstep(500, Math.max(501, treeline), thermal) * 0.45;
   const aspectFactor = 1 - aspect * 0.25;
 
   const forest = sampleForestPattern(
@@ -750,7 +761,7 @@ export function densityField(
   // and persist a little above the canopy treeline.
   const shrubMoisture = smoothstep(0.2, 0.5, input.moisture);
   const shrubSlope = 1 - smoothstep(0.09, 0.26, input.slope);
-  const shrubTreeline = 1 - smoothstep(treeline - 80, treeline + 140, elevation);
+  const shrubTreeline = 1 - smoothstep(treeline - 80, treeline + 140, thermal);
   const openness = 0.45 + 0.55 * (1 - forest.glade * 0.7);
   const shrubForestGate = 0.28 + forest.forestFraction * 0.72;
   const edgeShrubGain = 1 + forest.forestEdge * 0.45;
@@ -765,7 +776,7 @@ export function densityField(
     // Canopy closure IS the shade term: the field already knows how much
     // canopy stands here, so shade needs no field of its own.
     saturate(treeStems / BASE_TREE_STEMS),
-    elevation,
+    thermal,
     riparian.bankBand,
   );
   const closure = canopyClosure(saturate(treeStems));

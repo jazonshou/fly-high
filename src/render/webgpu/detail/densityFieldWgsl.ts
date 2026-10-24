@@ -19,6 +19,7 @@
  * split origins were built the same way the kernel's page uniform is.
  */
 
+import { CLIMATE_PROVINCE_METERS_PER_TEMPERATURE } from "@/src/world/climateProvince";
 import type { TerrainKernelLattice } from "../terrain/TerrainKernel";
 import {
   CANOPY_CLOSURE_FILTER_WIDTH_METERS,
@@ -287,6 +288,9 @@ struct VegetationDensityDrivers {
   // pre-load/out-of-domain value.
   shoreDistanceMeters: f32,
   filterWidthMeters: f32,
+  // Climate provinces: the temperature offset; the treeline, lapse and
+  // ground-cover lowland read thermal height from it. 0.0 in the temperate core.
+  temperatureOffset: f32,
 };
 
 struct VegetationDensitySample {
@@ -339,6 +343,8 @@ fn vegetationDensity(
   var result: VegetationDensitySample;
   let elevation = drivers.elevationAboveSeaLevel;
   let shoreline = kSmoothstep(1.5, 7.0, elevation);
+  // Climate provinces: thermal height for the altitude bands; see the TS twin.
+  let thermal = elevation - drivers.temperatureOffset * ${wgslMeters(CLIMATE_PROVINCE_METERS_PER_TEMPERATURE)};
   if (shoreline <= 0.0 || drivers.shoreDistanceMeters <= 0.0) {
     result.treeStemsPerSquareMeter = 0.0;
     result.shrubStemsPerSquareMeter = 0.0;
@@ -377,16 +383,16 @@ fn vegetationDensity(
     base + ${vegetationLatticeBase("treelineWander")}u, 2u, localX, localZ);
   let treeline = VEG_TREELINE_BASE_METERS
     + drivers.aspect * 120.0 + shelter * 80.0 + treelineWander * 90.0;
-  let treelineFactor = 1.0 - kSmoothstep(treeline - 220.0, treeline + 40.0, elevation);
+  let treelineFactor = 1.0 - kSmoothstep(treeline - 220.0, treeline + 40.0, thermal);
   let heightFactor = kClamp(
-    1.0 - kSmoothstep(treeline - 320.0, treeline - 30.0, elevation) * 0.88,
+    1.0 - kSmoothstep(treeline - 320.0, treeline - 30.0, thermal) * 0.88,
     0.12,
     1.0,
   );
 
   let moistureFactor = pow(kSmoothstep(0.3, 0.62, drivers.moisture), 1.6);
   let slopeFactor = 1.0 - kSmoothstep(0.05, 0.212, drivers.slope);
-  let lapse = 1.0 - kSmoothstep(500.0, max(501.0, treeline), elevation) * 0.45;
+  let lapse = 1.0 - kSmoothstep(500.0, max(501.0, treeline), thermal) * 0.45;
   let aspectFactor = 1.0 - drivers.aspect * 0.25;
   let clearance = 1.0 - kSaturate(drivers.airportInfluence);
   let channelClearance = kSmoothstep(0.0, 2.0, drivers.shoreDistanceMeters);
@@ -408,7 +414,7 @@ fn vegetationDensity(
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
   let shrubSlope = 1.0 - kSmoothstep(0.09, 0.26, drivers.slope);
-  let shrubTreeline = 1.0 - kSmoothstep(treeline - 80.0, treeline + 140.0, elevation);
+  let shrubTreeline = 1.0 - kSmoothstep(treeline - 80.0, treeline + 140.0, thermal);
   let openness = 0.45 + 0.55 * (1.0 - glade * 0.7);
   let shrubForestGate = 0.28 + province * 0.72;
   let edgeShrubGain = 1.0 + forestEdge * 0.45;
@@ -428,7 +434,7 @@ fn vegetationDensity(
       drivers.slope,
       // Canopy closure IS the shade term, exactly as the TS says.
       kSaturate(result.treeStemsPerSquareMeter / VEG_BASE_TREE_STEMS),
-      elevation,
+      thermal,
       riparianBand,
     ),
     result.canopyClosure,

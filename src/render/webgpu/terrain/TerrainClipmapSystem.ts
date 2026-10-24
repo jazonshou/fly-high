@@ -39,6 +39,7 @@ import {
 import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { SURFACE_MATERIALS } from "./surfaceMaterials";
+import { terrainClimateProvinceInput } from "./TerrainKernel";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import {
   TERRAIN_CHANNEL_TEXTURES,
@@ -1176,6 +1177,7 @@ export class TerrainClipmapSystem {
         this.world.seaLevel,
         this.world.latitudeDegrees,
         this.world.airport ?? null,
+        terrainClimateProvinceInput(this.world),
       ),
     };
   };
