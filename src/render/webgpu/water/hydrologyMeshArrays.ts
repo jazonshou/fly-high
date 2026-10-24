@@ -60,6 +60,8 @@ export interface HydrologyClimateSample {
    * includes it; the cold biomes' chemistry keys on it. Omitted reads 0.
    */
   readonly temperatureOffset?: number;
+  /** The climate province's raw dryness offset; omitted reads 0 (the core). */
+  readonly dryness?: number;
 }
 
 export type HydrologyClimateSampler = (
@@ -151,6 +153,7 @@ function riverStationChemistry(
       ...(sample.temperatureOffset !== undefined
         ? { temperatureOffset: sample.temperatureOffset }
         : {}),
+      ...(sample.dryness !== undefined ? { dryness: sample.dryness } : {}),
     },
     widthMeters,
     flowSpeedMetersPerSecond,

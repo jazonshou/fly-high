@@ -37,6 +37,7 @@
  */
 
 import { borealShare, tundraShare } from "@/src/world/coldBiomes";
+import { dryProvinceShares } from "../detail/densityField";
 import type { WaterOpticalType } from "./WaterShaders";
 
 /**
@@ -268,6 +269,12 @@ export interface InlandWaterEnvironment {
    * copy keys the cold biomes' chemistry. Omitted reads 0.
    */
   readonly temperatureOffset?: number;
+  /**
+   * The climate province's raw dryness offset at the water
+   * (`sampleClimateProvince`); `moisture` already carries its scaling. Omitted
+   * reads 0, the temperate core, where every term it gates is exactly 0.
+   */
+  readonly dryness?: number;
 }
 
 /** Glacial flour needs cold AND height: a valley glacier's outwash. */
@@ -382,13 +389,25 @@ export function resolveRiverConstituents(
   const wet = smoothstepUp(0.42, 0.86, moisture);
   const lowland = smoothstepDown(80, 900, elevationAboveSeaMeters);
   const cold = coldInlandWater(environment.temperatureOffset ?? 0, wet, RIVER_BOREAL_PEAT_GAIN);
+  // Dry country is bare country: with no vegetation to hold the banks, a
+  // desert river runs brown at ANY stream power (the Colorado before the dams,
+  // the Rio Grande), and a savanna river runs tan. Not lowland-gated: a high
+  // desert's rivers are as muddy as its basin's. At 1 and full load this is
+  // the 150 g/m^3 muddy-river type the model is validated against.
+  const dry = dryProvinceShares(environment.dryness ?? 0);
+  const dryLoad = (DESERT_RIVER_SEDIMENT * dry.arid + PARKLAND_RIVER_SEDIMENT * dry.parkland)
+    * (0.35 + 0.65 * load);
   return {
     chlorophyll: 0.2 + 4 * lowland * wet * (1 - glacial),
     cdom440: 0.04 + 2.4 * cold.peat * lowland * (1 - glacial) * cold.stain,
-    sediment: 0.3 + 34 * load * lowland,
+    sediment: 0.3 + 34 * load * lowland + dryLoad,
     mineral: 7 * glacial,
   };
 }
+
+/** Bare-catchment sediment a fully dry province adds to a river, g/m^3. */
+export const DESERT_RIVER_SEDIMENT = 115;
+export const PARKLAND_RIVER_SEDIMENT = 30;
 
 function smoothstepUp(low: number, high: number, value: number): number {
   if (!(high > low)) throw new RangeError("smoothstep edges must increase");

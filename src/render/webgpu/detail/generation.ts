@@ -6,7 +6,7 @@ import {
   seasonalWinterFraction,
   type TerrainEvolutionGeologySample,
 } from "@/src/world";
-import { clamp as kernelClamp } from "@/src/world/noise";
+import { clamp as kernelClamp, smoothstep } from "@/src/world/noise";
 import { borealShare, splitColdDraw, tundraShare } from "@/src/world/coldBiomes";
 import {
   terrainSnowlineThermalHeight,
@@ -30,8 +30,11 @@ import {
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
   densityField,
+  dryProvinceGroundCoverKeep,
+  dryProvinceShares,
   riparianVegetationFactors,
   soilLitterFactor,
+  type DryProvinceShares,
   type VegetationDensitySample,
 } from "./densityField";
 import { sampleStandField, type StandSample } from "./standField";
@@ -252,6 +255,18 @@ const ZERO_VEGETATION_DENSITY: VegetationDensitySample = Object.freeze({
   grassCover: 1,
 });
 
+/** The dry province's shares at a sample: one reading, shared by every draw. */
+function sampleDryShares(sample: DetailTerrainSample): DryProvinceShares {
+  return dryProvinceShares(sample.dryness ?? 0);
+}
+
+/**
+ * Cold parkland (aspen parkland), by the province's temperature offset: none
+ * at the temperate plateau or warmer, all of it at the boreal one (-0.22).
+ */
+const COLD_PARKLAND_ONSET = 0.06;
+const COLD_PARKLAND_FULL = 0.2;
+
 /**
  * `R-27`: species read the CLASSIFIER's weight vector, not their own rules.
  *
@@ -314,6 +329,28 @@ function chooseBorealTreeSpecies(sample: DetailTerrainSample, choice: number): T
 }
 
 function chooseTemperateTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpecies {
+  // The dry provinces' own stands come first, drawn against their shares so
+  // the ecotone is a mixture rather than a contour. The roll is re-stretched
+  // over what is left, so the temperate draw below stays uniform.
+  const dry = sampleDryShares(sample);
+  if (choice < dry.arid) {
+    // Pinyon-juniper: pinyon pine, and the tree-form juniper the "cedar"
+    // prototype stands in for.
+    return choice / dry.arid < 0.78 ? "pine" : "cedar";
+  }
+  const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
+  if (afterArid < dry.parkland) {
+    const parklandRoll = afterArid / dry.parkland;
+    // A cold province's parkland is aspen parkland, not oak savanna: the
+    // prairie-boreal ecotone's aspen clumps ("birch" stands in for them) and
+    // lodgepole. Exactly 0 at a temperature offset of 0 or warmer.
+    const cold = smoothstep(
+      COLD_PARKLAND_ONSET, COLD_PARKLAND_FULL, -(sample.temperatureOffset ?? 0));
+    if (parklandRoll < cold) return parklandRoll / cold < 0.72 ? "birch" : "pine";
+    // Oak savanna: open-grown oaks with the odd grey pine.
+    return (parklandRoll - cold) / (1 - cold) < 0.84 ? "oak" : "pine";
+  }
+  choice = dry.parkland > 0 ? (afterArid - dry.parkland) / (1 - dry.parkland) : afterArid;
   const habitat = landCoverHabitat(classifyDetailSample(sample));
   // Upland: conifer-dominated, and the classifier's scrub/barren shares are
   // what "upland" MEANS here rather than a height threshold.
@@ -760,6 +797,7 @@ function fieldAt(
     ...(sample.shoreDistanceMeters !== undefined
       ? { shoreDistanceMeters: sample.shoreDistanceMeters }
       : {}),
+    dryness: sample.dryness ?? 0,
     dayOfYear: context.dayOfYear,
   });
   return field;
@@ -969,6 +1007,9 @@ function scatterLayer(
     .map((candidate) => candidate.build());
 }
 
+/** How much of a tree's height a full desert takes away (31 m pine -> 12 m pinyon). */
+const DESERT_TREE_STATURE_CUT = 0.6;
+
 function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
   return scatterLayer(context, "canopy", (x, z, y, blockSample, field, random, stand, push) => {
     const priority = random();
@@ -985,14 +1026,18 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
     }
     const dimensions = treeDimensions(species, random, stand.standAge);
     const boreal = borealTreeForm(species, borealShare(blockSample.temperatureOffset ?? 0));
+    // A desert tree is a small one: pinyon and juniper stand 4-12 m with a
+    // crown nearly as wide as they are tall. Exactly 1 outside a dry province.
+    const desertStature = 1 - sampleDryShares(blockSample).arid * DESERT_TREE_STATURE_CUT;
     // Krummholz: near the treeline trees shrink before they disappear.
-    const height = dimensions.height * field.heightFactor * boreal.stature;
+    const height = dimensions.height * field.heightFactor * boreal.stature * desertStature;
     // Gate B forest-edge margin: the density authority shortens edge stems
     // through heightFactor and publishes the same margin for crown form.
     // Species and stand selection remain untouched; only silhouette changes.
     const crown = dimensions.crown
       * (0.55 + 0.45 * field.heightFactor)
-      * (1 + field.forestEdge * 0.48);
+      * (1 + field.forestEdge * 0.48)
+      * Math.sqrt(desertStature);
     // Half a crown: real closed-canopy forests overlap crowns; a full-crown
     // exclusion zone thins the stand far below its ecological density.
     push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({
@@ -1103,6 +1148,15 @@ function chooseColdShrubSpecies(sample: DetailTerrainSample, choice: number): Sh
 }
 
 function chooseTemperateShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
+  // Dry provinces first, drawn against their shares as the canopy is.
+  const dry = sampleDryShares(sample);
+  if (choice < dry.arid) return choice / dry.arid < 0.74 ? "sage" : "juniper";
+  const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
+  if (afterArid < dry.parkland) {
+    const parklandRoll = afterArid / dry.parkland;
+    return parklandRoll < 0.4 ? "juniper" : parklandRoll < 0.7 ? "sage" : "hazel";
+  }
+  choice = dry.parkland > 0 ? (afterArid - dry.parkland) / (1 - dry.parkland) : afterArid;
   if (sample.moisture > 0.64) return choice < 0.68 ? "hazel" : "juniper";
   const habitat = landCoverHabitat(classifyDetailSample(sample));
   if (habitat.scrub + habitat.barren > habitat.canopy + habitat.open) {
@@ -1436,6 +1490,7 @@ function buildGroundCoverGrid(
         slope: sample.slope,
         moisture: sample.moisture,
         temperatureOffset: sample.temperatureOffset ?? 0,
+        dryness: sample.dryness ?? 0,
         dayOfYear: context.dayOfYear,
         ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
         ...(sample.airportInfluence !== undefined
@@ -1453,7 +1508,9 @@ function buildGroundCoverGrid(
         : clamp(0.35 + sample.moisture * 0.5 + closure * 0.15, 0, 1)
           // Mown, not bare: the apron keeps ~40% of its cover (1B-6).
           * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1))
-          * riparianVegetationFactors(sample.shoreDistanceMeters).clearance;
+          * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
+          // Bunchgrass and bare soil, not a sward: exactly 1 outside a desert.
+          * dryProvinceGroundCoverKeep(sample.dryness ?? 0);
       // Exposure reads THERMAL height: a cold province's lowland is as exposed
       // as the temperate world's uplands, which is where heath takes over from
       // grass. `- 0` in the temperate core.
