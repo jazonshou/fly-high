@@ -1,4 +1,5 @@
 import type { ClimateProvinceOption, ClimateProvinceSample } from "./climateProvince";
+import type { ForcedLandforms, LandformsOption } from "./landforms";
 
 /** A seed accepted by the deterministic world generator. */
 export type WorldSeed = string | number;
@@ -50,6 +51,13 @@ export interface WorldOptions {
    * World content, like `worldEvolution`: it is part of the cache identity.
    */
   climateProvince?: ClimateProvinceOption;
+  /**
+   * Force landforms everywhere outside a small clearance round the start
+   * airport (see `landforms.ts`): `{ dunes: true }` puts a sand sea on all low
+   * ground. Omitted, landforms appear only where the world grows them, at
+   * least 120 km from the start. World content: part of the cache identity.
+   */
+  landforms?: LandformsOption;
 }
 
 export interface WorldDefinition {
@@ -76,6 +84,11 @@ export interface WorldDefinition {
    * the temperate core. Read it through `sampleClimateProvince`, never directly.
    */
   readonly climateProvince?: Readonly<ClimateProvinceSample> | null;
+  /**
+   * The forced landforms, or null/absent for natural landforms outside the
+   * landform core. Landform stages read it; nothing else should.
+   */
+  readonly landforms?: ForcedLandforms | null;
 }
 
 export const TerrainBiome = {

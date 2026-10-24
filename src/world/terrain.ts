@@ -8,6 +8,7 @@ import {
   type CarvedChannelSet,
 } from "@/src/render/webgpu/terrain/RiverChannels";
 import { getAirportInfluence, isPointOnRunway, worldToRunway } from "./airport";
+import { applyTerrainLandforms } from "./landforms";
 import { sampleGeologicalRelief, sampleTerrainPlates } from "./geology";
 import {
   blendTowardExpectation,
@@ -405,11 +406,67 @@ export function sampleNaturalTerrainHeight(
       - (rockyKnolls + cragDetail + geologicalRelief) * (1 - reliefKept);
     height = shippedHeight + (reshapedHeight - shippedHeight) * shapeWeight;
   }
+  // Landforms read these off the call that produced the height (see
+  // NATURAL_INTERMEDIATES); writing them cannot change the returned value.
+  const intermediates = NATURAL_INTERMEDIATES;
+  intermediates.warpedX = warpedX;
+  intermediates.warpedZ = warpedZ;
+  intermediates.continental = continental;
+  intermediates.land = land;
+  intermediates.foothillRegion = foothillRegion;
+  intermediates.mountainRegion = mountainRegion;
+  intermediates.rolling = rolling;
+  intermediates.hillStrength = hillStrength;
+  intermediates.fine = fine;
+  intermediates.rockyKnolls = rockyKnolls;
+  intermediates.geologicalRelief = geologicalRelief;
+  intermediates.shippedHeight = shippedHeight;
   return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
 }
 
 /** Per-call scratch for the ridge pair; the kernel runs ~181 lattices per vertex. */
 const RIDGE_PAIR_SCRATCH: RidgedPair = { hard: 0, soft: 0 };
+
+/**
+ * The natural kernel's intermediates at the point of its LAST call: what the
+ * landform stages (`landforms.ts`) read instead of evaluating the kernel again.
+ * Valid only until the next `sampleNaturalTerrainHeight` call, which is why
+ * only the two world-height samplers below hand it on, on the very next line.
+ * The WGSL twin is the private `kNatural` the kernel writes the same way.
+ */
+export interface NaturalTerrainIntermediates {
+  /** The warped coordinate the continental, rolling and ridge fields read, metres. */
+  warpedX: number;
+  warpedZ: number;
+  continental: number;
+  land: number;
+  foothillRegion: number;
+  mountainRegion: number;
+  /** The 1.65 km hill fbm, before `hillStrength`. */
+  rolling: number;
+  hillStrength: number;
+  /** The 310 m fbm, before its `5 + land * 12` amplitude. */
+  fine: number;
+  rockyKnolls: number;
+  geologicalRelief: number;
+  /** The height before M-1's massif reshaping and the clamp. */
+  shippedHeight: number;
+}
+
+const NATURAL_INTERMEDIATES: NaturalTerrainIntermediates = {
+  warpedX: 0,
+  warpedZ: 0,
+  continental: 0,
+  land: 0,
+  foothillRegion: 0,
+  mountainRegion: 0,
+  rolling: 0,
+  hillStrength: 0,
+  fine: 0,
+  rockyKnolls: 0,
+  geologicalRelief: 0,
+  shippedHeight: 0,
+};
 
 /**
  * Phase 5's pre-erosion tectonic field.
@@ -718,7 +775,8 @@ export function sampleFilteredTerrainUpliftHeight(
 export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
-  return applyAirportEarthworks(world, naturalHeight, x, z);
+  const height = applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
+  return applyAirportEarthworks(world, height, x, z);
 }
 
 /**
@@ -811,7 +869,9 @@ export function sampleFilteredTerrainHeight(
   filterWidthMeters: number,
 ): number {
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, filterWidthMeters);
-  return applyAirportEarthworks(world, naturalHeight, x, z);
+  const height = applyTerrainLandforms(
+    world, x, z, naturalHeight, filterWidthMeters, NATURAL_INTERMEDIATES);
+  return applyAirportEarthworks(world, height, x, z);
 }
 
 /**
