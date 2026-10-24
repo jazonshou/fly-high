@@ -1,4 +1,5 @@
 import type { WorldDefinition } from "@/src/world";
+import { sampleClimateProvince } from "@/src/world/climateProvince";
 import {
   sampleTerrainClimate,
   sampleTerrainMoisture,
@@ -16,13 +17,21 @@ import type { HydrologyClimateSampler } from "./hydrologyMeshArrays";
  * the same arrays from the same world. Class P: no Babylon, no DOM.
  */
 export function hydrologyClimateSamplerFor(world: WorldDefinition): HydrologyClimateSampler {
-  return (x, z, elevation) => ({
-    temperature: terrainTemperatureFromClimate(
-      world,
-      sampleTerrainClimate(world, x, z),
-      elevation,
-    ),
-    // Point-sampled: a lake or a station is a point, not a footprint.
-    moisture: sampleTerrainMoisture(world, x, z, 0),
-  });
+  return (x, z, elevation) => {
+    // Climate provinces: the temperature carries the province's offset, and
+    // the raw offset rides along for the cold biomes' chemistry. Both are
+    // exactly the temperate values in the core (`+ 0`).
+    const province = sampleClimateProvince(world, x, z);
+    return {
+      temperature: terrainTemperatureFromClimate(
+        world,
+        sampleTerrainClimate(world, x, z),
+        elevation,
+        province.temperatureOffset,
+      ),
+      // Point-sampled: a lake or a station is a point, not a footprint.
+      moisture: sampleTerrainMoisture(world, x, z, 0),
+      temperatureOffset: province.temperatureOffset,
+    };
+  };
 }
