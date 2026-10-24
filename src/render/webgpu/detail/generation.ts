@@ -1163,10 +1163,13 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       )
       : chooseTreeSpecies(blockSample, speciesChoice);
     // Cool north faces carry a larger conifer share (the aspect species shift),
-    // and the tropics fade it out with the rest of their conifers.
-    const aspectConifers = tropical > 0
+    // and the tropics fade it out with the rest of their conifers. A desert's
+    // north faces keep their pinyon-juniper: spruce is no high-desert tree, and
+    // a third prototype on every slope is a third batch in every chunk.
+    const arid = sampleDryShares(blockSample).arid;
+    const aspectConifers = (tropical > 0
       ? 1 - smootherStep(0, TROPICAL_COAST.broadleafOnlyWeight, tropical)
-      : 1;
+      : 1) * (1 - arid);
     if (
       species !== "palm"
       && field.aspect < 0
@@ -1178,7 +1181,7 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
     const boreal = borealTreeForm(species, borealShare(blockSample.temperatureOffset ?? 0));
     // A desert tree is a small one: pinyon and juniper stand 4-12 m with a
     // crown nearly as wide as they are tall. Exactly 1 outside a dry province.
-    const desertStature = 1 - sampleDryShares(blockSample).arid * DESERT_TREE_STATURE_CUT;
+    const desertStature = 1 - arid * DESERT_TREE_STATURE_CUT;
     // Krummholz: near the treeline trees shrink before they disappear.
     const height = dimensions.height * field.heightFactor * boreal.stature * desertStature;
     // Gate B forest-edge margin: the density authority shortens edge stems

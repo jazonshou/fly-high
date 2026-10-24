@@ -38,6 +38,7 @@ import {
 } from "./MaterialArrayUpload";
 import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
+import { ClimateProvinceField } from "./ClimateProvinceField";
 import { SURFACE_MATERIALS } from "./surfaceMaterials";
 import { terrainClimateProvinceInput, terrainLandformInput } from "./TerrainKernel";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
@@ -305,7 +306,11 @@ export interface TerrainClipmapStatistics {
    * physics and morphing require.
    */
   readonly residencyReasons: TerrainResidencyReasons;
-  /** Slots whose generation dispatch is in flight. */
+  /**
+   * Slots whose generation dispatch is in flight, plus one while the climate
+   * province window still has stale texels: the far ground's tones are part
+   * of what "streamed" means, so a capture never settles on a half-baked field.
+   */
   readonly pendingPages: number;
   readonly triangles: number;
   /** 4-4: the CPU worker pool is gone; this is compute dispatches in flight. */
@@ -446,6 +451,11 @@ export class TerrainClipmapSystem {
    * drain a few frames later, when nothing in flight can hold them.
    */
   private deferredDisposals: Array<{ retiredAtFrame: number; dispose: () => void }> = [];
+  /**
+   * The climate province window the far fallback reads, when the tier has it
+   * (`terrainProvinceField`). Null compiles the province terms out.
+   */
+  private provinceField: ClimateProvinceField | null = null;
   /** False under NullEngine, where a TEXTURE_2D_ARRAY upload cannot be expressed. */
   private canBuildArrays = false;
   /** The edge the arrays SHOULD have; the build runs until they do. */
@@ -540,6 +550,7 @@ export class TerrainClipmapSystem {
       profile.heightBlendMaxMaterials,
     );
     this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
+    this.applyProvinceField(profile);
     // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
     // the rendered-density law's, carried on the profile since the perf-debt
     // pass, so terrain reads them as data and never re-derives a radius. The
@@ -746,6 +757,30 @@ export class TerrainClipmapSystem {
     }
   }
 
+  /**
+   * Create or retire the province window to match the tier. The plugin's
+   * define follows it, so the swap recompiles with the tier's other defines.
+   */
+  private applyProvinceField(profile: WebGpuQualityProfile): void {
+    if (profile.terrainProvinceField && !this.provinceField) {
+      this.provinceField = new ClimateProvinceField(this.scene, this.world);
+      this.surfacePlugin.setClimateProvinceField(this.provinceField.binding);
+    } else if (!profile.terrainProvinceField && this.provinceField) {
+      const retired = this.provinceField;
+      this.provinceField = null;
+      this.surfacePlugin.setClimateProvinceField(null);
+      this.deferredDisposals.push({
+        retiredAtFrame: this.frameIndex,
+        dispose: () => retired.dispose(),
+      });
+    }
+  }
+
+  /** True while the province window still has stale texels near the camera. */
+  get provinceFieldPending(): boolean {
+    return this.provinceField?.pending ?? false;
+  }
+
   /** Drain retirements that are safely past any in-flight frame. */
   private drainDeferredDisposals(): void {
     if (this.deferredDisposals.length === 0) return;
@@ -781,7 +816,8 @@ export class TerrainClipmapSystem {
     return {
       residentPages: this.heightAtlas.residency.residentCount,
       residencyReasons: this.residencyReasons,
-      pendingPages: this.heightAtlas.residency.generatingCount,
+      pendingPages: this.heightAtlas.residency.generatingCount
+        + (this.provinceField?.pending ? 1 : 0),
       triangles: trianglesPerNode * this.nodes.length,
       workersBusy: (this.generationInFlight ? 1 : 0) + (this.occlusionInFlight ? 1 : 0),
       residentSlots: this.heightAtlas.residency.residentCount,
@@ -829,6 +865,7 @@ export class TerrainClipmapSystem {
       profile.heightBlendMaxMaterials,
     );
     this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
+    this.applyProvinceField(profile);
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
@@ -1037,6 +1074,7 @@ export class TerrainClipmapSystem {
       velocityX: observer.velocityX,
       velocityZ: observer.velocityZ,
     };
+    this.provinceField?.update(observer.x, observer.z);
     const residentPage = createResidentInvariantPageLookup(this.heightAtlas.residency);
     this.nodes = selectTerrainNodes({
       cameraX: observer.x,
@@ -1091,6 +1129,8 @@ export class TerrainClipmapSystem {
     this.occlusionBake?.dispose();
     this.splatBake?.dispose();
     this.pyramid?.dispose();
+    this.provinceField?.dispose();
+    this.provinceField = null;
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
     this.channelAtlas.dispose();

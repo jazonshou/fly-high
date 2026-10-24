@@ -109,7 +109,7 @@ describe("D-5 the gate", () => {
       expect(terrainTurfMesoGainTerm(strength)).toBe("");
     }
     expect(terrainTurfMesoGainWgsl(1)).toMatch(
-      /let terrainTurfMesoGain = 1\.0 \+ 1\.0 \* terrainTurfCover\s+\* \(1\.0 - terrainGroundAirfield\)\s+\* \(1\.0 - clamp\(terrainGroundCanopyClosure, 0\.0, 1\.0\)\)\s+\* smoothstep\(420\.0, 980\.0,\s+terrainElevationDriver\)\s+\* \(1\.0 - smoothstep\(0\.16, 0\.24, terrainSlope\)\)\s+\* smoothstep\(0\.6, 2\.0,\s+terrainFootprint3D\)\s+\* terrainGroundPatchworkOn;/u);
+      /let terrainTurfMesoGain = 1\.0 \+ 1\.0 \* terrainTurfCover\s+\* \(1\.0 - terrainGroundAirfield\)\s+\* \(1\.0 - clamp\(terrainGroundCanopyClosure, 0\.0, 1\.0\)\)\s+\* smoothstep\(420\.0, 980\.0,\s+terrainThermalDriver\)\s+\* \(1\.0 - smoothstep\(0\.16, 0\.24, terrainSlope\)\)\s+\* smoothstep\(0\.6, 2\.0,\s+terrainFootprint3D\)\s+\* terrainGroundPatchworkOn;/u);
     expect(terrainTurfMesoGainWgsl(2)).toContain("let terrainTurfMesoGain = 1.0 + 2.0 * terrainTurfCover");
     expect(terrainTurfMesoGainTerm(1)).toBe(" * terrainTurfMesoGain");
     // The owner's choice: A, the band doubled on alpine turf.

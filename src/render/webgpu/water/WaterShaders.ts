@@ -1007,11 +1007,16 @@ fn analyticWaterBedAlbedo(
   );
   let deepSilt = vec3f(0.028, 0.055, 0.052);
   let substrate = mix(rock, sand, mix(mineral * 0.32, 0.7 + 0.25 * mineral, carbonate));
-  return mix(
-    substrate,
-    deepSilt,
-    smoothstep(8.0 + 10.0 * carbonate, 45.0 + 15.0 * carbonate, -bedElevation),
+  // Two literal-edged fades mixed by the carbonate, never one fade with
+  // carbonate-shifted edges: a compiler lowers smoothstep with literal edges
+  // differently from one with runtime edges, and the bits then differ at a
+  // carbonate of 0 (measured on SwiftShader, tests/gpu/water-bed-carbonate).
+  let siltFade = mix(
+    smoothstep(8.0, 45.0, -bedElevation),
+    smoothstep(18.0, 60.0, -bedElevation),
+    carbonate,
   );
+  return mix(substrate, deepSilt, siltFade);
 }
 
 // W-7 -- the water-leaving radiance of one fragment: Lee et al.'s

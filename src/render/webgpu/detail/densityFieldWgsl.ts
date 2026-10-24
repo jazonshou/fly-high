@@ -37,6 +37,7 @@ import {
   DRY_PROVINCE_PARKLAND_FULL,
   DRY_PROVINCE_PARKLAND_ONSET,
   DETAIL_FAR_CULL_FADE_METERS,
+  PARKLAND_CLOSED_FOREST_KEEP,
   PARKLAND_OPEN_GROWN_EDGE,
   PARKLAND_SHRUB_SHARE,
   PARKLAND_TREE_SHARE,
@@ -332,6 +333,7 @@ const VEG_BASE_TREE_STEMS: f32 = 0.08;
 const VEG_BASE_SHRUB_STEMS: f32 = 0.045;
 const VEG_TREELINE_BASE_METERS: f32 = 1350.0;
 const VEG_PARKLAND_TREE_SHARE: f32 = ${wgslMeters(PARKLAND_TREE_SHARE)};
+const VEG_PARKLAND_CLOSED_FOREST_CUT: f32 = ${wgslMeters(1 - PARKLAND_CLOSED_FOREST_KEEP)};
 const VEG_DESERT_TREE_SHARE: f32 = ${wgslMeters(DESERT_TREE_SHARE)};
 const VEG_DESERT_SHRUB_SHARE: f32 = ${wgslMeters(DESERT_SHRUB_SHARE)};
 const VEG_PARKLAND_SHRUB_SHARE: f32 = ${wgslMeters(PARKLAND_SHRUB_SHARE)};
@@ -459,8 +461,11 @@ fn vegetationDensity(
     * kSmoothstep(${wgslMeters(PINYON_HEAT_ONSET)}, ${wgslMeters(PINYON_HEAT_FULL)}, drivers.temperatureOffset);
   let pinyonStems = VEG_BASE_TREE_STEMS * VEG_DESERT_TREE_SHARE * arid
     * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * glade);
+  let closedForestKeep = 1.0
+    - (arid + VEG_PARKLAND_CLOSED_FOREST_CUT * parkland) * (1.0 - riparianBand);
   result.treeStemsPerSquareMeter = kSaturate(
-    VEG_BASE_TREE_STEMS * moistureFactor * habitat + parklandStems + pinyonStems);
+    VEG_BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep
+    + parklandStems + pinyonStems);
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
   let shrubSlope = 1.0 - kSmoothstep(0.09, 0.26, drivers.slope);
@@ -475,10 +480,11 @@ fn vegetationDensity(
   let openness = 0.45 + 0.55 * (1.0 - glade * 0.7);
   let shrubForestGate = 0.28 + province * 0.72;
   let edgeShrubGain = 1.0 + forestEdge * 0.45;
+  let understoryKeep = 1.0 - VEG_PARKLAND_CLOSED_FOREST_CUT * parkland * (1.0 - riparianBand);
   result.shrubStemsPerSquareMeter = kSaturate(
     VEG_BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness
       * shoreline * disturbance * shrubForestGate * edgeShrubGain * clearance
-      * channelClearance * (1.0 + riparianBand * 0.65)
+      * channelClearance * (1.0 + riparianBand * 0.65) * understoryKeep
     + VEG_BASE_SHRUB_STEMS
       * (VEG_DESERT_SHRUB_SHARE * arid + VEG_PARKLAND_SHRUB_SHARE * parkland)
       * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * glade),
