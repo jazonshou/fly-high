@@ -51,6 +51,8 @@ import {
   ssimBaselineFailureMessage,
   deliveryFailuresAgainst,
   perfCaptureDeliveryContract,
+  perfShotWorldKey,
+  perfShotWorldOptions,
   tileStatistics,
   worstTileRgbSsim,
   yawForSunBearing,
@@ -599,7 +601,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
     // appended). These are LET bindings so the placement and terrain-sample
     // closures below always read the ACTIVE world at call time, and the
     // renderer/canvas swap at a mode boundary reassigns them all together.
-    let activeWorldEvolution: "analytic" | "eroded" = "analytic";
+    let activeWorldKey = perfShotWorldKey({});
     let world = createWorld(PERF_CAPTURE_SEED);
     let airportX = world.airport?.centerX ?? 0;
     let airportZ = world.airport?.centerZ ?? 0;
@@ -702,12 +704,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // Eroded shots are appended after all analytic shots, so this fires at
       // most once per run.
       const shotWorldEvolution = shot.worldEvolution ?? "analytic";
-      if (shotWorldEvolution !== activeWorldEvolution) {
+      const shotWorldKey = perfShotWorldKey(shot);
+      if (shotWorldKey !== activeWorldKey) {
         removeGpuUncapturedErrorListener?.();
         removeGpuUncapturedErrorListener = null;
         renderer.dispose();
         canvas.remove();
-        world = createWorld(PERF_CAPTURE_SEED, { worldEvolution: shotWorldEvolution });
+        world = createWorld(PERF_CAPTURE_SEED, perfShotWorldOptions(shot));
         airportX = world.airport?.centerX ?? 0;
         airportZ = world.airport?.centerZ ?? 0;
         canvas = createCaptureCanvas();
@@ -715,7 +718,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         removeGpuUncapturedErrorListener = renderer.addGpuUncapturedErrorListenerForCapture(
           (event) => gpuUncapturedErrors.push(serializeGpuUncapturedError(event)),
         );
-        activeWorldEvolution = shotWorldEvolution;
+        activeWorldKey = shotWorldKey;
       }
       // 6-11.1: a sweep viewport overrides every shot's own size, so one
       // sweep run is one resolution across the whole set and the three

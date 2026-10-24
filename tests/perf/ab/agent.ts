@@ -56,6 +56,8 @@ import {
   worstTileRgbSsim,
   yawForSunBearing,
   type PerfCaptureShotDefinition,
+  perfShotWorldKey,
+  perfShotWorldOptions,
 } from "../../../scripts/perf-capture.mts";
 import {
   gpuDrawGateStats,
@@ -87,8 +89,6 @@ import {
   type StreamRequest,
 } from "./protocol";
 
-type WorldEvolution = "analytic" | "eroded";
-
 interface ShotContext {
   readonly shot: PerfCaptureShotDefinition;
   readonly canonicalShotIndex: number;
@@ -108,7 +108,7 @@ const creations = { pipelines: 0, shaderModules: 0 };
 
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
-let activeWorldEvolution: WorldEvolution | null = null;
+let activeWorldKey: string | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let renderer: FlightRenderer | null = null;
 let removeGpuErrorListener: (() => void) | null = null;
@@ -258,16 +258,17 @@ function createCanvas(): HTMLCanvasElement {
   return element;
 }
 
-async function ensureRenderer(worldEvolution: WorldEvolution): Promise<void> {
+async function ensureRenderer(shot: PerfCaptureShotDefinition): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  if (renderer && activeWorldEvolution === worldEvolution) return;
+  const worldKey = perfShotWorldKey(shot);
+  if (renderer && activeWorldKey === worldKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
   removeGpuErrorListener?.();
   removeGpuErrorListener = null;
   renderer?.dispose();
   canvas?.remove();
-  world = createWorld(PERF_CAPTURE_SEED, { worldEvolution });
+  world = createWorld(PERF_CAPTURE_SEED, perfShotWorldOptions(shot));
   canvas = createCanvas();
   const activeWorld = world;
   const profile = qualityProfile.resolveWebGpuQualityProfile(
@@ -289,7 +290,7 @@ async function ensureRenderer(worldEvolution: WorldEvolution): Promise<void> {
     cockpitRigOverride: PERF_COCKPIT_RIG,
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
-  activeWorldEvolution = worldEvolution;
+  activeWorldKey = worldKey;
   renderCalls = 0;
   removeGpuErrorListener = capability("addGpuUncapturedErrorListenerForCapture")((event) => {
     errors.gpu.push(JSON.stringify({ type: event.error.constructor?.name || "GPUError", message: event.error.message }));
@@ -429,7 +430,7 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic");
+    await ensureRenderer(shot);
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;

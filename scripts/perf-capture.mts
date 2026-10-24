@@ -12,6 +12,8 @@
 
 import { aircraftSpec } from "../src/aircraft/catalogue";
 import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
+import type { ClimateProvinceOption } from "../src/world/climateProvince";
+import type { LandformsOption } from "../src/world/landforms";
 
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
 export const PERF_CAPTURE_WIDTH = 1_280;
@@ -115,6 +117,29 @@ export interface PerfCaptureDeliveryContract {
   readonly hitchBudgetMs: number;
   readonly maxHitches: number;
   readonly maxFrameMs: number;
+}
+
+type PerfShotWorld = Pick<PerfCaptureShotDefinition, "worldEvolution" | "landforms" | "climateProvince">;
+
+/** The world options a shot captures in: its evolution, forced landforms and forced province. */
+export function perfShotWorldOptions(shot: PerfShotWorld): {
+  worldEvolution: "analytic" | "eroded";
+  landforms?: LandformsOption;
+  climateProvince?: ClimateProvinceOption;
+} {
+  return {
+    worldEvolution: shot.worldEvolution ?? "analytic",
+    ...(shot.landforms ? { landforms: shot.landforms } : {}),
+    ...(shot.climateProvince !== undefined ? { climateProvince: shot.climateProvince } : {}),
+  };
+}
+
+/** Equal for two shots that capture the same world (a rebuild happens where it changes). */
+export function perfShotWorldKey(shot: PerfShotWorld): string {
+  const options = perfShotWorldOptions(shot);
+  return `${options.worldEvolution}|dunes=${options.landforms?.dunes === true}`
+    + `|volcanic=${options.landforms?.volcanic === true}`
+    + `|province=${JSON.stringify(options.climateProvince ?? null)}`;
 }
 
 export function perfCaptureDeliveryContract(tier: number): PerfCaptureDeliveryContract {
@@ -557,6 +582,22 @@ export interface PerfCaptureShotDefinition {
    * and appending preserves every existing canonical phase index.
    */
   readonly worldEvolution?: "analytic" | "eroded";
+  /**
+   * Landforms the shot's world forces everywhere outside the runway
+   * clearance (`?landforms=`): review shots of sand seas and volcanic
+   * fields near the airport. Absent, the world's natural landforms. A shot
+   * that forces landforms rebuilds the world like a mode boundary, so such
+   * shots belong after the shots that do not. A build that predates the
+   * field ignores it and draws the natural world at the same pose, which is
+   * what makes an A/B against such a base a before/after pair.
+   */
+  readonly landforms?: LandformsOption;
+  /**
+   * A climate province the shot's world forces (a preset name or explicit
+   * offsets), for review pairs that hold the province fixed in both arms.
+   * Absent, the natural province field. Same ordering rule as `landforms`.
+   */
+  readonly climateProvince?: ClimateProvinceOption;
   /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.
