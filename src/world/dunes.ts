@@ -93,7 +93,7 @@ export const DUNES = Object.freeze({
   /** Mean windward slope; the convex profile peaks at 4/3 of it. */
   stossDegrees: 8,
   /** The slipface: sand's angle of repose. */
-  slipDegrees: 30,
+  slipDegrees: 29,
   /** Polynomial smooth-min height band that rounds the brink (about 4 m wide). */
   brinkRoundingMeters: 3,
   /** Crest sinuosity: a ~1.5 km field and a ~450 m one, amplitudes in periods. */
@@ -107,9 +107,9 @@ export const DUNES = Object.freeze({
    */
   scallopWidthMeters: 520,
   scallopAmplitudePeriods: 0.22,
-  scallopStagger: 0.37,
+  scallopStagger: 0.12,
   /** How far the two meander fields push the crescent joints sideways, crescents. */
-  scallopJitter: 0.35,
+  scallopJitter: 0.45,
   /** Crest continuity: a ~700 m field. */
   crest: Object.freeze({ channel: 222, wavelengthMeters: 700 }),
   /** Crest threshold at full supply and at the thinnest sand, on the [0, 1] crest field. */
