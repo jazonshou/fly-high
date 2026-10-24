@@ -62,9 +62,9 @@ import { sameAirport } from "./AirportFootprint";
  *
  * **NO NEW MATERIAL, TEXTURE OR PIPELINE.** Structures draw with the HOME
  * field's material set (`AirportSystem.materials`), with exactly the vertex
- * layouts the home field's meshes already compiled pipelines for; lamps ride
- * the home field's light-point draw; floods are clustered lights reserved at
- * startup. Spawning compiles nothing.
+ * layouts and index widths the home field's meshes already compiled pipelines
+ * for; lamps ride the home field's light-point draw; floods are clustered
+ * lights reserved at startup. Spawning compiles nothing.
  *
  * **BATCHED, NOT 22 MESHES.** The home field draws its 22 structure meshes
  * separately. A spawned field merges them per (material, vertex layout,
@@ -194,24 +194,35 @@ interface GroupSpec {
   readonly material: keyof Omit<AirfieldMaterialSet, "dispose">;
   readonly uvs: boolean;
   readonly casts: boolean;
+  /**
+   * 32-bit indices, as the home meshes of this material and layout have.
+   * WebGPU picks the index buffer's width from the array it is given, and
+   * Babylon keys a define on it (`VERTEX_PULLING_INDEX_BUFFER_32BITS`), so a
+   * width the home field never drew with is an effect variant compiled
+   * mid-flight. The tower's parts keep its builder's `Uint32Array`s; every
+   * other home mesh is a plain array, which WebGPU uploads as 16-bit.
+   */
+  readonly wideIndices: boolean;
 }
 
 /**
  * The merged groups, one draw each. Grouped by what a draw cannot mix — the
  * material, whether the vertex layout carries UVs (the home field's furniture
- * has none, and the untextured metal variant is a different pipeline), and
- * whether it casts. The fence keeps its own because it does not cast (see
- * `AirportSystem`). The hangars' clerestory glazing shares the tower cab's
- * casting glass draw: its shadow falls inside the wall's at every sun angle
- * but grazing, and a draw is the scarcer unit here.
+ * has none, and the untextured metal variant is a different pipeline), the
+ * index width the home field drew that pair with, and whether it casts. The
+ * fence keeps its own because it does not cast (see `AirportSystem`). The
+ * hangars' clerestory glazing shares the tower cab's casting glass draw: its
+ * shadow falls inside the wall's at every sun angle but grazing, and a draw
+ * is the scarcer unit here.
  */
 const GROUPS: readonly GroupSpec[] = Object.freeze([
-  { key: "concrete", material: "concrete", uvs: true, casts: true },
-  { key: "metal", material: "metal", uvs: true, casts: true },
-  { key: "glass", material: "glass", uvs: true, casts: true },
-  { key: "steel", material: "steel", uvs: true, casts: true },
-  { key: "furniture", material: "metal", uvs: false, casts: true },
-  { key: "fence", material: "metal", uvs: false, casts: false },
+  { key: "concrete", material: "concrete", uvs: true, casts: true, wideIndices: false },
+  { key: "metal", material: "metal", uvs: true, casts: true, wideIndices: false },
+  { key: "glass", material: "glass", uvs: true, casts: true, wideIndices: false },
+  // Steel is only ever the tower's (railing, cab roof, mast).
+  { key: "steel", material: "steel", uvs: true, casts: true, wideIndices: true },
+  { key: "furniture", material: "metal", uvs: false, casts: true, wideIndices: false },
+  { key: "fence", material: "metal", uvs: false, casts: false, wideIndices: false },
 ] as const);
 
 const HANGAR_GROUP: Readonly<Record<HangarSurface, GroupKey>> = Object.freeze({
@@ -245,7 +256,7 @@ class GroupBuffer implements FurnitureGeometryAccumulator {
   private vertexTotal = 0;
   private indexTotal = 0;
 
-  constructor(withUvs: boolean) {
+  constructor(withUvs: boolean, private readonly wideIndices: boolean) {
     this.uvs = withUvs ? [] : null;
   }
 
@@ -281,9 +292,14 @@ class GroupBuffer implements FurnitureGeometryAccumulator {
     return this.uvs ? this.packFloats(2, (chunk) => chunk.uvs!) : null;
   }
 
-  /** 16-bit while the group allows it, as the home field's meshes are. */
+  /**
+   * The home field's width for the group (`GroupSpec.wideIndices`). A 16-bit
+   * group past 65,535 vertices has to widen, which can be a variant the home
+   * field never drew; the spawn test pins that every merged mesh draws with
+   * one it did.
+   */
   packIndices(): Uint16Array | Uint32Array {
-    const out = this.vertexTotal < 65_536
+    const out = !this.wideIndices && this.vertexTotal < 65_536
       ? new Uint16Array(this.indexTotal)
       : new Uint32Array(this.indexTotal);
     let offset = 0;
@@ -942,7 +958,7 @@ export class SpawnedAirfieldManager {
     const sites = field.sites;
 
     const groups = new Map<GroupKey, GroupBuffer>();
-    for (const spec of GROUPS) groups.set(spec.key, new GroupBuffer(spec.uvs));
+    for (const spec of GROUPS) groups.set(spec.key, new GroupBuffer(spec.uvs, spec.wideIndices));
     const group = (key: GroupKey): GroupBuffer => groups.get(key)!;
     // Ends every appending step (see `GroupBuffer`).
     const seal = (): void => {
@@ -1091,7 +1107,8 @@ export class SpawnedAirfieldManager {
         const data = new VertexData();
         data.positions = geometry.positions;
         data.normals = geometry.normals;
-        data.indices = geometry.indices;
+        // 16-bit, as the home sock's plain array uploads (see `wideIndices`).
+        data.indices = Uint16Array.from(geometry.indices);
         data.applyToMesh(sock, false);
       }
       sock.material = this.materials.accent;

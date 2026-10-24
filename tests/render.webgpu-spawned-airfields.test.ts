@@ -1,5 +1,7 @@
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import type { DataBuffer } from "@babylonjs/core/Buffers/dataBuffer";
+import type { IndicesArray } from "@babylonjs/core/types";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
@@ -86,8 +88,28 @@ class FakeFloods implements SpawnedFloodSink {
   }
 }
 
+/**
+ * Gives a NullEngine's index buffers the width WebGPU would: 32-bit for an
+ * `Int32Array`/`Uint32Array`, 16-bit for a `Uint16Array`, and for a plain
+ * array 16-bit unless an index passes 65,535 (`WebGPUEngine.createIndexBuffer`).
+ * Materials key a define on that width, so the variant test below needs it.
+ */
+function withWebGpuIndexWidths(engine: NullEngine): NullEngine {
+  const create = engine.createIndexBuffer.bind(engine);
+  engine.createIndexBuffer = (indices: IndicesArray): DataBuffer => {
+    const buffer = create(indices);
+    let wide = indices instanceof Uint32Array || indices instanceof Int32Array;
+    if (!wide && !(indices instanceof Uint16Array)) {
+      for (let index = 0; index < indices.length && !wide; index += 1) wide = indices[index]! > 65_535;
+    }
+    buffer.is32Bits = wide;
+    return buffer;
+  };
+  return engine;
+}
+
 function rig(tier: SpawnedAirfieldTier = HIGH, seed = "alpha"): Rig {
-  const engine = new NullEngine();
+  const engine = withWebGpuIndexWidths(new NullEngine());
   const scene = new Scene(engine);
   scene.activeCamera = new FreeCamera("probe", new Vector3(0, 5, -20), scene);
   const world = createWorld(seed);
@@ -262,6 +284,39 @@ describe("an airport spawned in flight gets the home field's airfield", () => {
         expect(unmatched(list, mine, 0.002), `${material}: home-builder corners the spawn lacks`).toBe(0);
       }
       reference.dispose();
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it("draws every merged mesh with a shader variant the home field already compiled", () => {
+    const host = rig();
+    try {
+      host.manager.setAirports(host.next.airports);
+      settle(host, host.spawned.centerX, host.spawned.centerZ);
+      const materials = host.home.materials;
+      // The variant is the material and its defines; nothing in Node loads a
+      // texture, so the materials' own are taken as ready, as they are by the
+      // time the home field first draws.
+      for (const material of [materials.concrete, materials.metal, materials.glass, materials.steel, materials.accent]) {
+        for (const texture of material.getActiveTextures()) {
+          texture.isReady = () => true;
+          texture.isReadyOrNotBlocking = () => true;
+        }
+      }
+      const variant = (mesh: Mesh): string => {
+        const material = mesh.material!;
+        const subMesh = mesh.subMeshes[0]!;
+        material.isReadyForSubMesh(mesh, subMesh, false);
+        return `${material.name}\n${subMesh.materialDefines!.toString()}`;
+      };
+      const home = new Set((host.home.root.getChildMeshes(false) as Mesh[]).map(variant));
+      const spawned = spawnedMeshes(host.scene);
+      expect(spawned).toHaveLength(7);
+      for (const mesh of spawned) {
+        expect(home.has(variant(mesh)), `${mesh.name} (${mesh.material!.name}) needs a variant the home field never drew`)
+          .toBe(true);
+      }
     } finally {
       host.dispose();
     }
