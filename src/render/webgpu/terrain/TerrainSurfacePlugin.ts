@@ -23,7 +23,7 @@ import {
   TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
 } from "@/src/world";
 import {
-  resolveRunwaySurfaceBinding,
+  resolveRunwaySurfaceSetBinding,
   RUNWAY_SURFACE_UNIFORMS,
   RUNWAY_SURFACE_WGSL,
 } from "./RunwaySurface";
@@ -3147,10 +3147,15 @@ let terrainTurfCover = terrainTurfShareOf(i32(terrainPrimaryId)) * terrainBlend0
 // disagree about where the airfield is.
 var terrainGroundAirfield = 0.0;
 #ifdef TERRAIN_SURFACE_RUNWAY
+// The nearest airport, chosen ONCE per fragment for both the airfield surround
+// and the runway painter below (RunwaySurface.ts, terrainRunwayNearestSlot).
+let terrainRunwaySlot = terrainRunwayNearestSlot(terrainAbsolutePosition.xz);
+let terrainRunwaySlotFrame = uniforms.terrainRunwayFrames[terrainRunwaySlot];
+let terrainRunwaySlotShape = uniforms.terrainRunwayShapes[terrainRunwaySlot];
 terrainGroundAirfield = terrainRunwayAirfieldInfluence(
   terrainAbsolutePosition.xz,
-  uniforms.terrainRunwayFrame,
-  uniforms.terrainRunwayShape);
+  terrainRunwaySlotFrame,
+  terrainRunwaySlotShape);
 #endif
 let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0)
   * (1.0 - terrainGroundAirfield);
@@ -3421,6 +3426,7 @@ var terrainRunwayPaved = 0.0;
 terrainRunwaySurface(
   terrainAbsolutePosition, terrainGeometricNormal,
   terrainWorldDdx, terrainWorldDdy, terrainDetailWeight,
+  terrainRunwaySlotFrame, terrainRunwaySlotShape,
   &terrainAlbedo, &terrainNormal, &terrainRoughness, &terrainCavity,
   &terrainF0, &terrainDiffuseRoughness, &terrainRunwayPaved,
 );
@@ -3928,8 +3934,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private triplanarMode: TerrainTriplanarMode = "biplanar";
   private heightBlendMaxMaterials = 3;
   private runwayEnabled = false;
-  private runwayFrame: readonly [number, number, number, number] = [0, 0, 0, 1];
-  private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
+  /** `3-9` per airport slot: see `RUNWAY_SURFACE_UNIFORMS`. */
+  private runwaySet = resolveRunwaySurfaceSetBinding([]);
   private detileWarp = DEFAULT_DETILE_WARP;
   private groundPatchwork = 1;
   /** 1 when the bound arrays carry the ground grain layer (see setArrays). */
@@ -4104,12 +4110,24 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
    * entirely, so a world without an airport pays nothing.
    */
   setRunway(airport: Readonly<AirportDefinition> | null): void {
-    const enabled = airport !== null;
-    if (airport) {
-      const binding = resolveRunwaySurfaceBinding(airport);
-      this.runwayFrame = binding.frame;
-      this.runwayShape = binding.shape;
-    }
+    this.setRunways(airport ? [airport] : []);
+  }
+
+  /**
+   * Paint every airport in `airports`, home field first, each fragment for
+   * the airport whose centre is nearest.
+   *
+   * A change of list is a UNIFORM write: the arrays are compiled at their
+   * full slot count, so an airport spawning mid-flight costs no recompile.
+   * The define changes — and the material recompiles — only between no
+   * airport at all and some airport, which the airport network never does:
+   * it cannot add an airport to a world without a home field, and it never
+   * retires the home field.
+   */
+  setRunways(airports: readonly Readonly<AirportDefinition>[]): void {
+    // In place: the arrays bindForSubMesh uploads are the same two for life.
+    this.runwaySet = resolveRunwaySurfaceSetBinding(airports, this.runwaySet);
+    const enabled = this.runwaySet.count > 0;
     if (enabled === this.runwayEnabled) return;
     this.runwayEnabled = enabled;
     this.markAllDefinesAsDirty();
@@ -4537,8 +4555,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, this.seasonBlend);
     uniformBuffer.updateFloat4("terrainCanopyBands", ...this.canopyBands);
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
-    uniformBuffer.updateFloat4("terrainRunwayFrame", ...this.runwayFrame);
-    uniformBuffer.updateFloat4("terrainRunwayShape", ...this.runwayShape);
+    uniformBuffer.updateFloatArray("terrainRunwayFrames", this.runwaySet.frames);
+    uniformBuffer.updateFloatArray("terrainRunwayShapes", this.runwaySet.shapes);
+    uniformBuffer.updateFloat4("terrainRunwaySet", this.runwaySet.count, 0, 0, 0);
   }
 
   override getCustomCode(

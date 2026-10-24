@@ -606,6 +606,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "RUNWAY_SURFACE_UNIFORMS",
       "runwayMarkingProfile",
       "resolveRunwaySurfaceBinding",
+      "resolveRunwaySurfaceSetBinding",
     ],
     notes:
       "The WGSL SDF is a transliteration of roundedRectangleSignedDistance "
@@ -628,9 +629,39 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "runwayPlatformSignedDistance",
       "runwayPlatformHalfLength",
       "runwayPlatformHalfWidth",
+      "TERRAIN_AIRPORT_SLOTS",
+      "packRunwayEarthworksSetUniform",
+      "runwayEarthworksSetWgsl",
     ],
     notes:
       "Terrain-geometry contributes the erosion exclusion mask only. The profile must keep getAirportInfluence exactly 1.0 inside the apron (tests/sim.terrain-authority.test.ts), and collision must agree with the rendered surface to within 1 mm (assertion 63).",
+  },
+  {
+    // Which pages an airport reaches: the clipmap's invalidation when an
+    // airport spawns or retires, and the splat bake's per-page airport choice,
+    // read ONE geometric answer so a page cannot be baked for an airport it
+    // was never re-baked for.
+    artifact: "airport-terrain-reach",
+    owner: "terrain-material",
+    definitionSites: ["src/render/webgpu/terrain/AirportReach.ts"],
+    consumers: ["terrain-material"],
+    ownedSymbols: [
+      "terrainAirportGradingReach",
+      "terrainAirportAirfieldReach",
+      "terrainAirportReaches",
+      "terrainPageAirportDomain",
+      "terrainRectIntersectsAirportReach",
+      "terrainPageInAirportReach",
+      "terrainPageGradingAirport",
+      "TERRAIN_PAGE_GRADED_BY_NONE",
+      "TERRAIN_PAGE_GRADED_BY_SEVERAL",
+      "diffTerrainAirports",
+      "sameTerrainAirports",
+    ],
+    notes:
+      "Reach is the graded platform + terrainBlendDistance (earthworks and "
+      + "getAirportInfluence) and the pavement + RUNWAY_AIRFIELD_OUTER_METERS; "
+      + "the page domain adds the gutter and one channel texel.",
   },
   {
     artifact: "vegetation-density-field",
