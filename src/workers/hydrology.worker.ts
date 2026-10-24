@@ -1,9 +1,13 @@
 /// <reference lib="webworker" />
 
-import { generateHydrology } from "@/src/render/webgpu/water/HydrologyGeneration";
+import {
+  generateHydrology,
+  resolveHydrologyConfig,
+} from "@/src/render/webgpu/water/HydrologyGeneration";
 import { createWorld, sampleTerrain, type TerrainSample, type WorldDefinition } from "@/src/world";
 import type { HydrologyWorkerCommand, HydrologyWorkerEvent } from "./hydrologyProtocol";
 import { hydrologyClimateSamplerFor } from "@/src/render/webgpu/water/hydrologyClimate";
+import { volcanicHydrologyInputs } from "@/src/render/webgpu/water/hydrologyVolcanism";
 import {
   buildAnalyticRegionMeshArrays,
   packedRegionGeometryTransferables,
@@ -48,6 +52,9 @@ workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerComm
     if (!world) throw new Error("Hydrology worker has not been initialized");
     const hydrology = generateHydrology({
       ...command.options,
+      // Crater lakes and porous ground, from this worker's own world: data
+      // and a predicate, so nothing new crosses the worker boundary.
+      ...volcanicHydrologyInputs(world, resolveHydrologyConfig(command.options)),
       worldSeed: world.seed,
       terrainSample: (x, z) => {
         const sample = sampleTerrain(world as WorldDefinition, x, z, sampleTarget);

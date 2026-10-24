@@ -11,7 +11,7 @@ import {
  * The world's two hydrology inputs, on terrain that is pure arithmetic:
  * authored basins (a lake the world gives a level, or a basin it keeps dry)
  * and porous ground no river rises from. The volcanic inputs themselves are
- * tested against real worlds in `world.volcanic-water.test.ts`.
+ * tested against real worlds in `render.webgpu-hydrology-volcanic.test.ts`.
  */
 
 /** Every number as its exact bits, so "identical" means bit-identical. */
