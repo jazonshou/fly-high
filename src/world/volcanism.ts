@@ -1237,8 +1237,13 @@ function stratoDelta(
   const shape = (q: number): number => height * q * q * (0.5 + 0.5 * q);
   let delta: number;
   if (r < crater) {
+    // The rim follows the outline, but the floor may not: at the centre every
+    // bearing meets, so the floor's level is the nominal radius's, and the
+    // outlined rim is blended in towards the wall (p^2, flat at the centre).
     const p = r / crater;
-    delta = shape(1 - crater / radius)
+    const floor = shape(1 - crater / site.radiusMeters);
+    const rim = shape(1 - crater / radius);
+    delta = floor + (rim - floor) * p * p
       - site.craterDepthMeters * (1 - p * p) * band(crater * 2, filterWidthMeters);
   } else {
     delta = shape(1 - r / radius);

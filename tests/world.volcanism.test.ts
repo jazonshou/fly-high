@@ -211,6 +211,31 @@ describe("volcanic shapes", () => {
     }
   });
 
+  it("give a stratovolcano's crater one floor level, whatever the bearing it is reached from", () => {
+    // The rim follows the outline noise; the floor's centre is where every
+    // bearing meets, so a level that followed it too would be a point where
+    // the surface tears (a GPU a millimetre off the centre read metres off).
+    const stratos = sites.filter((site) => site.kind === VolcanicSiteKind.Strato);
+    expect(stratos.length).toBeGreaterThan(0);
+    for (const strato of stratos.slice(0, 4)) {
+      const levels: number[] = [];
+      for (let bearing = 0; bearing < 16; bearing += 1) {
+        const angle = bearing * Math.PI / 8;
+        levels.push(applyVolcanicOverlay(
+          world, strato.x + Math.cos(angle) * 0.01, strato.z + Math.sin(angle) * 0.01, 0, 0));
+      }
+      expect(Math.max(...levels) - Math.min(...levels), `strato ${strato.id}`).toBeLessThan(1e-3);
+      // Still a crater: the floor sits below the rim on every bearing.
+      for (let bearing = 0; bearing < 16; bearing += 1) {
+        const angle = bearing * Math.PI / 8;
+        const crater = strato.craterRadiusMeters;
+        const rim = applyVolcanicOverlay(
+          world, strato.x + Math.cos(angle) * crater, strato.z + Math.sin(angle) * crater, 0, 0);
+        expect(rim - levels[0]!).toBeGreaterThan(strato.craterDepthMeters * 0.5);
+      }
+    }
+  });
+
   it("set caldera floors to one level", () => {
     const calderas = SEEDS.flatMap((seed) => {
       const seeded = createWorld(seed);

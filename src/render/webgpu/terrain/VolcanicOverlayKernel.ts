@@ -652,7 +652,9 @@ fn vStratoDelta(site: VolcanicSiteData, r: f32, unit: vec2f, filterWidth: f32) -
   var delta: f32;
   if (r < crater) {
     let p = r / crater;
-    delta = vStratoShape(height, 1.0 - crater / radius)
+    let floorLevel = vStratoShape(height, 1.0 - crater / site.radius);
+    let rim = vStratoShape(height, 1.0 - crater / radius);
+    delta = floorLevel + (rim - floorLevel) * p * p
       - site.craterDepth * (1.0 - p * p) * vBand(crater * 2.0, filterWidth);
   } else {
     delta = vStratoShape(height, 1.0 - r / radius);
