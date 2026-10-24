@@ -703,8 +703,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     depth,
     optics,
     // Inland beds are terrigenous by definition: a lake or a river bed is the
-    // catchment's own silt, so it takes the wet end of the range.
+    // catchment's own silt, so it takes the wet end of the range, and none of
+    // it is reef carbonate.
     0.75,
+    0.0,
     downwelling,
     light,
     normal,

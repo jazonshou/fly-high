@@ -976,12 +976,29 @@ fn waterBathymetryBedSlope(worldXZ: vec2f, stepMeters: f32) -> vec2f {
 // silt by its rivers and grows weed on its rocks. The wetness argument is the
 // province's runoff, so the shallow margin changes with the same field the
 // water column does rather than being one sand for the whole world.
-fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32, wetness: f32) -> vec3f {
+//
+// The carbonate argument is the tropical coast's reef-and-lagoon bed (the
+// environment field's B channel): sand ground from coral and shell, nearly
+// white, carpeting the bed out to the reef with only patches of rock and
+// grass, and staying pale to twice the depth a silt bed does. Clear water
+// over it is the lagoon turquoise. It is exactly 0 everywhere but the
+// tropics (and literally 0.0 for inland water), and every term below is a
+// mix by it, so the bed elsewhere is unchanged.
+fn analyticWaterBedAlbedo(
+  worldXZ: vec2f,
+  bedElevation: f32,
+  wetness: f32,
+  carbonate: f32,
+) -> vec3f {
   let mineral = 0.5 + 0.5 * sin(dot(worldXZ, vec2f(0.021, 0.017)) + bedElevation * 0.08);
   let sand = mix(
-    vec3f(0.42, 0.395, 0.315),
-    vec3f(0.22, 0.205, 0.145),
-    clamp(wetness, 0.0, 1.0),
+    mix(
+      vec3f(0.42, 0.395, 0.315),
+      vec3f(0.22, 0.205, 0.145),
+      clamp(wetness, 0.0, 1.0),
+    ),
+    vec3f(0.62, 0.60, 0.52),
+    carbonate,
   );
   let rock = mix(
     vec3f(0.105, 0.125, 0.105),
@@ -989,8 +1006,12 @@ fn analyticWaterBedAlbedo(worldXZ: vec2f, bedElevation: f32, wetness: f32) -> ve
     clamp(wetness, 0.0, 1.0),
   );
   let deepSilt = vec3f(0.028, 0.055, 0.052);
-  let substrate = mix(rock, sand, mineral * 0.32);
-  return mix(substrate, deepSilt, smoothstep(8.0, 45.0, -bedElevation));
+  let substrate = mix(rock, sand, mix(mineral * 0.32, 0.7 + 0.25 * mineral, carbonate));
+  return mix(
+    substrate,
+    deepSilt,
+    smoothstep(8.0 + 10.0 * carbonate, 45.0 + 15.0 * carbonate, -bedElevation),
+  );
 }
 
 // W-7 -- the water-leaving radiance of one fragment: Lee et al.'s
@@ -1026,6 +1047,7 @@ fn waterVolumeRadiance(
   depth: f32,
   optics: WaterOptics,
   bedWetness: f32,
+  bedCarbonate: f32,
   downwelling: WaterDownwelling,
   light: vec3f,
   normal: vec3f,
@@ -1050,7 +1072,7 @@ fn waterVolumeRadiance(
     bedXZ = worldXZ + transmittedDirection.xz * (depth / verticalTravel);
     upwellingCosine = verticalTravel;
   }
-  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation, bedWetness);
+  let bed = analyticWaterBedAlbedo(bedXZ, bedElevation, bedWetness, bedCarbonate);
   let attenuation = waterBeamAttenuation(optics);
   let u = waterScatteringRatio(optics);
   // Snell: the solar beam's cosine inside the water. A 10-degree sun still

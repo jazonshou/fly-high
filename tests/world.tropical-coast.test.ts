@@ -1,5 +1,7 @@
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
-import { TerrainBiome } from "../src/world";
+import { TerrainBiome, createWorld } from "../src/world";
 import {
   CLIMATE_PROVINCE_PRESETS,
   sampleClimateProvinceUnmasked,
@@ -18,7 +20,17 @@ import {
   type LandCoverInput,
 } from "../src/render/webgpu/terrain/LandCoverClassifier";
 import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
-import { waterRunoff } from "../src/render/webgpu/water/WaterEnvironmentField";
+import {
+  WaterEnvironmentField,
+  waterBedCarbonate,
+  waterRunoff,
+} from "../src/render/webgpu/water/WaterEnvironmentField";
+import { WATER_DEPTH_OPTICS_WGSL } from "../src/render/webgpu/water/WaterShaders";
+import {
+  WATER_FRAGMENT_WGSL,
+  WATER_VERTEX_WGSL,
+} from "../src/render/webgpu/water/SpectralOceanSystem";
+import { HYDROLOGY_WATER_FRAGMENT_WGSL } from "../src/render/webgpu/water/HydrologySystem";
 import { TREE_SPECIES_COHORTS } from "../src/render/webgpu/detail/treePrototypeFamily";
 import type {
   DetailTerrainSampler,
@@ -276,5 +288,48 @@ describe("tropical coast ground and water", () => {
     // Below the ocean shader's contrast floor (0.18), so the coast reads as
     // the clearest water the model makes.
     expect(waterRunoff(0.85, 1)).toBeLessThan(0.18);
+  });
+
+  it("lays a carbonate bed under tropical water and nowhere else", () => {
+    expect(waterBedCarbonate(0)).toBe(0);
+    expect(waterBedCarbonate(1)).toBe(1);
+    const bakedCarbonate = (world: ReturnType<typeof createWorld>) => {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      const field = new WaterEnvironmentField(scene, world);
+      field.update(0, 0);
+      // The bytes the field uploads (NullEngine textures keep no copy).
+      const data = (field as unknown as { readonly data: Uint8Array }).data;
+      expect(data.length).toBeGreaterThan(0);
+      const blue = new Set<number>();
+      for (let offset = 2; offset < data.length; offset += 4) blue.add(data[offset]!);
+      field.dispose();
+      scene.dispose();
+      engine.dispose();
+      return blue;
+    };
+    // The core and every province but the tropics carry a zero B channel,
+    // which the bed reads as `mix(x, y, 0)`: the bed it always was.
+    expect([...bakedCarbonate(createWorld("phase1-perf-baseline", { climateProvince: "temperate" }))])
+      .toEqual([0]);
+    expect([...bakedCarbonate(createWorld("phase1-perf-baseline", { climateProvince: "savanna" }))])
+      .toEqual([0]);
+    expect([...bakedCarbonate(createWorld("phase1-perf-baseline", { climateProvince: "tropical" }))])
+      .toEqual([255]);
+  });
+
+  it("threads the carbonate from the field to the bed, and none into inland water", () => {
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain(
+      "analyticWaterBedAlbedo(bedXZ, bedElevation, bedWetness, bedCarbonate)",
+    );
+    expect(WATER_DEPTH_OPTICS_WGSL).toContain(
+      "mix(mineral * 0.32, 0.7 + 0.25 * mineral, carbonate)",
+    );
+    // The ocean reads it from the field's B channel at the vertex...
+    expect(WATER_VERTEX_WGSL).toContain(").xyz;");
+    expect(WATER_VERTEX_WGSL).toContain("varying waterProvince: vec4f;");
+    expect(WATER_FRAGMENT_WGSL).toContain("input.waterProvince.w,");
+    // ...and inland water, whose bed is the catchment's silt, passes 0.0.
+    expect(HYDROLOGY_WATER_FRAGMENT_WGSL).toMatch(/0\.75,\n\s*0\.0,\n\s*downwelling,/u);
   });
 });
