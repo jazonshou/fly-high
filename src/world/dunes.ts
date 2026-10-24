@@ -1,4 +1,4 @@
-import { sampleClimateProvinceUnmasked, type ClimateProvinceSample } from "./climateProvince";
+import { CLIMATE_PROVINCE, climateProvinceStaircase } from "./climateProvince";
 import { FRACTURE_EXPOSURE_MEAN, FRACTURE_RAVINE_MEAN } from "./geology";
 import { fbm2D, filteredValueNoise2D, octaveBandWeight, smoothstep } from "./noise";
 import { mixSeed } from "./seed";
@@ -219,8 +219,29 @@ export interface DuneSample {
   sandCover: number;
 }
 
-const PROVINCE_SCRATCH: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
 const DUNE_SCRATCH: DuneSample = { ergWeight: 0, duneHeight: 0, sandCover: 0 };
+
+/**
+ * The natural province's dryness before the climate core: the dryness half of
+ * `sampleClimateProvinceUnmasked`, the same arithmetic, without evaluating the
+ * temperature field or allocating (this runs on physics' height samples).
+ * WGSL twin: `kProvinceDrynessStaircase` over the `provinceDryness` lattices.
+ */
+export function unmaskedProvinceDryness(seedHash: number, x: number, z: number): number {
+  const field = CLIMATE_PROVINCE.dryness;
+  return climateProvinceStaircase(
+    fbm2D(
+      mixSeed(seedHash, field.channel),
+      x / field.baseWavelengthMeters,
+      z / field.baseWavelengthMeters,
+      field.octaves,
+      field.lacunarity,
+      field.persistence,
+    ),
+    field.levels,
+    field.thresholds,
+  );
+}
 
 /**
  * The erg weight from the factors the kernel already computed (`coreMask`,
@@ -246,8 +267,7 @@ export function duneErgWeight(
   let weight = coreMask * lowGround * flat;
   if (weight <= 0) return 0;
   if (!dunesForced(world)) {
-    const province = sampleClimateProvinceUnmasked(world.seedHash, x, z, PROVINCE_SCRATCH);
-    weight *= smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, province.dryness);
+    weight *= smoothstep(DUNES.aridDrynessLow, DUNES.aridDrynessHigh, unmaskedProvinceDryness(world.seedHash, x, z));
     if (weight <= 0) return 0;
     const patch = DUNES.ergPatch;
     weight *= smoothstep(

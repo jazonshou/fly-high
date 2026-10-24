@@ -207,3 +207,17 @@ describe("a forced sand sea", () => {
     }
   });
 });
+
+describe("the arid factor", () => {
+  it("reads exactly the unmasked province dryness", async () => {
+    const { sampleClimateProvinceUnmasked } = await import("../src/world/climateProvince");
+    const { unmaskedProvinceDryness } = await import("../src/world/dunes");
+    const world = createWorld("terra1");
+    for (let index = 0; index < 500; index += 1) {
+      const x = (index * 7_919) % 900_000 - 450_000;
+      const z = (index * 104_729) % 900_000 - 450_000;
+      expect(unmaskedProvinceDryness(world.seedHash, x, z))
+        .toBe(sampleClimateProvinceUnmasked(world.seedHash, x, z).dryness);
+    }
+  });
+});
