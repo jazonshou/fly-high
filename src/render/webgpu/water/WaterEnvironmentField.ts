@@ -34,6 +34,7 @@ import {
   sampleClimateProvince,
   type ClimateProvinceSample,
 } from "@/src/world/climateProvince";
+import { TROPICAL_COAST, tropicalCoastWeight } from "@/src/world/tropicalCoast";
 import {
   sampleTerrainClimate,
   sampleTerrainMoisture,
@@ -60,9 +61,14 @@ export function waterProductivity(temperature: number, moisture: number): number
   return clamp01(0.5 + (0.66 - temperature) * 1.9 + (moisture - 0.5) * 0.55);
 }
 
-/** Runoff is the moisture field itself: what the land is shedding. */
-export function waterRunoff(moisture: number): number {
-  return clamp01(moisture);
+/**
+ * Runoff is the moisture field itself: what the land is shedding. A tropical
+ * coast (`tropicalCoastWeight`) is a reef-and-lagoon coast whose reef keeps
+ * most of it offshore, so its water runs clear over a pale bed: the lagoon
+ * turquoise. Exactly `* 1` outside the tropics.
+ */
+export function waterRunoff(moisture: number, tropical = 0): number {
+  return clamp01(moisture) * (1 - TROPICAL_COAST.lagoonRunoffCut * tropical);
 }
 
 function clamp01(value: number): number {
@@ -208,7 +214,10 @@ export class WaterEnvironmentField {
         );
         const offset = (iz * resolution + ix) * 4;
         this.data[offset] = Math.round(waterProductivity(temperature, moisture) * 255);
-        this.data[offset + 1] = Math.round(waterRunoff(moisture) * 255);
+        this.data[offset + 1] = Math.round(waterRunoff(
+          moisture,
+          tropicalCoastWeight(province.temperatureOffset, province.dryness),
+        ) * 255);
         this.data[offset + 2] = 0;
         this.data[offset + 3] = 255;
       }

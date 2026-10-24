@@ -301,10 +301,15 @@ describe("crossfade shader surface (2-17 close)", () => {
       // afterwards doubled its albedo fetches for the same output).
       expect(definitions).toContain("bucket.rgb * bucket.a");
       expect(definitions).not.toContain("let bare = textureSample");
-      expect(definitions).toContain(
-        "select(layers.x, layers.y, uniforms.detailImpostorSeason > seasonSelector)",
-      );
+      expect(definitions).toContain("select(layers.x, layers.y, bare)");
       expect(albedo).toContain("impostorVariantByteForSeason");
+      // The hash picks when a stem sheds and the tint's leaf fraction can veto
+      // it, once for all three views: a stem kept in full leaf (a tropical
+      // broadleaf) never reads its bare bucket.
+      expect(albedo).toContain(
+        "let impostorBare = uniforms.detailImpostorSeason > impostorSeasonSelector\n"
+          + "  && fragmentInputs.detailInstanceTint.a < 0.999;",
+      );
       expect(albedo).not.toContain("dot(\n  fragmentInputs.detailInstanceTint.rgb");
       expect(albedo).toContain("#ifndef DETAIL_OPAQUE_CROWN");
       const vertex = plugin.getCustomCode("vertex", ShaderLanguage.WGSL)!;
