@@ -432,3 +432,15 @@ export function applyDuneStage(
   const dunes = sampleDuneField(world, x, z, erg, filterWidthMeters, natural);
   return height + duneFloorFlattening(erg, relief) + dunes.duneHeight;
 }
+
+/**
+ * The profile's derived constants, for the WGSL twin (`TerrainLandformKernel.ts`)
+ * to inject rather than re-derive: a retyped tangent is a slipface that
+ * disagrees with collision.
+ */
+export const DUNE_PROFILE_CONSTANTS = Object.freeze({
+  stossTan: STOSS_TAN,
+  slipTan: SLIP_TAN,
+  crestHeightLimitMeters: CREST_HEIGHT_LIMIT_METERS,
+  stossShapeIntegral: STOSS_SHAPE_INTEGRAL,
+});

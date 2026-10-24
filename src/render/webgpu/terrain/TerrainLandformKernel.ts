@@ -1,5 +1,14 @@
 import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import { CLIMATE_PROVINCE } from "@/src/world/climateProvince";
+import { DUNE_PROFILE_CONSTANTS, DUNES } from "@/src/world/dunes";
+import { FRACTURE_EXPOSURE_MEAN, FRACTURE_RAVINE_MEAN } from "@/src/world/geology";
+import {
+  LOCAL_RIDGES_KNOLL_MEAN,
+  RIDGES_INVERSE_POW_31_MEAN,
+  RIDGES_POW_212_MEAN,
+} from "@/src/world/terrain";
+import { terrainKernelLatticeBase } from "./TerrainKernel";
 
 /**
  * The WGSL landform stage — Class K, the transliteration of
@@ -31,6 +40,63 @@ import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
  * Requires, before it: `terrainKernelPageBindingWgsl(...)`,
  * `terrainLandformDataBindingWgsl(...)` and `TERRAIN_KERNEL_WGSL`.
  */
+
+/**
+ * Every figure the dune stage reads, imported rather than retyped and emitted
+ * as `KL_<NAME>` constants: DUNES' own, the profile constants dunes.ts derives
+ * from them (in f64, then rounded once to f32 here), and the kernel's measured
+ * expectations the relief is measured from (the same imports dunes.ts makes).
+ * A wrong digit in an expectation moves a sand sea's floor by metres on a
+ * band-limited page and passes every parity probe at width 0.
+ */
+export const TERRAIN_LANDFORM_CONSTANTS = Object.freeze({
+  LOCAL_RIDGES_KNOLL_MEAN,
+  FRACTURE_EXPOSURE_MEAN,
+  FRACTURE_RAVINE_MEAN,
+  RIDGES_POW_212_MEAN,
+  RIDGES_INVERSE_POW_31_MEAN,
+  ARID_DRYNESS_LOW: DUNES.aridDrynessLow,
+  ARID_DRYNESS_HIGH: DUNES.aridDrynessHigh,
+  ERG_PATCH_LOW: DUNES.ergPatch.low,
+  ERG_PATCH_HIGH: DUNES.ergPatch.high,
+  LOW_GROUND_RISE_LOW: DUNES.lowGroundRiseLowMeters,
+  LOW_GROUND_RISE_HIGH: DUNES.lowGroundRiseHighMeters,
+  LOW_GROUND_FALL_LOW: DUNES.lowGroundFallLowMeters,
+  LOW_GROUND_FALL_HIGH: DUNES.lowGroundFallHighMeters,
+  HILL_LOW: DUNES.hillLow,
+  HILL_HIGH: DUNES.hillHigh,
+  RELIEF_DAMPING: DUNES.reliefDamping,
+  ROLLING_DAMPING: DUNES.rollingDamping,
+  SPACING: DUNES.spacingMeters,
+  CREST_HEIGHT_MAX: DUNES.crestHeightMaxMeters,
+  CREST_HEIGHT_MIN: DUNES.crestHeightMinMeters,
+  BRINK_ROUNDING: DUNES.brinkRoundingMeters,
+  MEANDER_AMPLITUDE: DUNES.meander.amplitudePeriods,
+  MEANDER_FINE_AMPLITUDE: DUNES.meanderFine.amplitudePeriods,
+  SCALLOP_WIDTH: DUNES.scallopWidthMeters,
+  SCALLOP_AMPLITUDE: DUNES.scallopAmplitudePeriods,
+  SCALLOP_STAGGER: DUNES.scallopStagger,
+  SCALLOP_JITTER: DUNES.scallopJitter,
+  CREST_THRESHOLD_FULL: DUNES.crestThresholdFull,
+  CREST_THRESHOLD_THIN: DUNES.crestThresholdThin,
+  CREST_HALF_WIDTH: DUNES.crestHalfWidth,
+  HORN_SHIFT: DUNES.hornShift,
+  STOSS_TAN: DUNE_PROFILE_CONSTANTS.stossTan,
+  SLIP_TAN: DUNE_PROFILE_CONSTANTS.slipTan,
+  CREST_HEIGHT_LIMIT: DUNE_PROFILE_CONSTANTS.crestHeightLimitMeters,
+  STOSS_SHAPE_INTEGRAL: DUNE_PROFILE_CONSTANTS.stossShapeIntegral,
+});
+
+/** A float literal WGSL accepts and a test can find verbatim. */
+function wgslFloat(value: number): string {
+  return Number.isInteger(value) ? `${value}.0` : String(value);
+}
+
+function landformConstantsWgsl(): string {
+  return Object.entries(TERRAIN_LANDFORM_CONSTANTS)
+    .map(([name, value]) => `const KL_${name}: f32 = ${wgslFloat(value)};`)
+    .join("\n");
+}
 
 /**
  * Bytes of the placeholder `terrainLandformData` buffer: one zero `vec4f`, on
@@ -98,9 +164,180 @@ fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f
   return height;
 }
 
-/** applyDuneStage (dunes.ts). */
+// --- the dune stage: dunes.ts, line for line -------------------------------
+
+${landformConstantsWgsl()}
+
+/** stossShape: g(u) = u^2 (2 - u). */
+fn terrainDuneStossShape(u: f32) -> f32 {
+  return u * u * (2.0 - u);
+}
+
+/** smoothMin: the polynomial smooth minimum. */
+fn terrainDuneSmoothMin(a: f32, b: f32, k: f32) -> f32 {
+  let h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+
+/** duneProfileMeters: exactly 0 on the interdune floor and at both period ends. */
+fn terrainDuneProfile(metersIntoPeriod: f32, crestHeight: f32) -> f32 {
+  if (crestHeight <= 0.0) { return 0.0; }
+  let slipLength = crestHeight / KL_SLIP_TAN;
+  let stossLength = crestHeight / KL_STOSS_TAN;
+  let crestAt = KL_SPACING - slipLength;
+  let toeAt = crestAt - stossLength;
+  if (metersIntoPeriod <= toeAt) { return 0.0; }
+  // The stoss continues past the brink at its brink slope; the slipface line
+  // continues back up past it; their smooth minimum rounds the brink.
+  var stoss: f32;
+  if (metersIntoPeriod <= crestAt) {
+    stoss = crestHeight * terrainDuneStossShape((metersIntoPeriod - toeAt) / stossLength);
+  } else {
+    stoss = crestHeight + (metersIntoPeriod - crestAt) * KL_STOSS_TAN;
+  }
+  let slip = crestHeight - (metersIntoPeriod - crestAt) * KL_SLIP_TAN;
+  return max(0.0, terrainDuneSmoothMin(stoss, slip, KL_BRINK_ROUNDING));
+}
+
+/** duneProfileMeanMeters: the profile's analytic mean over one period. */
+fn terrainDuneProfileMean(crestHeight: f32) -> f32 {
+  if (crestHeight <= 0.0) { return 0.0; }
+  let k = KL_BRINK_ROUNDING;
+  let area = crestHeight * (crestHeight / KL_STOSS_TAN) * KL_STOSS_SHAPE_INTEGRAL
+    + crestHeight * (crestHeight / KL_SLIP_TAN) * 0.5
+    - (k * k) / (6.0 * (KL_STOSS_TAN + KL_SLIP_TAN));
+  return max(0.0, area) / KL_SPACING;
+}
+
+/** duneScallop: 0 at a crescent's middle, 1 at its joints. */
+fn terrainDuneScallop(across: f32) -> f32 {
+  let offset = 2.0 * (across - floor(across)) - 1.0;
+  return offset * offset;
+}
+
+/**
+ * duneRelief: (short, broad), each term measured from the kernel's own
+ * expectation, read off the kNatural intermediates of the LAST
+ * terrainNaturalHeight call. The land <= 0.0001 early-out is geology.ts' rule
+ * 6 cliff, ported verbatim for the same reason.
+ */
+fn terrainDuneRelief() -> vec2f {
+  let land = kNatural.land;
+  let foothill = kNatural.foothillRegion;
+  let mountain = kNatural.mountainRegion;
+  let knollMean = land * (0.34 + foothill * 0.66) * KL_LOCAL_RIDGES_KNOLL_MEAN
+    * (72.0 + foothill * 115.0);
+  var geologyMean = 0.0;
+  if (land > 0.0001) {
+    geologyMean = land * (foothill * 0.52 + mountain * 0.78) * KL_FRACTURE_EXPOSURE_MEAN
+        * (17.0 + mountain * 66.0)
+      - land * (foothill * 0.32 + mountain * 0.7) * KL_FRACTURE_RAVINE_MEAN
+        * (9.0 + mountain * 48.0);
+  }
+  let foothillMean = land * foothill * KL_RIDGES_POW_212_MEAN * 285.0;
+  let valleyMean = land * foothill * KL_RIDGES_INVERSE_POW_31_MEAN * (55.0 + mountain * 105.0);
+  let shortRelief = kNatural.fine * (5.0 + land * 12.0)
+    + (kNatural.rockyKnolls - knollMean)
+    + (kNatural.geologicalRelief - geologyMean);
+  let broadRelief = kNatural.rolling * kNatural.hillStrength
+    + (kNatural.foothillHeight - foothillMean)
+    - (kNatural.valleyCarve - valleyMean);
+  return vec2f(shortRelief, broadRelief);
+}
+
+/**
+ * duneErgWeight: the cheap factors the kernel already computed first, then
+ * the province's dryness and the erg patch, returning 0 wherever a factor is
+ * already 0 (on a real GPU that skips the lattices; SwiftShader runs both
+ * sides of a branch, so there it saves nothing and costs nothing). A world
+ * that forces dunes (landform.w) drops the province and patch factors.
+ */
+fn terrainDuneErgWeight(localX: f32, localZ: f32, coreMask: f32, relief: vec2f) -> f32 {
+  let baseHeight = kNatural.shippedHeight - relief.x - relief.y;
+  let lowGround = kSmoothstep(KL_LOW_GROUND_RISE_LOW, KL_LOW_GROUND_RISE_HIGH, baseHeight)
+    * (1.0 - kSmoothstep(KL_LOW_GROUND_FALL_LOW, KL_LOW_GROUND_FALL_HIGH, baseHeight));
+  let flatGround = 1.0 - kSmoothstep(KL_HILL_LOW, KL_HILL_HIGH, kNatural.foothillRegion);
+  var weight = coreMask * lowGround * flatGround;
+  if (weight <= 0.0) { return 0.0; }
+  if (terrainKernelPages[kPageIndex].landform.w <= 0.0) {
+    // unmaskedProvinceDryness: the dryness half of the unmasked province.
+    let dryness = kProvinceDrynessStaircase(
+      kFbm(${terrainKernelLatticeBase("provinceDryness")}u, ${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ));
+    weight = weight * kSmoothstep(KL_ARID_DRYNESS_LOW, KL_ARID_DRYNESS_HIGH, dryness);
+    if (weight <= 0.0) { return 0.0; }
+    weight = weight * kSmoothstep(
+      KL_ERG_PATCH_LOW,
+      KL_ERG_PATCH_HIGH,
+      kFbm(${terrainKernelLatticeBase("duneErgPatch")}u, ${DUNES.ergPatch.octaves}u, localX, localZ),
+    );
+    if (weight <= 0.0) { return 0.0; }
+  }
+  return weight * (1.0 - terrainVolcanicActivity(localX, localZ));
+}
+
+/**
+ * sampleDuneField's dune height for erg weight erg. The phases are the
+ * page's (landformWind.zw, reduced in f64 at the page origin) plus the local
+ * warped offset's own (rule 1), so the f32 phase stays a few periods at most
+ * across a page instead of thousands.
+ */
+fn terrainDuneField(localX: f32, localZ: f32, erg: f32) -> f32 {
+  let supply = erg;
+  let crestNoise = kFilteredNoise(${terrainKernelLatticeBase("duneCrest")}u, localX, localZ);
+  let threshold = KL_CREST_THRESHOLD_THIN
+    + (KL_CREST_THRESHOLD_FULL - KL_CREST_THRESHOLD_THIN) * supply;
+  let crest = kSmoothstep(
+    threshold - KL_CREST_HALF_WIDTH,
+    threshold + KL_CREST_HALF_WIDTH,
+    crestNoise * 0.5 + 0.5,
+  );
+  let crestHeight = min(
+    KL_CREST_HEIGHT_LIMIT,
+    crest * (KL_CREST_HEIGHT_MIN + (KL_CREST_HEIGHT_MAX - KL_CREST_HEIGHT_MIN) * supply)
+      * (0.8 + 0.2 * crestNoise),
+  );
+  let meanderNoise = kFilteredNoise(${terrainKernelLatticeBase("duneMeander")}u, localX, localZ);
+  let meanderFineNoise =
+    kFilteredNoise(${terrainKernelLatticeBase("duneMeanderFine")}u, localX, localZ);
+  let wind = terrainKernelPages[kPageIndex].landformWind;
+  // duneWindPhase and duneAcrossPhase of the LOCAL warped offset.
+  let windLocal = (kNatural.warpedX * wind.x + kNatural.warpedZ * wind.y) / KL_SPACING;
+  let acrossLocal = (kNatural.warpedX * wind.y - kNatural.warpedZ * wind.x) / KL_SCALLOP_WIDTH;
+  let windPhase = wind.z + windLocal;
+  // The page's across phase already carries the origin's stagger.
+  let across = wind.w + acrossLocal + windLocal * KL_SCALLOP_STAGGER
+    + meanderNoise * KL_SCALLOP_JITTER;
+  let phase = windPhase
+    + meanderNoise * KL_MEANDER_AMPLITUDE
+    + meanderFineNoise * KL_MEANDER_FINE_AMPLITUDE
+    - KL_SCALLOP_AMPLITUDE * (0.65 + 0.35 * crestNoise) * terrainDuneScallop(across)
+    - KL_HORN_SHIFT * (1.0 - crest);
+  let metersIntoPeriod = (phase - floor(phase)) * KL_SPACING;
+  let mean = terrainDuneProfileMean(crestHeight);
+  // octaveBandWeight(spacing, filterWidth): a page constant (rule 4).
+  let kept = terrainKernelPages[kPageIndex].landformRadii.z;
+  var profile = terrainDuneProfile(metersIntoPeriod, crestHeight);
+  if (kept < 1.0) {
+    profile = mean + (profile - mean) * kept;
+  }
+  return erg * profile;
+}
+
+/** duneFloorFlattening: mean-free, because the relief is. */
+fn terrainDuneFloorFlattening(erg: f32, relief: vec2f) -> f32 {
+  return -erg * (KL_RELIEF_DAMPING * relief.x + KL_ROLLING_DAMPING * relief.y);
+}
+
+/**
+ * applyDuneStage: height itself (the same number, not + 0.0) wherever the
+ * erg weight is 0; inside a sand sea the flattened floor plus the dune field.
+ */
 fn terrainDuneStage(localX: f32, localZ: f32, height: f32, coreMask: f32) -> f32 {
-  return height;
+  let relief = terrainDuneRelief();
+  let erg = terrainDuneErgWeight(localX, localZ, coreMask, relief);
+  if (erg <= 0.0) { return height; }
+  let duneHeight = terrainDuneField(localX, localZ, erg);
+  return height + terrainDuneFloorFlattening(erg, relief) + duneHeight;
 }
 
 /**

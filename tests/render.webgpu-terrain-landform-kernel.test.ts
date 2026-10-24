@@ -11,14 +11,22 @@ import {
   terrainLandformInput,
 } from "../src/render/webgpu/terrain/TerrainKernel";
 import {
+  TERRAIN_LANDFORM_CONSTANTS,
   TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES,
   TERRAIN_LANDFORM_WGSL,
   terrainLandformDataBindingWgsl,
 } from "../src/render/webgpu/terrain/TerrainLandformKernel";
-import { DUNES, duneAcrossPhase, duneWindPhase } from "../src/world/dunes";
+import { CLIMATE_PROVINCE } from "../src/world/climateProvince";
+import { DUNE_PROFILE_CONSTANTS, DUNES, duneAcrossPhase, duneWindPhase } from "../src/world/dunes";
+import { FRACTURE_EXPOSURE_MEAN, FRACTURE_RAVINE_MEAN } from "../src/world/geology";
 import { LANDFORM_CORE, landformCoreCenter } from "../src/world/landforms";
 import { octaveBandWeight } from "../src/world/noise";
-import { sampleNaturalTerrainIntermediates } from "../src/world/terrain";
+import {
+  LOCAL_RIDGES_KNOLL_MEAN,
+  RIDGES_INVERSE_POW_31_MEAN,
+  RIDGES_POW_212_MEAN,
+  sampleNaturalTerrainIntermediates,
+} from "../src/world/terrain";
 import { createWorld } from "../src/world/world";
 
 /**
@@ -35,6 +43,14 @@ const FORCED = createWorld("landform-kernel", { landforms: { dunes: true } });
 
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/\/\/[^\n]*/gu, "");
+}
+
+/**
+ * Whether source calls builtin, matched as a whole word: the volcanic
+ * include's terrainVolcanicGround( is not a call to round(.
+ */
+function callsBuiltin(source: string, builtin: string): boolean {
+  return new RegExp(`\\b${builtin.replace(/[()]/gu, "\\$&")}`, "u").test(source);
 }
 
 /** The four landform rows: 16 floats after the kept row and the province's two. */
@@ -199,7 +215,59 @@ describe("the landform include (TerrainLandformKernel.ts)", () => {
 
   it("uses none of the builtins whose rounding differs from the TypeScript", () => {
     for (const builtin of TERRAIN_KERNEL_FORBIDDEN_BUILTINS) {
-      expect(code.includes(builtin), `landform WGSL uses ${builtin}`).toBe(false);
+      expect(callsBuiltin(code, builtin), `landform WGSL uses ${builtin}`).toBe(false);
+    }
+    expect(callsBuiltin("let g = terrainVolcanicGround(x);", "round(")).toBe(false);
+    expect(callsBuiltin("let r = round(x);", "round(")).toBe(true);
+  });
+
+  it("emits every injected constant with its f64 value, and reads each one", () => {
+    for (const [name, value] of Object.entries(TERRAIN_LANDFORM_CONSTANTS)) {
+      const declaration = new RegExp(`\\nconst KL_${name}: f32 = ([^;]+);`, "u").exec(code);
+      expect(declaration, name).not.toBeNull();
+      expect(Number(declaration![1]), name).toBe(value);
+      // Declared and never read is a retyped literal somewhere instead.
+      const uses = code.match(new RegExp(`\\bKL_${name}\\b`, "gu")) ?? [];
+      expect(uses.length, `KL_${name} is never read`).toBeGreaterThan(1);
+    }
+    // No KL_ name the table does not supply.
+    const declared = [...code.matchAll(/\bconst KL_(\w+): f32/gu)].map((match) => match[1]);
+    expect(declared.sort()).toEqual(Object.keys(TERRAIN_LANDFORM_CONSTANTS).sort());
+  });
+
+  it("injects the figures dunes.ts reads, from the modules dunes.ts reads them from", () => {
+    expect(TERRAIN_LANDFORM_CONSTANTS).toMatchObject({
+      LOCAL_RIDGES_KNOLL_MEAN,
+      FRACTURE_EXPOSURE_MEAN,
+      FRACTURE_RAVINE_MEAN,
+      RIDGES_POW_212_MEAN,
+      RIDGES_INVERSE_POW_31_MEAN,
+      ARID_DRYNESS_LOW: DUNES.aridDrynessLow,
+      ARID_DRYNESS_HIGH: DUNES.aridDrynessHigh,
+      ERG_PATCH_LOW: DUNES.ergPatch.low,
+      ERG_PATCH_HIGH: DUNES.ergPatch.high,
+      SPACING: DUNES.spacingMeters,
+      BRINK_ROUNDING: DUNES.brinkRoundingMeters,
+      SCALLOP_STAGGER: DUNES.scallopStagger,
+      SCALLOP_JITTER: DUNES.scallopJitter,
+      STOSS_TAN: DUNE_PROFILE_CONSTANTS.stossTan,
+      SLIP_TAN: DUNE_PROFILE_CONSTANTS.slipTan,
+      CREST_HEIGHT_LIMIT: DUNE_PROFILE_CONSTANTS.crestHeightLimitMeters,
+      STOSS_SHAPE_INTEGRAL: DUNE_PROFILE_CONSTANTS.stossShapeIntegral,
+    });
+    // The derived profile constants are the slopes DUNES names.
+    expect(DUNE_PROFILE_CONSTANTS.stossTan).toBe(Math.tan(DUNES.stossDegrees * Math.PI / 180));
+    expect(DUNE_PROFILE_CONSTANTS.slipTan).toBe(Math.tan(DUNES.slipDegrees * Math.PI / 180));
+  });
+
+  it("addresses the dune and dryness lattices at their table bases", () => {
+    expect(code).toContain(`kFbm(${terrainKernelLatticeBase("provinceDryness")}u, `
+      + `${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ)`);
+    expect(code).toContain(`kFbm(${terrainKernelLatticeBase("duneErgPatch")}u, `
+      + `${DUNES.ergPatch.octaves}u, localX, localZ)`);
+    for (const name of ["duneMeander", "duneMeanderFine", "duneCrest"]) {
+      expect(code, name).toContain(
+        `kFilteredNoise(${terrainKernelLatticeBase(name)}u, localX, localZ)`);
     }
   });
 
@@ -207,7 +275,9 @@ describe("the landform include (TerrainLandformKernel.ts)", () => {
     expect(code).not.toContain("@group");
     expect(terrainLandformDataBindingWgsl(1, 6))
       .toContain("@group(1) @binding(6) var<storage, read> terrainLandformData: array<vec4f>;");
-    expect(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES).toBe(16);
+    // Whole vec4fs, at least the one the activity stub reads.
+    expect(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES % 16).toBe(0);
+    expect(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES).toBeGreaterThanOrEqual(16);
   });
 
   it("keeps the volcanic hooks as stubs: activity reads the data binding, the overlay returns its height", () => {

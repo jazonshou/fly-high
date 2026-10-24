@@ -1,0 +1,374 @@
+import { describe, expect, it } from "vitest";
+import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
+import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
+// Side-effect import: register the compute pipeline methods on WebGPUEngine.
+import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
+import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import {
+  TERRAIN_KERNEL_PAGE_BYTES,
+  TERRAIN_KERNEL_WGSL,
+  buildTerrainKernelPageUniform,
+  terrainKernelPageBindingWgsl,
+  terrainLandformInput,
+  type TerrainKernelLandformInput,
+} from "../../src/render/webgpu/terrain/TerrainKernel";
+import {
+  TERRAIN_LANDFORM_WGSL,
+  createTerrainLandformPlaceholderBuffer,
+  terrainLandformDataBindingWgsl,
+} from "../../src/render/webgpu/terrain/TerrainLandformKernel";
+import { TERRAIN_HEIGHT_PARITY_CRITERIA } from "../../src/render/webgpu/terrain/TerrainSpineContract";
+import { DUNES, unmaskedProvinceDryness } from "../../src/world/dunes";
+import {
+  LANDFORM_CORE,
+  applyTerrainLandforms,
+  landformCoreCenter,
+  sampleLandformCover,
+} from "../../src/world/landforms";
+import {
+  sampleNaturalTerrainHeight,
+  sampleNaturalTerrainIntermediates,
+} from "../../src/world/terrain";
+import type { WorldDefinition } from "../../src/world/types";
+import { createWorld } from "../../src/world/world";
+
+/**
+ * The landform stage's CPU/GPU parity: `applyTerrainLandforms` (landforms.ts,
+ * dunes.ts) against `terrainLandforms` (TerrainLandformKernel.ts), on a real
+ * adapter.
+ *
+ * Two properties, in the shape of `terrain-height-parity.test.ts`:
+ *
+ * - CONTAINMENT. Inside the landform core, and on a page built without a
+ *   landform input, the GPU hook returns the natural height it was given BIT
+ *   FOR BIT. That is the whole of the reason the perf baselines and the
+ *   start-airport search cannot move.
+ * - PARITY. In a sand sea, forced (10-40 km from the airport) and natural
+ *   (an arid erg found 150-600 km out), the GPU agrees with the CPU at filter
+ *   widths 0, 128 and 512 within the kernel's own near-field tolerance. 128
+ *   and 512 are the mandatory rows for the same reason they are for the
+ *   kernel: the dune profile fades to its analytic mean there, and a wrong
+ *   mean or band weight is invisible at width 0.
+ */
+
+const FILTER_WIDTHS = [0, 128, 512] as const;
+const PAGE_METERS = 512;
+const NATURAL_WORLD = createWorld("landform-parity");
+const FORCED_WORLD = createWorld("landform-parity", { landforms: { dunes: true } });
+
+const KERNEL = /* wgsl */ `
+${terrainKernelPageBindingWgsl(0, 0)}
+${terrainLandformDataBindingWgsl(0, 3)}
+${TERRAIN_KERNEL_WGSL}
+${TERRAIN_LANDFORM_WGSL}
+
+struct LandformProbe { pageIndex: u32, pad: u32, localX: f32, localZ: f32 };
+
+@group(0) @binding(1) var<storage, read> probes: array<LandformProbe>;
+@group(0) @binding(2) var<storage, read_write> results: array<vec2f>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= arrayLength(&probes)) { return; }
+  let probe = probes[id.x];
+  kSelectPage(probe.pageIndex);
+  // The consumers' order: the natural kernel, then the landforms reading the
+  // intermediates that very call recorded.
+  let natural = terrainNaturalHeight(probe.localX, probe.localZ);
+  results[id.x] = vec2f(natural, terrainLandforms(probe.localX, probe.localZ, natural));
+}
+`;
+
+function halton(index: number, base: number): number {
+  let result = 0;
+  let fraction = 1 / base;
+  let i = index;
+  while (i > 0) {
+    result += (i % base) * fraction;
+    i = Math.floor(i / base);
+    fraction /= base;
+  }
+  return result;
+}
+
+interface ProbeSet {
+  readonly name: string;
+  readonly world: WorldDefinition;
+  readonly landform: TerrainKernelLandformInput | null;
+  readonly pageOrigins: readonly (readonly [number, number])[];
+  readonly probes: Float32Array;
+  readonly worldX: Float64Array;
+  readonly worldZ: Float64Array;
+  readonly count: number;
+}
+
+/** Page origins on the 512 m lattice, each probed at Halton points over its core and gutter. */
+function buildProbeSet(
+  name: string,
+  world: WorldDefinition,
+  landform: TerrainKernelLandformInput | null,
+  pageOrigins: readonly (readonly [number, number])[],
+  perPage: number,
+): ProbeSet {
+  const count = pageOrigins.length * perPage;
+  const probes = new Float32Array(count * 4);
+  const pageIndices = new Uint32Array(probes.buffer);
+  const worldX = new Float64Array(count);
+  const worldZ = new Float64Array(count);
+  let index = 0;
+  pageOrigins.forEach(([originX, originZ], page) => {
+    for (let sample = 0; sample < perPage; sample += 1) {
+      const localX = halton(sample + 1, 2) * (PAGE_METERS + 16) - 8;
+      const localZ = halton(sample + 1, 3) * (PAGE_METERS + 16) - 8;
+      pageIndices[index * 4] = page;
+      probes[index * 4 + 2] = localX;
+      probes[index * 4 + 3] = localZ;
+      // The CPU oracle runs at the point the GPU sees: the f32 local offset.
+      worldX[index] = originX + Math.fround(localX);
+      worldZ[index] = originZ + Math.fround(localZ);
+      index += 1;
+    }
+  });
+  return { name, world, landform, pageOrigins, probes, worldX, worldZ, count };
+}
+
+function snapToPage(value: number): number {
+  return Math.floor(value / PAGE_METERS) * PAGE_METERS;
+}
+
+/** Pages whose centre lies `minRadius`-`maxRadius` from the airport with a positive erg. */
+function forcedErgPages(world: WorldDefinition, wanted: number): [number, number][] {
+  const center = landformCoreCenter(world);
+  const pages: [number, number][] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < 20_000 && pages.length < wanted; index += 1) {
+    const angle = index * 2.399963;
+    const radius = 10_000 + 30_000 * ((index * 0.618034) % 1);
+    const x = snapToPage(center.x + Math.cos(angle) * radius);
+    const z = snapToPage(center.z + Math.sin(angle) * radius);
+    const key = `${x},${z}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const cover = sampleLandformCover(world, x + PAGE_METERS / 2, z + PAGE_METERS / 2, 0);
+    if (cover.ergWeight > 0.05) pages.push([x, z]);
+  }
+  return pages;
+}
+
+/**
+ * A natural world's sand seas, found the way a player would: scanning 150-600 km
+ * out for arid ground first (the province alone is two lattices), then the
+ * whole erg weight.
+ */
+function naturalErgPages(world: WorldDefinition, wanted: number): [number, number][] {
+  const center = landformCoreCenter(world);
+  const pages: [number, number][] = [];
+  const step = 3_000;
+  const outer = 600_000;
+  const inner = LANDFORM_CORE.innerRadiusMeters + LANDFORM_CORE.rampMeters;
+  for (let gz = -outer; gz <= outer && pages.length < wanted; gz += step) {
+    for (let gx = -outer; gx <= outer && pages.length < wanted; gx += step) {
+      const radius = Math.hypot(gx, gz);
+      if (radius < inner || radius > outer) continue;
+      const x = center.x + gx;
+      const z = center.z + gz;
+      if (unmaskedProvinceDryness(world.seedHash, x, z) <= DUNES.aridDrynessLow) continue;
+      if (sampleLandformCover(world, x, z, 0).ergWeight <= 0.2) continue;
+      // Spread the pages out: one per 30 km cell at most.
+      const tooClose = pages.some(([px, pz]) => Math.hypot(px - x, pz - z) < 30_000);
+      if (!tooClose) pages.push([snapToPage(x - PAGE_METERS / 2), snapToPage(z - PAGE_METERS / 2)]);
+    }
+  }
+  return pages;
+}
+
+function packPages(set: ProbeSet, filterWidthMeters: number): Uint8Array {
+  const packed = new Uint8Array(set.pageOrigins.length * TERRAIN_KERNEL_PAGE_BYTES);
+  set.pageOrigins.forEach(([originX, originZ], index) => {
+    packed.set(
+      new Uint8Array(buildTerrainKernelPageUniform({
+        seedHash: set.world.seedHash,
+        originX,
+        originZ,
+        filterWidthMeters,
+        landform: set.landform,
+      })),
+      index * TERRAIN_KERNEL_PAGE_BYTES,
+    );
+  });
+  return packed;
+}
+
+async function withEngine<T>(run: (engine: WebGPUEngine) => Promise<T>): Promise<T> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  document.body.appendChild(canvas);
+  const engine = new WebGPUEngine(canvas, {
+    antialias: false,
+    enableAllFeatures: false,
+    setMaximumLimits: false,
+  });
+  try {
+    await engine.initAsync();
+    engine.runRenderLoop(() => {});
+    const result = await run(engine);
+    engine.stopRenderLoop();
+    return result;
+  } finally {
+    engine.dispose();
+    canvas.remove();
+  }
+}
+
+/** (natural, landformed) per probe, from one dispatch. */
+async function dispatch(
+  engine: WebGPUEngine,
+  set: ProbeSet,
+  filterWidthMeters: number,
+): Promise<Float32Array> {
+  const pageBuffer = new StorageBuffer(engine, set.pageOrigins.length * TERRAIN_KERNEL_PAGE_BYTES);
+  pageBuffer.update(packPages(set, filterWidthMeters));
+  const probeBuffer = new StorageBuffer(engine, set.probes.byteLength);
+  probeBuffer.update(new Uint8Array(set.probes.buffer));
+  const resultBuffer = new StorageBuffer(engine, set.count * 8);
+  const dataBuffer = createTerrainLandformPlaceholderBuffer(engine);
+  const shader = new ComputeShader(
+    `terrain-landform-parity-${set.name}-${filterWidthMeters}`,
+    engine,
+    { computeSource: KERNEL },
+    {
+      bindingsMapping: {
+        terrainKernelPages: { group: 0, binding: 0 },
+        probes: { group: 0, binding: 1 },
+        results: { group: 0, binding: 2 },
+        terrainLandformData: { group: 0, binding: 3 },
+      },
+    },
+  );
+  shader.setStorageBuffer("terrainKernelPages", pageBuffer);
+  shader.setStorageBuffer("probes", probeBuffer);
+  shader.setStorageBuffer("results", resultBuffer);
+  shader.setStorageBuffer("terrainLandformData", dataBuffer);
+  await shader.dispatchWhenReady(Math.ceil(set.count / 64), 1, 1);
+  const view = await resultBuffer.read();
+  const results = new Float32Array(
+    view.buffer.slice(view.byteOffset, view.byteOffset + set.count * 8));
+  pageBuffer.dispose();
+  probeBuffer.dispose();
+  resultBuffer.dispose();
+  dataBuffer.dispose();
+  return results;
+}
+
+describe("landform stage CPU/GPU parity (terrainLandforms)", () => {
+  it("returns the natural height bit for bit inside the core and without a landform input", async () => {
+    const naturalCenter = landformCoreCenter(NATURAL_WORLD);
+    const forcedCenter = landformCoreCenter(FORCED_WORLD);
+    // A natural world's core: a 7 x 7 grid of pages out to 90 km, all of each
+    // page inside the 120 km inner radius.
+    const corePages: [number, number][] = [];
+    for (let row = -3; row <= 3; row += 1) {
+      for (let column = -3; column <= 3; column += 1) {
+        corePages.push([
+          snapToPage(naturalCenter.x + column * 28_000),
+          snapToPage(naturalCenter.z + row * 28_000),
+        ]);
+      }
+    }
+    // A forced world's runway clearance: pages within ~3.6 km of the airport,
+    // inside the 5 km inner radius.
+    const clearancePages: [number, number][] = [];
+    for (let row = -2; row <= 1; row += 1) {
+      for (let column = -2; column <= 1; column += 1) {
+        clearancePages.push([
+          snapToPage(forcedCenter.x) + column * PAGE_METERS,
+          snapToPage(forcedCenter.z) + row * PAGE_METERS,
+        ]);
+      }
+    }
+    const ergPages = forcedErgPages(FORCED_WORLD, 12);
+    expect(ergPages.length, "forced erg pages found").toBeGreaterThanOrEqual(8);
+    const sets = [
+      buildProbeSet("core", NATURAL_WORLD, terrainLandformInput(NATURAL_WORLD), corePages, 96),
+      buildProbeSet(
+        "clearance", FORCED_WORLD, terrainLandformInput(FORCED_WORLD), clearancePages, 96),
+      // Gain 0: an erg the page was not told about is natural ground.
+      buildProbeSet("no-input", FORCED_WORLD, null, ergPages, 96),
+    ];
+    const report: string[] = [];
+    await withEngine(async (engine) => {
+      for (const set of sets) {
+        for (const filterWidthMeters of FILTER_WIDTHS) {
+          const gpu = await dispatch(engine, set, filterWidthMeters);
+          const bits = new Uint32Array(gpu.buffer);
+          let mismatches = 0;
+          for (let index = 0; index < set.count; index += 1) {
+            if (bits[index * 2] !== bits[index * 2 + 1]) mismatches += 1;
+          }
+          report.push(`${set.name}, fw ${filterWidthMeters}: ${mismatches} of ${set.count} not bit-identical`);
+          expect(mismatches, `${set.name} at filter width ${filterWidthMeters}`).toBe(0);
+        }
+      }
+    });
+    console.log(`landform containment:\n  ${report.join("\n  ")}`);
+  }, 300_000);
+
+  it("agrees with applyTerrainLandforms in forced and natural sand seas at widths 0, 128, 512", async () => {
+    const criteria = TERRAIN_HEIGHT_PARITY_CRITERIA;
+    const forcedPages = forcedErgPages(FORCED_WORLD, 24);
+    const naturalPages = naturalErgPages(NATURAL_WORLD, 8);
+    expect(forcedPages.length, "forced erg pages found").toBeGreaterThanOrEqual(16);
+    expect(naturalPages.length, "natural erg pages found 150-600 km out").toBeGreaterThanOrEqual(3);
+    const sets = [
+      buildProbeSet("forced erg", FORCED_WORLD, terrainLandformInput(FORCED_WORLD), forcedPages, 160),
+      buildProbeSet(
+        "natural erg", NATURAL_WORLD, terrainLandformInput(NATURAL_WORLD), naturalPages, 160),
+    ];
+    const report: string[] = [];
+    await withEngine(async (engine) => {
+      for (const set of sets) {
+        for (const filterWidthMeters of FILTER_WIDTHS) {
+          const gpu = await dispatch(engine, set, filterWidthMeters);
+          let worst = 0;
+          let worstIndex = 0;
+          let worstNatural = 0;
+          let moved = 0;
+          for (let index = 0; index < set.count; index += 1) {
+            const x = set.worldX[index]!;
+            const z = set.worldZ[index]!;
+            const natural = sampleNaturalTerrainHeight(set.world.seedHash, x, z, filterWidthMeters);
+            const expected = applyTerrainLandforms(
+              set.world,
+              x,
+              z,
+              natural,
+              filterWidthMeters,
+              sampleNaturalTerrainIntermediates(set.world.seedHash, x, z, filterWidthMeters),
+            );
+            if (expected !== natural) moved += 1;
+            worstNatural = Math.max(worstNatural, Math.abs(gpu[index * 2]! - natural));
+            const delta = Math.abs(gpu[index * 2 + 1]! - expected);
+            if (delta > worst) {
+              worst = delta;
+              worstIndex = index;
+            }
+          }
+          report.push(
+            `${set.name}, fw ${filterWidthMeters}: max |Δh| = ${worst.toFixed(5)} m `
+            + `at (${set.worldX[worstIndex]!.toFixed(1)}, ${set.worldZ[worstIndex]!.toFixed(1)}); `
+            + `natural kernel alone ${worstNatural.toFixed(5)} m; `
+            + `${moved} of ${set.count} points moved by the dunes`,
+          );
+          // Non-vacuous: most probes sit in the sand sea.
+          expect(moved, `${set.name} at ${filterWidthMeters}: probes the dunes moved`)
+            .toBeGreaterThan(set.count * 0.4);
+          expect(worst, `${set.name} at filter width ${filterWidthMeters} over ${set.count} points`)
+            .toBeLessThan(criteria.nearToleranceMeters);
+        }
+      }
+    });
+    // Printed so the achieved bound is a recorded measurement, not a pass/fail bit.
+    console.log(`landform parity:\n  ${report.join("\n  ")}`);
+  }, 600_000);
+});
