@@ -28,7 +28,9 @@
  * a sward secondary gets none — times the airfield exclusion, times one minus
  * the canopy closure the vegetation system draws (beyond the trusted pages the
  * fallback cannot name forest floor, and an upper forest belt in a cool climate
- * classifies as turf), times the classifier's own alpine ramp, times gentle
+ * classifies as turf), times the classifier's own alpine ramp (on thermal
+ * height, so a cold province's lowland meadow counts as the alpine turf its
+ * classifier calls it), times gentle
  * ground ending where the classifier's `steep` begins, times a fade-in with
  * range where D-3's band has handed over, times W-1's tier switch (Low pays
  * nothing).
@@ -43,7 +45,11 @@ import { SURFACE_MATERIAL_COUNT } from "./surfaceMaterials";
  * luminance on high-10000ft-down), and 0 folds the term out of the shader.
  */
 export const TURF_RELIEF_STRENGTH = 1;
-/** The classifier's own alpine ramp (`alpine = smoothstep(420, 980, elevation)`). */
+/**
+ * The classifier's own alpine ramp (`alpine = smoothstep(420, 980, elevation)`),
+ * read on thermal height (elevation plus the province's lift, exactly the
+ * elevation in the temperate core).
+ */
 export const TURF_RELIEF_ALPINE_LOW_METERS = 420;
 export const TURF_RELIEF_ALPINE_HIGH_METERS = 980;
 /**
@@ -108,7 +114,7 @@ export function terrainTurfMesoGainWgsl(strength: number = TURF_RELIEF_STRENGTH)
     * (1.0 - terrainGroundAirfield)
     * (1.0 - clamp(terrainGroundCanopyClosure, 0.0, 1.0))
     * smoothstep(${wgslFloat(TURF_RELIEF_ALPINE_LOW_METERS)}, ${wgslFloat(TURF_RELIEF_ALPINE_HIGH_METERS)},
-      terrainElevationDriver)
+      terrainThermalDriver)
     * (1.0 - smoothstep(${wgslFloat(TURF_RELIEF_GENTLE_LOW)}, ${wgslFloat(TURF_RELIEF_GENTLE_HIGH)}, terrainSlope))
     * smoothstep(${wgslFloat(TURF_RELIEF_RANGE_LOW_METERS)}, ${wgslFloat(TURF_RELIEF_RANGE_HIGH_METERS)},
       terrainFootprint3D)

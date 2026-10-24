@@ -226,6 +226,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
   const TIER_BOOLEAN_ROW_CHECKS:
     readonly (readonly [string, (p: (typeof PROFILES)[number]) => boolean])[] = [
       ["Ground patchwork", (p: (typeof PROFILES)[number]) => p.terrainGroundPatchwork],
+      ["Climate province field",
+        (p: (typeof PROFILES)[number]) => p.terrainProvinceField],
       ["Vegetation casts shadows",
         (p: (typeof PROFILES)[number]) => p.vegetationCastsShadows],
     ];

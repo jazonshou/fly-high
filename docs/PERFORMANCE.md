@@ -108,6 +108,7 @@ audit is why it now carries all four tiers):
 | Terrain material array edge (3-0) | 256² | 512² | 512² | 512² |
 | Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
 | Ground patchwork (W-1) | off | on | on | on |
+| Climate province field (far biome tones, `ClimateProvinceField.ts`) | off | on | on | on |
 | Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
 | Shadow map (`4-8b`) | 1,024 | 1,280 | 1,536 | 2,048 |
 | Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
@@ -274,6 +275,26 @@ presentation spine and changes the height authority behind it:
 - `src/render/webgpu/world/` remains the one page-identity, payload,
   lifecycle, cache-metadata and streaming-priority authority; the terrain atlas
   consumes it verbatim rather than keeping a second residency map.
+- **The far ground follows the climate province (2026-10-24).** Past the
+  trusted pages the macro fallback assumed the temperate world (Grass, rock
+  and snow on real elevation, one canopy paint), so a taiga, tundra, desert or
+  tropical forest changed colour with viewing distance. `ClimateProvinceField.ts`
+  streams a 128² RGBA32F window of the province (1.25 km texels, 256 KiB,
+  nearest-first, at most 512 work units a frame, no allocation per frame); the
+  CDLOD vertex stage reads it once per vertex and `ProvinceFarTone.ts` turns it
+  into a thermal lift, a sward base tone and a signed canopy share, all as
+  deltas, so the temperate core is `x + x * 0` and renders bit-identical. They
+  ride lanes the terrain already interpolates (the beauty pipeline has no
+  spare fragment input), and shadow-depth passes skip the read. Behind the
+  define `TERRAIN_PROVINCE_FIELD` from the tier flag `terrainProvinceField`:
+  compiled out on Low, which pays nothing and allocates nothing.
+  **Cost** (`npm run perf:ab -- --base 62bade0`, cloud SwiftShader, Medium):
+  GPU time SAME on all five shots, approach +0.4%, cruise +2.1% (re-run
+  -2.0%), forest +0.5%, ground +0.5%, water +1.3% (re-run with the shadow
+  skip -0.6%); draw calls unchanged; inventoried GPU memory +0.25 MiB; every
+  default shot's pixels identical to the base. The shadow skip took the CSM
+  pass from +8-18% to water's +3.6% (-0.3% to +6.3%). Baselines and draw-call
+  ceilings are unchanged.
 
 ## Spectral ocean and inland water
 
