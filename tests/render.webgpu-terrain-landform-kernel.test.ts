@@ -419,10 +419,20 @@ describe("the consumers of the landform stage", () => {
     expect(landformed).toBeLessThan(bed.indexOf("bathymetryParams.water.w > 0.5"));
   });
 
-  it("keep the splat bake's binding live without changing a texel", () => {
+  it("give the splat bake the sand cover, behind the gate that reads no kernel", () => {
     const body = functionBody(consumers[3][1], "bakeSplat");
-    expect(body).toContain("_ = terrainVolcanicActivity(localX, localZ);");
+    // The gate comes first, and the kernel runs only inside it: a texel off
+    // every erg (and every page inside the landform core) never evaluates it.
+    const gate = body.indexOf("if (terrainLandformClimateGate(localX, localZ)) {");
+    const cover = body.indexOf(
+      "sandCover = terrainLandformSandCover(localX, localZ, terrainNaturalHeight(localX, localZ)).y;");
+    expect(gate).toBeGreaterThan(0);
+    expect(cover).toBeGreaterThan(gate);
+    expect(body.slice(0, gate)).not.toContain("terrainNaturalHeight(");
     expect(body).not.toContain("terrainLandforms(");
+    // Every classification and both seasons read it.
+    expect(body).toContain("splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province, sandCover);");
+    expect(body).toContain("splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province, sandCover);");
   });
 });
 

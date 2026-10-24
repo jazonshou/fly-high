@@ -15,6 +15,8 @@ import {
   DRY_PROVINCE_PARKLAND_ONSET,
   dryProvinceAridShare,
   dryProvinceParklandShare,
+  SAND_COVER_TREE_HIGH,
+  SAND_COVER_TREE_LOW,
   SOIL_LITTER_DEEP_METERS,
   SOIL_LITTER_THIN_METERS,
   soilLitterFactor,
@@ -1296,10 +1298,17 @@ export function landCoverFarDesertWeights(
   weightsByMaterial: readonly number[],
   dryness: number,
   channelTexelMeters: number,
+  /**
+   * The landform sand cover at the texel. A sand sea is sand at any range, so
+   * the share the far desert moves to straw shrinks with it; 0 (no erg, and
+   * every texel inside the landform core) leaves the share exactly as it was.
+   */
+  sandCover = 0,
 ): number[] {
   const out = [...weightsByMaterial];
-  const arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, dryness)
+  let arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, dryness)
     * landCoverFarDesertRamp(channelTexelMeters);
+  if (sandCover > 0) arid *= 1 - sandCover;
   if (!(arid > 0)) return out;
   const moved = (out[SurfaceMaterial.Sand]! + out[SurfaceMaterial.Gravel]!
     + out[SurfaceMaterial.Rock]!) * arid;
@@ -1468,6 +1477,9 @@ fn splatClassify(
   // every tap to within ~1e-3 at the coarsest level, and it is (0, 0) exactly
   // in the temperate core whatever the tap.
   province: vec2f,
+  // Landforms: the sand the dunes lay down, at the texel centre (bakeSplat).
+  // 0 off every sand sea and inside the landform core.
+  sandCover: f32,
 ) -> LandCoverWeights {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
@@ -1521,6 +1533,7 @@ fn splatClassify(
   input.temperature = terrainTemperatureFromClimate(tapClimate, elevation, province.x);
   input.temperatureOffset = province.x;
   input.dryness = province.y;
+  input.sandCover = sandCover;
   input.aspect = 0.0;
   // The airport's graded platform is mown grass (1B-6), and its influence is
   // the same rounded-rectangle field the earthworks key on.
@@ -1596,6 +1609,18 @@ fn splatCanopyAt(
   return vec2f(sample.canopyClosure, sample.grassCover);
 }
 
+/**
+ * (canopy, grass) factors for the sand cover: densityField.ts'
+ * sandCoverTreeFactor and sandCoverGroundFactor, exactly (1, 1) at no cover.
+ */
+fn splatSandPlantFactors(sandCover: f32) -> vec2f {
+  if (sandCover <= 0.0) { return vec2f(1.0); }
+  return vec2f(
+    1.0 - kSmoothstep(${wgslConstant(SAND_COVER_TREE_LOW)}, ${wgslConstant(SAND_COVER_TREE_HIGH)}, sandCover),
+    1.0 - kSaturate(sandCover),
+  );
+}
+
 /** The canopy at a point whose moisture nobody has evaluated yet. */
 fn splatCanopy(job: SplatJob, localX: f32, localZ: f32, province: vec2f) -> vec2f {
   return splatCanopyAt(
@@ -1610,6 +1635,7 @@ fn splatSupersample(
   shift: f32,
   tapCanopy: array<vec4f, 4>,
   province: vec2f,
+  sandCover: f32,
 ) -> LandCoverWeights {
   var accumulated: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
@@ -1621,7 +1647,7 @@ fn splatSupersample(
   for (var sample = 0u; sample < 4u; sample = sample + 1u) {
     let dx = select(-step, step, (sample & 1u) == 1u);
     let dz = select(-step, step, (sample & 2u) == 2u);
-    let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample], province);
+    let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample], province, sandCover);
     for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
       accumulated[u32(weights.ids[slot])] =
         accumulated[u32(weights.ids[slot])] + weights.weights[slot] * 0.25;
@@ -1632,7 +1658,9 @@ fn splatSupersample(
   if (job.shape.x > ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)}) {
     let farRamp = kSaturate(log2(job.shape.x / ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)})
       / ${Math.log2(LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS / LAND_COVER_FAR_DESERT_START_TEXEL_METERS).toFixed(1)});
-    let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;
+    var farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;
+    // A sand sea stays sand at range (the TS twin's sandCover argument).
+    if (sandCover > 0.0) { farArid = farArid * (1.0 - sandCover); }
     if (farArid > 0.0) {
       let moved = (accumulated[${SurfaceMaterial.Sand}] + accumulated[${SurfaceMaterial.Gravel}]
         + accumulated[${SurfaceMaterial.Rock}]) * farArid;
@@ -1729,12 +1757,6 @@ fn bakeSplat(
   let localX = job.placement.x + (f32(id.x) + 0.5) * job.shape.x;
   let localZ = job.placement.y + (f32(id.y) + 0.5) * job.shape.x;
   let texel = vec2i(job.slots.xy) + vec2i(i32(id.x), i32(id.y));
-  // terrainVolcanicActivity is supplied by the COMPOSER with the landform
-  // include (terrainPageSplatWgsl), like SPLAT_VEGETATION_LATTICE_BASE. The
-  // phony assignment changes no texel; it keeps terrainLandformData in the
-  // pipeline's layout, which drops a binding no reachable code names, until
-  // the landform ground (sand cover, lava rock) reads it for real.
-  _ = terrainVolcanicActivity(localX, localZ);
 
   // Ids are categorical values encoded as unorm over the ten-material axis.
   // The surface shader loads them exactly; it never filters between ids.
@@ -1743,7 +1765,21 @@ fn bakeSplat(
   // Climate provinces: once per texel (see splatClassify), shared by the
   // canopy, every tap and both seasons.
   let province = terrainClimateProvince(localX, localZ);
-  let canopy = splatCanopy(job, localX, localZ, province);
+  // Landforms: the sand the dunes lay down, also once per texel. The landform
+  // functions are supplied by the COMPOSER with the landform include
+  // (terrainPageSplatWgsl), like SPLAT_VEGETATION_LATTICE_BASE. The gate reads
+  // no kernel and is shut inside the landform core and off every erg, so only
+  // a texel that can be sand pays for the natural kernel here. A dune's
+  // slipface is ~20 m across, wider than a 4 m L0 texel, and from 128 m texels
+  // up the dune field is its mean, so the taps share the centre's cover.
+  var sandCover = 0.0;
+  if (terrainLandformClimateGate(localX, localZ)) {
+    sandCover = terrainLandformSandCover(localX, localZ, terrainNaturalHeight(localX, localZ)).y;
+  }
+  // The baked canopy is the canopy the CPU plants: no trees on the sand
+  // (sandCoverTreeFactor) and grass thinned with it (sandCoverGroundFactor).
+  let sandPlants = splatSandPlantFactors(sandCover);
+  let canopy = splatCanopy(job, localX, localZ, province) * sandPlants;
   // Coarse texels give each tap its own canopy (see
   // LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); finer ones hand all four the
   // centre's, which is bit-for-bit what this bake did before. Same tap order
@@ -1759,13 +1795,14 @@ fn bakeSplat(
       // sample and by both of its seasonal classifications.
       let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz, province.y);
       tapCanopy[tap] = vec4f(
-        splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y),
+        splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y)
+          * sandPlants,
         tapMoisture,
         terrainClimate(localX + tapDx, localZ + tapDz));
     }
   }
-  let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province);
-  let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province);
+  let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province, sandCover);
+  let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province, sandCover);
   let aligned = splatAlignSeasonalWeights(lo, hi);
   textureStore(splatId, texel, aligned.ids * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in

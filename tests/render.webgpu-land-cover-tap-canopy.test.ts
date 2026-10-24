@@ -42,7 +42,9 @@ describe("the splat bake gives coarse taps their own canopy", () => {
     // The climate province is sampled once per texel and shared by every
     // tap: it moves over 60 km and more, so the texel centre is the field.
     expect(source).toContain("let province = terrainClimateProvince(localX, localZ);");
-    expect(source).toContain("let canopy = splatCanopy(job, localX, localZ, province);");
+    // The sand factors (exactly (1, 1) off the sand seas) scale every canopy
+    // sample the bake takes, the centre's and each coarse tap's.
+    expect(source).toContain("let canopy = splatCanopy(job, localX, localZ, province) * sandPlants;");
     // ... every tap starts as it, and only a coarse texel overwrites any.
     // (closure, grass, -1, 0): the -1 tells a fine tap to evaluate its own
     // moisture and climate, exactly as it did before.
@@ -60,8 +62,8 @@ describe("the splat bake gives coarse taps their own canopy", () => {
     expect(source).toContain("let dx = select(-step, step, (sample & 1u) == 1u);");
     expect(source).toContain("let dz = select(-step, step, (sample & 2u) == 2u);");
     // Sampled once and shared by both season buckets.
-    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province);");
-    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province);");
+    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province, sandCover);");
+    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province, sandCover);");
   });
 
   it("evaluates a coarse tap's moisture and climate once, and a fine tap's where it always did", () => {
@@ -71,7 +73,7 @@ describe("the splat bake gives coarse taps their own canopy", () => {
     expect(source).toContain(
       "let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz, province.y);");
     expect(source).toContain(
-      "splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y),");
+      "splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y)\n          * sandPlants,");
     expect(source).toContain("terrainClimate(localX + tapDx, localZ + tapDz));");
     // Fine: the sentinel routes the tap to the same two calls it made before.
     expect(source).toMatch(

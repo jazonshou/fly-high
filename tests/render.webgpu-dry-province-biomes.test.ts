@@ -375,7 +375,11 @@ describe("the far desert keeps its colour where the fragment trusts only swards"
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
       `let farRamp = kSaturate(log2(job.shape.x / ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)})`);
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
-      "let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;");
+      "var farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;");
+    // A sand sea stays sand at range: the share shrinks with the sand cover,
+    // and only where there is some (the TS twin's sandCover argument).
+    expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
+      "if (sandCover > 0.0) { farArid = farArid * (1.0 - sandCover); }");
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
       `accumulated[${SurfaceMaterial.DryGrass}] = accumulated[${SurfaceMaterial.DryGrass}] + moved;`);
   });
