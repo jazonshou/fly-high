@@ -33,10 +33,13 @@ Open [http://localhost:3000](http://localhost:3000) and press **Start**.
 | `C` | Cycle camera |
 | `H` | Cycle HUD |
 | `N` | Show / hide the nearest airport |
+| `L` | Autoland at the nearest airport (press again, or move the stick hard, to take back control) |
 | `R` | Restart |
 | `Esc` or `P` | Pause / resume |
 
 Fly 14 km from every airport and a new one is built 5 to 9 km away, so there is always somewhere to land; the nearest-airport marker (or the button at the top right of the HUD) points to whichever is closest.
+
+Autoland (`L`, or the button beside it) flies the aeroplane you are in to the nearest airport and lands it: it plans a circuit to whichever runway end it can reach, flies the approach and flare inside the aircraft's own limits, and brakes to a stop on the runway. When an approach cannot end in a landing (too high, too fast, off the centreline, or a downdraft on short final) it goes around and tries again. Once stopped it holds the brakes until you press `L` again or move the stick.
 
 Gamepads and joysticks are supported too. Sensitivity, dead zone, pitch inversion, and mouse flight can be changed in settings.
 
