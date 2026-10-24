@@ -6,7 +6,11 @@ import {
   type DetailPrototypeBounds,
 } from "./instanceFormat";
 import {
+  PALM_FROND_SEGMENTS,
   buildTreeSkeleton,
+  palmFrondEdge,
+  palmFrondKept,
+  palmFrondPointIndices,
   type SkeletonMeshBudget,
   type TreeSkeleton,
 } from "./treeSkeleton";
@@ -81,6 +85,7 @@ export const TREE_VARIANT_COUNTS: Readonly<Record<TreeSpecies, number>> = Object
   maple: 3,
   birch: 5,
   willow: 3,
+  palm: 3,
 });
 
 /** Two variants per shrub species (2-12b). */
@@ -357,11 +362,14 @@ interface OccluderDisk {
  * Writes A = fraction of the 16 hemisphere rays that escape the disk set.
  * `ownerByVertex` maps each vertex to the disk it belongs to (skipped so a
  * quad never occludes itself); omit for geometry outside the quad set.
+ * With `diskGroups`, the owner names a GROUP and every disk of that group is
+ * skipped — a palm frond's strip never shadows itself.
  */
 function bakeSkyOcclusion(
   acc: GeometryAccumulator,
   disks: readonly OccluderDisk[],
   ownerByVertex?: readonly number[],
+  diskGroups?: readonly number[],
 ): void {
   const vertexCount = acc.positions.length / 3;
   for (let i = 0; i < vertexCount; i += 1) {
@@ -373,7 +381,7 @@ function bakeSkyOcclusion(
     for (const direction of OCCLUSION_DIRECTIONS) {
       let blocked = false;
       for (let d = 0; d < disks.length; d += 1) {
-        if (d === owner) continue;
+        if ((diskGroups ? diskGroups[d] : d) === owner) continue;
         const disk = disks[d]!;
         const denom = direction.x * disk.nx + direction.y * disk.ny + direction.z * disk.nz;
         if (Math.abs(denom) < 1e-6) continue;
@@ -626,6 +634,14 @@ const TREE_SPECIES_SPECS: Readonly<Record<TreeSpecies, TreeSpeciesSpec>> = Objec
     nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
     barkLayer: FOLIAGE_LAYER_INDEX.barkBroadleaf, fork: true,
   },
+  // The palm's crown and core come from its own skeleton path below; these
+  // rows only feed the far crossed-card fallback and name the layers.
+  palm: {
+    conifer: false, trunkRadius: 0.02, taper: 0.2, crownBase: 0.7, crownTop: 1,
+    crownRadius: 0.3, crownLayer: FOLIAGE_LAYER_INDEX.palmFrond,
+    nearCrownLayer: FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+    barkLayer: FOLIAGE_LAYER_INDEX.barkPalm, fork: false,
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -653,11 +669,19 @@ export const NEAR_TREE_MESH_BUDGET: SkeletonMeshBudget = Object.freeze({
   trunkSides: 8, branchSides: 5, twigSides: 3,
   minimumMeshRadius: 0.0008, ringStride: 1, twigShare: 1,
   cardStride: 1, cardScale: 1,
+  frondStride: 1, frondSegmentStride: 1, frondWidthScale: 1,
 });
+/**
+ * Palms at mid keep every other frond (the golden-angle spiral leaves the
+ * survivors spread round the crown) at half the rachis points, widened 1.2x
+ * — under the sqrt(2) coverage compensation for the same reason the card
+ * shell stays under its own: full compensation reads as paddles at range.
+ */
 export const MID_TREE_MESH_BUDGET: SkeletonMeshBudget = Object.freeze({
   trunkSides: 5, branchSides: 3, twigSides: 3,
   minimumMeshRadius: 0.004, ringStride: 2, twigShare: 0,
   cardStride: 4, cardScale: 2.2,
+  frondStride: 2, frondSegmentStride: 2, frondWidthScale: 1.2,
 });
 
 /**
@@ -783,6 +807,169 @@ function emitSkeletonCards(
     }
     ownerId += 1;
   }
+}
+
+/**
+ * Palm fronds as folded strips. Each kept frond meshes two half-strips that
+ * meet at the rachis (u = 0.5) and fall away by the frond's fold angle to the
+ * leaflet tips, so the crown keeps volume from below and from the side where
+ * one flat card per frond would vanish edge-on. v runs petiole to tip and u
+ * spans the leaflet reach, matching the `palmFrond` layer's frond-space
+ * layout. Normals are each half's upper surface, dome-blended (as the card
+ * shell's are) toward a sphere under the crown so the fronds light as one
+ * crown and never as black undersides. One occluder disk per segment, grouped
+ * per frond so a frond does not shade itself.
+ */
+function emitPalmFronds(
+  acc: GeometryAccumulator,
+  skeleton: TreeSkeleton,
+  budget: SkeletonMeshBudget,
+  layer: number,
+  owners: number[],
+  disks: OccluderDisk[],
+  diskGroups: number[],
+): void {
+  const pointIndices = palmFrondPointIndices(budget);
+  const span = Math.max(skeleton.crownTopY - skeleton.crownBaseY, 1e-3);
+  const domeOrigin: Vec3 = {
+    x: skeleton.crownCenter.x,
+    y: skeleton.crownCenter.y - span * 0.9,
+    z: skeleton.crownCenter.z,
+  };
+  skeleton.fronds.forEach((frond, frondIndex) => {
+    if (!palmFrondKept(budget, frondIndex)) return;
+    for (const sign of [-1, 1] as const) {
+      const rows: Array<{ rachis: number; edge: number }> = [];
+      const corners: Array<{ rachis: Vec3; edge: Vec3 }> = [];
+      for (const pointIndex of pointIndices) {
+        const rachis = frond.points[pointIndex]!;
+        const edge = palmFrondEdge(frond, pointIndex, sign, budget.frondWidthScale);
+        const tangent = frond.tangents[pointIndex]!;
+        const across = norm3(edge.x - rachis.x, edge.y - rachis.y, edge.z - rachis.z);
+        // The half-strip's upper side: the leaflet plane normal that points
+        // the same way as the frond's own up (side x tangent).
+        let surface = norm3(
+          tangent.y * across.z - tangent.z * across.y,
+          tangent.z * across.x - tangent.x * across.z,
+          tangent.x * across.y - tangent.y * across.x,
+        );
+        const frondUp = cross3(frond.sides[pointIndex]!, tangent);
+        if (dot3(surface, frondUp) < 0) surface = { x: -surface.x, y: -surface.y, z: -surface.z };
+        const v = pointIndex / PALM_FROND_SEGMENTS;
+        const u = 0.5 + sign * 0.5 * frond.reach[pointIndex]!;
+        const row = { rachis: 0, edge: 0 };
+        for (const [point, texU] of [[rachis, 0.5], [edge, u]] as const) {
+          const dome = norm3(
+            point.x - domeOrigin.x,
+            point.y - domeOrigin.y,
+            point.z - domeOrigin.z,
+          );
+          const normal = norm3(
+            lerp(surface.x, dome.x, 0.4),
+            lerp(surface.y, dome.y, 0.4),
+            lerp(surface.z, dome.z, 0.4),
+          );
+          const along = dot3(across, normal);
+          const cardTangent = norm3(
+            across.x - normal.x * along,
+            across.y - normal.y * along,
+            across.z - normal.z * along,
+          );
+          const vertex = pushVertex(
+            acc,
+            point.x, point.y, point.z,
+            normal.x, normal.y, normal.z,
+            texU, v,
+            cardTangent.x, cardTangent.y, cardTangent.z, 1,
+            layer,
+            1,
+          );
+          owners.push(frondIndex);
+          if (point === rachis) row.rachis = vertex;
+          else row.edge = vertex;
+        }
+        rows.push(row);
+        corners.push({ rachis, edge });
+      }
+      for (let segment = 0; segment + 1 < rows.length; segment += 1) {
+        const a = rows[segment]!;
+        const b = rows[segment + 1]!;
+        acc.indices.push(a.rachis, a.edge, b.edge, a.rachis, b.edge, b.rachis);
+        const p0 = corners[segment]!;
+        const p1 = corners[segment + 1]!;
+        const diagonalA = {
+          x: p1.edge.x - p0.rachis.x, y: p1.edge.y - p0.rachis.y, z: p1.edge.z - p0.rachis.z,
+        };
+        const diagonalB = {
+          x: p1.rachis.x - p0.edge.x, y: p1.rachis.y - p0.edge.y, z: p1.rachis.z - p0.edge.z,
+        };
+        const areaNormal = cross3(diagonalA, diagonalB);
+        const area = Math.hypot(areaNormal.x, areaNormal.y, areaNormal.z) * 0.5;
+        const facing = norm3(areaNormal.x, areaNormal.y, areaNormal.z);
+        disks.push({
+          cx: (p0.rachis.x + p0.edge.x + p1.rachis.x + p1.edge.x) * 0.25,
+          cy: (p0.rachis.y + p0.edge.y + p1.rachis.y + p1.edge.y) * 0.25,
+          cz: (p0.rachis.z + p0.edge.z + p1.rachis.z + p1.edge.z) * 0.25,
+          nx: facing.x,
+          ny: facing.y,
+          nz: facing.z,
+          radiusSq: area / Math.PI,
+        });
+        diskGroups.push(frondIndex);
+      }
+    }
+  });
+}
+
+/**
+ * The palm's opaque core is the crown's knot of fibrous frond bases and
+ * nuts: a small dark hull where the fronds meet the trunk top, not a canopy
+ * volume (a palm has none, and a canopy-sized core would read as a ball
+ * among the fronds). It keeps the core's contract — closed and opaque, on
+ * the opaque-crown pipeline — but wears the trunk's `barkPalm` layer, which
+ * the crown tint turns the olive-brown of a coconut's crown shaft.
+ */
+function buildPalmCrownBoss(
+  skeleton: TreeSkeleton,
+  spec: TreeSpeciesSpec,
+  rng: RandomSource,
+): PrototypeGeometry {
+  const trunk = skeleton.stems[0]!;
+  const topRadius = trunk.radii[trunk.radii.length - 1]!;
+  const radius = Math.max(topRadius * 3, 0.012);
+  // emitBroadleafCrownHull centres the hull at 54% of the span and gives it
+  // a 0.49-span vertical radius; solve the span for a 1.5x-tall knot that
+  // sits just below the frond attachments.
+  const span = (radius * 1.5) / 0.49;
+  const centreY = skeleton.crownCenter.y - radius * 0.6;
+  const bossSpec: TreeSpeciesSpec = {
+    ...spec,
+    crownBase: centreY - span * 0.54,
+    crownTop: centreY - span * 0.54 + span,
+    crownRadius: radius,
+  };
+  const acc = createAccumulator();
+  emitBroadleafCrownHull(acc, bossSpec, "palm", 1, 1, spec.barkLayer, rng);
+  const boss = finalizeGeometry(acc);
+  // Leaning trunks carry the crown off-axis: move the hull onto the top.
+  const positions = boss.positions;
+  for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
+    positions[vertex * 3] = positions[vertex * 3]! + skeleton.crownCenter.x;
+    positions[vertex * 3 + 2] = positions[vertex * 3 + 2]! + skeleton.crownCenter.z;
+  }
+  const colors = boss.colors;
+  for (let vertex = 0; vertex < colors.length / 4; vertex += 1) {
+    colors[vertex * 4 + 3] = colors[vertex * 4 + 3]! * 0.78;
+  }
+  return finalizeGeometry({
+    positions: Array.from(positions),
+    normals: Array.from(boss.normals),
+    uvs: Array.from(boss.uvs),
+    tangents: Array.from(boss.tangents),
+    colors: Array.from(colors),
+    atlasLayer: Array.from(boss.atlasLayer),
+    indices: Array.from(boss.indices),
+  });
 }
 
 /**
@@ -1158,7 +1345,9 @@ export function buildTreePrototype(
   sweepSkeletonBark(barkAcc, skeleton, budget, spec.barkLayer);
   return {
     trunk: finalizeGeometry(barkAcc),
-    crown: buildCanopyCoreFromSkeleton(skeleton, spec, species, placementRng),
+    crown: skeleton.fronds.length > 0
+      ? buildPalmCrownBoss(skeleton, spec, placementRng)
+      : buildCanopyCoreFromSkeleton(skeleton, spec, species, placementRng),
     envelopeRadius: Math.max(skeleton.envelopeRadius, 0.05),
   };
 }
@@ -1215,8 +1404,14 @@ export function buildCrownFringePrototype(
   const acc = createAccumulator();
   const owners: number[] = [];
   const disks: OccluderDisk[] = [];
-  emitSkeletonCards(acc, skeleton, budget, spec.crownLayer, owners, disks);
-  bakeSkyOcclusion(acc, disks, owners);
+  if (skeleton.fronds.length > 0) {
+    const diskGroups: number[] = [];
+    emitPalmFronds(acc, skeleton, budget, spec.crownLayer, owners, disks, diskGroups);
+    bakeSkyOcclusion(acc, disks, owners, diskGroups);
+  } else {
+    emitSkeletonCards(acc, skeleton, budget, spec.crownLayer, owners, disks);
+    bakeSkyOcclusion(acc, disks, owners);
+  }
   // A SOFTENED version of the core's vertical ramp so shell and core still
   // shade as one canopy without compounding into near-black: the cards
   // already carry real baked occlusion, and the first capture measured the

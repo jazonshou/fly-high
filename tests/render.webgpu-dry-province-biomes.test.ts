@@ -7,8 +7,10 @@ import {
   DRY_PROVINCE_PARKLAND_FULL,
   PARKLAND_SHRUB_SHARE,
   PARKLAND_TREE_SHARE,
+  PARKLAND_CLOSED_FOREST_KEEP,
   canopyClosure,
   densityField,
+  dryProvinceClosedForestKeep,
   dryProvinceGroundCoverKeep,
   dryProvinceShares,
   type VegetationDensityInput,
@@ -202,6 +204,8 @@ interface ProvinceSurvey {
   readonly shrubsPerHectare: number;
   /** Share of land probes each material is dominant on. */
   readonly dominant: readonly number[];
+  /** Mean classifier weight of each material over the land probes. */
+  readonly mean: readonly number[];
   /** Mean forest-edge (open-grown) form where trees stand. */
   readonly treeEdge: number;
 }
@@ -216,6 +220,7 @@ function surveyProvince(province: ClimateProvinceName | null): ProvinceSurvey {
     : createWorld("open-skies", { climateProvince: province });
   const airport = world.airport!;
   const dominant = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+  const mean = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
   let trees = 0;
   let shrubs = 0;
   let edgeWeighted = 0;
@@ -256,6 +261,7 @@ function surveyProvince(province: ClimateProvinceName | null): ProvinceSurvey {
         grassCover: field.groundCover?.grass,
       });
       dominant[cover.ids[0]!] = dominant[cover.ids[0]!]! + 1;
+      cover.ids.forEach((id, slot) => { mean[id] = mean[id]! + (cover.weights[slot] ?? 0); });
       trees += field.treeStemsPerSquareMeter;
       shrubs += field.shrubStemsPerSquareMeter;
       edgeWeighted += field.treeStemsPerSquareMeter * field.forestEdge;
@@ -266,6 +272,7 @@ function surveyProvince(province: ClimateProvinceName | null): ProvinceSurvey {
     treesPerHectare: (trees / landProbes) * 1e4,
     shrubsPerHectare: (shrubs / landProbes) * 1e4,
     dominant: dominant.map((count) => count / landProbes),
+    mean: mean.map((weight) => weight / landProbes),
     treeEdge: trees > 0 ? edgeWeighted / trees : 0,
   };
 }
@@ -283,18 +290,61 @@ describe("a forced dry province reads as its ecology", () => {
     expect(temperate.dominant[SurfaceMaterial.Sand]!).toBeLessThan(0.02);
   });
 
-  it("turns the high desert into sage, bare soil and rock instead of green grass", () => {
-    const bareAndScrub = desert.dominant[SurfaceMaterial.Sand]!
-      + desert.dominant[SurfaceMaterial.Shrub]!
+  it("turns the high desert into tan bunchgrass, bare soil and rock instead of green grass", () => {
+    // From the air a sagebrush steppe is tan: bunchgrass between grey-green
+    // bushes that are too small to colour the ground at range (the bushes
+    // themselves are drawn). Shrub, the dark olive material, is kept to the
+    // damp swales; the first tuning let it take a third of the ground and the
+    // forced desert rendered GREENER than the province's dried moisture alone.
+    expect(desert.dominant[SurfaceMaterial.DryGrass]!).toBeGreaterThan(0.6);
+    const bare = desert.dominant[SurfaceMaterial.Sand]!
       + desert.dominant[SurfaceMaterial.Gravel]!
       + desert.dominant[SurfaceMaterial.Rock]!;
-    expect(bareAndScrub).toBeGreaterThan(0.5);
-    expect(desert.dominant[SurfaceMaterial.Shrub]!).toBeGreaterThan(0.2);
-    expect(desert.dominant[SurfaceMaterial.Sand]!).toBeGreaterThan(0.08);
+    expect(bare).toBeGreaterThan(0.12);
+    expect(desert.dominant[SurfaceMaterial.Sand]!).toBeGreaterThan(0.05);
     // ... and sand is a share of the basin floors, not the whole province.
     expect(desert.dominant[SurfaceMaterial.Sand]!).toBeLessThan(0.35);
+    expect(desert.dominant[SurfaceMaterial.Shrub]!).toBeLessThan(0.1);
+    expect(desert.mean[SurfaceMaterial.Shrub]!).toBeGreaterThan(0.04);
+    expect(desert.mean[SurfaceMaterial.Shrub]!).toBeLessThan(0.2);
     expect(desert.dominant[SurfaceMaterial.Grass]!).toBeLessThan(0.05);
     expect(desert.dominant[SurfaceMaterial.ForestFloor]!).toBeLessThan(0.02);
+  });
+
+  it("opens the closed forest in both dry provinces but keeps the river galleries", () => {
+    expect(dryProvinceClosedForestKeep(0, 0, 0)).toBe(1);
+    expect(dryProvinceClosedForestKeep(0, 0, 0.6)).toBe(1);
+    expect(dryProvinceClosedForestKeep(0, 1, 0)).toBeCloseTo(PARKLAND_CLOSED_FOREST_KEEP, 12);
+    expect(dryProvinceClosedForestKeep(1, 0, 0)).toBe(0);
+    // The bank band is the gallery forest: a full band keeps the whole stand.
+    expect(dryProvinceClosedForestKeep(0, 1, 1)).toBe(1);
+    expect(dryProvinceClosedForestKeep(1, 0, 1)).toBe(1);
+    // Through the field: the same wet lowland, off the bank and on it, at the
+    // densest stand along a transect (the forest pattern gates most points).
+    let ground: VegetationDensityInput | null = null;
+    let densest = 0;
+    for (let step = 0; step < 400; step += 1) {
+      const probe = {
+        x: step * 137, z: step * -61, heightMeters: 160, seaLevelMeters: 0, slope: 0.02,
+        moisture: 0.6, dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR, filterWidthMeters: 0,
+        shoreDistanceMeters: 400,
+      } satisfies VegetationDensityInput;
+      const stems = densityField(7, probe).treeStemsPerSquareMeter;
+      if (stems > densest) { densest = stems; ground = probe; }
+    }
+    if (ground === null) throw new Error("no stand on the transect");
+    const temperateStems = densityField(7, { ...ground, shoreDistanceMeters: 400 })
+      .treeStemsPerSquareMeter;
+    const savannaStems = densityField(7, { ...ground, shoreDistanceMeters: 400, dryness: 0.25 })
+      .treeStemsPerSquareMeter;
+    const galleryTemperate = densityField(7, { ...ground, shoreDistanceMeters: 15 })
+      .treeStemsPerSquareMeter;
+    const gallerySavanna = densityField(7, { ...ground, shoreDistanceMeters: 15, dryness: 0.25 })
+      .treeStemsPerSquareMeter;
+    expect(temperateStems).toBeGreaterThan(0.005);
+    expect(savannaStems).toBeLessThan(temperateStems * 0.5);
+    // On the bank the savanna keeps the stand and adds its lone trees.
+    expect(gallerySavanna).toBeGreaterThanOrEqual(galleryTemperate);
   });
 
   it("leaves the desert a scatter of pinyon, never a forest", () => {
@@ -303,11 +353,15 @@ describe("a forced dry province reads as its ecology", () => {
   });
 
   it("turns the savanna into a straw-coloured sward with open-grown trees", () => {
-    expect(savanna.dominant[SurfaceMaterial.DryGrass]!).toBeGreaterThan(0.55);
+    expect(savanna.dominant[SurfaceMaterial.DryGrass]!).toBeGreaterThan(0.7);
     expect(savanna.dominant[SurfaceMaterial.ForestFloor]!)
-      .toBeLessThan(temperate.dominant[SurfaceMaterial.ForestFloor]! * 0.5);
-    expect(savanna.treesPerHectare).toBeGreaterThan(temperate.treesPerHectare * 0.25);
-    expect(savanna.treesPerHectare).toBeLessThan(temperate.treesPerHectare * 0.7);
+      .toBeLessThan(temperate.dominant[SurfaceMaterial.ForestFloor]! * 0.25);
+    // A grazed oak savanna carries 10-40 trees/ha; the temperate core ~110.
+    // The closed forest is cut, so this is the lone oaks and the galleries.
+    expect(savanna.treesPerHectare).toBeGreaterThan(10);
+    expect(savanna.treesPerHectare).toBeLessThan(40);
+    // The forest's understory went with it: bush clumps in the grass remain.
+    expect(savanna.shrubsPerHectare).toBeLessThan(temperate.shrubsPerHectare * 0.5);
     // Lone trees grow the spreading edge form; the temperate stands do not.
     expect(savanna.treeEdge).toBeGreaterThan(temperate.treeEdge + 0.2);
   });
@@ -395,6 +449,12 @@ describe("the WGSL twins carry the same dry laws", () => {
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("fn vegetationDryProvinceShares(");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("parklandStems + pinyonStems");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
+      "(arid + VEG_PARKLAND_CLOSED_FOREST_CUT * parkland) * (1.0 - riparianBand)");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("moistureFactor * habitat * closedForestKeep");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
+      "1.0 - VEG_PARKLAND_CLOSED_FOREST_CUT * parkland * (1.0 - riparianBand)");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("(1.0 + riparianBand * 0.65) * understoryKeep");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
       "max(forestEdge, parkland * VEG_PARKLAND_OPEN_GROWN_EDGE)");
     for (const value of [
       PARKLAND_TREE_SHARE, DESERT_TREE_SHARE, DESERT_SHRUB_SHARE, PARKLAND_SHRUB_SHARE,
@@ -404,7 +464,12 @@ describe("the WGSL twins carry the same dry laws", () => {
   });
 });
 
-function dryTerrain(dryness: number, temperatureOffset: number, moisture: number): DetailTerrainSampler {
+function dryTerrain(
+  dryness: number,
+  temperatureOffset: number,
+  moisture: number,
+  normal?: { readonly x: number; readonly y: number; readonly z: number },
+): DetailTerrainSampler {
   return (x, z) => ({
     height: 160 + Math.sin(x * 0.002) * 3 + Math.cos(z * 0.0025) * 2,
     slope: 0.05,
@@ -412,6 +477,7 @@ function dryTerrain(dryness: number, temperatureOffset: number, moisture: number
     biome: TerrainBiome.GRASSLAND,
     dryness,
     temperatureOffset,
+    ...(normal ? { normal } : {}),
   });
 }
 
@@ -445,6 +511,17 @@ describe("the dry provinces draw their own species", () => {
     const shrubTotal = [...shrubs.values()].reduce((a, b) => a + b, 0);
     expect(shrubs.get("sage") ?? 0).toBeGreaterThan(shrubTotal * 0.6);
     expect(shrubs.get("hazel") ?? 0).toBe(0);
+  });
+
+  it("keeps a desert's north faces pinyon-juniper, where the core turns them to spruce", () => {
+    // A north-facing 12-degree slope: the aspect shift's home ground.
+    const north = { x: 0, y: 0.95, z: 0.31 };
+    const desert = cells(dryTerrain(0.5, 0, 0.25, north)).trees;
+    expect([...desert.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    expect([...desert.keys()].sort()).toEqual(["cedar", "pine"]);
+    // Non-vacuity: the same face at zero dryness does take the spruce.
+    const core = cells(dryTerrain(0, 0, 0.6, north)).trees;
+    expect(core.get("spruce") ?? 0).toBeGreaterThan(0);
   });
 
   it("grows open oaks in the warm savanna", () => {

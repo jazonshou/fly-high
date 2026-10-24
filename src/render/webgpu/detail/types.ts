@@ -12,7 +12,8 @@ export type TreeSpecies =
   | "oak"
   | "maple"
   | "birch"
-  | "willow";
+  | "willow"
+  | "palm";
 export type ShrubSpecies = "juniper" | "hazel" | "sage";
 export type ClutterKind = "log" | "stump" | "branchLitter" | "mossCushion";
 export type GroundCoverArchetype = "grass" | "fern" | "heather" | "reed";

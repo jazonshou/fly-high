@@ -12,6 +12,7 @@
 
 import { aircraftSpec } from "../src/aircraft/catalogue";
 import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
+import type { ClimateProvinceOption } from "../src/world/climateProvince";
 
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
 export const PERF_CAPTURE_WIDTH = 1_280;
@@ -557,6 +558,20 @@ export interface PerfCaptureShotDefinition {
    * and appending preserves every existing canonical phase index.
    */
   readonly worldEvolution?: "analytic" | "eroded";
+  /**
+   * Climate provinces: force the shot's world into one province everywhere
+   * (`createWorld`'s `climateProvince`: a preset name such as "boreal" or
+   * "tundra", or explicit offsets). Omitted, the world keeps the natural field
+   * with its temperate core around the airport, which is where every canonical
+   * shot sits. The two harnesses rebuild the world and renderer when it
+   * changes, as at a `worldEvolution` boundary.
+   *
+   * NO CANONICAL SHOT CARRIES ONE, and that is deliberate: a forced shot needs
+   * its own baseline and ceilings. It exists for before/after pairs inside a
+   * province: append a scratch shot that sets it, or run every shot of a cloud
+   * A/B forced with `npm run perf:ab -- --climate-province <name>`.
+   */
+  readonly climateProvince?: ClimateProvinceOption;
   /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.

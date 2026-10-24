@@ -526,7 +526,8 @@ export function groundCoverWeights(
  * do not grade into each other the way a moisture field does:
  *
  *  - PARKLAND (oak savanna) on the moderately dry side. Too dry for a closed
- *    canopy, so the forest term is gone, but wet enough for single
+ *    canopy, so the forest term is cut to its wettest patches and the river
+ *    galleries (`dryProvinceClosedForestKeep`), but wet enough for single
  *    open-grown trees standing tens of metres apart in golden grass.
  *  - DESERT (sagebrush steppe) on the strongly dry side. Trees survive only as
  *    pinyon on the rocky slopes, and the flats carry sage and bare soil.
@@ -586,16 +587,35 @@ export function dryProvinceGroundCoverKeep(drynessOffset: number): number {
 /**
  * The lone-tree and pinyon stands, as shares of the closed-forest base.
  *
- * Parkland: 0.045 of 800 is 36 stems/ha at full share, and the glade field
- * clumps it to ~22/ha on average, the 10-40 trees/ha a grazed oak savanna
- * carries. These do NOT ride the moisture gate or the forest province: that is
+ * Parkland: 0.025 of 800 is 20 stems/ha at full share, and the glade field
+ * clumps it to ~12/ha on average; with the closed forest's remnant that is
+ * the 10-40 trees/ha and 10-30 % crown cover of a grazed oak savanna (an
+ * open-grown crown here is ~90 m^2; 0.045 read as 30-40 % cover, a woodland). These do NOT ride the moisture gate or the forest province: that is
  * what "lone tree" means, a tree the climate allows but no stand surrounds.
  * Desert: pinyon only on the 7-24 degree slopes, ~15/ha where it grows. Both
  * sit far under the near band's rendered cap, so a dry province never draws
  * more trees than a temperate forest does.
  */
-export const PARKLAND_TREE_SHARE = 0.045;
+export const PARKLAND_TREE_SHARE = 0.025;
 export const DESERT_TREE_SHARE = 0.03;
+/**
+ * How much of the closed forest a full parkland share keeps: the woodland
+ * patches on the wettest ground. Lowering the province's moisture thins the
+ * forest but does not open it (a forced savanna still carried 70-120 stems/ha
+ * of closed oak wood), so the shares cut the closed-forest term outright. The
+ * desert keeps none of it. The riparian bank keeps all of it in both: the
+ * gallery forest along a dry country's rivers.
+ */
+export const PARKLAND_CLOSED_FOREST_KEEP = 0.06;
+
+/** The closed-forest term's keep, 1 at zero dryness exactly (`1 - 0 * x`). */
+export function dryProvinceClosedForestKeep(
+  aridShare: number,
+  parklandShare: number,
+  bankBand: number,
+): number {
+  return 1 - (aridShare + (1 - PARKLAND_CLOSED_FOREST_KEEP) * parklandShare) * (1 - bankBand);
+}
 /** Sage and parkland bush, as shares of the shrub base (~200 and ~90 stems/ha). */
 export const DESERT_SHRUB_SHARE = 0.45;
 export const PARKLAND_SHRUB_SHARE = 0.2;
@@ -872,7 +892,9 @@ export function densityField(
     * smoothstep(PINYON_HEAT_ONSET, PINYON_HEAT_FULL, input.temperatureOffset ?? 0);
   const pinyonStems = BASE_TREE_STEMS * DESERT_TREE_SHARE * arid
     * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * forest.glade);
-  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat + parklandStems + pinyonStems;
+  const closedForestKeep = dryProvinceClosedForestKeep(arid, parkland, riparian.bankBand);
+  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep
+    + parklandStems + pinyonStems;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
   // and persist a little above the canopy treeline: on a mountain 140 m, in
@@ -890,10 +912,13 @@ export function densityField(
   const dryShrubStems = BASE_SHRUB_STEMS
     * (DESERT_SHRUB_SHARE * arid + PARKLAND_SHRUB_SHARE * parkland)
     * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * forest.glade);
+  // The parkland's understory goes with the forest it grew under; the
+  // desert keeps its moisture-gated scrub, which is sage and juniper there.
+  const understoryKeep = dryProvinceClosedForestKeep(0, parkland, riparian.bankBand);
   const shrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
     * forest.disturbance * shrubForestGate * edgeShrubGain * clearance
-    * riparian.clearance * riparian.shrubDensityGain
+    * riparian.clearance * riparian.shrubDensityGain * understoryKeep
     + dryShrubStems;
 
   const groundCover = groundCoverWeights(
