@@ -433,6 +433,8 @@ describe("the consumers of the landform stage", () => {
     expect(gate).toBeGreaterThan(0);
     expect(cover).toBeGreaterThan(gate);
     expect(body.slice(0, gate)).not.toContain("terrainNaturalHeight(");
+    // The volcanic ground reads the binding at every texel, never the height stages.
+    expect(body).toContain("splatVolcanicGround = terrainVolcanicGround(");
     expect(body).not.toContain("terrainLandforms(");
     // Every classification and both seasons read it.
     expect(body).toContain("splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province, sandCover);");

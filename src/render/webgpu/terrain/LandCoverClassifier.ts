@@ -26,6 +26,7 @@ import {
   SURFACE_MATERIAL_COUNT,
   SurfaceMaterial,
   type SurfaceMaterialId,
+  volcanicFallbackMaterial,
 } from "./surfaceMaterials";
 import {
   TROPICAL_COAST,
@@ -1624,6 +1625,10 @@ struct SplatJob {
   //  half-extents, so the bake can evaluate the SAME rounded-rectangle field
   //  getAirportInfluence does instead of a circle about the centre.
   runway: vec4f,
+  // Volcanic land: (1 where the profile carries Basalt and Tephra, 0 where the
+  //  bake remaps them — WebGpuQualityProfile.volcanicMaterials — then three
+  //  reserved lanes).
+  volcanic: vec4f,
 };
 
 @group(0) @binding(1) var<storage, read> splatJobs: array<SplatJob>;
@@ -1645,6 +1650,37 @@ const SPLAT_SOIL_MAX_METERS: f32 = ${
 // reached from src/world/terrain.ts, so importing the kernel's lattice count
 // would close a module cycle (world/terrain -> classifier -> kernel ->
 // world/terrain) and every kernel constant would read undefined at load.
+//
+// Volcanic land: terrainVolcanicGround is supplied by the composer for the
+// same reason (the landform include, VolcanicOverlayKernel.ts, over the bound
+// site index). bakeSplat samples it ONCE per texel, like
+// the climate province, and every tap of both seasons reads that sample. It
+// travels in a private var, as the occlusion bake's job index does, so no
+// signature between bakeSplat and splatLandCoverInput changes for it.
+var<private> splatVolcanicGround: vec3f;
+
+// The landform base terrainVolcanicGround measures from: the selected page's
+// origin minus the landform core centre, split hi/lo (xy hi, zw lo), the page
+// uniform's landformBase row. All zero in a world without landforms, where the
+// placeholder index lists no site and the ground is exactly 0.
+fn splatVolcanicBase() -> vec4f {
+  return terrainKernelPages[kPageIndex].landformBase;
+}
+
+/**
+ * Volcanic land on a profile whose arrays carry neither volcanic layer
+ * (\`WebGpuQualityProfile.volcanicMaterials\` false): Basalt bakes as Rock and
+ * Tephra as Gravel (\`volcanicFallbackMaterial\`), so that tier's ten-layer
+ * arrays and ten-case gather never meet an id they lack. Data, not a define:
+ * the job lane says which. Every other id passes through, so a profile with
+ * the layers, and all ground without volcanic cover, bakes what it baked.
+ */
+fn splatVolcanicMaterial(job: SplatJob, id: u32) -> u32 {
+  if (job.volcanic.x > 0.5) { return id; }
+  if (id == ${SurfaceMaterial.Basalt}u) { return ${volcanicFallbackMaterial(SurfaceMaterial.Basalt)}u; }
+  if (id == ${SurfaceMaterial.Tephra}u) { return ${volcanicFallbackMaterial(SurfaceMaterial.Tephra)}u; }
+  return id;
+}
 
 /**
  * Slope and ASPECT from the page's own texel grid — never a fixed 2 m
@@ -1727,7 +1763,8 @@ fn splatAirportInfluence(job: SplatJob, localX: f32, localZ: f32) -> f32 {
   return 1.0 - kSmoothstep(0.0, 1.0, platformDistance * job.airport.z);
 }
 
-fn splatClassify(
+/** The classifier's input at one tap, which splatClassify classifies. */
+fn splatLandCoverInput(
   job: SplatJob,
   localX: f32,
   localZ: f32,
@@ -1748,7 +1785,7 @@ fn splatClassify(
   // Landforms: the sand the dunes lay down, at the texel centre (bakeSplat).
   // 0 off every sand sea and inside the landform core.
   sandCover: f32,
-) -> LandCoverWeights {
+) -> LandCoverInput {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
   // \`shape.y\` over-shifts by \`GUTTER * (channelTexel / heightTexel - 1)\`. The
@@ -1808,7 +1845,26 @@ fn splatClassify(
   input.airportInfluence = kSaturate(splatAirportInfluence(job, localX, localZ));
   input.dayOfYear = job.airport.w;
   input.seasonalTemperatureShift = shift;
-  return classifyLandCover(input);
+  // Volcanic land: the texel's one sample (see splatVolcanicGround). All
+  // three are exactly 0 off volcanic ground — what the zero-initialised
+  // input held before they existed.
+  input.lavaCover = splatVolcanicGround.x;
+  input.tephraCover = splatVolcanicGround.y;
+  input.volcanicAge = splatVolcanicGround.z;
+  return input;
+}
+
+/** Classify one tap; the arguments are splatLandCoverInput's. */
+fn splatClassify(
+  job: SplatJob,
+  localX: f32,
+  localZ: f32,
+  shift: f32,
+  tap: vec4f,
+  province: vec2f,
+  sandCover: f32,
+) -> LandCoverWeights {
+  return classifyLandCover(splatLandCoverInput(job, localX, localZ, shift, tap, province, sandCover));
 }
 
 /**
@@ -1917,8 +1973,10 @@ fn splatSupersample(
     let dz = select(-step, step, (sample & 2u) == 2u);
     let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample], province, sandCover);
     for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
-      accumulated[u32(weights.ids[slot])] =
-        accumulated[u32(weights.ids[slot])] + weights.weights[slot] * 0.25;
+      // Volcanic land: remapped here, before anything selects, so a remapped
+      // Basalt and a real Rock in one texel are one material's weight.
+      let id = splatVolcanicMaterial(job, u32(weights.ids[slot]));
+      accumulated[id] = accumulated[id] + weights.weights[slot] * 0.25;
     }
   }
   // The far desert: see landCoverFarDesertWeights (the TS twin). Bake-time
@@ -2047,6 +2105,10 @@ fn bakeSplat(
   // The baked canopy is the canopy the CPU plants: no trees on the sand
   // (sandCoverTreeFactor) and grass thinned with it (sandCoverGroundFactor).
   let sandPlants = splatSandPlantFactors(sandCover);
+  // Volcanic land: once per texel too, at the same page-local point, over the
+  // channel texel's footprint.
+  splatVolcanicGround = terrainVolcanicGround(
+    splatVolcanicBase(), vec2f(localX, localZ), job.shape.x);
   let canopy = splatCanopy(job, localX, localZ, province) * sandPlants;
   // Coarse texels give each tap its own canopy (see
   // LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); finer ones hand all four the
@@ -2095,7 +2157,18 @@ fn bakeSplat(
   // corner taps and terrainSurfaceCanopyClosure); nothing mixes the alpha
   // lanes. So the HIGH bucket's alpha carries the texel's far-sward gate for
   // both buckets instead (FarSwardGate.ts), for the soft read's neighbours.
-  textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, canopy.x));
+  //
+  // Volcanic land: the lane carries the trees bare lava and tephra leave
+  // standing — generation.ts plants exactly that share of the stems
+  // (detailVolcanicStemShare) — so the far canopy and the hand-off still
+  // agree with the trees actually planted. Off volcanic ground nothing is
+  // evaluated and the lane is the centre sample, bit for bit.
+  var closure = canopy.x;
+  if (splatVolcanicGround.x > 0.0 || splatVolcanicGround.y > 0.0) {
+    closure = closure * (1.0 - landCoverVolcanicBareShare(
+      splatLandCoverInput(job, localX, localZ, job.placement.z, centreTap, province, sandCover)));
+  }
+  textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, closure));
   textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, splatFarSwardGateStored(aligned)));
 }
 `;

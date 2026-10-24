@@ -43,6 +43,7 @@ import {
   type SurfaceMaterialArrays,
 } from "./MaterialArrayUpload";
 import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
+import { SurfaceMaterial } from "./surfaceMaterials";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { ClimateProvinceField } from "./ClimateProvinceField";
 import { terrainClimateProvinceInput, terrainLandformInput } from "./TerrainKernel";
@@ -163,6 +164,12 @@ export interface TerrainSplatProducer {
   /** The slots actually baked: the caller publishes these and releases the rest. */
   bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<readonly TerrainAtlasSlot[]>;
   consumeMeasuredDispatchCostMs(): number | null;
+  /**
+   * Volcanic land: `WebGpuQualityProfile.volcanicMaterials`, from the next
+   * bake on. Where it is false the bake paints Basalt and Tephra as Rock and
+   * Gravel, so arrays without those layers never meet their ids.
+   */
+  setVolcanicMaterials?(enabled: boolean): void;
   dispose(): void;
 }
 
@@ -254,6 +261,14 @@ const CASTER_READINESS_SWEEP_FRAMES = 120;
  * does not hold the atlas hostage.
  */
 const STALLED_SLOT_RECLAIM_FRAMES = 120;
+
+/**
+ * Volcanic land: the season day a resident splat is marked with when the
+ * profile's `volcanicMaterials` datum flips under it. It is no day at all, so
+ * `pendingSplatRebakes` reads the slot as owed and re-bakes it in place under
+ * the new datum, exactly as it does across a season-bucket rollover.
+ */
+const VOLCANIC_DATUM_REBAKE_DAY = -1;
 
 export interface TerrainObserver {
   readonly x: number;
@@ -653,7 +668,11 @@ export class TerrainClipmapSystem {
     );
     this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     this.applyProvinceField(profile);
-    this.surfacePlugin.setVolcanicMaterials(profile.volcanicMaterials);
+    // The gather follows the layers the arrays will carry (setArrays keeps it
+    // there); set now so the load-time compile is the one the arrays need.
+    this.surfacePlugin.setVolcanicMaterials(surfaceArrayLayerIds(
+      profile.terrainGroundPatchwork, profile.volcanicMaterials,
+    ).includes(SurfaceMaterial.Basalt));
     // 6-8: the canopy handoff needs the tier's vegetation band radii. They are
     // the rendered-density law's, carried on the profile since the perf-debt
     // pass, so terrain reads them as data and never re-derives a radius. The
@@ -829,6 +848,10 @@ export class TerrainClipmapSystem {
       replacement.normalMaterial,
       build.layerIds.includes(GROUND_GRAIN_LAYER),
     );
+    // Volcanic land: the gather's case count follows the layers BOUND, not the
+    // profile, so a quality change never reads a volcanic id from arrays that
+    // do not carry it yet. Unchanged ids leave the defines alone.
+    this.surfacePlugin.setVolcanicMaterials(build.layerIds.includes(SurfaceMaterial.Basalt));
     // Enabling the plugin recompiles the shared material, but a mesh that has
     // already been drawn holds its own cached draw wrapper and render bundle
     // against the OLD effect — and keeps using it. The first capture after
@@ -979,6 +1002,7 @@ export class TerrainClipmapSystem {
     const atlasReshaped = profile.heightAtlasSlots !== this.heightAtlas.residency.slotCount
       || profile.channelAtlasSlots !== this.channelAtlas.residency.slotCount;
     const cascadesChanged = profile.shadowCascades !== this.profile.shadowCascades;
+    const volcanicChanged = profile.volcanicMaterials !== this.profile.volcanicMaterials;
     this.profile = profile;
     this.surfacePlugin.setSamplingProfile(
       profile.terrainTriplanarMode,
@@ -986,7 +1010,8 @@ export class TerrainClipmapSystem {
     );
     this.surfacePlugin.setGroundPatchwork(profile.terrainGroundPatchwork);
     this.applyProvinceField(profile);
-    this.surfacePlugin.setVolcanicMaterials(profile.volcanicMaterials);
+    // Volcanic land: the gather's define follows the arrays when they land
+    // (stepMaterialArrayBuild); only the bake changes now.
     this.surfacePlugin.setCanopyBands(
       profile.renderedDensityLaw.near.outerRadiusMeters,
       profile.renderedDensityLaw.far.outerRadiusMeters,
@@ -999,6 +1024,15 @@ export class TerrainClipmapSystem {
     this.materialArrayGrain = profile.terrainGroundPatchwork;
     this.materialArrayVolcanic = profile.volcanicMaterials;
     this.computeBudget.setProfile(profile);
+    if (volcanicChanged) {
+      this.splatBake?.setVolcanicMaterials?.(profile.volcanicMaterials);
+      // Every resident splat was baked under the other datum: mark it owed,
+      // and the season re-bake path repaints it in place. No season day is
+      // negative, so this never reads as current.
+      for (const slot of this.channelAtlas.residency.entries) {
+        if (slot.bakedSeasonDay !== null) slot.bakedSeasonDay = VOLCANIC_DATUM_REBAKE_DAY;
+      }
+    }
     if (atlasReshaped) {
       // A slot index addresses a different texel in a reshaped atlas, so
       // residency cannot survive the change — dropping it is correct, not
@@ -1295,6 +1329,7 @@ export class TerrainClipmapSystem {
     this.pageGenerator = built.pageGenerator;
     this.occlusionBake = built.occlusionBake;
     this.splatBake = built.splatBake;
+    this.splatBake?.setVolcanicMaterials?.(this.profile.volcanicMaterials);
     this.pyramid = built.pyramid;
     this.pageGenerator?.setCollisionPagePublisher?.(this.collisionPagePublisher);
     this.pageGenerator?.setAuxPagePublisher?.(this.auxPagePublisher);

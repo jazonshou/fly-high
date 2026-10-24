@@ -4194,11 +4194,12 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   }
 
   /**
-   * Volcanic land: whether this tier carries Basalt and Tephra
-   * (`WebGpuQualityProfile.volcanicMaterials`). A DEFINE, unlike the
-   * patchwork, because what it changes is the sparse gather's case count, and
-   * a count is a compile-time property. It moves with the tier's other
-   * shader-shaping rows, so it adds no permutation a tier did not have.
+   * Volcanic land: whether the bound arrays carry Basalt and Tephra (the
+   * tier's `WebGpuQualityProfile.volcanicMaterials`, through the layers the
+   * clipmap builds). A DEFINE, unlike the patchwork, because what it changes
+   * is the sparse gather's case count, and a count is a compile-time
+   * property. It moves with the tier's other shader-shaping rows, so it adds
+   * no permutation a tier did not have.
    */
   setVolcanicMaterials(enabled: boolean): void {
     if (enabled === this.volcanicMaterials) return;
