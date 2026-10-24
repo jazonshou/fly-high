@@ -109,6 +109,7 @@ audit is why it now carries all four tiers):
 | Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
 | Ground patchwork (W-1) | off | on | on | on |
 | Climate province field (far biome tones, `ClimateProvinceField.ts`) | off | on | on | on |
+| Volcanic materials (Basalt, Tephra) | off | on | on | on |
 | Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
 | Shadow map (`4-8b`) | 1,024 | 1,280 | 1,536 | 2,048 |
 | Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
@@ -133,8 +134,9 @@ synthesises the ten layers on the CPU (measured 1.07 s at 512², ~4.3 s at
 1024²), and several seconds of blocked main thread at startup is not worth a
 resolution the de-tiling warp and 16× anisotropy largely mask. The row reopens
 if synthesis moves to GPU compute. Both arrays together are 6.7 MiB at tier 0
-and 26.7 MiB above it, derived from the tier's edge rather than declared, so
-the memory row cannot disagree with the knob.
+(the ten base materials) and 34.7 MiB above it (those ten, the volcanic pair
+and the ground grain), derived from the tier's edge and layer data rather than
+declared, so the memory row cannot disagree with the knobs.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
@@ -2216,3 +2218,12 @@ On the same CPU model each shot moved by 0.4% or less; the two larger moves swap
 Before promotion the capture failed the visual gates on `water-3m`, `water-25ft`, `forest-line-highsun` and `forest-500ft-sunbehind` (whole-frame SSIM 0.916-0.984 against 0.985), all from sea pixels.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
+
+## Volcanic materials (Basalt, Tephra), 2026-10-24
+
+Volcanic land, phase 2: two surface materials appended after Concrete, Basalt (id 10) and Tephra (id 11), so the ground grain moves from array index 10 to 12 (`GROUND_GRAIN_LAYER`). The profile datum `volcanicMaterials` is off at tier 0 and on at tiers 1-3 (the tier row above). **Not timed yet**: the A/B against `bb7b6b1` was stopped part-way so the integrated branch can be timed once against main; its result belongs here.
+
+- **Memory.** Tiers 1-3: two more layers in each terrain material array, +5.33 MiB at 512² with mips, so both arrays are 34.7 MiB (thirteen layers: the ten base materials, the volcanic pair and the grain). Tier 0 is unchanged at 6.7 MiB: the splat bake paints Basalt as Rock and Tephra as Gravel there (`volcanicFallbackMaterial`), from a sixth `SplatJob` lane (+16 B per job), so its ten-layer arrays and ten-case gather never meet an id they lack.
+- **Terrain fragment.** The sparse splat gather is a switch on each texel's id; under `TERRAIN_SURFACE_VOLCANIC` it has twelve cases instead of ten. The number of fetches per pixel does not change, only which layer a volcanic id reads. The define follows the layers actually bound, so tier 0 compiles today's gather. No draw-call change.
+- **Splat bake.** One `terrainVolcanicGround` sample per texel, shared by every tap and both seasons; one remap per accumulated id; and a closure-lane branch taken only on volcanic ground. Off volcanic ground the classification is bit-identical (`tests/render.webgpu-land-cover-volcanic.test.ts`). The stub returns 0; the landform include that replaces it carries its own cost.
+- **Startup.** Two more synthesis-worker jobs, off the main thread: Basalt ~0.83 s and Tephra ~0.59 s at 512² (Node; Rock is ~1.23 s). The main-thread mip reduction in `uploadSurfaceMaterialArrays` grows with the layer count, from ~190 ms to ~223 ms at 512² (Node). It was already one step over the 2 ms budget and stays on the main thread; moving it into the synthesis worker is open.

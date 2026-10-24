@@ -229,6 +229,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
       ["Ground patchwork", (p: (typeof PROFILES)[number]) => p.terrainGroundPatchwork],
       ["Climate province field",
         (p: (typeof PROFILES)[number]) => p.terrainProvinceField],
+      ["Volcanic materials", (p: (typeof PROFILES)[number]) => p.volcanicMaterials],
       ["Vegetation casts shadows",
         (p: (typeof PROFILES)[number]) => p.vegetationCastsShadows],
     ];
