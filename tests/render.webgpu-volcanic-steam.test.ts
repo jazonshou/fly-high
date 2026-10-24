@@ -446,20 +446,23 @@ describe("volcanic steam", () => {
       }
       return process.memoryUsage().heapUsed - before;
     };
-    // The first runs execute unoptimised code, which boxes every double it
-    // produces (about 16 B a call here, in the harness loop as much as in the
-    // update); measured, the optimiser has taken over by the fourth run of
-    // 20,000. A run with a collection in it shrinks the heap, so negative
-    // readings are discarded: they can only hide an allocation, never show one.
-    const readings: number[] = [];
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      const grown = run();
-      if (grown >= 0) readings.push(grown);
+    // Code below the optimising tier boxes doubles (about 16 B a call here, in
+    // the harness loop as much as in the update), and when the optimiser takes
+    // over is the machine's business: alone it is the fourth run of 20,000,
+    // inside the full suite it can be a hundred. So keep running until the
+    // optimised code shows, within a budget only an allocation exhausts.
+    // Clean means grown by under 32 KB, 1.6 B a call, and it must hold for
+    // three runs in a row: one 12-byte object a call is 240 KB a run, and a
+    // collection that happens to land a run near zero cannot do it thrice.
+    const clean = (grown: number): boolean => grown >= 0 && grown < 32 * 1024;
+    const deadline = performance.now() + 20_000;
+    let streak = 0;
+    let last = Number.NaN;
+    while (streak < 3 && performance.now() < deadline) {
+      last = run();
+      streak = clean(last) ? streak + 1 : 0;
     }
-    expect(readings.length).toBeGreaterThanOrEqual(4);
-    // One 12-byte object per call would be 240 KB in EVERY run that is not
-    // collected, so the smallest reading separates the two cases.
-    expect(Math.min(...readings)).toBeLessThan(32 * 1024);
+    expect(streak, `last run grew the heap by ${last} B`).toBe(3);
     system.dispose();
   });
 
