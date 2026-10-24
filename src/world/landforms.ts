@@ -173,3 +173,22 @@ export function sampleLandformCover(
   if (erg <= 0) return target;
   return sampleDuneField(world, x, z, erg, filterWidthMeters, natural, target);
 }
+
+/** The far field's texel: its erg weight is band-limited at this half-width. */
+const ERG_FAR_FILTER_WIDTH_METERS = 1_250;
+
+/**
+ * The erg weight as the far ground sees it: the same factors as the dune
+ * stage, with the natural kernel band-limited at the far field's 1.25 km
+ * texel (which also skips every octave shorter than ~2.5 km, so it is cheap).
+ * Exactly 0 inside the landform core and in eroded worlds; allocates nothing.
+ * For the CPU-baked far province field (ClimateProvinceField.ts), which turns
+ * it into a sand tone past the fine channel pages.
+ */
+export function sampleErgFarWeight(world: WorldDefinition, x: number, z: number): number {
+  if (world.worldEvolution === "eroded") return 0;
+  const coreMask = landformCoreMask(world, x, z);
+  if (coreMask <= 0) return 0;
+  const natural = sampleNaturalTerrainIntermediates(world.seedHash, x, z, ERG_FAR_FILTER_WIDTH_METERS);
+  return duneErgWeight(world, x, z, coreMask, natural, duneRelief(natural), volcanicActivity);
+}
