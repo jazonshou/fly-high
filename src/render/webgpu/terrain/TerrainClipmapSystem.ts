@@ -306,7 +306,11 @@ export interface TerrainClipmapStatistics {
    * physics and morphing require.
    */
   readonly residencyReasons: TerrainResidencyReasons;
-  /** Slots whose generation dispatch is in flight. */
+  /**
+   * Slots whose generation dispatch is in flight, plus one while the climate
+   * province window still has stale texels: the far ground's tones are part
+   * of what "streamed" means, so a capture never settles on a half-baked field.
+   */
   readonly pendingPages: number;
   readonly triangles: number;
   /** 4-4: the CPU worker pool is gone; this is compute dispatches in flight. */
@@ -812,7 +816,8 @@ export class TerrainClipmapSystem {
     return {
       residentPages: this.heightAtlas.residency.residentCount,
       residencyReasons: this.residencyReasons,
-      pendingPages: this.heightAtlas.residency.generatingCount,
+      pendingPages: this.heightAtlas.residency.generatingCount
+        + (this.provinceField?.pending ? 1 : 0),
       triangles: trianglesPerNode * this.nodes.length,
       workersBusy: (this.generationInFlight ? 1 : 0) + (this.occlusionInFlight ? 1 : 0),
       residentSlots: this.heightAtlas.residency.residentCount,
