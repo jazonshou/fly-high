@@ -71,14 +71,14 @@ describe("the splat bake gives coarse taps their own canopy", () => {
     expect(source).toContain(
       "let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz, province.y);");
     expect(source).toContain(
-      "splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x),");
+      "splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y),");
     expect(source).toContain("terrainClimate(localX + tapDx, localZ + tapDz));");
     // Fine: the sentinel routes the tap to the same two calls it made before.
     expect(source).toMatch(
       /if \(tap\.z >= 0\.0\) \{\s*input\.moisture = tap\.z;\s*\} else \{\s*input\.moisture = terrainMoisture\(localX, localZ, province\.y\);\s*tapClimate = terrainClimate\(localX, localZ\);\s*\}/u);
     // The centre's canopy still evaluates its own moisture: it feeds the lane.
     expect(source).toMatch(
-      /return splatCanopyAt\(\s*job, localX, localZ, terrainMoisture\(localX, localZ, province\.y\), province\.x\);/u);
+      /return splatCanopyAt\(\s*job, localX, localZ, terrainMoisture\(localX, localZ, province\.y\), province\.x, province\.y\);/u);
   });
 
   it("leaves the closure LANE the centre sample at every level", () => {
