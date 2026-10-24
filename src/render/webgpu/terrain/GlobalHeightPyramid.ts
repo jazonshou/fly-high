@@ -185,7 +185,7 @@ export interface GlobalHeightPyramidOptions {
   readonly landform?: TerrainKernelLandformInput | null;
   /**
    * What `terrainLandformData` binds: the volcanic site index, or (omitted)
-   * a zeroed placeholder the pyramid owns. Swappable later with
+   * a placeholder (the empty site index) the pyramid owns. Swappable later with
    * `setLandformDataSource`.
    */
   readonly landformData?: TerrainLandformDataSource | null;

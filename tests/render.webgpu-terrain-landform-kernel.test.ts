@@ -27,6 +27,7 @@ import {
   terrainLandformDataBindingWgsl,
   type TerrainLandformDataSource,
 } from "../src/render/webgpu/terrain/TerrainLandformKernel";
+import { VOLCANIC_INDEX, emptyVolcanicSiteIndex } from "../src/render/webgpu/terrain/VolcanicOverlayKernel";
 import { CLIMATE_PROVINCE } from "../src/world/climateProvince";
 import { DUNE_PROFILE_CONSTANTS, DUNES, duneAcrossPhase, duneWindPhase } from "../src/world/dunes";
 import { FRACTURE_EXPOSURE_MEAN, FRACTURE_RAVINE_MEAN } from "../src/world/geology";
@@ -290,17 +291,20 @@ describe("the landform include (TerrainLandformKernel.ts)", () => {
     expect(code).not.toContain("@group");
     expect(terrainLandformDataBindingWgsl(1, 6))
       .toContain("@group(1) @binding(6) var<storage, read> terrainLandformData: array<vec4f>;");
-    // Whole vec4fs, at least the one the activity stub reads.
-    expect(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES % 16).toBe(0);
-    expect(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES).toBeGreaterThanOrEqual(16);
+    // The placeholder is the empty volcanic site index: no bins, no volcanism.
+    expect(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES).toBe((VOLCANIC_INDEX.headerVec4s + 1) * 16);
+    const empty = new Uint32Array(emptyVolcanicSiteIndex().data.buffer);
+    expect([empty[0], empty[1], empty[16]]).toEqual([0, 0, 0]);
   });
 
-  it("keeps the volcanic hooks as stubs: activity reads the data binding, the overlay returns its height", () => {
+  it("composes the volcanic include into the hooks, activity read at the page's landform base", () => {
     expect(code).toContain("fn terrainVolcanicActivity(localX: f32, localZ: f32) -> f32 {");
-    expect(code).toContain("return kSaturate(terrainLandformData[0].x);");
     expect(code).toContain(
-      "fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f32) -> f32 {\n"
-      + "  return height;\n}");
+      "terrainVolcanicActivitySplit(terrainKernelPages[kPageIndex].landformBase, vec2f(localX, localZ))");
+    expect(code).toContain(
+      "fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f32) -> f32 {");
+    expect(code).toContain("fn terrainVolcanicActivityAt(p: vec2f) -> f32 {");
+    expect(code).toContain("fn terrainVolcanicGround(base: vec4f, local: vec2f, filterWidth: f32) -> vec3f {");
   });
 
   it("returns the natural height itself, not natural + 0, for gain 0 and inside the core", () => {

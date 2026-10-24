@@ -519,7 +519,8 @@ export class PageSplatBake {
     private readonly landform: TerrainKernelLandformInput | null = null,
     /**
      * What `terrainLandformData` binds: the volcanic site index, or (null) a
-     * zeroed placeholder the bake owns. Swappable with `setLandformDataSource`.
+     * placeholder (the empty site index) the bake owns. Swappable with
+     * `setLandformDataSource`.
      */
     landformData: TerrainLandformDataSource | null = null,
   ) {

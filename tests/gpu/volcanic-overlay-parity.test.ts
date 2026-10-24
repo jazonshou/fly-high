@@ -8,11 +8,13 @@ import {
   TERRAIN_KERNEL_WGSL,
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
+  terrainLandformInput,
 } from "../../src/render/webgpu/terrain/TerrainKernel";
 import {
-  VOLCANIC_OVERLAY_WGSL,
-  packVolcanicSiteIndex,
-} from "../../src/render/webgpu/terrain/VolcanicOverlayKernel";
+  TERRAIN_LANDFORM_WGSL,
+  terrainLandformDataBindingWgsl,
+} from "../../src/render/webgpu/terrain/TerrainLandformKernel";
+import { packVolcanicSiteIndex } from "../../src/render/webgpu/terrain/VolcanicOverlayKernel";
 import { sampleNaturalTerrainHeight } from "../../src/world/terrain";
 import {
   applyVolcanicOverlay,
@@ -35,24 +37,30 @@ const KERNEL = /* wgsl */ `
 ${terrainKernelPageBindingWgsl(0, 0)}
 ${TERRAIN_KERNEL_WGSL}
 
-@group(0) @binding(1) var<storage, read> terrainVolcanicIndex: array<vec4f>;
-// probes: two vec4 each, (base hi, base lo) and (local, height in, filter width)
+${terrainLandformDataBindingWgsl(0, 1)}
+// probes: three vec4 each, (base hi, base lo), (local, height in, filter
+// width) and (the point relative to the page at the world origin, 0, 0)
 @group(0) @binding(2) var<storage, read> probes: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> results: array<vec4f>;
 
-${VOLCANIC_OVERLAY_WGSL}
+${TERRAIN_LANDFORM_WGSL}
 
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= arrayLength(&probes) / 2u) { return; }
+  if (id.x >= arrayLength(&probes) / 3u) { return; }
   kSelectPage(0u);
-  // Keep the kernel page binding reachable (see runway-earthworks-parity).
-  let live = terrainKernelPages[kPageIndex].kept.w * 0.0;
-  let base = probes[id.x * 2u];
-  let rest = probes[id.x * 2u + 1u];
+  let base = probes[id.x * 3u];
+  let rest = probes[id.x * 3u + 1u];
+  let world = probes[id.x * 3u + 2u];
   let ground = terrainVolcanicGround(base, rest.xy, rest.w);
-  results[id.x * 2u] = vec4f(terrainVolcanicOverlay(base, rest.xy, rest.z, rest.w) + live, ground);
-  results[id.x * 2u + 1u] = vec4f(terrainVolcanicActivity(base, rest.xy), 0.0, 0.0, 0.0);
+  results[id.x * 2u] = vec4f(terrainVolcanicOverlay(base, rest.xy, rest.z, rest.w), ground);
+  // The landform hook reads the page's own base: the page sits at the world origin.
+  results[id.x * 2u + 1u] = vec4f(
+    terrainVolcanicActivitySplit(base, rest.xy),
+    terrainVolcanicActivity(world.x, world.y),
+    0.0,
+    0.0,
+  );
 }
 `;
 
@@ -102,18 +110,20 @@ async function runOnGpu(
   // As a bake hands points over: a base on a 1 km world lattice (a page
   // origin) relative to the index origin (the core centre), split hi/lo in
   // f64, and the small local offset from it.
-  const probeData = new Float32Array(probes.length * 8);
+  const probeData = new Float32Array(probes.length * 12);
   probes.forEach((probe, slot) => {
     const baseX = Math.floor(probe.x / 1_000) * 1_000 - index.originX;
     const baseZ = Math.floor(probe.z / 1_000) * 1_000 - index.originZ;
-    probeData[slot * 8] = baseX;
-    probeData[slot * 8 + 1] = baseZ;
-    probeData[slot * 8 + 2] = baseX - Math.fround(baseX);
-    probeData[slot * 8 + 3] = baseZ - Math.fround(baseZ);
-    probeData[slot * 8 + 4] = probe.x - index.originX - baseX;
-    probeData[slot * 8 + 5] = probe.z - index.originZ - baseZ;
-    probeData[slot * 8 + 6] = probe.height;
-    probeData[slot * 8 + 7] = probe.filterWidth;
+    probeData[slot * 12] = baseX;
+    probeData[slot * 12 + 1] = baseZ;
+    probeData[slot * 12 + 2] = baseX - Math.fround(baseX);
+    probeData[slot * 12 + 3] = baseZ - Math.fround(baseZ);
+    probeData[slot * 12 + 4] = probe.x - index.originX - baseX;
+    probeData[slot * 12 + 5] = probe.z - index.originZ - baseZ;
+    probeData[slot * 12 + 6] = probe.height;
+    probeData[slot * 12 + 7] = probe.filterWidth;
+    probeData[slot * 12 + 8] = probe.x;
+    probeData[slot * 12 + 9] = probe.z;
   });
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -126,6 +136,7 @@ async function runOnGpu(
     const pageBuffer = new StorageBuffer(engine, TERRAIN_KERNEL_PAGE_BYTES);
     pageBuffer.update(new Uint8Array(buildTerrainKernelPageUniform({
       seedHash: world.seedHash, originX: 0, originZ: 0, filterWidthMeters: 0,
+      landform: terrainLandformInput(world),
     })));
     const indexBuffer = new StorageBuffer(engine, index.data.byteLength);
     indexBuffer.update(new Uint8Array(index.data.buffer, index.data.byteOffset, index.data.byteLength));
@@ -135,13 +146,13 @@ async function runOnGpu(
     const shader = new ComputeShader("volcanic-overlay-parity", engine, { computeSource: KERNEL }, {
       bindingsMapping: {
         terrainKernelPages: { group: 0, binding: 0 },
-        terrainVolcanicIndex: { group: 0, binding: 1 },
+        terrainLandformData: { group: 0, binding: 1 },
         probes: { group: 0, binding: 2 },
         results: { group: 0, binding: 3 },
       },
     });
     shader.setStorageBuffer("terrainKernelPages", pageBuffer);
-    shader.setStorageBuffer("terrainVolcanicIndex", indexBuffer);
+    shader.setStorageBuffer("terrainLandformData", indexBuffer);
     shader.setStorageBuffer("probes", probeBuffer);
     shader.setStorageBuffer("results", resultBuffer);
     const compileErrors: string[] = [];
@@ -173,6 +184,7 @@ function compare(probes: readonly Probe[], raw: Float32Array, label: string): vo
   let worstCover = 0;
   let worstAge = 0;
   let worstActivity = 0;
+  let worstHookActivity = 0;
   let touched = 0;
   let worstAt = "";
   probes.forEach((probe, slot) => {
@@ -196,16 +208,16 @@ function compare(probes: readonly Probe[], raw: Float32Array, label: string): vo
     if (Math.max(ground.lavaCover, ground.tephraCover) > 0.05) {
       worstAge = Math.max(worstAge, Math.abs(raw[slot * 8 + 3]! - ground.age));
     }
-    worstActivity = Math.max(
-      worstActivity,
-      Math.abs(raw[slot * 8 + 4]! - volcanicActivity(probe.world, probe.x, probe.z)),
-    );
+    const activity = volcanicActivity(probe.world, probe.x, probe.z);
+    worstActivity = Math.max(worstActivity, Math.abs(raw[slot * 8 + 4]! - activity));
+    worstHookActivity = Math.max(worstHookActivity, Math.abs(raw[slot * 8 + 5]! - activity));
   });
   console.log(
     `volcanic overlay parity, ${label}: ${probes.length} probes (${touched} inside a footprint): `
     + `max |dh| ${(worstHeight * 1_000).toFixed(2)} mm (width 0: ${(worstPhysics * 1_000).toFixed(2)} mm), `
     + `max |d cover| ${worstCover.toExponential(2)}, max |d age| ${worstAge.toExponential(2)}, `
-    + `max |d activity| ${worstActivity.toExponential(2)}; worst at ${worstAt}`,
+    + `max |d activity| ${worstActivity.toExponential(2)} (landform hook ${worstHookActivity.toExponential(2)}); `
+    + `worst at ${worstAt}`,
   );
   expect(touched).toBeGreaterThan(probes.length * 0.5);
   // The kernel's near-field budget is 5 cm; physics reads the CPU, and the
@@ -215,6 +227,7 @@ function compare(probes: readonly Probe[], raw: Float32Array, label: string): vo
   expect(worstCover).toBeLessThan(2e-3);
   expect(worstAge).toBeLessThan(2e-3);
   expect(worstActivity).toBeLessThan(1e-4);
+  expect(worstHookActivity).toBeLessThan(1e-4);
 }
 
 describe("volcanic overlay CPU/GPU parity", () => {

@@ -1163,7 +1163,7 @@ export interface TerrainPageGeneratorOptions {
   readonly erosionGpu?: boolean;
   /**
    * What `terrainLandformData` binds: the volcanic site index, or (omitted)
-   * a zeroed placeholder the generator owns. Swappable later with
+   * a placeholder (the empty site index) the generator owns. Swappable later with
    * `setLandformDataSource`.
    */
   readonly landformData?: TerrainLandformDataSource | null;

@@ -472,13 +472,14 @@ const ACTIVITY = VOLCANISM.activity;
 const FIELD = VOLCANISM.guaranteed;
 
 /**
- * The overlay and ground functions. Requires the terrain kernel's scalar
- * helpers (`kLerp`, `kSmoothstep`, `kSaturate`) and hash layer
- * (`kValueNoiseSplit`), and a binding the consumer declares:
+ * The overlay, ground and activity functions. Requires the terrain
+ * kernel's scalar helpers (`kLerp`, `kSmoothstep`, `kSaturate`) and hash
+ * layer (`kValueNoiseSplit`), and the landform data binding
+ * (`terrainLandformDataBindingWgsl`), which holds this index. The landform
+ * include (`TERRAIN_LANDFORM_WGSL`) composes it; consumers that only need
+ * the ground covers can compose it alone.
  *
- *   var<storage, read> terrainVolcanicIndex: array<vec4f>;
- *
- * Points are index-local metres (see the file comment).
+ * Points are split, origin-relative metres (see the file comment).
  */
 export const VOLCANIC_OVERLAY_WGSL = /* wgsl */ `
 // ---------------------------------------------------------------------------
@@ -544,16 +545,16 @@ fn vOutline(seed: u32, unit: vec2f) -> f32 {
 }
 
 fn vHeaderU(index: u32) -> vec4<u32> {
-  return bitcast<vec4<u32>>(terrainVolcanicIndex[index]);
+  return bitcast<vec4<u32>>(terrainLandformData[index]);
 }
 
 fn vSite(slot: u32) -> VolcanicSiteData {
   let first = vHeaderU(2u).z + slot * ${VOLCANIC_INDEX.siteVec4s}u;
-  let a = terrainVolcanicIndex[first];
-  let b = terrainVolcanicIndex[first + 1u];
-  let c = terrainVolcanicIndex[first + 2u];
-  let d = bitcast<vec4<u32>>(terrainVolcanicIndex[first + 3u]);
-  let e = terrainVolcanicIndex[first + 4u];
+  let a = terrainLandformData[first];
+  let b = terrainLandformData[first + 1u];
+  let c = terrainLandformData[first + 2u];
+  let d = bitcast<vec4<u32>>(terrainLandformData[first + 3u]);
+  let e = terrainLandformData[first + 4u];
   return VolcanicSiteData(
     u32(a.x), a.yz, e.xy, a.w,
     b.x, b.y, b.z, b.w,
@@ -563,17 +564,17 @@ fn vSite(slot: u32) -> VolcanicSiteData {
 
 fn vFlow(slot: u32) -> VolcanicFlowData {
   let first = vHeaderU(2u).w + slot * ${VOLCANIC_INDEX.flowVec4s}u;
-  let a = terrainVolcanicIndex[first];
-  let b = terrainVolcanicIndex[first + 1u];
-  let c = terrainVolcanicIndex[first + 2u];
+  let a = terrainLandformData[first];
+  let b = terrainLandformData[first + 1u];
+  let c = terrainLandformData[first + 2u];
   return VolcanicFlowData(a.xy, c.yw, a.zw, b.x, b.y, b.z, b.w, c.x, bitcast<u32>(c.z));
 }
 
 /** The bin a point falls in: (first ref, count), or (0, 0) outside the index. */
 fn vBin(at: VolcanicPoint) -> vec2<u32> {
   let header = vHeaderU(0u);
-  let size = terrainVolcanicIndex[0u].z;
-  let corner = terrainVolcanicIndex[1u];
+  let size = terrainLandformData[0u].z;
+  let corner = terrainLandformData[1u];
   let cell = floor(((at.hi - corner.xy) + (at.lo - corner.zw) + at.local) / size);
   if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= f32(header.x) || cell.y >= f32(header.y)) {
     return vec2<u32>(0u, 0u);
@@ -792,7 +793,7 @@ fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f
 fn terrainVolcanicGround(base: vec4f, local: vec2f, filterWidth: f32) -> vec3f {
   let at = VolcanicPoint(base.xy, base.zw, local);
   let bin = vBin(at);
-  let wind = terrainVolcanicIndex[3u].xy;
+  let wind = terrainLandformData[3u].xy;
   var lavaCover = 0.0;
   var tephraCover = 0.0;
   var ageOut = 0.0;
@@ -881,20 +882,20 @@ fn vActivityOctave(row: vec4f, seed: u32, scale: f32, p: vec2f) -> f32 {
 fn terrainVolcanicActivityAt(p: vec2f) -> f32 {
   let mode = vHeaderU(4u);
   if (mode.x == 0u) { return 0.0; }
-  let field = (vActivityOctave(terrainVolcanicIndex[5u], mode.z, V_ACTIVITY_SCALE_0, p)
-    + vActivityOctave(terrainVolcanicIndex[6u], mode.w, V_ACTIVITY_SCALE_1, p) * V_ACTIVITY_AMPLITUDE_1)
+  let field = (vActivityOctave(terrainLandformData[5u], mode.z, V_ACTIVITY_SCALE_0, p)
+    + vActivityOctave(terrainLandformData[6u], mode.w, V_ACTIVITY_SCALE_1, p) * V_ACTIVITY_AMPLITUDE_1)
     / (1.0 + V_ACTIVITY_AMPLITUDE_1);
   var activity = kSmoothstep(V_ACTIVITY_LOW, V_ACTIVITY_HIGH, field);
   if (mode.x == 2u) { return max(activity, V_FORCED_FLOOR); }
   if (mode.y != 0u) {
-    let near = 1.0 - kSmoothstep(V_FIELD_FULL, V_FIELD_OUTER, length(p - terrainVolcanicIndex[3u].zw));
+    let near = 1.0 - kSmoothstep(V_FIELD_FULL, V_FIELD_OUTER, length(p - terrainLandformData[3u].zw));
     if (near > activity) { activity = near; }
   }
   return activity * kSmoothstep(V_CORE_INNER, V_CORE_OUTER, length(p));
 }
 
 /** volcanicActivity at a split point (see terrainVolcanicOverlay). */
-fn terrainVolcanicActivity(base: vec4f, local: vec2f) -> f32 {
+fn terrainVolcanicActivitySplit(base: vec4f, local: vec2f) -> f32 {
   return terrainVolcanicActivityAt((base.xy + base.zw) + local);
 }
 `;

@@ -1008,7 +1008,7 @@ export interface BathymetryClipmapOptions {
   readonly storageFormat?: BathymetryStorageFormat;
   /**
    * What `terrainLandformData` binds: the volcanic site index, or (omitted)
-   * a zeroed placeholder the clipmap owns. Swappable later with
+   * a placeholder (the empty site index) the clipmap owns. Swappable later with
    * `setLandformDataSource`.
    */
   readonly landformData?: TerrainLandformDataSource | null;

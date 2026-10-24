@@ -14,6 +14,7 @@ import {
   RIDGES_POW_212_MEAN,
 } from "@/src/world/terrain";
 import { terrainKernelLatticeBase } from "./TerrainKernel";
+import { VOLCANIC_OVERLAY_WGSL, emptyVolcanicSiteIndex } from "./VolcanicOverlayKernel";
 
 /**
  * The WGSL landform stage — Class K, the transliteration of
@@ -108,18 +109,18 @@ function landformConstantsWgsl(): string {
 }
 
 /**
- * Bytes of the placeholder `terrainLandformData` buffer: one zero `vec4f`, on
- * which `terrainVolcanicActivity` is exactly 0.0. A consumer binds one until
- * it is handed a live `TerrainLandformDataSource`. Size and register it from
- * this name, never a literal: the volcanic overlay grows it to its empty site
- * index.
+ * Bytes of the placeholder `terrainLandformData` buffer: the EMPTY volcanic
+ * site index (`emptyVolcanicSiteIndex`), which lists no bins and has no
+ * volcanism, so the overlay returns its height and `terrainVolcanicActivity`
+ * is exactly 0.0. A consumer binds one until it is handed a live
+ * `TerrainLandformDataSource`. Size and register it from this name, never a
+ * literal.
  */
-export const TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES = 16;
+export const TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES = emptyVolcanicSiteIndex().data.byteLength;
 
 /**
- * The landform data binding a consumer prepends. A generic array the volcanic
- * overlay will fill (a site index); the stub below reads element 0 so the
- * binding stays reachable.
+ * The landform data binding a consumer prepends: the volcanic site index
+ * (`VolcanicOverlayKernel.ts` owns its layout and builder).
  */
 export function terrainLandformDataBindingWgsl(group: number, binding: number): string {
   return /* wgsl */ `
@@ -128,7 +129,7 @@ export function terrainLandformDataBindingWgsl(group: number, binding: number): 
 }
 
 /**
- * The zeroed placeholder buffer. It registers
+ * The placeholder buffer, holding the empty site index. It registers
  * `TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES` with the GPU buffer inventory
  * (Gate 0-c) as it allocates, so no consumer can forget to; whoever disposes
  * it releases the same constant. Prefer `createTerrainLandformPlaceholderSource`,
@@ -137,16 +138,16 @@ export function terrainLandformDataBindingWgsl(group: number, binding: number): 
 export function createTerrainLandformPlaceholderBuffer(engine: WebGPUEngine): StorageBuffer {
   const buffer = new StorageBuffer(engine, TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
   registerGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
-  // WebGPU zero-initialises buffers; writing the zeros states the contract
-  // `terrainVolcanicActivity` depends on instead of inheriting it.
-  buffer.update(new Float32Array(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES / 4));
+  // Zeros would read as a bin grid of no size at a corner of 0: the empty
+  // index's header says outright that nothing is listed and nothing is active.
+  buffer.update(emptyVolcanicSiteIndex().data);
   return buffer;
 }
 
 /**
  * What a consumer binds as `terrainLandformData`: the volcanic overlay's site
  * index (`VolcanicSiteIndexStream`, which rebuilds as the camera moves), or
- * the zeroed placeholder.
+ * the placeholder (the empty index).
  *
  * `bufferVersion` changes whenever `buffer` is replaced, so a consumer
  * re-binds by comparing a number before each dispatch instead of being told.
@@ -167,7 +168,7 @@ export interface TerrainLandformPlaceholderSource extends TerrainLandformDataSou
   dispose(): void;
 }
 
-/** The zeroed placeholder as a source: version 0, covering everything. */
+/** The placeholder as a source: version 0, covering everything. */
 export function createTerrainLandformPlaceholderSource(
   engine: WebGPUEngine,
 ): TerrainLandformPlaceholderSource {
@@ -260,30 +261,19 @@ export const TERRAIN_LANDFORM_WGSL = /* wgsl */ `
 // terrainLandformDataBindingWgsl(...) and TERRAIN_KERNEL_WGSL.
 // ---------------------------------------------------------------------------
 
-// ===== VOLCANIC HOOK 1 of 2 — the volcanic include replaces this stub =====
+// ===== VOLCANIC HOOKS — the volcanic include (VolcanicOverlayKernel.ts) =====
+${VOLCANIC_OVERLAY_WGSL}
+
 /**
- * volcanicActivity (landforms.ts), in [0, 1]: a stub returning 0 until the
- * volcanic overlay lands. Sand seas are multiplied by (1.0 - activity), so the
- * two landforms never stack. It READS terrainLandformData so the binding stays
- * reachable: Tint prunes a binding no live code reads, and Babylon then
- * dispatches against a bindingsMapping entry that no longer exists. Over the
- * zeroed placeholder kSaturate(0.0) is exactly 0.0, so the dune weight's
- * (1.0 - activity) is exactly 1.0.
+ * volcanicActivity (volcanism.ts) at a point LOCAL to the bound page, in
+ * [0, 1]. Sand seas are multiplied by (1.0 - activity), so the two
+ * landforms never stack. Exactly 0.0 inside a natural world's core, in a
+ * world without volcanism, and on the placeholder (the empty index). It
+ * reads terrainLandformData's header, so the binding stays reachable even
+ * where no site is listed (Tint prunes a binding no live code reads).
  */
 fn terrainVolcanicActivity(localX: f32, localZ: f32) -> f32 {
-  return kSaturate(terrainLandformData[0].x);
-}
-
-// ===== VOLCANIC HOOK 2 of 2 — the volcanic include replaces this stub =====
-/**
- * The volcanic overlay: the stage after the dunes. base is the page's
- * landformBase row (the page origin minus the landform core's centre, split
- * hi/lo in f64), local the point's offset from the page origin, and
- * filterWidth the page's band-limit half-width (kept.w). A stub returning
- * the height it was given, the same number.
- */
-fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f32) -> f32 {
-  return height;
+  return terrainVolcanicActivitySplit(terrainKernelPages[kPageIndex].landformBase, vec2f(localX, localZ));
 }
 
 // --- the dune stage: dunes.ts, line for line -------------------------------
