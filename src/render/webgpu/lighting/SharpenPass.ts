@@ -142,13 +142,22 @@ export function rcasSharpen(
  * Extra strength for the pixels FXAA moved, in the fused pass. Their lobe is
  * solved against the cross before FXAA, which has more contrast than the
  * smoothed cross the separate pass saw, so it comes out smaller. Calibrated
- * on real tier-1 frames taken before FXAA (2026-10-24, `ground-2m-lowsun` and
- * `approach-500ft`, FXAA moving 19% and 17% of their pixels): with no gain
- * the fused image held 2.3% and 4.5% less fine contrast (mean absolute luma
- * Laplacian) than FXAA then RCAS; at 1.15 it is +1.0% and -0.3%, and the
- * frames sit 0.48/255 and 0.62/255 from the two-pass frames on average.
+ * on real tier-1 frames taken before FXAA at tier 1's own 0.86 render scale
+ * (2026-10-24, `ground-2m-lowsun` and `approach-500ft`, FXAA moving 20% and
+ * 18% of their pixels), by fine contrast (mean absolute luma Laplacian)
+ * against FXAA then RCAS, as displayed (the raster upscaled to the viewport,
+ * as the capture and the browser do) and on the raster itself:
+ *
+ *   gain   displayed            raster
+ *   1.00   -3.6%, -5.7%         -2.2%, -4.6%
+ *   1.15   -0.9%, -2.5%         +1.3%, -0.3%
+ *   1.20   +0.2%, -1.2%         +2.6%, +1.4%
+ *
+ * 1.20 matches what is seen best; the raster's fine contrast, which the
+ * upscale softens, runs a little over. The frames sit 0.55/255 and 0.70/255
+ * from the two-pass frames on average.
  */
-export const FXAA_MOVED_SHARPEN_GAIN = 1.15;
+export const FXAA_MOVED_SHARPEN_GAIN = 1.2;
 
 /**
  * The kernel, shared by both forms. `e` is the centre and `b`, `d`, `f`, `h`
