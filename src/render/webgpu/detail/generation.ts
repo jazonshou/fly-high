@@ -26,6 +26,7 @@ import {
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
   densityField,
+  dryProvinceGroundCoverKeep,
   dryProvinceShares,
   riparianVegetationFactors,
   soilLitterFactor,
@@ -1327,6 +1328,7 @@ function buildGroundCoverGrid(
         slope: sample.slope,
         moisture: sample.moisture,
         temperatureOffset: sample.temperatureOffset ?? 0,
+        dryness: sample.dryness ?? 0,
         dayOfYear: context.dayOfYear,
         ...(sample.normal ? { normalX: sample.normal.x, normalZ: sample.normal.z } : {}),
         ...(sample.airportInfluence !== undefined
@@ -1344,7 +1346,9 @@ function buildGroundCoverGrid(
         : clamp(0.35 + sample.moisture * 0.5 + closure * 0.15, 0, 1)
           // Mown, not bare: the apron keeps ~40% of its cover (1B-6).
           * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1))
-          * riparianVegetationFactors(sample.shoreDistanceMeters).clearance;
+          * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
+          // Bunchgrass and bare soil, not a sward: exactly 1 outside a desert.
+          * dryProvinceGroundCoverKeep(sample.dryness ?? 0);
       const exposure = clamp(
         (sample.height - context.seaLevelMeters) / 900 + sample.slope * 1.6,
         0,

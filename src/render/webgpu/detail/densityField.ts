@@ -552,13 +552,34 @@ export interface DryProvinceShares {
 }
 
 export function dryProvinceShares(drynessOffset: number): DryProvinceShares {
-  const arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, drynessOffset);
-  const parkland = smoothstep(
-    DRY_PROVINCE_PARKLAND_ONSET,
-    DRY_PROVINCE_PARKLAND_FULL,
-    drynessOffset,
-  ) * (1 - arid);
-  return { arid, parkland };
+  const arid = dryProvinceAridShare(drynessOffset);
+  return { arid, parkland: dryProvinceParklandShare(drynessOffset, arid) };
+}
+
+/**
+ * The two shares as scalars, for the per-sample paths that must not allocate
+ * (the density field and the blade driver bake run on the main thread).
+ */
+export function dryProvinceAridShare(drynessOffset: number): number {
+  return smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, drynessOffset);
+}
+
+export function dryProvinceParklandShare(drynessOffset: number, aridShare: number): number {
+  return smoothstep(DRY_PROVINCE_PARKLAND_ONSET, DRY_PROVINCE_PARKLAND_FULL, drynessOffset)
+    * (1 - aridShare);
+}
+
+/**
+ * Ground-cover coverage a full desert keeps: sagebrush steppe is bunchgrass
+ * with bare soil between the clumps, 20-40 % cover, where the shared coverage
+ * law reads ~0.48 at a desert's dried moisture. 1 outside a desert, exactly.
+ * Applied by BOTH coverage sites (the card path in generation.ts and the blade
+ * drivers in GroundCoverSystem.ts), so the two keep agreeing.
+ */
+export const DESERT_GROUND_COVER_KEEP = 0.45;
+
+export function dryProvinceGroundCoverKeep(drynessOffset: number): number {
+  return 1 - (1 - DESERT_GROUND_COVER_KEEP) * dryProvinceAridShare(drynessOffset);
 }
 
 /**
@@ -837,7 +858,8 @@ export function densityField(
   // The dry provinces' stands (see `dryProvinceShares`). Neither rides the
   // moisture gate or the forest province, and both are exactly 0 in the core,
   // so `treeStems` there is the closed-forest term plus two zeros.
-  const { arid, parkland } = dryProvinceShares(input.dryness ?? 0);
+  const arid = dryProvinceAridShare(input.dryness ?? 0);
+  const parkland = dryProvinceParklandShare(input.dryness ?? 0, arid);
   const openStand = shoreline * treelineFactor * clearance * riparian.clearance;
   const parklandStems = BASE_TREE_STEMS * PARKLAND_TREE_SHARE * parkland
     * openStand * slopeFactor * (0.25 + 0.75 * forest.glade);

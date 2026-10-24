@@ -28,7 +28,7 @@ import { consumeGpuDispatchCostMs } from "@/src/render/webgpu/terrain/TerrainPag
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import type { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
 import { GroundCoverMaterialPlugin } from "./GroundCoverMaterialPlugin";
-import { densityField } from "./densityField";
+import { densityField, dryProvinceGroundCoverKeep } from "./densityField";
 import {
   GROUND_COVER_ATTRIBUTE_TILE_EDGE,
   GROUND_COVER_BLADE_STRIDE_BYTES,
@@ -747,6 +747,7 @@ export class GroundCoverSystem {
       dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
       filterWidthMeters: 0,
       temperatureOffset: sample.temperatureOffset,
+      dryness: sample.dryness,
     });
     // The shade term the archetype law takes, exactly as densityField.ts and
     // the WGSL mirror define it: stems relative to the base canopy density.
@@ -757,7 +758,8 @@ export class GroundCoverSystem {
     const coverage = rocky
       ? 0
       : Math.min(1, Math.max(0, 0.35 + sample.moisture * 0.5 + closure * 0.15))
-        * (1 - 0.6 * Math.min(1, Math.max(0, sample.airportInfluence)));
+        * (1 - 0.6 * Math.min(1, Math.max(0, sample.airportInfluence)))
+        * dryProvinceGroundCoverKeep(sample.dryness);
     this.backDrivers[at] = Math.round(Math.min(1, Math.max(0, sample.moisture)) * 255);
     this.backDrivers[at + 1] = Math.round(shade * 255);
     this.backDrivers[at + 2] = Math.round(Math.min(1, Math.max(0, field.riparianBand)) * 255);
