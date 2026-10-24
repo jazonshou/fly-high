@@ -26,13 +26,16 @@ function bits(result: HydrologyGenerationResult): string {
 
 const BOWL_RADIUS_TO_LEVEL = 0.002;
 
-/** A round bowl, 100 m at its centre, that the tracer fills with basin lakes. */
-function bowlTerrain(island = false): HydrologyTerrainSampler {
+/**
+ * A round bowl, 100 m at its centre, that the tracer fills with basin lakes;
+ * optionally with a cone 90 m high and 70 m round standing on its centre, or
+ * tilted up to the east (+x) by `tilt`.
+ */
+function bowlTerrain(island = false, tilt = 0): HydrologyTerrainSampler {
   return (x, z) => {
     const r = Math.hypot(x, z);
-    // An optional cone 90 m high, 70 m round, standing on the bowl's centre.
     const cone = island ? Math.max(0, 90 * (1 - r / 70)) : 0;
-    return { height: 100 + r * r * BOWL_RADIUS_TO_LEVEL + cone, moisture: 0.78 };
+    return { height: 100 + r * r * BOWL_RADIUS_TO_LEVEL + cone + x * tilt, moisture: 0.78 };
   };
 }
 
@@ -121,12 +124,13 @@ describe("authored basins and porous ground", () => {
     expect(lake.surfaceHeight).toBe(150 + offset);
     expect(lake.maximumDepthMeters).toBe(50);
     expect(lake.boundary).toHaveLength(24);
+    // The march steps 300 m / 16 = 18.75 m (the basin lakes' 19.25 m, fitted to the rim).
     for (const point of lake.boundary) {
       const radius = Math.hypot(point.x, point.z);
       expect(point.y).toBe(lake.surfaceHeight);
       // Just outside the true shore (the bracketing dry sample), never past the rim.
       expect(radius).toBeGreaterThanOrEqual(SHORE_RADIUS);
-      expect(radius).toBeLessThanOrEqual(SHORE_RADIUS + 40);
+      expect(radius).toBeLessThanOrEqual(SHORE_RADIUS + 18.75 + 1e-9);
       expect(radius).toBeLessThanOrEqual(BOWL_BASIN.rimRadiusMeters);
     }
     expect(lake.areaSquareMeters).toBeGreaterThan(Math.PI * SHORE_RADIUS ** 2 * 0.95);
@@ -142,20 +146,59 @@ describe("authored basins and porous ground", () => {
     }
   });
 
-  it("keep the rim where the water would spill, and make no lake where no ray is wet", () => {
+  it("drain a level that would spill over the rim down to the rim's lowest point", () => {
     const options = bowlOptions(bowlTerrain());
-    // Rim 120 m: the 150 m level stands above the ground there on every ray.
-    const spill = generateHydrology({
+    const offset = generateHydrology(options).config.riverSurfaceOffsetMeters;
+    // Rim 120 m, where the ground stands at 128.8 m all round: the 150 m level
+    // would pour out on every ray, so the lake stands at 128.8 m, brim-full.
+    const brimFull = generateHydrology({
       ...options,
       authoredBasins: [{ ...BOWL_BASIN, rimRadiusMeters: 120 }],
     }).lakes[0]!;
-    for (const point of spill.boundary) expect(Math.hypot(point.x, point.z)).toBeCloseTo(120, 6);
+    expect(brimFull.surfaceHeight).toBeCloseTo(128.8 + offset, 9);
+    for (const point of brimFull.boundary) expect(Math.hypot(point.x, point.z)).toBeCloseTo(120, 6);
+    // Tilted up to the east by 10 %, the 300 m rim is lowest due west, at
+    // 100 + 180 - 30 = 250 m. A level under that is kept; one over it drains to it.
+    const tilted = bowlOptions(bowlTerrain(false, 0.1));
+    const kept = generateHydrology({
+      ...tilted,
+      authoredBasins: [{ ...BOWL_BASIN, levelMeters: 240 }],
+    }).lakes[0]!;
+    expect(kept.surfaceHeight).toBe(240 + offset);
+    const drained = generateHydrology({
+      ...tilted,
+      authoredBasins: [{ ...BOWL_BASIN, levelMeters: 260 }],
+    }).lakes[0]!;
+    expect(drained.surfaceHeight).toBeCloseTo(250 + offset, 9);
+    expect(drained.maximumDepthMeters).toBeCloseTo(150, 9);
+    // The spill ray (due west, segment 12 of 24) keeps the rim; the rest a shore inside it.
+    const west = drained.boundary[12]!;
+    expect(Math.hypot(west.x, west.z)).toBeCloseTo(300, 6);
+    const east = drained.boundary[0]!;
+    expect(Math.hypot(east.x, east.z)).toBeLessThan(300);
+  });
+
+  it("make no lake where no ray finds water, or the water drains below its minimum depth", () => {
+    const options = bowlOptions(bowlTerrain());
     // A level under the bowl's floor: no water anywhere.
-    const dryLevel = generateHydrology({
+    expect(generateHydrology({
       ...options,
       authoredBasins: [{ ...BOWL_BASIN, levelMeters: 99 }],
+    }).lakes).toHaveLength(0);
+    // A rim 15 m out stands 0.45 m over the floor: the lake drains to a
+    // puddle. (The tracer's own basin lakes, ending outside so small a rim,
+    // still stand.)
+    const puddle = generateHydrology({
+      ...options,
+      authoredBasins: [{ ...BOWL_BASIN, rimRadiusMeters: 15 }],
     });
-    expect(dryLevel.lakes).toHaveLength(0);
+    expect(puddle.lakes.some((lake) => lake.id.endsWith(":test:bowl"))).toBe(false);
+    const shallowAllowed = generateHydrology({
+      ...options,
+      minimumLakeDepthMeters: 0.1,
+      authoredBasins: [{ ...BOWL_BASIN, rimRadiusMeters: 15 }],
+    });
+    expect(shallowAllowed.lakes.some((lake) => lake.id.endsWith(":test:bowl"))).toBe(true);
   });
 
   it("keep a basin authored dry free of basin lakes, and drop lakes under the sea", () => {

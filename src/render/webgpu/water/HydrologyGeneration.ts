@@ -1075,18 +1075,31 @@ function insideAuthoredBasin(
 }
 
 /**
- * An authored basin's lake. The world chose the level, so only the shore is
- * found here, on the region's own sampler.
+ * Samples per shore ray at most: a 5 km caldera rim is then marched at ~55 m
+ * rather than the basin lakes' 31.5 m, and one authored lake costs at most
+ * `lakeBoundarySegments` times this many terrain samples.
+ */
+const AUTHORED_LAKE_MAXIMUM_RADIAL_STEPS = 96;
+
+/**
+ * An authored basin's lake. The world chose the level, so what is found here
+ * is the shore, on the region's own sampler.
  *
- * Each ray marches INWARD from the rim and stops at the first ground under
- * the level: the OUTER shore. Marching out from the centre would stop at an
- * island instead (a cone on a caldera floor, which can stand on the centre)
- * and leave the floor behind it dry; here an island is a hole the contained
- * plate cuts by itself. The vertex is the dry sample just outside the shore,
- * pushed out by a chord's sag so the polygon's edges clear the water between
- * rays, and never past the rim: the polygon only OWNS ground, and the plate
- * draws water exactly where that ground is under the level. A ray that meets
- * no water keeps the rim; a basin with no water on any ray has no lake.
+ * Each ray marches INWARD from the rim: first to dry ground (the rim's crest;
+ * the outer flank past it can lie under the level), then on to the first
+ * ground under the level, which is the OUTER shore. Marching out from the
+ * centre would stop at an island instead (a cone on a caldera floor can stand
+ * on the centre) and leave the floor behind it dry; here an island is a hole
+ * the contained plate cuts by itself. The vertex is the dry sample just
+ * outside the shore, never past the rim: the polygon only OWNS ground, and the
+ * plate draws water exactly where that ground is under the level.
+ *
+ * The level is a CEILING. A ray with no dry ground on it is a way out: the
+ * water would pour over the rim there and stand as a wall over the ground
+ * outside. The level then drops to the lowest such ray's highest ground (the
+ * spill) and the shore is found again; every ray is dry somewhere at that
+ * level. A lake that drains to less than `minimumLakeDepthMeters` over its
+ * floor, or onto the sea, is no lake; nor is one in which no ray finds water.
  */
 function buildAuthoredLake(
   id: string,
@@ -1095,41 +1108,84 @@ function buildAuthoredLake(
   terrainSample: HydrologyTerrainSampler,
   hash: number,
 ): HydrologyLake | null {
-  const level = basin.levelMeters;
   const rim = basin.rimRadiusMeters;
   const segments = config.lakeBoundarySegments;
-  // Samples at exactly the rim and every `radialStep` inside it, the basin
-  // lakes' spacing.
-  const radialSteps = Math.max(1, Math.ceil(rim / Math.max(config.traceStepMeters * 0.35, 12)));
-  const sag = 1 / Math.cos(Math.PI / segments);
+  // Samples at exactly the rim and every radial step inside it; at least four,
+  // so a basin smaller than one step still has ground inside its rim.
+  const radialSteps = Math.min(
+    AUTHORED_LAKE_MAXIMUM_RADIAL_STEPS,
+    Math.max(4, Math.ceil(rim / Math.max(config.traceStepMeters * 0.35, 12))),
+  );
+  // Ground along every ray, sampled on first use: the spill pass re-reads
+  // the first pass's samples rather than taking them again.
+  const ground = new Float64Array(segments * radialSteps).fill(Number.NaN);
+  const groundAt = (segment: number, step: number): number => {
+    const index = segment * radialSteps + step - 1;
+    const cached = ground[index]!;
+    if (cached === cached) return cached;
+    const angle = segment * TAU / segments;
+    const radius = rim * step / radialSteps;
+    const height = readTerrainSample(
+      terrainSample,
+      basin.centerX + Math.cos(angle) * radius,
+      basin.centerZ + Math.sin(angle) * radius,
+    ).terrainHeight;
+    ground[index] = height;
+    return height;
+  };
+  // Per ray, the step of its vertex: the dry sample just outside the water,
+  // or the outermost dry sample of a ray with no water on it.
+  const vertexSteps = new Int32Array(segments);
+  let level = basin.levelMeters;
+  let wetRays = 0;
+  for (let pass = 0; pass < 2; pass += 1) {
+    let spill = Number.POSITIVE_INFINITY;
+    wetRays = 0;
+    for (let segment = 0; segment < segments; segment += 1) {
+      let outerDryStep = 0;
+      let shoreStep = 0;
+      let highest = Number.NEGATIVE_INFINITY;
+      for (let step = radialSteps; step >= 1; step -= 1) {
+        const height = groundAt(segment, step);
+        if (height > highest) highest = height;
+        if (height >= level) {
+          if (outerDryStep === 0) outerDryStep = step;
+          continue;
+        }
+        if (outerDryStep === 0) continue;
+        shoreStep = step + 1;
+        break;
+      }
+      if (outerDryStep === 0) {
+        // All of it under the level: a way out, as low as its highest ground.
+        if (highest < spill) spill = highest;
+        continue;
+      }
+      if (shoreStep > 0) wetRays += 1;
+      vertexSteps[segment] = shoreStep > 0 ? shoreStep : outerDryStep;
+    }
+    if (spill === Number.POSITIVE_INFINITY) break;
+    // Every ray's highest ground is at or above the spill, so the second pass
+    // finds dry ground on all of them and never lowers the level again.
+    level = spill;
+  }
+  if (
+    wetRays === 0
+    || !(level > config.seaLevel + 0.5)
+    || level - basin.floorMeters < config.minimumLakeDepthMeters
+  ) return null;
   const boundary: HydrologyLakeBoundaryPoint[] = [];
   let radiusSum = 0;
-  let wetRays = 0;
   for (let segment = 0; segment < segments; segment += 1) {
     const angle = segment * TAU / segments;
-    const directionX = Math.cos(angle);
-    const directionZ = Math.sin(angle);
-    let shoreRadius = rim;
-    for (let step = radialSteps; step >= 1; step -= 1) {
-      const radius = rim * step / radialSteps;
-      const ground = readTerrainSample(
-        terrainSample,
-        basin.centerX + directionX * radius,
-        basin.centerZ + directionZ * radius,
-      ).terrainHeight;
-      if (ground >= level) continue;
-      wetRays += 1;
-      if (step < radialSteps) shoreRadius = Math.min(rim, rim * (step + 1) / radialSteps * sag);
-      break;
-    }
-    radiusSum += shoreRadius;
+    const radius = rim * vertexSteps[segment]! / radialSteps;
+    radiusSum += radius;
     boundary.push(Object.freeze({
-      x: basin.centerX + directionX * shoreRadius,
+      x: basin.centerX + Math.cos(angle) * radius,
       y: level + config.riverSurfaceOffsetMeters,
-      z: basin.centerZ + directionZ * shoreRadius,
+      z: basin.centerZ + Math.sin(angle) * radius,
     }));
   }
-  if (wetRays === 0) return null;
   const flowAngle = unitHash(mixHash(hash, hashText(basin.id)), 71) * TAU;
   return Object.freeze({
     id,
@@ -1137,7 +1193,7 @@ function buildAuthoredLake(
     centerZ: basin.centerZ,
     // The same lift every lake and river surface gets over its waterline.
     surfaceHeight: level + config.riverSurfaceOffsetMeters,
-    maximumDepthMeters: Math.max(level - basin.floorMeters, config.minimumLakeDepthMeters),
+    maximumDepthMeters: level - basin.floorMeters,
     radiusMeters: radiusSum / segments,
     areaSquareMeters: polygonArea(boundary),
     flowDirection: Object.freeze([Math.cos(flowAngle), Math.sin(flowAngle)]) as readonly [number, number],
