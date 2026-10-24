@@ -1660,8 +1660,8 @@ const SPLAT_SOIL_MAX_METERS: f32 = ${
 var<private> splatVolcanicGround: vec3f;
 
 // The landform base terrainVolcanicGround measures from: the selected page's
-// origin minus the landform core centre, split hi/lo (xy hi, zw lo), the page
-// uniform's landformBase row. All zero in a world without landforms, where the
+// origin minus the landform core centre, split into whole cells (xy) and the
+// remainder (zw), the page uniform's landformBase row. All zero in a world without landforms, where the
 // placeholder index lists no site and the ground is exactly 0.
 fn splatVolcanicBase() -> vec4f {
   return terrainKernelPages[kPageIndex].landformBase;

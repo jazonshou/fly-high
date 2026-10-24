@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TERRAIN_LANDFORM_CELL_METERS } from "../src/render/webgpu/terrain/TerrainKernel";
 import {
   VOLCANIC_INDEX,
   VolcanicSiteIndexBuilder,
@@ -82,9 +83,13 @@ describe("volcanic site index", () => {
       expected.forEach((site, k) => {
         const slot = u32[u32[9]! * 4 + first + k]!;
         const base = (u32[10]! + slot * VOLCANIC_INDEX.siteVec4s) * 4;
-        // Centre hi + lo is the site's offset from the core centre.
-        expect(index.data[base + 1]! + index.data[base + 16]!).toBeCloseTo(site.x - frame.coreX, 6);
-        expect(index.data[base + 2]! + index.data[base + 17]!).toBeCloseTo(site.z - frame.coreZ, 6);
+        // Whole cells and the remainder are the site's offset from the core
+        // centre, and the cells are exact integers.
+        const cellX = index.data[base + 16]!;
+        const cellZ = index.data[base + 17]!;
+        expect(Number.isInteger(cellX) && Number.isInteger(cellZ)).toBe(true);
+        expect(cellX * TERRAIN_LANDFORM_CELL_METERS + index.data[base + 1]!).toBeCloseTo(site.x - frame.coreX, 4);
+        expect(cellZ * TERRAIN_LANDFORM_CELL_METERS + index.data[base + 2]!).toBeCloseTo(site.z - frame.coreZ, 4);
         expect(u32[base + 15]).toBe(site.flows.length);
       });
     }

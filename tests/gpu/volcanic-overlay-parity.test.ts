@@ -9,8 +9,10 @@ import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/Qualit
 import {
   TERRAIN_KERNEL_PAGE_BYTES,
   TERRAIN_KERNEL_WGSL,
+  TERRAIN_LANDFORM_CELL_METERS,
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
+  terrainLandformCell,
   terrainLandformInput,
 } from "../../src/render/webgpu/terrain/TerrainKernel";
 import {
@@ -55,8 +57,8 @@ ${terrainKernelPageBindingWgsl(0, 0)}
 ${TERRAIN_KERNEL_WGSL}
 
 ${terrainLandformDataBindingWgsl(0, 1)}
-// probes: three vec4 each, (base hi, base lo), (local, height in, filter
-// width) and (the point relative to the page at the world origin, 0, 0)
+// probes: three vec4 each, (base cells, base remainder), (local, height in,
+// filter width) and (the point relative to the page at the world origin, 0, 0)
 @group(0) @binding(2) var<storage, read> probes: array<vec4f>;
 @group(0) @binding(3) var<storage, read_write> results: array<vec4f>;
 
@@ -125,16 +127,18 @@ async function runOnGpu(
 ): Promise<Float32Array> {
   const index = packVolcanicSiteIndex(world, centerX, centerZ);
   // As a bake hands points over: a base on a 1 km world lattice (a page
-  // origin) relative to the index origin (the core centre), split hi/lo in
-  // f64, and the small local offset from it.
+  // origin) relative to the index origin (the core centre), split in f64
+  // into whole cells and the remainder, and the small local offset from it.
   const probeData = new Float32Array(probes.length * 12);
   probes.forEach((probe, slot) => {
     const baseX = Math.floor(probe.x / 1_000) * 1_000 - index.originX;
     const baseZ = Math.floor(probe.z / 1_000) * 1_000 - index.originZ;
-    probeData[slot * 12] = baseX;
-    probeData[slot * 12 + 1] = baseZ;
-    probeData[slot * 12 + 2] = baseX - Math.fround(baseX);
-    probeData[slot * 12 + 3] = baseZ - Math.fround(baseZ);
+    const cellX = terrainLandformCell(baseX);
+    const cellZ = terrainLandformCell(baseZ);
+    probeData[slot * 12] = cellX;
+    probeData[slot * 12 + 1] = cellZ;
+    probeData[slot * 12 + 2] = baseX - cellX * TERRAIN_LANDFORM_CELL_METERS;
+    probeData[slot * 12 + 3] = baseZ - cellZ * TERRAIN_LANDFORM_CELL_METERS;
     probeData[slot * 12 + 4] = probe.x - index.originX - baseX;
     probeData[slot * 12 + 5] = probe.z - index.originZ - baseZ;
     probeData[slot * 12 + 6] = probe.height;

@@ -10,6 +10,7 @@ import { LANDFORM_CORE } from "@/src/world/landforms";
 import { NOISE_LATTICE_WRAP_PERIOD_CELLS } from "@/src/world/noise";
 import { mixSeed } from "@/src/world/seed";
 import type { WorldDefinition } from "@/src/world/types";
+import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKernel";
 
 /**
  * The GPU twin of the volcanic overlay (`src/world/volcanism.ts`) — Class K.
@@ -26,16 +27,21 @@ import type { WorldDefinition } from "@/src/world/types";
  * the point the landform stage hands its page bases relative to, so the
  * origin never moves and two indexes centred anywhere pack a site into the
  * same bits. Every centre, flow start and bin corner is stored relative to
- * the origin as a hi f32 plus the lo f32 left over (split in f64), and a
+ * the origin as whole cells (`TERRAIN_LANDFORM_CELL_METERS`, an exact f32
+ * integer) plus the f32 remainder within the cell, split in f64, and a
  * consumer passes its points the same way (its page origin minus the core
  * centre, split in f64 on the CPU, plus its small local offset). Distances
- * subtract hi from hi and lo from lo, so they keep sub-millimetre precision
- * anywhere in the index.
+ * subtract the cells as i32 and the remainders as f32, so no f32 sum ever
+ * holds more than the distance itself plus a cell, and they keep
+ * sub-millimetre precision anywhere in the index even under a compiler that
+ * reassociates float sums (the hi/lo f32 pairs this replaced lost about
+ * 1.5 cm at 140 km from the origin on Metal).
  *
  * LAYOUT, one `array<vec4f>` (u32 fields bitcast):
  *
  *   [0] header: binsX, binsZ (u32), bin size (m), site count (u32)
- *   [1] header: bin grid corner relative to the origin, hi (x, z) and lo (x, z)
+ *   [1] header: bin grid corner relative to the origin, cells (x, z) and
+ *       the remainder within them (x, z)
  *   [2] header: first bin vec4, first ref vec4, first site vec4, first flow vec4 (u32)
  *   [3] header: wind (x, z), guaranteed field centre relative to the origin (x, z)
  *   [4] header: activity mode (0 off, 1 natural, 2 forced), has a field,
@@ -44,12 +50,12 @@ import type { WorldDefinition } from "@/src/world/types";
  *   [6] header: activity octave 1, the same
  *   bins:  two per vec4, (first ref, ref count) each (u32)
  *   refs:  four site indices per vec4 (u32)
- *   sites: VOLCANIC_INDEX.siteVec4s each: (kind, centre hi, radius),
- *          (height, crater radius, crater depth, age), (breach, base level,
- *          footprint), (noise seeds A and B, first flow, flow count) (u32),
- *          (centre lo, unused)
- *   flows: VOLCANIC_INDEX.flowVec4s each: (start hi, direction),
- *          (bend, length, width, thickness), (age, start lo x, seed (u32), start lo z)
+ *   sites: VOLCANIC_INDEX.siteVec4s each: (kind, centre within its cell,
+ *          radius), (height, crater radius, crater depth, age), (breach,
+ *          base level, footprint), (noise seeds A and B, first flow, flow
+ *          count) (u32), (centre cell, unused)
+ *   flows: VOLCANIC_INDEX.flowVec4s each: (start within its cell, direction),
+ *          (bend, length, width, thickness), (age, start cell x, seed (u32), start cell z)
  *
  * Profiles transliterate `volcanism.ts` line for line through the kernel's
  * hand-written `kLerp` / `kSmoothstep` (rule 2) and avoid `pow`.
@@ -360,12 +366,8 @@ export class VolcanicSiteIndexBuilder {
     u32[1] = this.binsZ;
     data[2] = size;
     u32[3] = this.sites.length;
-    const cornerX = this.bi0 * size - this.originX;
-    const cornerZ = this.bj0 * size - this.originZ;
-    data[4] = cornerX;
-    data[5] = cornerZ;
-    data[6] = cornerX - Math.fround(cornerX);
-    data[7] = cornerZ - Math.fround(cornerZ);
+    writeSplit(data, 4, 6, this.bi0 * size - this.originX);
+    writeSplit(data, 5, 7, this.bj0 * size - this.originZ);
     u32[8] = firstBin;
     u32[9] = firstRef;
     u32[10] = firstSite;
@@ -392,8 +394,8 @@ export class VolcanicSiteIndexBuilder {
     const centerX = site.x - this.originX;
     const centerZ = site.z - this.originZ;
     data[base] = site.kind;
-    data[base + 1] = centerX;
-    data[base + 2] = centerZ;
+    writeSplit(data, base + 16, base + 1, centerX);
+    writeSplit(data, base + 17, base + 2, centerZ);
     data[base + 3] = site.radiusMeters;
     data[base + 4] = site.heightMeters;
     data[base + 5] = site.craterRadiusMeters;
@@ -408,14 +410,12 @@ export class VolcanicSiteIndexBuilder {
     u32[base + 13] = mixSeed(mixSeed(site.seed, 2), 0) >>> 0;
     u32[base + 14] = this.flowSlot;
     u32[base + 15] = site.flows.length;
-    data[base + 16] = centerX - Math.fround(centerX);
-    data[base + 17] = centerZ - Math.fround(centerZ);
     for (const flow of site.flows) {
       const f = (this.firstFlow + this.flowSlot * VOLCANIC_INDEX.flowVec4s) * 4;
       const startX = flow.startX - this.originX;
       const startZ = flow.startZ - this.originZ;
-      data[f] = startX;
-      data[f + 1] = startZ;
+      writeSplit(data, f + 9, f, startX);
+      writeSplit(data, f + 11, f + 1, startZ);
       data[f + 2] = flow.directionX;
       data[f + 3] = flow.directionZ;
       data[f + 4] = flow.bend;
@@ -423,9 +423,7 @@ export class VolcanicSiteIndexBuilder {
       data[f + 6] = flow.widthMeters;
       data[f + 7] = flow.thicknessMeters;
       data[f + 8] = flow.age;
-      data[f + 9] = startX - Math.fround(startX);
       u32[f + 10] = mixSeed(flow.seed, 0) >>> 0;
-      data[f + 11] = startZ - Math.fround(startZ);
       this.flowSlot += 1;
     }
     this.cursor += 1;
@@ -449,6 +447,13 @@ export class VolcanicSiteIndexBuilder {
 
 function defaultClock(): number {
   return performance.now();
+}
+
+/** An origin-relative coordinate split in f64: whole cells at `cell`, the remainder at `within`. */
+function writeSplit(data: Float32Array, cell: number, within: number, value: number): void {
+  const whole = terrainLandformCell(value);
+  data[cell] = whole;
+  data[within] = value - whole * TERRAIN_LANDFORM_CELL_METERS;
 }
 
 /**
@@ -479,7 +484,8 @@ const FIELD = VOLCANISM.guaranteed;
  * include (`TERRAIN_LANDFORM_WGSL`) composes it; consumers that only need
  * the ground covers can compose it alone.
  *
- * Points are split, origin-relative metres (see the file comment).
+ * Points are split, origin-relative metres: whole cells and the remainder
+ * (see the file comment).
  */
 export const VOLCANIC_OVERLAY_WGSL = /* wgsl */ `
 // ---------------------------------------------------------------------------
@@ -494,11 +500,12 @@ const V_KIND_CALDERA: u32 = ${KIND.Caldera}u;
 const V_CINDER_APRON_RADII: f32 = 2.6;
 const V_MAAR_RING_RADII: f32 = 1.8;
 const V_CALDERA_FLANK_RADII: f32 = 2.4;
+const V_CELL: f32 = ${TERRAIN_LANDFORM_CELL_METERS}.0;
 
 struct VolcanicSiteData {
   kind: u32,
-  center: vec2f,
-  centerLo: vec2f,
+  cell: vec2<i32>,
+  within: vec2f,
   radius: f32,
   height: f32,
   craterRadius: f32,
@@ -514,8 +521,8 @@ struct VolcanicSiteData {
 }
 
 struct VolcanicFlowData {
-  start: vec2f,
-  startLo: vec2f,
+  cell: vec2<i32>,
+  within: vec2f,
   direction: vec2f,
   bend: f32,
   length: f32,
@@ -556,7 +563,7 @@ fn vSite(slot: u32) -> VolcanicSiteData {
   let d = bitcast<vec4<u32>>(terrainLandformData[first + 3u]);
   let e = terrainLandformData[first + 4u];
   return VolcanicSiteData(
-    u32(a.x), a.yz, e.xy, a.w,
+    u32(a.x), vec2<i32>(e.xy), a.yz, a.w,
     b.x, b.y, b.z, b.w,
     c.xy, c.z, c.w,
     d.x, d.y, d.z, d.w);
@@ -567,7 +574,7 @@ fn vFlow(slot: u32) -> VolcanicFlowData {
   let a = terrainLandformData[first];
   let b = terrainLandformData[first + 1u];
   let c = terrainLandformData[first + 2u];
-  return VolcanicFlowData(a.xy, c.yw, a.zw, b.x, b.y, b.z, b.w, c.x, bitcast<u32>(c.z));
+  return VolcanicFlowData(vec2<i32>(c.yw), a.xy, a.zw, b.x, b.y, b.z, b.w, c.x, bitcast<u32>(c.z));
 }
 
 /** The bin a point falls in: (first ref, count), or (0, 0) outside the index. */
@@ -575,7 +582,7 @@ fn vBin(at: VolcanicPoint) -> vec2<u32> {
   let header = vHeaderU(0u);
   let size = terrainLandformData[0u].z;
   let corner = terrainLandformData[1u];
-  let cell = floor(((at.hi - corner.xy) + (at.lo - corner.zw) + at.local) / size);
+  let cell = floor(vFromSplit(vec2<i32>(corner.xy), corner.zw, at) / size);
   if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= f32(header.x) || cell.y >= f32(header.y)) {
     return vec2<u32>(0u, 0u);
   }
@@ -699,7 +706,7 @@ fn vMaarHeight(site: VolcanicSiteData, height: f32, r: f32, unit: vec2f) -> f32 
 
 /** (along, across) of a point in a flow's frame: flowFrame's parabola. */
 fn vFlowFrame(flow: VolcanicFlowData, at: VolcanicPoint) -> vec2f {
-  let p = (at.hi - flow.start) + (at.lo - flow.startLo) + at.local;
+  let p = vFromSplit(flow.cell, flow.within, at);
   let dir = flow.direction;
   let a = p.x * dir.x + p.y * dir.y;
   let b = -p.x * dir.y + p.y * dir.x;
@@ -756,30 +763,41 @@ fn vApplySite(site: VolcanicSiteData, at: VolcanicPoint, height: f32, filterWidt
 }
 
 /**
- * A point as the bakes hand it over: an index-relative base split into hi
- * and lo f32 parts (computed in f64 on the CPU) plus a small local offset.
- * Every distance to a site or flow start subtracts hi from hi and lo from lo
- * before adding the local part, so no f32 sum ever holds a large coordinate
- * and the GPU keeps sub-millimetre agreement with the CPU (the 5 mm physics
- * budget) anywhere in the index.
+ * A point as the bakes hand it over: an index-relative base split into whole
+ * cells and the f32 remainder within them (computed in f64 on the CPU) plus
+ * a small local offset. Every distance to a site, flow start or bin corner
+ * subtracts the cells as i32, exactly, before any float arithmetic, so no
+ * f32 sum ever holds more than the distance plus a cell, in whatever order a
+ * fast-math compiler adds them, and the GPU keeps sub-millimetre agreement
+ * with the CPU (the 5 mm physics budget) anywhere in the index.
  */
 struct VolcanicPoint {
-  hi: vec2f,
-  lo: vec2f,
+  cell: vec2<i32>,
+  within: vec2f,
   local: vec2f,
 }
 
+fn vPoint(base: vec4f, local: vec2f) -> VolcanicPoint {
+  return VolcanicPoint(vec2<i32>(base.xy), base.zw, local);
+}
+
+/** A point's offset from a split position (whole cells, remainder). */
+fn vFromSplit(cell: vec2<i32>, within: vec2f, at: VolcanicPoint) -> vec2f {
+  return vec2f(at.cell - cell) * V_CELL + ((at.within - within) + at.local);
+}
+
 fn vFromSite(site: VolcanicSiteData, at: VolcanicPoint) -> vec2f {
-  return (at.hi - site.center) + (at.lo - site.centerLo) + at.local;
+  return vFromSplit(site.cell, site.within, at);
 }
 
 /**
  * applyVolcanicOverlay: the height after the overlay. \`base\` is the
- * index-relative base point (hi.xy, lo.zw), \`local\` the offset from it.
+ * index-relative base point (whole cells .xy, remainder .zw), \`local\` the
+ * offset from it.
  * Returns \`height\` itself wherever no listed footprint covers the point.
  */
 fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f32) -> f32 {
-  let at = VolcanicPoint(base.xy, base.zw, local);
+  let at = vPoint(base, local);
   let bin = vBin(at);
   var result = height;
   for (var k = 0u; k < bin.y; k += 1u) {
@@ -793,7 +811,7 @@ fn terrainVolcanicOverlay(base: vec4f, local: vec2f, height: f32, filterWidth: f
 
 /** sampleVolcanicGround: (lava cover, tephra cover, age) at a point (see terrainVolcanicOverlay). */
 fn terrainVolcanicGround(base: vec4f, local: vec2f, filterWidth: f32) -> vec3f {
-  let at = VolcanicPoint(base.xy, base.zw, local);
+  let at = vPoint(base, local);
   let bin = vBin(at);
   let wind = terrainLandformData[3u].xy;
   var lavaCover = 0.0;
@@ -898,6 +916,6 @@ fn terrainVolcanicActivityAt(p: vec2f) -> f32 {
 
 /** volcanicActivity at a split point (see terrainVolcanicOverlay). */
 fn terrainVolcanicActivitySplit(base: vec4f, local: vec2f) -> f32 {
-  return terrainVolcanicActivityAt((base.xy + base.zw) + local);
+  return terrainVolcanicActivityAt(base.xy * V_CELL + (base.zw + local));
 }
 `;

@@ -14,6 +14,7 @@ import {
   TERRAIN_KERNEL_LATTICE_COUNT,
   TERRAIN_KERNEL_PAGE_BYTES,
   TERRAIN_KERNEL_WGSL,
+  TERRAIN_LANDFORM_CELL_METERS,
   buildTerrainKernelPageUniform,
   terrainKernelLatticeBase,
   terrainKernelPageBindingWgsl,
@@ -143,14 +144,19 @@ describe("the landform rows of the kernel page uniform", () => {
       Math.fround(Math.cos(wind)),
       Math.fround(windPhase - Math.floor(windPhase)),
       Math.fround(across - Math.floor(across)),
-      Math.fround(baseX),
-      Math.fround(baseZ),
-      Math.fround(baseX - Math.fround(baseX)),
-      Math.fround(baseZ - Math.fround(baseZ)),
+      Math.floor(baseX / TERRAIN_LANDFORM_CELL_METERS),
+      Math.floor(baseZ / TERRAIN_LANDFORM_CELL_METERS),
+      Math.fround(baseX - Math.floor(baseX / TERRAIN_LANDFORM_CELL_METERS) * TERRAIN_LANDFORM_CELL_METERS),
+      Math.fround(baseZ - Math.floor(baseZ / TERRAIN_LANDFORM_CELL_METERS) * TERRAIN_LANDFORM_CELL_METERS),
     ]);
-    // hi + lo recovers the f64 offset to well under a millimetre.
-    expect(Math.abs(rows[12]! + rows[14]! - baseX)).toBeLessThan(1e-6);
-    expect(Math.abs(rows[13]! + rows[15]! - baseZ)).toBeLessThan(1e-6);
+    // Whole cells and the remainder recover the f64 offset to well under a
+    // millimetre, and the remainder stays within one cell.
+    expect(Math.abs(rows[12]! * TERRAIN_LANDFORM_CELL_METERS + rows[14]! - baseX)).toBeLessThan(1e-4);
+    expect(Math.abs(rows[13]! * TERRAIN_LANDFORM_CELL_METERS + rows[15]! - baseZ)).toBeLessThan(1e-4);
+    for (const within of [rows[14]!, rows[15]!]) {
+      expect(within).toBeGreaterThanOrEqual(0);
+      expect(within).toBeLessThan(TERRAIN_LANDFORM_CELL_METERS);
+    }
     // The reduced origin phase plus a local offset's phase is the CPU's phase
     // at origin + offset, modulo whole periods: the split is exact in f64.
     for (const [localX, localZ] of [[0, 0], [37.5, -411.25], [4_100, 2_048.75]] as const) {

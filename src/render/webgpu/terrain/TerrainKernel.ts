@@ -479,6 +479,22 @@ export interface TerrainKernelPageInput {
   readonly landform?: TerrainKernelLandformInput | null;
 }
 
+/**
+ * The landform base's cell (row four): an offset from the landform core's
+ * centre is handed to the GPU as whole cells of this size, an exact f32
+ * integer the shader subtracts as an i32, plus the f32 remainder within the
+ * cell. Integer subtraction is the one step a fast-math compiler cannot
+ * reassociate, so a distance between two split points never passes through
+ * an f32 sum the size of the offset itself (a hi/lo f32 pair lost about
+ * 1.5 cm at 140 km from the core on Metal).
+ */
+export const TERRAIN_LANDFORM_CELL_METERS = 1_024;
+
+/** The whole cells of an offset (`TERRAIN_LANDFORM_CELL_METERS`); the remainder is `value - cell * size`, exact in f64. */
+export function terrainLandformCell(value: number): number {
+  return Math.floor(value / TERRAIN_LANDFORM_CELL_METERS);
+}
+
 /** What the page uniform needs to evaluate `terrainLandforms` (TerrainLandformKernel.ts). */
 export interface TerrainKernelLandformInput {
   /** Centre of the landform core, world metres (f64 here, never on the GPU). */
@@ -607,9 +623,9 @@ export function buildTerrainKernelPageUniform(
   // across phase also carries the wind phase's stagger, whose integer part
   // DOES matter (a stagger times 2,300 periods is not a whole crescent), so
   // it is folded in here at full f64 precision before the reduction. Row
-  // four: the same core offset split hi/lo in f64 (hi = fround(d), lo = d -
-  // hi), for the volcanic overlay, whose site lattice needs more of the
-  // offset than one f32 holds.
+  // four: the same core offset as whole cells and the remainder
+  // (`terrainLandformCell`, split in f64), for the volcanic overlay, whose
+  // sites need more of the offset than one f32 holds.
   const landform = input.landform ?? null;
   if (landform) {
     const wind = landform.windRadians;
@@ -630,12 +646,12 @@ export function buildTerrainKernelPageUniform(
     floats[keptBase + 23] = acrossPhase - Math.floor(acrossPhase);
     const baseX = input.originX - landform.coreCenterX;
     const baseZ = input.originZ - landform.coreCenterZ;
-    const hiX = Math.fround(baseX);
-    const hiZ = Math.fround(baseZ);
-    floats[keptBase + 24] = hiX;
-    floats[keptBase + 25] = hiZ;
-    floats[keptBase + 26] = baseX - hiX;
-    floats[keptBase + 27] = baseZ - hiZ;
+    const cellX = terrainLandformCell(baseX);
+    const cellZ = terrainLandformCell(baseZ);
+    floats[keptBase + 24] = cellX;
+    floats[keptBase + 25] = cellZ;
+    floats[keptBase + 26] = baseX - cellX * TERRAIN_LANDFORM_CELL_METERS;
+    floats[keptBase + 27] = baseZ - cellZ * TERRAIN_LANDFORM_CELL_METERS;
   }
   return buffer;
 }
@@ -1268,7 +1284,8 @@ struct TerrainKernelPage {
   // Landforms: (page origin - core centre xz, gain, forced dunes),
   // (core inner radius, outer radius, dune profile band weight, 0),
   // (wind sin, wind cos, wind phase at the origin, across phase at the origin)
-  // and the core offset again, split in f64: (hi x, hi z, lo x, lo z).
+  // and the core offset again, split in f64 into whole cells and the
+  // remainder: (cell x, cell z, within x, within z).
   landform: vec4f,
   landformRadii: vec4f,
   landformWind: vec4f,
