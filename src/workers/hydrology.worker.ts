@@ -37,10 +37,10 @@ function post(event: HydrologyWorkerEvent, transfer: Transferable[] = []): void 
 workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerCommand>) => {
   const command = event.data;
   if (command.type === "initialize") {
-    world = createWorld(
-      command.worldSeed,
-      command.climateProvince ? { climateProvince: command.climateProvince } : {},
-    );
+    world = createWorld(command.worldSeed, {
+      ...(command.climateProvince ? { climateProvince: command.climateProvince } : {}),
+      ...(command.landforms ? { landforms: command.landforms } : {}),
+    });
     return;
   }
   const startedAt = performance.now();

@@ -268,6 +268,131 @@ describe("hydrology worker parity with the main-thread fallback", () => {
   }, 60_000);
 });
 
+/** A worker stand-in that records (cloned) commands and answers nothing. */
+function recordingWorker(commands: HydrologyWorkerCommand[]): Worker {
+  return {
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    postMessage: (command: HydrologyWorkerCommand) => {
+      commands.push(structuredClone(command));
+    },
+    terminate: () => undefined,
+  } as unknown as Worker;
+}
+
+describe("a forced world's landforms reach the hydrology worker", () => {
+  // Sand seas forced on the low ground (screenshots, a chosen start). The
+  // worker rebuilds the world from what `initialize` carries, so without the
+  // landforms it would trace water across ground the main thread has made
+  // into a sand sea.
+  const FORCED = createWorld("dune-lab", { landforms: { dunes: true }, climateProvince: "high-desert" });
+
+  it("posts the landforms with the seed and the province", () => {
+    const commands: HydrologyWorkerCommand[] = [];
+    const client = new HydrologyGenerationClient({
+      worldSeed: FORCED.seed,
+      workerWorldSeed: FORCED.seed,
+      workerClimateProvince: FORCED.climateProvince ?? null,
+      workerLandforms: FORCED.landforms ?? null,
+      terrainSample: (x, z) => sampleTerrain(FORCED, x, z),
+      workerFactory: () => recordingWorker(commands),
+    });
+    client.dispose();
+    expect(commands[0]).toEqual({
+      type: "initialize",
+      worldSeed: FORCED.seed,
+      climateProvince: { temperatureOffset: 0, dryness: 0.5 },
+      landforms: { dunes: true, volcanic: false },
+    });
+  });
+
+  it("is handed on by HydrologySystem, as FlightRenderer passes it", async () => {
+    const commands: HydrologyWorkerCommand[] = [];
+    vi.stubGlobal("Worker", class {
+      constructor() {
+        return recordingWorker(commands);
+      }
+    });
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("forced-hydrology-camera", new Vector3(0, 300, -400), scene);
+    const abort = new AbortController();
+    try {
+      const creating = HydrologySystem.create(scene, camera, {
+        atmosphere: ATMOSPHERE,
+        worldSeed: FORCED.seed,
+        terrainSample: (x, z) => sampleTerrain(FORCED, x, z),
+        workerWorldSeed: FORCED.seed,
+        workerClimateProvince: FORCED.climateProvince ?? null,
+        workerLandforms: FORCED.landforms ?? null,
+        seaLevel: FORCED.seaLevel,
+        centerX: FORCED.airport!.centerX,
+        centerZ: FORCED.airport!.centerZ,
+      }, abort.signal);
+      // The worker is started, and initialised, in the constructor.
+      expect(commands[0]).toMatchObject({
+        type: "initialize",
+        landforms: { dunes: true, volcanic: false },
+      });
+      // The option is plumbing, not generation data: it must not ride along.
+      expect(commands[1]).toMatchObject({ type: "generate" });
+      expect(JSON.stringify(commands[1])).not.toContain("workerLandforms");
+      abort.abort();
+      await expect(creating).rejects.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal("self", { addEventListener: () => undefined, postMessage: () => undefined });
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("generates the main thread's water on the forced world, sand seas included", () => {
+    const airport = FORCED.airport!;
+    // East of the runway, where the sand sea holds an interdune hollow and a
+    // spring that only the sand-sea gate removes; relaxed river thresholds so
+    // the tracer runs.
+    const options = {
+      ...hydrologyGenerationConfigData({
+        ...systemGenerationConfig(FORCED),
+        maximumRiverGrade: 0.5,
+        minimumSourceElevationAboveSeaMeters: 10,
+        minimumRiverPoints: 4,
+        minimumDownhillDropMeters: 0.01,
+      }),
+      centerX: airport.centerX + 14_400,
+      centerZ: airport.centerZ,
+    };
+    let main: HydrologyGenerationResult | null = null;
+    const fallback = new HydrologyGenerationClient({
+      worldSeed: FORCED.seed,
+      terrainSample: (x, z) => sampleTerrain(FORCED, x, z),
+      fallbackScheduler: (callback) => callback(),
+    });
+    fallback.request({ key: "1:0", generation: 1, options }, (result) => { main = result.hydrology; });
+    fallback.dispose();
+    expect(main).not.toBeNull();
+
+    const generate = (requestId: number): HydrologyGenerationResult => {
+      workerPosts.length = 0;
+      sendToWorker({ type: "generate", requestId, generation: 1, key: "1:0", options });
+      const event = workerPosts.at(-1);
+      expect(event?.type).toBe("region");
+      return (event as Extract<HydrologyWorkerEvent, { type: "region" }>).hydrology;
+    };
+    sendToWorker({
+      type: "initialize",
+      worldSeed: FORCED.seed,
+      climateProvince: FORCED.climateProvince!,
+      landforms: FORCED.landforms!,
+    });
+    expect(generate(400)).toEqual(main);
+    // Without the landforms the worker's world is another world.
+    sendToWorker({ type: "initialize", worldSeed: FORCED.seed, climateProvince: FORCED.climateProvince! });
+    expect(generate(401)).not.toEqual(main);
+  });
+});
+
 describe("eroded worlds keep their graph hydrology", () => {
   it("constructs no generation client or worker for an eroded world", async () => {
     const world = createWorld("hydrology-parity-eroded", { worldEvolution: "eroded" });

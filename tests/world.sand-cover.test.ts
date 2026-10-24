@@ -9,6 +9,9 @@ import {
 } from "../src/world/terrain";
 import { TerrainBiome, type TerrainSample, type WorldDefinition } from "../src/world/types";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
+import { airfieldStructureExclusions } from "../src/render/webgpu/airfield/StructureExclusion";
+import { DetailWorkerRuntime } from "../src/workers/detail.worker";
+import type { DetailWorkerCommand, DetailWorkerEvent } from "../src/workers/detailProtocol";
 import {
   HYDROLOGY_SAND_SEA_ERG_WEIGHT,
   generateHydrology,
@@ -140,27 +143,77 @@ describe("sand cover in the vegetation", () => {
     });
   }
 
-  it("plants no trees on dune sand, and fewer shrubs, where the climate grows forest", () => {
-    // An erg's thin edge: lone dunes on a floor that still grows forest.
+  /** Cells on an erg's thin edge, lone dunes on a forested floor, with their control. */
+  let forested: { probe: Probe; control: ReturnType<typeof cellAt> }[] | null = null;
+  function forestedDuneCells() {
+    if (forested) return forested;
+    forested = [];
     const edges = findProbes(WET_DUNES, 6, (x, z) => {
       const erg = sampleLandformCover(WET_DUNES, x, z, 0).ergWeight;
       return erg > 0.2 && erg < 0.7;
     });
-    let compared = 0;
-    for (const { x, z } of edges) {
+    for (const probe of edges) {
       // The control withholds the cover: what the scatter placed before.
-      const control = cellAt(x, z, (px, pz) => ({ ...sampleTerrain(WET_DUNES, px, pz), sandCover: 0 }));
-      const controlOnSand = control.trees.filter((tree) => coverAt(tree) > 0.2).length;
-      if (controlOnSand < 50) continue;
-      const cell = cellAt(x, z, live(WET_DUNES));
+      const control = cellAt(probe.x, probe.z, (x, z) => ({ ...sampleTerrain(WET_DUNES, x, z), sandCover: 0 }));
+      if (control.trees.filter((tree) => coverAt(tree) > 0.2).length >= 50) forested.push({ probe, control });
+    }
+    return forested;
+  }
+
+  it("plants no trees on dune sand, and fewer shrubs, where the climate grows forest", () => {
+    const cells = forestedDuneCells();
+    expect(cells.length).toBeGreaterThan(0);
+    for (const { probe, control } of cells) {
+      const cell = cellAt(probe.x, probe.z, live(WET_DUNES));
       // ~0.2: the gate reads the 16 m grid's corners, so a curved dune edge
       // can let a stem stand a little past the threshold (measured 0.25).
       for (const tree of cell.trees) expect(coverAt(tree)).toBeLessThan(0.3);
       expect(cell.trees.length).toBeLessThan(control.trees.length);
       expect(cell.shrubs.length).toBeLessThan(control.shrubs.length);
-      compared += 1;
     }
-    expect(compared).toBeGreaterThan(0);
+  });
+
+  it("reaches the detail worker on the world it is handed", () => {
+    // The live renderer hands the detail worker the whole world, which carries
+    // the forced landforms (and province) through the structured clone.
+    const { probe } = forestedDuneCells()[0]!;
+    const events: DetailWorkerEvent[] = [];
+    const runtime = new DetailWorkerRuntime((event) => events.push(event), (callback) => callback());
+    runtime.handleCommand(structuredClone({
+      type: "initialize",
+      worldSeed: WET_DUNES.seed,
+      world: WET_DUNES,
+      cellSizeMeters: CELL_METERS,
+      seaLevelMeters: WET_DUNES.seaLevel,
+    } satisfies DetailWorkerCommand));
+    const cellX = Math.floor(probe.x / CELL_METERS);
+    const cellZ = Math.floor(probe.z / CELL_METERS);
+    runtime.handleCommand({
+      type: "generate",
+      requestId: 1,
+      generation: 1,
+      key: `${cellX}:${cellZ}`,
+      cellX,
+      cellZ,
+      densityMultiplier: 1,
+      dayOfYear: 0,
+    });
+    const event = events.at(-1);
+    expect(event?.type).toBe("cell");
+    const cell = (event as Extract<DetailWorkerEvent, { type: "cell" }>).cell;
+    expect(cell).toEqual(generateDetailCell({
+      worldSeed: WET_DUNES.seed,
+      cellX,
+      cellZ,
+      cellSizeMeters: CELL_METERS,
+      terrainSample: live(WET_DUNES),
+      seaLevelMeters: WET_DUNES.seaLevel,
+      dayOfYear: 0,
+      latitudeDegrees: WET_DUNES.latitudeDegrees,
+      structureExclusions: airfieldStructureExclusions(WET_DUNES.airport!, WET_DUNES.seedHash),
+      exclusionAirport: WET_DUNES.airport!,
+    }));
+    for (const tree of cell.trees) expect(coverAt(tree)).toBeLessThan(0.3);
   });
 
   it("places identical detail with zero sand cover and with none", () => {

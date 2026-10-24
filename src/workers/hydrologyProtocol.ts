@@ -1,4 +1,5 @@
 import type { ClimateProvinceSample } from "@/src/world/climateProvince";
+import type { ForcedLandforms } from "@/src/world/landforms";
 import type {
   HydrologyGenerationConfig,
   HydrologyGenerationResult,
@@ -17,6 +18,8 @@ export type HydrologyWorkerCommand =
       readonly worldSeed: WorldSeed;
       /** The main thread's forced climate province, so both build one world. */
       readonly climateProvince?: Readonly<ClimateProvinceSample>;
+      /** The main thread's forced landforms: sand seas move ground, lakes and springs. */
+      readonly landforms?: ForcedLandforms;
     }
   | {
       readonly type: "generate";

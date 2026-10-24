@@ -1,4 +1,5 @@
 import type { ClimateProvinceSample } from "@/src/world/climateProvince";
+import type { ForcedLandforms } from "@/src/world/landforms";
 import type {
   HydrologyGenerationResult,
   HydrologyTerrainSampler,
@@ -56,6 +57,8 @@ export interface HydrologyGenerationClientOptions {
   readonly workerWorldSeed?: WorldSeed;
   /** The world's forced climate province, so the worker builds the same world. */
   readonly workerClimateProvince?: Readonly<ClimateProvinceSample> | null;
+  /** The world's forced landforms, so the worker's sand seas are the main thread's. */
+  readonly workerLandforms?: ForcedLandforms | null;
   readonly workerFactory?: WorkerFactory;
   readonly fallbackScheduler?: FallbackScheduler;
 }
@@ -110,6 +113,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
   private readonly terrainSample: HydrologyTerrainSampler;
   private readonly workerWorldSeed: WorldSeed | undefined;
   private readonly workerClimateProvince: Readonly<ClimateProvinceSample> | null;
+  private readonly workerLandforms: ForcedLandforms | null;
   private readonly workerFactory: WorkerFactory;
   private readonly fallbackScheduler: FallbackScheduler;
   private readonly pending = new Map<number, PendingRequest>();
@@ -127,6 +131,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
     this.terrainSample = options.terrainSample;
     this.workerWorldSeed = options.workerWorldSeed;
     this.workerClimateProvince = options.workerClimateProvince ?? null;
+    this.workerLandforms = options.workerLandforms ?? null;
     this.workerFactory = options.workerFactory ?? defaultWorkerFactory;
     this.fallbackScheduler = options.fallbackScheduler ?? defaultFallbackScheduler;
     if (this.workerWorldSeed === undefined) {
@@ -342,6 +347,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
         type: "initialize",
         worldSeed: this.workerWorldSeed,
         ...(this.workerClimateProvince ? { climateProvince: this.workerClimateProvince } : {}),
+        ...(this.workerLandforms ? { landforms: this.workerLandforms } : {}),
       });
     } catch {
       this.activateFallback();
