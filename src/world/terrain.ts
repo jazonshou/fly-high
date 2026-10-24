@@ -8,7 +8,12 @@ import {
   type CarvedChannelSet,
 } from "@/src/render/webgpu/terrain/RiverChannels";
 import { getAirportInfluence, isPointOnRunway, worldToRunway } from "./airport";
-import { applyTerrainLandforms } from "./landforms";
+import type { DuneSample } from "./dunes";
+import {
+  applyTerrainLandforms,
+  sampleLandformCover,
+  sampleLandformCoverFromNatural,
+} from "./landforms";
 import { sampleGeologicalRelief, sampleTerrainPlates } from "./geology";
 import {
   blendTowardExpectation,
@@ -1242,6 +1247,7 @@ function classifyBiome(
   airportInfluence: number,
   temperatureOffset: number,
   dryness: number,
+  sandCover: number,
 ): TerrainBiomeId {
   if (runway) return TerrainBiome.RUNWAY;
   if (height <= world.seaLevel) return TerrainBiome.WATER;
@@ -1265,6 +1271,7 @@ function classifyBiome(
     seasonalTemperatureShift: 0,
     temperatureOffset,
     dryness,
+    sandCover,
   });
   return BIOME_FOR_DOMINANT_MATERIAL[dominantLandCover(weights)] ?? TerrainBiome.GRASSLAND;
 }
@@ -1276,6 +1283,12 @@ function classifyBiome(
  * `SURFACE_MATERIALS_BY_BIOME` primary IS that material, so the round trip
  * `biome -> primary material -> biome` is the identity and the two tables
  * cannot drift.
+ *
+ * An inland sand sea reads as BEACH too. There is no desert biome, and BEACH
+ * is already what every consumer treats as bare sand: no ground cover, no
+ * wildlife, the sand palette. A new id would have to be taught to each of
+ * them (palettes, material sets, per-vertex biome arrays, wildlife), to say
+ * only what `sandCover` on the sample already says; the cost is the name.
  */
 const BIOME_FOR_DOMINANT_MATERIAL: Readonly<Record<number, TerrainBiomeId>> = Object.freeze({
   [SurfaceMaterial.Sand]: TerrainBiome.BEACH,
@@ -1404,6 +1417,8 @@ function createTerrainSampleTarget(): TerrainSample {
     temperature: 0,
     temperatureOffset: 0,
     dryness: 0,
+    sandCover: 0,
+    ergWeight: 0,
     biome: TerrainBiome.GRASSLAND,
     biomeName: "grassland",
     color: { r: 0, g: 0, b: 0 },
@@ -1423,6 +1438,10 @@ function createTerrainSampleTarget(): TerrainSample {
  * wavelength is 850 m, so the tile generator samples them on a coarse
  * subgrid and interpolates instead of paying nine noise evaluations per
  * 8 m vertex.
+ *
+ * `landformCover` may be supplied by a caller that read it off its own height
+ * sample (`sampleTerrain`). Otherwise it is sampled here: free inside the
+ * landform core, one natural-kernel evaluation outside it.
  */
 export function sampleTerrainSurface(
   world: WorldDefinition,
@@ -1434,12 +1453,16 @@ export function sampleTerrainSurface(
   dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
   moisture?: number,
   temperature?: number,
+  landformCover?: Readonly<DuneSample>,
 ): TerrainSample {
   // Climate provinces: sampled once, for the climate fields (when they were
   // not supplied) and for the thermal-height reads.
   const province = sampleClimateProvince(world, x, z, PROVINCE_SCRATCH);
   const temperatureOffset = province.temperatureOffset;
   const dryness = province.dryness;
+  // Sand seas: the cover overrides the classifier's climate. Exactly 0 inside
+  // the landform core, where the classification is the shipped one.
+  const cover = landformCover ?? sampleLandformCover(world, x, z, 0, LANDFORM_COVER_SCRATCH);
   const resolvedMoisture = moisture ?? sampleTerrainMoisture(world, x, z, 0, dryness);
   const resolvedTemperature = temperature ?? terrainTemperatureFromClimate(
     world, sampleTerrainClimate(world, x, z), height, temperatureOffset,
@@ -1448,7 +1471,7 @@ export function sampleTerrainSurface(
   const airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
   const biome = classifyBiome(
     world, height, slope, resolvedMoisture, resolvedTemperature, runway, airportInfluence,
-    temperatureOffset, dryness,
+    temperatureOffset, dryness, cover.sandCover,
   );
 
   target.height = height;
@@ -1457,6 +1480,8 @@ export function sampleTerrainSurface(
   target.temperature = resolvedTemperature;
   target.temperatureOffset = temperatureOffset;
   target.dryness = dryness;
+  target.sandCover = cover.sandCover;
+  target.ergWeight = cover.ergWeight;
   target.biome = biome;
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
   target.airportInfluence = airportInfluence;
@@ -1477,7 +1502,16 @@ export function sampleTerrain(
   dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
 ): TerrainSample {
   const height = sampleTerrainHeight(world, x, z);
+  // The height sample left the natural kernel's intermediates for this point
+  // behind; read the landform cover off them before the normal's four samples
+  // overwrite them, so the cover costs no kernel evaluation of its own.
+  const cover = sampleLandformCoverFromNatural(
+    world, x, z, 0, NATURAL_INTERMEDIATES, LANDFORM_COVER_SCRATCH);
   sampleTerrainNormal(world, x, z, target.normal);
   const slope = saturate(1 - target.normal.y);
-  return sampleTerrainSurface(world, x, z, height, slope, target, dayOfYear);
+  return sampleTerrainSurface(
+    world, x, z, height, slope, target, dayOfYear, undefined, undefined, cover);
 }
+
+/** The landform cover of the point being classified; module scratch, no allocation. */
+const LANDFORM_COVER_SCRATCH: DuneSample = { ergWeight: 0, duneHeight: 0, sandCover: 0 };

@@ -137,6 +137,14 @@ export interface TerrainSample {
    */
   temperatureOffset: number;
   dryness: number;
+  /**
+   * Sand seas (`sampleLandformCover`): how much of the ground is sand, and the
+   * erg weight. Both exactly 0 inside the landform core and off the sand seas.
+   * `biome` and `color` already include the cover; vegetation reads it, and
+   * hydrology reads the erg weight (no lakes or springs in a sand sea).
+   */
+  sandCover: number;
+  ergWeight: number;
   biome: TerrainBiomeId;
   biomeName: TerrainBiomeName;
   color: TerrainColor;

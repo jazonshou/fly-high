@@ -33,6 +33,8 @@ import {
   dryProvinceGroundCoverKeep,
   dryProvinceShares,
   riparianVegetationFactors,
+  sandCoverGroundFactor,
+  sandCoverTreeFactor,
   soilLitterFactor,
   type DryProvinceShares,
   type VegetationDensitySample,
@@ -758,6 +760,27 @@ function gridHeight(grid: ScatterTerrainGrid, x: number, z: number): number {
   return top * (1 - fz) + bottom * fz;
 }
 
+/**
+ * Sand seas: the most sand cover at the four grid nodes round a point. The
+ * MOST, not an interpolation: a dune's edge is near straight over 16 m, and a
+ * straight edge that puts the point on the sand side puts a corner there too,
+ * so a stem on a dune sees its sand. A slipface toe goes from bare to full
+ * cover in about four metres, which interpolation would blur away.
+ */
+function gridSandCover(grid: ScatterTerrainGrid, x: number, z: number): number {
+  const pitch = SCATTER_TERRAIN_GRID_METERS;
+  const x0 = clamp(Math.floor(x / pitch) - grid.minNodeX, 0, grid.nodesX - 2);
+  const z0 = clamp(Math.floor(z / pitch) - grid.minNodeZ, 0, grid.nodesZ - 2);
+  const row0 = z0 * grid.nodesX + x0;
+  const row1 = row0 + grid.nodesX;
+  return Math.max(
+    grid.samples[row0]!.sandCover ?? 0,
+    grid.samples[row0 + 1]!.sandCover ?? 0,
+    grid.samples[row1]!.sandCover ?? 0,
+    grid.samples[row1 + 1]!.sandCover ?? 0,
+  );
+}
+
 interface ScatterContext {
   readonly seed: string;
   readonly seedHash: number;
@@ -991,8 +1014,16 @@ function scatterLayer(
           // a building with a tree in it.
           const structure = structureFactorAt(context, x, z);
           if (structure <= 0) continue;
+          // Sand seas, gated at the stem for the structure gate's reason: the
+          // 32 m block lattice would carry a grassy neighbour's stems onto the
+          // dune. Off the sand seas the factor is exactly 1.
+          const sandCover = gridSandCover(context.grid, x, z);
+          const sand = layer === "canopy"
+            ? sandCoverTreeFactor(sandCover)
+            : sandCoverGroundFactor(sandCover);
+          if (sand <= 0) continue;
           const acceptance = kernelClamp(
-            stemsInterpolated(x, z) * subSize * subSize * structure,
+            stemsInterpolated(x, z) * subSize * subSize * structure * sand,
             0,
             1,
           );
@@ -1524,7 +1555,9 @@ function buildGroundCoverGrid(
           * (1 - 0.6 * clamp(sample.airportInfluence ?? 0, 0, 1))
           * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
           // Bunchgrass and bare soil, not a sward: exactly 1 outside a desert.
-          * dryProvinceGroundCoverKeep(sample.dryness ?? 0);
+          * dryProvinceGroundCoverKeep(sample.dryness ?? 0)
+          // Sand seas thin it; where Sand wins outright the BEACH gate empties it.
+          * sandCoverGroundFactor(sample.sandCover ?? 0);
       // Exposure reads THERMAL height: a cold province's lowland is as exposed
       // as the temperate world's uplands, which is where heath takes over from
       // grass. `- 0` in the temperate core.
@@ -1673,10 +1706,12 @@ function scatterClutter(
     // was the whole defect.
     const structure = structureFactorAt(context, x, z);
     if (structure <= 0) continue;
+    // Sand seas bury the litter with the plants that drop it.
     const probability = airportClearance(sample)
       * riparianVegetationFactors(sample.shoreDistanceMeters).clearance
       * (0.06 + closure * 0.5 + litter * 0.12)
-      * structure;
+      * structure
+      * sandCoverGroundFactor(sample.sandCover ?? 0);
     if (acceptance >= probability) continue;
     // Moss cushions need a substrate to sit on, not just humid air: real soil
     // depth replaces the moisture gate wherever the channel supplies it.

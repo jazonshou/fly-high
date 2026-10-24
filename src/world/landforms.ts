@@ -161,7 +161,7 @@ export function applyTerrainLandforms(
  * The ground cover the landforms leave at a point, for readers that classify
  * or plant the ground rather than draw it: sand cover and the erg weight. All
  * zero inside the landform core (and in eroded worlds). Evaluates the natural
- * kernel once.
+ * kernel once, outside the core only.
  */
 export function sampleLandformCover(
   world: WorldDefinition,
@@ -170,16 +170,44 @@ export function sampleLandformCover(
   filterWidthMeters: number,
   target: DuneSample = { ergWeight: 0, duneHeight: 0, sandCover: 0 },
 ): DuneSample {
+  return landformCover(world, x, z, filterWidthMeters, null, target);
+}
+
+/**
+ * The same cover for a caller that has just sampled the world height at THIS
+ * point with this filter width, and so holds the natural kernel's
+ * intermediates for it (`sampleTerrain` does): the same answer, without
+ * evaluating the kernel a second time.
+ */
+export function sampleLandformCoverFromNatural(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+  natural: Readonly<NaturalTerrainIntermediates>,
+  target: DuneSample,
+): DuneSample {
+  return landformCover(world, x, z, filterWidthMeters, natural, target);
+}
+
+function landformCover(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+  natural: Readonly<NaturalTerrainIntermediates> | null,
+  target: DuneSample,
+): DuneSample {
   target.ergWeight = 0;
   target.duneHeight = 0;
   target.sandCover = 0;
   if (world.worldEvolution === "eroded") return target;
   const coreMask = landformCoreMask(world, x, z);
   if (coreMask <= 0) return target;
-  const natural = sampleNaturalTerrainIntermediates(world.seedHash, x, z, filterWidthMeters);
-  const erg = duneErgWeight(world, x, z, coreMask, natural, duneRelief(natural), volcanicActivity);
+  const at = natural ?? sampleNaturalTerrainIntermediates(world.seedHash, x, z, filterWidthMeters);
+  const erg = duneErgWeight(world, x, z, coreMask, at, duneRelief(at), volcanicActivity);
   if (erg <= 0) return target;
-  return sampleDuneField(world, x, z, erg, filterWidthMeters, natural, target);
+  return sampleDuneField(world, x, z, erg, filterWidthMeters, at, target);
 }
 
 /** The far field's texel: its erg weight is band-limited at this half-width. */

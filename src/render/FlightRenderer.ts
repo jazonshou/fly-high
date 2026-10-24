@@ -1095,6 +1095,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainSample: options.terrainSample,
           workerWorldSeed: options.world.seed,
           workerClimateProvince: options.world.climateProvince ?? null,
+          workerLandforms: options.world.landforms ?? null,
           seaLevel: options.world.seaLevel,
           centerX: airportDefinition?.centerX ?? 0,
           centerZ: airportDefinition?.centerZ ?? 0,

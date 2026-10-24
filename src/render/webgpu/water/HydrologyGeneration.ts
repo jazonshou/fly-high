@@ -20,7 +20,22 @@ export interface HydrologyTerrainSample {
   readonly height: number;
   /** Optional normalized moisture. Missing values use a neutral 0.5. */
   readonly moisture?: number;
+  /**
+   * Optional sand-sea erg weight (`TerrainSample.ergWeight`). Missing values
+   * read 0, which leaves every source, trace and lake exactly as before.
+   */
+  readonly ergWeight?: number;
 }
+
+/**
+ * Sand seas hold no surface water: an interdune hollow is a closed low in the
+ * height field, but the sand drains it, so it is no lake; a sand sea has no
+ * springs to start a river; and a river that reaches one sinks into it. Above
+ * this erg weight a point is sand sea for all three. (0.3 sits below the
+ * 0.55 where the interdune floor itself turns to sand sheet, so the hollows
+ * between an erg's first dunes are already dry.)
+ */
+export const HYDROLOGY_SAND_SEA_ERG_WEIGHT = 0.3;
 
 export type HydrologyTerrainSampler = (
   worldX: number,
@@ -34,13 +49,15 @@ export interface HydrologyBounds {
   readonly maxZ: number;
 }
 
-export type DownhillTermination = "sea" | "basin" | "boundary" | "limit" | "loop";
+/** "sand": the trace reached a sand sea and sinks into it. */
+export type DownhillTermination = "sea" | "basin" | "boundary" | "limit" | "loop" | "sand";
 
 export interface DownhillTracePoint {
   readonly x: number;
   readonly z: number;
   readonly terrainHeight: number;
   readonly moisture: number;
+  readonly ergWeight: number;
 }
 
 export interface DownhillTraceOptions {
@@ -358,7 +375,11 @@ function readTerrainSample(
   if (!Number.isFinite(moisture)) {
     throw new RangeError(`terrainSample returned invalid moisture at (${x}, ${z})`);
   }
-  return { x, z, terrainHeight: sample.height, moisture: clamp(moisture, 0, 1) };
+  const ergWeight = sample.ergWeight ?? 0;
+  if (!Number.isFinite(ergWeight)) {
+    throw new RangeError(`terrainSample returned an invalid erg weight at (${x}, ${z})`);
+  }
+  return { x, z, terrainHeight: sample.height, moisture: clamp(moisture, 0, 1), ergWeight };
 }
 
 export function resolveHydrologyConfig(
@@ -504,6 +525,13 @@ export function traceDownhillPath(options: DownhillTraceOptions): DownhillTrace 
       termination = "sea";
       break;
     }
+    // A river that reaches a sand sea sinks into it. The trace stops on its
+    // first sand point, before looking for lower ground, so a trace ends in a
+    // "basin" (the only end that becomes a lake) only outside a sand sea.
+    if (current.ergWeight > HYDROLOGY_SAND_SEA_ERG_WEIGHT) {
+      termination = "sand";
+      break;
+    }
 
     let best: DownhillTracePoint | null = null;
     let bestDirection: readonly [number, number] | null = null;
@@ -640,6 +668,8 @@ function buildSourceCandidates(
       const z = (cellZ + 0.18 + unitHash(cellHash, 2) * 0.64) * cellWidth;
       if (!inBounds(bounds, x, z)) continue;
       const center = readTerrainSample(terrainSample, x, z);
+      // No springs in a sand sea; skipped before the neighbours are sampled.
+      if (center.ergWeight > HYDROLOGY_SAND_SEA_ERG_WEIGHT) continue;
       const minimumNeighbor = Math.min(
         readTerrainSample(terrainSample, x - gradientRadius, z).terrainHeight,
         readTerrainSample(terrainSample, x + gradientRadius, z).terrainHeight,
@@ -1028,7 +1058,7 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
   const terrainSample: HydrologyTerrainSampler = (x, z) => {
     terrainSampleCount += 1;
     const point = readTerrainSample(sourceTerrainSample, x, z);
-    return { height: point.terrainHeight, moisture: point.moisture };
+    return { height: point.terrainHeight, moisture: point.moisture, ergWeight: point.ergWeight };
   };
   const sourceBuild = buildSourceCandidates(config, sourceBounds, terrainSample, hash);
   const candidates = sourceBuild.candidates;

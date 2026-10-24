@@ -120,6 +120,15 @@ export interface LandCoverInput {
    * Exactly 0 in the temperate core; omission reads 0.
    */
   readonly dryness?: number;
+  /**
+   * Sand seas: how much of the ground the dunes leave as sand
+   * (`sampleLandformCover`), 1 on dune bodies and on a full erg's floor.
+   * Exactly 0 inside the landform core and outside sand seas; omission reads
+   * 0 and leaves every suitability bit-identical (see
+   * `landCoverSandCoverTerms`). The splat bake does not supply it yet: its
+   * zero-initialised input reads 0 until the bake samples the landform cover.
+   */
+  readonly sandCover?: number;
 }
 
 export interface LandCoverWeights {
@@ -229,6 +238,59 @@ export function landCoverWetness(input: LandCoverInput): number {
     )),
     input.dryness ?? 0,
   );
+}
+
+/** Sand seas: what full sand cover adds to Sand (see `landCoverSandCoverTerms`). */
+export const LAND_COVER_SAND_COVER_GAIN = 1.5;
+/** Normalised steepness of 35 and 42 degrees: dune slipfaces sit below the band. */
+export const LAND_COVER_SAND_SLOPE_LOW = 0.18;
+export const LAND_COVER_SAND_SLOPE_HIGH = 0.26;
+
+export interface LandCoverSandCoverTerms {
+  /** Added to Sand. */
+  sand: number;
+  /** Multiplies every vegetated material. */
+  vegetation: number;
+  /** Multiplies the stony materials, Rock and Gravel. */
+  stone: number;
+}
+
+const SAND_COVER_TERMS: LandCoverSandCoverTerms = { sand: 0, vegetation: 1, stone: 1 };
+
+/**
+ * Sand seas. A dune is sand whatever the climate says, so sand cover is not
+ * one more climatic factor but an override of three claims:
+ *
+ * - Sand gains `LAND_COVER_SAND_COVER_GAIN` times the cover, so a dune field
+ *   reads as sand whatever the province would grow there;
+ * - every vegetated material (Grass, DryGrass, Shrub, ForestFloor) is
+ *   multiplied by `1 - cover`: nothing roots in moving sand;
+ * - Rock and Gravel are multiplied by `1 - cover` on dune-angle ground: the
+ *   sand buries the pavement. Slipfaces stand at 29-34 degrees, sand's angle
+ *   of repose, inside the bands where Rock's altitude share reads slope as
+ *   rock face (a cold desert's thermal height is alpine), the alpine scree
+ *   band claims Gravel, and the high desert's fan band claims it again. The
+ *   burial fades out over 35-42 degrees (`LAND_COVER_SAND_SLOPE_*`), where
+ *   `steep` begins, so a genuine outcrop in an erg keeps its Rock and scree,
+ *   and the Sand gain fades with it.
+ *
+ * Applied after every climate term, the dry and cold provinces' claims
+ * included, which is what lets the cover override them. The suitabilities
+ * apply these only where the cover is positive (a branch, the M-1 pattern),
+ * so ground off the sand seas is the shipped law by construction. Returns
+ * module scratch; read it before the next call.
+ */
+export function landCoverSandCoverTerms(
+  sandCover: number,
+  slope: number,
+  target: LandCoverSandCoverTerms = SAND_COVER_TERMS,
+): LandCoverSandCoverTerms {
+  const cover = saturate(sandCover);
+  const dune = cover * (1 - smoothstep(LAND_COVER_SAND_SLOPE_LOW, LAND_COVER_SAND_SLOPE_HIGH, slope));
+  target.sand = dune * LAND_COVER_SAND_COVER_GAIN;
+  target.vegetation = 1 - cover;
+  target.stone = 1 - dune;
+  return target;
 }
 
 /**
@@ -689,6 +751,20 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // The paved materials are never climatic: `3-9`'s airport SDF paints them.
   suitability[SurfaceMaterial.Asphalt] = 0;
   suitability[SurfaceMaterial.Concrete] = 0;
+  // Sand seas override the climate: see `landCoverSandCoverTerms`.
+  const sandCover = input.sandCover ?? 0;
+  if (sandCover > 0) {
+    const sand = landCoverSandCoverTerms(sandCover, slope);
+    suitability[SurfaceMaterial.Sand] = suitability[SurfaceMaterial.Sand]! + sand.sand;
+    suitability[SurfaceMaterial.Grass] = suitability[SurfaceMaterial.Grass]! * sand.vegetation;
+    suitability[SurfaceMaterial.ForestFloor] =
+      suitability[SurfaceMaterial.ForestFloor]! * sand.vegetation;
+    suitability[SurfaceMaterial.Shrub] = suitability[SurfaceMaterial.Shrub]! * sand.vegetation;
+    suitability[SurfaceMaterial.DryGrass] =
+      suitability[SurfaceMaterial.DryGrass]! * sand.vegetation;
+    suitability[SurfaceMaterial.Rock] = suitability[SurfaceMaterial.Rock]! * sand.stone;
+    suitability[SurfaceMaterial.Gravel] = suitability[SurfaceMaterial.Gravel]! * sand.stone;
+  }
   return suitability;
 }
 
@@ -893,6 +969,8 @@ struct LandCoverInput {
   // height and the real-drainage wetness. See the TS twin.
   temperatureOffset: f32,
   dryness: f32,
+  // Sand seas: the landform sand cover, 0 off the sand seas. See the TS twin.
+  sandCover: f32,
 };
 ${COLD_BIOME_WGSL}
 const LAND_COVER_COUNT: u32 = ${SURFACE_MATERIAL_COUNT}u;
@@ -917,6 +995,9 @@ const LAND_COVER_SNOWLINE_THERMAL_METERS: f32 = ${
 };
 const LAND_COVER_TUNDRA_FLAT_ROCK_LOSS: f32 = ${wgslConstant(TUNDRA_FLAT_ROCK_LOSS)};
 const LAND_COVER_TUNDRA_HEATH_CUT_FLOOR: f32 = ${wgslConstant(TUNDRA_HEATH_CUT_FLOOR)};
+const LAND_COVER_SAND_COVER_GAIN: f32 = ${wgslConstant(LAND_COVER_SAND_COVER_GAIN)};
+const LAND_COVER_SAND_SLOPE_LOW: f32 = ${wgslConstant(LAND_COVER_SAND_SLOPE_LOW)};
+const LAND_COVER_SAND_SLOPE_HIGH: f32 = ${wgslConstant(LAND_COVER_SAND_SLOPE_HIGH)};
 
 /** Transliteration of densityField.ts's soilLitterFactor, injected constants. */
 fn landCoverLitter(input: LandCoverInput) -> f32 {
@@ -940,6 +1021,14 @@ fn landCoverWetness(input: LandCoverInput) -> f32 {
   // Climate provinces: real drainage ignores climatic moisture, so the
   // province's dryness is applied here. A zero dryness is m - 0 * k == m.
   return kProvinceDryness(mapped * mapped * (3.0 - 2.0 * mapped), input.dryness);
+}
+
+/** Sand seas: (added to Sand, vegetation factor, Rock and Gravel factor). See the TS twin. */
+fn landCoverSandCoverTerms(sandCover: f32, slope: f32) -> vec3f {
+  let cover = kSaturate(sandCover);
+  let dune = cover
+    * (1.0 - kSmoothstep(LAND_COVER_SAND_SLOPE_LOW, LAND_COVER_SAND_SLOPE_HIGH, slope));
+  return vec3f(dune * LAND_COVER_SAND_COVER_GAIN, 1.0 - cover, 1.0 - dune);
 }
 
 struct LandCoverDryProvinceTerms {
@@ -1073,6 +1162,17 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
     + shore * desert.gravel;
   suitability[${SurfaceMaterial.Asphalt}] = 0.0;
   suitability[${SurfaceMaterial.Concrete}] = 0.0;
+  // Sand seas: a branch, so every texel off them is the shipped law.
+  if (input.sandCover > 0.0) {
+    let sand = landCoverSandCoverTerms(input.sandCover, slope);
+    suitability[${SurfaceMaterial.Sand}] = suitability[${SurfaceMaterial.Sand}] + sand.x;
+    suitability[${SurfaceMaterial.Grass}] = suitability[${SurfaceMaterial.Grass}] * sand.y;
+    suitability[${SurfaceMaterial.ForestFloor}] = suitability[${SurfaceMaterial.ForestFloor}] * sand.y;
+    suitability[${SurfaceMaterial.Shrub}] = suitability[${SurfaceMaterial.Shrub}] * sand.y;
+    suitability[${SurfaceMaterial.DryGrass}] = suitability[${SurfaceMaterial.DryGrass}] * sand.y;
+    suitability[${SurfaceMaterial.Rock}] = suitability[${SurfaceMaterial.Rock}] * sand.z;
+    suitability[${SurfaceMaterial.Gravel}] = suitability[${SurfaceMaterial.Gravel}] * sand.z;
+  }
   return suitability;
 }
 

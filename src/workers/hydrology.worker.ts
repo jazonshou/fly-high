@@ -21,6 +21,8 @@ const sampleTarget: TerrainSample = {
   temperature: 0,
   temperatureOffset: 0,
   dryness: 0,
+  sandCover: 0,
+  ergWeight: 0,
   biome: 0,
   biomeName: "water",
   color: { r: 0, g: 0, b: 0 },
@@ -35,10 +37,10 @@ function post(event: HydrologyWorkerEvent, transfer: Transferable[] = []): void 
 workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerCommand>) => {
   const command = event.data;
   if (command.type === "initialize") {
-    world = createWorld(
-      command.worldSeed,
-      command.climateProvince ? { climateProvince: command.climateProvince } : {},
-    );
+    world = createWorld(command.worldSeed, {
+      ...(command.climateProvince ? { climateProvince: command.climateProvince } : {}),
+      ...(command.landforms ? { landforms: command.landforms } : {}),
+    });
     return;
   }
   const startedAt = performance.now();
@@ -49,7 +51,7 @@ workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerComm
       worldSeed: world.seed,
       terrainSample: (x, z) => {
         const sample = sampleTerrain(world as WorldDefinition, x, z, sampleTarget);
-        return { height: sample.height, moisture: sample.moisture };
+        return { height: sample.height, moisture: sample.moisture, ergWeight: sample.ergWeight };
       },
     });
     // P2b: the region's vertex arrays, built here and transferred, so the

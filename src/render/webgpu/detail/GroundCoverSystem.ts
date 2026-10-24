@@ -28,7 +28,7 @@ import { consumeGpuDispatchCostMs } from "@/src/render/webgpu/terrain/TerrainPag
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import type { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
 import { GroundCoverMaterialPlugin } from "./GroundCoverMaterialPlugin";
-import { densityField, dryProvinceGroundCoverKeep } from "./densityField";
+import { densityField, dryProvinceGroundCoverKeep, sandCoverGroundFactor } from "./densityField";
 import {
   GROUND_COVER_ATTRIBUTE_TILE_EDGE,
   GROUND_COVER_BLADE_STRIDE_BYTES,
@@ -669,6 +669,9 @@ export class GroundCoverSystem {
         seasonalTemperatureShift: 0,
         temperatureOffset: sample.temperatureOffset,
         dryness: sample.dryness,
+        // Sand seas: the same cover the world biome read, so the grass lane
+        // falls with it and the tile wears the sand the terrain shows.
+        sandCover: sample.sandCover,
       });
       let albedoR = 0;
       let albedoG = 0;
@@ -759,7 +762,8 @@ export class GroundCoverSystem {
       ? 0
       : Math.min(1, Math.max(0, 0.35 + sample.moisture * 0.5 + closure * 0.15))
         * (1 - 0.6 * Math.min(1, Math.max(0, sample.airportInfluence)))
-        * dryProvinceGroundCoverKeep(sample.dryness);
+        * dryProvinceGroundCoverKeep(sample.dryness)
+        * sandCoverGroundFactor(sample.sandCover);
     this.backDrivers[at] = Math.round(Math.min(1, Math.max(0, sample.moisture)) * 255);
     this.backDrivers[at + 1] = Math.round(shade * 255);
     this.backDrivers[at + 2] = Math.round(Math.min(1, Math.max(0, field.riparianBand)) * 255);
