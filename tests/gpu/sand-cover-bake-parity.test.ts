@@ -201,7 +201,7 @@ async function bakeSandSea(addresses: readonly WorldPageAddress[]): Promise<Page
               dayOfYear: DAY,
               seasonalTemperatureShift: 0,
               canopyClosure: tapField.canopyClosure * trees,
-              grassCover: grassCover === undefined ? undefined : grassCover * grass,
+              ...(grassCover !== undefined ? { grassCover: grassCover * grass } : {}),
               temperatureOffset: sample.temperatureOffset,
               dryness: sample.dryness,
               sandCover,
