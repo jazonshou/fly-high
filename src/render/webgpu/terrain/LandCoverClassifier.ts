@@ -12,7 +12,8 @@ import {
   DRY_PROVINCE_DESERT_ONSET,
   DRY_PROVINCE_PARKLAND_FULL,
   DRY_PROVINCE_PARKLAND_ONSET,
-  dryProvinceShares,
+  dryProvinceAridShare,
+  dryProvinceParklandShare,
   SOIL_LITTER_DEEP_METERS,
   SOIL_LITTER_THIN_METERS,
   soilLitterFactor,
@@ -259,28 +260,43 @@ export interface LandCoverDryProvinceTerms {
   readonly dryGrassKeep: number;
 }
 
+type MutableDryProvinceTerms = { -readonly [K in keyof LandCoverDryProvinceTerms]: number };
+
+/**
+ * `target` lets the per-sample classifier reuse one record: the blade-driver
+ * bake classifies on the main thread, where nothing may allocate per sample.
+ * Callers that keep the result omit it and get their own.
+ */
 export function landCoverDryProvinceTerms(
   dryness: number,
   slope: number,
   wetness: number,
+  target: MutableDryProvinceTerms = {
+    sand: 0, shrub: 0, gravel: 0, rock: 0, grassKeep: 1, dryGrassKeep: 1,
+  },
 ): LandCoverDryProvinceTerms {
   const k = LAND_COVER_DRY_PROVINCE;
-  const { arid, parkland } = dryProvinceShares(dryness);
+  const arid = dryProvinceAridShare(dryness);
+  const parkland = dryProvinceParklandShare(dryness, arid);
   const flat = 1 - smoothstep(k.flatLow, k.flatHigh, slope);
   const bare = 1 - smoothstep(k.bareLow, k.bareHigh, wetness);
   const sageWet = smoothstep(k.sageLow, k.sageHigh, wetness);
   const holdsShrub = 1 - smoothstep(k.shrubSlopeLow, k.shrubSlopeHigh, slope);
   const fan = smoothstep(k.fanLow, k.fanHigh, slope)
     * (1 - smoothstep(k.fanFadeLow, k.fanFadeHigh, slope));
-  return {
-    sand: arid * flat * bare * k.sandGain,
-    shrub: arid * holdsShrub * (k.shrubBase + sageWet * k.shrubWetGain),
-    gravel: arid * fan * k.gravelGain,
-    rock: arid * smoothstep(k.rockLow, k.rockHigh, slope) * k.rockGain,
-    grassKeep: 1 - arid * k.desertGrassCut - parkland * k.parklandGrassCut,
-    dryGrassKeep: 1 - arid * k.desertDryGrassCut,
-  };
+  target.sand = arid * flat * bare * k.sandGain;
+  target.shrub = arid * holdsShrub * (k.shrubBase + sageWet * k.shrubWetGain);
+  target.gravel = arid * fan * k.gravelGain;
+  target.rock = arid * smoothstep(k.rockLow, k.rockHigh, slope) * k.rockGain;
+  target.grassKeep = 1 - arid * k.desertGrassCut - parkland * k.parklandGrassCut;
+  target.dryGrassKeep = 1 - arid * k.desertDryGrassCut;
+  return target;
 }
+
+/** The classifier's own record (see `landCoverDryProvinceTerms`); read at once, never kept. */
+const DRY_TERMS_SCRATCH: MutableDryProvinceTerms = {
+  sand: 0, shrub: 0, gravel: 0, rock: 0, grassKeep: 1, dryGrassKeep: 1,
+};
 
 /**
  * The ten suitabilities, in `SurfaceMaterial` order.
@@ -418,7 +434,7 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // `arid`, which is exactly 0 outside a dry province, so the temperate law is
   // bit-identical there: additive claims are `x + 0` and the two damping
   // factors are `x * 1`. See `landCoverDryProvinceTerms` for the shapes.
-  const desert = landCoverDryProvinceTerms(input.dryness ?? 0, slope, wetness);
+  const desert = landCoverDryProvinceTerms(input.dryness ?? 0, slope, wetness, DRY_TERMS_SCRATCH);
 
   const closure = saturate(input.canopyClosure ?? 0);
   /**
@@ -1088,14 +1104,32 @@ export const LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS = CANOPY_CLOSURE_FILTER_WIDT
  * and bare hills are most of the ground, and every one of them is refused, so
  * from a few kilometres out the desert would turn green.
  *
- * So the bake, at zero-trust texels only, hands a dry province's sand, gravel
- * and rock weight to DryGrass, the nearest sward in colour (tan). The pair the
- * fragment then sees is sage and straw, which passes the gate, and the
- * fragment's own slope rock still greys the real faces. Fine pages, which are
- * trusted, keep the desert's real materials. At zero dryness the share is 0
- * and the bake does not enter the branch, so the temperate bake is untouched.
+ * So the bake hands a dry province's sand, gravel and rock weight to DryGrass,
+ * the nearest sward in colour (tan). The pair the fragment then sees at zero
+ * trust is sage and straw, which passes the gate, and the fragment's own slope
+ * rock still greys the real faces.
+ *
+ * **It RAMPS with texel size, linear in level, from none at 16 m texels (L2)
+ * to all of it at 128 m (L5).** A switch at L5 alone drew a ring: the
+ * partly-trusted levels fade a non-sward pair toward its primary, so a
+ * Sand-primary texel stayed pure sand (about 1.8x straw's albedo) through L4
+ * and turned straw at L5, a bright edge that followed the aircraft wherever
+ * sand was primary. Ramped, each texel's primary flips at its own level (L3
+ * moves a third of the weight, L4 two thirds), and the edge breaks into the
+ * patches every other level border is. L0-L2, the near pages, keep the
+ * desert's real materials. At zero dryness the share is 0 and the bake does
+ * not enter the branch, so the temperate bake is untouched.
  */
-export const LAND_COVER_FAR_DESERT_MIN_TEXEL_METERS = 96;
+export const LAND_COVER_FAR_DESERT_START_TEXEL_METERS = 16;
+export const LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS = 128;
+
+/** The ramp: 0 at and below 16 m texels, 1 at and above 128 m, linear in level. */
+export function landCoverFarDesertRamp(channelTexelMeters: number): number {
+  return saturate(
+    Math.log2(channelTexelMeters / LAND_COVER_FAR_DESERT_START_TEXEL_METERS)
+      / Math.log2(LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS / LAND_COVER_FAR_DESERT_START_TEXEL_METERS),
+  );
+}
 
 export function landCoverFarDesertWeights(
   weightsByMaterial: readonly number[],
@@ -1103,8 +1137,8 @@ export function landCoverFarDesertWeights(
   channelTexelMeters: number,
 ): number[] {
   const out = [...weightsByMaterial];
-  if (channelTexelMeters < LAND_COVER_FAR_DESERT_MIN_TEXEL_METERS) return out;
-  const arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, dryness);
+  const arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, dryness)
+    * landCoverFarDesertRamp(channelTexelMeters);
   if (!(arid > 0)) return out;
   const moved = (out[SurfaceMaterial.Sand]! + out[SurfaceMaterial.Gravel]!
     + out[SurfaceMaterial.Rock]!) * arid;
@@ -1434,8 +1468,10 @@ fn splatSupersample(
   }
   // The far desert: see landCoverFarDesertWeights (the TS twin). Bake-time
   // only, and only where a dry province makes the share non-zero.
-  if (job.shape.x >= ${LAND_COVER_FAR_DESERT_MIN_TEXEL_METERS.toFixed(1)}) {
-    let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y);
+  if (job.shape.x > ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)}) {
+    let farRamp = kSaturate(log2(job.shape.x / ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)})
+      / ${Math.log2(LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS / LAND_COVER_FAR_DESERT_START_TEXEL_METERS).toFixed(1)});
+    let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;
     if (farArid > 0.0) {
       let moved = (accumulated[${SurfaceMaterial.Sand}] + accumulated[${SurfaceMaterial.Gravel}]
         + accumulated[${SurfaceMaterial.Rock}]) * farArid;
