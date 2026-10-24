@@ -185,9 +185,11 @@ export interface WebGpuQualityProfile {
    * with the distance it is seen from.
    *
    * Its cost is a 128x128 RGBA32F texture (256 KiB), one bilinear read of it per
-   * terrain VERTEX, one more vec4 varying, and a few multiply-adds per terrain
-   * fragment; the CPU bakes at most 512 province samples a frame (~0.8 ms) and
-   * only when the window moves, about one 128-sample row per 1.25 km of flight.
+   * terrain VERTEX, two more interpolated floats (an existing vec2 varying
+   * widened to vec4: the beauty pipeline has no fragment input to spare), and
+   * a few multiply-adds per terrain fragment; the CPU bakes at most 512
+   * province samples a frame (~0.8 ms) and only when the window moves, about
+   * one 128-sample row per 1.25 km of flight.
    * Off compiles all of it out (`TERRAIN_PROVINCE_FIELD`, a define set with the
    * tier's others, so it never compiles mid-flight) and allocates no texture:
    * Low has no memory headroom, and its far ground keeps the temperate
