@@ -7,6 +7,7 @@ import {
   type HydrologyLake,
   type HydrologyTerrainSampler,
 } from "../src/render/webgpu/water/HydrologyGeneration";
+import { HydrologyGenerationClient } from "../src/render/webgpu/water/HydrologyGenerationClient";
 import {
   resolveHydrologyPagingConfig,
   selectHydrologyRegion,
@@ -405,6 +406,34 @@ describe("the hydrology worker", () => {
     expect(lake.surfaceHeight)
       .toBe(site.lakeLevelMeters + fromWorker.config.riverSurfaceOffsetMeters);
     expect(bits(fromWorker)).toBe(bits(region(world, site.x, site.z)));
+  });
+
+  it("is matched by the main-thread fallback, given the same world inputs", () => {
+    const world = createWorld("kilo77");
+    const site = siteById(world, 34_365_504_705);
+    // No worker seed: the client generates on the main thread, at once.
+    const client = new HydrologyGenerationClient({
+      worldSeed: world.seed,
+      terrainSample: workerSampler(world),
+      worldInputs: (config) => volcanicHydrologyInputs(world, config),
+      fallbackScheduler: (callback) => callback(),
+    });
+    let fallback: HydrologyGenerationResult | null = null;
+    client.request(
+      {
+        key: "maar",
+        generation: 1,
+        options: { centerX: site.x, centerZ: site.z, seaLevel: world.seaLevel },
+      },
+      (result) => {
+        expect(result.workerGenerated).toBe(false);
+        fallback = result.hydrology;
+      },
+    );
+    client.dispose();
+    expect(fallback).not.toBeNull();
+    expect(craterLake(fallback!, site)).toBeDefined();
+    expect(bits(fallback)).toBe(bits(workerRegion("kilo77", site.x, site.z, world.seaLevel)));
   });
 
   it("generates the start airport's region exactly as before", () => {

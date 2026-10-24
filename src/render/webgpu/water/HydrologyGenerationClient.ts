@@ -3,8 +3,9 @@ import type { ForcedLandforms } from "@/src/world/landforms";
 import type {
   HydrologyGenerationResult,
   HydrologyTerrainSampler,
+  HydrologyWorldInputsProvider,
 } from "./HydrologyGeneration";
-import { generateHydrology } from "./HydrologyGeneration";
+import { generateHydrology, resolveHydrologyConfig } from "./HydrologyGeneration";
 import {
   isHydrologyWorkerEvent,
   type HydrologyWorkerCommand,
@@ -59,6 +60,11 @@ export interface HydrologyGenerationClientOptions {
   readonly workerClimateProvince?: Readonly<ClimateProvinceSample> | null;
   /** The world's forced landforms, so the worker's sand seas are the main thread's. */
   readonly workerLandforms?: ForcedLandforms | null;
+  /**
+   * The world's authored basins and porous ground for the main-thread
+   * fallback. The worker derives the same from its own world.
+   */
+  readonly worldInputs?: HydrologyWorldInputsProvider;
   readonly workerFactory?: WorkerFactory;
   readonly fallbackScheduler?: FallbackScheduler;
 }
@@ -114,6 +120,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
   private readonly workerWorldSeed: WorldSeed | undefined;
   private readonly workerClimateProvince: Readonly<ClimateProvinceSample> | null;
   private readonly workerLandforms: ForcedLandforms | null;
+  private readonly worldInputs: HydrologyWorldInputsProvider | null;
   private readonly workerFactory: WorkerFactory;
   private readonly fallbackScheduler: FallbackScheduler;
   private readonly pending = new Map<number, PendingRequest>();
@@ -132,6 +139,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
     this.workerWorldSeed = options.workerWorldSeed;
     this.workerClimateProvince = options.workerClimateProvince ?? null;
     this.workerLandforms = options.workerLandforms ?? null;
+    this.worldInputs = options.worldInputs ?? null;
     this.workerFactory = options.workerFactory ?? defaultWorkerFactory;
     this.fallbackScheduler = options.fallbackScheduler ?? defaultFallbackScheduler;
     if (this.workerWorldSeed === undefined) {
@@ -261,6 +269,7 @@ export class HydrologyGenerationClient implements HydrologyGenerationClientLike 
     try {
       const hydrology = generateHydrology({
         ...request.options,
+        ...this.worldInputs?.(resolveHydrologyConfig(request.options)),
         worldSeed: this.worldSeed,
         terrainSample: this.terrainSample,
       });

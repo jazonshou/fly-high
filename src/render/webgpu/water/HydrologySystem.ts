@@ -35,6 +35,8 @@ import {
   type HydrologyGenerationResult,
   type HydrologyGenerationConfig,
   type HydrologyLake,
+  type HydrologyWorldInputs,
+  type HydrologyWorldInputsProvider,
   resolveHydrologyConfig,
 } from "./HydrologyGeneration";
 import {
@@ -902,7 +904,12 @@ function uploadWaterMesh(
  */
 export type HydrologyGraphSource = HydrologyGenerationResult | ChannelHydrologyGeometry;
 
-export interface HydrologySystemOptions extends HydrologyGenerationOptions {
+/**
+ * A region's world inputs depend on the region, so the system takes the
+ * provider (`worldInputs`) rather than one region's inputs.
+ */
+export interface HydrologySystemOptions
+  extends Omit<HydrologyGenerationOptions, keyof HydrologyWorldInputs> {
   readonly atmosphere: AtmosphereSnapshot;
   /** Shared terrain-depth substrate used by both inland and ocean materials. */
   readonly bathymetry?: BathymetryClipmap;
@@ -924,6 +931,13 @@ export interface HydrologySystemOptions extends HydrologyGenerationOptions {
   readonly workerClimateProvince?: Readonly<ClimateProvinceSample> | null;
   /** The world's forced landforms (sand seas), for the worker's copy of the world. */
   readonly workerLandforms?: ForcedLandforms | null;
+  /**
+   * The world's authored basins (crater lakes) and porous ground, for the
+   * regions generated on the main thread (the fallback and a synchronous
+   * first region). The worker derives the same from its own world. Absent
+   * (every analytic harness) means none.
+   */
+  readonly worldInputs?: HydrologyWorldInputsProvider;
   /**
    * `W-8`: the climate at an inland water surface, for its chemistry. Absent
    * (every test fixture, every analytic harness) means the neutral temperate
@@ -1105,6 +1119,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       workerWorldSeed,
       workerClimateProvince,
       workerLandforms,
+      worldInputs,
       paging,
       generationClient,
       graphHydrology,
@@ -1133,6 +1148,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
         ...(workerWorldSeed === undefined ? {} : { workerWorldSeed }),
         ...(workerClimateProvince ? { workerClimateProvince } : {}),
         ...(workerLandforms ? { workerLandforms } : {}),
+        ...(worldInputs ? { worldInputs } : {}),
       });
     this.analyticGroundSample = this.graphMode
       ? null
@@ -1234,7 +1250,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       const hydrology = resultFromGraphHydrology(graphHydrology, this.generationConfig);
       this.currentRegion = this.buildRegion(this.initialSelection(), hydrology);
     } else if (initializeSynchronously) {
-      const hydrology = generateHydrology(generationOptions);
+      const hydrology = generateHydrology({
+        ...generationOptions,
+        ...worldInputs?.(resolvedGenerationConfig),
+      });
       this.currentRegion = this.buildRegion(this.initialSelection(), hydrology);
     }
   }

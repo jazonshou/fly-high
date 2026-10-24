@@ -152,6 +152,7 @@ import {
 } from "./webgpu/water/SpectralOceanSystem";
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
+import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import type { FlightRenderingSystem, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
@@ -1111,6 +1112,9 @@ export class FlightRenderer implements FlightRenderingSystem {
           // elevation, so two pages sharing a river derive the same colour.
           // (Shared with the hydrology worker, which builds the same arrays.)
           climateSample: hydrologyClimateSamplerFor(options.world),
+          // Crater lakes and porous ground, for regions the main thread
+          // generates (fallback only; the worker derives its own).
+          worldInputs: (config) => volcanicHydrologyInputs(options.world, config),
           ...(channelGraph
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),

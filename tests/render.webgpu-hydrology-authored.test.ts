@@ -1,4 +1,6 @@
+import { Color3, FreeCamera, NullEngine, Scene, Vector2, Vector3 } from "@babylonjs/core";
 import { describe, expect, it } from "vitest";
+import type { AtmosphereSnapshot } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   generateHydrology,
   type HydrologyAuthoredBasin,
@@ -6,6 +8,7 @@ import {
   type HydrologyGenerationResult,
   type HydrologyTerrainSampler,
 } from "../src/render/webgpu/water/HydrologyGeneration";
+import { HydrologySystem } from "../src/render/webgpu/water/HydrologySystem";
 
 /**
  * The world's two hydrology inputs, on terrain that is pure arithmetic:
@@ -243,5 +246,50 @@ describe("authored basins and porous ground", () => {
     for (const river of half.rivers) expect(river).toEqual(fullById.get(river.id));
     // The result stays data: the predicate never reaches the config.
     expect(Object.values(half.config).every((value) => typeof value === "number")).toBe(true);
+  });
+});
+
+const ATMOSPHERE: AtmosphereSnapshot = {
+  sunDirection: new Vector3(-0.36, 0.82, 0.44).normalize(),
+  sunColor: new Color3(1, 0.96, 0.88),
+  sunIntensity: 4.8,
+  skyZenith: new Color3(0.1, 0.36, 0.78),
+  skyHorizon: new Color3(0.58, 0.77, 0.96),
+  ambientColor: new Color3(0.18, 0.27, 0.42),
+  skylightIlluminanceNormalized: 1,
+  sunIlluminanceNormalized: 0.92,
+  sunAngularRadiusRadians: 0.004675,
+  cloudCoverage: 0.32,
+  humidity: 0.62,
+  windSpeed: 9,
+  windDirection: new Vector2(0.93, 0.37).normalize(),
+  moonDirection: new Vector3(0, -1, 0),
+  moonIlluminanceLux: 0,
+  moonIlluminatedFraction: 0,
+  adaptedLuminanceCdM2: 6_000,
+  sceneKeyLuminanceCdM2: 1_000,
+};
+
+describe("the hydrology system's world inputs", () => {
+  it("reach the region it generates on the main thread, for that region", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const camera = new FreeCamera("authored-basin-camera", new Vector3(0, 300, -600), scene);
+    const asked: number[] = [];
+    const system = new HydrologySystem(scene, camera, {
+      ...bowlOptions(bowlTerrain()),
+      atmosphere: ATMOSPHERE,
+      worldInputs: (config) => {
+        asked.push(config.centerX, config.extentMeters);
+        return { authoredBasins: [BOWL_BASIN] };
+      },
+    });
+    expect(asked).toEqual([0, 1_600]);
+    const lakes = system.hydrology.lakes;
+    expect(lakes).toHaveLength(1);
+    expect(lakes[0]!.id).toMatch(/:lake:test:bowl$/);
+    system.dispose();
+    scene.dispose();
+    engine.dispose();
   });
 });
