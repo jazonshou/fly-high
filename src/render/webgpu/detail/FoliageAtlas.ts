@@ -1155,7 +1155,7 @@ function synthesizePalmFrond(raster: FoliageRaster, random: RandomSource): void 
       const missing = random() < 0.05;
       const lengthJitter = 0.9 + random() * 0.08;
       const curl = (random() - 0.35) * 0.08;
-      const hue = 0.235 + (random() - 0.5) * 0.03;
+      const hue = 0.245 + (random() - 0.5) * 0.03;
       const saturation = 0.58 + (random() - 0.5) * 0.16;
       const value = 0.38 + random() * 0.15;
       if (missing) continue;
@@ -1177,7 +1177,10 @@ function synthesizePalmFrond(raster: FoliageRaster, random: RandomSource): void 
         y1,
         8,
       );
-      strokePolyline(raster, line, 1.9, 0.55, hsvToRgb(hue, saturation, value));
+      // Leaflets nearly touch at the base, as a coconut's do: the frond has
+      // to read as a feather, not a comb, once mips and the mid mesh's
+      // every-other-frond thinning have their say.
+      strokePolyline(raster, line, 2.35, 0.75, hsvToRgb(hue, saturation, value));
     }
   }
   // Rachis last, over the leaflet bases: yellow-green, tapering to the tip.
