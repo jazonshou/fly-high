@@ -30,6 +30,7 @@ import {
   type WorldPageStreamingPriorityOptions,
 } from "@/src/render/webgpu/world/streamingPriority";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type WorldDefinition } from "@/src/world";
+import { sampleErgFarWeight } from "@/src/world/landforms";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
 import { surfaceArrayLayerIds, synthesizeSurfaceArrayLayer } from "./GroundGrainSynthesis";
 import {
@@ -763,7 +764,13 @@ export class TerrainClipmapSystem {
    */
   private applyProvinceField(profile: WebGpuQualityProfile): void {
     if (profile.terrainProvinceField && !this.provinceField) {
-      this.provinceField = new ClimateProvinceField(this.scene, this.world);
+      // A sand sea's far ground is Sand whatever province surrounds it, which
+      // no province offset predicts: the sand lane carries its erg weight, and
+      // its early outs (the landform core, wet country) cost nothing.
+      const world = this.world;
+      this.provinceField = new ClimateProvinceField(this.scene, world, {
+        sand: (x, z) => sampleErgFarWeight(world, x, z),
+      });
       this.surfacePlugin.setClimateProvinceField(this.provinceField.binding);
     } else if (!profile.terrainProvinceField && this.provinceField) {
       const retired = this.provinceField;
