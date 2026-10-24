@@ -20,6 +20,12 @@ export interface AgentConfig {
    * positive control (an arm with a known extra cost). Null in a normal run.
    */
   readonly profileOverride: Readonly<Record<string, unknown>> | null;
+  /**
+   * Options merged into the page's `createWorld` (a landform or climate
+   * under test, one arm with it and one without). Absent or null in a
+   * normal run; `worldEvolution` stays the shot's.
+   */
+  readonly worldOptions?: Readonly<Record<string, unknown>> | null;
 }
 
 export interface AgentInfo {
@@ -142,6 +148,77 @@ export interface FrameSample {
   readonly shaderModulesCreated: number;
 }
 
+/**
+ * One leg of a scripted flight (`scripts/perf-flight.mts`): the aircraft flies
+ * on from where the arm's previous leg ended, over terrain it has not seen,
+ * so streaming, bakes and pipeline creation happen the way they do in play.
+ */
+export interface FlightRequest {
+  readonly frames: number;
+  /** Start again from the prepared shot's pose instead of continuing. */
+  readonly restart: boolean;
+  readonly speedMetersPerSecond: number;
+  /** Height kept above the highest ground under and 3 s ahead of the aircraft. */
+  readonly clearanceMeters: number;
+  /** Constant bank; 0 flies straight. */
+  readonly bankDegrees: number;
+  readonly cameraMode: "chase" | "cockpit";
+  /** Drop the frame's own draws (`gpuDrawGate.ts`): CPU and compute only. */
+  readonly suppressDraws: boolean;
+  /** Fence to GPU idle every this many frames, so the queue cannot run ahead. */
+  readonly fenceEvery: number;
+  /**
+   * Where a restarted flight begins instead of the prepared shot's pose, at
+   * the clearance over the ground there. Null starts at the shot.
+   */
+  readonly start?: { readonly x: number; readonly z: number; readonly yawDegrees: number } | null;
+}
+
+export interface FlightFrame {
+  /** `renderer.render()` on the main thread. */
+  readonly renderMs: number;
+  /** Everything else the main thread ran before the next frame (worker results, timers). */
+  readonly betweenMs: number;
+  /** JS heap grown during render() and between frames; a fall is a collection. */
+  readonly heapRenderBytes: number;
+  readonly heapBetweenBytes: number;
+  readonly pipelinesCreated: number;
+  readonly shaderModulesCreated: number;
+  /** WGSL characters compiled in this frame's new shader modules. */
+  readonly shaderCodeChars: number;
+  /**
+   * Effects first compiled in this frame: the shader, and the defines that
+   * differ from the nearest effect of that shader compiled before it.
+   */
+  readonly effectsCompiled?: readonly string[];
+  /** Main-thread milliseconds per frame-graph pass (an older build may report none). */
+  readonly passMs: Readonly<Record<string, number>>;
+}
+
+export interface FlightReport {
+  readonly frames: readonly FlightFrame[];
+  readonly renderCalls: number;
+  readonly elapsedMs: number;
+  /** Tasks over 50 ms on the main thread during the leg (Long Tasks API). */
+  readonly longTasks: readonly { readonly start: number; readonly duration: number }[];
+  readonly position: { readonly x: number; readonly y: number; readonly z: number };
+  readonly pendingTerrainPages: number;
+  readonly pendingDetailWork: number;
+  readonly visibleInstances: number;
+  readonly residentTerrainPages: number;
+  /**
+   * The vegetation generator: on its worker (`active`), or fallen back to
+   * generating cells inline on the main thread. Null from a build without one.
+   */
+  readonly detailWorker: {
+    readonly active: boolean;
+    readonly fallbacks: number;
+    readonly generationTimeouts: number;
+    readonly buildTimeouts: number;
+    readonly buildRejections: number;
+  } | null;
+}
+
 export interface CaptureResult {
   readonly pngBase64: string;
   readonly width: number;
@@ -179,6 +256,7 @@ export interface PerfAgent {
   pad(frames: number): Promise<{ readonly renderCalls: number }>;
   settle(request: SettleRequest): Promise<SettleReport>;
   measureFrame(): Promise<FrameSample>;
+  flight(request: FlightRequest): Promise<FlightReport>;
   capture(): Promise<CaptureResult>;
   compareImages(a: string, b: string, width: number, height: number): Promise<ImageComparison>;
   errors(): AgentErrors;
