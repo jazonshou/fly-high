@@ -339,7 +339,7 @@ World detail is deterministic and page-owned rather than attached to transient t
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
 - Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice.
 - Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting conservative prototype-aware bounds independently, so one visible tree no longer submits every offscreen resident instance.
-- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. A corrupt, silent, or unavailable Worker fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; authority-level generation and presentation watchdogs cannot be reset indefinitely by motion. Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
+- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. A corrupt, silent, or unavailable Worker fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; authority-level generation and presentation watchdogs cannot be reset indefinitely by motion. The watchdogs time the WORKER: generation is timed only while the worker holds a request, any answer (current or stale) is progress, the 240-update count applies only after its first answer, and time without updates (a hidden tab, a long main-thread stall) is not charged past 100 ms per gap (see "Flight stutter" below). Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
 - Per-instance color supplies variation. A lightweight PBR vertex deformation consumes each tree's phase, compliance, height, and stable selection from `instanceWind`, producing asynchronous crown and trunk sway without CPU transform updates.
 - `densityField.ts` owns a 7.2 × 5.4 km forest-fraction field in addition to the continuous stand field. Its 260 m glades reach a 0.02 authored-density floor, thresholded windthrow supplies a genuinely hard edge, and the published edge margin makes generated stems shorter and crowns broader. This changes where and how much forest grows; it deliberately does not change species/stand selection.
 - A floating-origin change immediately translates every live presentation batch by its build-origin delta while the bounded rebuild sweep catches up. The detail shader receives the same offset for pre-world band culling and impostor facing. The shared cascaded-shadow system still receives all eligible chunks rather than only those visible to the main camera.
@@ -1411,6 +1411,101 @@ and its work counts name the pass that draws it.
   `water-25ft` reads 0.706 on both. What the A/B does show is exactly which
   pixels a change moved, which is what a reviewer needs before any
   promotion.
+
+## Flight stutter: `npm run perf:flight` (2026-10-24)
+
+The A/B times a settled shot, which is the steady cost. A player's frames
+also carry the work of flying into terrain nobody has seen yet: cells and
+pages streaming in, worker results landing on the main thread, a pipeline
+compiled the first time a material meets a new state, and the garbage all of
+it leaves. None of that shows in a settled shot, and all of it shows as a
+hitch. `npm run perf:flight` measures it, with the same agent page and arms
+as the A/B:
+
+```
+npm run perf:flight -- --base origin/main            # working tree vs main, 6 legs x 240 frames
+npm run perf:flight -- --base 264b760 --head main --legs 8
+npm run perf:flight -- --profile --heap-profile --no-minify   # V8 CPU and heap profiles per leg
+node scripts/cpuprofile-spikes.mts <arm>-leg2.cpuprofile        # what the long frames ran
+node scripts/heapprofile-summary.mts <arm>-leg2.heapprofile 30 --frames 240
+```
+
+Both arms start from the same settled shot (`approach-500ft` by default) and
+fly the same scripted path, terrain following at 120 m/s, in legs that
+alternate ABBA. Every frame records `render()`'s main-thread time and each
+frame-graph pass's share of it, the time the main thread spends on whatever
+is queued behind the frame (worker results, buffer maps), the JS heap grown
+(`--enable-precise-memory-info`), pipelines and shader modules created, and
+each new Babylon effect with the defines that set it apart from the nearest
+one compiled before it. Tasks over 50 ms come from the Long Tasks API, and
+each leg reports whether vegetation is still generated on its worker. The
+frame's own draws are dropped by default (`gpuDrawGate.ts`; `--draws` keeps
+them), so on SwiftShader a frame costs its CPU work and its compute. CPU
+milliseconds are this host's and only compare the arms; counts are exact.
+
+**What it found.** Main (6d91220) against the commit before PR #19
+(264b760), 6 x 240 frames: no new CPU cost from the three October PRs
+(render() p50 12.0 vs 11.6 ms, 25 vs 30 long tasks), but both arms carried
+the same older stutter: about 2% of frames were main-thread stalls of 100 to
+500 ms, and the frame allocated 3.2 MB of garbage. Profiles put every stall
+in `world-page-visibility`, in `generateDetailCell`: vegetation cells were
+being generated on the MAIN thread. The detail worker's generation watchdog
+had fallen back to inline generation, permanently, because it charged the
+worker for time in which nothing was asked of it: the agent's 22 s between
+the settle and the flight, with no update in between, read as 22 s without
+an answer on the first update back. In the browser the same thing happens
+whenever requestAnimationFrame stops for 8 s with cells still missing (a
+hidden tab, a window covered by another app on macOS) and, on a 120 Hz
+display, whenever the worker takes 2 s (240 updates) to answer its first
+request. Either way the rest of the session generates 512 m cells inline, a
+stall every few frames. The watchdog now times only an outstanding request,
+counts any answer, applies the update count after the first answer, and
+lifts update gaps (`DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS`);
+a worker that stops answering while frames run still falls back
+(tests/render.webgpu-detail-worker-runtime.test.ts).
+
+The same flight, 4 x 240 frames, after the first leg (SwiftShader host,
+trainer, medium/balanced):
+
+| | main (worker fell back) | watchdog fix (worker kept) |
+| --- | --- | --- |
+| render() ms p50 / p95 / p99 / max | 12.5 / 39.6 / 138.0 / 253.8 | 10.4 / 20.1 / 29.2 / 92.3 |
+| frame CPU ms mean | 17.7 | 11.9 |
+| frames over 4x the median | 29 | 3 |
+| long tasks: count / total ms / worst | 29 / 3148 / 259 | 3 / 208 / 92 |
+| JS heap allocated per frame | 3.3 MB | 1.7 MB |
+
+**Still open** (smaller, and each its own change):
+
+- Two effects compile mid-flight, the remaining long tasks: the wildlife
+  keratin PBR (clearcoat; the first antler, tusk or beak in view) and a
+  vegetation PBR variant without `DETAIL_BAND_FADES`. Each is a one-time
+  pipeline compile of ~120 KiB of WGSL. Compiling them at load needs the
+  meshes in the state they will draw in (thin instances, shadow defines).
+- 1.7 MB of garbage per frame: the terrain clipmap's node selection and
+  buffer writes (~1 MB: per-node objects and string page keys) and the
+  wildlife step (~0.5 MB: per-step arrays and vector clones). Young
+  collections absorb it; it is not a stall source on its own.
+- The sky probe's spherical-harmonics bake runs on the main thread whenever
+  the camera's altitude changes by 500 m: 1,536 `evaluateSkyRadiance` calls,
+  1.3 ms on this host before PR #22 and 3.6 ms (high sun) to ~9 ms (low sun)
+  since. One frame per 500 m of climb; it could be spread over six frames
+  (one cube face each) with identical results.
+
+**The October PRs' steady cost, together.** Each of PRs #19, #20 and #22
+passed the 5% gate alone; together, against 264b760 (CI run 40117858194):
+
+| Shot | SwiftShader GPU | macOS runner wall (advisory) |
+| --- | --- | --- |
+| approach-500ft | +5.0% (+4.4..+5.5) | +1.9% (+0.6..+3.2) |
+| cruise-horizon | +4.1% (+4.0..+4.3) | +3.2% (+1.9..+4.5) |
+| forest-500ft-sunbehind | +3.7% (+3.6..+3.8) | +2.9% (+2.0..+3.8) |
+| ground-2m-lowsun | +4.7% (+3.9..+5.5) | +2.5% (+1.9..+3.1) |
+| water-25ft | +6.4% (+5.9..+6.7) | +4.8% (+4.1..+5.6) |
+
+SwiftShader runs both sides of every branch, so it charges the per-point sun
+on every shot; a real GPU skips it above a 33° sun. The rule for new work is
+to budget each feature at about 2% on medium, not the gate's 5%.
 
 ## Capture harness
 
