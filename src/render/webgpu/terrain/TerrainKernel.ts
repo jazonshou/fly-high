@@ -954,6 +954,16 @@ fn terrainTemperatureFromClimate(
 ${provinceStaircaseWgsl("kProvinceTemperatureStaircase", CLIMATE_PROVINCE.temperature)}
 ${provinceStaircaseWgsl("kProvinceDrynessStaircase", CLIMATE_PROVINCE.dryness)}
 /**
+ * sampleClimateProvinceUnmasked (climateProvince.ts): the natural province's
+ * (temperature offset, dryness) at full strength, before the temperate core.
+ */
+fn terrainClimateProvinceUnmasked(localX: f32, localZ: f32) -> vec2f {
+  let temperature = kFbm(${latticeBase("provinceTemperature")}u, ${CLIMATE_PROVINCE.temperature.octaves}u, localX, localZ);
+  let dryness = kFbm(${latticeBase("provinceDryness")}u, ${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ);
+  return vec2f(kProvinceTemperatureStaircase(temperature), kProvinceDrynessStaircase(dryness));
+}
+
+/**
  * sampleClimateProvince (climateProvince.ts): (temperature offset, dryness).
  * Exactly (0, 0) inside a natural world's temperate core and on a page built
  * without a province; the forced offsets everywhere in a forced world.
@@ -966,11 +976,7 @@ fn terrainClimateProvince(localX: f32, localZ: f32) -> vec2f {
     ${wgslFloat(CLIMATE_PROVINCE.coreRadiusMeters + CLIMATE_PROVINCE.rampMeters)},
     length(core.xy + vec2f(localX, localZ)));
   if (mask > 0.0) {
-    let temperature = kFbm(${latticeBase("provinceTemperature")}u, ${CLIMATE_PROVINCE.temperature.octaves}u, localX, localZ);
-    let dryness = kFbm(${latticeBase("provinceDryness")}u, ${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ);
-    offsets = offsets + vec2f(
-      mask * kProvinceTemperatureStaircase(temperature),
-      mask * kProvinceDrynessStaircase(dryness));
+    offsets = offsets + terrainClimateProvinceUnmasked(localX, localZ) * mask;
   }
   return offsets;
 }

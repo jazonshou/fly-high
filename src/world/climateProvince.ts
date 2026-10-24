@@ -256,6 +256,32 @@ export function sampleClimateProvinceFields(
 }
 
 /**
+ * The natural province offsets at a point BEFORE the temperate-core mask: the
+ * staircases at full strength. For consumers with a core of their own (the
+ * landform work keeps a larger one); everything else reads
+ * `sampleClimateProvince`. WGSL twin: `terrainClimateProvinceUnmasked`.
+ */
+export function sampleClimateProvinceUnmasked(
+  seedHash: number,
+  x: number,
+  z: number,
+  target: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 },
+): ClimateProvinceSample {
+  const fields = sampleClimateProvinceFields(seedHash, x, z);
+  target.temperatureOffset = climateProvinceStaircase(
+    fields.temperature,
+    CLIMATE_PROVINCE.temperature.levels,
+    CLIMATE_PROVINCE.temperature.thresholds,
+  );
+  target.dryness = climateProvinceStaircase(
+    fields.dryness,
+    CLIMATE_PROVINCE.dryness.levels,
+    CLIMATE_PROVINCE.dryness.thresholds,
+  );
+  return target;
+}
+
+/**
  * The province offsets at a world point. Exactly `{0, 0}` inside the temperate
  * core of a natural world; the forced offsets everywhere in a forced one.
  */
@@ -277,17 +303,9 @@ export function sampleClimateProvince(
     target.dryness = 0;
     return target;
   }
-  const fields = sampleClimateProvinceFields(world.seedHash, x, z);
-  target.temperatureOffset = mask * climateProvinceStaircase(
-    fields.temperature,
-    CLIMATE_PROVINCE.temperature.levels,
-    CLIMATE_PROVINCE.temperature.thresholds,
-  );
-  target.dryness = mask * climateProvinceStaircase(
-    fields.dryness,
-    CLIMATE_PROVINCE.dryness.levels,
-    CLIMATE_PROVINCE.dryness.thresholds,
-  );
+  sampleClimateProvinceUnmasked(world.seedHash, x, z, target);
+  target.temperatureOffset *= mask;
+  target.dryness *= mask;
   return target;
 }
 
