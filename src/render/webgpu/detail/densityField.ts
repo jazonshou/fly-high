@@ -69,6 +69,13 @@ export interface VegetationDensityInput {
    * real height. Omitted reads 0, which is exactly the temperate core.
    */
   readonly temperatureOffset?: number;
+  /**
+   * The climate province's dryness offset (`sampleClimateProvince`), raw:
+   * `moisture` already carries its scaling. The two dry ecologies read their
+   * shares from it through `dryProvinceShares`. Omitted reads 0, the temperate
+   * core, and every term the shares gate is a product with them.
+   */
+  readonly dryness?: number;
 }
 
 export interface VegetationDensitySample {
@@ -511,6 +518,78 @@ export function groundCoverWeights(
   });
 }
 
+/**
+ * DRY PROVINCES: the one answer to "how far into the dry country is this".
+ *
+ * A climate province's dryness offset makes two ecologies, not one, and they
+ * do not grade into each other the way a moisture field does:
+ *
+ *  - PARKLAND (oak savanna) on the moderately dry side. Too dry for a closed
+ *    canopy, so the forest term is gone, but wet enough for single
+ *    open-grown trees standing tens of metres apart in golden grass.
+ *  - DESERT (sagebrush steppe) on the strongly dry side. Trees survive only as
+ *    pinyon on the rocky slopes, and the flats carry sage and bare soil.
+ *
+ * Parkland hands over to desert rather than overlapping it, so the two shares
+ * never sum past one. Both are exactly 0 at zero dryness, which is the
+ * temperate core, and every consumer multiplies by them. The windows sit
+ * between the province field's plateaus (`CLIMATE_PROVINCE`: semi-arid 0.25,
+ * arid 0.5), so each plateau is one ecology at full strength and the hand-over
+ * happens inside the field's own ~12 km ecotone. Wet provinces (negative
+ * dryness) read 0 for both.
+ *
+ * Read by the classifier too (through this file, the one sanctioned entry
+ * point), so the ground and the plants agree about where the desert starts.
+ */
+export const DRY_PROVINCE_PARKLAND_ONSET = 0.08;
+export const DRY_PROVINCE_PARKLAND_FULL = 0.2;
+export const DRY_PROVINCE_DESERT_ONSET = 0.3;
+export const DRY_PROVINCE_DESERT_FULL = 0.45;
+
+export interface DryProvinceShares {
+  readonly arid: number;
+  readonly parkland: number;
+}
+
+export function dryProvinceShares(drynessOffset: number): DryProvinceShares {
+  const arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, drynessOffset);
+  const parkland = smoothstep(
+    DRY_PROVINCE_PARKLAND_ONSET,
+    DRY_PROVINCE_PARKLAND_FULL,
+    drynessOffset,
+  ) * (1 - arid);
+  return { arid, parkland };
+}
+
+/**
+ * The lone-tree and pinyon stands, as shares of the closed-forest base.
+ *
+ * Parkland: 0.045 of 800 is 36 stems/ha at full share, and the glade field
+ * clumps it to ~22/ha on average, the 10-40 trees/ha a grazed oak savanna
+ * carries. These do NOT ride the moisture gate or the forest province: that is
+ * what "lone tree" means, a tree the climate allows but no stand surrounds.
+ * Desert: pinyon only on the 7-24 degree slopes, ~15/ha where it grows. Both
+ * sit far under the near band's rendered cap, so a dry province never draws
+ * more trees than a temperate forest does.
+ */
+export const PARKLAND_TREE_SHARE = 0.045;
+export const DESERT_TREE_SHARE = 0.03;
+/** Sage and parkland bush, as shares of the shrub base (~200 and ~90 stems/ha). */
+export const DESERT_SHRUB_SHARE = 0.45;
+export const PARKLAND_SHRUB_SHARE = 0.2;
+/** How far an open-grown crown trades height for spread: the edge-stem form. */
+export const PARKLAND_OPEN_GROWN_EDGE = 0.8;
+/**
+ * Pinyon-juniper is a COOL desert's woodland (1,500-2,300 m on the Colorado
+ * Plateau); a hot province's desert is creosote flats with trees only on the
+ * washes. The temperature offset that fades it, normalised units: the warm
+ * plateau (0.12) keeps most of it, the hot one (0.28) keeps 15 %. At an offset
+ * of 0, which includes the high-desert preset, the fade is exactly 1.
+ */
+export const PINYON_HEAT_ONSET = 0.08;
+export const PINYON_HEAT_FULL = 0.24;
+export const PINYON_HOT_KEEP = 0.15;
+
 /** Base canopy density: ~800 stems/ha before habitat factors. */
 const BASE_TREE_STEMS = 0.08;
 const BASE_SHRUB_STEMS = 0.045;
@@ -755,7 +834,22 @@ export function densityField(
     shoreline * slopeFactor * lapse * treelineFactor * aspectFactor
     * forest.glade * forest.disturbance * forest.forestFraction * clearance
     * riparian.clearance * riparian.treeDensityGain;
-  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat;
+  // The dry provinces' stands (see `dryProvinceShares`). Neither rides the
+  // moisture gate or the forest province, and both are exactly 0 in the core,
+  // so `treeStems` there is the closed-forest term plus two zeros.
+  const { arid, parkland } = dryProvinceShares(input.dryness ?? 0);
+  const openStand = shoreline * treelineFactor * clearance * riparian.clearance;
+  const parklandStems = BASE_TREE_STEMS * PARKLAND_TREE_SHARE * parkland
+    * openStand * slopeFactor * (0.25 + 0.75 * forest.glade);
+  // Pinyon holds the rocky 7-24 degree slopes and leaves the basin floors to
+  // the sage.
+  const pinyonSlope = smoothstep(0.006, 0.025, input.slope)
+    * (1 - smoothstep(0.08, 0.16, input.slope));
+  const pinyonHeat = 1 - (1 - PINYON_HOT_KEEP)
+    * smoothstep(PINYON_HEAT_ONSET, PINYON_HEAT_FULL, input.temperatureOffset ?? 0);
+  const pinyonStems = BASE_TREE_STEMS * DESERT_TREE_SHARE * arid
+    * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * forest.glade);
+  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat + parklandStems + pinyonStems;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
   // and persist a little above the canopy treeline.
@@ -765,10 +859,16 @@ export function densityField(
   const openness = 0.45 + 0.55 * (1 - forest.glade * 0.7);
   const shrubForestGate = 0.28 + forest.forestFraction * 0.72;
   const edgeShrubGain = 1 + forest.forestEdge * 0.45;
+  // Sage on the desert flats, bush clumps in the parkland grass: no moisture
+  // gate, clumped on the glade field like the stands above.
+  const dryShrubStems = BASE_SHRUB_STEMS
+    * (DESERT_SHRUB_SHARE * arid + PARKLAND_SHRUB_SHARE * parkland)
+    * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * forest.glade);
   const shrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
     * forest.disturbance * shrubForestGate * edgeShrubGain * clearance
-    * riparian.clearance * riparian.shrubDensityGain;
+    * riparian.clearance * riparian.shrubDensityGain
+    + dryShrubStems;
 
   const groundCover = groundCoverWeights(
     input.moisture,
@@ -780,14 +880,17 @@ export function densityField(
     riparian.bankBand,
   );
   const closure = canopyClosure(saturate(treeStems));
+  // A lone tree is open-grown, the same form an edge stem has: shorter, with a
+  // wider crown. `max` with a zero share is the shipped edge exactly.
+  const forestEdge = Math.max(forest.forestEdge, parkland * PARKLAND_OPEN_GROWN_EDGE);
   return {
     treeStemsPerSquareMeter: saturate(treeStems),
     shrubStemsPerSquareMeter: saturate(shrubStems),
     // Edge stems trade height for lateral mass in generation. Keeping the
     // scalar here makes the margin a property of the density authority.
-    heightFactor: heightFactor * (1 - forest.forestEdge * 0.34),
+    heightFactor: heightFactor * (1 - forestEdge * 0.34),
     aspect,
-    forestEdge: forest.forestEdge,
+    forestEdge,
     groundCover,
     riparianBand: riparian.bankBand,
     canopyClosure: closure,
