@@ -10,6 +10,7 @@ import {
   normalizeAirborneStartAgl,
 } from "@/src/workers/protocol";
 import { AIRCRAFT_KINDS, type AircraftKind } from "@/src/sim";
+import type { LandformsOption } from "@/src/world";
 
 export type UnitSystem = "aviation" | "metric";
 export type HudMode = "minimal" | "full" | "off";
@@ -282,6 +283,28 @@ export function readTerrainFarSwardFromUrl(url?: string): "off" | "cheap" | "sof
   try {
     const value = new URL(source).searchParams.get("farSward");
     return value === "off" || value === "cheap" || value === "soft" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Landforms forced for one review session (`?landforms=dunes`, `volcanic`, or
+ * `dunes,volcanic`): sand seas or volcanic fields everywhere outside a small
+ * clearance round the start runway, instead of 150 km out where the natural
+ * world grows them. URL only and never persisted, like `?world=`: absence, or
+ * a list naming no landform, keeps the natural world.
+ */
+export function readLandformsFromUrl(url?: string): LandformsOption | undefined {
+  const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
+  try {
+    const value = new URL(source).searchParams.get("landforms");
+    if (!value) return undefined;
+    const names = value.split(",").map((name) => name.trim());
+    const dunes = names.includes("dunes");
+    const volcanic = names.includes("volcanic");
+    if (!dunes && !volcanic) return undefined;
+    return { ...(dunes ? { dunes } : {}), ...(volcanic ? { volcanic } : {}) };
   } catch {
     return undefined;
   }

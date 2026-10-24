@@ -39,6 +39,6 @@ describe("eroded-world URL opt-in", () => {
   it("FlightGame threads the URL value into createWorld and nowhere else sets it", () => {
     const source = readSource("src/game/FlightGame.tsx");
     expect(source).toContain("readWorldEvolutionFromUrl()");
-    expect(source).toMatch(/createWorld\(seed, worldEvolution \? \{ worldEvolution \} : \{\}\)/);
+    expect(source).toMatch(/createWorld\(seed, \{\s*\.\.\.\(worldEvolution \? \{ worldEvolution \} : \{\}\),/);
   });
 });
