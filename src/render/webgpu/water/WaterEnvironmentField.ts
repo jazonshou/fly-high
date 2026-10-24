@@ -31,6 +31,10 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WorldDefinition } from "@/src/world/types";
 import {
+  sampleClimateProvince,
+  type ClimateProvinceSample,
+} from "@/src/world/climateProvince";
+import {
   sampleTerrainClimate,
   sampleTerrainMoisture,
   terrainTemperatureFromClimate,
@@ -176,6 +180,8 @@ export class WaterEnvironmentField {
     return true;
   }
 
+  private readonly province: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
+
   private bake(): void {
     const resolution = WATER_ENVIRONMENT_FIELD_RESOLUTION;
     const span = WATER_ENVIRONMENT_FIELD_SPAN_METERS;
@@ -188,13 +194,17 @@ export class WaterEnvironmentField {
         const x = originX + (ix + 0.5) * texel;
         // Filter width = one texel: the same band limiting the terrain's own
         // consumers use, so the field cannot carry detail it cannot resolve.
-        const moisture = sampleTerrainMoisture(this.world, x, z, texel);
+        // Climate provinces, sampled once per texel for both fields; exactly
+        // 0 in the temperate core, so the field there is unchanged.
+        const province = sampleClimateProvince(this.world, x, z, this.province);
+        const moisture = sampleTerrainMoisture(this.world, x, z, texel, province.dryness);
         const climate = sampleTerrainClimate(this.world, x, z, texel);
         // Sea-level temperature: the sea IS at sea level, so no lapse term.
         const temperature = terrainTemperatureFromClimate(
           this.world,
           climate,
           this.world.seaLevel,
+          province.temperatureOffset,
         );
         const offset = (iz * resolution + ix) * 4;
         this.data[offset] = Math.round(waterProductivity(temperature, moisture) * 255);

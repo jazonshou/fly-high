@@ -19,6 +19,8 @@ const sampleTarget: TerrainSample = {
   slope: 0,
   moisture: 0,
   temperature: 0,
+  temperatureOffset: 0,
+  dryness: 0,
   biome: 0,
   biomeName: "water",
   color: { r: 0, g: 0, b: 0 },
@@ -33,7 +35,10 @@ function post(event: HydrologyWorkerEvent, transfer: Transferable[] = []): void 
 workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerCommand>) => {
   const command = event.data;
   if (command.type === "initialize") {
-    world = createWorld(command.worldSeed);
+    world = createWorld(
+      command.worldSeed,
+      command.climateProvince ? { climateProvince: command.climateProvince } : {},
+    );
     return;
   }
   const startedAt = performance.now();

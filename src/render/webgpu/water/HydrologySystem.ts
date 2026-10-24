@@ -1,3 +1,4 @@
+import type { ClimateProvinceSample } from "@/src/world/climateProvince";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { ShaderStore } from "@babylonjs/core/Engines/shaderStore";
@@ -916,6 +917,8 @@ export interface HydrologySystemOptions extends HydrologyGenerationOptions {
   readonly windSpeedMetersPerSecond?: number;
   /** Enables off-main-thread generation from the deterministic built-in world. */
   readonly workerWorldSeed?: WorldSeed;
+  /** The world's forced climate province, for the worker's copy of the world. */
+  readonly workerClimateProvince?: Readonly<ClimateProvinceSample> | null;
   /**
    * `W-8`: the climate at an inland water surface, for its chemistry. Absent
    * (every test fixture, every analytic harness) means the neutral temperate
@@ -1095,6 +1098,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       windDirectionRadians,
       windSpeedMetersPerSecond,
       workerWorldSeed,
+      workerClimateProvince,
       paging,
       generationClient,
       graphHydrology,
@@ -1121,6 +1125,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
         worldSeed: generationOptions.worldSeed,
         terrainSample: generationOptions.terrainSample,
         ...(workerWorldSeed === undefined ? {} : { workerWorldSeed }),
+        ...(workerClimateProvince ? { workerClimateProvince } : {}),
       });
     this.analyticGroundSample = this.graphMode
       ? null
