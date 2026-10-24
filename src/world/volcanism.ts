@@ -4,7 +4,8 @@ import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "./seed";
 // A value import of terrain.ts, which imports this module through
 // landforms.ts: safe because the kernel is only called inside functions,
 // after every module has evaluated.
-import { sampleNaturalTerrainHeight } from "./terrain";
+// Never the plain kernel: a site built mid-sample must not move the intermediates the caller reads.
+import { sampleNaturalTerrainHeightAside as sampleNaturalTerrainHeight } from "./terrain";
 import type { WorldDefinition } from "./types";
 
 /**

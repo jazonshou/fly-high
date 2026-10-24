@@ -109,6 +109,30 @@ describe("volcanic sites", () => {
     expect(fromB).toEqual(fromA);
   });
 
+  it("give the same ground on an area's first sample as on every later one", () => {
+    // Sites are built on a bin's first visit, in the middle of a height
+    // sample, and the dune stage asks for volcanic activity while it still
+    // reads the natural kernel's shared intermediates. Building a site must
+    // leave those exactly as they were.
+    for (const landforms of [{ dunes: true }, { dunes: true, volcanic: true }]) {
+      const options = { landforms, climateProvince: "high-desert" } as const;
+      const home = landformCoreCenter(createWorld("dune-lab", options));
+      for (let k = 0; k < 24; k += 1) {
+        const angle = k * 0.9;
+        const r = 7_000 + k * 1_500;
+        const x = home.x + Math.cos(angle) * r;
+        const z = home.z + Math.sin(angle) * r;
+        // A fresh world per point: empty caches, so this sample is the first.
+        const world = createWorld("dune-lab", options);
+        const first = sampleTerrainHeight(world, x, z);
+        expect(sampleTerrainHeight(world, x, z)).toBe(first);
+        const fresh = createWorld("dune-lab", options);
+        const firstFiltered = sampleFilteredTerrainHeight(fresh, x, z, 64);
+        expect(sampleFilteredTerrainHeight(fresh, x, z, 64)).toBe(firstFiltered);
+      }
+    }
+  });
+
   it("guarantee a field with a stratovolcano just past the core", () => {
     for (const seed of SEEDS) {
       const world = createWorld(seed);

@@ -496,6 +496,28 @@ const NATURAL_INTERMEDIATES: NaturalTerrainIntermediates = {
   shippedHeight: 0,
 };
 
+const ASIDE_INTERMEDIATES: NaturalTerrainIntermediates = { ...NATURAL_INTERMEDIATES };
+
+/**
+ * The natural height at a point, leaving the shared intermediates exactly as
+ * they were: for a landform that samples the kernel ELSEWHERE while a caller
+ * may still be reading this point's intermediates — volcanic sites are built
+ * on a bin's first visit, in the middle of a height sample, and the dune
+ * stage reads the intermediates after asking for volcanic activity. Without
+ * it, the first sample of an area would differ from every later one.
+ */
+export function sampleNaturalTerrainHeightAside(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  Object.assign(ASIDE_INTERMEDIATES, NATURAL_INTERMEDIATES);
+  const height = sampleNaturalTerrainHeight(seedHash, x, z, filterWidthMeters);
+  Object.assign(NATURAL_INTERMEDIATES, ASIDE_INTERMEDIATES);
+  return height;
+}
+
 /**
  * Phase 5's pre-erosion tectonic field.
  *
