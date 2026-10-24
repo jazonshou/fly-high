@@ -10,6 +10,7 @@ import {
 } from "./dunes";
 import { smoothstep } from "./noise";
 import { sampleNaturalTerrainIntermediates, type NaturalTerrainIntermediates } from "./terrain";
+import { applyVolcanicOverlay, volcanicActivity } from "./volcanism";
 import type { WorldDefinition } from "./types";
 
 /**
@@ -123,19 +124,6 @@ export function landformCoreMask(
 }
 
 /**
- * The volcanic field's activity at a point, in [0, 1]. A stub until the
- * volcanic overlay lands (it owns this function and its WGSL twin,
- * `terrainVolcanicActivity`): sand seas are multiplied by `1 - activity`, so
- * the two landforms never stack.
- */
-export function volcanicActivity(world: WorldDefinition, x: number, z: number): number {
-  void world;
-  void x;
-  void z;
-  return 0;
-}
-
-/**
  * Every landform stage, applied to a natural height. `natural` carries the
  * natural kernel's intermediates for THIS point (the kernel fills them on the
  * call that produced `naturalHeight`), so no stage evaluates the kernel twice.
@@ -153,8 +141,9 @@ export function applyTerrainLandforms(
   if (world.worldEvolution === "eroded") return naturalHeight;
   const coreMask = landformCoreMask(world, x, z);
   if (coreMask <= 0) return naturalHeight;
-  return applyDuneStage(
+  const duned = applyDuneStage(
     world, x, z, naturalHeight, filterWidthMeters, coreMask, natural, volcanicActivity);
+  return applyVolcanicOverlay(world, x, z, duned, filterWidthMeters);
 }
 
 /**
