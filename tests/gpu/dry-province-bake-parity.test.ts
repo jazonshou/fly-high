@@ -270,27 +270,23 @@ describe("dry-province bake parity", () => {
     report("high-desert L5", far);
 
     expect(near.compared).toBeGreaterThan(500);
-    // Measured on SwiftShader (2026-10-24): 90.2% on the L2 pages, 90.2% on
-    // L4 and 78.3% on L5, against 85% on the temperate pages. The twins are
-    // line for line; what is left is the steppe's own mosaic. Sage
-    // (0.3 + 0.55 * sageWet) and bunchgrass (0.48 * (1 + 0.45 * sward)) tie at
-    // the province's median wetness, which is what makes them co-dominant, so
-    // the argmax there turns on the bake's band-limited heights and f32
-    // fields. On L5, where sand has gone to straw, every disagreement is that
-    // tie (bake straw, CPU sage); feeding the CPU side the bake's own height
-    // texels, slope stencil, filtered moisture and canopy-suppressed sward
-    // moved it only to 81%.
+    // Measured on SwiftShader (2026-10-24): 97.8% on the L2 pages, 99.9% on
+    // L4 and 99.3% on L5, against 85% on the temperate pages. Bunchgrass
+    // dominates the steppe by a wide margin, so the argmax rarely turns on the
+    // bake's band-limited heights and f32 fields; what disagreement is left
+    // sits on the edges of the sand flats and the rock outcrops.
     expect(
       near.agreed / near.compared,
       "the baked desert disagrees with the CPU classifier too widely to be boundary noise "
       + "- the WGSL twin of the dry-province terms has drifted",
-    ).toBeGreaterThan(0.75);
-    // Non-vacuity: the temperate bake paints neither of these on these pages.
-    expect(near.bake[SurfaceMaterial.Shrub]! / near.compared).toBeGreaterThan(0.15);
-    expect(near.bake[SurfaceMaterial.Sand]! / near.compared).toBeGreaterThan(0.03);
+    ).toBeGreaterThan(0.9);
+    // Non-vacuity: the temperate bake paints these pages green Grass, and no
+    // inland sand; the desert bake paints tan bunchgrass and bare flats.
+    expect(near.bake[SurfaceMaterial.DryGrass]! / near.compared).toBeGreaterThan(0.6);
+    expect(near.bake[SurfaceMaterial.Sand]! / near.compared).toBeGreaterThan(0.02);
     expect(near.bake[SurfaceMaterial.Grass]! / near.compared).toBeLessThan(0.1);
     expect(mid.compared).toBeGreaterThan(500);
-    expect(mid.agreed / mid.compared).toBeGreaterThan(0.75);
+    expect(mid.agreed / mid.compared).toBeGreaterThan(0.9);
 
     // Far: no sand, gravel or rock is DOMINANT on a zero-trust desert page; the
     // remap leaves sage and straw, the pair the far-sward gate lets through.
@@ -300,14 +296,15 @@ describe("dry-province bake parity", () => {
     expect(farBare / far.compared).toBeLessThan(0.02);
     expect((far.bake[SurfaceMaterial.DryGrass]! + far.bake[SurfaceMaterial.Shrub]!) / far.compared)
       .toBeGreaterThan(0.8);
-    expect(far.agreed / far.compared).toBeGreaterThan(0.75);
+    expect(far.agreed / far.compared).toBeGreaterThan(0.9);
   }, 300_000);
 
   it("bakes the savanna's straw sward the CPU classifier describes", async () => {
     const near = merge(await bakeProvince("savanna", LOWLAND_L4));
     report("savanna L4", near);
     expect(near.compared).toBeGreaterThan(500);
-    expect(near.agreed / near.compared).toBeGreaterThan(0.75);
+    // Measured on SwiftShader (2026-10-24): 93.0%.
+    expect(near.agreed / near.compared).toBeGreaterThan(0.85);
     expect(near.bake[SurfaceMaterial.DryGrass]! / near.compared).toBeGreaterThan(0.5);
   }, 300_000);
 });
