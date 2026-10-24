@@ -21,6 +21,8 @@ const sampleTarget: TerrainSample = {
   temperature: 0,
   temperatureOffset: 0,
   dryness: 0,
+  sandCover: 0,
+  ergWeight: 0,
   biome: 0,
   biomeName: "water",
   color: { r: 0, g: 0, b: 0 },
