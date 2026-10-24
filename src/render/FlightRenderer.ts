@@ -6,7 +6,6 @@ import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imagePro
 import { Color4 } from "@babylonjs/core/Maths/math.color";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { FxaaPostProcess } from "@babylonjs/core/PostProcesses/fxaaPostProcess";
 import { ImageProcessingPostProcess } from "@babylonjs/core/PostProcesses/imageProcessingPostProcess";
 import { Scene, ScenePerformancePriority } from "@babylonjs/core/scene";
 import type {
@@ -44,7 +43,7 @@ import {
   HANGAR_FLOOD_INTENSITY,
 } from "./webgpu/lighting/ObstructionLighting";
 import { BloomPass } from "./webgpu/lighting/BloomPass";
-import { SharpenPass } from "./webgpu/lighting/SharpenPass";
+import { FxaaSharpenPass, SharpenPass } from "./webgpu/lighting/SharpenPass";
 import {
   rodFractionForAdaptedLuminance,
   shouldRunScotopicPass,
@@ -112,6 +111,7 @@ import {
   hitchThresholdMilliseconds,
   isUsableFrameTiming,
   resolveWebGpuQualityProfile,
+  standaloneSharpen,
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
@@ -536,7 +536,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly groundCover: GroundCoverSystem;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
-  private readonly fxaa: FxaaPostProcess;
+  /** FXAA with the final sharpen fused in; attached only where MSAA is off. */
+  private readonly fxaa: FxaaSharpenPass;
   /** 7-3: the catalogue star field, one additive draw. */
   private readonly stars: StarFieldSystem;
   /**
@@ -590,9 +591,10 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   private readonly bloom: BloomPass;
   /**
-   * The final contrast-adaptive sharpen, LAST in the chain; detached at a zero
-   * `sharpenAmount`. See `SharpenPass` for why every tier presents softer than
-   * its raster.
+   * The final contrast-adaptive sharpen as a pass of its own, LAST in the
+   * chain, where FXAA does not run to carry it; detached otherwise and at a
+   * zero `sharpenAmount`. See `SharpenPass` for why every tier presents softer
+   * than its raster.
    */
   private readonly sharpen: SharpenPass;
   private readonly resizeObserver: ResizeObserver;
@@ -721,7 +723,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     groundCover: GroundCoverSystem,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
-    fxaa: FxaaPostProcess,
+    fxaa: FxaaSharpenPass,
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
     clusteredLighting: ClusteredLightingSystem,
@@ -1487,23 +1489,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       // request a second multisampled target for no benefit.
       toneMap.samples = 1;
       cleanup.push(() => toneMap.dispose(camera));
-      const fxaa = new FxaaPostProcess(
-        "final-fxaa",
-        1,
-        camera,
-        Constants.TEXTURE_BILINEAR_SAMPLINGMODE,
-        engine,
-        false,
-        Constants.TEXTURETYPE_UNSIGNED_BYTE,
-      );
+      // FXAA, with the final sharpen fused into it: one full-screen pass where
+      // two ran, and no target between them (see `SharpenPass`).
+      const fxaa = new FxaaSharpenPass(camera, engine, profile.sharpenAmount);
       cleanup.push(() => fxaa.dispose(camera));
       // FXAA is the no-MSAA fallback only; running both softens the image.
-      if (profile.msaaSamples > 1) camera.detachPostProcess(fxaa);
-      // Constructed after FXAA so it is last: it sharpens the display image,
-      // and FXAA's edge blur is part of what it takes back.
+      if (profile.msaaSamples > 1) fxaa.setEnabled(camera, false);
+      // The multisampled tiers' sharpen has no FXAA to ride in, so it is a pass
+      // of its own, constructed last so it is last: it sharpens the display
+      // image.
       const sharpen = new SharpenPass(camera, engine, profile.sharpenAmount);
       cleanup.push(() => sharpen.dispose(camera));
-      if (profile.sharpenAmount <= 0) sharpen.setEnabled(camera, false);
+      if (!standaloneSharpen(profile)) sharpen.setEnabled(camera, false);
 
       checkpointRendererStartup("presentation systems construction", "sync");
 
@@ -2856,7 +2853,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.bloom.blurVertical,
       this.bloom.composite,
       this.toneMap,
-      this.fxaa,
+      this.fxaa.postProcess,
       this.sharpen.postProcess,
     ]) {
       pass.markTextureDirty();
@@ -3414,13 +3411,14 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // depends on what is attached.
     this.bloom.setEnabled(this.camera, this.profile.bloomEnabled, this.scotopic.enabled ? 1 : 0);
     this.applyFirstPassOwnership();
-    // Babylon APPENDS on attach, so the sharpen comes off first and goes back
-    // on after FXAA: it must stay the last pass in the chain.
+    // Babylon APPENDS on attach, so both final passes come off and the
+    // profile's one goes back on: it must be the last pass in the chain.
     this.sharpen.setEnabled(this.camera, false);
-    this.camera.detachPostProcess(this.fxaa);
-    if (this.profile.msaaSamples === 1) this.camera.attachPostProcess(this.fxaa);
+    this.fxaa.setEnabled(this.camera, false);
+    this.fxaa.setAmount(this.profile.sharpenAmount);
+    this.fxaa.setEnabled(this.camera, this.profile.msaaSamples === 1);
     this.sharpen.setAmount(this.profile.sharpenAmount);
-    this.sharpen.setEnabled(this.camera, this.profile.sharpenAmount > 0);
+    this.sharpen.setEnabled(this.camera, standaloneSharpen(this.profile));
     this.resetTimingWindow();
     this.applyRenderScale();
     this.graph.invalidateHistory("quality profile changed");

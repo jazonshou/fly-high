@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { readSource } from "./support/sourceText";
-import { RCAS_LIMIT, RCAS_SHARPEN_WGSL, rcasSharpen } from "../src/render/webgpu/lighting/SharpenPass";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import {
+  FXAA_QUALITY,
+  FXAA_RCAS_WGSL,
+  RCAS_LIMIT,
+  RCAS_SHARPEN_WGSL,
+  rcasSharpen,
+} from "../src/render/webgpu/lighting/SharpenPass";
+import { resolveWebGpuQualityProfile, standaloneSharpen } from "../src/render/webgpu/core/QualityProfile";
 
 /**
  * The final RCAS sharpen: the properties that decide whether it reads as
@@ -138,12 +146,14 @@ describe("RCAS is contrast-adaptive, which is why it does not ring", () => {
 });
 
 describe("the shipped shader and the chain", () => {
-  it("carries the tested lobe limit and both guards", () => {
-    expect(RCAS_SHARPEN_WGSL).toContain(`-${RCAS_LIMIT.toFixed(6)}`);
-    expect(RCAS_SHARPEN_WGSL).toContain("max(4.0 * mx4, vec3f(1e-5))");
-    expect(RCAS_SHARPEN_WGSL).toContain("min(4.0 * mn4 - vec3f(4.0), vec3f(-1e-5))");
-    expect(RCAS_SHARPEN_WGSL).toContain("1.0 - 0.5 * noise");
-    expect(RCAS_SHARPEN_WGSL).toContain("uniforms.sharpenAmount");
+  it("carries the tested lobe limit and both guards, in both forms", () => {
+    for (const shader of [RCAS_SHARPEN_WGSL, FXAA_RCAS_WGSL]) {
+      expect(shader).toContain(`-${RCAS_LIMIT.toFixed(6)}`);
+      expect(shader).toContain("max(4.0 * mx4, vec3f(1e-5))");
+      expect(shader).toContain("min(4.0 * mn4 - vec3f(4.0), vec3f(-1e-5))");
+      expect(shader).toContain("1.0 - 0.5 * noise");
+      expect(shader).toContain("uniforms.sharpenAmount");
+    }
   });
 
   it("is ratio 1 and single-sampled", () => {
@@ -157,26 +167,55 @@ describe("the shipped shader and the chain", () => {
 
   const renderer = readSource("src/render/FlightRenderer.ts");
 
-  it("is constructed after FXAA, so it is the last pass", () => {
+  it("is constructed after the tone map, FXAA first, so whichever runs is last", () => {
     // Construction order is attachment order is render order.
-    const fxaa = renderer.indexOf("new FxaaPostProcess(");
+    const toneMap = renderer.indexOf("new ImageProcessingPostProcess(");
+    const fxaa = renderer.indexOf("new FxaaSharpenPass(");
     const sharpen = renderer.indexOf("new SharpenPass(");
-    expect(fxaa).toBeGreaterThan(-1);
-    expect(sharpen, "the sharpen is not constructed after FXAA").toBeGreaterThan(fxaa);
+    expect(toneMap).toBeGreaterThan(-1);
+    expect(fxaa, "FXAA is not constructed after the tone map").toBeGreaterThan(toneMap);
+    expect(sharpen, "the standalone sharpen is not constructed after FXAA").toBeGreaterThan(fxaa);
+    // Babylon's own FXAA would be a second, unsharpened FXAA in the chain.
+    expect(renderer).not.toContain("FxaaPostProcess");
   });
 
-  it("comes off before FXAA is re-attached on a profile change, and goes back after", () => {
-    // Babylon appends on attach. Re-attaching FXAA with the sharpen still on
-    // would leave FXAA last, blurring what the sharpen just restored.
-    const detach = renderer.indexOf("this.sharpen.setEnabled(this.camera, false);");
-    const fxaaBack = renderer.indexOf("this.camera.attachPostProcess(this.fxaa);", detach);
-    const reattach = renderer.indexOf(
-      "this.sharpen.setEnabled(this.camera, this.profile.sharpenAmount > 0);",
-      fxaaBack,
+  it("detaches both final passes on a profile change before re-attaching the profile's one", () => {
+    // Babylon appends on attach. Re-attaching one with the other still on
+    // would leave the wrong one last.
+    const sharpenOff = renderer.indexOf("this.sharpen.setEnabled(this.camera, false);");
+    const fxaaOff = renderer.indexOf("this.fxaa.setEnabled(this.camera, false);", sharpenOff);
+    const fxaaOn = renderer.indexOf(
+      "this.fxaa.setEnabled(this.camera, this.profile.msaaSamples === 1);",
+      fxaaOff,
     );
-    expect(detach, "applyProfile does not detach the sharpen").toBeGreaterThan(-1);
-    expect(fxaaBack, "FXAA is not re-attached after the sharpen comes off").toBeGreaterThan(detach);
-    expect(reattach, "the sharpen is not re-attached after FXAA").toBeGreaterThan(fxaaBack);
+    const sharpenOn = renderer.indexOf(
+      "this.sharpen.setEnabled(this.camera, standaloneSharpen(this.profile));",
+      fxaaOff,
+    );
+    expect(sharpenOff, "applyProfile does not detach the standalone sharpen").toBeGreaterThan(-1);
+    expect(fxaaOff, "applyProfile does not detach FXAA").toBeGreaterThan(sharpenOff);
+    expect(fxaaOn, "FXAA is not re-attached after both come off").toBeGreaterThan(fxaaOff);
+    expect(sharpenOn, "the sharpen is not re-attached after both come off").toBeGreaterThan(fxaaOff);
+    // The fused pass takes the profile's strength before it can draw with it.
+    expect(renderer.indexOf("this.fxaa.setAmount(this.profile.sharpenAmount);", fxaaOff))
+      .toBeGreaterThan(fxaaOff);
+  });
+
+  it("rides inside FXAA wherever FXAA runs, and is a pass of its own only where it does not", () => {
+    // The point of the fused form: a sharpened FXAA tier pays for one
+    // full-screen pass, not two. And no tier runs both forms, or neither while
+    // asking for a sharpen.
+    let fused = 0;
+    for (const quality of ["low", "medium", "high"] as const) {
+      for (const mode of ["performance", "balanced", "ultra"] as const) {
+        const profile = resolveWebGpuQualityProfile(quality, mode);
+        const fxaaRuns = profile.msaaSamples === 1;
+        expect(standaloneSharpen(profile)).toBe(!fxaaRuns && profile.sharpenAmount > 0);
+        if (fxaaRuns && profile.sharpenAmount > 0) fused += 1;
+      }
+    }
+    expect(fused, "no profile exercises the fused form").toBeGreaterThan(0);
+    expect(standaloneSharpen(resolveWebGpuQualityProfile("medium", "balanced"))).toBe(false);
   });
 
   it("has a valid strength on every tier, stronger where FXAA runs", () => {
@@ -197,5 +236,50 @@ describe("the shipped shader and the chain", () => {
     expect(fxaaTier.msaaSamples).toBe(1);
     expect(msaaTier.msaaSamples).toBeGreaterThan(1);
     expect(fxaaTier.sharpenAmount).toBeGreaterThan(msaaTier.sharpenAmount);
+  });
+});
+
+describe("the fused FXAA pass is Babylon's FXAA", () => {
+  // The installed Babylon's shipped WGSL, which the fused pass ports. Read as
+  // text: it is a generated module whose export is marked internal.
+  const require = createRequire(import.meta.url);
+  const babylonFxaa = readFileSync(
+    require.resolve("@babylonjs/core/ShadersWGSL/fxaa.fragment.js"),
+    "utf8",
+  );
+  const compact = (text: string) => text.replace(/\s+/g, "");
+
+  it("runs at Babylon's quality settings", () => {
+    expect(babylonFxaa).toContain(`fxaaQualitySubpix: f32=${FXAA_QUALITY.subpix.toFixed(1)};`);
+    expect(babylonFxaa).toContain(`fxaaQualityEdgeThreshold: f32=${FXAA_QUALITY.edgeThreshold};`);
+    expect(babylonFxaa).toContain(`fxaaQualityEdgeThresholdMin: f32=${FXAA_QUALITY.edgeThresholdMin};`);
+    expect(compact(FXAA_RCAS_WGSL)).toContain(`fxaaQualityEdgeThreshold:f32=${FXAA_QUALITY.edgeThreshold};`);
+    expect(compact(FXAA_RCAS_WGSL)).toContain(`fxaaQualityEdgeThresholdMin:f32=${FXAA_QUALITY.edgeThresholdMin};`);
+    expect(compact(FXAA_RCAS_WGSL)).toContain(`fxaaQualitySubpix:f32=${FXAA_QUALITY.subpix.toFixed(1)};`);
+  });
+
+  it("weighs luma and walks the edge as Babylon's does", () => {
+    // The luma weights and the three search steps (1.5, 3 and 12 texels) are
+    // what decide which pixels FXAA moves and how far; a port that drifted on
+    // any of them would anti-alias differently while compiling fine.
+    expect(babylonFxaa).toContain("vec3f(0.2126,0.7152,0.0722)");
+    expect(compact(FXAA_RCAS_WGSL)).toContain("vec3f(0.2126,0.7152,0.0722)");
+    for (const step of ["offNP.x*1.5", "offNP.x*3.0", "offNP.x*12.0"]) {
+      expect(babylonFxaa, `Babylon's FXAA no longer steps ${step}`).toContain(step);
+    }
+    for (const step of ["offNP*1.5", "offNP*3.0", "offNP*12.0"]) {
+      expect(compact(FXAA_RCAS_WGSL)).toContain(step);
+    }
+    expect(compact(FXAA_RCAS_WGSL)).toContain("(subpixA*(1.0/12.0))-lumaM");
+    expect(compact(FXAA_RCAS_WGSL)).toContain("gradient*1.0/4.0");
+  });
+
+  it("compiles RCAS in only when asked, so a zero amount is FXAA alone", () => {
+    const rcasCall = FXAA_RCAS_WGSL.indexOf("rcasSharpen(colour.rgb");
+    const ifdef = FXAA_RCAS_WGSL.lastIndexOf("#ifdef RCAS_SHARPEN", rcasCall);
+    const endif = FXAA_RCAS_WGSL.indexOf("#endif", rcasCall);
+    expect(rcasCall).toBeGreaterThan(-1);
+    expect(ifdef, "the RCAS call is not inside #ifdef RCAS_SHARPEN").toBeGreaterThan(-1);
+    expect(endif).toBeGreaterThan(rcasCall);
   });
 });

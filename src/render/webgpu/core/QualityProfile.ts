@@ -143,8 +143,11 @@ export interface WebGpuQualityProfile {
    *
    * Per row: tier 1 sits highest because FXAA is part of what it undoes. The
    * multisampled tiers keep a lighter touch for the canvas stretch alone.
-   * Tier 0 is OFF, not for want of need: the pass costs one LDR target, and
-   * tier 0 already estimates 259.6 of its 260 MiB ceiling at 2560x1440@2.
+   * Tier 0 is OFF, not for want of need. It was off for memory while the
+   * sharpen was a pass of its own (one LDR target, against tier 0's 259.6 of
+   * 260 MiB at 2560x1440@2); fused into FXAA (`FxaaSharpenPass`) it costs no
+   * target, only RCAS's arithmetic, so turning it on there is now a decision
+   * about the low tier's look, not its budget.
    *
    * DATA, not a `profile.tier` branch, per the tier rule.
    */
@@ -810,6 +813,17 @@ export function isUsableFrameTiming(milliseconds: number): boolean {
   return Number.isFinite(milliseconds)
     && milliseconds >= MIN_TIMING_MILLISECONDS
     && milliseconds <= MAX_TIMING_MILLISECONDS;
+}
+
+/**
+ * Whether the final sharpen runs as a full-screen pass of its own. Where FXAA
+ * runs (no MSAA) the sharpen is fused into it and costs no pass or target, so
+ * only the multisampled tiers pay for a separate one.
+ */
+export function standaloneSharpen(
+  profile: Pick<WebGpuQualityProfile, "msaaSamples" | "sharpenAmount">,
+): boolean {
+  return profile.msaaSamples > 1 && profile.sharpenAmount > 0;
 }
 
 /** A hitch is a frame slower than twice the tier's controllable target. */

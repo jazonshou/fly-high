@@ -1212,15 +1212,21 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     owner: "lighting",
     definitionSites: ["src/render/webgpu/lighting/SharpenPass.ts"],
     consumers: ["lighting"],
-    ownedSymbols: ["SharpenPass", "RCAS_SHARPEN_WGSL", "rcasSharpen"],
+    ownedSymbols: [
+      "SharpenPass", "FxaaSharpenPass", "RCAS_SHARPEN_WGSL", "FXAA_RCAS_WGSL", "rcasSharpen",
+    ],
     notes:
       "RCAS (AMD FidelityFX's contrast-adaptive sharpen) restores the acutance "
-      + "FXAA and the browser's bilinear canvas upscale take away. It must be "
-      + "the LAST pass: `applyProfile` detaches it before re-attaching FXAA and "
-      + "re-attaches it after, because Babylon appends. Its strength is the "
-      + "profile's `sharpenAmount`; zero detaches it rather than running an "
-      + "identity draw. `rcasSharpen` is the CPU twin of the WGSL that the "
-      + "bounded-output tests run against.",
+      + "FXAA and the browser's bilinear canvas upscale take away. Where FXAA "
+      + "runs it is fused into the FXAA pass (`FxaaSharpenPass`, a port of "
+      + "Babylon's FXAA that replaced FxaaPostProcess), which already fetches "
+      + "RCAS's five taps, so it costs no pass and no target; at the MSAA tiers "
+      + "it is a pass of its own (`SharpenPass`). Either is the LAST pass: "
+      + "`applyProfile` detaches both and re-attaches the profile's one, because "
+      + "Babylon appends. Its strength is the profile's `sharpenAmount`; zero "
+      + "compiles RCAS out of the fused pass and detaches the standalone one "
+      + "rather than running an identity draw. `rcasSharpen` is the CPU twin of "
+      + "the WGSL that the bounded-output tests run against.",
   },
   {
     // 7-13: the airfield's furniture. Arithmetic and geometry only -- the
