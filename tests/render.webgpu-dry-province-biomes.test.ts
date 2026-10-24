@@ -7,8 +7,10 @@ import {
   DRY_PROVINCE_PARKLAND_FULL,
   PARKLAND_SHRUB_SHARE,
   PARKLAND_TREE_SHARE,
+  PARKLAND_CLOSED_FOREST_KEEP,
   canopyClosure,
   densityField,
+  dryProvinceClosedForestKeep,
   dryProvinceGroundCoverKeep,
   dryProvinceShares,
   type VegetationDensityInput,
@@ -309,17 +311,57 @@ describe("a forced dry province reads as its ecology", () => {
     expect(desert.dominant[SurfaceMaterial.ForestFloor]!).toBeLessThan(0.02);
   });
 
+  it("opens the closed forest in both dry provinces but keeps the river galleries", () => {
+    expect(dryProvinceClosedForestKeep(0, 0, 0)).toBe(1);
+    expect(dryProvinceClosedForestKeep(0, 0, 0.6)).toBe(1);
+    expect(dryProvinceClosedForestKeep(0, 1, 0)).toBeCloseTo(PARKLAND_CLOSED_FOREST_KEEP, 12);
+    expect(dryProvinceClosedForestKeep(1, 0, 0)).toBe(0);
+    // The bank band is the gallery forest: a full band keeps the whole stand.
+    expect(dryProvinceClosedForestKeep(0, 1, 1)).toBe(1);
+    expect(dryProvinceClosedForestKeep(1, 0, 1)).toBe(1);
+    // Through the field: the same wet lowland, off the bank and on it, at the
+    // densest stand along a transect (the forest pattern gates most points).
+    let ground: VegetationDensityInput | null = null;
+    let densest = 0;
+    for (let step = 0; step < 400; step += 1) {
+      const probe = {
+        x: step * 137, z: step * -61, heightMeters: 160, seaLevelMeters: 0, slope: 0.02,
+        moisture: 0.6, dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR, filterWidthMeters: 0,
+        shoreDistanceMeters: 400,
+      } satisfies VegetationDensityInput;
+      const stems = densityField(7, probe).treeStemsPerSquareMeter;
+      if (stems > densest) { densest = stems; ground = probe; }
+    }
+    if (ground === null) throw new Error("no stand on the transect");
+    const temperateStems = densityField(7, { ...ground, shoreDistanceMeters: 400 })
+      .treeStemsPerSquareMeter;
+    const savannaStems = densityField(7, { ...ground, shoreDistanceMeters: 400, dryness: 0.25 })
+      .treeStemsPerSquareMeter;
+    const galleryTemperate = densityField(7, { ...ground, shoreDistanceMeters: 15 })
+      .treeStemsPerSquareMeter;
+    const gallerySavanna = densityField(7, { ...ground, shoreDistanceMeters: 15, dryness: 0.25 })
+      .treeStemsPerSquareMeter;
+    expect(temperateStems).toBeGreaterThan(0.005);
+    expect(savannaStems).toBeLessThan(temperateStems * 0.5);
+    // On the bank the savanna keeps the stand and adds its lone trees.
+    expect(gallerySavanna).toBeGreaterThanOrEqual(galleryTemperate);
+  });
+
   it("leaves the desert a scatter of pinyon, never a forest", () => {
     expect(desert.treesPerHectare).toBeGreaterThan(1);
     expect(desert.treesPerHectare).toBeLessThan(temperate.treesPerHectare * 0.15);
   });
 
   it("turns the savanna into a straw-coloured sward with open-grown trees", () => {
-    expect(savanna.dominant[SurfaceMaterial.DryGrass]!).toBeGreaterThan(0.55);
+    expect(savanna.dominant[SurfaceMaterial.DryGrass]!).toBeGreaterThan(0.7);
     expect(savanna.dominant[SurfaceMaterial.ForestFloor]!)
-      .toBeLessThan(temperate.dominant[SurfaceMaterial.ForestFloor]! * 0.5);
-    expect(savanna.treesPerHectare).toBeGreaterThan(temperate.treesPerHectare * 0.25);
-    expect(savanna.treesPerHectare).toBeLessThan(temperate.treesPerHectare * 0.7);
+      .toBeLessThan(temperate.dominant[SurfaceMaterial.ForestFloor]! * 0.25);
+    // A grazed oak savanna carries 10-40 trees/ha; the temperate core ~110.
+    // The closed forest is cut, so this is the lone oaks and the galleries.
+    expect(savanna.treesPerHectare).toBeGreaterThan(10);
+    expect(savanna.treesPerHectare).toBeLessThan(40);
+    // The forest's understory went with it: bush clumps in the grass remain.
+    expect(savanna.shrubsPerHectare).toBeLessThan(temperate.shrubsPerHectare * 0.5);
     // Lone trees grow the spreading edge form; the temperate stands do not.
     expect(savanna.treeEdge).toBeGreaterThan(temperate.treeEdge + 0.2);
   });
@@ -406,6 +448,12 @@ describe("the WGSL twins carry the same dry laws", () => {
   it("mirrors the density field's stands and bush", () => {
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("fn vegetationDryProvinceShares(");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("parklandStems + pinyonStems");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
+      "(arid + VEG_PARKLAND_CLOSED_FOREST_CUT * parkland) * (1.0 - riparianBand)");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("moistureFactor * habitat * closedForestKeep");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
+      "1.0 - VEG_PARKLAND_CLOSED_FOREST_CUT * parkland * (1.0 - riparianBand)");
+    expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("(1.0 + riparianBand * 0.65) * understoryKeep");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
       "max(forestEdge, parkland * VEG_PARKLAND_OPEN_GROWN_EDGE)");
     for (const value of [

@@ -282,17 +282,17 @@ export const LAND_COVER_DRY_PROVINCE = Object.freeze({
   fanHigh: 0.07,
   fanFadeLow: 0.16,
   fanFadeHigh: 0.3,
-  /** Bare rock from about 23 degrees. */
-  rockLow: 0.08,
-  rockHigh: 0.24,
+  /** Bare rock from about 35 degrees, full by 53. */
+  rockLow: 0.18,
+  rockHigh: 0.4,
   sandGain: 1.15,
   shrubBase: 0.1,
   shrubWetGain: 0.5,
-  gravelGain: 0.62,
-  rockGain: 0.8,
+  gravelGain: 0.3,
+  rockGain: 0.4,
   desertGrassCut: 0.9,
   desertDryGrassCut: 0.15,
-  parklandGrassCut: 0.35,
+  parklandGrassCut: 0.6,
 });
 
 export interface LandCoverDryProvinceTerms {
