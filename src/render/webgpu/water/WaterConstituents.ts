@@ -36,6 +36,8 @@
  * per-pixel depth terms), from one text.
  */
 
+import { borealShare, tundraShare } from "@/src/world/coldBiomes";
+import { dryProvinceShares } from "../detail/densityField";
 import type { WaterOpticalType } from "./WaterShaders";
 
 /**
@@ -260,6 +262,19 @@ export interface InlandWaterEnvironment {
   readonly temperature: number;
   /** Terrain moisture field at the water, 0..1. */
   readonly moisture: number;
+  /**
+   * The climate province's raw temperature offset (`sampleClimateProvince`),
+   * negative colder: 0 in the temperate core, where it leaves every
+   * concentration bit-identical. `temperature` already includes it; this raw
+   * copy keys the cold biomes' chemistry. Omitted reads 0.
+   */
+  readonly temperatureOffset?: number;
+  /**
+   * The climate province's raw dryness offset at the water
+   * (`sampleClimateProvince`); `moisture` already carries its scaling. Omitted
+   * reads 0, the temperate core, where every term it gates is exactly 0.
+   */
+  readonly dryness?: number;
 }
 
 /** Glacial flour needs cold AND height: a valley glacier's outwash. */
@@ -268,6 +283,55 @@ export const LAKE_GLACIAL_TEMPERATURE_MILD = 0.40;
 export const LAKE_GLACIAL_ELEVATION_LOW = 550;
 export const LAKE_GLACIAL_ELEVATION_HIGH = 1400;
 export const LAKE_GLACIAL_MINERAL = 9;
+
+/**
+ * The cold biomes' inland water (`src/world/coldBiomes.ts`).
+ *
+ * TAIGA WATER IS BROWN. The boreal zone is the world's peatland belt: bogs and
+ * fens cover a large share of its catchments, and the humus they leach makes
+ * its lakes and rivers tea-coloured to near-black — Finnish and Swedish forest
+ * lakes typically carry a CDOM absorption of 3-10 per metre at 440 nm, against
+ * the ~1 of a temperate lowland lake. Two terms carry that:
+ * - PEATLAND SHARE: a boreal catchment is humic well below the moisture a
+ *   temperate one needs, because the peat holds the water the climate does
+ *   not. `wet` is raised toward 1 by this share of the gap.
+ * - PEAT GAIN: the same humic share leaches more stain.
+ *
+ * TUNDRA WATER IS CLEAR. Arctic lakes are among the most oligotrophic on
+ * Earth, and their thin, frozen soils leach a fraction of a forest's humus,
+ * so the stain falls away again as the tundra takes over from the taiga —
+ * the boreal gain is faded out by the tundra share — and the remaining humic
+ * term loses most of itself. Chlorophyll needs no term: the province's own
+ * cold already shuts `warm`. Glacial flour still needs a glacier, so its
+ * elevation gate stays on real height: a lowland tundra lake is clear and
+ * blue-black, and only the mountain lakes above it run turquoise.
+ *
+ * Every term is `+ 0 * k` or `* (1 - 0 * k)` in the temperate core.
+ */
+export const LAKE_BOREAL_PEATLAND_SHARE = 0.45;
+export const LAKE_BOREAL_PEAT_GAIN = 1.4;
+export const RIVER_BOREAL_PEAT_GAIN = 1.0;
+export const INLAND_TUNDRA_HUMIC_LOSS = 0.7;
+
+interface ColdInlandWater {
+  /** `wet`, raised by the boreal peatland share. */
+  readonly peat: number;
+  /** Multiplier on the humic stain. */
+  readonly stain: number;
+}
+
+function coldInlandWater(
+  temperatureOffset: number,
+  wet: number,
+  peatGain: number,
+): ColdInlandWater {
+  const tundra = tundraShare(temperatureOffset);
+  const boreal = borealShare(temperatureOffset) * (1 - tundra);
+  return {
+    peat: wet + (1 - wet) * boreal * LAKE_BOREAL_PEATLAND_SHARE,
+    stain: (1 + boreal * peatGain) * (1 - tundra * INLAND_TUNDRA_HUMIC_LOSS),
+  };
+}
 
 /**
  * Resolve a lake's chemistry. Three regimes, blended rather than switched:
@@ -290,11 +354,12 @@ export function resolveLakeConstituents(
     + Math.sqrt(Math.max(areaSquareMeters, 0)) / 4_000);
   const wet = smoothstepUp(0.42, 0.86, moisture);
   const warm = smoothstepUp(0.34, 0.72, temperature);
-  const humic = wet * (1 - glacial) * dilution;
+  const cold = coldInlandWater(environment.temperatureOffset ?? 0, wet, LAKE_BOREAL_PEAT_GAIN);
+  const humic = cold.peat * (1 - glacial) * dilution;
   const productive = warm * wet * (1 - glacial) * dilution;
   return {
     chlorophyll: 0.35 + 22 * productive,
-    cdom440: 0.05 + 3.2 * humic,
+    cdom440: 0.05 + 3.2 * humic * cold.stain,
     sediment: 0.15 + 1.6 * productive,
     mineral: LAKE_GLACIAL_MINERAL * glacial,
   };
@@ -323,13 +388,26 @@ export function resolveRiverConstituents(
   const load = smoothstepUp(0.08, 2.5, streamPower);
   const wet = smoothstepUp(0.42, 0.86, moisture);
   const lowland = smoothstepDown(80, 900, elevationAboveSeaMeters);
+  const cold = coldInlandWater(environment.temperatureOffset ?? 0, wet, RIVER_BOREAL_PEAT_GAIN);
+  // Dry country is bare country: with no vegetation to hold the banks, a
+  // desert river runs brown at ANY stream power (the Colorado before the dams,
+  // the Rio Grande), and a savanna river runs tan. Not lowland-gated: a high
+  // desert's rivers are as muddy as its basin's. At 1 and full load this is
+  // the 150 g/m^3 muddy-river type the model is validated against.
+  const dry = dryProvinceShares(environment.dryness ?? 0);
+  const dryLoad = (DESERT_RIVER_SEDIMENT * dry.arid + PARKLAND_RIVER_SEDIMENT * dry.parkland)
+    * (0.35 + 0.65 * load);
   return {
     chlorophyll: 0.2 + 4 * lowland * wet * (1 - glacial),
-    cdom440: 0.04 + 2.4 * wet * lowland * (1 - glacial),
-    sediment: 0.3 + 34 * load * lowland,
+    cdom440: 0.04 + 2.4 * cold.peat * lowland * (1 - glacial) * cold.stain,
+    sediment: 0.3 + 34 * load * lowland + dryLoad,
     mineral: 7 * glacial,
   };
 }
+
+/** Bare-catchment sediment a fully dry province adds to a river, g/m^3. */
+export const DESERT_RIVER_SEDIMENT = 115;
+export const PARKLAND_RIVER_SEDIMENT = 30;
 
 function smoothstepUp(low: number, high: number, value: number): number {
   if (!(high > low)) throw new RangeError("smoothstep edges must increase");
