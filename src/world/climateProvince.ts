@@ -203,11 +203,13 @@ export function climateProvinceCoreMask(
   x: number,
   z: number,
 ): number {
-  const center = climateProvinceCoreCenter(world);
+  // Inline rather than through `climateProvinceCoreCenter`: every CPU terrain
+  // sample comes through here, so it allocates nothing.
+  const airport = world.airport;
   return smoothstep(
     CLIMATE_PROVINCE.coreRadiusMeters,
     CLIMATE_PROVINCE.coreRadiusMeters + CLIMATE_PROVINCE.rampMeters,
-    Math.hypot(x - center.x, z - center.z),
+    Math.hypot(x - (airport ? airport.centerX : 0), z - (airport ? airport.centerZ : 0)),
   );
 }
 
@@ -267,16 +269,33 @@ export function sampleClimateProvinceUnmasked(
   z: number,
   target: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 },
 ): ClimateProvinceSample {
-  const fields = sampleClimateProvinceFields(seedHash, x, z);
+  // The fields inline rather than through `sampleClimateProvinceFields`, so a
+  // caller with a scratch target allocates nothing (CPU samplers run per frame).
+  const t = CLIMATE_PROVINCE.temperature;
+  const d = CLIMATE_PROVINCE.dryness;
   target.temperatureOffset = climateProvinceStaircase(
-    fields.temperature,
-    CLIMATE_PROVINCE.temperature.levels,
-    CLIMATE_PROVINCE.temperature.thresholds,
+    fbm2D(
+      mixSeed(seedHash, t.channel),
+      x / t.baseWavelengthMeters,
+      z / t.baseWavelengthMeters,
+      t.octaves,
+      t.lacunarity,
+      t.persistence,
+    ),
+    t.levels,
+    t.thresholds,
   );
   target.dryness = climateProvinceStaircase(
-    fields.dryness,
-    CLIMATE_PROVINCE.dryness.levels,
-    CLIMATE_PROVINCE.dryness.thresholds,
+    fbm2D(
+      mixSeed(seedHash, d.channel),
+      x / d.baseWavelengthMeters,
+      z / d.baseWavelengthMeters,
+      d.octaves,
+      d.lacunarity,
+      d.persistence,
+    ),
+    d.levels,
+    d.thresholds,
   );
   return target;
 }
