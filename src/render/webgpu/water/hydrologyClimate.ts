@@ -4,6 +4,7 @@ import {
   sampleTerrainMoisture,
   terrainTemperatureFromClimate,
 } from "@/src/world/terrain";
+import { sampleClimateProvince } from "@/src/world/climateProvince";
 import type { HydrologyClimateSampler } from "./hydrologyMeshArrays";
 
 /**
@@ -24,5 +25,7 @@ export function hydrologyClimateSamplerFor(world: WorldDefinition): HydrologyCli
     ),
     // Point-sampled: a lake or a station is a point, not a footprint.
     moisture: sampleTerrainMoisture(world, x, z, 0),
+    // The raw offset: a dry province's rivers run brown (resolveRiverConstituents).
+    dryness: sampleClimateProvince(world, x, z).dryness,
   });
 }

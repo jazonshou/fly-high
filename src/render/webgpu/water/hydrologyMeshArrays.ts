@@ -54,6 +54,8 @@ export interface HydrologyClimateSample {
   readonly temperature: number;
   /** Terrain moisture field, 0..1. */
   readonly moisture: number;
+  /** The climate province's raw dryness offset; omitted reads 0 (the core). */
+  readonly dryness?: number;
 }
 
 export type HydrologyClimateSampler = (
@@ -142,6 +144,7 @@ function riverStationChemistry(
       elevationAboveSeaMeters,
       temperature: sample.temperature,
       moisture: sample.moisture,
+      ...(sample.dryness !== undefined ? { dryness: sample.dryness } : {}),
     },
     widthMeters,
     flowSpeedMetersPerSecond,
