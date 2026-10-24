@@ -1,4 +1,13 @@
+import type { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
+import type { ComputeShader } from "@babylonjs/core/Compute/computeShader";
+import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { describe, expect, it } from "vitest";
+import { GLOBAL_HEIGHT_PYRAMID_WGSL } from "../src/render/webgpu/terrain/GlobalHeightPyramid";
+import { terrainPageSplatWgsl } from "../src/render/webgpu/terrain/PageOcclusionBake";
+import { RUNWAY_EARTHWORKS_WGSL } from "../src/render/webgpu/terrain/RunwayEarthworks";
+import { RUNWAY_SDF_WGSL } from "../src/render/webgpu/terrain/RunwaySurface";
+import { terrainPageGenerationWgsl } from "../src/render/webgpu/terrain/TerrainPageAtlas";
+import { bathymetryUpdateWgsl } from "../src/render/webgpu/water/BathymetryClipmap";
 import {
   TERRAIN_KERNEL_FORBIDDEN_BUILTINS,
   TERRAIN_KERNEL_LATTICES,
@@ -14,7 +23,9 @@ import {
   TERRAIN_LANDFORM_CONSTANTS,
   TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES,
   TERRAIN_LANDFORM_WGSL,
+  TerrainLandformDataBinding,
   terrainLandformDataBindingWgsl,
+  type TerrainLandformDataSource,
 } from "../src/render/webgpu/terrain/TerrainLandformKernel";
 import { CLIMATE_PROVINCE } from "../src/world/climateProvince";
 import { DUNE_PROFILE_CONSTANTS, DUNES, duneAcrossPhase, duneWindPhase } from "../src/world/dunes";
@@ -297,5 +308,124 @@ describe("the landform include (TerrainLandformKernel.ts)", () => {
     expect(body.indexOf("terrainDuneStage(")).toBeLessThan(body.indexOf("terrainVolcanicOverlay("));
     expect(body).toContain("terrainKernelPages[kPageIndex].landformBase");
     expect(body).toContain("terrainKernelPages[kPageIndex].kept.w");
+  });
+});
+
+/** The body of fn name in source, up to the next top-level fn. */
+function functionBody(source: string, name: string): string {
+  const start = source.indexOf(`fn ${name}(`);
+  expect(start, name).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf("\nfn ", start + 1);
+  return source.slice(start, next < 0 ? undefined : next);
+}
+
+describe("the consumers of the landform stage", () => {
+  const consumers = [
+    ["page generation", terrainPageGenerationWgsl(
+      TERRAIN_KERNEL_WGSL,
+      terrainKernelPageBindingWgsl(0, 0),
+      `${RUNWAY_SDF_WGSL}\n${RUNWAY_EARTHWORKS_WGSL}`,
+    ), 6],
+    ["height pyramid", GLOBAL_HEIGHT_PYRAMID_WGSL, 3],
+    ["bathymetry", bathymetryUpdateWgsl(), 6],
+    ["splat bake", terrainPageSplatWgsl(), 8],
+  ] as const;
+
+  it("each compose the include once and bind the data at a slot of their own", () => {
+    for (const [name, source, binding] of consumers) {
+      const declaration = `@group(0) @binding(${binding}) var<storage, read> terrainLandformData`;
+      expect(source.split(declaration).length - 1, name).toBe(1);
+      expect(source.split("fn terrainLandforms(").length - 1, name).toBe(1);
+      // No other group-0 binding shares the slot.
+      expect(source.split(`@group(0) @binding(${binding}) `).length - 1, name).toBe(1);
+      // The include follows the kernel it reads kNatural from.
+      expect(source.indexOf("fn terrainNaturalHeight("), name)
+        .toBeLessThan(source.indexOf("fn terrainLandforms("));
+    }
+  });
+
+  it("run natural -> landforms -> earthworks in the page bake, the CPU's order", () => {
+    const body = functionBody(consumers[0][1], "pageHeightAt");
+    const natural = body.indexOf("let natural = terrainNaturalHeight(localX, localZ);");
+    const landformed = body.indexOf("let landformed = terrainLandforms(localX, localZ, natural);");
+    const earthworks = body.indexOf("terrainRunwayEarthworksHeight(");
+    expect(natural).toBeGreaterThan(0);
+    expect(landformed).toBeGreaterThan(natural);
+    expect(earthworks).toBeGreaterThan(landformed);
+    expect(body.slice(earthworks)).toMatch(/earthworks,\s*landformed,/u);
+  });
+
+  it("draw landforms into the pyramid, and into the bed before the macro blend", () => {
+    expect(functionBody(GLOBAL_HEIGHT_PYRAMID_WGSL, "bakePyramid")).toContain(
+      "let height = terrainLandforms(localX, localZ, terrainNaturalHeight(localX, localZ));");
+    const bed = functionBody(consumers[2][1], "updateBathymetry");
+    const landformed = bed.indexOf("var height = terrainLandforms(localX, localZ, natural);");
+    expect(landformed).toBeGreaterThan(bed.indexOf("let natural = terrainNaturalHeight(localX, localZ);"));
+    expect(landformed).toBeLessThan(bed.indexOf("bathymetryParams.water.w > 0.5"));
+  });
+
+  it("keep the splat bake's binding live without changing a texel", () => {
+    const body = functionBody(consumers[3][1], "bakeSplat");
+    expect(body).toContain("_ = terrainVolcanicActivity(localX, localZ);");
+    expect(body).not.toContain("terrainLandforms(");
+  });
+});
+
+describe("TerrainLandformDataBinding", () => {
+  const engine = {} as WebGPUEngine;
+  function fakeShader(): { shader: ComputeShader; calls: [string, unknown][] } {
+    const calls: [string, unknown][] = [];
+    const shader = {
+      setStorageBuffer: (name: string, buffer: unknown) => { calls.push([name, buffer]); },
+    } as unknown as ComputeShader;
+    return { shader, calls };
+  }
+  function fakeSource(
+    covers: TerrainLandformDataSource["covers"] = () => true,
+  ): { bufferVersion: number; buffer: StorageBuffer; covers: TerrainLandformDataSource["covers"] } {
+    return { buffer: {} as StorageBuffer, bufferVersion: 0, covers };
+  }
+
+  it("binds a source once, and again only when its buffer, version or shader changes", () => {
+    const first = fakeSource();
+    const binding = new TerrainLandformDataBinding(first);
+    const { shader, calls } = fakeShader();
+    binding.bind(engine, shader);
+    binding.bind(engine, shader);
+    expect(calls).toEqual([["terrainLandformData", first.buffer]]);
+    // The stream rebuilt its index in place: same object, new version.
+    first.bufferVersion = 1;
+    binding.bind(engine, shader);
+    binding.bind(engine, shader);
+    expect(calls).toHaveLength(2);
+    // A new buffer behind the same source.
+    first.buffer = {} as StorageBuffer;
+    binding.bind(engine, shader);
+    expect(calls[2]).toEqual(["terrainLandformData", first.buffer]);
+    // A different source, then a recreated pipeline.
+    const second = fakeSource();
+    binding.setSource(second);
+    binding.bind(engine, shader);
+    expect(calls[3]).toEqual(["terrainLandformData", second.buffer]);
+    const other = fakeShader();
+    binding.bind(engine, other.shader);
+    expect(other.calls).toEqual([["terrainLandformData", second.buffer]]);
+    expect(calls).toHaveLength(4);
+  });
+
+  it("asks the source what it covers, and covers everything with the placeholder", () => {
+    const asked: number[][] = [];
+    const source = fakeSource((minX, minZ, maxX, maxZ) => {
+      asked.push([minX, minZ, maxX, maxZ]);
+      return minX > 0;
+    });
+    const binding = new TerrainLandformDataBinding(source);
+    expect(binding.hasSource).toBe(true);
+    expect(binding.covers(1, 2, 3, 4)).toBe(true);
+    expect(binding.covers(-1, 2, 3, 4)).toBe(false);
+    expect(asked).toEqual([[1, 2, 3, 4], [-1, 2, 3, 4]]);
+    binding.setSource(null);
+    expect(binding.hasSource).toBe(false);
+    expect(binding.covers(-1, 2, 3, 4)).toBe(true);
   });
 });

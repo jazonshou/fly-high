@@ -39,7 +39,7 @@ import {
 import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { SURFACE_MATERIALS } from "./surfaceMaterials";
-import { terrainClimateProvinceInput } from "./TerrainKernel";
+import { terrainClimateProvinceInput, terrainLandformInput } from "./TerrainKernel";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
 import {
   TERRAIN_CHANNEL_TEXTURES,
@@ -1145,8 +1145,12 @@ export class TerrainClipmapSystem {
       return { pageGenerator: null, occlusionBake: null, splatBake: null, pyramid: null };
     }
     const engine = this.scene.getEngine();
+    // The landform stage reaches every height a page bake reads: the pages
+    // (through the world the generator is given), the pyramid beyond them,
+    // and the splat bake's page uniform.
+    const landform = terrainLandformInput(this.world);
     const pyramid = input.existingPyramid
-      ?? new GlobalHeightPyramid(this.scene, engine, this.world.seedHash);
+      ?? new GlobalHeightPyramid(this.scene, engine, this.world.seedHash, { landform });
     return {
       pageGenerator: new TerrainPageGenerator(
         engine,
@@ -1178,6 +1182,7 @@ export class TerrainClipmapSystem {
         this.world.latitudeDegrees,
         this.world.airport ?? null,
         terrainClimateProvinceInput(this.world),
+        landform,
       ),
     };
   };

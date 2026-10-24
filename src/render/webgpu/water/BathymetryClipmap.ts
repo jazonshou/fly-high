@@ -13,7 +13,15 @@ import {
   TERRAIN_KERNEL_WGSL,
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
+  terrainLandformInput,
+  type TerrainKernelLandformInput,
 } from "@/src/render/webgpu/terrain/TerrainKernel";
+import {
+  TERRAIN_LANDFORM_WGSL,
+  TerrainLandformDataBinding,
+  terrainLandformDataBindingWgsl,
+  type TerrainLandformDataSource,
+} from "@/src/render/webgpu/terrain/TerrainLandformKernel";
 import {
   EVOLUTION_ANALYTIC_BLEND_METERS,
   EVOLUTION_DOMAIN_SAMPLE_COUNT,
@@ -106,6 +114,8 @@ export function bathymetryStorageBytesPerTexel(format: BathymetryStorageFormat):
 }
 
 const BATHYMETRY_WORKGROUP_EDGE = 8;
+/** The landform data binding's slot in the update kernel's bind group. */
+const BATHYMETRY_LANDFORM_DATA_BINDING = 6;
 export const BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS = 30_000;
 const BATHYMETRY_COMPUTE_POLL_MILLISECONDS = 16;
 
@@ -748,7 +758,9 @@ export function bathymetryUpdateWgsl(
   }
   return /* wgsl */ `
 ${terrainKernelPageBindingWgsl(0, 0)}
+${terrainLandformDataBindingWgsl(0, BATHYMETRY_LANDFORM_DATA_BINDING)}
 ${TERRAIN_KERNEL_WGSL}
+${TERRAIN_LANDFORM_WGSL}
 
 struct BathymetryUpdateParams {
   // texel metres, sea level, clamp magnitude, macro-authority enabled
@@ -909,7 +921,13 @@ fn updateBathymetry(@builtin(global_invocation_id) id: vec3<u32>) {
   // coordinates by their own contracts; that asymmetry is real, not a bug.
   // tests/gpu/bathymetry-page-overlay.test.ts pins an analytic world's bed
   // against the CPU kernel at world coordinates so this cannot recur unseen.
-  var height = terrainNaturalHeight(f32(id.x) * texel, f32(id.y) * texel);
+  let localX = f32(id.x) * texel;
+  let localZ = f32(id.y) * texel;
+  let natural = terrainNaturalHeight(localX, localZ);
+  // The landform stage right after the natural kernel and before the macro
+  // blend, sampleTerrainHeight's order; LOCAL coordinates, by the contract
+  // above. Inside the landform core it returns natural itself, bit for bit.
+  var height = terrainLandforms(localX, localZ, natural);
   if (bathymetryParams.water.w > 0.5) {
     let macroHeight = sampleBathymetryMacroHeight(worldXZ);
     height = height + (macroHeight - height) * bathymetryMacroBlend(worldXZ);
@@ -988,6 +1006,12 @@ export interface BathymetryClipmapOptions {
    * renderer passes `selectBathymetryStorageFormat(adapter features)`.
    */
   readonly storageFormat?: BathymetryStorageFormat;
+  /**
+   * What `terrainLandformData` binds: the volcanic site index, or (omitted)
+   * a zeroed placeholder the clipmap owns. Swappable later with
+   * `setLandformDataSource`.
+   */
+  readonly landformData?: TerrainLandformDataSource | null;
 }
 
 /**
@@ -1018,6 +1042,10 @@ export class BathymetryClipmap {
   /** The snapshot whose footprints the textures are known to reflect. */
   private publishedPages: readonly BathymetryResidentErodedPage[] = [];
   private fallbackHeightTexture: RawTexture | null = null;
+  /** `terrainLandformData`: the one place it is held and bound, per dispatch. */
+  private readonly landformBinding: TerrainLandformDataBinding;
+  /** The world's landform core and wind; null (gain 0) for an eroded world. */
+  private readonly landform: TerrainKernelLandformInput | null;
   private macroEvolution: Readonly<TerrainMacroEvolutionExport> | null = null;
   private macroBufferDirty = true;
   private authorityDirty = false;
@@ -1039,6 +1067,8 @@ export class BathymetryClipmap {
       throw new RangeError(`Unknown bathymetry storage format ${String(storageFormat)}`);
     }
     this.storageFormat = storageFormat;
+    this.landform = terrainLandformInput(world);
+    this.landformBinding = new TerrainLandformDataBinding(options.landformData ?? null);
     // Mode gate, belt and braces with the wiring gate in FlightRenderer: an
     // analytic world ignores an accidentally supplied seam entirely, so its
     // page table stays the empty sentinel and the WGSL branch stays inert.
@@ -1272,6 +1302,20 @@ export class BathymetryClipmap {
     ));
   }
 
+  /**
+   * Bind a different landform data source (null: the placeholder). Takes
+   * effect at the next dispatch; the pipeline is not recreated.
+   *
+   * The clipmap does not defer a strip the source does not cover: the ring
+   * advances only once its strips are painted, and holding one back would
+   * serve a stale bed under the surf zone (see the page-delta rects in
+   * update). A strip painted before the index arrived is repainted when the
+   * ring next crosses it.
+   */
+  setLandformDataSource(source: TerrainLandformDataSource | null): void {
+    this.landformBinding.setSource(source);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -1284,6 +1328,7 @@ export class BathymetryClipmap {
     releaseGpuBufferBytes(this.pageTableBufferBytes);
     this.pageTableBufferBytes = 0;
     this.fallbackHeightTexture?.dispose();
+    this.landformBinding.dispose();
     this.macroHeightBuffer = null;
     this.pageTableBuffer = null;
     this.fallbackHeightTexture = null;
@@ -1338,6 +1383,7 @@ export class BathymetryClipmap {
         originX,
         originZ,
         filterWidthMeters: texel,
+        landform: this.landform,
       })));
       const bytes = new ArrayBuffer(32);
       const view = new DataView(bytes);
@@ -1354,6 +1400,7 @@ export class BathymetryClipmap {
       shader.setStorageBuffer("bathymetryParams", paramsBuffer);
       shader.setStorageBuffer("bathymetryMacroHeight", macroHeightBuffer);
       shader.setStorageBuffer("bathymetryPageTable", pageTableBuffer);
+      this.landformBinding.bind(this.engine, shader);
       shader.setTexture("bathymetryHeightAtlas", heightAtlasTexture, false);
       shader.setStorageTexture("bathymetryTarget", runtime.texture);
       await dispatchBathymetryComputeWhenReady(
@@ -1406,6 +1453,7 @@ export class BathymetryClipmap {
           bathymetryMacroHeight: { group: 0, binding: 3 },
           bathymetryPageTable: { group: 0, binding: 4 },
           bathymetryHeightAtlas: { group: 0, binding: 5 },
+          terrainLandformData: { group: 0, binding: BATHYMETRY_LANDFORM_DATA_BINDING },
         },
       },
     ));

@@ -3,7 +3,10 @@ import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 // Side-effect import: register the compute pipeline methods on WebGPUEngine.
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
+import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import { Scene } from "@babylonjs/core/scene";
+import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import {
   TERRAIN_KERNEL_PAGE_BYTES,
   TERRAIN_KERNEL_WGSL,
@@ -17,7 +20,18 @@ import {
   createTerrainLandformPlaceholderBuffer,
   terrainLandformDataBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainLandformKernel";
-import { TERRAIN_HEIGHT_PARITY_CRITERIA } from "../../src/render/webgpu/terrain/TerrainSpineContract";
+import {
+  TerrainPageAtlas,
+  TerrainPageGenerator,
+  invariantSlotKey,
+} from "../../src/render/webgpu/terrain/TerrainPageAtlas";
+import {
+  TERRAIN_HEIGHT_PARITY_CRITERIA,
+  TERRAIN_HEIGHT_SLOT_EDGE,
+  terrainTexelSizeMeters,
+} from "../../src/render/webgpu/terrain/TerrainSpineContract";
+import { WORLD_PAGE_GUTTER } from "../../src/render/webgpu/world/pageGeometry";
+import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
 import { DUNES, unmaskedProvinceDryness } from "../../src/world/dunes";
 import {
   LANDFORM_CORE,
@@ -28,6 +42,7 @@ import {
 import {
   sampleNaturalTerrainHeight,
   sampleNaturalTerrainIntermediates,
+  sampleTerrainHeight,
 } from "../../src/world/terrain";
 import type { WorldDefinition } from "../../src/world/types";
 import { createWorld } from "../../src/world/world";
@@ -371,4 +386,66 @@ describe("landform stage CPU/GPU parity (terrainLandforms)", () => {
     // Printed so the achieved bound is a recorded measurement, not a pass/fail bit.
     console.log(`landform parity:\n  ${report.join("\n  ")}`);
   }, 600_000);
+
+  it("writes the sand sea sampleTerrainHeight samples into an L0 page of the atlas", async () => {
+    // The wiring, end to end: the generator builds the landform rows from its
+    // world, pageHeightAt runs natural -> landforms -> earthworks, and the
+    // texels collision reads are the CPU authority's to the physics bound.
+    const candidates = forcedErgPages(FORCED_WORLD, 24);
+    const [originX, originZ] = candidates.reduce((best, page) =>
+      sampleLandformCover(FORCED_WORLD, page[0] + PAGE_METERS / 2, page[1] + PAGE_METERS / 2, 0)
+        .ergWeight
+      > sampleLandformCover(FORCED_WORLD, best[0] + PAGE_METERS / 2, best[1] + PAGE_METERS / 2, 0)
+        .ergWeight
+        ? page
+        : best);
+    const address = createWorldPageAddress(0, originX / PAGE_METERS, originZ / PAGE_METERS);
+    const texel = terrainTexelSizeMeters(0);
+    const heights = await withEngine(async (engine) => {
+      const scene = new Scene(engine);
+      try {
+        const atlas = new TerrainPageAtlas(scene, resolveWebGpuQualityProfile("medium", "balanced"), {
+          kind: "height",
+          worldRevision: "landform-parity",
+        });
+        const generator = new TerrainPageGenerator(
+          engine, atlas, FORCED_WORLD.seedHash, FORCED_WORLD.airport ?? null, { world: FORCED_WORLD });
+        atlas.residency.beginFrame(1);
+        const request = atlas.residency.request(invariantSlotKey(address), address)!;
+        await generator.generate([request.slot]);
+        await generator.settle();
+        const origin = atlas.slotOrigin(request.slot.slotIndex);
+        const read = await atlas.texture()!.readPixels(
+          0, 0, undefined, true, false,
+          origin.u, origin.v, TERRAIN_HEIGHT_SLOT_EDGE, TERRAIN_HEIGHT_SLOT_EDGE,
+        ) as Float32Array;
+        generator.dispose();
+        atlas.dispose();
+        return read;
+      } finally {
+        scene.dispose();
+      }
+    });
+    let worst = 0;
+    let moved = 0;
+    let compared = 0;
+    for (let row = 0; row < PAGE_METERS / texel; row += 9) {
+      for (let column = 0; column < PAGE_METERS / texel; column += 9) {
+        const x = originX + column * texel;
+        const z = originZ + row * texel;
+        const expected = sampleTerrainHeight(FORCED_WORLD, x, z);
+        const stored = heights[(row + WORLD_PAGE_GUTTER) * TERRAIN_HEIGHT_SLOT_EDGE
+          + column + WORLD_PAGE_GUTTER]!;
+        worst = Math.max(worst, Math.abs(stored - expected));
+        if (expected !== sampleNaturalTerrainHeight(FORCED_WORLD.seedHash, x, z, 0)) moved += 1;
+        compared += 1;
+      }
+    }
+    console.log(
+      `L0 page (${originX}, ${originZ}) vs sampleTerrainHeight over ${compared} texels: `
+      + `max |Δh| = ${(worst * 1_000).toFixed(3)} mm; ${moved} moved by the dunes`,
+    );
+    expect(moved, "texels the dunes moved").toBeGreaterThan(compared * 0.4);
+    expect(worst).toBeLessThan(TERRAIN_HEIGHT_PARITY_CRITERIA.physicsToleranceMeters);
+  }, 300_000);
 });

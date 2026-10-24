@@ -1,5 +1,10 @@
 import { StorageBuffer } from "@babylonjs/core/Buffers/storageBuffer";
+import type { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
+import {
+  registerGpuBufferBytes,
+  releaseGpuBufferBytes,
+} from "@/src/render/webgpu/core/GpuBufferInventory";
 import { CLIMATE_PROVINCE } from "@/src/world/climateProvince";
 import { DUNE_PROFILE_CONSTANTS, DUNES } from "@/src/world/dunes";
 import { FRACTURE_EXPOSURE_MEAN, FRACTURE_RAVINE_MEAN } from "@/src/world/geology";
@@ -100,8 +105,10 @@ function landformConstantsWgsl(): string {
 
 /**
  * Bytes of the placeholder `terrainLandformData` buffer: one zero `vec4f`, on
- * which `terrainVolcanicActivity` is exactly 0.0. Every consumer binds one
- * until the volcanic overlay owns the buffer.
+ * which `terrainVolcanicActivity` is exactly 0.0. A consumer binds one until
+ * it is handed a live `TerrainLandformDataSource`. Size and register it from
+ * this name, never a literal: the volcanic overlay grows it to its empty site
+ * index.
  */
 export const TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES = 16;
 
@@ -127,6 +134,106 @@ export function createTerrainLandformPlaceholderBuffer(engine: WebGPUEngine): St
   // `terrainVolcanicActivity` depends on instead of inheriting it.
   buffer.update(new Float32Array(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES / 4));
   return buffer;
+}
+
+/**
+ * What a consumer binds as `terrainLandformData`: the volcanic overlay's site
+ * index (`VolcanicSiteIndexStream`, which rebuilds as the camera moves), or
+ * the zeroed placeholder.
+ *
+ * `bufferVersion` changes whenever `buffer` is replaced, so a consumer
+ * re-binds by comparing a number before each dispatch instead of being told.
+ * `covers` says whether the index holds every site that can reach a world
+ * rectangle; a consumer that bakes a page with known bounds defers it while
+ * this is false, so the page is baked once, with its volcanoes, rather than
+ * first without them.
+ */
+export interface TerrainLandformDataSource {
+  readonly buffer: StorageBuffer;
+  readonly bufferVersion: number;
+  covers(minX: number, minZ: number, maxX: number, maxZ: number): boolean;
+}
+
+/** The zeroed placeholder as a source: version 0, covering everything. */
+export function createTerrainLandformPlaceholderSource(
+  engine: WebGPUEngine,
+): TerrainLandformDataSource {
+  return {
+    buffer: createTerrainLandformPlaceholderBuffer(engine),
+    bufferVersion: 0,
+    covers: () => true,
+  };
+}
+
+/**
+ * One consumer's `terrainLandformData` binding: the source it was given, or a
+ * placeholder it creates and owns, bound to its one pipeline and re-bound only
+ * when the buffer or its version changes.
+ *
+ * WHY ONE HELPER. Four consumers bind this (page generation, the height
+ * pyramid, the bathymetry bake and the splat bake), and each needs the same
+ * three things: a lazily created placeholder (its constructor runs before the
+ * engine is known to be WebGPU, and in Node tests with no engine at all),
+ * the placeholder's bytes reported to the inventory (Gate 0-c) while a
+ * supplied source's bytes stay its owner's, and a re-bind that allocates
+ * nothing per frame. Swapping the source never recreates the pipeline.
+ */
+export class TerrainLandformDataBinding {
+  private placeholder: TerrainLandformDataSource | null = null;
+  private boundShader: ComputeShader | null = null;
+  private boundBuffer: StorageBuffer | null = null;
+  private boundVersion = -1;
+
+  constructor(private source: TerrainLandformDataSource | null = null) {}
+
+  /** Replace the source (null returns to the placeholder); the next bind re-binds. */
+  setSource(source: TerrainLandformDataSource | null): void {
+    this.source = source;
+  }
+
+  /** False while this binds its own placeholder, which covers everything. */
+  get hasSource(): boolean {
+    return this.source !== null;
+  }
+
+  /** Whether the current source covers a world rectangle (the placeholder always does). */
+  covers(minX: number, minZ: number, maxX: number, maxZ: number): boolean {
+    return this.source ? this.source.covers(minX, minZ, maxX, maxZ) : true;
+  }
+
+  /** Bind the current source's buffer to shader, if it is not already bound. Before every dispatch. */
+  bind(engine: WebGPUEngine, shader: ComputeShader): void {
+    const source = this.source ?? this.ownedPlaceholder(engine);
+    if (
+      shader === this.boundShader
+      && source.buffer === this.boundBuffer
+      && source.bufferVersion === this.boundVersion
+    ) return;
+    shader.setStorageBuffer("terrainLandformData", source.buffer);
+    this.boundShader = shader;
+    this.boundBuffer = source.buffer;
+    this.boundVersion = source.bufferVersion;
+  }
+
+  /** Dispose the placeholder this binding created; a supplied source is its owner's. */
+  dispose(): void {
+    if (this.placeholder) {
+      this.placeholder.buffer.dispose();
+      releaseGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
+    }
+    this.placeholder = null;
+    this.boundShader = null;
+    this.boundBuffer = null;
+    this.boundVersion = -1;
+  }
+
+  private ownedPlaceholder(engine: WebGPUEngine): TerrainLandformDataSource {
+    if (!this.placeholder) {
+      this.placeholder = createTerrainLandformPlaceholderSource(engine);
+      registerGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
+    }
+    return this.placeholder;
+  }
 }
 
 export const TERRAIN_LANDFORM_WGSL = /* wgsl */ `

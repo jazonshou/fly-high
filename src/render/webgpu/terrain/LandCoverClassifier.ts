@@ -1317,6 +1317,12 @@ fn bakeSplat(
   let localX = job.placement.x + (f32(id.x) + 0.5) * job.shape.x;
   let localZ = job.placement.y + (f32(id.y) + 0.5) * job.shape.x;
   let texel = vec2i(job.slots.xy) + vec2i(i32(id.x), i32(id.y));
+  // terrainVolcanicActivity is supplied by the COMPOSER with the landform
+  // include (terrainPageSplatWgsl), like SPLAT_VEGETATION_LATTICE_BASE. The
+  // phony assignment changes no texel; it keeps terrainLandformData in the
+  // pipeline's layout, which drops a binding no reachable code names, until
+  // the landform ground (sand cover, lava rock) reads it for real.
+  _ = terrainVolcanicActivity(localX, localZ);
 
   // Ids are categorical values encoded as unorm over the ten-material axis.
   // The surface shader loads them exactly; it never filters between ids.

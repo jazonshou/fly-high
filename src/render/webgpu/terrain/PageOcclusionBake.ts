@@ -16,8 +16,15 @@ import {
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
   terrainKernelPageBytes,
+  type TerrainKernelLandformInput,
   type TerrainKernelProvinceInput,
 } from "./TerrainKernel";
+import {
+  TERRAIN_LANDFORM_WGSL,
+  TerrainLandformDataBinding,
+  terrainLandformDataBindingWgsl,
+  type TerrainLandformDataSource,
+} from "./TerrainLandformKernel";
 import {
   VEGETATION_DENSITY_FIELD_WGSL,
   VEGETATION_DENSITY_KERNEL_LATTICES,
@@ -111,6 +118,9 @@ const SPLAT_KERNEL_PAGE_BYTES = terrainKernelPageBytes(
  */
 const SPLAT_JOB_FLOATS = 20;
 
+/** The landform data binding's slot in the splat bake's bind group. */
+const SPLAT_LANDFORM_DATA_BINDING = 8;
+
 /**
  * The page-splat bake's composed source — ONE definition.
  *
@@ -122,7 +132,12 @@ const SPLAT_JOB_FLOATS = 20;
 export function terrainPageSplatWgsl(): string {
   return [
     terrainKernelPageBindingWgsl(0, 0, VEGETATION_DENSITY_KERNEL_LATTICES.length),
+    terrainLandformDataBindingWgsl(0, SPLAT_LANDFORM_DATA_BINDING),
     TERRAIN_KERNEL_WGSL,
+    // The landform include, for the ground the landform stages lay down (sand
+    // cover, lava rock). Today the bake reads only its activity hook, which
+    // keeps the data binding in the pipeline's layout; see bakeSplat.
+    TERRAIN_LANDFORM_WGSL,
     // 6-8: the appended table's base index, derived from the kernel's own
     // lattice count and never retyped. It is composed here rather than
     // injected inside the classifier because the classifier is reachable
@@ -466,6 +481,8 @@ export class PageSplatBake {
   private disposed = false;
   /** This shader's passes, each paired with its own delivered duration (DeferredPassTiming.ts). */
   private costTape: PassCostTape | null = null;
+  /** `terrainLandformData`: the one place it is held and bound, before each bake. */
+  private readonly landformBinding: TerrainLandformDataBinding;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -495,7 +512,33 @@ export class PageSplatBake {
      * bakes the shipped climate everywhere: offsets of exactly 0.
      */
     private readonly climateProvince: TerrainKernelProvinceInput | null = null,
-  ) {}
+    /**
+     * The world's landform core and wind (`terrainLandformInput`), carried on
+     * the page uniform like the provinces. Null is gain 0.
+     */
+    private readonly landform: TerrainKernelLandformInput | null = null,
+    /**
+     * What `terrainLandformData` binds: the volcanic site index, or (null) a
+     * zeroed placeholder the bake owns. Swappable with `setLandformDataSource`.
+     */
+    landformData: TerrainLandformDataSource | null = null,
+  ) {
+    this.landformBinding = new TerrainLandformDataBinding(landformData);
+  }
+
+  /**
+   * Bind a different landform data source (null: the placeholder). Takes
+   * effect at the next bake; the pipeline is not recreated.
+   *
+   * The splat bake does not defer a slot the source does not cover: a first
+   * bake that skips a slot releases its channel slot, so the occlusion bake
+   * would be repeated every frame until the index arrived. Nothing it writes
+   * reads the data yet; when something does, the deferral belongs in the
+   * clipmap's channel-bake admission, before the occlusion bake.
+   */
+  setLandformDataSource(source: TerrainLandformDataSource | null): void {
+    this.landformBinding.setSource(source);
+  }
 
   get isBaking(): boolean {
     return this.running;
@@ -630,12 +673,14 @@ export class PageSplatBake {
           originZ: bounds.minZ,
           filterWidthMeters: channelTexel,
           ...(this.climateProvince ? { climateProvince: this.climateProvince } : {}),
+          landform: this.landform,
         }, VEGETATION_DENSITY_KERNEL_LATTICES)),
         index * SPLAT_KERNEL_PAGE_BYTES,
       );
     });
     jobBuffer.update(new Uint8Array(jobs.buffer));
     pageBuffer.update(pages);
+    this.landformBinding.bind(this.engine as WebGPUEngine, shader);
 
     this.running = true;
     try {
@@ -658,6 +703,7 @@ export class PageSplatBake {
     this.pageBuffer?.dispose();
     releaseGpuBufferBytes(this.registeredBufferBytes);
     this.registeredBufferBytes = 0;
+    this.landformBinding.dispose();
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.shader = null;
@@ -696,6 +742,7 @@ export class PageSplatBake {
           splatFlowAccumAtlas: { group: 0, binding: 6 },
           // 6-6: the soil-depth channel's first GPU consumer.
           splatSoilDepthAtlas: { group: 0, binding: 7 },
+          terrainLandformData: { group: 0, binding: SPLAT_LANDFORM_DATA_BINDING },
         },
       },
     );
