@@ -17,6 +17,7 @@ import { sampleNaturalTerrainHeight } from "../../src/world/terrain";
 import {
   applyVolcanicOverlay,
   sampleVolcanicGround,
+  volcanicActivity,
   volcanicSitesInBounds,
   type VolcanicSite,
 } from "../../src/world/volcanism";
@@ -26,7 +27,8 @@ import type { WorldDefinition } from "../../src/world/types";
 /**
  * The volcanic overlay agrees CPU-to-GPU: every profile, every flow, the
  * level sites and the ground covers, at the collision width and at two page
- * widths, read through the packed site index exactly as the bakes read it.
+ * widths, read through the packed site index exactly as the bakes read it,
+ * and the activity field the sand seas and the far fallback read.
  */
 
 const KERNEL = /* wgsl */ `
@@ -49,7 +51,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let base = probes[id.x * 2u];
   let rest = probes[id.x * 2u + 1u];
   let ground = terrainVolcanicGround(base, rest.xy, rest.w);
-  results[id.x] = vec4f(terrainVolcanicOverlay(base, rest.xy, rest.z, rest.w) + live, ground);
+  results[id.x * 2u] = vec4f(terrainVolcanicOverlay(base, rest.xy, rest.z, rest.w) + live, ground);
+  results[id.x * 2u + 1u] = vec4f(terrainVolcanicActivity(base, rest.xy), 0.0, 0.0, 0.0);
 }
 `;
 
@@ -96,8 +99,9 @@ async function runOnGpu(
   probes: readonly Probe[],
 ): Promise<Float32Array> {
   const index = packVolcanicSiteIndex(world, centerX, centerZ);
-  // As a bake hands points over: a base on a 1 km lattice (a page origin),
-  // split hi/lo in f64, and the small local offset from it.
+  // As a bake hands points over: a base on a 1 km world lattice (a page
+  // origin) relative to the index origin (the core centre), split hi/lo in
+  // f64, and the small local offset from it.
   const probeData = new Float32Array(probes.length * 8);
   probes.forEach((probe, slot) => {
     const baseX = Math.floor(probe.x / 1_000) * 1_000 - index.originX;
@@ -124,10 +128,10 @@ async function runOnGpu(
       seedHash: world.seedHash, originX: 0, originZ: 0, filterWidthMeters: 0,
     })));
     const indexBuffer = new StorageBuffer(engine, index.data.byteLength);
-    indexBuffer.update(new Uint8Array(index.data.buffer));
+    indexBuffer.update(new Uint8Array(index.data.buffer, index.data.byteOffset, index.data.byteLength));
     const probeBuffer = new StorageBuffer(engine, probeData.byteLength);
     probeBuffer.update(new Uint8Array(probeData.buffer));
-    const resultBuffer = new StorageBuffer(engine, probes.length * 16);
+    const resultBuffer = new StorageBuffer(engine, probes.length * 32);
     const shader = new ComputeShader("volcanic-overlay-parity", engine, { computeSource: KERNEL }, {
       bindingsMapping: {
         terrainKernelPages: { group: 0, binding: 0 },
@@ -150,7 +154,7 @@ async function runOnGpu(
     expect(compileErrors.join(" | ")).toBe("");
     await shader.dispatchWhenReady(Math.ceil(probes.length / 64), 1, 1);
     const view = await resultBuffer.read();
-    const raw = new Float32Array(view.buffer.slice(view.byteOffset, view.byteOffset + probes.length * 16));
+    const raw = new Float32Array(view.buffer.slice(view.byteOffset, view.byteOffset + probes.length * 32));
     engine.stopRenderLoop();
     pageBuffer.dispose();
     indexBuffer.dispose();
@@ -168,13 +172,14 @@ function compare(probes: readonly Probe[], raw: Float32Array, label: string): vo
   let worstPhysics = 0;
   let worstCover = 0;
   let worstAge = 0;
+  let worstActivity = 0;
   let touched = 0;
   let worstAt = "";
   probes.forEach((probe, slot) => {
     const expected = applyVolcanicOverlay(probe.world, probe.x, probe.z, probe.height, probe.filterWidth);
     const ground = sampleVolcanicGround(probe.world, probe.x, probe.z, probe.filterWidth);
     if (expected !== probe.height) touched += 1;
-    const delta = Math.abs(raw[slot * 4]! - expected);
+    const delta = Math.abs(raw[slot * 8]! - expected);
     if (delta > worstHeight) {
       const kinds = volcanicSitesInBounds(probe.world, probe.x, probe.z, probe.x, probe.z)
         .map((site) => site.kind).join(",");
@@ -185,17 +190,22 @@ function compare(probes: readonly Probe[], raw: Float32Array, label: string): vo
     if (probe.filterWidth === 0) worstPhysics = Math.max(worstPhysics, delta);
     worstCover = Math.max(
       worstCover,
-      Math.abs(raw[slot * 4 + 1]! - ground.lavaCover),
-      Math.abs(raw[slot * 4 + 2]! - ground.tephraCover),
+      Math.abs(raw[slot * 8 + 1]! - ground.lavaCover),
+      Math.abs(raw[slot * 8 + 2]! - ground.tephraCover),
     );
     if (Math.max(ground.lavaCover, ground.tephraCover) > 0.05) {
-      worstAge = Math.max(worstAge, Math.abs(raw[slot * 4 + 3]! - ground.age));
+      worstAge = Math.max(worstAge, Math.abs(raw[slot * 8 + 3]! - ground.age));
     }
+    worstActivity = Math.max(
+      worstActivity,
+      Math.abs(raw[slot * 8 + 4]! - volcanicActivity(probe.world, probe.x, probe.z)),
+    );
   });
   console.log(
     `volcanic overlay parity, ${label}: ${probes.length} probes (${touched} inside a footprint): `
     + `max |dh| ${(worstHeight * 1_000).toFixed(2)} mm (width 0: ${(worstPhysics * 1_000).toFixed(2)} mm), `
-    + `max |d cover| ${worstCover.toExponential(2)}, max |d age| ${worstAge.toExponential(2)}; worst at ${worstAt}`,
+    + `max |d cover| ${worstCover.toExponential(2)}, max |d age| ${worstAge.toExponential(2)}, `
+    + `max |d activity| ${worstActivity.toExponential(2)}; worst at ${worstAt}`,
   );
   expect(touched).toBeGreaterThan(probes.length * 0.5);
   // The kernel's near-field budget is 5 cm; physics reads the CPU, and the
@@ -204,6 +214,7 @@ function compare(probes: readonly Probe[], raw: Float32Array, label: string): vo
   expect(worstPhysics).toBeLessThan(0.005);
   expect(worstCover).toBeLessThan(2e-3);
   expect(worstAge).toBeLessThan(2e-3);
+  expect(worstActivity).toBeLessThan(1e-4);
 }
 
 describe("volcanic overlay CPU/GPU parity", () => {
@@ -215,6 +226,15 @@ describe("volcanic overlay CPU/GPU parity", () => {
       world, strato.x - 30_000, strato.z - 30_000, strato.x + 30_000, strato.z + 30_000);
     const probes: Probe[] = [];
     probesAround(world, sites, probes);
+    // Activity across the core's edge and the field's fade, on the line to the field.
+    const airport = world.airport!;
+    for (let step = 0; step < 64; step += 1) {
+      const t = 0.6 + step / 63 * 0.6;
+      const x = airport.centerX + (strato.x - airport.centerX) * t;
+      const z = airport.centerZ + (strato.z - airport.centerZ) * t;
+      const height = Math.fround(sampleNaturalTerrainHeight(world.seedHash, x, z, 0));
+      probes.push({ world, x, z, height, filterWidth: 0 });
+    }
     const raw = await runOnGpu(world, strato.x, strato.z, probes);
     compare(probes, raw, "guaranteed field");
   }, 240_000);

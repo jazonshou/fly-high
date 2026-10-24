@@ -363,6 +363,29 @@ export function volcanicActivity(
   return activityAt(world, stateFor(world), x, z);
 }
 
+/** What the GPU's activity twin needs about a world, beyond its seed. */
+export interface VolcanicActivityFrame {
+  /** 0: no volcanism (eroded), 1: natural, 2: forced outside the runway clearance. */
+  readonly mode: 0 | 1 | 2;
+  /** The landform core centre: the start airport, or the origin without one. */
+  readonly coreX: number;
+  readonly coreZ: number;
+  /** The guaranteed field's centre, NaN for none. */
+  readonly fieldX: number;
+  readonly fieldZ: number;
+}
+
+export function volcanicActivityFrame(world: WorldDefinition): VolcanicActivityFrame {
+  const state = stateFor(world);
+  return {
+    mode: !state.enabled ? 0 : state.forced ? 2 : 1,
+    coreX: state.coreX,
+    coreZ: state.coreZ,
+    fieldX: state.fieldX,
+    fieldZ: state.fieldZ,
+  };
+}
+
 /** Does a footprint keep clear of the core (natural) or the runway clearance (forced)? */
 function footprintAllowed(
   world: WorldDefinition,
