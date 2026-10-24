@@ -20,12 +20,29 @@
  */
 
 import { CLIMATE_PROVINCE_METERS_PER_TEMPERATURE } from "@/src/world/climateProvince";
+import {
+  TUNDRA_COLD_FULL,
+  TUNDRA_COLD_ONSET,
+  TUNDRA_SHRUB_BELT_METERS,
+} from "@/src/world/coldBiomes";
 import type { TerrainKernelLattice } from "../terrain/TerrainKernel";
 import {
   CANOPY_CLOSURE_FILTER_WIDTH_METERS,
   CANOPY_MEAN_CROWN_RADIUS_METERS,
   CANOPY_RENDERED_CROWN_AREA_RATIO,
+  DESERT_SHRUB_SHARE,
+  DESERT_TREE_SHARE,
+  DRY_PROVINCE_DESERT_FULL,
+  DRY_PROVINCE_DESERT_ONSET,
+  DRY_PROVINCE_PARKLAND_FULL,
+  DRY_PROVINCE_PARKLAND_ONSET,
   DETAIL_FAR_CULL_FADE_METERS,
+  PARKLAND_OPEN_GROWN_EDGE,
+  PARKLAND_SHRUB_SHARE,
+  PARKLAND_TREE_SHARE,
+  PINYON_HEAT_FULL,
+  PINYON_HEAT_ONSET,
+  PINYON_HOT_KEEP,
   RIPARIAN_BANK_FADE_END_METERS,
   RIPARIAN_BANK_FADE_START_METERS,
   RIPARIAN_BANK_FULL_METERS,
@@ -291,6 +308,9 @@ struct VegetationDensityDrivers {
   // Climate provinces: the temperature offset; the treeline, lapse and
   // ground-cover lowland read thermal height from it. 0.0 in the temperate core.
   temperatureOffset: f32,
+  // Climate provinces: the raw dryness offset (moisture already carries its
+  // scaling). The dry ecologies read their shares from it; 0.0 in the core.
+  dryness: f32,
 };
 
 struct VegetationDensitySample {
@@ -311,6 +331,21 @@ ${VEGETATION_GROUND_COVER_LAW_WGSL}
 const VEG_BASE_TREE_STEMS: f32 = 0.08;
 const VEG_BASE_SHRUB_STEMS: f32 = 0.045;
 const VEG_TREELINE_BASE_METERS: f32 = 1350.0;
+const VEG_PARKLAND_TREE_SHARE: f32 = ${wgslMeters(PARKLAND_TREE_SHARE)};
+const VEG_DESERT_TREE_SHARE: f32 = ${wgslMeters(DESERT_TREE_SHARE)};
+const VEG_DESERT_SHRUB_SHARE: f32 = ${wgslMeters(DESERT_SHRUB_SHARE)};
+const VEG_PARKLAND_SHRUB_SHARE: f32 = ${wgslMeters(PARKLAND_SHRUB_SHARE)};
+const VEG_PARKLAND_OPEN_GROWN_EDGE: f32 = ${wgslMeters(PARKLAND_OPEN_GROWN_EDGE)};
+
+/** densityField.ts's dryProvinceShares: (desert share, parkland share). */
+fn vegetationDryProvinceShares(dryness: f32) -> vec2f {
+  let arid = kSmoothstep(
+    ${wgslMeters(DRY_PROVINCE_DESERT_ONSET)}, ${wgslMeters(DRY_PROVINCE_DESERT_FULL)}, dryness);
+  let parkland = kSmoothstep(
+    ${wgslMeters(DRY_PROVINCE_PARKLAND_ONSET)}, ${wgslMeters(DRY_PROVINCE_PARKLAND_FULL)}, dryness)
+    * (1.0 - arid);
+  return vec2f(arid, parkland);
+}
 
 /**
  * The two anisotropic channels arrive in SHEARED frames, exactly as the TS
@@ -410,22 +445,49 @@ fn vegetationDensity(
   let habitat = shoreline * slopeFactor * lapse * treelineFactor * aspectFactor
     * glade * disturbance * province * clearance * channelClearance
     * (1.0 + riparianBand * 0.2);
-  result.treeStemsPerSquareMeter = kSaturate(VEG_BASE_TREE_STEMS * moistureFactor * habitat);
+  // The dry provinces' stands, as the TS: lone trees and pinyon, neither on
+  // the moisture gate nor the forest province, both exactly 0 in the core.
+  let dryShares = vegetationDryProvinceShares(drivers.dryness);
+  let arid = dryShares.x;
+  let parkland = dryShares.y;
+  let openStand = shoreline * treelineFactor * clearance * channelClearance;
+  let parklandStems = VEG_BASE_TREE_STEMS * VEG_PARKLAND_TREE_SHARE * parkland
+    * openStand * slopeFactor * (0.25 + 0.75 * glade);
+  let pinyonSlope = kSmoothstep(0.006, 0.025, drivers.slope)
+    * (1.0 - kSmoothstep(0.08, 0.16, drivers.slope));
+  let pinyonHeat = 1.0 - ${wgslMeters(1 - PINYON_HOT_KEEP)}
+    * kSmoothstep(${wgslMeters(PINYON_HEAT_ONSET)}, ${wgslMeters(PINYON_HEAT_FULL)}, drivers.temperatureOffset);
+  let pinyonStems = VEG_BASE_TREE_STEMS * VEG_DESERT_TREE_SHARE * arid
+    * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * glade);
+  result.treeStemsPerSquareMeter = kSaturate(
+    VEG_BASE_TREE_STEMS * moistureFactor * habitat + parklandStems + pinyonStems);
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
   let shrubSlope = 1.0 - kSmoothstep(0.09, 0.26, drivers.slope);
-  let shrubTreeline = 1.0 - kSmoothstep(treeline - 80.0, treeline + 140.0, thermal);
+  // The arctic shrub belt; see the TS twin. \`+ 0.0\` in the temperate core.
+  let shrubLine = treeline + 140.0
+    + kSmoothstep(
+      ${wgslMeters(TUNDRA_COLD_ONSET)},
+      ${wgslMeters(TUNDRA_COLD_FULL)},
+      -drivers.temperatureOffset,
+    ) * ${wgslMeters(TUNDRA_SHRUB_BELT_METERS)};
+  let shrubTreeline = 1.0 - kSmoothstep(treeline - 80.0, shrubLine, thermal);
   let openness = 0.45 + 0.55 * (1.0 - glade * 0.7);
   let shrubForestGate = 0.28 + province * 0.72;
   let edgeShrubGain = 1.0 + forestEdge * 0.45;
   result.shrubStemsPerSquareMeter = kSaturate(
     VEG_BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness
       * shoreline * disturbance * shrubForestGate * edgeShrubGain * clearance
-      * channelClearance * (1.0 + riparianBand * 0.65),
+      * channelClearance * (1.0 + riparianBand * 0.65)
+    + VEG_BASE_SHRUB_STEMS
+      * (VEG_DESERT_SHRUB_SHARE * arid + VEG_PARKLAND_SHRUB_SHARE * parkland)
+      * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * glade),
   );
-  result.heightFactor = heightFactor * (1.0 - forestEdge * 0.34);
+  // A lone tree is open-grown: the edge-stem form. max with 0 is the shipped edge.
+  let standEdge = max(forestEdge, parkland * VEG_PARKLAND_OPEN_GROWN_EDGE);
+  result.heightFactor = heightFactor * (1.0 - standEdge * 0.34);
   result.forestFraction = province;
-  result.forestEdge = forestEdge;
+  result.forestEdge = standEdge;
   result.riparianBand = riparianBand;
   result.canopyClosure = vegetationCanopyClosure(result.treeStemsPerSquareMeter);
   result.grassCover = vegetationGrassCover(
