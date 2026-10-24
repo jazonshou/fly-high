@@ -11,7 +11,7 @@
  * vertex and interpolated. That is the same trade wave S made for the 1.5 km
  * gust octave, for the same reason.
  *
- * Two channels, both dimensionless 0..1:
+ * Three channels, all dimensionless 0..1:
  *
  *   R  productivity — how much life this water carries. Cold, wet coasts are
  *      green; warm dry ones are blue. Built from the terrain's own temperature
@@ -19,6 +19,9 @@
  *      of being noise that happens to sit next to it.
  *   G  runoff — how much stained fresh water the catchment delivers, from the
  *      same moisture field the forests and the rivers are placed by.
+ *   B  carbonate — how much of the bed is reef sand (`waterBedCarbonate`):
+ *      the tropical coast's weight, exactly 0 everywhere else, so the bed
+ *      outside the tropics is the one it always was.
  *
  * It is baked on the CPU because that is where the terrain's climate lives:
  * both fields are `terrain.ts` functions, and transliterating their lattices
@@ -35,6 +38,7 @@ import {
   sampleClimateProvinceUnmasked,
   type ClimateProvinceSample,
 } from "@/src/world/climateProvince";
+import { TROPICAL_COAST, tropicalCoastWeight } from "@/src/world/tropicalCoast";
 import {
   sampleTerrainClimate,
   sampleTerrainMoisture,
@@ -73,9 +77,24 @@ export function waterProductivity(temperature: number, moisture: number): number
   return clamp01(0.5 + (0.66 - temperature) * 1.9 + (moisture - 0.5) * 0.55);
 }
 
-/** Runoff is the moisture field itself: what the land is shedding. */
-export function waterRunoff(moisture: number): number {
-  return clamp01(moisture);
+/**
+ * Runoff is the moisture field itself: what the land is shedding. A tropical
+ * coast (`tropicalCoastWeight`) is a reef-and-lagoon coast whose reef keeps
+ * most of it offshore, so its water runs clear over a pale bed: the lagoon
+ * turquoise. Exactly `* 1` outside the tropics.
+ */
+export function waterRunoff(moisture: number, tropical = 0): number {
+  return clamp01(moisture) * (1 - TROPICAL_COAST.lagoonRunoffCut * tropical);
+}
+
+/**
+ * The share of the bed that is pale reef carbonate rather than terrigenous
+ * sand and rock: the tropical coast's own weight. Coral and shell ground to
+ * sand make a near-white floor out to the reef, and clear water over it is
+ * the lagoon turquoise (`analyticWaterBedAlbedo`).
+ */
+export function waterBedCarbonate(tropical: number): number {
+  return clamp01(tropical);
 }
 
 function clamp01(value: number): number {
@@ -302,10 +321,11 @@ export class WaterEnvironmentField {
           this.world.seaLevel,
           province.temperatureOffset,
         );
+        const tropical = tropicalCoastWeight(province.temperatureOffset, province.dryness);
         const offset = (iz * resolution + ix) * 4;
         this.data[offset] = Math.round(waterProductivity(temperature, moisture) * 255);
-        this.data[offset + 1] = Math.round(waterRunoff(moisture) * 255);
-        this.data[offset + 2] = 0;
+        this.data[offset + 1] = Math.round(waterRunoff(moisture, tropical) * 255);
+        this.data[offset + 2] = Math.round(waterBedCarbonate(tropical) * 255);
         this.data[offset + 3] = 255;
       }
     }

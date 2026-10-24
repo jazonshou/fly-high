@@ -26,6 +26,11 @@ import {
   SurfaceMaterial,
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
+import {
+  TROPICAL_COAST,
+  TROPICAL_COAST_WGSL,
+  tropicalCoastWeight,
+} from "@/src/world/tropicalCoast";
 import { FAR_SWARD_BAKE_GATE_WGSL } from "./FarSwardGate";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
 import {
@@ -443,7 +448,11 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // 3 m matches the density field's own shoreline gate
   // (`smoothstep(1.5, 7, elevation)`), so the ground and the plants agree
   // about where the beach ends.
-  const shore = smoothstep(-1, 3, elevation);
+  //
+  // Tropical coast: a wider beach, up to a ~6 m ridge, where the province is
+  // hot and wet (`tropicalCoastWeight`). Exactly `3 + 0` outside the tropics.
+  const tropical = tropicalCoastWeight(temperatureOffset, input.dryness ?? 0);
+  const shore = smoothstep(-1, 3 + TROPICAL_COAST.beachExtraMeters * tropical, elevation);
   const dry = 1 - smoothstep(0.28, 0.62, wetness);
   const wet = smoothstep(0.3, 0.64, wetness);
   const warm = smoothstep(0.16, 0.34, temperature);
@@ -744,9 +753,11 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // `alpine * screeBand * (0.5 + dry * 0.5) * 0.85`: a claim confined to the
   // repose-angle band, stronger where the ground is dry (wet repose-angle
   // ground holds turf instead, which is the mosaic the reference shows).
+  // A tropical beach is sand to the waterline: its wave-washed band fades
+  // with the tropical weight (`* 1` elsewhere).
   suitability[SurfaceMaterial.Gravel] =
     shore * (
-      steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2
+      steep * 0.35 + (1 - shore) * 0.4 * (1 - tropical) + alpine * 0.2
       + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
     )
     + shore * desert.gravel;
@@ -1065,6 +1076,7 @@ fn landCoverDryProvinceTerms(dryness: f32, slope: f32, wetness: f32) -> LandCove
   return terms;
 }
 
+${TROPICAL_COAST_WGSL}
 fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIAL_COUNT}> {
   let elevation = input.elevationMeters;
   let slope = input.slope;
@@ -1076,7 +1088,9 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   let snowline = LAND_COVER_SNOWLINE_REFERENCE
     + input.seasonalTemperatureShift * LAND_COVER_METERS_PER_TEMPERATURE
     + input.aspect * 90.0;
-  let shore = kSmoothstep(-1.0, 3.0, elevation);
+  // Tropical coast: the wider beach — see the TS twin.
+  let tropical = tropicalCoastWeight(input.temperatureOffset, input.dryness);
+  let shore = kSmoothstep(-1.0, 3.0 + ${wgslConstant(TROPICAL_COAST.beachExtraMeters)} * tropical, elevation);
   let dry = 1.0 - kSmoothstep(0.28, 0.62, wetness);
   let wet = kSmoothstep(0.3, 0.64, wetness);
   let warm = kSmoothstep(0.16, 0.34, input.temperature);
@@ -1158,7 +1172,7 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
     + alpineTurf * dry * 0.95;
   suitability[${SurfaceMaterial.Gravel}] =
     shore * (
-      steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2
+      steep * 0.35 + (1.0 - shore) * 0.4 * (1.0 - tropical) + alpine * 0.2
       + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
     )
     + shore * desert.gravel;

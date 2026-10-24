@@ -12,6 +12,7 @@ import {
   terrainSnowlineThermalHeight,
   terrainThermalHeight,
 } from "@/src/world/climateProvince";
+import { TROPICAL_COAST, tropicalCoastWeight } from "@/src/world/tropicalCoast";
 import {
   classifyLandCover,
   landCoverHabitat,
@@ -387,6 +388,55 @@ function chooseTemperateTreeSpecies(sample: DetailTerrainSample, choice: number)
   return "cedar";
 }
 
+/** The tropical weight at a detail sample: exactly 0 in the temperate core. */
+function tropicalWeightAt(sample: DetailTerrainSample): number {
+  return tropicalCoastWeight(sample.temperatureOffset ?? 0, sample.dryness ?? 0);
+}
+
+/**
+ * Tropical coast: the species a stand grows where the province is hot and
+ * wet. Only reached where `tropical > 0`, so the temperate rule above is
+ * untouched in the core.
+ *
+ * Three moves, on two disjoint ranges of the weight (`TROPICAL_COAST`):
+ *
+ * - Conifers and willow give way to broadleaf over `[0, broadleafOnlyWeight]`.
+ *   The temperate draw still runs, so a stand keeps its place in the mix, and
+ *   a conifer or willow pick is replaced with the share that has faded.
+ * - Palms come in over `[palmWeight, 1]`, as much as 85% of the stems on the
+ *   beach ridge, falling to a tenth of the forest by 16 m above the sea and
+ *   gone by ~350 m: the coconut is a lowland, salt-tolerant tree, and the
+ *   rainforest behind the beach is broadleaf with the odd palm. The palm roll is the stand's own choice, so
+ *   palms grow as groves rather than as confetti.
+ * - The broadleaf is oak and maple shapes with a little birch, kept in leaf
+ *   all year, tinted lusher (`applyFoliageSeason`, `treeColor`) and grown
+ *   with wider crowns (`TROPICAL_CROWN_SPREAD`).
+ *
+ * The belt between the two ranges grows broadleaf alone, so no stand holds a
+ * palm and a pine or willow at once (`TREE_SPECIES_COHORTS`).
+ */
+function chooseTropicalTreeSpecies(
+  sample: DetailTerrainSample,
+  choice: number,
+  tropical: number,
+  elevationMeters: number,
+  replaceRoll: number,
+): TreeSpecies {
+  const palmShare = smootherStep(TROPICAL_COAST.palmWeight, 1, tropical)
+    * (0.1 + 0.75 * (1 - smootherStep(4, 16, elevationMeters)))
+    * (1 - smootherStep(150, 350, elevationMeters));
+  if (choice < palmShare) return "palm";
+  const rest = palmShare > 0 ? (choice - palmShare) / (1 - palmShare) : choice;
+  const temperate = chooseTreeSpecies(sample, rest);
+  if (temperate !== "willow" && !CONIFER_SPECIES.has(temperate)) return temperate;
+  const broadleaf = smootherStep(0, TROPICAL_COAST.broadleafOnlyWeight, tropical);
+  if (replaceRoll >= broadleaf) return temperate;
+  const pick = replaceRoll / broadleaf;
+  if (pick < 0.55) return "oak";
+  if (pick < 0.88) return "maple";
+  return "birch";
+}
+
 /**
  * Classify a detail sample through the one authority.
  *
@@ -466,6 +516,14 @@ function treeDimensions(
     case "maple": return dimensions(3.2, 26, 0.3, 0.023, 0.88);
     case "birch": return dimensions(3.4, 24, 0.22, 0.014, 0.9);
     case "willow": return dimensions(2.8, 21, 0.37, 0.023, 0.94);
+    case "palm": {
+      // The crown radius maps onto the prototype's envelope (frond reach
+      // plus the trunk's lean), ~0.47 of its height, so a mature palm scales
+      // uniformly. A coconut's fronds reach ~5 m whatever its trunk height,
+      // so a young palm carries a crown wide for its height.
+      const palm = dimensions(4.5, 24, 0.47, 0.011, 0.96);
+      return { ...palm, crown: palm.crown * (1.6 - 0.6 * individualAge) };
+    }
   }
 }
 
@@ -521,7 +579,30 @@ const TREE_TINT_BASE: Readonly<Record<TreeSpecies, readonly [number, number, num
   maple: [0.98, 0.94, 0.63],
   birch: [0.88, 1.02, 0.75],
   willow: [0.88, 0.98, 0.7],
+  // Coconut fronds read yellower and brighter than temperate broadleaf.
+  palm: [0.87, 0.98, 0.64],
 };
+
+/** How much wider a tropical broadleaf crown spreads at full weight. */
+const TROPICAL_CROWN_SPREAD = 0.22;
+
+/**
+ * Tropical broadleaf: a deeper, bluer, more saturated green than any
+ * temperate canopy, the evergreen rainforest leaf.
+ */
+const TROPICAL_BROADLEAF_TINT: readonly [number, number, number] = [0.66, 0.88, 0.66];
+
+function mixTint(
+  from: readonly [number, number, number],
+  to: readonly [number, number, number],
+  t: number,
+): readonly [number, number, number] {
+  return [
+    from[0] + (to[0] - from[0]) * t,
+    from[1] + (to[1] - from[1]) * t,
+    from[2] + (to[2] - from[2]) * t,
+  ];
+}
 
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   const max = Math.max(r, g, b);
@@ -592,14 +673,19 @@ function applyFoliageSeason(
   phenologyJitter: number,
   terrainHeightMeters: number,
   terrainSlope: number,
+  tropical = 0,
 ): readonly [number, number, number, number] {
   const winter = clamp(season.winterFraction + (phenologyJitter - 0.5) * 0.12, 0, 1);
+  // Tropical coast: no cold season, so its broadleaf keeps its leaves and its
+  // colour all year. The far band reads the same leaf fraction from the tint
+  // (the impostor's season veto), so both bands agree.
+  const leafWinter = tropical > 0 ? winter * (1 - tropical) : winter;
   let [r, g, b] = color;
   let alpha = color[3];
   const autumn = AUTUMN_HUE[species];
   if (autumn) {
     const [targetHue, strength] = autumn;
-    const autumnBlend = smootherStep(0.12, 0.42, winter) * strength;
+    const autumnBlend = smootherStep(0.12, 0.42, leafWinter) * strength;
     if (autumnBlend > 0) {
       const [hue, saturation, value] = rgbToHsv(r, g, b);
       let hueDelta = targetHue - hue;
@@ -611,9 +697,9 @@ function applyFoliageSeason(
       );
       r = ar; g = ag; b = ab;
     }
-    alpha = alpha * (1 - smootherStep(0.34, 0.7, winter));
+    alpha = alpha * (1 - smootherStep(0.34, 0.7, leafWinter));
   } else {
-    const winterDim = 1 - 0.07 * winter;
+    const winterDim = 1 - 0.07 * leafWinter;
     r *= winterDim; g *= winterDim; b *= winterDim;
   }
   const snowed = applySnowCover([r, g, b], season, winter, terrainHeightMeters, terrainSlope);
@@ -668,8 +754,11 @@ function treeColor(
   individualAge: number,
   /** `borealTreeForm`'s value scale; 1 outside the cold biomes. */
   valueScale = 1,
+  tropical = 0,
 ): readonly [number, number, number, number] {
-  const base = TREE_TINT_BASE[species];
+  const base = tropical > 0 && species !== "palm" && !CONIFER_SPECIES.has(species)
+    ? mixTint(TREE_TINT_BASE[species], TROPICAL_BROADLEAF_TINT, tropical)
+    : TREE_TINT_BASE[species];
   const [baseHue, baseSat, baseVal] = rgbToHsv(base[0], base[1], base[2]);
   const triangular = (): number => random() + random() - 1;
   const hueSigmaTurns = (CONIFER_SPECIES.has(species) ? 6.5 : 8.5) / 360;
@@ -1060,13 +1149,30 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
     const speciesRoll = random();
     const dominantRoll = random();
     const coniferRoll = random();
-    let species = chooseTreeSpecies(
-      blockSample,
-      dominantRoll < 0.62 ? stand.dominantChoice : speciesRoll,
-    );
-    // Cool north faces carry a larger conifer share (the aspect species shift).
-    if (field.aspect < 0 && coniferRoll < -field.aspect * 0.3) {
-      species = coniferRoll < -field.aspect * 0.15 ? "spruce" : "pine";
+    const tropical = tropicalWeightAt(blockSample);
+    const speciesChoice = dominantRoll < 0.62 ? stand.dominantChoice : speciesRoll;
+    // The tropical branch draws its own roll, so the stream (and every stem)
+    // outside the tropics is exactly what it was.
+    let species = tropical > 0
+      ? chooseTropicalTreeSpecies(
+        blockSample,
+        speciesChoice,
+        tropical,
+        blockSample.height - context.seaLevelMeters,
+        random(),
+      )
+      : chooseTreeSpecies(blockSample, speciesChoice);
+    // Cool north faces carry a larger conifer share (the aspect species shift),
+    // and the tropics fade it out with the rest of their conifers.
+    const aspectConifers = tropical > 0
+      ? 1 - smootherStep(0, TROPICAL_COAST.broadleafOnlyWeight, tropical)
+      : 1;
+    if (
+      species !== "palm"
+      && field.aspect < 0
+      && coniferRoll < -field.aspect * 0.3 * aspectConifers
+    ) {
+      species = coniferRoll < -field.aspect * 0.15 * aspectConifers ? "spruce" : "pine";
     }
     const dimensions = treeDimensions(species, random, stand.standAge);
     const boreal = borealTreeForm(species, borealShare(blockSample.temperatureOffset ?? 0));
@@ -1082,6 +1188,13 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       * (0.55 + 0.45 * field.heightFactor)
       * (1 + field.forestEdge * 0.48)
       * Math.sqrt(desertStature);
+    // A rainforest canopy is closed: its broadleaf crowns spread wider than a
+    // temperate wood's at the same stem spacing. The exclusion kernel keeps
+    // the unspread crown, so the stand keeps its stems. Exactly `* 1` outside
+    // the tropics.
+    const spread = tropical > 0 && species !== "palm" && !CONIFER_SPECIES.has(species)
+      ? 1 + TROPICAL_CROWN_SPREAD * tropical
+      : 1;
     // Half a crown: real closed-canopy forests overlap crowns; a full-crown
     // exclusion zone thins the stand far below its ecological density.
     push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({
@@ -1093,17 +1206,25 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       z,
       yawRadians: random() * TAU,
       heightMeters: height,
-      crownRadiusMeters: crown * boreal.crown,
+      crownRadiusMeters: crown * boreal.crown * spread,
       trunkRadiusMeters: dimensions.trunk * (0.7 + 0.3 * field.heightFactor) * boreal.stature,
       windPhaseRadians: random() * TAU,
       windResponse: dimensions.wind * (0.82 + random() * 0.28),
       color: applyFoliageSeason(
-        treeColor(species, random, stand.tintCentre, dimensions.individualAge, boreal.value),
+        treeColor(
+          species,
+          random,
+          stand.tintCentre,
+          dimensions.individualAge,
+          boreal.value,
+          tropical,
+        ),
         species,
         context.season,
         random(),
         snowlineHeight(y, blockSample),
         blockSample.slope,
+        tropical,
       ),
       standAge: stand.standAge,
       selection: random(),
@@ -1159,6 +1280,7 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
         random(),
         snowlineHeight(y, blockSample),
         blockSample.slope,
+        tropicalWeightAt(blockSample),
       ),
       selection: random(),
     }));

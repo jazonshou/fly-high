@@ -29,10 +29,10 @@ import type { TreeSpecies } from "./types";
  * and card LOD mean colour match") is a unit test rather than a capture
  * diff, and the upload rides the SAME coverage-preserving mip machinery as
  * the foliage atlas. Each species bakes 16 hemi-octahedral views into a
- * 4×4 grid of 64² tiles on a 256² layer, twice (2-17a's leafed and bare
- * season buckets — conifers bake identical buckets and the cross-fade is a
- * no-op for them). Two arrays: albedo+coverage (rgba8) and world-space
- * normal + normalized depth (rgba8).
+ * 4×4 grid of 64² tiles on a 256² layer, twice for deciduous species (2-17a's
+ * leafed and bare season buckets) and once for evergreens, whose one layer
+ * serves both buckets so the cross-fade is a no-op for them. Two arrays:
+ * albedo+coverage (rgba8) and world-space normal + normalized depth (rgba8).
  *
  * 64² tiles are a recorded decision against the plan's 128² sketch: the
  * §5.2 headroom the plan itself flags as "does not close" at 128², and a
@@ -74,8 +74,12 @@ export function leafDissolveSurvives(u: number, v: number, leafFraction: number)
   return hash - Math.floor(hash) <= leafFraction;
 }
 
+/**
+ * Bake order IS the far table's row order (the variant byte's top three
+ * bits). Append-only, and the palm fills the eighth and last row.
+ */
 export const IMPOSTOR_SPECIES: readonly TreeSpecies[] = [
-  "pine", "cedar", "spruce", "oak", "maple", "birch", "willow",
+  "pine", "cedar", "spruce", "oak", "maple", "birch", "willow", "palm",
 ];
 
 /**
@@ -95,9 +99,36 @@ export interface ImpostorAtlasPlans {
   readonly layerCount: number;
 }
 
+/**
+ * Each species' [leafed, bare] layers. Evergreens bake ONE layer and name it
+ * for both buckets: their bare bake was byte-identical to the leafed one, so
+ * the season cross-fade samples the same texels either way and the duplicate
+ * only spent memory and startup bake time. Sharing it is what pays for the
+ * palm's row (tier 0 sits within a few MiB of its ceiling).
+ */
+const IMPOSTOR_LAYER_TABLE: readonly (readonly [number, number])[] = (() => {
+  let next = 0;
+  return IMPOSTOR_SPECIES.map((species) => {
+    const leafed = next;
+    next += 1;
+    if (!DECIDUOUS_IMPOSTORS.has(species)) return [leafed, leafed] as const;
+    const bare = next;
+    next += 1;
+    return [leafed, bare] as const;
+  });
+})();
+
+/** Layers in each impostor array: one per evergreen, two per deciduous. */
+export const IMPOSTOR_LAYER_COUNT = IMPOSTOR_LAYER_TABLE.reduce(
+  (count, [leafed, bare]) => count + (leafed === bare ? 1 : 2),
+  0,
+);
+
 /** Layer index for a species and season bucket (0 leafed, 1 bare). */
 export function impostorLayerIndex(species: TreeSpecies, bucket: 0 | 1): number {
-  return IMPOSTOR_SPECIES.indexOf(species) * IMPOSTOR_SEASON_BUCKETS + bucket;
+  const row = IMPOSTOR_LAYER_TABLE[IMPOSTOR_SPECIES.indexOf(species)];
+  if (!row) throw new RangeError(`${species} has no impostor row`);
+  return row[bucket];
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +469,8 @@ export function planImpostorAtlas(
   const albedoLayers: Uint8Array[] = [];
   const normalDepthLayers: Uint8Array[] = [];
   for (const species of IMPOSTOR_SPECIES) {
-    for (let bucket = 0; bucket < IMPOSTOR_SEASON_BUCKETS; bucket += 1) {
+    const buckets = DECIDUOUS_IMPOSTORS.has(species) ? IMPOSTOR_SEASON_BUCKETS : 1;
+    for (let bucket = 0; bucket < buckets; bucket += 1) {
       const baked = bakeSpeciesLayer(species, bucket === 1, foliage, prototypeSeed);
       albedoLayers.push(baked.albedo);
       normalDepthLayers.push(baked.normalDepth);
@@ -450,7 +482,7 @@ export function planImpostorAtlas(
       alphaTestThreshold: IMPOSTOR_ALPHA_TEST_THRESHOLD,
     }),
     normalDepth: planMippedTextureArray(normalDepthLayers, IMPOSTOR_LAYER_EDGE, "box"),
-    layerCount: IMPOSTOR_SPECIES.length * IMPOSTOR_SEASON_BUCKETS,
+    layerCount: IMPOSTOR_LAYER_COUNT,
   };
 }
 

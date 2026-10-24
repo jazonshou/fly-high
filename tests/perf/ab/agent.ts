@@ -56,8 +56,6 @@ import {
   worstTileRgbSsim,
   yawForSunBearing,
   type PerfCaptureShotDefinition,
-  perfShotWorldKey,
-  perfShotWorldOptions,
 } from "../../../scripts/perf-capture.mts";
 import {
   gpuDrawGateStats,
@@ -89,6 +87,8 @@ import {
   type StreamRequest,
 } from "./protocol";
 
+type WorldEvolution = "analytic" | "eroded";
+
 interface ShotContext {
   readonly shot: PerfCaptureShotDefinition;
   readonly canonicalShotIndex: number;
@@ -108,7 +108,9 @@ const creations = { pipelines: 0, shaderModules: 0 };
 
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
-let activeWorldKey: string | null = null;
+let activeWorldEvolution: WorldEvolution | null = null;
+/** The forced climate province and landforms of the current world, as JSON; null is the natural world. */
+let activeForcedKey: string | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let renderer: FlightRenderer | null = null;
 let removeGpuErrorListener: (() => void) | null = null;
@@ -258,17 +260,34 @@ function createCanvas(): HTMLCanvasElement {
   return element;
 }
 
-async function ensureRenderer(shot: PerfCaptureShotDefinition): Promise<void> {
+async function ensureRenderer(
+  worldEvolution: WorldEvolution,
+  climateProvince: PerfCaptureShotDefinition["climateProvince"],
+  landforms: PerfCaptureShotDefinition["landforms"],
+): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  const worldKey = perfShotWorldKey(shot);
-  if (renderer && activeWorldKey === worldKey) return;
+  const forcedKey = climateProvince === undefined && landforms === undefined
+    ? null
+    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null });
+  if (renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
   removeGpuErrorListener?.();
   removeGpuErrorListener = null;
   renderer?.dispose();
+  renderer = null;
   canvas?.remove();
-  world = createWorld(PERF_CAPTURE_SEED, perfShotWorldOptions(shot));
+  world = createWorld(PERF_CAPTURE_SEED, {
+    worldEvolution,
+    ...(climateProvince === undefined ? {} : { climateProvince }),
+    ...(landforms === undefined ? {} : { landforms }),
+  });
+  // A base that predates climate provinces ignores the option and would
+  // render the temperate world: fail the shot rather than compare the wrong
+  // worlds. The option reads back as the forced offsets when honoured.
+  if (climateProvince !== undefined && !world.climateProvince) {
+    throw new Error("perf-ab agent: this build's createWorld ignores climateProvince; the arm predates climate provinces");
+  }
   canvas = createCanvas();
   const activeWorld = world;
   const profile = qualityProfile.resolveWebGpuQualityProfile(
@@ -290,7 +309,8 @@ async function ensureRenderer(shot: PerfCaptureShotDefinition): Promise<void> {
     cockpitRigOverride: PERF_COCKPIT_RIG,
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
-  activeWorldKey = worldKey;
+  activeWorldEvolution = worldEvolution;
+  activeForcedKey = forcedKey;
   renderCalls = 0;
   removeGpuErrorListener = capability("addGpuUncapturedErrorListenerForCapture")((event) => {
     errors.gpu.push(JSON.stringify({ type: event.error.constructor?.name || "GPUError", message: event.error.message }));
@@ -430,7 +450,7 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot);
+    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms);
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;

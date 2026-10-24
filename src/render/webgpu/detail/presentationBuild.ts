@@ -98,6 +98,7 @@ const IMPOSTOR_SPECIES: readonly TreeSpecies[] = [
   "maple",
   "birch",
   "willow",
+  "palm",
 ];
 
 /**

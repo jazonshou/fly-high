@@ -135,9 +135,33 @@ export interface LeafAnchor {
   readonly pick: number;
 }
 
+/**
+ * One palm frond: the rachis as a polyline plus the frame and leaflet reach
+ * the meshing folds into a two-sided V. All of it is skeleton output, so the
+ * frond strip, like a leaf card, consumes no RNG when it is meshed.
+ */
+export interface PalmFrond {
+  /** Rachis points, petiole base first. */
+  readonly points: readonly SkeletonVec3[];
+  /** Unit rachis direction at each point. */
+  readonly tangents: readonly SkeletonVec3[];
+  /** Unit leaflet axis at each point, perpendicular to the tangent. */
+  readonly sides: readonly SkeletonVec3[];
+  /** Strip half-width at each point (unit-height units). */
+  readonly halfWidths: readonly number[];
+  /** `halfWidths` over the frond's widest leaflet: the texture's u reach. */
+  readonly reach: readonly number[];
+  /** Leaflet droop below the frond plane, radians — the V's half-angle. */
+  readonly fold: number;
+  /** 0 for the youngest (upright, central) frond, 1 for the oldest. */
+  readonly age: number;
+}
+
 export interface TreeSkeleton {
   readonly stems: readonly TreeStem[];
   readonly anchors: readonly LeafAnchor[];
+  /** Palm fronds; empty for every branching species. */
+  readonly fronds: readonly PalmFrond[];
   /** Horizontal envelope over stems and card extents — the radial contract. */
   readonly envelopeRadius: number;
   /** Canopy vertical span (drives the interior core and dome normals). */
@@ -202,7 +226,10 @@ interface SpeciesPreset {
   readonly cardDroop: number;
 }
 
-const SPECIES_PRESETS: Readonly<Record<TreeSpecies, SpeciesPreset>> = Object.freeze({
+/** Every species but the palm grows from the branching grammar below. */
+export type BranchingTreeSpecies = Exclude<TreeSpecies, "palm">;
+
+const SPECIES_PRESETS: Readonly<Record<BranchingTreeSpecies, SpeciesPreset>> = Object.freeze({
   pine: {
     conifer: true, trunkRadius: 0.014, taper: 0.85, flare: 0.45, trunkSegments: 8,
     trunkCurveV: 14, baseSplits: 0, splitAngle: 0, baseSize: 0.28,
@@ -275,7 +302,7 @@ const SPECIES_PRESETS: Readonly<Record<TreeSpecies, SpeciesPreset>> = Object.fre
   },
 });
 
-export function treeSkeletonPreset(species: TreeSpecies): SpeciesPreset {
+export function treeSkeletonPreset(species: BranchingTreeSpecies): SpeciesPreset {
   return SPECIES_PRESETS[species];
 }
 
@@ -409,6 +436,7 @@ export function buildTreeSkeleton(
   variant: number,
   seed: number,
 ): TreeSkeleton {
+  if (species === "palm") return buildPalmSkeleton(variant, seed);
   const preset = SPECIES_PRESETS[species];
   const rng = createRandom(`tree-skeleton/${species}/${variant}/${seed}`);
   const stems: MutableStem[] = [];
@@ -672,6 +700,7 @@ export function buildTreeSkeleton(
   return {
     stems,
     anchors,
+    fronds: [],
     envelopeRadius: envelopeRadius * heightScale,
     crownBaseY: crownBaseY * heightScale,
     crownTopY: crownTopY * heightScale,
@@ -683,6 +712,263 @@ export function buildTreeSkeleton(
       }
       : { x: 0, y: 0.65, z: 0 },
     cardHalfWidth: preset.cardHalfWidth * heightScale,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Palm (tropical coast). A coconut palm is not a branching tree, so it does
+// not go through the stem grammar above: one unbranched, leaning trunk that
+// turns back up toward the light, and a spiral crown of pinnate fronds that
+// rise when young and arch over and droop as they age. Proportions follow a
+// mature Cocos nucifera (trunk ~16 m, fronds ~5 m with ~1 m leaflets, ~20
+// fronds alive at once); the normalization below makes them unit-height.
+// ---------------------------------------------------------------------------
+
+/** Rachis segments per frond; the near band meshes every one. */
+export const PALM_FROND_SEGMENTS = 8;
+
+/**
+ * Leaflet rake toward the frond tip, in texture texels along per texel
+ * across. The strip maps the frond's length onto v and two leaflet lengths
+ * onto u, and a 5.3 m frond is ~5x its 1.07 m leaflet, so 0.31 is the ~38
+ * degree forward angle coconut leaflets hold against the rachis.
+ */
+export const PALM_FROND_RAKE = 0.31;
+
+/**
+ * Leaflet length along a frond (0 petiole, 1 tip) as a fraction of the
+ * widest pair: a bare petiole, the longest leaflets just before mid-frond,
+ * and short ones at the tip. The foliage atlas draws leaflets to this curve
+ * and the strip's edge follows it, so the two cannot drift apart.
+ */
+export function palmLeafletProfile(t: number): number {
+  const u = clamp(t, 0, 1);
+  const rise = clamp((u - 0.08) / 0.22, 0, 1);
+  const fall = u > 0.38 ? (u - 0.38) / 0.62 : 0;
+  return rise * rise * (3 - 2 * rise) * (1 - 0.7 * fall * fall);
+}
+
+/**
+ * The strip's edge at rachis point `index` of `frond`: out along the
+ * leaflet axis and down by the fold, so the two halves meet at the rachis
+ * as an inverted V. `widthScale` widens a decimated band's strips.
+ */
+export function palmFrondEdge(
+  frond: PalmFrond,
+  index: number,
+  sign: -1 | 1,
+  widthScale = 1,
+): SkeletonVec3 {
+  const point = frond.points[index]!;
+  const tangent = frond.tangents[index]!;
+  const side = frond.sides[index]!;
+  const normal = norm(cross(side, tangent));
+  const width = frond.halfWidths[index]! * widthScale;
+  const across = Math.cos(frond.fold);
+  const down = Math.sin(frond.fold);
+  return {
+    x: point.x + width * (sign * side.x * across - normal.x * down),
+    y: point.y + width * (sign * side.y * across - normal.y * down),
+    z: point.z + width * (sign * side.z * across - normal.z * down),
+  };
+}
+
+function buildPalmSkeleton(variant: number, seed: number): TreeSkeleton {
+  const rng = createRandom(`tree-skeleton/palm/${variant}/${seed}`);
+
+  // --- Trunk -------------------------------------------------------------
+  // Leans from the base and recovers toward vertical with height, with a
+  // gentle sideways S; the base swells into the bole.
+  const trunkSegments = 10;
+  const trunkLength = 0.84 + rng() * 0.04;
+  const lean = (5 + rng() * 13) * DEG;
+  const leanAzimuth = rng() * TWO_PI;
+  const recovery = 0.45 + rng() * 0.35;
+  const sway = (rng() - 0.5) * 6 * DEG;
+  const swayPhase = rng() * TWO_PI;
+  const trunkRadius = 0.0095 * (0.92 + rng() * 0.16);
+  const flare = 0.75 + rng() * 0.3;
+  const leanX = Math.cos(leanAzimuth);
+  const leanZ = Math.sin(leanAzimuth);
+  const trunkPoints: SkeletonVec3[] = [{ x: 0, y: 0, z: 0 }];
+  const trunkDirections: SkeletonVec3[] = [];
+  const segmentLength = trunkLength / trunkSegments;
+  let position: SkeletonVec3 = { x: 0, y: 0, z: 0 };
+  for (let segment = 0; segment < trunkSegments; segment += 1) {
+    const t = (segment + 0.5) / trunkSegments;
+    const tilt = lean * (1 - recovery * t * t * (3 - 2 * t));
+    const lateral = sway * Math.sin(TWO_PI * t + swayPhase);
+    const direction = norm({
+      x: Math.sin(tilt) * leanX - Math.sin(lateral) * leanZ,
+      y: Math.cos(tilt),
+      z: Math.sin(tilt) * leanZ + Math.sin(lateral) * leanX,
+    });
+    trunkDirections.push(direction);
+    position = {
+      x: position.x + direction.x * segmentLength,
+      y: position.y + direction.y * segmentLength,
+      z: position.z + direction.z * segmentLength,
+    };
+    trunkPoints.push({ ...position });
+  }
+  const trunkAxes = trunkPoints.map((_, index) => {
+    const before = trunkDirections[Math.max(0, index - 1)]!;
+    const after = trunkDirections[Math.min(trunkDirections.length - 1, index)]!;
+    return norm({ x: before.x + after.x, y: before.y + after.y, z: before.z + after.z });
+  });
+  const trunkRadii = trunkPoints.map((_, index) => {
+    const t = index / trunkSegments;
+    return trunkRadius * (1 + flare * Math.pow(1 - t, 10)) * (1 - 0.16 * t);
+  });
+  const trunk: MutableStem = {
+    level: 0,
+    points: trunkPoints,
+    axes: trunkAxes,
+    radii: trunkRadii,
+    vStart: 0,
+  };
+
+  // --- Fronds ------------------------------------------------------------
+  // Golden-angle spiral, youngest first: pitch from near-vertical to past
+  // horizontal with age, a droop concentrated in the thin outer rachis, and
+  // a leaflet V that opens wider on old fronds. Older fronds attach a little
+  // lower on the crown shaft.
+  const top = trunkPoints[trunkPoints.length - 1]!;
+  const topRadius = trunkRadii[trunkRadii.length - 1]!;
+  const frondCount = 18 + Math.floor(rng() * 6);
+  const frondLength = 0.33 + rng() * 0.05;
+  const frondHalfWidth = frondLength * 0.2;
+  const bendWeights: number[] = [];
+  for (let segment = 0; segment < PALM_FROND_SEGMENTS; segment += 1) {
+    bendWeights.push(Math.pow((segment + 0.5) / PALM_FROND_SEGMENTS, 1.3));
+  }
+  const bendTotal = bendWeights.reduce((sum, weight) => sum + weight, 0);
+  const fronds: PalmFrond[] = [];
+  let azimuth = rng() * TWO_PI;
+  for (let frond = 0; frond < frondCount; frond += 1) {
+    const age = frond / (frondCount - 1);
+    azimuth += GOLDEN_ANGLE + (rng() - 0.5) * 0.3;
+    const pitch = (lerp(14, 112, Math.pow(age, 0.75)) + (rng() - 0.5) * 12) * DEG;
+    // Old fronds arch over until their tips hang, but never fold back past
+    // ~175 degrees from vertical into the trunk.
+    const droop = Math.min(
+      lerp(30, 100, Math.pow(age, 0.8)) * DEG * (0.85 + rng() * 0.3),
+      175 * DEG - pitch,
+    );
+    const youth = clamp(age / 0.35, 0, 1);
+    const senescence = clamp((age - 0.85) / 0.15, 0, 1);
+    const length = frondLength
+      * (0.7 + 0.3 * youth * youth * (3 - 2 * youth))
+      * (1 - 0.12 * senescence)
+      * (0.93 + rng() * 0.14);
+    const fold = lerp(24, 50, age) * DEG * (0.9 + rng() * 0.2);
+    const twist = (rng() - 0.5) * 10 * DEG;
+    const outwardX = Math.cos(azimuth);
+    const outwardZ = Math.sin(azimuth);
+    const side0: SkeletonVec3 = { x: -outwardZ, y: 0, z: outwardX };
+    // Rotating about -side0 by a positive angle pitches the rachis down.
+    const droopAxis: SkeletonVec3 = { x: outwardZ, y: 0, z: -outwardX };
+    let direction = norm({
+      x: Math.sin(pitch) * outwardX,
+      y: Math.cos(pitch),
+      z: Math.sin(pitch) * outwardZ,
+    });
+    const points: SkeletonVec3[] = [{
+      x: top.x + outwardX * topRadius * 0.8,
+      y: top.y - age * 0.028,
+      z: top.z + outwardZ * topRadius * 0.8,
+    }];
+    const directions: SkeletonVec3[] = [];
+    const step = length / PALM_FROND_SEGMENTS;
+    for (let segment = 0; segment < PALM_FROND_SEGMENTS; segment += 1) {
+      direction = rotateAbout(direction, droopAxis, droop * bendWeights[segment]! / bendTotal);
+      direction = norm(rotateAbout(direction, { x: 0, y: 1, z: 0 }, twist / PALM_FROND_SEGMENTS));
+      directions.push(direction);
+      const last = points[points.length - 1]!;
+      points.push({
+        x: last.x + direction.x * step,
+        y: last.y + direction.y * step,
+        z: last.z + direction.z * step,
+      });
+    }
+    const tangents = points.map((_, index) => {
+      const before = directions[Math.max(0, index - 1)]!;
+      const after = directions[Math.min(directions.length - 1, index)]!;
+      return norm({ x: before.x + after.x, y: before.y + after.y, z: before.z + after.z });
+    });
+    const sides = tangents.map((tangent) => {
+      const along = side0.x * tangent.x + side0.y * tangent.y + side0.z * tangent.z;
+      return norm({
+        x: side0.x - tangent.x * along,
+        y: side0.y - tangent.y * along,
+        z: side0.z - tangent.z * along,
+      });
+    });
+    const leafletHalfWidth = frondHalfWidth * (length / frondLength);
+    const reach = points.map((_, index) => clamp(
+      palmLeafletProfile(index / PALM_FROND_SEGMENTS) + 0.04,
+      0.12,
+      1,
+    ));
+    fronds.push({
+      points,
+      tangents,
+      sides,
+      halfWidths: reach.map((fraction) => fraction * leafletHalfWidth),
+      reach,
+      fold,
+      age,
+    });
+  }
+
+  // --- Envelope / canopy bounds -----------------------------------------
+  let envelopeRadius = 0.02;
+  let crownBaseY = Number.POSITIVE_INFINITY;
+  let crownTopY = 0;
+  for (const point of trunkPoints) {
+    envelopeRadius = Math.max(envelopeRadius, Math.hypot(point.x, point.z));
+    crownTopY = Math.max(crownTopY, point.y);
+  }
+  for (const frond of fronds) {
+    for (let index = 0; index < frond.points.length; index += 1) {
+      for (const point of [
+        frond.points[index]!,
+        palmFrondEdge(frond, index, -1),
+        palmFrondEdge(frond, index, 1),
+      ]) {
+        envelopeRadius = Math.max(envelopeRadius, Math.hypot(point.x, point.z));
+        crownTopY = Math.max(crownTopY, point.y);
+        crownBaseY = Math.min(crownBaseY, point.y);
+      }
+    }
+  }
+
+  // Unit height, exactly as the branching builder normalizes.
+  const heightScale = 1 / Math.max(crownTopY, 1e-3);
+  const scalePoint = (point: SkeletonVec3): SkeletonVec3 => ({
+    x: point.x * heightScale,
+    y: point.y * heightScale,
+    z: point.z * heightScale,
+  });
+  const scaledTrunk: MutableStem = {
+    ...trunk,
+    points: trunk.points.map(scalePoint),
+    radii: trunk.radii.map((radius) => radius * heightScale),
+  };
+  const scaledFronds = fronds.map((frond) => ({
+    ...frond,
+    points: frond.points.map(scalePoint),
+    halfWidths: frond.halfWidths.map((width) => width * heightScale),
+  }));
+  return {
+    stems: [scaledTrunk],
+    anchors: [],
+    fronds: scaledFronds,
+    envelopeRadius: envelopeRadius * heightScale,
+    crownBaseY: crownBaseY * heightScale,
+    crownTopY: crownTopY * heightScale,
+    crownCenter: scalePoint(top),
+    cardHalfWidth: frondHalfWidth * heightScale,
   };
 }
 
@@ -706,6 +992,27 @@ export interface SkeletonMeshBudget {
   readonly cardStride: number;
   /** Card size multiplier compensating the stride. */
   readonly cardScale: number;
+  /** Palms: keep every k-th frond (the youngest always kept). */
+  readonly frondStride: number;
+  /** Palms: keep every k-th rachis point (first and last always kept). */
+  readonly frondSegmentStride: number;
+  /** Palms: strip width multiplier compensating the frond stride. */
+  readonly frondWidthScale: number;
+}
+
+/** Rachis point indices a budget keeps: every stride-th, plus the tip. */
+export function palmFrondPointIndices(budget: SkeletonMeshBudget): readonly number[] {
+  const indices: number[] = [];
+  for (let index = 0; index < PALM_FROND_SEGMENTS; index += budget.frondSegmentStride) {
+    indices.push(index);
+  }
+  indices.push(PALM_FROND_SEGMENTS);
+  return indices;
+}
+
+/** Whether a budget meshes frond `index` (fronds are youngest first). */
+export function palmFrondKept(budget: SkeletonMeshBudget, index: number): boolean {
+  return index % budget.frondStride === 0;
 }
 
 export function estimateSkeletonTriangles(
@@ -730,5 +1037,10 @@ export function estimateSkeletonTriangles(
   }
   const cards = Math.ceil(skeleton.anchors.length / budget.cardStride);
   triangles += cards * 2;
+  // Palm fronds: two half-strips (the V) of two triangles per kept segment.
+  const frondSegments = palmFrondPointIndices(budget).length - 1;
+  skeleton.fronds.forEach((_, index) => {
+    if (palmFrondKept(budget, index)) triangles += 2 * frondSegments * 2;
+  });
   return triangles;
 }

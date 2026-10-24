@@ -192,13 +192,18 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
         // (measured 824–1,376 across the species) and mid at 340.
         const { trunk, crown, envelopeRadius } = buildTreePrototype(species, variant, 31);
         const cards = buildCrownFringePrototype(species, variant, 31, "near");
+        const palm = species === "palm";
         // The interior core keeps the closed-hull construction and stays on
-        // the opaque dense layers.
+        // the opaque dense layers. The palm's core is its crown-shaft knot,
+        // the same hull on the palm bark.
         expect(crown.triangleCount).toBeGreaterThanOrEqual(60);
         expect(crown.triangleCount).toBeLessThanOrEqual(80);
-        expect(crown.atlasLayer.every((layer) => layer >= 16 && layer <= 17)).toBe(true);
-        // The bark part carries the trunk and two branch levels now.
-        expect(trunk.triangleCount).toBeGreaterThanOrEqual(400);
+        expect(crown.atlasLayer.every((layer) => (palm
+          ? layer === FOLIAGE_LAYER_INDEX.barkPalm
+          : layer >= 16 && layer <= 17))).toBe(true);
+        // The bark part carries the trunk and two branch levels now; a palm
+        // is one unbranched trunk.
+        expect(trunk.triangleCount).toBeGreaterThanOrEqual(palm ? 120 : 400);
         expect(trunk.triangleCount).toBeLessThanOrEqual(1_150);
         expect(
           trunk.triangleCount + crown.triangleCount + cards.triangleCount,
@@ -214,8 +219,12 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
           mid.trunk.triangleCount + mid.crown.triangleCount + cardsMid.triangleCount,
           `${species} v${variant} mid total`,
         ).toBeLessThanOrEqual(340);
-        expect(mid.crown.atlasLayer.every((layer) => layer >= 16 && layer <= 17)).toBe(true);
-        expect(cards.atlasLayer.every((layer) => layer >= 0 && layer <= 4)).toBe(true);
+        expect(mid.crown.atlasLayer.every((layer) => (palm
+          ? layer === FOLIAGE_LAYER_INDEX.barkPalm
+          : layer >= 16 && layer <= 17))).toBe(true);
+        expect(cards.atlasLayer.every((layer) => (palm
+          ? layer === FOLIAGE_LAYER_INDEX.palmFrond
+          : layer >= 0 && layer <= 4))).toBe(true);
       }
     }
     for (const species of SHRUB_SPECIES) {
@@ -495,8 +504,12 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
     expect(layerOf(buildClutterPrototype("branchLitter", 1))).toBe(FOLIAGE_LAYER_INDEX.litterTwig);
     expect(layerOf(buildClutterPrototype("log", 1))).toBe(FOLIAGE_LAYER_INDEX.barkConifer);
     expect(layerOf(buildGrassPatchPrototype(1))).toBe(FOLIAGE_LAYER_INDEX.grassBlade);
+    const palm = buildTreePrototype("palm", 0, 1);
+    expect(layerOf(palm.trunk)).toBe(FOLIAGE_LAYER_INDEX.barkPalm);
+    expect(layerOf(palm.crown)).toBe(FOLIAGE_LAYER_INDEX.barkPalm);
+    expect(layerOf(buildCrownFringePrototype("palm", 0, 1))).toBe(FOLIAGE_LAYER_INDEX.palmFrond);
     expect(TREE_VARIANT_COUNTS).toEqual({
-      pine: 5, cedar: 3, spruce: 3, oak: 5, maple: 3, birch: 5, willow: 3,
+      pine: 5, cedar: 3, spruce: 3, oak: 5, maple: 3, birch: 5, willow: 3, palm: 3,
     });
     expect(SHRUB_VARIANT_COUNTS).toEqual({ juniper: 2, hazel: 2, sage: 2 });
   });
