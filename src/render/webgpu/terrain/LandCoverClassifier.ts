@@ -281,12 +281,12 @@ export const LAND_COVER_DRY_PROVINCE = Object.freeze({
   rockLow: 0.08,
   rockHigh: 0.24,
   sandGain: 1.15,
-  shrubBase: 0.3,
-  shrubWetGain: 0.55,
+  shrubBase: 0.1,
+  shrubWetGain: 0.5,
   gravelGain: 0.62,
   rockGain: 0.8,
   desertGrassCut: 0.9,
-  desertDryGrassCut: 0.4,
+  desertDryGrassCut: 0.15,
   parklandGrassCut: 0.35,
 });
 

@@ -202,6 +202,8 @@ interface ProvinceSurvey {
   readonly shrubsPerHectare: number;
   /** Share of land probes each material is dominant on. */
   readonly dominant: readonly number[];
+  /** Mean classifier weight of each material over the land probes. */
+  readonly mean: readonly number[];
   /** Mean forest-edge (open-grown) form where trees stand. */
   readonly treeEdge: number;
 }
@@ -216,6 +218,7 @@ function surveyProvince(province: ClimateProvinceName | null): ProvinceSurvey {
     : createWorld("open-skies", { climateProvince: province });
   const airport = world.airport!;
   const dominant = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+  const mean = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
   let trees = 0;
   let shrubs = 0;
   let edgeWeighted = 0;
@@ -256,6 +259,7 @@ function surveyProvince(province: ClimateProvinceName | null): ProvinceSurvey {
         grassCover: field.groundCover?.grass,
       });
       dominant[cover.ids[0]!] = dominant[cover.ids[0]!]! + 1;
+      cover.ids.forEach((id, slot) => { mean[id] = mean[id]! + (cover.weights[slot] ?? 0); });
       trees += field.treeStemsPerSquareMeter;
       shrubs += field.shrubStemsPerSquareMeter;
       edgeWeighted += field.treeStemsPerSquareMeter * field.forestEdge;
@@ -266,6 +270,7 @@ function surveyProvince(province: ClimateProvinceName | null): ProvinceSurvey {
     treesPerHectare: (trees / landProbes) * 1e4,
     shrubsPerHectare: (shrubs / landProbes) * 1e4,
     dominant: dominant.map((count) => count / landProbes),
+    mean: mean.map((weight) => weight / landProbes),
     treeEdge: trees > 0 ? edgeWeighted / trees : 0,
   };
 }
@@ -283,16 +288,23 @@ describe("a forced dry province reads as its ecology", () => {
     expect(temperate.dominant[SurfaceMaterial.Sand]!).toBeLessThan(0.02);
   });
 
-  it("turns the high desert into sage, bare soil and rock instead of green grass", () => {
-    const bareAndScrub = desert.dominant[SurfaceMaterial.Sand]!
-      + desert.dominant[SurfaceMaterial.Shrub]!
+  it("turns the high desert into tan bunchgrass, bare soil and rock instead of green grass", () => {
+    // From the air a sagebrush steppe is tan: bunchgrass between grey-green
+    // bushes that are too small to colour the ground at range (the bushes
+    // themselves are drawn). Shrub, the dark olive material, is kept to the
+    // damp swales; the first tuning let it take a third of the ground and the
+    // forced desert rendered GREENER than the province's dried moisture alone.
+    expect(desert.dominant[SurfaceMaterial.DryGrass]!).toBeGreaterThan(0.6);
+    const bare = desert.dominant[SurfaceMaterial.Sand]!
       + desert.dominant[SurfaceMaterial.Gravel]!
       + desert.dominant[SurfaceMaterial.Rock]!;
-    expect(bareAndScrub).toBeGreaterThan(0.5);
-    expect(desert.dominant[SurfaceMaterial.Shrub]!).toBeGreaterThan(0.2);
-    expect(desert.dominant[SurfaceMaterial.Sand]!).toBeGreaterThan(0.08);
+    expect(bare).toBeGreaterThan(0.12);
+    expect(desert.dominant[SurfaceMaterial.Sand]!).toBeGreaterThan(0.05);
     // ... and sand is a share of the basin floors, not the whole province.
     expect(desert.dominant[SurfaceMaterial.Sand]!).toBeLessThan(0.35);
+    expect(desert.dominant[SurfaceMaterial.Shrub]!).toBeLessThan(0.1);
+    expect(desert.mean[SurfaceMaterial.Shrub]!).toBeGreaterThan(0.04);
+    expect(desert.mean[SurfaceMaterial.Shrub]!).toBeLessThan(0.2);
     expect(desert.dominant[SurfaceMaterial.Grass]!).toBeLessThan(0.05);
     expect(desert.dominant[SurfaceMaterial.ForestFloor]!).toBeLessThan(0.02);
   });

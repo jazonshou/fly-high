@@ -284,21 +284,24 @@ function chooseTreeSpecies(sample: DetailTerrainSample, choice: number): TreeSpe
   // The dry provinces' own stands come first, drawn against their shares so
   // the ecotone is a mixture rather than a contour. The roll is re-stretched
   // over what is left, so the temperate draw below stays uniform.
+  //
+  // The stand channel can hand over a roll of exactly 1, so a full share
+  // (`>= 1`) claims every roll: re-stretching past it would divide by zero.
   const dry = sampleDryShares(sample);
-  if (choice < dry.arid) {
+  if (choice < dry.arid || dry.arid >= 1) {
     // Pinyon-juniper: pinyon pine, and the tree-form juniper the "cedar"
     // prototype stands in for.
     return choice / dry.arid < 0.78 ? "pine" : "cedar";
   }
   const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
-  if (afterArid < dry.parkland) {
+  if (afterArid < dry.parkland || dry.parkland >= 1) {
     const parklandRoll = afterArid / dry.parkland;
     // A cold province's parkland is aspen parkland, not oak savanna: the
     // prairie-boreal ecotone's aspen clumps ("birch" stands in for them) and
     // lodgepole. Exactly 0 at a temperature offset of 0 or warmer.
     const cold = smoothstep(
       COLD_PARKLAND_ONSET, COLD_PARKLAND_FULL, -(sample.temperatureOffset ?? 0));
-    if (parklandRoll < cold) return parklandRoll / cold < 0.72 ? "birch" : "pine";
+    if (parklandRoll < cold || cold >= 1) return parklandRoll / cold < 0.72 ? "birch" : "pine";
     // Oak savanna: open-grown oaks with the odd grey pine.
     return (parklandRoll - cold) / (1 - cold) < 0.84 ? "oak" : "pine";
   }
@@ -1135,9 +1138,9 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
 function chooseShrubSpecies(sample: DetailTerrainSample, choice: number): ShrubSpecies {
   // Dry provinces first, drawn against their shares as the canopy is.
   const dry = sampleDryShares(sample);
-  if (choice < dry.arid) return choice / dry.arid < 0.74 ? "sage" : "juniper";
+  if (choice < dry.arid || dry.arid >= 1) return choice / dry.arid < 0.74 ? "sage" : "juniper";
   const afterArid = dry.arid > 0 ? (choice - dry.arid) / (1 - dry.arid) : choice;
-  if (afterArid < dry.parkland) {
+  if (afterArid < dry.parkland || dry.parkland >= 1) {
     const parklandRoll = afterArid / dry.parkland;
     return parklandRoll < 0.4 ? "juniper" : parklandRoll < 0.7 ? "sage" : "hazel";
   }
