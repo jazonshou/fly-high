@@ -62,7 +62,12 @@ import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
-import type { AirportDefinition, TerrainSample, WorldDefinition } from "@/src/world";
+import {
+  withAirports,
+  type AirportDefinition,
+  type TerrainSample,
+  type WorldDefinition,
+} from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
@@ -110,6 +115,19 @@ import {
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
+import {
+  SpawnedAirfieldManager,
+  spawnedFloodReserve,
+} from "./webgpu/airfield/SpawnedAirfields";
+import {
+  LiveAirportGround,
+  analyticTerrainOf,
+} from "./webgpu/airfield/SpawnedAirportGround";
+import {
+  airportReachWorldBounds,
+  airportTerrainReach,
+  changedAirports,
+} from "./webgpu/airfield/AirportFootprint";
 import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
@@ -632,6 +650,24 @@ export class FlightRenderer implements FlightRenderingSystem {
   private originZ = 0;
   /** The world's airports, home field first; replaced by `setAirports`. */
   private airports: readonly Readonly<AirportDefinition>[];
+  /**
+   * The world as it stands now: the starting world with every airport spawned
+   * since (`withAirports`). Only its airport list ever differs from
+   * `worldDefinition`.
+   */
+  private liveWorld: WorldDefinition;
+  /**
+   * The ground every CPU terrain consumer reads (vegetation, ground cover,
+   * wildlife, the camera clamp, spawned airfields): the consumer sampler, with
+   * spawned airports' authored earthworks inside their influence.
+   */
+  private readonly airportGround: LiveAirportGround<TerrainSample>;
+  /**
+   * Airfields for airports spawned in flight — structures, lamps and floods,
+   * built incrementally on the home field's materials. Null without a home
+   * field, which a world that cannot gain airports never has.
+   */
+  private readonly spawnedAirfields: SpawnedAirfieldManager | null;
   private originShifted = true;
   private cameraCut = true;
   private frameIndex = 0;
@@ -693,6 +729,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     clusteredLighting: ClusteredLightingSystem,
     hangarFloodNames: readonly string[],
     airfieldLighting: AirfieldLightingSystem | null,
+    airportGround: LiveAirportGround<TerrainSample>,
+    spawnedAirfields: SpawnedAirfieldManager | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
     sharpen: SharpenPass,
@@ -735,6 +773,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clusteredLighting = clusteredLighting;
     this.hangarFloodNames = hangarFloodNames;
     this.airfieldLighting = airfieldLighting;
+    this.airportGround = airportGround;
+    this.spawnedAirfields = spawnedAirfields;
     this.scotopic = scotopic;
     this.bloom = bloom;
     this.sharpen = sharpen;
@@ -745,6 +785,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraTerrainSample = options.terrainSample;
     this.worldDefinition = options.world;
     this.airports = options.world.airports;
+    this.liveWorld = options.world;
     this.quality = options.quality;
     this.renderingMode = options.renderingMode;
     this.reducedMotion = options.reducedMotion;
@@ -983,6 +1024,16 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainConsumerAuthority,
         );
       }
+      // Airports spawned in flight: every CPU consumer below reads ONE stable
+      // sampler whose answer follows `setAirports`. Until an airport spawns it
+      // delegates straight to `consumerTerrainSample`, so the home-only world
+      // samples exactly what it did.
+      const airportGround = new LiveAirportGround<TerrainSample>(
+        consumerTerrainSample,
+        analyticTerrainOf,
+      );
+      airportGround.setWorld(options.world);
+      const liveTerrainSample = airportGround.sample;
       // W-6 (C-6): eroded bathymetry overlays resident L0 eroded pages inside
       // its own update dispatch (ARCHITECTURE 5-10 row — water consumers may
       // not implement this independently). The seam is read-only, resolved
@@ -1037,7 +1088,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       checkpointRendererStartup("airport construction", "sync");
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
-        terrainSample: consumerTerrainSample,
+        terrainSample: liveTerrainSample,
         seaLevelMeters: options.world.seaLevel,
         latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
@@ -1048,7 +1099,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // Wave G: the blade system reads the SAME consumer sampler as detail
       // and the camera clamp, so blades stand on the rendered surface.
       const groundCover = new GroundCoverSystem(scene, {
-        terrainSample: consumerTerrainSample,
+        terrainSample: liveTerrainSample,
         // `6-9` debt 1: the per-frame field is admitted through the SAME
         // amortised-compute meter as every other GPU compute producer, which
         // is what `owners.ts` has claimed since `4-0b` and wave G left false.
@@ -1068,7 +1119,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
       const wildlife = new WildlifeSystem(scene, {
         worldSeed: options.world.seed,
-        terrainSample: consumerTerrainSample,
+        terrainSample: liveTerrainSample,
       });
       cleanup.push(() => wildlife.dispose());
       checkpointRendererStartup("wildlife construction", "sync");
@@ -1309,9 +1360,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // `render.scene-light-slots.test.ts` pins `ClusteredLighting: 1` — a
       // second construction fails with a map diff. Positions are placeholders;
       // `setPosition` moves them onto the airframe every frame.
-      const clusteredLighting = new ClusteredLightingSystem(
-        scene,
-        [
+      const clusteredDefinitions = [
           ...hangarFloods,
           ...AIRCRAFT_CAST_POOLS.map((pool) => ({
             name: pool.name,
@@ -1332,7 +1381,21 @@ export class FlightRenderer implements FlightRenderingSystem {
             intensity: 0,
             rangeMeters: wash.rangeMeters,
           })),
-        ],
+      ];
+      // Spawned airports' hangar floods: PARKED lights reserved now, because the
+      // container cannot add one later and constructing a light in flight would
+      // mark every mesh light-dirty. Sized to what the one clustered batch has
+      // free (13 used -> 3 fields of 6), so the container's buffers and per-pixel
+      // loop are exactly what they were; a parked light sets no tile bit and
+      // costs no pixel anything. Only with a home field (no home, no spawns),
+      // and only when the starting tier lights spawned floods: low reserves
+      // none, so its container is exactly the home field's.
+      const spawnedFloodSlots = airport && profile.spawnedAirfields.floodFields > 0
+        ? spawnedFloodReserve(clusteredDefinitions.length)
+        : [];
+      const clusteredLighting = new ClusteredLightingSystem(
+        scene,
+        [...clusteredDefinitions, ...spawnedFloodSlots.flat()],
         profile.clusteredLighting,
       );
       // `IsLightSupported` refuses silently and `addLight` only warns, so a
@@ -1361,6 +1424,34 @@ export class FlightRenderer implements FlightRenderingSystem {
       // system exists. The per-frame fan-out carries it from the next frame on;
       // this is the one that lands before the first.
       if (initialAerialBinding) lightPoints.setAerialPerspective(initialAerialBinding);
+      // Airports spawned in flight. Constructed empty: `setAirports` queues a
+      // field, `update` builds it a slice per frame on the home field's
+      // materials, so nothing here or there compiles or allocates a pipeline.
+      const spawnedAirfields = airport
+        ? new SpawnedAirfieldManager({
+          scene,
+          world: options.world,
+          materials: airport.materials,
+          seedHash: options.world.seedHash,
+          groundHeight: (x, z) => liveTerrainSample(x, z).height,
+          lamps: lightPoints,
+          floods: clusteredLighting,
+          floodSlots: spawnedFloodSlots.map((slot) => slot.map((light) => light.name)),
+          tier: profile.spawnedAirfields,
+          // Their materials are the home field's, already in both registries,
+          // so this registers nothing — and says so if that ever stops being
+          // true, rather than leaving a spawned hangar unhazed.
+          onStructuresBuilt: (meshes) => {
+            const added = cloudShadowReceivers.registerMeshes(meshes)
+              + aerialReceivers.registerMeshes(meshes);
+            if (added > 0) {
+              console.warn(`spawned airfield registered ${added} new material(s) in flight`);
+            }
+          },
+        })
+        : null;
+      if (spawnedAirfields) cleanup.push(() => spawnedAirfields.dispose());
+      spawnedAirfields?.setAirports(options.world.airports);
 
       // 7-2: rod vision, FIRST in the chain — it must see scene-referred
       // linear radiance, because the tone map is where exposure and ACES
@@ -1475,7 +1566,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         // in eroded worlds that is the consumer authority's surface, not the
         // analytic pre-erosion kernel — clamping against an invisible ridge
         // shoved the chase camera upward with no visual justification.
-        { ...options, terrainSample: consumerTerrainSample },
+        { ...options, terrainSample: liveTerrainSample },
         engine,
         gpuUncapturedErrorGuard,
         scene,
@@ -1504,6 +1595,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         clusteredLighting,
         hangarFloods.map((flood) => flood.name),
         airfieldLighting,
+        airportGround,
+        spawnedAirfields,
         scotopic,
         bloom,
         sharpen,
@@ -1574,10 +1667,39 @@ export class FlightRenderer implements FlightRenderingSystem {
     return this.cameraTerrainSample(x, z).height;
   }
 
+  /**
+   * The world's airport list changed: an airport spawned ahead of the aircraft,
+   * or the oldest spawned one was retired. Home field first.
+   *
+   * CHEAP AND SYNCHRONOUS ON PURPOSE: every owner below only records the
+   * change and invalidates what it reaches. The work — regenerating the
+   * vegetation cells over the new runway, rebaking a ground-cover tile, building
+   * the airfield — happens in their own budgeted per-frame paths.
+   */
   setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
     if (this.disposed) return;
     this.airports = airports;
-    this.terrain.setAirports(airports);
+    const previous = this.liveWorld;
+    const next = withAirports(previous, airports);
+    if (next === previous) return;
+    this.liveWorld = next;
+    // 1. Terrain: the GPU grading and runway paint go first, so every consumer
+    //    below reads ground the terrain also draws. Pages rebuild in place
+    //    over later frames.
+    this.terrain.setAirports(next.airports);
+    // 2. The CPU ground: vegetation, ground cover, wildlife, the camera clamp
+    //    and the spawned structures all read this one sampler.
+    this.airportGround.setWorld(next);
+    // 3. Vegetation: off the new platform and out of its structures; only the
+    //    cells the change reaches regenerate.
+    this.detail.setAirports(next.airports);
+    // 4. Ground cover: a baked tile under a changed airport rebakes.
+    for (const airport of changedAirports(previous.airports ?? [], next.airports)) {
+      const bounds = airportReachWorldBounds(airportTerrainReach(airport));
+      this.groundCover.invalidateArea(bounds.minX, bounds.minZ, bounds.maxX, bounds.maxZ);
+    }
+    // 5. The airfield: hangars, tower, windsock, furniture, lamps and floods.
+    this.spawnedAirfields?.setAirports(next.airports);
   }
 
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
@@ -2395,6 +2517,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
       () => this.airport?.dispose(),
+      () => this.spawnedAirfields?.dispose(),
       () => this.clouds.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
@@ -2664,6 +2787,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     )) {
       this.lightPoints.setColors(this.airfieldLighting.colourList());
     }
+    // Spawned airfields: the same daylight law for their floods, their PAPIs
+    // against the same world camera, and their construction inside its own
+    // per-frame budget.
+    this.spawnedAirfields?.setDaylightAttenuation(daylightAttenuation);
+    this.spawnedAirfields?.update(
+      this.camera.position.x + this.originX,
+      this.camera.position.y,
+      this.camera.position.z + this.originZ,
+    );
     // OUTPUT size, for the reason on `LightPointSystem.setOutputSize`. The CSS
     // size is what `applyRenderScale` already reads for its own pixel cap, so
     // this is the same authority rather than a second one.
@@ -3095,6 +3227,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         sockWind.speed,
       );
     }
+    // Each nearby spawned field's sock takes ITS OWN sample, at its own mast.
+    this.spawnedAirfields?.updateWindsocks(state.simulationTime);
     // 2-12's translucency term: the atmosphere system's own key light, on
     // the same forward-the-snapshot pattern the wind field uses. The
     // strength is the relative illuminance, so a backlit canopy glows in
@@ -3207,6 +3341,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.addShadowCasters(collect, this.workLeverSettings.shadowCasterDistanceMeters);
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
+    this.spawnedAirfields?.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
       if (!active.has(id)) this.atmosphere.shadows.removeShadowCaster(mesh, false);
     }
@@ -3230,6 +3365,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.ocean.setFloatingOrigin(this.originX, this.originZ);
     this.hydrology.setFloatingOrigin(this.originX, this.originZ);
     this.airport?.setFloatingOrigin(this.originX, this.originZ);
+    this.spawnedAirfields?.setFloatingOrigin(this.originX, this.originZ);
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
@@ -3273,6 +3409,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
+    this.spawnedAirfields?.setTier(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
     this.atmosphere.shadows.shadowMaxZ = this.profile.shadowDistance;
