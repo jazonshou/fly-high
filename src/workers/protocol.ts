@@ -55,7 +55,13 @@ export type SimulationCommand =
    * with `withAirports`, so collision, `nearestAirport` and anything else
    * reading `world.airports` sees the new runway from the next step.
    */
-  | { type: "airports"; airports: readonly AirportDefinition[] };
+  | { type: "airports"; airports: readonly AirportDefinition[] }
+  /**
+   * Engage the autoland on the nearest airport's runway, or hand back. The
+   * worker refuses to engage on the ground and in the menu flight, and drops
+   * out by itself on a crash, a firm stick input, or a reset.
+   */
+  | { type: "autoland"; enabled: boolean };
 
 export type SimulationEvent =
   | { type: "ready"; state: FlightVisualState }

@@ -1067,6 +1067,97 @@
   opacity: 0.6;
 }
 
+/* Autoland: a toggle beside the nearest-airport one, and a mode strip under
+ * the topline while engaged, where an airliner's flight-mode annunciator sits. */
+.hud-autoland__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-surface);
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+  backdrop-filter: blur(13px) saturate(1.16);
+  -webkit-backdrop-filter: blur(13px) saturate(1.16);
+}
+
+.hud-autoland__toggle:hover:not(:disabled) {
+  border-color: rgba(225, 254, 118, 0.6);
+}
+
+.hud-autoland__toggle:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.hud-autoland__toggle svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.hud-autoland__toggle kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.hud-autoland__toggle.is-active {
+  border-color: rgba(225, 254, 118, 0.72);
+  color: var(--accent);
+}
+
+.hud-autoland {
+  position: absolute;
+  top: calc(max(22px, env(safe-area-inset-top)) + 40px);
+  left: 50%;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 6px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-surface);
+  color: rgba(238, 247, 245, 0.86);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  backdrop-filter: blur(13px) saturate(1.16);
+  -webkit-backdrop-filter: blur(13px) saturate(1.16);
+}
+
+.hud-autoland strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hud-autoland__phase {
+  color: rgba(238, 247, 245, 0.98);
+}
+
+.hud-autoland em {
+  font-style: normal;
+  color: #ffb36b;
+}
+
+.hud-autoland.is-go-around .hud-autoland__phase {
+  color: #ffb36b;
+}
+
 /*
  * The marker itself: a diamond over the runway while it is in view, an arrow
  * on the screen edge pointing the way to turn while it is not. Positioned with
@@ -1883,6 +1974,8 @@
   .hud-session span:last-child { display: none; }
   .hud-nearest__toggle span { display: none; }
   .hud-nearest__readout span:nth-of-type(1) { display: none; }
+  .hud-autoland__toggle span { display: none; }
+  .hud-autoland { gap: 10px; }
   .flight-hud__bottom { right: 14px; bottom: 48px; left: 14px; }
   .instrument-strip { display: none; }
   .control-status { width: 240px; margin-left: auto; }

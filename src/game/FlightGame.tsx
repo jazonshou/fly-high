@@ -54,6 +54,7 @@ import {
 } from "./spawn";
 import {
   INITIAL_VISUAL_STATE,
+  type AutolandVisualState,
   type CameraMode,
   type FlightVisualState,
   type RenderDiagnostics,
@@ -143,6 +144,13 @@ export function FlightGame() {
   const airportMarkerRef = useRef<HTMLDivElement>(null);
   /** The marker's "STQK · 4.2 NM" label, rebuilt with the readout, not per frame. */
   const airportMarkerTextRef = useRef("");
+  /**
+   * The autoland as of the latest snapshot, and that snapshot's sim time: on
+   * the snapshot where it is gone the pilot's input takes over its levers,
+   * unless the clock went backwards, which is a new aeroplane (a reset), not a
+   * hand-back.
+   */
+  const lastAutolandRef = useRef<{ state: AutolandVisualState; time: number } | null>(null);
   const lastUiUpdateRef = useRef(0);
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
@@ -212,6 +220,11 @@ export function FlightGame() {
     const next = !nearestAirportShownRef.current;
     nearestAirportShownRef.current = next;
     setNearestAirportShown(next);
+  }, []);
+
+  const toggleAutoland = useCallback(() => {
+    if (phaseRef.current !== "flying") return;
+    simulationRef.current?.setAutoland(!latestStateRef.current.autoland);
   }, []);
 
   const changeCamera = useCallback(() => {
@@ -493,9 +506,18 @@ export function FlightGame() {
         }
         if (action === "hud") applySettings(cycleHud(settingsRef.current));
         if (action === "nearestAirport" && phaseRef.current === "flying") toggleNearestAirport();
+        if (action === "autoland") toggleAutoland();
       }
     },
-    [applySettings, changeCamera, pauseFlight, restartFlight, resumeFlight, toggleNearestAirport],
+    [
+      applySettings,
+      changeCamera,
+      pauseFlight,
+      restartFlight,
+      resumeFlight,
+      toggleAutoland,
+      toggleNearestAirport,
+    ],
   );
 
   useEffect(() => {
@@ -658,6 +680,13 @@ export function FlightGame() {
       simulation.onError((message) => setError(message));
       simulation.onState((state) => {
         latestStateRef.current = state;
+        const lastAutoland = lastAutolandRef.current;
+        if (lastAutoland && !state.autoland && state.simulationTime >= lastAutoland.time) {
+          input.adoptConfiguration(lastAutoland.state.throttle, lastAutoland.state.flaps, lastAutoland.state.gear);
+        }
+        lastAutolandRef.current = state.autoland
+          ? { state: state.autoland, time: state.simulationTime }
+          : null;
         if (!readyRef.current) {
           readyRef.current = true;
           setReady(true);
@@ -886,6 +915,7 @@ export function FlightGame() {
           nearestAirport={nearestAirport}
           nearestAirportShown={nearestAirportShown}
           onToggleNearestAirport={toggleNearestAirport}
+          onToggleAutoland={toggleAutoland}
         />
       ) : null}
 

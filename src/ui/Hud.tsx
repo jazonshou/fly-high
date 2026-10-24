@@ -1,4 +1,5 @@
 import type {
+  AutolandVisualState,
   CameraMode,
   FlightMode,
   FlightVisualState,
@@ -31,6 +32,36 @@ interface HudProps {
   /** Whether the nearest-airport marker and readout are switched on. */
   nearestAirportShown?: boolean;
   onToggleNearestAirport?: () => void;
+  /** Engages or hands back the autoland; the button is drawn only when given. */
+  onToggleAutoland?: () => void;
+}
+
+const AUTOLAND_PHASE_LABELS: Record<AutolandVisualState["phase"], string> = {
+  approach: "APPROACH",
+  final: "FINAL",
+  flare: "FLARE",
+  rollout: "ROLLOUT",
+  landed: "LANDED",
+  "go-around": "GO AROUND",
+};
+
+const GO_AROUND_LABELS: Record<NonNullable<AutolandVisualState["goAroundReason"]>, string> = {
+  glideslope: "OFF GLIDESLOPE",
+  centreline: "OFF CENTRELINE",
+  "speed-high": "TOO FAST",
+  "speed-low": "TOO SLOW",
+  "sink-rate": "SINK RATE",
+  unconfigured: "NOT CONFIGURED",
+  bank: "BANK",
+  "long-landing": "LANDING LONG",
+  bounce: "BOUNCED",
+  terrain: "TERRAIN",
+};
+
+/** The painted number of the runway end being landed on: `runwayDesignator`'s rule. */
+function runwayNumber(headingDegrees: number): string {
+  const number = Math.round(headingDegrees / 10) % 36;
+  return String(number === 0 ? 36 : number).padStart(2, "0");
 }
 
 function formatHeading(heading: number): string {
@@ -87,6 +118,7 @@ export function Hud({
   nearestAirport = null,
   nearestAirportShown = false,
   onToggleNearestAirport,
+  onToggleAutoland,
 }: HudProps) {
   if (mode === "off") return null;
   const spec = aircraftSpec(aircraft);
@@ -103,6 +135,10 @@ export function Hud({
   const altitudeUnit = aviation ? "FT" : "M";
   const verticalUnit = aviation ? "FT/M" : "M/S";
   const pitchPixels = Math.max(-95, Math.min(95, state.pitch * 2.25));
+  const autoland = state.autoland ?? null;
+  const autolandDistance = autoland && (autoland.phase === "approach" || autoland.phase === "final")
+    ? formatAirportDistance(autoland.distanceToTouchdown, aviation)
+    : null;
   const controlModeLabel =
     flightMode === "unassisted"
       ? "DIRECT CONTROLS"
@@ -178,7 +214,42 @@ export function Hud({
             ) : null}
           </div>
         ) : null}
+        {onToggleAutoland ? (
+          <button
+            type="button"
+            className={`hud-autoland__toggle${autoland ? " is-active" : ""}`}
+            aria-pressed={autoland !== null}
+            title="Land at the nearest airport (L)"
+            disabled={!autoland && (state.onGround || state.crashed)}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={onToggleAutoland}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M 6 15 L 7 1 L 9 1 L 10 15 Z" />
+              <path d="M 8 4 L 8 6 M 8 9 L 8 11" />
+            </svg>
+            <span>AUTOLAND</span>
+            <kbd>L</kbd>
+          </button>
+        ) : null}
       </div>
+
+      {autoland ? (
+        <div
+          className={`hud-autoland${autoland.phase === "go-around" ? " is-go-around" : ""}`}
+          role="status"
+          aria-label={`Autoland ${AUTOLAND_PHASE_LABELS[autoland.phase].toLowerCase()}, runway ${runwayNumber(autoland.runwayHeading)}${autolandDistance ? `, ${autolandDistance} to touchdown` : ""}, approach ${autoland.attempt}`}
+        >
+          <strong>AUTOLAND</strong>
+          <span className="hud-autoland__phase">{AUTOLAND_PHASE_LABELS[autoland.phase]}</span>
+          <span>RWY {runwayNumber(autoland.runwayHeading)}</span>
+          {autolandDistance ? <span>{autolandDistance}</span> : null}
+          {autoland.attempt > 1 ? <span>APP {autoland.attempt}</span> : null}
+          {autoland.goAroundReason && (autoland.phase === "go-around" || autoland.phase === "approach")
+            ? <em>{GO_AROUND_LABELS[autoland.goAroundReason]}</em>
+            : null}
+        </div>
+      ) : null}
 
       {mode === "full" ? (
         <>
@@ -335,6 +406,7 @@ export function Hud({
         <span>F flaps down · V up</span>
         <span>C view</span>
         {onToggleNearestAirport && nearestAirport ? <span>N nearest airport</span> : null}
+        {onToggleAutoland ? <span>L autoland</span> : null}
         <span>Esc pause</span>
         {mouseFlight ? <span className="hud-help__active">Click view for mouse yoke</span> : null}
       </div>

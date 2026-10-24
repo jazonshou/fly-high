@@ -5,6 +5,7 @@ import {
   applyFlightAssistance,
   aircraftDefinition,
   AttractHold,
+  Autoland,
   ScenicAltitudeHold,
   attractScanOffset,
   attractScanSamples,
@@ -24,9 +25,12 @@ import {
   TRIM_ELEVATOR_AUTHORITY,
   type FlightControls,
   type AircraftKind,
+  type FlightState,
+  type FlightTelemetry,
   type SpawnOptions,
 } from "@/src/sim";
 import {
+  nearestAirport,
   sampleWind,
   withAirports,
   type TerrainCollisionSample,
@@ -44,6 +48,7 @@ import {
   setGroundHeightMirror,
 } from "@/src/sim/terrainGrid";
 import type {
+  AutolandVisualState,
   ControlState,
   FlightMode,
   FlightVisualState,
@@ -110,6 +115,28 @@ const collisionTarget: TerrainCollisionSample = {
 const assistedTarget: FlightControls = { ...DEFAULT_CONTROLS };
 const directPitchRetention = new DirectPitchRetention();
 const jetStabilityAugmentation = new JetStabilityAugmentation();
+/**
+ * The autoland for the current aeroplane, rebuilt with it. While engaged it
+ * flies in place of the pilot's controls and every assistance law; it reads
+ * the pilot's stick only to notice a firm input and hand back.
+ */
+let autoland: Autoland | null = null;
+const autolandControls: FlightControls = { ...DEFAULT_CONTROLS };
+const autolandInput: {
+  state: FlightState;
+  telemetry: FlightTelemetry;
+  terrainHeight: (x: number, z: number) => number;
+  seaLevel: number;
+  dt: number;
+} = {
+  state: null as unknown as FlightState,
+  telemetry: null as unknown as FlightTelemetry,
+  terrainHeight: terrainHeightSample,
+  seaLevel: 0,
+  dt: FIXED_TIME_STEP,
+};
+/** A stick deflection past this, on pitch or roll, takes the aeroplane back. */
+const AUTOLAND_OVERRIDE_STICK = 0.5;
 
 function post(event: SimulationEvent): void {
   workerScope.postMessage(event);
@@ -163,10 +190,88 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
   });
   directPitchRetention.reset();
   jetStabilityAugmentation.reset();
+  autoland = new Autoland(aircraft);
   accumulator = 0;
   lastTime = performance.now();
   lastSnapshotTime = 0;
   post({ type: "ready", state: visualState() });
+}
+
+function prepareAutolandInput(sim: FlightSimulator): typeof autolandInput {
+  autolandInput.state = sim.state;
+  autolandInput.telemetry = sim.telemetry();
+  autolandInput.seaLevel = world?.seaLevel ?? 0;
+  return autolandInput;
+}
+
+function setAutoland(enabled: boolean): void {
+  if (!enabled) {
+    disengageAutoland();
+    return;
+  }
+  const sim = simulator;
+  if (!sim || !world || !autoland || attractMode || autoland.engaged) return;
+  const target = nearestAirport(world, sim.state.position.x, sim.state.position.z);
+  if (!target) return;
+  autoland.engage(target.airport, prepareAutolandInput(sim), controls);
+}
+
+/**
+ * Hands the aeroplane back to the pilot's controls. The assistance laws hold
+ * targets learned before the autoland flew, so they start again from here.
+ */
+function disengageAutoland(): void {
+  if (!autoland?.engaged) return;
+  autoland.disengage();
+  handBackFromAutoland();
+}
+
+function handBackFromAutoland(): void {
+  scenicAltitudeHold.reset();
+  directPitchRetention.reset();
+  jetStabilityAugmentation.reset();
+}
+
+/** One step of the autoland, or the pilot's controls if it has just dropped out. */
+function autolandStep(sim: FlightSimulator): FlightControls {
+  const active = autoland!;
+  active.update(prepareAutolandInput(sim), autolandControls);
+  if (active.engaged) return autolandControls;
+  handBackFromAutoland();
+  return assistedControls();
+}
+
+/** A spawned airport can be nearer than the one the approach was planned to. */
+function retargetAutoland(): void {
+  const sim = simulator;
+  if (!sim || !world || !autoland?.engaged) return;
+  const target = nearestAirport(world, sim.state.position.x, sim.state.position.z);
+  const current = autoland.targetRunway;
+  if (!target || !current) return;
+  if (target.airport.centerX === current.centerX && target.airport.centerZ === current.centerZ) return;
+  autoland.retarget(target.airport, prepareAutolandInput(sim));
+}
+
+function autolandVisualState(): AutolandVisualState | null {
+  const active = autoland;
+  const runway = active?.targetRunway;
+  if (!active?.engaged || !runway) return null;
+  const status = active.status;
+  if (status.phase === "off") return null;
+  const heading = (status.runwayHeading * 180) / Math.PI;
+  return {
+    phase: status.phase,
+    attempt: status.attempt,
+    distanceToTouchdown: status.distanceToTouchdown,
+    runwayHeading: ((heading % 360) + 360) % 360,
+    targetAirspeed: status.targetAirspeed,
+    goAroundReason: status.goAroundReason,
+    runwayX: runway.centerX,
+    runwayZ: runway.centerZ,
+    throttle: autolandControls.throttle,
+    flaps: autolandControls.flaps,
+    gear: autolandControls.gear,
+  };
 }
 
 function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): void {
@@ -403,6 +508,7 @@ function visualState(): FlightVisualState {
     touchdown: simulator.state.peakImpactSpeed,
     simulationTime: snapshot.time,
     terrainAuthority: terrainAuthority.countersSnapshot(),
+    autoland: autolandVisualState(),
   };
 }
 
@@ -422,7 +528,7 @@ function simulationTick(): void {
     wind.z *= windScale;
     wind.speed *= windScale;
     if (attractMode) updateAttractSupervisor();
-    simulator.setControls(assistedControls());
+    simulator.setControls(autoland?.engaged ? autolandStep(simulator) : assistedControls());
     simulator.setEnvironment({
       terrain: terrainSample,
       terrainHeight: terrainHeightSample,
@@ -479,9 +585,20 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     if (command.type === "airports") {
       if (world) world = withAirports(world, command.airports);
+      retargetAutoland();
       return;
     }
-    if (command.type === "controls") controls = { ...command.controls };
+    if (command.type === "autoland") {
+      setAutoland(command.enabled);
+      return;
+    }
+    if (command.type === "controls") {
+      controls = { ...command.controls };
+      if (
+        autoland?.engaged
+        && Math.max(Math.abs(controls.pitch), Math.abs(controls.roll)) > AUTOLAND_OVERRIDE_STICK
+      ) disengageAutoland();
+    }
     else if (command.type === "mode") {
       // Applying an unrelated settings change re-sends the selected mode. Keep
       // an armed pilot-selected target unless the assistance mode truly changes.
@@ -494,6 +611,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     else if (command.type === "weather") weather = command.weather;
     else if (command.type === "attract") {
       attractMode = command.enabled;
+      if (attractMode) disengageAutoland();
       directPitchRetention.reset();
       jetStabilityAugmentation.reset();
     }

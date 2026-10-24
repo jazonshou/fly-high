@@ -196,6 +196,11 @@ export class SimulationClient {
     this.send({ type: "airports", airports });
   }
 
+  /** Engage the autoland on the nearest airport, or hand back (`src/sim/autoland.ts`). */
+  setAutoland(enabled: boolean): void {
+    this.send({ type: "autoland", enabled });
+  }
+
   reset(spawn: SpawnKind, airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
     this.clearPresentationPause();
     this.send({ type: "reset", spawn, airborneStartAgl });
