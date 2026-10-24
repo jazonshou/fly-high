@@ -78,15 +78,17 @@ describe("terrain height kernel WGSL (4-1)", () => {
     const heightChain = TERRAIN_KERNEL_LATTICES.filter(
       (lattice) => !lattice.name.startsWith("moisture")
         && !lattice.name.startsWith("climate")
-        && !lattice.name.startsWith("province"),
+        && !lattice.name.startsWith("province")
+        && !lattice.name.startsWith("dune"),
     );
     expect(heightChain).toHaveLength(34);
     // `4-6` (D5) moved the climate chain here from `4-1`: four moisture-broad
     // octaves, the local and rain-shadow channels, and three climate octaves.
-    // Climate provinces appended two octaves each of temperature and dryness.
-    expect(TERRAIN_KERNEL_LATTICE_COUNT).toBe(47);
+    // Climate provinces appended two octaves each of temperature and dryness,
+    // and the dune stage two erg-patch octaves, two meanders and the crest.
+    expect(TERRAIN_KERNEL_LATTICE_COUNT).toBe(52);
     const names = TERRAIN_KERNEL_LATTICES.map((lattice) => lattice.name);
-    expect(new Set(names).size).toBe(47);
+    expect(new Set(names).size).toBe(52);
     for (const lattice of TERRAIN_KERNEL_LATTICES) {
       expect(lattice.divisorX, lattice.name).toBeGreaterThan(0);
       expect(lattice.divisorZ, lattice.name).toBeGreaterThan(0);
@@ -175,9 +177,9 @@ describe("terrain height kernel WGSL (4-1)", () => {
     const buffer = buildTerrainKernelPageUniform({
       seedHash: SEED_HASH, originX: 0, originZ: 0, filterWidthMeters: 0,
     });
-    // Twelve kept floats: three variance-kept scalars and the filter width,
-    // then the climate province's two rows.
-    const seedOffset = (TERRAIN_KERNEL_LATTICE_COUNT * 8 + 12) * 4;
+    // Twenty-eight kept floats: three variance-kept scalars and the filter
+    // width, the climate province's two rows, then the landforms' four.
+    const seedOffset = (TERRAIN_KERNEL_LATTICE_COUNT * 8 + 28) * 4;
     const seeds = new Uint32Array(buffer, seedOffset, TERRAIN_KERNEL_LATTICE_COUNT);
     TERRAIN_KERNEL_LATTICES.forEach((lattice, index) => {
       const channelSeed = mixSeed(SEED_HASH, lattice.channel);
