@@ -11,6 +11,7 @@ import {
   sampleTerrainHeight,
 } from "../src/world/terrain";
 import { createWorld } from "../src/world/world";
+import { volcanicSitesInBounds } from "../src/world/volcanism";
 import type { WorldDefinition } from "../src/world/types";
 
 /**
@@ -105,6 +106,8 @@ describe("where sand seas grow", () => {
       const x = center.x + Math.cos(angle) * radius;
       const z = center.z + Math.sin(angle) * radius;
       if (sampleLandformCover(world, x, z, 0).ergWeight !== 0) continue;
+      // Volcanoes are the next stage: their footprints move the ground too.
+      if (volcanicSitesInBounds(world, x, z, x, z).length > 0) continue;
       expect(Object.is(sampleTerrainHeight(world, x, z), sampleTerrainHeight(reference, x, z))).toBe(true);
       checked += 1;
     }
