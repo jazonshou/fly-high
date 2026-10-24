@@ -17,7 +17,7 @@ import {
 } from "../../src/render/webgpu/terrain/TerrainKernel";
 import {
   TERRAIN_LANDFORM_WGSL,
-  createTerrainLandformPlaceholderBuffer,
+  createTerrainLandformPlaceholderSource,
   terrainLandformDataBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainLandformKernel";
 import {
@@ -32,11 +32,17 @@ import {
 } from "../../src/render/webgpu/terrain/TerrainSpineContract";
 import { WORLD_PAGE_GUTTER } from "../../src/render/webgpu/world/pageGeometry";
 import { createWorldPageAddress } from "../../src/render/webgpu/world/pageKey";
-import { DUNES, unmaskedProvinceDryness } from "../../src/world/dunes";
+import {
+  DUNES,
+  duneClimateFactors,
+  unmaskedProvinceDryness,
+  type DuneClimateFactors,
+} from "../../src/world/dunes";
 import {
   LANDFORM_CORE,
   applyTerrainLandforms,
   landformCoreCenter,
+  landformCoreMask,
   sampleLandformCover,
 } from "../../src/world/landforms";
 import {
@@ -67,6 +73,14 @@ import { createWorld } from "../../src/world/world";
  */
 
 const FILTER_WIDTHS = [0, 128, 512] as const;
+/**
+ * Erg weight and sand cover, both in [0, 1]. The steepest path from a height
+ * error to either is sand cover's smoothstep over 0.4-2.5 m of dune height
+ * (slope at most 0.71 per metre), so the stage's 2 mm worst height error
+ * bounds it at ~1.4e-3. Measured on SwiftShader: 6e-6 (erg) and 6e-5 (sand).
+ * A wrong constant moves either by tenths.
+ */
+const SAND_TOLERANCE = 2e-3;
 const PAGE_METERS = 512;
 const NATURAL_WORLD = createWorld("landform-parity");
 const FORCED_WORLD = createWorld("landform-parity", { landforms: { dunes: true } });
@@ -80,19 +94,27 @@ ${TERRAIN_LANDFORM_WGSL}
 struct LandformProbe { pageIndex: u32, pad: u32, localX: f32, localZ: f32 };
 
 @group(0) @binding(1) var<storage, read> probes: array<LandformProbe>;
-@group(0) @binding(2) var<storage, read_write> results: array<vec2f>;
+@group(0) @binding(2) var<storage, read_write> results: array<vec4f>;
 
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= arrayLength(&probes)) { return; }
   let probe = probes[id.x];
   kSelectPage(probe.pageIndex);
+  // The climate gate first, as a ground bake calls it: before the kernel.
+  let gate = terrainLandformClimateGate(probe.localX, probe.localZ);
   // The consumers' order: the natural kernel, then the landforms reading the
   // intermediates that very call recorded.
   let natural = terrainNaturalHeight(probe.localX, probe.localZ);
-  results[id.x] = vec2f(natural, terrainLandforms(probe.localX, probe.localZ, natural));
+  let landformed = terrainLandforms(probe.localX, probe.localZ, natural);
+  let cover = terrainLandformSandCover(probe.localX, probe.localZ, natural);
+  results[id.x * 2u] = vec4f(natural, landformed, select(0.0, 1.0, gate), 0.0);
+  results[id.x * 2u + 1u] = vec4f(cover, 0.0, 0.0);
 }
 `;
+
+/** Floats per probe in the result buffer: (natural, landformed, gate, -), (erg, sand, -, -). */
+const RESULT_FLOATS = 8;
 
 function halton(index: number, base: number): number {
   let result = 0;
@@ -236,7 +258,7 @@ async function withEngine<T>(run: (engine: WebGPUEngine) => Promise<T>): Promise
   }
 }
 
-/** (natural, landformed) per probe, from one dispatch. */
+/** RESULT_FLOATS per probe, from one dispatch. */
 async function dispatch(
   engine: WebGPUEngine,
   set: ProbeSet,
@@ -246,8 +268,8 @@ async function dispatch(
   pageBuffer.update(packPages(set, filterWidthMeters));
   const probeBuffer = new StorageBuffer(engine, set.probes.byteLength);
   probeBuffer.update(new Uint8Array(set.probes.buffer));
-  const resultBuffer = new StorageBuffer(engine, set.count * 8);
-  const dataBuffer = createTerrainLandformPlaceholderBuffer(engine);
+  const resultBuffer = new StorageBuffer(engine, set.count * RESULT_FLOATS * 4);
+  const data = createTerrainLandformPlaceholderSource(engine);
   const shader = new ComputeShader(
     `terrain-landform-parity-${set.name}-${filterWidthMeters}`,
     engine,
@@ -264,15 +286,15 @@ async function dispatch(
   shader.setStorageBuffer("terrainKernelPages", pageBuffer);
   shader.setStorageBuffer("probes", probeBuffer);
   shader.setStorageBuffer("results", resultBuffer);
-  shader.setStorageBuffer("terrainLandformData", dataBuffer);
+  shader.setStorageBuffer("terrainLandformData", data.buffer);
   await shader.dispatchWhenReady(Math.ceil(set.count / 64), 1, 1);
   const view = await resultBuffer.read();
   const results = new Float32Array(
-    view.buffer.slice(view.byteOffset, view.byteOffset + set.count * 8));
+    view.buffer.slice(view.byteOffset, view.byteOffset + set.count * RESULT_FLOATS * 4));
   pageBuffer.dispose();
   probeBuffer.dispose();
   resultBuffer.dispose();
-  dataBuffer.dispose();
+  data.dispose();
   return results;
 }
 
@@ -318,11 +340,21 @@ describe("landform stage CPU/GPU parity (terrainLandforms)", () => {
           const gpu = await dispatch(engine, set, filterWidthMeters);
           const bits = new Uint32Array(gpu.buffer);
           let mismatches = 0;
+          let gated = 0;
+          let covered = 0;
           for (let index = 0; index < set.count; index += 1) {
-            if (bits[index * 2] !== bits[index * 2 + 1]) mismatches += 1;
+            const at = index * RESULT_FLOATS;
+            if (bits[at] !== bits[at + 1]) mismatches += 1;
+            if (gpu[at + 2] !== 0) gated += 1;
+            if (gpu[at + 4] !== 0 || gpu[at + 5] !== 0) covered += 1;
           }
-          report.push(`${set.name}, fw ${filterWidthMeters}: ${mismatches} of ${set.count} not bit-identical`);
+          report.push(
+            `${set.name}, fw ${filterWidthMeters}: ${mismatches} of ${set.count} not bit-identical; `
+            + `${gated} gated open; ${covered} with sand cover`);
           expect(mismatches, `${set.name} at filter width ${filterWidthMeters}`).toBe(0);
+          // No sand sea is possible here, and the ground bake is told so.
+          expect(gated, `${set.name} at ${filterWidthMeters}: climate gate open`).toBe(0);
+          expect(covered, `${set.name} at ${filterWidthMeters}: sand cover`).toBe(0);
         }
       }
     });
@@ -362,8 +394,8 @@ describe("landform stage CPU/GPU parity (terrainLandforms)", () => {
               sampleNaturalTerrainIntermediates(set.world.seedHash, x, z, filterWidthMeters),
             );
             if (expected !== natural) moved += 1;
-            worstNatural = Math.max(worstNatural, Math.abs(gpu[index * 2]! - natural));
-            const delta = Math.abs(gpu[index * 2 + 1]! - expected);
+            worstNatural = Math.max(worstNatural, Math.abs(gpu[index * RESULT_FLOATS]! - natural));
+            const delta = Math.abs(gpu[index * RESULT_FLOATS + 1]! - expected);
             if (delta > worst) {
               worst = delta;
               worstIndex = index;
@@ -385,6 +417,81 @@ describe("landform stage CPU/GPU parity (terrainLandforms)", () => {
     });
     // Printed so the achieved bound is a recorded measurement, not a pass/fail bit.
     console.log(`landform parity:\n  ${report.join("\n  ")}`);
+  }, 600_000);
+
+  it("gates and covers the ground as duneClimateFactors and sampleLandformCover do", async () => {
+    // The ground bake's two entry points: the climate gate (no kernel) and
+    // the sand cover (the dune evaluation the height stage makes). A forced
+    // desert, natural ergs, and natural ground 150-600 km out at random, so
+    // the gate is seen shut by the province and by the patch as well as open.
+    const naturalCenter = landformCoreCenter(NATURAL_WORLD);
+    const scattered: [number, number][] = [];
+    for (let index = 1; scattered.length < 24; index += 1) {
+      const angle = halton(index, 2) * 2 * Math.PI;
+      const radius = 150_000 + 450_000 * halton(index, 3);
+      scattered.push([
+        snapToPage(naturalCenter.x + Math.cos(angle) * radius),
+        snapToPage(naturalCenter.z + Math.sin(angle) * radius),
+      ]);
+    }
+    const sets = [
+      buildProbeSet(
+        "forced desert", FORCED_WORLD, terrainLandformInput(FORCED_WORLD), forcedErgPages(FORCED_WORLD, 8), 64),
+      buildProbeSet(
+        "natural erg", NATURAL_WORLD, terrainLandformInput(NATURAL_WORLD), naturalErgPages(NATURAL_WORLD, 6), 64),
+      buildProbeSet(
+        "natural, scattered", NATURAL_WORLD, terrainLandformInput(NATURAL_WORLD), scattered, 32),
+    ];
+    const climate: DuneClimateFactors = { arid: 0, patch: 0 };
+    const report: string[] = [];
+    await withEngine(async (engine) => {
+      for (const set of sets) {
+        for (const filterWidthMeters of FILTER_WIDTHS) {
+          const gpu = await dispatch(engine, set, filterWidthMeters);
+          let worstErg = 0;
+          let worstSand = 0;
+          let open = 0;
+          let shutWithCover = 0;
+          let gateMisses = 0;
+          let gateEdges = 0;
+          let sanded = 0;
+          for (let index = 0; index < set.count; index += 1) {
+            const x = set.worldX[index]!;
+            const z = set.worldZ[index]!;
+            const at = index * RESULT_FLOATS;
+            const gate = gpu[at + 2] !== 0;
+            const cover = sampleLandformCover(set.world, x, z, filterWidthMeters);
+            worstErg = Math.max(worstErg, Math.abs(gpu[at + 4]! - cover.ergWeight));
+            worstSand = Math.max(worstSand, Math.abs(gpu[at + 5]! - cover.sandCover));
+            if (cover.sandCover > 0) sanded += 1;
+            if (gate) open += 1;
+            // The gate never shuts on sand the GPU itself draws.
+            if (!gate && (gpu[at + 4] !== 0 || gpu[at + 5] !== 0)) shutWithCover += 1;
+            // The CPU's early outs: the core mask, then both climate factors.
+            const mask = landformCoreMask(set.world, x, z);
+            duneClimateFactors(set.world, x, z, climate);
+            const cpuGate = mask > 0 && climate.arid > 0 && climate.patch > 0;
+            // f32 against f64 may disagree only where a factor is at its edge.
+            if (gate !== cpuGate) {
+              if (Math.min(mask, climate.arid, climate.patch) > 1e-3) gateMisses += 1;
+              else gateEdges += 1;
+            }
+          }
+          report.push(
+            `${set.name}, fw ${filterWidthMeters}: max |Δerg| = ${worstErg.toExponential(2)}, `
+            + `max |Δsand| = ${worstSand.toExponential(2)}; gate open at ${open} of ${set.count}; `
+            + `${sanded} sanded on the CPU; ${gateEdges} gate disagreements at a factor's edge`,
+          );
+          expect(shutWithCover, `${set.name} at ${filterWidthMeters}: cover where the gate is shut`).toBe(0);
+          expect(gateMisses, `${set.name} at ${filterWidthMeters}: gate disagrees off a factor edge`).toBe(0);
+          expect(gateEdges, `${set.name} at ${filterWidthMeters}: gate disagrees at an edge`)
+            .toBeLessThanOrEqual(set.count * 0.01);
+          expect(worstErg, `${set.name} at ${filterWidthMeters}: erg weight`).toBeLessThan(SAND_TOLERANCE);
+          expect(worstSand, `${set.name} at ${filterWidthMeters}: sand cover`).toBeLessThan(SAND_TOLERANCE);
+        }
+      }
+    });
+    console.log(`landform ground entry points:\n  ${report.join("\n  ")}`);
   }, 600_000);
 
   it("writes the sand sea sampleTerrainHeight samples into an L0 page of the atlas", async () => {

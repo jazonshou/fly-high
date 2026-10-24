@@ -261,6 +261,10 @@ describe("the landform include (TerrainLandformKernel.ts)", () => {
       BRINK_ROUNDING: DUNES.brinkRoundingMeters,
       SCALLOP_STAGGER: DUNES.scallopStagger,
       SCALLOP_JITTER: DUNES.scallopJitter,
+      SAND_COVER_LOW: DUNES.sandCoverLowMeters,
+      SAND_COVER_HIGH: DUNES.sandCoverHighMeters,
+      SAND_SHEET_LOW: DUNES.sandSheetLow,
+      SAND_SHEET_HIGH: DUNES.sandSheetHigh,
       STOSS_TAN: DUNE_PROFILE_CONSTANTS.stossTan,
       SLIP_TAN: DUNE_PROFILE_CONSTANTS.slipTan,
       CREST_HEIGHT_LIMIT: DUNE_PROFILE_CONSTANTS.crestHeightLimitMeters,
@@ -318,6 +322,57 @@ function functionBody(source: string, name: string): string {
   const next = source.indexOf("\nfn ", start + 1);
   return source.slice(start, next < 0 ? undefined : next);
 }
+
+describe("the ground bake's entry points (climate gate, sand cover)", () => {
+  const code = stripComments(TERRAIN_LANDFORM_WGSL);
+
+  it("gates on the climate without ever reaching the natural kernel", () => {
+    const gate = functionBody(code, "terrainLandformClimateGate");
+    expect(gate).toContain("fn terrainLandformClimateGate(localX: f32, localZ: f32) -> bool {");
+    // Gain 0 and the core first, then forced dunes, then arid, then the patch:
+    // sampleErgFarWeight's early outs, in its order.
+    const order = [
+      "if (landform.z <= 0.0) { return false; }",
+      "if (terrainLandformCoreMask(localX, localZ) <= 0.0) { return false; }",
+      "if (landform.w > 0.0) { return true; }",
+      "if (terrainDuneAridFactor(localX, localZ) <= 0.0) { return false; }",
+      "return terrainDunePatchFactor(localX, localZ) > 0.0;",
+    ];
+    let cursor = 0;
+    for (const line of order) {
+      const at = gate.indexOf(line);
+      expect(at, line).toBeGreaterThan(cursor);
+      cursor = at;
+    }
+    // Neither the gate nor anything it calls reads the kernel or its record.
+    for (const name of [
+      "terrainLandformClimateGate",
+      "terrainLandformCoreMask",
+      "terrainDuneAridFactor",
+      "terrainDunePatchFactor",
+    ]) {
+      const body = functionBody(code, name);
+      expect(body, name).not.toContain("terrainNaturalHeight(");
+      expect(body, name).not.toContain("kNatural");
+    }
+  });
+
+  it("shares the dune evaluation between the height stage and the sand cover", () => {
+    const cover = functionBody(code, "terrainLandformSandCover");
+    expect(cover).toContain(
+      "fn terrainLandformSandCover(localX: f32, localZ: f32, natural: f32) -> vec2f {");
+    expect(cover.split("return vec2f(0.0, 0.0);").length - 1).toBe(3);
+    expect(cover).toContain("terrainDuneSample(localX, localZ, coreMask)");
+    expect(cover).toContain("terrainDuneSandCover(dune.erg, dune.duneHeight)");
+    expect(cover).not.toContain("terrainNaturalHeight(");
+    expect(functionBody(code, "terrainDuneStage")).toContain("terrainDuneSample(localX, localZ, coreMask)");
+    // One dune field evaluation site, one erg weight site: nothing duplicated.
+    expect(code.split("terrainDuneField(localX, localZ, erg)").length - 1).toBe(1);
+    expect(code.split("terrainDuneErgWeight(localX, localZ, coreMask, relief)").length - 1).toBe(1);
+    // The core mask has one definition, used by all three entry points.
+    expect(code.split("terrainLandformCoreMask(localX, localZ)").length - 1).toBe(3);
+  });
+});
 
 describe("the consumers of the landform stage", () => {
   const consumers = [

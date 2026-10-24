@@ -86,6 +86,10 @@ export const TERRAIN_LANDFORM_CONSTANTS = Object.freeze({
   CREST_THRESHOLD_THIN: DUNES.crestThresholdThin,
   CREST_HALF_WIDTH: DUNES.crestHalfWidth,
   HORN_SHIFT: DUNES.hornShift,
+  SAND_COVER_LOW: DUNES.sandCoverLowMeters,
+  SAND_COVER_HIGH: DUNES.sandCoverHighMeters,
+  SAND_SHEET_LOW: DUNES.sandSheetLow,
+  SAND_SHEET_HIGH: DUNES.sandSheetHigh,
   STOSS_TAN: DUNE_PROFILE_CONSTANTS.stossTan,
   SLIP_TAN: DUNE_PROFILE_CONSTANTS.slipTan,
   CREST_HEIGHT_LIMIT: DUNE_PROFILE_CONSTANTS.crestHeightLimitMeters,
@@ -124,12 +128,15 @@ export function terrainLandformDataBindingWgsl(group: number, binding: number): 
 }
 
 /**
- * The zeroed one-`vec4f` placeholder. The caller registers
- * `TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES` with the GPU buffer inventory (Gate
- * 0-c), like its other fixed buffers, and disposes it with them.
+ * The zeroed placeholder buffer. It registers
+ * `TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES` with the GPU buffer inventory
+ * (Gate 0-c) as it allocates, so no consumer can forget to; whoever disposes
+ * it releases the same constant. Prefer `createTerrainLandformPlaceholderSource`,
+ * whose `dispose` does both.
  */
 export function createTerrainLandformPlaceholderBuffer(engine: WebGPUEngine): StorageBuffer {
   const buffer = new StorageBuffer(engine, TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
+  registerGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
   // WebGPU zero-initialises buffers; writing the zeros states the contract
   // `terrainVolcanicActivity` depends on instead of inheriting it.
   buffer.update(new Float32Array(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES / 4));
@@ -154,14 +161,28 @@ export interface TerrainLandformDataSource {
   covers(minX: number, minZ: number, maxX: number, maxZ: number): boolean;
 }
 
+/** The placeholder as a source, which owns its buffer and its inventory bytes. */
+export interface TerrainLandformPlaceholderSource extends TerrainLandformDataSource {
+  /** Dispose the buffer and release its registered bytes. Idempotent. */
+  dispose(): void;
+}
+
 /** The zeroed placeholder as a source: version 0, covering everything. */
 export function createTerrainLandformPlaceholderSource(
   engine: WebGPUEngine,
-): TerrainLandformDataSource {
+): TerrainLandformPlaceholderSource {
+  const buffer = createTerrainLandformPlaceholderBuffer(engine);
+  let disposed = false;
   return {
-    buffer: createTerrainLandformPlaceholderBuffer(engine),
+    buffer,
     bufferVersion: 0,
     covers: () => true,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      buffer.dispose();
+      releaseGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
+    },
   };
 }
 
@@ -174,12 +195,12 @@ export function createTerrainLandformPlaceholderSource(
  * pyramid, the bathymetry bake and the splat bake), and each needs the same
  * three things: a lazily created placeholder (its constructor runs before the
  * engine is known to be WebGPU, and in Node tests with no engine at all),
- * the placeholder's bytes reported to the inventory (Gate 0-c) while a
- * supplied source's bytes stay its owner's, and a re-bind that allocates
+ * disposed with the consumer (the placeholder source accounts for its own
+ * bytes; a supplied source stays its owner's), and a re-bind that allocates
  * nothing per frame. Swapping the source never recreates the pipeline.
  */
 export class TerrainLandformDataBinding {
-  private placeholder: TerrainLandformDataSource | null = null;
+  private placeholder: TerrainLandformPlaceholderSource | null = null;
   private boundShader: ComputeShader | null = null;
   private boundBuffer: StorageBuffer | null = null;
   private boundVersion = -1;
@@ -217,10 +238,7 @@ export class TerrainLandformDataBinding {
 
   /** Dispose the placeholder this binding created; a supplied source is its owner's. */
   dispose(): void {
-    if (this.placeholder) {
-      this.placeholder.buffer.dispose();
-      releaseGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
-    }
+    this.placeholder?.dispose();
     this.placeholder = null;
     this.boundShader = null;
     this.boundBuffer = null;
@@ -228,10 +246,7 @@ export class TerrainLandformDataBinding {
   }
 
   private ownedPlaceholder(engine: WebGPUEngine): TerrainLandformDataSource {
-    if (!this.placeholder) {
-      this.placeholder = createTerrainLandformPlaceholderSource(engine);
-      registerGpuBufferBytes(TERRAIN_LANDFORM_DATA_PLACEHOLDER_BYTES);
-    }
+    this.placeholder ??= createTerrainLandformPlaceholderSource(engine);
     return this.placeholder;
   }
 }
@@ -353,6 +368,26 @@ fn terrainDuneRelief() -> vec2f {
 }
 
 /**
+ * duneClimateFactors' arid factor: the arid province, a smoothstep over
+ * unmaskedProvinceDryness (the dryness half of the unmasked province). Reads
+ * two lattices and never the natural kernel.
+ */
+fn terrainDuneAridFactor(localX: f32, localZ: f32) -> f32 {
+  let dryness = kProvinceDrynessStaircase(
+    kFbm(${terrainKernelLatticeBase("provinceDryness")}u, ${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ));
+  return kSmoothstep(KL_ARID_DRYNESS_LOW, KL_ARID_DRYNESS_HIGH, dryness);
+}
+
+/** ergPatchFactor: which arid ground is a sand sea. Never reads the natural kernel. */
+fn terrainDunePatchFactor(localX: f32, localZ: f32) -> f32 {
+  return kSmoothstep(
+    KL_ERG_PATCH_LOW,
+    KL_ERG_PATCH_HIGH,
+    kFbm(${terrainKernelLatticeBase("duneErgPatch")}u, ${DUNES.ergPatch.octaves}u, localX, localZ),
+  );
+}
+
+/**
  * duneErgWeight: the cheap factors the kernel already computed first, then
  * the province's dryness and the erg patch, returning 0 wherever a factor is
  * already 0 (on a real GPU that skips the lattices; SwiftShader runs both
@@ -367,16 +402,9 @@ fn terrainDuneErgWeight(localX: f32, localZ: f32, coreMask: f32, relief: vec2f) 
   var weight = coreMask * lowGround * flatGround;
   if (weight <= 0.0) { return 0.0; }
   if (terrainKernelPages[kPageIndex].landform.w <= 0.0) {
-    // unmaskedProvinceDryness: the dryness half of the unmasked province.
-    let dryness = kProvinceDrynessStaircase(
-      kFbm(${terrainKernelLatticeBase("provinceDryness")}u, ${CLIMATE_PROVINCE.dryness.octaves}u, localX, localZ));
-    weight = weight * kSmoothstep(KL_ARID_DRYNESS_LOW, KL_ARID_DRYNESS_HIGH, dryness);
+    weight = weight * terrainDuneAridFactor(localX, localZ);
     if (weight <= 0.0) { return 0.0; }
-    weight = weight * kSmoothstep(
-      KL_ERG_PATCH_LOW,
-      KL_ERG_PATCH_HIGH,
-      kFbm(${terrainKernelLatticeBase("duneErgPatch")}u, ${DUNES.ergPatch.octaves}u, localX, localZ),
-    );
+    weight = weight * terrainDunePatchFactor(localX, localZ);
     if (weight <= 0.0) { return 0.0; }
   }
   return weight * (1.0 - terrainVolcanicActivity(localX, localZ));
@@ -435,16 +463,92 @@ fn terrainDuneFloorFlattening(erg: f32, relief: vec2f) -> f32 {
   return -erg * (KL_RELIEF_DAMPING * relief.x + KL_ROLLING_DAMPING * relief.y);
 }
 
+/** sampleDuneField's sandCover: a dune body, or the sand sheet of a deep erg. */
+fn terrainDuneSandCover(erg: f32, duneHeight: f32) -> f32 {
+  return max(
+    kSmoothstep(KL_SAND_COVER_LOW, KL_SAND_COVER_HIGH, duneHeight),
+    kSmoothstep(KL_SAND_SHEET_LOW, KL_SAND_SHEET_HIGH, erg),
+  );
+}
+
+/**
+ * What the dune stage knows at a point: the erg weight, the dune height
+ * (sampleDuneField's ergWeight and duneHeight) and the relief the floor
+ * flattening reads. erg is 0, and the dune field unread, outside a sand sea.
+ * The ONE evaluation the height stage and the sand cover share.
+ */
+struct TerrainDuneSample {
+  erg: f32,
+  duneHeight: f32,
+  relief: vec2f,
+};
+
+fn terrainDuneSample(localX: f32, localZ: f32, coreMask: f32) -> TerrainDuneSample {
+  let relief = terrainDuneRelief();
+  let erg = terrainDuneErgWeight(localX, localZ, coreMask, relief);
+  if (erg <= 0.0) { return TerrainDuneSample(0.0, 0.0, relief); }
+  return TerrainDuneSample(erg, terrainDuneField(localX, localZ, erg), relief);
+}
+
 /**
  * applyDuneStage: height itself (the same number, not + 0.0) wherever the
  * erg weight is 0; inside a sand sea the flattened floor plus the dune field.
  */
 fn terrainDuneStage(localX: f32, localZ: f32, height: f32, coreMask: f32) -> f32 {
-  let relief = terrainDuneRelief();
-  let erg = terrainDuneErgWeight(localX, localZ, coreMask, relief);
-  if (erg <= 0.0) { return height; }
-  let duneHeight = terrainDuneField(localX, localZ, erg);
-  return height + terrainDuneFloorFlattening(erg, relief) + duneHeight;
+  let dune = terrainDuneSample(localX, localZ, coreMask);
+  if (dune.erg <= 0.0) { return height; }
+  return height + terrainDuneFloorFlattening(dune.erg, dune.relief) + dune.duneHeight;
+}
+
+/**
+ * landformCoreMask at a point local to the bound page: 0 inside the core,
+ * exactly. The page origin's offset from the core's centre was subtracted in
+ * f64, so only a local-sized vector reaches this length(). Callers check the
+ * page's gain first.
+ */
+fn terrainLandformCoreMask(localX: f32, localZ: f32) -> f32 {
+  let radii = terrainKernelPages[kPageIndex].landformRadii;
+  return kSmoothstep(
+    radii.x,
+    radii.y,
+    length(terrainKernelPages[kPageIndex].landform.xy + vec2f(localX, localZ)),
+  );
+}
+
+/**
+ * Whether a sand sea is possible here at all, WITHOUT the natural kernel:
+ * false for a page without a landform input (gain 0) and inside the core,
+ * true in a world that forces dunes, otherwise both of duneClimateFactors'
+ * factors (the arid province, then the erg patch) positive. The GPU twin of
+ * sampleErgFarWeight's early outs: a ground bake gates on it and skips the
+ * kernel wherever it is false, which outside the core is most of the world.
+ * terrainLandformSandCover is (0, 0) wherever it is false.
+ */
+fn terrainLandformClimateGate(localX: f32, localZ: f32) -> bool {
+  let landform = terrainKernelPages[kPageIndex].landform;
+  if (landform.z <= 0.0) { return false; }
+  if (terrainLandformCoreMask(localX, localZ) <= 0.0) { return false; }
+  if (landform.w > 0.0) { return true; }
+  if (terrainDuneAridFactor(localX, localZ) <= 0.0) { return false; }
+  return terrainDunePatchFactor(localX, localZ) > 0.0;
+}
+
+/**
+ * sampleLandformCover's (ergWeight, sandCover) at a point LOCAL to the bound
+ * page, for readers that classify the ground rather than draw it. natural is
+ * the height the LAST terrainNaturalHeight call returned for this same point:
+ * the stage reads that call's kNatural, as terrainLandforms does, and never
+ * evaluates the kernel itself. (0, 0) wherever terrainLandforms leaves the
+ * natural height untouched by the dunes: gain 0, inside the core, outside a
+ * sand sea.
+ */
+fn terrainLandformSandCover(localX: f32, localZ: f32, natural: f32) -> vec2f {
+  if (terrainKernelPages[kPageIndex].landform.z <= 0.0) { return vec2f(0.0, 0.0); }
+  let coreMask = terrainLandformCoreMask(localX, localZ);
+  if (coreMask <= 0.0) { return vec2f(0.0, 0.0); }
+  let dune = terrainDuneSample(localX, localZ, coreMask);
+  if (dune.erg <= 0.0) { return vec2f(0.0, 0.0); }
+  return vec2f(dune.erg, terrainDuneSandCover(dune.erg, dune.duneHeight));
 }
 
 /**
@@ -457,10 +561,7 @@ fn terrainDuneStage(localX: f32, localZ: f32, height: f32, coreMask: f32) -> f32
 fn terrainLandforms(localX: f32, localZ: f32, natural: f32) -> f32 {
   let landform = terrainKernelPages[kPageIndex].landform;
   if (landform.z <= 0.0) { return natural; }
-  // landformCoreMask: the page origin's offset from the core's centre was
-  // subtracted in f64, so only a local-sized vector reaches this length().
-  let radii = terrainKernelPages[kPageIndex].landformRadii;
-  let coreMask = kSmoothstep(radii.x, radii.y, length(landform.xy + vec2f(localX, localZ)));
+  let coreMask = terrainLandformCoreMask(localX, localZ);
   if (coreMask <= 0.0) { return natural; }
   let duned = terrainDuneStage(localX, localZ, natural, coreMask);
   return terrainVolcanicOverlay(
