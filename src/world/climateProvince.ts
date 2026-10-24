@@ -85,7 +85,7 @@ export const CLIMATE_PROVINCE_PRESETS: Readonly<
 > = Object.freeze({
   temperate: Object.freeze({ temperatureOffset: 0, dryness: 0 }),
   boreal: Object.freeze({ temperatureOffset: -0.22, dryness: 0 }),
-  tundra: Object.freeze({ temperatureOffset: -0.55, dryness: 0 }),
+  tundra: Object.freeze({ temperatureOffset: -0.65, dryness: 0 }),
   "high-desert": Object.freeze({ temperatureOffset: 0, dryness: 0.5 }),
   savanna: Object.freeze({ temperatureOffset: 0.12, dryness: 0.25 }),
   tropical: Object.freeze({ temperatureOffset: 0.28, dryness: -0.15 }),
@@ -137,7 +137,7 @@ export const CLIMATE_PROVINCE = Object.freeze({
      * Plateaus, coldest first: tundra, boreal, temperate, warm, hot. The
      * same values as the named presets.
      */
-    levels: Object.freeze([-0.55, -0.22, 0, 0.12, 0.28]),
+    levels: Object.freeze([-0.65, -0.22, 0, 0.12, 0.28]),
     /**
      * Field values at which the staircase steps, at the field's measured
      * 15 / 35 / 65 / 85 % quantiles (five seeds, 800k samples): tundra 15 %, boreal 20 %, temperate 30 %,
