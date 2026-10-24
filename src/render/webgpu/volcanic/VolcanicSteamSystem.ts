@@ -486,6 +486,14 @@ export interface VolcanicSteamOptions {
   readonly sceneDepth?: BaseTexture | null;
   /** Override of `STEAM_HEIGHT_SAMPLES_PER_FRAME`. */
   readonly heightSamplesPerFrame?: number;
+  /**
+   * Whether a vent query over this box (world metres) would find its site
+   * cells built. The renderer passes the site index stream's `covers`: the
+   * stream's slices build those cells, and a cold query after a teleport
+   * costs about 13 ms in one frame. A query is held, and the old set kept,
+   * until this says yes. Omitted, every query runs at once.
+   */
+  readonly ventsReady?: (minX: number, minZ: number, maxX: number, maxZ: number) => boolean;
 }
 
 export type SteamVentQuery = (
@@ -544,6 +552,7 @@ export class VolcanicSteamSystem {
   private readonly world: WorldDefinition;
   private readonly groundHeight: (x: number, z: number) => number;
   private readonly queryVents: SteamVentQuery;
+  private readonly ventsReady: VolcanicSteamOptions["ventsReady"];
   private readonly heightSamplesPerFrame: number;
   private readonly flowX: number;
   private readonly flowZ: number;
@@ -615,6 +624,7 @@ export class VolcanicSteamSystem {
     this.world = world;
     this.groundHeight = options.groundHeight;
     this.queryVents = options.queryVents ?? volcanicVentsInBounds;
+    this.ventsReady = options.ventsReady;
     this.heightSamplesPerFrame = Math.max(
       1,
       Math.floor(options.heightSamplesPerFrame ?? STEAM_HEIGHT_SAMPLES_PER_FRAME),
@@ -736,8 +746,9 @@ export class VolcanicSteamSystem {
     if (this.rebuildRequested || cellX !== this.cellX || cellZ !== this.cellZ) {
       this.cellX = cellX;
       this.cellZ = cellZ;
-      this.rebuildRequested = false;
-      this.beginRebuild();
+      // Held (and retried each frame) while the query's site cells are cold.
+      this.rebuildRequested = !this.queryReady();
+      if (!this.rebuildRequested) this.beginRebuild();
     }
     if (this.building) this.continueRebuild(gpu);
 
@@ -880,6 +891,18 @@ export class VolcanicSteamSystem {
       if (dx * dx + dz * dz <= reach * reach) return true;
     }
     return false;
+  }
+
+  private queryReady(): boolean {
+    if (!this.ventsReady) return true;
+    const centreX = (this.cellX + 0.5) * STEAM_QUERY_CELL_METERS;
+    const centreZ = (this.cellZ + 0.5) * STEAM_QUERY_CELL_METERS;
+    return this.ventsReady(
+      centreX - STEAM_QUERY_REACH_METERS,
+      centreZ - STEAM_QUERY_REACH_METERS,
+      centreX + STEAM_QUERY_REACH_METERS,
+      centreZ + STEAM_QUERY_REACH_METERS,
+    );
   }
 
   /** Query the cell's vents into the pending set, nearest the cell centre first. */

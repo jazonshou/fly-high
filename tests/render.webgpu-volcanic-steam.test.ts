@@ -430,6 +430,54 @@ describe("volcanic steam", () => {
     system.dispose();
   });
 
+  it("holds a query until its site cells are ready, keeping the old set meanwhile", () => {
+    const calls = { count: 0 };
+    let ready = true;
+    const boxes: number[][] = [];
+    const far: VolcanicVent = { ...GENTLE, x: 200_000 + 500, z: 300 };
+    const system = new VolcanicSteamSystem(scene, BASE_WORLD, {
+      maxWisps: 256,
+      groundHeight: flatGround,
+      queryVents: injected([VIGOROUS, far], calls),
+      ventsReady: (minX, minZ, maxX, maxZ) => {
+        boxes.push([minX, minZ, maxX, maxZ]);
+        return ready;
+      },
+    });
+    settle(system, 10, 10);
+    expect(calls.count).toBe(1);
+    expect(system.ventCount).toBe(1);
+    // The box asked about is the box the query would read.
+    const [minX, minZ, maxX, maxZ] = boxes[0]!;
+    expect(minX).toBeLessThanOrEqual(VIGOROUS.x - STEAM_VENT_RANGE_METERS);
+    expect(maxX).toBeGreaterThanOrEqual(VIGOROUS.x + STEAM_VENT_RANGE_METERS);
+    expect(minZ).toBeLessThan(0);
+    expect(maxZ).toBeGreaterThan(0);
+
+    // A teleport onto cold cells: no query, the old set stays, the old vent
+    // is out of range so nothing draws, and readiness is asked every frame.
+    ready = false;
+    const asked = boxes.length;
+    for (let frame = 0; frame < 5; frame += 1) system.update(200_000, 0, frame / 60);
+    expect(calls.count).toBe(1);
+    expect(system.ventCount).toBe(1);
+    expect(system.drawing).toBe(false);
+    expect(boxes.length).toBe(asked + 5);
+
+    // Ready: the held query runs at once, without another cell change.
+    ready = true;
+    settle(system, 200_000, 0);
+    expect(calls.count).toBe(2);
+    expect(system.ventCount).toBe(1);
+    expect(system.anchorX).toBeCloseTo(200_000 + STEAM_QUERY_CELL_METERS / 2);
+    expect(system.drawing).toBe(true);
+    // And once run, readiness is not asked again inside the cell.
+    const after = boxes.length;
+    settle(system, 200_100, 0);
+    expect(boxes.length).toBe(after);
+    system.dispose();
+  });
+
   it("allocates nothing in the per-frame update", () => {
     const system = new VolcanicSteamSystem(scene, BASE_WORLD, {
       maxWisps: 256,
