@@ -1507,6 +1507,89 @@ SwiftShader runs both sides of every branch, so it charges the per-point sun
 on every shot; a real GPU skips it above a 33° sun. The rule for new work is
 to budget each feature at about 2% on medium, not the gate's 5%.
 
+## The final sharpen, fused into FXAA (2026-10-24)
+
+PR #20's RCAS sharpen ran at tier 1 as a pass of its own after FXAA: a
+second full-screen draw, five taps per pixel, and an LDR target the size of
+the raster that FXAA wrote and the sharpen read back. FXAA already fetches
+the centre and its four-neighbour cross, which is RCAS's whole footprint, so
+the sharpen now rides inside the FXAA pass (`FxaaSharpenPass`, a port of
+Babylon's FXAA 3.11 run with Babylon's own FXAA vertex shader). The
+multisampled tiers, which run no FXAA, keep the standalone `SharpenPass`.
+
+**Same look.** At a zero amount the port is Babylon's FXAA pixel for pixel
+(`tests/gpu/final-sharpen.test.ts`). With the sharpen on, the fused pass
+solves RCAS's lobe against the cross before FXAA, which has more contrast
+than the smoothed cross the separate pass saw, so on the pixels FXAA moved
+the lobe comes out smaller; `FXAA_MOVED_SHARPEN_GAIN` (1.2) makes it up.
+Calibrated on real tier-1 frames captured before FXAA at tier 1's own 0.86
+render scale, each run through both chains, and measured as displayed (the
+1100x619 raster upscaled to the 1280x720 viewport, as the capture and the
+browser do):
+
+| Shot | FXAA moved | Fine contrast*, FXAA then RCAS | fused, no gain | gain 1.15 | gain 1.2 | mean distance from the two-pass frame at 1.2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ground-2m-lowsun | 20.4% of pixels | 9.19 | 8.86 (-3.6%) | 9.11 (-0.9%) | 9.21 (+0.2%) | 0.55/255 |
+| approach-500ft | 18.2% of pixels | 10.41 | 9.82 (-5.7%) | 10.16 (-2.5%) | 10.28 (-1.2%) | 0.70/255 |
+
+\* Mean absolute 4-neighbour Laplacian of luma, on the displayed image;
+FXAA alone reads 6.24 and 7.45. On the raster itself, which the upscale
+softens, 1.2 runs a little over (+2.6% and +1.4%; 1.15 read +1.3% and
+-0.3% there, which is where it was first calibrated, at render scale 1).
+The harness reproduces the real pipeline: the end-to-end A/B frames of the
+two-pass and the 1.15 build read 10.41 -> 10.16 and 9.19 -> 9.10 on these
+shots, as above.
+
+Calibration recipe (reusable for any post-process change): a local branch
+that makes the pass a no-op at a profile value, and a capture that copies
+the raw raster (`tests/perf/ab/agent.ts`, `capture()`, destination size =
+raster size), give the pass's real input via `npm run perf:ab -- --base X
+--head X --rounds 0 --head-profile-override ...`; a throwaway `tests/gpu`
+harness then feeds that PNG through candidate chains on SwiftShader.
+
+**Cost** (CI run 40126495030, the pass fused without the gain, against
+`e06252f`; the gain is a multiply):
+
+| Shot | SwiftShader GPU | macOS runner wall (advisory) |
+| --- | --- | --- |
+| approach-500ft | -0.5% (-0.6..-0.4) | +0.1% (-1.6..+1.8) |
+| cruise-horizon | -0.4% (medians 5,884 -> 5,859 ms) | +0.1% (-0.9..+1.0) |
+| forest-500ft-sunbehind | -0.3% (-0.4..-0.1) | -0.2% (-0.7..+0.3) |
+| ground-2m-lowsun | -0.2% (-0.4..+0.1) | -0.3% (-1.1..+0.5) |
+| water-25ft | -0.2% (medians 7,042 -> 7,031 ms) | -0.8% (-1.6..-0.0) |
+
+Every tier-1 shot draws one call fewer and estimates 3.0 MiB less at the
+capture viewport (6.6 MiB at 2560x1440@2). The separate pass had cost about
+half a per cent of the frame, so this is close to all of what moving the
+sharpen to the high tiers would have saved, without losing it on medium.
+
+Draw-call ceilings: every tier-1 shot now reads its ceiling minus one. The
+`final-sharpen` entry in `DRAW_CALL_RAISES` stays, as the raise mechanism
+requires, until the next re-pin moves all 32 ceilings down by one and
+retires it.
+
+**The ground grain, read at an explicit mip.** The other half of PR #20's
+cost is the ground grain's five extra array reads on terrain. They were
+`textureSampleGrad` with limited gradients; at anisotropy 1 that is one
+trilinear tap at the mip the footprint's major axis picks, so the shader now
+computes that level once per scale and reads with `textureSampleLevel`
+(frames move 0.01-0.08/255 on the macOS runner). CI run 40130714082, against
+the fused sharpen:
+
+| Shot | SwiftShader GPU | macOS runner wall (advisory) |
+| --- | --- | --- |
+| approach-500ft | +0.4% (+0.1..+0.7) | +0.7% (-0.9..+2.3) |
+| cruise-horizon | -0.5% (-0.7..-0.4) | +0.6% (-0.4..+1.6) |
+| forest-500ft-sunbehind | -0.3% (-1.1..-0.1) | -1.1% (-1.7..-0.5) |
+| ground-2m-lowsun | -0.6% (-0.7..-0.5) | -0.6% (-1.2..-0.1) |
+| water-25ft | -0.1% (-0.5..+0.4) | -0.8% (-1.4..-0.2) |
+
+A small win, largest where the grain is (`ground-2m-lowsun` on both
+rasterisers), kept. Many GPUs run explicit-gradient reads at a reduced
+rate, which an explicit level avoids and SwiftShader does not model. Not
+tried: fewer octaves or a distance fade on the grain, since both change the
+look Jason approved.
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
@@ -2069,7 +2152,7 @@ Recent, baselines from `35e03d3`:
 Two changes from the "Sharper scenery" thread, both visual and both perf-sensitive. **Neither has been timed yet**: the thread had no GPU, its screenshots come from SwiftShader in headless Chromium (good for looking at frames, meaningless for timing), and the hosted macOS runner that captured the full list below does not gate delivery. Draw counts and visual gates are measured; the costs below are expected, to be confirmed by the first capture that can time them.
 
 - **Final RCAS sharpen** (`lighting/SharpenPass.ts`, profile `sharpenAmount`). Expected cost at tier 1: one extra full-screen pass at the render raster (~0.68 Mpx at the canonical 1280x720 shot, ~1.5 Mpx at the reference panel), five texture taps per pixel, plus one 4 B/px LDR target. **Draw calls: +1 per frame on every tier-1 shot**, re-pinned below as the uniform `DRAW_CALL_RAISES` entry `final-sharpen`. Estimate rows: tier 1 rises by 6.6 MiB at the 2560x1440@2 viewport (the LDR target), tiers 2/3 by 10.5/17.6 MiB; tier 0 is unchanged because the pass is off there.
-- **Ground grain** (`terrain/GroundGrainSynthesis.ts`, read in `TerrainSurfacePlugin`). One more layer in each terrain material array (index 10, after the ten materials), built in the synthesis worker only where `terrainGroundPatchwork` is on (tiers 1-3). Memory: +1/10 of the material-array row, 2.67 MiB at 512² with mips. Fragment cost on terrain: up to three extra array fetches from array A and two from array B (all `textureSampleGrad`, isotropic: `GROUND_GRAIN_ANISOTROPY_LIMIT` = 1 against the materials' 16), each skipped where it cannot show (the relief past mip 6, the tone past mip 8.5, everything under 3 m of sea), and a few dozen ALU, inside a uniform branch on `terrainSurfaceTuning.z` that is off at tier 0. No draw-call change. Startup: one more ~0.3-0.5 s worker job, off the main thread.
+- **Ground grain** (`terrain/GroundGrainSynthesis.ts`, read in `TerrainSurfacePlugin`). One more layer in each terrain material array (index 10, after the ten materials), built in the synthesis worker only where `terrainGroundPatchwork` is on (tiers 1-3). Memory: +1/10 of the material-array row, 2.67 MiB at 512² with mips. Fragment cost on terrain: up to three extra array fetches from array A and two from array B (all `textureSampleGrad`, isotropic: `GROUND_GRAIN_ANISOTROPY_LIMIT` = 1 against the materials' 16; `textureSampleLevel` at the footprint's mip since 2026-10-24, see "The final sharpen, fused into FXAA"), each skipped where it cannot show (the relief past mip 6, the tone past mip 8.5, everything under 3 m of sea), and a few dozen ALU, inside a uniform branch on `terrainSurfaceTuning.z` that is off at tier 0. No draw-call change. Startup: one more ~0.3-0.5 s worker job, off the main thread.
 
 **First full capture, 2026-10-12** (PR #20's macOS run 38217280044 at `3d96334`, hosted runner, so no delivery gate). Draw calls: all 32 shots with a ceiling read exactly ceiling + 1, which is the sharpen's quad; staged as `final-sharpen` in `MEASURED_DRAW_DELTAS`. Visual gates: 24 shots fail, every one with ground in frame (lowest whole-frame SSIM: `lake-island-piercing` 0.824, `terrain-material-1600ft-down` 0.851, `cliff-60m` 0.877, `high-10000ft-down` 0.884, `mountain-close` 0.897). The 15 shots dominated by water, night or sky still pass (moved, but inside their gates): `night`, `night-moonlit`, `night-beacon-offset`, `dusk-mesopic`, `blue-hour`, `golden-hour`, `sunset-sunward`, `water-3m`, `water-25ft`, `water-400ft-glitter`, `coast-10km-lowsun`, `canopy-backlit-lowsun`, `motion-banked-turn`, `page-thrash-turn`, `cdlod-transition`. All thirty-nine were re-promoted from one reviewed capture, below.
 
