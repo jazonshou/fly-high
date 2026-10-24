@@ -1579,11 +1579,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.airports = airports;
   }
 
-  projectWorldPoint(x: number, y: number, z: number): ScreenPoint | null {
+  projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
     const canvas = this.domElement;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    if (width <= 0 || height <= 0) return null;
+    if (width <= 0 || height <= 0) return false;
     // Row-vector convention: clip = (local, 1) * view * projection.
     const m = this.camera.getTransformationMatrix().m;
     const lx = x - this.originX;
@@ -1595,13 +1595,12 @@ export class FlightRenderer implements FlightRenderingSystem {
     // Behind the camera the divide mirrors the point; dividing by |w| keeps
     // the direction to turn toward instead.
     const w = Math.max(Math.abs(clipW), 1e-6);
-    return {
-      x: (clipX / w * 0.5 + 0.5) * width,
-      y: (0.5 - clipY / w * 0.5) * height,
-      inFront,
-      width,
-      height,
-    };
+    result.x = (clipX / w * 0.5 + 0.5) * width;
+    result.y = (0.5 - clipY / w * 0.5) * height;
+    result.inFront = inFront;
+    result.width = width;
+    result.height = height;
+    return true;
   }
 
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {

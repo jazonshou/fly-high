@@ -14,19 +14,26 @@ export function airportMarkerSideMargin(width: number): number {
 
 export interface AirportMarkerPlacement {
   /** "on" draws the diamond over the airport; "edge" pins an arrow to the screen edge. */
-  readonly mode: "on" | "edge";
-  readonly x: number;
-  readonly y: number;
+  mode: "on" | "edge";
+  x: number;
+  y: number;
   /** Direction from screen centre toward the airport, radians, screen space (+x right, +y down). */
-  readonly angle: number;
+  angle: number;
+}
+
+export function createAirportMarkerPlacement(): AirportMarkerPlacement {
+  return { mode: "on", x: 0, y: 0, angle: 0 };
 }
 
 /**
- * Where the nearest-airport marker goes this frame. In view, it sits on the
- * runway; out of view (beside or behind the camera) it rides the screen edge,
- * pointing the way to turn.
+ * Where the nearest-airport marker goes this frame, written into `result`.
+ * In view, it sits on the runway; out of view (beside or behind the camera)
+ * it rides the screen edge, pointing the way to turn.
  */
-export function placeAirportMarker(point: ScreenPoint): AirportMarkerPlacement {
+export function placeAirportMarker(
+  point: ScreenPoint,
+  result: AirportMarkerPlacement = createAirportMarkerPlacement(),
+): AirportMarkerPlacement {
   const marginX = airportMarkerSideMargin(point.width);
   const marginY = AIRPORT_MARKER_EDGE_MARGIN;
   const centerX = point.width * 0.5;
@@ -36,7 +43,13 @@ export function placeAirportMarker(point: ScreenPoint): AirportMarkerPlacement {
   const inside = point.inFront
     && point.x >= marginX && point.x <= point.width - marginX
     && point.y >= marginY && point.y <= point.height - marginY;
-  if (inside) return { mode: "on", x: point.x, y: point.y, angle: Math.atan2(dy, dx) };
+  if (inside) {
+    result.mode = "on";
+    result.x = point.x;
+    result.y = point.y;
+    result.angle = Math.atan2(dy, dx);
+    return result;
+  }
   // Directly behind, the projection collapses toward the centre: point down,
   // which reads as "turn around".
   if (Math.hypot(dx, dy) < 1) {
@@ -49,12 +62,11 @@ export function placeAirportMarker(point: ScreenPoint): AirportMarkerPlacement {
     dx === 0 ? Number.POSITIVE_INFINITY : halfWidth / Math.abs(dx),
     dy === 0 ? Number.POSITIVE_INFINITY : halfHeight / Math.abs(dy),
   );
-  return {
-    mode: "edge",
-    x: centerX + dx * scale,
-    y: centerY + dy * scale,
-    angle: Math.atan2(dy, dx),
-  };
+  result.mode = "edge";
+  result.x = centerX + dx * scale;
+  result.y = centerY + dy * scale;
+  result.angle = Math.atan2(dy, dx);
+  return result;
 }
 
 /** Distance in the HUD's units: nautical miles for aviation units, kilometres otherwise. */
@@ -64,23 +76,66 @@ export function formatAirportDistance(meters: number, aviation: boolean): string
   return `${value < 9.95 ? value.toFixed(1) : Math.round(value).toString()} ${unit}`;
 }
 
+/** What the marker element last showed, so a frame that changes nothing writes nothing. */
+export interface AirportMarkerView {
+  readonly element: HTMLElement;
+  readonly label: HTMLElement | null;
+  mode: "on" | "edge" | "hidden";
+  x: number;
+  y: number;
+  angle: number;
+  text: string;
+}
+
+export function createAirportMarkerView(element: HTMLElement): AirportMarkerView {
+  return {
+    element,
+    label: element.querySelector<HTMLElement>("[data-airport-marker-label]"),
+    mode: element.hidden ? "hidden" : "on",
+    x: Number.NaN,
+    y: Number.NaN,
+    angle: Number.NaN,
+    text: "",
+  };
+}
+
 /**
  * Writes a placement onto the marker element with transforms only, so the
- * per-frame update never forces a layout.
+ * per-frame update never forces a layout. Positions snap to half a pixel and
+ * only a change is written: a still marker costs no style work at all.
  */
 export function applyAirportMarker(
-  element: HTMLElement,
+  view: AirportMarkerView,
   placement: AirportMarkerPlacement | null,
-  label: string,
+  text: string,
 ): void {
+  const element = view.element;
   if (!placement) {
-    if (!element.hidden) element.hidden = true;
+    if (view.mode !== "hidden") {
+      element.hidden = true;
+      view.mode = "hidden";
+    }
     return;
   }
-  if (element.hidden) element.hidden = false;
-  if (element.dataset.mode !== placement.mode) element.dataset.mode = placement.mode;
-  element.style.transform = `translate3d(${placement.x.toFixed(1)}px, ${placement.y.toFixed(1)}px, 0)`;
-  element.style.setProperty("--airport-marker-angle", `${placement.angle.toFixed(3)}rad`);
-  const labelElement = element.querySelector<HTMLElement>("[data-airport-marker-label]");
-  if (labelElement && labelElement.textContent !== label) labelElement.textContent = label;
+  if (view.mode === "hidden") element.hidden = false;
+  if (view.mode !== placement.mode) {
+    element.dataset.mode = placement.mode;
+    view.mode = placement.mode;
+  }
+  const x = Math.round(placement.x * 2) / 2;
+  const y = Math.round(placement.y * 2) / 2;
+  if (x !== view.x || y !== view.y) {
+    element.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    view.x = x;
+    view.y = y;
+  }
+  const angle = Math.round(placement.angle * 500) / 500;
+  if (angle !== view.angle) {
+    element.style.setProperty("--airport-marker-angle", `${angle}rad`);
+    view.angle = angle;
+  }
+  if (view.label && text !== view.text) {
+    view.label.textContent = text;
+    view.text = text;
+  }
 }

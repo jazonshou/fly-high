@@ -14,6 +14,9 @@ import { Hud } from "../src/ui/Hud";
 import {
   AIRPORT_MARKER_EDGE_MARGIN,
   airportMarkerSideMargin,
+  applyAirportMarker,
+  createAirportMarkerPlacement,
+  createAirportMarkerView,
   formatAirportDistance,
   placeAirportMarker,
 } from "../src/ui/airportMarker";
@@ -157,6 +160,40 @@ describe("nearest airport marker", () => {
     // Dead astern: point down, "turn around".
     const astern = placeAirportMarker({ x: 800, y: 450, inFront: false, ...size });
     expect(astern.y).toBeCloseTo(size.height - AIRPORT_MARKER_EDGE_MARGIN, 9);
+  });
+
+  it("reuses the caller's placement and writes the element only when something changed", () => {
+    const scratch = createAirportMarkerPlacement();
+    expect(placeAirportMarker({ x: 900, y: 500, inFront: true, ...size }, scratch)).toBe(scratch);
+
+    let transformWrites = 0;
+    let angleWrites = 0;
+    let textWrites = 0;
+    const label = {
+      get textContent() { return ""; },
+      set textContent(_value: string) { textWrites += 1; },
+    };
+    const element = {
+      hidden: true,
+      dataset: {} as Record<string, string>,
+      style: {
+        set transform(_value: string) { transformWrites += 1; },
+        setProperty: () => { angleWrites += 1; },
+      },
+      querySelector: () => label,
+    } as unknown as HTMLElement;
+    const view = createAirportMarkerView(element);
+    applyAirportMarker(view, scratch, "KQRT · 6.0 NM");
+    expect(element.hidden).toBe(false);
+    expect(element.dataset.mode).toBe("on");
+    expect([transformWrites, angleWrites, textWrites]).toEqual([1, 1, 1]);
+    // The same frame again, and a sub-quarter-pixel wobble: no writes.
+    applyAirportMarker(view, scratch, "KQRT · 6.0 NM");
+    scratch.x += 0.1;
+    applyAirportMarker(view, scratch, "KQRT · 6.0 NM");
+    expect([transformWrites, angleWrites, textWrites]).toEqual([1, 1, 1]);
+    applyAirportMarker(view, null, "");
+    expect(element.hidden).toBe(true);
   });
 
   it("formats distance in the HUD's units", () => {

@@ -11,7 +11,7 @@ import {
 import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
-import { type FlightRenderingSystem } from "@/src/render/types";
+import { type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
 import {
   createRandomSeed,
   DEFAULT_SETTINGS,
@@ -29,7 +29,14 @@ import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
 import { createWorld, sampleTerrain } from "@/src/world";
-import { applyAirportMarker, formatAirportDistance, placeAirportMarker } from "@/src/ui/airportMarker";
+import {
+  applyAirportMarker,
+  createAirportMarkerPlacement,
+  createAirportMarkerView,
+  formatAirportDistance,
+  placeAirportMarker,
+  type AirportMarkerView,
+} from "@/src/ui/airportMarker";
 import {
   AirportNetworkController,
   describeNearestAirport,
@@ -134,6 +141,8 @@ export function FlightGame() {
   const nearestAirportRef = useRef<NearestAirportInfo | null>(null);
   const [nearestAirport, setNearestAirport] = useState<NearestAirportInfo | null>(null);
   const airportMarkerRef = useRef<HTMLDivElement>(null);
+  /** The marker's "STQK · 4.2 NM" label, rebuilt with the readout, not per frame. */
+  const airportMarkerTextRef = useRef("");
   const lastUiUpdateRef = useRef(0);
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
@@ -531,6 +540,11 @@ export function FlightGame() {
     let disposed = false;
     let rendererTerminal = false;
     let lastFrame = performance.now();
+    let lastNearestAirportUpdate = Number.NEGATIVE_INFINITY;
+    // Per-frame marker scratch: the overlay update allocates nothing.
+    const airportMarkerPoint: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
+    const airportMarkerPlacement = createAirportMarkerPlacement();
+    let airportMarkerView: AirportMarkerView | null = null;
     const startupAbortController = new AbortController();
     const startupResources = new DisposableScope();
     readyRef.current = false;
@@ -656,12 +670,23 @@ export function FlightGame() {
         if (now - lastUiUpdateRef.current > 75) {
           lastUiUpdateRef.current = now;
           setVisualState(state);
+        }
+        // A handful of airports at most, and the readout moves in 0.1 NM
+        // steps: four times a second is plenty.
+        if (now - lastNearestAirportUpdate > 250) {
+          lastNearestAirportUpdate = now;
           const nearest = describeNearestAirport(
             airportNetwork.world,
             state.position.x,
             state.position.z,
           );
           nearestAirportRef.current = nearest;
+          airportMarkerTextRef.current = nearest
+            ? `${nearest.ident} · ${formatAirportDistance(
+              nearest.distanceMeters,
+              settingsRef.current.units === "aviation",
+            )}`
+            : "";
           setNearestAirport(nearest);
         }
         if (now - lastAudioUpdateRef.current > 35) {
@@ -712,22 +737,21 @@ export function FlightGame() {
         }
         const marker = airportMarkerRef.current;
         if (marker) {
+          if (airportMarkerView?.element !== marker) airportMarkerView = createAirportMarkerView(marker);
           const nearest = nearestAirportRef.current;
           const markerVisible = nearest !== null
             && nearestAirportShownRef.current
-            && (phaseRef.current === "flying" || phaseRef.current === "paused");
-          const point = markerVisible
-            ? renderer.projectWorldPoint(nearest.markerX, nearest.markerY, nearest.markerZ)
-            : null;
+            && (phaseRef.current === "flying" || phaseRef.current === "paused")
+            && renderer.projectWorldPointToRef(
+              nearest.markerX,
+              nearest.markerY,
+              nearest.markerZ,
+              airportMarkerPoint,
+            );
           applyAirportMarker(
-            marker,
-            point ? placeAirportMarker(point) : null,
-            nearest
-              ? `${nearest.ident} · ${formatAirportDistance(
-                nearest.distanceMeters,
-                settingsRef.current.units === "aviation",
-              )}`
-              : "",
+            airportMarkerView,
+            markerVisible ? placeAirportMarker(airportMarkerPoint, airportMarkerPlacement) : null,
+            airportMarkerTextRef.current,
           );
         }
         if (Math.floor(now / 500) !== Math.floor((now - deltaSeconds * 1_000) / 500)) {

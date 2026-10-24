@@ -18,13 +18,14 @@ export interface TerrainAuthorityPublisher {
   publishTerrainMacro(macro: TerrainMacroGrid): void;
 }
 
+/** A world point on the canvas, written in place by `projectWorldPointToRef`. */
 export interface ScreenPoint {
-  readonly x: number;
-  readonly y: number;
-  readonly inFront: boolean;
+  x: number;
+  y: number;
+  inFront: boolean;
   /** Canvas size the point was projected into, CSS pixels. */
-  readonly width: number;
-  readonly height: number;
+  width: number;
+  height: number;
 }
 
 export interface FlightRenderingSystem {
@@ -62,11 +63,13 @@ export interface FlightRenderingSystem {
    */
   setAirports(airports: readonly Readonly<AirportDefinition>[]): void;
   /**
-   * Where a world point lands on the canvas this frame, in CSS pixels from
-   * its top-left corner, or null before the first frame. `inFront` is false
-   * for a point behind the camera; `x`/`y` then point the way to turn.
+   * Writes where a world point lands on the canvas this frame into
+   * `result`, in CSS pixels from its top-left corner; false (and `result`
+   * untouched) while the canvas has no size. `inFront` is false for a point
+   * behind the camera; `x`/`y` then point the way to turn. Allocation-free,
+   * for the per-frame HUD overlay.
    */
-  projectWorldPoint(x: number, y: number, z: number): ScreenPoint | null;
+  projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean;
   /** Attach the worker-owned height authority after renderer startup. */
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */
