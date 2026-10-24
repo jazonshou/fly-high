@@ -2219,11 +2219,29 @@ Before promotion the capture failed the visual gates on `water-3m`, `water-25ft`
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
 
-## Volcanic materials (Basalt, Tephra), 2026-10-24
+## Volcanic land, 2026-10-24
 
-Volcanic land, phase 2: two surface materials appended after Concrete, Basalt (id 10) and Tephra (id 11), so the ground grain moves from array index 10 to 12 (`GROUND_GRAIN_LAYER`). The profile datum `volcanicMaterials` is off at tier 0 and on at tiers 1-3 (the tier row above). **Not timed yet**: the A/B against `bb7b6b1` was stopped part-way so the integrated branch can be timed once against main; its result belongs here.
+Volcanic fields are a height stage after the sand seas (`natural -> dunes -> volcanic overlay -> earthworks`, `src/world/volcanism.ts`). In a natural world they start 120 km from home, with one field guaranteed just past that; `?landforms=volcanic` forces a field 30 km out for review. The temperate core lists no site, so every pixel there is the overlay's identity. Steam has its own section above ("Volcanic steam").
+
+### Site index (`VolcanicSiteIndexStream`)
+
+The GPU reads the sites from ONE storage buffer, `terrainLandformData`, which page generation, the height pyramid, the sea-depth bake and the splat bake all bind. It lists the sites within 72 km of its centre in 4 km bins, relative to the landform core centre, so two indexes pack a site into the same bits and an in-place upload never changes a page both cover.
+
+- **Memory.** 256 KiB initial capacity; forced volcanic starts measured 77-87 KiB of index. It grows by reallocation only if a world ever needs more.
+- **Load.** `prime` packs the spawn's index synchronously behind the load screen: 3.8 ms in a natural world (no site near home), 113 ms in a forced volcanic world (Node). This is load time, not a frame.
+- **Flight.** The index is rebuilt after 4 km of drift, packed in slices of at most 1 ms of main thread a frame (the 2 ms rule, with room) and uploaded whole once packed: about 21 frames in a natural world and 85 in a forced one, so the 72 km reach keeps every page inside the 45 km far plane covered meanwhile. Steady state is one distance check a frame and allocates nothing.
+- **Coverage.** While a build is under way (after a teleport), a page the index does not cover waits rather than caching a bake without its volcanoes. Coarse pages are wider than any index (the L9 roots are 262 km), so they bake with part of it, recording the coverage they had, and are refreshed in place (height, then occlusion and splat) once their part within 50 km of the observer leaves that coverage. The scan runs every 1 km of travel or on a new upload, and refreshes at most 2 pages a frame, after any new page (`TERRAIN_LANDFORM_REFRESH`).
+- **Per texel.** Each bake looks up one 4 km bin and loops over that bin's sites, which is zero sites everywhere in the temperate core.
+
+### Materials (Basalt, Tephra)
+
+Two surface materials appended after Concrete, Basalt (id 10) and Tephra (id 11), so the ground grain moves from array index 10 to 12 (`GROUND_GRAIN_LAYER`). The profile datum `volcanicMaterials` is off at tier 0 and on at tiers 1-3 (the tier row above).
 
 - **Memory.** Tiers 1-3: two more layers in each terrain material array, +5.33 MiB at 512² with mips, so both arrays are 34.7 MiB (thirteen layers: the ten base materials, the volcanic pair and the grain). Tier 0 is unchanged at 6.7 MiB: the splat bake paints Basalt as Rock and Tephra as Gravel there (`volcanicFallbackMaterial`), from a sixth `SplatJob` lane (+16 B per job), so its ten-layer arrays and ten-case gather never meet an id they lack.
 - **Terrain fragment.** The sparse splat gather is a switch on each texel's id; under `TERRAIN_SURFACE_VOLCANIC` it has twelve cases instead of ten. The number of fetches per pixel does not change, only which layer a volcanic id reads. The define follows the layers actually bound, so tier 0 compiles today's gather. No draw-call change.
-- **Splat bake.** One `terrainVolcanicGround` sample per texel, shared by every tap and both seasons; one remap per accumulated id; and a closure-lane branch taken only on volcanic ground. Off volcanic ground the classification is bit-identical (`tests/render.webgpu-land-cover-volcanic.test.ts`). The stub returns 0; the landform include that replaces it carries its own cost.
+- **Splat bake.** One `terrainVolcanicGround` sample per texel (the landform include, over the site index), shared by every tap and both seasons; one remap per accumulated id; and a closure-lane branch taken only on volcanic ground. Off volcanic ground the classification is bit-identical (`tests/render.webgpu-land-cover-volcanic.test.ts`).
 - **Startup.** Two more synthesis-worker jobs, off the main thread: Basalt ~0.83 s and Tephra ~0.59 s at 512² (Node; Rock is ~1.23 s). The main-thread mip reduction in `uploadSurfaceMaterialArrays` grows with the layer count, from ~190 ms to ~223 ms at 512² (Node). It was already one step over the 2 ms budget and stays on the main thread; moving it into the synthesis worker is open.
+
+### Timing
+
+Not timed yet: the A/B against main runs on the CI runners (`perf-ab.yml`, `base: origin/main`) once the pull request is open, and its result belongs here.
