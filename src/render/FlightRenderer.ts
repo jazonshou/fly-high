@@ -1577,6 +1577,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
     if (this.disposed) return;
     this.airports = airports;
+    this.terrain.setAirports(airports);
   }
 
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
