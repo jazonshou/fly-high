@@ -32,6 +32,7 @@ import {
   DRY_PROVINCE_PARKLAND_FULL,
   DRY_PROVINCE_PARKLAND_ONSET,
   DETAIL_FAR_CULL_FADE_METERS,
+  PARKLAND_CLOSED_FOREST_KEEP,
   PARKLAND_OPEN_GROWN_EDGE,
   PARKLAND_SHRUB_SHARE,
   PARKLAND_TREE_SHARE,
@@ -327,6 +328,7 @@ const VEG_BASE_TREE_STEMS: f32 = 0.08;
 const VEG_BASE_SHRUB_STEMS: f32 = 0.045;
 const VEG_TREELINE_BASE_METERS: f32 = 1350.0;
 const VEG_PARKLAND_TREE_SHARE: f32 = ${wgslMeters(PARKLAND_TREE_SHARE)};
+const VEG_PARKLAND_CLOSED_FOREST_CUT: f32 = ${wgslMeters(1 - PARKLAND_CLOSED_FOREST_KEEP)};
 const VEG_DESERT_TREE_SHARE: f32 = ${wgslMeters(DESERT_TREE_SHARE)};
 const VEG_DESERT_SHRUB_SHARE: f32 = ${wgslMeters(DESERT_SHRUB_SHARE)};
 const VEG_PARKLAND_SHRUB_SHARE: f32 = ${wgslMeters(PARKLAND_SHRUB_SHARE)};
@@ -454,8 +456,11 @@ fn vegetationDensity(
     * kSmoothstep(${wgslMeters(PINYON_HEAT_ONSET)}, ${wgslMeters(PINYON_HEAT_FULL)}, drivers.temperatureOffset);
   let pinyonStems = VEG_BASE_TREE_STEMS * VEG_DESERT_TREE_SHARE * arid
     * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * glade);
+  let closedForestKeep = 1.0
+    - (arid + VEG_PARKLAND_CLOSED_FOREST_CUT * parkland) * (1.0 - riparianBand);
   result.treeStemsPerSquareMeter = kSaturate(
-    VEG_BASE_TREE_STEMS * moistureFactor * habitat + parklandStems + pinyonStems);
+    VEG_BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep
+    + parklandStems + pinyonStems);
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
   let shrubSlope = 1.0 - kSmoothstep(0.09, 0.26, drivers.slope);

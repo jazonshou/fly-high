@@ -248,7 +248,7 @@ export const LAND_COVER_DRY_PROVINCE = Object.freeze({
   rockGain: 0.8,
   desertGrassCut: 0.9,
   desertDryGrassCut: 0.15,
-  parklandGrassCut: 0.35,
+  parklandGrassCut: 0.6,
 });
 
 export interface LandCoverDryProvinceTerms {

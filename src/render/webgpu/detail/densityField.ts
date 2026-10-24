@@ -525,7 +525,8 @@ export function groundCoverWeights(
  * do not grade into each other the way a moisture field does:
  *
  *  - PARKLAND (oak savanna) on the moderately dry side. Too dry for a closed
- *    canopy, so the forest term is gone, but wet enough for single
+ *    canopy, so the forest term is cut to its wettest patches and the river
+ *    galleries (`dryProvinceClosedForestKeep`), but wet enough for single
  *    open-grown trees standing tens of metres apart in golden grass.
  *  - DESERT (sagebrush steppe) on the strongly dry side. Trees survive only as
  *    pinyon on the rocky slopes, and the flats carry sage and bare soil.
@@ -595,6 +596,24 @@ export function dryProvinceGroundCoverKeep(drynessOffset: number): number {
  */
 export const PARKLAND_TREE_SHARE = 0.045;
 export const DESERT_TREE_SHARE = 0.03;
+/**
+ * How much of the closed forest a full parkland share keeps: the woodland
+ * patches on the wettest ground. Lowering the province's moisture thins the
+ * forest but does not open it (a forced savanna still carried 70-120 stems/ha
+ * of closed oak wood), so the shares cut the closed-forest term outright. The
+ * desert keeps none of it. The riparian bank keeps all of it in both: the
+ * gallery forest along a dry country's rivers.
+ */
+export const PARKLAND_CLOSED_FOREST_KEEP = 0.15;
+
+/** The closed-forest term's keep, 1 at zero dryness exactly (`1 - 0 * x`). */
+export function dryProvinceClosedForestKeep(
+  aridShare: number,
+  parklandShare: number,
+  bankBand: number,
+): number {
+  return 1 - (aridShare + (1 - PARKLAND_CLOSED_FOREST_KEEP) * parklandShare) * (1 - bankBand);
+}
 /** Sage and parkland bush, as shares of the shrub base (~200 and ~90 stems/ha). */
 export const DESERT_SHRUB_SHARE = 0.45;
 export const PARKLAND_SHRUB_SHARE = 0.2;
@@ -871,7 +890,9 @@ export function densityField(
     * smoothstep(PINYON_HEAT_ONSET, PINYON_HEAT_FULL, input.temperatureOffset ?? 0);
   const pinyonStems = BASE_TREE_STEMS * DESERT_TREE_SHARE * arid
     * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * forest.glade);
-  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat + parklandStems + pinyonStems;
+  const closedForestKeep = dryProvinceClosedForestKeep(arid, parkland, riparian.bankBand);
+  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep
+    + parklandStems + pinyonStems;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
   // and persist a little above the canopy treeline.
