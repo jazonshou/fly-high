@@ -731,6 +731,34 @@ describe("inline generation after a worker failure", () => {
     expect(limited.lastCellUpdate).toBeLessThanOrEqual(Math.ceil(unlimited.lastCellUpdate * 1.1));
   });
 
+  it("holds the runtime's own inline cells to the credit after a fallback", () => {
+    const scene = fixture("detail-runtime-worker-respawn-budget", {
+      respawnLimit: 0,
+      reportWorkerHealth: () => undefined,
+    });
+    try {
+      scene.settle();
+      scene.latest().fail();
+      // Every cell is now the main thread's to make again, and each costs
+      // more than the update's slice. On credit, updates with cells still
+      // missing make none; with the first cell of every update free, as
+      // without a worker failure, there would be no such update.
+      const generatedPerUpdate: number[] = [];
+      for (let pass = 0; pass < 8_192 && scene.runtime.pendingWorkItems > 0; pass += 1) {
+        const before = scene.runtime.statistics.generatedCells;
+        scene.update();
+        generatedPerUpdate.push(scene.runtime.statistics.generatedCells - before);
+      }
+      expect(scene.runtime.pendingWorkItems).toBe(0);
+      const waited = generatedPerUpdate.indexOf(0);
+      expect(waited).toBeGreaterThanOrEqual(0);
+      // A later update still made a cell: one was missing while it waited.
+      expect(generatedPerUpdate.slice(waited).some((cells) => cells > 0)).toBe(true);
+    } finally {
+      scene.dispose();
+    }
+  });
+
   it("applies only after a worker failed, not to a runtime that never had one", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
