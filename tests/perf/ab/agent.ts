@@ -369,6 +369,7 @@ interface DetailRuntimeInternals {
   readonly client?: object | null;
   readonly updateSequence?: number;
   readonly presentationNowMilliseconds?: () => number;
+  readonly lastUpdateMilliseconds?: number | null;
   readonly workerPresentationProgressUpdate?: number | null;
   readonly workerPresentationProgressMilliseconds?: number | null;
   readonly workerGenerationProgressUpdate?: number | null;
@@ -440,6 +441,7 @@ function detailWatchdogSample(detail: DetailRuntimeInternals): DetailWatchdogSam
   return {
     wallMs: performance.now(),
     nowMs: detail.presentationNowMilliseconds?.() ?? performance.now(),
+    lastUpdateMs: detail.lastUpdateMilliseconds ?? null,
     updateSequence: detail.updateSequence ?? 0,
     presentationUpdate: detail.workerPresentationProgressUpdate ?? null,
     presentationMs: detail.workerPresentationProgressMilliseconds ?? null,

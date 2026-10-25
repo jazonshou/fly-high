@@ -20,12 +20,20 @@
 export const DETAIL_WATCHDOG_TRIP_AT_120HZ_MILLISECONDS = 2_000;
 /** The deadline's millisecond arm, which needs no update count. */
 export const DETAIL_WATCHDOG_WALL_DEADLINE_MILLISECONDS = 8_000;
+/** The part of a gap between updates the runtime still charges its worker. */
+export const DETAIL_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS = 100;
 
 export interface DetailWatchdogSample {
   /** `performance.now()` when sampled. */
   readonly wallMs: number;
   /** The runtime's own clock (`presentationNowMilliseconds`), which its deadlines read. */
   readonly nowMs: number;
+  /**
+   * That clock at the runtime's last update; null before the first, or with
+   * no worker to time. The next update charges at most the allowance of the
+   * time since, however long the rest of `render()` took.
+   */
+  readonly lastUpdateMs: number | null;
   readonly updateSequence: number;
   /**
    * Where each clock's open span started: the update index and the clock's
@@ -197,9 +205,14 @@ export class DetailWatchdogProbe {
     const frame = this.frames;
     this.frames += 1;
     this.lastWallMs = sample.wallMs;
+    // Sampled after the whole render(): of the time since the update, the
+    // next update lifts all but the allowance off the marker before it checks.
+    const nowMs = sample.lastUpdateMs === null
+      ? sample.nowMs
+      : Math.min(sample.nowMs, sample.lastUpdateMs + DETAIL_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS);
     const charged = (update: number | null, milliseconds: number | null) => update === null || milliseconds === null
       ? { updates: null, ms: null }
-      : { updates: sample.updateSequence - update, ms: Math.max(0, sample.nowMs - milliseconds) };
+      : { updates: sample.updateSequence - update, ms: Math.max(0, nowMs - milliseconds) };
     const presentation = charged(sample.presentationUpdate, sample.presentationMs);
     this.presentation.observe(
       sample.wallMs,

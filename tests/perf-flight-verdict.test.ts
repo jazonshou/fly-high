@@ -38,6 +38,7 @@ function sample(update: number, nowMs: number, overrides: Partial<DetailWatchdog
   return {
     wallMs: nowMs,
     nowMs,
+    lastUpdateMs: null,
     updateSequence: update,
     presentationUpdate: null,
     presentationMs: null,
@@ -87,6 +88,17 @@ describe("detail watchdog probe", () => {
     expect(presentation.maxWallMs).toBe(3_000);
     expect(presentation.wouldTripAt120Hz).toBe(0);
     expect(presentation.openChargedMs).toBe(100);
+  });
+
+  it("charges no more of the render after the update than the next update would", () => {
+    const probe = new DetailWatchdogProbe();
+    probe.beginWindow(0);
+    // The update ran at 1,850 ms; the rest of a 250 ms software render
+    // follows it. The next update charges 100 ms of that at most.
+    probe.observe(sample(40, 2_050, { lastUpdateMs: 1_850, presentationUpdate: 1, presentationMs: 0 }));
+    expect(probe.report().presentation).toMatchObject({ maxChargedMs: 1_950, wouldTripAt120Hz: 0 });
+    probe.observe(sample(41, 2_060, { lastUpdateMs: 2_000, presentationUpdate: 1, presentationMs: 0 }));
+    expect(probe.report().presentation).toMatchObject({ maxChargedMs: 2_060, wouldTripAt120Hz: 1 });
   });
 
   it("ends a span when a heartbeat moves the marker, and holds it through a pause", () => {
