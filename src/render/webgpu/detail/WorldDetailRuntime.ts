@@ -3226,13 +3226,17 @@ export class WorldDetailRuntime {
   }
 
   /**
-   * A semantically malformed worker result is not retried on the same path:
-   * keep every complete live chunk, terminate the untrusted authority, and
-   * let bounded inline generation replace descriptors cell by cell.
+   * A worker build that failed — the worker reported an error for it (a
+   * slice threw, a retained token was missing, packing could not allocate)
+   * or answered with a semantically malformed result — is not retried on the
+   * same path: keep every complete live chunk, terminate the untrusted
+   * authority, and let bounded inline generation replace descriptors cell by
+   * cell.
    *
-   * This stays a permanent fallback, unlike a worker that failed or went
-   * silent (`recoverWorkerAuthority`): a worker that answered with bytes
-   * that do not fit would answer a respawned build the same way.
+   * Both stay a permanent fallback, unlike a worker that failed outright or
+   * went silent (`recoverWorkerAuthority`). A replacement would be sent the
+   * same build; it might clear a worker-side exception, but a result whose
+   * bytes do not fit would come back the same way, and no respawn is tried.
    */
   private failClosedWorkerPresentation(build: PendingWorkerDetailChunkBuild): void {
     if (this.pendingPresentationBuild !== build) return;
