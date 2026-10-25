@@ -41,12 +41,14 @@ function invokeListener(listener: Listener, event: Event): void {
  * divided by one factor for a Mac. `generateDetailCell` at the medium
  * profile's density took 110-320 ms per 512 m cell round the home field and
  * 125-220 ms for populated cells 20 km east (165 ms is typical); presentation
- * packing ran 924 work units per 4 ms slice, 4.33 us a unit. The perf
- * investigators measured Node at about 2.8x slower than the Chrome bundle,
- * and an Apple P-core is faster again than this host: dividing by 5.5 puts a
- * cell at 30 ms, the low end of the 25-45 ms that implies. It is not tuned to
- * make the old watchdog trip. `DETAIL_LIVENESS_HOST_SCALE` overrides the
- * factor for the recorded runs (it is 5.5 for the assertions).
+ * packing ran 924 work units per 4 ms slice, 4.33 us a unit. Browser
+ * profiling for this fix put Node at 2-2.8x slower than the Chrome bundle on
+ * this code (a vitest "45 ms a cell" is 15-25 ms in Chrome); that an Apple
+ * P-core is about twice as fast again as this host is an estimate. Dividing
+ * by 5.5 puts a cell at 30 ms, the low end of the 25-45 ms that implies. It
+ * is not tuned to make the old watchdog trip: the parked-then-flown session
+ * below trips 19543c0 at any cell cost. `DETAIL_LIVENESS_HOST_SCALE`
+ * overrides the factor for the recorded runs (it is 5.5 for the assertions).
  */
 const HOST_SCALE = Number(process.env.DETAIL_LIVENESS_HOST_SCALE ?? 5.5);
 const GENERATE_MILLISECONDS = 165 / HOST_SCALE;
@@ -54,11 +56,12 @@ const WORK_UNIT_MILLISECONDS = 0.004_33 / HOST_SCALE;
 /** The worker reads its slice clock once per 64 work units. */
 const SLICE_CLOCK_READ_MILLISECONDS = 64 * WORK_UNIT_MILLISECONDS;
 /**
- * A nested `setTimeout(0)` is clamped to 4 ms. `DETAIL_LIVENESS_TIMER_CLAMP`
- * overrides it for the recorded runs (0 models the browser entry's
- * MessageChannel yield).
+ * The worker's yield between build slices. The browser entry yields through a
+ * MessageChannel, which has no clamp, so the assertions run at 0;
+ * `DETAIL_LIVENESS_TIMER_CLAMP` overrides it for the recorded runs (4 models
+ * a nested `setTimeout(0)`, the constructor default and 19543c0's yield).
  */
-const TIMER_CLAMP_MILLISECONDS = Number(process.env.DETAIL_LIVENESS_TIMER_CLAMP ?? 4);
+const TIMER_CLAMP_MILLISECONDS = Number(process.env.DETAIL_LIVENESS_TIMER_CLAMP ?? 0);
 const UPDATE_MILLISECONDS = 1_000 / 120;
 
 interface WorkerTask {
@@ -240,15 +243,16 @@ interface ScenarioResult {
   readonly homeFillMilliseconds: number | null;
   readonly freshFillMilliseconds: number | null;
   readonly endedEarlyByFallback: boolean;
+  /** The phase a watchdog first expired in, and how far into it. */
+  readonly firstTimeout: { readonly phase: string; readonly milliseconds: number } | null;
   readonly diagnostics: DetailPresentationRebuildDiagnostics;
   readonly workerThreads: number;
   /**
-   * The longest the presentation watchdog's clock ran while a worker build
-   * was in flight, read after every update from its two epochs (fields
-   * 19543c0 already had): updates, and milliseconds net of gaps. 240
-   * updates is an expiry at any update rate on 19543c0. Outside a build in
-   * flight 19543c0 can leave a stale epoch it never checks, so those
-   * updates are not sampled.
+   * The age of the presentation watchdog's clock, read after every update
+   * from its two epochs (fields 19543c0 already had): updates, and
+   * milliseconds net of gaps. 240 updates is an expiry at any update rate on
+   * 19543c0, whose last publication of a fill could leave the clock running
+   * through a parked hold.
    */
   readonly maximumClockUpdates: number;
   readonly maximumClockMilliseconds: number;
@@ -271,11 +275,24 @@ interface WatchdogEpochs {
   } | null;
 }
 
+/** How long the player sits parked after a fill before flying on. */
+const PARKED_MILLISECONDS = 3_000;
+const FLIGHT_MILLISECONDS = 3_000;
+/** About 1 m an update at 120 Hz: a 64 m observer step every half second. */
+const FLIGHT_METERS_PER_SECOND = 120;
+
 /**
- * The game's world at medium/balanced: settle at the home field, then jump
- * 20 km east into a region no cell has been generated for, and fly nothing
- * for 30 s while it fills. East is the densest of the eight compass points
- * 20 km out (4,122 trees in nine sampled cells; four of the others are sea).
+ * The game's world at medium/balanced, at 120 Hz:
+ * 1. settle at the home field, sit parked for 3 s, then fly east for 3 s;
+ * 2. jump 20 km east into a region no cell has been generated for, and sit
+ *    there for 30 s while it fills (and stays parked once it has);
+ * 3. fly east again for 3 s.
+ *
+ * A parked hold of 240 updates followed by any step tripped 19543c0 at any
+ * cell cost: the last publication of a fill started its clock, which nothing
+ * reset once the sweep went idle, and the first new demand found it 240
+ * updates old. East is the densest of the eight compass points 20 km out
+ * (4,122 trees in nine sampled cells; four of the others are sea).
  */
 function runFreshRegionScenario(
   generateMilliseconds: number,
@@ -306,9 +323,31 @@ function runFreshRegionScenario(
     let maximumWorkerBuildMilliseconds = 0;
     let buildInFlight: WatchdogEpochs["pendingPresentationBuild"] = null;
     let buildPostedAt = 0;
+    let phase = "home fill";
+    let phaseStartedAt = 0;
+    let firstTimeout: ScenarioResult["firstTimeout"] = null;
     const update = () => {
       runtime.update(observer, origin, quality, simulation.now / 1_000);
+      const diagnostics = runtime.presentationRebuildDiagnostics;
+      if (
+        firstTimeout === null
+        && diagnostics.workerBuildTimeouts + diagnostics.workerGenerationTimeouts > 0
+      ) {
+        firstTimeout = { phase, milliseconds: simulation.now - phaseStartedAt };
+      }
       const epochs = runtime as unknown as WatchdogEpochs;
+      if (epochs.workerPresentationProgressUpdate !== null) {
+        maximumClockUpdates = Math.max(
+          maximumClockUpdates,
+          epochs.updateSequence - epochs.workerPresentationProgressUpdate,
+        );
+      }
+      if (epochs.workerPresentationProgressMilliseconds !== null) {
+        maximumClockMilliseconds = Math.max(
+          maximumClockMilliseconds,
+          simulation.now - epochs.workerPresentationProgressMilliseconds,
+        );
+      }
       const build = epochs.pendingPresentationBuild;
       if (
         build === null
@@ -324,20 +363,24 @@ function runFreshRegionScenario(
         maximumWorkerBuildMilliseconds,
         simulation.now - buildPostedAt,
       );
-      if (epochs.workerPresentationProgressUpdate !== null) {
-        maximumClockUpdates = Math.max(
-          maximumClockUpdates,
-          epochs.updateSequence - epochs.workerPresentationProgressUpdate,
-        );
-      }
-      if (epochs.workerPresentationProgressMilliseconds !== null) {
-        maximumClockMilliseconds = Math.max(
-          maximumClockMilliseconds,
-          simulation.now - epochs.workerPresentationProgressMilliseconds,
-        );
-      }
     };
     const fellBack = () => runtime.presentationRebuildDiagnostics.workerFallbacks > 0;
+    const startPhase = (name: string) => {
+      phase = name;
+      phaseStartedAt = simulation.now;
+    };
+    const park = (name: string) => {
+      startPhase(name);
+      simulation.run(phaseStartedAt + PARKED_MILLISECONDS, update, fellBack);
+    };
+    const flyEast = (name: string) => {
+      startPhase(name);
+      const step = FLIGHT_METERS_PER_SECOND / 120;
+      simulation.run(phaseStartedAt + FLIGHT_MILLISECONDS, () => {
+        observer = { ...observer, x: observer.x + step };
+        update();
+      }, fellBack);
+    };
 
     let homeFillMilliseconds: number | null = null;
     simulation.run(60_000, update, () => {
@@ -346,9 +389,12 @@ function runFreshRegionScenario(
       homeFillMilliseconds = simulation.now;
       return true;
     });
+    if (!fellBack()) park("parked at home");
+    if (!fellBack()) flyEast("flying from home");
 
     let freshFillMilliseconds: number | null = null;
     if (!fellBack()) {
+      startPhase("fresh region");
       const jumpedAt = simulation.now;
       observer = { x: home.centerX + 20_000, y: 150, z: home.centerZ };
       origin = {
@@ -364,10 +410,12 @@ function runFreshRegionScenario(
         return false;
       });
     }
+    if (!fellBack()) flyEast("flying from the fresh region");
     return {
       homeFillMilliseconds,
       freshFillMilliseconds,
       endedEarlyByFallback: fellBack(),
+      firstTimeout,
       diagnostics: runtime.presentationRebuildDiagnostics,
       workerThreads: simulation.threads.length,
       maximumClockUpdates,
@@ -396,6 +444,7 @@ function reportScenario(label: string, result: ScenarioResult): void {
     homeFillMilliseconds: result.homeFillMilliseconds,
     freshFillMilliseconds: result.freshFillMilliseconds,
     endedEarlyByFallback: result.endedEarlyByFallback,
+    firstTimeout: result.firstTimeout,
     workerThreads: result.workerThreads,
     workerBuildStarts: diagnostics.workerBuildStarts,
     workerBuildPublications: diagnostics.workerBuildPublications,
@@ -414,11 +463,12 @@ function reportScenario(label: string, result: ScenarioResult): void {
 }
 
 describe("detail worker liveness in virtual time", () => {
-  it("keeps the worker through a home settle and a fresh-region fill at 120 Hz", () => {
+  it("keeps the worker through fills, parked holds and flight at 120 Hz", () => {
     const result = runFreshRegionScenario(GENERATE_MILLISECONDS, TIMER_CLAMP_MILLISECONDS);
     reportScenario("liveness", result);
     // The fields 19543c0 already had first, so a run against it fails on
     // the trip itself rather than on a field it never reported.
+    expect(result.firstTimeout).toBeNull();
     expect(result.diagnostics.workerBuildTimeouts).toBe(0);
     expect(result.diagnostics.workerGenerationTimeouts).toBe(0);
     expect(result.diagnostics.workerFallbacks).toBe(0);
