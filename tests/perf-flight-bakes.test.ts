@@ -210,27 +210,38 @@ describe("flight bake report", () => {
   it("names each sky-work frame's part of the re-light, carrying it across the arm's legs", () => {
     const first = row(report.rows, "leg 1", "head").sky!;
     expect(first.landed).toBe(2);
-    expect(first.oneFrame).toBe(1);
-    expect(first.workFrames).toBe(9);
-    expect(first.worst).toMatchObject({ frame: 0, work: ["one-frame"], skyMs: 2 });
+    expect(first.slicedFrames).toBe(8);
+    expect(first.worst).toMatchObject({ frame: 4, work: ["land"], skyMs: 1.5 });
     expect(first.overTarget.map((entry) => [entry.frame, entry.work.join("+"), entry.skyMs, entry.renderMs])).toEqual([
-      [0, "one-frame", 2, 20],
       [3, "advance", 1.3, 31],
       [4, "land", 1.5, 33],
     ]);
-    expect(first.overTarget[1]).toMatchObject({ advanceMs: 0.52, applyMs: null });
-    expect(first.overTarget[2]).toMatchObject({ advanceMs: null, applyMs: 1.4 });
+    expect(first.overTarget[0]).toMatchObject({ advanceMs: 0.52, applyMs: null });
+    expect(first.overTarget[1]).toMatchObject({ advanceMs: null, applyMs: 1.4 });
     const second = row(report.rows, "leg 2", "head").sky!;
     expect(second.landed).toBe(0);
+    expect(second.slicedFrames).toBe(2);
     expect(second.overTarget).toEqual([]);
     expect(second.worst).toMatchObject({ frame: 1, work: ["LUT", "begin"], skyMs: 0.7 });
     const all = row(report.rows, "all legs", "head").sky!;
     expect(all.landed).toBe(2);
-    expect(all.workFrames).toBe(11);
-    expect(all.overTarget).toHaveLength(3);
+    expect(all.slicedFrames).toBe(10);
+    expect(all.overTarget).toHaveLength(2);
+    expect(all.oneFrame).toHaveLength(1);
+  });
+
+  it("keeps one-frame re-lights out of the sliced re-light's target, in a column of their own", () => {
+    // Leg 1's first frame re-lights in one frame at 2 ms: more than any
+    // sliced frame, but not the worst sliced frame, nor over the target.
+    const first = row(report.rows, "leg 1", "head").sky!;
+    expect(first.oneFrame.map((entry) => [entry.frame, entry.work, entry.skyMs])).toEqual([[0, ["one-frame"], 2]]);
+    expect(first.overTarget.map((entry) => entry.frame)).not.toContain(0);
+    // A trial's new renderer re-lights in one frame first: 3.2 ms, outside the target.
     const trial = row(report.rows, "trial 1", "head").sky!;
-    expect(trial.oneFrame).toBe(1);
-    expect(trial.worst).toMatchObject({ phase: "trial 1", frame: 0, work: ["one-frame"], skyMs: 3.2 });
+    expect(trial.oneFrame.map((entry) => [entry.phase, entry.frame, entry.skyMs])).toEqual([["trial 1", 0, 3.2]]);
+    expect(trial.overTarget).toEqual([]);
+    expect(trial.slicedFrames).toBe(1);
+    expect(trial.worst).toMatchObject({ phase: "trial 1", frame: 1, work: ["begin"], skyMs: 0.5 });
   });
 
   it("tells a slice that begins a rebake from one that continues it", () => {
@@ -246,7 +257,8 @@ describe("flight bake report", () => {
         shas: SHAS,
         reports: { base: [], head: [leg([frame(before), frame(null), frame(null), frame(slice(1.2)), frame(slice(1.1))])] },
       });
-      expect(row(known.rows, "leg 1", "head").sky!.overTarget.slice(1).map((entry) => entry.work)).toEqual([["begin"], ["advance"]]);
+      const sliced = row(known.rows, "leg 1", "head").sky!.overTarget;
+      expect(sliced.slice(sliced.length - 2).map((entry) => entry.work)).toEqual([["begin"], ["advance"]]);
     }
   });
 
@@ -292,32 +304,40 @@ describe("flight bake report", () => {
     const markdown = renderBakeMarkdown(report);
     expect(markdown).toContain("### Sky re-light and ground-cover bake");
     expect(markdown).toContain("| leg 1 | base | 05f17b4aaa | n/a | n/a | n/a | n/a | n/a |");
-    expect(markdown).toContain("| leg 1 | head | 1234567890 | 2 | 1 | 9 | 2.00 (one-frame) | **3** |");
-    expect(markdown).toContain("| leg 2 | head | 1234567890 | 0 | 0 | 2 | 0.70 (LUT + begin) | 0 |");
+    expect(markdown).toContain("| leg 1 | head | 1234567890 | 2 | 8 | 1.50 (land) | **2** | 1 (2.00) |");
+    expect(markdown).toContain("| leg 2 | head | 1234567890 | 0 | 2 | 0.70 (LUT + begin) | 0 | 0 |");
+    expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | 1 | 0.50 (begin) | 0 | 1 (3.20) |");
     expect(markdown).toContain("| leg 1 | head | 1234567890 | 3 | 1.60 / 2.30 / 2.30 | **1** | 1 | 1 |");
     expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | - | 0 | 0 | 0 |");
     expect(markdown).toContain("- head leg 1 frame 3: advance 1.30 ms (slice 0.52), render() 31.00 ms");
     expect(markdown).toContain("- head leg 1 frame 4: land 1.50 ms (converter 1.40), render() 33.00 ms");
-    expect(markdown).toContain("- head trial 1 frame 0: one-frame 3.20 ms, render() 20.00 ms");
+    // The one-frame re-lights in a list of their own, after the sliced frames'.
+    const oneFrameList = markdown.indexOf("One-frame re-lights, outside the target:");
+    expect(oneFrameList).toBeGreaterThan(markdown.indexOf("- head leg 1 frame 4:"));
+    expect(markdown.indexOf("- head leg 1 frame 0: one-frame 2.00 ms, render() 20.00 ms")).toBeGreaterThan(oneFrameList);
+    expect(markdown.indexOf("- head trial 1 frame 0: one-frame 3.20 ms, render() 20.00 ms")).toBeGreaterThan(oneFrameList);
     // The "all legs" rows repeat the legs' frames; the list does not.
     expect(markdown.match(/- head leg 1 frame 4:/g)).toHaveLength(1);
   });
 
   it("says so when no recorded frame went over 1 ms, and nothing when no arm was recorded", () => {
     const quiet = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [leg([frame(sky(0.3))])] } }));
-    expect(quiet).toContain("No sky-work frame at or over 1 ms.");
+    expect(quiet).toContain("No sliced-re-light frame at or over 1 ms.");
     const none = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [unrecorded(2)] } }));
-    expect(none).not.toContain("No sky-work frame");
+    expect(none).not.toContain("No sliced-re-light frame");
     expect(none).not.toContain("- head");
   });
 
   it("logs a leg's bakes in one line, and nothing for a build that does not report them", () => {
     expect(describeLegBakes(unrecorded(4))).toBe("");
     expect(describeLegBakes(headLeg1)).toBe(
-      ", sky 2 landed / 1 one-frame, worst 2.00 ms, 3 at or over 1 ms; ground cover 3 calls, max 2.30 ms, 1 at or over 2 ms",
+      ", sky 2 landed, worst sliced frame 1.50 ms, 2 at or over 1 ms, 1 one-frame (worst 2.00 ms); "
+        + "ground cover 3 calls, max 2.30 ms, 1 at or over 2 ms",
     );
     // Recorded, with neither bake at work (a leg too high for the blades, below any re-light).
-    expect(describeLegBakes(leg([frame(null), frame(null)]))).toBe(", no sky work; no ground-cover bake");
+    expect(describeLegBakes(leg([frame(null), frame(null)]))).toBe(", no sliced sky re-light; no ground-cover bake");
+    expect(describeLegBakes(leg([frame(sky(4.5)), frame(null)])))
+      .toBe(", no sliced sky re-light, 1 one-frame (worst 4.50 ms); no ground-cover bake");
   });
 });
 

@@ -11,7 +11,10 @@
  * environment change or a teleport re-lights in one frame instead. A frame's
  * sky work is the renderer's own time in its sky-probe refresh; the cube's
  * six faces render later in that frame, inside the scene pass, and are not in
- * it. The target is no frame over 1 ms.
+ * it. The target is no frame of a sliced re-light over 1 ms. A one-frame
+ * re-light (a renderer's first frame, a teleport, an environment change) is
+ * synchronous by design and outside it: it has its own column, and the
+ * worst frame and the frames over the target are the sliced ones alone.
  *
  * Which of these a frame did is read from its record and the frames before
  * it: landings and sampling slices are counted by the renderer; the cube and
@@ -69,11 +72,14 @@ export interface SkyWorkFrame {
 export interface SkySummary {
   /** Sliced re-lights that landed their irradiance. */
   readonly landed: number;
-  readonly oneFrame: number;
-  /** Frames on which the refresh ran. */
-  readonly workFrames: number;
+  /** Frames that did a sliced re-light's work: a begin, an advance, a landing, the cube or the LUT. */
+  readonly slicedFrames: number;
+  /** The sliced frame with the most sky work; null with none. */
   readonly worst: SkyWorkFrame | null;
+  /** The sliced frames at or over the target. */
   readonly overTarget: readonly SkyWorkFrame[];
+  /** Every one-frame re-light: outside the target. */
+  readonly oneFrame: readonly SkyWorkFrame[];
 }
 
 export interface GroundCoverSummary {
@@ -181,6 +187,10 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
   return { recorded: recorded(frames), sky, landed, callMs, paceFloorCalls, tilesCompleted };
 }
 
+function worstOf(frames: readonly SkyWorkFrame[]): SkyWorkFrame | null {
+  return frames.reduce<SkyWorkFrame | null>((most, frame) => (most && most.skyMs >= frame.skyMs ? most : frame), null);
+}
+
 interface BakeFigures {
   readonly sky: SkySummary;
   readonly groundCover: GroundCoverSummary;
@@ -190,16 +200,16 @@ interface BakeFigures {
 function figures(parts: readonly PhaseBakes[]): BakeFigures | null {
   if (!parts.some((part) => part.recorded)) return null;
   const sky = parts.flatMap((part) => part.sky);
+  const sliced = sky.filter((frame) => !frame.work.includes("one-frame"));
   const callMs = parts.flatMap((part) => part.callMs);
   const calls = percentiles(callMs);
-  const worst = sky.reduce<SkyWorkFrame | null>((most, frame) => (most && most.skyMs >= frame.skyMs ? most : frame), null);
   return {
     sky: {
       landed: parts.reduce((sum, part) => sum + part.landed, 0),
-      oneFrame: sky.filter((frame) => frame.work.includes("one-frame")).length,
-      workFrames: sky.length,
-      worst,
-      overTarget: sky.filter((frame) => reaches(frame.skyMs, SKY_FRAME_TARGET_MS)),
+      slicedFrames: sliced.length,
+      worst: worstOf(sliced),
+      overTarget: sliced.filter((frame) => reaches(frame.skyMs, SKY_FRAME_TARGET_MS)),
+      oneFrame: sky.filter((frame) => frame.work.includes("one-frame")),
     },
     groundCover: {
       calls: callMs.length,
@@ -248,6 +258,12 @@ function fmt(value: number | null | undefined, digits = 2): string {
   return value !== null && value !== undefined && Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 }
 
+/** How many one-frame re-lights, and the worst one's ms. */
+function oneFrameCell(frames: readonly SkyWorkFrame[]): string {
+  const worst = worstOf(frames);
+  return worst === null ? "0" : `${frames.length} (${fmt(worst.skyMs)})`;
+}
+
 function describeSkyFrame(frame: SkyWorkFrame): string {
   const parts = [
     ...(frame.advanceMs !== null ? [`slice ${fmt(frame.advanceMs)}`] : []),
@@ -261,10 +277,14 @@ export function describeLegBakes(leg: FlightReport): string {
   const seen = figures([phaseBakes("", leg.frames, unknownSky())]);
   if (!seen) return "";
   const { sky, groundCover } = seen;
+  const oneFrameWorst = worstOf(sky.oneFrame);
+  const oneFramePart = oneFrameWorst === null
+    ? ""
+    : `, ${sky.oneFrame.length} one-frame (worst ${fmt(oneFrameWorst.skyMs)} ms)`;
   const skyPart = sky.worst === null
-    ? "no sky work"
-    : `sky ${sky.landed} landed / ${sky.oneFrame} one-frame, worst ${fmt(sky.worst.skyMs)} ms, `
-      + `${sky.overTarget.length} at or over ${SKY_FRAME_TARGET_MS} ms`;
+    ? `no sliced sky re-light${oneFramePart}`
+    : `sky ${sky.landed} landed, worst sliced frame ${fmt(sky.worst.skyMs)} ms, `
+      + `${sky.overTarget.length} at or over ${SKY_FRAME_TARGET_MS} ms${oneFramePart}`;
   const coverPart = groundCover.ms === null
     ? "no ground-cover bake"
     : `ground cover ${groundCover.calls} calls, max ${fmt(groundCover.ms.max)} ms, `
@@ -282,17 +302,23 @@ export function renderBakeMarkdown(report: BakeReport): string {
       ...(sky
         ? [
           String(sky.landed),
-          String(sky.oneFrame),
-          String(sky.workFrames),
+          String(sky.slicedFrames),
           sky.worst ? `${fmt(sky.worst.skyMs)} (${sky.worst.work.join(" + ")})` : "-",
           sky.overTarget.length > 0 ? `**${sky.overTarget.length}**` : "0",
+          oneFrameCell(sky.oneFrame),
         ]
         : na(5)),
     ];
   });
   // Legs and trials; the "all legs" rows repeat the legs' frames.
-  const over = report.rows.filter((row) => row.phase !== "all legs")
-    .flatMap((row) => (row.sky?.overTarget ?? []).map((frame) => ({ arm: row.arm, frame })));
+  const listed = report.rows.filter((row) => row.phase !== "all legs");
+  const over = listed.flatMap((row) => (row.sky?.overTarget ?? []).map((frame) => ({ arm: row.arm, frame })));
+  const oneFrame = listed.flatMap((row) => (row.sky?.oneFrame ?? []).map((frame) => ({ arm: row.arm, frame })));
+  const listFrames = (frames: readonly { readonly arm: ArmName; readonly frame: SkyWorkFrame }[]) => [
+    ...frames.slice(0, LISTED_FRAMES).map(({ arm, frame }) =>
+      `- ${arm} ${frame.phase} frame ${frame.frame}: ${describeSkyFrame(frame)}, render() ${fmt(frame.renderMs)} ms`),
+    ...(frames.length > LISTED_FRAMES ? [`- and ${frames.length - LISTED_FRAMES} more (report.json)`] : []),
+  ];
   const recordedAny = report.rows.some((row) => row.sky !== null);
   const coverRows = report.rows.map((row) => {
     const cover = row.groundCover;
@@ -321,28 +347,34 @@ export function renderBakeMarkdown(report: BakeReport): string {
       + "not report its bakes. Sky work: the renderer's own ms in its sky-probe refresh on the frames it ran. A "
       + "sliced re-light (every 500 m of climb) begins and samples about 0.5 ms a frame, lands its irradiance "
       + "(the converter), re-arms the specular cube on the next frame (its six faces render in the scene pass, "
-      + "outside these ms) and re-bakes the cloud LUT on the one after; a one-frame re-light (an environment "
-      + `change, a teleport) does it all at once. Target: no frame over ${SKY_FRAME_TARGET_MS} ms. The page's clock `
+      + "outside these ms) and re-bakes the cloud LUT on the one after. Target: no frame of a sliced re-light "
+      + `over ${SKY_FRAME_TARGET_MS} ms. A one-frame re-light (a renderer's first frame, a teleport, an environment `
+      + "change) does it all at once, synchronous by design: it is outside the target and has its own column. "
+      + "The page's clock "
       + "reads in 0.1 ms steps (it is not cross-origin isolated), so a frame that reads the target is counted with "
       + "those over it: it cannot be shown to be within it.",
     "",
     ...table(
-      "phase | arm | commit | sliced re-lights landed | one-frame re-lights | sky-work frames "
-        + `| worst sky-work frame ms (work) | frames at or over ${SKY_FRAME_TARGET_MS} ms`,
+      "phase | arm | commit | sliced re-lights landed | sliced-re-light frames | worst sliced frame ms (work) "
+        + `| sliced frames at or over ${SKY_FRAME_TARGET_MS} ms | one-frame re-lights (worst ms)`,
       skyRows,
     ),
     "",
     ...(!recordedAny ? [] : over.length === 0
-      ? [`No sky-work frame at or over ${SKY_FRAME_TARGET_MS} ms.`, ""]
+      ? [`No sliced-re-light frame at or over ${SKY_FRAME_TARGET_MS} ms.`, ""]
       : [
-        `Sky-work frames at or over ${SKY_FRAME_TARGET_MS} ms (the work, the refresh's ms with the slice's and the `
-          + "converter's, and the frame's render() ms):",
+        `Sliced-re-light frames at or over ${SKY_FRAME_TARGET_MS} ms (the work, the refresh's ms with the slice's `
+          + "and the converter's, and the frame's render() ms):",
         "",
-        ...over.slice(0, LISTED_FRAMES).map(({ arm, frame }) =>
-          `- ${arm} ${frame.phase} frame ${frame.frame}: ${describeSkyFrame(frame)}, render() ${fmt(frame.renderMs)} ms`),
-        ...(over.length > LISTED_FRAMES ? [`- and ${over.length - LISTED_FRAMES} more (report.json)`] : []),
+        ...listFrames(over),
         "",
       ]),
+    ...(oneFrame.length === 0 ? [] : [
+      "One-frame re-lights, outside the target:",
+      "",
+      ...listFrames(oneFrame),
+      "",
+    ]),
     `Ground cover: each tile-bake call's ms on the bake's own clock. Target: each within ${GROUND_COVER_CALL_TARGET_MS} ms `
       + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's pace.",
     "",
