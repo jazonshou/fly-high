@@ -98,6 +98,7 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --leg-frames <n>        frames per leg (default 240, 4 s of flight)
   --speed <m/s>           ground speed (default 120)
   --burst-legs            alternate the legs between 250 and 60 m/s instead (ABBA keeps each leg's speed equal)
+  --park-legs             hold still (0 m/s) on odd legs and fly on even ones: a stop on the runway, then the roll
   --clearance <m>         height kept above the terrain (default 150)
   --bank <deg>            constant bank; 0 flies straight (default 0)
   --camera chase|cockpit  (default chase)
@@ -377,6 +378,7 @@ async function main(): Promise<number> {
       "leg-frames": { type: "string", default: "240" },
       speed: { type: "string", default: "120" },
       "burst-legs": { type: "boolean", default: false },
+      "park-legs": { type: "boolean", default: false },
       clearance: { type: "string", default: "150" },
       bank: { type: "string", default: "0" },
       camera: { type: "string", default: "chase" },
@@ -591,6 +593,7 @@ async function main(): Promise<number> {
           ...request,
           restart: leg === 0,
           ...(values["burst-legs"] ? { speedMetersPerSecond: leg % 2 === 0 ? 250 : 60 } : {}),
+          ...(values["park-legs"] && leg % 2 === 0 ? { speedMetersPerSecond: 0 } : {}),
           killDetailWorkerAtFrame: faults.kill?.leg === leg + 1 ? faults.kill.frame : null,
           hangDetailWorkerAtFrame: faults.hang?.leg === leg + 1 ? faults.hang.frame : null,
           hitch: hitch && hitchLeg ? { frame: hitch.frame, milliseconds: hitch.milliseconds } : null,
@@ -670,6 +673,7 @@ async function main(): Promise<number> {
       ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),
       ...(settleTrials > 0 ? { settleTrials, trialFrames } : {}),
       ...(values["burst-legs"] ? { burstLegs: "250 and 60 m/s, alternating" } : {}),
+      ...(values["park-legs"] ? { parkLegs: "0 m/s on odd legs" } : {}),
       ...(hitch ? { emulateHitch: hitch } : {}),
       ...(frameDump ? { frameDump } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
