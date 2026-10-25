@@ -301,7 +301,9 @@ describe("FlightRenderer applies scale changes at frame start (B1)", () => {
 
   it("keeps construction, profile changes and the capture pin forced and immediate", () => {
     const applyRenderScale = method(/\n {2}private applyRenderScale\(\): boolean/u, /\n {2}(?:private |\/\*\*)/u);
-    expect(applyRenderScale).toContain("return this.renderScaleQueue.applyNow();");
+    expect(applyRenderScale).toMatch(
+      /const changed = this\.renderScaleQueue\.applyNow\(\);\s*this\.appliedRenderScale = this\.renderScale;\s*return changed;/u,
+    );
     const constructor = method(/\n {2}private constructor\(/u, /\n {2}private readonly handleDebugKey/u);
     expect(constructor.indexOf("this.renderScaleQueue = new RenderScaleQueue("))
       .toBeLessThan(constructor.indexOf("this.applyRenderScale();"));
@@ -310,5 +312,23 @@ describe("FlightRenderer applies scale changes at frame start (B1)", () => {
     const applyProfile = method(/\n {2}private applyProfile\(\): void/u, /\n {2}\}\n/u);
     expect(applyProfile).toContain("this.applyRenderScale();");
     expect(source.match(/this\.applyRenderScale\(\);/gu)).toHaveLength(4);
+  });
+
+  it("reports the applied scale, so a snapshot pairs it with the pixels rendered", () => {
+    const diagnostics = method(/\n {2}getDiagnostics\(\): RenderDiagnostics/u, /\n {2}(?:private |\/\*\*)/u);
+    expect(diagnostics).toContain("renderScale: this.appliedRenderScale,");
+    expect(diagnostics).toContain("renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),");
+    const applyPending = method(/\n {2}private applyPendingRenderScale\(\): void/u, /\n {2}(?:private |\/\*\*)/u);
+    expect(applyPending).toMatch(
+      /if \(applied === null\) return;\s*this\.appliedRenderScale = this\.renderScale;/u,
+    );
+    // A governor step the pixel cap absorbs is applied as it is decided; one
+    // that moves the level is applied at the next frame's start.
+    const deferGoverned = method(/\n {2}private deferGovernedRenderScale\(\): boolean/u, /\n {2}(?:private |\/\*\*)/u);
+    expect(deferGoverned).toMatch(
+      /if \(changed\) \{\s*this\.renderScaleQueue\.defer\(GOVERNED_SCALE_REQUEST\);\s*\} else \{\s*this\.appliedRenderScale = this\.renderScale;\s*\}/u,
+    );
+    // Those two and applyRenderScale are the only writers.
+    expect(source.match(/this\.appliedRenderScale = /gu)).toHaveLength(3);
   });
 });

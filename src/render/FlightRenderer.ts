@@ -692,6 +692,13 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
+  /**
+   * B1: the `renderScale` the engine's level was last resolved from, which
+   * diagnostics report. A governor step that moves the level waits for the
+   * next frame's start, and until then a snapshot's scale still pairs with
+   * the pixels it rendered. Every application sets it; 1 is a placeholder.
+   */
+  private appliedRenderScale = 1;
   private terrainAuthorityPublisher: TerrainAuthorityPublisher | null = null;
   private readonly atmosphereResources: AtmosphereGpuResources;
   private readonly passTimingHistory = new PassTimingHistory();
@@ -2448,7 +2455,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       requestedRenderingMode: this.renderingMode,
       renderBackend: "webgpu",
       renderTechnique: "forward-spectral-volumetric",
-      renderScale: this.renderScale,
+      renderScale: this.appliedRenderScale,
       cloudResolutionScale: this.profile.cloudResolutionScale,
       cloudRaySteps: this.profile.cloudPrimarySteps,
       oceanFftCascades: this.ocean.cascadeCount,
@@ -3548,24 +3555,32 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * capture pin take this path.
    */
   private applyRenderScale(): boolean {
-    return this.renderScaleQueue.applyNow();
+    const changed = this.renderScaleQueue.applyNow();
+    this.appliedRenderScale = this.renderScale;
+    return changed;
   }
 
   /** B1: the frame-start half of a deferred governor step or display resize. */
   private applyPendingRenderScale(): void {
     const applied = this.renderScaleQueue.applyPending();
     if (applied === null) return;
+    this.appliedRenderScale = this.renderScale;
     if (applied.resetTimingWindow) this.resetTimingWindow();
     if (applied.changed || applied.force) this.graph.invalidateHistory(applied.reason);
   }
 
   /**
    * B1: queues a governor step for the next frame's start and returns whether
-   * it moves the level, which the anti-ratchet latch needs now.
+   * it moves the level, which the anti-ratchet latch needs now. A step the
+   * pixel cap absorbs leaves the level as it is, so it counts as applied.
    */
   private deferGovernedRenderScale(): boolean {
     const changed = this.renderScaleQueue.levelWouldChange();
-    if (changed) this.renderScaleQueue.defer(GOVERNED_SCALE_REQUEST);
+    if (changed) {
+      this.renderScaleQueue.defer(GOVERNED_SCALE_REQUEST);
+    } else {
+      this.appliedRenderScale = this.renderScale;
+    }
     return changed;
   }
 
