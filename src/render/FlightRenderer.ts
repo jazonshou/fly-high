@@ -128,6 +128,7 @@ import {
 } from "./webgpu/airfield/SpawnedAirfields";
 import {
   LiveAirportGround,
+  analyticTerrainHeightOf,
   analyticTerrainOf,
 } from "./webgpu/airfield/SpawnedAirportGround";
 import {
@@ -149,6 +150,7 @@ import {
 import { terrainMacroGridFromEvolution } from "./webgpu/terrain/TerrainMacroEvolutionClient";
 import {
   TerrainConsumerAuthority,
+  terrainConsumerHeightFromAuthority,
   terrainConsumerSampleFromAuthority,
 } from "./webgpu/terrain/TerrainConsumerAuthority";
 import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
@@ -431,6 +433,13 @@ export interface FlightRendererOptions {
   canvas: HTMLCanvasElement;
   aircraft: AircraftKind;
   terrainSample: TerrainSampleFunction;
+  /**
+   * `terrainSample(x, z).height` alone, bit for bit (`sampleTerrainHeight` of
+   * the same world), for the consumers that read only the height: it costs
+   * none of the normal's four extra heights or the surface classification.
+   * Unset, those consumers read the full sample's height.
+   */
+  terrainHeight?: (x: number, z: number) => number;
   world: WorldDefinition;
   seed: number;
   quality: QualityLevel;
@@ -654,8 +663,14 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** `7-15`: which lamp geometry the wash lights follow. Both airframes ship. */
   private readonly aircraftKind: AircraftKind;
   private readonly latitudeDegrees: number;
-  /** The chase rig's ground clamp samples the terrain directly. */
-  private readonly cameraTerrainSample: TerrainSampleFunction;
+  /**
+   * The chase rig's ground clamp, and the free-fly viewer's: the live
+   * consumer height. It must track the terrain the player SEES: in eroded
+   * worlds that is the consumer authority's surface, not the analytic
+   * pre-erosion kernel — clamping against an invisible ridge shoved the
+   * chase camera upward with no visual justification.
+   */
+  private readonly cameraTerrainHeight: (x: number, z: number) => number;
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
   private skyProbeStale = false;
   private skyProbeAltitudeMeters = 0;
@@ -682,6 +697,12 @@ export class FlightRenderer implements FlightRenderingSystem {
    * spawned airports' authored earthworks inside their influence.
    */
   private readonly airportGround: LiveAirportGround<TerrainSample>;
+  /**
+   * `airportGround`'s height alone, bit for bit, for the consumers that read
+   * nothing else: the camera clamp, the spawned airfields, the ground-cover
+   * tile and the birds.
+   */
+  private readonly airportHeight: LiveAirportGround<number>;
   /**
    * Airfields for airports spawned in flight — structures, lamps and floods,
    * built incrementally on the home field's materials. Null without a home
@@ -758,6 +779,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     hangarFloodNames: readonly string[],
     airfieldLighting: AirfieldLightingSystem | null,
     airportGround: LiveAirportGround<TerrainSample>,
+    airportHeight: LiveAirportGround<number>,
     spawnedAirfields: SpawnedAirfieldManager | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
@@ -803,6 +825,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.hangarFloodNames = hangarFloodNames;
     this.airfieldLighting = airfieldLighting;
     this.airportGround = airportGround;
+    this.airportHeight = airportHeight;
     this.spawnedAirfields = spawnedAirfields;
     this.scotopic = scotopic;
     this.bloom = bloom;
@@ -811,7 +834,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.seaLevel = options.world.seaLevel;
     this.aircraftKind = options.aircraft;
     this.latitudeDegrees = options.world.latitudeDegrees;
-    this.cameraTerrainSample = options.terrainSample;
+    this.cameraTerrainHeight = airportHeight.sample;
     this.worldDefinition = options.world;
     this.liveWorld = options.world;
     this.quality = options.quality;
@@ -1051,6 +1074,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       terrain.setMacroEvolution(evolutionResult.evolution);
       let terrainConsumerAuthority: TerrainConsumerAuthority | null = null;
       let consumerTerrainSample = options.terrainSample;
+      // The same surface's height alone, for the consumers that read nothing
+      // else. Without the game's height function it is the full sample's.
+      const analyticTerrainHeight = options.terrainHeight
+        ?? ((x: number, z: number) => options.terrainSample(x, z).height);
+      let consumerTerrainHeight = analyticTerrainHeight;
       if (evolutionResult.mode === "eroded") {
         terrainConsumerAuthority = new TerrainConsumerAuthority();
         // This view is retained on the main thread. Simulation and detail
@@ -1061,6 +1089,11 @@ export class FlightRenderer implements FlightRenderingSystem {
         consumerTerrainSample = terrainConsumerSampleFromAuthority(
           options.world,
           options.terrainSample,
+          terrainConsumerAuthority,
+        );
+        consumerTerrainHeight = terrainConsumerHeightFromAuthority(
+          options.world,
+          analyticTerrainHeight,
           terrainConsumerAuthority,
         );
       }
@@ -1074,6 +1107,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       airportGround.setWorld(options.world);
       const liveTerrainSample = airportGround.sample;
+      // Its height alone, `liveTerrainSample(x, z).height` bit for bit
+      // (tests/render.live-terrain-height.test.ts), for the camera clamp, the
+      // spawned airfields, the ground-cover tile and the birds.
+      const airportHeight = new LiveAirportGround<number>(
+        consumerTerrainHeight,
+        analyticTerrainHeightOf,
+      );
+      airportHeight.setWorld(options.world);
+      const liveTerrainHeight = airportHeight.sample;
       // W-6 (C-6): eroded bathymetry overlays resident L0 eroded pages inside
       // its own update dispatch (ARCHITECTURE 5-10 row — water consumers may
       // not implement this independently). The seam is read-only, resolved
@@ -1140,6 +1182,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       // and the camera clamp, so blades stand on the rendered surface.
       const groundCover = new GroundCoverSystem(scene, {
         terrainSample: liveTerrainSample,
+        // The tile's height rows and the altitude gate read only the height,
+        // and with it the tile bakes in 32 m steps under its frame budget.
+        terrainHeight: liveTerrainHeight,
         // `6-9` debt 1: the per-frame field is admitted through the SAME
         // amortised-compute meter as every other GPU compute producer, which
         // is what `owners.ts` has claimed since `4-0b` and wave G left false.
@@ -1160,6 +1205,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       const wildlife = new WildlifeSystem(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,
+        terrainHeight: liveTerrainHeight,
+        // A cell crossing generates only the cells it brings into range. The
+        // cells read `liveTerrainSample`, so every change to it forgets them
+        // (`setAirports`, `publishTerrainConsumerPage`/`AuxPage`).
+        wildlifeCellCacheCapacity: 64,
       });
       cleanup.push(() => wildlife.dispose());
       checkpointRendererStartup("wildlife construction", "sync");
@@ -1495,7 +1545,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           world: options.world,
           materials: airport.materials,
           seedHash: options.world.seedHash,
-          groundHeight: (x, z) => liveTerrainSample(x, z).height,
+          groundHeight: liveTerrainHeight,
           lamps: lightPoints,
           floods: clusteredLighting,
           floodSlots: spawnedFloodSlots.map((slot) => slot.map((light) => light.name)),
@@ -1619,11 +1669,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // a zero-confidence fallback texel inside each water material.
       const info = engine.getInfo();
       const renderer = new FlightRenderer(
-        // The camera's ground clamp must track the terrain the player SEES:
-        // in eroded worlds that is the consumer authority's surface, not the
-        // analytic pre-erosion kernel — clamping against an invisible ridge
-        // shoved the chase camera upward with no visual justification.
-        { ...options, terrainSample: liveTerrainSample },
+        options,
         engine,
         gpuUncapturedErrorGuard,
         scene,
@@ -1654,6 +1700,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         hangarFloods.map((flood) => flood.name),
         airfieldLighting,
         airportGround,
+        airportHeight,
         spawnedAirfields,
         scotopic,
         bloom,
@@ -1722,7 +1769,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   sampleGroundHeight(x: number, z: number): number {
-    return this.cameraTerrainSample(x, z).height;
+    return this.cameraTerrainHeight(x, z);
   }
 
   /**
@@ -1745,8 +1792,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     //    over later frames.
     this.terrain.setAirports(next.airports);
     // 2. The CPU ground: vegetation, ground cover, wildlife, the camera clamp
-    //    and the spawned structures all read this one sampler.
+    //    and the spawned structures all read this one sampler, or its height.
+    //    The wildlife's cached cells were generated from the old one.
     this.airportGround.setWorld(next);
+    this.airportHeight.setWorld(next);
+    this.wildlife.invalidateCellCache();
     // 3. Vegetation: off the new platform and out of its structures; only the
     //    cells the change reaches regenerate.
     this.detail.setAirports(next.airports);
@@ -1800,6 +1850,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (authority) {
       authority.publish({ ...page, heights: page.heights.slice() });
       this.detail.publishTerrainPage({ ...page, heights: page.heights.slice() });
+      // The consumer surface moved under the wildlife's cached cells.
+      this.wildlife.invalidateCellCache();
     }
     // Keep the original for the simulation worker and transfer it last.
     this.terrainAuthorityPublisher?.publishTerrainPage(page);
@@ -1814,6 +1866,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       shoreDistanceR16Sint: page.shoreDistanceR16Sint.slice(),
       soilDepthR8Unorm: page.soilDepthR8Unorm.slice(),
     });
+    this.wildlife.invalidateCellCache();
     // Transfer the producer-owned buffer only after retaining the main-thread copy.
     this.detail.publishTerrainAuxPage(page);
   }
@@ -3162,11 +3215,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const cameraWorldZ = this.desiredCamera.z + this.originZ;
       const aheadMeters = Math.min(120, state.airspeed * 0.35);
       const cameraGround = Math.max(
-        this.cameraTerrainSample(cameraWorldX, cameraWorldZ).height,
-        this.cameraTerrainSample(
+        this.cameraTerrainHeight(cameraWorldX, cameraWorldZ),
+        this.cameraTerrainHeight(
           cameraWorldX + this.forward.x * aheadMeters,
           cameraWorldZ + this.forward.z * aheadMeters,
-        ).height,
+        ),
       );
       if (this.desiredCamera.y < cameraGround + 2.5) {
         this.desiredCamera.y = cameraGround + 2.5;

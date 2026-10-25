@@ -29,7 +29,7 @@ import { AircraftPicker } from "@/src/ui/AircraftPicker";
 import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
-import { createWorld, sampleTerrain, type LandformsOption } from "@/src/world";
+import { createWorld, sampleTerrain, sampleTerrainHeight, type LandformsOption } from "@/src/world";
 import {
   applyAirportMarker,
   createAirportMarkerPlacement,
@@ -614,6 +614,8 @@ export function FlightGame() {
         aircraft: activeSettings.aircraft,
         // The LIVE world: spawned airports grade the ground the camera clamps to.
         terrainSample: (x: number, z: number) => sampleTerrain(airportNetwork.world, x, z),
+        // Its height alone, for the renderer's height-only consumers.
+        terrainHeight: (x: number, z: number) => sampleTerrainHeight(airportNetwork.world, x, z),
         world,
         seed,
         quality: activeSettings.quality,
