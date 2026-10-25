@@ -242,6 +242,8 @@ function createRuntime(
     readonly bridge?: RuntimeWorkerBridge;
     readonly vegetationBudget?: number;
     readonly now?: () => number;
+    /** 0 pins today's fallback: a failed worker is not replaced. */
+    readonly respawnLimit?: number;
   } = {},
 ): WorldDetailRuntime {
   const runtime = new WorldDetailRuntime(scene, {
@@ -262,6 +264,9 @@ function createRuntime(
       maximumMilliseconds: 1_000_000,
     },
     ...(options.now ? { presentationNowMilliseconds: options.now } : {}),
+    ...(options.respawnLimit !== undefined
+      ? { detailWorkerRespawnLimit: options.respawnLimit }
+      : {}),
   });
   if (options.vegetationBudget !== undefined) {
     runtime.setGenerationBudgetCap({
@@ -585,7 +590,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
-    const runtime = createRuntime(scene, world, { bridge });
+    const runtime = createRuntime(scene, world, { bridge, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -627,7 +632,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       )).toEqual(oldBatches);
       expect(runtime.pendingWorkItems).toBeGreaterThan(0);
 
-      for (let pass = 0; pass < 256 && runtime.pendingWorkItems > 0; pass += 1) {
+      // After a worker failure inline cells run on credit, a few updates apart.
+      for (let pass = 0; pass < 8_192 && runtime.pendingWorkItems > 0; pass += 1) {
         runtime.update(observer, ORIGIN, quality);
       }
       expect(runtime.pendingWorkItems).toBe(0);
@@ -653,7 +659,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
     let now = 0;
-    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+    const runtime = createRuntime(scene, world, { bridge, now: () => now, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -719,7 +725,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
     let now = 0;
-    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+    const runtime = createRuntime(scene, world, { bridge, now: () => now, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -777,7 +783,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       // worker ownership or reset the already-entered inline fallback.
       bridge.releaseHeldGeneration();
       expect(internals(runtime).client).toBeNull();
-      for (let update = 0; update < 512 && runtime.pendingWorkItems > 0; update += 1) {
+      // After a worker failure inline cells run on credit, a few updates apart.
+      for (let update = 0; update < 8_192 && runtime.pendingWorkItems > 0; update += 1) {
         runtime.update(observer, ORIGIN, quality);
       }
       expect(runtime.pendingWorkItems).toBe(0);
@@ -841,7 +848,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
     let now = 0;
-    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+    const runtime = createRuntime(scene, world, { bridge, now: () => now, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);

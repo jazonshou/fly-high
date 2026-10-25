@@ -75,9 +75,13 @@ import {
   GROUND_COVER_GRID,
 } from "./generation";
 import {
+  admitInlineCellAfterWorkerFailure,
   canGenerateNextDetailCell,
+  createInlineCellCredit,
+  recordInlineCellAfterWorkerFailure,
   resolveDetailGenerationBudget,
   type DetailGenerationBudget,
+  type InlineCellCredit,
 } from "./generationBudget";
 import {
   detailPresentationChunkCoordinates,
@@ -488,9 +492,12 @@ export interface DetailPresentationRebuildDiagnostics {
   readonly workerBuildTimeouts: number;
   readonly workerGenerationTimeouts: number;
   readonly workerFallbacks: number;
-  /** A worker holds generation and presentation authority right now. */
+  /**
+   * A worker holds generation and presentation authority right now, or
+   * replaces a failed one at the start of the next update.
+   */
   readonly workerActive: boolean;
-  /** Workers replaced after a failure, without falling back to the main thread. */
+  /** Replacement workers started after a failure (a start that failed included). */
   readonly workerRespawns: number;
   /** Heartbeats accepted from the build this runtime was waiting on. */
   readonly workerPresentationHeartbeats: number;
@@ -506,6 +513,25 @@ export interface DetailPresentationRebuildDiagnostics {
   /** Times worker presentation demand went `DETAIL_WORKER_CONVERGENCE_MILLISECONDS` without an accepted answer. */
   readonly workerConvergenceStalls: number;
 }
+
+/** The worker's health for a HUD: counters only, so constant time to read. */
+export interface DetailWorkerHealth {
+  /** As `DetailPresentationRebuildDiagnostics.workerActive`. */
+  readonly active: boolean;
+  readonly fallbacks: number;
+  readonly respawns: number;
+  readonly buildTimeouts: number;
+  readonly generationTimeouts: number;
+  readonly convergenceStalls: number;
+}
+
+export type DetailWorkerHealthEvent = "respawn" | "fallback" | "convergenceStall";
+
+const DETAIL_WORKER_HEALTH_MESSAGES: Readonly<Record<DetailWorkerHealthEvent, string>> = {
+  respawn: "detail worker failed and was replaced; its cells regenerate on the new worker",
+  fallback: "detail worker failed for good; vegetation generates on the main thread for the rest of the session",
+  convergenceStall: "detail worker presentation has gone 30 s without an accepted build",
+};
 
 interface DesiredCell {
   readonly key: string;
@@ -622,6 +648,20 @@ export interface WorldDetailRuntimeOptions {
   readonly presentationRebuildBudget?: DetailPresentationRebuildBudget;
   /** Injectable monotonic clock for the presentation-budget contract. */
   readonly presentationNowMilliseconds?: () => number;
+  /**
+   * How many times a failed worker is replaced before generation falls back
+   * to the main thread for the session. Default `DETAIL_WORKER_RESPAWN_LIMIT`.
+   */
+  readonly detailWorkerRespawnLimit?: number;
+  /**
+   * Receives every worker health event. Without it the runtime warns once
+   * per kind, with `console.warn` and a message starting "detail worker" —
+   * never `console.error`, which the perf agent counts as a failed run.
+   */
+  readonly reportWorkerHealth?: (
+    kind: DetailWorkerHealthEvent,
+    health: DetailWorkerHealth,
+  ) => void;
 }
 
 /**
@@ -734,6 +774,12 @@ export const DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS = 2_000;
  * failed over — the silence deadlines above still catch a stalled worker.
  */
 export const DETAIL_WORKER_CONVERGENCE_MILLISECONDS = 30_000;
+/**
+ * A worker that fails — reports an error, or goes silent past a watchdog — is
+ * replaced up to this many times per runtime before generation falls back to
+ * the main thread for the session, as every failure did until 2026-10-25.
+ */
+export const DETAIL_WORKER_RESPAWN_LIMIT = 2;
 /**
  * Retained-cell authority must answer an outstanding request inside the same
  * envelope. The update count applies once the worker has answered at least
@@ -977,6 +1023,29 @@ export class WorldDetailRuntime {
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
   private client: DetailGenerationClient | null = null;
+  private readonly workerRespawnLimit: number;
+  /**
+   * A failed worker is replaced at the START of the next update, never inside
+   * the update that found the failure: that update may already hold targets
+   * built for the old worker, which a new client would turn into builds over
+   * residents it does not own.
+   */
+  private workerRespawnPending = false;
+  /**
+   * The `respawning` guard: a client is under construction. One that fails
+   * inside its own constructor (its factory or its initialize post threw)
+   * falls back for good — recovering from in there would build the next
+   * client inside this one's constructor.
+   */
+  private constructingWorkerClient = false;
+  /** A worker was given terrain, which is transferred, not kept: no respawn. */
+  private terrainAuthorityForwarded = false;
+  /** A client has been installed at least once. */
+  private workerEverInstalled = false;
+  /** After a worker failure, inline generation runs on credit. */
+  private inlineGenerationLimited = false;
+  private inlineCellCredit: InlineCellCredit | null = null;
+  private readonly reportedWorkerHealth = new Set<DetailWorkerHealthEvent>();
   /** Mirrors the consumer authority's bounded L0 ring for aux-arrival gating. */
   private readonly terrainPageAddresses: string[] = [];
   /** Desired keys with a request in flight, mapped to their request ids. */
@@ -1030,34 +1099,115 @@ export class WorldDetailRuntime {
     this.presentationRebuildBudget = presentationRebuildBudget;
     this.presentationNowMilliseconds = options.presentationNowMilliseconds
       ?? (() => (typeof performance === "undefined" ? Date.now() : performance.now()));
+    const workerRespawnLimit = options.detailWorkerRespawnLimit ?? DETAIL_WORKER_RESPAWN_LIMIT;
+    if (!Number.isSafeInteger(workerRespawnLimit) || workerRespawnLimit < 0) {
+      throw new RangeError("Detail worker respawn limit must be a non-negative integer");
+    }
+    this.workerRespawnLimit = workerRespawnLimit;
     this.createBatches();
     this.presentationBuildCatalog = this.createPresentationBuildCatalog();
-    if (options.workerWorldSeed !== undefined) {
-      const client = new DetailGenerationClient(
+    if (options.workerWorldSeed !== undefined) this.installWorkerClient(options.workerWorldSeed);
+  }
+
+  /**
+   * Builds a worker client against the live world — `options.workerWorld`
+   * at first, and for a replacement whatever airport list `setAirports` has
+   * installed since — and installs it. False when it failed while being
+   * built; `handleWorkerUnavailable` has already fallen back.
+   */
+  private installWorkerClient(workerWorldSeed: string | number): boolean {
+    this.constructingWorkerClient = true;
+    let client: DetailGenerationClient;
+    try {
+      client = new DetailGenerationClient(
         {
-          worldSeed: options.workerWorldSeed,
-          ...(options.workerWorld ? { world: options.workerWorld } : {}),
+          worldSeed: workerWorldSeed,
+          ...(this.world ? { world: this.world } : {}),
           cellSizeMeters: this.cellSizeMeters,
-          seaLevelMeters: options.seaLevelMeters ?? 0,
+          seaLevelMeters: this.options.seaLevelMeters ?? 0,
           presentationCatalog: this.presentationBuildCatalog,
-          ...(options.detailWorkerFactory
-            ? { workerFactory: options.detailWorkerFactory }
+          ...(this.options.detailWorkerFactory
+            ? { workerFactory: this.options.detailWorkerFactory }
             : {}),
         },
         () => this.handleWorkerUnavailable(),
       );
-      // Construction can fail synchronously before assignment. Never retain
-      // an unavailable client over the fallback state established above.
-      this.client = client.isAvailable ? client : null;
+    } finally {
+      this.constructingWorkerClient = false;
     }
+    // Construction can fail synchronously before assignment. Never retain
+    // an unavailable client over the fallback state established above.
+    if (!client.isAvailable) return false;
+    this.client = client;
+    this.workerEverInstalled = true;
+    return true;
   }
 
   private handleWorkerUnavailable(): void {
     if (this.disposed) return;
-    this.activateInlineWorkerFallback(false);
+    if (this.constructingWorkerClient) {
+      this.activateInlineWorkerFallback(false);
+      return;
+    }
+    this.recoverWorkerAuthority(false);
   }
 
+  /**
+   * A worker failed: it reported an error, or a watchdog found it silent.
+   * Replace it while the respawn budget lasts and no terrain has gone to a
+   * worker (a new one could not have it); otherwise fall back as before.
+   * Until the next update builds the replacement, the runtime is exactly as
+   * a fallback leaves it, except that the main thread generates nothing.
+   */
+  private recoverWorkerAuthority(disposeClient: boolean): void {
+    if (
+      this.options.workerWorldSeed === undefined
+      || this.presentationWorkerRespawns >= this.workerRespawnLimit
+      || this.terrainAuthorityForwarded
+    ) {
+      this.activateInlineWorkerFallback(disposeClient);
+      return;
+    }
+    this.releaseWorkerAuthority(disposeClient);
+    this.workerRespawnPending = true;
+  }
+
+  /**
+   * Called at the start of an update, before anything reads `client`. The
+   * new worker gets the same seed and the live world; its residents are
+   * requested again by the ordinary generation pass, and every chunk keeps
+   * its last bytes until all of its cells are back.
+   */
+  private respawnWorker(): void {
+    this.workerRespawnPending = false;
+    const workerWorldSeed = this.options.workerWorldSeed;
+    if (workerWorldSeed === undefined || this.terrainAuthorityForwarded) {
+      this.activateInlineWorkerFallback(false);
+      return;
+    }
+    this.presentationWorkerRespawns = addDiagnosticCount(this.presentationWorkerRespawns);
+    if (this.installWorkerClient(workerWorldSeed)) this.reportWorkerHealth("respawn");
+  }
+
+  /** Main-thread generation for the rest of the session. */
   private activateInlineWorkerFallback(disposeClient: boolean): void {
+    this.releaseWorkerAuthority(disposeClient);
+    this.workerRespawnPending = false;
+    this.presentationWorkerFallbacks = addDiagnosticCount(
+      this.presentationWorkerFallbacks,
+    );
+    // A runtime whose first client never started keeps today's inline path.
+    if (!this.workerEverInstalled) return;
+    this.inlineGenerationLimited = true;
+    this.reportWorkerHealth("fallback");
+  }
+
+  /**
+   * Tears the worker authority down, for a fallback or a respawn alike: the
+   * staged worker build is released and the client disposed (or it is dead
+   * already), and worker residents stay only as placeholders.
+   */
+  private releaseWorkerAuthority(disposeClient: boolean): void {
     const client = this.client;
     this.client = null;
     if (this.pendingPresentationBuild?.source === "worker") {
@@ -1075,14 +1225,23 @@ export class WorldDetailRuntime {
     for (const resident of this.cells.values()) {
       if (resident.source === "worker") resident.tokenOwned = false;
     }
-    this.presentationWorkerFallbacks = addDiagnosticCount(
-      this.presentationWorkerFallbacks,
-    );
     this.resetWorkerPresentationProgress();
     this.resetWorkerGenerationProgress();
+    this.workerGenerationAnswered = false;
     this.workerConvergenceMilliseconds = null;
     this.lastUpdateMilliseconds = null;
     this.batchesDirty = true;
+  }
+
+  private reportWorkerHealth(kind: DetailWorkerHealthEvent): void {
+    const report = this.options.reportWorkerHealth;
+    if (report) {
+      report(kind, this.workerHealth);
+      return;
+    }
+    if (this.reportedWorkerHealth.has(kind)) return;
+    this.reportedWorkerHealth.add(kind);
+    console.warn(DETAIL_WORKER_HEALTH_MESSAGES[kind], this.workerHealth);
   }
 
   private beginWorkerPresentationProgress(): void {
@@ -1245,7 +1404,7 @@ export class WorldDetailRuntime {
         this.presentationWorkerGenerationTimeouts,
       );
     }
-    this.activateInlineWorkerFallback(true);
+    this.recoverWorkerAuthority(true);
   }
 
   private residentIsCurrentAndAccessible(resident: ResidentCell | undefined): boolean {
@@ -1283,13 +1442,24 @@ export class WorldDetailRuntime {
     this.generationBudgetCap = cap;
   }
 
+  /**
+   * Terrain goes to the worker as a transfer, not a copy, so a replacement
+   * worker could never be given it: from the first publication offered to a
+   * worker, or to one about to be replaced, a failure falls back instead.
+   */
+  private noteTerrainAuthorityForwarded(): void {
+    if (this.client !== null || this.workerRespawnPending) this.terrainAuthorityForwarded = true;
+  }
+
   /** Transfer the canonical macro fallback into the off-thread placement authority. */
   publishTerrainMacro(macro: TerrainMacroGrid): boolean {
+    this.noteTerrainAuthorityForwarded();
     return this.client?.publishTerrainMacro(macro) ?? false;
   }
 
   /** Transfer one final L0 page into the off-thread placement authority. */
   publishTerrainPage(page: TerrainPagePublication): boolean {
+    this.noteTerrainAuthorityForwarded();
     const published = this.client?.publishTerrainPage(page) ?? false;
     if (page.level !== 0) return published;
 
@@ -1310,6 +1480,7 @@ export class WorldDetailRuntime {
    * its matching final height page has arrived.
    */
   publishTerrainAuxPage(page: TerrainAuxPagePublication): boolean {
+    this.noteTerrainAuthorityForwarded();
     const published = this.client?.publishTerrainAuxPage(page) ?? false;
     if (
       page.level === 0
@@ -1520,6 +1691,22 @@ export class WorldDetailRuntime {
     return this.statisticsValue;
   }
 
+  private get workerActive(): boolean {
+    return this.client !== null || this.workerRespawnPending;
+  }
+
+  /** The worker's health in constant time, for a HUD: no cell or chunk walk. */
+  get workerHealth(): DetailWorkerHealth {
+    return {
+      active: this.workerActive,
+      fallbacks: this.presentationWorkerFallbacks,
+      respawns: this.presentationWorkerRespawns,
+      buildTimeouts: this.presentationWorkerBuildTimeouts,
+      generationTimeouts: this.presentationWorkerGenerationTimeouts,
+      convergenceStalls: this.workerConvergenceStalls,
+    };
+  }
+
   /** Instrumentation for the bounded CPU-only presentation builder. */
   get presentationRebuildDiagnostics(): DetailPresentationRebuildDiagnostics {
     let stagedRecords = 0;
@@ -1589,7 +1776,7 @@ export class WorldDetailRuntime {
       workerBuildTimeouts: this.presentationWorkerBuildTimeouts,
       workerGenerationTimeouts: this.presentationWorkerGenerationTimeouts,
       workerFallbacks: this.presentationWorkerFallbacks,
-      workerActive: this.client !== null,
+      workerActive: this.workerActive,
       workerRespawns: this.presentationWorkerRespawns,
       workerPresentationHeartbeats: this.presentationWorkerHeartbeats,
       workerMaxSilenceMilliseconds: this.workerMaxSilenceMilliseconds,
@@ -1655,6 +1842,7 @@ export class WorldDetailRuntime {
     simulationTimeSeconds?: number,
   ): void {
     if (this.disposed) return;
+    if (this.workerRespawnPending) this.respawnWorker();
     this.updateSequence += 1;
     this.excludeUpdateGapFromWorkerDeadlines();
     this.vegetationCastsShadows = profile.vegetationCastsShadows;
@@ -1867,7 +2055,9 @@ export class WorldDetailRuntime {
         this.pendingCells.set(desired.key, requestId);
         admitted += 1;
       }
-    } else {
+    } else if (!this.workerRespawnPending) {
+      // (A worker that failed in this update is replaced at the next one;
+      // a cell generated here would leave its chunk mixed for good.)
       const resolvedBudget = resolveDetailGenerationBudget(profile);
       const cap = this.generationBudgetCap;
       // The governor cap can only shrink the profile's own slice, never grow it.
@@ -1875,6 +2065,15 @@ export class WorldDetailRuntime {
         maximumCells: Math.min(resolvedBudget.maximumCells, cap.maximumCells),
         maximumMilliseconds: Math.min(resolvedBudget.maximumMilliseconds, cap.maximumMilliseconds),
       };
+      // After a worker failure the first cell of an update is not free: it
+      // waits for credit, and each cell is charged what it took.
+      let credit: InlineCellCredit | null = null;
+      let admitted = true;
+      if (this.inlineGenerationLimited) {
+        this.inlineCellCredit ??= createInlineCellCredit(generationBudget);
+        credit = this.inlineCellCredit;
+        admitted = admitInlineCellAfterWorkerFailure(credit, generationBudget);
+      }
       const generationStartedAt = this.nowMilliseconds();
       let generated = 0;
       for (const desired of this.desiredCells) {
@@ -1884,10 +2083,12 @@ export class WorldDetailRuntime {
           && current.generation === this.cellEpoch
           && !current.invalidated
         ) continue;
+        if (!admitted) break;
         const elapsedMilliseconds = generated === 0
           ? 0
           : Math.max(0, this.nowMilliseconds() - generationStartedAt);
         if (!canGenerateNextDetailCell(generated, elapsedMilliseconds, generationBudget)) break;
+        const cellStartedAt = credit === null ? 0 : this.nowMilliseconds();
         const cell = generateDetailCell({
           worldSeed: this.options.worldSeed,
           cellX: desired.cellX,
@@ -1904,6 +2105,9 @@ export class WorldDetailRuntime {
             ? { structureExclusionSites: this.structureSites }
             : {}),
         });
+        if (credit !== null) {
+          recordInlineCellAfterWorkerFailure(credit, this.nowMilliseconds() - cellStartedAt);
+        }
         this.replaceResident(desired.key, {
           source: "inline",
           key: cell.key,
@@ -2124,6 +2328,7 @@ export class WorldDetailRuntime {
     this.releaseAllResidentTokens();
     this.client?.dispose();
     this.client = null;
+    this.workerRespawnPending = false;
     this.pendingCells.clear();
     this.cells.clear();
     this.desiredCells = [];
@@ -2613,6 +2818,7 @@ export class WorldDetailRuntime {
     } else if (now - this.workerConvergenceMilliseconds >= DETAIL_WORKER_CONVERGENCE_MILLISECONDS) {
       this.workerConvergenceStalls = addDiagnosticCount(this.workerConvergenceStalls);
       this.workerConvergenceMilliseconds = now;
+      this.reportWorkerHealth("convergenceStall");
     }
     if (!charged) {
       this.pauseWorkerPresentationProgress();
@@ -3015,6 +3221,10 @@ export class WorldDetailRuntime {
    * A semantically malformed worker result is not retried on the same path:
    * keep every complete live chunk, terminate the untrusted authority, and
    * let bounded inline generation replace descriptors cell by cell.
+   *
+   * This stays a permanent fallback, unlike a worker that failed or went
+   * silent (`recoverWorkerAuthority`): a worker that answered with bytes
+   * that do not fit would answer a respawned build the same way.
    */
   private failClosedWorkerPresentation(build: PendingWorkerDetailChunkBuild): void {
     if (this.pendingPresentationBuild !== build) return;

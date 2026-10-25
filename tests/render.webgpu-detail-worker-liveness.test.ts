@@ -668,7 +668,9 @@ describe("detail worker presentation watchdog", () => {
       expect(clockOf(fixture.runtime).client).toBeNull();
       const diagnostics = fixture.runtime.presentationRebuildDiagnostics;
       expect(diagnostics.workerBuildTimeouts).toBe(1);
-      expect(diagnostics.workerFallbacks).toBe(1);
+      // A replacement worker is built at the next update, not a fallback.
+      expect(diagnostics.workerFallbacks).toBe(0);
+      expect(diagnostics.workerActive).toBe(true);
       expect(diagnostics.workerMaxSilenceUpdates).toBe(240);
       expect(diagnostics.workerMaxSilenceMilliseconds).toBeGreaterThanOrEqual(2_000);
       expect(fixture.bridge.cancels()).toBe(1);
