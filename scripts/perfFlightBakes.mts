@@ -16,6 +16,12 @@
  * synchronous by design and outside it: it has its own column, and the
  * worst frame and the frames over the target are the sliced ones alone.
  *
+ * The refresh's own ms leave out what the re-light costs elsewhere in the
+ * frame: the cube's six faces in the scene pass above all. So each sliced
+ * re-light is also followed frame by frame, from its begin to the frame after
+ * its LUT, with each frame's render() and the two passes its work lands in
+ * (`RELIGHT_PASSES`), against their medians over the frame's leg.
+ *
  * Which of these a frame did is read from its record and the frames before
  * it: landings and sampling slices are counted by the renderer; the cube and
  * the LUT are the first and second frames after a landing; a slice is a begin
@@ -55,6 +61,8 @@ export const SKY_FRAME_TARGET_MS = 1;
 export const GROUND_COVER_CALL_TARGET_MS = 2;
 /** The report lists at most this many sky-work frames over the target; report.json keeps them all. */
 const LISTED_FRAMES = 40;
+/** The report follows at most this many sliced re-lights frame by frame; report.json keeps them all. */
+const LISTED_RELIGHTS = 6;
 
 /**
  * How to make a run exercise each target, for the report and perf:flight's
@@ -135,8 +143,44 @@ export interface BakeRow {
   readonly groundCover: GroundCoverSummary | null;
 }
 
+/**
+ * The frame-graph passes a sliced re-light's work lands in: the sky refresh
+ * runs inside flight-presentation, and the specular cube's six faces render
+ * inside the scene render, hdr-present (they draw even when perf:flight drops
+ * the frame's own draws: a bake's target is never gated, `gpuDrawGate.ts`).
+ */
+export const RELIGHT_PASSES = ["flight-presentation", "hdr-present"] as const;
+
+/** One frame of a sliced re-light, with what the frame cost besides the refresh. */
+export interface RelightFrame {
+  readonly phase: string;
+  readonly frame: number;
+  /** The frame's part of the re-light; "after": the frame after the LUT, which did no sky work. */
+  readonly work: readonly (SkyWork | "after")[];
+  /** The refresh's ms, and the slice's and the converter's; null when the frame had none. */
+  readonly skyMs: number | null;
+  readonly advanceMs: number | null;
+  readonly applyMs: number | null;
+  readonly renderMs: number;
+  /** The median render() of the frame's leg (or trial). */
+  readonly renderP50Ms: number;
+  /** Each of `RELIGHT_PASSES`: its main-thread ms in this frame and its median over the leg; null when not timed. */
+  readonly passes: Readonly<Record<string, { readonly ms: number; readonly p50Ms: number } | null>>;
+}
+
+/** A sliced re-light, frame by frame. */
+export interface SlicedRelight {
+  readonly arm: ArmName;
+  readonly sha: string;
+  /** "landed"; "dropped": a one-frame re-light or a new begin replaced it first; "unfinished": the frames ended first. */
+  readonly outcome: "landed" | "dropped" | "unfinished";
+  readonly frames: readonly RelightFrame[];
+}
+
 export interface BakeReport {
   readonly rows: readonly BakeRow[];
+  /** Every sliced re-light of the legs (per arm, in order), then of the trials. */
+  readonly relights: readonly SlicedRelight[];
 }
 
 export interface BakeReportInput {
@@ -153,9 +197,67 @@ interface SkyState {
   sinceLanding: number | null;
   /** The refresh ran on the frame before; null when not known. */
   previousRan: boolean | null;
+  /** The sliced re-light being followed; null with none. */
+  relight: OpenRelight | null;
+  /** The re-lights followed to their end. */
+  readonly relights: { readonly outcome: SlicedRelight["outcome"]; readonly frames: readonly RelightFrame[] }[];
 }
 
-const unknownSky = (): SkyState => ({ inFlight: null, sinceLanding: null, previousRan: null });
+interface OpenRelight {
+  readonly frames: RelightFrame[];
+  landed: boolean;
+  /** Its LUT has landed: the next frame is its last. */
+  awaitingAfter: boolean;
+}
+
+const unknownSky = (): SkyState => ({ inFlight: null, sinceLanding: null, previousRan: null, relight: null, relights: [] });
+
+function closeRelight(state: SkyState, unlanded: "dropped" | "unfinished"): void {
+  const open = state.relight;
+  if (open === null) return;
+  state.relights.push({ outcome: open.landed ? "landed" : unlanded, frames: open.frames });
+  state.relight = null;
+}
+
+/** One frame into the re-light being followed: `work` null when the frame did no sky work. */
+function followRelight(
+  state: SkyState,
+  work: readonly SkyWork[] | null,
+  make: (work: readonly (SkyWork | "after")[]) => RelightFrame,
+): void {
+  if (state.relight?.awaitingAfter) {
+    // The frame after the LUT ends it, and is part of it unless it starts something else.
+    if (work === null) state.relight.frames.push(make(["after"]));
+    closeRelight(state, "unfinished");
+  }
+  if (work === null) return;
+  if (work.includes("one-frame")) {
+    closeRelight(state, "dropped");
+    return;
+  }
+  const slicing = work.includes("begin") || work.includes("advance");
+  if (state.relight && work.includes("LUT") && slicing) {
+    // The LUT's frame also begins the next rebake: it ends this one and starts that.
+    state.relight.frames.push(make(work));
+    closeRelight(state, "unfinished");
+  }
+  if (state.relight && work.includes("begin") && !state.relight.landed) closeRelight(state, "dropped");
+  state.relight ??= { frames: [], landed: false, awaitingAfter: false };
+  state.relight.frames.push(make(work));
+  if (work.includes("land")) state.relight.landed = true;
+  if (work.includes("LUT") && !slicing) state.relight.awaitingAfter = true;
+}
+
+/** A phase's median render() and `RELIGHT_PASSES` ms, the yardstick for its re-light frames. */
+function phaseMedians(frames: readonly FlightFrame[]): { renderP50Ms: number; passP50Ms: Record<string, number | null> } {
+  const passP50Ms: Record<string, number | null> = {};
+  for (const name of RELIGHT_PASSES) {
+    const values = frames.map((frame) => frame.passMs?.[name])
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    passP50Ms[name] = values.length > 0 ? percentiles(values).p50 : null;
+  }
+  return { renderP50Ms: percentiles(frames.map((frame) => frame.renderMs)).p50, passP50Ms };
+}
 
 /** What one phase's frames say, before summing. */
 interface PhaseBakes {
@@ -177,13 +279,36 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
   let landed = 0;
   let paceFloorCalls = 0;
   let tilesCompleted = 0;
+  let medians: ReturnType<typeof phaseMedians> | null = null;
   for (const [index, frame] of frames.entries()) {
+    const relightFrame = (work: readonly (SkyWork | "after")[]): RelightFrame => {
+      medians ??= phaseMedians(frames);
+      const passes: Record<string, { ms: number; p50Ms: number } | null> = {};
+      for (const name of RELIGHT_PASSES) {
+        const ms = frame.passMs?.[name];
+        const p50Ms = medians.passP50Ms[name];
+        passes[name] = typeof ms === "number" && Number.isFinite(ms) && typeof p50Ms === "number" ? { ms, p50Ms } : null;
+      }
+      return {
+        phase,
+        frame: index,
+        work,
+        skyMs: frame.bake?.skyMs ?? null,
+        advanceMs: frame.bake?.skyAdvanceMs ?? null,
+        applyMs: frame.bake?.skyApplyMs ?? null,
+        renderMs: frame.renderMs,
+        renderP50Ms: medians.renderP50Ms,
+        passes,
+      };
+    };
     if (state.sinceLanding !== null) state.sinceLanding += 1;
     const bake = frame.bake;
     const ran = bake === undefined ? null : bake !== null && bake.skyMs !== null;
     const previousRan = state.previousRan;
     state.previousRan = ran;
-    if (!bake) continue;
+    if (bake === undefined) continue;
+    if (bake === null || bake.skyMs === null) followRelight(state, null, relightFrame);
+    if (bake === null) continue;
     if (bake.groundCoverCalls > 0) {
       calls.push({
         phase,
@@ -221,6 +346,7 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
         state.inFlight = false;
       }
     }
+    followRelight(state, work, relightFrame);
     sky.push({
       phase,
       frame: index,
@@ -281,9 +407,15 @@ function summarize(phase: string, arm: ArmName, sha: string, parts: readonly Pha
  */
 export function bakeReport(input: BakeReportInput): BakeReport {
   const legs = {} as Record<ArmName, PhaseBakes[]>;
+  const relights: SlicedRelight[] = [];
+  const followed = (arm: ArmName, state: SkyState) => {
+    closeRelight(state, "unfinished");
+    relights.push(...state.relights.map((relight) => ({ arm, sha: input.shas[arm], ...relight })));
+  };
   for (const arm of ARMS) {
     const state: SkyState = unknownSky();
     legs[arm] = input.reports[arm].map((leg, index) => phaseBakes(`leg ${index + 1}`, leg.frames, state));
+    followed(arm, state);
   }
   const rows: BakeRow[] = [];
   const legCount = Math.max(...ARMS.map((arm) => legs[arm].length));
@@ -297,14 +429,50 @@ export function bakeReport(input: BakeReportInput): BakeReport {
   for (const [index, trial] of (input.settleTrials ?? []).entries()) {
     for (const arm of ARMS) {
       const phase = `trial ${index + 1}`;
-      rows.push(summarize(phase, arm, input.shas[arm], [phaseBakes(phase, trial[arm].frames, unknownSky())]));
+      const state = unknownSky();
+      rows.push(summarize(phase, arm, input.shas[arm], [phaseBakes(phase, trial[arm].frames, state)]));
+      followed(arm, state);
     }
   }
-  return { rows };
+  return { rows, relights };
 }
 
 function fmt(value: number | null | undefined, digits = 2): string {
   return value !== null && value !== undefined && Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
+/** The sliced re-lights, frame by frame, or nothing when there were none. */
+function renderRelights(relights: readonly SlicedRelight[]): string[] {
+  if (relights.length === 0) return [];
+  const cell = (timing: { readonly ms: number; readonly p50Ms: number } | null) =>
+    (timing ? `${fmt(timing.ms)} (${fmt(timing.p50Ms)})` : "n/a");
+  const rows = relights.slice(0, LISTED_RELIGHTS).flatMap((relight, index) => relight.frames.map((frame) => [
+    `${index + 1} ${relight.outcome}`,
+    relight.arm,
+    frame.phase,
+    String(frame.frame),
+    frame.work.join(" + "),
+    frame.skyMs === null
+      ? "-"
+      : `${fmt(frame.skyMs)}${frame.advanceMs !== null ? ` (slice ${fmt(frame.advanceMs)})` : ""}`
+        + `${frame.applyMs !== null ? ` (converter ${fmt(frame.applyMs)})` : ""}`,
+    `${fmt(frame.renderMs)} (${fmt(frame.renderP50Ms)})`,
+    ...RELIGHT_PASSES.map((name) => cell(frame.passes[name] ?? null)),
+  ]));
+  const header = "re-light | arm | phase | frame | work | sky ms | render() ms (leg p50) | "
+    + RELIGHT_PASSES.map((name) => `${name} ms (leg p50)`).join(" | ");
+  return [
+    "Each sliced re-light, frame by frame, from its begin to the frame after its LUT: what the refresh's own ms "
+      + "leave out. render() and the two passes the re-light's work lands in, flight-presentation (where the sky "
+      + "refresh runs) and hdr-present (the scene render, where the specular cube's six faces render on the cube "
+      + "frame, even with the frame's own draws dropped), each with its median over the frame's leg.",
+    "",
+    `| ${header} |`,
+    `| ${header.split(" | ").map(() => "---").join(" | ")} |`,
+    ...rows.map((cells) => `| ${cells.join(" | ")} |`),
+    ...(relights.length > LISTED_RELIGHTS ? ["", `And ${relights.length - LISTED_RELIGHTS} more re-lights (report.json).`] : []),
+    "",
+  ];
 }
 
 /** What a tile-bake call's frame says of it, or "" when nothing. */
@@ -447,6 +615,7 @@ export function renderBakeMarkdown(report: BakeReport): string {
       ...listFrames(oneFrame),
       "",
     ]),
+    ...renderRelights(report.relights),
     `Ground cover: each tile-bake call's ms on the bake's own clock. Target: each within ${GROUND_COVER_CALL_TARGET_MS} ms `
       + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's "
       + "pace, by design. A call over the target is not by itself the bake's own overrun: a collection during the "

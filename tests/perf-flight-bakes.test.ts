@@ -244,6 +244,85 @@ describe("flight bake report", () => {
     expect(trial.worst).toMatchObject({ phase: "trial 1", frame: 1, work: ["begin"], skyMs: 0.5 });
   });
 
+  it("follows each sliced re-light frame by frame, from its begin to the frame after its LUT", () => {
+    const followed = report.relights.map((relight) => [
+      relight.arm,
+      relight.sha,
+      relight.outcome,
+      relight.frames.map((entry) => `${entry.phase}:${entry.frame}:${entry.work.join("+")}`),
+    ]);
+    expect(followed).toEqual([
+      ["head", SHAS.head, "landed", [
+        "leg 1:1:begin", "leg 1:2:advance", "leg 1:3:advance", "leg 1:4:land", "leg 1:5:cube", "leg 1:6:LUT", "leg 1:7:after",
+      ]],
+      // Across the legs: its cube and LUT fall on leg 2, and the LUT's frame begins the next.
+      ["head", SHAS.head, "landed", ["leg 1:11:begin", "leg 1:12:land", "leg 2:0:cube", "leg 2:1:LUT+begin"]],
+      ["head", SHAS.head, "unfinished", ["leg 2:1:LUT+begin"]],
+      ["head", SHAS.head, "unfinished", ["trial 1:1:begin"]],
+    ]);
+    const first = report.relights[0]!.frames;
+    expect(first[3]).toMatchObject({ skyMs: 1.5, advanceMs: null, applyMs: 1.4, renderMs: 33 });
+    // The frame after the LUT did no sky work.
+    expect(first[6]).toMatchObject({ work: ["after"], skyMs: null, advanceMs: null, applyMs: null });
+    // A one-frame re-light before it lands drops it.
+    const dropped = bakeReport({
+      shas: SHAS,
+      reports: { base: [], head: [leg([frame(null), frame(slice(0.5)), frame(slice(0.5)), frame(sky(2)), frame(null)])] },
+    });
+    expect(dropped.relights.map((relight) => [relight.outcome, relight.frames.map((entry) => entry.frame)]))
+      .toEqual([["dropped", [1, 2]]]);
+  });
+
+  it("gives each re-light frame's render() and the passes its work lands in, against the leg's medians", () => {
+    const timed = (bake: FlightFrameBake | null, renderMs: number, presentation: number, scene: number): FlightFrame => ({
+      ...frame(bake, renderMs),
+      passMs: { "flight-presentation": presentation, "hdr-present": scene, "world-page-visibility": 3 },
+    });
+    const quiet = Array.from({ length: 9 }, () => timed(null, 10, 1, 5));
+    const relit = bakeReport({
+      shas: SHAS,
+      reports: {
+        base: [],
+        head: [leg([
+          ...quiet,
+          timed(slice(1.2, 0.6), 12, 1.6, 5),
+          timed(landing(4.6, 4.2), 16, 4.8, 5),
+          // The cube: no time in the refresh, the six faces in the scene pass.
+          timed(sky(0), 19.3, 0.2, 13),
+          timed(sky(0.7), 17.9, 9.5, 5),
+          timed(null, 27.8, 0.2, 17.9),
+          // A build that does not time the scene pass on this frame.
+          { ...frame(null, 10), passMs: { "flight-presentation": 1 } },
+        ])],
+      },
+    });
+    const [relight] = relit.relights;
+    expect(relight!.frames.map((entry) => entry.work.join("+"))).toEqual(["begin", "land", "cube", "LUT", "after"]);
+    expect(relight!.frames[2]).toMatchObject({
+      renderMs: 19.3,
+      renderP50Ms: 10,
+      passes: { "flight-presentation": { ms: 0.2, p50Ms: 1 }, "hdr-present": { ms: 13, p50Ms: 5 } },
+    });
+    const markdown = renderBakeMarkdown(relit);
+    expect(markdown).toContain(
+      "| re-light | arm | phase | frame | work | sky ms | render() ms (leg p50) | flight-presentation ms (leg p50) "
+        + "| hdr-present ms (leg p50) |",
+    );
+    expect(markdown).toContain("| 1 landed | head | leg 1 | 9 | begin | 1.20 (slice 0.60) | 12.00 (10.00) | 1.60 (1.00) | 5.00 (5.00) |");
+    expect(markdown).toContain("| 1 landed | head | leg 1 | 10 | land | 4.60 (converter 4.20) | 16.00 (10.00) | 4.80 (1.00) | 5.00 (5.00) |");
+    expect(markdown).toContain("| 1 landed | head | leg 1 | 11 | cube | 0.00 | 19.30 (10.00) | 0.20 (1.00) | 13.00 (5.00) |");
+    expect(markdown).toContain("| 1 landed | head | leg 1 | 13 | after | - | 27.80 (10.00) | 0.20 (1.00) | 17.90 (5.00) |");
+    // No re-light, no table.
+    const none = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [], head: [leg([frame(sky(2)), frame(null)])] } }));
+    expect(none).not.toContain("| re-light |");
+    // A pass the frame did not time reads n/a.
+    const untimed = bakeReport({
+      shas: SHAS,
+      reports: { base: [], head: [leg([frame(null), { ...frame(slice(0.5)), passMs: { "flight-presentation": 0.9 } }])] },
+    });
+    expect(untimed.relights[0]!.frames[0]!.passes).toEqual({ "flight-presentation": { ms: 0.9, p50Ms: 0.9 }, "hdr-present": null });
+  });
+
   it("tells a slice that begins a rebake from one that continues it", () => {
     // Not known at the start of the arm's first leg: a slice reads "advance".
     const unknown = bakeReport({ shas: SHAS, reports: { base: [], head: [leg([frame(slice(1.2)), frame(slice(1.1))])] } });
