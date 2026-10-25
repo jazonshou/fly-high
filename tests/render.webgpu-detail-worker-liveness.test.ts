@@ -243,18 +243,32 @@ interface ScenarioResult {
   readonly diagnostics: DetailPresentationRebuildDiagnostics;
   readonly workerThreads: number;
   /**
-   * The longest the presentation watchdog's clock ran, read after every
-   * update from its two epochs (fields 19543c0 already had): updates, and
-   * milliseconds net of gaps. 240 updates is an expiry at any update rate.
+   * The longest the presentation watchdog's clock ran while a worker build
+   * was in flight, read after every update from its two epochs (fields
+   * 19543c0 already had): updates, and milliseconds net of gaps. 240
+   * updates is an expiry at any update rate on 19543c0. Outside a build in
+   * flight 19543c0 can leave a stale epoch it never checks, so those
+   * updates are not sampled.
    */
   readonly maximumClockUpdates: number;
   readonly maximumClockMilliseconds: number;
+  /**
+   * The longest a worker build stayed in flight, posted to answered, to the
+   * update: the same measure on 19543c0 and after it.
+   */
+  readonly maximumWorkerBuildMilliseconds: number;
 }
 
+/** Private state 19543c0 already had, read by name. */
 interface WatchdogEpochs {
   readonly updateSequence: number;
   readonly workerPresentationProgressUpdate: number | null;
   readonly workerPresentationProgressMilliseconds: number | null;
+  readonly pendingPresentationBuild: {
+    readonly source: string;
+    readonly queuedResult: unknown;
+    readonly queuedError: unknown;
+  } | null;
 }
 
 /**
@@ -289,9 +303,27 @@ function runFreshRegionScenario(
     let origin = { x: 0, y: 0, z: 0 };
     let maximumClockUpdates = 0;
     let maximumClockMilliseconds = 0;
+    let maximumWorkerBuildMilliseconds = 0;
+    let buildInFlight: WatchdogEpochs["pendingPresentationBuild"] = null;
+    let buildPostedAt = 0;
     const update = () => {
       runtime.update(observer, origin, quality, simulation.now / 1_000);
       const epochs = runtime as unknown as WatchdogEpochs;
+      const build = epochs.pendingPresentationBuild;
+      if (
+        build === null
+        || build.source !== "worker"
+        || build.queuedResult !== null
+        || build.queuedError !== null
+      ) return;
+      if (build !== buildInFlight) {
+        buildInFlight = build;
+        buildPostedAt = simulation.now;
+      }
+      maximumWorkerBuildMilliseconds = Math.max(
+        maximumWorkerBuildMilliseconds,
+        simulation.now - buildPostedAt,
+      );
       if (epochs.workerPresentationProgressUpdate !== null) {
         maximumClockUpdates = Math.max(
           maximumClockUpdates,
@@ -340,6 +372,7 @@ function runFreshRegionScenario(
       workerThreads: simulation.threads.length,
       maximumClockUpdates,
       maximumClockMilliseconds,
+      maximumWorkerBuildMilliseconds,
     };
   } finally {
     runtime.dispose();
@@ -359,6 +392,7 @@ function reportScenario(label: string, result: ScenarioResult): void {
     timerClampMilliseconds: TIMER_CLAMP_MILLISECONDS,
     maximumClockUpdates: result.maximumClockUpdates,
     maximumClockMilliseconds: result.maximumClockMilliseconds,
+    maximumWorkerBuildMilliseconds: result.maximumWorkerBuildMilliseconds,
     homeFillMilliseconds: result.homeFillMilliseconds,
     freshFillMilliseconds: result.freshFillMilliseconds,
     endedEarlyByFallback: result.endedEarlyByFallback,

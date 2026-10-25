@@ -1011,15 +1011,19 @@ describe("detail generation client (1B-10)", () => {
 
       worker.handleCommand({ type: "buildPresentation", buildId: 8, input });
       expect(worker.activePresentationBuildCount).toBe(1);
+      // Builds first: a generate posted while a build runs waits for the
+      // build's turn, and canceling the build answers it at once.
+      const postedBeforeGenerate = posted.length;
       generateRetained(3);
+      expect(posted).toHaveLength(postedBeforeGenerate);
+      worker.handleCommand({ type: "cancelPresentation", buildId: 8 });
+      expect(worker.activePresentationBuildCount).toBe(0);
       expect(posted.at(-1)?.event).toMatchObject({
         type: "retainedCell",
         requestId: 3,
       });
       expect(posted.some(({ event }) => event.type === "presentation" && event.buildId === 8))
         .toBe(false);
-      worker.handleCommand({ type: "cancelPresentation", buildId: 8 });
-      expect(worker.activePresentationBuildCount).toBe(0);
       macrotasks.flushAll();
       expect(posted.some(({ event }) => event.type === "presentation" && event.buildId === 8))
         .toBe(false);
