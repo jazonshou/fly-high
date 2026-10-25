@@ -47,9 +47,9 @@ export interface DetailTerrainSample {
   readonly normal?: { readonly x: number; readonly y: number; readonly z: number };
   /**
    * The climate temperature (`sampleTerrainTemperature`: climate field,
-   * lapse and province offset), normalised, for rules that want it. The
-   * species classifier keeps its height-only stand-in plus the province
-   * offset; `classifyDetailSample` says why. The world-layer TerrainSample
+   * lapse and province offset), normalised. The species classifier reads it
+   * (`classifyDetailSample`); omitted, it falls back to a height-only
+   * stand-in plus the province offset. The world-layer TerrainSample
    * carries it, so the live sampler provides it for free.
    */
   readonly temperature?: number;

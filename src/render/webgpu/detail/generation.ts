@@ -448,19 +448,18 @@ function classifyDetailSample(sample: DetailTerrainSample) {
     elevationMeters: sample.height,
     slope: sample.slope,
     moisture: sample.moisture,
-    // The height-only stand-in, plus the climate province's offset so a cold
-    // or hot province reaches the species exactly as it reaches the ground.
-    //
-    // NOT the full climate temperature (`sample.temperature`), though the
-    // ground's bake reads that one, and deliberately. The 11 km climate field
-    // moves temperature by up to ±0.12 inside the temperate core too, and
-    // measured on the perf seed (2026-10-24, every 200 m within 66 km of the
-    // airport) it flips the upland/lowland species split on 288 of 13,816
-    // stand-bearing points above 450 m, 1.2% of those stems: far trees on the
-    // mountains in the baselines would change. Switching is a one-line change
-    // with a rebaseline, not part of the province work, whose rule is that the
-    // core stays bit-identical (`x + 0`).
-    temperature: 0.66 - Math.max(0, sample.height) / 2_450 + (sample.temperatureOffset ?? 0),
+    // The climate temperature (`sampleTerrainTemperature`: the 11 km climate
+    // field, lapse from sea level and the province offset), the one the
+    // ground's bake reads, so a stand turns upland where its ground does.
+    // Until 2026-10-25 this was a height-only stand-in plus the province
+    // offset, which kept the temperate core's species bit-identical through
+    // the province work; Jason chose the real temperature, with a rebaseline
+    // of the mountain shots whose upland/lowland split it moves (measured on
+    // the perf seed, every 200 m within 66 km of the airport: 288 of 13,816
+    // stand-bearing points above 450 m, 1.2% of those stems). A sampler that
+    // supplies no temperature keeps the stand-in.
+    temperature: sample.temperature
+      ?? (0.66 - Math.max(0, sample.height) / 2_450 + (sample.temperatureOffset ?? 0)),
     temperatureOffset: sample.temperatureOffset ?? 0,
     dryness: sample.dryness ?? 0,
     aspect: horizontal > 1e-6 ? (-(sample.normal?.z ?? 0) / horizontal) * (1 - normalY) : 0,
