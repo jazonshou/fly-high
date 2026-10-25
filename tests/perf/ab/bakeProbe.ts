@@ -42,9 +42,33 @@ export interface BakeStatsReading {
   };
 }
 
-/** The renderer's bake counters, or null from a build whose renderer does not report them. */
+/**
+ * The renderer's bake counters, or null from a build whose renderer does not
+ * report them, or reports them in another shape: the arm's own build is read
+ * with this branch's probe, and a renamed or regrouped figure would otherwise
+ * come through as NaN or as no call at all, not as n/a. Checks the figures
+ * the probe reads, in place: no allocation.
+ */
 export function readBakeStats(renderer: object): BakeStatsReading | null {
-  return (renderer as { getBakeStatsForCapture?: () => BakeStatsReading }).getBakeStatsForCapture?.() ?? null;
+  const stats = (renderer as { getBakeStatsForCapture?: () => unknown }).getBakeStatsForCapture?.();
+  return isBakeStatsReading(stats) ? stats : null;
+}
+
+function isBakeStatsReading(value: unknown): value is BakeStatsReading {
+  const stats = value as {
+    readonly sky?: Partial<BakeStatsReading["sky"]>;
+    readonly skyRebake?: Partial<BakeStatsReading["skyRebake"]>;
+    readonly groundCover?: Partial<BakeStatsReading["groundCover"]>;
+  } | null | undefined;
+  return typeof stats?.sky?.frameIndex === "number"
+    && typeof stats.sky.lastMilliseconds === "number"
+    && typeof stats.skyRebake?.advanceCalls === "number"
+    && typeof stats.skyRebake.lastAdvanceMilliseconds === "number"
+    && typeof stats.skyRebake.bakesCompleted === "number"
+    && typeof stats.skyRebake.lastApplyMilliseconds === "number"
+    && typeof stats.groundCover?.lastMilliseconds === "number"
+    && typeof stats.groundCover.tilesCompleted === "number"
+    && typeof stats.groundCover.paceFloorCalls === "number";
 }
 
 export class FlightBakeProbe {

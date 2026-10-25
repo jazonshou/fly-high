@@ -104,6 +104,25 @@ describe("flight bake probe", () => {
     const renderer = { stats, getBakeStatsForCapture(this: { stats: BakeStatsReading }) { return this.stats; } };
     expect(readBakeStats(renderer)).toBe(stats);
   });
+
+  it("reads nothing from a build whose bake stats have another shape, rather than NaN or no call", () => {
+    const full = reading({ frameIndex: 7 });
+    const reports = (stats: unknown) => ({ getBakeStatsForCapture: () => stats });
+    for (const stats of [
+      null,
+      undefined,
+      {},
+      { sky: full.sky, skyRebake: full.skyRebake },
+      { ...full, sky: { frameIndex: 7 } },
+      // A renamed counter, a regrouped one, a figure that is not a number.
+      { ...full, skyRebake: { ...full.skyRebake, advanceCalls: undefined, advances: 3 } },
+      { ...full, groundCover: { lastMilliseconds: 0, tilesCompleted: 0 }, pace: { paceFloorCalls: 0 } },
+      { ...full, groundCover: { ...full.groundCover, lastMilliseconds: "0.5" } },
+    ]) {
+      expect(readBakeStats(reports(stats))).toBeNull();
+    }
+    expect(readBakeStats(reports(full))).toBe(full);
+  });
 });
 
 const IDLE: FlightFrameBake = {
