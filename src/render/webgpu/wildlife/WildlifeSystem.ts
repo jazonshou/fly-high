@@ -1,3 +1,4 @@
+import { mainRenderPassId } from "../detail/indirectDrawCapability";
 import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -479,6 +480,11 @@ export class WildlifeSystem {
    * which also asks each shadow generator holding it), and then for one more
    * frame, which therefore draws it in all of them. That is two frames when
    * the effects compile at once (tests/gpu/wildlife-material-compile.test.ts).
+   *
+   * The prime runs once per system. A quality switch that changes the shadow
+   * cascade count (`FlightRenderer.applyProfile`) changes every receiver's
+   * effect, so a batch that has had no animals since compiles again at its
+   * next sighting, as every batch did before the prime.
    */
   private advancePrime(): void {
     this.primeFramesLeft -= 1;
@@ -489,11 +495,11 @@ export class WildlifeSystem {
         this.endPrime(batch);
         continue;
       }
-      // The main pass's effect is stored per render pass, so check the
-      // camera's, as `Scene.isReady` does.
+      // The main pass's effect is stored per render pass, so check the one
+      // `Scene.render` draws under, which is not always `Scene.isReady`'s.
       const engine = this.scene.getEngine();
       const renderPassId = engine.currentRenderPassId;
-      engine.currentRenderPassId = this.scene.activeCamera?.renderPassId ?? renderPassId;
+      engine.currentRenderPassId = mainRenderPassId(this.scene);
       batch.primeReady = batch.mesh.isReady(true);
       engine.currentRenderPassId = renderPassId;
       priming = true;
