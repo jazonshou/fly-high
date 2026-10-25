@@ -327,4 +327,19 @@ describe("the agent's terrain samplers", () => {
     // The capture creates its own renderer, with the full sample alone.
     expect(read("tests/perf/perf-capture.test.ts")).not.toMatch(/terrainHeight|agentTerrainSamplers/);
   });
+
+  it("leave perf:ab's frames without the bake read: only a flight leg reads it, and perf:ab never flies", () => {
+    const agent = read("tests/perf/ab/agent.ts");
+    const flight = agent.indexOf("  async flight(request: FlightRequest): Promise<FlightReport> {");
+    const next = agent.indexOf("\n  landStarts(", flight);
+    expect(flight).toBeGreaterThan(-1);
+    expect(next).toBeGreaterThan(flight);
+    const reads = [...agent.matchAll(/readBakeStats\(active\)/g)].map((match) => match.index);
+    expect(reads).toHaveLength(2);
+    for (const index of reads) {
+      expect(index).toBeGreaterThan(flight);
+      expect(index).toBeLessThan(next);
+    }
+    expect(read("scripts/perf-ab.mts")).not.toMatch(/\.call\("flight"/);
+  });
 });
