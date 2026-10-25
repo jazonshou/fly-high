@@ -37,7 +37,9 @@
  * Every report also says what the vegetation worker's watchdog did in each
  * arm, in the stream to rest and in every leg (`perfFlightVerdict.mts`), and
  * `--fail-on-worker-fallback` fails the run when the commit under test
- * tripped it.
+ * tripped it. It ends with what the two bakes the renderer spreads over
+ * frames cost, frame by frame (`perfFlightBakes.mts`): the sky probe's
+ * sliced re-light in a climb, and the ground-cover tile bake low down.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -57,6 +59,7 @@ import {
   type GpuBackend,
   type StaticServer,
 } from "./perfAbHarness.mts";
+import { bakeReport, describeLegBakes, renderBakeMarkdown } from "./perfFlightBakes.mts";
 import {
   ARMS,
   faultOutcome,
@@ -626,7 +629,8 @@ async function main(): Promise<number> {
             ? `, detail worker ${report.detailWorkerFault.kind === "kill" ? "killed" : "hung"} at frame `
               + `${report.detailWorkerFault.frame}${report.detailWorkerFault.delivered ? "" : " (no worker to fail)"}`
             : "")
-          + describeDetailWorker(report.detailWorker, report.detailWatchdog, injected[arm]));
+          + describeDetailWorker(report.detailWorker, report.detailWatchdog, injected[arm])
+          + describeLegBakes(report));
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
     }
@@ -655,7 +659,8 @@ async function main(): Promise<number> {
         for (const [arm, report] of [["base", base!], ["head", head!]] as const) {
           log(`trial ${index + 1} ${arm}: ${(report.elapsedMs / 1000).toFixed(0)} s, `
             + `render p50 ${fmt(summarize([report], 0).renderMs.p50)} ms, detail ${report.pendingDetailWork}`
-            + describeDetailWorker(report.detailWorker, report.detailWatchdog));
+            + describeDetailWorker(report.detailWorker, report.detailWatchdog)
+            + describeLegBakes(report));
         }
         writeFileSync(join(outDir, "progress-trials.json"), JSON.stringify(trials));
       }
@@ -680,10 +685,12 @@ async function main(): Promise<number> {
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };
     const verdict = flightVerdict({ identity, shas, settle, reports, settleTrials: trials });
-    const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`;
+    const bakes = bakeReport({ shas, reports, settleTrials: trials });
+    const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`
+      + `\n${renderBakeMarkdown(bakes)}`;
     writeFileSync(
       join(outDir, "report.json"),
-      JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, settleTrials: trials, verdict }, null, 1),
+      JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, settleTrials: trials, verdict, bakes }, null, 1),
     );
     writeFileSync(join(outDir, "report.md"), markdown);
     console.log(`\n${markdown}`);
