@@ -55,10 +55,17 @@ import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
-import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import {
+  AerialPerspectiveRegistry,
+  type AerialPerspectiveBinding,
+} from "./webgpu/atmosphere/AerialPerspective";
 import { FULL_MOON_ILLUMINANCE_LUX } from "./webgpu/atmosphere/Ephemeris";
 import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
-import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
+import {
+  SkyEnvironmentProbe,
+  skyProbeRefreshAction,
+  type SkyRebakeStats,
+} from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
@@ -226,6 +233,12 @@ const GPU_TIMING_STALE_AFTER_FRAMES = 30;
 const DIAGNOSTIC_WINDOW_FRAMES = 600;
 /** The present pass cannot be probed off — cutting it blacks the frame. */
 const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
+/**
+ * B6: main-thread milliseconds a frame spends sampling a sliced sky rebake
+ * (`SkyEnvironmentProbe.advanceRebake`, which always samples one 16-texel
+ * row). A rebake is 96 rows, so it lands a few dozen frames after it begins.
+ */
+const SKY_REBAKE_MILLISECONDS_PER_FRAME = 0.5;
 
 function rendererAbortError(): Error {
   const error = new Error("WebGPU renderer startup was cancelled");
@@ -469,6 +482,16 @@ export interface FlightRendererOptions {
    */
   captureGpuTiming?: boolean;
   /**
+   * B6: how the sky probe re-lights the world after the camera's altitude
+   * drifts. "sliced" (the default) samples the irradiance over frames and
+   * lands it in one; "sync" re-lights in the frame that asks, as every
+   * re-light did before slicing, for a capture whose baselines must not move.
+   * An environment change re-lights at once either way. Render-scale pinning
+   * does not choose this, because perf:flight is pinned and must fly the
+   * sliced path; the capture's time pin does (`pinOceanCascadePhaseForCapture`).
+   */
+  skyRebake?: "sliced" | "sync";
+  /**
    * Replace the gameplay cockpit rig — its lens and its lateral eye — with the
    * previous one. Perf capture ONLY: its cockpit-mode shots were placed for a
    * 56 degree lens and have to stay comparable. Interactive sessions leave it
@@ -674,6 +697,16 @@ export class FlightRenderer implements FlightRenderingSystem {
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
   private skyProbeStale = false;
   private skyProbeAltitudeMeters = 0;
+  /** B6: re-light in one frame (`FlightRendererOptions.skyRebake`). */
+  private skyRebakeSynchronous: boolean;
+  /** A sliced rebake has sampled every texel; it lands on the next frame. */
+  private skyRebakeSampled = false;
+  /** A sliced rebake landed last frame; its specular cube re-renders on this one. */
+  private skyProbeRearmPending = false;
+  /** What the probe's refresh cost on the main thread, for the perf probe. */
+  private skyRefreshLastMilliseconds = 0;
+  private skyRefreshMaxMilliseconds = 0;
+  private skyRefreshFrameIndex = -1;
   private currentState: FlightVisualState | null = null;
   private currentDeltaSeconds = 1 / 60;
   private profile: WebGpuQualityProfile;
@@ -842,6 +875,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
     this.pinnedRenderScale = options.pinnedRenderScale ?? null;
+    this.skyRebakeSynchronous = options.skyRebake === "sync";
     this.cockpitRigOverride = options.cockpitRigOverride ?? null;
     this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
@@ -2133,6 +2167,41 @@ export class FlightRenderer implements FlightRenderingSystem {
   pinOceanCascadePhaseForCapture(): void {
     if (this.disposed) return;
     this.ocean.pinCascadePhaseForCapture();
+    // The time pin is where a capture's frames stop being a flight: from
+    // here on the sky probe re-lights in the frame that asks, as it did when
+    // the shots' baselines were made (`FlightRendererOptions.skyRebake`). The
+    // A/B agent's renderer flies perf:flight too, so it cannot say so at
+    // construction.
+    this.skyRebakeSynchronous = true;
+  }
+
+  /**
+   * The perf probe's read of the two bakes that spread over frames, in
+   * constant time. `sky` is this renderer's own timing of its probe refresh
+   * on frame `frameIndex` (a one-frame re-light, a rebake's slice, its
+   * landing, or the specular cube's re-arm; the cube itself renders inside
+   * the frame's scene render). `skyRebake` and `groundCover` are the
+   * systems' own counters (`SkyEnvironmentProbe.rebakeStats`,
+   * `GroundCoverSystem.bakeStats`).
+   */
+  getBakeStatsForCapture(): {
+    readonly sky: {
+      readonly frameIndex: number;
+      readonly lastMilliseconds: number;
+      readonly maxMilliseconds: number;
+    };
+    readonly skyRebake: SkyRebakeStats;
+    readonly groundCover: GroundCoverSystem["bakeStats"];
+  } {
+    return {
+      sky: {
+        frameIndex: this.skyRefreshFrameIndex,
+        lastMilliseconds: this.skyRefreshLastMilliseconds,
+        maxMilliseconds: this.skyRefreshMaxMilliseconds,
+      },
+      skyRebake: this.skyProbe.rebakeStats,
+      groundCover: this.groundCover.bakeStats,
+    };
   }
 
   /**
@@ -3048,22 +3117,69 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.clouds.setAerialPerspective(binding);
     this.lightPoints.setAerialPerspective(binding);
     this.steam.setAerialPerspective(binding);
-    // The probe re-lights the world when the environment changes or when the
-    // camera's altitude has drifted enough to matter (the sky itself dims
-    // and clears with height); everything else leaves it untouched.
-    if (
-      this.skyProbeStale
-      || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
-    ) {
+    this.refreshSkyProbe(binding);
+  }
+
+  /**
+   * The probe re-lights the world when the environment changes or when the
+   * camera's altitude has drifted enough to matter (the sky itself dims and
+   * clears with height); everything else leaves it untouched.
+   *
+   * B6: in one frame, the whole irradiance bake (6 x 16 x 16 sky-radiance
+   * evaluations and Babylon's converter), the cloud ambient LUT and the six
+   * specular faces with their mips made every 500 m of a climb a single-frame
+   * spike. A drift re-light is now sampled at most
+   * `SKY_REBAKE_MILLISECONDS_PER_FRAME` a frame from a snapshot of the
+   * binding it began on, lands the irradiance and the LUT from that snapshot
+   * on the frame after the last sample, and re-renders the specular cube on
+   * the frame after that, so no frame carries two of the three. An
+   * environment change, and every re-light of a synchronous renderer, still
+   * runs in the frame that asks (`skyProbeRefreshAction`).
+   */
+  private refreshSkyProbe(binding: AerialPerspectiveBinding): void {
+    const action = skyProbeRefreshAction({
+      stale: this.skyProbeStale,
+      altitudeDeltaMeters: binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters,
+      inProgress: this.skyProbe.rebakeInProgress,
+      synchronous: this.skyRebakeSynchronous,
+    });
+    if (action === "none" && !this.skyProbeRearmPending) return;
+    const started = performance.now();
+    if (this.skyProbeRearmPending) {
+      this.skyProbeRearmPending = false;
+      this.skyProbe.rearmSpecular();
+    }
+    if (action === "sync") {
       // R-26: the below-horizon half of the SH bake is the ground's own
-      // albedo now, not a hardcoded 0.25 floor.
+      // albedo now, not a hardcoded 0.25 floor. A rebake in flight is
+      // dropped: it sampled an older environment.
       this.skyProbe.update(binding, this.atmosphere.surfaceAlbedoLuminance);
       // 2-0a: the cloud ambient LUT re-bakes on the same cadence, from the
       // same binding, so cloud ambient cannot drift from the sky/IBL pair.
       this.atmosphereResources.update(binding);
       this.skyProbeStale = false;
       this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
+      this.skyRebakeSampled = false;
+    } else if (action === "begin") {
+      this.skyProbe.beginRebake(binding, this.atmosphere.surfaceAlbedoLuminance);
+      this.skyRebakeSampled = this.skyProbe.advanceRebake(SKY_REBAKE_MILLISECONDS_PER_FRAME);
+    } else if (action === "advance" && !this.skyRebakeSampled) {
+      this.skyRebakeSampled = this.skyProbe.advanceRebake(SKY_REBAKE_MILLISECONDS_PER_FRAME);
+    } else if (action === "advance") {
+      // The snapshot the rebake sampled, read before the next begin replaces
+      // it: the LUT and the drift threshold take the environment the
+      // irradiance has, as they took the binding in one frame.
+      const baked = this.skyProbe.rebakeBinding!;
+      this.skyProbe.applyRebakeIrradiance();
+      this.atmosphereResources.update(baked);
+      this.skyProbeAltitudeMeters = baked.cameraAltitudeMeters;
+      this.skyRebakeSampled = false;
+      this.skyProbeRearmPending = true;
     }
+    const spent = performance.now() - started;
+    this.skyRefreshLastMilliseconds = spent;
+    this.skyRefreshMaxMilliseconds = Math.max(this.skyRefreshMaxMilliseconds, spent);
+    this.skyRefreshFrameIndex = this.frameIndex;
   }
 
   private updateCamera(state: FlightVisualState): void {
