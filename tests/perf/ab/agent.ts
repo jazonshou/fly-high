@@ -68,6 +68,7 @@ import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
 import { resolveShotPlacement } from "../shotPlacement";
+import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import {
   PERF_AB_PROTOCOL,
   type AgentCatalog,
@@ -75,6 +76,8 @@ import {
   type AgentErrors,
   type AgentInfo,
   type CaptureResult,
+  type DetailWatchdogReport,
+  type DetailWorkerState,
   type FlightFrame,
   type FlightReport,
   type FlightRequest,
@@ -272,10 +275,6 @@ function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuM
 }
 
 /**
- * Whether vegetation cells are generated on the detail worker or, after a
- * fallback, inline on the main thread (private, as `graphPassTimings`).
- */
-/**
  * Effects (material x defines) the engine compiles, each named by its shader
  * and by the defines that set it apart from the nearest effect of that shader
  * compiled before it: what a mid-flight pipeline compile is FOR.
@@ -354,27 +353,110 @@ function installEffectRecorder(target: FlightRenderer): void {
   };
 }
 
-function detailWorkerState(target: FlightRenderer): FlightReport["detailWorker"] {
-  const detail = (target as unknown as {
-    readonly detail?: {
-      readonly client: unknown;
-      readonly presentationRebuildDiagnostics: {
-        readonly workerFallbacks: number;
-        readonly workerGenerationTimeouts: number;
-        readonly workerBuildTimeouts: number;
-        readonly workerBuildRejections: number;
-      };
-    };
-  }).detail;
-  if (!detail) return null;
-  const diagnostics = detail.presentationRebuildDiagnostics;
+/**
+ * The vegetation runtime's private state, read loosely: this agent runs in
+ * both arms, and a base predates the fields a head adds (each optional here).
+ */
+interface DetailRuntimeInternals {
+  readonly client?: object | null;
+  readonly updateSequence?: number;
+  readonly presentationNowMilliseconds?: () => number;
+  readonly workerPresentationProgressUpdate?: number | null;
+  readonly workerPresentationProgressMilliseconds?: number | null;
+  readonly workerGenerationProgressUpdate?: number | null;
+  readonly workerGenerationProgressMilliseconds?: number | null;
+  readonly workerGenerationAnswered?: boolean;
+  readonly pendingPresentationBuild?: { readonly source?: string; readonly buildId?: number } | null;
+  readonly presentationWorkerBuildTimeouts?: number;
+  readonly presentationBuildCancellations?: number;
+  readonly presentationRebuildDiagnostics?: {
+    readonly workerFallbacks: number;
+    readonly workerGenerationTimeouts: number;
+    readonly workerBuildTimeouts: number;
+    readonly workerBuildRejections: number;
+    readonly workerRespawns?: number;
+    readonly workerPresentationHeartbeats?: number;
+    readonly workerMaxSilenceMilliseconds?: number;
+    readonly workerBuildMaxLatencyMilliseconds?: number;
+    readonly workerConvergenceStalls?: number;
+  };
+}
+
+function detailRuntime(target: FlightRenderer): DetailRuntimeInternals | null {
+  return (target as unknown as { readonly detail?: DetailRuntimeInternals }).detail ?? null;
+}
+
+/**
+ * Whether vegetation cells are generated on the detail worker or, after a
+ * fallback, inline on the main thread, and what its watchdogs have counted.
+ * Walks the runtime's cells (`presentationRebuildDiagnostics`): once per
+ * stream or leg, never per frame.
+ */
+function detailWorkerState(target: FlightRenderer): DetailWorkerState | null {
+  const detail = detailRuntime(target);
+  const diagnostics = detail?.presentationRebuildDiagnostics;
+  if (!detail || !diagnostics) return null;
+  const {
+    workerRespawns: respawns,
+    workerPresentationHeartbeats: heartbeats,
+    workerMaxSilenceMilliseconds: maxSilenceMs,
+    workerBuildMaxLatencyMilliseconds: buildMaxLatencyMs,
+    workerConvergenceStalls: convergenceStalls,
+  } = diagnostics;
   return {
     active: detail.client !== null,
     fallbacks: diagnostics.workerFallbacks,
     generationTimeouts: diagnostics.workerGenerationTimeouts,
     buildTimeouts: diagnostics.workerBuildTimeouts,
     buildRejections: diagnostics.workerBuildRejections,
+    ...(respawns !== undefined ? { respawns } : {}),
+    ...(heartbeats !== undefined ? { heartbeats } : {}),
+    ...(maxSilenceMs !== undefined ? { maxSilenceMs } : {}),
+    ...(buildMaxLatencyMs !== undefined ? { buildMaxLatencyMs } : {}),
+    ...(convergenceStalls !== undefined ? { convergenceStalls } : {}),
   };
+}
+
+/**
+ * The runtime's watchdog clocks after a frame: a few field reads, cheap
+ * enough for every frame (`detailWatchdog.ts` says what is made of them).
+ */
+function detailWatchdogSample(detail: DetailRuntimeInternals): DetailWatchdogSample {
+  const build = detail.pendingPresentationBuild;
+  return {
+    wallMs: performance.now(),
+    nowMs: detail.presentationNowMilliseconds?.() ?? performance.now(),
+    updateSequence: detail.updateSequence ?? 0,
+    presentationUpdate: detail.workerPresentationProgressUpdate ?? null,
+    presentationMs: detail.workerPresentationProgressMilliseconds ?? null,
+    generationUpdate: detail.workerGenerationProgressUpdate ?? null,
+    generationMs: detail.workerGenerationProgressMilliseconds ?? null,
+    generationAnswered: detail.workerGenerationAnswered ?? false,
+    workerBuildId: build?.source === "worker" ? build.buildId ?? null : null,
+    client: detail.client ?? null,
+    buildTimeouts: detail.presentationWorkerBuildTimeouts ?? 0,
+    cancellations: detail.presentationBuildCancellations ?? 0,
+  };
+}
+
+/** The probe of the current renderer's runtime; a new renderer gets a new one. */
+let watchdogProbe: { readonly detail: DetailRuntimeInternals; readonly probe: DetailWatchdogProbe } | null = null;
+
+/**
+ * Starts a watchdog window (a stream or a leg) on `target`; the returned
+ * function samples one frame. Null for a build with no detail runtime.
+ */
+function beginDetailWatchdogWindow(target: FlightRenderer): (() => void) | null {
+  const detail = detailRuntime(target);
+  if (!detail) return null;
+  if (watchdogProbe?.detail !== detail) watchdogProbe = { detail, probe: new DetailWatchdogProbe() };
+  const { probe } = watchdogProbe;
+  probe.beginWindow(performance.now());
+  return () => probe.observe(detailWatchdogSample(detail));
+}
+
+function detailWatchdogReport(target: FlightRenderer): DetailWatchdogReport | null {
+  return watchdogProbe && watchdogProbe.detail === detailRuntime(target) ? watchdogProbe.probe.report() : null;
 }
 
 /** Where the scripted flight is; legs continue from it. */
@@ -715,9 +797,11 @@ const agent: PerfAgent = {
     let lastVisibleInstances = -1;
     let frames = request.maxFrames;
     let settled = false;
+    const sampleWatchdog = beginDetailWatchdogWindow(active);
     for (let frame = 0; frame < request.maxFrames; frame += 1) {
       simulationTime += 1 / 60;
       renderFrame({ ...shot.state, simulationTime });
+      sampleWatchdog?.();
       // Let worker results and buffer maps land, and keep the queue from
       // running unboundedly ahead of the CPU adapter.
       await yieldToTasks();
@@ -761,6 +845,8 @@ const agent: PerfAgent = {
       droppedDraws: gate.droppedDraws,
       suppressedPasses: gate.suppressedPasses,
       bakedWhileClosed: gate.bakedWhileClosed,
+      detailWorker: detailWorkerState(active),
+      detailWatchdog: detailWatchdogReport(active),
     };
   },
 
@@ -894,6 +980,7 @@ const agent: PerfAgent = {
     setGpuDrawsSuppressed(request.suppressDraws);
     const longTaskStart = longTasks.length;
     const frames: FlightFrame[] = [];
+    const sampleWatchdog = beginDetailWatchdogWindow(active);
     let heapMark = heapUsedBytes();
     for (let frame = 0; frame < request.frames; frame += 1) {
       simulationTime += 1 / 60;
@@ -934,6 +1021,8 @@ const agent: PerfAgent = {
       renderFrame(state);
       const renderMs = performance.now() - renderStarted;
       const heapAfter = heapUsedBytes();
+      // Outside both timed windows and both heap windows.
+      sampleWatchdog?.();
       // The tasks queued behind the frame (worker results, buffer maps,
       // timers) run here; a zero-delay timer is the last of them.
       const betweenStarted = performance.now();
@@ -973,6 +1062,7 @@ const agent: PerfAgent = {
       visibleInstances: diagnostics.visibleInstances,
       residentTerrainPages: diagnostics.residentTerrainPages,
       detailWorker: detailWorkerState(active),
+      detailWatchdog: detailWatchdogReport(active),
     };
   },
 

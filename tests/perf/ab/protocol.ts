@@ -7,6 +7,9 @@
 
 import type { PerfCaptureShotDefinition } from "../../../scripts/perf-capture.mts";
 import type { GpuWorkCounters } from "../gpuWorkCounters";
+import type { DetailWatchdogReport } from "./detailWatchdog";
+
+export type { DetailWatchdogReport } from "./detailWatchdog";
 
 export const PERF_AB_PROTOCOL = 1;
 
@@ -87,6 +90,9 @@ export interface StreamReport {
   readonly droppedDraws: number;
   readonly suppressedPasses: number;
   readonly bakedWhileClosed: Readonly<Record<string, number>>;
+  /** As `FlightReport`'s, over the stream (absent from an older agent). */
+  readonly detailWorker?: DetailWorkerState | null;
+  readonly detailWatchdog?: DetailWatchdogReport | null;
 }
 
 export interface SettleRequest {
@@ -210,13 +216,27 @@ export interface FlightReport {
    * The vegetation generator: on its worker (`active`), or fallen back to
    * generating cells inline on the main thread. Null from a build without one.
    */
-  readonly detailWorker: {
-    readonly active: boolean;
-    readonly fallbacks: number;
-    readonly generationTimeouts: number;
-    readonly buildTimeouts: number;
-    readonly buildRejections: number;
-  } | null;
+  readonly detailWorker: DetailWorkerState | null;
+  /** The detail worker's watchdog clocks and build latencies over the leg (absent from an older agent). */
+  readonly detailWatchdog?: DetailWatchdogReport | null;
+}
+
+/**
+ * The detail worker's state at the end of a stream or a leg; the counters are
+ * the renderer's, so they run on across legs. The optional ones come only from
+ * a build whose runtime restarts a failed worker and reports its silences.
+ */
+export interface DetailWorkerState {
+  readonly active: boolean;
+  readonly fallbacks: number;
+  readonly generationTimeouts: number;
+  readonly buildTimeouts: number;
+  readonly buildRejections: number;
+  readonly respawns?: number;
+  readonly heartbeats?: number;
+  readonly maxSilenceMs?: number;
+  readonly buildMaxLatencyMs?: number;
+  readonly convergenceStalls?: number;
 }
 
 export interface CaptureResult {
