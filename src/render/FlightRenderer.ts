@@ -238,7 +238,9 @@ const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"
 /**
  * B6: main-thread milliseconds a frame spends sampling a sliced sky rebake
  * (`SkyEnvironmentProbe.advanceRebake`, which always samples one 16-texel
- * row). A rebake is 96 rows, so it lands a few dozen frames after it begins.
+ * row). A rebake is 96 rows and a slice sampled about twenty on the
+ * SwiftShader perf host, where the irradiance landed five frames after the
+ * rebake began.
  */
 const SKY_REBAKE_MILLISECONDS_PER_FRAME = 0.5;
 
@@ -710,6 +712,12 @@ export class FlightRenderer implements FlightRenderingSystem {
   private skyRebakeSampled = false;
   /** A sliced rebake landed last frame; its specular cube re-renders on this one. */
   private skyProbeRearmPending = false;
+  /**
+   * The snapshot a sliced rebake's irradiance was sampled from, for the
+   * cloud ambient LUT, which re-bakes from it on the frame after the cube's
+   * re-arm.
+   */
+  private skyAmbientLutPending: AerialPerspectiveBinding | null = null;
   /** The camera altitude the probe's refresh saw last frame, to tell a teleport from a climb. */
   private skyProbeCameraAltitudeMeters = Number.NaN;
   /** What the probe's refresh cost on the main thread, for the perf probe. */
@@ -2192,10 +2200,10 @@ export class FlightRenderer implements FlightRenderingSystem {
    * The perf probe's read of the two bakes that spread over frames, in
    * constant time. `sky` is this renderer's own timing of its probe refresh
    * on frame `frameIndex` (a one-frame re-light, a rebake's slice, its
-   * landing, or the specular cube's re-arm; the cube itself renders inside
-   * the frame's scene render). `skyRebake` and `groundCover` are the
-   * systems' own counters (`SkyEnvironmentProbe.rebakeStats`,
-   * `GroundCoverSystem.bakeStats`).
+   * landing, the specular cube's re-arm or the cloud ambient LUT; the cube
+   * itself renders inside the frame's scene render). `skyRebake` and
+   * `groundCover` are the systems' own counters
+   * (`SkyEnvironmentProbe.rebakeStats`, `GroundCoverSystem.bakeStats`).
    */
   getBakeStatsForCapture(): {
     readonly sky: {
@@ -3143,11 +3151,14 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * specular faces with their mips made every 500 m of a climb a single-frame
    * spike. A drift re-light is now sampled at most
    * `SKY_REBAKE_MILLISECONDS_PER_FRAME` a frame from a snapshot of the
-   * binding it began on, lands the irradiance and the LUT from that snapshot
-   * on the frame after the last sample, and re-renders the specular cube on
-   * the frame after that, so no frame carries two of the three. An
-   * environment change, and every re-light of a synchronous renderer, still
-   * runs in the frame that asks (`skyProbeRefreshAction`).
+   * binding it began on, and lands one output a frame: the irradiance on the
+   * frame after the last sample, the specular cube's re-render on the next,
+   * and the cloud ambient LUT, from the same snapshot, on the one after. The
+   * landing frame still runs Babylon's converter in one call (1.5 ms on the
+   * SwiftShader perf host), which is the floor on that frame. An environment
+   * change, and every re-light of a synchronous renderer, still runs in the
+   * frame that asks (`skyProbeRefreshAction`), and a landing's LUT still to
+   * come is dropped.
    *
    * So does a teleport: a spawn reset or a crash restart moves the camera
    * past the drift threshold between two frames, which no flight can. Sliced,
@@ -3167,11 +3178,18 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       inProgress: this.skyProbe.rebakeInProgress,
       synchronous: this.skyRebakeSynchronous || teleported,
     });
-    if (action === "none" && !this.skyProbeRearmPending) return;
+    if (
+      action === "none"
+      && !this.skyProbeRearmPending
+      && this.skyAmbientLutPending === null
+    ) return;
     const started = performance.now();
     if (this.skyProbeRearmPending) {
       this.skyProbeRearmPending = false;
       this.skyProbe.rearmSpecular();
+    } else if (this.skyAmbientLutPending !== null && action !== "sync") {
+      this.atmosphereResources.update(this.skyAmbientLutPending);
+      this.skyAmbientLutPending = null;
     }
     if (action === "sync") {
       // R-26: the below-horizon half of the SH bake is the ground's own
@@ -3180,7 +3198,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.skyProbe.update(binding, this.atmosphere.surfaceAlbedoLuminance);
       // 2-0a: the cloud ambient LUT re-bakes on the same cadence, from the
       // same binding, so cloud ambient cannot drift from the sky/IBL pair.
+      // A landing's LUT still to come is older: it must not follow this one.
       this.atmosphereResources.update(binding);
+      this.skyAmbientLutPending = null;
       this.skyProbeStale = false;
       this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
       this.skyRebakeSampled = false;
@@ -3195,10 +3215,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // irradiance has, as they took the binding in one frame.
       const baked = this.skyProbe.rebakeBinding!;
       this.skyProbe.applyRebakeIrradiance();
-      this.atmosphereResources.update(baked);
       this.skyProbeAltitudeMeters = baked.cameraAltitudeMeters;
       this.skyRebakeSampled = false;
       this.skyProbeRearmPending = true;
+      this.skyAmbientLutPending = baked;
     }
     const spent = performance.now() - started;
     this.skyRefreshLastMilliseconds = spent;
