@@ -59,12 +59,14 @@ import {
 } from "./perfAbHarness.mts";
 import {
   ARMS,
+  faultOutcome,
   flightVerdict,
   parseFrameRange,
   parseHitch,
   parseLegFrame,
   percentiles,
   renderVerdictMarkdown,
+  trippedBeyondFault,
   workerFallbackExitCode,
   workerTripped,
   type ArmName,
@@ -75,6 +77,7 @@ import {
 import type {
   AgentCatalog,
   DetailWatchdogReport,
+  DetailWorkerFault,
   DetailWorkerState,
   FlightFrame,
   FlightReport,
@@ -277,10 +280,21 @@ function fmt(value: number, digits = 2): string {
   return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 }
 
-/** One log line's worth of a stream's or a leg's vegetation worker. */
-function describeDetailWorker(state: DetailWorkerState | null | undefined, watchdog: DetailWatchdogReport | null | undefined): string {
+/**
+ * One log line's worth of a stream's or a leg's vegetation worker; `fault`
+ * is a failure the harness caused in this leg or an earlier one, which is
+ * not a trip (as in the verdict).
+ */
+function describeDetailWorker(
+  state: DetailWorkerState | null | undefined,
+  watchdog: DetailWatchdogReport | null | undefined,
+  fault: DetailWorkerFault | null = null,
+): string {
   const parts: string[] = [];
-  if (state && workerTripped(state)) {
+  if (state && fault) {
+    parts.push(`${fault.kind === "kill" ? "killed" : "hung"} worker: ${faultOutcome(fault, state)}`);
+  }
+  if (state && (fault ? trippedBeyondFault(fault, state) : workerTripped(state))) {
     parts.push(`DETAIL WORKER TRIPPED (${JSON.stringify(state)})`);
   }
   if (watchdog) {
@@ -552,6 +566,7 @@ async function main(): Promise<number> {
       start,
     };
     const reports: Record<ArmName, FlightReport[]> = { base: [], head: [] };
+    const injected: Record<ArmName, DetailWorkerFault | null> = { base: null, head: null };
     for (let leg = 0; leg < legs; leg += 1) {
       // ABBA, so a drifting host weighs on both arms alike.
       const order: readonly ArmName[] = leg % 2 === 0 ? ["base", "head"] : ["head", "base"];
@@ -598,6 +613,7 @@ async function main(): Promise<number> {
           writeFileSync(join(outDir, `${arm}-leg${leg + 1}.heapprofile`), JSON.stringify(profile));
         }
         reports[arm].push(report);
+        injected[arm] = report.detailWorkerFault ?? injected[arm];
         const summary = summarize([report], 0);
         log(`leg ${leg + 1} ${arm}: ${(report.elapsedMs / 1000).toFixed(0)} s, render p50 ${fmt(summary.renderMs.p50)} max ${fmt(summary.renderMs.max)} ms, `
           + `between p50 ${fmt(summary.betweenMs.p50)} max ${fmt(summary.betweenMs.max)} ms, `
@@ -607,7 +623,7 @@ async function main(): Promise<number> {
             ? `, detail worker ${report.detailWorkerFault.kind === "kill" ? "killed" : "hung"} at frame `
               + `${report.detailWorkerFault.frame}${report.detailWorkerFault.delivered ? "" : " (no worker to fail)"}`
             : "")
-          + describeDetailWorker(report.detailWorker, report.detailWatchdog));
+          + describeDetailWorker(report.detailWorker, report.detailWatchdog, injected[arm]));
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
     }
