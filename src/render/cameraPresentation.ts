@@ -1,4 +1,4 @@
-import type { CockpitEyeSpec } from "@/src/aircraft/catalogue";
+import type { CockpitEyeSpec, TopFrontViewSpec } from "@/src/aircraft/catalogue";
 import type { CameraMode } from "@/src/game/types";
 
 export interface MutablePresentationVector {
@@ -348,6 +348,155 @@ export function chaseRigOffsetsToRef(
 
 /** The aim point's height up the rig's vertical, in metres. */
 export const CHASE_AIM_HEIGHT_METERS = 1.25;
+
+/**
+ * The top view's lens, in degrees HORIZONTAL (the flight camera is
+ * horizontal-fixed): the orbit view's, the other camera that exists to look at
+ * the aeroplane rather than past it. Looking down on a plan, nothing in it is
+ * much nearer the camera than anything else, so the lens can stay wide and
+ * show the ground around the aeroplane.
+ */
+export const TOP_VIEW_FIELD_OF_VIEW_DEGREES = 58;
+
+/**
+ * The front view's lens, in degrees horizontal: a long one, as an air-to-air
+ * photographer would use. Head-on the nose is the nearest thing to the camera
+ * and the tail the farthest, and at the orbit's 58 degrees the camera has to
+ * come close enough that the nose looms: on the built F-16 the tail sat 2.6
+ * times as far away as the nose, and the airframe's box sank 7.4% of the
+ * frame below centre under its own perspective. At 40 the camera stands 1.4
+ * times further off, and the box sits 1.5 to 3.7% below centre on all four.
+ */
+export const FRONT_VIEW_FIELD_OF_VIEW_DEGREES = 40;
+
+/**
+ * How far above the nose the front camera sits, seen from the airframe's
+ * centre, in degrees.
+ *
+ * Not zero: dead level, the nose and the engines stand in front of the wing
+ * and the view reads as a silhouette. Ten degrees shows the wing's leading
+ * edge and the top of the fuselage behind the windscreen, and still puts the
+ * horizon inside the frame (the front lens is +-11.6 degrees vertical at
+ * 16:9).
+ */
+export const FRONT_VIEW_ELEVATION_DEGREES = 10;
+const FRONT_VIEW_ELEVATION_COS = Math.cos((FRONT_VIEW_ELEVATION_DEGREES * Math.PI) / 180);
+const FRONT_VIEW_ELEVATION_SIN = Math.sin((FRONT_VIEW_ELEVATION_DEGREES * Math.PI) / 180);
+
+/**
+ * The centre of the built airframe, relative to the aircraft's origin: a point
+ * ON the aeroplane, so it is carried by the body's own axes, not the rig's.
+ */
+function topFrontViewCentreToRef(
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+  framing: Readonly<TopFrontViewSpec>,
+  result: MutablePresentationVector,
+): void {
+  result.x = forward.x * framing.centreForward + up.x * framing.centreUp;
+  result.y = forward.y * framing.centreForward + up.y * framing.centreUp;
+  result.z = forward.z * framing.centreForward + up.z * framing.centreUp;
+}
+
+/**
+ * Where the top camera and its aim point sit, relative to the aircraft.
+ *
+ * Straight up from the airframe's centre along the rig's vertical
+ * (`cameraRigLiftToRef`), aiming at that centre. The rig's vertical follows
+ * pitch fully and bank as far as the view does, so the view is always square
+ * to the airframe's plan in pitch: in level flight it looks straight down, in
+ * a climb it tips back with the fuselage instead of foreshortening it. That
+ * vertical never points below the horizon (wings-level up has a non-negative
+ * height, and an exterior view adopts less than half of the bank), so the
+ * camera can never be put under the aeroplane, or into the ground, and needs
+ * no terrain sample.
+ *
+ * Which way is up on the screen is the renderer's: the nose
+ * (`topViewCameraUpToRef`).
+ */
+export function topViewRigOffsetsToRef(
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+  lift: Readonly<MutablePresentationVector>,
+  framing: Readonly<TopFrontViewSpec>,
+  camera: MutablePresentationVector,
+  target: MutablePresentationVector,
+): void {
+  topFrontViewCentreToRef(forward, up, framing, target);
+  camera.x = target.x + lift.x * framing.topDistanceMeters;
+  camera.y = target.y + lift.y * framing.topDistanceMeters;
+  camera.z = target.z + lift.z * framing.topDistanceMeters;
+}
+
+/**
+ * The up the top camera asks for: the nose, so the aeroplane points up the
+ * screen. The rig's other views ask for (a blend toward) world up, which is
+ * the one direction this view looks along; the renderer projects whatever is
+ * asked onto the camera plane (`orthogonalizeCameraUpToRef`).
+ */
+export function topViewCameraUpToRef(
+  forward: Readonly<MutablePresentationVector>,
+  result: MutablePresentationVector,
+): void {
+  result.x = forward.x;
+  result.y = forward.y;
+  result.z = forward.z;
+}
+
+/**
+ * Where the front camera and its aim point sit, relative to the aircraft.
+ *
+ * Out from the airframe's centre along the nose, raised
+ * `FRONT_VIEW_ELEVATION_DEGREES` toward the rig's vertical, looking back at
+ * the centre: the nose comes straight at the viewer. Like the chase rig it
+ * follows pitch fully and bank as far as the view does.
+ *
+ * Except that it never goes BELOW the airframe's centre. Followed into a dive
+ * the camera would drop under the aeroplane, ahead of it and toward the
+ * ground it is diving at — 37% of the distance down at 30 degrees, 53 m for
+ * the 747 — which the chase rig answers with two terrain samples a frame.
+ * This one holds the horizon instead: once its direction would point below
+ * it, the camera stays level with the centre at the same distance, along the
+ * direction's own heading, and watches the aeroplane dive past it. Never
+ * lower than the aeroplane, it needs no terrain sample: the ground is under
+ * the aeroplane before it is under the camera. Above the horizon it is
+ * untouched, which covers every attitude from a 10 degree dive upward.
+ */
+export function frontViewRigOffsetsToRef(
+  forward: Readonly<MutablePresentationVector>,
+  up: Readonly<MutablePresentationVector>,
+  lift: Readonly<MutablePresentationVector>,
+  framing: Readonly<TopFrontViewSpec>,
+  camera: MutablePresentationVector,
+  target: MutablePresentationVector,
+): void {
+  topFrontViewCentreToRef(forward, up, framing, target);
+  let x = forward.x * FRONT_VIEW_ELEVATION_COS + lift.x * FRONT_VIEW_ELEVATION_SIN;
+  let y = forward.y * FRONT_VIEW_ELEVATION_COS + lift.y * FRONT_VIEW_ELEVATION_SIN;
+  let z = forward.z * FRONT_VIEW_ELEVATION_COS + lift.z * FRONT_VIEW_ELEVATION_SIN;
+  if (y < 0) {
+    // At least sin(10 deg) long from the renderer's rig, whose vertical never
+    // points below the horizon. The fallbacks keep the function total for any
+    // input, not for any attitude the renderer can reach.
+    let horizontal = Math.hypot(x, z);
+    if (!(horizontal > 1e-6)) {
+      x = forward.x;
+      z = forward.z;
+      horizontal = Math.hypot(x, z);
+    }
+    if (horizontal > 1e-6) {
+      x /= horizontal;
+      z /= horizontal;
+    } else {
+      x = 1;
+      z = 0;
+    }
+    y = 0;
+  }
+  camera.x = target.x + x * framing.frontDistanceMeters;
+  camera.y = target.y + y * framing.frontDistanceMeters;
+  camera.z = target.z + z * framing.frontDistanceMeters;
+}
 
 /**
  * How far ahead of the aircraft the chase camera must keep aiming, in metres.

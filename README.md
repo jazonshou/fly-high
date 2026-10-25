@@ -30,7 +30,7 @@ Open [http://localhost:3000](http://localhost:3000) and press **Start**.
 | `F` / `V` | Extend / retract flaps |
 | `↑` / `↓` | Elevator trim |
 | `Space` | Wheel brakes |
-| `C` | Cycle camera |
+| `C` | Cycle camera: chase, cockpit, orbit, top, front |
 | `H` | Cycle HUD |
 | `N` | Show / hide the nearest airport |
 | `L` | Autoland at the nearest airport (press again, or move the stick hard, to take back control) |

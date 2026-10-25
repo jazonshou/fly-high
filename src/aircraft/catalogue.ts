@@ -66,6 +66,27 @@ export interface CinematicOrbitSpec {
 }
 
 /**
+ * How the top and front views frame this airframe, measured against the built
+ * one (gear up, flaps up) in tests/render.top-front-views.test.ts.
+ *
+ * Both views aim at the centre of the built airframe's box rather than at its
+ * origin, the centre of gravity, which is not the middle of the aeroplane: the
+ * 747's box centre is 2 m aft of it and 3.8 m above, the Global's 1.75 m aft.
+ * Each distance puts the airframe across 60% of the frame along whichever axis
+ * it fills first at 16:9: the length, top to bottom, in the top view, and the
+ * span in the front view (the F-16's height, there, whose nose looms).
+ */
+export interface TopFrontViewSpec {
+  /** The airframe box's centre, metres along the body's nose (+X) and up (+Y) axes. */
+  readonly centreForward: number;
+  readonly centreUp: number;
+  /** Metres from that centre to the top camera, up the rig's vertical. */
+  readonly topDistanceMeters: number;
+  /** Metres from that centre to the front camera, out along the nose. */
+  readonly frontDistanceMeters: number;
+}
+
+/**
  * Where the pilot's eye sits, in metres from the centre of gravity, in the
  * body frame (+X nose, +Y up, +Z starboard).
  *
@@ -141,6 +162,7 @@ export interface AircraftSpec {
   readonly description: string;
   readonly chase: ChaseFramingSpec;
   readonly cinematic: CinematicOrbitSpec;
+  readonly topFront: TopFrontViewSpec;
   readonly cockpitEye: CockpitEyeSpec;
   /**
    * The deck's top below the eye, in degrees, measured on the built kit: where
@@ -190,6 +212,8 @@ const TRAINER: AircraftSpec = Object.freeze({
     aimAhead: Object.freeze({ base: 16, knee: 0, slope: 0, cap: 0 }),
   }),
   cinematic: Object.freeze({ radiusMeters: 24, heightMeters: 8.5, heightDriftMeters: 2 }),
+  // Box -3.36..4.00 long, -1.22..1.45 high, 10.43 across; the gear is fixed.
+  topFront: Object.freeze({ centreForward: 0.32, centreUp: 0.12, topDistanceMeters: 20, frontDistanceMeters: 24 }),
   // Measured against the built cabin, not guessed. The 150's cabin passes
   // UNDER its wing, so everything is low: seat pan at y -0.17, cabin roof at
   // 0.18, instrument panel top at 0.01 and 2.02 m forward. The old fictional
@@ -271,6 +295,8 @@ const JET: AircraftSpec = Object.freeze({
   // in family with both, and a radius 6.4x the half-span so the wing is never
   // near the camera at the bottom of the height drift.
   cinematic: Object.freeze({ radiusMeters: 32, heightMeters: 11, heightDriftMeters: 2.5 }),
+  // Box -7.40..7.50 long, -1.24..3.02 high gear up, 10.07 across the rails.
+  topFront: Object.freeze({ centreForward: 0.05, centreUp: 0.89, topDistanceMeters: 39, frontDistanceMeters: 24 }),
   // Measured against the built cockpit, and the values this replaces were not
   // survivable: up 1.12 sat 0.11 m ABOVE the canopy crown at that station —
   // the pilot's head through the glass — and forward 1.15 put the eye 1.07 m
@@ -354,6 +380,8 @@ const BIZJET: AircraftSpec = Object.freeze({
   // wingspan. Height scales with it so the orbit still looks down on the
   // aeroplane rather than along it.
   cinematic: Object.freeze({ radiusMeters: 65, heightMeters: 21, heightDriftMeters: 5 }),
+  // Box -18.50..15.00 long, -1.91..5.50 high gear up, 31.75 across.
+  topFront: Object.freeze({ centreForward: -1.75, centreUp: 1.79, topDistanceMeters: 89, frontDistanceMeters: 68 }),
   // The SEATED eye: 1.21 m over the flight deck's floor (-0.66), the one the
   // Global's nose was re-lofted for (phase 3c, parts 2 to 5, and
   // docs/findings/GLOBAL_LIVERY.md). From it, on the built glass (K0 in
@@ -449,6 +477,8 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // 41.6%, and the look-down angle matches at 17.9 degrees on both. The
   // provisional 140/46 was not wrong, just 10% tighter.
   cinematic: Object.freeze({ radiusMeters: 155, heightMeters: 50, heightDriftMeters: 10 }),
+  // Box -38.00..34.00 long, -5.41..13.00 high gear up, 68.70 across.
+  topFront: Object.freeze({ centreForward: -2, centreUp: 3.8, topDistanceMeters: 193, frontDistanceMeters: 142 }),
   // The eye was chosen on a grid of candidate eyes against the BUILT flight-deck glazing, after
   // the nose was re-lofted and the panes cast by angle (docs/findings/COCKPIT_VIEW_2026_09_20.md,
   // the K0 table), in the PORT seat (the mesh named `airliner-first-officer-seat`; see the

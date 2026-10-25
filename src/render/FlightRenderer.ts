@@ -190,8 +190,13 @@ import {
   cockpitHorizontalFieldOfViewForAspect,
   type CockpitRigOverride,
   cockpitRigPositionsToRef,
+  FRONT_VIEW_FIELD_OF_VIEW_DEGREES,
+  frontViewRigOffsetsToRef,
   orthogonalizeCameraUpToRef,
   smoothCameraVectorToRef,
+  TOP_VIEW_FIELD_OF_VIEW_DEGREES,
+  topViewCameraUpToRef,
+  topViewRigOffsetsToRef,
 } from "./cameraPresentation";
 
 const FLOATING_ORIGIN_GRID = 2_048;
@@ -3014,6 +3019,35 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.cameraRigLift.scale(1.3));
       fieldOfView = 58;
+    } else if (this.cameraMode === "top" || this.cameraMode === "front") {
+      // Both aim at the built airframe's centre from a measured distance
+      // (`TopFrontViewSpec`): straight down on its plan, or back at its nose.
+      // Neither can sit below the aeroplane, so neither samples the terrain;
+      // both write into the rig's own vectors, so neither allocates.
+      const framing = aircraftSpec(this.aircraft.kind).topFront;
+      if (this.cameraMode === "top") {
+        topViewRigOffsetsToRef(
+          this.forward,
+          this.up,
+          this.cameraRigLift,
+          framing,
+          this.desiredCamera,
+          this.desiredCameraTarget,
+        );
+        fieldOfView = TOP_VIEW_FIELD_OF_VIEW_DEGREES;
+      } else {
+        frontViewRigOffsetsToRef(
+          this.forward,
+          this.up,
+          this.cameraRigLift,
+          framing,
+          this.desiredCamera,
+          this.desiredCameraTarget,
+        );
+        fieldOfView = FRONT_VIEW_FIELD_OF_VIEW_DEGREES;
+      }
+      this.desiredCamera.addInPlace(aircraftPosition);
+      this.desiredCameraTarget.addInPlace(aircraftPosition);
     } else {
       const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
       // The trail the old absolute-position smoothing used to produce as a
@@ -3113,13 +3147,19 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // every physics/interpolation correction. This restores the restrained
     // 18% chase / 30% cinematic bank used by the playable renderer; cockpit
     // remains physically attached and reduced-motion exterior views stay level.
-    Vector3.LerpToRef(
-      Vector3.UpReadOnly,
-      this.up,
-      cameraBankFollow(this.cameraMode, this.reducedMotion),
-      this.desiredCameraUp,
-    );
-    this.desiredCameraUp.normalize();
+    if (this.cameraMode === "top") {
+      // The top view looks along world up, so it asks for the nose instead:
+      // the aeroplane points up the screen.
+      topViewCameraUpToRef(this.forward, this.desiredCameraUp);
+    } else {
+      Vector3.LerpToRef(
+        Vector3.UpReadOnly,
+        this.up,
+        cameraBankFollow(this.cameraMode, this.reducedMotion),
+        this.desiredCameraUp,
+      );
+      this.desiredCameraUp.normalize();
+    }
     smoothCameraVectorToRef(
       this.camera.upVector,
       this.desiredCameraUp,
