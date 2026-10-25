@@ -328,16 +328,21 @@ export interface SkyProbeRefreshState {
   readonly altitudeDeltaMeters: number;
   /** A sliced rebake has begun and its irradiance is not applied yet. */
   readonly inProgress: boolean;
-  /** The renderer bakes in one frame, as captures must. */
-  readonly pinned: boolean;
+  /**
+   * The renderer's explicit choice to re-light in one frame, as captures and
+   * perf:ab do so their baselines cannot move. It is not render-scale
+   * pinning: a pinned perf:flight run must still take the sliced path.
+   */
+  readonly synchronous: boolean;
 }
 
 /**
  * What the renderer does with the probe this frame:
  * - "sync": update() from the current binding, in this frame, as before
  *   slicing. An environment change always takes it: a scrub re-lights at
- *   once, and a half-sampled rebake is of the old environment. Pinned, every
- *   re-light takes it, and so does a rebake left over from unpinned frames.
+ *   once, and a half-sampled rebake is of the old environment. Synchronous,
+ *   every re-light takes it, and so does a rebake left over from sliced
+ *   frames.
  * - "begin": the camera has drifted past the threshold; snapshot the binding
  *   and start sampling.
  * - "advance": keep sampling the rebake in flight, and apply it once
@@ -348,7 +353,7 @@ export interface SkyProbeRefreshState {
 export function skyProbeRefreshAction(state: SkyProbeRefreshState): SkyProbeRefreshAction {
   const drifted = Math.abs(state.altitudeDeltaMeters) > SKY_PROBE_REBAKE_ALTITUDE_METERS;
   if (state.stale) return "sync";
-  if (state.pinned) return drifted || state.inProgress ? "sync" : "none";
+  if (state.synchronous) return drifted || state.inProgress ? "sync" : "none";
   if (state.inProgress) return "advance";
   return drifted ? "begin" : "none";
 }

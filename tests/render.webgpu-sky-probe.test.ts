@@ -532,7 +532,7 @@ describe("F1 — the probe's refresh decision", () => {
   const DRIFT = SKY_PROBE_REBAKE_ALTITUDE_METERS + 1;
 
   it("follows the truth table", () => {
-    // [stale, drifted, inProgress, pinned] → action.
+    // [stale, drifted, inProgress, synchronous] → action.
     const table: readonly [boolean, boolean, boolean, boolean, SkyProbeRefreshAction][] = [
       [false, false, false, false, "none"],
       [false, true, false, false, "begin"],
@@ -552,26 +552,26 @@ describe("F1 — the probe's refresh decision", () => {
       [true, true, true, true, "sync"],
     ];
     expect(table).toHaveLength(16);
-    for (const [stale, drifted, inProgress, pinned, action] of table) {
+    for (const [stale, drifted, inProgress, synchronous, action] of table) {
       for (const sign of [1, -1]) {
         const altitudeDeltaMeters = drifted ? sign * DRIFT : sign * 10;
         expect(
-          skyProbeRefreshAction({ stale, altitudeDeltaMeters, inProgress, pinned }),
-          JSON.stringify({ stale, altitudeDeltaMeters, inProgress, pinned }),
+          skyProbeRefreshAction({ stale, altitudeDeltaMeters, inProgress, synchronous }),
+          JSON.stringify({ stale, altitudeDeltaMeters, inProgress, synchronous }),
         ).toBe(action);
       }
     }
   });
 
   it("re-lights past 500 m of drift either way, as the renderer always has", () => {
-    const idle = { stale: false, inProgress: false, pinned: false };
+    const idle = { stale: false, inProgress: false, synchronous: false };
     expect(SKY_PROBE_REBAKE_ALTITUDE_METERS).toBe(500);
     expect(skyProbeRefreshAction({ ...idle, altitudeDeltaMeters: 500 })).toBe("none");
     expect(skyProbeRefreshAction({ ...idle, altitudeDeltaMeters: -500 })).toBe("none");
     expect(skyProbeRefreshAction({ ...idle, altitudeDeltaMeters: 500.001 })).toBe("begin");
     expect(skyProbeRefreshAction({ ...idle, altitudeDeltaMeters: -500.001 })).toBe("begin");
     expect(skyProbeRefreshAction({ ...idle, altitudeDeltaMeters: Number.NaN })).toBe("none");
-    expect(skyProbeRefreshAction({ ...idle, pinned: true, altitudeDeltaMeters: 500.001 }))
+    expect(skyProbeRefreshAction({ ...idle, synchronous: true, altitudeDeltaMeters: 500.001 }))
       .toBe("sync");
   });
 });
