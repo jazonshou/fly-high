@@ -33,6 +33,11 @@
  *   npm run perf:flight -- --base origin/main
  *   npm run perf:flight -- --base 264b760 --head main --legs 8 --leg-frames 240
  *   npm run perf:flight -- --profile        # also a V8 CPU profile per arm per leg
+ *
+ * Every report also says what the vegetation worker's watchdog did in each
+ * arm, in the stream to rest and in every leg (`perfFlightVerdict.mts`), and
+ * `--fail-on-worker-fallback` fails the run when the commit under test
+ * tripped it.
  */
 
 import { writeFileSync } from "node:fs";
@@ -52,16 +57,25 @@ import {
   type GpuBackend,
   type StaticServer,
 } from "./perfAbHarness.mts";
+import {
+  ARMS,
+  flightVerdict,
+  percentiles,
+  renderVerdictMarkdown,
+  workerFallbackExitCode,
+  workerTripped,
+  type ArmName,
+  type Percentiles,
+} from "./perfFlightVerdict.mts";
 import type {
   AgentCatalog,
+  DetailWatchdogReport,
+  DetailWorkerState,
   FlightFrame,
   FlightReport,
   FlightRequest,
   PerfAgent,
 } from "../tests/perf/ab/protocol.ts";
-
-type ArmName = "base" | "head";
-const ARMS: readonly ArmName[] = ["base", "head"];
 
 const USAGE = `usage: npm run perf:flight -- [options]
 
@@ -85,6 +99,11 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --profile               write a V8 CPU profile per arm per leg (perturbs the timings)
   --heap-profile          write a V8 sampling heap profile per arm per leg: where the garbage comes from
   --no-minify             build the arms unminified, so profiles name functions (timings move)
+  --fail-on-worker-fallback
+                          exit 1 when the arm built from the commit under test tripped the
+                          vegetation worker's watchdog (timed out, restarted or fell back)
+  --under-test <ref>      the commit --fail-on-worker-fallback asks about (default the head;
+                          name it when the arms are swapped)
   --out <dir>             (default tests/perf/artifacts/flight/<timestamp>)
 `;
 
@@ -178,21 +197,6 @@ interface ArmSummary {
   readonly effectsCompiled: readonly string[];
 }
 
-interface Percentiles {
-  readonly p50: number;
-  readonly p95: number;
-  readonly p99: number;
-  readonly max: number;
-  readonly mean: number;
-}
-
-function percentiles(values: readonly number[]): Percentiles {
-  const sorted = [...values].sort((a, b) => a - b);
-  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))] ?? Number.NaN;
-  const mean = sorted.reduce((sum, value) => sum + value, 0) / Math.max(1, sorted.length);
-  return { p50: at(0.5), p95: at(0.95), p99: at(0.99), max: sorted[sorted.length - 1] ?? Number.NaN, mean };
-}
-
 function summarize(legs: readonly FlightReport[], skipLegs: number): ArmSummary {
   const measured = legs.slice(skipLegs);
   const frames: FlightFrame[] = measured.flatMap((leg) => leg.frames);
@@ -243,6 +247,20 @@ function summarize(legs: readonly FlightReport[], skipLegs: number): ArmSummary 
 
 function fmt(value: number, digits = 2): string {
   return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
+/** One log line's worth of a stream's or a leg's vegetation worker. */
+function describeDetailWorker(state: DetailWorkerState | null | undefined, watchdog: DetailWatchdogReport | null | undefined): string {
+  const parts: string[] = [];
+  if (state && workerTripped(state)) {
+    parts.push(`DETAIL WORKER TRIPPED (${JSON.stringify(state)})`);
+  }
+  if (watchdog) {
+    const wouldTrip = watchdog.presentation.wouldTripAt120Hz + watchdog.generation.wouldTripAt120Hz;
+    parts.push(`watchdog charged max ${fmt(watchdog.presentation.maxChargedMs, 0)} / ${fmt(watchdog.generation.maxChargedMs, 0)} ms`
+      + (wouldTrip > 0 ? `, ${wouldTrip} WOULD TRIP at 120 Hz` : ""));
+  }
+  return parts.length === 0 ? "" : `, ${parts.join(", ")}`;
 }
 
 function renderMarkdown(
@@ -332,6 +350,8 @@ async function main(): Promise<number> {
       profile: { type: "boolean", default: false },
       "heap-profile": { type: "boolean", default: false },
       "no-minify": { type: "boolean", default: false },
+      "fail-on-worker-fallback": { type: "boolean", default: false },
+      "under-test": { type: "string" },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -377,6 +397,12 @@ async function main(): Promise<number> {
     base: `${baseRef} (${baseSha.slice(0, 10)})`,
     head: `${values.head ?? "working tree"} (${headSha.slice(0, 10)}${dirty ? " + uncommitted" : ""})`,
   };
+  const shas: Record<ArmName, string> = { base: baseSha, head: headSha };
+  const underTestSha = values["under-test"] ? git(root, "rev-parse", "--verify", `${values["under-test"]}^{commit}`) : headSha;
+  if (underTestSha !== baseSha && underTestSha !== headSha) {
+    console.error(`perf-flight: --under-test ${values["under-test"]} is neither arm's commit`);
+    return 2;
+  }
   const outDir = resolve(values.out ?? join(root, "tests/perf/artifacts/flight", new Date().toISOString().replace(/[:.]/gu, "-")));
   ensureDirectory(outDir);
   log(`base ${identity.base} vs head ${identity.head}; ${backend}; output ${outDir}`);
@@ -434,6 +460,11 @@ async function main(): Promise<number> {
       minFrames: 240, maxFrames: 6_000, checkEvery: 30,
     })));
     log(`streamed ${streams[0]!.frames} / ${streams[1]!.frames} frames (base / head)`);
+    const settle = { base: streams[0]!, head: streams[1]! };
+    for (const arm of ARMS) {
+      const detail = describeDetailWorker(settle[arm].detailWorker, settle[arm].detailWatchdog);
+      if (detail) log(`settle ${arm}${detail}`);
+    }
 
     const request: Omit<FlightRequest, "restart"> = {
       frames: legFrames,
@@ -480,9 +511,7 @@ async function main(): Promise<number> {
           + `between p50 ${fmt(summary.betweenMs.p50)} max ${fmt(summary.betweenMs.max)} ms, `
           + `${summary.pipelinesCreated} pipelines, ${fmt(summary.allocatedKiBPerFrame, 0)} KiB/frame, `
           + `pending pages ${report.pendingTerrainPages}, detail ${report.pendingDetailWork}`
-          + (report.detailWorker && !report.detailWorker.active
-            ? `, VEGETATION INLINE (worker fell back: ${JSON.stringify(report.detailWorker)})`
-            : ""));
+          + describeDetailWorker(report.detailWorker, report.detailWatchdog));
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
     }
@@ -496,11 +525,19 @@ async function main(): Promise<number> {
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };
-    const markdown = renderMarkdown(identity, settings, summaries, firstLeg);
-    writeFileSync(join(outDir, "report.json"), JSON.stringify({ identity, settings, summaries, firstLeg, reports }, null, 1));
+    const verdict = flightVerdict({ identity, shas, settle, reports });
+    const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`;
+    writeFileSync(
+      join(outDir, "report.json"),
+      JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, verdict }, null, 1),
+    );
     writeFileSync(join(outDir, "report.md"), markdown);
     console.log(`\n${markdown}`);
     log(`report: ${join(outDir, "report.md")}`);
+    if (values["fail-on-worker-fallback"] && workerFallbackExitCode(verdict, underTestSha) !== 0) {
+      log(`FAIL: the vegetation worker's watchdog tripped in the arm built from ${underTestSha.slice(0, 10)}`);
+      return 1;
+    }
     return 0;
   } finally {
     for (const arm of opened) await arm.close().catch(() => undefined);

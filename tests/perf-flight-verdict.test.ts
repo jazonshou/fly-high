@@ -1,11 +1,28 @@
 import { describe, expect, it } from "vitest";
+import {
+  flightVerdict,
+  heapKiBPerFrame,
+  percentiles,
+  renderVerdictMarkdown,
+  workerFallbackExitCode,
+  type FlightRunReport,
+} from "../scripts/perfFlightVerdict.mts";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./perf/ab/detailWatchdog";
+import type {
+  DetailWatchdogReport,
+  DetailWorkerState,
+  FlightFrame,
+  FlightReport,
+  StreamReport,
+} from "./perf/ab/protocol";
 
 /**
  * perf:flight's reading of the detail worker. The watchdog probe turns the
  * runtime's private clocks, sampled once a frame, into the spans the runtime
  * charged its worker for; a span charged 2,000 ms would have tripped the
- * 240-update deadline at 120 Hz.
+ * 240-update deadline at 120 Hz. The verdict turns a run's report into
+ * TRIPPED / WOULD-TRIP per arm and phase, and decides
+ * `--fail-on-worker-fallback`'s exit status.
  */
 
 const CLIENT = { name: "worker client" };
@@ -165,5 +182,186 @@ describe("detail watchdog probe", () => {
     probe.beginWindow(90_000);
     probe.observe(sample(2, 90_040));
     expect(probe.report()).toMatchObject({ buildLatencyMs: [], buildsNotAccepted: 0 });
+  });
+});
+
+const BASE_SHA = "c43eb86f6f0000000000000000000000000000aa";
+const HEAD_SHA = "19543c0172000000000000000000000000000bbb";
+const CLEAN: DetailWorkerState = { active: true, fallbacks: 0, generationTimeouts: 0, buildTimeouts: 0, buildRejections: 0 };
+/** Round 3, job 2's head (far east): the worker was gone by the end of leg 0. */
+const J2_HEAD_TRIP: DetailWorkerState = {
+  active: false,
+  fallbacks: 1,
+  generationTimeouts: 0,
+  buildTimeouts: 1,
+  buildRejections: 1,
+};
+
+function frame(renderMs: number, heapRenderBytes = 0, heapBetweenBytes = 0): FlightFrame {
+  return {
+    renderMs,
+    betweenMs: 0.5,
+    passMs: {},
+    heapRenderBytes,
+    heapBetweenBytes,
+    pipelinesCreated: 0,
+    shaderModulesCreated: 0,
+    shaderCodeChars: 0,
+    effectsCompiled: [],
+  };
+}
+
+function watchdog(overrides: { presentation?: number; generation?: number; wouldTrip?: number; latency?: number[] } = {}): DetailWatchdogReport {
+  const clock = (maxChargedMs: number, wouldTripAt120Hz: number) => ({
+    spans: 3,
+    maxChargedMs,
+    maxChargedUpdates: Math.round(maxChargedMs / 40),
+    maxWallMs: maxChargedMs,
+    wouldTripAt120Hz,
+    openChargedMs: null,
+  });
+  return {
+    frames: 600,
+    wallMs: 24_000,
+    presentation: clock(overrides.presentation ?? 900, overrides.wouldTrip ?? 0),
+    generation: clock(overrides.generation ?? 60, 0),
+    buildLatencyMs: overrides.latency ?? [120, 300, 80],
+    buildLatencyUpdates: [3, 7, 2],
+    buildsNotAccepted: 1,
+    workerLostAtFrames: [],
+  };
+}
+
+function leg(renderCalls: number, worker: DetailWorkerState, frames: readonly FlightFrame[], probe?: DetailWatchdogReport): FlightReport {
+  return {
+    frames,
+    renderCalls,
+    elapsedMs: 30_000,
+    longTasks: [{ start: 0, duration: 80 }],
+    position: { x: 0, y: 0, z: 0 },
+    pendingTerrainPages: 0,
+    pendingDetailWork: 0,
+    visibleInstances: 1,
+    residentTerrainPages: 1,
+    detailWorker: worker,
+    ...(probe ? { detailWatchdog: probe } : {}),
+  };
+}
+
+function stream(worker: DetailWorkerState, probe: DetailWatchdogReport): StreamReport {
+  return {
+    frames: 962,
+    settled: true,
+    renderCalls: 964,
+    elapsedMs: 40_000,
+    pendingTerrainPages: 0,
+    pendingDetailWork: 0,
+    droppedDraws: 0,
+    suppressedPasses: 0,
+    bakedWhileClosed: {},
+    detailWorker: worker,
+    detailWatchdog: probe,
+  };
+}
+
+const steady = (scale: number) => Array.from({ length: 100 }, (_, index) => frame((index + 1) * scale, 2_048, -4_096));
+
+/** A report.json as perf:flight wrote it before the probe (round 3, job 2), and one with it. */
+function j2Report(withProbe: boolean): FlightRunReport {
+  return {
+    identity: { base: "c43eb86 (c43eb86f6f)", head: "19543c0 (19543c0172)" },
+    ...(withProbe ? { shas: { base: BASE_SHA, head: HEAD_SHA } } : {}),
+    reports: {
+      base: [962, 1562, 2162].map((calls) => leg(calls, CLEAN, steady(1), withProbe ? watchdog() : undefined)),
+      head: [1142, 1742, 2342].map((calls) => leg(calls, J2_HEAD_TRIP, steady(2), withProbe ? watchdog() : undefined)),
+    },
+  };
+}
+
+describe("flight verdict", () => {
+  it("finds round 3 job 2's head trip in a report from before the probe", () => {
+    const verdict = flightVerdict(j2Report(false));
+    const head = verdict.rows.filter((row) => row.arm === "head");
+    expect(head.map((row) => [row.phase, row.tripped, row.firstTripped])).toEqual([
+      ["leg 1", true, true],
+      ["leg 2", true, false],
+      ["leg 3", true, false],
+    ]);
+    expect(head[0]!.wouldTrip).toBeNull();
+    expect(verdict.rows.filter((row) => row.arm === "base").every((row) => row.tripped === false)).toBe(true);
+    // Without full SHAs, the short ones in the identity key the commits.
+    expect(verdict.trippedBySha).toEqual({ c43eb86f6f: false, "19543c0172": true });
+    expect(renderVerdictMarkdown(verdict)).toContain(
+      "| leg 1 | head | 19543c0172 | **TRIPPED** (build timeouts 1, generation timeouts 0, fallbacks 1, inactive) |",
+    );
+  });
+
+  it("fails --fail-on-worker-fallback on the commit that tripped, whichever side it ran on", () => {
+    const verdict = flightVerdict(j2Report(true));
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(1);
+    expect(workerFallbackExitCode(verdict, BASE_SHA)).toBe(0);
+    expect(() => workerFallbackExitCode(verdict, "0".repeat(40))).toThrow(/no arm was built from/);
+  });
+
+  it("passes a clean head", () => {
+    const report = j2Report(true);
+    const clean: FlightRunReport = {
+      ...report,
+      reports: { base: report.reports.base, head: report.reports.base },
+    };
+    const verdict = flightVerdict(clean);
+    expect(verdict.rows.every((row) => row.tripped === false)).toBe(true);
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(0);
+  });
+
+  it("counts restarts and timeouts as trips though the worker is active again", () => {
+    const report = j2Report(true);
+    const restarted: DetailWorkerState = { ...CLEAN, buildTimeouts: 1, respawns: 1 };
+    const verdict = flightVerdict({
+      ...report,
+      reports: { base: report.reports.base, head: [leg(962, restarted, steady(1))] },
+    });
+    expect(verdict.rows.find((row) => row.arm === "head")!.tripped).toBe(true);
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(1);
+  });
+
+  it("reads the stream to rest as a phase of its own, where the CI trips happened", () => {
+    const report = j2Report(true);
+    const verdict = flightVerdict({
+      ...report,
+      settle: {
+        base: stream(CLEAN, watchdog({ presentation: 2_400, wouldTrip: 1 })),
+        head: stream(J2_HEAD_TRIP, watchdog({ presentation: 8_000, wouldTrip: 1 })),
+      },
+    });
+    const settle = verdict.rows.filter((row) => row.phase === "settle");
+    expect(settle.map((row) => [row.arm, row.tripped, row.firstTripped, row.wouldTrip])).toEqual([
+      ["base", false, false, 1],
+      ["head", true, true, 1],
+    ]);
+    expect(settle[1]!.maxChargedMs).toEqual({ presentation: 8_000, generation: 60 });
+    expect(settle[0]!.renderMs).toBeNull();
+    expect(settle[0]!.framesPerSecond).toBeCloseTo(25, 9);
+    // The head's legs carry the settle's trip; only the settle is its first.
+    expect(verdict.rows.filter((row) => row.arm === "head" && row.firstTripped).map((row) => row.phase)).toEqual(["settle"]);
+  });
+
+  it("reports render percentiles, heap per frame, build latency and the head/base ratios", () => {
+    const verdict = flightVerdict(j2Report(true));
+    const baseLeg = verdict.rows.find((row) => row.arm === "base" && row.phase === "leg 2")!;
+    expect(baseLeg.renderMs).toEqual({ p50: 50, p95: 95 });
+    expect(baseLeg.heapKiBPerFrame).toBe(2);
+    expect(baseLeg.buildLatencyMs).toEqual({ p50: 120, p95: 300, count: 3 });
+    expect(baseLeg.longTasks).toBe(1);
+    expect(verdict.ratios).toEqual([
+      { phase: "after the first leg", renderP50: 2, renderP95: 2, heapKiBPerFrame: 1 },
+      { phase: "the first leg", renderP50: 2, renderP95: 2, heapKiBPerFrame: 1 },
+    ]);
+  });
+
+  it("takes nearest-rank percentiles and counts only heap growth", () => {
+    expect(percentiles([5, 1, 4, 2, 3])).toEqual({ p50: 3, p95: 5, p99: 5, max: 5, mean: 3 });
+    expect(percentiles([]).p50).toBeNaN();
+    expect(heapKiBPerFrame([frame(1, 4_096, -10_000_000), frame(1, 0, 2_048)])).toBe(3);
   });
 });
