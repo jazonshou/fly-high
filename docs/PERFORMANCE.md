@@ -409,7 +409,7 @@ World detail is deterministic and page-owned rather than attached to transient t
 
 - Default detail cells are 512 m. Terrain biome, climate temperature, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
-- Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice (after a worker failure, since 2026-10-25, inline cells wait for credit instead; next item).
+- Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice (after a worker failure, since 2026-10-25, inline cells wait for credit instead; see the presentation-synthesis item below).
 - Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting conservative prototype-aware bounds independently, so one visible tree no longer submits every offscreen resident instance.
 - Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. While a build runs the worker posts a `presentationProgress` heartbeat after its first slice and then at most every `DETAIL_WORKER_HEARTBEAT_MILLISECONDS` (100 ms), and cells posted meanwhile wait their turn: each runs once the build has had its share of slices (a fifth of the last cell's time, 4 to 8 ms), and all of them run when the build ends or before any command that changes what a cell reads. The browser worker yields between slices through a self-posted MessageChannel message, which has none of a nested `setTimeout(0)`'s 4 ms clamp. A worker that reports an error or goes silent past a watchdog is replaced at the start of the next update by a new one on the same seed and live world, up to `DETAIL_WORKER_RESPAWN_LIMIT` (2) times per runtime; its cells are requested again, and every chunk keeps its last bytes until they are back. Past that limit, in a world whose terrain pages were transferred to the worker (an eroded world), or when a worker build fails or answers with a malformed result, the runtime fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; inline cells then run on credit (an update earns one generation time slice, a cell starts only when the credit covers the running average cell cost, and each cell is charged what it took), which bounds the average main-thread time per update, not one cell. Authority-level generation and presentation watchdogs cannot be reset indefinitely by motion: cancel and reissue do not reset them. The watchdogs time the WORKER. The presentation watchdog charges silence: a heartbeat from the build the runtime holds, or an accepted answer, restarts it; it holds still while the demand is the main thread's to finish (a publication streaming, an inline build, an answer already queued); and it resets when the presentation sweep goes idle. Generation is timed only while the worker holds a request, any answer (current or stale) is progress, and its update count applies only after the worker's first answer. Either watchdog expires after 240 charged updates and at least `DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS` (2,000 ms) of charged time, or after 8,000 ms whatever the count, and time without updates (a hidden tab, a long main-thread stall) is not charged past 100 ms per gap. Worker presentation demand that goes `DETAIL_WORKER_CONVERGENCE_MILLISECONDS` (30,000 ms) without an accepted build is counted and reported as a convergence stall, never failed over. Until 2026-10-25 the presentation watchdog expired after 240 updates OR 8 s counted from the first update with demand, through publication streaming, and every failure was a fallback for the session (see "Flight stutter" and "Medium/balanced choppiness" below). Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
 - Per-instance color supplies variation. A lightweight PBR vertex deformation consumes each tree's phase, compliance, height, and stable selection from `instanceWind`, producing asynchronous crown and trunk sway without CPU transform updates.
@@ -1610,7 +1610,7 @@ npm run perf:flight -- --profile --heap-profile --no-minify   # V8 CPU and heap 
 node scripts/cpuprofile-spikes.mts <arm>-leg2.cpuprofile        # what the long frames ran
 node scripts/heapprofile-summary.mts <arm>-leg2.heapprofile 30 --frames 240
 npm run perf:flight -- --base origin/main --settle-trials 12 --fail-on-worker-fallback   # fresh-region settles; exit 1 on a head trip
-npm run perf:flight -- --base origin/main --hang-detail-worker 2:300                    # does a silent worker recover?
+npm run perf:flight -- --base origin/main --legs 4 --leg-frames 600 --hang-detail-worker 2:300   # does a silent worker recover?
 ```
 
 Both arms start from the same settled shot (`approach-500ft` by default) and
@@ -1669,7 +1669,10 @@ and a line per commit:
 - **would-trip**: spans the runtime charged its worker 2,000 ms or more,
   which trip its 240-update deadline at 120 Hz although the harness runs far
   slower. On `19543c0` a span is a whole demand episode; on a runtime with
-  heartbeats it is a silence.
+  heartbeats it is a silence. The count is an estimate, not a bound: on
+  `19543c0` it also counts a clock left set while the presentation sweep
+  was idle, which trips only if demand comes back first (see "Medium/balanced
+  choppiness" below).
 - A worker failed on purpose (`--kill-detail-worker`, `--hang-detail-worker`)
   is not a trip: its leg and those after it say whether the runtime
   RECOVERED (restarted it; RECOVERING while the restart is due at its next
@@ -1701,7 +1704,8 @@ a worker that stops answering while frames run still falls back
 (tests/render.webgpu-detail-worker-runtime.test.ts).
 
 *Superseded in part on 2026-10-25.* This fix covered the generation
-watchdog. The presentation watchdog kept its 240 updates OR 8 s from the
+watchdog (its gap allowance also lifted update gaps off the presentation
+clock). The presentation watchdog kept its 240 updates OR 8 s from the
 first update with demand, and it was still tripping a working worker; see
 "Medium/balanced choppiness: the vegetation worker's watchdog (2026-10-25)"
 below. A worker that stops answering is now replaced, up to twice, before
@@ -1739,8 +1743,9 @@ trainer, medium/balanced):
   1.3 ms on this host before PR #22 and 3.6 ms (high sun) to ~9 ms (low sun)
   since. One frame per 500 m of climb; it could be spread over six frames
   (one cube face each) with identical results. *Sliced 2026-10-25*
-  (`e149d4d`, `8adc324`, `49e666e`; below): bit-identical, not yet measured
-  in a browser flight.
+  (`e149d4d`, `8adc324`, `49e666e`, `4dc648a`; below): bit-identical, not
+  yet measured in a browser flight (perf:flight neither climbs 500 m on
+  purpose nor records a re-light).
 
 **The October PRs' steady cost, together.** Each of PRs #19, #20 and #22
 passed the 5% gate alone; together, against 264b760 (CI run 40117858194):
@@ -1983,33 +1988,40 @@ main (`19543c0`, unchanged at `05f17b4`) that clock
 240 updates are 2 s on a 120 Hz display, and a fresh region's builds could
 take longer than that: the worker ran a whole queued cell between every
 pair of 4 ms build slices, and yielded between slices through a nested
-`setTimeout(0)`, which clamps to 4 ms. On a machine drawing 10 to 12 frames
+`setTimeout(0)`, which clamps to 4 ms. On a machine drawing 9 to 12 frames
 a second while a region settles, the 8 s arm trips instead. 2026-10-24's
-fix had covered only the generation watchdog. The evidence:
+fix had reworked only the generation watchdog (and lifted update gaps off
+both clocks). The evidence:
 
 - A unit model (`tests/render.webgpu-detail-worker-liveness.test.ts`: one
   worker thread and a 120 Hz main thread in virtual time, cell costs from
   the cloud host scaled to a Mac) trips `19543c0` when the session parks for
   3 s after a fill and then flies east: 58 ms into the flight, with the
-  clock 366 updates old (`7d300de`). That path is the model's only: in the
-  browser, main ended both parked legs of wave 1's park-then-fly job with
-  no charged span open, so it is not claimed for the real app.
+  clock 366 updates old (`7d300de`). The trip itself was not seen in a
+  browser, because perf:flight never moved after such a hold, but what it
+  needs was: main's presentation clock left set, unchecked, while the
+  aircraft held still. Settle trial 2 ended with main's clock still open in
+  9 of the 11 main arms that ran settle trials (wave 1 job 1, wave 1.5 jobs
+  0-7), at 7.3 to 12.2 s (151 to 309 updates). In 7 of them it was already
+  past main's own 240 updates or 8 s with no trip, so nothing was checking
+  it, and the first sweep with demand would have found it expired. Main
+  ended both parked legs of wave 1's park-then-fly job with no span open.
 - In the browser, on the macOS runner's GPU (below): main charged its
-  worker 2 s or more 28 times across wave 1's eight jobs (at most that many
-  trips at 120 Hz; see wave 1 for why it is an upper bound), and in wave
-  1.5 it tripped outright in 4 of 10 arms, all on the 8 s arm, while a
-  region settled at 9 to 12 frames a second. The fix and the worker fix
-  alone did neither in 22 arms, outside the one leg where the worker was
-  hung on purpose.
+  worker 2 s or more 28 times across wave 1's eight jobs (an estimate of
+  its trips at 120 Hz, not a bound; see wave 1), and in wave 1.5 it tripped
+  outright in 4 of 10 arms, all on the 8 s arm, while a region settled at
+  9 to 12 frames a second. The fix and the worker fix alone did neither in
+  22 arms, outside the one leg where the worker was hung on purpose.
 
 Why it showed now is not pinned down. The 240-update deadline is older
-than the October merges (it is in `264b760`). Near home the biome and
-landform merges left a cell's cost where it was: 95.6 ms at `c43eb86` and
-94.8 ms at `19543c0`, the mean of 64 cells generated on the cloud host (a
-scratch bench, not committed). Away from home it depends on the ground,
-36 cells each: 150 km south a cell went from 68.9 to 79.4 ms (+15%), 200
-km east from 123.5 to 101.8 ms (-18%, where the trees are gone), and a
-forced dunes or volcanic world (`19543c0` only) takes 140 to 145 ms.
+than the October merges: it is on main by 2026-09-22 (`a4c8762`). Near
+home the biome and landform merges left a cell's cost where it was: 95.6
+ms at `c43eb86` and 94.8 ms at `19543c0`, the mean of 64 cells generated on
+the cloud host (a scratch bench, not committed). Away from home it depends
+on the ground, 36 cells each: 150 km south a cell went from 68.9 to 79.4
+ms (+15%), 200 km east from 123.5 to 101.8 ms (-18%, where the trees are
+gone), and a forced dunes or volcanic world (`19543c0` only, 12 km east of
+home) takes 140 to 145 ms.
 
 **The fix** (`git log origin/main..HEAD` on the branch, based on
 `05f17b4`). The worker and its watchdog:
@@ -2034,9 +2046,10 @@ All but `e8a1f47` are in the build that waves 1 and 1.5 flew (below).
   Cancel and reissue still do not reset it, so motion cannot keep a dead
   worker alive.
 - Both watchdogs expire after 240 charged updates AND at least
-  `DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS` (2,000 ms), so the count
-  means the same silence at 60, 120 or 240 Hz, or after 8,000 ms whatever
-  the count. A gap between updates is still charged at most 100 ms.
+  `DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS` (2,000 ms), so 240 updates
+  never mean less than 2 s of silence (2 s at 120 and 240 Hz, 4 s at 60
+  Hz), or after 8,000 ms whatever the count. A gap between updates is still
+  charged at most 100 ms.
 - Cells posted while a build runs wait. Each runs once the build has had
   its turn of slices (a fifth of the last cell's time, 4 to 8 ms), and all
   run when it ends. The browser worker yields through a self-posted
@@ -2059,53 +2072,68 @@ All but `e8a1f47` are in the build that waves 1 and 1.5 flew (below).
 
 Main-thread work that also hitched a medium/balanced flight. The last column
 says whether the build that waves 1 and 1.5 flew (`5dd5ecb`: the branch
-through `4ae68b4`, on `19543c0`) had it working:
+through `4ae68b4`, on `19543c0`) had it working, and whether perf:flight
+can show it at all: the harness pins the render scale (the governor never
+steps) and drives `FlightRenderer` without `FlightGame` or the HUD.
 
 | Commit | Subject | What it changes | In waves 1, 1.5 |
 | --- | --- | --- | --- |
-| `e513c6f` | Apply render-scale steps at the next frame's start so no drawn frame is discarded | the governor's step forced a resize after `endFrame`, throwing the drawn frame away | yes |
-| `b0ecd8b` | Poll renderer diagnostics only while something shows them, and skip unchanged airport readouts | a 2 Hz read walked every desired detail cell with the panel closed (it is off by default); now only while the setting is on or the viewer HUD is up (`75d4626`) | yes |
+| `e513c6f` | Apply render-scale steps at the next frame's start so no drawn frame is discarded | the governor's step forced a resize after `endFrame`, throwing the drawn frame away | in the build, not exercised: perf:flight pins the render scale |
+| `b0ecd8b` | Poll renderer diagnostics only while something shows them, and skip unchanged airport readouts | a 2 Hz read walked every desired detail cell with the panel closed (it is off by default); now only while the setting is on or the viewer HUD is up (`75d4626`) | in the build, not exercised: the poll is `FlightGame`'s, which perf:flight does not run |
 | `6a80b12` | Prime each wildlife batch's pipelines at startup so the first antler does not hitch | the keratin PBR compiled at the first antler, 35-87 ms on Metal once a session | yes |
 | `73e1cbb` | Cache generated wildlife cells so a cell crossing generates only new cells | a cell crossing regenerated the whole window; 5 km at 250 m/s generates 71 cells instead of 617 (unit test) | no: the renderer turns it on in `69746b7` |
 | `02f875f` | Bake the ground-cover tile in 32 m steps to hold a low frame near its budget | below the gate every frame baked a whole row, 12.6-15.2 ms p50 on the cloud host; in 32 m steps under 1.5 ms, 2.9-3.2 ms there (the pace floor binds) | no: only with the game's height-only sampler (`69746b7`, `904c309`), which perf:flight does not pass |
 | `69746b7` | Read height-only terrain where a consumer needs only the height | the camera clamp, spawned airfields, ground-cover tile and birds stop paying for normals and classification; bit-identical heights | no |
-| `8adc324`, `49e666e`, `4dc648a` | Slice the in-flight sky re-light so a climb spreads it over frames; Land the sliced sky re-light's cloud LUT on a frame of its own; Re-light the sky at once after a teleport, not over a sliced rebake | each 500 m of climb re-lit the sky in one frame; now 0.5 ms of sampling a frame, then SH, specular cube and cloud LUT each on a frame of its own. An environment change, a teleport and the capture (`skyRebake: "sync"`) re-light at once | no |
+| `e149d4d`, `8adc324`, `49e666e`, `4dc648a` | Slice the sky irradiance bake so a climb's re-light can spread over frames; Slice the in-flight sky re-light so a climb spreads it over frames; Land the sliced sky re-light's cloud LUT on a frame of its own; Re-light the sky at once after a teleport, not over a sliced rebake | each 500 m of climb re-lit the sky in one frame; now 0.5 ms of sampling a frame, then SH, specular cube and cloud LUT each on a frame of its own. An environment change, a teleport and the capture (`skyRebake: "sync"`) re-light at once | no: `e149d4d`'s sliced bake was in the build, but nothing called it before `8adc324` |
 | `05e9b1d`, `af053f8` | Measure the chase camera's ground speed over simulation time; Divide the chase trail's distance by simulation time only from 1/240 s up | a hitch read as a burst of speed and threw the chase camera back, then forward | no |
 
 Each measured figure in that table comes from its commit's message. The
 remaining commits on the branch are follow-ups and tests (`31c1de0`,
 `fa2ffc8`, `7d300de`, `3e8f908`, `3492803`, `e107d26`, `bc89123`,
-`08eade3`, `6a3d0e2`, `e149d4d`, `ccbc1e4`, `b9ec5ec`, `f6646e9`,
-`7a9a190`, `41838e9`, `cb0fc03`, `3548966`) and the perf:flight harness
+`08eade3`, `6a3d0e2`, `ccbc1e4`, `b9ec5ec`, `f6646e9`, `7a9a190`,
+`41838e9`, `cb0fc03`, `3548966`) and the perf:flight harness
 (`882569a` to `b4d5fa4`, and `4ae68b4`: the probe, the verdict and the
 options marked 2026-10-25 above).
 
-**Wave 1** (CI run 40208129275, a temporary workflow: the matrix is in
-`.github/workflows/perf-flight.yml` at `1c8d792`, and artifact
-`perf-flight-<job>-40208129275-1` holds each job's `report.md` and
-`report.json`). macOS runner, `--gpu hardware --draws`, medium/balanced,
-trainer, chase camera, from `approach-500ft` at 250 m/s in 600-frame legs;
-main is `19543c0`, the fix `5dd5ecb`. Jobs 0-2 and 6-8 fly breezy weather,
-3-5 clear. No arm TRIPPED in wave 1 (the runner drew 10 to 41 frames a
-second, so 240 updates took about 6 s or more).
+**Where the flights are kept.** Both waves ran a temporary workflow whose
+matrix is in `.github/workflows/perf-flight.yml` at `1c8d792` (wave 1) and
+`01e9aa6` (wave 1.5). Those two commits, and the builds flown (`5dd5ecb`
+and `0058f56`), are on no branch now: the investigation branch was
+rewritten for wave 2. They resolve by SHA only in a clone that still holds
+them, or from the run pages. `5dd5ecb` and `0058f56` are the branch through
+`4ae68b4` and through `fa2ffc8` rebased onto `19543c0`, with the same
+patches to `src`, `tests` and `scripts` up to hunk offsets. The text and
+tables below give every job's arguments. Artifact
+`perf-flight-<job>-<run>-1` holds each job's `report.md` and `report.json`,
+and the artifacts expire 14 days after the runs (about 2026-11-08).
 
-Main's would-trip count is an upper bound on its trips at 120 Hz. Main
-checks its clock only while the presentation sweep runs, and the sweep can
-go idle with the clock still set (the stale epoch `aef41c1` removes); the
-probe charges that time too, and a stale span trips only if demand comes
-back before a sweep without demand clears it. One main span (job 1, settle
-trial 2) reached 8,966 ms without tripping the 8 s arm, so main was not
-checking that clock then. The fix resets its clock when the sweep goes
-idle, and for it a zero is a zero.
+**Wave 1** (CI run 40208129275). macOS runner, `--gpu hardware --draws`,
+medium/balanced, trainer, chase camera, from `approach-500ft` at 250 m/s in
+600-frame legs (`--speed 250 --leg-frames 600`); main is `19543c0`, the fix
+`5dd5ecb`. Jobs 0-2 and 6-8 fly breezy weather (`--weather breezy`), 3-5
+clear. No arm TRIPPED in wave 1 (the runner drew 10 to 41 frames a second,
+so 240 updates took about 6 s or more).
+
+Main's would-trip count is an estimate of its trips at 120 Hz, not a bound.
+It over-counts: main checks its clock only while the presentation sweep
+runs, and the sweep can go idle with the clock still set (the stale epoch
+`aef41c1` removes); the probe charges that time too, and a stale span trips
+only if demand comes back before a sweep without demand clears it. One main
+span (job 1, settle trial 2) reached 8,966 ms without tripping the 8 s arm,
+so main was not checking that clock then. It can also under-count: the
+harness drew 10 to 41 frames a second, and the part of any gap between
+updates past 100 ms is not charged, where a 120 Hz session, with no such
+gaps, would charge the same wall time in full. The fix resets its clock
+when the sweep goes idle, so its count holds no stale spans.
 
 | Job | Flight | Would-trip spans, main / fix | Longest charged span, ms, main / fix | Accepted build latency p50, ms, main / fix |
 | --- | --- | --- | --- | --- |
 | 0 | park then fly (`--park-legs`), 4 legs | 3 / 0 | 2,667 / 465 | 549 / 115 |
-| 1 | 2 legs, then 12 settle trials | 17 / 0 | 8,966 / 616 | 293 / 159 |
+| 1 | 2 legs, then 12 settle trials (`--settle-trials 12 --trial-frames 600`) | 17 / 0 | 8,966 / 616 | 293 / 159 |
 | 2 | far east (`--start 160000,0,90`), 6 legs | 2 / 0 | 3,454 / 634 | 129 / 37 |
-| 3 | forced boreal province, 6 legs | 1 / 0 | 3,306 / 1,110 | 130 / 46 |
-| 4 | kill the worker at leg 2, frame 300; 4 legs | 1 / 0 | 3,258 / 669 | 460 / 64 |
-| 5 | hang the worker at leg 2, frame 300; 4 legs | 1 / 0 | 3,477 / 479 | 473 / 69 |
+| 3 | forced boreal province (`--base-world` and `--head-world` `{"climateProvince":"boreal"}`), 6 legs | 1 / 0 | 3,306 / 1,110 | 130 / 46 |
+| 4 | kill the worker at leg 2, frame 300 (`--kill-detail-worker 2:300`); 4 legs | 1 / 0 | 3,258 / 669 | 460 / 64 |
+| 5 | hang the worker at leg 2, frame 300 (`--hang-detail-worker 2:300`); 4 legs | 1 / 0 | 3,477 / 479 | 473 / 69 |
 | 6 | near home, 6 legs | 2 / 0 | 4,110 / 553 | 128 / 76 |
 | 7 | as 6 with the arms swapped (`--under-test 5dd5ecb`) | 1 / 0 | 4,454 / 818 | 112 / 51 |
 | 8 | A/A of the fix | - / 0 and 0 | - / 447 and 774 | - / 47 and 63 |
@@ -2117,8 +2145,10 @@ span was 884 ms). Job 5 leaves out the hung leg, where both arms' clocks
 ran to the hang's detection (main 7,986 ms, the fix 7,722 ms): that is
 the hang, not a false trip. Latency pools every accepted build of the job;
 main's in jobs 4 and 5 stop at its fallback. Across jobs the fix answered
-builds 1.7 to 7.2 times sooner (3.1 at the median); pooled, main 149 ms
-p50 (3,546 builds) and the fix 69 ms (7,986).
+builds 1.7 to 7.2 times sooner (3.1 at the median); pooled over jobs 0-7,
+main 149 ms p50 (3,546 builds) and the fix 72 ms (6,062). Jobs 1, 2, 3, 6
+and 7 also passed `--fail-on-worker-fallback`, which changes no
+measurement.
 
 Killed or hung, main FELL BACK to main-thread generation and the fix
 RECOVERED on a new worker (the legs after the first, legs 2 to 4):
@@ -2141,12 +2171,17 @@ and a plain PBR variant. The first leg read the fix 1% to 20% slower in all
 eight jobs (1.15 with the fix as the base), which is why wave 1.5 flew
 both orders.
 
-**Wave 1.5** (CI run 40210471637; matrix in the same file at `01e9aa6`;
-artifact `perf-flight-<job>-40210471637-1`). Every job: 4 legs of 600
-frames at 250 m/s in breezy weather, then 4 settle trials of 600 frames,
-otherwise as wave 1. A third build, the worker fix only (`0058f56`: the
-branch through `fa2ffc8`, the worker commits and the harness without the
-main-thread work), separates the two halves.
+**Wave 1.5** (CI run 40210471637). Every job: 4 legs of 600 frames at 250
+m/s in breezy weather, then 4 settle trials of 600 frames (`--legs 4
+--leg-frames 600 --speed 250 --weather breezy --settle-trials 4
+--trial-frames 600`), otherwise as wave 1. A third build, the worker fix
+only (`0058f56`: the branch through `fa2ffc8`, the worker commits and the
+harness without the main-thread work), was flown to separate the two
+halves. Under perf:flight the fix differs from it in effect only by the
+wildlife prime (`6a80b12` and its follow-ups): the render-scale step and
+the diagnostics poll are not exercised, and the cell cache, the tile's
+32 m steps and the sliced sky re-light were not switched on in that build
+(table above).
 
 | Job | Base / head | TRIPPED | Would-trip spans, base / head | render() p50 head / base: first leg, legs after it, settle trials |
 | --- | --- | --- | --- | --- |
@@ -2165,12 +2200,15 @@ main-thread work), separates the two halves.
 Main charged 81 would-trip spans in its 10 arms and TRIPPED in 4. The fix
 (8 arms) and the worker fix only (4 arms) neither tripped nor charged a
 span of 2 s; their longest were 1,242 ms and 1,502 ms. All four trips were
-the 8 s arm: the longest span read 7,995 to 8,023 ms at the last frame
-before the trip, and no span reached 240 updates (117 to 190). Accepted
-build latency, pooled p50: main 148 ms, the fix 89 ms, the worker fix only
-87 ms.
+the 8 s arm: the tripping span read 7,995 to 8,023 ms at the last frame
+before the trip, and none of the four had reached 240 updates (117 to
+190). The 81 over-counts as wave 1's 28 does: in settle trial 2, eight
+main arms (jobs 0-7) ended with a span still open at 7.3 to 12.2 s (up to
+309 updates), six of them past main's own limits with no trip, so main
+was not checking them. Accepted build latency, pooled p50 over every arm of
+each build: main 148 ms, the fix 89 ms, the worker fix only 87 ms.
 
-| Trip | Where, at frames/s | Phase after it: render() ms p50 / p95, long tasks | The other arm, same phase |
+| Trip | Where, at frames/s | The leg after it (jobs 3, 6) or the trial it tripped in (job 10): render() ms p50 / p95, long tasks | The other arm, same phase |
 | --- | --- | --- | --- |
 | job 3, main (head) | stream to rest, 10.0 | leg 1: 18.0 / 88.6, 47 | fix: 16.7 / 40.8, 20 |
 | job 6, main (base) | stream to rest, 11.9 | leg 1: 17.9 / 99.2, 47 | worker fix only: 15.4 / 43.0, 25 |
@@ -2182,19 +2220,27 @@ render() p50 / p95 / p99 14.0 / 51.6 / 101.0 ms with 98 long tasks (job 3)
 and 15.3 / 51.9 / 108.4 ms with 96 (job 6), against 12.9 / 25.3 / 54.7 ms
 with 22 and 11.6 / 24.4 / 49.4 ms with 19 in the other arm.
 
-The first leg costs nothing that the runs can see. Single runs put the
-fix's first leg anywhere from 13% faster to 21% slower than main's, and
-which arm was the head moved it about as much: in jobs 8 and 9 the head's
-first leg was 16% and 12% faster than the base's, whichever build it was.
-With both orders of jobs 0-5 pooled (geometric means of head over base,
-half the difference of the two orders), the fix over main reads +3.2% at
-p50 with one standard error of 6.1%. The legs after the first read -0.1%
-(1.7%), and the settle trials +1.3% (0.7%), a small cost if it is real.
-The fix over the worker fix only, from the one pair of jobs 8 and 9: -4.0%
-at p50 after the first leg and -2.3% on the first leg, inside the A/A
-runs' 5-7% (job 10 here, job 8 of wave 1).
+The first leg's cost is not settled. Single runs put the fix's first leg
+anywhere from 13% faster to 21% slower than main's, and runs in the same
+arm order spread as widely (jobs 0-2: 0.865 to 1.214), so one run says
+little. The estimates below pool both orders (geometric means of head over
+base, half the difference of the two orders) and leave out job 3, whose
+main fell back in the stream to rest and generated cells on the main thread
+for all four legs, which makes the fix look cheaper. On the first leg, jobs
+0-2, 4 and 5 read the fix over main +5.2% at p50 with one standard error
+of 6.7% (+3.2%, SE 6.1%, with job 3), and wave 1's one matched pair of
+orders, jobs 6 and 7, reads +9%; wave 1 had the fix's first leg slower in
+all eight jobs. A first-leg cost of a few percent is possible and not
+shown. After the first leg the fix reads +1.4% (SE 0.9%; -0.1% with job 3),
+and the settle trials, on fresh renderers that job 3's trip does not
+reach, +1.3% (SE 0.7%): a steady cost of about 1-2% at p50 that may be
+real. Which arm was the head moved the main / fix pairs by 1-3%, but in
+jobs 8 and 9 the head's first leg was 16% and 12% faster than the base's,
+whichever build it was. The fix over the worker fix only, from that one
+pair: -4.0% at p50 after the first leg and -2.3% on the first leg, inside
+the A/A runs' 5-7% (job 10 here, job 8 of wave 1).
 
-**What did not change.**
+**What is expected not to change** (pending the CI capture check).
 
 - Still images. The 39 perf baselines (`tests/perf/baseline`) are expected
   unchanged, and that is pending the CI capture check on the branch.
@@ -2207,13 +2253,15 @@ runs' 5-7% (job 10 here, job 8 of wave 1).
   profile changes and the capture pin keep the forced render-scale path; and
   the capture respawn ends a pending wildlife prime.
 - Draw-call ceilings. They are pinned per shot as `drawCallCeiling` in
-  `PERF_CAPTURE_SHOTS` (`scripts/perf-capture.mts`, 32 shots), with raises
-  in `DRAW_CALL_RAISES` (`scripts/deliveryFloors.mts`), and checked by
+  `PERF_CAPTURE_SHOTS` (`scripts/perf-capture.mts`; 32 of its 39 shots
+  carry one), with raises in `DRAW_CALL_RAISES`
+  (`scripts/deliveryFloors.mts`), and checked by
   `tests/delivery-floors.test.ts`. No commit on the branch touches those
   files or `tests/perf/baseline`. The only new draws are the wildlife
   prime's zero-matrix instances (they rasterise nothing), which last until
   each batch's pipelines exist and which a capture respawn ends, so no
-  shot's count is expected to move; the capture check confirms that too.
+  shot's count is expected to move; the capture check is to confirm it
+  (wave 2, below).
 - The steady GPU cost (perf:ab) of the branch is not recorded in this
   section.
 
@@ -2223,12 +2271,21 @@ runs' 5-7% (job 10 here, job 8 of wave 1).
 finishes.** Waves 1 and 1.5 flew `5dd5ecb` on the old main, which had
 neither the wildlife cell cache nor the height-only reads, the sliced sky
 re-light, the chase camera's ground speed or the diagnostics line working.
-Wave 2 flies the branch as it stands on `05f17b4`, so it is their first
-browser measurement (the ground-cover tile's 32 m steps still are not
-exercised: perf:flight passes no height-only sampler). To fill in: the CI
-run id and the commit that holds its matrix, the jobs, the would-trip and
-TRIPPED counts, render() and long tasks per arm, and the capture check's
-result on the 39 baselines and the draw-call ceilings.
+Wave 2 flies the branch as it stands on `05f17b4`, but perf:flight can
+show only some of that: the wildlife cell cache is on in every arm of the
+fix; the chase camera's ground speed is what an `--emulate-hitch` job
+flies; the height-only reads still pay a full analytic sample each, since
+perf:flight passes no `terrainHeight` (in an eroded world they skip only
+the pages' normal and slope); the sliced sky re-light runs only after 500 m
+of altitude change, which perf:flight neither asks for nor records; the
+render-scale step, the diagnostics poll
+and the diagnostics line are outside it (pinned render scale, no
+`FlightGame`, no HUD); and the ground-cover tile's 32 m steps are not
+exercised at all (no height-only sampler). To fill in: the CI run id and
+the commit that holds its matrix, the jobs and their arguments, which of
+the commits above each job exercised, the would-trip and TRIPPED counts,
+render() and long tasks per arm, and the capture check's result on the 39
+baselines and the draw-call ceilings.
 
 ## Capture harness
 
