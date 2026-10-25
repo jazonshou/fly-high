@@ -76,6 +76,7 @@ import { resolveShotPlacement } from "../shotPlacement";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
+import { agentTerrainSamplers } from "./terrainSamplers";
 import {
   PERF_AB_PROTOCOL,
   type AgentCatalog,
@@ -573,7 +574,9 @@ async function ensureRenderer(
   renderer = await FlightRenderer.create({
     canvas,
     aircraft: config.aircraft as (typeof AIRCRAFT_KINDS)[number],
-    terrainSample: (x: number, z: number) => sampleTerrain(activeWorld, x, z),
+    // The full sample; with it, for perf:flight alone, the height-only
+    // sampler FlightGame passes (`terrainSamplers.ts`).
+    ...agentTerrainSamplers(activeWorld, config.gameTerrainHeight, sampleTerrain, sampleTerrainHeight),
     world: activeWorld,
     seed: activeWorld.sourceSeedHash,
     quality: config.quality as QualityLevel,

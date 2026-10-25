@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   bakeReport,
@@ -6,8 +8,10 @@ import {
   type BakeRow,
 } from "../scripts/perfFlightBakes.mts";
 import type { FlightRenderer } from "../src/render/FlightRenderer";
+import { createWorld, sampleTerrain, sampleTerrainHeight } from "../src/world";
 import { FlightBakeProbe, readBakeStats, type BakeStatsReading } from "./perf/ab/bakeProbe";
 import type { FlightFrame, FlightFrameBake, FlightReport } from "./perf/ab/protocol";
+import { agentTerrainSamplers } from "./perf/ab/terrainSamplers";
 
 /**
  * perf:flight's per-frame record of the renderer's two bakes that spread over
@@ -15,7 +19,8 @@ import type { FlightFrame, FlightFrameBake, FlightReport } from "./perf/ab/proto
  * probe turns its running counters and newest-call figures into what that
  * frame did. The report then says, per arm and leg, which frames of a sliced
  * sky re-light went over 1 ms and what each ground-cover call cost, and n/a
- * for a base whose renderer does not report them.
+ * for a base whose renderer does not report them. And perf:flight flies the
+ * game's terrain samplers, which perf:ab must not.
  */
 
 /** For tsc: the probe reads no figure the head's renderer does not report, under the name it reports it by. */
@@ -264,5 +269,62 @@ describe("flight bake report", () => {
     expect(describeLegBakes(headLeg1)).toBe(
       ", sky 2 landed / 1 one-frame, worst 2.00 ms, 3 over 1 ms; ground cover 3 calls, max 2.30 ms, 1 over 2 ms",
     );
+  });
+});
+
+describe("the agent's terrain samplers", () => {
+  const ROOT = fileURLToPath(new URL("..", import.meta.url));
+  const read = (path: string) => readFileSync(`${ROOT}${path}`, "utf8");
+
+  it("hand the renderer the full sample alone unless perf:flight asks for the game's pair", () => {
+    const calls: string[] = [];
+    const world = { name: "world" };
+    const sample = (target: typeof world, x: number, z: number) => {
+      calls.push(`sample ${target.name} ${x} ${z}`);
+      return { height: x + z };
+    };
+    const height = (target: typeof world, x: number, z: number) => {
+      calls.push(`height ${target.name} ${x} ${z}`);
+      return x - z;
+    };
+    for (const flag of [undefined, null, false]) {
+      const samplers = agentTerrainSamplers(world, flag, sample, height);
+      // perf:ab's renderer options: the key is absent, not undefined.
+      expect(Object.keys(samplers)).toEqual(["terrainSample"]);
+      expect(samplers.terrainSample(3, 4)).toEqual({ height: 7 });
+    }
+    const game = agentTerrainSamplers(world, true, sample, height);
+    expect(Object.keys(game)).toEqual(["terrainSample", "terrainHeight"]);
+    expect(game.terrainHeight!(3, 4)).toBe(-1);
+    expect(game.terrainSample(5, 6)).toEqual({ height: 11 });
+    expect(calls).toEqual([
+      "sample world 3 4", "sample world 3 4", "sample world 3 4", "height world 3 4", "sample world 5 6",
+    ]);
+  });
+
+  it("give the perf world's height bit for bit as its full sample, as FlightRenderer requires", () => {
+    const world = createWorld("phase1-perf-baseline");
+    const { terrainSample, terrainHeight } = agentTerrainSamplers(world, true, sampleTerrain, sampleTerrainHeight);
+    const airportX = world.airport?.centerX ?? 0;
+    const airportZ = world.airport?.centerZ ?? 0;
+    for (const [dx, dz] of [[0, 0], [-2_500, 0], [-2_437.5, 61.25], [8_000, -4_000], [-31_000, 17_500]] as const) {
+      expect(terrainHeight!(airportX + dx, airportZ + dz)).toBe(terrainSample(airportX + dx, airportZ + dz).height);
+    }
+  });
+
+  it("are asked for by perf:flight alone: perf:ab and the capture never pass the height-only sampler", () => {
+    const flight = read("scripts/perf-flight.mts");
+    expect(flight).toMatch(/call\("configure", \{[^}]*gameTerrainHeight: true,\n\s*\}\)/);
+    // perf:ab's agent configuration names no such field, so it is absent.
+    expect(read("scripts/perf-ab.mts")).not.toMatch(/gameTerrainHeight|terrainHeight/);
+    // The agent passes the flag to the helper and nowhere else.
+    const agent = read("tests/perf/ab/agent.ts");
+    expect(agent.match(/gameTerrainHeight/g)).toHaveLength(1);
+    expect(agent).toContain(
+      "...agentTerrainSamplers(activeWorld, config.gameTerrainHeight, sampleTerrain, sampleTerrainHeight),",
+    );
+    expect(agent).not.toMatch(/terrainHeight:/);
+    // The capture creates its own renderer, with the full sample alone.
+    expect(read("tests/perf/perf-capture.test.ts")).not.toMatch(/terrainHeight|agentTerrainSamplers/);
   });
 });

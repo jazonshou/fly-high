@@ -34,6 +34,13 @@ export interface AgentConfig {
    * the capture renders; a flight can fly the game's default, "breezy".
    */
   readonly weather?: string | null;
+  /**
+   * True: create the renderer with the game's height-only terrain sampler
+   * beside the full sample, as FlightGame does (`terrainSamplers.ts`).
+   * perf:flight sets it; perf:ab never does, so its renderers are made as the
+   * capture's are. Absent, null or false: the full sample alone.
+   */
+  readonly gameTerrainHeight?: boolean | null;
 }
 
 export interface AgentInfo {

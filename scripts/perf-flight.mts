@@ -540,6 +540,9 @@ async function main(): Promise<number> {
         profileOverride: null,
         worldOptions: worldOptions[arm],
         weather: values.weather,
+        // Fly the game's terrain samplers: its ground-cover tile bakes in
+        // steps on the height-only one (perf:ab keeps the capture's).
+        gameTerrainHeight: true,
       });
     }
     const catalog: AgentCatalog = await arms.head.call("catalog");
@@ -672,7 +675,7 @@ async function main(): Promise<number> {
       shot: shot.name, legs, legFrames, speed: request.speedMetersPerSecond, clearance: request.clearanceMeters,
       bank: request.bankDegrees, camera, weather: values.weather, quality: values.quality, mode: values.mode,
       aircraft: values.aircraft,
-      draws: !request.suppressDraws, backend,
+      draws: !request.suppressDraws, backend, gameTerrainHeight: true,
       ...(start ? { start } : {}),
       ...(faults.kill ? { killDetailWorker: faults.kill } : {}),
       ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),
