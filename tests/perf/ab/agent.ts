@@ -548,6 +548,8 @@ async function ensureRenderer(
   removeGpuErrorListener = null;
   renderer?.dispose();
   renderer = null;
+  // The probe holds the old runtime, and through it the old world.
+  watchdogProbe = null;
   canvas?.remove();
   world = createWorld(PERF_CAPTURE_SEED, {
     ...(config.worldOptions ?? {}),
