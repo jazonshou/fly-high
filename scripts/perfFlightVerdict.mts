@@ -219,7 +219,7 @@ export interface TrialSummary {
 export interface FlightVerdict {
   readonly rows: readonly VerdictRow[];
   readonly trials: readonly TrialSummary[];
-  /** Head over base, over the legs after the first and over the first leg. */
+  /** Head over base: over the legs after the first, over the first leg, and over the settle trials. */
   readonly ratios: readonly HeadBaseRatio[];
   /** For each commit an arm was built from: whether that arm tripped anywhere. */
   readonly trippedBySha: Readonly<Record<string, boolean>>;
