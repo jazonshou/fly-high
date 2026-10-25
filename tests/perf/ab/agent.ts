@@ -281,8 +281,26 @@ function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuM
 const effectsCompiled: string[] = [];
 const knownEffectDefines = new Map<string, Set<string>[]>();
 
+function effectDefineLines(defines: string): Set<string> {
+  return new Set(defines.split("\n").map((line) => line.trim()).filter((line) => line.length > 0));
+}
+
+function effectShaderName(baseName: unknown): string {
+  const named = baseName as Record<string, unknown> | null | undefined;
+  const raw = typeof baseName === "string"
+    ? baseName
+    : String(named?.["vertexToken"] ?? named?.["vertex"] ?? named?.["vertexSource"] ?? "?");
+  return raw.length > 48 ? `${raw.slice(0, 48).replace(/\s+/g, " ")}...` : raw;
+}
+
+function rememberEffect(shader: string, lines: Set<string>): void {
+  const known = knownEffectDefines.get(shader) ?? [];
+  known.push(lines);
+  knownEffectDefines.set(shader, known);
+}
+
 function describeNewEffect(shader: string, defines: string): string {
-  const lines = new Set(defines.split("\n").map((line) => line.trim()).filter((line) => line.length > 0));
+  const lines = effectDefineLines(defines);
   const known = knownEffectDefines.get(shader) ?? [];
   let best: { added: string[]; removed: string[] } | null = null;
   for (const other of known) {
@@ -290,8 +308,7 @@ function describeNewEffect(shader: string, defines: string): string {
     const removed = [...other].filter((line) => !lines.has(line));
     if (!best || added.length + removed.length < best.added.length + best.removed.length) best = { added, removed };
   }
-  known.push(lines);
-  knownEffectDefines.set(shader, known);
+  rememberEffect(shader, lines);
   if (!best) return `${shader} (its first effect)`;
   const list = (prefix: string, entries: string[]) => entries.slice(0, 6).map((line) => `${prefix}${line}`)
     .concat(entries.length > 6 ? [`${prefix}${entries.length - 6} more`] : []);
@@ -300,28 +317,36 @@ function describeNewEffect(shader: string, defines: string): string {
 
 function installEffectRecorder(target: FlightRenderer): void {
   const engine = (target as unknown as { scene?: { getEngine(): unknown } }).scene?.getEngine() as
-    | { createEffect: (...args: unknown[]) => unknown; __effectRecorder?: boolean }
+    | {
+      createEffect: (...args: unknown[]) => unknown;
+      __effectRecorder?: boolean;
+      _compiledEffects?: Record<string, { name?: unknown; defines?: unknown }>;
+    }
     | undefined;
   if (!engine || engine.__effectRecorder) return;
   engine.__effectRecorder = true;
   const original = engine.createEffect;
   const seen = new WeakSet<object>();
+  // The effects the renderer compiled while it loaded. The engine hands an
+  // existing effect back for the same shader and defines, so without these a
+  // load-time effect a mesh first asks for in flight would read as a compile,
+  // and a real new variant would be told apart from the wrong neighbour.
+  for (const effect of Object.values(engine._compiledEffects ?? {})) {
+    seen.add(effect);
+    rememberEffect(effectShaderName(effect.name), effectDefineLines(String(effect.defines ?? "")));
+  }
   engine.createEffect = function (this: unknown, ...args: unknown[]) {
     const effect = original.apply(this, args) as object;
     if (effect && !seen.has(effect)) {
       seen.add(effect);
       const [baseName, options, , , defines] = args as [
-        string | Record<string, unknown>,
+        unknown,
         { defines?: unknown } | undefined,
         unknown,
         unknown,
         unknown,
       ];
-      const raw = typeof baseName === "string"
-        ? baseName
-        : String(baseName?.["vertexToken"] ?? baseName?.["vertex"] ?? baseName?.["vertexSource"] ?? "?");
-      const shader = raw.length > 48 ? `${raw.slice(0, 48).replace(/\s+/g, " ")}...` : raw;
-      effectsCompiled.push(describeNewEffect(shader, String(defines ?? options?.defines ?? "")));
+      effectsCompiled.push(describeNewEffect(effectShaderName(baseName), String(defines ?? options?.defines ?? "")));
     }
     return effect;
   };
