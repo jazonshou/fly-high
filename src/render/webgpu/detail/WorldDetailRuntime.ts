@@ -762,9 +762,10 @@ export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion: expires on charged time alone. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS = 8_000;
 /**
- * The least charged time either watchdog's update count may expire on, so the
- * count means the same silence at 60, 120 or 240 Hz. A working build
- * heartbeats every 100 ms, far inside it.
+ * The least charged time either watchdog's update count may expire on, so 240
+ * updates never mean less than two seconds of silence: two seconds at 120 or
+ * 240 Hz, four at 60 Hz. A working build heartbeats every 100 ms, far inside
+ * it.
  */
 export const DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS = 2_000;
 /**
