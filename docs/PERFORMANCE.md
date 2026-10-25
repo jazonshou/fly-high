@@ -279,13 +279,15 @@ presentation spine and changes the height authority behind it:
   trusted pages the macro fallback assumed the temperate world (Grass, rock
   and snow on real elevation, one canopy paint), so a taiga, tundra, desert or
   tropical forest changed colour with viewing distance. `ClimateProvinceField.ts`
-  streams a 128² RGBA32F window of the province (1.25 km texels, 256 KiB,
-  nearest-first, at most 512 work units a frame, no allocation per frame); the
-  CDLOD vertex stage reads it once per vertex and `ProvinceFarTone.ts` turns it
-  into a thermal lift, a sward base tone and a signed canopy share, all as
-  deltas, so the temperate core is `x + x * 0` and renders bit-identical. They
-  ride lanes the terrain already interpolates (the beauty pipeline has no
-  spare fragment input), and shadow-depth passes skip the read. Behind the
+  streams a 128² window of the province around the camera (1.25 km texels,
+  nearest-first, at most 512 work units a frame, no allocation per frame) and
+  bakes each texel's far tone on the CPU (`ProvinceFarTone.ts`: a thermal
+  lift, a sward base tone and a signed canopy share, all as deltas, so the
+  temperate core is `x + x * 0` and renders bit-identical) into two half-float
+  textures, 160 KiB. The CDLOD vertex stage takes one bilinear, repeat-wrapped
+  sample of each per vertex. The tone rides lanes the terrain already
+  interpolates (the beauty pipeline has no spare fragment input), and
+  shadow-depth passes skip the read. Behind the
   define `TERRAIN_PROVINCE_FIELD` from the tier flag `terrainProvinceField`:
   compiled out on Low, which pays nothing and allocates nothing.
   **Cost** (`npm run perf:ab -- --base 62bade0`, cloud SwiftShader, Medium):
@@ -295,6 +297,27 @@ presentation spine and changes the height authority behind it:
   default shot's pixels identical to the base. The shadow skip took the CSM
   pass from +8-18% to water's +3.6% (-0.3% to +6.3%). Baselines and draw-call
   ceilings are unchanged.
+  **Re-measured on CI against main (2026-10-25)**, with every biome merged:
+  cruise +2.0%, water +3.1%, ground +4.0%; the same run with
+  `--head-profile-override {"terrainProvinceField":false}` read cruise -1.2%,
+  water +0.1%, ground +0.5%, so the field itself was 3.0-3.5% of the frame,
+  over the 2% a feature may spend (the cloud runs above read it as noise). The
+  vertex stage then loaded four RGBA32F texels per vertex, mixed them
+  bilinearly and evaluated the tone's seven smoothsteps and two divides on the
+  result. The tone is now baked per texel on the CPU (1.5 us a texel warm, 0.5
+  of it the tone), which leaves the vertex two filtered samples.
+  **After the bake** (`9d5f98e`, perf-ab run 40148770740 against main,
+  SwiftShader GPU time, all SAME, draw calls unchanged): approach +2.0% (EPYC
+  9V74), cruise +1.0%, forest +1.3%, ground +0.5%, water +0.7% (EPYC 7763).
+  Against the field-off run on the same CPU model, the field now costs cruise
+  about 2.2% (was 3.2%), water about 0.6% and ground nothing measurable. The
+  macOS runner's advisory A/B (Apple M1 GPU, frame wall time) read -0.5% to
+  +1.0%, cruise +0.5% (-0.2% to +1.2%). A second dispatch (run 40148782563)
+  drew an EPYC 9V45 for cruise and read +3.7%: the main pass +3.9% (+1.1% on
+  the 7763), and the cloud raymarch, which this branch does not touch, +8.2%
+  beside a bloom composite at -5.6%, with the arms' pixels matching. As with
+  the sea's sky (2026-10-20), the 9V45 weighs this work more than the other
+  models do; the hardware run does not show it.
 
 ## Spectral ocean and inland water
 
@@ -356,7 +379,7 @@ Cloud cost is primarily fill rate multiplied by ray steps and density-light samp
 
 World detail is deterministic and page-owned rather than attached to transient terrain meshes (villages and buildings were deleted in 1B-5; the airfield is the only settlement content):
 
-- Default detail cells are 512 m. Terrain biome, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
+- Default detail cells are 512 m. Terrain biome, climate temperature, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
 - Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice.
 - Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting conservative prototype-aware bounds independently, so one visible tree no longer submits every offscreen resident instance.
@@ -2207,3 +2230,35 @@ On the same CPU model each shot moved by 0.4% or less; the two larger moves swap
 Before promotion the capture failed the visual gates on `water-3m`, `water-25ft`, `forest-line-highsun` and `forest-500ft-sunbehind` (whole-frame SSIM 0.916-0.984 against 0.985), all from sea pixels.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
+
+## Tree species from the climate temperature (2026-10-25): no baseline moves
+
+`classifyDetailSample` (`detail/generation.ts`) chose between the upland and
+lowland tree sets, and picked the shrub species, from `0.66 - height / 2450`
+plus the province offset. It now reads the sample's climate temperature, the
+one the ground's bake reads (the 11 km climate field, the lapse rate and the
+province offset), so a stand turns upland where its ground does. A sampler
+with no temperature keeps the stand-in. Jason chose the switch on 2026-10-25.
+Tree positions, counts and sizes do not change; only species can.
+
+**What changes in the temperate core** (perf seed, 373 detail cells every 6 km
+within 66 km of the airport): 7 cells, 12 of 403,624 trees (oak to spruce 5,
+spruce to maple 2, pine to birch 2, and one each of spruce to cedar, cedar to
+spruce and spruce to oak) and 1,811 of 768,012 shrubs (0.24%). The largest
+group is six trees on a slope at 980-990 m, 54 km east of the airport (cell
+131, -55), where the real temperature (0.21) is colder than the stand-in's
+(0.26): five oaks become spruces and a spruce becomes a cedar.
+
+**No shot sees one.** The macOS capture at `9d5f98e` (gpu-tests run
+40148770639, artifact `perf-capture-40148770639-1`, zip sha256
+`e5fb992a9dd9308d…c57c9e988`) against the capture before it (`8324439`, run
+40140784416): at most 0.0062/255 mean absolute difference
+(`forest-line-highsun`, sea sparkle and foliage shimmer), and `mountain-close`,
+`terrain-material-1600ft-down` and `canopy-1200ft` are identical. Against the
+committed baselines it is at most 0.0075/255. Two captures of the same code on
+that runner differ by up to 0.025/255, so nothing is promoted and every
+baseline stays. The before/after of the six trees is a scratch perf:ab render
+(`--rounds 0`), not a committed shot.
+
+**Cost: none.** The classifier reads a field the sampler already returns; the
+A/B at `9d5f98e` is in "Terrain and world paging" above.
