@@ -99,6 +99,12 @@ import {
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
 import {
+  DISPLAY_RESIZE_REQUEST,
+  GOVERNED_SCALE_REQUEST,
+  RenderScaleQueue,
+  resolveHardwareScalingLevel,
+} from "./renderScaleLevel";
+import {
   DYNAMIC_ALLOCATIONS,
   estimateGpuMemoryMiB,
   estimateInventoriableGpuMemoryMiB,
@@ -610,6 +616,8 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   private readonly sharpen: SharpenPass;
   private readonly resizeObserver: ResizeObserver;
+  /** B1: owns the hardware scaling level; see `RenderScaleQueue`. */
+  private readonly renderScaleQueue: RenderScaleQueue;
   private readonly atmosphereTracker = new AtmosphereChangeTracker();
   private readonly bodyMatrix = Matrix.Identity();
   private readonly bodyQuaternion = Quaternion.Identity();
@@ -809,11 +817,23 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
     this.renderScale = this.governorState.renderScale;
+    this.renderScaleQueue = new RenderScaleQueue(
+      this.engine,
+      () => this.resolveRenderScaleLevel(),
+    );
     this.applyRenderScale();
     this.installFrameGraph();
     this.resizeObserver = new ResizeObserver(() => {
       if (this.disposed) return;
       // Re-derive the capped scale: the pixel budget depends on the CSS size.
+      // B1: in flight that waits for the next frame's start, because this
+      // fires after rAF has drawn and a resize now would discard the frame.
+      // Pinned renderers (perf capture, VITE_PERF_RESIZE_WOBBLE) keep the
+      // immediate path.
+      if (this.pinnedRenderScale === null) {
+        this.renderScaleQueue.defer(DISPLAY_RESIZE_REQUEST);
+        return;
+      }
       this.applyRenderScale();
       this.resetTimingWindow();
       this.graph.invalidateHistory("display resize");
@@ -1853,6 +1873,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       throw new Error("The WebGPU device was lost; rendering cannot continue");
     }
     if (!finiteState(state)) throw new Error("The simulation produced a non-finite render state");
+    // B1: a governor step or display resize waiting since the last frame is
+    // applied before anything draws. Ahead of `started`, so its cost and its
+    // timing reset land where the old out-of-frame resize put them.
+    this.applyPendingRenderScale();
     const started = performance.now();
     this.captureFrameInterval(started);
     this.currentState = state;
@@ -3506,28 +3530,42 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.graph.invalidateHistory("quality profile changed");
   }
 
-  /** Applies the capped scale product; returns whether it actually changed. */
+  /** The capped scale product as a hardware scaling level (1A-6a). */
+  private resolveRenderScaleLevel(): number {
+    return resolveHardwareScalingLevel({
+      maxDevicePixelRatio: this.profile.maxDevicePixelRatio,
+      devicePixelRatio: window.devicePixelRatio,
+      renderScale: this.renderScale,
+      cssWidth: this.domElement.clientWidth,
+      cssHeight: this.domElement.clientHeight,
+      maxRenderPixels: this.profile.maxRenderPixels,
+    });
+  }
+
+  /**
+   * Applies the capped scale product now, with a forced resize; returns
+   * whether it actually changed. Construction, a profile change and a
+   * capture pin take this path.
+   */
   private applyRenderScale(): boolean {
-    // 1A-6a: the device pixel ratio is a per-tier ceiling, not a multiplier the
-    // display gets to raise for free, and the total scale product is clamped by
-    // an absolute pixel budget. The previous code multiplied DPR into the scale
-    // uncapped, so a Retina panel rendered 5.94 Mpx at tier 2 before any work.
-    const pixelRatio = Math.min(
-      this.profile.maxDevicePixelRatio,
-      window.devicePixelRatio || 1,
-    );
-    const requestedScale = Math.max(0.1, pixelRatio * this.renderScale);
-    const cssPixels = Math.max(
-      1,
-      this.domElement.clientWidth * this.domElement.clientHeight,
-    );
-    // Rendered pixels = cssPixels × totalScale², so the absolute cap on pixels
-    // is a cap of sqrt(maxRenderPixels / cssPixels) on the total scale product.
-    const pixelCapScale = Math.sqrt(this.profile.maxRenderPixels / cssPixels);
-    const level = 1 / Math.min(requestedScale, pixelCapScale);
-    const changed = Math.abs(level - this.engine.getHardwareScalingLevel()) > 1e-4;
-    if (changed) this.engine.setHardwareScalingLevel(level);
-    this.engine.resize(true);
+    return this.renderScaleQueue.applyNow();
+  }
+
+  /** B1: the frame-start half of a deferred governor step or display resize. */
+  private applyPendingRenderScale(): void {
+    const applied = this.renderScaleQueue.applyPending();
+    if (applied === null) return;
+    if (applied.resetTimingWindow) this.resetTimingWindow();
+    if (applied.changed || applied.force) this.graph.invalidateHistory(applied.reason);
+  }
+
+  /**
+   * B1: queues a governor step for the next frame's start and returns whether
+   * it moves the level, which the anti-ratchet latch needs now.
+   */
+  private deferGovernedRenderScale(): boolean {
+    const changed = this.renderScaleQueue.levelWouldChange();
+    if (changed) this.renderScaleQueue.defer(GOVERNED_SCALE_REQUEST);
     return changed;
   }
 
@@ -3557,17 +3595,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const lowered = state.renderScale < this.renderScale;
       this.renderScale = state.renderScale;
       // When the absolute pixel cap is the binding constraint, a governor
-      // step leaves the effective scale unchanged — no history reset, and the
-      // anti-ratchet latch learns about it immediately.
-      const changed = this.applyRenderScale();
-      if (changed) this.graph.invalidateHistory("dynamic resolution changed");
+      // step leaves the effective scale unchanged — no resize, no history
+      // reset, and the anti-ratchet latch learns about it immediately. B1: a
+      // step that does change it resizes at the next frame's start, never
+      // here, after this frame has drawn.
+      const changed = this.deferGovernedRenderScale();
       if (lowered) {
         state = observeRenderScaleApplication(state, changed, this.governorConfig);
         if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
           this.renderScale = state.renderScale;
-          if (this.applyRenderScale()) {
-            this.graph.invalidateHistory("dynamic resolution changed");
-          }
+          this.deferGovernedRenderScale();
         }
       }
     }
