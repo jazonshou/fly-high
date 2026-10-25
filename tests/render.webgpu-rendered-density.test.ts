@@ -22,7 +22,11 @@ import {
   buildShrubPrototype,
   buildTreePrototype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
-import { treePrototypeSpecies } from "../src/render/webgpu/detail/treePrototypeFamily";
+import {
+  TREE_SPECIES_COHORTS,
+  treePrototypeSpecies,
+} from "../src/render/webgpu/detail/treePrototypeFamily";
+import type { TreeSpecies } from "../src/render/webgpu/detail/types";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import type { QualityLevel } from "../src/game/types";
 import type { RenderingMode } from "../src/settings";
@@ -244,28 +248,31 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
   const CHUNK_EDGE_METERS =
     DETAIL_PRESENTATION_CHUNK_CELL_SPAN * DEFAULT_DETAIL_CELL_SIZE_METERS;
 
-  /** Meshes a chunk submits, from the runtime's own prototype registrations. */
+  /**
+   * Meshes a chunk submits, from the runtime's own prototype registrations.
+   * A chunk grows ONE species cohort (`TREE_SPECIES_COHORTS`: the temperate
+   * world, or the tropical coast's palms and broadleaf), so it is priced at
+   * the costlier cohort; `cohorts` overrides that, e.g. with the union of
+   * both for a disk that straddles the tropical belt.
+   */
   function meshCounts(
     treeVariantCap: number,
     prototypeMode: "families" | "species" = "species",
+    cohorts: readonly (readonly TreeSpecies[])[] = TREE_SPECIES_COHORTS,
   ): {
     near: number;
     mid: number;
     far: number;
     understory: number;
   } {
-    const authoredSpecies = Object.keys(TREE_VARIANT_COUNTS) as (keyof typeof TREE_VARIANT_COUNTS)[];
-    const species = [...new Set(
-      authoredSpecies.map((name) => treePrototypeSpecies(name, prototypeMode)),
-    )];
-    const nearVariants = species.reduce(
+    const cohortVariants = (cohort: readonly TreeSpecies[]) => [...new Set(
+      cohort.map((name) => treePrototypeSpecies(name, prototypeMode)),
+    )].reduce(
       (sum, name) => sum + Math.min(TREE_VARIANT_COUNTS[name], treeVariantCap, 3),
       0,
     );
-    const midVariants = species.reduce(
-      (sum, name) => sum + Math.min(TREE_VARIANT_COUNTS[name], treeVariantCap, 3),
-      0,
-    );
+    const nearVariants = Math.max(...cohorts.map(cohortVariants));
+    const midVariants = nearVariants;
     const shrubMeshes = Object.values(SHRUB_VARIANT_COUNTS).reduce((a, b) => a + b, 0);
     return {
       // Wave T: three parts per tree per band — bark skeleton (opaque), the
@@ -296,9 +303,13 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     ["high", "ultra"],
   ];
 
-  function estimateForTier(quality: QualityLevel, mode: RenderingMode) {
+  function estimateForTier(
+    quality: QualityLevel,
+    mode: RenderingMode,
+    cohorts: readonly (readonly TreeSpecies[])[] = TREE_SPECIES_COHORTS,
+  ) {
     const profile = resolveWebGpuQualityProfile(quality, mode);
-    const counts = meshCounts(profile.treeVariantCap, profile.treePrototypeMode);
+    const counts = meshCounts(profile.treeVariantCap, profile.treePrototypeMode, cohorts);
     return {
       profile,
       counts,
@@ -329,6 +340,39 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
         .toBeGreaterThan(ceiling * 0.8);
       expect(estimate.total * VEGETATION_DRAW_COST_MS).toBeCloseTo(estimate.estimatedMs, 9);
     }
+  });
+
+  it("prices every authored species in a cohort, and the tropics no dearer than the temperate world", () => {
+    const authored = Object.keys(TREE_VARIANT_COUNTS) as TreeSpecies[];
+    const cohorted = new Set(TREE_SPECIES_COHORTS.flat());
+    for (const species of authored) expect(cohorted.has(species), species).toBe(true);
+    // The palm grows only in its own cohort, with no conifer and no willow.
+    const tropical = TREE_SPECIES_COHORTS.find((cohort) => cohort.includes("palm"))!;
+    for (const species of ["pine", "cedar", "spruce", "willow"] as const) {
+      expect(tropical).not.toContain(species);
+    }
+    for (const [quality, mode] of TIERS) {
+      const temperate = estimateForTier(quality, mode, [TREE_SPECIES_COHORTS[0]!]);
+      const tropics = estimateForTier(quality, mode, [tropical]);
+      expect(tropics.estimate.total, `${quality}/${mode}`)
+        .toBeLessThanOrEqual(temperate.estimate.total);
+    }
+  });
+
+  it("prices a chunk that straddles the tropical belt", () => {
+    // The belt keeps a palm and a pine a kilometre or more apart, but a
+    // province ecotone can be steep, and a band disk that reaches across it
+    // sees both cohorts. Measured on five seeds over 400 km squares
+    // (2026-10-24, 500 m grid): tier 1's 1.1 km mid disk does so on 0.05-2.0%
+    // of the world, 4-12% of the places that see a palm. There a chunk can
+    // submit all four families: priced here, over the ceiling, and confined
+    // to those strips.
+    const union = [[...new Set(TREE_SPECIES_COHORTS.flat())]];
+    const straddle = estimateForTier("low", "performance", union);
+    const ceiling = VEGETATION_DRAW_CEILING[straddle.profile.tier]!;
+    expect(straddle.counts.near / 3, "four families").toBe(4);
+    expect(straddle.estimate.total).toBeGreaterThan(ceiling);
+    expect(straddle.estimate.total).toBeLessThan(ceiling * 1.12);
   });
 
   it("pins submission spend without claiming full vegetation-frame closure", () => {

@@ -1,6 +1,20 @@
 import { saturate, smoothstep } from "@/src/world/noise";
+import { COLD_BIOME_WGSL, tundraShare } from "@/src/world/coldBiomes";
+import {
+  applyClimateProvinceDryness,
+  CLIMATE_PROVINCE_METERS_PER_TEMPERATURE,
+  CLIMATE_PROVINCE_SNOWLINE_METERS_PER_TEMPERATURE,
+  terrainSnowlineThermalHeight,
+  terrainThermalHeight,
+} from "@/src/world/climateProvince";
 import {
   CANOPY_CLOSURE_FILTER_WIDTH_METERS,
+  DRY_PROVINCE_DESERT_FULL,
+  DRY_PROVINCE_DESERT_ONSET,
+  DRY_PROVINCE_PARKLAND_FULL,
+  DRY_PROVINCE_PARKLAND_ONSET,
+  dryProvinceAridShare,
+  dryProvinceParklandShare,
   SOIL_LITTER_DEEP_METERS,
   SOIL_LITTER_THIN_METERS,
   soilLitterFactor,
@@ -10,6 +24,11 @@ import {
   SurfaceMaterial,
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
+import {
+  TROPICAL_COAST,
+  TROPICAL_COAST_WGSL,
+  tropicalCoastWeight,
+} from "@/src/world/tropicalCoast";
 import { FAR_SWARD_BAKE_GATE_WGSL } from "./FarSwardGate";
 import { TERRAIN_AIRPORT_SLOTS } from "./RunwayEarthworks";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
@@ -93,6 +112,20 @@ export interface LandCoverInput {
   readonly dayOfYear: number;
   /** Seasonal temperature offset in normalised units; 0 at the reference day. */
   readonly seasonalTemperatureShift: number;
+  /**
+   * The climate province's temperature offset (`sampleClimateProvince`),
+   * normalised units, negative colder. `temperature` already includes it; this
+   * raw copy drives THERMAL HEIGHT, the altitude bands' input. Exactly 0 in the
+   * temperate core, and omission reads 0, so every band is bit-identical there.
+   */
+  readonly temperatureOffset?: number;
+  /**
+   * The climate province's dryness offset, moisture units, positive drier.
+   * `moisture` already includes it; this raw copy reaches the real-drainage
+   * wetness (which ignores climatic moisture) and is there for arid terms.
+   * Exactly 0 in the temperate core; omission reads 0.
+   */
+  readonly dryness?: number;
 }
 
 export interface LandCoverWeights {
@@ -147,14 +180,168 @@ export function landCoverLitter(input: LandCoverInput): number {
 export const LAND_COVER_CANOPY_CLOSURE_GAIN = 0.55;
 export const LAND_COVER_GRASS_COVER_GAIN = 0.45;
 
-/** One classifier seam: real drainage when available, climatic proxy otherwise. */
+/**
+ * THE TUNDRA PARTITION — what open ground is made of once a province is too
+ * cold for trees (`tundraShare`, `src/world/coldBiomes.ts`).
+ *
+ * Thermal height already puts a tundra province's lowland in the alpine band,
+ * so its ground starts from the alpine law item C tuned for mountain tops:
+ * turf on the gentle ground, rock on the steep, scree between. Three things
+ * about that law are true of a mountain and false of the Arctic, and each is
+ * a gated product here:
+ *
+ * 1. TURF IS COLD-HARDY. Item C's `cool` gate (temperature 0.00-0.12) hands
+ *    turf to bare ground at the very top of a temperate mountain, because
+ *    there it is the last vegetation below the summit. Arctic sedge, moss and
+ *    dwarf herbs cover ground colder than that for thousands of kilometres,
+ *    so the tundra share lifts the gate toward 1.
+ * 2. FLAT GROUND IS NOT BEDROCK. Rock's flat `alpine * 0.25` claim stands for
+ *    a summit's wind-scoured pavement; the low-arctic plain is vegetated
+ *    tundra over permafrost, with frost-sorted gravel where it is bare. The
+ *    flat claim loses `TUNDRA_FLAT_ROCK_LOSS` of itself. The slope share is
+ *    untouched: an arctic cliff is still rock.
+ * 3. HEATH DOES NOT STOP AT 1,650 m. Shrub's upper altitude cut is a mountain
+ *    fact (the heath band gives out under the summit). Dwarf-shrub heath —
+ *    crowberry, bilberry, dwarf birch, Labrador tea — is the commonest cover
+ *    of the low Arctic, so the tundra share restores the cut toward
+ *    `TUNDRA_HEATH_CUT_FLOOR`.
+ *
+ * Measured in the tundra preset (-0.65) on flat open ground 20 m above the
+ * sea, the top four come out turf 0.56, heath 0.24, dry grass 0.11, gravel
+ * 0.09 at moisture 0.5; at 0.25 dry grass 0.59 and heath 0.33 lead, and at
+ * 0.8 turf takes 0.79. Repose-angle ground is scree (gravel 0.56-0.63) and
+ * snow claims the hills from ~800 m. Every term is `x + 0` or `x * 1` at
+ * share 0, so the temperate core is bit-identical — the frozen law of
+ * `render.webgpu-land-cover-alpine-partition` holds it, and
+ * `render.webgpu-cold-biomes` checks offset 0 against omission.
+ */
+export const TUNDRA_FLAT_ROCK_LOSS = 0.6;
+export const TUNDRA_HEATH_CUT_FLOOR = 0.85;
+
+/**
+ * One classifier seam: real drainage when available, climatic proxy otherwise.
+ *
+ * Climatic moisture already carries the province's dryness. Real drainage does
+ * not read climate at all, so a dry province would never reach eroded ground;
+ * it is applied there instead, the same way (`applyClimateProvinceDryness`).
+ * A zero dryness returns the shipped value bit for bit.
+ */
 export function landCoverWetness(input: LandCoverInput): number {
   if (input.flowAccumulationAreaM2 === undefined) return saturate(input.moisture);
-  return terrainTopographicWetnessToUnit(terrainTopographicWetnessIndex(
-    input.flowAccumulationAreaM2,
-    terrainSlopeAngleFromNormalizedSteepness(input.slope),
-  ));
+  return applyClimateProvinceDryness(
+    terrainTopographicWetnessToUnit(terrainTopographicWetnessIndex(
+      input.flowAccumulationAreaM2,
+      terrainSlopeAngleFromNormalizedSteepness(input.slope),
+    )),
+    input.dryness ?? 0,
+  );
 }
+
+/**
+ * The dry provinces' claims (`dryProvinceShares`), each already scaled by its
+ * share.
+ *
+ * A HIGH DESERT (sagebrush steppe) is not one colour: grey-olive sage on the
+ * gentle ground that holds a little water, tan bunchgrass between, pale bare
+ * soil on the driest basin floors, gravel pavement on the fans, and rock on any
+ * slope whose soil the wind has taken. So its claims key on the same two
+ * drivers the temperate law reads, slope and wetness, and differ only in what
+ * they hand each band to. The province SCALES moisture rather than clamping
+ * it, so the dried field still carries its 850 m / 5.2 km structure and
+ * "driest" is a mosaic, not a disc:
+ *
+ *  - SAND takes the flattest, driest ground: basin floors and playas.
+ *  - SHRUB (sage) takes the gentle ground that is a little less dry.
+ *  - DRYGRASS keeps the middle, damped a little: bunchgrass.
+ *  - GRAVEL takes the fan band, about 10-30 degrees.
+ *  - ROCK starts on gentler slopes than the temperate `steep` window, because
+ *    desert hills carry almost no soil.
+ *  - Grass is damped hard, not removed: the odd green seep stays.
+ *
+ * An OAK SAVANNA needs no claim of its own: the dried moisture already hands
+ * the open ground to DryGrass. It only damps Grass, so the green is left to
+ * the wettest hollows and the golden sward carries the rest.
+ *
+ * Every claim is a product with a share; at zero dryness they are all exactly
+ * 0 and both keep factors exactly 1.
+ */
+export const LAND_COVER_DRY_PROVINCE = Object.freeze({
+  /** Basin-floor flatness, slope window (about 5 to 14 degrees). */
+  flatLow: 0.004,
+  flatHigh: 0.03,
+  /** Bare ground: the driest wetness in a desert's dried range. */
+  bareLow: 0.18,
+  bareHigh: 0.28,
+  /** Sage: the less dry end of the same range. */
+  sageLow: 0.19,
+  sageHigh: 0.31,
+  /** Sage holds ground to about 25 degrees and is gone by 40. */
+  shrubSlopeLow: 0.1,
+  shrubSlopeHigh: 0.24,
+  /** The fan band: rising 11-21 degrees, falling 33-46. */
+  fanLow: 0.02,
+  fanHigh: 0.07,
+  fanFadeLow: 0.16,
+  fanFadeHigh: 0.3,
+  /** Bare rock from about 35 degrees, full by 53. */
+  rockLow: 0.18,
+  rockHigh: 0.4,
+  sandGain: 1.15,
+  shrubBase: 0.1,
+  shrubWetGain: 0.5,
+  gravelGain: 0.3,
+  rockGain: 0.4,
+  desertGrassCut: 0.9,
+  desertDryGrassCut: 0.15,
+  parklandGrassCut: 0.6,
+});
+
+export interface LandCoverDryProvinceTerms {
+  readonly sand: number;
+  readonly shrub: number;
+  readonly gravel: number;
+  readonly rock: number;
+  readonly grassKeep: number;
+  readonly dryGrassKeep: number;
+}
+
+type MutableDryProvinceTerms = { -readonly [K in keyof LandCoverDryProvinceTerms]: number };
+
+/**
+ * `target` lets the per-sample classifier reuse one record: the blade-driver
+ * bake classifies on the main thread, where nothing may allocate per sample.
+ * Callers that keep the result omit it and get their own.
+ */
+export function landCoverDryProvinceTerms(
+  dryness: number,
+  slope: number,
+  wetness: number,
+  target: MutableDryProvinceTerms = {
+    sand: 0, shrub: 0, gravel: 0, rock: 0, grassKeep: 1, dryGrassKeep: 1,
+  },
+): LandCoverDryProvinceTerms {
+  const k = LAND_COVER_DRY_PROVINCE;
+  const arid = dryProvinceAridShare(dryness);
+  const parkland = dryProvinceParklandShare(dryness, arid);
+  const flat = 1 - smoothstep(k.flatLow, k.flatHigh, slope);
+  const bare = 1 - smoothstep(k.bareLow, k.bareHigh, wetness);
+  const sageWet = smoothstep(k.sageLow, k.sageHigh, wetness);
+  const holdsShrub = 1 - smoothstep(k.shrubSlopeLow, k.shrubSlopeHigh, slope);
+  const fan = smoothstep(k.fanLow, k.fanHigh, slope)
+    * (1 - smoothstep(k.fanFadeLow, k.fanFadeHigh, slope));
+  target.sand = arid * flat * bare * k.sandGain;
+  target.shrub = arid * holdsShrub * (k.shrubBase + sageWet * k.shrubWetGain);
+  target.gravel = arid * fan * k.gravelGain;
+  target.rock = arid * smoothstep(k.rockLow, k.rockHigh, slope) * k.rockGain;
+  target.grassKeep = 1 - arid * k.desertGrassCut - parkland * k.parklandGrassCut;
+  target.dryGrassKeep = 1 - arid * k.desertDryGrassCut;
+  return target;
+}
+
+/** The classifier's own record (see `landCoverDryProvinceTerms`); read at once, never kept. */
+const DRY_TERMS_SCRATCH: MutableDryProvinceTerms = {
+  sand: 0, shrub: 0, gravel: 0, rock: 0, grassKeep: 1, dryGrassKeep: 1,
+};
 
 /**
  * The ten suitabilities, in `SurfaceMaterial` order.
@@ -173,6 +360,16 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
     airportInfluence,
   } = input;
   const wetness = landCoverWetness(input);
+  // CLIMATE PROVINCES: the altitude bands read THERMAL height, the altitude
+  // whose climate this point has, so a cold province at sea level behaves like
+  // today's ground that much higher up. The shore band, Sand and the wave-washed
+  // Gravel band stay on real elevation: the sea does not move with the climate.
+  // The snowline follows only part of the shift (see
+  // CLIMATE_PROVINCE_SNOWLINE_RESPONSE). The offset is exactly 0 in the
+  // temperate core and both heights are then `elevation - 0`, bit for bit.
+  const temperatureOffset = input.temperatureOffset ?? 0;
+  const thermal = terrainThermalHeight(elevation, temperatureOffset);
+  const snowHeight = terrainSnowlineThermalHeight(elevation, temperatureOffset);
 
   // The snowline descends with the season; the reference day leaves it exactly
   // where Phase 3 tuned it.
@@ -188,7 +385,11 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // 3 m matches the density field's own shoreline gate
   // (`smoothstep(1.5, 7, elevation)`), so the ground and the plants agree
   // about where the beach ends.
-  const shore = smoothstep(-1, 3, elevation);
+  //
+  // Tropical coast: a wider beach, up to a ~6 m ridge, where the province is
+  // hot and wet (`tropicalCoastWeight`). Exactly `3 + 0` outside the tropics.
+  const tropical = tropicalCoastWeight(temperatureOffset, input.dryness ?? 0);
+  const shore = smoothstep(-1, 3 + TROPICAL_COAST.beachExtraMeters * tropical, elevation);
   const dry = 1 - smoothstep(0.28, 0.62, wetness);
   const wet = smoothstep(0.3, 0.64, wetness);
   const warm = smoothstep(0.16, 0.34, temperature);
@@ -225,8 +426,8 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // `gentle + steep === 1` at every slope, so the gap cannot reopen.
   const steep = smoothstep(0.24, 0.58, slope);
   const gentle = 1 - steep;
-  const alpine = smoothstep(420, 980, elevation);
-  const lowland = 1 - smoothstep(320, 900, elevation);
+  const alpine = smoothstep(420, 980, thermal);
+  const lowland = 1 - smoothstep(320, 900, thermal);
   const airfield = saturate(airportInfluence);
 
   // THE ALPINE COVER PARTITION ("item C").
@@ -264,8 +465,11 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   //    reversed-argument smoothstep.
   // 2. ROCK NEEDS SLOPE AT ALTITUDE: see the Rock term.
   // 3. SCREE APRONS: see the Gravel term.
-  const cool = smoothstep(0, 0.12, temperature);
-  const snowBand = smoothstep(snowline - 260, snowline - 40, elevation);
+  // The tundra partition's turf gate (1): `cool + 0` in the temperate core.
+  const tundra = tundraShare(temperatureOffset);
+  const coolTemperate = smoothstep(0, 0.12, temperature);
+  const cool = coolTemperate + (1 - coolTemperate) * tundra;
+  const snowBand = smoothstep(snowline - 260, snowline - 40, snowHeight);
   // Turf has its OWN slope window, not `gentle`: `gentle` is still 0.5 at 54
   // degrees (steep's calibrated window), and measured with it turf reached
   // 45-50 degree ground. A sward holds to about 35 degrees and is gone by 47.
@@ -277,6 +481,12 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // 0.21 is ~38 deg. Loose debris rests here; gentler ground holds soil and
   // steeper ground sheds the debris onto this band.
   const screeBand = smoothstep(0.085, 0.145, slope) * (1 - smoothstep(0.2, 0.27, slope));
+
+  // THE HIGH DESERT (sagebrush steppe). Every term below is multiplied by
+  // `arid`, which is exactly 0 outside a dry province, so the temperate law is
+  // bit-identical there: additive claims are `x + 0` and the two damping
+  // factors are `x * 1`. See `landCoverDryProvinceTerms` for the shapes.
+  const desert = landCoverDryProvinceTerms(input.dryness ?? 0, slope, wetness, DRY_TERMS_SCRATCH);
 
   const closure = saturate(input.canopyClosure ?? 0);
   /**
@@ -379,7 +589,10 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // Moving the floor rather than widening a gate is the smaller change: it
   // cannot touch the shore band, which is doing real work at the waterline,
   // and it changes only ground that had no claimant at all.
-  suitability[SurfaceMaterial.Sand] = (1 - shore) * gentle * 1.35;
+  suitability[SurfaceMaterial.Sand] = (1 - shore) * gentle * 1.35
+    // The desert floor, inland. Off the alpine band, which keeps its own
+    // partition (turf, scree, rock) in a dry province too.
+    + shore * (1 - alpine) * desert.sand;
   // Grass: the default lowland cover, and what an airfield is mown to. The
   // sward gain rides the CLIMATIC term only — an airfield is mown grass by
   // decree and must not be scaled by whether the wild sward would grow there.
@@ -392,7 +605,7 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // second peak. (Before item C that same envelope fell to 0 by 900 m.)
   suitability[SurfaceMaterial.Grass] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
-      * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+      * (1 + sward * LAND_COVER_GRASS_COVER_GAIN) * desert.grassKeep
     + alpineTurf * (0.35 + wet * 0.65) * 0.9
     + airfield * 2.4;
   // The unclaimed-ground floor, moved here from Sand. Grass is what a temperate
@@ -424,12 +637,17 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // CLOSED canopy sees today, so the `1.1` base and the gain constant carry
   // their existing meaning unchanged — only open ground moves.
   suitability[SurfaceMaterial.ForestFloor] =
-    shore * wet * warm * (1 - smoothstep(900, 1_350, elevation)) * (1 - steep * 0.8) * 1.1
+    shore * wet * warm * (1 - smoothstep(900, 1_350, thermal)) * (1 - steep * 0.8) * 1.1
     * (1 + landCoverLitter(input) * LAND_COVER_FOREST_FLOOR_LITTER_GAIN)
     * closureGate;
-  // Shrub: the highland band — drier, cooler, tolerant of slope.
+  // Shrub: the highland band — drier, cooler, tolerant of slope. The tundra
+  // partition (3) lifts its altitude cut toward the heath floor.
+  const heathCut = 1 - smoothstep(1_150, 1_650, thermal);
   suitability[SurfaceMaterial.Shrub] =
-    shore * alpine * (1 - smoothstep(1_150, 1_650, elevation)) * (0.4 + dry * 0.6) * 0.95;
+    shore * alpine * (heathCut + Math.max(0, TUNDRA_HEATH_CUT_FLOOR - heathCut) * tundra)
+      * (0.4 + dry * 0.6) * 0.95
+    // Sagebrush: the desert's shrub band reaches down to the basin floors.
+    + shore * heathCut * desert.shrub;
   // Rock: slope first, altitude second. A cliff is rock at any height.
   //
   // Item C: ROCK NEEDS SLOPE AT ALTITUDE. The altitude share was a flat
@@ -440,14 +658,22 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // `smoothstep(0.24, 0.58, slope)` window are NOT touched — the coefficient
   // is calibrated against that exact window (see the `6-13` note above: moving
   // the window took Rock from 18.77% to 35.40% of land).
+  //
+  // The tundra partition (2): the FLAT claim gives up `TUNDRA_FLAT_ROCK_LOSS`
+  // of its 0.25, and the slope share stays. Written as a subtraction so item
+  // C's own product stays as calibrated: `- 0` in the temperate core.
   suitability[SurfaceMaterial.Rock] =
-    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope)));
+    shore * (
+      steep * 1.25 + alpine * (0.25 + 0.30 * smoothstep(0.10, 0.30, slope))
+        - alpine * 0.25 * tundra * TUNDRA_FLAT_ROCK_LOSS
+    )
+    + shore * desert.rock;
   // Snow: above the seasonal snowline, and shed by steep faces. M-3: shed over
   // 39-55 degrees, where it was 60-72. Dry snow avalanches off anything much
   // past 40, and at the old threshold a snowfield on the reshaped massifs showed
   // no rock at all. This is the ONE M-3 term that acts at every altitude.
   suitability[SurfaceMaterial.Snow] =
-    smoothstep(snowline - 90, snowline + 130, elevation)
+    smoothstep(snowline - 90, snowline + 130, snowHeight)
     * (1 - smoothstep(0.22, 0.42, slope))
     * 1.5;
   // Dry grass: the rain-shadow companion to grass, off the ecotone chain.
@@ -455,6 +681,7 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // reason Grass's is.
   suitability[SurfaceMaterial.DryGrass] =
     shore * lowland * gentle * dry * warm * 0.8 * (1 + sward * LAND_COVER_GRASS_COVER_GAIN)
+      * desert.dryGrassKeep
     + alpineTurf * dry * 0.95;
   // Gravel: scree below cliffs and the wave-washed band above sand.
   //
@@ -463,11 +690,14 @@ export function landCoverSuitabilities(input: LandCoverInput): number[] {
   // `alpine * screeBand * (0.5 + dry * 0.5) * 0.85`: a claim confined to the
   // repose-angle band, stronger where the ground is dry (wet repose-angle
   // ground holds turf instead, which is the mosaic the reference shows).
+  // A tropical beach is sand to the waterline: its wave-washed band fades
+  // with the tropical weight (`* 1` elsewhere).
   suitability[SurfaceMaterial.Gravel] =
     shore * (
-      steep * 0.35 + (1 - shore) * 0.4 + alpine * 0.2
+      steep * 0.35 + (1 - shore) * 0.4 * (1 - tropical) + alpine * 0.2
       + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
-    );
+    )
+    + shore * desert.gravel;
   // The paved materials are never climatic: `3-9`'s airport SDF paints them.
   suitability[SurfaceMaterial.Asphalt] = 0;
   suitability[SurfaceMaterial.Concrete] = 0;
@@ -633,6 +863,11 @@ function wgslConstant(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : String(value);
 }
 
+/** One `LAND_COVER_DRY_PROVINCE` constant as a WGSL literal: one table, both twins. */
+function dry(name: keyof typeof LAND_COVER_DRY_PROVINCE): string {
+  return wgslConstant(LAND_COVER_DRY_PROVINCE[name]);
+}
+
 /**
  * The same ten functions, transliterated.
  *
@@ -665,8 +900,13 @@ struct LandCoverInput {
   airportInfluence: f32,
   dayOfYear: f32,
   seasonalTemperatureShift: f32,
+  // Climate provinces: the raw offsets, exactly 0 in the temperate core. The
+  // temperature and moisture above already include them; these drive thermal
+  // height and the real-drainage wetness. See the TS twin.
+  temperatureOffset: f32,
+  dryness: f32,
 };
-
+${COLD_BIOME_WGSL}
 const LAND_COVER_COUNT: u32 = ${SURFACE_MATERIAL_COUNT}u;
 const LAND_COVER_TOP: u32 = ${LAND_COVER_TOP_MATERIALS}u;
 const LAND_COVER_SOFTMAX_BASE: f32 = ${LAND_COVER_SOFTMAX_BASE_TEMPERATURE};
@@ -679,6 +919,16 @@ const LAND_COVER_FLOOR_LITTER_GAIN: f32 = ${
 };
 const LAND_COVER_CLOSURE_GAIN: f32 = ${wgslConstant(LAND_COVER_CANOPY_CLOSURE_GAIN)};
 const LAND_COVER_SWARD_GAIN: f32 = ${wgslConstant(LAND_COVER_GRASS_COVER_GAIN)};
+const LAND_COVER_DESERT_ONSET: f32 = ${wgslConstant(DRY_PROVINCE_DESERT_ONSET)};
+const LAND_COVER_DESERT_FULL: f32 = ${wgslConstant(DRY_PROVINCE_DESERT_FULL)};
+const LAND_COVER_PARKLAND_ONSET: f32 = ${wgslConstant(DRY_PROVINCE_PARKLAND_ONSET)};
+const LAND_COVER_PARKLAND_FULL: f32 = ${wgslConstant(DRY_PROVINCE_PARKLAND_FULL)};
+const LAND_COVER_THERMAL_METERS: f32 = ${wgslConstant(CLIMATE_PROVINCE_METERS_PER_TEMPERATURE)};
+const LAND_COVER_SNOWLINE_THERMAL_METERS: f32 = ${
+  wgslConstant(CLIMATE_PROVINCE_SNOWLINE_METERS_PER_TEMPERATURE)
+};
+const LAND_COVER_TUNDRA_FLAT_ROCK_LOSS: f32 = ${wgslConstant(TUNDRA_FLAT_ROCK_LOSS)};
+const LAND_COVER_TUNDRA_HEATH_CUT_FLOOR: f32 = ${wgslConstant(TUNDRA_HEATH_CUT_FLOOR)};
 
 /** Transliteration of densityField.ts's soilLitterFactor, injected constants. */
 fn landCoverLitter(input: LandCoverInput) -> f32 {
@@ -699,36 +949,83 @@ fn landCoverWetness(input: LandCoverInput) -> f32 {
       / (tanSlope + ${TERRAIN_TWI_SLOPE_EPSILON}),
   );
   let mapped = kSaturate((twi - ${TERRAIN_TWI_DRY}.0) / ${TERRAIN_TWI_WET - TERRAIN_TWI_DRY}.0);
-  return mapped * mapped * (3.0 - 2.0 * mapped);
+  // Climate provinces: real drainage ignores climatic moisture, so the
+  // province's dryness is applied here. A zero dryness is m - 0 * k == m.
+  return kProvinceDryness(mapped * mapped * (3.0 - 2.0 * mapped), input.dryness);
 }
 
+struct LandCoverDryProvinceTerms {
+  sand: f32,
+  shrub: f32,
+  gravel: f32,
+  rock: f32,
+  grassKeep: f32,
+  dryGrassKeep: f32,
+};
+
+/** The dry provinces' claims, scaled by their shares — see the TS twin. */
+fn landCoverDryProvinceTerms(dryness: f32, slope: f32, wetness: f32) -> LandCoverDryProvinceTerms {
+  // densityField.ts's dryProvinceShares, injected: the ground and the plants
+  // read one pair of shares.
+  let arid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, dryness);
+  let parkland = kSmoothstep(LAND_COVER_PARKLAND_ONSET, LAND_COVER_PARKLAND_FULL, dryness)
+    * (1.0 - arid);
+  let flat = 1.0 - kSmoothstep(${dry("flatLow")}, ${dry("flatHigh")}, slope);
+  let bare = 1.0 - kSmoothstep(${dry("bareLow")}, ${dry("bareHigh")}, wetness);
+  let sageWet = kSmoothstep(${dry("sageLow")}, ${dry("sageHigh")}, wetness);
+  let holdsShrub = 1.0 - kSmoothstep(${dry("shrubSlopeLow")}, ${dry("shrubSlopeHigh")}, slope);
+  let fan = kSmoothstep(${dry("fanLow")}, ${dry("fanHigh")}, slope)
+    * (1.0 - kSmoothstep(${dry("fanFadeLow")}, ${dry("fanFadeHigh")}, slope));
+  var terms: LandCoverDryProvinceTerms;
+  terms.sand = arid * flat * bare * ${dry("sandGain")};
+  terms.shrub = arid * holdsShrub * (${dry("shrubBase")} + sageWet * ${dry("shrubWetGain")});
+  terms.gravel = arid * fan * ${dry("gravelGain")};
+  terms.rock = arid * kSmoothstep(${dry("rockLow")}, ${dry("rockHigh")}, slope) * ${dry("rockGain")};
+  terms.grassKeep = 1.0 - arid * ${dry("desertGrassCut")} - parkland * ${dry("parklandGrassCut")};
+  terms.dryGrassKeep = 1.0 - arid * ${dry("desertDryGrassCut")};
+  return terms;
+}
+
+${TROPICAL_COAST_WGSL}
 fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIAL_COUNT}> {
   let elevation = input.elevationMeters;
   let slope = input.slope;
   let wetness = landCoverWetness(input);
+  // Climate provinces: the altitude bands read thermal height; shore, Sand
+  // and the wave-washed band stay on real elevation. See the TS twin.
+  let thermal = elevation - input.temperatureOffset * LAND_COVER_THERMAL_METERS;
+  let snowHeight = elevation - input.temperatureOffset * LAND_COVER_SNOWLINE_THERMAL_METERS;
   let snowline = LAND_COVER_SNOWLINE_REFERENCE
     + input.seasonalTemperatureShift * LAND_COVER_METERS_PER_TEMPERATURE
     + input.aspect * 90.0;
-  let shore = kSmoothstep(-1.0, 3.0, elevation);
+  // Tropical coast: the wider beach — see the TS twin.
+  let tropical = tropicalCoastWeight(input.temperatureOffset, input.dryness);
+  let shore = kSmoothstep(-1.0, 3.0 + ${wgslConstant(TROPICAL_COAST.beachExtraMeters)} * tropical, elevation);
   let dry = 1.0 - kSmoothstep(0.28, 0.62, wetness);
   let wet = kSmoothstep(0.3, 0.64, wetness);
   let warm = kSmoothstep(0.16, 0.34, input.temperature);
   // 6-13: one partition, anchored on steep's calibrated window — see TS twin.
   let steep = kSmoothstep(0.24, 0.58, slope);
   let gentle = 1.0 - steep;
-  let alpine = kSmoothstep(420.0, 980.0, elevation);
-  let lowland = 1.0 - kSmoothstep(320.0, 900.0, elevation);
+  let alpine = kSmoothstep(420.0, 980.0, thermal);
+  let lowland = 1.0 - kSmoothstep(320.0, 900.0, thermal);
   let airfield = kSaturate(input.airportInfluence);
   // Item C, the alpine cover partition — see the TS twin. Every new term is
   // multiplied by alpine, which is exactly 0.0 at and below 420 m, so the
   // lowland law is bit-identical to what shipped.
-  let cool = kSmoothstep(0.0, 0.12, input.temperature);
-  let snowBand = kSmoothstep(snowline - 260.0, snowline - 40.0, elevation);
+  // The tundra partition — see the TS twin. Exactly x + 0 / x * 1 at share 0.
+  let tundra = coldTundraShare(input.temperatureOffset);
+  let coolTemperate = kSmoothstep(0.0, 0.12, input.temperature);
+  let cool = coolTemperate + (1.0 - coolTemperate) * tundra;
+  let snowBand = kSmoothstep(snowline - 260.0, snowline - 40.0, snowHeight);
   let turfSlope = 1.0 - kSmoothstep(0.16, 0.32, slope);
   let alpineTurf = shore * alpine * turfSlope * cool * (1.0 - snowBand);
   let screeBand = kSmoothstep(0.085, 0.145, slope) * (1.0 - kSmoothstep(0.2, 0.27, slope));
   let closure = kSaturate(input.canopyClosure);
   let sward = kSaturate(input.grassCover);
+  // The high desert: every term multiplied by arid, exactly 0 outside a dry
+  // province, so the temperate law is bit-identical there — see the TS twin.
+  let desert = landCoverDryProvinceTerms(input.dryness, slope, wetness);
 
   var suitability: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   // \`0608fed\` moved the unclaimed-ground floor off Sand and onto Grass in the
@@ -749,37 +1046,46 @@ fn landCoverSuitabilities(input: LandCoverInput) -> array<f32, ${SURFACE_MATERIA
   // **Do not read this as the fix for the grey-tan strips.** That report is
   // still open, and \`3e4bf32\` strikes the sentence in \`0608fed\` that claimed
   // otherwise.
-  suitability[${SurfaceMaterial.Sand}] = (1.0 - shore) * gentle * 1.35;
+  suitability[${SurfaceMaterial.Sand}] = (1.0 - shore) * gentle * 1.35
+    + shore * (1.0 - alpine) * desert.sand;
   suitability[${SurfaceMaterial.Grass}] =
     shore * lowland * gentle * warm * (0.35 + wet * 0.65)
-      * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+      * (1.0 + sward * LAND_COVER_SWARD_GAIN) * desert.grassKeep
     + alpineTurf * (0.35 + wet * 0.65) * 0.9
     + airfield * 2.4;
   // A FLOOR, not a bonus: \`max\`, not \`+\`, so it raises only ground that had no
   // claimant instead of giving Grass a universal gain over its rivals.
   suitability[${SurfaceMaterial.Grass}] = max(suitability[${SurfaceMaterial.Grass}], 0.02);
   suitability[${SurfaceMaterial.ForestFloor}] =
-    shore * wet * warm * (1.0 - kSmoothstep(900.0, 1350.0, elevation))
+    shore * wet * warm * (1.0 - kSmoothstep(900.0, 1350.0, thermal))
       * (1.0 - steep * 0.8) * 1.1
       * (1.0 + landCoverLitter(input) * LAND_COVER_FLOOR_LITTER_GAIN)
       // 6-13: closure GATES the litter rather than gaining it — see TS twin.
       * (closure * (1.0 + LAND_COVER_CLOSURE_GAIN));
+  let heathCut = 1.0 - kSmoothstep(1150.0, 1650.0, thermal);
   suitability[${SurfaceMaterial.Shrub}] =
-    shore * alpine * (1.0 - kSmoothstep(1150.0, 1650.0, elevation))
-      * (0.4 + dry * 0.6) * 0.95;
+    shore * alpine * (heathCut + max(0.0, LAND_COVER_TUNDRA_HEATH_CUT_FLOOR - heathCut) * tundra)
+      * (0.4 + dry * 0.6) * 0.95
+    + shore * heathCut * desert.shrub;
   suitability[${SurfaceMaterial.Rock}] =
-    shore * (steep * 1.25 + alpine * (0.25 + 0.30 * kSmoothstep(0.10, 0.30, slope)));
+    shore * (
+      steep * 1.25 + alpine * (0.25 + 0.30 * kSmoothstep(0.10, 0.30, slope))
+        - alpine * 0.25 * tundra * LAND_COVER_TUNDRA_FLAT_ROCK_LOSS
+    )
+    + shore * desert.rock;
   suitability[${SurfaceMaterial.Snow}] =
-    kSmoothstep(snowline - 90.0, snowline + 130.0, elevation)
+    kSmoothstep(snowline - 90.0, snowline + 130.0, snowHeight)
       * (1.0 - kSmoothstep(0.22, 0.42, slope)) * 1.5;
   suitability[${SurfaceMaterial.DryGrass}] =
     shore * lowland * gentle * dry * warm * 0.8 * (1.0 + sward * LAND_COVER_SWARD_GAIN)
+      * desert.dryGrassKeep
     + alpineTurf * dry * 0.95;
   suitability[${SurfaceMaterial.Gravel}] =
     shore * (
-      steep * 0.35 + (1.0 - shore) * 0.4 + alpine * 0.2
+      steep * 0.35 + (1.0 - shore) * 0.4 * (1.0 - tropical) + alpine * 0.2
       + alpine * screeBand * (0.5 + dry * 0.5) * 0.85
-    );
+    )
+    + shore * desert.gravel;
   suitability[${SurfaceMaterial.Asphalt}] = 0.0;
   suitability[${SurfaceMaterial.Concrete}] = 0.0;
   return suitability;
@@ -862,6 +1168,62 @@ export const LAND_COVER_SUPERSAMPLE_EDGE = 2;
  * there would be 8, for the same answer.
  */
 export const LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS = CANOPY_CLOSURE_FILTER_WIDTH_METERS;
+
+/**
+ * The far desert: what a zero-trust page may say about a dry province.
+ *
+ * From level 5 (128 m texels) a page is too coarse to trust, and the fragment
+ * draws its pair only when both are SWARDS (`FarSwardGate.ts`); any other pair
+ * falls back to the continuous Grass base. That is the right rule for a
+ * temperate world, where the refused pairs are coasts, cliffs and forest
+ * floors under impostor canopy. In a desert it is not: sand, gravel pavement
+ * and bare hills are most of the ground, and every one of them is refused, so
+ * from a few kilometres out the desert would turn green.
+ *
+ * So the bake hands a dry province's sand, gravel and rock weight to DryGrass,
+ * the nearest sward in colour (tan). The pair the fragment then sees at zero
+ * trust is sage and straw, which passes the gate, and the fragment's own slope
+ * rock still greys the real faces.
+ *
+ * **It RAMPS with texel size, linear in level, from none at 16 m texels (L2)
+ * to all of it at 128 m (L5).** A switch at L5 alone drew a ring: the
+ * partly-trusted levels fade a non-sward pair toward its primary, so a
+ * Sand-primary texel stayed pure sand (about 1.8x straw's albedo) through L4
+ * and turned straw at L5, a bright edge that followed the aircraft wherever
+ * sand was primary. Ramped, each texel's primary flips at its own level (L3
+ * moves a third of the weight, L4 two thirds), and the edge breaks into the
+ * patches every other level border is. L0-L2, the near pages, keep the
+ * desert's real materials. At zero dryness the share is 0 and the bake does
+ * not enter the branch, so the temperate bake is untouched.
+ */
+export const LAND_COVER_FAR_DESERT_START_TEXEL_METERS = 16;
+export const LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS = 128;
+
+/** The ramp: 0 at and below 16 m texels, 1 at and above 128 m, linear in level. */
+export function landCoverFarDesertRamp(channelTexelMeters: number): number {
+  return saturate(
+    Math.log2(channelTexelMeters / LAND_COVER_FAR_DESERT_START_TEXEL_METERS)
+      / Math.log2(LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS / LAND_COVER_FAR_DESERT_START_TEXEL_METERS),
+  );
+}
+
+export function landCoverFarDesertWeights(
+  weightsByMaterial: readonly number[],
+  dryness: number,
+  channelTexelMeters: number,
+): number[] {
+  const out = [...weightsByMaterial];
+  const arid = smoothstep(DRY_PROVINCE_DESERT_ONSET, DRY_PROVINCE_DESERT_FULL, dryness)
+    * landCoverFarDesertRamp(channelTexelMeters);
+  if (!(arid > 0)) return out;
+  const moved = (out[SurfaceMaterial.Sand]! + out[SurfaceMaterial.Gravel]!
+    + out[SurfaceMaterial.Rock]!) * arid;
+  out[SurfaceMaterial.Sand] = out[SurfaceMaterial.Sand]! * (1 - arid);
+  out[SurfaceMaterial.Gravel] = out[SurfaceMaterial.Gravel]! * (1 - arid);
+  out[SurfaceMaterial.Rock] = out[SurfaceMaterial.Rock]! * (1 - arid);
+  out[SurfaceMaterial.DryGrass] = out[SurfaceMaterial.DryGrass]! + moved;
+  return out;
+}
 
 /**
  * The splat bake (`4-6`).
@@ -1067,6 +1429,11 @@ fn splatClassify(
   // ones. A fine tap arrives with -1 and evaluates both here, as it always has
   // (moisture is saturated to [0, 1], so -1 cannot be a value).
   tap: vec4f,
+  // Climate provinces: (temperature offset, dryness) at the texel centre. The
+  // province moves over 60 km and more, so one sample per texel is the field at
+  // every tap to within ~1e-3 at the coarsest level, and it is (0, 0) exactly
+  // in the temperate core whatever the tap.
+  province: vec2f,
 ) -> LandCoverWeights {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
@@ -1114,10 +1481,12 @@ fn splatClassify(
   if (tap.z >= 0.0) {
     input.moisture = tap.z;
   } else {
-    input.moisture = terrainMoisture(localX, localZ);
+    input.moisture = terrainMoisture(localX, localZ, province.y);
     tapClimate = terrainClimate(localX, localZ);
   }
-  input.temperature = terrainTemperatureFromClimate(tapClimate, elevation);
+  input.temperature = terrainTemperatureFromClimate(tapClimate, elevation, province.x);
+  input.temperatureOffset = province.x;
+  input.dryness = province.y;
   input.aspect = 0.0;
   // The airport's graded platform is mown grass (1B-6), and its influence is
   // the same rounded-rectangle field the earthworks key on.
@@ -1142,7 +1511,14 @@ fn splatClassify(
  * because the riparian corridor is 6-50 m wide - an order of magnitude below
  * this channel's own band limit, so it could not survive into it anyway.
  */
-fn splatCanopyAt(job: SplatJob, localX: f32, localZ: f32, moisture: f32) -> vec2f {
+fn splatCanopyAt(
+  job: SplatJob,
+  localX: f32,
+  localZ: f32,
+  moisture: f32,
+  temperatureOffset: f32,
+  dryness: f32,
+) -> vec2f {
   // **The gutter offset is packed in CHANNEL texels and this reads HEIGHT
   // texels.** \`job.placement.xy\` is \`-GUTTER * channelTexel\`, so dividing it by
   // \`shape.y\` over-shifts by \`GUTTER * (channelTexel / heightTexel - 1)\`. The
@@ -1174,6 +1550,11 @@ fn splatCanopyAt(job: SplatJob, localX: f32, localZ: f32, moisture: f32) -> vec2
   // baked closure equal to the canopy actually planted on the apron.
   drivers.airportInfluence = kSaturate(splatAirportInfluence(job, localX, localZ));
   drivers.shoreDistanceMeters = 1e9;
+  // Climate provinces: the treeline reads thermal height.
+  drivers.temperatureOffset = temperatureOffset;
+  // ... and the dry provinces' lone trees and pinyon read the raw dryness, so
+  // the baked closure is the canopy generation.ts actually plants there.
+  drivers.dryness = dryness;
   // The band limit is hoisted into the appended lattice table's own weights,
   // so this driver is inert here — the include never reads it.
   drivers.filterWidthMeters = 0.0;
@@ -1182,8 +1563,9 @@ fn splatCanopyAt(job: SplatJob, localX: f32, localZ: f32, moisture: f32) -> vec2
 }
 
 /** The canopy at a point whose moisture nobody has evaluated yet. */
-fn splatCanopy(job: SplatJob, localX: f32, localZ: f32) -> vec2f {
-  return splatCanopyAt(job, localX, localZ, terrainMoisture(localX, localZ));
+fn splatCanopy(job: SplatJob, localX: f32, localZ: f32, province: vec2f) -> vec2f {
+  return splatCanopyAt(
+    job, localX, localZ, terrainMoisture(localX, localZ, province.y), province.x, province.y);
 }
 
 /** Average the WEIGHT VECTORS of a 2x2 supersample, not their argmax. */
@@ -1193,6 +1575,7 @@ fn splatSupersample(
   localZ: f32,
   shift: f32,
   tapCanopy: array<vec4f, 4>,
+  province: vec2f,
 ) -> LandCoverWeights {
   var accumulated: array<f32, ${SURFACE_MATERIAL_COUNT}>;
   for (var index = 0u; index < LAND_COVER_COUNT; index = index + 1u) {
@@ -1204,10 +1587,26 @@ fn splatSupersample(
   for (var sample = 0u; sample < 4u; sample = sample + 1u) {
     let dx = select(-step, step, (sample & 1u) == 1u);
     let dz = select(-step, step, (sample & 2u) == 2u);
-    let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample]);
+    let weights = splatClassify(job, localX + dx, localZ + dz, shift, taps[sample], province);
     for (var slot = 0u; slot < LAND_COVER_TOP; slot = slot + 1u) {
       accumulated[u32(weights.ids[slot])] =
         accumulated[u32(weights.ids[slot])] + weights.weights[slot] * 0.25;
+    }
+  }
+  // The far desert: see landCoverFarDesertWeights (the TS twin). Bake-time
+  // only, and only where a dry province makes the share non-zero.
+  if (job.shape.x > ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)}) {
+    let farRamp = kSaturate(log2(job.shape.x / ${LAND_COVER_FAR_DESERT_START_TEXEL_METERS.toFixed(1)})
+      / ${Math.log2(LAND_COVER_FAR_DESERT_FULL_TEXEL_METERS / LAND_COVER_FAR_DESERT_START_TEXEL_METERS).toFixed(1)});
+    let farArid = kSmoothstep(LAND_COVER_DESERT_ONSET, LAND_COVER_DESERT_FULL, province.y) * farRamp;
+    if (farArid > 0.0) {
+      let moved = (accumulated[${SurfaceMaterial.Sand}] + accumulated[${SurfaceMaterial.Gravel}]
+        + accumulated[${SurfaceMaterial.Rock}]) * farArid;
+      accumulated[${SurfaceMaterial.Sand}] = accumulated[${SurfaceMaterial.Sand}] * (1.0 - farArid);
+      accumulated[${SurfaceMaterial.Gravel}] =
+        accumulated[${SurfaceMaterial.Gravel}] * (1.0 - farArid);
+      accumulated[${SurfaceMaterial.Rock}] = accumulated[${SurfaceMaterial.Rock}] * (1.0 - farArid);
+      accumulated[${SurfaceMaterial.DryGrass}] = accumulated[${SurfaceMaterial.DryGrass}] + moved;
     }
   }
   // Re-select the top four from the AVERAGED vector.
@@ -1301,7 +1700,10 @@ fn bakeSplat(
   // The surface shader loads them exactly; it never filters between ids.
   // Both seasonal weight textures must share this same per-texel basis.
   let scale = 1.0 / f32(LAND_COVER_COUNT - 1u);
-  let canopy = splatCanopy(job, localX, localZ);
+  // Climate provinces: once per texel (see splatClassify), shared by the
+  // canopy, every tap and both seasons.
+  let province = terrainClimateProvince(localX, localZ);
+  let canopy = splatCanopy(job, localX, localZ, province);
   // Coarse texels give each tap its own canopy (see
   // LAND_COVER_TAP_CANOPY_MIN_TEXEL_METERS); finer ones hand all four the
   // centre's, which is bit-for-bit what this bake did before. Same tap order
@@ -1315,15 +1717,15 @@ fn bakeSplat(
       let tapDz = select(-tapStep, tapStep, (tap & 2u) == 2u);
       // One moisture chain and one climate chain per tap, shared by its canopy
       // sample and by both of its seasonal classifications.
-      let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz);
+      let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz, province.y);
       tapCanopy[tap] = vec4f(
-        splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture),
+        splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y),
         tapMoisture,
         terrainClimate(localX + tapDx, localZ + tapDz));
     }
   }
-  let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy);
-  let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy);
+  let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province);
+  let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province);
   let aligned = splatAlignSeasonalWeights(lo, hi);
   textureStore(splatId, texel, aligned.ids * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in

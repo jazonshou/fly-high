@@ -343,18 +343,21 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
     2: 260_000,
     3: 560_000,
   }),
-  // Card/bark layers plus broadleaf/conifer opaque near-crown layers, with
-  // complete mip chains: 18 × 256² × rgba8 × 4/3 = 6.0 MiB.
-  foliageAtlasMiB: 6,
-  // 2-17: 7 species × 2 season buckets × 2 arrays (albedo, normal+depth) of
-  // 256² rgba8 with full mip chains — measured from the CPU bake. 64² tiles
+  // Card/bark layers plus broadleaf/conifer opaque near-crown layers and the
+  // palm's frond and bark, with complete mip chains:
+  // 20 × 256² × rgba8 × 4/3 = 6.67 MiB.
+  foliageAtlasMiB: 6.67,
+  // 2-17: 12 layers (8 species; the four deciduous ones bake a second, bare
+  // season bucket, evergreens share one layer for both) × 2 arrays (albedo,
+  // normal+depth) of 256² rgba8 with full mip chains = 8.0 MiB — measured
+  // from the CPU bake. 64² tiles
   // are the recorded decision (the plan's 128² sketch did not close against
   // the §5.2 headroom, and a far-band tree subtends ≤ ~20 px). 2026-09-13's
   // mid-band impostor fill draws the same tiles from the crossover (~274 m at
   // tier 1, where a 20 m tree spans ~100 px — ~1.6× magnified) for the
   // NON-dominant stems that stand between the skeletal crowns; accepted with
   // the atlas as it is rather than re-arbitrating the 128² tile.
-  impostorAtlasMiB: 9.33,
+  impostorAtlasMiB: 8,
   // Wave G: blade record buffers (32 B x lattice lanes across three rings)
   // plus the 256-metre domain tile (256 squared r32float + 64 squared rgba8).
   groundCoverMiB: Object.freeze({

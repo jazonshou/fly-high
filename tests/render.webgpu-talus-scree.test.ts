@@ -559,12 +559,17 @@ describe("6-7 scree placement in the world", () => {
     // mountain digest above. The count does not move here (52 -> 52).
     // RE-PINNED `809a6f0a` -> `986415c2` for wave M: rocks 52 -> 45, bands
     // 2/1/9/6/18/9, so the apron bands hold 10 where they held 3.
-    expect(first.digest).toBe("986415c2");
+    // RE-PINNED `986415c2` -> `fe935b50` for climate provinces: 926 km out is
+    // far outside the temperate core, and this site sits in a warm, wet
+    // province (temperature +0.143, dryness -0.15). Warmth lowers the thermal
+    // height the alpine and snow bands read, so less of the ground is alpine
+    // and rocks fall 45 -> 36, bands 1/4/7/6/13/5. The apron still holds 11.
+    expect(first.digest).toBe("fe935b50");
         // `6-13` re-pin: total scree FALLS (`gentle` now reaches further up the
     // slope axis, so grass holds ground that previously went to rock).
     // Down is budget-safe; the +1 mid-band boulder noted above is a
     // redistribution outward, not a net increase.
-    expect(first.rocks).toBe(45);    // 6-13: 53 -> 52; wave M: 52 -> 45
+    expect(first.rocks).toBe(36);    // 6-13: 53 -> 52; wave M: 52 -> 45; provinces: 45 -> 36
     expect(first.rocks, "net count falls vs the pre-6-7 72").toBeLessThan(72);
     // ITEM C MOVED THIS ASSERTION, NOT JUST A PIN, and it is stated rather than
     // absorbed. It read `toBeGreaterThan(3)` and the two cells held 4 apron

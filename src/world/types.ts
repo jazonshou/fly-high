@@ -1,3 +1,5 @@
+import type { ClimateProvinceOption, ClimateProvinceSample } from "./climateProvince";
+
 /** A seed accepted by the deterministic world generator. */
 export type WorldSeed = string | number;
 
@@ -41,6 +43,13 @@ export interface WorldOptions {
   airport?: false | Partial<AirportDefinition>;
   /** Geographic latitude of the world, in degrees. Defaults to 45°N. */
   latitudeDegrees?: number;
+  /**
+   * Force one climate province everywhere, temperate core included: a preset
+   * name or explicit offsets (see `climateProvince.ts`). Omitted, the world
+   * has natural provinces outside a temperate core around the start airport.
+   * World content, like `worldEvolution`: it is part of the cache identity.
+   */
+  climateProvince?: ClimateProvinceOption;
 }
 
 export interface WorldDefinition {
@@ -73,6 +82,11 @@ export interface WorldDefinition {
    * declination, day length, and the seasonal fields (§1.6).
    */
   readonly latitudeDegrees: number;
+  /**
+   * The forced climate province, or null/absent for natural provinces outside
+   * the temperate core. Read it through `sampleClimateProvince`, never directly.
+   */
+  readonly climateProvince?: Readonly<ClimateProvinceSample> | null;
 }
 
 export const TerrainBiome = {
@@ -115,6 +129,12 @@ export interface TerrainSample {
   slope: number;
   moisture: number;
   temperature: number;
+  /**
+   * The climate province's raw offsets (`sampleClimateProvince`), exactly 0
+   * in the temperate core. `moisture` and `temperature` already include them.
+   */
+  temperatureOffset: number;
+  dryness: number;
   biome: TerrainBiomeId;
   biomeName: TerrainBiomeName;
   color: TerrainColor;

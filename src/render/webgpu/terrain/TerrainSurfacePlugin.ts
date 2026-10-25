@@ -98,6 +98,16 @@ import {
 } from "./TurfRelief";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "./HorizonField";
 import { GROUND_GRAIN_LAYER } from "./GroundGrainSynthesis";
+import type { ClimateProvinceFieldBinding } from "./ClimateProvinceField";
+import {
+  PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE,
+  PROVINCE_FAR_SNOWLINE_RESPONSE,
+  PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS,
+  TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
+  TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL,
+  provinceFarTundraFromLift,
+} from "./ProvinceFarTone";
+import { TUNDRA_COLD_FULL, TUNDRA_COLD_ONSET } from "@/src/world/coldBiomes";
 // 6-6: the riparian corridor's shape is vegetation-owned. Terrain reaches it
 // through the one sanctioned entry point rather than restating four distances.
 import {
@@ -381,14 +391,21 @@ export function terrainMaterialDetailWeight(footprintMeters: number): number {
   return 1 - t * t * (3 - 2 * t);
 }
 
-/** Pure CPU mirror of the no-page fallback's continuous Rock cover. */
+/**
+ * Pure CPU mirror of the no-page fallback's continuous Rock cover.
+ * `thermalLiftMeters` is the climate province's lift (-T x 2450 m, 0 in the
+ * temperate core): it raises the alpine driver and, through the tundra share,
+ * gives up part of the level-ground rock the way the classifier's tundra does.
+ */
 export function terrainFallbackRockCover(
   elevationDriverMeters: number,
   slope: number,
+  thermalLiftMeters = 0,
 ): number {
   if (
     !Number.isFinite(elevationDriverMeters)
     || !Number.isFinite(slope)
+    || !Number.isFinite(thermalLiftMeters)
     || slope < 0
     || slope > 1
   ) {
@@ -396,7 +413,7 @@ export function terrainFallbackRockCover(
   }
   const altitudeT = Math.min(1, Math.max(
     0,
-    (elevationDriverMeters - TERRAIN_FALLBACK_ALPINE_START_METERS)
+    (elevationDriverMeters + thermalLiftMeters - TERRAIN_FALLBACK_ALPINE_START_METERS)
       / (TERRAIN_FALLBACK_ALPINE_END_METERS - TERRAIN_FALLBACK_ALPINE_START_METERS),
   ));
   const alpineSlopeT = Math.min(1, Math.max(
@@ -405,10 +422,13 @@ export function terrainFallbackRockCover(
       / (TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH - TERRAIN_FALLBACK_ALPINE_SLOPE_LOW),
   ));
   const alpineSlope = alpineSlopeT * alpineSlopeT * (3 - 2 * alpineSlopeT);
+  const tundra = provinceFarTundraFromLift(thermalLiftMeters);
   const alpine = altitudeT * altitudeT * (3 - 2 * altitudeT)
     * TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH
     * (TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE
-      + (1 - TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE) * alpineSlope);
+      + (1 - TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE) * alpineSlope
+      - TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE * PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS
+        * tundra * (1 - alpineSlope));
   const slopeT = Math.min(1, Math.max(0, (slope - 0.30) / (0.66 - 0.30)));
   const slopeRock = slopeT * slopeT * (3 - 2 * slopeT);
   return Math.max(alpine, slopeRock);
@@ -1203,12 +1223,53 @@ fn terrainVertexCanopyClosure(lane: f32, pageLocalMeters: vec2f) -> f32 {
   return clamp(top + (bottom - top) * fraction.y, 0.0, 1.0);
 }
 #endif
+#if defined(TERRAIN_SURFACE_CDLOD) && defined(TERRAIN_PROVINCE_FIELD)
+// The climate province's far tone around the camera (ClimateProvinceField.ts,
+// ProvinceFarTone.ts), baked per 1.25 km texel on the CPU into a toroidal
+// window: the PAINT (base tone delta rgb, signed canopy share) and the LIFT
+// (thermal lift, metres), both half float. One bilinear sample each with
+// repeat addressing, so the hardware does the filtering and the wrap, and the
+// vertex stage only: the fragment gets the tone through lanes of the
+// terrainSplat and terrainPageLocal varyings. The define is the tier's
+// (QualityProfile terrainProvinceField): off, none of this, the widened lanes
+// or the fragment's province terms is compiled.
+var terrainProvincePaintSampler: sampler;
+var terrainProvincePaint: texture_2d<f32>;
+var terrainProvinceLiftSampler: sampler;
+var terrainProvinceLift: texture_2d<f32>;
+
+struct TerrainProvinceFarTone {
+  base: vec3f,
+  canopyShare: f32,
+  thermalLift: f32,
+};
+
+fn terrainProvinceFarToneAt(absoluteXZ: vec2f) -> TerrainProvinceFarTone {
+  // x = 1 / (texel metres x resolution): one UV unit per window, so texel i's
+  // centre, (i + 0.5) texels, samples slot i mod resolution exactly.
+  let uv = absoluteXZ * uniforms.terrainProvinceShape.x;
+  let paint = textureSampleLevel(terrainProvincePaint, terrainProvincePaintSampler, uv, 0.0);
+  var tone: TerrainProvinceFarTone;
+  tone.base = paint.xyz;
+  tone.canopyShare = paint.w;
+  tone.thermalLift = textureSampleLevel(
+    terrainProvinceLift, terrainProvinceLiftSampler, uv, 0.0).x;
+  return tone;
+}
+#endif
 varying terrainSplat: vec4f;
 // 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
 // built page-local and positioned by their world matrix, so this is free —
 // and it is what lets the fragment address the channel atlas without a
 // per-mesh uniform on a material every page shares.
+#ifdef TERRAIN_PROVINCE_FIELD
+// Widened for the climate province (ProvinceFarTone.ts): z = the thermal lift
+// in metres, w = the canopy share. The beauty pipeline has no fragment input
+// to spare (16 of 16), so the province rides lanes, never a new varying.
+varying terrainPageLocal: vec4f;
+#else
 varying terrainPageLocal: vec2f;
+#endif
 `,
   /**
    * `4-4`: displacement at `CUSTOM_VERTEX_UPDATE_POSITION`, and the hook
@@ -1361,11 +1422,32 @@ varying terrainPageLocal: vec2f;
 // contours at flight altitude even though it avoided the older per-node plate.
 {
   // Lane w is the CHANNEL-atlas lane the fragment addresses page UV with:
-  // channelSlot*32 + level, or -1 when the page holds no channel slot. Lane y
-  // is -1 for the same reason the page path returns -1: no secondary id is
-  // supplied, and 0 would silently mean sand.
+  // channelSlot*32 + level, or -1 when the page holds no channel slot.
+#ifdef TERRAIN_PROVINCE_FIELD
+  // Lanes xyz were idle constants (the provisional ids no fragment reads any
+  // more) and now carry the far BASE tone's per-channel delta for the climate
+  // province (ProvinceFarTone.ts); the thermal lift and the canopy share ride
+  // terrainPageLocal.zw below. One field read per vertex; the province moves
+  // over kilometres, so vertex interpolation is exact to the field. The tone
+  // is baked per texel on the CPU, so the read is two filtered samples, where
+  // it was four loads and the tone's seven smoothsteps per vertex.
+  // Shadow-depth passes skip the read: the ShadowDepthWrapper reuses this
+  // vertex stage once per cascade, defines SM_FLOAT in every one, and writes
+  // depth rather than colour, so the tone would be interpolated and dropped.
+  // Measured before the skip: the CSM pass +8% to +18% on SwiftShader.
+#ifdef SM_FLOAT
+  let provinceTone = TerrainProvinceFarTone();
+#else
+  let provinceTone = terrainProvinceFarToneAt(
+    vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin);
+#endif
+  vertexOutputs.terrainSplat = vec4f(provinceTone.base, vertexInputs.terrainNodeB.z);
+#else
+  // Lane y is -1 for the same reason the page path returns -1: no secondary
+  // id is supplied, and 0 would silently mean sand.
   vertexOutputs.terrainSplat = vec4f(
     ${SurfaceMaterial.Grass}.0, -1.0, 0.0, vertexInputs.terrainNodeB.z);
+#endif
   let subIndexOut = vertexInputs.terrainNodeA.y
     - floor(vertexInputs.terrainNodeA.y * 0.015625) * 64.0;
   let subZOut = floor(subIndexOut * 0.125);
@@ -1376,8 +1458,14 @@ varying terrainPageLocal: vec2f;
   // which renders as a flawless uniform desert. The CPU tile path fed metres
   // here and this path has to as well.
   let nodeSpanOut = 64.0 * exp2(vertexInputs.terrainNodeA.z);
+#ifdef TERRAIN_PROVINCE_FIELD
+  vertexOutputs.terrainPageLocal = vec4f((vec2f(subXOut, subZOut)
+    + vec2f(positionUpdated.x, positionUpdated.z)) * nodeSpanOut,
+    provinceTone.thermalLift, provinceTone.canopyShare);
+#else
   vertexOutputs.terrainPageLocal = (vec2f(subXOut, subZOut)
     + vec2f(positionUpdated.x, positionUpdated.z)) * nodeSpanOut;
+#endif
 }
 #else
 vertexOutputs.terrainSplat = vertexInputs.color;
@@ -1838,7 +1926,11 @@ function wgslGains(row: { vegetation: number; rock: number; snow: number; other:
 
 const FRAGMENT_DEFINITIONS = /* wgsl */ `
 varying terrainSplat: vec4f;
+#ifdef TERRAIN_PROVINCE_FIELD
+varying terrainPageLocal: vec4f;
+#else
 varying terrainPageLocal: vec2f;
+#endif
 var terrainSurfaceAlbedoSampler: sampler;
 var terrainSurfaceAlbedo: texture_2d_array<f32>;
 var terrainSurfaceNormalSampler: sampler;
@@ -2612,7 +2704,7 @@ let terrainSamplePosition = vec3f(
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 let terrainPageUv = terrainSurfacePageUv(
   fragmentInputs.terrainSplat.w,
-  fragmentInputs.terrainPageLocal,
+  fragmentInputs.terrainPageLocal.xy,
 );
 // textureSampleLevel, not textureSample: the house rule since 2-8 is that no
 // sample under a branch or a wrap takes implicit derivatives, and the channel
@@ -2726,6 +2818,19 @@ let terrainCoverNoise =
   + (terrainSurfaceValue(terrainAbsolutePosition.xz * (1.0 / 95.0)) - 0.5) * 19.0;
 let terrainElevationDriver = terrainAbsolutePosition.y
   - uniforms.terrainSurfaceWetness.y + terrainCoverNoise;
+// Climate provinces (ProvinceFarTone.ts): the fallback's altitude bands read
+// THERMAL height, as the classifier's do, so a cold province's alpine ground
+// and snowline continue past the last page that classifies them instead of
+// stopping at its edge. The lift is exactly 0 in the temperate core, and
+// x + 0 is x. The snowline follows only part of the shift, as it does in the
+// classifier.
+#ifdef TERRAIN_PROVINCE_FIELD
+let terrainThermalLift = fragmentInputs.terrainPageLocal.z;
+let terrainThermalDriver = terrainElevationDriver + terrainThermalLift;
+#else
+let terrainThermalLift = 0.0;
+let terrainThermalDriver = terrainElevationDriver;
+#endif
 // Wave Q: how much this fragment trusts the page classification over the
 // provisional fallback. Confidence loses a fifth per residency level, and
 // the cover noise mottles the threshold by ~±0.14, so every level border
@@ -2821,6 +2926,16 @@ let terrainRockSlopeDriver = terrainSlope + clamp(
 // Rock recipe). The classifier owns steep ground where it is trusted; this
 // term is the fallback's cliff answer, exactly like the alpine term below.
 var terrainSlopeRock = smoothstep(0.30, 0.66, terrainRockSlopeDriver) * terrainClassComplement;
+let terrainAlpineSlope = smoothstep(
+  ${TERRAIN_FALLBACK_ALPINE_SLOPE_LOW.toFixed(2)},
+  ${TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH.toFixed(2)},
+  terrainSlope);
+// The tundra share, recovered from the thermal lift (coldBiomes.ts's window
+// in metres): exactly 0 wherever the lift is, so the temperate core is untouched.
+let terrainProvinceTundra = smoothstep(
+  ${terrainWgslFloat(TUNDRA_COLD_ONSET * PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE)},
+  ${terrainWgslFloat(TUNDRA_COLD_FULL * PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE)},
+  terrainThermalLift);
 // This is the altitude term from the real classifier, kept deliberately
 // weaker than a true cliff. It greys alpine fallback terrain continuously
 // without walking through four categorical material palettes. Wave Q: it
@@ -2832,16 +2947,19 @@ terrainSlopeRock = max(
   smoothstep(
     ${TERRAIN_FALLBACK_ALPINE_START_METERS.toFixed(1)},
     ${TERRAIN_FALLBACK_ALPINE_END_METERS.toFixed(1)},
-    terrainElevationDriver,
+    terrainThermalDriver,
   ) * ${TERRAIN_FALLBACK_ALPINE_ROCK_STRENGTH.toFixed(2)} * terrainClassComplement
-    * mix(
+    * (mix(
       ${TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE.toFixed(2)},
       1.0,
-      smoothstep(
-        ${TERRAIN_FALLBACK_ALPINE_SLOPE_LOW.toFixed(2)},
-        ${TERRAIN_FALLBACK_ALPINE_SLOPE_HIGH.toFixed(2)},
-        terrainSlope),
-    ),
+      terrainAlpineSlope,
+    )
+    // The tundra partition: flat arctic ground is turf and heath, not
+    // bedrock, so the LEVEL share gives up what the classifier's flat claim
+    // does. Subtracted, so the temperate law is x - 0 (the share is exactly 0
+    // there); the slope share is untouched.
+      - ${terrainWgslFloat(TERRAIN_FALLBACK_ALPINE_LEVEL_SHARE * PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS)}
+        * terrainProvinceTundra * (1.0 - terrainAlpineSlope)),
 );
 
 
@@ -2859,7 +2977,8 @@ terrainSlopeRock = max(
 //    outputs"); it applies just as much to one band.
 let terrainSnowline = uniforms.terrainSurfaceTuning.w;
 let terrainSnowDescent = max(0.0, uniforms.terrainSurfaceWetness.z - terrainSnowline);
-let terrainSnowDriver = terrainElevationDriver + uniforms.terrainSurfaceWetness.y;
+let terrainSnowDriver = terrainElevationDriver + uniforms.terrainSurfaceWetness.y
+  + terrainThermalLift * ${terrainWgslFloat(PROVINCE_FAR_SNOWLINE_RESPONSE)};
 // Steep faces shed snow — the 2-18 slope-weighting rule, applied to the
 // ground the same way it is applied to canopy and rock.
 // M-2: 39 to 55 degrees, where it was 60 to 72. Dry snow avalanches off
@@ -2974,6 +3093,14 @@ if (!terrainUsePageSplat) {
   terrainBlend0 = 1.0 - terrainThirdWeight;
   terrainBlend1 = 0.0;
   terrainBlend2 = terrainThirdWeight;
+  // Climate provinces: Grass by assumption is the temperate answer. Elsewhere
+  // the base takes the tone of the province's open sward (ProvinceFarTone.ts),
+  // so a desert stays straw and a tundra heath-brown where no page says so.
+  // x + x * 0 in the temperate core.
+#ifdef TERRAIN_PROVINCE_FIELD
+  terrainLayer0.albedo = terrainLayer0.albedo
+    + terrainLayer0.albedo * fragmentInputs.terrainSplat.xyz;
+#endif
 }
 if (terrainFarSward) {
   // Same reason, for a zero-trust pair of swards: a 128-256 m texel has no
@@ -3108,6 +3235,11 @@ terrainBlend2 = terrainBlend2 / terrainBlendSum;
 if (!terrainUsePageSplat) {
   terrainBlend0 = 1.0 - terrainThirdWeight;
   terrainBlend2 = terrainThirdWeight;
+  // Climate provinces: the base's province tone, as on the three-material path.
+#ifdef TERRAIN_PROVINCE_FIELD
+  terrainLayer0.albedo = terrainLayer0.albedo
+    + terrainLayer0.albedo * fragmentInputs.terrainSplat.xyz;
+#endif
 }
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0 + terrainLayer2.albedo * terrainBlend2;
 var terrainNormal = terrainLayer0.normal * terrainBlend0 + terrainLayer2.normal * terrainBlend2;
@@ -3697,10 +3829,19 @@ var terrainCanopyShade = 0.0;
     // The surface half: the ground becomes the canopy's own material, at the
     // impostor's measured response rather than at a chosen colour.
     let canopySurface = canopySplit.surface;
-    terrainAlbedo = mix(
-      terrainAlbedo,
-      vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy,
-      canopySurface);
+    // Climate provinces: the paint takes the colour of the crowns the
+    // province draws (ProvinceFarTone.ts), so a taiga's canopy does not
+    // brighten, nor a tropical one dull, where its stems hand over. The
+    // share is signed (taiga and desert above 0, tropics below), and
+    // x + x * 0 in the temperate core.
+    var canopyAlbedo = vec3f(${TERRAIN_CANOPY_ALBEDO}) * terrainGrainCanopy;
+#ifdef TERRAIN_PROVINCE_FIELD
+    let provinceCanopyShare = fragmentInputs.terrainPageLocal.w;
+    canopyAlbedo = canopyAlbedo + canopyAlbedo * (
+      max(provinceCanopyShare, 0.0) * ${TERRAIN_PROVINCE_CANOPY_DELTA_WGSL}
+      + max(-provinceCanopyShare, 0.0) * ${TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL});
+#endif
+    terrainAlbedo = mix(terrainAlbedo, canopyAlbedo, canopySurface);
     terrainRoughness = mix(
       terrainRoughness, ${TERRAIN_CANOPY_ROUGHNESS}, canopySurface);
     terrainF0 = mix(terrainF0, terrainF0 * ${TERRAIN_CANOPY_SPECULAR}, canopySurface);
@@ -3979,6 +4120,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private sunDirection: readonly [number, number, number] = [0, 1, 0];
   private heightAtlasTexture: BaseTexture | null = null;
   private heightAtlasShape: readonly [number, number, number, number] = [1, 1, 0, 1];
+  /** The climate province window (ClimateProvinceField.ts); null reads the temperate zero field. */
+  private provinceField: ClimateProvinceFieldBinding | null = null;
   /**
    * `6-8`: (near band radius, impostor radius, drawn-share floor, canopy height).
    *
@@ -4017,6 +4160,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         // same reason as HYDROLOGY_CHANNELS above.
         TERRAIN_FAR_SWARD_OFF: false,
         TERRAIN_FAR_SWARD_SOFT: false,
+        // The climate province window (setClimateProvinceField). Listed for
+        // the same reason again.
+        TERRAIN_PROVINCE_FIELD: false,
       },
       true,
       // enable = false at construction, as CloudShadowMaterialPlugin does, so
@@ -4298,6 +4444,19 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     return this.cdlodEnabled;
   }
 
+  /**
+   * The climate province window the vertex stage reads for the far fallback
+   * (`ClimateProvinceField.ts`), or null for none: the define folds every
+   * province term out of the shader. Set once per tier (TerrainClipmapSystem
+   * at construction and on setProfile), so it recompiles with the tier's
+   * other defines and never mid-flight.
+   */
+  setClimateProvinceField(binding: ClimateProvinceFieldBinding | null): void {
+    const changed = (binding === null) !== (this.provinceField === null);
+    this.provinceField = binding;
+    if (changed) this.markAllDefinesAsDirty();
+  }
+
   /** `4-6`: the cross-fade weight between the two resident season buckets. */
   setSeasonBlend(blend: number): void {
     this.seasonBlend = Number.isFinite(blend) ? Math.min(1, Math.max(0, blend)) : 0;
@@ -4369,6 +4528,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       this.shoreDistanceAtlas !== null && this.lakeDepthAtlas !== null;
     defines["TERRAIN_FAR_SWARD_OFF"] = this.farSwardRead === "off";
     defines["TERRAIN_FAR_SWARD_SOFT"] = this.farSwardRead === "soft";
+    // The tier's switch (QualityProfile terrainProvinceField): compiled out,
+    // not branched, so a tier without it pays nothing, SwiftShader included.
+    defines["TERRAIN_PROVINCE_FIELD"] = this.cdlodEnabled && this.provinceField !== null;
   }
 
   /** V-4: which far-sward read this material compiles (TerrainFarSwardRead). */
@@ -4398,6 +4560,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainSplatWeightHi",
       "terrainShoreDistanceAtlas",
       "terrainLakeDepthAtlas",
+      "terrainProvincePaint",
+      "terrainProvinceLift",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
     }
@@ -4466,6 +4630,12 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       // only ever `textureLoad` it.
       uniformBuffer.setTexture("terrainHeightAtlas", this.heightAtlasTexture);
     }
+    if (this.provinceField) {
+      // rgba16float and r16float: filterable, each with its bilinear,
+      // repeat-addressed sampler (ClimateProvinceField.ts).
+      uniformBuffer.setTexture("terrainProvincePaint", this.provinceField.paint);
+      uniformBuffer.setTexture("terrainProvinceLift", this.provinceField.lift);
+    }
   }
 
   override getUniforms(): {
@@ -4498,6 +4668,10 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         { name: "terrainCanopyBands", size: 4, type: "vec4" },
         // 4-4: (atlasEdge, slotEdge, gutter, gridEdge) for the height atlas.
         { name: "terrainHeightAtlasShape", size: 4, type: "vec4" },
+        // The climate province window: (1 / (texel metres x resolution), 0,
+        // 0, 0), world metres to window UV. Declared unconditionally, like
+        // the runway frame.
+        { name: "terrainProvinceShape", size: 4, type: "vec4" },
         {
           name: "terrainMaterialTiling",
           size: 4,
@@ -4563,6 +4737,13 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, this.seasonBlend);
     uniformBuffer.updateFloat4("terrainCanopyBands", ...this.canopyBands);
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
+    uniformBuffer.updateFloat4(
+      "terrainProvinceShape",
+      this.provinceField?.inverseWindowMeters ?? 0,
+      0,
+      0,
+      0,
+    );
     uniformBuffer.updateFloatArray("terrainRunwayFrames", this.runwaySet.frames);
     uniformBuffer.updateFloatArray("terrainRunwayShapes", this.runwaySet.shapes);
     uniformBuffer.updateFloat4("terrainRunwaySet", this.runwaySet.count, 0, 0, 0);

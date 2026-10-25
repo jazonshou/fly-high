@@ -112,6 +112,8 @@ const creations = { pipelines: 0, shaderModules: 0, shaderCodeChars: 0 };
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
 let activeWorldEvolution: WorldEvolution | null = null;
+/** The forced climate province of the current world, as JSON; null is the natural field. */
+let activeProvinceKey: string | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let renderer: FlightRenderer | null = null;
 let removeGpuErrorListener: (() => void) | null = null;
@@ -412,19 +414,31 @@ function createCanvas(): HTMLCanvasElement {
   return element;
 }
 
-async function ensureRenderer(worldEvolution: WorldEvolution): Promise<void> {
+async function ensureRenderer(
+  worldEvolution: WorldEvolution,
+  climateProvince: PerfCaptureShotDefinition["climateProvince"],
+): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  if (renderer && activeWorldEvolution === worldEvolution) return;
+  const provinceKey = climateProvince === undefined ? null : JSON.stringify(climateProvince);
+  if (renderer && activeWorldEvolution === worldEvolution && activeProvinceKey === provinceKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
   removeGpuErrorListener?.();
   removeGpuErrorListener = null;
   renderer?.dispose();
+  renderer = null;
   canvas?.remove();
   world = createWorld(PERF_CAPTURE_SEED, {
     ...(config.worldOptions ?? {}),
     worldEvolution,
+    ...(climateProvince === undefined ? {} : { climateProvince }),
   } as Parameters<typeof createWorld>[1]);
+  // A base that predates climate provinces ignores the option and would
+  // render the temperate world: fail the shot rather than compare the wrong
+  // worlds. The option reads back as the forced offsets when honoured.
+  if (climateProvince !== undefined && !world.climateProvince) {
+    throw new Error("perf-ab agent: this build's createWorld ignores climateProvince; the arm predates climate provinces");
+  }
   canvas = createCanvas();
   const activeWorld = world;
   const profile = qualityProfile.resolveWebGpuQualityProfile(
@@ -447,6 +461,7 @@ async function ensureRenderer(worldEvolution: WorldEvolution): Promise<void> {
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
   activeWorldEvolution = worldEvolution;
+  activeProvinceKey = provinceKey;
   installEffectRecorder(renderer);
   renderCalls = 0;
   removeGpuErrorListener = capability("addGpuUncapturedErrorListenerForCapture")((event) => {
@@ -588,7 +603,7 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic");
+    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince);
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;

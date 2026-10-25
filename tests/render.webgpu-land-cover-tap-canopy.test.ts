@@ -39,7 +39,10 @@ describe("the splat bake gives coarse taps their own canopy", () => {
   it("hands fine texels the centre's canopy four times, which is what it did before", () => {
     const source = LAND_COVER_SPLAT_BAKE_WGSL;
     // The centre sample is taken first and unconditionally ...
-    expect(source).toContain("let canopy = splatCanopy(job, localX, localZ);");
+    // The climate province is sampled once per texel and shared by every
+    // tap: it moves over 60 km and more, so the texel centre is the field.
+    expect(source).toContain("let province = terrainClimateProvince(localX, localZ);");
+    expect(source).toContain("let canopy = splatCanopy(job, localX, localZ, province);");
     // ... every tap starts as it, and only a coarse texel overwrites any.
     // (closure, grass, -1, 0): the -1 tells a fine tap to evaluate its own
     // moisture and climate, exactly as it did before.
@@ -57,23 +60,25 @@ describe("the splat bake gives coarse taps their own canopy", () => {
     expect(source).toContain("let dx = select(-step, step, (sample & 1u) == 1u);");
     expect(source).toContain("let dz = select(-step, step, (sample & 2u) == 2u);");
     // Sampled once and shared by both season buckets.
-    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.z, tapCanopy);");
-    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.w, tapCanopy);");
+    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province);");
+    expect(source).toContain("splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province);");
   });
 
   it("evaluates a coarse tap's moisture and climate once, and a fine tap's where it always did", () => {
     const source = LAND_COVER_SPLAT_BAKE_WGSL;
     // Coarse: one chain of each per tap, handed to the canopy sample and to
     // both seasonal classifications of that tap.
-    expect(source).toContain("let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz);");
-    expect(source).toContain("splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture),");
+    expect(source).toContain(
+      "let tapMoisture = terrainMoisture(localX + tapDx, localZ + tapDz, province.y);");
+    expect(source).toContain(
+      "splatCanopyAt(job, localX + tapDx, localZ + tapDz, tapMoisture, province.x, province.y),");
     expect(source).toContain("terrainClimate(localX + tapDx, localZ + tapDz));");
     // Fine: the sentinel routes the tap to the same two calls it made before.
     expect(source).toMatch(
-      /if \(tap\.z >= 0\.0\) \{\s*input\.moisture = tap\.z;\s*\} else \{\s*input\.moisture = terrainMoisture\(localX, localZ\);\s*tapClimate = terrainClimate\(localX, localZ\);\s*\}/u);
+      /if \(tap\.z >= 0\.0\) \{\s*input\.moisture = tap\.z;\s*\} else \{\s*input\.moisture = terrainMoisture\(localX, localZ, province\.y\);\s*tapClimate = terrainClimate\(localX, localZ\);\s*\}/u);
     // The centre's canopy still evaluates its own moisture: it feeds the lane.
-    expect(source).toContain(
-      "return splatCanopyAt(job, localX, localZ, terrainMoisture(localX, localZ));");
+    expect(source).toMatch(
+      /return splatCanopyAt\(\s*job, localX, localZ, terrainMoisture\(localX, localZ, province\.y\), province\.x, province\.y\);/u);
   });
 
   it("leaves the closure LANE the centre sample at every level", () => {

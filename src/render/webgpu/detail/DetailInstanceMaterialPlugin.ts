@@ -72,10 +72,10 @@ export function detailMetricTreeBarkV(authoredV: number, treeHeightMeters: numbe
  */
 
 /**
- * Rows in the per-species impostor bake table. Seven species today; the
- * eighth slot is the round-up to a power of two. The variant byte's high
- * three bits index it, so this cannot grow past eight without spending
- * instance-format bits — which is a decision, not an accident.
+ * Rows in the per-species impostor bake table: all eight are in use since
+ * the palm took the last one. The variant byte's high three bits index it,
+ * so this cannot grow past eight without spending instance-format bits —
+ * which is a decision, not an accident.
  */
 export const DETAIL_IMPOSTOR_SPECIES_SLOTS = 8;
 
@@ -633,7 +633,7 @@ fn detailImpostorSample(
   tileOrigin: vec2f,
   quadUv: vec2f,
   layers: vec2f,
-  seasonSelector: f32,
+  bare: bool,
 ) -> vec4f {
   let uv = detailImpostorTileUv(tileOrigin, quadUv);
   // Season changes pick one whole distant stem at a stable per-instance
@@ -645,7 +645,7 @@ fn detailImpostorSample(
   // output — and the far band is fragment-bound: every alpha-tested sprite
   // pays its whole shader before the discard, and Metal cannot early-Z a
   // discarding fragment.
-  let layer = select(layers.x, layers.y, uniforms.detailImpostorSeason > seasonSelector);
+  let layer = select(layers.x, layers.y, bare);
   let bucket = textureSample(impostorAlbedo, impostorAlbedoSampler, uv, i32(layer));
   // The bake is straight-alpha with RGB dilation. Convert to premultiplied
   // form BEFORE any view blend, otherwise silhouette disagreement leaves
@@ -935,12 +935,19 @@ let impostorVariantByteForSeason = floor(fragmentInputs.detailImpostorC.w + 0.5)
 let impostorSeasonSelector = (
   impostorVariantByteForSeason - floor(impostorVariantByteForSeason / 32.0) * 32.0 + 0.5
 ) / 32.0;
+// The hash picks WHEN a stem sheds; the tint's leaf fraction can only veto it.
+// A stem the generator kept in full leaf (an evergreen, or a tropical
+// broadleaf with no cold season) never reads its bare bucket, so the far band
+// agrees with the near band's leaf dissolve. One comparison for all three
+// views, where each view used to make its own.
+let impostorBare = uniforms.detailImpostorSeason > impostorSeasonSelector
+  && fragmentInputs.detailInstanceTint.a < 0.999;
 let impostorSampleA = detailImpostorSample(
-  fragmentInputs.detailImpostorB.xy, impostorQuadUv, impostorLayers, impostorSeasonSelector);
+  fragmentInputs.detailImpostorB.xy, impostorQuadUv, impostorLayers, impostorBare);
 let impostorSampleB = detailImpostorSample(
-  fragmentInputs.detailImpostorB.zw, impostorQuadUv, impostorLayers, impostorSeasonSelector);
+  fragmentInputs.detailImpostorB.zw, impostorQuadUv, impostorLayers, impostorBare);
 let impostorSampleC = detailImpostorSample(
-  fragmentInputs.detailImpostorC.xy, impostorQuadUv, impostorLayers, impostorSeasonSelector);
+  fragmentInputs.detailImpostorC.xy, impostorQuadUv, impostorLayers, impostorBare);
 let impostorWeightA = clamp(fragmentInputs.detailImpostorA.w, 0.0, 1.0);
 let impostorWeightB = clamp(fragmentInputs.detailImpostorC.z, 0.0, 1.0);
 let impostorWeightC = clamp(1.0 - impostorWeightA - impostorWeightB, 0.0, 1.0);

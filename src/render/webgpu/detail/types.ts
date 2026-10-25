@@ -15,7 +15,8 @@ export type TreeSpecies =
   | "oak"
   | "maple"
   | "birch"
-  | "willow";
+  | "willow"
+  | "palm";
 export type ShrubSpecies = "juniper" | "hazel" | "sage";
 export type ClutterKind = "log" | "stump" | "branchLitter" | "mossCushion";
 export type GroundCoverArchetype = "grass" | "fern" | "heather" | "reed";
@@ -47,6 +48,21 @@ export interface DetailTerrainSample {
    * world-layer TerrainSample carries it. Omitted reads as flat ground.
    */
   readonly normal?: { readonly x: number; readonly y: number; readonly z: number };
+  /**
+   * The climate temperature (`sampleTerrainTemperature`: climate field,
+   * lapse and province offset), normalised. The species classifier reads it
+   * (`classifyDetailSample`); omitted, it falls back to a height-only
+   * stand-in plus the province offset. The world-layer TerrainSample
+   * carries it, so the live sampler provides it for free.
+   */
+  readonly temperature?: number;
+  /**
+   * The climate province's raw offsets (`sampleClimateProvince`), exactly 0 in
+   * the temperate core. `temperature` and `moisture` already include them;
+   * these drive thermal height and province-gated rules. Omitted reads 0.
+   */
+  readonly temperatureOffset?: number;
+  readonly dryness?: number;
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;

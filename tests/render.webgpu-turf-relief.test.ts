@@ -86,10 +86,13 @@ describe("D-5 the gate", () => {
     const classifier = readFileSync(
       join(__dirname, "..", "src", "render", "webgpu", "terrain", "LandCoverClassifier.ts"), "utf8");
     // Both twins of the classifier, so neither can drift away from this gate.
+    // The classifier reads THERMAL height (climate provinces), which is the
+    // elevation itself in the temperate core; this gate stays per-pixel on
+    // real elevation, so it adds no shader work for the provinces.
     expect(classifier).toContain(
-      `smoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}, ${TURF_RELIEF_ALPINE_HIGH_METERS}, elevation)`);
+      `smoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}, ${TURF_RELIEF_ALPINE_HIGH_METERS}, thermal)`);
     expect(classifier).toContain(
-      `kSmoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}.0, ${TURF_RELIEF_ALPINE_HIGH_METERS}.0, elevation)`);
+      `kSmoothstep(${TURF_RELIEF_ALPINE_LOW_METERS}.0, ${TURF_RELIEF_ALPINE_HIGH_METERS}.0, thermal)`);
     expect(classifier).toContain(`smoothstep(${TURF_RELIEF_GENTLE_HIGH}, 0.58, slope)`);
     expect(TURF_RELIEF_GENTLE_LOW).toBeLessThan(TURF_RELIEF_GENTLE_HIGH);
   });
@@ -106,7 +109,7 @@ describe("D-5 the gate", () => {
       expect(terrainTurfMesoGainTerm(strength)).toBe("");
     }
     expect(terrainTurfMesoGainWgsl(1)).toMatch(
-      /let terrainTurfMesoGain = 1\.0 \+ 1\.0 \* terrainTurfCover\s+\* \(1\.0 - terrainGroundAirfield\)\s+\* \(1\.0 - clamp\(terrainGroundCanopyClosure, 0\.0, 1\.0\)\)\s+\* smoothstep\(420\.0, 980\.0,\s+terrainElevationDriver\)\s+\* \(1\.0 - smoothstep\(0\.16, 0\.24, terrainSlope\)\)\s+\* smoothstep\(0\.6, 2\.0,\s+terrainFootprint3D\)\s+\* terrainGroundPatchworkOn;/u);
+      /let terrainTurfMesoGain = 1\.0 \+ 1\.0 \* terrainTurfCover\s+\* \(1\.0 - terrainGroundAirfield\)\s+\* \(1\.0 - clamp\(terrainGroundCanopyClosure, 0\.0, 1\.0\)\)\s+\* smoothstep\(420\.0, 980\.0,\s+terrainThermalDriver\)\s+\* \(1\.0 - smoothstep\(0\.16, 0\.24, terrainSlope\)\)\s+\* smoothstep\(0\.6, 2\.0,\s+terrainFootprint3D\)\s+\* terrainGroundPatchworkOn;/u);
     expect(terrainTurfMesoGainWgsl(2)).toContain("let terrainTurfMesoGain = 1.0 + 2.0 * terrainTurfCover");
     expect(terrainTurfMesoGainTerm(1)).toBe(" * terrainTurfMesoGain");
     // The owner's choice: A, the band doubled on alpine turf.

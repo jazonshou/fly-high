@@ -29,6 +29,12 @@ import {
   dominantLandCover,
 } from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import { SurfaceMaterial } from "@/src/render/webgpu/terrain/surfaceMaterials";
+import {
+  applyClimateProvinceDryness,
+  sampleClimateProvince,
+  terrainSnowlineThermalHeight,
+  type ClimateProvinceSample,
+} from "./climateProvince";
 import { mixSeed } from "./seed";
 import {
   TERRAIN_BIOME_NAMES,
@@ -916,11 +922,17 @@ export function sampleTerrainCollision(
   return target;
 }
 
+/**
+ * Climatic moisture, province dryness applied. `dryness` may be supplied by a
+ * caller that already sampled the province at this point (it is 0 in the
+ * temperate core, so either way the core is the shipped field bit for bit).
+ */
 export function sampleTerrainMoisture(
   world: WorldDefinition,
   x: number,
   z: number,
   filterWidthMeters: number,
+  dryness = sampleClimateProvince(world, x, z, PROVINCE_SCRATCH).dryness,
 ): number {
   assertFilterWidth(filterWidthMeters);
   // 4-6 (D5): `filterWidthMeters` was validated here and then never used —
@@ -963,8 +975,17 @@ export function sampleTerrainMoisture(
     9_500,
     filterWidthMeters,
   );
-  return saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17);
+  // Climate provinces: the dryness scales the saturated moisture (see
+  // applyClimateProvinceDryness); it is exactly 0 in the temperate core, where
+  // `m - 0 * m === m`.
+  return applyClimateProvinceDryness(
+    saturate(0.5 + broad * 0.37 + local * 0.13 + rainShadow * 0.17),
+    dryness,
+  );
 }
+
+/** Per-call scratch for the province sample; these samplers run per texel. */
+const PROVINCE_SCRATCH: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
 
 /** The smooth 11 km climate field feeding temperature; interpolable at tile scale. */
 export function sampleTerrainClimate(
@@ -1085,16 +1106,24 @@ export function seasonalHumidityMultiplier(
   return 1 - 0.4 * seasonalWinterFraction(dayOfYear, latitudeDegrees);
 }
 
-/** Temperature from a precomputed climate value plus exact per-point cooling. */
+/**
+ * Temperature from a precomputed climate value plus exact per-point cooling.
+ *
+ * `temperatureOffset` is the climate province's (`sampleClimateProvince`),
+ * added inside the saturate. It is exactly 0 in the temperate core, and
+ * `x + 0 === x`, so omitting it is the shipped law bit for bit.
+ */
 export function terrainTemperatureFromClimate(
   world: WorldDefinition,
   climate: number,
   height: number,
+  temperatureOffset = 0,
 ): number {
   const elevationCooling = Math.max(0, height - world.seaLevel) / 2_450;
-  return saturate(0.66 + climate * 0.2 - elevationCooling);
+  return saturate(0.66 + climate * 0.2 - elevationCooling + temperatureOffset);
 }
 
+/** The province-adjusted climate temperature at a point. */
 export function sampleTerrainTemperature(
   world: WorldDefinition,
   x: number,
@@ -1103,7 +1132,12 @@ export function sampleTerrainTemperature(
   height = sampleTerrainHeight(world, x, z),
 ): number {
   assertFilterWidth(filterWidthMeters);
-  return terrainTemperatureFromClimate(world, sampleTerrainClimate(world, x, z), height);
+  return terrainTemperatureFromClimate(
+    world,
+    sampleTerrainClimate(world, x, z),
+    height,
+    sampleClimateProvince(world, x, z, PROVINCE_SCRATCH).temperatureOffset,
+  );
 }
 
 /**
@@ -1125,6 +1159,8 @@ function classifyBiome(
   temperature: number,
   runway: boolean,
   airportInfluence: number,
+  temperatureOffset: number,
+  dryness: number,
 ): TerrainBiomeId {
   if (runway) return TerrainBiome.RUNWAY;
   if (height <= world.seaLevel) return TerrainBiome.WATER;
@@ -1146,6 +1182,8 @@ function classifyBiome(
     airportInfluence,
     dayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR,
     seasonalTemperatureShift: 0,
+    temperatureOffset,
+    dryness,
   });
   return BIOME_FOR_DOMINANT_MATERIAL[dominantLandCover(weights)] ?? TerrainBiome.GRASSLAND;
 }
@@ -1197,13 +1235,17 @@ function seasonalSnowCover(
   slope: number,
   temperature: number,
   dayOfYear: number,
+  temperatureOffset: number,
 ): number {
   const shift = seasonalTemperatureShift(dayOfYear, world.latitudeDegrees);
   if (shift >= 0) return 0;
   const snowline =
     world.seaLevel + TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS
     + shift * METERS_PER_NORMALIZED_TEMPERATURE;
-  const heightBand = saturate((height - (snowline - 80)) / 120);
+  // Climate provinces: the snowline reads the snowline thermal height, the
+  // classifier's own; `height - 0` in the temperate core.
+  const snowHeight = terrainSnowlineThermalHeight(height, temperatureOffset);
+  const heightBand = saturate((snowHeight - (snowline - 80)) / 120);
   const coverFromHeight = heightBand * heightBand * (3 - 2 * heightBand);
   const temperatureBand = saturate((0.2 - (temperature + shift)) / 0.06);
   const coverFromCold = temperatureBand * temperatureBand * (3 - 2 * temperatureBand);
@@ -1223,6 +1265,7 @@ function writeTerrainColor(
   height: number,
   temperature: number,
   dayOfYear: number,
+  temperatureOffset: number,
   target: TerrainColor,
 ): TerrainColor {
   const palette = PALETTES[biome];
@@ -1253,7 +1296,9 @@ function writeTerrainColor(
     && biome !== TerrainBiome.RUNWAY
     && biome !== TerrainBiome.SNOW
   ) {
-    const cover = seasonalSnowCover(world, height, slope, temperature, dayOfYear);
+    const cover = seasonalSnowCover(
+      world, height, slope, temperature, dayOfYear, temperatureOffset,
+    );
     if (cover > 0) {
       const snow = PALETTES[TerrainBiome.SNOW];
       // Keep a whisper of the ground variation so the blanket reads as a
@@ -1276,6 +1321,8 @@ function createTerrainSampleTarget(): TerrainSample {
     slope: 0,
     moisture: 0,
     temperature: 0,
+    temperatureOffset: 0,
+    dryness: 0,
     biome: TerrainBiome.GRASSLAND,
     biomeName: "grassland",
     color: { r: 0, g: 0, b: 0 },
@@ -1304,26 +1351,39 @@ export function sampleTerrainSurface(
   slope: number,
   target: TerrainSample,
   dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
-  moisture = sampleTerrainMoisture(world, x, z, 0),
-  temperature = sampleTerrainTemperature(world, x, z, 0, height),
+  moisture?: number,
+  temperature?: number,
 ): TerrainSample {
+  // Climate provinces: sampled once, for the climate fields (when they were
+  // not supplied) and for the thermal-height reads.
+  const province = sampleClimateProvince(world, x, z, PROVINCE_SCRATCH);
+  const temperatureOffset = province.temperatureOffset;
+  const dryness = province.dryness;
+  const resolvedMoisture = moisture ?? sampleTerrainMoisture(world, x, z, 0, dryness);
+  const resolvedTemperature = temperature ?? terrainTemperatureFromClimate(
+    world, sampleTerrainClimate(world, x, z), height, temperatureOffset,
+  );
   const airport = worldAirportAt(world, x, z);
   const runway = airport ? isPointOnRunway(airport, x, z) : false;
   const airportInfluence = airport ? getAirportInfluence(airport, x, z) : 0;
   const biome = classifyBiome(
-    world, height, slope, moisture, temperature, runway, airportInfluence,
+    world, height, slope, resolvedMoisture, resolvedTemperature, runway, airportInfluence,
+    temperatureOffset, dryness,
   );
 
   target.height = height;
   target.slope = slope;
-  target.moisture = moisture;
-  target.temperature = temperature;
+  target.moisture = resolvedMoisture;
+  target.temperature = resolvedTemperature;
+  target.temperatureOffset = temperatureOffset;
+  target.dryness = dryness;
   target.biome = biome;
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
   target.airportInfluence = airportInfluence;
   target.isRunway = runway;
   writeTerrainColor(
-    world, x, z, biome, moisture, slope, height, temperature, dayOfYear, target.color,
+    world, x, z, biome, resolvedMoisture, slope, height, resolvedTemperature, dayOfYear,
+    temperatureOffset, target.color,
   );
   return target;
 }

@@ -5,8 +5,8 @@ import {
   hemiOctahedralUv,
   impostorBakeFrame,
   impostorLayerIndex,
+  IMPOSTOR_LAYER_COUNT,
   IMPOSTOR_LAYER_EDGE,
-  IMPOSTOR_SEASON_BUCKETS,
   IMPOSTOR_SPECIES,
   IMPOSTOR_VIEW_GRID,
   planImpostorAtlas,
@@ -99,7 +99,10 @@ describe("impostor bake (2-17)", () => {
   it("bakes non-trivial coverage for every species and view row", () => {
     for (const species of IMPOSTOR_SPECIES) {
       const stats = layerStats(impostorLayerIndex(species, 0));
-      expect(stats.coverage, species).toBeGreaterThan(0.08);
+      // A palm is a bare pole under an open star of fronds, so its sprites
+      // cover about two thirds of a crowned tree's; the floor still rejects
+      // an empty or crown-less bake.
+      expect(stats.coverage, species).toBeGreaterThan(species === "palm" ? 0.045 : 0.08);
       expect(stats.coverage, species).toBeLessThan(0.9);
     }
   });
@@ -231,10 +234,10 @@ describe("impostor bake (2-17)", () => {
       const bare = layerStats(impostorLayerIndex(species, 1));
       expect(bare.coverage, species).toBeLessThan(leafed.coverage * 0.75);
     }
-    for (const species of ["pine", "cedar", "spruce"] as const) {
-      const leafed = PLANS.albedo.layerChains[impostorLayerIndex(species, 0)]![0]!;
-      const bare = PLANS.albedo.layerChains[impostorLayerIndex(species, 1)]![0]!;
-      expect(Buffer.from(leafed).equals(Buffer.from(bare)), species).toBe(true);
+    // Evergreens hold by construction: one layer serves both buckets (their
+    // separate bare bake was byte-identical, so sharing it moved no pixel).
+    for (const species of ["pine", "cedar", "spruce", "palm"] as const) {
+      expect(impostorLayerIndex(species, 1), species).toBe(impostorLayerIndex(species, 0));
     }
   });
 
@@ -274,8 +277,6 @@ describe("impostor bake (2-17)", () => {
       // The shader's exact decode: floor(state.y × 255 + 0.5), then / 32.
       const decoded = Math.floor(Math.floor((byte / 255) * 255 + 0.5) / 32);
       expect(decoded, species).toBe(index);
-      expect(impostorLayerIndex(species, 0)).toBe(index * IMPOSTOR_SEASON_BUCKETS);
-      expect(impostorLayerIndex(species, 1)).toBe(index * IMPOSTOR_SEASON_BUCKETS + 1);
       // The bake frame is per species and reaches the shader as a table row,
       // so it must be finite and inside the unit prototype's extent.
       const frame = impostorBakeFrame(species);
@@ -284,6 +285,21 @@ describe("impostor bake (2-17)", () => {
       expect(frame.centerYUnit).toBeGreaterThan(0.1);
       expect(frame.centerYUnit).toBeLessThan(1);
     });
+  });
+
+  it("gives every species its own leafed layer and deciduous ones a bare one", () => {
+    const leafed = IMPOSTOR_SPECIES.map((species) => impostorLayerIndex(species, 0));
+    expect(new Set(leafed).size).toBe(IMPOSTOR_SPECIES.length);
+    const used = new Set<number>();
+    for (const species of IMPOSTOR_SPECIES) {
+      used.add(impostorLayerIndex(species, 0));
+      used.add(impostorLayerIndex(species, 1));
+    }
+    expect([...used].sort((a, b) => a - b))
+      .toEqual(Array.from({ length: IMPOSTOR_LAYER_COUNT }, (_, layer) => layer));
+    for (const species of ["oak", "maple", "birch", "willow"] as const) {
+      expect(impostorLayerIndex(species, 1), species).toBe(impostorLayerIndex(species, 0) + 1);
+    }
   });
 
   it("is deterministic and inside the memory headroom", () => {
@@ -310,10 +326,13 @@ describe("impostor bake (2-17)", () => {
     );
     const megabytes = bytes / (1024 * 1024);
     // The §5.2 arbitration the plan asked to settle by measurement: 64²
-    // tiles land both buckets AND the normal+depth array at 9.33 MiB,
-    // inside the ~15.8 MiB headroom the 128² sketch overran.
-    expect(megabytes).toBeCloseTo(9.33, 1);
-    expect(PLANS.layerCount).toBe(IMPOSTOR_SPECIES.length * IMPOSTOR_SEASON_BUCKETS);
+    // tiles landed both buckets AND the normal+depth array at 9.33 MiB for
+    // seven species, inside the ~15.8 MiB headroom the 128² sketch overran.
+    // Evergreens sharing one layer for both buckets brings eight species
+    // (twelve layers) to 8.0 MiB.
+    expect(megabytes).toBeCloseTo(8, 1);
+    expect(PLANS.layerCount).toBe(IMPOSTOR_LAYER_COUNT);
+    expect(IMPOSTOR_LAYER_COUNT).toBe(12);
     expect(PLANS.albedo.edge).toBe(IMPOSTOR_LAYER_EDGE);
   });
 });

@@ -1,3 +1,4 @@
+import type { ClimateProvinceSample } from "@/src/world/climateProvince";
 import type {
   HydrologyGenerationConfig,
   HydrologyGenerationResult,
@@ -11,7 +12,12 @@ import {
 export type HydrologyWorkerGenerationOptions = Partial<HydrologyGenerationConfig>;
 
 export type HydrologyWorkerCommand =
-  | { readonly type: "initialize"; readonly worldSeed: WorldSeed }
+  | {
+      readonly type: "initialize";
+      readonly worldSeed: WorldSeed;
+      /** The main thread's forced climate province, so both build one world. */
+      readonly climateProvince?: Readonly<ClimateProvinceSample>;
+    }
   | {
       readonly type: "generate";
       readonly requestId: number;

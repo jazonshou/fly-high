@@ -11,6 +11,7 @@ import {
 import {
   SHRUB_VARIANT_COUNTS,
   TREE_VARIANT_COUNTS,
+  buildCrownFringePrototype,
   buildRockPrototype,
   buildShrubPrototype,
   buildTreePrototype,
@@ -197,9 +198,19 @@ describe("prototype height contract", () => {
         for (const band of TREE_BANDS) {
           for (const seed of HEIGHT_SEEDS) {
             const prototype = buildTreePrototype(species, variant, seed, band);
+            // The leaf cards draw at the same scale, and a palm's crown IS its
+            // cards: its trunk and boss stop at ~0.84 and the youngest fronds
+            // rise to the top. The far impostor bakes the mid cards.
+            const cards = buildCrownFringePrototype(
+              species,
+              variant,
+              seed,
+              band === "near" ? "near" : "mid",
+            );
             const height = Math.max(
               prototype.crown.boundingHeight,
               prototype.trunk.boundingHeight,
+              cards.boundingHeight,
             );
             checked += 1;
             expect(

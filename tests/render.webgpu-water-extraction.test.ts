@@ -286,11 +286,24 @@ describe("water shader extraction (2-8a)", () => {
     // zero slope variance and from below; the sun lobe, the Fresnel and the
     // planar capture are untouched. Re-pinned once more, text only, when its
     // three copies of the clamped RMS slope became one `roughRmsSlope`.
+    //
+    // Re-pinned by the tropical coast's reef carbonate. BOTH hashes move: the
+    // vertex reads `.xyz` of the environment sample it already took and its
+    // province varying goes vec3f -> vec4f (the same inter-stage location),
+    // and the fragment hands `.w` to the bed, whose albedo mixes by it toward
+    // a near-white coral sand. The field's B channel is 0 outside the tropics
+    // and every new term is `mix(x, y, 0)` there, so no other sea moves:
+    // tests/gpu/water-bed-carbonate.test.ts measures the bed at 0 on a real
+    // adapter: bit-identical on SwiftShader (a first cut that shifted
+    // smoothstep's edges by the carbonate was not, which is why the fades are
+    // two literal-edged ones), and within last-bit rounding on Metal, which
+    // reassociates.
+    // Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "39bd19b4fb34b8697aaf57c1fc83d98620fbc22bf8537a9c93372ea611a058e9",
+      "7a22f44586e782bb4373d85e8a6f7ff21adaba05660f9d7849e7731ef344eab4",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "272044dd7580c11bd68ee3b339953fcf78921cc4419ccdf04fb54c9ffdb1502f",
+      "5bfdc4c6d1da8171922929b1dda80472fe79f9786b2ec1a11a1eaaee1b182704",
     );
   });
 

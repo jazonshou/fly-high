@@ -715,6 +715,7 @@ const TREE_SPECIES: readonly TreeSpecies[] = [
   "maple",
   "birch",
   "willow",
+  "palm",
 ];
 const SHRUB_SPECIES: readonly ShrubSpecies[] = ["juniper", "hazel", "sage"];
 const ROCK_VARIANTS: readonly RockVariant[] = ["granite", "limestone", "dark"];

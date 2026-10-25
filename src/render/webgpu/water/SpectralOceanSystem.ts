@@ -465,7 +465,7 @@ varying waveCrest: f32;
 varying farGustCoarse: f32;
 // W-8: (productivity, runoff) at this vertex, 0..1 each.
 // W-10 added .z: wind exposure, 0 in the lee of a coast, 1 in open water.
-varying waterProvince: vec3f;
+varying waterProvince: vec4f;
 // W-10: this vertex's packed terrain horizon, for the reflected sky.
 varying oceanHorizonPackedA: vec4f;
 varying oceanHorizonPackedB: vec4f;
@@ -626,10 +626,12 @@ fn main(input: VertexInputs) -> FragmentInputs {
     waterEnvironmentSampler,
     clamp(environmentUv, vec2f(0.0), vec2f(1.0)),
     0.0,
-  ).xy;
-  vertexOutputs.waterProvince = vec3f(
-    province,
+  ).xyz;
+  // .w is the tropical coast's reef carbonate, which only the bed reads.
+  vertexOutputs.waterProvince = vec4f(
+    province.xy,
     oceanWindExposure(worldXZ, uniforms.oceanWind),
+    province.z,
   );
   // W-10: the packed horizon at this vertex. inverseSpan 0 is the "no field
   // yet" sentinel the fragment folds in, exactly as inland water does.
@@ -679,7 +681,7 @@ varying cascadeFade4: f32;
 varying waveCrest: f32;
 // wave S: the far cat's paws' 1.5 km octave, per vertex.
 varying farGustCoarse: f32;
-varying waterProvince: vec3f;
+varying waterProvince: vec4f;
 varying oceanHorizonPackedA: vec4f;
 varying oceanHorizonPackedB: vec4f;
 varying planarReflectionClip: vec4f;
@@ -1332,6 +1334,7 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
       ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
       input.waterProvince.y,
     ),
+    input.waterProvince.w,
     downwelling,
     light,
     normal,
