@@ -358,16 +358,24 @@ export function skyProbeRefreshAction(state: SkyProbeRefreshState): SkyProbeRefr
   return drifted ? "begin" : "none";
 }
 
-/** O(1) counters for the sliced rebake, read by the perf probe. */
+/**
+ * O(1) counters for the sliced rebake, read by the perf probe. The last
+ * figures hold until the next call that sets them, so a per-frame reader
+ * diffs advanceCalls and bakesCompleted to tell whether they are its own
+ * frame's. The max figures run from construction, the cold first rebake
+ * included. update()'s one-frame bake is not timed or counted.
+ */
 export interface SkyRebakeStats {
-  /** Milliseconds the last advanceRebake call spent sampling. */
+  /** Milliseconds the last sampling advanceRebake call spent. */
   readonly lastAdvanceMilliseconds: number;
   /** The longest single advanceRebake call since the probe was made. */
   readonly maxAdvanceMilliseconds: number;
+  /** advanceRebake calls that sampled, since the probe was made. */
+  readonly advanceCalls: number;
   /** Milliseconds the last applyRebakeIrradiance call spent in the converter. */
   readonly lastApplyMilliseconds: number;
   readonly maxApplyMilliseconds: number;
-  /** Sliced rebakes whose irradiance reached the probe. update() is not counted. */
+  /** Sliced rebakes whose irradiance reached the probe. */
   readonly bakesCompleted: number;
 }
 
@@ -380,6 +388,7 @@ export class SkyEnvironmentProbe {
   private rebaking = false;
   private lastAdvanceMilliseconds = 0;
   private maxAdvanceMilliseconds = 0;
+  private advanceCalls = 0;
   private lastApplyMilliseconds = 0;
   private maxApplyMilliseconds = 0;
   private bakesCompleted = 0;
@@ -483,6 +492,7 @@ export class SkyEnvironmentProbe {
     const elapsed = this.now() - started;
     this.lastAdvanceMilliseconds = elapsed;
     this.maxAdvanceMilliseconds = Math.max(this.maxAdvanceMilliseconds, elapsed);
+    this.advanceCalls += 1;
     return done;
   }
 
@@ -524,6 +534,7 @@ export class SkyEnvironmentProbe {
     return {
       lastAdvanceMilliseconds: this.lastAdvanceMilliseconds,
       maxAdvanceMilliseconds: this.maxAdvanceMilliseconds,
+      advanceCalls: this.advanceCalls,
       lastApplyMilliseconds: this.lastApplyMilliseconds,
       maxApplyMilliseconds: this.maxApplyMilliseconds,
       bakesCompleted: this.bakesCompleted,

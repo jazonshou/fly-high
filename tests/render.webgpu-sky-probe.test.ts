@@ -478,17 +478,29 @@ describe("F1 — the sky irradiance bake slices without changing a bit", () => {
     expect(probe.rebakeStats).toEqual({
       lastAdvanceMilliseconds: 0,
       maxAdvanceMilliseconds: 0,
+      advanceCalls: 0,
       lastApplyMilliseconds: 0,
       maxApplyMilliseconds: 0,
       bakesCompleted: 0,
     });
     probe.update(REBAKE_BINDINGS[0]!.binding);
     expect(probe.rebakeStats.bakesCompleted, "update() is not a sliced bake").toBe(0);
+    expect(probe.rebakeStats.advanceCalls, "update() is not a sliced bake").toBe(0);
+    let calls = 0;
     for (let bake = 1; bake <= 2; bake += 1) {
       probe.beginRebake(REBAKE_BINDINGS[bake]!.binding);
-      while (!probe.advanceRebake(0.5)) { /* slice */ }
+      do {
+        calls += 1;
+      } while (!probe.advanceRebake(0.5));
+      // A ready rebake answers without sampling, so a frame that only asks
+      // leaves the count, and the last figure, alone.
+      const lastAdvance = probe.rebakeStats.lastAdvanceMilliseconds;
+      expect(probe.advanceRebake(0.5)).toBe(true);
+      expect(probe.rebakeStats.lastAdvanceMilliseconds).toBe(lastAdvance);
       probe.applyRebake();
+      expect(probe.advanceRebake(0.5), "nothing in flight").toBe(false);
       const stats = probe.rebakeStats;
+      expect(stats.advanceCalls).toBe(calls);
       expect(stats.bakesCompleted).toBe(bake);
       // Each read moves the fake clock 0.05 ms: the advance spends its
       // 0.5 ms budget, and the converter is one step between two reads.
