@@ -78,6 +78,40 @@ describe("WebGPU paged world-detail generation", () => {
     expect(new Set(forest.trees.map((tree) => tree.species)).size).toBeGreaterThanOrEqual(3);
   });
 
+  it("splits upland and lowland species on the sample's climate temperature", () => {
+    // A 700 m slope, where the classifier's upland/lowland split turns on
+    // temperature. It reads the sample's climate temperature; a sampler that
+    // supplies none gets the height-only stand-in, 0.66 - height / 2450
+    // (0.37 here, lowland).
+    const slope = (temperature?: (height: number) => number): DetailTerrainSampler => (x, z) => {
+      const height = 700 + Math.sin(x * 0.002) * 3 + Math.cos(z * 0.0025) * 2;
+      return {
+        height,
+        slope: 0.18,
+        moisture: 0.5,
+        biome: TerrainBiome.FOREST,
+        ...(temperature ? { temperature: temperature(height) } : {}),
+      };
+    };
+    const shared = { worldSeed: "climate-species", cellX: 4, cellZ: 7 } as const;
+    const coniferShare = (cell: ReturnType<typeof generateDetailCell>) =>
+      cell.trees.filter((tree) => ["spruce", "pine", "cedar"].includes(tree.species)).length
+        / cell.trees.length;
+    const standIn = generateDetailCell({ ...shared, terrainSample: slope() });
+    expect(generateDetailCell({
+      ...shared, terrainSample: slope((height) => 0.66 - height / 2_450),
+    })).toEqual(standIn);
+    // A cold climate field makes the same slope upland conifer; a warm one
+    // keeps the lowland mix. The stand is the same trees either way.
+    const cold = generateDetailCell({ ...shared, terrainSample: slope(() => 0.2) });
+    const warm = generateDetailCell({ ...shared, terrainSample: slope(() => 0.5) });
+    expect(coniferShare(cold)).toBe(1);
+    expect(coniferShare(warm)).toBeLessThan(0.5);
+    expect(coniferShare(standIn)).toBeLessThan(0.5);
+    const where = (cell: ReturnType<typeof generateDetailCell>) => cell.trees.map((tree) => [tree.x, tree.z]);
+    expect(where(cold)).toEqual(where(warm));
+  });
+
   it("never places terrestrial detail on water or runway ground", () => {
     // The density field is continuous, never a biome switch (1B-7): water is
     // ground at or below sea level, and the runway sits inside the graded

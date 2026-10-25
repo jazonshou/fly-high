@@ -383,7 +383,7 @@ describe("the consumers of the landform stage", () => {
     ), 6],
     ["height pyramid", GLOBAL_HEIGHT_PYRAMID_WGSL, 3],
     ["bathymetry", bathymetryUpdateWgsl(), 6],
-    ["splat bake", terrainPageSplatWgsl(), 8],
+    ["splat bake", terrainPageSplatWgsl(), 9],
   ] as const;
 
   it("each compose the include once and bind the data at a slot of their own", () => {
@@ -403,11 +403,12 @@ describe("the consumers of the landform stage", () => {
     const body = functionBody(consumers[0][1], "pageHeightAt");
     const natural = body.indexOf("let natural = terrainNaturalHeight(localX, localZ);");
     const landformed = body.indexOf("let landformed = terrainLandforms(localX, localZ, natural);");
-    const earthworks = body.indexOf("terrainRunwayEarthworksHeight(");
+    // The nearest airport's earthworks (the CPU's worldAirportAt), on the landformed height.
+    const earthworks = body.indexOf("terrainRunwayEarthworksNearestHeight(");
     expect(natural).toBeGreaterThan(0);
     expect(landformed).toBeGreaterThan(natural);
     expect(earthworks).toBeGreaterThan(landformed);
-    expect(body.slice(earthworks)).toMatch(/earthworks,\s*landformed,/u);
+    expect(body.slice(earthworks)).toMatch(/^terrainRunwayEarthworksNearestHeight\(\s*landformed,/u);
   });
 
   it("draw landforms into the pyramid, and into the bed before the macro blend", () => {

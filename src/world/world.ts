@@ -162,6 +162,7 @@ export function createWorld(
     seedHash,
     seaLevel,
     airport,
+    airports: Object.freeze(airport ? [airport] : []),
     prevailingWindRadians,
     prevailingWindSpeed: 3.5 + unitFloatFromHash(speedHash) * 7.5,
     latitudeDegrees,

@@ -286,6 +286,12 @@ export class GroundCoverSystem {
   private frontTileOriginX = 0;
   private frontTileOriginZ = 0;
   private frontTileReady = false;
+  /**
+   * The front tile was baked against ground that has since changed (an airport
+   * spawned or was retired under it). It keeps drawing until its replacement
+   * finishes baking — a stale tile for a few frames, never a hole.
+   */
+  private frontTileStale = false;
   private backTileOriginX = 0;
   private backTileOriginZ = 0;
   private backTileRow = -1;
@@ -385,6 +391,28 @@ export class GroundCoverSystem {
   /** The blade material joins the shared cloud-shadow/aerial registries. */
   addPbrMaterials(add: (material: PBRMaterial) => void): void {
     if (this.material) add(this.material);
+  }
+
+  /**
+   * The ground under a world rectangle changed — an airport spawned or was
+   * retired there. A front tile over it is rebaked through the ordinary
+   * amortised bake (it keeps drawing meanwhile), and a back bake over it starts
+   * again. Anything else is untouched. Returns whether a tile was affected.
+   */
+  invalidateArea(minX: number, minZ: number, maxX: number, maxZ: number): boolean {
+    const span = GROUND_COVER_TILE_SPAN_METERS;
+    const overlaps = (originX: number, originZ: number): boolean =>
+      originX < maxX && originX + span > minX && originZ < maxZ && originZ + span > minZ;
+    let affected = false;
+    if (this.frontTileReady && overlaps(this.frontTileOriginX, this.frontTileOriginZ)) {
+      this.frontTileStale = true;
+      affected = true;
+    }
+    if (this.backTileRow >= 0 && overlaps(this.backTileOriginX, this.backTileOriginZ)) {
+      this.backTileRow = 0;
+      affected = true;
+    }
+    return affected;
   }
 
   /** Rows the amortised tile bake still owes — capture settle reads this. */
@@ -590,12 +618,14 @@ export class GroundCoverSystem {
     const span = GROUND_COVER_TILE_SPAN_METERS;
     const needsRestart = this.backTileRow < 0
       && (!this.frontTileReady
+        || this.frontTileStale
         || desiredOriginX !== this.frontTileOriginX
         || desiredOriginZ !== this.frontTileOriginZ);
     if (needsRestart) {
       this.backTileOriginX = desiredOriginX;
       this.backTileOriginZ = desiredOriginZ;
       this.backTileRow = 0;
+      this.frontTileStale = false;
     }
     if (this.backTileRow < 0) return;
     const started = performance.now();

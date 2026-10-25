@@ -279,13 +279,15 @@ presentation spine and changes the height authority behind it:
   trusted pages the macro fallback assumed the temperate world (Grass, rock
   and snow on real elevation, one canopy paint), so a taiga, tundra, desert or
   tropical forest changed colour with viewing distance. `ClimateProvinceField.ts`
-  streams a 128² RGBA32F window of the province (1.25 km texels, 256 KiB,
-  nearest-first, at most 512 work units a frame, no allocation per frame); the
-  CDLOD vertex stage reads it once per vertex and `ProvinceFarTone.ts` turns it
-  into a thermal lift, a sward base tone and a signed canopy share, all as
-  deltas, so the temperate core is `x + x * 0` and renders bit-identical. They
-  ride lanes the terrain already interpolates (the beauty pipeline has no
-  spare fragment input), and shadow-depth passes skip the read. Behind the
+  streams a 128² window of the province around the camera (1.25 km texels,
+  nearest-first, at most 512 work units a frame, no allocation per frame) and
+  bakes each texel's far tone on the CPU (`ProvinceFarTone.ts`: a thermal
+  lift, a sward base tone and a signed canopy share, all as deltas, so the
+  temperate core is `x + x * 0` and renders bit-identical) into two half-float
+  textures, 160 KiB. The CDLOD vertex stage takes one bilinear, repeat-wrapped
+  sample of each per vertex. The tone rides lanes the terrain already
+  interpolates (the beauty pipeline has no spare fragment input), and
+  shadow-depth passes skip the read. Behind the
   define `TERRAIN_PROVINCE_FIELD` from the tier flag `terrainProvinceField`:
   compiled out on Low, which pays nothing and allocates nothing.
   **Cost** (`npm run perf:ab -- --base 62bade0`, cloud SwiftShader, Medium):
@@ -295,6 +297,29 @@ presentation spine and changes the height authority behind it:
   default shot's pixels identical to the base. The shadow skip took the CSM
   pass from +8-18% to water's +3.6% (-0.3% to +6.3%). Baselines and draw-call
   ceilings are unchanged.
+  **Re-measured on CI against main (2026-10-25)**, with every biome merged:
+  cruise +2.0% on an EPYC 7763, and the same commit with
+  `--head-profile-override {"terrainProvinceField":false}` read cruise -1.2%
+  on a 7763, so the field itself was 3.2% of the cruise frame, over the 2% a
+  feature may spend (the cloud runs above read it as noise). Water +3.1% and
+  ground +4.0% with the field came from a 9V45 against +0.1% and +0.5%
+  without it on a 7763, so they do not isolate it (see "Cloud A/B"). The
+  vertex stage then loaded four RGBA32F texels per vertex, mixed them
+  bilinearly and evaluated the tone's seven smoothsteps and two divides on the
+  result. The tone is now baked per texel on the CPU (1.5 us a texel warm, 0.5
+  of it the tone), which leaves the vertex two filtered samples.
+  **After the bake** (`9d5f98e`, perf-ab run 40148770740 against main,
+  SwiftShader GPU time, all SAME, draw calls unchanged): approach +2.0% (EPYC
+  9V74), cruise +1.0%, forest +1.3%, ground +0.5%, water +0.7% (EPYC 7763).
+  Against the field-off run on the same CPU model, the field now costs cruise
+  about 2.2% (was 3.2%), water about 0.6% and ground nothing measurable. The
+  macOS runner's advisory A/B (Apple M1 GPU, frame wall time) read -0.5% to
+  +1.0%, cruise +0.5% (-0.2% to +1.2%). A second dispatch (run 40148782563)
+  drew an EPYC 9V45 for cruise and read +3.7%: the main pass +3.9% (+1.1% on
+  the 7763), and the cloud raymarch, which this branch does not touch, +8.2%
+  beside a bloom composite at -5.6%, with the arms' pixels matching. As with
+  the sea's sky (2026-10-20), the 9V45 weighs this work more than the other
+  models do; the hardware run does not show it.
 
 ### Landforms: sand seas (2026-10-24)
 
@@ -370,11 +395,11 @@ Cloud cost is primarily fill rate multiplied by ray steps and density-light samp
 
 World detail is deterministic and page-owned rather than attached to transient terrain meshes (villages and buildings were deleted in 1B-5; the airfield is the only settlement content):
 
-- Default detail cells are 512 m. Terrain biome, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
+- Default detail cells are 512 m. Terrain biome, climate temperature, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
 - Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice.
 - Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting conservative prototype-aware bounds independently, so one visible tree no longer submits every offscreen resident instance.
-- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. A corrupt, silent, or unavailable Worker fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; authority-level generation and presentation watchdogs cannot be reset indefinitely by motion. Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
+- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. A corrupt, silent, or unavailable Worker fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; authority-level generation and presentation watchdogs cannot be reset indefinitely by motion. The watchdogs time the WORKER: generation is timed only while the worker holds a request, any answer (current or stale) is progress, the 240-update count applies only after its first answer, and time without updates (a hidden tab, a long main-thread stall) is not charged past 100 ms per gap (see "Flight stutter" below). Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
 - Per-instance color supplies variation. A lightweight PBR vertex deformation consumes each tree's phase, compliance, height, and stable selection from `instanceWind`, producing asynchronous crown and trunk sway without CPU transform updates.
 - `densityField.ts` owns a 7.2 × 5.4 km forest-fraction field in addition to the continuous stand field. Its 260 m glades reach a 0.02 authored-density floor, thresholded windthrow supplies a genuinely hard edge, and the published edge margin makes generated stems shorter and crowns broader. This changes where and how much forest grows; it deliberately does not change species/stand selection.
 - A floating-origin change immediately translates every live presentation batch by its build-origin delta while the bounded rebuild sweep catches up. The detail shader receives the same offset for pre-world band culling and impostor facing. The shared cascaded-shadow system still receives all eligible chunks rather than only those visible to the main camera.
@@ -392,8 +417,8 @@ Gate A adds only small, fixed steady allocations. The worst live aircraft surfac
 
 - The scene has no active prepass or TAA pipeline. Engine context antialiasing is disabled; MSAA lives on the offscreen beauty target, which is owned by whichever post-process is currently FIRST in the camera's chain (1B-11), at the per-tier sample counts above. That owner is not fixed: the scotopic pass detaches in photopic daylight, so ownership moves between rod vision, bloom and the tone map with the time of day and the tier. `FlightRenderer.applyFirstPassOwnership` derives it. FXAA is the sample-count-1 fallback.
 - An explicit full-resolution `ImageProcessingPostProcess` uses a half-float texture and the scene's ACES configuration with exposure 1.08 and contrast 1.04.
-- A full-resolution `FxaaPostProcess` follows tone mapping and writes through an unsigned-byte target.
-- A final contrast-adaptive sharpen (`SharpenPass`, AMD FidelityFX RCAS) is the LAST pass at every tier that sets `sharpenAmount` above zero (tier 1 0.7, tiers 2/3 0.4; tier 0 off, for want of memory headroom against its 260 MiB estimate ceiling). It restores the acutance FXAA and the browser's bilinear canvas upscale remove: 5 taps and a few dozen ALU per pixel at the render raster, one LDR target (counted in the framebuffer row), and one more full-screen draw per frame. `applyProfile` detaches it before re-attaching FXAA and re-attaches it after, so it stays last.
+- A full-resolution FXAA pass (`FxaaSharpenPass`, Babylon's FXAA 3.11 ported so the sharpen can ride in it; at a zero amount it is the stock pass, pixel for pixel) follows tone mapping at the sample-count-1 tiers, reading an unsigned-byte target.
+- A final contrast-adaptive sharpen (AMD FidelityFX RCAS) restores the acutance FXAA and the browser's bilinear canvas upscale remove, at every tier that sets `sharpenAmount` above zero (tier 1 0.7, tiers 2/3 0.4; tier 0 off). Where FXAA runs it is FUSED into the FXAA pass (`FxaaSharpenPass`, 2026-10-24): FXAA already fetches the centre and its four-neighbour cross, which is RCAS's whole footprint, so the sharpen adds a few dozen ALU per pixel and no fetch, pass, draw or target. At the multisampled tiers it is a pass of its own after the tone map (`SharpenPass`: 5 taps, one LDR target counted in the framebuffer row, one more full-screen draw). Whichever runs is last: `applyProfile` detaches both and re-attaches the profile's one.
 - Bloom (7-5) runs between rod vision and the tone map, on scene-referred linear radiance: a full-resolution soft-knee bright pass, a half-resolution separable Gaussian (9 taps, sigma 2.0), and an additive composite at intensity 0.08. It is enabled at tier 1 only — tier 0 is unmeasured rather than refused, tiers 2 and Ultra are unfunded. The bright pass is full resolution deliberately: it becomes the first post-process whenever the scotopic pass detaches, and the first pass's ratio sets the size of the target the scene renders into.
 - The device pixel ratio is capped per tier (1/1.5/2/2) and the total scale product is clamped by the tier's absolute pixel cap (1A-6a) — no display can raise rendered pixels past it.
 - Two governors adapt per 120-frame window (1A-6b, repaired by R-11): Governor A uses presentation interval minus measured CPU time as its normal GPU/pacing proxy, steps resolution by 0.05 down / 0.025 up to a 0.75 floor, undoes and latches against steps that do not improve the same timing domain, and — when latched or floored — sheds GPU-cost work levers (cloud-shadow cadence, shadow-caster distance, vegetation distance). Governor B sheds CPU-cost levers (terrain-page requests, detail generation slice, animal budget) only on CPU-bound windows. Explicit timestamp captures can substitute a GPU signal, but unlike the old policy normal gameplay does not burn frame time merely to decide how to save it.
@@ -1554,6 +1579,309 @@ and its work counts name the pass that draws it.
   pixels a change moved, which is what a reviewer needs before any
   promotion.
 
+## Flight stutter: `npm run perf:flight` (2026-10-24)
+
+The A/B times a settled shot, which is the steady cost. A player's frames
+also carry the work of flying into terrain nobody has seen yet: cells and
+pages streaming in, worker results landing on the main thread, a pipeline
+compiled the first time a material meets a new state, and the garbage all of
+it leaves. None of that shows in a settled shot, and all of it shows as a
+hitch. `npm run perf:flight` measures it, with the same agent page and arms
+as the A/B:
+
+```
+npm run perf:flight -- --base origin/main            # working tree vs main, 6 legs x 240 frames
+npm run perf:flight -- --base 264b760 --head main --legs 8
+npm run perf:flight -- --profile --heap-profile --no-minify   # V8 CPU and heap profiles per leg
+node scripts/cpuprofile-spikes.mts <arm>-leg2.cpuprofile        # what the long frames ran
+node scripts/heapprofile-summary.mts <arm>-leg2.heapprofile 30 --frames 240
+```
+
+Both arms start from the same settled shot (`approach-500ft` by default) and
+fly the same scripted path, terrain following at 120 m/s, in legs that
+alternate ABBA. Every frame records `render()`'s main-thread time and each
+frame-graph pass's share of it, the time the main thread spends on whatever
+is queued behind the frame (worker results, buffer maps), the JS heap grown
+(`--enable-precise-memory-info`), pipelines and shader modules created, and
+each new Babylon effect with the defines that set it apart from the nearest
+one compiled before it, at load included (an effect the engine hands back
+from its cache is not listed). Tasks over 50 ms come from the Long Tasks API, and
+each leg reports whether vegetation is still generated on its worker. The
+frame's own draws are dropped by default (`gpuDrawGate.ts`; `--draws` keeps
+them), so on SwiftShader a frame costs its CPU work and its compute. CPU
+milliseconds are this host's and only compare the arms; counts are exact.
+
+**What it found.** Main (6d91220) against the commit before PR #19
+(264b760), 6 x 240 frames: no new CPU cost from the three October PRs
+(render() p50 12.0 vs 11.6 ms, 25 vs 30 long tasks), but both arms carried
+the same older stutter: about 2% of frames were main-thread stalls of 100 to
+500 ms, and the frame allocated 3.2 MB of garbage. Profiles put every stall
+in `world-page-visibility`, in `generateDetailCell`: vegetation cells were
+being generated on the MAIN thread. The detail worker's generation watchdog
+had fallen back to inline generation, permanently, because it charged the
+worker for time in which nothing was asked of it: the agent's 22 s between
+the settle and the flight, with no update in between, read as 22 s without
+an answer on the first update back. In the browser the same thing happens
+whenever requestAnimationFrame stops for 8 s with cells still missing (a
+hidden tab, a window covered by another app on macOS) and, on a 120 Hz
+display, whenever the worker takes 2 s (240 updates) to answer its first
+request. Either way the rest of the session generates 512 m cells inline, a
+stall every few frames. The watchdog now times only an outstanding request,
+counts any answer, applies the update count after the first answer, and
+lifts update gaps (`DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS`);
+a worker that stops answering while frames run still falls back
+(tests/render.webgpu-detail-worker-runtime.test.ts).
+
+The same flight, 4 x 240 frames, after the first leg (SwiftShader host,
+trainer, medium/balanced):
+
+| | main (worker fell back) | watchdog fix (worker kept) |
+| --- | --- | --- |
+| render() ms p50 / p95 / p99 / max | 12.5 / 39.6 / 138.0 / 253.8 | 10.4 / 20.1 / 29.2 / 92.3 |
+| frame CPU ms mean | 17.7 | 11.9 |
+| frames over 4x the median | 29 | 3 |
+| long tasks: count / total ms / worst | 29 / 3148 / 259 | 3 / 208 / 92 |
+| JS heap allocated per frame | 3.3 MB | 1.7 MB |
+
+**Still open** (smaller, and each its own change):
+
+- One effect compiles mid-flight: the wildlife keratin PBR (clearcoat; the
+  first antler, tusk or beak in view), a one-time compile of ~120 KiB of
+  WGSL. Compiling it at load needs the meshes in the state they will draw in
+  (thin instances, shadow defines). The vegetation PBR variant without
+  `DETAIL_BAND_FADES` listed here before is compiled at load: until
+  `f86a866` the probe's recorder, installed after the renderer loaded, took
+  the engine's cached copy for a compile.
+- 1.7 MB of garbage per frame: the terrain clipmap's node selection and
+  buffer writes (~1 MB: per-node objects and string page keys) and the
+  wildlife step (~0.5 MB: per-step arrays and vector clones). Young
+  collections absorb it; it is not a stall source on its own.
+- The sky probe's spherical-harmonics bake runs on the main thread whenever
+  the camera's altitude changes by 500 m: 1,536 `evaluateSkyRadiance` calls,
+  1.3 ms on this host before PR #22 and 3.6 ms (high sun) to ~9 ms (low sun)
+  since. One frame per 500 m of climb; it could be spread over six frames
+  (one cube face each) with identical results.
+
+**The October PRs' steady cost, together.** Each of PRs #19, #20 and #22
+passed the 5% gate alone; together, against 264b760 (CI run 40117858194):
+
+| Shot | SwiftShader GPU | macOS runner wall (advisory) |
+| --- | --- | --- |
+| approach-500ft | +5.0% (+4.4..+5.5) | +1.9% (+0.6..+3.2) |
+| cruise-horizon | +4.1% (+4.0..+4.3) | +3.2% (+1.9..+4.5) |
+| forest-500ft-sunbehind | +3.7% (+3.6..+3.8) | +2.9% (+2.0..+3.8) |
+| ground-2m-lowsun | +4.7% (+3.9..+5.5) | +2.5% (+1.9..+3.1) |
+| water-25ft | +6.4% (+5.9..+6.7) | +4.8% (+4.1..+5.6) |
+
+SwiftShader runs both sides of every branch, so it charges the per-point sun
+on every shot; a real GPU skips it above a 33° sun. The rule for new work is
+to budget each feature at about 2% on medium, not the gate's 5%.
+
+## The final sharpen, fused into FXAA (2026-10-24)
+
+PR #20's RCAS sharpen ran at tier 1 as a pass of its own after FXAA: a
+second full-screen draw, five taps per pixel, and an LDR target the size of
+the raster that FXAA wrote and the sharpen read back. FXAA already fetches
+the centre and its four-neighbour cross, which is RCAS's whole footprint, so
+the sharpen now rides inside the FXAA pass (`FxaaSharpenPass`, a port of
+Babylon's FXAA 3.11 run with Babylon's own FXAA vertex shader). The
+multisampled tiers, which run no FXAA, keep the standalone `SharpenPass`.
+
+**Same look.** At a zero amount the port is Babylon's FXAA pixel for pixel
+(`tests/gpu/final-sharpen.test.ts`). With the sharpen on, the fused pass
+solves RCAS's lobe against the cross before FXAA, which has more contrast
+than the smoothed cross the separate pass saw, so on the pixels FXAA moved
+the lobe comes out smaller; `FXAA_MOVED_SHARPEN_GAIN` (1.2) makes it up.
+Calibrated on real tier-1 frames captured before FXAA at tier 1's own 0.86
+render scale, each run through both chains, and measured as displayed (the
+1100x619 raster upscaled to the 1280x720 viewport, as the capture and the
+browser do):
+
+| Shot | FXAA moved | Fine contrast*, FXAA then RCAS | fused, no gain | gain 1.15 | gain 1.2 | mean distance from the two-pass frame at 1.2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ground-2m-lowsun | 20.4% of pixels | 9.19 | 8.86 (-3.6%) | 9.11 (-0.9%) | 9.21 (+0.2%) | 0.55/255 |
+| approach-500ft | 18.2% of pixels | 10.41 | 9.82 (-5.7%) | 10.16 (-2.5%) | 10.28 (-1.2%) | 0.70/255 |
+
+\* Mean absolute 4-neighbour Laplacian of luma, on the displayed image;
+FXAA alone reads 6.24 and 7.45. On the raster itself, which the upscale
+softens, 1.2 runs a little over (+2.6% and +1.4%; 1.15 read +1.3% and
+-0.3% there, which is where it was first calibrated, at render scale 1).
+The harness reproduces the real pipeline: the end-to-end A/B frames of the
+two-pass and the 1.15 build read 10.41 -> 10.16 and 9.19 -> 9.10 on these
+shots, as above.
+
+Calibration recipe (reusable for any post-process change): a local branch
+that makes the pass a no-op at a profile value, and a capture that copies
+the raw raster (`tests/perf/ab/agent.ts`, `capture()`, destination size =
+raster size), give the pass's real input via `npm run perf:ab -- --base X
+--head X --rounds 0 --head-profile-override ...`; a throwaway `tests/gpu`
+harness then feeds that PNG through candidate chains on SwiftShader.
+
+**Cost** (CI run 40126495030, the pass fused without the gain, against
+`e06252f`; the gain is a multiply):
+
+| Shot | SwiftShader GPU | macOS runner wall (advisory) |
+| --- | --- | --- |
+| approach-500ft | -0.5% (-0.6..-0.4) | +0.1% (-1.6..+1.8) |
+| cruise-horizon | -0.4% (medians 5,884 -> 5,859 ms) | +0.1% (-0.9..+1.0) |
+| forest-500ft-sunbehind | -0.3% (-0.4..-0.1) | -0.2% (-0.7..+0.3) |
+| ground-2m-lowsun | -0.2% (-0.4..+0.1) | -0.3% (-1.1..+0.5) |
+| water-25ft | -0.2% (medians 7,042 -> 7,031 ms) | -0.8% (-1.6..-0.0) |
+
+Every tier-1 shot draws one call fewer and estimates 3.0 MiB less at the
+capture viewport (6.6 MiB at 2560x1440@2). The separate pass had cost about
+half a per cent of the frame, so this is close to all of what moving the
+sharpen to the high tiers would have saved, without losing it on medium.
+
+Draw-call ceilings: every tier-1 shot now reads its ceiling minus one. The
+`final-sharpen` entry in `DRAW_CALL_RAISES` stays, as the raise mechanism
+requires, until the next re-pin moves all 32 ceilings down by one and
+retires it.
+
+**The ground grain, read at an explicit mip.** The other half of PR #20's
+cost is the ground grain's five extra array reads on terrain. They were
+`textureSampleGrad` with limited gradients; at anisotropy 1 that is one
+trilinear tap at the mip the footprint's major axis picks, so the shader now
+computes that level once per scale and reads with `textureSampleLevel`
+(frames move 0.01-0.08/255 on the macOS runner). CI run 40130714082, against
+the fused sharpen:
+
+| Shot | SwiftShader GPU | macOS runner wall (advisory) |
+| --- | --- | --- |
+| approach-500ft | +0.4% (+0.1..+0.7) | +0.7% (-0.9..+2.3) |
+| cruise-horizon | -0.5% (-0.7..-0.4) | +0.6% (-0.4..+1.6) |
+| forest-500ft-sunbehind | -0.3% (-1.1..-0.1) | -1.1% (-1.7..-0.5) |
+| ground-2m-lowsun | -0.6% (-0.7..-0.5) | -0.6% (-1.2..-0.1) |
+| water-25ft | -0.1% (-0.5..+0.4) | -0.8% (-1.4..-0.2) |
+
+A small win, largest where the grain is (`ground-2m-lowsun` on both
+rasterisers), kept. Many GPUs run explicit-gradient reads at a reduced
+rate, which an explicit level avoids and SwiftShader does not model. Not
+tried: fewer octaves or a distance fade on the grain, since both change the
+look Jason approved.
+
+## Spawned airports and the nearest-airport marker (2026-10-24)
+
+Once the aircraft is 14 km from every airport, a new one is placed 5 to 9 km
+away (`AIRPORT_SPAWN_POLICY`, `src/world/airportNetwork.ts`), up to eight in
+the world. None of the capture's shots spawns one, so no draw-call ceiling
+moves and no baseline is re-promoted (the windsock change below moves 17
+pixels of one shot). What a spawn costs, and where:
+
+- **The site search** runs on its own worker (`airportSpawn.worker.ts`): one
+  certified site assessment takes 60 to 310 ms, too long for the main thread
+  or the simulation worker. The main thread checks the trigger once a second
+  and installs a found airport with `withAirports`, a list copy.
+- **The marker** is a DOM overlay moved with a transform, so it draws
+  nothing. The render loop projects into scratch objects and writes the
+  element only when its half-pixel position, angle or label changed; the
+  readout is rebuilt four times a second.
+- **Terrain** carries a fixed set of eight airport slots in the page
+  generator, the runway painter and the splat bake, compiled at load, so a
+  spawn writes uniforms and never compiles a pipeline. Per fragment, each
+  airport after the first costs one `vec2` difference, a `dot` and a
+  compare; a one-airport world runs that loop zero times. Memory: the
+  earthworks buffer grows from 64 B to 528 B, the splat airport table adds
+  256 B and the painter's uniform arrays 256 B; no texture, no atlas growth.
+  `TerrainClipmapSystem.setAirports` (0.34 ms) only queues the change: a
+  per-frame scan of 64 atlas slots finds the resident pages the new
+  airport's grading reaches, and they are regenerated in place through the
+  existing compute meter, about one page a frame (about 1.9 ms GPU per
+  height page and 0.7 ms per channel pair, measured on the test host). A
+  spawn 15 km out rebuilt 9 of 41 resident height pages over 9 frames, none
+  at L0. An eroded world still grades its home field only.
+- **The airfield** (hangars, tower, windsock, fence, fuel farm, signs, lamps
+  and floods) is built on the home field's materials in steps under a 1 ms
+  budget per frame (about 120 to 150 frames a field). It creates no
+  material or texture, and every merged mesh draws with a shader variant the
+  home field already compiled: each group keeps the index width (16 or 32
+  bit) the home meshes of its material have, since Babylon keys a define on
+  it, and every windsock is scaled a hair off uniform along its length
+  (`WINDSOCK_LENGTH_SCALE`), since Babylon keys another on that.
+  `tests/render.webgpu-spawned-airfields.test.ts` compares each merged
+  mesh's defines with the home field's. Its meshes merge into 7 draws; lamps
+  ride the home light-point draw and floods take clustered lights reserved
+  at startup (13 + 18 of the batch's 32). Per tier
+  (`spawnedAirfields` in `QualityProfile.ts`):
+
+  | | Low | Medium | High / Ultra |
+  | --- | --- | --- | --- |
+  | Fields built | 0 | 1 | 2 |
+  | Build / cull distance | none | 6 / 4 km | 8 / 6 km |
+  | Shadow casting | no | no | yes (up to 12 shadow draws) |
+  | Fields with floods | 0 | 1 | 3 |
+
+  On low nothing is built, lit or reserved.
+- **Vegetation** keeps off a spawned field, and only the detail cells its
+  reach meets regenerate, on the worker, while the old cells keep drawing.
+
+**Measured.** With a spawned field in view on medium (scratch shots, not
+committed): draws 227 to 234 on a 1.2 km final and 210 to 217 from 1.5 km
+abeam, about 50 k more triangles and 2.0 MiB more inventoried GPU memory.
+
+Cloud A/B, the airport work and autoland (`09f4dac`) against main
+(`6d91220`), SwiftShader, 16 rounds, in five parts: every shot SAME, draw
+calls unchanged.
+
+| Shot | GPU time | Draw calls | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | -2.5% (-3.7..-1.3) | 248 → 248 | 0.85% differ (see below) |
+| cruise-horizon | -2.2% (-3.6..-0.1) | 201 → 201 | identical |
+| forest-500ft-sunbehind | -0.3% (-1.8..+1.0) | 249 → 249 | identical |
+| ground-2m-lowsun | -2.6% (-4.2..-1.4) | 122 → 122 | identical |
+| water-25ft | -2.0% (-3.3..-0.4) | 225 → 225 | identical |
+
+`approach-500ft` comes to rest with 36 or 37 resident terrain pages (both
+arms want 24), whichever commit renders it. The same commit (`e2ddbb6`) came
+to rest with 37 as one A/B's base and 36 as another's head. Counts-only A/Bs
+of each merged commit against its parent rendered identical frames on
+`ground-2m-lowsun` every time; on `approach-500ft` every pair differed by
+that flip alone, the same 0.85% of pixels, with every other count equal.
+
+**Stutter** (`npm run perf:flight -- --base origin/main`: six legs of 240
+frames at 120 m/s on medium, SwiftShader, the frame's draws dropped; the
+figures are the five legs after the first). For a spawn, a scratch change to
+the harness (not committed) installs a field 5 km ahead and 1.5 km aside as
+leg 2 begins, from the approach shot, so the home field drew first:
+
+| | main | `fc4e890`, no spawn | `f86a866`, a field spawned |
+| --- | --- | --- | --- |
+| render() ms p50 / p99 / max | 12.3 / 98.7 / 219.3 | 9.9 / 29.3 / 53.4 | 9.8 / 26.0 / 95.6 |
+| frames over 4x the median | 26 | 4 | 2 |
+| long tasks: count / total ms | 27 / 2,779 | 2 / 105 | 1 / 95 |
+| pipelines / shader modules created | 1 / 2 | 2 / 2 | 2 / 2 |
+
+Main's column is from the no-spawn run; the spawn run's own main arm read
+the same (24 long tasks, 2,325 ms). No head leg built vegetation inline. The
+spawn's leg peaked at 36.4 ms. The one long task came three legs later, over
+the home field, in `world-page-visibility`, where the no-spawn run has its
+own (53 ms) and an earlier spawn run had none. The spawn created no pipeline
+and no shader module: the head's counts are the no-spawn run's, and its one
+listed compile is the wildlife keratin PBR both arms make.
+
+Before `df1445e` and `bc9c41f` a spawn compiled one variant, 85 KiB of WGSL:
+a spawned sock streaming at another bore than the home sock's drew with a
+different `NONUNIFORMSCALING`. The home sock could do the same alone, on
+main, when the wind at its mast crossed 15 kt. Keeping every sock off
+uniform moves 17 pixels of `ground-2m-lowsun` by at most 20/255 (the home
+sock, at a distance; every other pixel and count identical in a counts-only
+A/B). A real spawn site found by the search (`c6d8aab`, flown from 4.5 km
+out with `--start 19740.8,-13155.1,-17.02`) read no long task and no frame
+over 4x the median after the spawn, render max 35.0 ms against main's
+211.4 ms.
+
+### Compare CI parts on one CPU model (2026-10-25)
+
+Each SwiftShader part of the CI gate runs on whichever runner CPU it draws
+(so far an AMD EPYC 7763, 9V74 or 9V45), and the report's header names it.
+The models weigh work differently. The 9V45 runs about twice as fast as a
+7763 and read the biomes PR's cruise at +3.7% against main where a 7763
+read +1.0%; on it, passes the PR does not touch moved by 5-8% (the cloud
+raymarch +8.2%, the bloom composite -5.6%, with identical pixels). Within
+one model, run-to-run spread is about 1%. So attribute a change only between
+parts on the same CPU model, and use the macOS runner's advisory A/B to
+break a tie: it read the same cruise at +0.5% (-0.2% to +1.2%).
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
@@ -2116,7 +2444,7 @@ Recent, baselines from `35e03d3`:
 Two changes from the "Sharper scenery" thread, both visual and both perf-sensitive. **Neither has been timed yet**: the thread had no GPU, its screenshots come from SwiftShader in headless Chromium (good for looking at frames, meaningless for timing), and the hosted macOS runner that captured the full list below does not gate delivery. Draw counts and visual gates are measured; the costs below are expected, to be confirmed by the first capture that can time them.
 
 - **Final RCAS sharpen** (`lighting/SharpenPass.ts`, profile `sharpenAmount`). Expected cost at tier 1: one extra full-screen pass at the render raster (~0.68 Mpx at the canonical 1280x720 shot, ~1.5 Mpx at the reference panel), five texture taps per pixel, plus one 4 B/px LDR target. **Draw calls: +1 per frame on every tier-1 shot**, re-pinned below as the uniform `DRAW_CALL_RAISES` entry `final-sharpen`. Estimate rows: tier 1 rises by 6.6 MiB at the 2560x1440@2 viewport (the LDR target), tiers 2/3 by 10.5/17.6 MiB; tier 0 is unchanged because the pass is off there.
-- **Ground grain** (`terrain/GroundGrainSynthesis.ts`, read in `TerrainSurfacePlugin`). One more layer in each terrain material array (index 10, after the ten materials), built in the synthesis worker only where `terrainGroundPatchwork` is on (tiers 1-3). Memory: +1/10 of the material-array row, 2.67 MiB at 512² with mips. Fragment cost on terrain: up to three extra array fetches from array A and two from array B (all `textureSampleGrad`, isotropic: `GROUND_GRAIN_ANISOTROPY_LIMIT` = 1 against the materials' 16), each skipped where it cannot show (the relief past mip 6, the tone past mip 8.5, everything under 3 m of sea), and a few dozen ALU, inside a uniform branch on `terrainSurfaceTuning.z` that is off at tier 0. No draw-call change. Startup: one more ~0.3-0.5 s worker job, off the main thread.
+- **Ground grain** (`terrain/GroundGrainSynthesis.ts`, read in `TerrainSurfacePlugin`). One more layer in each terrain material array (index 10, after the ten materials), built in the synthesis worker only where `terrainGroundPatchwork` is on (tiers 1-3). Memory: +1/10 of the material-array row, 2.67 MiB at 512² with mips. Fragment cost on terrain: up to three extra array fetches from array A and two from array B (all `textureSampleGrad`, isotropic: `GROUND_GRAIN_ANISOTROPY_LIMIT` = 1 against the materials' 16; `textureSampleLevel` at the footprint's mip since 2026-10-24, see "The final sharpen, fused into FXAA"), each skipped where it cannot show (the relief past mip 6, the tone past mip 8.5, everything under 3 m of sea), and a few dozen ALU, inside a uniform branch on `terrainSurfaceTuning.z` that is off at tier 0. No draw-call change. Startup: one more ~0.3-0.5 s worker job, off the main thread.
 
 **First full capture, 2026-10-12** (PR #20's macOS run 38217280044 at `3d96334`, hosted runner, so no delivery gate). Draw calls: all 32 shots with a ceiling read exactly ceiling + 1, which is the sharpen's quad; staged as `final-sharpen` in `MEASURED_DRAW_DELTAS`. Visual gates: 24 shots fail, every one with ground in frame (lowest whole-frame SSIM: `lake-island-piercing` 0.824, `terrain-material-1600ft-down` 0.851, `cliff-60m` 0.877, `high-10000ft-down` 0.884, `mountain-close` 0.897). The 15 shots dominated by water, night or sky still pass (moved, but inside their gates): `night`, `night-moonlit`, `night-beacon-offset`, `dusk-mesopic`, `blue-hour`, `golden-hour`, `sunset-sunward`, `water-3m`, `water-25ft`, `water-400ft-glitter`, `coast-10km-lowsun`, `canopy-backlit-lowsun`, `motion-banked-turn`, `page-thrash-turn`, `cdlod-transition`. All thirty-nine were re-promoted from one reviewed capture, below.
 
@@ -2221,3 +2549,35 @@ On the same CPU model each shot moved by 0.4% or less; the two larger moves swap
 Before promotion the capture failed the visual gates on `water-3m`, `water-25ft`, `forest-line-highsun` and `forest-500ft-sunbehind` (whole-frame SSIM 0.916-0.984 against 0.985), all from sea pixels.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
+
+## Tree species from the climate temperature (2026-10-25): no baseline moves
+
+`classifyDetailSample` (`detail/generation.ts`) chose between the upland and
+lowland tree sets, and picked the shrub species, from `0.66 - height / 2450`
+plus the province offset. It now reads the sample's climate temperature, the
+one the ground's bake reads (the 11 km climate field, the lapse rate and the
+province offset), so a stand turns upland where its ground does. A sampler
+with no temperature keeps the stand-in. Jason chose the switch on 2026-10-25.
+Tree positions, counts and sizes do not change; only species can.
+
+**What changes in the temperate core** (perf seed, 373 detail cells every 6 km
+within 66 km of the airport): 7 cells, 12 of 403,624 trees (oak to spruce 5,
+spruce to maple 2, pine to birch 2, and one each of spruce to cedar, cedar to
+spruce and spruce to oak) and 1,811 of 768,012 shrubs (0.24%). The largest
+group is six trees on a slope at 980-990 m, 54 km east of the airport (cell
+131, -55), where the real temperature (0.21) is colder than the stand-in's
+(0.26): five oaks become spruces and a spruce becomes a cedar.
+
+**No shot sees one.** The macOS capture at `9d5f98e` (gpu-tests run
+40148770639, artifact `perf-capture-40148770639-1`, zip sha256
+`e5fb992a9dd9308d…c57c9e988`) against the capture before it (`8324439`, run
+40140784416): at most 0.0062/255 mean absolute difference
+(`forest-line-highsun`, sea sparkle and foliage shimmer), and `mountain-close`,
+`terrain-material-1600ft-down` and `canopy-1200ft` are identical. Against the
+committed baselines it is at most 0.0075/255. Two captures of the same code on
+that runner differ by up to 0.025/255, so nothing is promoted and every
+baseline stays. The before/after of the six trees is a scratch perf:ab render
+(`--rounds 0`), not a committed shot.
+
+**Cost: none.** The classifier reads a field the sampler already returns; the
+A/B at `9d5f98e` is in "Terrain and world paging" above.

@@ -128,3 +128,38 @@ export function isPointOnRunway(
 export function getWorldAirport(world: WorldDefinition): Readonly<AirportDefinition> | null {
   return world.airport;
 }
+
+/**
+ * The one airport that can shape the ground at a world coordinate: the
+ * airport whose centre is nearest.
+ *
+ * Every terrain and collision consumer that used to read `world.airport`
+ * reads this instead. Airports are kept `AIRPORT_SPAWN_POLICY.
+ * minSeparationMeters` apart, several times the reach of any one airport's
+ * earthworks (half a runway, the safety area and the blend distance), so the
+ * nearest centre is the only airport whose influence can be non-zero at the
+ * point and the earthworks never need blending between two sites. A world
+ * with only its home field returns that field everywhere, exactly as before
+ * airports could spawn, so the single-airport terrain stays bit-identical.
+ */
+export function worldAirportAt(
+  world: WorldDefinition,
+  x: number,
+  z: number,
+): Readonly<AirportDefinition> | null {
+  const airports = world.airports;
+  // `airports` is absent only on a world built by hand before it existed.
+  if (!airports || airports.length <= 1) return world.airport;
+  let nearest: Readonly<AirportDefinition> | null = null;
+  let nearestDistanceSquared = Infinity;
+  for (const airport of airports) {
+    const dx = x - airport.centerX;
+    const dz = z - airport.centerZ;
+    const distanceSquared = dx * dx + dz * dz;
+    if (distanceSquared < nearestDistanceSquared) {
+      nearest = airport;
+      nearestDistanceSquared = distanceSquared;
+    }
+  }
+  return nearest;
+}

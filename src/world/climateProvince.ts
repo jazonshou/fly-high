@@ -188,7 +188,11 @@ export function resolveClimateProvinceOption(
   return Object.freeze({ temperatureOffset, dryness });
 }
 
-/** The centre of the temperate core: the start airport, or the origin without one. */
+/**
+ * The centre of the temperate core: the home field (`world.airport`), or the
+ * origin without one. Never a spawned airport, so the provinces stay put as
+ * the airport network grows.
+ */
 export function climateProvinceCoreCenter(
   world: Pick<WorldDefinition, "airport">,
 ): { readonly x: number; readonly z: number } {

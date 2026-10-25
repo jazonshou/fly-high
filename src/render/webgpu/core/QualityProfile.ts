@@ -43,6 +43,46 @@ export interface OceanPresentationTopology {
   readonly nearStepMeters: number;
 }
 
+/**
+ * What an airport spawned mid-flight (`world.airports[1..]`) gets at this tier.
+ * The home field is NOT governed by this row: it is built at startup at every
+ * tier exactly as before.
+ *
+ * Nothing here is a new GPU effect. Spawned structures draw with the home
+ * field's own materials (so its already-compiled pipelines), their lamps ride
+ * the home field's light-point draw, and their floods use clustered lights
+ * reserved at startup. What a spawned field costs is geometry, draws and
+ * memory, so those are what the row bounds:
+ *
+ *  - `maxStructureFields`: how many spawned fields have hangars, tower,
+ *    windsock, fence, fuel farm and signs BUILT at once — the nearest ones
+ *    within `structureBuildRadiusMeters`. A field outside that set has no
+ *    meshes and no memory. 0 keeps low at zero structure meshes, zero draws and
+ *    zero bytes: it has no memory headroom.
+ *  - `structureCullMeters`: beyond this a built field's meshes are not drawn
+ *    (a Babylon LOD level with no mesh, which also skips the shadow passes).
+ *  - `structuresCastShadows`: off below high, so medium pays the beauty draws
+ *    only (7 merged draws per field in view, not 7 x (1 + cascades)).
+ *  - `floodFields`: how many spawned fields' hangar floods may light, nearest
+ *    first, from the clustered reserve allocated at startup — which is only
+ *    allocated when the STARTING tier lights any, so a session that starts
+ *    low has exactly the home field's clustered lights.
+ *  - `lamps`: runway edge, threshold, approach, PAPI, sign and obstruction
+ *    light points. They are appended to the home field's single light-point
+ *    draw, so they add vertices (~105 KB a field) and no draw call.
+ *
+ * Low is all off: there a spawned field costs no draw, no vertex, no light and
+ * no byte of GPU memory. Medium is the cheap row, high and ultra the full one.
+ */
+export interface SpawnedAirfieldTier {
+  readonly maxStructureFields: number;
+  readonly structureBuildRadiusMeters: number;
+  readonly structureCullMeters: number;
+  readonly structuresCastShadows: boolean;
+  readonly floodFields: number;
+  readonly lamps: boolean;
+}
+
 export interface WebGpuQualityProfile {
   readonly tier: 0 | 1 | 2 | 3;
   readonly quality: QualityLevel;
@@ -103,8 +143,11 @@ export interface WebGpuQualityProfile {
    *
    * Per row: tier 1 sits highest because FXAA is part of what it undoes. The
    * multisampled tiers keep a lighter touch for the canvas stretch alone.
-   * Tier 0 is OFF, not for want of need: the pass costs one LDR target, and
-   * tier 0 already estimates 259.6 of its 260 MiB ceiling at 2560x1440@2.
+   * Tier 0 is OFF, not for want of need. It was off for memory while the
+   * sharpen was a pass of its own (one LDR target, against tier 0's 259.6 of
+   * 260 MiB at 2560x1440@2); fused into FXAA (`FxaaSharpenPass`) it costs no
+   * target, only RCAS's arithmetic, so turning it on there is now a decision
+   * about the low tier's look, not its budget.
    *
    * DATA, not a `profile.tier` branch, per the tier rule.
    */
@@ -320,6 +363,8 @@ export interface WebGpuQualityProfile {
    */
   readonly vegetationCastsShadows: boolean;
   readonly activeAnimalBudget: number;
+  /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
+  readonly spawnedAirfields: SpawnedAirfieldTier;
 }
 
 const QUALITY_WEIGHT: Readonly<Record<QualityLevel, number>> = {
@@ -421,6 +466,16 @@ function resolveBaseQualityProfile(
       // modelled draws.
       vegetationCastsShadows: false,
       activeAnimalBudget: 16,
+      // Off: no structure meshes, no floods, no lamps — low has no memory
+      // headroom, and a spawned field costs it nothing.
+      spawnedAirfields: {
+        maxStructureFields: 0,
+        structureBuildRadiusMeters: 0,
+        structureCullMeters: 0,
+        structuresCastShadows: false,
+        floodFields: 0,
+        lamps: false,
+      },
     };
   }
   if (tier === 1) {
@@ -513,6 +568,16 @@ function resolveBaseQualityProfile(
       // 9.02 ms row.
       vegetationCastsShadows: false,
       activeAnimalBudget: 48,
+      // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
+      // one field's floods.
+      spawnedAirfields: {
+        maxStructureFields: 1,
+        structureBuildRadiusMeters: 6_000,
+        structureCullMeters: 4_000,
+        structuresCastShadows: false,
+        floodFields: 1,
+        lamps: true,
+      },
     };
   }
   if (tier === 2) {
@@ -594,6 +659,15 @@ function resolveBaseQualityProfile(
       // spending pixels, and D15 already cut this tier's cascade count once.
       vegetationCastsShadows: true,
       activeAnimalBudget: 128,
+      // Full: the home field's 6 km structure reach, shadows, floods.
+      spawnedAirfields: {
+        maxStructureFields: 2,
+        structureBuildRadiusMeters: 8_000,
+        structureCullMeters: 6_000,
+        structuresCastShadows: true,
+        floodFields: 3,
+        lamps: true,
+      },
     };
   }
   // Tier 3 (Ultra, high+ultra): a 30 fps tier that spends its frame on
@@ -678,6 +752,14 @@ function resolveBaseQualityProfile(
     vegetationDensity: 1,
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
+    spawnedAirfields: {
+      maxStructureFields: 2,
+      structureBuildRadiusMeters: 8_000,
+      structureCullMeters: 6_000,
+      structuresCastShadows: true,
+      floodFields: 3,
+      lamps: true,
+    },
   };
 }
 
@@ -754,6 +836,17 @@ export function isUsableFrameTiming(milliseconds: number): boolean {
   return Number.isFinite(milliseconds)
     && milliseconds >= MIN_TIMING_MILLISECONDS
     && milliseconds <= MAX_TIMING_MILLISECONDS;
+}
+
+/**
+ * Whether the final sharpen runs as a full-screen pass of its own. Where FXAA
+ * runs (no MSAA) the sharpen is fused into it and costs no pass or target, so
+ * only the multisampled tiers pay for a separate one.
+ */
+export function standaloneSharpen(
+  profile: Pick<WebGpuQualityProfile, "msaaSamples" | "sharpenAmount">,
+): boolean {
+  return profile.msaaSamples > 1 && profile.sharpenAmount > 0;
 }
 
 /** A hitch is a frame slower than twice the tier's controllable target. */

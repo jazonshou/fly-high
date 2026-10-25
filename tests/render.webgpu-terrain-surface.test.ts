@@ -236,13 +236,15 @@ describe("terrain surface plugin (3-2)", () => {
         "terrainShoreDistanceAtlas",
         "terrainLakeDepthAtlas",
         // The climate-province field (ClimateProvinceField.ts) is the second
-        // VERTEX-only name: read by textureLoad per vertex, no companion
-        // sampler, so the fragment arithmetic above does not move (ten
-        // declared, eight shipping) and the vertex stage holds two where
-        // TERRAIN_PROVINCE_FIELD is on (tiers 1-3), one where it is off.
-        "terrainProvinceField",
+        // and third VERTEX-only names: its paint and lift, one bilinear sample
+        // each per vertex, each with its own sampler, so the fragment
+        // arithmetic above does not move (ten declared, eight shipping) and
+        // the vertex stage's two province textures and two samplers exist
+        // only where TERRAIN_PROVINCE_FIELD is on (tiers 1-3).
+        "terrainProvincePaint",
+        "terrainProvinceLift",
       ]);
-      expect(samplers).toHaveLength(12);
+      expect(samplers).toHaveLength(13);
       const uniformNames = plugin.getUniforms().ubo.map((entry) => entry.name);
       expect(uniformNames).toContain("terrainMaterialTiling");
       expect(uniformNames).toContain("terrainMaterialSeason");
@@ -994,7 +996,7 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
       const texture = (): RawTexture => RawTexture.CreateRGBATexture(
         new Uint8Array(4), 1, 1, scene, false, false, Texture.NEAREST_SAMPLINGMODE,
       );
-      const field = { texture: texture(), inverseTexelMeters: 1 / 1_250, resolution: 128 };
+      const field = { paint: texture(), lift: texture(), inverseWindowMeters: 1 / (1_250 * 128) };
       const shape = { atlasEdge: 1, slotEdge: 1, gutter: 0, gridEdge: 1 };
       const defines: Record<string, boolean> = {};
       // A field with no CDLOD path: the tile path never reads one.
@@ -1030,7 +1032,7 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
             open.pop();
           }
           depth = open.filter(Boolean).length;
-          if (/terrainProvince(Field|At|FarTone)?\b|terrainSplat\.xyz|terrainPageLocal\.[zw]|provinceTone/u
+          if (/terrainProvince(Paint|Lift|FarToneAt)?\b|terrainSplat\.xyz|terrainPageLocal\.[zw]|provinceTone/u
             .test(trimmed) && !trimmed.startsWith("//") && !trimmed.startsWith("#")) {
             expect(depth, `ungated province read: ${trimmed}`).toBeGreaterThan(0);
           }
@@ -1039,7 +1041,7 @@ describe("6-6 wet-litter darkening (terrain fragment)", () => {
       // Shadow-depth passes (SM_FLOAT, defined by every Babylon shadow
       // generator) write no colour, so they never read the field.
       expect(vertex).toMatch(
-        /#ifdef SM_FLOAT\n {2}let provinceTone = TerrainProvinceFarTone\(\);\n#else\n {2}let provinceTone = terrainProvinceFarTone\(/u,
+        /#ifdef SM_FLOAT\n {2}let provinceTone = TerrainProvinceFarTone\(\);\n#else\n {2}let provinceTone = terrainProvinceFarToneAt\(/u,
       );
     });
   });
