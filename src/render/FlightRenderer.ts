@@ -2184,6 +2184,10 @@ export class FlightRenderer implements FlightRenderingSystem {
    * streamed, which is wall-clock paced, so a water shot's waves differ
    * between runs of identical code. See `OceanCascadeClock`. Production never
    * calls this; mid-flight it would dispatch the slow cascades out of turn.
+   *
+   * It also makes every later sky re-light synchronous, for the renderer's
+   * lifetime (`FlightRendererOptions.skyRebake`): a flight on this renderer
+   * after a capture's settle no longer takes the sliced path.
    */
   pinOceanCascadePhaseForCapture(): void {
     if (this.disposed) return;
