@@ -29,6 +29,11 @@ export interface AgentConfig {
    * normal run; `worldEvolution` stays the shot's.
    */
   readonly worldOptions?: Readonly<Record<string, unknown>> | null;
+  /**
+   * The weather every shot is rendered in. Absent or null is "clear", what
+   * the capture renders; a flight can fly the game's default, "breezy".
+   */
+  readonly weather?: string | null;
 }
 
 export interface AgentInfo {

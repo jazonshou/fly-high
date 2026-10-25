@@ -35,8 +35,13 @@ import { FlightRenderer } from "../../../src/render/FlightRenderer";
 import { PERF_COCKPIT_RIG } from "../../../src/render/cameraPresentation";
 import { WebGpuFrameGraph, type FrameGraphPass } from "../../../src/render/webgpu/core/FrameGraph";
 import * as qualityProfile from "../../../src/render/webgpu/core/QualityProfile";
-import { sunDirectionForClock } from "../../../src/render/webgpu/nature/EnvironmentDirector";
-import { INITIAL_VISUAL_STATE, type FlightVisualState, type QualityLevel } from "../../../src/game/types";
+import { WEATHER_PROFILES, sunDirectionForClock } from "../../../src/render/webgpu/nature/EnvironmentDirector";
+import {
+  INITIAL_VISUAL_STATE,
+  type FlightVisualState,
+  type QualityLevel,
+  type WeatherPreset,
+} from "../../../src/game/types";
 import type { RenderingMode } from "../../../src/settings";
 import { AIRCRAFT_KINDS } from "../../../src/sim";
 import { createWorld, sampleTerrain, sampleTerrainHeight } from "../../../src/world";
@@ -663,6 +668,9 @@ const agent: PerfAgent = {
     if (!(AIRCRAFT_KINDS as readonly string[]).includes(next.aircraft)) {
       throw new Error(`perf-ab agent: "${next.aircraft}" is not one of ${AIRCRAFT_KINDS.join(", ")}`);
     }
+    if (next.weather != null && !Object.hasOwn(WEATHER_PROFILES, next.weather)) {
+      throw new Error(`perf-ab agent: "${next.weather}" is not one of ${Object.keys(WEATHER_PROFILES).join(", ")}`);
+    }
     config = next;
     installErrorChannels();
     // Order matters: the gate wraps the counters, so a dropped draw is never
@@ -717,7 +725,7 @@ const agent: PerfAgent = {
     capability("setPinnedRenderScaleForCapture")(renderScale);
 
     const clock = shot.clock ?? PERF_CAPTURE_DEFAULT_CLOCK;
-    active.setAtmosphere(clock, "clear");
+    active.setAtmosphere(clock, (config!.weather ?? "clear") as WeatherPreset);
     const placement = resolveShotPlacement(activeWorld, shot);
     const airportX = activeWorld.airport?.centerX ?? 0;
     const airportZ = activeWorld.airport?.centerZ ?? 0;

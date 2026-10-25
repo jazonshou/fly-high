@@ -88,6 +88,8 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --clearance <m>         height kept above the terrain (default 150)
   --bank <deg>            constant bank; 0 flies straight (default 0)
   --camera chase|cockpit  (default chase)
+  --weather clear|breezy|cloudy
+                          (default clear, as the capture; the game's default is breezy)
   --quality, --mode, --aircraft   renderer settings (default medium, balanced, trainer)
   --draws                 keep the frame's own draws (slow on a software adapter)
   --fence-every <n>       fence to GPU idle every n frames (default 4)
@@ -337,6 +339,7 @@ async function main(): Promise<number> {
       clearance: { type: "string", default: "150" },
       bank: { type: "string", default: "0" },
       camera: { type: "string", default: "chase" },
+      weather: { type: "string", default: "clear" },
       quality: { type: "string", default: "medium" },
       mode: { type: "string", default: "balanced" },
       aircraft: { type: "string", default: "trainer" },
@@ -446,6 +449,7 @@ async function main(): Promise<number> {
         aircraft: values.aircraft,
         profileOverride: null,
         worldOptions: worldOptions[arm],
+        weather: values.weather,
       });
     }
     const catalog: AgentCatalog = await arms.head.call("catalog");
@@ -519,7 +523,8 @@ async function main(): Promise<number> {
     const firstLeg = { base: summarize(reports.base.slice(0, 1), 0), head: summarize(reports.head.slice(0, 1), 0) };
     const settings = {
       shot: shot.name, legs, legFrames, speed: request.speedMetersPerSecond, clearance: request.clearanceMeters,
-      bank: request.bankDegrees, camera, quality: values.quality, mode: values.mode, aircraft: values.aircraft,
+      bank: request.bankDegrees, camera, weather: values.weather, quality: values.quality, mode: values.mode,
+      aircraft: values.aircraft,
       draws: !request.suppressDraws, backend,
       ...(start ? { start } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
