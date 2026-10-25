@@ -4,8 +4,6 @@ import {
   CLIMATE_PROVINCE_SNOWLINE_RESPONSE,
 } from "@/src/world/climateProvince";
 import {
-  BOREAL_COLD_FULL,
-  BOREAL_COLD_ONSET,
   TUNDRA_COLD_FULL,
   TUNDRA_COLD_ONSET,
   borealShare,
@@ -13,13 +11,10 @@ import {
 } from "@/src/world/coldBiomes";
 import {
   CANOPY_SURFACE_ALBEDO,
-  DRY_PROVINCE_DESERT_FULL,
-  DRY_PROVINCE_DESERT_ONSET,
-  DRY_PROVINCE_PARKLAND_FULL,
-  DRY_PROVINCE_PARKLAND_ONSET,
-  dryProvinceShares,
+  dryProvinceAridShare,
+  dryProvinceParklandShare,
 } from "@/src/render/webgpu/detail/densityField";
-import { TROPICAL_COAST, tropicalCoastWeight } from "@/src/world/tropicalCoast";
+import { tropicalCoastWeight } from "@/src/world/tropicalCoast";
 import {
   SurfaceMaterial,
   surfaceMaterialSpec,
@@ -40,8 +35,9 @@ import {
  * the aeroplane: a tundra's snowline stopped at the page edge, a desert went
  * Grass-green, a taiga's near crowns were 10% darker than the paint beyond.
  *
- * Three quantities, derived from the province once per VERTEX
- * (`ClimateProvinceField.ts`) and handed to the fragment as varyings:
+ * Three quantities, baked from the province once per field TEXEL on the CPU
+ * (`ClimateProvinceField.ts`), read back by the vertex stage with filtered
+ * samples and handed to the fragment as varyings:
  *
  * - **thermal lift**, metres: `-temperatureOffset x 2,450`, what thermal height
  *   adds to real height. The fallback's alpine rock and the turf-relief gate add
@@ -76,7 +72,17 @@ import {
  * shares (a cold desert) are averaged, never stacked: weights are the shares
  * divided by `max(1, sum)`. The tropical share is `tropicalCoast.ts`'s weight.
  *
- * Class P: pure numbers with a WGSL twin for the terrain vertex stage.
+ * WHY THE CPU. The laws below are seven smoothsteps and two divides. The
+ * vertex stage first evaluated them at every CDLOD vertex, on a province it
+ * had bilinearly loaded from four texels, and the field as a whole cost 3.0
+ * to 3.5% of the frame at cruise, over water and on the ground on SwiftShader
+ * (CI A/B against main, 2026-10-25). Baked once per 1.25 km texel instead,
+ * they cost the vertex two filtered samples, and the GPU has no twin of them
+ * to keep in step. Filtering the tone rather than the province differs only
+ * inside a texel, and the province is smooth at that scale.
+ *
+ * Class P: pure numbers. The fragment's canopy deltas are emitted as WGSL
+ * below.
  */
 
 /** A mix of surface materials, by share; the shares of one mix sum to 1. */
@@ -227,9 +233,11 @@ export interface ProvinceFarTone {
 }
 
 /**
- * CPU twin of the vertex stage's `terrainProvinceFarTone`. `sand` is the far
- * field's sand lane (a sand sea's erg weight): it takes the base over from the
- * province's sward, since an erg is sand whatever the province around it grows.
+ * The far tone at a province: what the field bakes per texel, and so what the
+ * vertex stage reads back filtered. `sand` is the far field's sand lane (a
+ * sand sea's erg weight): it takes the base over from the province's sward,
+ * since an erg is sand whatever the province around it grows. Allocates
+ * nothing when given a target (the field's bake runs on the main thread).
  */
 export function provinceFarTone(
   temperatureOffset: number,
@@ -241,7 +249,8 @@ export function provinceFarTone(
 ): ProvinceFarTone {
   const boreal = borealShare(temperatureOffset);
   const tundra = tundraShare(temperatureOffset);
-  const { arid, parkland } = dryProvinceShares(dryness);
+  const arid = dryProvinceAridShare(dryness);
+  const parkland = dryProvinceParklandShare(dryness, arid);
   const baseScale = 1 / Math.max(1, tundra + arid + parkland);
   const b = PROVINCE_FAR_BASE_DELTAS;
   const erg = Math.min(1, Math.max(0, sand));
@@ -280,45 +289,10 @@ function wgslVec3(value: readonly [number, number, number]): string {
 }
 
 /**
- * The vertex stage's half. Requires nothing but WGSL builtins; every
- * identifier carries the `terrainProvince` prefix. The fragment applies the
- * signed canopy share as `max(share, 0) * TERRAIN_PROVINCE_CANOPY_DELTA_WGSL +
- * max(-share, 0) * TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL`.
+ * The fragment applies the signed canopy share as `max(share, 0) *
+ * TERRAIN_PROVINCE_CANOPY_DELTA_WGSL + max(-share, 0) *
+ * TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL`.
  */
-export const TERRAIN_PROVINCE_FAR_TONE_WGSL = /* wgsl */ `
-struct TerrainProvinceFarTone {
-  base: vec3f,
-  canopyShare: f32,
-  thermalLift: f32,
-};
-
-fn terrainProvinceFarTone(province: vec3f) -> TerrainProvinceFarTone {
-  let boreal = smoothstep(${wgslFloat(BOREAL_COLD_ONSET)}, ${wgslFloat(BOREAL_COLD_FULL)}, -province.x);
-  let tundra = smoothstep(${wgslFloat(TUNDRA_COLD_ONSET)}, ${wgslFloat(TUNDRA_COLD_FULL)}, -province.x);
-  let arid = smoothstep(
-    ${wgslFloat(DRY_PROVINCE_DESERT_ONSET)}, ${wgslFloat(DRY_PROVINCE_DESERT_FULL)}, province.y);
-  let parkland = smoothstep(
-    ${wgslFloat(DRY_PROVINCE_PARKLAND_ONSET)}, ${wgslFloat(DRY_PROVINCE_PARKLAND_FULL)}, province.y)
-    * (1.0 - arid);
-  var tone: TerrainProvinceFarTone;
-  let sward = (tundra * ${wgslVec3(PROVINCE_FAR_BASE_DELTAS.tundra)}
-    + arid * ${wgslVec3(PROVINCE_FAR_BASE_DELTAS.arid)}
-    + parkland * ${wgslVec3(PROVINCE_FAR_BASE_DELTAS.parkland)})
-    / max(1.0, tundra + arid + parkland);
-  // A sand sea takes the base over from the sward (lane z, the erg weight).
-  tone.base = sward + (${wgslVec3(PROVINCE_FAR_BASE_DELTAS.sand)} - sward)
-    * clamp(province.z, 0.0, 1.0);
-  // tropicalCoast.ts's weight, exactly 0.0 at and below its warm onset.
-  let tropical = smoothstep(
-    ${wgslFloat(TROPICAL_COAST.temperatureStart)}, ${wgslFloat(TROPICAL_COAST.temperatureFull)}, province.x)
-    * (1.0 - smoothstep(
-      ${wgslFloat(TROPICAL_COAST.drynessStart)}, ${wgslFloat(TROPICAL_COAST.drynessEnd)}, province.y));
-  tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland) - tropical;
-  tone.thermalLift = -province.x * ${wgslFloat(PROVINCE_FAR_LIFT_METERS_PER_TEMPERATURE)};
-  return tone;
-}
-`;
-
 /** `PROVINCE_FAR_CANOPY_PAINT_DELTA` as a WGSL literal, for the fragment. */
 export const TERRAIN_PROVINCE_CANOPY_DELTA_WGSL = wgslVec3(PROVINCE_FAR_CANOPY_PAINT_DELTA);
 /** `PROVINCE_FAR_CANOPY_TROPICAL_DELTA` as a WGSL literal, for the fragment. */

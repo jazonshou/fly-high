@@ -7,6 +7,7 @@ import {
   CLIMATE_PROVINCE_FIELD_TEXEL_METERS,
   ClimateProvinceFieldGrid,
   type ClimateProvinceFieldSample,
+  type ClimateProvinceToneSample,
 } from "../src/render/webgpu/terrain/ClimateProvinceField";
 import {
   PROVINCE_FAR_BASE_DELTAS,
@@ -18,8 +19,8 @@ import {
   PROVINCE_FAR_SWARD_MIXES,
   TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
   TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL,
-  TERRAIN_PROVINCE_FAR_TONE_WGSL,
   provinceFarTone,
+  type ProvinceFarTone,
   provinceFarTundraFromLift,
   swardMixAlbedo,
 } from "../src/render/webgpu/terrain/ProvinceFarTone";
@@ -62,17 +63,47 @@ function isZero(value: number): boolean {
   return value === 0;
 }
 
+/** Half-float bits of a zero, of either sign: `x + (-0)` is `x` too. */
+function isHalfZero(bits: number): boolean {
+  return (bits & 0x7fff) === 0;
+}
+
+function toneSample(): ClimateProvinceToneSample {
+  return { base: [0, 0, 0], canopyShare: 0, thermalLiftMeters: 0 };
+}
+
+/** Half precision: 11 significant bits, truncated (Babylon's ToHalfFloat). */
+function expectHalfOf(actual: number, exact: number, label: string): void {
+  expect(Math.abs(actual - exact), `${label}: ${actual} vs ${exact}`)
+    .toBeLessThanOrEqual(Math.abs(exact) * 2 ** -10 + 1e-7);
+}
+
+function expectToneOf(actual: ClimateProvinceToneSample, exact: ProvinceFarTone, label: string): void {
+  for (let channel = 0; channel < 3; channel += 1) {
+    expectHalfOf(actual.base[channel]!, exact.base[channel]!, `${label} base ${channel}`);
+  }
+  expectHalfOf(actual.canopyShare, exact.canopyShare, `${label} canopy share`);
+  expectHalfOf(actual.thermalLiftMeters, exact.thermalLiftMeters, `${label} lift`);
+}
+
 describe("the temperate core stays bit-identical", () => {
   it("bakes a field of exact zeros around the start airport", () => {
     const grid = new ClimateProvinceFieldGrid(WORLD, 32, CLIMATE_PROVINCE_FIELD_TEXEL_METERS);
     // 32 texels of 1.25 km: a 40 km window, wholly inside the 70 km core.
     while (grid.pending) grid.update(CORE.x, CORE.z, 4_096);
     expect(grid.data.every(isZero)).toBe(true);
+    // And so is the tone the vertex stage samples: zero bits in every lane.
+    expect(grid.paint.every(isHalfZero)).toBe(true);
+    expect(grid.lift.every(isHalfZero)).toBe(true);
     const sample: ClimateProvinceFieldSample = { temperatureOffset: 1, dryness: 1, sand: 1 };
+    const tone = toneSample();
     for (const [dx, dz] of [[0, 0], [7_313, -4_002], [-15_000, 11_111]] as const) {
       grid.sample(CORE.x + dx, CORE.z + dz, sample);
       expect(sample.temperatureOffset).toBe(0);
       expect(sample.dryness).toBe(0);
+      grid.sampleTone(CORE.x + dx, CORE.z + dz, tone);
+      expect(tone.base.every(isZero)).toBe(true);
+      expect(tone.canopyShare === 0 && tone.thermalLiftMeters === 0).toBe(true);
     }
   });
 
@@ -117,6 +148,10 @@ describe("the streamed province field", () => {
     grid.sample(5_000, 9_000, sample);
     expect(sample.temperatureOffset).toBeCloseTo(preset.temperatureOffset, 6);
     expect(sample.dryness).toBeCloseTo(preset.dryness, 6);
+    // Its tone is baked once, everywhere, at construction.
+    const tone = grid.sampleTone(-71_234, 15_500, toneSample());
+    expectToneOf(tone, provinceFarTone(preset.temperatureOffset, preset.dryness), "tundra");
+    expect(tone.thermalLiftMeters).toBeGreaterThan(1_000);
   });
 
   it("bakes the camera's own neighbourhood first, inside the frame budget", () => {
@@ -404,24 +439,51 @@ describe("the far tones are the biomes' own", () => {
     expect(PROVINCE_FAR_CANOPY_PAINT_RATIO).toBe(PROVINCE_FAR_CANOPY_RATIOS.boreal);
   }, 60_000);
 
-  it("emits the same constants and the same share laws into WGSL", () => {
-    const wgsl = TERRAIN_PROVINCE_FAR_TONE_WGSL;
-    expect(wgsl).toContain("fn terrainProvinceFarTone(province: vec3f) -> TerrainProvinceFarTone");
-    expect(wgsl).toContain("* clamp(province.z, 0.0, 1.0);");
-    expect(wgsl).toContain("smoothstep(0.06, 0.2, -province.x)");
-    expect(wgsl).toContain("smoothstep(0.4, 0.62, -province.x)");
-    expect(wgsl).toContain("/ max(1.0, tundra + arid + parkland)");
-    expect(wgsl).toContain("/ max(1.0, boreal + arid + parkland)");
-    expect(wgsl).toContain("tone.thermalLift = -province.x * 2450.0;");
-    for (const delta of Object.values(PROVINCE_FAR_BASE_DELTAS)) {
-      for (const value of delta) {
-        expect(wgsl).toContain(String(Number(value.toPrecision(9))));
+  it("bakes the tone per texel into the half floats the vertex stage samples", () => {
+    // Out among the provinces, where every lane moves.
+    const texel = 2_500;
+    const grid = new ClimateProvinceFieldGrid(WORLD, 16, texel, {
+      sand: (x) => (x > CORE.x - 70_000 ? -1 : Math.min(1, (CORE.x - 70_000 - x) / 20_000)),
+    });
+    const x = CORE.x - 75_000;
+    const z = CORE.z + 150_000;
+    while (grid.pending) grid.update(x, z, 1_000);
+    const province: ClimateProvinceFieldSample = { temperatureOffset: 0, dryness: 0, sand: 0 };
+    const tone = toneSample();
+    const left = toneSample();
+    const right = toneSample();
+    const cx = Math.floor(x / texel);
+    const cz = Math.floor(z / texel);
+    let moving = 0;
+    for (let dz = -8; dz < 8; dz += 1) {
+      for (let dx = -8; dx < 8; dx += 1) {
+        const px = (cx + dx + 0.5) * texel;
+        const pz = (cz + dz + 0.5) * texel;
+        // At a texel centre the sampler returns that texel: the CPU tone of
+        // its province, to half precision.
+        grid.sample(px, pz, province);
+        const exact = provinceFarTone(province.temperatureOffset, province.dryness, undefined, province.sand);
+        expectToneOf(grid.sampleTone(px, pz, tone), exact, `texel (${dx}, ${dz})`);
+        if (exact.base.some((value) => value !== 0)) moving += 1;
+        // Halfway to the next one it is the mean of the two (bilinear, and
+        // across the window's edge the repeat wrap).
+        if (dx === 7) continue;
+        grid.sampleTone(px, pz, left);
+        grid.sampleTone(px + texel, pz, right);
+        grid.sampleTone(px + texel / 2, pz, tone);
+        expect(tone.canopyShare).toBeCloseTo((left.canopyShare + right.canopyShare) / 2, 9);
+        expect(tone.thermalLiftMeters).toBeCloseTo((left.thermalLiftMeters + right.thermalLiftMeters) / 2, 6);
+        expect(tone.base[0]).toBeCloseTo((left.base[0] + right.base[0]) / 2, 9);
       }
     }
-    expect(wgsl).toContain(
-      "tone.canopyShare = (boreal + arid) / max(1.0, boreal + arid + parkland) - tropical;");
-    expect(wgsl).toContain("smoothstep(\n    0.14, 0.26, province.x)");
-    expect(wgsl).toContain("smoothstep(\n      0.04, 0.2, province.y)");
+    expect(moving).toBeGreaterThan(100);
+    // The window repeats: one window east is the same slots.
+    grid.sampleTone(x, z, left);
+    grid.sampleTone(x + 16 * texel, z - 16 * texel, right);
+    expect(right).toEqual(left);
+  });
+
+  it("emits the canopy deltas the fragment applies into WGSL", () => {
     for (const value of PROVINCE_FAR_CANOPY_PAINT_DELTA) {
       expect(TERRAIN_PROVINCE_CANOPY_DELTA_WGSL).toContain(String(Number(value.toPrecision(9))));
     }

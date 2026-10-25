@@ -104,7 +104,6 @@ import {
   PROVINCE_FAR_SNOWLINE_RESPONSE,
   PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS,
   TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
-  TERRAIN_PROVINCE_FAR_TONE_WGSL,
   TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL,
   provinceFarTundraFromLift,
 } from "./ProvinceFarTone";
@@ -1225,33 +1224,38 @@ fn terrainVertexCanopyClosure(lane: f32, pageLocalMeters: vec2f) -> f32 {
 }
 #endif
 #if defined(TERRAIN_SURFACE_CDLOD) && defined(TERRAIN_PROVINCE_FIELD)
-// The climate province around the camera (ClimateProvinceField.ts): RGBA32F,
-// (temperature offset, dryness, sand-sea weight, reserved), a toroidal window
-// of whole texels. textureLoad only, like the height atlas, and the vertex
-// stage only: the fragment gets what it needs through lanes of the
+// The climate province's far tone around the camera (ClimateProvinceField.ts,
+// ProvinceFarTone.ts), baked per 1.25 km texel on the CPU into a toroidal
+// window: the PAINT (base tone delta rgb, signed canopy share) and the LIFT
+// (thermal lift, metres), both half float. One bilinear sample each with
+// repeat addressing, so the hardware does the filtering and the wrap, and the
+// vertex stage only: the fragment gets the tone through lanes of the
 // terrainSplat and terrainPageLocal varyings. The define is the tier's
 // (QualityProfile terrainProvinceField): off, none of this, the widened lanes
 // or the fragment's province terms is compiled.
-var terrainProvinceField: texture_2d<f32>;
+var terrainProvincePaintSampler: sampler;
+var terrainProvincePaint: texture_2d<f32>;
+var terrainProvinceLiftSampler: sampler;
+var terrainProvinceLift: texture_2d<f32>;
 
-fn terrainProvinceAt(absoluteXZ: vec2f) -> vec3f {
-  // shape = (1 / texel metres, resolution, -, -); texel i's centre is (i + 0.5).
-  let shape = uniforms.terrainProvinceShape;
-  let u = absoluteXZ * shape.x - vec2f(0.5);
-  let base = floor(u);
-  let fraction = u - base;
-  let n = shape.y;
-  let i0 = base - n * floor(base / n);
-  let i1 = select(i0 + vec2f(1.0), vec2f(0.0), i0 + vec2f(1.0) >= vec2f(n));
-  let p00 = textureLoad(terrainProvinceField, vec2i(i0), 0).xyz;
-  let p10 = textureLoad(terrainProvinceField, vec2i(i32(i1.x), i32(i0.y)), 0).xyz;
-  let p01 = textureLoad(terrainProvinceField, vec2i(i32(i0.x), i32(i1.y)), 0).xyz;
-  let p11 = textureLoad(terrainProvinceField, vec2i(i1), 0).xyz;
-  let top = p00 + (p10 - p00) * fraction.x;
-  let bottom = p01 + (p11 - p01) * fraction.x;
-  return top + (bottom - top) * fraction.y;
+struct TerrainProvinceFarTone {
+  base: vec3f,
+  canopyShare: f32,
+  thermalLift: f32,
+};
+
+fn terrainProvinceFarToneAt(absoluteXZ: vec2f) -> TerrainProvinceFarTone {
+  // x = 1 / (texel metres x resolution): one UV unit per window, so texel i's
+  // centre, (i + 0.5) texels, samples slot i mod resolution exactly.
+  let uv = absoluteXZ * uniforms.terrainProvinceShape.x;
+  let paint = textureSampleLevel(terrainProvincePaint, terrainProvincePaintSampler, uv, 0.0);
+  var tone: TerrainProvinceFarTone;
+  tone.base = paint.xyz;
+  tone.canopyShare = paint.w;
+  tone.thermalLift = textureSampleLevel(
+    terrainProvinceLift, terrainProvinceLiftSampler, uv, 0.0).x;
+  return tone;
 }
-${TERRAIN_PROVINCE_FAR_TONE_WGSL}
 #endif
 varying terrainSplat: vec4f;
 // 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
@@ -1424,7 +1428,9 @@ varying terrainPageLocal: vec2f;
   // more) and now carry the far BASE tone's per-channel delta for the climate
   // province (ProvinceFarTone.ts); the thermal lift and the canopy share ride
   // terrainPageLocal.zw below. One field read per vertex; the province moves
-  // over kilometres, so vertex interpolation is exact to the field.
+  // over kilometres, so vertex interpolation is exact to the field. The tone
+  // is baked per texel on the CPU, so the read is two filtered samples, where
+  // it was four loads and the tone's seven smoothsteps per vertex.
   // Shadow-depth passes skip the read: the ShadowDepthWrapper reuses this
   // vertex stage once per cascade, defines SM_FLOAT in every one, and writes
   // depth rather than colour, so the tone would be interpolated and dropped.
@@ -1432,8 +1438,8 @@ varying terrainPageLocal: vec2f;
 #ifdef SM_FLOAT
   let provinceTone = TerrainProvinceFarTone();
 #else
-  let provinceTone = terrainProvinceFarTone(
-    terrainProvinceAt(vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin));
+  let provinceTone = terrainProvinceFarToneAt(
+    vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin);
 #endif
   vertexOutputs.terrainSplat = vec4f(provinceTone.base, vertexInputs.terrainNodeB.z);
 #else
@@ -4528,7 +4534,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainSplatWeightHi",
       "terrainShoreDistanceAtlas",
       "terrainLakeDepthAtlas",
-      "terrainProvinceField",
+      "terrainProvincePaint",
+      "terrainProvinceLift",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
     }
@@ -4598,8 +4605,10 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       uniformBuffer.setTexture("terrainHeightAtlas", this.heightAtlasTexture);
     }
     if (this.provinceField) {
-      // rg32float, textureLoad only and no sampler, like the height atlas.
-      uniformBuffer.setTexture("terrainProvinceField", this.provinceField.texture);
+      // rgba16float and r16float: filterable, each with its bilinear,
+      // repeat-addressed sampler (ClimateProvinceField.ts).
+      uniformBuffer.setTexture("terrainProvincePaint", this.provinceField.paint);
+      uniformBuffer.setTexture("terrainProvinceLift", this.provinceField.lift);
     }
   }
 
@@ -4633,8 +4642,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         { name: "terrainCanopyBands", size: 4, type: "vec4" },
         // 4-4: (atlasEdge, slotEdge, gutter, gridEdge) for the height atlas.
         { name: "terrainHeightAtlasShape", size: 4, type: "vec4" },
-        // The climate province window: (1 / texel metres, resolution, 0, 0).
-        // Declared unconditionally, like the runway frame.
+        // The climate province window: (1 / (texel metres x resolution), 0,
+        // 0, 0), world metres to window UV. Declared unconditionally, like
+        // the runway frame.
         { name: "terrainProvinceShape", size: 4, type: "vec4" },
         {
           name: "terrainMaterialTiling",
@@ -4703,8 +4713,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
     uniformBuffer.updateFloat4(
       "terrainProvinceShape",
-      this.provinceField?.inverseTexelMeters ?? 0,
-      this.provinceField?.resolution ?? 1,
+      this.provinceField?.inverseWindowMeters ?? 0,
+      0,
       0,
       0,
     );
