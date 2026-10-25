@@ -230,6 +230,36 @@ export interface FlightFrame {
   readonly effectsCompiled?: readonly string[];
   /** Main-thread milliseconds per frame-graph pass (an older build may report none). */
   readonly passMs: Readonly<Record<string, number>>;
+  /**
+   * What the two bakes that spread over frames did in this frame
+   * (`bakeProbe.ts`): null when neither did anything; absent from a build
+   * whose renderer does not report them, and from an older agent (undefined
+   * in the page, dropped from report.json).
+   */
+  readonly bake?: FlightFrameBake | null | undefined;
+}
+
+/**
+ * One flight frame's share of the sky probe's re-light and of the
+ * ground-cover tile bake, from the renderer's `getBakeStatsForCapture()` read
+ * after `render()`, outside the frame's timed and heap windows. Milliseconds
+ * are the renderer's own clock readings.
+ */
+export interface FlightFrameBake {
+  /** The renderer's sky-probe refresh ran in this frame: its main-thread ms. Null when it did not run. */
+  readonly skyMs: number | null;
+  /** Sampling slices of a sliced sky rebake in this frame (0 or 1), and the slice's ms (null with none). */
+  readonly skyAdvances: number;
+  readonly skyAdvanceMs: number | null;
+  /** Sliced sky rebakes that landed their irradiance in this frame (0 or 1), and the converter's ms (null with none). */
+  readonly skyLandings: number;
+  readonly skyApplyMs: number | null;
+  /** 1 when the ground-cover tile baked in this frame, and that call's ms (null when it did not). */
+  readonly groundCoverCalls: number;
+  readonly groundCoverMs: number | null;
+  /** That call was held past its budget by the pace floor (0 or 1); it finished a tile (0 or 1). */
+  readonly groundCoverPaceFloorCalls: number;
+  readonly groundCoverTilesCompleted: number;
 }
 
 export interface FlightReport {

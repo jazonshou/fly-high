@@ -73,6 +73,7 @@ import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
 import { resolveShotPlacement } from "../shotPlacement";
+import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
 import {
@@ -1027,6 +1028,9 @@ const agent: PerfAgent = {
     const longTaskStart = longTasks.length;
     const frames: FlightFrame[] = [];
     const sampleWatchdog = beginDetailWatchdogWindow(active);
+    // Null from a build whose renderer does not report its bakes.
+    const bakeStart = readBakeStats(active);
+    const bakeProbe = bakeStart ? new FlightBakeProbe(bakeStart) : null;
     let fault: DetailWorkerFault | null = null;
     const dumped: { readonly frame: number; readonly copy: HTMLCanvasElement }[] = [];
     let heapMark = heapUsedBytes();
@@ -1078,6 +1082,7 @@ const agent: PerfAgent = {
       const heapAfter = heapUsedBytes();
       // Outside both timed windows and both heap windows, as is the dump.
       sampleWatchdog?.();
+      const bake = bakeProbe ? bakeProbe.observe(readBakeStats(active)!) : undefined;
       if (request.dumpFrames && frame >= request.dumpFrames.from && frame <= request.dumpFrames.to) {
         // As capture() reads a frame back, but this frame's own render, not
         // a second one: in the same task, before the compositor takes it.
@@ -1110,6 +1115,7 @@ const agent: PerfAgent = {
         shaderModulesCreated: creations.shaderModules - shaderModulesBefore,
         shaderCodeChars: creations.shaderCodeChars - shaderCodeBefore,
         effectsCompiled: effectsCompiled.slice(effectsBefore),
+        bake,
       });
       if (frame % request.fenceEvery === request.fenceEvery - 1) {
         await fence();
