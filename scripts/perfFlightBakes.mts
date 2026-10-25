@@ -652,7 +652,10 @@ export function renderBakeMarkdown(report: BakeReport): string {
       + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's "
       + "pace, by design. A call over the target is not by itself the bake's own overrun: a collection during the "
       + "frame's render() (its heap fell) may have run inside the call, so the calls over it with neither a collection "
-      + "nor a pace-floor hold are counted apart, and each call over it is listed with what its frame says.",
+      + "nor a pace-floor hold are counted apart, and each call over it is listed with what its frame says. "
+      + "perf:flight asks every arm's renderer for the game's height-only terrain sampler, under which the tile bakes "
+      + "in 32-column steps; a build without FlightRendererOptions.terrainHeight (before 69746b7) ignores it and "
+      + "bakes whole rows on the full sample, as that build's game did.",
     "",
     ...table(
       `phase | arm | commit | tile-bake calls | ms per call p50 / p95 / max | calls at or over ${GROUND_COVER_CALL_TARGET_MS} ms `

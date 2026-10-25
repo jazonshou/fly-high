@@ -40,6 +40,15 @@
  * tripped it. It ends with what the two bakes the renderer spreads over
  * frames cost, frame by frame (`perfFlightBakes.mts`): the sky probe's
  * sliced re-light in a climb, and the ground-cover tile bake low down.
+ *
+ * Both arms' renderers are made with the game's two terrain samplers, the
+ * full sample and the height-only one (`AgentConfig.gameTerrainHeight`), so
+ * the ground-cover tile bakes in steps as in the game; a build without
+ * `FlightRendererOptions.terrainHeight` (before 69746b7, "Read height-only
+ * terrain where a consumer needs only the height") ignores the second and
+ * bakes whole rows, as its game did. perf:flight runs from before it asked
+ * for the pair flew the full sample alone, so their low legs do not compare
+ * with later runs'. perf:ab still makes the capture's renderer.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -683,7 +692,8 @@ async function main(): Promise<number> {
       shot: shot.name, legs, legFrames, speed: request.speedMetersPerSecond, clearance: request.clearanceMeters,
       bank: request.bankDegrees, camera, weather: values.weather, quality: values.quality, mode: values.mode,
       aircraft: values.aircraft,
-      draws: !request.suppressDraws, backend, gameTerrainHeight: true,
+      draws: !request.suppressDraws, backend,
+      gameTerrainHeight: "requested; a build without FlightRendererOptions.terrainHeight ignores it",
       ...(start ? { start } : {}),
       ...(faults.kill ? { killDetailWorker: faults.kill } : {}),
       ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),

@@ -561,6 +561,10 @@ describe("the agent's terrain samplers", () => {
   it("are asked for by perf:flight alone: perf:ab and the capture never pass the height-only sampler", () => {
     const flight = read("scripts/perf-flight.mts");
     expect(flight).toMatch(/call\("configure", \{[^}]*gameTerrainHeight: true,\n\s*\}\)/);
+    // Its report says the base may not have honoured it: a build before the option ignores it.
+    expect(flight).toContain('gameTerrainHeight: "requested; a build without FlightRendererOptions.terrainHeight ignores it",');
+    expect(renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [], head: [] } })))
+      .toContain("a build without FlightRendererOptions.terrainHeight (before 69746b7) ignores it and bakes whole rows");
     // perf:ab's agent configuration names no such field, so it is absent.
     expect(read("scripts/perf-ab.mts")).not.toMatch(/gameTerrainHeight|terrainHeight/);
     // The agent passes the flag to the helper and nowhere else.
