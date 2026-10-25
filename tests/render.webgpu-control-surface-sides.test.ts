@@ -369,7 +369,9 @@ describe("control surfaces move the way the pilot's controls promise", () => {
       // rudder surface and correctly so: the rudder's trailing edge swings to
       // starboard while the wheel's tread turns to starboard.
       const { scene, visual } = build(kind);
-      const ground = { onGround: true, altitudeAgl: 0, airspeed: 5 };
+      // Taxiing: the nosewheel's authority fades with groundspeed, as the
+      // aeroplane's does, so the velocity says 5 m/s as well as the airspeed.
+      const ground = { onGround: true, altitudeAgl: 0, airspeed: 5, velocity: { x: 5, y: 0, z: 0 } };
       fly(visual, { ...ground, rudder: 0 });
       const neutral = wheelHeadingDegrees(scene, "nose-wheel-tire");
       fly(visual, { ...ground, rudder: 1 });
@@ -379,6 +381,26 @@ describe("control surfaces move the way the pilot's controls promise", () => {
       expect(neutral).toBeCloseTo(0, 4);
       expect(right).toBeGreaterThan(2);
       expect(left).toBeLessThan(-2);
+    });
+  }
+
+  for (const kind of KINDS) {
+    it(`steers the ${kind}'s nosewheel with A/D on the ground, less as it speeds up`, () => {
+      // The roll axis is the nosewheel tiller on the ground (`steeringCommand`
+      // in simulation.ts), and the wheel drawn is the angle the simulator
+      // steers on, which fades with groundspeed.
+      const { scene, visual } = build(kind);
+      const ground = { onGround: true, altitudeAgl: 0, airspeed: 5, velocity: { x: 5, y: 0, z: 0 } };
+      fly(visual, { ...ground, aileron: 1 });
+      const right = wheelHeadingDegrees(scene, "nose-wheel-tire");
+      fly(visual, { ...ground, aileron: -1 });
+      const left = wheelHeadingDegrees(scene, "nose-wheel-tire");
+      fly(visual, { ...ground, aileron: 1, velocity: { x: 40, y: 0, z: 0 } });
+      const fast = wheelHeadingDegrees(scene, "nose-wheel-tire");
+      expect(right).toBeGreaterThan(8);
+      expect(left).toBeLessThan(-8);
+      expect(fast).toBeGreaterThan(0);
+      expect(fast).toBeLessThan(right / 3);
     });
   }
 
