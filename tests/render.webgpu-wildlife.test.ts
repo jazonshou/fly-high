@@ -564,3 +564,99 @@ describe("wildlife pipeline prime (D1)", () => {
     dispose();
   });
 });
+
+describe("height-only terrain for birds (D3)", () => {
+  /** High enough under the flocks that the birds' 24 m clearance climb engages. */
+  const ridge: WildlifeTerrainSampler = (x, z) => ({
+    height: 230 + Math.sin(x * 0.01) * 40 + Math.cos(z * 0.013) * 30,
+    slope: 0.07,
+    biome: TerrainBiome.FOREST,
+  });
+
+  it("flies the birds bit for bit the same on the height alone, and samples fully for ground animals only", () => {
+    const cells = generatedNeighborhood("height-only-birds");
+    const spawns = [
+      ...cells.flatMap((cell) => cell.birdSpawns).slice(0, 64),
+      ...cells.flatMap((cell) => cell.groundSpawns).slice(0, 6),
+    ];
+    const groundAnimals = spawns.filter((spawn) => spawn.kind === "ground").length;
+    expect(groundAnimals).toBeGreaterThan(0);
+    const fullAgents = spawns.map(createWildlifeAgent);
+    const heightAgents = spawns.map(createWildlifeAgent);
+    const raisedAgents = spawns.map(createWildlifeAgent);
+    const fullSimulation = new WildlifeSimulation();
+    const heightSimulation = new WildlifeSimulation();
+    const raisedSimulation = new WildlifeSimulation();
+    const observer = { x: 50_000, y: 2_000, z: 50_000 };
+    let fullSamples = 0;
+    let heightSamples = 0;
+    const heightContext = {
+      observer,
+      terrainSample: (x: number, z: number) => {
+        fullSamples += 1;
+        return ridge(x, z);
+      },
+      terrainHeight: (x: number, z: number) => {
+        heightSamples += 1;
+        return ridge(x, z).height;
+      },
+    };
+    let climbing = 0;
+    for (let step = 0; step < 90; step += 1) {
+      const full = fullSimulation.step(fullAgents, { observer, terrainSample: ridge }, 1 / 30);
+      fullSamples = 0;
+      heightSamples = 0;
+      const height = heightSimulation.step(heightAgents, heightContext, 1 / 30);
+      expect(height).toEqual(full);
+      // One height per bird AI update; the full sample only under hooves.
+      expect(heightSamples).toBe(height.neighborQueries);
+      expect(fullSamples).toBe(groundAnimals);
+      raisedSimulation.step(raisedAgents, {
+        observer,
+        terrainSample: ridge,
+        terrainHeight: (x, z) => ridge(x, z).height + 80,
+      }, 1 / 30);
+      climbing += heightAgents.filter(
+        (agent) => agent.kind === "bird" && agent.position.y < ridge(agent.position.x, agent.position.z).height + 24,
+      ).length;
+    }
+    expect(JSON.stringify(heightAgents)).toBe(JSON.stringify(fullAgents));
+    // Not a test of nothing: birds flew below the clearance, and a different
+    // height moves them.
+    expect(climbing).toBeGreaterThan(0);
+    expect(JSON.stringify(raisedAgents)).not.toBe(JSON.stringify(fullAgents));
+  });
+
+  it("reaches the birds through WildlifeSystem's option, with the same drawn matrices", () => {
+    const run = (terrainHeight?: (x: number, z: number) => number) => {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      scene.useRightHandedSystem = true;
+      let heightSamples = 0;
+      const system = new WildlifeSystem(scene, {
+        worldSeed: "height-only-system",
+        terrainSample: ridge,
+        ...(terrainHeight
+          ? { terrainHeight: (x: number, z: number) => { heightSamples += 1; return terrainHeight(x, z); } }
+          : {}),
+      });
+      const profile = resolveWebGpuQualityProfile("medium", "balanced");
+      for (let frame = 0; frame < 240; frame += 1) {
+        system.update({ x: 0, y: 300, z: 0, velocityX: 60 }, { x: 0, y: 0, z: 0 }, profile, 1 / 60);
+      }
+      const matrices = wildlifeMeshes(scene).map((mesh) => mesh.thinInstanceGetWorldMatrices()
+        .slice(0, mesh.thinInstanceCount)
+        .flatMap((matrix) => [...matrix.asArray()]));
+      const birds = system.statistics.birdCount;
+      system.dispose();
+      scene.dispose();
+      engine.dispose();
+      return { matrices: JSON.stringify(matrices), birds, heightSamples };
+    };
+    const full = run();
+    const height = run((x, z) => ridge(x, z).height);
+    expect(full.birds).toBeGreaterThan(10);
+    expect(height.heightSamples).toBeGreaterThan(0);
+    expect(height.matrices).toBe(full.matrices);
+  });
+});

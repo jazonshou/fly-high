@@ -231,7 +231,11 @@ export class WildlifeSystem {
     const advance = this.clock.advance(deltaSeconds, (stepSeconds) => {
       const step = this.simulation.step(
         this.agents,
-        { observer, terrainSample: this.options.terrainSample },
+        {
+          observer,
+          terrainSample: this.options.terrainSample,
+          terrainHeight: this.options.terrainHeight,
+        },
         stepSeconds,
       );
       neighborQueries += step.neighborQueries;
