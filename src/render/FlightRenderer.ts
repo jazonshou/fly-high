@@ -2452,6 +2452,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       lakeCount: hydrology.lakeCount,
       hydrologyMainThreadFallback: hydrology.usingMainThreadFallback,
       hydrologyLastGenerationUsedWorker: hydrology.lastGenerationUsedWorker,
+      // Counters only: the perf probe reads diagnostics every frame, and
+      // `presentationRebuildDiagnostics` walks every cell.
+      detailWorker: this.detail.workerHealth,
       requestedRenderingMode: this.renderingMode,
       renderBackend: "webgpu",
       renderTechnique: "forward-spectral-volumetric",
