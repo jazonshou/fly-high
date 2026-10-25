@@ -490,7 +490,9 @@ describe("detail worker liveness in virtual time", () => {
 /** Runs the real worker inside `postMessage`; slices and deliveries on `flush`. */
 class SynchronousWorkerBridge {
   readonly commands: DetailWorkerCommand[] = [];
+  /** Answers and heartbeats are held together, so a held build is silent. */
   holdPresentations = false;
+  holdGeneration = false;
   readonly held: DetailWorkerEvent[] = [];
   private readonly listeners = new Map<string, Set<Listener>>();
   private readonly tasks: Array<() => void> = [];
@@ -521,16 +523,21 @@ class SynchronousWorkerBridge {
     while (this.tasks.length > 0 || this.outbound.length > 0) {
       while (this.tasks.length > 0) this.tasks.shift()!();
       for (const event of this.outbound.splice(0)) {
-        if (
-          this.holdPresentations
-          && (event.type === "presentation" || event.type === "presentationProgress")
-        ) {
+        const presentation = event.type === "presentation" || event.type === "presentationProgress";
+        if ((this.holdPresentations && presentation) || (this.holdGeneration && !presentation)) {
           this.held.push(event);
         } else {
           this.emit(event);
         }
       }
     }
+  }
+
+  /** Delivers the held events of `type` (all of them by default), in order. */
+  release(type?: DetailWorkerEvent["type"]): void {
+    const released = this.held.filter((event) => type === undefined || event.type === type);
+    this.held.splice(0, this.held.length, ...this.held.filter((event) => !released.includes(event)));
+    for (const event of released) this.emit(event);
   }
 
   emit(data: unknown): void {
@@ -803,6 +810,121 @@ describe("detail worker presentation watchdog", () => {
     }
   });
 
+  it("holds a running clock still while an answer waits, counting a long gap once", () => {
+    const fixture = settledFixture("detail-liveness-pause");
+    try {
+      postHeldBuild(fixture);
+      updateHeld(fixture, 10, 50);
+      const age = () => {
+        const state = clockOf(fixture.runtime);
+        return {
+          updates: state.updateSequence - state.workerPresentationProgressUpdate!,
+          milliseconds: fixture.clock.now - state.workerPresentationProgressMilliseconds!,
+        };
+      };
+      expect(age()).toEqual({ updates: 50, milliseconds: 500 });
+
+      // The answer arrives (its heartbeats stay held) and the next update is
+      // 500 ms late, with a floating-origin rebase. The answer is the main
+      // thread's to take, so the update is not charged; the rebase then
+      // cancels the build and reissues it, which does not reset the clock.
+      fixture.bridge.release("presentation");
+      const moved = { ...fixture.observer, x: fixture.observer.x + 64 };
+      const rebased = { x: 512, y: 0, z: -256 };
+      const builds = fixture.bridge.buildIds().length;
+      const cancellations = fixture.runtime.presentationRebuildDiagnostics.cancellations;
+      fixture.clock.now += 500;
+      fixture.runtime.update(moved, rebased, fixture.quality);
+      fixture.bridge.flush();
+      expect(fixture.runtime.presentationRebuildDiagnostics.cancellations).toBe(cancellations + 1);
+      expect(fixture.bridge.buildIds()).toHaveLength(builds + 1);
+      expect(age()).toEqual({ updates: 50, milliseconds: 500 });
+
+      // The reissued build is the worker's to answer: charged again.
+      fixture.clock.now += 10;
+      fixture.runtime.update(moved, rebased, fixture.quality);
+      fixture.bridge.flush();
+      expect(age()).toEqual({ updates: 51, milliseconds: 510 });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reports a build's latency from its post to its accepted answer", () => {
+    const fixture = settledFixture("detail-liveness-latency");
+    try {
+      // The bridge answers every settling build in the update that posts it.
+      const latency = () => fixture.runtime.presentationRebuildDiagnostics
+        .workerBuildMaxLatencyMilliseconds;
+      expect(latency()).toBe(0);
+      postHeldBuild(fixture);
+      updateHeld(fixture, 10, 70);
+      fixture.bridge.release();
+      updateHeld(fixture, 10, 1);
+      expect(clockOf(fixture.runtime).pendingPresentationBuild).toBeNull();
+      expect(latency()).toBe(700);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("lifts a long gap between updates off the convergence timer too", () => {
+    const fixture = settledFixture("detail-liveness-gap");
+    try {
+      const buildId = postHeldBuild(fixture);
+      updateHeld(fixture, 10, 20);
+      heartbeat(fixture, buildId);
+      // The tab was hidden for 40 s with the build in flight.
+      expect(updateHeld(fixture, 40_000, 1)).toBe(1);
+      expect(updateHeld(fixture, 10, 20)).toBe(20);
+      const diagnostics = fixture.runtime.presentationRebuildDiagnostics;
+      expect(diagnostics.workerConvergenceStalls).toBe(0);
+      expect(diagnostics.workerBuildTimeouts).toBe(0);
+      expect(clockOf(fixture.runtime).client).not.toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("restarts the convergence timer at an accepted answer, while demand lasts", () => {
+    const fixture = settledFixture("detail-liveness-converging");
+    try {
+      const diagnostics = () => fixture.runtime.presentationRebuildDiagnostics;
+      const publications = diagnostics().workerBuildPublications;
+      const cancellations = diagnostics().cancellations;
+      postHeldBuild(fixture);
+      /** 100 Hz updates at an offset, with a heartbeat for the current build every 100 ms. */
+      const updateWorking = (offset: number, updates: number) => {
+        for (let update = 1; update <= updates; update += 1) {
+          fixture.clock.now += 10;
+          fixture.runtime.update(
+            { ...fixture.observer, x: fixture.observer.x + offset },
+            ORIGIN,
+            fixture.quality,
+          );
+          fixture.bridge.flush();
+          if (update % 10 === 0) heartbeat(fixture, fixture.bridge.buildIds().at(-1)!);
+        }
+      };
+      // The build works for 29 s before it answers. The observer steps on a
+      // second earlier, so its answer publishes a snapshot that is already
+      // stale: demand never lapses, and only the answer ends the span.
+      updateWorking(64, 2_800);
+      updateWorking(128, 100);
+      fixture.bridge.release();
+      updateWorking(128, 300);
+      expect(diagnostics().workerBuildPublications).toBe(publications + 1);
+      expect(diagnostics().cancellations).toBe(cancellations);
+      expect(diagnostics().workerConvergenceStalls).toBe(0);
+      // The next build never answers: 30 s after the last answer is a stall.
+      updateWorking(128, 2_800);
+      expect(diagnostics().workerConvergenceStalls).toBe(1);
+      expect(diagnostics().workerBuildTimeouts).toBe(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("starts both clocks afresh after a parked hold, whatever the last publication left", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const fixture = settledFixture("detail-liveness-parked");
@@ -884,6 +1006,37 @@ describe("detail worker presentation watchdog", () => {
       runtime.dispose();
       scene.dispose();
       engine.dispose();
+    }
+  });
+});
+
+describe("detail worker generation watchdog", () => {
+  it("does not expire on 240 updates that span less than two seconds", () => {
+    const fixture = settledFixture("detail-liveness-generation");
+    try {
+      // Every resident is asked for again, and no answer comes back.
+      fixture.bridge.holdGeneration = true;
+      fixture.runtime.setDayOfYear(40);
+      const updateAt240Hertz = (updates: number) => {
+        for (let update = 1; update <= updates; update += 1) {
+          fixture.clock.now += 1_000 / 240;
+          fixture.runtime.update(fixture.observer, ORIGIN, fixture.quality);
+          fixture.bridge.flush();
+          if (clockOf(fixture.runtime).client === null) return update;
+        }
+        return updates;
+      };
+      const diagnostics = () => fixture.runtime.presentationRebuildDiagnostics;
+      // The clock starts at the second update, the first with a request out:
+      // 470 updates are 1.95 s of silence.
+      expect(updateAt240Hertz(470)).toBe(470);
+      expect(diagnostics().workerGenerationTimeouts).toBe(0);
+      expect(updateAt240Hertz(16)).toBeLessThanOrEqual(16);
+      expect(clockOf(fixture.runtime).client).toBeNull();
+      expect(diagnostics().workerGenerationTimeouts).toBe(1);
+      expect(diagnostics().workerBuildTimeouts).toBe(0);
+    } finally {
+      fixture.dispose();
     }
   });
 });
