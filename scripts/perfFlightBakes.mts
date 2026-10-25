@@ -26,6 +26,13 @@
  * Ground cover. Each tile-bake call's time on the bake's own clock, against
  * 2 ms: its 1.5 ms budget and one 32-column step past it.
  *
+ * Both targets count a reading AT the target with those over it. The agent's
+ * page is not cross-origin isolated, so its clock reads in 0.1 ms steps: a
+ * frame that reads 1.0 ms spent anywhere from about 0.9 to 1.1 ms and cannot
+ * be shown to be within it, and the difference of two such readings is 1.0
+ * give or take a float's last bit, so a strict comparison would count it or
+ * not at random.
+ *
  * An arm whose build does not report its bakes (no `bake` on its frames) is
  * "n/a" throughout. Plain Node, as `perfAbHarness.mts`.
  */
@@ -39,6 +46,11 @@ export const SKY_FRAME_TARGET_MS = 1;
 export const GROUND_COVER_CALL_TARGET_MS = 2;
 /** The report lists at most this many sky-work frames over the target; report.json keeps them all. */
 const LISTED_FRAMES = 40;
+
+/** At or over `target`, give or take the float error of a difference of two clock readings. */
+export function reaches(milliseconds: number, target: number): boolean {
+  return milliseconds >= target - 1e-6;
+}
 
 export type SkyWork = "one-frame" | "begin" | "advance" | "land" | "cube" | "LUT";
 
@@ -187,12 +199,12 @@ function figures(parts: readonly PhaseBakes[]): BakeFigures | null {
       oneFrame: sky.filter((frame) => frame.work.includes("one-frame")).length,
       workFrames: sky.length,
       worst,
-      overTarget: sky.filter((frame) => frame.skyMs > SKY_FRAME_TARGET_MS),
+      overTarget: sky.filter((frame) => reaches(frame.skyMs, SKY_FRAME_TARGET_MS)),
     },
     groundCover: {
       calls: callMs.length,
       ms: callMs.length > 0 ? { p50: calls.p50, p95: calls.p95, max: calls.max } : null,
-      overTarget: callMs.filter((ms) => ms > GROUND_COVER_CALL_TARGET_MS).length,
+      overTarget: callMs.filter((ms) => reaches(ms, GROUND_COVER_CALL_TARGET_MS)).length,
       paceFloorCalls: parts.reduce((sum, part) => sum + part.paceFloorCalls, 0),
       tilesCompleted: parts.reduce((sum, part) => sum + part.tilesCompleted, 0),
     },
@@ -252,11 +264,11 @@ export function describeLegBakes(leg: FlightReport): string {
   const skyPart = sky.worst === null
     ? "no sky work"
     : `sky ${sky.landed} landed / ${sky.oneFrame} one-frame, worst ${fmt(sky.worst.skyMs)} ms, `
-      + `${sky.overTarget.length} over ${SKY_FRAME_TARGET_MS} ms`;
+      + `${sky.overTarget.length} at or over ${SKY_FRAME_TARGET_MS} ms`;
   const coverPart = groundCover.ms === null
     ? "no ground-cover bake"
     : `ground cover ${groundCover.calls} calls, max ${fmt(groundCover.ms.max)} ms, `
-      + `${groundCover.overTarget} over ${GROUND_COVER_CALL_TARGET_MS} ms`;
+      + `${groundCover.overTarget} at or over ${GROUND_COVER_CALL_TARGET_MS} ms`;
   return `, ${skyPart}; ${coverPart}`;
 }
 
@@ -310,18 +322,20 @@ export function renderBakeMarkdown(report: BakeReport): string {
       + "sliced re-light (every 500 m of climb) begins and samples about 0.5 ms a frame, lands its irradiance "
       + "(the converter), re-arms the specular cube on the next frame (its six faces render in the scene pass, "
       + "outside these ms) and re-bakes the cloud LUT on the one after; a one-frame re-light (an environment "
-      + `change, a teleport) does it all at once. Target: no frame over ${SKY_FRAME_TARGET_MS} ms.`,
+      + `change, a teleport) does it all at once. Target: no frame over ${SKY_FRAME_TARGET_MS} ms. The page's clock `
+      + "reads in 0.1 ms steps (it is not cross-origin isolated), so a frame that reads the target is counted with "
+      + "those over it: it cannot be shown to be within it.",
     "",
     ...table(
       "phase | arm | commit | sliced re-lights landed | one-frame re-lights | sky-work frames "
-        + `| worst sky-work frame ms (work) | frames over ${SKY_FRAME_TARGET_MS} ms`,
+        + `| worst sky-work frame ms (work) | frames at or over ${SKY_FRAME_TARGET_MS} ms`,
       skyRows,
     ),
     "",
     ...(!recordedAny ? [] : over.length === 0
-      ? [`No sky-work frame over ${SKY_FRAME_TARGET_MS} ms.`, ""]
+      ? [`No sky-work frame at or over ${SKY_FRAME_TARGET_MS} ms.`, ""]
       : [
-        `Sky-work frames over ${SKY_FRAME_TARGET_MS} ms (the work, the refresh's ms with the slice's and the `
+        `Sky-work frames at or over ${SKY_FRAME_TARGET_MS} ms (the work, the refresh's ms with the slice's and the `
           + "converter's, and the frame's render() ms):",
         "",
         ...over.slice(0, LISTED_FRAMES).map(({ arm, frame }) =>
@@ -333,7 +347,7 @@ export function renderBakeMarkdown(report: BakeReport): string {
       + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's pace.",
     "",
     ...table(
-      `phase | arm | commit | tile-bake calls | ms per call p50 / p95 / max | calls over ${GROUND_COVER_CALL_TARGET_MS} ms `
+      `phase | arm | commit | tile-bake calls | ms per call p50 / p95 / max | calls at or over ${GROUND_COVER_CALL_TARGET_MS} ms `
         + "| pace-floor calls | tiles completed",
       coverRows,
     ),

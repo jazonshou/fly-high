@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   bakeReport,
   describeLegBakes,
+  reaches,
   renderBakeMarkdown,
   type BakeRow,
 } from "../scripts/perfFlightBakes.mts";
@@ -249,6 +250,30 @@ describe("flight bake report", () => {
     }
   });
 
+  it("counts a reading at the target with those over it, whichever way the float error falls", () => {
+    // The page's clock reads in 0.1 ms steps; a difference of two readings is
+    // the step's multiple give or take the last bit.
+    expect(reaches(1, 1)).toBe(true);
+    expect(reaches(1.0000000000000002, 1)).toBe(true);
+    expect(reaches(0.9999999999999998, 1)).toBe(true);
+    expect(reaches(0.9000000000000004, 1)).toBe(false);
+    expect(reaches(1.9999999999999996, 2)).toBe(true);
+    expect(reaches(1.9, 2)).toBe(false);
+    const atTarget = bakeReport({
+      shas: SHAS,
+      reports: {
+        base: [],
+        head: [leg([
+          frame(null), frame(slice(0.9999999999999998)), frame(slice(0.9000000000000004)),
+          frame(cover(1.9999999999999996)), frame(cover(1.9)),
+        ])],
+      },
+    });
+    const head = row(atTarget.rows, "leg 1", "head");
+    expect(head.sky!.overTarget.map((entry) => entry.frame)).toEqual([1]);
+    expect(head.groundCover!.overTarget).toBe(1);
+  });
+
   it("gives each ground-cover call's ms, the calls over 2 ms, pace-floor holds and tiles", () => {
     expect(row(report.rows, "leg 1", "head").groundCover).toEqual({
       calls: 3, ms: { p50: 1.6, p95: 2.3, max: 2.3 }, overTarget: 1, paceFloorCalls: 1, tilesCompleted: 1,
@@ -280,7 +305,7 @@ describe("flight bake report", () => {
 
   it("says so when no recorded frame went over 1 ms, and nothing when no arm was recorded", () => {
     const quiet = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [leg([frame(sky(0.3))])] } }));
-    expect(quiet).toContain("No sky-work frame over 1 ms.");
+    expect(quiet).toContain("No sky-work frame at or over 1 ms.");
     const none = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [unrecorded(2)] } }));
     expect(none).not.toContain("No sky-work frame");
     expect(none).not.toContain("- head");
@@ -289,7 +314,7 @@ describe("flight bake report", () => {
   it("logs a leg's bakes in one line, and nothing for a build that does not report them", () => {
     expect(describeLegBakes(unrecorded(4))).toBe("");
     expect(describeLegBakes(headLeg1)).toBe(
-      ", sky 2 landed / 1 one-frame, worst 2.00 ms, 3 over 1 ms; ground cover 3 calls, max 2.30 ms, 1 over 2 ms",
+      ", sky 2 landed / 1 one-frame, worst 2.00 ms, 3 at or over 1 ms; ground cover 3 calls, max 2.30 ms, 1 at or over 2 ms",
     );
     // Recorded, with neither bake at work (a leg too high for the blades, below any re-light).
     expect(describeLegBakes(leg([frame(null), frame(null)]))).toBe(", no sky work; no ground-cover bake");
