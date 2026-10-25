@@ -6,6 +6,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
+import { poseWindsock } from "../src/render/webgpu/airfield/AirfieldPlacement";
 import {
   SPAWNED_AIRFIELD_FRAME_BUDGET_MS,
   SPAWNED_FLOODS_PER_FIELD,
@@ -304,9 +305,15 @@ describe("an airport spawned in flight gets the home field's airfield", () => {
           texture.isReadyOrNotBlocking = () => true;
         }
       }
+      // The socks at the two ends of their travel: the home one streaming at
+      // full bore, the spawned one slack.
+      host.home.setWindsockState(0, 30);
+      const sock = spawnedMeshes(host.scene).find((mesh) => mesh.name.endsWith("-sock"))!;
+      poseWindsock(sock, host.spawned.headingRadians, 1, 0, new Vector3());
       const variant = (mesh: Mesh): string => {
         const material = mesh.material!;
         const subMesh = mesh.subMeshes[0]!;
+        mesh.computeWorldMatrix(true);
         material.isReadyForSubMesh(mesh, subMesh, false);
         return `${material.name}\n${subMesh.materialDefines!.toString()}`;
       };

@@ -41,6 +41,7 @@ import {
   poseWindsock,
   towerSite,
   TOWER_PART_SURFACES,
+  WINDSOCK_LENGTH_SCALE,
   windsockNodePosition,
   type HangarSite,
   type TowerSite,
@@ -1114,6 +1115,7 @@ export class SpawnedAirfieldManager {
       sock.material = this.materials.accent;
       sock.position.set(windsockAt[0], windsockAt[1] + WINDSOCK_MAST_HEIGHT_METERS, windsockAt[2]);
       sock.rotationQuaternion = Quaternion.Identity();
+      sock.scaling.set(1, WINDSOCK_LENGTH_SCALE, 1);
       sock.parent = root;
       this.applyCull(sock);
       meshes.push(sock);

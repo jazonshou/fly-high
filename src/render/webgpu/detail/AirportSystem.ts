@@ -29,6 +29,7 @@ import {
   hangarSite,
   poseWindsock,
   towerSite,
+  WINDSOCK_LENGTH_SCALE,
   windsockNodePosition,
 } from "../airfield/AirfieldPlacement";
 
@@ -240,6 +241,7 @@ export class AirportSystem {
       if (kind === "sock") {
         mesh.position.y = WINDSOCK_MAST_HEIGHT_METERS;
         mesh.rotationQuaternion = Quaternion.Identity();
+        mesh.scaling.set(1, WINDSOCK_LENGTH_SCALE, 1);
         this.windsockSock = mesh;
       }
       mesh.parent = windsockNode;

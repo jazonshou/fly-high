@@ -209,6 +209,16 @@ export function airfieldGroundPoints(definition: Readonly<AirportDefinition>): F
 }
 
 /**
+ * The sock's scale along its length, a hair over 1 so the sock is never
+ * uniformly scaled at any bore. Babylon keys `NONUNIFORMSCALING` on a mesh's
+ * scaling, so a sock reaching full bore, or a spawned field's sock at another
+ * bore than the home field's, would otherwise draw with a second shader
+ * variant, compiled mid-flight. 0.4 mm on the 3.6 m sock. Builders give a new
+ * sock this scale before its first pose.
+ */
+export const WINDSOCK_LENGTH_SCALE = 1.0001;
+
+/**
  * Point and inflate a windsock's sock mesh.
  *
  * `windHeadingRadians` is world-referenced. Children of an airport root are
@@ -234,5 +244,5 @@ export function poseWindsock(
   // The mesh is built along +y, so the rotation is +y onto the axis.
   Quaternion.FromUnitVectorsToRef(Vector3.UpReadOnly, scratch, sock.rotationQuaternion!);
   const bore = windsockBoreScale(inflation);
-  sock.scaling.set(bore, 1, bore);
+  sock.scaling.set(bore, WINDSOCK_LENGTH_SCALE, bore);
 }
