@@ -2795,9 +2795,17 @@ export class WorldDetailRuntime {
     };
     this.presentationBacklogChunks = rebuildBacklogChunks;
     this.refreshVisibilityStatistics();
-    return rebuildBacklogChunks > 0
+    const backlog = rebuildBacklogChunks > 0
       || this.pendingPresentationBuild !== null
       || this.pendingPublication !== null;
+    if (!backlog) {
+      // The sweep goes idle, and no demand check runs until something dirties
+      // it again: demand counted at the top of this update (the publication
+      // that just committed) must not start the next demand's clocks early.
+      this.resetWorkerPresentationProgress();
+      this.workerConvergenceMilliseconds = null;
+    }
+    return backlog;
   }
 
   /**

@@ -504,6 +504,7 @@ class SynchronousWorkerBridge {
 interface ClockInternals {
   readonly workerPresentationProgressUpdate: number | null;
   readonly workerPresentationProgressMilliseconds: number | null;
+  readonly workerConvergenceMilliseconds: number | null;
   readonly updateSequence: number;
   readonly client: unknown;
   readonly pendingPresentationBuild: { readonly source: string } | null;
@@ -749,6 +750,34 @@ describe("detail worker presentation watchdog", () => {
       expect(heartbeats()).toBe(settledHeartbeats + 1);
     } finally {
       fixture.dispose();
+    }
+  });
+
+  it("starts both clocks afresh after a parked hold, whatever the last publication left", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fixture = settledFixture("detail-liveness-parked");
+    try {
+      // Parked for 31 s at 120 Hz with no gaps: the sweep is idle throughout,
+      // so no demand check runs until the observer moves.
+      for (let update = 0; update < 31 * 120; update += 1) {
+        fixture.clock.now += 1_000 / 120;
+        fixture.runtime.update(fixture.observer, ORIGIN, fixture.quality);
+        fixture.bridge.flush();
+      }
+      const parked = clockOf(fixture.runtime);
+      expect(parked.workerPresentationProgressUpdate).toBeNull();
+      expect(parked.workerConvergenceMilliseconds).toBeNull();
+
+      postHeldBuild(fixture);
+      expect(updateHeld(fixture, 1_000 / 120, 12)).toBe(12);
+      const diagnostics = fixture.runtime.presentationRebuildDiagnostics;
+      expect(diagnostics.workerConvergenceStalls).toBe(0);
+      expect(diagnostics.workerBuildTimeouts).toBe(0);
+      expect(warn.mock.calls.filter(([message]) => String(message).startsWith("detail worker")))
+        .toHaveLength(0);
+    } finally {
+      fixture.dispose();
+      warn.mockRestore();
     }
   });
 
