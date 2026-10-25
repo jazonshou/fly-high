@@ -3164,12 +3164,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * frame that asks (`skyProbeRefreshAction`), and a landing's LUT still to
    * come is dropped.
    *
-   * So does a teleport: a spawn reset or a crash restart moves the camera
-   * past the drift threshold between two frames, which no flight can. Sliced,
-   * the new place would keep the old altitude's lighting for the frames the
-   * rebake takes and then step, after the camera cut has cleared the history
-   * that would have hidden it. cutCamera cannot ask for it: the simulation's
-   * reset reaches the renderer frames after the cut.
+   * A teleport re-lights in the frame that asks too: a spawn reset or a crash
+   * restart moves the camera past the drift threshold between two frames,
+   * which no flight can. Sliced, the new place would keep the old altitude's
+   * lighting for the frames the rebake takes and then step, after the camera
+   * cut has cleared the history that would have hidden it. cutCamera cannot
+   * ask for it: the simulation's reset reaches the renderer frames after the
+   * cut.
    */
   private refreshSkyProbe(binding: AerialPerspectiveBinding): void {
     const altitude = binding.cameraAltitudeMeters;
