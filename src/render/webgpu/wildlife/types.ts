@@ -131,4 +131,11 @@ export interface WildlifeSystemOptions {
   readonly cellSizeMeters?: number;
   /** Radius used to gather deterministic spawn cells around the observer. */
   readonly activeRadiusMeters?: number;
+  /**
+   * Generated cells kept, least recently used first out, for the population
+   * rebuild at each cell crossing; 0 (the default) generates every cell
+   * afresh. Cells read the terrain sampler, so a caller whose terrain changes
+   * calls `WildlifeSystem.invalidateCellCache`.
+   */
+  readonly wildlifeCellCacheCapacity?: number;
 }

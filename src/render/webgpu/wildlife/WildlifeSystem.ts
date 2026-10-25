@@ -22,6 +22,7 @@ import {
 import {
   DEFAULT_WILDLIFE_CELL_SIZE_METERS,
   type BirdAgent,
+  type GeneratedWildlifeCell,
   type GroundAnimalAgent,
   type WildlifeAgent,
   type WildlifeFloatingOrigin,
@@ -121,6 +122,9 @@ function interpolateAngle(previous: number, current: number, alpha: number): num
 export class WildlifeSystem {
   private readonly batches = new Map<string, WildlifeBatch>();
   private readonly materials = new Set<PBRMaterial>();
+  /** Least recently used first: Map order is insertion order (`wildlifeCell`). */
+  private readonly cellCache = new Map<string, GeneratedWildlifeCell>();
+  private readonly cellCacheCapacity: number;
   private readonly simulation = new WildlifeSimulation();
   private readonly clock = new FixedStepClock();
   private agents: WildlifeAgent[] = [];
@@ -162,6 +166,10 @@ export class WildlifeSystem {
       this.activeRadiusMeters > 12_000
     ) {
       throw new RangeError("Wildlife active radius must be between one cell and 12000 metres");
+    }
+    this.cellCacheCapacity = options.wildlifeCellCacheCapacity ?? 0;
+    if (!Number.isSafeInteger(this.cellCacheCapacity) || this.cellCacheCapacity < 0) {
+      throw new RangeError("Wildlife cell cache capacity must be a non-negative safe integer");
     }
     this.createBatches();
     this.primeObserver = scene.onAfterRenderObservable.add(() => this.advancePrime());
@@ -257,7 +265,9 @@ export class WildlifeSystem {
    * A pipeline prime still pending is history too: a batch that has had
    * animals has ended its prime and one that has not is still drawing it
    * (`advancePrime`). Rendered frames end it long before any pin, so this
-   * only ends one that frames never reached.
+   * only ends one that frames never reached. And the cell cache is emptied,
+   * so the respawn reads the terrain as it is now, not as some earlier shot
+   * found it.
    */
   respawnForCapture(): void {
     if (this.disposed) return;
@@ -265,9 +275,19 @@ export class WildlifeSystem {
     this.populationSignature = "";
     this.clock.reset();
     this.simulation.restartStepCountForCapture();
+    this.cellCache.clear();
     for (const batch of this.batches.values()) {
       if (batch.priming) this.endPrime(batch);
     }
+  }
+
+  /**
+   * Forgets every cached cell (`wildlifeCellCacheCapacity`). Call it when the
+   * terrain the sampler answers from changes; as without a cache, the
+   * population picks the change up at its next rebuild.
+   */
+  invalidateCellCache(): void {
+    this.cellCache.clear();
   }
 
   /**
@@ -298,6 +318,7 @@ export class WildlifeSystem {
     if (this.disposed) return;
     this.disposed = true;
     this.agents = [];
+    this.cellCache.clear();
     this.scene.onAfterRenderObservable.remove(this.primeObserver);
     this.primeObserver = null;
     for (const batch of this.batches.values()) batch.mesh.dispose(false, false);
@@ -351,13 +372,7 @@ export class WildlifeSystem {
           currentDistance > this.activeRadiusMeters &&
           predictedDistance > this.activeRadiusMeters * 0.8
         ) continue;
-        cells.push(generateWildlifeCell({
-          worldSeed: this.options.worldSeed,
-          cellX,
-          cellZ,
-          cellSizeMeters: this.cellSizeMeters,
-          terrainSample: this.options.terrainSample,
-        }));
+        cells.push(this.wildlifeCell(cellX, cellZ));
       }
     }
 
@@ -368,6 +383,38 @@ export class WildlifeSystem {
       return existing && existing.kind === spawn.kind ? existing : createWildlifeAgent(spawn);
     });
     this.populationRebuilds += 1;
+  }
+
+  /**
+   * One cell's spawn descriptors, from the cache when it holds them. A cell is
+   * a function of the seed, the cell size and the terrain sampler; the first
+   * two are fixed per system and the sampler is the caller's to vouch for
+   * (`invalidateCellCache`). Cached cells are shared, not copied:
+   * `selectActiveWildlife` only reads them and `createWildlifeAgent` clones
+   * every vector an agent keeps.
+   */
+  private wildlifeCell(cellX: number, cellZ: number): GeneratedWildlifeCell {
+    const key = `${cellX},${cellZ}`;
+    const cached = this.cellCache.get(key);
+    if (cached) {
+      this.cellCache.delete(key);
+      this.cellCache.set(key, cached);
+      return cached;
+    }
+    const cell = generateWildlifeCell({
+      worldSeed: this.options.worldSeed,
+      cellX,
+      cellZ,
+      cellSizeMeters: this.cellSizeMeters,
+      terrainSample: this.options.terrainSample,
+    });
+    if (this.cellCacheCapacity > 0) {
+      this.cellCache.set(key, cell);
+      if (this.cellCache.size > this.cellCacheCapacity) {
+        this.cellCache.delete(this.cellCache.keys().next().value!);
+      }
+    }
+    return cell;
   }
 
   private rebuildPresentation(
