@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CAMERA_GROUND_SPEED_HELD_FRAMES,
+  CAMERA_GROUND_SPEED_MIN_SIM_DELTA_SECONDS,
   nextObservedGroundSpeed,
   type CameraGroundSpeed,
 } from "../src/render/cameraGroundSpeed";
@@ -15,6 +16,8 @@ import { cameraTrailMeters } from "../src/render/cameraPresentation";
 
 /** The renderer's clamp on the delta FlightGame hands it (`render`). */
 const clampWall = (seconds: number): number => Math.max(1 / 300, Math.min(0.1, seconds));
+/** FlightGame's clamp on the real frame interval (its render loop). */
+const gameDelta = (seconds: number): number => Math.min(0.1, Math.max(1 / 240, seconds));
 /** What the renderer computed before B2. */
 const oldFormula = (travelled: number, wall: number): number => travelled / Math.max(1e-4, wall);
 
@@ -109,6 +112,37 @@ describe("the chase camera's observed ground speed", () => {
     // The old division read that frame at three times the speed.
     expect(oldFormula(80 * 3 * step, step)).toBeCloseTo(240, 9);
     expect(speeds[3]!.heldFrames).toBe(0);
+  });
+
+  it("keeps the old division where the simulation clock moved less than FlightGame's shortest frame", () => {
+    expect(CAMERA_GROUND_SPEED_MIN_SIM_DELTA_SECONDS).toBe(1 / 240);
+    // A new snapshot corrects an extrapolated pose half a metre in a frame
+    // whose simulation clock moved a tenth of a millisecond: 5000 m/s over
+    // the sliver, the old division's 60 m/s over the frame.
+    for (const holdWhenFrozen of [true, false]) {
+      const corrected = nextObservedGroundSpeed({
+        travelled: 0.5, wallDeltaSeconds: 1 / 120, simDeltaSeconds: 1e-4, previous: 60, heldFrames: 2,
+        holdWhenFrozen,
+      });
+      expect(Object.is(corrected.speed, oldFormula(0.5, 1 / 120))).toBe(true);
+      expect(corrected.heldFrames).toBe(0);
+    }
+    // A 360 Hz display: FlightGame raises the frame delta to 1/240 s while
+    // the simulation clock moves by the real 1/360 s, so a steady frame is
+    // framed exactly as before.
+    for (const hertz of [270, 360, 500]) {
+      const real = 1 / hertz;
+      const wall = clampWall(gameDelta(real));
+      const travelled = 60 * real;
+      const [steady] = fly([{ wall: gameDelta(real), sim: real, travelled }], 60);
+      expect(Object.is(steady!.speed, oldFormula(travelled, wall)), `${hertz} Hz`).toBe(true);
+    }
+    // From FlightGame's shortest frame up, the clock's delta is the divisor:
+    // the pose's clock reaches the extrapolation cap half way through a
+    // 120 Hz frame, which the old division read at half the speed.
+    const [capped] = fly([{ wall: 1 / 120, sim: 1 / 240, travelled: 70 / 240 }], 70);
+    expect(capped!.speed).toBeCloseTo(70, 9);
+    expect(oldFormula(70 / 240, 1 / 120)).toBeCloseTo(35, 9);
   });
 
   it("keeps the held count spent until the clock moves again", () => {

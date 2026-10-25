@@ -14,11 +14,26 @@
  *
  * A steady frame, whose two deltas agree to half a millisecond, keeps the old
  * division bit for bit, so the perf harness, which advances simulation time
- * by exactly the delta it renders with, frames every shot as before.
+ * by exactly the delta it renders with, frames every shot as before. So does
+ * a frame whose simulation delta is shorter than any frame FlightGame hands
+ * the renderer (`CAMERA_GROUND_SPEED_MIN_SIM_DELTA_SECONDS`).
  */
 
 /** Wall and simulation deltas this close make a steady frame: the old division. */
 export const CAMERA_GROUND_SPEED_STEADY_TOLERANCE_SECONDS = 0.0005;
+
+/**
+ * The shortest simulation delta the distance is divided by: FlightGame's
+ * shortest frame delta, so the speed never reads higher than the old division
+ * could for the same distance. Below it the old division stands. A pose
+ * correction (a new snapshot replacing an extrapolated pose) can move the
+ * aircraft in a frame whose simulation clock barely moved, and the distance
+ * over that sliver read thousands of metres a second. And a display above
+ * 240 Hz, whose frame delta FlightGame raises to 1/240 s while the
+ * simulation clock moves by the real interval, keeps every steady frame as
+ * it was.
+ */
+export const CAMERA_GROUND_SPEED_MIN_SIM_DELTA_SECONDS = 1 / 240;
 
 /**
  * Frames a frozen simulation clock holds the last speed for before the wall
@@ -55,7 +70,7 @@ export interface CameraGroundSpeed {
 export function nextObservedGroundSpeed(input: CameraGroundSpeedInput): CameraGroundSpeed {
   const { travelled, wallDeltaSeconds, simDeltaSeconds } = input;
   if (
-    simDeltaSeconds > 0
+    simDeltaSeconds >= CAMERA_GROUND_SPEED_MIN_SIM_DELTA_SECONDS
     && Math.abs(simDeltaSeconds - wallDeltaSeconds) > CAMERA_GROUND_SPEED_STEADY_TOLERANCE_SECONDS
   ) {
     return { speed: travelled / simDeltaSeconds, heldFrames: 0 };
