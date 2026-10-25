@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
+import { FlightRenderer } from "../src/render/FlightRenderer";
 import {
   airportReachWorldBounds,
   airportTerrainReach,
@@ -22,6 +23,7 @@ import {
   type TerrainConsumerSample,
   type TerrainConsumerTerrainSample,
 } from "../src/render/webgpu/terrain/TerrainConsumerAuthority";
+import type { TerrainAuxPagePublication } from "../src/render/webgpu/terrain/TerrainPageAtlas";
 import { WORLD_PAGE_BASE_EXTENT_METERS, WORLD_PAGE_HEIGHT_CORE } from "../src/render/webgpu/world/pageGeometry";
 import type { DetailWorkerEvent } from "../src/workers/detailProtocol";
 import { DetailWorkerRuntime } from "../src/workers/detail.worker";
@@ -473,5 +475,69 @@ describe("the detail worker's eroded-world generation", () => {
     // The pages and the macro grid reached the cells off the airfields: those
     // differ from the kernel's.
     expect(differsFromKernel).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("the birds' cached cells", () => {
+  /**
+   * The birds generate their cells from `liveTerrainSample` and the renderer
+   * keeps 64 of them (`wildlifeCellCacheCapacity`), so every change to that
+   * sampler must forget them: a new airport list, and in an eroded world each
+   * consumer page and aux page published. The three FlightRenderer methods
+   * run here on only what they reach of the renderer.
+   */
+  it("are forgotten whenever the surface they were generated from changes", () => {
+    const setup = erodedSetup();
+    const calls: string[] = [];
+    const record = (name: string) => () => {
+      calls.push(name);
+    };
+    const receiver = {
+      disposed: false,
+      liveWorld: setup.world,
+      terrain: { setAirports: record("terrain") },
+      airportGround: { setWorld: record("ground") },
+      airportHeight: { setWorld: record("height") },
+      wildlife: { invalidateCellCache: record("wildlife") },
+      detail: {
+        setAirports: record("detail"),
+        publishTerrainPage: record("detail page"),
+        publishTerrainAuxPage: record("detail aux"),
+      },
+      groundCover: { invalidateArea: record("ground cover") },
+      spawnedAirfields: null,
+      terrainConsumerAuthority: null as TerrainConsumerAuthority | null,
+      terrainAuthorityPublisher: null,
+    };
+    const renderer = FlightRenderer.prototype as unknown as {
+      setAirports(this: typeof receiver, airports: readonly Readonly<AirportDefinition>[]): void;
+      publishTerrainConsumerPage(this: typeof receiver, page: TerrainPagePublication): void;
+      publishTerrainConsumerAuxPage(this: typeof receiver, page: TerrainAuxPagePublication): void;
+    };
+    const forgotten = (): number => calls.filter((call) => call === "wildlife").length;
+
+    // An airport spawns: both samplers take the new world, then the cells go.
+    renderer.setAirports.call(receiver, setup.next.airports);
+    expect(forgotten()).toBe(1);
+    expect(calls.indexOf("wildlife")).toBeGreaterThan(calls.indexOf("ground"));
+    expect(calls.indexOf("wildlife")).toBeGreaterThan(calls.indexOf("height"));
+    // The same list again changes nothing and forgets nothing.
+    calls.length = 0;
+    renderer.setAirports.call(receiver, setup.next.airports);
+    expect(calls).toEqual([]);
+
+    // An analytic world's sampler reads no page: nothing to forget.
+    renderer.publishTerrainConsumerPage.call(receiver, setup.pages[0]!);
+    renderer.publishTerrainConsumerAuxPage.call(receiver, setup.aux);
+    expect(forgotten()).toBe(0);
+
+    // An eroded world's reads the authority, which each publication moves.
+    const authority = new TerrainConsumerAuthority();
+    receiver.terrainConsumerAuthority = authority;
+    renderer.publishTerrainConsumerPage.call(receiver, setup.pages[0]!);
+    expect(forgotten()).toBe(1);
+    renderer.publishTerrainConsumerAuxPage.call(receiver, setup.aux);
+    expect(forgotten()).toBe(2);
+    expect(calls).toEqual(["detail page", "wildlife", "wildlife", "detail aux"]);
   });
 });
