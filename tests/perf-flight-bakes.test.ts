@@ -269,6 +269,8 @@ describe("flight bake report", () => {
     expect(describeLegBakes(headLeg1)).toBe(
       ", sky 2 landed / 1 one-frame, worst 2.00 ms, 3 over 1 ms; ground cover 3 calls, max 2.30 ms, 1 over 2 ms",
     );
+    // Recorded, with neither bake at work (a leg too high for the blades, below any re-light).
+    expect(describeLegBakes(leg([frame(null), frame(null)]))).toBe(", no sky work; no ground-cover bake");
   });
 });
 

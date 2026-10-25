@@ -240,9 +240,15 @@ export function describeLegBakes(leg: FlightReport): string {
   const seen = figures([phaseBakes("", leg.frames, { inFlight: null, sinceLanding: null })]);
   if (!seen) return "";
   const { sky, groundCover } = seen;
-  return `, sky ${sky.landed} landed / ${sky.oneFrame} one-frame, worst ${fmt(sky.worst?.skyMs ?? null)} ms, `
-    + `${sky.overTarget.length} over ${SKY_FRAME_TARGET_MS} ms; ground cover ${groundCover.calls} calls, `
-    + `max ${fmt(groundCover.ms?.max ?? null)} ms, ${groundCover.overTarget} over ${GROUND_COVER_CALL_TARGET_MS} ms`;
+  const skyPart = sky.worst === null
+    ? "no sky work"
+    : `sky ${sky.landed} landed / ${sky.oneFrame} one-frame, worst ${fmt(sky.worst.skyMs)} ms, `
+      + `${sky.overTarget.length} over ${SKY_FRAME_TARGET_MS} ms`;
+  const coverPart = groundCover.ms === null
+    ? "no ground-cover bake"
+    : `ground cover ${groundCover.calls} calls, max ${fmt(groundCover.ms.max)} ms, `
+      + `${groundCover.overTarget} over ${GROUND_COVER_CALL_TARGET_MS} ms`;
+  return `, ${skyPart}; ${coverPart}`;
 }
 
 export function renderBakeMarkdown(report: BakeReport): string {
