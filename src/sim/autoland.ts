@@ -12,6 +12,7 @@ import {
 } from "./dubins";
 import { clamp, moveToward, rotateVectorInto } from "./math";
 import { SEA_LEVEL_DENSITY } from "./atmosphere";
+import { TYRE_CORNERING_STIFFNESS, WHEEL_BRAKE_FRICTION } from "./simulation";
 import type { FlightControls, FlightState, FlightTelemetry, Vec3 } from "./types";
 
 /**
@@ -96,14 +97,6 @@ const TERRAIN_FLOOR_CAPACITY = 1_024;
 const CERTIFIED_APPROACH_METERS = 4_000;
 /** Go-around climb-out leg drawn past the far end of the runway. */
 const CLIMB_OUT_METERS = 6_000;
-/**
- * Lateral tyre force per leg per m/s of side slip: the simulator's own figure
- * (`applyGroundForces` in simulation.ts), not mass-scaled, so the heavier the
- * aeroplane the longer its velocity takes to follow its nose on the ground.
- */
-const TYRE_CORNERING_PER_LEG = 8_000;
-/** Wheel-brake force per leg per m/s of rolling speed at full brake, the same model's. */
-const TYRE_BRAKING_PER_LEG = 7_450;
 /** Highest en-route speed the autoland flies, indicated: 250 kt. */
 const ENROUTE_SPEED_CAP = 128.6;
 /** Seconds ahead along the ground track at which the terrain look-ahead samples. */
@@ -112,6 +105,21 @@ const LOOKAHEAD_INTERVAL_SECONDS = 0.5;
 /** Rollout centreline loop: natural frequency (rad/s) and damping ratio. */
 const ROLLOUT_STEER_OMEGA = 0.25;
 const ROLLOUT_STEER_DAMPING = 0.85;
+/**
+ * The most the rollout points the nose off the runway's heading to regain the
+ * centreline, and the groundspeeds over which that fades to nothing: below
+ * the lower one it only holds the runway heading, so the aeroplane stops
+ * parallel to the runway wherever across it that is.
+ */
+const ROLLOUT_MAX_HEADING_OFFSET = 3 * DEG;
+const ROLLOUT_ALIGN_SPEEDS = [8, 18] as const;
+/**
+ * The autobrake's least deceleration, m/s^2: 0.36 g, an airliner's highest
+ * landing setting, and well inside what the tyres give (`brakingDeceleration`,
+ * about 0.6 g). And how fast it comes on, in full brake per second.
+ */
+const AUTOBRAKE_DECELERATION = 3.5;
+const AUTOBRAKE_RAMP = 1.5;
 
 export type AutolandPhase =
   | "off"
@@ -234,10 +242,11 @@ export interface AutolandProfile {
    * longer flare floats them further and whose brakes stop them slower.
    */
   readonly aimPoint: number;
-  /** Seconds the ground track takes to follow the heading on the tyres alone. */
-  readonly tyreLag: number;
-  /** Deceleration per m/s of groundspeed at full wheel brake, below the friction limit. */
-  readonly viscousBrakeRate: number;
+  /**
+   * Deceleration full wheel brakes give on a dry runway: the brakes' friction
+   * on the main gear's share of the weight (the nosewheel is unbraked).
+   */
+  readonly brakingDeceleration: number;
 }
 
 function isNoseGear(aircraft: AircraftDefinition, index: number): boolean {
@@ -258,9 +267,13 @@ export function autolandProfile(aircraft: AircraftDefinition): AutolandProfile {
   let mainZ = 0;
   let mains = 0;
   let gearDrop = 0;
+  let noseX = 0;
   aircraft.gear.forEach((leg, index) => {
     gearDrop = Math.max(gearDrop, -leg.position.y);
-    if (isNoseGear(aircraft, index)) return;
+    if (isNoseGear(aircraft, index)) {
+      noseX = leg.position.x;
+      return;
+    }
     mainX += leg.position.x;
     mainY += leg.position.y;
     mainZ = Math.max(mainZ, Math.abs(leg.position.z));
@@ -268,6 +281,8 @@ export function autolandProfile(aircraft: AircraftDefinition): AutolandProfile {
   });
   mainX /= Math.max(1, mains);
   mainY /= Math.max(1, mains);
+  // The static share of the weight on the main gear, about the CG (x = 0).
+  const mainShare = noseX > mainX ? clamp(noseX / (noseX - mainX), 0, 1) : 1;
   let tailStrike = 30 * DEG;
   let tipStrike = 30 * DEG;
   for (const point of aircraft.airframeContactPoints) {
@@ -321,8 +336,7 @@ export function autolandProfile(aircraft: AircraftDefinition): AutolandProfile {
     gainScale,
     gearDrop,
     aimPoint: AUTOLAND_AIM_FROM_THRESHOLD - 55 * (gainScale - 1),
-    tyreLag: aircraft.mass / (Math.max(1, aircraft.gear.length) * TYRE_CORNERING_PER_LEG),
-    viscousBrakeRate: (Math.max(1, aircraft.gear.length) * TYRE_BRAKING_PER_LEG) / aircraft.mass,
+    brakingDeceleration: WHEEL_BRAKE_FRICTION * GRAVITY * mainShare,
   };
 }
 
@@ -1359,29 +1373,35 @@ export class Autoland {
     } else {
       out.pitch = moveToward(out.pitch, -state.actuators.trim * 0.5, dt * 1.5);
     }
-    // Wings level while the ailerons still have air.
-    if (dynamics.airspeed > 20) {
+    // Wings level while the ailerons still have air, until the nosewheel is
+    // down: with every wheel on the runway the roll axis steers the nosewheel
+    // (`steeringCommand` in simulation.ts), and the gear holds the wings.
+    if (dynamics.airspeed > 20 && !allWheels) {
       this.lateralAxes(input, 0, true, out);
       out.roll = clamp(out.roll, -0.3, 0.3);
     } else {
       out.roll = 0;
     }
 
-    // Steering. The tyres turn the velocity toward the nose only with a lag
-    // (`tyreLag`), so the centreline is held as a second-order loop: a heading
+    // Steering, on the rudder pedals: the rudder while it has air, the
+    // nosewheel once it is down. The tyres turn the velocity toward the nose
+    // only with a lag, v / (C g) for a cornering stiffness C per radian of
+    // slip, so the centreline is held as a second-order loop: a heading
     // offset from the runway against both the distance off the centreline and
-    // the track's angle to it, the latter the damping a heading-only law lacks
-    // (the 747 drifted 44 m off the crowned runway without it). Heading grows
-    // to the LEFT, so right of centre, or tracking right, asks for more of it.
-    const tau = this.profile.tyreLag + 1.5;
+    // the track's angle to it, the latter the damping a heading-only law
+    // lacks. Heading grows to the LEFT, so right of centre, or tracking right,
+    // asks for more of it. The offset is small and fades out as the aeroplane
+    // slows, so it stops parallel to the runway.
+    const tau = groundSpeed / (TYRE_CORNERING_STIFFNESS * GRAVITY) + 1.5;
     const lateralSpeed = state.velocity.x * -end.dirZ + state.velocity.z * end.dirX;
     const trackRight = groundSpeed > 3 ? lateralSpeed / groundSpeed : 0;
     const steerSpeed = Math.max(groundSpeed, 5);
-    const headingOffset = clamp(
+    const [alignedSpeed, centrelineSpeed] = ROLLOUT_ALIGN_SPEEDS;
+    const headingOffset = clamp((groundSpeed - alignedSpeed) / (centrelineSpeed - alignedSpeed), 0, 1) * clamp(
       (ROLLOUT_STEER_OMEGA * ROLLOUT_STEER_OMEGA * tau / steerSpeed) * rightOfCentre
         + Math.max(0, 2 * ROLLOUT_STEER_DAMPING * ROLLOUT_STEER_OMEGA * tau - 1) * trackRight,
-      -0.2,
-      0.2,
+      -ROLLOUT_MAX_HEADING_OFFSET,
+      ROLLOUT_MAX_HEADING_OFFSET,
     );
     // The heading loop under it, stiffer for the heavier aeroplanes, whose
     // nosewheels steer less (12 degrees on the 747) against more inertia.
@@ -1391,32 +1411,26 @@ export class Autoland {
     out.yaw = clamp(steerGain * (headingError - 0.3 * yawRate), -1, 1);
 
     // Autobrake: hold the deceleration that stops with a margin of runway
-    // left, at least a comfortable 2 m/s^2. Closed on the MEASURED
+    // left, at least `AUTOBRAKE_DECELERATION`. Closed on the MEASURED
     // deceleration, because what a brake command buys depends on how much
     // weight the wheels carry, which changes all through the rollout. It
     // ramps in once the nosewheel is down: braked on the mains alone, the
     // jet's nose fell 13 degrees in a second against full up elevator. The
-    // exception is a runway too short to wait on (`spareRunway` below): the
-    // 747's brakes are viscous, their force growing with speed, so what it
-    // loses by waiting it loses at the fastest part of the roll.
+    // exception is a runway too short to wait on (`spareRunway` below).
     const measured = (this.lastGroundSpeed - groundSpeed) / dt;
     this.lastGroundSpeed = groundSpeed;
     this.measuredDeceleration += (measured - this.measuredDeceleration) * clamp(dt / 0.5, 0, 1);
-    // A viscous brake stops in v/k, not the v^2/2a of a constant one, so the
-    // deceleration it must hold now is v^2/d: twice the constant-rate figure,
-    // which only makes the trainer (whose brakes hit the friction limit and
-    // so ARE constant) stop a little shorter.
+    const profile = this.profile;
     const remaining = end.length - pastThreshold - 250;
-    const needed = remaining > 20 ? (groundSpeed * groundSpeed) / remaining : 8;
-    const deceleration = Math.max(2, needed * 1.1);
-    const brakingStop = Math.max(
-      groundSpeed / this.profile.viscousBrakeRate,
-      (groundSpeed * groundSpeed) / (2 * 0.6 * GRAVITY),
-    );
+    const needed = remaining > 20 ? (groundSpeed * groundSpeed) / (2 * remaining) : 8;
+    const deceleration = Math.max(AUTOBRAKE_DECELERATION, needed * 1.2);
+    // Full braking's own stopping distance, with a quarter of the friction
+    // kept in hand for the lift still on the wing and a wet runway.
+    const brakingStop = (groundSpeed * groundSpeed) / (2 * 0.75 * profile.brakingDeceleration);
     const spareRunway = end.length - pastThreshold - 40 - brakingStop;
     const brakeUrgency = clamp(1 - spareRunway / 150, 0, 1);
     if (allWheels || brakeUrgency > 0 || this.phaseTime > 5) {
-      this.brakeRamp = Math.min(1, this.brakeRamp + 0.8 * dt);
+      this.brakeRamp = Math.min(1, this.brakeRamp + AUTOBRAKE_RAMP * dt);
     }
     // On the mains alone, only as much as the runway insists on, and half at
     // most: the elevator cannot hold the nose against more.
@@ -1428,32 +1442,12 @@ export class Autoland {
         1,
       );
     }
-    // Steering shares the tyres with the brakes. This simulator's wheel brake
-    // is a damper along the tyre's rolling direction, nearly as stiff at full
-    // brake as the tyre's side force is across it, so a fully braked tyre is
-    // close to an isotropic damper: turning the nose then barely bends the
-    // track at all (the 747, whose brakes never reach the friction limit,
-    // slides off the crowned runway braked). Off the centreline, or heading
-    // away from it, the brakes give back enough to steer with.
-    // Fast, a metre costs the most stopping distance and the aerodynamic side
-    // force still steers, so more drift is tolerated before giving brake back;
-    // and none is given back once full braking is all that still stops it on
-    // the runway: `brakingStop` is the brakes' own stopping distance, the
-    // longer of a viscous brake's v/k and a friction-limited one's v^2/2(mu g).
-    const driftPrediction = Math.abs(rightOfCentre + 2 * lateralSpeed);
-    const driftAllowance = 0.75 + 4 * clamp((groundSpeed - 10) / 30, 0, 1);
-    const steeringShare = clamp(1 - 0.25 * Math.max(0, driftPrediction - driftAllowance), 0.3, 1);
-    // Off the side is no better than off the end (which at least has its
-    // safety area), so a real side excursion takes the brakes back anyway.
-    const brakeShare = driftPrediction > 5 ? steeringShare : Math.max(steeringShare, brakeUrgency);
+    // The tyres' friction circle (in the simulator) leaves steering grip under
+    // any brake, so the brakes no longer give way to the steering. Below
+    // walking pace, full brake: friction brakes stop it there in a moment.
     out.brake = groundSpeed < 3
       ? 1
-      : Math.min(brakeLimit, brakeShare, clamp(deceleration / 6 + this.brakeIntegral, 0.15, 1));
-    if (groundSpeed < 3) {
-      // Let the tyres' static grip hold it: neutral surfaces, brakes on.
-      out.yaw = 0;
-      out.roll = 0;
-    }
+      : Math.min(brakeLimit, clamp(deceleration / profile.brakingDeceleration + this.brakeIntegral, 0.15, 1));
     return out;
   }
 }
