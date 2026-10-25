@@ -370,6 +370,9 @@ interface PendingWorkerDetailChunkBuild extends PendingDetailChunkBuildBase {
   buildId: number;
   queuedResult: DetailWorkerPresentationResult | null;
   queuedError: Error | null;
+  /** Presentation clock at the post, and when the answer arrived (build latency). */
+  readonly postedMilliseconds: number;
+  answeredMilliseconds: number | null;
 }
 
 type PendingDetailChunkBuild =
@@ -485,6 +488,23 @@ export interface DetailPresentationRebuildDiagnostics {
   readonly workerBuildTimeouts: number;
   readonly workerGenerationTimeouts: number;
   readonly workerFallbacks: number;
+  /** A worker holds generation and presentation authority right now. */
+  readonly workerActive: boolean;
+  /** Workers replaced after a failure, without falling back to the main thread. */
+  readonly workerRespawns: number;
+  /** Heartbeats accepted from the build this runtime was waiting on. */
+  readonly workerPresentationHeartbeats: number;
+  /**
+   * The longest charged presentation silence a heartbeat, an accepted answer
+   * or an expiry ended: charged milliseconds (update gaps lifted off), and
+   * charged updates.
+   */
+  readonly workerMaxSilenceMilliseconds: number;
+  readonly workerMaxSilenceUpdates: number;
+  /** The longest a worker build took from its post to an answer that was then accepted. */
+  readonly workerBuildMaxLatencyMilliseconds: number;
+  /** Times worker presentation demand went `DETAIL_WORKER_CONVERGENCE_MILLISECONDS` without an accepted answer. */
+  readonly workerConvergenceStalls: number;
 }
 
 interface DesiredCell {
@@ -684,10 +704,36 @@ const DETAIL_LOOK_AHEAD_DISTANCE_METERS = 2_400;
  * margin that must exceed it (2026-09-13); re-exported here unchanged.
  */
 export { DETAIL_DENSITY_SHARE_REFRESH_EPSILON };
-/** Authority-level deadline; cancellation/reissue deliberately does not reset it. */
+/**
+ * The presentation watchdog times WORKER SILENCE: charged time with no
+ * heartbeat from the build it holds and no accepted answer. Cancellation and
+ * reissue deliberately do not reset it, so motion cannot keep a dead worker
+ * alive. It expires after this many charged updates AND at least
+ * `DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS` of charged time, or after
+ * `..._MAX_PENDING_MILLISECONDS` whatever the update count.
+ *
+ * Until 2026-10-25 the count alone expired it, from the first update with any
+ * worker demand, through main-thread publication streaming and every
+ * cancel/reissue: 240 updates are two seconds at 120 Hz, an ordinary
+ * fresh-region build ran longer than that, and expiry swapped the worker for
+ * main-thread generation for the rest of the session.
+ */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
-/** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
+/** Low-frame-rate watchdog companion: expires on charged time alone. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS = 8_000;
+/**
+ * The least charged time either watchdog's update count may expire on, so the
+ * count means the same silence at 60, 120 or 240 Hz. A working build
+ * heartbeats every 100 ms, far inside it.
+ */
+export const DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS = 2_000;
+/**
+ * Worker presentation demand this long (update gaps lifted off) without an
+ * accepted answer is a convergence stall: a worker that heartbeats but whose
+ * builds are canceled and reissued forever. It is counted and reported, never
+ * failed over — the silence deadlines above still catch a stalled worker.
+ */
+export const DETAIL_WORKER_CONVERGENCE_MILLISECONDS = 30_000;
 /**
  * Retained-cell authority must answer an outstanding request inside the same
  * envelope. The update count applies once the worker has answered at least
@@ -879,17 +925,30 @@ export class WorldDetailRuntime {
   private presentationWorkerBuildTimeouts = 0;
   private presentationWorkerGenerationTimeouts = 0;
   private presentationWorkerFallbacks = 0;
+  private presentationWorkerRespawns = 0;
+  private presentationWorkerHeartbeats = 0;
+  private workerMaxSilenceMilliseconds = 0;
+  private workerMaxSilenceUpdates = 0;
+  private workerBuildMaxLatencyMilliseconds = 0;
+  private workerConvergenceStalls = 0;
   /**
    * Worker-authority progress epochs. Request cancellation/reissue never
-   * changes them; only accepted useful output (or no remaining demand) does.
+   * changes them; only worker progress (a heartbeat for the build this
+   * runtime holds, accepted useful output) or no remaining demand does. While
+   * the demand is the main thread's to serve, the presentation epoch moves
+   * forward with time so that span is not charged.
    */
   private workerPresentationProgressUpdate: number | null = null;
   private workerPresentationProgressMilliseconds: number | null = null;
   private workerGenerationProgressUpdate: number | null = null;
   private workerGenerationProgressMilliseconds: number | null = null;
+  /** Start of the current span of worker presentation demand with no accepted answer. */
+  private workerConvergenceMilliseconds: number | null = null;
   /** The generation worker has answered a request at least once (it is initialized). */
   private workerGenerationAnswered = false;
   private lastUpdateMilliseconds: number | null = null;
+  /** Clock time since the previous update, for pausing the presentation epoch. */
+  private lastUpdateDeltaMilliseconds = 0;
   private lastPublicationObserverDriftMeters = 0;
   private windTimeSeconds = 0;
   private updateSequence = 0;
@@ -1021,6 +1080,8 @@ export class WorldDetailRuntime {
     );
     this.resetWorkerPresentationProgress();
     this.resetWorkerGenerationProgress();
+    this.workerConvergenceMilliseconds = null;
+    this.lastUpdateMilliseconds = null;
     this.batchesDirty = true;
   }
 
@@ -1033,6 +1094,59 @@ export class WorldDetailRuntime {
   private resetWorkerPresentationProgress(): void {
     this.workerPresentationProgressUpdate = null;
     this.workerPresentationProgressMilliseconds = null;
+  }
+
+  /**
+   * Worker presentation demand this update that only the main thread can
+   * serve — a publication streaming, or an answer already queued — is not
+   * worker silence. A running clock holds still (its epoch moves forward by
+   * this update and this update's time); a stopped one stays stopped. The
+   * part of a long gap past the allowance was already lifted off by
+   * `excludeUpdateGapFromWorkerDeadlines`, so only the rest is added here.
+   */
+  private pauseWorkerPresentationProgress(): void {
+    if (
+      this.workerPresentationProgressUpdate === null
+      || this.workerPresentationProgressMilliseconds === null
+    ) return;
+    this.workerPresentationProgressUpdate += 1;
+    // Never past now: a heartbeat since the last update already moved it.
+    this.workerPresentationProgressMilliseconds = Math.min(
+      this.presentationNowMilliseconds(),
+      this.workerPresentationProgressMilliseconds + Math.min(
+        this.lastUpdateDeltaMilliseconds,
+        DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS,
+      ),
+    );
+  }
+
+  /** Records the charged silence that worker progress (or an expiry) is ending. */
+  private recordWorkerPresentationSilence(): void {
+    if (
+      this.workerPresentationProgressUpdate === null
+      || this.workerPresentationProgressMilliseconds === null
+    ) return;
+    this.workerMaxSilenceUpdates = Math.max(
+      this.workerMaxSilenceUpdates,
+      this.updateSequence - this.workerPresentationProgressUpdate,
+    );
+    this.workerMaxSilenceMilliseconds = Math.max(
+      this.workerMaxSilenceMilliseconds,
+      this.presentationNowMilliseconds() - this.workerPresentationProgressMilliseconds,
+    );
+  }
+
+  /**
+   * A heartbeat from the build this runtime holds: the worker is working, so
+   * the silence clock restarts now. Only the current build can get here —
+   * the client drops a canceled build's entry before posting its cancel.
+   */
+  private recordWorkerPresentationHeartbeat(build: PendingWorkerDetailChunkBuild): void {
+    if (this.disposed || this.pendingPresentationBuild !== build) return;
+    this.presentationWorkerHeartbeats = addDiagnosticCount(this.presentationWorkerHeartbeats);
+    this.recordWorkerPresentationSilence();
+    this.workerPresentationProgressUpdate = this.updateSequence;
+    this.workerPresentationProgressMilliseconds = this.presentationNowMilliseconds();
   }
 
   private beginWorkerGenerationProgress(): void {
@@ -1052,13 +1166,14 @@ export class WorldDetailRuntime {
     this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
   }
 
-  /** Lifts a gap between updates, past the allowance, off both worker deadlines. */
+  /** Lifts a gap between updates, past the allowance, off every worker deadline. */
   private excludeUpdateGapFromWorkerDeadlines(): void {
     // Inline, there is no worker to time (and no clock read to spend).
     if (this.client === null) return;
     const now = this.presentationNowMilliseconds();
     const previous = this.lastUpdateMilliseconds;
     this.lastUpdateMilliseconds = now;
+    this.lastUpdateDeltaMilliseconds = previous === null ? 0 : Math.max(0, now - previous);
     if (previous === null) return;
     const excess = now - previous - DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS;
     if (!(excess > 0)) return;
@@ -1068,6 +1183,9 @@ export class WorldDetailRuntime {
     if (this.workerPresentationProgressMilliseconds !== null) {
       this.workerPresentationProgressMilliseconds += excess;
     }
+    if (this.workerConvergenceMilliseconds !== null) {
+      this.workerConvergenceMilliseconds += excess;
+    }
   }
 
   private resetWorkerGenerationProgress(): void {
@@ -1076,38 +1194,43 @@ export class WorldDetailRuntime {
   }
 
   private workerPresentationProgressExpired(): boolean {
-    return this.workerPresentationProgressUpdate !== null
-      && this.workerPresentationProgressMilliseconds !== null
-      && (
-        this.updateSequence - this.workerPresentationProgressUpdate
-          >= DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES
-        || Math.max(
-          0,
-          this.presentationNowMilliseconds() - this.workerPresentationProgressMilliseconds,
-        ) >= DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS
-      );
+    if (
+      this.workerPresentationProgressUpdate === null
+      || this.workerPresentationProgressMilliseconds === null
+    ) return false;
+    const chargedMilliseconds = Math.max(
+      0,
+      this.presentationNowMilliseconds() - this.workerPresentationProgressMilliseconds,
+    );
+    return (
+      this.updateSequence - this.workerPresentationProgressUpdate
+        >= DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES
+      && chargedMilliseconds >= DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS
+    ) || chargedMilliseconds >= DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS;
   }
 
   private workerGenerationProgressExpired(): boolean {
-    return this.workerGenerationProgressUpdate !== null
-      && this.workerGenerationProgressMilliseconds !== null
-      && (
-        (
-          this.workerGenerationAnswered
-          && this.updateSequence - this.workerGenerationProgressUpdate
-            >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
-        )
-        || Math.max(
-          0,
-          this.presentationNowMilliseconds() - this.workerGenerationProgressMilliseconds,
-        ) >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS
-      );
+    if (
+      this.workerGenerationProgressUpdate === null
+      || this.workerGenerationProgressMilliseconds === null
+    ) return false;
+    const chargedMilliseconds = Math.max(
+      0,
+      this.presentationNowMilliseconds() - this.workerGenerationProgressMilliseconds,
+    );
+    return (
+      this.workerGenerationAnswered
+      && this.updateSequence - this.workerGenerationProgressUpdate
+        >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
+      && chargedMilliseconds >= DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS
+    ) || chargedMilliseconds >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS;
   }
 
   private failClosedWorkerAuthorityTimeout(
     authority: "presentation" | "generation",
   ): void {
     if (authority === "presentation") {
+      this.recordWorkerPresentationSilence();
       if (this.pendingPresentationBuild?.source === "worker") {
         this.client?.cancelPresentation(this.pendingPresentationBuild.buildId);
       }
@@ -1466,6 +1589,13 @@ export class WorldDetailRuntime {
       workerBuildTimeouts: this.presentationWorkerBuildTimeouts,
       workerGenerationTimeouts: this.presentationWorkerGenerationTimeouts,
       workerFallbacks: this.presentationWorkerFallbacks,
+      workerActive: this.client !== null,
+      workerRespawns: this.presentationWorkerRespawns,
+      workerPresentationHeartbeats: this.presentationWorkerHeartbeats,
+      workerMaxSilenceMilliseconds: this.workerMaxSilenceMilliseconds,
+      workerMaxSilenceUpdates: this.workerMaxSilenceUpdates,
+      workerBuildMaxLatencyMilliseconds: this.workerBuildMaxLatencyMilliseconds,
+      workerConvergenceStalls: this.workerConvergenceStalls,
     };
   }
 
@@ -2292,17 +2422,10 @@ export class WorldDetailRuntime {
         && this.presentationChunks.get(target.coordinates.key)?.signature !== target.signature
       ));
     if (workerPresentationDemand) {
-      this.beginWorkerPresentationProgress();
-      const queuedWorkerCompletion = this.pendingPresentationBuild?.source === "worker"
-        && (
-          this.pendingPresentationBuild.queuedResult !== null
-          || this.pendingPresentationBuild.queuedError !== null
-        );
-      if (!queuedWorkerCompletion && this.workerPresentationProgressExpired()) {
-        this.failClosedWorkerAuthorityTimeout("presentation");
-      }
+      this.chargeWorkerPresentationDemand();
     } else {
       this.resetWorkerPresentationProgress();
+      this.workerConvergenceMilliseconds = null;
     }
 
     // A staged build is a snapshot. Structural representation changes cancel
@@ -2403,7 +2526,15 @@ export class WorldDetailRuntime {
             // The worker produced accepted useful output; the publication
             // streaming that follows is main-thread work and must not be
             // chargeable to the worker authority watchdog.
+            this.recordWorkerPresentationSilence();
             this.resetWorkerPresentationProgress();
+            this.workerConvergenceMilliseconds = null;
+            if (completedBuild.answeredMilliseconds !== null) {
+              this.workerBuildMaxLatencyMilliseconds = Math.max(
+                this.workerBuildMaxLatencyMilliseconds,
+                completedBuild.answeredMilliseconds - completedBuild.postedMilliseconds,
+              );
+            }
           }
           this.createPendingPublication(completedBuild, completed);
           this.pendingPresentationBuild = null;
@@ -2464,6 +2595,35 @@ export class WorldDetailRuntime {
       || this.pendingPublication !== null;
   }
 
+  /**
+   * This update has worker presentation demand. The silence clock is charged
+   * only while the worker is what the demand waits on: a posted build with no
+   * answer queued, or a build that could be posted now (none pending, none
+   * publishing). A publication streaming, an inline build or a queued answer
+   * is the main thread's to finish, so the clock holds still through it.
+   */
+  private chargeWorkerPresentationDemand(): void {
+    const build = this.pendingPresentationBuild;
+    const charged = build === null
+      ? this.pendingPublication === null
+      : build.source === "worker" && build.queuedResult === null && build.queuedError === null;
+    const now = this.presentationNowMilliseconds();
+    if (this.workerConvergenceMilliseconds === null) {
+      this.workerConvergenceMilliseconds = now;
+    } else if (now - this.workerConvergenceMilliseconds >= DETAIL_WORKER_CONVERGENCE_MILLISECONDS) {
+      this.workerConvergenceStalls = addDiagnosticCount(this.workerConvergenceStalls);
+      this.workerConvergenceMilliseconds = now;
+    }
+    if (!charged) {
+      this.pauseWorkerPresentationProgress();
+      return;
+    }
+    this.beginWorkerPresentationProgress();
+    if (this.workerPresentationProgressExpired()) {
+      this.failClosedWorkerAuthorityTimeout("presentation");
+    }
+  }
+
   private createPendingPresentationBuild(
     target: DetailChunkBuildTarget,
     floatingOrigin: DetailFloatingOrigin,
@@ -2511,6 +2671,8 @@ export class WorldDetailRuntime {
         buildId: -1,
         queuedResult: null,
         queuedError: null,
+        postedMilliseconds: this.presentationNowMilliseconds(),
+        answeredMilliseconds: null,
       };
       const buildId = client.requestPresentation(
         {
@@ -2533,6 +2695,7 @@ export class WorldDetailRuntime {
             return;
           }
           build.queuedResult = result;
+          build.answeredMilliseconds = this.presentationNowMilliseconds();
           this.presentationWorkerResultsQueued = addDiagnosticCount(
             this.presentationWorkerResultsQueued,
           );
@@ -2542,6 +2705,7 @@ export class WorldDetailRuntime {
           build.queuedError = error;
           this.batchesDirty = true;
         },
+        () => this.recordWorkerPresentationHeartbeat(build),
       );
       if (buildId < 0) {
         this.presentationWorkerBuildRejections = addDiagnosticCount(

@@ -652,7 +652,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
-    const runtime = createRuntime(scene, world, { bridge });
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -673,11 +674,13 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       expect(runtime.presentationRebuildDiagnostics.activeBuildSource).toBe("worker");
       bridge.heldPresentationEvents.length = 0;
 
+      // 100 Hz: the update count expires together with its two-second floor.
       for (let update = 0; update < DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES; update += 1) {
         const movingObserver = {
           ...observer,
           x: observer.x + (update % 2 === 0 ? -64 : 64),
         };
+        now += 10;
         runtime.update(movingObserver, ORIGIN, quality);
         bridge.flush();
         if (internals(runtime).client === null) break;
@@ -715,7 +718,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
-    const runtime = createRuntime(scene, world, { bridge });
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -746,12 +750,14 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       ))).toBe(true);
 
       // The deadline runs from the first update that finds the request
-      // outstanding: the one after the update that filed it.
+      // outstanding: the one after the update that filed it. At 100 Hz the
+      // update count expires together with its two-second floor.
       for (
         let update = 0;
         update <= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES;
         update += 1
       ) {
+        now += 10;
         runtime.update(observer, ORIGIN, quality);
         bridge.flush();
         if (internals(runtime).client === null) break;
