@@ -5,6 +5,7 @@ import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
+import type { Observer } from "@babylonjs/core/Misc/observable";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
@@ -33,12 +34,23 @@ import {
 const DEFAULT_ACTIVE_RADIUS_METERS = 2_000;
 const MAX_ACTIVE_ANIMALS = 512;
 const TAU = Math.PI * 2;
+/**
+ * Rendered frames a batch may wait for its effects before its prime is
+ * dropped anyway. A ready batch ends its prime on the second frame
+ * (`advancePrime`); this only stops an effect that never becomes ready from
+ * drawing the prime for ever.
+ */
+export const WILDLIFE_PRIME_FRAME_LIMIT = 60;
 
 interface WildlifeBatch {
   readonly mesh: Mesh;
   readonly matrices: number[];
   readonly castsShadows: boolean;
   readonly matrixData: Float32Array;
+  /** Drawing one zero-matrix instance until its pipelines exist (`advancePrime`). */
+  priming: boolean;
+  /** Every pass that draws the prime was ready when the last frame ended. */
+  primeReady: boolean;
 }
 
 type WildlifeSurfaceKind = "feather" | "fur" | "keratin";
@@ -116,6 +128,8 @@ export class WildlifeSystem {
   private populationRebuilds = 0;
   private statisticsValue = ZERO_STATISTICS;
   private disposed = false;
+  private primeObserver: Observer<Scene> | null = null;
+  private primeFramesLeft = WILDLIFE_PRIME_FRAME_LIMIT;
 
   private readonly bodyRotation = new Quaternion();
   private readonly localRotation = new Quaternion();
@@ -150,6 +164,7 @@ export class WildlifeSystem {
       throw new RangeError("Wildlife active radius must be between one cell and 12000 metres");
     }
     this.createBatches();
+    this.primeObserver = scene.onAfterRenderObservable.add(() => this.advancePrime());
   }
 
   get statistics(): WildlifeStatistics {
@@ -238,6 +253,11 @@ export class WildlifeSystem {
    * and drives the birds' wander. Mid-flight this would teleport every animal
    * back to its spawn point, which is why the perf harness, at its time pin,
    * is the only caller (`tests/render.wildlife-capture-pin.test.ts`).
+   *
+   * A pipeline prime still pending is history too: a batch that has had
+   * animals has ended its prime and one that has not is still drawing it
+   * (`advancePrime`). Rendered frames end it long before any pin, so this
+   * only ends one that frames never reached.
    */
   respawnForCapture(): void {
     if (this.disposed) return;
@@ -245,9 +265,16 @@ export class WildlifeSystem {
     this.populationSignature = "";
     this.clock.reset();
     this.simulation.restartStepCountForCapture();
+    for (const batch of this.batches.values()) {
+      if (batch.priming) this.endPrime(batch);
+    }
   }
 
-  /** Supplies only enabled, populated thin-instance sources to a CSM/shadow generator. */
+  /**
+   * Supplies only enabled, populated thin-instance sources to a CSM/shadow
+   * generator. A priming batch counts as populated: the shadow-depth pipeline
+   * is built on its first draw too, and a zero matrix writes no depth.
+   */
   addShadowCasters(add: (mesh: Mesh) => void): void {
     if (this.disposed) return;
     for (const batch of this.batches.values()) {
@@ -271,6 +298,8 @@ export class WildlifeSystem {
     if (this.disposed) return;
     this.disposed = true;
     this.agents = [];
+    this.scene.onAfterRenderObservable.remove(this.primeObserver);
+    this.primeObserver = null;
     for (const batch of this.batches.values()) batch.mesh.dispose(false, false);
     this.batches.clear();
     for (const material of this.materials) material.dispose(false, false);
@@ -355,6 +384,10 @@ export class WildlifeSystem {
     }
     for (const batch of this.batches.values()) {
       const count = batch.matrices.length / 16;
+      // A priming batch with no animals keeps its zero-matrix instance until
+      // the prime has drawn; the first real instances end the prime instead.
+      if (count === 0 && batch.priming) continue;
+      batch.priming = false;
       batch.matrixData.set(batch.matrices, 0);
       batch.mesh.thinInstanceCount = count;
       if (count === 0) {
@@ -370,6 +403,59 @@ export class WildlifeSystem {
         ._thinInstanceDataStorage.worldMatrices = null;
       batch.mesh.thinInstanceRefreshBoundingInfo(true);
     }
+  }
+
+  /**
+   * Ends each batch's prime once its pipelines exist. Runs after every render
+   * while any batch is priming.
+   *
+   * THE HITCH. `scene.whenReadyAsync` compiles a material's effect, but WebGPU
+   * builds the render pipeline on the first draw, and an empty batch is never
+   * drawn. So the first animal to need a batch built its pipelines mid-flight:
+   * the keratin antlers and tusks, which only near ground animals draw, cost
+   * 35-87 ms on Metal once per session. And an empty batch at startup also
+   * compiled the wrong effect, since the thin-instance variant is chosen by
+   * `thinInstanceCount > 0`.
+   *
+   * THE PRIME. Every batch starts with one instance of its zero-filled matrix
+   * buffer, which rasterises nothing. Startup then compiles the thin-instance
+   * effect, and the first frames after it draw the prime, building the
+   * pipelines behind the load screen. The shadow-depth effect is only created
+   * during a render, once the batch is in the shadow map's render list, and
+   * Babylon skips a mesh whose effect is not ready yet, which an asynchronous
+   * compile can leave it for a frame or more. So a batch stays primed until
+   * the end of a frame finds every pass that draws it ready (`isReady(true)`,
+   * which also asks each shadow generator holding it), and then for one more
+   * frame, which therefore draws it in all of them. That is two frames when
+   * the effects compile at once (tests/gpu/wildlife-material-compile.test.ts).
+   */
+  private advancePrime(): void {
+    this.primeFramesLeft -= 1;
+    let priming = false;
+    for (const batch of this.batches.values()) {
+      if (!batch.priming) continue;
+      if (batch.primeReady || this.primeFramesLeft <= 0) {
+        this.endPrime(batch);
+        continue;
+      }
+      // The main pass's effect is stored per render pass, so check the
+      // camera's, as `Scene.isReady` does.
+      const engine = this.scene.getEngine();
+      const renderPassId = engine.currentRenderPassId;
+      engine.currentRenderPassId = this.scene.activeCamera?.renderPassId ?? renderPassId;
+      batch.primeReady = batch.mesh.isReady(true);
+      engine.currentRenderPassId = renderPassId;
+      priming = true;
+    }
+    if (priming) return;
+    this.scene.onAfterRenderObservable.remove(this.primeObserver);
+    this.primeObserver = null;
+  }
+
+  private endPrime(batch: WildlifeBatch): void {
+    batch.priming = false;
+    batch.mesh.thinInstanceCount = 0;
+    batch.mesh.setEnabled(false);
   }
 
   private renderBird(
@@ -569,7 +655,8 @@ export class WildlifeSystem {
       if (agent.lod === "near") nearAiAgents += 1;
     }
     for (const batch of this.batches.values()) {
-      if (!batch.mesh.isEnabled()) continue;
+      // A prime instance is not an animal.
+      if (!batch.mesh.isEnabled() || batch.priming) continue;
       renderedThinInstances += batch.mesh.thinInstanceCount;
       activeBatches += 1;
     }
@@ -762,13 +849,16 @@ export class WildlifeSystem {
     const matrixCapacity = MAX_ACTIVE_ANIMALS * 4;
     const matrixData = new Float32Array(matrixCapacity * 16);
     mesh.thinInstanceSetBuffer("matrix", matrixData, 16, false);
-    mesh.thinInstanceCount = 0;
-    mesh.setEnabled(false);
+    // The prime: one instance of the still zero-filled buffer (`advancePrime`).
+    mesh.thinInstanceCount = 1;
+    mesh.setEnabled(true);
     this.batches.set(key, {
       mesh,
       matrices: [],
       castsShadows,
       matrixData,
+      priming: true,
+      primeReady: false,
     });
   }
 }

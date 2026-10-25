@@ -1,9 +1,11 @@
+import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   FixedStepClock,
@@ -25,6 +27,7 @@ import {
   WILDLIFE_SILHOUETTE_CONTRACT,
   createWildlifePrototypeGeometry,
 } from "../src/render/webgpu/wildlife/appearance";
+import { WILDLIFE_PRIME_FRAME_LIMIT } from "../src/render/webgpu/wildlife/WildlifeSystem";
 import { TerrainBiome } from "../src/world";
 
 const forestTerrain: WildlifeTerrainSampler = (x, z) => ({
@@ -47,6 +50,17 @@ function generatedNeighborhood(seed: string): GeneratedWildlifeCell[] {
     }
   }
   return cells;
+}
+
+function wildlifeMeshes(scene: Scene): Mesh[] {
+  return scene.meshes.filter((mesh) => mesh.metadata?.wildlife === true) as Mesh[];
+}
+
+/** The frames after startup, which end every empty batch's D1 prime. */
+async function renderPastPrime(scene: Scene): Promise<void> {
+  await scene.whenReadyAsync();
+  scene.render();
+  scene.render();
 }
 
 function geometryBounds(positions: readonly number[]) {
@@ -301,7 +315,8 @@ describe("Babylon wildlife presentation", () => {
       expect(prototype.metadata?.castsShadow).toBe(true);
       expect(prototype.getTotalVertices()).toBeGreaterThan(8);
       expect(prototype.getTotalIndices()).toBeGreaterThan(12);
-      expect(prototype.thinInstanceCount).toBe(0);
+      // D1: one zero-matrix prime instance until the first frames draw it.
+      expect(prototype.thinInstanceCount).toBe(1);
     }
     const geometryBytes = prototypes.reduce(
       (sum, mesh) => sum + Number(mesh.metadata?.wildlifePrototypeGeometryBytes ?? 0),
@@ -333,16 +348,18 @@ describe("Babylon wildlife presentation", () => {
     engine.dispose();
   });
 
-  it("honors the profile budget, exposes shadow batches, rebases, and disposes", () => {
+  it("honors the profile budget, exposes shadow batches, rebases, and disposes", async () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     scene.useRightHandedSystem = true;
+    new FreeCamera("wildlife-budget-camera", new Vector3(0, 180, 0), scene);
     const system = new WildlifeSystem(scene, {
       worldSeed: "null-engine-wildlife",
       terrainSample: forestTerrain,
       cellSizeMeters: 500,
       activeRadiusMeters: 1_000,
     });
+    await renderPastPrime(scene);
     const profile = {
       ...resolveWebGpuQualityProfile("medium", "balanced"),
       activeAnimalBudget: 12,
@@ -408,5 +425,142 @@ describe("Babylon wildlife presentation", () => {
     expect(scene.meshes.some((mesh) => mesh.metadata?.wildlife === true)).toBe(false);
     scene.dispose();
     engine.dispose();
+  });
+});
+
+describe("wildlife pipeline prime (D1)", () => {
+  function primeRig(seed: string) {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    scene.useRightHandedSystem = true;
+    new FreeCamera("wildlife-prime-camera", new Vector3(0, 180, 0), scene);
+    const afterRenderObservers = scene.onAfterRenderObservable.observers.length;
+    const system = new WildlifeSystem(scene, {
+      worldSeed: seed,
+      terrainSample: forestTerrain,
+      cellSizeMeters: 500,
+      activeRadiusMeters: 1_000,
+    });
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const update = (budget: number) => system.update(
+      { x: 0, y: 180, z: 0 },
+      { x: 0, y: 0, z: 0 },
+      { ...profile, activeAnimalBudget: budget },
+      1 / 60,
+    );
+    const casters = () => {
+      const names: string[] = [];
+      system.addShadowCasters((mesh) => names.push(mesh.name));
+      return names.sort();
+    };
+    const dispose = () => {
+      system.dispose();
+      scene.dispose();
+      engine.dispose();
+    };
+    return { scene, system, update, casters, afterRenderObservers, dispose };
+  }
+
+  it("draws one zero-matrix instance per batch, in the shadow map too, until a ready frame has drawn it", async () => {
+    const { scene, system, update, casters, afterRenderObservers, dispose } = primeRig("prime-state");
+    const meshes = wildlifeMeshes(scene);
+    expect(meshes).toHaveLength(WILDLIFE_PROTOTYPE_KEYS.length);
+    for (const mesh of meshes) {
+      expect(mesh.isEnabled(), mesh.name).toBe(true);
+      expect(mesh.thinInstanceCount, mesh.name).toBe(1);
+      expect([...mesh.thinInstanceGetWorldMatrices()[0]!.asArray()], mesh.name)
+        .toEqual(new Array(16).fill(0));
+    }
+    // The shadow-depth pipeline is built on first draw as well.
+    expect(casters()).toEqual(meshes.map((mesh) => mesh.name).sort());
+
+    // FlightRenderer updates the wildlife BEFORE every render. An update with
+    // no animals must leave the prime alone, or it never reaches a draw.
+    update(0);
+    for (const mesh of meshes) {
+      expect(mesh.isEnabled(), mesh.name).toBe(true);
+      expect(mesh.thinInstanceCount, mesh.name).toBe(1);
+    }
+    // A prime instance is not an animal.
+    expect(system.statistics).toMatchObject({ renderedThinInstances: 0, activeBatches: 0 });
+
+    await scene.whenReadyAsync();
+    // The first frame finds every pass ready; the second has drawn it in all.
+    update(0);
+    scene.render();
+    expect(meshes.every((mesh) => mesh.isEnabled() && mesh.thinInstanceCount === 1)).toBe(true);
+    update(0);
+    scene.render();
+    for (const mesh of meshes) {
+      expect(mesh.isEnabled(), mesh.name).toBe(false);
+      expect(mesh.thinInstanceCount, mesh.name).toBe(0);
+    }
+    expect(casters()).toEqual([]);
+    // Babylon unregisters an observer on the next task.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(scene.onAfterRenderObservable.observers).toHaveLength(afterRenderObservers);
+    // And it never comes back.
+    update(0);
+    scene.render();
+    expect(meshes.some((mesh) => mesh.isEnabled())).toBe(false);
+    dispose();
+  });
+
+  it("keeps a batch primed while an effect is not ready, up to the frame limit", async () => {
+    const { scene, dispose } = primeRig("prime-not-ready");
+    await scene.whenReadyAsync();
+    const [late, ...others] = wildlifeMeshes(scene);
+    vi.spyOn(late!, "isReady").mockReturnValue(false);
+    scene.render();
+    scene.render();
+    expect(others.some((mesh) => mesh.isEnabled())).toBe(false);
+    for (let frame = 2; frame < WILDLIFE_PRIME_FRAME_LIMIT; frame += 1) {
+      expect(late!.isEnabled(), `frame ${frame}`).toBe(true);
+      expect(late!.thinInstanceCount, `frame ${frame}`).toBe(1);
+      scene.render();
+    }
+    expect(late!.isEnabled()).toBe(false);
+    expect(late!.thinInstanceCount).toBe(0);
+    dispose();
+  });
+
+  it("ends a batch's prime as soon as it has animals, and never re-primes it", () => {
+    const { scene, system, update, dispose } = primeRig("prime-animals");
+    update(12);
+    const meshes = wildlifeMeshes(scene);
+    const populated = meshes.filter(
+      (mesh) => mesh.thinInstanceCount > 0
+        && mesh.thinInstanceGetWorldMatrices().some((matrix) => matrix.asArray().some((value) => value !== 0)),
+    );
+    const primed = meshes.filter((mesh) => !populated.includes(mesh));
+    expect(populated.length).toBeGreaterThan(0);
+    expect(primed.length).toBeGreaterThan(0);
+    for (const mesh of primed) {
+      expect(mesh.isEnabled(), mesh.name).toBe(true);
+      expect(mesh.thinInstanceCount, mesh.name).toBe(1);
+    }
+    // The statistics count the animals' instances only.
+    expect(system.statistics.renderedThinInstances).toBe(
+      populated.reduce((sum, mesh) => sum + mesh.thinInstanceCount, 0),
+    );
+    expect(system.statistics.activeBatches).toBe(populated.length);
+
+    // Emptied before any frame has rendered: dark at once, not primed again.
+    update(0);
+    for (const mesh of populated) {
+      expect(mesh.isEnabled(), mesh.name).toBe(false);
+      expect(mesh.thinInstanceCount, mesh.name).toBe(0);
+    }
+    for (const mesh of primed) expect(mesh.thinInstanceCount, mesh.name).toBe(1);
+    dispose();
+  });
+
+  it("stops listening for frames on dispose, mid-prime", async () => {
+    const { scene, system, afterRenderObservers, dispose } = primeRig("prime-dispose");
+    expect(scene.onAfterRenderObservable.observers).toHaveLength(afterRenderObservers + 1);
+    system.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(scene.onAfterRenderObservable.observers).toHaveLength(afterRenderObservers);
+    dispose();
   });
 });
