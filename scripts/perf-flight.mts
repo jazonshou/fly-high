@@ -81,6 +81,10 @@ import type {
   FlightRequest,
   PerfAgent,
 } from "../tests/perf/ab/protocol.ts";
+import type { WeatherPreset } from "../src/game/types.ts";
+
+/** The game's weathers, to turn a typo away before both arms are built (each agent checks its own). */
+const WEATHERS: Readonly<Record<WeatherPreset, true>> = { clear: true, breezy: true, cloudy: true };
 
 const USAGE = `usage: npm run perf:flight -- [options]
 
@@ -408,6 +412,10 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  if (!Object.hasOwn(WEATHERS, values.weather)) {
+    console.error(`perf-flight: --weather takes ${Object.keys(WEATHERS).join(", ")} (got ${values.weather})`);
+    return 2;
+  }
   const startValues = values.start?.split(",").map(Number) ?? null;
   if (startValues && !(startValues.length >= 2 && startValues.length <= 3 && startValues.every(Number.isFinite))) {
     console.error(`perf-flight: --start takes x,z or x,z,yaw (got ${values.start})`);
@@ -456,7 +464,15 @@ async function main(): Promise<number> {
     head: `${values.head ?? "working tree"} (${headSha.slice(0, 10)}${dirty ? " + uncommitted" : ""})`,
   };
   const shas: Record<ArmName, string> = { base: baseSha, head: headSha };
-  const underTestSha = values["under-test"] ? git(root, "rev-parse", "--verify", `${values["under-test"]}^{commit}`) : headSha;
+  let underTestSha = headSha;
+  if (values["under-test"]) {
+    try {
+      underTestSha = git(root, "rev-parse", "--verify", `${values["under-test"]}^{commit}`);
+    } catch {
+      console.error(`perf-flight: --under-test ${values["under-test"]} is not a commit`);
+      return 2;
+    }
+  }
   if (underTestSha !== baseSha && underTestSha !== headSha) {
     console.error(`perf-flight: --under-test ${values["under-test"]} is neither arm's commit`);
     return 2;
