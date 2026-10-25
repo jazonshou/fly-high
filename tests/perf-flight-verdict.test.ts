@@ -3,6 +3,8 @@ import {
   faultOutcome,
   flightVerdict,
   heapKiBPerFrame,
+  parseFrameRange,
+  parseHitch,
   parseLegFrame,
   percentiles,
   renderVerdictMarkdown,
@@ -10,6 +12,7 @@ import {
   type FlightRunReport,
 } from "../scripts/perfFlightVerdict.mts";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./perf/ab/detailWatchdog";
+import { hitchFrameDeltaSeconds } from "./perf/ab/flightHitch";
 import type {
   DetailWatchdogReport,
   DetailWorkerFault,
@@ -510,5 +513,30 @@ describe("perf-flight arguments", () => {
         /--kill-detail-worker takes <leg>:<frame>, leg 1-4 and frame 0-599/,
       );
     }
+  });
+});
+
+describe("perf-flight hitches", () => {
+  it("takes <ms>@<leg>:<frame>", () => {
+    expect(parseHitch("--emulate-hitch", "150@1:300", 2, 600)).toEqual({ milliseconds: 150, leg: 1, frame: 300 });
+    expect(parseHitch("--emulate-hitch", "12.5@2:0", 2, 600)).toEqual({ milliseconds: 12.5, leg: 2, frame: 0 });
+    for (const bad of ["150", "@1:300", "0@1:300", "-5@1:300", "1e3@1:300", "x@1:300", "150@1"]) {
+      expect(() => parseHitch("--emulate-hitch", bad, 2, 600), bad).toThrow(/--emulate-hitch takes/);
+    }
+    expect(() => parseHitch("--emulate-hitch", "150@3:300", 2, 600)).toThrow(/leg 1-2 and frame 0-599/);
+  });
+
+  it("takes <from>-<to> within a leg", () => {
+    expect(parseFrameRange("--frame-dump", "296-306", 600)).toEqual({ from: 296, to: 306 });
+    expect(parseFrameRange("--frame-dump", "7-7", 600)).toEqual({ from: 7, to: 7 });
+    for (const bad of ["306-296", "296", "296-600", "-1-3", "1-2-3", "a-b", "296-"]) {
+      expect(() => parseFrameRange("--frame-dump", bad, 600), bad).toThrow(/--frame-dump takes <from>-<to>, frames 0-599/);
+    }
+  });
+
+  it("hands render() FlightGame's delta after a hitch", () => {
+    expect(hitchFrameDeltaSeconds(150)).toBe(0.1);
+    expect(hitchFrameDeltaSeconds(50)).toBe(0.05);
+    expect(hitchFrameDeltaSeconds(1)).toBe(1 / 240);
   });
 });

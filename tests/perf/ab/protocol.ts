@@ -196,6 +196,19 @@ export interface FlightRequest {
   readonly killDetailWorkerAtFrame?: number | null;
   /** Terminate the detail worker before this frame with no event: a silent worker, which only the watchdog can catch. */
   readonly hangDetailWorkerAtFrame?: number | null;
+  /**
+   * This frame of the leg stands for a main thread blocked `milliseconds`
+   * while the simulation flew on: the path and simulation time advance by
+   * that much, and render()'s delta is FlightGame's clamp of it (0.1 s at
+   * most). Every other frame is 1/60 s, as without it.
+   */
+  readonly hitch?: { readonly frame: number; readonly milliseconds: number } | null;
+  /**
+   * Read these frames of the leg (indices, inclusive) back from the canvas
+   * right after rendering them, in the same task and with no extra render;
+   * they are encoded only after the leg. Needs the frame's draws.
+   */
+  readonly dumpFrames?: { readonly from: number; readonly to: number } | null;
 }
 
 export interface FlightFrame {
@@ -239,6 +252,8 @@ export interface FlightReport {
   readonly detailWatchdog?: DetailWatchdogReport | null;
   /** The worker failed on purpose in this leg (`killDetailWorkerAtFrame`, `hangDetailWorkerAtFrame`). */
   readonly detailWorkerFault?: DetailWorkerFault | null;
+  /** `dumpFrames`, as PNGs at the viewport's size. */
+  readonly dumpedFrames?: readonly { readonly frame: number; readonly pngBase64: string }[];
 }
 
 export interface DetailWorkerFault {

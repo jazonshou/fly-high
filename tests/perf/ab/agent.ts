@@ -74,6 +74,7 @@ import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "..
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
 import { resolveShotPlacement } from "../shotPlacement";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
+import { renderAfterHitch } from "./flightHitch";
 import {
   PERF_AB_PROTOCOL,
   type AgentCatalog,
@@ -580,10 +581,15 @@ async function ensureRenderer(
   });
 }
 
-/** One frame: the gate's frame boundary, then the renderer. */
-function renderFrame(state: FlightVisualState): void {
+/**
+ * One frame: the gate's frame boundary, then the renderer. After an emulated
+ * hitch of `hitchMilliseconds` (flight legs only), with the delta FlightGame
+ * would hand it (`flightHitch.ts`).
+ */
+function renderFrame(state: FlightVisualState, hitchMilliseconds: number | null = null): void {
   markGpuDrawGateFrame();
-  requireRenderer().render(state, 1 / 60);
+  if (hitchMilliseconds === null) requireRenderer().render(state, 1 / 60);
+  else renderAfterHitch(requireRenderer(), state, hitchMilliseconds);
   renderCalls += 1;
 }
 
@@ -1010,15 +1016,21 @@ const agent: PerfAgent = {
     const frames: FlightFrame[] = [];
     const sampleWatchdog = beginDetailWatchdogWindow(active);
     let fault: DetailWorkerFault | null = null;
+    const dumped: { readonly frame: number; readonly copy: HTMLCanvasElement }[] = [];
     let heapMark = heapUsedBytes();
     for (let frame = 0; frame < request.frames; frame += 1) {
       if (frame === request.killDetailWorkerAtFrame) fault = failDetailWorker(active, "kill", frame);
       if (frame === request.hangDetailWorkerAtFrame) fault = failDetailWorker(active, "hang", frame);
-      simulationTime += 1 / 60;
-      path.yawDegrees += turnRateDegrees / 60;
+      // An emulated hitch's frame flies as many sixtieths of a second as the
+      // hitch lasted; on every other frame `steps` is exactly 1, so those
+      // frames are what they were before hitches existed, bit for bit.
+      const hitchMilliseconds = request.hitch?.frame === frame ? request.hitch.milliseconds : null;
+      const steps = hitchMilliseconds === null ? 1 : (hitchMilliseconds / 1_000) * 60;
+      simulationTime += hitchMilliseconds === null ? 1 / 60 : hitchMilliseconds / 1_000;
+      path.yawDegrees += (turnRateDegrees / 60) * steps;
       const heading = headingVectorFromYaw(path.yawDegrees);
-      path.x += (speed * heading.x) / 60;
-      path.z += (speed * heading.z) / 60;
+      path.x += ((speed * heading.x) / 60) * steps;
+      path.z += ((speed * heading.z) / 60) * steps;
       // Terrain following, as a pilot would: never closer than the clearance
       // to the ground under the aircraft or 3 s ahead, climbing at up to
       // 25 m/s and descending at up to 10 m/s toward it.
@@ -1029,7 +1041,7 @@ const agent: PerfAgent = {
         path.z + heading.z * speed * 3,
       );
       const target = Math.max(groundHere, groundAhead) + request.clearanceMeters;
-      path.altitude += Math.max(-10 / 60, Math.min(25 / 60, target - path.altitude));
+      path.altitude += Math.max((-10 / 60) * steps, Math.min((25 / 60) * steps, target - path.altitude));
       path.altitude = Math.max(path.altitude, groundHere + 30);
       const state: FlightVisualState = {
         ...shot.state,
@@ -1049,11 +1061,23 @@ const agent: PerfAgent = {
       const heapBefore = heapUsedBytes();
       const heapBetweenBytes = heapBefore - heapMark;
       const renderStarted = performance.now();
-      renderFrame(state);
+      renderFrame(state, hitchMilliseconds);
       const renderMs = performance.now() - renderStarted;
       const heapAfter = heapUsedBytes();
-      // Outside both timed windows and both heap windows.
+      // Outside both timed windows and both heap windows, as is the dump.
       sampleWatchdog?.();
+      if (request.dumpFrames && frame >= request.dumpFrames.from && frame <= request.dumpFrames.to) {
+        // As capture() reads a frame back, but this frame's own render, not
+        // a second one: in the same task, before the compositor takes it.
+        const raster = capability("getCaptureRenderSize")();
+        const copy = document.createElement("canvas");
+        copy.width = shot.viewportWidth;
+        copy.height = shot.viewportHeight;
+        copy.getContext("2d")!.drawImage(
+          canvas!, 0, 0, raster.width, raster.height, 0, 0, shot.viewportWidth, shot.viewportHeight,
+        );
+        dumped.push({ frame, copy });
+      }
       // The tasks queued behind the frame (worker results, buffer maps,
       // timers) run here; a zero-delay timer is the last of them.
       const betweenStarted = performance.now();
@@ -1095,6 +1119,14 @@ const agent: PerfAgent = {
       detailWorker: detailWorkerState(active),
       detailWatchdog: detailWatchdogReport(active),
       detailWorkerFault: fault,
+      ...(request.dumpFrames
+        ? {
+          dumpedFrames: dumped.map(({ frame, copy }) => ({
+            frame,
+            pngBase64: copy.toDataURL("image/png").split(",", 2)[1]!,
+          })),
+        }
+        : {}),
     };
   },
 

@@ -40,7 +40,7 @@
  * tripped it.
  */
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -60,6 +60,8 @@ import {
 import {
   ARMS,
   flightVerdict,
+  parseFrameRange,
+  parseHitch,
   parseLegFrame,
   percentiles,
   renderVerdictMarkdown,
@@ -88,6 +90,7 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --legs <n>              legs per arm (default 6)
   --leg-frames <n>        frames per leg (default 240, 4 s of flight)
   --speed <m/s>           ground speed (default 120)
+  --burst-legs            alternate the legs between 250 and 60 m/s instead (ABBA keeps each leg's speed equal)
   --clearance <m>         height kept above the terrain (default 150)
   --bank <deg>            constant bank; 0 flies straight (default 0)
   --camera chase|cockpit  (default chase)
@@ -108,6 +111,13 @@ const USAGE = `usage: npm run perf:flight -- [options]
                           build a new renderer and hold still over the next land start (a spiral out
                           from the home airport that skips the sea), as in the stream to rest
   --trial-frames <n>      frames per settle trial (default 600)
+  --emulate-hitch <ms>@<leg>:<frame>
+                          that frame stands for a main thread blocked <ms> while the simulation flew on:
+                          path and simulation time advance by <ms>, render()'s delta is FlightGame's
+                          clamp of it (0.1 s at most); every other frame stays 1/60 s
+  --frame-dump <from>-<to>
+                          read those frames of the hitch's leg back as each renders (no extra render)
+                          and write them as PNGs under <out>/frames (needs --emulate-hitch, --draws)
   --gpu swiftshader|hardware
   --chromium <path>
   --profile               write a V8 CPU profile per arm per leg (perturbs the timings)
@@ -348,6 +358,7 @@ async function main(): Promise<number> {
       legs: { type: "string", default: "6" },
       "leg-frames": { type: "string", default: "240" },
       speed: { type: "string", default: "120" },
+      "burst-legs": { type: "boolean", default: false },
       clearance: { type: "string", default: "150" },
       bank: { type: "string", default: "0" },
       camera: { type: "string", default: "chase" },
@@ -364,6 +375,8 @@ async function main(): Promise<number> {
       "hang-detail-worker": { type: "string" },
       "settle-trials": { type: "string", default: "0" },
       "trial-frames": { type: "string", default: "600" },
+      "emulate-hitch": { type: "string" },
+      "frame-dump": { type: "string" },
       gpu: { type: "string" },
       chromium: { type: "string" },
       profile: { type: "boolean", default: false },
@@ -404,6 +417,8 @@ async function main(): Promise<number> {
     ? { x: startValues[0]!, z: startValues[1]!, yawDegrees: startValues[2] ?? 0 }
     : null;
   let faults: { readonly kill: LegFrame | null; readonly hang: LegFrame | null };
+  let hitch: (LegFrame & { readonly milliseconds: number }) | null;
+  let frameDump: { readonly from: number; readonly to: number } | null;
   try {
     const parse = (option: "kill-detail-worker" | "hang-detail-worker") => {
       const text = values[option];
@@ -412,6 +427,11 @@ async function main(): Promise<number> {
     faults = { kill: parse("kill-detail-worker"), hang: parse("hang-detail-worker") };
     // The verdict excuses one failure per arm; a second would read as a trip.
     if (faults.kill && faults.hang) throw new Error("perf-flight: --kill-detail-worker and --hang-detail-worker are separate runs");
+    hitch = values["emulate-hitch"] === undefined ? null : parseHitch("--emulate-hitch", values["emulate-hitch"], legs, legFrames);
+    frameDump = values["frame-dump"] === undefined ? null : parseFrameRange("--frame-dump", values["frame-dump"], legFrames);
+    if (frameDump && !hitch) throw new Error("perf-flight: --frame-dump reads the --emulate-hitch leg; give one");
+    // With its draws dropped (gpuDrawGate.ts) a frame's own image is never drawn.
+    if (frameDump && !values.draws) throw new Error("perf-flight: --frame-dump needs --draws");
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 2;
@@ -535,12 +555,24 @@ async function main(): Promise<number> {
             includeObjectsCollectedByMinorGC: true,
           });
         }
-        const report = await arms[arm].call("flight", {
+        const hitchLeg = hitch?.leg === leg + 1;
+        const { dumpedFrames, ...report } = await arms[arm].call("flight", {
           ...request,
           restart: leg === 0,
+          ...(values["burst-legs"] ? { speedMetersPerSecond: leg % 2 === 0 ? 250 : 60 } : {}),
           killDetailWorkerAtFrame: faults.kill?.leg === leg + 1 ? faults.kill.frame : null,
           hangDetailWorkerAtFrame: faults.hang?.leg === leg + 1 ? faults.hang.frame : null,
+          hitch: hitch && hitchLeg ? { frame: hitch.frame, milliseconds: hitch.milliseconds } : null,
+          dumpFrames: hitchLeg ? frameDump : null,
         });
+        if (dumpedFrames && dumpedFrames.length > 0) {
+          const directory = join(outDir, "frames");
+          mkdirSync(directory, { recursive: true });
+          for (const dumped of dumpedFrames) {
+            writeFileSync(join(directory, `${arm}-leg${leg + 1}-frame${dumped.frame}.png`), Buffer.from(dumped.pngBase64, "base64"));
+          }
+          log(`leg ${leg + 1} ${arm}: wrote ${dumpedFrames.length} frames to ${directory}`);
+        }
         if (values.profile) {
           const { profile } = await arms[arm].cdp.send("Profiler.stop");
           writeFileSync(join(outDir, `${arm}-leg${leg + 1}.cpuprofile`), JSON.stringify(profile));
@@ -603,6 +635,9 @@ async function main(): Promise<number> {
       ...(faults.kill ? { killDetailWorker: faults.kill } : {}),
       ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),
       ...(settleTrials > 0 ? { settleTrials, trialFrames } : {}),
+      ...(values["burst-legs"] ? { burstLegs: "250 and 60 m/s, alternating" } : {}),
+      ...(hitch ? { emulateHitch: hitch } : {}),
+      ...(frameDump ? { frameDump } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };

@@ -60,6 +60,32 @@ export function parseLegFrame(option: string, text: string, legs: number, legFra
   return { leg, frame };
 }
 
+/** `<ms>@<leg>:<frame>`, as `--emulate-hitch` takes it: a hitch of `ms` milliseconds on that frame. */
+export function parseHitch(
+  option: string,
+  text: string,
+  legs: number,
+  legFrames: number,
+): LegFrame & { readonly milliseconds: number } {
+  const at = text.indexOf("@");
+  const milliseconds = /^\d+(\.\d+)?$/.test(text.slice(0, at)) ? Number(text.slice(0, at)) : Number.NaN;
+  if (at < 0 || !(milliseconds > 0)) {
+    throw new Error(`perf-flight: ${option} takes <ms>@<leg>:<frame> with ms over 0 (got ${text})`);
+  }
+  return { milliseconds, ...parseLegFrame(option, text.slice(at + 1), legs, legFrames) };
+}
+
+/** `<from>-<to>`, as `--frame-dump` takes it: frame indices within a leg, inclusive. */
+export function parseFrameRange(option: string, text: string, legFrames: number): { readonly from: number; readonly to: number } {
+  const [fromText = "", toText = "", ...rest] = text.split("-");
+  const from = integerIn(fromText, 0, legFrames - 1);
+  const to = integerIn(toText, 0, legFrames - 1);
+  if (rest.length > 0 || from === null || to === null || to < from) {
+    throw new Error(`perf-flight: ${option} takes <from>-<to>, frames 0-${legFrames - 1}, from <= to (got ${text})`);
+  }
+  return { from, to };
+}
+
 export interface Percentiles {
   readonly p50: number;
   readonly p95: number;
