@@ -1437,7 +1437,8 @@ frame-graph pass's share of it, the time the main thread spends on whatever
 is queued behind the frame (worker results, buffer maps), the JS heap grown
 (`--enable-precise-memory-info`), pipelines and shader modules created, and
 each new Babylon effect with the defines that set it apart from the nearest
-one compiled before it. Tasks over 50 ms come from the Long Tasks API, and
+one compiled before it, at load included (an effect the engine hands back
+from its cache is not listed). Tasks over 50 ms come from the Long Tasks API, and
 each leg reports whether vegetation is still generated on its worker. The
 frame's own draws are dropped by default (`gpuDrawGate.ts`; `--draws` keeps
 them), so on SwiftShader a frame costs its CPU work and its compute. CPU
@@ -1477,11 +1478,13 @@ trainer, medium/balanced):
 
 **Still open** (smaller, and each its own change):
 
-- Two effects compile mid-flight, the remaining long tasks: the wildlife
-  keratin PBR (clearcoat; the first antler, tusk or beak in view) and a
-  vegetation PBR variant without `DETAIL_BAND_FADES`. Each is a one-time
-  pipeline compile of ~120 KiB of WGSL. Compiling them at load needs the
-  meshes in the state they will draw in (thin instances, shadow defines).
+- One effect compiles mid-flight: the wildlife keratin PBR (clearcoat; the
+  first antler, tusk or beak in view), a one-time compile of ~120 KiB of
+  WGSL. Compiling it at load needs the meshes in the state they will draw in
+  (thin instances, shadow defines). The vegetation PBR variant without
+  `DETAIL_BAND_FADES` listed here before is compiled at load: until
+  `f86a866` the probe's recorder, installed after the renderer loaded, took
+  the engine's cached copy for a compile.
 - 1.7 MB of garbage per frame: the terrain clipmap's node selection and
   buffer writes (~1 MB: per-node objects and string page keys) and the
   wildlife step (~0.5 MB: per-step arrays and vector clones). Young
@@ -1589,6 +1592,116 @@ rasterisers), kept. Many GPUs run explicit-gradient reads at a reduced
 rate, which an explicit level avoids and SwiftShader does not model. Not
 tried: fewer octaves or a distance fade on the grain, since both change the
 look Jason approved.
+
+## Spawned airports and the nearest-airport marker (2026-10-24)
+
+Once the aircraft is 14 km from every airport, a new one is placed 5 to 9 km
+away (`AIRPORT_SPAWN_POLICY`, `src/world/airportNetwork.ts`), up to eight in
+the world. None of the capture's shots spawns one, so no draw-call ceiling
+moves and no baseline is re-promoted (the windsock change below moves 17
+pixels of one shot). What a spawn costs, and where:
+
+- **The site search** runs on its own worker (`airportSpawn.worker.ts`): one
+  certified site assessment takes 60 to 310 ms, too long for the main thread
+  or the simulation worker. The main thread checks the trigger once a second
+  and installs a found airport with `withAirports`, a list copy.
+- **The marker** is a DOM overlay moved with a transform, so it draws
+  nothing. The render loop projects into scratch objects and writes the
+  element only when its half-pixel position, angle or label changed; the
+  readout is rebuilt four times a second.
+- **Terrain** carries a fixed set of eight airport slots in the page
+  generator, the runway painter and the splat bake, compiled at load, so a
+  spawn writes uniforms and never compiles a pipeline. Per fragment, each
+  airport after the first costs one `vec2` difference, a `dot` and a
+  compare; a one-airport world runs that loop zero times. Memory: the
+  earthworks buffer grows from 64 B to 528 B, the splat airport table adds
+  256 B and the painter's uniform arrays 256 B; no texture, no atlas growth.
+  `TerrainClipmapSystem.setAirports` (0.34 ms) only queues the change: a
+  per-frame scan of 64 atlas slots finds the resident pages the new
+  airport's grading reaches, and they are regenerated in place through the
+  existing compute meter, about one page a frame (about 1.9 ms GPU per
+  height page and 0.7 ms per channel pair, measured on the test host). A
+  spawn 15 km out rebuilt 9 of 41 resident height pages over 9 frames, none
+  at L0. An eroded world still grades its home field only.
+- **The airfield** (hangars, tower, windsock, fence, fuel farm, signs, lamps
+  and floods) is built on the home field's materials in steps under a 1 ms
+  budget per frame (about 120 to 150 frames a field). It creates no
+  material or texture, and every merged mesh draws with a shader variant the
+  home field already compiled: each group keeps the index width (16 or 32
+  bit) the home meshes of its material have, since Babylon keys a define on
+  it, and every windsock is scaled a hair off uniform along its length
+  (`WINDSOCK_LENGTH_SCALE`), since Babylon keys another on that.
+  `tests/render.webgpu-spawned-airfields.test.ts` compares each merged
+  mesh's defines with the home field's. Its meshes merge into 7 draws; lamps
+  ride the home light-point draw and floods take clustered lights reserved
+  at startup (13 + 18 of the batch's 32). Per tier
+  (`spawnedAirfields` in `QualityProfile.ts`):
+
+  | | Low | Medium | High / Ultra |
+  | --- | --- | --- | --- |
+  | Fields built | 0 | 1 | 2 |
+  | Build / cull distance | none | 6 / 4 km | 8 / 6 km |
+  | Shadow casting | no | no | yes (up to 12 shadow draws) |
+  | Fields with floods | 0 | 1 | 3 |
+
+  On low nothing is built, lit or reserved.
+- **Vegetation** keeps off a spawned field, and only the detail cells its
+  reach meets regenerate, on the worker, while the old cells keep drawing.
+
+**Measured.** With a spawned field in view on medium (scratch shots, not
+committed): draws 227 to 234 on a 1.2 km final and 210 to 217 from 1.5 km
+abeam, about 50 k more triangles and 2.0 MiB more inventoried GPU memory.
+
+Cloud A/B, the airport work and autoland (`09f4dac`) against main
+(`6d91220`), SwiftShader, 16 rounds, in five parts: every shot SAME, draw
+calls unchanged.
+
+| Shot | GPU time | Draw calls | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | -2.5% (-3.7..-1.3) | 248 → 248 | 0.85% differ (see below) |
+| cruise-horizon | -2.2% (-3.6..-0.1) | 201 → 201 | identical |
+| forest-500ft-sunbehind | -0.3% (-1.8..+1.0) | 249 → 249 | identical |
+| ground-2m-lowsun | -2.6% (-4.2..-1.4) | 122 → 122 | identical |
+| water-25ft | -2.0% (-3.3..-0.4) | 225 → 225 | identical |
+
+`approach-500ft` comes to rest with 36 or 37 resident terrain pages (both
+arms want 24), whichever commit renders it. The same commit (`e2ddbb6`) came
+to rest with 37 as one A/B's base and 36 as another's head. Counts-only A/Bs
+of each merged commit against its parent rendered identical frames on
+`ground-2m-lowsun` every time; on `approach-500ft` every pair differed by
+that flip alone, the same 0.85% of pixels, with every other count equal.
+
+**Stutter** (`npm run perf:flight -- --base origin/main`: six legs of 240
+frames at 120 m/s on medium, SwiftShader, the frame's draws dropped; the
+figures are the five legs after the first). For a spawn, a scratch change to
+the harness (not committed) installs a field 5 km ahead and 1.5 km aside as
+leg 2 begins, from the approach shot, so the home field drew first:
+
+| | main | `fc4e890`, no spawn | `f86a866`, a field spawned |
+| --- | --- | --- | --- |
+| render() ms p50 / p99 / max | 12.3 / 98.7 / 219.3 | 9.9 / 29.3 / 53.4 | 9.8 / 26.0 / 95.6 |
+| frames over 4x the median | 26 | 4 | 2 |
+| long tasks: count / total ms | 27 / 2,779 | 2 / 105 | 1 / 95 |
+| pipelines / shader modules created | 1 / 2 | 2 / 2 | 2 / 2 |
+
+Main's column is from the no-spawn run; the spawn run's own main arm read
+the same (24 long tasks, 2,325 ms). No head leg built vegetation inline. The
+spawn's leg peaked at 36.4 ms. The one long task came three legs later, over
+the home field, in `world-page-visibility`, where the no-spawn run has its
+own (53 ms) and an earlier spawn run had none. The spawn created no pipeline
+and no shader module: the head's counts are the no-spawn run's, and its one
+listed compile is the wildlife keratin PBR both arms make.
+
+Before `df1445e` and `bc9c41f` a spawn compiled one variant, 85 KiB of WGSL:
+a spawned sock streaming at another bore than the home sock's drew with a
+different `NONUNIFORMSCALING`. The home sock could do the same alone, on
+main, when the wind at its mast crossed 15 kt. Keeping every sock off
+uniform moves 17 pixels of `ground-2m-lowsun` by at most 20/255 (the home
+sock, at a distance; every other pixel and count identical in a counts-only
+A/B). A real spawn site found by the search (`c6d8aab`, flown from 4.5 km
+out with `--start 19740.8,-13155.1,-17.02`) read no long task and no frame
+over 4x the median after the spawn, render max 35.0 ms against main's
+211.4 ms.
 
 ## Capture harness
 
