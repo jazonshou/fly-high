@@ -265,25 +265,97 @@ export function packRunwayEarthworksUniform(
   seedHash: number,
 ): Float32Array {
   const packed = new Float32Array(RUNWAY_EARTHWORKS_UNIFORM_FLOATS);
-  if (!airport) return packed;
-  packed[0] = 1;
-  packed[1] = airport.centerX;
-  packed[2] = airport.centerZ;
-  packed[3] = airport.elevation;
-  packed[4] = Math.sin(airport.headingRadians);
-  packed[5] = Math.cos(airport.headingRadians);
-  packed[6] = runwayPlatformHalfLength(airport);
-  packed[7] = runwayPlatformHalfWidth(airport);
-  packed[8] = airport.terrainBlendDistance;
+  writeRunwayEarthworksUniform(packed, new Uint32Array(packed.buffer), 0, airport, seedHash);
+  return packed;
+}
+
+/**
+ * `packRunwayEarthworksUniform`'s sixteen lanes, written IN PLACE at float
+ * `offset` of a buffer seen through two views of the same bytes — every lane,
+ * the unused ones zeroed, so a slot that held another airport is fully
+ * overwritten.
+ */
+function writeRunwayEarthworksUniform(
+  floats: Float32Array,
+  words: Uint32Array,
+  offset: number,
+  airport: Readonly<AirportDefinition> | null,
+  seedHash: number,
+): void {
+  words.fill(0, offset, offset + RUNWAY_EARTHWORKS_UNIFORM_FLOATS);
+  if (!airport) return;
+  floats[offset] = 1;
+  floats[offset + 1] = airport.centerX;
+  floats[offset + 2] = airport.centerZ;
+  floats[offset + 3] = airport.elevation;
+  floats[offset + 4] = Math.sin(airport.headingRadians);
+  floats[offset + 5] = Math.cos(airport.headingRadians);
+  floats[offset + 6] = runwayPlatformHalfLength(airport);
+  floats[offset + 7] = runwayPlatformHalfWidth(airport);
+  floats[offset + 8] = airport.terrainBlendDistance;
   // The noise channel's already-mixed hash: valueNoise2D mixes channel 0 once
   // per evaluation, and both mixes are page constants.
   // Slot 12 is the struct's `seeds: vec4u`: the already-mixed hash reaches
   // the shader as a real u32, never through an f32 lane.
-  new Uint32Array(packed.buffer)[12] = mixSeed(
+  words[offset + 12] = mixSeed(
     mixSeed(seedHash, runwayEarthworksProfile.blendNoiseChannel),
     0,
   ) >>> 0;
-  return packed;
+}
+
+/**
+ * Airport slots the GPU terrain carries at once: every shader that grades,
+ * paints or classifies the ground compiles with arrays of exactly this many,
+ * so an airport spawning mid-flight writes uniforms and never recompiles.
+ *
+ * It is `AIRPORT_SPAWN_POLICY.maxAirports` (`src/world/airportNetwork.ts`),
+ * restated rather than imported because `src/world/terrain.ts` imports this
+ * module and the network imports the terrain, so the import would close a
+ * cycle and this constant would read `undefined` while the template strings
+ * below are built. `tests/render.webgpu-airport-terrain.test.ts` pins the two
+ * to each other.
+ */
+export const TERRAIN_AIRPORT_SLOTS = 8;
+
+/** Floats in `RunwayEarthworksSet`: a vec4u header, then one struct per slot. */
+export const RUNWAY_EARTHWORKS_SET_FLOATS = 4
+  + TERRAIN_AIRPORT_SLOTS * RUNWAY_EARTHWORKS_UNIFORM_FLOATS;
+
+/**
+ * Every airport's earthworks uniform, packed for `RunwayEarthworksSet`.
+ *
+ * Slot `n` holds `packRunwayEarthworksUniform(airports[n])` bit for bit, so a
+ * one-airport world uploads exactly the struct it always did, in slot 0, and
+ * the shader evaluates it with exactly the arithmetic it always did. The seed
+ * lane is written through a u32 view and never passes through an f32 copy,
+ * for the reason `packRunwayEarthworksUniform` gives. Past the slot count the
+ * list is truncated; the airport network never sends that many.
+ *
+ * `target`, when given, is rewritten in place — every lane, unused slots
+ * zeroed — so a caller that holds one array uploads the same bytes each time.
+ */
+export function packRunwayEarthworksSetUniform(
+  airports: readonly Readonly<AirportDefinition>[],
+  seedHash: number,
+  target: Float32Array = new Float32Array(RUNWAY_EARTHWORKS_SET_FLOATS),
+): Float32Array {
+  if (target.length !== RUNWAY_EARTHWORKS_SET_FLOATS) {
+    throw new RangeError("Runway earthworks set target has the wrong length");
+  }
+  const words = new Uint32Array(target.buffer, target.byteOffset, RUNWAY_EARTHWORKS_SET_FLOATS);
+  const count = Math.min(airports.length, TERRAIN_AIRPORT_SLOTS);
+  words.fill(0, 0, 4);
+  words[0] = count;
+  for (let slot = 0; slot < TERRAIN_AIRPORT_SLOTS; slot += 1) {
+    writeRunwayEarthworksUniform(
+      target,
+      words,
+      4 + slot * RUNWAY_EARTHWORKS_UNIFORM_FLOATS,
+      slot < count ? airports[slot]! : null,
+      seedHash,
+    );
+  }
+  return target;
 }
 
 /**
@@ -388,3 +460,67 @@ fn terrainRunwayEarthworksHeight(
   return height;
 }
 `;
+
+/**
+ * Every airport's earthworks, for a shader that grades more than the home
+ * field: the struct, plus the nearest-centre selection over it.
+ *
+ * `worldAirportAt` (`src/world/airport.ts`) is the CPU rule: the airport whose
+ * CENTRE is nearest shapes the ground, and only it. Airports stand at least
+ * `AIRPORT_SPAWN_POLICY.minSeparationMeters` (4 km) apart and one airport's
+ * earthworks reach about 1 km from its centre, so the selection only ever
+ * changes airport where both candidates return the natural height bit for
+ * bit — which is also why f32 distances here and f64 ones on the CPU can
+ * disagree on the bisector without the two heights disagreeing.
+ *
+ * The selection is the only cost added per texel: one `vec2` difference and
+ * `dot` per airport after the first, then ONE evaluation of the unchanged
+ * `terrainRunwayEarthworksHeight`. A one-airport world runs zero iterations
+ * and evaluates slot 0, which holds exactly the struct the shader read before
+ * this existed — so its pages are unchanged to the bit.
+ *
+ * `binding` names the composer's `var<storage, read> <binding>:
+ * RunwayEarthworksSet`. The selection reads it directly rather than taking
+ * the set as a parameter: a by-value parameter would copy all eight structs
+ * per call, and a storage pointer parameter needs a language extension.
+ * Requires `RUNWAY_EARTHWORKS_WGSL`.
+ */
+export function runwayEarthworksSetWgsl(binding: string): string {
+  return /* wgsl */ `
+const K_TERRAIN_AIRPORT_SLOTS: u32 = ${TERRAIN_AIRPORT_SLOTS}u;
+
+struct RunwayEarthworksSet {
+  // (airport count, 0, 0, 0). With no airport, slot 0 is zeroed and its
+  // enabled lane reads 0, so the earthworks return the natural height.
+  header: vec4u,
+  airports: array<RunwayEarthworks, ${TERRAIN_AIRPORT_SLOTS}>,
+};
+
+/** worldAirportAt's nearest-centre rule; ties keep the lower slot, as it does. */
+fn terrainRunwayEarthworksSlot(worldX: f32, worldZ: f32) -> u32 {
+  let count = min(${binding}.header.x, K_TERRAIN_AIRPORT_SLOTS);
+  let worldXz = vec2f(worldX, worldZ);
+  let first = worldXz - ${binding}.airports[0].site.yz;
+  var best = 0u;
+  var bestDistance = dot(first, first);
+  for (var slot = 1u; slot < count; slot = slot + 1u) {
+    let delta = worldXz - ${binding}.airports[slot].site.yz;
+    let distance = dot(delta, delta);
+    let closer = distance < bestDistance;
+    best = select(best, slot, closer);
+    bestDistance = select(bestDistance, distance, closer);
+  }
+  return best;
+}
+
+/** The earthworks of the airport nearest a world point, evaluated once. */
+fn terrainRunwayEarthworksNearestHeight(naturalHeight: f32, worldX: f32, worldZ: f32) -> f32 {
+  return terrainRunwayEarthworksHeight(
+    ${binding}.airports[terrainRunwayEarthworksSlot(worldX, worldZ)],
+    naturalHeight,
+    worldX,
+    worldZ,
+  );
+}
+`;
+}

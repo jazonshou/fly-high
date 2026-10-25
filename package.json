@@ -24,6 +24,7 @@
     "perf:capture:candidate": "npm run perf:cold-start && VITE_PERF_REBASELINE=1 vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts",
     "perf:capture:rebaseline": "npm run perf:capture:candidate",
     "perf:ab": "node scripts/perf-ab.mts",
+    "perf:flight": "node scripts/perf-flight.mts",
     "material:preview": "VITE_MATERIAL_PREVIEW=1 vitest run --config vitest.config.ts tests/render.webgpu-material-arrays.test.ts"
   },
   "dependencies": {

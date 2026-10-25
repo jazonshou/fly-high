@@ -9,7 +9,9 @@ export type InputAction =
   | "flapsDown"
   | "gearToggle"
   | "trimUp"
-  | "trimDown";
+  | "trimDown"
+  | "nearestAirport"
+  | "autoland";
 
 export interface InputOptions {
   sensitivity: number;
@@ -102,6 +104,8 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
   KeyF: "flapsDown",
   KeyV: "flapsUp",
   KeyG: "gearToggle",
+  KeyN: "nearestAirport",
+  KeyL: "autoland",
   ArrowUp: "trimUp",
   ArrowDown: "trimDown",
 };
@@ -302,6 +306,19 @@ export class InputManager {
 
   setThrottle(value: number): void {
     this.throttle = Math.min(1, Math.max(0, value));
+  }
+
+  /**
+   * Take over the levers the autoland left the aeroplane in, when it hands
+   * back. This controller holds throttle, flaps and gear and re-sends them,
+   * so without this the first message after a hand-back would snap them to
+   * wherever the pilot left them before engaging: the flaps retracting and
+   * the gear coming up on short final. Flaps go to the nearest detent.
+   */
+  adoptConfiguration(throttle: number, flaps: number, gear: number): void {
+    this.setThrottle(throttle);
+    this.flaps = Math.min(1, Math.max(0, Math.round(flaps * 2) / 2));
+    this.gear = gear >= 0.5 ? 1 : 0;
   }
 
   /**

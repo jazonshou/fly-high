@@ -1,6 +1,7 @@
 import type {
   TerrainHeightAuthorityCounters,
 } from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
+import type { AutolandPhase, GoAroundReason } from "@/src/sim";
 
 export interface Vec3State {
   x: number;
@@ -68,6 +69,36 @@ export interface FlightVisualState {
    * compatible; live worker snapshots always include it.
    */
   terrainAuthority?: TerrainHeightAuthorityCounters;
+  /**
+   * The autoland while it is engaged (`src/sim/autoland.ts`), null otherwise.
+   * Optional for the same reason as `terrainAuthority`.
+   */
+  autoland?: AutolandVisualState | null;
+}
+
+/** What the HUD shows of an engaged autoland. */
+export interface AutolandVisualState {
+  phase: Exclude<AutolandPhase, "off">;
+  /** Approach number, from 1; each go-around starts the next. */
+  attempt: number;
+  /** Track distance still to fly to the touchdown point, metres. */
+  distanceToTouchdown: number;
+  /** Landing direction, degrees true (0..360). */
+  runwayHeading: number;
+  /** Airspeed being held, m/s indicated. */
+  targetAirspeed: number;
+  goAroundReason: GoAroundReason | null;
+  /** Centre of the runway being landed on, world metres. */
+  runwayX: number;
+  runwayZ: number;
+  /**
+   * The levers the autoland is commanding, which the pilot's input takes over
+   * on hand-back (`InputManager.adoptConfiguration`). Commands rather than the
+   * actuators, because gear or flaps in transit are going where these say.
+   */
+  throttle: number;
+  flaps: number;
+  gear: number;
 }
 
 export interface ControlState {

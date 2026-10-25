@@ -1,6 +1,9 @@
 import type { TerrainBiomeId, WorldSeed } from "@/src/world";
 import type { AirportDefinition } from "@/src/world/types";
-import type { StructureExclusionBox } from "../airfield/StructureExclusion";
+import type {
+  StructureExclusionBox,
+  StructureExclusionSite,
+} from "../airfield/StructureExclusion";
 
 export const DEFAULT_DETAIL_CELL_SIZE_METERS = 512;
 
@@ -47,9 +50,9 @@ export interface DetailTerrainSample {
   readonly normal?: { readonly x: number; readonly y: number; readonly z: number };
   /**
    * The climate temperature (`sampleTerrainTemperature`: climate field,
-   * lapse and province offset), normalised, for rules that want it. The
-   * species classifier keeps its height-only stand-in plus the province
-   * offset; `classifyDetailSample` says why. The world-layer TerrainSample
+   * lapse and province offset), normalised. The species classifier reads it
+   * (`classifyDetailSample`); omitted, it falls back to a height-only
+   * stand-in plus the province offset. The world-layer TerrainSample
    * carries it, so the live sampler provides it for free.
    */
   readonly temperature?: number;
@@ -111,6 +114,13 @@ export interface DetailCellGenerationOptions {
   readonly structureExclusions?: readonly StructureExclusionBox[];
   /** Required with `structureExclusions`: the frame those boxes are stated in. */
   readonly exclusionAirport?: Readonly<AirportDefinition>;
+  /**
+   * Every airport's structures, each in its own runway frame — the form the
+   * live world uses once airports spawn mid-flight. Combined with the pair
+   * above when both are given. Same seed rule: built by the caller from
+   * `world.seedHash` (`airfieldStructureExclusionSites`).
+   */
+  readonly structureExclusionSites?: readonly StructureExclusionSite[];
 }
 
 export interface DetailTreePlacement {

@@ -499,6 +499,22 @@ export class LightPointSystem {
    * what the rebuilt buffer is derived from.
    */
   private readonly fixtures: readonly LightPointFixture[];
+  /**
+   * Lamps of airports spawned in flight, drawn AFTER the home field's in the
+   * same mesh — so a spawned airfield's runway, approach, PAPI, sign and
+   * obstruction lights add vertices and NO draw call, and share the home
+   * field's material, uniforms and pipeline. Absolute world coordinates, like
+   * `fixtures`. Empty unless `setExtraFixtures` is called, and while empty
+   * every buffer this system uploads is exactly what it was without them.
+   */
+  private extraFixtures: readonly LightPointFixture[] = [];
+  /**
+   * Per-vertex colour for every fixture, home then extra — written in place
+   * and uploaded whole, so a PAPI flip allocates nothing.
+   */
+  private colourBuffer: Float32Array;
+  /** Origin-relative positions for every fixture, rewritten in place on a rebase. */
+  private positionBuffer: Float32Array;
   private originX = 0;
   private originZ = 0;
   /**
@@ -532,6 +548,8 @@ export class LightPointSystem {
     this.fixtureCount = fixtures.length;
     this.fixtures = fixtures;
     const geometry = buildLightPointGeometry(fixtures);
+    this.colourBuffer = new Float32Array(geometry.colors);
+    this.positionBuffer = new Float32Array(geometry.positions);
     this.mesh = new Mesh("light-points", scene);
     const data = new VertexData();
     data.positions = geometry.positions;
@@ -624,18 +642,114 @@ export class LightPointSystem {
     if (originX === this.originX && originZ === this.originZ) return;
     this.originX = originX;
     this.originZ = originZ;
-    if (this.fixtureCount === 0) return;
-    const positions = new Float32Array(this.fixtureCount * 4 * 3);
-    for (let index = 0; index < this.fixtureCount; index += 1) {
-      const fixture = this.fixtures[index]!;
+    if (this.fixtureCount + this.extraFixtures.length === 0) return;
+    this.writePositions();
+    this.mesh.updateVerticesData("position", this.positionBuffer, false, false);
+  }
+
+  /** Every fixture's origin-relative position into `positionBuffer`, in place. */
+  private writePositions(): void {
+    const positions = this.positionBuffer;
+    const total = this.fixtureCount + this.extraFixtures.length;
+    for (let index = 0; index < total; index += 1) {
+      const fixture = index < this.fixtureCount
+        ? this.fixtures[index]!
+        : this.extraFixtures[index - this.fixtureCount]!;
       for (let corner = 0; corner < 4; corner += 1) {
         const vertex = index * 4 + corner;
-        positions[vertex * 3] = fixture.position[0] - originX;
+        positions[vertex * 3] = fixture.position[0] - this.originX;
         positions[vertex * 3 + 1] = fixture.position[1];
-        positions[vertex * 3 + 2] = fixture.position[2] - originZ;
+        positions[vertex * 3 + 2] = fixture.position[2] - this.originZ;
       }
     }
-    this.mesh.updateVerticesData("position", positions, false, false);
+  }
+
+  /** How many spawned-airfield lamps follow the home field's in this draw. */
+  get extraFixtureCount(): number {
+    return this.extraFixtures.length;
+  }
+
+  /**
+   * Replace the lamps of every airport spawned in flight. Called when an
+   * airport spawns, is retired, or gains its structures — never per frame.
+   *
+   * Rebuilds the vertex buffers at the new length (new GPU buffers, the same
+   * material and pipeline) and KEEPS the home field's current colours, so a
+   * PAPI showing white does not flash red because a field spawned 20 km away.
+   * Extra lamps start at their fixture colour until `setExtraColors`.
+   */
+  setExtraFixtures(
+    fixtures: readonly LightPointFixture[],
+    /** Current colour per extra lamp (a PAPI already showing white); defaults to each fixture's. */
+    colours?: readonly (readonly [number, number, number])[],
+  ): void {
+    if (fixtures.length === 0 && this.extraFixtures.length === 0) return;
+    if (colours && colours.length !== fixtures.length) {
+      throw new Error(
+        `light-point extra fixtures have ${colours.length} colours for ${fixtures.length} lamps`,
+      );
+    }
+    const homeColours = this.colourBuffer.subarray(0, this.fixtureCount * 4 * 3);
+    this.extraFixtures = fixtures;
+    const all = fixtures.length === 0 ? this.fixtures : [...this.fixtures, ...fixtures];
+    const geometry = buildLightPointGeometry(all);
+    geometry.colors.set(homeColours);
+    if (colours) {
+      for (let index = 0; index < colours.length; index += 1) {
+        const colour = colours[index]!;
+        for (let corner = 0; corner < 4; corner += 1) {
+          const vertex = (this.fixtureCount + index) * 4 + corner;
+          geometry.colors[vertex * 3] = colour[0];
+          geometry.colors[vertex * 3 + 1] = colour[1];
+          geometry.colors[vertex * 3 + 2] = colour[2];
+        }
+      }
+    }
+    this.colourBuffer = geometry.colors;
+    this.positionBuffer = geometry.positions;
+    this.writePositions();
+    this.mesh.setVerticesData("position", this.positionBuffer, true);
+    this.mesh.setVerticesData("lightCorner", geometry.corners, false, 2);
+    this.mesh.setVerticesData("lightParams", geometry.params, false, 4);
+    this.mesh.setVerticesData("lightAim", geometry.aims, false, 3);
+    this.mesh.setVerticesData("lightColor", this.colourBuffer, true, 3);
+    // The index format Babylon would pick for a plain array, without the copy
+    // through one: 16-bit while every index fits.
+    const vertexCount = all.length * 4;
+    this.mesh.setIndices(
+      vertexCount <= 65_536 ? new Uint16Array(geometry.indices) : geometry.indices,
+      vertexCount,
+    );
+  }
+
+  /**
+   * Recolour spawned lamps `[start, start + colours.length)` — the PAPI of a
+   * spawned field, on a transition. Uploads the whole colour buffer, as
+   * `setColors` does, from the same persistent array.
+   */
+  setExtraColors(
+    start: number,
+    colours: readonly (readonly [number, number, number])[],
+  ): void {
+    if (start < 0 || start + colours.length > this.extraFixtures.length) {
+      throw new RangeError(
+        `light-point extra colour update [${start}, ${start + colours.length}) is outside `
+        + `the ${this.extraFixtures.length} spawned lamps`,
+      );
+    }
+    if (colours.length === 0) return;
+    const buffer = this.colourBuffer;
+    for (let index = 0; index < colours.length; index += 1) {
+      const colour = colours[index]!;
+      const fixture = this.fixtureCount + start + index;
+      for (let corner = 0; corner < 4; corner += 1) {
+        const vertex = fixture * 4 + corner;
+        buffer[vertex * 3] = colour[0];
+        buffer[vertex * 3 + 1] = colour[1];
+        buffer[vertex * 3 + 2] = colour[2];
+      }
+    }
+    this.mesh.updateVerticesData("lightColor", buffer, false, false);
   }
 
   /**
@@ -655,7 +769,9 @@ export class LightPointSystem {
       );
     }
     if (this.fixtureCount === 0) return;
-    const buffer = new Float32Array(this.fixtureCount * 4 * 3);
+    // Written in place: the home range of the persistent buffer, which also
+    // carries any spawned airfields' lamps after it.
+    const buffer = this.colourBuffer;
     for (let index = 0; index < this.fixtureCount; index += 1) {
       const colour = colors[index]!;
       for (let corner = 0; corner < 4; corner += 1) {

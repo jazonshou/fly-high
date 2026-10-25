@@ -3,6 +3,7 @@ import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
+  DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS,
   DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES,
   DETAIL_MEMBERSHIP_SLACK_METERS,
   DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES,
@@ -236,6 +237,7 @@ function createRuntime(
   options: {
     readonly bridge?: RuntimeWorkerBridge;
     readonly vegetationBudget?: number;
+    readonly now?: () => number;
   } = {},
 ): WorldDetailRuntime {
   const runtime = new WorldDetailRuntime(scene, {
@@ -255,6 +257,7 @@ function createRuntime(
       maximumWorkUnits: 1_000_000,
       maximumMilliseconds: 1_000_000,
     },
+    ...(options.now ? { presentationNowMilliseconds: options.now } : {}),
   });
   if (options.vegetationBudget !== undefined) {
     runtime.setGenerationBudgetCap({
@@ -738,9 +741,11 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
         resident.source === "worker" && !resident.tokenOwned
       ))).toBe(true);
 
+      // The deadline runs from the first update that finds the request
+      // outstanding: the one after the update that filed it.
       for (
         let update = 0;
-        update < DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES;
+        update <= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES;
         update += 1
       ) {
         runtime.update(observer, ORIGIN, quality);
@@ -769,6 +774,120 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       expect([...state.cells.values()].every((resident) => resident.source === "inline"))
         .toBe(true);
       expect(state.presentationChunks.get(targetChunkKey)!.revision).toBeGreaterThan(oldRevision);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("does not charge a span without updates (a hidden tab) to the generation worker", () => {
+    const world = createWorld("detail-runtime-generation-hidden-tab", { airport: false });
+    const quality = profile(170);
+    const selected = richCell(world, quality.vegetationDensity);
+    const observer = observerForCell(selected.cellX, selected.cellZ);
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const bridge = new RuntimeWorkerBridge();
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+
+    try {
+      settleWorker(runtime, bridge, observer, quality);
+      runtime.setGenerationBudgetCap({ maximumCells: 1, maximumMilliseconds: 1_000_000 });
+      bridge.holdGeneration = true;
+      runtime.setDayOfYear(40);
+      runtime.update(observer, ORIGIN, quality);
+      bridge.flush();
+      expect(bridge.heldGenerationEvents).toHaveLength(1);
+
+      // A minute in another tab: no updates, so no frame could have taken
+      // the worker's answer.
+      now += 60_000;
+      runtime.update(observer, ORIGIN, quality);
+      bridge.flush();
+      expect(internals(runtime).client).not.toBeNull();
+      expect(runtime.presentationRebuildDiagnostics.workerGenerationTimeouts).toBe(0);
+
+      // A worker that answers keeps the authority.
+      bridge.releaseHeldGeneration();
+      bridge.holdGeneration = false;
+      settleWorker(runtime, bridge, observer, quality);
+      expect(internals(runtime).client).not.toBeNull();
+      expect(runtime.presentationRebuildDiagnostics.workerFallbacks).toBe(0);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("still falls back when the worker stops answering while frames run", () => {
+    const world = createWorld("detail-runtime-generation-hidden-tab", { airport: false });
+    const quality = profile(170);
+    const selected = richCell(world, quality.vegetationDensity);
+    const observer = observerForCell(selected.cellX, selected.cellZ);
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const bridge = new RuntimeWorkerBridge();
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+
+    try {
+      settleWorker(runtime, bridge, observer, quality);
+      runtime.setGenerationBudgetCap({ maximumCells: 1, maximumMilliseconds: 1_000_000 });
+      bridge.holdGeneration = true;
+      runtime.setDayOfYear(40);
+      runtime.update(observer, ORIGIN, quality);
+      bridge.flush();
+      // 50 ms frames (inside the gap allowance): the clock deadline, well
+      // before the update count, finds the hung worker.
+      let updates = 0;
+      while (internals(runtime).client !== null && updates < 1_000) {
+        now += 50;
+        runtime.update(observer, ORIGIN, quality);
+        bridge.flush();
+        updates += 1;
+      }
+      expect(internals(runtime).client).toBeNull();
+      expect(runtime.presentationRebuildDiagnostics.workerGenerationTimeouts).toBe(1);
+      expect(updates).toBeLessThan(DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES);
+      expect(updates * 50).toBeGreaterThanOrEqual(DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("times a worker that has not answered yet (still building its world) by the clock, not by updates", () => {
+    const world = createWorld("detail-runtime-generation-initializing", { airport: false });
+    const quality = profile(170);
+    const selected = richCell(world, quality.vegetationDensity);
+    const observer = observerForCell(selected.cellX, selected.cellZ);
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const bridge = new RuntimeWorkerBridge();
+    bridge.holdGeneration = true;
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+
+    try {
+      // Two seconds of a 120 Hz display: more updates than the count allows.
+      for (let update = 0; update < DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES + 16; update += 1) {
+        now += 1_000 / 120;
+        runtime.update(observer, ORIGIN, quality);
+        bridge.flush();
+      }
+      expect(bridge.heldGenerationEvents.length).toBeGreaterThan(0);
+      expect(internals(runtime).client).not.toBeNull();
+      expect(runtime.presentationRebuildDiagnostics.workerGenerationTimeouts).toBe(0);
+
+      bridge.releaseHeldGeneration();
+      bridge.holdGeneration = false;
+      settleWorker(runtime, bridge, observer, quality, ORIGIN, 512);
+      expect(internals(runtime).client).not.toBeNull();
+      expect(runtime.presentationRebuildDiagnostics.workerFallbacks).toBe(0);
     } finally {
       runtime.dispose();
       scene.dispose();

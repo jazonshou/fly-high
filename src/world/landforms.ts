@@ -4,6 +4,7 @@ import {
   duneClimateFactors,
   duneErgWeight,
   duneRelief,
+  SAND_SEA_ERG_WEIGHT,
   sampleDuneField,
   type DuneClimateFactors,
   type DuneSample,
@@ -209,7 +210,7 @@ const ERG_FAR_FILTER_WIDTH_METERS = 1_250;
  */
 export const ERG_FAR_WEIGHT_SKIPPED = -1;
 
-const FAR_CLIMATE_SCRATCH: DuneClimateFactors = { arid: 0, patch: 0 };
+const ERG_CLIMATE_SCRATCH: DuneClimateFactors = { arid: 0, patch: 0 };
 
 /**
  * The erg weight as the far ground sees it: the same factors as the dune
@@ -224,11 +225,28 @@ const FAR_CLIMATE_SCRATCH: DuneClimateFactors = { arid: 0, patch: 0 };
  * patch. Otherwise the weight in [0, 1].
  */
 export function sampleErgFarWeight(world: WorldDefinition, x: number, z: number): number {
+  return ergWeightAt(world, x, z, ERG_FAR_FILTER_WIDTH_METERS);
+}
+
+/**
+ * Whether a point lies in a sand sea: its erg weight reaches
+ * `SAND_SEA_ERG_WEIGHT`, where some dune reads as sand. A spawned runway's
+ * veto (`spawnedAirportGroundAllowed`), so it reads the erg rather than the
+ * point's own sand cover, which is 0 in an interdune corridor a crest away
+ * from 20 m of sand. Free inside the landform core and wherever the province
+ * rules the erg out; otherwise one full-bandwidth natural kernel evaluation.
+ */
+export function inSandSea(world: WorldDefinition, x: number, z: number): boolean {
+  return ergWeightAt(world, x, z, 0) >= SAND_SEA_ERG_WEIGHT;
+}
+
+/** The dune stage's erg weight with the kernel at this filter width, or `ERG_FAR_WEIGHT_SKIPPED`. */
+function ergWeightAt(world: WorldDefinition, x: number, z: number, filterWidthMeters: number): number {
   if (world.worldEvolution === "eroded") return ERG_FAR_WEIGHT_SKIPPED;
   const coreMask = landformCoreMask(world, x, z);
   if (coreMask <= 0) return ERG_FAR_WEIGHT_SKIPPED;
-  const climate = duneClimateFactors(world, x, z, FAR_CLIMATE_SCRATCH);
+  const climate = duneClimateFactors(world, x, z, ERG_CLIMATE_SCRATCH);
   if (climate.arid <= 0 || climate.patch <= 0) return ERG_FAR_WEIGHT_SKIPPED;
-  const natural = sampleNaturalTerrainIntermediates(world.seedHash, x, z, ERG_FAR_FILTER_WIDTH_METERS);
+  const natural = sampleNaturalTerrainIntermediates(world.seedHash, x, z, filterWidthMeters);
   return duneErgWeight(world, x, z, coreMask, natural, duneRelief(natural), volcanicActivity, climate);
 }

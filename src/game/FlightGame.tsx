@@ -11,7 +11,7 @@ import {
 import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
-import { type FlightRenderingSystem } from "@/src/render/types";
+import { type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
 import {
   createRandomSeed,
   DEFAULT_SETTINGS,
@@ -30,6 +30,19 @@ import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
 import { createWorld, sampleTerrain, type LandformsOption } from "@/src/world";
+import {
+  applyAirportMarker,
+  createAirportMarkerPlacement,
+  createAirportMarkerView,
+  formatAirportDistance,
+  placeAirportMarker,
+  type AirportMarkerView,
+} from "@/src/ui/airportMarker";
+import {
+  AirportNetworkController,
+  describeNearestAirport,
+  type NearestAirportInfo,
+} from "./AirportNetworkController";
 import { DisposableScope } from "./DisposableScope";
 import { FreeFlyController } from "./freeFly";
 import { SimulationClient } from "./SimulationClient";
@@ -42,6 +55,7 @@ import {
 } from "./spawn";
 import {
   INITIAL_VISUAL_STATE,
+  type AutolandVisualState,
   type CameraMode,
   type FlightVisualState,
   type RenderDiagnostics,
@@ -121,6 +135,23 @@ export function FlightGame() {
    * the markup reads.
    */
   const [spawnKind, setSpawnKind] = useState<SpawnKind>("airborne");
+  /** The live airport list, grown by spawns during the flight. */
+  const airportNetworkRef = useRef<AirportNetworkController | null>(null);
+  /** Nearest-airport marker: a ref for the frame loop, state for the HUD markup. */
+  const nearestAirportShownRef = useRef(false);
+  const [nearestAirportShown, setNearestAirportShown] = useState(false);
+  const nearestAirportRef = useRef<NearestAirportInfo | null>(null);
+  const [nearestAirport, setNearestAirport] = useState<NearestAirportInfo | null>(null);
+  const airportMarkerRef = useRef<HTMLDivElement>(null);
+  /** The marker's "STQK · 4.2 NM" label, rebuilt with the readout, not per frame. */
+  const airportMarkerTextRef = useRef("");
+  /**
+   * The autoland as of the latest snapshot, and that snapshot's sim time: on
+   * the snapshot where it is gone the pilot's input takes over its levers,
+   * unless the clock went backwards, which is a new aeroplane (a reset), not a
+   * hand-back.
+   */
+  const lastAutolandRef = useRef<{ state: AutolandVisualState; time: number } | null>(null);
   const lastUiUpdateRef = useRef(0);
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
@@ -189,6 +220,17 @@ export function FlightGame() {
     simulationRef.current?.setMode(next.flightMode);
     simulationRef.current?.setWeather(next.weather);
   }, [invalidatePendingTransitions]);
+
+  const toggleNearestAirport = useCallback(() => {
+    const next = !nearestAirportShownRef.current;
+    nearestAirportShownRef.current = next;
+    setNearestAirportShown(next);
+  }, []);
+
+  const toggleAutoland = useCallback(() => {
+    if (phaseRef.current !== "flying") return;
+    simulationRef.current?.setAutoland(!latestStateRef.current.autoland);
+  }, []);
 
   const changeCamera = useCallback(() => {
     const currentIndex = CAMERA_MODES.indexOf(cameraModeRef.current);
@@ -468,9 +510,19 @@ export function FlightGame() {
           else if (phaseRef.current === "paused") void resumeFlight();
         }
         if (action === "hud") applySettings(cycleHud(settingsRef.current));
+        if (action === "nearestAirport" && phaseRef.current === "flying") toggleNearestAirport();
+        if (action === "autoland") toggleAutoland();
       }
     },
-    [applySettings, changeCamera, pauseFlight, restartFlight, resumeFlight],
+    [
+      applySettings,
+      changeCamera,
+      pauseFlight,
+      restartFlight,
+      resumeFlight,
+      toggleAutoland,
+      toggleNearestAirport,
+    ],
   );
 
   useEffect(() => {
@@ -517,6 +569,11 @@ export function FlightGame() {
     let disposed = false;
     let rendererTerminal = false;
     let lastFrame = performance.now();
+    let lastNearestAirportUpdate = Number.NEGATIVE_INFINITY;
+    // Per-frame marker scratch: the overlay update allocates nothing.
+    const airportMarkerPoint: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
+    const airportMarkerPlacement = createAirportMarkerPlacement();
+    let airportMarkerView: AirportMarkerView | null = null;
     const startupAbortController = new AbortController();
     const startupResources = new DisposableScope();
     readyRef.current = false;
@@ -544,10 +601,12 @@ export function FlightGame() {
       try {
       const activeSettings = settingsRef.current;
       const urlFarSward = readTerrainFarSwardFromUrl();
+      const airportNetwork = startupResources.own(new AirportNetworkController(world));
       const rendererOptions = {
         canvas,
         aircraft: activeSettings.aircraft,
-        terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
+        // The LIVE world: spawned airports grade the ground the camera clamps to.
+        terrainSample: (x: number, z: number) => sampleTerrain(airportNetwork.world, x, z),
         world,
         seed,
         quality: activeSettings.quality,
@@ -620,9 +679,21 @@ export function FlightGame() {
         activeSettings.weather,
       );
 
+      airportNetwork.onChange((next) => {
+        simulation.setAirports(next.airports);
+        renderer.setAirports(next.airports);
+      });
+
       simulation.onError((message) => setError(message));
       simulation.onState((state) => {
         latestStateRef.current = state;
+        const lastAutoland = lastAutolandRef.current;
+        if (lastAutoland && !state.autoland && state.simulationTime >= lastAutoland.time) {
+          input.adoptConfiguration(lastAutoland.state.throttle, lastAutoland.state.flaps, lastAutoland.state.gear);
+        }
+        lastAutolandRef.current = state.autoland
+          ? { state: state.autoland, time: state.simulationTime }
+          : null;
         if (!readyRef.current) {
           readyRef.current = true;
           setReady(true);
@@ -631,9 +702,28 @@ export function FlightGame() {
           if (phaseRef.current !== "paused") simulation.setPaused(false);
         }
         const now = performance.now();
+        if (phaseRef.current === "flying") airportNetwork.observe(state, now);
         if (now - lastUiUpdateRef.current > 75) {
           lastUiUpdateRef.current = now;
           setVisualState(state);
+        }
+        // A handful of airports at most, and the readout moves in 0.1 NM
+        // steps: four times a second is plenty.
+        if (now - lastNearestAirportUpdate > 250) {
+          lastNearestAirportUpdate = now;
+          const nearest = describeNearestAirport(
+            airportNetwork.world,
+            state.position.x,
+            state.position.z,
+          );
+          nearestAirportRef.current = nearest;
+          airportMarkerTextRef.current = nearest
+            ? `${nearest.ident} · ${formatAirportDistance(
+              nearest.distanceMeters,
+              settingsRef.current.units === "aviation",
+            )}`
+            : "";
+          setNearestAirport(nearest);
         }
         if (now - lastAudioUpdateRef.current > 35) {
           lastAudioUpdateRef.current = now;
@@ -681,6 +771,25 @@ export function FlightGame() {
           );
           return;
         }
+        const marker = airportMarkerRef.current;
+        if (marker) {
+          if (airportMarkerView?.element !== marker) airportMarkerView = createAirportMarkerView(marker);
+          const nearest = nearestAirportRef.current;
+          const markerVisible = nearest !== null
+            && nearestAirportShownRef.current
+            && (phaseRef.current === "flying" || phaseRef.current === "paused")
+            && renderer.projectWorldPointToRef(
+              nearest.markerX,
+              nearest.markerY,
+              nearest.markerZ,
+              airportMarkerPoint,
+            );
+          applyAirportMarker(
+            airportMarkerView,
+            markerVisible ? placeAirportMarker(airportMarkerPoint, airportMarkerPlacement) : null,
+            airportMarkerTextRef.current,
+          );
+        }
         if (Math.floor(now / 500) !== Math.floor((now - deltaSeconds * 1_000) / 500)) {
           setDiagnostics(renderer.getDiagnostics());
         }
@@ -696,6 +805,8 @@ export function FlightGame() {
       inputRef.current = input;
       audioRef.current = audio;
       simulationRef.current = simulation;
+      airportNetworkRef.current = airportNetwork;
+      startupResources.release(airportNetwork);
       startupResources.release(renderer);
       startupResources.release(input);
       startupResources.release(audio);
@@ -739,6 +850,9 @@ export function FlightGame() {
       if (inputRef.current) cleanupResources.own(inputRef.current);
       if (audioRef.current) cleanupResources.own(audioRef.current);
       if (simulationRef.current) cleanupResources.own(simulationRef.current);
+      if (airportNetworkRef.current) cleanupResources.own(airportNetworkRef.current);
+      airportNetworkRef.current = null;
+      nearestAirportRef.current = null;
       rendererRef.current = null;
       simulationRef.current = null;
       inputRef.current = null;
@@ -784,6 +898,13 @@ export function FlightGame() {
       />
       <div className="flight-vignette" aria-hidden="true" />
 
+      {/* Before the HUD, so the instruments draw over the marker where they meet. */}
+      <div ref={airportMarkerRef} className="airport-marker" hidden aria-hidden="true">
+        <span className="airport-marker__diamond" />
+        <span className="airport-marker__arrow" />
+        <span className="airport-marker__label" data-airport-marker-label />
+      </div>
+
       {phase === "flying" || phase === "paused" ? (
         <Hud
           state={visualState}
@@ -798,6 +919,10 @@ export function FlightGame() {
           seedLabel={seedToString(seed)}
           mouseFlight={settings.mouseFlight}
           onRunBudgetProbe={() => rendererRef.current?.startBudgetProbe()}
+          nearestAirport={nearestAirport}
+          nearestAirportShown={nearestAirportShown}
+          onToggleNearestAirport={toggleNearestAirport}
+          onToggleAutoland={toggleAutoland}
         />
       ) : null}
 

@@ -7,7 +7,7 @@ import {
   channelCarveDepth,
   type CarvedChannelSet,
 } from "@/src/render/webgpu/terrain/RiverChannels";
-import { getAirportInfluence, isPointOnRunway, worldToRunway } from "./airport";
+import { getAirportInfluence, isPointOnRunway, worldAirportAt, worldToRunway } from "./airport";
 import type { DuneSample } from "./dunes";
 import {
   applyTerrainLandforms,
@@ -792,7 +792,7 @@ function applyAirportEarthworks(
   x: number,
   z: number,
 ): number {
-  const airport = world.airport;
+  const airport = worldAirportAt(world, x, z);
   if (!airport) return naturalHeight;
   const local = worldToRunway(airport, x, z);
   return runwayEarthworksHeightLocal(
@@ -822,12 +822,22 @@ export function sampleFilteredTerrainUpliftHeight(
   return applyAirportEarthworks(world, upliftHeight, x, z);
 }
 
-/** Fast collision-query path: only computes terrain elevation. */
-export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+/**
+ * The world's ground before any airport's earthworks: the natural kernel and
+ * the landform stage, at full bandwidth. What the earthworks are applied to
+ * (`sampleTerrainHeight`), and so what a spawned airport is surveyed and
+ * graded on (`spawnedAirportSiteHeight`). Inside the landform core it is the
+ * natural height, bit for bit.
+ */
+export function sampleTerrainHeightBeforeEarthworks(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
-  const height = applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
-  return applyAirportEarthworks(world, height, x, z);
+  return applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
+}
+
+/** Fast collision-query path: only computes terrain elevation. */
+export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+  return applyAirportEarthworks(world, sampleTerrainHeightBeforeEarthworks(world, x, z), x, z);
 }
 
 /**
@@ -940,12 +950,13 @@ export function sampleTerrainCollisionHeight(
   x: number,
   z: number,
 ): number {
+  const airport = worldAirportAt(world, x, z);
   if (
-    world.airport &&
-    getAirportInfluence(world.airport, x, z) >= 1
+    airport &&
+    getAirportInfluence(airport, x, z) >= 1
   ) {
-    return world.airport.elevation
-      + runwayCrownHeight(world.airport, worldToRunway(world.airport, x, z).across);
+    return airport.elevation
+      + runwayCrownHeight(airport, worldToRunway(airport, x, z).across);
   }
   return sampleTerrainHeight(world, x, z);
 }
@@ -998,23 +1009,24 @@ export function sampleTerrainCollision(
   z: number,
   target: TerrainCollisionSample = createTerrainCollisionTarget(),
 ): TerrainCollisionSample {
-  const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
-  if (runway && world.airport) {
+  const airport = worldAirportAt(world, x, z);
+  const runway = airport ? isPointOnRunway(airport, x, z) : false;
+  if (runway && airport) {
     // 3-8: the same crowned surface the renderer draws and
     // sampleTerrainCollisionHeight returns. The normal follows the camber
     // too — a flat normal on a cambered surface is the same lie one
     // derivative up, and the cross-slope is ~1.3 deg at the edge, which is
     // what a real runway has.
-    const local = worldToRunway(world.airport, x, z);
-    const halfWidth = world.airport.runwayWidth * 0.5 + world.airport.shoulderWidth;
-    target.height = world.airport.elevation + runwayCrownHeight(world.airport, local.across);
+    const local = worldToRunway(airport, x, z);
+    const halfWidth = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+    target.height = airport.elevation + runwayCrownHeight(airport, local.across);
     const crossGrade = halfWidth > 0
       ? (-2 * RUNWAY_CROWN_METERS * clamp(local.across, -halfWidth, halfWidth))
         / (halfWidth * halfWidth)
       : 0;
     // The gradient is along the runway's ACROSS axis; rotate it back to world.
-    const sinHeading = Math.sin(world.airport.headingRadians);
-    const cosHeading = Math.cos(world.airport.headingRadians);
+    const sinHeading = Math.sin(airport.headingRadians);
+    const cosHeading = Math.cos(airport.headingRadians);
     const inverseLength = 1 / Math.hypot(crossGrade, 1);
     target.normal.x = -crossGrade * cosHeading * inverseLength;
     target.normal.y = inverseLength;
@@ -1508,8 +1520,9 @@ export function sampleTerrainSurface(
   const resolvedTemperature = temperature ?? terrainTemperatureFromClimate(
     world, sampleTerrainClimate(world, x, z), height, temperatureOffset,
   );
-  const runway = world.airport ? isPointOnRunway(world.airport, x, z) : false;
-  const airportInfluence = world.airport ? getAirportInfluence(world.airport, x, z) : 0;
+  const airport = worldAirportAt(world, x, z);
+  const runway = airport ? isPointOnRunway(airport, x, z) : false;
+  const airportInfluence = airport ? getAirportInfluence(airport, x, z) : 0;
   // Volcanic land: a point sample, like the province above.
   const volcanic = sampleVolcanicGround(world, x, z, 0, VOLCANIC_SCRATCH);
   const biome = classifyBiome(

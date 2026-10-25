@@ -1,6 +1,6 @@
 /**
  * The climate province where no page can say it: a small CPU-baked field of
- * the province offsets around the camera, for the terrain's FAR FALLBACK.
+ * the province's far tone around the camera, for the terrain's FAR FALLBACK.
  *
  * The splat bake reads the province once per texel (`LandCoverClassifier.ts`),
  * so everything a trusted page classifies already follows it. What does not is
@@ -12,58 +12,68 @@
  * the biome changed with the distance it was seen from, as a ring that follows
  * the aeroplane. GROUND_NEAR_FIELD_D.md section 5 names the real fix, a
  * low-resolution biome field for the whole streaming window, used by far ground
- * AND unresident pages; this is that field, carrying the province's two raw
- * offsets, from which the vertex stage derives tones and the thermal lift, and
- * the landform overlays' far weights (a sand sea's erg weight), which no
- * province offset can predict.
+ * AND unresident pages; this is that field. It samples the province's two raw
+ * offsets and the landform overlays' far weights (a sand sea's erg weight,
+ * which no province offset can predict), and bakes from them, per texel, what
+ * the fallback paints: the far tone (`ProvinceFarTone.ts`).
  *
  * WHY THESE NUMBERS. The province changes over ecotones 12 km wide, 2-6 km at
  * the steepest (measured over five seeds, 2026-10-24: 99th-percentile thermal
  * gradient 172 m/km, maximum 305 m/km), so 1.25 km texels resolve every step
  * the field can take. 128 of them span 160 km, and the window recentres on the
- * camera texel by texel, so the 45 km far plane is always inside it. RGBA32F,
- * 256 KiB: (temperature offset, dryness, sand, reserved for the volcanic
- * overlay). It is read with `textureLoad` in the vertex stage only, and the
- * fragment receives it through varyings, so it costs no fragment binding.
+ * camera texel by texel, so the 45 km far plane is always inside it. Two
+ * half-float textures, 160 KiB: the PAINT, rgba16float (the base tone's
+ * per-channel delta, the signed canopy share), and the LIFT, r16float (the
+ * thermal lift in metres). Half floats keep 11 significant bits: a tone to a
+ * fraction of a display level, the lift to 2 m at the coldest province. The
+ * vertex stage samples each once, bilinear with repeat addressing, so the
+ * hardware does the filtering and the toroidal wrap; the fragment receives the
+ * tone through varyings, so it costs no fragment binding. The raw province lanes
+ * (temperature offset, dryness, sand, one reserved for the volcanic overlay)
+ * stay on the CPU, in `grid.data`, for the twins and the tests.
  *
  * TOROIDAL, NEAREST FIRST, BUDGETED. Absolute texel `(i, j)` lives in slot
  * `(i mod N, j mod N)`, so moving one texel re-bakes one row or column and
  * nothing else. Each frame walks the window in rings outward from the camera
- * and bakes stale slots until a work budget is spent: a province sample is one
- * unit (1.5 us) and a landform sample `CLIMATE_PROVINCE_FIELD_LANDFORM_COST`
- * more, so the budget below stays under a millisecond, steady flight bakes one
+ * and bakes stale slots until a work budget is spent: a province sample and
+ * its tone is one unit (1.5 us warm, of which the tone and its half floats
+ * are 0.5) and a landform sample `CLIMATE_PROVINCE_FIELD_LANDFORM_COST` more,
+ * so the budget below stays under a millisecond, steady flight bakes one
  * 128-texel row every 1.25 km, and a teleport has the camera's own
  * neighbourhood right within a frame and the whole window within about thirty
  * (more where a landform lane has work). A forced province with no landform
  * lane is one constant and never bakes at all.
  *
  * THE TEMPERATE CORE STAYS BIT-IDENTICAL. `sampleClimateProvince` returns
- * exactly 0 within 70 km of the start airport, a bilinear mix of zeros is
- * zero, and an interpolated varying that is zero at all three vertices is zero.
- * Every consumer adds what it derives from these as `x + 0` or `x * (1 + 0)`.
+ * exactly 0 within 70 km of the start airport, the far tone of a zero province
+ * is exactly 0 (half float keeps 0 exact), a bilinear mix of zeros is zero, and
+ * an interpolated varying that is zero at all three vertices is zero. Every
+ * consumer adds what it reads as `x + 0` or `x * (1 + 0)`.
  *
- * Class R for the texture, Class P for the grid (`ClimateProvinceFieldGrid`,
+ * Class R for the textures, Class P for the grid (`ClimateProvinceFieldGrid`,
  * Node-tested).
  */
 
 import { Constants } from "@babylonjs/core/Engines/constants";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import { FromHalfFloat, ToHalfFloat } from "@babylonjs/core/Misc/halfFloat";
 import type { Scene } from "@babylonjs/core/scene";
 import {
   sampleClimateProvince,
   type ClimateProvinceSample,
 } from "@/src/world/climateProvince";
 import type { WorldDefinition } from "@/src/world/types";
+import { provinceFarTone, type ProvinceFarTone } from "./ProvinceFarTone";
 
 /** Texels per axis of the window. */
 export const CLIMATE_PROVINCE_FIELD_RESOLUTION = 128;
 /** Texel edge, metres: under half the narrowest ecotone the field draws. */
 export const CLIMATE_PROVINCE_FIELD_TEXEL_METERS = 1_250;
 /**
- * Work units per frame at most, one unit per province sample: ~0.8 ms at the
- * measured 1.5 us, inside the 2 ms main-thread rule, and four whole rows, so
- * steady flight never waits.
+ * Work units per frame at most, one unit per province sample and its baked
+ * tone: ~0.8 ms at the measured 1.5 us, inside the 2 ms main-thread rule, and
+ * four whole rows, so steady flight never waits.
  */
 export const CLIMATE_PROVINCE_FIELD_SAMPLES_PER_FRAME = 512;
 /**
@@ -75,6 +85,8 @@ export const CLIMATE_PROVINCE_FIELD_SAMPLES_PER_FRAME = 512;
 export const CLIMATE_PROVINCE_FIELD_LANDFORM_COST = 3;
 /** Floats per texel: temperature offset, dryness, sand, volcanic (reserved). */
 export const CLIMATE_PROVINCE_FIELD_LANES = 4;
+/** Half floats per texel of the paint: base tone delta (rgb), canopy share. */
+export const CLIMATE_PROVINCE_FIELD_PAINT_LANES = 4;
 
 /**
  * The far weight of a landform overlay at a world point, 0..1: exactly 0 in the
@@ -94,19 +106,30 @@ export interface ClimateProvinceFieldSample extends ClimateProvinceSample {
   sand: number;
 }
 
+/** The far tone as the vertex stage reads it back: half floats, filtered. */
+export interface ClimateProvinceToneSample {
+  readonly base: [number, number, number];
+  canopyShare: number;
+  thermalLiftMeters: number;
+}
+
 type ProvinceWorld = Pick<WorldDefinition, "airport" | "seedHash" | "climateProvince">;
 
 /** Absolute texel index no slot can hold: marks a slot as never baked. */
 const UNBAKED = -0x7fffffff;
 
 /**
- * The CPU half: a toroidal window of (temperature offset, dryness) texels and
- * the nearest-first schedule that keeps it current. No Babylon, so the
+ * The CPU half: a toroidal window of province texels, their baked far tone,
+ * and the nearest-first schedule that keeps it current. No engine, so the
  * schedule, the budget and the core's exact zeros are tested in Node.
  */
 export class ClimateProvinceFieldGrid {
-  /** RGBA per slot, row-major by slot z: what the texture uploads. */
+  /** The raw province, four lanes per slot, row-major by slot z (CPU only). */
   readonly data: Float32Array;
+  /** Half-float bits, four per slot: what the paint texture uploads. */
+  readonly paint: Uint16Array;
+  /** Half-float bits, one per slot: what the lift texture uploads. */
+  readonly lift: Uint16Array;
   readonly resolution: number;
   readonly texelMeters: number;
   private readonly world: ProvinceWorld;
@@ -116,8 +139,18 @@ export class ClimateProvinceFieldGrid {
   /** Window offsets (dx, dz), nearest Chebyshev ring first. */
   private readonly order: Int16Array;
   private readonly target: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
+  private readonly tone: ProvinceFarTone = {
+    thermalLiftMeters: 0, base: [0, 0, 0], canopyShare: 0, canopy: [0, 0, 0],
+  };
   private centerX = Number.NaN;
   private centerZ = Number.NaN;
+  // The four slots and weights around the last located point (the twins).
+  private s00 = 0;
+  private s10 = 0;
+  private s01 = 0;
+  private s11 = 0;
+  private fu = 0;
+  private fv = 0;
   private cursor = 0;
   private settled = false;
   private sampleCount = 0;
@@ -140,6 +173,9 @@ export class ClimateProvinceFieldGrid {
     this.texelMeters = texelMeters;
     const slots = resolution * resolution;
     this.data = new Float32Array(slots * CLIMATE_PROVINCE_FIELD_LANES);
+    // Half-float 0 is all-zero bits, so an unbaked slot reads the temperate tone.
+    this.paint = new Uint16Array(slots * CLIMATE_PROVINCE_FIELD_PAINT_LANES);
+    this.lift = new Uint16Array(slots);
     this.storedX = new Int32Array(slots).fill(UNBAKED);
     this.storedZ = new Int32Array(slots).fill(UNBAKED);
     this.order = ringOrder(resolution);
@@ -149,6 +185,7 @@ export class ClimateProvinceFieldGrid {
       for (let slot = 0; slot < slots; slot += 1) {
         this.data[slot * CLIMATE_PROVINCE_FIELD_LANES] = forced.temperatureOffset;
         this.data[slot * CLIMATE_PROVINCE_FIELD_LANES + 1] = forced.dryness;
+        this.bakeTone(slot, forced.temperatureOffset, forced.dryness, 0);
       }
       this.settled = true;
     }
@@ -203,11 +240,14 @@ export class ClimateProvinceFieldGrid {
       this.data[at] = province.temperatureOffset;
       this.data[at + 1] = province.dryness;
       spent += 1;
+      let sand = 0;
       if (sandLane) {
-        const sand = sandLane(x, z);
-        this.data[at + 2] = sand > 0 ? Math.min(1, sand) : 0;
-        if (sand >= 0) spent += CLIMATE_PROVINCE_FIELD_LANDFORM_COST;
+        const weight = sandLane(x, z);
+        sand = weight > 0 ? Math.min(1, weight) : 0;
+        this.data[at + 2] = sand;
+        if (weight >= 0) spent += CLIMATE_PROVINCE_FIELD_LANDFORM_COST;
       }
+      this.bakeTone(slot, province.temperatureOffset, province.dryness, sand);
       this.storedX[slot] = absoluteX;
       this.storedZ[slot] = absoluteZ;
       baked += 1;
@@ -219,35 +259,83 @@ export class ClimateProvinceFieldGrid {
   }
 
   /**
-   * CPU twin of the vertex stage's read: the bilinear field at a world point,
-   * texel centres at `(i + 0.5) * texel`, wrapped exactly as the shader wraps.
+   * The raw province, bilinear at a world point, texel centres at
+   * `(i + 0.5) * texel`, wrapped as the sampler wraps: the field before the
+   * tone is baked from it.
    */
   sample(worldX: number, worldZ: number, target: ClimateProvinceFieldSample): ClimateProvinceFieldSample {
+    const lanes = CLIMATE_PROVINCE_FIELD_LANES;
+    const data = this.data;
+    this.locate(worldX, worldZ);
+    target.temperatureOffset = this.mix(data[this.s00 * lanes]!, data[this.s10 * lanes]!,
+      data[this.s01 * lanes]!, data[this.s11 * lanes]!);
+    target.dryness = this.mix(data[this.s00 * lanes + 1]!, data[this.s10 * lanes + 1]!,
+      data[this.s01 * lanes + 1]!, data[this.s11 * lanes + 1]!);
+    target.sand = this.mix(data[this.s00 * lanes + 2]!, data[this.s10 * lanes + 2]!,
+      data[this.s01 * lanes + 2]!, data[this.s11 * lanes + 2]!);
+    return target;
+  }
+
+  /**
+   * CPU twin of the vertex stage's read: the baked half-float tone, bilinear
+   * at a world point with repeat addressing, as the sampler filters it (up to
+   * the hardware's sub-texel weight precision).
+   */
+  sampleTone(worldX: number, worldZ: number, target: ClimateProvinceToneSample): ClimateProvinceToneSample {
+    const lanes = CLIMATE_PROVINCE_FIELD_PAINT_LANES;
+    this.locate(worldX, worldZ);
+    target.base[0] = this.mixHalves(this.paint, lanes, 0);
+    target.base[1] = this.mixHalves(this.paint, lanes, 1);
+    target.base[2] = this.mixHalves(this.paint, lanes, 2);
+    target.canopyShare = this.mixHalves(this.paint, lanes, 3);
+    target.thermalLiftMeters = this.mixHalves(this.lift, 1, 0);
+    return target;
+  }
+
+  /** The far tone of one slot's province, as half-float bits. Allocates nothing. */
+  private bakeTone(slot: number, temperatureOffset: number, dryness: number, sand: number): void {
+    const tone = provinceFarTone(temperatureOffset, dryness, this.tone, sand);
+    const at = slot * CLIMATE_PROVINCE_FIELD_PAINT_LANES;
+    this.paint[at] = ToHalfFloat(tone.base[0]);
+    this.paint[at + 1] = ToHalfFloat(tone.base[1]);
+    this.paint[at + 2] = ToHalfFloat(tone.base[2]);
+    this.paint[at + 3] = ToHalfFloat(tone.canopyShare);
+    this.lift[slot] = ToHalfFloat(tone.thermalLiftMeters);
+  }
+
+  private locate(worldX: number, worldZ: number): void {
     const n = this.resolution;
     const u = worldX / this.texelMeters - 0.5;
     const v = worldZ / this.texelMeters - 0.5;
     const baseU = Math.floor(u);
     const baseV = Math.floor(v);
-    const fu = u - baseU;
-    const fv = v - baseV;
+    this.fu = u - baseU;
+    this.fv = v - baseV;
     const x0 = wrap(baseU, n);
     const z0 = wrap(baseV, n);
     const x1 = x0 + 1 >= n ? 0 : x0 + 1;
     const z1 = z0 + 1 >= n ? 0 : z0 + 1;
-    const lanes = CLIMATE_PROVINCE_FIELD_LANES;
-    for (let lane = 0; lane < 3; lane += 1) {
-      const a = this.data[(z0 * n + x0) * lanes + lane]!;
-      const b = this.data[(z0 * n + x1) * lanes + lane]!;
-      const c = this.data[(z1 * n + x0) * lanes + lane]!;
-      const d = this.data[(z1 * n + x1) * lanes + lane]!;
-      const top = a + (b - a) * fu;
-      const bottom = c + (d - c) * fu;
-      const value = top + (bottom - top) * fv;
-      if (lane === 0) target.temperatureOffset = value;
-      else if (lane === 1) target.dryness = value;
-      else target.sand = value;
-    }
-    return target;
+    this.s00 = z0 * n + x0;
+    this.s10 = z0 * n + x1;
+    this.s01 = z1 * n + x0;
+    this.s11 = z1 * n + x1;
+  }
+
+  /** Bilinear over the located slots' four values. */
+  private mix(a: number, b: number, c: number, d: number): number {
+    const top = a + (b - a) * this.fu;
+    const bottom = c + (d - c) * this.fu;
+    return top + (bottom - top) * this.fv;
+  }
+
+  /** One lane of half-float bits, decoded and bilinear over the located slots. */
+  private mixHalves(bits: Uint16Array, lanes: number, lane: number): number {
+    return this.mix(
+      FromHalfFloat(bits[this.s00 * lanes + lane]!),
+      FromHalfFloat(bits[this.s10 * lanes + lane]!),
+      FromHalfFloat(bits[this.s01 * lanes + lane]!),
+      FromHalfFloat(bits[this.s11 * lanes + lane]!),
+    );
   }
 }
 
@@ -283,39 +371,49 @@ function ringOrder(n: number): Int16Array {
 }
 
 /**
- * What the terrain material binds: the window's texture and its shape,
- * `(1 / texel metres, resolution, 0, 0)`. The plugin reads both in the vertex
- * stage only.
+ * What the terrain material binds: the window's two textures and the scale
+ * from world metres to window UV, `1 / (texel metres x resolution)`. The
+ * plugin samples both in the vertex stage only.
  */
 export interface ClimateProvinceFieldBinding {
-  readonly texture: RawTexture;
-  readonly inverseTexelMeters: number;
-  readonly resolution: number;
+  /** rgba16float: base tone delta (rgb), signed canopy share (a). */
+  readonly paint: RawTexture;
+  /** r16float: thermal lift, metres. */
+  readonly lift: RawTexture;
+  readonly inverseWindowMeters: number;
 }
 
-function createFieldTexture(scene: Scene, data: Float32Array, edge: number): RawTexture {
-  // rgba32float: Babylon declares it unfilterable, which is fine, because the
-  // shader only ever textureLoads it (the height atlas's discipline).
+function createToneTexture(
+  scene: Scene,
+  bits: Uint16Array,
+  edge: number,
+  format: number,
+  name: string,
+): RawTexture {
+  // Half float is filterable in core WebGPU: bilinear, so the vertex takes one
+  // sample a texture, and repeat, so the toroidal slot order IS the wrap.
   const texture = new RawTexture(
-    data,
+    bits,
     edge,
     edge,
-    Constants.TEXTUREFORMAT_RGBA,
+    format,
     scene,
     false,
     false,
-    Texture.NEAREST_SAMPLINGMODE,
-    Constants.TEXTURETYPE_FLOAT,
+    Texture.BILINEAR_SAMPLINGMODE,
+    Constants.TEXTURETYPE_HALF_FLOAT,
   );
-  texture.wrapU = Texture.CLAMP_ADDRESSMODE;
-  texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+  texture.wrapU = Texture.WRAP_ADDRESSMODE;
+  texture.wrapV = Texture.WRAP_ADDRESSMODE;
+  texture.name = name;
   return texture;
 }
 
-/** The Babylon half: the grid, and its texture re-uploaded when a bake lands. */
+/** The Babylon half: the grid, and its textures re-uploaded when a bake lands. */
 export class ClimateProvinceField {
   readonly grid: ClimateProvinceFieldGrid;
-  private readonly texture: RawTexture;
+  private readonly paint: RawTexture;
+  private readonly lift: RawTexture;
   private uploads = 0;
 
   constructor(scene: Scene, world: ProvinceWorld, landforms: ClimateProvinceLandformLanes = {}) {
@@ -325,19 +423,22 @@ export class ClimateProvinceField {
       CLIMATE_PROVINCE_FIELD_TEXEL_METERS,
       landforms,
     );
-    this.texture = createFieldTexture(scene, this.grid.data, this.grid.resolution);
-    this.texture.name = "terrain-province-field";
+    const edge = this.grid.resolution;
+    this.paint = createToneTexture(
+      scene, this.grid.paint, edge, Constants.TEXTUREFORMAT_RGBA, "terrain-province-paint");
+    this.lift = createToneTexture(
+      scene, this.grid.lift, edge, Constants.TEXTUREFORMAT_R, "terrain-province-lift");
   }
 
   get binding(): ClimateProvinceFieldBinding {
     return {
-      texture: this.texture,
-      inverseTexelMeters: 1 / this.grid.texelMeters,
-      resolution: this.grid.resolution,
+      paint: this.paint,
+      lift: this.lift,
+      inverseWindowMeters: 1 / (this.grid.texelMeters * this.grid.resolution),
     };
   }
 
-  /** Texture uploads since construction (at most one per frame that baked). */
+  /** Texture uploads since construction (at most one pair per frame that baked). */
   get uploadCount(): number {
     return this.uploads;
   }
@@ -349,12 +450,14 @@ export class ClimateProvinceField {
   /** Once per frame, with the camera's world position. Allocates nothing when settled. */
   update(worldX: number, worldZ: number): void {
     if (this.grid.update(worldX, worldZ) > 0) {
-      this.texture.update(this.grid.data);
+      this.paint.update(this.grid.paint);
+      this.lift.update(this.grid.lift);
       this.uploads += 1;
     }
   }
 
   dispose(): void {
-    this.texture.dispose();
+    this.paint.dispose();
+    this.lift.dispose();
   }
 }

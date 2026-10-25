@@ -126,6 +126,20 @@ export const DUNES = Object.freeze({
   sandSheetHigh: 0.9,
 });
 
+/**
+ * The erg weight from which a sand sea is sand somewhere: its tallest crest,
+ * `erg * (crestHeightMin + (crestHeightMax - crestHeightMin) * erg)` metres
+ * (`sampleDuneField`), reaches the height at which a dune body starts to read
+ * as sand (`sandCoverLowMeters`). Below it every dune is a ripple under 0.4 m,
+ * the sand cover is exactly 0 everywhere, and the ground keeps its own class.
+ * About 0.05.
+ */
+export const SAND_SEA_ERG_WEIGHT = (() => {
+  const span = DUNES.crestHeightMaxMeters - DUNES.crestHeightMinMeters;
+  const min = DUNES.crestHeightMinMeters;
+  return (-min + Math.sqrt(min * min + 4 * span * DUNES.sandCoverLowMeters)) / (2 * span);
+})();
+
 const DEG = Math.PI / 180;
 const STOSS_TAN = Math.tan(DUNES.stossDegrees * DEG);
 const SLIP_TAN = Math.tan(DUNES.slipDegrees * DEG);

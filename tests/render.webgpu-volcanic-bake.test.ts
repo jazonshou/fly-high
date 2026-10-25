@@ -93,14 +93,14 @@ describe("volcanic land (phase 2): the splat bake", () => {
 describe("volcanic land (phase 2): tier 0's remap, as data", () => {
   const bake = LAND_COVER_SPLAT_BAKE_WGSL;
 
-  it("carries the datum in a sixth job lane the host's stride counts", () => {
+  it("carries the datum in a seventh job lane, after the airports', that the host's stride counts", () => {
     const struct = bake.slice(bake.indexOf("struct SplatJob {"), bake.indexOf("};", bake.indexOf("struct SplatJob {")));
     const lanes = [...struct.matchAll(/^\s+(\w+): vec4f,$/gmu)].map((match) => match[1]);
-    expect(lanes).toEqual(["slots", "shape", "placement", "airport", "runway", "volcanic"]);
+    expect(lanes).toEqual(["slots", "shape", "placement", "airport", "runway", "airportSet", "volcanic"]);
     expect(SPLAT_JOB_FLOATS).toBe(lanes.length * 4);
     const host = readFileSync(
       new URL("../src/render/webgpu/terrain/PageOcclusionBake.ts", import.meta.url), "utf8");
-    expect(host).toContain("jobs[base + 20] = this.volcanicMaterials ? 1 : 0;");
+    expect(host).toContain("jobs[base + 24] = this.volcanicMaterials ? 1 : 0;");
   });
 
   it("remaps Basalt and Tephra through volcanicFallbackMaterial, before anything selects", () => {

@@ -1,4 +1,4 @@
-import type { WebGpuQualityProfile } from "./QualityProfile";
+import { standaloneSharpen, type WebGpuQualityProfile } from "./QualityProfile";
 
 /**
  * The performance budget contract (1A-2).
@@ -718,9 +718,10 @@ export function estimateGpuMemoryBreakdown(
     + DEPTH_BYTES
     + 2 * LDR_COLOR_BYTES
     + (msaaSamples > 1 ? (HDR_COLOR_BYTES + DEPTH_BYTES) * msaaSamples : 0)
-    // The final sharpen's input: whatever was last before it (FXAA, or the
-    // tone map at multisampled tiers) now renders here, not to the swapchain.
-    + (profile.sharpenAmount > 0 ? LDR_COLOR_BYTES : 0)
+    // A standalone final sharpen's input: the tone map, last before it at the
+    // multisampled tiers, renders here, not to the swapchain. Where FXAA runs
+    // the sharpen is fused into it and needs no target of its own.
+    + (standaloneSharpen(profile) ? LDR_COLOR_BYTES : 0)
   );
 
   const shadowBytes =

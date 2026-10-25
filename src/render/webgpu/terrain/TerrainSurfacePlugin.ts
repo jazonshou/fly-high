@@ -23,7 +23,7 @@ import {
   TERRAIN_REFERENCE_SNOWLINE_OFFSET_METERS,
 } from "@/src/world";
 import {
-  resolveRunwaySurfaceBinding,
+  resolveRunwaySurfaceSetBinding,
   RUNWAY_SURFACE_UNIFORMS,
   RUNWAY_SURFACE_WGSL,
 } from "./RunwaySurface";
@@ -105,7 +105,6 @@ import {
   PROVINCE_FAR_SNOWLINE_RESPONSE,
   PROVINCE_FAR_TUNDRA_LEVEL_ROCK_LOSS,
   TERRAIN_PROVINCE_CANOPY_DELTA_WGSL,
-  TERRAIN_PROVINCE_FAR_TONE_WGSL,
   TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL,
   provinceFarTundraFromLift,
 } from "./ProvinceFarTone";
@@ -1226,33 +1225,38 @@ fn terrainVertexCanopyClosure(lane: f32, pageLocalMeters: vec2f) -> f32 {
 }
 #endif
 #if defined(TERRAIN_SURFACE_CDLOD) && defined(TERRAIN_PROVINCE_FIELD)
-// The climate province around the camera (ClimateProvinceField.ts): RGBA32F,
-// (temperature offset, dryness, sand-sea weight, reserved), a toroidal window
-// of whole texels. textureLoad only, like the height atlas, and the vertex
-// stage only: the fragment gets what it needs through lanes of the
+// The climate province's far tone around the camera (ClimateProvinceField.ts,
+// ProvinceFarTone.ts), baked per 1.25 km texel on the CPU into a toroidal
+// window: the PAINT (base tone delta rgb, signed canopy share) and the LIFT
+// (thermal lift, metres), both half float. One bilinear sample each with
+// repeat addressing, so the hardware does the filtering and the wrap, and the
+// vertex stage only: the fragment gets the tone through lanes of the
 // terrainSplat and terrainPageLocal varyings. The define is the tier's
 // (QualityProfile terrainProvinceField): off, none of this, the widened lanes
 // or the fragment's province terms is compiled.
-var terrainProvinceField: texture_2d<f32>;
+var terrainProvincePaintSampler: sampler;
+var terrainProvincePaint: texture_2d<f32>;
+var terrainProvinceLiftSampler: sampler;
+var terrainProvinceLift: texture_2d<f32>;
 
-fn terrainProvinceAt(absoluteXZ: vec2f) -> vec3f {
-  // shape = (1 / texel metres, resolution, -, -); texel i's centre is (i + 0.5).
-  let shape = uniforms.terrainProvinceShape;
-  let u = absoluteXZ * shape.x - vec2f(0.5);
-  let base = floor(u);
-  let fraction = u - base;
-  let n = shape.y;
-  let i0 = base - n * floor(base / n);
-  let i1 = select(i0 + vec2f(1.0), vec2f(0.0), i0 + vec2f(1.0) >= vec2f(n));
-  let p00 = textureLoad(terrainProvinceField, vec2i(i0), 0).xyz;
-  let p10 = textureLoad(terrainProvinceField, vec2i(i32(i1.x), i32(i0.y)), 0).xyz;
-  let p01 = textureLoad(terrainProvinceField, vec2i(i32(i0.x), i32(i1.y)), 0).xyz;
-  let p11 = textureLoad(terrainProvinceField, vec2i(i1), 0).xyz;
-  let top = p00 + (p10 - p00) * fraction.x;
-  let bottom = p01 + (p11 - p01) * fraction.x;
-  return top + (bottom - top) * fraction.y;
+struct TerrainProvinceFarTone {
+  base: vec3f,
+  canopyShare: f32,
+  thermalLift: f32,
+};
+
+fn terrainProvinceFarToneAt(absoluteXZ: vec2f) -> TerrainProvinceFarTone {
+  // x = 1 / (texel metres x resolution): one UV unit per window, so texel i's
+  // centre, (i + 0.5) texels, samples slot i mod resolution exactly.
+  let uv = absoluteXZ * uniforms.terrainProvinceShape.x;
+  let paint = textureSampleLevel(terrainProvincePaint, terrainProvincePaintSampler, uv, 0.0);
+  var tone: TerrainProvinceFarTone;
+  tone.base = paint.xyz;
+  tone.canopyShare = paint.w;
+  tone.thermalLift = textureSampleLevel(
+    terrainProvinceLift, terrainProvinceLiftSampler, uv, 0.0).x;
+  return tone;
 }
-${TERRAIN_PROVINCE_FAR_TONE_WGSL}
 #endif
 varying terrainSplat: vec4f;
 // 4-7: the vertex's position INSIDE its page, in metres. The page meshes are
@@ -1425,7 +1429,9 @@ varying terrainPageLocal: vec2f;
   // more) and now carry the far BASE tone's per-channel delta for the climate
   // province (ProvinceFarTone.ts); the thermal lift and the canopy share ride
   // terrainPageLocal.zw below. One field read per vertex; the province moves
-  // over kilometres, so vertex interpolation is exact to the field.
+  // over kilometres, so vertex interpolation is exact to the field. The tone
+  // is baked per texel on the CPU, so the read is two filtered samples, where
+  // it was four loads and the tone's seven smoothsteps per vertex.
   // Shadow-depth passes skip the read: the ShadowDepthWrapper reuses this
   // vertex stage once per cascade, defines SM_FLOAT in every one, and writes
   // depth rather than colour, so the tone would be interpolated and dropped.
@@ -1433,8 +1439,8 @@ varying terrainPageLocal: vec2f;
 #ifdef SM_FLOAT
   let provinceTone = TerrainProvinceFarTone();
 #else
-  let provinceTone = terrainProvinceFarTone(
-    terrainProvinceAt(vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin));
+  let provinceTone = terrainProvinceFarToneAt(
+    vertexOutputs.vPositionW.xz + uniforms.terrainWorldOrigin);
 #endif
   vertexOutputs.terrainSplat = vec4f(provinceTone.base, vertexInputs.terrainNodeB.z);
 #else
@@ -1621,13 +1627,16 @@ export const GROUND_GRAIN_GAINS = Object.freeze({
 });
 
 /**
- * Most anisotropy the grain's fetches ask the sampler for, where the
- * materials ask for the full `DEFAULT_ANISOTROPY_LIMIT`. At 1 the reads are
- * isotropic: one filtered tap each, at the mip the footprint's long axis
- * picks. The grain is zero-mean noise, so along the line of sight at grazing
- * angles the extra taps only resolve noise the eye cannot see, while each one
- * is a full filtered read on every distant terrain pixel; the coarser mip
- * averages the grain toward its mean (no change) rather than aliasing it.
+ * Most anisotropy the grain's fetches use, where the materials ask for the
+ * full `DEFAULT_ANISOTROPY_LIMIT`. At 1 the reads are isotropic: one
+ * trilinear tap each, at the mip the footprint's long axis picks, which the
+ * shader computes and passes as an explicit level (2026-10-24; before, it
+ * passed gradients limited to this ratio and left the level, and any
+ * remaining anisotropy, to the sampler on every read). The grain is
+ * zero-mean noise, so along the line of sight at grazing angles extra taps
+ * only resolve noise the eye cannot see, while each one is a full filtered
+ * read on every distant terrain pixel; the coarser mip averages the grain
+ * toward its mean (no change) rather than aliasing it.
  * The materials keep their anisotropy, so ground detail at grazing angles is
  * theirs, as it was before the grain.
  *
@@ -1675,6 +1684,12 @@ fn terrainGroundGrainFrame${index}() -> mat2x2f {
   return mat2x2f(${cos}, ${sin}, -${sin}, ${cos}) * ${inverse};
 }
 
+// The mip this scale's reads land on, from the footprint in metres and the
+// layer's edge in texels: log2 of the footprint in texels.
+fn terrainGroundGrainLevel${index}(footprintMeters: f32, edgeTexels: f32) -> f32 {
+  return log2(footprintMeters * edgeTexels * ${inverse});
+}
+
 fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
   // fract before the fetch: the layer wraps, and a small UV keeps the f32
   // product precise kilometres from the origin. Gradients are explicit, so
@@ -1695,30 +1710,27 @@ fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
 const GROUND_GRAIN_WGSL = /* wgsl */ `
 ${GROUND_GRAIN_SCALES.map((_, index) => groundGrainScaleWgsl(index)).join("")}
 
-// ddx/ddy arrive already limited (terrainGroundGrainLimit): each frame is a
-// rotation times a uniform scale, which leaves a footprint's anisotropy
-// unchanged, so one limit in world space serves all five fetches.
-fn terrainGroundGrainLimit(worldDdx: vec2f, worldDdy: vec2f) -> mat2x2f {
-  return terrainSurfaceLimitAnisotropyTo(
-    worldDdx, worldDdy, ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(1)});
+// The footprint's major axis in metres. The grain reads at anisotropy
+// ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(0)} (GROUND_GRAIN_ANISOTROPY_LIMIT): one trilinear tap
+// at the mip this axis picks, so it is both the mip and the fades' measure.
+// Each scale's frame is a rotation times a uniform scale, so one footprint
+// in world space serves all five reads, each scaled by its period.
+fn terrainGroundGrainFootprint(worldDdx: vec2f, worldDdy: vec2f) -> f32 {
+  return max(max(length(worldDdx), length(worldDdy)), 1e-9);
 }
 
-// The limited footprint's minor axis in metres, which is what the sampler's
-// mip choice follows: the parallelogram's area over its major axis.
-fn terrainGroundGrainFootprint(ddx: vec2f, ddy: vec2f) -> f32 {
-  let major = max(length(ddx), length(ddy));
-  return abs(ddx.x * ddy.y - ddx.y * ddy.x) / max(major, 1e-9);
-}
-
-fn terrainGroundGrainFetch(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec4f {
-  let texel = textureSampleGrad(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
-    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
+// Explicit level, not gradients: at anisotropy 1 a gradient read is one
+// trilinear tap at the major axis's mip, which this computes once per scale
+// instead of the sampler working it out (and its anisotropy) on every read.
+fn terrainGroundGrainFetch(uv: vec2f, level: f32) -> vec4f {
+  let texel = textureSampleLevel(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
+    uv, ${GROUND_GRAIN_LAYER}, level);
   return (texel - vec4f(0.5)) * 2.0;
 }
 
-fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, ddx: vec2f, ddy: vec2f) -> vec2f {
-  let texel = textureSampleGrad(terrainSurfaceNormal, terrainSurfaceNormalSampler,
-    uv, ${GROUND_GRAIN_LAYER}, frame * ddx, frame * ddy);
+fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, level: f32) -> vec2f {
+  let texel = textureSampleLevel(terrainSurfaceNormal, terrainSurfaceNormalSampler,
+    uv, ${GROUND_GRAIN_LAYER}, level);
   let normal = terrainSurfaceDecodeNormal(texel.xy);
   let gradientUv = -normal.xy / max(normal.z, 0.3);
   // The frame's rotation part, transposed, is its inverse; its scale is left
@@ -1742,9 +1754,6 @@ const GROUND_GRAIN_COMPOSITE_WGSL = /* wgsl */ `
 var terrainGrainCanopy = vec3f(1.0);
 if (uniforms.terrainSurfaceTuning.z > 0.5) {
   let terrainGrainXz = terrainAbsolutePosition.xz + terrainWarp;
-  let terrainGrainLimited = terrainGroundGrainLimit(terrainWorldDdx.xz, terrainWorldDdy.xz);
-  let terrainGrainDdx = terrainGrainLimited[0];
-  let terrainGrainDdy = terrainGrainLimited[1];
   let terrainGrainUv0 = terrainGroundGrainUv0(terrainGrainXz);
   let terrainGrainUv1 = terrainGroundGrainUv1(terrainGrainXz);
   let terrainGrainUv2 = terrainGroundGrainUv2(terrainGrainXz);
@@ -1752,8 +1761,13 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   // (GROUND_GRAIN_SEABED_FADE), and fading as its mips average it to the mean
   // (GROUND_GRAIN_TONE_FADE). A zero share skips the fetch, and a skipped
   // scale reads as zero, which every term below takes as "no change". The
-  // fetches take explicit gradients, so they are legal in these branches.
-  let terrainGrainFootprint = terrainGroundGrainFootprint(terrainGrainDdx, terrainGrainDdy);
+  // fetches take explicit levels, so they are legal in these branches.
+  let terrainGrainFootprint = terrainGroundGrainFootprint(terrainWorldDdx.xz, terrainWorldDdy.xz);
+  // Both arrays are built at the profile's one material edge.
+  let terrainGrainEdge = f32(textureDimensions(terrainSurfaceAlbedo).x);
+  let terrainGrainLevel0 = terrainGroundGrainLevel0(terrainGrainFootprint, terrainGrainEdge);
+  let terrainGrainLevel1 = terrainGroundGrainLevel1(terrainGrainFootprint, terrainGrainEdge);
+  let terrainGrainLevel2 = terrainGroundGrainLevel2(terrainGrainFootprint, terrainGrainEdge);
   let terrainGrainShown = 1.0 - smoothstep(
     ${GROUND_GRAIN_SEABED_FADE.start.toFixed(1)}, ${GROUND_GRAIN_SEABED_FADE.end.toFixed(1)},
     uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);
@@ -1765,15 +1779,15 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   var terrainGrain2 = vec4f(0.0);
   if (terrainGrainShare0 > 0.0) {
     terrainGrain0 = terrainGrainShare0 * terrainGroundGrainFetch(
-      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv0, terrainGrainLevel0);
   }
   if (terrainGrainShare1 > 0.0) {
     terrainGrain1 = terrainGrainShare1 * terrainGroundGrainFetch(
-      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv1, terrainGrainLevel1);
   }
   if (terrainGrainShare2 > 0.0) {
     terrainGrain2 = terrainGrainShare2 * terrainGroundGrainFetch(
-      terrainGrainUv2, terrainGroundGrainFrame2(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv2, terrainGrainLevel2);
   }
   // A planar xz read smears down a steep face, and on one the xz footprint
   // also understates the pixel; cliffs keep the material's triplanar detail.
@@ -1810,11 +1824,11 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
   var terrainGrainSlope = vec2f(0.0);
   if (terrainGrainRelief0 > 0.0) {
     terrainGrainSlope += terrainGrainRelief0 * terrainGroundGrainGradient(
-      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainLevel0);
   }
   if (terrainGrainRelief1 > 0.0) {
     terrainGrainSlope += terrainGrainRelief1 * terrainGroundGrainGradient(
-      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainDdx, terrainGrainDdy);
+      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainLevel1);
   }
   terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;
@@ -3207,10 +3221,15 @@ let terrainTurfCover = terrainTurfShareOf(i32(terrainPrimaryId)) * terrainBlend0
 // disagree about where the airfield is.
 var terrainGroundAirfield = 0.0;
 #ifdef TERRAIN_SURFACE_RUNWAY
+// The nearest airport, chosen ONCE per fragment for both the airfield surround
+// and the runway painter below (RunwaySurface.ts, terrainRunwayNearestSlot).
+let terrainRunwaySlot = terrainRunwayNearestSlot(terrainAbsolutePosition.xz);
+let terrainRunwaySlotFrame = uniforms.terrainRunwayFrames[terrainRunwaySlot];
+let terrainRunwaySlotShape = uniforms.terrainRunwayShapes[terrainRunwaySlot];
 terrainGroundAirfield = terrainRunwayAirfieldInfluence(
   terrainAbsolutePosition.xz,
-  uniforms.terrainRunwayFrame,
-  uniforms.terrainRunwayShape);
+  terrainRunwaySlotFrame,
+  terrainRunwaySlotShape);
 #endif
 let terrainGroundVegetation = clamp(terrainGroundCover.x, 0.0, 1.0)
   * (1.0 - terrainGroundAirfield);
@@ -3481,6 +3500,7 @@ var terrainRunwayPaved = 0.0;
 terrainRunwaySurface(
   terrainAbsolutePosition, terrainGeometricNormal,
   terrainWorldDdx, terrainWorldDdy, terrainDetailWeight,
+  terrainRunwaySlotFrame, terrainRunwaySlotShape,
   &terrainAlbedo, &terrainNormal, &terrainRoughness, &terrainCavity,
   &terrainF0, &terrainDiffuseRoughness, &terrainRunwayPaved,
 );
@@ -3997,8 +4017,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private triplanarMode: TerrainTriplanarMode = "biplanar";
   private heightBlendMaxMaterials = 3;
   private runwayEnabled = false;
-  private runwayFrame: readonly [number, number, number, number] = [0, 0, 0, 1];
-  private runwayShape: readonly [number, number, number, number] = [0, 0, 0, 0];
+  /** `3-9` per airport slot: see `RUNWAY_SURFACE_UNIFORMS`. */
+  private runwaySet = resolveRunwaySurfaceSetBinding([]);
   private detileWarp = DEFAULT_DETILE_WARP;
   private groundPatchwork = 1;
   /** Volcanic land: the profile's `volcanicMaterials` (see setVolcanicMaterials). */
@@ -4182,12 +4202,24 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
    * entirely, so a world without an airport pays nothing.
    */
   setRunway(airport: Readonly<AirportDefinition> | null): void {
-    const enabled = airport !== null;
-    if (airport) {
-      const binding = resolveRunwaySurfaceBinding(airport);
-      this.runwayFrame = binding.frame;
-      this.runwayShape = binding.shape;
-    }
+    this.setRunways(airport ? [airport] : []);
+  }
+
+  /**
+   * Paint every airport in `airports`, home field first, each fragment for
+   * the airport whose centre is nearest.
+   *
+   * A change of list is a UNIFORM write: the arrays are compiled at their
+   * full slot count, so an airport spawning mid-flight costs no recompile.
+   * The define changes — and the material recompiles — only between no
+   * airport at all and some airport, which the airport network never does:
+   * it cannot add an airport to a world without a home field, and it never
+   * retires the home field.
+   */
+  setRunways(airports: readonly Readonly<AirportDefinition>[]): void {
+    // In place: the arrays bindForSubMesh uploads are the same two for life.
+    this.runwaySet = resolveRunwaySurfaceSetBinding(airports, this.runwaySet);
+    const enabled = this.runwaySet.count > 0;
     if (enabled === this.runwayEnabled) return;
     this.runwayEnabled = enabled;
     this.markAllDefinesAsDirty();
@@ -4481,7 +4513,8 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       "terrainSplatWeightHi",
       "terrainShoreDistanceAtlas",
       "terrainLakeDepthAtlas",
-      "terrainProvinceField",
+      "terrainProvincePaint",
+      "terrainProvinceLift",
     ]) {
       if (!samplers.includes(name)) samplers.push(name);
     }
@@ -4551,8 +4584,10 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
       uniformBuffer.setTexture("terrainHeightAtlas", this.heightAtlasTexture);
     }
     if (this.provinceField) {
-      // rg32float, textureLoad only and no sampler, like the height atlas.
-      uniformBuffer.setTexture("terrainProvinceField", this.provinceField.texture);
+      // rgba16float and r16float: filterable, each with its bilinear,
+      // repeat-addressed sampler (ClimateProvinceField.ts).
+      uniformBuffer.setTexture("terrainProvincePaint", this.provinceField.paint);
+      uniformBuffer.setTexture("terrainProvinceLift", this.provinceField.lift);
     }
   }
 
@@ -4586,8 +4621,9 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
         { name: "terrainCanopyBands", size: 4, type: "vec4" },
         // 4-4: (atlasEdge, slotEdge, gutter, gridEdge) for the height atlas.
         { name: "terrainHeightAtlasShape", size: 4, type: "vec4" },
-        // The climate province window: (1 / texel metres, resolution, 0, 0).
-        // Declared unconditionally, like the runway frame.
+        // The climate province window: (1 / (texel metres x resolution), 0,
+        // 0, 0), world metres to window UV. Declared unconditionally, like
+        // the runway frame.
         { name: "terrainProvinceShape", size: 4, type: "vec4" },
         {
           name: "terrainMaterialTiling",
@@ -4656,13 +4692,14 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
     uniformBuffer.updateFloat4(
       "terrainProvinceShape",
-      this.provinceField?.inverseTexelMeters ?? 0,
-      this.provinceField?.resolution ?? 1,
+      this.provinceField?.inverseWindowMeters ?? 0,
+      0,
       0,
       0,
     );
-    uniformBuffer.updateFloat4("terrainRunwayFrame", ...this.runwayFrame);
-    uniformBuffer.updateFloat4("terrainRunwayShape", ...this.runwayShape);
+    uniformBuffer.updateFloatArray("terrainRunwayFrames", this.runwaySet.frames);
+    uniformBuffer.updateFloatArray("terrainRunwayShapes", this.runwaySet.shapes);
+    uniformBuffer.updateFloat4("terrainRunwaySet", this.runwaySet.count, 0, 0, 0);
   }
 
   override getCustomCode(

@@ -6,8 +6,21 @@ export {
   isPointOnRunway,
   roundedRectangleSignedDistance,
   runwayToWorld,
+  worldAirportAt,
   worldToRunway,
 } from "./airport";
+export {
+  AIRPORT_SPAWN_POLICY,
+  airportDesignator,
+  airportSpawnDue,
+  findSpawnedAirport,
+  getRunwayEnds,
+  nearestAirport,
+  spawnedAirportGroundAllowed,
+  spawnedAirportSiteHeight,
+  withAirports,
+} from "./airportNetwork";
+export type { NearestAirport, RunwayEnd } from "./airportNetwork";
 export {
   assessAirportSite,
   DETAILED_PRIMARY_COUNT,
@@ -40,6 +53,7 @@ export {
   sampleFilteredTerrainHeight,
   sampleFilteredTerrainUpliftHeight,
   sampleTerrainHeight,
+  sampleTerrainHeightBeforeEarthworks,
   sampleTerrainMoisture,
   sampleTerrainNormal,
   sampleTerrainTemperature,

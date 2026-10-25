@@ -155,12 +155,24 @@ export function windsockAxisDirection(
   headingRadians: number,
   droopRadians: number,
 ): readonly [number, number, number] {
+  const out = { x: 0, y: 0, z: 0 };
+  windsockAxisDirectionToRef(headingRadians, droopRadians, out);
+  return [out.x, out.y, out.z];
+}
+
+/**
+ * `windsockAxisDirection` written into `out` — the same arithmetic, for the
+ * per-frame sock pose, which must not allocate.
+ */
+export function windsockAxisDirectionToRef(
+  headingRadians: number,
+  droopRadians: number,
+  out: { x: number; y: number; z: number },
+): void {
   const horizontal = Math.cos(droopRadians);
-  return [
-    Math.sin(headingRadians) * horizontal,
-    -Math.sin(droopRadians),
-    Math.cos(headingRadians) * horizontal,
-  ];
+  out.x = Math.sin(headingRadians) * horizontal;
+  out.y = -Math.sin(droopRadians);
+  out.z = Math.cos(headingRadians) * horizontal;
 }
 
 /**
@@ -854,11 +866,40 @@ export function buildPerimeterFenceGeometry(
    */
   heightAt: (along: number, across: number) => number = () => 0,
 ): WindsockPartGeometry {
-  const post = buildFencePart("post");
-  const rail = buildFencePart("rail");
   const out = { positions: [] as number[], normals: [] as number[], indices: [] as number[] };
   const stations = perimeterFenceStations(airport);
-  for (const station of stations) {
+  appendPerimeterFenceStations(out, stations, 0, stations.length, heightAt);
+  return {
+    positions: new Float32Array(out.positions),
+    normals: new Float32Array(out.normals),
+    indices: new Uint32Array(out.indices),
+  };
+}
+
+/** A growing merged-geometry buffer, as the furniture builders append into. */
+export interface FurnitureGeometryAccumulator {
+  readonly positions: number[];
+  readonly normals: number[];
+  readonly indices: number[];
+}
+
+/**
+ * Append fence stations `[start, end)` to `out` — `buildPerimeterFenceGeometry`
+ * is exactly this over every station, so a caller that spreads the ~1,200
+ * stations of a runway's perimeter over several frames (an airport spawned in
+ * flight) produces the same vertices in the same order.
+ */
+export function appendPerimeterFenceStations(
+  out: FurnitureGeometryAccumulator,
+  stations: readonly FenceStation[],
+  start: number,
+  end: number,
+  heightAt: (along: number, across: number) => number,
+): void {
+  const post = buildFencePart("post");
+  const rail = buildFencePart("rail");
+  for (let index = start; index < Math.min(end, stations.length); index += 1) {
+    const station = stations[index]!;
     const base = heightAt(station.along, station.across);
     appendTransformed(out, post, [0, 1, 0], [station.across, base, station.along]);
     if (!station.toNext) continue;
@@ -874,11 +915,6 @@ export function buildPerimeterFenceGeometry(
       );
     }
   }
-  return {
-    positions: new Float32Array(out.positions),
-    normals: new Float32Array(out.normals),
-    indices: new Uint32Array(out.indices),
-  };
 }
 
 // ---------------------------------------------------------------------------
