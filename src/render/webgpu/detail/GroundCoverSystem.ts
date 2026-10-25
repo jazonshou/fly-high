@@ -118,7 +118,11 @@ export interface GroundCoverSystemOptions {
    * it did before the column budget existed.
    */
   readonly terrainHeight?: (x: number, z: number) => number;
-  /** The tile bake's clock in milliseconds; `performance.now` by default. */
+  /**
+   * The tile bake's clock in milliseconds, `() => performance.now()` by
+   * default. It is not called on `performance`, so pass a closure: a bare
+   * `performance.now` throws without `performance` as its `this`.
+   */
   readonly now?: () => number;
   /**
    * `6-9`: the shared amortised-compute meter. Optional so the NullEngine
@@ -486,6 +490,9 @@ export class GroundCoverSystem {
    * update has spent since construction, the tiles finished, and the calls
    * the pace floor kept baking past the budget. A call that spent more than
    * the budget and one step without adding to `paceFloorCalls` overran it.
+   * The update that finishes a tile also times its three texture uploads, and
+   * the maximum keeps the first frames' warm-up, so a per-frame or per-leg
+   * check reads `lastMilliseconds` every frame and keeps its own maximum.
    */
   get bakeStats(): {
     lastMilliseconds: number;
