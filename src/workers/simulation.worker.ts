@@ -4,6 +4,7 @@ import { aircraftSpec } from "@/src/aircraft/catalogue";
 import {
   applyFlightAssistance,
   aircraftDefinition,
+  isGroundSteering,
   AttractHold,
   Autoland,
   ScenicAltitudeHold,
@@ -426,6 +427,14 @@ function assistedControls(): FlightControls {
   const sim = simulator;
   if (!sim) return controls;
   const telemetry = sim.telemetry();
+  // Scenic's ground heading hold keeps the runway heading of a runway start
+  // through the take-off roll. Steering (rudder, or A/D's tiller) moves the
+  // heading it holds to wherever the pilot lets go, and it ends once the
+  // aeroplane is flying: it is not the heading of whatever runway it lands on.
+  if (groundHeadingTarget !== null) {
+    if (telemetry.altitudeAgl > 5) groundHeadingTarget = null;
+    else if (sim.state.onGround && isGroundSteering(controls)) groundHeadingTarget = telemetry.heading;
+  }
   const selectedMode = attractMode ? "scenic" : mode;
   // Scenic's centred stick holds height. NOT under attractMode: the menu flight
   // carries its own complete supervisor (src/sim/attract.ts), and layering a

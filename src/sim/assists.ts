@@ -16,6 +16,11 @@ function copyControls(out: FlightControls, requested: FlightControls): void {
   out.gear = requested.gear;
 }
 
+/** Whether the pilot is steering on the ground: rudder, or the roll axis's tiller. */
+export function isGroundSteering(requested: Readonly<FlightControls>): boolean {
+  return Math.abs(requested.yaw) >= 0.04 || Math.abs(requested.roll) >= 0.04;
+}
+
 /**
  * Converts pilot commands into surface commands for the two assisted modes.
  *
@@ -24,8 +29,9 @@ function copyControls(out: FlightControls, requested: FlightControls): void {
  * Pilot mode retains direct surface control while adding only rate damping and
  * a small amount of turn coordination. Unassisted is a byte-for-byte pass
  * through. Scenic mode can optionally hold a runway heading while the pilot is
- * not commanding rudder; Pilot and Unassisted always leave ground steering
- * direct, and any Scenic rudder input immediately overrides the hold.
+ * not steering; Pilot and Unassisted always leave ground steering direct, and
+ * any Scenic steering input, on the rudder or on the roll axis (which steers
+ * the nosewheel on the ground, `steeringCommand`), immediately overrides it.
  */
 export function applyFlightAssistance(
   out: FlightControls,
@@ -43,7 +49,7 @@ export function applyFlightAssistance(
       mode === "scenic" &&
       Number.isFinite(groundHeadingTarget) &&
       telemetry.groundSpeed > 1.5 &&
-      Math.abs(requested.yaw) < 0.04
+      !isGroundSteering(requested)
     ) {
       const headingError = Math.atan2(
         Math.sin((groundHeadingTarget ?? telemetry.heading) - telemetry.heading),

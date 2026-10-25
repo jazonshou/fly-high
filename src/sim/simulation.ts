@@ -65,6 +65,58 @@ const GEAR_DOWN_LOCK_THRESHOLD = 0.98;
 const CRASH_IMPACT_SPEED = 8.5;
 const CRASH_SURFACE_CLEARANCE = 0.006;
 /**
+ * WHEEL BRAKES act on the main gear only, as on every aeroplane here (none has
+ * nosewheel brakes), and they are a friction brake: the force is the tyre's
+ * load times this coefficient times the pedal, whatever the speed. They used to
+ * be a damper whose force fell with the speed (`|v| * 7000` per leg at full
+ * pedal), so a 250 t 747 took 30 s to stop from 10 m/s and crept the last
+ * 2 m/s for 12 of them, and against 5% throttle never stopped at all. 0.68 is
+ * the coefficient the old model capped at: dry concrete under an anti-skid
+ * system, about 0.6 g on the mains' share of the weight.
+ */
+export const WHEEL_BRAKE_FRICTION = 0.68;
+/**
+ * Below this rolling speed a braked tyre's force fades in proportion, so the
+ * friction brake stops the wheel instead of reversing it. Small enough that a
+ * stop reads as a stop: the last 0.3 m/s takes a twentieth of a second.
+ */
+const WHEEL_BRAKE_SLIP_SPEED = 0.3;
+/**
+ * Peak tyre friction, the radius of the friction circle a braked tyre shares
+ * between braking and cornering: what the brake takes, steering cannot have.
+ */
+const TYRE_PEAK_FRICTION = 0.85;
+/**
+ * CORNERING: side force per newton of tyre load per radian of slip angle, the
+ * cornering stiffness of an aircraft tyre (it saturates at the 0.78 friction
+ * limit near 7.5 degrees). Load-scaled, so a 747 follows its nosewheel the way
+ * a Cessna does. The old law was a fixed 8,000 N per m/s of side slip per leg
+ * whatever the load and speed: ten times too stiff on the trainer at speed and
+ * so soft on the 747 that its track lagged its nose by 10 s.
+ */
+export const TYRE_CORNERING_STIFFNESS = 6;
+/** The slip angle is taken against at least this rolling speed, so it stays finite at a standstill. */
+const TYRE_SLIP_REFERENCE_SPEED = 1.5;
+/**
+ * NOSEWHEEL STEERING authority fades with speed, as steer-by-wire fades a
+ * tiller's: full travel at taxi speeds, and above them no more angle than
+ * turns the aeroplane at this lateral acceleration (kinematically,
+ * v^2 tan(angle) / wheelbase), or at half the acceleration that would tip it
+ * over its main and nose wheels if that is less (the F-16's narrow track tips
+ * at 0.51 g). Full travel at 60 m/s would ask a 747 for 3 g; its tyres give
+ * 0.8, and the rest is a ground loop.
+ */
+export const NOSEWHEEL_STEERING_LATERAL_LIMIT = 0.35 * STANDARD_GRAVITY;
+/**
+ * The nosewheel answers the rudder pedals and, ON THE GROUND ONLY, the roll
+ * axis as well (A/D on a keyboard): the tiller. In the air the nosewheel
+ * touches nothing, so the roll axis is the ailerons alone, as it always was;
+ * on the ground both sum, clamped to full travel.
+ */
+export function steeringCommand(actuators: Readonly<FlightControls>): number {
+  return clamp(actuators.yaw + actuators.roll, -1, 1);
+}
+/**
  * GROUND SPOILERS, the type's rule with the speedbrake always armed: on the
  * ground they deploy fully once the throttle is back at idle above a walking-
  * pace-and-then-some ground speed (a touchdown, or a rejected take-off), and
@@ -145,6 +197,13 @@ interface Scratch {
   tempC: Vec3;
   tempD: Vec3;
   maximumGroundPenetration: number;
+  /** What the braked wheels in contact can hold statically this step, N. */
+  brakeHoldForce: number;
+  /**
+   * Body yaw rate (rad/s, +y) of the turn the steered nosewheel describes
+   * without slipping, v tan(angle) / wheelbase; 0 with it off the ground.
+   */
+  kinematicYawRate: number;
   airframeContact: boolean;
   gearBody: Vec3;
 }
@@ -165,6 +224,8 @@ function createScratch(): Scratch {
     tempC: vec3(),
     tempD: vec3(),
     maximumGroundPenetration: 0,
+    brakeHoldForce: 0,
+    kinematicYawRate: 0,
     airframeContact: false,
     gearBody: vec3(),
   };
@@ -757,6 +818,66 @@ function sanitizeState(state: FlightState): void {
   normalizeQuaternionInto(state.orientation, state.orientation);
 }
 
+interface SteeringGeometry {
+  /** Steering leg to the mean of the others, metres: the base of the kinematic turn. */
+  readonly wheelbase: number;
+  /** Most lateral acceleration a full steering input may ask for, m/s^2. */
+  readonly lateralLimit: number;
+}
+
+const steeringGeometries = new WeakMap<AircraftDefinition, SteeringGeometry>();
+
+function steeringGeometry(aircraft: AircraftDefinition): SteeringGeometry {
+  let geometry = steeringGeometries.get(aircraft);
+  if (geometry) return geometry;
+  let steeringX = 0;
+  let otherX = 0;
+  let others = 0;
+  let halfTrack = 0;
+  let cgHeight = 0;
+  for (const leg of aircraft.gear) {
+    cgHeight = Math.max(cgHeight, -leg.position.y);
+    if (leg.maxSteeringAngle) steeringX = leg.position.x;
+    else {
+      otherX += leg.position.x;
+      others += 1;
+      halfTrack = Math.max(halfTrack, Math.abs(leg.position.z));
+    }
+  }
+  const mainX = otherX / Math.max(1, others);
+  const wheelbase = Math.max(0.5, steeringX - mainX);
+  // The aeroplane tips about the line from the nosewheel to a main wheel;
+  // abeam the CG that line is this far out from the centreline.
+  const tipArm = halfTrack * clamp(steeringX / wheelbase, 0, 1);
+  const turnover = cgHeight > 0 ? (tipArm / cgHeight) * STANDARD_GRAVITY : Infinity;
+  geometry = {
+    wheelbase,
+    lateralLimit: Math.min(NOSEWHEEL_STEERING_LATERAL_LIMIT, 0.5 * turnover),
+  };
+  steeringGeometries.set(aircraft, geometry);
+  return geometry;
+}
+
+/**
+ * The nosewheel's angle for a steering command (-1..1, positive steers right)
+ * at a ground speed: full travel up to taxi speeds, and above them only what
+ * turns the aeroplane at its steering lateral limit (see
+ * `NOSEWHEEL_STEERING_LATERAL_LIMIT`).
+ */
+export function nosewheelSteeringAngle(
+  aircraft: AircraftDefinition,
+  maxAngle: number,
+  command: number,
+  groundSpeed: number,
+): number {
+  const geometry = steeringGeometry(aircraft);
+  const limit = Math.min(
+    maxAngle,
+    Math.atan((geometry.wheelbase * geometry.lateralLimit) / Math.max(1e-6, groundSpeed * groundSpeed)),
+  );
+  return clamp(command, -1, 1) * limit;
+}
+
 function applyGroundForces(
   state: FlightState,
   environment: EnvironmentInput,
@@ -768,6 +889,9 @@ function applyGroundForces(
 
   let contacts = 0;
   scratch.maximumGroundPenetration = 0;
+  scratch.brakeHoldForce = 0;
+  scratch.kinematicYawRate = 0;
+  const groundSpeed = Math.hypot(state.velocity.x, state.velocity.z);
   const referenceX = state.position.x;
   const referenceZ = state.position.z;
   const aircraftForward = scratch.tempC;
@@ -847,9 +971,20 @@ function applyGroundForces(
     normalizeInto(scratch.liftDirectionBody, scratch.liftDirectionBody, BODY_RIGHT);
 
     if (gear.maxSteeringAngle) {
-      // The nose wheel follows rudder input at taxi speeds. Rotate the tyre's
-      // tangent frame about the runway normal; positive pilot yaw steers right.
-      const steering = state.actuators.yaw * gear.maxSteeringAngle;
+      // The nose wheel follows the pedals and the tiller (`steeringCommand`),
+      // with an authority that fades at speed (`nosewheelSteeringAngle`).
+      // Rotate the tyre's tangent frame about the runway normal; positive
+      // pilot yaw steers right.
+      const steering = nosewheelSteeringAngle(
+        aircraft,
+        gear.maxSteeringAngle,
+        steeringCommand(state.actuators),
+        groundSpeed,
+      );
+      // Nose right is -omega_y; rolling backwards turns the other way.
+      scratch.kinematicYawRate = steering === 0
+        ? 0
+        : (-dot3(state.velocity, aircraftForward) * Math.tan(steering)) / steeringGeometry(aircraft).wheelbase;
       const cosine = Math.cos(steering);
       const sine = Math.sin(steering);
       const forwardX = scratch.velocityDirectionBody.x;
@@ -875,14 +1010,37 @@ function applyGroundForces(
       pointVelocityY * scratch.liftDirectionBody.y +
       pointVelocityZ * scratch.liftDirectionBody.z;
     const frictionMultiplier = clamp(finiteOr(sample.friction, 1), 0.05, 2);
-    const rollingLimit =
-      normalForce * (0.012 + state.actuators.brake * 0.68) * frictionMultiplier;
-    const rollingForce =
-      -Math.sign(forwardSpeed) *
-      Math.min(rollingLimit, Math.abs(forwardSpeed) * (450 + 7_000 * state.actuators.brake));
-    const lateralLimit = normalForce * 0.78 * frictionMultiplier;
+    // A tyre's stiffness grows with its load less and less, and is read here
+    // at no more than the aeroplane's weight: the 12 g spike of a hard
+    // arrival otherwise makes the side and brake forces stiffer than one
+    // step can integrate, and they chatter. Their LIMITS still use the load.
+    const stiffnessLoad = Math.min(normalForce, aircraft.mass * STANDARD_GRAVITY);
+    // Rolling resistance, every wheel.
+    const rollingLimit = normalForce * 0.012 * frictionMultiplier;
+    let rollingForce =
+      -Math.sign(forwardSpeed) * Math.min(rollingLimit, Math.abs(forwardSpeed) * 450);
+    let lateralLimit = normalForce * 0.78 * frictionMultiplier;
+    if (!gear.maxSteeringAngle && state.actuators.brake > 0) {
+      // The friction brake (`WHEEL_BRAKE_FRICTION`), faded only in the last
+      // fraction of a metre per second so that it stops the wheel rather
+      // than reversing it; and what it takes from the friction circle,
+      // cornering cannot have.
+      const brakeLimit = normalForce * WHEEL_BRAKE_FRICTION * state.actuators.brake * frictionMultiplier;
+      scratch.brakeHoldForce += brakeLimit;
+      rollingForce -= Math.sign(forwardSpeed) * Math.min(
+        brakeLimit,
+        (Math.abs(forwardSpeed) / WHEEL_BRAKE_SLIP_SPEED)
+          * stiffnessLoad * WHEEL_BRAKE_FRICTION * state.actuators.brake * frictionMultiplier,
+      );
+      const peak = normalForce * TYRE_PEAK_FRICTION * frictionMultiplier;
+      lateralLimit = Math.min(lateralLimit, Math.sqrt(Math.max(0, peak * peak - rollingForce * rollingForce)));
+    }
+    // Cornering: slip angle times load times the tyre's stiffness (see
+    // `TYRE_CORNERING_STIFFNESS`).
+    const lateralStiffness =
+      (stiffnessLoad * TYRE_CORNERING_STIFFNESS) / Math.max(Math.abs(forwardSpeed), TYRE_SLIP_REFERENCE_SPEED);
     const lateralForce =
-      -Math.sign(sideSpeed) * Math.min(lateralLimit, Math.abs(sideSpeed) * 8_000);
+      -Math.sign(sideSpeed) * Math.min(lateralLimit, Math.abs(sideSpeed) * lateralStiffness);
     forceX +=
       scratch.velocityDirectionBody.x * rollingForce + scratch.liftDirectionBody.x * lateralForce;
     forceY +=
@@ -1319,25 +1477,40 @@ function integrateSubstep(
     // velocity-based friction lets a parked aircraft rotate in a crosswind
     // before the contact model can react, so blend in low-speed yaw grip.
     const yawGrip = clamp(1 - groundSpeed / 18, 0, 1);
-    if (groundSpeed < 1.2 && Math.abs(state.actuators.yaw) < 0.05) {
+    if (groundSpeed < 1.2 && Math.abs(steeringCommand(state.actuators)) < 0.05) {
       scratch.torqueBody.y = 0;
     } else {
       scratch.torqueBody.y *= 1 - yawGrip * 0.86;
     }
+    // The grip resists any yaw but the turn the nosewheel is steering
+    // (`kinematicYawRate`): damping all of it left a 747 at full steering
+    // turning on a 600 m circle where its geometry gives 120 m.
     scratch.torqueBody.y -=
-      state.angularVelocity.y * aircraft.inertia.y * (3.5 + yawGrip * 8.5);
+      (state.angularVelocity.y - scratch.kinematicYawRate) * aircraft.inertia.y * (3.5 + yawGrip * 8.5);
   }
-  const parked =
-    (contactCount > 0 || wasOnGround) &&
-    groundSpeed < 0.65 &&
+  const pilotNeutral =
     state.actuators.throttle < 0.02 &&
     Math.abs(state.actuators.pitch) < 0.05 &&
     Math.abs(state.actuators.roll) < 0.05 &&
     Math.abs(state.actuators.yaw) < 0.05;
+  // Held brakes hold the aeroplane against any thrust their static friction
+  // can, whatever the pilot does with the other controls: a braked wheel
+  // does not roll, so steering a stopped aeroplane moves nothing.
+  const brakesHold = contactCount > 0 && Math.abs(thrustForce) < scratch.brakeHoldForce;
+  // Standing on its wheels: all of them, or (for one step of suspension
+  // jitter) none since it was. Never one or two: a 747 dropped on one main
+  // wheel at 50 degrees of bank, its side slip now killed by its tyres, was
+  // frozen there by this lock instead of falling onto its wingtip.
+  const standing = contactCount === aircraft.gear.length || (contactCount === 0 && wasOnGround);
+  const parked =
+    standing &&
+    groundSpeed < 0.65 &&
+    (pilotNeutral || brakesHold);
   if (parked) {
     // Static tyre friction cancels modest wind loads until the pilot adds
-    // power or steering. Keep the lock across a one-step suspension gap so a
-    // gust cannot turn spring jitter into an artificial parked tip-over.
+    // power or steering, or lets the brakes off against power. Keep the lock
+    // across a one-step suspension gap so a gust cannot turn spring jitter
+    // into an artificial parked tip-over.
     state.onGround = true;
     state.velocity.x = 0;
     state.velocity.z = 0;

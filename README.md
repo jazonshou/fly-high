@@ -24,7 +24,7 @@ Open [http://localhost:3000](http://localhost:3000) and press **Start**.
 | Key | Action |
 | --- | --- |
 | `W` / `S` | Nose down / nose up |
-| `A` / `D` | Bank left / bank right |
+| `A` / `D` | Bank left / bank right; on the ground, steer the nosewheel left / right |
 | `Q` / `E` | Rudder left / rudder right |
 | `+` / `−` (or `Shift` / `Ctrl`) | Throttle up / down |
 | `F` / `V` | Extend / retract flaps |
@@ -39,7 +39,7 @@ Open [http://localhost:3000](http://localhost:3000) and press **Start**.
 
 Fly 14 km from every airport and a new one is built 5 to 9 km away, so there is always somewhere to land; the nearest-airport marker (or the button at the top right of the HUD) points to whichever is closest.
 
-Autoland (`L`, or the button beside it) flies the aeroplane you are in to the nearest airport and lands it: it plans a circuit to whichever runway end it can reach, flies the approach and flare inside the aircraft's own limits, and brakes to a stop on the runway. When an approach cannot end in a landing (too high, too fast, off the centreline, or a downdraft on short final) it goes around and tries again. Once stopped it holds the brakes until you press `L` again or move the stick.
+Autoland (`L`, or the button beside it) flies the aeroplane you are in to the nearest airport and lands it: it plans a circuit to whichever runway end it can reach, flies the approach and flare inside the aircraft's own limits, and brakes to a stop on the runway, steering so that it stops parallel to it. When an approach cannot end in a landing (too high, too fast, off the centreline, or a downdraft on short final) it goes around and tries again. Once stopped it holds the brakes until you press `L` again or move the stick.
 
 Gamepads and joysticks are supported too. Sensitivity, dead zone, pitch inversion, and mouse flight can be changed in settings.
 

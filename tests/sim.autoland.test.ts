@@ -49,6 +49,14 @@ interface Flight {
   peakBank: number;
   /** Total heading change flown, radians: a loop shows as more than pi. */
   turned: number;
+  /** Seconds from the touchdown to the stop. */
+  rolloutSeconds: number;
+  /**
+   * Largest angle of the nose to the runway with every wheel down below
+   * 30 m/s, and at the stop, radians.
+   */
+  slowHeadingError: number;
+  stopHeadingError: number;
   runway: AirportDefinition;
   aircraftKind: AircraftKind;
 }
@@ -115,6 +123,12 @@ function flyAutoland(
   let peakBank = 0;
   let turned = 0;
   let lastHeading = input.telemetry.heading;
+  let touchdownTime = Number.NaN;
+  let slowHeadingError = 0;
+  const headingError = () => Math.abs(Math.atan2(
+    Math.sin(sim.telemetry().heading - autoland.status.runwayHeading),
+    Math.cos(sim.telemetry().heading - autoland.status.runwayHeading),
+  ));
   for (let step = 0; step < seconds / FIXED_TIME_STEP; step += 1) {
     const position = sim.state.position;
     sampleWind(world, position.x, position.y, position.z, sim.state.time, wind);
@@ -143,8 +157,21 @@ function flyAutoland(
     lastHeading = input.telemetry.heading;
     autoland.update(input, controls);
     if (phases.at(-1) !== autoland.status.phase) phases.push(autoland.status.phase);
+    // The last touchdown: a bounce back into the air starts it again.
+    if (autoland.status.phase === "rollout") {
+      if (Number.isNaN(touchdownTime)) touchdownTime = sim.state.time;
+    } else if (autoland.status.phase !== "landed") {
+      touchdownTime = Number.NaN;
+    }
     sim.setControls(controls);
     sim.step(FIXED_TIME_STEP);
+    if (
+      autoland.status.phase === "rollout"
+      && Math.hypot(sim.state.velocity.x, sim.state.velocity.z) < 30
+      && sim.state.dynamics.contactCount === sim.aircraft.gear.length
+    ) {
+      slowHeadingError = Math.max(slowHeadingError, headingError());
+    }
     if (sim.state.crashed || autoland.status.phase === "landed" || !autoland.engaged) break;
   }
   return {
@@ -155,6 +182,9 @@ function flyAutoland(
     phases,
     peakBank,
     turned,
+    rolloutSeconds: sim.state.time - touchdownTime,
+    slowHeadingError,
+    stopHeadingError: headingError(),
     runway,
     aircraftKind: kind,
   };
@@ -167,9 +197,9 @@ function expectGracefulLanding(flight: Flight): void {
   expect(flight.crashed, label).toBe(false);
   expect(flight.status.phase, label).toBe("landed");
   expect(flight.onRunway, label).toBe(true);
-  // Firm for the 747 (whose short-runway technique lands it at 0.9), soft
-  // for the others; a passenger would call any of these a landing, not an
-  // arrival.
+  // Positive, aimed at 0.7-0.9 m/s by type, and firmest for the 747 on a
+  // runway this short for it; a passenger would call any of these a landing,
+  // not an arrival.
   expect(flight.status.touchdownSinkRate, label).toBeLessThan(1.2);
   // Mains in the touchdown zone, nowhere near the far end.
   expect(flight.status.touchdownDistance, label).toBeGreaterThan(150);
@@ -179,6 +209,12 @@ function expectGracefulLanding(flight: Flight): void {
   // Inside the envelope throughout: below the stall angle, inside the bank limit.
   expect(flight.status.peakAngleOfAttack, label).toBeLessThan(aircraft.positiveStallAngle);
   expect(flight.peakBank, label).toBeLessThan(profile.maxBank + 2 * DEG);
+  // A decisive stop, square to the runway: the rollout steers the nose down
+  // it rather than across it ("it should make sure the plane is parallel to
+  // the runway", Jason, 2026-10-25), and the autobrake holds at least 0.36 g.
+  expect(flight.rolloutSeconds, label).toBeLessThan(24);
+  expect(flight.slowHeadingError, label).toBeLessThan(1.5 * DEG);
+  expect(flight.stopHeadingError, label).toBeLessThan(0.5 * DEG);
 }
 
 describe("autoland profile", () => {
@@ -245,12 +281,15 @@ describe("autoland flights", { timeout: 120_000 }, () => {
     });
   }
 
-  it("loops round to lose height when the start is too high and close to land", () => {
+  it("turns round to lose height when the start is too high and close to land", () => {
     const flight = flyAutoland("trainer", "short-high");
     expectGracefulLanding(flight);
-    // Lined up already, so landing straight in would turn nothing: the
-    // circuit it flies instead is a full reversal out and another back.
-    expect(flight.turned).toBeGreaterThan(Math.PI * 1.5);
+    expect(flight.status.attempt).toBe(1);
+    // Lined up already, so landing straight in would turn nothing: what it
+    // flies instead is at least a full reversal. That was a circuit back to
+    // this end until the steeper descent (2026-10-25) made the shorter way
+    // round, onto the other end of the runway, the one that loses the height.
+    expect(flight.turned).toBeGreaterThan(Math.PI);
   });
 
   // Downdraft strengths that defeat each aeroplane's stabilised approach. The

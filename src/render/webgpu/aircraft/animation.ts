@@ -1,5 +1,5 @@
 import type { FlightVisualState } from "@/src/game/types";
-import type { AircraftKind } from "@/src/sim";
+import { aircraftDefinition, nosewheelSteeringAngle, type AircraftKind } from "@/src/sim";
 
 export interface AircraftAnimationPose {
   readonly rotorRadiansPerSecond: number;
@@ -131,7 +131,6 @@ interface SurfaceTravel {
   readonly aileron: number;
   readonly elevator: number;
   readonly rudder: number;
-  readonly noseSteering: number;
   /** Full flap. The 150's barn-door 40 degrees is the type's signature. */
   readonly flap: number;
   /** Tyre radii, which set how fast the wheels appear to roll. */
@@ -144,7 +143,6 @@ const SURFACE_TRAVEL: Readonly<Record<AircraftKind, SurfaceTravel>> = Object.fre
     aileron: 0.25,
     elevator: 0.3,
     rudder: 0.32,
-    noseSteering: 0.24,
     flap: (40 * Math.PI) / 180,
     mainWheelRadius: 0.27,
     noseWheelRadius: 0.21,
@@ -153,29 +151,25 @@ const SURFACE_TRAVEL: Readonly<Record<AircraftKind, SurfaceTravel>> = Object.fre
     aileron: 0.22,
     elevator: 0.26,
     rudder: 0.28,
-    noseSteering: 0.2,
     flap: (20 * Math.PI) / 180,
     mainWheelRadius: 0.3,
     noseWheelRadius: 0.24,
   }),
   bizjet: Object.freeze({
-    // A large aeroplane's surfaces move through smaller angles, and its
-    // nosewheel steers less at speed than a light aircraft's.
+    // A large aeroplane's surfaces move through smaller angles.
     aileron: 0.17,
     elevator: 0.22,
     rudder: 0.24,
-    noseSteering: 0.16,
     flap: (30 * Math.PI) / 180,
     mainWheelRadius: 0.56,
     noseWheelRadius: 0.42,
   }),
   airliner: Object.freeze({
     // Larger again than the Global: a 747's control surfaces are enormous but
-    // move through small angles, and its nosewheel barely steers at speed.
+    // move through small angles.
     aileron: 0.14,
     elevator: 0.2,
     rudder: 0.22,
-    noseSteering: 0.12,
     flap: (30 * Math.PI) / 180,
     // 1.24 m tall main tyres and 1.12 m nose tyres.
     mainWheelRadius: 0.62,
@@ -197,6 +191,26 @@ function finite(value: number, fallback = 0): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, finite(value)));
+}
+
+/**
+ * The nosewheel's angle in the rig's sense (positive turns the tread to
+ * PORT), radians: the one the aeroplane really steers on. The simulator's
+ * own law (`nosewheelSteeringAngle`), from the pedals and the A/D tiller
+ * mixed as `steeringCommand` mixes them, at the type's full steering angle
+ * and faded with groundspeed as the aeroplane's is. Centred off the ground.
+ */
+function noseSteeringAngle(
+  kind: AircraftKind,
+  state: FlightVisualState,
+  rudder: number,
+  aileron: number,
+  groundSpeed: number,
+): number {
+  if (!state.onGround) return 0;
+  const aircraft = aircraftDefinition(kind);
+  const maxAngle = aircraft.gear.find((leg) => leg.maxSteeringAngle)?.maxSteeringAngle ?? 0;
+  return -nosewheelSteeringAngle(aircraft, maxAngle, clamp(rudder + aileron, -1, 1), groundSpeed);
 }
 
 /**
@@ -255,7 +269,7 @@ export function resolveAircraftAnimationPose(
       // negated, so the rudder answered every input backwards while the
       // nosewheel beside it steered the right way.
       rudder: rudder * travel.rudder,
-      noseSteering: state.onGround ? -rudder * travel.noseSteering : 0,
+      noseSteering: noseSteeringAngle(kind, state, rudder, aileron, groundSpeed),
       mainWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.mainWheelRadius : 0,
       noseWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.noseWheelRadius : 0,
       gearVisible: gearTravel > 0.012,
@@ -287,7 +301,7 @@ export function resolveAircraftAnimationPose(
     elevator: -elevator * travel.elevator,
     // See the turbine note above: right rudder, trailing edge to starboard.
     rudder: rudder * travel.rudder,
-    noseSteering: state.onGround ? -rudder * travel.noseSteering : 0,
+    noseSteering: noseSteeringAngle(kind, state, rudder, aileron, groundSpeed),
     mainWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.mainWheelRadius : 0,
     noseWheelRadiansPerSecond: wheelsRolling ? -groundSpeed / travel.noseWheelRadius : 0,
     gearVisible: true,
