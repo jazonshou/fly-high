@@ -10,7 +10,8 @@
  *    on every later phase of that arm; the first phase it shows on is marked.
  *    A worker failed on purpose (`--kill-detail-worker`, `--hang-detail-worker`)
  *    is not a trip: its leg and those after it say whether the runtime
- *    RECOVERED (restarted the worker) or FELL BACK, and only trips beyond the
+ *    RECOVERED (restarted the worker; RECOVERING when the restart is due at
+ *    its next update) or FELL BACK, and only trips beyond the
  *    one that failure accounts for count.
  *  - WOULD-TRIP: spans the runtime charged its worker 2,000 ms or more
  *    (`tests/perf/ab/detailWatchdog.ts`), which trip its 240-update deadline
@@ -142,16 +143,18 @@ export function workerTripped(state: DetailWorkerState): boolean {
 
 /**
  * What became of a worker failed on purpose, as of `after`: restarted
- * (RECOVERED), replaced by main-thread generation (FELL BACK), not yet
+ * (RECOVERED), noticed with the restart due at the runtime's next update
+ * (RECOVERING), replaced by main-thread generation (FELL BACK), not yet
  * noticed (UNDETECTED: a silent worker before the watchdog fires), or never
  * failed because there was no worker (NOT DELIVERED).
  */
-export type FaultOutcome = "RECOVERED" | "FELL BACK" | "UNDETECTED" | "NOT DELIVERED";
+export type FaultOutcome = "RECOVERED" | "RECOVERING" | "FELL BACK" | "UNDETECTED" | "NOT DELIVERED";
 
 export function faultOutcome(fault: DetailWorkerFault, after: DetailWorkerState): FaultOutcome {
   if (!fault.delivered || !fault.before) return "NOT DELIVERED";
   if (!after.active || after.fallbacks > fault.before.fallbacks) return "FELL BACK";
-  return (after.respawns ?? 0) > (fault.before.respawns ?? 0) ? "RECOVERED" : "UNDETECTED";
+  if ((after.respawns ?? 0) > (fault.before.respawns ?? 0)) return "RECOVERED";
+  return after.respawnPending ? "RECOVERING" : "UNDETECTED";
 }
 
 /**
@@ -391,6 +394,7 @@ function workerCell(row: VerdictRow): string {
     ...(worker.respawns !== undefined ? [`respawns ${worker.respawns}`] : []),
     `fallbacks ${worker.fallbacks}`,
     ...(worker.active ? [] : ["inactive"]),
+    ...(worker.respawnPending ? ["respawn pending"] : []),
   ].join(", ");
   const cells = [
     ...(row.fault ? [`${row.fault.kind} in ${row.fault.phase}: ${row.fault.outcome}`] : []),
@@ -427,7 +431,8 @@ export function renderVerdictMarkdown(verdict: FlightVerdict): string {
       + "back to generating cells on the main thread. Would-trip: spans it charged its worker 2,000 ms or more, "
       + "which trip the 240-update deadline at 120 Hz. Charged ms: the longest span, on the runtime's own clock "
       + "(presentation / generation). Build latency: accepted worker builds, wall ms. A worker failed on purpose "
-      + "says whether the runtime RECOVERED (restarted it) or FELL BACK; only trips beyond that one count.",
+      + "says whether the runtime RECOVERED (restarted it; RECOVERING: the restart is due at its next update) "
+      + "or FELL BACK; only trips beyond that one count.",
     "",
     "| phase | arm | commit | worker | would-trip | charged ms max | build latency ms p50 / p95 (n) "
       + "| render() ms p50 / p95 | KiB/frame | long tasks | frames/s |",

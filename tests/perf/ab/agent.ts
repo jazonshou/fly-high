@@ -377,6 +377,7 @@ interface DetailRuntimeInternals {
   readonly pendingPresentationBuild?: { readonly source?: string; readonly buildId?: number } | null;
   readonly presentationWorkerBuildTimeouts?: number;
   readonly presentationBuildCancellations?: number;
+  readonly workerHealth?: { readonly active: boolean };
   readonly presentationRebuildDiagnostics?: {
     readonly workerFallbacks: number;
     readonly workerGenerationTimeouts: number;
@@ -411,13 +412,18 @@ function detailWorkerState(target: FlightRenderer): DetailWorkerState | null {
     workerBuildMaxLatencyMilliseconds: buildMaxLatencyMs,
     workerConvergenceStalls: convergenceStalls,
   } = diagnostics;
+  // A runtime that restarts a failed worker has no client from the failure
+  // until its next update builds the replacement; its own `workerHealth`
+  // counts that worker as active, with the restart pending.
+  const health = detail.workerHealth;
   return {
-    active: detail.client !== null,
+    active: health?.active ?? detail.client !== null,
     fallbacks: diagnostics.workerFallbacks,
     generationTimeouts: diagnostics.workerGenerationTimeouts,
     buildTimeouts: diagnostics.workerBuildTimeouts,
     buildRejections: diagnostics.workerBuildRejections,
     ...(respawns !== undefined ? { respawns } : {}),
+    ...(health ? { respawnPending: health.active && detail.client === null } : {}),
     ...(heartbeats !== undefined ? { heartbeats } : {}),
     ...(maxSilenceMs !== undefined ? { maxSilenceMs } : {}),
     ...(buildMaxLatencyMs !== undefined ? { buildMaxLatencyMs } : {}),

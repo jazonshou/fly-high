@@ -473,6 +473,19 @@ describe("a worker failed on purpose", () => {
     expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(0);
   });
 
+  it("reads a worker caught on a leg's last update, its restart still pending, as RECOVERING", () => {
+    // A head times the silent worker out and drops its client; the next
+    // update builds the replacement. `workerHealth` counts it active.
+    const before: DetailWorkerState = { ...CLEAN, respawns: 0, respawnPending: false };
+    const pending: DetailWorkerState = { ...before, buildTimeouts: 1, buildRejections: 1, respawnPending: true };
+    const recovered: DetailWorkerState = { ...pending, respawns: 1, respawnPending: false };
+    const verdict = flightVerdict(faultRun([before, pending, recovered], killed(before, "hang")));
+    expect(verdict.rows.filter((row) => row.arm === "head").map((row) => [row.tripped, row.fault?.outcome ?? null]))
+      .toEqual([[false, null], [false, "RECOVERING"], [false, "RECOVERED"]]);
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(0);
+    expect(renderVerdictMarkdown(verdict)).toContain("| hang in leg 2: RECOVERING |");
+  });
+
   it("excuses a silent worker's timeout, and nothing past it", () => {
     const caught: DetailWorkerState = { ...CLEAN, buildTimeouts: 1, buildRejections: 1, respawns: 1 };
     const tripsAgain: DetailWorkerState = { ...caught, generationTimeouts: 1, respawns: 2 };

@@ -277,6 +277,8 @@ export interface DetailWorkerState {
   readonly buildTimeouts: number;
   readonly buildRejections: number;
   readonly respawns?: number;
+  /** The worker failed and its replacement is built at the runtime's next update; `active` counts it. */
+  readonly respawnPending?: boolean;
   readonly heartbeats?: number;
   readonly maxSilenceMs?: number;
   readonly buildMaxLatencyMs?: number;
