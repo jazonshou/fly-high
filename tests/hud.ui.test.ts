@@ -46,6 +46,19 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(orbit).toContain("ORBIT CAM");
   });
 
+  it("names the top and front views and, like orbit, leaves the reticle off; nothing else changes", () => {
+    for (const [mode, label] of [["top", "TOP CAM"], ["front", "FRONT CAM"]] as const) {
+      const markup = renderToStaticMarkup(createElement(Hud, {
+        state: INITIAL_VISUAL_STATE, aircraft: "trainer", mode: "full", flightMode: "unassisted", units: "aviation",
+        diagnostics: null, showDiagnostics: false, cameraMode: mode, cameraLabel: label, seedLabel: "AUD1T0",
+        mouseFlight: false,
+      }));
+      expect(markup).toContain(label);
+      expect(markup).not.toContain("attitude__aircraft");
+      expect(markup.replace(label, "ORBIT CAM")).toBe(renderHud("cinematic"));
+    }
+  });
+
   it("shows only the terminal reset alert after a crash", () => {
     const crashed = renderHud("chase", true);
     expect(crashed).toContain("AIRCRAFT DAMAGED · PRESS R");

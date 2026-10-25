@@ -84,11 +84,15 @@ interface ViewerStats {
 const GRAPHICS_DEVICE_LOST_MESSAGE =
   "The WebGPU device was lost. Reload to recreate the adapter, device, and all GPU resources.";
 
-const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "cinematic"];
+// `C` steps through these in order. The top and front views come after the
+// three that were there first, so those keep their places in the cycle.
+const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "cinematic", "top", "front"];
 const CAMERA_LABELS: Record<CameraMode, string> = {
   chase: "CHASE CAM",
   cockpit: "COCKPIT",
   cinematic: "ORBIT CAM",
+  top: "TOP CAM",
+  front: "FRONT CAM",
   freefly: "FREE CAM",
 };
 

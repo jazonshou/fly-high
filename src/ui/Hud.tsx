@@ -64,6 +64,16 @@ function runwayNumber(headingDegrees: number): string {
   return String(number === 0 ? 36 : number).padStart(2, "0");
 }
 
+/**
+ * The fixed aircraft symbol marks where the nose points on the attitude
+ * horizon, which means something only when the camera looks roughly along the
+ * nose. The orbit view circles the aeroplane, the top view looks down on it
+ * and the front view looks back at it, so none of them shows it.
+ */
+export function hudShowsAircraftReticle(cameraMode: CameraMode): boolean {
+  return cameraMode !== "cinematic" && cameraMode !== "top" && cameraMode !== "front";
+}
+
 function formatHeading(heading: number): string {
   const normalized = ((heading % 360) + 360) % 360;
   return Math.round(normalized).toString().padStart(3, "0");
@@ -274,7 +284,7 @@ export function Hud({
           <span className="attitude__line attitude__line--down-one" />
           <span className="attitude__line attitude__line--down-two" />
         </div>
-        {cameraMode !== "cinematic" ? (
+        {hudShowsAircraftReticle(cameraMode) ? (
           <div className="attitude__aircraft">
             <span />
             <i />

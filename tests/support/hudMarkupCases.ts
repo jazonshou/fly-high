@@ -31,7 +31,7 @@ const CRUISE: FlightVisualState = {
 const ALERTS: FlightVisualState = { ...CRUISE, stalled: true, brake: 0.5, bank: 75 };
 
 const CAMERA_LABELS: Record<CameraMode, string> = {
-  chase: "CHASE CAM", cockpit: "COCKPIT", cinematic: "ORBIT CAM", freefly: "FREE CAM",
+  chase: "CHASE CAM", cockpit: "COCKPIT", cinematic: "ORBIT CAM", top: "TOP CAM", front: "FRONT CAM", freefly: "FREE CAM",
 };
 
 export function hudMarkupCases(cameraModes: readonly CameraMode[]): HudMarkupCase[] {
