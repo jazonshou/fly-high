@@ -317,20 +317,21 @@ export function autolandProfile(aircraft: AircraftDefinition): AutolandProfile {
     patternSpeed,
     halfFlapLimit: 1.8 * stallClean,
     fullFlapLimit: 1.6 * stallLanding,
-    planBank: (heavy ? 25 : 30) * DEG,
-    maxBank: (heavy ? 30 : 35) * DEG,
+    planBank: (heavy ? 30 : 35) * DEG,
+    maxBank: (heavy ? 35 : 40) * DEG,
     groundBank: Math.min(5 * DEG, 0.4 * tipStrike),
     maxLoadFactor: heavy ? 1.5 : 2,
     maxAngleOfAttack: aircraft.positiveStallAngle - 3 * DEG,
     maxFlarePitch: tailStrike - 2.5 * DEG,
-    flareTau: 1.6 + 0.4 * gainScale,
-    // Firmer for the 747: on a runway this short for it, the float a softer
-    // touchdown costs is runway it needs for steering on the rollout.
-    touchdownSink: aircraft.mass > 100_000 ? 0.9 : heavy ? 0.7 : 0.55,
-    energyGradient: 0.6 * dragOverWeight,
-    descentGradient: Math.min(Math.tan(4.5 * DEG), 0.6 * dragOverWeight),
+    flareTau: 1.3 + 0.35 * gainScale,
+    // A positive touchdown, not a greaser: every metre of float a softer one
+    // costs is runway the stop needs. Firmest for the 747, on a runway this
+    // short for it.
+    touchdownSink: aircraft.mass > 100_000 ? 0.9 : heavy ? 0.8 : 0.7,
+    energyGradient: 0.8 * dragOverWeight,
+    descentGradient: Math.min(Math.tan(6 * DEG), 0.8 * dragOverWeight),
     climbGradient: 0.04,
-    finalSeconds: heavy ? 75 : 55,
+    finalSeconds: heavy ? 60 : 55,
     gearSeconds: aircraft.retractableGear && aircraft.gearCycleRate > 0 ? 1 / aircraft.gearCycleRate : 0,
     maxThrottle: aircraft.afterburner?.engageThrottle ?? 1,
     gainScale,
@@ -563,7 +564,13 @@ export class Autoland {
       Math.min(state.dynamics.airspeed, this.enrouteSpeed / Math.sqrt(sigma)),
       profile.patternSpeed / Math.sqrt(sigma),
     ) + windSpeed;
-    const radius = clamp((planSpeed * planSpeed) / (GRAVITY * Math.tan(profile.planBank)), 80, 6_000);
+    // Sized for the speed it is slowing to, but never tighter than it can fly
+    // at the speed it has now: a 747 engaged at 400 kt planned a 4 km turn it
+    // needed 6 for, flew wide of it for a minute and a half, and replanned.
+    const radius = clamp(Math.max(
+      (planSpeed * planSpeed) / (GRAVITY * Math.tan(profile.planBank)),
+      ((state.dynamics.airspeed + windSpeed) ** 2) / (GRAVITY * Math.tan(profile.maxBank)),
+    ), 80, 9_000);
     const speedEnergy = (state.dynamics.airspeed ** 2) / (2 * GRAVITY);
 
     let best: PlanCandidate | null = null;
@@ -977,11 +984,15 @@ export class Autoland {
 
     if (status.phase === "approach") {
       const toFinal = this.finalS - s;
-      const decelDistance = Math.max(0, (profile.patternSpeed ** 2 - approachSpeed ** 2) / sigma) / (2 * 0.45)
+      const decelDistance = Math.max(0, (profile.patternSpeed ** 2 - approachSpeed ** 2) / sigma) / (2 * 0.6)
         + (approachSpeed / Math.sqrt(sigma)) * 12;
+      // En-route speed until there is just room to slow to the pattern speed,
+      // at the same 0.6 m/s^2, with 3 km to settle.
+      const patternDistance = Math.max(0, (this.enrouteSpeed ** 2 - profile.patternSpeed ** 2) / sigma) / (2 * 0.6)
+        + 3_000;
       // The configuration only ever advances on an approach: once the flaps
       // are coming out nothing re-plans them back in.
-      if (toFinal <= decelDistance + 15_000) this.stage = Math.max(this.stage, 1);
+      if (toFinal <= decelDistance + patternDistance) this.stage = Math.max(this.stage, 1);
       if (toFinal <= decelDistance) this.stage = Math.max(this.stage, 2);
       if (toFinal <= Math.min(3_000, decelDistance * 0.5)) this.stage = Math.max(this.stage, 3);
       targetSpeed = this.stage === 0

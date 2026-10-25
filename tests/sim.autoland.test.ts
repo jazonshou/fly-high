@@ -197,9 +197,9 @@ function expectGracefulLanding(flight: Flight): void {
   expect(flight.crashed, label).toBe(false);
   expect(flight.status.phase, label).toBe("landed");
   expect(flight.onRunway, label).toBe(true);
-  // Firm for the 747 (whose short-runway technique lands it at 0.9), soft
-  // for the others; a passenger would call any of these a landing, not an
-  // arrival.
+  // Positive, aimed at 0.7-0.9 m/s by type, and firmest for the 747 on a
+  // runway this short for it; a passenger would call any of these a landing,
+  // not an arrival.
   expect(flight.status.touchdownSinkRate, label).toBeLessThan(1.2);
   // Mains in the touchdown zone, nowhere near the far end.
   expect(flight.status.touchdownDistance, label).toBeGreaterThan(150);
@@ -281,12 +281,15 @@ describe("autoland flights", { timeout: 120_000 }, () => {
     });
   }
 
-  it("loops round to lose height when the start is too high and close to land", () => {
+  it("turns round to lose height when the start is too high and close to land", () => {
     const flight = flyAutoland("trainer", "short-high");
     expectGracefulLanding(flight);
-    // Lined up already, so landing straight in would turn nothing: the
-    // circuit it flies instead is a full reversal out and another back.
-    expect(flight.turned).toBeGreaterThan(Math.PI * 1.5);
+    expect(flight.status.attempt).toBe(1);
+    // Lined up already, so landing straight in would turn nothing: what it
+    // flies instead is at least a full reversal. That was a circuit back to
+    // this end until the steeper descent (2026-10-25) made the shorter way
+    // round, onto the other end of the runway, the one that loses the height.
+    expect(flight.turned).toBeGreaterThan(Math.PI);
   });
 
   // Downdraft strengths that defeat each aeroplane's stabilised approach. The
