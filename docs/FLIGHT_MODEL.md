@@ -63,7 +63,9 @@ Public `step` calls are subdivided into the same 1/120 s quantum, so a 60 Hz cal
 
 ## Landing gear and ground handling
 
-Each wheel has its own spring, damper, contact velocity, rolling resistance, braking friction, and lateral tyre force. The nose wheel steers up to 22° with rudder input at taxi speeds.
+Each wheel has its own spring, damper, contact velocity, rolling resistance, braking friction, and lateral tyre force. The wheel brakes are friction brakes on the main gear (the nose wheel is unbraked): their force is the brake setting times 0.68 times the wheel's load, fading only in the last 0.3 m/s, so a braked aeroplane stops decisively instead of creeping, and held brakes hold it while the thrust is less than they can hold. Each braked tyre shares its grip between braking and cornering inside a friction circle. Cornering force is the slip angle times the wheel's load times a cornering stiffness of 6 per radian.
+
+The nose wheel steers with the rudder pedals and, on the ground, with the roll axis as a tiller (`A`/`D`): the two add, clamped to full travel. Its angle, up to the type's own (22° on the trainer, 12° on the 747), fades with speed so that the turn it asks for never exceeds 0.35 g or half the lateral acceleration that would tip the aeroplane over its gear: about 5° at 10 m/s on the trainer and 1.4° at 60 m/s on the 747. Off the ground the roll axis is the ailerons alone.
 
 A runway spawn is solved from the actual tricycle geometry, aircraft weight, wheelbase, and spring rates. The resulting pose preloads all three wheels and gives the trainer a roughly -2.7° fuselage attitude on level pavement. An `onGround` spawn always snaps Y to that solved pose; a contradictory elevated `position.y` cannot leave the aircraft hovering while flagged as grounded.
 
@@ -79,7 +81,7 @@ AGL telemetry is the clearance between the lowest landing-gear contact point and
 
 The title screen deliberately uses Scenic as a disposable attract-flight controller so the aircraft is already moving through the world. **Take the controls** disables attract mode and selects the user's chosen mode in one Worker command without resetting position, velocity, attitude, simulation time, or camera state. Only the attract flight may auto-reset after a crash or low-terrain approach; ordinary pilot flight is never taken over or reset automatically.
 
-No airborne assistance runs while the gear is loaded. On the runway, rudder steers the nose wheel and elevator directly commands rotation.
+No airborne assistance runs while the gear is loaded. On the runway, rudder and the roll axis steer the nose wheel and elevator directly commands rotation.
 
 The simulation worker advances at 120 Hz with a bounded accumulator and emits visual snapshots at 60 Hz. Its assistance routine reuses a control object, and the core dynamics reuse scratch vectors to avoid simulation-loop garbage.
 

@@ -10,9 +10,9 @@ The trainer is a Cessna 150, so calibration targets the type's published figures
 | Scenic recenter | Releasing the preceding roll command returns bank to within 3° of level in 4 s |
 | Scenic climb | A 70% pitch command for 3 s produces 9–13° pitch, 5–10 m/s climb, more than 43 m/s airspeed, and no stall |
 | Trimmed cruise | A 60 s hands-off run at 50 m/s stays within -30/+35 m of initial altitude, 44–55 m/s, 1° bank, and 0.08 rad/s total body rate |
-| Rudder and taxi steering | Positive rudder increases airborne heading and body yaw rate; at 20% power, half rudder taxis at 1–4 m/s and turns 5–20° in 8 s |
+| Rudder and taxi steering | Positive rudder increases airborne heading and body yaw rate; at 20% power, half rudder taxis at 1–4 m/s and turns 15–70° in 8 s. Every type turns on the circle its wheelbase and nosewheel angle give with `A`/`D` at 5 m/s, and full `A`/`D` at 40 m/s stays under 0.4 g and 4° of bank (`tests/sim.ground-handling.test.ts`) |
 | Stall and recovery | A sustained pull from 34 m/s crosses the +15° critical angle within 5.5 s and raises drag above 0.08; unloading and adding power recovers below 8° absolute alpha and between 40–75 m/s |
-| Wheel braking | From 24 m/s on dry pavement, full braking reaches less than 2 m/s within 8 s while remaining upright and grounded |
+| Wheel braking | From 24 m/s on dry pavement, full braking reaches less than 2 m/s within 8 s while remaining upright and grounded. From 30 m/s every type stops within 8 s, the last 2 m/s in under 0.6 s, and stays stopped with 5% power left on |
 | Power-off glide | From 1,200 m MSL at 50 m/s, a 20 s glide descends less than 650 m and remains between 28–75 m/s |
 | Crosswind parking | A parked aircraft holds heading within 2° and ground speed below 0.5 m/s for 8–10 s under fixed and procedural gust fields |
 | Determinism/endurance | Identical 30 s control streams match to 12 decimal places; a 100 s adversarial stream stays finite with a normalized quaternion |
