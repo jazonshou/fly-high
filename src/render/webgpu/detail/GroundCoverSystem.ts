@@ -194,8 +194,8 @@ const HEIGHT_ROWS_PER_ATTRIBUTE_ROW =
  * The column-granular bake's step: 32 m of row, which is 32 height columns or
  * 8 attribute columns. An attribute column costs about four height-only
  * columns (a full sample, the classifier and the density field), so the two
- * steps cost about the same, and a call overruns the budget by one step at
- * most.
+ * steps cost about the same, and a call stops within one step of the budget
+ * unless the pace floor below holds it longer.
  */
 export const GROUND_COVER_TILE_BAKE_STEP_HEIGHT_COLUMNS = 32;
 export const GROUND_COVER_TILE_BAKE_STEP_ATTRIBUTE_COLUMNS =
@@ -207,7 +207,9 @@ export const GROUND_COVER_TILE_BAKE_STEP_ATTRIBUTE_COLUMNS =
  * attribute row. That is the whole-row bake's minimum of one row per call,
  * averaged over a tile, so a tile never takes more calls than it has rows,
  * however slow the host. Where the budget already covers this, it does
- * nothing.
+ * nothing. Where it does not, a call bakes past the budget until it has kept
+ * the pace, ending within one step of it, so it costs at most a pace's worth
+ * of work and one step; `bakeStats.paceFloorCalls` counts those calls.
  */
 export const GROUND_COVER_TILE_BAKE_PACE_COLUMNS =
   GROUND_COVER_HEIGHT_TILE_EDGE + GROUND_COVER_ATTRIBUTE_TILE_EDGE;
@@ -347,6 +349,7 @@ export class GroundCoverSystem {
   private bakeLastMilliseconds = 0;
   private bakeMaxMilliseconds = 0;
   private tilesCompleted = 0;
+  private paceFloorCalls = 0;
   private warmed = false;
   private disposed = false;
   private readonly planeScratch = new Float32Array(24);
@@ -480,17 +483,21 @@ export class GroundCoverSystem {
   /**
    * What the tile bake cost, on the bake's own clock, for the perf probe:
    * the newest update's milliseconds (0 when it baked nothing), the most any
-   * update has spent since construction, and the tiles finished.
+   * update has spent since construction, the tiles finished, and the calls
+   * the pace floor kept baking past the budget. A call that spent more than
+   * the budget and one step without adding to `paceFloorCalls` overran it.
    */
   get bakeStats(): {
     lastMilliseconds: number;
     maxMilliseconds: number;
     tilesCompleted: number;
+    paceFloorCalls: number;
   } {
     return {
       lastMilliseconds: this.bakeLastMilliseconds,
       maxMilliseconds: this.bakeMaxMilliseconds,
       tilesCompleted: this.tilesCompleted,
+      paceFloorCalls: this.paceFloorCalls,
     };
   }
 
@@ -686,9 +693,10 @@ export class GroundCoverSystem {
    *
    * With the height-only sampler the bake is column-granular: it resumes at a
    * cursor inside a row, checks the clock every 32 m of row and stops once the
-   * budget is spent, so a call overruns it by one step at most. The pace floor
-   * keeps it going past the budget only on a host too slow to sweep one row's
-   * share of the tile per call within it. Without the sampler a row costs a
+   * budget is spent, so a call overruns it by one step at most, unless the
+   * pace floor keeps it going: that happens only on a host too slow to sweep
+   * one row's share of the tile per call within the budget, and
+   * `paceFloorCalls` counts each such call. Without the sampler a row costs a
    * full sample per column, so the bake keeps its whole-row step and its floor
    * of one row per call, exactly as before. Either way the textures upload
    * only when the tile completes, so its bytes do not depend on the budget.
@@ -711,13 +719,17 @@ export class GroundCoverSystem {
     const terrainHeight = this.options.terrainHeight;
     if (terrainHeight) {
       this.backTileCalls += 1;
-      do {
+      let paceHeld = false;
+      for (;;) {
         this.advanceBakeStep(terrainHeight);
-      } while (
-        this.backTileRow < heightEdge
-        && (this.clock() - started < GROUND_COVER_TILE_BAKE_MILLISECONDS_PER_FRAME
-          || this.backTileSweptColumns < this.backTileCalls * GROUND_COVER_TILE_BAKE_PACE_COLUMNS)
-      );
+        if (this.backTileRow >= heightEdge) break;
+        if (this.clock() - started < GROUND_COVER_TILE_BAKE_MILLISECONDS_PER_FRAME) continue;
+        if (this.backTileSweptColumns >= this.backTileCalls * GROUND_COVER_TILE_BAKE_PACE_COLUMNS) {
+          break;
+        }
+        paceHeld = true;
+      }
+      if (paceHeld) this.paceFloorCalls += 1;
     } else {
       do {
         const row = this.backTileRow;

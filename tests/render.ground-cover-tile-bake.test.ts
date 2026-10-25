@@ -396,6 +396,8 @@ interface RollResult {
   readonly framesPerTile: number[];
   /** What each frame that baked spent, on the work clock. */
   readonly bakeMilliseconds: number[];
+  /** Whether the pace floor held each of those frames past the budget. */
+  readonly paceFloorHeld: boolean[];
 }
 
 /** A take-off roll at 65 m/s and 60 Hz: the tile re-centres after every bake. */
@@ -410,20 +412,26 @@ function groundRoll(costs: SampleCosts, withHeightSampler: boolean, frames: numb
   try {
     const framesPerTile: number[] = [];
     const bakeMilliseconds: number[] = [];
+    const paceFloorHeld: boolean[] = [];
     let completed = 0;
     let lastCompletion = -1;
+    let paceFloorCalls = 0;
     for (let frame = 0; frame < frames; frame += 1) {
       const x = 1_000 + (65 * frame) / 60;
       baking.frame(x, 500, rollingHeight(x, 500) + 3);
       const stats = baking.system.bakeStats;
-      if (stats.lastMilliseconds > 0) bakeMilliseconds.push(stats.lastMilliseconds);
+      if (stats.lastMilliseconds > 0) {
+        bakeMilliseconds.push(stats.lastMilliseconds);
+        paceFloorHeld.push(stats.paceFloorCalls > paceFloorCalls);
+      }
+      paceFloorCalls = stats.paceFloorCalls;
       if (stats.tilesCompleted > completed) {
         completed = stats.tilesCompleted;
         framesPerTile.push(frame - lastCompletion);
         lastCompletion = frame;
       }
     }
-    return { framesPerTile, bakeMilliseconds };
+    return { framesPerTile, bakeMilliseconds, paceFloorHeld };
   } finally {
     baking.dispose();
   }
@@ -487,17 +495,25 @@ describe("ground-cover tile bake: progress and cost", () => {
     for (const spent of roll.bakeMilliseconds) {
       expect(spent).toBeLessThanOrEqual(BUDGET + step);
     }
+    expect(roll.paceFloorHeld).not.toContain(true);
     // And the slow host, which cannot keep pace inside the budget, spends the
-    // pace's worth of work and one step more, never a whole row's overrun.
+    // pace's worth of work and one step more, never a whole row's overrun, and
+    // the probe can tell each such frame from a budget overrun.
     const slow = groundRoll(SLOW_HOST, true, 600);
     const pace = GROUND_COVER_TILE_BAKE_PACE_COLUMNS * Math.max(SLOW_HOST.height, SLOW_HOST.full / 4);
     const slowStep = Math.max(
       GROUND_COVER_TILE_BAKE_STEP_HEIGHT_COLUMNS * SLOW_HOST.height,
       GROUND_COVER_TILE_BAKE_STEP_ATTRIBUTE_COLUMNS * SLOW_HOST.full,
     );
-    for (const spent of slow.bakeMilliseconds) {
+    let overBudgetAndStep = 0;
+    slow.bakeMilliseconds.forEach((spent, frame) => {
       expect(spent).toBeLessThanOrEqual(pace + slowStep);
-    }
+      if (spent > BUDGET + slowStep) {
+        overBudgetAndStep += 1;
+        expect(slow.paceFloorHeld[frame], `frame ${frame}: ${spent} ms`).toBe(true);
+      }
+    });
+    expect(overBudgetAndStep).toBeGreaterThan(500);
   });
 
   it("reads only the height for the altitude gate when it has the sampler", () => {
@@ -537,6 +553,7 @@ describe("ground-cover tile bake: progress and cost", () => {
         lastMilliseconds: 0,
         maxMilliseconds: 0,
         tilesCompleted: 0,
+        paceFloorCalls: 0,
       });
       // Row 0 carries attribute row 0; row 1 is a height row alone.
       baking.frame(1_000, 500, groundY + 3);
@@ -554,6 +571,7 @@ describe("ground-cover tile bake: progress and cost", () => {
         lastMilliseconds: 0,
         maxMilliseconds: rowWithAttributes,
         tilesCompleted: 1,
+        paceFloorCalls: 0,
       });
     } finally {
       baking.dispose();
