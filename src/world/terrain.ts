@@ -799,12 +799,22 @@ export function sampleFilteredTerrainUpliftHeight(
   return applyAirportEarthworks(world, upliftHeight, x, z);
 }
 
-/** Fast collision-query path: only computes terrain elevation. */
-export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+/**
+ * The world's ground before any airport's earthworks: the natural kernel and
+ * the landform stage, at full bandwidth. What the earthworks are applied to
+ * (`sampleTerrainHeight`), and so what a spawned airport is surveyed and
+ * graded on (`spawnedAirportSiteHeight`). Inside the landform core it is the
+ * natural height, bit for bit.
+ */
+export function sampleTerrainHeightBeforeEarthworks(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
-  const height = applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
-  return applyAirportEarthworks(world, height, x, z);
+  return applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
+}
+
+/** Fast collision-query path: only computes terrain elevation. */
+export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+  return applyAirportEarthworks(world, sampleTerrainHeightBeforeEarthworks(world, x, z), x, z);
 }
 
 /**

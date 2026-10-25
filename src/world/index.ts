@@ -53,6 +53,7 @@ export {
   sampleFilteredTerrainHeight,
   sampleFilteredTerrainUpliftHeight,
   sampleTerrainHeight,
+  sampleTerrainHeightBeforeEarthworks,
   sampleTerrainMoisture,
   sampleTerrainNormal,
   sampleTerrainTemperature,

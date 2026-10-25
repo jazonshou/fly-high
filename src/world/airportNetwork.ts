@@ -1,14 +1,15 @@
 import { runwayToWorld } from "./airport";
 import {
   findAirportSiteForCandidate,
-  naturalAirportSiteHeight,
   surveyAirportCandidate,
   type AirportFootprint,
   type AirportSiteHeight,
   type AirportSiteLimits,
   type CoarseAirportCandidate,
 } from "./airportSite";
+import { inSandSea } from "./landforms";
 import { mixSeed, unitFloatFromHash } from "./seed";
+import { sampleTerrainHeightBeforeEarthworks } from "./terrain";
 import type { AirportDefinition, RunwayPoint, WorldDefinition } from "./types";
 
 /**
@@ -236,27 +237,26 @@ let lastSpawnSurvey: SpawnSurvey | null = null;
  * The ground a spawned airport is surveyed, assessed and set on: the world's
  * height before any airport's earthworks.
  *
- * Here that is the natural kernel, the ground the home field is chosen on.
- * A world stage that moves the height between the natural kernel and the
- * earthworks (the landforms: sand seas, volcanic fields) must be applied here
- * too, or a runway is chosen on ground the world neither draws nor collides
- * with.
+ * That is the natural kernel with the landform stage applied
+ * (`sampleTerrainHeightBeforeEarthworks`), the ground the world draws and
+ * collides with under the earthworks, so a runway is never chosen on ground
+ * the world does not have. Inside the landform core (120 km round the home
+ * field) it is the natural kernel, bit for bit, the ground the home field is
+ * chosen on.
  */
 export function spawnedAirportSiteHeight(world: WorldDefinition): AirportSiteHeight {
-  return naturalAirportSiteHeight(world.seedHash);
+  return (x, z) => sampleTerrainHeightBeforeEarthworks(world, x, z);
 }
 
 /**
- * Whether a spawned airport may stand on the ground at a world point. This
- * world has no ground to refuse; a landform no runway belongs on (a sand sea,
- * a volcanic field) refuses it here. It is asked at every surveyed centre
- * before its assessment, and at both thresholds of a site that passed.
+ * Whether a spawned airport may stand on the ground at a world point. A
+ * landform no runway belongs on refuses it here: a sand sea (`inSandSea`),
+ * whose dunes the site assessment's relief limits would otherwise let a
+ * runway be cut through. It is asked at every surveyed centre before its
+ * assessment, and at both thresholds of a site that passed.
  */
 export function spawnedAirportGroundAllowed(world: WorldDefinition, x: number, z: number): boolean {
-  void world;
-  void x;
-  void z;
-  return true;
+  return !inSandSea(world, x, z);
 }
 
 function spawnSurvey(
@@ -265,7 +265,19 @@ function spawnSurvey(
   z: number,
   headingRadians: number,
 ): readonly CoarseAirportCandidate[] {
-  const key = [world.seedHash, world.seaLevel, world.airports.length, x, z, headingRadians].join(":");
+  // The survey reads the world's ground and its landforms, so a forced
+  // world shares no survey with the natural one of the same seed.
+  const key = [
+    world.seedHash,
+    world.seaLevel,
+    world.worldEvolution,
+    JSON.stringify(world.climateProvince ?? null),
+    JSON.stringify(world.landforms ?? null),
+    world.airports.length,
+    x,
+    z,
+    headingRadians,
+  ].join(":");
   if (lastSpawnSurvey?.key === key) return lastSpawnSurvey.ranked;
   const policy = AIRPORT_SPAWN_POLICY;
   const nearest = nearestAirport(world, x, z);
