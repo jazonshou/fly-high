@@ -37,6 +37,8 @@ class RuntimeWorkerBridge {
   readonly commands: DetailWorkerCommand[] = [];
   readonly transfers: Transferable[][] = [];
   readonly heldPresentationEvents: DetailWorkerEvent[] = [];
+  /** Heartbeats are held with the answers, so a held build stays silent. */
+  readonly heldProgressEvents: DetailWorkerEvent[] = [];
   readonly heldGenerationEvents: DetailWorkerEvent[] = [];
   holdPresentations = false;
   holdGeneration = false;
@@ -84,6 +86,8 @@ class RuntimeWorkerBridge {
       for (const event of outbound) {
         if (this.holdPresentations && event.type === "presentation") {
           this.heldPresentationEvents.push(event);
+        } else if (this.holdPresentations && event.type === "presentationProgress") {
+          this.heldProgressEvents.push(event);
         } else if (this.holdGeneration && event.type === "retainedCell") {
           this.heldGenerationEvents.push(event);
         } else {

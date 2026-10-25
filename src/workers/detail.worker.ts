@@ -47,6 +47,14 @@ type PostWorkerEvent = (event: DetailWorkerEvent, transferables: Transferable[])
 const DETAIL_PRESENTATION_WORKER_SLICE_UNITS = 4_096;
 const DETAIL_PRESENTATION_WORKER_SLICE_MILLISECONDS = 4;
 const DETAIL_PRESENTATION_WORKER_CLOCK_INTERVAL_UNITS = 64;
+/**
+ * A build that has not finished posts a `presentationProgress` heartbeat
+ * after its first slice and then at most this often, so the main thread's
+ * watchdog can tell a slow build from a hung worker. Ten a second costs a
+ * few small messages and keeps the longest silence of a working build far
+ * inside the watchdog's two-second floor.
+ */
+export const DETAIL_WORKER_HEARTBEAT_MILLISECONDS = 100;
 
 interface RetainedDetailCell {
   readonly cell: ReturnType<typeof generateDetailCell>;
@@ -63,6 +71,10 @@ interface PendingWorkerPresentationBuild {
   readonly batches: Map<string, WorkerPresentationBatchStorage>;
   readonly iterator: Generator<void, DetailPresentationChunkStatistics, void>;
   canceled: boolean;
+  /** Unfinished slices run, and work units packed, so far. */
+  slices: number;
+  units: number;
+  lastHeartbeatMilliseconds: number;
 }
 
 function nowMilliseconds(): number {
@@ -122,6 +134,8 @@ export class DetailWorkerRuntime {
     private readonly scheduleMacrotask: ScheduleMacrotask = (callback) => {
       setTimeout(callback, 0);
     },
+    /** Slice and heartbeat clock; a test seam, like the scheduler. */
+    private readonly now: () => number = nowMilliseconds,
   ) {}
 
   get retainedCellCount(): number {
@@ -340,6 +354,9 @@ export class DetailWorkerRuntime {
           sink,
         ),
         canceled: false,
+        slices: 0,
+        units: 0,
+        lastHeartbeatMilliseconds: 0,
       };
       this.presentationBuilds.set(command.buildId, task);
       this.schedulePresentationSlice(task);
@@ -358,7 +375,7 @@ export class DetailWorkerRuntime {
 
   private runPresentationSlice(task: PendingWorkerPresentationBuild): void {
     if (task.canceled || this.presentationBuilds.get(task.buildId) !== task) return;
-    const startedAt = nowMilliseconds();
+    const startedAt = this.now();
     let workUnits = 0;
     try {
       while (workUnits < DETAIL_PRESENTATION_WORKER_SLICE_UNITS) {
@@ -371,9 +388,12 @@ export class DetailWorkerRuntime {
         }
         if (
           workUnits % DETAIL_PRESENTATION_WORKER_CLOCK_INTERVAL_UNITS === 0
-          && nowMilliseconds() - startedAt >= DETAIL_PRESENTATION_WORKER_SLICE_MILLISECONDS
+          && this.now() - startedAt >= DETAIL_PRESENTATION_WORKER_SLICE_MILLISECONDS
         ) break;
       }
+      task.slices += 1;
+      task.units += workUnits;
+      this.postPresentationHeartbeat(task);
       this.schedulePresentationSlice(task);
     } catch (error) {
       this.presentationBuilds.delete(task.buildId);
@@ -383,6 +403,26 @@ export class DetailWorkerRuntime {
         message: error instanceof Error ? error.message : "Detail presentation build failed",
       });
     }
+  }
+
+  /**
+   * Only an unfinished slice reaches here: the answer and a cancel both
+   * remove the build first, so a build never heartbeats after either, and a
+   * result lost in transport still ends in silence the main thread times.
+   */
+  private postPresentationHeartbeat(task: PendingWorkerPresentationBuild): void {
+    const now = this.now();
+    if (
+      task.slices > 1
+      && now - task.lastHeartbeatMilliseconds < DETAIL_WORKER_HEARTBEAT_MILLISECONDS
+    ) return;
+    task.lastHeartbeatMilliseconds = now;
+    this.post({
+      type: "presentationProgress",
+      buildId: task.buildId,
+      slices: task.slices,
+      units: task.units,
+    });
   }
 
   private publishPresentationBuild(
