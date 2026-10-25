@@ -45,6 +45,7 @@ function sample(update: number, nowMs: number, overrides: Partial<DetailWatchdog
     generationUpdate: null,
     generationMs: null,
     generationAnswered: true,
+    heartbeats: null,
     workerBuildId: null,
     client: CLIENT,
     buildTimeouts: 0,
@@ -106,20 +107,22 @@ describe("detail watchdog probe", () => {
     probe.beginWindow(0);
     let marker = 1;
     let markerMs = 0;
+    let heartbeats = 0;
     for (let update = 1; update <= 120; update += 1) {
       const now = update * 25;
       if (update % 4 === 0) {
         // A heartbeat landed before this update.
         marker = update - 1;
         markerMs = now - 25;
+        heartbeats += 1;
       }
-      probe.observe(sample(update, now, { presentationUpdate: marker, presentationMs: markerMs }));
+      probe.observe(sample(update, now, { presentationUpdate: marker, presentationMs: markerMs, heartbeats }));
     }
     // A paused span: both markers advance with every update.
     for (let update = 121; update <= 130; update += 1) {
       marker += 1;
       markerMs += 25;
-      probe.observe(sample(update, update * 25, { presentationUpdate: marker, presentationMs: markerMs }));
+      probe.observe(sample(update, update * 25, { presentationUpdate: marker, presentationMs: markerMs, heartbeats }));
     }
     const { presentation } = probe.report();
     expect(presentation.spans).toBe(30);
@@ -127,6 +130,28 @@ describe("detail watchdog probe", () => {
     expect(presentation.maxChargedMs).toBe(100);
     expect(presentation.wouldTripAt120Hz).toBe(0);
     expect(presentation.openChargedMs).not.toBeNull();
+  });
+
+  it("ends a span at every heartbeat, though one lands between every two updates", () => {
+    const probe = new DetailWatchdogProbe();
+    probe.beginWindow(0);
+    // The charged count stays at 1, so only the heartbeat count shows each
+    // silence ending.
+    for (let update = 1; update <= 600; update += 1) {
+      const now = update * 16;
+      probe.observe(sample(update, now, { presentationUpdate: update - 1, presentationMs: now - 8, heartbeats: update }));
+    }
+    probe.observe(sample(601, 601 * 16));
+    expect(probe.report().presentation).toMatchObject({ spans: 600, maxChargedMs: 8, maxWallMs: 0 });
+  });
+
+  it("ends a generation span at every answer, though one comes every update", () => {
+    const probe = new DetailWatchdogProbe();
+    probe.beginWindow(0);
+    for (let update = 1; update <= 300; update += 1) {
+      probe.observe(sample(update, update * 16, { generationUpdate: update - 1, generationMs: update * 16 - 8 }));
+    }
+    expect(probe.report().generation).toMatchObject({ spans: 299, maxChargedUpdates: 1, maxWallMs: 0 });
   });
 
   it("times generation as the runtime does: the update arm only after a first answer", () => {

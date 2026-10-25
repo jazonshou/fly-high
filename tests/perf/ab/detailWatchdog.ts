@@ -46,6 +46,11 @@ export interface DetailWatchdogSample {
   readonly generationMs: number | null;
   /** The generation worker has answered once: its update arm is armed. */
   readonly generationAnswered: boolean;
+  /**
+   * Worker heartbeats the runtime has taken, each restarting the presentation
+   * span; null from a runtime without them.
+   */
+  readonly heartbeats: number | null;
   /** The worker presentation build in flight; null for none or an inline build. */
   readonly workerBuildId: number | null;
   /** The generation client, as an identity; null when vegetation is generated inline. */
@@ -91,6 +96,8 @@ export interface DetailWatchdogReport {
 
 interface OpenSpan {
   chargedUpdates: number;
+  /** What restarts the span when it moves, as of the span's start. */
+  readonly restart: number | null;
   firstWallMs: number;
   lastWallMs: number;
   /** Already counted as a would-trip (in this window or an earlier one). */
@@ -122,18 +129,24 @@ class ChargedClock {
     wallMs: number,
     chargedUpdates: number | null,
     chargedMs: number | null,
+    restart: number | null,
     tripsAt120Hz: (chargedMs: number) => boolean,
   ): void {
-    // A span ends when the marker is cleared, or when its charged count falls:
-    // the marker moved past the previous sample's (accepted output, a
-    // heartbeat), and a new span started. A paused span keeps its count.
-    if (this.open && (chargedUpdates === null || chargedUpdates < this.open.chargedUpdates)) {
+    // A span ends when the marker is cleared, when its charged count falls
+    // (the marker moved past the previous sample's: accepted output, a
+    // heartbeat), or when `restart` moves (progress since the last sample,
+    // however few updates ago the span before it started). A paused span
+    // keeps its count, its marker moving on with every update.
+    if (
+      this.open
+      && (chargedUpdates === null || chargedUpdates < this.open.chargedUpdates || restart !== this.open.restart)
+    ) {
       this.open = null;
       this.spans += 1;
     }
     this.lastChargedMs = chargedMs;
     if (chargedUpdates === null || chargedMs === null) return;
-    const span = (this.open ??= { chargedUpdates, firstWallMs: wallMs, lastWallMs: wallMs, counted: false });
+    const span = (this.open ??= { chargedUpdates, restart, firstWallMs: wallMs, lastWallMs: wallMs, counted: false });
     if (Number.isNaN(span.firstWallMs)) span.firstWallMs = wallMs;
     span.chargedUpdates = chargedUpdates;
     span.lastWallMs = wallMs;
@@ -214,19 +227,24 @@ export class DetailWatchdogProbe {
       ? { updates: null, ms: null }
       : { updates: sample.updateSequence - update, ms: Math.max(0, nowMs - milliseconds) };
     const presentation = charged(sample.presentationUpdate, sample.presentationMs);
+    // Only a heartbeat restarts presentation without its count falling: a
+    // pause moves the marker on too.
     this.presentation.observe(
       sample.wallMs,
       presentation.updates,
       presentation.ms,
+      sample.heartbeats,
       (ms) => ms >= DETAIL_WATCHDOG_TRIP_AT_120HZ_MILLISECONDS,
     );
     // As the runtime's generation deadline: the update arm only once the
-    // worker has answered, the millisecond arm always.
+    // worker has answered, the millisecond arm always. Its marker moves only
+    // on an answer, which is progress.
     const generation = charged(sample.generationUpdate, sample.generationMs);
     this.generation.observe(
       sample.wallMs,
       generation.updates,
       generation.ms,
+      sample.generationUpdate,
       (ms) => (sample.generationAnswered && ms >= DETAIL_WATCHDOG_TRIP_AT_120HZ_MILLISECONDS)
         || ms >= DETAIL_WATCHDOG_WALL_DEADLINE_MILLISECONDS,
     );

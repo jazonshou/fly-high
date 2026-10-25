@@ -375,6 +375,7 @@ interface DetailRuntimeInternals {
   readonly workerGenerationProgressUpdate?: number | null;
   readonly workerGenerationProgressMilliseconds?: number | null;
   readonly workerGenerationAnswered?: boolean;
+  readonly presentationWorkerHeartbeats?: number;
   readonly pendingPresentationBuild?: { readonly source?: string; readonly buildId?: number } | null;
   readonly presentationWorkerBuildTimeouts?: number;
   readonly presentationBuildCancellations?: number;
@@ -448,6 +449,7 @@ function detailWatchdogSample(detail: DetailRuntimeInternals): DetailWatchdogSam
     generationUpdate: detail.workerGenerationProgressUpdate ?? null,
     generationMs: detail.workerGenerationProgressMilliseconds ?? null,
     generationAnswered: detail.workerGenerationAnswered ?? false,
+    heartbeats: detail.presentationWorkerHeartbeats ?? null,
     workerBuildId: build?.source === "worker" ? build.buildId ?? null : null,
     client: detail.client ?? null,
     buildTimeouts: detail.presentationWorkerBuildTimeouts ?? 0,
