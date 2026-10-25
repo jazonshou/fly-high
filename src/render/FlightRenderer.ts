@@ -62,6 +62,7 @@ import {
 import { FULL_MOON_ILLUMINANCE_LUX } from "./webgpu/atmosphere/Ephemeris";
 import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
 import {
+  SKY_PROBE_REBAKE_ALTITUDE_METERS,
   SkyEnvironmentProbe,
   skyProbeRefreshAction,
   type SkyRebakeStats,
@@ -709,6 +710,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private skyRebakeSampled = false;
   /** A sliced rebake landed last frame; its specular cube re-renders on this one. */
   private skyProbeRearmPending = false;
+  /** The camera altitude the probe's refresh saw last frame, to tell a teleport from a climb. */
+  private skyProbeCameraAltitudeMeters = Number.NaN;
   /** What the probe's refresh cost on the main thread, for the perf probe. */
   private skyRefreshLastMilliseconds = 0;
   private skyRefreshMaxMilliseconds = 0;
@@ -3145,13 +3148,24 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * the frame after that, so no frame carries two of the three. An
    * environment change, and every re-light of a synchronous renderer, still
    * runs in the frame that asks (`skyProbeRefreshAction`).
+   *
+   * So does a teleport: a spawn reset or a crash restart moves the camera
+   * past the drift threshold between two frames, which no flight can. Sliced,
+   * the new place would keep the old altitude's lighting for the frames the
+   * rebake takes and then step, after the camera cut has cleared the history
+   * that would have hidden it. cutCamera cannot ask for it: the simulation's
+   * reset reaches the renderer frames after the cut.
    */
   private refreshSkyProbe(binding: AerialPerspectiveBinding): void {
+    const altitude = binding.cameraAltitudeMeters;
+    const teleported = Math.abs(altitude - this.skyProbeCameraAltitudeMeters)
+      > SKY_PROBE_REBAKE_ALTITUDE_METERS;
+    this.skyProbeCameraAltitudeMeters = altitude;
     const action = skyProbeRefreshAction({
       stale: this.skyProbeStale,
-      altitudeDeltaMeters: binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters,
+      altitudeDeltaMeters: altitude - this.skyProbeAltitudeMeters,
       inProgress: this.skyProbe.rebakeInProgress,
-      synchronous: this.skyRebakeSynchronous,
+      synchronous: this.skyRebakeSynchronous || teleported,
     });
     if (action === "none" && !this.skyProbeRearmPending) return;
     const started = performance.now();
