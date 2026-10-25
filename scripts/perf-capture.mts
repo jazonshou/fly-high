@@ -13,6 +13,7 @@
 import { aircraftSpec } from "../src/aircraft/catalogue";
 import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 import type { ClimateProvinceOption } from "../src/world/climateProvince";
+import type { LandformsOption } from "../src/world/landforms";
 
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
 export const PERF_CAPTURE_WIDTH = 1_280;
@@ -572,6 +573,17 @@ export interface PerfCaptureShotDefinition {
    * A/B forced with `npm run perf:ab -- --climate-province <name>`.
    */
   readonly climateProvince?: ClimateProvinceOption;
+  /**
+   * Landforms the shot's world forces everywhere outside the runway clearance
+   * (`createWorld`'s `landforms`, the `?landforms=` option): sand seas and
+   * volcanic fields near the airport, where the natural world keeps none
+   * within 120 km. A rebuild boundary like `climateProvince`, and carried by
+   * no canonical shot for the same reason. A build that predates landforms
+   * ignores it and draws the natural world at the same pose, so an A/B whose
+   * head shot forces them against a base shot that does not is a before/after
+   * pair.
+   */
+  readonly landforms?: LandformsOption;
   /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.

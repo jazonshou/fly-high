@@ -16,8 +16,15 @@ import {
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
   terrainKernelPageBytes,
+  type TerrainKernelLandformInput,
   type TerrainKernelProvinceInput,
 } from "./TerrainKernel";
+import {
+  TERRAIN_LANDFORM_WGSL,
+  TerrainLandformDataBinding,
+  terrainLandformDataBindingWgsl,
+  type TerrainLandformDataSource,
+} from "./TerrainLandformKernel";
 import {
   VEGETATION_DENSITY_FIELD_WGSL,
   VEGETATION_DENSITY_KERNEL_LATTICES,
@@ -115,11 +122,12 @@ const SPLAT_KERNEL_PAGE_BYTES = terrainKernelPageBytes(
  * The fifth is the runway frame the rounded-rectangle airport influence needs
  * (`splatAirportInfluence`); the sixth says how many airports reach the page
  * and where the page sits, for the per-texel path a page two airports reach
- * takes. Named rather than repeated so the host's stride, the buffer size and
+ * takes; the seventh is volcanic land's (whether the profile carries Basalt
+ * and Tephra, see `splatVolcanicMaterial`). Named rather than repeated so the host's stride, the buffer size and
  * the inventoried byte count cannot drift from the WGSL struct — the previous
  * literal `16` appeared in three places.
  */
-const SPLAT_JOB_FLOATS = 24;
+export const SPLAT_JOB_FLOATS = 28;
 
 /** Floats per `SplatAirport` (two `vec4f`), and the table they fill. */
 const SPLAT_AIRPORT_FLOATS = 8;
@@ -149,6 +157,9 @@ function packSplatAirportTable(
   }
 }
 
+/** The landform data binding's slot in the splat bake's bind group. */
+const SPLAT_LANDFORM_DATA_BINDING = 9;
+
 /**
  * The page-splat bake's composed source — ONE definition.
  *
@@ -160,7 +171,12 @@ function packSplatAirportTable(
 export function terrainPageSplatWgsl(): string {
   return [
     terrainKernelPageBindingWgsl(0, 0, VEGETATION_DENSITY_KERNEL_LATTICES.length),
+    terrainLandformDataBindingWgsl(0, SPLAT_LANDFORM_DATA_BINDING),
     TERRAIN_KERNEL_WGSL,
+    // The landform include, for the ground the landform stages lay down. The
+    // bake reads its volcanic ground (`terrainVolcanicGround`, lava and tephra
+    // cover over the bound site index) once per texel; see bakeSplat.
+    TERRAIN_LANDFORM_WGSL,
     // 6-8: the appended table's base index, derived from the kernel's own
     // lattice count and never retyped. It is composed here rather than
     // injected inside the classifier because the classifier is reachable
@@ -357,10 +373,11 @@ export class PageOcclusionBake {
    * whose shadows are of nothing.
    *
    * A slot is bakeable while it is being generated (it holds a token) or, for
-   * an in-place re-bake after the airport list changed over it, while it is
-   * resident: its texels are overwritten where they stand, as a season
-   * re-bake overwrites a splat, so there is no frame in which it reads as
-   * unbaked.
+   * an in-place re-bake, while it is resident: after the airport list changed
+   * over it, or after its height page was refreshed
+   * (`TERRAIN_LANDFORM_REFRESH`). Its texels are overwritten where they stand,
+   * as a season re-bake overwrites a splat, so there is no frame in which it
+   * reads as unbaked.
    */
   async bake(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]> {
     if (this.disposed || this.running) return [];
@@ -528,6 +545,14 @@ export class PageSplatBake {
   private disposed = false;
   /** This shader's passes, each paired with its own delivered duration (DeferredPassTiming.ts). */
   private costTape: PassCostTape | null = null;
+  /** `terrainLandformData`: the one place it is held and bound, before each bake. */
+  private readonly landformBinding: TerrainLandformDataBinding;
+  /**
+   * Volcanic land: whether the profile's arrays carry Basalt and Tephra
+   * (`WebGpuQualityProfile.volcanicMaterials`). Where they do not, the bake
+   * paints them as Rock and Gravel. A job lane, so one pipeline serves both.
+   */
+  private volcanicMaterials = true;
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -557,10 +582,36 @@ export class PageSplatBake {
      * bakes the shipped climate everywhere: offsets of exactly 0.
      */
     private readonly climateProvince: TerrainKernelProvinceInput | null = null,
+    /**
+     * The world's landform core and wind (`terrainLandformInput`), carried on
+     * the page uniform like the provinces. Null is gain 0.
+     */
+    private readonly landform: TerrainKernelLandformInput | null = null,
+    /**
+     * What `terrainLandformData` binds: the volcanic site index, or (null) a
+     * placeholder (the empty site index) the bake owns. Swappable with
+     * `setLandformDataSource`.
+     */
+    landformData: TerrainLandformDataSource | null = null,
   ) {
+    this.landformBinding = new TerrainLandformDataBinding(landformData);
     this.airports = [];
     this.gradingReaches = [];
     this.setAirports(airport ? [airport] : []);
+  }
+
+  /**
+   * Bind a different landform data source (null: the placeholder). Takes
+   * effect at the next bake; the pipeline is not recreated.
+   *
+   * The splat bake does not defer a slot the source does not cover: a first
+   * bake that skips a slot releases its channel slot, so the occlusion bake
+   * would be repeated every frame until the index arrived. Nothing it writes
+   * reads the data yet; when something does, the deferral belongs in the
+   * clipmap's channel-bake admission, before the occlusion bake.
+   */
+  setLandformDataSource(source: TerrainLandformDataSource | null): void {
+    this.landformBinding.setSource(source);
   }
 
   get isBaking(): boolean {
@@ -591,6 +642,14 @@ export class PageSplatBake {
   /** `4.5-C3`: this shader's whole-dispatch GPU time, unconsumed. */
   gpuMillisecondsInFrame(): number | null {
     return readGpuDispatchMs(this.shader);
+  }
+
+  /**
+   * Volcanic land: the profile datum, applied from the next bake on. Pages
+   * already baked keep their ids until re-baked; the caller owes them that.
+   */
+  setVolcanicMaterials(enabled: boolean): void {
+    this.volcanicMaterials = enabled;
   }
 
   /**
@@ -724,6 +783,9 @@ export class PageSplatBake {
         ? 2
         : graded === TERRAIN_PAGE_GRADED_BY_NONE ? 0 : 1;
       jobs[base + 23] = Math.min(airports.length, TERRAIN_AIRPORT_SLOTS);
+      // Volcanic land: 1 bakes Basalt and Tephra as themselves, 0 remaps them.
+      // The three lanes after it are reserved and stay 0.
+      jobs[base + 24] = this.volcanicMaterials ? 1 : 0;
       pages.set(
         new Uint8Array(buildTerrainKernelPageUniform({
           seedHash: this.seedHash,
@@ -732,12 +794,14 @@ export class PageSplatBake {
           originZ: bounds.minZ,
           filterWidthMeters: channelTexel,
           ...(this.climateProvince ? { climateProvince: this.climateProvince } : {}),
+          landform: this.landform,
         }, VEGETATION_DENSITY_KERNEL_LATTICES)),
         index * SPLAT_KERNEL_PAGE_BYTES,
       );
     });
     jobBuffer.update(new Uint8Array(jobs.buffer));
     pageBuffer.update(pages);
+    this.landformBinding.bind(this.engine as WebGPUEngine, shader);
     // Only after the list changed: the table was packed by setAirports from
     // the same `airports` these jobs index.
     if (this.airportTableDirty) {
@@ -768,6 +832,7 @@ export class PageSplatBake {
     releaseGpuBufferBytes(this.registeredBufferBytes);
     if (this.airportTableBuffer) releaseGpuBufferBytes(SPLAT_AIRPORT_TABLE_FLOATS * 4);
     this.registeredBufferBytes = 0;
+    this.landformBinding.dispose();
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.airportTableBuffer = null;
@@ -807,6 +872,7 @@ export class PageSplatBake {
           splatFlowAccumAtlas: { group: 0, binding: 6 },
           // 6-6: the soil-depth channel's first GPU consumer.
           splatSoilDepthAtlas: { group: 0, binding: 7 },
+          terrainLandformData: { group: 0, binding: SPLAT_LANDFORM_DATA_BINDING },
           splatAirports: { group: 0, binding: 8 },
         },
       },

@@ -10,7 +10,10 @@ import type { Scene } from "@babylonjs/core/scene";
  *   0  the opaque world: terrain, the airframe's skin, detail, the cloud shell.
  *   1  water: the spectral ocean and the inland surfaces. Drawn after every
  *      opaque surface so a transparent sheet can feather against the bed it
- *      covers and be depth-tested away above the waterline (D-12).
+ *      covers and be depth-tested away above the waterline (D-12). Volcanic
+ *      steam draws last in this group (alphaIndex 2, after the ocean's 0 and
+ *      inland water's 1): after the cloud composite, which would otherwise
+ *      cover it in sky pixels, and after any crater lake it rises from.
  *   2  the translucent airframe: canopy glass, the propeller blur disc and its
  *      fading blades. Those materials self-sort through a depth PRE-PASS, and a
  *      pre-pass writes depth — so anything drawn after them into a shared depth

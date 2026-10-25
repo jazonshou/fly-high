@@ -23,7 +23,8 @@ export interface MaterialSynthesisRequest {
   readonly edge: number;
   /**
    * Array layer ids, in the order the arrays layer them: `SurfaceMaterial`
-   * ids, then `GROUND_GRAIN_LAYER` when the grain is built.
+   * ids (the volcanic pair only where the tier carries it), then
+   * `GROUND_GRAIN_LAYER` when the grain is built.
    */
   readonly materialIds: readonly number[];
 }

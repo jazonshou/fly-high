@@ -183,12 +183,15 @@ describe("item C: the lowland law is bit-identical at and below 420 m", () => {
       const live = landCoverSuitabilities(input);
       const frozen = shippedSuitabilities(input);
       for (let id = 0; id < SURFACE_MATERIAL_COUNT; id += 1) {
+        // The capture predates the appended volcanic materials, which claim
+        // exactly +0 wherever no volcanic input is given.
+        const captured = id < shipped.length ? shipped[id] : 0;
         // `toBe` is `Object.is`: bit equality, and it tells +0 from -0.
-        expect(live[id], `live ${nameOf(id)} at ${JSON.stringify(overrides)}`).toBe(shipped[id]);
+        expect(live[id], `live ${nameOf(id)} at ${JSON.stringify(overrides)}`).toBe(captured);
         // The frozen copy is pinned to the same literals, so the sweep below is
         // a sweep against the SHIPPED law and not against a transcription of it.
         expect(frozen[id], `frozen ${nameOf(id)} at ${JSON.stringify(overrides)}`)
-          .toBe(shipped[id]);
+          .toBe(captured);
       }
     }
   });

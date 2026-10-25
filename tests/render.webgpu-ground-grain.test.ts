@@ -48,12 +48,15 @@ function std(values: readonly number[]): number {
 }
 
 describe("the grain layer's place in the arrays", () => {
-  it("sits directly after the ten materials, and only when asked for", () => {
+  it("sits directly after every material, and only when asked for", () => {
     expect(GROUND_GRAIN_LAYER).toBe(SURFACE_MATERIALS.length);
-    const without = surfaceArrayLayerIds(false);
-    const withGrain = surfaceArrayLayerIds(true);
+    const without = surfaceArrayLayerIds(false, true);
+    const withGrain = surfaceArrayLayerIds(true, true);
     expect(without).toEqual(SURFACE_MATERIALS.map((spec) => spec.id));
     expect(withGrain).toEqual([...without, GROUND_GRAIN_LAYER]);
+    // A grain array keeps the volcanic layers whatever the tier says, because
+    // the grain's index follows them.
+    expect(surfaceArrayLayerIds(true, false)).toEqual(withGrain);
     // Material ids are their own layer indices, which is what lets the
     // shader's layer index and the worker's id be the same number.
     SURFACE_MATERIALS.forEach((spec, index) => expect(spec.id).toBe(index));

@@ -63,6 +63,21 @@ export interface DetailTerrainSample {
    */
   readonly temperatureOffset?: number;
   readonly dryness?: number;
+  /**
+   * Sand seas: the landform sand cover, exactly 0 inside the landform core and
+   * off the sand seas. Trees, shrubs, ground cover and litter thin with it
+   * (`sandCoverTreeFactor`, `sandCoverGroundFactor`). The world-layer
+   * TerrainSample carries it; omitted reads 0.
+   */
+  readonly sandCover?: number;
+  /**
+   * Volcanic land: lava and tephra cover and their age, exactly 0 off
+   * volcanic ground. Omitted reads 0. The world-layer TerrainSample carries
+   * them, so the live sampler provides them for free.
+   */
+  readonly lavaCover?: number;
+  readonly tephraCover?: number;
+  readonly volcanicAge?: number;
 }
 
 export type DetailTerrainSampler = (worldX: number, worldZ: number) => DetailTerrainSample;

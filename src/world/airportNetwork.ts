@@ -1,15 +1,22 @@
 import { runwayToWorld } from "./airport";
 import {
   findAirportSiteForCandidate,
-  naturalAirportSiteHeight,
   surveyAirportCandidate,
   type AirportFootprint,
   type AirportSiteHeight,
   type AirportSiteLimits,
   type CoarseAirportCandidate,
 } from "./airportSite";
+import { inSandSea } from "./landforms";
 import { mixSeed, unitFloatFromHash } from "./seed";
+import { sampleTerrainHeightBeforeEarthworks } from "./terrain";
 import type { AirportDefinition, RunwayPoint, WorldDefinition } from "./types";
+import {
+  createVolcanicGroundSample,
+  sampleVolcanicGround,
+  volcanicSitesInBounds,
+  type VolcanicSite,
+} from "./volcanism";
 
 /**
  * The airport network: the home field plus airports spawned as the aircraft
@@ -236,27 +243,67 @@ let lastSpawnSurvey: SpawnSurvey | null = null;
  * The ground a spawned airport is surveyed, assessed and set on: the world's
  * height before any airport's earthworks.
  *
- * Here that is the natural kernel, the ground the home field is chosen on.
- * A world stage that moves the height between the natural kernel and the
- * earthworks (the landforms: sand seas, volcanic fields) must be applied here
- * too, or a runway is chosen on ground the world neither draws nor collides
- * with.
+ * That is the natural kernel with the landform stage applied
+ * (`sampleTerrainHeightBeforeEarthworks`), the ground the world draws and
+ * collides with under the earthworks, so a runway is never chosen on ground
+ * the world does not have. Inside the landform core (120 km round the home
+ * field) it is the natural kernel, bit for bit, the ground the home field is
+ * chosen on.
  */
 export function spawnedAirportSiteHeight(world: WorldDefinition): AirportSiteHeight {
-  return naturalAirportSiteHeight(world.seedHash);
+  return (x, z) => sampleTerrainHeightBeforeEarthworks(world, x, z);
 }
 
 /**
- * Whether a spawned airport may stand on the ground at a world point. This
- * world has no ground to refuse; a landform no runway belongs on (a sand sea,
- * a volcanic field) refuses it here. It is asked at every surveyed centre
- * before its assessment, and at both thresholds of a site that passed.
+ * How far a spawned airport keeps from a volcano: no edifice's base (a cone's,
+ * shield's or stratovolcano's radius, a caldera's or maar's rim,
+ * `VolcanicSite.radiusMeters`) may come within this of the point asked.
+ */
+export const SPAWNED_AIRPORT_VOLCANIC_CLEARANCE_METERS = 1_500;
+
+/**
+ * The most lava and tephra (`VolcanicGroundSample`, summed) the ground under
+ * a spawned airport may carry. Cover is nearly crisp, so any small share
+ * draws the same line; this one refuses every flow and apron that reads as
+ * volcanic ground.
+ */
+export const SPAWNED_AIRPORT_VOLCANIC_COVER_MAX = 0.05;
+
+/** `spawnedAirportGroundAllowed`'s scratch, reused: the survey asks it per candidate. */
+const VOLCANIC_CLEARANCE_SITES: VolcanicSite[] = [];
+const VOLCANIC_CLEARANCE_GROUND = createVolcanicGroundSample();
+
+/**
+ * Whether a spawned airport may stand on the ground at a world point. A
+ * landform no runway belongs on refuses it here: a sand sea (`inSandSea`),
+ * whose dunes the site assessment's relief limits would otherwise let a
+ * runway be cut through, and volcanic land (`volcanicGroundRefuses`). It is
+ * asked at every surveyed centre before its assessment, and at both
+ * thresholds of a site that passed.
  */
 export function spawnedAirportGroundAllowed(world: WorldDefinition, x: number, z: number): boolean {
-  void world;
-  void x;
-  void z;
-  return true;
+  return !inSandSea(world, x, z) && !volcanicGroundRefuses(world, x, z);
+}
+
+/**
+ * Volcanic land refuses a spawned airport where the ground is lava or tephra
+ * (`SPAWNED_AIRPORT_VOLCANIC_COVER_MAX`) or a volcano's edifice comes within
+ * `SPAWNED_AIRPORT_VOLCANIC_CLEARANCE_METERS`. Not the whole footprint: a
+ * cinder cone's tephra apron and flows reach about 5 km, so refusing every
+ * footprint would refuse almost every runway within 25 km of a field's
+ * centre; this refuses about 40% there, the volcanic ground and the cones.
+ */
+function volcanicGroundRefuses(world: WorldDefinition, x: number, z: number): boolean {
+  const ground = sampleVolcanicGround(world, x, z, 0, VOLCANIC_CLEARANCE_GROUND);
+  if (ground.lavaCover + ground.tephraCover > SPAWNED_AIRPORT_VOLCANIC_COVER_MAX) return true;
+  const clearance = SPAWNED_AIRPORT_VOLCANIC_CLEARANCE_METERS;
+  const sites = volcanicSitesInBounds(
+    world, x - clearance, z - clearance, x + clearance, z + clearance, VOLCANIC_CLEARANCE_SITES,
+  );
+  for (const site of sites) {
+    if (Math.hypot(site.x - x, site.z - z) - site.radiusMeters < clearance) return true;
+  }
+  return false;
 }
 
 function spawnSurvey(
@@ -265,7 +312,19 @@ function spawnSurvey(
   z: number,
   headingRadians: number,
 ): readonly CoarseAirportCandidate[] {
-  const key = [world.seedHash, world.seaLevel, world.airports.length, x, z, headingRadians].join(":");
+  // The survey reads the world's ground and its landforms, so a forced
+  // world shares no survey with the natural one of the same seed.
+  const key = [
+    world.seedHash,
+    world.seaLevel,
+    world.worldEvolution,
+    JSON.stringify(world.climateProvince ?? null),
+    JSON.stringify(world.landforms ?? null),
+    world.airports.length,
+    x,
+    z,
+    headingRadians,
+  ].join(":");
   if (lastSpawnSurvey?.key === key) return lastSpawnSurvey.ranked;
   const policy = AIRPORT_SPAWN_POLICY;
   const nearest = nearestAirport(world, x, z);

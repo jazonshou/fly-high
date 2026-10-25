@@ -112,8 +112,8 @@ const creations = { pipelines: 0, shaderModules: 0, shaderCodeChars: 0 };
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
 let activeWorldEvolution: WorldEvolution | null = null;
-/** The forced climate province of the current world, as JSON; null is the natural field. */
-let activeProvinceKey: string | null = null;
+/** The forced climate province and landforms of the current world, as JSON; null is the natural world. */
+let activeForcedKey: string | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let renderer: FlightRenderer | null = null;
 let removeGpuErrorListener: (() => void) | null = null;
@@ -417,10 +417,13 @@ function createCanvas(): HTMLCanvasElement {
 async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
+  landforms: PerfCaptureShotDefinition["landforms"],
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  const provinceKey = climateProvince === undefined ? null : JSON.stringify(climateProvince);
-  if (renderer && activeWorldEvolution === worldEvolution && activeProvinceKey === provinceKey) return;
+  const forcedKey = climateProvince === undefined && landforms === undefined
+    ? null
+    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null });
+  if (renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
   removeGpuErrorListener?.();
@@ -432,6 +435,7 @@ async function ensureRenderer(
     ...(config.worldOptions ?? {}),
     worldEvolution,
     ...(climateProvince === undefined ? {} : { climateProvince }),
+    ...(landforms === undefined ? {} : { landforms }),
   } as Parameters<typeof createWorld>[1]);
   // A base that predates climate provinces ignores the option and would
   // render the temperate world: fail the shot rather than compare the wrong
@@ -461,7 +465,7 @@ async function ensureRenderer(
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
   activeWorldEvolution = worldEvolution;
-  activeProvinceKey = provinceKey;
+  activeForcedKey = forcedKey;
   installEffectRecorder(renderer);
   renderCalls = 0;
   removeGpuErrorListener = capability("addGpuUncapturedErrorListenerForCapture")((event) => {
@@ -603,7 +607,7 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince);
+    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms);
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;

@@ -53,7 +53,15 @@ import {
   TERRAIN_KERNEL_WGSL,
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
+  terrainLandformInput,
+  type TerrainKernelLandformInput,
 } from "./TerrainKernel";
+import {
+  TERRAIN_LANDFORM_WGSL,
+  TerrainLandformDataBinding,
+  terrainLandformDataBindingWgsl,
+  type TerrainLandformDataSource,
+} from "./TerrainLandformKernel";
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   TERRAIN_HEIGHT_SLOT_EDGE,
@@ -163,6 +171,14 @@ export interface TerrainAtlasSlot {
    * so it cannot outlive the slot it describes.
    */
   bakedSeasonDay: number | null;
+  /**
+   * The landform coverage (`TerrainLandformDataSource.coverage`) a height page
+   * was last baked against, when that did not cover the whole page; null when
+   * it did, or when the page reads no landform data. A page wider than any
+   * site index (the 262 km roots) always records one, and the clipmap
+   * refreshes it in place once its part near the observer leaves it.
+   */
+  landformCoverage: Float64Array | null;
   /**
    * The airport list changed over this page (`TerrainClipmapSystem.
    * setAirports`): its texels describe ground an airport has since been
@@ -325,6 +341,7 @@ export class TerrainAtlasResidency {
       hydrologyReady: !this.options.requireHydrology,
       hydrologySubmitted: false,
       bakedSeasonDay: null,
+      landformCoverage: null,
       // A new slot is generated against the CURRENT airport list, whose
       // uniforms are written before any later dispatch is recorded.
       airportRebuildOwed: false,
@@ -871,6 +888,8 @@ const PAGE_WORKGROUP_EDGE = 8;
 const PAGE_APRON_EDGE = PAGE_WORKGROUP_EDGE + 2;
 /** Three atomics per job: min, max and max second difference. */
 export const TERRAIN_PAGE_BOUNDS_SLOTS = 4;
+/** The landform data binding's slot in the page-generation bind group. */
+const PAGE_LANDFORM_DATA_BINDING = 6;
 
 /**
  * The page-generation compute shader.
@@ -880,6 +899,12 @@ export const TERRAIN_PAGE_BOUNDS_SLOTS = 4;
  * submits once — a `writeBuffer` between per-page dispatches would land before
  * any of them executed and every dispatch would read the last job (§4 D11's
  * hazard, in the generation path rather than the shadow path).
+ *
+ * The landform include and its data binding are composed HERE rather than
+ * passed in: `pageHeightAt` calls `terrainLandforms`, so a page shader without
+ * them does not compile, and a caller left to remember them would compile a
+ * different shader from the renderer's. The include reads the kernel's
+ * `kNatural`, so `kernelWgsl` is `TERRAIN_KERNEL_WGSL`.
  */
 export function terrainPageGenerationWgsl(
   kernelWgsl: string,
@@ -888,7 +913,9 @@ export function terrainPageGenerationWgsl(
 ): string {
   return /* wgsl */ `
 ${bindingWgsl}
+${terrainLandformDataBindingWgsl(0, PAGE_LANDFORM_DATA_BINDING)}
 ${kernelWgsl}
+${TERRAIN_LANDFORM_WGSL}
 ${airportWgsl}
 ${runwayEarthworksSetWgsl("earthworks")}
 
@@ -940,13 +967,18 @@ var<workgroup> groupDeviation: atomic<u32>;
  */
 fn pageHeightAt(job: PageJob, localX: f32, localZ: f32) -> f32 {
   let natural = terrainNaturalHeight(localX, localZ);
+  // natural -> landforms -> earthworks, sampleTerrainHeight's order. The
+  // landform stage reads the intermediates the call above recorded, so the
+  // kernel runs once; inside the landform core, and on a page built without a
+  // landform input, it returns natural itself, bit for bit.
+  let landformed = terrainLandforms(localX, localZ, natural);
   // 4-3/4-9: the page stores the AIRPORT-FLATTENED height. The CDLOD min/max
   // AABB has to be correct over the airport, the collision fast path returns
   // the crowned platform, and after 4-4 there is no CPU tile path left to
   // apply the earthworks anywhere else. The airport is the one whose centre
   // is nearest, as the CPU's worldAirportAt picks it.
   return terrainRunwayEarthworksNearestHeight(
-    natural,
+    landformed,
     job.world.x + localX - job.placement.z,
     job.world.y + localZ - job.placement.w,
   );
@@ -1177,6 +1209,12 @@ export interface TerrainPageGeneratorOptions {
    * the engine is a real WebGPU device with textures".
    */
   readonly erosionGpu?: boolean;
+  /**
+   * What `terrainLandformData` binds: the volcanic site index, or (omitted)
+   * a placeholder (the empty site index) the generator owns. Swappable later with
+   * `setLandformDataSource`.
+   */
+  readonly landformData?: TerrainLandformDataSource | null;
 }
 
 /**
@@ -1197,6 +1235,10 @@ export class TerrainPageGenerator {
   private boundsRingIndex = 0;
   private offsetBuffer: StorageBuffer | null = null;
   private earthworksBuffer: StorageBuffer | null = null;
+  /** `terrainLandformData`: the one place it is held and bound, before each dispatch. */
+  private readonly landformBinding: TerrainLandformDataBinding;
+  /** The world's landform core and wind (`terrainLandformInput`), or gain 0. */
+  private readonly landform: TerrainKernelLandformInput | null;
   private capacity = 0;
   private inFlight: readonly TerrainAtlasSlot[] = [];
   private readbacksInFlight = 0;
@@ -1235,6 +1277,9 @@ export class TerrainPageGenerator {
     if (this.world && this.world.seedHash !== seedHash) {
       throw new RangeError("Terrain page generator world does not match its seed hash");
     }
+    // Without a world the pages are the natural kernel's, as they always were.
+    this.landform = this.world ? terrainLandformInput(this.world) : null;
+    this.landformBinding = new TerrainLandformDataBinding(options.landformData ?? null);
     this.erosionExecutor = this.world?.worldEvolution === "eroded"
       ? options.erosionExecutor ?? new TerrainPageErosionClient(this.world)
       : null;
@@ -1273,6 +1318,14 @@ export class TerrainPageGenerator {
       executor,
     });
     return this.erosionGpu;
+  }
+
+  /**
+   * Bind a different landform data source (null: the placeholder). Takes
+   * effect at the next dispatch; the pipeline is not recreated.
+   */
+  setLandformDataSource(source: TerrainLandformDataSource | null): void {
+    this.landformBinding.setSource(source);
   }
 
   /** True while a GPU page DAG holds the producer's single in-flight slot. */
@@ -1461,15 +1514,44 @@ export class TerrainPageGenerator {
       return;
     }
     if (slots.length === 0) return;
+    // A page the landform data does not cover yet is DEFERRED while the data
+    // is being built, not baked without the sites that reach it: it stays
+    // generating and unsubmitted, so the clipmap offers it again next frame
+    // (and reclaims it if the aircraft turns away first). The placeholder
+    // covers everything.
+    slots = this.landformReadySlots(slots);
+    if (slots.length === 0) return;
+    await this.dispatchPages(slots);
+  }
+
+  /**
+   * Re-bake RESIDENT pages in place, with the landform data as it is now: the
+   * pages that recorded a partial `landformCoverage`, once the clipmap finds
+   * the data covers what matters of them. The slot stays resident throughout
+   * (its texels are overwritten by one dispatch, so nothing reads a half-made
+   * page) and takes the new stats when the readback lands. Level-0 pages are
+   * never refreshed: they publish collision, and no index is narrower than
+   * one. Returns the slots dispatched.
+   */
+  async refresh(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]> {
+    if (this.disposed || !this.atlas.hasTextures || this.world?.worldEvolution === "eroded") return [];
+    const resident = slots.filter((slot) =>
+      slot.lifecycle.state === "resident" && slot.address.level > 0 && !slot.generationSubmitted);
+    if (resident.length === 0) return [];
+    return (await this.dispatchPages(resident)) ? resident : [];
+  }
+
+  /** One dispatch over `slots`, completed (or, for a refresh, re-statted) from the readback. */
+  private async dispatchPages(slots: readonly TerrainAtlasSlot[]): Promise<boolean> {
     // Never overwrite a bounds buffer whose read has not landed: that is what
     // silently completes a page at zero deviation. See BOUNDS_BUFFER_RING.
-    if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return;
+    if (this.readbacksInFlight >= BOUNDS_BUFFER_RING) return false;
     this.ensureCapacity(slots.length);
     const shader = this.shader;
     const jobBuffer = this.jobBuffer;
     const pageBuffer = this.pageBuffer;
     const boundsBuffer = this.boundsRing[this.boundsRingIndex];
-    if (!shader || !jobBuffer || !pageBuffer || !boundsBuffer) return;
+    if (!shader || !jobBuffer || !pageBuffer || !boundsBuffer) return false;
     this.boundsRingIndex = (this.boundsRingIndex + 1) % BOUNDS_BUFFER_RING;
 
     const jobs = new Float32Array(slots.length * 12);
@@ -1497,6 +1579,7 @@ export class TerrainPageGenerator {
           originX: pageBounds.minX,
           originZ: pageBounds.minZ,
           filterWidthMeters: terrainPageFilterWidthMeters(level),
+          landform: this.landform,
         })),
         index * TERRAIN_KERNEL_PAGE_BYTES,
       );
@@ -1514,13 +1597,17 @@ export class TerrainPageGenerator {
     // bind group is recorded per dispatch, so this cannot disturb a batch
     // already encoded.
     shader.setStorageBuffer("pageBounds", boundsBuffer);
+    this.landformBinding.bind(this.engine as WebGPUEngine, shader);
     // Captured before the dispatch: a regenerated slot is one that was
     // already resident when its batch was recorded.
     const regenerated = slots.map(
       (slot) => slot.token === null && slot.lifecycle.state === "resident",
     );
     this.inFlight = slots;
-    for (const slot of slots) slot.generationSubmitted = true;
+    for (const slot of slots) {
+      slot.generationSubmitted = true;
+      slot.landformCoverage = this.partialLandformCoverage(slot);
+    }
     try {
       await shader.dispatchWhenReady(
         TERRAIN_PAGE_WORKGROUPS_PER_SLOT_EDGE,
@@ -1539,6 +1626,7 @@ export class TerrainPageGenerator {
     const readback = this.collectBounds(boundsBuffer, slots, regenerated);
     this.pendingReadbacks.add(readback);
     void readback.finally(() => this.pendingReadbacks.delete(readback));
+    return true;
   }
 
   /**
@@ -1774,6 +1862,10 @@ export class TerrainPageGenerator {
         const inPlace = regenerated[index] === true;
         if (!inPlace && !slot.token) return;
         const base = index * TERRAIN_PAGE_BOUNDS_SLOTS;
+        // A landform refresh (`refresh`) may be offered again once its
+        // readback lands. An airport regeneration's flag was already cleared
+        // when its batch was recorded.
+        if (isRefreshing(slot)) slot.generationSubmitted = false;
         const stats = {
           minHeightMeters: decodeOrderableFloat(read[base]!),
           maxHeightMeters: decodeOrderableFloat(read[base + 1]!),
@@ -1786,6 +1878,8 @@ export class TerrainPageGenerator {
       await Promise.all(publications);
     } catch {
       for (const slot of slots) {
+        // A refresh keeps its old stats, and may be offered again.
+        if (isRefreshing(slot)) slot.generationSubmitted = false;
         if (!slot.token) continue;
         if (this.collisionPagePublisher && slot.address.level === 0) {
           this.atlas.residency.fail(slot.key, slot.token, "collision readback failed");
@@ -1898,6 +1992,7 @@ export class TerrainPageGenerator {
     this.offsetBuffer?.dispose();
     this.earthworksBuffer?.dispose();
     this.earthworksBuffer = null;
+    this.landformBinding.dispose();
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.offsetBuffer = null;
@@ -1964,6 +2059,7 @@ export class TerrainPageGenerator {
           pageBounds: { group: 0, binding: 3 },
           supersample: { group: 0, binding: 4 },
           earthworks: { group: 0, binding: 5 },
+          terrainLandformData: { group: 0, binding: PAGE_LANDFORM_DATA_BINDING },
         },
       },
     );
@@ -1982,4 +2078,68 @@ export class TerrainPageGenerator {
     this.earthworksBuffer.update(this.earthworksSetBytes);
     this.shader.setStorageBuffer("earthworks", this.earthworksBuffer);
   }
+
+  /**
+   * The slots not waiting on landform data still being built: `slots`
+   * itself, with no allocation, unless one is. A page without a landform
+   * input never reads the data (gain 0 returns before it), and the
+   * placeholder covers everything, so neither defers anything; nor does any
+   * page once the data is built, covered or not (`TerrainLandformDataSource`).
+   */
+  private landformReadySlots(slots: readonly TerrainAtlasSlot[]): readonly TerrainAtlasSlot[] {
+    if (!this.landform || !this.landformBinding.hasSource) return slots;
+    if (!slots.some((slot) => this.landformHoldsBack(slot))) return slots;
+    return slots.filter((slot) => !this.landformHoldsBack(slot));
+  }
+
+  /**
+   * The coverage to record on a page about to be baked: null when the data
+   * covers all of it (or it reads none), else a copy of the data's coverage.
+   */
+  private partialLandformCoverage(slot: TerrainAtlasSlot): Float64Array | null {
+    if (!this.landform || !this.landformBinding.hasSource || this.landformCovers(slot)) return null;
+    return Float64Array.from(this.landformBinding.coverage);
+  }
+
+  /**
+   * Whether the landform data covers everything a page samples: its stored
+   * texels (core plus gutter), the bounds apron one texel further out, and
+   * the supersample taps within half a texel of those.
+   */
+  private landformCovers(slot: TerrainAtlasSlot): boolean {
+    const bounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
+    const margin = terrainPageLandformMargin(slot.address.level);
+    return this.landformBinding.covers(
+      bounds.minX - margin,
+      bounds.minZ - margin,
+      bounds.maxX + margin,
+      bounds.maxZ + margin,
+    );
+  }
+
+  /** Whether a page waits for landform data still being built (`holdsBack`). */
+  private landformHoldsBack(slot: TerrainAtlasSlot): boolean {
+    const bounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
+    const margin = terrainPageLandformMargin(slot.address.level);
+    return this.landformBinding.holdsBack(
+      bounds.minX - margin,
+      bounds.minZ - margin,
+      bounds.maxX + margin,
+      bounds.maxZ + margin,
+    );
+  }
+}
+
+/**
+ * How far past its bounds a page's bake samples: its gutter texels, the
+ * bounds apron one texel further out, and the supersample taps within half a
+ * texel of those.
+ */
+export function terrainPageLandformMargin(level: number): number {
+  return (WORLD_PAGE_GUTTER + 1) * terrainTexelSizeMeters(level);
+}
+
+/** A resident page re-dispatched by `refresh`, whose readback has not landed. */
+function isRefreshing(slot: TerrainAtlasSlot): boolean {
+  return slot.token === null && slot.generationSubmitted && slot.lifecycle.state === "resident";
 }

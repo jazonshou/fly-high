@@ -649,7 +649,7 @@ describe("6-8 adds canopy height at coarse LOD only", () => {
 describe("6-8's closure channel costs no atlas bytes and no fragment sampler", () => {
   it("rides the LOW season bucket's alpha lane, the only one read as closure", () => {
     expect(LAND_COVER_SPLAT_BAKE_WGSL).toContain(
-      "textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, canopy.x));");
+      "textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, closure));");
     expect(LAND_COVER_SPLAT_BAKE_WGSL).not.toContain("canopy.y);");
     // V-4: closure was written into BOTH buckets, but every reader takes the
     // low bucket's lane (the vertex stage's corner taps and

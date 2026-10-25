@@ -242,7 +242,6 @@ export const ROCK_CRAG_OCCLUSION_REST = ROCK_CRAG_CREASE_MEANS.reduce(
   0,
 );
 
-/** Rock-likeness of one material id: bedrock 1, scree a share, all else 0. */
 /** The mineral share of a pair after a push of `push` logits. CPU twin. */
 export function rockBoundaryPushedShare(mineralShare: number, push: number): number {
   const gate = Math.min(1, Math.max(0,
@@ -256,8 +255,14 @@ export function rockBoundaryPushedShare(mineralShare: number, push: number): num
   return 1 / (1 + Math.exp(-logit));
 }
 
+/**
+ * Rock-likeness of one material id: bedrock 1, scree a share, all else 0.
+ * Fresh lava is bedrock too — its flow fronts, pressure ridges and channel
+ * walls are crags at this scale — so Basalt reads the whole of Rock's relief.
+ * Tephra is loose ground and reads none: its relief is in its grains.
+ */
 export function rockReliefShareOf(materialId: number): number {
-  if (materialId === SurfaceMaterial.Rock) return 1;
+  if (materialId === SurfaceMaterial.Rock || materialId === SurfaceMaterial.Basalt) return 1;
   if (materialId === SurfaceMaterial.Gravel) return ROCK_RELIEF_GRAVEL_SHARE;
   return 0;
 }
@@ -329,6 +334,7 @@ export const TERRAIN_ROCK_RELIEF_WGSL = /* wgsl */ `
 fn terrainRockShareOf(materialIndex: i32) -> f32 {
   if (materialIndex == ${SurfaceMaterial.Rock}) { return 1.0; }
   if (materialIndex == ${SurfaceMaterial.Gravel}) { return ${wgslFloat(ROCK_RELIEF_GRAVEL_SHARE)}; }
+  if (materialIndex == ${SurfaceMaterial.Basalt}) { return 1.0; }
   return 0.0;
 }
 

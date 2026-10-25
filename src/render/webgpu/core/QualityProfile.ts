@@ -240,6 +240,22 @@ export interface WebGpuQualityProfile {
    */
   readonly terrainProvinceField: boolean;
   /**
+   * Volcanic land, phase 2: whether the two volcanic ground materials (Basalt
+   * and Tephra, appended after Concrete) exist on this tier. DATA, not a
+   * `profile.tier` branch.
+   *
+   * Off, the material arrays are built without the two layers (tier 0 sits
+   * within ~1 MiB of its memory ceiling, and they are 1.3 MiB at its 256²
+   * edge), the splat bake remaps volcanic ground to the nearest shipped
+   * material (Basalt to Rock, Tephra to Gravel) so no page ever stores an id
+   * the arrays lack, and the fragment's sparse gather compiles the ten
+   * materials it had before the two were appended. On, the gather scans two
+   * more candidates (the same three vec4 buckets hold all twelve totals),
+   * which is the only per-pixel cost volcanic ground adds where there is
+   * none.
+   */
+  readonly volcanicMaterials: boolean;
+  /**
    * `4-0`/`4-5`: screen-space error, in pixels, above which a CDLOD node
    * splits. Split when `maxDeviationFromParent × pixelsPerMeter(distance3D)`
    * exceeds this. Monotone decreasing in tier — a smaller threshold splits
@@ -363,6 +379,19 @@ export interface WebGpuQualityProfile {
    */
   readonly vegetationCastsShadows: boolean;
   readonly activeAnimalBudget: number;
+  /**
+   * Volcanic phase 5: the instance cap on steam wisps over vents within 15 km
+   * (`VolcanicSteamSystem`). One instanced draw while a vent is in range and
+   * none otherwise, so the temperate core pays nothing at any tier.
+   *
+   * 0 is OFF and means no mesh, no material and no draw at all — the low
+   * tier's whole cost is this field. The cap only binds over a dense vent
+   * field: one vigorous crater emits 24 wisps, so 128 covers five, and the
+   * nearest vents keep their wisps when it binds.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly volcanicSteamMaxWisps: number;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -416,6 +445,7 @@ function resolveBaseQualityProfile(
       heightBlendMaxMaterials: 2,
       terrainGroundPatchwork: false,
       terrainProvinceField: false,
+      volcanicMaterials: false,
       cdlodPixelThreshold: 4,
       // `4.5-A1`: 160 -> 224. Low keeps L3 (512 m nodes, 16 m height texels)
       // under the aircraft rather than the L6 the per-level loop converged on.
@@ -466,6 +496,7 @@ function resolveBaseQualityProfile(
       // modelled draws.
       vegetationCastsShadows: false,
       activeAnimalBudget: 16,
+      volcanicSteamMaxWisps: 0,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -515,6 +546,7 @@ function resolveBaseQualityProfile(
       heightBlendMaxMaterials: 3,
       terrainGroundPatchwork: true,
       terrainProvinceField: true,
+      volcanicMaterials: true,
       cdlodPixelThreshold: 3,
       // `4.5-A1`: 240 -> 320, the measured step that reaches L2 (128 m nodes,
       // 4 m height texels) under the aircraft at 500 ft. At 240 the new
@@ -568,6 +600,7 @@ function resolveBaseQualityProfile(
       // 9.02 ms row.
       vegetationCastsShadows: false,
       activeAnimalBudget: 48,
+      volcanicSteamMaxWisps: 128,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -608,6 +641,7 @@ function resolveBaseQualityProfile(
       heightBlendMaxMaterials: 4,
       terrainGroundPatchwork: true,
       terrainProvinceField: true,
+      volcanicMaterials: true,
       cdlodPixelThreshold: 2,
       // `4.5-A1`: 320 -> 448. Same L2 floor as tier 1 with the mid field
       // carried a level finer.
@@ -659,6 +693,7 @@ function resolveBaseQualityProfile(
       // spending pixels, and D15 already cut this tier's cascade count once.
       vegetationCastsShadows: true,
       activeAnimalBudget: 128,
+      volcanicSteamMaxWisps: 192,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -695,6 +730,7 @@ function resolveBaseQualityProfile(
     heightBlendMaxMaterials: 4,
     terrainGroundPatchwork: true,
     terrainProvinceField: true,
+    volcanicMaterials: true,
     cdlodPixelThreshold: 1.5,
     // `4.5-A1`: 448 -> 640.
     cdlodNodeBudget: 640,
@@ -752,6 +788,7 @@ function resolveBaseQualityProfile(
     vegetationDensity: 1,
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
+    volcanicSteamMaxWisps: 256,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

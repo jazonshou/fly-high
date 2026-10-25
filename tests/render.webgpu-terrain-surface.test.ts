@@ -635,18 +635,27 @@ describe("terrain surface plugin (3-2)", () => {
     expect(gather).toContain("lane < 4u; lane = lane + 1u");
 
     // Dynamic private-array indexing is the regression this implementation
-    // avoids. Every material has one scalar switch arm and one statically
-    // ordered top-two candidate, with the original strict tie comparison.
-    expect(gather).not.toMatch(/array<f32,\s*10>/u);
-    expect(gather).not.toContain("accumulated[materialId]");
-    expect(gather).not.toContain("accumulated[materialIndex]");
+    // avoids. The totals are named vec4 buckets of four materials, one switch
+    // arm per bucket (SwiftShader executes every arm), and every material has
+    // one statically ordered top-two candidate reading its own lane, with the
+    // original strict tie comparison.
+    expect(gather).not.toMatch(new RegExp(`array<f32,\\s*${SURFACE_MATERIAL_COUNT}>`, "u"));
+    expect(gather).not.toMatch(/array<vec4f,/u);
+    expect(gather).not.toMatch(/totals\[/u);
+    expect(gather).toContain(
+      "let share = select(vec4f(0.0), vec4f(weights[lane]),\n"
+      + "        vec4<u32>(0u, 1u, 2u, 3u) == vec4<u32>(materialId & 3u));");
+    expect(gather).toContain("switch materialId >> 2u {");
+    const buckets = Math.ceil(SURFACE_MATERIAL_COUNT / 4);
+    for (let bucket = 0; bucket < buckets; bucket += 1) {
+      expect(gather).toContain(`var totals${bucket} = vec4f(0.0);`);
+      expect(gather).toContain(`case ${bucket}u: { totals${bucket} = totals${bucket} + share; }`);
+    }
+    expect(gather.match(/case \d+u:/gu)).toHaveLength(buckets);
     let precedingCandidate = -1;
     for (let materialId = 0; materialId < SURFACE_MATERIAL_COUNT; materialId += 1) {
-      expect(gather).toContain(`var accumulated${materialId} = 0.0;`);
-      expect(gather).toContain(
-        `case ${materialId}u: { accumulated${materialId} = accumulated${materialId} + weights[lane]; }`,
-      );
-      const candidate = gather.indexOf(`candidateWeight = accumulated${materialId};`);
+      const lane = "xyzw"[materialId & 3];
+      const candidate = gather.indexOf(`candidateWeight = totals${materialId >> 2}.${lane};`);
       expect(candidate, `material ${materialId} top-two candidate`).toBeGreaterThan(
         precedingCandidate,
       );

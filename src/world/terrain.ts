@@ -8,6 +8,12 @@ import {
   type CarvedChannelSet,
 } from "@/src/render/webgpu/terrain/RiverChannels";
 import { getAirportInfluence, isPointOnRunway, worldAirportAt, worldToRunway } from "./airport";
+import type { DuneSample } from "./dunes";
+import {
+  applyTerrainLandforms,
+  sampleLandformCover,
+  sampleLandformCoverFromNatural,
+} from "./landforms";
 import { sampleGeologicalRelief, sampleTerrainPlates } from "./geology";
 import {
   blendTowardExpectation,
@@ -36,6 +42,7 @@ import {
   type ClimateProvinceSample,
 } from "./climateProvince";
 import { mixSeed } from "./seed";
+import { createVolcanicGroundSample, sampleVolcanicGround } from "./volcanism";
 import {
   TERRAIN_BIOME_NAMES,
   TerrainBiome,
@@ -405,11 +412,112 @@ export function sampleNaturalTerrainHeight(
       - (rockyKnolls + cragDetail + geologicalRelief) * (1 - reliefKept);
     height = shippedHeight + (reshapedHeight - shippedHeight) * shapeWeight;
   }
+  // Landforms read these off the call that produced the height (see
+  // NATURAL_INTERMEDIATES); writing them cannot change the returned value.
+  const intermediates = NATURAL_INTERMEDIATES;
+  intermediates.warpedX = warpedX;
+  intermediates.warpedZ = warpedZ;
+  intermediates.continental = continental;
+  intermediates.land = land;
+  intermediates.foothillRegion = foothillRegion;
+  intermediates.mountainRegion = mountainRegion;
+  intermediates.rolling = rolling;
+  intermediates.hillStrength = hillStrength;
+  intermediates.fine = fine;
+  intermediates.rockyKnolls = rockyKnolls;
+  intermediates.foothillHeight = foothillHeight;
+  intermediates.valleyCarve = valleyCarve;
+  intermediates.geologicalRelief = geologicalRelief;
+  intermediates.shippedHeight = shippedHeight;
   return clamp(height, MIN_TERRAIN_HEIGHT, MAX_TERRAIN_HEIGHT);
 }
 
 /** Per-call scratch for the ridge pair; the kernel runs ~181 lattices per vertex. */
 const RIDGE_PAIR_SCRATCH: RidgedPair = { hard: 0, soft: 0 };
+
+/**
+ * The natural kernel's intermediates at the point of its LAST call: what the
+ * landform stages (`landforms.ts`) read instead of evaluating the kernel again.
+ * Valid only until the next `sampleNaturalTerrainHeight` call, which is why
+ * only the two world-height samplers below hand it on, on the very next line.
+ * The WGSL twin is the private `kNatural` the kernel writes the same way.
+ */
+export interface NaturalTerrainIntermediates {
+  /** The warped coordinate the continental, rolling and ridge fields read, metres. */
+  warpedX: number;
+  warpedZ: number;
+  continental: number;
+  land: number;
+  foothillRegion: number;
+  mountainRegion: number;
+  /** The 1.65 km hill fbm, before `hillStrength`. */
+  rolling: number;
+  hillStrength: number;
+  /** The 310 m fbm, before its `5 + land * 12` amplitude. */
+  fine: number;
+  rockyKnolls: number;
+  foothillHeight: number;
+  /** Subtracted from the height (it carves). */
+  valleyCarve: number;
+  geologicalRelief: number;
+  /** The height before M-1's massif reshaping and the clamp. */
+  shippedHeight: number;
+}
+
+/**
+ * Run the natural kernel at a point for its intermediates (landform readers
+ * that need the erg weight or sand cover without a height: the classifier,
+ * hydrology, vegetation). The returned object is shared scratch, valid until
+ * the next kernel call.
+ */
+export function sampleNaturalTerrainIntermediates(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): Readonly<NaturalTerrainIntermediates> {
+  sampleNaturalTerrainHeight(seedHash, x, z, filterWidthMeters);
+  return NATURAL_INTERMEDIATES;
+}
+
+const NATURAL_INTERMEDIATES: NaturalTerrainIntermediates = {
+  warpedX: 0,
+  warpedZ: 0,
+  continental: 0,
+  land: 0,
+  foothillRegion: 0,
+  mountainRegion: 0,
+  rolling: 0,
+  hillStrength: 0,
+  fine: 0,
+  rockyKnolls: 0,
+  foothillHeight: 0,
+  valleyCarve: 0,
+  geologicalRelief: 0,
+  shippedHeight: 0,
+};
+
+const ASIDE_INTERMEDIATES: NaturalTerrainIntermediates = { ...NATURAL_INTERMEDIATES };
+
+/**
+ * The natural height at a point, leaving the shared intermediates exactly as
+ * they were: for a landform that samples the kernel ELSEWHERE while a caller
+ * may still be reading this point's intermediates — volcanic sites are built
+ * on a bin's first visit, in the middle of a height sample, and the dune
+ * stage reads the intermediates after asking for volcanic activity. Without
+ * it, the first sample of an area would differ from every later one.
+ */
+export function sampleNaturalTerrainHeightAside(
+  seedHash: number,
+  x: number,
+  z: number,
+  filterWidthMeters: number,
+): number {
+  Object.assign(ASIDE_INTERMEDIATES, NATURAL_INTERMEDIATES);
+  const height = sampleNaturalTerrainHeight(seedHash, x, z, filterWidthMeters);
+  Object.assign(NATURAL_INTERMEDIATES, ASIDE_INTERMEDIATES);
+  return height;
+}
 
 /**
  * Phase 5's pre-erosion tectonic field.
@@ -714,11 +822,22 @@ export function sampleFilteredTerrainUpliftHeight(
   return applyAirportEarthworks(world, upliftHeight, x, z);
 }
 
-/** Fast collision-query path: only computes terrain elevation. */
-export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+/**
+ * The world's ground before any airport's earthworks: the natural kernel and
+ * the landform stage, at full bandwidth. What the earthworks are applied to
+ * (`sampleTerrainHeight`), and so what a spawned airport is surveyed and
+ * graded on (`spawnedAirportSiteHeight`). Inside the landform core it is the
+ * natural height, bit for bit.
+ */
+export function sampleTerrainHeightBeforeEarthworks(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, 0);
-  return applyAirportEarthworks(world, naturalHeight, x, z);
+  return applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
+}
+
+/** Fast collision-query path: only computes terrain elevation. */
+export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
+  return applyAirportEarthworks(world, sampleTerrainHeightBeforeEarthworks(world, x, z), x, z);
 }
 
 /**
@@ -811,7 +930,9 @@ export function sampleFilteredTerrainHeight(
   filterWidthMeters: number,
 ): number {
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, filterWidthMeters);
-  return applyAirportEarthworks(world, naturalHeight, x, z);
+  const height = applyTerrainLandforms(
+    world, x, z, naturalHeight, filterWidthMeters, NATURAL_INTERMEDIATES);
+  return applyAirportEarthworks(world, height, x, z);
 }
 
 /**
@@ -986,6 +1107,8 @@ export function sampleTerrainMoisture(
 
 /** Per-call scratch for the province sample; these samplers run per texel. */
 const PROVINCE_SCRATCH: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };
+/** The same, for the volcanic ground the classifier reads. */
+const VOLCANIC_SCRATCH = createVolcanicGroundSample();
 
 /** The smooth 11 km climate field feeding temperature; interpolable at tile scale. */
 export function sampleTerrainClimate(
@@ -1161,6 +1284,10 @@ function classifyBiome(
   airportInfluence: number,
   temperatureOffset: number,
   dryness: number,
+  sandCover: number,
+  lavaCover: number,
+  tephraCover: number,
+  volcanicAge: number,
 ): TerrainBiomeId {
   if (runway) return TerrainBiome.RUNWAY;
   if (height <= world.seaLevel) return TerrainBiome.WATER;
@@ -1184,6 +1311,12 @@ function classifyBiome(
     seasonalTemperatureShift: 0,
     temperatureOffset,
     dryness,
+    sandCover,
+    // Volcanic land: exactly 0 off volcanic ground, where the classifier then
+    // runs bit for bit the law it ran before.
+    lavaCover,
+    tephraCover,
+    volcanicAge,
   });
   return BIOME_FOR_DOMINANT_MATERIAL[dominantLandCover(weights)] ?? TerrainBiome.GRASSLAND;
 }
@@ -1195,6 +1328,12 @@ function classifyBiome(
  * `SURFACE_MATERIALS_BY_BIOME` primary IS that material, so the round trip
  * `biome -> primary material -> biome` is the identity and the two tables
  * cannot drift.
+ *
+ * An inland sand sea reads as BEACH too. There is no desert biome, and BEACH
+ * is already what every consumer treats as bare sand: no ground cover, no
+ * wildlife, the sand palette. A new id would have to be taught to each of
+ * them (palettes, material sets, per-vertex biome arrays, wildlife), to say
+ * only what `sandCover` on the sample already says; the cost is the name.
  */
 const BIOME_FOR_DOMINANT_MATERIAL: Readonly<Record<number, TerrainBiomeId>> = Object.freeze({
   [SurfaceMaterial.Sand]: TerrainBiome.BEACH,
@@ -1207,6 +1346,11 @@ const BIOME_FOR_DOMINANT_MATERIAL: Readonly<Record<number, TerrainBiomeId>> = Ob
   [SurfaceMaterial.Gravel]: TerrainBiome.ALPINE,
   [SurfaceMaterial.Asphalt]: TerrainBiome.RUNWAY,
   [SurfaceMaterial.Concrete]: TerrainBiome.RUNWAY,
+  // Bare volcanic ground is barren ground: ALPINE is the legacy id whose
+  // consumers (rock lag, no turf) treat it as such. Neither is any biome's
+  // primary, like DryGrass and Gravel above.
+  [SurfaceMaterial.Basalt]: TerrainBiome.ALPINE,
+  [SurfaceMaterial.Tephra]: TerrainBiome.ALPINE,
 });
 
 const PALETTES: Readonly<Record<TerrainBiomeId, readonly [number, number, number]>> = {
@@ -1323,11 +1467,16 @@ function createTerrainSampleTarget(): TerrainSample {
     temperature: 0,
     temperatureOffset: 0,
     dryness: 0,
+    sandCover: 0,
+    ergWeight: 0,
     biome: TerrainBiome.GRASSLAND,
     biomeName: "grassland",
     color: { r: 0, g: 0, b: 0 },
     airportInfluence: 0,
     isRunway: false,
+    lavaCover: 0,
+    tephraCover: 0,
+    volcanicAge: 0,
   };
 }
 
@@ -1342,6 +1491,10 @@ function createTerrainSampleTarget(): TerrainSample {
  * wavelength is 850 m, so the tile generator samples them on a coarse
  * subgrid and interpolates instead of paying nine noise evaluations per
  * 8 m vertex.
+ *
+ * `landformCover` may be supplied by a caller that read it off its own height
+ * sample (`sampleTerrain`). Otherwise it is sampled here: free inside the
+ * landform core, one natural-kernel evaluation outside it.
  */
 export function sampleTerrainSurface(
   world: WorldDefinition,
@@ -1353,12 +1506,16 @@ export function sampleTerrainSurface(
   dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
   moisture?: number,
   temperature?: number,
+  landformCover?: Readonly<DuneSample>,
 ): TerrainSample {
   // Climate provinces: sampled once, for the climate fields (when they were
   // not supplied) and for the thermal-height reads.
   const province = sampleClimateProvince(world, x, z, PROVINCE_SCRATCH);
   const temperatureOffset = province.temperatureOffset;
   const dryness = province.dryness;
+  // Sand seas: the cover overrides the classifier's climate. Exactly 0 inside
+  // the landform core, where the classification is the shipped one.
+  const cover = landformCover ?? sampleLandformCover(world, x, z, 0, LANDFORM_COVER_SCRATCH);
   const resolvedMoisture = moisture ?? sampleTerrainMoisture(world, x, z, 0, dryness);
   const resolvedTemperature = temperature ?? terrainTemperatureFromClimate(
     world, sampleTerrainClimate(world, x, z), height, temperatureOffset,
@@ -1366,9 +1523,12 @@ export function sampleTerrainSurface(
   const airport = worldAirportAt(world, x, z);
   const runway = airport ? isPointOnRunway(airport, x, z) : false;
   const airportInfluence = airport ? getAirportInfluence(airport, x, z) : 0;
+  // Volcanic land: a point sample, like the province above.
+  const volcanic = sampleVolcanicGround(world, x, z, 0, VOLCANIC_SCRATCH);
   const biome = classifyBiome(
     world, height, slope, resolvedMoisture, resolvedTemperature, runway, airportInfluence,
-    temperatureOffset, dryness,
+    temperatureOffset, dryness, cover.sandCover,
+    volcanic.lavaCover, volcanic.tephraCover, volcanic.age,
   );
 
   target.height = height;
@@ -1377,10 +1537,15 @@ export function sampleTerrainSurface(
   target.temperature = resolvedTemperature;
   target.temperatureOffset = temperatureOffset;
   target.dryness = dryness;
+  target.sandCover = cover.sandCover;
+  target.ergWeight = cover.ergWeight;
   target.biome = biome;
   target.biomeName = TERRAIN_BIOME_NAMES[biome];
   target.airportInfluence = airportInfluence;
   target.isRunway = runway;
+  target.lavaCover = volcanic.lavaCover;
+  target.tephraCover = volcanic.tephraCover;
+  target.volcanicAge = volcanic.age;
   writeTerrainColor(
     world, x, z, biome, resolvedMoisture, slope, height, resolvedTemperature, dayOfYear,
     temperatureOffset, target.color,
@@ -1397,7 +1562,16 @@ export function sampleTerrain(
   dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR,
 ): TerrainSample {
   const height = sampleTerrainHeight(world, x, z);
+  // The height sample left the natural kernel's intermediates for this point
+  // behind; read the landform cover off them before the normal's four samples
+  // overwrite them, so the cover costs no kernel evaluation of its own.
+  const cover = sampleLandformCoverFromNatural(
+    world, x, z, 0, NATURAL_INTERMEDIATES, LANDFORM_COVER_SCRATCH);
   sampleTerrainNormal(world, x, z, target.normal);
   const slope = saturate(1 - target.normal.y);
-  return sampleTerrainSurface(world, x, z, height, slope, target, dayOfYear);
+  return sampleTerrainSurface(
+    world, x, z, height, slope, target, dayOfYear, undefined, undefined, cover);
 }
+
+/** The landform cover of the point being classified; module scratch, no allocation. */
+const LANDFORM_COVER_SCRATCH: DuneSample = { ergWeight: 0, duneHeight: 0, sandCover: 0 };

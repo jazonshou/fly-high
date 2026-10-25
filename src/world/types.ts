@@ -1,4 +1,5 @@
 import type { ClimateProvinceOption, ClimateProvinceSample } from "./climateProvince";
+import type { ForcedLandforms, LandformsOption } from "./landforms";
 
 /** A seed accepted by the deterministic world generator. */
 export type WorldSeed = string | number;
@@ -50,6 +51,13 @@ export interface WorldOptions {
    * World content, like `worldEvolution`: it is part of the cache identity.
    */
   climateProvince?: ClimateProvinceOption;
+  /**
+   * Force landforms everywhere outside a small clearance round the start
+   * airport (see `landforms.ts`): `{ dunes: true }` puts a sand sea on all low
+   * ground. Omitted, landforms appear only where the world grows them, at
+   * least 120 km from the start. World content: part of the cache identity.
+   */
+  landforms?: LandformsOption;
 }
 
 export interface WorldDefinition {
@@ -87,6 +95,11 @@ export interface WorldDefinition {
    * the temperate core. Read it through `sampleClimateProvince`, never directly.
    */
   readonly climateProvince?: Readonly<ClimateProvinceSample> | null;
+  /**
+   * The forced landforms, or null/absent for natural landforms outside the
+   * landform core. Landform stages read it; nothing else should.
+   */
+  readonly landforms?: ForcedLandforms | null;
 }
 
 export const TerrainBiome = {
@@ -135,6 +148,14 @@ export interface TerrainSample {
    */
   temperatureOffset: number;
   dryness: number;
+  /**
+   * Sand seas (`sampleLandformCover`): how much of the ground is sand, and the
+   * erg weight. Both exactly 0 inside the landform core and off the sand seas.
+   * `biome` and `color` already include the cover; vegetation reads it, and
+   * hydrology reads the erg weight (no lakes or springs in a sand sea).
+   */
+  sandCover: number;
+  ergWeight: number;
   biome: TerrainBiomeId;
   biomeName: TerrainBiomeName;
   color: TerrainColor;
@@ -142,6 +163,14 @@ export interface TerrainSample {
   airportInfluence: number;
   /** True only over the paved runway rectangle. */
   isRunway: boolean;
+  /**
+   * Volcanic land (`sampleVolcanicGround`): lava and tephra cover and their
+   * age, exactly 0 outside every footprint. `sampleTerrainSurface` fills them;
+   * a sample built by hand may omit them, which reads 0.
+   */
+  lavaCover?: number;
+  tephraCover?: number;
+  volcanicAge?: number;
 }
 
 /** Minimal terrain data required by the flight contact solver. */

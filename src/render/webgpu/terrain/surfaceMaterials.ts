@@ -57,6 +57,13 @@ import { TerrainBiome, type TerrainBiomeId } from "@/src/world/types";
  *    highland/alpine iso-contour lit up as a white band. The materials that
  *    are never a biome's primary — dry grass, gravel and the two paved
  *    surfaces — sit at 6..9, off the chain.
+ *
+ *    The two volcanic grounds, basalt (10) and tephra (11), were APPENDED
+ *    after concrete rather than placed on the chain: every splat page, every
+ *    array layer and every per-material table already in the world keeps its
+ *    index. Volcanism is geology, not climate, so neither is a climatic
+ *    neighbour of anything and neither needs an axis position. They are
+ *    reached only through the classifier's volcanic inputs.
  */
 export const SurfaceMaterial = {
   Sand: 0,
@@ -69,13 +76,33 @@ export const SurfaceMaterial = {
   Gravel: 7,
   Asphalt: 8,
   Concrete: 9,
+  Basalt: 10,
+  Tephra: 11,
 } as const;
 
 export type SurfaceMaterialId = (typeof SurfaceMaterial)[keyof typeof SurfaceMaterial];
 export type SurfaceMaterialName = keyof typeof SurfaceMaterial;
 
-/** Layers per array. Both arrays carry the same ten. */
-export const SURFACE_MATERIAL_COUNT = 10;
+/** Layers per array. Both arrays carry the same twelve. */
+export const SURFACE_MATERIAL_COUNT = 12;
+
+/**
+ * The materials before the volcanic pair: the count every tier ships, and the
+ * one a profile without volcanic ground (`volcanicMaterials`) builds its
+ * arrays and compiles its sparse gather for. Ids at and past it are volcanic.
+ */
+export const SURFACE_MATERIAL_BASE_COUNT = SurfaceMaterial.Basalt;
+
+/**
+ * What a volcanic id becomes where the tier does not carry volcanic ground:
+ * the nearest shipped material, lava to bedrock and tephra to loose stone.
+ * Every other id is returned unchanged.
+ */
+export function volcanicFallbackMaterial(id: SurfaceMaterialId): SurfaceMaterialId {
+  if (id === SurfaceMaterial.Basalt) return SurfaceMaterial.Rock;
+  if (id === SurfaceMaterial.Tephra) return SurfaceMaterial.Gravel;
+  return id;
+}
 
 /** Two arrays: A = albedo/height, B = normal/material. */
 export const SURFACE_MATERIAL_ARRAY_COUNT = 2;
@@ -136,7 +163,7 @@ export interface SurfaceMaterialSpec {
 }
 
 /**
- * Ten identities. Physical constants only.
+ * Twelve identities. Physical constants only.
  *
  * Deviation from `RENDERING_PLAN.md` §3.2's eight published periods (grass
  * 2.4, forest floor 3.1, scree 3.7, sand 4.3, rock 5.7, snow 6.9, asphalt 7.4,
@@ -270,6 +297,44 @@ export const SURFACE_MATERIALS: readonly SurfaceMaterialSpec[] = Object.freeze([
     seasonal: false,
     triplanar: false,
   },
+  {
+    id: SurfaceMaterial.Basalt,
+    name: "Basalt",
+    // Fresh lava rock: pahoehoe's glassy skin is the glossiest ground short of
+    // snow, aa clinker among the mattest, and the band spans both. 5.3 m is a
+    // prime number of decimetres like every period above.
+    tilingPeriodMeters: 5.3,
+    roughness: [0.38, 0.72],
+    // Clinker is a rubble of spines and cavities: strong retroreflection.
+    diffuseRoughness: 0.5,
+    // Basaltic glass, n = 1.58.
+    f0: 0.05,
+    // Measured broadband albedo of fresh basalt is ~0.05-0.10; fresh flows sit
+    // at the dark end. Near-neutral with a faint blue cast from the glass.
+    referenceAlbedo: [0.049, 0.05, 0.053],
+    seasonal: false,
+    // Flow fronts, pressure ridges and lava-channel walls are steep, and the
+    // ground reuses Rock's relief, so it projects like Rock.
+    triplanar: true,
+  },
+  {
+    id: SurfaceMaterial.Tephra,
+    name: "Tephra",
+    // Cinder, scoria and ash: loose granular ground, matte between sand and
+    // asphalt with a little sparkle from glassy lapilli.
+    tilingPeriodMeters: 4.7,
+    roughness: [0.54, 0.78],
+    // Granular, like sand, and darker, so the backscatter reads more.
+    diffuseRoughness: 0.6,
+    f0: 0.045,
+    // Dark grey-black with oxidised red-brown scoria in patches: ~0.08
+    // luminance, red-shifted by the scoria share.
+    referenceAlbedo: [0.088, 0.077, 0.07],
+    seasonal: false,
+    // A cinder cone stands at the angle of repose, ~34 degrees (slope 0.17),
+    // under the 0.22 at which the projection engages; steeper is Rock.
+    triplanar: false,
+  },
 ] satisfies readonly SurfaceMaterialSpec[]);
 
 export function surfaceMaterialSpec(id: SurfaceMaterialId): SurfaceMaterialSpec {
@@ -282,7 +347,7 @@ export function surfaceMaterialSpec(id: SurfaceMaterialId): SurfaceMaterialSpec 
  * The provisional splat's biome mapping (`3-2`, Class T).
  *
  * `R-25` states the known interim plainly: until `4-6` rasterises real splat
- * pages, these ten well-synthesised materials are selected by the 8-bit
+ * pages, these well-synthesised materials are selected by the 8-bit
  * per-vertex threshold cascade the audit indicts — the one that puts 41–50% of
  * adjacent vertex pairs in different biomes past 5 km. The boundary quality is
  * `4-6`'s to close. What this table can do is make the *interim* honest:
@@ -372,6 +437,10 @@ const SUMMER_LAND_COVER_SHARE: readonly number[] = Object.freeze([
   0.06, // Gravel
   0.005, // Asphalt
   0.005, // Concrete
+  // Volcanic ground is a regional overlay, absent from the reference
+  // temperate world this mean describes.
+  0, // Basalt
+  0, // Tephra
 ]);
 
 /** Snow's share at the depth of winter; the balance is taken from the four seasonal covers. */
@@ -405,8 +474,8 @@ export function meanSurfaceAlbedo(winterFraction: number): readonly [number, num
 /**
  * The land-cover share `meanSurfaceAlbedo` weights each material by, adjusted
  * for the season's snow. Exported so the seasonal tint is averaged over the
- * SAME weights the albedo is — an unweighted tint mean over ten materials, six
- * of which are season-invariant, dilutes the swing by more than half.
+ * SAME weights the albedo is — an unweighted tint mean over every material,
+ * most of which are season-invariant, dilutes the swing by more than half.
  */
 export function landCoverShare(winterFraction: number): readonly number[] {
   const winter = Math.min(1, Math.max(0, winterFraction));

@@ -9,7 +9,7 @@ import {
 } from "./surfaceMaterials";
 
 /**
- * 3-1 — the ten synthesised land-cover materials (owner: terrain-material).
+ * 3-1 — the synthesised land-cover materials (owner: terrain-material).
  *
  * INVARIANT THIS FILE OWNS: every texel of both terrain material
  * `Texture2DArray`s is a pure function of (seed, edge), and every noise
@@ -458,6 +458,13 @@ export const MATERIAL_REFERENCE_NOTES: Readonly<Record<string, string>> = Object
     + "bitumen sheen surviving only between the tracks.",
   Concrete: "Float-finished apron concrete — fine aggregate, float sweeps, hairline shrinkage "
     + "cracks, air voids.",
+  Basalt: "Fresh Hawaiian/Icelandic flow field — PAHOEHOE lobes and toes 0.4–1 m with a glassy "
+    + "blue-black skin wrinkled into ropes 5–10 cm apart, beside AA clinker: jagged spinose "
+    + "fragments 5–25 cm, matte, deep voids, a few oxidised red-brown. Glossy skin against matte "
+    + "clinker is the read at 2 m; lobes and clinker patches at 50.",
+  Tephra: "Cinder-cone apron / black-sand plain — lapilli 1–3 cm over fine ash, glassy grains "
+    + "catching the sun, scattered vesicular scoria clasts 4–10 cm, and oxidised red-brown "
+    + "scoria in patches. Granular and SMOOTHER than lava: the relief is in the grains.",
 });
 
 /**
@@ -493,6 +500,11 @@ const NORMAL_RMS_SLOPE: Readonly<Record<SurfaceMaterialId, number>> = Object.fre
   [SurfaceMaterial.Snow]: 0.2,
   [SurfaceMaterial.Asphalt]: 0.3,
   [SurfaceMaterial.Concrete]: 0.16,
+  // Clinker spines and pahoehoe toes: a rock face's slope, a little under it
+  // because the glassy skin between the ropes is smooth.
+  [SurfaceMaterial.Basalt]: 0.58,
+  // Loose grains: rougher than wind-graded sand, far smoother than lava.
+  [SurfaceMaterial.Tephra]: 0.34,
 });
 
 function fillBase(
@@ -1390,6 +1402,186 @@ const synthesizeConcrete: Recipe = (context) => {
   }
 };
 
+// --- Basalt ----------------------------------------------------------------
+
+const BASALT_GLASS: Rgb = [0.03, 0.032, 0.038];
+const BASALT_SKIN: Rgb = [0.056, 0.056, 0.06];
+const BASALT_CLINKER_DARK: Rgb = [0.036, 0.035, 0.035];
+const BASALT_CLINKER_LIGHT: Rgb = [0.074, 0.069, 0.064];
+const BASALT_OXIDISED: Rgb = [0.098, 0.058, 0.042];
+
+/**
+ * Fresh lava rock: the two surfaces a flow field shows side by side, at two
+ * scales each.
+ *
+ * PAHOEHOE is a smooth glassy skin, swollen into toes and lobes (~0.75 m) and
+ * wrinkled into ropes a few centimetres apart; AA is a rubble of jagged
+ * clinker (~0.14 m) bristling with spines. Both integrate to ~0.05 linear, so
+ * as with Rock the identity is relief and gloss rather than tone: glassy skin
+ * against matte clinker is what a 2 m view reads, and the lobe and clinker
+ * patchwork is what a 50 m one does.
+ *
+ * The ropes fold across the direction each lobe advanced, so their family is
+ * chosen PER LOBE from three integer lattice directions — the move Rock's
+ * joints make per block, for the same reason: one family ruled across the
+ * whole tile is a lattice, and a lattice moirés at grazing angles.
+ */
+const synthesizeBasalt: Recipe = (context) => {
+  const { canvas, seed, spec } = context;
+  const edge = canvas.edge;
+  const lobeCells = cellsForFeature(edge, spec.tilingPeriodMeters, 0.75);
+  const clinkerCells = cellsForFeature(edge, spec.tilingPeriodMeters, 0.14);
+  const spineCells = Math.min(clinkerCells * 3, Math.floor(edge / MINIMUM_TEXELS_PER_CELL));
+  // Ropes ~7 cm apart across the 5.3 m tile.
+  const ropeBands = Math.max(4, Math.round(spec.tilingPeriodMeters / 0.07));
+  const ropeSkew = Math.max(1, Math.round(ropeBands * 0.35));
+  const ropeFamilies: readonly (readonly [number, number])[] = [
+    [ropeBands, ropeSkew],
+    [ropeSkew, ropeBands],
+    [ropeBands, -ropeSkew],
+  ];
+  for (let y = 0; y < edge; y += 1) {
+    const v = (y + 0.5) / edge;
+    for (let x = 0; x < edge; x += 1) {
+      const u = (x + 0.5) / edge;
+      const texel = y * edge + x;
+      // Which surface this part of the flow is: patches ~1 m across, so a
+      // clinker tongue can override the skin inside one tile.
+      const aa = smoothstep(0.42, 0.6, periodicFbm(u, v, 4, 4, 0.55, seed + 101));
+      const grain = periodicValue(u, v, Math.max(16, Math.round(edge / 3)), seed + 102);
+
+      // Pahoehoe: toes domed over their cells, a crease where two meet.
+      const lobe = periodicWorley(u, v, lobeCells, seed + 103);
+      const toe = Math.sqrt(Math.max(0, 1 - (lobe.f1 / 0.95) ** 2));
+      const seam = 1 - smoothstep(0.0, 0.07, lobe.f2 - lobe.f1);
+      const family = ropeFamilies[Math.min(2, Math.floor(lobe.cellHash * 3))]!;
+      const ropePhase = periodicCurvedBands(
+        u, v, family[0], family[1], lobe.cellHash * 7, 6, 2.4, seed + 104);
+      // Ropes develop on part of a lobe only (where the skin was dragged),
+      // which also keeps any one family off most of the tile's bins.
+      const ropeDevelop = smoothstep(0.32, 0.62, periodicFbm(u, v, 6, 3, 0.55, seed + 105));
+      const rope = (0.5 - 0.5 * Math.cos(ropePhase * Math.PI * 2)) * ropeDevelop;
+      const skinTone = saturate(0.35 + rope * 0.35 + (grain - 0.5) * 0.5 + toe * 0.15);
+      const pahoehoe = mixRgb(BASALT_GLASS, BASALT_SKIN, skinTone);
+      const pahoehoeHeight = 0.3 + toe * 0.36 + rope * 0.12 - seam * 0.18;
+      // Glass on the crown of a toe, duller in the seams and over the ropes.
+      const pahoehoeGloss = 0.18 + rope * 0.16 + seam * 0.3 + (1 - toe) * 0.12;
+
+      // Aa: each clinker its own fragment, with its own tone and gloss.
+      const clinker = periodicWorley(u, v, clinkerCells, seed + 106);
+      const spine = periodicRidged(u, v, spineCells, 3, 0.55, seed + 107);
+      const fragment = 1 - smoothstep(0.32, 0.78, clinker.f1);
+      const oxidised = smoothstep(
+        0.86, 0.94, hash2(Math.floor(clinker.cellHash * 4096), 13, seed + 108));
+      const clinkerColour = mixRgb(
+        mixRgb(
+          BASALT_CLINKER_DARK, BASALT_CLINKER_LIGHT, saturate(clinker.cellHash * 0.7 + grain * 0.3)),
+        BASALT_OXIDISED,
+        oxidised * 0.85,
+      );
+      const aaColour = mixRgb(BASALT_GLASS, clinkerColour, 0.35 + fragment * 0.65);
+      const aaHeight = 0.2 + fragment * (0.34 + clinker.cellHash * 0.16) + spine * 0.26;
+      const aaGloss = 0.8 + (clinker.cellHash - 0.5) * 0.16 - spine * 0.08;
+
+      const colour = mixRgb(pahoehoe, aaColour, aa);
+      const at = texel * 3;
+      canvas.albedo[at] = colour[0];
+      canvas.albedo[at + 1] = colour[1];
+      canvas.albedo[at + 2] = colour[2];
+      canvas.height[texel] = mix(pahoehoeHeight, aaHeight, aa);
+      canvas.roughness[texel] = saturate(mix(pahoehoeGloss, aaGloss, aa));
+      // Clinker voids are the deepest cavities in the table; a lobe seam is a
+      // shallow one.
+      const voids = (1 - smoothstep(0.0, 0.2, clinker.f2 - clinker.f1)) * (1 - fragment * 0.5);
+      canvas.cavity[texel] = saturate(1 - mix(seam * 0.35, voids * 0.6 + (1 - spine) * 0.15, aa));
+    }
+  }
+};
+
+// --- Tephra ----------------------------------------------------------------
+
+const TEPHRA_ASH: Rgb = [0.058, 0.057, 0.058];
+const TEPHRA_LAPILLI_DARK: Rgb = [0.04, 0.04, 0.043];
+const TEPHRA_LAPILLI_LIGHT: Rgb = [0.105, 0.1, 0.097];
+const TEPHRA_SCORIA_BROWN: Rgb = [0.118, 0.072, 0.052];
+const TEPHRA_SCORIA_RED: Rgb = [0.172, 0.078, 0.048];
+
+/**
+ * Cinder, scoria and ash: the loose ground of a cone's flanks and of a black
+ * sand plain.
+ *
+ * Granular rather than rocky. Lapilli (1–3 cm) sit in an ash matrix, a scatter
+ * of larger vesicular clasts lies on top, and the oxidised scoria that makes a
+ * cinder cone read rust-red from the air comes in PATCHES rather than per
+ * grain — where one phase's ejecta landed. The patch field sits at ~0.6 m and
+ * finer so it survives `flattenLowFrequency`; the patchwork above a metre is
+ * the splat's and the macro term's. The height is in the grains, and is
+ * deliberately smoother than Basalt's.
+ */
+const synthesizeTephra: Recipe = (context) => {
+  const { canvas, seed, random, spec, texelsPerMeter } = context;
+  const edge = canvas.edge;
+  const lapilliCells = cellsForFeature(edge, spec.tilingPeriodMeters, 0.02);
+  for (let y = 0; y < edge; y += 1) {
+    const v = (y + 0.5) / edge;
+    for (let x = 0; x < edge; x += 1) {
+      const u = (x + 0.5) / edge;
+      const texel = y * edge + x;
+      const lapilli = periodicWorley(u, v, lapilliCells, seed + 111);
+      const grain = periodicValue(u, v, Math.max(24, Math.round(edge / 2)), seed + 112);
+      const oxidation = smoothstep(0.5, 0.7, periodicFbm(u, v, 8, 3, 0.55, seed + 113));
+      const swell = periodicFbm(u, v, 5, 3, 0.5, seed + 114);
+      const body = 1 - smoothstep(0.3, 0.62, lapilli.f1);
+      const tint = lapilli.cellHash;
+      // Inside a patch most grains are oxidised; outside it a few still are.
+      const rusty = saturate(oxidation * (0.55 + tint * 0.45)
+        + smoothstep(0.9, 0.97, hash2(Math.floor(tint * 4096), 7, seed + 115)) * 0.6);
+      const dark = mixRgb(
+        TEPHRA_LAPILLI_DARK, TEPHRA_LAPILLI_LIGHT, saturate(tint * 0.75 + grain * 0.25));
+      const scoria = mixRgb(TEPHRA_SCORIA_BROWN, TEPHRA_SCORIA_RED, tint);
+      const grainColour = mixRgb(dark, scoria, rusty);
+      const matrix = mixRgb(TEPHRA_ASH, TEPHRA_SCORIA_BROWN, oxidation * 0.5);
+      const colour = mixRgb(matrix, grainColour, body);
+      const shade = 0.9 + (grain - 0.5) * 0.24;
+      const at = texel * 3;
+      canvas.albedo[at] = colour[0] * shade;
+      canvas.albedo[at + 1] = colour[1] * shade;
+      canvas.albedo[at + 2] = colour[2] * shade;
+      canvas.height[texel] = 0.38 + swell * 0.24
+        + body * 0.16 * Math.sqrt(Math.max(0, 1 - (lapilli.f1 / 0.62) ** 2))
+        + (grain - 0.5) * 0.06;
+      // Glassy lapilli catch the sun; the ash between them is matte.
+      const glassy = hash2(Math.floor(tint * 4096), 23, seed + 116);
+      canvas.roughness[texel] = saturate(
+        0.8 - body * (0.12 + glassy * 0.3) + (grain - 0.5) * 0.1);
+      canvas.cavity[texel] = saturate(0.78
+        + smoothstep(0.0, 0.2, lapilli.f2 - lapilli.f1) * 0.22 * (0.4 + 0.6 * body));
+    }
+  }
+  // Vesicular clasts, 4–10 cm, lying on the surface: dark or oxidised, matte,
+  // and pitted, which is what tells scoria from a river pebble.
+  const clastCount = Math.round((edge * edge) / 2_600);
+  for (let clast = 0; clast < clastCount; clast += 1) {
+    const x = random() * edge;
+    const y = random() * edge;
+    const radius = Math.max(1, mix(0.02, 0.05, random()) * texelsPerMeter);
+    const red = random() < 0.35;
+    const shade = mix(0.75, 1.2, random());
+    const base: Rgb = red ? TEPHRA_SCORIA_RED : TEPHRA_LAPILLI_DARK;
+    const pitSeed = Math.floor(random() * 65_536);
+    stampEllipse(canvas, x, y, radius, radius * mix(0.65, 1, random()), random() * Math.PI,
+      (texel, falloff, localX, localY) => {
+        const weight = saturate(falloff * 1.8);
+        const pit = smoothstep(0.62, 0.8,
+          hash2(Math.floor(localX * 3 + 8), Math.floor(localY * 3 + 8), pitSeed));
+        writeAlbedo(canvas, texel, [base[0] * shade, base[1] * shade, base[2] * shade], weight);
+        canvas.height[texel] = (canvas.height[texel] ?? 0) + (0.2 * falloff - 0.08 * pit) * weight;
+        canvas.roughness[texel] = mix(canvas.roughness[texel] ?? 0, 0.9, weight);
+        canvas.cavity[texel] = (canvas.cavity[texel] ?? 1) * (1 - 0.35 * pit * weight);
+      });
+  }
+};
+
 const RECIPES: Readonly<Record<SurfaceMaterialId, Recipe>> = Object.freeze({
   [SurfaceMaterial.Grass]: synthesizeGrass,
   [SurfaceMaterial.DryGrass]: synthesizeDryGrass,
@@ -1401,6 +1593,8 @@ const RECIPES: Readonly<Record<SurfaceMaterialId, Recipe>> = Object.freeze({
   [SurfaceMaterial.Snow]: synthesizeSnow,
   [SurfaceMaterial.Asphalt]: synthesizeAsphalt,
   [SurfaceMaterial.Concrete]: synthesizeConcrete,
+  [SurfaceMaterial.Basalt]: synthesizeBasalt,
+  [SurfaceMaterial.Tephra]: synthesizeTephra,
 });
 
 // ---------------------------------------------------------------------------
@@ -1756,7 +1950,7 @@ function packLayers(
   // through synthesis moved Rock's stored cavity median only 0.326 → 0.318,
   // while Snow's fell 0.557 → 0.431 and Concrete's 0.753 → 0.694. Rock's cavity
   // was written by its own recipe (see `synthesizeRock`), so it was fixed
-  // there, and this radius — shared by all ten materials — is left alone.
+  // there, and this radius — shared by every material — is left alone.
   const openness = boxBlur(canvas.height, edge, Math.max(1, Math.round(edge / 64)));
 
   for (let texel = 0; texel < texels; texel += 1) {
@@ -1839,7 +2033,7 @@ export function synthesizeSurfaceMaterial(
   return packLayers(canvas, spec, NORMAL_RMS_SLOPE[id]);
 }
 
-/** All ten materials, in `SurfaceMaterial` index order. Pure. */
+/** Every material, in `SurfaceMaterial` index order. Pure. */
 export function synthesizeSurfaceMaterialLayers(
   seed: WorldSeed,
   edge: number,

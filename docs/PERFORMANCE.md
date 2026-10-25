@@ -109,6 +109,7 @@ audit is why it now carries all four tiers):
 | Terrain triplanar projection (3-5) | planar (slope-stretched) | 2-axis | 3-axis | 3-axis |
 | Ground patchwork (W-1) | off | on | on | on |
 | Climate province field (far biome tones, `ClimateProvinceField.ts`) | off | on | on | on |
+| Volcanic materials (Basalt, Tephra) | off | on | on | on |
 | Height-blend max materials (3-6) | 2 | 3 | 4 | 4 |
 | Shadow map (`4-8b`) | 1,024 | 1,280 | 1,536 | 2,048 |
 | Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
@@ -125,6 +126,7 @@ audit is why it now carries all four tiers):
 | Impostor floor share (fraction of the near cap drawn in SOME representation beyond the near radius; the gap under the geometry share is 2D impostors) | 0.20 | 0.30 | 0.35 | 0.40 |
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
+| Volcanic steam wisp cap (`volcanicSteamMaxWisps`; 0 = no mesh) | 0 | 128 | 192 | 256 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`
@@ -132,8 +134,9 @@ synthesises the ten layers on the CPU (measured 1.07 s at 512², ~4.3 s at
 1024²), and several seconds of blocked main thread at startup is not worth a
 resolution the de-tiling warp and 16× anisotropy largely mask. The row reopens
 if synthesis moves to GPU compute. Both arrays together are 6.7 MiB at tier 0
-and 26.7 MiB above it, derived from the tier's edge rather than declared, so
-the memory row cannot disagree with the knob.
+(the ten base materials) and 34.7 MiB above it (those ten, the volcanic pair
+and the ground grain), derived from the tier's edge and layer data rather than
+declared, so the memory row cannot disagree with the knobs.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
@@ -321,6 +324,21 @@ presentation spine and changes the height authority behind it:
   the sea's sky (2026-10-20), the 9V45 weighs this work more than the other
   models do; the hardware run does not show it.
 
+### Landforms: sand seas (2026-10-24)
+
+The dune stage (`src/world/landforms.ts`, `src/world/dunes.ts`, the WGSL twin in `terrain/TerrainLandformKernel.ts`) adds crescent sand seas to arid lowland past 150 km from the start airport. It is world geometry: the aircraft lands on it, so physics, every quality tier and every bake must see the same dunes, and it cannot be switched off on Low. Instead its cost is confined to bakes, and the airport's surroundings never pay it.
+
+- **Where it runs.** The stage is a pure function of world position between the natural height and the runway earthworks. Within 120 km of the start airport its core mask is zero and it returns the natural height untouched (the occlusion march reaches about 120 km, so nothing in view changes); it ramps to full by 150 km. Inside an erg it adds the dune field and a sand cover that turns the ground bake's material to the golden Sand, thins trees and ground cover, and keeps lakes and rivers out. `?landforms=dunes` (or `createWorld(seed, { landforms: { dunes: true } })`) forces it everywhere but a 5→8 km runway clearance, for review and tests; it is read from the URL and never saved.
+- **Per frame: nothing.** No pass, draw call, pipeline, uniform buffer or texture was added. The height page generator, the height pyramid and the bathymetry clipmap call the stage after the natural height; the splat bake reads the sand cover. Those pipelines are the ones already pre-warmed behind the load screen, so no compile moves into flight. The one new binding, `terrainLandformData`, is a 16-byte placeholder registered with `GpuBufferInventory` (the volcanic overlay fills it with its site index). The CPU path writes into scratch objects and allocates nothing per sample, and the far-field erg weight returns before the natural-terrain sample wherever the core, the climate or the erg patch rules a point out.
+- **The far field.** Zero-trust pages (L5 and coarser) refuse a Sand pair and draw the Grass base, so the far province field's sand lane carries the dune stage's far erg weight (`sampleErgFarWeight`, 1.25 km texels) and the far tone paints Sand over an erg. A sampled texel costs about 4.0 µs against the province's 1.5 µs, and the field charges it `CLIMATE_PROVINCE_FIELD_LANDFORM_COST` extra units, so a frame's bake stays about 0.8 ms. Its early outs (the core, wet country, outside an erg patch) cost nothing extra and read 0, so around the airport the far tone is still x + 0. Low has no province field, so there a far erg keeps the Grass base.
+- **CPU samples.** Measured in Node: a terrain height inside an erg costs 9.1 µs against the natural kernel's 8.1 µs. Physics, the detail worker and hydrology pay that only inside a sand sea.
+- **Spawned airports** (2026-10-25, with main's airport network). A spawn search surveys and grades its sites on the landformed ground (`sampleTerrainHeightBeforeEarthworks`) and refuses sand seas (`inSandSea`). Inside the core the height is the natural kernel, as before, and the veto is a distance test (0.5 µs). In an arid erg the veto is one natural kernel evaluation (about 10 µs) per surveyed centre, 160 per spawn, and each height probe pays the stage's ~1.5 µs. All of it runs on the spawn worker, never the main thread.
+- **Bake cost on a real GPU.** `terrainLandforms` returns the natural height after a gain test and one distance test. Inside the core every texel of a page takes that same early return, so a real GPU never enters the dune field there; only pages that straddle the 120-150 km ramp diverge.
+- **Bake cost on SwiftShader, which runs both sides of every branch.** Measured on this host (median of interleaved runs, warmed pipelines): a height page costs 15-25% more wall clock with the stage compiled in, whether the page is inside the core or in an erg, and a splat bake 10-13% more. The first splat compile takes about 1.4 s longer, behind the load screen. These are bake times, which the A/B's settled frames do not include; they show up as streaming time on CI's SwiftShader runs.
+- **Flight hitches** (`npm run perf:flight`, medium, SwiftShader, 6 legs of 240 frames each way): around the airport (biomes branch `73c344f` vs `22fc510`), the steady flight after the first leg reads render() p50 12.2 / 12.4 ms, p99 120 / 113 ms, long tasks 27 / 26, and the same 1 pipeline compile. The first leg out of the settled shot read 1.5 s more long-task time in the head in that run, all in world page visibility; it did not repeat in the steady legs. Over a forced high desert with and without the erg (both `22fc510`, start inside the erg), the erg flight was cheaper: render() p50 7.5 vs 9.8 ms, long tasks 20 vs 49, heap per frame 1.9 vs 2.4 MiB, because sand replaces trees and ground cover.
+- **The A/B gate** (`npm run perf:ab -- --base origin/main --head a45de37`, a cloud session's SwiftShader, 16 rounds): GPU time SAME on `cruise-horizon` +0.2%, `forest-500ft-sunbehind` -0.2%, `ground-2m-lowsun` -0.8% and `water-25ft` +0.0%; `approach-500ft` read +0.1% but inconclusive (-1.3% to +7.8%), since a typecheck shared the host during its rounds. Rerun alone on the final head (`dead891`, which also carries the biomes branch's far province field), it read SAME +0.7% (-0.4% to +1.4%), with frames within 1/255 of main's and 0.1 KiB more uploaded per frame. In the first run, draw calls and GPU work were identical on all five. Against the biomes branch alone (`5257480` → `4d0ee74`, `--rounds 0`), `approach-500ft` and `ground-2m-lowsun` rendered identical frames. Against main, `ground-2m-lowsun` differed on 31% of its pixels at low amplitude, with 46 vs 45 resident pages: a leftover streamed page, which reads 0 pixels different when both arms hold the same pages (measured by the dry biomes work).
+- **Draw calls, baselines and delivery floors unchanged.** Inside the core the stage returns the natural height bit for bit, so every committed baseline and draw-call ceiling stands; none were re-pinned.
+
 ## Spectral ocean and inland water
 
 The ocean is the renderer's native WebGPU compute workload:
@@ -376,6 +394,14 @@ The planar scene-reflection capture is retired (2-10): with the sky environment 
 - Atmosphere, clouds, ocean, and hydrology share sun direction/color, sky and ambient response, fog, coverage, humidity, and surface advection from one time/weather snapshot. The FFT spectrum deliberately retains its construction-time prevailing swell until a topology rebuild instead of resetting long ocean waves with every gust.
 
 Cloud cost is primarily fill rate multiplied by ray steps and density-light sampling. Tier 2 is capped at 0.60 resolution, 96 primary steps, and 6 light steps because every output pixel is still integrated each frame; checkerboard reconstruction is not yet active. At 1080p this reduces the upper-bound nested density/light sample opportunity by roughly half versus the former 0.67/112/8 profile before early exits. Measure actual GPU time at multiple altitudes and view angles; a clear horizon and a camera inside dense cloud are not equivalent workloads.
+
+### Volcanic steam
+
+`VolcanicSteamSystem` draws steam over volcanic vents as camera-facing sprites in ONE instanced draw, and only while a vent is within 15 km of the camera; otherwise the mesh is disabled, so it is never submitted. The temperate core has no vents, so every core baseline gains no draw. Tier 0's `volcanicSteamMaxWisps` is 0, which builds no mesh or material at all. The first frame after load draws once with a collapsed, transparent instance so the WebGPU render pipeline exists before any vent comes into range.
+
+- The vent query (`volcanicVentsInBounds`, reusing one `out` array) runs only when the camera crosses a 2 km cell. It keeps the 48 vents nearest the cell centre within 15 km plus half the cell's diagonal. A new vent's ground height costs one terrain sample, at most 8 a frame. The old wisps stay live until the new set is written in one 12 KiB upload.
+- The per-frame update is a cell check, a range check over at most 48 vents and a clock write. It does no instance writes and allocates nothing. Rise, downwind drift, growth and fade are evaluated in the vertex shader.
+- Each wisp is lit per vertex with the cloud model, so the fragment work is two value-noise octaves and one scene-depth load. Near-camera wisps fade out and collapse, which bounds overdraw when the camera flies through a plume.
 
 ## Detail and wildlife
 
@@ -2535,6 +2561,40 @@ On the same CPU model each shot moved by 0.4% or less; the two larger moves swap
 Before promotion the capture failed the visual gates on `water-3m`, `water-25ft`, `forest-line-highsun` and `forest-500ft-sunbehind` (whole-frame SSIM 0.916-0.984 against 0.985), all from sea pixels.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame delivery.
+
+## Volcanic land, 2026-10-24
+
+Volcanic fields are a height stage after the sand seas (`natural -> dunes -> volcanic overlay -> earthworks`, `src/world/volcanism.ts`). In a natural world they start 120 km from home, with one field guaranteed just past that; `?landforms=volcanic` forces a field 30 km out for review. The temperate core lists no site, so every pixel there is the overlay's identity. Steam has its own section above ("Volcanic steam").
+
+### Site index (`VolcanicSiteIndexStream`)
+
+The GPU reads the sites from ONE storage buffer, `terrainLandformData`, which page generation, the height pyramid, the sea-depth bake and the splat bake all bind. It lists the sites within 72 km of its centre in 4 km bins, relative to the landform core centre, so two indexes pack a site into the same bits and an in-place upload never changes a page both cover.
+
+- **Memory.** 256 KiB initial capacity; forced volcanic starts measured 77-87 KiB of index. It grows by reallocation only if a world ever needs more.
+- **Load.** `prime` packs the spawn's index synchronously behind the load screen: 3.8 ms in a natural world (no site near home), 113 ms in a forced volcanic world (Node). This is load time, not a frame.
+- **Flight.** The index is rebuilt after 4 km of drift, packed in slices of at most 1 ms of main thread a frame (the 2 ms rule, with room) and uploaded whole once packed: about 21 frames in a natural world and 85 in a forced one, so the 72 km reach keeps every page inside the 45 km far plane covered meanwhile. Steady state is one distance check a frame and allocates nothing.
+- **Coverage.** While a build is under way (after a teleport), a page the index does not cover waits rather than caching a bake without its volcanoes. Coarse pages are wider than any index (the L9 roots are 262 km), so they bake with part of it, recording the coverage they had, and are refreshed in place (height, then occlusion and splat) once their part within 50 km of the observer leaves that coverage. The scan runs every 1 km of travel or on a new upload, and refreshes at most 2 pages a frame, after any new page (`TERRAIN_LANDFORM_REFRESH`).
+- **Per texel.** Each bake looks up one 4 km bin and loops over that bin's sites, which is zero sites everywhere in the temperate core.
+
+### Materials (Basalt, Tephra)
+
+Two surface materials appended after Concrete, Basalt (id 10) and Tephra (id 11), so the ground grain moves from array index 10 to 12 (`GROUND_GRAIN_LAYER`). The profile datum `volcanicMaterials` is off at tier 0 and on at tiers 1-3 (the tier row above).
+
+- **Memory.** Tiers 1-3: two more layers in each terrain material array, +5.33 MiB at 512² with mips, so both arrays are 34.7 MiB (thirteen layers: the ten base materials, the volcanic pair and the grain). Tier 0 is unchanged at 6.7 MiB: the splat bake paints Basalt as Rock and Tephra as Gravel there (`volcanicFallbackMaterial`), from a seventh `SplatJob` lane, after main's airport lane (+16 B per job), so its ten-layer arrays and ten-material gather never meet an id they lack.
+- **Terrain fragment.** The sparse splat gather adds each texel's weights into per-material totals, then picks the two largest. The totals live in vec4 buckets of four materials, one switch arm per bucket, so ten and twelve materials both use three arms; under `TERRAIN_SURFACE_VOLCANIC` the pick scans twelve candidates instead of ten. The result is bit-identical to one scalar per material. The bucketing matters on SwiftShader, which executes every switch arm: a twelve-arm scalar switch cost the gather 1.5x the ten-arm one, and pushed two volcanic-only A/B shots past 2% GPU (approach +2.2%, water +3.7%). The bucketed twelve-material gather takes about 0.8x the old ten-arm time (1M invocations, `terrainSparseSplatGatherWgsl`). The number of fetches per pixel does not change. The define follows the layers actually bound, so tier 0 compiles the ten-material gather. No draw-call change.
+- **Splat bake.** One `terrainVolcanicGround` sample per texel (the landform include, over the site index), shared by every tap and both seasons; one remap per accumulated id; and a closure-lane branch taken only on volcanic ground. Off volcanic ground the classification is bit-identical (`tests/render.webgpu-land-cover-volcanic.test.ts`).
+- **Spawned airports** (2026-10-25, with main's airport network). The spawn survey's height already includes the overlay (`sampleTerrainHeightBeforeEarthworks`). `spawnedAirportGroundAllowed` also refuses ground with more than 5% lava and tephra, or within 1.5 km of an edifice's base; not the whole footprint, which would refuse almost every runway within 25 km of a field's centre. It costs about 7-8 µs per surveyed point (Node; one ground sample and one site query), about 1.4 ms per spawn, all on the spawn worker.
+- **Startup.** Two more synthesis-worker jobs, off the main thread: Basalt ~0.83 s and Tephra ~0.59 s at 512² (Node; Rock is ~1.23 s). The main-thread mip reduction in `uploadSurfaceMaterialArrays` grows with the layer count, from ~190 ms to ~223 ms at 512² (Node). It was already one step over the 2 ms budget and stays on the main thread; moving it into the synthesis worker is open.
+
+### Timing
+
+Measured on the CI runners (`perf-ab.yml`) at `050a5d9`, the five default shots, none of which shows volcanic ground. No draw-call change on any shot. Inventoried GPU memory +5.6 MiB (280.2 -> 285.8 MiB on approach), the two material layers.
+
+- **Volcanic alone** (the pull request's run, base the dunes branch at `dead891`): all five SAME on SwiftShader, all on the EPYC 7763: approach -0.2%, cruise -0.9%, forest -0.3%, ground +0.2%, water -1.2% GPU. The macOS runner's advisory A/B read -0.4% to +0.9% frame time, all SAME. Volcanic ground costs nothing where there is none, well inside the 2% budget; the bucketed gather (below) is cheaper than the ten-arm one it replaced (0.8x over 1M invocations), which fits four shots reading faster.
+- **Against main** (the whole biome stack plus volcanic, base `6d91220`): all five SAME on SwiftShader: approach -0.2% (EPYC 7763), cruise +3.5% (EPYC 9V45), forest -0.7% (9V45), ground -2.2% (Xeon 8370C), water -1.0% (7763). The macOS runner read +0.5% to +1.6%, all SAME. Cruise's +3.5% is the scene pass (+2.9%) and the cloud raymarch (+49%, 72 -> 108 ms a frame). No cloud code differs between main and this head, and on the 7763 the same raymarch moved +0.1% (the stack against main at `82c97e9`) and +0.3% (volcanic alone), so this is how the 9V45 weighs the biome stack, not volcanic ground.
+- **After merging main's airport network** (`dc7743b`, base the dunes branch at `7d6b300`, which carries main at `c43eb86`): all five SAME on SwiftShader and none slower: approach -1.4% (EPYC 7763), cruise -0.6% (7763), forest -1.2% (9V74), ground -1.4% (7763), water -1.6% (9V74) GPU. No draw-call, pass or pipeline change. The macOS runner's advisory A/B read frame time +0.7% to +2.3% and main-thread CPU +1.3% to +2.6% (0.2 to 0.75 ms), inside its 5% and 15% gates; before the merge both read about 0. The water shot's frame differs from its base (SSIM 0.98, the swell in another place), but not from volcanic: the head frame matches the dunes branch's own A/B frames (`cdcc4d9` and `7d6b300`) bit for bit, while the base frame, the same tree as `7d6b300`, came out as a different frame. On the SwiftShader runners the water frame is not reproducible run to run, so a water pixel diff there says nothing about a change.
+- **The gather, before and after.** With twelve scalar switch arms the same volcanic-alone A/B (at `06a0da7`) read approach +2.2%, cruise +1.6%, forest +1.4%, ground +1.0% and water +3.7%: two shots over budget, because SwiftShader executes every arm of the switch in every terrain pixel. `8fdf0b7` keeps the totals in vec4 buckets, three arms for twelve materials; the result is bit-identical.
+- **A control that is not one.** A run with `--head-profile-override {"volcanicMaterials":false}` read the same as the shipped profile (+1.3% to +3.4%). On the tiers with the ground grain the arrays keep the volcanic pair (the grain's layer index follows it) and the gather follows the layers bound, so the override changes nothing there; it only differs on tier 0, which has no grain.
 
 ## Tree species from the climate temperature (2026-10-25): no baseline moves
 

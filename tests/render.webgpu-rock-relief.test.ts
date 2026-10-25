@@ -117,8 +117,11 @@ describe("M-2 the material axis and the WGSL it emits", () => {
   it("reads bedrock fully, scree in part, and nothing else", () => {
     expect(rockReliefShareOf(SurfaceMaterial.Rock)).toBe(1);
     expect(rockReliefShareOf(SurfaceMaterial.Gravel)).toBe(ROCK_RELIEF_GRAVEL_SHARE);
+    // Fresh lava is bedrock and reuses Rock's relief whole; tephra is loose.
+    expect(rockReliefShareOf(SurfaceMaterial.Basalt)).toBe(1);
     for (const id of [SurfaceMaterial.Grass, SurfaceMaterial.Snow, SurfaceMaterial.Sand,
-      SurfaceMaterial.Asphalt, SurfaceMaterial.Concrete, SurfaceMaterial.DryGrass]) {
+      SurfaceMaterial.Asphalt, SurfaceMaterial.Concrete, SurfaceMaterial.DryGrass,
+      SurfaceMaterial.Tephra]) {
       expect(rockReliefShareOf(id)).toBe(0);
     }
   });

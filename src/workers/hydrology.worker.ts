@@ -1,9 +1,13 @@
 /// <reference lib="webworker" />
 
-import { generateHydrology } from "@/src/render/webgpu/water/HydrologyGeneration";
+import {
+  generateHydrology,
+  resolveHydrologyConfig,
+} from "@/src/render/webgpu/water/HydrologyGeneration";
 import { createWorld, sampleTerrain, type TerrainSample, type WorldDefinition } from "@/src/world";
 import type { HydrologyWorkerCommand, HydrologyWorkerEvent } from "./hydrologyProtocol";
 import { hydrologyClimateSamplerFor } from "@/src/render/webgpu/water/hydrologyClimate";
+import { volcanicHydrologyInputs } from "@/src/render/webgpu/water/hydrologyVolcanism";
 import {
   buildAnalyticRegionMeshArrays,
   packedRegionGeometryTransferables,
@@ -21,6 +25,8 @@ const sampleTarget: TerrainSample = {
   temperature: 0,
   temperatureOffset: 0,
   dryness: 0,
+  sandCover: 0,
+  ergWeight: 0,
   biome: 0,
   biomeName: "water",
   color: { r: 0, g: 0, b: 0 },
@@ -35,10 +41,10 @@ function post(event: HydrologyWorkerEvent, transfer: Transferable[] = []): void 
 workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerCommand>) => {
   const command = event.data;
   if (command.type === "initialize") {
-    world = createWorld(
-      command.worldSeed,
-      command.climateProvince ? { climateProvince: command.climateProvince } : {},
-    );
+    world = createWorld(command.worldSeed, {
+      ...(command.climateProvince ? { climateProvince: command.climateProvince } : {}),
+      ...(command.landforms ? { landforms: command.landforms } : {}),
+    });
     return;
   }
   const startedAt = performance.now();
@@ -46,10 +52,13 @@ workerScope.addEventListener("message", (event: MessageEvent<HydrologyWorkerComm
     if (!world) throw new Error("Hydrology worker has not been initialized");
     const hydrology = generateHydrology({
       ...command.options,
+      // Crater lakes and porous ground, from this worker's own world: data
+      // and a predicate, so nothing new crosses the worker boundary.
+      ...volcanicHydrologyInputs(world, resolveHydrologyConfig(command.options)),
       worldSeed: world.seed,
       terrainSample: (x, z) => {
         const sample = sampleTerrain(world as WorldDefinition, x, z, sampleTarget);
-        return { height: sample.height, moisture: sample.moisture };
+        return { height: sample.height, moisture: sample.moisture, ergWeight: sample.ergWeight };
       },
     });
     // P2b: the region's vertex arrays, built here and transferred, so the

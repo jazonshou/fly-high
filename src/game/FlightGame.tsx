@@ -16,6 +16,7 @@ import {
   createRandomSeed,
   DEFAULT_SETTINGS,
   loadSettings,
+  readLandformsFromUrl,
   readSeedFromUrl,
   readTerrainFarSwardFromUrl,
   readWorldEvolutionFromUrl,
@@ -28,7 +29,7 @@ import { AircraftPicker } from "@/src/ui/AircraftPicker";
 import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
-import { createWorld, sampleTerrain } from "@/src/world";
+import { createWorld, sampleTerrain, type LandformsOption } from "@/src/world";
 import {
   applyAirportMarker,
   createAirportMarkerPlacement,
@@ -167,9 +168,13 @@ export function FlightGame() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [worldEvolution, setWorldEvolution] = useState<"eroded" | undefined>(undefined);
+  const [landforms, setLandforms] = useState<LandformsOption | undefined>(undefined);
   const world = useMemo(
-    () => createWorld(seed, worldEvolution ? { worldEvolution } : {}),
-    [seed, worldEvolution],
+    () => createWorld(seed, {
+      ...(worldEvolution ? { worldEvolution } : {}),
+      ...(landforms ? { landforms } : {}),
+    }),
+    [seed, worldEvolution, landforms],
   );
 
   const updatePhase = useCallback((nextPhase: GamePhase) => {
@@ -525,10 +530,12 @@ export function FlightGame() {
     settingsRef.current = loaded;
     const urlSeed = readSeedFromUrl();
     const urlWorldEvolution = readWorldEvolutionFromUrl();
+    const urlLandforms = readLandformsFromUrl();
     queueMicrotask(() => {
       setSettings(loaded);
       setSeed(urlSeed);
       setWorldEvolution(urlWorldEvolution);
+      setLandforms(urlLandforms);
       setBootstrapped(true);
     });
     try {

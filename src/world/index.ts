@@ -53,6 +53,7 @@ export {
   sampleFilteredTerrainHeight,
   sampleFilteredTerrainUpliftHeight,
   sampleTerrainHeight,
+  sampleTerrainHeightBeforeEarthworks,
   sampleTerrainMoisture,
   sampleTerrainNormal,
   sampleTerrainTemperature,
@@ -89,6 +90,7 @@ export type {
   WorldSeed,
   WorldVector3,
 } from "./types";
+export type { ForcedLandforms, LandformsOption } from "./landforms";
 export { MAX_WIND_SPEED, sampleWind } from "./wind";
 export {
   createEnvironmentClock,

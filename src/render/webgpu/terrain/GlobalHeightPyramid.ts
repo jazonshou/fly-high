@@ -11,7 +11,14 @@ import {
   TERRAIN_KERNEL_WGSL,
   buildTerrainKernelPageUniform,
   terrainKernelPageBindingWgsl,
+  type TerrainKernelLandformInput,
 } from "./TerrainKernel";
+import {
+  TERRAIN_LANDFORM_WGSL,
+  TerrainLandformDataBinding,
+  terrainLandformDataBindingWgsl,
+  type TerrainLandformDataSource,
+} from "./TerrainLandformKernel";
 import {
   TERRAIN_HEIGHT_PYRAMID_EDGE,
   TERRAIN_HEIGHT_PYRAMID_SPAN_METERS,
@@ -50,10 +57,14 @@ import {
  */
 
 const PYRAMID_WORKGROUP_EDGE = 8;
+/** The landform data binding's slot in the pyramid bake's bind group. */
+const PYRAMID_LANDFORM_DATA_BINDING = 3;
 
 export const GLOBAL_HEIGHT_PYRAMID_WGSL = /* wgsl */ `
 ${terrainKernelPageBindingWgsl(0, 0)}
+${terrainLandformDataBindingWgsl(0, PYRAMID_LANDFORM_DATA_BINDING)}
 ${TERRAIN_KERNEL_WGSL}
+${TERRAIN_LANDFORM_WGSL}
 
 struct PyramidParams {
   // (world offset of texel 0 from the kernel page origin, x and z, texel size,
@@ -71,10 +82,11 @@ fn bakePyramid(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   kSelectPage(0u);
   let texel = pyramidParams.placement.z;
-  let height = terrainNaturalHeight(
-    pyramidParams.placement.x + f32(id.x) * texel,
-    pyramidParams.placement.y + f32(id.y) * texel,
-  );
+  let localX = pyramidParams.placement.x + f32(id.x) * texel;
+  let localZ = pyramidParams.placement.y + f32(id.y) * texel;
+  // The landform stage on the natural height, as every page below it stores:
+  // a sand sea the pages draw has to shadow, and be shadowed, past them too.
+  let height = terrainLandforms(localX, localZ, terrainNaturalHeight(localX, localZ));
   textureStore(pyramidTarget, vec2i(i32(id.x), i32(id.y)), vec4f(height, 0.0, 0.0, 0.0));
 }
 `;
@@ -165,11 +177,28 @@ fn bakeHorizon(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+export interface GlobalHeightPyramidOptions {
+  /**
+   * The world's landform core and wind (`terrainLandformInput`). Omitted or
+   * null bakes the natural kernel alone: gain 0, the same field as before.
+   */
+  readonly landform?: TerrainKernelLandformInput | null;
+  /**
+   * What `terrainLandformData` binds: the volcanic site index, or (omitted)
+   * a placeholder (the empty site index) the pyramid owns. Swappable later with
+   * `setLandformDataSource`.
+   */
+  readonly landformData?: TerrainLandformDataSource | null;
+}
+
 export class GlobalHeightPyramid {
   private texture: RawTexture | null = null;
   private shader: ComputeShader | null = null;
   private paramsBuffer: StorageBuffer | null = null;
   private pageBuffer: StorageBuffer | null = null;
+  /** `terrainLandformData`: the one place it is held and bound, before each bake. */
+  private readonly landformBinding: TerrainLandformDataBinding;
+  private readonly landform: TerrainKernelLandformInput | null;
   private centerTexelX = Number.NaN;
   private centerTexelZ = Number.NaN;
   private baking = false;
@@ -198,7 +227,10 @@ export class GlobalHeightPyramid {
     scene: Scene,
     private readonly engine: AbstractEngine,
     private readonly seedHash: number,
+    options: GlobalHeightPyramidOptions = {},
   ) {
+    this.landform = options.landform ?? null;
+    this.landformBinding = new TerrainLandformDataBinding(options.landformData ?? null);
     const engineFlags = scene.getEngine() as { isWebGPU?: boolean };
     if (!engineFlags.isWebGPU) return;
     this.texture = RawTexture.CreateRStorageTexture(
@@ -236,6 +268,19 @@ export class GlobalHeightPyramid {
       if (layer === "A") this.horizonA = texture;
       else this.horizonB = texture;
     }
+  }
+
+  /**
+   * Bind a different landform data source (null: the placeholder). Takes
+   * effect at the next bake; the pipeline is not recreated.
+   *
+   * The pyramid does not defer a bake the source does not cover: its span is
+   * 131 km, the channel bakes wait on it, and an index narrower than that
+   * would stall them for good. A field baked before the index arrived is
+   * replaced at the next recentre, 512 m of travel later.
+   */
+  setLandformDataSource(source: TerrainLandformDataSource | null): void {
+    this.landformBinding.setSource(source);
   }
 
   get heightTexture(): RawTexture | null {
@@ -334,6 +379,7 @@ export class GlobalHeightPyramid {
           terrainKernelPages: { group: 0, binding: 0 },
           pyramidParams: { group: 0, binding: 1 },
           pyramidTarget: { group: 0, binding: 2 },
+          terrainLandformData: { group: 0, binding: PYRAMID_LANDFORM_DATA_BINDING },
         },
       },
     ));
@@ -350,12 +396,14 @@ export class GlobalHeightPyramid {
       originZ,
       // Band-limited at the pyramid's own texel size.
       filterWidthMeters: TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS,
+      landform: this.landform,
     })));
     this.paramsBuffer.update(new Uint8Array(
       new Float32Array([0, 0, TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS, 0]).buffer,
     ));
     this.shader.setStorageBuffer("terrainKernelPages", this.pageBuffer);
     this.shader.setStorageBuffer("pyramidParams", this.paramsBuffer);
+    this.landformBinding.bind(engine, this.shader);
     this.shader.setStorageTexture("pyramidTarget", this.texture);
 
     this.baking = true;
@@ -464,6 +512,7 @@ export class GlobalHeightPyramid {
     this.paramsBuffer?.dispose();
     if (this.pageBuffer) releaseGpuBufferBytes(TERRAIN_KERNEL_PAGE_BYTES);
     this.pageBuffer?.dispose();
+    this.landformBinding.dispose();
     if (this.horizonParamsBuffer) releaseGpuBufferBytes(HORIZON_PARAMS_BYTES);
     this.horizonParamsBuffer?.dispose();
     this.texture?.dispose();

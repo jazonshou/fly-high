@@ -172,7 +172,10 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     // failure the audit found, in the artifact the phase creates.
     artifact: "terrain-height-kernel-wgsl",
     owner: "terrain-geometry",
-    definitionSites: ["src/render/webgpu/terrain/TerrainKernel.ts"],
+    definitionSites: [
+      "src/render/webgpu/terrain/TerrainKernel.ts",
+      "src/render/webgpu/terrain/TerrainLandformKernel.ts",
+    ],
     consumers: ["terrain-geometry", "terrain-material"],
     ownedSymbols: [
       "TERRAIN_KERNEL_WGSL",
@@ -181,11 +184,38 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "TERRAIN_KERNEL_LATTICES",
       "buildTerrainKernelPageUniform",
       "TERRAIN_KERNEL_FORBIDDEN_BUILTINS",
+      "TERRAIN_LANDFORM_WGSL",
     ],
     notes:
       "A transliteration of src/world/{seed,noise,geology,terrain}.ts, not a "
-      + "second kernel. Every expectation constant is INJECTED from the TS "
-      + "source; retyping one is how coarse-page mean height moves by metres.",
+      + "second kernel, and of the landform stages that run after it "
+      + "(src/world/{landforms,dunes}.ts, in TerrainLandformKernel.ts). Every "
+      + "expectation constant is INJECTED from the TS source; retyping one is "
+      + "how coarse-page mean height moves by metres.",
+  },
+  {
+    // The volcanic overlay's GPU half: the site index (the landform data
+    // binding's contents), its packer and the stream that keeps it round the
+    // observer. One index, one layout; a consumer binds the stream's buffer
+    // and gates its dispatches on `covers`, it never packs its own.
+    artifact: "volcanic-site-index",
+    owner: "terrain-geometry",
+    definitionSites: [
+      "src/render/webgpu/terrain/VolcanicOverlayKernel.ts",
+      "src/render/webgpu/terrain/VolcanicSiteIndexStream.ts",
+    ],
+    consumers: ["terrain-geometry", "terrain-material", "water"],
+    ownedSymbols: [
+      "VOLCANIC_OVERLAY_WGSL",
+      "VOLCANIC_INDEX",
+      "VolcanicSiteIndexBuilder",
+      "packVolcanicSiteIndex",
+      "VolcanicSiteIndexStream",
+    ],
+    notes:
+      "A transliteration of src/world/volcanism.ts. The index origin is the "
+      + "landform core centre, so overlapping indexes pack a site into the same "
+      + "bits and an in-place upload never changes a bake both cover.",
   },
   {
     artifact: "terrain-page-atlas",
@@ -524,7 +554,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "SurfaceMaterial",
       "SURFACE_MATERIALS",
       "SURFACE_MATERIAL_COUNT",
+      "SURFACE_MATERIAL_BASE_COUNT",
       "SURFACE_MATERIAL_ARRAY_COUNT",
+      "volcanicFallbackMaterial",
       "SURFACE_MATERIALS_BY_BIOME",
       "SURFACE_ALBEDO_STORAGE_GAMMA",
       "meanSurfaceAlbedo",
@@ -567,7 +599,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "The repo ships zero image assets by design; a second synthesiser, or an "
       + "imported texture, is the audit's root cause #1 reopening from the "
       + "other side. The ground grain is not a second one: it is one more "
-      + "layer of these arrays (index 10, after the ten materials), built only "
+      + "layer of these arrays (index 12, after every material), built only "
       + "where the patchwork runs, and the terrain fragment reads it at three "
       + "world scales so the mip chain, not a footprint fade, band-limits it.",
   },
@@ -708,6 +740,29 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes:
       "No inline cloud WGSL outside this file and the composite shell. A second "
       + "raymarch/temporal/shadow definition fails the boundary test.",
+  },
+  {
+    // Volcanic phase 5: steam over vents. Owned by clouds because it is the
+    // same participating medium, lit by `cloudLighting`'s terms with the
+    // cloud config's constants rather than a second scattering model.
+    artifact: "volcanic-steam",
+    owner: "clouds",
+    definitionSites: ["src/render/webgpu/volcanic/VolcanicSteamSystem.ts"],
+    consumers: ["clouds"],
+    ownedSymbols: [
+      "VolcanicSteamSystem",
+      "VOLCANIC_STEAM_VERTEX_WGSL",
+      "VOLCANIC_STEAM_FRAGMENT_WGSL",
+      "steamWispCount",
+      "writeSteamWisps",
+    ],
+    notes:
+      "ONE instanced draw while a vent is within 15 km, and a DISABLED mesh "
+      + "otherwise, so the temperate core adds no draw. The tier cap "
+      + "`volcanicSteamMaxWisps` is 0 on tier 0, which builds no mesh at all. "
+      + "Vents are re-queried only on a 2 km camera cell change; the wisps "
+      + "animate in the vertex shader from the simulation clock, so the "
+      + "per-frame update writes no instance data and allocates nothing.",
   },
   {
     // 2-8a: the §3.6 drift closed. One definition of fresnel/GGX/reflectedSky

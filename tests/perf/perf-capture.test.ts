@@ -600,9 +600,10 @@ describe("perf capture (1A-1c / 2Z)", () => {
     // closures below always read the ACTIVE world at call time, and the
     // renderer/canvas swap at a mode boundary reassigns them all together.
     let activeWorldEvolution: "analytic" | "eroded" = "analytic";
-    // Climate provinces: a forced province (no canonical shot has one) is a
-    // world boundary too, keyed by its JSON; null is the natural field.
-    let activeProvinceKey: string | null = null;
+    // Climate provinces and landforms: a forced province or landform (no
+    // canonical shot has one) is a world boundary too, keyed by their JSON;
+    // null is the natural world.
+    let activeForcedKey: string | null = null;
     let world = createWorld(PERF_CAPTURE_SEED);
     let airportX = world.airport?.centerX ?? 0;
     let airportZ = world.airport?.centerZ ?? 0;
@@ -703,13 +704,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // inventoried-memory wall); error arrays keep accumulating across the
       // swap so the run-wide zero-error gates still cover both renderers.
       // Eroded shots are appended after all analytic shots, so this fires at
-      // most once per run (plus once per forced province, which only a
-      // scratch shot carries).
+      // most once per run (plus once per forced province or landform, which
+      // only a scratch shot carries).
       const shotWorldEvolution = shot.worldEvolution ?? "analytic";
-      const shotProvinceKey = shot.climateProvince === undefined
+      const shotForcedKey = shot.climateProvince === undefined && shot.landforms === undefined
         ? null
-        : JSON.stringify(shot.climateProvince);
-      if (shotWorldEvolution !== activeWorldEvolution || shotProvinceKey !== activeProvinceKey) {
+        : JSON.stringify({ climateProvince: shot.climateProvince ?? null, landforms: shot.landforms ?? null });
+      if (shotWorldEvolution !== activeWorldEvolution || shotForcedKey !== activeForcedKey) {
         removeGpuUncapturedErrorListener?.();
         removeGpuUncapturedErrorListener = null;
         renderer.dispose();
@@ -717,6 +718,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         world = createWorld(PERF_CAPTURE_SEED, {
           worldEvolution: shotWorldEvolution,
           ...(shot.climateProvince === undefined ? {} : { climateProvince: shot.climateProvince }),
+          ...(shot.landforms === undefined ? {} : { landforms: shot.landforms }),
         });
         airportX = world.airport?.centerX ?? 0;
         airportZ = world.airport?.centerZ ?? 0;
@@ -726,7 +728,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
           (event) => gpuUncapturedErrors.push(serializeGpuUncapturedError(event)),
         );
         activeWorldEvolution = shotWorldEvolution;
-        activeProvinceKey = shotProvinceKey;
+        activeForcedKey = shotForcedKey;
       }
       // 6-11.1: a sweep viewport overrides every shot's own size, so one
       // sweep run is one resolution across the whole set and the three

@@ -25,6 +25,7 @@ import {
 } from "./webgpu/nature/EnvironmentDirector";
 import { StarFieldSystem } from "./webgpu/atmosphere/StarField";
 import { LightPointSystem } from "./webgpu/lighting/LightPoints";
+import { VolcanicSteamSystem } from "./webgpu/volcanic/VolcanicSteamSystem";
 import {
   AirfieldLightingSystem,
   airfieldLampDaylightAttenuation,
@@ -170,6 +171,7 @@ import {
 } from "./webgpu/water/SpectralOceanSystem";
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
+import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
@@ -553,6 +555,11 @@ export class FlightRenderer implements FlightRenderingSystem {
    * night-lighting work shipped correct, green, and invisible.
    */
   private readonly lightPoints: LightPointSystem;
+  /**
+   * Volcanic phase 5: steam over vents, one instanced draw while a vent is
+   * within 15 km and a disabled mesh otherwise. Tier 0 builds nothing.
+   */
+  private readonly steam: VolcanicSteamSystem;
   private readonly clusteredLighting: ClusteredLightingSystem;
   /**
    * Names of `7-14`'s hangar-face floods, for the per-frame daylight gate.
@@ -726,6 +733,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     fxaa: FxaaSharpenPass,
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
+    steam: VolcanicSteamSystem,
     clusteredLighting: ClusteredLightingSystem,
     hangarFloodNames: readonly string[],
     airfieldLighting: AirfieldLightingSystem | null,
@@ -770,6 +778,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.fxaa = fxaa;
     this.stars = stars;
     this.lightPoints = lightPoints;
+    this.steam = steam;
     this.clusteredLighting = clusteredLighting;
     this.hangarFloodNames = hangarFloodNames;
     this.airfieldLighting = airfieldLighting;
@@ -1045,7 +1054,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         evolutionResult.mode === "eroded"
           ? bathymetryErodedPageOverlaySeamFromAtlas(() => terrain.atlases.height)
           : null,
-        { storageFormat: bathymetryStorageFormat },
+        { storageFormat: bathymetryStorageFormat, landformData: terrain.landformData },
       );
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
@@ -1148,6 +1157,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainSample: options.terrainSample,
           workerWorldSeed: options.world.seed,
           workerClimateProvince: options.world.climateProvince ?? null,
+          workerLandforms: options.world.landforms ?? null,
           seaLevel: options.world.seaLevel,
           centerX: airportDefinition?.centerX ?? 0,
           centerZ: airportDefinition?.centerZ ?? 0,
@@ -1163,6 +1173,9 @@ export class FlightRenderer implements FlightRenderingSystem {
           // elevation, so two pages sharing a river derive the same colour.
           // (Shared with the hydrology worker, which builds the same arrays.)
           climateSample: hydrologyClimateSamplerFor(options.world),
+          // Crater lakes and porous ground, for regions the main thread
+          // generates (fallback only; the worker derives its own).
+          worldInputs: (config) => volcanicHydrologyInputs(options.world, config),
           ...(channelGraph
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
@@ -1331,6 +1344,23 @@ export class FlightRenderer implements FlightRenderingSystem {
         1,
       );
       cleanup.push(() => lightPoints.dispose());
+      // Volcanic phase 5: steam over vents. Built before the whenReadyAsync
+      // gate below, like the star field, so its effect compiles at load; its
+      // first frame then draws one collapsed instance so the render pipeline
+      // exists before the first vent comes into range. The ground under a
+      // vent is the consumer surface the player sees, never below the sea.
+      // A vent query waits until the terrain's site index covers it: building
+      // the index is what builds the vents' site cells, in 1 ms slices.
+      const steamSiteIndex = terrain.landformData;
+      const steam = new VolcanicSteamSystem(scene, options.world, {
+        maxWisps: profile.volcanicSteamMaxWisps,
+        groundHeight: (x, z) => consumerTerrainSample(x, z).height,
+        sceneDepth: atmosphereResources.sceneDepth,
+        ...(steamSiteIndex
+          ? { ventsReady: (minX, minZ, maxX, maxZ) => steamSiteIndex.covers(minX, minZ, maxX, maxZ) }
+          : {}),
+      });
+      cleanup.push(() => steam.dispose());
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -1587,6 +1617,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         fxaa,
         stars,
         lightPoints,
+        steam,
         clusteredLighting,
         hangarFloods.map((flood) => flood.name),
         airfieldLighting,
@@ -2513,6 +2544,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.airport?.dispose(),
       () => this.spawnedAirfields?.dispose(),
       () => this.clouds.dispose(),
+      () => this.steam.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -2797,6 +2829,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.domElement.clientWidth,
       this.domElement.clientHeight,
     );
+    // Volcanic steam follows the CAMERA: a cell check, a range check and a
+    // clock write per frame; the vent query runs only on a 2 km cell change.
+    // simulationTime keeps the plume capture-deterministic (Z-1).
+    this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
     this.updateAerialPerspective();
   }
 
@@ -2919,6 +2955,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.hydrology.setAerialPerspective(binding);
     this.clouds.setAerialPerspective(binding);
     this.lightPoints.setAerialPerspective(binding);
+    this.steam.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.
@@ -3361,6 +3398,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.airport?.setFloatingOrigin(this.originX, this.originZ);
     this.spawnedAirfields?.setFloatingOrigin(this.originX, this.originZ);
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
+    this.steam.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -3403,6 +3441,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.setProfile(this.profile);
     this.clouds.setProfile(this.profile);
     this.ocean.setProfile(this.profile);
+    // 0 on tier 0 tears the steam's mesh down; a cap above it builds one,
+    // compiling at the switch rather than at load.
+    this.steam.setMaxWisps(this.profile.volcanicSteamMaxWisps);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;

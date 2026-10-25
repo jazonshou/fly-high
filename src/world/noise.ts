@@ -92,7 +92,7 @@ export function valueNoise2D(seedHash: number, x: number, z: number): number {
  * Width 0 (physics, collision — forever) evaluates the full-bandwidth kernel
  * bit-identically.
  */
-function octaveBandWeight(wavelengthMeters: number, filterWidthMeters: number): number {
+export function octaveBandWeight(wavelengthMeters: number, filterWidthMeters: number): number {
   return smoothstep(2 * filterWidthMeters, 3.2 * filterWidthMeters, wavelengthMeters);
 }
 

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CLIMATE_PROVINCE_FIELD_LANDFORM_COST,
@@ -43,6 +46,7 @@ import { borealShare, tundraShare } from "../src/world/coldBiomes";
 import { tropicalCoastWeight } from "../src/world/tropicalCoast";
 import { dryProvinceShares } from "../src/render/webgpu/detail/densityField";
 import { createWorld, sampleTerrain } from "../src/world";
+import { ERG_FAR_WEIGHT_SKIPPED, sampleErgFarWeight } from "../src/world/landforms";
 
 /**
  * **Smooth biome transitions at range.** The far fallback (ground no trusted
@@ -285,6 +289,48 @@ describe("the streamed province field", () => {
     forced.sample(0, 0, sample);
     expect(sample.sand).toBeCloseTo(0.5, 6);
     expect(sample.dryness).toBeCloseTo(CLIMATE_PROVINCE_PRESETS["high-desert"].dryness, 6);
+  });
+
+  it("bakes the dune stage's far erg weight into the clipmap's sand lane", () => {
+    // The clipmap owns the wiring; it needs a Babylon scene, so pin its source.
+    const clipmap = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "src/render/webgpu/terrain/TerrainClipmapSystem.ts"),
+      "utf8",
+    );
+    expect(clipmap).toContain("sand: (x, z) => sampleErgFarWeight(world, x, z)");
+
+    // Over the forced sand sea the review shots fly (22 km from the capture
+    // airport), the far ground is Sand: the lane reads a full erg.
+    const forced = createWorld("phase1-perf-baseline", {
+      climateProvince: "high-desert",
+      landforms: { dunes: true },
+    });
+    const ergX = 7_271;
+    const ergZ = -50_295;
+    const sandSea = new ClimateProvinceFieldGrid(forced, 8, CLIMATE_PROVINCE_FIELD_TEXEL_METERS, {
+      sand: (x, z) => sampleErgFarWeight(forced, x, z),
+    });
+    while (sandSea.pending) sandSea.update(ergX, ergZ, 1_000);
+    const sample: ClimateProvinceFieldSample = { temperatureOffset: 0, dryness: 0, sand: 0 };
+    sandSea.sample(ergX, ergZ, sample);
+    expect(sample.sand).toBeGreaterThan(0.9);
+
+    // Around a natural world's airport every texel is inside the landform
+    // core: the lane skips (charging the budget nothing) and reads exactly 0,
+    // so the far tone there is the province's own, x + 0.
+    let skipped = 0;
+    const core = new ClimateProvinceFieldGrid(WORLD, 8, CLIMATE_PROVINCE_FIELD_TEXEL_METERS, {
+      sand: (x, z) => {
+        const weight = sampleErgFarWeight(WORLD, x, z);
+        if (weight === ERG_FAR_WEIGHT_SKIPPED) skipped += 1;
+        return weight;
+      },
+    });
+    const airport = WORLD.airport!;
+    expect(core.update(airport.centerX, airport.centerZ, 64)).toBe(64);
+    expect(skipped).toBe(64);
+    core.sample(airport.centerX, airport.centerZ, sample);
+    expect(sample.sand).toBe(0);
   });
 
   it("rejects what it cannot bake", () => {
