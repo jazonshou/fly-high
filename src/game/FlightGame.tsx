@@ -751,7 +751,7 @@ export function FlightGame() {
         keyEvents: window,
       });
 
-      // B3: polled only while the diagnostics panel or the viewer HUD shows it.
+      // B3: polled only while the diagnostics setting is on or the viewer HUD is up.
       const diagnosticsPoller = new DiagnosticsPoller(
         () => renderer.getDiagnostics(),
         setDiagnostics,

@@ -38,7 +38,7 @@ function rig() {
 }
 
 describe("diagnostics polling (B3)", () => {
-  it("polls only for the diagnostics panel or the viewer HUD", () => {
+  it("polls only while the diagnostics setting is on or the viewer HUD is up", () => {
     for (const showDiagnostics of [false, true]) {
       for (const phase of PHASES) {
         const shown = showDiagnostics || phase === "viewer";

@@ -12,9 +12,12 @@ export const DIAGNOSTICS_POLL_INTERVAL_MS = 500;
 
 /**
  * Only the diagnostics panel and the terrain viewer's HUD (fps, draws,
- * triangles) show renderer diagnostics. With both hidden, a poll is a
+ * triangles) show renderer diagnostics, so they are polled only while the
+ * diagnostics setting is on or the viewer HUD is up. Otherwise a poll is a
  * main-thread spike (`detail.pendingWorkItems` walks every desired cell and
- * GPU memory is inventoried) plus a React commit nobody sees.
+ * GPU memory is inventoried) plus a React commit nobody sees. With the
+ * setting on, the menu's attract flight still polls, though no panel is
+ * mounted there.
  */
 export function diagnosticsShown(showDiagnostics: boolean, phase: string): boolean {
   return showDiagnostics || phase === "viewer";
@@ -36,9 +39,9 @@ export function shouldPollDiagnostics(input: DiagnosticsPollInput): boolean {
 }
 
 /**
- * The frame loop's diagnostics publication: a poll per interval while they
- * are shown, then one clear when they stop being shown, so reopening polls
- * on the next frame instead of showing a stale snapshot.
+ * The frame loop's diagnostics publication: a poll per interval while
+ * `diagnosticsShown`, then one clear when it stops, so reopening polls on
+ * the next frame instead of showing a stale snapshot.
  */
 export class DiagnosticsPoller {
   private lastPolledAt: number | null = null;
