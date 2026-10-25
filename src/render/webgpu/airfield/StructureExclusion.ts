@@ -181,3 +181,118 @@ export function airfieldStructureExclusions(
   boxes.push(...approachLightExclusionBoxes(airport));
   return boxes;
 }
+
+/**
+ * One airport's structures, stated in that airport's runway frame.
+ *
+ * **WHY THE AIRPORT TRAVELS WITH ITS BOXES.** A box is runway-local, so it means
+ * nothing without the runway it was measured from. Once airports spawn during a
+ * flight there is more than one frame, and a list of boxes paired with "the"
+ * airport would put a spawned field's hangars on the home field's runway.
+ */
+export interface StructureExclusionSite {
+  readonly airport: Readonly<AirportDefinition>;
+  readonly boxes: readonly StructureExclusionBox[];
+}
+
+/** World-space axis-aligned bounds, metres. */
+export interface WorldBounds {
+  readonly minX: number;
+  readonly minZ: number;
+  readonly maxX: number;
+  readonly maxZ: number;
+}
+
+/**
+ * Every airport's structure exclusions, in `airports` order (home field first).
+ *
+ * The same `seedHash` for every airport, because it is the hangars' siting
+ * seed and `AirportSystem` builds every field's hangars from it.
+ */
+export function airfieldStructureExclusionSites(
+  airports: readonly Readonly<AirportDefinition>[],
+  seedHash: number,
+): readonly StructureExclusionSite[] {
+  return airports.map((airport) => ({
+    airport,
+    boxes: airfieldStructureExclusions(airport, seedHash),
+  }));
+}
+
+/**
+ * The world rectangle outside which `structureClearanceFactor` is EXACTLY 1 for
+ * this site.
+ *
+ * Each box's runway-local corners (rotated by its own yaw) are taken to world
+ * space and the union is grown by the hard clearance plus the blend. A point
+ * outside a rectangle grown by `e` on every side is more than `e` from it along
+ * at least one axis, so more than `e` from anything inside it — and the factor
+ * returns 1 from `STRUCTURE_HARD_CLEARANCE_METERS + STRUCTURE_BLEND_METERS` out.
+ * That is what lets a caller skip a site whose bounds miss a cell without
+ * changing a single placement inside it.
+ */
+export function structureExclusionSiteBounds(site: StructureExclusionSite): WorldBounds {
+  const { airport } = site;
+  const sinHeading = Math.sin(airport.headingRadians);
+  const cosHeading = Math.cos(airport.headingRadians);
+  let minX = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const box of site.boxes) {
+    const cos = Math.cos(box.yawRadians);
+    const sin = Math.sin(box.yawRadians);
+    for (const [cornerAlong, cornerAcross] of [
+      [box.halfAlongMeters, box.halfAcrossMeters],
+      [box.halfAlongMeters, -box.halfAcrossMeters],
+      [-box.halfAlongMeters, box.halfAcrossMeters],
+      [-box.halfAlongMeters, -box.halfAcrossMeters],
+    ] as const) {
+      // Box axes into runway axes (the inverse of `structureClearanceFactor`'s
+      // rotation), then runway-local into world — `runwayToWorld`'s algebra.
+      const along = box.alongMeters + cornerAlong * cos - cornerAcross * sin;
+      const across = box.acrossMeters + cornerAlong * sin + cornerAcross * cos;
+      const x = airport.centerX + along * sinHeading + across * cosHeading;
+      const z = airport.centerZ + along * cosHeading - across * sinHeading;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+  }
+  if (!Number.isFinite(minX)) {
+    return { minX: airport.centerX, minZ: airport.centerZ, maxX: airport.centerX, maxZ: airport.centerZ };
+  }
+  // A millimetre over the reach, so float rounding in the corner arithmetic can
+  // never make the skip claim false at the very edge.
+  const reach = STRUCTURE_HARD_CLEARANCE_METERS + STRUCTURE_BLEND_METERS + 1e-3;
+  return { minX: minX - reach, minZ: minZ - reach, maxX: maxX + reach, maxZ: maxZ + reach };
+}
+
+/** Whether two closed world rectangles share any point. */
+export function worldBoundsOverlap(a: WorldBounds, b: WorldBounds): boolean {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
+}
+
+/**
+ * The product of every site's clearance at a world point: 0 inside any
+ * structure, 1 clear of all of them.
+ *
+ * A product rather than a minimum because airports are kept kilometres apart,
+ * so at most one factor is ever below 1 and the two agree — and a product of
+ * exact 1s is exactly the single-site answer, which is what keeps a world with
+ * only its home field bit-identical.
+ */
+export function structureClearanceFactorForSites(
+  sites: readonly StructureExclusionSite[],
+  x: number,
+  z: number,
+): number {
+  let factor = 1;
+  for (const site of sites) {
+    if (site.boxes.length === 0) continue;
+    factor *= structureClearanceFactor(site.airport, site.boxes, x, z);
+    if (factor <= 0) return 0;
+  }
+  return factor;
+}

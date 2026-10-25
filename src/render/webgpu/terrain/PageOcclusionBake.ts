@@ -52,6 +52,14 @@ import {
 } from "./HorizonField";
 import type { GlobalHeightPyramid } from "./GlobalHeightPyramid";
 import type { AirportDefinition } from "@/src/world/types";
+import {
+  TERRAIN_PAGE_GRADED_BY_NONE,
+  TERRAIN_PAGE_GRADED_BY_SEVERAL,
+  terrainAirportGradingReach,
+  terrainPageGradingAirport,
+  type TerrainAirportReach,
+} from "./AirportReach";
+import { TERRAIN_AIRPORT_SLOTS } from "./RunwayEarthworks";
 import { seasonalTemperatureShift } from "@/src/world/terrain";
 
 /**
@@ -102,14 +110,44 @@ const SPLAT_KERNEL_PAGE_BYTES = terrainKernelPageBytes(
 );
 
 /**
- * Floats per `SplatJob`: five `vec4f` lanes.
+ * Floats per `SplatJob`: six `vec4f` lanes.
  *
  * The fifth is the runway frame the rounded-rectangle airport influence needs
- * (`splatAirportInfluence`). Named rather than repeated so the host's stride,
- * the buffer size and the inventoried byte count cannot drift from the WGSL
- * struct — the previous literal `16` appeared in three places.
+ * (`splatAirportInfluence`); the sixth says how many airports reach the page
+ * and where the page sits, for the per-texel path a page two airports reach
+ * takes. Named rather than repeated so the host's stride, the buffer size and
+ * the inventoried byte count cannot drift from the WGSL struct — the previous
+ * literal `16` appeared in three places.
  */
-const SPLAT_JOB_FLOATS = 20;
+const SPLAT_JOB_FLOATS = 24;
+
+/** Floats per `SplatAirport` (two `vec4f`), and the table they fill. */
+const SPLAT_AIRPORT_FLOATS = 8;
+const SPLAT_AIRPORT_TABLE_FLOATS = SPLAT_AIRPORT_FLOATS * TERRAIN_AIRPORT_SLOTS;
+
+/**
+ * Every airport's influence frame in WORLD metres, for `splatAirports`: the
+ * same numbers the job's page-local `airport` and `runway` lanes carry,
+ * before the page origin is subtracted. Packed IN PLACE, unused slots zeroed.
+ */
+function packSplatAirportTable(
+  airports: readonly Readonly<AirportDefinition>[],
+  table: Float32Array,
+): void {
+  table.fill(0);
+  const count = Math.min(airports.length, TERRAIN_AIRPORT_SLOTS);
+  for (let slot = 0; slot < count; slot += 1) {
+    const airport = airports[slot]!;
+    const base = slot * SPLAT_AIRPORT_FLOATS;
+    table[base] = airport.centerX;
+    table[base + 1] = airport.centerZ;
+    table[base + 2] = 1 / Math.max(1, airport.terrainBlendDistance);
+    table[base + 4] = Math.sin(airport.headingRadians);
+    table[base + 5] = Math.cos(airport.headingRadians);
+    table[base + 6] = airport.runwayLength * 0.5 + airport.endSafetyArea;
+    table[base + 7] = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+  }
+}
 
 /**
  * The page-splat bake's composed source — ONE definition.
@@ -317,6 +355,12 @@ export class PageOcclusionBake {
    * A page is only baked once its HEIGHT slot is resident: the march reads the
    * height atlas, and baking against an unwritten slot would produce a page
    * whose shadows are of nothing.
+   *
+   * A slot is bakeable while it is being generated (it holds a token) or, for
+   * an in-place re-bake after the airport list changed over it, while it is
+   * resident: its texels are overwritten where they stand, as a season
+   * re-bake overwrites a splat, so there is no frame in which it reads as
+   * unbaked.
    */
   async bake(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]> {
     if (this.disposed || this.running) return [];
@@ -326,7 +370,8 @@ export class PageOcclusionBake {
 
     const bakeable = slots.filter((slot) => {
       const heightSlot = this.heightAtlas.residency.slotIndexOf(slot.key);
-      return heightSlot >= 0 && slot.token !== null;
+      return heightSlot >= 0
+        && (slot.token !== null || slot.lifecycle.state === "resident");
     });
     if (bakeable.length === 0) return [];
     this.ensureCapacity(bakeable.length, pyramidTexture);
@@ -450,6 +495,23 @@ export class PageSplatBake {
   /** Bytes reported to the renderer's memory-inventory floor (Gate 0-c). */
   private registeredBufferBytes = 0;
   private pageBuffer: StorageBuffer | null = null;
+  /**
+   * `splatAirports`. Uploaded by the first batch after the list changes, with
+   * that batch's jobs, so a batch can never pair one list's jobs with
+   * another's table (one batch is recorded per frame; see `recordedFrame`).
+   */
+  private airportTableBuffer: StorageBuffer | null = null;
+  /**
+   * Every airport the bake classifies the airfield of, home field first. The
+   * constructor's `airport` seeds it; `setAirports` replaces it.
+   */
+  private airports: readonly Readonly<AirportDefinition>[];
+  /** `airports`' grading reaches, in list order, for `terrainPageGradingAirport`. */
+  private gradingReaches: readonly TerrainAirportReach[];
+  /** `splatAirports`' contents, packed in place by `setAirports`. */
+  private readonly airportTable = new Float32Array(SPLAT_AIRPORT_TABLE_FLOATS);
+  private readonly airportTableBytes = new Uint8Array(this.airportTable.buffer);
+  private airportTableDirty = true;
   private capacity = 0;
   private running = false;
   /** Serialises `bake`: a second request waits for the first, it is never dropped. */
@@ -489,16 +551,32 @@ export class PageSplatBake {
     private readonly vegetationSeedHash: number,
     private readonly seaLevelMeters: number,
     private readonly latitudeDegrees: number,
-    private readonly airport: Readonly<AirportDefinition> | null,
+    airport: Readonly<AirportDefinition> | null,
     /**
      * The world's climate provinces (`terrainClimateProvinceInput`). Null
      * bakes the shipped climate everywhere: offsets of exactly 0.
      */
     private readonly climateProvince: TerrainKernelProvinceInput | null = null,
-  ) {}
+  ) {
+    this.airports = [];
+    this.gradingReaches = [];
+    this.setAirports(airport ? [airport] : []);
+  }
 
   get isBaking(): boolean {
     return this.running;
+  }
+
+  /**
+   * Classify the airfield of every airport in `airports` (home field first)
+   * from the next batch on. Host state only — the table is packed here and
+   * uploaded by the next batch, with its jobs — and nothing recompiles.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
+    this.airports = airports.slice(0, TERRAIN_AIRPORT_SLOTS);
+    this.gradingReaches = this.airports.map(terrainAirportGradingReach);
+    packSplatAirportTable(this.airports, this.airportTable);
+    this.airportTableDirty = true;
   }
 
   /**
@@ -567,8 +645,10 @@ export class PageSplatBake {
     const shader = this.shader;
     const jobBuffer = this.jobBuffer;
     const pageBuffer = this.pageBuffer;
-    if (!shader || !jobBuffer || !pageBuffer) return [];
+    const airportTableBuffer = this.airportTableBuffer;
+    if (!shader || !jobBuffer || !pageBuffer || !airportTableBuffer) return [];
 
+    const airports = this.airports;
     const blend = seasonBucketBlend(dayOfYear);
     const jobs = new Float32Array(bakeable.length * SPLAT_JOB_FLOATS);
     const pages = new Uint8Array(bakeable.length * SPLAT_KERNEL_PAGE_BYTES);
@@ -601,27 +681,49 @@ export class PageSplatBake {
         seasonBucketCenterDay(blend.hi),
         this.latitudeDegrees,
       );
+      // WHICH airport grades this page: the one whose influence reaches it
+      // (AirportReach.ts). Footprints never touch, so that one is the nearest
+      // centre wherever its influence is non-zero, and an airport whose
+      // influence cannot reach the page contributes exactly 0 to every texel
+      // of it — so a page no airport reaches keeps the home field, which is
+      // precisely what every page of a one-airport world was baked with
+      // before airports could spawn. Two or more reaching it (a coarse page
+      // spanning two airports) switches the shader to its per-texel nearest
+      // choice over `splatAirports`; per page is what keeps every other page
+      // at its old cost.
+      const graded = airports.length > 1
+        ? terrainPageGradingAirport(this.gradingReaches, slot.address)
+        : TERRAIN_PAGE_GRADED_BY_NONE;
+      const airport = graded >= 0 ? airports[graded] ?? null : airports[0] ?? null;
       // Airport influence, page-local, so the graded platform is mown grass.
-      jobs[base + 12] = this.airport ? this.airport.centerX - bounds.minX : 1e9;
-      jobs[base + 13] = this.airport ? this.airport.centerZ - bounds.minZ : 1e9;
+      jobs[base + 12] = airport ? airport.centerX - bounds.minX : 1e9;
+      jobs[base + 13] = airport ? airport.centerZ - bounds.minZ : 1e9;
       // A 1 m blend with no airport: the platform half-extents below are 0 and
       // the centre is 1e9 away, so the shader's smoothstep saturates and the
       // influence is 0. Writing 0 here (the old value) made the influence 1
       // EVERYWHERE in an airport-less world, because the term it scaled
       // vanished with it.
-      jobs[base + 14] = this.airport ? 1 / Math.max(1, this.airport.terrainBlendDistance) : 1;
+      jobs[base + 14] = airport ? 1 / Math.max(1, airport.terrainBlendDistance) : 1;
       jobs[base + 15] = dayOfYear;
       // The runway frame and the graded platform's half-extents, so the bake
       // evaluates `getAirportInfluence`'s rounded rectangle rather than a disc
       // about the centre. Half-extents match that function's arguments exactly.
-      jobs[base + 16] = this.airport ? Math.sin(this.airport.headingRadians) : 0;
-      jobs[base + 17] = this.airport ? Math.cos(this.airport.headingRadians) : 1;
-      jobs[base + 18] = this.airport
-        ? this.airport.runwayLength * 0.5 + this.airport.endSafetyArea
+      jobs[base + 16] = airport ? Math.sin(airport.headingRadians) : 0;
+      jobs[base + 17] = airport ? Math.cos(airport.headingRadians) : 1;
+      jobs[base + 18] = airport
+        ? airport.runwayLength * 0.5 + airport.endSafetyArea
         : 0;
-      jobs[base + 19] = this.airport
-        ? this.airport.runwayWidth * 0.5 + this.airport.shoulderWidth
+      jobs[base + 19] = airport
+        ? airport.runwayWidth * 0.5 + airport.shoulderWidth
         : 0;
+      // (page origin, airports reaching the page — 0, 1, or 2 for two or
+      // more — and airports in the table).
+      jobs[base + 20] = bounds.minX;
+      jobs[base + 21] = bounds.minZ;
+      jobs[base + 22] = graded === TERRAIN_PAGE_GRADED_BY_SEVERAL
+        ? 2
+        : graded === TERRAIN_PAGE_GRADED_BY_NONE ? 0 : 1;
+      jobs[base + 23] = Math.min(airports.length, TERRAIN_AIRPORT_SLOTS);
       pages.set(
         new Uint8Array(buildTerrainKernelPageUniform({
           seedHash: this.seedHash,
@@ -636,6 +738,12 @@ export class PageSplatBake {
     });
     jobBuffer.update(new Uint8Array(jobs.buffer));
     pageBuffer.update(pages);
+    // Only after the list changed: the table was packed by setAirports from
+    // the same `airports` these jobs index.
+    if (this.airportTableDirty) {
+      airportTableBuffer.update(this.airportTableBytes);
+      this.airportTableDirty = false;
+    }
 
     this.running = true;
     try {
@@ -656,10 +764,13 @@ export class PageSplatBake {
     for (const waiter of this.frameWaiters.splice(0)) waiter();
     this.jobBuffer?.dispose();
     this.pageBuffer?.dispose();
+    this.airportTableBuffer?.dispose();
     releaseGpuBufferBytes(this.registeredBufferBytes);
+    if (this.airportTableBuffer) releaseGpuBufferBytes(SPLAT_AIRPORT_TABLE_FLOATS * 4);
     this.registeredBufferBytes = 0;
     this.jobBuffer = null;
     this.pageBuffer = null;
+    this.airportTableBuffer = null;
     this.shader = null;
     this.costTape?.dispose();
     this.costTape = null;
@@ -696,12 +807,20 @@ export class PageSplatBake {
           splatFlowAccumAtlas: { group: 0, binding: 6 },
           // 6-6: the soil-depth channel's first GPU consumer.
           splatSoilDepthAtlas: { group: 0, binding: 7 },
+          splatAirports: { group: 0, binding: 8 },
         },
       },
     );
     this.costTape ??= new PassCostTape(this.engine, passTimingSinkOf(this.shader));
     this.shader.setStorageBuffer("terrainKernelPages", this.pageBuffer);
     this.shader.setStorageBuffer("splatJobs", this.jobBuffer);
+    if (!this.airportTableBuffer) {
+      // Fixed size, created once: the slot count is the shader's, not the batch's.
+      this.airportTableBuffer = new StorageBuffer(engine, SPLAT_AIRPORT_TABLE_FLOATS * 4);
+      this.airportTableDirty = true;
+      registerGpuBufferBytes(SPLAT_AIRPORT_TABLE_FLOATS * 4);
+    }
+    this.shader.setStorageBuffer("splatAirports", this.airportTableBuffer);
     const height = this.heightAtlas.texture();
     if (height) this.shader.setTexture("splatHeightAtlas", height, false);
     const flowAccum = this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.flowAccum);

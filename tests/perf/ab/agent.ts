@@ -75,6 +75,9 @@ import {
   type AgentErrors,
   type AgentInfo,
   type CaptureResult,
+  type FlightFrame,
+  type FlightReport,
+  type FlightRequest,
   type FrameSample,
   type ImageComparison,
   type PerfAgent,
@@ -104,7 +107,7 @@ interface ShotContext {
 }
 
 const errors = { console: [] as string[], logger: [] as string[], gpu: [] as string[], page: [] as string[] };
-const creations = { pipelines: 0, shaderModules: 0 };
+const creations = { pipelines: 0, shaderModules: 0, shaderCodeChars: 0 };
 
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
@@ -231,7 +234,158 @@ function installCreationCounts(): void {
   count("createComputePipeline", "pipelines");
   count("createComputePipelineAsync", "pipelines");
   count("createShaderModule", "shaderModules");
+  const createShaderModule = device.prototype.createShaderModule;
+  if (typeof createShaderModule === "function") {
+    device.prototype.createShaderModule = function (this: unknown, descriptor: { code?: string }) {
+      creations.shaderCodeChars += descriptor?.code?.length ?? 0;
+      return (createShaderModule as (descriptor: unknown) => unknown).call(this, descriptor);
+    };
+  }
 }
+
+/** Main-thread tasks over 50 ms, from installation on: a flight leg reads its own window. */
+const longTasks: { start: number; duration: number }[] = [];
+
+function installLongTaskObserver(): void {
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (longTasks.length < 10_000) longTasks.push({ start: entry.startTime, duration: entry.duration });
+      }
+    }).observe({ type: "longtask", buffered: false });
+  } catch {
+    // No Long Tasks API: the leg reports none.
+  }
+}
+
+/** The JS heap in bytes; exact only with `--enable-precise-memory-info`. */
+function heapUsedBytes(): number {
+  const memory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+  return memory?.usedJSHeapSize ?? Number.NaN;
+}
+
+/** The frame graph's per-pass main-thread times for the last frame; private, so read loosely. */
+function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuMilliseconds: number; ran: boolean }[] {
+  const graph = (target as unknown as { graph?: { passTimings?: unknown } }).graph;
+  const timings = graph?.passTimings;
+  return Array.isArray(timings) ? timings : [];
+}
+
+/**
+ * Whether vegetation cells are generated on the detail worker or, after a
+ * fallback, inline on the main thread (private, as `graphPassTimings`).
+ */
+/**
+ * Effects (material x defines) the engine compiles, each named by its shader
+ * and by the defines that set it apart from the nearest effect of that shader
+ * compiled before it: what a mid-flight pipeline compile is FOR.
+ */
+const effectsCompiled: string[] = [];
+const knownEffectDefines = new Map<string, Set<string>[]>();
+
+function effectDefineLines(defines: string): Set<string> {
+  return new Set(defines.split("\n").map((line) => line.trim()).filter((line) => line.length > 0));
+}
+
+function effectShaderName(baseName: unknown): string {
+  const named = baseName as Record<string, unknown> | null | undefined;
+  const raw = typeof baseName === "string"
+    ? baseName
+    : String(named?.["vertexToken"] ?? named?.["vertex"] ?? named?.["vertexSource"] ?? "?");
+  return raw.length > 48 ? `${raw.slice(0, 48).replace(/\s+/g, " ")}...` : raw;
+}
+
+function rememberEffect(shader: string, lines: Set<string>): void {
+  const known = knownEffectDefines.get(shader) ?? [];
+  known.push(lines);
+  knownEffectDefines.set(shader, known);
+}
+
+function describeNewEffect(shader: string, defines: string): string {
+  const lines = effectDefineLines(defines);
+  const known = knownEffectDefines.get(shader) ?? [];
+  let best: { added: string[]; removed: string[] } | null = null;
+  for (const other of known) {
+    const added = [...lines].filter((line) => !other.has(line));
+    const removed = [...other].filter((line) => !lines.has(line));
+    if (!best || added.length + removed.length < best.added.length + best.removed.length) best = { added, removed };
+  }
+  rememberEffect(shader, lines);
+  if (!best) return `${shader} (its first effect)`;
+  const list = (prefix: string, entries: string[]) => entries.slice(0, 6).map((line) => `${prefix}${line}`)
+    .concat(entries.length > 6 ? [`${prefix}${entries.length - 6} more`] : []);
+  return `${shader}: ${[...list("+", best.added), ...list("-", best.removed)].join(" ")}`;
+}
+
+function installEffectRecorder(target: FlightRenderer): void {
+  const engine = (target as unknown as { scene?: { getEngine(): unknown } }).scene?.getEngine() as
+    | {
+      createEffect: (...args: unknown[]) => unknown;
+      __effectRecorder?: boolean;
+      _compiledEffects?: Record<string, { name?: unknown; defines?: unknown }>;
+    }
+    | undefined;
+  if (!engine || engine.__effectRecorder) return;
+  engine.__effectRecorder = true;
+  const original = engine.createEffect;
+  const seen = new WeakSet<object>();
+  // The effects the renderer compiled while it loaded. The engine hands an
+  // existing effect back for the same shader and defines, so without these a
+  // load-time effect a mesh first asks for in flight would read as a compile,
+  // and a real new variant would be told apart from the wrong neighbour.
+  for (const effect of Object.values(engine._compiledEffects ?? {})) {
+    seen.add(effect);
+    rememberEffect(effectShaderName(effect.name), effectDefineLines(String(effect.defines ?? "")));
+  }
+  engine.createEffect = function (this: unknown, ...args: unknown[]) {
+    const effect = original.apply(this, args) as object;
+    if (effect && !seen.has(effect)) {
+      seen.add(effect);
+      const [baseName, options, , , defines] = args as [
+        unknown,
+        { defines?: unknown } | undefined,
+        unknown,
+        unknown,
+        unknown,
+      ];
+      effectsCompiled.push(describeNewEffect(effectShaderName(baseName), String(defines ?? options?.defines ?? "")));
+    }
+    return effect;
+  };
+}
+
+function detailWorkerState(target: FlightRenderer): FlightReport["detailWorker"] {
+  const detail = (target as unknown as {
+    readonly detail?: {
+      readonly client: unknown;
+      readonly presentationRebuildDiagnostics: {
+        readonly workerFallbacks: number;
+        readonly workerGenerationTimeouts: number;
+        readonly workerBuildTimeouts: number;
+        readonly workerBuildRejections: number;
+      };
+    };
+  }).detail;
+  if (!detail) return null;
+  const diagnostics = detail.presentationRebuildDiagnostics;
+  return {
+    active: detail.client !== null,
+    fallbacks: diagnostics.workerFallbacks,
+    generationTimeouts: diagnostics.workerGenerationTimeouts,
+    buildTimeouts: diagnostics.workerBuildTimeouts,
+    buildRejections: diagnostics.workerBuildRejections,
+  };
+}
+
+/** Where the scripted flight is; legs continue from it. */
+interface FlightPath {
+  x: number;
+  z: number;
+  yawDegrees: number;
+  altitude: number;
+}
+
+let flightPath: FlightPath | null = null;
 
 function installErrorChannels(): void {
   // As the capture does (Z-1): a renderer error is a failed run, not a log
@@ -275,9 +429,10 @@ async function ensureRenderer(
   renderer = null;
   canvas?.remove();
   world = createWorld(PERF_CAPTURE_SEED, {
+    ...(config.worldOptions ?? {}),
     worldEvolution,
     ...(climateProvince === undefined ? {} : { climateProvince }),
-  });
+  } as Parameters<typeof createWorld>[1]);
   // A base that predates climate provinces ignores the option and would
   // render the temperate world: fail the shot rather than compare the wrong
   // worlds. The option reads back as the forced offsets when honoured.
@@ -307,6 +462,7 @@ async function ensureRenderer(
   });
   activeWorldEvolution = worldEvolution;
   activeProvinceKey = provinceKey;
+  installEffectRecorder(renderer);
   renderCalls = 0;
   removeGpuErrorListener = capability("addGpuUncapturedErrorListenerForCapture")((event) => {
     errors.gpu.push(JSON.stringify({ type: event.error.constructor?.name || "GPUError", message: event.error.message }));
@@ -431,6 +587,7 @@ const agent: PerfAgent = {
     installGpuDrawGate();
     installRendererPassNames();
     installCreationCounts();
+    installLongTaskObserver();
     if (next.profileOverride) {
       // The capture's VITE_PERF_PROFILE_OVERRIDE: set before the renderer
       // exists, so every profile resolution sees it.
@@ -701,6 +858,118 @@ const agent: PerfAgent = {
     await nextAnimationFrame();
     await nextAnimationFrame();
     return sample;
+  },
+
+  async flight(request: FlightRequest): Promise<FlightReport> {
+    const started = performance.now();
+    const shot = requireContext();
+    const active = requireRenderer();
+    const activeWorld = world!;
+    const fence = capability("waitForGpuIdleForCapture");
+    if (flightPath === null || request.restart) {
+      const start = request.start ?? null;
+      flightPath = start
+        ? {
+          x: start.x,
+          z: start.z,
+          yawDegrees: start.yawDegrees,
+          altitude: sampleTerrainHeight(activeWorld, start.x, start.z) + request.clearanceMeters,
+        }
+        : {
+          x: shot.state.position.x,
+          z: shot.state.position.z,
+          yawDegrees: shot.yawDegrees,
+          altitude: shot.altitude,
+        };
+      active.setCameraMode(request.cameraMode);
+    }
+    const path = flightPath;
+    const speed = request.speedMetersPerSecond;
+    const bankRadians = (request.bankDegrees * Math.PI) / 180;
+    const turnRateDegrees = ((9.81 * Math.tan(bankRadians)) / Math.max(20, speed)) * (180 / Math.PI);
+    setGpuDrawsSuppressed(request.suppressDraws);
+    const longTaskStart = longTasks.length;
+    const frames: FlightFrame[] = [];
+    let heapMark = heapUsedBytes();
+    for (let frame = 0; frame < request.frames; frame += 1) {
+      simulationTime += 1 / 60;
+      path.yawDegrees += turnRateDegrees / 60;
+      const heading = headingVectorFromYaw(path.yawDegrees);
+      path.x += (speed * heading.x) / 60;
+      path.z += (speed * heading.z) / 60;
+      // Terrain following, as a pilot would: never closer than the clearance
+      // to the ground under the aircraft or 3 s ahead, climbing at up to
+      // 25 m/s and descending at up to 10 m/s toward it.
+      const groundHere = sampleTerrainHeight(activeWorld, path.x, path.z);
+      const groundAhead = sampleTerrainHeight(
+        activeWorld,
+        path.x + heading.x * speed * 3,
+        path.z + heading.z * speed * 3,
+      );
+      const target = Math.max(groundHere, groundAhead) + request.clearanceMeters;
+      path.altitude += Math.max(-10 / 60, Math.min(25 / 60, target - path.altitude));
+      path.altitude = Math.max(path.altitude, groundHere + 30);
+      const state: FlightVisualState = {
+        ...shot.state,
+        simulationTime,
+        position: { x: path.x, y: path.altitude, z: path.z },
+        velocity: { x: speed * heading.x, y: 0, z: speed * heading.z },
+        orientation: orientationFromYawPitchBank(path.yawDegrees, 0, request.bankDegrees),
+        airspeed: speed,
+        altitude: path.altitude,
+        altitudeAgl: path.altitude - groundHere,
+      };
+      shot.lastFrameState = state;
+      const pipelinesBefore = creations.pipelines;
+      const shaderModulesBefore = creations.shaderModules;
+      const shaderCodeBefore = creations.shaderCodeChars;
+      const effectsBefore = effectsCompiled.length;
+      const heapBefore = heapUsedBytes();
+      const heapBetweenBytes = heapBefore - heapMark;
+      const renderStarted = performance.now();
+      renderFrame(state);
+      const renderMs = performance.now() - renderStarted;
+      const heapAfter = heapUsedBytes();
+      // The tasks queued behind the frame (worker results, buffer maps,
+      // timers) run here; a zero-delay timer is the last of them.
+      const betweenStarted = performance.now();
+      await yieldToTasks();
+      const betweenMs = performance.now() - betweenStarted;
+      heapMark = heapUsedBytes();
+      const passMs: Record<string, number> = {};
+      for (const timing of graphPassTimings(active)) {
+        if (timing.ran) passMs[timing.name] = timing.cpuMilliseconds;
+      }
+      frames.push({
+        renderMs,
+        betweenMs,
+        passMs,
+        heapRenderBytes: heapAfter - heapBefore,
+        heapBetweenBytes,
+        pipelinesCreated: creations.pipelines - pipelinesBefore,
+        shaderModulesCreated: creations.shaderModules - shaderModulesBefore,
+        shaderCodeChars: creations.shaderCodeChars - shaderCodeBefore,
+        effectsCompiled: effectsCompiled.slice(effectsBefore),
+      });
+      if (frame % request.fenceEvery === request.fenceEvery - 1) {
+        await fence();
+        heapMark = heapUsedBytes();
+      }
+    }
+    await fence();
+    const diagnostics = active.getDiagnostics();
+    return {
+      frames,
+      renderCalls,
+      elapsedMs: performance.now() - started,
+      longTasks: longTasks.slice(longTaskStart),
+      position: { x: path.x, y: path.altitude, z: path.z },
+      pendingTerrainPages: diagnostics.pendingTerrainPages,
+      pendingDetailWork: diagnostics.pendingDetailWork,
+      visibleInstances: diagnostics.visibleInstances,
+      residentTerrainPages: diagnostics.residentTerrainPages,
+      detailWorker: detailWorkerState(active),
+    };
   },
 
   async capture(): Promise<CaptureResult> {

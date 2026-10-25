@@ -29,7 +29,18 @@ import {
   type WorldPageStreamingObserver,
   type WorldPageStreamingPriorityOptions,
 } from "@/src/render/webgpu/world/streamingPriority";
-import { TERRAIN_REFERENCE_DAY_OF_YEAR, type WorldDefinition } from "@/src/world";
+import {
+  TERRAIN_REFERENCE_DAY_OF_YEAR,
+  type AirportDefinition,
+  type WorldDefinition,
+} from "@/src/world";
+import {
+  diffTerrainAirports,
+  sameTerrainAirports,
+  terrainAirportReaches,
+  terrainPageInAirportReach,
+  type TerrainAirportReach,
+} from "./AirportReach";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
 import { surfaceArrayLayerIds, synthesizeSurfaceArrayLayer } from "./GroundGrainSynthesis";
 import {
@@ -39,6 +50,7 @@ import {
 import { MaterialSynthesisClient } from "./MaterialSynthesisClient";
 import { PageOcclusionBake, PageSplatBake } from "./PageOcclusionBake";
 import { ClimateProvinceField } from "./ClimateProvinceField";
+import { TERRAIN_AIRPORT_SLOTS } from "./RunwayEarthworks";
 import { SURFACE_MATERIALS } from "./surfaceMaterials";
 import { terrainClimateProvinceInput } from "./TerrainKernel";
 import { TerrainDebugOverlay, type TerrainDebugOverlayMode } from "./TerrainDebugOverlay";
@@ -99,8 +111,16 @@ export interface TerrainPageProducer {
    * `admittedDispatches` is what the meter allowed this frame. The analytic
    * batch is already sliced to it and ignores the argument; the `W-1d` GPU
    * erosion DAG spends it on DAG stages instead of pages.
+   *
+   * A RESIDENT slot in an analytic batch is an in-place regeneration
+   * (`TerrainAtlasSlot.airportRebuildOwed`). The producer marks every slot it
+   * actually dispatched `generationSubmitted`, resident ones included; the
+   * clipmap reads that once the promise settles to tell a recorded
+   * regeneration from a declined one, and re-queues the latter.
    */
   generate(slots: readonly TerrainAtlasSlot[], admittedDispatches?: number): Promise<void>;
+  /** Grade these airports (home field first) from the next dispatch on. */
+  setAirports?(airports: readonly Readonly<AirportDefinition>[]): void;
   /** Fill Phase-5 aux fields for channel slots admitted after height. */
   ensureHydrology?(slots: readonly TerrainAtlasSlot[]): Promise<void>;
   setCollisionPagePublisher?(publisher: TerrainCollisionPagePublisher | null): void;
@@ -149,8 +169,25 @@ export interface TerrainSplatProducer {
   gpuMillisecondsInFrame?(): number | null;
   /** The slots actually baked: the caller publishes these and releases the rest. */
   bake(slots: readonly TerrainAtlasSlot[], dayOfYear: number): Promise<readonly TerrainAtlasSlot[]>;
+  /** Classify the airfield of these airports (home field first) from the next bake on. */
+  setAirports?(airports: readonly Readonly<AirportDefinition>[]): void;
   consumeMeasuredDispatchCostMs(): number | null;
   dispose(): void;
+}
+
+/**
+ * Pages owed an in-place rebuild because the airport list changed over them
+ * (`TerrainClipmapSystem.setAirports`). Observation only.
+ */
+export interface TerrainAirportRebuildBacklog {
+  /** Airport-list changes whose reach is still being tested against the slots. */
+  readonly changesBeingScanned: number;
+  /** Height slots whose regeneration has not been dispatched yet. */
+  readonly heightPagesOwed: number;
+  /** Height slots whose regeneration is batched but not yet known recorded. */
+  readonly heightPagesInFlight: number;
+  /** Channel slots whose occlusion and splat re-bake has not been dispatched. */
+  readonly channelPagesOwed: number;
 }
 
 export interface TerrainHeightPyramidProducer {
@@ -223,6 +260,30 @@ const CASTER_READINESS_SWEEP_FRAMES = 120;
  * does not hold the atlas hostage.
  */
 const STALLED_SLOT_RECLAIM_FRAMES = 120;
+
+/** The airport pumps' answer on a frame with nothing owed: shared, never allocated. */
+const NO_SLOTS: readonly TerrainAtlasSlot[] = Object.freeze([]);
+
+/**
+ * Slots, of both atlases together, an airport change's invalidation tests per
+ * frame. A test is a handful of rectangle projections; this many keeps the
+ * per-frame share far under the 2 ms main-thread bound on any tier, and the
+ * largest atlas pair (2 x 256 slots) is through in eight frames — while the
+ * rebuild it feeds is paced at a page or two per frame by the meter anyway.
+ */
+export const AIRPORT_INVALIDATION_SLOTS_PER_FRAME = 64;
+
+/** One airport-list change whose reach is still being tested against the slots. */
+interface AirportInvalidation {
+  /** The list version the change produced: slots batched at or after it are current. */
+  readonly version: number;
+  readonly reaches: readonly TerrainAirportReach[];
+  /** Snapshots taken when the scan starts; slots requested later are current. */
+  heightSlots: readonly TerrainAtlasSlot[] | null;
+  channelSlots: readonly TerrainAtlasSlot[] | null;
+  /** Index into heightSlots, then channelSlots. */
+  cursor: number;
+}
 
 export interface TerrainObserver {
   readonly x: number;
@@ -534,6 +595,27 @@ export class TerrainClipmapSystem {
   private seasonDayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR;
   private readonly worldRevision: string;
   private disposed = false;
+  /**
+   * Every airport the terrain grades, paints and classifies, home field first
+   * and at most `TERRAIN_AIRPORT_SLOTS`. `world` is the world the flight
+   * started in and never changes; spawned airports arrive through
+   * `setAirports`.
+   */
+  private airports: readonly Readonly<AirportDefinition>[];
+  /**
+   * Height slots owed an airport regeneration or with one in flight, and
+   * channel slots owed an airport re-bake — the only slots the airport pumps
+   * look at. Pruned lazily; emptied when the atlases are rebuilt.
+   */
+  private readonly heightAirportRebuilds = new Set<TerrainAtlasSlot>();
+  private readonly channelAirportRebuilds = new Set<TerrainAtlasSlot>();
+  /** The airport pumps' per-frame candidate lists, reused, never reallocated. */
+  private readonly heightRegenerationScratch: TerrainAtlasSlot[] = [];
+  private readonly channelRebakeScratch: TerrainAtlasSlot[] = [];
+  /** Bumped by every airport-list change; slots record it when batched. */
+  private airportListVersion = 0;
+  /** Changes whose invalidation scan has not finished, oldest first. */
+  private readonly airportInvalidations: AirportInvalidation[] = [];
 
   constructor(
     private readonly scene: Scene,
@@ -541,6 +623,9 @@ export class TerrainClipmapSystem {
     profile: WebGpuQualityProfile,
     private readonly options: TerrainClipmapSystemOptions = {},
   ) {
+    // `airports` is absent only on a world built by hand before it existed.
+    this.airports = (world.airports ?? (world.airport ? [world.airport] : []))
+      .slice(0, TERRAIN_AIRPORT_SLOTS);
     this.profile = profile;
     this.worldRevision = terrainWorldRevision(world);
     this.material = createTerrainMaterial(scene);
@@ -568,7 +653,7 @@ export class TerrainClipmapSystem {
     this.surfacePlugin.setSeason(this.seasonDayOfYear, world.latitudeDegrees, world.seaLevel);
     // 3-9: the runway is painted into this material by the analytic airport
     // SDF. Nothing else needs to know — no mesh, no second material.
-    this.surfacePlugin.setRunway(world.airport);
+    this.surfacePlugin.setRunways(this.airports);
     const engineFlags = scene.getEngine() as { isWebGPU?: boolean; _gl?: unknown };
     this.canBuildArrays = Boolean(engineFlags.isWebGPU || engineFlags._gl);
     this.materialArrayEdge = profile.materialArrayEdge;
@@ -885,6 +970,12 @@ export class TerrainClipmapSystem {
       // textures must not have them destroyed under its submit.
       const retiredHeightAtlas = this.heightAtlas;
       const retiredChannelAtlas = this.channelAtlas;
+      // The rebuild queues hold the retired atlases' slots, which never leave
+      // `resident` on their own; every page of the new atlases is generated
+      // against the current airport list, so nothing is owed any more.
+      this.heightAirportRebuilds.clear();
+      this.channelAirportRebuilds.clear();
+      this.airportInvalidations.length = 0;
       this.deferredDisposals.push({
         retiredAtFrame: this.frameIndex,
         dispose: () => {
@@ -1062,6 +1153,151 @@ export class TerrainClipmapSystem {
       : null);
   }
 
+  /**
+   * Grade, paint and classify every airport in `airports` — home field first,
+   * at most `TERRAIN_AIRPORT_SLOTS` — and bring the pages an airport entered
+   * or left up to date, with no hitch.
+   *
+   * What a spawn costs on the frame it lands is a few uniform writes; the rest
+   * rides the frames after it, through the existing queues and meter:
+   *
+   *  1. UNIFORMS, never pipelines. The page generator's earthworks set, the
+   *     splat bake's airport table and the painter's per-slot frames are all
+   *     compiled at the full slot count; this rewrites their values. Pages
+   *     batched from here on are built for the new list.
+   *  2. INVALIDATION by value, not by identity (`diffTerrainAirports`): only
+   *     the reach of an airport that was ADDED or REMOVED can have changed
+   *     (`AirportReach.ts` — platform + blend, and the airfield surround).
+   *     The change is queued and its reach tested against every slot of both
+   *     atlases at `AIRPORT_INVALIDATION_SLOTS_PER_FRAME` slots a frame
+   *     (`stepAirportInvalidation`). A slot is marked `airportRebuildOwed`
+   *     when it meets the reach AND was built against an older list — its
+   *     `airportListVersion` predates the change — so a page batched after
+   *     the change is never rebuilt for it, however late the scan reaches
+   *     it. Pages the change does not reach are bit-identical before and
+   *     after, because every texel outside an airport's reach evaluates to
+   *     the same height and influence whichever airports exist.
+   *  3. REBUILT IN PLACE through the existing pumps: owed height pages join
+   *     the `terrainCompute` demand after fresh pages and are overwritten
+   *     where they stand (no eviction, so no LOD pop and no hole in the
+   *     physics ring); an L0 page is re-published to the simulation worker
+   *     and the detail runtime through the same publisher its first
+   *     generation used. Owed channel pages join the occlusion/splat pair's
+   *     demand once their height page's regeneration is recorded, so they
+   *     bake the new ground.
+   *
+   * An eroded world (opt-in) regrades heights for its home field only: its
+   * earthworks are inputs to a multi-frame erosion DAG and to the erosion
+   * worker's airport mask, and re-eroding every page under a spawned runway
+   * is not a uniform write. Its painter and splat bake follow the list.
+   *
+   * Cheap to call every frame: an unchanged list — the same array, or the
+   * same airports by value — returns before touching anything, allocating
+   * nothing. It never scans, dispatches or bakes.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
+    if (this.disposed || sameTerrainAirports(this.airports, airports)) return;
+    const next = airports.slice(0, TERRAIN_AIRPORT_SLOTS);
+    const { added, removed } = diffTerrainAirports(this.airports, next);
+    this.airports = next;
+    this.surfacePlugin.setRunways(next);
+    this.pageGenerator?.setAirports?.(next);
+    this.splatBake?.setAirports?.(next);
+    if (added.length === 0 && removed.length === 0) return;
+    this.airportListVersion += 1;
+    this.airportInvalidations.push({
+      version: this.airportListVersion,
+      reaches: [...added, ...removed].flatMap(terrainAirportReaches),
+      heightSlots: null,
+      channelSlots: null,
+      cursor: 0,
+    });
+  }
+
+  /** What `setAirports` has queued and not yet dispatched. Observation only. */
+  get airportRebuildBacklog(): TerrainAirportRebuildBacklog {
+    let heightPagesOwed = 0;
+    let heightPagesInFlight = 0;
+    for (const slot of this.heightAtlas.residency.entries) {
+      if (slot.airportRebuildOwed) heightPagesOwed += 1;
+      if (slot.airportRebuildInFlight) heightPagesInFlight += 1;
+    }
+    let channelPagesOwed = 0;
+    for (const slot of this.channelAtlas.residency.entries) {
+      if (slot.airportRebuildOwed) channelPagesOwed += 1;
+    }
+    return {
+      changesBeingScanned: this.airportInvalidations.length,
+      heightPagesOwed,
+      heightPagesInFlight,
+      channelPagesOwed,
+    };
+  }
+
+  /**
+   * Step 2 of `setAirports`, a frame's share of it: test up to
+   * `AIRPORT_INVALIDATION_SLOTS_PER_FRAME` slots against the oldest queued
+   * change's reach, and mark and queue the ones it invalidates. The rebuild
+   * queues are what the pumps read, so a frame with nothing owed scans and
+   * allocates nothing, and one with pages owed walks only those pages.
+   */
+  private stepAirportInvalidation(): void {
+    let budget = AIRPORT_INVALIDATION_SLOTS_PER_FRAME;
+    while (budget > 0 && this.airportInvalidations.length > 0) {
+      const change = this.airportInvalidations[0]!;
+      if (!change.heightSlots || !change.channelSlots) {
+        // A slot requested after this snapshot is batched against the new
+        // list, so it is current by construction. Eroded heights stay graded
+        // for the home field (see setAirports).
+        change.heightSlots = this.world.worldEvolution === "eroded"
+          ? NO_SLOTS
+          : this.heightAtlas.residency.entries;
+        change.channelSlots = this.channelAtlas.residency.entries;
+      }
+      const heights = change.heightSlots;
+      const channels = change.channelSlots;
+      const total = heights.length + channels.length;
+      while (budget > 0 && change.cursor < total) {
+        const index = change.cursor;
+        change.cursor += 1;
+        budget -= 1;
+        if (index < heights.length) this.invalidateHeightSlot(heights[index]!, change);
+        else this.invalidateChannelSlot(channels[index - heights.length]!, change);
+      }
+      if (change.cursor >= total) this.airportInvalidations.shift();
+    }
+  }
+
+  private invalidateHeightSlot(slot: TerrainAtlasSlot, change: AirportInvalidation): void {
+    const state = slot.lifecycle.state;
+    // Built (or being built) against the old list. A slot waiting for its
+    // first dispatch needs nothing: it will read the new list.
+    const recorded = state === "resident" || (state === "generating" && slot.generationSubmitted);
+    if (!recorded || slot.airportListVersion >= change.version) return;
+    if (!terrainPageInAirportReach(slot.address, change.reaches)) return;
+    slot.airportRebuildOwed = true;
+    this.heightAirportRebuilds.add(slot);
+    // Its channel page bakes FROM these heights, so it is re-baked after
+    // them — even one baked since the change, while this scan had not yet
+    // reached its height page.
+    const channel = this.channelAtlas.residency.get(slot.key);
+    const channelState = channel?.lifecycle.state;
+    if (channel && (channelState === "resident" || channelState === "generating")) {
+      channel.airportRebuildOwed = true;
+      this.channelAirportRebuilds.add(channel);
+    }
+  }
+
+  private invalidateChannelSlot(slot: TerrainAtlasSlot, change: AirportInvalidation): void {
+    const state = slot.lifecycle.state;
+    // Never batched yet: its first bake reads the new list.
+    if (state !== "resident" && state !== "generating") return;
+    if (slot.airportListVersion < 0 || slot.airportListVersion >= change.version) return;
+    if (!terrainPageInAirportReach(slot.address, change.reaches)) return;
+    slot.airportRebuildOwed = true;
+    this.channelAirportRebuilds.add(slot);
+  }
+
   update(observer: TerrainObserver, frameIndex: number): void {
     if (this.disposed) return;
     this.stepMaterialArrayBuild();
@@ -1134,6 +1370,9 @@ export class TerrainClipmapSystem {
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
     this.channelAtlas.dispose();
+    this.heightAirportRebuilds.clear();
+    this.channelAirportRebuilds.clear();
+    this.airportInvalidations.length = 0;
     for (const mesh of this.casterMeshes) mesh.dispose(false, false);
     this.casterMeshes = [];
     this.beautyMesh.dispose(false, false);
@@ -1173,6 +1412,8 @@ export class TerrainClipmapSystem {
     this.pageGenerator?.setCollisionPagePublisher?.(this.collisionPagePublisher);
     this.pageGenerator?.setAuxPagePublisher?.(this.auxPagePublisher);
     this.pageGenerator?.setMacroEvolution?.(this.macroEvolution);
+    this.pageGenerator?.setAirports?.(this.airports);
+    this.splatBake?.setAirports?.(this.airports);
     // A dispatch that was in flight against the disposed atlas can never
     // complete into the new one; clear the gates so the next pump admits.
     this.generationInFlight = false;
@@ -1683,8 +1924,11 @@ export class TerrainClipmapSystem {
   private pumpComputeClients(observer: TerrainObserver): void {
     this.observeDispatchCosts();
     this.computeBudget.beginFrame();
+    this.stepAirportInvalidation();
     const heightPending = this.pendingHeightGeneration();
+    const heightRegenerations = this.pendingHeightRegenerations();
     const channelPending = this.pendingChannelBake(observer);
+    const channelRebakes = this.pendingChannelAirportRebakes();
     const splatRebakes = this.pendingSplatRebakes();
     const heightClient = this.world.worldEvolution === "eroded"
       ? "erosionCompute"
@@ -1705,12 +1949,14 @@ export class TerrainClipmapSystem {
           erosionDagDemand.costMs,
         );
       }
-    } else if (heightPending.length > 0) {
+    } else if (heightPending.length + heightRegenerations.length > 0) {
       // The activated worker pass is the Phase-5 erosion client even though
       // its final bytes upload through the height atlas. Booking it as
       // terrainCompute would silently bypass the only tier pacing lever the
-      // evolution contract permits (D11 / assertion 105).
-      this.computeBudget.submit(heightClient, heightPending.length);
+      // evolution contract permits (D11 / assertion 105). An airport
+      // regeneration is the same dispatch at the same per-page price, so it
+      // is the same demand — never a second meter.
+      this.computeBudget.submit(heightClient, heightPending.length + heightRegenerations.length);
     }
     // `6-11`: the global horizon bake shares the OCCLUSION row rather than
     // taking one of its own, and the reason is a wall the row table records
@@ -1727,7 +1973,8 @@ export class TerrainClipmapSystem {
     const horizonOwed = this.pyramid?.needsHorizonBake ?? false;
     const channelPairCostMs = this.computeBudget.estimatedCostMs("occlusionCompute")
       + this.computeBudget.estimatedCostMs("splatCompute");
-    if (channelPending.length > 0 || horizonOwed) {
+    const channelDemand = channelPending.length + channelRebakes.length;
+    if (channelDemand > 0 || horizonOwed) {
       // A channel slot's TWO bakes are ONE admission: occlusion writes three
       // textures, the splat writes four, both into the same slot, and the slot
       // is published only once both have run — publishing between them puts
@@ -1737,7 +1984,7 @@ export class TerrainClipmapSystem {
       // of work must not jump the queue on the strength of its cheaper half.
       this.computeBudget.submit(
         "occlusionCompute",
-        channelPending.length + (horizonOwed ? 1 : 0),
+        channelDemand + (horizonOwed ? 1 : 0),
         channelPairCostMs,
       );
     }
@@ -1746,7 +1993,7 @@ export class TerrainClipmapSystem {
       // geometry-only and never goes stale.
       this.computeBudget.submit("splatCompute", splatRebakes.length);
     }
-    this.dispatchPageGeneration(heightPending, erosionDagDemand !== null);
+    this.dispatchPageGeneration(heightPending, heightRegenerations, erosionDagDemand !== null);
     // Read ONCE — `admitted` settles the client, so a second read would report
     // a plan this frame has already dispatched against (`6-9`'s rule).
     let occlusionAdmitted = this.computeBudget.admitted("occlusionCompute");
@@ -1757,7 +2004,7 @@ export class TerrainClipmapSystem {
       occlusionAdmitted -= 1;
       void this.pyramid?.bakeHorizon?.().catch(() => undefined);
     }
-    this.dispatchChannelBake(channelPending, occlusionAdmitted);
+    this.dispatchChannelBake(channelPending, channelRebakes, occlusionAdmitted);
     this.dispatchSplatRebake(splatRebakes);
   }
 
@@ -1811,8 +2058,34 @@ export class TerrainClipmapSystem {
     );
   }
 
+  /**
+   * `setAirports`' owed height pages: resident and analytic. Empty while a
+   * generation is in flight, like the fresh pages. Walks the rebuild queue
+   * only — nothing at all on a frame with no airport backlog — into a reused
+   * list, pruning slots that were evicted or are done.
+   */
+  private pendingHeightRegenerations(): readonly TerrainAtlasSlot[] {
+    const queue = this.heightAirportRebuilds;
+    if (queue.size === 0 || !this.pageGenerator || this.generationInFlight) return NO_SLOTS;
+    const pending = this.heightRegenerationScratch;
+    pending.length = 0;
+    for (const slot of queue) {
+      const state = slot.lifecycle.state;
+      // A released slot is never resident or generating again: its object is
+      // dropped, and a re-request of the page builds a new one.
+      const live = state === "resident" || state === "generating";
+      if (!live || (!slot.airportRebuildOwed && !slot.airportRebuildInFlight)) {
+        queue.delete(slot);
+        continue;
+      }
+      if (slot.airportRebuildOwed && state === "resident") pending.push(slot);
+    }
+    return pending;
+  }
+
   private dispatchPageGeneration(
     pending: readonly TerrainAtlasSlot[],
+    regenerations: readonly TerrainAtlasSlot[],
     dagProducer: boolean,
   ): void {
     const generator = this.pageGenerator;
@@ -1824,21 +2097,49 @@ export class TerrainClipmapSystem {
     // no pending admissions left — otherwise the page that is 90% eroded stops
     // the moment the atlas runs out of new work and the slot never converges.
     const dagActive = dagProducer && (generator.hasActiveErosionDag?.() ?? false);
-    if (pending.length === 0 && !dagActive) return;
+    const regenerating = dagProducer ? [] : regenerations;
+    if (pending.length === 0 && regenerating.length === 0 && !dagActive) return;
     const ranked = this.rankForDispatch(pending);
     // The erosion producer takes ONE page at a time and needs the whole ranked
     // set to choose it; the analytic batch is sliced to its admitted count.
-    const batch = dagProducer ? ranked : ranked.slice(0, admitted);
+    // Fresh pages first: a missing page is a hole, an owed one is ground that
+    // is merely out of date, and it keeps drawing until its turn.
+    const batch = dagProducer
+      ? ranked
+      : regenerating.length === 0
+        ? ranked.slice(0, admitted)
+        : [...ranked, ...this.rankForDispatch(regenerating)].slice(0, admitted);
+    // Built against the CURRENT list from here (see stepAirportInvalidation).
+    if (!dagProducer) {
+      for (const slot of batch) slot.airportListVersion = this.airportListVersion;
+    }
+    const inPlace = regenerating.length === 0
+      ? NO_SLOTS
+      : batch.filter((slot) => slot.lifecycle.state === "resident");
+    for (const slot of inPlace) {
+      slot.airportRebuildOwed = false;
+      slot.airportRebuildInFlight = true;
+      slot.generationSubmitted = false;
+    }
     this.generationInFlight = true;
     void generator.generate(batch, admitted)
       .catch(() => {
         // The DAG owns exactly one of these slots and fails it on its own
         // token; releasing the whole ranked candidate set here would evict
-        // every queued page because one dispatch went wrong.
+        // every queued page because one dispatch went wrong. Resident slots
+        // hold no token, so this never releases one.
         if (!dagProducer) this.releaseBatch(this.heightAtlas, batch, "page generation failed");
       })
       .finally(() => {
         this.generationInFlight = false;
+        // The producer marks what it dispatched. A regeneration it declined
+        // (readback ring full, buffers not ready) or that threw is owed again;
+        // a setAirports landing meanwhile has already re-marked it.
+        for (const slot of inPlace) {
+          if (!slot.generationSubmitted) slot.airportRebuildOwed = true;
+          slot.generationSubmitted = false;
+          slot.airportRebuildInFlight = false;
+        }
       });
   }
 
@@ -1850,15 +2151,67 @@ export class TerrainClipmapSystem {
     return this.channelAtlas.residency.entries.filter(
       (slot) => slot.lifecycle.state === "generating"
         && slot.token !== null
-        && this.heightAtlas.residency.slotIndexOf(slot.key) >= 0,
+        && this.heightSlotCurrentForBake(slot),
     );
   }
 
-  private dispatchChannelBake(pending: readonly TerrainAtlasSlot[], admitted: number): void {
+  /**
+   * A channel bake reads its height slot's texels, so it waits for that slot
+   * to be resident AND for any airport regeneration of it to be recorded:
+   * baked first, it would describe the ground the new runway replaced.
+   */
+  private heightSlotCurrentForBake(channelSlot: TerrainAtlasSlot): boolean {
+    // ONE lookup, as the `slotIndexOf(...) >= 0` this replaces made.
+    const height = this.heightAtlas.residency.get(channelSlot.key);
+    return height?.lifecycle.state === "resident"
+      && !height.airportRebuildOwed
+      && !height.airportRebuildInFlight;
+  }
+
+  /**
+   * `setAirports`' owed channel pages: resident, with their heights current.
+   * Walks the rebuild queue only, into a reused list, like the height pump.
+   */
+  private pendingChannelAirportRebakes(): readonly TerrainAtlasSlot[] {
+    const queue = this.channelAirportRebuilds;
+    if (queue.size === 0) return NO_SLOTS;
+    if (!this.occlusionBake || !this.pyramid?.isResident || this.occlusionInFlight) return NO_SLOTS;
+    const pending = this.channelRebakeScratch;
+    pending.length = 0;
+    for (const slot of queue) {
+      const state = slot.lifecycle.state;
+      // Not owed any more: batched as a fresh page or re-baked. An in-flight
+      // re-bake that fails is queued again by `dispatchChannelBake`.
+      if (!slot.airportRebuildOwed || (state !== "resident" && state !== "generating")) {
+        queue.delete(slot);
+        continue;
+      }
+      if (state === "resident" && this.heightSlotCurrentForBake(slot)) pending.push(slot);
+    }
+    return pending;
+  }
+
+  private dispatchChannelBake(
+    pending: readonly TerrainAtlasSlot[],
+    rebakes: readonly TerrainAtlasSlot[],
+    admitted: number,
+  ): void {
     const bake = this.occlusionBake;
-    if (!bake || pending.length === 0) return;
+    if (!bake || pending.length + rebakes.length === 0) return;
     if (admitted <= 0) return;
-    const batch = this.rankForDispatch(pending).slice(0, admitted);
+    // Fresh pages first, as in the height pump: an unbaked page shades the
+    // provisional fallback, an owed one only the ground before the change.
+    const batch = rebakes.length === 0
+      ? this.rankForDispatch(pending).slice(0, admitted)
+      : [...this.rankForDispatch(pending), ...this.rankForDispatch(rebakes)].slice(0, admitted);
+    // Batched now, so each bakes the CURRENT airport list and heights; a
+    // setAirports landing before its bakes record marks it again.
+    for (const slot of batch) {
+      slot.airportRebuildOwed = false;
+      slot.airportListVersion = this.airportListVersion;
+    }
+    const inPlace = rebakes.length === 0 ? NO_SLOTS : batch.filter((slot) => slot.token === null);
+    const channelAtlas = this.channelAtlas;
     this.occlusionInFlight = true;
     const seasonDay = this.seasonDayOfYear;
     // BOTH channel bakes, then residency — in that order, and awaited rather
@@ -1867,6 +2220,7 @@ export class TerrainClipmapSystem {
     // at weight 0, which is sand. The failure is permanent, because a slot is
     // only baked once.
     void (async () => {
+      let written: readonly TerrainAtlasSlot[] = [];
       try {
         await this.pageGenerator?.ensureHydrology?.(batch);
         const ready = batch.filter((slot) => slot.hydrologyReady);
@@ -1876,6 +2230,7 @@ export class TerrainClipmapSystem {
         // Publish ONLY what the splat bake wrote. A slot it did not write reads
         // as sand, permanently, because it is marked baked for this season.
         const splatted = this.splatBake ? await this.splatBake.bake(baked, seasonDay) : baked;
+        written = splatted;
         for (const slot of splatted) {
           slot.bakedSeasonDay = seasonDay;
           if (slot.token) this.channelAtlas.residency.complete(slot.key, slot.token, slot.stats);
@@ -1885,6 +2240,16 @@ export class TerrainClipmapSystem {
       } catch {
         this.releaseBatch(this.channelAtlas, batch, "channel bake failed");
       } finally {
+        // An in-place re-bake is never released — the slot keeps drawing what
+        // it had — so one that did not get both bakes is simply owed again,
+        // unless the atlas it lived in was rebuilt meanwhile.
+        if (this.channelAtlas === channelAtlas) {
+          for (const slot of inPlace) {
+            if (written.includes(slot)) continue;
+            slot.airportRebuildOwed = true;
+            this.channelAirportRebuilds.add(slot);
+          }
+        }
         this.occlusionInFlight = false;
       }
     })();

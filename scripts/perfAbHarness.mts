@@ -96,7 +96,12 @@ export function installBaseDependencies(baseRoot: string): void {
  * Babylon's GPU debug markers are off), and both arms must be built the same
  * way whatever that way is.
  */
-export async function buildAgent(checkout: string, outDir: string, cacheDir?: string): Promise<void> {
+export async function buildAgent(
+  checkout: string,
+  outDir: string,
+  cacheDir?: string,
+  options: { readonly minify?: boolean } = {},
+): Promise<void> {
   // Resolved through symlinks, as Rolldown resolves the page: Vite names the
   // page relative to the root as given, so under macOS's temporary directory
   // (/var links to /private/var) the two would disagree and the build would
@@ -117,6 +122,9 @@ export async function buildAgent(checkout: string, outDir: string, cacheDir?: st
       outDir,
       emptyOutDir: true,
       target: "es2022",
+      // Unminified only for attribution (a profile's function names); every
+      // timing is taken on the shipped, minified form.
+      minify: options.minify ?? true,
       reportCompressedSize: false,
       chunkSizeWarningLimit: 100_000,
       rolldownOptions: { input: join(root, "agent.html") },

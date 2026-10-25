@@ -19,8 +19,20 @@ import {
   terrainConsumerSampleFromAuthority,
   type TerrainConsumerSample,
 } from "@/src/render/webgpu/terrain/TerrainConsumerAuthority";
-import { createWorld, sampleTerrain, type WorldDefinition } from "@/src/world";
-import { airfieldStructureExclusions } from "@/src/render/webgpu/airfield/StructureExclusion";
+import {
+  createWorld,
+  sampleTerrain,
+  withAirports,
+  type WorldDefinition,
+} from "@/src/world";
+import {
+  airfieldStructureExclusionSites,
+  type StructureExclusionSite,
+} from "@/src/render/webgpu/airfield/StructureExclusion";
+import {
+  spawnedAirportsOf,
+  withSpawnedAirportGround,
+} from "@/src/render/webgpu/airfield/SpawnedAirportGround";
 import {
   detailWorkerEventTransferables,
   type DetailRetainedCellDescriptor,
@@ -89,6 +101,14 @@ function retainedCellDescriptor(
 export class DetailWorkerRuntime {
   private world: WorldDefinition | null = null;
   private terrainSample: TerrainConsumerSample | null = null;
+  /**
+   * Every airport's structure exclusions, rebuilt only when the world changes
+   * (`initialize`, `airports`) rather than once per generated cell. Built from
+   * the world the worker ALREADY HOLDS, so nothing crosses the message boundary
+   * that could arrive stale — and with `seedHash`, the terrain authority the
+   * hangars' own siting uses, NOT the seed string's hash.
+   */
+  private structureSites: readonly StructureExclusionSite[] = [];
   private cellSizeMeters = 512;
   private seaLevelMeters = 0;
   private presentationCatalog: DetailPresentationBuildCatalog | null = null;
@@ -117,6 +137,9 @@ export class DetailWorkerRuntime {
       case "initialize":
         this.initialize(command);
         return;
+      case "airports":
+        this.setAirports(command.airports);
+        return;
       case "terrainMacro":
         this.terrainAuthority.publishMacro(command.macro);
         return;
@@ -144,18 +167,49 @@ export class DetailWorkerRuntime {
     this.terrainAuthority.clear();
     this.cancelAllPresentationBuilds();
     this.retainedCells.clear();
-    this.world = command.world ?? createWorld(command.worldSeed);
-    const activeWorld = this.world;
-    this.terrainSample = terrainConsumerSampleFromAuthority(
-      activeWorld,
-      (x, z) => sampleTerrain(activeWorld, x, z),
-      this.terrainAuthority,
-    );
+    this.adoptWorld(command.world ?? createWorld(command.worldSeed));
     this.cellSizeMeters = command.cellSizeMeters;
     this.seaLevelMeters = command.seaLevelMeters;
     this.presentationCatalog = command.presentationCatalog ?? null;
     // nextCellToken deliberately does not reset: even an accidental second
     // initialize cannot make a stale main-thread descriptor alias a new cell.
+  }
+
+  /**
+   * The world's airport list changed: an airport spawned or was retired.
+   *
+   * **Only the world changes here.** Retained cells are the main thread's to
+   * invalidate — it knows which cells intersect the changed airports and
+   * releases exactly those tokens — so this does not touch them. Message order
+   * is the guarantee: every `generate` posted after this command samples the
+   * new world, and one posted before it is a result the main thread has already
+   * cancelled.
+   */
+  private setAirports(
+    airports: Extract<DetailWorkerCommand, { type: "airports" }>["airports"],
+  ): void {
+    if (!this.world) return;
+    const next = withAirports(this.world, airports);
+    if (next === this.world) return;
+    this.adoptWorld(next);
+  }
+
+  /** Install a world and everything derived from it, in one place. */
+  private adoptWorld(world: WorldDefinition): void {
+    this.world = world;
+    const analytic = (x: number, z: number) => sampleTerrain(world, x, z);
+    // A spawned airport's earthworks are authored, like the home field's, so
+    // inside its influence the analytic sample answers here too — the
+    // consumer authority only bypasses `world.airport`. No spawned airport:
+    // the consumer sampler itself, unchanged.
+    this.terrainSample = withSpawnedAirportGround(
+      spawnedAirportsOf(world),
+      terrainConsumerSampleFromAuthority(world, analytic, this.terrainAuthority),
+      analytic,
+    );
+    // `airports` is absent only on a world built by hand before it existed.
+    const airports = world.airports ?? (world.airport ? [world.airport] : []);
+    this.structureSites = airfieldStructureExclusionSites(airports, world.seedHash);
   }
 
   private generate(command: Extract<DetailWorkerCommand, { type: "generate" }>): void {
@@ -165,13 +219,6 @@ export class DetailWorkerRuntime {
         throw new Error("Detail worker has not been initialized");
       }
       const activeWorld = this.world;
-      // Structures the vegetation must not grow through. Built from the world
-      // the worker ALREADY HOLDS, so nothing crosses the message boundary and
-      // nothing can arrive stale — and built with `seedHash`, the terrain
-      // authority the hangars' own siting uses, NOT the seed string's hash.
-      const structureExclusions = activeWorld.airport
-        ? airfieldStructureExclusions(activeWorld.airport, activeWorld.seedHash)
-        : [];
       const cell = generateDetailCell({
         worldSeed: activeWorld.seed,
         cellX: command.cellX,
@@ -182,8 +229,11 @@ export class DetailWorkerRuntime {
         seaLevelMeters: this.seaLevelMeters,
         dayOfYear: command.dayOfYear,
         latitudeDegrees: activeWorld.latitudeDegrees,
-        ...(activeWorld.airport
-          ? { structureExclusions, exclusionAirport: activeWorld.airport }
+        // Structures the vegetation must not grow through, every airport's.
+        // `generateDetailCell` keeps only the sites whose reach touches this
+        // cell, so a cell far from every airport runs no box test at all.
+        ...(this.structureSites.length > 0
+          ? { structureExclusionSites: this.structureSites }
           : {}),
       });
       if (cell.key !== command.key) {

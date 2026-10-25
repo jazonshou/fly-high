@@ -1,6 +1,9 @@
 import type { TerrainBiomeId, WorldSeed } from "@/src/world";
 import type { AirportDefinition } from "@/src/world/types";
-import type { StructureExclusionBox } from "../airfield/StructureExclusion";
+import type {
+  StructureExclusionBox,
+  StructureExclusionSite,
+} from "../airfield/StructureExclusion";
 
 export const DEFAULT_DETAIL_CELL_SIZE_METERS = 512;
 
@@ -96,6 +99,13 @@ export interface DetailCellGenerationOptions {
   readonly structureExclusions?: readonly StructureExclusionBox[];
   /** Required with `structureExclusions`: the frame those boxes are stated in. */
   readonly exclusionAirport?: Readonly<AirportDefinition>;
+  /**
+   * Every airport's structures, each in its own runway frame — the form the
+   * live world uses once airports spawn mid-flight. Combined with the pair
+   * above when both are given. Same seed rule: built by the caller from
+   * `world.seedHash` (`airfieldStructureExclusionSites`).
+   */
+  readonly structureExclusionSites?: readonly StructureExclusionSite[];
 }
 
 export interface DetailTreePlacement {

@@ -41,9 +41,11 @@ import {
   decodeWorldPageSoilDepth,
 } from "@/src/render/webgpu/world/payload";
 import {
-  RUNWAY_EARTHWORKS_UNIFORM_FLOATS,
+  RUNWAY_EARTHWORKS_SET_FLOATS,
   RUNWAY_EARTHWORKS_WGSL,
-  packRunwayEarthworksUniform,
+  TERRAIN_AIRPORT_SLOTS,
+  packRunwayEarthworksSetUniform,
+  runwayEarthworksSetWgsl,
 } from "./RunwayEarthworks";
 import { RUNWAY_SDF_WGSL } from "./RunwaySurface";
 import {
@@ -161,6 +163,35 @@ export interface TerrainAtlasSlot {
    * so it cannot outlive the slot it describes.
    */
   bakedSeasonDay: number | null;
+  /**
+   * The airport list changed over this page (`TerrainClipmapSystem.
+   * setAirports`): its texels describe ground an airport has since been
+   * added to or removed from, and they are regenerated IN PLACE.
+   *
+   * In place, because the lifecycle has no resident -> generating edge and
+   * should not grow one: evicting the page to regenerate it would drop it to
+   * its parent for the frames the regeneration takes — a visible LOD pop — and
+   * would pull an L0 page out of the physics ring. A resident page keeps
+   * drawing its old texels until the regeneration's dispatch overwrites them,
+   * which is one atomic step on the GPU timeline, exactly as a season re-bake
+   * overwrites a splat. Height slots carry it for the generator, channel slots
+   * for the occlusion and splat bakes.
+   */
+  airportRebuildOwed: boolean;
+  /**
+   * A height slot's in-place regeneration is batched and its dispatch not yet
+   * known to be recorded. The channel bakes wait on it: an occlusion or splat
+   * bake recorded before the new heights would bake the old ground.
+   */
+  airportRebuildInFlight: boolean;
+  /**
+   * The clipmap's airport-list version when this slot's last generation
+   * (height) or bake (channel) was batched; -1 before the first. An airport
+   * change invalidates only slots batched before it, which is what lets the
+   * clipmap spread its invalidation over frames without re-marking pages
+   * that were already built against the new list.
+   */
+  airportListVersion: number;
 }
 
 export interface TerrainAtlasResidencyOptions {
@@ -294,6 +325,11 @@ export class TerrainAtlasResidency {
       hydrologyReady: !this.options.requireHydrology,
       hydrologySubmitted: false,
       bakedSeasonDay: null,
+      // A new slot is generated against the CURRENT airport list, whose
+      // uniforms are written before any later dispatch is recorded.
+      airportRebuildOwed: false,
+      airportRebuildInFlight: false,
+      airportListVersion: -1,
     };
     this.slots.set(keyString, slot);
     return { slot, token };
@@ -854,6 +890,7 @@ export function terrainPageGenerationWgsl(
 ${bindingWgsl}
 ${kernelWgsl}
 ${airportWgsl}
+${runwayEarthworksSetWgsl("earthworks")}
 
 struct PageJob {
   // (atlas texel u, atlas texel v, world offset of stored texel 0 from the
@@ -871,7 +908,9 @@ struct PageJob {
 @group(0) @binding(2) var heightAtlas: texture_storage_2d<r32float, write>;
 @group(0) @binding(3) var<storage, read_write> pageBounds: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read> supersample: array<vec4f>;
-@group(0) @binding(5) var<storage, read> earthworks: RunwayEarthworks;
+// Every airport in the world, home field first: a spawn rewrites this buffer
+// and never the pipeline (RunwayEarthworks.ts, runwayEarthworksSetWgsl).
+@group(0) @binding(5) var<storage, read> earthworks: RunwayEarthworksSet;
 
 /**
  * A monotonic u32 encoding of an f32, so atomicMin/atomicMax reduce floats.
@@ -904,9 +943,9 @@ fn pageHeightAt(job: PageJob, localX: f32, localZ: f32) -> f32 {
   // 4-3/4-9: the page stores the AIRPORT-FLATTENED height. The CDLOD min/max
   // AABB has to be correct over the airport, the collision fast path returns
   // the crowned platform, and after 4-4 there is no CPU tile path left to
-  // apply the earthworks anywhere else.
-  return terrainRunwayEarthworksHeight(
-    earthworks,
+  // apply the earthworks anywhere else. The airport is the one whose centre
+  // is nearest, as the CPU's worldAirportAt picks it.
+  return terrainRunwayEarthworksNearestHeight(
     natural,
     job.world.x + localX - job.placement.z,
     job.world.y + localZ - job.placement.w,
@@ -1173,6 +1212,15 @@ export class TerrainPageGenerator {
   private readonly erosionGpuEnabled: boolean;
   private erosionGpu: TerrainPageErosionGpu | null = null;
   private macroEvolution: Readonly<TerrainMacroEvolutionExport> | null = null;
+  /**
+   * Every airport the analytic pages are graded for, home field first. The
+   * constructor's `airport` seeds it; `setAirports` replaces it. The eroded
+   * producers keep grading the home field alone (see `setAirports`).
+   */
+  private airports: readonly Readonly<AirportDefinition>[];
+  /** `earthworks`' contents, packed in place by `setAirports` and uploaded whole. */
+  private readonly earthworksSet = new Float32Array(RUNWAY_EARTHWORKS_SET_FLOATS);
+  private readonly earthworksSetBytes = new Uint8Array(this.earthworksSet.buffer);
 
   constructor(
     private readonly engine: AbstractEngine,
@@ -1181,6 +1229,8 @@ export class TerrainPageGenerator {
     private readonly airport: Readonly<AirportDefinition> | null = null,
     options: TerrainPageGeneratorOptions = {},
   ) {
+    this.airports = airport ? [airport] : [];
+    packRunwayEarthworksSetUniform(this.airports, seedHash, this.earthworksSet);
     this.world = options.world ?? null;
     if (this.world && this.world.seedHash !== seedHash) {
       throw new RangeError("Terrain page generator world does not match its seed hash");
@@ -1282,6 +1332,27 @@ export class TerrainPageGenerator {
     this.auxPagePublisher = publisher;
   }
 
+  /**
+   * Grade every airport in `airports` (home field first) from the next
+   * recorded dispatch on: one buffer write, never a pipeline. The buffer is
+   * written at once, through the device queue, so a batch already recorded in
+   * this frame but not yet submitted reads the new list too — which only ever
+   * makes a page more current than its caller assumed.
+   *
+   * Pages already resident are NOT touched here; the clipmap decides which
+   * ones the change reaches and hands them back through `generate`.
+   *
+   * The eroded producers (`TerrainPageErosionGpu` and the CPU worker) keep
+   * the home field alone: their airport mask is part of a multi-frame erosion
+   * DAG keyed on the world the worker was built with, and re-eroding every
+   * page under a spawned runway is not a uniform write.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
+    this.airports = airports.slice(0, TERRAIN_AIRPORT_SLOTS);
+    packRunwayEarthworksSetUniform(this.airports, this.seedHash, this.earthworksSet);
+    this.earthworksBuffer?.update(this.earthworksSetBytes);
+  }
+
   /** Install the eager canonical macro authority before eroded pages schedule. */
   setMacroEvolution(macro: Readonly<TerrainMacroEvolutionExport> | null): void {
     if (macro && this.world && macro.provenance.worldSeed !== this.world.seed) {
@@ -1362,6 +1433,13 @@ export class TerrainPageGenerator {
    * exercises the asynchronous half of `WorldPageLifecycle` for real: a page
    * whose slot is re-admitted meanwhile is rejected on its epoch instead of
    * writing bounds into a slot that now holds a different page.
+   *
+   * A RESIDENT slot in the batch (no token) is an in-place regeneration after
+   * the airport list changed over it: the same dispatch overwrites its texels,
+   * and its readback refreshes the bounds and re-publishes an L0 core instead
+   * of completing a lifecycle. Every slot this call actually dispatched is
+   * marked `generationSubmitted`, resident ones included — that is how the
+   * clipmap tells a recorded regeneration from one this call declined.
    */
   async generate(
     slots: readonly TerrainAtlasSlot[],
@@ -1436,6 +1514,11 @@ export class TerrainPageGenerator {
     // bind group is recorded per dispatch, so this cannot disturb a batch
     // already encoded.
     shader.setStorageBuffer("pageBounds", boundsBuffer);
+    // Captured before the dispatch: a regenerated slot is one that was
+    // already resident when its batch was recorded.
+    const regenerated = slots.map(
+      (slot) => slot.token === null && slot.lifecycle.state === "resident",
+    );
     this.inFlight = slots;
     for (const slot of slots) slot.generationSubmitted = true;
     try {
@@ -1453,7 +1536,7 @@ export class TerrainPageGenerator {
     // NOT awaited: the next batch may dispatch against a different readback
     // ring entry. Unlike the analytic-era fast path, however, this page is not
     // sampleable until collectBounds completes the final publication stage.
-    const readback = this.collectBounds(boundsBuffer, slots);
+    const readback = this.collectBounds(boundsBuffer, slots, regenerated);
     this.pendingReadbacks.add(readback);
     void readback.finally(() => this.pendingReadbacks.delete(readback));
   }
@@ -1676,6 +1759,7 @@ export class TerrainPageGenerator {
   private async collectBounds(
     boundsBuffer: StorageBuffer,
     slots: readonly TerrainAtlasSlot[],
+    regenerated: readonly boolean[],
   ): Promise<void> {
     this.readbacksInFlight += 1;
     const byteLength = slots.length * TERRAIN_PAGE_BOUNDS_SLOTS * 4;
@@ -1687,14 +1771,17 @@ export class TerrainPageGenerator {
       );
       const publications: Promise<void>[] = [];
       slots.forEach((slot, index) => {
-        if (!slot.token) return;
+        const inPlace = regenerated[index] === true;
+        if (!inPlace && !slot.token) return;
         const base = index * TERRAIN_PAGE_BOUNDS_SLOTS;
         const stats = {
           minHeightMeters: decodeOrderableFloat(read[base]!),
           maxHeightMeters: decodeOrderableFloat(read[base + 1]!),
           maxDeviationFromParent: decodeOrderableFloat(read[base + 2]!),
         };
-        publications.push(this.publishCompletedSlot(slot, stats));
+        publications.push(inPlace
+          ? this.publishRegeneratedSlot(slot, stats)
+          : this.publishCompletedSlot(slot, stats));
       });
       await Promise.all(publications);
     } catch {
@@ -1723,26 +1810,9 @@ export class TerrainPageGenerator {
     if (!token) return;
     const publisher = this.collisionPagePublisher;
     if (publisher && slot.address.level === 0) {
-      const texture = this.atlas.texture();
-      if (!texture) return;
-      const origin = this.atlas.slotOrigin(slot.slotIndex);
-      const heights = new Float32Array(WORLD_PAGE_HEIGHT_CORE * WORLD_PAGE_HEIGHT_CORE);
-      const pixels = await texture.readPixels(
-        0,
-        0,
-        heights,
-        false,
-        true,
-        origin.u + WORLD_PAGE_GUTTER,
-        origin.v + WORLD_PAGE_GUTTER,
-        WORLD_PAGE_HEIGHT_CORE,
-        WORLD_PAGE_HEIGHT_CORE,
-      );
-      if (!pixels) throw new Error("Collision height readback returned no data");
+      const published = await this.readCollisionCore(slot);
+      if (!published) return;
       if (this.disposed || slot.token !== token) return;
-      const published = pixels instanceof Float32Array
-        ? pixels
-        : new Float32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4);
       publisher({
         level: 0,
         tileX: slot.address.x,
@@ -1751,6 +1821,63 @@ export class TerrainPageGenerator {
       });
     }
     this.atlas.residency.complete(slot.key, token, stats);
+  }
+
+  /**
+   * An in-place regeneration's publication (`TerrainAtlasSlot.
+   * airportRebuildOwed`): the same L0 core copy `publishCompletedSlot` makes,
+   * sent again through the same publisher, so the simulation worker's height
+   * ladder and the detail runtime take the new runway's ground exactly where
+   * the screen does — and the measured bounds. No lifecycle transition: the
+   * slot never left `resident`.
+   *
+   * A slot evicted while its readback was in flight — or evicted and
+   * re-admitted, which makes a NEW record under the same key — is skipped:
+   * its atlas index may already hold another page's texels.
+   */
+  private async publishRegeneratedSlot(
+    slot: TerrainAtlasSlot,
+    stats: TerrainSlotStats,
+  ): Promise<void> {
+    const current = (): boolean => !this.disposed
+      && this.atlas.residency.get(slot.key) === slot
+      && slot.lifecycle.state === "resident";
+    if (!current()) return;
+    const publisher = this.collisionPagePublisher;
+    if (publisher && slot.address.level === 0) {
+      const published = await this.readCollisionCore(slot);
+      if (!published || !current()) return;
+      publisher({
+        level: 0,
+        tileX: slot.address.x,
+        tileZ: slot.address.z,
+        heights: published,
+      });
+    }
+    slot.stats = stats;
+  }
+
+  /** Copy an L0 slot's 256² core out of the atlas for the simulation worker. */
+  private async readCollisionCore(slot: TerrainAtlasSlot): Promise<Float32Array | null> {
+    const texture = this.atlas.texture();
+    if (!texture) return null;
+    const origin = this.atlas.slotOrigin(slot.slotIndex);
+    const heights = new Float32Array(WORLD_PAGE_HEIGHT_CORE * WORLD_PAGE_HEIGHT_CORE);
+    const pixels = await texture.readPixels(
+      0,
+      0,
+      heights,
+      false,
+      true,
+      origin.u + WORLD_PAGE_GUTTER,
+      origin.v + WORLD_PAGE_GUTTER,
+      WORLD_PAGE_HEIGHT_CORE,
+      WORLD_PAGE_HEIGHT_CORE,
+    );
+    if (!pixels) throw new Error("Collision height readback returned no data");
+    return pixels instanceof Float32Array
+      ? pixels
+      : new Float32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4);
   }
 
   dispose(): void {
@@ -1848,13 +1975,11 @@ export class TerrainPageGenerator {
     this.shader.setStorageBuffer("pageBounds", this.boundsRing[0]!);
     this.shader.setStorageBuffer("supersample", this.offsetBuffer);
     if (!this.earthworksBuffer) {
-      this.earthworksBuffer = new StorageBuffer(engine, RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
-      registerGpuBufferBytes(RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4);
-      this.registeredFixedBufferBytes += RUNWAY_EARTHWORKS_UNIFORM_FLOATS * 4;
+      this.earthworksBuffer = new StorageBuffer(engine, RUNWAY_EARTHWORKS_SET_FLOATS * 4);
+      registerGpuBufferBytes(RUNWAY_EARTHWORKS_SET_FLOATS * 4);
+      this.registeredFixedBufferBytes += RUNWAY_EARTHWORKS_SET_FLOATS * 4;
     }
-    this.earthworksBuffer.update(new Uint8Array(
-      packRunwayEarthworksUniform(this.airport, this.seedHash).buffer,
-    ));
+    this.earthworksBuffer.update(this.earthworksSetBytes);
     this.shader.setStorageBuffer("earthworks", this.earthworksBuffer);
   }
 }
