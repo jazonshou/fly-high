@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  faultOutcome,
   flightVerdict,
   heapKiBPerFrame,
+  parseLegFrame,
   percentiles,
   renderVerdictMarkdown,
   workerFallbackExitCode,
@@ -10,6 +12,7 @@ import {
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./perf/ab/detailWatchdog";
 import type {
   DetailWatchdogReport,
+  DetailWorkerFault,
   DetailWorkerState,
   FlightFrame,
   FlightReport,
@@ -363,5 +366,87 @@ describe("flight verdict", () => {
     expect(percentiles([5, 1, 4, 2, 3])).toEqual({ p50: 3, p95: 5, p99: 5, max: 5, mean: 3 });
     expect(percentiles([]).p50).toBeNaN();
     expect(heapKiBPerFrame([frame(1, 4_096, -10_000_000), frame(1, 0, 2_048)])).toBe(3);
+  });
+});
+
+describe("a worker failed on purpose", () => {
+  const killed = (before: DetailWorkerState, kind: DetailWorkerFault["kind"] = "kill"): DetailWorkerFault =>
+    ({ kind, frame: 300, delivered: true, before });
+
+  function faultRun(head: readonly DetailWorkerState[], fault: DetailWorkerFault, faultLeg = 1): FlightRunReport {
+    const report = j2Report(true);
+    return {
+      ...report,
+      reports: {
+        base: report.reports.base,
+        head: head.map((state, index) => ({
+          ...leg(962 + 600 * index, state, steady(1)),
+          ...(index === faultLeg ? { detailWorkerFault: fault } : {}),
+        })),
+      },
+    };
+  }
+
+  it("reads a restarted worker as RECOVERED, not as a trip", () => {
+    const recovered: DetailWorkerState = { ...CLEAN, respawns: 1 };
+    const verdict = flightVerdict(faultRun([CLEAN, recovered, recovered], killed(CLEAN)));
+    const head = verdict.rows.filter((row) => row.arm === "head");
+    expect(head.map((row) => [row.phase, row.tripped, row.fault?.outcome ?? null])).toEqual([
+      ["leg 1", false, null],
+      ["leg 2", false, "RECOVERED"],
+      ["leg 3", false, "RECOVERED"],
+    ]);
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(0);
+    expect(renderVerdictMarkdown(verdict)).toContain("| kill in leg 2: RECOVERED |");
+  });
+
+  it("reads 19543c0's permanent fallback as FELL BACK, not as a trip", () => {
+    const fellBack: DetailWorkerState = { ...CLEAN, active: false, fallbacks: 1 };
+    const verdict = flightVerdict(faultRun([CLEAN, fellBack, fellBack], killed(CLEAN)));
+    expect(verdict.rows.filter((row) => row.arm === "head").map((row) => row.fault?.outcome ?? null))
+      .toEqual([null, "FELL BACK", "FELL BACK"]);
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(0);
+  });
+
+  it("excuses a silent worker's timeout, and nothing past it", () => {
+    const caught: DetailWorkerState = { ...CLEAN, buildTimeouts: 1, buildRejections: 1, respawns: 1 };
+    const tripsAgain: DetailWorkerState = { ...caught, generationTimeouts: 1, respawns: 2 };
+    const verdict = flightVerdict(faultRun([CLEAN, caught, tripsAgain], killed(CLEAN, "hang")));
+    expect(verdict.rows.filter((row) => row.arm === "head").map((row) => [row.tripped, row.firstTripped]))
+      .toEqual([[false, false], [false, false], [true, true]]);
+    expect(renderVerdictMarkdown(verdict)).toContain("| hang in leg 2: RECOVERED; **TRIPPED** (build timeouts 1, generation timeouts 1, respawns 2, fallbacks 0) |");
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(1);
+  });
+
+  it("does not excuse a kill's timeout, which the error path never needs", () => {
+    const timedOut: DetailWorkerState = { ...CLEAN, buildTimeouts: 1, respawns: 1 };
+    expect(flightVerdict(faultRun([CLEAN, timedOut], killed(CLEAN))).rows.at(-1)!.tripped).toBe(true);
+  });
+
+  it("still counts a trip from before the failure", () => {
+    const before: DetailWorkerState = { ...CLEAN, buildTimeouts: 1, respawns: 1 };
+    const verdict = flightVerdict(faultRun([before, { ...before, respawns: 2 }], killed(before)));
+    expect(verdict.rows.filter((row) => row.arm === "head").map((row) => row.tripped)).toEqual([true, true]);
+  });
+
+  it("names a failure that never landed or was not noticed yet", () => {
+    const gone: DetailWorkerState = { ...CLEAN, active: false, fallbacks: 1, buildTimeouts: 1 };
+    expect(faultOutcome({ kind: "kill", frame: 0, delivered: false, before: gone }, gone)).toBe("NOT DELIVERED");
+    expect(faultOutcome(killed(CLEAN, "hang"), CLEAN)).toBe("UNDETECTED");
+    // A worker already gone was not failed by the harness: its trip stands.
+    const verdict = flightVerdict(faultRun([gone, gone], { kind: "kill", frame: 0, delivered: false, before: gone }));
+    expect(verdict.rows.filter((row) => row.arm === "head").map((row) => row.tripped)).toEqual([true, true]);
+  });
+});
+
+describe("perf-flight arguments", () => {
+  it("takes <leg>:<frame> with legs from 1 and frames from 0", () => {
+    expect(parseLegFrame("--kill-detail-worker", "2:300", 4, 600)).toEqual({ leg: 2, frame: 300 });
+    expect(parseLegFrame("--kill-detail-worker", "1:0", 2, 60)).toEqual({ leg: 1, frame: 0 });
+    for (const bad of ["0:10", "5:10", "2:600", "2", "2:", ":3", "2:3:4", "1.5:3", "2:-1", "a:b", " 2:3"]) {
+      expect(() => parseLegFrame("--kill-detail-worker", bad, 4, 600), bad).toThrow(
+        /--kill-detail-worker takes <leg>:<frame>, leg 1-4 and frame 0-599/,
+      );
+    }
   });
 });

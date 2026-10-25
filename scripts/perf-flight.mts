@@ -60,11 +60,13 @@ import {
 import {
   ARMS,
   flightVerdict,
+  parseLegFrame,
   percentiles,
   renderVerdictMarkdown,
   workerFallbackExitCode,
   workerTripped,
   type ArmName,
+  type LegFrame,
   type Percentiles,
 } from "./perfFlightVerdict.mts";
 import type {
@@ -96,6 +98,11 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --start <x,z[,yaw]>     begin the flight here (world metres, yaw in degrees) instead of at the shot's pose
   --base-world <json>, --head-world <json>
                           options merged into that arm's createWorld (e.g. a landform under test)
+  --kill-detail-worker <leg>:<frame>
+                          fail the vegetation worker in both arms before that frame of that leg
+                          (legs from 1, frames from 0): an error event, as a crashed worker script
+  --hang-detail-worker <leg>:<frame>
+                          as --kill-detail-worker, but terminate it with no event: a silent worker
   --gpu swiftshader|hardware
   --chromium <path>
   --profile               write a V8 CPU profile per arm per leg (perturbs the timings)
@@ -348,6 +355,8 @@ async function main(): Promise<number> {
       start: { type: "string" },
       "base-world": { type: "string" },
       "head-world": { type: "string" },
+      "kill-detail-worker": { type: "string" },
+      "hang-detail-worker": { type: "string" },
       gpu: { type: "string" },
       chromium: { type: "string" },
       profile: { type: "boolean", default: false },
@@ -381,6 +390,19 @@ async function main(): Promise<number> {
   const start = startValues
     ? { x: startValues[0]!, z: startValues[1]!, yawDegrees: startValues[2] ?? 0 }
     : null;
+  let faults: { readonly kill: LegFrame | null; readonly hang: LegFrame | null };
+  try {
+    const parse = (option: "kill-detail-worker" | "hang-detail-worker") => {
+      const text = values[option];
+      return text === undefined ? null : parseLegFrame(`--${option}`, text, legs, legFrames);
+    };
+    faults = { kill: parse("kill-detail-worker"), hang: parse("hang-detail-worker") };
+    // The verdict excuses one failure per arm; a second would read as a trip.
+    if (faults.kill && faults.hang) throw new Error("perf-flight: --kill-detail-worker and --hang-detail-worker are separate runs");
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
   const worldOptions: Record<ArmName, Record<string, unknown> | null> = { base: null, head: null };
   for (const arm of ARMS) {
     const raw = values[`${arm}-world`];
@@ -500,7 +522,12 @@ async function main(): Promise<number> {
             includeObjectsCollectedByMinorGC: true,
           });
         }
-        const report = await arms[arm].call("flight", { ...request, restart: leg === 0 });
+        const report = await arms[arm].call("flight", {
+          ...request,
+          restart: leg === 0,
+          killDetailWorkerAtFrame: faults.kill?.leg === leg + 1 ? faults.kill.frame : null,
+          hangDetailWorkerAtFrame: faults.hang?.leg === leg + 1 ? faults.hang.frame : null,
+        });
         if (values.profile) {
           const { profile } = await arms[arm].cdp.send("Profiler.stop");
           writeFileSync(join(outDir, `${arm}-leg${leg + 1}.cpuprofile`), JSON.stringify(profile));
@@ -515,6 +542,10 @@ async function main(): Promise<number> {
           + `between p50 ${fmt(summary.betweenMs.p50)} max ${fmt(summary.betweenMs.max)} ms, `
           + `${summary.pipelinesCreated} pipelines, ${fmt(summary.allocatedKiBPerFrame, 0)} KiB/frame, `
           + `pending pages ${report.pendingTerrainPages}, detail ${report.pendingDetailWork}`
+          + (report.detailWorkerFault
+            ? `, detail worker ${report.detailWorkerFault.kind === "kill" ? "killed" : "hung"} at frame `
+              + `${report.detailWorkerFault.frame}${report.detailWorkerFault.delivered ? "" : " (no worker to fail)"}`
+            : "")
           + describeDetailWorker(report.detailWorker, report.detailWatchdog));
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
@@ -527,6 +558,8 @@ async function main(): Promise<number> {
       aircraft: values.aircraft,
       draws: !request.suppressDraws, backend,
       ...(start ? { start } : {}),
+      ...(faults.kill ? { killDetailWorker: faults.kill } : {}),
+      ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };

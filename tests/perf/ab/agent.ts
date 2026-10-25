@@ -82,6 +82,7 @@ import {
   type AgentInfo,
   type CaptureResult,
   type DetailWatchdogReport,
+  type DetailWorkerFault,
   type DetailWorkerState,
   type FlightFrame,
   type FlightReport,
@@ -462,6 +463,23 @@ function beginDetailWatchdogWindow(target: FlightRenderer): (() => void) | null 
 
 function detailWatchdogReport(target: FlightRenderer): DetailWatchdogReport | null {
   return watchdogProbe && watchdogProbe.detail === detailRuntime(target) ? watchdogProbe.probe.report() : null;
+}
+
+/**
+ * Fails the detail worker on purpose, in either arm: "kill" fires an error
+ * event at the generation client's private Worker (the path a crashed worker
+ * script takes), "hang" terminates it without one (a worker gone silent).
+ */
+function failDetailWorker(target: FlightRenderer, kind: DetailWorkerFault["kind"], frame: number): DetailWorkerFault {
+  const before = detailWorkerState(target);
+  const client = detailRuntime(target)?.client as { readonly worker?: Worker | null } | null | undefined;
+  const worker = client?.worker ?? null;
+  if (worker && kind === "kill") {
+    worker.dispatchEvent(new ErrorEvent("error", { message: "perf-flight: the detail worker was killed" }));
+  } else if (worker) {
+    worker.terminate();
+  }
+  return { kind, frame, delivered: worker !== null, before };
 }
 
 /** Where the scripted flight is; legs continue from it. */
@@ -989,8 +1007,11 @@ const agent: PerfAgent = {
     const longTaskStart = longTasks.length;
     const frames: FlightFrame[] = [];
     const sampleWatchdog = beginDetailWatchdogWindow(active);
+    let fault: DetailWorkerFault | null = null;
     let heapMark = heapUsedBytes();
     for (let frame = 0; frame < request.frames; frame += 1) {
+      if (frame === request.killDetailWorkerAtFrame) fault = failDetailWorker(active, "kill", frame);
+      if (frame === request.hangDetailWorkerAtFrame) fault = failDetailWorker(active, "hang", frame);
       simulationTime += 1 / 60;
       path.yawDegrees += turnRateDegrees / 60;
       const heading = headingVectorFromYaw(path.yawDegrees);
@@ -1071,6 +1092,7 @@ const agent: PerfAgent = {
       residentTerrainPages: diagnostics.residentTerrainPages,
       detailWorker: detailWorkerState(active),
       detailWatchdog: detailWatchdogReport(active),
+      detailWorkerFault: fault,
     };
   },
 

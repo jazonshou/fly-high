@@ -183,6 +183,14 @@ export interface FlightRequest {
    * the clearance over the ground there. Null starts at the shot.
    */
   readonly start?: { readonly x: number; readonly z: number; readonly yawDegrees: number } | null;
+  /**
+   * Fail the detail worker before rendering this frame of the leg, as a
+   * crashed worker script does: an error event on the generation client's
+   * Worker. Absent or null leaves it alone.
+   */
+  readonly killDetailWorkerAtFrame?: number | null;
+  /** Terminate the detail worker before this frame with no event: a silent worker, which only the watchdog can catch. */
+  readonly hangDetailWorkerAtFrame?: number | null;
 }
 
 export interface FlightFrame {
@@ -224,6 +232,17 @@ export interface FlightReport {
   readonly detailWorker: DetailWorkerState | null;
   /** The detail worker's watchdog clocks and build latencies over the leg (absent from an older agent). */
   readonly detailWatchdog?: DetailWatchdogReport | null;
+  /** The worker failed on purpose in this leg (`killDetailWorkerAtFrame`, `hangDetailWorkerAtFrame`). */
+  readonly detailWorkerFault?: DetailWorkerFault | null;
+}
+
+export interface DetailWorkerFault {
+  readonly kind: "kill" | "hang";
+  readonly frame: number;
+  /** False when there was no worker to fail: it had already gone, or the build has none. */
+  readonly delivered: boolean;
+  /** The worker's state just before. */
+  readonly before: DetailWorkerState | null;
 }
 
 /**
