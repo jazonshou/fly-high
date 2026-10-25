@@ -235,6 +235,28 @@ function referenceOneShotBake(
   })!;
 }
 
+/** 19543c0's groundBounceFactor and bakeSkyIrradiancePolynomial field, verbatim. */
+function referenceGroundBounceFactor(directionY: number, groundAlbedo: number): number {
+  if (directionY >= 0) return 1;
+  const albedo = Math.min(1, Math.max(0.01, groundAlbedo));
+  return Math.max(albedo, 1 + directionY * ((1 - albedo) / 0.4));
+}
+
+function referenceSkyIrradianceBake(
+  binding: AerialPerspectiveBinding,
+  size: number,
+  groundAlbedo: number,
+): SphericalPolynomial {
+  return referenceOneShotBake(
+    (direction) => {
+      const radiance = evaluateSkyRadiance(binding, direction);
+      const factor = referenceGroundBounceFactor(direction[1], groundAlbedo);
+      return [radiance[0] * factor, radiance[1] * factor, radiance[2] * factor];
+    },
+    size,
+  );
+}
+
 const POLYNOMIAL_TERMS = ["x", "y", "z", "xx", "yy", "zz", "xy", "yz", "zx"] as const;
 
 function expectBitIdentical(
@@ -352,6 +374,15 @@ describe("F1 — the sky irradiance bake slices without changing a bit", () => {
           referenceOneShotBake(sky, size),
           `${label} @ ${size}`,
         );
+        // The ground-bounce field, which now answers in a scratch tuple, at
+        // the default, a snowy and both clamped albedos.
+        for (const albedo of [DEFAULT_GROUND_BOUNCE_ALBEDO, 0.42, 0.005, 1.5]) {
+          expectBitIdentical(
+            bakeSkyIrradiancePolynomial(binding, size, albedo),
+            referenceSkyIrradianceBake(binding, size, albedo),
+            `${label} @ ${size}, albedo ${albedo}`,
+          );
+        }
       }
     }
   });
