@@ -298,10 +298,12 @@ presentation spine and changes the height authority behind it:
   pass from +8-18% to water's +3.6% (-0.3% to +6.3%). Baselines and draw-call
   ceilings are unchanged.
   **Re-measured on CI against main (2026-10-25)**, with every biome merged:
-  cruise +2.0%, water +3.1%, ground +4.0%; the same run with
-  `--head-profile-override {"terrainProvinceField":false}` read cruise -1.2%,
-  water +0.1%, ground +0.5%, so the field itself was 3.0-3.5% of the frame,
-  over the 2% a feature may spend (the cloud runs above read it as noise). The
+  cruise +2.0% on an EPYC 7763, and the same commit with
+  `--head-profile-override {"terrainProvinceField":false}` read cruise -1.2%
+  on a 7763, so the field itself was 3.2% of the cruise frame, over the 2% a
+  feature may spend (the cloud runs above read it as noise). Water +3.1% and
+  ground +4.0% with the field came from a 9V45 against +0.1% and +0.5%
+  without it on a 7763, so they do not isolate it (see "Cloud A/B"). The
   vertex stage then loaded four RGBA32F texels per vertex, mixed them
   bilinearly and evaluated the tone's seven smoothsteps and two divides on the
   result. The tone is now baked per texel on the CPU (1.5 us a texel warm, 0.5
