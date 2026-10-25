@@ -45,6 +45,8 @@ interface PendingPresentationRequest {
   readonly buildId: number;
   readonly onResult: (result: DetailWorkerPresentationResult) => void;
   readonly onError: (error: Error) => void;
+  /** A heartbeat from the still-running build; the request stays pending. */
+  readonly onProgress?: (slices: number, units: number) => void;
 }
 
 type WorkerFactory = () => Worker;
@@ -222,6 +224,7 @@ export class DetailGenerationClient {
     input: DetailWorkerPresentationBuildInput,
     onResult: (result: DetailWorkerPresentationResult) => void,
     onError: (error: Error) => void = () => undefined,
+    onProgress?: (slices: number, units: number) => void,
   ): number {
     if (this.disposed || this.failed || !this.worker || !this.presentationAvailable) return -1;
     if (input.residents.some((resident) => !this.retainedCellTokens.has(resident.token))) {
@@ -230,7 +233,12 @@ export class DetailGenerationClient {
     }
     const buildId = this.allocateBuildId();
     if (buildId < 0) return -1;
-    const pending: PendingPresentationRequest = { buildId, onResult, onError };
+    const pending: PendingPresentationRequest = {
+      buildId,
+      onResult,
+      onError,
+      ...(onProgress ? { onProgress } : {}),
+    };
     this.pendingPresentation.set(buildId, pending);
     try {
       this.worker.postMessage({
@@ -370,6 +378,13 @@ export class DetailGenerationClient {
       return;
     }
     const event: DetailWorkerEvent = message.data;
+    if (event.type === "presentationProgress") {
+      // A heartbeat, not an answer: the request stays pending for its result.
+      // A canceled or unknown build has no entry (cancelPresentation deletes
+      // it before posting the cancel), so a late heartbeat is ignored.
+      this.pendingPresentation.get(event.buildId)?.onProgress?.(event.slices, event.units);
+      return;
+    }
     if (event.type === "presentation" || event.type === "presentationError") {
       const request = this.pendingPresentation.get(event.buildId);
       this.pendingPresentation.delete(event.buildId);
