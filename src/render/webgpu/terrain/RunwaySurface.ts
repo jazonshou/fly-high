@@ -1,4 +1,5 @@
 import type { AirportDefinition } from "@/src/world/types";
+import { TERRAIN_AIRPORT_SLOTS } from "./RunwayEarthworks";
 import { SurfaceMaterial } from "./surfaceMaterials";
 
 /**
@@ -85,14 +86,57 @@ export function resolveRunwaySurfaceBinding(
   };
 }
 
+/**
+ * The painter's uniforms: one frame and one shape PER AIRPORT SLOT, and the
+ * count in use.
+ *
+ * Arrays at the full slot count from the first compile, so an airport that
+ * spawns mid-flight rewrites uniform values and never the shader — a spawn
+ * costs no pipeline compile and no frame. Slot `n` is
+ * `resolveRunwaySurfaceBinding(airports[n])`; a one-airport world's slot 0 is
+ * exactly the frame and shape the scalar uniforms held before.
+ */
 export const RUNWAY_SURFACE_UNIFORMS: readonly {
   readonly name: string;
   readonly size: number;
   readonly type: string;
+  readonly arraySize?: number;
 }[] = Object.freeze([
-  { name: "terrainRunwayFrame", size: 4, type: "vec4" },
-  { name: "terrainRunwayShape", size: 4, type: "vec4" },
+  { name: "terrainRunwayFrames", size: 4, type: "vec4", arraySize: TERRAIN_AIRPORT_SLOTS },
+  { name: "terrainRunwayShapes", size: 4, type: "vec4", arraySize: TERRAIN_AIRPORT_SLOTS },
+  // (airport count, 0, 0, 0).
+  { name: "terrainRunwaySet", size: 4, type: "vec4" },
 ]);
+
+/** The painter's uniform VALUES for an airport list, home field first. */
+export interface RunwaySurfaceSetBinding {
+  /** `TERRAIN_AIRPORT_SLOTS` frames, flattened; unused slots are zero. */
+  readonly frames: Float32Array;
+  /** `TERRAIN_AIRPORT_SLOTS` shapes, flattened; unused slots are zero. */
+  readonly shapes: Float32Array;
+  readonly count: number;
+}
+
+/**
+ * `target`, when given, has its arrays rewritten IN PLACE (unused slots
+ * zeroed), so the painter uploads the same two arrays for its whole life.
+ */
+export function resolveRunwaySurfaceSetBinding(
+  airports: readonly Readonly<AirportDefinition>[],
+  target?: Pick<RunwaySurfaceSetBinding, "frames" | "shapes">,
+): RunwaySurfaceSetBinding {
+  const frames = target?.frames ?? new Float32Array(TERRAIN_AIRPORT_SLOTS * 4);
+  const shapes = target?.shapes ?? new Float32Array(TERRAIN_AIRPORT_SLOTS * 4);
+  frames.fill(0);
+  shapes.fill(0);
+  const count = Math.min(airports.length, TERRAIN_AIRPORT_SLOTS);
+  for (let slot = 0; slot < count; slot += 1) {
+    const binding = resolveRunwaySurfaceBinding(airports[slot]!);
+    frames.set(binding.frame, slot * 4);
+    shapes.set(binding.shape, slot * 4);
+  }
+  return { frames, shapes, count };
+}
 
 /**
  * The SDF half, isolated so assertion 65 can compile it into a bare compute
@@ -184,12 +228,39 @@ fn terrainRunwayMask(distance: f32, width: f32) -> f32 {
   return 1.0 - smoothstep(-w, w, distance);
 }
 
+// The airport this fragment is painted for: the slot whose centre is nearest,
+// worldAirportAt's rule. Airports stand >= 4 km apart and the paint and the
+// airfield surround reach well under a kilometre, so the choice only changes
+// where every slot paints nothing. This loop is the whole per-fragment cost of
+// more than one airport — one difference and dot per slot after the first, no
+// transcendental — and a one-airport world runs it zero times and reads slot
+// 0, which holds exactly the frame and shape the scalar uniforms held. The
+// caller reads the slot ONCE and hands the frame and shape to both the
+// airfield influence and the painter.
+fn terrainRunwayNearestSlot(worldXz: vec2f) -> u32 {
+  let count = min(u32(uniforms.terrainRunwaySet.x), ${TERRAIN_AIRPORT_SLOTS}u);
+  let first = worldXz - uniforms.terrainRunwayFrames[0].xy;
+  var best = 0u;
+  var bestDistance = dot(first, first);
+  for (var slot = 1u; slot < count; slot = slot + 1u) {
+    let offset = worldXz - uniforms.terrainRunwayFrames[slot].xy;
+    let distance = dot(offset, offset);
+    let closer = distance < bestDistance;
+    best = select(best, slot, closer);
+    bestDistance = select(bestDistance, distance, closer);
+  }
+  return best;
+}
+
 fn terrainRunwaySurface(
   position: vec3f,
   geometricNormal: vec3f,
   worldDdx: vec3f,
   worldDdy: vec3f,
   detailWeight: f32,
+  // The nearest airport's frame and shape (terrainRunwayNearestSlot).
+  frame: vec4f,
+  shape: vec4f,
   albedo: ptr<function, vec3f>,
   normal: ptr<function, vec3f>,
   roughness: ptr<function, f32>,
@@ -202,8 +273,6 @@ fn terrainRunwaySurface(
   // which is the correct answer for ground the paint never reached.
   pavedOut: ptr<function, f32>,
 ) {
-  let frame = uniforms.terrainRunwayFrame;
-  let shape = uniforms.terrainRunwayShape;
   let halfLength = shape.x;
   let halfWidth = shape.y;
   if (halfLength <= 0.0) {

@@ -40,7 +40,12 @@ import {
   IMPOSTOR_SPECIES,
   type ImpostorAtlas,
 } from "./ImpostorAtlas";
-import { seasonalWinterFraction, type WorldDefinition } from "@/src/world";
+import {
+  seasonalWinterFraction,
+  withAirports,
+  type AirportDefinition,
+  type WorldDefinition,
+} from "@/src/world";
 import {
   TERRAIN_READBACK_RING_CAPACITY,
   type TerrainMacroGrid,
@@ -63,7 +68,12 @@ import {
   TREE_VARIANT_COUNTS,
   type PrototypeGeometry,
 } from "./prototypeGeometry";
-import { detailCellKey, generateDetailCell, GROUND_COVER_GRID } from "./generation";
+import {
+  DETAIL_CELL_SAMPLE_MARGIN_METERS,
+  detailCellKey,
+  generateDetailCell,
+  GROUND_COVER_GRID,
+} from "./generation";
 import {
   canGenerateNextDetailCell,
   resolveDetailGenerationBudget,
@@ -94,9 +104,14 @@ import {
   CANOPY_SURFACE_SPECULAR,
 } from "./densityField";
 import {
-  airfieldStructureExclusions,
-  type StructureExclusionBox,
+  airfieldStructureExclusionSites,
+  type StructureExclusionSite,
 } from "../airfield/StructureExclusion";
+import {
+  airportReachIntersectsBounds,
+  airportVegetationReach,
+  changedAirports,
+} from "../airfield/AirportFootprint";
 import {
   DEFAULT_DETAIL_CELL_SIZE_METERS,
   type DetailFloatingOrigin,
@@ -673,9 +688,24 @@ export { DETAIL_DENSITY_SHARE_REFRESH_EPSILON };
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES = 240;
 /** Low-frame-rate watchdog companion; update-count remains the deterministic authority. */
 export const DETAIL_PRESENTATION_WORKER_MAX_PENDING_MILLISECONDS = 8_000;
-/** Retained-cell authority must make accepted-cell progress inside the same envelope. */
+/**
+ * Retained-cell authority must answer an outstanding request inside the same
+ * envelope. The update count applies once the worker has answered at least
+ * once: before that it is still building its world, which takes seconds and
+ * is 240 updates in two of them on a 120 Hz display.
+ */
 export const DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES = 240;
 export const DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS = 8_000;
+/**
+ * Both watchdogs time the WORKER, so a span in which this runtime was not
+ * updated at all is not charged to it beyond one slow frame's worth: a hidden
+ * tab stops requestAnimationFrame, and a long main-thread stall cannot accept
+ * a result either. Before this, eight seconds in another tab with cells still
+ * missing tripped the generation deadline on the first update back, and
+ * vegetation was generated on the main thread for the rest of the session,
+ * a 30-300 ms stall every few frames in flight (2026-10-24).
+ */
+export const DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS = 100;
 
 const TREE_SPECIES: readonly TreeSpecies[] = [
   "pine",
@@ -856,6 +886,9 @@ export class WorldDetailRuntime {
   private workerPresentationProgressMilliseconds: number | null = null;
   private workerGenerationProgressUpdate: number | null = null;
   private workerGenerationProgressMilliseconds: number | null = null;
+  /** The generation worker has answered a request at least once (it is initialized). */
+  private workerGenerationAnswered = false;
+  private lastUpdateMilliseconds: number | null = null;
   private lastPublicationObserverDriftMeters = 0;
   private windTimeSeconds = 0;
   private updateSequence = 0;
@@ -868,12 +901,18 @@ export class WorldDetailRuntime {
   private dayOfYear = 0;
 
   /**
-   * Airfield structures vegetation must not grow through, built ONCE from the
-   * world this runtime was given. Uses `seedHash` — the terrain authority the
-   * hangars' own siting reads — not the seed string's hash, which is a
-   * different number on any guaranteed-airport world.
+   * The live world, for its airport list: `options.workerWorld` until
+   * `setAirports` swaps in a world with a different list. Null when the runtime
+   * was built without one (tests, headless tools), which means no airports.
    */
-  private readonly structureExclusions: readonly StructureExclusionBox[];
+  private world: Readonly<WorldDefinition> | null;
+  /**
+   * Airfield structures vegetation must not grow through, one site per airport,
+   * rebuilt only when the airport list changes. Uses `seedHash` — the terrain
+   * authority the hangars' own siting reads — not the seed string's hash, which
+   * is a different number on any guaranteed-airport world.
+   */
+  private structureSites: readonly StructureExclusionSite[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -897,8 +936,12 @@ export class WorldDetailRuntime {
     this.groundCoverBladesActive =
       (scene.getEngine().getCaps() as { supportComputeShaders?: boolean })
         .supportComputeShaders === true;
-    this.structureExclusions = options.workerWorld?.airport
-      ? airfieldStructureExclusions(options.workerWorld.airport, options.workerWorld.seedHash)
+    this.world = options.workerWorld ?? null;
+    this.structureSites = this.world
+      ? airfieldStructureExclusionSites(
+        this.world.airports ?? (this.world.airport ? [this.world.airport] : []),
+        this.world.seedHash,
+      )
       : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
@@ -997,10 +1040,33 @@ export class WorldDetailRuntime {
     this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
   }
 
-  /** An accepted, current descriptor is the only worker-generation progress signal. */
+  /**
+   * Any descriptor the worker returns is progress, current or stale: the
+   * watchdog detects a worker that has stopped answering, not one working
+   * through requests the observer has since flown past.
+   */
   private recordWorkerGenerationProgress(): void {
+    this.workerGenerationAnswered = true;
     this.workerGenerationProgressUpdate = this.updateSequence;
     this.workerGenerationProgressMilliseconds = this.presentationNowMilliseconds();
+  }
+
+  /** Lifts a gap between updates, past the allowance, off both worker deadlines. */
+  private excludeUpdateGapFromWorkerDeadlines(): void {
+    // Inline, there is no worker to time (and no clock read to spend).
+    if (this.client === null) return;
+    const now = this.presentationNowMilliseconds();
+    const previous = this.lastUpdateMilliseconds;
+    this.lastUpdateMilliseconds = now;
+    if (previous === null) return;
+    const excess = now - previous - DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS;
+    if (!(excess > 0)) return;
+    if (this.workerGenerationProgressMilliseconds !== null) {
+      this.workerGenerationProgressMilliseconds += excess;
+    }
+    if (this.workerPresentationProgressMilliseconds !== null) {
+      this.workerPresentationProgressMilliseconds += excess;
+    }
   }
 
   private resetWorkerGenerationProgress(): void {
@@ -1025,8 +1091,11 @@ export class WorldDetailRuntime {
     return this.workerGenerationProgressUpdate !== null
       && this.workerGenerationProgressMilliseconds !== null
       && (
-        this.updateSequence - this.workerGenerationProgressUpdate
-          >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
+        (
+          this.workerGenerationAnswered
+          && this.updateSequence - this.workerGenerationProgressUpdate
+            >= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES
+        )
         || Math.max(
           0,
           this.presentationNowMilliseconds() - this.workerGenerationProgressMilliseconds,
@@ -1145,9 +1214,68 @@ export class WorldDetailRuntime {
         && cellMinimumZ < maximumZ
         && cellMinimumZ + this.cellSizeMeters > minimumZ;
     };
-    let invalidated = false;
+    this.invalidateCellsWhere(overlapsPage);
+  }
+
+  /**
+   * The world's airport list changed: an airport spawned, or the oldest spawned
+   * one was retired. Home field first, as `withAirports` requires.
+   *
+   * **ONLY THE CELLS THE CHANGE CAN REACH ARE REGENERATED.** A new runway
+   * changes the ground under its platform and blend (`sampleTerrain` reads the
+   * nearest airport) and adds hard exclusions round its hangars and approach
+   * rows; outside that reach both worlds sample identically and every site's
+   * clearance is exactly 1, so a cell there would regenerate to the same bytes.
+   * A cell is invalidated when its rectangle, grown by the furthest its own
+   * generation reads the ground (`DETAIL_CELL_SAMPLE_MARGIN_METERS`), meets
+   * a changed airport's vegetation reach.
+   *
+   * **AND NOTHING IS DROPPED IN THE MEANTIME.** The same epoch-free pattern as a
+   * terrain page publication: an invalidated resident keeps drawing its old
+   * trees until the ordinary bounded generator replaces it, and the presentation
+   * chunk, impostors and canopy ranks are rebuilt from the replacement through
+   * the existing budgets — so a spawn costs one regeneration per reached cell,
+   * spread like any other streaming work, and never a frame-sized hole.
+   *
+   * Returns how many residents and in-flight requests were invalidated.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): number {
+    if (this.disposed || !this.world) return 0;
+    const previous = this.world;
+    const next = withAirports(previous, airports);
+    if (next === previous) return 0;
+    const changed = changedAirports(previous.airports ?? [], next.airports);
+    this.world = next;
+    this.structureSites = airfieldStructureExclusionSites(next.airports, next.seedHash);
+    // Posted BEFORE any regeneration request below can be dispatched, so the
+    // worker swaps worlds first; message order does the rest.
+    this.client?.setAirports(next.airports);
+    if (changed.length === 0) return 0;
+    const reaches = changed.map((airport) => airportVegetationReach(airport, next.seedHash));
+    const margin = DETAIL_CELL_SAMPLE_MARGIN_METERS;
+    return this.invalidateCellsWhere((cellX, cellZ) => {
+      const minX = cellX * this.cellSizeMeters - margin;
+      const minZ = cellZ * this.cellSizeMeters - margin;
+      const bounds = {
+        minX,
+        minZ,
+        maxX: minX + this.cellSizeMeters + 2 * margin,
+        maxZ: minZ + this.cellSizeMeters + 2 * margin,
+      };
+      return reaches.some((reach) => airportReachIntersectsBounds(reach, bounds));
+    });
+  }
+
+  /**
+   * Mark every resident cell the predicate selects stale and cancel the
+   * in-flight requests it selects; returns how many of either it touched.
+   */
+  private invalidateCellsWhere(
+    overlaps: (cellX: number, cellZ: number) => boolean,
+  ): number {
+    let count = 0;
     for (const resident of this.cells.values()) {
-      if (!overlapsPage(resident.cellX, resident.cellZ)) continue;
+      if (!overlaps(resident.cellX, resident.cellZ)) continue;
       if (resident.invalidated) continue;
       // Defect B fix — the epoch pattern (`setDayOfYear`), page-scoped:
       // release the worker token (exactly once; `replaceResident` and every
@@ -1160,17 +1288,18 @@ export class WorldDetailRuntime {
       // omitted a 512 m block of trees for the whole regeneration latency.
       this.releaseResidentToken(resident);
       resident.invalidated = true;
-      invalidated = true;
+      count += 1;
     }
     for (const desired of this.desiredCells) {
-      if (!overlapsPage(desired.cellX, desired.cellZ)) continue;
+      if (!overlaps(desired.cellX, desired.cellZ)) continue;
       const requestId = this.pendingCells.get(desired.key);
       if (requestId === undefined) continue;
       this.client?.cancel(requestId);
       this.pendingCells.delete(desired.key);
-      invalidated = true;
+      count += 1;
     }
-    if (invalidated) this.batchesDirty = true;
+    if (count > 0) this.batchesDirty = true;
+    return count;
   }
 
   /**
@@ -1396,6 +1525,7 @@ export class WorldDetailRuntime {
   ): void {
     if (this.disposed) return;
     this.updateSequence += 1;
+    this.excludeUpdateGapFromWorkerDeadlines();
     this.vegetationCastsShadows = profile.vegetationCastsShadows;
     this.disposeExpiredBatches();
     // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
@@ -1561,7 +1691,10 @@ export class WorldDetailRuntime {
           + (this.residentIsCurrentAndAccessible(this.cells.get(desired.key)) ? 0 : 1),
         0,
       );
-      if (missingWorkerCells === 0) {
+      // Only a request the worker holds can be late: with none outstanding
+      // (all answered, or dropped at the queue's capacity and refiled
+      // below), there is nothing to time.
+      if (missingWorkerCells === 0 || this.pendingCells.size === 0) {
         this.resetWorkerGenerationProgress();
       } else {
         this.beginWorkerGenerationProgress();
@@ -1636,11 +1769,8 @@ export class WorldDetailRuntime {
           latitudeDegrees: this.options.latitudeDegrees ?? 45,
           // The inline path needs the same exclusions as the worker path, or
           // the fix is only present on whichever one happens to run.
-          ...(this.options.workerWorld?.airport
-            ? {
-              structureExclusions: this.structureExclusions,
-              exclusionAirport: this.options.workerWorld.airport,
-            }
+          ...(this.structureSites.length > 0
+            ? { structureExclusionSites: this.structureSites }
             : {}),
         });
         this.replaceResident(desired.key, {
@@ -1983,6 +2113,7 @@ export class WorldDetailRuntime {
     descriptor: DetailRetainedCellDescriptor,
   ): void {
     this.pendingCells.delete(key);
+    this.recordWorkerGenerationProgress();
     const desired = this.desiredCells.find((candidate) => candidate.key === key);
     if (
       this.disposed
@@ -2010,7 +2141,6 @@ export class WorldDetailRuntime {
       distance: desired.distance,
       invalidated: false,
     });
-    this.recordWorkerGenerationProgress();
     this.cumulativeGeneratedCells += 1;
     this.batchesDirty = true;
   }

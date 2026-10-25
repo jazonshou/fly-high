@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
+import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
 import type {
   TerrainMacroGrid,
@@ -15,6 +16,16 @@ import type {
 export interface TerrainAuthorityPublisher {
   publishTerrainPage(page: TerrainPagePublication): void;
   publishTerrainMacro(macro: TerrainMacroGrid): void;
+}
+
+/** A world point on the canvas, written in place by `projectWorldPointToRef`. */
+export interface ScreenPoint {
+  x: number;
+  y: number;
+  inFront: boolean;
+  /** Canvas size the point was projected into, CSS pixels. */
+  width: number;
+  height: number;
 }
 
 export interface FlightRenderingSystem {
@@ -45,6 +56,20 @@ export interface FlightRenderingSystem {
   setQuality(quality: QualityLevel): void;
   setRenderingMode(mode: RenderingMode): void;
   setReducedMotion(reducedMotion: boolean): void;
+  /**
+   * The world's airport list changed (an airport spawned or retired), home
+   * field first. Every airport in it is graded, painted and lit; work for a
+   * new one streams in over the following frames rather than in this call.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): void;
+  /**
+   * Writes where a world point lands on the canvas this frame into
+   * `result`, in CSS pixels from its top-left corner; false (and `result`
+   * untouched) while the canvas has no size. `inFront` is false for a point
+   * behind the camera; `x`/`y` then point the way to turn. Allocation-free,
+   * for the per-frame HUD overlay.
+   */
+  projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean;
   /** Attach the worker-owned height authority after renderer startup. */
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */

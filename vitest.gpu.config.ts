@@ -106,6 +106,7 @@ export default defineConfig({
       "@babylonjs/core/PostProcesses/postProcess",
       "@babylonjs/core/Probes/reflectionProbe",
       "@babylonjs/core/Rendering/depthRenderer",
+      "@babylonjs/core/ShadersWGSL/fxaa.vertex",
       "@babylonjs/core/scene",
     ],
   },

@@ -4,6 +4,7 @@ import {
   sampleTerrainCollision,
   sampleTerrainCollisionHeight,
   TERRAIN_NORMAL_SAMPLE_DISTANCE,
+  worldAirportAt,
   type TerrainCollisionSample,
   type WorldDefinition,
 } from "@/src/world";
@@ -51,7 +52,8 @@ export function sampleGroundHeight(world: WorldDefinition, x: number, z: number)
   // The crowned airport platform is an analytic Class-K fast path. It bypasses
   // the ladder so the runway profile remains bit-identical and available even
   // before a page or macro transfer arrives.
-  if (world.airport && getAirportInfluence(world.airport, x, z) >= 1) {
+  const airport = worldAirportAt(world, x, z);
+  if (airport && getAirportInfluence(airport, x, z) >= 1) {
     return sampleTerrainCollisionHeight(world, x, z);
   }
 
@@ -81,7 +83,8 @@ export function sampleGroundContact(
   // Preserve Phase 3's crowned runway height, camber-tilted normal and tyre
   // friction bit-for-bit. Sampling the readback here would quantize the one
   // surface whose exact contact profile is already a hard contract.
-  if (world.airport && isPointOnRunway(world.airport, x, z)) {
+  const airport = worldAirportAt(world, x, z);
+  if (airport && isPointOnRunway(airport, x, z)) {
     return sampleTerrainCollision(world, x, z, target);
   }
 

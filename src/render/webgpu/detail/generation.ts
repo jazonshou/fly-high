@@ -17,10 +17,11 @@ import {
   terrainTopographicWetnessIndex,
 } from "@/src/render/webgpu/terrain/TerrainPageHydrology";
 import { hashSeed } from "@/src/world/seed";
-import type { AirportDefinition } from "@/src/world/types";
 import {
-  structureClearanceFactor,
-  type StructureExclusionBox,
+  structureClearanceFactorForSites,
+  structureExclusionSiteBounds,
+  worldBoundsOverlap,
+  type StructureExclusionSite,
 } from "../airfield/StructureExclusion";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
@@ -599,10 +600,11 @@ function gridHeight(grid: ScatterTerrainGrid, x: number, z: number): number {
 interface ScatterContext {
   readonly seed: string;
   readonly seedHash: number;
-  /** Airfield structures vegetation must not grow through; empty off-airfield. */
-  readonly structureExclusions: readonly StructureExclusionBox[];
-  /** The frame those boxes are stated in; absent when there are none. */
-  readonly exclusionAirport: Readonly<AirportDefinition> | undefined;
+  /**
+   * Airfield structures vegetation must not grow through: only the sites whose
+   * reach touches this cell (`cellStructureSites`), so empty off-airfield.
+   */
+  readonly structureSites: readonly StructureExclusionSite[];
   readonly minX: number;
   readonly minZ: number;
   readonly cellSize: number;
@@ -667,15 +669,56 @@ function fieldAt(
  * band and strip the surround Jason has separately asked to keep.
  */
 function structureFactorAt(context: ScatterContext, x: number, z: number): number {
-  if (context.exclusionAirport === undefined || context.structureExclusions.length === 0) {
-    return 1;
+  if (context.structureSites.length === 0) return 1;
+  return structureClearanceFactorForSites(context.structureSites, x, z);
+}
+
+/**
+ * How far past its own edges a cell evaluates the structure gate: the thinning
+ * halo plus one scatter block, which covers every candidate position
+ * `scatterTrees`/`scatterShrubs` can test (rocks and clutter stay inside the
+ * cell). Generous on purpose — a site kept that could have been dropped costs
+ * one evaluation per stem, while a site dropped that should have been kept
+ * would put a tree through a hangar.
+ */
+const STRUCTURE_SITE_CELL_MARGIN_METERS = SCATTER_HALO_METERS + SCATTER_BLOCK_METERS;
+
+/**
+ * The structure sites that can touch a cell, from the legacy single-airport
+ * pair and the per-airport list together.
+ *
+ * **Dropping a site here never changes a placement.** `structureExclusionSiteBounds`
+ * is the rectangle outside which the site's factor is exactly 1, and a product
+ * with exact 1s is unchanged — so a cell far from every airport skips the
+ * per-stem box loop it used to run against the home field's boxes, and a cell
+ * beside a spawned field gets that field's boxes rather than the home field's.
+ */
+function cellStructureSites(
+  options: DetailCellGenerationOptions,
+  minX: number,
+  minZ: number,
+  cellSize: number,
+): readonly StructureExclusionSite[] {
+  const sites: StructureExclusionSite[] = [];
+  if (
+    options.exclusionAirport !== undefined
+    && options.structureExclusions !== undefined
+    && options.structureExclusions.length > 0
+  ) {
+    sites.push({ airport: options.exclusionAirport, boxes: options.structureExclusions });
   }
-  return structureClearanceFactor(
-    context.exclusionAirport,
-    context.structureExclusions,
-    x,
-    z,
-  );
+  for (const site of options.structureExclusionSites ?? []) {
+    if (site.boxes.length > 0) sites.push(site);
+  }
+  if (sites.length === 0) return sites;
+  const margin = STRUCTURE_SITE_CELL_MARGIN_METERS;
+  const cell = {
+    minX: minX - margin,
+    minZ: minZ - margin,
+    maxX: minX + cellSize + margin,
+    maxZ: minZ + cellSize + margin,
+  };
+  return sites.filter((site) => worldBoundsOverlap(structureExclusionSiteBounds(site), cell));
 }
 
 interface ScatterCandidate {
@@ -1029,6 +1072,22 @@ function chooseRockVariant(sample: DetailTerrainSample, random: RandomSource): R
  */
 const TALUS_PROBE_STEP_METERS = 32;
 const TALUS_PROBE_STEPS = 3;
+
+/**
+ * The furthest past its own edges that one cell's generation reads the terrain,
+ * metres — so a change to the ground (an airport spawning, a page publishing)
+ * can be traced to exactly the cells it can move.
+ *
+ * Two readers set it: the scatter grid, which samples the halo, one scatter
+ * block and one grid pitch beyond the cell (56 m), and the talus probe, which
+ * walks up to three 32 m steps upslope from a rock candidate inside the cell
+ * (96 m). Plus 16 m for the sampler's own normal stencil, which reads a few
+ * metres around every point it is asked for.
+ */
+export const DETAIL_CELL_SAMPLE_MARGIN_METERS = Math.max(
+  SCATTER_HALO_METERS + SCATTER_BLOCK_METERS + SCATTER_TERRAIN_GRID_METERS,
+  TALUS_PROBE_STEPS * TALUS_PROBE_STEP_METERS,
+) + 16;
 
 function probeTalusSupply(
   x: number,
@@ -1462,8 +1521,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
   const context: ScatterContext = {
     seed,
     seedHash,
-    structureExclusions: options.structureExclusions ?? [],
-    exclusionAirport: options.exclusionAirport,
+    structureSites: cellStructureSites(options, minX, minZ, cellSizeMeters),
     minX,
     minZ,
     cellSize: cellSizeMeters,

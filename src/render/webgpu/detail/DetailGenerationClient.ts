@@ -9,7 +9,7 @@ import {
   type DetailWorkerPresentationResult,
 } from "@/src/workers/detailProtocol";
 import type { TerrainMacroGrid, TerrainPagePublication } from "@/src/workers/terrainAuthority";
-import type { WorldDefinition, WorldSeed } from "@/src/world";
+import type { AirportDefinition, WorldDefinition, WorldSeed } from "@/src/world";
 import type { TerrainAuxPagePublication } from "../terrain/TerrainPageAtlas";
 import type { DetailPresentationBuildCatalog } from "./presentationBuild";
 import type { GeneratedDetailCell } from "./types";
@@ -148,6 +148,22 @@ export class DetailGenerationClient {
   /** Publish one committed signed-shore page; ownership of its buffer transfers. */
   publishTerrainAuxPage(page: TerrainAuxPagePublication): boolean {
     return this.postTerrainAuthority({ type: "terrainAux", page });
+  }
+
+  /**
+   * Swap the worker's airport list (home field first). Posted in order with
+   * generation, so every request dispatched after this call samples the new
+   * world; the caller cancels and invalidates whatever was generated before it.
+   */
+  setAirports(airports: readonly Readonly<AirportDefinition>[]): boolean {
+    if (this.disposed || this.failed || !this.worker) return false;
+    try {
+      this.worker.postMessage({ type: "airports", airports } satisfies DetailWorkerCommand);
+      return true;
+    } catch {
+      this.markUnavailable();
+      return false;
+    }
   }
 
   /** Compatibility request: returns a cloned full GeneratedDetailCell. */

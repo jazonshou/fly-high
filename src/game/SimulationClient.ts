@@ -1,6 +1,6 @@
 import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
-import type { WorldDefinition } from "@/src/world";
+import type { AirportDefinition, WorldDefinition } from "@/src/world";
 import type {
   TerrainMacroGrid,
   TerrainPagePublication,
@@ -189,6 +189,16 @@ export class SimulationClient {
       { type: "terrainMacro", macro },
       macro.heights.buffer instanceof ArrayBuffer ? [macro.heights.buffer] : [],
     );
+  }
+
+  /** The world's full airport list, home field first (see `withAirports`). */
+  setAirports(airports: readonly AirportDefinition[]): void {
+    this.send({ type: "airports", airports });
+  }
+
+  /** Engage the autoland on the nearest airport, or hand back (`src/sim/autoland.ts`). */
+  setAutoland(enabled: boolean): void {
+    this.send({ type: "autoland", enabled });
   }
 
   reset(spawn: SpawnKind, airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {

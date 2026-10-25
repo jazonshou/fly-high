@@ -997,6 +997,229 @@
   gap: 24px;
 }
 
+/* Nearest airport: a toggle at the top right, its readout to its left. */
+.hud-nearest {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.hud-nearest__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-surface);
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+  backdrop-filter: blur(13px) saturate(1.16);
+  -webkit-backdrop-filter: blur(13px) saturate(1.16);
+}
+
+.hud-nearest__toggle:hover {
+  border-color: rgba(225, 254, 118, 0.6);
+}
+
+.hud-nearest__toggle svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.hud-nearest__toggle kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.hud-nearest.is-active .hud-nearest__toggle {
+  border-color: rgba(225, 254, 118, 0.72);
+  color: var(--accent);
+}
+
+.hud-nearest__readout {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  color: rgba(238, 247, 245, 0.86);
+}
+
+.hud-nearest__readout strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hud-nearest__readout em {
+  font-style: normal;
+  opacity: 0.6;
+}
+
+/* Autoland: a toggle beside the nearest-airport one, and a mode strip under
+ * the topline while engaged, where an airliner's flight-mode annunciator sits. */
+.hud-autoland__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-surface);
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+  backdrop-filter: blur(13px) saturate(1.16);
+  -webkit-backdrop-filter: blur(13px) saturate(1.16);
+}
+
+.hud-autoland__toggle:hover:not(:disabled) {
+  border-color: rgba(225, 254, 118, 0.6);
+}
+
+.hud-autoland__toggle:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.hud-autoland__toggle svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.hud-autoland__toggle kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.hud-autoland__toggle.is-active {
+  border-color: rgba(225, 254, 118, 0.72);
+  color: var(--accent);
+}
+
+.hud-autoland {
+  position: absolute;
+  top: calc(max(22px, env(safe-area-inset-top)) + 40px);
+  left: 50%;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 6px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-surface);
+  color: rgba(238, 247, 245, 0.86);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  backdrop-filter: blur(13px) saturate(1.16);
+  -webkit-backdrop-filter: blur(13px) saturate(1.16);
+}
+
+.hud-autoland strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hud-autoland__phase {
+  color: rgba(238, 247, 245, 0.98);
+}
+
+.hud-autoland em {
+  font-style: normal;
+  color: #ffb36b;
+}
+
+.hud-autoland.is-go-around .hud-autoland__phase {
+  color: #ffb36b;
+}
+
+/*
+ * The marker itself: a diamond over the runway while it is in view, an arrow
+ * on the screen edge pointing the way to turn while it is not. Positioned with
+ * a transform from the frame loop (src/ui/airportMarker.ts), so it never
+ * triggers layout.
+ */
+.airport-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 4;
+  width: 0;
+  height: 0;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  will-change: transform;
+}
+
+.airport-marker[hidden] { display: none; }
+
+.airport-marker__diamond {
+  position: absolute;
+  top: -9px;
+  left: -9px;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid currentColor;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.45);
+  transform: rotate(45deg);
+}
+
+.airport-marker__arrow {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  display: none;
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 16px solid currentColor;
+  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+  transform: rotate(var(--airport-marker-angle, 0rad));
+  transform-origin: 8px 8px;
+}
+
+.airport-marker__label {
+  position: absolute;
+  top: 16px;
+  left: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.airport-marker[data-mode="edge"] .airport-marker__diamond { display: none; }
+.airport-marker[data-mode="edge"] .airport-marker__arrow { display: block; }
+.airport-marker[data-mode="edge"] .airport-marker__label { top: 14px; }
+
 .metric-tape {
   position: absolute;
   top: 50%;
@@ -1749,6 +1972,10 @@
   .metric-tape__value { font-size: 20px; }
   .flight-hud__topline { right: 14px; left: 14px; }
   .hud-session span:last-child { display: none; }
+  .hud-nearest__toggle span { display: none; }
+  .hud-nearest__readout span:nth-of-type(1) { display: none; }
+  .hud-autoland__toggle span { display: none; }
+  .hud-autoland { gap: 10px; }
   .flight-hud__bottom { right: 14px; bottom: 48px; left: 14px; }
   .instrument-strip { display: none; }
   .control-status { width: 240px; margin-left: auto; }

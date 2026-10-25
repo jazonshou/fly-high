@@ -11,6 +11,7 @@ import {
   type SurfaceMaterialId,
 } from "./surfaceMaterials";
 import { FAR_SWARD_BAKE_GATE_WGSL } from "./FarSwardGate";
+import { TERRAIN_AIRPORT_SLOTS } from "./RunwayEarthworks";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
 import {
   TERRAIN_TWI_DRY,
@@ -899,6 +900,20 @@ struct SplatJob {
   //  half-extents, so the bake can evaluate the SAME rounded-rectangle field
   //  getAirportInfluence does instead of a circle about the centre.
   runway: vec4f,
+  // (page origin x, page origin z, airports whose influence reaches this page
+  //  — 0, 1, or 2 for two or more — and airports in splatAirports). The host
+  //  resolves the reach per page; see splatAirportInfluence for why the
+  //  per-texel path only runs past one.
+  airportSet: vec4f,
+};
+
+/** One airport's influence frame in WORLD metres, for the per-texel path. */
+struct SplatAirport {
+  // (centre x, centre z, inverse blend radius, 0)
+  site: vec4f,
+  // (sin heading, cos heading, half length + end safety area,
+  //  half width + shoulder) — the job's runway lane, per airport.
+  runway: vec4f,
 };
 
 @group(0) @binding(1) var<storage, read> splatJobs: array<SplatJob>;
@@ -912,6 +927,10 @@ struct SplatJob {
 // it belongs where the splat is decided rather than costing every fragment a
 // sampler slot the 16-per-stage budget has to find.
 @group(0) @binding(7) var splatSoilDepthAtlas: texture_2d<f32>;
+// Every airport in the world, home field first. Read only by a page two or
+// more airports reach; uploaded with a batch's jobs after the list changes,
+// never recompiled.
+@group(0) @binding(8) var<storage, read> splatAirports: array<SplatAirport, ${TERRAIN_AIRPORT_SLOTS}>;
 const SPLAT_SOIL_MAX_METERS: f32 = ${
   wgslConstant(TERRAIN_PAGE_HYDROLOGY_ENCODING.soilDepthMaxMeters)
 };
@@ -994,12 +1013,45 @@ fn splatSlopeAt(job: SplatJob, heightTexel: vec2f) -> f32 {
  * blend radius was 0 and the radial term vanished with it.
  */
 fn splatAirportInfluence(job: SplatJob, localX: f32, localZ: f32) -> f32 {
-  let delta = vec2f(localX, localZ) - job.airport.xy;
-  let along = delta.x * job.runway.x + delta.y * job.runway.y;
-  let across = delta.x * job.runway.y - delta.y * job.runway.x;
-  let q = vec2f(abs(along) - job.runway.z, abs(across) - job.runway.w);
+  // WHICH airport: the one whose centre is nearest, as worldAirportAt picks it
+  // on the CPU — resolved PER PAGE wherever that is exact, per texel where it
+  // is not. Airports stand >= 4 km apart and an influence footprint (platform
+  // plus blend) reaches ~1 km, so footprints never touch: a page that only one
+  // footprint reaches has that airport as the nearest centre at every texel
+  // the influence is non-zero, and zero influence everywhere else whichever
+  // centre is nearest. The host finds that airport in f64 and writes it into
+  // the job page-locally, exactly as it wrote the home field before airports
+  // could spawn, so every page of a one-airport world bakes the same bits it
+  // did. Only a page wider than the gap between two footprints (2 km pages
+  // and up, near two airports) needs the per-texel loop below — a uniform
+  // branch per workgroup, so no other page pays for it.
+  var centre = job.airport.xy;
+  var inverseBlend = job.airport.z;
+  var runway = job.runway;
+  if (job.airportSet.z > 1.5) {
+    let worldXz = job.airportSet.xy + vec2f(localX, localZ);
+    let count = min(u32(job.airportSet.w), ${TERRAIN_AIRPORT_SLOTS}u);
+    let first = worldXz - splatAirports[0].site.xy;
+    var best = 0u;
+    var bestDistance = dot(first, first);
+    for (var slot = 1u; slot < count; slot = slot + 1u) {
+      let offset = worldXz - splatAirports[slot].site.xy;
+      let distance = dot(offset, offset);
+      let closer = distance < bestDistance;
+      best = select(best, slot, closer);
+      bestDistance = select(bestDistance, distance, closer);
+    }
+    let nearest = splatAirports[best];
+    centre = nearest.site.xy - job.airportSet.xy;
+    inverseBlend = nearest.site.z;
+    runway = nearest.runway;
+  }
+  let delta = vec2f(localX, localZ) - centre;
+  let along = delta.x * runway.x + delta.y * runway.y;
+  let across = delta.x * runway.y - delta.y * runway.x;
+  let q = vec2f(abs(along) - runway.z, abs(across) - runway.w);
   let platformDistance = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0);
-  return 1.0 - kSmoothstep(0.0, 1.0, platformDistance * job.airport.z);
+  return 1.0 - kSmoothstep(0.0, 1.0, platformDistance * inverseBlend);
 }
 
 fn splatClassify(

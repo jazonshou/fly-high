@@ -9,7 +9,7 @@ import type {
   GeneratedDetailCell,
 } from "@/src/render/webgpu/detail/types";
 import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
-import type { WorldDefinition, WorldSeed } from "@/src/world";
+import type { AirportDefinition, WorldDefinition, WorldSeed } from "@/src/world";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 /** Lightweight main-thread handle for one full cell retained by the worker. */
@@ -86,6 +86,15 @@ export type DetailWorkerCommand =
       seaLevelMeters: number;
       /** Cloneable Babylon-free prototype metadata used by worker presentation packing. */
       presentationCatalog?: DetailPresentationBuildCatalog;
+    }
+  | {
+      /**
+       * The world's full airport list, home field first (`withAirports`). The
+       * worker swaps its world; the main thread invalidates the cells the change
+       * reaches, so every generate posted after this one samples the new list.
+       */
+      type: "airports";
+      airports: readonly Readonly<AirportDefinition>[];
     }
   | {
       type: "terrainMacro";

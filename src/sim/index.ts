@@ -17,6 +17,19 @@ export {
 } from "./aircraft";
 export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
 export {
+  AUTOLAND_AIM_FROM_THRESHOLD,
+  AUTOLAND_GLIDESLOPE_RADIANS,
+  AUTOLAND_MAX_ATTEMPTS,
+  Autoland,
+  autolandProfile,
+  type AutolandInput,
+  type AutolandPhase,
+  type AutolandProfile,
+  type AutolandRunway,
+  type AutolandStatus,
+  type GoAroundReason,
+} from "./autoland";
+export {
   ATTRACT_MIN_PREDICTION_SPEED,
   ATTRACT_TURN_RATE_RADIANS_PER_SECOND,
   ATTRACT_SCAN_SECONDS,
