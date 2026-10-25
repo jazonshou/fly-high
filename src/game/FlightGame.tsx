@@ -44,6 +44,7 @@ import {
   type NearestAirportInfo,
 } from "./AirportNetworkController";
 import { DisposableScope } from "./DisposableScope";
+import { DiagnosticsPoller, nearestAirportReadoutKey } from "./diagnosticsCadence";
 import { FreeFlyController } from "./freeFly";
 import { SimulationClient } from "./SimulationClient";
 import { startFlightControlPump, type FlightControlPump } from "./controlPump";
@@ -574,6 +575,8 @@ export function FlightGame() {
     let rendererTerminal = false;
     let lastFrame = performance.now();
     let lastNearestAirportUpdate = Number.NEGATIVE_INFINITY;
+    // B3: what the HUD's readout last showed; null until this run publishes.
+    let nearestAirportReadout: string | null = null;
     // Per-frame marker scratch: the overlay update allocates nothing.
     const airportMarkerPoint: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
     const airportMarkerPlacement = createAirportMarkerPlacement();
@@ -721,13 +724,16 @@ export function FlightGame() {
             state.position.z,
           );
           nearestAirportRef.current = nearest;
+          const aviation = settingsRef.current.units === "aviation";
           airportMarkerTextRef.current = nearest
-            ? `${nearest.ident} · ${formatAirportDistance(
-              nearest.distanceMeters,
-              settingsRef.current.units === "aviation",
-            )}`
+            ? `${nearest.ident} · ${formatAirportDistance(nearest.distanceMeters, aviation)}`
             : "";
-          setNearestAirport(nearest);
+          // B3: re-render only when the HUD readout would change.
+          const readout = nearestAirportReadoutKey(nearest, aviation);
+          if (readout !== nearestAirportReadout) {
+            nearestAirportReadout = readout;
+            setNearestAirport(nearest);
+          }
         }
         if (now - lastAudioUpdateRef.current > 35) {
           lastAudioUpdateRef.current = now;
@@ -745,6 +751,11 @@ export function FlightGame() {
         keyEvents: window,
       });
 
+      // B3: polled only while the diagnostics panel or the viewer HUD shows it.
+      const diagnosticsPoller = new DiagnosticsPoller(
+        () => renderer.getDiagnostics(),
+        setDiagnostics,
+      );
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
@@ -794,9 +805,7 @@ export function FlightGame() {
             airportMarkerTextRef.current,
           );
         }
-        if (Math.floor(now / 500) !== Math.floor((now - deltaSeconds * 1_000) / 500)) {
-          setDiagnostics(renderer.getDiagnostics());
-        }
+        diagnosticsPoller.tick(now, settingsRef.current.showDiagnostics, phaseRef.current);
         if (rendererTerminal) return;
         animationFrame = requestAnimationFrame(renderLoop);
       };
