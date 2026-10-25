@@ -27,7 +27,13 @@
  * of the two frames after a landing reads as the cube or the LUT.
  *
  * Ground cover. Each tile-bake call's time on the bake's own clock, against
- * 2 ms: its 1.5 ms budget and one 32-column step past it.
+ * 2 ms: its 1.5 ms budget and one 32-column step past it. A call over it is
+ * not by itself the bake's own overrun, so each one carries what else its
+ * frame says: a collection during render() (its heap fell), which may have
+ * run inside the call; a pace-floor hold, which bakes past the budget by
+ * design; and the call that finished the tile, which also times its three
+ * texture uploads. The calls over it with neither of the first two are
+ * counted apart.
  *
  * Both targets count a reading AT the target with those over it. The agent's
  * page is not cross-origin isolated, so its clock reads in 0.1 ms steps: a
@@ -93,11 +99,28 @@ export interface SkySummary {
   readonly oneFrame: readonly SkyWorkFrame[];
 }
 
+/** One tile-bake call, with what its frame says of it. */
+export interface GroundCoverCall {
+  readonly phase: string;
+  readonly frame: number;
+  readonly ms: number;
+  /** The pace floor kept it baking past the budget. */
+  readonly paceFloor: boolean;
+  /** It finished the tile, and timed the three texture uploads. */
+  readonly tileCompleted: boolean;
+  /** The JS heap fell during the frame's render(): a collection ran there, maybe in the call. Null: not measured. */
+  readonly collection: boolean | null;
+  readonly renderMs: number;
+}
+
 export interface GroundCoverSummary {
   readonly calls: number;
   /** Per call; null with no calls. */
   readonly ms: { readonly p50: number; readonly p95: number; readonly max: number } | null;
-  readonly overTarget: number;
+  /** The calls at or over the target. */
+  readonly overTarget: readonly GroundCoverCall[];
+  /** Of those, the calls with neither a collection in their frame's render() nor a pace-floor hold. */
+  readonly overTargetUnflagged: number;
   readonly paceFloorCalls: number;
   readonly tilesCompleted: number;
 }
@@ -139,7 +162,7 @@ interface PhaseBakes {
   readonly recorded: boolean;
   readonly sky: SkyWorkFrame[];
   readonly landed: number;
-  readonly callMs: number[];
+  readonly calls: GroundCoverCall[];
   readonly paceFloorCalls: number;
   readonly tilesCompleted: number;
 }
@@ -150,7 +173,7 @@ function recorded(frames: readonly FlightFrame[]): boolean {
 
 function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkyState): PhaseBakes {
   const sky: SkyWorkFrame[] = [];
-  const callMs: number[] = [];
+  const calls: GroundCoverCall[] = [];
   let landed = 0;
   let paceFloorCalls = 0;
   let tilesCompleted = 0;
@@ -161,7 +184,20 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
     const previousRan = state.previousRan;
     state.previousRan = ran;
     if (!bake) continue;
-    if (bake.groundCoverCalls > 0) callMs.push(bake.groundCoverMs ?? 0);
+    if (bake.groundCoverCalls > 0) {
+      calls.push({
+        phase,
+        frame: index,
+        ms: bake.groundCoverMs ?? 0,
+        paceFloor: bake.groundCoverPaceFloorCalls > 0,
+        tileCompleted: bake.groundCoverTilesCompleted > 0,
+        // NaN in the page (no precise heap figures) is null in report.json.
+        collection: typeof frame.heapRenderBytes === "number" && Number.isFinite(frame.heapRenderBytes)
+          ? frame.heapRenderBytes < 0
+          : null,
+        renderMs: frame.renderMs,
+      });
+    }
     paceFloorCalls += bake.groundCoverPaceFloorCalls;
     tilesCompleted += bake.groundCoverTilesCompleted;
     landed += bake.skyLandings;
@@ -195,7 +231,7 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
       renderMs: frame.renderMs,
     });
   }
-  return { recorded: recorded(frames), sky, landed, callMs, paceFloorCalls, tilesCompleted };
+  return { recorded: recorded(frames), sky, landed, calls, paceFloorCalls, tilesCompleted };
 }
 
 function worstOf(frames: readonly SkyWorkFrame[]): SkyWorkFrame | null {
@@ -212,8 +248,9 @@ function figures(parts: readonly PhaseBakes[]): BakeFigures | null {
   if (!parts.some((part) => part.recorded)) return null;
   const sky = parts.flatMap((part) => part.sky);
   const sliced = sky.filter((frame) => !frame.work.includes("one-frame"));
-  const callMs = parts.flatMap((part) => part.callMs);
-  const calls = percentiles(callMs);
+  const calls = parts.flatMap((part) => part.calls);
+  const callMs = percentiles(calls.map((call) => call.ms));
+  const overCalls = calls.filter((call) => reaches(call.ms, GROUND_COVER_CALL_TARGET_MS));
   return {
     sky: {
       landed: parts.reduce((sum, part) => sum + part.landed, 0),
@@ -223,9 +260,10 @@ function figures(parts: readonly PhaseBakes[]): BakeFigures | null {
       oneFrame: sky.filter((frame) => frame.work.includes("one-frame")),
     },
     groundCover: {
-      calls: callMs.length,
-      ms: callMs.length > 0 ? { p50: calls.p50, p95: calls.p95, max: calls.max } : null,
-      overTarget: callMs.filter((ms) => reaches(ms, GROUND_COVER_CALL_TARGET_MS)).length,
+      calls: calls.length,
+      ms: calls.length > 0 ? { p50: callMs.p50, p95: callMs.p95, max: callMs.max } : null,
+      overTarget: overCalls,
+      overTargetUnflagged: overCalls.filter((call) => call.collection !== true && !call.paceFloor).length,
       paceFloorCalls: parts.reduce((sum, part) => sum + part.paceFloorCalls, 0),
       tilesCompleted: parts.reduce((sum, part) => sum + part.tilesCompleted, 0),
     },
@@ -269,6 +307,16 @@ function fmt(value: number | null | undefined, digits = 2): string {
   return value !== null && value !== undefined && Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 }
 
+/** What a tile-bake call's frame says of it, or "" when nothing. */
+function describeCallFlags(call: GroundCoverCall): string {
+  const flags = [
+    ...(call.collection === true ? ["collection in render()"] : call.collection === null ? ["heap not measured"] : []),
+    ...(call.paceFloor ? ["pace-floor hold"] : []),
+    ...(call.tileCompleted ? ["finished the tile (its three uploads)"] : []),
+  ];
+  return flags.length > 0 ? `; ${flags.join("; ")}` : "";
+}
+
 /** How many one-frame re-lights, and the worst one's ms. */
 function oneFrameCell(frames: readonly SkyWorkFrame[]): string {
   const worst = worstOf(frames);
@@ -299,7 +347,8 @@ export function describeLegBakes(leg: FlightReport): string {
   const coverPart = groundCover.ms === null
     ? "no ground-cover bake"
     : `ground cover ${groundCover.calls} calls, max ${fmt(groundCover.ms.max)} ms, `
-      + `${groundCover.overTarget} at or over ${GROUND_COVER_CALL_TARGET_MS} ms`;
+      + `${groundCover.overTarget.length} at or over ${GROUND_COVER_CALL_TARGET_MS} ms`
+      + ` (${groundCover.overTargetUnflagged} with no collection or pace-floor hold)`;
   return `, ${skyPart}; ${coverPart}`;
 }
 
@@ -344,13 +393,15 @@ export function renderBakeMarkdown(report: BakeReport): string {
         ? [
           String(cover.calls),
           cover.ms ? `${fmt(cover.ms.p50)} / ${fmt(cover.ms.p95)} / ${fmt(cover.ms.max)}` : "-",
-          cover.calls === 0 ? "-" : cover.overTarget > 0 ? `**${cover.overTarget}**` : "0",
+          cover.calls === 0 ? "-" : cover.overTarget.length > 0 ? `**${cover.overTarget.length}**` : "0",
+          cover.calls === 0 ? "-" : String(cover.overTargetUnflagged),
           String(cover.paceFloorCalls),
           String(cover.tilesCompleted),
         ]
-        : na(5)),
+        : na(6)),
     ];
   });
+  const overCalls = listed.flatMap((row) => (row.groundCover?.overTarget ?? []).map((call) => ({ arm: row.arm, call })));
   const table = (header: string, rows: readonly (readonly string[])[]) => [
     `| ${header} |`,
     `| ${header.split(" | ").map(() => "---").join(" | ")} |`,
@@ -397,14 +448,27 @@ export function renderBakeMarkdown(report: BakeReport): string {
       "",
     ]),
     `Ground cover: each tile-bake call's ms on the bake's own clock. Target: each within ${GROUND_COVER_CALL_TARGET_MS} ms `
-      + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's pace.",
+      + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's "
+      + "pace, by design. A call over the target is not by itself the bake's own overrun: a collection during the "
+      + "frame's render() (its heap fell) may have run inside the call, so the calls over it with neither a collection "
+      + "nor a pace-floor hold are counted apart, and each call over it is listed with what its frame says.",
     "",
     ...table(
       `phase | arm | commit | tile-bake calls | ms per call p50 / p95 / max | calls at or over ${GROUND_COVER_CALL_TARGET_MS} ms `
-        + "| pace-floor calls | tiles completed",
+        + "| of those, with no collection or pace-floor hold | pace-floor calls | tiles completed",
       coverRows,
     ),
     "",
+    ...(overCalls.length === 0 ? [] : [
+      `Tile-bake calls at or over ${GROUND_COVER_CALL_TARGET_MS} ms (the call's ms, what its frame says, and the frame's `
+        + "render() ms):",
+      "",
+      ...overCalls.slice(0, LISTED_FRAMES).map(({ arm, call }) =>
+        `- ${arm} ${call.phase} frame ${call.frame}: ${fmt(call.ms)} ms${describeCallFlags(call)}, `
+          + `render() ${fmt(call.renderMs)} ms`),
+      ...(overCalls.length > LISTED_FRAMES ? [`- and ${overCalls.length - LISTED_FRAMES} more (report.json)`] : []),
+      "",
+    ]),
     ...(noCover.length === 0 ? [] : [
       `**Not exercised:** no tile-bake call in the legs of ${noCover.join(" and ")}, so this run does not check `
         + `the ${GROUND_COVER_CALL_TARGET_MS} ms target there. ${GROUND_COVER_HOW}`,

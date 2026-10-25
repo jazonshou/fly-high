@@ -137,9 +137,9 @@ const cover = (ms: number, rest: Partial<FlightFrameBake> = {}): FlightFrameBake
   ({ ...IDLE, groundCoverCalls: 1, groundCoverMs: ms, ...rest });
 
 /** A frame of `renderMs` with this bake record; `undefined` leaves the record out, as a base build does. */
-function frame(bake: FlightFrameBake | null | undefined, renderMs = 20): FlightFrame {
+function frame(bake: FlightFrameBake | null | undefined, renderMs = 20, heapRenderBytes = 0): FlightFrame {
   return {
-    renderMs, betweenMs: 1, heapRenderBytes: 0, heapBetweenBytes: 0, pipelinesCreated: 0,
+    renderMs, betweenMs: 1, heapRenderBytes, heapBetweenBytes: 0, pipelinesCreated: 0,
     shaderModulesCreated: 0, shaderCodeChars: 0, passMs: {},
     ...(bake === undefined ? {} : { bake }),
   };
@@ -283,21 +283,69 @@ describe("flight bake report", () => {
     });
     const head = row(atTarget.rows, "leg 1", "head");
     expect(head.sky!.overTarget.map((entry) => entry.frame)).toEqual([1]);
-    expect(head.groundCover!.overTarget).toBe(1);
+    expect(head.groundCover!.overTarget.map((call) => call.frame)).toEqual([3]);
   });
 
   it("gives each ground-cover call's ms, the calls over 2 ms, pace-floor holds and tiles", () => {
     expect(row(report.rows, "leg 1", "head").groundCover).toEqual({
-      calls: 3, ms: { p50: 1.6, p95: 2.3, max: 2.3 }, overTarget: 1, paceFloorCalls: 1, tilesCompleted: 1,
+      calls: 3,
+      ms: { p50: 1.6, p95: 2.3, max: 2.3 },
+      overTarget: [{
+        phase: "leg 1", frame: 9, ms: 2.3, paceFloor: true, tileCompleted: false, collection: false, renderMs: 20,
+      }],
+      overTargetUnflagged: 0,
+      paceFloorCalls: 1,
+      tilesCompleted: 1,
     });
     expect(row(report.rows, "leg 2", "head").groundCover).toEqual({
-      calls: 1, ms: { p50: 1.1, p95: 1.1, max: 1.1 }, overTarget: 0, paceFloorCalls: 0, tilesCompleted: 0,
+      calls: 1, ms: { p50: 1.1, p95: 1.1, max: 1.1 }, overTarget: [], overTargetUnflagged: 0, paceFloorCalls: 0, tilesCompleted: 0,
     });
-    expect(row(report.rows, "all legs", "head").groundCover).toMatchObject({ calls: 4, overTarget: 1, paceFloorCalls: 1 });
+    expect(row(report.rows, "all legs", "head").groundCover).toMatchObject({ calls: 4, paceFloorCalls: 1 });
+    expect(row(report.rows, "all legs", "head").groundCover!.overTarget).toHaveLength(1);
     // Recorded, but no call (held still above the blades): zero calls, not n/a.
     expect(row(report.rows, "trial 1", "head").groundCover).toEqual({
-      calls: 0, ms: null, overTarget: 0, paceFloorCalls: 0, tilesCompleted: 0,
+      calls: 0, ms: null, overTarget: [], overTargetUnflagged: 0, paceFloorCalls: 0, tilesCompleted: 0,
     });
+  });
+
+  it("flags each call over 2 ms with a collection in its frame's render(), a pace-floor hold or the tile's uploads", () => {
+    const flagged = bakeReport({
+      shas: SHAS,
+      reports: {
+        base: [],
+        head: [leg([
+          // Over 2 ms: with a collection (the heap fell in render()), a
+          // pace-floor hold, the tile's uploads, none, and an unmeasured heap.
+          frame(cover(5.1), 24, -31_000_000),
+          frame(cover(2.4, { groundCoverPaceFloorCalls: 1 }), 22, 1_500_000),
+          frame(cover(3, { groundCoverTilesCompleted: 1 }), 21, 1_200_000),
+          frame(cover(4.2), 23, 1_800_000),
+          frame(cover(2.2), 19, Number.NaN),
+          // Under: flags do not matter.
+          frame(cover(1.5), 18, -2_000_000),
+        ])],
+      },
+    });
+    const cover1 = row(flagged.rows, "leg 1", "head").groundCover!;
+    expect(cover1.overTarget.map((call) => [call.frame, call.collection, call.paceFloor, call.tileCompleted])).toEqual([
+      [0, true, false, false],
+      [1, false, true, false],
+      [2, false, false, true],
+      [3, false, false, false],
+      [4, null, false, false],
+    ]);
+    // The tile's uploads are the bake's own cost, and an unmeasured heap is no collection known.
+    expect(cover1.overTargetUnflagged).toBe(3);
+    const markdown = renderBakeMarkdown(flagged);
+    expect(markdown).toContain("| leg 1 | head | 1234567890 | 6 | 2.40 / 5.10 / 5.10 | **5** | 3 | 1 | 1 |");
+    expect(markdown).toContain("- head leg 1 frame 0: 5.10 ms; collection in render(), render() 24.00 ms");
+    expect(markdown).toContain("- head leg 1 frame 1: 2.40 ms; pace-floor hold, render() 22.00 ms");
+    expect(markdown).toContain("- head leg 1 frame 2: 3.00 ms; finished the tile (its three uploads), render() 21.00 ms");
+    expect(markdown).toContain("- head leg 1 frame 3: 4.20 ms, render() 23.00 ms");
+    expect(markdown).toContain("- head leg 1 frame 4: 2.20 ms; heap not measured, render() 19.00 ms");
+    expect(markdown).not.toContain("frame 5: 1.50");
+    expect(describeLegBakes(leg([frame(cover(5.1), 24, -31_000_000), frame(cover(4.2))])))
+      .toBe(", no sliced sky re-light; ground cover 2 calls, max 5.10 ms, 2 at or over 2 ms (1 with no collection or pace-floor hold)");
   });
 
   it("renders both tables, n/a for the base, and lists the sky-work frames over 1 ms once", () => {
@@ -307,8 +355,10 @@ describe("flight bake report", () => {
     expect(markdown).toContain("| leg 1 | head | 1234567890 | 2 | 8 | 1.50 (land) | **2** | 1 (2.00) |");
     expect(markdown).toContain("| leg 2 | head | 1234567890 | 0 | 2 | 0.70 (LUT + begin) | 0 | 0 |");
     expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | 1 | 0.50 (begin) | 0 | 1 (3.20) |");
-    expect(markdown).toContain("| leg 1 | head | 1234567890 | 3 | 1.60 / 2.30 / 2.30 | **1** | 1 | 1 |");
-    expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | - | - | 0 | 0 |");
+    expect(markdown).toContain("| leg 1 | head | 1234567890 | 3 | 1.60 / 2.30 / 2.30 | **1** | 0 | 1 | 1 |");
+    expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | - | - | - | 0 | 0 |");
+    expect(markdown).toContain("| leg 1 | base | 05f17b4aaa | n/a | n/a | n/a | n/a | n/a | n/a |");
+    expect(markdown).toContain("- head leg 1 frame 9: 2.30 ms; pace-floor hold, render() 20.00 ms");
     expect(markdown).toContain("- head leg 1 frame 3: advance 1.30 ms (slice 0.52), render() 31.00 ms");
     expect(markdown).toContain("- head leg 1 frame 4: land 1.50 ms (converter 1.40), render() 33.00 ms");
     // The one-frame re-lights in a list of their own, after the sliced frames'.
@@ -345,7 +395,7 @@ describe("flight bake report", () => {
     expect(markdown).toContain("| leg 2 | head | 1234567890 | 0 | 2 | 0.50 (advance) | 0 | 0 |");
     expect(markdown).toContain("| all legs | head | 1234567890 | 0 | 2 | 0.50 (advance) | 0 | 1 (2.50) |");
     // The ground-cover table: no call, so neither the per-call ms nor the calls over 2 ms.
-    expect(markdown).toContain("| all legs | head | 1234567890 | 0 | - | - | 0 | 0 |");
+    expect(markdown).toContain("| all legs | head | 1234567890 | 0 | - | - | - | 0 | 0 |");
     expect(markdown).toContain(
       "**Not exercised:** no sliced re-light landed in the legs of head, so this run does not check the 1 ms target there.",
     );
@@ -364,7 +414,7 @@ describe("flight bake report", () => {
     expect(describeLegBakes(unrecorded(4))).toBe("");
     expect(describeLegBakes(headLeg1)).toBe(
       ", sky 2 landed, worst sliced frame 1.50 ms, 2 at or over 1 ms, 1 one-frame (worst 2.00 ms); "
-        + "ground cover 3 calls, max 2.30 ms, 1 at or over 2 ms",
+        + "ground cover 3 calls, max 2.30 ms, 1 at or over 2 ms (0 with no collection or pace-floor hold)",
     );
     // Recorded, with neither bake at work (a leg too high for the blades, below any re-light).
     expect(describeLegBakes(leg([frame(null), frame(null)]))).toBe(", no sliced sky re-light; no ground-cover bake");
