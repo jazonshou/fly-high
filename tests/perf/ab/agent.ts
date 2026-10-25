@@ -88,6 +88,7 @@ import {
   type FlightReport,
   type FlightRequest,
   type FrameSample,
+  type LandStart,
   type ImageComparison,
   type PerfAgent,
   type PrepareReport,
@@ -523,12 +524,13 @@ async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
   landforms: PerfCaptureShotDefinition["landforms"],
+  fresh = false,
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
   const forcedKey = climateProvince === undefined && landforms === undefined
     ? null
     : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null });
-  if (renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
+  if (!fresh && renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
   removeGpuErrorListener?.();
@@ -715,7 +717,7 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms);
+    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms, request.freshRenderer);
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
@@ -1094,6 +1096,43 @@ const agent: PerfAgent = {
       detailWatchdog: detailWatchdogReport(active),
       detailWorkerFault: fault,
     };
+  },
+
+  landStarts(count: number): readonly LandStart[] {
+    // A Fermat spiral out from the home airport (golden-angle turns, radius
+    // 25 km x sqrt(i + 1), so evenly over the disc), keeping the points over
+    // dry land where a 5 x 5 grid over 3 km has at most 3 samples of water
+    // and at least 13 of forest or grassland: fresh ground with vegetation to
+    // generate, never open sea with nothing to wait on. For the perf seed the
+    // first 20 lie 25-166 km out, from the first 44 points.
+    if (!world) throw new Error("perf-ab agent: no world; prepareShot() first");
+    const activeWorld = world;
+    const homeX = activeWorld.airport?.centerX ?? 0;
+    const homeZ = activeWorld.airport?.centerZ ?? 0;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    const starts: LandStart[] = [];
+    for (let index = 0; starts.length < count && index < 32 * count; index += 1) {
+      const distanceMeters = 25_000 * Math.sqrt(index + 1);
+      const x = homeX + distanceMeters * Math.sin(index * goldenAngle);
+      const z = homeZ + distanceMeters * Math.cos(index * goldenAngle);
+      let vegetated = 0;
+      let wet = 0;
+      let centreWet = false;
+      for (let sampleIndex = 0; sampleIndex < 25; sampleIndex += 1) {
+        const sample = sampleTerrain(activeWorld, x + ((sampleIndex % 5) - 2) * 750, z + (Math.floor(sampleIndex / 5) - 2) * 750);
+        const sampleWet = sample.height <= activeWorld.seaLevel || sample.biomeName === "water";
+        if (sampleWet) wet += 1;
+        if (sampleWet && sampleIndex === 12) centreWet = true;
+        if (sample.biomeName === "forest" || sample.biomeName === "grassland") vegetated += 1;
+      }
+      if (!centreWet && wet <= 3 && vegetated >= 13) {
+        starts.push({ x, z, yawDegrees: 0, distanceMeters, vegetatedShare: vegetated / 25 });
+      }
+    }
+    if (starts.length < count) {
+      throw new Error(`perf-ab agent: ${starts.length} vegetated land starts within ${32 * count} tries, not ${count}`);
+    }
+    return starts;
   },
 
   async capture(): Promise<CaptureResult> {

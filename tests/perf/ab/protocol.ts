@@ -64,6 +64,11 @@ export interface PrepareRequest {
   readonly renderScale: number | null;
   /** Ordinary frames before the draw gate closes (bakes, per-frame targets). */
   readonly openFrames: number;
+  /**
+   * Dispose the renderer and build a new one (a new world, detail worker and
+   * caches) even when the current one would do: an independent trial.
+   */
+  readonly freshRenderer?: boolean;
 }
 
 export interface PrepareReport {
@@ -263,6 +268,20 @@ export interface DetailWorkerState {
   readonly convergenceStalls?: number;
 }
 
+/**
+ * Where a settle trial holds still (`PerfAgent.landStarts`): land above the
+ * sea with vegetation to generate, away from the home airport.
+ */
+export interface LandStart {
+  readonly x: number;
+  readonly z: number;
+  readonly yawDegrees: number;
+  /** From the home airport. */
+  readonly distanceMeters: number;
+  /** The share of the samples around it that are forest or grassland. */
+  readonly vegetatedShare: number;
+}
+
 export interface CaptureResult {
   readonly pngBase64: string;
   readonly width: number;
@@ -301,6 +320,8 @@ export interface PerfAgent {
   settle(request: SettleRequest): Promise<SettleReport>;
   measureFrame(): Promise<FrameSample>;
   flight(request: FlightRequest): Promise<FlightReport>;
+  /** `count` settle-trial starts in the current shot's world, the same in every build of that world. */
+  landStarts(count: number): readonly LandStart[];
   capture(): Promise<CaptureResult>;
   compareImages(a: string, b: string, width: number, height: number): Promise<ImageComparison>;
   errors(): AgentErrors;

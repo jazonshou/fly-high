@@ -68,6 +68,7 @@ import {
   type ArmName,
   type LegFrame,
   type Percentiles,
+  type SettleTrial,
 } from "./perfFlightVerdict.mts";
 import type {
   AgentCatalog,
@@ -103,6 +104,10 @@ const USAGE = `usage: npm run perf:flight -- [options]
                           (legs from 1, frames from 0): an error event, as a crashed worker script
   --hang-detail-worker <leg>:<frame>
                           as --kill-detail-worker, but terminate it with no event: a silent worker
+  --settle-trials <k>     after the legs, k independent fresh-region settles: in each, both arms at once
+                          build a new renderer and hold still over the next land start (a spiral out
+                          from the home airport that skips the sea), as in the stream to rest
+  --trial-frames <n>      frames per settle trial (default 600)
   --gpu swiftshader|hardware
   --chromium <path>
   --profile               write a V8 CPU profile per arm per leg (perturbs the timings)
@@ -357,6 +362,8 @@ async function main(): Promise<number> {
       "head-world": { type: "string" },
       "kill-detail-worker": { type: "string" },
       "hang-detail-worker": { type: "string" },
+      "settle-trials": { type: "string", default: "0" },
+      "trial-frames": { type: "string", default: "600" },
       gpu: { type: "string" },
       chromium: { type: "string" },
       profile: { type: "boolean", default: false },
@@ -379,6 +386,12 @@ async function main(): Promise<number> {
   const legFrames = Number(values["leg-frames"]);
   const camera = values.camera as FlightRequest["cameraMode"];
   if (!(legs >= 2 && Number.isInteger(legs)) || !(legFrames >= 10 && Number.isInteger(legFrames))) {
+    console.error(USAGE);
+    return 2;
+  }
+  const settleTrials = Number(values["settle-trials"]);
+  const trialFrames = Number(values["trial-frames"]);
+  if (!(settleTrials >= 0 && Number.isInteger(settleTrials)) || !(trialFrames >= 10 && Number.isInteger(trialFrames))) {
     console.error(USAGE);
     return 2;
   }
@@ -550,6 +563,35 @@ async function main(): Promise<number> {
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
     }
+
+    // Each trial is a new renderer in each arm, so a worker lost in one
+    // trial cannot leave the next with nothing to trip; both arms settle at
+    // once, the contention of the stream to rest.
+    const trials: SettleTrial[] = [];
+    if (settleTrials > 0) {
+      const starts = await arms.head.call("landStarts", settleTrials);
+      log(`settle trials at ${starts.map((point) => `(${fmt(point.x, 0)}, ${fmt(point.z, 0)})`).join(", ")}`);
+      for (const [index, point] of starts.entries()) {
+        await Promise.all(ARMS.map((arm) => arms[arm].call("prepareShot", {
+          shot, canonicalShotIndex, renderScale: null, openFrames: 2, freshRenderer: true,
+        })));
+        const [base, head] = await Promise.all(ARMS.map((arm) => arms[arm].call("flight", {
+          ...request,
+          frames: trialFrames,
+          restart: true,
+          speedMetersPerSecond: 0,
+          start: { x: point.x, z: point.z, yawDegrees: point.yawDegrees },
+        })));
+        trials.push({ start: point, base: base!, head: head! });
+        for (const [arm, report] of [["base", base!], ["head", head!]] as const) {
+          log(`trial ${index + 1} ${arm}: ${(report.elapsedMs / 1000).toFixed(0)} s, `
+            + `render p50 ${fmt(summarize([report], 0).renderMs.p50)} ms, detail ${report.pendingDetailWork}`
+            + describeDetailWorker(report.detailWorker, report.detailWatchdog));
+        }
+        writeFileSync(join(outDir, "progress-trials.json"), JSON.stringify(trials));
+      }
+    }
+
     const summaries = { base: summarize(reports.base, 1), head: summarize(reports.head, 1) };
     const firstLeg = { base: summarize(reports.base.slice(0, 1), 0), head: summarize(reports.head.slice(0, 1), 0) };
     const settings = {
@@ -560,14 +602,15 @@ async function main(): Promise<number> {
       ...(start ? { start } : {}),
       ...(faults.kill ? { killDetailWorker: faults.kill } : {}),
       ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),
+      ...(settleTrials > 0 ? { settleTrials, trialFrames } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };
-    const verdict = flightVerdict({ identity, shas, settle, reports });
+    const verdict = flightVerdict({ identity, shas, settle, reports, settleTrials: trials });
     const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`;
     writeFileSync(
       join(outDir, "report.json"),
-      JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, verdict }, null, 1),
+      JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, settleTrials: trials, verdict }, null, 1),
     );
     writeFileSync(join(outDir, "report.md"), markdown);
     console.log(`\n${markdown}`);

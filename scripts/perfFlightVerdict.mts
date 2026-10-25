@@ -2,7 +2,8 @@
  * perf:flight's verdict on the detail (vegetation) worker, with the frame
  * numbers that go with it, from a run's `report.json`. Pure; no I/O.
  *
- * For each arm and phase (the concurrent stream to rest, then each leg):
+ * For each arm and phase (the concurrent stream to rest, each leg, and each
+ * settle trial, which starts from a new renderer and so stands alone):
  *  - TRIPPED: by the end of the phase the runtime had timed its worker out,
  *    restarted it or fallen back to generating cells on the main thread, or
  *    had no worker at all. The counters are the renderer's, so a trip stays
@@ -30,6 +31,7 @@ import type {
   DetailWorkerState,
   FlightFrame,
   FlightReport,
+  LandStart,
   StreamReport,
 } from "../tests/perf/ab/protocol.ts";
 
@@ -93,6 +95,14 @@ export interface FlightRunReport {
   /** The concurrent stream to rest that every run starts with. */
   readonly settle?: Readonly<Record<ArmName, StreamReport>> | null;
   readonly reports: Readonly<Record<ArmName, readonly FlightReport[]>>;
+  readonly settleTrials?: readonly SettleTrial[];
+}
+
+/** One `--settle-trials` round: both arms, each on a new renderer, held still over `start`. */
+export interface SettleTrial {
+  readonly start: LandStart;
+  readonly base: FlightReport;
+  readonly head: FlightReport;
 }
 
 /** The trips a worker state counts: timeouts, restarts and fallbacks. */
@@ -165,8 +175,24 @@ export interface HeadBaseRatio {
   readonly heapKiBPerFrame: number;
 }
 
+/** An arm over all its settle trials. */
+export interface TrialSummary {
+  readonly arm: ArmName;
+  readonly sha: string;
+  readonly trials: number;
+  readonly tripped: number;
+  /** Trials with at least one span that would trip at 120 Hz, and those spans. */
+  readonly wouldTripTrials: number;
+  readonly wouldTripSpans: number;
+  /** The longest charged presentation span of any trial. */
+  readonly maxChargedMs: number | null;
+  /** Accepted build latency over every trial. */
+  readonly buildLatencyMs: { readonly p50: number; readonly p95: number; readonly count: number };
+}
+
 export interface FlightVerdict {
   readonly rows: readonly VerdictRow[];
+  readonly trials: readonly TrialSummary[];
   /** Head over base, over the legs after the first and over the first leg. */
   readonly ratios: readonly HeadBaseRatio[];
   /** For each commit an arm was built from: whether that arm tripped anywhere. */
@@ -195,7 +221,7 @@ function framesPerSecond(frames: number, watchdog: DetailWatchdogReport | null |
   return watchdog && watchdog.wallMs > 0 ? (watchdog.frames / watchdog.wallMs) * 1_000 : (frames / elapsedMs) * 1_000;
 }
 
-type PhaseRow = Omit<VerdictRow, "tripped" | "firstTripped" | "fault"> & { readonly injected?: DetailWorkerFault | null };
+type PhaseRow = Omit<VerdictRow, "tripped" | "firstTripped" | "fault">;
 
 function settleRow(arm: ArmName, sha: string, stream: StreamReport): PhaseRow {
   return {
@@ -211,10 +237,10 @@ function settleRow(arm: ArmName, sha: string, stream: StreamReport): PhaseRow {
   };
 }
 
-function legRow(arm: ArmName, sha: string, index: number, leg: FlightReport): PhaseRow {
+function legRow(arm: ArmName, sha: string, phase: string, leg: FlightReport): PhaseRow {
   const render = percentiles(leg.frames.map((frame) => frame.renderMs));
   return {
-    phase: `leg ${index + 1}`,
+    phase,
     arm,
     sha,
     worker: leg.detailWorker,
@@ -223,7 +249,6 @@ function legRow(arm: ArmName, sha: string, index: number, leg: FlightReport): Ph
     heapKiBPerFrame: heapKiBPerFrame(leg.frames),
     longTasks: leg.longTasks.length,
     framesPerSecond: framesPerSecond(leg.frames.length, leg.detailWatchdog, leg.elapsedMs),
-    injected: leg.detailWorkerFault ?? null,
   };
 }
 
@@ -243,13 +268,16 @@ export function flightVerdict(report: FlightRunReport): FlightVerdict {
   const trippedBySha: Record<string, boolean> = {};
   for (const arm of ARMS) {
     const sha = armSha(report, arm);
-    const phases = [
-      ...(report.settle?.[arm] ? [settleRow(arm, sha, report.settle[arm])] : []),
-      ...report.reports[arm].map((leg, index) => legRow(arm, sha, index, leg)),
+    const phases: { readonly phase: PhaseRow; readonly injected: DetailWorkerFault | null }[] = [
+      ...(report.settle?.[arm] ? [{ phase: settleRow(arm, sha, report.settle[arm]), injected: null }] : []),
+      ...report.reports[arm].map((leg, index) => ({
+        phase: legRow(arm, sha, `leg ${index + 1}`, leg),
+        injected: leg.detailWorkerFault ?? null,
+      })),
     ];
     let trippedBefore = false;
     let fault: { readonly injected: DetailWorkerFault; readonly phase: string } | null = null;
-    for (const { injected, ...phase } of phases) {
+    for (const { phase, injected } of phases) {
       if (injected) fault = { injected, phase: phase.phase };
       const tripped = !phase.worker
         ? null
@@ -268,6 +296,32 @@ export function flightVerdict(report: FlightRunReport): FlightVerdict {
     }
     trippedBySha[sha] = (trippedBySha[sha] ?? false) || trippedBefore;
   }
+  const trials: TrialSummary[] = [];
+  for (const arm of ARMS) {
+    const sha = armSha(report, arm);
+    const trialRows = (report.settleTrials ?? []).map((trial, index): VerdictRow => {
+      const row = legRow(arm, sha, `trial ${index + 1}`, trial[arm]);
+      const tripped = row.worker ? workerTripped(row.worker) : null;
+      return { ...row, tripped, firstTripped: tripped === true, fault: null };
+    });
+    if (trialRows.length === 0) continue;
+    rows.push(...trialRows);
+    const tripped = trialRows.filter((row) => row.tripped === true).length;
+    trippedBySha[sha] = (trippedBySha[sha] ?? false) || tripped > 0;
+    const latency = (report.settleTrials ?? []).flatMap((trial) => trial[arm].detailWatchdog?.buildLatencyMs ?? []);
+    const latencyPercentiles = percentiles(latency);
+    const charged = trialRows.flatMap((row) => (row.maxChargedMs ? [row.maxChargedMs.presentation] : []));
+    trials.push({
+      arm,
+      sha,
+      trials: trialRows.length,
+      tripped,
+      wouldTripTrials: trialRows.filter((row) => (row.wouldTrip ?? 0) > 0).length,
+      wouldTripSpans: trialRows.reduce((sum, row) => sum + (row.wouldTrip ?? 0), 0),
+      maxChargedMs: charged.length > 0 ? Math.max(...charged) : null,
+      buildLatencyMs: { p50: latencyPercentiles.p50, p95: latencyPercentiles.p95, count: latency.length },
+    });
+  }
   const legs = (arm: ArmName, from: number, to?: number) =>
     report.reports[arm].slice(from, to).flatMap((leg) => leg.frames);
   const ratios = [
@@ -275,8 +329,15 @@ export function flightVerdict(report: FlightRunReport): FlightVerdict {
       ? [ratio("after the first leg", legs("base", 1), legs("head", 1))]
       : []),
     ratio("the first leg", legs("base", 0, 1), legs("head", 0, 1)),
+    ...(report.settleTrials && report.settleTrials.length > 0
+      ? [ratio(
+        "the settle trials",
+        report.settleTrials.flatMap((trial) => trial.base.frames),
+        report.settleTrials.flatMap((trial) => trial.head.frames),
+      )]
+      : []),
   ];
-  return { rows, ratios, trippedBySha };
+  return { rows, trials, ratios, trippedBySha };
 }
 
 /**
@@ -347,6 +408,17 @@ export function renderVerdictMarkdown(verdict: FlightVerdict): string {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map((cells) => `| ${cells.join(" | ")} |`),
     "",
+    ...(verdict.trials.length === 0 ? [] : [
+      "Settle trials (each a new renderer in each arm, held still over fresh land, both arms at once):",
+      "",
+      "| arm | commit | trials | TRIPPED | trials with a would-trip (spans) | charged ms max | build latency ms p50 / p95 (n) |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      ...verdict.trials.map((entry) => `| ${entry.arm} | ${entry.sha.slice(0, 10)} | ${entry.trials} | `
+        + `${entry.tripped > 0 ? `**${entry.tripped}**` : "0"} | ${entry.wouldTripTrials} (${entry.wouldTripSpans}) | `
+        + `${fmt(entry.maxChargedMs)} | ${fmt(entry.buildLatencyMs.p50)} / ${fmt(entry.buildLatencyMs.p95)} `
+        + `(${entry.buildLatencyMs.count}) |`),
+      "",
+    ]),
     "| head / base | render() p50 | render() p95 | KiB/frame |",
     "| --- | --- | --- | --- |",
     ...verdict.ratios.map((entry) =>

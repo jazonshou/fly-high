@@ -369,6 +369,68 @@ describe("flight verdict", () => {
   });
 });
 
+describe("settle trials", () => {
+  const start = (x: number) => ({ x, z: 0, yawDegrees: 0, distanceMeters: x, vegetatedShare: 0.8 });
+
+  it("reads each trial on its own, and sums the arms over them", () => {
+    const report = j2Report(true);
+    const verdict = flightVerdict({
+      ...report,
+      reports: { base: report.reports.base, head: report.reports.base },
+      settleTrials: [
+        {
+          start: start(25_000),
+          base: leg(602, CLEAN, steady(2), watchdog({ presentation: 2_200, wouldTrip: 1, latency: [400, 900] })),
+          head: leg(602, CLEAN, steady(1), watchdog({ presentation: 300, latency: [100] })),
+        },
+        {
+          start: start(35_355),
+          base: leg(602, J2_HEAD_TRIP, steady(2), watchdog({ presentation: 8_000, wouldTrip: 1, latency: [] })),
+          head: leg(602, CLEAN, steady(1), watchdog({ presentation: 250, latency: [150, 200] })),
+        },
+        {
+          start: start(43_301),
+          base: leg(602, J2_HEAD_TRIP, steady(2), watchdog({ presentation: 8_000, wouldTrip: 1, latency: [] })),
+          head: leg(602, CLEAN, steady(1), watchdog({ presentation: 250, latency: [] })),
+        },
+      ],
+    });
+    const trialRows = verdict.rows.filter((row) => row.phase.startsWith("trial") && row.arm === "base");
+    expect(trialRows.map((row) => [row.phase, row.tripped, row.firstTripped])).toEqual([
+      ["trial 1", false, false],
+      ["trial 2", true, true],
+      ["trial 3", true, true],
+    ]);
+    expect(verdict.trials).toEqual([
+      {
+        arm: "base",
+        sha: BASE_SHA,
+        trials: 3,
+        tripped: 2,
+        wouldTripTrials: 3,
+        wouldTripSpans: 3,
+        maxChargedMs: 8_000,
+        buildLatencyMs: { p50: 400, p95: 900, count: 2 },
+      },
+      {
+        arm: "head",
+        sha: HEAD_SHA,
+        trials: 3,
+        tripped: 0,
+        wouldTripTrials: 0,
+        wouldTripSpans: 0,
+        maxChargedMs: 300,
+        buildLatencyMs: { p50: 150, p95: 200, count: 3 },
+      },
+    ]);
+    // The legs were clean: the trials decide.
+    expect(verdict.trippedBySha).toEqual({ [BASE_SHA]: true, [HEAD_SHA]: false });
+    expect(workerFallbackExitCode(verdict, HEAD_SHA)).toBe(0);
+    expect(verdict.ratios.at(-1)).toEqual({ phase: "the settle trials", renderP50: 0.5, renderP95: 0.5, heapKiBPerFrame: 1 });
+    expect(renderVerdictMarkdown(verdict)).toContain(`| base | ${BASE_SHA.slice(0, 10)} | 3 | **2** | 3 (3) | 8000 | 400 / 900 (2) |`);
+  });
+});
+
 describe("a worker failed on purpose", () => {
   const killed = (before: DetailWorkerState, kind: DetailWorkerFault["kind"] = "kill"): DetailWorkerFault =>
     ({ kind, frame: 300, delivered: true, before });
