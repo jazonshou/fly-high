@@ -267,8 +267,9 @@ export function bakeSkyIrradiancePolynomial(
  * ambient, twilightArch, nightZenithFade, twilightWarm, twilightBelt and
  * sunsetDirection. sunTransmittance and strength, which it does not read,
  * are copied too: the copy is a whole binding, for the renderer to hand
- * AtmosphereGpuResources.update so the SH, the cloud ambient LUT and the
- * probe all light from the same environment.
+ * AtmosphereGpuResources.update so the SH and the cloud ambient LUT light
+ * from the same environment. The specular cube does not read it: it renders
+ * the sky dome with the dome's uniforms of its re-arm frame.
  */
 function snapshotAerialPerspectiveBinding(
   binding: AerialPerspectiveBinding,
@@ -471,9 +472,13 @@ export class SkyEnvironmentProbe {
   }
 
   /**
-   * The binding the current or last applied rebake samples. The renderer
-   * hands it to AtmosphereGpuResources.update and takes the probe's altitude
-   * from it. Null before any rebake and after update().
+   * The snapshot the rebake in flight samples, else the last applied one's,
+   * until the next beginRebake replaces it or update() clears it (null then
+   * and before any rebake). The renderer hands it to
+   * AtmosphereGpuResources.update and takes the probe's altitude from it:
+   * each begin makes a new object, so keep the reference read at apply time
+   * if the LUT update comes on a later frame. Read only — the rebake in
+   * flight samples it, so a write would change the bake.
    */
   get rebakeBinding(): AerialPerspectiveBinding | null {
     return this.rebakeSnapshot;
