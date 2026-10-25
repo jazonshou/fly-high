@@ -499,8 +499,40 @@ function describeSkyFrame(frame: SkyWorkFrame): string {
   return `${frame.work.join(" + ")} ${fmt(frame.skyMs)} ms${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
 }
 
-/** One leg's bakes for the run log, or "" from a build that does not report them. */
+/**
+ * The bake section and its report.json figures. It is new beside tables a
+ * run has always had, so a frame it cannot read costs only itself: on a
+ * throw the section says so, `bakes` is null, and the rest of the report is
+ * still written.
+ */
+export function bakeSection(input: BakeReportInput): { readonly bakes: BakeReport | null; readonly markdown: string } {
+  try {
+    const bakes = bakeReport(input);
+    return { bakes, markdown: renderBakeMarkdown(bakes) };
+  } catch (error) {
+    return {
+      bakes: null,
+      markdown: [
+        "### Sky re-light and ground-cover bake",
+        "",
+        `The bake section failed: ${error instanceof Error ? error.message : String(error)}. The tables above do not `
+          + "depend on it; report.json carries `bakes: null`.",
+        "",
+      ].join("\n"),
+    };
+  }
+}
+
+/** One leg's bakes for the run log, or "" from a build that does not report them; never throws. */
 export function describeLegBakes(leg: FlightReport): string {
+  try {
+    return legBakes(leg);
+  } catch (error) {
+    return `, bake summary failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function legBakes(leg: FlightReport): string {
   const seen = figures([phaseBakes("", leg.frames, unknownSky())]);
   if (!seen) return "";
   const { sky, groundCover } = seen;

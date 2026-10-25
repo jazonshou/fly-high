@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   bakeReport,
+  bakeSection,
   describeLegBakes,
   reaches,
   renderBakeMarkdown,
@@ -487,6 +488,21 @@ describe("flight bake report", () => {
     expect(markdown).not.toMatch(/legs of base/);
     // Once each arm's legs exercise both, neither note.
     expect(renderBakeMarkdown(report)).not.toContain("Not exercised");
+  });
+
+  it("costs only its own section when it cannot read the frames: the rest of the report is still written", () => {
+    const good = bakeSection({ shas: SHAS, reports: { base: [], head: [headLeg2] } });
+    expect(good.bakes).toEqual(bakeReport({ shas: SHAS, reports: { base: [], head: [headLeg2] } }));
+    expect(good.markdown).toBe(renderBakeMarkdown(good.bakes!));
+    const broken = { ...headLeg2, frames: null } as unknown as FlightReport;
+    const failed = bakeSection({ shas: SHAS, reports: { base: [], head: [broken] } });
+    expect(failed.bakes).toBeNull();
+    expect(failed.markdown).toMatch(/^### Sky re-light and ground-cover bake\n\nThe bake section failed: .+; report\.json carries `bakes: null`\.\n$/);
+    expect(describeLegBakes(broken)).toMatch(/^, bake summary failed: /);
+    // perf:flight writes report.json and report.md from it, not from the throwing parts.
+    const flight = readFileSync(fileURLToPath(new URL("../scripts/perf-flight.mts", import.meta.url)), "utf8");
+    expect(flight).toContain("bakeSection({ shas, reports, settleTrials: trials })");
+    expect(flight).not.toMatch(/\b(bakeReport|renderBakeMarkdown)\(/);
   });
 
   it("logs a leg's bakes in one line, and nothing for a build that does not report them", () => {

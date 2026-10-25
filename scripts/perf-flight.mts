@@ -59,7 +59,7 @@ import {
   type GpuBackend,
   type StaticServer,
 } from "./perfAbHarness.mts";
-import { bakeReport, describeLegBakes, renderBakeMarkdown } from "./perfFlightBakes.mts";
+import { bakeSection, describeLegBakes } from "./perfFlightBakes.mts";
 import {
   ARMS,
   faultOutcome,
@@ -696,9 +696,9 @@ async function main(): Promise<number> {
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };
     const verdict = flightVerdict({ identity, shas, settle, reports, settleTrials: trials });
-    const bakes = bakeReport({ shas, reports, settleTrials: trials });
+    const { bakes, markdown: bakeMarkdown } = bakeSection({ shas, reports, settleTrials: trials });
     const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`
-      + `\n${renderBakeMarkdown(bakes)}`;
+      + `\n${bakeMarkdown}`;
     writeFileSync(
       join(outDir, "report.json"),
       JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, settleTrials: trials, verdict, bakes }, null, 1),
