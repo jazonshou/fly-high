@@ -16,12 +16,6 @@
  * synchronous by design and outside it: it has its own column, and the
  * worst frame and the frames over the target are the sliced ones alone.
  *
- * The refresh's own ms leave out what the re-light costs elsewhere in the
- * frame: the cube's six faces in the scene pass above all. So each sliced
- * re-light is also followed frame by frame, from its begin to the frame after
- * its LUT, with each frame's render() and the two passes its work lands in
- * (`RELIGHT_PASSES`), against their medians over the frame's leg.
- *
  * Which of these a frame did is read from its record and the frames before
  * it: landings and sampling slices are counted by the renderer; the cube and
  * the LUT are the first and second frames after a landing; a slice is a begin
@@ -31,6 +25,12 @@
  * that is not known, and a slice there reads "advance". A refresh that did
  * none of those is a one-frame re-light. So a one-frame re-light on either
  * of the two frames after a landing reads as the cube or the LUT.
+ *
+ * The refresh's own ms leave out what the re-light costs elsewhere in the
+ * frame: the cube's six faces in the scene pass above all. So each sliced
+ * re-light is also followed frame by frame, from its begin to the frame after
+ * its LUT, with each frame's render() and the two passes its work lands in
+ * (`RELIGHT_PASSES`), against their medians over the frame's leg.
  *
  * Ground cover. Each tile-bake call's time on the bake's own clock, against
  * 2 ms: its 1.5 ms budget and one 32-column step past it. A call over it is
@@ -65,13 +65,14 @@ const LISTED_FRAMES = 40;
 const LISTED_RELIGHTS = 6;
 
 /**
- * How to make a run exercise each target, for the report and perf:flight's
- * usage. The agent's terrain following climbs at most 25 m/s and descends
- * at most 10 m/s, at 60 frames a simulated second.
+ * How to make a run exercise each target, for the report's "not exercised"
+ * lines (perf:flight's usage says the same). The agent's terrain following
+ * climbs at most 25 m/s and descends at most 10 m/s, at 60 frames a
+ * simulated second.
  */
-export const SKY_RELIGHT_HOW = "A climb re-lights the sky every 500 m and the agent climbs at most 25 m/s, so a "
+const SKY_RELIGHT_HOW = "A climb re-lights the sky every 500 m and the agent climbs at most 25 m/s, so a "
   + "re-light needs about 1200 frames of climb: e.g. --clearance 1500 --speed 250 --legs 2 --leg-frames 720.";
-export const GROUND_COVER_HOW = "The ground cover bakes only below its fade height (55 to 110 m above the ground, by "
+const GROUND_COVER_HOW = "The ground cover bakes only below its fade height (55 to 110 m above the ground, by "
   + "quality tier), and the agent descends at most 10 m/s from the shot's altitude; --start x,z begins the "
   + "legs at --clearance above the ground: e.g. --clearance 30 --speed 70 --start <x,z>.";
 
