@@ -554,8 +554,11 @@ describe("rebuilt light-trainer handling", () => {
     expect(taxi.telemetry().groundSpeed).toBeLessThan(4);
     // D-6: right rudder steers the nose wheel to starboard and the compass
     // reading falls (wrapped into [0, 360); pre-D-6 the mirror read 5..20).
-    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeGreaterThan(340);
-    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeLessThan(355);
+    // A real turn now, not a drift: 11 degrees of nosewheel on a 2.6 m
+    // wheelbase is a 13 m circle, and the yaw grip no longer damps the turn
+    // the nosewheel steers (it read 340-355 when it did, about 10 degrees).
+    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeGreaterThan(290);
+    expect(taxi.telemetry().heading * RAD_TO_DEG).toBeLessThan(345);
     expect(taxi.state.crashed).toBe(false);
   });
 

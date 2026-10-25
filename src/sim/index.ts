@@ -15,7 +15,7 @@ export {
   aftExtent,
   stallSpeed,
 } from "./aircraft";
-export { applyFlightAssistance, type StabilityAssistMode } from "./assists";
+export { applyFlightAssistance, isGroundSteering, type StabilityAssistMode } from "./assists";
 export {
   AUTOLAND_AIM_FROM_THRESHOLD,
   AUTOLAND_GLIDESLOPE_RADIANS,
@@ -85,7 +85,12 @@ export {
   getFlightTelemetry,
   pilotSurfaceClearance,
   MAX_STEP_DURATION,
+  NOSEWHEEL_STEERING_LATERAL_LIMIT,
+  nosewheelSteeringAngle,
+  steeringCommand,
   TRIM_ELEVATOR_AUTHORITY,
+  TYRE_CORNERING_STIFFNESS,
+  WHEEL_BRAKE_FRICTION,
   spawnFlight,
   speedBrakeLiftDump,
   STANDARD_GRAVITY,
