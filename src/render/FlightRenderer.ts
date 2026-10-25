@@ -450,7 +450,8 @@ export interface FlightRendererOptions {
    * `terrainSample(x, z).height` alone, bit for bit (`sampleTerrainHeight` of
    * the same world), for the consumers that read only the height: it costs
    * none of the normal's four extra heights or the surface classification.
-   * Unset, those consumers read the full sample's height.
+   * Unset, those consumers read the full sample's height, and the
+   * ground-cover tile keeps its whole-row bake.
    */
   terrainHeight?: (x: number, z: number) => number;
   world: WorldDefinition;
@@ -1217,8 +1218,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       const groundCover = new GroundCoverSystem(scene, {
         terrainSample: liveTerrainSample,
         // The tile's height rows and the altitude gate read only the height,
-        // and with it the tile bakes in 32 m steps under its frame budget.
-        terrainHeight: liveTerrainHeight,
+        // and with a height-only sampler the tile bakes in 32 m steps under
+        // its frame budget. Without one (the perf harness) a column would cost
+        // a full sample, which the step's pace floor is not sized for, so the
+        // tile keeps its whole-row bake, as before.
+        ...(options.terrainHeight ? { terrainHeight: liveTerrainHeight } : {}),
         // `6-9` debt 1: the per-frame field is admitted through the SAME
         // amortised-compute meter as every other GPU compute producer, which
         // is what `owners.ts` has claimed since `4-0b` and wave G left false.
