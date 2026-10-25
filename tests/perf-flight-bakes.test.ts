@@ -217,6 +217,9 @@ describe("flight bake report", () => {
     // Not known at the start of the arm's first leg: a slice reads "advance".
     const unknown = bakeReport({ shas: SHAS, reports: { base: [], head: [leg([frame(slice(1.2)), frame(slice(1.1))])] } });
     expect(row(unknown.rows, "leg 1", "head").sky!.overTarget.map((entry) => entry.work)).toEqual([["advance"], ["advance"]]);
+    // Nor after a frame without sky work: a rebake in flight runs the refresh on every frame.
+    const quiet = bakeReport({ shas: SHAS, reports: { base: [], head: [leg([frame(null), frame(slice(1.3)), frame(slice(1.2))])] } });
+    expect(row(quiet.rows, "leg 1", "head").sky!.overTarget.map((entry) => entry.work)).toEqual([["begin"], ["advance"]]);
     // After a landing or a one-frame re-light nothing is in flight: the next slice begins one.
     for (const before of [landing(1.1, 1), sky(1.1)]) {
       const known = bakeReport({

@@ -16,10 +16,12 @@
  * Which of these a frame did is read from its record and the frames before
  * it: landings and sampling slices are counted by the renderer; the cube and
  * the LUT are the first and second frames after a landing; a slice is a begin
- * when no rebake was in flight, which is not known at the start of an arm's
- * first leg or of a trial (a slice reads "advance" there); a refresh that
- * did none of those is a one-frame re-light. So a one-frame re-light on
- * either of the two frames after a landing reads as the cube or the LUT.
+ * when no rebake was in flight: after a landing or a one-frame re-light, or
+ * after a frame on which the refresh did not run (it runs on every frame of a
+ * rebake in flight). On the first frame of an arm's first leg or of a trial
+ * that is not known, and a slice there reads "advance". A refresh that did
+ * none of those is a one-frame re-light. So a one-frame re-light on either
+ * of the two frames after a landing reads as the cube or the LUT.
  *
  * Ground cover. Each tile-bake call's time on the bake's own clock, against
  * 2 ms: its 1.5 ms budget and one 32-column step past it.
@@ -97,7 +99,11 @@ interface SkyState {
   inFlight: boolean | null;
   /** Frames since the last landing; null before one. */
   sinceLanding: number | null;
+  /** The refresh ran on the frame before; null when not known. */
+  previousRan: boolean | null;
 }
+
+const unknownSky = (): SkyState => ({ inFlight: null, sinceLanding: null, previousRan: null });
 
 /** What one phase's frames say, before summing. */
 interface PhaseBakes {
@@ -122,6 +128,9 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
   for (const [index, frame] of frames.entries()) {
     if (state.sinceLanding !== null) state.sinceLanding += 1;
     const bake = frame.bake;
+    const ran = bake === undefined ? null : bake !== null && bake.skyMs !== null;
+    const previousRan = state.previousRan;
+    state.previousRan = ran;
     if (!bake) continue;
     if (bake.groundCoverCalls > 0) callMs.push(bake.groundCoverMs ?? 0);
     paceFloorCalls += bake.groundCoverPaceFloorCalls;
@@ -138,7 +147,7 @@ function phaseBakes(phase: string, frames: readonly FlightFrame[], state: SkySta
       if (state.sinceLanding === 1) work.push("cube");
       else if (state.sinceLanding === 2) work.push("LUT");
       if (bake.skyAdvances > 0) {
-        work.push(state.inFlight === false ? "begin" : "advance");
+        work.push(state.inFlight === false || previousRan === false ? "begin" : "advance");
         state.inFlight = true;
       }
       if (work.length === 0) {
@@ -202,7 +211,7 @@ function summarize(phase: string, arm: ArmName, sha: string, parts: readonly Pha
 export function bakeReport(input: BakeReportInput): BakeReport {
   const legs = {} as Record<ArmName, PhaseBakes[]>;
   for (const arm of ARMS) {
-    const state: SkyState = { inFlight: null, sinceLanding: null };
+    const state: SkyState = unknownSky();
     legs[arm] = input.reports[arm].map((leg, index) => phaseBakes(`leg ${index + 1}`, leg.frames, state));
   }
   const rows: BakeRow[] = [];
@@ -217,7 +226,7 @@ export function bakeReport(input: BakeReportInput): BakeReport {
   for (const [index, trial] of (input.settleTrials ?? []).entries()) {
     for (const arm of ARMS) {
       const phase = `trial ${index + 1}`;
-      rows.push(summarize(phase, arm, input.shas[arm], [phaseBakes(phase, trial[arm].frames, { inFlight: null, sinceLanding: null })]));
+      rows.push(summarize(phase, arm, input.shas[arm], [phaseBakes(phase, trial[arm].frames, unknownSky())]));
     }
   }
   return { rows };
@@ -237,7 +246,7 @@ function describeSkyFrame(frame: SkyWorkFrame): string {
 
 /** One leg's bakes for the run log, or "" from a build that does not report them. */
 export function describeLegBakes(leg: FlightReport): string {
-  const seen = figures([phaseBakes("", leg.frames, { inFlight: null, sinceLanding: null })]);
+  const seen = figures([phaseBakes("", leg.frames, unknownSky())]);
   if (!seen) return "";
   const { sky, groundCover } = seen;
   const skyPart = sky.worst === null
