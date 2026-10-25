@@ -410,6 +410,8 @@ export class Autoland {
   private readonly pathS = new Float64Array(PATH_CAPACITY);
   private pathCount = 0;
   private pathIndex = 0;
+  /** Plans installed since construction: tells `update` a replan happened. */
+  private plans = 0;
   /** Arc length at the start of the final approach, and at the aim point. */
   private finalS = 0;
   private aimS = 0;
@@ -688,6 +690,7 @@ export class Autoland {
     }
     this.pathCount = count;
     this.pathIndex = 0;
+    this.plans += 1;
     this.finalS = finalS;
     this.aimS = finalS + chosen.finalLength + this.profile.aimPoint;
     this.finalLength = chosen.finalLength;
@@ -729,6 +732,27 @@ export class Autoland {
     status.runwayHeading = end.heading;
     status.approachSpeed = this.approachSpeedFor(end);
     this.replanTimer = 0;
+  }
+
+  /**
+   * Path progress: the nearest sample in a short window ahead of the last
+   * one, which becomes `pathIndex`. Returns the squared distance to it.
+   */
+  private trackPath(x: number, z: number): number {
+    let index = this.pathIndex;
+    let bestDistance = Infinity;
+    const searchEnd = Math.min(this.pathCount - 1, index + 60);
+    for (let i = Math.max(0, index - 2); i <= searchEnd; i += 1) {
+      const dx = this.pathX[i]! - x;
+      const dz = this.pathZ[i]! - z;
+      const distance = dx * dx + dz * dz;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        index = i;
+      }
+    }
+    this.pathIndex = index;
+    return bestDistance;
   }
 
   private indexAtS(s: number): number {
@@ -856,21 +880,9 @@ export class Autoland {
     const rightOfCentre = relX * -end.dirZ + relZ * end.dirX;
     const distanceToAim = this.profile.aimPoint - pastThreshold;
 
-    // Path progress: nearest sample in a short window ahead of the last one.
+    let bestDistance = this.trackPath(x, z);
     let index = this.pathIndex;
-    let bestDistance = Infinity;
-    const searchEnd = Math.min(this.pathCount - 1, index + 60);
-    for (let i = Math.max(0, index - 2); i <= searchEnd; i += 1) {
-      const dx = this.pathX[i]! - x;
-      const dz = this.pathZ[i]! - z;
-      const distance = dx * dx + dz * dz;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        index = i;
-      }
-    }
-    this.pathIndex = index;
-    const s = this.pathS[index]!;
+    let s = this.pathS[index]!;
     const crossTrack = Math.sqrt(bestDistance);
     status.distanceToTouchdown = status.phase === "rollout" || status.phase === "landed"
       ? 0
@@ -885,6 +897,7 @@ export class Autoland {
     }
 
     // ---- Phase transitions that do not depend on this step's commands ----
+    const plans = this.plans;
     if (phase === "approach") {
       this.replanTimer += dt;
       const lost = crossTrack > Math.max(600, this.turnRadius * 1.5);
@@ -920,6 +933,14 @@ export class Autoland {
       this.touchdown(state, pastThreshold);
     }
     this.lastVerticalSpeed = state.velocity.y;
+    if (this.plans !== plans) {
+      // A new plan: progress is along IT from here on. Measured along the
+      // old one, the approach's configuration stage read the new final as
+      // already passed and put the landing flap out 13 km from it.
+      bestDistance = this.trackPath(x, z);
+      index = this.pathIndex;
+      s = this.pathS[index]!;
+    }
 
     // ---- Lateral guidance: L1 on the planned track ----
     let lookahead = clamp(groundSpeed * (status.phase === "approach" ? 9 : 6), 120, 1_500);
