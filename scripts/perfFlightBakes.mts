@@ -50,6 +50,17 @@ export const GROUND_COVER_CALL_TARGET_MS = 2;
 /** The report lists at most this many sky-work frames over the target; report.json keeps them all. */
 const LISTED_FRAMES = 40;
 
+/**
+ * How to make a run exercise each target, for the report and perf:flight's
+ * usage. The agent's terrain following climbs at most 25 m/s and descends
+ * at most 10 m/s, at 60 frames a simulated second.
+ */
+export const SKY_RELIGHT_HOW = "A climb re-lights the sky every 500 m and the agent climbs at most 25 m/s, so a "
+  + "re-light needs about 1200 frames of climb: e.g. --clearance 1500 --speed 250 --legs 2 --leg-frames 720.";
+export const GROUND_COVER_HOW = "The ground cover bakes only below its fade height (55 to 110 m above the ground, by "
+  + "quality tier), and the agent descends at most 10 m/s from the shot's altitude; --start x,z begins the "
+  + "legs at --clearance above the ground: e.g. --clearance 30 --speed 70 --start <x,z>.";
+
 /** At or over `target`, give or take the float error of a difference of two clock readings. */
 export function reaches(milliseconds: number, target: number): boolean {
   return milliseconds >= target - 1e-6;
@@ -303,8 +314,9 @@ export function renderBakeMarkdown(report: BakeReport): string {
         ? [
           String(sky.landed),
           String(sky.slicedFrames),
+          // "-": no sliced frame, so nothing to hold to the target.
           sky.worst ? `${fmt(sky.worst.skyMs)} (${sky.worst.work.join(" + ")})` : "-",
-          sky.overTarget.length > 0 ? `**${sky.overTarget.length}**` : "0",
+          sky.slicedFrames === 0 ? "-" : sky.overTarget.length > 0 ? `**${sky.overTarget.length}**` : "0",
           oneFrameCell(sky.oneFrame),
         ]
         : na(5)),
@@ -319,7 +331,11 @@ export function renderBakeMarkdown(report: BakeReport): string {
       `- ${arm} ${frame.phase} frame ${frame.frame}: ${describeSkyFrame(frame)}, render() ${fmt(frame.renderMs)} ms`),
     ...(frames.length > LISTED_FRAMES ? [`- and ${frames.length - LISTED_FRAMES} more (report.json)`] : []),
   ];
-  const recordedAny = report.rows.some((row) => row.sky !== null);
+  // An arm whose legs never reached a target does not check it: say so, not "0 over".
+  const allLegs = report.rows.filter((row) => row.phase === "all legs");
+  const noRelight = allLegs.filter((row) => row.sky !== null && row.sky.landed === 0).map((row) => row.arm);
+  const noCover = allLegs.filter((row) => row.groundCover !== null && row.groundCover.calls === 0).map((row) => row.arm);
+  const slicedAny = listed.some((row) => (row.sky?.slicedFrames ?? 0) > 0);
   const coverRows = report.rows.map((row) => {
     const cover = row.groundCover;
     return [
@@ -328,7 +344,7 @@ export function renderBakeMarkdown(report: BakeReport): string {
         ? [
           String(cover.calls),
           cover.ms ? `${fmt(cover.ms.p50)} / ${fmt(cover.ms.p95)} / ${fmt(cover.ms.max)}` : "-",
-          cover.overTarget > 0 ? `**${cover.overTarget}**` : "0",
+          cover.calls === 0 ? "-" : cover.overTarget > 0 ? `**${cover.overTarget}**` : "0",
           String(cover.paceFloorCalls),
           String(cover.tilesCompleted),
         ]
@@ -360,7 +376,12 @@ export function renderBakeMarkdown(report: BakeReport): string {
       skyRows,
     ),
     "",
-    ...(!recordedAny ? [] : over.length === 0
+    ...(noRelight.length === 0 ? [] : [
+      `**Not exercised:** no sliced re-light landed in the legs of ${noRelight.join(" and ")}, so this run does `
+        + `not check the ${SKY_FRAME_TARGET_MS} ms target there. ${SKY_RELIGHT_HOW}`,
+      "",
+    ]),
+    ...(!slicedAny ? [] : over.length === 0
       ? [`No sliced-re-light frame at or over ${SKY_FRAME_TARGET_MS} ms.`, ""]
       : [
         `Sliced-re-light frames at or over ${SKY_FRAME_TARGET_MS} ms (the work, the refresh's ms with the slice's `
@@ -384,5 +405,10 @@ export function renderBakeMarkdown(report: BakeReport): string {
       coverRows,
     ),
     "",
+    ...(noCover.length === 0 ? [] : [
+      `**Not exercised:** no tile-bake call in the legs of ${noCover.join(" and ")}, so this run does not check `
+        + `the ${GROUND_COVER_CALL_TARGET_MS} ms target there. ${GROUND_COVER_HOW}`,
+      "",
+    ]),
   ].join("\n");
 }

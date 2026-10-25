@@ -308,7 +308,7 @@ describe("flight bake report", () => {
     expect(markdown).toContain("| leg 2 | head | 1234567890 | 0 | 2 | 0.70 (LUT + begin) | 0 | 0 |");
     expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | 1 | 0.50 (begin) | 0 | 1 (3.20) |");
     expect(markdown).toContain("| leg 1 | head | 1234567890 | 3 | 1.60 / 2.30 / 2.30 | **1** | 1 | 1 |");
-    expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | - | 0 | 0 | 0 |");
+    expect(markdown).toContain("| trial 1 | head | 1234567890 | 0 | - | - | 0 | 0 |");
     expect(markdown).toContain("- head leg 1 frame 3: advance 1.30 ms (slice 0.52), render() 31.00 ms");
     expect(markdown).toContain("- head leg 1 frame 4: land 1.50 ms (converter 1.40), render() 33.00 ms");
     // The one-frame re-lights in a list of their own, after the sliced frames'.
@@ -320,12 +320,44 @@ describe("flight bake report", () => {
     expect(markdown.match(/- head leg 1 frame 4:/g)).toHaveLength(1);
   });
 
-  it("says so when no recorded frame went over 1 ms, and nothing when no arm was recorded", () => {
-    const quiet = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [leg([frame(sky(0.3))])] } }));
+  it("says so when no sliced frame reached 1 ms, and nothing when no arm was recorded", () => {
+    const quiet = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [leg([frame(slice(0.3))])] } }));
     expect(quiet).toContain("No sliced-re-light frame at or over 1 ms.");
     const none = renderBakeMarkdown(bakeReport({ shas: SHAS, reports: { base: [unrecorded(2)], head: [unrecorded(2)] } }));
     expect(none).not.toContain("No sliced-re-light frame");
+    expect(none).not.toContain("Not exercised");
     expect(none).not.toContain("- head");
+  });
+
+  it("says a target was not exercised when an arm's legs never reached it, not that it held", () => {
+    // The specified smoke runs: a climb too short for a re-light, an approach
+    // that never came down to the blades. Only a one-frame re-light and
+    // slices that did not land.
+    const unexercised = bakeReport({
+      shas: SHAS,
+      reports: {
+        base: [unrecorded(4), unrecorded(4)],
+        head: [leg([frame(sky(2.5)), frame(null), frame(null)]), leg([frame(null), frame(slice(0.4)), frame(slice(0.5))])],
+      },
+    });
+    const markdown = renderBakeMarkdown(unexercised);
+    expect(markdown).toContain("| leg 1 | head | 1234567890 | 0 | 0 | - | - | 1 (2.50) |");
+    expect(markdown).toContain("| leg 2 | head | 1234567890 | 0 | 2 | 0.50 (advance) | 0 | 0 |");
+    expect(markdown).toContain("| all legs | head | 1234567890 | 0 | 2 | 0.50 (advance) | 0 | 1 (2.50) |");
+    // The ground-cover table: no call, so neither the per-call ms nor the calls over 2 ms.
+    expect(markdown).toContain("| all legs | head | 1234567890 | 0 | - | - | 0 | 0 |");
+    expect(markdown).toContain(
+      "**Not exercised:** no sliced re-light landed in the legs of head, so this run does not check the 1 ms target there.",
+    );
+    expect(markdown).toContain(
+      "**Not exercised:** no tile-bake call in the legs of head, so this run does not check the 2 ms target there.",
+    );
+    expect(markdown).toContain("--leg-frames 720");
+    expect(markdown).toContain("--start <x,z>");
+    // The base reads n/a, not "not exercised".
+    expect(markdown).not.toMatch(/legs of base/);
+    // Once each arm's legs exercise both, neither note.
+    expect(renderBakeMarkdown(report)).not.toContain("Not exercised");
   });
 
   it("logs a leg's bakes in one line, and nothing for a build that does not report them", () => {
