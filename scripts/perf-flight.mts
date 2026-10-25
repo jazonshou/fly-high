@@ -611,7 +611,9 @@ async function main(): Promise<number> {
           ...request,
           frames: trialFrames,
           restart: true,
+          // Held still and level: a bank would turn it on the spot.
           speedMetersPerSecond: 0,
+          bankDegrees: 0,
           start: { x: point.x, z: point.z, yawDegrees: point.yawDegrees },
         })));
         trials.push({ start: point, base: base!, head: head! });
