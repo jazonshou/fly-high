@@ -9,6 +9,7 @@ import {
   renderBakeMarkdown,
   type BakeRow,
 } from "../scripts/perfFlightBakes.mts";
+import { PERF_CAPTURE_SEED } from "../scripts/perf-capture.mts";
 import type { FlightRenderer } from "../src/render/FlightRenderer";
 import { createWorld, sampleTerrain, sampleTerrainHeight } from "../src/world";
 import { FlightBakeProbe, readBakeStats, type BakeStatsReading } from "./perf/ab/bakeProbe";
@@ -549,7 +550,8 @@ describe("the agent's terrain samplers", () => {
   });
 
   it("give the perf world's height bit for bit as its full sample, as FlightRenderer requires", () => {
-    const world = createWorld("phase1-perf-baseline");
+    // The world the agent flies perf:flight's shot in (its seed, the shot's evolution or "analytic").
+    const world = createWorld(PERF_CAPTURE_SEED, { worldEvolution: "analytic" });
     const { terrainSample, terrainHeight } = agentTerrainSamplers(world, true, sampleTerrain, sampleTerrainHeight);
     const airportX = world.airport?.centerX ?? 0;
     const airportZ = world.airport?.centerZ ?? 0;
