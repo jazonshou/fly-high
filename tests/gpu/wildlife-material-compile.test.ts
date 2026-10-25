@@ -130,12 +130,14 @@ describe("wildlife material stack compiles on-adapter (Gate A-5)", () => {
       const prototypes = wildlifeMeshes(scene);
       expect(prototypes).toHaveLength(10);
       for (const [index, prototype] of prototypes.entries()) {
+        // The count first: `thinInstanceSetMatrixAt` writes nothing at an
+        // index at or past it, and an ended prime leaves it at 0.
+        prototype.thinInstanceCount = 1;
         prototype.thinInstanceSetMatrixAt(
           0,
           Matrix.Translation((index - 4.5) * 1.2, 0, 0),
           true,
         );
-        prototype.thinInstanceCount = 1;
         prototype.setEnabled(true);
       }
 
