@@ -1856,6 +1856,18 @@ out with `--start 19740.8,-13155.1,-17.02`) read no long task and no frame
 over 4x the median after the spawn, render max 35.0 ms against main's
 211.4 ms.
 
+### Compare CI parts on one CPU model (2026-10-25)
+
+Each SwiftShader part of the CI gate runs on whichever runner CPU it draws
+(so far an AMD EPYC 7763, 9V74 or 9V45), and the report's header names it.
+The models weigh work differently. The 9V45 runs about twice as fast as a
+7763 and read the biomes PR's cruise at +3.7% against main where a 7763
+read +1.0%; on it, passes the PR does not touch moved by 5-8% (the cloud
+raymarch +8.2%, the bloom composite -5.6%, with identical pixels). Within
+one model, run-to-run spread is about 1%. So attribute a change only between
+parts on the same CPU model, and use the macOS runner's advisory A/B to
+break a tie: it read the same cruise at +0.5% (-0.2% to +1.2%).
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
