@@ -215,6 +215,7 @@ import {
   topViewCameraUpToRef,
   topViewRigOffsetsToRef,
 } from "./cameraPresentation";
+import { nextObservedGroundSpeed } from "./cameraGroundSpeed";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
@@ -668,8 +669,12 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Last frame's aircraft position, for the observed ground speed. */
   private readonly previousAircraftPosition = Vector3.Zero();
   private previousAircraftPositionValid = false;
+  /** B2: that position's simulation time, which the distance is flown over. */
+  private previousSimulationTime = 0;
   /** Observed ground speed in m/s, which is what sets the chase trail. */
   private observedGroundSpeed = 0;
+  /** Frames a frozen simulation clock has held it (`nextObservedGroundSpeed`). */
+  private observedGroundSpeedHeldFrames = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   private readonly frameIntervalDurations: number[] = [];
@@ -1792,6 +1797,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
+    this.observedGroundSpeedHeldFrames = 0;
     this.graph.invalidateHistory("camera cut");
   }
 
@@ -3205,14 +3211,29 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // How fast the aeroplane is ACTUALLY moving through the scene, which is
     // what the chase trail is derived from. A rebase frame moves every
     // coordinate at once, so the delta across it is meaningless and the
-    // previous value is held instead.
+    // previous value is held instead. B2: the distance is between two
+    // simulation poses, so it is divided by the simulation time between them
+    // where that is not the frame's own delta (a hitch past the 0.1 s clamp,
+    // a late snapshot); a steady frame divides as it always did.
     if (this.previousAircraftPositionValid && !this.originShifted) {
-      const travelled = Vector3.Distance(aircraftPosition, this.previousAircraftPosition);
-      this.observedGroundSpeed = travelled / Math.max(1e-4, this.currentDeltaSeconds);
+      const next = nextObservedGroundSpeed({
+        travelled: Vector3.Distance(aircraftPosition, this.previousAircraftPosition),
+        wallDeltaSeconds: this.currentDeltaSeconds,
+        simDeltaSeconds: state.simulationTime - this.previousSimulationTime,
+        previous: this.observedGroundSpeed,
+        heldFrames: this.observedGroundSpeedHeldFrames,
+        // A pinned (perf) renderer re-renders a shot's last state with no
+        // simulation time passing; that frame must read as it always did.
+        holdWhenFrozen: this.pinnedRenderScale === null,
+      });
+      this.observedGroundSpeed = next.speed;
+      this.observedGroundSpeedHeldFrames = next.heldFrames;
     } else if (!this.previousAircraftPositionValid) {
       this.observedGroundSpeed = 0;
+      this.observedGroundSpeedHeldFrames = 0;
     }
     this.previousAircraftPosition.copyFrom(aircraftPosition);
+    this.previousSimulationTime = state.simulationTime;
     this.previousAircraftPositionValid = true;
     if (this.cameraMode === "freefly") {
       // The synthetic viewer state's position IS the camera; its orientation
