@@ -36,9 +36,10 @@
  * 2 ms: its 1.5 ms budget and one 32-column step past it. A call over it is
  * not by itself the bake's own overrun, so each one carries what else its
  * frame says: a collection during render() (its heap fell), which may have
- * run inside the call; a pace-floor hold, which bakes past the budget by
- * design; and the call that finished the tile, which also times its three
- * texture uploads. The calls over it with neither of the first two are
+ * run inside the call; a pace-floor hold, which bakes past the budget until
+ * the tile has kept its pace, so the target does not bind it (its ms still
+ * count in the figures); and the call that finished the tile, which also
+ * times its three texture uploads. The calls over it with neither of the first two are
  * counted apart.
  *
  * Both targets count a reading AT the target with those over it. The agent's
@@ -650,8 +651,10 @@ export function renderBakeMarkdown(report: BakeReport): string {
     ]),
     ...renderRelights(report.relights),
     `Ground cover: each tile-bake call's ms on the bake's own clock. Target: each within ${GROUND_COVER_CALL_TARGET_MS} ms `
-      + "(the 1.5 ms budget and one 32-column step). Pace-floor calls kept baking past the budget to keep the tile's "
-      + "pace, by design. A call over the target is not by itself the bake's own overrun: a collection during the "
+      + "(the 1.5 ms budget and one 32-column step). A pace-floor call keeps baking past the budget until the tile has "
+      + "kept its pace (one row's share of the tile a call), so the target does not bind it on a host too slow for "
+      + "the budget, but its ms are still the frame's: they stay in the figures and the list. A call over the target "
+      + "is not by itself the bake's own overrun either: a collection during the "
       + "frame's render() (its heap fell) may have run inside the call, so the calls over it with neither a collection "
       + "nor a pace-floor hold are counted apart, and each call over it is listed with what its frame says. "
       + "perf:flight asks every arm's renderer for the game's height-only terrain sampler, under which the tile bakes "
