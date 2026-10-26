@@ -785,7 +785,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
     offset = band * (armOffset + across * armHalf);
     // The arms are waves: broken water on their crest line near the boat
     // only, gone in seconds.
-    foam = smoothstep(4.0, 14.0, speed) * 0.3 * exp(-age / 3.0);
+    foam = smoothstep(4.0, 14.0, speed) * 0.22 * exp(-age / 3.0);
   }
   let fade = 1.0 - smoothstep(0.75 * trail, trail, age);
 
@@ -887,12 +887,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // is a narrow line of broken water.
   let edge = 1.0 - across * across;
   let profile = select(edge * edge, edge, wash);
-  // World-locked lace; in the wash, streaked along the track as well. Summed
+  // World-locked lace, streaked along the track as well: the wash's streaks
+  // run with the track, an arm's along its own crest line. Summed
   // octaves crowd round one half (a spread of about 0.1), so the pattern is
   // stretched back out: without it the foam is either all there or all gone,
   // with a cut-out line between.
   let lace = wakeLace(fragmentInputs.wakeWorld, footprint);
-  let raw = select(lace, mix(lace, wakeStreaks(fragmentInputs.wakeTrack, footprint), 0.55), wash);
+  let streakFrame = select(vec2f(fragmentInputs.wakeTrack.x, across * 0.6), fragmentInputs.wakeTrack, wash);
+  let raw = mix(lace, wakeStreaks(streakFrame, footprint), 0.55);
   let pattern = 0.5 + (raw - 0.5) * WAKE_PATTERN_CONTRAST;
   // Never quite solid: even fresh at the transom the sea shows through.
   let coverage = clamp(fragmentInputs.wakeAmount.x * profile, 0.0, 1.0) * WAKE_COVERAGE_CAP;
