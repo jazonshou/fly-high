@@ -127,6 +127,7 @@ audit is why it now carries all four tiers):
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
 | Volcanic steam wisp cap (`volcanicSteamMaxWisps`; 0 = no mesh) | 0 | 128 | 192 | 256 |
+| Boat spray particle cap (`boatSprayParticleCap`; boat sessions only) | 256 | 1,024 | 4,096 | 4,096 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`
