@@ -394,7 +394,8 @@ const STEP_OVERHEAD = Object.freeze({
   saving: 2,
   bootTypical: 8,
   bootWorst: 30,
-  settleTypical: 8,
+  // A first check at 4 s, then three calm ones 120 frames apart: at 60 Hz no settle ends before 10 s.
+  settleTypical: 10,
 });
 /** The report page's own refresh probe and render. */
 const REPORT_PAGE_S = 3;
@@ -421,13 +422,23 @@ export function estimateBenchDuration(
   };
 }
 
-/** The run chip's "about 4 min left": typical steps, less what this one has used. */
+/**
+ * The run chip's "about 4 min left": what this step still has, then typical
+ * steps and the report. Before its flight a step has used `thisStepElapsedS`
+ * of a typical step, but its whole flight is still ahead; from the flight's
+ * first frame the flight clock says what is left (`flightElapsedS`, the
+ * flight's length once it is over).
+ */
 export function estimateRemainingSeconds(
   timings: BenchTimings,
   stepsAfterThis: number,
   thisStepElapsedS: number,
+  flightElapsedS: number | null = null,
 ): number {
-  const thisStep = Math.max(timings.betweenStepsS, stepSeconds(timings, false) - Math.max(0, thisStepElapsedS));
+  const afterFlight = STEP_OVERHEAD.saving + timings.betweenStepsS;
+  const thisStep = flightElapsedS === null
+    ? Math.max(timings.flightS + afterFlight, stepSeconds(timings, false) - Math.max(0, thisStepElapsedS))
+    : Math.max(0, timings.flightS - flightElapsedS) + afterFlight;
   return thisStep + Math.max(0, stepsAfterThis) * stepSeconds(timings, false) + REPORT_PAGE_S;
 }
 

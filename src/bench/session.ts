@@ -900,6 +900,7 @@ class StepPage {
           this.timings,
           this.run.steps.length - this.stepIndex - 1,
           (now - this.pageStartMs) / 1_000,
+          phase === "flying" ? controller?.flightElapsedS ?? 0 : phase === "done" ? this.timings.flightS : null,
         ),
         result: this.chipResult,
         nextTierIndex: this.nextTierIndex,

@@ -123,6 +123,21 @@ describe("bench timings", () => {
     expect(remaining).toBeGreaterThan(2 * 75);
     expect(estimateRemainingSeconds(benchTimings(false), 0, 1e6)).toBeGreaterThan(0);
   });
+
+  it("counts the time left in flight by the flight clock, however slowly the step started", () => {
+    const standard = benchTimings(false);
+    // The last step of a slow machine: 30 s to start and the 20 s settle cap, then 10 s of flight.
+    const flying = estimateRemainingSeconds(standard, 0, 60, 10);
+    expect(flying).toBeGreaterThanOrEqual(65);
+    expect(describeDuration(flying)).toBe("about a minute");
+    expect(estimateRemainingSeconds(standard, 0, 80, 30)).toBeGreaterThanOrEqual(45);
+    // Before the flight its whole length is still ahead; after it, only the pause and the report.
+    expect(estimateRemainingSeconds(standard, 0, 120)).toBeGreaterThanOrEqual(75);
+    expect(estimateRemainingSeconds(standard, 0, 130, standard.flightS)).toBeLessThan(10);
+    const typicalStep = estimateBenchDuration(1, standard).typicalS - estimateBenchDuration(0, standard).typicalS;
+    expect(estimateRemainingSeconds(standard, 1, 0, standard.flightS))
+      .toBeCloseTo(estimateRemainingSeconds(standard, 0, 0, standard.flightS) + typicalStep, 9);
+  });
 });
 
 describe("bench URLs", () => {
