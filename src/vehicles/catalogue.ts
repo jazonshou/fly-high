@@ -76,13 +76,16 @@ const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
   cockpitEye: Object.freeze({ forward: 0.27, up: 1.12, right: 0.53 }),
   engineReadout: Object.freeze({ label: "RPM", unit: "ENG", maximum: 6_000, roundTo: 50 }),
   // A V6 four-stroke fires three times per crank turn: the fundamental is
-  // rpm / 20, 35 Hz at the 700 rpm idle and 300 Hz at the 6,000 rpm limiter.
+  // rpm / 20, 35 Hz at the 700 rpm idle and 300 Hz at the 6,000 rpm limiter,
+  // which is exactly 0 + (rpm / 6,000) x 300. The low-pass is the exhaust's,
+  // set every frame by `boatSoundTargets` (open at idle, muffled through the
+  // hub under way); this is its idle value.
   engineSound: Object.freeze({
-    baseHz: 35,
-    spanHz: 265,
+    baseHz: 0,
+    spanHz: 300,
     gainBase: 0.12,
     gainSpan: 0.3,
-    filterHz: 900,
+    filterHz: 760,
     filterQ: 0.6,
     waveforms: Object.freeze(["sawtooth", "square"] as const) as readonly [OscillatorType, OscillatorType],
   }),
