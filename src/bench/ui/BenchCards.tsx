@@ -15,6 +15,8 @@ export type BenchCardProps =
     /** This load's attempt. */
     readonly attempt: number;
     readonly maxAttempts: number;
+    /** No flight is left after this one: the last try ends on the report. */
+    readonly reportNext?: boolean;
     /** Seconds before the page goes on by itself, or null to leave the count out. */
     readonly continueInS?: number | null;
     /** Draws a button that goes on at once. */
@@ -72,8 +74,9 @@ export function cardWords(card: BenchCardProps): CardWords {
       const last = card.attempt >= card.maxAttempts;
       const title = card.kind === "hidden" ? "Paused because you switched away" : "The window changed size";
       const why = card.kind === "hidden" ? "" : "A flight in a different window size cannot be compared. ";
+      const next = card.reportNext === true ? "opens the report" : "moves on to the next flight";
       const text = last
-        ? `${why}That was the last try at ${tierName(card.tierIndex)}, so the benchmark moves on to the next flight.`
+        ? `${why}That was the last try at ${tierName(card.tierIndex)}, so the benchmark ${next}.`
         : `${why}This flight restarts${card.kind === "hidden" ? " when you are back" : ""} `
           + `(attempt ${card.attempt + 1} of ${card.maxAttempts}).`;
       return { title, text, urgent: true };
@@ -95,7 +98,9 @@ export function cardWords(card: BenchCardProps): CardWords {
 /**
  * One card. The urgent ones sit in the middle of the screen as alerts; the
  * notes sit under the run chip as polite status lines. Neither takes focus:
- * the page goes on by itself, and a card only says why.
+ * the page goes on by itself, and a card only says why. The live region
+ * holds the words alone: the countdown beside them ticks every second, and
+ * inside an alert a screen reader would read the whole card each time.
  */
 export function BenchCard(props: BenchCardProps) {
   const words = cardWords(props);
@@ -106,13 +111,11 @@ export function BenchCard(props: BenchCardProps) {
     ? props.onContinue
     : undefined;
   return (
-    <div
-      className={`bench-card ${words.urgent ? "bench-card--alert" : "bench-card--note"}`}
-      role={words.urgent ? "alert" : "status"}
-      data-bench-ui=""
-    >
-      {words.title ? <strong>{words.title}</strong> : null}
-      <span>{words.text}</span>
+    <div className={`bench-card ${words.urgent ? "bench-card--alert" : "bench-card--note"}`} data-bench-ui="">
+      <div className="bench-card__words" role={words.urgent ? "alert" : "status"}>
+        {words.title ? <strong>{words.title}</strong> : null}
+        <span>{words.text}</span>
+      </div>
       {countdown !== null && countdown !== undefined ? (
         <small>{countdown > 0 ? `Continuing in ${Math.ceil(countdown)} s.` : "Continuing…"}</small>
       ) : null}

@@ -330,6 +330,8 @@ describe("the step page's cards", () => {
     expect(markup).toContain("This flight restarts when you are back (attempt 2 of 2).");
     expect(cardWords({ kind: "hidden", tierIndex: 0, attempt: 2, maxAttempts: 2 }).text)
       .toBe("That was the last try at Low, so the benchmark moves on to the next flight.");
+    expect(cardWords({ kind: "hidden", tierIndex: 1, attempt: 2, maxAttempts: 2, reportNext: true }).text)
+      .toBe("That was the last try at Medium, so the benchmark opens the report.");
   });
 
   it("says a resize voided the flight", () => {
@@ -345,6 +347,11 @@ describe("the step page's cards", () => {
     expect(markup).toContain("<strong>Low stopped</strong>");
     expect(markup).toContain("<span>The WebGPU device was lost.</span>");
     expect(markup).toContain("Continuing in 5 s.");
+    // The alert holds the words; the countdown that ticks every second sits beside it.
+    expect(markup).toContain(
+      '<div class="bench-card__words" role="alert"><strong>Low stopped</strong><span>The WebGPU device was lost.</span></div>'
+      + "<small>Continuing in 5 s.</small>",
+    );
     expect(actions(markup)).toEqual(["Continue now"]);
     expect(actions(card({ kind: "failed", tierIndex: 0, message: "startup timeout" }))).toEqual([]);
   });
@@ -369,8 +376,8 @@ describe("the step page's cards", () => {
         { kind: "failed", tierIndex: 1, message: "startup timeout" },
       ],
     }));
-    expect(markup).toMatch(/bench-cards--notes"><div class="bench-card bench-card--note" role="status"/);
-    expect(markup).toMatch(/bench-cards--alerts"><div class="bench-card bench-card--alert" role="alert"/);
+    expect(markup).toMatch(/bench-cards--notes"><div class="bench-card bench-card--note" data-bench-ui=""><div class="bench-card__words" role="status"/);
+    expect(markup).toMatch(/bench-cards--alerts"><div class="bench-card bench-card--alert" data-bench-ui=""><div class="bench-card__words" role="alert"/);
     expect(renderToStaticMarkup(createElement(BenchCards, { cards: [] }))).toBe("");
   });
 });

@@ -83,11 +83,17 @@ function fakeBrowser(visibilityState: "visible" | "hidden") {
   };
 }
 
-/** Step 0 of a fresh two-step run, opened in a fresh module: one page load. */
-async function openStep(visibility: "visible" | "hidden") {
+/**
+ * Step 0 of a fresh two-step run, or step 1 once step 0 has flown, opened in
+ * a fresh module: one page load.
+ */
+async function openStep(visibility: "visible" | "hidden", stepIndex: 0 | 1 = 0) {
   const browser = fakeBrowser(visibility);
   const { storage, items } = memoryStorage();
-  const start = startRun(startInput(), `${PAGE}?bench=1&quick=1&tiers=1,0`);
+  const fresh = startRun(startInput(), `${PAGE}?bench=1&quick=1&tiers=1,0`);
+  const start = stepIndex === 0
+    ? fresh
+    : recordStepResult(fresh.store, 0, "ok", benchStepResult({ tierIndex: 1, quick: true }), "absent", fresh.href);
   items.set(BENCH_STORE_KEY, serializeBenchStore(start.store));
   const go = vi.fn<(href: string) => void>();
   const host: BenchHost = { href: start.href, storage, navigationType: "navigate", isoNow: () => NOW, go };
@@ -97,7 +103,7 @@ async function openStep(visibility: "visible" | "hidden") {
   // The step's idle refresh probe runs to its deadline on fake timers.
   await vi.advanceTimersByTimeAsync(2_500);
   const session = await opening;
-  const step = (): BenchStepRecord => parseBenchStore(items.get(BENCH_STORE_KEY) ?? null)!.current!.steps[0]!;
+  const step = (): BenchStepRecord => parseBenchStore(items.get(BENCH_STORE_KEY) ?? null)!.current!.steps[stepIndex]!;
   const lastView = () => {
     const shown = views[views.length - 1];
     if (shown?.kind !== "step") throw new Error(`not a step view: ${shown?.kind}`);
@@ -130,7 +136,7 @@ describe("a step page whose tab is hidden", () => {
     page.browser.show("hidden");
     // Still claimed: a reload hides the page on its way out too.
     expect(page.step()).toMatchObject({ status: "running", attempts: 1, attemptLog: [] });
-    expect(page.lastView().cards.map((card) => card.kind)).toEqual(["hidden"]);
+    expect(page.lastView().cards).toMatchObject([{ kind: "hidden", reportNext: false }]);
     expect(page.lastView().chip.phase).toBe("paused");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(page.go).not.toHaveBeenCalled();
@@ -153,6 +159,13 @@ describe("a step page whose tab is hidden", () => {
     if (next.page.kind !== "step") return;
     expect(next.page.attempt).toBe(2);
     expect(next.page.previous).toEqual({ attempt: 1, outcome: "interrupted", navigationType: "reload", at: NOW });
+  });
+
+  it("says the report comes next on the plan's last flight", async () => {
+    const page = await openStep("visible", 1);
+    expect(page.step()).toMatchObject({ status: "running", tierIndex: 0 });
+    page.browser.show("hidden");
+    expect(page.lastView().cards).toMatchObject([{ kind: "hidden", reportNext: true }]);
   });
 
   it("voids an attempt whose page loaded hidden, boots nothing, and waits for the person", async () => {

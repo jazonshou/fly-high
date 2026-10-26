@@ -849,6 +849,11 @@ td.bench-label--did-not-run {
   line-height: 1.5;
 }
 
+.bench-card__words {
+  display: grid;
+  gap: 6px;
+}
+
 .bench-card--alert {
   padding: 18px 20px;
   border-color: rgba(255, 189, 99, 0.6);

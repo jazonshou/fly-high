@@ -16,6 +16,7 @@ import {
   benchFlow,
   deviceOnlyRun,
   failStep,
+  isFinalStep,
   nextHref,
   nextStepIndex,
   recordReportExtras,
@@ -764,6 +765,8 @@ class StepPage {
       tierIndex: this.tierIndex,
       attempt: this.attempt,
       maxAttempts: this.timings.maxAttempts,
+      // The steps before this one are all over: any other open step is still to fly.
+      reportNext: !this.run.steps.some((step) => step.index !== this.stepIndex && !isFinalStep(step.status)),
       onContinue: () => {
         if (this.voidedHref !== null) this.go(this.voidedHref);
       },
