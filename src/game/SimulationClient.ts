@@ -1,5 +1,6 @@
 import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
+import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
 import type {
   TerrainMacroGrid,
@@ -96,6 +97,7 @@ export class SimulationClient {
     airborneStartAgl = DEFAULT_AIRBORNE_START_AGL,
     attractMode = false,
     aircraft: AircraftKind = "trainer",
+    surfaceVehicle: SurfaceVehicleKind | null = null,
   ) {
     this.worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
@@ -107,6 +109,7 @@ export class SimulationClient {
       type: "initialize",
       world,
       aircraft,
+      surfaceVehicle,
       mode,
       spawn,
       weather,
@@ -464,6 +467,11 @@ export function interpolateFlightState(
   const terrainAuthority = second.terrainAuthority ?? first.terrainAuthority;
   if (terrainAuthority) result.terrainAuthority = terrainAuthority;
   else delete result.terrainAuthority;
+  // A surface vehicle's payload is discrete state (gear, moored) beside
+  // slow-moving actuators, so it switches with the flags rather than blending.
+  const vehicle = useSecondFlags ? second.vehicle : first.vehicle;
+  if (vehicle) result.vehicle = vehicle;
+  else delete result.vehicle;
   return result;
 }
 
@@ -490,6 +498,7 @@ export function extrapolateFlightState(
   const angularVelocity = result.angularVelocity;
   Object.assign(result, state);
   if (!state.terrainAuthority) delete result.terrainAuthority;
+  if (!state.vehicle) delete result.vehicle;
   result.position = position;
   result.velocity = velocity;
   result.orientation = orientation;
