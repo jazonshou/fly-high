@@ -1,3 +1,4 @@
+import { OCEAN_SPECTRUM_WGSL } from "@/src/sim/water/spectrumWgsl";
 import type { NatureShaderModule } from "./ShaderModule";
 
 const OCEAN_WORKGROUP_8_X_8 = [8, 8, 1] as const;
@@ -42,92 +43,7 @@ struct OceanSpectrumInitParams {
 @group(0) @binding(1) var initial_spectrum: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var wave_data: texture_storage_2d<rgba32float, write>;
 
-fn hash32(value: u32) -> u32 {
-  var state = value;
-  state = state ^ (state >> 16u);
-  state = state * 0x7feb352du;
-  state = state ^ (state >> 15u);
-  state = state * 0x846ca68bu;
-  return state ^ (state >> 16u);
-}
-
-fn random01(value: u32) -> f32 {
-  return f32(hash32(value) & 0x00ffffffu) / 16777216.0;
-}
-
-fn gaussianComplex(seed: u32) -> vec2<f32> {
-  let u1 = max(random01(seed), 1e-7);
-  let u2 = random01(seed ^ 0x9e3779b9u);
-  let radius = sqrt(-2.0 * log(u1));
-  let angle = 2.0 * OCEAN_PI * u2;
-  return radius * vec2<f32>(cos(angle), sin(angle));
-}
-
-fn signedFrequencyIndex(index: u32, resolution: u32) -> i32 {
-  let signed_index = i32(index);
-  if (index > resolution / 2u) {
-    return signed_index - i32(resolution);
-  }
-  return signed_index;
-}
-
-fn bandWindow(wavelength: f32) -> f32 {
-  let low_width = max(params.minimum_wavelength_m * 0.18, 0.001);
-  let high_width = max(params.maximum_wavelength_m * 0.18, 0.001);
-  let low = smoothstep(
-    params.minimum_wavelength_m - low_width,
-    params.minimum_wavelength_m + low_width,
-    wavelength,
-  );
-  let high = 1.0 - smoothstep(
-    params.maximum_wavelength_m - high_width,
-    params.maximum_wavelength_m + high_width,
-    wavelength,
-  );
-  return low * high;
-}
-
-fn finiteDepthFactor(k_length: f32) -> f32 {
-  // tanh(x) has rounded to 1.0 in f32 by x=10. Saturating its dimensionless
-  // input there is physically lossless, and avoids undefined large-argument
-  // transcendental behaviour observed through ANGLE/Metal: short-wave
-  // cascades returned zero, while a few boundary texels became non-finite.
-  return tanh(min(k_length * params.water_depth_m, 10.0));
-}
-
-fn directionalJonswapSpectrum(k: vec2<f32>, k_length: f32, omega: f32) -> f32 {
-  let gravity = params.gravity_m_s2;
-  let wind = max(params.wind_speed_m_s, 0.05);
-  let fetch = max(params.fetch_length_m, 1.0);
-  let omega_peak = 22.0 * pow((gravity * gravity) / (wind * fetch), 1.0 / 3.0);
-  let alpha = 0.076 * pow((wind * wind) / (fetch * gravity), 0.22);
-  let sigma = select(0.09, 0.07, omega <= omega_peak);
-  let peak_distance = (omega - omega_peak) / max(sigma * omega_peak, 1e-5);
-  let peak_shape = exp(-0.5 * peak_distance * peak_distance);
-  let peak_enhancement = pow(3.3, peak_shape);
-  let frequency_spectrum = alpha * gravity * gravity
-    * exp(-1.25 * pow(omega_peak / max(omega, 1e-4), 4.0))
-    * peak_enhancement / max(pow(omega, 5.0), 1e-8);
-
-  let capillary = params.surface_tension_over_density;
-  let tanh_depth = finiteDepthFactor(k_length);
-  let dispersion_numerator = gravity * k_length + capillary * k_length * k_length * k_length;
-  let dispersion_derivative = max(
-    (gravity + 3.0 * capillary * k_length * k_length) * tanh_depth,
-    1e-6,
-  ) / max(2.0 * omega, 1e-5);
-  let direction = k / max(k_length, 1e-6);
-  let aligned = dot(direction, normalize(params.wind_direction));
-  let forward_lobe = pow(max(aligned, 0.0), params.directional_spread);
-  let opposing_lobe = 0.04 * pow(max(-aligned, 0.0), params.directional_spread * 0.5);
-  let wavelength = 2.0 * OCEAN_PI / max(k_length, 1e-6);
-  let radial_jacobian = dispersion_derivative / max(k_length, 1e-6);
-  return max(
-    frequency_spectrum * radial_jacobian * (forward_lobe + opposing_lobe)
-      * bandWindow(wavelength) * params.spectrum_scale,
-    0.0,
-  );
-}
+${OCEAN_SPECTRUM_WGSL}
 
 @compute @workgroup_size(8, 8, 1)
 fn initializeOceanSpectrum(@builtin(global_invocation_id) invocation: vec3<u32>) {
@@ -152,7 +68,10 @@ fn initializeOceanSpectrum(@builtin(global_invocation_id) invocation: vec3<u32>)
     max((gravity_term + capillary_term) * finiteDepthFactor(k_length), 0.0),
   );
   let spectrum = directionalJonswapSpectrum(k, k_length, omega);
-  let linear_index = invocation.x + invocation.y * params.resolution;
+  let linear_index = oceanWavePhaseIndex(vec2<i32>(
+    signedFrequencyIndex(invocation.x, params.resolution),
+    signedFrequencyIndex(invocation.y, params.resolution),
+  ));
   let random_seed = params.seed
     ^ hash32(linear_index + 0x9e3779b9u * (params.cascade_index + 1u));
   // Non-finite guard at the SOURCE. On the shipping config a handful of cascade-3

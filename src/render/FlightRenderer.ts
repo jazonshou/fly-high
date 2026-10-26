@@ -61,6 +61,7 @@ import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResourc
 import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
 import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
@@ -441,6 +442,13 @@ export interface FlightRendererOptions {
   terrainSample: TerrainSampleFunction;
   world: WorldDefinition;
   seed: number;
+  /**
+   * The weather the session starts in, so the sea is built for it rather than
+   * rebuilt by the first `setAtmosphere` (D2: the sea's spectrum wind is the
+   * world's prevailing wind times `weatherWindScale`). Unset is Breezy, the
+   * world's own wind.
+   */
+  weather?: WeatherPreset;
   quality: QualityLevel;
   renderingMode: RenderingMode;
   reducedMotion: boolean;
@@ -1257,15 +1265,18 @@ export class FlightRenderer implements FlightRenderingSystem {
       checkpointRendererStartup("atmosphere and cloud construction", "sync");
       await clouds.whenReadyAsync(options.signal);
       checkpointRendererStartup("cloud pipeline startup", "async");
+      // The sea's seed and wind come from the world and the weather alone,
+      // the same inputs the sim's sea twin is built from, so a hull floats on
+      // the waves drawn under it.
       const ocean = await SpectralOceanSystem.create(
         scene,
         camera,
         options.world.seaLevel,
         profile,
-        options.seed,
+        oceanSpectrumSeed(options.world),
         atmosphere.snapshot,
         options.world.prevailingWindRadians,
-        options.world.prevailingWindSpeed,
+        seaSpectrumWindSpeed(options.world, options.weather ?? "breezy"),
         options.signal,
         bathymetry,
       );
@@ -1896,6 +1907,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setEnvironment(this.environmentState);
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
+    this.ocean.setWindSpeed(seaSpectrumWindSpeed(this.worldDefinition, weather));
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
