@@ -282,8 +282,11 @@ export function scriptSource(raw: string): string {
 // --- JS heap ----------------------------------------------------------------
 
 export interface HeapSampler {
-  /** Records the heap at time `t` (ms). Allocation-free; meant for once a second. */
-  sample(t: number): void;
+  /**
+   * Records the heap at time `t` (ms) and returns the bytes read, or null when
+   * the read was not a number. Allocation-free; meant for once a second.
+   */
+  sample(t: number): number | null;
   /** Every sample so far, copied out for `summarizeHeap`. */
   samples(): BenchHeapSample[];
   readonly overflowed: boolean;
@@ -313,14 +316,15 @@ export function createHeapSampler(options: HeapSamplerOptions = {}): HeapSampler
   return {
     sample: (t) => {
       const value = read();
-      if (!Number.isFinite(value)) return;
+      if (!Number.isFinite(value)) return null;
       if (count >= capacity) {
         overflowed = true;
-        return;
+        return value;
       }
       times[count] = t;
       bytes[count] = value;
       count += 1;
+      return value;
     },
     samples: () => {
       const out: BenchHeapSample[] = [];
