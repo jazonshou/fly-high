@@ -397,12 +397,19 @@ function reportSteps(run: BenchRunRecord): BenchReportStep[] {
   });
 }
 
+/**
+ * Each quality's label: the worst of its flights that measured the game.
+ * Without one, a flight the browser held under 50 Hz says more than one that
+ * did not run, whichever came first.
+ */
 function tierLabels(steps: readonly BenchReportStep[]): BenchReportRun["tierLabels"] {
   const labels = new Map<number, BenchSmoothness>();
   for (const step of steps) {
     const current = labels.get(step.tierIndex);
     if (step.label === "limited" || step.label === "did-not-run") {
-      if (current === undefined) labels.set(step.tierIndex, step.label);
+      if (current === undefined || (current === "did-not-run" && step.label === "limited")) {
+        labels.set(step.tierIndex, step.label);
+      }
       continue;
     }
     if (current === undefined || current === "limited" || current === "did-not-run"

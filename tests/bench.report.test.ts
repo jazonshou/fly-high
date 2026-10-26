@@ -392,6 +392,21 @@ describe("plain-language labels", () => {
     }
     expect(full.run.tierLabels.find((entry) => entry.tierIndex === 2)!.label).toBe("choppy");
   });
+
+  it("labels a quality that only ran browser-limited as limited, whichever of its flights came first", () => {
+    const flown = run.steps[3]!;
+    const limited: BenchStepRecord = {
+      ...flown,
+      result: { ...flown.result!, raf: { ...flown.result!.raf, idleHz: 30, limited: true } },
+    };
+    const failed: BenchStepRecord = { ...run.steps[0]!, status: "failed", message: "the WebGPU device was lost", result: null };
+    const medium = (steps: readonly BenchStepRecord[]) =>
+      report(withSteps(run, steps)).run.tierLabels.find((entry) => entry.tierIndex === 1)!.label;
+    expect(medium([failed, run.steps[1]!, run.steps[2]!, limited])).toBe("limited");
+    expect(medium([{ ...limited, index: 0 }, run.steps[1]!, run.steps[2]!, { ...failed, index: 3 }])).toBe("limited");
+    // A flight that measured the game still outranks both.
+    expect(medium([failed, run.steps[1]!, run.steps[2]!, run.steps[3]!])).not.toBe("limited");
+  });
 });
 
 describe("the report page's table and summary", () => {
