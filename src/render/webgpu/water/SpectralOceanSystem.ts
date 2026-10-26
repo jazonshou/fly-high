@@ -2096,6 +2096,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private rebuildGeneration = 0;
   private disposed = false;
   private lastTimeSeconds = 0;
+  /** The spectrum wind the sea should have; the live compute may still be catching up. */
+  private windSpeedMetersPerSecond: number;
   private originX = 0;
   private originZ = 0;
   private cameraWorld = Vector3.Zero();
@@ -2136,6 +2138,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       windDirectionRadians,
       windSpeedMetersPerSecond,
     );
+    this.windSpeedMetersPerSecond = this.compute.config.windSpeedMetersPerSecond;
     this.mesh = createOceanPresentationMesh(scene, profile);
     this.material = new ShaderMaterial(
       "spectral-ocean-material",
@@ -2450,8 +2453,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // profile. Settings apply quality and rendering mode back-to-back; using
     // the requested profile could abort the first rebuild and then incorrectly
     // conclude that no replacement is needed.
-    const topologyChanged = profile.oceanResolution !== this.compute.config.resolution
-      || profile.oceanCascades !== this.compute.cascades.length;
+    // A wind change still in flight counts too, or this abort would drop it.
+    const computeChanged = profile.oceanResolution !== this.compute.config.resolution
+      || profile.oceanCascades !== this.compute.cascades.length
+      || this.windSpeedMetersPerSecond !== this.compute.config.windSpeedMetersPerSecond;
     const previousTopology = this.profile.oceanPresentation;
     const nextTopology = profile.oceanPresentation;
     // wave R added nearStepMeters to the comparison: it changes every ring
@@ -2468,7 +2473,29 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       this.mesh.dispose(false, false);
       this.mesh = nextMesh;
     }
-    if (!topologyChanged) return;
+    if (!computeChanged) return;
+    this.rebuildCompute(profile);
+  }
+
+  /**
+   * D2 (boats plan, approved 2026-10-26): the sea's spectrum wind follows the
+   * weather preset (`weatherWindScale`). A new wind is a new initial spectrum
+   * for every cascade, so it rebuilds the compute runtime off the active path
+   * exactly as a quality change does, and the live sea keeps moving until the
+   * replacement is ready.
+   */
+  setWindSpeed(windSpeedMetersPerSecond: number): void {
+    if (this.disposed || windSpeedMetersPerSecond === this.windSpeedMetersPerSecond) return;
+    this.windSpeedMetersPerSecond = windSpeedMetersPerSecond;
+    this.rebuildAbortController?.abort();
+    this.rebuildAbortController = null;
+    if (windSpeedMetersPerSecond === this.compute.config.windSpeedMetersPerSecond
+      && this.profile.oceanResolution === this.compute.config.resolution
+      && this.profile.oceanCascades === this.compute.cascades.length) return;
+    this.rebuildCompute(this.profile);
+  }
+
+  private rebuildCompute(profile: WebGpuQualityProfile): void {
     const generation = ++this.rebuildGeneration;
     const controller = new AbortController();
     this.rebuildAbortController = controller;
@@ -2480,7 +2507,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
         this.compute.config.windDirection[0],
         this.compute.config.windDirection[1],
       ),
-      this.compute.config.windSpeedMetersPerSecond,
+      this.windSpeedMetersPerSecond,
     );
     void nextCompute.initialize(controller.signal, this.lastTimeSeconds).then(() => {
       if (this.disposed || generation !== this.rebuildGeneration) {
@@ -2495,7 +2522,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     }).catch((error: unknown) => {
       nextCompute.dispose();
       if (!isAbortError(error)) {
-        console.error("Unable to rebuild the spectral-ocean quality profile", error);
+        console.error("Unable to rebuild the spectral-ocean compute runtime", error);
       }
     }).finally(() => {
       if (this.rebuildAbortController === controller) this.rebuildAbortController = null;

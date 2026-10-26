@@ -638,6 +638,7 @@ export function FlightGame() {
         terrainSample: (x: number, z: number) => sampleTerrain(airportNetwork.world, x, z),
         world,
         seed,
+        weather: activeSettings.weather,
         quality: activeSettings.quality,
         renderingMode: activeSettings.renderingMode,
         reducedMotion: activeSettings.reducedMotion,

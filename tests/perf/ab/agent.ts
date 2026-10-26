@@ -455,6 +455,9 @@ async function ensureRenderer(
     terrainSample: (x: number, z: number) => sampleTerrain(activeWorld, x, z),
     world: activeWorld,
     seed: activeWorld.sourceSeedHash,
+    // Every shot renders Clear, so build the sea for Clear's wind (an arm
+    // whose renderer predates the option ignores it).
+    weather: "clear",
     quality: config.quality as QualityLevel,
     renderingMode: config.renderingMode as RenderingMode,
     reducedMotion: false,
