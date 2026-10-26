@@ -73,6 +73,7 @@ import {
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
+import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
 import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
@@ -522,6 +523,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** The spray a boat throws and the wake it leaves; null outside a boat session. */
   private readonly boatSpray: BoatSpraySystem | null;
   private readonly boatWake: BoatWakeSystem | null;
+  /** The sea kept out of the boat's hull, posed with it. */
+  private readonly boatHullClip: OceanHullClip | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -796,6 +799,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       : [];
     this.boatSpray = boatEffects?.spray ?? null;
     this.boatWake = boatEffects?.wake ?? null;
+    this.boatHullClip = boatEffects?.hullClip ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -3074,6 +3078,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     );
     this.surfaceVehicle?.root.setEnabled(active && !this.viewerMode);
     this.surfaceVehicle?.setCockpitView(cockpit);
+    // The sea fills the hull's footprint again while the boat is away.
+    if (!active) this.boatHullClip?.clearPose();
     // A different vehicle somewhere else: the rig's offsets and the frame
     // graph's history both belong to the one that was there before.
     this.cutCamera();
@@ -3093,6 +3099,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       state.position.z - this.originZ,
     );
     visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+    this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
     // The boat's lamp law, from the observer's bearing as the aircraft's is.
     const toCamera = this.camera.position.subtract(visual.root.position);

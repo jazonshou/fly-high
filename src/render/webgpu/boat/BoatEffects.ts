@@ -10,10 +10,12 @@ import {
 import type { WorldDefinition } from "@/src/world";
 import { BoatSpraySystem, type BoatSprayGeometry } from "./BoatSpraySystem";
 import { BoatWakeSystem, type BoatWakeGeometry, type BoatWakeOcean } from "./BoatWakeSystem";
+import { OceanHullClip } from "./oceanHullClip";
 
 /**
- * Everything a boat leaves in the world around it, as opposed to the boat
- * itself (`createWebGpuBoat`): the spray and the wake. The
+ * Everything a boat does to the world around it, as opposed to the boat
+ * itself (`createWebGpuBoat`): the spray, the wake, and the sea kept out of
+ * its hull (`OceanHullClip`, set on the ocean here, once, at load). The
  * renderer builds these when the session's vehicle is a boat and never
  * otherwise, so an aircraft session compiles none of their shaders and pays
  * none of their draws. Each is a renderer system of its own, called where
@@ -51,13 +53,20 @@ export interface BoatEffectsOptions {
   readonly profile: BoatEffectsProfile;
   /** The prevailing surface wind the spray drifts on, and the sea level the wake lies on. */
   readonly world: Pick<WorldDefinition, "prevailingWindRadians" | "prevailingWindSpeed" | "seaLevel">;
-  /** The sea whose displacement the wake rides. */
-  readonly ocean: BoatWakeOcean;
+  /** The sea whose displacement the wake rides and whose water the hull keeps out. */
+  readonly ocean: BoatEffectsOcean;
+}
+
+/** What the effects need of the sea. */
+export interface BoatEffectsOcean extends BoatWakeOcean {
+  setHullClip(clip: OceanHullClip | null): void;
 }
 
 export interface BoatEffects {
   readonly spray: BoatSpraySystem;
   readonly wake: BoatWakeSystem;
+  /** The renderer poses it every frame the boat is on screen and clears it while it is not. */
+  readonly hullClip: OceanHullClip;
 }
 
 export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): BoatEffects {
@@ -75,5 +84,7 @@ export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): Bo
     seaLevel: options.world.seaLevel,
     ocean: options.ocean,
   });
-  return { spray, wake };
+  const hullClip = new OceanHullClip();
+  options.ocean.setHullClip(hullClip);
+  return { spray, wake, hullClip };
 }

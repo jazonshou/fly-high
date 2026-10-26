@@ -137,6 +137,12 @@ import {
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { BathymetryClipmap } from "./BathymetryClipmap";
 import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
+import {
+  OCEAN_HULL_CLIP_DEFINE,
+  OCEAN_HULL_CLIP_UNIFORMS,
+  OCEAN_HULL_CLIP_WGSL,
+  type OceanHullClip,
+} from "../boat/oceanHullClip";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
@@ -988,6 +994,10 @@ fn cascadeSlopeVariance(sample: vec4f, moment: vec4f, fade: f32) -> f32 {
     + max(moment.y - fade * fade * sample.y * sample.y, 0.0);
 }
 
+#ifdef ${OCEAN_HULL_CLIP_DEFINE}
+${OCEAN_HULL_CLIP_WGSL}
+#endif
+
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   let light = normalize(uniforms.sunDirection);
@@ -1020,6 +1030,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.oceanCoordinate,
   );
   if (depth <= 0.0) { discard; }
+#ifdef ${OCEAN_HULL_CLIP_DEFINE}
+  // A boat session: no sea inside the hull (boat/oceanHullClip.ts).
+  if (oceanHullClipped(input.worldPosition)) { discard; }
+#endif
   // wave S: the far cat's paws — a mean-one gain on the short-wave slope
   // variance (cascade 0, half of cascade 1, the capillary tail) from two
   // wind-stretched octaves drifting with the gusts. No derivatives, so it
@@ -2064,6 +2078,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private compute: SpectralOceanCompute;
   private mesh: Mesh;
   private readonly material: ShaderMaterial;
+  private hullClip: OceanHullClip | null = null;
   private profile: WebGpuQualityProfile;
   private rebuildAbortController: AbortController | null = null;
   private rebuildGeneration = 0;
@@ -2516,6 +2531,26 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     this.material.setFloat("time", timeSeconds);
     this.material.setVector3("cameraPosition", this.camera.position);
     this.updateCascadeFadeRadii();
+  }
+
+  /**
+   * Keep the sea out of a boat's hull (`boat/oceanHullClip.ts`), or stop.
+   * Only a session with a boat sets one, once, at load: the define compiles
+   * the clip in, and without it this material's shader is exactly the one it
+   * was before boats existed.
+   */
+  setHullClip(clip: OceanHullClip | null): void {
+    if (clip === this.hullClip) return;
+    this.hullClip?.detach();
+    this.hullClip = clip;
+    const uniforms = this.material.options.uniforms;
+    for (const name of OCEAN_HULL_CLIP_UNIFORMS) {
+      const index = uniforms.indexOf(name);
+      if (clip && index < 0) uniforms.push(name);
+      else if (!clip && index >= 0) uniforms.splice(index, 1);
+    }
+    this.material.setDefine(OCEAN_HULL_CLIP_DEFINE, clip !== null);
+    clip?.attach(this.material);
   }
 
   /**
