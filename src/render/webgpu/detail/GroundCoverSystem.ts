@@ -20,6 +20,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { TerrainSample } from "@/src/world/types";
 import { TerrainBiome } from "@/src/world";
 import {
+  INFRASTRUCTURE_PLANT_BLEND_METERS,
   infrastructurePlantFactor,
   type InfrastructurePlantExclusion,
 } from "@/src/world/infrastructure";
@@ -182,6 +183,7 @@ interface GroundCoverRingResources {
   indirectPassId: number | null;
 }
 
+const NO_PLANT_EXCLUSIONS: readonly InfrastructurePlantExclusion[] = Object.freeze([]);
 const BLADE_BASE_HEIGHT_METERS = 0.42;
 const BLADE_BASE_WIDTH_METERS = 0.016;
 
@@ -675,8 +677,8 @@ export class GroundCoverSystem {
     const step = span / attrEdge;
     const seaLevel = this.options.seaLevelMeters ?? 0;
     const seedHash = this.options.seedHash;
-    const plantExclusions = this.options.plantExclusions ?? [];
     const worldZ = this.backTileOriginZ + (attrRow + 0.5) * step;
+    const plantExclusions = this.rowPlantExclusions(worldZ, this.backTileOriginX, this.backTileOriginX + span);
     for (let column = 0; column < attrEdge; column += 1) {
       const worldX = this.backTileOriginX + (column + 0.5) * step;
       const sample = this.options.terrainSample(worldX, worldZ);
@@ -758,6 +760,28 @@ export class GroundCoverSystem {
       );
       this.bakeDriverTexel(at, worldX, worldZ, sample, seedHash, seaLevel, built);
     }
+  }
+
+  /**
+   * The plant exclusions whose blend band reaches a row from `minX` to
+   * `maxX`, so a row off every site tests none (each row bakes 64 texels).
+   * Dropping one never changes a texel: past radius + blend its factor is 1.
+   */
+  private rowPlantExclusions(z: number, minX: number, maxX: number): readonly InfrastructurePlantExclusion[] {
+    const exclusions = this.options.plantExclusions;
+    if (exclusions === undefined || exclusions.length === 0) return NO_PLANT_EXCLUSIONS;
+    let row: InfrastructurePlantExclusion[] | null = null;
+    for (const exclusion of exclusions) {
+      const reach = exclusion.radius + INFRASTRUCTURE_PLANT_BLEND_METERS;
+      if (
+        Math.min(exclusion.az, exclusion.bz) - reach > z
+        || Math.max(exclusion.az, exclusion.bz) + reach < z
+        || Math.min(exclusion.ax, exclusion.bx) - reach > maxX
+        || Math.max(exclusion.ax, exclusion.bx) + reach < minX
+      ) continue;
+      (row ??= []).push(exclusion);
+    }
+    return row ?? NO_PLANT_EXCLUSIONS;
   }
 
   /**
