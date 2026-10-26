@@ -416,6 +416,8 @@ describe("the HTTP cache reading", () => {
       .toBe("cache");
     expect(classifyCacheState({ transferSize: 310, encodedBodySize: 50_000, decodedBodySize: 180_000 }))
       .toBe("revalidated");
+    // Chromium's 304 for a no-cache script after location.replace: headers on the wire, no body.
+    expect(classifyCacheState({ transferSize: 300, encodedBodySize: 0, decodedBodySize: 0 })).toBe("revalidated");
     expect(classifyCacheState({ transferSize: 50_310, encodedBodySize: 50_000, decodedBodySize: 180_000 }))
       .toBe("network");
     expect(classifyCacheState({ transferSize: 0, encodedBodySize: 0, decodedBodySize: 0 })).toBe("unknown");

@@ -478,15 +478,18 @@ interface ResourceTimingLike {
 
 /**
  * Where a response came from. Nothing on the wire is the cache; less than the
- * body on the wire is a revalidation (a 304 carries headers only); anything
- * more is the network. Browsers without `transferSize`, and cross-origin
- * responses without Timing-Allow-Origin, are unknown.
+ * body on the wire is a revalidation (a 304 carries headers only), and so are
+ * bytes on the wire with no body at all, which is how Chromium can list a 304
+ * (a script fetched with a 200 always has one); anything more is the network.
+ * Browsers without `transferSize`, and cross-origin responses without
+ * Timing-Allow-Origin, are unknown.
  */
 export function classifyCacheState(entry: ResourceTimingLike): CacheState {
   const { transferSize, encodedBodySize, decodedBodySize } = entry;
   if (typeof transferSize !== "number") return "unknown";
   if (transferSize === 0) return (decodedBodySize ?? 0) > 0 ? "cache" : "unknown";
   if (typeof encodedBodySize === "number" && transferSize < encodedBodySize) return "revalidated";
+  if ((encodedBodySize ?? 0) === 0 && (decodedBodySize ?? 0) === 0) return "revalidated";
   return "network";
 }
 
