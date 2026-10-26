@@ -7,8 +7,8 @@
  * INVARIANT THIS FILE OWNS: resolution moves only for GPU-bound frames, CPU
  * work is shed only for CPU-bound frames, exactly one governor actuates per
  * window, a resolution step that does not buy frame time is undone and
- * latched against instead of repeated, and — R-11 — no work step is ever
- * recovered while the frame is classified GPU-bound.
+ * latched against instead of repeated, and — R-11, then PR B — no work step
+ * is ever recovered except on cadence, one rung at a time and on trial.
  *
  * R-11 (PRE_PHASE_4_REALIGNMENT.md §3) split the old single work ladder into
  * CPU-cost and GPU-cost levers. Four of the old rungs (planar-reflection and
@@ -20,15 +20,36 @@
  * actuator: it is shed while GPU-bound-and-latched (or pinned at the scale
  * floor) and recovered only from a calm, non-GPU-bound state.
  *
+ * PR B (G1, plan §4.2) judges every window against the presentation cadence
+ * first. A window with at most 5% of its frames late is ON CADENCE: nothing
+ * is shed, and after four calm windows one shed rung comes back on trial,
+ * kept only while the windows after it stay on cadence. Before, work came
+ * back only in a "balanced" class that a vsync-locked 60 Hz frame almost
+ * never reaches (R5 §2.7: the CPU ladder never, the GPU ladder only with a
+ * render() p95 of 7.75-8.92 ms), so a machine that met 60 fps kept every
+ * rung it had ever shed. Off cadence the window is classified as before,
+ * except that the interval-minus-CPU proxy and the raw pacing interval no
+ * longer share a label (P9).
+ *
  * Class P: pure functions over numbers. No Babylon import, Node-testable.
  */
+
+import {
+  PRESENTATION_HEADROOM_MS,
+  SLOWEST_TRUSTED_DISPLAY_PERIOD_MS,
+  cadenceFloorMs,
+  type PresentationCadence,
+} from "./presentationCadence";
 
 export type GovernorMode =
   | "gpu-resolution"
   | "cpu-work"
   | "gpu-work"
   | "frame-pacing"
+  // Only the initial mode since PR B: the on-cadence class replaced the
+  // balanced one. Kept so the bench's mode tables still read it.
   | "balanced"
+  | "on-cadence"
   | "holding"
   | "no-gpu-timing";
 
@@ -39,15 +60,23 @@ export interface GovernorSignals {
   readonly intervalP95Ms: number | null;
   /** PR B: the window's mean presented interval. Absent in callers that predate it. */
   readonly intervalMeanMs?: number | null;
-  /** PR B: the share of the window's presented intervals that were late. */
+  /** PR B: the share of the window's presented intervals over `lateIntervalMs`. */
   readonly lateFraction?: number | null;
+  /**
+   * PR B: detail cells, ground-cover rows and terrain pages still waiting
+   * when the window closed. A streaming rung's trial ends only once it reads
+   * 0, because that rung's cost arrives with the streaming.
+   */
+  readonly streamingBacklog?: number | null;
 }
 
 export interface GovernorConfig {
-  /** 13.7 ms on the 60 fps tiers, 30 ms on Ultra. */
+  /** 13.7 ms on the 60 fps tiers, 30 ms on Ultra and at the 30 fps setting. */
   readonly gpuTargetMs: number;
-  /** Pilot-visible cadence: 60 Hz on tiers 0-2, 30 Hz on Ultra. */
+  /** Pilot-visible cadence: 60 Hz on tiers 0-2, 30 Hz on Ultra and at the 30 fps setting. */
   readonly presentationTargetMs: number;
+  /** PR B: a presented interval longer than this is late (`lateIntervalFor`). */
+  readonly lateIntervalMs: number;
   readonly scaleCeiling: number;
   /** Floor raised 0.62 → 0.75: below it the image degrades faster than the frame time improves. */
   readonly scaleFloor: number;
@@ -69,13 +98,28 @@ export interface GovernorConfig {
   readonly frozen?: boolean;
 }
 
-export function governorConfigForProfile(profile: {
-  readonly tier: number;
-  readonly renderScale: number;
-}): GovernorConfig {
+/**
+ * The tier's targets, moved only by a cadence slower than them: the 30 fps
+ * setting, which raises Medium's 16.67 ms to 33.3 ms. A null cadence, which
+ * captures, perf:ab and perf:flight always have, gives exactly the tier's
+ * own numbers. The GPU target keeps Ultra's present/compositor headroom and
+ * is rounded to whole microseconds so Ultra's stays exactly 30.
+ */
+export function governorConfigForProfile(
+  profile: { readonly tier: number; readonly renderScale: number },
+  cadence: PresentationCadence | null = null,
+): GovernorConfig {
+  const tierPresentationMs = profile.tier === 3 ? 1_000 / 30 : 1_000 / 60;
+  const tierGpuMs = profile.tier === 3 ? 30 : 13.7;
+  const floorMs = cadenceFloorMs(cadence);
+  const slower = floorMs > tierPresentationMs + 1e-9;
+  const presentationTargetMs = slower ? floorMs : tierPresentationMs;
   return Object.freeze({
-    gpuTargetMs: profile.tier === 3 ? 30 : 13.7,
-    presentationTargetMs: profile.tier === 3 ? 1_000 / 30 : 1_000 / 60,
+    gpuTargetMs: slower
+      ? Math.max(tierGpuMs, Math.round((floorMs - PRESENTATION_HEADROOM_MS) * 1_000) / 1_000)
+      : tierGpuMs,
+    presentationTargetMs,
+    lateIntervalMs: lateIntervalFor(presentationTargetMs, cadence),
     scaleCeiling: profile.renderScale,
     scaleFloor: Math.min(0.75, profile.renderScale),
     windowFrames: 120,
@@ -83,6 +127,62 @@ export function governorConfigForProfile(profile: {
     upCooldownFrames: 240,
     insensitiveRearmWindows: 15,
   });
+}
+
+/** Without a trusted display period, late means 15% over the target: 19.17 ms, or 38.3 ms on Ultra. */
+const UNTRUSTED_LATE_RATIO = 1.15;
+
+/**
+ * An observed period under this (128 Hz) cannot be two refreshes of a panel
+ * up to 240 Hz. Half a refresh past a doubled period is a whole refresh of
+ * the real one: 144 Hz observed as 72 put Ultra's threshold on 34.72 ms,
+ * exactly five refreshes.
+ */
+const SINGLE_REFRESH_OBSERVED_MS = 2_000 / 240 - 0.5;
+
+/**
+ * When a presented interval counts as late (PR B; red team finding 1).
+ *
+ * With a trusted display period P, half a refresh past the slowest whole
+ * multiple of P the target allows: 25 ms at 60 Hz, 20.8 ms at 120 Hz paced
+ * to 60, 17.4 ms at 144 Hz paced to 72. Vsync puts every interval on a
+ * multiple of P, so the threshold sits half a refresh from all of them and
+ * timestamp jitter cannot decide a frame. Without one, 15% over the target,
+ * lowered by the same rule only for a period observed faster than 128 Hz:
+ * intervals cannot beat the display, but what a slow machine observes on a
+ * fast panel is a multiple of its period, not the period, and trusting it
+ * would read 48 fps on a 144 Hz panel as on time.
+ */
+function lateIntervalFor(targetMs: number, cadence: PresentationCadence | null): number {
+  const trusted = trustedDisplayPeriodMs(cadence);
+  if (trusted !== null) return halfRefreshPast(targetMs, trusted);
+  const late = UNTRUSTED_LATE_RATIO * targetMs;
+  const observed = cadence?.displayPeriodMs ?? null;
+  return observed !== null && observed < SINGLE_REFRESH_OBSERVED_MS
+    ? Math.min(late, halfRefreshPast(targetMs, observed))
+    : late;
+}
+
+function halfRefreshPast(targetMs: number, periodMs: number): number {
+  const allowedMs = targetMs + 0.5 * Math.min(targetMs, periodMs);
+  return (Math.floor(allowedMs / periodMs + 1e-9) + 0.5) * periodMs;
+}
+
+/** The period `cadenceFloorMs` trusts too: confirmed, and no slower than 57 Hz unless the cap is 30. */
+function trustedDisplayPeriodMs(cadence: PresentationCadence | null): number | null {
+  const period = cadence?.periodConfirmed ? cadence.displayPeriodMs : null;
+  if (period === null || period === undefined) return null;
+  return period <= SLOWEST_TRUSTED_DISPLAY_PERIOD_MS || cadence!.frameCapHz === 30 ? period : null;
+}
+
+/**
+ * Whether two configs judge a window against the same targets, to 1%. The
+ * late threshold alone moving (the 60 fps setting on a 120 Hz panel) keeps
+ * the window in flight, whose intervals are on time against either.
+ */
+export function sameGovernorTargets(a: GovernorConfig, b: GovernorConfig): boolean {
+  const close = (x: number, y: number): boolean => Math.abs(x - y) <= 0.01 * Math.max(x, y);
+  return close(a.presentationTargetMs, b.presentationTargetMs) && close(a.gpuTargetMs, b.gpuTargetMs);
 }
 
 /**
@@ -237,11 +337,44 @@ export function gpuWorkLeverName(level: number): string | null {
   return GPU_WORK_LADDER[Math.min(level, GPU_WORK_MAX_LEVEL) - 1]?.lever ?? null;
 }
 
+
 interface PendingScaleProbe {
+  /** The GPU p95 in the gpu domain; the presented interval p95 in the interval domain. */
   readonly preStepGpuP95Ms: number;
   readonly preStepScale: number;
   /** Effectiveness samples must stay in one timing domain. */
   readonly metric: "gpu" | "interval";
+}
+
+/** PR B: what can recover a step, one at a time: either work ladder, or the render scale. */
+export type RecoveryLadder = "gpu" | "cpu" | "scale";
+
+/** PR B (G1): a recovered step, kept only while the windows after it stay on cadence. */
+export interface RecoveryTrial {
+  readonly ladder: RecoveryLadder;
+  /** The work level a failed trial restores (0 for the scale ladder). */
+  readonly restoreLevel: number;
+  /** The render scale a failed scale trial restores. */
+  readonly restoreScale: number;
+  readonly windowsPassed: number;
+  /**
+   * The rung's cost arrives with streaming (terrain pages, detail cells,
+   * animals, vegetation reach), later than two windows: the trial lasts four
+   * and ends only on an empty streaming backlog (red team finding 3).
+   */
+  readonly streaming: boolean;
+}
+
+/** PR B (G1): one ladder's recovery record, so a rung that keeps failing waits longer each time. */
+export interface LadderRecovery {
+  /** Windows left before the ladder may recover again. */
+  readonly backoffWindows: number;
+  /** Failed trials not yet forgiven; each one picks the next, longer backoff. */
+  readonly strikes: number;
+  /** Windows since the last strike or the last one forgiven. */
+  readonly windowsSinceStrike: number;
+  /** Windows since the ladder passed a trial, while a re-shed would still fail it; else null. */
+  readonly windowsSincePass: number | null;
 }
 
 export interface GovernorState {
@@ -260,10 +393,26 @@ export interface GovernorState {
   readonly restoreScale: number | null;
   readonly insensitiveWindowsRemaining: number;
   readonly cpuHotWindows: number;
-  readonly cpuCalmWindows: number;
   readonly gpuHotWindows: number;
-  readonly gpuCalmWindows: number;
+  /** PR B: consecutive off-cadence windows. A scale step on presented intervals needs two. */
+  readonly offCadenceWindows: number;
+  /**
+   * PR B: the late shares of the on-cadence windows since the last shed,
+   * recovery or off-cadence window, newest last, at most four of them. One
+   * window's late count is noise (binomial: 7 late frames can read as 5),
+   * so recovery reads the four pooled (red team finding 6).
+   */
+  readonly calmStreak: readonly number[];
+  readonly trial: RecoveryTrial | null;
+  readonly recovery: Readonly<Record<RecoveryLadder, LadderRecovery>>;
 }
+
+const FRESH_LADDER: LadderRecovery = Object.freeze({
+  backoffWindows: 0,
+  strikes: 0,
+  windowsSinceStrike: 0,
+  windowsSincePass: null,
+});
 
 export function createGovernorState(config: GovernorConfig): GovernorState {
   return Object.freeze({
@@ -280,9 +429,11 @@ export function createGovernorState(config: GovernorConfig): GovernorState {
     restoreScale: null,
     insensitiveWindowsRemaining: 0,
     cpuHotWindows: 0,
-    cpuCalmWindows: 0,
     gpuHotWindows: 0,
-    gpuCalmWindows: 0,
+    offCadenceWindows: 0,
+    calmStreak: Object.freeze([]),
+    trial: null,
+    recovery: Object.freeze({ gpu: FRESH_LADDER, cpu: FRESH_LADDER, scale: FRESH_LADDER }),
   });
 }
 
@@ -290,31 +441,81 @@ const GPU_BOUND_RATIO = 1.15;
 const DOWN_STEP = 0.05;
 const UP_STEP = 0.025;
 const DOWN_TRIGGER_RATIO = 1.1;
+/** With GPU timestamps, a GPU rung or a scale step recovers only under this share of the GPU target. */
 const UP_TRIGGER_RATIO = 0.8;
 /** A downward step must buy at least this fraction of GPU time to count. */
 const MIN_STEP_IMPROVEMENT = 0.04;
 /** Below this synthesised GPU estimate the frame is CPU-bound by definition. */
 const MIN_GPU_PROXY_MS = 2;
-const CPU_CALM_MS = 6;
-const CPU_HOT_WINDOWS_REQUIRED = 2;
-const CPU_CALM_WINDOWS_REQUIRED = 4;
-const GPU_HOT_WINDOWS_REQUIRED = 2;
-const GPU_CALM_WINDOWS_REQUIRED = 4;
+const HOT_WINDOWS_REQUIRED = 2;
+/**
+ * PR B: at or under this share of late frames (6 of 120) a window is on
+ * cadence and nothing is shed. Under vsync it is the plan's "interval p95
+ * within 2% of the target", read without the p95's two-valued jump.
+ */
+const ON_CADENCE_LATE_FRACTION = 0.05;
+/** The same rule for signals that carry no late share. */
+const ON_CADENCE_P95_RATIO = 1.02;
+/** Calm windows before one step recovers, and the most their pooled late share may be. */
+const RECOVER_AFTER_CALM_WINDOWS = 4;
+const CALM_LATE_FRACTION = 0.025;
+/** On-cadence windows that keep a recovered step; a streaming rung's trial takes longer. */
+const TRIAL_WINDOWS = 2;
+const STREAMING_TRIAL_WINDOWS = 4;
+/** The backoff after a ladder's first, second, and third or later unforgiven failed trial. */
+const RECOVERY_BACKOFF_WINDOWS: readonly number[] = Object.freeze([15, 30, 60]);
+/** One strike is forgiven after this many windows without a failure on the ladder. */
+const STRIKE_FORGIVEN_AFTER_WINDOWS = 60;
+/** A ladder shed again this soon after passing a trial failed it, just late. */
+const LATE_FAILURE_WINDOWS = 15;
+/**
+ * CPU recovery needs render() p95 within this share of the presentation
+ * target: 15 ms at 60 Hz. The red team's dead band was the old gate of 0.8 x
+ * 13.7 = 10.96 ms, which kept every CPU rung shed on machines between 11 and
+ * 16.7 ms that met 60 fps; the trial guards the rest.
+ */
+const CPU_RECOVERY_RATIO = 0.9;
+const STREAMING_LEVERS: ReadonlySet<string> = new Set([
+  "terrain-page-requests",
+  "detail-cell-budget",
+  "animal-budget",
+  "vegetation-distance",
+]);
 
-export type Classification = "gpu-bound" | "cpu-bound" | "pacing-bound" | "balanced" | "unknown";
+/**
+ * How a window reads (PR B adds "on-cadence", which replaced "balanced"). The
+ * bench's report labels each decision with it.
+ */
+export type Classification = "on-cadence" | "gpu-bound" | "cpu-bound" | "pacing-bound" | "unknown";
+
+/**
+ * Which clock a window's figure came from (P9). The interval-minus-CPU proxy
+ * and the raw pacing interval are different signals; under one "interval"
+ * label a CPU-bound host's pacing window could be compared with a proxy
+ * window and read a 70% improvement that never happened (R5 trace2).
+ */
+export type GovernorMetric = "gpu" | "interval-proxy" | "interval-pacing";
 
 export interface ResolvedSignals {
   readonly gpuMs: number | null;
   readonly synthesised: boolean;
   readonly classification: Classification;
-  readonly metric: "gpu" | "interval" | null;
+  readonly metric: GovernorMetric | null;
+}
+
+/** PR B: at most 5% of the window's frames late, or, without a late share, a p95 within 2% of the target. */
+function onCadence(signals: GovernorSignals, presentationTargetMs: number): boolean {
+  const late = signals.lateFraction;
+  if (late !== undefined && late !== null) return late <= ON_CADENCE_LATE_FRACTION;
+  return signals.intervalP95Ms !== null
+    && signals.intervalP95Ms <= presentationTargetMs * ON_CADENCE_P95_RATIO;
 }
 
 /**
- * How a window's signals read: which side bounds the frame, and the GPU
- * estimate the decision uses. Exported for the `?bench=1` report, which
- * labels each recorded decision with it; the governor is its only caller in
- * the game.
+ * How a window's signals read: on cadence, or which side bounds the frame,
+ * and the GPU estimate the decision uses. Exported for the `?bench=1`
+ * report, which labels each recorded decision with it; the governor is its
+ * only caller in the game.
  */
 export function resolveSignals(
   signals: GovernorSignals,
@@ -322,23 +523,39 @@ export function resolveSignals(
   presentationTargetMs: number,
 ): ResolvedSignals {
   const cpu = signals.cpuP95Ms;
-  let gpu = signals.gpuP95Ms;
-  let synthesised = false;
-  let metric: "gpu" | "interval" = "gpu";
-  if (gpu === null) {
-    if (signals.intervalP95Ms === null || cpu === null) {
-      return { gpuMs: null, synthesised: false, classification: "unknown", metric: null };
-    }
-    // No timestamp queries: infer the GPU's share from the presentation
-    // cadence. A tiny remainder means the CPU is the whole story — the case
-    // the deleted ratchet used to answer by lowering resolution.
-    const proxy = Math.max(0, signals.intervalP95Ms - cpu);
-    if (proxy < MIN_GPU_PROXY_MS) {
+  const measured = signals.gpuP95Ms;
+  const interval = signals.intervalP95Ms;
+  if (measured === null && (interval === null || cpu === null)) {
+    return { gpuMs: null, synthesised: false, classification: "unknown", metric: null };
+  }
+  const proxy = interval !== null && cpu !== null ? Math.max(0, interval - cpu) : null;
+  // PR B (G1): the cadence is the outcome the governor exists to protect, so
+  // it is read first. A frame that meets it is not bound by anything, however
+  // the vsync wait splits between the proxy and the CPU.
+  if (onCadence(signals, presentationTargetMs)) {
+    return {
+      gpuMs: measured ?? proxy,
+      synthesised: measured === null,
+      classification: "on-cadence",
+      metric: null,
+    };
+  }
+  if (measured === null) {
+    // No timestamp queries, which is all of shipping gameplay: infer the
+    // GPU's share from the presentation cadence. A tiny remainder means the
+    // CPU is the whole story — the case the deleted ratchet used to answer by
+    // lowering resolution. P9: only a split that neither side explains is
+    // pacing-bound; pacing no longer pre-empts a CPU-dominated window.
+    if (proxy! < MIN_GPU_PROXY_MS) {
       return { gpuMs: null, synthesised: true, classification: "cpu-bound", metric: null };
     }
-    gpu = proxy;
-    synthesised = true;
-    metric = "interval";
+    if (proxy! > cpu! * GPU_BOUND_RATIO) {
+      return { gpuMs: proxy, synthesised: true, classification: "gpu-bound", metric: "interval-proxy" };
+    }
+    if (cpu! > proxy! * GPU_BOUND_RATIO) {
+      return { gpuMs: proxy, synthesised: true, classification: "cpu-bound", metric: "interval-proxy" };
+    }
+    return { gpuMs: interval, synthesised: true, classification: "pacing-bound", metric: "interval-pacing" };
   }
   // Timestamp queries measure submitted GPU work, not the pilot-visible time
   // between presented frames. Browser scheduling, queue back-pressure, and
@@ -348,33 +565,29 @@ export function resolveSignals(
   // measured component explains it, use it as a conservative presentation
   // proxy. Resolution effectiveness feedback will quickly undo/latch a step
   // that cannot improve cadence, after which the GPU-work ladder takes over.
-  const interval = signals.intervalP95Ms;
-  const componentCeiling = Math.max(cpu ?? 0, gpu ?? 0);
+  const componentCeiling = Math.max(cpu ?? 0, measured);
   if (
     interval !== null
-    // A healthy 60 Hz presentation stream is ~16.67 ms even though the
-    // submitted-GPU budget is 13.7 ms. Keep a small scheduler tolerance so
-    // ordinary vsync quantisation cannot start a downscale probe.
-    && interval > presentationTargetMs * 1.02
+    && interval > presentationTargetMs * ON_CADENCE_P95_RATIO
     && componentCeiling <= gpuTargetMs * DOWN_TRIGGER_RATIO
   ) {
-    return {
-      gpuMs: interval,
-      synthesised: true,
-      classification: "pacing-bound",
-      metric: "interval",
-    };
+    return { gpuMs: interval, synthesised: true, classification: "pacing-bound", metric: "interval-pacing" };
   }
-  if (cpu === null) {
-    return { gpuMs: gpu, synthesised, classification: "gpu-bound", metric };
+  if (cpu === null || measured > cpu * GPU_BOUND_RATIO) {
+    return { gpuMs: measured, synthesised: false, classification: "gpu-bound", metric: "gpu" };
   }
-  if (gpu > cpu * GPU_BOUND_RATIO) {
-    return { gpuMs: gpu, synthesised, classification: "gpu-bound", metric };
+  if (cpu > measured * GPU_BOUND_RATIO) {
+    return { gpuMs: measured, synthesised: false, classification: "cpu-bound", metric: "gpu" };
   }
-  if (cpu > gpu * GPU_BOUND_RATIO) {
-    return { gpuMs: gpu, synthesised, classification: "cpu-bound", metric };
-  }
-  return { gpuMs: gpu, synthesised, classification: "balanced", metric };
+  // Neither component explains a missed cadence: the presentation itself is the bound.
+  return interval === null
+    ? { gpuMs: measured, synthesised: false, classification: "gpu-bound", metric: "gpu" }
+    : { gpuMs: interval, synthesised: true, classification: "pacing-bound", metric: "interval-pacing" };
+}
+
+/** The timing domain a probe's two windows must share: GPU timestamps, or presented intervals. */
+function probeDomain(metric: GovernorMetric | null): "gpu" | "interval" {
+  return metric === "gpu" ? "gpu" : "interval";
 }
 
 /**
@@ -400,6 +613,7 @@ export function nextGovernorDecision(
     ...state,
     framesSinceScaleChange: state.framesSinceScaleChange + config.windowFrames,
     mode: "holding",
+    recovery: tickRecovery(state.recovery),
   };
 
   // Re-arm the resolution-insensitive latch on a window clock.
@@ -420,7 +634,12 @@ export function nextGovernorDecision(
   // step: did the previous downward step actually buy GPU time?
   if (next.pendingProbe !== null) {
     const probe = next.pendingProbe;
-    if (resolved.gpuMs === null || resolved.metric !== probe.metric) {
+    const domain = probeDomain(resolved.metric);
+    const post = domain === "gpu" ? resolved.gpuMs : signals.intervalP95Ms;
+    if (resolved.classification === "on-cadence") {
+      // The step bought the cadence back: it was effective.
+      next = { ...next, ineffectiveDownSteps: 0, restoreScale: null, pendingProbe: null };
+    } else if (resolved.classification === "unknown" || domain !== probe.metric || post === null) {
       // The pre/post windows came from unrelated clocks (for example an
       // interval pacing proxy followed by a timestamp-query sample). Undo the
       // experimental scale change; accepting that comparison can manufacture
@@ -434,30 +653,31 @@ export function nextGovernorDecision(
         restoreScale: null,
         mode: "holding",
       });
-    }
-    const improvement =
-      (probe.preStepGpuP95Ms - resolved.gpuMs) / Math.max(probe.preStepGpuP95Ms, 1e-6);
-    if (improvement < MIN_STEP_IMPROVEMENT) {
-      const ineffective = next.ineffectiveDownSteps + 1;
-      const restoreScale = next.restoreScale ?? probe.preStepScale;
-      if (ineffective >= 2) {
-        // The workload is resolution-insensitive: undo the useless steps,
-        // latch, and leave only the work ladders in play until the latch
-        // re-arms.
-        next = {
-          ...next,
-          renderScale: restoreScale,
-          resolutionInsensitive: true,
-          insensitiveWindowsRemaining: config.insensitiveRearmWindows,
-          ineffectiveDownSteps: 0,
-          restoreScale: null,
-          pendingProbe: null,
-        };
-      } else {
-        next = { ...next, ineffectiveDownSteps: ineffective, restoreScale, pendingProbe: null };
-      }
     } else {
-      next = { ...next, ineffectiveDownSteps: 0, restoreScale: null, pendingProbe: null };
+      const improvement =
+        (probe.preStepGpuP95Ms - post) / Math.max(probe.preStepGpuP95Ms, 1e-6);
+      if (improvement < MIN_STEP_IMPROVEMENT) {
+        const ineffective = next.ineffectiveDownSteps + 1;
+        const restoreScale = next.restoreScale ?? probe.preStepScale;
+        if (ineffective >= 2) {
+          // The workload is resolution-insensitive: undo the useless steps,
+          // latch, and leave only the work ladders in play until the latch
+          // re-arms.
+          next = {
+            ...next,
+            renderScale: restoreScale,
+            resolutionInsensitive: true,
+            insensitiveWindowsRemaining: config.insensitiveRearmWindows,
+            ineffectiveDownSteps: 0,
+            restoreScale: null,
+            pendingProbe: null,
+          };
+        } else {
+          next = { ...next, ineffectiveDownSteps: ineffective, restoreScale, pendingProbe: null };
+        }
+      } else {
+        next = { ...next, ineffectiveDownSteps: 0, restoreScale: null, pendingProbe: null };
+      }
     }
   }
 
@@ -465,159 +685,295 @@ export function nextGovernorDecision(
     return Object.freeze({ ...next, mode: "no-gpu-timing" });
   }
 
+  const cadenceMet = resolved.classification === "on-cadence";
+  if (next.trial !== null) {
+    if (!cadenceMet) return failTrial(next, next.trial);
+    next = advanceTrial(next, next.trial, signals);
+  }
+  return cadenceMet
+    ? onCadenceDecision(next, signals, config)
+    : offCadenceDecision(next, signals, resolved, config);
+}
+
+/**
+ * On cadence: never shed. After four on-cadence windows whose pooled late
+ * share is calm, recover one step, GPU work first, then CPU work, then
+ * resolution, each on trial and each only once its ladder's backoff is over.
+ */
+function onCadenceDecision(
+  state: GovernorState,
+  signals: GovernorSignals,
+  config: GovernorConfig,
+): GovernorState {
+  // Without a late share the window met the p95 rule, which counts as calm.
+  const calmStreak = Object.freeze(
+    [...state.calmStreak, signals.lateFraction ?? 0].slice(-RECOVER_AFTER_CALM_WINDOWS),
+  );
+  const held: GovernorState = {
+    ...state,
+    calmStreak,
+    offCadenceWindows: 0,
+    cpuHotWindows: 0,
+    gpuHotWindows: 0,
+    mode: "on-cadence",
+  };
+  if (
+    state.trial !== null
+    || calmStreak.length < RECOVER_AFTER_CALM_WINDOWS
+    || calmStreak.reduce((sum, late) => sum + late, 0) / calmStreak.length > CALM_LATE_FRACTION
+  ) {
+    return Object.freeze(held);
+  }
+  // Without timestamps the GPU side has no gate of its own: the trial is the guard.
+  const gpu = signals.gpuP95Ms;
+  const gpuHeadroom = gpu === null || gpu <= config.gpuTargetMs * UP_TRIGGER_RATIO;
+  const cpu = signals.cpuP95Ms;
+  const recovered = { ...held, calmStreak: Object.freeze([]) };
+  if (state.gpuWorkLevel > 0 && state.recovery.gpu.backoffWindows === 0 && gpuHeadroom) {
+    const lever = gpuWorkLeverName(state.gpuWorkLevel);
+    return Object.freeze({
+      ...recovered,
+      gpuWorkLevel: state.gpuWorkLevel - 1,
+      lastLever: lever,
+      mode: "gpu-work",
+      trial: openTrial("gpu", state, lever),
+    });
+  }
+  if (
+    state.cpuWorkLevel > 0
+    && state.recovery.cpu.backoffWindows === 0
+    && cpu !== null
+    && cpu <= config.presentationTargetMs * CPU_RECOVERY_RATIO
+  ) {
+    const lever = cpuWorkLeverName(state.cpuWorkLevel);
+    return Object.freeze({
+      ...recovered,
+      cpuWorkLevel: state.cpuWorkLevel - 1,
+      lastLever: lever,
+      mode: "cpu-work",
+      trial: openTrial("cpu", state, lever),
+    });
+  }
+  if (
+    state.renderScale < config.scaleCeiling - 1e-6
+    && state.recovery.scale.backoffWindows === 0
+    && state.framesSinceScaleChange >= config.upCooldownFrames
+    && gpuHeadroom
+  ) {
+    return Object.freeze({
+      ...recovered,
+      renderScale: Math.min(config.scaleCeiling, state.renderScale + UP_STEP),
+      framesSinceScaleChange: 0,
+      pendingProbe: null,
+      mode: "gpu-resolution",
+      trial: openTrial("scale", state, null),
+    });
+  }
+  return Object.freeze(held);
+}
+
+/**
+ * Off cadence: shed only, never recover. On presented intervals, which is
+ * every shipping window, being off cadence is the trigger itself; with GPU
+ * timestamps the old millisecond thresholds still apply.
+ */
+function offCadenceDecision(
+  state: GovernorState,
+  signals: GovernorSignals,
+  resolved: ResolvedSignals,
+  config: GovernorConfig,
+): GovernorState {
+  const next: GovernorState = {
+    ...state,
+    calmStreak: Object.freeze([]),
+    offCadenceWindows: state.offCadenceWindows + 1,
+  };
+  const domain = probeDomain(resolved.metric);
+  const intervalDomain = domain === "interval";
   if (
     resolved.classification === "gpu-bound"
     || resolved.classification === "pacing-bound"
   ) {
-    // R-11 invariant: while GPU-bound, no ladder ever recovers. The only
-    // question is which lever, if any, sheds.
     const gpu = resolved.gpuMs!;
+    const pacing = resolved.classification === "pacing-bound";
     const scaleCanMove =
       !next.resolutionInsensitive && next.renderScale > config.scaleFloor + 1e-6;
     if (scaleCanMove) {
-      if (
-        gpu > config.gpuTargetMs * DOWN_TRIGGER_RATIO
-        && next.framesSinceScaleChange >= config.downCooldownFrames
-      ) {
-        const lowered = Math.max(config.scaleFloor, next.renderScale - DOWN_STEP);
+      // Two windows in a row on intervals: one window's late count is noise.
+      const hot = intervalDomain
+        ? next.offCadenceWindows >= HOT_WINDOWS_REQUIRED
+        : gpu > config.gpuTargetMs * DOWN_TRIGGER_RATIO;
+      if (hot && next.framesSinceScaleChange >= config.downCooldownFrames) {
         return Object.freeze({
           ...next,
-          renderScale: lowered,
+          renderScale: Math.max(config.scaleFloor, next.renderScale - DOWN_STEP),
           framesSinceScaleChange: 0,
           pendingProbe: {
-            preStepGpuP95Ms: gpu,
+            preStepGpuP95Ms: intervalDomain ? signals.intervalP95Ms ?? gpu : gpu,
             preStepScale: next.renderScale,
-            metric: resolved.metric!,
+            metric: domain,
           },
-          mode: resolved.classification === "pacing-bound"
+          mode: pacing
             ? "frame-pacing"
             : resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
           cpuHotWindows: 0,
-          cpuCalmWindows: 0,
           gpuHotWindows: 0,
-          gpuCalmWindows: 0,
+          recovery: noteShed(next.recovery, "scale"),
         });
       }
-    } else if (gpu > config.gpuTargetMs) {
+      return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
+    }
+    if (intervalDomain || gpu > config.gpuTargetMs) {
       // Governor A has no lever (latched, or already at the floor): shed a
       // GPU-cost work lever instead — the R-6 missing actuator.
       const hot = next.gpuHotWindows + 1;
-      if (hot >= GPU_HOT_WINDOWS_REQUIRED && next.gpuWorkLevel < GPU_WORK_MAX_LEVEL) {
+      const mode: GovernorMode = pacing ? "frame-pacing" : "gpu-work";
+      if (hot >= HOT_WINDOWS_REQUIRED && next.gpuWorkLevel < GPU_WORK_MAX_LEVEL) {
         const level = next.gpuWorkLevel + 1;
         return Object.freeze({
           ...next,
           gpuWorkLevel: level,
           lastLever: gpuWorkLeverName(level),
           gpuHotWindows: 0,
-          gpuCalmWindows: 0,
           cpuHotWindows: 0,
-          cpuCalmWindows: 0,
-          mode: resolved.classification === "pacing-bound" ? "frame-pacing" : "gpu-work",
+          mode,
+          recovery: noteShed(next.recovery, "gpu"),
         });
       }
-      return Object.freeze({
-        ...next,
-        gpuHotWindows: hot,
-        gpuCalmWindows: 0,
-        cpuHotWindows: 0,
-        mode: resolved.classification === "pacing-bound" ? "frame-pacing" : "gpu-work",
-      });
+      return Object.freeze({ ...next, gpuHotWindows: hot, cpuHotWindows: 0, mode });
     }
-    if (
-      !next.resolutionInsensitive
-      && gpu < config.gpuTargetMs * UP_TRIGGER_RATIO
-      && next.framesSinceScaleChange >= config.upCooldownFrames
-      && next.renderScale < config.scaleCeiling - 1e-6
-    ) {
-      return Object.freeze({
-        ...next,
-        renderScale: Math.min(config.scaleCeiling, next.renderScale + UP_STEP),
-        framesSinceScaleChange: 0,
-        pendingProbe: null,
-        mode: resolved.classification === "pacing-bound"
-          ? "frame-pacing"
-          : resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
-        cpuHotWindows: 0,
-        cpuCalmWindows: 0,
-        gpuHotWindows: 0,
-        gpuCalmWindows: 0,
-      });
-    }
-    return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuCalmWindows: 0 });
+    return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
   }
 
-  if (resolved.classification === "cpu-bound") {
-    const cpu = signals.cpuP95Ms;
-    if (cpu !== null && cpu > config.gpuTargetMs) {
-      const hot = next.cpuHotWindows + 1;
-      if (hot >= CPU_HOT_WINDOWS_REQUIRED && next.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
-        const level = next.cpuWorkLevel + 1;
-        return Object.freeze({
-          ...next,
-          cpuWorkLevel: level,
-          lastLever: cpuWorkLeverName(level),
-          cpuHotWindows: 0,
-          cpuCalmWindows: 0,
-          mode: "cpu-work",
-        });
-      }
-      return Object.freeze({ ...next, cpuHotWindows: hot, cpuCalmWindows: 0, mode: "cpu-work" });
-    }
-    if (cpu !== null && cpu < CPU_CALM_MS) {
-      const calm = next.cpuCalmWindows + 1;
-      if (calm >= CPU_CALM_WINDOWS_REQUIRED && next.cpuWorkLevel > 0) {
-        const level = next.cpuWorkLevel - 1;
-        return Object.freeze({
-          ...next,
-          cpuWorkLevel: level,
-          lastLever: cpuWorkLeverName(level + 1),
-          cpuHotWindows: 0,
-          cpuCalmWindows: 0,
-          mode: "cpu-work",
-        });
-      }
-      return Object.freeze({ ...next, cpuHotWindows: 0, cpuCalmWindows: calm, mode: "holding" });
-    }
-    return Object.freeze({ ...next, cpuHotWindows: 0, cpuCalmWindows: 0, mode: "holding" });
-  }
-
-  // Balanced — the only state that recovers work, and never while GPU-bound
-  // (R-11). GPU-cost levers recover first, and only when the GPU itself is
-  // genuinely calm; then the CPU ladder, on the CPU's own calm signal.
+  // CPU-bound.
   const cpu = signals.cpuP95Ms;
-  const gpuCalm =
-    resolved.gpuMs !== null && resolved.gpuMs < config.gpuTargetMs * UP_TRIGGER_RATIO;
-  if (gpuCalm && next.gpuWorkLevel > 0) {
-    const calm = next.gpuCalmWindows + 1;
-    if (calm >= GPU_CALM_WINDOWS_REQUIRED) {
-      const level = next.gpuWorkLevel - 1;
-      return Object.freeze({
-        ...next,
-        gpuWorkLevel: level,
-        lastLever: gpuWorkLeverName(level + 1),
-        gpuHotWindows: 0,
-        gpuCalmWindows: 0,
-        mode: "gpu-work",
-      });
-    }
-    return Object.freeze({ ...next, gpuCalmWindows: calm, gpuHotWindows: 0, mode: "balanced" });
-  }
-  if (cpu !== null && cpu < CPU_CALM_MS && next.cpuWorkLevel > 0) {
-    const calm = next.cpuCalmWindows + 1;
-    if (calm >= CPU_CALM_WINDOWS_REQUIRED) {
-      const level = next.cpuWorkLevel - 1;
+  if (intervalDomain || (cpu !== null && cpu > config.gpuTargetMs)) {
+    const hot = next.cpuHotWindows + 1;
+    if (hot >= HOT_WINDOWS_REQUIRED && next.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
+      const level = next.cpuWorkLevel + 1;
       return Object.freeze({
         ...next,
         cpuWorkLevel: level,
-        lastLever: cpuWorkLeverName(level + 1),
+        lastLever: cpuWorkLeverName(level),
         cpuHotWindows: 0,
-        cpuCalmWindows: 0,
+        gpuHotWindows: 0,
         mode: "cpu-work",
+        recovery: noteShed(next.recovery, "cpu"),
       });
     }
-    return Object.freeze({ ...next, cpuCalmWindows: calm, cpuHotWindows: 0, mode: "balanced" });
+    return Object.freeze({ ...next, cpuHotWindows: hot, gpuHotWindows: 0, mode: "cpu-work" });
   }
-  return Object.freeze({ ...next, cpuHotWindows: 0, cpuCalmWindows: 0, mode: "balanced" });
+  return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuHotWindows: 0 });
+}
+
+function openTrial(ladder: RecoveryLadder, state: GovernorState, lever: string | null): RecoveryTrial {
+  return Object.freeze({
+    ladder,
+    restoreLevel: ladder === "gpu" ? state.gpuWorkLevel : ladder === "cpu" ? state.cpuWorkLevel : 0,
+    restoreScale: state.renderScale,
+    windowsPassed: 0,
+    streaming: lever !== null && STREAMING_LEVERS.has(lever),
+  });
+}
+
+/** An on-cadence window during a trial: it counts, and enough of them keep the step. */
+function advanceTrial(state: GovernorState, trial: RecoveryTrial, signals: GovernorSignals): GovernorState {
+  const windowsPassed = trial.windowsPassed + 1;
+  const required = trial.streaming ? STREAMING_TRIAL_WINDOWS : TRIAL_WINDOWS;
+  const settled = !trial.streaming || !((signals.streamingBacklog ?? 0) > 0);
+  if (windowsPassed < required || !settled) {
+    return { ...state, trial: Object.freeze({ ...trial, windowsPassed }) };
+  }
+  return {
+    ...state,
+    trial: null,
+    recovery: withLadder(state.recovery, trial.ladder, {
+      ...state.recovery[trial.ladder],
+      windowsSincePass: 0,
+    }),
+  };
+}
+
+/** An off-cadence window during a trial: restore the step, strike the ladder, shed nothing else. */
+function failTrial(state: GovernorState, trial: RecoveryTrial): GovernorState {
+  const failed: GovernorState = {
+    ...state,
+    trial: null,
+    calmStreak: Object.freeze([]),
+    offCadenceWindows: state.offCadenceWindows + 1,
+    cpuHotWindows: 0,
+    gpuHotWindows: 0,
+    recovery: strike(state.recovery, trial.ladder),
+  };
+  if (trial.ladder === "gpu") {
+    return Object.freeze({
+      ...failed,
+      gpuWorkLevel: trial.restoreLevel,
+      lastLever: gpuWorkLeverName(trial.restoreLevel),
+      mode: "gpu-work",
+    });
+  }
+  if (trial.ladder === "cpu") {
+    return Object.freeze({
+      ...failed,
+      cpuWorkLevel: trial.restoreLevel,
+      lastLever: cpuWorkLeverName(trial.restoreLevel),
+      mode: "cpu-work",
+    });
+  }
+  return Object.freeze({
+    ...failed,
+    renderScale: trial.restoreScale,
+    framesSinceScaleChange: 0,
+    mode: "gpu-resolution",
+  });
+}
+
+function withLadder(
+  recovery: GovernorState["recovery"],
+  ladder: RecoveryLadder,
+  record: LadderRecovery,
+): GovernorState["recovery"] {
+  return Object.freeze({ ...recovery, [ladder]: Object.freeze(record) });
+}
+
+function strike(recovery: GovernorState["recovery"], ladder: RecoveryLadder): GovernorState["recovery"] {
+  const strikes = recovery[ladder].strikes + 1;
+  return withLadder(recovery, ladder, {
+    backoffWindows: RECOVERY_BACKOFF_WINDOWS[Math.min(strikes, RECOVERY_BACKOFF_WINDOWS.length) - 1]!,
+    strikes,
+    windowsSinceStrike: 0,
+    windowsSincePass: null,
+  });
+}
+
+/** A shed soon after the ladder passed a trial means the trial missed a cost that came late. */
+function noteShed(recovery: GovernorState["recovery"], ladder: RecoveryLadder): GovernorState["recovery"] {
+  return recovery[ladder].windowsSincePass === null ? recovery : strike(recovery, ladder);
+}
+
+/** One window passes for every ladder's backoff, strike and late-failure clocks. */
+function tickRecovery(recovery: GovernorState["recovery"]): GovernorState["recovery"] {
+  const gpu = tickLadder(recovery.gpu);
+  const cpu = tickLadder(recovery.cpu);
+  const scale = tickLadder(recovery.scale);
+  if (gpu === recovery.gpu && cpu === recovery.cpu && scale === recovery.scale) return recovery;
+  return Object.freeze({ gpu, cpu, scale });
+}
+
+function tickLadder(record: LadderRecovery): LadderRecovery {
+  if (record.backoffWindows === 0 && record.strikes === 0 && record.windowsSincePass === null) {
+    return record;
+  }
+  const forgiven = record.strikes > 0
+    && record.windowsSinceStrike + 1 >= STRIKE_FORGIVEN_AFTER_WINDOWS;
+  const sincePass = record.windowsSincePass === null ? null : record.windowsSincePass + 1;
+  return Object.freeze({
+    backoffWindows: Math.max(0, record.backoffWindows - 1),
+    strikes: forgiven ? record.strikes - 1 : record.strikes,
+    windowsSinceStrike: forgiven || record.strikes === 0 ? 0 : record.windowsSinceStrike + 1,
+    windowsSincePass: sincePass !== null && sincePass > LATE_FAILURE_WINDOWS ? null : sincePass,
+  });
 }
 
 /**
@@ -640,5 +996,44 @@ export function observeRenderScaleApplication(
     ineffectiveDownSteps: 0,
     restoreScale: null,
     pendingProbe: null,
+  });
+}
+
+/**
+ * PR B: a window's mean presented interval and its share of late ones,
+ * from the same samples its p95 comes from. Null for an empty window.
+ */
+export function summariseIntervals(
+  intervals: readonly number[],
+  lateIntervalMs: number,
+): { readonly mean: number | null; readonly late: number | null } {
+  if (intervals.length === 0) return { mean: null, late: null };
+  let sum = 0;
+  let late = 0;
+  for (const interval of intervals) {
+    sum += interval;
+    if (interval > lateIntervalMs) late += 1;
+  }
+  return { mean: sum / intervals.length, late: late / intervals.length };
+}
+
+/**
+ * PR B: the presentation cadence moved the targets, so the window in flight
+ * was judged against the old ones. Drop what that judgement fed: the
+ * pending probe, the calm streak and the hot counts. Levels, scale, latch
+ * and recovery records stay, and an open trial restarts its count rather
+ * than escaping its verdict (red team finding 11).
+ */
+export function rebaseGovernorState(state: GovernorState): GovernorState {
+  return Object.freeze({
+    ...state,
+    pendingProbe: null,
+    ineffectiveDownSteps: 0,
+    restoreScale: null,
+    cpuHotWindows: 0,
+    gpuHotWindows: 0,
+    offCadenceWindows: 0,
+    calmStreak: Object.freeze([]),
+    trial: state.trial === null ? null : Object.freeze({ ...state.trial, windowsPassed: 0 }),
   });
 }

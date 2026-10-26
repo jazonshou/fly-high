@@ -117,6 +117,9 @@ import {
   governorConfigForProfile,
   nextGovernorDecision,
   observeRenderScaleApplication,
+  rebaseGovernorState,
+  sameGovernorTargets,
+  summariseIntervals,
   workLeverSettingsFor,
   type GovernorConfig,
   type GovernorSignals,
@@ -211,7 +214,11 @@ import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
-import type { PresentationCadence } from "./webgpu/core/presentationCadence";
+import {
+  cadenceDisplayHz,
+  sameCadence,
+  type PresentationCadence,
+} from "./webgpu/core/presentationCadence";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -878,6 +885,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
   /** PR B: the frame pacer's cadence; null for captures, perf:ab and perf:flight, which never pace. */
   private presentationCadence: PresentationCadence | null = null;
+  /** A cadence change already restarted the governor's window in flight (at most once per window). */
+  private governorRebasedThisWindow = false;
   private budgetProbe: FrameGraphBudgetProbe | null = null;
   private budgetProbeReport: RenderDiagnostics["budgetProbeReport"] = null;
   private probeDisabledPass: string | null = null;
@@ -2141,9 +2150,24 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setShelter(ellipses);
   }
 
-  /** Stored, and read by the bench's probe. The governor does not read it yet. */
+  /**
+   * PR B: the governor's targets follow the cadence (the 30 fps setting
+   * raises them; the 60 setting on a fast panel moves only the late
+   * threshold). When the targets move, the window in flight was judged
+   * against the old ones and restarts, at most once per window, so a cadence
+   * that flickers cannot starve the governor of decisions. Never a resize, a
+   * level change or a diagnostics reset.
+   */
   setPresentationCadence(cadence: PresentationCadence | null): void {
+    if (sameCadence(cadence, this.presentationCadence)) return;
     this.presentationCadence = cadence;
+    const next = this.resolveGovernorConfig();
+    const moved = !sameGovernorTargets(next, this.governorConfig);
+    this.governorConfig = next;
+    if (!moved || next.frozen || this.governorRebasedThisWindow) return;
+    this.governorState = rebaseGovernorState(this.governorState);
+    this.resetTimingSamples();
+    this.governorRebasedThisWindow = true;
   }
 
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
@@ -2201,7 +2225,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     // timing reset land where the old out-of-frame resize put them.
     this.applyPendingRenderScale();
     const started = performance.now();
-    this.captureFrameInterval(started);
+    this.captureFrameInterval(started, deltaSeconds);
     this.currentState = this.presentedState(state);
     this.currentDeltaSeconds = Math.max(1 / 300, Math.min(0.1, deltaSeconds));
     this.frameIndex += 1;
@@ -2308,7 +2332,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   private resolveGovernorConfig(): GovernorConfig {
-    const config = governorConfigForProfile(this.profile);
+    const config = governorConfigForProfile(this.profile, this.presentationCadence);
     if (this.pinnedRenderScale === null) return config;
     return Object.freeze({
       ...config,
@@ -2791,7 +2815,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // consumed, which was every committed capture).
     // The threshold is a product contract, not something a slower workload
     // may redefine until its own misses disappear. A tier-1 frame above
-    // 27.4 ms is a visible missed delivery and must remain visible here.
+    // 27.4 ms is a visible missed delivery and must remain visible here. PR
+    // B: only the player's own 30 fps choice raises it (to 60 ms, as on
+    // Ultra); a cadence measured from slow frames never does.
     const inventoryLanes = this.inventoryGpuMemoryBreakdown();
     // One viewport for both estimates. Two reads of `clientWidth` could differ
     // across a resize and make the restricted figure incomparable to the one
@@ -2801,7 +2827,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       cssHeight: Math.max(1, this.domElement.clientHeight),
       devicePixelRatio: window.devicePixelRatio || 1,
     };
-    const hitchThresholdMs = hitchThresholdMilliseconds(this.profile);
+    const hitchThresholdMs = hitchThresholdMilliseconds(this.profile, this.presentationCadence);
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {
@@ -2868,10 +2894,20 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       maxFrameMs,
       p999FrameMs,
       hitchCount,
+      hitchThresholdMs,
       cpuWorkLevel: this.governorState.cpuWorkLevel,
       cpuWorkLever: this.governorState.lastLever,
       gpuWorkLevel: this.governorState.gpuWorkLevel,
       resolutionInsensitive: this.governorState.resolutionInsensitive,
+      presentationTargetMs: this.governorConfig.presentationTargetMs,
+      lateFraction: this.lastSignals.lateFraction ?? null,
+      governorTrial: this.governorState.trial?.ladder ?? null,
+      presentationCadence: this.presentationCadence === null ? null : {
+        frameCapHz: this.presentationCadence.frameCapHz,
+        divisor: this.presentationCadence.divisor,
+        displayHz: cadenceDisplayHz(this.presentationCadence),
+        confirmed: this.presentationCadence.periodConfirmed,
+      },
       renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),
       topPassesByCpuMs: this.passTimingHistory
         .topByP95(4)
@@ -4246,8 +4282,17 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       : null;
     const cpuP95Ms = frameTimingPercentile95(this.cpuFrameDurations);
     const intervalP95Ms = frameTimingPercentile95(this.frameIntervalDurations);
+    const { mean, late } = summariseIntervals(this.frameIntervalDurations, this.governorConfig.lateIntervalMs);
     this.resetTimingSamples();
-    this.lastSignals = { gpuP95Ms, cpuP95Ms, intervalP95Ms };
+    this.governorRebasedThisWindow = false;
+    this.lastSignals = {
+      gpuP95Ms,
+      cpuP95Ms,
+      intervalP95Ms,
+      intervalMeanMs: mean,
+      lateFraction: late,
+      streamingBacklog: this.streamingBacklog(),
+    };
 
     const previous = this.governorState;
     let state = nextGovernorDecision(previous, this.lastSignals, this.governorConfig);
@@ -4275,6 +4320,17 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.applyWorkLevels(state.cpuWorkLevel, state.gpuWorkLevel);
     }
     this.governorState = state;
+  }
+
+  /**
+   * PR B: detail cells, ground-cover rows and terrain pages still to come,
+   * which a streaming rung's trial waits on. Once per governor window: the
+   * terrain's statistics allocate and the detail count walks every cell.
+   */
+  private streamingBacklog(): number {
+    const terrain = this.terrain.statistics;
+    return terrain.pendingPages + terrain.slotsGenerating
+      + this.detail.pendingWorkItems + this.groundCover.pendingTileRows;
   }
 
   /** Push both ladders' notches into every lever's subsystem seam (R-11). */
@@ -4315,7 +4371,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     };
   }
 
-  private captureFrameInterval(started: number): void {
+  /**
+   * `started` is this frame's `performance.now()` and `deltaSeconds` the
+   * game's rAF delta since its last rendered frame. PR B: the governor's
+   * window takes the rAF delta, which is vsync-aligned and so lands on the
+   * refresh multiples the late threshold is placed between, and is blind to
+   * main-thread work done before `render()` in the same tick. Diagnostics,
+   * present attribution and the usability gate keep the start-to-start clock.
+   */
+  private captureFrameInterval(started: number, deltaSeconds: number): void {
     const previous = this.previousFrameStartedAt;
     this.previousFrameStartedAt = started;
     if (previous === null) return;
@@ -4334,7 +4398,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       return;
     }
     this.lastFrameIntervalMilliseconds = interval;
-    this.frameIntervalDurations.push(interval);
+    const presentedMilliseconds = deltaSeconds * 1_000;
+    if (isUsableFrameTiming(presentedMilliseconds)) {
+      this.frameIntervalDurations.push(presentedMilliseconds);
+    }
     // The interval ending at this frame start belongs to the CPU work saved
     // from the preceding render. Babylon's WebGPU PerfCounter does not expose
     // the submitted frame id for its asynchronous timestamp result, so that

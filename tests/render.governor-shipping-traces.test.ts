@@ -6,11 +6,18 @@ import {
   governorConfigForProfile,
   nextGovernorDecision,
   observeRenderScaleApplication,
+  rebaseGovernorState,
+  resolveSignals,
+  summariseIntervals,
   type GovernorConfig,
   type GovernorSignals,
   type GovernorState,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import type { FrameRateCap, PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
+import {
+  frameTimingPercentile95,
+  resolveWebGpuQualityProfile,
+} from "../src/render/webgpu/core/QualityProfile";
 
 /**
  * The governor as it runs for players (PR B, step 2.1). Shipping gameplay has
@@ -25,13 +32,22 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * late share agree: with 6 or fewer late frames the nearest-rank p95 is still
  * the on-time interval.
  *
- * `it.fails` marks a defect of today's governor; PR B's G1 turns each into `it`.
+ * G-1 put today's defects in as `it.fails`; G1 (G-2) turned each into `it`.
  */
 
 const medium = resolveWebGpuQualityProfile("medium", "balanced");
 const config = governorConfigForProfile(medium);
 const VSYNC_60 = 1_000 / 60;
 const VSYNC_120 = 1_000 / 120;
+
+function cadence(
+  frameCapHz: FrameRateCap,
+  divisor: number,
+  hz: number | null,
+  periodConfirmed: boolean,
+): PresentationCadence {
+  return { frameCapHz, divisor, displayPeriodMs: hz === null ? null : 1_000 / hz, periodConfirmed };
+}
 
 /** One window of 120 frames: `late` of them took `slowMs`, the rest `onTimeMs`. */
 function frames(
@@ -43,11 +59,28 @@ function frames(
   const slowFrames = Math.round(late * 120);
   return {
     gpuP95Ms: null,
-    cpuP95Ms,
+    cpuP95Ms: cpuP95Ms,
     intervalP95Ms: slowFrames > 6 ? slowMs : onTimeMs,
     intervalMeanMs: onTimeMs + (slowFrames / 120) * (slowMs - onTimeMs),
     lateFraction: slowFrames / 120,
   };
+}
+
+/** A window summarised exactly as FlightRenderer does, against `governorConfig`'s late threshold. */
+function windowOf(intervals: readonly number[], cpuP95Ms: number, governorConfig: GovernorConfig): GovernorSignals {
+  const { mean, late } = summariseIntervals(intervals, governorConfig.lateIntervalMs);
+  return {
+    gpuP95Ms: null,
+    cpuP95Ms,
+    intervalP95Ms: frameTimingPercentile95(intervals),
+    intervalMeanMs: mean,
+    lateFraction: late,
+  };
+}
+
+/** 120 intervals of `onTimeMs`, the first `late` of them `slowMs` instead. */
+function intervals(onTimeMs: number, late = 0, slowMs = 2 * onTimeMs): number[] {
+  return Array.from({ length: 120 }, (_, frame) => (frame < late ? slowMs : onTimeMs));
 }
 
 interface TraceOptions {
@@ -83,6 +116,19 @@ function firstWindow(states: readonly GovernorState[], match: (state: GovernorSt
   return index < 0 ? -1 : index + 1;
 }
 
+/** Every window (from 1) whose state matches its predecessor's that way. */
+function windowsWhere(
+  start: GovernorState,
+  states: readonly GovernorState[],
+  match: (state: GovernorState, previous: GovernorState) => boolean,
+): number[] {
+  const found: number[] = [];
+  states.forEach((state, index) => {
+    if (match(state, index === 0 ? start : states[index - 1]!)) found.push(index + 1);
+  });
+  return found;
+}
+
 function withLevels(cpuWorkLevel: number, gpuWorkLevel: number, extra: Partial<GovernorState> = {}): GovernorState {
   return Object.freeze({ ...createGovernorState(config), cpuWorkLevel, gpuWorkLevel, ...extra });
 }
@@ -91,6 +137,7 @@ describe("the shipping governor on a healthy cadence", () => {
   it("S1 (R5 trace A): a healthy 60 Hz frame with a 5 ms CPU moves nothing", () => {
     const states = trace(createGovernorState(config), 3, () => frames(5));
     for (const state of states) {
+      expect(state.mode).toBe("on-cadence");
       expect(state.renderScale).toBe(config.scaleCeiling);
       expect(state.pendingProbe).toBeNull();
       expect(state.cpuWorkLevel).toBe(0);
@@ -98,14 +145,14 @@ describe("the shipping governor on a healthy cadence", () => {
     }
   });
 
-  it.fails("S2 (R5 trace3): a CPU ladder shed to the top comes back, one rung per four windows", () => {
+  it("S2 (R5 trace3): a CPU ladder shed to the top comes back, one rung per four windows", () => {
     for (const cpu of [3, 5, 7, 8.5]) {
       const states = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => frames(cpu));
       expect(firstWindow(states, (state) => state.cpuWorkLevel === 0), `render() p95 ${cpu} ms`).toBe(28);
     }
   });
 
-  it.fails("S3: the CPU ladder recovers with render() p95 up to 0.9 of the 16.67 ms target", () => {
+  it("S3: the CPU ladder recovers with render() p95 up to 0.9 of the 16.67 ms target", () => {
     // The red team's dead band: a gate at 0.8 x 13.7 = 10.96 ms left every
     // machine between 11 and 16.7 ms with its CPU rungs shed for good.
     for (const cpu of [10.9, 11.4, 12.5, 14.5]) {
@@ -119,10 +166,14 @@ describe("the shipping governor on a healthy cadence", () => {
     expect(states.every((state) => state.cpuWorkLevel === CPU_WORK_MAX_LEVEL)).toBe(true);
   });
 
-  it.fails("S4: a 120 Hz display paced to 60 recovers exactly like S2", () => {
-    // Today the config cannot see the cadence, so the paced stream (every
-    // second refresh, 16.67 ms apart) reads exactly as a 60 Hz display does.
-    const states = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => frames(5));
+  it("S4: a 120 Hz display paced to 60 recovers exactly like S2", () => {
+    const paced = governorConfigForProfile(medium, cadence(60, 2, 120, true));
+    expect(paced.presentationTargetMs).toBe(config.presentationTargetMs);
+    expect(paced.gpuTargetMs).toBe(config.gpuTargetMs);
+    // Half a refresh past the second: a single missed slot (25 ms) is late.
+    expect(paced.lateIntervalMs).toBeCloseTo(2.5 * VSYNC_120, 9);
+    expect(summariseIntervals([25], paced.lateIntervalMs).late).toBe(1);
+    const states = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => frames(5), { config: paced });
     expect(firstWindow(states, (state) => state.cpuWorkLevel === 0)).toBe(28);
   });
 
@@ -135,16 +186,20 @@ describe("the shipping governor on a healthy cadence", () => {
     expect(firstWindow(states, (state) => state.cpuWorkLevel === 0)).toBe(28);
   });
 
-  it.fails("S6 (R5 trace4): a fast CPU on a healthy, latched 60 Hz frame sheds no GPU work", () => {
-    // render() p95 2.5 ms makes today's proxy 14.17 ms, over the 13.7 ms target.
+  it("S6 (R5 trace4): a fast CPU on a healthy, latched 60 Hz frame sheds no GPU work", () => {
+    // render() p95 2.5 ms made the old proxy 14.17 ms, over the 13.7 ms target.
     const latched = withLevels(0, 0, { resolutionInsensitive: true, insensitiveWindowsRemaining: 15 });
     const states = trace(latched, 14, () => frames(2.5));
     expect(states.every((state) => state.gpuWorkLevel === 0)).toBe(true);
+    // The latch keeps counting down to its re-arm.
+    expect(states[13]!.resolutionInsensitive).toBe(true);
+    expect(states[13]!.insensitiveWindowsRemaining).toBe(1);
   });
 
   it("S9: exactly 5% late frames (6 of 120) moves nothing", () => {
     const states = trace(createGovernorState(config), 20, () => frames(9, 0.05));
     for (const state of states) {
+      expect(state.mode).toBe("on-cadence");
       expect(state.renderScale).toBe(config.scaleCeiling);
       expect(state.cpuWorkLevel).toBe(0);
       expect(state.gpuWorkLevel).toBe(0);
@@ -153,11 +208,11 @@ describe("the shipping governor on a healthy cadence", () => {
 });
 
 describe("the shipping governor off cadence", () => {
-  it.fails("S7 (R5 trace2, P9): a CPU-bound host sheds CPU work and keeps its resolution", () => {
+  it("S7 (R5 trace2, P9): a CPU-bound host sheds CPU work and keeps its resolution", () => {
     // render() p95 alternating 14 and 16 ms with the interval held at 23 ms.
-    // Today the pacing label pre-empts the split, the resolution probe reads
-    // 23 -> 7 ms as a 70% gain, and the scale walks to its floor while the
-    // CPU ladder never moves.
+    // Before G1 the pacing label pre-empted the split, the resolution probe
+    // read 23 -> 7 ms as a 70% gain, and the scale walked to its floor while
+    // the CPU ladder never moved.
     const states = trace(createGovernorState(config), 14, (window) => ({
       gpuP95Ms: null,
       cpuP95Ms: window % 2 === 1 ? 14 : 16,
@@ -181,12 +236,351 @@ describe("the shipping governor off cadence", () => {
     expect(hitchy.every((state) => state.cpuWorkLevel === 0)).toBe(true);
   });
 
-  it.fails("S8 (R5 trace C): once the frame is healthy again, the whole GPU ladder comes back", () => {
+  it("S8 (R5 trace C): once the frame is healthy again, the whole GPU ladder comes back", () => {
     const shed = hitchy[hitchy.length - 1]!;
     expect(shed.gpuWorkLevel).toBe(GPU_WORK_MAX_LEVEL);
     const states = trace(shed, 60, () => frames(5));
     // Nine rungs, four calm windows each: 36 windows, 72 s at 60 fps.
     expect(firstWindow(states, (state) => state.gpuWorkLevel === 0)).toBe(36);
     expect(states[59]!.cpuWorkLevel).toBe(0);
+  });
+});
+
+describe("recovery on trial", () => {
+  const recovered = (state: GovernorState, previous: GovernorState): boolean =>
+    state.gpuWorkLevel < previous.gpuWorkLevel;
+  const restored = (state: GovernorState, previous: GovernorState): boolean =>
+    state.gpuWorkLevel > previous.gpuWorkLevel;
+
+  it("S10: a GPU rung that costs the cadence back is tried less and less often", () => {
+    // Calm at GPU level 3 or above; level 2 puts 10 of 120 frames a refresh late.
+    const start = withLevels(0, 3);
+    const states = trace(start, 240, (_, state) => frames(5, state.gpuWorkLevel <= 2 ? 0.08 : 0));
+    // Backoffs of 15, 30, then 60 windows. Strikes are kept on a pass and one
+    // is forgiven per 60 windows without a failure, so after the third the
+    // ladder settles at one trial per 61 windows (122 s).
+    expect(windowsWhere(start, states, recovered)).toEqual([4, 20, 51, 112, 173, 234]);
+    expect(windowsWhere(start, states, restored)).toEqual([5, 21, 52, 113, 174, 235]);
+    expect(states.every((state) => state.gpuWorkLevel >= 2)).toBe(true);
+    expect(Math.max(...states.map((state) => state.recovery.gpu.strikes))).toBe(3);
+    expect(states[239]!.gpuWorkLevel).toBe(3);
+  });
+
+  it("S10b: a rung whose cost arrives three windows late is not tried more than once a minute", () => {
+    // The red team's delayed-cost model: from GPU level 7, a recovered rung's
+    // cost (12% of frames late) arrives three windows after the recovery.
+    // Vegetation distance is a streaming rung, so its four-window trial is
+    // still open when the cost lands.
+    const start = withLevels(0, 7);
+    let level = start.gpuWorkLevel;
+    let recoveredAt = Number.NEGATIVE_INFINITY;
+    const states = trace(start, 300, (window, state) => {
+      if (state.gpuWorkLevel < level) recoveredAt = window - 1;
+      level = state.gpuWorkLevel;
+      return frames(5, level < 7 && window - recoveredAt > 3 ? 0.12 : 0);
+    }, { capBinds: true });
+    const recoveries = windowsWhere(start, states, recovered);
+    expect(recoveries).toEqual([4, 23, 57, 121, 185, 249]);
+    // At most one pair per 60 windows after the first 60 (plan §5.4: one per 2 min).
+    expect(recoveries.filter((window) => window > 60).length).toBeLessThanOrEqual(240 / 60);
+    expect(states.every((state) => state.renderScale === config.scaleCeiling)).toBe(true);
+  });
+
+  it("S11: a resolution step that costs the cadence back is tried less and less often", () => {
+    // Calm at 0.835 or below; 0.86 puts 10 of 120 frames a refresh late.
+    const start = withLevels(0, 0, { renderScale: 0.81 });
+    const states = trace(start, 180, (_, state) => frames(5, state.renderScale > 0.835 + 1e-9 ? 0.08 : 0));
+    const moves = windowsWhere(start, states, (state, previous) => state.renderScale !== previous.renderScale)
+      .map((window) => [window, Number(states[window - 1]!.renderScale.toFixed(3))]);
+    expect(moves).toEqual([
+      [4, 0.835], [8, 0.86], [9, 0.835],
+      [24, 0.86], [25, 0.835],
+      [55, 0.86], [56, 0.835],
+      [116, 0.86], [117, 0.835],
+      [177, 0.86], [178, 0.835],
+    ]);
+    expect(states.every((state) => !state.resolutionInsensitive && state.pendingProbe === null)).toBe(true);
+  });
+
+  it("S16: an on-cadence window that is not calm still passes a trial", () => {
+    const start = withLevels(0, 3);
+    const lates = [0, 0, 0, 0, 0.05, 0];
+    const states = trace(start, lates.length, (window) => frames(5, lates[window - 1]!));
+    expect(states[3]!.gpuWorkLevel).toBe(2);
+    expect(states[3]!.trial).toMatchObject({ ladder: "gpu", restoreLevel: 3, windowsPassed: 0, streaming: false });
+    expect(states[4]!.trial?.windowsPassed).toBe(1);
+    expect(states[5]!.trial).toBeNull();
+    expect(states[5]!.gpuWorkLevel).toBe(2);
+    expect(states[5]!.recovery.gpu.strikes).toBe(0);
+  });
+
+  it("a streaming rung's trial lasts four windows and ends only once streaming has caught up", () => {
+    // CPU level 1 is a terrain-page-request rung: its cost arrives with the pages.
+    const start = withLevels(1, 0);
+    const backlog = [0, 0, 0, 0, 0, 0, 0, 12, 0];
+    const states = trace(start, backlog.length, (window) => ({
+      ...frames(5),
+      streamingBacklog: backlog[window - 1]!,
+    }));
+    expect(states[3]!.cpuWorkLevel).toBe(0);
+    expect(states[3]!.trial).toMatchObject({ ladder: "cpu", streaming: true });
+    expect(states[6]!.trial?.windowsPassed).toBe(3);
+    // The fourth window passes, but 12 items are still streaming in.
+    expect(states[7]!.trial?.windowsPassed).toBe(4);
+    expect(states[8]!.trial).toBeNull();
+    expect(states[8]!.cpuWorkLevel).toBe(0);
+  });
+
+  it("keeps a strike through a passed trial and forgives it after 60 windows without a failure", () => {
+    // GPU level 1; the first recovery fails, the cost then goes away.
+    const start = withLevels(0, 1);
+    const states = trace(start, 70, (window, state) => frames(5, window === 5 && state.gpuWorkLevel === 0 ? 0.08 : 0));
+    expect(states[4]!.recovery.gpu).toMatchObject({ strikes: 1, backoffWindows: 15 });
+    expect(states[4]!.gpuWorkLevel).toBe(1);
+    // Backoff over at window 20: the rung comes back and passes.
+    expect(windowsWhere(start, states, recovered)).toEqual([4, 20]);
+    expect(states[21]!.trial).toBeNull();
+    expect(states[21]!.recovery.gpu.strikes).toBe(1);
+    expect(states[63]!.recovery.gpu.strikes).toBe(1);
+    expect(states[64]!.recovery.gpu.strikes).toBe(0);
+  });
+
+  it("counts a re-shed within 15 windows of a passed trial as a failed one", () => {
+    const latched = { resolutionInsensitive: true, insensitiveWindowsRemaining: 1_000 };
+    const costFrom = (from: number) => (window: number) => frames(5, window >= from ? 0.12 : 0);
+    // Recovered at window 4, passed at window 6.
+    const early = trace(withLevels(0, 1, latched), 9, costFrom(8));
+    expect(early[5]!.recovery.gpu.windowsSincePass).toBe(0);
+    expect(early[8]!.gpuWorkLevel).toBe(1);
+    expect(early[8]!.recovery.gpu).toMatchObject({ strikes: 1, backoffWindows: 15 });
+    // Sixteen windows after the pass, a shed is a new load, not a missed trial.
+    const late = trace(withLevels(0, 1, latched), 31, costFrom(30));
+    expect(late[30]!.gpuWorkLevel).toBe(1);
+    expect(late[30]!.recovery.gpu).toMatchObject({ strikes: 0, backoffWindows: 0 });
+  });
+
+  it("S17: a cadence rebase drops what the old targets judged and keeps the trial on its verdict", () => {
+    const state = Object.freeze({
+      ...withLevels(2, 4, { renderScale: 0.81, resolutionInsensitive: true, insensitiveWindowsRemaining: 9 }),
+      pendingProbe: Object.freeze({ preStepGpuP95Ms: 33.3, preStepScale: 0.86, metric: "interval" as const }),
+      ineffectiveDownSteps: 1,
+      restoreScale: 0.86,
+      cpuHotWindows: 1,
+      gpuHotWindows: 1,
+      offCadenceWindows: 3,
+      calmStreak: Object.freeze([0, 0.01]),
+      trial: Object.freeze({
+        ladder: "gpu" as const,
+        restoreLevel: 5,
+        restoreScale: 0.81,
+        windowsPassed: 1,
+        streaming: false,
+      }),
+    });
+    const rebased = rebaseGovernorState(state);
+    expect(rebased).toMatchObject({
+      pendingProbe: null,
+      ineffectiveDownSteps: 0,
+      restoreScale: null,
+      cpuHotWindows: 0,
+      gpuHotWindows: 0,
+      offCadenceWindows: 0,
+      calmStreak: [],
+      trial: { ladder: "gpu", restoreLevel: 5, windowsPassed: 0 },
+      cpuWorkLevel: 2,
+      gpuWorkLevel: 4,
+      renderScale: 0.81,
+      resolutionInsensitive: true,
+      insensitiveWindowsRemaining: 9,
+    });
+    expect(rebased.recovery).toBe(state.recovery);
+    // The restarted trial needs its two windows again, and still fails off cadence.
+    const passing = trace(rebased, 2, () => frames(5));
+    expect(passing[0]!.trial?.windowsPassed).toBe(1);
+    expect(passing[1]!.trial).toBeNull();
+    const failing = trace(rebased, 1, () => frames(5, 0.1));
+    expect(failing[0]!.gpuWorkLevel).toBe(5);
+    expect(failing[0]!.recovery.gpu.strikes).toBe(1);
+  });
+});
+
+describe("the shipping governor at other cadences", () => {
+  it("S12: at the 30 fps setting 33.3 ms is on cadence, a CPU up to 30 ms recovers, and 10% late sheds", () => {
+    const thirty = governorConfigForProfile(medium, cadence(30, 2, 60, true));
+    expect(thirty.presentationTargetMs).toBe(1_000 / 30);
+    expect(thirty.gpuTargetMs).toBe(30);
+    expect(thirty.lateIntervalMs).toBeCloseTo(2.5 * VSYNC_60, 9);
+    const steady = trace(createGovernorState(thirty), 20, () => windowOf(intervals(1_000 / 30), 9, thirty), { config: thirty });
+    expect(steady.every((state) => state.mode === "on-cadence" && state.renderScale === thirty.scaleCeiling)).toBe(true);
+    // Machines that hold 30 get their rungs back: 0.9 x 33.3 = 30 ms of render().
+    const recovering = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => windowOf(intervals(1_000 / 30), 20, thirty), { config: thirty });
+    expect(firstWindow(recovering, (state) => state.cpuWorkLevel === 0)).toBe(28);
+    // 12 of 120 frames at 50 ms: off cadence twice, then a resolution step.
+    const hitching = trace(createGovernorState(thirty), 2, () => windowOf(intervals(1_000 / 30, 12, 50), 9, thirty), { config: thirty });
+    expect(hitching[0]!.renderScale).toBe(thirty.scaleCeiling);
+    expect(hitching[1]!.renderScale).toBeCloseTo(thirty.scaleCeiling - 0.05, 9);
+  });
+
+  it("S13: a confirmed 50 Hz panel sheds as it did before PR B", () => {
+    const fifty = governorConfigForProfile(medium, cadence(60, 1, 50, true));
+    expect(fifty).toEqual(config);
+    expect(fifty.lateIntervalMs).toBeCloseTo(1.15 * VSYNC_60, 9);
+    const at50 = (governorConfig: GovernorConfig) =>
+      trace(createGovernorState(governorConfig), 12, () => windowOf(intervals(20), 6, governorConfig), { config: governorConfig });
+    const states = at50(fifty);
+    expect(states).toEqual(at50(config));
+    expect(states[0]!.mode).not.toBe("on-cadence");
+    expect(states[1]!.renderScale).toBeLessThan(config.scaleCeiling);
+    // Without a late share the p95 rule reads 20 ms as off cadence too.
+    expect(resolveSignals({ gpuP95Ms: null, cpuP95Ms: 6, intervalP95Ms: 20 }, fifty.gpuTargetMs, fifty.presentationTargetMs)
+      .classification).not.toBe("on-cadence");
+  });
+
+  it("S14: a slow machine whose observed period is its own 33.3 ms frame sheds as it did before PR B", () => {
+    const slow = governorConfigForProfile(medium, cadence(60, 1, 30, false));
+    expect(slow).toEqual(config);
+    const run = (governorConfig: GovernorConfig) =>
+      trace(createGovernorState(governorConfig), 12, () => windowOf(intervals(1_000 / 30), 9, governorConfig), {
+        config: governorConfig,
+      });
+    const states = run(slow);
+    expect(states).toEqual(run(config));
+    expect(states.some((state) => state.resolutionInsensitive)).toBe(true);
+    expect(states[11]!.gpuWorkLevel).toBeGreaterThan(0);
+  });
+
+  it("S15: a confirmed 30 Hz rAF sheds at the 60 setting as before, and is on cadence at the 30 setting", () => {
+    const at60 = governorConfigForProfile(medium, cadence(60, 1, 30, true));
+    expect(at60).toEqual(config);
+    const shedding = trace(createGovernorState(at60), 2, () => windowOf(intervals(1_000 / 30), 6, at60), { config: at60 });
+    expect(shedding[1]!.renderScale).toBeLessThan(config.scaleCeiling);
+    const at30 = governorConfigForProfile(medium, cadence(30, 1, 30, true));
+    expect(at30.presentationTargetMs).toBe(1_000 / 30);
+    expect(at30.lateIntervalMs).toBeCloseTo(50, 9);
+    const states = trace(createGovernorState(at30), 12, () => windowOf(intervals(1_000 / 30), 6, at30), { config: at30 });
+    expect(states.every((state) => state.mode === "on-cadence" && state.renderScale === at30.scaleCeiling)).toBe(true);
+  });
+
+  it("S19: a slow machine on a fast panel, period unconfirmed, sheds toward 60", () => {
+    // The period it observes may be the panel's or a multiple of it; neither
+    // may read a missed refresh as on time.
+    const cases: readonly [number, number, number][] = [
+      // [panel Hz, refreshes per frame, observed multiple]
+      [144, 3, 1], [144, 3, 3],
+      [165, 4, 1], [165, 4, 4],
+      [240, 5, 1], [240, 5, 5],
+      [120, 3, 1], [120, 3, 2], [120, 3, 3],
+    ];
+    for (const [hz, refreshes, observed] of cases) {
+      const governorConfig = governorConfigForProfile(medium, cadence(60, 1, hz / observed, false));
+      const frameMs = (refreshes * 1_000) / hz;
+      const label = `${hz} Hz at ${(1_000 / frameMs).toFixed(0)} fps, observing ${observed} refreshes`;
+      const states = trace(createGovernorState(governorConfig), 2, () => windowOf(intervals(frameMs), 6, governorConfig), {
+        config: governorConfig,
+      });
+      expect(states[0]!.mode, label).not.toBe("on-cadence");
+      expect(states[1]!.renderScale, label).toBeLessThan(config.scaleCeiling);
+    }
+  });
+
+  it("S19: at a confirmed 90 Hz, two refreshes are on time and three late, whatever the jitter", () => {
+    const ninety = governorConfigForProfile(medium, cadence(60, 1, 90, true));
+    const period = 1_000 / 90;
+    expect(ninety.lateIntervalMs).toBeCloseTo(2.5 * period, 9);
+    const jittered = (refreshes: number) =>
+      Array.from({ length: 120 }, (_, frame) => refreshes * period + ((frame % 5) - 2) * 0.5);
+    expect(summariseIntervals(jittered(2), ninety.lateIntervalMs).late).toBe(0);
+    expect(summariseIntervals(jittered(3), ninety.lateIntervalMs).late).toBe(1);
+  });
+});
+
+describe("the late threshold", () => {
+  it("keeps clear of every whole refresh on panels up to 240 Hz", () => {
+    // Vsync puts every presented interval on a multiple of the true period,
+    // so a threshold near one lets timestamp jitter decide frames. Every
+    // common rate, setting, confirmation and observed multiple, for every
+    // divisor the pacer might choose. The closest are 0.83 ms: an unconfirmed
+    // 19.17 ms against a 20 ms refresh (50 and 100 Hz), and 38.33 against
+    // 37.5 (240 Hz at the 30 setting).
+    const profiles = [medium, resolveWebGpuQualityProfile("high", "ultra")];
+    const caps: readonly FrameRateCap[] = [60, 30, null];
+    let closest = Number.POSITIVE_INFINITY;
+    for (const profile of profiles) {
+      for (const hz of [48, 50, 60, 75, 90, 100, 120, 144, 165, 240]) {
+        const period = 1_000 / hz;
+        for (const cap of caps) {
+          for (let divisor = 1; divisor <= 8; divisor += 1) {
+            const observed = [1, 2, 3, 4, 5, 6].map((multiple) => multiple * period).filter((ms) => ms <= 34);
+            const cadences = [
+              cadence(cap, divisor, hz, true),
+              ...observed.map((ms) => cadence(cap, divisor, 1_000 / ms, false)),
+              cadence(cap, divisor, null, false),
+            ];
+            for (const each of cadences) {
+              const late = governorConfigForProfile(profile, each).lateIntervalMs;
+              const margin = Math.abs(late - Math.round(late / period) * period);
+              closest = Math.min(closest, margin);
+              expect(margin, `${hz} Hz, cap ${cap}, divisor ${divisor}, ${JSON.stringify(each)}`)
+                .toBeGreaterThanOrEqual(0.8);
+            }
+          }
+        }
+      }
+    }
+    expect(closest).toBeCloseTo(5 / 6, 2);
+  });
+});
+
+describe("binomial spikes (red team finding 6)", () => {
+  /** A seeded generator, so each case sees the same windows whatever runs before it. */
+  function spikes(seed: number) {
+    let value = seed;
+    const random = (): number => {
+      value = (value * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return value / 2_147_483_648;
+    };
+    // 40 ms spikes outside render(), render() p95 4 ms.
+    return (share: number): GovernorSignals =>
+      windowOf(Array.from({ length: 120 }, () => (random() < share ? 2.5 * VSYNC_60 : VSYNC_60)), 4, config);
+  }
+
+  const SEEDS = [987_654_321, 12_345, 424_242];
+
+  it("S18: 2% spikes move nothing, and 3% shed at most one GPU rung", () => {
+    for (const seed of SEEDS) {
+      const at2 = spikes(seed);
+      const states = trace(createGovernorState(config), 150, () => at2(0.02));
+      expect(states.every((state) => state.renderScale === config.scaleCeiling && state.gpuWorkLevel === 0), `seed ${seed}`)
+        .toBe(true);
+    }
+    // At 3% one window in fourteen is off cadence. Two in a row step the
+    // scale, and a pooled 3% is never calm enough to undo it, so the scale
+    // drifts to its floor (as in the red team's own amended prototype); only
+    // then can a pair reach the GPU ladder.
+    for (const seed of SEEDS) {
+      const at3 = spikes(seed);
+      const states = trace(createGovernorState(config), 150, () => at3(0.03));
+      expect(Math.max(...states.map((state) => state.gpuWorkLevel)), `seed ${seed}`).toBeLessThanOrEqual(1);
+      expect(states.every((state) => state.cpuWorkLevel === 0), `seed ${seed}`).toBe(true);
+    }
+  });
+
+  it("S18: whatever 3-7% spikes shed comes back once they fall to 1.5%", () => {
+    // Spike-dominated windows still shed GPU rungs at 5-7%: the GPU ladder has
+    // no effectiveness latch (a known limit, left to G6/G7).
+    for (const seed of SEEDS) {
+      for (const share of [0.03, 0.05, 0.07]) {
+        const label = `seed ${seed}, ${share * 100}% spikes`;
+        const window = spikes(seed);
+        const shed = trace(createGovernorState(config), 150, () => window(share));
+        const calm = trace(shed[149]!, 100, () => window(0.015));
+        const back = firstWindow(calm, (state) =>
+          state.gpuWorkLevel === 0 && state.cpuWorkLevel === 0 && state.renderScale === config.scaleCeiling);
+        expect(back, label).toBeGreaterThan(0);
+        expect(back, label).toBeLessThanOrEqual(80);
+        expect(calm[99]!.renderScale, label).toBe(config.scaleCeiling);
+        expect(calm[99]!.gpuWorkLevel, label).toBe(0);
+      }
+    }
   });
 });
