@@ -5,4 +5,6 @@ export * from "./hullMesh";
 export * from "./hydrostatics";
 export * from "./planing";
 export * from "./propulsion";
+export * from "./savitsky";
 export * from "./testSea";
+export * from "./trials";

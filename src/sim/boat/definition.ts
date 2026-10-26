@@ -34,6 +34,8 @@ export interface PropellerDefinition {
   readonly diameter: number;
   readonly pitch: number;
   readonly blades: number;
+  /** Expanded blade area over disc area. */
+  readonly expandedAreaRatio: number;
   /** Gearcase reduction, crank to propeller. */
   readonly gearRatio: number;
   /** Mechanical efficiency of the gearcase. */
@@ -54,6 +56,8 @@ export interface EngineDefinition {
   readonly shiftTravel: number;
   /** Gears change only below this crank rpm. */
   readonly shiftMaxRpm: number;
+  /** Throttle at the lever's full astern stop: binnacle controls open the throttle less going astern. */
+  readonly reverseThrottleMax: number;
 }
 
 export interface TrimTabDefinition {
@@ -95,7 +99,8 @@ export interface WindageDefinition {
  *   yaw (Lewandowski, *The Dynamics of Marine Craft*, small-craft values), the
  *   heavy engine on the transom pushing pitch and yaw toward the top of the range.
  * - Propeller: 3-blade stainless 14.5 x 19 in on a 1.85:1 gearcase, the
- *   factory fit for a 200 hp V6 on a 21 ft hull.
+ *   factory fit for a 200 hp V6 on a 21 ft hull; expanded area ratio 0.6,
+ *   the high-speed outboard pattern's.
  * - Engine: a 200 hp V6 four-stroke's published curve, 149 kW at 5,500 rpm,
  *   full-throttle range 5,000-6,000, 700 rpm idle, fuel cut at 6,000.
  * - Tabs: two 12 x 9 in, 0-12 degrees, about 5 s full travel.
@@ -108,6 +113,7 @@ export const RUNABOUT_21: BoatDefinition = Object.freeze({
     diameter: 0.368,
     pitch: 0.4826,
     blades: 3,
+    expandedAreaRatio: 0.6,
     gearRatio: 1.85,
     gearEfficiency: 0.95,
     inertia: 0.04,
@@ -130,6 +136,7 @@ export const RUNABOUT_21: BoatDefinition = Object.freeze({
     crankInertia: 0.14,
     shiftTravel: 0.15,
     shiftMaxRpm: 1_000,
+    reverseThrottleMax: 0.5,
   }),
   tabs: Object.freeze({ span: 0.305, chord: 0.229, centreHalfBeam: 0.75, maxDegrees: 12, rate: 0.2 }),
   gearcase: Object.freeze({ finArea: 0.12, liftSlope: 3.6, dragArea: 0.0032 }),
@@ -166,18 +173,26 @@ export const BOAT_CALIBRATION = Object.freeze({
    * transom runs dry. Garme (2005) fits 2.5 x C_V in a tanh; we hold a
    * speed-independent length.
    */
-  transomReleaseBeams: 0.45,
+  transomReleaseBeams: 0.65,
   /** Sway added mass of a section, as a share of rho * pi/2 * draft^2 (the mirrored plate). */
   lateralAddedMass: 0.8,
   /** Sway cross-flow drag coefficient on the section's draft. */
   lateralCrossFlowDrag: 1.0,
   /** How much a panel's sideslip adds to its penetration (1 = the panel's geometry). */
   sideslipLift: 1.0,
-  /** Pre-planing hump: peak drag over displacement weight, and the length Froude number of the peak. */
-  humpDrag: 0.05,
-  humpFroude: 0.45,
+  /**
+   * Pre-planing hump: the wave-making and transom-immersion resistance the
+   * strips and the clipped mesh leave out. Peak drag over displacement
+   * weight, the length Froude number of the peak, and how sharply it rises
+   * and falls about it: shape = exp(s (ln r + 1 - r)), r = Fn / humpFroude.
+   */
+  humpDrag: 0.09,
+  humpFroude: 0.57,
+  humpSharpness: 18,
   /** Its bow-up moment over displacement weight times waterline length. */
   humpMoment: 0.012,
+  /** Going astern, the drag coefficient of the immersed transom face (Hoerner: 1.17 for a plate square to the flow, less at the surface). */
+  transomAsternDrag: 1.0,
   /** ITTC-57 roughness allowance on C_F. */
   roughnessAllowance: 0.0004,
   /** Wake fraction and thrust deduction at the outboard's propeller. */
@@ -197,6 +212,23 @@ export const BOAT_CALIBRATION = Object.freeze({
   ventilationOnset: 0.82,
   /** K_T and K_Q fall to this share once fully ventilated. */
   ventilatedLoad: 0.25,
+  /**
+   * Blade loading at which back cavitation starts to take thrust: Barnaby's
+   * mean thrust per projected blade area, as a share of the static head at
+   * the shaft (p_atm + rho g h - p_v). Barnaby's merchant-ship rule is 0.76
+   * (11.25 psi at 1 ft of immersion). A cupped high-speed outboard propeller
+   * is built to run past it: this one carries its full-speed thrust at 0.9
+   * and reaches 1.4 in the hole shot. Fitted to the trials' time to plane and
+   * 0-30 mph, with the full-speed point left clear.
+   */
+  cavitationLoading: 1.0,
+  /**
+   * Past it, the share of the extra open-water thrust the blades still give,
+   * and the share of the thrust's fractional loss that the torque loses too
+   * (thrust breaks down before torque, so the engine flares).
+   */
+  cavitationThrustSlope: 0.4,
+  cavitationTorqueShare: 0.5,
   /** Low-speed sideways pull of a right-hand propeller, as a share of thrust. */
   propellerWalk: 0.04,
   /** Linear wave-radiation damping at rest, as a fraction of critical, heave/pitch/roll. */

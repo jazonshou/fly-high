@@ -57,7 +57,7 @@ describe("boat grounding", () => {
   });
 
   it("is a wreck when it hits the same beach on the plane", () => {
-    const boat = new BoatSimulator({ position: { x: -300, y: 0, z: 0 }, heading: Math.PI / 2, moored: false, speed: 35 * KNOT, gear: "forward", rpm: 5_000 });
+    const boat = new BoatSimulator({ position: { x: -100, y: 0, z: 0 }, heading: Math.PI / 2, moored: false, speed: 35 * KNOT, gear: "forward", rpm: 5_000 });
     boat.setEnvironment(environment(beach));
     boat.setControls(controls({ lever: 1 }));
     run(boat, 20);
