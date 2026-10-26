@@ -51,6 +51,12 @@ const RENDERING_MODE_OPTIONS = [
   { value: "ultra", label: "WebGPU Ultra" },
 ] as const;
 
+const FRAME_RATE_OPTIONS = [
+  { value: "60", label: "60 fps (smooth)" },
+  { value: "display", label: "Match display" },
+  { value: "30", label: "30 fps" },
+] as const;
+
 const HUD_OPTIONS = [
   { value: "full", label: "Full" },
   { value: "minimal", label: "Minimal" },
@@ -403,6 +409,20 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
         <small className="setting-field__hint">
           Controls compute simulation resolution, volumetric sampling, water shading, shadows,
           and streamed world-detail density.
+        </small>
+      </div>
+      <div className="setting-field setting-field--described">
+        <span id="settings-frame-rate-label">Frame rate</span>
+        <ThemedSelect
+          labelId="settings-frame-rate-label"
+          value={settings.frameRate}
+          options={FRAME_RATE_OPTIONS}
+          onChange={(value) => patch("frameRate", value)}
+        />
+        <small className="setting-field__hint">
+          60 fps keeps frames evenly spaced and saves power on fast screens. Screens up to
+          100 Hz draw every refresh; very fast screens may show 72 or 82 fps instead, to stay
+          even. Match display draws on every refresh. 30 fps saves the most.
         </small>
       </div>
       <div className="setting-field">

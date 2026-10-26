@@ -55,6 +55,11 @@ export interface GameSettings {
   cameraShake: boolean;
   showDiagnostics: boolean;
   /**
+   * PR B: how often the frame loop draws. "60" at every tier by default;
+   * stored blobs from before it load with the default.
+   */
+  frameRate: FrameRateSetting;
+  /**
    * UI preset label only (§1.6). After 1C-1 the renderer never branches on
    * this name; the two clock scalars below are the rendering inputs. The
    * label survives so preset buttons can highlight and so older stored
@@ -120,6 +125,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   reducedMotion: false,
   cameraShake: false,
   showDiagnostics: false,
+  frameRate: "60",
   timeOfDay: "day",
   weather: "breezy",
   dayOfYear: TIME_OF_DAY_PRESET_CLOCKS.day.dayOfYear,
@@ -199,6 +205,7 @@ export function validateSettings(value: unknown): GameSettings {
       typeof source.showDiagnostics === "boolean"
         ? source.showDiagnostics
         : DEFAULT_SETTINGS.showDiagnostics,
+    frameRate: oneOf(source.frameRate, FRAME_RATE_SETTINGS, DEFAULT_SETTINGS.frameRate),
     timeOfDay,
     weather: oneOf(
       source.weather,
