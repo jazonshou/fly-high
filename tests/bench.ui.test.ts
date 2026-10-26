@@ -4,12 +4,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { noticeText } from "../src/bench/flow";
 import { benchTimings, describeDuration, estimateBenchDuration } from "../src/bench/plan";
-import type { BenchDeviceReport } from "../src/bench/types";
+import { buildReport, compactReportJson, verdictText } from "../src/bench/report";
+import type { BenchBuildInfo, BenchDeviceReport, BenchReport, BenchRunRecord } from "../src/bench/types";
 import { BenchCard, BenchCards, cardWords, type BenchCardProps } from "../src/bench/ui/BenchCards";
 import { BenchChip, chipAnnouncement, chipPhaseText, chipProgress, type BenchChipProps } from "../src/bench/ui/BenchChip";
 import { BenchIntro, type BenchIntroProps } from "../src/bench/ui/BenchIntro";
+import { BenchReportDialog, type BenchReportDialogProps } from "../src/bench/ui/BenchReportDialog";
 import { clockText, parseTierList, tierListText } from "../src/bench/ui/words";
-import { benchDevice, benchRefresh, benchRunRecord } from "./support/benchReportFixture";
+import { benchDevice, benchRefresh, benchRunRecord, defaultRun } from "./support/benchReportFixture";
 
 /**
  * The bench's pages as markup (Node, no DOM): the roles, labels and buttons
@@ -17,6 +19,17 @@ import { benchDevice, benchRefresh, benchRunRecord } from "./support/benchReport
  */
 
 const noop = () => undefined;
+
+const BUILD: BenchBuildInfo = {
+  commit: "8813adf4c2e19b07a6d5f3e2b1c0d9e8f7a6b5c4",
+  entryScript: "assets/index-4f8c2a1b.js",
+  base: "/fly-high/",
+  origin: "https://jazonshou.github.io",
+};
+
+function report(run: BenchRunRecord, earlier?: readonly BenchRunRecord[]): BenchReport {
+  return buildReport({ run, build: BUILD, createdAt: "2026-10-26T09:21:14.381Z", ...(earlier ? { earlier } : {}) });
+}
 
 function introProps(overrides: Partial<BenchIntroProps> = {}): BenchIntroProps {
   return {
@@ -52,6 +65,20 @@ function html(text: string): string {
 /** The button and link labels in document order. */
 function actions(markup: string): string[] {
   return [...markup.matchAll(/<(button|a)\b[^>]*>([^<]*)<\/\1>/g)].map((match) => match[2]!.trim());
+}
+
+function reportDialog(value: BenchReport, overrides: Partial<BenchReportDialogProps> = {}): string {
+  return renderToStaticMarkup(createElement(BenchReportDialog, {
+    report: value,
+    notice: null,
+    copy: null,
+    onDownload: noop,
+    onCopy: noop,
+    onPinnedPass: noop,
+    onRunAgain: noop,
+    onExit: noop,
+    ...overrides,
+  }));
 }
 
 function chipProps(overrides: Partial<BenchChipProps> = {}): BenchChipProps {
@@ -304,5 +331,132 @@ describe("the step page's cards", () => {
     expect(markup).toMatch(/bench-cards--notes"><div class="bench-card bench-card--note" role="status"/);
     expect(markup).toMatch(/bench-cards--alerts"><div class="bench-card bench-card--alert" role="alert"/);
     expect(renderToStaticMarkup(createElement(BenchCards, { cards: [] }))).toBe("");
+  });
+});
+
+describe("the report dialog", () => {
+  const valid = report(defaultRun());
+
+  it("is a labelled modal with a verdict banner", () => {
+    expect(valid.run.verdict).toBe("valid");
+    const markup = reportDialog(valid);
+    expect(markup).toContain('role="dialog"');
+    expect(markup).toContain('aria-labelledby="bench-report-title"');
+    expect(markup).toContain('aria-describedby="bench-report-description"');
+    expect(markup).toContain(`<p class="bench-verdict bench-verdict--valid">${html(verdictText(valid.run))}</p>`);
+    expect(markup).toContain("nvidia ampere · Windows 11 · Chrome 130 · 60 Hz");
+  });
+
+  it("has one row per flight with the air and runway numbers and the plain label", () => {
+    const markup = reportDialog(valid);
+    const table = /<table class="bench-table">[\s\S]*?<\/table>/.exec(markup)![0];
+    const rows = [...table.matchAll(/<tr><th scope="row">(\d+)<\/th>([\s\S]*?)<\/tr>/g)];
+    expect(rows.map((row) => row[1])).toEqual(["1", "2", "3", "4"]);
+    expect(table).toContain('<th scope="col">In the air</th>');
+    expect(table).toContain('<th scope="col">On the runway</th>');
+    for (const [index, row] of rows.entries()) {
+      const step = valid.steps[index]!;
+      const cells = [...row[2]!.matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((cell) => cell[1]);
+      expect(cells[1]).toMatch(/^(Smooth|Mostly smooth|Choppy)/);
+      expect(cells[2]).toBe(`${Math.round(step.result!.windows.air!.fps!)} fps`);
+      expect(cells[3]).toBe(step.result!.windows.air!.over["27.4"].per240.toFixed(1));
+      expect(cells[4]).toBe(`${Math.round(step.result!.windows.ground!.fps!)} fps`);
+      expect(cells[5]).toBe(step.result!.windows.ground!.over["27.4"].per240.toFixed(1));
+    }
+    expect(rows[0]![2]).toContain("Medium *");
+    expect(markup).toContain("The first flight also prepares the graphics");
+    expect(markup).toContain("<summary>All numbers</summary>");
+    expect(markup).toContain("How it felt");
+  });
+
+  it("lists the buttons in order, the download first and the issue as a new-tab link", () => {
+    const markup = reportDialog(valid);
+    expect(actions(markup)).toEqual([
+      "Download report (.json)",
+      "Open GitHub issue",
+      "Copy report",
+      "Copy short summary",
+      "Run the GPU comparison pass",
+      "Run again",
+      "Exit",
+    ]);
+    expect(markup).toMatch(/<button type="button" class="bench-action bench-action--primary">Download report \(\.json\)<\/button>/);
+    const link = /<a [^>]*>Open GitHub issue<\/a>/.exec(markup)![0];
+    expect(link).toContain('target="_blank"');
+    expect(link).toContain('rel="noopener"');
+    expect(link).toContain('href="https://github.com/jazonshou/fly-high/issues/new?title=');
+    expect(link).toContain('aria-describedby="bench-report-issue-hint"');
+    expect(markup).toContain("fly-high-bench-nvidia-2026-10-26T09-21-14Z.json");
+    expect(markup).not.toContain("<textarea");
+  });
+
+  it("copies the compact report from the issue link's own click", () => {
+    const source = readFileSync(new URL("../src/bench/ui/BenchReportDialog.tsx", import.meta.url), "utf8");
+    expect(source).toMatch(/onClick=\{\(\) => props\.onCopy\("issue", compactJson\)\}/);
+    expect(source).toContain("compactReportJson(report)");
+    expect(source).not.toMatch(/\bawait\b|window\.open/);
+  });
+
+  it("shows a void run's reasons", () => {
+    const run = benchRunRecord({ steps: [{ tierIndex: 1, fps: 58 }, { tierIndex: 0, fps: 60 }, { tierIndex: 1, fps: 45 }] });
+    const value = report(run);
+    expect(value.run.verdict).toBe("void");
+    const markup = reportDialog(value);
+    expect(markup).toContain('class="bench-verdict bench-verdict--void"');
+    expect(markup).toContain("flights differ by");
+    expect(markup).toContain("run it again");
+  });
+
+  it("shows a stopped run as incomplete with its skipped flights", () => {
+    const run = benchRunRecord({
+      status: "stopped",
+      steps: [{ tierIndex: 1 }, { tierIndex: 0 }, { tierIndex: 2, status: "skipped" }, { tierIndex: 1, status: "skipped" }],
+    });
+    const markup = reportDialog(report(run));
+    expect(markup).toContain('class="bench-verdict bench-verdict--incomplete"');
+    expect(markup).toContain("Did not run (Skipped)");
+    expect(actions(markup)).toContain("Run again");
+  });
+
+  it("offers no second GPU comparison pass on a pinned run", () => {
+    const markup = reportDialog(report(defaultRun({ mode: "pinned" })));
+    expect(markup).toContain("GPU comparison run");
+    expect(actions(markup)).not.toContain("Run the GPU comparison pass");
+    expect(actions(markup)).toContain("Run again");
+  });
+
+  it("shows a device-only report without a table or run buttons", () => {
+    const device = withWebGpu("missing");
+    const run = benchRunRecord({
+      status: "no-webgpu",
+      device,
+      steps: [1, 0, 2, 1].map((tierIndex) => ({ tierIndex, status: "skipped" as const })),
+    });
+    const markup = reportDialog(report(run));
+    expect(markup).toContain('class="bench-verdict bench-verdict--device"');
+    expect(markup).toContain("this browser cannot run the game");
+    expect(markup).not.toContain("<table");
+    expect(actions(markup)).toEqual(["Download report (.json)", "Open GitHub issue", "Copy report", "Copy short summary", "Exit"]);
+    const storage = reportDialog(report({ ...run, status: "storage-unavailable" }));
+    expect(storage).toContain("this tab cannot keep the benchmark");
+  });
+
+  it("falls back to a read-only, labelled textarea when the browser will not copy", () => {
+    const text = compactReportJson(valid);
+    const markup = reportDialog(valid, { copy: { target: "report", status: "failed", text } });
+    expect(markup).toMatch(/<label for="bench-report-fallback">The browser would not let the page copy\./);
+    expect(markup).toMatch(/<textarea id="bench-report-fallback" readOnly="" rows="8"/);
+    expect(markup).toContain("&quot;schema&quot;:&quot;fly-high.bench/1&quot;");
+    const copied = reportDialog(valid, { copy: { target: "issue", status: "copied", text } });
+    expect(copied).toContain('role="status">Report copied. Paste it into the empty block in the GitHub issue.</p>');
+    expect(copied).not.toContain("<textarea");
+  });
+
+  it("shows the notice and the earlier run a GPU comparison pass keeps", () => {
+    const earlier = defaultRun({ runId: "a1b2c3d4e5" });
+    const markup = reportDialog(report(defaultRun({ mode: "pinned" }), [earlier]), { notice: "storage-failed" });
+    expect(markup).toContain(html(noticeText("storage-failed")));
+    expect(markup).toContain("<h3>Earlier run in this tab (as players get it)</h3>");
+    expect(markup).toContain("Each flight of the earlier run");
   });
 });
