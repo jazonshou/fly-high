@@ -14,6 +14,13 @@ import { VEHICLE_KINDS, type VehicleKind } from "@/src/vehicles/kinds";
 import type { LandformsOption } from "@/src/world";
 
 export type UnitSystem = "aviation" | "metric";
+/**
+ * PR B's frame-rate setting: "60" draws every Nth display refresh so frames
+ * stay evenly spaced near 60 fps, "display" draws every refresh, "30" every
+ * Nth near 30 fps (src/game/framePacer.ts).
+ */
+export type FrameRateSetting = "60" | "display" | "30";
+export const FRAME_RATE_SETTINGS = ["60", "display", "30"] as const satisfies readonly FrameRateSetting[];
 export type HudMode = "minimal" | "full" | "off";
 export type RenderingMode = RequestedRenderingMode;
 
