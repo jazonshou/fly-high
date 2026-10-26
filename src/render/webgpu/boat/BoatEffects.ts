@@ -1,4 +1,5 @@
 import type { Scene } from "@babylonjs/core/scene";
+import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   HULL_STATIONS,
@@ -55,6 +56,8 @@ export interface BoatEffectsOptions {
   readonly world: Pick<WorldDefinition, "prevailingWindRadians" | "prevailingWindSpeed" | "seaLevel">;
   /** The sea whose displacement the wake rides and whose water the hull keeps out. */
   readonly ocean: BoatEffectsOcean;
+  /** The light the sea is lit by at load; `BoatWakeSystem.setAtmosphere` with every change after. */
+  readonly atmosphere?: AtmosphereSnapshot;
 }
 
 /** What the effects need of the sea. */
@@ -84,6 +87,7 @@ export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): Bo
     seaLevel: options.world.seaLevel,
     ocean: options.ocean,
   });
+  if (options.atmosphere) wake.setAtmosphere(options.atmosphere);
   const hullClip = new OceanHullClip();
   options.ocean.setHullClip(hullClip);
   return { spray, wake, hullClip };

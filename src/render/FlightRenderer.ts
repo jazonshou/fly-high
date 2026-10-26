@@ -1474,7 +1474,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => steam.dispose());
       // Only with a surface vehicle, so an aircraft session builds and
       // compiles none of it. Before the readiness gate, as the steam is.
-      const boatEffects = surfaceVehicle ? createBoatEffects(scene, { profile, world: options.world, ocean }) : null;
+      const boatEffects = surfaceVehicle
+        ? createBoatEffects(scene, {
+          profile,
+          world: options.world,
+          ocean,
+          atmosphere: atmosphere.snapshot,
+        })
+        : null;
       if (boatEffects) {
         cleanup.push(() => boatEffects.spray.dispose());
         cleanup.push(() => boatEffects.wake.dispose());
@@ -1957,6 +1964,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setWindSpeed(seaSpectrumWindSpeed(this.worldDefinition, weather));
+    this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built

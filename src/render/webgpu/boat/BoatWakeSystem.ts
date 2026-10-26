@@ -15,6 +15,7 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   keepOpaqueDepthForRenderingGroup,
   WATER_RENDERING_GROUP_ID,
@@ -25,6 +26,7 @@ import {
   OCEAN_SURFACE_SAMPLERS,
   OCEAN_SURFACE_UNIFORMS,
 } from "@/src/render/webgpu/water/SpectralOceanSystem";
+import { waterDownwellingRadiance } from "@/src/render/webgpu/water/WaterShaders";
 import { SPRAY_CLOCK_PERIOD_SECONDS, sprayAge, sprayClock } from "./BoatSpraySystem";
 
 /**
@@ -60,6 +62,12 @@ import { SPRAY_CLOCK_PERIOD_SECONDS, sprayAge, sprayClock } from "./BoatSpraySys
  * speed shows the wake it would have, and the same wake at any frame rate,
  * because it is a function of the one snapshot. A pose held still while it
  * reports way on (a capture holding one frame) is primed again each second.
+ *
+ * LIT AS THE SEA'S OWN FOAM. The foam and the scar are albedos under the
+ * irradiance the ocean lights its whitecaps and surf with (`waterDownwelling`
+ * through its CPU mirror `waterDownwellingRadiance`, from the same atmosphere
+ * snapshot), so the wake's white is the surf's white in every light; only the
+ * haze comes from the shared aerial include.
  *
  * DRAW ORDER. Group 1 (water) at alphaIndex 1.5: after the ocean and inland
  * water, before the volcanic steam and the spray. Depth-tested against the
@@ -218,6 +226,8 @@ export class BoatWakeSystem {
   private commits = 0;
   private readonly anchorUniform = new Vector4();
   private readonly paramsUniform = new Vector4();
+  /** The sea's downwelling irradiance over pi, as its foam is lit (`setAtmosphere`). */
+  private readonly downwellingUniform = new Vector3(1, 1, 1);
   private readonly aerialVectors3 = new Map<string, Vector3>();
   private readonly aerialVectors4 = new Map<string, Vector4>();
   private readonly setAerialVector3 = (name: string, x: number, y: number, z: number): void => {
@@ -281,6 +291,26 @@ export class BoatWakeSystem {
   setTrailSeconds(trailSeconds: number): void {
     this.trailSeconds = sanitizeTrail(trailSeconds);
     this.syncParams();
+  }
+
+  /** The light the sea's foam is lit by, from the snapshot the ocean takes too. */
+  setAtmosphere(atmosphere: AtmosphereSnapshot): void {
+    const sun = atmosphere.sunColor.scale(atmosphere.sunIlluminanceNormalized);
+    const [r, g, b] = waterDownwellingRadiance(
+      [sun.r, sun.g, sun.b],
+      [atmosphere.skyZenith.r, atmosphere.skyZenith.g, atmosphere.skyZenith.b],
+      [atmosphere.skyHorizon.r, atmosphere.skyHorizon.g, atmosphere.skyHorizon.b],
+      atmosphere.skylightIlluminanceNormalized,
+      atmosphere.sunDirection.y,
+      1,
+    );
+    this.downwellingUniform.set(r, g, b);
+    this.gpu?.material.setVector3("wakeDownwelling", this.downwellingUniform);
+  }
+
+  /** The irradiance the foam is lit by, as the last `setAtmosphere` left it. */
+  get downwelling(): Readonly<Vector3> {
+    return this.downwellingUniform;
   }
 
   setAerialPerspective(binding: AerialPerspectiveBinding): void {
@@ -584,6 +614,7 @@ export class BoatWakeSystem {
           "cameraPosition",
           "wakeAnchor",
           "wakeParams",
+          "wakeDownwelling",
           ...OCEAN_SURFACE_UNIFORMS,
           ...AERIAL_PERSPECTIVE_UNIFORMS,
         ],
@@ -602,6 +633,7 @@ export class BoatWakeSystem {
     this.gpu = { mesh, material, buffer };
     this.syncAnchor();
     this.syncParams();
+    material.setVector3("wakeDownwelling", this.downwellingUniform);
     if (this.binding) this.setAerialPerspective(this.binding);
   }
 }
@@ -679,6 +711,8 @@ uniform cameraPosition: vec3f;
 uniform wakeAnchor: vec4f;
 // x clock s (wrapped), y trail s, z half-beam m, w sea level m
 uniform wakeParams: vec4f;
+// the sea's downwelling irradiance over pi (waterDownwelling, sun and sky)
+uniform wakeDownwelling: vec3f;
 
 ${OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL}
 
@@ -693,7 +727,6 @@ const WAKE_FOAM_LIFE_MIN: f32 = ${wgslFloat(WAKE_FOAM_LIFE_MIN_SECONDS)};
 const WAKE_FOAM_LIFE_SPAN: f32 = ${wgslFloat(WAKE_FOAM_LIFE_SPAN_SECONDS)};
 const WAKE_FOAM_ALBEDO: f32 = ${wgslFloat(WAKE_FOAM_ALBEDO)};
 const WAKE_SCAR_ALBEDO: vec3f = vec3f(${WAKE_SCAR_ALBEDO.map(wgslFloat).join(", ")});
-const WAKE_PI: f32 = 3.14159265359;
 
 fn wakeAge(birth: f32) -> f32 {
   let age = uniforms.wakeParams.x - birth;
@@ -729,15 +762,17 @@ fn main(input: VertexInputs) -> FragmentInputs {
     // The wash: as wide as the prop wash at the transom, spreading slowly.
     let halfWidth = halfBeam * (0.72 + 0.2 * sqrt(behind));
     offset = across * halfWidth;
-    // Solid white at the transom, breaking up fast, then patches that last.
-    foam = state.z * (0.55 * exp(-age / 3.5) + 0.45 * (1.0 - smoothstep(0.0, foamLife, age)));
+    // Solid white at the transom, broken up within seconds, then lace that lasts.
+    foam = state.z * (0.7 * exp(-age / 2.5) + 0.3 * (1.0 - smoothstep(0.0, foamLife, age)));
     scar = state.w * (1.0 - smoothstep(0.35 * trail, trail, age));
   } else {
     // A Kelvin arm: its cusp line at 19.47 degrees, softening as it spreads.
     let armOffset = halfBeam + behind * WAKE_TAN_KELVIN;
-    let armHalf = 0.45 + 0.018 * behind;
+    let armHalf = 0.3 + 0.012 * behind;
     offset = band * (armOffset + across * armHalf);
-    foam = smoothstep(3.0, 12.0, speed) * 0.75 * (1.0 - smoothstep(0.0, 0.5 * foamLife, age));
+    // The arms are waves: broken water on their crest line near the boat
+    // only, gone in seconds.
+    foam = smoothstep(4.0, 14.0, speed) * 0.5 * exp(-age / 4.0);
   }
   let fade = 1.0 - smoothstep(0.75 * trail, trail, age);
 
@@ -753,11 +788,9 @@ fn main(input: VertexInputs) -> FragmentInputs {
   var clip = uniforms.viewProjection * vec4f(renderPosition, 1.0);
   clip = select(vec4f(0.0, 0.0, 2.0, 1.0), clip, segmentLive);
 
-  // Foam is a Lambertian surface lying on the water: sun at the sea through
-  // the shared transmittance, plus the sky's downwelling.
+  // Lit as the sea lights its own foam (litFoamColor under waterDownwelling).
   let sunDirection = normalize(uniforms.aerialSunDirection);
-  let sunAtSea = uniforms.aerialSunRadiance * aerialSunTransmittanceAt(height, sunDirection.y);
-  let downwelling = sunAtSea * (max(sunDirection.y, 0.0) / WAKE_PI) + skyRadiance(vec3f(0.0, 1.0, 0.0));
+  let downwelling = uniforms.wakeDownwelling;
   let toPoint = renderPosition - uniforms.cameraPosition;
   let distanceMeters = max(length(toPoint), 0.001);
   let haze = aerialPerspective(height, distanceMeters, dot(toPoint / distanceMeters, sunDirection));
@@ -802,25 +835,39 @@ fn wakeValueNoise(p: vec2f) -> f32 {
   return mix(bottom, top, w.y);
 }
 
+// Lace: three octaves, warped so it curls instead of sitting on a lattice,
+// the finest faded out where a pixel covers it (it would only shimmer).
+fn wakeLace(p: vec2f, footprint: f32) -> f32 {
+  let warp = vec2f(
+    wakeValueNoise(p * 0.3 + vec2f(3.1, 7.7)),
+    wakeValueNoise(p * 0.3 + vec2f(11.3, 1.9)),
+  ) - vec2f(0.5);
+  let w = p + warp * 3.0;
+  let q = vec2f(w.x * 0.8 - w.y * 0.6, w.x * 0.6 + w.y * 0.8);
+  let fine = mix(wakeValueNoise(w * 4.6 + vec2f(2.9, 13.4)), 0.5, smoothstep(0.08, 0.22, footprint));
+  return 0.5 * wakeValueNoise(w * 0.7) + 0.3 * wakeValueNoise(q * 1.9 + vec2f(17.3, 5.1)) + 0.2 * fine;
+}
+
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
+  // Before any branch: derivatives need every pixel of the quad.
+  let footprint = length(fwidth(fragmentInputs.wakeWorld));
   let across = fragmentInputs.wakeAcross.x;
   let band = fragmentInputs.wakeAcross.y;
   // The wash is fullest on the track and feathers to its edges; an arm is a
   // narrow line of broken water.
-  let profile = select(
-    1.0 - across * across,
-    sqrt(max(1.0 - across * across, 0.0)),
-    abs(band) < 0.5,
-  );
-  // World-locked break-up at two scales, rotated against each other so no
-  // grid shows: foam that is laid stays where it was laid.
-  let p = fragmentInputs.wakeWorld;
-  let q = vec2f(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
-  let noise = 0.6 * wakeValueNoise(p * 0.62) + 0.4 * wakeValueNoise(q * 1.9 + vec2f(17.3, 5.1));
+  let edge = 1.0 - across * across;
+  let profile = select(edge * edge, sqrt(max(edge, 0.0)), abs(band) < 0.5);
+  // World-locked, so foam that is laid stays where it was laid.
+  let lace = wakeLace(fragmentInputs.wakeWorld, footprint);
   let coverage = clamp(fragmentInputs.wakeAmount.x * profile, 0.0, 1.0);
-  // Full coverage is solid foam; as it thins, only the noise's peaks stay white.
-  let foamAlpha = smoothstep(1.0 - coverage, 1.0 - coverage + 0.22, noise) * min(coverage * 3.0, 1.0);
+  // Full coverage is solid foam; as it thins, only the lace's ridges stay,
+  // crisp at the edge and thin (the sea showing through) just inside it.
+  let threshold = mix(0.74, 0.2, coverage);
+  let sharpness = 0.04 + 0.25 * min(footprint, 0.4);
+  let body = smoothstep(threshold, threshold + 0.18, lace);
+  let foamAlpha = smoothstep(threshold, threshold + sharpness, lace) * mix(0.5, 1.0, body)
+    * smoothstep(0.0, 0.08, coverage);
   let scarAlpha = clamp(fragmentInputs.wakeAmount.y * profile, 0.0, 1.0) * WAKE_SCAR_OPACITY;
   let alpha = foamAlpha + scarAlpha * (1.0 - foamAlpha);
   if (alpha < 0.002) { discard; }

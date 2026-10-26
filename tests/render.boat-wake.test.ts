@@ -1,4 +1,6 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INITIAL_VISUAL_STATE, type BoatVisualState, type FlightVisualState } from "../src/game/types";
@@ -14,6 +16,8 @@ import {
   wakeScarStrength,
   wakeSegmentTemplate,
 } from "../src/render/webgpu/boat/BoatWakeSystem";
+import type { AtmosphereSnapshot } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { waterDownwellingRadiance } from "../src/render/webgpu/water/WaterShaders";
 
 /**
  * The boat's wake (src/render/webgpu/boat/BoatWakeSystem.ts): the track it
@@ -291,5 +295,35 @@ describe("binding the sea", () => {
     wake.update(running(1, 0, 0, 0, 12));
     wake.bindOcean();
     expect(ocean.bindSurface).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the light on the foam", () => {
+  it("is the irradiance the sea lights its own surf with, from the same snapshot", () => {
+    const atmosphere = {
+      sunDirection: new Vector3(0.4, 0.5, 0.77).normalize(),
+      sunColor: new Color3(1, 0.86, 0.7),
+      sunIlluminanceNormalized: 0.62,
+      skyZenith: new Color3(0.2, 0.36, 0.7),
+      skyHorizon: new Color3(0.86, 0.66, 0.5),
+      skylightIlluminanceNormalized: 0.7,
+      windDirection: new Vector2(0, 1),
+    } as unknown as AtmosphereSnapshot;
+    wake.setAtmosphere(atmosphere);
+    const expected = waterDownwellingRadiance(
+      [0.62, 0.86 * 0.62, 0.7 * 0.62],
+      [0.2, 0.36, 0.7],
+      [0.86, 0.66, 0.5],
+      0.7,
+      atmosphere.sunDirection.y,
+      1,
+    );
+    expect(wake.downwelling.x).toBeCloseTo(expected[0], 6);
+    expect(wake.downwelling.y).toBeCloseTo(expected[1], 6);
+    expect(wake.downwelling.z).toBeCloseTo(expected[2], 6);
+    // The shader takes that and nothing else for its light: no second sun.
+    expect(BOAT_WAKE_VERTEX_WGSL).toContain("let downwelling = uniforms.wakeDownwelling;");
+    const body = BOAT_WAKE_VERTEX_WGSL.slice(BOAT_WAKE_VERTEX_WGSL.indexOf("@vertex"));
+    expect(body).not.toContain("aerialSunRadiance");
   });
 });
