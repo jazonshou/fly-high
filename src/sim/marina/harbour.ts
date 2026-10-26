@@ -40,6 +40,9 @@ export class MarinaHarbour {
       cgAboveWater: solveRestWaterline(boat.definition).cgAboveWater,
     });
     this.contact = new MarinaContactLoad(this.colliders);
+    // The lines own mooring: the simulator stops counting presses, casting
+    // off on the lever and holding its own berth, and follows `setMoored`.
+    boat.setMooringOwner("external");
     boat.addExternalLoad(this.mooring);
     boat.addExternalLoad(this.contact);
   }
@@ -63,10 +66,7 @@ export class MarinaHarbour {
     );
   }
 
-  /**
-   * After the boat steps: the lines decide whether it is moored, so the
-   * simulator's own flag (the HUD's MOORED) is set to match them.
-   */
+  /** After the boat steps: the simulator's flag (the HUD's MOORED) follows the lines. */
   afterStep(): void {
     this.boat.setMoored(this.mooring.state === "moored");
   }
