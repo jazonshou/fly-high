@@ -84,6 +84,17 @@ const MODE_CHOICES: readonly { readonly value: BenchMode; readonly label: string
   },
 ];
 
+/**
+ * What the problem card can add to its own words: for a graphics card short
+ * of a limit, which limits, as "maxStorageBuffersPerShaderStage: 8, needs
+ * 10". The device report's `reason` only says the card's text again.
+ */
+function limitShortfallText(device: BenchDeviceReport | null): string | null {
+  const shortfalls = device?.webgpu.limitShortfalls ?? [];
+  if (shortfalls.length === 0) return null;
+  return shortfalls.map((entry) => `${entry.limit}: ${entry.reported}, needs ${entry.required}`).join("; ");
+}
+
 /** "1920 × 1080, 125% scaling". */
 function screenText(device: BenchDeviceReport): string {
   const { width, height, devicePixelRatio } = device.screen;
@@ -146,6 +157,7 @@ export function BenchIntro(props: BenchIntroProps) {
 
   const webgpuStatus = device?.webgpu.status ?? "ok";
   const webgpuProblem = webgpuStatus === "ok" ? null : WEBGPU_PROBLEMS[webgpuStatus];
+  const shortfalls = webgpuProblem ? limitShortfallText(device) : null;
   const blocked = storage === "unavailable" || webgpuProblem !== null;
   const resume = !blocked && resumable !== null ? resumable : null;
   const startDisabled = busy || props.checking || tiers === null;
@@ -175,7 +187,7 @@ export function BenchIntro(props: BenchIntroProps) {
             <div className="bench-problem">
               <strong>{webgpuProblem.title}</strong>
               <span>{webgpuProblem.text}</span>
-              {device?.webgpu.reason ? <small>Details: {device.webgpu.reason}</small> : null}
+              {shortfalls ? <small>Details: {shortfalls}</small> : null}
             </div>
           ) : null}
           {storage === "unavailable" ? (
@@ -243,7 +255,6 @@ export function BenchIntro(props: BenchIntroProps) {
             <input
               id="bench-intro-tiers"
               type="text"
-              inputMode="numeric"
               autoComplete="off"
               spellCheck={false}
               aria-invalid={tiers === null}
@@ -280,8 +291,10 @@ export function BenchIntro(props: BenchIntroProps) {
 
       <div className="bench-panel__footer">
         <p className="bench-privacy">
-          The report contains your graphics card, browser, system version, screen size and these timings.
-          Nothing is sent unless you send it.
+          The report contains your graphics card, processor, memory, screen size, battery level and whether it
+          is charging, your browser and system with their versions (and the device model, where the browser
+          gives one), the name you type in Your computer, and the timings the benchmark measures. Nothing is
+          sent unless you send it.
         </p>
 
         <div className="bench-actions">

@@ -147,6 +147,8 @@ describe("the intro dialog", () => {
     const markup = intro();
     expect(markup).toMatch(/<details class="bench-section bench-advanced"><summary>Advanced<\/summary>/);
     expect(markup).toContain('id="bench-intro-tiers"');
+    // Commas separate the qualities, so the field keeps the full keyboard on a phone.
+    expect(/<input id="bench-intro-tiers"[^>]*>/.exec(markup)![0]).not.toContain("inputMode");
     expect(markup).toContain('value="1,0,2,1"');
     expect(markup).toContain("Medium, Low, High, Medium.");
     expect(markup).toContain("<legend>Mode</legend>");
@@ -183,10 +185,11 @@ describe("the intro dialog", () => {
   });
 
   it("explains a browser without WebGPU and offers a device-only report", () => {
-    const markup = intro({ device: withWebGpu("missing", "navigator.gpu is undefined") });
+    const markup = intro({ device: withWebGpu("missing", "This browser does not offer WebGPU.") });
     expect(markup).toContain("This browser has no WebGPU");
     expect(markup).toContain("Try the latest Chrome or Edge.");
-    expect(markup).toContain("Details: navigator.gpu is undefined");
+    // The device report's reason says the card's words again: no Details line.
+    expect(markup).not.toContain("Details:");
     expect(markup).toContain("The benchmark cannot run here.");
     expect(actions(markup)).toEqual(["Make a device-only report", "Back to the game"]);
     expect(markup).not.toContain("Plug in your laptop.");
@@ -195,6 +198,32 @@ describe("the intro dialog", () => {
     expect(markup).toContain('id="bench-intro-label"');
     for (const status of ["no-adapter", "fallback-only", "limits-short"] as const) {
       expect(actions(intro({ device: withWebGpu(status) }))[0]).toBe("Make a device-only report");
+    }
+  });
+
+  it("names the limits a graphics card falls short of", () => {
+    const device = withWebGpu("limits-short", "This graphics adapter falls short of limits the game needs.");
+    const short: BenchDeviceReport = {
+      ...device,
+      webgpu: {
+        ...device.webgpu,
+        limitShortfalls: [
+          { limit: "maxStorageBuffersPerShaderStage", required: 10, reported: 8 },
+          { limit: "maxBindGroups", required: 5, reported: 4 },
+        ],
+      },
+    };
+    const markup = intro({ device: short });
+    expect(markup).toContain("The graphics card is missing features the game needs");
+    expect(markup).toContain("<small>Details: maxStorageBuffersPerShaderStage: 8, needs 10; maxBindGroups: 4, needs 5</small>");
+  });
+
+  it("says in the privacy line everything the report carries", () => {
+    const privacy = /<p class="bench-privacy">([^<]*)<\/p>/.exec(intro())![1]!.replace(/\s+/g, " ");
+    for (const part of ["graphics card", "processor", "memory", "screen size", "battery level", "charging",
+      "browser and system with their versions", "device model", "the name you type in Your computer",
+      "the timings the benchmark measures", "Nothing is sent unless you send it."]) {
+      expect(privacy).toContain(part);
     }
   });
 
