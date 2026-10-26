@@ -4,6 +4,7 @@ import type { Quaternion, Vec3 } from "../types";
 import { createWaterSurfaceSample, type WaterSurfaceAuthority, type WaterSurfaceSample } from "../water/types";
 import {
   FLOATING_BOX_KINDS,
+  marinaBoxOrientation,
   marinaToWorld,
   type MarinaBox,
   type MarinaLayout,
@@ -67,12 +68,6 @@ export interface MarinaColliders {
   readonly pontoons: readonly MarinaPontoonCollider[];
 }
 
-/** Rotation about +Y taking local +Z to the marina's `out` axis (local +X then points to -right). */
-function yawQuaternion(layout: MarinaLayout, yaw: number): Quaternion {
-  const angle = layout.frame.headingRadians + yaw;
-  return { x: 0, y: Math.sin(angle * 0.5), z: 0, w: Math.cos(angle * 0.5) };
-}
-
 /** Adds every marina collider; returns the handles, pontoons in layout order. */
 export function addMarinaColliders(
   colliders: ColliderWorld,
@@ -100,26 +95,17 @@ export function addMarinaColliders(
   for (const box of layout.boxes) {
     if (box.kind === "lifeRingStand" || box.kind === "fuelPump") continue;
     const p = marinaToWorld(layout.frame, box.right, box.out);
-    // Box-local x is marina -right, z is marina out (see yawQuaternion).
+    // Box-local x is marina -right, z is marina out (see marinaBoxOrientation).
     const halfExtents = { x: box.halfRight, y: box.halfHeight, z: box.halfOut };
+    const orientation = marinaBoxOrientation(layout.frame, box);
     if (FLOATING_BOX_KINDS.has(box.kind)) {
-      const yaw = yawQuaternion(layout, box.yaw);
       const handle = colliders.addKinematic(
         { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents },
         { material: MARINA_COLLIDER_MATERIAL.pontoon, group },
       );
-      colliders.setKinematicPose(handle, { x: p.x, y: box.y, z: p.z }, yaw);
-      pontoons.push(Object.freeze({ handle, box, x: p.x, z: p.z, restOffset: box.y - layout.seaLevel, yaw }));
+      colliders.setKinematicPose(handle, { x: p.x, y: box.y, z: p.z }, orientation);
+      pontoons.push(Object.freeze({ handle, box, x: p.x, z: p.z, restOffset: box.y - layout.seaLevel, yaw: orientation }));
       continue;
-    }
-    let orientation = yawQuaternion(layout, box.yaw);
-    if (box.kind === "gangway") {
-      // Sloping from the pier head down to the pontoon deck: a pitch about local x.
-      const pitch = Math.atan2(
-        layout.pier.length > 0 ? MARINA_GANGWAY_DROP(layout) : 0,
-        2 * box.halfOut,
-      );
-      orientation = multiply(orientation, { x: Math.sin(pitch * 0.5), y: 0, z: 0, w: Math.cos(pitch * 0.5) });
     }
     staticHandles.push(colliders.addStatic(
       { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents },
@@ -132,17 +118,6 @@ export function addMarinaColliders(
     ));
   }
   return Object.freeze({ group, staticHandles: Object.freeze(staticHandles), pontoons: Object.freeze(pontoons) });
-}
-
-/** Height the gangway drops from the pier head to the pontoon deck. */
-function MARINA_GANGWAY_DROP(layout: MarinaLayout): number {
-  let pier = 0;
-  let pontoon = 0;
-  for (const box of layout.boxes) {
-    if (box.kind === "pierDeck") pier = box.y + box.halfHeight;
-    if (box.kind === "pontoon") pontoon = box.y + box.halfHeight;
-  }
-  return pier - pontoon;
 }
 
 function multiply(a: Quaternion, b: Quaternion): Quaternion {

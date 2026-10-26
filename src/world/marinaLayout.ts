@@ -180,7 +180,9 @@ export interface MarinaBox {
   readonly halfRight: number;
   readonly halfOut: number;
   readonly halfHeight: number;
+  /** Turn about +Y from the marina frame, and a slope about box-local +X (the gangway's), radians. */
   readonly yaw: number;
+  readonly pitch: number;
 }
 
 export type MarinaBoxKind =
@@ -198,6 +200,39 @@ export type MarinaBoxKind =
 
 /** Parts that float: pontoon modules and fingers ride the calmed sea. */
 export const FLOATING_BOX_KINDS: ReadonlySet<MarinaBoxKind> = new Set(["pontoon", "finger"]);
+
+/** A unit quaternion (x, y, z, w), the convention of the sim's math and of Babylon's. */
+export interface MarinaQuaternion {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
+/**
+ * A box's orientation in the world: a turn about +Y taking box-local +Z to
+ * the marina's `out` axis (so local +X points to -right), then the box's
+ * pitch about its local +X, which tips its +out end down (the gangway, from
+ * the pier head to the pontoon deck). The colliders and the renderer both
+ * read it, so a deck a hull meets is the deck on screen.
+ */
+export function marinaBoxOrientation(
+  frame: MarinaFrame,
+  box: Pick<MarinaBox, "yaw" | "pitch">,
+  out: MarinaQuaternion = { x: 0, y: 0, z: 0, w: 1 },
+): MarinaQuaternion {
+  const half = (frame.headingRadians + box.yaw) * 0.5;
+  const sy = Math.sin(half);
+  const cy = Math.cos(half);
+  const sp = Math.sin(box.pitch * 0.5);
+  const cp = Math.cos(box.pitch * 0.5);
+  // yaw (0, sy, 0, cy) times pitch (sp, 0, 0, cp).
+  out.x = cy * sp;
+  out.y = sy * cp;
+  out.z = -sy * sp;
+  out.w = cy * cp;
+  return out;
+}
 
 /** A vertical cylinder: piles, posts, bollards, fenders. */
 export interface MarinaPost {
@@ -401,8 +436,8 @@ export function buildMarinaLayout(
   const boxes: MarinaBox[] = [];
   const posts: MarinaPost[] = [];
   const lamps: MarinaLamp[] = [];
-  const box = (kind: MarinaBoxKind, right: number, out: number, y: number, halfRight: number, halfOut: number, halfHeight: number, yaw = 0) => {
-    boxes.push(Object.freeze({ kind, right, out, y, halfRight, halfOut, halfHeight, yaw }));
+  const box = (kind: MarinaBoxKind, right: number, out: number, y: number, halfRight: number, halfOut: number, halfHeight: number, pitch = 0) => {
+    boxes.push(Object.freeze({ kind, right, out, y, halfRight, halfOut, halfHeight, yaw: 0, pitch }));
   };
   const post = (kind: MarinaPostKind, right: number, out: number, bottomY: number, topY: number, radius: number, floating = false) => {
     posts.push(Object.freeze({ kind, right, out, bottomY, topY, radius, floating }));
@@ -418,7 +453,7 @@ export function buildMarinaLayout(
   const gangwayDrop = pierY - pontoonY;
   box(
     "gangway", pierRight, pierLength + L.gangwayLength * 0.5, (pierY + pontoonY) * 0.5 - 0.05,
-    L.gangwayWidth * 0.5, Math.hypot(L.gangwayLength, gangwayDrop) * 0.5, 0.05,
+    L.gangwayWidth * 0.5, Math.hypot(L.gangwayLength, gangwayDrop) * 0.5, 0.05, Math.atan2(gangwayDrop, L.gangwayLength),
   );
 
   // Arm modules (the fuel module included) and their guide piles.

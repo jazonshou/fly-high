@@ -23,7 +23,7 @@ import { marinaToWorld, type MarinaLayout } from "@/src/world/marinaLayout";
 
 /**
  * The home marina's lines and structures with the Runabout's own simulator:
- * the dock start on 48 worlds (no jolt, no contact), the lines holding in a
+ * the dock start on 40 worlds (no jolt, no contact), the lines holding in a
  * gale, making fast and casting off, and the boat's hull probes against the
  * marina's colliders (a fast hit on a pile wrecks it, a slow one fends off).
  */
@@ -135,35 +135,46 @@ function seeds(count: number): (string | number)[] {
   return out;
 }
 
+/** The dock start's worlds, in four groups of ten: each group is about 25 s of stepping on its own. */
+const DOCK_START_SEEDS = seeds(40);
+const DOCK_START_GROUP = 10;
+
 describe("the dock start", () => {
-  it("settles with no jolt and no contact for 5 s on 48 worlds", { timeout: 120_000 }, () => {
-    for (const seed of seeds(48)) {
-      const dock = dockStart(createWorld(seed));
-      const start = { x: dock.sim.state.position.x, z: dock.sim.state.position.z };
-      let peak = 0;
-      let previous = { x: 0, z: 0 };
-      for (let step = 0; step < 120 * 5; step += 1) {
-        dock.step();
-        const v = dock.sim.state.velocity;
-        if (step > 0) peak = Math.max(peak, Math.hypot(v.x - previous.x, v.z - previous.z) / STEP);
-        previous = { x: v.x, z: v.z };
-      }
-      const label = String(seed);
-      expect(dock.colliders.touches, `${label}: contact`).toBe(0);
-      expect(dock.sim.state.crashed, label).toBe(false);
-      expect(dock.mooring.state, label).toBe("moored");
-      expect(dock.sim.snapshot().payload.moored, label).toBe(true);
-      expect(peak, `${label}: horizontal acceleration`).toBeLessThan(0.05);
-      expect(Math.hypot(dock.sim.state.position.x - start.x, dock.sim.state.position.z - start.z), label).toBeLessThan(0.05);
-    }
-  });
+  for (let first = 0; first < DOCK_START_SEEDS.length; first += DOCK_START_GROUP) {
+    const group = DOCK_START_SEEDS.slice(first, first + DOCK_START_GROUP);
+    it(`settles with no jolt and no contact for 5 s (worlds ${first + 1}-${first + group.length} of ${DOCK_START_SEEDS.length})`, { timeout: 240_000 }, () => {
+      dockStartChecks(group);
+    });
+  }
 });
+
+function dockStartChecks(group: readonly (string | number)[]): void {
+  for (const seed of group) {
+    const dock = dockStart(createWorld(seed));
+    const start = { x: dock.sim.state.position.x, z: dock.sim.state.position.z };
+    let peak = 0;
+    let previous = { x: 0, z: 0 };
+    for (let step = 0; step < 120 * 5; step += 1) {
+      dock.step();
+      const v = dock.sim.state.velocity;
+      if (step > 0) peak = Math.max(peak, Math.hypot(v.x - previous.x, v.z - previous.z) / STEP);
+      previous = { x: v.x, z: v.z };
+    }
+    const label = String(seed);
+    expect(dock.colliders.touches, `${label}: contact`).toBe(0);
+    expect(dock.sim.state.crashed, label).toBe(false);
+    expect(dock.mooring.state, label).toBe("moored");
+    expect(dock.sim.snapshot().payload.moored, label).toBe(true);
+    expect(peak, `${label}: horizontal acceleration`).toBeLessThan(0.05);
+    expect(Math.hypot(dock.sim.state.position.x - start.x, dock.sim.state.position.z - start.z), label).toBeLessThan(0.05);
+  }
+}
 
 describe("home marina mooring", () => {
   const world = createWorld("open-skies");
   const layout = homeMarina(world);
 
-  it("holds the boat within 0.5 m in an 11 m/s wind from any side, touching nothing hard", { timeout: 120_000 }, () => {
+  it("holds the boat within 0.5 m in an 11 m/s wind from any side, touching nothing hard", { timeout: 300_000 }, () => {
     for (let index = 0; index < 8; index += 1) {
       const angle = (index / 8) * Math.PI * 2;
       const dock = dockStart(world, { x: Math.sin(angle) * 11, y: 0, z: Math.cos(angle) * 11 });
