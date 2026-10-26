@@ -351,8 +351,19 @@ export interface BenchUrlRequest {
   readonly hud: boolean;
   /** `quick=1`: short timings for development; the report says non-standard. */
   readonly quick: boolean;
+  /** `fps=60|display|30`: the frame-rate setting every flight uses; the mode's default without one. */
+  readonly frameRate: FrameRateSetting;
   readonly run: string | null;
   readonly step: number | "report" | null;
+}
+
+/**
+ * The bench's frame rate without `fps=`. Shipped mode flies what players
+ * get. Pinned mode measures the GPU's capacity, which a 60 fps cap would
+ * hide on a fast display, so it draws every refresh.
+ */
+export function defaultBenchFrameRate(mode: BenchUrlRequest["mode"]): FrameRateSetting {
+  return mode === "pinned" ? "display" : DEFAULT_SETTINGS.frameRate;
 }
 
 /** Medium first and last, so a run can check itself for drift. */
@@ -374,8 +385,8 @@ export function parseBenchTiers(text: string): number[] | null {
  * `?bench=1` only. URL only and never persisted, like `?world=`: the bench
  * keeps its progress in its own tab-scoped store (src/bench/store.ts), never
  * in the settings. Anything but exactly `bench=1` is the normal game. A bad
- * `tiers` list falls back to the default; a bad `run` or `step` reads as null,
- * which means the intro page.
+ * `tiers` list or `fps` falls back to the default; a bad `run` or `step`
+ * reads as null, which means the intro page.
  */
 export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
   const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
@@ -385,11 +396,13 @@ export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
     const tiers = parseBenchTiers(params.get("tiers") ?? "");
     const run = params.get("run");
     const step = params.get("step");
+    const mode = params.get("mode") === "pinned" ? "pinned" : "shipped";
     return {
       tiers: tiers ?? [...DEFAULT_BENCH_TIERS],
-      mode: params.get("mode") === "pinned" ? "pinned" : "shipped",
+      mode,
       hud: params.get("hud") !== "0",
       quick: params.get("quick") === "1",
+      frameRate: oneOf(params.get("fps"), FRAME_RATE_SETTINGS, defaultBenchFrameRate(mode)),
       run: run !== null && /^[a-z0-9]{6,16}$/.test(run) ? run : null,
       step: step === "report" ? "report" : step !== null && /^\d{1,2}$/.test(step) ? Number(step) : null,
     };

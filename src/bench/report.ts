@@ -1,6 +1,8 @@
+import { effectiveFrameRate } from "@/src/game/framePacer";
 import type { RenderDiagnostics } from "@/src/game/types";
 import { governorConfigForProfile } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import { hitchThresholdMilliseconds } from "@/src/render/webgpu/core/QualityProfile";
+import { DEFAULT_SETTINGS, defaultBenchFrameRate } from "@/src/settings";
 import { fnv1aHex } from "./hash";
 import { BENCH_SCHEMA, BENCH_VERSION, benchProfile, benchTier, benchTierName, isBenchTierIndex } from "./plan";
 import { spread } from "./stats";
@@ -28,7 +30,7 @@ import type {
 } from "./types";
 
 /**
- * The `fly-high.bench/1` report: built from the run store, then written as
+ * The `fly-high.bench/2` report: built from the run store, then written as
  * the downloadable JSON, a compact clipboard copy, a short summary for chat,
  * a prefilled GitHub issue link and the table the report page shows. Pure:
  * the page does the copying, downloading and opening.
@@ -45,6 +47,8 @@ export const REPEATABILITY_THRESHOLD = 0.1;
 export const CANVAS_CHANGE_THRESHOLD = 0.02;
 /** The idle refresh at the intro and on the report page may differ this much. */
 export const REFRESH_CHANGE_THRESHOLD = 0.05;
+/** A step's idle refresh probe and the frame pacer's display rate may differ this much. */
+export const PACER_PERIOD_THRESHOLD = 0.05;
 /** At most this many slow frames per 240 still reads "mostly smooth"; one or none, "smooth". */
 const SMOOTH_PER_240 = 1;
 const MOSTLY_SMOOTH_PER_240 = 6;
@@ -56,7 +60,18 @@ const DEFINITIONS: Readonly<Record<string, string>> = Object.freeze({
   renderMs: "Main-thread time inside the renderer's render(), including any render-scale step it applies first.",
   gpuMs: "GPU frame time from timestamp queries; pinned mode only, where the renderer measures it.",
   over27_4: "Frames slower than 27.4 ms (twice the 13.7 ms frame target), per 240 frames and per minute.",
-  missedRefresh: "Intervals longer than 1.5 refresh periods of the step's idle refresh probe.",
+  hitch: "Frames slower than the tier's hitch threshold for the cadence at the flight's first frame: 27.4 ms; 60 ms on "
+    + "Ultra and at the 30 fps setting, more where that setting draws below 30 fps (a 75 Hz panel draws 25).",
+  missedRefresh: "Intervals longer than the paced cadence plus half a refresh period of the step's idle refresh probe: "
+    + "1.5 periods when every refresh is drawn. At 165 Hz paced to every 2nd refresh that is 15.2 ms, so the bench counts "
+    + "every missed slot, including ones the governor lets pass.",
+  vsyncBuckets: "Intervals in paced slots (divisor refresh periods each), within the tolerance: x1 kept up, x2 to x4plus "
+    + "took whole slots, offSlot missed its slot by a whole refresh or more, irregular is neither (a variable-rate panel).",
+  frameCap: "The fps= setting the run flew, and what this build does with it: 60 fps draws every refresh until 60 fps "
+    + "pacing is switched on. Shipped mode defaults to the players' setting, pinned mode to Match display; "
+    + "a run that behaves otherwise is non-standard.",
+  pacing: "The frame pacer's cadence at the flight's first and last frames (it draws every divisor-th refresh of displayHz; "
+    + "confirmed when measured on ticks that drew nothing), and the bench's rAF ticks against the frames rendered.",
   spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier, over the air window, or over the early check's stretch when either stopped early. Over 10% voids the run.",
   rafHz: "The browser's frame rate with nothing to draw, which is not always the panel's refresh rate.",
   heap: "performance.memory, coarse outside a flagged Chromium; null and stale when it never changed.",
@@ -351,6 +366,13 @@ export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
         `${name}: the browser or display ran at ${result.raf.idleHz?.toFixed(0)} Hz (power saving?). `
         + "Left out of How it felt."));
     }
+    const pacerHz = result.pacing.cadenceAtFlightStart?.displayHz ?? null;
+    const idleHz = result.refresh?.rafHz ?? null;
+    if (pacerHz !== null && idleHz !== null && Math.abs(pacerHz - idleHz) / Math.min(pacerHz, idleHz) > PACER_PERIOD_THRESHOLD) {
+      warnings.push(warning("pacer-period-disagrees", at,
+        `${name}: the frame pacer read the display as ${pacerHz.toFixed(1)} Hz against `
+        + `${idleHz.toFixed(1)} Hz idle (slow frames before the pacer confirmed the rate, or a rate switch?).`));
+    }
     if (result.timer.coarse) {
       warnings.push(warning("timer-coarse", at,
         `${name}: the browser's clock steps ${result.timer.granularityMs} ms; render times are coarse.`));
@@ -388,8 +410,20 @@ function workloadFor(run: BenchRunRecord): BenchWorkload {
     audio: "none",
     spawnedAirports: false,
     pilotInput: false,
-    frameCap: null,
+    frameCap: run.plan.frameRate,
+    frameCapEffective: effectiveFrameRate(run.plan.frameRate),
+    shippedFrameRate: DEFAULT_SETTINGS.frameRate,
+    shippedFrameRateEffective: effectiveFrameRate(DEFAULT_SETTINGS.frameRate),
   };
+}
+
+/**
+ * A quick run, or one whose frame rate behaves unlike its mode's default:
+ * `fps=30` in shipped mode is, and so is `fps=60` in pinned mode once 60 fps
+ * paces. A setting that this build draws the same way as the default is not.
+ */
+export function isNonStandardRun(plan: Pick<BenchRunPlan, "quick" | "mode" | "frameRate">): boolean {
+  return plan.quick || effectiveFrameRate(plan.frameRate) !== effectiveFrameRate(defaultBenchFrameRate(plan.mode));
 }
 
 function reportSteps(run: BenchRunRecord): BenchReportStep[] {
@@ -453,7 +487,7 @@ function reportRun(run: BenchRunRecord, steps: readonly BenchReportStep[]): Benc
     settingsKeyUnchanged: run.settingsKeyAtStart !== null && run.settingsKeyAtEnd !== null
       ? run.settingsKeyAtStart === run.settingsKeyAtEnd
       : null,
-    nonStandard: run.plan.quick,
+    nonStandard: isNonStandardRun(run.plan),
     firstLoad: run.firstLoad,
     tierLabels: tierLabels(steps),
   };
@@ -821,7 +855,9 @@ function buildLine(report: BenchReport): string {
     : report.build.entryScript
       ? `entry ${report.build.entryScript}`
       : "build unknown";
-  return `${build} · run ${report.run.id}${report.run.nonStandard ? " · quick (non-standard)" : ""}`;
+  const plan = report.run.plan;
+  const nonStandard = report.run.nonStandard ? ` · ${plan.quick ? "quick " : ""}(non-standard)` : "";
+  return `${build} · run ${report.run.id} · fps=${plan.frameRate}${nonStandard}`;
 }
 
 /** "Copy short summary": a few lines for a chat message. */

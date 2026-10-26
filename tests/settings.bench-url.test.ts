@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_BENCH_TIERS, readBenchFromUrl } from "../src/settings";
+import { DEFAULT_BENCH_TIERS, DEFAULT_SETTINGS, defaultBenchFrameRate, readBenchFromUrl } from "../src/settings";
 import { readSource } from "./support/sourceText";
 
 /**
@@ -24,10 +24,25 @@ describe("benchmark URL request", () => {
       mode: "shipped",
       hud: true,
       quick: false,
+      frameRate: DEFAULT_SETTINGS.frameRate,
       run: null,
       step: null,
     });
     expect(DEFAULT_BENCH_TIERS).toEqual([1, 0, 2, 1]);
+  });
+
+  it("reads fps, defaulting to what players get in shipped mode and to every refresh in pinned mode", () => {
+    expect(defaultBenchFrameRate("shipped")).toBe(DEFAULT_SETTINGS.frameRate);
+    expect(defaultBenchFrameRate("pinned")).toBe("display");
+    for (const value of ["60", "display", "30"] as const) {
+      expect(readBenchFromUrl(`http://local/?bench=1&fps=${value}`)?.frameRate).toBe(value);
+      expect(readBenchFromUrl(`http://local/?bench=1&mode=pinned&fps=${value}`)?.frameRate).toBe(value);
+    }
+    expect(readBenchFromUrl("http://local/?bench=1&mode=pinned")?.frameRate).toBe("display");
+    for (const bad of ["", "120", "Display", "60fps", "match"]) {
+      expect(readBenchFromUrl(`http://local/?bench=1&fps=${bad}`)?.frameRate, bad).toBe(DEFAULT_SETTINGS.frameRate);
+      expect(readBenchFromUrl(`http://local/?bench=1&mode=pinned&fps=${bad}`)?.frameRate, bad).toBe("display");
+    }
   });
 
   it("reads 1 to 8 tiers of 0-3 and falls back to the default for anything else", () => {

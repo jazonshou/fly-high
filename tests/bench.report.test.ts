@@ -14,6 +14,7 @@ import {
   describeOs,
   issueTitle,
   issueUrl,
+  isNonStandardRun,
   reportFileName,
   reportTableRows,
   reportToJson,
@@ -25,6 +26,8 @@ import {
   windowSmoothness,
 } from "../src/bench/report";
 import { BENCH_SCHEMA } from "../src/bench/plan";
+import { FRAME_PACING_ENABLED } from "../src/game/framePacer";
+import { DEFAULT_SETTINGS } from "../src/settings";
 import type {
   BenchBuildInfo,
   BenchDeviceReport,
@@ -76,13 +79,15 @@ function badValues(value: unknown, path = "$"): string[] {
 const run = defaultRun();
 const full = report(run);
 
-describe("the fly-high.bench/1 report", () => {
+describe("the fly-high.bench/2 report", () => {
   it("has the schema's top-level, run and step keys", () => {
     expect(Object.keys(full)).toEqual([
       "schema", "benchVersion", "createdAt", "build", "run", "device", "display", "profiles", "steps",
       "earlierRuns", "definitions",
     ]);
     expect(full.schema).toBe(BENCH_SCHEMA);
+    expect(BENCH_SCHEMA).toBe("fly-high.bench/2");
+    expect(full.benchVersion).toBe(2);
     expect(Object.keys(full.run).sort()).toEqual([
       "finishedAt", "firstLoad", "id", "ignoredParams", "nonStandard", "plan", "repeatability", "settingsKeyUnchanged",
       "startedAt", "status", "tierLabels", "userLabel", "verdict", "voidReasons", "warnings", "workload",
@@ -93,14 +98,58 @@ describe("the fly-high.bench/1 report", () => {
     ]);
     expect(Object.keys(full.steps[0]!.result!).sort()).toEqual([
       "benchOverheadMs", "canvas", "compiles", "detailWorker", "end", "environment", "firstRendererInTab", "flight",
-      "governor", "heap", "histogram", "longAnimationFrames", "longTasks", "mode", "path", "perSecond", "quality",
-      "raf", "refresh", "renderingMode", "segments", "settle", "startup", "tierIndex", "timer", "windows", "worst",
+      "governor", "heap", "histogram", "longAnimationFrames", "longTasks", "mode", "pacing", "path", "perSecond",
+      "quality", "raf", "refresh", "renderingMode", "segments", "settle", "startup", "tierIndex", "timer", "windows",
+      "worst",
     ]);
     expect(Object.keys(full.profiles)).toEqual(["0", "1", "2"]);
     expect(full.profiles["1"]).toMatchObject({ quality: "medium", renderingMode: "balanced", hitchThresholdMs: 27.4 });
+    // The setting flown and the players' default, each with what this build does with it.
+    const effective60 = FRAME_PACING_ENABLED ? "60" : "display";
     expect(full.run.workload).toEqual({
-      hud: "bench-portal", simWorker: "attract", audio: "none", spawnedAirports: false, pilotInput: false, frameCap: null,
+      hud: "bench-portal", simWorker: "attract", audio: "none", spawnedAirports: false, pilotInput: false,
+      frameCap: "60", frameCapEffective: effective60, shippedFrameRate: "60", shippedFrameRateEffective: effective60,
     });
+    expect(full.run.plan.frameRate).toBe(DEFAULT_SETTINGS.frameRate);
+    expect(full.run.nonStandard).toBe(false);
+    expect(full.steps[0]!.result!.pacing).toEqual({
+      setting: "60",
+      effective: effective60,
+      cadenceAtFlightStart: { frameCapHz: FRAME_PACING_ENABLED ? 60 : null, divisor: 1, displayHz: 60, confirmed: true },
+      cadenceAtEnd: { frameCapHz: FRAME_PACING_ENABLED ? 60 : null, divisor: 1, displayHz: 60, confirmed: true },
+      cadenceChanges: 0,
+      rafTicks: 4_500,
+      renderedFrames: expect.any(Number),
+      pacedHz: 60,
+      governorConfigAtFlightStart: full.profiles["1"]!.governorConfig,
+    });
+  });
+
+  it("marks a run non-standard when its frame rate behaves unlike its mode's default", () => {
+    // Shipped mode defaults to the players' setting, pinned mode to every refresh.
+    expect(isNonStandardRun({ quick: false, mode: "shipped", frameRate: "60" })).toBe(false);
+    expect(isNonStandardRun({ quick: false, mode: "shipped", frameRate: "30" })).toBe(true);
+    expect(isNonStandardRun({ quick: false, mode: "pinned", frameRate: "display" })).toBe(false);
+    expect(isNonStandardRun({ quick: false, mode: "pinned", frameRate: "30" })).toBe(true);
+    expect(isNonStandardRun({ quick: true, mode: "shipped", frameRate: "60" })).toBe(true);
+    // "60" draws every refresh until 60 fps pacing is switched on, so until then it and "display" are the same run.
+    expect(isNonStandardRun({ quick: false, mode: "shipped", frameRate: "display" })).toBe(FRAME_PACING_ENABLED);
+    expect(isNonStandardRun({ quick: false, mode: "pinned", frameRate: "60" })).toBe(FRAME_PACING_ENABLED);
+
+    const thirty = report(defaultRun({ frameRate: "30" }));
+    expect(thirty.run.nonStandard).toBe(true);
+    expect(thirty.run.workload).toMatchObject({ frameCap: "30", frameCapEffective: "30", shippedFrameRate: "60" });
+    expect(thirty.steps[0]!.result!.pacing).toMatchObject({
+      setting: "30", effective: "30", cadenceAtFlightStart: { frameCapHz: 30, divisor: 2 }, pacedHz: 30,
+    });
+    // The 30 fps cadence counts hitches against 60 ms, on every tier.
+    expect(thirty.steps[0]!.result!.windows.air!.over.hitch.thresholdMs).toBeCloseTo(60, 9);
+    expect(summaryMarkdown(thirty).split("\n")[8]).toBe("build 8813adf4c2e1 · run k3x9q2m7wp · fps=30 · (non-standard)");
+    expect(summaryMarkdown(report(defaultRun({ quick: true }))).split("\n")[8])
+      .toBe("build 8813adf4c2e1 · run k3x9q2m7wp · fps=60 · quick (non-standard)");
+    const pinned = report(benchRunRecord({ mode: "pinned", steps: [{ tierIndex: 1 }] }));
+    expect(pinned.run.plan.frameRate).toBe("display");
+    expect(pinned.run.nonStandard).toBe(false);
   });
 
   it("defines the windows by the run's own times, which quick mode shortens", () => {
@@ -484,7 +533,7 @@ describe("the report page's table and summary", () => {
     expect(lines[1]).toBe("| Quality | Avg fps | 1% low | Slow frames (over 27.4 ms) per 240 | Stutters (over 50 ms) per 240 | Result |");
     expect(lines).toHaveLength(9);
     expect(lines[7]).toMatch(/^Verdict: valid · spread \d+\.\d% \(limit 10%\)$/);
-    expect(lines[8]).toBe("build 8813adf4c2e1 · run k3x9q2m7wp");
+    expect(lines[8]).toBe("build 8813adf4c2e1 · run k3x9q2m7wp · fps=60");
   });
 
   it("names the download after the GPU vendor and the time", () => {
@@ -525,6 +574,21 @@ describe("warnings and earlier runs", () => {
     const built = report(warned);
     expect(built.run.verdict).toBe("valid");
     expect(built.run.settingsKeyUnchanged).toBe(false);
+  });
+
+  it("warns when the frame pacer and the idle probe read the display more than 5% apart", () => {
+    const steps = [
+      benchStepRecord(0, { tierIndex: 1, pacerHz: 30 }),
+      benchStepRecord(1, { tierIndex: 0, pacerHz: 61.5 }),
+      benchStepRecord(2, { tierIndex: 2, pacerHz: null }),
+      benchStepRecord(3, { tierIndex: 1, refreshHz: 120, pacerHz: 144 }),
+    ];
+    const warnings = collectWarnings(withSteps(run, steps)).filter((entry) => entry.code === "pacer-period-disagrees");
+    expect(warnings.map((entry) => entry.stepIndex)).toEqual([0, 3]);
+    expect(warnings[0]!.message).toBe(
+      "Flight 1 (Medium): the frame pacer read the display as 30.0 Hz against 60.0 Hz idle "
+      + "(slow frames before the pacer confirmed the rate, or a rate switch?).",
+    );
   });
 
   it("carries a shipped run under the pinned pass that followed it (N6)", () => {

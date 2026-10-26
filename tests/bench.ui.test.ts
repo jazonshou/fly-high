@@ -12,7 +12,7 @@ import { BenchApp, isInsideBenchUi, type BenchView } from "../src/bench/ui/Bench
 import { BenchCard, BenchCards, cardWords, type BenchCardProps } from "../src/bench/ui/BenchCards";
 import { BenchChip, chipAnnouncement, chipPhaseText, chipProgress, type BenchChipProps } from "../src/bench/ui/BenchChip";
 import { BenchHud, BenchHudContent } from "../src/bench/ui/BenchHud";
-import { BenchIntro, type BenchIntroProps } from "../src/bench/ui/BenchIntro";
+import { BenchIntro, introFrameRate, type BenchIntroProps } from "../src/bench/ui/BenchIntro";
 import { BenchReportDialog, type BenchReportDialogProps } from "../src/bench/ui/BenchReportDialog";
 import { clockText, tierListText } from "../src/bench/ui/words";
 import { parseBenchTiers, readBenchFromUrl } from "../src/settings";
@@ -38,7 +38,7 @@ function report(run: BenchRunRecord, earlier?: readonly BenchRunRecord[]): Bench
 
 function introProps(overrides: Partial<BenchIntroProps> = {}): BenchIntroProps {
   return {
-    options: { tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false },
+    options: { tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false, frameRate: "60" },
     storage: "ok",
     device: benchDevice(),
     refresh: benchRefresh(60),
@@ -158,13 +158,30 @@ describe("the intro dialog", () => {
   });
 
   it("opens Advanced when the URL asked for something other than the default", () => {
-    const markup = intro({ options: { tiers: [1, 3, 1], mode: "pinned", hud: false, quick: true } });
+    const markup = intro({ options: { tiers: [1, 3, 1], mode: "pinned", hud: false, quick: true, frameRate: "display" } });
     expect(markup).toMatch(/<details class="bench-section bench-advanced" open="">/);
     expect(markup).toContain('checked="" value="pinned"');
     expect(markup).toContain("Medium, Ultra, Medium.");
     expect(markup).toContain("flies itself 3 times");
     expect(markup).toContain("quick run for testing");
     expect(markup).toContain("The flight instruments are hidden for this run.");
+  });
+
+  it("keeps a frame rate the URL asked for, and says so; the mode's own default follows the mode", () => {
+    const shipped = { tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false, frameRate: "60" } as const;
+    // Switching to the GPU comparison in Advanced draws every refresh, as a pinned URL would.
+    expect(introFrameRate(shipped, "pinned")).toEqual({ asked: null, flown: "display" });
+    expect(introFrameRate(shipped, "shipped")).toEqual({ asked: null, flown: "60" });
+    expect(introFrameRate({ ...shipped, mode: "pinned", frameRate: "display" }, "shipped")).toEqual({ asked: null, flown: "60" });
+    expect(introFrameRate({ ...shipped, frameRate: "30" }, "pinned")).toEqual({ asked: "30", flown: "30" });
+    const asked = intro({ options: { ...shipped, frameRate: "30" } });
+    expect(asked).toMatch(/<details class="bench-section bench-advanced" open="">/);
+    expect(asked).toContain("Every flight uses the 30 fps frame rate, from the address.");
+    expect(intro()).not.toContain("frame rate, from the address");
+    expect(intro({ options: { tiers: [1], mode: "pinned", hud: true, quick: false, frameRate: "display" } }))
+      .not.toContain("frame rate, from the address");
+    expect(intro({ options: { tiers: [1], mode: "pinned", hud: true, quick: false, frameRate: "60" } }))
+      .toContain("Every flight uses the 60 fps (smooth) frame rate, from the address.");
   });
 
   it("keeps the privacy line and the buttons in the panel's footer, so Start is never below the fold", () => {
@@ -543,7 +560,7 @@ describe("the report dialog", () => {
     const markup = reportDialog(valid, { copy: { target: "report", status: "failed", text } });
     expect(markup).toMatch(/<label for="bench-report-fallback">The browser would not let the page copy\./);
     expect(markup).toMatch(/<textarea id="bench-report-fallback" readOnly="" rows="8"/);
-    expect(markup).toContain("&quot;schema&quot;:&quot;fly-high.bench/1&quot;");
+    expect(markup).toContain("&quot;schema&quot;:&quot;fly-high.bench/2&quot;");
     const copied = reportDialog(valid, { copy: { target: "issue", status: "copied", text } });
     expect(copied).toContain('role="status">Report copied. Paste it into the empty block in the GitHub issue.</p>');
     expect(copied).not.toContain("<textarea");
@@ -562,7 +579,7 @@ describe("the bench HUD", () => {
   it("is the game's full HUD for a chase-camera flight, with no buttons or diagnostics", () => {
     const markup = renderToStaticMarkup(createElement(BenchHudContent, {
       state: createBenchVisualState(),
-      settings: benchGameSettings(1),
+      settings: benchGameSettings(1, "60"),
       seed: BENCH_SEED,
     }));
     expect(markup).toContain('class="flight-hud flight-hud--full"');
@@ -577,7 +594,7 @@ describe("the bench HUD", () => {
     expect(renderToStaticMarkup(createElement(BenchHud, {
       container: null,
       state: createBenchVisualState(),
-      settings: benchGameSettings(1),
+      settings: benchGameSettings(1, "60"),
       seed: BENCH_SEED,
     }))).toBe("");
   });
