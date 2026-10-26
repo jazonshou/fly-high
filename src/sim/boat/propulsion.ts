@@ -42,14 +42,22 @@ export class OutboardPowertrain {
   advanceRatio = 0;
   /** Brake torque the engine made this step, N m (negative when it is being driven). */
   engineTorque = 0;
+  /** Share of the open-water thrust back cavitation took this step. */
+  cavitation = 0;
   private shiftTimer = 0;
   private limiterCut = false;
+
+  /** Projected blade area, m^2: the expanded area times 1.067 - 0.229 P/D (the B-series fit). */
+  private readonly projectedArea: number;
 
   constructor(
     private readonly definition: BoatDefinition,
     private readonly calibration: BoatCalibration,
   ) {
     this.crankSpeed = rpmToRadians(definition.engine.idleRpm);
+    const propeller = definition.propeller;
+    const disc = (Math.PI / 4) * propeller.diameter * propeller.diameter;
+    this.projectedArea = disc * propeller.expandedAreaRatio * (1.067 - (0.229 * propeller.pitch) / propeller.diameter);
   }
 
   get rpm(): number {
@@ -66,6 +74,7 @@ export class OutboardPowertrain {
     this.propellerTorque = 0;
     this.advanceRatio = 0;
     this.engineTorque = 0;
+    this.cavitation = 0;
     this.shiftTimer = 0;
     this.limiterCut = false;
   }
@@ -79,8 +88,10 @@ export class OutboardPowertrain {
 
   /** The throttle a lever position asks for, 0..1, past the shift detent. */
   leverThrottle(lever: number): number {
-    const travel = this.definition.engine.shiftTravel;
-    return Math.min(1, Math.max(0, (Math.abs(lever) - travel) / (1 - travel)));
+    const engine = this.definition.engine;
+    const travel = engine.shiftTravel;
+    const open = Math.min(1, Math.max(0, (Math.abs(lever) - travel) / (1 - travel)));
+    return lever < 0 ? open * engine.reverseThrottleMax : open;
   }
 
   /**
@@ -89,7 +100,16 @@ export class OutboardPowertrain {
    * positive moving ahead), `immersion` the share of the disc under the local
    * surface. Fills `thrust` and `propellerTorque`.
    */
-  update(dt: number, lever: number, inflow: number, immersion: number, rho: number, enabled = true): void {
+  update(
+    dt: number,
+    lever: number,
+    inflow: number,
+    immersion: number,
+    rho: number,
+    enabled = true,
+    hubDepth = 0.5,
+    gravity = 9.80665,
+  ): void {
     const engine = this.definition.engine;
     const propeller = this.definition.propeller;
     const demandedGear = enabled ? OutboardPowertrain.leverGear(lever) : "neutral";
@@ -133,13 +153,29 @@ export class OutboardPowertrain {
       const j = clampJ((sign * va) / (absN * d));
       this.advanceRatio = j;
       const reverse = sign < 0 ? this.calibration.reverseEfficiency : 1;
-      const kt = thrustCoefficient(this.calibration, j) * reverse * load;
-      const kq = torqueCoefficient(this.calibration, j) * reverse * load;
+      let kt = thrustCoefficient(this.calibration, j) * reverse * load;
+      let kq = torqueCoefficient(this.calibration, j) * reverse * load;
       const n2 = n * n;
-      thrust = sign * kt * rho * n2 * d * d * d * d * Math.min(1, immersion / 0.5);
-      torque = kq * rho * n2 * d * d * d * d * d * Math.min(1, immersion / 0.5);
+      const wet = Math.min(1, immersion / 0.5);
+      // Back cavitation (Barnaby): past a mean thrust per projected blade area
+      // set by the static head at the shaft, the sheet on the blade backs
+      // takes most of the extra thrust and less of the torque, so the engine
+      // flares in a hard hole shot instead of the boat leaping.
+      const openThrust = Math.abs(kt) * rho * n2 * d * d * d * d * wet;
+      const head = ATMOSPHERE + rho * gravity * Math.max(0, hubDepth) - VAPOUR_PRESSURE;
+      const limit = this.calibration.cavitationLoading * this.projectedArea * head;
+      this.cavitation = 0;
+      if (openThrust > limit) {
+        const kept = (limit + (openThrust - limit) * this.calibration.cavitationThrustSlope) / openThrust;
+        this.cavitation = 1 - kept;
+        kt *= kept;
+        kq *= 1 - this.calibration.cavitationTorqueShare * (1 - kept);
+      }
+      thrust = sign * kt * rho * n2 * d * d * d * d * wet;
+      torque = kq * rho * n2 * d * d * d * d * d * wet;
     } else {
       this.advanceRatio = 0;
+      this.cavitation = 0;
     }
     this.thrust = thrust;
     this.propellerTorque = torque;
@@ -153,8 +189,10 @@ export class OutboardPowertrain {
     if (!enabled) {
       // Crashed: the kill cord is out and the engine winds down.
       engineTorque = -4 * loss;
-    } else if (throttle < 0.05 && rpm < engine.idleRpm + 200) {
-      // The idle air valve holds idle against the propeller's drag.
+    } else if (rpm < engine.idleRpm + 200) {
+      // The idle air valve holds idle against the propeller's drag at any
+      // throttle: a part-open throttle lugged down by the load is a floor, not
+      // a stall.
       engineTorque = Math.max(engineTorque, Math.min(80 - loss, 0.6 * (engine.idleRpm - rpm)));
     }
     this.engineTorque = engineTorque;
@@ -164,6 +202,10 @@ export class OutboardPowertrain {
     if (this.crankSpeed < 0) this.crankSpeed = 0;
   }
 }
+
+const ATMOSPHERE = 101_325;
+/** Sea water at 15 C. */
+const VAPOUR_PRESSURE = 1_700;
 
 function rpmToRadians(rpm: number): number {
   return (rpm * 2 * Math.PI) / 60;

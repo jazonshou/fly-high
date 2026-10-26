@@ -26,6 +26,11 @@ import {
   type TerrainLandformDataSource,
 } from "./TerrainLandformKernel";
 import {
+  TERRAIN_INFRASTRUCTURE_WGSL,
+  TerrainInfrastructureDataBinding,
+  terrainInfrastructureDataBindingWgsl,
+} from "./TerrainInfrastructureKernel";
+import {
   VEGETATION_DENSITY_FIELD_WGSL,
   VEGETATION_DENSITY_KERNEL_LATTICES,
 } from "../detail/densityFieldWgsl";
@@ -58,7 +63,7 @@ import {
   HORIZON_FIELD_MARCH_WGSL,
 } from "./HorizonField";
 import type { GlobalHeightPyramid } from "./GlobalHeightPyramid";
-import type { AirportDefinition } from "@/src/world/types";
+import type { AirportDefinition, WorldDefinition } from "@/src/world/types";
 import {
   TERRAIN_PAGE_GRADED_BY_NONE,
   TERRAIN_PAGE_GRADED_BY_SEVERAL,
@@ -159,6 +164,8 @@ function packSplatAirportTable(
 
 /** The landform data binding's slot in the splat bake's bind group. */
 const SPLAT_LANDFORM_DATA_BINDING = 9;
+/** The infrastructure index's slot in the splat bake's bind group. */
+const SPLAT_INFRASTRUCTURE_DATA_BINDING = 10;
 
 /**
  * The page-splat bake's composed source — ONE definition.
@@ -172,11 +179,16 @@ export function terrainPageSplatWgsl(): string {
   return [
     terrainKernelPageBindingWgsl(0, 0, VEGETATION_DENSITY_KERNEL_LATTICES.length),
     terrainLandformDataBindingWgsl(0, SPLAT_LANDFORM_DATA_BINDING),
+    terrainInfrastructureDataBindingWgsl(0, SPLAT_INFRASTRUCTURE_DATA_BINDING),
     TERRAIN_KERNEL_WGSL,
     // The landform include, for the ground the landform stages lay down. The
     // bake reads its volcanic ground (`terrainVolcanicGround`, lava and tephra
     // cover over the bound site index) once per texel; see bakeSplat.
     TERRAIN_LANDFORM_WGSL,
+    // The infrastructure include, for the paint built ground wears
+    // (`terrainInfrastructureSurface`, once per texel; see bakeSplat). Its
+    // heights are already in the atlas the bake reads.
+    TERRAIN_INFRASTRUCTURE_WGSL,
     // 6-8: the appended table's base index, derived from the kernel's own
     // lattice count and never retyped. It is composed here rather than
     // injected inside the classifier because the classifier is reachable
@@ -547,6 +559,8 @@ export class PageSplatBake {
   private costTape: PassCostTape | null = null;
   /** `terrainLandformData`: the one place it is held and bound, before each bake. */
   private readonly landformBinding: TerrainLandformDataBinding;
+  /** `terrainInfrastructureData`: the world's built-ground index, bound before each bake. */
+  private readonly infrastructureBinding: TerrainInfrastructureDataBinding;
   /**
    * Volcanic land: whether the profile's arrays carry Basalt and Tephra
    * (`WebGpuQualityProfile.volcanicMaterials`). Where they do not, the bake
@@ -593,8 +607,15 @@ export class PageSplatBake {
      * `setLandformDataSource`.
      */
     landformData: TerrainLandformDataSource | null = null,
+    /**
+     * The world whose infrastructure surfaces the bake paints (Concrete on a
+     * slipway, say). It rides the page uniform's landform base, so without a
+     * `landform` input, or with no world, the index is the empty one.
+     */
+    infrastructureWorld: WorldDefinition | null = null,
   ) {
     this.landformBinding = new TerrainLandformDataBinding(landformData);
+    this.infrastructureBinding = new TerrainInfrastructureDataBinding(landform ? infrastructureWorld : null);
     this.airports = [];
     this.gradingReaches = [];
     this.setAirports(airport ? [airport] : []);
@@ -802,6 +823,7 @@ export class PageSplatBake {
     jobBuffer.update(new Uint8Array(jobs.buffer));
     pageBuffer.update(pages);
     this.landformBinding.bind(this.engine as WebGPUEngine, shader);
+    this.infrastructureBinding.bind(this.engine as WebGPUEngine, shader);
     // Only after the list changed: the table was packed by setAirports from
     // the same `airports` these jobs index.
     if (this.airportTableDirty) {
@@ -833,6 +855,7 @@ export class PageSplatBake {
     if (this.airportTableBuffer) releaseGpuBufferBytes(SPLAT_AIRPORT_TABLE_FLOATS * 4);
     this.registeredBufferBytes = 0;
     this.landformBinding.dispose();
+    this.infrastructureBinding.dispose();
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.airportTableBuffer = null;
@@ -873,6 +896,7 @@ export class PageSplatBake {
           // 6-6: the soil-depth channel's first GPU consumer.
           splatSoilDepthAtlas: { group: 0, binding: 7 },
           terrainLandformData: { group: 0, binding: SPLAT_LANDFORM_DATA_BINDING },
+          terrainInfrastructureData: { group: 0, binding: SPLAT_INFRASTRUCTURE_DATA_BINDING },
           splatAirports: { group: 0, binding: 8 },
         },
       },

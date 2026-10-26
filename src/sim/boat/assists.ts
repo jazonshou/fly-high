@@ -130,11 +130,15 @@ export class BoatAssists {
     // Tabs level the heel when the helm is near centre and the boat is running.
     out.tabsAuto = true;
     if (Math.abs(steer) < 0.15 && knots > 12) {
-      this.tabHeelIntegral = clamp(this.tabHeelIntegral + input.heel * 0.8 * input.dt, -0.5, 0.5);
+      const level = Math.sign(input.heel) * Math.max(0, Math.abs(input.heel) - 0.5 * DEG);
+      this.tabHeelIntegral = clamp(this.tabHeelIntegral + level * 0.8 * input.dt, -0.25, 0.25);
     } else {
       this.tabHeelIntegral *= Math.max(0, 1 - 0.5 * input.dt);
     }
-    out.tabDifferential = clamp(input.heel * 2.5 + this.tabHeelIntegral, -0.6, 0.6);
+    // Inside half a degree the tabs leave the heel alone (a levelling
+    // system's deadband): the propeller's own torque list is not worth the drag.
+    const level = Math.sign(input.heel) * Math.max(0, Math.abs(input.heel) - 0.5 * DEG);
+    out.tabDifferential = clamp(level * 2.5 + this.tabHeelIntegral, -0.6, 0.6);
     // Ease the throttle while the propeller is blown out, so it hooks back up.
     if (input.ventilation > 0.3 && Math.abs(out.lever) > 0.4) {
       out.lever *= 1 - 0.45 * clamp((input.ventilation - 0.3) / 0.5, 0, 1);

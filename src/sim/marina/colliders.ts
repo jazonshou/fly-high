@@ -1,8 +1,11 @@
+import type { BoatContactMaterial } from "../boat/boatSimulator";
 import type { ColliderWorld } from "../colliders";
 import type { Quaternion, Vec3 } from "../types";
 import { createWaterSurfaceSample, type WaterSurfaceAuthority, type WaterSurfaceSample } from "../water/types";
 import {
   FLOATING_BOX_KINDS,
+  marinaBoxOrientation,
+  marinaMooredBoatBox,
   marinaToWorld,
   type MarinaBox,
   type MarinaLayout,
@@ -14,6 +17,8 @@ import {
  * beacon towers are capsules, the pier deck, gangway, quay wall and buildings
  * are static boxes, and every pontoon module and finger is a kinematic box
  * that rides the (calmed) sea, posed every step from the water authority.
+ * The moored runabouts are static boxes too, so the boat cannot pass
+ * through the ones on screen.
  *
  * Every collider is built from `homeMarina(world)`'s records, the same ones
  * the renderer draws, so a pile a hull hits is the pile on screen.
@@ -29,7 +34,24 @@ export const MARINA_COLLIDER_MATERIAL = Object.freeze({
   concrete: 102,
   pontoon: 103,
   steel: 104,
+  hull: 105,
 });
+
+/**
+ * How a hull meets each marina material, for the boat's contact law
+ * (`BoatEnvironment.contactMaterials`). Fendered pontoons give: a 1,800 kg
+ * runabout's 3.5 m/s knock (11 kJ) is what a pontoon's rubbing strake is
+ * built to take. Bare timber and steel piles take the boat's own default, and
+ * the concrete quay wall is the hardest face in the marina. A moored boat's
+ * topsides flex between the two: a 3 m/s knock on one is a crash.
+ */
+export const MARINA_CONTACT_MATERIALS: ReadonlyMap<number, Readonly<BoatContactMaterial>> = new Map<number, Readonly<BoatContactMaterial>>([
+  [MARINA_COLLIDER_MATERIAL.pontoon, Object.freeze({ crashSpeed: 4, stiffness: 1.5e5, damping: 9e3, friction: 0.15 })],
+  [MARINA_COLLIDER_MATERIAL.timber, Object.freeze({ crashSpeed: 2.5, stiffness: 4e5, damping: 1.2e4, friction: 0.3 })],
+  [MARINA_COLLIDER_MATERIAL.steel, Object.freeze({ crashSpeed: 2.5, stiffness: 4e5, damping: 1.2e4, friction: 0.25 })],
+  [MARINA_COLLIDER_MATERIAL.concrete, Object.freeze({ crashSpeed: 2, stiffness: 6e5, damping: 1.5e4, friction: 0.4 })],
+  [MARINA_COLLIDER_MATERIAL.hull, Object.freeze({ crashSpeed: 3, stiffness: 2.5e5, damping: 1e4, friction: 0.2 })],
+]);
 
 /** Collider group of the home marina, for `ColliderWorld.removeGroup`. */
 export const MARINA_COLLIDER_GROUP = 7_001;
@@ -50,12 +72,6 @@ export interface MarinaColliders {
   readonly group: number;
   readonly staticHandles: readonly number[];
   readonly pontoons: readonly MarinaPontoonCollider[];
-}
-
-/** Rotation about +Y taking local +Z to the marina's `out` axis (local +X then points to -right). */
-function yawQuaternion(layout: MarinaLayout, yaw: number): Quaternion {
-  const angle = layout.frame.headingRadians + yaw;
-  return { x: 0, y: Math.sin(angle * 0.5), z: 0, w: Math.cos(angle * 0.5) };
 }
 
 /** Adds every marina collider; returns the handles, pontoons in layout order. */
@@ -85,26 +101,17 @@ export function addMarinaColliders(
   for (const box of layout.boxes) {
     if (box.kind === "lifeRingStand" || box.kind === "fuelPump") continue;
     const p = marinaToWorld(layout.frame, box.right, box.out);
-    // Box-local x is marina -right, z is marina out (see yawQuaternion).
+    // Box-local x is marina -right, z is marina out (see marinaBoxOrientation).
     const halfExtents = { x: box.halfRight, y: box.halfHeight, z: box.halfOut };
+    const orientation = marinaBoxOrientation(layout.frame, box);
     if (FLOATING_BOX_KINDS.has(box.kind)) {
-      const yaw = yawQuaternion(layout, box.yaw);
       const handle = colliders.addKinematic(
         { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents },
         { material: MARINA_COLLIDER_MATERIAL.pontoon, group },
       );
-      colliders.setKinematicPose(handle, { x: p.x, y: box.y, z: p.z }, yaw);
-      pontoons.push(Object.freeze({ handle, box, x: p.x, z: p.z, restOffset: box.y - layout.seaLevel, yaw }));
+      colliders.setKinematicPose(handle, { x: p.x, y: box.y, z: p.z }, orientation);
+      pontoons.push(Object.freeze({ handle, box, x: p.x, z: p.z, restOffset: box.y - layout.seaLevel, yaw: orientation }));
       continue;
-    }
-    let orientation = yawQuaternion(layout, box.yaw);
-    if (box.kind === "gangway") {
-      // Sloping from the pier head down to the pontoon deck: a pitch about local x.
-      const pitch = Math.atan2(
-        layout.pier.length > 0 ? MARINA_GANGWAY_DROP(layout) : 0,
-        2 * box.halfOut,
-      );
-      orientation = multiply(orientation, { x: Math.sin(pitch * 0.5), y: 0, z: 0, w: Math.cos(pitch * 0.5) });
     }
     staticHandles.push(colliders.addStatic(
       { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents },
@@ -116,18 +123,21 @@ export function addMarinaColliders(
       },
     ));
   }
-  return Object.freeze({ group, staticHandles: Object.freeze(staticHandles), pontoons: Object.freeze(pontoons) });
-}
-
-/** Height the gangway drops from the pier head to the pontoon deck. */
-function MARINA_GANGWAY_DROP(layout: MarinaLayout): number {
-  let pier = 0;
-  let pontoon = 0;
-  for (const box of layout.boxes) {
-    if (box.kind === "pierDeck") pier = box.y + box.halfHeight;
-    if (box.kind === "pontoon") pontoon = box.y + box.halfHeight;
+  for (const berth of layout.berths) {
+    if (!berth.occupied) continue;
+    const box = marinaMooredBoatBox(layout.frame, berth, layout.seaLevel);
+    const p = marinaToWorld(layout.frame, box.right, box.out);
+    staticHandles.push(colliders.addStatic(
+      { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents: { x: box.halfRight, y: box.halfHeight, z: box.halfOut } },
+      {
+        material: MARINA_COLLIDER_MATERIAL.hull,
+        group,
+        position: { x: p.x, y: box.y, z: p.z },
+        orientation: marinaBoxOrientation(layout.frame, box),
+      },
+    ));
   }
-  return pier - pontoon;
+  return Object.freeze({ group, staticHandles: Object.freeze(staticHandles), pontoons: Object.freeze(pontoons) });
 }
 
 function multiply(a: Quaternion, b: Quaternion): Quaternion {
@@ -141,8 +151,9 @@ function multiply(a: Quaternion, b: Quaternion): Quaternion {
 
 /**
  * How much of the surface's tilt a pontoon takes: a 12 m module bridges the
- * short waves, so it follows the slope at its centre only partly. Applied to
- * the drawn pontoons too, through `marinaPontoonPose`.
+ * short waves, so it follows the slope at its centre only partly. The drawn
+ * pontoons stand at rest for now: the renderer has no sea sample on the main
+ * thread yet, and in the calmed basin the difference is the basin's swell.
  */
 export const PONTOON_TILT_FOLLOW = 0.5;
 

@@ -631,6 +631,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       terrainSample: (x: number, z: number) => sampleTerrain(world, x, z),
       world,
       seed: world.sourceSeedHash,
+      // Every shot renders Clear (setAtmosphere below), so the sea is built
+      // for Clear's wind instead of being rebuilt by the first shot.
+      weather: "clear" as const,
       quality: CAPTURE_QUALITY,
       renderingMode: CAPTURE_MODE,
       reducedMotion: false,

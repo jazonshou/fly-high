@@ -412,6 +412,17 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly boatWakeTrailSeconds: number;
+  /**
+   * The home marina's near meshes (decks, pontoons, walls and buildings, the
+   * piles and posts, the moored boats) cast sun shadows: three thin-instanced
+   * casters, 2 draws each at two cascades, and only while the camera is
+   * within 1.5 km of the marina (`MarinaSystem`; beyond it the silhouette
+   * casts nothing). Like the home airfield's hangars, which cast at every
+   * tier, except that the low tier sheds them. Every session, aircraft too.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly marinaCastsShadows: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -519,6 +530,7 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
       boatWakeTrailSeconds: 12,
+      marinaCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -625,6 +637,7 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
       boatWakeTrailSeconds: 24,
+      marinaCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -720,6 +733,7 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
       boatWakeTrailSeconds: 40,
+      marinaCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -817,6 +831,7 @@ function resolveBaseQualityProfile(
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,
     boatWakeTrailSeconds: 40,
+    marinaCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,
