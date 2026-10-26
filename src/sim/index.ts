@@ -106,6 +106,26 @@ export {
   standardTemperatureForDensity,
 } from "./atmosphere";
 export { quaternionFromFlightAngles } from "./math";
+export {
+  COLLIDER_BIN_SIZE_METERS,
+  ColliderWorld,
+  createColliderContact,
+  type ColliderAabb,
+  type ColliderBox,
+  type ColliderCapsule,
+  type ColliderContact,
+  type ColliderOptions,
+  type ColliderPolyline,
+  type ColliderShape,
+  type ColliderSphere,
+} from "./colliders";
+export {
+  ADDED_MASS_SIZE,
+  RigidBody,
+  type AddedMassOptions,
+  type RigidBodyInertia,
+  type RigidBodyOptions,
+} from "./rigidBody";
 export type {
   ActuatorState,
   DynamicsState,
