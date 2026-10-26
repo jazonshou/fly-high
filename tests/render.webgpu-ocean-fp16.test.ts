@@ -4,11 +4,19 @@ import {
   oceanTransformNormalizationScale,
   resolveSpectralOceanConfig,
 } from "../src/render/webgpu/nature/OceanConfig";
+import {
+  oceanAngularFrequency,
+  oceanDirectionalSpectrum,
+  oceanGaussianComplex,
+  oceanSignedFrequencyIndex,
+  oceanWaveSeed,
+  type OceanSpectrumParameters,
+} from "../src/sim/water/spectrum";
 
 /**
  * 1B-13, assertion 28 — fp16 FFT intermediate bounds, on a CPU mirror of the
- * exact GPU chain (same hash, same JONSWAP, same Stockham stages, same
- * normalisation schedule). Every intermediate stage's peak magnitude must
+ * exact GPU chain (the shared spectrum module's hash and JONSWAP, the same
+ * Stockham stages, the same normalisation schedule). Every intermediate stage's peak magnitude must
  * stay under fp16's maximum (~65 504; bound 60 000 with headroom) and above
  * 1e-3 — folding the full 1/N² anywhere early drops the signal band to
  * 1.5e-6…1.5e-4, straddling the smallest fp16 normal (6.1e-5), and the
@@ -16,27 +24,6 @@ import {
  */
 
 const TAU = Math.PI * 2;
-
-function hash32(value: number): number {
-  let state = value >>> 0;
-  state ^= state >>> 16;
-  state = Math.imul(state, 0x7feb352d) >>> 0;
-  state ^= state >>> 15;
-  state = Math.imul(state, 0x846ca68b) >>> 0;
-  return (state ^ (state >>> 16)) >>> 0;
-}
-
-function random01(value: number): number {
-  return (hash32(value) & 0x00ffffff) / 16777216;
-}
-
-function gaussianComplex(seed: number): [number, number] {
-  const u1 = Math.max(random01(seed), 1e-7);
-  const u2 = random01((seed ^ 0x9e3779b9) >>> 0);
-  const radius = Math.sqrt(-2 * Math.log(u1));
-  const angle = TAU * u2;
-  return [radius * Math.cos(angle), radius * Math.sin(angle)];
-}
 
 interface SpectrumParams {
   readonly seed: number;
@@ -55,51 +42,24 @@ interface SpectrumParams {
   readonly maximumWavelength: number;
 }
 
-function signedFrequencyIndex(index: number, resolution: number): number {
-  return index > resolution / 2 ? index - resolution : index;
-}
-
-function smoothstepValue(low: number, high: number, value: number): number {
-  const t = Math.min(1, Math.max(0, (value - low) / (high - low)));
-  return t * t * (3 - 2 * t);
-}
-
-function jonswap(params: SpectrumParams, kx: number, kz: number, kLength: number, omega: number): number {
-  const gravity = params.gravity;
-  const wind = Math.max(params.windSpeed, 0.05);
-  const fetch = Math.max(params.fetchLength, 1);
-  const omegaPeak = 22 * Math.pow((gravity * gravity) / (wind * fetch), 1 / 3);
-  const alpha = 0.076 * Math.pow((wind * wind) / (fetch * gravity), 0.22);
-  const sigma = omega <= omegaPeak ? 0.07 : 0.09;
-  const peakDistance = (omega - omegaPeak) / Math.max(sigma * omegaPeak, 1e-5);
-  const peakShape = Math.exp(-0.5 * peakDistance * peakDistance);
-  const peakEnhancement = Math.pow(3.3, peakShape);
-  const frequencySpectrum = alpha * gravity * gravity
-    * Math.exp(-1.25 * Math.pow(omegaPeak / Math.max(omega, 1e-4), 4))
-    * peakEnhancement / Math.max(Math.pow(omega, 5), 1e-8);
-
-  const capillary = params.surfaceTensionOverDensity;
-  const tanhDepth = Math.tanh(kLength * params.waterDepth);
-  const dispersionDerivative = Math.max(
-    (gravity + 3 * capillary * kLength * kLength) * tanhDepth,
-    1e-6,
-  ) / Math.max(2 * omega, 1e-5);
-  const windLength = Math.hypot(params.windDirection[0], params.windDirection[1]) || 1;
-  const aligned = (kx / Math.max(kLength, 1e-6)) * (params.windDirection[0] / windLength)
-    + (kz / Math.max(kLength, 1e-6)) * (params.windDirection[1] / windLength);
-  const forwardLobe = Math.pow(Math.max(aligned, 0), params.directionalSpread);
-  const opposingLobe = 0.04 * Math.pow(Math.max(-aligned, 0), params.directionalSpread * 0.5);
-  const wavelength = TAU / Math.max(kLength, 1e-6);
-  const lowWidth = Math.max(params.minimumWavelength * 0.18, 0.001);
-  const highWidth = Math.max(params.maximumWavelength * 0.18, 0.001);
-  const band =
-    smoothstepValue(params.minimumWavelength - lowWidth, params.minimumWavelength + lowWidth, wavelength)
-    * (1 - smoothstepValue(params.maximumWavelength - highWidth, params.maximumWavelength + highWidth, wavelength));
-  const radialJacobian = dispersionDerivative / Math.max(kLength, 1e-6);
-  return Math.max(
-    frequencySpectrum * radialJacobian * (forwardLobe + opposingLobe) * band * params.spectrumScale,
-    0,
-  );
+/**
+ * The shared spectrum module (src/sim/water/spectrum.ts) is the authority the
+ * GPU shader transliterates; this mirror evaluates it rather than a copy.
+ */
+function spectrumParameters(params: SpectrumParams): OceanSpectrumParameters {
+  return {
+    gravity: params.gravity,
+    windSpeed: params.windSpeed,
+    fetchLength: params.fetchLength,
+    windDirectionX: params.windDirection[0],
+    windDirectionZ: params.windDirection[1],
+    directionalSpread: params.directionalSpread,
+    waterDepth: params.waterDepth,
+    surfaceTensionOverDensity: params.surfaceTensionOverDensity,
+    spectrumScale: params.spectrumScale,
+    minimumWavelength: params.minimumWavelength,
+    maximumWavelength: params.maximumWavelength,
+  };
 }
 
 /** transformA = [h.re, h.im, dx.re, dx.im]; transformB = [dz.re, dz.im, 0, 0]. */
@@ -113,19 +73,22 @@ function evolve(
   const waveK = new Float64Array(n * n * 3);
   for (let y = 0; y < n; y += 1) {
     for (let x = 0; x < n; x += 1) {
-      const kx = (TAU / params.patchLengthMeters) * signedFrequencyIndex(x, n);
-      const kz = (TAU / params.patchLengthMeters) * signedFrequencyIndex(y, n);
+      const frequencyX = oceanSignedFrequencyIndex(x, n);
+      const frequencyY = oceanSignedFrequencyIndex(y, n);
+      const kx = (TAU / params.patchLengthMeters) * frequencyX;
+      const kz = (TAU / params.patchLengthMeters) * frequencyY;
       const kLength = Math.hypot(kx, kz);
       const index = x + y * n;
       if (kLength < 1e-6) continue;
-      const gravityTerm = params.gravity * kLength;
-      const capillaryTerm = params.surfaceTensionOverDensity * kLength ** 3;
-      const omega = Math.sqrt(
-        Math.max((gravityTerm + capillaryTerm) * Math.tanh(kLength * params.waterDepth), 0),
+      const omega = oceanAngularFrequency(
+        kLength,
+        params.gravity,
+        params.surfaceTensionOverDensity,
+        params.waterDepth,
       );
-      const spectrum = jonswap(params, kx, kz, kLength, omega);
-      const seed = (params.seed ^ hash32((index + Math.imul(0x9e3779b9, params.cascadeIndex + 1)) >>> 0)) >>> 0;
-      const [gr, gi] = gaussianComplex(seed);
+      const spectrum = oceanDirectionalSpectrum(spectrumParameters(params), kx, kz, kLength, omega);
+      const seed = oceanWaveSeed(params.seed, params.cascadeIndex, frequencyX, frequencyY);
+      const [gr, gi] = oceanGaussianComplex(seed, [0, 0]);
       const amplitude = Math.sqrt(0.5 * spectrum);
       h0[index * 2] = gr * amplitude;
       h0[index * 2 + 1] = gi * amplitude;
@@ -142,10 +105,11 @@ function evolve(
       const mirrored = ((n - x) % n) + ((n - y) % n) * n;
       const kLength = waveK[index * 3 + 2]!;
       if (kLength < 1e-6) continue;
-      const gravityTerm = params.gravity * kLength;
-      const capillaryTerm = params.surfaceTensionOverDensity * kLength ** 3;
-      const omega = Math.sqrt(
-        Math.max((gravityTerm + capillaryTerm) * Math.tanh(kLength * params.waterDepth), 0),
+      const omega = oceanAngularFrequency(
+        kLength,
+        params.gravity,
+        params.surfaceTensionOverDensity,
+        params.waterDepth,
       );
       const phase = omega * timeSeconds;
       const cosPhase = Math.cos(phase);

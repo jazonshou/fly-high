@@ -785,6 +785,36 @@ export class LightPointSystem {
   }
 
   /**
+   * Recolour home fixtures `[start, start + colours.length)`: the airfield's
+   * on a PAPI transition, the home marina's (appended after the airfield's at
+   * construction) when a beacon flashes or the marina is culled. Uploads the
+   * whole colour buffer, as `setColors` does, from the same persistent array.
+   */
+  setColorRange(
+    start: number,
+    colours: readonly (readonly [number, number, number])[],
+  ): void {
+    if (start < 0 || start + colours.length > this.fixtureCount) {
+      throw new RangeError(
+        `light-point colour update [${start}, ${start + colours.length}) is outside `
+        + `the ${this.fixtureCount} home fixtures`,
+      );
+    }
+    if (colours.length === 0) return;
+    const buffer = this.colourBuffer;
+    for (let index = 0; index < colours.length; index += 1) {
+      const colour = colours[index]!;
+      for (let corner = 0; corner < 4; corner += 1) {
+        const vertex = (start + index) * 4 + corner;
+        buffer[vertex * 3] = colour[0];
+        buffer[vertex * 3 + 1] = colour[1];
+        buffer[vertex * 3 + 2] = colour[2];
+      }
+    }
+    this.mesh.updateVerticesData("lightColor", buffer, false, false);
+  }
+
+  /**
    * Per-frame haze binding, resolved once by the renderer for every consumer.
    * Mirrors `HydrologySystem.setAerialPerspective` exactly; a second call
    * shape would be a second integration point for one owned include.

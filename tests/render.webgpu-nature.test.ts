@@ -38,6 +38,7 @@ import {
   shouldUpdateOceanCascade,
   resolveSpectralOceanConfig,
 } from "../src/render/webgpu/nature/OceanConfig";
+import { oceanSpectrumParameters } from "../src/sim/water/spectrum";
 import {
   buildNatureBindGroupLayoutEntries,
   computeDispatch2D,
@@ -211,6 +212,14 @@ describe("spectral ocean foundations", () => {
     expect(initView.getUint32(8, true)).toBe(1);
     expect(initView.getFloat32(16, true)).toBe(256);
     expect(initView.getFloat32(32, true)).toBeCloseTo(config.windDirection[0], 6);
+    // D1: the fetch and energy caps travel in the uniform.
+    const calm = resolveSpectralOceanConfig({ resolution: 128, windSpeedMetersPerSecond: 4 });
+    const calmView = new DataView(packOceanInitializationUniforms(calm, 1));
+    const calmSpectrum = oceanSpectrumParameters(calm, 1);
+    expect(calmSpectrum.fetchLength).toBeLessThan(calm.fetchLengthMeters);
+    expect(calmSpectrum.spectrumScale).toBeLessThan(calm.cascades[1]!.spectrumScale);
+    expect(calmView.getFloat32(28, true)).toBe(Math.fround(calmSpectrum.fetchLength));
+    expect(calmView.getFloat32(40, true)).toBe(Math.fround(calmSpectrum.spectrumScale));
 
     const evolution = packOceanEvolutionUniforms(config, 2, 12.5);
     expect(evolution.byteLength).toBe(32);

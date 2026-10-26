@@ -57,7 +57,8 @@ import {
   type SurfaceVehicleSimulator,
   type SurfaceVehicleSpawn,
 } from "@/src/sim/surface";
-import { CalmWaterSurface } from "@/src/sim/water";
+import { CalmWaterSurface, createSeaTwin, resolveSeaSpectrumConfig, SeaTwin } from "@/src/sim/water";
+import { homeMarina } from "@/src/world/marina";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
@@ -239,9 +240,15 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   disengageAutoland();
   controls = { ...DEFAULT_CONTROLS };
   surfaceControls.boat = { ...NEUTRAL_BOAT_CONTROLS };
-  // The shared base's water is still water at sea level over the worker's own
-  // bed authority; the wave twin replaces it behind the same interface.
-  surfaceEnvironment.water = new CalmWaterSurface(world?.seaLevel ?? 0, terrainHeightSample);
+  // The sea the renderer draws, from the same spectrum, seed and weather,
+  // calmed inside the home marina's basin, over the worker's own bed.
+  if (world) {
+    const sea = createSeaTwin(world, weather, terrainHeightSample);
+    sea.setShelter([homeMarina(world).shelter]);
+    surfaceEnvironment.water = sea;
+  } else {
+    surfaceEnvironment.water = new CalmWaterSurface(0, terrainHeightSample);
+  }
   surface = createSurfaceSimulator(kind, spawn);
   harbour = surface instanceof BoatSimulator && world ? new MarinaHarbour(world, surface) : null;
   if (harbour && spawn.moored && world) harbour.makeFastAtStart(world);
@@ -269,7 +276,7 @@ function stepSurface(active: SurfaceVehicleSimulator): void {
   surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
   active.setControls(surfaceControls);
   active.setEnvironment(surfaceEnvironment);
-  harbour?.beforeStep(surfaceControls.boat, mode === "scenic", surfaceEnvironment.water);
+  harbour?.beforeStep(surfaceControls.boat, mode === "scenic", surfaceEnvironment);
   active.step(FIXED_TIME_STEP);
   harbour?.afterStep();
 }
@@ -720,7 +727,13 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       }
       mode = command.mode;
     }
-    else if (command.type === "weather") weather = command.weather;
+    else if (command.type === "weather") {
+      weather = command.weather;
+      // The sea state follows the weather (D2): the twin rebuilds its spectrum.
+      if (world && surfaceEnvironment.water instanceof SeaTwin) {
+        surfaceEnvironment.water.setConfig(resolveSeaSpectrumConfig(world, weather));
+      }
+    }
     else if (command.type === "attract") {
       attractMode = command.enabled;
       if (attractMode) disengageAutoland();

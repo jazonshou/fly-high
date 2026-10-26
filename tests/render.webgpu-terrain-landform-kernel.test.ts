@@ -409,16 +409,18 @@ describe("the consumers of the landform stage", () => {
     }
   });
 
-  it("run natural -> landforms -> earthworks in the page bake, the CPU's order", () => {
+  it("run natural -> landforms -> infrastructure -> earthworks in the page bake, the CPU's order", () => {
     const body = functionBody(consumers[0][1], "pageHeightAt");
     const natural = body.indexOf("let natural = terrainNaturalHeight(localX, localZ);");
     const landformed = body.indexOf("let landformed = terrainLandforms(localX, localZ, natural);");
-    // The nearest airport's earthworks (the CPU's worldAirportAt), on the landformed height.
+    const built = body.indexOf("let built = terrainInfrastructure(localX, localZ, landformed);");
+    // The nearest airport's earthworks (the CPU's worldAirportAt), on the built height.
     const earthworks = body.indexOf("terrainRunwayEarthworksNearestHeight(");
     expect(natural).toBeGreaterThan(0);
     expect(landformed).toBeGreaterThan(natural);
-    expect(earthworks).toBeGreaterThan(landformed);
-    expect(body.slice(earthworks)).toMatch(/^terrainRunwayEarthworksNearestHeight\(\s*landformed,/u);
+    expect(built).toBeGreaterThan(landformed);
+    expect(earthworks).toBeGreaterThan(built);
+    expect(body.slice(earthworks)).toMatch(/^terrainRunwayEarthworksNearestHeight\(\s*built,/u);
   });
 
   it("draw landforms into the pyramid, and into the bed before the macro blend", () => {
@@ -428,6 +430,10 @@ describe("the consumers of the landform stage", () => {
     const landformed = bed.indexOf("var height = terrainLandforms(localX, localZ, natural);");
     expect(landformed).toBeGreaterThan(bed.indexOf("let natural = terrainNaturalHeight(localX, localZ);"));
     expect(landformed).toBeLessThan(bed.indexOf("bathymetryParams.water.w > 0.5"));
+    // The infrastructure stage on the landformed bed, before the macro blend.
+    const built = bed.indexOf("height = terrainInfrastructure(localX, localZ, height);");
+    expect(built).toBeGreaterThan(landformed);
+    expect(built).toBeLessThan(bed.indexOf("bathymetryParams.water.w > 0.5"));
   });
 
   it("give the splat bake the sand cover, behind the gate that reads no kernel", () => {
