@@ -64,6 +64,7 @@ import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
+import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
 import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
@@ -79,8 +80,11 @@ import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { homeMarina } from "@/src/world/marina";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
+import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
+import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
+import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
 import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
 import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
@@ -532,8 +536,13 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly surfaceVehicleSpec: SurfaceVehicleSpec | null;
   /** The surface vehicle's lamp washes, riding the aircraft's nav-wash slots. */
   private readonly surfaceVehicleWashes: readonly BoatWashLight[];
-  /** The spray a boat throws; null outside a boat session. */
+  /** The spray a boat throws and the wake it leaves; null outside a boat session. */
   private readonly boatSpray: BoatSpraySystem | null;
+  private readonly boatWake: BoatWakeSystem | null;
+  /** The sea kept out of the boat's hull, posed with it. */
+  private readonly boatHullClip: OceanHullClip | null;
+  /** The swell this tier does not draw, which the drawn boat is lowered by. */
+  private readonly boatHeave: UndrawnSeaHeave | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -819,6 +828,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       ? surfaceVehicleWashLights(surfaceVehicle.kind)
       : [];
     this.boatSpray = boatEffects?.spray ?? null;
+    this.boatWake = boatEffects?.wake ?? null;
+    this.boatHullClip = boatEffects?.hullClip ?? null;
+    this.boatHeave = boatEffects?.heave ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1313,6 +1325,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
+      // The home marina's calm basin, the one the worker's sea twin floats a
+      // hull on, so the drawn waves inside are the waves the boat rides.
+      ocean.setShelter([homeMarina(options.world).shelter]);
       const waterEnvironment = new WaterEnvironmentField(scene, options.world);
       cleanup.push(() => waterEnvironment.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
@@ -1467,8 +1482,19 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => steam.dispose());
       // Only with a surface vehicle, so an aircraft session builds and
       // compiles none of it. Before the readiness gate, as the steam is.
-      const boatEffects = surfaceVehicle ? createBoatEffects(scene, { profile, world: options.world }) : null;
-      if (boatEffects) cleanup.push(() => boatEffects.spray.dispose());
+      const boatEffects = surfaceVehicle
+        ? createBoatEffects(scene, {
+          profile,
+          world: options.world,
+          ocean,
+          atmosphere: atmosphere.snapshot,
+          sea: { world: options.world, weather: options.weather ?? "breezy" },
+        })
+        : null;
+      if (boatEffects) {
+        cleanup.push(() => boatEffects.spray.dispose());
+        cleanup.push(() => boatEffects.wake.dispose());
+      }
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -1916,6 +1942,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = reducedMotion;
   }
 
+  /**
+   * The marina's calm basins (boats): the drawn waves inside are scaled down
+   * exactly as the sea twin scales the waves a hull floats on. Pass the world's
+   * marina shelter ellipses; none is the open sea.
+   */
+  setSeaShelter(ellipses: readonly SeaShelterEllipse[]): void {
+    this.ocean.setShelter(ellipses);
+  }
+
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
     if (!this.atmosphereTracker.update(clock, weather)) return;
     this.environmentState = resolveEnvironmentState({
@@ -1947,6 +1982,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setWindSpeed(seaSpectrumWindSpeed(this.worldDefinition, weather));
+    this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
+    this.boatHeave?.setWeather(weather);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
@@ -1965,7 +2002,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!finiteState(state)) throw new Error("The simulation produced a non-finite render state");
     const started = performance.now();
     this.captureFrameInterval(started);
-    this.currentState = state;
+    this.currentState = this.presentedState(state);
     this.currentDeltaSeconds = Math.max(1 / 300, Math.min(0.1, deltaSeconds));
     this.frameIndex += 1;
     this.originShifted = this.updateFloatingOrigin(state);
@@ -2663,6 +2700,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.clouds.dispose(),
       () => this.steam.dispose(),
       () => this.boatSpray?.dispose(),
+      () => this.boatWake?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -2718,6 +2756,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           this.ocean.setWaterEnvironmentField(this.waterEnvironment);
         }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
+        // The wake lies on the waves this frame's sea is drawn with.
+        this.boatWake?.bindOcean();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -2969,6 +3009,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // simulationTime keeps the plume capture-deterministic (Z-1).
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
     this.boatSpray?.update(state);
+    this.boatWake?.update(state);
     this.updateAerialPerspective();
   }
 
@@ -3093,6 +3134,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.lightPoints.setAerialPerspective(binding);
     this.steam.setAerialPerspective(binding);
     this.boatSpray?.setAerialPerspective(binding);
+    this.boatWake?.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.
@@ -3129,6 +3171,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     );
     this.surfaceVehicle?.root.setEnabled(active && !this.viewerMode);
     this.surfaceVehicle?.setCockpitView(cockpit);
+    // The sea fills the hull's footprint again while the boat is away.
+    if (!active) this.boatHullClip?.clearPose();
     // A different vehicle somewhere else: the rig's offsets and the frame
     // graph's history both belong to the one that was there before.
     this.cutCamera();
@@ -3141,6 +3185,23 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * is not there. The boat's sidelight washes take over the aircraft's two
    * nav-wash slots (`boatWashLights` has why); every other slot goes dark.
    */
+  /**
+   * The state everything that presents the frame reads. A boat rides the sea
+   * twin's every cascade; on a tier that draws fewer it is drawn lowered by
+   * the swell the tier leaves out (`UndrawnSeaHeave`), so its hull, spray,
+   * hull clip and the camera that follows it sit on the sea on screen.
+   */
+  private presentedState(state: FlightVisualState): FlightVisualState {
+    const heave = this.boatHeave;
+    if (!heave?.active || state.vehicle?.kind !== "boat") return state;
+    const { x, y, z, w } = state.orientation;
+    // The bow's heading, forward = (sin h, cos h): body +X turned by the orientation.
+    const heading = Math.atan2(1 - 2 * (y * y + z * z), 2 * (x * z - w * y));
+    const lowered = heave.heaveAt(state.position.x, state.position.z, heading, state.simulationTime);
+    if (lowered === 0) return state;
+    return { ...state, position: { x: state.position.x, y: state.position.y - lowered, z: state.position.z } };
+  }
+
   private poseSurfaceVehicle(state: FlightVisualState, visual: VehicleVisual): void {
     visual.root.position.set(
       state.position.x - this.originX,
@@ -3148,6 +3209,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       state.position.z - this.originZ,
     );
     visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+    this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
     // The boat's lamp law, from the observer's bearing as the aircraft's is.
     const toCamera = this.camera.position.subtract(visual.root.position);
@@ -3682,6 +3744,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.setFloatingOrigin(this.originX, this.originZ);
     this.marina.setFloatingOrigin(this.originX, this.originZ);
     this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
+    this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -3728,6 +3791,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // compiling at the switch rather than at load.
     this.steam.setMaxWisps(this.profile.volcanicSteamMaxWisps);
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
+    this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
+    this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;

@@ -60,7 +60,7 @@ import {
   type ShotPlacement,
   type TemporalStability,
 } from "../../scripts/perf-capture.mts";
-import { resolveShotPlacement } from "./shotPlacement";
+import { boatShotState, resolveShotPlacement } from "./shotPlacement";
 
 /**
  * 1A-1c, rebuilt by Gate 2Z — the perf-capture driver. Boots the real
@@ -604,6 +604,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
     // canonical shot has one) is a world boundary too, keyed by their JSON;
     // null is the natural world.
     let activeForcedKey: string | null = null;
+    // Boat shots build the renderer with the speedboat, behind the same boundary.
+    let activeBoat = false;
     let world = createWorld(PERF_CAPTURE_SEED);
     let airportX = world.airport?.centerX ?? 0;
     let airportZ = world.airport?.centerZ ?? 0;
@@ -646,8 +648,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // the eye on the centreline. The gameplay cockpit is now 75 degrees from
       // the left seat, and they must stay comparable with their baselines, so
       // this harness renders them with the previous rig. It is the ONLY caller
-      // of the override (tests/render.cockpit-rig.test.ts scans for that).
-      cockpitRigOverride: PERF_COCKPIT_RIG,
+      // of the override (tests/render.cockpit-rig.test.ts scans for that). A
+      // boat shot's helm view is the gameplay one: no aircraft shot moves.
+      ...(activeBoat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
       ...(world.airport ? { runway: world.airport } : {}),
       ...(FAR_SWARD_OVERRIDE !== ""
         ? { terrainFarSwardRead: FAR_SWARD_OVERRIDE as "off" | "cheap" | "soft" }
@@ -713,7 +716,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const shotForcedKey = shot.climateProvince === undefined && shot.landforms === undefined
         ? null
         : JSON.stringify({ climateProvince: shot.climateProvince ?? null, landforms: shot.landforms ?? null });
-      if (shotWorldEvolution !== activeWorldEvolution || shotForcedKey !== activeForcedKey) {
+      const shotBoat = shot.boat !== undefined;
+      if (
+        shotWorldEvolution !== activeWorldEvolution
+        || shotForcedKey !== activeForcedKey
+        || shotBoat !== activeBoat
+      ) {
         removeGpuUncapturedErrorListener?.();
         removeGpuUncapturedErrorListener = null;
         renderer.dispose();
@@ -726,6 +734,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         airportX = world.airport?.centerX ?? 0;
         airportZ = world.airport?.centerZ ?? 0;
         canvas = createCaptureCanvas();
+        activeBoat = shotBoat;
         renderer = await FlightRenderer.create(captureRendererOptions());
         removeGpuUncapturedErrorListener = renderer.addGpuUncapturedErrorListenerForCapture(
           (event) => gpuUncapturedErrors.push(serializeGpuUncapturedError(event)),
@@ -803,20 +812,22 @@ describe("perf capture (1A-1c / 2Z)", () => {
         : 0;
       const heading = headingVectorFromYaw(yawDegrees);
       const orientation = orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0);
-      const state: FlightVisualState = {
-        ...INITIAL_VISUAL_STATE,
-        position: { x: positionX, y: altitude, z: positionZ },
-        velocity: {
-          x: shot.airspeedMetersPerSecond * heading.x,
-          y: 0,
-          z: shot.airspeedMetersPerSecond * heading.z,
-        },
-        orientation,
-        airspeed: shot.airspeedMetersPerSecond,
-        altitude,
-        altitudeAgl: altitude - groundHeight,
-        simulationTime,
-      };
+      const state: FlightVisualState = shot.boat
+        ? boatShotState(world, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+        : {
+            ...INITIAL_VISUAL_STATE,
+            position: { x: positionX, y: altitude, z: positionZ },
+            velocity: {
+              x: shot.airspeedMetersPerSecond * heading.x,
+              y: 0,
+              z: shot.airspeedMetersPerSecond * heading.z,
+            },
+            orientation,
+            airspeed: shot.airspeedMetersPerSecond,
+            altitude,
+            altitudeAgl: altitude - groundHeight,
+            simulationTime,
+          };
       renderer.setCameraMode(shot.cameraMode);
 
       // Stream until the desired terrain pages are fully resident AND the
@@ -877,8 +888,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // was set; this is the field that says the camera moved.
       let observerFirstX: number | null = null;
       let observerFirstZ: number | null = null;
-      let observerLastX = positionX;
-      let observerLastZ = positionZ;
+      let observerLastX = state.position.x;
+      let observerLastZ = state.position.z;
       for (let frame = 0; frame < maxStreamingFrames; frame += 1) {
         simulationTime += 1 / 60;
         // Metres still to run. Zero once arrived, so every later frame — and
@@ -891,9 +902,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
           ? {
             ...state,
             position: {
-              x: positionX - heading.x * remaining,
-              y: altitude,
-              z: positionZ - heading.z * remaining,
+              x: state.position.x - heading.x * remaining,
+              y: state.position.y,
+              z: state.position.z - heading.z * remaining,
             },
           }
           : state;

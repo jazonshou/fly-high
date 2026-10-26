@@ -20,6 +20,7 @@ import {
   SPRAY_CLOCK_PERIOD_SECONDS,
   SPRAY_EMISSION_HZ,
   SPRAY_FLOATS_PER_DROPLET,
+  SPRAY_HELD_SECONDS,
   SPRAY_INSTANCE_CAPACITY,
   SPRAY_MAX_LIFETIME_SECONDS,
   SPRAY_REANCHOR_METERS,
@@ -222,6 +223,52 @@ describe("boat spray", () => {
     run(venting, 1, 60, boat({ ventilating: true, lever: 1, propellerImmersion: 0.3 }));
     expect(venting.birthCount).toBeGreaterThan(20);
     venting.dispose();
+  });
+
+  it("throws a held hull's spray in the hull's own frame, as a camera riding along sees it", () => {
+    const speed = 35 * KNOTS;
+    const wind = { windX: 3, windZ: -2 };
+    const held = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY, ...wind });
+    const moving = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY, ...wind });
+    for (let frame = 0; frame <= 90; frame += 1) {
+      const state = running(frame / 60, speed, PLANING);
+      // A pinned capture: the clock runs, the velocity says 35 kn, the hull stays put.
+      held.update({ ...state, position: { x: 0, y: 0.15, z: 40 } });
+      moving.update(state);
+    }
+    expect(moving.referenceVelocity).toEqual({ x: 0, z: 0 });
+    expect(held.referenceVelocity.x).toBeCloseTo(speed, 9);
+    // The air the droplets relax to is the wind the boat feels.
+    const windOf = (system: BoatSpraySystem) => (system as unknown as { windUniform: { x: number; z: number } }).windUniform;
+    expect(windOf(held).x).toBeCloseTo(3 - speed, 9);
+    expect(windOf(moving).x).toBeCloseTo(3, 9);
+
+    // The same lattice and the same draws, droplet for droplet: the held
+    // one's velocity is less the hull's, and it was born where the hull is.
+    expect(held.birthCount).toBe(moving.birthCount);
+    const a = held.instanceData!;
+    const b = moving.instanceData!;
+    let compared = 0;
+    // Both rings wrap alike, so slot for slot.
+    for (let droplet = 0; droplet < held.capacity; droplet += 1) {
+      const at = droplet * SPRAY_FLOATS_PER_DROPLET;
+      const birth = a[at + 3]!;
+      if (a[at + 7] === 0 || birth < SPRAY_HELD_SECONDS + 2 / 60) continue;
+      compared += 1;
+      expect(b[at + 3]).toBe(birth);
+      expect(a[at]!).toBeCloseTo(b[at]! - speed * birth, 3);
+      expect(a[at + 2]!).toBeCloseTo(b[at + 2]!, 4);
+      expect(a[at + 4]!).toBeCloseTo(b[at + 4]! - speed, 4);
+      expect(a[at + 5]!).toBeCloseTo(b[at + 5]!, 4);
+      expect(a[at + 6]!).toBeCloseTo(b[at + 6]!, 4);
+    }
+    expect(compared).toBeGreaterThan(100);
+
+    // Moving again: back in the world's frame on the next frame.
+    held.update(running(91 / 60, speed, PLANING));
+    expect(held.referenceVelocity).toEqual({ x: 0, z: 0 });
+    held.dispose();
+    moving.dispose();
   });
 
   it("is deterministic: the same spray at 30, 60 and 144 frames a second", () => {

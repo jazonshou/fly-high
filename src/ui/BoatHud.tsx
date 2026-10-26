@@ -22,22 +22,37 @@ const GEAR_LABELS: Record<BoatVisualState["gear"], string> = {
 /** Under the keel, the sounder warns. */
 export const BOAT_SHALLOW_WARNING_METERS = 1.5;
 
+/** A small boat's sounder reads to about this; deeper, it shows DEEP rather than a sea floor it cannot see. */
+export const BOAT_SOUNDER_RANGE_METERS = 200;
+
+/**
+ * A reading as a chartplotter shows it: a decimal while it is small enough
+ * for the decimal to matter (alongside, over a shoal), whole units above.
+ */
+export function formatBoatReading(value: number): string {
+  const reading = Number.isFinite(value) ? Math.max(0, value) : 0;
+  return reading < 10 ? (Math.floor(reading * 10) / 10).toFixed(1) : Math.round(reading).toString();
+}
+
 /**
  * The boat's panel, in the aircraft HUD's visual language: speed through the
- * water on the left tape (knots in aviation units, km/h in metric), heading,
- * engine, gear, trim and depth, and the boat's own states. The shared base's
- * first cut; the boat-presentation work owns its content from here.
+ * water on the left tape (knots in aviation units, km/h in metric), the
+ * sounder's depth under the keel on the right (feet or metres, DEEP past its
+ * range), heading, engine, gear, trim and tabs, and the boat's own states.
  */
 export function BoatHud({ state, boat, mode, flightMode, units, cameraLabel, seedLabel }: BoatHudProps) {
   const spec = surfaceVehicleSpec("speedboat");
   const aviation = units === "aviation";
   const speed = aviation ? boat.speedThroughWater * 1.94384 : boat.speedThroughWater * 3.6;
   const speedUnit = aviation ? "KN" : "KM/H";
+  const deep = !(boat.depthUnderKeel <= BOAT_SOUNDER_RANGE_METERS);
   const depth = aviation ? boat.depthUnderKeel * 3.28084 : boat.depthUnderKeel;
   const depthUnit = aviation ? "FT" : "M";
   const controlModeLabel =
     flightMode === "unassisted" ? "DIRECT CONTROLS" : flightMode === "pilot" ? "PILOT DAMPING" : "SCENIC ASSIST";
   const shallow = !boat.moored && boat.depthUnderKeel < BOAT_SHALLOW_WARNING_METERS;
+  // A damaged or capsized boat shows that alone: the rest describe a boat under way.
+  const upright = !state.crashed && !boat.capsized;
 
   return (
     <div className={`flight-hud flight-hud--${mode} flight-hud--boat`} aria-live="off">
@@ -51,8 +66,8 @@ export function BoatHud({ state, boat, mode, flightMode, units, cameraLabel, see
 
       {mode === "full" ? (
         <>
-          <MetricTape label="SPD" value={Math.max(0, Math.round(speed)).toString()} unit={speedUnit} side="left" />
-          <MetricTape label="DEPTH" value={Math.max(0, depth).toFixed(1)} unit={depthUnit} side="right" />
+          <MetricTape label="SPD" value={formatBoatReading(speed)} unit={speedUnit} side="left" />
+          <MetricTape label="DEPTH" value={deep ? "DEEP" : formatBoatReading(depth)} unit={deep ? "" : depthUnit} side="right" />
         </>
       ) : null}
 
@@ -65,9 +80,9 @@ export function BoatHud({ state, boat, mode, flightMode, units, cameraLabel, see
 
       {state.crashed ? <div className="flight-alert flight-alert--danger">BOAT DAMAGED · PRESS R</div> : null}
       {!state.crashed && boat.capsized ? <div className="flight-alert flight-alert--danger">CAPSIZED · PRESS R</div> : null}
-      {!state.crashed && boat.moored ? <div className="flight-alert flight-alert--warning">MOORED · THROTTLE OR M TO CAST OFF</div> : null}
-      {!state.crashed && shallow ? <div className="flight-alert flight-alert--warning">SHALLOW</div> : null}
-      {!state.crashed && boat.ventilating ? <div className="flight-alert flight-alert--warning">VENTILATING</div> : null}
+      {upright && boat.moored ? <div className="flight-alert flight-alert--warning">MOORED · THROTTLE OR M TO CAST OFF</div> : null}
+      {upright && shallow ? <div className="flight-alert flight-alert--warning">SHALLOW</div> : null}
+      {upright && boat.ventilating ? <div className="flight-alert flight-alert--warning">VENTILATING</div> : null}
 
       <div className="flight-hud__bottom">
         {mode === "full" ? (

@@ -403,6 +403,16 @@ export interface WebGpuQualityProfile {
    */
   readonly boatSprayParticleCap: number;
   /**
+   * Boats: how many seconds of wake the boat leaves behind it
+   * (`BoatWakeSystem`). The trail is one instanced draw of a fixed ring at
+   * every length; a longer trail spaces its points further apart at speed and
+   * reaches further back. Boat sessions only: an aircraft session builds no
+   * wake at any tier.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly boatWakeTrailSeconds: number;
+  /**
    * The home marina's near meshes (decks, pontoons, walls and buildings, the
    * piles and posts, the moored boats) cast sun shadows: three thin-instanced
    * casters, 2 draws each at two cascades, and only while the camera is
@@ -519,6 +529,7 @@ function resolveBaseQualityProfile(
       activeAnimalBudget: 16,
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
+      boatWakeTrailSeconds: 12,
       marinaCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
@@ -625,6 +636,7 @@ function resolveBaseQualityProfile(
       activeAnimalBudget: 48,
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
+      boatWakeTrailSeconds: 24,
       marinaCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
@@ -720,6 +732,7 @@ function resolveBaseQualityProfile(
       activeAnimalBudget: 128,
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
+      boatWakeTrailSeconds: 40,
       marinaCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
@@ -817,6 +830,7 @@ function resolveBaseQualityProfile(
     activeAnimalBudget: 128,
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,
+    boatWakeTrailSeconds: 40,
     marinaCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,

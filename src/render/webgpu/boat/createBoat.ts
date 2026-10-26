@@ -53,7 +53,8 @@ import { outboardSurfaces, PROPELLER, propellerSurfaces } from "./boatOutboard";
  * DRAWS: at most six, in every view.
  *   1. `boat-body`: hull, deck, seats, consoles, windscreen frame, fittings
  *      (one atlas material, opaque, casts the boat's shadow);
- *   2. `boat-glass`: the windscreen, in the aircraft glazing material;
+ *   2. `boat-glass`: the windscreen, smoked acrylic blended over what is
+ *      behind it (not the aircraft glazing's refraction, see `glass`);
  *   3. `boat-outboard`: cowl, leg, plate, gearcase, skeg (tilts with trim,
  *      turns with steer);
  *   4. `boat-propeller` OR `boat-propeller-disc`: three helical blades below
@@ -222,19 +223,16 @@ export function createWebGpuBoat(scene: Scene, kind: SurfaceVehicleKind): BoatVi
   // The dash markings' daylight brightness; the glow law multiplies it at night.
   body.emissiveIntensity = 0.35;
 
+  // Smoked acrylic, blended over the scene behind it. Not the aircraft
+  // glazing's refraction: that refracts the sky probe, not the scene, and the
+  // helm looks DOWN through the screen at the foredeck, where the probe's
+  // lower half drew the glass an opaque navy.
   const glass = build.material(`${kind}-glass`, 0x163845, {
     roughness: 0.045,
     metallic: 0,
-    alpha: 0.3,
+    alpha: 0.26,
     doubleSided: true,
     clearCoat: { intensity: 1, roughness: 0.025, indexOfRefraction: 1.5 },
-    transmission: {
-      indexOfRefraction: 1.52,
-      minimumThickness: 0.004,
-      maximumThickness: 0.008,
-      tintColor: 0xb7e5ed,
-      tintColorAtDistance: 2.4,
-    },
   });
   // One curved sheet, so nothing of it sorts against itself: no pre-pass,
   // as the trainer's cabin glazing (see its note).
