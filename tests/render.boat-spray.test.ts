@@ -96,7 +96,8 @@ const PLANING = boat({
   planing: 1,
   trim: 0.4,
   trimAngle: 0.07,
-  sprayRoots: chineRoots(8, 16),
+  // The outer chine of a hard turn: a full sheet from every root.
+  sprayRoots: chineRoots(8, 30),
   sprayRootCount: 8,
 });
 
@@ -194,6 +195,25 @@ describe("boat spray", () => {
     run(system, SPRAY_MAX_LIFETIME_SECONDS + 0.2, 60, idle, 2);
     expect(system.liveCount()).toBe(0);
     expect(system.drawing).toBe(false);
+    system.dispose();
+  });
+
+  it("keeps drawing on a fixed-step clock, whose every frame lands on a tick", () => {
+    // Summed 1/60 steps, as the simulation clock runs: each frame births the
+    // tick it lands on a rounding error after its own clock.
+    const system = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    let time = 30;
+    let onTick = 0;
+    for (let frame = 0; frame < 120; frame += 1) {
+      time += 1 / 60;
+      system.update(running(time, 35 * KNOTS, PLANING));
+      if (sprayClock(Math.floor(time * SPRAY_EMISSION_HZ + 1e-6) / SPRAY_EMISSION_HZ) > sprayClock(time)) onTick += 1;
+      if (frame > 0) expect(system.drawing, `frame ${frame}`).toBe(true);
+    }
+    expect(onTick).toBeGreaterThan(0);
+    expect(system.liveCount()).toBeGreaterThan(100);
+    // Newborn, not 960 s old.
+    expect(sprayAge(30, 30 + 1e-9)).toBe(0);
     system.dispose();
   });
 
@@ -304,14 +324,47 @@ describe("boat spray", () => {
     system.dispose();
   });
 
+  it("throws light whiskers running straight and a full sheet off the outer chine of a hard turn", () => {
+    // Every root of a hull running straight at 35 kn jets about 21 m/s; in a
+    // hard turn the outer chine's jet about 30 and the inner's about 17.
+    const sheets = (roots: number[]): BoatSpraySystem => {
+      const system = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+      run(system, 1, 60, boat({ planing: 0, sprayRoots: roots, sprayRootCount: roots.length / 4 }));
+      return system;
+    };
+    const straight = sheets(chineRoots(MAX_BOAT_SPRAY_ROOTS, 21));
+    const turn = chineRoots(MAX_BOAT_SPRAY_ROOTS, 30);
+    for (let root = 1; root < MAX_BOAT_SPRAY_ROOTS; root += 2) turn[root * 4 + 3] = 17;
+    const turning = sheets(turn);
+    expect(straight.birthCount).toBeGreaterThan(0);
+    expect(turning.birthCount).toBeGreaterThan(1.8 * straight.birthCount);
+    // And the turn's sheet climbs higher: its droplets leave faster and steeper.
+    const climb = (system: BoatSpraySystem): number => {
+      const records = system.instanceData!;
+      let sum = 0;
+      let count = 0;
+      for (let droplet = 0; droplet < system.capacity; droplet += 1) {
+        const at = droplet * SPRAY_FLOATS_PER_DROPLET;
+        if (records[at + 7]! > 0 && records[at + 5]! > 0 && records[at + 8]! < 0.4) {
+          sum += records[at + 5]!;
+          count += 1;
+        }
+      }
+      return sum / Math.max(count, 1);
+    };
+    expect(climb(turning)).toBeGreaterThan(1.5 * climb(straight));
+    straight.dispose();
+    turning.dispose();
+  });
+
   it("folds the sheets of every root into one budget, whatever the root count", () => {
     const few = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
-    run(few, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(2, 16), sprayRootCount: 2 }));
+    run(few, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(2, 30), sprayRootCount: 2 }));
     const many = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
-    run(many, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(MAX_BOAT_SPRAY_ROOTS, 16), sprayRootCount: MAX_BOAT_SPRAY_ROOTS }));
+    run(many, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(MAX_BOAT_SPRAY_ROOTS, 30), sprayRootCount: MAX_BOAT_SPRAY_ROOTS }));
     expect(many.birthCount).toBeGreaterThan(few.birthCount);
-    // Never past the sheet share's steady-state rate.
-    expect(many.birthCount).toBeLessThanOrEqual(Math.ceil((SPRAY_BUDGET_SHARES.sheet * 1_024) / 1.2) + MAX_BOAT_SPRAY_ROOTS);
+    // Never past the sheet share's steady-state rate (a sheet droplet lives 0.9 s on average).
+    expect(many.birthCount).toBeLessThanOrEqual(Math.ceil((SPRAY_BUDGET_SHARES.sheet * 1_024) / 0.9) + MAX_BOAT_SPRAY_ROOTS);
     // Slow jets throw nothing.
     const slow = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
     run(slow, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(8, 2), sprayRootCount: 8 }));

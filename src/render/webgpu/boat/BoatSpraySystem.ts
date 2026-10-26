@@ -122,13 +122,21 @@ const BIRTH_LANE = 7;
 export const SPRAY_BUDGET_SHARES = Object.freeze({ sheet: 0.62, rooster: 0.26, mist: 0.1 });
 
 /** Mean lifetimes, seconds: rates are budget / lifetime. */
-const SHEET_LIFETIME = { min: 0.8, span: 0.8 };
+const SHEET_LIFETIME = { min: 0.6, span: 0.6 };
 const ROOSTER_LIFETIME = { min: 1.1, span: 1.0 };
 const MIST_LIFETIME = { min: 0.6, span: 0.6 };
 
-/** A sheet root emits nothing below this jet speed, m/s, and full rate from it plus `SHEET_JET_SPAN`. */
-export const SHEET_JET_THRESHOLD = 3;
-export const SHEET_JET_SPAN = 12;
+/**
+ * A sheet root emits nothing below this jet speed, m/s, and full rate from it
+ * plus `SHEET_JET_SPAN`, rising as the square. A hull running straight on the
+ * plane jets about 21 m/s at every root and its chines and spray rails turn
+ * most of that sheet down: light whiskers either side. The outer chine of a
+ * hard turn jets about 30 m/s and throws a full sheet.
+ */
+export const SHEET_JET_THRESHOLD = 14;
+export const SHEET_JET_SPAN = 14;
+/** Roots at full intensity that together take the whole sheet share. */
+export const SHEET_FULL_ROOTS = 8;
 /** The rooster tail rises once the hull is this far on the plane, and above this speed, m/s. */
 export const ROOSTER_PLANING_THRESHOLD = 0.55;
 export const ROOSTER_SPEED_THRESHOLD = 9;
@@ -149,10 +157,19 @@ export function sprayClock(simulationTimeSeconds: number): number {
   return wrapped < 0 ? wrapped + SPRAY_CLOCK_PERIOD_SECONDS : wrapped;
 }
 
-/** A droplet's age at `clock`, through the wrap. */
+/**
+ * How far a birth may sit AFTER the clock it is read at and still be newborn.
+ * The lattice floors `time * SPRAY_EMISSION_HZ` with an epsilon, so a frame
+ * that lands on a tick (every frame of a fixed-step clock) births that tick a
+ * rounding error after the frame's own clock. Read through the wrap, that
+ * newborn droplet was 960 s old: dead, and the mesh switched itself off.
+ */
+export const SPRAY_CLOCK_SLACK_SECONDS = 1e-3;
+
+/** A droplet's age at `clock`, through the wrap; zero for a birth a rounding error ahead. */
 export function sprayAge(clock: number, birthClock: number): number {
   const age = clock - birthClock;
-  return age < 0 ? age + SPRAY_CLOCK_PERIOD_SECONDS : age;
+  return age < -SPRAY_CLOCK_SLACK_SECONDS ? age + SPRAY_CLOCK_PERIOD_SECONDS : Math.max(age, 0);
 }
 
 /** One uniform draw in [0, 1) per (tick, source, droplet, lane). */
@@ -214,7 +231,7 @@ export function sampleSprayDroplet(
   out.age = age;
   out.life = life;
   const u = life > 0 ? age / life : 1;
-  out.sizeMeters = records[at + 8]! * (0.55 + 1.6 * u);
+  out.sizeMeters = records[at + 8]! * (0.6 + 1.1 * u);
   const below = smoothstep(-0.35, 0.05, out.y - records[at + 1]!);
   out.alpha = u >= 1 || life <= 0
     ? 0
@@ -545,14 +562,12 @@ export class BoatSpraySystem {
     // Sheets: the cap's sheet share, spread over the roots by jet intensity.
     const roots = Math.min(boat.sprayRootCount | 0, boat.sprayRoots.length >> 2, MAX_BOAT_SPRAY_ROOTS);
     let total = 0;
-    for (let root = 0; root < roots; root += 1) {
-      total += clamp01((boat.sprayRoots[root * 4 + 3]! - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
-    }
+    for (let root = 0; root < roots; root += 1) total += intensityOf(boat.sprayRoots[root * 4 + 3]!);
     const sheetRate = (SPRAY_BUDGET_SHARES.sheet * capScale) / (SHEET_LIFETIME.min + SHEET_LIFETIME.span / 2);
-    const perIntensity = total > 0 ? sheetRate / Math.max(total, 4) : 0;
+    const perIntensity = total > 0 ? sheetRate / Math.max(total, SHEET_FULL_ROOTS) : 0;
     for (let root = 0; root < roots; root += 1) {
       const jet = boat.sprayRoots[root * 4 + 3]!;
-      const intensity = clamp01((jet - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
+      const intensity = intensityOf(jet);
       const born = births(perIntensity * intensity * dt, tick, SOURCE_SHEET + root);
       for (let index = 0; index < born; index += 1) {
         this.birthSheet(state, boat, root, jet, tick, index, back, tickClock);
@@ -599,13 +614,15 @@ export class BoatSpraySystem {
     const r2 = unit(tick, source, index, 2);
     const r3 = unit(tick, source, index, 3);
     const r4 = unit(tick, source, index, 4);
-    // The sheet leaves the chine across the flow: mostly outboard and up,
-    // fanned by the draws so it reads as a sheet and not a jet.
+    // The sheet leaves the chine across the flow, outboard and a little up,
+    // fanned by the draws so it reads as a sheet and not a jet; the harder
+    // the jet, the higher it climbs past the spray rails.
+    const intensity = intensityOf(jet);
     const ax = -0.25 + 0.35 * (r0 - 0.5);
-    const ay = 0.45 + 0.35 * r1;
+    const ay = 0.12 + 0.4 * intensity + 0.2 * r1;
     const az = side * (0.85 - 0.2 * r1);
     const norm = 1 / Math.hypot(ax, ay, az);
-    const throwSpeed = jet * (0.4 + 0.3 * r2);
+    const throwSpeed = jet * (0.25 + 0.25 * r2);
     rotateBodyToWorld(state.orientation, ax * norm * throwSpeed, ay * norm * throwSpeed, az * norm * throwSpeed, this.scratchVelocity);
     // Water leaving the hull keeps part of the hull's own motion.
     const carry = 0.55 + 0.2 * r3;
@@ -619,10 +636,10 @@ export class BoatSpraySystem {
       state.position.z + this.scratch.z + (state.velocity.z - this.frame.z) * back,
       tickClock,
       SHEET_LIFETIME.min + SHEET_LIFETIME.span * r4,
-      0.22 + 0.3 * r0,
+      0.14 + 0.22 * r0,
       r3,
       1.1 + 0.8 * r2,
-      0.34 + 0.26 * intensityOf(jet),
+      0.2 + 0.3 * intensity,
     );
   }
 
@@ -676,7 +693,7 @@ export class BoatSpraySystem {
       state.position.z + this.scratch.z + (state.velocity.z - this.frame.z) * back,
       tickClock,
       life.min + life.span * r4,
-      rooster ? 0.3 + 0.35 * r3 : 0.2 + 0.25 * r3,
+      rooster ? 0.24 + 0.26 * r3 : 0.2 + 0.25 * r3,
       r2,
       rooster ? 0.9 + 0.5 * r1 : 2.2 + r1,
       rooster ? 0.3 : 0.26,
@@ -805,8 +822,10 @@ export class BoatSpraySystem {
   }
 }
 
+/** A root's sheet intensity from its jet speed (`SHEET_JET_THRESHOLD`). */
 function intensityOf(jet: number): number {
-  return clamp01((jet - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
+  const ramp = clamp01((jet - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
+  return ramp * ramp;
 }
 
 function wgslFloat(value: number): string {
@@ -848,6 +867,7 @@ uniform spraySky: vec3f;
 ${AERIAL_PERSPECTIVE_WGSL}
 
 const SPRAY_PERIOD: f32 = ${wgslFloat(SPRAY_CLOCK_PERIOD_SECONDS)};
+const SPRAY_CLOCK_SLACK: f32 = ${wgslFloat(SPRAY_CLOCK_SLACK_SECONDS)};
 const SPRAY_GRAVITY: f32 = ${wgslFloat(GRAVITY)};
 const SPRAY_PI: f32 = 3.14159265359;
 const SPRAY_ALBEDO: f32 = ${wgslFloat(SPRAY_ALBEDO)};
@@ -863,7 +883,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
 
   // sampleSprayDroplet is this block's CPU twin; change both or neither.
   var age = uniforms.sprayWind.w - recordA.w;
-  age = select(age, age + SPRAY_PERIOD, age < 0.0);
+  age = select(max(age, 0.0), age + SPRAY_PERIOD, age < -SPRAY_CLOCK_SLACK);
   let life = recordB.w;
   let u = select(1.0, age / max(life, 0.0001), life > 0.0);
   let k = max(recordC.z, 0.05);
@@ -876,7 +896,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let centre = uniforms.sprayAnchor + local;
   let velocity = (recordB.xyz - wind + vec3f(0.0, SPRAY_GRAVITY / k, 0.0)) * decay
     + wind - vec3f(0.0, SPRAY_GRAVITY / k, 0.0);
-  let size = recordC.x * (0.55 + 1.6 * u);
+  let size = recordC.x * (0.6 + 1.1 * u);
 
   let toCentre = centre - uniforms.cameraPosition;
   let distanceMeters = max(length(toCentre), 0.001);
