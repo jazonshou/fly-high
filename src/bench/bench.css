@@ -663,6 +663,16 @@ td.bench-label--did-not-run {
   white-space: nowrap;
 }
 
+/* "All numbers" is wider than the panel at any width: its Quality column stays in view as it scrolls. */
+.bench-details .bench-table tbody th,
+.bench-details .bench-table thead th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bench-surface);
+  box-shadow: inset -1px 0 0 rgba(238, 247, 245, 0.1);
+}
+
 .bench-warnings {
   display: grid;
   gap: 6px;

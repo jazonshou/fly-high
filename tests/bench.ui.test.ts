@@ -649,6 +649,16 @@ describe("bench.css", () => {
     expect(/\.bench-panel \{[^}]*overflow: auto;/.exec(css)).not.toBeNull();
   });
 
+  it("keeps All numbers' Quality column in view while the table scrolls sideways", () => {
+    const rule = /\.bench-details \.bench-table tbody th,\s*\.bench-details \.bench-table thead th:first-child \{([^}]*)\}/
+      .exec(css)?.[1] ?? "";
+    expect(rule).toContain("position: sticky;");
+    expect(rule).toContain("left: 0;");
+    // Opaque, so the numbers scroll under it, not through it.
+    expect(rule).toContain("background: var(--bench-surface);");
+    expect(/\.bench-details \{[^}]*background: var\(--bench-surface\);/.exec(css)).not.toBeNull();
+  });
+
   it("holds the intro's footer at the panel's foot, reaching past the panel's padding", () => {
     const footer = /\.bench-panel__footer \{([^}]*)\}/.exec(css)?.[1] ?? "";
     expect(footer).toContain("position: sticky;");
