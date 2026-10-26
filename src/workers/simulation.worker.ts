@@ -58,6 +58,8 @@ import {
   type SurfaceVehicleSpawn,
 } from "@/src/sim/surface";
 import { CalmWaterSurface } from "@/src/sim/water";
+import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
+import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type {
@@ -160,6 +162,8 @@ const AUTOLAND_OVERRIDE_STICK = 0.5;
  */
 let surfaceVehicle: SurfaceVehicleKind | null = null;
 let surface: SurfaceVehicleSimulator | null = null;
+/** The home marina's structures, lines and contact, for a boat that has them. */
+let harbour: MarinaHarbour | null = null;
 const surfaceControls: SurfaceVehicleControls = {
   assist: "scenic",
   boat: { ...NEUTRAL_BOAT_CONTROLS },
@@ -239,6 +243,8 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   // bed authority; the wave twin replaces it behind the same interface.
   surfaceEnvironment.water = new CalmWaterSurface(world?.seaLevel ?? 0, terrainHeightSample);
   surface = createSurfaceSimulator(kind, spawn);
+  harbour = surface instanceof BoatSimulator && world ? new MarinaHarbour(world, surface) : null;
+  if (harbour && spawn.moored && world) harbour.makeFastAtStart(world);
   accumulator = 0;
   lastTime = performance.now();
   lastSnapshotTime = 0;
@@ -263,7 +269,9 @@ function stepSurface(active: SurfaceVehicleSimulator): void {
   surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
   active.setControls(surfaceControls);
   active.setEnvironment(surfaceEnvironment);
+  harbour?.beforeStep(surfaceControls.boat, mode === "scenic", surfaceEnvironment.water);
   active.step(FIXED_TIME_STEP);
+  harbour?.afterStep();
 }
 
 function prepareAutolandInput(sim: FlightSimulator): typeof autolandInput {
@@ -352,6 +360,7 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
     return;
   }
   surface = null;
+  harbour = null;
   installSimulation(
     kind,
     createSimulationSpawn(world, kind, airborneStartAgl, aircraftKind),
@@ -673,6 +682,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       attractMode = command.attractMode;
       surfaceVehicle = command.surfaceVehicle;
       surface = null;
+      harbour = null;
       airborneStartAgl = normalizeAirborneStartAgl(command.airborneStartAgl);
       reset(attractMode ? "airborne" : command.spawn, airborneStartAgl);
       return;
@@ -767,6 +777,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // airborne state without the menu controller that is meant to own it.
       attractMode = true;
       surface = null;
+      harbour = null;
       reset("airborne", command.airborneStartAgl);
     } else if (command.type === "pause") {
       paused = command.paused;
