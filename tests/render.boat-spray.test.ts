@@ -1,6 +1,8 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import type { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -28,6 +30,8 @@ import {
   sprayClock,
   type BoatSprayGeometry,
 } from "../src/render/webgpu/boat/BoatSpraySystem";
+import type { AtmosphereSnapshot } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { waterDownwellingRadiance } from "../src/render/webgpu/water/WaterShaders";
 import { WATER_RENDERING_GROUP_ID } from "../src/render/webgpu/core/RenderingGroups";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 
@@ -361,9 +365,51 @@ describe("boat spray", () => {
     const material = mesh.material as ShaderMaterial;
     expect(material.alphaMode).toBe(Constants.ALPHA_PREMULTIPLIED_PORTERDUFF);
     expect(material.disableDepthWrite).toBe(true);
-    expect(BOAT_SPRAY_VERTEX_WGSL).toContain("aerialSunTransmittanceAt");
     expect(BOAT_SPRAY_VERTEX_WGSL).toContain("aerialPerspective(");
     expect(BOAT_SPRAY_FRAGMENT_WGSL).toContain("discard");
     system.dispose();
+  });
+});
+
+describe("the light on the spray", () => {
+  it("is the sea's own sun and sky, split so the sun lights the clump and not a level surface", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const system = new BoatSpraySystem(scene, { cap: 256, geometry: GEOMETRY });
+    const atmosphere = {
+      sunDirection: new Vector3(0.4, 0.5, 0.77).normalize(),
+      sunColor: new Color3(1, 0.86, 0.7),
+      sunIlluminanceNormalized: 0.62,
+      skyZenith: new Color3(0.2, 0.36, 0.7),
+      skyHorizon: new Color3(0.86, 0.66, 0.5),
+      skylightIlluminanceNormalized: 0.7,
+      windDirection: new Vector2(0, 1),
+    } as unknown as AtmosphereSnapshot;
+    system.setAtmosphere(atmosphere);
+    const downwelling = waterDownwellingRadiance(
+      [0.62, 0.86 * 0.62, 0.7 * 0.62],
+      [0.2, 0.36, 0.7],
+      [0.86, 0.66, 0.5],
+      0.7,
+      atmosphere.sunDirection.y,
+      1,
+    );
+    const { sun, sky } = system.lighting;
+    const elevation = atmosphere.sunDirection.y;
+    expect(sun.x * elevation + sky.x).toBeCloseTo(downwelling[0], 6);
+    expect(sun.y * elevation + sky.y).toBeCloseTo(downwelling[1], 6);
+    expect(sun.z * elevation + sky.z).toBeCloseTo(downwelling[2], 6);
+    // The sun's share alone is the sun's colour: the sky's is the sky's.
+    expect(sun.y / sun.x).toBeCloseTo(0.86, 6);
+    expect(sky.z).toBeGreaterThan(0);
+    // The shader takes that and nothing else for its light: no second sun.
+    const body = BOAT_SPRAY_VERTEX_WGSL.slice(BOAT_SPRAY_VERTEX_WGSL.indexOf("@vertex"));
+    expect(body).toContain("uniforms.spraySun");
+    expect(body).toContain("uniforms.spraySky");
+    expect(body).not.toContain("aerialSunRadiance");
+    expect(body).not.toContain("skyRadiance(");
+    system.dispose();
+    scene.dispose();
+    engine.dispose();
   });
 });

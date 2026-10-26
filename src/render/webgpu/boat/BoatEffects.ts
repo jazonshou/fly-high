@@ -96,7 +96,10 @@ export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): Bo
     seaLevel: options.world.seaLevel,
     ocean: options.ocean,
   });
-  if (options.atmosphere) wake.setAtmosphere(options.atmosphere);
+  if (options.atmosphere) {
+    wake.setAtmosphere(options.atmosphere);
+    spray.setAtmosphere(options.atmosphere);
+  }
   const hullClip = new OceanHullClip();
   options.ocean.setHullClip(hullClip);
   const heave = options.sea

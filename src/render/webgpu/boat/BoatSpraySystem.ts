@@ -15,10 +15,15 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   keepOpaqueDepthForRenderingGroup,
   WATER_RENDERING_GROUP_ID,
 } from "@/src/render/webgpu/core/RenderingGroups";
+import {
+  WATER_SKY_IRRADIANCE_FRACTION,
+  WATER_SUN_IRRADIANCE_SCALE,
+} from "@/src/render/webgpu/water/WaterShaders";
 import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
 
 /**
@@ -48,12 +53,15 @@ import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
  * included, is a hash of (tick, source, droplet), so a pinned capture sees
  * the same spray at any frame rate.
  *
- * LIGHTING is the volcanic steam's construction: an optically thin sample of
- * the shared aerial include, sun through `aerialSunTransmittanceAt` with a
- * forward-peaked droplet phase plus the sky ambient, hazed by
- * `aerialPerspective`. Droplets scatter forward far more than steam does, so
- * spray thrown towards a low sun glows and spray seen down-sun is a dull
- * grey-white, which is what sea spray does.
+ * LIGHTING is the sea's own light (`setAtmosphere`): the sun and sky the
+ * ocean lights its foam with (`waterDownwelling`), from the same snapshot.
+ * A clump of droplets is white water in the air, so it takes that light as
+ * an albedo, as the wake's foam does, but it hangs in the air, so the sun
+ * lights the side of it that faces the sun (a Lambert sphere's phase law,
+ * translucent enough that its shaded side is never black) instead of
+ * lighting a level surface by the sun's elevation. On top of that, the
+ * droplets' forward lobe: spray between the camera and the sun glows.
+ * Hazed by `aerialPerspective`.
  *
  * HELD. Droplets fly in the world, so a hull held still while its velocity
  * says it planes (a pinned capture) would throw its spray forward of the
@@ -288,6 +296,9 @@ export class BoatSpraySystem {
   private readonly frame = { x: 0, z: 0 };
   private readonly anchorUniform = new Vector3();
   private readonly windUniform = new Vector4();
+  /** The sun's irradiance at normal incidence over pi, and the sky's on a level surface over pi. */
+  private readonly sunUniform = new Vector3(1, 1, 1);
+  private readonly skyUniform = new Vector3(0.3, 0.3, 0.3);
   private readonly scratch = { x: 0, y: 0, z: 0 };
   private readonly scratchVelocity = { x: 0, y: 0, z: 0 };
   private readonly aerialVectors3 = new Map<string, Vector3>();
@@ -388,6 +399,30 @@ export class BoatSpraySystem {
     this.cursor = 0;
     this.lastBirthClock = Number.NaN;
     if (next > 0) this.createGpu();
+  }
+
+  /**
+   * The light the spray is lit by, from the snapshot the ocean takes too: the
+   * two halves of `waterDownwellingRadiance`, the sun's before it is laid on
+   * a level surface (`sunDirection.y`), so that the sun term times the sun's
+   * elevation sine plus the sky term is exactly the sea's own downwelling.
+   */
+  setAtmosphere(atmosphere: AtmosphereSnapshot): void {
+    const sun = atmosphere.sunIlluminanceNormalized * WATER_SUN_IRRADIANCE_SCALE;
+    this.sunUniform.set(atmosphere.sunColor.r * sun, atmosphere.sunColor.g * sun, atmosphere.sunColor.b * sun);
+    const sky = 0.5 * WATER_SKY_IRRADIANCE_FRACTION * atmosphere.skylightIlluminanceNormalized;
+    this.skyUniform.set(
+      (atmosphere.skyZenith.r + atmosphere.skyHorizon.r) * sky,
+      (atmosphere.skyZenith.g + atmosphere.skyHorizon.g) * sky,
+      (atmosphere.skyZenith.b + atmosphere.skyHorizon.b) * sky,
+    );
+    this.gpu?.material.setVector3("spraySun", this.sunUniform);
+    this.gpu?.material.setVector3("spraySky", this.skyUniform);
+  }
+
+  /** The sun and sky the spray is lit by, as the last `setAtmosphere` left them. */
+  get lighting(): { readonly sun: Readonly<Vector3>; readonly sky: Readonly<Vector3> } {
+    return { sun: this.sunUniform, sky: this.skyUniform };
   }
 
   setAerialPerspective(binding: AerialPerspectiveBinding): void {
@@ -728,7 +763,16 @@ export class BoatSpraySystem {
       SPRAY_SHADER_NAME,
       {
         attributes: ["position", "sprayA", "sprayB", "sprayC"],
-        uniforms: ["view", "projection", "cameraPosition", "sprayAnchor", "sprayWind", ...AERIAL_PERSPECTIVE_UNIFORMS],
+        uniforms: [
+          "view",
+          "projection",
+          "cameraPosition",
+          "sprayAnchor",
+          "sprayWind",
+          "spraySun",
+          "spraySky",
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
+        ],
         shaderLanguage: ShaderLanguage.WGSL,
         needAlphaBlending: true,
       },
@@ -739,6 +783,8 @@ export class BoatSpraySystem {
     material.alphaMode = Constants.ALPHA_PREMULTIPLIED_PORTERDUFF;
     material.setVector3("sprayAnchor", this.anchorUniform);
     material.setVector4("sprayWind", this.windUniform);
+    material.setVector3("spraySun", this.sunUniform);
+    material.setVector3("spraySky", this.skyUniform);
     mesh.material = material;
     mesh.setEnabled(false);
 
@@ -769,13 +815,13 @@ function wgslFloat(value: number): string {
 
 const SPRAY_SHADER_NAME = "boatSpray";
 
-/** The droplet phase: a forward lobe and a weak back lobe (sea spray, Mie, large drops). */
+/** A clump of spray as white water: a little below the wake's fresh foam (0.5) seen face on. */
+export const SPRAY_ALBEDO = 0.62;
+/** How much sun the side of a clump turned away from it still passes (it is translucent). */
+export const SPRAY_TRANSLUCENCY = 0.35;
+/** The droplets' forward lobe (large drops, Mie), and how much of the sun it carries. */
 export const SPRAY_FORWARD_G = 0.72;
-export const SPRAY_BACKWARD_G = -0.2;
-export const SPRAY_BACKWARD_BLEND = 0.3;
-/** Multiple scattering inside a dense sheet, as an isotropic floor on the phase. */
-export const SPRAY_MULTIPLE_SCATTERING = 0.42;
-export const SPRAY_AMBIENT_STRENGTH = 0.9;
+export const SPRAY_GLOW = 0.12;
 
 export const BOAT_SPRAY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -795,17 +841,19 @@ uniform cameraPosition: vec3f;
 uniform sprayAnchor: vec3f;
 // xy surface wind, world m/s along x and z; w clock s (wrapped)
 uniform sprayWind: vec4f;
+// the sun's irradiance at normal incidence over pi; the sky's on a level surface over pi
+uniform spraySun: vec3f;
+uniform spraySky: vec3f;
 
 ${AERIAL_PERSPECTIVE_WGSL}
 
 const SPRAY_PERIOD: f32 = ${wgslFloat(SPRAY_CLOCK_PERIOD_SECONDS)};
 const SPRAY_GRAVITY: f32 = ${wgslFloat(GRAVITY)};
 const SPRAY_PI: f32 = 3.14159265359;
+const SPRAY_ALBEDO: f32 = ${wgslFloat(SPRAY_ALBEDO)};
+const SPRAY_TRANSLUCENCY: f32 = ${wgslFloat(SPRAY_TRANSLUCENCY)};
 const SPRAY_FORWARD_G: f32 = ${wgslFloat(SPRAY_FORWARD_G)};
-const SPRAY_BACKWARD_G: f32 = ${wgslFloat(SPRAY_BACKWARD_G)};
-const SPRAY_BACKWARD_BLEND: f32 = ${wgslFloat(SPRAY_BACKWARD_BLEND)};
-const SPRAY_MULTIPLE_SCATTERING: f32 = ${wgslFloat(SPRAY_MULTIPLE_SCATTERING)};
-const SPRAY_AMBIENT_STRENGTH: f32 = ${wgslFloat(SPRAY_AMBIENT_STRENGTH)};
+const SPRAY_GLOW: f32 = ${wgslFloat(SPRAY_GLOW)};
 
 @vertex
 fn main(input: VertexInputs) -> FragmentInputs {
@@ -852,19 +900,19 @@ fn main(input: VertexInputs) -> FragmentInputs {
   var clip = uniforms.projection * (viewCentre + vec4f(offset, 0.0, 0.0));
   clip = select(clip, vec4f(0.0, 0.0, 2.0, 1.0), alpha < ${SPRAY_MIN_VISIBLE_ALPHA});
 
-  // Optically thin, as the steam: sun through the shared transmittance with a
-  // forward-peaked droplet phase and a multiple-scattering floor, plus sky.
+  // White water in the sea's light (see the header): the sunlit fraction of
+  // the clump seen at phase angle acos(-mu), translucent, plus the sky, plus
+  // the forward glow of spray seen against the sun. Nothing of the sun once
+  // it is below the horizon.
   let rayDirection = toCentre / distanceMeters;
   let sunDirection = normalize(uniforms.aerialSunDirection);
   let mu = dot(rayDirection, sunDirection);
-  let sunAtDrop = uniforms.aerialSunRadiance * aerialSunTransmittanceAt(centre.y, sunDirection.y);
-  let phase = mix(
-    aerialMiePhase(mu, SPRAY_FORWARD_G),
-    aerialMiePhase(mu, SPRAY_BACKWARD_G),
-    SPRAY_BACKWARD_BLEND,
-  ) + SPRAY_MULTIPLE_SCATTERING / (4.0 * SPRAY_PI);
-  let sky = skyRadiance(normalize(vec3f(rayDirection.x, abs(rayDirection.y) + 0.35, rayDirection.z)));
-  let radiance = sunAtDrop * phase + sky * SPRAY_AMBIENT_STRENGTH;
+  let sun = uniforms.spraySun * smoothstep(-0.02, 0.02, sunDirection.y);
+  let phaseAngle = acos(clamp(-mu, -1.0, 1.0));
+  let sunlit = (sin(phaseAngle) + (SPRAY_PI - phaseAngle) * cos(phaseAngle)) / SPRAY_PI;
+  let lit = SPRAY_TRANSLUCENCY + (1.0 - SPRAY_TRANSLUCENCY) * sunlit;
+  let glow = SPRAY_GLOW * 4.0 * SPRAY_PI * aerialMiePhase(mu, SPRAY_FORWARD_G);
+  let radiance = SPRAY_ALBEDO * (sun * lit + uniforms.spraySky) + sun * glow;
   let haze = aerialPerspective(centre.y, distanceMeters, mu);
 
   vertexOutputs.position = clip;
