@@ -173,7 +173,8 @@ export interface BenchStepRecord {
   readonly result: BenchStepResult | null;
   /**
    * Pinned mode: the renderer could not install its per-pass GPU timer, so
-   * this step loads again with GPU timing off. Absent until that happens.
+   * this step loads again, and every later one starts, with GPU timing off.
+   * Absent until that happens.
    */
   readonly gpuTimingFailed?: boolean;
 }

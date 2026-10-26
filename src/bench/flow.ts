@@ -375,11 +375,21 @@ export function failStep(
 /**
  * Pinned mode only: the renderer could not install its per-pass GPU timer.
  * The same step loads again, once, with GPU timing off, which a pinned
- * renderer allows; its result then says "install-failed".
+ * renderer allows; its result then says "install-failed". The timer fails
+ * for the whole device, so every later step starts with it off too, and the
+ * reload is not an attempt: the step gets back the one this load claimed.
  */
 export function retryWithoutGpuTiming(store: BenchStore, index: number, href: string): BenchTransition {
-  const { run } = currentStep(store, index);
-  const next = withStep(run, index, { status: "pending", gpuTimingFailed: true });
+  const { run, step } = currentStep(store, index);
+  const next: BenchRunRecord = {
+    ...run,
+    steps: run.steps.map((each): BenchStepRecord => {
+      if (each.index === index) {
+        return { ...each, status: "pending", attempts: Math.max(0, step.attempts - 1), gpuTimingFailed: true };
+      }
+      return each.index > index && !isFinalStep(each.status) ? { ...each, gpuTimingFailed: true } : each;
+    }),
+  };
   return { store: withRun(store, next, store.notice), href: stepUrl(href, run.runId, index, urlOptions(run.plan)) };
 }
 

@@ -262,12 +262,38 @@ describe("the page flow", () => {
     const { href } = started(storage);
     const retry = retryWithoutGpuTiming(stored(storage), 0, href);
     expect(retry.href).toBe(href);
-    expect(retry.store.current!.steps[0]).toMatchObject({ status: "pending", attempts: 1, gpuTimingFailed: true });
+    // Not an attempt: the step gets back the one its load claimed.
+    expect(retry.store.current!.steps[0]).toMatchObject({ status: "pending", attempts: 0, attemptLog: [], gpuTimingFailed: true });
+    // The timer fails for the whole device, so no later step tries it again.
+    expect(retry.store.current!.steps.map((step) => step.gpuTimingFailed)).toEqual([true, true, true, true]);
     writeBenchStore(storage, retry.store);
     const again = load(storage, href);
-    expect(again.page).toMatchObject({ kind: "step", stepIndex: 0, attempt: 2 });
+    expect(again.page).toMatchObject({ kind: "step", stepIndex: 0, attempt: 1 });
     const page = again.page as Extract<typeof again.page, { kind: "step" }>;
-    expect(page.run.steps[0]).toMatchObject({ status: "running", gpuTimingFailed: true });
+    expect(page.run.steps[0]).toMatchObject({ status: "running", attempts: 1, gpuTimingFailed: true });
+    // A hidden tab afterwards still has its retry.
+    const hidden = voidAttempt(stored(storage), 0, "void-hidden", NOW, href);
+    expect(hidden.store.current!.steps[0]!.status).toBe("pending");
+  });
+
+  it("keeps a GPU timing retry after a void within the attempt limit", () => {
+    const { storage } = memoryStorage();
+    const { href } = started(storage);
+    writeBenchStore(storage, voidAttempt(stored(storage), 0, "void-hidden", NOW, href).store);
+    expect(load(storage, href).page).toMatchObject({ kind: "step", attempt: 2 });
+    writeBenchStore(storage, retryWithoutGpuTiming(stored(storage), 0, href).store);
+    expect(load(storage, href).page).toMatchObject({ kind: "step", attempt: 2 });
+    expect(stored(storage).current!.steps[0]).toMatchObject({ attempts: 2, gpuTimingFailed: true });
+  });
+
+  it("leaves finished steps as they were when a later step's timer fails", () => {
+    const { storage } = memoryStorage();
+    const { href } = started(storage);
+    const first = recordStepResult(stored(storage), 0, "ok", benchStepResult({ tierIndex: 1 }), "absent", href);
+    writeBenchStore(storage, first.store);
+    load(storage, first.href);
+    const retry = retryWithoutGpuTiming(stored(storage), 1, first.href);
+    expect(retry.store.current!.steps.map((step) => step.gpuTimingFailed)).toEqual([undefined, true, true, true]);
   });
 
   it("skips the step in flight and the rest on Stop", () => {
