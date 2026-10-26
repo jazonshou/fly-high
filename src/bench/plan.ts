@@ -122,7 +122,12 @@ const STANDARD_TIMINGS: BenchTimings = Object.freeze({
   maxAttempts: 2,
 } satisfies BenchTimings);
 
-/** `quick=1`, for development: the same shape, compressed. Its reports say non-standard. */
+/**
+ * `quick=1`, for development: the same shape, compressed. Its reports say
+ * non-standard. Its rest checks are 30 frames apart, not 120: four checks
+ * 120 frames apart from 2 s need a steady 60 fps to fit under the 8 s cap,
+ * and one dropped frame put the last past it.
+ */
 const QUICK_TIMINGS: BenchTimings = Object.freeze({
   ...STANDARD_TIMINGS,
   quick: true,
@@ -133,6 +138,7 @@ const QUICK_TIMINGS: BenchTimings = Object.freeze({
   air: Object.freeze({ name: "air", startS: 10, endS: 20 }),
   settleMinS: 2,
   settleCapS: 8,
+  settleCheckFrames: 30,
   earlyStopAtS: 8,
   earlyStopFromS: 1,
 } satisfies BenchTimings);

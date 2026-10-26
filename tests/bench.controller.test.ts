@@ -248,7 +248,7 @@ function harness(options: HarnessOptions = {}) {
 }
 
 describe("the step controller's settle", () => {
-  it("holds the runway pose and rests after three calm checks a second and 120 frames apart", () => {
+  it("holds the runway pose and rests after three calm checks, a second and the plan's frame spacing apart", () => {
     const h = harness();
     // 240 Hz: 120 frames is half a second, so the one-second spacing binds.
     h.run(1_000, 1_000 / 240, () => h.controller.phase !== "settling" && h.controller.phase !== "waiting");
@@ -330,8 +330,9 @@ describe("the step controller's flight", () => {
     expect(result.worst.length).toBeGreaterThan(0);
     expect(result.segments.map((segment) => [segment.startS, segment.endS])).toEqual([[0, 10], [10, 20]]);
     expect(result.perSecond.rows).toHaveLength(quick.flightS);
-    // At 60 Hz, quick mode's checks are two seconds apart and the cap comes first.
-    expect(result.settle.checks).toBe(3);
+    // At 60 Hz, quick mode's checks are a second apart: pending at 2 s, calm at 3, 4 and 5 s.
+    expect(result.settle).toMatchObject({ reachedRest: true, checks: 4 });
+    expect(result.settle.ms).toBeLessThan(quick.settleCapS * 1_000);
     expect(result.startup.navToAttachMs).toBe(1_500);
     // The first render began half a millisecond into the first frame.
     expect(result.startup.navToFirstFrameMs).toBe(1_000.5);

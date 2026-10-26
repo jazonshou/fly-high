@@ -280,6 +280,33 @@ describe("settle rest checks", () => {
     expect(settleOutcome(timings, progress, 7_000)).toBe("rest");
   });
 
+  it("lets quick mode's settle rest inside its cap at 60 Hz with a dropped frame, and at 30 Hz", () => {
+    const quick = benchTimings(true);
+    /** A calm world drawn every `intervalMs`, one frame `droppedAtMs` in twice as long: how the settle ends. */
+    const settle = (intervalMs: number, droppedAtMs: number | null) => {
+      let progress = SETTLE_START;
+      let elapsedMs = 0;
+      for (let frames = 1; frames < 10_000; frames += 1) {
+        elapsedMs += droppedAtMs !== null && elapsedMs <= droppedAtMs && elapsedMs + intervalMs > droppedAtMs
+          ? 2 * intervalMs
+          : intervalMs;
+        if (settleCheckDue(quick, progress, elapsedMs, frames, false)) {
+          progress = recordSettleCheck(quick, progress, elapsedMs, frames, calm);
+        }
+        const outcome = settleOutcome(quick, progress, elapsedMs);
+        if (outcome !== null) return { outcome, elapsedMs, checks: progress.checks };
+      }
+      throw new Error("the settle never ended");
+    };
+    const dropped = settle(1_000 / 60, 2_500);
+    expect(dropped.outcome).toBe("rest");
+    expect(dropped.checks).toBe(4);
+    expect(dropped.elapsedMs).toBeLessThan(6_000);
+    expect(settle(1_000 / 30, null)).toMatchObject({ outcome: "rest", checks: 4 });
+    // The standard settle keeps its 120 frames.
+    expect(benchTimings(false).settleCheckFrames).toBe(120);
+  });
+
   it("a pending page or an instance jump over 1% resets the run; the cap is not a failure", () => {
     let progress = check(check(SETTLE_START, 4, 0), 5, 200);
     expect(progress.calm).toBe(1);

@@ -3249,7 +3249,7 @@ at the start and the end to show it.
 | `tiers=1,0,2,1` | the tiers to fly, in order (0 Low, 1 Medium, 2 High, 3 Ultra), one to eight; the default flies Medium, Low, High and Medium again |
 | `mode=pinned` | the GPU comparison pass: each tier renders its whole pixel budget at a fixed scale, with per-pass GPU timing on, whatever the governor would do |
 | `hud=0` | flies without the HUD (it is on by default, as a player sees it) |
-| `quick=1` | for development: 20 s flights, an 8 s settle cap; the report says it is non-standard |
+| `quick=1` | for development: 20 s flights, and an 8 s settle cap with rest checks 30 frames apart so it can rest inside it; the report says it is non-standard |
 
 **How long it takes.** Each flight is a page load, a 1 s idle frame-rate
 probe, the renderer's start-up, a settle on the runway while the scenery
