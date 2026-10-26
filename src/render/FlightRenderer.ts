@@ -73,6 +73,10 @@ import {
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
+import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
+import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
+import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
+import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
@@ -512,6 +516,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** The surface vehicle the session can drive, or null when it is aircraft only. */
   private readonly surfaceVehicle: VehicleVisual | null;
   private readonly surfaceVehicleSpec: SurfaceVehicleSpec | null;
+  /** The surface vehicle's lamp washes, riding the aircraft's nav-wash slots. */
+  private readonly surfaceVehicleWashes: readonly BoatWashLight[];
+  /** The spray a boat throws; null outside a boat session. */
+  private readonly boatSpray: BoatSpraySystem | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -737,6 +745,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     camera: UniversalCamera,
     aircraft: AircraftVisual,
     surfaceVehicle: VehicleVisual | null,
+    boatEffects: BoatEffects | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -780,6 +789,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.surfaceVehicleSpec = surfaceVehicle && isSurfaceVehicleKind(surfaceVehicle.kind)
       ? surfaceVehicleSpec(surfaceVehicle.kind)
       : null;
+    this.surfaceVehicleWashes = surfaceVehicle && isSurfaceVehicleKind(surfaceVehicle.kind)
+      ? surfaceVehicleWashLights(surfaceVehicle.kind)
+      : [];
+    this.boatSpray = boatEffects?.spray ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1404,6 +1417,10 @@ export class FlightRenderer implements FlightRenderingSystem {
           : {}),
       });
       cleanup.push(() => steam.dispose());
+      // Only with a surface vehicle, so an aircraft session builds and
+      // compiles none of it. Before the readiness gate, as the steam is.
+      const boatEffects = surfaceVehicle ? createBoatEffects(scene, { profile, world: options.world }) : null;
+      if (boatEffects) cleanup.push(() => boatEffects.spray.dispose());
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -1641,6 +1658,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         camera,
         aircraft,
         surfaceVehicle,
+        boatEffects,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -2592,6 +2610,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.spawnedAirfields?.dispose(),
       () => this.clouds.dispose(),
       () => this.steam.dispose(),
+      () => this.boatSpray?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -2883,6 +2902,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // clock write per frame; the vent query runs only on a 2 km cell change.
     // simulationTime keeps the plume capture-deterministic (Z-1).
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
+    this.boatSpray?.update(state);
     this.updateAerialPerspective();
   }
 
@@ -3006,6 +3026,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.clouds.setAerialPerspective(binding);
     this.lightPoints.setAerialPerspective(binding);
     this.steam.setAerialPerspective(binding);
+    this.boatSpray?.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.
@@ -3048,10 +3069,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   }
 
   /**
-   * The surface vehicle's pose, and the aircraft's own lights put out: its
-   * cast pools and washes live in the clustered container whoever is on
-   * screen, and a boat at the dock must not be lit by an aeroplane that is
-   * not there. The boat's lamps are its presentation's to drive.
+   * The surface vehicle's pose and lamps, and the aircraft's own lights put
+   * out: its cast pools and washes live in the clustered container whoever
+   * is on screen, and a boat at the dock must not be lit by an aeroplane that
+   * is not there. The boat's sidelight washes take over the aircraft's two
+   * nav-wash slots (`boatWashLights` has why); every other slot goes dark.
    */
   private poseSurfaceVehicle(state: FlightVisualState, visual: VehicleVisual): void {
     visual.root.position.set(
@@ -3061,9 +3083,39 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     );
     visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
+    // The boat's lamp law, from the observer's bearing as the aircraft's is.
+    const toCamera = this.camera.position.subtract(visual.root.position);
+    const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
+    const bodyUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
+    const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+    const lights = resolveBoatLights({
+      observerAzimuthDegrees: observerAzimuthDegrees(
+        Vector3.Dot(toCamera, bodyForward),
+        Vector3.Dot(toCamera, bodyStarboard),
+      ),
+      sunElevationSine: this.environmentState.sun.direction[1],
+      horizontalLux: horizontalIlluminanceLux(this.environmentState),
+    });
+    visual.setLightState(lights);
     for (const pool of AIRCRAFT_CAST_POOLS) this.clusteredLighting.setIntensity(pool.name, 0);
-    for (const wash of aircraftWashLights(this.aircraftKind)) {
-      this.clusteredLighting.setIntensity(wash.name, 0);
+    for (const slot of aircraftWashLights(this.aircraftKind)) {
+      const wash = this.surfaceVehicleWashes.find((candidate) => candidate.driver === slot.driver);
+      if (!wash) {
+        this.clusteredLighting.setIntensity(slot.name, 0);
+        continue;
+      }
+      const at = castPoolWorldPosition(
+        [state.position.x, state.position.y, state.position.z],
+        [bodyForward.x, bodyForward.y, bodyForward.z],
+        [bodyUp.x, bodyUp.y, bodyUp.z],
+        [bodyStarboard.x, bodyStarboard.y, bodyStarboard.z],
+        wash.offset,
+      );
+      this.clusteredLighting.setPosition(slot.name, at[0], at[1], at[2]);
+      this.clusteredLighting.setIntensity(
+        slot.name,
+        wash.intensity * lights[wash.driver] * this.lastDaylightAttenuation,
+      );
     }
   }
 
@@ -3561,6 +3613,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.spawnedAirfields?.setFloatingOrigin(this.originX, this.originZ);
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     this.steam.setFloatingOrigin(this.originX, this.originZ);
+    this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -3606,6 +3659,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // 0 on tier 0 tears the steam's mesh down; a cap above it builds one,
     // compiling at the switch rather than at load.
     this.steam.setMaxWisps(this.profile.volcanicSteamMaxWisps);
+    this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
