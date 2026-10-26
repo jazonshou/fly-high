@@ -48,6 +48,18 @@ import {
   sampleGroundHeight,
   setGroundHeightMirror,
 } from "@/src/sim/terrainGrid";
+import {
+  createSurfaceSimulator,
+  NEUTRAL_BOAT_CONTROLS,
+  surfaceVisualState,
+  type SurfaceVehicleControls,
+  type SurfaceVehicleEnvironment,
+  type SurfaceVehicleSimulator,
+  type SurfaceVehicleSpawn,
+} from "@/src/sim/surface";
+import { CalmWaterSurface } from "@/src/sim/water";
+import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
+import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type {
   AutolandVisualState,
   ControlState,
@@ -58,6 +70,7 @@ import type {
 import {
   DEFAULT_AIRBORNE_START_AGL,
   normalizeAirborneStartAgl,
+  type AircraftSpawnKind,
   type SimulationCommand,
   type SimulationEvent,
   type SpawnKind,
@@ -139,6 +152,26 @@ const autolandInput: {
 /** A stick deflection past this, on pitch or roll, takes the aeroplane back. */
 const AUTOLAND_OVERRIDE_STICK = 0.5;
 
+/**
+ * The session's surface vehicle, if it has one, and its simulator while it is
+ * the thing being driven: a `"dock"` spawn installs it, any aircraft spawn or
+ * the menu's attract flight drops it. While it runs, the aeroplane path below
+ * is not stepped at all, so aircraft sessions are untouched by any of it.
+ */
+let surfaceVehicle: SurfaceVehicleKind | null = null;
+let surface: SurfaceVehicleSimulator | null = null;
+const surfaceControls: SurfaceVehicleControls = {
+  assist: "scenic",
+  boat: { ...NEUTRAL_BOAT_CONTROLS },
+};
+const surfaceWind = { x: 0, y: 0, z: 0 };
+const surfaceEnvironment: SurfaceVehicleEnvironment = {
+  water: new CalmWaterSurface(0, terrainHeightSample),
+  wind: surfaceWind,
+  bedHeight: terrainHeightSample,
+  gravity: 9.80665,
+};
+
 function post(event: SimulationEvent): void {
   workerScope.postMessage(event);
 }
@@ -160,7 +193,7 @@ function terrainHeightSample(x: number, z: number): number {
   return world ? sampleGroundHeight(world, x, z) : 0;
 }
 
-function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
+function installSimulation(kind: AircraftSpawnKind, spawn: SpawnOptions): void {
   const aircraft = aircraftDefinition(aircraftKind);
   groundHeadingTarget = kind === "runway" ? (spawn.heading ?? 0) : null;
   controls = { ...DEFAULT_CONTROLS, ...spawn.controls };
@@ -198,6 +231,41 @@ function installSimulation(kind: SpawnKind, spawn: SpawnOptions): void {
   post({ type: "ready", state: visualState() });
 }
 
+function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): void {
+  disengageAutoland();
+  controls = { ...DEFAULT_CONTROLS };
+  surfaceControls.boat = { ...NEUTRAL_BOAT_CONTROLS };
+  // The shared base's water is still water at sea level over the worker's own
+  // bed authority; the wave twin replaces it behind the same interface.
+  surfaceEnvironment.water = new CalmWaterSurface(world?.seaLevel ?? 0, terrainHeightSample);
+  surface = createSurfaceSimulator(kind, spawn);
+  accumulator = 0;
+  lastTime = performance.now();
+  lastSnapshotTime = 0;
+  post({ type: "ready", state: visualState() });
+}
+
+function surfaceVehicleOrThrow(): SurfaceVehicleKind {
+  if (!surfaceVehicle) throw new Error("A dock start needs a boat: this session has no surface vehicle");
+  return surfaceVehicle;
+}
+
+function stepSurface(active: SurfaceVehicleSimulator): void {
+  if (!world) return;
+  const position = active.state.position;
+  const wind = sampleWind(world, position.x, position.y, position.z, active.state.time, windTarget);
+  const windScale = weather === "clear" ? 0.62 : weather === "cloudy" ? 1.28 : 1;
+  surfaceWind.x = wind.x * windScale;
+  surfaceWind.y = wind.y * windScale;
+  surfaceWind.z = wind.z * windScale;
+  surfaceEnvironment.water.setTime(active.state.time);
+  surfaceControls.assist = mode;
+  surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
+  active.setControls(surfaceControls);
+  active.setEnvironment(surfaceEnvironment);
+  active.step(FIXED_TIME_STEP);
+}
+
 function prepareAutolandInput(sim: FlightSimulator): typeof autolandInput {
   autolandInput.state = sim.state;
   autolandInput.telemetry = sim.telemetry();
@@ -211,7 +279,7 @@ function setAutoland(enabled: boolean): void {
     return;
   }
   const sim = simulator;
-  if (!sim || !world || !autoland || attractMode || autoland.engaged) return;
+  if (!sim || !world || !autoland || attractMode || autoland.engaged || surface) return;
   const target = nearestAirport(world, sim.state.position.x, sim.state.position.z);
   if (!target) return;
   autoland.engage(target.airport, prepareAutolandInput(sim), controls);
@@ -278,6 +346,12 @@ function autolandVisualState(): AutolandVisualState | null {
 function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): void {
   if (!world) return;
   airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
+  if (kind === "dock") {
+    const vehicle = surfaceVehicleOrThrow();
+    installSurface(vehicle, createSurfaceSpawn(world, vehicle));
+    return;
+  }
+  surface = null;
   installSimulation(
     kind,
     createSimulationSpawn(world, kind, airborneStartAgl, aircraftKind),
@@ -290,6 +364,15 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
  * only on the main thread and is therefore neither needed nor accepted here.
  */
 function restartAfterCrash(requestedAirborneStartAgl = airborneStartAgl): void {
+  if (surface) {
+    // A wrecked boat comes back upright and afloat in the open water nearest
+    // the wreck, not at the dock forty minutes' run away.
+    if (!world || !surface.state.crashed) return;
+    const vehicle = surfaceVehicleOrThrow();
+    const wreck = surface.state.position;
+    installSurface(vehicle, createSurfaceRecoverySpawn(world, vehicle, wreck.x, wreck.z));
+    return;
+  }
   if (!world || !simulator || !simulator.state.crashed) return;
   const crashWorldX = simulator.state.position.x;
   const crashWorldZ = simulator.state.position.z;
@@ -483,6 +566,7 @@ function assistedControls(): FlightControls {
 }
 
 function visualState(): FlightVisualState {
+  if (surface) return surfaceVisualState(surface.snapshot(), terrainAuthority.countersSnapshot());
   if (!simulator) throw new Error("Simulation has not been initialized");
   const snapshot = simulator.snapshot();
   const telemetry = snapshot.telemetry;
@@ -525,10 +609,17 @@ function simulationTick(): void {
   const now = performance.now();
   const elapsed = Math.min(0.05, Math.max(0, (now - lastTime) / 1_000));
   lastTime = now;
-  if (paused || !simulator || !world) return;
+  if (paused || !world || (!simulator && !surface)) return;
   accumulator += elapsed;
   let steps = 0;
   while (accumulator >= FIXED_TIME_STEP && steps < 6) {
+    if (surface) {
+      stepSurface(surface);
+      accumulator -= FIXED_TIME_STEP;
+      steps += 1;
+      continue;
+    }
+    if (!simulator) break;
     const position = simulator.state.position;
     const wind = sampleWind(world, position.x, position.y, position.z, simulator.state.time, windTarget);
     const windScale = weather === "clear" ? 0.62 : weather === "cloudy" ? 1.28 : 1;
@@ -580,8 +671,10 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       mode = command.mode;
       weather = command.weather;
       attractMode = command.attractMode;
+      surfaceVehicle = command.surfaceVehicle;
+      surface = null;
       airborneStartAgl = normalizeAirborneStartAgl(command.airborneStartAgl);
-      reset(command.spawn, airborneStartAgl);
+      reset(attractMode ? "airborne" : command.spawn, airborneStartAgl);
       return;
     }
     if (command.type === "terrainPage") {
@@ -673,6 +766,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // End-flight is one state transition: no timer tick can observe a new
       // airborne state without the menu controller that is meant to own it.
       attractMode = true;
+      surface = null;
       reset("airborne", command.airborneStartAgl);
     } else if (command.type === "pause") {
       paused = command.paused;

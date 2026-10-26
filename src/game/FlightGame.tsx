@@ -62,6 +62,7 @@ import {
 } from "./types";
 import { handoffTrimSeed, heldElevator } from "@/src/sim";
 import type { SpawnKind } from "@/src/workers/protocol";
+import { isAircraftKind, isSurfaceVehicleKind, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import {
   beginTransition,
   createTransitionGate,
@@ -109,6 +110,11 @@ const PAUSE_FOCUSABLE_SELECTOR = [
   "[href]",
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
+
+/** The surface vehicle the player chose, or null when they chose an aircraft. */
+function chosenSurfaceVehicle(settings: GameSettings): SurfaceVehicleKind | null {
+  return isSurfaceVehicleKind(settings.vehicle) ? settings.vehicle : null;
+}
 
 function cycleHud(settings: GameSettings): GameSettings {
   const next = settings.hud === "full" ? "minimal" : settings.hud === "minimal" ? "off" : "full";
@@ -199,7 +205,10 @@ export function FlightGame() {
   }, []);
 
   const applySettings = useCallback((next: GameSettings) => {
-    if (next.aircraft !== settingsRef.current.aircraft) invalidatePendingTransitions();
+    if (
+      next.aircraft !== settingsRef.current.aircraft
+      || next.vehicle !== settingsRef.current.vehicle
+    ) invalidatePendingTransitions();
     settingsRef.current = next;
     setSettings(next);
     saveSettings(next);
@@ -390,6 +399,15 @@ export function FlightGame() {
     [startNewFlight],
   );
 
+  /**
+   * A boat's only start: moored at its berth. There is no attract boat to
+   * hand off to, so this is the full reset a runway start is.
+   */
+  const startAtDock = useCallback(
+    () => startNewFlight("dock", true),
+    [startNewFlight],
+  );
+
   const pauseFlight = useCallback(() => {
     invalidatePendingTransitions();
     simulationRef.current?.setPaused(true);
@@ -466,8 +484,13 @@ export function FlightGame() {
     // back on the threshold after hitting a mountain forty kilometres away is
     // worse than a re-entry, and the recovery path is built to find safe air
     // above the wreck rather than to find the airfield.
+    //
+    // A boat is the exception that proves it: it recovers upright and afloat
+    // in open water near the wreck, still a boat, so its controls stay the
+    // boat's and a later restart still means the berth.
+    const recovery = spawnRef.current === "dock" ? "dock" : "airborne";
     inputRef.current?.resetForSpawn(
-      "airborne",
+      recovery,
       airborneThrottleForAircraft(settingsRef.current.aircraft),
       runwayTrimForAircraft(settingsRef.current.aircraft),
       airborneGearForAircraft(settingsRef.current.aircraft),
@@ -606,9 +629,11 @@ export function FlightGame() {
       const activeSettings = settingsRef.current;
       const urlFarSward = readTerrainFarSwardFromUrl();
       const airportNetwork = startupResources.own(new AirportNetworkController(world));
+      const surfaceVehicle = chosenSurfaceVehicle(activeSettings);
       const rendererOptions = {
         canvas,
         aircraft: activeSettings.aircraft,
+        ...(surfaceVehicle ? { vehicle: surfaceVehicle } : {}),
         // The LIVE world: spawned airports grade the ground the camera clamps to.
         terrainSample: (x: number, z: number) => sampleTerrain(airportNetwork.world, x, z),
         world,
@@ -648,6 +673,7 @@ export function FlightGame() {
       }));
       const audio = startupResources.own(new FlightAudio({
         aircraft: activeSettings.aircraft,
+        ...(surfaceVehicle ? { vehicle: surfaceVehicle } : {}),
         master: activeSettings.masterVolume,
         engine: activeSettings.engineVolume,
         wind: activeSettings.windVolume,
@@ -672,6 +698,7 @@ export function FlightGame() {
         activeSettings.airborneStartAgl,
         initialAttractMode,
         activeSettings.aircraft,
+        surfaceVehicle,
       ));
       renderer.setTerrainAuthorityPublisher(simulation);
       renderer.setCameraMode(cameraModeRef.current);
@@ -706,7 +733,8 @@ export function FlightGame() {
           if (phaseRef.current !== "paused") simulation.setPaused(false);
         }
         const now = performance.now();
-        if (phaseRef.current === "flying") airportNetwork.observe(state, now);
+        // Airports spawn ahead of an aircraft's track; a boat's trip is local.
+        if (phaseRef.current === "flying" && !state.vehicle) airportNetwork.observe(state, now);
         if (now - lastUiUpdateRef.current > 75) {
           lastUiUpdateRef.current = now;
           setVisualState(state);
@@ -870,6 +898,7 @@ export function FlightGame() {
     pauseFlight,
     seed,
     settings.aircraft,
+    settings.vehicle,
     world,
   ]);
 
@@ -945,8 +974,14 @@ export function FlightGame() {
         >
           <div className="start-screen__minimal">
             <AircraftPicker
-              value={settings.aircraft}
-              onChange={(aircraft) => applySettings({ ...settingsRef.current, aircraft })}
+              value={settings.vehicle}
+              onChange={(vehicle) => applySettings(
+                // An aircraft is also the menu's attract flight; a boat leaves
+                // the last aircraft flying behind the menu.
+                isAircraftKind(vehicle)
+                  ? { ...settingsRef.current, aircraft: vehicle, vehicle }
+                  : { ...settingsRef.current, vehicle },
+              )}
             />
             {/*
               * One wrapping row of two GROUPS, never four loose buttons. The two
@@ -964,24 +999,38 @@ export function FlightGame() {
                   * the one piece here a player might have been relying on and it
                   * is not shown anywhere else on this screen.
                   */}
-                <button
-                  className="primary-action start-screen__start"
-                  type="button"
-                  onClick={() => void takeControl()}
-                  aria-label={`Start flying. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
-                  title={CONTROL_MODE_LABELS[settings.flightMode]}
-                >
-                  <span>Start</span>
-                </button>
-                <button
-                  className="primary-action start-screen__runway"
-                  type="button"
-                  onClick={() => void startOnRunway()}
-                  aria-label="Start on the runway, stopped and ready for take-off"
-                  title="On the threshold"
-                >
-                  <span>Runway start</span>
-                </button>
+                {chosenSurfaceVehicle(settings) ? (
+                  <button
+                    className="primary-action start-screen__start"
+                    type="button"
+                    onClick={() => void startAtDock()}
+                    aria-label={`Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+                    title="At the dock"
+                  >
+                    <span>Start</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      className="primary-action start-screen__start"
+                      type="button"
+                      onClick={() => void takeControl()}
+                      aria-label={`Start flying. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+                      title={CONTROL_MODE_LABELS[settings.flightMode]}
+                    >
+                      <span>Start</span>
+                    </button>
+                    <button
+                      className="primary-action start-screen__runway"
+                      type="button"
+                      onClick={() => void startOnRunway()}
+                      aria-label="Start on the runway, stopped and ready for take-off"
+                      title="On the threshold"
+                    >
+                      <span>Runway start</span>
+                    </button>
+                  </>
+                )}
               </div>
               <div className="start-screen__utility">
                 <button className="seed-action" onClick={chooseNewWorld} aria-label={`Generate a new world. Current seed ${seedToString(seed)}`}>
@@ -1088,11 +1137,15 @@ export function FlightGame() {
               </button>
               <button
                 onClick={() => void restartFlight()}
-                aria-label={visualState.crashed
-                  ? "Restart airborne above the crash location"
-                  : spawnKind === "runway"
-                    ? "Restart on the runway, where this flight began"
-                    : "Restart airborne, where this flight began"}
+                aria-label={spawnKind === "dock"
+                  ? visualState.crashed
+                    ? "Restart afloat near where the boat was damaged"
+                    : "Restart at the dock, where this trip began"
+                  : visualState.crashed
+                    ? "Restart airborne above the crash location"
+                    : spawnKind === "runway"
+                      ? "Restart on the runway, where this flight began"
+                      : "Restart airborne, where this flight began"}
               >
                 Restart flight
               </button>

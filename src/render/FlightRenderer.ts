@@ -62,6 +62,8 @@ import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
+import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
+import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
 import {
   withAirports,
   type AirportDefinition,
@@ -70,6 +72,7 @@ import {
 } from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
+import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
@@ -350,11 +353,11 @@ export interface ChaseCameraProfile {
 }
 
 export function chaseCameraProfile(
-  aircraft: AircraftKind,
+  vehicle: VehicleKind,
   airspeed: number,
   out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0, aimAhead: 0 },
 ): ChaseCameraProfile {
-  const { chase } = aircraftSpec(aircraft);
+  const { chase } = isAircraftKind(vehicle) ? aircraftSpec(vehicle) : surfaceVehicleSpec(vehicle);
   out.distance = rampAtSpeed(chase.distance, airspeed);
   out.height = chase.height;
   out.fieldOfView = rampAtSpeed(chase.fieldOfView, airspeed);
@@ -424,6 +427,13 @@ export type TerrainSampleFunction = (x: number, z: number) => TerrainSample;
 export interface FlightRendererOptions {
   canvas: HTMLCanvasElement;
   aircraft: AircraftKind;
+  /**
+   * What the player will drive, when it is not an aircraft: its visual is
+   * built beside the aircraft and takes over whenever the state carries a
+   * surface vehicle's payload. The menu's attract flight stays `aircraft`.
+   * Unset (or an aircraft kind) builds nothing extra.
+   */
+  vehicle?: VehicleKind;
   terrainSample: TerrainSampleFunction;
   world: WorldDefinition;
   seed: number;
@@ -499,6 +509,14 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly camera: UniversalCamera;
   private readonly graph = new WebGpuFrameGraph();
   private readonly aircraft: AircraftVisual;
+  /** The surface vehicle the session can drive, or null when it is aircraft only. */
+  private readonly surfaceVehicle: VehicleVisual | null;
+  private readonly surfaceVehicleSpec: SurfaceVehicleSpec | null;
+  /** Whether the surface vehicle, not the aircraft, is the one on screen. */
+  private surfaceActive = false;
+  /** The surface follow's level frame: the bow's heading and world up. */
+  private readonly surfaceRigForward = new Vector3(1, 0, 0);
+  private readonly surfaceRigUp = new Vector3(0, 1, 0);
   private readonly terrain: TerrainClipmapSystem;
   private readonly terrainEvolution: TerrainEvolutionRuntime;
   /** Main-thread copy serving wildlife and inline detail placement. */
@@ -718,6 +736,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     scene: Scene,
     camera: UniversalCamera,
     aircraft: AircraftVisual,
+    surfaceVehicle: VehicleVisual | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -757,6 +776,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.scene = scene;
     this.camera = camera;
     this.aircraft = aircraft;
+    this.surfaceVehicle = surfaceVehicle;
+    this.surfaceVehicleSpec = surfaceVehicle && isSurfaceVehicleKind(surfaceVehicle.kind)
+      ? surfaceVehicleSpec(surfaceVehicle.kind)
+      : null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1081,6 +1104,19 @@ export class FlightRenderer implements FlightRenderingSystem {
         if (mesh.metadata?.castsShadow === false) continue;
         atmosphere.shadows.addShadowCaster(mesh, false);
       }
+      const surfaceVehicle = options.vehicle && isSurfaceVehicleKind(options.vehicle)
+        ? createSurfaceVehicleVisual(scene, options.vehicle)
+        : null;
+      if (surfaceVehicle) {
+        cleanup.push(() => surfaceVehicle.dispose());
+        // Built hidden: the menu's attract flight is an aircraft, and the boat
+        // appears only once the state carries its payload.
+        surfaceVehicle.root.setEnabled(false);
+        for (const mesh of surfaceVehicle.meshes) {
+          if (mesh.metadata?.castsShadow === false) continue;
+          atmosphere.shadows.addShadowCaster(mesh, false);
+        }
+      }
       checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
       // 3-9: the hangars are the only airport meshes left, and the apron they
@@ -1229,6 +1265,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // Register each shared PBR material once. Detail and wildlife can render
       // thousands of thin instances without creating receiver-side state.
       cloudShadowReceivers.registerMeshes(aircraft.meshes);
+      if (surfaceVehicle) cloudShadowReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
       detail.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
@@ -1245,6 +1282,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => aerialReceivers.dispose());
       aerialReceivers.registerMaterial(terrain.pbrMaterial);
       aerialReceivers.registerMeshes(aircraft.meshes);
+      if (surfaceVehicle) aerialReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       detail.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
@@ -1602,6 +1640,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         scene,
         camera,
         aircraft,
+        surfaceVehicle,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -1652,13 +1691,14 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     const cockpit = mode === "cockpit";
     this.aircraft.setCockpitView(cockpit);
+    this.surfaceVehicle?.setCockpitView(cockpit);
     // A WORLD-ONLY RIG (perf capture) draws no part of the aeroplane in cockpit view. Disabling the
     // visual's ROOT is what does it, rather than walking the meshes: `setCockpitView` and
     // `configureCockpitOnlyParts` both own per-mesh `isVisible`, and a second writer would fight
     // them on the way back out. A disabled root draws nothing beneath it whatever those flags say,
     // and restoring it hands every mesh back in the state its own owner left it in.
     if (!cockpitRigDrawsAircraft(this.cockpitRigOverride)) {
-      this.aircraft.root.setEnabled(!cockpit);
+      this.aircraft.root.setEnabled(!cockpit && !this.surfaceActive);
     }
     this.graph.invalidateHistory("camera mode changed");
   }
@@ -1690,7 +1730,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     // from the beauty pass and the shadow render lists alike; the visual and
     // its registrations are otherwise untouched so leaving the viewer is a
     // pure re-enable.
-    this.aircraft.root.setEnabled(!enabled);
+    this.aircraft.root.setEnabled(!enabled && !this.surfaceActive);
+    this.surfaceVehicle?.root.setEnabled(!enabled && this.surfaceActive);
     this.setCameraMode(enabled ? "freefly" : "chase");
   }
 
@@ -2536,6 +2577,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.scene.dispose(),
       () => this.atmosphere.dispose(),
       () => this.aircraft.dispose(),
+      () => this.surfaceVehicle?.dispose(),
       () => {
         if (typeof window !== "undefined") {
           window.removeEventListener("keydown", this.handleDebugKey);
@@ -2669,7 +2711,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     Vector3.TransformNormalToRef(Vector3.Up(), this.bodyMatrix, this.up);
     this.forward.normalize();
     this.up.normalize();
-    if (!this.viewerMode) {
+    this.syncActiveVehicle(state);
+    if (!this.viewerMode && this.surfaceActive && this.surfaceVehicle) {
+      this.poseSurfaceVehicle(state, this.surfaceVehicle);
+    } else if (!this.viewerMode) {
       this.aircraft.root.position.set(
         state.position.x - this.originX,
         state.position.y,
@@ -2979,8 +3024,70 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     }
   }
 
+  /**
+   * Swap which visual is on screen when the state's class changes: a surface
+   * vehicle's payload puts the boat up and the aircraft away, and its absence
+   * the reverse. A session without a surface vehicle never gets past the
+   * first comparison, so every aircraft frame is exactly what it was.
+   */
+  private syncActiveVehicle(state: FlightVisualState): void {
+    const active = this.surfaceVehicle !== null && state.vehicle != null;
+    if (active === this.surfaceActive) return;
+    this.surfaceActive = active;
+    const cockpit = this.cameraMode === "cockpit";
+    this.aircraft.root.setEnabled(
+      !active
+      && !this.viewerMode
+      && !(cockpit && !cockpitRigDrawsAircraft(this.cockpitRigOverride)),
+    );
+    this.surfaceVehicle?.root.setEnabled(active && !this.viewerMode);
+    this.surfaceVehicle?.setCockpitView(cockpit);
+    // A different vehicle somewhere else: the rig's offsets and the frame
+    // graph's history both belong to the one that was there before.
+    this.cutCamera();
+  }
+
+  /**
+   * The surface vehicle's pose, and the aircraft's own lights put out: its
+   * cast pools and washes live in the clustered container whoever is on
+   * screen, and a boat at the dock must not be lit by an aeroplane that is
+   * not there. The boat's lamps are its presentation's to drive.
+   */
+  private poseSurfaceVehicle(state: FlightVisualState, visual: VehicleVisual): void {
+    visual.root.position.set(
+      state.position.x - this.originX,
+      state.position.y,
+      state.position.z - this.originZ,
+    );
+    visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+    visual.update(state, this.currentDeltaSeconds);
+    for (const pool of AIRCRAFT_CAST_POOLS) this.clusteredLighting.setIntensity(pool.name, 0);
+    for (const wash of aircraftWashLights(this.aircraftKind)) {
+      this.clusteredLighting.setIntensity(wash.name, 0);
+    }
+  }
+
   private updateCamera(state: FlightVisualState): void {
-    const aircraftPosition = this.aircraft.root.position;
+    const followed = this.surfaceActive && this.surfaceVehicle ? this.surfaceVehicle : this.aircraft;
+    const aircraftPosition = followed.root.position;
+    const framing = this.surfaceActive && this.surfaceVehicleSpec
+      ? this.surfaceVehicleSpec
+      : aircraftSpec(this.aircraft.kind);
+    // A boat's exterior views follow its HEADING: the hull pitches several
+    // degrees over the hump and rolls in every wave, and a rig that took either
+    // would bob the whole frame with it. The helm view stays attached. For an
+    // aircraft both are the body axes, the very same vectors as before.
+    const levelFollow = this.surfaceActive && this.cameraMode !== "cockpit";
+    let rigForward = this.forward;
+    let rigUp = this.up;
+    if (levelFollow) {
+      const horizontal = Math.hypot(this.forward.x, this.forward.z);
+      if (horizontal > 1e-4) {
+        this.surfaceRigForward.set(this.forward.x / horizontal, 0, this.forward.z / horizontal);
+      }
+      rigForward = this.surfaceRigForward;
+      rigUp = this.surfaceRigUp;
+    }
     let fieldOfView = 62;
     // One vertical reference for the whole rig. The exterior views adopt only
     // part of the aircraft's bank (`cameraBankFollow`), and the camera's own
@@ -2990,8 +3097,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // removes that exactly, and because the blend starts from wings-level
     // rather than from world up, an unbanked frame is untouched at any pitch.
     cameraRigLiftToRef(
-      this.forward,
-      this.up,
+      rigForward,
+      rigUp,
       cameraBankFollow(this.cameraMode, this.reducedMotion),
       this.cameraRigLift,
     );
@@ -3019,7 +3126,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(200));
     } else if (this.cameraMode === "cockpit") {
-      const eye = aircraftSpec(this.aircraft.kind).cockpitEye;
+      const eye = framing.cockpitEye;
       // The eye is where the pilot's head is — in the LEFT seat where there
       // are two — and the aim point carries the same offset, so the view stays
       // parallel to the body axis. Both are built by one pure function so a
@@ -3047,7 +3154,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       );
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
-      const orbit = aircraftSpec(this.aircraft.kind).cinematic;
+      const orbit = framing.cinematic;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
         Math.cos(angle) * orbit.radiusMeters,
         orbit.heightMeters + Math.sin(angle * 0.7) * orbit.heightDriftMeters,
@@ -3055,29 +3162,41 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       );
       this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.cameraRigLift.scale(1.3));
+      if (this.surfaceActive) {
+        // The orbit circles a boat at the dock as readily as one at sea, so
+        // it keeps clear of the quay, the shore and the water.
+        const orbitFloor = Math.max(
+          this.seaLevel,
+          this.cameraTerrainSample(
+            this.desiredCamera.x + this.originX,
+            this.desiredCamera.z + this.originZ,
+          ).height,
+        ) + 1.5;
+        if (this.desiredCamera.y < orbitFloor) this.desiredCamera.y = orbitFloor;
+      }
       fieldOfView = 58;
     } else if (this.cameraMode === "top" || this.cameraMode === "front") {
       // Both aim at the built airframe's centre from a measured distance
       // (`TopFrontViewSpec`): straight down on its plan, or back at its nose.
       // Neither can sit below the aeroplane, so neither samples the terrain;
       // both write into the rig's own vectors, so neither allocates.
-      const framing = aircraftSpec(this.aircraft.kind).topFront;
+      const topFront = framing.topFront;
       if (this.cameraMode === "top") {
         topViewRigOffsetsToRef(
-          this.forward,
-          this.up,
+          rigForward,
+          rigUp,
           this.cameraRigLift,
-          framing,
+          topFront,
           this.desiredCamera,
           this.desiredCameraTarget,
         );
         fieldOfView = TOP_VIEW_FIELD_OF_VIEW_DEGREES;
       } else {
         frontViewRigOffsetsToRef(
-          this.forward,
-          this.up,
+          rigForward,
+          rigUp,
           this.cameraRigLift,
-          framing,
+          topFront,
           this.desiredCamera,
           this.desiredCameraTarget,
         );
@@ -3086,7 +3205,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCamera.addInPlace(aircraftPosition);
       this.desiredCameraTarget.addInPlace(aircraftPosition);
     } else {
-      const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
+      const profile = chaseCameraProfile(followed.kind, state.airspeed);
       // The trail the old absolute-position smoothing used to produce as a
       // lag, now asked for explicitly and along the NOSE rather than along the
       // ground track: the settled framing players know is preserved, without
@@ -3102,10 +3221,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // keeps a banked airframe centred; this keeps it from sinking in frame.
       // See `CHASE_BANK_HEIGHT_DROP`.
       chaseRigOffsetsToRef(
-        this.forward,
+        rigForward,
         this.cameraRigLift,
         profile.distance,
-        chaseRigHeightForBank(profile.height, this.forward, this.up),
+        chaseRigHeightForBank(profile.height, rigForward, rigUp),
         profile.aimAhead,
         CHASE_AIM_HEIGHT_METERS,
         trail,
@@ -3130,12 +3249,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const cameraGround = Math.max(
         this.cameraTerrainSample(cameraWorldX, cameraWorldZ).height,
         this.cameraTerrainSample(
-          cameraWorldX + this.forward.x * aheadMeters,
-          cameraWorldZ + this.forward.z * aheadMeters,
+          cameraWorldX + rigForward.x * aheadMeters,
+          cameraWorldZ + rigForward.z * aheadMeters,
         ).height,
       );
-      if (this.desiredCamera.y < cameraGround + 2.5) {
-        this.desiredCamera.y = cameraGround + 2.5;
+      // A boat's rig floats over the sea, which the terrain sample (the
+      // seabed) knows nothing about.
+      const cameraFloor = this.surfaceActive ? Math.max(cameraGround, this.seaLevel) : cameraGround;
+      if (this.desiredCamera.y < cameraFloor + 2.5) {
+        this.desiredCamera.y = cameraFloor + 2.5;
       }
       // Both offsets were produced together above, so the aim point already
       // carries the same trail the camera does and the view direction is
@@ -3187,11 +3309,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     if (this.cameraMode === "top") {
       // The top view looks along world up, so it asks for the nose instead:
       // the aeroplane points up the screen.
-      topViewCameraUpToRef(this.forward, this.desiredCameraUp);
+      topViewCameraUpToRef(rigForward, this.desiredCameraUp);
     } else {
       Vector3.LerpToRef(
         Vector3.UpReadOnly,
-        this.up,
+        rigUp,
         cameraBankFollow(this.cameraMode, this.reducedMotion),
         this.desiredCameraUp,
       );
@@ -3207,7 +3329,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     orthogonalizeCameraUpToRef(
       this.camera.upVector,
       this.cameraViewDirection,
-      this.up,
+      rigUp,
       this.camera.upVector,
     );
     this.camera.setTarget(this.cameraTarget);
