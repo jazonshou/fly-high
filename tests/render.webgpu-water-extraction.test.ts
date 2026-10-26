@@ -311,11 +311,20 @@ describe("water shader extraction (2-8a)", () => {
     // texel downstream, so every water pixel moves by that much of each
     // band's phase (45 degrees on the shortest waves of each band at tier 1).
     // Deliberate, named, reviewed.
+    //
+    // Re-pinned, FRAGMENT ONLY and text only, by the boat's hull clip
+    // (boat/oceanHullClip.ts): two `#ifdef OCEAN_HULL_CLIP` blocks, the
+    // declarations before `@fragment` and a discard after the dry-bed one.
+    // Only a boat session sets the define, so for every other session the
+    // preprocessor strips both and the compiled shader is the one before:
+    // the text with the two blocks taken out hashes to the previous pin
+    // (0fe7b0f4...), and tests/gpu/boat-effects-compile.test.ts compares the
+    // compiled module on a real adapter.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "903148f43b5e8a0694582dd406e14a49156bdbab7ba21193219f22066f9e586b",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "0fe7b0f464eafdada6ef62fafbf665d3d558de2a7887618d0f54455750e0710a",
+      "57b8f69c5847fdf6d60752dbce42ed0e8199857d5da086daa981e8f44731a01b",
     );
   });
 
