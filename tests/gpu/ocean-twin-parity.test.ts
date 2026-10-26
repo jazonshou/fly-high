@@ -58,11 +58,16 @@ const SEA_WORLD: SeaWorld = Object.freeze({
 // ~1e-6 rad, so what remains is the fp16 transform.
 const TIME_SECONDS = 17.25;
 const POINTS = 96;
-// fp16 keeps 11 significant bits. Each cascade's value passes through
-// 2 log2(N) rounded Stockham stages and the stored texel, so the drawn sum is
-// held to a few half-float ulps of the largest texel it adds.
-const FP16_EPSILON = 2 ** -11;
-const FP16_ULPS = 4;
+// fp16 keeps 11 significant bits, so a store that rounds to the nearest half
+// moves a value by at most 2^-11 of it. WGSL lets a conversion take either
+// neighbour, and the Apple adapter's stores round the other way often enough
+// to shrink the drawn sea by a few tenths of a percent (macOS CI, 2026-10-26).
+// Each cascade's value is stored 2 log2(N) + 1 times (the evolution and every
+// Stockham pass), so the drawn sum is held to a number of those half ulps of
+// the largest texels it adds: a random walk's 4 when the adapter rounds to
+// nearest, and one per store when it may not, whose errors can add.
+const FP16_HALF_ULP = 2 ** -11;
+const NEAREST_HALF_ULPS = 4;
 
 const DISPLACEMENT_READBACK_WGSL = /* wgsl */ `
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -75,6 +80,19 @@ fn readDisplacement(@builtin(global_invocation_id) invocation: vec3<u32>) {
     return;
   }
   results[invocation.x + invocation.y * dimensions.x] = textureLoad(source, vec2<i32>(invocation.xy), 0);
+}
+`;
+
+// How this adapter rounds an f32 stored to rgba16float: a value 3/4 and one
+// 1/4 of the way between halves, either sign, read from a buffer so no
+// compiler folds the conversion.
+const FP16_ROUNDING_PROBE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> values: array<vec4<f32>>;
+@group(0) @binding(1) var destination: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(1, 1, 1)
+fn probeRounding() {
+  textureStore(destination, vec2<i32>(0, 0), values[0]);
 }
 `;
 
@@ -266,6 +284,33 @@ async function drawnCascade(
   }
 }
 
+/** Whether this adapter's rgba16float stores round to the nearest half, and what it stored. */
+async function fp16Rounding(engine: WebGPUEngine, scene: Scene): Promise<{ nearest: boolean; stored: string }> {
+  const ulp = 2 ** -10;
+  const input = new StorageBuffer(engine, 16);
+  input.update(new Float32Array([1 + 0.75 * ulp, -(1 + 0.75 * ulp), 1 + 0.25 * ulp, -(1 + 0.25 * ulp)]));
+  const destination = storageTexture(scene, 1, Constants.TEXTURETYPE_HALF_FLOAT);
+  const results = new StorageBuffer(engine, 16);
+  try {
+    const probe = computeShader(engine, "parity-fp16-rounding", FP16_ROUNDING_PROBE_WGSL, "probeRounding", ["values", "destination"]);
+    probe.setStorageBuffer("values", input);
+    probe.setStorageTexture("destination", destination);
+    await dispatch(probe, 1, 1);
+    const readback = computeShader(engine, "parity-read", DISPLACEMENT_READBACK_WGSL, "readDisplacement", ["source", "results"]);
+    readback.setTexture("source", destination, false);
+    readback.setStorageBuffer("results", results);
+    await dispatch(readback, 1, 1);
+    const view = await results.read();
+    const stored = Array.from(new Float32Array(view.buffer, view.byteOffset, 4));
+    const nearest = stored[0] === 1 + ulp && stored[1] === -(1 + ulp) && stored[2] === 1 && stored[3] === -1;
+    return { nearest, stored: stored.map((value) => `${value < 0 ? "-" : ""}(1 + ${((Math.abs(value) - 1) / ulp).toFixed(2)} ulp)`).join(", ") };
+  } finally {
+    input.dispose();
+    destination.dispose();
+    results.dispose();
+  }
+}
+
 async function shaderShelter(engine: WebGPUEngine, packed: Float64Array, points: Float32Array): Promise<Float32Array> {
   const uniform = new UniformBuffer(engine, undefined, false, "parity-shelter");
   for (const name of SEA_SHELTER_UNIFORMS) uniform.addUniform(name, 4);
@@ -358,6 +403,7 @@ function createRandom(seed: number): () => number {
 describe("ocean twin parity", () => {
   it("the drawn sea's displacement is the twin's, within fp16", async () => {
     await withEngine(async (engine, scene) => {
+      const rounding = await fp16Rounding(engine, scene);
       for (const weather of ["clear", "cloudy"] satisfies WeatherPreset[]) {
         // The twin's canonical config: 256 points, the resolution every
         // tier-2/3 profile draws; tier 0/1 hold the same waves in bands 1-4.
@@ -400,6 +446,7 @@ describe("ocean twin parity", () => {
         let worstZ = 0;
         let sumSquares = 0;
         let twinSquares = 0;
+        const gain = { h: { cross: 0, square: 0 }, dx: { cross: 0, square: 0 }, dz: { cross: 0, square: 0 } };
         for (let point = 0; point < POINTS; point += 1) {
           const x = (Math.floor(random() * 2048) - 1024) * lattice;
           const z = (Math.floor(random() * 2048) - 1024) * lattice;
@@ -410,12 +457,25 @@ describe("ocean twin parity", () => {
           worstZ = Math.max(worstZ, Math.abs(dz - expected.dz));
           sumSquares += (h - expected.h) ** 2;
           twinSquares += expected.h ** 2;
+          // How much larger or smaller the drawn sea is than the twin's, by
+          // least squares: a store that keeps rounding toward zero shrinks it.
+          gain.h.cross += h * expected.h;
+          gain.h.square += expected.h ** 2;
+          gain.dx.cross += dx * expected.dx;
+          gain.dx.square += expected.dx ** 2;
+          gain.dz.cross += dz * expected.dz;
+          gain.dz.square += expected.dz ** 2;
         }
-        const tolerance = (largest: number) => FP16_ULPS * FP16_EPSILON * largest;
+        const stores = 2 * Math.log2(n) + 1;
+        const halfUlps = rounding.nearest ? NEAREST_HALF_ULPS : stores;
+        const tolerance = (largest: number) => halfUlps * FP16_HALF_ULP * largest;
+        const gains = (["h", "dx", "dz"] as const).map((channel) => `${channel} ${(gain[channel].cross / gain[channel].square).toFixed(4)}`).join(", ");
         const report = `${weather}: worst h ${(worstH * 1000).toFixed(3)} mm (tol ${(tolerance(largest.h) * 1000).toFixed(3)}), `
           + `dx ${(worstX * 1000).toFixed(3)} mm (tol ${(tolerance(largest.dx) * 1000).toFixed(3)}), `
           + `dz ${(worstZ * 1000).toFixed(3)} mm (tol ${(tolerance(largest.dz) * 1000).toFixed(3)}); `
-          + `rms h error ${(Math.sqrt(sumSquares / POINTS) * 1000).toFixed(3)} mm of ${Math.sqrt(twinSquares / POINTS).toFixed(3)} m`;
+          + `rms h error ${(Math.sqrt(sumSquares / POINTS) * 1000).toFixed(3)} mm of ${Math.sqrt(twinSquares / POINTS).toFixed(3)} m; `
+          + `drawn/twin gain ${gains}; fp16 stores ${rounding.nearest ? "round to nearest" : "may round either way"} `
+          + `(stored ${rounding.stored}), so ${halfUlps} half ulps`;
         console.log(report);
         // Not a vacuous match: the points see real waves.
         expect(Math.sqrt(twinSquares / POINTS), report).toBeGreaterThan(0.02);
