@@ -292,11 +292,19 @@ describe("the run chip", () => {
     expect(chipPhaseText(chipProps({ phase: "starting" }))).toBe("Starting");
     expect(chipPhaseText(chipProps({ phase: "starting", attempt: 2 }))).toBe("Starting again (attempt 2)");
     expect(chipPhaseText(chipProps({ phase: "settling" }))).toBe("Loading the scenery");
+    // The chip names the quality in the span before these words, so they leave it out.
     expect(chipPhaseText(chipProps({ phase: "done", result: { outcome: "ok", fps: 58.4 }, nextTierIndex: 2 })))
-      .toBe("Low done: 58 fps. Loading High…");
+      .toBe("Done: 58 fps. Loading High…");
     expect(chipPhaseText(chipProps({ phase: "done", result: { outcome: "early-stop", fps: 3.1 }, nextTierIndex: null })))
+      .toBe("Stopped early: under 5 fps. Opening the report…");
+    expect(chipPhaseText(chipProps({ phase: "failed" }))).toBe("Stopped");
+    expect(chip({ phase: "failed" })).toContain("<span>Low</span><span>Stopped</span>");
+    // The announcement has no such span, so it keeps the quality.
+    expect(chipAnnouncement(chipProps({ phase: "done", result: { outcome: "ok", fps: 58.4 }, nextTierIndex: 2 })))
+      .toBe("Low done: 58 fps. Loading High…");
+    expect(chipAnnouncement(chipProps({ phase: "done", result: { outcome: "early-stop", fps: 3.1 }, nextTierIndex: null })))
       .toBe("Low stopped early: under 5 fps. Opening the report…");
-    expect(chipPhaseText(chipProps({ phase: "failed" }))).toBe("Low stopped");
+    expect(chipAnnouncement(chipProps({ phase: "failed" }))).toBe("Low stopped");
     expect(chipPhaseText(chipProps({ phase: "stopping" }))).toBe("Stopping. Opening the report…");
     expect(chip({ phase: "done", result: { outcome: "ok", fps: 58 }, nextTierIndex: 2 })).not.toContain("left</span>");
     expect(clockText(75)).toBe("1:15");

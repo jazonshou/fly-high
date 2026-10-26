@@ -44,9 +44,26 @@ export function chipProgress(props: Pick<BenchChipProps, "stepIndex" | "stepCoun
   return Math.min(1, Math.max(0, (stepIndex + within) / stepCount));
 }
 
-/** The chip's visible phase words, ticking clock included. */
-export function chipPhaseText(props: Pick<BenchChipProps, "phase" | "tierIndex" | "attempt" | "flightElapsedS" | "flightS" | "result" | "nextTierIndex">): string {
-  const tier = tierName(props.tierIndex);
+type ChipWordsProps = Pick<BenchChipProps, "phase" | "tierIndex" | "attempt" | "flightElapsedS" | "flightS" | "result" | "nextTierIndex">;
+
+/**
+ * How a step ended: after "Low " in the announcement, or on its own in the
+ * chip, whose line names the quality already.
+ */
+function endedText(phase: "done" | "failed", props: ChipWordsProps, capital: boolean): string {
+  const word = (text: string) => (capital ? text.charAt(0).toUpperCase() + text.slice(1) : text);
+  if (phase === "failed") return word("stopped");
+  const next = props.nextTierIndex === null || props.nextTierIndex === undefined
+    ? "Opening the report…"
+    : `Loading ${tierName(props.nextTierIndex)}…`;
+  const how = props.result?.outcome === "early-stop"
+    ? word("stopped early: under 5 fps.")
+    : word(`done: ${fpsText(props.result?.fps)}.`);
+  return `${how} ${next}`;
+}
+
+/** The chip's visible phase words, ticking clock included; the quality is in the span before them. */
+export function chipPhaseText(props: ChipWordsProps): string {
   switch (props.phase) {
     case "starting":
       return props.attempt > 1 ? `Starting again (attempt ${props.attempt})` : "Starting";
@@ -54,19 +71,11 @@ export function chipPhaseText(props: Pick<BenchChipProps, "phase" | "tierIndex" 
       return "Loading the scenery";
     case "flying":
       return `Flying ${clockText(props.flightElapsedS)} / ${clockText(props.flightS)}`;
-    case "done": {
-      const next = props.nextTierIndex === null || props.nextTierIndex === undefined
-        ? "Opening the report…"
-        : `Loading ${tierName(props.nextTierIndex)}…`;
-      const how = props.result?.outcome === "early-stop"
-        ? `${tier} stopped early: under 5 fps.`
-        : `${tier} done: ${fpsText(props.result?.fps)}.`;
-      return `${how} ${next}`;
-    }
+    case "done":
+    case "failed":
+      return endedText(props.phase, props, true);
     case "paused":
       return "Paused";
-    case "failed":
-      return `${tier} stopped`;
     case "stopping":
       return "Stopping. Opening the report…";
   }
@@ -89,6 +98,7 @@ export function chipAnnouncement(props: Pick<BenchChipProps, "phase" | "tierInde
       return "Benchmark paused.";
     case "done":
     case "failed":
+      return `${tierName(props.tierIndex)} ${endedText(props.phase, props, false)}`;
     case "stopping":
       return chipPhaseText(props);
   }
