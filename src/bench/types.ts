@@ -178,7 +178,10 @@ export interface BenchStepRecord {
 
 export type BenchRunStatus = "running" | "finished" | "stopped" | "no-webgpu" | "storage-unavailable";
 
-/** The page load's HTTP cache state for the page's own scripts (critique S10). */
+/**
+ * Where a page's same-origin scripts came from (critique S10). A step reads
+ * it after its flight, so the renderer's workers and shader chunks count.
+ */
 export interface BenchHttpCache {
   readonly scripts: number;
   /** Served from the cache: `transferSize` 0. */

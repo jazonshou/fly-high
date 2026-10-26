@@ -111,7 +111,13 @@ export interface StepSetup {
   /** The step's idle refresh probe, before the renderer existed. */
   readonly refresh: BenchRefresh | null;
   readonly timer: BenchTimerReport;
-  readonly load: BenchFirstLoad;
+  /**
+   * How the page was reached and where its same-origin scripts came from,
+   * read when the flight's result is collected: by then the renderer has
+   * loaded its workers and shader chunks, most of a cold step's download,
+   * none of which exists before the renderer does (critique S10).
+   */
+  readonly load: () => BenchFirstLoad;
   /** The canvas's CSS size and the device pixel ratio when the renderer was created. */
   readonly cssWidth: number;
   readonly cssHeight: number;
@@ -514,6 +520,7 @@ export class StepController implements BenchFramePort {
     const cssPixels = Math.max(1, setup.cssWidth * setup.cssHeight);
     const pixelRatio = Math.min(this.scale.maxDevicePixelRatio, setup.devicePixelRatio || 1);
     const environment = setup.environment();
+    const load = setup.load();
     const events = instruments.creations?.events ?? [];
 
     return {
@@ -526,8 +533,8 @@ export class StepController implements BenchFramePort {
       raf: rafReport(setup.refresh, flightCadence(intervals)),
       timer: setup.timer,
       startup: {
-        navigationType: setup.load.navigationType,
-        httpCache: setup.load.httpCache,
+        navigationType: load.navigationType,
+        httpCache: load.httpCache,
         rendererStages: settled?.stages ?? [],
         navToAttachMs: setup.attachedAtMs,
         navToFirstFrameMs: this.firstRenderStartMs,

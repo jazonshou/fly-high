@@ -553,7 +553,6 @@ class StepPage {
   private battery: BenchDeviceReport["battery"] = null;
   private refresh: BenchRefresh | null = null;
   private timer: BenchTimerReport = timerReport(null);
-  private load: BenchFirstLoad = { navigationType: "unknown", httpCache: null };
   private readonly gameErrors: string[] = [];
   /** The canvas's size when the renderer was created; null before. */
   private canvas: { readonly cssWidth: number; readonly cssHeight: number; readonly devicePixelRatio: number } | null = null;
@@ -611,7 +610,6 @@ class StepPage {
     await documentLoaded();
     this.refresh = await measureRefresh(this.timings.refreshProbeStepMs);
     this.timer = timerReport(measureTimerGranularity().granularityMs);
-    this.load = readHttpCache();
     this.battery = await collectBattery();
     if (this.ended) return NO_FLIGHT;
 
@@ -671,7 +669,8 @@ class StepPage {
           firstRendererInTab: this.stepIndex === 0 && this.attempt === 1 && this.run.firstLoad !== null,
           refresh: this.refresh,
           timer: this.timer,
-          load: this.load,
+          // After the flight, once the renderer has fetched its workers and shader chunks.
+          load: () => readHttpCache(),
           ...canvas,
           pinnedRenderScale: this.pinnedRenderScale,
           gpuTimingFailed: this.gpuTimingFailed,

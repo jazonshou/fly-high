@@ -494,7 +494,9 @@ export function classifyCacheState(entry: ResourceTimingLike): CacheState {
  * The page's own load: how it was reached ("navigate", "reload",
  * "back_forward", "prerender"; "unknown" without timing) and where its
  * same-origin scripts came from, workers included when the browser lists
- * them. `httpCache` is null without Resource Timing.
+ * them. A script is listed only once it has loaded, so a step page reads
+ * this after its flight, when the renderer's workers and lazily loaded
+ * shader chunks have. `httpCache` is null without Resource Timing.
  */
 export function readHttpCache(
   timing: { getEntriesByType(type: string): readonly unknown[] } | null =

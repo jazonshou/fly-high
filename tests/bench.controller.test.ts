@@ -6,12 +6,12 @@ import {
   type StepPhase,
   type StepSetup,
 } from "../src/bench/controller";
-import { createHeapSampler, type CreationCounts, type FrameClock } from "../src/bench/instruments";
+import { createHeapSampler, readHttpCache, type CreationCounts, type FrameClock } from "../src/bench/instruments";
 import { createBenchPath, createBenchVisualState, writeSettleState } from "../src/bench/path";
 import { BENCH_SEED, benchProfile, benchTimings, expectedPathFingerprint } from "../src/bench/plan";
 import { BenchRenderer, type BenchProbedRenderer } from "../src/bench/recorder";
 import { timerReport } from "../src/bench/stats";
-import type { BenchStepResult, BenchTimings } from "../src/bench/types";
+import type { BenchFirstLoad, BenchStepResult, BenchTimings } from "../src/bench/types";
 import { INITIAL_VISUAL_STATE, type FlightVisualState, type RenderDiagnostics } from "../src/game/types";
 import type { RendererBenchProbe } from "../src/render/FlightRenderer";
 import {
@@ -94,6 +94,7 @@ interface HarnessOptions {
   readonly renderThrew?: (error: unknown) => void;
   /** Runs inside each `render()`, as the renderer's own work does; `timestamp` is the frame's. */
   readonly duringRender?: (phase: StepPhase, timestamp: number) => void;
+  readonly load?: () => BenchFirstLoad;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -179,7 +180,7 @@ function harness(options: HarnessOptions = {}) {
     firstRendererInTab: true,
     refresh: { rafHz: 60, periodMs: 1_000 / 60, medianMs: 1_000 / 60, p10Ms: 16.5, p90Ms: 16.9, samples: 59, outliers: 0 },
     timer: timerReport(0.1),
-    load: { navigationType: "navigate", httpCache: null },
+    load: options.load ?? (() => ({ navigationType: "navigate", httpCache: null })),
     cssWidth: 1_280,
     cssHeight: 720,
     devicePixelRatio: 1,
@@ -509,6 +510,37 @@ describe("the step controller's flight", () => {
     // The log's last frame closes the last interval and opens none.
     expect(result.governor.flight.frames).toBe(h.controller.log.length - 1);
     expect(result.governor.atEnd).not.toBeNull();
+  });
+
+  it("reads the page's scripts after the flight, once the renderer has fetched its workers and shader chunks", () => {
+    const origin = "https://jazonshou.github.io";
+    const script = (name: string, transferSize: number, bodySize: number) => ({
+      name: `${origin}/fly-high/assets/${name}`, transferSize, encodedBodySize: bodySize, decodedBodySize: bodySize,
+    });
+    // The page's own two scripts, from the cache, are all there is before the renderer exists.
+    const entries = [script("index-Wmd7DH9j.js", 0, 1_171_000), script("session-rZoC1oyc.js", 0, 98_000)];
+    const timing = {
+      getEntriesByType: (type: string) => (type === "navigation" ? [{ type: "navigate" }] : entries),
+    };
+    let fetched = false;
+    const h = harness({
+      load: () => readHttpCache(timing, origin),
+      duringRender: (phase) => {
+        // The renderer starts its workers and loads shader chunks as it draws its first frames.
+        if (phase !== "settling" || fetched) return;
+        fetched = true;
+        entries.push(
+          script("detail.worker-DcRbokn4.js", 457_754, 457_454),
+          script("simulation.worker-C3ZI-zGi.js", 41_770, 41_470),
+          script("pbr.fragment-DYYRbIct.js", 41_484, 41_184),
+        );
+      },
+    });
+    h.run(1_000, 1_000 / 60, () => h.finished.length > 0);
+    const { startup } = h.finished[0]!.result;
+    expect(startup.navigationType).toBe("navigate");
+    expect(startup.httpCache).toMatchObject({ scripts: 5, fromCache: 2, revalidated: 0, network: 3 });
+    expect(startup.httpCache!.transferKiB).toBeGreaterThan(500);
   });
 
   it("flags a frame log that filled up, and keeps flying", () => {
