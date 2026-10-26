@@ -1,4 +1,7 @@
+import { readdirSync, readFileSync } from "node:fs";
+import type { HtmlTagDescriptor } from "vite";
 import { describe, expect, it } from "vitest";
+import { COMMIT_META_NAME, commitMetaTags } from "../scripts/commitStamp";
 import {
   buildCommit,
   collectBuild,
@@ -211,17 +214,54 @@ describe("the device report", () => {
   });
 });
 
+/** A page whose head holds `tags`, as the browser would parse them. */
+function stampedPage(tags: readonly HtmlTagDescriptor[]) {
+  return {
+    querySelector: (selector: string) => {
+      const name = /^meta\[name="([^"]+)"\]$/u.exec(selector)?.[1];
+      const tag = tags.find((each) => each.tag === "meta" && each.attrs?.name === name);
+      return tag ? { getAttribute: (attribute: string) => String(tag.attrs?.[attribute] ?? "") || null } : null;
+    },
+  };
+}
+
 describe("the build stamp", () => {
-  it("has no commit outside a Pages build", () => {
-    expect(buildCommit()).toBeNull();
+  const sha = "8813adf0c2b54f1e9d7a6b3c5e4f2a1b0c9d8e7f";
+
+  it("reads the commit a Pages build wrote into index.html", () => {
+    expect(buildCommit(stampedPage(commitMetaTags(sha)))).toBe(sha);
+    expect(commitMetaTags(sha)).toEqual([
+      { tag: "meta", attrs: { name: COMMIT_META_NAME, content: sha }, injectTo: "head" },
+    ]);
   });
 
-  it("names the entry script and the path the game is served under", () => {
+  it("has no commit outside a Pages build", () => {
+    expect(commitMetaTags(undefined)).toEqual([]);
+    expect(commitMetaTags("")).toEqual([]);
+    expect(buildCommit(stampedPage([]))).toBeNull();
+    expect(buildCommit(stampedPage(commitMetaTags("not a commit")))).toBeNull();
+  });
+
+  it("keeps the commit out of every bundled file, so a deploy renames no chunk", () => {
+    // A define (or anything else bundled) holding the commit would change the
+    // hash of the chunk it lands in and of every chunk that imports that one.
+    const config = readFileSync(new URL("../vite.static.config.ts", import.meta.url), "utf8");
+    expect(config).toContain("plugins: [react(), commitStamp(process.env.GITHUB_SHA)]");
+    expect(config.match(/GITHUB_SHA/gu)).toHaveLength(2);
+    expect(config).not.toMatch(/\bdefine\s*:/u);
+    const bench = readdirSync(new URL("../src/bench/", import.meta.url), { recursive: true, encoding: "utf8" })
+      .filter((file) => /\.tsx?$/u.test(file))
+      .map((file) => readFileSync(new URL(`../src/bench/${file}`, import.meta.url), "utf8"));
+    expect(bench.some((source) => /GITHUB_SHA|__FLY_HIGH_COMMIT__/u.test(source))).toBe(false);
+  });
+
+  it("names the commit, the entry script and the path the game is served under", () => {
+    const head = stampedPage(commitMetaTags(sha));
     const stamp = collectBuild({
       document: {
         querySelector: (selector) => selector === "script[type=\"module\"][src]"
           ? { getAttribute: () => "./assets/index-Bx1yQ9.js" }
-          : null,
+          : head.querySelector(selector),
       },
       location: {
         href: "https://jazonshou.github.io/fly-high/?bench=1",
@@ -230,7 +270,7 @@ describe("the build stamp", () => {
       },
     });
     expect(stamp).toEqual({
-      commit: null,
+      commit: sha,
       entryScript: "/fly-high/assets/index-Bx1yQ9.js",
       base: "/fly-high/",
       origin: "https://jazonshou.github.io",

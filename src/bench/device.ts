@@ -255,16 +255,22 @@ export interface BuildStamp {
   readonly origin: string;
 }
 
-/** `__FLY_HIGH_COMMIT__` where a build defines it (`src/bench/env.d.ts`). */
-export function buildCommit(): string | null {
-  return typeof __FLY_HIGH_COMMIT__ === "string" && __FLY_HIGH_COMMIT__ !== ""
-    ? __FLY_HIGH_COMMIT__
-    : null;
+interface StampedDocument {
+  querySelector(selector: string): { getAttribute(name: string): string | null } | null;
+}
+
+/**
+ * The commit a Pages build wrote into its index.html (scripts/commitStamp.ts),
+ * or null on a page without one: a local build, the dev server, the Worker.
+ */
+export function buildCommit(page: StampedDocument = document): string | null {
+  const commit = page.querySelector("meta[name=\"fly-high-commit\"]")?.getAttribute("content")?.trim() ?? "";
+  return /^[0-9a-f]{7,64}$/iu.test(commit) ? commit.toLowerCase() : null;
 }
 
 export function collectBuild(
   page: {
-    readonly document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null };
+    readonly document: StampedDocument;
     readonly location: { readonly pathname: string; readonly origin: string; readonly href: string };
   } = { document, location },
 ): BuildStamp {
@@ -279,7 +285,7 @@ export function collectBuild(
   }
   const { pathname, origin } = page.location;
   return {
-    commit: buildCommit(),
+    commit: buildCommit(page.document),
     entryScript,
     base: pathname.slice(0, pathname.lastIndexOf("/") + 1),
     origin,
