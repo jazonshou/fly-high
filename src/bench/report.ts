@@ -158,7 +158,11 @@ export function outcomeText(outcome: BenchStepStatus, message?: string | null): 
  * a tier or a step. The first and last flights of one quality are the run's
  * check on itself, which "Valid" passed: steady numbers, not good ones.
  */
-export function verdictText(run: Pick<BenchReportRun, "status" | "verdict" | "voidReasons" | "repeatability">): string {
+export function verdictText(
+  run: Pick<BenchReportRun, "status" | "verdict" | "voidReasons" | "repeatability"> & {
+    readonly plan: Pick<BenchReportRun["plan"], "tiers">;
+  },
+): string {
   const pair = run.repeatability
     ? `the first and last ${benchTierName(run.repeatability.tierIndex)} flights`
     : "the first and last flights";
@@ -172,7 +176,9 @@ export function verdictText(run: Pick<BenchReportRun, "status" | "verdict" | "vo
         ? "Incomplete: the run was stopped before it could check itself."
         : `Incomplete: one of ${pair}, which check the run, did not finish.`;
     case "unchecked":
-      return "Unchecked: this run does not start and end on the same quality, so it cannot check itself.";
+      return run.plan.tiers.length < 2
+        ? "Unchecked: one flight cannot check itself; fly the same quality first and last (the default list does)."
+        : "Unchecked: this run does not start and end on the same quality, so it cannot check itself.";
   }
 }
 

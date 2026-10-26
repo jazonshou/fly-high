@@ -363,6 +363,15 @@ describe("the verdict", () => {
       .toBe("Unchecked: this run does not start and end on the same quality, so it cannot check itself.");
     expect(verdictOf(withSteps(run, [first])).verdict).toBe("unchecked");
   });
+
+  it("says a one-flight run is unchecked because one flight has nothing to be compared with", () => {
+    // tiers=1: it starts and ends on Medium, so the other reason would be false.
+    const single = report(benchRunRecord({ steps: [{ tierIndex: 1, status: "early-stop" }] }));
+    expect(single.run.plan.tiers).toEqual([1]);
+    expect(single.run.verdict).toBe("unchecked");
+    expect(verdictText(single.run))
+      .toBe("Unchecked: one flight cannot check itself; fly the same quality first and last (the default list does).");
+  });
 });
 
 describe("plain-language labels", () => {

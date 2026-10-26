@@ -3295,8 +3295,8 @@ throttling laptop, another program, a window resized between them); those
 two are the only rules that void a run, and every number is still in the
 report.
 **Incomplete** is a run that was stopped or whose check flight did not
-finish, and **unchecked** a plan that does not start and end on the same
-tier. Everything else worth knowing (a display under 50 Hz, a refresh rate
+finish, and **unchecked** a plan of one flight, or one that does not start
+and end on the same tier. Everything else worth knowing (a display under 50 Hz, a refresh rate
 that moved, a coarse timer, a settle that hit its cap, a battery
 discharging, focus lost, a denied wake lock) is a warning beside the
 numbers, and the first flight in the tab is marked, because it pays the
