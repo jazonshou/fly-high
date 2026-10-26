@@ -218,6 +218,27 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "bits and an in-place upload never changes a bake both cover.",
   },
   {
+    // The infrastructure stage's GPU half: the packed index (the
+    // `terrainInfrastructureData` binding), the stage that applies it after
+    // the landforms, and the per-consumer binding that packs it. The profiles
+    // themselves are defined once, CPU and WGSL side by side, in
+    // src/world/infrastructureProfiles.ts.
+    artifact: "terrain-infrastructure-index",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainInfrastructureKernel.ts"],
+    consumers: ["terrain-geometry", "water"],
+    ownedSymbols: [
+      "TERRAIN_INFRASTRUCTURE_WGSL",
+      "packTerrainInfrastructure",
+      "TerrainInfrastructureData",
+      "TerrainInfrastructureDataBinding",
+    ],
+    notes:
+      "A transliteration of src/world/infrastructure.ts. The index origin is the "
+      + "landform core centre and points arrive split like the volcanic overlay's, "
+      + "so precision holds anywhere a marina or road can be.",
+  },
+  {
     artifact: "terrain-page-atlas",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainPageAtlas.ts"],
