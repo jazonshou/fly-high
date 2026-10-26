@@ -3286,7 +3286,9 @@ windows:
 
 The run's verdict checks the run against itself: the default plan flies
 Medium first and last, and **valid** means those two flights' mean fps agree
-within 10% and the window kept its size. **Void** means they did not (a
+within 10% and the window kept its size. The two are compared over the air
+window, or, when either stopped early, over the stretch the early check
+reads (3 s to 20 s), which both flew. **Void** means they did not (a
 throttling laptop, another program, a window resized between them); those
 two are the only rules that void a run, and every number is still in the
 report.

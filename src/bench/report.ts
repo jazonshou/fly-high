@@ -55,7 +55,7 @@ export const BENCH_DEFINITIONS: Readonly<Record<string, string>> = Object.freeze
   gpuMs: "GPU frame time from timestamp queries; pinned mode only, where the renderer measures it.",
   over27_4: "Frames slower than 27.4 ms (twice the 13.7 ms frame target), per 240 frames and per minute.",
   missedRefresh: "Intervals longer than 1.5 refresh periods of the step's idle refresh probe.",
-  spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier. Over 10% voids the run.",
+  spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier, over the air window, or over the early check's stretch when either stopped early. Over 10% voids the run.",
   rafHz: "The browser's frame rate with nothing to draw, which is not always the panel's refresh rate.",
   heap: "performance.memory, coarse outside a flagged Chromium; null and stale when it never changed.",
   shares: "Fractions of the window's frames, from the pixels the engine actually rendered.",
@@ -161,9 +161,25 @@ function benchTierName(tierIndex: number): string {
 
 // --- verdict and warnings -------------------------------------------------------------
 
-/** The headline fps: the air window's, or for an early stop the fps it stopped at. */
-function headlineFps(step: BenchStepRecord): number | null {
-  return step.result?.windows.air?.fps ?? step.result?.flight.earlyStopFps ?? null;
+/**
+ * The check flights' fps from one part of the route: the air window when
+ * both reached it, otherwise the early check's stretch (3 s to 20 s), which
+ * a flight that stopped early has and one that flew on has too. An early
+ * stop's fps is the roll and climb's, not the cruise's, so it is never set
+ * against an air window.
+ */
+function checkFlightFps(
+  first: BenchStepRecord,
+  last: BenchStepRecord,
+): { readonly window: BenchRepeatability["window"]; readonly first: number | null; readonly last: number | null } {
+  const firstAir = first.result?.windows.air?.fps ?? null;
+  const lastAir = last.result?.windows.air?.fps ?? null;
+  if (firstAir !== null && lastAir !== null) return { window: "air", first: firstAir, last: lastAir };
+  return {
+    window: "early-check",
+    first: first.result?.flight.earlyCheckFps ?? null,
+    last: last.result?.flight.earlyCheckFps ?? null,
+  };
 }
 
 /**
@@ -174,9 +190,8 @@ export function computeRepeatability(steps: readonly BenchStepRecord[]): BenchRe
   const first = steps[0];
   const last = steps[steps.length - 1];
   if (!first || !last || steps.length < 2 || first.tierIndex !== last.tierIndex) return null;
-  const firstFps = headlineFps(first);
-  const lastFps = headlineFps(last);
-  const value = spread(firstFps, lastFps);
+  const fps = checkFlightFps(first, last);
+  const value = spread(fps.first, fps.last);
   const firstCanvas = first.result?.canvas;
   const lastCanvas = last.result?.canvas;
   const canvasChange = firstCanvas && lastCanvas
@@ -188,9 +203,10 @@ export function computeRepeatability(steps: readonly BenchStepRecord[]): BenchRe
   const lastRefresh = last.result?.refresh?.rafHz ?? null;
   return {
     metric: "meanFps",
+    window: fps.window,
     tierIndex: first.tierIndex,
-    first: firstFps,
-    last: lastFps,
+    first: fps.first,
+    last: fps.last,
     spread: value,
     threshold: REPEATABILITY_THRESHOLD,
     passed: value !== null && value <= REPEATABILITY_THRESHOLD
@@ -234,7 +250,8 @@ export function computeVerdict(
   if (repeatability.spread > REPEATABILITY_THRESHOLD) {
     reasons.push(
       `the first and last ${benchTierName(repeatability.tierIndex)} flights differ by `
-      + `${(repeatability.spread * 100).toFixed(1)}% (limit 10%)`,
+      + `${(repeatability.spread * 100).toFixed(1)}% (limit 10%)`
+      + (repeatability.window === "early-check" ? ", measured before the cruise because one stopped early" : ""),
     );
   }
   if (repeatability.canvasChange !== null && repeatability.canvasChange > CANVAS_CHANGE_THRESHOLD) {

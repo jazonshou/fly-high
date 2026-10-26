@@ -279,7 +279,7 @@ describe("the verdict", () => {
 
   it("is valid when the first and last Medium flights agree within 10%", () => {
     expect(full.run.verdict).toBe("valid");
-    expect(full.run.repeatability).toMatchObject({ metric: "meanFps", tierIndex: 1, threshold: 0.1, passed: true });
+    expect(full.run.repeatability).toMatchObject({ metric: "meanFps", window: "air", tierIndex: 1, threshold: 0.1, passed: true });
     expect(full.run.repeatability!.spread).toBeGreaterThan(0);
     expect(full.run.repeatability!.spread).toBeLessThan(0.1);
     expect(verdictText(full.run)).toBe("Valid: the first and last Medium flights agree within 10%.");
@@ -313,12 +313,28 @@ describe("the verdict", () => {
     expect(verdictOf(withSteps(run, [first, steps[1]!, steps[2]!, voided])).verdict).toBe("incomplete");
   });
 
-  it("uses an early stop's fps as the headline", () => {
+  it("compares an early stop with the other check flight over the same stretch, not the air window", () => {
     const stopped = benchStepRecord(3, { tierIndex: 1, status: "early-stop" });
     const early = withSteps(run, [first, steps[1]!, steps[2]!, stopped]);
     const repeatability = computeRepeatability(early.steps)!;
-    expect(repeatability.last).toBe(4.2);
+    expect(repeatability).toMatchObject({ window: "early-check", last: 4.2 });
+    expect(repeatability.first).toBe(first.result!.flight.earlyCheckFps);
     expect(verdictOf(early).verdict).toBe("void");
+    expect(verdictOf(early).voidReasons[0]).toMatch(/, measured before the cruise because one stopped early$/u);
+
+    // A first flight at 5.4 fps in the air and 5.0 over the early check's
+    // stretch agrees with a last flight that stopped early at 4.9 fps.
+    const slowFirst: BenchStepRecord = {
+      ...withAir(first, 5.4),
+      result: { ...withAir(first, 5.4).result!, flight: { ...first.result!.flight, earlyCheckFps: 5 } },
+    };
+    const slowLast: BenchStepRecord = {
+      ...stopped,
+      result: { ...stopped.result!, flight: { ...stopped.result!.flight, earlyStopFps: 4.9, earlyCheckFps: 4.9 } },
+    };
+    const slow = computeRepeatability([slowFirst, steps[1]!, steps[2]!, slowLast])!;
+    expect(slow).toMatchObject({ window: "early-check", first: 5, last: 4.9, passed: true });
+    expect(verdictOf(withSteps(run, [slowFirst, steps[1]!, steps[2]!, slowLast])).verdict).toBe("valid");
   });
 
   it("is unchecked when the plan does not start and end on the same tier", () => {

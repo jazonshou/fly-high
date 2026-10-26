@@ -738,7 +738,13 @@ export interface BenchPathSummary {
 export interface BenchFlightSummary {
   /** Seconds flown from the first frame; short of the plan after an early stop. */
   readonly seconds: number;
+  /** The early check's fps, for a flight it stopped; null otherwise. */
   readonly earlyStopFps: number | null;
+  /**
+   * Mean fps from `earlyStopFromS` to `earlyStopAtS`, which every flight that
+   * gets that far is checked on; null for one that did not.
+   */
+  readonly earlyCheckFps: number | null;
 }
 
 export interface BenchStepResult {
@@ -866,6 +872,11 @@ export interface BenchWarning {
 
 export interface BenchRepeatability {
   readonly metric: "meanFps";
+  /**
+   * The part of the route both check flights' fps come from: the air window,
+   * or the early check's stretch when either flight stopped early.
+   */
+  readonly window: "air" | "early-check";
   readonly tierIndex: number;
   readonly first: number | null;
   readonly last: number | null;

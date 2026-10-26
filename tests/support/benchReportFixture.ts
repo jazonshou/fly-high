@@ -2,6 +2,7 @@ import { GovernorTrace, pixelsAtScale, type ScaleContext } from "@/src/bench/gov
 import { benchProfile, benchRunPlan, benchTier, benchTimings, expectedPathFingerprint } from "@/src/bench/plan";
 import {
   createFrameLog,
+  earlyStopCheck,
   estimateRefresh,
   flightCadence,
   flightSegments,
@@ -292,6 +293,7 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
     flight: {
       seconds: flightS,
       earlyStopFps: status === "early-stop" ? 4.2 : null,
+      earlyCheckFps: status === "early-stop" ? 4.2 : earlyStopCheck(log, context, timings).fps,
     },
     windows: { ground, air },
     histogram: air === null ? null : windowHistogram(log, timings.air, context),

@@ -318,6 +318,8 @@ describe("the step controller's flight", () => {
     expect(result.flight.seconds).toBeGreaterThanOrEqual(quick.flightS);
     expect(result.flight.seconds).toBeLessThan(quick.flightS + 0.05);
     expect(result.flight.earlyStopFps).toBeNull();
+    // A flight that flew on still has the early check's fps, to set against one that stopped.
+    expect(result.flight.earlyCheckFps).toBeCloseTo(60, 0);
     // 60 Hz: four seconds of ground, ten of air.
     expect(result.windows.ground!.frames).toBeGreaterThanOrEqual(239);
     expect(result.windows.ground!.frames).toBeLessThanOrEqual(241);
@@ -472,6 +474,7 @@ describe("the step controller's flight", () => {
     expect(result.flight.seconds).toBeGreaterThanOrEqual(quick.earlyStopAtS);
     expect(result.flight.seconds).toBeLessThan(quick.earlyStopAtS + 0.3);
     expect(result.flight.earlyStopFps).toBeCloseTo(4, 6);
+    expect(result.flight.earlyCheckFps).toBe(result.flight.earlyStopFps);
     // The air window never began.
     expect(result.windows.air).toBeNull();
     expect(result.histogram).toBeNull();

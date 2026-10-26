@@ -210,7 +210,7 @@ export class StepController implements BenchFramePort {
   private lastPixels: number | null = null;
   private lastCompileTotal = 0;
   private earlyStopChecked = false;
-  private earlyStopFps: number | null = null;
+  private earlyCheckFps: number | null = null;
   private readonly secondSamples: (BenchSecondSample | null)[];
   /**
    * Compile counts at each boundary, taken BEFORE the render of the frame that
@@ -329,8 +329,8 @@ export class StepController implements BenchFramePort {
     if (!this.earlyStopChecked && t >= this.timings.earlyStopAtS) {
       this.earlyStopChecked = true;
       const check = earlyStopCheck(this.log, { flightStartMs: this.flightStartMs }, this.timings);
+      this.earlyCheckFps = check.fps;
       if (check.stop) {
-        this.earlyStopFps = check.fps;
         this.finish("early-stop", compilesBefore);
         return;
       }
@@ -554,7 +554,11 @@ export class StepController implements BenchFramePort {
         gpuTiming: this.gpuTiming(),
       },
       environment: { ...environment, overflowed: this.log.overflowed },
-      flight: { seconds: flown, earlyStopFps: outcome === "early-stop" ? this.earlyStopFps : null },
+      flight: {
+        seconds: flown,
+        earlyStopFps: outcome === "early-stop" ? this.earlyCheckFps : null,
+        earlyCheckFps: this.earlyCheckFps,
+      },
       windows: { ground, air },
       histogram: air ? windowHistogram(this.log, this.timings.air, context) : null,
       segments: flightSegments(this.log, context, outcome === "early-stop" ? Math.ceil(flown) : this.timings.flightS),
