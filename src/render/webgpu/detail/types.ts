@@ -1,5 +1,6 @@
 import type { TerrainBiomeId, WorldSeed } from "@/src/world";
 import type { AirportDefinition } from "@/src/world/types";
+import type { InfrastructurePlantExclusion } from "@/src/world/infrastructure";
 import type {
   StructureExclusionBox,
   StructureExclusionSite,
@@ -121,6 +122,12 @@ export interface DetailCellGenerationOptions {
    * `world.seedHash` (`airfieldStructureExclusionSites`).
    */
   readonly structureExclusionSites?: readonly StructureExclusionSite[];
+  /**
+   * Built ground no plant grows on (`infrastructurePlantExclusions`): the
+   * same hard gate at the stem as the structures, plus the ground-cover
+   * grid's coverage. Plain data, for the worker; filtered to the cell here.
+   */
+  readonly plantExclusions?: readonly InfrastructurePlantExclusion[];
 }
 
 export interface DetailTreePlacement {

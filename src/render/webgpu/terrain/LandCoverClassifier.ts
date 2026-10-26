@@ -2121,6 +2121,71 @@ fn splatAlignSeasonalWeights(
   if (totalHi > 0.0) { result.weightsHi = result.weightsHi / totalHi; }
   return result;
 }
+
+/**
+ * Built ground's paint over the aligned weights: surface is
+ * (material id, coverage) from terrainInfrastructureSurface, which the
+ * COMPOSER supplies with the infrastructure include (terrainPageSplatWgsl).
+ * The material takes its own slot, or the slot weakest in both seasons; the
+ * other weights keep (1 - coverage) of themselves and the material gains
+ * the coverage, in both buckets, so full coverage is the material alone.
+ * The slots are then put back in descending order. No coverage: the weights
+ * exactly as aligned.
+ */
+fn splatApplyInfrastructureSurface(
+  aligned: SeasonalLandCoverWeights,
+  surface: vec2f,
+) -> SeasonalLandCoverWeights {
+  let coverage = surface.y;
+  if (!(coverage > 0.0)) { return aligned; }
+  var result = aligned;
+  var slot = LAND_COVER_TOP;
+  for (var index = 0u; index < LAND_COVER_TOP; index = index + 1u) {
+    if (result.ids[index] == surface.x) { slot = index; }
+  }
+  if (slot == LAND_COVER_TOP) {
+    slot = 0u;
+    var weakest = 2.0;
+    for (var index = 0u; index < LAND_COVER_TOP; index = index + 1u) {
+      let strength = max(result.weightsLo[index], result.weightsHi[index]);
+      if (strength < weakest) {
+        weakest = strength;
+        slot = index;
+      }
+    }
+    result.ids[slot] = surface.x;
+    result.weightsLo[slot] = 0.0;
+    result.weightsHi[slot] = 0.0;
+  }
+  let keep = 1.0 - coverage;
+  result.weightsLo = result.weightsLo * keep;
+  result.weightsHi = result.weightsHi * keep;
+  result.weightsLo[slot] = result.weightsLo[slot] + coverage;
+  result.weightsHi[slot] = result.weightsHi[slot] + coverage;
+  let totalLo = dot(result.weightsLo, vec4f(1.0));
+  let totalHi = dot(result.weightsHi, vec4f(1.0));
+  if (totalLo > 0.0) { result.weightsLo = result.weightsLo / totalLo; }
+  if (totalHi > 0.0) { result.weightsHi = result.weightsHi / totalHi; }
+  // Descending by the alignment's own score, max over the two buckets.
+  for (var sweep = 1u; sweep < LAND_COVER_TOP; sweep = sweep + 1u) {
+    for (var index = 0u; index + sweep < LAND_COVER_TOP; index = index + 1u) {
+      let next = index + 1u;
+      if (max(result.weightsLo[next], result.weightsHi[next])
+        > max(result.weightsLo[index], result.weightsHi[index])) {
+        let id = result.ids[index];
+        let lo = result.weightsLo[index];
+        let hi = result.weightsHi[index];
+        result.ids[index] = result.ids[next];
+        result.weightsLo[index] = result.weightsLo[next];
+        result.weightsHi[index] = result.weightsHi[next];
+        result.ids[next] = id;
+        result.weightsLo[next] = lo;
+        result.weightsHi[next] = hi;
+      }
+    }
+  }
+  return result;
+}
 ${FAR_SWARD_BAKE_GATE_WGSL}
 @compute @workgroup_size(8, 8, 1)
 fn bakeSplat(
@@ -2185,7 +2250,10 @@ fn bakeSplat(
   }
   let lo = splatSupersample(job, localX, localZ, job.placement.z, tapCanopy, province, sandCover);
   let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province, sandCover);
-  let aligned = splatAlignSeasonalWeights(lo, hi);
+  // Built ground: the paint its segments carry (Concrete on a slipway, say),
+  // over the classified cover. Nothing reaches: the cover exactly as before.
+  let built = terrainInfrastructureSurface(localX, localZ);
+  let aligned = splatApplyInfrastructureSurface(splatAlignSeasonalWeights(lo, hi), built);
   textureStore(splatId, texel, aligned.ids * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in
   // BOTH season buckets, and costs nothing.
@@ -2220,6 +2288,9 @@ fn bakeSplat(
     closure = closure * (1.0 - landCoverVolcanicBareShare(
       splatLandCoverInput(job, localX, localZ, job.placement.z, centreTap, province, sandCover)));
   }
+  // Built ground grows no trees (generation.ts gates them on the same
+  // segments), so the far canopy leaves its paved share bare.
+  if (built.y > 0.0) { closure = closure * (1.0 - built.y); }
   textureStore(splatWeightLo, texel, vec4f(aligned.weightsLo.xyz, closure));
   textureStore(splatWeightHi, texel, vec4f(aligned.weightsHi.xyz, splatFarSwardGateStored(aligned)));
 }

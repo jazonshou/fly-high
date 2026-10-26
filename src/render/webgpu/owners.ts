@@ -226,7 +226,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     artifact: "terrain-infrastructure-index",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainInfrastructureKernel.ts"],
-    consumers: ["terrain-geometry", "water"],
+    consumers: ["terrain-geometry", "terrain-material", "water"],
     ownedSymbols: [
       "TERRAIN_INFRASTRUCTURE_WGSL",
       "packTerrainInfrastructure",
@@ -236,7 +236,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     notes:
       "A transliteration of src/world/infrastructure.ts. The index origin is the "
       + "landform core centre and points arrive split like the volcanic overlay's, "
-      + "so precision holds anywhere a marina or road can be.",
+      + "so precision holds anywhere a marina or road can be. The page and sea-depth "
+      + "bakes read its heights; the splat bake reads only its surface paint "
+      + "(terrainInfrastructureSurface), since its heights are already in the atlas.",
   },
   {
     artifact: "terrain-page-atlas",

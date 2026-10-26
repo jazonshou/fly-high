@@ -233,6 +233,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
       ["Volcanic materials", (p: (typeof PROFILES)[number]) => p.volcanicMaterials],
       ["Vegetation casts shadows",
         (p: (typeof PROFILES)[number]) => p.vegetationCastsShadows],
+      ["Home marina casts shadows",
+        (p: (typeof PROFILES)[number]) => p.marinaCastsShadows],
     ];
 
   it.each(TIER_BOOLEAN_ROW_CHECKS)(

@@ -5,6 +5,7 @@ import { createWaterSurfaceSample, type WaterSurfaceAuthority, type WaterSurface
 import {
   FLOATING_BOX_KINDS,
   marinaBoxOrientation,
+  marinaMooredBoatBox,
   marinaToWorld,
   type MarinaBox,
   type MarinaLayout,
@@ -16,6 +17,8 @@ import {
  * beacon towers are capsules, the pier deck, gangway, quay wall and buildings
  * are static boxes, and every pontoon module and finger is a kinematic box
  * that rides the (calmed) sea, posed every step from the water authority.
+ * The moored runabouts are static boxes too, so the boat cannot pass
+ * through the ones on screen.
  *
  * Every collider is built from `homeMarina(world)`'s records, the same ones
  * the renderer draws, so a pile a hull hits is the pile on screen.
@@ -31,6 +34,7 @@ export const MARINA_COLLIDER_MATERIAL = Object.freeze({
   concrete: 102,
   pontoon: 103,
   steel: 104,
+  hull: 105,
 });
 
 /**
@@ -38,13 +42,15 @@ export const MARINA_COLLIDER_MATERIAL = Object.freeze({
  * (`BoatEnvironment.contactMaterials`). Fendered pontoons give: a 1,800 kg
  * runabout's 3.5 m/s knock (11 kJ) is what a pontoon's rubbing strake is
  * built to take. Bare timber and steel piles take the boat's own default, and
- * the concrete quay wall is the hardest face in the marina.
+ * the concrete quay wall is the hardest face in the marina. A moored boat's
+ * topsides flex between the two: a 3 m/s knock on one is a crash.
  */
 export const MARINA_CONTACT_MATERIALS: ReadonlyMap<number, Readonly<BoatContactMaterial>> = new Map<number, Readonly<BoatContactMaterial>>([
   [MARINA_COLLIDER_MATERIAL.pontoon, Object.freeze({ crashSpeed: 4, stiffness: 1.5e5, damping: 9e3, friction: 0.15 })],
   [MARINA_COLLIDER_MATERIAL.timber, Object.freeze({ crashSpeed: 2.5, stiffness: 4e5, damping: 1.2e4, friction: 0.3 })],
   [MARINA_COLLIDER_MATERIAL.steel, Object.freeze({ crashSpeed: 2.5, stiffness: 4e5, damping: 1.2e4, friction: 0.25 })],
   [MARINA_COLLIDER_MATERIAL.concrete, Object.freeze({ crashSpeed: 2, stiffness: 6e5, damping: 1.5e4, friction: 0.4 })],
+  [MARINA_COLLIDER_MATERIAL.hull, Object.freeze({ crashSpeed: 3, stiffness: 2.5e5, damping: 1e4, friction: 0.2 })],
 ]);
 
 /** Collider group of the home marina, for `ColliderWorld.removeGroup`. */
@@ -117,6 +123,20 @@ export function addMarinaColliders(
       },
     ));
   }
+  for (const berth of layout.berths) {
+    if (!berth.occupied) continue;
+    const box = marinaMooredBoatBox(layout.frame, berth, layout.seaLevel);
+    const p = marinaToWorld(layout.frame, box.right, box.out);
+    staticHandles.push(colliders.addStatic(
+      { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents: { x: box.halfRight, y: box.halfHeight, z: box.halfOut } },
+      {
+        material: MARINA_COLLIDER_MATERIAL.hull,
+        group,
+        position: { x: p.x, y: box.y, z: p.z },
+        orientation: marinaBoxOrientation(layout.frame, box),
+      },
+    ));
+  }
   return Object.freeze({ group, staticHandles: Object.freeze(staticHandles), pontoons: Object.freeze(pontoons) });
 }
 
@@ -131,8 +151,9 @@ function multiply(a: Quaternion, b: Quaternion): Quaternion {
 
 /**
  * How much of the surface's tilt a pontoon takes: a 12 m module bridges the
- * short waves, so it follows the slope at its centre only partly. Applied to
- * the drawn pontoons too, through `marinaPontoonPose`.
+ * short waves, so it follows the slope at its centre only partly. The drawn
+ * pontoons stand at rest for now: the renderer has no sea sample on the main
+ * thread yet, and in the calmed basin the difference is the basin's swell.
  */
 export const PONTOON_TILT_FOLLOW = 0.5;
 
