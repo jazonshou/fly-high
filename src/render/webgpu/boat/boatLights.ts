@@ -112,19 +112,26 @@ export interface BoatLampPlacement {
   readonly allRound: readonly [number, number, number];
 }
 
+/** A wash of the boat's own lamp: the aircraft table's shape, without a range of its own. */
+export type BoatWashLight = Omit<AircraftWashLight, "rangeMeters">;
+
 /**
- * Spill of the boat's own lamps onto its own deck, for the clustered
- * container, in the aircraft wash table's shape. Small ranges keep the spill
- * on the boat, as the aircraft's keep theirs on the airframe.
+ * Spill of the boat's sidelights onto its own foredeck. The clustered
+ * container takes its lights at construction and exposes no `add`, and every
+ * airframe's wash table has a port and a starboard nav wash in these same
+ * colours, so while the boat is on screen its washes RIDE those two slots,
+ * matched by `driver`: the container, and so every aircraft frame, stay
+ * exactly what they were. A slot keeps its airframe's range (9 to 24 m); the
+ * boat's intensity, falling off with the inverse square, keeps the spill on
+ * the deck round the lantern.
  */
-export function boatWashLights(lamps: BoatLampPlacement): readonly AircraftWashLight[] {
+export function boatWashLights(lamps: BoatLampPlacement): readonly BoatWashLight[] {
   return Object.freeze([
     Object.freeze({
       name: "boat-sidelight-wash-port",
       offset: lamps.port,
       color: [1, 0.125, 0.094] as const,
       intensity: 0.9,
-      rangeMeters: 3,
       driver: "portNav" as const,
     }),
     Object.freeze({
@@ -132,7 +139,6 @@ export function boatWashLights(lamps: BoatLampPlacement): readonly AircraftWashL
       offset: lamps.starboard,
       color: [0.141, 1, 0.514] as const,
       intensity: 0.9,
-      rangeMeters: 3,
       driver: "starboardNav" as const,
     }),
   ]);

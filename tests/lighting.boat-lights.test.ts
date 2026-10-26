@@ -8,7 +8,8 @@ import {
   resolveBoatLights,
   type BoatNavLight,
 } from "../src/render/webgpu/boat/boatLights";
-import { NAV_LIGHT_OUT_OF_ARC_SCALE } from "../src/render/webgpu/lighting/AircraftLighting";
+import { aircraftWashLights, NAV_LIGHT_OUT_OF_ARC_SCALE } from "../src/render/webgpu/lighting/AircraftLighting";
+import { AIRCRAFT_KINDS } from "../src/sim";
 
 const NIGHT = Math.sin((-12 * Math.PI) / 180);
 const NOON = Math.sin((60 * Math.PI) / 180);
@@ -79,13 +80,25 @@ describe("boat navigation lights (COLREGs Rules 21 and 23)", () => {
     expect(byDay.tailNav).toBe(0);
   });
 
-  it("spills each sidelight on its own deck in its own colour, within a few metres", () => {
+  it("spills each sidelight on its own deck in its own colour", () => {
     const washes = boatWashLights({ port: [3, 0.9, -0.1], starboard: [3, 0.9, 0.1], allRound: [-2, 2, 0] });
     expect(washes.map((wash) => wash.driver)).toEqual(["portNav", "starboardNav"]);
     const [port, starboard] = washes;
     expect(port!.offset).toEqual([3, 0.9, -0.1]);
     expect(port!.color[0]).toBeGreaterThan(port!.color[1]);
     expect(starboard!.color[1]).toBeGreaterThan(starboard!.color[0]);
-    for (const wash of washes) expect(wash.rangeMeters).toBeLessThanOrEqual(3);
+    // A tenth of its strength or less beyond 3 m, under the inverse square.
+    for (const wash of washes) expect(wash.intensity / 3 ** 2).toBeLessThanOrEqual(0.1);
+  });
+
+  it("rides a slot every airframe has, in that slot's own colour", () => {
+    const washes = boatWashLights({ port: [3, 0.9, -0.1], starboard: [3, 0.9, 0.1], allRound: [-2, 2, 0] });
+    for (const kind of AIRCRAFT_KINDS) {
+      for (const wash of washes) {
+        const slots = aircraftWashLights(kind).filter((slot) => slot.driver === wash.driver);
+        expect(slots, `${kind} ${wash.driver}`).toHaveLength(1);
+        expect(slots[0]!.color, `${kind} ${wash.driver}`).toEqual(wash.color);
+      }
+    }
   });
 });
