@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   createOceanWave,
+  OCEAN_FULLY_DEVELOPED_WAVE_HEIGHT,
   oceanCascadeFrequencyReach,
+  oceanEffectiveFetchMeters,
+  oceanExpectedHeightVariance,
   oceanInitialWave,
+  oceanSeaStateEnergyScale,
   oceanSignedFrequencyIndex,
   oceanSpectrumParameters,
   oceanWavePhaseIndex,
@@ -63,11 +67,11 @@ describe("tier-independent ocean spectrum", () => {
         windSpeedMetersPerSecond: wind,
         windDirection: WIND_DIRECTION,
       });
+      let nonzero = 0;
       for (let cascade = 1; cascade < 5; cascade += 1) {
         expect(oceanCascadeFrequencyReach(high, cascade)).toBeLessThanOrEqual(63);
         const lowParams = oceanSpectrumParameters(low, cascade);
         const highParams = oceanSpectrumParameters(high, cascade);
-        let nonzero = 0;
         let outside = 0;
         let mismatched = 0;
         for (let fy = -127; fy <= 128; fy += 1) {
@@ -84,7 +88,67 @@ describe("tier-independent ocean spectrum", () => {
           }
         }
         expect({ cascade, wind, outside, mismatched }).toEqual({ cascade, wind, outside: 0, mismatched: 0 });
-        expect(nonzero).toBeGreaterThan(100);
+      }
+      // A light wind's sea has no energy in the kilometre band, so count them together.
+      expect(nonzero).toBeGreaterThan(1_000);
+    }
+  });
+});
+
+describe("D1: the sea is capped at the Pierson-Moskowitz limit", () => {
+  const gravity = resolveSpectralOceanConfig().gravityMetersPerSecondSquared;
+  const canonical = (wind: number) => resolveSpectralOceanConfig({
+    resolution: 256,
+    seed: SHIPPING_SEED,
+    windSpeedMetersPerSecond: wind,
+    windDirection: WIND_DIRECTION,
+  });
+  const drawnHeight = (wind: number) => {
+    const config = canonical(wind);
+    return 4 * Math.sqrt(oceanExpectedHeightVariance(
+      config,
+      oceanEffectiveFetchMeters(config),
+      oceanSeaStateEnergyScale(config),
+    ));
+  };
+
+  it("grows a light wind's sea over no more fetch than full development", () => {
+    for (const wind of [2, 3.5, 6, 8]) {
+      const fetch = oceanEffectiveFetchMeters(canonical(wind));
+      const peak = 22 * Math.cbrt((gravity * gravity) / (wind * fetch));
+      expect(peak).toBeCloseTo((0.855 * gravity) / wind, 9);
+    }
+    // 12 m/s over 120 km is still fetch-limited: the shipped default is untouched.
+    expect(oceanEffectiveFetchMeters(canonical(12))).toBe(120_000);
+  });
+
+  it("holds the drawn wave height at or under 0.22 U^2/g, and leaves strong winds alone", () => {
+    // Before D1 (measured by the boats plan): 0.84 m at 3.5 m/s and 1.62 m at 7 m/s.
+    for (const wind of [3.5, 5.966, 7, 9.623]) {
+      const limit = (OCEAN_FULLY_DEVELOPED_WAVE_HEIGHT * wind * wind) / gravity;
+      expect(drawnHeight(wind) / limit).toBeCloseTo(1, 9);
+    }
+    for (const wind of [11, 12, 14]) {
+      expect(oceanSeaStateEnergyScale(canonical(wind))).toBe(1);
+    }
+  });
+
+  it("applies one factor at every tier, through the parameters the GPU uploads", () => {
+    for (const wind of [3.5, 7]) {
+      const low = resolveSpectralOceanConfig({
+        resolution: 128,
+        seed: SHIPPING_SEED,
+        windSpeedMetersPerSecond: wind,
+        windDirection: WIND_DIRECTION,
+      });
+      const high = canonical(wind);
+      const scale = oceanSeaStateEnergyScale(high);
+      expect(scale).toBeLessThan(1);
+      expect(oceanSeaStateEnergyScale(low)).toBe(scale);
+      for (let cascade = 0; cascade < 5; cascade += 1) {
+        const params = oceanSpectrumParameters(low, cascade);
+        expect(params.spectrumScale).toBe(low.cascades[cascade]!.spectrumScale * scale);
+        expect(params.fetchLength).toBe(oceanEffectiveFetchMeters(low));
       }
     }
   });

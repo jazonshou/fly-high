@@ -21,7 +21,7 @@
  */
 
 import type { SpectralOceanConfig } from "./spectrumConfig";
-import { assertPositive } from "./spectrumConfig";
+import { assertPositive, resolveSpectralOceanConfig } from "./spectrumConfig";
 
 const TAU = Math.PI * 2;
 
@@ -151,25 +151,147 @@ export interface OceanSpectrumParameters {
   readonly maximumWavelength: number;
 }
 
-export function oceanSpectrumParameters(
+/**
+ * The dimensionless fetch `g F / U^2` at which JONSWAP's peak frequency,
+ * `22 (g^2 / (U F))^(1/3)`, reaches the Pierson-Moskowitz fully developed peak
+ * `0.855 g / U`. A longer fetch grows no bigger sea: the wind has nothing left
+ * to give it.
+ */
+export const OCEAN_FULLY_DEVELOPED_FETCH = (22 / 0.855) ** 3;
+
+/** Pierson-Moskowitz fully developed significant wave height, `Hs = 0.22 U^2 / g`. */
+export const OCEAN_FULLY_DEVELOPED_WAVE_HEIGHT = 0.22;
+
+/**
+ * D1 (boats plan, approved 2026-10-26), part one: the fetch the spectrum
+ * grows over, capped at full development. Below about 8 m/s of wind the
+ * world's 120 km fetch is longer than the sea can use, and the uncapped
+ * JONSWAP kept lengthening the peak past the Pierson-Moskowitz limit.
+ */
+export function oceanEffectiveFetchMeters(config: SpectralOceanConfig): number {
+  const wind = Math.max(config.windSpeedMetersPerSecond, 0.05);
+  return Math.min(
+    config.fetchLengthMeters,
+    (OCEAN_FULLY_DEVELOPED_FETCH * wind * wind) / config.gravityMetersPerSecondSquared,
+  );
+}
+
+function rawSpectrumParameters(
   config: SpectralOceanConfig,
   cascadeIndex: number,
+  fetchLength: number,
+  energyScale: number,
 ): OceanSpectrumParameters {
   const cascade = config.cascades[cascadeIndex];
   if (cascade === undefined) throw new RangeError("Invalid ocean cascade index");
   return {
     gravity: config.gravityMetersPerSecondSquared,
     windSpeed: config.windSpeedMetersPerSecond,
-    fetchLength: config.fetchLengthMeters,
+    fetchLength,
     windDirectionX: config.windDirection[0],
     windDirectionZ: config.windDirection[1],
     directionalSpread: config.directionalSpread,
     waterDepth: config.representativeDepthMeters,
     surfaceTensionOverDensity: config.surfaceTensionOverDensity,
-    spectrumScale: cascade.spectrumScale,
+    spectrumScale: cascade.spectrumScale * energyScale,
     minimumWavelength: cascade.minimumWavelengthMeters,
     maximumWavelength: cascade.maximumWavelengthMeters,
   };
+}
+
+/**
+ * The height variance, m^2, a config's grid of waves carries on average:
+ * `sum Psi(k) dk^2` over every cascade's grid (see
+ * `oceanTransformNormalizationScale` for why that is the variance).
+ */
+export function oceanExpectedHeightVariance(
+  config: SpectralOceanConfig,
+  fetchLength = config.fetchLengthMeters,
+  energyScale = 1,
+): number {
+  let variance = 0;
+  for (let cascadeIndex = 0; cascadeIndex < config.cascades.length; cascadeIndex += 1) {
+    const cascade = config.cascades[cascadeIndex]!;
+    const params = rawSpectrumParameters(config, cascadeIndex, fetchLength, energyScale);
+    const reach = oceanCascadeFrequencyReach(config, cascadeIndex);
+    const low = reach >= config.resolution / 2 ? 1 - config.resolution / 2 : -reach;
+    const cell = (TAU / cascade.patchLengthMeters) ** 2;
+    let sum = 0;
+    for (let fy = low; fy <= reach; fy += 1) {
+      for (let fx = low; fx <= reach; fx += 1) {
+        sum += oceanWaveDensity(params, cascade.patchLengthMeters, fx, fy);
+      }
+    }
+    variance += sum * cell;
+  }
+  return variance;
+}
+
+const energyScaleCache = new Map<string, number>();
+const ENERGY_SCALE_CACHE_SIZE = 16;
+
+/**
+ * D1 (boats plan, approved 2026-10-26), part two: the factor that holds the
+ * drawn sea at or under the Pierson-Moskowitz height, `0.22 U^2 / g`.
+ *
+ * Capping the fetch fixes the peak but not the level: the spectrum's art
+ * scales and its band windows still drew 0.92 m against 0.80 m at 6 m/s.
+ * This measures the expected height of the CANONICAL sea (256 points, all
+ * five shipped cascades, so the factor does not depend on quality tier) and
+ * scales every cascade's energy by `min(1, (Hs_PM / Hs)^2)`. In a stronger
+ * wind the fetch limits the sea first and the factor is exactly 1, so
+ * nothing above about 10 m/s moves.
+ */
+export function oceanSeaStateEnergyScale(config: SpectralOceanConfig): number {
+  const key = [
+    config.windSpeedMetersPerSecond,
+    config.fetchLengthMeters,
+    config.gravityMetersPerSecondSquared,
+    config.representativeDepthMeters,
+    config.directionalSpread,
+    config.surfaceTensionOverDensity,
+    config.windDirection[0],
+    config.windDirection[1],
+  ].join("|");
+  const cached = energyScaleCache.get(key);
+  if (cached !== undefined) return cached;
+  const canonical = resolveSpectralOceanConfig({
+    resolution: 256,
+    gravityMetersPerSecondSquared: config.gravityMetersPerSecondSquared,
+    representativeDepthMeters: config.representativeDepthMeters,
+    windSpeedMetersPerSecond: config.windSpeedMetersPerSecond,
+    windDirection: config.windDirection,
+    fetchLengthMeters: config.fetchLengthMeters,
+    directionalSpread: config.directionalSpread,
+    surfaceTensionOverDensity: config.surfaceTensionOverDensity,
+  });
+  const variance = oceanExpectedHeightVariance(canonical, oceanEffectiveFetchMeters(canonical));
+  const wind = Math.max(config.windSpeedMetersPerSecond, 0.05);
+  const limit = (OCEAN_FULLY_DEVELOPED_WAVE_HEIGHT * wind * wind)
+    / config.gravityMetersPerSecondSquared;
+  const height = 4 * Math.sqrt(variance);
+  const scale = height > limit ? (limit / height) ** 2 : 1;
+  if (energyScaleCache.size >= ENERGY_SCALE_CACHE_SIZE) {
+    energyScaleCache.delete(energyScaleCache.keys().next().value!);
+  }
+  energyScaleCache.set(key, scale);
+  return scale;
+}
+
+/**
+ * One cascade's spectrum inputs, as the GPU's initialisation uniform carries
+ * them: the config's own values with D1's fetch and energy caps applied.
+ */
+export function oceanSpectrumParameters(
+  config: SpectralOceanConfig,
+  cascadeIndex: number,
+): OceanSpectrumParameters {
+  return rawSpectrumParameters(
+    config,
+    cascadeIndex,
+    oceanEffectiveFetchMeters(config),
+    oceanSeaStateEnergyScale(config),
+  );
 }
 
 /**
@@ -216,6 +338,28 @@ export function oceanDirectionalSpectrum(
       * params.spectrumScale,
     0,
   );
+}
+
+/** `Psi(k)` of one grid frequency, zero where the GPU's finite guard zeroes it. */
+function oceanWaveDensity(
+  params: OceanSpectrumParameters,
+  patchLength: number,
+  frequencyX: number,
+  frequencyY: number,
+): number {
+  const scale = TAU / patchLength;
+  const kx = scale * frequencyX;
+  const kz = scale * frequencyY;
+  const wavenumber = Math.hypot(kx, kz);
+  if (wavenumber < 1e-6) return 0;
+  const omega = oceanAngularFrequency(
+    wavenumber,
+    params.gravity,
+    params.surfaceTensionOverDensity,
+    params.waterDepth,
+  );
+  const density = oceanDirectionalSpectrum(params, kx, kz, wavenumber, omega);
+  return Number.isFinite(density) ? density : 0;
 }
 
 /** One wave of one cascade, as the GPU's initial-spectrum texel holds it. */

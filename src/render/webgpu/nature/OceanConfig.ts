@@ -1,4 +1,4 @@
-import { oceanTransformNormalizationScale } from "@/src/sim/water/spectrum";
+import { oceanSpectrumParameters, oceanTransformNormalizationScale } from "@/src/sim/water/spectrum";
 import {
   assertSpectralOceanConfig,
   type OceanCascadeConfig,
@@ -201,6 +201,7 @@ export function packOceanInitializationUniforms(
   assertSpectralOceanConfig(config);
   const cascade = config.cascades[cascadeIndex];
   if (cascade === undefined) throw new RangeError("Invalid ocean cascade index");
+  const spectrum = oceanSpectrumParameters(config, cascadeIndex);
   const { buffer, view } = uniformBuffer(64);
   view.setUint32(0, config.resolution, true);
   view.setUint32(4, config.seed, true);
@@ -209,10 +210,10 @@ export function packOceanInitializationUniforms(
   view.setFloat32(16, cascade.patchLengthMeters, true);
   view.setFloat32(20, config.gravityMetersPerSecondSquared, true);
   view.setFloat32(24, config.windSpeedMetersPerSecond, true);
-  view.setFloat32(28, config.fetchLengthMeters, true);
+  view.setFloat32(28, spectrum.fetchLength, true);
   view.setFloat32(32, config.windDirection[0], true);
   view.setFloat32(36, config.windDirection[1], true);
-  view.setFloat32(40, cascade.spectrumScale, true);
+  view.setFloat32(40, spectrum.spectrumScale, true);
   view.setFloat32(44, config.directionalSpread, true);
   view.setFloat32(48, config.representativeDepthMeters, true);
   view.setFloat32(52, config.surfaceTensionOverDensity, true);

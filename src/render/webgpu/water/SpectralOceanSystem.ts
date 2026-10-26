@@ -44,6 +44,7 @@ import {
   type OceanCascadeConfig,
   type SpectralOceanConfig,
 } from "@/src/render/webgpu/nature/OceanConfig";
+import { oceanEffectiveFetchMeters, oceanSpectrumParameters } from "@/src/sim/water/spectrum";
 import {
   OCEAN_SPATIAL_DERIVATION_WGSL,
   OCEAN_SPECTRUM_EVOLUTION_WGSL,
@@ -1715,6 +1716,9 @@ function createInitializationUniforms(
 ): UniformBuffer {
   const cascade = config.cascades[cascadeIndex];
   if (!cascade) throw new RangeError("Missing ocean cascade");
+  // D1's fetch and energy caps ride in on the uniform, so the shader's
+  // spectrum is the sea twin's spectrum term for term.
+  const spectrum = oceanSpectrumParameters(config, cascadeIndex);
   const buffer = new UniformBuffer(engine, undefined, false, `ocean-init-${cascadeIndex}`);
   for (const name of ["resolution", "seed", "cascadeIndex", "padding0"]) buffer.addUniform(name, 1);
   for (const name of ["patchLength", "gravity", "windSpeed", "fetchLength"]) buffer.addUniform(name, 1);
@@ -1728,9 +1732,9 @@ function createInitializationUniforms(
   buffer.updateFloat("patchLength", cascade.patchLengthMeters);
   buffer.updateFloat("gravity", config.gravityMetersPerSecondSquared);
   buffer.updateFloat("windSpeed", config.windSpeedMetersPerSecond);
-  buffer.updateFloat("fetchLength", config.fetchLengthMeters);
+  buffer.updateFloat("fetchLength", spectrum.fetchLength);
   buffer.updateFloat2("windDirection", config.windDirection[0], config.windDirection[1]);
-  buffer.updateFloat("spectrumScale", cascade.spectrumScale);
+  buffer.updateFloat("spectrumScale", spectrum.spectrumScale);
   buffer.updateFloat("directionalSpread", config.directionalSpread);
   buffer.updateFloat("depth", config.representativeDepthMeters);
   buffer.updateFloat("surfaceTension", config.surfaceTensionOverDensity);
@@ -2760,9 +2764,11 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
    */
   shoreRunupSwell(): WaterShoreSwell {
     const config = this.compute.config;
+    // D1: the fetch the drawn sea actually grows over, capped at full
+    // development, so a light wind's run-up matches its light sea.
     return waterOceanShoreSwell(
       config.windSpeedMetersPerSecond,
-      config.fetchLengthMeters,
+      oceanEffectiveFetchMeters(config),
     );
   }
 }
