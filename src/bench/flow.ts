@@ -372,6 +372,17 @@ export function failStep(
   return { store: withRun(store, next, store.notice), href: nextHref(next, href) };
 }
 
+/**
+ * Pinned mode only: the renderer could not install its per-pass GPU timer.
+ * The same step loads again, once, with GPU timing off, which a pinned
+ * renderer allows; its result then says "install-failed".
+ */
+export function retryWithoutGpuTiming(store: BenchStore, index: number, href: string): BenchTransition {
+  const { run } = currentStep(store, index);
+  const next = withStep(run, index, { status: "pending", gpuTimingFailed: true });
+  return { store: withRun(store, next, store.notice), href: stepUrl(href, run.runId, index, urlOptions(run.plan)) };
+}
+
 /** The report page's close of a run: anything not flown is skipped, a claimed step interrupted. */
 export function finishRun(run: BenchRunRecord, now: string): BenchRunRecord {
   if (run.status !== "running") return run;

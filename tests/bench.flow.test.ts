@@ -10,6 +10,7 @@ import {
   noticeText,
   recordReportExtras,
   recordStepResult,
+  retryWithoutGpuTiming,
   startDeviceOnlyRun,
   startPinnedPass,
   startRun,
@@ -254,6 +255,19 @@ describe("the page flow", () => {
     expect(failed.store.current!.steps[0]).toMatchObject({
       status: "failed", attempts: 1, message: "the WebGPU device was lost", result: null,
     });
+  });
+
+  it("loads a pinned step again with GPU timing off when its timer could not be installed", () => {
+    const { storage } = memoryStorage();
+    const { href } = started(storage);
+    const retry = retryWithoutGpuTiming(stored(storage), 0, href);
+    expect(retry.href).toBe(href);
+    expect(retry.store.current!.steps[0]).toMatchObject({ status: "pending", attempts: 1, gpuTimingFailed: true });
+    writeBenchStore(storage, retry.store);
+    const again = load(storage, href);
+    expect(again.page).toMatchObject({ kind: "step", stepIndex: 0, attempt: 2 });
+    const page = again.page as Extract<typeof again.page, { kind: "step" }>;
+    expect(page.run.steps[0]).toMatchObject({ status: "running", gpuTimingFailed: true });
   });
 
   it("skips the step in flight and the rest on Stop", () => {

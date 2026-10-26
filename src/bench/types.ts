@@ -171,6 +171,11 @@ export interface BenchStepRecord {
   readonly message: string | null;
   /** Null until the step has measured something; a failed step may still have one. */
   readonly result: BenchStepResult | null;
+  /**
+   * Pinned mode: the renderer could not install its per-pass GPU timer, so
+   * this step loads again with GPU timing off. Absent until that happens.
+   */
+  readonly gpuTimingFailed?: boolean;
 }
 
 export type BenchRunStatus = "running" | "finished" | "stopped" | "no-webgpu" | "storage-unavailable";
