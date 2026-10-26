@@ -321,22 +321,22 @@ export class StepController implements BenchFramePort {
     const t = (frameMs - this.flightStartMs) / 1_000;
     this.flightSeconds = t;
     recordFrame(this.log, frameMs, renderStart, renderEnd - renderStart, compiles, scaleStep, probe.gpuFrameMs);
-    this.trace.observe(t, probe);
-    if (this.compilesAtAirStart === null && t >= this.timings.air.startS) this.compilesAtAirStart = compilesBefore;
-    if (this.compilesAtAirEnd === null && t >= this.timings.air.endS) this.compilesAtAirEnd = compilesBefore;
-    this.secondSample(t, frameMs, probe);
-
+    // The early check reads the log, this frame included.
+    let stopEarly = false;
     if (!this.earlyStopChecked && t >= this.timings.earlyStopAtS) {
       this.earlyStopChecked = true;
       const check = earlyStopCheck(this.log, { flightStartMs: this.flightStartMs }, this.timings);
       this.earlyCheckFps = check.fps;
-      if (check.stop) {
-        this.finish("early-stop", compilesBefore);
-        return;
-      }
+      stopEarly = check.stop;
     }
-    // The first frame at or past the end closes the last interval, then the flight ends.
-    if (t >= this.timings.flightS) this.finish("ok", compilesBefore);
+    // The first frame at or past the end, or the early check's, closes the
+    // last interval, then the flight ends: no window counts it.
+    const closing = stopEarly || t >= this.timings.flightS;
+    this.trace.observe(t, probe, closing);
+    if (this.compilesAtAirStart === null && t >= this.timings.air.startS) this.compilesAtAirStart = compilesBefore;
+    if (this.compilesAtAirEnd === null && t >= this.timings.air.endS) this.compilesAtAirEnd = compilesBefore;
+    this.secondSample(t, frameMs, probe);
+    if (closing) this.finish(stopEarly ? "early-stop" : "ok", compilesBefore);
   }
 
   renderThrew(error: unknown): void {

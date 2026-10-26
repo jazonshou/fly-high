@@ -197,8 +197,14 @@ export class GovernorTrace {
     this.maxDecisions = options.maxDecisions ?? DEFAULT_MAX_DECISIONS;
   }
 
-  /** Every frame, after `render()`: `tS` is flight time, negative during the settle. */
-  observe(tS: number, probe: GovernorObservation): void {
+  /**
+   * Every frame, after `render()`: `tS` is flight time, negative during the
+   * settle. The frame that ends the flight (`closing`) closes the last
+   * interval and opens none, so the frame log counts it in no window; it
+   * still sets the end state and logs its decision, but no window counts it
+   * either. An early stop's can land past the air window's start.
+   */
+  observe(tS: number, probe: GovernorObservation, closing = false): void {
     if (this.config === null) this.start(probe);
     const state = probe.governorState;
     const pixels = probe.renderWidth * probe.renderHeight;
@@ -207,13 +213,13 @@ export class GovernorTrace {
 
     const decided = this.lastSignals !== null && probe.governorSignals !== this.lastSignals;
     this.lastSignals = probe.governorSignals;
-    if (decided) this.decide(tS, probe, pixels);
+    if (decided) this.decide(tS, probe, pixels, closing);
     this.lastState = state;
 
     const slot = tS < 0 ? this.atSettleEnd : this.atEnd;
     this.write(slot, probe, pixels);
     if (tS >= 0 && !this.atFlightStart.set) this.write(this.atFlightStart, probe, pixels);
-    if (tS < 0 || tS >= this.options.flightS) return;
+    if (closing || tS < 0 || tS >= this.options.flightS) return;
     for (const target of this.buckets) {
       if (tS < target.startS || tS >= target.endS) continue;
       target.frames += 1;
@@ -273,7 +279,7 @@ export class GovernorTrace {
       && this.ceilingPixels > this.floorPixels * (1 + 2 * PIXEL_TOLERANCE);
   }
 
-  private decide(tS: number, probe: GovernorObservation, pixels: number): void {
+  private decide(tS: number, probe: GovernorObservation, pixels: number, closing: boolean): void {
     const state = probe.governorState;
     const signals = probe.governorSignals;
     const config = this.config ?? probe.governorConfig;
@@ -303,6 +309,7 @@ export class GovernorTrace {
       this.decisionsDuringSettle += 1;
       return;
     }
+    if (closing) return;
     const previous = this.lastState;
     for (const target of this.buckets) {
       if (tS < target.startS || tS >= target.endS) continue;

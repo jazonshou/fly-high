@@ -492,6 +492,25 @@ describe("the step controller's flight", () => {
     expect(result.perSecond.rows.every((row) => typeof row[heapColumn] === "number")).toBe(true);
   });
 
+  it("counts the frame that ends an early stop in no governor window, as the frame log does", () => {
+    const h = harness();
+    h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying");
+    const flightStart = h.now() + 10;
+    h.run(flightStart, 250, () => h.controller.flightElapsedS >= 7.5);
+    // One frame spans the early check (8 s) and the air window's start (10 s).
+    h.frame(flightStart + 10_500);
+    const { outcome, result } = h.finished[0]!;
+    expect(outcome).toBe("early-stop");
+    expect(result.flight.seconds).toBeCloseTo(10.5, 6);
+    expect(result.windows.air).toBeNull();
+    expect(result.governor.windows.air.frames).toBe(0);
+    expect(result.governor.windows.air.modeShare).toEqual({});
+    expect(result.governor.windows.air.classShare).toEqual({});
+    // The log's last frame closes the last interval and opens none.
+    expect(result.governor.flight.frames).toBe(h.controller.log.length - 1);
+    expect(result.governor.atEnd).not.toBeNull();
+  });
+
   it("flags a frame log that filled up, and keeps flying", () => {
     const h = harness({ capacity: 100 });
     h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying");
