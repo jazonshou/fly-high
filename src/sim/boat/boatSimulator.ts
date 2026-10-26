@@ -85,9 +85,34 @@ export interface BoatEnvironment extends Partial<SurfaceVehicleEnvironment> {
   bedSample?: TerrainSampler;
   /** Docks, piles, pontoons. */
   colliders?: ColliderWorld | null;
+  /**
+   * The contact law by collider material id (`ColliderContact.material`), so
+   * a fendered pontoon can give more than a timber pile. Ids not listed use
+   * `DEFAULT_BOAT_CONTACT`.
+   */
+  contactMaterials?: ReadonlyMap<number, Readonly<BoatContactMaterial>> | null;
   airDensity?: number;
   waterDensity?: number;
 }
+
+/** How the hull meets one collider material, per contact probe. */
+export interface BoatContactMaterial {
+  /** Closing speed along the contact normal above which the hull is wrecked, m/s. */
+  crashSpeed: number;
+  /** Spring, N/m, and damper, N s/m, on the probe's penetration. */
+  stiffness: number;
+  damping: number;
+  /** Coulomb friction along the face. */
+  friction: number;
+}
+
+/** Bare GRP on a hard face: piles, walls, rocks. */
+export const DEFAULT_BOAT_CONTACT: Readonly<BoatContactMaterial> = Object.freeze({
+  crashSpeed: 2.5,
+  stiffness: 4e5,
+  damping: 1.2e4,
+  friction: 0.3,
+});
 
 /**
  * The seam's spawn (`position.y` is the still water height there; the hull
@@ -196,14 +221,10 @@ const CAPSIZE_ROLL = 110 * DEG;
 const CAPSIZE_SECONDS = 4;
 /** Hard impacts. */
 const BED_CRASH_SPEED = 3;
-const COLLIDER_CRASH_SPEED = 2.5;
 const GROUNDING_CRASH_SPEED = 8;
 const BED_STIFFNESS = 3e5;
 const BED_DAMPING = 6e3;
 const BED_FRICTION = 0.45;
-const COLLIDER_STIFFNESS = 4e5;
-const COLLIDER_DAMPING = 1.2e4;
-const COLLIDER_FRICTION = 0.3;
 const PROBE_RADIUS = 0.15;
 /** A press of the mooring key makes fast only below this speed over the ground, m/s. */
 const MAKE_FAST_SPEED = 0.6;
@@ -1530,6 +1551,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     box.maxZ = body.position.z + reach;
     const count = colliders.query(box, this.candidates);
     if (count === 0) return;
+    const materials = this.environment.contactMaterials;
     const centre = this.tmpB;
     const velocity = this.tmpC;
     const force = this.tmpD;
@@ -1547,13 +1569,14 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
         velocity.z -= contact.pointVelocity.z;
         const n = contact.normal;
         const vn = velocity.x * n.x + velocity.y * n.y + velocity.z * n.z;
-        if (vn < -COLLIDER_CRASH_SPEED && contact.penetration < 0.1) this.crash();
-        const normalForce = Math.max(0, COLLIDER_STIFFNESS * contact.penetration - COLLIDER_DAMPING * vn);
+        const law = materials?.get(contact.material) ?? DEFAULT_BOAT_CONTACT;
+        if (vn < -law.crashSpeed && contact.penetration < 0.1) this.crash();
+        const normalForce = Math.max(0, law.stiffness * contact.penetration - law.damping * vn);
         const tx = velocity.x - vn * n.x;
         const ty = velocity.y - vn * n.y;
         const tz = velocity.z - vn * n.z;
         const vt = Math.hypot(tx, ty, tz);
-        const slip = vt > 1e-4 ? (COLLIDER_FRICTION * normalForce * Math.min(1, vt / 0.2)) / vt : 0;
+        const slip = vt > 1e-4 ? (law.friction * normalForce * Math.min(1, vt / 0.2)) / vt : 0;
         force.x = n.x * normalForce - slip * tx;
         force.y = n.y * normalForce - slip * ty;
         force.z = n.z * normalForce - slip * tz;
