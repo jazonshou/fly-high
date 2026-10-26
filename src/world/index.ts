@@ -38,6 +38,36 @@ export type {
 } from "./airportSite";
 export { hashCoordinates, hashSeed, mixSeed, normalizeSeed, unitFloatFromHash } from "./seed";
 export {
+  applyInfrastructure,
+  buildInfrastructureIndex,
+  INFRASTRUCTURE_BIN_METERS,
+  INFRASTRUCTURE_MAX_PARAMS,
+  infrastructureAnchor,
+  infrastructureCapsuleDistance,
+  infrastructureIndex,
+  infrastructureNear,
+  infrastructurePlantExclusions,
+  infrastructurePlantFactor,
+  INFRASTRUCTURE_PLANT_BLEND_METERS,
+  INFRASTRUCTURE_SURFACE_FEATHER_METERS,
+  sampleInfrastructureSurface,
+} from "./infrastructure";
+export type {
+  InfrastructureAnchor,
+  InfrastructureIndex,
+  InfrastructureLayout,
+  InfrastructureMode,
+  InfrastructurePlantExclusion,
+  InfrastructureProfile,
+  InfrastructureProfileSample,
+  InfrastructureSegment,
+  InfrastructureSource,
+  InfrastructureSurface,
+  InfrastructureSurfaceSample,
+} from "./infrastructure";
+export { INFRASTRUCTURE_PROFILE, INFRASTRUCTURE_PROFILES } from "./infrastructureProfiles";
+export { INFRASTRUCTURE_SOURCES } from "./infrastructureSources";
+export {
   MAX_TERRAIN_HEIGHT,
   MIN_TERRAIN_HEIGHT,
   TERRAIN_NORMAL_SAMPLE_DISTANCE,
@@ -53,6 +83,7 @@ export {
   sampleFilteredTerrainHeight,
   sampleFilteredTerrainUpliftHeight,
   sampleTerrainHeight,
+  sampleTerrainHeightBeforeAirports,
   sampleTerrainHeightBeforeEarthworks,
   sampleTerrainMoisture,
   sampleTerrainNormal,
