@@ -52,13 +52,19 @@ export const MARINA_LAYOUT = Object.freeze({
   pontoonDraft: 0.6,
   armModulesMin: 4,
   armModulesMax: 6,
-  /** Finger berths off both sides of the arm. */
+  /** Finger berths off both sides of the arm, a cleat this far along each finger's middle. */
   fingerLength: 10,
+  fingerMidCleat: 4.5,
   fingerWidth: 0.8,
   berthPitch: 4.5,
-  /** The berth's design boat: the Runabout 21 and its gap to the arm. */
+  /**
+   * The berth's design boat, the Runabout 21 (src/vehicles/boat/hullLines.ts:
+   * length, beam, and its centre of gravity's distance forward of the transom),
+   * and the gap its transom keeps to the arm.
+   */
   boatLength: 6.55,
   boatBeam: 2.59,
+  boatCgFromTransom: 1.95,
   sternGap: 1,
   /** Moored runabouts: this share of the free berths, at most this many. */
   mooredShare: 0.45,
@@ -234,14 +240,19 @@ export interface MarinaCleat {
 export interface MarinaBerth {
   readonly index: number;
   readonly side: "seaward" | "landward" | "fuel";
-  /** The moored boat's centre, marina-local, and its bow's world heading. */
+  /** The moored boat's centre of gravity, marina-local, and its bow's world heading. */
   readonly right: number;
   readonly out: number;
   readonly bowHeadingRadians: number;
   /** Clear length and width between the fingers. */
   readonly length: number;
   readonly width: number;
-  /** Dock cleats, stern pair first (on the arm), then the bow pair (finger ends). */
+  /**
+   * Dock cleats. A finger berth's six are pairs, each pair's -right one first:
+   * at the finger roots (stern lines), the finger middles (breast lines from
+   * the spring cleats) and the finger tips (bow lines). The fuel berth's four
+   * run along the pontoon's edge.
+   */
   readonly cleats: readonly MarinaCleat[];
   readonly occupied: boolean;
   readonly start: boolean;
@@ -426,7 +437,7 @@ export function buildMarinaLayout(
   const fingerOut = halfPontoon + L.fingerLength * 0.5;
   const pierClear = L.pierWidth * 0.5 + 1;
   const berths: MarinaBerth[] = [];
-  const berthInner = halfPontoon + L.sternGap + L.boatLength * 0.5;
+  const berthInner = halfPontoon + L.sternGap + L.boatCgFromTransom;
   for (const side of ["seaward", "landward"] as const) {
     const sign = side === "seaward" ? 1 : -1;
     for (let index = 0; index < fingerCount; index += 1) {
@@ -445,12 +456,13 @@ export function buildMarinaLayout(
       const out = armOut + sign * berthInner;
       const cleatY = pontoonY + 0.1;
       const halfGap = L.berthPitch * 0.5 - L.fingerWidth * 0.5;
-      const cleats: MarinaCleat[] = [
-        { right: right - 1.1, out: armOut + sign * halfPontoon, y: cleatY, floating: true },
-        { right: right + 1.1, out: armOut + sign * halfPontoon, y: cleatY, floating: true },
-        { right: right - L.berthPitch * 0.5, out: armOut + sign * (halfPontoon + L.fingerLength - 0.6), y: cleatY, floating: true },
-        { right: right + L.berthPitch * 0.5, out: armOut + sign * (halfPontoon + L.fingerLength - 0.6), y: cleatY, floating: true },
-      ];
+      // On the finger edges facing the berth: at the roots, the middles and the tips.
+      const cleats: MarinaCleat[] = [];
+      for (const along of [0.3, L.fingerMidCleat, L.fingerLength - 0.6]) {
+        for (const lateral of [-halfGap, halfGap]) {
+          cleats.push({ right: right + lateral, out: armOut + sign * (halfPontoon + along), y: cleatY, floating: true });
+        }
+      }
       berths.push({
         index: berths.length,
         side,
@@ -475,10 +487,12 @@ export function buildMarinaLayout(
     bowHeadingRadians: marinaHeading(frame, mouthSide, 0),
     length: L.pontoonModuleLength,
     width: L.boatBeam + 1,
-    cleats: Object.freeze([
-      Object.freeze({ right: fuelRight - 4, out: armOut + halfPontoon, y: pontoonY + 0.1, floating: true }),
-      Object.freeze({ right: fuelRight + 4, out: armOut + halfPontoon, y: pontoonY + 0.1, floating: true }),
-    ]),
+    cleats: Object.freeze([-5, -1.5, 1.5, 5].map((along) => Object.freeze({
+      right: fuelRight + along,
+      out: armOut + halfPontoon,
+      y: pontoonY + 0.1,
+      floating: true,
+    }))),
     occupied: false,
     start: false,
   } as MarinaBerth);
