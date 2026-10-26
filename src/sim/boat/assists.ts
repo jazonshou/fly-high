@@ -8,7 +8,8 @@ import type { BoatDefinition } from "./definition";
  * "Assists" table):
  *
  * - Scenic: Active Trim (power trim scheduled by speed, then held at a 4
- *   degree running trim, as Mercury's Active Trim does), tabs levelling the
+ *   degree running trim, as Mercury's Active Trim does, and trimmed in
+ *   with the helm over), tabs levelling the
  *   heel on their own, steering eased at speed and eased off as the hull
  *   slides, and the throttle eased while the propeller is ventilating so it
  *   hooks back up.
@@ -125,14 +126,19 @@ export class BoatAssists {
     // Active Trim, with the driver's rocker as an offset on the schedule.
     this.trimOffset = clamp(this.trimOffset + out.trimRate * 2 * DEG * input.dt, -6 * DEG, 6 * DEG);
     const planing = knots > 22;
-    if (planing && input.ventilation < 0.3) {
+    // With the helm over, Active Trim trims in as a driver does before a
+    // turn: the bow down keeps the propeller bitten, and a deep-V trimmed
+    // out and heeled at speed starts to walk on its chines.
+    const turning = clamp((Math.abs(steer) - 0.15) / 0.6, 0, 1);
+    if (planing && input.ventilation < 0.3 && turning === 0) {
       this.trimHold = clamp(this.trimHold + (4 * DEG - input.runningTrim) * 0.6 * input.dt, -4 * DEG, 4 * DEG);
-    } else {
+    } else if (turning === 0) {
       this.trimHold *= Math.max(0, 1 - input.dt);
     }
     const ventilationTrimIn = input.ventilation * 6 * DEG;
     out.trimAuto = true;
-    out.trimTarget = activeTrimSchedule(this.definition, input.speed) + this.trimHold + this.trimOffset - ventilationTrimIn;
+    out.trimTarget =
+      activeTrimSchedule(this.definition, input.speed) + this.trimHold + this.trimOffset - ventilationTrimIn - turning * 5 * DEG;
     // Tabs level the heel when the helm is near centre and the boat is
     // running. With the helm over they stand off (a levelling system's turn
     // detection): the heel into a turn is the turn, and fighting it through

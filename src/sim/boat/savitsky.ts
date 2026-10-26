@@ -112,3 +112,22 @@ function bisect(f: (x: number) => number, lo: number, hi: number): number {
   }
   return 0.5 * (lo + hi);
 }
+
+/**
+ * Savitsky's (1964) porpoising limit, from Day and Haag's (1952) tank tests
+ * of prismatic planing surfaces: the running trim, degrees, above which a
+ * hull of this deadrise porpoises at this load, as a function of
+ * sqrt(C_Lbeta / 2) = sqrt(Delta / (rho V^2 b^2)). Cubic fits to the chart's
+ * 0, 10 and 20 degree curves (E. L. Castro-Feliciano's openplaning, MIT),
+ * joined by a quadratic in deadrise. The chart spans 0.13-0.3 and 0-20 deg;
+ * outside it the fits extrapolate.
+ */
+export function porpoisingTrimLimit(sqrtHalfLift: number, deadriseDegrees: number): number {
+  const x = sqrtHalfLift;
+  const at0 = -376.37 * x ** 3 + 329.74 * x ** 2 - 38.485 * x + 1.3415;
+  const at10 = -356.05 * x ** 3 + 314.36 * x ** 2 - 41.674 * x + 3.5786;
+  const at20 = -254.51 * x ** 3 + 239.65 * x ** 2 - 23.936 * x + 3.0195;
+  const curvature = (at20 - 2 * at10 + at0) / 200;
+  const slope = (at10 - at0) / 10 - curvature * 10;
+  return at0 + slope * deadriseDegrees + curvature * deadriseDegrees * deadriseDegrees;
+}
