@@ -1682,6 +1682,46 @@ and a line per commit:
   p95, heap allocated per frame, long tasks, frames per second, and head/base
   ratios for the first leg, the legs after it and the settle trials.
 
+**The bake section** (2026-10-25, `scripts/perfFlightBakes.mts`). The
+renderer spreads two bakes over frames: the sky probe's re-light every 500 m
+of climb, and the ground-cover tile below the blades' fade height. The agent
+reads `FlightRenderer.getBakeStatsForCapture()` after every frame of a leg,
+outside the frame's timed and heap windows (`tests/perf/ab/bakeProbe.ts`),
+and `report.md` ends with a table for each:
+
+- Sky: per arm and leg, over all legs and per settle trial, the sliced re-lights landed, their frames, the worst
+  sliced frame's ms with its work (begin, advance, land, cube, LUT), the
+  sliced frames at or over 1 ms, and the one-frame re-lights (a renderer's
+  first frame, a teleport, an environment change: synchronous by design, so
+  outside the 1 ms target). Each sliced re-light is then followed frame by
+  frame from its begin to the frame after its LUT, with render() and the
+  `flight-presentation` and `hdr-present` passes against their leg medians,
+  because the specular cube's six faces render in the scene pass, outside
+  the refresh's own ms (`report.md` follows the first 6 re-lights and lists
+  the first 40 frames or calls of each list; `report.json` has them all).
+- Ground cover: per arm and leg, over all legs and per settle trial, tile-bake calls, ms per call p50 / p95 /
+  max, calls at or over 2 ms (the 1.5 ms budget and one 32 m step), those
+  with neither a collection during render() nor a pace-floor hold,
+  pace-floor calls and tiles completed, then each call at or over 2 ms with
+  what its frame says.
+- An arm that never reached a bake reads **Not exercised** with how to reach
+  it: a re-light needs about 1,200 frames of climb (`--clearance 1500
+  --speed 250 --legs 2 --leg-frames 720`; wave 2b flew 4 legs and landed
+  two in each job); the tile bakes only below 55 to
+  110 m above the ground, by tier (`--clearance 30 --speed 70
+  --start=<x,z>`). A build without `getBakeStatsForCapture` reads n/a.
+- The page is not cross-origin isolated, so the bake clocks read in 0.1 ms
+  steps, and a reading at a target counts with those over it.
+
+perf:flight builds both arms' renderers with the game's two terrain
+samplers, the full sample and the height alone (`AgentConfig.gameTerrainHeight`,
+`tests/perf/ab/terrainSamplers.ts`), so the ground-cover tile bakes in 32 m
+steps as in the game. A build without `FlightRendererOptions.terrainHeight`
+(before `69746b7`) ignores the second and bakes whole rows on the full
+sample, as its game did; the report's settings line says so. perf:ab never
+passes it, so its renderers and baselines are made as the capture's are
+(`tests/perf-flight-bakes.test.ts`).
+
 **What it found.** Main (6d91220) against the commit before PR #19
 (264b760), 6 x 240 frames: no new CPU cost from the three October PRs
 (render() p50 12.0 vs 11.6 ms, 25 vs 30 long tasks), but both arms carried
@@ -1743,9 +1783,13 @@ trainer, medium/balanced):
   1.3 ms on this host before PR #22 and 3.6 ms (high sun) to ~9 ms (low sun)
   since. One frame per 500 m of climb; it could be spread over six frames
   (one cube face each) with identical results. *Sliced 2026-10-25*
-  (`e149d4d`, `8adc324`, `49e666e`, `4dc648a`; below): bit-identical, not
-  yet measured in a browser flight (perf:flight neither climbs 500 m on
-  purpose nor records a re-light).
+  (`e149d4d`, `8adc324`, `49e666e`, `4dc648a`; below): bit-identical. On
+  the macOS runner (wave 2b, below; main-thread ms) its advance frames cost
+  0.2 to 0.6 ms, but the frame that lands it still runs Babylon's
+  spherical-harmonics converter in one call, 0.5 to 3.9 ms, and the begin
+  frame read up to 2.2 ms: 5 of the 33 sliced frames were at or over 1 ms.
+  Still open: slicing the converter, and the begin frame's work outside its
+  slice.
 
 **The October PRs' steady cost, together.** Each of PRs #19, #20 and #22
 passed the 5% gate alone; together, against 264b760 (CI run 40117858194):
@@ -2082,7 +2126,7 @@ steps) and drives `FlightRenderer` without `FlightGame` or the HUD.
 | `b0ecd8b` | Poll renderer diagnostics only while something shows them, and skip unchanged airport readouts | a 2 Hz read walked every desired detail cell with the panel closed (it is off by default); now only while the setting is on or the viewer HUD is up (`75d4626`) | in the build, not exercised: the poll is `FlightGame`'s, which perf:flight does not run |
 | `6a80b12` | Prime each wildlife batch's pipelines at startup so the first antler does not hitch | the keratin PBR compiled at the first antler, 35-87 ms on Metal once a session | yes |
 | `73e1cbb` | Cache generated wildlife cells so a cell crossing generates only new cells | a cell crossing regenerated the whole window; 5 km at 250 m/s generates 71 cells instead of 617 (unit test) | no: the renderer turns it on in `69746b7` |
-| `02f875f` | Bake the ground-cover tile in 32 m steps to hold a low frame near its budget | below the gate every frame baked a whole row, 12.6-15.2 ms p50 on the cloud host; in 32 m steps under 1.5 ms, 2.9-3.2 ms there (the pace floor binds) | no: only with the game's height-only sampler (`69746b7`, `904c309`), which perf:flight does not pass |
+| `02f875f` | Bake the ground-cover tile in 32 m steps to hold a low frame near its budget | below the gate every frame baked a whole row, 12.6-15.2 ms p50 on the cloud host; in 32 m steps under 1.5 ms, 2.9-3.2 ms there (the pace floor binds) | no: only with the game's height-only sampler (`69746b7`, `904c309`), which perf:flight passed only from `c616c91` (wave 2b, below) |
 | `69746b7` | Read height-only terrain where a consumer needs only the height | the camera clamp, spawned airfields, ground-cover tile and birds stop paying for normals and classification; bit-identical heights | no |
 | `e149d4d`, `8adc324`, `49e666e`, `4dc648a` | Slice the sky irradiance bake so a climb's re-light can spread over frames; Slice the in-flight sky re-light so a climb spreads it over frames; Land the sliced sky re-light's cloud LUT on a frame of its own; Re-light the sky at once after a teleport, not over a sliced rebake | each 500 m of climb re-lit the sky in one frame; now 0.5 ms of sampling a frame, then SH, specular cube and cloud LUT each on a frame of its own. An environment change, a teleport and the capture (`skyRebake: "sync"`) re-light at once | no: `e149d4d`'s sliced bake was in the build, but nothing called it before `8adc324` |
 | `05e9b1d`, `af053f8` | Measure the chase camera's ground speed over simulation time; Divide the chase trail's distance by simulation time only from 1/240 s up | a hitch read as a burst of speed and threw the chase camera back, then forward | no |
@@ -2091,9 +2135,10 @@ Each measured figure in that table comes from its commit's message. The
 remaining commits on the branch are follow-ups and tests (`31c1de0`,
 `fa2ffc8`, `7d300de`, `3e8f908`, `3492803`, `e107d26`, `bc89123`,
 `08eade3`, `6a3d0e2`, `ccbc1e4`, `b9ec5ec`, `f6646e9`, `7a9a190`,
-`41838e9`, `cb0fc03`, `3548966`) and the perf:flight harness
+`41838e9`, `cb0fc03`, `3548966`, `e461321`, `10809fb`), the perf:flight harness
 (`882569a` to `b4d5fa4`, and `4ae68b4`: the probe, the verdict and the
-options marked 2026-10-25 above).
+options marked 2026-10-25 above; `d15d73d` to `908960d`: the bake section
+above and its tests), one comment (`009a7e2`) and this section.
 
 **Where the flights are kept.** Both waves ran a temporary workflow whose
 matrix is in `.github/workflows/perf-flight.yml` at `1c8d792` (wave 1) and
@@ -2240,52 +2285,199 @@ whichever build it was. The fix over the worker fix only, from that one
 pair: -4.0% at p50 after the first leg and -2.3% on the first leg, inside
 the A/A runs' 5-7% (job 10 here, job 8 of wave 1).
 
-**What is expected not to change** (pending the CI capture check).
+**What does not change.** The capture check against the 39 committed
+baselines is the pull request's "Renderer GPU and performance gates" run
+(`perf:capture`, then `git diff --exit-code -- tests/perf/baseline`). The
+evidence before it:
 
-- Still images. The 39 perf baselines (`tests/perf/baseline`) are expected
-  unchanged, and that is pending the CI capture check on the branch.
-  perf:capture passes `skyRebake: "sync"` and the capture time pin makes
-  the A/B agent's renderer synchronous, so every re-light lands in one frame
-  as before; the ground-cover tile's bytes are the same at every budget and
-  with either sampler; the height-only sampler equals the full sample's
-  height bit for bit (`tests/render.live-terrain-height.test.ts`); a steady
-  frame keeps the chase camera's old division bit for bit; construction,
-  profile changes and the capture pin keep the forced render-scale path; and
-  the capture respawn ends a pending wildlife prime.
+- Still images. perf:capture passes `skyRebake: "sync"` and the capture
+  time pin makes the A/B agent's renderer synchronous, so every re-light
+  lands in one frame as before; the ground-cover tile's bytes are the same
+  at every budget and with either sampler; the height-only sampler equals
+  the full sample's height bit for bit
+  (`tests/render.live-terrain-height.test.ts`); a steady frame keeps the
+  chase camera's old division bit for bit; construction, profile changes
+  and the capture pin keep the forced render-scale path; and the capture
+  respawn ends a pending wildlife prime. Base against head on all 39 shots
+  (CI run 40232422802, `perf:ab --rounds 0 --shots all`, base `05f17b4`,
+  head `0e76d2a`, whose `src` is `08eade3`'s; perf:ab's frames take the
+  capture's pins but are another instant than the baselines'): on the
+  macOS runner's GPU every shot drew the same calls with the same GPU work,
+  and 0.00% to 0.15% of pixels differed, SSIM 1.0000 on every shot.
+  Resident terrain pages differ on every shot there (e.g. 34 → 38), stream
+  leftovers beyond the pages both arms want. On SwiftShader the draw calls
+  and GPU work were identical on all 39 too. The 24 shots of the three parts
+  that ran on EPYC 7763 and 9V45 runners rendered identical frames; the 15
+  of the two parts on EPYC 9V74 runners all differed, from 0.12% to 70.27%
+  (`grove-forest-2m` 70.27%, SSIM 0.7313; `cliff-60m` 55.64%, SSIM 0.8952;
+  `apron-hangar-variety` 23.19%, almost none of it over 8/255), spread over
+  large areas of the terrain, not one object, and their arms' resident
+  terrain pages differed on 13 of those 15 shots against none of the other
+  24. On the cloud host, rounds-0 runs of the two worst shots rendered
+  identical frames A/A (`05f17b4`) and in both orders (`05f17b4` against
+  `009a7e2`, and back), and the macOS runner read 0.02% and 0.05% on them,
+  so the 9V74 frames are most likely that runner's, not the branch's (no
+  A/A ran on a 9V74 runner; "Volcanic land" below found a SwiftShader water
+  frame that did not reproduce run to run). No baseline was re-promoted.
 - Draw-call ceilings. They are pinned per shot as `drawCallCeiling` in
   `PERF_CAPTURE_SHOTS` (`scripts/perf-capture.mts`; 32 of its 39 shots
   carry one), with raises in `DRAW_CALL_RAISES`
   (`scripts/deliveryFloors.mts`), and checked by
   `tests/delivery-floors.test.ts`. No commit on the branch touches those
-  files or `tests/perf/baseline`. The only new draws are the wildlife
+  files or `tests/perf/baseline`, and in the run above no shot's count moved
+  and no ceiling was newly breached (`page-thrash-turn` at 255 / 254 and
+  `cdlod-transition` at 215 / 196 read over their ceilings in both arms,
+  main's as well, at perf:ab's instant). The only new draws are the wildlife
   prime's zero-matrix instances (they rasterise nothing), which last until
-  each batch's pipelines exist and which a capture respawn ends, so no
-  shot's count is expected to move; the capture check is to confirm it
-  (wave 2, below).
-- The steady GPU cost (perf:ab) of the branch is not recorded in this
-  section.
+  each batch's pipelines exist and which a capture respawn ends.
+- Steady GPU work. The branch adds no render pass and no shader, and the
+  run above counted the same GPU work on every shot. Its timed steady cost
+  is the pull request's own perf:ab gate.
 
-### Wave 2: the whole branch on `05f17b4` (PLACEHOLDER)
+### Wave 2: the whole branch on `05f17b4`
 
-**PLACEHOLDER: wave 2 is running; this subsection is filled in when it
-finishes.** Waves 1 and 1.5 flew `5dd5ecb` on the old main, which had
-neither the wildlife cell cache nor the height-only reads, the sliced sky
-re-light, the chase camera's ground speed or the diagnostics line working.
-Wave 2 flies the branch as it stands on `05f17b4`, but perf:flight can
-show only some of that: the wildlife cell cache is on in every arm of the
-fix; the chase camera's ground speed is what an `--emulate-hitch` job
-flies; the height-only reads still pay a full analytic sample each, since
-perf:flight passes no `terrainHeight` (in an eroded world they skip only
-the pages' normal and slope); the sliced sky re-light runs only after 500 m
-of altitude change, which perf:flight neither asks for nor records; the
-render-scale step, the diagnostics poll
-and the diagnostics line are outside it (pinned render scale, no
-`FlightGame`, no HUD); and the ground-cover tile's 32 m steps are not
-exercised at all (no height-only sampler). To fill in: the CI run id and
-the commit that holds its matrix, the jobs and their arguments, which of
-the commits above each job exercised, the would-trip and TRIPPED counts,
-render() and long tasks per arm, and the capture check's result on the 39
-baselines and the draw-call ceilings.
+Waves 1 and 1.5 flew `5dd5ecb` on the old main, which had neither the
+wildlife cell cache nor the height-only reads, the sliced sky re-light, the
+chase camera's ground speed or the diagnostics line working. The branch
+was then rebased onto `05f17b4` (main after PRs #27 and #29) and flown on
+the macOS runner in two runs. `08eade3`, the build wave 2 flew, has the
+branch head's `src` but for one comment (`009a7e2`); the head adds the
+bake section above, which wave 2b read. The matrices are in
+`.github/workflows/perf-flight.yml` at `0e76d2a` (wave 2) and `f0b1313`
+(wave 2b), two temporary commits that, like waves 1 and 1.5's, were left
+off the branch when it was proposed; the artifacts expire about
+2026-11-08.
+
+Under perf:flight, of the renderer changes: the wildlife cell cache and
+prime are on in every arm of the fix; the camera's ground speed is what an
+`--emulate-hitch` job flies; the height-only reads and the ground-cover
+tile's 32 m steps run in wave 2b, which passes the game's samplers and
+flies low (wave 2 passed neither and flew at 150 m, above the blades' fade
+height, where the tile does not bake); the sliced sky re-light runs in
+wave 2b's climb. The render-scale step, the
+diagnostics poll and the diagnostics line stay outside perf:flight (pinned
+render scale, no `FlightGame`, no HUD).
+
+**Wave 2** (CI run 40232403657). `--gpu hardware --draws`,
+medium/balanced, trainer, chase camera, from `approach-500ft` at 250 m/s
+and 150 m clearance in breezy weather unless the table says otherwise; main
+is `05f17b4`, the fix `08eade3`.
+
+| Job | Flight | Base / head |
+| --- | --- | --- |
+| 0 | near home, 6 legs of 600 frames | main / fix |
+| 1 | as 0 | fix / main |
+| 2 | 2 legs of 300 frames, then 20 settle trials of 600 frames (`--settle-trials 20 --trial-frames 600`) | main / fix |
+| 3 | far east (`--start=160000,0,90`), 4 legs of 600 | main / fix |
+| 4 | kill the worker at leg 2, frame 300 (`--kill-detail-worker 2:300`), 4 legs of 600 | main / fix |
+| 5 | the camera after a hitch: `--speed 60 --legs 2 --leg-frames 60 --emulate-hitch 300@1:20 --frame-dump 18-45`, clear weather | `4ae68b4` (the branch before `e8a1f47`, so without `05e9b1d` and `af053f8`) / fix |
+
+- Trips. Main charged its worker 2 s or more in the stream to rest of
+  every one of its five arms (2,939 to 5,190 ms; jobs 0-4), and in job 2's
+  settle trials it TRIPPED in 1 of 20 (trial 13: the 8 s arm, then a
+  fallback for the trial) and charged 36 would-trip spans in 12 of them, up
+  to 8,710 ms. The fix tripped nowhere and charged no span of 2 s: its
+  longest was 846 ms. Accepted build latency over job 2's settle trials:
+  main p50 / p95 622 / 4,164 ms (458 builds), the fix 366 / 2,219 ms (783).
+- A killed worker (job 4). Main FELL BACK: leg 2 read render() p95 147.5 ms
+  with 109 long tasks and 4,247 KiB of garbage a frame, legs 3 and 4 p95
+  43 to 52 ms. The fix RECOVERED on a new worker: leg 2 p95 32.3 ms with 12
+  long tasks (19.0 and 35.0 ms on the same leg of jobs 0 and 1, with no
+  kill). After the first leg the fix read 0.316 of main's p95 and 0.527 of
+  its garbage.
+- Near home (jobs 0 and 1, both orders; ratios are the fix over main, the
+  geometric mean of the two orders). After the first leg render() p50 is
+  even (1.000), p95 0.926, garbage 1.001; long tasks 42 → 24 in job 0 and
+  28 (main) against 26 in job 1. The first leg reads p50 0.972 but p95
+  1.160: the fix's first-leg p95 was the higher in both orders (34.1
+  against 30.0 ms, 40.0 against 33.8), with 17 against 9 and 24 against 18
+  long tasks. In that leg the fix published 135 to 149 vegetation builds to
+  main's 36 to 64, and the trees arrived two to five times sooner at the
+  median (155 against 310 ms in job 0, 122 against 648 in job 1), which
+  likely puts more publication and draw work into the first leg (10 s of
+  flight, 30 to 36 s of wall time here); the per-pass spike tables do not
+  isolate it. Only one presentation build is ever in flight
+  (`WorldDetailRuntime.pendingPresentationBuild`), so no frame adopts more
+  than one. Over jobs 0-4 (four in main/fix order, one in fix/main) the
+  first leg's p95, fix over main, has a geometric mean of 1.051 (job 2 0.954, job 3 0.908, job
+  4 1.098); wave 2b's first legs, below, read 0.831 and 0.975.
+- Far east (job 3, one order). First leg p50 0.850, p95 0.908; after it
+  p50 0.973, p95 1.143, garbage 1.070. Near home the order alone moved p95
+  after the first leg by about ±15% (0.801 against 1.070), so 1.143 is
+  inside it; the +7% garbage is beyond the ±1% the order moved garbage
+  there, and one run cannot say more.
+- Mid-flight compiles. Main compiled the wildlife PBR (123.9 KiB of WGSL)
+  mid-flight in all five of its arms: in leg 1 of jobs 0, 1, 2 and 4, and
+  in leg 3 of job 3. The fix compiled it nowhere. Far east (job 3), both
+  arms compiled a plain "pbr:" effect in leg 1 and `aerolithHydrologyWater`
+  in leg 3 (both on main before this branch; still open).
+- The camera after a hitch (job 5). Frames 18 and 19 are pixel-identical
+  between the arms. At frame 20, the 300 ms hitch, the base's camera falls
+  back: the aircraft's centre rises about 20 px on screen (the centroid of
+  its near-white pixels, 1280x720 frames) and its wingspan shrinks from
+  about 500 to about 458 px (−9%), then it creeps back over about 25
+  frames. The fix's aircraft moves about 3 px at the hitch (wingspan 493 px
+  against 501) and drifts 3 px more by frame 45, where the base's has
+  caught up.
+
+**Wave 2b** (CI run 40246463673). As wave 2, but main against the branch
+head `009a7e2`, both orders of each flight, and the bake section read in
+the fix's arms (main's build reads n/a):
+
+| Job | Flight | Base / head |
+| --- | --- | --- |
+| 0 | low approach: `--start=10771.39,-27794.70,0 --clearance 30 --speed 70 --legs 4 --leg-frames 600` | main / fix |
+| 1 | as 0 | fix / main |
+| 2 | climb: `--clearance 1500 --speed 250 --legs 4 --leg-frames 720` | main / fix |
+| 3 | as 2 | fix / main |
+
+- Low approach, below the blades' fade height, where the tile bakes on
+  every frame. After the first leg render() p50 0.827, p95 0.863, garbage
+  0.686; the first leg p50 0.796, p95 0.831, garbage 0.755 (fix over main,
+  both orders). After the first leg, render() p50 fell from 18.1 to 15.4 ms
+  in job 0; in job 1 main read 12.7 ms and the fix 10.2. Main charged its
+  worker 2 s or more in its stream to rest in both orders (4,636 and 2,968
+  ms), the fix at most 395 ms there and 961 ms in any phase, and main
+  compiled the wildlife PBR mid-flight in both.
+- Ground cover (the fix's arms, 4,800 calls): p50 1.50 ms, p95 2.5 and
+  1.8 ms, worst 23.1 and 9.4 ms (jobs 0 and 1). Calls at or over 2 ms: 191 of 2,400 in job
+  0 and 95 of 2,400 in job 1, of which 134 and 65 (5.6% and 2.7% of the
+  calls) had neither a collection nor a pace-floor hold; 4 and 7 pace-floor
+  calls; 16 and 18 tiles finished. So the 2 ms target holds at the median
+  (1.5 ms in every leg), but at p95 only in job 1 (1.8 ms; 2.2 in its first
+  leg): job 0's p95 was 2.5 ms (2.1 to 3.7 by leg), and 6.0% of all calls
+  were at or over 2 ms. Both arms also compiled the ground-cover blades'
+  PBR (one pipeline and 122.1 KiB of WGSL, after a 14.5 KiB module the
+  frame before) in the first leg, on first use below the fade height
+  (before this branch; still open).
+- Climb. After the first leg render() p50 1.019, p95 1.007, garbage 0.956;
+  the first leg p50 0.948, p95 0.975, garbage 0.959. Main charged 2 s or
+  more once in its stream to rest (job 2, 2,318 ms) and compiled the
+  wildlife PBR mid-flight in both orders.
+- Sliced sky re-lights (the fix's arms): 4 landed, 2 per job. Their frames
+  read: begin 0.5 to 2.2 ms, advance 0.2 to 0.6 ms, land 0.5 to 3.9 ms
+  (all but at most 0.1 ms of it the converter), cube 0.0 to 0.7 ms, LUT
+  0.1 to 0.4 ms (main-thread ms). 3 of job 2's 20 sliced frames were at or
+  over 1 ms (begin 2.2, land 2.9 and 3.9 ms) and 2 of job 3's 13 (begin
+  1.3, land 1.2). On the cube frame the scene pass also renders the six
+  faces: `hdr-present` read 12.4 and 6.4 ms against leg medians of 6.0 and
+  5.7 in job 2, and 5.6 and 2.0 against 2.5 and 2.0 in job 3; job 2's
+  frame after its first LUT, with no sky work, read 14.6, so these flights
+  cannot separate the faces' cost from the leg's spread. Main does all of
+  it in one frame, which its build does not record; on the cloud host the
+  SH bake alone took 3.6 to about 9 ms ("Flight stutter" above). The 1 ms
+  target held on every advance, cube and LUT frame. It failed on 3 of the
+  4 landing frames (1.2 to 3.9 ms, the converter) and on the first begin
+  frame in each job (2.2 and 1.3 ms).
+
+Still open after wave 2: slicing the spherical-harmonics converter and
+the begin frame's work outside its slice; finding what runs inside the
+ground-cover calls over 2 ms with neither a collection nor a pace-floor
+hold (a step averages about 0.1 ms here, and the clock is already read
+after each one), for example by timing each step; compiling the
+ground-cover blades' PBR, and the far east's plain PBR and hydrology
+water, at load; and the first leg near home, where the fix's sooner trees
+cost p95 in the first 10 s of flight.
 
 ## Capture harness
 
