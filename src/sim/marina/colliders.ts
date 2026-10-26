@@ -1,3 +1,4 @@
+import type { BoatContactMaterial } from "../boat/boatSimulator";
 import type { ColliderWorld } from "../colliders";
 import type { Quaternion, Vec3 } from "../types";
 import { createWaterSurfaceSample, type WaterSurfaceAuthority, type WaterSurfaceSample } from "../water/types";
@@ -30,6 +31,20 @@ export const MARINA_COLLIDER_MATERIAL = Object.freeze({
   pontoon: 103,
   steel: 104,
 });
+
+/**
+ * How a hull meets each marina material, for the boat's contact law
+ * (`BoatEnvironment.contactMaterials`). Fendered pontoons give: a 1,800 kg
+ * runabout's 3.5 m/s knock (11 kJ) is what a pontoon's rubbing strake is
+ * built to take. Bare timber and steel piles take the boat's own default, and
+ * the concrete quay wall is the hardest face in the marina.
+ */
+export const MARINA_CONTACT_MATERIALS: ReadonlyMap<number, Readonly<BoatContactMaterial>> = new Map<number, Readonly<BoatContactMaterial>>([
+  [MARINA_COLLIDER_MATERIAL.pontoon, Object.freeze({ crashSpeed: 4, stiffness: 1.5e5, damping: 9e3, friction: 0.15 })],
+  [MARINA_COLLIDER_MATERIAL.timber, Object.freeze({ crashSpeed: 2.5, stiffness: 4e5, damping: 1.2e4, friction: 0.3 })],
+  [MARINA_COLLIDER_MATERIAL.steel, Object.freeze({ crashSpeed: 2.5, stiffness: 4e5, damping: 1.2e4, friction: 0.25 })],
+  [MARINA_COLLIDER_MATERIAL.concrete, Object.freeze({ crashSpeed: 2, stiffness: 6e5, damping: 1.5e4, friction: 0.4 })],
+]);
 
 /** Collider group of the home marina, for `ColliderWorld.removeGroup`. */
 export const MARINA_COLLIDER_GROUP = 7_001;
