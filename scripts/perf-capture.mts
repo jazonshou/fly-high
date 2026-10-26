@@ -391,6 +391,17 @@ export interface PerfCaptureBoatRun {
   }[];
 }
 
+/**
+ * The planing shots' run: the lever at 0.83 for 30 s settles the Runabout 21
+ * within a tenth of a knot of its steady 35.6 kn (tests/perf-boat-shots.test.ts
+ * holds it between 34 and 36 kn), so the frame shows a hull at speed, not one
+ * still accelerating.
+ */
+const BOAT_RUN_35KN: PerfCaptureBoatRun = Object.freeze({
+  start: "open-water",
+  legs: Object.freeze([Object.freeze({ seconds: 30, lever: 0.83, steer: 0 })]),
+});
+
 export interface PerfCaptureShotDefinition {
   readonly name: string;
   readonly description: string;
@@ -2178,7 +2189,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
     locate: "coast",
-    boat: { start: "open-water", legs: [{ seconds: 25, lever: 0.9, steer: 0 }] },
+    boat: BOAT_RUN_35KN,
     comparesToBaseline: false,
     ceilings: null,
   },
@@ -2195,7 +2206,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
     locate: "coast",
-    boat: { start: "open-water", legs: [{ seconds: 25, lever: 0.9, steer: 0 }] },
+    boat: BOAT_RUN_35KN,
     comparesToBaseline: false,
     ceilings: null,
   },
@@ -2214,7 +2225,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     clock: { dayOfYear: 171, solarTimeHours: 18.4 },
     relativeSunBearingDegrees: 30,
     locate: "coast",
-    boat: { start: "open-water", legs: [{ seconds: 25, lever: 0.9, steer: 0 }] },
+    boat: BOAT_RUN_35KN,
     comparesToBaseline: false,
     ceilings: null,
   },
