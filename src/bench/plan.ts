@@ -78,6 +78,11 @@ export function isBenchTierIndex(value: number): value is BenchTierIndex {
   return Number.isInteger(value) && value >= 0 && value < TIER_TABLE.length;
 }
 
+/** "Medium"; "Tier 7" for a number the tier table does not have. */
+export function benchTierName(tierIndex: number): string {
+  return isBenchTierIndex(tierIndex) ? benchTier(tierIndex).name : `Tier ${tierIndex}`;
+}
+
 /**
  * A step's game settings: the defaults with only the tier's quality and
  * mode changed. Held in memory for the page load; never saved, so a player's

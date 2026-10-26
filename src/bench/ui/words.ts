@@ -1,4 +1,7 @@
-import { benchTier, describeDuration, isBenchTierIndex } from "../plan";
+import { benchTierName, describeDuration } from "../plan";
+
+/** "0.4", or a dash when there is no number. */
+export { decimalText } from "../report";
 
 /**
  * The words and number formats the bench's pages share. Everything a person
@@ -6,28 +9,12 @@ import { benchTier, describeDuration, isBenchTierIndex } from "../plan";
  * someone who has never seen a frame time: plain words, short sentences.
  */
 
-/** `readBenchFromUrl` takes at most this many tiers; the intro's Advanced field keeps to it. */
-export const BENCH_TIER_LIST_MAX = 8;
-
 /** "Medium"; "Tier 7" for a number the tier table does not have. */
-export function tierName(tierIndex: number): string {
-  return isBenchTierIndex(tierIndex) ? benchTier(tierIndex).name : `Tier ${tierIndex}`;
-}
+export const tierName = benchTierName;
 
 /** "Medium, Low, High, Medium". */
 export function tierListText(tiers: readonly number[]): string {
   return tiers.map(tierName).join(", ");
-}
-
-/**
- * The Advanced field's tier list, read by `readBenchFromUrl`'s rule: 1 to 8
- * entries, each 0 to 3, separated by commas. Null when it breaks the rule, so
- * the intro never starts a run the URL reader would replace with the default.
- */
-export function parseTierList(text: string): number[] | null {
-  const names = text.split(",").map((name) => name.trim());
-  if (names.length > BENCH_TIER_LIST_MAX || !names.every((name) => /^[0-3]$/.test(name))) return null;
-  return names.map(Number);
 }
 
 /** "0:34", "1:15". */
@@ -39,11 +26,6 @@ export function clockText(seconds: number): string {
 /** "58 fps", or a dash when there is no number. */
 export function fpsText(fps: number | null | undefined): string {
   return fps === null || fps === undefined || !Number.isFinite(fps) ? "–" : `${Math.round(fps)} fps`;
-}
-
-/** "0.4", or a dash: slow frames per 240 and the like. */
-export function decimalText(value: number | null | undefined, digits = 1): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "–" : value.toFixed(digits);
 }
 
 /** "about 4 minutes left", "under a minute left". */

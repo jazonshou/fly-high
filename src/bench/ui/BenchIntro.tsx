@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { parseBenchTiers } from "@/src/settings";
 import { USER_LABEL_MAX, noticeText } from "../flow";
 import { benchTimings, estimateBenchDuration, type BenchUrlOptions } from "../plan";
 import { describeBrowser, describeGpu, describeOs } from "../report";
@@ -11,7 +12,7 @@ import type {
   BenchWebGpuStatus,
 } from "../types";
 import { BenchDialog } from "./BenchDialog";
-import { durationText, flightCountText, parseTierList, tierListText } from "./words";
+import { durationText, flightCountText, tierListText } from "./words";
 
 /** What the intro starts with: the page's options or Advanced's edits, and the typed label. */
 export interface BenchIntroChoice {
@@ -149,7 +150,7 @@ export function BenchIntro(props: BenchIntroProps) {
     () => options.mode !== "shipped" || options.quick || !options.hud,
   );
 
-  const tiers = parseTierList(tiersText);
+  const tiers = parseBenchTiers(tiersText);
   const chosen: BenchUrlOptions = { ...options, tiers: tiers ?? options.tiers, mode };
   const choice: BenchIntroChoice = { options: chosen, userLabel };
   const timings = benchTimings(chosen.quick);

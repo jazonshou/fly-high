@@ -332,6 +332,17 @@ export const DEFAULT_BENCH_TIERS: readonly number[] = Object.freeze([1, 0, 2, 1]
 const MAX_BENCH_TIERS = 8;
 
 /**
+ * A `tiers` list: 1 to 8 entries, each 0 to 3, separated by commas. Null when
+ * it breaks the rule. The bench intro's Advanced field reads its text with
+ * this too, so it never starts a run that `readBenchFromUrl` would replace
+ * with the default.
+ */
+export function parseBenchTiers(text: string): number[] | null {
+  const names = text.split(",").map((name) => name.trim());
+  return names.length <= MAX_BENCH_TIERS && names.every((name) => /^[0-3]$/.test(name)) ? names.map(Number) : null;
+}
+
+/**
  * `?bench=1` only. URL only and never persisted, like `?world=`: the bench
  * keeps its progress in its own tab-scoped store (src/bench/store.ts), never
  * in the settings. Anything but exactly `bench=1` is the normal game. A bad
@@ -343,12 +354,11 @@ export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
   try {
     const params = new URL(source).searchParams;
     if (params.get("bench") !== "1") return undefined;
-    const names = (params.get("tiers") ?? "").split(",").map((name) => name.trim());
-    const tiersValid = names.length <= MAX_BENCH_TIERS && names.every((name) => /^[0-3]$/.test(name));
+    const tiers = parseBenchTiers(params.get("tiers") ?? "");
     const run = params.get("run");
     const step = params.get("step");
     return {
-      tiers: tiersValid ? names.map(Number) : [...DEFAULT_BENCH_TIERS],
+      tiers: tiers ?? [...DEFAULT_BENCH_TIERS],
       mode: params.get("mode") === "pinned" ? "pinned" : "shipped",
       hud: params.get("hud") !== "0",
       quick: params.get("quick") === "1",

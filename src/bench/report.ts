@@ -2,7 +2,7 @@ import type { RenderDiagnostics } from "@/src/game/types";
 import { governorConfigForProfile } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import { hitchThresholdMilliseconds } from "@/src/render/webgpu/core/QualityProfile";
 import { fnv1aHex } from "./hash";
-import { BENCH_SCHEMA, BENCH_VERSION, benchProfile, benchTier, isBenchTierIndex } from "./plan";
+import { BENCH_SCHEMA, BENCH_VERSION, benchProfile, benchTier, benchTierName, isBenchTierIndex } from "./plan";
 import { spread } from "./stats";
 import type {
   BenchBuildInfo,
@@ -162,10 +162,6 @@ export function verdictText(run: Pick<BenchReportRun, "status" | "verdict" | "vo
     case "unchecked":
       return "Unchecked: this run does not start and end on the same quality, so it cannot check itself.";
   }
-}
-
-function benchTierName(tierIndex: number): string {
-  return isBenchTierIndex(tierIndex) ? benchTier(tierIndex).name : `Tier ${tierIndex}`;
 }
 
 // --- verdict and warnings -------------------------------------------------------------
@@ -696,7 +692,8 @@ export function deviceLine(report: BenchReport): string {
   return parts.filter((part): part is string => part !== null).join(" · ");
 }
 
-function formatNumber(value: number | null | undefined, digits = 1): string {
+/** "0.4", or a dash when there is no number: the report's cells and the page's. */
+export function decimalText(value: number | null | undefined, digits = 1): string {
   return value === null || value === undefined || !Number.isFinite(value) ? "–" : value.toFixed(digits);
 }
 
@@ -760,16 +757,16 @@ export function reportTableRows(steps: readonly BenchReportStep[]): BenchTableRo
       resultText: ended ? `${label} (${ended})` : label,
       cells: [
         benchTierName(step.tierIndex),
-        formatNumber(air?.fps),
-        formatNumber(air?.onePercentLowFps),
-        formatNumber(air?.over["27.4"].per240),
-        formatNumber(air?.over["50"].per240),
+        decimalText(air?.fps),
+        decimalText(air?.onePercentLowFps),
+        decimalText(air?.over["27.4"].per240),
+        decimalText(air?.over["50"].per240),
         air?.renderMs ? `${air.renderMs.p95.toFixed(1)} ms` : "–",
         formatShare(result?.governor.windows.air.share.atScaleFloor),
         governor
           ? `${governor.mode}, scale ${governor.appliedScale.toFixed(2)}, CPU ${governor.cpuLevel}, GPU ${governor.gpuLevel}`
           : "–",
-        ground ? `${formatNumber(ground.fps)} fps, ${formatNumber(ground.over["27.4"].per240)} slow` : "–",
+        ground ? `${decimalText(ground.fps)} fps, ${decimalText(ground.over["27.4"].per240)} slow` : "–",
         outcome ? `${label} (${outcome})` : label,
       ],
     };

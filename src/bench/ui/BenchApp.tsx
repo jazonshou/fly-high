@@ -6,16 +6,15 @@ import { BenchIntro, type BenchIntroProps } from "./BenchIntro";
 import { BenchReportDialog, type BenchReportDialogProps } from "./BenchReportDialog";
 
 /**
- * The marker on every bench element a person can reach. The step page's key
- * blocker lets Tab, Enter, Space and Escape through only to targets inside
- * it; `isInsideBenchUi` is that test, ready to hand to the blocker.
+ * Inside an element a person can reach on a bench page: BenchDialog's
+ * screen, the run chip and the cards each carry `data-bench-ui`. The step
+ * page's key blocker lets Tab, Enter, Space and Escape through only to
+ * targets inside one; this is that test, ready to hand to the blocker.
  */
-export const BENCH_UI_ATTRIBUTE = "data-bench-ui";
-
 export function isInsideBenchUi(target: EventTarget | null): boolean {
   return typeof Element !== "undefined"
     && target instanceof Element
-    && target.closest(`[${BENCH_UI_ATTRIBUTE}]`) !== null;
+    && target.closest("[data-bench-ui]") !== null;
 }
 
 /**

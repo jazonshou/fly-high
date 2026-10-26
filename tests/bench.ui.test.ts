@@ -14,7 +14,8 @@ import { BenchChip, chipAnnouncement, chipPhaseText, chipProgress, type BenchChi
 import { BenchHud, BenchHudContent } from "../src/bench/ui/BenchHud";
 import { BenchIntro, type BenchIntroProps } from "../src/bench/ui/BenchIntro";
 import { BenchReportDialog, type BenchReportDialogProps } from "../src/bench/ui/BenchReportDialog";
-import { clockText, parseTierList, tierListText } from "../src/bench/ui/words";
+import { clockText, tierListText } from "../src/bench/ui/words";
+import { parseBenchTiers, readBenchFromUrl } from "../src/settings";
 import { benchDevice, benchRefresh, benchRunRecord, defaultRun } from "./support/benchReportFixture";
 
 /**
@@ -251,14 +252,19 @@ describe("the intro dialog", () => {
   });
 
   it("reads the Advanced tier list by the URL reader's rule", () => {
-    expect(parseTierList("1,0,2,1")).toEqual([1, 0, 2, 1]);
-    expect(parseTierList(" 1 , 3 ")).toEqual([1, 3]);
-    expect(parseTierList("2")).toEqual([2]);
-    expect(parseTierList("")).toBeNull();
-    expect(parseTierList("1,4")).toBeNull();
-    expect(parseTierList("1,,2")).toBeNull();
-    expect(parseTierList("1,0,2,1,0,2,1,0")).toHaveLength(8);
-    expect(parseTierList("1,0,2,1,0,2,1,0,1")).toBeNull();
+    expect(parseBenchTiers("1,0,2,1")).toEqual([1, 0, 2, 1]);
+    expect(parseBenchTiers(" 1 , 3 ")).toEqual([1, 3]);
+    expect(parseBenchTiers("2")).toEqual([2]);
+    expect(parseBenchTiers("")).toBeNull();
+    expect(parseBenchTiers("1,4")).toBeNull();
+    expect(parseBenchTiers("1,,2")).toBeNull();
+    expect(parseBenchTiers("1,0,2,1,0,2,1,0")).toHaveLength(8);
+    expect(parseBenchTiers("1,0,2,1,0,2,1,0,1")).toBeNull();
+    // One rule: a list the field takes, the URL reader keeps; one it refuses, the reader replaces.
+    for (const text of ["1,0,2,1", " 1 , 3 ", "1,4", "1,0,2,1,0,2,1,0,1"]) {
+      const read = readBenchFromUrl(`https://jazonshou.github.io/fly-high/?bench=1&tiers=${encodeURIComponent(text)}`)!;
+      expect(read.tiers).toEqual(parseBenchTiers(text) ?? [1, 0, 2, 1]);
+    }
     expect(tierListText([0, 3, 7])).toBe("Low, Ultra, Tier 7");
   });
 });
