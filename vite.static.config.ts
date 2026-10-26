@@ -20,6 +20,12 @@ export default defineConfig({
   cacheDir: checkoutCacheDir("static"),
   base: process.env.PAGES_BASE ?? "/",
   plugins: [react()],
+  // `?bench=1` stamps its reports with the commit a Pages build was made from.
+  // GitHub Actions sets GITHUB_SHA; a local build stamps null. Declared in
+  // src/bench/env.d.ts; no other build defines it.
+  define: {
+    __FLY_HIGH_COMMIT__: JSON.stringify(process.env.GITHUB_SHA ?? null),
+  },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),
