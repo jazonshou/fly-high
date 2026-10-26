@@ -348,14 +348,14 @@ describe("the page flow", () => {
     const { storage } = memoryStorage();
     const done = stopRun(startRun(startInput(), INTRO).store, NOW, INTRO).store;
     const extras = recordReportExtras(done, { reportRefresh: benchRefresh(59.9), settingsKeyAtEnd: "absent" });
-    expect(recordReportExtras(extras, { reportRefresh: benchRefresh(30), settingsKeyAtEnd: null }).current!.reportRefresh!.hz)
+    expect(recordReportExtras(extras, { reportRefresh: benchRefresh(30), settingsKeyAtEnd: null }).current!.reportRefresh!.rafHz)
       .toBe(59.9);
     const pinned = startPinnedPass(extras, "p1n2e3d4x5", "absent", NOW, INTRO);
     expect(pinned.href).toBe(`${PAGE}?bench=1&run=p1n2e3d4x5&step=0&seed=00762m&tiers=1,0,2,1&mode=pinned`);
     expect(pinned.store.current).toMatchObject({
       runId: "p1n2e3d4x5", status: "running", userLabel: "Jason's laptop", firstLoad: null, plan: { mode: "pinned" },
     });
-    expect(pinned.store.current!.introRefresh!.hz).toBe(59.9);
+    expect(pinned.store.current!.introRefresh!.rafHz).toBe(59.9);
     expect(pinned.store.earlier.map((run) => run.runId)).toEqual(["k3x9q2m7wp"]);
     writeBenchStore(storage, stopRun(pinned.store, NOW, INTRO).store);
     const report = load(storage, `${PAGE}?bench=1&run=p1n2e3d4x5&step=report&tiers=1,0,2,1&mode=pinned`);

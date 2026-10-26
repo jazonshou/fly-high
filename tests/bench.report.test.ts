@@ -423,7 +423,7 @@ describe("warnings and earlier runs", () => {
     const warned = {
       ...withSteps(run, [run.steps[0]!, odd, run.steps[2]!, run.steps[3]!]),
       settingsKeyAtEnd: "1a2b3c4d",
-      reportRefresh: { ...run.reportRefresh!, hz: 48 },
+      reportRefresh: { ...run.reportRefresh!, rafHz: 48 },
     };
     const codes = collectWarnings(warned).map((entry) => `${entry.code}@${entry.stepIndex}`);
     expect(codes).toEqual([

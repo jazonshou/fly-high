@@ -103,7 +103,7 @@ describe("the device report", () => {
     expect(report.hardwareConcurrency).toBe(16);
     expect(report.deviceMemoryGiB).toBe(8);
     expect(report.uaData).toEqual({
-      brands: [{ brand: "Chromium", version: "131" }],
+      brands: ["Chromium 131"],
       mobile: false,
       platform: "Windows",
       platformVersion: "15.0.0",
@@ -111,7 +111,7 @@ describe("the device report", () => {
       bitness: "64",
       model: "",
       wow64: false,
-      fullVersionList: [{ brand: "Chromium", version: "131.0.6778.86" }],
+      fullVersionList: ["Chromium 131.0.6778.86"],
     });
     expect(report.screen).toEqual({
       width: 2_560, height: 1_440, availWidth: 2_560, availHeight: 1_400, colorDepth: 24, devicePixelRatio: 1.25,
@@ -135,6 +135,7 @@ describe("the device report", () => {
       limitShortfalls: [],
       preferredCanvasFormat: "bgra8unorm",
       timestampQuery: true,
+      rendererLabel: null,
     });
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
@@ -154,6 +155,7 @@ describe("the device report", () => {
       limitShortfalls: [],
       preferredCanvasFormat: null,
       timestampQuery: false,
+      rendererLabel: null,
     });
   });
 

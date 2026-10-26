@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CREATION_EVENT_LIMIT,
   classifyCacheState,
+  compileCounts,
   createHeapSampler,
-  estimateRefresh,
   installCreationCounter,
   installEnvironmentGuards,
   installKeyBlocker,
@@ -20,6 +20,7 @@ import {
   type FrameClock,
   type PerformanceObserverConstructor,
 } from "../src/bench/instruments";
+import { summarizeHeap, summarizeLongAnimationFrames, summarizeLongTasks } from "../src/bench/stats";
 
 /**
  * The `?bench=1` browser instruments, driven with fakes: Node has no
@@ -76,15 +77,23 @@ describe("the creation counter", () => {
       total: 6,
     });
     expect(counter.events.map((event) => event.kind)).toEqual([
-      "render-pipeline",
-      "render-pipeline-async",
-      "compute-pipeline",
-      "compute-pipeline",
-      "compute-pipeline-async",
+      "render",
+      "render-async",
+      "compute",
+      "compute",
+      "compute-async",
       "shader-module",
     ]);
     expect(counter.events[0]!.t).toBe(10);
     expect(counter.events[1]!.t).toBe(20);
+    expect(compileCounts(counter.counts)).toEqual({
+      render: 1,
+      renderAsync: 1,
+      compute: 2,
+      computeAsync: 1,
+      shaderModules: 1,
+      wgslKiB: 2,
+    });
     counter.uninstall();
   });
 
@@ -172,7 +181,7 @@ describe("the long-task and long-animation-frame observers", () => {
     expect(observeLongAnimationFrames()).toBeNull();
   });
 
-  it("summarise long tasks that started inside a window", () => {
+  it("record long tasks for stats.ts to summarise by window", () => {
     const { Observer, deliver, live } = fakeObserver(["longtask"]);
     const log = observeLongTasks(Observer)!;
     deliver("longtask", [
@@ -183,8 +192,9 @@ describe("the long-task and long-animation-frame observers", () => {
     ]);
 
     expect(log.entries).toHaveLength(4);
-    expect(log.summarize(1_000, 2_000)).toEqual({ count: 2, totalMs: 180, maxMs: 120 });
-    expect(log.summarize(3_000, 4_000)).toEqual({ count: 0, totalMs: 0, maxMs: 0 });
+    expect(log.entries[0]).toEqual({ startMs: 50, durationMs: 80 });
+    expect(summarizeLongTasks(log.entries, 1_000, 2_000)).toEqual({ supported: true, count: 2, totalMs: 180, maxMs: 120 });
+    expect(summarizeLongTasks(log.entries, 3_000, 4_000)).toEqual({ supported: true, count: 0, totalMs: 0, maxMs: 0 });
     log.disconnect();
     expect(live).toHaveLength(0);
   });
@@ -211,11 +221,12 @@ describe("the long-task and long-animation-frame observers", () => {
       invoker: "FrameRequestCallback",
       ms: 40,
     });
-    const summary = log.summarize(0, 1_000);
+    expect(first.blockingMs).toBe(10);
+    const summary = summarizeLongAnimationFrames(log.entries, 0, 1_000, 0);
     expect(summary.count).toBe(7);
     expect(summary.maxMs).toBe(200);
     expect(summary.blockingMs).toBe(620 - 7 * 50);
-    expect(summary.top.map((entry) => entry.duration)).toEqual([200, 90, 80, 70, 65]);
+    expect(summary.top.map((entry) => entry.durationMs)).toEqual([200, 90, 80, 70, 65]);
   });
 
   it("reduce a script URL to its path, and an extension to a word", () => {
@@ -236,10 +247,11 @@ describe("the heap sampler", () => {
   it("reports a value that never changed in the window as stale, with no figures", () => {
     const sampler = createHeapSampler({ read: () => 64 * 1_048_576 })!;
     for (let t = 0; t < 60_000; t += 1_000) sampler.sample(t);
-    expect(sampler.summarize(0, 60_000)).toEqual({
+    expect(sampler.samples()).toHaveLength(60);
+    expect(summarizeHeap(sampler.samples(), 0, 60_000)).toEqual({
+      supported: true,
       precise: false,
       stale: true,
-      samples: 60,
       startMiB: null,
       endMiB: null,
       peakMiB: null,
@@ -255,9 +267,9 @@ describe("the heap sampler", () => {
       bytes = (100 + t / 60_000 * 3) * 1_048_576;
       sampler.sample(t);
     }
-    const summary = sampler.summarize(0, 60_001);
+    expect(sampler.samples()[0]).toEqual({ tMs: -1_000, usedBytes: 100 * 1_048_576 });
+    const summary = summarizeHeap(sampler.samples(), 0, 60_001);
     expect(summary.stale).toBe(false);
-    expect(summary.samples).toBe(61);
     expect(summary.startMiB).toBeCloseTo(100, 9);
     expect(summary.endMiB).toBeCloseTo(103, 9);
     expect(summary.peakMiB).toBeCloseTo(103, 9);
@@ -271,46 +283,6 @@ describe("the heap sampler", () => {
     expect(sampler.overflowed).toBe(false);
     sampler.sample(2);
     expect(sampler.overflowed).toBe(true);
-  });
-});
-
-function repeat(pattern: readonly number[], times: number): number[] {
-  return Array.from({ length: times }, () => pattern).flat();
-}
-
-describe("the refresh estimate", () => {
-  it("drops stalls and doubled frames from an idle 60 Hz loop", () => {
-    const intervals = [...repeat([16.667], 90), ...repeat([33.333], 8), 250, 0.4];
-    const estimate = estimateRefresh(intervals);
-    expect(estimate.rafHz).toBeCloseTo(60, 2);
-    expect(estimate.samples).toBe(99);
-    expect(estimate.kept).toBe(90);
-  });
-
-  it("finds the refresh period under a flight that misses two frames in five", () => {
-    const estimate = estimateRefresh(repeat([16.6, 16.75, 33.3, 16.65, 33.4], 60));
-    expect(estimate.rafHz).toBeCloseTo(60, 0);
-    expect(estimate.medianMs).toBeCloseTo(16.75, 9);
-    expect(estimate.p90Ms).toBeCloseTo(33.4, 9);
-  });
-
-  it("averages a 1 ms clock's 16s and 17s back to 60 Hz", () => {
-    const estimate = estimateRefresh(repeat([17, 16, 17], 40));
-    expect(estimate.rafHz!).toBeGreaterThan(59.5);
-    expect(estimate.rafHz!).toBeLessThan(60.5);
-  });
-
-  it("reads 50, 120, 144 and 240 Hz", () => {
-    for (const hz of [50, 120, 144, 240]) {
-      const jitter = [-0.05, 0.05, 0, 0.02, -0.02];
-      const intervals = repeat(jitter.map((offset) => 1_000 / hz + offset), 30);
-      expect(estimateRefresh(intervals).rafHz).toBeCloseTo(hz, 0);
-    }
-  });
-
-  it("gives no rate from too few intervals", () => {
-    expect(estimateRefresh([16.7, 16.7, 16.7]).rafHz).toBeNull();
-    expect(estimateRefresh(new Float64Array(10), 0).samples).toBe(0);
   });
 });
 
@@ -371,7 +343,7 @@ describe("the rAF instruments", () => {
     const fake = fakeFrameClock();
     const measuring = measureRefresh(1_000, fake.clock);
     for (let index = 0; index <= 130; index += 1) fake.frame(index * (1_000 / 120));
-    const estimate = await measuring;
+    const estimate = (await measuring)!;
     expect(estimate.rafHz).toBeCloseTo(120, 6);
     expect(estimate.samples).toBe(120);
     expect(fake.pendingFrames()).toBe(0);
@@ -383,9 +355,8 @@ describe("the rAF instruments", () => {
     fake.frame(0);
     fake.frame(16.7);
     fake.advance(2_000);
-    const estimate = await measuring;
-    expect(estimate.rafHz).toBeNull();
-    expect(estimate.samples).toBe(1);
+    // One interval is no estimate.
+    expect(await measuring).toBeNull();
   });
 });
 
@@ -446,19 +417,12 @@ describe("the HTTP cache reading", () => {
     const report = readHttpCache({ getEntriesByType: (type) => entries[type] ?? [] }, origin);
     expect(report).toEqual({
       navigationType: "reload",
-      document: "revalidated",
-      scripts: { cache: 1, revalidated: 1, network: 1, unknown: 0 },
-      transferKiB: (300 + 2_348) / 1_024,
+      httpCache: { scripts: 3, fromCache: 1, revalidated: 1, network: 1, transferKiB: (300 + 2_348) / 1_024 },
     });
   });
 
   it("knows nothing without resource timing", () => {
-    expect(readHttpCache(null, null)).toEqual({
-      navigationType: null,
-      document: "unknown",
-      scripts: { cache: 0, revalidated: 0, network: 0, unknown: 0 },
-      transferKiB: 0,
-    });
+    expect(readHttpCache(null, null)).toEqual({ navigationType: "unknown", httpCache: null });
   });
 });
 
@@ -665,12 +629,12 @@ describe("the wake lock", () => {
     expect((await requestWakeLock(refused)).state).toBe("denied");
   });
 
-  it("is held until the browser or the bench releases it", async () => {
+  it("is lost when the browser lets go, and stays as it was when the bench does", async () => {
     const sentinel = Object.assign(new EventTarget(), { release: vi.fn(() => Promise.resolve()) });
     const handle = await requestWakeLock({ request: () => Promise.resolve(sentinel) });
     expect(handle.state).toBe("held");
     sentinel.dispatchEvent(new Event("release"));
-    expect(handle.state).toBe("released");
+    expect(handle.state).toBe("lost");
     await handle.release();
     expect(sentinel.release).not.toHaveBeenCalled();
 
@@ -678,7 +642,9 @@ describe("the wake lock", () => {
     const mine = await requestWakeLock({ request: () => Promise.resolve(other) });
     await mine.release();
     expect(other.release).toHaveBeenCalledOnce();
-    expect(mine.state).toBe("released");
+    // The bench's own release leaves the state as the step had it.
+    other.dispatchEvent(new Event("release"));
+    expect(mine.state).toBe("held");
   });
 });
 

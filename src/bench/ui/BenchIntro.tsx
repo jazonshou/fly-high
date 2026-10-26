@@ -98,7 +98,7 @@ function DeviceCard({ device, refresh, checking }: Pick<BenchIntroProps, "device
     ["Browser", device ? describeBrowser(device) : pending],
     ["System", device ? describeOs(device) : pending],
     ["Screen", device ? screenText(device) : pending],
-    ["Frame rate", refresh ? `${Math.round(refresh.hz)} Hz` : checking ? "Measuring…" : "Unknown"],
+    ["Frame rate", refresh ? `${Math.round(refresh.rafHz)} Hz` : checking ? "Measuring…" : "Unknown"],
   ];
   if (device?.hardwareConcurrency) rows.push(["Processor", `${device.hardwareConcurrency} threads`]);
   if (device?.deviceMemoryGiB) {

@@ -3,6 +3,7 @@ import type { FlightRenderer } from "@/src/render/FlightRenderer";
 import type { FlightRenderingSystem } from "@/src/render/types";
 import type { DetailWorkerHealth } from "@/src/render/webgpu/detail/WorldDetailRuntime";
 import type { GovernorConfig, GovernorMode } from "@/src/render/webgpu/core/AdaptiveGovernor";
+import type { WebGpuLimitShortfall } from "@/src/render/webgpu/core/Capabilities";
 import type { GameSettings, RenderingMode } from "@/src/settings";
 import type { WorldDefinition } from "@/src/world";
 
@@ -305,14 +306,22 @@ export interface BenchCompileCounts {
 
 // --- one step's measurements ---------------------------------------------------
 
-/** An idle rAF loop's cadence: what the browser paces frames at, not the panel. */
+/**
+ * A rAF loop's cadence: the rate the browser paces frames at, which the
+ * panel's refresh rate only bounds (Energy Saver, Low Power Mode and VRR
+ * panels can all hold it lower), hence `rafHz` (critique S8).
+ */
 export interface BenchRefresh {
-  readonly hz: number;
+  readonly rafHz: number;
+  /** The mean of the intervals near the fastest steady cadence; `1000 / rafHz`. */
+  readonly periodMs: number;
+  /** Over every usable interval, outliers included. */
   readonly medianMs: number;
   readonly p10Ms: number;
   readonly p90Ms: number;
+  /** Usable intervals: 1.5 ms to 1 s. */
   readonly samples: number;
-  /** Deltas more than 25% from the median, left out (a stall, a skipped frame). */
+  /** Usable intervals away from that cadence, left out of the period (a stall, a skipped frame). */
   readonly outliers: number;
 }
 
@@ -778,6 +787,7 @@ export interface BenchAdapterInfo {
 
 export interface BenchDeviceReport {
   readonly userAgent: string;
+  /** Chromium's client hints; null in Firefox and Safari. Brands read "Google Chrome 130". */
   readonly uaData: {
     readonly brands: readonly string[];
     readonly mobile: boolean;
@@ -807,7 +817,7 @@ export interface BenchDeviceReport {
     readonly adapter: BenchAdapterInfo | null;
     readonly features: readonly string[];
     readonly limits: Readonly<Record<string, number>>;
-    readonly limitShortfalls: readonly string[];
+    readonly limitShortfalls: readonly WebGpuLimitShortfall[];
     readonly preferredCanvasFormat: string | null;
     readonly timestampQuery: boolean;
     /** `getDiagnostics().adapter` from a step, when one ran. */

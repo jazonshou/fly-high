@@ -179,24 +179,46 @@ export function spread(first: number | null, last: number | null): number | null
 
 // --- refresh, cadence and timers ------------------------------------------------
 
+/** Fewer usable intervals than this give no refresh estimate. */
+export const MIN_REFRESH_SAMPLES = 5;
+
 /**
- * An idle rAF loop's cadence. Deltas more than 25% from the median (a stall,
- * a skipped vsync, the first frame) are dropped before the median that sets
- * the rate. Null with fewer than five deltas.
+ * A rAF loop's frame period, from the idle probe or the flight's own deltas.
+ *
+ * The median would do for an idle loop but not for a flight on a machine that
+ * misses frames, where it lands between one and two refresh periods. So the
+ * period is the mean of the intervals within [0.8, 1.25] of the 10th
+ * percentile: the fastest cadence the loop sustains, with dropped frames and
+ * stalls left out. The mean, not the median, because a 1 ms timer (Firefox,
+ * Safari) splits a 16.67 ms period into 16s and 17s. Below 1.5 ms is no
+ * display's period (a catch-up callback), and 1 s or more is a stall. Null
+ * with fewer than five usable intervals.
  */
-export function estimateRefresh(deltas: ArrayLike<number>): BenchRefresh | null {
-  const sorted = sortedPositive(Array.from(deltas));
-  if (sorted.length < 5) return null;
-  const median = nearestRank(sorted, 0.5)!;
-  const kept = sorted.filter((value) => value >= median * 0.75 && value <= median * 1.25);
-  const medianMs = nearestRank(kept, 0.5)!;
+export function estimateRefresh(deltas: ArrayLike<number>, count: number = deltas.length): BenchRefresh | null {
+  const usable: number[] = [];
+  for (let index = 0; index < Math.min(count, deltas.length); index += 1) {
+    const value = deltas[index]!;
+    if (Number.isFinite(value) && value >= 1.5 && value < 1_000) usable.push(value);
+  }
+  if (usable.length < MIN_REFRESH_SAMPLES) return null;
+  const sorted = Float64Array.from(usable).sort();
+  const p10Ms = nearestRank(sorted, 0.1)!;
+  let sum = 0;
+  let kept = 0;
+  for (const value of sorted) {
+    if (value < p10Ms * 0.8 || value > p10Ms * 1.25) continue;
+    sum += value;
+    kept += 1;
+  }
+  const periodMs = sum / kept;
   return {
-    hz: 1_000 / medianMs,
-    medianMs,
-    p10Ms: nearestRank(kept, 0.1)!,
-    p90Ms: nearestRank(kept, 0.9)!,
-    samples: kept.length,
-    outliers: sorted.length - kept.length,
+    rafHz: 1_000 / periodMs,
+    periodMs,
+    medianMs: nearestRank(sorted, 0.5)!,
+    p10Ms,
+    p90Ms: nearestRank(sorted, 0.9)!,
+    samples: sorted.length,
+    outliers: sorted.length - kept,
   };
 }
 
@@ -222,24 +244,14 @@ export function flightCadence(intervals: ArrayLike<number>): BenchFlightCadence 
  * half the refresh rate agrees; a display that switched rate does not.
  */
 export function rafReport(idle: BenchRefresh | null, flight: BenchFlightCadence | null): BenchRafReport {
-  const idleHz = idle?.hz ?? null;
+  const idleHz = idle?.rafHz ?? null;
   let disagrees = false;
   if (idle !== null && flight !== null && flight.share >= 0.25) {
-    const ratio = flight.medianMs / idle.medianMs;
+    const ratio = flight.medianMs / idle.periodMs;
     const multiple = Math.max(1, Math.round(ratio));
     disagrees = Math.abs(ratio - multiple) / multiple > 0.05;
   }
   return { idleHz, flight, disagrees, limited: idleHz !== null && idleHz < LIMITED_RAF_HZ };
-}
-
-/** The smallest step the clock was seen to take: its granularity, or near it. */
-export function estimateTimerGranularity(deltas: ArrayLike<number>): number | null {
-  let smallest = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < deltas.length; index += 1) {
-    const value = deltas[index]!;
-    if (Number.isFinite(value) && value > 0 && value < smallest) smallest = value;
-  }
-  return Number.isFinite(smallest) ? smallest : null;
 }
 
 export function timerReport(granularityMs: number | null): BenchTimerReport {

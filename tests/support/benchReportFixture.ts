@@ -81,9 +81,9 @@ export interface StepFixtureOptions {
   readonly seed?: number;
 }
 
-export function benchRefresh(hz = 60): BenchRefresh {
-  const medianMs = 1_000 / hz;
-  return { hz, medianMs, p10Ms: medianMs - 0.1, p90Ms: medianMs + 0.1, samples: 59, outliers: 1 };
+export function benchRefresh(rafHz = 60): BenchRefresh {
+  const periodMs = 1_000 / rafHz;
+  return { rafHz, periodMs, medianMs: periodMs, p10Ms: periodMs - 0.1, p90Ms: periodMs + 0.1, samples: 59, outliers: 1 };
 }
 
 const ZERO: BenchCompileCounts = { render: 0, renderAsync: 0, compute: 0, computeAsync: 0, shaderModules: 0, wgslKiB: 0 };

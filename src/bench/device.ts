@@ -1,8 +1,5 @@
-import {
-  findWebGpuLimitShortfalls,
-  readWebGpuLimits,
-  type WebGpuLimitShortfall,
-} from "@/src/render/webgpu/core/Capabilities";
+import { findWebGpuLimitShortfalls, readWebGpuLimits } from "@/src/render/webgpu/core/Capabilities";
+import type { BenchAdapterInfo, BenchDeviceReport, BenchWebGpuStatus } from "./types";
 
 /**
  * `?bench=1`: what the report says about the machine and the build. Collected
@@ -11,74 +8,14 @@ import {
  * that. Everything is copied field by field into plain data, because WebGPU
  * and user-agent objects keep their values in prototype getters, which
  * `JSON.stringify` drops (see `readWebGpuLimits`).
+ *
+ * WebGPU's status uses the renderer's own three gates: an adapter, not a
+ * software fallback, and every declared limit met. `rendererLabel` stays null
+ * here; the report fills it from a step's `getDiagnostics().adapter`.
  */
 
-export interface BrandVersion {
-  readonly brand: string;
-  readonly version: string;
-}
-
-/** Chromium's client hints; null in Firefox and Safari. */
-export interface UserAgentDataReport {
-  readonly brands: readonly BrandVersion[];
-  readonly mobile: boolean;
-  readonly platform: string;
-  readonly platformVersion: string | null;
-  readonly architecture: string | null;
-  readonly bitness: string | null;
-  readonly model: string | null;
-  readonly wow64: boolean | null;
-  readonly fullVersionList: readonly BrandVersion[];
-}
-
-export interface AdapterReport {
-  readonly vendor: string;
-  readonly architecture: string;
-  /** Often empty: browsers withhold the exact model unless asked with a flag. */
-  readonly device: string;
-  readonly description: string;
-  readonly isFallbackAdapter: boolean;
-  readonly subgroupMinSize: number | null;
-  readonly subgroupMaxSize: number | null;
-}
-
-/**
- * Whether the renderer would start, by the same three gates it applies: an
- * adapter, not a software fallback, and every declared limit met.
- */
-export type WebGpuStatus = "ok" | "missing" | "no-adapter" | "fallback-only" | "limits-short";
-
-export interface WebGpuReport {
-  readonly status: WebGpuStatus;
-  /** A plain-language reason when the status is not "ok". */
-  readonly reason: string | null;
-  readonly adapter: AdapterReport | null;
-  readonly features: readonly string[];
-  readonly limits: Readonly<Record<string, number>>;
-  readonly limitShortfalls: readonly WebGpuLimitShortfall[];
-  readonly preferredCanvasFormat: string | null;
-  readonly timestampQuery: boolean;
-}
-
-export interface DeviceReport {
-  readonly userAgent: string;
-  readonly uaData: UserAgentDataReport | null;
-  readonly hardwareConcurrency: number | null;
-  /** Chromium's rounded, capped figure (at most 8); null elsewhere. */
-  readonly deviceMemoryGiB: number | null;
-  readonly screen: {
-    readonly width: number;
-    readonly height: number;
-    readonly availWidth: number;
-    readonly availHeight: number;
-    readonly colorDepth: number;
-    readonly devicePixelRatio: number;
-  };
-  readonly window: { readonly innerWidth: number; readonly innerHeight: number };
-  /** Chromium only; a discharging laptop may be throttled. */
-  readonly battery: { readonly charging: boolean; readonly level: number } | null;
-  readonly webgpu: WebGpuReport;
-}
+type UserAgentDataReport = NonNullable<BenchDeviceReport["uaData"]>;
+type WebGpuReport = BenchDeviceReport["webgpu"];
 
 /** The browser globals `collectDevice` reads, injectable for tests. */
 export interface DeviceHost {
@@ -143,7 +80,7 @@ function browserDeviceHost(): DeviceHost {
 export async function collectDevice(
   host: DeviceHost = browserDeviceHost(),
   timeoutMs: number = DEVICE_QUERY_TIMEOUT_MS,
-): Promise<DeviceReport> {
+): Promise<BenchDeviceReport> {
   const nav = host.navigator as NavigatorFields;
   const [uaData, battery, webgpu] = await Promise.all([
     readUserAgentData(nav, timeoutMs),
@@ -193,18 +130,25 @@ async function readUserAgentData(
   };
 }
 
-function brandList(raw: unknown): BrandVersion[] {
+/** Client-hint brands as "Google Chrome 130.0.6723.70", the form the report's words parse. */
+function brandList(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.map((entry: { brand?: unknown; version?: unknown }) => ({
-    brand: String(entry?.brand ?? ""),
-    version: String(entry?.version ?? ""),
-  }));
+  return raw.map((entry: { brand?: unknown; version?: unknown }) =>
+    `${String(entry?.brand ?? "")} ${String(entry?.version ?? "")}`.trim());
+}
+
+/** The battery alone, for a step page: a discharging laptop may be throttled. Chromium only. */
+export function collectBattery(
+  nav: object = navigator,
+  timeoutMs: number = DEVICE_QUERY_TIMEOUT_MS,
+): Promise<BenchDeviceReport["battery"]> {
+  return readBattery(nav as NavigatorFields, timeoutMs);
 }
 
 async function readBattery(
   nav: NavigatorFields,
   timeoutMs: number,
-): Promise<DeviceReport["battery"]> {
+): Promise<BenchDeviceReport["battery"]> {
   const getBattery = nav.getBattery;
   if (typeof getBattery !== "function") return null;
   const battery = await settleWithin(() => getBattery.call(nav), timeoutMs, null);
@@ -220,6 +164,7 @@ async function readWebGpu(nav: NavigatorFields, timeoutMs: number): Promise<WebG
     limits: {},
     limitShortfalls: [],
     timestampQuery: false,
+    rendererLabel: null,
   };
   if (!gpu) {
     return {
@@ -258,7 +203,7 @@ async function readWebGpu(nav: NavigatorFields, timeoutMs: number): Promise<WebG
   const features = [...adapter.features].sort();
   const limits = readWebGpuLimits(adapter.limits);
   const limitShortfalls = findWebGpuLimitShortfalls(limits);
-  const status: WebGpuStatus = adapterReport.isFallbackAdapter
+  const status: BenchWebGpuStatus = adapterReport.isFallbackAdapter
     ? "fallback-only"
     : limitShortfalls.length > 0 ? "limits-short" : "ok";
   return {
@@ -274,11 +219,12 @@ async function readWebGpu(nav: NavigatorFields, timeoutMs: number): Promise<WebG
     limitShortfalls,
     preferredCanvasFormat,
     timestampQuery: features.includes("timestamp-query"),
+    rendererLabel: null,
   };
 }
 
 /** `GPUAdapterInfo` keeps every field in a prototype getter, so each is named. */
-function readAdapterInfo(info: object | null, adapter: AdapterLike): AdapterReport {
+function readAdapterInfo(info: object | null, adapter: AdapterLike): BenchAdapterInfo {
   const fields = (info ?? {}) as {
     readonly vendor?: unknown;
     readonly architecture?: unknown;

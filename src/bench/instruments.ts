@@ -9,17 +9,24 @@
  * report must never carry a zero that means "not measured".
  *
  * Every browser global is reached through an injectable parameter, so Node
- * tests drive these with fakes.
+ * tests drive these with fakes. They record raw entries in the report's own
+ * shapes (types.ts); stats.ts summarises them.
  */
 
-// --- Pipeline and shader creation -----------------------------------------
+import { COARSE_TIMER_MS, estimateRefresh, nearestRank } from "./stats";
+import type {
+  BenchCompileCounts,
+  BenchCompileEvent,
+  BenchCompileKind,
+  BenchFirstLoad,
+  BenchHeapSample,
+  BenchLongAnimationFrameEntry,
+  BenchLongTaskEntry,
+  BenchRefresh,
+  BenchWakeLock,
+} from "./types";
 
-export type CreationKind =
-  | "render-pipeline"
-  | "render-pipeline-async"
-  | "compute-pipeline"
-  | "compute-pipeline-async"
-  | "shader-module";
+// --- Pipeline and shader creation -----------------------------------------
 
 export interface CreationCounts {
   renderPipelines: number;
@@ -33,16 +40,11 @@ export interface CreationCounts {
   total: number;
 }
 
-export interface CreationEvent {
-  readonly t: number;
-  readonly kind: CreationKind;
-}
-
 export interface CreationCounter {
   /** Live counts, mutated in place by every creation. */
   readonly counts: Readonly<CreationCounts>;
   /** The first `CREATION_EVENT_LIMIT` creations since install or `clearEvents`. */
-  readonly events: readonly CreationEvent[];
+  readonly events: readonly BenchCompileEvent[];
   clearEvents(): void;
   /** Restores every method this counter wrapped. Safe to call twice. */
   uninstall(): void;
@@ -52,13 +54,13 @@ export const CREATION_EVENT_LIMIT = 32;
 
 const CREATION_METHODS: readonly (readonly [
   method: string,
-  kind: CreationKind,
+  kind: BenchCompileKind,
   field: Exclude<keyof CreationCounts, "wgslChars" | "total">,
 ])[] = [
-  ["createRenderPipeline", "render-pipeline", "renderPipelines"],
-  ["createRenderPipelineAsync", "render-pipeline-async", "renderPipelinesAsync"],
-  ["createComputePipeline", "compute-pipeline", "computePipelines"],
-  ["createComputePipelineAsync", "compute-pipeline-async", "computePipelinesAsync"],
+  ["createRenderPipeline", "render", "renderPipelines"],
+  ["createRenderPipelineAsync", "render-async", "renderPipelinesAsync"],
+  ["createComputePipeline", "compute", "computePipelines"],
+  ["createComputePipelineAsync", "compute-async", "computePipelinesAsync"],
   ["createShaderModule", "shader-module", "shaderModules"],
 ];
 
@@ -98,7 +100,7 @@ export function installCreationCounter(
     wgslChars: 0,
     total: 0,
   };
-  const events: CreationEvent[] = [];
+  const events: BenchCompileEvent[] = [];
   const restore: (() => void)[] = [];
   for (const [method, kind, field] of CREATION_METHODS) {
     const original = prototype[method];
@@ -134,6 +136,18 @@ export function installCreationCounter(
   };
   installedCounters.set(prototype, counter);
   return counter;
+}
+
+/** The live counts as the report records them: a copy, WGSL in KiB. */
+export function compileCounts(counts: Readonly<CreationCounts>): BenchCompileCounts {
+  return {
+    render: counts.renderPipelines,
+    renderAsync: counts.renderPipelinesAsync,
+    compute: counts.computePipelines,
+    computeAsync: counts.computePipelinesAsync,
+    shaderModules: counts.shaderModules,
+    wgslKiB: counts.wgslChars / 1_024,
+  };
 }
 
 function wgslLength(descriptor: unknown): number {
@@ -185,21 +199,9 @@ function observeEntries(
   }
 }
 
-export interface LongTaskEntry {
-  readonly start: number;
-  readonly duration: number;
-}
-
-export interface LongTaskSummary {
-  readonly count: number;
-  readonly totalMs: number;
-  readonly maxMs: number;
-}
-
-export interface LongTaskLog {
-  readonly entries: readonly LongTaskEntry[];
-  /** Tasks that started in [from, to). */
-  summarize(from: number, to: number): LongTaskSummary;
+/** An observer's entries so far, oldest first, at most `OBSERVED_ENTRY_LIMIT`. */
+export interface EntryLog<T> {
+  readonly entries: readonly T[];
   disconnect(): void;
 }
 
@@ -209,61 +211,16 @@ export const OBSERVED_ENTRY_LIMIT = 5_000;
 /** Main-thread tasks over 50 ms (Chromium); null where unsupported. */
 export function observeLongTasks(
   Observer: PerformanceObserverConstructor | null = browserObserver(),
-): LongTaskLog | null {
-  const entries: LongTaskEntry[] = [];
+): EntryLog<BenchLongTaskEntry> | null {
+  const entries: BenchLongTaskEntry[] = [];
   const observer = observeEntries("longtask", Observer, (raw) => {
     const entry = raw as ObservedEntry;
     if (entries.length < OBSERVED_ENTRY_LIMIT) {
-      entries.push({ start: entry.startTime, duration: entry.duration });
+      entries.push({ startMs: entry.startTime, durationMs: entry.duration });
     }
   });
   if (!observer) return null;
-  return {
-    entries,
-    summarize: (from, to) => {
-      let count = 0;
-      let totalMs = 0;
-      let maxMs = 0;
-      for (const entry of entries) {
-        if (entry.start < from || entry.start >= to) continue;
-        count += 1;
-        totalMs += entry.duration;
-        maxMs = Math.max(maxMs, entry.duration);
-      }
-      return { count, totalMs, maxMs };
-    },
-    disconnect: () => observer.disconnect(),
-  };
-}
-
-export interface LongAnimationFrameScript {
-  /** Where the script came from, reduced to a path (see `scriptSource`). */
-  readonly source: string;
-  readonly invoker: string;
-  readonly ms: number;
-}
-
-export interface LongAnimationFrameEntry {
-  readonly start: number;
-  readonly duration: number;
-  readonly blockingDuration: number;
-  /** The four longest scripts the frame ran. */
-  readonly scripts: readonly LongAnimationFrameScript[];
-}
-
-export interface LongAnimationFrameSummary {
-  readonly count: number;
-  readonly blockingMs: number;
-  readonly maxMs: number;
-  /** The five longest frames. */
-  readonly top: readonly LongAnimationFrameEntry[];
-}
-
-export interface LongAnimationFrameLog {
-  readonly entries: readonly LongAnimationFrameEntry[];
-  /** Frames that started in [from, to). */
-  summarize(from: number, to: number): LongAnimationFrameSummary;
-  disconnect(): void;
+  return { entries, disconnect: () => observer.disconnect() };
 }
 
 interface RawLongAnimationFrame extends ObservedEntry {
@@ -281,8 +238,8 @@ interface RawLongAnimationFrame extends ObservedEntry {
  */
 export function observeLongAnimationFrames(
   Observer: PerformanceObserverConstructor | null = browserObserver(),
-): LongAnimationFrameLog | null {
-  const entries: LongAnimationFrameEntry[] = [];
+): EntryLog<BenchLongAnimationFrameEntry> | null {
+  const entries: BenchLongAnimationFrameEntry[] = [];
   const observer = observeEntries("long-animation-frame", Observer, (raw) => {
     if (entries.length >= OBSERVED_ENTRY_LIMIT) return;
     const entry = raw as RawLongAnimationFrame;
@@ -295,26 +252,14 @@ export function observeLongAnimationFrames(
         ms: Math.round(script.duration ?? 0),
       }));
     entries.push({
-      start: entry.startTime,
-      duration: entry.duration,
-      blockingDuration: entry.blockingDuration ?? 0,
+      startMs: entry.startTime,
+      durationMs: entry.duration,
+      blockingMs: entry.blockingDuration ?? 0,
       scripts,
     });
   });
   if (!observer) return null;
-  return {
-    entries,
-    summarize: (from, to) => {
-      const inWindow = entries.filter((entry) => entry.start >= from && entry.start < to);
-      return {
-        count: inWindow.length,
-        blockingMs: inWindow.reduce((sum, entry) => sum + entry.blockingDuration, 0),
-        maxMs: inWindow.reduce((max, entry) => Math.max(max, entry.duration), 0),
-        top: [...inWindow].sort((a, b) => b.duration - a.duration).slice(0, 5),
-      };
-    },
-    disconnect: () => observer.disconnect(),
-  };
+  return { entries, disconnect: () => observer.disconnect() };
 }
 
 /**
@@ -336,27 +281,11 @@ export function scriptSource(raw: string): string {
 
 // --- JS heap ----------------------------------------------------------------
 
-export interface HeapSummary {
-  /** Always false: the bucketed value Chromium gives a page without a flag. */
-  readonly precise: false;
-  /**
-   * True when the value never changed inside the window. Chromium refreshes
-   * the bucketed value on a timer, so an unchanged value says nothing about
-   * allocation, and every figure below is then null.
-   */
-  readonly stale: boolean;
-  readonly samples: number;
-  readonly startMiB: number | null;
-  readonly endMiB: number | null;
-  readonly peakMiB: number | null;
-  readonly slopeMiBPerMin: number | null;
-}
-
 export interface HeapSampler {
   /** Records the heap at time `t` (ms). Allocation-free; meant for once a second. */
   sample(t: number): void;
-  /** Samples taken in [from, to). */
-  summarize(from: number, to: number): HeapSummary;
+  /** Every sample so far, copied out for `summarizeHeap`. */
+  samples(): BenchHeapSample[];
   readonly overflowed: boolean;
 }
 
@@ -365,8 +294,6 @@ export interface HeapSamplerOptions {
   readonly read?: (() => number) | null;
   readonly capacity?: number;
 }
-
-const MIB = 1_048_576;
 
 function browserHeapReader(): (() => number) | null {
   const memory = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
@@ -395,48 +322,10 @@ export function createHeapSampler(options: HeapSamplerOptions = {}): HeapSampler
       bytes[count] = value;
       count += 1;
     },
-    summarize: (from, to) => {
-      let samples = 0;
-      let first = Number.NaN;
-      let last = Number.NaN;
-      let peak = Number.NEGATIVE_INFINITY;
-      let changed = false;
-      // Least squares of MiB against minutes, accumulated in one pass.
-      let sumT = 0;
-      let sumV = 0;
-      let sumTT = 0;
-      let sumTV = 0;
-      for (let index = 0; index < count; index += 1) {
-        const t = times[index]!;
-        if (t < from || t >= to) continue;
-        const mib = bytes[index]! / MIB;
-        if (samples === 0) first = mib;
-        else if (mib !== last) changed = true;
-        last = mib;
-        peak = Math.max(peak, mib);
-        const minutes = (t - from) / 60_000;
-        sumT += minutes;
-        sumV += mib;
-        sumTT += minutes * minutes;
-        sumTV += minutes * mib;
-        samples += 1;
-      }
-      if (!changed) {
-        return {
-          precise: false, stale: true, samples,
-          startMiB: null, endMiB: null, peakMiB: null, slopeMiBPerMin: null,
-        };
-      }
-      const denominator = samples * sumTT - sumT * sumT;
-      return {
-        precise: false,
-        stale: false,
-        samples,
-        startMiB: first,
-        endMiB: last,
-        peakMiB: peak,
-        slopeMiBPerMin: denominator > 0 ? (samples * sumTV - sumT * sumV) / denominator : null,
-      };
+    samples: () => {
+      const out: BenchHeapSample[] = [];
+      for (let index = 0; index < count; index += 1) out.push({ tMs: times[index]!, usedBytes: bytes[index]! });
+      return out;
     },
     get overflowed() {
       return overflowed;
@@ -490,79 +379,6 @@ export function startRafRecorder(
   };
 }
 
-export interface RefreshEstimate {
-  /**
-   * The browser's animation-frame rate. The panel's refresh rate only bounds
-   * it: Energy Saver, Low Power Mode and VRR panels can all hold it lower.
-   * Null with fewer than `MIN_REFRESH_SAMPLES` usable intervals.
-   */
-  readonly rafHz: number | null;
-  /** Mean of the intervals near the fastest steady cadence; `1000 / rafHz`. */
-  readonly periodMs: number | null;
-  /** Over every usable interval, outliers included. */
-  readonly medianMs: number | null;
-  readonly p10Ms: number | null;
-  readonly p90Ms: number | null;
-  /** Usable intervals, and how many of them the period was taken from. */
-  readonly samples: number;
-  readonly kept: number;
-}
-
-export const MIN_REFRESH_SAMPLES = 5;
-
-/**
- * The frame period from a run of frame intervals.
- *
- * The median would do for an idle loop but not for a flight on a machine that
- * misses frames, where it lands between one and two refresh periods. So the
- * period is the mean of the intervals within [0.8, 1.25] of the 10th
- * percentile: the fastest cadence the loop sustains, with dropped frames and
- * stalls left out. The mean, not the median, because a 1 ms timer (Firefox,
- * Safari) splits a 16.67 ms period into 16s and 17s.
- */
-export function estimateRefresh(
-  intervalsMs: ArrayLike<number>,
-  count: number = intervalsMs.length,
-): RefreshEstimate {
-  const usable: number[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const interval = intervalsMs[index]!;
-    // Below 1.5 ms is no display's period: a catch-up callback, not a frame.
-    if (Number.isFinite(interval) && interval >= 1.5 && interval < 1_000) usable.push(interval);
-  }
-  if (usable.length < MIN_REFRESH_SAMPLES) {
-    return {
-      rafHz: null, periodMs: null, medianMs: null, p10Ms: null, p90Ms: null,
-      samples: usable.length, kept: 0,
-    };
-  }
-  usable.sort((a, b) => a - b);
-  const p10 = nearestRank(usable, 0.1);
-  let sum = 0;
-  let kept = 0;
-  for (const interval of usable) {
-    if (interval < p10 * 0.8 || interval > p10 * 1.25) continue;
-    sum += interval;
-    kept += 1;
-  }
-  const periodMs = sum / kept;
-  return {
-    rafHz: 1_000 / periodMs,
-    periodMs,
-    medianMs: nearestRank(usable, 0.5),
-    p10Ms: p10,
-    p90Ms: nearestRank(usable, 0.9),
-    samples: usable.length,
-    kept,
-  };
-}
-
-/** Nearest-rank percentile of an ascending, non-empty array. */
-function nearestRank(sorted: readonly number[], fraction: number): number {
-  const rank = Math.ceil(fraction * sorted.length);
-  return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1]!;
-}
-
 /**
  * An idle rAF loop for `durationMs`, before the renderer exists or after it
  * is gone. It resolves at the deadline even if frames stop (a hidden tab),
@@ -571,7 +387,7 @@ function nearestRank(sorted: readonly number[], fraction: number): number {
 export function measureRefresh(
   durationMs: number,
   clock: FrameClock = browserFrameClock(),
-): Promise<RefreshEstimate> {
+): Promise<BenchRefresh | null> {
   return new Promise((resolve) => {
     // 500 Hz is beyond any display; the cap only bounds the buffer.
     const capacity = Math.ceil((durationMs / 1_000) * 500) + 2;
@@ -611,8 +427,6 @@ export interface TimerGranularity {
   readonly coarse: boolean;
 }
 
-export const COARSE_TIMER_MS = 0.5;
-
 /**
  * How finely this page can time anything. A page without cross-origin
  * isolation, which GitHub Pages cannot grant, gets a coarsened clock; how
@@ -637,23 +451,13 @@ export function measureTimerGranularity(
   }
   if (steps.length === 0) return { granularityMs: null, steps: 0, coarse: false };
   steps.sort((a, b) => a - b);
-  const granularityMs = nearestRank(steps, 0.5);
+  const granularityMs = nearestRank(steps, 0.5)!;
   return { granularityMs, steps: steps.length, coarse: granularityMs >= COARSE_TIMER_MS };
 }
 
 // --- HTTP cache -------------------------------------------------------------
 
 export type CacheState = "cache" | "revalidated" | "network" | "unknown";
-
-export interface HttpCacheReport {
-  /** "navigate", "reload", "back_forward" or "prerender"; null without timing. */
-  readonly navigationType: string | null;
-  readonly document: CacheState;
-  /** Same-origin scripts, workers included when the browser lists them. */
-  readonly scripts: Readonly<Record<CacheState, number>>;
-  /** Bytes those scripts cost over the wire, headers included. */
-  readonly transferKiB: number;
-}
 
 interface ResourceTimingLike {
   readonly name?: string;
@@ -677,15 +481,21 @@ export function classifyCacheState(entry: ResourceTimingLike): CacheState {
   return "network";
 }
 
-/** The page's own load: the document and its same-origin scripts. */
+/**
+ * The page's own load: how it was reached ("navigate", "reload",
+ * "back_forward", "prerender"; "unknown" without timing) and where its
+ * same-origin scripts came from, workers included when the browser lists
+ * them. `httpCache` is null without Resource Timing.
+ */
 export function readHttpCache(
   timing: { getEntriesByType(type: string): readonly unknown[] } | null =
     typeof performance === "undefined" ? null : performance,
   origin: string | null = typeof location === "undefined" ? null : location.origin,
-): HttpCacheReport {
-  const scripts: Record<CacheState, number> = { cache: 0, revalidated: 0, network: 0, unknown: 0 };
-  if (!timing) return { navigationType: null, document: "unknown", scripts, transferKiB: 0 };
+): BenchFirstLoad {
+  if (!timing) return { navigationType: "unknown", httpCache: null };
   const navigation = timing.getEntriesByType("navigation")[0] as ResourceTimingLike | undefined;
+  const states: Record<CacheState, number> = { cache: 0, revalidated: 0, network: 0, unknown: 0 };
+  let scripts = 0;
   let transferBytes = 0;
   for (const raw of timing.getEntriesByType("resource")) {
     const entry = raw as ResourceTimingLike;
@@ -696,14 +506,19 @@ export function readHttpCache(
       continue;
     }
     if (url.origin !== origin || !/\.m?js$/u.test(url.pathname)) continue;
-    scripts[classifyCacheState(entry)] += 1;
+    scripts += 1;
+    states[classifyCacheState(entry)] += 1;
     transferBytes += entry.transferSize ?? 0;
   }
   return {
-    navigationType: navigation?.type ?? null,
-    document: navigation ? classifyCacheState(navigation) : "unknown",
-    scripts,
-    transferKiB: transferBytes / 1_024,
+    navigationType: navigation?.type ?? "unknown",
+    httpCache: {
+      scripts,
+      fromCache: states.cache,
+      revalidated: states.revalidated,
+      network: states.network,
+      transferKiB: transferBytes / 1_024,
+    },
   };
 }
 
@@ -903,11 +718,12 @@ export function installEnvironmentGuards(
 
 // --- Wake lock --------------------------------------------------------------
 
-export type WakeLockState = "held" | "released" | "denied" | "unsupported";
-
 export interface WakeLockHandle {
-  /** "released" once the browser lets go, which it does when the tab is hidden. */
-  readonly state: WakeLockState;
+  /**
+   * "lost" once the browser lets go, which it does when the tab is hidden.
+   * The bench's own `release` at the end of a step leaves it as it was.
+   */
+  readonly state: BenchWakeLock;
   release(): Promise<void>;
 }
 
@@ -933,17 +749,18 @@ export async function requestWakeLock(
   }
   if (requested === null) return { state: "denied", release: async () => undefined };
   const sentinel = requested;
-  let state: WakeLockState = "held";
+  let state: BenchWakeLock = "held";
+  let released = false;
   sentinel.addEventListener("release", () => {
-    state = "released";
+    if (!released) state = "lost";
   });
   return {
     get state() {
       return state;
     },
     release: async () => {
-      if (state !== "held") return;
-      state = "released";
+      if (released || state !== "held") return;
+      released = true;
       try {
         await sentinel.release();
       } catch {

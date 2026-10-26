@@ -182,8 +182,8 @@ export function computeRepeatability(steps: readonly BenchStepRecord[]): BenchRe
     : null;
   const firstAir = first.result?.windows.air ?? null;
   const lastAir = last.result?.windows.air ?? null;
-  const firstRefresh = first.result?.refresh?.hz ?? null;
-  const lastRefresh = last.result?.refresh?.hz ?? null;
+  const firstRefresh = first.result?.refresh?.rafHz ?? null;
+  const lastRefresh = last.result?.refresh?.rafHz ?? null;
   return {
     metric: "meanFps",
     tierIndex: first.tierIndex,
@@ -248,8 +248,8 @@ function warning(code: BenchWarning["code"], stepIndex: number | null, message: 
 /** Everything worth knowing that does not void the run. */
 export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
   const warnings: BenchWarning[] = [];
-  const intro = run.introRefresh?.hz ?? null;
-  const report = run.reportRefresh?.hz ?? null;
+  const intro = run.introRefresh?.rafHz ?? null;
+  const report = run.reportRefresh?.rafHz ?? null;
   if (intro !== null && report !== null && Math.abs(report - intro) / Math.min(report, intro) > REFRESH_CHANGE_THRESHOLD) {
     warnings.push(warning("refresh-changed", null,
       `The browser's frame rate changed from ${intro.toFixed(1)} to ${report.toFixed(1)} Hz during the run.`));
@@ -652,7 +652,7 @@ export function deviceLine(report: BenchReport): string {
     describeGpu(report.device),
     describeOs(report.device),
     describeBrowser(report.device),
-    report.display.intro ? `${report.display.intro.hz.toFixed(0)} Hz` : null,
+    report.display.intro ? `${report.display.intro.rafHz.toFixed(0)} Hz` : null,
   ];
   return parts.filter((part): part is string => part !== null).join(" · ");
 }

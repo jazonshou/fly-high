@@ -6,7 +6,6 @@ import {
   createFrameLog,
   earlyStopCheck,
   estimateRefresh,
-  estimateTimerGranularity,
   flightCadence,
   flightSegments,
   intervalHistogram,
@@ -297,14 +296,42 @@ describe("windows over a flight", () => {
   });
 });
 
+function repeat(pattern: readonly number[], times: number): number[] {
+  return Array.from({ length: times }, () => pattern).flat();
+}
+
 describe("refresh, cadence and timers", () => {
   it("estimates the idle refresh and drops outliers", () => {
-    const deltas = new Array<number>(118).fill(1_000 / 144).concat([40, 2]);
+    const deltas = new Array<number>(118).fill(1_000 / 144).concat([40, 2, 0.4, 1_200]);
     const refresh = estimateRefresh(deltas)!;
-    expect(refresh.hz).toBeCloseTo(144, 6);
+    expect(refresh.rafHz).toBeCloseTo(144, 6);
+    expect(refresh.periodMs).toBeCloseTo(1_000 / 144, 9);
+    // 0.4 ms is a catch-up callback and 1.2 s a stall: neither is usable.
+    expect(refresh.samples).toBe(120);
     expect(refresh.outliers).toBe(2);
-    expect(refresh.samples).toBe(118);
     expect(estimateRefresh([16, 16, 16])).toBeNull();
+    expect(estimateRefresh(new Float64Array(10), 0)).toBeNull();
+  });
+
+  it("finds the refresh period under a flight that misses two frames in five", () => {
+    const deltas = repeat([16.6, 16.75, 33.3, 16.65, 33.4], 60);
+    const refresh = estimateRefresh(deltas)!;
+    expect(refresh.rafHz).toBeCloseTo(60, 0);
+    expect(refresh.medianMs).toBeCloseTo(16.75, 9);
+    expect(refresh.p90Ms).toBeCloseTo(33.4, 9);
+  });
+
+  it("averages a 1 ms clock's 16s and 17s back to 60 Hz", () => {
+    const refresh = estimateRefresh(repeat([17, 16, 17], 40))!;
+    expect(refresh.rafHz).toBeGreaterThan(59.5);
+    expect(refresh.rafHz).toBeLessThan(60.5);
+  });
+
+  it("reads 50, 120, 144 and 240 Hz", () => {
+    for (const hz of [50, 120, 144, 240]) {
+      const jitter = [-0.05, 0.05, 0, 0.02, -0.02];
+      expect(estimateRefresh(repeat(jitter.map((offset) => 1_000 / hz + offset), 30))!.rafHz).toBeCloseTo(hz, 0);
+    }
   });
 
   it("a slow game at half the refresh agrees with the idle probe; a switched display does not", () => {
@@ -325,13 +352,11 @@ describe("refresh, cadence and timers", () => {
 
   it("a 30 Hz idle probe marks the step limited by the browser or display", () => {
     const capped = estimateRefresh(new Array<number>(30).fill(1_000 / 30))!;
-    expect(rafReport(capped, null)).toEqual({ idleHz: capped.hz, flight: null, disagrees: false, limited: true });
+    expect(rafReport(capped, null)).toEqual({ idleHz: capped.rafHz, flight: null, disagrees: false, limited: true });
     expect(rafReport(null, null).limited).toBe(false);
   });
 
   it("measures timer granularity and widens the vsync tolerance on a coarse clock", () => {
-    expect(estimateTimerGranularity([1, 2, 1, 0, 3])).toBe(1);
-    expect(estimateTimerGranularity([])).toBeNull();
     expect(timerReport(1)).toEqual({ granularityMs: 1, coarse: true });
     expect(timerReport(0.1).coarse).toBe(false);
     expect(timerReport(null).coarse).toBe(false);
