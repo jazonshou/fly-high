@@ -1,11 +1,14 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { noticeText } from "../src/bench/flow";
 import { benchTimings, describeDuration, estimateBenchDuration } from "../src/bench/plan";
 import type { BenchDeviceReport } from "../src/bench/types";
+import { BenchCard, BenchCards, cardWords, type BenchCardProps } from "../src/bench/ui/BenchCards";
+import { BenchChip, chipAnnouncement, chipPhaseText, chipProgress, type BenchChipProps } from "../src/bench/ui/BenchChip";
 import { BenchIntro, type BenchIntroProps } from "../src/bench/ui/BenchIntro";
-import { parseTierList, tierListText } from "../src/bench/ui/words";
+import { clockText, parseTierList, tierListText } from "../src/bench/ui/words";
 import { benchDevice, benchRefresh, benchRunRecord } from "./support/benchReportFixture";
 
 /**
@@ -49,6 +52,28 @@ function html(text: string): string {
 /** The button and link labels in document order. */
 function actions(markup: string): string[] {
   return [...markup.matchAll(/<(button|a)\b[^>]*>([^<]*)<\/\1>/g)].map((match) => match[2]!.trim());
+}
+
+function chipProps(overrides: Partial<BenchChipProps> = {}): BenchChipProps {
+  return {
+    stepIndex: 1,
+    stepCount: 4,
+    tierIndex: 0,
+    attempt: 1,
+    phase: "flying",
+    flightElapsedS: 34,
+    flightS: 75,
+    remainingS: 260,
+    stopConfirm: false,
+    onStop: noop,
+    onStopCancel: noop,
+    onStopConfirm: noop,
+    ...overrides,
+  };
+}
+
+function chip(overrides: Partial<BenchChipProps> = {}): string {
+  return renderToStaticMarkup(createElement(BenchChip, chipProps(overrides)));
 }
 
 describe("the intro dialog", () => {
@@ -167,5 +192,117 @@ describe("the intro dialog", () => {
     expect(parseTierList("1,0,2,1,0,2,1,0")).toHaveLength(8);
     expect(parseTierList("1,0,2,1,0,2,1,0,1")).toBeNull();
     expect(tierListText([0, 3, 7])).toBe("Low, Ultra, Tier 7");
+  });
+});
+
+describe("the run chip", () => {
+  it("shows the flight, the quality, the phase, the time left and a progress bar", () => {
+    const markup = chip();
+    expect(markup).toContain('aria-label="Benchmark"');
+    expect(markup).toContain("data-bench-ui");
+    expect(markup).toContain("<strong>Benchmark 2/4</strong>");
+    expect(markup).toContain("<span>Low</span>");
+    expect(markup).toContain("<span>Flying 0:34 / 1:15</span>");
+    expect(markup).toContain("<span>about 4 minutes left</span>");
+    expect(markup).toContain('role="progressbar"');
+    expect(markup).toContain('aria-valuenow="36"');
+    expect(markup).toContain('aria-valuemin="0"');
+    expect(markup).toContain('aria-valuemax="100"');
+    expect(actions(markup)).toEqual(["Stop"]);
+  });
+
+  it("announces phase changes only, never the ticking clock", () => {
+    const markup = chip();
+    expect(markup).toContain('role="status" aria-live="polite">Flight 2 of 4, Low: flying.</p>');
+    const tick = chipAnnouncement(chipProps({ flightElapsedS: 35 }));
+    expect(tick).toBe(chipAnnouncement(chipProps({ flightElapsedS: 34 })));
+    expect(tick).not.toMatch(/\d:\d\d/);
+    expect(chipAnnouncement(chipProps({ phase: "settling" }))).toBe("Flight 2 of 4, Low: loading the scenery.");
+  });
+
+  it("words each phase plainly", () => {
+    expect(chipPhaseText(chipProps({ phase: "starting" }))).toBe("Starting");
+    expect(chipPhaseText(chipProps({ phase: "starting", attempt: 2 }))).toBe("Starting again (attempt 2)");
+    expect(chipPhaseText(chipProps({ phase: "settling" }))).toBe("Loading the scenery");
+    expect(chipPhaseText(chipProps({ phase: "done", result: { outcome: "ok", fps: 58.4 }, nextTierIndex: 2 })))
+      .toBe("Low done: 58 fps. Loading High…");
+    expect(chipPhaseText(chipProps({ phase: "done", result: { outcome: "early-stop", fps: 3.1 }, nextTierIndex: null })))
+      .toBe("Low stopped early: under 5 fps. Opening the report…");
+    expect(chipPhaseText(chipProps({ phase: "failed" }))).toBe("Low stopped");
+    expect(chipPhaseText(chipProps({ phase: "stopping" }))).toBe("Stopping. Opening the report…");
+    expect(chip({ phase: "done", result: { outcome: "ok", fps: 58 }, nextTierIndex: 2 })).not.toContain("left</span>");
+    expect(clockText(75)).toBe("1:15");
+  });
+
+  it("measures progress over the whole run", () => {
+    expect(chipProgress(chipProps({ stepIndex: 0, phase: "starting" }))).toBe(0);
+    expect(chipProgress(chipProps({ stepIndex: 1, phase: "flying", flightElapsedS: 37.5 }))).toBeCloseTo(1.5 / 4);
+    expect(chipProgress(chipProps({ stepIndex: 3, phase: "done" }))).toBe(1);
+    expect(chipProgress(chipProps({ phase: "flying", flightElapsedS: 500 }))).toBe(2 / 4);
+  });
+
+  it("asks before stopping, inside the chip", () => {
+    const markup = chip({ stopConfirm: true });
+    expect(markup).toContain('role="group" aria-labelledby="bench-chip-confirm"');
+    expect(markup).toContain("Stop the benchmark? Finished flights stay in the report.");
+    expect(actions(markup)).toEqual(["Stop now", "Keep going"]);
+    expect(actions(chip({ phase: "stopping" }))).toEqual([]);
+    const source = readFileSync(new URL("../src/bench/ui/BenchChip.tsx", import.meta.url), "utf8");
+    expect(source).not.toMatch(/window\.confirm\s*\(/);
+  });
+});
+
+describe("the step page's cards", () => {
+  const card = (props: BenchCardProps) => renderToStaticMarkup(createElement(BenchCard, props));
+
+  it("says a hidden tab paused the flight and when it restarts", () => {
+    const markup = card({ kind: "hidden", tierIndex: 0, attempt: 1, maxAttempts: 2 });
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("<strong>Paused because you switched away</strong>");
+    expect(markup).toContain("This flight restarts when you are back (attempt 2 of 2).");
+    expect(cardWords({ kind: "hidden", tierIndex: 0, attempt: 2, maxAttempts: 2 }).text)
+      .toBe("That was the last try at Low, so the benchmark moves on to the next flight.");
+  });
+
+  it("says a resize voided the flight", () => {
+    const markup = card({ kind: "resized", tierIndex: 2, attempt: 1, maxAttempts: 2 });
+    expect(markup).toContain("<strong>The window changed size</strong>");
+    expect(markup).toContain("cannot be compared");
+    expect(markup).toContain("(attempt 2 of 2)");
+  });
+
+  it("says a flight failed and counts down to the next", () => {
+    const markup = card({ kind: "failed", tierIndex: 0, message: "the WebGPU device was lost", continueInS: 5, onContinue: noop });
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("<strong>Low stopped</strong>");
+    expect(markup).toContain("<span>The WebGPU device was lost.</span>");
+    expect(markup).toContain("Continuing in 5 s.");
+    expect(actions(markup)).toEqual(["Continue now"]);
+    expect(actions(card({ kind: "failed", tierIndex: 0, message: "startup timeout" }))).toEqual([]);
+  });
+
+  it("explains a second try and the flow's notices politely", () => {
+    const retry = card({
+      kind: "retry",
+      tierIndex: 0,
+      previous: { attempt: 1, outcome: "interrupted", navigationType: "reload", at: "2026-10-26T09:15:00.000Z" },
+      attempt: 2,
+      maxAttempts: 2,
+    });
+    expect(retry).toContain('role="status"');
+    expect(retry).toContain("The last try at Low closed the page. Trying again (attempt 2 of 2).");
+    expect(card({ kind: "notice", notice: "crash-skipped" })).toContain(html(noticeText("crash-skipped")));
+  });
+
+  it("puts notes under the chip and alerts in the middle", () => {
+    const markup = renderToStaticMarkup(createElement(BenchCards, {
+      cards: [
+        { kind: "notice", notice: "crash-skipped" },
+        { kind: "failed", tierIndex: 1, message: "startup timeout" },
+      ],
+    }));
+    expect(markup).toMatch(/bench-cards--notes"><div class="bench-card bench-card--note" role="status"/);
+    expect(markup).toMatch(/bench-cards--alerts"><div class="bench-card bench-card--alert" role="alert"/);
+    expect(renderToStaticMarkup(createElement(BenchCards, { cards: [] }))).toBe("");
   });
 });
