@@ -78,12 +78,26 @@ describe("FlightGame without ?bench=1", () => {
 });
 
 describe("src/bench stays apart", () => {
+  /** A module path into src/bench, by alias or relative from anywhere in the repo. */
+  const benchImport = /["']@\/src\/bench\b|["'](\.\.?\/)+(src\/)?bench\//u;
+
   it("is imported by FlightGame alone, outside src/bench", () => {
-    const importers = [...sourceFiles(join(projectRoot, "src")), ...sourceFiles(join(projectRoot, "app"))]
+    // Every root a player's page or the Worker bundles: the app, the Pages
+    // entry (static/) and the Worker entry.
+    const roots = ["src", "app", "static", "worker"];
+    const importers = roots.flatMap((root) => sourceFiles(join(projectRoot, root)))
       .filter((path) => !repoPath(path).startsWith("src/bench/"))
-      .filter((path) => /["']@\/src\/bench\b|["'](\.\.?\/)+bench\//u.test(readSource(path)))
+      .filter((path) => benchImport.test(readSource(path)))
       .map(repoPath);
     expect(importers).toEqual(["src/game/FlightGame.tsx"]);
+  });
+
+  it("knows each way a module can name src/bench (not vacuous)", () => {
+    for (const spelling of ["\"@/src/bench/plan\"", "'@/src/bench/bench.css'", "\"../src/bench/plan\"", "\"./bench/session\"", "\"../../bench/types\""]) {
+      expect(benchImport.test(`import x from ${spelling};`), spelling).toBe(true);
+    }
+    expect(benchImport.test("import x from \"@/src/benchmarks\";")).toBe(false);
+    expect(benchImport.test("import x from \"./workbench/x\";")).toBe(false);
   });
 
   const benchFiles = sourceFiles(join(projectRoot, "src/bench"))
