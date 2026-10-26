@@ -311,8 +311,13 @@ describe("water shader extraction (2-8a)", () => {
     // texel downstream, so every water pixel moves by that much of each
     // band's phase (45 degrees on the shortest waves of each band at tier 1).
     // Deliberate, named, reviewed.
+    //
+    // Re-pinned, the VERTEX hash only, by the marina shelter field (boats T1,
+    // SEA_SHELTER_WGSL): the cascade displacement is scaled by
+    // seaShelterFactor, which is exactly 1 with no basin set, so no pixel
+    // moves until a world publishes its marina's ellipse.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "903148f43b5e8a0694582dd406e14a49156bdbab7ba21193219f22066f9e586b",
+      "acc8d499e85806a3ff438bcefad28de5d84ed4146bd548db3ba5080df2fdc760",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
       "0fe7b0f464eafdada6ef62fafbf665d3d558de2a7887618d0f54455750e0710a",
