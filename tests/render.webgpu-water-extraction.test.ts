@@ -304,12 +304,18 @@ describe("water shader extraction (2-8a)", () => {
     // ride the drawn waves: the same uniforms, the same fades and the same five
     // samples, now called through oceanSurfaceFades and
     // oceanSurfaceCascadeDisplacement.
+    //
+    // Re-pinned, BOTH hashes, by the half-texel alignment
+    // (OCEAN_FFT_TEXEL_ALIGNMENT_WGSL): every cascade's displacement, slope
+    // and foam are now fetched where the FFT computed them instead of half a
+    // texel downstream, so every water pixel moves by that much of each
+    // band's phase (45 degrees on the shortest waves of each band at tier 1).
     // Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "894b94c8d26eed1cf6443b92f7b299075f4edafd5a7c8a195e3ff13af57bf319",
+      "903148f43b5e8a0694582dd406e14a49156bdbab7ba21193219f22066f9e586b",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "5bfdc4c6d1da8171922929b1dda80472fe79f9786b2ec1a11a1eaaee1b182704",
+      "0fe7b0f464eafdada6ef62fafbf665d3d558de2a7887618d0f54455750e0710a",
     );
   });
 

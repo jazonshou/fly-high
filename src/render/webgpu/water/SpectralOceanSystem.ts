@@ -423,6 +423,23 @@ export function resolveProfileSpectralOceanConfig(
 }
 
 /**
+ * Where a world point falls in a cascade's FFT output.
+ *
+ * FFT sample `n` is the sea at `x = n L / N`, but a filtered texture fetch puts
+ * texel `n`'s value at its CENTRE, `u = (n + 0.5) / N`. Sampling at `x / L`
+ * alone therefore drew every cascade `L / (2 N)` downstream of its own waves:
+ * at tier 1, 45 degrees of phase on each band's shortest waves, and a sea the
+ * physics twin (which sums the same waves exactly) could not match. The fix is
+ * the half texel, in both stages: the displacement the vertex draws and the
+ * slope and foam the fragment shades.
+ */
+const OCEAN_FFT_TEXEL_ALIGNMENT_WGSL = /* wgsl */ `
+fn oceanFftTexelAlignment(size: vec2u) -> vec2f {
+  return 0.5 / vec2f(size);
+}
+`;
+
+/**
  * The rendered sea's displacement, as one include any vertex shader can call.
  *
  * The ocean's own vertex shader is built from it, and so is anything that has
@@ -473,8 +490,11 @@ export const OCEAN_SURFACE_SAMPLERS: readonly string[] = Array.from(
 );
 
 export const OCEAN_SURFACE_DISPLACEMENT_WGSL = /* wgsl */ `
+${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
+
 fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
-  let coordinate = fract(worldXZ / patchLength);
+  let coordinate = fract(worldXZ / patchLength)
+    + oceanFftTexelAlignment(textureDimensions(displacementTexture));
   return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
 }
 
@@ -971,9 +991,12 @@ fn oceanTerrainVisibility(
 // derivative discontinuity at every patch seam that would spike the
 // selected mip there. Slopes filter linearly, so the mip chain is correct
 // by construction (a box-filtered normal is not).
+${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
+
 fn sampleSlopeTexture(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
   let unwrapped = worldXZ / patchLength;
-  return textureSampleGrad(source, sourceSampler, fract(unwrapped), dpdx(unwrapped), dpdy(unwrapped));
+  let coordinate = fract(unwrapped) + oceanFftTexelAlignment(textureDimensions(source));
+  return textureSampleGrad(source, sourceSampler, coordinate, dpdx(unwrapped), dpdy(unwrapped));
 }
 
 // 2-8: the variance folded into roughness is the band's MISSING energy —
