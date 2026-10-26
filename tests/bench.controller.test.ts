@@ -92,6 +92,8 @@ interface HarnessOptions {
   /** Milliseconds each `render()` takes on the fake clock. */
   readonly renderMs?: number;
   readonly renderThrew?: (error: unknown) => void;
+  /** Runs inside each `render()`, as the renderer's own work does; `timestamp` is the frame's. */
+  readonly duringRender?: (phase: StepPhase, timestamp: number) => void;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -102,6 +104,7 @@ function harness(options: HarnessOptions = {}) {
   const renderMs = options.renderMs ?? 4;
   const frames = fakeFrameClock();
   let nowMs = 0;
+  let frameTimestamp = 0;
   let settleStartMs: number | null = null;
   const diagnosticsReads: { atMs: number; frame: number; phase: StepPhase }[] = [];
   let framesRendered = 0;
@@ -141,6 +144,7 @@ function harness(options: HarnessOptions = {}) {
     render: vi.fn((state: FlightVisualState) => {
       drawn.push({ ...state, position: { ...state.position } });
       framesRendered += 1;
+      options.duringRender?.(controller.phase, frameTimestamp);
       nowMs += renderMs;
     }),
     readBenchProbe: (into: RendererBenchProbe) => {
@@ -219,6 +223,7 @@ function harness(options: HarnessOptions = {}) {
 
   /** One browser frame at `timestamp`: rAF callbacks first, then the game loop's render. */
   const frame = (timestamp: number, ownLoopRuns = true) => {
+    frameTimestamp = timestamp;
     nowMs = timestamp;
     if (ownLoopRuns) frames.frame(timestamp);
     nowMs = timestamp + 0.5;
@@ -384,6 +389,78 @@ describe("the step controller's flight", () => {
     expect(result.compiles.window.framesWithCompiles).toBe(1);
     expect(result.compiles.firstEvents).toHaveLength(3);
     expect(result.compiles.firstEvents[0]!.t).toBeGreaterThan(1.9);
+  });
+
+  it("counts a frame's compiles where the frame log counts the frame", () => {
+    /** One compile in the first frame `pick` chooses: its phase and its flight time (null before the flight). */
+    const oneCompile = (pick: (phase: StepPhase, t: number | null) => boolean) => {
+      let flightStart: number | null = null;
+      let done = false;
+      const h = harness({
+        duringRender: (phase, timestamp) => {
+          if (phase === "flying" && flightStart === null) flightStart = timestamp;
+          const t = flightStart === null ? null : (timestamp - flightStart) / 1_000;
+          if (!done && pick(phase, t)) {
+            done = true;
+            h.compile();
+          }
+        },
+      });
+      h.run(1_000, 1_000 / 60, () => h.finished.length > 0);
+      const { startup, settle, compiles, segments } = h.finished[0]!.result;
+      return {
+        startup: startup.compiles.render,
+        settle: settle.compiles.render,
+        warmup: compiles.warmup.render,
+        window: compiles.window.render,
+        framesWithCompiles: compiles.window.framesWithCompiles,
+        events: compiles.firstEvents.length,
+        firstSegment: segments[0]!.compiles,
+      };
+    };
+
+    // The first frame (drawn while the controller still waits for it) is the settle's first.
+    expect(oneCompile((phase) => phase === "waiting")).toMatchObject({ startup: 0, settle: 1, warmup: 0, events: 0 });
+    // The first flight frame is the warm-up's, events and all.
+    expect(oneCompile((_, t) => t === 0)).toEqual({
+      startup: 0, settle: 0, warmup: 1, window: 0, framesWithCompiles: 0, events: 1, firstSegment: 1,
+    });
+    // The first air frame is the window's.
+    expect(oneCompile((_, t) => t !== null && t >= quick.air.startS)).toMatchObject({
+      warmup: 0, window: 1, framesWithCompiles: 1,
+    });
+    // The frame that closes the flight is in no window.
+    expect(oneCompile((_, t) => t !== null && t >= quick.flightS)).toMatchObject({
+      settle: 0, warmup: 0, window: 0, framesWithCompiles: 0,
+    });
+  });
+
+  it("times the settle's governor decisions back from the flight's first frame", () => {
+    let flightStart: number | null = null;
+    let settleFrames = 0;
+    const decidedAt: number[] = [];
+    // The standard settle rests at about 10 s, well short of its 20 s cap.
+    const standard = benchTimings(false);
+    const h = harness({
+      timings: standard,
+      duringRender: (phase, timestamp) => {
+        if (phase === "flying" && flightStart === null) flightStart = timestamp;
+        if (phase !== "settling" || ++settleFrames % 10 !== 0) return;
+        // A new signals object is a new decision, made in this frame.
+        h.probe.governorSignals = { ...h.probe.governorSignals };
+        decidedAt.push(timestamp);
+      },
+    });
+    h.run(1_000, 1_000 / 60, () => h.finished.length > 0);
+    const { governor, settle } = h.finished[0]!.result;
+    // The old clock counted back from the cap, which the settle never reached.
+    expect(settle.reachedRest).toBe(true);
+    expect(settle.ms).toBeLessThan(standard.settleCapS * 1_000 - 5_000);
+    expect(governor.decisionsDuringSettle).toBe(decidedAt.length);
+    expect(decidedAt.length).toBeGreaterThan(10);
+    const settleDecisions = governor.decisions.filter((decision) => decision[0] < 0);
+    expect(settleDecisions.map((decision) => decision[0]))
+      .toEqual(decidedAt.map((timestamp) => expect.closeTo((timestamp - flightStart!) / 1_000, 6)));
   });
 
   it("stops early when the flight runs under five frames a second", () => {

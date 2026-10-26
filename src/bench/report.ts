@@ -59,6 +59,8 @@ export const BENCH_DEFINITIONS: Readonly<Record<string, string>> = Object.freeze
   rafHz: "The browser's frame rate with nothing to draw, which is not always the panel's refresh rate.",
   heap: "performance.memory, coarse outside a flagged Chromium; null and stale when it never changed.",
   shares: "Fractions of the window's frames, from the pixels the engine actually rendered.",
+  compiles: "Pipelines and shader modules created, each counted with the frame whose render created it: startup (before the first frame), settle, warmup (flight frames before the air window), window (the air window's frames).",
+  decisions: "Governor decisions; t is seconds from the flight's first frame, below zero during the settle.",
 });
 
 // --- labels ------------------------------------------------------------------------

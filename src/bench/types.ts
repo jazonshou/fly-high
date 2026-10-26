@@ -373,6 +373,7 @@ export interface BenchStartup {
   readonly navToFirstFrameMs: number | null;
   readonly navToSettleEndMs: number | null;
   readonly pathPrecomputeMs: number | null;
+  /** Pipelines and shader modules created before the first frame's render. */
   readonly compiles: BenchCompileCounts;
 }
 
@@ -384,6 +385,7 @@ export interface BenchSettle {
   readonly pendingTerrainPages: number | null;
   readonly pendingDetailWork: number | null;
   readonly visibleInstances: number | null;
+  /** From the first frame's render through the settle's last frame. */
   readonly compiles: BenchCompileCounts;
   readonly longTasks: { readonly count: number; readonly totalMs: number } | null;
   readonly governorDecisions: number;
@@ -616,7 +618,9 @@ export interface BenchGovernorSnapshot {
 /**
  * One decision: [t s, mode, class, proxy ms, target scale, applied scale,
  * rendered pixels, CPU level, GPU level, lever, insensitive, GPU p95, CPU p95,
- * interval p95]. A tuple, because a run holds up to 128 of them per step.
+ * interval p95]. t counts from the flight's first frame, so the settle's
+ * decisions read below zero. A tuple, because a run holds up to 128 of them
+ * per step.
  */
 export type BenchGovernorDecision = readonly [
   t: number,
@@ -761,9 +765,11 @@ export interface BenchStepResult {
   readonly worst: readonly BenchWorstFrame[];
   readonly perSecond: BenchPerSecondTable;
   readonly compiles: {
-    /** Flight frames before the air window. */
+    /** Flight frames before the air window, the first one included. */
     readonly warmup: BenchCompileCounts;
+    /** The air window's frames. The frame that closes the flight is in no window and counts nowhere. */
     readonly window: BenchCompileCounts & { readonly framesWithCompiles: number };
+    /** The flight's first creations, t from its first frame. */
     readonly firstEvents: readonly BenchCompileEvent[];
   };
   readonly longTasks: BenchLongTaskSummary;

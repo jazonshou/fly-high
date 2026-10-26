@@ -212,9 +212,20 @@ export class StepController implements BenchFramePort {
   private earlyStopChecked = false;
   private earlyStopFps: number | null = null;
   private readonly secondSamples: (BenchSecondSample | null)[];
+  /**
+   * Compile counts at each boundary, taken BEFORE the render of the frame that
+   * opens what follows. A frame's compiles then count where the frame log
+   * puts the frame: the first frame in the settle, the first flight frame in
+   * the warm-up, the first air frame in the window, and the frame that closes
+   * the flight (past every window) in none.
+   */
   private compilesAtFirstFrame: BenchCompileCounts = ZERO_COMPILES;
   private compilesAtFlightStart: BenchCompileCounts = ZERO_COMPILES;
   private compilesAtAirStart: BenchCompileCounts | null = null;
+  private compilesAtAirEnd: BenchCompileCounts | null = null;
+  private compilesAtFlightEnd: BenchCompileCounts | null = null;
+  /** The counts as the last frame ended, which are the next frame's "before". */
+  private compilesSeen: BenchCompileCounts = ZERO_COMPILES;
 
   constructor(private readonly options: StepControllerOptions) {
     const { setup, path } = options;
@@ -264,6 +275,8 @@ export class StepController implements BenchFramePort {
   // --- the recorder's port ---------------------------------------------------------
 
   stateFor(now: number): FlightVisualState | null {
+    // Startup's compiles stop where the first frame's render begins.
+    if (this.currentPhase === "waiting") this.compilesAtFirstFrame = this.compiles();
     if (this.currentPhase === "flying") {
       const frameMs = this.frameTime(now);
       const t = this.flightStartMs === null ? 0 : (frameMs - this.flightStartMs) / 1_000;
@@ -282,6 +295,8 @@ export class StepController implements BenchFramePort {
     const compileTotal = counts?.total ?? 0;
     const compiles = compileTotal - this.lastCompileTotal;
     this.lastCompileTotal = compileTotal;
+    const compilesBefore = this.compilesSeen;
+    if (compiles !== 0) this.compilesSeen = this.compiles();
     const pixels = probe.renderWidth * probe.renderHeight;
     const scaleStep = this.lastPixels !== null && pixels !== this.lastPixels;
     this.lastPixels = pixels;
@@ -289,7 +304,6 @@ export class StepController implements BenchFramePort {
     if (phase === "waiting") {
       this.firstFrameMs = frameMs;
       this.firstRenderStartMs = renderStart;
-      this.compilesAtFirstFrame = this.compiles();
       this.setPhase("settling");
     }
     if (this.currentPhase === "settling") {
@@ -300,14 +314,16 @@ export class StepController implements BenchFramePort {
 
     if (this.flightStartMs === null) {
       this.flightStartMs = frameMs;
-      this.compilesAtFlightStart = this.compiles();
-      this.options.instruments.creations?.clearEvents();
+      this.compilesAtFlightStart = compilesBefore;
+      // The settle's clock read `settleCapS` short of its elapsed time; now the flight's start is known.
+      this.trace.rebaseSettle(this.timings.settleCapS - (frameMs - this.firstFrameMs!) / 1_000);
     }
     const t = (frameMs - this.flightStartMs) / 1_000;
     this.flightSeconds = t;
     recordFrame(this.log, frameMs, renderStart, renderEnd - renderStart, compiles, scaleStep, probe.gpuFrameMs);
     this.trace.observe(t, probe);
-    if (this.compilesAtAirStart === null && t >= this.timings.air.startS) this.compilesAtAirStart = this.compiles();
+    if (this.compilesAtAirStart === null && t >= this.timings.air.startS) this.compilesAtAirStart = compilesBefore;
+    if (this.compilesAtAirEnd === null && t >= this.timings.air.endS) this.compilesAtAirEnd = compilesBefore;
     this.secondSample(t, frameMs, probe);
 
     if (!this.earlyStopChecked && t >= this.timings.earlyStopAtS) {
@@ -315,12 +331,12 @@ export class StepController implements BenchFramePort {
       const check = earlyStopCheck(this.log, { flightStartMs: this.flightStartMs }, this.timings);
       if (check.stop) {
         this.earlyStopFps = check.fps;
-        this.finish("early-stop");
+        this.finish("early-stop", compilesBefore);
         return;
       }
     }
     // The first frame at or past the end closes the last interval, then the flight ends.
-    if (t >= this.timings.flightS) this.finish("ok");
+    if (t >= this.timings.flightS) this.finish("ok", compilesBefore);
   }
 
   renderThrew(error: unknown): void {
@@ -379,7 +395,8 @@ export class StepController implements BenchFramePort {
     const elapsedMs = frameMs - this.firstFrameMs!;
     this.settleFrames += 1;
     // During the settle the trace's clock reads below zero, rising to the
-    // settle cap: decisions there count as the settle's.
+    // settle cap: decisions there count as the settle's. The flight's first
+    // frame rebases them to count back from it.
     this.trace.observe(Math.min(-1e-3, elapsedMs / 1_000 - this.timings.settleCapS), probe);
     let reading: SettleReading | null = null;
     if (settleCheckDue(this.timings, this.settleProgress, elapsedMs, this.settleFrames, false)) {
@@ -432,7 +449,8 @@ export class StepController implements BenchFramePort {
       appliedScale: probe.appliedRenderScale,
       stages: setup.startupStages().map((stage) => ({ label: stage.label, kind: stage.kind, ms: stage.milliseconds })),
     };
-    // The flight begins with the next frame.
+    // The flight begins with the next frame, and so do its compile events.
+    instruments.creations?.clearEvents();
     this.setPhase("flying");
   }
 
@@ -452,7 +470,8 @@ export class StepController implements BenchFramePort {
 
   // --- the end of the flight ---------------------------------------------------------
 
-  private finish(outcome: "ok" | "early-stop"): void {
+  private finish(outcome: "ok" | "early-stop", compilesBeforeLastFrame: BenchCompileCounts): void {
+    this.compilesAtFlightEnd = compilesBeforeLastFrame;
     this.raf.stop();
     this.setPhase("done");
     const result = this.collect(outcome);
@@ -483,8 +502,10 @@ export class StepController implements BenchFramePort {
     const intervals = flightFrames.map((index) => this.log.frameTimeMs[index + 1]! - this.log.frameTimeMs[index]!);
 
     const diagnostics = renderer.getDiagnostics();
-    const atEnd = this.compiles();
+    // An early stop ends before the air window opens: its flight is all warm-up.
+    const atEnd = this.compilesAtFlightEnd ?? this.compiles();
     const airStart = this.compilesAtAirStart ?? atEnd;
+    const airEnd = this.compilesAtAirEnd ?? atEnd;
     const tier = benchTier(setup.tierIndex);
     const governor = this.trace.summary();
     const appliedScale = settled?.appliedScale ?? 1;
@@ -541,7 +562,7 @@ export class StepController implements BenchFramePort {
       perSecond: perSecondTable(perSecondRows(this.log, context, Math.ceil(flown), this.secondSamples)),
       compiles: {
         warmup: compileDelta(airStart, this.compilesAtFlightStart),
-        window: { ...compileDelta(atEnd, airStart), framesWithCompiles: air?.framesWithCompiles ?? 0 },
+        window: { ...compileDelta(airEnd, airStart), framesWithCompiles: air?.framesWithCompiles ?? 0 },
         firstEvents: events.slice(0, 20).map((event) => ({ t: (event.t - flightStartMs) / 1_000, kind: event.kind })),
       },
       longTasks: summarizeLongTasks(instruments.longTasks?.entries ?? null, air0, air1),

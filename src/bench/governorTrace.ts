@@ -229,6 +229,20 @@ export class GovernorTrace {
     }
   }
 
+  /**
+   * The flight's first frame: the settle's decisions were timed by a clock
+   * that reads below zero (the flight's start was not yet known), and
+   * `offsetS` moves them to count back from that frame, as the log says.
+   */
+  rebaseSettle(offsetS: number): void {
+    for (let index = 0; index < this.decisions.length; index += 1) {
+      const [tS, ...rest] = this.decisions[index]!;
+      if (tS >= 0) continue;
+      // Still below zero, so the settle's decisions stay the settle's.
+      this.decisions[index] = Object.freeze([Math.min(-1e-3, tS + offsetS), ...rest] as const);
+    }
+  }
+
   summary(): BenchGovernorSummary {
     return {
       pinned: this.pinned,
