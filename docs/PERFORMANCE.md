@@ -3238,9 +3238,11 @@ tab in front: hiding the tab voids the flight in progress, as does resizing
 the window or moving it to a screen with another pixel ratio; each flight
 gets two tries. Esc, or the run chip's **Stop**, asks before it stops, and
 the report then shows the flights that finished. Progress lives in one
-tab-scoped `sessionStorage` key, `flyhigh.bench.v1`, which **Exit** clears;
-the player's settings (`aerolith.settings.v3`) are never written, and the
-report carries their hash at the start and the end to show it.
+tab-scoped `sessionStorage` key, `flyhigh.bench.v1`, which **Exit** clears; a
+page that cannot read what the key holds (the game was updated mid-run, say)
+says so and offers **Start over** and **Exit**. The player's settings
+(`aerolith.settings.v3`) are never written, and the report carries their hash
+at the start and the end to show it.
 
 | URL parameter | What it does |
 | --- | --- |

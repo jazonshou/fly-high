@@ -1,13 +1,15 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { benchFlow, startRun, type StartRunInput } from "../src/bench/flow";
+import { benchFlow, recordStepResult, startRun, type StartRunInput } from "../src/bench/flow";
+import { exitUrl, introUrl, reportUrl } from "../src/bench/plan";
 import type { BenchHost } from "../src/bench/session";
 import { BENCH_STORE_KEY, openBenchStore, parseBenchStore, serializeBenchStore } from "../src/bench/store";
 import type { BenchStepRecord } from "../src/bench/types";
 import type { BenchView } from "../src/bench/ui/BenchApp";
 import { readBenchFromUrl } from "../src/settings";
+import { benchStepResult } from "./support/benchReportFixture";
 
 /**
- * A step page's session against a hand-made browser: a window and document
+ * A bench page's session against a hand-made browser: a window and document
  * that are plain event targets, rAF on fake timers, and a React root that
  * only keeps the views it is handed. Enough of a page to hide and show the
  * tab and read what the session saved and showed.
@@ -68,6 +70,7 @@ function fakeBrowser(visibilityState: "visible" | "hidden") {
   });
   vi.stubGlobal("window", view);
   vi.stubGlobal("document", page);
+  vi.stubGlobal("location", new URL(PAGE));
   vi.stubGlobal("requestAnimationFrame", (callback: (timestamp: number) => void) =>
     setTimeout(() => callback(performance.now()), 16));
   vi.stubGlobal("cancelAnimationFrame", (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle));
@@ -165,5 +168,55 @@ describe("a step page whose tab is hidden", () => {
     expect(page.step().attemptLog.map((note) => note.outcome)).toEqual(["void-hidden"]);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(page.go).toHaveBeenCalledWith(page.start.href);
+  });
+});
+
+describe("a bench page that cannot set itself up", () => {
+  beforeEach(() => {
+    views.length = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** The report page of a two-step run whose first step saved `result`. */
+  async function openReport(result: unknown) {
+    fakeBrowser("visible");
+    const { storage, items } = memoryStorage();
+    const start = startRun(startInput(), `${PAGE}?bench=1&quick=1&tiers=1,0`);
+    const flown = recordStepResult(start.store, 0, "ok", result as never, "absent", start.href);
+    items.set(BENCH_STORE_KEY, serializeBenchStore(flown.store));
+    const href = reportUrl(start.href, start.store.current!.runId, { tiers: [1, 0], mode: "shipped", hud: false, quick: true });
+    const go = vi.fn<(href: string) => void>();
+    const host: BenchHost = { href, storage, navigationType: "navigate", isoNow: () => NOW, go };
+    vi.resetModules();
+    const { openBenchSession } = await import("../src/bench/session");
+    const session = await openBenchSession(readBenchFromUrl(href)!, host);
+    return { session, go, items, href, shown: views[views.length - 1] };
+  }
+
+  it("shows the report of a run it can read (the control)", async () => {
+    const page = await openReport(benchStepResult({ tierIndex: 1, quick: true }));
+    expect(page.shown?.kind).toBe("report");
+  });
+
+  it("shows a way out, not a blank page, for a saved result it cannot read", async () => {
+    // A result in another build's shape: the store takes it, the report cannot.
+    const page = await openReport({});
+    expect(page.session.boot).toBeNull();
+    const shown = page.shown;
+    if (shown?.kind !== "failed") throw new Error(`not a failure: ${shown?.kind}`);
+    expect(shown.failure.message).toMatch(/undefined/u);
+    expect(shown.failure.onDownload).not.toBeNull();
+    expect(page.go).not.toHaveBeenCalled();
+
+    shown.failure.onStartOver();
+    expect(page.go).toHaveBeenLastCalledWith(introUrl(page.href, { tiers: [1, 0], mode: "shipped", hud: false, quick: true }));
+    expect(page.items.has(BENCH_STORE_KEY)).toBe(false);
+    shown.failure.onExit();
+    expect(page.go).toHaveBeenLastCalledWith(exitUrl(page.href));
   });
 });

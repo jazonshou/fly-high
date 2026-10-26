@@ -561,6 +561,16 @@ describe("the bench app", () => {
       kind: "report",
       report: { report: report(defaultRun()), notice: null, copy: null, onDownload: noop, onCopy: noop, onPinnedPass: noop, onRunAgain: noop, onExit: noop },
     })).toContain('id="bench-report"');
+    const failed = render({
+      kind: "failed",
+      failure: { message: "Cannot read properties of undefined (reading 'limited')", onDownload: noop, onStartOver: noop, onExit: noop },
+    });
+    expect(failed).toContain('id="bench-failure"');
+    expect(failed).toContain("<small>Details: Cannot read properties of undefined (reading &#x27;limited&#x27;)</small>");
+    expect(failed.match(/<button[^>]*>([^<]+)<\/button>/g)?.map((button) => button.replace(/<[^>]+>/g, "").trim()))
+      .toEqual(["Start over", "Download what was saved", "Exit"]);
+    expect(render({ kind: "failed", failure: { message: "x", onDownload: null, onStartOver: noop, onExit: noop } }))
+      .not.toContain("Download what was saved");
     expect(render({ kind: "none" })).toBe("");
     expect(isInsideBenchUi(null)).toBe(false);
   });

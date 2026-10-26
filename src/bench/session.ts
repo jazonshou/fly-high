@@ -57,6 +57,7 @@ import {
   estimateRemainingSeconds,
   exitUrl,
   ignoredBenchParams,
+  introUrl,
   newRunId,
   reportUrl,
   type BenchUrlOptions,
@@ -65,7 +66,7 @@ import { BenchRendererSlot, type BenchRenderer } from "./recorder";
 import { buildReport, reportFileName, reportToJson } from "./report";
 import { hashSettingsKey } from "./settingsGuard";
 import { timerReport } from "./stats";
-import { benchSessionStorage, clearBenchStore, openBenchStore, writeBenchStore } from "./store";
+import { BENCH_STORE_KEY, benchSessionStorage, clearBenchStore, openBenchStore, writeBenchStore } from "./store";
 import type {
   BenchDeviceReport,
   BenchFirstLoad,
@@ -156,25 +157,70 @@ async function openPage(request: BenchUrlRequest, host: BenchHost): Promise<Benc
       store = null;
     }
   }
-  switch (page.kind) {
-    case "redirect":
-      host.go(page.href);
-      return NO_FLIGHT;
-    case "intro":
-      new IntroPage(host, request, page).start();
-      return NO_FLIGHT;
-    case "report":
-      new ReportPage(host, page.run, page.earlier, page.notice, store ?? currentStore(host)).start();
-      return NO_FLIGHT;
-    case "step":
-      return await new StepPage(host, page, store ?? currentStore(host)).start();
+  try {
+    switch (page.kind) {
+      case "redirect":
+        host.go(page.href);
+        return NO_FLIGHT;
+      case "intro":
+        new IntroPage(host, request, page).start();
+        return NO_FLIGHT;
+      case "report":
+        new ReportPage(host, page.run, page.earlier, page.notice, store ?? currentStore(host)).start();
+        return NO_FLIGHT;
+      case "step":
+        return await new StepPage(host, page, store ?? currentStore(host)).start();
+    }
+  } catch (error) {
+    showFailure(host, request, error);
+    return NO_FLIGHT;
   }
+}
+
+/**
+ * A page that threw while it set itself up, most likely on a saved run this
+ * build cannot read: a panel with a way out instead of a blank page, since
+ * bench pages hide the game's error banner. The renderer never starts.
+ */
+function showFailure(host: BenchHost, request: BenchUrlRequest, error: unknown): void {
+  let saved: string | null = null;
+  try {
+    saved = host.storage?.getItem(BENCH_STORE_KEY) ?? null;
+  } catch {
+    saved = null;
+  }
+  const leave = (href: string) => {
+    clearBenchStore(host.storage);
+    host.go(href);
+  };
+  const options: BenchUrlOptions = { tiers: request.tiers, mode: request.mode, hud: request.hud, quick: request.quick };
+  benchUi("report").show({
+    kind: "failed",
+    failure: {
+      message: error instanceof Error ? error.message : String(error),
+      onDownload: saved === null ? null : () => download(saved, "fly-high-bench-saved.json"),
+      onStartOver: () => leave(introUrl(host.href, options)),
+      onExit: () => leave(exitUrl(host.href)),
+    },
+  });
 }
 
 /** The store as saved, for a page whose decision saved nothing. */
 function currentStore(host: BenchHost): BenchStore | null {
   const read = openBenchStore(host.storage);
   return read.kind === "ok" ? read.store : null;
+}
+
+let pageUi: BenchUi | null = null;
+
+/** The page load's one bench root: a page that fails shows its panel in the root it made. */
+function benchUi(page: "intro" | "step" | "report"): BenchUi {
+  if (pageUi === null) {
+    pageUi = new BenchUi(page);
+  } else {
+    pageUi.page = page;
+  }
+  return pageUi;
 }
 
 /** The bench's own React root, beside FlightGame's, and the page's marker for bench.css. */
@@ -214,7 +260,7 @@ function withRendererLabel(run: BenchRunRecord): BenchRunRecord {
 // --- the intro ----------------------------------------------------------------------
 
 class IntroPage {
-  private readonly ui = new BenchUi("intro");
+  private readonly ui = benchUi("intro");
   private readonly options: BenchUrlOptions;
   private device: BenchDeviceReport | null = null;
   private refresh: BenchRefresh | null = null;
@@ -333,7 +379,7 @@ class ReportPage {
     private store: BenchStore | null,
     ui?: BenchUi,
   ) {
-    this.ui = ui ?? new BenchUi("report");
+    this.ui = ui ?? benchUi("report");
     this.notice = notice;
   }
 
@@ -476,7 +522,7 @@ function documentLoaded(): Promise<void> {
 }
 
 class StepPage {
-  private readonly ui = new BenchUi("step");
+  private readonly ui = benchUi("step");
   private readonly run: BenchRunRecord;
   private readonly stepIndex: number;
   private readonly attempt: number;

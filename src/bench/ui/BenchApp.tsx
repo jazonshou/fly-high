@@ -1,5 +1,6 @@
 import { BenchCards, type BenchCardProps } from "./BenchCards";
 import { BenchChip, type BenchChipProps } from "./BenchChip";
+import { BenchFailure, type BenchFailureProps } from "./BenchFailure";
 import { BenchHud, type BenchHudProps } from "./BenchHud";
 import { BenchIntro, type BenchIntroProps } from "./BenchIntro";
 import { BenchReportDialog, type BenchReportDialogProps } from "./BenchReportDialog";
@@ -33,13 +34,16 @@ export type BenchView =
     readonly hud: BenchHudProps | null;
   }
   | { readonly kind: "report"; readonly report: BenchReportDialogProps }
+  /** The page threw while it set itself up. */
+  | { readonly kind: "failed"; readonly failure: BenchFailureProps }
   /** A redirect is under way: nothing to show. */
   | { readonly kind: "none" };
 
 /**
  * The bench's pages in one component: the intro dialog, the step page's chip,
- * cards and HUD, or the report dialog. Props in, callbacks out: it holds no
- * run state, reads no storage and never touches the renderer.
+ * cards and HUD, the report dialog, or a page that could not open. Props in,
+ * callbacks out: it holds no run state, reads no storage and never touches
+ * the renderer.
  */
 export function BenchApp({ view }: { readonly view: BenchView }) {
   switch (view.kind) {
@@ -55,6 +59,8 @@ export function BenchApp({ view }: { readonly view: BenchView }) {
       );
     case "report":
       return <BenchReportDialog {...view.report} />;
+    case "failed":
+      return <BenchFailure {...view.failure} />;
     case "none":
       return null;
   }
