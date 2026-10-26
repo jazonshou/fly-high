@@ -172,6 +172,13 @@ function linePlan(berth: MarinaBerth, layout: MarinaLayout, heading: number): { 
  * The mooring of one boat at the home marina. Implements the boat
  * simulator's external load (`apply`), and decides making fast and casting
  * off from the boat's controls (`update`, once per 120 Hz step).
+ *
+ * WIRING, in this order. Once at install: `addMarinaColliders`, then
+ * `makeFast(layout.startBerth, ...)` right after the dock spawn, and register
+ * this and a `MarinaContactLoad` as external loads. Then every fixed step:
+ * `water.setTime`, `poseMarinaPontoons`, `update`, and the boat's step (which
+ * calls `apply` per substep). None of it waits for terrain: every collider
+ * and berth comes from `homeMarina(world)`, which is pure CPU.
  */
 export class Mooring {
   state: MooringState = "free";
