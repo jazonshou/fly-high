@@ -65,6 +65,8 @@ import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
 import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
 import {
+  infrastructureIndex,
+  infrastructurePlantExclusions,
   withAirports,
   type AirportDefinition,
   type TerrainSample,
@@ -1193,6 +1195,9 @@ export class FlightRenderer implements FlightRenderingSystem {
         // realisation or the handoff at the field radius swaps species.
         seedHash: options.world.sourceSeedHash,
         seaLevelMeters: options.world.seaLevel,
+        // Built ground (infrastructure segments with a plant clearance): no
+        // blades, the detail scatter's own gate. None in a world without it.
+        plantExclusions: infrastructurePlantExclusions(infrastructureIndex(options.world)),
       });
       cleanup.push(() => groundCover.dispose());
       checkpointRendererStartup("ground-cover construction", "sync");

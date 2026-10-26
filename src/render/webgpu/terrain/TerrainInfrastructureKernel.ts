@@ -7,13 +7,16 @@ import {
 } from "@/src/render/webgpu/core/GpuBufferInventory";
 import {
   INFRASTRUCTURE_BIN_METERS,
+  INFRASTRUCTURE_SURFACE_FEATHER_METERS,
   infrastructureBinKey,
   infrastructureIndex,
   type InfrastructureIndex,
+  type InfrastructureSurface,
 } from "@/src/world/infrastructure";
 import { INFRASTRUCTURE_PROFILES } from "@/src/world/infrastructureProfiles";
 import { landformCoreCenter } from "@/src/world/landforms";
 import type { WorldDefinition } from "@/src/world/types";
+import { SurfaceMaterial, type SurfaceMaterialId } from "./surfaceMaterials";
 import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKernel";
 
 /**
@@ -50,7 +53,8 @@ import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKern
  *   lists:    four segment indices per vec4
  *   segments: five vec4s each: (a cell i32 x, z, a remainder f32 x, z),
  *             (dir x, dir z, length, halfWidth + reach) f32,
- *             (length, halfWidth, reach f32, profile | mode << 16),
+ *             (length, halfWidth, reach f32,
+ *              profile | mode << 16 | (surface material + 1) << 20),
  *             params 0-3, params 4-7 (f32)
  *
  * CONTAINMENT. With no segments (no sources, an eroded world, the
@@ -64,6 +68,14 @@ export const INFRASTRUCTURE_SEGMENT_VEC4S = 5;
 export const INFRASTRUCTURE_MAX_GPU_BINS = 128 * 128;
 
 const MODE_CODE = { set: 0, cut: 1, fill: 2 } as const;
+
+/** The splat material each named surface paints. */
+export const INFRASTRUCTURE_SURFACE_MATERIAL: Readonly<Record<InfrastructureSurface, SurfaceMaterialId>> =
+  Object.freeze({
+    concrete: SurfaceMaterial.Concrete,
+    asphalt: SurfaceMaterial.Asphalt,
+    gravel: SurfaceMaterial.Gravel,
+  });
 
 /** The placeholder: three header vec4s of zeros, so no segment is listed. */
 export const TERRAIN_INFRASTRUCTURE_PLACEHOLDER_BYTES = INFRASTRUCTURE_HEADER_VEC4S * 16;
@@ -142,7 +154,8 @@ export function packTerrainInfrastructure(
     floats[word + 8] = packed.length;
     floats[word + 9] = segment.halfWidth;
     floats[word + 10] = segment.reach;
-    words[word + 11] = (segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16);
+    const surface = segment.surface === undefined ? 0 : INFRASTRUCTURE_SURFACE_MATERIAL[segment.surface] + 1;
+    words[word + 11] = ((segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16) | (surface << 20)) >>> 0;
     for (let p = 0; p < 8; p += 1) floats[word + 12 + p] = segment.params[p] ?? 0;
   });
   return words;
@@ -193,12 +206,13 @@ export const TERRAIN_INFRASTRUCTURE_WGSL = /* wgsl */ `
 // ---------------------------------------------------------------------------
 
 const K_INFRA_CELL: f32 = ${TERRAIN_LANDFORM_CELL_METERS}.0;
+const K_INFRA_SURFACE_FEATHER: f32 = ${INFRASTRUCTURE_SURFACE_FEATHER_METERS}.0;
 
 /** What a profile reads of a segment (frame, shape, params). */
 struct TerrainInfrastructureSegment {
   // (dir x, dir z, length, halfWidth + reach)
   frame: vec4f,
-  // (length, halfWidth, reach, profile | mode << 16 as bits)
+  // (length, halfWidth, reach, profile | mode << 16 | surface << 20 as bits)
   shape: vec4f,
   p0: vec4f,
   p1: vec4f,
@@ -223,14 +237,9 @@ fn terrainInfraOffset(cell: vec2<i32>, within: vec2f, base: vec4f, local: vec2f)
   return vec2f(vec2<i32>(base.xy) - cell) * K_INFRA_CELL + ((base.zw - within) + local);
 }
 
-/**
- * applyInfrastructure at a split point: \`base\` is the page's landformBase
- * (whole cells .xy, remainder .zw, from the core centre), \`local\` the offset
- * from it. Returns \`height\` itself wherever no segment reaches.
- */
-fn terrainInfrastructureSplit(base: vec4f, local: vec2f, height: f32) -> f32 {
+/** The bin a split point falls in: (first list entry, count), (0, 0) outside the grid. */
+fn terrainInfraBin(base: vec4f, local: vec2f) -> vec2u {
   let header = terrainInfrastructureData[0u];
-  if (header.x == 0u) { return height; }
   let header1 = terrainInfrastructureData[1u];
   let corner = terrainInfrastructureData[2u];
   let binSize = bitcast<f32>(header1.w);
@@ -238,29 +247,51 @@ fn terrainInfrastructureSplit(base: vec4f, local: vec2f, height: f32) -> f32 {
     bitcast<vec2<i32>>(corner.xy), bitcast<vec2f>(corner.zw), base, local);
   let binXZ = floor(fromCorner / binSize);
   if (binXZ.x < 0.0 || binXZ.y < 0.0 || binXZ.x >= f32(header.y) || binXZ.y >= f32(header.z)) {
-    return height;
+    return vec2u(0u, 0u);
   }
   let bin = u32(binXZ.y) * header.y + u32(binXZ.x);
   let packed = terrainInfrastructureData[header.w + bin / 2u];
-  var entry = packed.xy;
-  if ((bin & 1u) == 1u) { entry = packed.zw; }
-  let seaLevel = bitcast<f32>(header1.z);
+  if ((bin & 1u) == 1u) { return packed.zw; }
+  return packed.xy;
+}
+
+/** The first vec4 of the segment a bin list entry names. */
+fn terrainInfraSegmentFirst(entryIndex: u32) -> u32 {
+  let header1 = terrainInfrastructureData[1u];
+  let refs = terrainInfrastructureData[header1.x + entryIndex / 4u];
+  let lane = entryIndex & 3u;
+  var segIndex = refs.x;
+  if (lane == 1u) { segIndex = refs.y; }
+  if (lane == 2u) { segIndex = refs.z; }
+  if (lane == 3u) { segIndex = refs.w; }
+  return header1.y + segIndex * ${INFRASTRUCTURE_SEGMENT_VEC4S}u;
+}
+
+/** (along, across) of a split point on the segment whose first vec4 is \`first\`. */
+fn terrainInfraLocal(first: u32, base: vec4f, local: vec2f) -> vec2f {
+  let origin = terrainInfrastructureData[first];
+  let rel = terrainInfraOffset(bitcast<vec2<i32>>(origin.xy), bitcast<vec2f>(origin.zw), base, local);
+  let frame = terrainInfraFloats(first + 1u);
+  // Right of a->b seen from above: (dirZ, -dirX).
+  return vec2f(rel.x * frame.x + rel.y * frame.y, rel.x * frame.y - rel.y * frame.x);
+}
+
+/**
+ * applyInfrastructure at a split point: \`base\` is the page's landformBase
+ * (whole cells .xy, remainder .zw, from the core centre), \`local\` the offset
+ * from it. Returns \`height\` itself wherever no segment reaches.
+ */
+fn terrainInfrastructureSplit(base: vec4f, local: vec2f, height: f32) -> f32 {
+  if (terrainInfrastructureData[0u].x == 0u) { return height; }
+  let entry = terrainInfraBin(base, local);
+  let seaLevel = bitcast<f32>(terrainInfrastructureData[1u].z);
   var h = height;
   for (var i = 0u; i < entry.y; i = i + 1u) {
-    let entryIndex = entry.x + i;
-    let refs = terrainInfrastructureData[header1.x + entryIndex / 4u];
-    let lane = entryIndex & 3u;
-    var segIndex = refs.x;
-    if (lane == 1u) { segIndex = refs.y; }
-    if (lane == 2u) { segIndex = refs.z; }
-    if (lane == 3u) { segIndex = refs.w; }
-    let first = header1.y + segIndex * ${INFRASTRUCTURE_SEGMENT_VEC4S}u;
-    let origin = terrainInfrastructureData[first];
-    let rel = terrainInfraOffset(bitcast<vec2<i32>>(origin.xy), bitcast<vec2f>(origin.zw), base, local);
+    let first = terrainInfraSegmentFirst(entry.x + i);
     let frame = terrainInfraFloats(first + 1u);
-    let along = rel.x * frame.x + rel.y * frame.y;
-    // Right of a->b seen from above: (dirZ, -dirX).
-    let across = rel.x * frame.y - rel.y * frame.x;
+    let position = terrainInfraLocal(first, base, local);
+    let along = position.x;
+    let across = position.y;
     if (terrainInfraCapsuleDistance(along, across, frame.z) >= frame.w) { continue; }
     let shape = terrainInfraFloats(first + 2u);
     let seg = TerrainInfrastructureSegment(
@@ -269,7 +300,7 @@ fn terrainInfrastructureSplit(base: vec4f, local: vec2f, height: f32) -> f32 {
     let sample = terrainInfraProfile(code & 0xffffu, along, across, seg, h, seaLevel);
     let weight = sample.y;
     if (!(weight > 0.0)) { continue; }
-    let mode = code >> 16u;
+    let mode = (code >> 16u) & 0xfu;
     var applies = true;
     if (mode == 1u) { applies = sample.x < h; }
     if (mode == 2u) { applies = sample.x > h; }
@@ -284,6 +315,30 @@ fn terrainInfrastructureSplit(base: vec4f, local: vec2f, height: f32) -> f32 {
 fn terrainInfrastructure(localX: f32, localZ: f32, height: f32) -> f32 {
   return terrainInfrastructureSplit(
     terrainKernelPages[kPageIndex].landformBase, vec2f(localX, localZ), height);
+}
+
+/**
+ * sampleInfrastructureSurface at a point LOCAL to the bound kernel page:
+ * (splat material id, coverage), or (-1, 0) where nothing is painted. The
+ * most coverage wins, the later segment on a tie.
+ */
+fn terrainInfrastructureSurface(localX: f32, localZ: f32) -> vec2f {
+  var best = vec2f(-1.0, 0.0);
+  if (terrainInfrastructureData[0u].x == 0u) { return best; }
+  let base = terrainKernelPages[kPageIndex].landformBase;
+  let local = vec2f(localX, localZ);
+  let entry = terrainInfraBin(base, local);
+  for (var i = 0u; i < entry.y; i = i + 1u) {
+    let first = terrainInfraSegmentFirst(entry.x + i);
+    let surface = (terrainInfrastructureData[first + 2u].w >> 20u) & 0xffu;
+    if (surface == 0u) { continue; }
+    let position = terrainInfraLocal(first, base, local);
+    let shape = terrainInfraFloats(first + 2u);
+    let distance = terrainInfraCapsuleDistance(position.x, position.y, shape.x);
+    let coverage = kSaturate(0.5 + (shape.y - distance) / K_INFRA_SURFACE_FEATHER);
+    if (coverage > 0.0 && coverage >= best.y) { best = vec2f(f32(surface - 1u), coverage); }
+  }
+  return best;
 }
 `;
 
