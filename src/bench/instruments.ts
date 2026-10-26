@@ -729,9 +729,9 @@ const BENCH_UI_KEYS: ReadonlySet<string> = new Set(["Tab", "Enter", " ", "Escape
 
 /**
  * Keeps every key away from the game for the whole step. The game listens on
- * `window` in four places (the input manager, the control pump, the
- * renderer's Backquote debug overlay and, in the viewer, free-fly), and any
- * of them would change what is measured; H alone would also save settings.
+ * `window` (the input manager, the control pump, the renderer's Backquote
+ * debug overlay, and the terrain viewer's handlers), and any of them would
+ * change what is measured; H alone would also save settings.
  *
  * A capture-phase listener on `window` runs before every other listener on
  * the page, so `stopImmediatePropagation` there stops a key everywhere. Keys
