@@ -8,6 +8,7 @@ import type {
 import type { EnvironmentClock } from "@/src/world/environmentClock";
 import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type {
   TerrainMacroGrid,
   TerrainPagePublication,
@@ -74,6 +75,12 @@ export interface FlightRenderingSystem {
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void;
+  /**
+   * The frame pacer's cadence (PR B), on the first rendered frame after it
+   * changes. Null, which captures and perf:ab never change, is today's
+   * behaviour: every refresh, judged against the tier's own target.
+   */
+  setPresentationCadence(cadence: PresentationCadence | null): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
   getDiagnostics(): RenderDiagnostics;
   /** Starts the 1A-1 GPU budget-probe sweep; returns whether it began. */

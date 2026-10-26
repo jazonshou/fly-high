@@ -211,6 +211,7 @@ import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import type { PresentationCadence } from "./webgpu/core/presentationCadence";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -573,6 +574,8 @@ export interface RendererBenchProbe {
   pinned: boolean;
   /** GPU milliseconds resolved during this frame; null without timing or a fresh sample. */
   gpuFrameMs: number | null;
+  /** The frame pacer's cadence as last set; null until FlightGame sets one. */
+  presentationCadence: PresentationCadence | null;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -873,6 +876,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
+  /** PR B: the frame pacer's cadence; null for captures, perf:ab and perf:flight, which never pace. */
+  private presentationCadence: PresentationCadence | null = null;
   private budgetProbe: FrameGraphBudgetProbe | null = null;
   private budgetProbeReport: RenderDiagnostics["budgetProbeReport"] = null;
   private probeDisabledPass: string | null = null;
@@ -2136,6 +2141,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setShelter(ellipses);
   }
 
+  /** Stored, and read by the bench's probe. The governor does not read it yet. */
+  setPresentationCadence(cadence: PresentationCadence | null): void {
+    this.presentationCadence = cadence;
+  }
+
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
     if (!this.atmosphereTracker.update(clock, weather)) return;
     this.environmentState = resolveEnvironmentState({
@@ -2540,6 +2550,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     into.gpuFrameMs = this.lastGpuTimingFrameIndex === this.frameIndex
       ? this.lastGpuFrameMilliseconds
       : null;
+    into.presentationCadence = this.presentationCadence;
   }
 
   /**

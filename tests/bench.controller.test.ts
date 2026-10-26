@@ -122,6 +122,7 @@ function harness(options: HarnessOptions = {}) {
     renderHeight: 619,
     pinned: false,
     gpuFrameMs: null,
+    presentationCadence: null,
   };
   const drawn: FlightVisualState[] = [];
   const counts: CreationCounts = {

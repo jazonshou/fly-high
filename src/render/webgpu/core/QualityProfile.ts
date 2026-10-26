@@ -8,6 +8,11 @@ import {
 } from "@/src/render/webgpu/detail/renderedDensity";
 import type { QualityLevel } from "@/src/game/types";
 import type { RenderingMode } from "@/src/settings";
+import {
+  cadenceFloorMs,
+  PRESENTATION_HEADROOM_MS,
+  type PresentationCadence,
+} from "./presentationCadence";
 
 /**
  * The camera far plane (1C-4). Beyond this the shared aerial perspective
@@ -929,9 +934,18 @@ export function standaloneSharpen(
   return profile.msaaSamples > 1 && profile.sharpenAmount > 0;
 }
 
-/** A hitch is a frame slower than twice the tier's controllable target. */
-export function hitchThresholdMilliseconds(profile: Pick<WebGpuQualityProfile, "frameTargetMs">): number {
-  return profile.frameTargetMs * 2;
+/**
+ * A hitch is a frame slower than twice the tier's controllable target: 27.4
+ * ms, or 60 ms on Ultra. The presentation cadence raises it only where the
+ * cadence itself is slower than that target, which is the 30 fps setting or
+ * a divisor of 2 or more on a confirmed display period (presentationCadence.ts);
+ * a slow workload never moves it. Captures and perf:ab pass no cadence.
+ */
+export function hitchThresholdMilliseconds(
+  profile: Pick<WebGpuQualityProfile, "frameTargetMs">,
+  cadence: PresentationCadence | null = null,
+): number {
+  return Math.max(profile.frameTargetMs * 2, (cadenceFloorMs(cadence) - PRESENTATION_HEADROOM_MS) * 2);
 }
 
 /** Return a timing only while its asynchronously produced sample is still current. */

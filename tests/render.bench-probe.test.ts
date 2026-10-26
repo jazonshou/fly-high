@@ -30,6 +30,12 @@ function receiver(overrides: Record<string, unknown> = {}) {
     lastGpuFrameMilliseconds: 7.25,
     lastGpuTimingFrameIndex: 41,
     engine: Object.freeze({ getRenderWidth: () => 1_212, getRenderHeight: () => 682 }),
+    presentationCadence: Object.freeze({
+      frameCapHz: 60,
+      divisor: 2,
+      displayPeriodMs: 1_000 / 120,
+      periodConfirmed: true,
+    }),
     ...overrides,
   };
   // Frozen, so any write to the receiver throws (class bodies are strict).
@@ -57,6 +63,7 @@ describe("the renderer's bench probe", () => {
     expect(probe.renderWidth).toBe(1_212);
     expect(probe.renderHeight).toBe(682);
     expect(probe.pinned).toBe(false);
+    expect(probe.presentationCadence).toBe(fields.presentationCadence);
     expect({ ...fields }).toEqual(before);
   });
 
@@ -74,6 +81,7 @@ describe("the renderer's bench probe", () => {
       "governorState",
       "gpuFrameMs",
       "pinned",
+      "presentationCadence",
       "renderHeight",
       "renderWidth",
       "workLevers",
