@@ -3212,3 +3212,106 @@ baseline stays. The before/after of the six trees is a scratch perf:ab render
 
 **Cost: none.** The classifier reads a field the sampler already returns; the
 A/B at `9d5f98e` is in "Terrain and world paging" above.
+
+## In-app benchmark (?bench=1)
+
+`?bench=1` turns the game into a benchmark anyone can run in their own
+browser, on the deployed build:
+`https://jazonshou.github.io/fly-high/?bench=1`. It measures what a player's
+machine does with the shipped game, tier by tier, so the coming tier work
+(the 60 fps cap, the governor's recovery, Auto moving weak machines to Low)
+has a "before" from real computers rather than from SwiftShader. Without the
+flag nothing changes for a player: FlightGame parses the URL once more and
+finds nothing, the bench's code and styles sit in their own chunk that only a
+dynamic `import()` under the flag fetches, and the frame loop is the one
+players run (`tests/bench.inert.test.ts`).
+
+**How to run it.** Open the link, plug in the laptop, maximise the window
+(full screen does not survive the reloads between flights), close games and
+video calls, and press **Start benchmark**. The intro first checks the
+machine: WebGPU (missing, no adapter, a software-only adapter or a limit
+short of what the game needs each block the run and offer a device-only
+report instead), the graphics adapter, the screen and the browser's idle
+frame rate. The game then flies itself once per tier, reloading the page
+between flights, and ends on the report. Do not touch anything, and keep the
+tab in front: hiding the tab voids the flight in progress, as does resizing
+the window or moving it to a screen with another pixel ratio; each flight
+gets two tries. Esc, or the run chip's **Stop**, asks before it stops, and
+the report then shows the flights that finished. Progress lives in one
+tab-scoped `sessionStorage` key, `flyhigh.bench.v1`, which **Exit** clears;
+the player's settings (`aerolith.settings.v3`) are never written, and the
+report carries their hash at the start and the end to show it.
+
+| URL parameter | What it does |
+| --- | --- |
+| `tiers=1,0,2,1` | the tiers to fly, in order (0 Low, 1 Medium, 2 High, 3 Ultra), one to eight; the default flies Medium, Low, High and Medium again |
+| `mode=pinned` | the GPU comparison pass: each tier renders its whole pixel budget at a fixed scale, with per-pass GPU timing on, whatever the governor would do |
+| `hud=0` | flies without the HUD (it is on by default, as a player sees it) |
+| `quick=1` | for development: 20 s flights, an 8 s settle cap; the report says it is non-standard |
+
+**How long it takes.** Each flight is a page load, a 1 s idle frame-rate
+probe, the renderer's start-up, a settle on the runway while the scenery
+streams in, and 75 s of flight. The settle ends when three checks in a row
+find nothing pending and the visible instance count unchanged, or at 20 s;
+checks start at 4 s and are at least a second and 120 frames apart, because
+each one walks the GPU memory inventory and the detail cells, so at 60 Hz the
+earliest end is 10 s. The default four flights take about 7 minutes on a
+typical machine and up to about 9 on one that is slow to start; the intro
+shows the estimate for the chosen tiers. A flight under 5 fps from 3 s to
+20 s stops there, because the rest would take minutes and say nothing new.
+
+**The flight.** A player's first minute, the same on every machine: from the
+runway threshold of the bench world (seed `00762m`), a 15 s roll from 0 to
+60 m/s along the centreline, a 15 s climb-out from 60 to 120 m/s, then a
+terrain-following cruise at 120 m/s and 150 m above the ground. Two windows
+are measured: `ground`, from 3 s into the roll to lift-off, and `air`, from
+30 s to the end. The headline numbers are the air window's.
+
+**What the report says.** Every frame's interval is taken from the
+`requestAnimationFrame` timestamps of the frame loop; the report gives, per
+window, fps (1000 over the mean interval), the interval percentiles, slow
+frames per 240 (over 27.4 ms; 60 ms on Ultra, whose target is 30 fps),
+stutters over 50 and 100 ms, `render()`'s main-thread time, pipelines
+compiled, long tasks, the governor's decisions and shares, and, in pinned
+mode, GPU milliseconds. Each tier gets a plain label, the worse of its two
+windows:
+
+| Label | Meaning |
+| --- | --- |
+| Smooth | p99 interval within the tier's slow-frame threshold, and at most 1 slow frame per 240 |
+| Mostly smooth | at most 6 slow frames per 240 |
+| Choppy | more than that, or the flight stopped early under 5 fps |
+| Limited by browser or display at N fps | the browser or display held frames under 50 Hz (a power saver, a 30 Hz cap), so the tier says nothing about the game |
+| Did not run | voided, failed, skipped or stopped |
+
+The run's verdict checks the run against itself: the default plan flies
+Medium first and last, and **valid** means those two flights' mean fps agree
+within 10% and the window kept its size. **Void** means they did not (a
+throttling laptop, another program, a window resized between them); those
+two are the only rules that void a run, and every number is still in the
+report.
+**Incomplete** is a run that was stopped or whose check flight did not
+finish, and **unchecked** a plan that does not start and end on the same
+tier. Everything else worth knowing (a display under 50 Hz, a refresh rate
+that moved, a coarse timer, a settle that hit its cap, a battery
+discharging, focus lost, a denied wake lock) is a warning beside the
+numbers, and the first flight in the tab is marked, because it pays the
+cold shader and pipeline caches.
+
+**Where reports go.** **Download report (.json)** saves the full report
+(`fly-high.bench/1`, `fly-high-bench-<vendor>-<time>.json`); it is the one
+to keep. **Open GitHub issue** copies a compact report to the clipboard and
+opens a prefilled issue to paste it into, and **Copy short summary** gives a
+few lines for a chat. A report kept as evidence is committed as
+`docs/evidence/bench-<label>-<ISO>.json`, where the label names the machine
+(for example `bench-rtx3050-laptop-2026-10-26T09-14-03Z.json`), and cited
+from here by that path. **Run the GPU comparison pass** flies the same tiers
+in pinned mode and keeps the shipped run in the same report.
+
+**Merge requirement.** The bench adds one read-only method to the renderer
+(`readBenchProbe`) and exports one pure governor function, and changes
+nothing else a player runs; the 39 reference pictures in
+`tests/perf/baseline` must not move. The Pages deploy waits only for the
+`verify` job, so a green `gpu-tests` run on the pull request (the perf
+capture against those pictures) is a merge requirement for the bench's pull
+request.
