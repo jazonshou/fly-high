@@ -35,9 +35,14 @@
  *   PROFILE_S>0  V8 sampling profile of the main thread -> <label>.cpuprofile
  *                (summarise with scripts/cpuprofile-summary.mts)
  *
+ * Frame rate (FRAME_RATE=60|display|30): the game's Frame rate setting, 60
+ * by default as players get it. FRAME_RATE=display draws every refresh, the
+ * loop the 2026-09-29 baseline measured; so does 60 until 60 fps pacing is
+ * switched on (FRAME_PACING_ENABLED in src/game/framePacer.ts).
+ *
  * Usage:  tsx scripts/throttle-probe.mts <outDir> <url> [label]
- * Environment: SCENARIO RATE WORKERS QUALITY MODE AIRCRAFT AGL_M WIDTH HEIGHT
- *   SEED DIAGNOSTICS CAMERA SETTLE_S MEASURE_S ROTATE_KT TRIALS
+ * Environment: SCENARIO RATE WORKERS QUALITY MODE FRAME_RATE AIRCRAFT AGL_M
+ *   WIDTH HEIGHT SEED DIAGNOSTICS CAMERA SETTLE_S MEASURE_S ROTATE_KT TRIALS
  *   AFTER_LIFTOFF_S TRACE_S PROFILE_S
  *
  * A URL cannot prove which checkout serves it (shared-machine rule): the
@@ -59,6 +64,8 @@ const RATE = Number(env("RATE", "4"));
 const THROTTLE_WORKERS = env("WORKERS", "0") === "1";
 const QUALITY = env("QUALITY", "low");
 const MODE = env("MODE", "performance");
+const FRAME_RATE = env("FRAME_RATE", "60");
+if (!["60", "display", "30"].includes(FRAME_RATE)) throw new Error(`unknown FRAME_RATE ${FRAME_RATE}`);
 const AIRCRAFT = env("AIRCRAFT", "trainer");
 /** METRES above the terrain datum (protocol.ts). 914 m = 3,000 ft. */
 const AGL_M = Number(env("AGL_M", "914"));
@@ -93,7 +100,8 @@ const HOLD_S = Number(env("HOLD_S", "20"));
 const FREEZE_TIME_S = Number(env("FREEZE_TIME_S", "1000"));
 const KNOTS_PER_MPS = 1.943_844_5;
 const label = labelArg
-  ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}-x${RATE}${THROTTLE_WORKERS ? "w" : ""}`;
+  ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}${FRAME_RATE === "60" ? "" : `-fps${FRAME_RATE}`}-x${RATE}`
+    + `${THROTTLE_WORKERS ? "w" : ""}`;
 mkdirSync(outDir, { recursive: true });
 
 const browser = await chromium.launch({
@@ -112,7 +120,7 @@ page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text(
 page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
 
 await page.addInitScript((opts: {
-  quality: string; mode: string; aircraft: string; diagnostics: boolean; agl: number;
+  quality: string; mode: string; frameRate: string; aircraft: string; diagnostics: boolean; agl: number;
 }) => {
   const w = globalThis as unknown as Record<string, unknown>;
   w.__name ??= (fn: unknown) => fn;
@@ -132,6 +140,7 @@ await page.addInitScript((opts: {
       dayOfYear: 171,
       solarTimeHours: 12.5,
       showDiagnostics: opts.diagnostics,
+      frameRate: opts.frameRate,
     }));
   } catch { /* storage unavailable */ }
 
@@ -252,7 +261,7 @@ await page.addInitScript((opts: {
     }
   }
   globalThis.Worker = CountingWorker as unknown as typeof Worker;
-}, { quality: QUALITY, mode: MODE, aircraft: AIRCRAFT, diagnostics: DIAGNOSTICS, agl: AGL_M });
+}, { quality: QUALITY, mode: MODE, frameRate: FRAME_RATE, aircraft: AIRCRAFT, diagnostics: DIAGNOSTICS, agl: AGL_M });
 
 // ---------------------------------------------------------------- helpers
 
@@ -547,6 +556,9 @@ async function installStateSampler(): Promise<boolean> {
         // The resolution ladder is a governor lever too: an arm that stepped
         // it differs in pixels for a reason that is not the change under test.
         scale: d.renderScale, insensitive: d.resolutionInsensitive, active: d.activeGovernor,
+        // PR B's cadence-aware governor: null on builds that predate it.
+        target: d.presentationTargetMs ?? null, late: d.lateFraction ?? null,
+        trial: d.governorTrial ?? null, cadence: d.presentationCadence ?? null,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {
@@ -578,6 +590,8 @@ async function sampleDiagnostics(): Promise<{
       governor.push({
         active: d.activeGovernor, cpuL: d.cpuWorkLevel, gpuL: d.gpuWorkLevel,
         cpuLever: d.cpuWorkLever, scale: d.renderScale, insensitive: d.resolutionInsensitive,
+        target: d.presentationTargetMs ?? null, late: d.lateFraction ?? null,
+        trial: d.governorTrial ?? null, cadence: d.presentationCadence ?? null,
       });
     }
     await page.waitForTimeout(1_000);
@@ -746,7 +760,10 @@ const report: Record<string, unknown> = {
   label,
   scenario: SCENARIO,
   capturedAtIso: new Date().toISOString(),
-  settings: { quality: QUALITY, mode: MODE, aircraft: AIRCRAFT, camera: CAMERA, seed: SEED, aglM: AGL_M, width: WIDTH, height: HEIGHT },
+  settings: {
+    quality: QUALITY, mode: MODE, frameRate: FRAME_RATE, aircraft: AIRCRAFT, camera: CAMERA, seed: SEED, aglM: AGL_M,
+    width: WIDTH, height: HEIGHT,
+  },
   rate: RATE,
   throttleWorkers: THROTTLE_WORKERS,
 };
