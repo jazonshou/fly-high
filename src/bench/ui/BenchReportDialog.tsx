@@ -104,7 +104,9 @@ function labelClass(label: BenchSmoothness): string {
 
 /**
  * One row per flight: the plain label first, then the air window (the
- * headline) and the runway window side by side. The table scrolls sideways
+ * headline) and the runway window side by side. Slow frames are counted
+ * against the quality's own threshold, the one its label and the legend use
+ * (60 ms on Ultra); "All numbers" keeps the 27.4 ms count. The table scrolls sideways
  * inside its own box on a narrow screen, never the page, so the label stays
  * in view and the numbers follow.
  */
@@ -135,9 +137,9 @@ function StepTable({ steps, caption }: { readonly steps: readonly BenchReportSte
                 <td>{row.tierName}{row.firstRendererInTab ? " *" : ""}</td>
                 <td className={labelClass(row.label)}>{row.cells[REPORT_TABLE_COLUMNS.length - 1]}</td>
                 <td>{fpsText(row.fps)}</td>
-                <td>{decimalText(windows?.air?.over["27.4"].per240)}</td>
+                <td>{decimalText(windows?.air?.over.hitch.per240)}</td>
                 <td>{fpsText(row.groundFps)}</td>
-                <td>{decimalText(windows?.ground?.over["27.4"].per240)}</td>
+                <td>{decimalText(windows?.ground?.over.hitch.per240)}</td>
               </tr>
             );
           })}

@@ -363,14 +363,32 @@ describe("the report dialog", () => {
       const cells = [...row[2]!.matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((cell) => cell[1]);
       expect(cells[1]).toMatch(/^(Smooth|Mostly smooth|Choppy)/);
       expect(cells[2]).toBe(`${Math.round(step.result!.windows.air!.fps!)} fps`);
-      expect(cells[3]).toBe(step.result!.windows.air!.over["27.4"].per240.toFixed(1));
+      expect(cells[3]).toBe(step.result!.windows.air!.over.hitch.per240.toFixed(1));
       expect(cells[4]).toBe(`${Math.round(step.result!.windows.ground!.fps!)} fps`);
-      expect(cells[5]).toBe(step.result!.windows.ground!.over["27.4"].per240.toFixed(1));
+      expect(cells[5]).toBe(step.result!.windows.ground!.over.hitch.per240.toFixed(1));
     }
     expect(rows[0]![2]).toContain("Medium *");
     expect(markup).toContain("The first flight also prepares the graphics");
     expect(markup).toContain("<summary>All numbers</summary>");
     expect(markup).toContain("How it felt");
+  });
+
+  it("counts Ultra's slow frames against its own 60 ms threshold, as its label and the legend do", () => {
+    // Ultra held at 30 fps with no long frames: every interval is over 27.4 ms and none over 60 ms.
+    const value = report(benchRunRecord({
+      steps: [{ tierIndex: 1, fps: 58 }, { tierIndex: 3, fps: 30, hitchEvery: 1e9 }, { tierIndex: 1, fps: 57 }],
+    }));
+    const ultra = value.steps[1]!.result!.windows.air!;
+    expect(ultra.over.hitch.thresholdMs).toBe(60);
+    expect(ultra.over["27.4"].per240).toBeGreaterThan(200);
+    expect(ultra.over.hitch.per240).toBe(0);
+    const table = /<table class="bench-table">[\s\S]*?<\/table>/.exec(reportDialog(value))![0];
+    const row = [...table.matchAll(/<tr><th scope="row">2<\/th>([\s\S]*?)<\/tr>/g)][0]![1]!;
+    const cells = [...row.matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((cell) => cell[1]);
+    expect(cells[0]).toBe("Ultra");
+    expect(cells[1]).toBe("Smooth");
+    expect(cells[3]).toBe("0.0");
+    expect(cells[5]).toBe(value.steps[1]!.result!.windows.ground!.over.hitch.per240.toFixed(1));
   });
 
   it("lists the buttons in order, the download first and the issue as a new-tab link", () => {
