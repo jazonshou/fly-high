@@ -435,6 +435,23 @@ describe("the report dialog", () => {
     expect(cells[5]).toBe(value.steps[1]!.result!.windows.ground!.over.hitch.per240.toFixed(1));
   });
 
+  it("keeps a failed flight's message out of the table, in a Result column that wraps", () => {
+    const message = "D3D12 reported a device removal (DXGI_ERROR_DEVICE_HUNG) while executing command lists; "
+      + "the GPU stopped responding to commands submitted by this page";
+    const record = benchRunRecord({
+      steps: [{ tierIndex: 1 }, { tierIndex: 0 }, { tierIndex: 2, status: "failed" }, { tierIndex: 1 }],
+    });
+    const value = report({ ...record, steps: record.steps.map((step) => (step.index === 2 ? { ...step, message } : step)) });
+    const markup = reportDialog(value);
+    const table = /<table class="bench-table">[\s\S]*?<\/table>/.exec(markup)![0];
+    expect(table).not.toContain("DXGI");
+    expect(table).toContain('<td class="bench-label--did-not-run bench-table__result">Did not run (Failed)</td>');
+    // The reason is under Things to know.
+    expect(markup).toContain(`<li>High (step 3) failed: ${message}.</li>`);
+    const css = readFileSync(new URL("../src/bench/bench.css", import.meta.url), "utf8");
+    expect(/\.bench-table td\.bench-table__result \{[^}]*white-space: normal;/.exec(css)).not.toBeNull();
+  });
+
   it("lists the buttons in order, the download first and the issue as a new-tab link", () => {
     const markup = reportDialog(valid);
     expect(actions(markup)).toEqual([

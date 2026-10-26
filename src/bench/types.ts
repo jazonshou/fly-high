@@ -851,6 +851,7 @@ export type BenchVerdict = "valid" | "void" | "incomplete" | "unchecked";
 export type BenchSmoothness = "smooth" | "mostly-smooth" | "choppy" | "limited" | "did-not-run";
 
 export type BenchWarningCode =
+  | "step-failed"
   | "refresh-changed"
   | "settle-not-at-rest"
   | "low-sample"

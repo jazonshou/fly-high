@@ -48,6 +48,9 @@ export interface BenchReportDialogProps {
   readonly onExit: () => void;
 }
 
+/** "All numbers" wraps this column, as the main table does its Result. */
+const RESULT_COLUMN = REPORT_TABLE_COLUMNS.indexOf("Result");
+
 const SMOOTHNESS_LEGEND = "Smooth: at most 1 slow frame in 240. Mostly smooth: up to 6. Choppy: more than that. "
   + "A slow frame takes longer than 27.4 ms (60 ms on Ultra), which shows as a stutter.";
 
@@ -106,9 +109,9 @@ function labelClass(label: BenchSmoothness): string {
  * One row per flight: the plain label first, then the air window (the
  * headline) and the runway window side by side. Slow frames are counted
  * against the quality's own threshold, the one its label and the legend use
- * (60 ms on Ultra); "All numbers" keeps the 27.4 ms count. The table scrolls sideways
- * inside its own box on a narrow screen, never the page, so the label stays
- * in view and the numbers follow.
+ * (60 ms on Ultra); "All numbers" keeps the 27.4 ms count. The table
+ * scrolls sideways inside its own box on a narrow screen, never the page, so
+ * the label stays in view and the numbers follow; the Result column wraps.
  */
 function StepTable({ steps, caption }: { readonly steps: readonly BenchReportStep[]; readonly caption: string }) {
   const rows = reportTableRows(steps);
@@ -135,7 +138,7 @@ function StepTable({ steps, caption }: { readonly steps: readonly BenchReportSte
               <tr key={row.stepIndex}>
                 <th scope="row">{row.stepIndex + 1}</th>
                 <td>{row.tierName}{row.firstRendererInTab ? " *" : ""}</td>
-                <td className={labelClass(row.label)}>{row.cells[REPORT_TABLE_COLUMNS.length - 1]}</td>
+                <td className={`${labelClass(row.label)} bench-table__result`}>{row.resultText}</td>
                 <td>{fpsText(row.fps)}</td>
                 <td>{decimalText(windows?.air?.over.hitch.per240)}</td>
                 <td>{fpsText(row.groundFps)}</td>
@@ -171,7 +174,7 @@ function AllNumbers({ steps }: { readonly steps: readonly BenchReportStep[] }) {
               <tr key={row.stepIndex}>
                 {row.cells.map((cell, column) => (column === 0
                   ? <th key={column} scope="row">{cell}</th>
-                  : <td key={column}>{cell}</td>))}
+                  : <td key={column} className={column === RESULT_COLUMN ? "bench-table__result" : undefined}>{cell}</td>))}
               </tr>
             ))}
           </tbody>

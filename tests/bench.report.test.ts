@@ -403,8 +403,15 @@ describe("the report page's table and summary", () => {
       ...run.steps[2]!, status: "failed", message: "the WebGPU device was lost", result: null,
     };
     const rows = reportTableRows(report(withSteps(run, [run.steps[0]!, run.steps[1]!, failed, run.steps[3]!])).steps);
+    const failedReport = report(withSteps(run, [run.steps[0]!, run.steps[1]!, failed, run.steps[3]!]));
     expect(rows[2]!.cells[9]).toBe("Did not run (Failed: the WebGPU device was lost)");
     expect(rows[2]!.cells[1]).toBe("–");
+    // The page's own Result leaves the message to the warnings, where it can be any length.
+    expect(rows[2]!.resultText).toBe("Did not run (Failed)");
+    expect(rows[0]!.resultText).toBe(rows[0]!.cells[9]);
+    expect(failedReport.run.warnings).toContainEqual({
+      code: "step-failed", stepIndex: 2, message: "High (step 3) failed: the WebGPU device was lost.",
+    });
   });
 
   it("summarises in a few lines for chat", () => {

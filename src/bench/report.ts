@@ -282,9 +282,12 @@ export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
   }
   for (const step of run.steps) {
     const result = step.result;
-    if (!result) continue;
     const at = step.index;
     const name = `${benchTierName(step.tierIndex)} (step ${at + 1})`;
+    if (step.status === "failed" && step.message) {
+      warnings.push(warning("step-failed", at, `${name} failed: ${step.message}.`));
+    }
+    if (!result) continue;
     if (!result.settle.reachedRest) {
       warnings.push(warning("settle-not-at-rest", at, `${name}: streaming had not settled when the flight began.`));
     }
@@ -708,6 +711,13 @@ export interface BenchTableRow {
   readonly fps: number | null;
   readonly groundFps: number | null;
   readonly firstRendererInTab: boolean;
+  /**
+   * The report page's Result: the label and, for a flight that did not
+   * finish, how it ended. A failure's message is left to the warnings, so
+   * one long error cannot push every row's numbers out of view.
+   */
+  readonly resultText: string;
+  /** The summary's and the issue's columns, a failure's message included. */
   readonly cells: readonly string[];
 }
 
@@ -719,6 +729,7 @@ export function reportTableRows(steps: readonly BenchReportStep[]): BenchTableRo
     const ground = result?.windows.ground ?? null;
     const governor = result?.governor.atEnd ?? null;
     const label = smoothnessText(step.label, result?.raf.idleHz);
+    const ended = step.outcome === "ok" ? null : outcomeText(step.outcome);
     const outcome = step.outcome === "ok" ? null : outcomeText(step.outcome, step.message);
     return {
       stepIndex: step.index,
@@ -729,6 +740,7 @@ export function reportTableRows(steps: readonly BenchReportStep[]): BenchTableRo
       fps: air?.fps ?? null,
       groundFps: ground?.fps ?? null,
       firstRendererInTab: result?.firstRendererInTab ?? false,
+      resultText: ended ? `${label} (${ended})` : label,
       cells: [
         benchTierName(step.tierIndex),
         formatNumber(air?.fps),

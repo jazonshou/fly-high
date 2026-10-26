@@ -633,6 +633,13 @@ td.bench-label--did-not-run {
   white-space: nowrap;
 }
 
+/* The one column of words: it wraps, so a long one keeps the numbers in view. */
+.bench-table td.bench-table__result {
+  min-width: 16ch;
+  max-width: 40ch;
+  white-space: normal;
+}
+
 .bench-table thead th {
   color: var(--bench-text-faint);
   font-family: var(--font-mono);
