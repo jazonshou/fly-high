@@ -7,6 +7,7 @@ import {
   type AirportSiteLimits,
   type CoarseAirportCandidate,
 } from "./airportSite";
+import { infrastructureNear } from "./infrastructure";
 import { inSandSea } from "./landforms";
 import { mixSeed, unitFloatFromHash } from "./seed";
 import { sampleTerrainHeightBeforeEarthworks } from "./terrain";
@@ -269,6 +270,15 @@ export const SPAWNED_AIRPORT_VOLCANIC_CLEARANCE_METERS = 1_500;
  */
 export const SPAWNED_AIRPORT_VOLCANIC_COVER_MAX = 0.05;
 
+/**
+ * How far a spawned airport's surveyed centre and thresholds keep from any
+ * infrastructure segment's reach (`infrastructureNear`): further than an
+ * airport's earthworks reach from either, so no runway is graded over a quay
+ * or a road, and the infrastructure stage, which runs before the airports,
+ * never has its work flattened.
+ */
+export const SPAWNED_AIRPORT_INFRASTRUCTURE_CLEARANCE_METERS = 1_500;
+
 /** `spawnedAirportGroundAllowed`'s scratch, reused: the survey asks it per candidate. */
 const VOLCANIC_CLEARANCE_SITES: VolcanicSite[] = [];
 const VOLCANIC_CLEARANCE_GROUND = createVolcanicGroundSample();
@@ -277,13 +287,17 @@ const VOLCANIC_CLEARANCE_GROUND = createVolcanicGroundSample();
  * Whether a spawned airport may stand on the ground at a world point. A
  * landform no runway belongs on refuses it here: a sand sea (`inSandSea`),
  * whose dunes the site assessment's relief limits would otherwise let a
- * runway be cut through, and volcanic land (`volcanicGroundRefuses`). It is
- * asked at every surveyed centre before its assessment, and at both
+ * runway be cut through, volcanic land (`volcanicGroundRefuses`), and
+ * built infrastructure (`SPAWNED_AIRPORT_INFRASTRUCTURE_CLEARANCE_METERS`). It
+ * is asked at every surveyed centre before its assessment, and at both
  * thresholds of a site that passed.
  */
 export function spawnedAirportGroundAllowed(world: WorldDefinition, x: number, z: number): boolean {
-  return !inSandSea(world, x, z) && !volcanicGroundRefuses(world, x, z);
+  return !inSandSea(world, x, z)
+    && !volcanicGroundRefuses(world, x, z)
+    && !infrastructureNear(world, x, z, SPAWNED_AIRPORT_INFRASTRUCTURE_CLEARANCE_METERS);
 }
+
 
 /**
  * Volcanic land refuses a spawned airport where the ground is lava or tephra
