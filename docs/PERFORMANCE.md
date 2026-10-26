@@ -3221,10 +3221,16 @@ browser, on the deployed build:
 machine does with the shipped game, tier by tier, so the coming tier work
 (the 60 fps cap, the governor's recovery, Auto moving weak machines to Low)
 has a "before" from real computers rather than from SwiftShader. Without the
-flag nothing changes for a player: FlightGame parses the URL once more and
+flag a player runs nothing new: FlightGame parses the URL once more and
 finds nothing, the bench's code and styles sit in their own chunk that only a
 dynamic `import()` under the flag fetches, and the frame loop is the one
-players run (`tests/bench.inert.test.ts`).
+players run (`tests/bench.inert.test.ts`). A player does download a little
+more: the few game functions the bench calls and players do not (the spawn
+and flight-state builders, the renderer's startup trace) live in modules the
+entry chunk already holds, so the bundler keeps them there, which adds about
+10 KB (4 KB gzipped) to the Pages entry chunk. In the Worker build the same
+code splits FlightGame's client chunk in two, and its page preloads 11 more
+files, about 15 KB (8 KB gzipped) more in all.
 
 **How to run it.** Open the link, plug in the laptop, maximise the window
 (full screen does not survive the reloads between flights), close games and
@@ -3315,7 +3321,10 @@ in pinned mode and keeps the shipped run in the same report.
 **Merge requirement.** The bench adds one read-only method to the renderer
 (`readBenchProbe`) and exports one pure governor function, and changes
 nothing else a player runs; the 39 reference pictures in
-`tests/perf/baseline` must not move. The Pages build writes the commit it
+`tests/perf/baseline` must not move. Before merging, build Pages for the
+base and the head and compare the entry chunk (`assets/index-*.js`): it
+should grow by about 10 KB, and no session chunk or stylesheet should be
+fetched without the flag. The Pages build writes the commit it
 was made from into `index.html` as `<meta name="fly-high-commit">`, which
 the reports name; no bundled file holds it, so a deploy renames no chunk. The Pages deploy waits only for the
 `verify` job, so a green `gpu-tests` run on the pull request (the perf
