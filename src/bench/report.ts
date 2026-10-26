@@ -67,9 +67,9 @@ const DEFINITIONS: Readonly<Record<string, string>> = Object.freeze({
     + "every missed slot, including ones the governor lets pass.",
   vsyncBuckets: "Intervals in paced slots (divisor refresh periods each), within the tolerance: x1 kept up, x2 to x4plus "
     + "took whole slots, offSlot missed its slot by a whole refresh or more, irregular is neither (a variable-rate panel).",
-  frameCap: "The fps= setting the run flew, and what this build does with it: 60 fps draws every refresh until 60 fps "
-    + "pacing is switched on. Shipped mode defaults to the players' setting, pinned mode to Match display; "
-    + "a run that behaves otherwise is non-standard.",
+  frameCap: "The fps= setting the run flew, and what this build does with it: 60 fps draws every Nth refresh, or "
+    + "every refresh on a build with 60 fps pacing switched off. Shipped mode defaults to the players' setting, pinned "
+    + "mode to Match display; a run that behaves otherwise is non-standard.",
   pacing: "The frame pacer's cadence at the flight's first and last frames (it draws every divisor-th refresh of displayHz; "
     + "confirmed when measured on ticks that drew nothing), and the bench's rAF ticks against the frames rendered.",
   spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier, over the air window, or over the early check's stretch when either stopped early. Over 10% voids the run.",
@@ -419,8 +419,9 @@ function workloadFor(run: BenchRunRecord): BenchWorkload {
 
 /**
  * A quick run, or one whose frame rate behaves unlike its mode's default:
- * `fps=30` in shipped mode is, and so is `fps=60` in pinned mode once 60 fps
- * paces. A setting that this build draws the same way as the default is not.
+ * `fps=30` in shipped mode is, and so is `fps=60` in pinned mode, because
+ * 60 fps paces. A setting that this build draws the same way as the default
+ * is not.
  */
 export function isNonStandardRun(plan: Pick<BenchRunPlan, "quick" | "mode" | "frameRate">): boolean {
   return plan.quick || effectiveFrameRate(plan.frameRate) !== effectiveFrameRate(defaultBenchFrameRate(plan.mode));

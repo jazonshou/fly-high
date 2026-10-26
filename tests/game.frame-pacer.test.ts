@@ -20,8 +20,8 @@ import type { FrameRateSetting } from "../src/settings";
  * The frame pacer (PR B, step 3.1) in simulation: a display ticks at a fixed
  * rate, each timestamp carries uniform jitter, and a rendered frame that
  * costs more than a refresh pushes the next tick to the next vsync after
- * it. Every test that paces "60" passes `pace60: true`, because shipping
- * keeps it off until the governor judges the paced cadence.
+ * it. Every test that paces "60" passes `pace60: true`, so it keeps pacing
+ * if shipping switches 60 fps pacing off again.
  */
 
 interface FlightOptions {
@@ -155,12 +155,12 @@ describe("the nominal rate", () => {
 });
 
 describe("what a setting does", () => {
-  it("leaves the 60 setting on every refresh until pacing is switched on", () => {
-    expect(FRAME_PACING_ENABLED).toBe(false);
-    expect(effectiveFrameRate("60")).toBe("display");
+  it("paces the 60 setting now that the governor judges the paced cadence", () => {
+    expect(FRAME_PACING_ENABLED).toBe(true);
+    expect(effectiveFrameRate("60")).toBe("60");
     expect(effectiveFrameRate("30")).toBe("30");
     expect(effectiveFrameRate("display")).toBe("display");
-    expect(effectiveFrameRate("60", true)).toBe("60");
+    expect(effectiveFrameRate("60", false)).toBe("display");
   });
 
   it("draws every refresh at every setting where the browser cannot skip a frame", () => {
@@ -172,8 +172,16 @@ describe("what a setting does", () => {
     expect(flight.pacer.paces("30")).toBe(false);
   });
 
-  it("draws every refresh at the shipped 60 setting while pacing is off", () => {
+  it("draws every 2nd refresh at 120 Hz at the shipped 60 setting", () => {
     const flight = fly(120, "60", { pacer: new FramePacer(), ticks: 600 });
+    expect(flight.rendered.length).toBeGreaterThanOrEqual(300);
+    expect(flight.rendered.length).toBeLessThanOrEqual(310);
+    expect(flight.pacer.currentCadence).toEqual(cadenceOf(60, 2, 120, true));
+    expect(flight.pacer.paces("60")).toBe(true);
+  });
+
+  it("draws every refresh at the 60 setting where 60 fps pacing is switched off", () => {
+    const flight = fly(120, "60", { pacer: new FramePacer({ pace60: false }), ticks: 600 });
     expect(flight.rendered).toHaveLength(600);
     expect(flight.pacer.currentCadence).toEqual(cadenceOf(null, 1, 120, false));
     expect(flight.pacer.paces("60")).toBe(false);
@@ -342,8 +350,8 @@ describe("confirmation", () => {
   it("does not skip a paused frame where it would not pace anyway", () => {
     const flight = fly(120, "display", { ticks: 400, paused: (tick) => tick >= 200 });
     expect(flight.rendered).toHaveLength(400);
-    const shipping = fly(120, "60", { pacer: new FramePacer(), ticks: 400, paused: (tick) => tick >= 200 });
-    expect(shipping.rendered).toHaveLength(400);
+    const unpaced = fly(120, "60", { pacer: new FramePacer({ pace60: false }), ticks: 400, paused: (tick) => tick >= 200 });
+    expect(unpaced.rendered).toHaveLength(400);
   });
 });
 

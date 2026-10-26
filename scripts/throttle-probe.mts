@@ -37,8 +37,7 @@
  *
  * Frame rate (FRAME_RATE=60|display|30): the game's Frame rate setting, 60
  * by default as players get it. FRAME_RATE=display draws every refresh, the
- * loop the 2026-09-29 baseline measured; so does 60 until 60 fps pacing is
- * switched on (FRAME_PACING_ENABLED in src/game/framePacer.ts).
+ * loop the 2026-09-29 baseline measured; on a 60 Hz host 60 does too.
  *
  * Usage:  tsx scripts/throttle-probe.mts <outDir> <url> [label]
  * Environment: SCENARIO RATE WORKERS QUALITY MODE FRAME_RATE AIRCRAFT AGL_M

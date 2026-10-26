@@ -22,12 +22,12 @@ import type { FrameRateSetting } from "@/src/settings";
  */
 
 /**
- * Off until the governor judges windows against the paced cadence (PR B's
- * G1). Without that, a 120 Hz player paced to 60 lands in the regime where
- * shed work never comes back. While off, "60 fps" draws every refresh;
- * "30 fps" is an explicit choice and paces either way.
+ * Whether "60 fps" paces. On since the governor judges windows against the
+ * paced cadence (PR B's G1): without that, a 120 Hz player paced to 60 lands
+ * in the regime where shed work never comes back. Switched off, "60 fps"
+ * draws every refresh; "30 fps" is an explicit choice and paces either way.
  */
-export const FRAME_PACING_ENABLED = false;
+export const FRAME_PACING_ENABLED = true;
 
 /** Deltas kept per ring. */
 const RING_SIZE = 64;

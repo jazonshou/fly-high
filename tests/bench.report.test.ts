@@ -132,7 +132,7 @@ describe("the fly-high.bench/2 report", () => {
     expect(isNonStandardRun({ quick: false, mode: "pinned", frameRate: "display" })).toBe(false);
     expect(isNonStandardRun({ quick: false, mode: "pinned", frameRate: "30" })).toBe(true);
     expect(isNonStandardRun({ quick: true, mode: "shipped", frameRate: "60" })).toBe(true);
-    // "60" draws every refresh until 60 fps pacing is switched on, so until then it and "display" are the same run.
+    // With 60 fps pacing switched off, "60" draws every refresh, so it and "display" are the same run.
     expect(isNonStandardRun({ quick: false, mode: "shipped", frameRate: "display" })).toBe(FRAME_PACING_ENABLED);
     expect(isNonStandardRun({ quick: false, mode: "pinned", frameRate: "60" })).toBe(FRAME_PACING_ENABLED);
 
