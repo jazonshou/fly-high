@@ -8,6 +8,7 @@ import {
   observeRenderScaleApplication,
   rebaseGovernorState,
   resolveSignals,
+  stepWasEffective,
   summariseIntervals,
   type GovernorConfig,
   type GovernorSignals,
@@ -362,7 +363,13 @@ describe("recovery on trial", () => {
   it("S17: a cadence rebase drops what the old targets judged and keeps the trial on its verdict", () => {
     const state = Object.freeze({
       ...withLevels(2, 4, { renderScale: 0.81, resolutionInsensitive: true, insensitiveWindowsRemaining: 9 }),
-      pendingProbe: Object.freeze({ preStepGpuP95Ms: 33.3, preStepScale: 0.86, metric: "interval" as const }),
+      pendingProbe: Object.freeze({
+        preStepGpuP95Ms: 33.3,
+        preStepScale: 0.86,
+        metric: "interval" as const,
+        preIntervalMeanMs: 20,
+        preLateFraction: 0.2,
+      }),
       ineffectiveDownSteps: 1,
       restoreScale: 0.86,
       cpuHotWindows: 1,
@@ -582,5 +589,84 @@ describe("binomial spikes (red team finding 6)", () => {
         expect(calm[99]!.gpuWorkLevel, label).toBe(0);
       }
     }
+  });
+});
+
+describe("G2: a step test that sees through vsync", () => {
+  // Medium, render() p95 8 ms, and the presented p95 pinned at 33.3 ms by
+  // vsync whatever a step buys: only the late share and the mean can move.
+  const path = (states: readonly GovernorState[]) => states.map((state) => Number(state.renderScale.toFixed(2)));
+
+  it("E2: a step that cuts the late share is kept, down to the floor", () => {
+    const lateAt = (scale: number) => (scale > 0.85 ? 0.3 : scale > 0.8 ? 0.2 : scale > 0.75 ? 0.12 : 0.04);
+    const states = trace(createGovernorState(config), 6, (_, state) => frames(8, lateAt(state.renderScale)));
+    expect(path(states)).toEqual([0.86, 0.81, 0.76, 0.75, 0.75, 0.75]);
+    expect(states.some((state) => state.resolutionInsensitive)).toBe(false);
+    expect(states.every((state) => state.ineffectiveDownSteps === 0)).toBe(true);
+    expect(states[4]!.mode).toBe("on-cadence");
+  });
+
+  it("E3: a dead lever is undone and latched, and the GPU ladder takes over", () => {
+    const states = trace(createGovernorState(config), 9, () => frames(8, 0.3));
+    expect(path(states)).toEqual([0.86, 0.81, 0.76, 0.86, 0.86, 0.86, 0.86, 0.86, 0.86]);
+    expect(firstWindow(states, (state) => state.resolutionInsensitive)).toBe(4);
+    expect(states.map((state) => state.gpuWorkLevel)).toEqual([0, 0, 0, 0, 1, 1, 2, 2, 3]);
+  });
+
+  it("E: signals without a late share or mean keep today's p95 test, and latch the same way", () => {
+    const today = trace(createGovernorState(config), 9, () => ({ gpuP95Ms: null, cpuP95Ms: 8, intervalP95Ms: 33.3 }));
+    const e3 = trace(createGovernorState(config), 9, () => frames(8, 0.3));
+    const summary = (states: readonly GovernorState[]) =>
+      states.map((state) => [state.renderScale, state.gpuWorkLevel, state.resolutionInsensitive]);
+    expect(summary(today)).toEqual(summary(e3));
+  });
+
+  it("a 4% fall in the mean interval alone counts", () => {
+    const means = [25, 25, 23.5];
+    const states = trace(createGovernorState(config), 3, (window) => ({
+      gpuP95Ms: null,
+      cpuP95Ms: 8,
+      intervalP95Ms: 33.3,
+      intervalMeanMs: means[window - 1]!,
+    }));
+    expect(states[1]!.pendingProbe).toMatchObject({ preIntervalMeanMs: 25, preLateFraction: null });
+    expect(states[2]!.ineffectiveDownSteps).toBe(0);
+    expect(states[2]!.resolutionInsensitive).toBe(false);
+  });
+
+  it("an on-cadence window after a step counts, however little it moved", () => {
+    const lates = [0.1, 0.1, 0.05];
+    const states = trace(createGovernorState(config), 3, (window) => frames(8, lates[window - 1]!));
+    expect(states[1]!.pendingProbe).not.toBeNull();
+    expect(states[2]).toMatchObject({ pendingProbe: null, ineffectiveDownSteps: 0, mode: "on-cadence" });
+    expect(states[2]!.renderScale).toBeCloseTo(0.81, 9);
+  });
+
+  it("a late share needs to fall by a quarter and by three frames", () => {
+    const judged = (preLateFraction: number, lateFrames: number, windowFrames: number): boolean => {
+      const probe = {
+        preStepGpuP95Ms: 33.3,
+        preStepScale: 0.86,
+        metric: "interval" as const,
+        preIntervalMeanMs: null,
+        preLateFraction,
+      };
+      const signals: GovernorSignals = {
+        gpuP95Ms: null,
+        cpuP95Ms: 8,
+        intervalP95Ms: 33.3,
+        lateFraction: lateFrames / windowFrames,
+      };
+      const resolved = resolveSignals(signals, config.gpuTargetMs, config.presentationTargetMs);
+      return stepWasEffective(probe, signals, resolved, windowFrames);
+    };
+    // A 60-frame window: 6 -> 4 late is a third, but only two frames.
+    expect(judged(6 / 60, 4, 60)).toBe(false);
+    expect(judged(6 / 60, 3, 60)).toBe(true);
+    // Less than a quarter is not enough, however many frames it is.
+    expect(judged(0.4, 39, 120)).toBe(false);
+    expect(judged(0.4, 36, 120)).toBe(true);
+    // Nor is any drop from 2% of frames late or fewer.
+    expect(judged(0.02, 0, 120)).toBe(false);
   });
 });

@@ -337,13 +337,16 @@ export function gpuWorkLeverName(level: number): string | null {
   return GPU_WORK_LADDER[Math.min(level, GPU_WORK_MAX_LEVEL) - 1]?.lever ?? null;
 }
 
-
-interface PendingScaleProbe {
+/** A downward scale step awaiting its verdict from the next window. */
+export interface PendingScaleProbe {
   /** The GPU p95 in the gpu domain; the presented interval p95 in the interval domain. */
   readonly preStepGpuP95Ms: number;
   readonly preStepScale: number;
   /** Effectiveness samples must stay in one timing domain. */
   readonly metric: "gpu" | "interval";
+  /** PR B (G2): the step window's mean presented interval and late share, when it had them. */
+  readonly preIntervalMeanMs: number | null;
+  readonly preLateFraction: number | null;
 }
 
 /** PR B: what can recover a step, one at a time: either work ladder, or the render scale. */
@@ -445,6 +448,15 @@ const DOWN_TRIGGER_RATIO = 1.1;
 const UP_TRIGGER_RATIO = 0.8;
 /** A downward step must buy at least this fraction of GPU time to count. */
 const MIN_STEP_IMPROVEMENT = 0.04;
+/**
+ * G2: on presented intervals a step also counts when it cuts the late share
+ * by a quarter, from more than 2% of frames late, and by at least 3 frames.
+ * One window's late count is noise (binomial: 7 late frames can read as 5),
+ * so a smaller drop is not evidence (red team finding 6).
+ */
+const MIN_LATE_DROP = 0.25;
+const MIN_LATE_BEFORE_STEP = 0.02;
+const MIN_LATE_FRAMES_DROPPED = 3;
 /** Below this synthesised GPU estimate the frame is CPU-bound by definition. */
 const MIN_GPU_PROXY_MS = 2;
 const HOT_WINDOWS_REQUIRED = 2;
@@ -591,6 +603,39 @@ function probeDomain(metric: GovernorMetric | null): "gpu" | "interval" {
 }
 
 /**
+ * G2: did a downward step buy frame time, judged on the window after it?
+ * The caller has already ruled out an on-cadence window (effective) and a
+ * window from the other domain (undone). With timestamps, the GPU p95 must
+ * fall 4%. On presented intervals vsync pins the p95 to a whole refresh
+ * (33.3 ms at 60 Hz) however much a step helps, so the late share and the
+ * mean are read as well: any one of the three falling counts.
+ */
+export function stepWasEffective(
+  probe: PendingScaleProbe,
+  signals: GovernorSignals,
+  resolved: ResolvedSignals,
+  windowFrames: number,
+): boolean {
+  if (probe.metric === "gpu") return fellBy(probe.preStepGpuP95Ms, resolved.gpuMs, MIN_STEP_IMPROVEMENT);
+  const preLate = probe.preLateFraction;
+  const late = signals.lateFraction ?? null;
+  const lateDropped = preLate !== null
+    && late !== null
+    && preLate > MIN_LATE_BEFORE_STEP
+    && fellBy(preLate, late, MIN_LATE_DROP)
+    && (preLate - late) * windowFrames >= MIN_LATE_FRAMES_DROPPED - 1e-9;
+  return lateDropped
+    || fellBy(probe.preIntervalMeanMs, signals.intervalMeanMs ?? null, MIN_STEP_IMPROVEMENT)
+    || fellBy(probe.preStepGpuP95Ms, signals.intervalP95Ms, MIN_STEP_IMPROVEMENT);
+}
+
+/** Whether `after` is at least `share` below `before`; false when either is missing. */
+function fellBy(before: number | null, after: number | null, share: number): boolean {
+  if (before === null || after === null) return false;
+  return (before - after) / Math.max(before, 1e-6) >= share;
+}
+
+/**
  * One decision per completed sample window. Returns the next state; the
  * caller applies `renderScale`/`cpuWorkLevel`/`gpuWorkLevel` differences to
  * the engine and reports downward-step effectiveness through
@@ -654,9 +699,7 @@ export function nextGovernorDecision(
         mode: "holding",
       });
     } else {
-      const improvement =
-        (probe.preStepGpuP95Ms - post) / Math.max(probe.preStepGpuP95Ms, 1e-6);
-      if (improvement < MIN_STEP_IMPROVEMENT) {
+      if (!stepWasEffective(probe, signals, resolved, config.windowFrames)) {
         const ineffective = next.ineffectiveDownSteps + 1;
         const restoreScale = next.restoreScale ?? probe.preStepScale;
         if (ineffective >= 2) {
@@ -812,6 +855,8 @@ function offCadenceDecision(
             preStepGpuP95Ms: intervalDomain ? signals.intervalP95Ms ?? gpu : gpu,
             preStepScale: next.renderScale,
             metric: domain,
+            preIntervalMeanMs: intervalDomain ? signals.intervalMeanMs ?? null : null,
+            preLateFraction: intervalDomain ? signals.lateFraction ?? null : null,
           },
           mode: pacing
             ? "frame-pacing"

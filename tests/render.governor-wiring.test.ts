@@ -56,7 +56,13 @@ function busyState(config: GovernorConfig): GovernorState {
     cpuWorkLevel: 2,
     gpuWorkLevel: 3,
     renderScale: 0.81,
-    pendingProbe: Object.freeze({ preStepGpuP95Ms: 33.3, preStepScale: 0.86, metric: "interval" as const }),
+    pendingProbe: Object.freeze({
+      preStepGpuP95Ms: 33.3,
+      preStepScale: 0.86,
+      metric: "interval" as const,
+      preIntervalMeanMs: 20,
+      preLateFraction: 0.2,
+    }),
     calmStreak: Object.freeze([0, 0.01]),
     offCadenceWindows: 1,
   });
