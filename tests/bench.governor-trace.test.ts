@@ -128,7 +128,7 @@ describe("governor trace", () => {
     expect(summary.decisionsDuringSettle).toBe(1);
     expect(summary.decisions).toHaveLength(6);
     expect(summary.decisions[2]!.slice(0, 6)).toEqual([32, "gpu-resolution", "gpu-bound", 20, 0.95, 0.95]);
-    expect(summary.decisions[2]!.slice(7)).toEqual([1, 0, "terrain-page-requests", false, null, 5, 25]);
+    expect(summary.decisions[2]!.slice(7)).toEqual([1, 0, "terrain-page-requests", false, null, 5, 25, null]);
     expect(summary.decisions[1]!.slice(1, 4)).toEqual(["cpu-work", "cpu-bound", null]);
     expect(summary.flight.decisions).toBe(5);
     expect(summary.flight.events).toEqual({

@@ -37,6 +37,10 @@ export interface GovernorSignals {
   readonly gpuP95Ms: number | null;
   readonly cpuP95Ms: number | null;
   readonly intervalP95Ms: number | null;
+  /** PR B: the window's mean presented interval. Absent in callers that predate it. */
+  readonly intervalMeanMs?: number | null;
+  /** PR B: the share of the window's presented intervals that were late. */
+  readonly lateFraction?: number | null;
 }
 
 export interface GovernorConfig {

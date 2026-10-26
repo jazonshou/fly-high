@@ -2,7 +2,7 @@ import type { QualityLevel, RenderDiagnostics } from "@/src/game/types";
 import type { FlightRenderer } from "@/src/render/FlightRenderer";
 import type { FlightRenderingSystem } from "@/src/render/types";
 import type { DetailWorkerHealth } from "@/src/render/webgpu/detail/WorldDetailRuntime";
-import type { GovernorConfig, GovernorMode } from "@/src/render/webgpu/core/AdaptiveGovernor";
+import type { Classification, GovernorConfig, GovernorMode } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import type { WebGpuLimitShortfall } from "@/src/render/webgpu/core/Capabilities";
 import type { GameSettings, RenderingMode } from "@/src/settings";
 import type { WorldDefinition } from "@/src/world";
@@ -602,7 +602,8 @@ export interface BenchHeapSummary {
   readonly slopeMiBPerMin: number | null;
 }
 
-export type BenchSignalClass = "gpu-bound" | "cpu-bound" | "pacing-bound" | "balanced" | "unknown";
+/** The governor's own classes, so a change to them reaches the report without touching this file. */
+export type BenchSignalClass = Classification;
 
 /** The governor at one instant. Target, applied and rendered are reported apart (S2). */
 export interface BenchGovernorSnapshot {
@@ -619,9 +620,9 @@ export interface BenchGovernorSnapshot {
 /**
  * One decision: [t s, mode, class, proxy ms, target scale, applied scale,
  * rendered pixels, CPU level, GPU level, lever, insensitive, GPU p95, CPU p95,
- * interval p95]. t counts from the flight's first frame, so the settle's
- * decisions read below zero. A tuple, because a run holds up to 128 of them
- * per step.
+ * interval p95, late share]. t counts from the flight's first frame, so the
+ * settle's decisions read below zero. A tuple, because a run holds up to 128
+ * of them per step.
  */
 export type BenchGovernorDecision = readonly [
   t: number,
@@ -638,6 +639,7 @@ export type BenchGovernorDecision = readonly [
   gpuP95: number | null,
   cpuP95: number | null,
   intervalP95: number | null,
+  lateFraction: number | null,
 ];
 
 export interface BenchGovernorEvents {
