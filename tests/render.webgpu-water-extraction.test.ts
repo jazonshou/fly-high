@@ -298,9 +298,15 @@ describe("water shader extraction (2-8a)", () => {
     // smoothstep's edges by the carbonate was not, which is why the fades are
     // two literal-edged ones), and within last-bit rounding on Metal, which
     // reassociates.
+    //
+    // Re-pinned, VERTEX ONLY and text only, when the boats' sea twin moved the
+    // cascade displacement into OCEAN_SURFACE_DISPLACEMENT_WGSL so a wake can
+    // ride the drawn waves: the same uniforms, the same fades and the same five
+    // samples, now called through oceanSurfaceFades and
+    // oceanSurfaceCascadeDisplacement.
     // Deliberate, named, reviewed.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "7a22f44586e782bb4373d85e8a6f7ff21adaba05660f9d7849e7731ef344eab4",
+      "894b94c8d26eed1cf6443b92f7b299075f4edafd5a7c8a195e3ff13af57bf319",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
       "5bfdc4c6d1da8171922929b1dda80472fe79f9786b2ec1a11a1eaaee1b182704",
