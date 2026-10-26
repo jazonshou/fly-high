@@ -1,5 +1,7 @@
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
+import type { Plane } from "@babylonjs/core/Maths/math.plane";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
@@ -17,12 +19,14 @@ import {
   marinaLamps,
   marinaLevelOfDetail,
   marinaPostInstances,
+  marinaRadius,
   marinaUnitBox,
   marinaUnitCylinder,
   type MarinaColouredGeometry,
   type MarinaInstances,
   type MarinaLamps,
   type MarinaLevelOfDetail,
+  MARINA_VISUAL,
 } from "./marinaVisual";
 
 /** What the marina takes from the quality profile: data, never a tier branch. */
@@ -39,6 +43,8 @@ export interface MarinaSystemStatistics {
   readonly lamps: number;
   /** Meshes enabled now: what the marina adds to a frame's beauty draws. */
   readonly enabledMeshes: number;
+  /** Meshes it hands the sun's shadow map now (each drawn once per cascade). */
+  readonly shadowCasters: number;
 }
 
 /**
@@ -52,6 +58,13 @@ export interface MarinaSystemStatistics {
  * `LightPointSystem` at startup, and `update` says when their colours (the
  * beacons' flashes, the cull) need writing back with `setColorRange`.
  *
+ * SHADOWS ARE DYNAMIC CASTERS (`addShadowCasters`, the renderer's per-frame
+ * caster sync): only near, and only while the marina and the reach of its
+ * shadows are in view. The cascaded generator has no per-cascade culling and
+ * fits its depth range to every caster in its list, enabled or not, so a
+ * marina listed while out of sight would cost 3 draws a cascade and move
+ * every other shadow's depth precision.
+ *
  * NOTHING COMPILES IN FLIGHT. Every mesh exists, enabled, when the renderer
  * awaits scene readiness, and the first frame draws all four (pinned active)
  * so their pipelines are made then; the level of detail applies from the
@@ -61,8 +74,6 @@ export class MarinaSystem {
   readonly root: TransformNode;
   /** Every mesh, for the haze and cloud-shadow registries. */
   readonly meshes: readonly Mesh[];
-  /** The near meshes, when the tier casts; empty otherwise. */
-  readonly shadowCasters: readonly Mesh[];
   /** Absolute-position fixtures for the airfield's light draw: lamps, then beacons. */
   readonly lampFixtures: readonly LightPointFixture[];
   private readonly lamps: MarinaLamps;
@@ -73,6 +84,10 @@ export class MarinaSystem {
   private readonly boatMaterial: PBRMaterial;
   private level: MarinaLevelOfDetail | null = null;
   private warmed = false;
+  private casting = false;
+  private readonly castsShadows: boolean;
+  private readonly radius: number;
+  private readonly sceneCentre = new Vector3();
   private readonly counts: { boxes: number; posts: number; boats: number };
 
   constructor(scene: Scene, private readonly layout: MarinaLayout, options: MarinaSystemOptions) {
@@ -99,7 +114,8 @@ export class MarinaSystem {
     finishMesh(this.silhouette, this.structureMaterial, this.root, false);
 
     this.meshes = Object.freeze([...this.near, this.silhouette]);
-    this.shadowCasters = options.castsShadows ? this.near : Object.freeze([]);
+    this.castsShadows = options.castsShadows;
+    this.radius = marinaRadius(layout);
 
     this.lamps = marinaLamps(layout);
     this.lampFixtures = this.lamps.fixtures;
@@ -117,22 +133,34 @@ export class MarinaSystem {
   }
 
   /**
-   * Once per frame with the camera's WORLD position and the simulation
-   * clock: picks the level of detail and steps the beacons. Returns true when
-   * the lamp colours changed and the light draw needs them.
+   * Once per frame with the camera's WORLD position, the simulation clock and
+   * the camera's frustum planes in the scene (origin-local) frame: picks the
+   * level of detail, whether the near meshes cast, and steps the beacons.
+   * Returns true when the lamp colours changed and the light draw needs them.
+   * Without planes the marina counts as in view.
    */
-  update(cameraX: number, cameraY: number, cameraZ: number, simulationTimeSeconds: number): boolean {
+  update(
+    cameraX: number,
+    cameraY: number,
+    cameraZ: number,
+    simulationTimeSeconds: number,
+    frustumPlanes?: readonly Plane[],
+  ): boolean {
     const distance = Math.hypot(cameraX - this.layout.site.x, cameraY - this.layout.seaLevel, cameraZ - this.layout.site.z);
     const level = marinaLevelOfDetail(distance, this.level);
     if (!this.warmed) {
-      // The first frame draws everything, pinned active, so every pipeline is
-      // made behind the load screen rather than on the first approach.
+      // The first frame draws everything, pinned active and casting, so every
+      // pipeline (the shadow depth ones too) is made behind the load screen
+      // rather than on the first approach.
       this.warmed = true;
       for (const mesh of this.meshes) {
         mesh.alwaysSelectAsActiveMesh = true;
         mesh.setEnabled(true);
       }
-    } else if (level !== this.level) {
+      this.casting = this.castsShadows;
+      return marinaLampColours(this.layout, this.lamps, simulationTimeSeconds, level !== "culled", this.colours);
+    }
+    if (level !== this.level) {
       this.level = level;
       for (const mesh of this.near) {
         mesh.alwaysSelectAsActiveMesh = false;
@@ -141,7 +169,14 @@ export class MarinaSystem {
       this.silhouette.alwaysSelectAsActiveMesh = false;
       this.silhouette.setEnabled(level === "silhouette");
     }
+    this.casting = this.castsShadows && level === "detail" && this.inView(frustumPlanes);
     return marinaLampColours(this.layout, this.lamps, simulationTimeSeconds, level !== "culled", this.colours);
+  }
+
+  /** The renderer's caster sync: the near meshes while they cast, nothing otherwise. */
+  addShadowCasters(collect: (mesh: Mesh) => void): void {
+    if (!this.casting) return;
+    for (const mesh of this.near) collect(mesh);
   }
 
   get statistics(): MarinaSystemStatistics {
@@ -150,7 +185,20 @@ export class MarinaSystem {
       ...this.counts,
       lamps: this.lampFixtures.length,
       enabledMeshes: this.meshes.filter((mesh) => mesh.isEnabled(false)).length,
+      shadowCasters: this.casting ? this.near.length : 0,
     };
+  }
+
+  /** Whether the marina's sphere, grown by its shadows' reach, meets the frustum. */
+  private inView(planes: readonly Plane[] | undefined): boolean {
+    if (!planes) return true;
+    const reach = this.radius + MARINA_VISUAL.shadowReachMeters;
+    const centre = this.sceneCentre.copyFrom(this.root.position);
+    centre.y = this.layout.seaLevel;
+    for (const plane of planes) {
+      if (plane.dotCoordinate(centre) <= -reach) return false;
+    }
+    return true;
   }
 
   dispose(): void {

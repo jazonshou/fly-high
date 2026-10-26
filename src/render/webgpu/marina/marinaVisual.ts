@@ -63,6 +63,13 @@ export const MARINA_VISUAL = Object.freeze({
   hysteresisMeters: 40,
   /** Sides on a post's cylinder. */
   postTessellation: 10,
+  /**
+   * How far past its own radius the marina's shadows can fall: its tallest
+   * part (a beacon tower, 8 m) at a 4° sun. The near meshes cast only while
+   * that sphere is in the camera's view, so a marina behind the camera adds no
+   * caster and leaves the cascades' depth range as it was.
+   */
+  shadowReachMeters: 120,
 });
 
 export type MarinaLevelOfDetail = "detail" | "silhouette" | "culled";

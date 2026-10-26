@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
@@ -204,12 +205,13 @@ describe("MarinaSystem", () => {
         at(10_000);
         expect(marina.statistics.enabledMeshes).toBe(marina.meshes.length);
         at(200);
-        const casters = marina.shadowCasters.length;
+        const casters = marina.statistics.shadowCasters;
         const near = marina.statistics.enabledMeshes;
         expect(near).toBeLessThanOrEqual(3);
         expect(near + casters * profile.shadowCascades, `tier ${profile.tier}`).toBeLessThanOrEqual(10);
         at(2_500);
         expect(marina.statistics.enabledMeshes).toBe(1);
+        expect(marina.statistics.shadowCasters).toBe(0);
         at(4_500);
         expect(marina.statistics.enabledMeshes).toBe(0);
         expect(marina.statistics.level).toBe("culled");
@@ -217,6 +219,39 @@ describe("MarinaSystem", () => {
       } finally {
         dispose();
       }
+    }
+  });
+
+  it("casts only while it and its shadows' reach are in view, and hands the renderer nothing otherwise", () => {
+    const { scene, marina, layout, dispose } = rig(true);
+    try {
+      const camera = scene.activeCamera as FreeCamera;
+      const planesLooking = (target: Vector3) => {
+        camera.setTarget(target);
+        return Frustum.GetPlanes(camera.getViewMatrix(true).multiply(camera.getProjectionMatrix(true)));
+      };
+      const site = new Vector3(layout.site.x, layout.seaLevel, layout.site.z);
+      camera.position.set(site.x + 900, layout.seaLevel + 20, site.z);
+      const collected = () => {
+        const meshes: string[] = [];
+        marina.addShadowCasters((mesh) => meshes.push(mesh.name));
+        return meshes.sort();
+      };
+      // The warm-up frame casts, wherever the camera looks, for the pipelines.
+      marina.update(camera.position.x, camera.position.y, camera.position.z, 0, planesLooking(site.add(new Vector3(2_000, 0, 0))));
+      expect(collected()).toEqual(["marina-boats", "marina-boxes", "marina-posts"]);
+      marina.update(camera.position.x, camera.position.y, camera.position.z, 0, planesLooking(site));
+      expect(collected()).toEqual(["marina-boats", "marina-boxes", "marina-posts"]);
+      // Looking away, 900 m off: in detail range, drawn by nothing, cast by nothing.
+      marina.update(camera.position.x, camera.position.y, camera.position.z, 0.1, planesLooking(site.add(new Vector3(2_000, 0, 0))));
+      expect(marina.statistics.level).toBe("detail");
+      expect(collected()).toEqual([]);
+      // Turned so the marina sits just off the edge of the view: its shadows
+      // could still fall in it, so it casts.
+      marina.update(camera.position.x, camera.position.y, camera.position.z, 0.2, planesLooking(site.add(new Vector3(0, 0, -700))));
+      expect(collected()).toEqual(["marina-boats", "marina-boxes", "marina-posts"]);
+    } finally {
+      dispose();
     }
   });
 

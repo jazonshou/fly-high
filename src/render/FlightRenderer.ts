@@ -4,6 +4,8 @@ import { Constants } from "@babylonjs/core/Engines/constants";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
+import { Frustum } from "@babylonjs/core/Maths/math.frustum";
+import { Plane } from "@babylonjs/core/Maths/math.plane";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { ImageProcessingPostProcess } from "@babylonjs/core/PostProcesses/imageProcessingPostProcess";
@@ -668,6 +670,9 @@ export class FlightRenderer implements FlightRenderingSystem {
   private observedGroundSpeed = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
+  /** The camera's view-projection and frustum this frame, for the marina's caster gate. */
+  private readonly marinaViewProjection = Matrix.Identity();
+  private readonly marinaFrustum = Array.from({ length: 6 }, () => new Plane(0, 0, 0, 0));
   private readonly frameIntervalDurations: number[] = [];
   private readonly cpuFrameDurations: number[] = [];
   private readonly gpuFrameDurations: number[] = [];
@@ -1170,7 +1175,6 @@ export class FlightRenderer implements FlightRenderingSystem {
         castsShadows: profile.marinaCastsShadows,
       });
       cleanup.push(() => marina.dispose());
-      for (const mesh of marina.shadowCasters) atmosphere.addShadowCaster(mesh, false);
       checkpointRendererStartup("marina construction", "sync");
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
@@ -2921,11 +2925,14 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // The home marina: its level of detail from the camera's world distance,
     // and its beacons on the simulation clock (capture-deterministic, as the
     // steam is). Its lamps take the airfield's daylight law with the draw.
+    this.camera.getViewMatrix().multiplyToRef(this.camera.getProjectionMatrix(), this.marinaViewProjection);
+    Frustum.GetPlanesToRef(this.marinaViewProjection, this.marinaFrustum);
     if (this.marina.update(
       this.camera.position.x + this.originX,
       this.camera.position.y,
       this.camera.position.z + this.originZ,
       state.simulationTime,
+      this.marinaFrustum,
     )) {
       this.lightPoints.setColorRange(this.marinaLampStart, this.marina.lampColours);
     }
@@ -3634,6 +3641,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     this.spawnedAirfields?.addShadowCasters(collect);
+    this.marina.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
       if (!active.has(id)) this.atmosphere.shadows.removeShadowCaster(mesh, false);
     }
