@@ -3315,7 +3315,9 @@ in pinned mode and keeps the shipped run in the same report.
 **Merge requirement.** The bench adds one read-only method to the renderer
 (`readBenchProbe`) and exports one pure governor function, and changes
 nothing else a player runs; the 39 reference pictures in
-`tests/perf/baseline` must not move. The Pages deploy waits only for the
+`tests/perf/baseline` must not move. The Pages build writes the commit it
+was made from into `index.html` as `<meta name="fly-high-commit">`, which
+the reports name; no bundled file holds it, so a deploy renames no chunk. The Pages deploy waits only for the
 `verify` job, so a green `gpu-tests` run on the pull request (the perf
 capture against those pictures) is a merge requirement for the bench's pull
 request.
