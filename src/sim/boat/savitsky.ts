@@ -112,3 +112,64 @@ function bisect(f: (x: number) => number, lo: number, hi: number): number {
   }
   return 0.5 * (lo + hi);
 }
+
+/**
+ * Savitsky's (1964) porpoising limit, from Day and Haag's (1952) tank tests
+ * of prismatic planing surfaces: the running trim, degrees, above which a
+ * hull of this deadrise porpoises at this load, as a function of
+ * sqrt(C_Lbeta / 2) = sqrt(Delta / (rho V^2 b^2)). Cubic fits to the chart's
+ * 0, 10 and 20 degree curves (E. L. Castro-Feliciano's openplaning, MIT),
+ * joined by a quadratic in deadrise. The chart spans 0.13-0.3 and 0-20 deg;
+ * outside it the fits extrapolate.
+ */
+export function porpoisingTrimLimit(sqrtHalfLift: number, deadriseDegrees: number): number {
+  const x = sqrtHalfLift;
+  const at0 = -376.37 * x ** 3 + 329.74 * x ** 2 - 38.485 * x + 1.3415;
+  const at10 = -356.05 * x ** 3 + 314.36 * x ** 2 - 41.674 * x + 3.5786;
+  const at20 = -254.51 * x ** 3 + 239.65 * x ** 2 - 23.936 * x + 3.0195;
+  const curvature = (at20 - 2 * at10 + at0) / 200;
+  const slope = (at10 - at0) / 10 - curvature * 10;
+  return at0 + slope * deadriseDegrees + curvature * deadriseDegrees * deadriseDegrees;
+}
+
+export interface SeawayHull {
+  /** Chine beam, m, and deadrise, degrees. */
+  beam: number;
+  deadriseDegrees: number;
+  /** Waterline length, m. */
+  length: number;
+  /** Displacement weight, N. */
+  weight: number;
+}
+
+/**
+ * Savitsky and Brown's (1976) impact acceleration at the CG of a planing
+ * hull in irregular head seas, the average of the highest tenth, in g:
+ *
+ *   n_1/10 = 0.0104 (H_1/3 / b + 0.084) (tau / 4) (5/3 - beta / 30) (V_k^2 / L_ft) (L / b) / C_Delta
+ *
+ * with tau the calm-water running trim in degrees, V_k the speed in knots,
+ * L_ft the waterline length in feet and C_Delta = Delta / (rho g b^3). From
+ * Fridsma's prismatic-model tests; the paper gives it for 3-6 deg of trim,
+ * 10-30 deg of deadrise and V_k / sqrt(L_ft) up to 6, about +/-30%.
+ */
+export function savitskyBrownImpact(
+  hull: Readonly<SeawayHull>,
+  significantHeight: number,
+  trimDegrees: number,
+  speed: number,
+  { rho = 1025, gravity = 9.80665 } = {},
+): number {
+  const knots = speed / 0.514444;
+  const lengthFeet = hull.length / 0.3048;
+  const loading = hull.weight / (rho * gravity * hull.beam ** 3);
+  return (
+    (0.0104 *
+      (significantHeight / hull.beam + 0.084) *
+      (trimDegrees / 4) *
+      (5 / 3 - hull.deadriseDegrees / 30) *
+      ((knots * knots) / lengthFeet) *
+      (hull.length / hull.beam)) /
+    loading
+  );
+}

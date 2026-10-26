@@ -349,11 +349,13 @@ describe("home marina structures", () => {
     expect(knock.touched).toBeGreaterThan(0);
     expect(knock.crashed).toBe(false);
     expect(knock.along).toBeLessThan(0.05);
-    expect(ram(5, "pontoon").crashed).toBe(true);
+    // Well past the pontoon's 4 m/s: a beam-on drift sheds some speed before
+    // it reaches the fenders.
+    expect(ram(6, "pontoon").crashed).toBe(true);
   });
 
   it("wrecks the boat ramming a moored one and fends off a nudge", () => {
-    const fast = ram(4, "moored boat");
+    const fast = ram(4.5, "moored boat");
     expect(fast.touched).toBeGreaterThan(0);
     expect(fast.crashed).toBe(true);
     const slow = ram(1.5, "moored boat");

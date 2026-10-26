@@ -102,8 +102,9 @@ describe("home marina site", () => {
     let worst = 0;
     for (const seed of SEEDS_200.slice(0, 60)) worst = Math.max(worst, homeMarinaSiteStats(world(seed)).heightSamples);
     // The budget is in height samples, the search's only real cost (timed
-    // below): at 4.3 us a sample 6,000 is the 25 ms budget with margin; the
-    // worst of 200 seeds measured 5,681.
+    // below); the worst of 200 seeds measured 5,681. (4.3 us a sample was
+    // measured on one warm run early on and has not held up: the lead's
+    // container reads 8-14 us, warm or cold.)
     expect(worst).toBeLessThanOrEqual(6_000);
     // And in time, on warm worlds whose search has not run yet: the search
     // costs what its height samples cost and little more, so the count above

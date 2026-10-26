@@ -480,7 +480,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   private readonly calm = new CalmWaterSurface(0, () => -1_000);
   private readonly assists: BoatAssists;
   private readonly targets = createBoatActuatorTargets();
-  private readonly assistInput: BoatAssistInput = { speed: 0, runningTrim: 0, heel: 0, trimAngle: 0, ventilation: 0, dt: 0 };
+  private readonly assistInput: BoatAssistInput = { speed: 0, sideslip: 0, runningTrim: 0, heel: 0, trimAngle: 0, ventilation: 0, dt: 0 };
   private readonly loads: BoatExternalLoad[] = [];
   private readonly loadContext: LoadContext;
   private capsizeTime = 0;
@@ -504,7 +504,9 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   private readonly etaT: Float64Array;
   private readonly waterU: Float64Array;
   private readonly waterSample = createWaterSurfaceSample();
+  /** The sampler's focus, and its centre's offset forward of the CG: fitted to every sample point the hull can put out. */
   private readonly focus: WaveFieldFocus = { x: 0, z: 0, heading: 0, halfLength: 3.4, halfBeam: 1.4 };
+  private focusAhead = 0.6;
   private quantumStart = 0;
 
   // Hull passes.
@@ -621,7 +623,45 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.probesBody = Float64Array.from(probes);
     this.probeCount = probes.length / 3;
 
+    this.fitWaveFocus();
     this.reset(spawn);
+  }
+
+  /**
+   * Size the wave sampler's focus to the box every sample point stays in,
+   * the outboard swung through its whole trim range at either lock, so the
+   * sampler's fast path answers all of them (a point outside it costs a full
+   * spectral sum).
+   */
+  private fitWaveFocus(): void {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let maxZ = 0;
+    const cover = () => {
+      for (let i = 0; i < this.pointCount; i += 1) {
+        const x = this.pointBody[i * 3]!;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        maxZ = Math.max(maxZ, Math.abs(this.pointBody[i * 3 + 2]!));
+      }
+    };
+    const definition = this.definition;
+    for (const trim of [definition.trimMinDegrees, definition.trimMaxDegrees]) {
+      for (const steer of [-definition.steerLockDegrees, definition.steerLockDegrees]) {
+        this.trimAngle = trim * DEG;
+        this.steerAngle = steer * DEG;
+        this.updateEngineGeometry();
+        this.placeSamplePoints();
+        cover();
+      }
+    }
+    this.trimAngle = definition.trimMinDegrees * DEG;
+    this.steerAngle = 0;
+    this.updateEngineGeometry();
+    this.placeSamplePoints();
+    this.focusAhead = 0.5 * (minX + maxX);
+    this.focus.halfLength = 0.5 * (maxX - minX);
+    this.focus.halfBeam = maxZ;
   }
 
   /** Put the boat back at a spawn: settled at rest on still water, or running at `speed` for probes. */
@@ -730,8 +770,8 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     water.setTime(this.state.time);
     if (isHullWaterSampler(water)) {
       const forward = rotateVectorInto(this.tmpA, body.orientation, BODY_FORWARD);
-      this.focus.x = body.position.x + forward.x * 0.6;
-      this.focus.z = body.position.z + forward.z * 0.6;
+      this.focus.x = body.position.x + forward.x * this.focusAhead;
+      this.focus.z = body.position.z + forward.z * this.focusAhead;
       this.focus.heading = Math.atan2(forward.x, forward.z);
       water.setFocus(this.focus);
     }
@@ -1186,6 +1226,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.runningTrim = Math.asin(clamp(forward.y, -1, 1)) - waterPitch;
     const input = this.assistInput;
     input.speed = this.speedThroughWater;
+    input.sideslip = this.sideslip;
     input.runningTrim = this.runningTrim;
     input.heel = heel;
     input.trimAngle = this.trimAngle;
@@ -1205,11 +1246,11 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     // Tabs.
     const tabStep = definition.tabs.rate * dt;
     if (targets.tabsAuto) {
-      // The rocker moves the collective; the assist's differential rides on it.
+      // The rocker moves the collective; the assist's pitch and differential ride on it.
       this.tabCollective = clamp(this.tabCollective + targets.tabRate * tabStep, 0, 1);
       const half = 0.5 * targets.tabDifferential;
-      const portTarget = clamp(this.tabCollective - half, 0, 1);
-      const starboardTarget = clamp(this.tabCollective + half, 0, 1);
+      const portTarget = clamp(this.tabCollective + targets.tabPitch - half, 0, 1);
+      const starboardTarget = clamp(this.tabCollective + targets.tabPitch + half, 0, 1);
       this.tabPort += clamp(portTarget - this.tabPort, -tabStep, tabStep);
       this.tabStarboard += clamp(starboardTarget - this.tabStarboard, -tabStep, tabStep);
     } else {
@@ -1462,9 +1503,11 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     for (let side = 0; side < 2; side += 1) {
       const deflection = (side === 0 ? this.tabPort : this.tabStarboard) * tabs.maxDegrees;
       if (deflection <= 0) continue;
-      const wetted = so.wettedHalfBeam[side]!;
+      // The share of the tab's span inside the transom strip's wetted bottom.
+      const wettedFrom = so.wettedInner[side]!;
+      const wettedTo = wettedFrom + so.wettedHalfBeam[side]!;
       const inner = tabs.centreHalfBeam - 0.5 * tabs.span;
-      const wet = clamp((wetted - inner) / tabs.span, 0, 1);
+      const wet = clamp((Math.min(wettedTo, inner + tabs.span) - Math.max(wettedFrom, inner)) / tabs.span, 0, 1);
       // Even off the plane the tab sits in the water behind a wet transom.
       const immersion = Math.max(wet, this.transomDepth > 0.05 ? 1 - this.transomDry : 0);
       if (immersion <= 0) continue;

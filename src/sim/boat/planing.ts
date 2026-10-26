@@ -18,6 +18,10 @@ import { STRAKES_PER_STRIP, type HullStrips } from "./hullMesh";
  *   f = D(m_a V)/Dt + 1/2 C_dc rho c V|V|,   D/Dt = d/dt - U d/dxi,
  *   m_a = k rho (pi/2) c^2,   c = lambda d / tan(beta)  (Wagner, lambda = pi/2).
  *
+ * The wetted beam grows with the section's own sinking across the local
+ * water line, dd/dt = n_y V - v_z n_z: heeled, the section's sway along the
+ * tilted water line carries it along the surface rather than into it.
+ *
  * m_a DV/Dt is split: the part proportional to the hull's acceleration goes
  * to the left-hand side as a 6x6 added-mass matrix (the caller solves
  * (M + A) a = F), which keeps the stiff slamming terms stable at a fixed step;
@@ -28,7 +32,10 @@ import { STRAKES_PER_STRIP, type HullStrips } from "./hullMesh";
  * local water lowers one panel's effective deadrise and widens its wetted
  * beam (the planing roll stiffness), and sideslip drives the leading panel
  * deeper (+/- tan(beta) times the sway speed): the outer panel lifts and a
- * deep-V heels INTO its turns. Sway is a second slender-body strip, with the
+ * deep-V heels INTO its turns. Heeled past its deadrise a panel enters chine
+ * first, wetting inboard from the chine before the keel touches, so a boat
+ * landing heeled off a crest takes the slam on its low side instead of
+ * finding that side's water already there. Sway is a second slender-body strip, with the
  * mirrored-plate added mass k rho (pi/2) d^2 of the section's draft and a
  * cross-flow drag on it. Strakes trip the spray root: once the Wagner jet
  * would cross a strake, the wetted beam stops at the strake's edge.
@@ -65,6 +72,8 @@ export interface StripOutputs {
   wettedLength: number;
   /** Per strip and side (index 2i + (starboard ? 1 : 0)): wetted half-beam, m. */
   readonly wettedHalfBeam: Float64Array;
+  /** Per strip and side: how far out from the keel the wetted bottom starts, m (0 unless only a band at the chine is wet). */
+  readonly wettedInner: Float64Array;
   /** Spray roots: body x y z and jet speed, flattened, `sprayCount` live. */
   readonly spray: Float64Array;
   sprayCount: number;
@@ -80,6 +89,7 @@ export function createStripOutputs(strips: HullStrips): StripOutputs {
     dynamicLift: 0,
     wettedLength: 0,
     wettedHalfBeam: new Float64Array(strips.count * 2),
+    wettedInner: new Float64Array(strips.count * 2),
     spray: new Float64Array(MAX_BOAT_SPRAY_ROOTS * 4),
     sprayCount: 0,
     peakSectionLoad: 0,
@@ -103,8 +113,8 @@ export function createStripInputs(strips: HullStrips): StripInputs {
 const WAGNER = Math.PI / 2;
 /** Centre of the Wagner pressure across a half-beam: 2/pi of the way out. */
 const PRESSURE_CENTRE = 2 / Math.PI;
-/** Lateral centre of pressure, as a share of the section draft above the keel. */
-const LATERAL_CENTRE = 0.4;
+/** Height of a mirrored vertical plate's elliptic sway load above its lower edge, as a share of its depth: 1 - 4/(3 pi). */
+const PLATE_CENTRE = 1 - 4 / (3 * Math.PI);
 /** Below this water-normal component along body y, the hull is on its beam ends and the strips stand down. */
 const MIN_NORMAL_Y = 0.25;
 
@@ -142,6 +152,7 @@ export function evaluateStrips(
   out.wettedLength = 0;
   out.peakSectionLoad = 0;
   out.wettedHalfBeam.fill(0);
+  out.wettedInner.fill(0);
   let candidates = 0;
 
   const span = strips.length;
@@ -158,11 +169,13 @@ export function evaluateStrips(
     const nby = input.normal[i * 3 + 1]!;
     const nbz = input.normal[i * 3 + 2]!;
     const depthPerp = input.depth[i]!;
-    if (depthPerp <= 0 || nby < MIN_NORMAL_Y) continue;
-    const x = strips.x[i]!;
-    const keelY = strips.keelY[i]!;
+    if (nby < MIN_NORMAL_Y) continue;
     const tanBeta = strips.tanDeadrise[i]!;
     const chine = strips.chineHalfBeam[i]!;
+    // Heeled, the low chine can be under while the keel is still dry.
+    if (depthPerp <= 0 && depthPerp - (nby * tanBeta - Math.abs(nbz)) * chine <= 0) continue;
+    const x = strips.x[i]!;
+    const keelY = strips.keelY[i]!;
     const kSlope = strips.keelSlope[i]!;
     const kCurve = strips.keelCurvature[i]!;
     const release = 1 - input.transomDry * (1 - Math.tanh(strips.transomDistance[i]! / releaseLength));
@@ -170,10 +183,14 @@ export function evaluateStrips(
     const vy = input.relativeVelocity[i * 3 + 1]!;
     const vz = input.relativeVelocity[i * 3 + 2]!;
     const along = vx;
-    // Earth-plane penetration speed of the keel, positive into the water.
+    // Earth-plane penetration speed of the keel along body y, positive into the water.
     const penetration = -vy + along * kSlope;
+    // How fast the section sinks across the local water line, as depth: the
+    // penetration less the sway along a heeled water line. A heeled hull
+    // sliding along the water is not sinking into it.
+    const sink = nby * penetration - vz * nbz;
     // Section draft along body y, for sway.
-    const draft = Math.min(depthPerp / nby, strips.sheerRise[i]!);
+    const draft = Math.min(Math.max(0, depthPerp) / nby, strips.sheerRise[i]!);
     const transomDistance = strips.transomDistance[i]!;
     out.wettedLength = Math.max(out.wettedLength, transomDistance + 0.5 * span);
 
@@ -190,20 +207,45 @@ export function evaluateStrips(
 
     for (let side = -1; side <= 1; side += 2) {
       const slope = nby * tanBeta + side * nbz;
-      // The panel's own penetration speed: the keel's, plus the sideslip
-      // driving the leading panel deeper, plus the roll rate at the panel's
-      // pressure centre (the descending side presses harder: roll damping).
-      const reach = slope > 0.02 ? Math.min(chine, (depthPerp / slope) * (1 + (WAGNER - 1) * speedSplash)) : chine;
-      const sideSpeed =
-        penetration + calibration.sideslipLift * side * tanBeta * vz + side * omegaX * PRESSURE_CENTRE * reach;
+      // A point s out along the panel sinks across the water line at
+      // sink + omegaX s (side n_y - tan(beta) n_z): the descending side's
+      // wetted beam widens (roll damping).
+      const rollSink = omegaX * (side * nby - tanBeta * nbz);
       const index = i * 2 + (side > 0 ? 1 : 0);
       if (slope <= 0.02) {
-        // Heeled past the panel's own deadrise: the bottom is flat or face-up to the water, the chine is wet.
-        const massPerLength = ka * rho * (Math.PI / 4) * chine * chine * release;
-        accumulateSide(out, x, keelY, tanBeta, side, chine, nx, ny, massPerLength, 0, sideSpeed, along, omegaZ, kCurve, calibration, rho, release, span);
-        out.wettedHalfBeam[index] = chine;
+        // Heeled past the panel's own deadrise: the bottom is flat or face-up
+        // to the water and the chine is its lowest edge. It enters chine
+        // first, a band wetting inboard from the chine as the chine sinks.
+        // Its inner edge is where the water crosses the panel, and moves
+        // inboard at that point's sinking speed over the panel's descent
+        // (so a hull rolling about its wet chine does not widen it). The
+        // band's growing mass is the slam on that side; once the keel is
+        // under the whole panel is wet and its mass stops growing. Its
+        // pressure centre sits 2/pi of the band out from the inner edge,
+        // which meets the wet panel's 2/pi of the chine as the keel goes under.
+        const chineDepth = depthPerp - slope * chine;
+        if (chineDepth <= 0) continue;
+        const descent = Math.max(0.02, -slope);
+        const wet = depthPerp >= 0 ? chine : Math.min(chine, chineDepth / descent);
+        const centre = chine - (1 - PRESSURE_CENTRE) * wet;
+        const entrySpeed = penetration + side * omegaX * centre + calibration.sideslipLift * side * tanBeta * vz;
+        const edgeSink = sink + rollSink * (chine - wet);
+        const massPerLength = ka * rho * (Math.PI / 4) * wet * wet * release;
+        const massRate = wet < chine && edgeSink > 0 ? (ka * rho * (Math.PI / 2) * wet * edgeSink * release) / descent : 0;
+        accumulateSide(out, x, keelY, tanBeta, side, wet, centre, nx, ny, massPerLength, massRate, entrySpeed, along, omegaY, omegaZ, kCurve, calibration, rho, release, span);
+        out.wettedHalfBeam[index] = wet;
+        out.wettedInner[index] = chine - wet;
         continue;
       }
+      if (depthPerp <= 0) continue;
+      // The panel's speed into the water along its normal, at its pressure
+      // centre: the keel's penetration, the roll rate there (the descending
+      // side presses harder) and the sideslip driving the leading panel
+      // deeper. The sideslip presses on the water the panel already has, but
+      // does not widen it: the wetted beam grows at the centre's sinking.
+      const centre = PRESSURE_CENTRE * Math.min(chine, (depthPerp / slope) * (1 + (WAGNER - 1) * speedSplash));
+      const sideSpeed = penetration + side * omegaX * centre + calibration.sideslipLift * side * tanBeta * vz;
+      const growth = sink + rollSink * centre;
       const geometric = depthPerp / slope;
       const impactSplash = smoothstep(0.5, 3, (sideSpeed * sideSpeed) / (9.81 * Math.max(0.05, geometric)));
       const lambda = 1 + (WAGNER - 1) * Math.max(speedSplash, impactSplash);
@@ -222,8 +264,8 @@ export function evaluateStrips(
         massSlope = trapped ? 0 : (ka * rho * (Math.PI / 2) * wetted * lambda) / slope;
       }
       const massPerLength = ka * rho * (Math.PI / 4) * wetted * wetted * release;
-      const massRate = Math.max(0, massSlope) * nby * sideSpeed * release;
-      accumulateSide(out, x, keelY, tanBeta, side, wetted, nx, ny, massPerLength, massRate, sideSpeed, along, omegaZ, kCurve, calibration, rho, release, span);
+      const massRate = Math.max(0, massSlope) * Math.max(0, growth) * release;
+      accumulateSide(out, x, keelY, tanBeta, side, wetted, PRESSURE_CENTRE * wetted, nx, ny, massPerLength, massRate, sideSpeed, along, omegaY, omegaZ, kCurve, calibration, rho, release, span);
       out.wettedHalfBeam[index] = wetted;
       if (!trapped) {
         recordSpray(x, keelY, tanBeta, side, wetted, Math.hypot(along, (2 * lambda * nby * sideSpeed) / slope));
@@ -233,19 +275,32 @@ export function evaluateStrips(
       }
     }
 
-    // Sway strip.
-    const lateralMass = kl * rho * (Math.PI / 2) * draft * draft * release;
-    const lateralMassRate = penetration > 0 && draft < strips.sheerRise[i]! ? kl * rho * Math.PI * draft * penetration * release : 0;
-    const ly = keelY + LATERAL_CENTRE * draft;
-    // Sway velocity at the lateral centre (the strip's keel-point value plus roll rate times the rise).
-    const sway = vz + omegaX * (ly - keelY);
-    const lateral =
-      -(lateralMass * along * omegaY + sway * lateralMassRate + 0.5 * calibration.lateralCrossFlowDrag * rho * draft * sway * Math.abs(sway)) * span;
-    // Force along +z at (x, ly, 0): moment r x F = (ly F, -x F, 0).
-    force.z += lateral;
-    moment.x += ly * lateral;
-    moment.y -= x * lateral;
-    addOuter(added, 0, 0, 1, ly, -x, 0, lateralMass * span);
+    // Sway strip. The V-bottom's sway is in its panels above; what is left
+    // is the topsides once the chine is under (a vertical plate from the
+    // chine down, mirrored in the surface: added mass k rho (pi/2) d^2, its
+    // elliptic load centred 4/(3 pi) of the plate below the surface), and the
+    // separated cross-flow drag on the section's whole draft.
+    const chineRise = strips.chineRise[i]!;
+    const plate = Math.max(0, draft - chineRise);
+    const lateralMass = kl * rho * (Math.PI / 2) * plate * plate * release;
+    const plateSink = sink / nby;
+    const lateralMassRate = plateSink > 0 && draft < strips.sheerRise[i]! ? kl * rho * Math.PI * plate * plateSink * release : 0;
+    const plateY = keelY + chineRise + PLATE_CENTRE * plate;
+    const plateSway = vz + omegaX * (plateY - keelY);
+    const inertial = -(lateralMass * along * omegaY + plateSway * lateralMassRate) * span;
+    // Cross-flow: at rest the whole section sheds a wake with suction behind
+    // it; on the plane the bottom's trailing side ventilates from the keel
+    // and its leading panel's pressure is already its load, so only the
+    // topsides stay in cross-flow.
+    const dragDepth = plate + (draft - plate) * (1 - speedSplash);
+    const dragY = keelY + draft - 0.5 * dragDepth;
+    const dragSway = vz + omegaX * (dragY - keelY);
+    const drag = -0.5 * calibration.lateralCrossFlowDrag * rho * dragDepth * dragSway * Math.abs(dragSway) * span;
+    // Forces along +z at (x, y, 0): moment r x F = (y F, -x F, 0).
+    force.z += inertial + drag;
+    moment.x += plateY * inertial + dragY * drag;
+    moment.y -= x * (inertial + drag);
+    addOuter(added, 0, 0, 1, plateY, -x, 0, lateralMass * span);
   }
 
   // Keep the strongest jets as spray roots.
@@ -312,7 +367,7 @@ function wettedHalfBeam(strips: HullStrips, i: number, geometric: number, lambda
   return wetted;
 }
 
-/** One half-wedge's force along the keel normal, at its centre of pressure, and its added mass. */
+/** One half-wedge's force along the keel normal, at its centre of pressure `centre` out from the keel, and its added mass. */
 function accumulateSide(
   out: StripOutputs,
   x: number,
@@ -320,12 +375,14 @@ function accumulateSide(
   tanBeta: number,
   side: number,
   wetted: number,
+  centre: number,
   nx: number,
   ny: number,
   massPerLength: number,
   massRate: number,
   sideSpeed: number,
   along: number,
+  omegaY: number,
   omegaZ: number,
   keelCurvature: number,
   calibration: BoatCalibration,
@@ -336,7 +393,10 @@ function accumulateSide(
   if (!(wetted > 0)) return;
   const entering = sideSpeed > 0;
   const momentum = entering ? sideSpeed * massRate : 0;
-  const convective = massPerLength * (along * omegaZ - along * along * keelCurvature);
+  // The earth plane sees the next section aft: its pitch rate, rocker and
+  // yaw rate (the last through the panel's tan(beta) of sway) change the
+  // speed it meets the water at.
+  const convective = massPerLength * (along * omegaZ - along * along * keelCurvature + side * tanBeta * along * omegaY);
   // Zarnick's cross-flow coefficient: the flat plate's, times Bobyleff's cos(beta) for the V.
   const crossFlow = entering
     ? 0.5 * calibration.crossFlowDrag * Math.cos(Math.atan(tanBeta)) * rho * wetted * sideSpeed * sideSpeed * release
@@ -347,23 +407,31 @@ function accumulateSide(
   // nothing. The added mass stays on the left-hand side either way.
   const sectional = Math.max(0, momentum + convective + crossFlow);
   const load = sectional * span;
-  const zc = side * PRESSURE_CENTRE * wetted;
-  const yc = keelY + PRESSURE_CENTRE * wetted * tanBeta;
+  const zc = side * centre;
+  const yc = keelY + centre * tanBeta;
   const fx = nx * load;
   const fy = ny * load;
+  // The panel's pressure acts square to the panel, along (nx, ny, nz) with
+  // nz = -side tan(beta) at this scaling: each half-wedge also pushes
+  // inboard by tan(beta) of its lift. The two cancel running straight; in a
+  // slide the loaded leading panel holds the hull (the V's bite), and its
+  // line of action passes outboard of the CG, so it heels the hull inward.
+  const nz = -side * tanBeta;
+  const fz = nz * load;
   out.force.x += fx;
   out.force.y += fy;
-  // r x F with F = (fx, fy, 0).
-  out.moment.x += -zc * fy;
-  out.moment.y += zc * fx;
+  out.force.z += fz;
+  // r x F with F = (fx, fy, fz).
+  out.moment.x += yc * fz - zc * fy;
+  out.moment.y += zc * fx - x * fz;
   out.moment.z += x * fy - yc * fx;
   out.dynamicLift += fy;
   if (sectional > out.peakSectionLoad) out.peakSectionLoad = sectional;
-  // J = [n; r x n], n = (nx, ny, 0).
-  const jx = -zc * ny;
-  const jy = zc * nx;
+  // J = [n; r x n]: the panel's added mass acts along its normal, so it carries the bottom's sway inertia too.
+  const jx = yc * nz - zc * ny;
+  const jy = zc * nx - x * nz;
   const jz = x * ny - yc * nx;
-  addOuter(out.addedMass, nx, ny, 0, jx, jy, jz, massPerLength * span);
+  addOuter(out.addedMass, nx, ny, nz, jx, jy, jz, massPerLength * span);
 }
 
 const jacobian = new Float64Array(6);

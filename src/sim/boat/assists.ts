@@ -1,16 +1,22 @@
 import type { BoatControlState } from "@/src/game/types";
+import { HULL_TRANSOM } from "@/src/vehicles/boat/hullLines";
 import type { StabilityAssistMode } from "../assists";
 import { clamp } from "../math";
 import type { BoatDefinition } from "./definition";
+import { HULL_TRANSOM_CHINE_BEAM } from "./hullMesh";
+import { porpoisingTrimLimit } from "./savitsky";
 
 /**
  * The boat's three assist modes, mapped from the aircraft's (the plan's
  * "Assists" table):
  *
  * - Scenic: Active Trim (power trim scheduled by speed, then held at a 4
- *   degree running trim, as Mercury's Active Trim does), tabs levelling the
- *   heel on their own, steering eased at speed, and the throttle eased while
- *   the propeller is ventilating so it hooks back up.
+ *   degree running trim, as Mercury's Active Trim does, and trimmed in
+ *   with the helm over), tabs levelling the
+ *   heel on their own and, with the helm over, holding the bow down inside
+ *   Day and Haag's porpoising limit, steering eased at speed and eased off as the hull
+ *   slides, and the throttle eased while the propeller is ventilating so it
+ *   hooks back up.
  * - Pilot: trim and tabs are the driver's; the helm turns at a limited rate.
  * - Direct ("unassisted"): everything raw, at the hydraulics' own rates,
  *   including porpoising if the engine is trimmed out too far.
@@ -31,6 +37,8 @@ export interface BoatActuatorTargets {
   tabRate: number;
   tabsAuto: boolean;
   tabDifferential: number;
+  /** When `tabsAuto`: both tabs down together on top of the collective, 0..1 (Scenic's pitch hold in a turn). */
+  tabPitch: number;
 }
 
 export function createBoatActuatorTargets(): BoatActuatorTargets {
@@ -44,13 +52,15 @@ export function createBoatActuatorTargets(): BoatActuatorTargets {
     tabRate: 0,
     tabsAuto: false,
     tabDifferential: 0,
+    tabPitch: 0,
   };
 }
 
 /** What the assists read of the boat. */
 export interface BoatAssistInput {
-  /** Speed through the water, m/s. */
+  /** Speed through the water, m/s, and the CG's sideslip, radians (positive sliding to starboard). */
   speed: number;
+  sideslip: number;
   /** Running trim of the keel against the local water, radians, bow up. */
   runningTrim: number;
   /** Heel, radians, starboard down positive. */
@@ -78,6 +88,7 @@ export class BoatAssists {
   private trimOffset = 0;
   private trimHold = 0;
   private tabHeelIntegral = 0;
+  private tabPitch = 0;
 
   constructor(private readonly definition: BoatDefinition) {}
 
@@ -85,6 +96,7 @@ export class BoatAssists {
     this.trimOffset = 0;
     this.trimHold = 0;
     this.tabHeelIntegral = 0;
+    this.tabPitch = 0;
   }
 
   apply(
@@ -101,6 +113,7 @@ export class BoatAssists {
     out.trimAuto = false;
     out.tabsAuto = false;
     out.tabDifferential = 0;
+    out.tabPitch = 0;
     if (mode === "unassisted") {
       out.steerAngle = steer * lock;
       out.steerRate = this.definition.steerRateDegrees * DEG;
@@ -114,31 +127,57 @@ export class BoatAssists {
     // Scenic.
     const knots = input.speed / KNOT;
     const authority = clamp(1 - ((knots - 10) / 30) * 0.55, 0.45, 1);
-    out.steerAngle = steer * lock * authority;
+    // Past 12 degrees of sideslip on the plane the hull is sliding rather
+    // than carving: the helm backs off toward a third, so a full-lock turn
+    // stays a turn instead of a spin-out that drops off the plane.
+    const sliding = knots > 12 ? clamp((Math.abs(input.sideslip) - 12 * DEG) / (10 * DEG), 0, 1) : 0;
+    out.steerAngle = steer * lock * authority * (1 - 0.65 * sliding);
     out.steerRate = 30 * DEG;
     // Active Trim, with the driver's rocker as an offset on the schedule.
     this.trimOffset = clamp(this.trimOffset + out.trimRate * 2 * DEG * input.dt, -6 * DEG, 6 * DEG);
     const planing = knots > 22;
-    if (planing && input.ventilation < 0.3) {
+    // With the helm over, Active Trim trims in as a driver does before a
+    // turn: the bow down keeps the propeller bitten, and a deep-V trimmed
+    // out and heeled at speed starts to walk on its chines.
+    const turning = clamp((Math.abs(steer) - 0.15) / 0.6, 0, 1);
+    if (planing && input.ventilation < 0.3 && turning === 0) {
       this.trimHold = clamp(this.trimHold + (4 * DEG - input.runningTrim) * 0.6 * input.dt, -4 * DEG, 4 * DEG);
-    } else {
+    } else if (turning === 0) {
       this.trimHold *= Math.max(0, 1 - input.dt);
     }
     const ventilationTrimIn = input.ventilation * 6 * DEG;
     out.trimAuto = true;
-    out.trimTarget = activeTrimSchedule(this.definition, input.speed) + this.trimHold + this.trimOffset - ventilationTrimIn;
-    // Tabs level the heel when the helm is near centre and the boat is running.
+    out.trimTarget =
+      activeTrimSchedule(this.definition, input.speed) + this.trimHold + this.trimOffset - ventilationTrimIn - turning * 5 * DEG;
+    // Tabs level the heel when the helm is near centre and the boat is
+    // running. With the helm over they stand off (a levelling system's turn
+    // detection): the heel into a turn is the turn, and fighting it through
+    // the tabs' slow travel only sets the hull rolling.
     out.tabsAuto = true;
-    if (Math.abs(steer) < 0.15 && knots > 12) {
-      const level = Math.sign(input.heel) * Math.max(0, Math.abs(input.heel) - 0.5 * DEG);
+    // Inside half a degree the tabs leave the heel alone (a levelling
+    // system's deadband): the propeller's own torque list is not worth the drag.
+    const level = Math.sign(input.heel) * Math.max(0, Math.abs(input.heel) - 0.5 * DEG);
+    const straight = Math.abs(steer) < 0.15 && knots > 12;
+    if (straight) {
       this.tabHeelIntegral = clamp(this.tabHeelIntegral + level * 0.8 * input.dt, -0.25, 0.25);
     } else {
       this.tabHeelIntegral *= Math.max(0, 1 - 0.5 * input.dt);
     }
-    // Inside half a degree the tabs leave the heel alone (a levelling
-    // system's deadband): the propeller's own torque list is not worth the drag.
-    const level = Math.sign(input.heel) * Math.max(0, Math.abs(input.heel) - 0.5 * DEG);
-    out.tabDifferential = clamp(level * 2.5 + this.tabHeelIntegral, -0.6, 0.6);
+    out.tabDifferential = clamp((straight ? level * 2.5 : 0) + this.tabHeelIntegral, -0.6, 0.6);
+    // A hard turn bleeds the speed and the bow climbs: past Day and Haag's
+    // porpoising limit at this speed (less a fifth of a degree) the hull starts to
+    // bound, and the trim's yaw kick sets the turn swinging. With the helm
+    // over on the plane both tabs go down together until the running trim is
+    // back inside (a pitch-holding tab system's turn mode), and come up again
+    // as it settles or the helm comes back.
+    if (planing && turning > 0) {
+      const halfLift = (this.definition.mass * 9.80665) / (1025 * input.speed * input.speed * HULL_TRANSOM_CHINE_BEAM ** 2);
+      const limit = (porpoisingTrimLimit(Math.sqrt(halfLift), HULL_TRANSOM.deadriseDegrees) - 0.2) * DEG;
+      this.tabPitch = clamp(this.tabPitch + ((input.runningTrim - limit) / DEG) * 0.15 * input.dt, 0, 0.25);
+    } else {
+      this.tabPitch = Math.max(0, this.tabPitch - 0.2 * input.dt);
+    }
+    out.tabPitch = this.tabPitch;
     // Ease the throttle while the propeller is blown out, so it hooks back up.
     if (input.ventilation > 0.3 && Math.abs(out.lever) > 0.4) {
       out.lever *= 1 - 0.45 * clamp((input.ventilation - 0.3) / 0.5, 0, 1);
