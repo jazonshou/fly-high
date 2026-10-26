@@ -3,6 +3,7 @@ import { BoatSimulator, KNOT } from "../src/sim/boat";
 import { NEUTRAL_BOAT_CONTROLS } from "../src/sim/surface";
 import { createSeaTwin } from "../src/sim/water/seaTwin";
 import type { HullWaterSampler, WaterSurfaceSample, WaveFieldFocus } from "../src/sim/water/types";
+import { referenceKernelMilliseconds, referenceSlowdown, warmReferenceKernel } from "./support/referenceKernel";
 
 /**
  * What one 120 Hz boat step costs in Node, on the game's own sea: the
@@ -12,10 +13,17 @@ import type { HullWaterSampler, WaterSurfaceSample, WaveFieldFocus } from "../sr
  * for the hydrostatics, 20 keel strips, and the propeller hub, gearcase,
  * two tabs, transom and CG), focuses the sampler once, and never reads the
  * depth under it. The two 240 Hz substeps reuse those samples.
+ *
+ * The budget is in the tuning box's milliseconds (tests/support/
+ * referenceKernel.ts) and scales by how much slower this process runs the
+ * reference kernel. There a step costs about 0.24 ms, 1.8 to 2.1 kernels
+ * idle or with three other suites running, so 0.3 ms (2.5 kernels) leaves
+ * the margin a busy runner needs and still catches the 3.2 ms step the
+ * fitted wave focus replaced.
  */
 
 const STEP = 1 / 120;
-const BUDGET_MS = 0.25;
+const BUDGET_MS = 0.3;
 
 class CountingSampler implements HullWaterSampler {
   samples = 0;
@@ -61,19 +69,28 @@ describe("boat step budget", () => {
     expect(water.times).toBe(120);
   });
 
-  it(`steps in under ${BUDGET_MS} ms at cruise on the game's sea`, () => {
+  it(`steps in under ${BUDGET_MS} ms at cruise on the game's sea, on the tuning box`, () => {
     const boat = cruising(twin());
-    // Warm the JIT and the sampler's expansions.
+    // Warm the JIT, the sampler's expansions and the yardstick.
     for (let i = 0; i < 2_400; i += 1) boat.step(STEP);
+    warmReferenceKernel();
     // The quickest of ten 2 s batches: the step's own cost, without the
-    // machine's other work in it.
+    // machine's other work in it. The kernel is timed around every batch.
     const batches: number[] = [];
+    const kernel: number[] = [referenceKernelMilliseconds()];
     for (let k = 0; k < 10; k += 1) {
       const start = performance.now();
       for (let i = 0; i < 240; i += 1) boat.step(STEP);
       batches.push((performance.now() - start) / 240);
+      kernel.push(referenceKernelMilliseconds());
     }
-    expect(Math.min(...batches)).toBeLessThan(BUDGET_MS);
+    const step = Math.min(...batches);
+    const slowdown = referenceSlowdown(kernel);
+    expect(
+      step,
+      `${(step * 1000).toFixed(0)} us a step against ${(BUDGET_MS * slowdown * 1000).toFixed(0)} us `
+      + `(this machine ran the reference kernel ${slowdown.toFixed(2)}x slower than the tuning box)`,
+    ).toBeLessThan(BUDGET_MS * slowdown);
     expect(boat.state.crashed).toBe(false);
   });
 });

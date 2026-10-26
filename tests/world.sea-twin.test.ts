@@ -19,6 +19,7 @@ import {
   type WaterSurfaceSample,
   type WaveFieldFocus,
 } from "@/src/sim/water/types";
+import { referenceKernelMilliseconds, referenceSlowdown, warmReferenceKernel } from "./support/referenceKernel";
 
 // The shipping world's sea inputs (the perf baselines' seed and wind).
 const SEA_WORLD: SeaWorld & { readonly seaLevel: number } = Object.freeze({
@@ -174,45 +175,8 @@ function snapshot(sample: WaterSurfaceSample): number[] {
 
 /** The SeaTwin step budget: 171 hull samples at 120 Hz, on the tuning box. */
 const STEP_BUDGET_MILLISECONDS = 0.15;
-// The reference kernel's best time on the box the twin was tuned on (a cloud
-// session's 2.1 GHz Xeon), where one open-water step costs 0.8-0.9 kernels.
-const REFERENCE_KERNEL_MILLISECONDS = 0.12;
-
-/**
- * A fixed piece of the twin's kind of work, timed in the same process as the
- * twin so the step budget follows the machine: phasor rotations over
- * Float64Arrays with a square root each. Best of five.
- */
-function referenceKernelMilliseconds(): number {
-  const count = 8192;
-  const re = new Float64Array(count);
-  const im = new Float64Array(count);
-  const weight = new Float64Array(count);
-  for (let index = 0; index < count; index += 1) {
-    re[index] = Math.cos(index * 0.37);
-    im[index] = Math.sin(index * 0.37);
-    weight[index] = 1 + (index % 7) * 0.125;
-  }
-  let best = Number.POSITIVE_INFINITY;
-  let sink = 0;
-  for (let run = 0; run < 5; run += 1) {
-    const started = performance.now();
-    for (let pass = 0; pass < 8; pass += 1) {
-      const cosine = Math.cos(0.01 * (pass + 1));
-      const sine = Math.sin(0.01 * (pass + 1));
-      for (let index = 0; index < count; index += 1) {
-        const a = re[index]!;
-        const b = im[index]!;
-        re[index] = a * cosine - b * sine;
-        im[index] = a * sine + b * cosine;
-        sink += Math.sqrt(a * a + b * b) * weight[index]!;
-      }
-    }
-    best = Math.min(best, performance.now() - started);
-  }
-  if (!Number.isFinite(sink)) throw new Error("reference kernel diverged");
-  return best;
-}
+// On the tuning box one open-water step costs 0.8-0.9 reference kernels
+// (tests/support/referenceKernel.ts).
 
 describe("sea twin", () => {
   it("sums the same sea as an FFT of the GPU's spectrum, within 0.1 mm", () => {
@@ -487,8 +451,7 @@ describe("sea twin", () => {
   });
 
   it("runs a 120 Hz hull step of 171 samples in under 0.15 ms", () => {
-    // Optimised before it is trusted as a yardstick.
-    for (let warm = 0; warm < 4; warm += 1) referenceKernelMilliseconds();
+    warmReferenceKernel();
     const measure = (weather: WeatherPreset, speed: number, shelter: readonly SeaShelterEllipse[]) => {
       const twin = createSeaTwin(SEA_WORLD, weather, (x, z) => -8 + 0.001 * x + 0.001 * z);
       twin.setShelter(shelter);
@@ -524,8 +487,7 @@ describe("sea twin", () => {
         best = Math.min(best, (performance.now() - started) / 1200);
         kernel.push(referenceKernelMilliseconds());
       }
-      kernel.sort((a, b) => a - b);
-      const slowdown = Math.max(1, (kernel[2]! + kernel[3]!) / 2 / REFERENCE_KERNEL_MILLISECONDS);
+      const slowdown = referenceSlowdown(kernel);
       return { step: best, budget: STEP_BUDGET_MILLISECONDS * slowdown, slowdown };
     };
     const report = (name: string, result: { step: number; budget: number; slowdown: number }) =>
