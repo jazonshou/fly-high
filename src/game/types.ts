@@ -141,7 +141,11 @@ export interface BoatControlState {
   trim: number;
   /** Tab rocker: +1 lowers the tabs (bow down), -1 raises them. */
   tabs: number;
-  /** Counts moor / cast-off presses, so a press survives a coalesced message. */
+  /**
+   * Counts moor / cast-off presses, so a press survives a coalesced message.
+   * Only a CHANGE is a press: a simulator adopts the first count it sees as
+   * its baseline, whatever it is.
+   */
   moorPresses: number;
 }
 

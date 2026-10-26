@@ -4,9 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AIRCRAFT_CATALOGUE } from "../src/aircraft/catalogue";
 import { AircraftPicker } from "../src/ui/AircraftPicker";
-import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
+import { AIRCRAFT_KINDS } from "../src/sim";
+import { SURFACE_VEHICLE_CATALOGUE } from "../src/vehicles/catalogue";
+import { SURFACE_VEHICLE_KINDS, VEHICLE_KINDS, type VehicleKind } from "../src/vehicles/kinds";
 
-function renderPicker(value: AircraftKind): string {
+function renderPicker(value: VehicleKind): string {
   return renderToStaticMarkup(createElement(AircraftPicker, {
     value,
     onChange: () => undefined,
@@ -14,8 +16,8 @@ function renderPicker(value: AircraftKind): string {
 }
 
 describe("aircraft picker", () => {
-  it("offers every airframe in the catalogue as a native labelled radio group", () => {
-    // Driven off the catalogue rather than a hand-written list, so adding an
+  it("offers every airframe and boat in the catalogues as one native labelled radio group", () => {
+    // Driven off the catalogues rather than a hand-written list, so adding an
     // aeroplane cannot leave the picker showing the old two while the rest of
     // the game flies three.
     const markup = renderPicker("trainer");
@@ -23,16 +25,18 @@ describe("aircraft picker", () => {
       .map((match) => match[1]);
     const labels = [...markup.matchAll(/<label\b[^>]*>([\s\S]*?)<\/label>/g)]
       .map((match) => match[1]);
-    const count = AIRCRAFT_KINDS.length;
+    const count = VEHICLE_KINDS.length;
 
     expect(markup).toContain('<fieldset class="aircraft-picker">');
-    expect(markup).toContain("<legend>Aircraft</legend>");
+    expect(markup).toContain("<legend>Vehicle</legend>");
     expect(labels).toHaveLength(count);
     expect(labels.every((label) => /<input[^>]*type="radio"/.test(label ?? ""))).toBe(true);
     expect(markup.match(/type="radio"/g)).toHaveLength(count);
-    expect(markup.match(/name="aircraft"/g)).toHaveLength(count);
-    expect(values).toEqual([...AIRCRAFT_KINDS]);
-    for (const spec of AIRCRAFT_CATALOGUE) {
+    expect(markup.match(/name="vehicle"/g)).toHaveLength(count);
+    // The aeroplanes first, in catalogue order, then the boats.
+    expect(values).toEqual([...AIRCRAFT_KINDS, ...SURFACE_VEHICLE_KINDS]);
+    expect(markup.match(/class="aircraft-picker__surface"/g)).toHaveLength(SURFACE_VEHICLE_KINDS.length);
+    for (const spec of [...AIRCRAFT_CATALOGUE, ...SURFACE_VEHICLE_CATALOGUE]) {
       expect(markup).toContain(spec.name);
       // The role is a TOOLTIP now, not rendered text — Jason asked for names
       // only on the face of the picker. This assertion passed unchanged when
@@ -44,7 +48,7 @@ describe("aircraft picker", () => {
     expect(markup).not.toMatch(/<small>/);
   });
 
-  it("names the four aeroplanes the game actually ships", () => {
+  it("names the four aeroplanes and the boat the game actually ships", () => {
     // The one place the literal names are asserted: a catalogue-driven test
     // would happily pass on an empty catalogue or a renamed aeroplane.
     const markup = renderPicker("trainer");
@@ -52,6 +56,7 @@ describe("aircraft picker", () => {
     expect(markup).toContain("F-16C Fighting Falcon");
     expect(markup).toContain("Bombardier Global 8000");
     expect(markup).toContain("Boeing 747-8");
+    expect(markup).toContain("Runabout 21");
     // The fictional sport jet this replaced is gone, not hidden.
     expect(markup).not.toContain("Vesper");
   });
@@ -63,6 +68,11 @@ describe("aircraft picker", () => {
     expect(inputs.filter((input) => input.includes('checked=""'))).toHaveLength(1);
     expect(inputs.find((input) => input.includes('value="trainer"'))).not.toContain('checked=""');
     expect(inputs.find((input) => input.includes('value="jet"'))).toContain('checked=""');
+
+    const boat = renderPicker("speedboat");
+    const boatInputs = [...boat.matchAll(/<input[^>]*>/g)].map((match) => match[0]);
+    expect(boatInputs.filter((input) => input.includes('checked=""'))).toHaveLength(1);
+    expect(boatInputs.find((input) => input.includes('value="speedboat"'))).toContain('checked=""');
   });
 
   it("stays integrated with the minimal menu's start, runway, seed and settings controls", () => {

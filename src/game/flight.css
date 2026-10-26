@@ -197,6 +197,11 @@
   background: linear-gradient(145deg, rgba(41, 71, 53, 0.54), rgba(10, 31, 37, 0.34));
 }
 
+/* The boats are their own row under the aeroplanes' two columns. */
+.aircraft-picker label.aircraft-picker__surface {
+  grid-column: 1 / -1;
+}
+
 .aircraft-picker input {
   position: absolute;
   width: 1px;
