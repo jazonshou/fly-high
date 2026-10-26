@@ -15,10 +15,15 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   keepOpaqueDepthForRenderingGroup,
   WATER_RENDERING_GROUP_ID,
 } from "@/src/render/webgpu/core/RenderingGroups";
+import {
+  WATER_SKY_IRRADIANCE_FRACTION,
+  WATER_SUN_IRRADIANCE_SCALE,
+} from "@/src/render/webgpu/water/WaterShaders";
 import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
 
 /**
@@ -48,12 +53,15 @@ import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
  * included, is a hash of (tick, source, droplet), so a pinned capture sees
  * the same spray at any frame rate.
  *
- * LIGHTING is the volcanic steam's construction: an optically thin sample of
- * the shared aerial include, sun through `aerialSunTransmittanceAt` with a
- * forward-peaked droplet phase plus the sky ambient, hazed by
- * `aerialPerspective`. Droplets scatter forward far more than steam does, so
- * spray thrown towards a low sun glows and spray seen down-sun is a dull
- * grey-white, which is what sea spray does.
+ * LIGHTING is the sea's own light (`setAtmosphere`): the sun and sky the
+ * ocean lights its foam with (`waterDownwelling`), from the same snapshot.
+ * A clump of droplets is white water in the air, so it takes that light as
+ * an albedo, as the wake's foam does, but it hangs in the air, so the sun
+ * lights the side of it that faces the sun (a Lambert sphere's phase law,
+ * translucent enough that its shaded side is never black) instead of
+ * lighting a level surface by the sun's elevation. On top of that, the
+ * droplets' forward lobe: spray between the camera and the sun glows.
+ * Hazed by `aerialPerspective`.
  *
  * HELD. Droplets fly in the world, so a hull held still while its velocity
  * says it planes (a pinned capture) would throw its spray forward of the
@@ -114,13 +122,21 @@ const BIRTH_LANE = 7;
 export const SPRAY_BUDGET_SHARES = Object.freeze({ sheet: 0.62, rooster: 0.26, mist: 0.1 });
 
 /** Mean lifetimes, seconds: rates are budget / lifetime. */
-const SHEET_LIFETIME = { min: 0.8, span: 0.8 };
+const SHEET_LIFETIME = { min: 0.6, span: 0.6 };
 const ROOSTER_LIFETIME = { min: 1.1, span: 1.0 };
 const MIST_LIFETIME = { min: 0.6, span: 0.6 };
 
-/** A sheet root emits nothing below this jet speed, m/s, and full rate from it plus `SHEET_JET_SPAN`. */
-export const SHEET_JET_THRESHOLD = 3;
-export const SHEET_JET_SPAN = 12;
+/**
+ * A sheet root emits nothing below this jet speed, m/s, and full rate from it
+ * plus `SHEET_JET_SPAN`, rising as the square. A hull running straight on the
+ * plane jets about 21 m/s at every root and its chines and spray rails turn
+ * most of that sheet down: light whiskers either side. The outer chine of a
+ * hard turn jets about 30 m/s and throws a full sheet.
+ */
+export const SHEET_JET_THRESHOLD = 14;
+export const SHEET_JET_SPAN = 14;
+/** Roots at full intensity that together take the whole sheet share. */
+export const SHEET_FULL_ROOTS = 8;
 /** The rooster tail rises once the hull is this far on the plane, and above this speed, m/s. */
 export const ROOSTER_PLANING_THRESHOLD = 0.55;
 export const ROOSTER_SPEED_THRESHOLD = 9;
@@ -141,10 +157,19 @@ export function sprayClock(simulationTimeSeconds: number): number {
   return wrapped < 0 ? wrapped + SPRAY_CLOCK_PERIOD_SECONDS : wrapped;
 }
 
-/** A droplet's age at `clock`, through the wrap. */
+/**
+ * How far a birth may sit AFTER the clock it is read at and still be newborn.
+ * The lattice floors `time * SPRAY_EMISSION_HZ` with an epsilon, so a frame
+ * that lands on a tick (every frame of a fixed-step clock) births that tick a
+ * rounding error after the frame's own clock. Read through the wrap, that
+ * newborn droplet was 960 s old: dead, and the mesh switched itself off.
+ */
+export const SPRAY_CLOCK_SLACK_SECONDS = 1e-3;
+
+/** A droplet's age at `clock`, through the wrap; zero for a birth a rounding error ahead. */
 export function sprayAge(clock: number, birthClock: number): number {
   const age = clock - birthClock;
-  return age < 0 ? age + SPRAY_CLOCK_PERIOD_SECONDS : age;
+  return age < -SPRAY_CLOCK_SLACK_SECONDS ? age + SPRAY_CLOCK_PERIOD_SECONDS : Math.max(age, 0);
 }
 
 /** One uniform draw in [0, 1) per (tick, source, droplet, lane). */
@@ -206,7 +231,7 @@ export function sampleSprayDroplet(
   out.age = age;
   out.life = life;
   const u = life > 0 ? age / life : 1;
-  out.sizeMeters = records[at + 8]! * (0.55 + 1.6 * u);
+  out.sizeMeters = records[at + 8]! * (0.6 + 1.1 * u);
   const below = smoothstep(-0.35, 0.05, out.y - records[at + 1]!);
   out.alpha = u >= 1 || life <= 0
     ? 0
@@ -288,6 +313,9 @@ export class BoatSpraySystem {
   private readonly frame = { x: 0, z: 0 };
   private readonly anchorUniform = new Vector3();
   private readonly windUniform = new Vector4();
+  /** The sun's irradiance at normal incidence over pi, and the sky's on a level surface over pi. */
+  private readonly sunUniform = new Vector3(1, 1, 1);
+  private readonly skyUniform = new Vector3(0.3, 0.3, 0.3);
   private readonly scratch = { x: 0, y: 0, z: 0 };
   private readonly scratchVelocity = { x: 0, y: 0, z: 0 };
   private readonly aerialVectors3 = new Map<string, Vector3>();
@@ -388,6 +416,30 @@ export class BoatSpraySystem {
     this.cursor = 0;
     this.lastBirthClock = Number.NaN;
     if (next > 0) this.createGpu();
+  }
+
+  /**
+   * The light the spray is lit by, from the snapshot the ocean takes too: the
+   * two halves of `waterDownwellingRadiance`, the sun's before it is laid on
+   * a level surface (`sunDirection.y`), so that the sun term times the sun's
+   * elevation sine plus the sky term is exactly the sea's own downwelling.
+   */
+  setAtmosphere(atmosphere: AtmosphereSnapshot): void {
+    const sun = atmosphere.sunIlluminanceNormalized * WATER_SUN_IRRADIANCE_SCALE;
+    this.sunUniform.set(atmosphere.sunColor.r * sun, atmosphere.sunColor.g * sun, atmosphere.sunColor.b * sun);
+    const sky = 0.5 * WATER_SKY_IRRADIANCE_FRACTION * atmosphere.skylightIlluminanceNormalized;
+    this.skyUniform.set(
+      (atmosphere.skyZenith.r + atmosphere.skyHorizon.r) * sky,
+      (atmosphere.skyZenith.g + atmosphere.skyHorizon.g) * sky,
+      (atmosphere.skyZenith.b + atmosphere.skyHorizon.b) * sky,
+    );
+    this.gpu?.material.setVector3("spraySun", this.sunUniform);
+    this.gpu?.material.setVector3("spraySky", this.skyUniform);
+  }
+
+  /** The sun and sky the spray is lit by, as the last `setAtmosphere` left them. */
+  get lighting(): { readonly sun: Readonly<Vector3>; readonly sky: Readonly<Vector3> } {
+    return { sun: this.sunUniform, sky: this.skyUniform };
   }
 
   setAerialPerspective(binding: AerialPerspectiveBinding): void {
@@ -510,14 +562,12 @@ export class BoatSpraySystem {
     // Sheets: the cap's sheet share, spread over the roots by jet intensity.
     const roots = Math.min(boat.sprayRootCount | 0, boat.sprayRoots.length >> 2, MAX_BOAT_SPRAY_ROOTS);
     let total = 0;
-    for (let root = 0; root < roots; root += 1) {
-      total += clamp01((boat.sprayRoots[root * 4 + 3]! - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
-    }
+    for (let root = 0; root < roots; root += 1) total += intensityOf(boat.sprayRoots[root * 4 + 3]!);
     const sheetRate = (SPRAY_BUDGET_SHARES.sheet * capScale) / (SHEET_LIFETIME.min + SHEET_LIFETIME.span / 2);
-    const perIntensity = total > 0 ? sheetRate / Math.max(total, 4) : 0;
+    const perIntensity = total > 0 ? sheetRate / Math.max(total, SHEET_FULL_ROOTS) : 0;
     for (let root = 0; root < roots; root += 1) {
       const jet = boat.sprayRoots[root * 4 + 3]!;
-      const intensity = clamp01((jet - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
+      const intensity = intensityOf(jet);
       const born = births(perIntensity * intensity * dt, tick, SOURCE_SHEET + root);
       for (let index = 0; index < born; index += 1) {
         this.birthSheet(state, boat, root, jet, tick, index, back, tickClock);
@@ -564,13 +614,15 @@ export class BoatSpraySystem {
     const r2 = unit(tick, source, index, 2);
     const r3 = unit(tick, source, index, 3);
     const r4 = unit(tick, source, index, 4);
-    // The sheet leaves the chine across the flow: mostly outboard and up,
-    // fanned by the draws so it reads as a sheet and not a jet.
+    // The sheet leaves the chine across the flow, outboard and a little up,
+    // fanned by the draws so it reads as a sheet and not a jet; the harder
+    // the jet, the higher it climbs past the spray rails.
+    const intensity = intensityOf(jet);
     const ax = -0.25 + 0.35 * (r0 - 0.5);
-    const ay = 0.45 + 0.35 * r1;
+    const ay = 0.12 + 0.4 * intensity + 0.2 * r1;
     const az = side * (0.85 - 0.2 * r1);
     const norm = 1 / Math.hypot(ax, ay, az);
-    const throwSpeed = jet * (0.4 + 0.3 * r2);
+    const throwSpeed = jet * (0.25 + 0.25 * r2);
     rotateBodyToWorld(state.orientation, ax * norm * throwSpeed, ay * norm * throwSpeed, az * norm * throwSpeed, this.scratchVelocity);
     // Water leaving the hull keeps part of the hull's own motion.
     const carry = 0.55 + 0.2 * r3;
@@ -584,10 +636,10 @@ export class BoatSpraySystem {
       state.position.z + this.scratch.z + (state.velocity.z - this.frame.z) * back,
       tickClock,
       SHEET_LIFETIME.min + SHEET_LIFETIME.span * r4,
-      0.22 + 0.3 * r0,
+      0.14 + 0.22 * r0,
       r3,
       1.1 + 0.8 * r2,
-      0.34 + 0.26 * intensityOf(jet),
+      0.2 + 0.3 * intensity,
     );
   }
 
@@ -641,7 +693,7 @@ export class BoatSpraySystem {
       state.position.z + this.scratch.z + (state.velocity.z - this.frame.z) * back,
       tickClock,
       life.min + life.span * r4,
-      rooster ? 0.3 + 0.35 * r3 : 0.2 + 0.25 * r3,
+      rooster ? 0.24 + 0.26 * r3 : 0.2 + 0.25 * r3,
       r2,
       rooster ? 0.9 + 0.5 * r1 : 2.2 + r1,
       rooster ? 0.3 : 0.26,
@@ -728,7 +780,16 @@ export class BoatSpraySystem {
       SPRAY_SHADER_NAME,
       {
         attributes: ["position", "sprayA", "sprayB", "sprayC"],
-        uniforms: ["view", "projection", "cameraPosition", "sprayAnchor", "sprayWind", ...AERIAL_PERSPECTIVE_UNIFORMS],
+        uniforms: [
+          "view",
+          "projection",
+          "cameraPosition",
+          "sprayAnchor",
+          "sprayWind",
+          "spraySun",
+          "spraySky",
+          ...AERIAL_PERSPECTIVE_UNIFORMS,
+        ],
         shaderLanguage: ShaderLanguage.WGSL,
         needAlphaBlending: true,
       },
@@ -739,6 +800,8 @@ export class BoatSpraySystem {
     material.alphaMode = Constants.ALPHA_PREMULTIPLIED_PORTERDUFF;
     material.setVector3("sprayAnchor", this.anchorUniform);
     material.setVector4("sprayWind", this.windUniform);
+    material.setVector3("spraySun", this.sunUniform);
+    material.setVector3("spraySky", this.skyUniform);
     mesh.material = material;
     mesh.setEnabled(false);
 
@@ -759,8 +822,10 @@ export class BoatSpraySystem {
   }
 }
 
+/** A root's sheet intensity from its jet speed (`SHEET_JET_THRESHOLD`). */
 function intensityOf(jet: number): number {
-  return clamp01((jet - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
+  const ramp = clamp01((jet - SHEET_JET_THRESHOLD) / SHEET_JET_SPAN);
+  return ramp * ramp;
 }
 
 function wgslFloat(value: number): string {
@@ -769,13 +834,13 @@ function wgslFloat(value: number): string {
 
 const SPRAY_SHADER_NAME = "boatSpray";
 
-/** The droplet phase: a forward lobe and a weak back lobe (sea spray, Mie, large drops). */
+/** A clump of spray as white water: a little below the wake's fresh foam (0.5) seen face on. */
+export const SPRAY_ALBEDO = 0.62;
+/** How much sun the side of a clump turned away from it still passes (it is translucent). */
+export const SPRAY_TRANSLUCENCY = 0.35;
+/** The droplets' forward lobe (large drops, Mie), and how much of the sun it carries. */
 export const SPRAY_FORWARD_G = 0.72;
-export const SPRAY_BACKWARD_G = -0.2;
-export const SPRAY_BACKWARD_BLEND = 0.3;
-/** Multiple scattering inside a dense sheet, as an isotropic floor on the phase. */
-export const SPRAY_MULTIPLE_SCATTERING = 0.42;
-export const SPRAY_AMBIENT_STRENGTH = 0.9;
+export const SPRAY_GLOW = 0.12;
 
 export const BOAT_SPRAY_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -795,17 +860,20 @@ uniform cameraPosition: vec3f;
 uniform sprayAnchor: vec3f;
 // xy surface wind, world m/s along x and z; w clock s (wrapped)
 uniform sprayWind: vec4f;
+// the sun's irradiance at normal incidence over pi; the sky's on a level surface over pi
+uniform spraySun: vec3f;
+uniform spraySky: vec3f;
 
 ${AERIAL_PERSPECTIVE_WGSL}
 
 const SPRAY_PERIOD: f32 = ${wgslFloat(SPRAY_CLOCK_PERIOD_SECONDS)};
+const SPRAY_CLOCK_SLACK: f32 = ${wgslFloat(SPRAY_CLOCK_SLACK_SECONDS)};
 const SPRAY_GRAVITY: f32 = ${wgslFloat(GRAVITY)};
 const SPRAY_PI: f32 = 3.14159265359;
+const SPRAY_ALBEDO: f32 = ${wgslFloat(SPRAY_ALBEDO)};
+const SPRAY_TRANSLUCENCY: f32 = ${wgslFloat(SPRAY_TRANSLUCENCY)};
 const SPRAY_FORWARD_G: f32 = ${wgslFloat(SPRAY_FORWARD_G)};
-const SPRAY_BACKWARD_G: f32 = ${wgslFloat(SPRAY_BACKWARD_G)};
-const SPRAY_BACKWARD_BLEND: f32 = ${wgslFloat(SPRAY_BACKWARD_BLEND)};
-const SPRAY_MULTIPLE_SCATTERING: f32 = ${wgslFloat(SPRAY_MULTIPLE_SCATTERING)};
-const SPRAY_AMBIENT_STRENGTH: f32 = ${wgslFloat(SPRAY_AMBIENT_STRENGTH)};
+const SPRAY_GLOW: f32 = ${wgslFloat(SPRAY_GLOW)};
 
 @vertex
 fn main(input: VertexInputs) -> FragmentInputs {
@@ -815,7 +883,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
 
   // sampleSprayDroplet is this block's CPU twin; change both or neither.
   var age = uniforms.sprayWind.w - recordA.w;
-  age = select(age, age + SPRAY_PERIOD, age < 0.0);
+  age = select(max(age, 0.0), age + SPRAY_PERIOD, age < -SPRAY_CLOCK_SLACK);
   let life = recordB.w;
   let u = select(1.0, age / max(life, 0.0001), life > 0.0);
   let k = max(recordC.z, 0.05);
@@ -828,7 +896,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let centre = uniforms.sprayAnchor + local;
   let velocity = (recordB.xyz - wind + vec3f(0.0, SPRAY_GRAVITY / k, 0.0)) * decay
     + wind - vec3f(0.0, SPRAY_GRAVITY / k, 0.0);
-  let size = recordC.x * (0.55 + 1.6 * u);
+  let size = recordC.x * (0.6 + 1.1 * u);
 
   let toCentre = centre - uniforms.cameraPosition;
   let distanceMeters = max(length(toCentre), 0.001);
@@ -852,19 +920,19 @@ fn main(input: VertexInputs) -> FragmentInputs {
   var clip = uniforms.projection * (viewCentre + vec4f(offset, 0.0, 0.0));
   clip = select(clip, vec4f(0.0, 0.0, 2.0, 1.0), alpha < ${SPRAY_MIN_VISIBLE_ALPHA});
 
-  // Optically thin, as the steam: sun through the shared transmittance with a
-  // forward-peaked droplet phase and a multiple-scattering floor, plus sky.
+  // White water in the sea's light (see the header): the sunlit fraction of
+  // the clump seen at phase angle acos(-mu), translucent, plus the sky, plus
+  // the forward glow of spray seen against the sun. Nothing of the sun once
+  // it is below the horizon.
   let rayDirection = toCentre / distanceMeters;
   let sunDirection = normalize(uniforms.aerialSunDirection);
   let mu = dot(rayDirection, sunDirection);
-  let sunAtDrop = uniforms.aerialSunRadiance * aerialSunTransmittanceAt(centre.y, sunDirection.y);
-  let phase = mix(
-    aerialMiePhase(mu, SPRAY_FORWARD_G),
-    aerialMiePhase(mu, SPRAY_BACKWARD_G),
-    SPRAY_BACKWARD_BLEND,
-  ) + SPRAY_MULTIPLE_SCATTERING / (4.0 * SPRAY_PI);
-  let sky = skyRadiance(normalize(vec3f(rayDirection.x, abs(rayDirection.y) + 0.35, rayDirection.z)));
-  let radiance = sunAtDrop * phase + sky * SPRAY_AMBIENT_STRENGTH;
+  let sun = uniforms.spraySun * smoothstep(-0.02, 0.02, sunDirection.y);
+  let phaseAngle = acos(clamp(-mu, -1.0, 1.0));
+  let sunlit = (sin(phaseAngle) + (SPRAY_PI - phaseAngle) * cos(phaseAngle)) / SPRAY_PI;
+  let lit = SPRAY_TRANSLUCENCY + (1.0 - SPRAY_TRANSLUCENCY) * sunlit;
+  let glow = SPRAY_GLOW * 4.0 * SPRAY_PI * aerialMiePhase(mu, SPRAY_FORWARD_G);
+  let radiance = SPRAY_ALBEDO * (sun * lit + uniforms.spraySky) + sun * glow;
   let haze = aerialPerspective(centre.y, distanceMeters, mu);
 
   vertexOutputs.position = clip;

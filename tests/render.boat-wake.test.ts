@@ -68,9 +68,14 @@ interface Segment {
   olderX: number;
   olderZ: number;
   olderClock: number;
+  /** The starboard direction's angle in the xz plane. */
+  olderStarboard: number;
+  olderDistance: number;
   newerX: number;
   newerZ: number;
   newerClock: number;
+  newerStarboard: number;
+  newerDistance: number;
   speed: number;
 }
 
@@ -82,9 +87,13 @@ function segment(wake: BoatWakeSystem, slot: number): Segment {
     olderX: r[at]! + x,
     olderZ: r[at + 1]! + z,
     olderClock: r[at + 4]!,
+    olderStarboard: r[at + 2]!,
+    olderDistance: r[at + 3]!,
     newerX: r[at + 8]! + x,
     newerZ: r[at + 9]! + z,
     newerClock: r[at + 12]!,
+    newerStarboard: r[at + 10]!,
+    newerDistance: r[at + 11]!,
     speed: r[at + 5]! + r[at + 13]!,
   };
 }
@@ -239,6 +248,33 @@ describe("laying track", () => {
     }
     // The head reaches the transom now.
     expect(segments[segments.length - 1]!.newerX).toBeCloseTo(speed * 10 - 1.95, 4);
+  });
+
+  it("measures the track along itself, joint to joint, so its streaks stay where they were laid", () => {
+    const speed = 15;
+    let time = 50;
+    // Heading 0.4 rad: the bow points along (cos, -sin), so starboard is (sin, cos).
+    const yaw = 0.4;
+    wake.update(running(time, 0, 0, yaw, speed));
+    for (let frame = 1; frame <= 600; frame += 1) {
+      time += 1 / 60;
+      const run = speed * (time - 50);
+      wake.update(running(time, Math.cos(yaw) * run, -Math.sin(yaw) * run, yaw, speed));
+    }
+    const segments = laidSegments(wake).sort((a, b) => a.olderDistance - b.olderDistance);
+    for (const s of segments) {
+      expect(s.newerDistance - s.olderDistance).toBeCloseTo(Math.hypot(s.newerX - s.olderX, s.newerZ - s.olderZ), 3);
+      for (const angle of [s.olderStarboard, s.newerStarboard]) {
+        expect(Math.cos(angle)).toBeCloseTo(Math.sin(yaw), 5);
+        expect(Math.sin(angle)).toBeCloseTo(Math.cos(yaw), 5);
+      }
+    }
+    for (let index = 1; index < segments.length; index += 1) {
+      expect(segments[index]!.olderDistance).toBeCloseTo(segments[index - 1]!.newerDistance, 3);
+    }
+    // Ten seconds of new track on top of the primed trail.
+    const head = segments[segments.length - 1]!;
+    expect(head.newerDistance).toBeCloseTo(speed * 10, 2);
   });
 
   it("commits early in a turn, so the trail follows the arc", () => {

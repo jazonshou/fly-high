@@ -1983,6 +1983,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setWindSpeed(seaSpectrumWindSpeed(this.worldDefinition, weather));
     this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
+    this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
     this.boatHeave?.setWeather(weather);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
