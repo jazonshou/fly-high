@@ -106,6 +106,14 @@ const GRID_LEAD_LIMIT_METERS = 2;
 /** How far past the hull's half length and half beam the fast path answers, metres. */
 const COVER_MARGIN_METERS = 0.25;
 
+/**
+ * Past the cover box, the reach of the disk round the focus over which the
+ * shelter is classified once per step, metres: it has to hold the label
+ * points the fixed point visits, which sit a wave's horizontal displacement
+ * from the hull.
+ */
+const SHELTER_DISK_MARGIN_METERS = 10;
+
 /** Bed samples along and across the hull footprint; each hull sample's depth interpolates them. */
 const BED_GRID_ALONG = 4;
 const BED_GRID_ACROSS = 3;
@@ -776,6 +784,14 @@ export class SeaTwin implements HullWaterSampler {
 
   private shelter: Float64Array | null = null;
   private readonly shelterScratch = new Float64Array(3);
+  // The shelter over a disk round the focus: a constant (each basin wholly
+  // around the disk or wholly clear of it, so the gradient is 0), or NaN
+  // where an edge crosses the disk and points need the full field.
+  private shelterClassified = false;
+  private shelterConstant = 1;
+  private shelterDiskX = 0;
+  private shelterDiskZ = 0;
+  private shelterDiskRadiusSquared = 0;
   private readonly fields = createSeaFields();
   private readonly partial = createSeaFields();
 
@@ -837,11 +853,13 @@ export class SeaTwin implements HullWaterSampler {
     this.focus.halfLength = focus.halfLength;
     this.focus.halfBeam = focus.halfBeam;
     if (moved) this.expansionValid = false;
+    this.shelterClassified = false;
   }
 
   /** Marina basins (at most 4); the open sea is exactly 1. */
   setShelter(ellipses: readonly SeaShelterEllipse[]): void {
     this.shelter = ellipses.length === 0 ? null : packSeaShelterEllipses(ellipses);
+    this.shelterClassified = false;
   }
 
   sample(x: number, z: number, out: WaterSurfaceSample): WaterSurfaceSample {
@@ -970,13 +988,79 @@ export class SeaTwin implements HullWaterSampler {
 
   private shelterAt(x: number, z: number): Float64Array {
     const out = this.shelterScratch;
-    if (this.shelter === null) {
-      out[0] = 1;
+    if (this.shelter === null || this.shelterHolds(x, z)) {
+      out[0] = this.shelter === null ? 1 : this.shelterConstant;
       out[1] = 0;
       out[2] = 0;
       return out;
     }
     return seaShelterField(this.shelter, x, z, out);
+  }
+
+  /** The shelter factor alone: what the fixed-point iterations scale displacement by. */
+  private shelterFactorAt(x: number, z: number): number {
+    if (this.shelter === null) return 1;
+    if (this.shelterHolds(x, z)) return this.shelterConstant;
+    return seaShelterField(this.shelter, x, z, this.shelterScratch)[0]!;
+  }
+
+  /** Whether the focus disk's constant is the field at this point, exactly. */
+  private shelterHolds(x: number, z: number): boolean {
+    if (!this.shelterClassified) this.classifyShelter();
+    if (Number.isNaN(this.shelterConstant)) return false;
+    const dx = x - this.shelterDiskX;
+    const dz = z - this.shelterDiskZ;
+    return dx * dx + dz * dz <= this.shelterDiskRadiusSquared;
+  }
+
+  /**
+   * Classifies each basin against a disk round the focus, by bounds over the
+   * square that holds the disk in the basin's own frame (`u` along, `v`
+   * across), where `f = q - 1`, `q = u^2/a^2 + v^2/b^2` and
+   * `|grad f| = 2 sqrt(u^2/a^4 + v^2/b^4)`. If `q` stays at or under 1 the disk
+   * is inside the ellipse and the field's slot is exactly `1 - depth`. If the
+   * least `f` over the greatest `|grad f|` is a feather or more, the disk is
+   * past the feather and the slot is exactly 1. Either way the gradient is 0.
+   * The products are taken in seaShelterField's order, so the constant is
+   * bit-identical to the field it stands for.
+   */
+  private classifyShelter(): void {
+    const packed = this.shelter!;
+    const { focus } = this;
+    const radius = Math.hypot(focus.halfLength + COVER_MARGIN_METERS, focus.halfBeam + COVER_MARGIN_METERS)
+      + SHELTER_DISK_MARGIN_METERS;
+    let constant = 1;
+    for (let base = 0; base < packed.length; base += 8) {
+      const depth = packed[base + 6]!;
+      if (depth === 0) continue;
+      const sine = packed[base + 2]!;
+      const cosine = packed[base + 3]!;
+      const inverseA2 = packed[base + 4]!;
+      const inverseB2 = packed[base + 5]!;
+      const dx = focus.x - packed[base]!;
+      const dz = focus.z - packed[base + 1]!;
+      const along = Math.abs(dx * sine + dz * cosine);
+      const across = Math.abs(dx * cosine - dz * sine);
+      const farAlong = (along + radius) ** 2;
+      const farAcross = (across + radius) ** 2;
+      // A part in a million keeps rounding off the boundaries.
+      if ((farAlong * inverseA2 + farAcross * inverseB2) * (1 + 1e-6) <= 1) {
+        constant *= 1 - depth;
+        continue;
+      }
+      const nearAlong = along > radius ? (along - radius) ** 2 : 0;
+      const nearAcross = across > radius ? (across - radius) ** 2 : 0;
+      const leastF = nearAlong * inverseA2 + nearAcross * inverseB2 - 1;
+      const greatestGradient = 2 * Math.sqrt(farAlong * inverseA2 * inverseA2 + farAcross * inverseB2 * inverseB2);
+      if (leastF > 0 && (leastF / greatestGradient) * packed[base + 7]! * (1 - 1e-6) >= 1) continue;
+      constant = Number.NaN;
+      break;
+    }
+    this.shelterConstant = constant;
+    this.shelterDiskX = focus.x;
+    this.shelterDiskZ = focus.z;
+    this.shelterDiskRadiusSquared = radius * radius;
+    this.shelterClassified = true;
   }
 
   private ensureExpansion(): void {
@@ -1365,7 +1449,7 @@ export class SeaTwin implements HullWaterSampler {
     dx += w00 * n[i00 + NODE_DX]! + w01 * n[i01 + NODE_DX]! + w10 * n[i10 + NODE_DX]! + w11 * n[i11 + NODE_DX]!;
     dz += w00 * n[i00 + NODE_DZ]! + w01 * n[i01 + NODE_DZ]! + w10 * n[i10 + NODE_DZ]! + w11 * n[i11 + NODE_DZ]!;
     if (this.shelter !== null) {
-      const shelter = seaShelterField(this.shelter, labelX, labelZ, this.shelterScratch)[0]!;
+      const shelter = this.shelterFactorAt(labelX, labelZ);
       dx *= shelter;
       dz *= shelter;
     }
