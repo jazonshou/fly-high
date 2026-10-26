@@ -1246,11 +1246,11 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     // Tabs.
     const tabStep = definition.tabs.rate * dt;
     if (targets.tabsAuto) {
-      // The rocker moves the collective; the assist's differential rides on it.
+      // The rocker moves the collective; the assist's pitch and differential ride on it.
       this.tabCollective = clamp(this.tabCollective + targets.tabRate * tabStep, 0, 1);
       const half = 0.5 * targets.tabDifferential;
-      const portTarget = clamp(this.tabCollective - half, 0, 1);
-      const starboardTarget = clamp(this.tabCollective + half, 0, 1);
+      const portTarget = clamp(this.tabCollective + targets.tabPitch - half, 0, 1);
+      const starboardTarget = clamp(this.tabCollective + targets.tabPitch + half, 0, 1);
       this.tabPort += clamp(portTarget - this.tabPort, -tabStep, tabStep);
       this.tabStarboard += clamp(starboardTarget - this.tabStarboard, -tabStep, tabStep);
     } else {
