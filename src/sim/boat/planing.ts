@@ -72,6 +72,8 @@ export interface StripOutputs {
   wettedLength: number;
   /** Per strip and side (index 2i + (starboard ? 1 : 0)): wetted half-beam, m. */
   readonly wettedHalfBeam: Float64Array;
+  /** Per strip and side: how far out from the keel the wetted bottom starts, m (0 unless only a band at the chine is wet). */
+  readonly wettedInner: Float64Array;
   /** Spray roots: body x y z and jet speed, flattened, `sprayCount` live. */
   readonly spray: Float64Array;
   sprayCount: number;
@@ -87,6 +89,7 @@ export function createStripOutputs(strips: HullStrips): StripOutputs {
     dynamicLift: 0,
     wettedLength: 0,
     wettedHalfBeam: new Float64Array(strips.count * 2),
+    wettedInner: new Float64Array(strips.count * 2),
     spray: new Float64Array(MAX_BOAT_SPRAY_ROOTS * 4),
     sprayCount: 0,
     peakSectionLoad: 0,
@@ -149,6 +152,7 @@ export function evaluateStrips(
   out.wettedLength = 0;
   out.peakSectionLoad = 0;
   out.wettedHalfBeam.fill(0);
+  out.wettedInner.fill(0);
   let candidates = 0;
 
   const span = strips.length;
@@ -230,6 +234,7 @@ export function evaluateStrips(
         const massRate = wet < chine && edgeSink > 0 ? (ka * rho * (Math.PI / 2) * wet * edgeSink * release) / descent : 0;
         accumulateSide(out, x, keelY, tanBeta, side, wet, centre, nx, ny, massPerLength, massRate, entrySpeed, along, omegaY, omegaZ, kCurve, calibration, rho, release, span);
         out.wettedHalfBeam[index] = wet;
+        out.wettedInner[index] = chine - wet;
         continue;
       }
       if (depthPerp <= 0) continue;
