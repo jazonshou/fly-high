@@ -62,6 +62,7 @@ import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
+import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
 import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
@@ -1857,6 +1858,15 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
+  }
+
+  /**
+   * The marina's calm basins (boats): the drawn waves inside are scaled down
+   * exactly as the sea twin scales the waves a hull floats on. Pass the world's
+   * marina shelter ellipses; none is the open sea.
+   */
+  setSeaShelter(ellipses: readonly SeaShelterEllipse[]): void {
+    this.ocean.setShelter(ellipses);
   }
 
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {

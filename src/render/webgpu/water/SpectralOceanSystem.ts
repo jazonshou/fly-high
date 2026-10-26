@@ -44,7 +44,15 @@ import {
   type OceanCascadeConfig,
   type SpectralOceanConfig,
 } from "@/src/render/webgpu/nature/OceanConfig";
+import {
+  packSeaShelterEllipses,
+  SEA_SHELTER_DECLARATIONS_WGSL,
+  SEA_SHELTER_MAX_ELLIPSES,
+  SEA_SHELTER_UNIFORMS,
+  SEA_SHELTER_WGSL,
+} from "@/src/sim/water/shelter";
 import { oceanEffectiveFetchMeters, oceanSpectrumParameters } from "@/src/sim/water/spectrum";
+import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import {
   OCEAN_SPATIAL_DERIVATION_WGSL,
   OCEAN_SPECTRUM_EVOLUTION_WGSL,
@@ -449,10 +457,10 @@ fn oceanFftTexelAlignment(size: vec2u) -> vec2f {
  * ShaderMaterial options, and calls `SpectralOceanSystem.bindSurface(material)`
  * every frame after `update`. `oceanSurfaceDisplacement(worldXZ)` then returns
  * exactly the displacement the sea's vertex at that point received: the same
- * cascades, the same pixel and lattice fades, the same disk centre. `worldXZ`
- * is ABSOLUTE world metres (render position plus the floating origin), the
- * frame `oceanWorldOrigin` lives in. The sub-26 m ripple relief (2.8 cm, camera
- * local) is not part of it.
+ * cascades, the same pixel and lattice fades, the same disk centre, the same
+ * marina shelter. `worldXZ` is ABSOLUTE world metres (render position plus the
+ * floating origin), the frame `oceanWorldOrigin` lives in. The sub-26 m ripple
+ * relief (2.8 cm, camera local) is not part of it.
  */
 export const OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL = /* wgsl */ `
 uniform oceanWorldOrigin: vec2f;
@@ -469,7 +477,11 @@ var displacement1Sampler: sampler; var displacement1: texture_2d<f32>;
 var displacement2Sampler: sampler; var displacement2: texture_2d<f32>;
 var displacement3Sampler: sampler; var displacement3: texture_2d<f32>;
 var displacement4Sampler: sampler; var displacement4: texture_2d<f32>;
+${SEA_SHELTER_DECLARATIONS_WGSL}
 `;
+
+/** The shelter uniforms' values with no basin: every slot neutral. */
+const NO_SEA_SHELTER = packSeaShelterEllipses([]);
 
 /** The uniforms `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` declares. */
 export const OCEAN_SURFACE_UNIFORMS: readonly string[] = [
@@ -482,6 +494,7 @@ export const OCEAN_SURFACE_UNIFORMS: readonly string[] = [
   "cascadeMeshFadeRadii0",
   "cascadeMeshFadeRadius4",
   "cascadeFadeCameraHeight",
+  ...SEA_SHELTER_UNIFORMS,
 ];
 
 /** The displacement textures `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` declares. */
@@ -492,6 +505,7 @@ export const OCEAN_SURFACE_SAMPLERS: readonly string[] = Array.from(
 
 export const OCEAN_SURFACE_DISPLACEMENT_WGSL = /* wgsl */ `
 ${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
+${SEA_SHELTER_WGSL}
 
 fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
   let coordinate = fract(worldXZ / patchLength)
@@ -574,7 +588,9 @@ fn oceanSurfaceCascadeDisplacement(worldXZ: vec2f, meshFades: vec4f, meshFade4: 
   if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * meshFades.z; }
   if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * meshFades.w; }
   if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * meshFade4; }
-  return displacement;
+  // The marina's calm basin (boats T1): exactly 1 on the open sea, and the
+  // sea twin scales the hull's waves by the same field.
+  return displacement * seaShelterFactor(worldXZ);
 }
 
 // The displacement the sea's own vertex at worldXZ received.
@@ -2112,6 +2128,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private readonly surfaceMeshFadeRadii0 = Vector4.Zero();
   private surfaceMeshFadeRadius4 = 0;
   private surfaceCameraHeight = 0;
+  private readonly surfaceShelter: readonly Vector4[] = Array.from(
+    { length: SEA_SHELTER_MAX_ELLIPSES * 2 },
+    (_, index) => Vector4.FromArray(NO_SEA_SHELTER, index * 4),
+  );
   private readonly cloudShadowCenterLocal = Vector2.Zero();
   private readonly cloudShadowSunDirection = Vector3.Up();
   private cloudShadowProjection: CloudShadowProjection | null = null;
@@ -2162,6 +2182,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "cascadeMeshFadeRadii0",
           "cascadeMeshFadeRadius4",
           "cascadeFadeCameraHeight",
+          ...SEA_SHELTER_UNIFORMS,
           "cameraPosition",
           "sunDirection",
           "sunColor",
@@ -2573,6 +2594,19 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   }
 
   /**
+   * The marina's calm basins (at most four), from the world's marina layout:
+   * the drawn waves inside are scaled by each ellipse's floor, as the sea twin
+   * scales the waves a hull floats on. None is the open sea, exactly.
+   */
+  setShelter(ellipses: readonly SeaShelterEllipse[]): void {
+    const packed = packSeaShelterEllipses(ellipses);
+    this.surfaceShelter.forEach((vector, index) => {
+      vector.set(packed[index * 4]!, packed[index * 4 + 1]!, packed[index * 4 + 2]!, packed[index * 4 + 3]!);
+    });
+    this.writeSurfaceUniforms(this.material);
+  }
+
+  /**
    * Binds the sea's displacement to another material that includes
    * `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` and lists
    * `OCEAN_SURFACE_UNIFORMS` and `OCEAN_SURFACE_SAMPLERS`, so its
@@ -2599,6 +2633,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     material.setVector4("cascadeMeshFadeRadii0", this.surfaceMeshFadeRadii0);
     material.setFloat("cascadeMeshFadeRadius4", this.surfaceMeshFadeRadius4);
     material.setFloat("cascadeFadeCameraHeight", this.surfaceCameraHeight);
+    for (let slot = 0; slot < SEA_SHELTER_MAX_ELLIPSES; slot += 1) {
+      material.setVector4(`seaShelterA${slot}`, this.surfaceShelter[slot * 2]!);
+      material.setVector4(`seaShelterB${slot}`, this.surfaceShelter[slot * 2 + 1]!);
+    }
   }
 
   /**
