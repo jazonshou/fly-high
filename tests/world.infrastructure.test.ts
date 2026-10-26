@@ -62,18 +62,27 @@ function flat(index: InfrastructureIndex, ground: number, x: number, z: number):
  */
 const PROFILE_EXAMPLES: Record<string, readonly number[]> = {
   platform: [1.2, 2],
+  marinaDredge: [3, 4, 0.3, 1.2],
+  marinaPad: [1.5, 1.5, 2, 0.15],
+  marinaSlipway: [1.5, -1.5, 1.5],
+  marinaBreakwater: [2, 2.5, 1.5],
 };
 
 describe("infrastructure stage containment", () => {
-  it("ships no sources, so every height is the pre-stage height bit for bit", () => {
-    expect(INFRASTRUCTURE_SOURCES).toHaveLength(0);
-    expect(infrastructureIndex(world).segments).toHaveLength(0);
+  it("ships only the home marina, so every height outside it is the pre-stage height bit for bit", () => {
+    expect(INFRASTRUCTURE_SOURCES).toHaveLength(1);
+    const index = infrastructureIndex(world);
+    expect(index.segments.length).toBeGreaterThan(0);
+    let outside = 0;
     for (let i = 0; i < 64; i += 1) {
       const x = -6_000 + i * 197.3;
       const z = 3_000 - i * 151.9;
+      if (infrastructureNear(world, x, z, 0.01, index)) continue;
+      outside += 1;
       const before = sampleTerrainHeightBeforeEarthworks(world, x, z);
       expect(Object.is(sampleTerrainHeightBeforeAirports(world, x, z), before)).toBe(true);
     }
+    expect(outside).toBeGreaterThan(50);
     // The home field is still the platform it was.
     const airport = world.airport!;
     expect(sampleTerrainHeight(world, airport.centerX, airport.centerZ)).toBeCloseTo(airport.elevation, 6);

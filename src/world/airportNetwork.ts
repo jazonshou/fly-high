@@ -293,9 +293,18 @@ const VOLCANIC_CLEARANCE_GROUND = createVolcanicGroundSample();
  * thresholds of a site that passed.
  */
 export function spawnedAirportGroundAllowed(world: WorldDefinition, x: number, z: number): boolean {
-  return !inSandSea(world, x, z)
-    && !volcanicGroundRefuses(world, x, z)
+  return landformGroundAllowsAirport(world, x, z)
     && !infrastructureNear(world, x, z, SPAWNED_AIRPORT_INFRASTRUCTURE_CLEARANCE_METERS);
+}
+
+/**
+ * The landform half of `spawnedAirportGroundAllowed`: no sand sea, no
+ * volcanic land. An infrastructure source (the home marina's site search)
+ * asks this one, since the other half reads the infrastructure index the
+ * source is being called to build.
+ */
+export function landformGroundAllowsAirport(world: WorldDefinition, x: number, z: number): boolean {
+  return !inSandSea(world, x, z) && !volcanicGroundRefuses(world, x, z);
 }
 
 

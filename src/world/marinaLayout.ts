@@ -69,6 +69,10 @@ export const MARINA_LAYOUT = Object.freeze({
   /** Moored runabouts: this share of the free berths, at most this many. */
   mooredShare: 0.45,
   mooredMax: 10,
+  /** Quay wall: thickness, its coping's height above the apron, and the gap it leaves each side of the slipway. */
+  quayWallThickness: 1.2,
+  quayCopingHeight: 0.1,
+  quayWallSlipwayGap: 2.5,
   /** Slipway: 1:8, 6 m wide, toe 1.5 m below still water, top at the apron. */
   slipwayHalfWidth: 3,
   slipwayGrade: 1 / 8,
@@ -404,9 +408,6 @@ export function buildMarinaLayout(
     posts.push(Object.freeze({ kind, right, out, bottomY, topY, radius, floating }));
   };
 
-  // Quay wall: its face on the waterline, its top the apron.
-  box("quayWall", 0, -0.3, (quayY + bedY) * 0.5, L.quayHalfLength, 0.3, (quayY - bedY) * 0.5);
-
   // Pier: deck and pile pairs.
   box("pierDeck", pierRight, pierLength * 0.5, pierY - 0.15, L.pierWidth * 0.5, pierLength * 0.5, 0.15);
   const pileAcross = L.pierWidth * 0.5 - 0.15;
@@ -545,6 +546,20 @@ export function buildMarinaLayout(
     outMax: 0,
   });
 
+  // Quay wall: its face on the waterline, its coping a little proud of the
+  // apron, along the apron's whole front but the slipway and its side slopes.
+  // The apron's ground drops to the bed inside it (marinaEarthworks).
+  const wallTop = quayY + L.quayCopingHeight;
+  const slipLow = slipRight - L.slipwayHalfWidth - L.quayWallSlipwayGap;
+  const slipHigh = slipRight + L.slipwayHalfWidth + L.quayWallSlipwayGap;
+  for (const [low, high] of [[apron.rightMin, slipLow], [slipHigh, apron.rightMax]] as const) {
+    if (high - low < 1) continue;
+    box(
+      "quayWall", (low + high) * 0.5, -L.quayWallThickness * 0.5, (wallTop + bedY) * 0.5,
+      (high - low) * 0.5, L.quayWallThickness * 0.5, (wallTop - bedY) * 0.5,
+    );
+  }
+
   // Car park behind the apron, away from the slipway; the shed beside the slip.
   const carParkCentre = -slipSide * (L.quayHalfLength - L.carParkHalfWidth);
   const carParkBackOut = -L.apronDepth - L.carParkDepth;
@@ -575,8 +590,8 @@ export function buildMarinaLayout(
   for (const [right, out, y] of [
     [pierRight + L.pierWidth * 0.5 + 0.4, 1.5, quayY],
     [pierRight - L.pierWidth * 0.5 - 0.4, pierLength - 1, pierY],
-    [-L.quayHalfLength + 2, -1.2, quayY],
-    [L.quayHalfLength - 2, -1.2, quayY],
+    [-L.quayHalfLength + 2, -1.8, quayY],
+    [L.quayHalfLength - 2, -1.8, quayY],
     [armRightMin + 1, armOut, pontoonY],
     [armRightMax - 1, armOut, pontoonY],
   ] as const) {
@@ -590,8 +605,8 @@ export function buildMarinaLayout(
     lamps.push({ kind: "pier", right, out, y: pierY + L.lampPostHeight, floating: false });
   }
   for (let right = apron.rightMin + 4; right <= apron.rightMax - 4 + 1e-6; right += L.quayLampSpacing) {
-    post("lampPost", right, -1.2, quayY, quayY + L.lampPostHeight, 0.06);
-    lamps.push({ kind: "quay", right, out: -1.2, y: quayY + L.lampPostHeight, floating: false });
+    post("lampPost", right, -1.8, quayY, quayY + L.lampPostHeight, 0.06);
+    lamps.push({ kind: "quay", right, out: -1.8, y: quayY + L.lampPostHeight, floating: false });
   }
   for (const right of [carPark.rightMin + 1, carPark.rightMax - 1]) {
     for (const out of [carPark.outMin + 1, carPark.outMax - 1]) {

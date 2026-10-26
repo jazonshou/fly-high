@@ -1,5 +1,12 @@
 import { clamp, smoothstep } from "./noise";
 import {
+  MARINA_PROFILE_WGSL,
+  marinaBreakwaterHeight,
+  marinaDredgeHeight,
+  marinaPadHeight,
+  marinaSlipwayHeight,
+} from "./marinaEarthworkProfiles";
+import {
   infrastructureCapsuleDistance,
   type InfrastructureProfile,
   type InfrastructureProfileSample,
@@ -69,8 +76,28 @@ fn terrainInfra_platform(
 
 export const INFRASTRUCTURE_PROFILE = Object.freeze({
   platform: 0,
+  // The home marina's (marinaEarthworkProfiles.ts).
+  marinaDredge: 1,
+  marinaPad: 2,
+  marinaSlipway: 3,
+  marinaBreakwater: 4,
 });
 
 export const INFRASTRUCTURE_PROFILES: readonly InfrastructureProfile[] = Object.freeze([
   Object.freeze({ id: INFRASTRUCTURE_PROFILE.platform, name: "platform", height: platformHeight, wgsl: PLATFORM_WGSL }),
+  Object.freeze({
+    id: INFRASTRUCTURE_PROFILE.marinaDredge, name: "marinaDredge", height: marinaDredgeHeight, wgsl: MARINA_PROFILE_WGSL.marinaDredge,
+  }),
+  Object.freeze({
+    id: INFRASTRUCTURE_PROFILE.marinaPad, name: "marinaPad", height: marinaPadHeight, wgsl: MARINA_PROFILE_WGSL.marinaPad,
+  }),
+  Object.freeze({
+    id: INFRASTRUCTURE_PROFILE.marinaSlipway, name: "marinaSlipway", height: marinaSlipwayHeight, wgsl: MARINA_PROFILE_WGSL.marinaSlipway,
+  }),
+  Object.freeze({
+    id: INFRASTRUCTURE_PROFILE.marinaBreakwater,
+    name: "marinaBreakwater",
+    height: marinaBreakwaterHeight,
+    wgsl: MARINA_PROFILE_WGSL.marinaBreakwater,
+  }),
 ]);

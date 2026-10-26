@@ -17,6 +17,7 @@ export {
   getRunwayEnds,
   nearestAirport,
   spawnedAirportGroundAllowed,
+  landformGroundAllowsAirport,
   spawnedAirportSiteHeight,
   withAirports,
 } from "./airportNetwork";

@@ -1,5 +1,5 @@
 import { getAirportInfluence, worldToRunway } from "./airport";
-import { spawnedAirportGroundAllowed } from "./airportNetwork";
+import { landformGroundAllowsAirport } from "./airportNetwork";
 import { buildMarinaLayout, marinaToWorld, type MarinaLayout } from "./marinaLayout";
 import { sampleTerrainHeightBeforeEarthworks } from "./terrain";
 import type { AirportDefinition, WorldDefinition } from "./types";
@@ -288,8 +288,8 @@ function preAssess(
       return null;
     }
   }
-  if (!spawnedAirportGroundAllowed(world, x, z)) return null;
-  if (!spawnedAirportGroundAllowed(world, x - nx * 60, z - nz * 60)) return null;
+  if (!landformGroundAllowsAirport(world, x, z)) return null;
+  if (!landformGroundAllowsAirport(world, x - nx * 60, z - nz * 60)) return null;
   // Short piers and a home near the airport first; the full assessment decides.
   const preScore = -berthDistance / 60 - crossing.radius / 12_000;
   return { crossing, berthDistance, berthDepth, preScore };
@@ -511,7 +511,7 @@ function candidatesOfDredged(
       }
     }
     if (openAt < 0) continue;
-    if (!spawnedAirportGroundAllowed(world, x, z)) continue;
+    if (!landformGroundAllowsAirport(world, x, z)) continue;
     const depth = -sampler.height(x + nx * 60, z + nz * 60);
     out.push({ crossing, berthDistance: 60, berthDepth: depth, preScore: -openAt / 1_500 - crossing.radius / 48_000 });
   }

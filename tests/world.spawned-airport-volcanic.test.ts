@@ -4,6 +4,7 @@ import {
   findSpawnedAirport,
   getRunwayEnds,
   sampleNaturalTerrainHeight,
+  landformGroundAllowsAirport,
   spawnedAirportGroundAllowed,
   spawnedAirportSiteHeight,
   type AirportDefinition,
@@ -84,7 +85,8 @@ describe("spawned airports and volcanic land", () => {
   it("refuses volcanic ground and the clearance around it", () => {
     const world = createWorld("open-skies");
     const home = world.airport!;
-    expect(spawnedAirportGroundAllowed(world, home.centerX, home.centerZ)).toBe(true);
+    // The home field itself stands on neither (the home marina's quay nearby refuses a spawned airport there, not the land).
+    expect(landformGroundAllowsAirport(world, home.centerX, home.centerZ)).toBe(true);
     const strato = guaranteedStrato(world);
     expect(spawnedAirportGroundAllowed(world, strato.x, strato.z)).toBe(false);
 
