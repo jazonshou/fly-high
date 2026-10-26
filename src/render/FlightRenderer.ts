@@ -1325,6 +1325,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
+      // The home marina's calm basin, the one the worker's sea twin floats a
+      // hull on, so the drawn waves inside are the waves the boat rides.
+      ocean.setShelter([homeMarina(options.world).shelter]);
       const waterEnvironment = new WaterEnvironmentField(scene, options.world);
       cleanup.push(() => waterEnvironment.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
