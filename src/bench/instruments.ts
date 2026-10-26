@@ -637,6 +637,10 @@ function browserEnvironmentHost(): EnvironmentHost {
  * viewport resized, the device pixel ratio changed (a zoom, or the window
  * moved to another monitor), and focus lost while visible. `onEvent` hears
  * each as it happens; the counts are read at the end.
+ *
+ * A page that loads in a hidden tab gets no event for it, so a document
+ * already hidden at install is counted and reported as "hidden" on the next
+ * microtask, as a tab switched away would be.
  */
 export function installEnvironmentGuards(
   onEvent: (event: EnvironmentEvent, at: number) => void,
@@ -706,6 +710,13 @@ export function installEnvironmentGuards(
   view.addEventListener("resize", onResize);
   view.addEventListener("blur", onBlur);
   view.addEventListener("focus", onFocus);
+  let installed = true;
+  if (!visible) {
+    hiddenEvents += 1;
+    queueMicrotask(() => {
+      if (installed && page.visibilityState === "hidden") onEvent("hidden", now());
+    });
+  }
   return {
     read: (at = now()) => ({
       hiddenEvents,
@@ -715,6 +726,7 @@ export function installEnvironmentGuards(
       focusLostMs: focusLostMs + (focusLostAt !== null ? at - focusLostAt : 0),
     }),
     uninstall: () => {
+      installed = false;
       page.removeEventListener("visibilitychange", onVisibility);
       view.removeEventListener("resize", onResize);
       view.removeEventListener("blur", onBlur);

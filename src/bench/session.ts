@@ -515,7 +515,9 @@ class StepPage {
   private ticker: ReturnType<typeof setInterval> | null = null;
   /** A card's countdown: when the page goes on by itself. */
   private continueAt: number | null = null;
-  /** Where a voided attempt goes once the person is back. */
+  /** Why this attempt was voided, once it was. */
+  private voided: "void-hidden" | "void-resized" | null = null;
+  /** Where a voided attempt goes, once the void is saved. */
   private voidedHref: string | null = null;
 
   constructor(
@@ -637,6 +639,8 @@ class StepPage {
           renderThrew: (error) => this.fail(errorText(error)),
         },
       });
+      // The attempt ended while the renderer started (a hidden tab, say): it draws nothing.
+      if (this.ended) this.controller.stop();
       return this.controller;
     });
     return this.decorator;
@@ -695,25 +699,39 @@ class StepPage {
     this.later(() => this.go(href), this.timings.failurePauseS * 1_000);
   }
 
-  /** The tab was hidden, or the window changed: this attempt says nothing. */
+  /**
+   * The tab was hidden, or the window changed: this attempt says nothing.
+   * A hidden page saves nothing yet. The void is saved, and the countdown
+   * starts, once the person is back to see why; and a reload, Back or a
+   * closed tab hides the page on its way out too, where the next load must
+   * find the step still claimed, to record it as interrupted with its
+   * navigation type (flow.ts).
+   */
   private voidAttempt(outcome: "void-hidden" | "void-resized"): void {
     if (this.ended || !this.store) return;
     this.ended = true;
+    this.voided = outcome;
     this.controller?.stop();
-    const transition = voidAttempt(this.store, this.stepIndex, outcome, this.host.isoNow(), this.host.href);
-    const href = this.save(transition) ? transition.href : this.reportHref();
     this.pagePhase = "paused";
     this.cards = [{
       kind: outcome === "void-hidden" ? "hidden" : "resized",
       tierIndex: this.tierIndex,
       attempt: this.attempt,
       maxAttempts: this.timings.maxAttempts,
-      onContinue: () => this.go(href),
+      onContinue: () => {
+        if (this.voidedHref !== null) this.go(this.voidedHref);
+      },
     }];
-    this.voidedHref = href;
-    // A hidden tab waits until it is back, so the person sees why.
-    if (outcome === "void-resized" || document.visibilityState !== "hidden") this.countDownTo(href);
+    if (document.visibilityState !== "hidden") this.saveVoid();
     this.render();
+  }
+
+  /** Saves the void, once, and counts down to the page it leads to. */
+  private saveVoid(): void {
+    if (this.voided === null || this.voidedHref !== null || !this.store) return;
+    const transition = voidAttempt(this.store, this.stepIndex, this.voided, this.host.isoNow(), this.host.href);
+    this.voidedHref = this.save(transition) ? transition.href : this.reportHref();
+    this.countDownTo(this.voidedHref);
   }
 
   private countDownTo(href: string): void {
@@ -728,7 +746,10 @@ class StepPage {
         this.voidAttempt("void-hidden");
         return;
       case "visible":
-        if (this.pagePhase === "paused" && this.voidedHref) this.countDownTo(this.voidedHref);
+        if (this.pagePhase === "paused") {
+          this.saveVoid();
+          this.render();
+        }
         return;
       case "resize":
       case "dpr":

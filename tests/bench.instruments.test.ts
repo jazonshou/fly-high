@@ -590,6 +590,28 @@ describe("the environment guards", () => {
     expect(guards.read().hiddenEvents).toBe(1);
   });
 
+  it("report a page that loads in a hidden tab as hidden, which no event would", async () => {
+    const env = fakeEnvironment();
+    env.page.visibilityState = "hidden";
+    const onEvent = vi.fn();
+    const guards = installEnvironmentGuards(onEvent, env.host);
+    expect(guards.read().hiddenEvents).toBe(1);
+    await Promise.resolve();
+    expect(onEvent.mock.calls.map(([event]) => event)).toEqual(["hidden"]);
+    env.page.visibilityState = "visible";
+    env.page.dispatchEvent(new Event("visibilitychange"));
+    expect(onEvent.mock.calls.map(([event]) => event)).toEqual(["hidden", "visible"]);
+    expect(guards.read().hiddenEvents).toBe(1);
+
+    // Visible again, or uninstalled, before the microtask: nothing to report.
+    const back = fakeEnvironment();
+    back.page.visibilityState = "hidden";
+    const quiet = vi.fn();
+    installEnvironmentGuards(quiet, back.host).uninstall();
+    await Promise.resolve();
+    expect(quiet).not.toHaveBeenCalled();
+  });
+
   it("hear a pixel-ratio change and listen again at the new ratio", () => {
     const env = fakeEnvironment();
     const onEvent = vi.fn();
