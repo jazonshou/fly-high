@@ -74,6 +74,75 @@ export interface FlightVisualState {
    * Optional for the same reason as `terrainAuthority`.
    */
   autoland?: AutolandVisualState | null;
+  /**
+   * What only a surface vehicle has, null or absent in an aircraft session.
+   * The common fields above still describe the hull's pose, speed and engine;
+   * the aircraft-only ones (control surfaces, flaps, gear, angle of attack)
+   * read neutral.
+   */
+  vehicle?: VehicleVisualPayload | null;
+}
+
+/** Surface-vehicle payloads, discriminated by `kind`. The car adds its own. */
+export type VehicleVisualPayload = BoatVisualState;
+
+export type BoatGear = "forward" | "neutral" | "reverse";
+
+/** What the HUD, the drawn boat, its wake, spray and sound read from the sim. */
+export interface BoatVisualState {
+  kind: "boat";
+  /** Speed through the water, m/s: what the boat's own log reads. */
+  speedThroughWater: number;
+  gear: BoatGear;
+  /** The binnacle lever as the sim holds it, -1 full astern .. +1 full ahead. */
+  lever: number;
+  /** Outboard steer angle, radians; positive swings the bow to starboard. */
+  steerAngle: number;
+  /** Power trim, 0..1 of its range (the HUD's 0-100%), and the engine tilt it gives, radians. */
+  trim: number;
+  trimAngle: number;
+  /** Trim-tab deflection, 0..1 of full, each side. */
+  tabPort: number;
+  tabStarboard: number;
+  /** Water under the keel, metres: the depth sounder. */
+  depthUnderKeel: number;
+  /** Fraction of the propeller disc under the local surface, 0..1. */
+  propellerImmersion: number;
+  moored: boolean;
+  ventilating: boolean;
+  capsized: boolean;
+  /** 0 in displacement mode .. 1 fully on the plane; scales wake and spray. */
+  planing: number;
+  /** Wetted keel length, metres, and how deep the transom's lowest point sits, metres. */
+  wettedLength: number;
+  transomImmersion: number;
+  /**
+   * Where spray leaves the hull this step: up to `MAX_BOAT_SPRAY_ROOTS`
+   * records of body-frame x, y, z (metres) and the jet's speed (m/s),
+   * flattened. `sprayRootCount` says how many are live.
+   */
+  sprayRoots: number[];
+  sprayRootCount: number;
+}
+
+export const MAX_BOAT_SPRAY_ROOTS = 16;
+
+/**
+ * The boat's controls, carried on `ControlState.boat` by the boat input
+ * profile. Trim and tabs are RATE commands, as the rocker switches on a real
+ * helm are: the sim holds the positions.
+ */
+export interface BoatControlState {
+  /** Single-lever binnacle control: -1 full astern, 0 neutral idle, +1 full ahead. */
+  lever: number;
+  /** Wheel, -1 hard to port .. +1 hard to starboard. */
+  steer: number;
+  /** Power trim rocker: +1 trims out (bow up), -1 trims in. */
+  trim: number;
+  /** Tab rocker: +1 lowers the tabs (bow down), -1 raises them. */
+  tabs: number;
+  /** Counts moor / cast-off presses, so a press survives a coalesced message. */
+  moorPresses: number;
 }
 
 /** What the HUD shows of an engaged autoland. */
@@ -111,6 +180,8 @@ export interface ControlState {
   brake: number;
   /** Requested landing-gear extension, 0..1. */
   gear: number;
+  /** Present only while driving a boat; aircraft never send it. */
+  boat?: BoatControlState;
 }
 
 /** Which governor acted (or held) in the most recent decision window (1A-6b). */
