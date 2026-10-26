@@ -523,3 +523,26 @@ describe("the bench app", () => {
     }
   });
 });
+
+describe("bench.css", () => {
+  const css = readFileSync(new URL("../src/bench/bench.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  it("scopes every selector that hides the game's own surfaces to bench pages", () => {
+    const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)];
+    const hiding = rules.filter(([, selectors]) => /\.(start-screen|loading-card|error-banner)\b/.test(selectors!));
+    expect(hiding.length).toBeGreaterThan(0);
+    for (const [, selectors] of hiding) {
+      for (const selector of selectors!.split(",")) {
+        expect(selector.trim()).toMatch(/^html\[data-bench-page\] \./);
+      }
+    }
+    expect(css).toContain('html[data-bench-page="step"] .flight-canvas');
+  });
+
+  it("uses no backdrop filter and stacks the chip at 45 and the panels at 50", () => {
+    expect(css).not.toMatch(/backdrop-filter/);
+    expect(/\.bench-chip \{[^}]*z-index: 45;/.exec(css)).not.toBeNull();
+    expect(/\.bench-screen \{[^}]*z-index: 50;/.exec(css)).not.toBeNull();
+    expect(/\.bench-panel \{[^}]*overflow: auto;/.exec(css)).not.toBeNull();
+  });
+});
