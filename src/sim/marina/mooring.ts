@@ -1,6 +1,9 @@
+import { OutboardPowertrain, solveRestWaterline, type BoatExternalLoad, type BoatLoadContext } from "../boat";
 import type { ColliderWorld } from "../colliders";
-import type { Quaternion, Vec3 } from "../types";
+import { quaternionFromFlightAngles, rotateVectorInto } from "../math";
+import type { Vec3 } from "../types";
 import type { BoatControlState } from "@/src/game/types";
+import { hullToBody, RUNABOUT_21_CLEATS } from "@/src/vehicles/boat/hullLines";
 import { marinaToWorld, type MarinaBerth, type MarinaLayout } from "@/src/world/marinaLayout";
 import type { MarinaColliders } from "./colliders";
 
@@ -26,23 +29,6 @@ import type { MarinaColliders } from "./colliders";
  * falls with the calmed sea the pontoon rides; fixed cleats stay put.
  */
 
-/**
- * What the boat simulator hands an external load each substep (the physics
- * thread's `BoatLoadContext`). Everything is reused between calls.
- */
-export interface MooringLoadContext {
-  readonly time: number;
-  readonly dt: number;
-  readonly position: Readonly<Vec3>;
-  readonly orientation: Readonly<Quaternion>;
-  readonly velocity: Readonly<Vec3>;
-  readonly angularVelocity: Readonly<Vec3>;
-  cleatWorld(index: number, out: Vec3): Vec3;
-  cleatVelocity(index: number, out: Vec3): Vec3;
-  pointVelocity(worldPoint: Readonly<Vec3>, out: Vec3): Vec3;
-  addForceAtWorldPoint(force: Readonly<Vec3>, point: Readonly<Vec3>): void;
-}
-
 /** Hull cleat indices, in the hull lines' order (`RUNABOUT_21_CLEATS`). */
 export const HULL_CLEAT = Object.freeze({
   bow: 0,
@@ -59,8 +45,6 @@ export const MOORING = Object.freeze({
   makeFastSpeed: 0.6,
   /** A cast-off boat must leave its berth by this much before Scenic moors it again. */
   rearmDistance: 4,
-  /** The lever past this is in gear, and casts off. */
-  leverDetent: 0.08,
   /** Line stiffness, N/m, and damping, N s/m (nylon dock line, a few metres). */
   stiffness: 9_000,
   damping: 2_800,
@@ -71,31 +55,28 @@ export const MOORING = Object.freeze({
   haulRate: 0.25,
 });
 
-/**
- * The Runabout 21's cleats in the body frame (hull lines' `RUNABOUT_21_CLEATS`
- * less `RUNABOUT_21_CG`), and its CG height above still water at rest. The
- * simulator's `cleatsBody` and rest pose replace these once it is wired.
- */
-export const RUNABOUT_21_CLEATS_BODY: readonly Readonly<Vec3>[] = Object.freeze([
-  Object.freeze({ x: 4.15, y: 0.74, z: 0 }),
-  Object.freeze({ x: 1.35, y: 0.55, z: -1.24 }),
-  Object.freeze({ x: 1.35, y: 0.55, z: 1.24 }),
-  Object.freeze({ x: -1.6, y: 0.48, z: -1.1 }),
-  Object.freeze({ x: -1.6, y: 0.48, z: 1.1 }),
-]);
-export const RUNABOUT_21_CG_ABOVE_WATER = 0.162;
-
 export interface MooringBoat {
   /** Hull cleats, body frame, in the hull lines' order. */
   readonly cleatsBody: readonly Readonly<Vec3>[];
-  /** Centre of gravity above still water at rest, metres. */
+  /** Centre of gravity above still water at rest, metres, and the keel's trim there, radians. */
   readonly cgAboveWater: number;
+  readonly trim: number;
 }
 
-export const RUNABOUT_21_MOORING: MooringBoat = Object.freeze({
-  cleatsBody: RUNABOUT_21_CLEATS_BODY,
-  cgAboveWater: RUNABOUT_21_CG_ABOVE_WATER,
-});
+let runabout: MooringBoat | null = null;
+
+/** The Runabout 21 at rest: its hull lines' cleats and the physics' solved waterline. */
+export function runabout21Mooring(): MooringBoat {
+  if (!runabout) {
+    const rest = solveRestWaterline();
+    runabout = Object.freeze({
+      cleatsBody: Object.freeze(RUNABOUT_21_CLEATS.map((cleat) => Object.freeze(hullToBody(cleat)))),
+      cgAboveWater: rest.cgAboveWater,
+      trim: rest.trim,
+    });
+  }
+  return runabout;
+}
 
 export type MooringState = "free" | "moored";
 
@@ -171,16 +152,22 @@ function linePlan(berth: MarinaBerth, layout: MarinaLayout, heading: number): { 
 /**
  * The mooring of one boat at the home marina. Implements the boat
  * simulator's external load (`apply`), and decides making fast and casting
- * off from the boat's controls (`update`, once per 120 Hz step).
+ * off from the boat's controls (`update`, once per 120 Hz step). The boat
+ * reads `crashed` from every load; a mooring never wrecks a boat, so it has
+ * none.
  *
- * WIRING, in this order. Once at install: `addMarinaColliders`, then
- * `makeFast(layout.startBerth, ...)` right after the dock spawn, and register
- * this and a `MarinaContactLoad` as external loads. Then every fixed step:
- * `water.setTime`, `poseMarinaPontoons`, `update`, and the boat's step (which
- * calls `apply` per substep). None of it waits for terrain: every collider
- * and berth comes from `homeMarina(world)`, which is pure CPU.
+ * WIRING, in this order. Once at install: `addMarinaColliders` into the
+ * boat's `ColliderWorld`, and give the boat that world
+ * (`environment.colliders`): the boat's own hull probes are the contact
+ * against piles, decks and pontoons. Right after the dock spawn,
+ * `makeFast(layout.startBerth, ...)` and `sim.addExternalLoad(mooring)`.
+ * Then every fixed step: `poseMarinaPontoons` at the step's time, `update`,
+ * the boat's step (which calls `apply` per substep), and
+ * `sim.setMoored(mooring.state === "moored")` so the HUD reads the lines.
+ * None of it waits for terrain: every collider and berth comes from
+ * `homeMarina(world)`, which is pure CPU.
  */
-export class Mooring {
+export class Mooring implements BoatExternalLoad {
   state: MooringState = "free";
   /** The berth the boat is made fast to, or was last cast off from. */
   berth: MarinaBerth | null = null;
@@ -194,18 +181,17 @@ export class Mooring {
     private readonly layout: MarinaLayout,
     private readonly colliders: ColliderWorld | null = null,
     private readonly marinaColliders: MarinaColliders | null = null,
-    private readonly boat: MooringBoat = RUNABOUT_21_MOORING,
+    private readonly boat: MooringBoat = runabout21Mooring(),
   ) {}
 
   /** A hull cleat's world position with the boat at rest on a berth's mark. */
   private markCleat(berth: MarinaBerth, index: number, out: Vec3): Vec3 {
-    const cleat = this.boat.cleatsBody[index]!;
     const centre = marinaToWorld(this.layout.frame, berth.right, berth.out);
-    const forwardX = Math.sin(berth.bowHeadingRadians);
-    const forwardZ = Math.cos(berth.bowHeadingRadians);
-    out.x = centre.x + forwardX * cleat.x - forwardZ * cleat.z;
-    out.y = this.layout.seaLevel + this.boat.cgAboveWater + cleat.y;
-    out.z = centre.z + forwardZ * cleat.x + forwardX * cleat.z;
+    const orientation = quaternionFromFlightAngles(berth.bowHeadingRadians, this.boat.trim, 0);
+    rotateVectorInto(out, orientation, this.boat.cleatsBody[index]! as Vec3);
+    out.x += centre.x;
+    out.y += this.layout.seaLevel + this.boat.cgAboveWater;
+    out.z += centre.z;
     return out;
   }
 
@@ -277,7 +263,8 @@ export class Mooring {
   ): void {
     const pressed = this.lastMoorPresses !== null && controls.moorPresses !== this.lastMoorPresses;
     this.lastMoorPresses = controls.moorPresses;
-    const inGear = Math.abs(controls.lever) > MOORING.leverDetent;
+    // Into gear is the outboard's own shift point.
+    const inGear = OutboardPowertrain.leverGear(controls.lever) !== "neutral";
     if (this.state === "moored") {
       if (pressed || inGear) this.castOff();
       return;
@@ -296,7 +283,7 @@ export class Mooring {
   }
 
   /** The boat simulator's external load: line tensions on the hull cleats. */
-  apply(context: MooringLoadContext): void {
+  apply(context: BoatLoadContext): void {
     if (this.state !== "moored") return;
     const haul = MOORING.haulRate * context.dt;
     for (const line of this.lines) {
