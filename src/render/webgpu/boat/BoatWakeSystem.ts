@@ -833,6 +833,7 @@ varying wakeTransmittance: vec3f;
 
 const WAKE_SCAR_OPACITY: f32 = ${wgslFloat(WAKE_SCAR_OPACITY)};
 const WAKE_COVERAGE_CAP: f32 = ${wgslFloat(WAKE_COVERAGE_CAP)};
+const WAKE_PATTERN_CONTRAST: f32 = 2.8;
 
 fn wakeHash(cell: vec2i) -> f32 {
   var h = (bitcast<u32>(cell.x) * 0x8da6b343u) ^ (bitcast<u32>(cell.y) * 0xd8163841u);
@@ -886,9 +887,13 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // is a narrow line of broken water.
   let edge = 1.0 - across * across;
   let profile = select(edge * edge, edge, wash);
-  // World-locked lace; in the wash, streaked along the track as well.
+  // World-locked lace; in the wash, streaked along the track as well. Summed
+  // octaves crowd round one half (a spread of about 0.1), so the pattern is
+  // stretched back out: without it the foam is either all there or all gone,
+  // with a cut-out line between.
   let lace = wakeLace(fragmentInputs.wakeWorld, footprint);
-  let pattern = select(lace, mix(lace, wakeStreaks(fragmentInputs.wakeTrack, footprint), 0.55), wash);
+  let raw = select(lace, mix(lace, wakeStreaks(fragmentInputs.wakeTrack, footprint), 0.55), wash);
+  let pattern = 0.5 + (raw - 0.5) * WAKE_PATTERN_CONTRAST;
   // Never quite solid: even fresh at the transom the sea shows through.
   let coverage = clamp(fragmentInputs.wakeAmount.x * profile, 0.0, 1.0) * WAKE_COVERAGE_CAP;
   // As it thins only the pattern's ridges stay, and they thin too: soft at
