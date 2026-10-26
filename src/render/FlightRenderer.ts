@@ -512,6 +512,33 @@ export interface FlightRendererOptions {
   terrainFarSwardRead?: TerrainFarSwardRead;
 }
 
+/**
+ * What the `?bench=1` benchmark (`src/bench`) reads after every frame, through
+ * `readBenchProbe`. Every field is a number or a reference the renderer
+ * already holds. The governor's state and signals are frozen and replaced on
+ * every decision, so a changed `governorSignals` reference is one decision.
+ */
+export interface RendererBenchProbe {
+  frameIndex: number;
+  governorState: GovernorState;
+  governorSignals: GovernorSignals;
+  governorConfig: GovernorConfig;
+  /** Whole, so the bench never reads a lever field the renderer does not. */
+  workLevers: WorkLeverSettings;
+  /** The scale the engine's level was last resolved from. */
+  appliedRenderScale: number;
+  /**
+   * The engine's raster size. When the pixel cap binds, a governor step moves
+   * `appliedRenderScale` and leaves these alone, so rendered pixels are read
+   * here rather than derived from the scale.
+   */
+  renderWidth: number;
+  renderHeight: number;
+  pinned: boolean;
+  /** GPU milliseconds resolved during this frame; null without timing or a fresh sample. */
+  gpuFrameMs: number | null;
+}
+
 function finiteState(state: FlightVisualState): boolean {
   return [
     state.position.x,
@@ -2305,6 +2332,30 @@ export class FlightRenderer implements FlightRenderingSystem {
       width: this.engine.getRenderWidth(),
       height: this.engine.getRenderHeight(),
     };
+  }
+
+  /**
+   * `?bench=1` only: `src/bench` calls this after every frame and nothing in
+   * the game does. Constant time, allocation-free and read-only; it writes
+   * `into` and nothing else. The streaming counters stay in `getDiagnostics`,
+   * because pending detail work walks every desired cell and the terrain's
+   * statistics getter allocates.
+   */
+  readBenchProbe(into: RendererBenchProbe): void {
+    into.frameIndex = this.frameIndex;
+    into.governorState = this.governorState;
+    into.governorSignals = this.lastSignals;
+    into.governorConfig = this.governorConfig;
+    into.workLevers = this.workLeverSettings;
+    into.appliedRenderScale = this.appliedRenderScale;
+    into.renderWidth = this.engine.getRenderWidth();
+    into.renderHeight = this.engine.getRenderHeight();
+    into.pinned = this.pinnedRenderScale !== null;
+    // `captureGpuFrameTiming` stamps a sample with the frame it resolved on,
+    // after `frameIndex` has advanced, so equality means "resolved this frame".
+    into.gpuFrameMs = this.lastGpuTimingFrameIndex === this.frameIndex
+      ? this.lastGpuFrameMilliseconds
+      : null;
   }
 
   /**
