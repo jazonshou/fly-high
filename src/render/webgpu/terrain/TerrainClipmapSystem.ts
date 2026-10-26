@@ -1627,6 +1627,7 @@ export class TerrainClipmapSystem {
         terrainClimateProvinceInput(this.world),
         landform,
         landformData,
+        this.world,
       ),
     };
   };

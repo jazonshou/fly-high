@@ -41,9 +41,12 @@ import {
   type ImpostorAtlas,
 } from "./ImpostorAtlas";
 import {
+  infrastructureIndex,
+  infrastructurePlantExclusions,
   seasonalWinterFraction,
   withAirports,
   type AirportDefinition,
+  type InfrastructurePlantExclusion,
   type WorldDefinition,
 } from "@/src/world";
 import {
@@ -914,6 +917,11 @@ export class WorldDetailRuntime {
    * is a different number on any guaranteed-airport world.
    */
   private structureSites: readonly StructureExclusionSite[];
+  /**
+   * Built ground no plant grows on (`infrastructurePlantExclusions`), the
+   * inline path's copy of what the worker derives from the same world.
+   */
+  private plantExclusions: readonly InfrastructurePlantExclusion[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -943,6 +951,9 @@ export class WorldDetailRuntime {
         this.world.airports ?? (this.world.airport ? [this.world.airport] : []),
         this.world.seedHash,
       )
+      : [];
+    this.plantExclusions = this.world
+      ? infrastructurePlantExclusions(infrastructureIndex(this.world))
       : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
@@ -1248,6 +1259,7 @@ export class WorldDetailRuntime {
     const changed = changedAirports(previous.airports ?? [], next.airports);
     this.world = next;
     this.structureSites = airfieldStructureExclusionSites(next.airports, next.seedHash);
+    this.plantExclusions = infrastructurePlantExclusions(infrastructureIndex(next));
     // Posted BEFORE any regeneration request below can be dispatched, so the
     // worker swaps worlds first; message order does the rest.
     this.client?.setAirports(next.airports);
@@ -1773,6 +1785,7 @@ export class WorldDetailRuntime {
           ...(this.structureSites.length > 0
             ? { structureExclusionSites: this.structureSites }
             : {}),
+          ...(this.plantExclusions.length > 0 ? { plantExclusions: this.plantExclusions } : {}),
         });
         this.replaceResident(desired.key, {
           source: "inline",

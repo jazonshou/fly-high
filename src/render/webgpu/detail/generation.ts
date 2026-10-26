@@ -31,6 +31,11 @@ import {
   worldBoundsOverlap,
   type StructureExclusionSite,
 } from "../airfield/StructureExclusion";
+import {
+  INFRASTRUCTURE_PLANT_BLEND_METERS,
+  infrastructurePlantFactor,
+  type InfrastructurePlantExclusion,
+} from "@/src/world/infrastructure";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
   densityField,
@@ -899,6 +904,11 @@ interface ScatterContext {
    * reach touches this cell (`cellStructureSites`), so empty off-airfield.
    */
   readonly structureSites: readonly StructureExclusionSite[];
+  /**
+   * Built ground no plant grows on: only the capsules whose blend band
+   * touches this cell (`cellPlantExclusions`), so empty off every site.
+   */
+  readonly plantExclusions: readonly InfrastructurePlantExclusion[];
   readonly minX: number;
   readonly minZ: number;
   readonly cellSize: number;
@@ -965,8 +975,13 @@ function fieldAt(
  * band and strip the surround Jason has separately asked to keep.
  */
 function structureFactorAt(context: ScatterContext, x: number, z: number): number {
-  if (context.structureSites.length === 0) return 1;
-  return structureClearanceFactorForSites(context.structureSites, x, z);
+  const structure = context.structureSites.length === 0
+    ? 1
+    : structureClearanceFactorForSites(context.structureSites, x, z);
+  // Built ground (slipways, aprons, car parks, roads) is gated the same way
+  // and for the same reason: at the stem, hard zero inside.
+  if (structure <= 0 || context.plantExclusions.length === 0) return structure;
+  return structure * infrastructurePlantFactor(context.plantExclusions, x, z);
 }
 
 /**
@@ -1015,6 +1030,29 @@ function cellStructureSites(
     maxZ: minZ + cellSize + margin,
   };
   return sites.filter((site) => worldBoundsOverlap(structureExclusionSiteBounds(site), cell));
+}
+
+/**
+ * The plant exclusions whose blend band can touch a cell, over the same
+ * margin as the structure sites. As there, dropping one never changes a
+ * placement: outside radius + blend its factor is exactly 1.
+ */
+function cellPlantExclusions(
+  options: DetailCellGenerationOptions,
+  minX: number,
+  minZ: number,
+  cellSize: number,
+): readonly InfrastructurePlantExclusion[] {
+  const exclusions = options.plantExclusions;
+  if (exclusions === undefined || exclusions.length === 0) return [];
+  const margin = STRUCTURE_SITE_CELL_MARGIN_METERS;
+  return exclusions.filter((exclusion) => {
+    const reach = exclusion.radius + INFRASTRUCTURE_PLANT_BLEND_METERS;
+    return Math.min(exclusion.ax, exclusion.bx) - reach <= minX + cellSize + margin
+      && Math.max(exclusion.ax, exclusion.bx) + reach >= minX - margin
+      && Math.min(exclusion.az, exclusion.bz) - reach <= minZ + cellSize + margin
+      && Math.max(exclusion.az, exclusion.bz) + reach >= minZ - margin;
+  });
 }
 
 interface ScatterCandidate {
@@ -1761,7 +1799,11 @@ function buildGroundCoverGrid(
           // Bunchgrass and bare soil, not a sward: exactly 1 outside a desert.
           * dryProvinceGroundCoverKeep(sample.dryness ?? 0)
           // Sand seas thin it; where Sand wins outright the BEACH gate empties it.
-          * sandCoverGroundFactor(sample.sandCover ?? 0);
+          * sandCoverGroundFactor(sample.sandCover ?? 0)
+          // Built ground grows nothing; exactly 1 off every site.
+          * (context.plantExclusions.length === 0
+            ? 1
+            : infrastructurePlantFactor(context.plantExclusions, x, z));
       // Exposure reads THERMAL height: a cold province's lowland is as exposed
       // as the temperate world's uplands, which is where heath takes over from
       // grass. `- 0` in the temperate core.
@@ -1989,6 +2031,7 @@ export function generateDetailCell(options: DetailCellGenerationOptions): Genera
     seed,
     seedHash,
     structureSites: cellStructureSites(options, minX, minZ, cellSizeMeters),
+    plantExclusions: cellPlantExclusions(options, minX, minZ, cellSizeMeters),
     minX,
     minZ,
     cellSize: cellSizeMeters,
