@@ -269,7 +269,7 @@ function stepSurface(active: SurfaceVehicleSimulator): void {
   surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
   active.setControls(surfaceControls);
   active.setEnvironment(surfaceEnvironment);
-  harbour?.beforeStep(surfaceControls.boat, mode === "scenic", surfaceEnvironment.water);
+  harbour?.beforeStep(surfaceControls.boat, mode === "scenic", surfaceEnvironment);
   active.step(FIXED_TIME_STEP);
   harbour?.afterStep();
 }

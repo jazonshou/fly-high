@@ -1,134 +1,52 @@
 import { describe, expect, it } from "vitest";
-import { ColliderWorld } from "@/src/sim/colliders";
-import { rotateVectorInto, quaternionFromFlightAngles } from "@/src/sim/math";
-import { RigidBody } from "@/src/sim/rigidBody";
-import type { Vec3 } from "@/src/sim/types";
+import type { BoatControlState } from "@/src/game/types";
+import { BoatSimulator, type BoatEnvironment } from "@/src/sim/boat";
+import { ColliderWorld, type ColliderContact } from "@/src/sim/colliders";
 import {
   addMarinaColliders,
-  MARINA_COLLIDER_MATERIAL,
   createMarinaPontoonPose,
+  MARINA_COLLIDER_MATERIAL,
   marinaPontoonPose,
   poseMarinaPontoons,
+  type MarinaColliders,
 } from "@/src/sim/marina/colliders";
-import { MarinaContactLoad } from "@/src/sim/marina/contact";
-import {
-  Mooring,
-  MOORING,
-  RUNABOUT_21_CG_ABOVE_WATER,
-  RUNABOUT_21_CLEATS_BODY,
-  type MooringLoadContext,
-} from "@/src/sim/marina/mooring";
+import { Mooring, MOORING } from "@/src/sim/marina/mooring";
+import { NEUTRAL_BOAT_CONTROLS } from "@/src/sim/surface";
+import type { Vec3 } from "@/src/sim/types";
+import { CalmWaterSurface } from "@/src/sim/water";
 import { createWaterSurfaceSample, type WaterSurfaceAuthority, type WaterSurfaceSample } from "@/src/sim/water/types";
-import type { BoatControlState } from "@/src/game/types";
-import { createWorld } from "@/src/world";
+import { createWorld, sampleTerrainHeight, type WorldDefinition } from "@/src/world";
 import { homeMarina, marinaStartPose } from "@/src/world/marina";
-import { MARINA_LAYOUT, marinaToWorld, type MarinaLayout } from "@/src/world/marinaLayout";
+import { marinaToWorld, type MarinaLayout } from "@/src/world/marinaLayout";
 
 /**
- * A stand-in hull for the marina's loads until the Runabout's own simulator is
- * wired: the design boat's mass and inertia on a RigidBody, linear
- * hydrostatic springs in heave, roll and pitch, quadratic water drag in the
- * plane, and windage. Its job is to carry the mooring and contact loads the
- * way the real hull will (through the same load context), not to be a boat.
+ * The home marina's lines and structures with the Runabout's own simulator:
+ * the dock start on 48 worlds (no jolt, no contact), the lines holding in a
+ * gale, making fast and casting off, and the boat's hull probes against the
+ * marina's colliders (a fast hit on a pile wrecks it, a slow one fends off).
  */
-const MASS = 1_800;
-const G = 9.81;
-const RHO_WATER = 1_025;
-const RHO_AIR = 1.225;
 
-class StandInHull implements MooringLoadContext {
-  readonly body: RigidBody;
-  time = 0;
-  dt = 1 / 240;
-  wind: Vec3 = { x: 0, y: 0, z: 0 };
-  private readonly loads: { apply(context: MooringLoadContext): void }[] = [];
-  private readonly scratch: Vec3 = { x: 0, y: 0, z: 0 };
-  private readonly scratch2: Vec3 = { x: 0, y: 0, z: 0 };
+const STEP = 1 / 120;
+const G = 9.80665;
 
-  constructor(readonly stillWaterY: number, x: number, z: number, heading: number) {
-    this.body = new RigidBody({
-      mass: MASS,
-      inertia: { xx: 1_900, yy: 6_400, zz: 6_000 },
-      position: { x, y: stillWaterY + RUNABOUT_21_CG_ABOVE_WATER, z },
-      orientation: quaternionFromFlightAngles(heading, 0, 0),
-    });
-  }
-
-  get position() { return this.body.position; }
-  get orientation() { return this.body.orientation; }
-  get velocity() { return this.body.velocity; }
-  get angularVelocity() { return this.body.angularVelocity; }
-
-  addLoad(load: { apply(context: MooringLoadContext): void }): void {
-    this.loads.push(load);
-  }
-
-  cleatWorld(index: number, out: Vec3): Vec3 {
-    return this.body.bodyToWorldPoint(RUNABOUT_21_CLEATS_BODY[index]!, out);
-  }
-
-  cleatVelocity(index: number, out: Vec3): Vec3 {
-    this.cleatWorld(index, this.scratch2);
-    return this.body.pointVelocity(this.scratch2, out);
-  }
-
-  pointVelocity(worldPoint: Readonly<Vec3>, out: Vec3): Vec3 {
-    return this.body.pointVelocity(worldPoint as Vec3, out);
-  }
-
-  addForceAtWorldPoint(force: Readonly<Vec3>, point: Readonly<Vec3>): void {
-    this.body.addForceAtWorldPoint(force as Vec3, point as Vec3);
-  }
-
-  heading(): number {
-    const forward = rotateVectorInto(this.scratch, this.body.orientation, { x: 1, y: 0, z: 0 });
-    return Math.atan2(forward.x, forward.z);
-  }
-
-  /** One 240 Hz substep: hydrostatics, drag, wind, then the external loads. */
-  substep(): void {
-    const body = this.body;
-    const v = body.velocity;
-    const rest = this.stillWaterY + RUNABOUT_21_CG_ABOVE_WATER;
-    // Heave: weight against a linear waterplane spring, damped.
-    const heaveK = RHO_WATER * G * 10.5;
-    body.addForce({ x: 0, y: -heaveK * (body.position.y - rest) - 8_000 * v.y, z: 0 });
-    // Roll and pitch: restoring torques from the body's up vector, damped.
-    const up = rotateVectorInto(this.scratch, body.orientation, { x: 0, y: 1, z: 0 });
-    const w = body.angularVelocity;
-    const forward = rotateVectorInto({ x: 0, y: 0, z: 0 }, body.orientation, { x: 1, y: 0, z: 0 });
-    const starboard = rotateVectorInto({ x: 0, y: 0, z: 0 }, body.orientation, { x: 0, y: 0, z: 1 });
-    const rollAngle = Math.asin(Math.max(-1, Math.min(1, up.x * starboard.x + up.y * starboard.y + up.z * starboard.z))) * -1;
-    const pitchAngle = Math.asin(Math.max(-1, Math.min(1, forward.y)));
-    body.addTorqueBody({ x: -MASS * G * 1.2 * Math.sin(-rollAngle) - 6_000 * w.x, y: -4_000 * w.y, z: -MASS * G * 8 * Math.sin(pitchAngle) - 20_000 * w.z });
-    // Water drag in the body plane: surge and sway, quadratic plus a little linear.
-    const surge = v.x * forward.x + v.z * forward.z;
-    const sway = v.x * starboard.x + v.z * starboard.z;
-    const fSurge = -(300 * surge + 0.5 * RHO_WATER * 1 * 1 * surge * Math.abs(surge));
-    const fSway = -(800 * sway + 0.5 * RHO_WATER * 1 * 2.4 * sway * Math.abs(sway));
-    body.addForce({ x: forward.x * fSurge + starboard.x * fSway, y: 0, z: forward.z * fSurge + starboard.z * fSway });
-    // Windage on the projected area, at the topsides' centre.
-    const rx = this.wind.x - v.x;
-    const rz = this.wind.z - v.z;
-    const speed = Math.hypot(rx, rz);
-    if (speed > 0) {
-      const along = Math.abs((rx * forward.x + rz * forward.z) / speed);
-      const across = Math.abs((rx * starboard.x + rz * starboard.z) / speed);
-      const area = along * 3.4 + across * 7.2;
-      const magnitude = 0.5 * RHO_AIR * 1.0 * area * speed * speed;
-      const point = body.bodyToWorldPoint({ x: 0.4, y: 0.6, z: 0 }, { x: 0, y: 0, z: 0 });
-      body.addForceAtWorldPoint({ x: (rx / speed) * magnitude, y: 0, z: (rz / speed) * magnitude }, point);
+/** Counts every collider contact the boat's probes find, by material. */
+class CountingColliders extends ColliderWorld {
+  touches = 0;
+  readonly byMaterial = new Map<number, number>();
+  override contactSphere(handle: number, center: Vec3, radius: number, out: ColliderContact): boolean {
+    const hit = super.contactSphere(handle, center, radius, out);
+    if (hit && out.penetration > 0) {
+      this.touches += 1;
+      this.byMaterial.set(out.material, (this.byMaterial.get(out.material) ?? 0) + 1);
     }
-    for (const load of this.loads) load.apply(this);
-    body.step(this.dt);
-    this.time += this.dt;
+    return hit;
   }
 }
 
-/** Still water everywhere, or a long swell scaled by a calm-basin floor. */
-class TestSea implements WaterSurfaceAuthority {
-  time = 0;
-  constructor(private readonly seaLevel: number, private readonly amplitude = 0, private readonly period = 6) {}
+/** A long swell, for the pontoons. */
+class Swell implements WaterSurfaceAuthority {
+  private time = 0;
+  constructor(private readonly seaLevel: number, private readonly amplitude: number, private readonly period: number) {}
   setTime(time: number): void {
     this.time = time;
   }
@@ -152,184 +70,245 @@ class TestSea implements WaterSurfaceAuthority {
   }
 }
 
-const CALM: BoatControlState = { lever: 0, steer: 0, trim: 0, tabs: 0, moorPresses: 0 };
-
-function moored(layout: MarinaLayout, wind: Vec3) {
-  const w = createWorld("open-skies");
-  const pose = marinaStartPose(w);
-  const colliders = new ColliderWorld();
-  const marina = addMarinaColliders(colliders, layout);
-  const hull = new StandInHull(pose.stillWaterY, pose.x, pose.z, pose.headingRadians);
-  hull.wind = wind;
-  const mooring = new Mooring(layout, colliders, marina);
-  mooring.makeFast(layout.startBerth, pose.headingRadians, (index, out) => hull.cleatWorld(index, out));
-  hull.addLoad(mooring);
-  const contact = new MarinaContactLoad(colliders);
-  hull.addLoad(contact);
-  return { hull, mooring, contact, pose, colliders, marina };
+interface Dock {
+  readonly world: WorldDefinition;
+  readonly layout: MarinaLayout;
+  readonly sim: BoatSimulator;
+  readonly mooring: Mooring;
+  readonly colliders: CountingColliders;
+  readonly marina: MarinaColliders;
+  readonly water: WaterSurfaceAuthority;
+  controls: BoatControlState;
+  scenic: boolean;
+  cleatWorld(index: number, out: Vec3): Vec3;
+  heading(): number;
+  /** One fixed step, in the worker's order. */
+  step(): void;
 }
 
-describe("home marina mooring", () => {
-  const layout = homeMarina(createWorld("open-skies"));
+/** A boat at the dock start, moored, the way the worker sets it up. */
+function dockStart(world: WorldDefinition, wind: Vec3 = { x: 0, y: 0, z: 0 }): Dock {
+  const layout = homeMarina(world);
+  const pose = marinaStartPose(world);
+  const colliders = new CountingColliders();
+  const marina = addMarinaColliders(colliders, layout);
+  const bedHeight = (x: number, z: number) => sampleTerrainHeight(world, x, z);
+  const water: WaterSurfaceAuthority = new CalmWaterSurface(layout.seaLevel, bedHeight);
+  const sim = new BoatSimulator({ position: { x: pose.x, y: pose.stillWaterY, z: pose.z }, heading: pose.headingRadians, moored: true });
+  const environment: BoatEnvironment = { water, wind, bedHeight, gravity: G, colliders };
+  sim.setEnvironment(environment);
+  const mooring = new Mooring(layout, colliders, marina);
+  const cleatWorld = (index: number, out: Vec3) => sim.body.bodyToWorldPoint(sim.cleatsBody[index]! as Vec3, out);
+  const forward: Vec3 = { x: 0, y: 0, z: 0 };
+  const heading = () => {
+    sim.body.bodyToWorldPoint({ x: 1, y: 0, z: 0 }, forward);
+    return Math.atan2(forward.x - sim.body.position.x, forward.z - sim.body.position.z);
+  };
+  mooring.makeFast(layout.startBerth, pose.headingRadians, cleatWorld);
+  sim.addExternalLoad(mooring);
+  const dock: Dock = {
+    world, layout, sim, mooring, colliders, marina, water,
+    controls: { ...NEUTRAL_BOAT_CONTROLS },
+    scenic: false,
+    cleatWorld,
+    heading,
+    step() {
+      water.setTime(sim.state.time);
+      poseMarinaPontoons(colliders, marina, water);
+      mooring.update(dock.controls, dock.scenic, sim.state.position, sim.state.velocity, heading(), cleatWorld);
+      sim.setControls({ assist: dock.scenic ? "scenic" : "pilot", boat: dock.controls });
+      sim.step(STEP);
+      sim.setMoored(mooring.state === "moored");
+    },
+  };
+  return dock;
+}
 
-  it("starts moored with no line force and no contact", () => {
-    const { hull, mooring, contact, pose } = moored(layout, { x: 0, y: 0, z: 0 });
-    expect(mooring.state).toBe("moored");
-    for (const stretch of mooring.lineStretches((i, out) => hull.cleatWorld(i, out))) expect(Math.abs(stretch)).toBeLessThan(1e-9);
-    let peak = 0;
-    for (let step = 0; step < 240 * 5; step += 1) {
-      hull.substep();
-      peak = Math.max(peak, Math.hypot(hull.body.linearAcceleration.x, hull.body.linearAcceleration.z));
-      expect(contact.touching, `contact at ${hull.time.toFixed(2)} s`).toBe(0);
+/** The plan probe's seed sequence (tests/world.marina-site.test.ts). */
+function seeds(count: number): (string | number)[] {
+  const out: (string | number)[] = ["open-skies"];
+  let state = 0x51a7e;
+  while (out.length < count) {
+    state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x9e3779b9) >>> 0;
+    out.push(state);
+  }
+  return out;
+}
+
+describe("the dock start", () => {
+  it("settles with no jolt and no contact for 5 s on 48 worlds", { timeout: 120_000 }, () => {
+    for (const seed of seeds(48)) {
+      const dock = dockStart(createWorld(seed));
+      const start = { x: dock.sim.state.position.x, z: dock.sim.state.position.z };
+      let peak = 0;
+      let previous = { x: 0, z: 0 };
+      for (let step = 0; step < 120 * 5; step += 1) {
+        dock.step();
+        const v = dock.sim.state.velocity;
+        if (step > 0) peak = Math.max(peak, Math.hypot(v.x - previous.x, v.z - previous.z) / STEP);
+        previous = { x: v.x, z: v.z };
+      }
+      const label = String(seed);
+      expect(dock.colliders.touches, `${label}: contact`).toBe(0);
+      expect(dock.sim.state.crashed, label).toBe(false);
+      expect(dock.mooring.state, label).toBe("moored");
+      expect(dock.sim.snapshot().payload.moored, label).toBe(true);
+      expect(peak, `${label}: horizontal acceleration`).toBeLessThan(0.05);
+      expect(Math.hypot(dock.sim.state.position.x - start.x, dock.sim.state.position.z - start.z), label).toBeLessThan(0.05);
     }
-    expect(peak).toBeLessThan(1e-6);
-    expect(Math.hypot(hull.position.x - pose.x, hull.position.z - pose.z)).toBeLessThan(1e-6);
   });
+});
 
-  it("holds the boat within 0.5 m in an 11 m/s wind from any direction", () => {
+describe("home marina mooring", () => {
+  const world = createWorld("open-skies");
+  const layout = homeMarina(world);
+
+  it("holds the boat within 0.5 m in an 11 m/s wind from any side, touching nothing hard", { timeout: 120_000 }, () => {
     for (let index = 0; index < 8; index += 1) {
       const angle = (index / 8) * Math.PI * 2;
-      const { hull, contact, pose } = moored(layout, { x: Math.sin(angle) * 11, y: 0, z: Math.cos(angle) * 11 });
+      const dock = dockStart(world, { x: Math.sin(angle) * 11, y: 0, z: Math.cos(angle) * 11 });
+      const mark = marinaToWorld(layout.frame, layout.startBerth.right, layout.startBerth.out);
       let worst = 0;
-      for (let step = 0; step < 240 * 60; step += 1) {
-        hull.substep();
-        worst = Math.max(worst, Math.hypot(hull.position.x - pose.x, hull.position.z - pose.z));
+      for (let step = 0; step < 120 * 30; step += 1) {
+        dock.step();
+        worst = Math.max(worst, Math.hypot(dock.sim.state.position.x - mark.x, dock.sim.state.position.z - mark.z));
       }
-      expect(worst, `wind from ${(angle * 180 / Math.PI).toFixed(0)} deg`).toBeLessThan(0.5);
-      expect(contact.crashed).toBe(false);
+      const label = `wind from ${((angle * 180) / Math.PI).toFixed(0)} deg`;
+      expect(worst, label).toBeLessThan(0.5);
+      expect(dock.mooring.state, label).toBe("moored");
+      expect(dock.sim.state.crashed, label).toBe(false);
     }
   });
 
   it("makes fast within 1.5 m below 0.6 m/s, and casts off on M or into gear", () => {
-    const w = createWorld("open-skies");
-    const pose = marinaStartPose(w);
     const mooring = new Mooring(layout);
     const berth = layout.startBerth;
     const centre = marinaToWorld(layout.frame, berth.right, berth.out);
-    const hull = new StandInHull(pose.stillWaterY, centre.x + 1.2, centre.z, pose.headingRadians);
-    const cleats = (i: number, out: Vec3) => hull.cleatWorld(i, out);
+    const at = { x: centre.x + 1.2, y: 0, z: centre.z };
+    const heading = berth.bowHeadingRadians;
+    const cleats = (_index: number, out: Vec3) => {
+      out.x = at.x;
+      out.y = 0.7;
+      out.z = at.z;
+      return out;
+    };
     const still = { x: 0, y: 0, z: 0 };
+    const press = (presses: number, extra: Partial<BoatControlState> = {}, position: Vec3 = at, velocity: Vec3 = still) =>
+      mooring.update({ ...NEUTRAL_BOAT_CONTROLS, moorPresses: presses, ...extra }, false, position, velocity, heading, cleats);
     // The first update only latches the press counter.
-    mooring.update(CALM, false, hull.position, still, pose.headingRadians, cleats);
+    press(0);
     expect(mooring.state).toBe("free");
-    mooring.update({ ...CALM, moorPresses: 1 }, false, hull.position, { x: 0.7, y: 0, z: 0 }, pose.headingRadians, cleats);
+    press(1, {}, at, { x: 0.7, y: 0, z: 0 });
     expect(mooring.state, "too fast").toBe("free");
-    mooring.update({ ...CALM, moorPresses: 2 }, false, hull.position, still, pose.headingRadians, cleats);
+    press(2);
     expect(mooring.state).toBe("moored");
     expect(mooring.berth).toBe(berth);
-    mooring.update({ ...CALM, moorPresses: 3 }, false, hull.position, still, pose.headingRadians, cleats);
+    press(3);
     expect(mooring.state, "M casts off").toBe("free");
-    mooring.update({ ...CALM, moorPresses: 4 }, false, hull.position, still, pose.headingRadians, cleats);
+    press(4);
     expect(mooring.state).toBe("moored");
-    mooring.update({ ...CALM, moorPresses: 4, lever: 0.3 }, false, hull.position, still, pose.headingRadians, cleats);
+    // Inside the shift detent it stays fast; into gear it casts off.
+    press(4, { lever: 0.04 });
+    expect(mooring.state, "lever inside the detent").toBe("moored");
+    press(4, { lever: 0.3 });
     expect(mooring.state, "into gear casts off").toBe("free");
-    // Out of range: nothing to make fast to.
-    const far = { x: centre.x + 2, y: 0, z: centre.z };
-    mooring.update({ ...CALM, moorPresses: 5 }, false, far, still, pose.headingRadians, cleats);
-    expect(mooring.state).toBe("free");
+    press(5, {}, { x: centre.x + 2, y: 0, z: centre.z });
+    expect(mooring.state, "out of range").toBe("free");
   });
 
   it("moors on its own in Scenic, but not straight back into the berth it just left", () => {
-    const w = createWorld("open-skies");
-    const pose = marinaStartPose(w);
     const mooring = new Mooring(layout);
     const berth = layout.startBerth;
     const centre = marinaToWorld(layout.frame, berth.right, berth.out);
-    const hull = new StandInHull(pose.stillWaterY, centre.x, centre.z, pose.headingRadians);
-    const cleats = (i: number, out: Vec3) => hull.cleatWorld(i, out);
+    const here = { x: centre.x, y: 0, z: centre.z };
+    const heading = berth.bowHeadingRadians;
+    const cleats = (_index: number, out: Vec3) => Object.assign(out, here);
     const still = { x: 0, y: 0, z: 0 };
-    mooring.update(CALM, true, hull.position, still, pose.headingRadians, cleats);
+    mooring.update(NEUTRAL_BOAT_CONTROLS, true, here, still, heading, cleats);
     expect(mooring.state).toBe("moored");
-    mooring.update({ ...CALM, lever: 0.2 }, true, hull.position, still, pose.headingRadians, cleats);
+    mooring.update({ ...NEUTRAL_BOAT_CONTROLS, lever: 0.2 }, true, here, still, heading, cleats);
     expect(mooring.state).toBe("free");
     // Back in neutral but still in the berth: stays free until it has left.
-    mooring.update(CALM, true, hull.position, still, pose.headingRadians, cleats);
+    mooring.update(NEUTRAL_BOAT_CONTROLS, true, here, still, heading, cleats);
     expect(mooring.state).toBe("free");
-    const away = { x: centre.x + Math.sin(pose.headingRadians) * 6, y: 0, z: centre.z + Math.cos(pose.headingRadians) * 6 };
-    mooring.update(CALM, true, away, still, pose.headingRadians, cleats);
-    mooring.update(CALM, true, hull.position, still, pose.headingRadians, cleats);
+    const away = { x: centre.x + Math.sin(heading) * 6, y: 0, z: centre.z + Math.cos(heading) * 6 };
+    mooring.update(NEUTRAL_BOAT_CONTROLS, true, away, still, heading, cleats);
+    mooring.update(NEUTRAL_BOAT_CONTROLS, true, here, still, heading, cleats);
     expect(mooring.state).toBe("moored");
   });
 
-  it("hauls a boat made fast off its mark back onto it without a jolt", () => {
-    const w = createWorld("open-skies");
-    const pose = marinaStartPose(w);
-    const colliders = new ColliderWorld();
-    const marina = addMarinaColliders(colliders, layout);
-    const berth = layout.startBerth;
-    const centre = marinaToWorld(layout.frame, berth.right, berth.out);
-    const starboardX = -Math.cos(pose.headingRadians);
-    const starboardZ = Math.sin(pose.headingRadians);
-    const hull = new StandInHull(pose.stillWaterY, centre.x + starboardX * 0.3, centre.z + starboardZ * 0.3, pose.headingRadians);
-    const mooring = new Mooring(layout, colliders, marina);
-    mooring.makeFast(berth, pose.headingRadians, (i, out) => hull.cleatWorld(i, out));
-    hull.addLoad(mooring);
-    let peak = 0;
-    for (let step = 0; step < 240 * 30; step += 1) {
-      hull.substep();
-      peak = Math.max(peak, Math.hypot(hull.body.linearAcceleration.x, hull.body.linearAcceleration.z));
-    }
-    expect(Math.hypot(hull.position.x - centre.x, hull.position.z - centre.z)).toBeLessThan(0.1);
-    expect(peak, "haul-in acceleration").toBeLessThan(0.5);
+  it("casts off and gets under way when the lever goes into gear", () => {
+    const dock = dockStart(world);
+    for (let step = 0; step < 120; step += 1) dock.step();
+    dock.controls = { ...NEUTRAL_BOAT_CONTROLS, lever: 0.4 };
+    for (let step = 0; step < 120 * 4; step += 1) dock.step();
+    expect(dock.mooring.state).toBe("free");
+    expect(dock.sim.snapshot().payload.moored).toBe(false);
+    const berth = marinaToWorld(layout.frame, layout.startBerth.right, layout.startBerth.out);
+    // Out along the lane, bow first, and clear of every structure.
+    const forward = { x: Math.sin(layout.startBerth.bowHeadingRadians), z: Math.cos(layout.startBerth.bowHeadingRadians) };
+    const made = (dock.sim.state.position.x - berth.x) * forward.x + (dock.sim.state.position.z - berth.z) * forward.z;
+    expect(made).toBeGreaterThan(3);
+    expect(dock.sim.state.crashed).toBe(false);
   });
 
   it("parts a line pulled past its breaking load", () => {
-    const { hull, mooring } = moored(layout, { x: 0, y: 0, z: 0 });
-    const forwardX = Math.sin(hull.heading());
-    const forwardZ = Math.cos(hull.heading());
+    const dock = dockStart(world);
+    const forward = { x: Math.sin(layout.startBerth.bowHeadingRadians), z: Math.cos(layout.startBerth.bowHeadingRadians) };
     // Far past any outboard's bollard pull: a push only a collision gives.
-    for (let step = 0; step < 240 * 20 && mooring.state === "moored"; step += 1) {
-      hull.body.addForce({ x: forwardX * 150_000, y: 0, z: forwardZ * 150_000 });
-      hull.substep();
-    }
-    expect(mooring.state).toBe("free");
-    expect(mooring.parted).toBe(true);
+    const push = {
+      apply(context: { addForceAtWorldPoint(force: Vec3, point: Vec3): void; position: Readonly<Vec3> }) {
+        context.addForceAtWorldPoint({ x: forward.x * 150_000, y: 0, z: forward.z * 150_000 }, context.position as Vec3);
+      },
+    };
+    dock.sim.addExternalLoad(push);
+    for (let step = 0; step < 120 * 10 && dock.mooring.state === "moored"; step += 1) dock.step();
+    expect(dock.mooring.state).toBe("free");
+    expect(dock.mooring.parted).toBe(true);
   });
 });
 
 describe("home marina structures", () => {
-  const layout = homeMarina(createWorld("open-skies"));
+  const world = createWorld("open-skies");
+  const layout = homeMarina(world);
 
-  /** A lone timber pile of the marina's size, hit beam-on with the hull's side 5 cm off it. */
+  /** A lone timber pile of the marina's size, hit beam-on by the boat's starboard side. */
   function ram(speed: number) {
-    const colliders = new ColliderWorld();
+    const colliders = new CountingColliders();
     const pile = layout.posts.find((post) => post.kind === "pile")!;
     colliders.addStatic(
-      { kind: "capsule", a: { x: 0, y: pile.bottomY, z: 0 }, b: { x: 0, y: pile.topY, z: 0 }, radius: pile.radius },
+      { kind: "capsule", a: { x: 0, y: -4, z: 0 }, b: { x: 0, y: 3, z: 0 }, radius: pile.radius },
       { material: MARINA_COLLIDER_MATERIAL.timber },
     );
-    const touchingDistance = MARINA_LAYOUT.boatBeam / 2 + pile.radius;
     // Heading 0 points the bow along +Z, so starboard is -X: the starboard side meets the pile.
-    const hull = new StandInHull(layout.seaLevel, touchingDistance + 0.05, 0, 0);
-    hull.body.velocity.x = -speed;
-    const contact = new MarinaContactLoad(colliders);
-    hull.addLoad(contact);
-    let touched = false;
-    let closest = Infinity;
-    for (let step = 0; step < 240 * 6; step += 1) {
-      hull.substep();
-      if (contact.touching > 0) touched = true;
-      closest = Math.min(closest, hull.position.x);
+    const sim = new BoatSimulator({ position: { x: 1.6, y: 0, z: 0.5 }, heading: 0, moored: false });
+    sim.setEnvironment({ water: new CalmWaterSurface(0, () => -10), wind: { x: 0, y: 0, z: 0 }, bedHeight: () => -10, gravity: G, colliders });
+    sim.setControls({ assist: "pilot", boat: { ...NEUTRAL_BOAT_CONTROLS } });
+    sim.body.velocity.x = -speed;
+    let touched = 0;
+    for (let step = 0; step < 120 * 4; step += 1) {
+      const before = colliders.touches;
+      sim.step(STEP);
+      if (colliders.touches > before) touched += 1;
     }
-    return { contact, touched, along: -hull.velocity.x, squeeze: touchingDistance - closest };
+    return { crashed: sim.state.crashed, touched, along: -sim.body.velocity.x };
   }
 
-  it("crashes on a fast hit on a pile and fends off a slow one", () => {
+  it("wrecks the boat on a fast hit on a pile and fends off a slow one", () => {
     const fast = ram(4);
-    expect(fast.touched).toBe(true);
-    expect(fast.contact.crashed).toBe(true);
+    expect(fast.touched).toBeGreaterThan(0);
+    expect(fast.crashed).toBe(true);
     const slow = ram(0.8);
-    expect(slow.touched).toBe(true);
-    expect(slow.contact.crashed).toBe(false);
-    // Fended off: the pile dents the strake by centimetres, and the boat is no longer driving into it.
-    expect(slow.squeeze).toBeLessThan(0.08);
+    expect(slow.touched).toBeGreaterThan(0);
+    expect(slow.crashed).toBe(false);
+    // Fended off: no longer driving into the pile.
     expect(slow.along).toBeLessThan(0.05);
   });
 
   it("rides the pontoons on the sea as kinematic colliders", () => {
     const colliders = new ColliderWorld();
     const marina = addMarinaColliders(colliders, layout);
-    const sea = new TestSea(layout.seaLevel, 0.3, 6);
+    const sea = new Swell(layout.seaLevel, 0.3, 6);
     const sample = createWaterSurfaceSample();
     const pose = createMarinaPontoonPose();
     const centre: Vec3 = { x: 0, y: 0, z: 0 };

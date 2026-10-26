@@ -23,6 +23,11 @@ import {
   type TerrainLandformDataSource,
 } from "@/src/render/webgpu/terrain/TerrainLandformKernel";
 import {
+  TERRAIN_INFRASTRUCTURE_WGSL,
+  TerrainInfrastructureDataBinding,
+  terrainInfrastructureDataBindingWgsl,
+} from "@/src/render/webgpu/terrain/TerrainInfrastructureKernel";
+import {
   EVOLUTION_ANALYTIC_BLEND_METERS,
   EVOLUTION_DOMAIN_SAMPLE_COUNT,
   EVOLUTION_DOMAIN_TEXELS,
@@ -116,6 +121,8 @@ export function bathymetryStorageBytesPerTexel(format: BathymetryStorageFormat):
 const BATHYMETRY_WORKGROUP_EDGE = 8;
 /** The landform data binding's slot in the update kernel's bind group. */
 const BATHYMETRY_LANDFORM_DATA_BINDING = 6;
+/** The infrastructure index's slot in the update kernel's bind group. */
+const BATHYMETRY_INFRASTRUCTURE_DATA_BINDING = 7;
 export const BATHYMETRY_COMPUTE_TIMEOUT_MILLISECONDS = 30_000;
 const BATHYMETRY_COMPUTE_POLL_MILLISECONDS = 16;
 
@@ -759,8 +766,10 @@ export function bathymetryUpdateWgsl(
   return /* wgsl */ `
 ${terrainKernelPageBindingWgsl(0, 0)}
 ${terrainLandformDataBindingWgsl(0, BATHYMETRY_LANDFORM_DATA_BINDING)}
+${terrainInfrastructureDataBindingWgsl(0, BATHYMETRY_INFRASTRUCTURE_DATA_BINDING)}
 ${TERRAIN_KERNEL_WGSL}
 ${TERRAIN_LANDFORM_WGSL}
+${TERRAIN_INFRASTRUCTURE_WGSL}
 
 struct BathymetryUpdateParams {
   // texel metres, sea level, clamp magnitude, macro-authority enabled
@@ -927,7 +936,11 @@ fn updateBathymetry(@builtin(global_invocation_id) id: vec3<u32>) {
   // The landform stage right after the natural kernel and before the macro
   // blend, sampleTerrainHeight's order; LOCAL coordinates, by the contract
   // above. Inside the landform core it returns natural itself, bit for bit.
+  // Then the infrastructure stage, so a dredged basin reads as deep water and
+  // a breakwater breaks the surface; it returns its input wherever no
+  // segment reaches.
   var height = terrainLandforms(localX, localZ, natural);
+  height = terrainInfrastructure(localX, localZ, height);
   if (bathymetryParams.water.w > 0.5) {
     let macroHeight = sampleBathymetryMacroHeight(worldXZ);
     height = height + (macroHeight - height) * bathymetryMacroBlend(worldXZ);
@@ -1044,6 +1057,8 @@ export class BathymetryClipmap {
   private fallbackHeightTexture: RawTexture | null = null;
   /** `terrainLandformData`: the one place it is held and bound, per dispatch. */
   private readonly landformBinding: TerrainLandformDataBinding;
+  /** `terrainInfrastructureData`: the world's infrastructure index, packed on first bind. */
+  private readonly infrastructureBinding: TerrainInfrastructureDataBinding;
   /** The world's landform core and wind; null (gain 0) for an eroded world. */
   private readonly landform: TerrainKernelLandformInput | null;
   private macroEvolution: Readonly<TerrainMacroEvolutionExport> | null = null;
@@ -1069,6 +1084,8 @@ export class BathymetryClipmap {
     this.storageFormat = storageFormat;
     this.landform = terrainLandformInput(world);
     this.landformBinding = new TerrainLandformDataBinding(options.landformData ?? null);
+    // Infrastructure rides the landform base, so no landform input, no stage.
+    this.infrastructureBinding = new TerrainInfrastructureDataBinding(this.landform ? world : null);
     // Mode gate, belt and braces with the wiring gate in FlightRenderer: an
     // analytic world ignores an accidentally supplied seam entirely, so its
     // page table stays the empty sentinel and the WGSL branch stays inert.
@@ -1329,6 +1346,7 @@ export class BathymetryClipmap {
     this.pageTableBufferBytes = 0;
     this.fallbackHeightTexture?.dispose();
     this.landformBinding.dispose();
+    this.infrastructureBinding.dispose();
     this.macroHeightBuffer = null;
     this.pageTableBuffer = null;
     this.fallbackHeightTexture = null;
@@ -1401,6 +1419,7 @@ export class BathymetryClipmap {
       shader.setStorageBuffer("bathymetryMacroHeight", macroHeightBuffer);
       shader.setStorageBuffer("bathymetryPageTable", pageTableBuffer);
       this.landformBinding.bind(this.engine, shader);
+      this.infrastructureBinding.bind(this.engine, shader);
       shader.setTexture("bathymetryHeightAtlas", heightAtlasTexture, false);
       shader.setStorageTexture("bathymetryTarget", runtime.texture);
       await dispatchBathymetryComputeWhenReady(
@@ -1454,6 +1473,7 @@ export class BathymetryClipmap {
           bathymetryPageTable: { group: 0, binding: 4 },
           bathymetryHeightAtlas: { group: 0, binding: 5 },
           terrainLandformData: { group: 0, binding: BATHYMETRY_LANDFORM_DATA_BINDING },
+          terrainInfrastructureData: { group: 0, binding: BATHYMETRY_INFRASTRUCTURE_DATA_BINDING },
         },
       },
     ));

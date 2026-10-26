@@ -3,7 +3,7 @@ import {
   createWorld,
   getAirportInfluence,
   sampleTerrainHeightBeforeEarthworks,
-  spawnedAirportGroundAllowed,
+  landformGroundAllowsAirport,
   withAirports,
   worldToRunway,
   type WorldDefinition,
@@ -66,7 +66,7 @@ describe("home marina site", () => {
       expect(insideApproach, `${seed}: inside the approach surfaces`).toBe(false);
       expect(getAirportInfluence(airport, site.x, site.z), `${seed}: on the airport's earthworks`).toBe(0);
       // The volcanic and sand vetoes.
-      expect(spawnedAirportGroundAllowed(w, site.x, site.z), `${seed}: vetoed ground`).toBe(true);
+      expect(landformGroundAllowsAirport(w, site.x, site.z), `${seed}: vetoed ground`).toBe(true);
       // A shore: land behind, berth water within the rung's reach, open water past it.
       const out = { x: Math.sin(site.headingRadians), z: Math.cos(site.headingRadians) };
       expect(-depthAt(w, site.x - out.x * 30, site.z - out.z * 30)).toBeGreaterThanOrEqual(0.5);
@@ -127,7 +127,7 @@ describe("home marina site", () => {
     for (const seed of SEEDS_200.slice(0, 8)) {
       const w = createWorld(seed, { landforms: { dunes: true, volcanic: true } });
       const site = homeMarinaSite(w);
-      expect(spawnedAirportGroundAllowed(w, site.x, site.z), `${seed}`).toBe(true);
+      expect(landformGroundAllowsAirport(w, site.x, site.z), `${seed}`).toBe(true);
     }
   });
 });
