@@ -45,8 +45,12 @@ function underWay(assist: StabilityAssistMode, lever: number, knots: number, win
   return { boat, telemetry, run, set };
 }
 
-/** Steady-turn figures over a window: mean heel into the turn, worst sideslip, slowest speed, radius from speed over yaw rate. */
-function turn(assist: StabilityAssistMode, steer: number, lever: number, knots: number, settle: number, measure: number) {
+/**
+ * Steady-turn figures over a window: mean heel into the turn, worst sideslip,
+ * slowest speed, radius from speed over yaw rate, and how far the heel and
+ * the yaw rate still swing over the window's last seconds.
+ */
+function turn(assist: StabilityAssistMode, steer: number, lever: number, knots: number, settle: number, measure: number, tail = 4) {
   const run = underWay(assist, lever, knots);
   run.set({ steer });
   let worstRoll = 0;
@@ -61,8 +65,17 @@ function turn(assist: StabilityAssistMode, steer: number, lever: number, knots: 
   let ground = 0;
   let yaw = 0;
   let n = 0;
+  const swing = { rollLow: Infinity, rollHigh: -Infinity, yawLow: Infinity, yawHigh: -Infinity };
+  const tailFrom = Math.round((measure - tail) / STEP);
   run.run(measure, () => {
     const t = run.telemetry;
+    if (n >= tailFrom) {
+      const r = run.boat.state.angularVelocity.y;
+      swing.rollLow = Math.min(swing.rollLow, t.roll);
+      swing.rollHigh = Math.max(swing.rollHigh, t.roll);
+      swing.yawLow = Math.min(swing.yawLow, r);
+      swing.yawHigh = Math.max(swing.yawHigh, r);
+    }
     worstRoll = Math.max(worstRoll, Math.abs(t.roll));
     capsized ||= t.capsized;
     heel += Math.sign(steer) * t.roll;
@@ -79,6 +92,8 @@ function turn(assist: StabilityAssistMode, steer: number, lever: number, knots: 
     slowestKnots: slowest,
     radius: ground / yaw,
     worstRollDegrees: worstRoll / DEG,
+    rollSwingDegrees: (swing.rollHigh - swing.rollLow) / DEG,
+    yawSwingDegrees: (swing.yawHigh - swing.yawLow) / DEG,
     capsized,
     crashed: run.telemetry.crashed,
   };
@@ -111,14 +126,35 @@ describe("boat handling", () => {
     expect(quarter.heelDegrees).toBeGreaterThan(0);
   });
 
-  it.each(["pilot", "unassisted"] as const)("spins out at full lock at top speed in %s rather than tripping over", (assist) => {
+  it.each([
+    ["starboard", 1],
+    ["port", -1],
+  ])("settles into a steady carved turn at full wheel to %s at 35 kn, still on the plane", (_, steer) => {
+    // Scenic, the game's default, at the planing shots' 35 kn: full wheel
+    // and held there. The heel and the yaw rate come to rest instead of
+    // swinging, and the hull carves rather than slides.
+    const full = turn("scenic", steer as number, 0.83, 35, 6, 8);
+    expect(full.rollSwingDegrees).toBeLessThan(1.5);
+    expect(full.yawSwingDegrees).toBeLessThan(3);
+    expect(full.heelDegrees).toBeGreaterThan(8);
+    expect(full.heelDegrees).toBeLessThan(20);
+    expect(full.slipDegrees).toBeLessThan(20);
+    expect(full.slowestKnots).toBeGreaterThan(20);
+    expect(full.capsized).toBe(false);
+  });
+
+  it.each(["pilot", "unassisted"] as const)("spins out at full lock at top speed in %s rather than tripping over, then settles", (assist) => {
     for (const steer of [1, -1]) {
       const spin = turn(assist, steer, 1, 38, 2, 13);
-      // The leg asks for more yaw than the hull can carve: it slides.
+      // The leg asks for more yaw than the hull can carve: the heel into the
+      // turn puts the bow down, the bottom's lateral load moves forward of
+      // the CG and the hull slides (Katayama and Ohashi's spin-out).
       expect(spin.slipDegrees).toBeGreaterThan(20);
       expect(spin.worstRollDegrees).toBeLessThan(60);
       expect(spin.capsized).toBe(false);
       expect(spin.crashed).toBe(false);
+      // The slide's roll and yaw swing dies out: it ends a steady sliding turn.
+      expect(spin.rollSwingDegrees).toBeLessThan(2);
     }
   });
 
