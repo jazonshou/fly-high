@@ -44,8 +44,6 @@ import type {
 
 /** 60 s at 360 Hz with room to spare; the standard flight is 75 s. */
 export const FRAME_LOG_CAPACITY = 32_768;
-/** The hitch thresholds every window counts against, ms. */
-export const OVER_THRESHOLDS_MS = Object.freeze([27.4, 50, 100] as const);
 /** Below this many frames a second a window is too thin to read. */
 export const LOW_SAMPLE_FPS = 6;
 /** Timers this coarse or coarser make render-time percentiles noise (S11). */

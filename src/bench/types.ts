@@ -150,9 +150,6 @@ export type BenchStepStatus =
   | "interrupted"
   | "skipped";
 
-/** A step that will not run again. */
-export type BenchStepOutcome = Exclude<BenchStepStatus, "pending" | "running">;
-
 /** Why an attempt ended without a result, one note per attempt. */
 export interface BenchAttemptNote {
   readonly attempt: number;
