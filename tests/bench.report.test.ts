@@ -103,6 +103,17 @@ describe("the fly-high.bench/1 report", () => {
     });
   });
 
+  it("defines the windows by the run's own times, which quick mode shortens", () => {
+    expect(full.definitions.windows).toBe(
+      "ground: on the runway, from 3 s into the roll to lift-off at 15 s. "
+      + "air: the terrain-following cruise, from 30 s to 75 s. The headline is air.",
+    );
+    const quick = report(defaultRun({ quick: true }));
+    expect(quick.run.plan.windows.ground).toMatchObject({ startS: 1, endS: 5 });
+    expect(quick.definitions.windows).toMatch(/^ground: on the runway, from 1 s into the roll to lift-off at 5 s\. air: [^.]*from 10 s to 20 s\./u);
+    expect(Object.keys(quick.definitions)).toEqual(Object.keys(full.definitions));
+  });
+
   it("holds no undefined, NaN or infinite value, before or after JSON", () => {
     expect(badValues(full)).toEqual([]);
     const parsed = JSON.parse(reportToJson(full)) as unknown;

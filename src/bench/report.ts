@@ -15,6 +15,7 @@ import type {
   BenchReport,
   BenchReportRun,
   BenchReportStep,
+  BenchRunPlan,
   BenchRunRecord,
   BenchSmoothness,
   BenchStepRecord,
@@ -48,10 +49,10 @@ export const REFRESH_CHANGE_THRESHOLD = 0.05;
 const SMOOTH_PER_240 = 1;
 const MOSTLY_SMOOTH_PER_240 = 6;
 
-export const BENCH_DEFINITIONS: Readonly<Record<string, string>> = Object.freeze({
+/** What the report's fields mean, all but the windows, whose times are the run's own. */
+const DEFINITIONS: Readonly<Record<string, string>> = Object.freeze({
   intervalMs: "Time from one frame's requestAnimationFrame timestamp to the next: how long each frame stayed on screen.",
   fps: "1000 / mean interval over the window.",
-  windows: "ground: on the runway, from 3 s into the roll to lift-off. air: the terrain-following cruise. The headline is air.",
   renderMs: "Main-thread time inside the renderer's render(), including any render-scale step it applies first.",
   gpuMs: "GPU frame time from timestamp queries; pinned mode only, where the renderer measures it.",
   over27_4: "Frames slower than 27.4 ms (twice the 13.7 ms frame target), per 240 frames and per minute.",
@@ -63,6 +64,16 @@ export const BENCH_DEFINITIONS: Readonly<Record<string, string>> = Object.freeze
   compiles: "Pipelines and shader modules created, each counted with the frame whose render created it: startup (before the first frame), settle, warmup (flight frames before the air window), window (the air window's frames).",
   decisions: "Governor decisions; t is seconds from the flight's first frame, below zero during the settle.",
 });
+
+/** The report's `definitions`, the windows' times read from the run's plan: quick mode's are shorter. */
+export function benchDefinitions(windows: BenchRunPlan["windows"]): Readonly<Record<string, string>> {
+  const { ground, air } = windows;
+  return Object.freeze({
+    windows: `ground: on the runway, from ${ground.startS} s into the roll to lift-off at ${ground.endS} s. `
+      + `air: the terrain-following cruise, from ${air.startS} s to ${air.endS} s. The headline is air.`,
+    ...DEFINITIONS,
+  });
+}
 
 // --- labels ------------------------------------------------------------------------
 
@@ -472,7 +483,7 @@ export function buildReport(input: BuildReportInput): BenchReport {
         steps: earlierSteps,
       };
     }),
-    definitions: BENCH_DEFINITIONS,
+    definitions: benchDefinitions(input.run.plan.windows),
   };
 }
 
