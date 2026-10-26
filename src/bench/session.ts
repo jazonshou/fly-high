@@ -388,8 +388,7 @@ class ReportPage {
         report,
         notice: this.notice,
         copy: this.copy,
-        // A tab that cannot save cannot run a pass or start again either.
-        busy: this.busy || store === null,
+        busy: this.busy,
         onDownload: () => download(reportToJson(report, 2), reportFileName(report)),
         onCopy: (target, text) => this.copyText(target, text),
         onPinnedPass: () => {
