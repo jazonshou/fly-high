@@ -1028,6 +1028,43 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "Two toroidal half-float levels: r16float storage where the adapter exposes `texture-formats-tier1`, rgba16float storage on a core-only device such as Firefox (`selectBathymetryStorageFormat`; the sampled `.r` is the same either way). Eroded mode samples the canonical macro authority with its cell-centred 16-texel rim blend, then overlays RESIDENT eroded L0 pages inside the update dispatch (W-6, feathered at macro-facing page borders); `sampleBathymetryTerrainAuthority` stays the documented macro floor. Analytic mode remains bit-compatible via the empty-table sentinel.",
   },
   {
+    // Boats (2026-10-26): the sea a hull floats on and the sea on screen are
+    // one authority (ARCHITECTURE.md §3, "The sea"). The spectrum is defined
+    // once, TypeScript and WGSL side by side; the GPU ocean transforms it and
+    // the CPU sea twin sums the same waves; the marina shelter field is one
+    // analytic function both evaluate.
+    artifact: "sea-surface-authority",
+    owner: "water",
+    definitionSites: [
+      "src/sim/water/spectrum.ts",
+      "src/sim/water/spectrumWgsl.ts",
+      "src/sim/water/spectrumConfig.ts",
+      "src/sim/water/seaState.ts",
+      "src/sim/water/seaTwin.ts",
+      "src/sim/water/shelter.ts",
+    ],
+    consumers: ["water", "simulation"],
+    ownedSymbols: [
+      "OCEAN_SPECTRUM_WGSL",
+      "oceanInitialWave",
+      "oceanWaveSeed",
+      "oceanDirectionalSpectrum",
+      "resolveSeaSpectrumConfig",
+      "weatherWindScale",
+      "SeaTwin",
+      "createSeaTwin",
+      "SEA_SHELTER_WGSL",
+      "packSeaShelterEllipses",
+      "seaShelterFactor",
+    ],
+    notes:
+      "Waves are keyed on the wave, not the texel, so every tier draws the same waves in the "
+      + "bands it has and the twin (bands 1-4, 256-point config) matches each. A weather change "
+      + "rebuilds the GPU h0 and calls SeaTwin.setConfig at the same simulation time. "
+      + "tests/world.sea-twin.test.ts holds the twin to an f64 FFT of the spectrum and "
+      + "tests/gpu/ocean-twin-parity.test.ts holds the drawn displacement and shelter to the twin.",
+  },
+  {
     // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,
     // which trees stand on it and which animals live in them. Before this,
     // classifyBiome's threshold cascade, chooseTreeSpecies and the wildlife
