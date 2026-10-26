@@ -1246,11 +1246,11 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     // Tabs.
     const tabStep = definition.tabs.rate * dt;
     if (targets.tabsAuto) {
-      // The rocker moves the collective; the assist's differential rides on it.
+      // The rocker moves the collective; the assist's pitch and differential ride on it.
       this.tabCollective = clamp(this.tabCollective + targets.tabRate * tabStep, 0, 1);
       const half = 0.5 * targets.tabDifferential;
-      const portTarget = clamp(this.tabCollective - half, 0, 1);
-      const starboardTarget = clamp(this.tabCollective + half, 0, 1);
+      const portTarget = clamp(this.tabCollective + targets.tabPitch - half, 0, 1);
+      const starboardTarget = clamp(this.tabCollective + targets.tabPitch + half, 0, 1);
       this.tabPort += clamp(portTarget - this.tabPort, -tabStep, tabStep);
       this.tabStarboard += clamp(starboardTarget - this.tabStarboard, -tabStep, tabStep);
     } else {
@@ -1503,9 +1503,11 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     for (let side = 0; side < 2; side += 1) {
       const deflection = (side === 0 ? this.tabPort : this.tabStarboard) * tabs.maxDegrees;
       if (deflection <= 0) continue;
-      const wetted = so.wettedHalfBeam[side]!;
+      // The share of the tab's span inside the transom strip's wetted bottom.
+      const wettedFrom = so.wettedInner[side]!;
+      const wettedTo = wettedFrom + so.wettedHalfBeam[side]!;
       const inner = tabs.centreHalfBeam - 0.5 * tabs.span;
-      const wet = clamp((wetted - inner) / tabs.span, 0, 1);
+      const wet = clamp((Math.min(wettedTo, inner + tabs.span) - Math.max(wettedFrom, inner)) / tabs.span, 0, 1);
       // Even off the plane the tab sits in the water behind a wet transom.
       const immersion = Math.max(wet, this.transomDepth > 0.05 ? 1 - this.transomDry : 0);
       if (immersion <= 0) continue;
