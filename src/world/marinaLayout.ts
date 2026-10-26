@@ -234,6 +234,41 @@ export function marinaBoxOrientation(
   return out;
 }
 
+/**
+ * A moored runabout as one box, for the sim's collider and the far
+ * silhouette: a little inside the Runabout 21's 6.55 x 2.59 m, because its
+ * bow narrows, from its bottom (0.45 m down, about its draft at the transom)
+ * to its gunwale.
+ */
+export const MARINA_MOORED_BOAT_BOX = Object.freeze({
+  length: 6.2,
+  beam: 2.4,
+  bottomBelowWater: 0.45,
+  topAboveWater: 0.75,
+});
+
+/** The box a moored boat at `berth` fills, centred on its hull rather than its centre of gravity. */
+export function marinaMooredBoatBox(
+  frame: MarinaFrame,
+  berth: MarinaBerth,
+  seaLevel: number,
+): Pick<MarinaBox, "right" | "out" | "y" | "halfRight" | "halfOut" | "halfHeight" | "yaw" | "pitch"> {
+  const B = MARINA_MOORED_BOAT_BOX;
+  const yaw = berth.bowHeadingRadians - frame.headingRadians;
+  // The hull's middle is this far forward of its centre of gravity.
+  const forward = MARINA_LAYOUT.boatLength * 0.5 - MARINA_LAYOUT.boatCgFromTransom;
+  return {
+    right: berth.right - Math.sin(yaw) * forward,
+    out: berth.out + Math.cos(yaw) * forward,
+    y: seaLevel + (B.topAboveWater - B.bottomBelowWater) * 0.5,
+    halfRight: B.beam * 0.5,
+    halfOut: B.length * 0.5,
+    halfHeight: (B.topAboveWater + B.bottomBelowWater) * 0.5,
+    yaw,
+    pitch: 0,
+  };
+}
+
 /** A vertical cylinder: piles, posts, bollards, fenders. */
 export interface MarinaPost {
   readonly kind: MarinaPostKind;

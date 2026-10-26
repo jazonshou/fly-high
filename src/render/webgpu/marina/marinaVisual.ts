@@ -7,6 +7,7 @@ import { RUNABOUT_21_CG, RUNABOUT_21_OUTBOARD, RUNABOUT_21_REST_WATERLINE } from
 import {
   MARINA_LAYOUT,
   marinaBoxOrientation,
+  marinaMooredBoatBox,
   marinaToWorld,
   type MarinaBeacon,
   type MarinaBox,
@@ -353,8 +354,6 @@ export function buildMooredRunaboutGeometry(): MarinaColouredGeometry {
   return mesh.build();
 }
 
-/** The silhouette's moored boat: a box the boat's length, beam and freeboard. */
-const SILHOUETTE_BOAT = Object.freeze({ length: 6.2, beam: 2.4, height: 1.1 });
 
 /**
  * The marina beyond `MARINA_VISUAL.detailMeters`: the decks, pontoons,
@@ -376,9 +375,11 @@ export function buildMarinaSilhouette(layout: MarinaLayout): MarinaColouredGeome
   }
   for (const berth of layout.berths) {
     if (!berth.occupied) continue;
-    scratchScale.set(SILHOUETTE_BOAT.length, SILHOUETTE_BOAT.height, SILHOUETTE_BOAT.beam);
-    setRotation(quaternionFromFlightAngles(berth.bowHeadingRadians, 0, 0));
-    rootPoint(layout, berth.right, berth.out, layout.seaLevel + SILHOUETTE_BOAT.height * 0.5 - 0.3, scratchTranslation);
+    // The box the sim collides with: the boat's length, beam and freeboard.
+    const box = marinaMooredBoatBox(layout.frame, berth, layout.seaLevel);
+    scratchScale.set(box.halfRight * 2, box.halfHeight * 2, box.halfOut * 2);
+    setRotation(marinaBoxOrientation(layout.frame, box));
+    rootPoint(layout, box.right, box.out, box.y, scratchTranslation);
     Matrix.ComposeToRef(scratchScale, scratchRotation, scratchTranslation, matrix);
     mesh.addBox(matrix, MOORED_RUNABOUT_ALBEDO.topsides);
   }

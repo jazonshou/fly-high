@@ -25,7 +25,7 @@ import type { Vec3 } from "../src/sim/types";
 import { RUNABOUT_21_REST_WATERLINE } from "../src/vehicles/boat/hullLines";
 import { createWorld } from "../src/world";
 import { homeMarina } from "../src/world/marina";
-import { FLOATING_BOX_KINDS, marinaToWorld, type MarinaLayout } from "../src/world/marinaLayout";
+import { FLOATING_BOX_KINDS, MARINA_MOORED_BOAT_BOX, marinaToWorld, type MarinaLayout } from "../src/world/marinaLayout";
 
 /**
  * The home marina as drawn (src/render/webgpu/marina/): every drawn part is
@@ -110,6 +110,37 @@ describe("marina parts as drawn", () => {
         const bow = instancePoint(instances.matrices, index, layout, { x: 1, y: 0, z: 0 });
         const heading = Math.atan2(bow.x - centre.x, bow.z - centre.z);
         expect(Math.cos(heading - berth.bowHeadingRadians)).toBeCloseTo(1, 6);
+      });
+    }
+  });
+
+  it("puts a collider in every moored runabout, bow to transom and beam to beam", () => {
+    for (const layout of LAYOUTS) {
+      const colliders = new ColliderWorld();
+      const marina = addMarinaColliders(colliders, layout);
+      const instances = marinaBoatInstances(layout);
+      const staticPosts = layout.posts.filter((post) => ["pile", "guidePile", "beaconPost", "lampPost"].includes(post.kind)).length;
+      const staticBoxes = layout.boxes.filter((box) => box.kind !== "lifeRingStand" && box.kind !== "fuelPump" && !FLOATING_BOX_KINDS.has(box.kind)).length;
+      const occupied = layout.berths.filter((berth) => berth.occupied);
+      expect(marina.staticHandles.length).toBe(staticPosts + staticBoxes + occupied.length);
+      occupied.forEach((berth, index) => {
+        const handle = marina.staticHandles[staticPosts + staticBoxes + index]!;
+        const zero = { x: 0, y: 0, z: 0 };
+        const centre = colliders.localToWorld(handle, zero, { x: 0, y: 0, z: 0 });
+        const axis = (local: Vec3) => {
+          const p = colliders.localToWorld(handle, local, { x: 0, y: 0, z: 0 });
+          return { x: p.x - centre.x, y: p.y - centre.y, z: p.z - centre.z };
+        };
+        const axes = [axis({ x: 1, y: 0, z: 0 }), axis({ x: 0, y: 1, z: 0 }), axis({ x: 0, y: 0, z: 1 })];
+        const halves = [MARINA_MOORED_BOAT_BOX.beam / 2, (MARINA_MOORED_BOAT_BOX.bottomBelowWater + MARINA_MOORED_BOAT_BOX.topAboveWater) / 2, MARINA_MOORED_BOAT_BOX.length / 2];
+        // Body frame, from the CG: near the bow, near the transom, and each side at the CG.
+        for (const body of [{ x: 4.3, y: 0, z: 0 }, { x: -1.65, y: 0, z: 0 }, { x: 0, y: 0, z: 1.15 }, { x: 0, y: 0, z: -1.15 }, { x: 1, y: -0.5, z: 0 }]) {
+          const p = instancePoint(instances.matrices, index, layout, body);
+          axes.forEach((u, k) => {
+            const along = (p.x - centre.x) * u.x + (p.y - centre.y) * u.y + (p.z - centre.z) * u.z;
+            expect(Math.abs(along), `berth ${berth.index}, body ${body.x},${body.y},${body.z}, axis ${k}`).toBeLessThanOrEqual(halves[k]! + 1e-6);
+          });
+        }
       });
     }
   });

@@ -19,7 +19,7 @@ import { CalmWaterSurface } from "@/src/sim/water";
 import { createWaterSurfaceSample, type WaterSurfaceAuthority, type WaterSurfaceSample } from "@/src/sim/water/types";
 import { createWorld, sampleTerrainHeight, type WorldDefinition } from "@/src/world";
 import { homeMarina, marinaStartPose } from "@/src/world/marina";
-import { marinaToWorld, type MarinaLayout } from "@/src/world/marinaLayout";
+import { MARINA_MOORED_BOAT_BOX, marinaToWorld, type MarinaLayout } from "@/src/world/marinaLayout";
 
 /**
  * The home marina's lines and structures with the Runabout's own simulator:
@@ -288,9 +288,16 @@ describe("home marina structures", () => {
    * part, under the marina's contact law: a timber pile of the marina's size,
    * or a pontoon module's fendered side.
    */
-  function ram(speed: number, target: "pile" | "pontoon") {
+  function ram(speed: number, target: "pile" | "pontoon" | "moored boat") {
     const colliders = new CountingColliders();
-    if (target === "pile") {
+    if (target === "moored boat") {
+      // A moored runabout's box, lying alongside with its side at x = 0.
+      const B = MARINA_MOORED_BOAT_BOX;
+      colliders.addStatic(
+        { kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents: { x: B.beam / 2, y: (B.bottomBelowWater + B.topAboveWater) / 2, z: B.length / 2 } },
+        { material: MARINA_COLLIDER_MATERIAL.hull, position: { x: -B.beam / 2, y: (B.topAboveWater - B.bottomBelowWater) / 2, z: 0 } },
+      );
+    } else if (target === "pile") {
       const pile = layout.posts.find((post) => post.kind === "pile")!;
       colliders.addStatic(
         { kind: "capsule", a: { x: 0, y: -4, z: 0 }, b: { x: 0, y: 3, z: 0 }, radius: pile.radius },
@@ -345,6 +352,16 @@ describe("home marina structures", () => {
     expect(ram(5, "pontoon").crashed).toBe(true);
   });
 
+  it("wrecks the boat ramming a moored one and fends off a nudge", () => {
+    const fast = ram(4, "moored boat");
+    expect(fast.touched).toBeGreaterThan(0);
+    expect(fast.crashed).toBe(true);
+    const slow = ram(1.5, "moored boat");
+    expect(slow.touched).toBeGreaterThan(0);
+    expect(slow.crashed).toBe(false);
+    expect(slow.along).toBeLessThan(0.05);
+  });
+
   it("rides the pontoons on the sea as kinematic colliders", () => {
     const colliders = new ColliderWorld();
     const marina = addMarinaColliders(colliders, layout);
@@ -367,13 +384,15 @@ describe("home marina structures", () => {
     expect(marina.pontoons.length).toBe(layout.boxes.filter((box) => box.kind === "pontoon" || box.kind === "finger").length);
   });
 
-  it("builds a static collider for every pile, post, deck, wall and building", () => {
+  it("builds a static collider for every pile, post, deck, wall, building and moored boat", () => {
     const colliders = new ColliderWorld();
     const marina = addMarinaColliders(colliders, layout);
     const piles = layout.posts.filter((post) => ["pile", "guidePile", "beaconPost", "lampPost"].includes(post.kind)).length;
     const boxes = layout.boxes.filter((box) => !["pontoon", "finger", "lifeRingStand", "fuelPump"].includes(box.kind)).length;
-    expect(marina.staticHandles.length).toBe(piles + boxes);
-    expect(colliders.size).toBe(piles + boxes + marina.pontoons.length);
+    const moored = layout.berths.filter((berth) => berth.occupied).length;
+    expect(moored).toBeGreaterThan(0);
+    expect(marina.staticHandles.length).toBe(piles + boxes + moored);
+    expect(colliders.size).toBe(piles + boxes + moored + marina.pontoons.length);
     expect(MOORING.makeFastRadius).toBe(1.5);
   });
 });
