@@ -164,7 +164,7 @@ describe("the issue link", () => {
     expect(title).toBe(issueTitle(full));
     expect(title).toBe("Benchmark: Jason's laptop (RTX 3060) · Windows 11 · Chrome 130 · valid");
     expect(body).toContain("```json\n\n```");
-    expect(body).toContain("| Tier |");
+    expect(body).toContain("| Quality |");
     expect(body).toContain("| Medium |");
     expect(body).toContain("spread");
     expect(body).toContain("build 8813adf4c2e1");
@@ -282,7 +282,10 @@ describe("the verdict", () => {
     expect(full.run.repeatability).toMatchObject({ metric: "meanFps", window: "air", tierIndex: 1, threshold: 0.1, passed: true });
     expect(full.run.repeatability!.spread).toBeGreaterThan(0);
     expect(full.run.repeatability!.spread).toBeLessThan(0.1);
-    expect(verdictText(full.run)).toBe("Valid: the first and last Medium flights agree within 10%.");
+    expect(verdictText(full.run)).toBe(
+      "Valid: the first and last Medium flights, flown to check the run, agree within 10%, "
+      + "so its numbers are steady enough to compare.",
+    );
   });
 
   it("passes at 10.0% and voids at 10.1%", () => {
@@ -306,9 +309,13 @@ describe("the verdict", () => {
   });
 
   it("is incomplete when stopped, or when a check flight did not finish", () => {
-    expect(verdictOf({ ...run, status: "stopped" }).verdict).toBe("incomplete");
+    const stopped = report({ ...run, status: "stopped" });
+    expect(stopped.run.verdict).toBe("incomplete");
+    expect(verdictText(stopped.run)).toBe("Incomplete: the run was stopped before it could check itself.");
     const failed: BenchStepRecord = { ...last, status: "failed", message: "the WebGPU device was lost", result: null };
     expect(verdictOf(withSteps(run, [first, steps[1]!, steps[2]!, failed])).verdict).toBe("incomplete");
+    expect(verdictText(report(withSteps(run, [first, steps[1]!, steps[2]!, failed])).run))
+      .toBe("Incomplete: one of the first and last Medium flights, which check the run, did not finish.");
     const voided: BenchStepRecord = { ...last, status: "void-hidden", attempts: 2, result: null };
     expect(verdictOf(withSteps(run, [first, steps[1]!, steps[2]!, voided])).verdict).toBe("incomplete");
   });
@@ -341,6 +348,8 @@ describe("the verdict", () => {
     const uneven = withSteps(run, [steps[1]!, steps[2]!]);
     expect(computeRepeatability(uneven.steps)).toBeNull();
     expect(verdictOf(uneven).verdict).toBe("unchecked");
+    expect(verdictText(report(uneven).run))
+      .toBe("Unchecked: this run does not start and end on the same quality, so it cannot check itself.");
     expect(verdictOf(withSteps(run, [first])).verdict).toBe("unchecked");
   });
 });
@@ -410,7 +419,7 @@ describe("the report page's table and summary", () => {
     expect(rows[2]!.resultText).toBe("Did not run (Failed)");
     expect(rows[0]!.resultText).toBe(rows[0]!.cells[9]);
     expect(failedReport.run.warnings).toContainEqual({
-      code: "step-failed", stepIndex: 2, message: "High (step 3) failed: the WebGPU device was lost.",
+      code: "step-failed", stepIndex: 2, message: "Flight 3 (High) failed: the WebGPU device was lost.",
     });
   });
 
@@ -420,7 +429,7 @@ describe("the report page's table and summary", () => {
     expect(lines[0]).toBe(
       '**fly high benchmark** (shipped): "Jason\'s laptop (RTX 3060)" · nvidia ampere · Windows 11 · Chrome 130 · 60 Hz',
     );
-    expect(lines[1]).toBe("| Tier | Avg fps | 1% low | Slow frames (over 27.4 ms) per 240 | Stutters (over 50 ms) per 240 | Result |");
+    expect(lines[1]).toBe("| Quality | Avg fps | 1% low | Slow frames (over 27.4 ms) per 240 | Stutters (over 50 ms) per 240 | Result |");
     expect(lines).toHaveLength(9);
     expect(lines[7]).toMatch(/^Verdict: valid · spread \d+\.\d% \(limit 10%\)$/);
     expect(lines[8]).toBe("build 8813adf4c2e1 · run k3x9q2m7wp");
@@ -457,6 +466,10 @@ describe("warnings and earlier runs", () => {
       "raf-limited@1",
       "timer-coarse@1",
     ]);
+    // In the page's words: a flight and its quality, never a step or a tier.
+    expect(collectWarnings(warned).find((entry) => entry.code === "raf-limited")!.message).toBe(
+      "Flight 2 (Low): the browser or display ran at 30 Hz (power saving?). Left out of How it felt.",
+    );
     const built = report(warned);
     expect(built.run.verdict).toBe("valid");
     expect(built.run.settingsKeyUnchanged).toBe(false);

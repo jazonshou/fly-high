@@ -141,17 +141,26 @@ export function outcomeText(outcome: BenchStepStatus, message?: string | null): 
   }
 }
 
-export function verdictText(run: Pick<BenchReportRun, "verdict" | "voidReasons" | "repeatability">): string {
-  const tier = run.repeatability ? benchTierName(run.repeatability.tierIndex) : "check";
+/**
+ * The verdict in the report page's words: a quality and its flights, never
+ * a tier or a step. The first and last flights of one quality are the run's
+ * check on itself, which "Valid" passed: steady numbers, not good ones.
+ */
+export function verdictText(run: Pick<BenchReportRun, "status" | "verdict" | "voidReasons" | "repeatability">): string {
+  const pair = run.repeatability
+    ? `the first and last ${benchTierName(run.repeatability.tierIndex)} flights`
+    : "the first and last flights";
   switch (run.verdict) {
     case "valid":
-      return `Valid: the first and last ${tier} flights agree within 10%.`;
+      return `Valid: ${pair}, flown to check the run, agree within 10%, so its numbers are steady enough to compare.`;
     case "void":
       return `Void: ${run.voidReasons.join("; ")}. Close other programs, let the computer cool, and run it again.`;
     case "incomplete":
-      return "Incomplete: the run was stopped, or one of its check flights did not finish.";
+      return run.status === "stopped"
+        ? "Incomplete: the run was stopped before it could check itself."
+        : `Incomplete: one of ${pair}, which check the run, did not finish.`;
     case "unchecked":
-      return "Unchecked: this run does not start and end on the same tier, so it cannot check itself.";
+      return "Unchecked: this run does not start and end on the same quality, so it cannot check itself.";
   }
 }
 
@@ -283,17 +292,18 @@ export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
   for (const step of run.steps) {
     const result = step.result;
     const at = step.index;
-    const name = `${benchTierName(step.tierIndex)} (step ${at + 1})`;
+    const name = `Flight ${at + 1} (${benchTierName(step.tierIndex)})`;
     if (step.status === "failed" && step.message) {
       warnings.push(warning("step-failed", at, `${name} failed: ${step.message}.`));
     }
     if (!result) continue;
     if (!result.settle.reachedRest) {
-      warnings.push(warning("settle-not-at-rest", at, `${name}: streaming had not settled when the flight began.`));
+      warnings.push(warning("settle-not-at-rest", at, `${name}: the world was still loading when the flight began.`));
     }
     for (const window of [result.windows.ground, result.windows.air]) {
       if (window && window.lowSample && FINISHED.has(step.status) && step.status !== "early-stop") {
-        warnings.push(warning("low-sample", at, `${name}: only ${window.frames} frames in the ${window.name} window.`));
+        const where = window.name === "ground" ? "on the runway" : "in the air";
+        warnings.push(warning("low-sample", at, `${name}: only ${window.frames} frames ${where}.`));
       }
     }
     if (!result.path.matchesExpected) {
@@ -325,7 +335,7 @@ export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
     if (result.raf.limited) {
       warnings.push(warning("raf-limited", at,
         `${name}: the browser or display ran at ${result.raf.idleHz?.toFixed(0)} Hz (power saving?). `
-        + "Left out of the tier labels."));
+        + "Left out of How it felt."));
     }
     if (result.timer.coarse) {
       warnings.push(warning("timer-coarse", at,
@@ -688,7 +698,7 @@ function formatShare(value: number | null | undefined): string {
 }
 
 export const REPORT_TABLE_COLUMNS = Object.freeze([
-  "Tier",
+  "Quality",
   "Avg fps",
   "1% low",
   "Slow frames (over 27.4 ms) per 240",

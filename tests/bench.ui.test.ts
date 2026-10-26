@@ -447,7 +447,7 @@ describe("the report dialog", () => {
     expect(table).not.toContain("DXGI");
     expect(table).toContain('<td class="bench-label--did-not-run bench-table__result">Did not run (Failed)</td>');
     // The reason is under Things to know.
-    expect(markup).toContain(`<li>High (step 3) failed: ${message}.</li>`);
+    expect(markup).toContain(`<li>Flight 3 (High) failed: ${message}.</li>`);
     const css = readFileSync(new URL("../src/bench/bench.css", import.meta.url), "utf8");
     expect(/\.bench-table td\.bench-table__result \{[^}]*white-space: normal;/.exec(css)).not.toBeNull();
   });
