@@ -1,0 +1,322 @@
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Constants } from "@babylonjs/core/Engines/constants";
+import type { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
+import { Scene } from "@babylonjs/core/scene";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  INITIAL_VISUAL_STATE,
+  MAX_BOAT_SPRAY_ROOTS,
+  type BoatVisualState,
+  type FlightVisualState,
+} from "../src/game/types";
+import {
+  BOAT_SPRAY_FRAGMENT_WGSL,
+  BOAT_SPRAY_VERTEX_WGSL,
+  BoatSpraySystem,
+  createSprayDropletSample,
+  sampleSprayDroplet,
+  SPRAY_BUDGET_SHARES,
+  SPRAY_CHUNK_DROPLETS,
+  SPRAY_CLOCK_PERIOD_SECONDS,
+  SPRAY_EMISSION_HZ,
+  SPRAY_FLOATS_PER_DROPLET,
+  SPRAY_INSTANCE_CAPACITY,
+  SPRAY_MAX_LIFETIME_SECONDS,
+  SPRAY_REANCHOR_METERS,
+  sprayAge,
+  sprayClock,
+  type BoatSprayGeometry,
+} from "../src/render/webgpu/boat/BoatSpraySystem";
+import { WATER_RENDERING_GROUP_ID } from "../src/render/webgpu/core/RenderingGroups";
+import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+
+const GEOMETRY: BoatSprayGeometry = { propellerHub: [-2.25, -0.55, 0], tiltPivot: [-1.95, 0.2, 0] };
+
+/** Chine roots a planing hull reports: four a side along the wetted run. */
+function chineRoots(count: number, jet: number): number[] {
+  const roots: number[] = [];
+  for (let root = 0; root < count; root += 1) {
+    const side = root % 2 === 0 ? 1 : -1;
+    roots.push(0.4 - 0.35 * Math.floor(root / 2), -0.36, side * 1.02, jet);
+  }
+  return roots;
+}
+
+function boat(overrides: Partial<BoatVisualState> = {}): BoatVisualState {
+  return {
+    kind: "boat",
+    speedThroughWater: 0,
+    gear: "neutral",
+    lever: 0,
+    steerAngle: 0,
+    trim: 0,
+    trimAngle: 0,
+    tabPort: 0,
+    tabStarboard: 0,
+    depthUnderKeel: 12,
+    propellerImmersion: 1,
+    moored: false,
+    ventilating: false,
+    capsized: false,
+    planing: 0,
+    wettedLength: 6,
+    transomImmersion: 0.42,
+    sprayRoots: [],
+    sprayRootCount: 0,
+    ...overrides,
+  };
+}
+
+const KNOTS = 0.514444;
+
+/** A boat running east (+X) at `speed`, on the water at the origin at t = 0. */
+function running(time: number, speed: number, payload: BoatVisualState, x0 = 0): FlightVisualState {
+  return {
+    ...INITIAL_VISUAL_STATE,
+    position: { x: x0 + speed * time, y: 0.15, z: 40 },
+    velocity: { x: speed, y: 0, z: 0 },
+    airspeed: speed,
+    altitude: 0.15,
+    altitudeAgl: 0.15,
+    simulationTime: time,
+    onGround: false,
+    vehicle: payload,
+  };
+}
+
+const PLANING = boat({
+  speedThroughWater: 35 * KNOTS,
+  gear: "forward",
+  lever: 0.85,
+  planing: 1,
+  trim: 0.4,
+  trimAngle: 0.07,
+  sprayRoots: chineRoots(8, 16),
+  sprayRootCount: 8,
+});
+
+function run(system: BoatSpraySystem, seconds: number, fps: number, payload: BoatVisualState, start = 0): void {
+  // From frame 0, so every frame rate starts the lattice on the same tick.
+  const frames = Math.round(seconds * fps);
+  for (let frame = start === 0 ? 0 : 1; frame <= frames; frame += 1) {
+    const time = start + frame / fps;
+    system.update(running(time, 35 * KNOTS, payload));
+  }
+}
+
+describe("boat spray", () => {
+  let engine: NullEngine;
+  let scene: Scene;
+
+  beforeEach(() => {
+    engine = new NullEngine();
+    scene = new Scene(engine);
+  });
+
+  afterEach(() => {
+    scene.dispose();
+    engine.dispose();
+  });
+
+  it("caps each tier at 256 / 1,024 / 4,096, inside the ring and in whole upload chunks", () => {
+    const caps = [
+      resolveWebGpuQualityProfile("low", "balanced"),
+      resolveWebGpuQualityProfile("medium", "balanced"),
+      resolveWebGpuQualityProfile("high", "balanced"),
+      resolveWebGpuQualityProfile("high", "ultra"),
+    ].map((profile) => profile.boatSprayParticleCap);
+    expect(caps).toEqual([256, 1_024, 4_096, 4_096]);
+    for (const cap of caps) {
+      expect(cap).toBeLessThanOrEqual(SPRAY_INSTANCE_CAPACITY);
+      expect(cap % SPRAY_CHUNK_DROPLETS).toBe(0);
+      const system = new BoatSpraySystem(scene, { cap, geometry: GEOMETRY });
+      expect(system.capacity).toBe(cap);
+      expect(system.mesh!.forcedInstanceCount).toBe(cap);
+      expect(system.instanceData!.length).toBe(cap * SPRAY_FLOATS_PER_DROPLET);
+      system.dispose();
+    }
+    // The budget shares leave headroom, so a full sheet + rooster + mist never overwrites live drops.
+    expect(SPRAY_BUDGET_SHARES.sheet + SPRAY_BUDGET_SHARES.rooster + SPRAY_BUDGET_SHARES.mist).toBeLessThan(1);
+  });
+
+  it("creates nothing at a cap of 0, and tears down and rebuilds on a cap change", () => {
+    const meshes = scene.meshes.length;
+    const materials = scene.materials.length;
+    const none = new BoatSpraySystem(scene, { cap: 0, geometry: GEOMETRY });
+    run(none, 1, 60, PLANING);
+    expect(none.mesh).toBeNull();
+    expect(none.instanceData).toBeNull();
+    expect(none.drawing).toBe(false);
+    expect(none.birthCount).toBe(0);
+    expect(scene.meshes.length).toBe(meshes);
+    expect(scene.materials.length).toBe(materials);
+
+    none.setCap(1_000);
+    expect(none.capacity).toBe(960);
+    expect(none.mesh).not.toBeNull();
+    none.setCap(0);
+    expect(none.mesh).toBeNull();
+    expect(scene.meshes.length).toBe(meshes);
+    expect(scene.materials.length).toBe(materials);
+    none.dispose();
+  });
+
+  it("primes once, then draws nothing for a boat at rest or an aircraft session", () => {
+    for (const payload of [boat({ moored: true }), null]) {
+      const system = new BoatSpraySystem(scene, { cap: 256, geometry: GEOMETRY });
+      system.update({ ...running(0, 0, boat()), vehicle: payload });
+      expect(system.drawing).toBe(true);
+      for (let frame = 1; frame < 30; frame += 1) {
+        system.update({ ...running(frame / 60, 0, boat()), vehicle: payload });
+      }
+      expect(system.drawing).toBe(false);
+      expect(system.birthCount).toBe(0);
+      system.dispose();
+    }
+  });
+
+  it("throws sheets from the roots once planing, and stops drawing when they have all fallen", () => {
+    const system = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(system, 2, 60, PLANING);
+    expect(system.drawing).toBe(true);
+    const live = system.liveCount();
+    // Steady state is near the budget, never the whole ring.
+    expect(live).toBeGreaterThan(0.5 * (SPRAY_BUDGET_SHARES.sheet + SPRAY_BUDGET_SHARES.rooster) * 1_024);
+    expect(live).toBeLessThan(1_024);
+
+    // Off the plane with no roots: no new spray, and the mesh goes once the last droplet is down.
+    const idle = boat({ speedThroughWater: 1 });
+    run(system, SPRAY_MAX_LIFETIME_SECONDS + 0.2, 60, idle, 2);
+    expect(system.liveCount()).toBe(0);
+    expect(system.drawing).toBe(false);
+    system.dispose();
+  });
+
+  it("raises the rooster tail only on the plane, and the mist only while ventilating", () => {
+    const displacing = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(displacing, 1, 60, boat({ planing: 0.2, propellerImmersion: 1 }));
+    expect(displacing.birthCount).toBe(0);
+    displacing.dispose();
+
+    const rooster = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(rooster, 1, 60, boat({ planing: 1, propellerImmersion: 1 }));
+    expect(rooster.birthCount).toBeGreaterThan(50);
+    // Born behind the transom and climbing.
+    const records = rooster.instanceData!;
+    const anchor = rooster.anchor;
+    const state = running(1, 35 * KNOTS, PLANING);
+    let behind = 0;
+    for (let droplet = 0; droplet < rooster.birthCount; droplet += 1) {
+      const at = droplet * SPRAY_FLOATS_PER_DROPLET;
+      const age = sprayAge(sprayClock(1), records[at + 3]!);
+      const bornX = records[at]! + anchor.x;
+      // Where the hull was at the droplet's birth.
+      const hullX = state.position.x - 35 * KNOTS * age;
+      if (bornX < hullX - 1.5) behind += 1;
+      expect(records[at + 5]!).toBeGreaterThan(0);
+    }
+    expect(behind).toBe(rooster.birthCount);
+    rooster.dispose();
+
+    const venting = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(venting, 1, 60, boat({ ventilating: true, lever: 1, propellerImmersion: 0.3 }));
+    expect(venting.birthCount).toBeGreaterThan(20);
+    venting.dispose();
+  });
+
+  it("is deterministic: the same spray at 30, 60 and 144 frames a second", () => {
+    const sample = (fps: number): Float32Array => {
+      const system = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+      run(system, 1.5, fps, PLANING);
+      const copy = Float32Array.from(system.instanceData!);
+      system.dispose();
+      return copy;
+    };
+    const at60 = sample(60);
+    for (const fps of [30, 144]) {
+      const other = sample(fps);
+      expect(other.length).toBe(at60.length);
+      let worst = 0;
+      for (let index = 0; index < at60.length; index += 1) worst = Math.max(worst, Math.abs(other[index]! - at60[index]!));
+      expect(worst).toBeLessThan(1e-3);
+    }
+  });
+
+  it("emits on the 120 Hz lattice and drops a long hitch's backlog rather than bursting", () => {
+    const system = new BoatSpraySystem(scene, { cap: 4_096, geometry: GEOMETRY });
+    run(system, 1, 60, PLANING);
+    const perSecond = system.birthCount;
+    // A one-second hitch: at most the frame's emission budget is replayed.
+    system.update(running(2, 35 * KNOTS, PLANING));
+    expect(system.birthCount - perSecond).toBeLessThan(perSecond / 4);
+    expect(SPRAY_EMISSION_HZ).toBe(120);
+    system.dispose();
+  });
+
+  it("folds the sheets of every root into one budget, whatever the root count", () => {
+    const few = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(few, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(2, 16), sprayRootCount: 2 }));
+    const many = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(many, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(MAX_BOAT_SPRAY_ROOTS, 16), sprayRootCount: MAX_BOAT_SPRAY_ROOTS }));
+    expect(many.birthCount).toBeGreaterThan(few.birthCount);
+    // Never past the sheet share's steady-state rate.
+    expect(many.birthCount).toBeLessThanOrEqual(Math.ceil((SPRAY_BUDGET_SHARES.sheet * 1_024) / 1.2) + MAX_BOAT_SPRAY_ROOTS);
+    // Slow jets throw nothing.
+    const slow = new BoatSpraySystem(scene, { cap: 1_024, geometry: GEOMETRY });
+    run(slow, 1, 60, boat({ planing: 0, sprayRoots: chineRoots(8, 2), sprayRootCount: 8 }));
+    expect(slow.birthCount).toBe(0);
+    few.dispose();
+    many.dispose();
+    slow.dispose();
+  });
+
+  it("flies each droplet ballistically and fades it out before it lands back in the sea", () => {
+    const system = new BoatSpraySystem(scene, { cap: 256, geometry: GEOMETRY });
+    run(system, 0.25, 60, PLANING);
+    const records = system.instanceData!;
+    const sample = createSprayDropletSample();
+    const birth = records[3]!;
+    const life = records[7]!;
+    sampleSprayDroplet(records, 0, sprayClock(birth + 0.001), 0, 0, sample);
+    expect(sample.x).toBeCloseTo(records[0]!, 1);
+    expect(sample.y).toBeCloseTo(records[1]!, 1);
+    sampleSprayDroplet(records, 0, sprayClock(birth + life * 0.3), 0, 0, sample);
+    expect(sample.alpha).toBeGreaterThan(0);
+    expect(sample.y).toBeGreaterThan(records[1]!);
+    sampleSprayDroplet(records, 0, sprayClock(birth + life + 0.01), 0, 0, sample);
+    expect(sample.alpha).toBe(0);
+    // Through the clock's wrap, the age is continuous.
+    expect(sprayAge(0.5, SPRAY_CLOCK_PERIOD_SECONDS - 0.5)).toBeCloseTo(1, 9);
+    system.dispose();
+  });
+
+  it("re-anchors every 2 km of travel without moving a droplet in the world", () => {
+    const system = new BoatSpraySystem(scene, { cap: 256, geometry: GEOMETRY });
+    const start = SPRAY_REANCHOR_METERS - 40;
+    for (let frame = 1; frame <= 30; frame += 1) {
+      system.update(running(frame / 60, 35 * KNOTS, PLANING, start));
+    }
+    const before = Float32Array.from(system.instanceData!);
+    const anchorBefore = system.anchor.x;
+    system.update(running(31 / 60, 35 * KNOTS, PLANING, start + SPRAY_REANCHOR_METERS * 2));
+    expect(system.anchor.x).not.toBe(anchorBefore);
+    const after = system.instanceData!;
+    // A droplet born before the jump sits where it was in the world.
+    expect(after[0]! + system.anchor.x).toBeCloseTo(before[0]! + anchorBefore, 2);
+    system.dispose();
+  });
+
+  it("draws in the water group after the ocean and the steam, premultiplied, without writing depth", () => {
+    const system = new BoatSpraySystem(scene, { cap: 256, geometry: GEOMETRY });
+    const mesh = system.mesh!;
+    expect(mesh.renderingGroupId).toBe(WATER_RENDERING_GROUP_ID);
+    expect(mesh.alphaIndex).toBeGreaterThan(2);
+    const material = mesh.material as ShaderMaterial;
+    expect(material.alphaMode).toBe(Constants.ALPHA_PREMULTIPLIED_PORTERDUFF);
+    expect(material.disableDepthWrite).toBe(true);
+    expect(BOAT_SPRAY_VERTEX_WGSL).toContain("aerialSunTransmittanceAt");
+    expect(BOAT_SPRAY_VERTEX_WGSL).toContain("aerialPerspective(");
+    expect(BOAT_SPRAY_FRAGMENT_WGSL).toContain("discard");
+    system.dispose();
+  });
+});

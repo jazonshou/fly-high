@@ -153,8 +153,10 @@ export class OutboardPowertrain {
     if (!enabled) {
       // Crashed: the kill cord is out and the engine winds down.
       engineTorque = -4 * loss;
-    } else if (throttle < 0.05 && rpm < engine.idleRpm + 200) {
-      // The idle air valve holds idle against the propeller's drag.
+    } else if (rpm < engine.idleRpm + 200) {
+      // The idle air valve holds idle against the propeller's drag at any
+      // throttle: a part-open throttle lugged down by the load is a floor, not
+      // a stall.
       engineTorque = Math.max(engineTorque, Math.min(80 - loss, 0.6 * (engine.idleRpm - rpm)));
     }
     this.engineTorque = engineTorque;

@@ -392,6 +392,16 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly volcanicSteamMaxWisps: number;
+  /**
+   * Boats: the instance cap on spray droplets (`BoatSpraySystem`): bow sheets
+   * in a turn, the rooster tail and prop wash. One instanced draw at every
+   * cap; the cap bounds the vertex work and the overdraw, and the emitters
+   * scale their rates to it so a low cap means a thinner sheet rather than a
+   * shorter one. Boat sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly boatSprayParticleCap: number;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -497,6 +507,7 @@ function resolveBaseQualityProfile(
       vegetationCastsShadows: false,
       activeAnimalBudget: 16,
       volcanicSteamMaxWisps: 0,
+      boatSprayParticleCap: 256,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -601,6 +612,7 @@ function resolveBaseQualityProfile(
       vegetationCastsShadows: false,
       activeAnimalBudget: 48,
       volcanicSteamMaxWisps: 128,
+      boatSprayParticleCap: 1_024,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -694,6 +706,7 @@ function resolveBaseQualityProfile(
       vegetationCastsShadows: true,
       activeAnimalBudget: 128,
       volcanicSteamMaxWisps: 192,
+      boatSprayParticleCap: 4_096,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -789,6 +802,7 @@ function resolveBaseQualityProfile(
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
     volcanicSteamMaxWisps: 256,
+    boatSprayParticleCap: 4_096,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

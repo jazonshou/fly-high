@@ -85,9 +85,34 @@ export interface BoatEnvironment extends Partial<SurfaceVehicleEnvironment> {
   bedSample?: TerrainSampler;
   /** Docks, piles, pontoons. */
   colliders?: ColliderWorld | null;
+  /**
+   * The contact law by collider material id (`ColliderContact.material`), so
+   * a fendered pontoon can give more than a timber pile. Ids not listed use
+   * `DEFAULT_BOAT_CONTACT`.
+   */
+  contactMaterials?: ReadonlyMap<number, Readonly<BoatContactMaterial>> | null;
   airDensity?: number;
   waterDensity?: number;
 }
+
+/** How the hull meets one collider material, per contact probe. */
+export interface BoatContactMaterial {
+  /** Closing speed along the contact normal above which the hull is wrecked, m/s. */
+  crashSpeed: number;
+  /** Spring, N/m, and damper, N s/m, on the probe's penetration. */
+  stiffness: number;
+  damping: number;
+  /** Coulomb friction along the face. */
+  friction: number;
+}
+
+/** Bare GRP on a hard face: piles, walls, rocks. */
+export const DEFAULT_BOAT_CONTACT: Readonly<BoatContactMaterial> = Object.freeze({
+  crashSpeed: 2.5,
+  stiffness: 4e5,
+  damping: 1.2e4,
+  friction: 0.3,
+});
 
 /**
  * The seam's spawn (`position.y` is the still water height there; the hull
@@ -196,14 +221,10 @@ const CAPSIZE_ROLL = 110 * DEG;
 const CAPSIZE_SECONDS = 4;
 /** Hard impacts. */
 const BED_CRASH_SPEED = 3;
-const COLLIDER_CRASH_SPEED = 2.5;
 const GROUNDING_CRASH_SPEED = 8;
 const BED_STIFFNESS = 3e5;
 const BED_DAMPING = 6e3;
 const BED_FRICTION = 0.45;
-const COLLIDER_STIFFNESS = 4e5;
-const COLLIDER_DAMPING = 1.2e4;
-const COLLIDER_FRICTION = 0.3;
 const PROBE_RADIUS = 0.15;
 /** A press of the mooring key makes fast only below this speed over the ground, m/s. */
 const MAKE_FAST_SPEED = 0.6;
@@ -440,7 +461,15 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   trimAngle: number;
   tabPort = 0;
   tabStarboard = 0;
+  /** The tabs' collective setting the rocker holds; Scenic's levelling rides on it. */
+  private tabCollective = 0;
   moored = false;
+  /**
+   * Who owns `moored`: the boat (mooring presses, the lever casting off, the
+   * berth hold), or an outside mooring (the marina's lines) that sets it with
+   * `setMoored` and holds the boat itself.
+   */
+  mooringOwner: "boat" | "external" = "boat";
   capsized = false;
 
   private environment: BoatEnvironment = {};
@@ -480,6 +509,8 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   private readonly pressureWeight: Float64Array;
   private readonly hydro: HydrostaticResult;
   private readonly stripIn: StripInputs;
+  /** 1 / cos(deadrise) per strip: wetted half-beam to panel girth. */
+  private readonly stripPanelSecant: Float64Array;
   private readonly stripOut: StripOutputs;
 
   // Telemetry kept from the last substep.
@@ -564,6 +595,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.pressureWeight = new Float64Array(this.mesh.triangleCount);
     this.hydro = createHydrostaticResult(this.mesh);
     this.stripIn = createStripInputs(this.strips);
+    this.stripPanelSecant = this.strips.tanDeadrise.map((t) => Math.sqrt(1 + t * t));
     this.stripOut = createStripOutputs(this.strips);
 
     // Collider probes: the sheer every other ring, the chines, the stem and transom corners.
@@ -618,6 +650,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.trimAngle = (spawn.trimDegrees ?? this.definition.trimMinDegrees) * DEG;
     this.tabPort = 0;
     this.tabStarboard = 0;
+    this.tabCollective = 0;
     this.powertrain.reset(spawn.rpm ?? this.definition.engine.idleRpm, spawn.gear ?? "neutral");
     this.assists.reset();
     Object.assign(this.controls, NEUTRAL_BOAT_CONTROLS);
@@ -641,7 +674,8 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
 
   /**
    * Make fast where the boat lies now, or cast off. A marina that moors the
-   * boat with its own lines (an external load) sets this to match them.
+   * boat with its own lines (an external load) sets `mooringOwner` to
+   * "external" and calls this to match them.
    */
   setMoored(moored: boolean): void {
     if (moored && !this.moored) this.makeFast();
@@ -654,6 +688,10 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.berth.z = this.body.position.z;
     const forward = rotateVectorInto(this.tmpA, this.body.orientation, BODY_FORWARD);
     this.berth.heading = Math.atan2(forward.x, forward.z);
+  }
+
+  setMooringOwner(owner: "boat" | "external"): void {
+    this.mooringOwner = owner;
   }
 
   addExternalLoad(load: BoatExternalLoad): void {
@@ -715,6 +753,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
    * stopped; the lever into gear casts off as well.
    */
   private updateMooring(): void {
+    if (this.mooringOwner === "external") return;
     const presses = this.controls.moorPresses;
     if (this.moorPresses === null) {
       this.moorPresses = presses;
@@ -1054,7 +1093,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
       this.loadContext.time = time;
       this.loadContext.dt = dt;
       for (let i = 0; i < this.loads.length; i += 1) this.loads[i]!.apply(this.loadContext);
-    } else if (this.moored) {
+    } else if (this.moored && this.mooringOwner === "boat") {
       this.applyBerthHold();
     }
 
@@ -1156,16 +1195,17 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     // Tabs.
     const tabStep = definition.tabs.rate * dt;
     if (targets.tabsAuto) {
-      // Collective from the rocker, differential to the target.
-      const mean = clamp(0.5 * (this.tabPort + this.tabStarboard) + targets.tabRate * tabStep, 0, 1);
+      // The rocker moves the collective; the assist's differential rides on it.
+      this.tabCollective = clamp(this.tabCollective + targets.tabRate * tabStep, 0, 1);
       const half = 0.5 * targets.tabDifferential;
-      const portTarget = clamp(mean - half, 0, 1);
-      const starboardTarget = clamp(mean + half, 0, 1);
+      const portTarget = clamp(this.tabCollective - half, 0, 1);
+      const starboardTarget = clamp(this.tabCollective + half, 0, 1);
       this.tabPort += clamp(portTarget - this.tabPort, -tabStep, tabStep);
       this.tabStarboard += clamp(starboardTarget - this.tabStarboard, -tabStep, tabStep);
     } else {
       this.tabPort = clamp(this.tabPort + targets.tabRate * tabStep, 0, 1);
       this.tabStarboard = clamp(this.tabStarboard + targets.tabRate * tabStep, 0, 1);
+      this.tabCollective = 0.5 * (this.tabPort + this.tabStarboard);
     }
     // Engine: inflow along the shaft at the hub, immersion against the local surface.
     const hubIndex = this.extraBase + EXTRA_HUB;
@@ -1212,7 +1252,26 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     const reynolds = Math.max(1e5, (flow * wettedLength) / WATER_VISCOSITY);
     const logRe = Math.log10(reynolds) - 2;
     const cf = 0.075 / (logRe * logRe) + this.calibration.roughnessAllowance;
-    const splash = 1 + (Math.PI / 2 - 1) * smoothstep(0.35, 0.9, this.froude);
+    // The clipped mesh's bottom is the still-water footprint. Once the hull
+    // runs, the wetted bottom is the strips' instead: wider by the Wagner
+    // pile-up where the spray root runs free, cut at the strakes and chines
+    // where it trips, and short of the dry transom's hollow. Friction keeps the
+    // mesh's distribution and takes the strips' total.
+    let meshBottom = 0;
+    for (let k = 0; k < pieces.count; k += 1) {
+      const tag = pieces.tag[k]!;
+      if (tag !== HULL_TAG_BOTTOM && tag !== HULL_TAG_CHINE) continue;
+      meshBottom += Math.hypot(pieces.areaVector[k * 3]!, pieces.areaVector[k * 3 + 1]!, pieces.areaVector[k * 3 + 2]!);
+    }
+    let stripBottom = 0;
+    const strips = this.strips;
+    const halfBeams = this.stripOut.wettedHalfBeam;
+    for (let i = 0; i < strips.count; i += 1) {
+      stripBottom += (halfBeams[i * 2]! + halfBeams[i * 2 + 1]!) * this.stripPanelSecant[i]! * strips.length;
+    }
+    const running = smoothstep(0.35, 0.9, this.froude);
+    const ratio = meshBottom > 1e-3 ? clamp(stripBottom / meshBottom, 0.3, Math.PI / 2) : 1;
+    const splash = 1 + (ratio - 1) * running;
     const cgIndex = this.extraBase + EXTRA_CG;
     const ux = this.waterU[cgIndex * 3]!;
     const uy = this.waterU[cgIndex * 3 + 1]!;
@@ -1492,6 +1551,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     box.maxZ = body.position.z + reach;
     const count = colliders.query(box, this.candidates);
     if (count === 0) return;
+    const materials = this.environment.contactMaterials;
     const centre = this.tmpB;
     const velocity = this.tmpC;
     const force = this.tmpD;
@@ -1509,13 +1569,14 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
         velocity.z -= contact.pointVelocity.z;
         const n = contact.normal;
         const vn = velocity.x * n.x + velocity.y * n.y + velocity.z * n.z;
-        if (vn < -COLLIDER_CRASH_SPEED && contact.penetration < 0.1) this.crash();
-        const normalForce = Math.max(0, COLLIDER_STIFFNESS * contact.penetration - COLLIDER_DAMPING * vn);
+        const law = materials?.get(contact.material) ?? DEFAULT_BOAT_CONTACT;
+        if (vn < -law.crashSpeed && contact.penetration < 0.1) this.crash();
+        const normalForce = Math.max(0, law.stiffness * contact.penetration - law.damping * vn);
         const tx = velocity.x - vn * n.x;
         const ty = velocity.y - vn * n.y;
         const tz = velocity.z - vn * n.z;
         const vt = Math.hypot(tx, ty, tz);
-        const slip = vt > 1e-4 ? (COLLIDER_FRICTION * normalForce * Math.min(1, vt / 0.2)) / vt : 0;
+        const slip = vt > 1e-4 ? (law.friction * normalForce * Math.min(1, vt / 0.2)) / vt : 0;
         force.x = n.x * normalForce - slip * tx;
         force.y = n.y * normalForce - slip * ty;
         force.z = n.z * normalForce - slip * tz;
