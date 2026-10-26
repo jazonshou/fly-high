@@ -388,7 +388,11 @@ export function applyInfrastructure(
   z: number,
 ): number {
   if (index.segments.length === 0) return height;
-  const list = index.bins.get(infrastructureBinKey(infrastructureBin(x), infrastructureBin(z)));
+  const binX = infrastructureBin(x);
+  const binZ = infrastructureBin(z);
+  // Off the binned rectangle (nearly every sample in a world): no map lookup.
+  if (binX < index.binMinX || binX > index.binMaxX || binZ < index.binMinZ || binZ > index.binMaxZ) return height;
+  const list = index.bins.get(infrastructureBinKey(binX, binZ));
   if (!list) return height;
   let h = height;
   for (let i = 0; i < list.length; i += 1) {
@@ -458,7 +462,10 @@ export function sampleInfrastructureSurface(
   out.surface = null;
   out.coverage = 0;
   if (index.segments.length === 0) return out;
-  const list = index.bins.get(infrastructureBinKey(infrastructureBin(x), infrastructureBin(z)));
+  const binX = infrastructureBin(x);
+  const binZ = infrastructureBin(z);
+  if (binX < index.binMinX || binX > index.binMaxX || binZ < index.binMinZ || binZ > index.binMaxZ) return out;
+  const list = index.bins.get(infrastructureBinKey(binX, binZ));
   if (!list) return out;
   for (let i = 0; i < list.length; i += 1) {
     const packed = index.segments[list[i]!]!;
