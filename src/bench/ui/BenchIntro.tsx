@@ -278,53 +278,55 @@ export function BenchIntro(props: BenchIntroProps) {
         </details>
       ) : null}
 
-      <p className="bench-privacy">
-        The report contains your graphics card, browser, system version, screen size and these timings.
-        Nothing is sent unless you send it.
-      </p>
+      <div className="bench-panel__footer">
+        <p className="bench-privacy">
+          The report contains your graphics card, browser, system version, screen size and these timings.
+          Nothing is sent unless you send it.
+        </p>
 
-      <div className="bench-actions">
-        {blocked ? (
-          <button
-            type="button"
-            className="bench-action bench-action--primary"
-            disabled={busy || props.checking}
-            onClick={() => props.onDeviceOnly(choice)}
-          >
-            Make a device-only report
-          </button>
-        ) : resume ? (
-          <>
+        <div className="bench-actions">
+          {blocked ? (
             <button
               type="button"
               className="bench-action bench-action--primary"
-              disabled={busy}
-              onClick={props.onResume}
+              disabled={busy || props.checking}
+              onClick={() => props.onDeviceOnly(choice)}
             >
-              Resume
+              Make a device-only report
             </button>
+          ) : resume ? (
+            <>
+              <button
+                type="button"
+                className="bench-action bench-action--primary"
+                disabled={busy}
+                onClick={props.onResume}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className="bench-action"
+                disabled={startDisabled}
+                onClick={() => props.onStart(choice)}
+              >
+                Start over
+              </button>
+            </>
+          ) : (
             <button
               type="button"
-              className="bench-action"
+              className="bench-action bench-action--primary"
               disabled={startDisabled}
               onClick={() => props.onStart(choice)}
             >
-              Start over
+              Start benchmark
             </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="bench-action bench-action--primary"
-            disabled={startDisabled}
-            onClick={() => props.onStart(choice)}
-          >
-            Start benchmark
+          )}
+          <button type="button" className="bench-action" disabled={busy} onClick={props.onExit}>
+            Back to the game
           </button>
-        )}
-        <button type="button" className="bench-action" disabled={busy} onClick={props.onExit}>
-          Back to the game
-        </button>
+        </div>
       </div>
     </BenchDialog>
   );

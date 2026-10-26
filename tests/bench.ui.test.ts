@@ -164,6 +164,14 @@ describe("the intro dialog", () => {
     expect(markup).toContain("The flight instruments are hidden for this run.");
   });
 
+  it("keeps the privacy line and the buttons in the panel's footer, so Start is never below the fold", () => {
+    for (const markup of [intro(), intro({ device: withWebGpu("missing") }), intro({ storage: "unavailable" })]) {
+      const footer = /<div class="bench-panel__footer">([\s\S]*)<\/div><\/div><\/section>$/.exec(markup)?.[1] ?? "";
+      expect(footer).toMatch(/^<p class="bench-privacy">/);
+      expect(actions(footer)).toEqual(actions(markup));
+    }
+  });
+
   it("offers Start and Back, and holds Start while the computer is checked", () => {
     expect(actions(intro())).toEqual(["Start benchmark", "Back to the game"]);
     expect(intro()).not.toMatch(/<button[^>]*disabled=""[^>]*>Start benchmark/);
@@ -562,5 +570,15 @@ describe("bench.css", () => {
     expect(/\.bench-chip \{[^}]*z-index: 45;/.exec(css)).not.toBeNull();
     expect(/\.bench-screen \{[^}]*z-index: 50;/.exec(css)).not.toBeNull();
     expect(/\.bench-panel \{[^}]*overflow: auto;/.exec(css)).not.toBeNull();
+  });
+
+  it("holds the intro's footer at the panel's foot, reaching past the panel's padding", () => {
+    const footer = /\.bench-panel__footer \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(footer).toContain("position: sticky;");
+    expect(footer).toContain("bottom: calc(-1 * var(--bench-panel-pad-end));");
+    expect(footer).toMatch(/margin: [^;]* calc\(-1 \* var\(--bench-panel-pad-end\)\);/);
+    expect(footer).toMatch(/background: [^;]+;/);
+    expect(/\.bench-panel \{[^}]*padding: var\(--bench-panel-pad-start\) var\(--bench-panel-pad-inline\) var\(--bench-panel-pad-end\);/.exec(css))
+      .not.toBeNull();
   });
 });

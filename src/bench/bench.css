@@ -82,11 +82,15 @@ html[data-bench-page="step"] .flight-canvas {
 }
 
 .bench-panel {
+  /* Named, so the intro's footer can reach the panel's edges (below). */
+  --bench-panel-pad-start: clamp(22px, 3.2vw, 36px);
+  --bench-panel-pad-inline: clamp(22px, 3.2vw, 36px);
+  --bench-panel-pad-end: clamp(22px, 3.2vw, 36px);
   width: min(880px, 100%);
   max-height: calc(100svh - clamp(28px, 6vw, 68px));
   overflow: auto;
   overscroll-behavior: contain;
-  padding: clamp(22px, 3.2vw, 36px);
+  padding: var(--bench-panel-pad-start) var(--bench-panel-pad-inline) var(--bench-panel-pad-end);
   border: 1px solid var(--bench-border-strong);
   border-radius: var(--bench-radius-panel);
   /* The scrollbar is clipped to the rounded corner with the rest of the box. */
@@ -173,6 +177,36 @@ html[data-bench-page="step"] .flight-canvas {
   color: var(--bench-text-faint);
   font-size: 11px;
   line-height: 1.5;
+}
+
+/*
+ * The intro's privacy line and buttons, held at the panel's foot while the
+ * rest scrolls: on most laptop windows the intro is taller than the panel,
+ * and Start must never sit below the fold. The negative margins take the
+ * footer to the panel's edges, and its bottom margin cancels the panel's
+ * end padding, so it is flush with the panel's foot when scrolled down. A
+ * sticky box keeps inside the scroller's padding, hence the negative
+ * `bottom` that lets it reach the foot while stuck as well.
+ */
+.bench-panel__footer {
+  position: sticky;
+  bottom: calc(-1 * var(--bench-panel-pad-end));
+  z-index: 1;
+  margin: 20px calc(-1 * var(--bench-panel-pad-inline)) calc(-1 * var(--bench-panel-pad-end));
+  padding: 14px var(--bench-panel-pad-inline) 18px;
+  border-top: 1px solid rgba(238, 247, 245, 0.12);
+  background: var(--bench-panel-bottom);
+  box-shadow: 0 -14px 28px rgba(4, 18, 24, 0.7);
+}
+
+.bench-panel__footer .bench-privacy {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.bench-panel__footer .bench-actions {
+  margin-top: 12px;
 }
 
 .bench-checklist {
@@ -846,8 +880,10 @@ td.bench-label--did-not-run {
 @media (max-width: 820px) {
   .bench-screen { padding: 10px; }
   .bench-panel {
+    --bench-panel-pad-start: 20px;
+    --bench-panel-pad-inline: 17px;
+    --bench-panel-pad-end: 24px;
     max-height: calc(100svh - 20px);
-    padding: 20px 17px 24px;
     border-radius: 25px;
     clip-path: inset(0 round 25px);
   }
