@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createSurfaceSpawn } from "../src/game/surfaceSpawn";
-import type { BoatControlState, FlightMode } from "../src/game/types";
+import type { BoatControlState, FlightMode, WeatherPreset } from "../src/game/types";
 import { BoatSimulator } from "../src/sim/boat";
 import { MarinaHarbour } from "../src/sim/marina/harbour";
 import { NEUTRAL_BOAT_CONTROLS, type SurfaceVehicleEnvironment } from "../src/sim/surface";
-import { CalmWaterSurface } from "../src/sim/water";
+import { CalmWaterSurface, createSeaTwin } from "../src/sim/water";
 import { createWorld, sampleTerrainHeight, type WorldDefinition } from "../src/world";
-import { marinaStartPose } from "../src/world/marina";
+import { homeMarina, marinaStartPose } from "../src/world/marina";
 
 /**
  * The dock start as the worker runs it: the real boat in the home marina's
@@ -17,19 +17,26 @@ import { marinaStartPose } from "../src/world/marina";
 
 const STEP = 1 / 120;
 
-function environment(world: WorldDefinition): SurfaceVehicleEnvironment {
+/** Still water, or the worker's sea: the twin under `weather`, calmed in the marina's basin. */
+function environment(world: WorldDefinition, weather?: WeatherPreset): SurfaceVehicleEnvironment {
   const bedHeight = (x: number, z: number) => sampleTerrainHeight(world, x, z);
+  let water: SurfaceVehicleEnvironment["water"] = new CalmWaterSurface(world.seaLevel, bedHeight);
+  if (weather) {
+    const sea = createSeaTwin(world, weather, bedHeight);
+    sea.setShelter([homeMarina(world).shelter]);
+    water = sea;
+  }
   return {
-    water: new CalmWaterSurface(world.seaLevel, bedHeight),
+    water,
     wind: { x: 0, y: 0, z: 0 },
     bedHeight,
     gravity: 9.80665,
   };
 }
 
-function session(seed: number) {
+function session(seed: number, weather?: WeatherPreset) {
   const world = createWorld(seed);
-  const env = environment(world);
+  const env = environment(world, weather);
   const boat = new BoatSimulator(createSurfaceSpawn(world, "speedboat"));
   const harbour = new MarinaHarbour(world, boat);
   harbour.makeFastAtStart(world);
@@ -66,6 +73,19 @@ describe("dock start in the home marina", () => {
       expect(harbour.mooring.state).toBe("free");
       expect(snapshot.payload.moored).toBe(false);
       expect(Math.hypot(snapshot.position.x - pose.x, snapshot.position.z - pose.z)).toBeGreaterThan(2);
+    });
+  }
+
+  for (const weather of ["breezy", "cloudy"] as const) {
+    it(`lies on its lines on the worker's sea, calmed in the basin (${weather})`, () => {
+      const { world, boat, harbour, run } = session(0x51a7e, weather);
+      const pose = marinaStartPose(world);
+      run(10);
+      const snapshot = boat.snapshot();
+      expect(harbour.mooring.state).toBe("moored");
+      expect(snapshot.payload.moored).toBe(true);
+      expect(snapshot.crashed).toBe(false);
+      expect(Math.hypot(snapshot.position.x - pose.x, snapshot.position.z - pose.z)).toBeLessThan(0.5);
     });
   }
 
