@@ -422,10 +422,21 @@ export function resolveProfileSpectralOceanConfig(
   });
 }
 
-export const WATER_VERTEX_WGSL = /* wgsl */ `
-attribute position: vec3f;
-uniform world: mat4x4f;
-uniform viewProjection: mat4x4f;
+/**
+ * The rendered sea's displacement, as one include any vertex shader can call.
+ *
+ * The ocean's own vertex shader is built from it, and so is anything that has
+ * to sit ON the drawn waves (a boat's wake and spray): it includes these two
+ * blocks, lists `OCEAN_SURFACE_UNIFORMS` and `OCEAN_SURFACE_SAMPLERS` in its
+ * ShaderMaterial options, and calls `SpectralOceanSystem.bindSurface(material)`
+ * every frame after `update`. `oceanSurfaceDisplacement(worldXZ)` then returns
+ * exactly the displacement the sea's vertex at that point received: the same
+ * cascades, the same pixel and lattice fades, the same disk centre. `worldXZ`
+ * is ABSOLUTE world metres (render position plus the floating origin), the
+ * frame `oceanWorldOrigin` lives in. The sub-26 m ripple relief (2.8 cm, camera
+ * local) is not part of it.
+ */
+export const OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL = /* wgsl */ `
 uniform oceanWorldOrigin: vec2f;
 uniform patchLengths0: vec4f;
 uniform patchLength4: f32;
@@ -435,14 +446,131 @@ uniform cascadeFadeRadius4: f32;
 uniform cascadeMeshFadeRadii0: vec4f;
 uniform cascadeMeshFadeRadius4: f32;
 uniform cascadeFadeCameraHeight: f32;
-uniform oceanWind: vec2f;
-uniform time: f32;
-uniform planarReflectionViewProjection: mat4x4f;
 var displacement0Sampler: sampler; var displacement0: texture_2d<f32>;
 var displacement1Sampler: sampler; var displacement1: texture_2d<f32>;
 var displacement2Sampler: sampler; var displacement2: texture_2d<f32>;
 var displacement3Sampler: sampler; var displacement3: texture_2d<f32>;
 var displacement4Sampler: sampler; var displacement4: texture_2d<f32>;
+`;
+
+/** The uniforms `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` declares. */
+export const OCEAN_SURFACE_UNIFORMS: readonly string[] = [
+  "oceanWorldOrigin",
+  "patchLengths0",
+  "patchLength4",
+  "cascadeCount",
+  "cascadeFadeRadii0",
+  "cascadeFadeRadius4",
+  "cascadeMeshFadeRadii0",
+  "cascadeMeshFadeRadius4",
+  "cascadeFadeCameraHeight",
+];
+
+/** The displacement textures `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` declares. */
+export const OCEAN_SURFACE_SAMPLERS: readonly string[] = Array.from(
+  { length: MAX_RENDER_CASCADES },
+  (_, index) => `displacement${index}`,
+);
+
+export const OCEAN_SURFACE_DISPLACEMENT_WGSL = /* wgsl */ `
+fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
+  let coordinate = fract(worldXZ / patchLength);
+  return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
+}
+
+// 2-8: each cascade fades out where its band's longest wavelength falls
+// below two rendered pixels (the distance is computed by the CPU from the
+// camera's fovMode-aware pixel angle). This replaces the hardcoded
+// 0.62/0.82/0.74/0.52/0.36 blend weights, and fading the DISPLACEMENT too
+// removes the vertex-level shimmer where ring spacing exceeds the band's
+// wavelengths. The fade keys on SLANT RANGE — the disk is camera-centred in
+// xz only, and from altitude the sea straight below is already distant.
+fn cascadeFade(slantRange: f32, fadeEndDistance: f32) -> f32 {
+  // wave R floored the end distance. The mesh-Nyquist fade (fix 4) returns 0
+  // for a band the lattice cannot carry ANYWHERE, and smoothstep with equal
+  // edges is undefined in WGSL — a divide by zero in the one place a band is
+  // meant to vanish cleanly. No shipped cascade reaches it (the shortest band
+  // top is 8 m against a 1 m near step), so this is a guard, not a behaviour.
+  let end = max(fadeEndDistance, 0.001);
+  return 1.0 - smoothstep(end * 0.3, end, slantRange);
+}
+
+struct OceanSurfaceFades {
+  // The pixel fades, which the ocean's fragment also shades with.
+  pixel: vec4f,
+  pixel4: f32,
+  // The pixel fades times the lattice fades: what the displacement carries.
+  mesh: vec4f,
+  mesh4: f32,
+}
+
+// vertexRadius is the point's horizontal distance from the disk's centre.
+fn oceanSurfaceFades(vertexRadius: f32) -> OceanSurfaceFades {
+  let slantRange = sqrt(
+    vertexRadius * vertexRadius
+      + uniforms.cascadeFadeCameraHeight * uniforms.cascadeFadeCameraHeight,
+  );
+  let fades = vec4f(
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.x),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.y),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.z),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.w),
+  );
+  let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
+  // wave R fix 4: the DISPLACEMENT additionally fades on the lattice's own
+  // Nyquist. A band the radial step cannot carry is not a wave in the vertex
+  // buffer, it is aliasing — and because the disk is camera-centred that
+  // aliasing rode along with the viewer. The fragment keeps the PIXEL fade
+  // (the varyings below): its slope comes from a mip-filtered
+  // textureSampleGrad, whose reconstruction limit is the pixel and not the
+  // lattice, so the band survives there as a correctly filtered normal —
+  // strictly more information than handing it to roughness.
+  //
+  // wave S: the two fades key on DIFFERENT ranges. The pixel fade is a
+  // function of slant range — from altitude the sea straight below is
+  // already distant. The lattice fade is a function of the ring's HORIZONTAL
+  // radius alone: the radial step at a vertex does not change when the camera
+  // climbs. Folding both into one min() evaluated on slant range meant that
+  // from 545 m up (tier 1; 1.3 km at tier 2) every vertex on the disk,
+  // including the ones directly below the aircraft on a 1 m lattice, lost the
+  // 32-128 m swell that carries the wind's peak energy — the sea became a flat
+  // plane wearing a normal map from that altitude on, and the crest glow
+  // term (fed by displacement.y) went with it.
+  let meshFades = fades * vec4f(
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.y),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.z),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.w),
+  );
+  let meshFade4 = fade4 * cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadius4);
+  return OceanSurfaceFades(fades, fade4, meshFades, meshFade4);
+}
+
+fn oceanSurfaceCascadeDisplacement(worldXZ: vec2f, meshFades: vec4f, meshFade4: f32) -> vec3f {
+  var displacement = vec3f(0.0);
+  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * meshFades.x;
+  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * meshFades.y; }
+  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * meshFades.z; }
+  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * meshFades.w; }
+  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * meshFade4; }
+  return displacement;
+}
+
+// The displacement the sea's own vertex at worldXZ received.
+fn oceanSurfaceDisplacement(worldXZ: vec2f) -> vec3f {
+  let fades = oceanSurfaceFades(length(worldXZ - uniforms.oceanWorldOrigin));
+  return oceanSurfaceCascadeDisplacement(worldXZ, fades.mesh, fades.mesh4);
+}
+`;
+
+export const WATER_VERTEX_WGSL = /* wgsl */ `
+attribute position: vec3f;
+uniform world: mat4x4f;
+uniform viewProjection: mat4x4f;
+${OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL}
+uniform oceanWind: vec2f;
+uniform time: f32;
+uniform planarReflectionViewProjection: mat4x4f;
 // W-8: the environment field (productivity, runoff), sampled HERE because the
 // fragment stage has no free sampler and the field's own lattices are
 // kilometres wide. See WaterEnvironmentField.
@@ -514,27 +642,7 @@ fn oceanWindExposure(worldXZ: vec2f, windVelocity: vec2f) -> f32 {
   return clamp(1.0 - blocked, ${WATER_SHELTER_FLOOR.toFixed(2)}, 1.0);
 }
 
-fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
-  let coordinate = fract(worldXZ / patchLength);
-  return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
-}
-
-// 2-8: each cascade fades out where its band's longest wavelength falls
-// below two rendered pixels (the distance is computed by the CPU from the
-// camera's fovMode-aware pixel angle). This replaces the hardcoded
-// 0.62/0.82/0.74/0.52/0.36 blend weights, and fading the DISPLACEMENT too
-// removes the vertex-level shimmer where ring spacing exceeds the band's
-// wavelengths. The fade keys on SLANT RANGE — the disk is camera-centred in
-// xz only, and from altitude the sea straight below is already distant.
-fn cascadeFade(slantRange: f32, fadeEndDistance: f32) -> f32 {
-  // wave R floored the end distance. The mesh-Nyquist fade (fix 4) returns 0
-  // for a band the lattice cannot carry ANYWHERE, and smoothstep with equal
-  // edges is undefined in WGSL — a divide by zero in the one place a band is
-  // meant to vanish cleanly. No shipped cascade reaches it (the shortest band
-  // top is 8 m against a 1 m near step), so this is a guard, not a behaviour.
-  let end = max(fadeEndDistance, 0.001);
-  return 1.0 - smoothstep(end * 0.3, end, slantRange);
-}
+${OCEAN_SURFACE_DISPLACEMENT_WGSL}
 
 @vertex
 fn main(input: VertexInputs) -> FragmentInputs {
@@ -544,45 +652,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
     vertexRadius * vertexRadius
       + uniforms.cascadeFadeCameraHeight * uniforms.cascadeFadeCameraHeight,
   );
-  let fades = vec4f(
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.x),
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.y),
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.z),
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.w),
+  let surfaceFades = oceanSurfaceFades(vertexRadius);
+  let fades = surfaceFades.pixel;
+  let fade4 = surfaceFades.pixel4;
+  let displacement = oceanSurfaceCascadeDisplacement(
+    worldXZ,
+    surfaceFades.mesh,
+    surfaceFades.mesh4,
   );
-  let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
-  // wave R fix 4: the DISPLACEMENT additionally fades on the lattice's own
-  // Nyquist. A band the radial step cannot carry is not a wave in the vertex
-  // buffer, it is aliasing — and because the disk is camera-centred that
-  // aliasing rode along with the viewer. The fragment keeps the PIXEL fade
-  // (the varyings below): its slope comes from a mip-filtered
-  // textureSampleGrad, whose reconstruction limit is the pixel and not the
-  // lattice, so the band survives there as a correctly filtered normal —
-  // strictly more information than handing it to roughness.
-  //
-  // wave S: the two fades key on DIFFERENT ranges. The pixel fade is a
-  // function of slant range — from altitude the sea straight below is
-  // already distant. The lattice fade is a function of the ring's HORIZONTAL
-  // radius alone: the radial step at a vertex does not change when the camera
-  // climbs. Folding both into one min() evaluated on slant range meant that
-  // from 545 m up (tier 1; 1.3 km at tier 2) every vertex on the disk,
-  // including the ones directly below the aircraft on a 1 m lattice, lost the
-  // 32-128 m swell that carries the wind's peak energy — the sea became a flat
-  // plane wearing a normal map from that altitude on, and the crest glow
-  // term (fed by displacement.y) went with it.
-  let meshFades = fades * vec4f(
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x),
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.y),
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.z),
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.w),
-  );
-  let meshFade4 = fade4 * cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadius4);
-  var displacement = vec3f(0.0);
-  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * meshFades.x;
-  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * meshFades.y; }
-  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * meshFades.z; }
-  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * meshFades.w; }
-  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * meshFade4; }
   // wave R fix 3: real relief below the spectrum's finest cascade. 2.8 cm at
   // the 0.42 m octave and 1.0 cm at the 0.16 m octave, world-locked and
   // wind-advected exactly as the fragment's octaves A and B are, so the
@@ -1995,6 +2072,17 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private originX = 0;
   private originZ = 0;
   private cameraWorld = Vector3.Zero();
+  // The values behind OCEAN_SURFACE_UNIFORMS, kept so `bindSurface` can hand
+  // another material exactly what this one draws with.
+  private readonly surfaceOrigin = Vector2.Zero();
+  private readonly surfacePatchLengths0 = new Vector4(64, 64, 64, 64);
+  private surfacePatchLength4 = 64;
+  private surfaceCascadeCount = 1;
+  private readonly surfaceFadeRadii0 = Vector4.Zero();
+  private surfaceFadeRadius4 = 0;
+  private readonly surfaceMeshFadeRadii0 = Vector4.Zero();
+  private surfaceMeshFadeRadius4 = 0;
+  private surfaceCameraHeight = 0;
   private readonly cloudShadowCenterLocal = Vector2.Zero();
   private readonly cloudShadowSunDirection = Vector3.Up();
   private cloudShadowProjection: CloudShadowProjection | null = null;
@@ -2424,13 +2512,39 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       this.seaLevel,
       snappedZ - this.originZ,
     );
-    this.material.setVector2(
-      "oceanWorldOrigin",
-      new Vector2(snappedX, snappedZ),
-    );
+    this.surfaceOrigin.set(snappedX, snappedZ);
     this.material.setFloat("time", timeSeconds);
     this.material.setVector3("cameraPosition", this.camera.position);
     this.updateCascadeFadeRadii();
+  }
+
+  /**
+   * Binds the sea's displacement to another material that includes
+   * `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` and lists
+   * `OCEAN_SURFACE_UNIFORMS` and `OCEAN_SURFACE_SAMPLERS`, so its
+   * `oceanSurfaceDisplacement` matches this frame's drawn sea. Call it every
+   * frame after `update`.
+   */
+  bindSurface(material: ShaderMaterial): void {
+    this.writeSurfaceUniforms(material);
+    const fallback = this.compute.cascades[0];
+    if (!fallback) return;
+    for (let index = 0; index < MAX_RENDER_CASCADES; index += 1) {
+      const cascade = this.compute.cascades[index] ?? fallback;
+      material.setTexture(`displacement${index}`, cascade.displacement);
+    }
+  }
+
+  private writeSurfaceUniforms(material: ShaderMaterial): void {
+    material.setVector2("oceanWorldOrigin", this.surfaceOrigin);
+    material.setVector4("patchLengths0", this.surfacePatchLengths0);
+    material.setFloat("patchLength4", this.surfacePatchLength4);
+    material.setFloat("cascadeCount", this.surfaceCascadeCount);
+    material.setVector4("cascadeFadeRadii0", this.surfaceFadeRadii0);
+    material.setFloat("cascadeFadeRadius4", this.surfaceFadeRadius4);
+    material.setVector4("cascadeMeshFadeRadii0", this.surfaceMeshFadeRadii0);
+    material.setFloat("cascadeMeshFadeRadius4", this.surfaceMeshFadeRadius4);
+    material.setFloat("cascadeFadeCameraHeight", this.surfaceCameraHeight);
   }
 
   /**
@@ -2471,24 +2585,17 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
         cascade.maximumWavelengthMeters,
       );
     };
-    this.material.setVector4("cascadeFadeRadii0", new Vector4(
-      fadeEnd(0),
-      fadeEnd(1),
-      fadeEnd(2),
-      fadeEnd(3),
-    ));
-    this.material.setFloat("cascadeFadeRadius4", fadeEnd(4));
-    this.material.setVector4("cascadeMeshFadeRadii0", new Vector4(
+    this.surfaceFadeRadii0.set(fadeEnd(0), fadeEnd(1), fadeEnd(2), fadeEnd(3));
+    this.surfaceFadeRadius4 = fadeEnd(4);
+    this.surfaceMeshFadeRadii0.set(
       meshFadeEnd(0),
       meshFadeEnd(1),
       meshFadeEnd(2),
       meshFadeEnd(3),
-    ));
-    this.material.setFloat("cascadeMeshFadeRadius4", meshFadeEnd(4));
-    this.material.setFloat(
-      "cascadeFadeCameraHeight",
-      Math.max(0, this.camera.globalPosition.y - this.seaLevel),
     );
+    this.surfaceMeshFadeRadius4 = meshFadeEnd(4);
+    this.surfaceCameraHeight = Math.max(0, this.camera.globalPosition.y - this.seaLevel);
+    this.writeSurfaceUniforms(this.material);
   }
 
   /**
@@ -2578,14 +2685,14 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     const lengths = this.compute.config.cascades.map(
       (cascade) => cascade.patchLengthMeters,
     );
-    this.material.setVector4("patchLengths0", {
-      x: lengths[0] ?? 64,
-      y: lengths[1] ?? lengths[0] ?? 64,
-      z: lengths[2] ?? lengths[0] ?? 64,
-      w: lengths[3] ?? lengths[0] ?? 64,
-    });
-    this.material.setFloat("patchLength4", lengths[4] ?? lengths.at(-1) ?? 64);
-    this.material.setFloat("cascadeCount", this.compute.cascades.length);
+    this.surfacePatchLengths0.set(
+      lengths[0] ?? 64,
+      lengths[1] ?? lengths[0] ?? 64,
+      lengths[2] ?? lengths[0] ?? 64,
+      lengths[3] ?? lengths[0] ?? 64,
+    );
+    this.surfacePatchLength4 = lengths[4] ?? lengths.at(-1) ?? 64;
+    this.surfaceCascadeCount = this.compute.cascades.length;
     // 6-4: the Jacobian-to-curvature conversion per cascade. Absent cascades
     // get ZERO rather than a fallback — their stored Jacobian lane holds the
     // identity 1.0, and a zero scale keeps the caustic band exactly inert
