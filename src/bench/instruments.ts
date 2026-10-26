@@ -298,10 +298,15 @@ export interface HeapSamplerOptions {
   readonly capacity?: number;
 }
 
+/**
+ * Chromium builds a new `MemoryInfo` on every read of `performance.memory`,
+ * holding the values of that moment, so the reader goes back to the property
+ * each time; a kept object would report the startup heap for ever.
+ */
 function browserHeapReader(): (() => number) | null {
-  const memory = (performance as unknown as { memory?: { usedJSHeapSize?: number } }).memory;
-  if (!memory || typeof memory.usedJSHeapSize !== "number") return null;
-  return () => memory.usedJSHeapSize ?? Number.NaN;
+  const timing = performance as unknown as { readonly memory?: { readonly usedJSHeapSize?: number } };
+  if (typeof timing.memory?.usedJSHeapSize !== "number") return null;
+  return () => timing.memory?.usedJSHeapSize ?? Number.NaN;
 }
 
 /** `performance.memory` once a second; null where the browser has none. */

@@ -276,6 +276,27 @@ describe("the heap sampler", () => {
     expect(summary.slopeMiBPerMin).toBeCloseTo(3, 9);
   });
 
+  it("reads performance.memory afresh each time, as Chromium hands out a new snapshot per read", () => {
+    let bytes = 50 * 1_048_576;
+    // Chromium's getter: a new object each read, holding that moment's values.
+    Object.defineProperty(performance, "memory", {
+      configurable: true,
+      get: () => Object.freeze({ usedJSHeapSize: bytes }),
+    });
+    try {
+      const sampler = createHeapSampler()!;
+      expect(sampler).not.toBeNull();
+      expect(sampler.sample(0)).toBe(50 * 1_048_576);
+      bytes = 130 * 1_048_576;
+      expect(sampler.sample(1_000)).toBe(130 * 1_048_576);
+      const summary = summarizeHeap(sampler.samples(), 0, 1_000);
+      expect(summary.stale).toBe(false);
+      expect(summary.endMiB).toBeCloseTo(130, 9);
+    } finally {
+      delete (performance as unknown as { memory?: unknown }).memory;
+    }
+  });
+
   it("flags samples beyond its capacity", () => {
     const sampler = createHeapSampler({ read: () => 1, capacity: 2 })!;
     sampler.sample(0);
