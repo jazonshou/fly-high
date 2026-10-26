@@ -13,6 +13,11 @@ fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It kee
 - There is **no WebGL fallback and no Canvas fallback**. An unsupported device receives a startup error rather than a reduced renderer.
 - The engine runs with compatibility mode disabled, a right-handed scene, reversed-Z depth, MSAA on the offscreen beauty target per tier, a 0.08 m near plane, and a 45 km far plane (1C-4: the shared aerial perspective is ≥95% opaque beyond it).
 - Continuous `timestamp-query` observers are disabled in gameplay: a controlled reference capture measured a 4.7 ms p95 observer tax and only 49 resolved samples in 240 frames. A pinned diagnostic capture can request them explicitly before device creation; they are never required for rendering.
+- The frame loop draws on every Nth display refresh (Settings → Frame rate, `src/game/framePacer.ts`).
+  - "60 fps (smooth)", the default at every tier, uses N = floor(refresh / 60), so frames stay evenly spaced: 60-100 Hz displays draw every refresh, 120 and 240 Hz draw 60, 144 Hz draws 72 and 165 Hz draws 82.5.
+  - "30 fps" uses N = round(refresh / 30). "Match display" draws every refresh, the loop every build before PR B ran.
+  - The period is measured from requestAnimationFrame ticks that draw nothing (a short probe at startup, a re-probe while paused, the ticks the pacer skips), so a slow machine cannot relax its own target. A tick that draws nothing only asks for the next frame.
+  - The capture, perf:ab and perf:flight harnesses call `render()` themselves and never pace.
 - Device loss is terminal for the current renderer instance. Simulation/rendering pause and the user must reload to recreate the adapter, device, and every GPU resource.
 - WebGPU normally requires a secure browser context; local development at `localhost` is accepted.
 
@@ -3505,9 +3510,10 @@ delivery.
 `?bench=1` turns the game into a benchmark anyone can run in their own
 browser, on the deployed build:
 `https://jazonshou.github.io/fly-high/?bench=1`. It measures what a player's
-machine does with the shipped game, tier by tier, so the coming tier work
-(the 60 fps cap, the governor's recovery, Auto moving weak machines to Low)
-has a "before" from real computers rather than from SwiftShader. Without the
+machine does with the shipped game, tier by tier, so the tier work (PR B:
+the governor's recovery and the 60 fps frame pacing; next, Auto moving weak
+machines to Low) has a "before" and an "after" from real computers rather
+than from SwiftShader. Without the
 flag a player runs nothing new: FlightGame parses the URL once more and
 finds nothing, the bench's code and styles sit in their own chunk that only a
 dynamic `import()` under the flag fetches, and the frame loop is the one
@@ -3542,6 +3548,7 @@ at the start and the end to show it.
 | `tiers=1,0,2,1` | the tiers to fly, in order (0 Low, 1 Medium, 2 High, 3 Ultra), one to eight; the default flies Medium, Low, High and Medium again |
 | `mode=pinned` | the GPU comparison pass: each tier renders its whole pixel budget at a fixed scale, with per-pass GPU timing on, whatever the governor would do |
 | `hud=0` | flies without the HUD (it is on by default, as a player sees it) |
+| `fps=display` | the Frame rate setting every flight uses: `60`, `display` or `30`. Without it, shipped mode flies the players' default (60) and pinned mode Match display, so a fast display does not cap a GPU comparison; any other value makes the report non-standard. Run and step URLs always carry it |
 | `quick=1` | for development: 20 s flights, and an 8 s settle cap with rest checks 30 frames apart so it can rest inside it; the report says it is non-standard |
 
 **How long it takes.** Each flight is a page load, a 1 s idle frame-rate
@@ -3565,11 +3572,16 @@ are measured: `ground`, from 3 s into the roll to lift-off, and `air`, from
 **What the report says.** Every frame's interval is taken from the
 `requestAnimationFrame` timestamps of the frame loop; the report gives, per
 window, fps (1000 over the mean interval), the interval percentiles, slow
-frames per 240 (over 27.4 ms; 60 ms on Ultra, whose target is 30 fps),
+frames per 240 (over 27.4 ms; 60 ms on Ultra and at the 30 fps setting),
 stutters over 50 and 100 ms, `render()`'s main-thread time, pipelines
 compiled, long tasks, the governor's decisions and shares, and, in pinned
-mode, GPU milliseconds. Each tier gets a plain label, the worse of its two
-windows:
+mode, GPU milliseconds. Each flight also records its pacing: the frame-rate
+setting and what the build does with it, the cadence at the first and last
+frames (the divisor, the display rate, and whether the rate was confirmed on
+ticks that drew nothing), and the bench's rAF ticks against the frames the
+game rendered. Missed refreshes are counted against the paced cadence, and
+the vsync buckets count paced slots. Each tier gets a plain label, the worse
+of its two windows:
 
 | Label | Meaning |
 | --- | --- |
@@ -3596,7 +3608,8 @@ numbers, and the first flight in the tab is marked, because it pays the
 cold shader and pipeline caches.
 
 **Where reports go.** **Download report (.json)** saves the full report
-(`fly-high.bench/1`, `fly-high-bench-<vendor>-<time>.json`); it is the one
+(`fly-high.bench/2`, `fly-high-bench-<vendor>-<time>.json`; a `/1` report
+was flown without frame pacing); it is the one
 to keep. **Open GitHub issue** copies a compact report to the clipboard and
 opens a prefilled issue to paste it into, and **Copy short summary** gives a
 few lines for a chat. A report kept as evidence is committed as
