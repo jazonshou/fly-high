@@ -440,7 +440,15 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   trimAngle: number;
   tabPort = 0;
   tabStarboard = 0;
+  /** The tabs' collective setting the rocker holds; Scenic's levelling rides on it. */
+  private tabCollective = 0;
   moored = false;
+  /**
+   * Who owns `moored`: the boat (mooring presses, the lever casting off, the
+   * berth hold), or an outside mooring (the marina's lines) that sets it with
+   * `setMoored` and holds the boat itself.
+   */
+  mooringOwner: "boat" | "external" = "boat";
   capsized = false;
 
   private environment: BoatEnvironment = {};
@@ -480,6 +488,8 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   private readonly pressureWeight: Float64Array;
   private readonly hydro: HydrostaticResult;
   private readonly stripIn: StripInputs;
+  /** 1 / cos(deadrise) per strip: wetted half-beam to panel girth. */
+  private readonly stripPanelSecant: Float64Array;
   private readonly stripOut: StripOutputs;
 
   // Telemetry kept from the last substep.
@@ -564,6 +574,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.pressureWeight = new Float64Array(this.mesh.triangleCount);
     this.hydro = createHydrostaticResult(this.mesh);
     this.stripIn = createStripInputs(this.strips);
+    this.stripPanelSecant = this.strips.tanDeadrise.map((t) => Math.sqrt(1 + t * t));
     this.stripOut = createStripOutputs(this.strips);
 
     // Collider probes: the sheer every other ring, the chines, the stem and transom corners.
@@ -618,6 +629,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.trimAngle = (spawn.trimDegrees ?? this.definition.trimMinDegrees) * DEG;
     this.tabPort = 0;
     this.tabStarboard = 0;
+    this.tabCollective = 0;
     this.powertrain.reset(spawn.rpm ?? this.definition.engine.idleRpm, spawn.gear ?? "neutral");
     this.assists.reset();
     Object.assign(this.controls, NEUTRAL_BOAT_CONTROLS);
@@ -641,7 +653,8 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
 
   /**
    * Make fast where the boat lies now, or cast off. A marina that moors the
-   * boat with its own lines (an external load) sets this to match them.
+   * boat with its own lines (an external load) sets `mooringOwner` to
+   * "external" and calls this to match them.
    */
   setMoored(moored: boolean): void {
     if (moored && !this.moored) this.makeFast();
@@ -654,6 +667,10 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.berth.z = this.body.position.z;
     const forward = rotateVectorInto(this.tmpA, this.body.orientation, BODY_FORWARD);
     this.berth.heading = Math.atan2(forward.x, forward.z);
+  }
+
+  setMooringOwner(owner: "boat" | "external"): void {
+    this.mooringOwner = owner;
   }
 
   addExternalLoad(load: BoatExternalLoad): void {
@@ -715,6 +732,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
    * stopped; the lever into gear casts off as well.
    */
   private updateMooring(): void {
+    if (this.mooringOwner === "external") return;
     const presses = this.controls.moorPresses;
     if (this.moorPresses === null) {
       this.moorPresses = presses;
@@ -1054,7 +1072,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
       this.loadContext.time = time;
       this.loadContext.dt = dt;
       for (let i = 0; i < this.loads.length; i += 1) this.loads[i]!.apply(this.loadContext);
-    } else if (this.moored) {
+    } else if (this.moored && this.mooringOwner === "boat") {
       this.applyBerthHold();
     }
 
@@ -1156,16 +1174,17 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     // Tabs.
     const tabStep = definition.tabs.rate * dt;
     if (targets.tabsAuto) {
-      // Collective from the rocker, differential to the target.
-      const mean = clamp(0.5 * (this.tabPort + this.tabStarboard) + targets.tabRate * tabStep, 0, 1);
+      // The rocker moves the collective; the assist's differential rides on it.
+      this.tabCollective = clamp(this.tabCollective + targets.tabRate * tabStep, 0, 1);
       const half = 0.5 * targets.tabDifferential;
-      const portTarget = clamp(mean - half, 0, 1);
-      const starboardTarget = clamp(mean + half, 0, 1);
+      const portTarget = clamp(this.tabCollective - half, 0, 1);
+      const starboardTarget = clamp(this.tabCollective + half, 0, 1);
       this.tabPort += clamp(portTarget - this.tabPort, -tabStep, tabStep);
       this.tabStarboard += clamp(starboardTarget - this.tabStarboard, -tabStep, tabStep);
     } else {
       this.tabPort = clamp(this.tabPort + targets.tabRate * tabStep, 0, 1);
       this.tabStarboard = clamp(this.tabStarboard + targets.tabRate * tabStep, 0, 1);
+      this.tabCollective = 0.5 * (this.tabPort + this.tabStarboard);
     }
     // Engine: inflow along the shaft at the hub, immersion against the local surface.
     const hubIndex = this.extraBase + EXTRA_HUB;
@@ -1212,7 +1231,26 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     const reynolds = Math.max(1e5, (flow * wettedLength) / WATER_VISCOSITY);
     const logRe = Math.log10(reynolds) - 2;
     const cf = 0.075 / (logRe * logRe) + this.calibration.roughnessAllowance;
-    const splash = 1 + (Math.PI / 2 - 1) * smoothstep(0.35, 0.9, this.froude);
+    // The clipped mesh's bottom is the still-water footprint. Once the hull
+    // runs, the wetted bottom is the strips' instead: wider by the Wagner
+    // pile-up where the spray root runs free, cut at the strakes and chines
+    // where it trips, and short of the dry transom's hollow. Friction keeps the
+    // mesh's distribution and takes the strips' total.
+    let meshBottom = 0;
+    for (let k = 0; k < pieces.count; k += 1) {
+      const tag = pieces.tag[k]!;
+      if (tag !== HULL_TAG_BOTTOM && tag !== HULL_TAG_CHINE) continue;
+      meshBottom += Math.hypot(pieces.areaVector[k * 3]!, pieces.areaVector[k * 3 + 1]!, pieces.areaVector[k * 3 + 2]!);
+    }
+    let stripBottom = 0;
+    const strips = this.strips;
+    const halfBeams = this.stripOut.wettedHalfBeam;
+    for (let i = 0; i < strips.count; i += 1) {
+      stripBottom += (halfBeams[i * 2]! + halfBeams[i * 2 + 1]!) * this.stripPanelSecant[i]! * strips.length;
+    }
+    const running = smoothstep(0.35, 0.9, this.froude);
+    const ratio = meshBottom > 1e-3 ? clamp(stripBottom / meshBottom, 0.3, Math.PI / 2) : 1;
+    const splash = 1 + (ratio - 1) * running;
     const cgIndex = this.extraBase + EXTRA_CG;
     const ux = this.waterU[cgIndex * 3]!;
     const uy = this.waterU[cgIndex * 3 + 1]!;
