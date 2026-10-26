@@ -169,10 +169,12 @@ interface TrackPoint {
   speed: number;
   foam: number;
   scar: number;
+  /** Metres along the track from where it last started: the foam's streaks run along it. */
+  distance: number;
 }
 
 function trackPoint(): TrackPoint {
-  return { x: 0, z: 0, lateralX: 0, lateralZ: 1, forwardX: 1, forwardZ: 0, clock: 0, speed: 0, foam: 0, scar: 0 };
+  return { x: 0, z: 0, lateralX: 0, lateralZ: 1, forwardX: 1, forwardZ: 0, clock: 0, speed: 0, foam: 0, scar: 0, distance: 0 };
 }
 
 function copyPoint(from: TrackPoint, to: TrackPoint): void {
@@ -186,6 +188,7 @@ function copyPoint(from: TrackPoint, to: TrackPoint): void {
   to.speed = from.speed;
   to.foam = from.foam;
   to.scar = from.scar;
+  to.distance = from.distance;
 }
 
 interface WakeGpu {
@@ -421,6 +424,7 @@ export class BoatWakeSystem {
     const live = this.live;
     const committed = this.committed;
     if (live.speed < WAKE_MIN_SPEED) {
+      live.distance = committed.distance;
       // Lying still: the track restarts here, so a boat that sets off later
       // does not join its new wake to where it stopped.
       if (sprayAge(live.clock, committed.clock) > this.trailSeconds) copyPoint(live, committed);
@@ -429,6 +433,7 @@ export class BoatWakeSystem {
     }
     this.lastMovingClock = live.clock;
     const moved = Math.hypot(live.x - committed.x, live.z - committed.z);
+    live.distance = committed.distance + moved;
     const turned = live.forwardX * committed.forwardX + live.forwardZ * committed.forwardZ < COMMIT_TURN_COS;
     if (moved >= this.commitSpacing(live.speed) || (turned && moved > 0.5)) {
       this.writeSegment(this.head, committed, live);
@@ -451,6 +456,8 @@ export class BoatWakeSystem {
     this.hasTrack = true;
     const live = this.live;
     const speed = live.speed;
+    // A fresh track: its distance starts again here.
+    live.distance = 0;
     copyPoint(live, this.committed);
     if (speed < WAKE_MIN_SPEED) {
       this.writeSegment(this.head, live, live);
@@ -490,6 +497,7 @@ export class BoatWakeSystem {
       older.speed = speed;
       older.foam = live.foam;
       older.scar = live.scar;
+      older.distance = newer.distance - spacing;
       // Oldest at slot 0 upward: slot (count - back) joins older to newer.
       this.writeSegment(count - back, older, newer);
       copyPoint(older, newer);
@@ -504,16 +512,16 @@ export class BoatWakeSystem {
     const at = slot * WAKE_FLOATS_PER_SEGMENT;
     records[at] = older.x - this.anchorX;
     records[at + 1] = older.z - this.anchorZ;
-    records[at + 2] = older.lateralX;
-    records[at + 3] = older.lateralZ;
+    records[at + 2] = Math.atan2(older.lateralZ, older.lateralX);
+    records[at + 3] = older.distance;
     records[at + 4] = older.clock;
     records[at + 5] = older.speed;
     records[at + 6] = older.foam;
     records[at + 7] = older.scar;
     records[at + 8] = newer.x - this.anchorX;
     records[at + 9] = newer.z - this.anchorZ;
-    records[at + 10] = newer.lateralX;
-    records[at + 11] = newer.lateralZ;
+    records[at + 10] = Math.atan2(newer.lateralZ, newer.lateralX);
+    records[at + 11] = newer.distance;
     records[at + 12] = newer.clock;
     records[at + 13] = newer.speed;
     records[at + 14] = newer.foam;
@@ -685,6 +693,8 @@ export const WAKE_FOAM_ALBEDO = 0.5;
 export const WAKE_SCAR_ALBEDO = Object.freeze([0.05, 0.13, 0.14] as const);
 /** The scar's opacity at full strength: it tints the sea, it does not hide it. */
 export const WAKE_SCAR_OPACITY = 0.42;
+/** The most of the wash foam ever covers: even fresh at the transom it is broken water, not a sheet. */
+export const WAKE_COVERAGE_CAP = 0.86;
 
 export const BOAT_WAKE_VERTEX_WGSL = /* wgsl */ `
 attribute position: vec3f;
@@ -697,6 +707,8 @@ attribute wakeNewerB: vec4f;
 varying wakeAcross: vec2f;
 // absolute world xz, for the world-locked break-up
 varying wakeWorld: vec2f;
+// x metres along the track, y metres across it: the streaks' frame
+varying wakeTrack: vec2f;
 // x foam coverage, y scar strength, z overall fade, w age s
 varying wakeAmount: vec4f;
 varying wakeFoamColor: vec3f;
@@ -762,8 +774,9 @@ fn main(input: VertexInputs) -> FragmentInputs {
     // The wash: as wide as the prop wash at the transom, spreading slowly.
     let halfWidth = halfBeam * (0.72 + 0.2 * sqrt(behind));
     offset = across * halfWidth;
-    // Solid white at the transom, broken up within seconds, then lace that lasts.
-    foam = state.z * (0.7 * exp(-age / 2.5) + 0.3 * (1.0 - smoothstep(0.0, foamLife, age)));
+    // Churned white at the transom, broken up within a couple of boat
+    // lengths, then streaks of lace that last.
+    foam = state.z * (0.7 * exp(-age / 1.2) + 0.3 * (1.0 - smoothstep(0.0, foamLife, age)));
     scar = state.w * (1.0 - smoothstep(0.35 * trail, trail, age));
   } else {
     // A Kelvin arm: its cusp line at 19.47 degrees, softening as it spreads.
@@ -772,11 +785,12 @@ fn main(input: VertexInputs) -> FragmentInputs {
     offset = band * (armOffset + across * armHalf);
     // The arms are waves: broken water on their crest line near the boat
     // only, gone in seconds.
-    foam = smoothstep(4.0, 14.0, speed) * 0.5 * exp(-age / 4.0);
+    foam = smoothstep(4.0, 14.0, speed) * 0.3 * exp(-age / 3.0);
   }
   let fade = 1.0 - smoothstep(0.75 * trail, trail, age);
 
-  let local = point.xy + point.zw * offset;
+  // point: x, z (anchor-relative), the starboard direction's angle, the track distance.
+  let local = point.xy + vec2f(cos(point.z), sin(point.z)) * offset;
   let worldXZ = uniforms.wakeAnchor.zw + local;
   let displacement = oceanSurfaceDisplacement(worldXZ);
   let height = uniforms.wakeParams.w + displacement.y + WAKE_LIFT;
@@ -798,6 +812,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.position = clip;
   vertexOutputs.wakeAcross = vec2f(across, band);
   vertexOutputs.wakeWorld = worldXZ;
+  vertexOutputs.wakeTrack = vec2f(point.w, offset);
   vertexOutputs.wakeAmount = vec4f(foam * fade, scar * fade, fade, age);
   vertexOutputs.wakeFoamColor = WAKE_FOAM_ALBEDO * downwelling;
   vertexOutputs.wakeScarColor = WAKE_SCAR_ALBEDO * downwelling;
@@ -809,6 +824,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
 export const BOAT_WAKE_FRAGMENT_WGSL = /* wgsl */ `
 varying wakeAcross: vec2f;
 varying wakeWorld: vec2f;
+varying wakeTrack: vec2f;
 varying wakeAmount: vec4f;
 varying wakeFoamColor: vec3f;
 varying wakeScarColor: vec3f;
@@ -816,6 +832,7 @@ varying wakeInScatter: vec3f;
 varying wakeTransmittance: vec3f;
 
 const WAKE_SCAR_OPACITY: f32 = ${wgslFloat(WAKE_SCAR_OPACITY)};
+const WAKE_COVERAGE_CAP: f32 = ${wgslFloat(WAKE_COVERAGE_CAP)};
 
 fn wakeHash(cell: vec2i) -> f32 {
   var h = (bitcast<u32>(cell.x) * 0x8da6b343u) ^ (bitcast<u32>(cell.y) * 0xd8163841u);
@@ -848,26 +865,38 @@ fn wakeLace(p: vec2f, footprint: f32) -> f32 {
   return 0.5 * wakeValueNoise(w * 0.7) + 0.3 * wakeValueNoise(q * 1.9 + vec2f(17.3, 5.1)) + 0.2 * fine;
 }
 
+// Streaks: the flow behind the hull draws its foam out along the track, so
+// in the track's own frame (metres along, metres across) it is long and
+// narrow. Laid with the track, so it too stays where it was laid.
+fn wakeStreaks(track: vec2f, footprint: f32) -> f32 {
+  let coarse = wakeValueNoise(vec2f(track.x * 0.09, track.y * 0.9) + vec2f(5.3, 1.7));
+  let fine = mix(wakeValueNoise(vec2f(track.x * 0.3, track.y * 2.6) + vec2f(9.1, 4.2)), 0.5,
+    smoothstep(0.15, 0.4, footprint));
+  return 0.6 * coarse + 0.4 * fine;
+}
+
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
   // Before any branch: derivatives need every pixel of the quad.
   let footprint = length(fwidth(fragmentInputs.wakeWorld));
   let across = fragmentInputs.wakeAcross.x;
   let band = fragmentInputs.wakeAcross.y;
-  // The wash is fullest on the track and feathers to its edges; an arm is a
-  // narrow line of broken water.
+  let wash = abs(band) < 0.5;
+  // The wash is fullest on the track and feathers out to its edges; an arm
+  // is a narrow line of broken water.
   let edge = 1.0 - across * across;
-  let profile = select(edge * edge, sqrt(max(edge, 0.0)), abs(band) < 0.5);
-  // World-locked, so foam that is laid stays where it was laid.
+  let profile = select(edge * edge, edge, wash);
+  // World-locked lace; in the wash, streaked along the track as well.
   let lace = wakeLace(fragmentInputs.wakeWorld, footprint);
-  let coverage = clamp(fragmentInputs.wakeAmount.x * profile, 0.0, 1.0);
-  // Full coverage is solid foam; as it thins, only the lace's ridges stay,
-  // crisp at the edge and thin (the sea showing through) just inside it.
-  let threshold = mix(0.74, 0.2, coverage);
-  let sharpness = 0.04 + 0.25 * min(footprint, 0.4);
-  let body = smoothstep(threshold, threshold + 0.18, lace);
-  let foamAlpha = smoothstep(threshold, threshold + sharpness, lace) * mix(0.5, 1.0, body)
-    * smoothstep(0.0, 0.08, coverage);
+  let pattern = select(lace, mix(lace, wakeStreaks(fragmentInputs.wakeTrack, footprint), 0.55), wash);
+  // Never quite solid: even fresh at the transom the sea shows through.
+  let coverage = clamp(fragmentInputs.wakeAmount.x * profile, 0.0, 1.0) * WAKE_COVERAGE_CAP;
+  // As it thins only the pattern's ridges stay, and they thin too: soft at
+  // the edge, never a cut-out line.
+  let threshold = mix(0.76, 0.26, coverage);
+  let softness = 0.1 + 0.12 * (1.0 - coverage) + 0.25 * min(footprint, 0.4);
+  let foamAlpha = smoothstep(threshold - 0.4 * softness, threshold + softness, pattern)
+    * mix(0.3, 1.0, coverage) * smoothstep(0.0, 0.08, coverage);
   let scarAlpha = clamp(fragmentInputs.wakeAmount.y * profile, 0.0, 1.0) * WAKE_SCAR_OPACITY;
   let alpha = foamAlpha + scarAlpha * (1.0 - foamAlpha);
   if (alpha < 0.002) { discard; }
