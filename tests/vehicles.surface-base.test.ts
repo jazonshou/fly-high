@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createSurfaceSpawn, findOpenWater, OPEN_WATER_DEPTH } from "../src/game/surfaceSpawn";
+import {
+  createSurfaceRecoverySpawn,
+  createSurfaceSpawn,
+  findOpenWater,
+  OPEN_WATER_DEPTH,
+} from "../src/game/surfaceSpawn";
 import { interpolateFlightState } from "../src/game/SimulationClient";
 import { INITIAL_VISUAL_STATE, type BoatControlState, type FlightVisualState } from "../src/game/types";
 import { inputProfileForSpawn, stepBoatLever } from "../src/input";
@@ -14,6 +19,7 @@ import {
 import { CalmWaterSurface } from "../src/sim/water";
 import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
 import { createWorld, sampleTerrainHeight } from "../src/world";
+import { marinaStartPose } from "../src/world/marina";
 
 /**
  * The shared vehicle base, before any boat physics exists: the stand-in
@@ -147,18 +153,27 @@ describe("surface visual state", () => {
 });
 
 describe("boat spawn", () => {
-  it("puts the boat on open water near the home airport", () => {
+  it("starts moored in the home marina's start berth, bow out", () => {
     const world = createWorld(0x51a7e);
     const spawn = createSurfaceSpawn(world, "speedboat");
+    const pose = marinaStartPose(world);
+    expect(spawn.moored).toBe(true);
+    expect(spawn.position).toEqual({ x: pose.x, y: pose.stillWaterY, z: pose.z });
+    expect(spawn.heading).toBe(pose.headingRadians);
     const depth = world.seaLevel - sampleTerrainHeight(world, spawn.position.x, spawn.position.z);
+    expect(depth).toBeGreaterThan(0.45);
+  });
+
+  it("recovers a wreck onto open water near it", () => {
+    const world = createWorld(0x51a7e);
+    const x = world.airport?.centerX ?? 0;
+    const z = world.airport?.centerZ ?? 0;
+    const spawn = createSurfaceRecoverySpawn(world, "speedboat", x, z);
+    const depth = world.seaLevel - sampleTerrainHeight(world, spawn.position.x, spawn.position.z);
+    expect(spawn.moored).toBe(false);
     expect(depth).toBeGreaterThanOrEqual(OPEN_WATER_DEPTH);
-    expect(spawn.position.y).toBe(world.seaLevel);
-    const origin = findOpenWater(world, world.airport?.centerX ?? 0, world.airport?.centerZ ?? 0);
-    expect(origin).not.toBeNull();
-    expect(Math.hypot(
-      spawn.position.x - (world.airport?.centerX ?? 0),
-      spawn.position.z - (world.airport?.centerZ ?? 0),
-    )).toBeLessThan(10_000);
+    expect(findOpenWater(world, x, z)).toMatchObject({ x: spawn.position.x, z: spawn.position.z });
+    expect(Math.hypot(spawn.position.x - x, spawn.position.z - z)).toBeLessThan(10_000);
   });
 });
 

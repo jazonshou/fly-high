@@ -1,6 +1,7 @@
 import type { SurfaceVehicleSpawn } from "@/src/sim/surface/types";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { sampleTerrainHeight, type WorldDefinition } from "@/src/world";
+import { marinaStartPose } from "@/src/world/marina";
 
 /** Water at least this deep, with `OPEN_WATER_CLEARANCE` of it around, counts as open. */
 export const OPEN_WATER_DEPTH = 4;
@@ -96,16 +97,22 @@ function openWaterSpawn(world: WorldDefinition, originX: number, originZ: number
 
 /**
  * Where a surface vehicle's session begins. A boat starts at the dock
- * (decision D4): until the home marina lands this is the open water nearest
- * the home airport, and the marina work replaces it with the start berth.
+ * (decision D4): moored in the home marina's start berth, bow out, on the
+ * still sea there. The simulator settles the hull to its own draft.
  */
 export function createSurfaceSpawn(
   world: WorldDefinition,
   kind: SurfaceVehicleKind,
 ): SurfaceVehicleSpawn {
   switch (kind) {
-    case "speedboat":
-      return openWaterSpawn(world, world.airport?.centerX ?? 0, world.airport?.centerZ ?? 0);
+    case "speedboat": {
+      const pose = marinaStartPose(world);
+      return {
+        position: { x: pose.x, y: pose.stillWaterY, z: pose.z },
+        heading: pose.headingRadians,
+        moored: true,
+      };
+    }
   }
 }
 
