@@ -11,10 +11,11 @@ import { inputProfileForSpawn, stepBoatLever } from "../src/input";
 import { chaseCameraProfile } from "../src/render/FlightRenderer";
 import { validateSettings } from "../src/settings";
 import {
+  createSurfaceSimulator,
   NEUTRAL_BOAT_CONTROLS,
-  StandInBoatSimulator,
   surfaceVisualState,
   type SurfaceVehicleEnvironment,
+  type SurfaceVehicleSimulator,
 } from "../src/sim/surface";
 import { CalmWaterSurface } from "../src/sim/water";
 import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
@@ -22,9 +23,10 @@ import { createWorld, sampleTerrainHeight } from "../src/world";
 import { marinaStartPose } from "../src/world/marina";
 
 /**
- * The shared vehicle base, before any boat physics exists: the stand-in
- * simulator drives the whole seam (worker, input, HUD, renderer), so the
- * contract it keeps is the one the real `BoatSimulator` inherits.
+ * The shared vehicle base: the seam the worker, input, HUD and renderer
+ * share whatever surface vehicle is behind it. The boat's own physics is held
+ * to its contract in tests/sim.boat-simulator.test.ts, and the dock start in
+ * tests/sim.boat-harbour.test.ts.
  */
 
 const STEP = 1 / 120;
@@ -42,58 +44,9 @@ function controls(boat: Partial<BoatControlState> = {}) {
   return { assist: "pilot" as const, boat: { ...NEUTRAL_BOAT_CONTROLS, ...boat } };
 }
 
-function run(boat: StandInBoatSimulator, seconds: number): void {
+function run(boat: SurfaceVehicleSimulator, seconds: number): void {
   for (let t = 0; t < seconds; t += STEP) boat.step(STEP);
 }
-
-describe("stand-in boat", () => {
-  const deep = environment(() => -30);
-
-  it("stays fast at the berth until the lever moves, then gets under way", () => {
-    const boat = new StandInBoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: Math.PI / 2, moored: true });
-    boat.setEnvironment(deep);
-    boat.setControls(controls());
-    run(boat, 3);
-    let snapshot = boat.snapshot();
-    expect(snapshot.payload.moored).toBe(true);
-    expect(snapshot.payload.speedThroughWater).toBeCloseTo(0, 6);
-    expect(Math.hypot(snapshot.position.x, snapshot.position.z)).toBeLessThan(0.01);
-
-    boat.setControls(controls({ lever: 1 }));
-    run(boat, 12);
-    snapshot = boat.snapshot();
-    expect(snapshot.payload.moored).toBe(false);
-    expect(snapshot.payload.gear).toBe("forward");
-    expect(snapshot.payload.speedThroughWater).toBeGreaterThan(15);
-    // Heading pi/2 is east, +X, as `FlightTelemetry.heading` has it.
-    expect(snapshot.position.x).toBeGreaterThan(50);
-    expect(Math.abs(snapshot.position.z)).toBeLessThan(1);
-  });
-
-  it("takes the first mooring count it sees as a baseline, and only a change as a press", () => {
-    const boat = new StandInBoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: 0, moored: true });
-    boat.setEnvironment(deep);
-    boat.setControls(controls({ moorPresses: 7 }));
-    run(boat, 1);
-    expect(boat.snapshot().payload.moored).toBe(true);
-    boat.setControls(controls({ moorPresses: 8 }));
-    run(boat, 1);
-    expect(boat.snapshot().payload.moored).toBe(false);
-    boat.setControls(controls({ moorPresses: 9 }));
-    run(boat, 1);
-    expect(boat.snapshot().payload.moored).toBe(true);
-  });
-
-  it("wrecks on a fast grounding", () => {
-    // Deep water for 150 m east, then a shelf 0.2 m under the surface.
-    const shelf = environment((x) => (x < 150 ? -30 : -0.2));
-    const boat = new StandInBoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: Math.PI / 2, moored: false });
-    boat.setEnvironment(shelf);
-    boat.setControls(controls({ lever: 1 }));
-    run(boat, 30);
-    expect(boat.snapshot().crashed).toBe(true);
-  });
-});
 
 describe("boat lever", () => {
   it("stops at neutral when it crosses it and holds there until released", () => {
@@ -127,13 +80,15 @@ describe("vehicle setting", () => {
 
 describe("surface visual state", () => {
   it("carries the pose, the speed through the water and the payload", () => {
-    const boat = new StandInBoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: Math.PI / 2, moored: false });
+    const boat = createSurfaceSimulator("speedboat", { position: { x: 0, y: 0, z: 0 }, heading: Math.PI / 2, moored: false });
     boat.setEnvironment(environment(() => -30));
-    boat.setControls(controls({ lever: 1 }));
-    run(boat, 6);
+    boat.setControls(controls({ lever: 0.3 }));
+    run(boat, 3);
     const snapshot = boat.snapshot();
     const state = surfaceVisualState(snapshot, undefined);
-    expect(state.heading).toBeCloseTo(90, 3);
+    // Heading pi/2 is east, +X, as `FlightTelemetry.heading` has it.
+    expect(Math.abs(state.heading - 90)).toBeLessThan(2);
+    expect(snapshot.position.x).toBeGreaterThan(0.5);
     expect(state.airspeed).toBe(snapshot.payload.speedThroughWater);
     expect(state.vehicle).toBe(snapshot.payload);
     expect(state.autoland).toBeNull();
@@ -141,10 +96,10 @@ describe("surface visual state", () => {
   });
 
   it("switches the payload with the snapshot flags rather than blending it", () => {
-    const boat = new StandInBoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: 0, moored: true });
+    const boat = createSurfaceSimulator("speedboat", { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: true });
     boat.setEnvironment(environment(() => -30));
     boat.setControls(controls());
-    boat.step(STEP);
+    run(boat, STEP);
     const afloat = surfaceVisualState(boat.snapshot(), undefined);
     const aircraft: FlightVisualState = { ...INITIAL_VISUAL_STATE };
     expect(interpolateFlightState(afloat, afloat, 0.5).vehicle?.kind).toBe("boat");

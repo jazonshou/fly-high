@@ -3,7 +3,6 @@ import { BoatSimulator } from "../boat/boatSimulator";
 import type { SurfaceVehicleSimulator, SurfaceVehicleSpawn } from "./types";
 
 export * from "./types";
-export { StandInBoatSimulator } from "./standInBoat";
 export { flightAnglesOf, surfaceVisualState } from "./visualState";
 
 /** The one place the worker gets a surface vehicle's simulator from. */
