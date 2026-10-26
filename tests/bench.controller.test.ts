@@ -480,6 +480,16 @@ describe("the step controller's flight", () => {
     expect(result.histogram).toBeNull();
     expect(result.worst).toEqual([]);
     expect(result.windows.ground).not.toBeNull();
+    // Nor did anything measured over it: no zeros and no "stale" heap for a window not flown.
+    expect(result.longTasks).toBeNull();
+    expect(result.longAnimationFrames).toBeNull();
+    expect(result.heap).toBeNull();
+    expect(result.governor.windows.air.frames).toBe(0);
+    expect(result.governor.windows.air.share.atScaleFloor).toBeNull();
+    expect(result.governor.windows.air.share.cpuShed).toBeNull();
+    // The heap was read through the flight all the same.
+    const heapColumn = result.perSecond.columns.indexOf("heapMiB");
+    expect(result.perSecond.rows.every((row) => typeof row[heapColumn] === "number")).toBe(true);
   });
 
   it("flags a frame log that filled up, and keeps flying", () => {

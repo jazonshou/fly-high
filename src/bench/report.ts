@@ -18,6 +18,7 @@ import type {
   BenchRunRecord,
   BenchSmoothness,
   BenchStepRecord,
+  BenchStepResult,
   BenchStepStatus,
   BenchVerdict,
   BenchWarning,
@@ -58,7 +59,7 @@ export const BENCH_DEFINITIONS: Readonly<Record<string, string>> = Object.freeze
   spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier, over the air window, or over the early check's stretch when either stopped early. Over 10% voids the run.",
   rafHz: "The browser's frame rate with nothing to draw, which is not always the panel's refresh rate.",
   heap: "performance.memory, coarse outside a flagged Chromium; null and stale when it never changed.",
-  shares: "Fractions of the window's frames, from the pixels the engine actually rendered.",
+  shares: "Fractions of the window's frames, from the pixels the engine actually rendered; null for a window the flight never reached.",
   compiles: "Pipelines and shader modules created, each counted with the frame whose render created it: startup (before the first frame), settle, warmup (flight frames before the air window), window (the air window's frames).",
   decisions: "Governor decisions; t is seconds from the flight's first frame, below zero during the settle.",
 });
@@ -697,8 +698,16 @@ export function decimalText(value: number | null | undefined, digits = 1): strin
   return value === null || value === undefined || !Number.isFinite(value) ? "–" : value.toFixed(digits);
 }
 
-function formatShare(value: number | null | undefined): string {
-  return value === null || value === undefined ? "n/a" : `${Math.round(value * 100)}%`;
+/**
+ * The air window's share of frames at the scale floor: a dash, as the other
+ * air cells, for a flight that never reached the window, and "n/a" where the
+ * resolution lever cannot move (tier 0, a binding pixel cap, pinned).
+ */
+function floorShareText(result: BenchStepResult | null): string {
+  const window = result?.governor.windows.air;
+  if (!result?.windows.air || !window || window.frames === 0) return "–";
+  const share = window.share.atScaleFloor;
+  return share === null ? "n/a" : `${Math.round(share * 100)}%`;
 }
 
 export const REPORT_TABLE_COLUMNS = Object.freeze([
@@ -762,7 +771,7 @@ export function reportTableRows(steps: readonly BenchReportStep[]): BenchTableRo
         decimalText(air?.over["27.4"].per240),
         decimalText(air?.over["50"].per240),
         air?.renderMs ? `${air.renderMs.p95.toFixed(1)} ms` : "–",
-        formatShare(result?.governor.windows.air.share.atScaleFloor),
+        floorShareText(result),
         governor
           ? `${governor.mode}, scale ${governor.appliedScale.toFixed(2)}, CPU ${governor.cpuLevel}, GPU ${governor.gpuLevel}`
           : "–",

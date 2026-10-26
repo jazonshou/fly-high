@@ -308,9 +308,11 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
         kind: (["render", "compute", "shader-module", "render-async"] as const)[index % 4]!,
       })),
     },
-    longTasks: summarizeLongTasks(longTasks, flightStartMs, flightEndMs),
-    longAnimationFrames: summarizeLongAnimationFrames(longFrames, flightStartMs, flightEndMs, flightStartMs),
-    heap: summarizeHeap(heap, flightStartMs, flightEndMs),
+    longTasks: air === null ? null : summarizeLongTasks(longTasks, flightStartMs, flightEndMs),
+    longAnimationFrames: air === null
+      ? null
+      : summarizeLongAnimationFrames(longFrames, flightStartMs, flightEndMs, flightStartMs),
+    heap: air === null ? null : summarizeHeap(heap, flightStartMs, flightEndMs),
     governor: trace.summary(),
     detailWorker: {
       atSettleEnd: { active: true, fallbacks: 0, respawns: 0, buildTimeouts: 0, generationTimeouts: 0, convergenceStalls: 0 },

@@ -569,14 +569,12 @@ export class StepController implements BenchFramePort {
         window: { ...compileDelta(airEnd, airStart), framesWithCompiles: air?.framesWithCompiles ?? 0 },
         firstEvents: events.slice(0, 20).map((event) => ({ t: (event.t - flightStartMs) / 1_000, kind: event.kind })),
       },
-      longTasks: summarizeLongTasks(instruments.longTasks?.entries ?? null, air0, air1),
-      longAnimationFrames: summarizeLongAnimationFrames(
-        instruments.longAnimationFrames?.entries ?? null,
-        air0,
-        air1,
-        flightStartMs,
-      ),
-      heap: summarizeHeap(instruments.heap?.samples() ?? null, air0, air1),
+      // A window the flight never reached measured nothing: null, as `windows.air` is, not zeros.
+      longTasks: air ? summarizeLongTasks(instruments.longTasks?.entries ?? null, air0, air1) : null,
+      longAnimationFrames: air
+        ? summarizeLongAnimationFrames(instruments.longAnimationFrames?.entries ?? null, air0, air1, flightStartMs)
+        : null,
+      heap: air ? summarizeHeap(instruments.heap?.samples() ?? null, air0, air1) : null,
       governor,
       detailWorker: {
         atSettleEnd: settled?.reading.diagnostics.detailWorker ?? null,

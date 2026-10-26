@@ -438,6 +438,23 @@ describe("the report page's table and summary", () => {
     });
   });
 
+  it("reads the scale floor's share as a dash for a flight that never reached the air window", () => {
+    const floor = REPORT_TABLE_COLUMNS.indexOf("At scale floor");
+    const stopped = benchStepRecord(3, { tierIndex: 1, status: "early-stop" });
+    const rows = reportTableRows(report(withSteps(run, [run.steps[0]!, run.steps[1]!, run.steps[2]!, stopped])).steps);
+    expect(rows.map((row) => row.cells[floor])).toEqual([
+      expect.stringMatching(/^\d+%$/),
+      // Low has no resolution lever.
+      "n/a",
+      expect.stringMatching(/^\d+%$/),
+      // Every other air cell of the row is a dash too.
+      "–",
+    ]);
+    expect(rows[3]!.cells[1]).toBe("–");
+    expect(stopped.result!.governor.windows.air.share.atScaleFloor).toBeNull();
+    expect(stopped.result!.heap).toBeNull();
+  });
+
   it("summarises in a few lines for chat", () => {
     const text = summaryMarkdown(full);
     const lines = text.split("\n");

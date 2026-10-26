@@ -647,15 +647,18 @@ export interface BenchGovernorEvents {
   readonly insensitiveLatched: number;
 }
 
-/** Frame-weighted shares of a window, from the pixels actually rendered (S2). */
+/**
+ * Frame-weighted shares of a window, from the pixels actually rendered (S2).
+ * All null for a window with no frames, which an early stop's air window is.
+ */
 export interface BenchGovernorShares {
-  /** Null where the resolution lever cannot change the pixels: tier 0, a binding pixel cap, pinned. */
+  /** Null too where the resolution lever cannot change the pixels: tier 0, a binding pixel cap, pinned. */
   readonly atScaleFloor: number | null;
   readonly belowCeiling: number | null;
-  readonly cpuShed: number;
-  readonly gpuShed: number;
-  readonly cpuAtMax: number;
-  readonly gpuAtMax: number;
+  readonly cpuShed: number | null;
+  readonly gpuShed: number | null;
+  readonly cpuAtMax: number | null;
+  readonly gpuAtMax: number | null;
 }
 
 export interface BenchGovernorWindow {
@@ -776,9 +779,13 @@ export interface BenchStepResult {
     /** The flight's first creations, t from its first frame. */
     readonly firstEvents: readonly BenchCompileEvent[];
   };
-  readonly longTasks: BenchLongTaskSummary;
-  readonly longAnimationFrames: BenchLongAnimationFrameSummary;
-  readonly heap: BenchHeapSummary;
+  /**
+   * The air window's long tasks, long animation frames and heap; null when
+   * the flight never reached the window (an early stop), as `windows.air` is.
+   */
+  readonly longTasks: BenchLongTaskSummary | null;
+  readonly longAnimationFrames: BenchLongAnimationFrameSummary | null;
+  readonly heap: BenchHeapSummary | null;
   readonly governor: BenchGovernorSummary;
   readonly detailWorker: BenchDetailWorkerReport;
   readonly end: BenchEndContext | null;

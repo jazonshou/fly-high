@@ -332,9 +332,10 @@ export class GovernorTrace {
     slot.insensitive = state.resolutionInsensitive;
   }
 
+  /** A window with no frames (an early stop ends before the air window) has no shares: null, not 0. */
   private windowSummary(target: Bucket): BenchGovernorWindow {
     const frames = target.frames;
-    const share = (count: number): number => (frames > 0 ? count / frames : 0);
+    const share = (count: number): number | null => (frames > 0 ? count / frames : null);
     const events: BenchGovernorEvents = { ...target.events };
     return {
       frames,

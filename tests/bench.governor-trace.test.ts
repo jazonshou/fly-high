@@ -215,6 +215,24 @@ describe("governor trace", () => {
     expect(summary.flight.decisions).toBe(9);
   });
 
+  it("gives a window the flight never reached null shares, not zeros", () => {
+    // An early stop at 20 s: the roll and climb flew, the air window (30 s on) did not.
+    const { config, scale, trace } = setup("high");
+    const current = probe(config, scale);
+    trace.observe(0, current);
+    decide(current, { mode: "gpu-resolution", renderScale: config.scaleFloor }, GPU_HOT, scale);
+    for (let frame = 1; frame <= 20 * 60; frame += 1) trace.observe(frame / 60, current);
+    const summary = trace.summary();
+    expect(summary.scaleLeverAvailable).toBe(true);
+    expect(summary.windows.ground.share.atScaleFloor).toBeGreaterThan(0.9);
+    expect(summary.windows.air.frames).toBe(0);
+    expect(summary.windows.air.share).toEqual({
+      atScaleFloor: null, belowCeiling: null, cpuShed: null, gpuShed: null, cpuAtMax: null, gpuAtMax: null,
+    });
+    expect(summary.windows.air.modeShare).toEqual({});
+    expect(summary.windows.air.classShare).toEqual({});
+  });
+
   it("counts every governor ladder rung at its maximum as at max", () => {
     const { config, scale, trace } = setup("high");
     const current = probe(config, scale);
