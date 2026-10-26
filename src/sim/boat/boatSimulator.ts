@@ -135,6 +135,8 @@ export interface CaptivePose {
   speed: number;
   /** Include the propeller's thrust and torque as the engine now stands. Default true. */
   thrust?: boolean;
+  /** The hull alone, as a towing tank (or Savitsky's equations) sees it: no outboard, tabs or windage. */
+  bareHull?: boolean;
 }
 
 export interface CaptiveLoads {
@@ -220,6 +222,8 @@ const DEG = Math.PI / 180;
 const CAPSIZE_ROLL = 110 * DEG;
 const CAPSIZE_SECONDS = 4;
 /** Hard impacts. */
+/** Waterplane coefficient of the deep V at rest, for Holtrop & Mennen's transom Froude number. */
+const TRANSOM_WATERPLANE_COEFFICIENT = 0.8;
 const BED_CRASH_SPEED = 3;
 const GROUNDING_CRASH_SPEED = 8;
 const BED_STIFFNESS = 3e5;
@@ -517,6 +521,8 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   private speedThroughWater = 0;
   private froude = 0;
   private transomDry = 0;
+  /** Set only inside `captiveLoads` for a bare-hull tow. */
+  private bareHull = false;
   private transomDepth = 0;
   private propellerImmersion = 1;
   private depthUnderKeel = 100;
@@ -1072,17 +1078,19 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     // --- Skin friction over the wetted pieces (ITTC-57 plus roughness).
     this.applyFriction(rho, speed);
 
-    // --- Pre-planing hump: wave-making the strips leave out.
+    // --- Pre-planing hump (wave-making the strips leave out) and the wet transom's eddy.
     this.applyHump(rho, g);
 
-    // --- Outboard: propeller, gearcase fin and drag, walk, torque reaction.
-    this.applyOutboard(rho, time);
+    if (!this.bareHull) {
+      // --- Outboard: propeller, gearcase fin and drag, walk, torque reaction.
+      this.applyOutboard(rho, time);
 
-    // --- Trim tabs (Savitsky and Brown).
-    this.applyTabs(rho, speed);
+      // --- Trim tabs (Savitsky and Brown).
+      this.applyTabs(rho, speed);
 
-    // --- Windage.
-    this.applyWindage();
+      // --- Windage.
+      this.applyWindage();
+    }
 
     // --- Sea bed and colliders.
     this.applyBed(g);
@@ -1144,7 +1152,9 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
       this.powertrain.thrust = 0;
       this.powertrain.propellerTorque = 0;
     }
+    this.bareHull = pose.bareHull === true;
     this.accumulateLoads(0, this.state.time, false);
+    this.bareHull = false;
     this.powertrain.thrust = thrust;
     this.powertrain.propellerTorque = torque;
     const record = this.body.record;
@@ -1214,7 +1224,16 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     const surface = this.localPropellerSurface(hubIndex);
     const hubDepth = surface - this.pointWorld[hubIndex * 3 + 1]!;
     this.propellerImmersion = discImmersion(hubDepth, 0.5 * definition.propeller.diameter);
-    this.powertrain.update(dt, targets.lever, axial, this.propellerImmersion, this.environment.waterDensity ?? WATER_DENSITY, !crashed);
+    this.powertrain.update(
+      dt,
+      targets.lever,
+      axial,
+      this.propellerImmersion,
+      this.environment.waterDensity ?? WATER_DENSITY,
+      !crashed,
+      hubDepth,
+      this.environment.gravity ?? STANDARD_GRAVITY,
+    );
   }
 
   /** Behind a dry transom the propeller runs in the transom's hollow, which sits at the transom's keel. */
@@ -1314,18 +1333,44 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     }
   }
 
+  /**
+   * The displacement and pre-planing resistance the strips and the clipped
+   * mesh leave out: the calibrated hump (wave-making), and Holtrop & Mennen's
+   * immersed-transom term while the transom is wet,
+   *
+   *   R_TR = 1/2 rho V^2 A_T 0.2 (1 - 0.2 F_nT),  F_nT = V / sqrt(2 g A_T / (B (1 + C_WP))),
+   *
+   * handing over, as the transom runs dry, to the dry transom's lost
+   * hydrostatic push (its face's pressures are switched off).
+   */
   private applyHump(rho: number, g: number): void {
     const c = this.calibration;
     const fn = this.froude;
     if (fn < 0.05) return;
     const ratio = fn / c.humpFroude;
-    const shape = Math.pow(ratio, 8) * Math.exp(8 * (1 - ratio));
-    if (shape < 1e-5) return;
+    const shape = Math.exp(c.humpSharpness * (Math.log(ratio) + 1 - ratio));
     const weight = rho * g * this.hydro.volume;
     const vb = this.velocityBody;
     const horizontal = Math.hypot(vb.x, vb.z);
     if (horizontal < 1e-3) return;
-    const drag = c.humpDrag * shape * weight;
+    let drag = c.humpDrag * shape * weight;
+    const wet = 1 - this.transomDry;
+    if (wet > 0) {
+      const pieces = this.hydro.pieces;
+      let area = 0;
+      for (let k = 0; k < pieces.count; k += 1) {
+        if (pieces.tag[k] !== HULL_TAG_TRANSOM) continue;
+        area += Math.hypot(pieces.areaVector[k * 3]!, pieces.areaVector[k * 3 + 1]!, pieces.areaVector[k * 3 + 2]!);
+      }
+      if (area > 1e-4 && vb.x > 0) {
+        const fnt = vb.x / Math.sqrt((2 * g * area) / (HULL_TRANSOM_CHINE_BEAM * (1 + TRANSOM_WATERPLANE_COEFFICIENT)));
+        if (fnt < 5) drag += 0.5 * rho * vb.x * vb.x * area * 0.2 * (1 - 0.2 * fnt) * wet;
+      } else if (area > 1e-4) {
+        // Going astern the transom is a flat face pushed into the water.
+        drag += 0.5 * rho * vb.x * vb.x * area * c.transomAsternDrag;
+      }
+    }
+    if (drag < 1e-3) return;
     const force = this.tmpB;
     force.x = (-drag * vb.x) / horizontal;
     force.y = 0;
