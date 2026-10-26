@@ -1,13 +1,17 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { noticeText } from "../src/bench/flow";
-import { benchTimings, describeDuration, estimateBenchDuration } from "../src/bench/plan";
+import { createBenchVisualState } from "../src/bench/path";
+import { BENCH_SEED, benchGameSettings, benchTimings, describeDuration, estimateBenchDuration } from "../src/bench/plan";
 import { buildReport, compactReportJson, verdictText } from "../src/bench/report";
 import type { BenchBuildInfo, BenchDeviceReport, BenchReport, BenchRunRecord } from "../src/bench/types";
+import { BenchApp, isInsideBenchUi, type BenchView } from "../src/bench/ui/BenchApp";
 import { BenchCard, BenchCards, cardWords, type BenchCardProps } from "../src/bench/ui/BenchCards";
 import { BenchChip, chipAnnouncement, chipPhaseText, chipProgress, type BenchChipProps } from "../src/bench/ui/BenchChip";
+import { BenchHud, BenchHudContent } from "../src/bench/ui/BenchHud";
 import { BenchIntro, type BenchIntroProps } from "../src/bench/ui/BenchIntro";
 import { BenchReportDialog, type BenchReportDialogProps } from "../src/bench/ui/BenchReportDialog";
 import { clockText, parseTierList, tierListText } from "../src/bench/ui/words";
@@ -458,5 +462,64 @@ describe("the report dialog", () => {
     expect(markup).toContain(html(noticeText("storage-failed")));
     expect(markup).toContain("<h3>Earlier run in this tab (as players get it)</h3>");
     expect(markup).toContain("Each flight of the earlier run");
+  });
+});
+
+describe("the bench HUD", () => {
+  it("is the game's full HUD for a chase-camera flight, with no buttons or diagnostics", () => {
+    const markup = renderToStaticMarkup(createElement(BenchHudContent, {
+      state: createBenchVisualState(),
+      settings: benchGameSettings(1),
+      seed: BENCH_SEED,
+    }));
+    expect(markup).toContain('class="flight-hud flight-hud--full"');
+    expect(markup).toContain("<span>CHASE CAM</span>");
+    expect(markup).toContain("<span>WORLD 00762M</span>");
+    expect(markup).toContain("metric-tape");
+    expect(markup).not.toContain("<button");
+    expect(markup).not.toContain("Performance diagnostics");
+  });
+
+  it("draws nothing without the shell to portal into", () => {
+    expect(renderToStaticMarkup(createElement(BenchHud, {
+      container: null,
+      state: createBenchVisualState(),
+      settings: benchGameSettings(1),
+      seed: BENCH_SEED,
+    }))).toBe("");
+  });
+});
+
+describe("the bench app", () => {
+  it("shows the page the view names", () => {
+    const render = (view: BenchView) => renderToStaticMarkup(createElement(BenchApp, { view }));
+    expect(render({ kind: "intro", intro: introProps() })).toContain('id="bench-intro"');
+    const step = render({
+      kind: "step",
+      chip: chipProps(),
+      cards: [{ kind: "notice", notice: "crash-skipped" }],
+      hud: null,
+    });
+    expect(step).toContain('class="bench-chip"');
+    expect(step).toContain(html(noticeText("crash-skipped")));
+    expect(render({
+      kind: "report",
+      report: { report: report(defaultRun()), notice: null, copy: null, onDownload: noop, onCopy: noop, onPinnedPass: noop, onRunAgain: noop, onExit: noop },
+    })).toContain('id="bench-report"');
+    expect(render({ kind: "none" })).toBe("");
+    expect(isInsideBenchUi(null)).toBe(false);
+  });
+
+  it("reads no storage and never reaches the renderer", () => {
+    const root = join(__dirname, "..", "src", "bench", "ui");
+    for (const name of readdirSync(root)) {
+      const source = readFileSync(join(root, name), "utf8");
+      expect(source, name).not.toMatch(/sessionStorage|localStorage|getDiagnostics|FlightRenderer/);
+      for (const [, from] of source.matchAll(/from "([^"]+)"/g)) {
+        expect(from, `${name} imports ${from}`).toMatch(
+          /^(react|react-dom|\.\.\/(flow|plan|report|types)|\.\/\w+|@\/src\/(ui\/\w+|settings|game\/types))$/,
+        );
+      }
+    }
   });
 });
