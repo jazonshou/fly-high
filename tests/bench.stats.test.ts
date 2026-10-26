@@ -143,7 +143,7 @@ describe("synthetic display streams", () => {
     expect(window.over["27.4"].count).toBe(3);
     expect(window.over["50"].count).toBe(2);
     expect(window.over["100"].count).toBe(1);
-    expect(window.over.tier).toMatchObject({ count: 3, thresholdMs: 27.4 });
+    expect(window.over.hitch).toMatchObject({ count: 3, thresholdMs: 27.4 });
     expect(window.intervalMs?.max).toBe(120);
   });
 });

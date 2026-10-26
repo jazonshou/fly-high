@@ -11,7 +11,9 @@ import type {
   BenchLongAnimationFrameSummary,
   BenchLongTaskEntry,
   BenchLongTaskSummary,
+  BenchPerSecondColumn,
   BenchPerSecondRow,
+  BenchPerSecondTable,
   BenchRafReport,
   BenchRefresh,
   BenchSecondSample,
@@ -398,7 +400,7 @@ export function summarizeWindow(
       "27.4": countOver(intervals, 27.4),
       "50": countOver(intervals, 50),
       "100": countOver(intervals, 100),
-      tier: { ...countOver(intervals, context.tierThresholdMs), thresholdMs: context.tierThresholdMs },
+      hitch: { ...countOver(intervals, context.tierThresholdMs), thresholdMs: context.tierThresholdMs },
     },
     missedRefresh: period === null ? null : missedRefresh(intervals, period),
     vsyncBuckets: period === null ? null : vsyncBuckets(intervals, period, context.granularityMs),
@@ -535,6 +537,28 @@ export function perSecondRows(
     });
   }
   return rows;
+}
+
+const PER_SECOND_COLUMNS: readonly BenchPerSecondColumn[] = Object.freeze([
+  "second",
+  "frames",
+  "maxIntervalMs",
+  "over27",
+  "renderP95Ms",
+  "compiles",
+  "appliedScale",
+  "renderPixels",
+  "cpuLevel",
+  "gpuLevel",
+  "heapMiB",
+]);
+
+/** The rows as the report stores them: one tuple per second, in `columns` order. */
+export function perSecondTable(rows: readonly BenchPerSecondRow[]): BenchPerSecondTable {
+  return {
+    columns: PER_SECOND_COLUMNS,
+    rows: rows.map((row) => PER_SECOND_COLUMNS.map((column) => row[column])),
+  };
 }
 
 /**

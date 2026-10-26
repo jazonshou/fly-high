@@ -136,7 +136,7 @@ export interface BenchRunPlan {
   readonly settleCapSeconds: number;
 }
 
-// --- the run store (sessionStorage, one tab) ------------------------------------
+// --- the run store (the tab's session storage, see store.ts) --------------------
 
 export type BenchStepStatus =
   | "pending"
@@ -479,7 +479,8 @@ export interface BenchWindowMetrics {
     readonly "27.4": BenchCount;
     readonly "50": BenchCount;
     readonly "100": BenchCount;
-    readonly tier: BenchCount & { readonly thresholdMs: number };
+    /** Against the tier's own hitch threshold: 27.4 ms, or 60 ms on Ultra. */
+    readonly hitch: BenchCount & { readonly thresholdMs: number };
   };
   readonly missedRefresh: { readonly count: number; readonly per240: number; readonly longestStreak: number } | null;
   readonly vsyncBuckets: BenchVsyncBuckets | null;
@@ -530,6 +531,18 @@ export interface BenchPerSecondRow {
   readonly cpuLevel: number | null;
   readonly gpuLevel: number | null;
   readonly heapMiB: number | null;
+}
+
+/** The column names of `BenchPerSecondTable`, in order. */
+export type BenchPerSecondColumn = keyof BenchPerSecondRow;
+
+/**
+ * Per-second rows as columns and number tuples: a 75 s flight's rows as
+ * objects are about 13 KB of JSON, as tuples about 3.
+ */
+export interface BenchPerSecondTable {
+  readonly columns: readonly BenchPerSecondColumn[];
+  readonly rows: readonly (readonly (number | null)[])[];
 }
 
 export interface BenchCompileEvent {
@@ -732,7 +745,7 @@ export interface BenchStepResult {
   readonly segments: readonly BenchSegment[];
   /** The air window's ten longest intervals. */
   readonly worst: readonly BenchWorstFrame[];
-  readonly perSecond: readonly BenchPerSecondRow[];
+  readonly perSecond: BenchPerSecondTable;
   readonly compiles: {
     /** Flight frames before the air window. */
     readonly warmup: BenchCompileCounts;
