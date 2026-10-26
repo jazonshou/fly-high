@@ -402,6 +402,16 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly boatSprayParticleCap: number;
+  /**
+   * Boats: how many seconds of wake the boat leaves behind it
+   * (`BoatWakeSystem`). The trail is one instanced draw of a fixed ring at
+   * every length; a longer trail spaces its points further apart at speed and
+   * reaches further back. Boat sessions only: an aircraft session builds no
+   * wake at any tier.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly boatWakeTrailSeconds: number;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -508,6 +518,7 @@ function resolveBaseQualityProfile(
       activeAnimalBudget: 16,
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
+      boatWakeTrailSeconds: 12,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -613,6 +624,7 @@ function resolveBaseQualityProfile(
       activeAnimalBudget: 48,
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
+      boatWakeTrailSeconds: 24,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -707,6 +719,7 @@ function resolveBaseQualityProfile(
       activeAnimalBudget: 128,
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
+      boatWakeTrailSeconds: 40,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -803,6 +816,7 @@ function resolveBaseQualityProfile(
     activeAnimalBudget: 128,
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,
+    boatWakeTrailSeconds: 40,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

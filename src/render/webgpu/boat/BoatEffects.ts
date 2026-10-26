@@ -1,19 +1,27 @@
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
-import { hullToBody, RUNABOUT_21_OUTBOARD } from "@/src/vehicles/boat/hullLines";
+import {
+  HULL_STATIONS,
+  hullToBody,
+  RUNABOUT_21_CG,
+  RUNABOUT_21_OUTBOARD,
+  RUNABOUT_21_REST_WATERLINE,
+} from "@/src/vehicles/boat/hullLines";
 import type { WorldDefinition } from "@/src/world";
 import { BoatSpraySystem, type BoatSprayGeometry } from "./BoatSpraySystem";
+import { BoatWakeSystem, type BoatWakeGeometry, type BoatWakeOcean } from "./BoatWakeSystem";
 
 /**
  * Everything a boat leaves in the world around it, as opposed to the boat
- * itself (`createWebGpuBoat`): the spray now, the wake as it lands. The
+ * itself (`createWebGpuBoat`): the spray and the wake. The
  * renderer builds these when the session's vehicle is a boat and never
  * otherwise, so an aircraft session compiles none of their shaders and pays
  * none of their draws. Each is a renderer system of its own, called where
  * the aircraft-session equivalent already is: its tier field on every profile
  * change (the steam's `setMaxWisps` site), `setFloatingOrigin` on every
  * origin shift, `setAerialPerspective` whenever the binding is rebuilt and
- * `update(state)` once a frame.
+ * `update(state)` once a frame; the wake also takes `bindOcean()` after the
+ * ocean's own update, which hands it the displacement the sea is drawn with.
  */
 
 /** The Runabout 21's propeller hub and tilt pivot in the body frame, from the hull lines. */
@@ -27,17 +35,29 @@ function bodyTuple(point: { readonly x: number; readonly y: number; readonly z: 
   return Object.freeze([body.x, body.y, body.z] as const);
 }
 
+/**
+ * Where the Runabout 21's wake starts: the transom's foot on the centreline at
+ * the still waterline, and the half-beam at the transom's chine.
+ */
+export const RUNABOUT_21_WAKE_GEOMETRY: BoatWakeGeometry = Object.freeze({
+  transom: Object.freeze([-RUNABOUT_21_CG.x, -RUNABOUT_21_REST_WATERLINE.cgAboveWater, 0] as const),
+  halfBeam: HULL_STATIONS[0]!.chineHalfBeam,
+});
+
 /** The tier fields the effects read. */
-export type BoatEffectsProfile = Pick<WebGpuQualityProfile, "boatSprayParticleCap">;
+export type BoatEffectsProfile = Pick<WebGpuQualityProfile, "boatSprayParticleCap" | "boatWakeTrailSeconds">;
 
 export interface BoatEffectsOptions {
   readonly profile: BoatEffectsProfile;
-  /** The prevailing surface wind the spray drifts on. */
-  readonly world: Pick<WorldDefinition, "prevailingWindRadians" | "prevailingWindSpeed">;
+  /** The prevailing surface wind the spray drifts on, and the sea level the wake lies on. */
+  readonly world: Pick<WorldDefinition, "prevailingWindRadians" | "prevailingWindSpeed" | "seaLevel">;
+  /** The sea whose displacement the wake rides. */
+  readonly ocean: BoatWakeOcean;
 }
 
 export interface BoatEffects {
   readonly spray: BoatSpraySystem;
+  readonly wake: BoatWakeSystem;
 }
 
 export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): BoatEffects {
@@ -49,5 +69,11 @@ export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): Bo
     windX: Math.sin(options.world.prevailingWindRadians) * speed,
     windZ: Math.cos(options.world.prevailingWindRadians) * speed,
   });
-  return { spray };
+  const wake = new BoatWakeSystem(scene, {
+    trailSeconds: options.profile.boatWakeTrailSeconds,
+    geometry: RUNABOUT_21_WAKE_GEOMETRY,
+    seaLevel: options.world.seaLevel,
+    ocean: options.ocean,
+  });
+  return { spray, wake };
 }

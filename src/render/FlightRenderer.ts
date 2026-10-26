@@ -75,6 +75,7 @@ import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
+import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
 import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
 import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
@@ -518,8 +519,9 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly surfaceVehicleSpec: SurfaceVehicleSpec | null;
   /** The surface vehicle's lamp washes, riding the aircraft's nav-wash slots. */
   private readonly surfaceVehicleWashes: readonly BoatWashLight[];
-  /** The spray a boat throws; null outside a boat session. */
+  /** The spray a boat throws and the wake it leaves; null outside a boat session. */
   private readonly boatSpray: BoatSpraySystem | null;
+  private readonly boatWake: BoatWakeSystem | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -793,6 +795,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       ? surfaceVehicleWashLights(surfaceVehicle.kind)
       : [];
     this.boatSpray = boatEffects?.spray ?? null;
+    this.boatWake = boatEffects?.wake ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1419,8 +1422,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => steam.dispose());
       // Only with a surface vehicle, so an aircraft session builds and
       // compiles none of it. Before the readiness gate, as the steam is.
-      const boatEffects = surfaceVehicle ? createBoatEffects(scene, { profile, world: options.world }) : null;
-      if (boatEffects) cleanup.push(() => boatEffects.spray.dispose());
+      const boatEffects = surfaceVehicle ? createBoatEffects(scene, { profile, world: options.world, ocean }) : null;
+      if (boatEffects) {
+        cleanup.push(() => boatEffects.spray.dispose());
+        cleanup.push(() => boatEffects.wake.dispose());
+      }
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -2611,6 +2617,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.clouds.dispose(),
       () => this.steam.dispose(),
       () => this.boatSpray?.dispose(),
+      () => this.boatWake?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -2666,6 +2673,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           this.ocean.setWaterEnvironmentField(this.waterEnvironment);
         }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
+        // The wake lies on the waves this frame's sea is drawn with.
+        this.boatWake?.bindOcean();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -2903,6 +2912,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // simulationTime keeps the plume capture-deterministic (Z-1).
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
     this.boatSpray?.update(state);
+    this.boatWake?.update(state);
     this.updateAerialPerspective();
   }
 
@@ -3027,6 +3037,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.lightPoints.setAerialPerspective(binding);
     this.steam.setAerialPerspective(binding);
     this.boatSpray?.setAerialPerspective(binding);
+    this.boatWake?.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.
@@ -3614,6 +3625,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     this.steam.setFloatingOrigin(this.originX, this.originZ);
     this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
+    this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -3660,6 +3672,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // compiling at the switch rather than at load.
     this.steam.setMaxWisps(this.profile.volcanicSteamMaxWisps);
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
+    this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
