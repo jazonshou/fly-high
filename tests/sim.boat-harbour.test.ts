@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createSurfaceSpawn } from "../src/game/surfaceSpawn";
 import type { BoatControlState, FlightMode } from "../src/game/types";
-import { BoatSimulator, type BoatEnvironment } from "../src/sim/boat";
+import { BoatSimulator } from "../src/sim/boat";
 import { MarinaHarbour } from "../src/sim/marina/harbour";
-import { NEUTRAL_BOAT_CONTROLS } from "../src/sim/surface";
+import { NEUTRAL_BOAT_CONTROLS, type SurfaceVehicleEnvironment } from "../src/sim/surface";
 import { CalmWaterSurface } from "../src/sim/water";
 import { createWorld, sampleTerrainHeight, type WorldDefinition } from "../src/world";
 import { marinaStartPose } from "../src/world/marina";
@@ -11,13 +11,13 @@ import { marinaStartPose } from "../src/world/marina";
 /**
  * The dock start as the worker runs it: the real boat in the home marina's
  * start berth, held by the marina's lines, with the hull meeting the
- * marina's structures through the marina's contact. The call order is the
- * worker's (`stepSurface`).
+ * marina's structures through the simulator's own contact. The call order
+ * is the worker's (`stepSurface`).
  */
 
 const STEP = 1 / 120;
 
-function environment(world: WorldDefinition): BoatEnvironment {
+function environment(world: WorldDefinition): SurfaceVehicleEnvironment {
   const bedHeight = (x: number, z: number) => sampleTerrainHeight(world, x, z);
   return {
     water: new CalmWaterSurface(world.seaLevel, bedHeight),
@@ -37,10 +37,10 @@ function session(seed: number) {
   const run = (seconds: number, boatControls: Partial<BoatControlState> = {}, assist: FlightMode = "pilot") => {
     const controls = { assist, boat: { ...NEUTRAL_BOAT_CONTROLS, ...boatControls } };
     for (let t = 0; t < seconds; t += STEP) {
-      env.water!.setTime(time);
+      env.water.setTime(time);
       boat.setControls(controls);
       boat.setEnvironment(env);
-      harbour.beforeStep(controls.boat, assist === "scenic", env.water!);
+      harbour.beforeStep(controls.boat, assist === "scenic", env);
       boat.step(STEP);
       harbour.afterStep();
       time += STEP;
