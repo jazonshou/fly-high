@@ -504,6 +504,14 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     // becomes floor-pinnable the moment somebody runs it on the reference
     // host, by the house method's three runs.
     "water-400ft-glitter",
+    // Boats: the speedboat at the dock, planing in chase and helm views, and
+    // its wake under a low sun. New frames with no predecessor, authored on a
+    // host that is not the reference adapter, and the look is still being
+    // tuned with Jason, so neither a baseline nor floors would mean anything yet.
+    "boat-moored-dock",
+    "boat-planing-35kn",
+    "boat-helm",
+    "boat-wake-lowsun",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {

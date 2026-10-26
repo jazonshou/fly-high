@@ -55,6 +55,13 @@ import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
  * spray thrown towards a low sun glows and spray seen down-sun is a dull
  * grey-white, which is what sea spray does.
  *
+ * HELD. Droplets fly in the world, so a hull held still while its velocity
+ * says it planes (a pinned capture) would throw its spray forward of the
+ * bow. Held long enough (`SPRAY_HELD_SECONDS`), the spray is drawn in the
+ * hull's frame instead: the same physics, Galilean-shifted by the hull's
+ * velocity, which is exactly what the moving boat shows a camera that rides
+ * with it.
+ *
  * DRAW ORDER. Group 1 (water) at alphaIndex 2.5: after the ocean, inland
  * water and the wake, and after volcanic steam. Depth-tested against the
  * opaque world (the hull hides the spray behind it) and never written.
@@ -76,6 +83,15 @@ export const SPRAY_CLOCK_PERIOD_SECONDS = 960;
 export const SPRAY_MAX_LIFETIME_SECONDS = 2.4;
 /** The anchor is moved when the boat is this far from it, so records stay small for f32. */
 export const SPRAY_REANCHOR_METERS = 2_000;
+/**
+ * A hull that moves over the ground less than this fraction of what its own
+ * velocity says, for `SPRAY_HELD_SECONDS` running, is being HELD: a pinned
+ * capture photographs a planing boat that never moves. Its spray is then
+ * thrown in the hull's own frame (every velocity, the wind's included, less
+ * the hull's), which is the same flight seen from a camera riding along.
+ */
+export const SPRAY_HELD_FRACTION = 0.1;
+export const SPRAY_HELD_SECONDS = 0.5;
 /** Standard gravity, m/s². */
 const GRAVITY = 9.81;
 
@@ -264,6 +280,12 @@ export class BoatSpraySystem {
   private originZ = 0;
   private births = 0;
   private primePending = false;
+  private holdX = Number.NaN;
+  private holdZ = Number.NaN;
+  private holdTime = Number.NaN;
+  private heldSeconds = 0;
+  /** The horizontal velocity the spray is drawn relative to: zero, or a held hull's own. */
+  private readonly frame = { x: 0, z: 0 };
   private readonly anchorUniform = new Vector3();
   private readonly windUniform = new Vector4();
   private readonly scratch = { x: 0, y: 0, z: 0 };
@@ -322,6 +344,11 @@ export class BoatSpraySystem {
   /** The ring of records (`capacity` droplets). Null without GPU resources. */
   get instanceData(): Float32Array | null {
     return this.records;
+  }
+
+  /** The velocity the droplets are drawn relative to: zero, or a held hull's own. */
+  get referenceVelocity(): { readonly x: number; readonly z: number } {
+    return { x: this.frame.x, z: this.frame.z };
   }
 
   /** The anchor the records are relative to, world metres. */
@@ -394,7 +421,8 @@ export class BoatSpraySystem {
     const time = Number.isFinite(state.simulationTime) ? state.simulationTime : 0;
     const clock = sprayClock(time);
     this.lastClock = clock;
-    this.windUniform.set(this.windX, this.windZ, 0, clock);
+    this.trackHold(state, time);
+    this.windUniform.set(this.windX - this.frame.x, this.windZ - this.frame.z, 0, clock);
 
     const boat = state.vehicle?.kind === "boat" ? state.vehicle : null;
     // The epsilon keeps a frame landing exactly on a tick from flooring below it.
@@ -422,6 +450,25 @@ export class BoatSpraySystem {
   dispose(): void {
     this.disposeGpu();
     this.cap = 0;
+  }
+
+  /** Whether the hull is being held still (`SPRAY_HELD_FRACTION`), and the frame that follows from it. */
+  private trackHold(state: FlightVisualState, time: number): void {
+    const elapsed = time - this.holdTime;
+    if (elapsed > 0 && elapsed < 1) {
+      const expected = Math.hypot(state.velocity.x, state.velocity.z) * elapsed;
+      const moved = Math.hypot(state.position.x - this.holdX, state.position.z - this.holdZ);
+      this.heldSeconds = expected > 0.005 && moved < SPRAY_HELD_FRACTION * expected ? this.heldSeconds + elapsed : 0;
+    } else if (elapsed !== 0) {
+      // The first frame, a jump, or time run backwards: start counting again.
+      this.heldSeconds = 0;
+    }
+    this.holdX = state.position.x;
+    this.holdZ = state.position.z;
+    this.holdTime = time;
+    const held = this.heldSeconds >= SPRAY_HELD_SECONDS;
+    this.frame.x = held ? state.velocity.x : 0;
+    this.frame.z = held ? state.velocity.z : 0;
   }
 
   private ensureAnchor(worldX: number, worldZ: number): void {
@@ -527,14 +574,14 @@ export class BoatSpraySystem {
     rotateBodyToWorld(state.orientation, ax * norm * throwSpeed, ay * norm * throwSpeed, az * norm * throwSpeed, this.scratchVelocity);
     // Water leaving the hull keeps part of the hull's own motion.
     const carry = 0.55 + 0.2 * r3;
-    this.scratchVelocity.x += state.velocity.x * carry;
+    this.scratchVelocity.x += state.velocity.x * carry - this.frame.x;
     this.scratchVelocity.y += state.velocity.y * carry;
-    this.scratchVelocity.z += state.velocity.z * carry;
+    this.scratchVelocity.z += state.velocity.z * carry - this.frame.z;
     rotateBodyToWorld(state.orientation, bx, by, bz, this.scratch);
     this.write(
-      state.position.x + this.scratch.x + state.velocity.x * back,
+      state.position.x + this.scratch.x + (state.velocity.x - this.frame.x) * back,
       state.position.y + this.scratch.y + state.velocity.y * back,
-      state.position.z + this.scratch.z + state.velocity.z * back,
+      state.position.z + this.scratch.z + (state.velocity.z - this.frame.z) * back,
       tickClock,
       SHEET_LIFETIME.min + SHEET_LIFETIME.span * r4,
       0.22 + 0.3 * r0,
@@ -583,15 +630,15 @@ export class BoatSpraySystem {
       : 2.5 + 3 * r2;
     rotateBodyToWorld(state.orientation, ax * norm * throwSpeed, ay * norm * throwSpeed, az * norm * throwSpeed, this.scratchVelocity);
     const carry = rooster ? 0.62 : 0.8;
-    this.scratchVelocity.x += state.velocity.x * carry;
+    this.scratchVelocity.x += state.velocity.x * carry - this.frame.x;
     this.scratchVelocity.y += state.velocity.y * carry;
-    this.scratchVelocity.z += state.velocity.z * carry;
+    this.scratchVelocity.z += state.velocity.z * carry - this.frame.z;
     rotateBodyToWorld(state.orientation, bx - 0.3, by, hz, this.scratch);
     const life = rooster ? ROOSTER_LIFETIME : MIST_LIFETIME;
     this.write(
-      state.position.x + this.scratch.x + state.velocity.x * back,
+      state.position.x + this.scratch.x + (state.velocity.x - this.frame.x) * back,
       state.position.y + this.scratch.y + state.velocity.y * back,
-      state.position.z + this.scratch.z + state.velocity.z * back,
+      state.position.z + this.scratch.z + (state.velocity.z - this.frame.z) * back,
       tickClock,
       life.min + life.span * r4,
       rooster ? 0.3 + 0.35 * r3 : 0.2 + 0.25 * r3,

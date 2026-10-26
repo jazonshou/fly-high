@@ -319,6 +319,13 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     // and its vegetation, and the bathymetry clipmap is not the shape of a
     // light shot, and nobody has measured it.
     "water-400ft-glitter",
+    // Boats, appended long after the inventory run. Named for the same reason
+    // as the shot above: a full ocean with its cascades, the marina, and in
+    // three of them the boat's wake and spray on top. Nobody has measured them.
+    "boat-moored-dock",
+    "boat-planing-35kn",
+    "boat-helm",
+    "boat-wake-lowsun",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -367,6 +374,33 @@ export function inventoriedMemoryFailures(
   }
   return [];
 }
+
+/** A boat shot's run (`PerfCaptureShotDefinition.boat`). */
+export interface PerfCaptureBoatRun {
+  /**
+   * "dock": made fast at the marina's start berth, where every boat session
+   * begins, engine idling; `legs` must be empty. "open-water": at the shot's
+   * placement, heading along the shot's own yaw at the end of the run.
+   */
+  readonly start: "dock" | "open-water";
+  /** The helm, leg by leg from rest, in the scenic assists: seconds held, single lever, wheel. */
+  readonly legs: readonly {
+    readonly seconds: number;
+    readonly lever: number;
+    readonly steer: number;
+  }[];
+}
+
+/**
+ * The planing shots' run: the lever at 0.83 for 30 s settles the Runabout 21
+ * within a tenth of a knot of its steady 35.6 kn (tests/perf-boat-shots.test.ts
+ * holds it between 34 and 36 kn), so the frame shows a hull at speed, not one
+ * still accelerating.
+ */
+const BOAT_RUN_35KN: PerfCaptureBoatRun = Object.freeze({
+  start: "open-water",
+  legs: Object.freeze([Object.freeze({ seconds: 30, lever: 0.83, steer: 0 })]),
+});
 
 export interface PerfCaptureShotDefinition {
   readonly name: string;
@@ -584,6 +618,17 @@ export interface PerfCaptureShotDefinition {
    * pair.
    */
   readonly landforms?: LandformsOption;
+  /**
+   * Boats: the shot drives the Runabout 21 instead of flying the aircraft.
+   * The pose is the boat simulator's own, run from rest through `legs` on
+   * still water at sea level, so trim, heel, spray roots and the wake's
+   * priming are what that helm produces rather than numbers typed here. A
+   * rebuild boundary like `climateProvince`: the renderer is built with the
+   * speedboat, and with the gameplay helm view rather than the frozen
+   * aircraft rig (`PERF_COCKPIT_RIG` was placed for aircraft shots). The
+   * altitude, pitch and airspeed fields are not read.
+   */
+  readonly boat?: PerfCaptureBoatRun;
   /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.
@@ -2106,6 +2151,83 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      */
     ceilings: null,
     drawCallCeiling: 88,
+  },
+  /**
+   * BOATS. Four shots of the Runabout 21 (`boat` has how the pose is made),
+   * appended so no aircraft shot's canonical index or wave phase moves. Not
+   * baselined and not floor-pinned yet: a boat frame has no history, and the
+   * frame timings belong to the reference host. The first three are the
+   * views a boat session spends its time in; the fourth is the wake at the
+   * hour it is most visible, under the same sun as `water-400ft-glitter`.
+   */
+  {
+    name: "boat-moored-dock",
+    description:
+      "The speedboat made fast at the marina's start berth, engine idling - "
+      + "where every boat session begins, with the docks and the harbour around it",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: 0,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    boat: { start: "dock", legs: [] },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "boat-planing-35kn",
+    description:
+      "The chase view of the speedboat planing at 35 kn in open water, land "
+      + "ahead: hull, spray sheets and the whole wake trail behind it",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    locate: "coast",
+    boat: BOAT_RUN_35KN,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "boat-helm",
+    description:
+      "The helm view at 35 kn: the dash and windscreen in the foreground, the "
+      + "sea and the coast ahead",
+    cameraMode: "cockpit",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    locate: "coast",
+    boat: BOAT_RUN_35KN,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "boat-wake-lowsun",
+    description:
+      "The speedboat at 35 kn with the sun low and ahead: the wake's foam and "
+      + "Kelvin arms against the glitter path",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 18.4 },
+    relativeSunBearingDegrees: 30,
+    locate: "coast",
+    boat: BOAT_RUN_35KN,
+    comparesToBaseline: false,
+    ceilings: null,
   },
 ]);
 
