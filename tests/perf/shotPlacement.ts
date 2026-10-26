@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+import type { FlightVisualState } from "../../src/game/types";
 import type { WorldDefinition } from "../../src/world/types";
 import { sampleTerrain, sampleTerrainHeight } from "../../src/world";
 import { sunDirectionForClock } from "../../src/render/webgpu/nature/EnvironmentDirector";
@@ -7,6 +9,7 @@ import {
   headingVectorFromYaw,
   locateShotOffset,
   yawForSunBearing,
+  type PerfCaptureBoatRun,
   type PerfCaptureShotDefinition,
   type ShotPlacement,
 } from "../../scripts/perf-capture.mts";
@@ -169,4 +172,29 @@ export function resolveShotPlacement(
     + "has no branch in resolvePlacement. Add one — the previous fallthrough "
     + "would have silently applied the coast search to it.",
   );
+}
+
+/**
+ * The arm's own boat-shot builder (`./boatShotState.ts`). By glob, not by
+ * import: this file is part of the A/B instrument and is copied into both
+ * arms, and a static import of the boat simulator would fail to build any
+ * base from before boats, the merge-base of the Boats PR among them. A glob
+ * that matches nothing is an empty record instead, so such an arm builds and
+ * only a boat shot fails in it, saying why. The builder is deliberately not
+ * in `HARNESS_PATHS`: each arm drives its own simulator.
+ */
+const BOAT_SHOT_BUILDERS = import.meta.glob<{
+  readonly buildBoatShotState: typeof import("./boatShotState").buildBoatShotState;
+}>("./boatShotState.ts", { eager: true });
+
+/** A boat shot's state (`PerfCaptureShotDefinition.boat`), as `buildBoatShotState` makes it. */
+export function boatShotState(
+  world: WorldDefinition,
+  run: PerfCaptureBoatRun,
+  at: { readonly x: number; readonly z: number; readonly yawDegrees: number },
+  simulationTime: number,
+): FlightVisualState {
+  const build = BOAT_SHOT_BUILDERS["./boatShotState.ts"]?.buildBoatShotState;
+  if (!build) throw new Error("perf-capture: this build has no boats, so it cannot render a boat shot");
+  return build(world, run, at, simulationTime);
 }
