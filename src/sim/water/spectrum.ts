@@ -85,6 +85,13 @@ export function oceanWavePhaseIndex(frequencyX: number, frequencyY: number): num
   return base + wrappedX + wrappedY * size;
 }
 
+/**
+ * The sign of time in a wave's phase, `k.x + s w t`, as the GPU's evolution
+ * shader applies it (`h0 e^{+i w t}` against an inverse transform in
+ * `e^{+i k.x}`). The sea twin reads it here so the two cannot disagree.
+ */
+export const OCEAN_TIME_SIGN = 1;
+
 /** The grid whose texel index is the phase index of every wave it holds. */
 export const OCEAN_PHASE_BASE_GRID = 128;
 
