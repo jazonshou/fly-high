@@ -80,6 +80,7 @@ import { homeMarina } from "@/src/world/marina";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
+import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
 import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
@@ -539,6 +540,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly boatWake: BoatWakeSystem | null;
   /** The sea kept out of the boat's hull, posed with it. */
   private readonly boatHullClip: OceanHullClip | null;
+  /** The swell this tier does not draw, which the drawn boat is lowered by. */
+  private readonly boatHeave: UndrawnSeaHeave | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -826,6 +829,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatSpray = boatEffects?.spray ?? null;
     this.boatWake = boatEffects?.wake ?? null;
     this.boatHullClip = boatEffects?.hullClip ?? null;
+    this.boatHeave = boatEffects?.heave ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1480,6 +1484,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           world: options.world,
           ocean,
           atmosphere: atmosphere.snapshot,
+          sea: { world: options.world, weather: options.weather ?? "breezy" },
         })
         : null;
       if (boatEffects) {
@@ -1965,6 +1970,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setWindSpeed(seaSpectrumWindSpeed(this.worldDefinition, weather));
     this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
+    this.boatHeave?.setWeather(weather);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
@@ -1983,7 +1989,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (!finiteState(state)) throw new Error("The simulation produced a non-finite render state");
     const started = performance.now();
     this.captureFrameInterval(started);
-    this.currentState = state;
+    this.currentState = this.presentedState(state);
     this.currentDeltaSeconds = Math.max(1 / 300, Math.min(0.1, deltaSeconds));
     this.frameIndex += 1;
     this.originShifted = this.updateFloatingOrigin(state);
@@ -3166,6 +3172,23 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * is not there. The boat's sidelight washes take over the aircraft's two
    * nav-wash slots (`boatWashLights` has why); every other slot goes dark.
    */
+  /**
+   * The state everything that presents the frame reads. A boat rides the sea
+   * twin's every cascade; on a tier that draws fewer it is drawn lowered by
+   * the swell the tier leaves out (`UndrawnSeaHeave`), so its hull, spray,
+   * hull clip and the camera that follows it sit on the sea on screen.
+   */
+  private presentedState(state: FlightVisualState): FlightVisualState {
+    const heave = this.boatHeave;
+    if (!heave?.active || state.vehicle?.kind !== "boat") return state;
+    const { x, y, z, w } = state.orientation;
+    // The bow's heading, forward = (sin h, cos h): body +X turned by the orientation.
+    const heading = Math.atan2(1 - 2 * (y * y + z * z), 2 * (x * z - w * y));
+    const lowered = heave.heaveAt(state.position.x, state.position.z, heading, state.simulationTime);
+    if (lowered === 0) return state;
+    return { ...state, position: { x: state.position.x, y: state.position.y - lowered, z: state.position.z } };
+  }
+
   private poseSurfaceVehicle(state: FlightVisualState, visual: VehicleVisual): void {
     visual.root.position.set(
       state.position.x - this.originX,
@@ -3756,6 +3779,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.setMaxWisps(this.profile.volcanicSteamMaxWisps);
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
+    this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;

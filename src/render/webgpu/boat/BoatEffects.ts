@@ -1,4 +1,5 @@
 import type { Scene } from "@babylonjs/core/scene";
+import type { WeatherPreset } from "@/src/game/types";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
@@ -12,6 +13,7 @@ import type { WorldDefinition } from "@/src/world";
 import { BoatSpraySystem, type BoatSprayGeometry } from "./BoatSpraySystem";
 import { BoatWakeSystem, type BoatWakeGeometry, type BoatWakeOcean } from "./BoatWakeSystem";
 import { OceanHullClip } from "./oceanHullClip";
+import { UndrawnSeaHeave } from "./undrawnSeaHeave";
 
 /**
  * Everything a boat does to the world around it, as opposed to the boat
@@ -48,7 +50,10 @@ export const RUNABOUT_21_WAKE_GEOMETRY: BoatWakeGeometry = Object.freeze({
 });
 
 /** The tier fields the effects read. */
-export type BoatEffectsProfile = Pick<WebGpuQualityProfile, "boatSprayParticleCap" | "boatWakeTrailSeconds">;
+export type BoatEffectsProfile = Pick<
+  WebGpuQualityProfile,
+  "boatSprayParticleCap" | "boatWakeTrailSeconds" | "oceanCascades"
+>;
 
 export interface BoatEffectsOptions {
   readonly profile: BoatEffectsProfile;
@@ -58,6 +63,8 @@ export interface BoatEffectsOptions {
   readonly ocean: BoatEffectsOcean;
   /** The light the sea is lit by at load; `BoatWakeSystem.setAtmosphere` with every change after. */
   readonly atmosphere?: AtmosphereSnapshot;
+  /** The session's world and starting weather, for the swell the tier does not draw (`UndrawnSeaHeave`). */
+  readonly sea?: { readonly world: WorldDefinition; readonly weather: WeatherPreset };
 }
 
 /** What the effects need of the sea. */
@@ -70,6 +77,8 @@ export interface BoatEffects {
   readonly wake: BoatWakeSystem;
   /** The renderer poses it every frame the boat is on screen and clears it while it is not. */
   readonly hullClip: OceanHullClip;
+  /** How far to lower the drawn boat onto the sea the tier draws; null without `sea`. */
+  readonly heave: UndrawnSeaHeave | null;
 }
 
 export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): BoatEffects {
@@ -90,5 +99,8 @@ export function createBoatEffects(scene: Scene, options: BoatEffectsOptions): Bo
   if (options.atmosphere) wake.setAtmosphere(options.atmosphere);
   const hullClip = new OceanHullClip();
   options.ocean.setHullClip(hullClip);
-  return { spray, wake, hullClip };
+  const heave = options.sea
+    ? new UndrawnSeaHeave(options.sea.world, options.sea.weather, options.profile.oceanCascades)
+    : null;
+  return { spray, wake, hullClip, heave };
 }
