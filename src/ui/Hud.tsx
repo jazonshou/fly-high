@@ -12,6 +12,8 @@ import { aircraftSpec } from "@/src/aircraft/catalogue";
 import { cockpitDeckKStyleValue } from "@/src/ui/cockpitHudLayout";
 import { formatAirportDistance } from "@/src/ui/airportMarker";
 import type { NearestAirportInfo } from "@/src/game/AirportNetworkController";
+import { BoatHud } from "@/src/ui/BoatHud";
+import { formatHeading, MetricTape } from "@/src/ui/hudParts";
 
 interface HudProps {
   state: FlightVisualState;
@@ -74,11 +76,6 @@ export function hudShowsAircraftReticle(cameraMode: CameraMode): boolean {
   return cameraMode !== "cinematic" && cameraMode !== "top" && cameraMode !== "front";
 }
 
-function formatHeading(heading: number): string {
-  const normalized = ((heading % 360) + 360) % 360;
-  return Math.round(normalized).toString().padStart(3, "0");
-}
-
 function renderTechniqueLabel(diagnostics: RenderDiagnostics): string {
   return diagnostics.renderTechnique === "forward-spectral-volumetric"
     ? "WEBGPU FORWARD / SPECTRAL / VOLUMETRIC"
@@ -87,29 +84,6 @@ function renderTechniqueLabel(diagnostics: RenderDiagnostics): string {
 
 function requestedRenderingLabel(diagnostics: RenderDiagnostics): string {
   return diagnostics.requestedRenderingMode;
-}
-
-function MetricTape({
-  label,
-  value,
-  unit,
-  side,
-}: {
-  label: string;
-  value: string;
-  unit: string;
-  side: "left" | "right";
-}) {
-  return (
-    <div className={`metric-tape metric-tape--${side}`} aria-label={`${label}: ${value} ${unit}`}>
-      <span className="metric-tape__label">{label}</span>
-      <span className="metric-tape__value">{value}</span>
-      <span className="metric-tape__unit">{unit}</span>
-      <span className="metric-tape__tick metric-tape__tick--one" />
-      <span className="metric-tape__tick metric-tape__tick--two" />
-      <span className="metric-tape__tick metric-tape__tick--three" />
-    </div>
-  );
 }
 
 export function Hud({
@@ -131,6 +105,21 @@ export function Hud({
   onToggleAutoland,
 }: HudProps) {
   if (mode === "off") return null;
+  // A surface vehicle has its own panel; the aircraft HUD below is exactly
+  // the markup it always was for every aircraft session.
+  if (state.vehicle?.kind === "boat") {
+    return (
+      <BoatHud
+        state={state}
+        boat={state.vehicle}
+        mode={mode}
+        flightMode={flightMode}
+        units={units}
+        cameraLabel={cameraLabel}
+        seedLabel={seedLabel}
+      />
+    );
+  }
   const spec = aircraftSpec(aircraft);
   // Read from the FLIGHT MODEL, not from a presentation copy of the number.
   // The bar marks where thrust actually changes, so a HUD that disagreed with

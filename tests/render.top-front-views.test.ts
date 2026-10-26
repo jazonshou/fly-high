@@ -210,7 +210,9 @@ describe("the renderer's top and front branches", () => {
     expect(upStart).toBeGreaterThan(0);
     expect(branch).toContain("topViewRigOffsetsToRef(");
     expect(branch).toContain("frontViewRigOffsetsToRef(");
-    expect(upBranch).toContain("topViewCameraUpToRef(this.forward, this.desiredCameraUp)");
+    // `rigForward` IS `this.forward` for an aircraft; a boat's level follow
+    // hands its heading instead.
+    expect(upBranch).toContain("topViewCameraUpToRef(rigForward, this.desiredCameraUp)");
   });
 
   it("allocate nothing and sample no terrain, every frame either view is on", () => {

@@ -17,7 +17,7 @@ import {
 import { sampleGroundHeight } from "@/src/sim/terrainGrid";
 import {
   normalizeAirborneStartAgl,
-  type SpawnKind,
+  type AircraftSpawnKind,
 } from "@/src/workers/protocol";
 
 const AIRBORNE_START_PITCH = (2.4 * Math.PI) / 180;
@@ -198,7 +198,7 @@ function crashRecoverySurfaceHeight(
  */
 export function createSimulationSpawn(
   world: WorldDefinition,
-  kind: SpawnKind,
+  kind: AircraftSpawnKind,
   requestedAirborneStartAgl: number,
   aircraftKind: AircraftKind = "trainer",
 ): SpawnOptions {

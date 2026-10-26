@@ -113,6 +113,7 @@ describe("simulation worker lifecycle commands", () => {
       weather: "breezy",
       airborneStartAgl: 450,
       attractMode: false,
+      surfaceVehicle: null,
     });
 
     client.reset("runway", 450);
