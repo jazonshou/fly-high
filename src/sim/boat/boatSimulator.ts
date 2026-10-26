@@ -480,7 +480,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   private readonly calm = new CalmWaterSurface(0, () => -1_000);
   private readonly assists: BoatAssists;
   private readonly targets = createBoatActuatorTargets();
-  private readonly assistInput: BoatAssistInput = { speed: 0, runningTrim: 0, heel: 0, trimAngle: 0, ventilation: 0, dt: 0 };
+  private readonly assistInput: BoatAssistInput = { speed: 0, sideslip: 0, runningTrim: 0, heel: 0, trimAngle: 0, ventilation: 0, dt: 0 };
   private readonly loads: BoatExternalLoad[] = [];
   private readonly loadContext: LoadContext;
   private capsizeTime = 0;
@@ -1186,6 +1186,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
     this.runningTrim = Math.asin(clamp(forward.y, -1, 1)) - waterPitch;
     const input = this.assistInput;
     input.speed = this.speedThroughWater;
+    input.sideslip = this.sideslip;
     input.runningTrim = this.runningTrim;
     input.heel = heel;
     input.trimAngle = this.trimAngle;
