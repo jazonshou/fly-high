@@ -325,7 +325,8 @@ describe("the step controller's flight", () => {
     // At 60 Hz, quick mode's checks are two seconds apart and the cap comes first.
     expect(result.settle.checks).toBe(3);
     expect(result.startup.navToAttachMs).toBe(1_500);
-    expect(result.startup.navToFirstFrameMs).toBe(1_000);
+    // The first render began half a millisecond into the first frame.
+    expect(result.startup.navToFirstFrameMs).toBe(1_000.5);
     expect(result.startup.rendererStages).toEqual([{ label: "device", kind: "async", ms: 40 }]);
     expect(result.canvas.renderPixels).toBe(1_101 * 619);
     expect(result.canvas.gpuTiming).toBe("off");
@@ -338,10 +339,12 @@ describe("the step controller's flight", () => {
     const heapColumn = result.perSecond.columns.indexOf("heapMiB");
     expect(result.perSecond.rows.every((row) => typeof row[heapColumn] === "number")).toBe(true);
 
-    // After the end, frames keep drawing the last pose and record nothing.
+    // After the end nothing is drawn or recorded: the page is about to leave.
     const length = h.controller.log.length;
+    const drawn = h.drawn.length;
     h.frame(h.now() + 16);
     expect(h.controller.log.length).toBe(length);
+    expect(h.drawn.length).toBe(drawn);
     expect(h.finished).toHaveLength(1);
     expect(h.frames.pendingFrames()).toBe(0);
   });
@@ -411,16 +414,17 @@ describe("the step controller's flight", () => {
 });
 
 describe("the step controller's controls", () => {
-  it("stop ends the measuring but not the pose", () => {
+  it("stop ends the measuring and the drawing", () => {
     const h = harness();
     h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying");
     h.run(h.now() + 10, 1_000 / 60, () => h.controller.flightElapsedS >= 3);
     h.controller.stop();
     const length = h.controller.log.length;
+    const drawn = h.drawn.length;
     h.frame(h.now() + 16);
     expect(h.controller.phase).toBe("stopped");
     expect(h.controller.log.length).toBe(length);
-    expect(h.drawn[h.drawn.length - 1]!.position).toEqual(h.controller.state.position);
+    expect(h.drawn.length).toBe(drawn);
     expect(h.finished).toHaveLength(0);
     expect(h.frames.pendingFrames()).toBe(0);
   });

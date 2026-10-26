@@ -44,6 +44,13 @@ export interface BenchFramePort {
   overhead(milliseconds: number): void;
   /** The decorator let go of this port: disposed, or replaced by a later attach. */
   detached?(): void;
+  /**
+   * True once the step is over and its page is about to leave: frames are
+   * not drawn at all, so the main thread and the GPU are free for the next
+   * page's load. On a slow machine one more frame can hold the navigation
+   * for seconds.
+   */
+  holdFrames?(): boolean;
 }
 
 /** The game's renderer interface plus the probe, which `FlightRenderer` has. */
@@ -114,6 +121,7 @@ export class BenchRenderer implements FlightRenderingSystem {
       this.inner.render(state, deltaSeconds);
       return;
     }
+    if (port.holdFrames?.()) return;
     const scriptStart = this.now();
     const scripted = port.stateFor(scriptStart);
     const renderStart = this.now();

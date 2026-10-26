@@ -152,6 +152,20 @@ describe("the bench renderer decorator", () => {
     expect(inner.render).toHaveBeenLastCalledWith(game, 0.1);
   });
 
+  it("draws nothing once the port holds its frames, so the next page can load", () => {
+    const { inner } = fakeRenderer();
+    const { port, calls } = fakePort(state(0));
+    let holding = false;
+    const bench = new BenchRenderer(inner as BenchProbedRenderer, { ...port, holdFrames: () => holding });
+    bench.render(state(0), 1 / 60);
+    holding = true;
+    bench.render(state(0), 1 / 60);
+    bench.render(state(0), 1 / 60);
+    expect(inner.render).toHaveBeenCalledTimes(1);
+    expect(bench.frames).toBe(1);
+    expect(calls).toEqual(["stateFor", "afterFrame", "overhead"]);
+  });
+
   it("times the inner render alone, reads the probe after it, and reports its own overhead", () => {
     const { inner, calls: innerCalls } = fakeRenderer();
     const { port, calls, probes } = fakePort(state(0));

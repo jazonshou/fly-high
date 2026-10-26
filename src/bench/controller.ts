@@ -196,6 +196,12 @@ export class StepController implements BenchFramePort {
   private rafMs: number | null = null;
   private lastFrameMs: number | null = null;
   private firstFrameMs: number | null = null;
+  /**
+   * When the first `render()` began. A rAF timestamp is the frame's begin
+   * time, which for a frame already under way when FlightGame asked for its
+   * first one can precede the attach; startup is timed by this instead.
+   */
+  private firstRenderStartMs: number | null = null;
   private settleFrames = 0;
   private settleProgress: SettleProgress = SETTLE_START;
   private settleRecord: SettleRecord | null = null;
@@ -282,6 +288,7 @@ export class StepController implements BenchFramePort {
 
     if (phase === "waiting") {
       this.firstFrameMs = frameMs;
+      this.firstRenderStartMs = renderStart;
       this.compilesAtFirstFrame = this.compiles();
       this.setPhase("settling");
     }
@@ -329,9 +336,14 @@ export class StepController implements BenchFramePort {
     this.dispose();
   }
 
+  /** After the flight, a stop, a void or a failure the page leaves next; the canvas keeps its last frame. */
+  holdFrames(): boolean {
+    return this.currentPhase === "done" || this.currentPhase === "stopped";
+  }
+
   // --- the page's controls ---------------------------------------------------------
 
-  /** Stop, a void or a failure: the flight goes on drawing its pose, but nothing more is measured. */
+  /** Stop, a void or a failure: nothing more is measured or drawn. */
   stop(): void {
     if (this.currentPhase === "detached" || this.currentPhase === "done") return;
     this.raf.stop();
@@ -497,7 +509,7 @@ export class StepController implements BenchFramePort {
         httpCache: setup.load.httpCache,
         rendererStages: settled?.stages ?? [],
         navToAttachMs: setup.attachedAtMs,
-        navToFirstFrameMs: this.firstFrameMs,
+        navToFirstFrameMs: this.firstRenderStartMs,
         navToSettleEndMs: settled?.navToSettleEndMs ?? null,
         pathPrecomputeMs: setup.pathPrecomputeMs,
         compiles: this.compilesAtFirstFrame,
