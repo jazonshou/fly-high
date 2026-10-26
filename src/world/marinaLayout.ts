@@ -52,17 +52,27 @@ export const MARINA_LAYOUT = Object.freeze({
   pontoonDraft: 0.6,
   armModulesMin: 4,
   armModulesMax: 6,
-  /** Finger berths off both sides of the arm. */
+  /** Finger berths off both sides of the arm, a cleat this far along each finger's middle. */
   fingerLength: 10,
+  fingerMidCleat: 4.5,
   fingerWidth: 0.8,
   berthPitch: 4.5,
-  /** The berth's design boat: the Runabout 21 and its gap to the arm. */
+  /**
+   * The berth's design boat, the Runabout 21 (src/vehicles/boat/hullLines.ts:
+   * length, beam, and its centre of gravity's distance forward of the transom),
+   * and the gap its transom keeps to the arm.
+   */
   boatLength: 6.55,
   boatBeam: 2.59,
+  boatCgFromTransom: 1.95,
   sternGap: 1,
   /** Moored runabouts: this share of the free berths, at most this many. */
   mooredShare: 0.45,
   mooredMax: 10,
+  /** Quay wall: thickness, its coping's height above the apron, and the gap it leaves each side of the slipway. */
+  quayWallThickness: 1.2,
+  quayCopingHeight: 0.1,
+  quayWallSlipwayGap: 2.5,
   /** Slipway: 1:8, 6 m wide, toe 1.5 m below still water, top at the apron. */
   slipwayHalfWidth: 3,
   slipwayGrade: 1 / 8,
@@ -170,7 +180,9 @@ export interface MarinaBox {
   readonly halfRight: number;
   readonly halfOut: number;
   readonly halfHeight: number;
+  /** Turn about +Y from the marina frame, and a slope about box-local +X (the gangway's), radians. */
   readonly yaw: number;
+  readonly pitch: number;
 }
 
 export type MarinaBoxKind =
@@ -188,6 +200,74 @@ export type MarinaBoxKind =
 
 /** Parts that float: pontoon modules and fingers ride the calmed sea. */
 export const FLOATING_BOX_KINDS: ReadonlySet<MarinaBoxKind> = new Set(["pontoon", "finger"]);
+
+/** A unit quaternion (x, y, z, w), the convention of the sim's math and of Babylon's. */
+export interface MarinaQuaternion {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
+/**
+ * A box's orientation in the world: a turn about +Y taking box-local +Z to
+ * the marina's `out` axis (so local +X points to -right), then the box's
+ * pitch about its local +X, which tips its +out end down (the gangway, from
+ * the pier head to the pontoon deck). The colliders and the renderer both
+ * read it, so a deck a hull meets is the deck on screen.
+ */
+export function marinaBoxOrientation(
+  frame: MarinaFrame,
+  box: Pick<MarinaBox, "yaw" | "pitch">,
+  out: MarinaQuaternion = { x: 0, y: 0, z: 0, w: 1 },
+): MarinaQuaternion {
+  const half = (frame.headingRadians + box.yaw) * 0.5;
+  const sy = Math.sin(half);
+  const cy = Math.cos(half);
+  const sp = Math.sin(box.pitch * 0.5);
+  const cp = Math.cos(box.pitch * 0.5);
+  // yaw (0, sy, 0, cy) times pitch (sp, 0, 0, cp).
+  out.x = cy * sp;
+  out.y = sy * cp;
+  out.z = -sy * sp;
+  out.w = cy * cp;
+  return out;
+}
+
+/**
+ * A moored runabout as one box, for the sim's collider and the far
+ * silhouette: a little inside the Runabout 21's 6.55 x 2.59 m, because its
+ * bow narrows, from its bottom (0.45 m down, about its draft at the transom)
+ * to its gunwale.
+ */
+export const MARINA_MOORED_BOAT_BOX = Object.freeze({
+  length: 6.2,
+  beam: 2.4,
+  bottomBelowWater: 0.45,
+  topAboveWater: 0.75,
+});
+
+/** The box a moored boat at `berth` fills, centred on its hull rather than its centre of gravity. */
+export function marinaMooredBoatBox(
+  frame: MarinaFrame,
+  berth: MarinaBerth,
+  seaLevel: number,
+): Pick<MarinaBox, "right" | "out" | "y" | "halfRight" | "halfOut" | "halfHeight" | "yaw" | "pitch"> {
+  const B = MARINA_MOORED_BOAT_BOX;
+  const yaw = berth.bowHeadingRadians - frame.headingRadians;
+  // The hull's middle is this far forward of its centre of gravity.
+  const forward = MARINA_LAYOUT.boatLength * 0.5 - MARINA_LAYOUT.boatCgFromTransom;
+  return {
+    right: berth.right - Math.sin(yaw) * forward,
+    out: berth.out + Math.cos(yaw) * forward,
+    y: seaLevel + (B.topAboveWater - B.bottomBelowWater) * 0.5,
+    halfRight: B.beam * 0.5,
+    halfOut: B.length * 0.5,
+    halfHeight: (B.topAboveWater + B.bottomBelowWater) * 0.5,
+    yaw,
+    pitch: 0,
+  };
+}
 
 /** A vertical cylinder: piles, posts, bollards, fenders. */
 export interface MarinaPost {
@@ -234,14 +314,19 @@ export interface MarinaCleat {
 export interface MarinaBerth {
   readonly index: number;
   readonly side: "seaward" | "landward" | "fuel";
-  /** The moored boat's centre, marina-local, and its bow's world heading. */
+  /** The moored boat's centre of gravity, marina-local, and its bow's world heading. */
   readonly right: number;
   readonly out: number;
   readonly bowHeadingRadians: number;
   /** Clear length and width between the fingers. */
   readonly length: number;
   readonly width: number;
-  /** Dock cleats, stern pair first (on the arm), then the bow pair (finger ends). */
+  /**
+   * Dock cleats. A finger berth's six are pairs, each pair's -right one first:
+   * at the finger roots (stern lines), the finger middles (breast lines from
+   * the spring cleats) and the finger tips (bow lines). The fuel berth's four
+   * run along the pontoon's edge.
+   */
   readonly cleats: readonly MarinaCleat[];
   readonly occupied: boolean;
   readonly start: boolean;
@@ -386,15 +471,12 @@ export function buildMarinaLayout(
   const boxes: MarinaBox[] = [];
   const posts: MarinaPost[] = [];
   const lamps: MarinaLamp[] = [];
-  const box = (kind: MarinaBoxKind, right: number, out: number, y: number, halfRight: number, halfOut: number, halfHeight: number, yaw = 0) => {
-    boxes.push(Object.freeze({ kind, right, out, y, halfRight, halfOut, halfHeight, yaw }));
+  const box = (kind: MarinaBoxKind, right: number, out: number, y: number, halfRight: number, halfOut: number, halfHeight: number, pitch = 0) => {
+    boxes.push(Object.freeze({ kind, right, out, y, halfRight, halfOut, halfHeight, yaw: 0, pitch }));
   };
   const post = (kind: MarinaPostKind, right: number, out: number, bottomY: number, topY: number, radius: number, floating = false) => {
     posts.push(Object.freeze({ kind, right, out, bottomY, topY, radius, floating }));
   };
-
-  // Quay wall: its face on the waterline, its top the apron.
-  box("quayWall", 0, -0.3, (quayY + bedY) * 0.5, L.quayHalfLength, 0.3, (quayY - bedY) * 0.5);
 
   // Pier: deck and pile pairs.
   box("pierDeck", pierRight, pierLength * 0.5, pierY - 0.15, L.pierWidth * 0.5, pierLength * 0.5, 0.15);
@@ -406,7 +488,7 @@ export function buildMarinaLayout(
   const gangwayDrop = pierY - pontoonY;
   box(
     "gangway", pierRight, pierLength + L.gangwayLength * 0.5, (pierY + pontoonY) * 0.5 - 0.05,
-    L.gangwayWidth * 0.5, Math.hypot(L.gangwayLength, gangwayDrop) * 0.5, 0.05,
+    L.gangwayWidth * 0.5, Math.hypot(L.gangwayLength, gangwayDrop) * 0.5, 0.05, Math.atan2(gangwayDrop, L.gangwayLength),
   );
 
   // Arm modules (the fuel module included) and their guide piles.
@@ -426,7 +508,7 @@ export function buildMarinaLayout(
   const fingerOut = halfPontoon + L.fingerLength * 0.5;
   const pierClear = L.pierWidth * 0.5 + 1;
   const berths: MarinaBerth[] = [];
-  const berthInner = halfPontoon + L.sternGap + L.boatLength * 0.5;
+  const berthInner = halfPontoon + L.sternGap + L.boatCgFromTransom;
   for (const side of ["seaward", "landward"] as const) {
     const sign = side === "seaward" ? 1 : -1;
     for (let index = 0; index < fingerCount; index += 1) {
@@ -445,12 +527,13 @@ export function buildMarinaLayout(
       const out = armOut + sign * berthInner;
       const cleatY = pontoonY + 0.1;
       const halfGap = L.berthPitch * 0.5 - L.fingerWidth * 0.5;
-      const cleats: MarinaCleat[] = [
-        { right: right - 1.1, out: armOut + sign * halfPontoon, y: cleatY, floating: true },
-        { right: right + 1.1, out: armOut + sign * halfPontoon, y: cleatY, floating: true },
-        { right: right - L.berthPitch * 0.5, out: armOut + sign * (halfPontoon + L.fingerLength - 0.6), y: cleatY, floating: true },
-        { right: right + L.berthPitch * 0.5, out: armOut + sign * (halfPontoon + L.fingerLength - 0.6), y: cleatY, floating: true },
-      ];
+      // On the finger edges facing the berth: at the roots, the middles and the tips.
+      const cleats: MarinaCleat[] = [];
+      for (const along of [0.3, L.fingerMidCleat, L.fingerLength - 0.6]) {
+        for (const lateral of [-halfGap, halfGap]) {
+          cleats.push({ right: right + lateral, out: armOut + sign * (halfPontoon + along), y: cleatY, floating: true });
+        }
+      }
       berths.push({
         index: berths.length,
         side,
@@ -475,10 +558,12 @@ export function buildMarinaLayout(
     bowHeadingRadians: marinaHeading(frame, mouthSide, 0),
     length: L.pontoonModuleLength,
     width: L.boatBeam + 1,
-    cleats: Object.freeze([
-      Object.freeze({ right: fuelRight - 4, out: armOut + halfPontoon, y: pontoonY + 0.1, floating: true }),
-      Object.freeze({ right: fuelRight + 4, out: armOut + halfPontoon, y: pontoonY + 0.1, floating: true }),
-    ]),
+    cleats: Object.freeze([-5, -1.5, 1.5, 5].map((along) => Object.freeze({
+      right: fuelRight + along,
+      out: armOut + halfPontoon,
+      y: pontoonY + 0.1,
+      floating: true,
+    }))),
     occupied: false,
     start: false,
   } as MarinaBerth);
@@ -531,6 +616,20 @@ export function buildMarinaLayout(
     outMax: 0,
   });
 
+  // Quay wall: its face on the waterline, its coping a little proud of the
+  // apron, along the apron's whole front but the slipway and its side slopes.
+  // The apron's ground drops to the bed inside it (marinaEarthworks).
+  const wallTop = quayY + L.quayCopingHeight;
+  const slipLow = slipRight - L.slipwayHalfWidth - L.quayWallSlipwayGap;
+  const slipHigh = slipRight + L.slipwayHalfWidth + L.quayWallSlipwayGap;
+  for (const [low, high] of [[apron.rightMin, slipLow], [slipHigh, apron.rightMax]] as const) {
+    if (high - low < 1) continue;
+    box(
+      "quayWall", (low + high) * 0.5, -L.quayWallThickness * 0.5, (wallTop + bedY) * 0.5,
+      (high - low) * 0.5, L.quayWallThickness * 0.5, (wallTop - bedY) * 0.5,
+    );
+  }
+
   // Car park behind the apron, away from the slipway; the shed beside the slip.
   const carParkCentre = -slipSide * (L.quayHalfLength - L.carParkHalfWidth);
   const carParkBackOut = -L.apronDepth - L.carParkDepth;
@@ -561,8 +660,8 @@ export function buildMarinaLayout(
   for (const [right, out, y] of [
     [pierRight + L.pierWidth * 0.5 + 0.4, 1.5, quayY],
     [pierRight - L.pierWidth * 0.5 - 0.4, pierLength - 1, pierY],
-    [-L.quayHalfLength + 2, -1.2, quayY],
-    [L.quayHalfLength - 2, -1.2, quayY],
+    [-L.quayHalfLength + 2, -1.8, quayY],
+    [L.quayHalfLength - 2, -1.8, quayY],
     [armRightMin + 1, armOut, pontoonY],
     [armRightMax - 1, armOut, pontoonY],
   ] as const) {
@@ -576,8 +675,8 @@ export function buildMarinaLayout(
     lamps.push({ kind: "pier", right, out, y: pierY + L.lampPostHeight, floating: false });
   }
   for (let right = apron.rightMin + 4; right <= apron.rightMax - 4 + 1e-6; right += L.quayLampSpacing) {
-    post("lampPost", right, -1.2, quayY, quayY + L.lampPostHeight, 0.06);
-    lamps.push({ kind: "quay", right, out: -1.2, y: quayY + L.lampPostHeight, floating: false });
+    post("lampPost", right, -1.8, quayY, quayY + L.lampPostHeight, 0.06);
+    lamps.push({ kind: "quay", right, out: -1.8, y: quayY + L.lampPostHeight, floating: false });
   }
   for (const right of [carPark.rightMin + 1, carPark.rightMax - 1]) {
     for (const out of [carPark.outMin + 1, carPark.outMax - 1]) {

@@ -392,6 +392,37 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly volcanicSteamMaxWisps: number;
+  /**
+   * Boats: the instance cap on spray droplets (`BoatSpraySystem`): bow sheets
+   * in a turn, the rooster tail and prop wash. One instanced draw at every
+   * cap; the cap bounds the vertex work and the overdraw, and the emitters
+   * scale their rates to it so a low cap means a thinner sheet rather than a
+   * shorter one. Boat sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly boatSprayParticleCap: number;
+  /**
+   * Boats: how many seconds of wake the boat leaves behind it
+   * (`BoatWakeSystem`). The trail is one instanced draw of a fixed ring at
+   * every length; a longer trail spaces its points further apart at speed and
+   * reaches further back. Boat sessions only: an aircraft session builds no
+   * wake at any tier.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly boatWakeTrailSeconds: number;
+  /**
+   * The home marina's near meshes (decks, pontoons, walls and buildings, the
+   * piles and posts, the moored boats) cast sun shadows: three thin-instanced
+   * casters, 2 draws each at two cascades, and only while the camera is
+   * within 1.5 km of the marina (`MarinaSystem`; beyond it the silhouette
+   * casts nothing). Like the home airfield's hangars, which cast at every
+   * tier, except that the low tier sheds them. Every session, aircraft too.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly marinaCastsShadows: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -497,6 +528,9 @@ function resolveBaseQualityProfile(
       vegetationCastsShadows: false,
       activeAnimalBudget: 16,
       volcanicSteamMaxWisps: 0,
+      boatSprayParticleCap: 256,
+      boatWakeTrailSeconds: 12,
+      marinaCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -601,6 +635,9 @@ function resolveBaseQualityProfile(
       vegetationCastsShadows: false,
       activeAnimalBudget: 48,
       volcanicSteamMaxWisps: 128,
+      boatSprayParticleCap: 1_024,
+      boatWakeTrailSeconds: 24,
+      marinaCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -694,6 +731,9 @@ function resolveBaseQualityProfile(
       vegetationCastsShadows: true,
       activeAnimalBudget: 128,
       volcanicSteamMaxWisps: 192,
+      boatSprayParticleCap: 4_096,
+      boatWakeTrailSeconds: 40,
+      marinaCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -789,6 +829,9 @@ function resolveBaseQualityProfile(
     vegetationCastsShadows: true,
     activeAnimalBudget: 128,
     volcanicSteamMaxWisps: 256,
+    boatSprayParticleCap: 4_096,
+    boatWakeTrailSeconds: 40,
+    marinaCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

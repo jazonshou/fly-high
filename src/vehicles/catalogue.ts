@@ -52,9 +52,12 @@ export interface SurfaceVehicleSpec extends VehicleSpec {
 
 /**
  * The generic 21 ft deep-V runabout with one 200 hp V6 outboard (decision D3,
- * 2026-10-26). Framing numbers are first estimates from the hull's size; the
- * boat-presentation work measures them on the built model, as the aircraft's
- * are measured in tests/render.top-front-views.test.ts.
+ * 2026-10-26). The top and front framing is measured on the built model in
+ * tests/render.top-front-views.test.ts, as the aircraft's is: its box runs
+ * from the propeller (2.67 m aft of the centre of gravity) to the stem
+ * (4.63 m ahead) and from the skeg (0.99 m below) to the all-round light
+ * (1.83 m above). The helm eye is a seated driver's: 0.8 m above the helm
+ * seat's cushion, over the hips, behind the wheel.
  */
 const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
   kind: "speedboat",
@@ -69,17 +72,20 @@ const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
     aimAhead: Object.freeze({ base: 6, knee: 0, slope: 0, cap: 0 }),
   }),
   cinematic: Object.freeze({ radiusMeters: 18, heightMeters: 5, heightDriftMeters: 1.5 }),
-  topFront: Object.freeze({ centreForward: 0.6, centreUp: 0.4, topDistanceMeters: 16, frontDistanceMeters: 12 }),
-  cockpitEye: Object.freeze({ forward: 0.7, up: 1.25, right: 0.55 }),
+  topFront: Object.freeze({ centreForward: 0.98, centreUp: 0.42, topDistanceMeters: 20, frontDistanceMeters: 12 }),
+  cockpitEye: Object.freeze({ forward: 0.27, up: 1.12, right: 0.53 }),
   engineReadout: Object.freeze({ label: "RPM", unit: "ENG", maximum: 6_000, roundTo: 50 }),
   // A V6 four-stroke fires three times per crank turn: the fundamental is
-  // rpm / 20, 35 Hz at the 700 rpm idle and 300 Hz at the 6,000 rpm limiter.
+  // rpm / 20, 35 Hz at the 700 rpm idle and 300 Hz at the 6,000 rpm limiter,
+  // which is exactly 0 + (rpm / 6,000) x 300. The low-pass is the exhaust's,
+  // set every frame by `boatSoundTargets` (open at idle, muffled through the
+  // hub under way); this is its idle value.
   engineSound: Object.freeze({
-    baseHz: 35,
-    spanHz: 265,
+    baseHz: 0,
+    spanHz: 300,
     gainBase: 0.12,
     gainSpan: 0.3,
-    filterHz: 900,
+    filterHz: 760,
     filterQ: 0.6,
     waveforms: Object.freeze(["sawtooth", "square"] as const) as readonly [OscillatorType, OscillatorType],
   }),

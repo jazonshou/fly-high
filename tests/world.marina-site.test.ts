@@ -3,7 +3,7 @@ import {
   createWorld,
   getAirportInfluence,
   sampleTerrainHeightBeforeEarthworks,
-  spawnedAirportGroundAllowed,
+  landformGroundAllowsAirport,
   withAirports,
   worldToRunway,
   type WorldDefinition,
@@ -66,7 +66,7 @@ describe("home marina site", () => {
       expect(insideApproach, `${seed}: inside the approach surfaces`).toBe(false);
       expect(getAirportInfluence(airport, site.x, site.z), `${seed}: on the airport's earthworks`).toBe(0);
       // The volcanic and sand vetoes.
-      expect(spawnedAirportGroundAllowed(w, site.x, site.z), `${seed}: vetoed ground`).toBe(true);
+      expect(landformGroundAllowsAirport(w, site.x, site.z), `${seed}: vetoed ground`).toBe(true);
       // A shore: land behind, berth water within the rung's reach, open water past it.
       const out = { x: Math.sin(site.headingRadians), z: Math.cos(site.headingRadians) };
       expect(-depthAt(w, site.x - out.x * 30, site.z - out.z * 30)).toBeGreaterThanOrEqual(0.5);
@@ -101,19 +101,45 @@ describe("home marina site", () => {
   it("stays inside its work budget", () => {
     let worst = 0;
     for (const seed of SEEDS_200.slice(0, 60)) worst = Math.max(worst, homeMarinaSiteStats(world(seed)).heightSamples);
-    // About 4.3 us per height sample in Node, so 6,000 samples is the 25 ms
-    // budget with margin; the worst of 200 seeds measured 5,681.
+    // The budget is in height samples, the search's only real cost (timed
+    // below): at 4.3 us a sample 6,000 is the 25 ms budget with margin; the
+    // worst of 200 seeds measured 5,681.
     expect(worst).toBeLessThanOrEqual(6_000);
-    // And in time, on warm worlds whose search has not run yet.
+    // And in time, on warm worlds whose search has not run yet: the search
+    // costs what its height samples cost and little more, so the count above
+    // is its time budget on any machine. Each search is timed against the
+    // same number of samples on a twin world over the same ring, in the same
+    // process, so a slower or busier runner slows both. (In the cloud
+    // container a sample is about 10 us, the median search about 21 ms and
+    // the ratio about 1.0; CI's shared runners are slower in both.)
+    const ratios: number[] = [];
     const times: number[] = [];
     for (const seed of seeds(230).slice(200)) {
       const w = createWorld(seed);
-      const started = performance.now();
+      let started = performance.now();
       homeMarinaSite(w);
-      times.push(performance.now() - started);
+      const search = performance.now() - started;
+      const samples = homeMarinaSiteStats(w).heightSamples;
+      const twin = createWorld(seed);
+      const centre = twin.airport ?? { centerX: 0, centerZ: 0 };
+      let sum = 0;
+      started = performance.now();
+      for (let index = 0; index < samples; index += 1) {
+        const bearing = index * 2.399963;
+        const radius = MARINA_SITE_RULES.innerRadiusMeters + (index % 97) * 50;
+        sum += sampleTerrainHeightBeforeEarthworks(
+          twin,
+          centre.centerX + radius * Math.sin(bearing),
+          centre.centerZ + radius * Math.cos(bearing),
+        );
+      }
+      const sampled = performance.now() - started;
+      expect(Number.isFinite(sum)).toBe(true);
+      times.push(search);
+      ratios.push(search / sampled);
     }
-    times.sort((x, y) => x - y);
-    expect(times[Math.floor(times.length / 2)]!).toBeLessThan(25);
+    const median = (values: readonly number[]) => [...values].sort((x, y) => x - y)[Math.floor(values.length / 2)]!;
+    expect(median(ratios), `median search ${median(times).toFixed(1)} ms`).toBeLessThan(1.5);
   });
 
   it("searches from the origin when a world has no airport", () => {
@@ -127,7 +153,7 @@ describe("home marina site", () => {
     for (const seed of SEEDS_200.slice(0, 8)) {
       const w = createWorld(seed, { landforms: { dunes: true, volcanic: true } });
       const site = homeMarinaSite(w);
-      expect(spawnedAirportGroundAllowed(w, site.x, site.z), `${seed}`).toBe(true);
+      expect(landformGroundAllowsAirport(w, site.x, site.z), `${seed}`).toBe(true);
     }
   });
 });

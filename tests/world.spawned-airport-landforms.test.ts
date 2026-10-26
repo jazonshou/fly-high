@@ -5,6 +5,7 @@ import {
   getRunwayEnds,
   sampleNaturalTerrainHeight,
   sampleTerrainHeight,
+  landformGroundAllowsAirport,
   spawnedAirportGroundAllowed,
   spawnedAirportSiteHeight,
   type AirportDefinition,
@@ -82,7 +83,8 @@ describe("spawned airports on the landforms", () => {
 
     const world = createWorld("open-skies");
     const home = world.airport!;
-    expect(spawnedAirportGroundAllowed(world, home.centerX, home.centerZ)).toBe(true);
+    // The home field itself stands on neither (the home marina's quay nearby refuses a spawned airport there, not the land).
+    expect(landformGroundAllowsAirport(world, home.centerX, home.centerZ)).toBe(true);
     expect(spawnedAirportGroundAllowed(world, NATURAL_ERG.x, NATURAL_ERG.z)).toBe(false);
     expect(spawnedAirportGroundAllowed(forcedDuneWorld(), FORCED_ERG.x, FORCED_ERG.z)).toBe(false);
 

@@ -15,6 +15,7 @@ import {
   sampleLandformCoverFromNatural,
 } from "./landforms";
 import { sampleGeologicalRelief, sampleTerrainPlates } from "./geology";
+import { applyInfrastructure, infrastructureIndex } from "./infrastructure";
 import {
   blendTowardExpectation,
   clamp,
@@ -823,11 +824,13 @@ export function sampleFilteredTerrainUpliftHeight(
 }
 
 /**
- * The world's ground before any airport's earthworks: the natural kernel and
- * the landform stage, at full bandwidth. What the earthworks are applied to
- * (`sampleTerrainHeight`), and so what a spawned airport is surveyed and
- * graded on (`spawnedAirportSiteHeight`). Inside the landform core it is the
- * natural height, bit for bit.
+ * The world's ground before any earthworks, infrastructure's or an
+ * airport's: the natural kernel and the landform stage, at full bandwidth.
+ * What the earthworks are applied to (`sampleTerrainHeightBeforeAirports`,
+ * `sampleTerrainHeight`), what infrastructure sources lay themselves out on,
+ * and what a spawned airport is surveyed and graded on
+ * (`spawnedAirportSiteHeight`). Inside the landform core it is the natural
+ * height, bit for bit.
  */
 export function sampleTerrainHeightBeforeEarthworks(world: WorldDefinition, x: number, z: number): number {
   // Physics and collision always sample the full-bandwidth kernel (width 0).
@@ -835,9 +838,23 @@ export function sampleTerrainHeightBeforeEarthworks(world: WorldDefinition, x: n
   return applyTerrainLandforms(world, x, z, naturalHeight, 0, NATURAL_INTERMEDIATES);
 }
 
+/**
+ * The ground before the airports: `sampleTerrainHeightBeforeEarthworks` with
+ * the infrastructure stage (`infrastructure.ts`) applied. Exactly that height
+ * wherever no infrastructure segment reaches, which with no sources is
+ * everywhere.
+ */
+export function sampleTerrainHeightBeforeAirports(world: WorldDefinition, x: number, z: number): number {
+  // The index first: a first call builds it, and its sources sample the
+  // natural kernel, which would overwrite the intermediates this sample
+  // leaves for `sampleTerrain`'s landform cover.
+  const index = infrastructureIndex(world);
+  return applyInfrastructure(index, world.seaLevel, sampleTerrainHeightBeforeEarthworks(world, x, z), x, z);
+}
+
 /** Fast collision-query path: only computes terrain elevation. */
 export function sampleTerrainHeight(world: WorldDefinition, x: number, z: number): number {
-  return applyAirportEarthworks(world, sampleTerrainHeightBeforeEarthworks(world, x, z), x, z);
+  return applyAirportEarthworks(world, sampleTerrainHeightBeforeAirports(world, x, z), x, z);
 }
 
 /**
@@ -929,10 +946,14 @@ export function sampleFilteredTerrainHeight(
   z: number,
   filterWidthMeters: number,
 ): number {
+  const index = infrastructureIndex(world);
   const naturalHeight = sampleNaturalTerrainHeight(world.seedHash, x, z, filterWidthMeters);
   const height = applyTerrainLandforms(
     world, x, z, naturalHeight, filterWidthMeters, NATURAL_INTERMEDIATES);
-  return applyAirportEarthworks(world, height, x, z);
+  // natural -> landforms -> infrastructure -> earthworks, sampleTerrainHeight's
+  // order. The infrastructure profiles are not band-limited: the page bake's
+  // supersampling filters a quay edge the way it filters a runway's.
+  return applyAirportEarthworks(world, applyInfrastructure(index, world.seaLevel, height, x, z), x, z);
 }
 
 /**
