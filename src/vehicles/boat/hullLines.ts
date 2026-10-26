@@ -147,14 +147,16 @@ export const RUNABOUT_21_CG: Readonly<Vec3> = Object.freeze({ x: 1.95, y: 0.56, 
 /**
  * Where the boat floats at rest in still sea water, 1,025 kg/m^3, as the sim's
  * hydrostatics solves it (`tests/sim.boat-hydrostatics.test.ts` holds these
- * to the solved equilibrium): the still-water height above the keel at the
- * transom and at the CG's station, and the keel's trim, positive bow up. For
- * the boot stripe and the render-against-physics draft test.
+ * to `solveRestWaterline`): the still-water height above the keel at the
+ * transom and at the CG's station, measured vertically, the keel's trim,
+ * positive bow up, and the CG's height above the still water. For the boot
+ * stripe, the dock spawn and the render-against-physics draft test.
  */
 export const RUNABOUT_21_REST_WATERLINE = Object.freeze({
-  draftAtTransom: 0.418,
-  draftAtCg: 0.398,
-  trimDegrees: 0.6,
+  draftAtTransom: 0.437,
+  draftAtCg: 0.405,
+  trimDegrees: 0.93,
+  cgAboveWater: 0.1545,
 });
 
 /**
