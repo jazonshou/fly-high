@@ -255,28 +255,33 @@ describe("adaptive governor (1A-6b)", () => {
   });
 
   it("splits the ladders by cost and keeps each ordered cheapest-looking first (R-11)", () => {
-    expect(workLeverSettingsFor(0, 0)).toMatchObject({
+    // PR B (G3): every lever but the page-request budget is relative to the
+    // profile, so level 0 is each field's identity.
+    expect(workLeverSettingsFor(0, 0)).toEqual({
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
-      detailCellBudgetMs: 2,
-      detailCellCap: 24,
-      cloudShadowIntervalFrames: null,
+      detailBudgetScale: 1,
+      cloudShadowExtraFrames: 0,
+      animalBudgetScale: 1,
+      shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
+      groundCoverGateScale: 1,
+      computeBudgetScale: 1,
     });
     // The CPU ladder touches only CPU-side fields.
     expect(workLeverSettingsFor(1, 0).terrainPageRequestsPerUpdate).toBe(8);
     expect(workLeverSettingsFor(3, 0).terrainPageRequestsPerUpdate).toBe(2);
-    expect(workLeverSettingsFor(4, 0)).toMatchObject({
-      detailCellBudgetMs: 1.25,
-      detailCellCap: 16,
-    });
+    expect(workLeverSettingsFor(3, 0).detailBudgetScale).toBe(1);
+    expect(workLeverSettingsFor(4, 0).detailBudgetScale).toBe(0.66);
+    expect(workLeverSettingsFor(5, 0).detailBudgetScale).toBe(0.33);
+    expect(workLeverSettingsFor(5, 0).animalBudgetScale).toBe(1);
+    expect(workLeverSettingsFor(6, 0).animalBudgetScale).toBe(0.5);
     expect(workLeverSettingsFor(CPU_WORK_MAX_LEVEL, 0)).toMatchObject({
       terrainPageRequestsPerUpdate: 2,
-      detailCellBudgetMs: 0.75,
-      detailCellCap: 8,
-      activeAnimalBudgetCap: 16,
+      detailBudgetScale: 0.33,
+      animalBudgetScale: 0.25,
       // GPU-cost levers stay untouched at any CPU level.
-      cloudShadowIntervalFrames: null,
-      shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+      cloudShadowExtraFrames: 0,
+      shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
       groundCoverGateScale: 1,
       computeBudgetScale: 1,
@@ -287,26 +292,30 @@ describe("adaptive governor (1A-6b)", () => {
     // the pilot can see. Assertion 71's companion property.
     expect(workLeverSettingsFor(0, 1)).toMatchObject({
       computeBudgetScale: 0.6,
-      cloudShadowIntervalFrames: null,
-      shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+      cloudShadowExtraFrames: 0,
+      shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
     });
     expect(workLeverSettingsFor(0, 2).computeBudgetScale).toBe(0.35);
-    expect(workLeverSettingsFor(0, 2).cloudShadowIntervalFrames).toBeNull();
-    expect(workLeverSettingsFor(0, 3).cloudShadowIntervalFrames).toBe(3);
+    expect(workLeverSettingsFor(0, 2).cloudShadowExtraFrames).toBe(0);
+    expect(workLeverSettingsFor(0, 3).cloudShadowExtraFrames).toBe(1);
+    expect(workLeverSettingsFor(0, 4).cloudShadowExtraFrames).toBe(2);
+    expect(workLeverSettingsFor(0, 4).shadowCasterDistanceScale).toBe(1);
+    expect(workLeverSettingsFor(0, 5).shadowCasterDistanceScale).toBe(0.7);
+    expect(workLeverSettingsFor(0, 6).shadowCasterDistanceScale).toBe(0.5);
     // `6-9`/`P-5`: the ground-cover gate is the LAST rung, after vegetation
     // distance, exactly where the wave-P plan put it — and it is untouched
     // until every cheaper GPU lever has been spent.
     expect(workLeverSettingsFor(0, 7).groundCoverGateScale).toBe(1);
     expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL)).toMatchObject({
       computeBudgetScale: 0.35,
-      cloudShadowIntervalFrames: 4,
-      shadowCasterDistanceMeters: 1_200,
+      cloudShadowExtraFrames: 2,
+      shadowCasterDistanceScale: 0.5,
       vegetationDistanceScale: 0.75,
       groundCoverGateScale: 0.3,
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
-      detailCellBudgetMs: 2,
-      activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
+      detailBudgetScale: 1,
+      animalBudgetScale: 1,
     });
     expect(cpuWorkLeverName(0)).toBeNull();
     expect(cpuWorkLeverName(1)).toBe("terrain-page-requests");

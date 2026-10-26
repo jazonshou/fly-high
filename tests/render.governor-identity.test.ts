@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { QualityLevel, RequestedRenderingMode } from "../src/game/types";
+import { resolveGovernedWork } from "../src/render/governedWork";
 import {
   createGovernorState,
   governorConfigForProfile,
   nextGovernorDecision,
+  workLeverSettingsFor,
   type GovernorConfig,
   type GovernorSignals,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
@@ -13,9 +15,11 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * PR B must move none of the reference pictures and no perf:ab number
  * (design §10). Captures, perf:ab and perf:flight drive FlightRenderer
  * directly, so the presentation cadence stays null, and they pin the render
- * scale, which freezes the governor. These are the two guards: a null
- * cadence is bench-b1's config plus a late threshold only the unfrozen
- * governor reads, and a frozen governor never leaves its first state.
+ * scale, which freezes the governor. These are the guards: a null cadence
+ * is bench-b1's config plus a late threshold only the unfrozen governor
+ * reads, a frozen governor never leaves its first state, and at that state,
+ * levels (0, 0), the relative levers hand every subsystem what it took
+ * before the governor existed.
  */
 
 /** bench-b1's literals for one tier, plus PR B's late threshold. */
@@ -79,6 +83,24 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
         state = nextGovernorDecision(state, overloaded[window % overloaded.length]!, frozen);
       }
       expect(state, `${quality} ${mode}`).toBe(initial);
+    }
+  });
+});
+
+describe("the work levers at levels (0, 0)", () => {
+  it("hand every subsystem exactly the profile's own values", () => {
+    for (const [quality, mode] of PAIRS) {
+      const profile = resolveWebGpuQualityProfile(quality, mode);
+      expect(resolveGovernedWork(profile, workLeverSettingsFor(0, 0)), `${quality} ${mode}`).toEqual({
+        terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
+        computeBudgetScale: 1,
+        detailGenerationCap: null,
+        activeAnimalBudget: profile.activeAnimalBudget,
+        cloudShadowIntervalFloor: null,
+        shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+        vegetationDistance: profile.vegetationDistance,
+        groundCoverGateScale: 1,
+      });
     }
   });
 });

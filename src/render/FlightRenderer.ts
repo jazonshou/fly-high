@@ -213,6 +213,7 @@ import {
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
+import { resolveGovernedWork, type GovernedWork } from "./governedWork";
 import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   cadenceDisplayHz,
@@ -881,6 +882,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Perf capture only; null for every player. See `FlightRendererOptions`. */
   private readonly cockpitRigOverride: CockpitRigOverride | null;
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
+  /** PR B (G3): the levers resolved against the profile; what each subsystem is handed. */
+  private governedWork: GovernedWork;
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
   /** PR B: the frame pacer's cadence; null for captures, perf:ab and perf:flight, which never pace. */
@@ -1022,6 +1025,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
+    this.governedWork = resolveGovernedWork(this.profile, this.workLeverSettings);
     this.renderScale = this.governorState.renderScale;
     this.renderScaleQueue = new RenderScaleQueue(
       this.engine,
@@ -4092,7 +4096,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       windGust01: Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
       simulationTimeSeconds: state.simulationTime,
       // `6-9`/`P-5`: the GPU ladder's ground-cover rung, the last one on it.
-      gateScale: this.workLeverSettings.groundCoverGateScale,
+      gateScale: this.governedWork.groundCoverGateScale,
     });
     this.wildlife.update(
       {
@@ -4114,7 +4118,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     const active = new Map<number, Mesh>();
     const collect = (mesh: Mesh) => active.set(mesh.uniqueId, mesh);
     // The shadow-caster-distance lever (GPU ladder since R-11) shortens reach.
-    this.terrain.addShadowCasters(collect, this.workLeverSettings.shadowCasterDistanceMeters);
+    this.terrain.addShadowCasters(collect, this.governedWork.shadowCasterDistanceMeters);
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     this.spawnedAirfields?.addShadowCasters(collect);
@@ -4333,41 +4337,36 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       + this.detail.pendingWorkItems + this.groundCover.pendingTileRows;
   }
 
-  /** Push both ladders' notches into every lever's subsystem seam (R-11). */
+  /**
+   * Push both ladders' notches into every lever's subsystem seam (R-11),
+   * resolved against the current profile (PR B, G3).
+   */
   private applyWorkLevels(cpuLevel: number, gpuLevel: number): void {
     const settings = workLeverSettingsFor(cpuLevel, gpuLevel);
+    const work = resolveGovernedWork(this.profile, settings);
     this.workLeverSettings = settings;
-    this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
+    this.governedWork = work;
+    this.terrain.setRequestBudgetPerUpdate(work.terrainPageRequestsPerUpdate);
     // 4-0b rung 0: the shared compute cap moves before any visible lever.
-    this.terrain.setComputeBudgetScale(settings.computeBudgetScale);
-    this.detail.setGenerationBudgetCap(
-      settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
-        ? null
-        : {
-            maximumCells: settings.detailCellCap,
-            maximumMilliseconds: settings.detailCellBudgetMs,
-          },
-    );
-    this.clouds.setShadowIntervalFloor(settings.cloudShadowIntervalFrames);
+    this.terrain.setComputeBudgetScale(work.computeBudgetScale);
+    this.detail.setGenerationBudgetCap(work.detailGenerationCap);
+    this.clouds.setShadowIntervalFloor(work.cloudShadowIntervalFloor);
     this.governedProfileCache = this.resolveGovernedProfile();
   }
 
-  /** The profile with the governed animal and vegetation caps applied. */
+  /** The profile with the governed animal budget and vegetation reach applied. */
   private resolveGovernedProfile(): WebGpuQualityProfile {
-    const settings = this.workLeverSettings;
+    const work = this.governedWork;
     if (
-      settings.activeAnimalBudgetCap === Number.POSITIVE_INFINITY
-      && settings.vegetationDistanceScale === 1
+      work.activeAnimalBudget === this.profile.activeAnimalBudget
+      && work.vegetationDistance === this.profile.vegetationDistance
     ) {
       return this.profile;
     }
     return {
       ...this.profile,
-      activeAnimalBudget: Math.min(
-        this.profile.activeAnimalBudget,
-        settings.activeAnimalBudgetCap,
-      ),
-      vegetationDistance: this.profile.vegetationDistance * settings.vegetationDistanceScale,
+      activeAnimalBudget: work.activeAnimalBudget,
+      vegetationDistance: work.vegetationDistance,
     };
   }
 

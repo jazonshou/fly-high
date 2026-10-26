@@ -186,19 +186,29 @@ export function sameGovernorTargets(a: GovernorConfig, b: GovernorConfig): boole
 }
 
 /**
- * The work levers at their current notches. Values are caps and overrides;
- * the renderer combines them with the profile via min/max so a lever can only
- * reduce work below the profile's own setting. R-11 renamed this from
+ * The work levers at their current notches. R-11 renamed this from
  * `CpuWorkSettings`: it now aggregates two ladders with disjoint fields.
+ *
+ * PR B (G3): every lever but the page-request budget is RELATIVE to the
+ * profile, a factor or an added interval that `resolveGovernedWork`
+ * (src/render/governedWork.ts) turns into the subsystem's value. The old
+ * absolute caps were no-ops wherever the tier's own value was already at or
+ * below them: with worker detail generation, six of tier 0's sixteen rungs
+ * shed nothing (an animal cap of 48 against a budget of 16, a caster cap of
+ * 1,800 m against 900 m of shadow), and each cost the governor two windows.
+ * At level 0 every field is its identity, so the subsystems see the profile.
  */
 export interface WorkLeverSettings {
+  /** An absolute cap on page requests per update; the pump's own queue bound applies at ∞. */
   readonly terrainPageRequestsPerUpdate: number;
-  readonly detailCellBudgetMs: number;
-  readonly detailCellCap: number;
-  /** null = profile default; otherwise a minimum interval in frames. */
-  readonly cloudShadowIntervalFrames: number | null;
-  readonly activeAnimalBudgetCap: number;
-  readonly shadowCasterDistanceMeters: number;
+  /** A factor on the profile's detail-generation slice, cells and milliseconds alike. */
+  readonly detailBudgetScale: number;
+  /** Frames added to the tier's cloud-shadow update interval. */
+  readonly cloudShadowExtraFrames: number;
+  /** A factor on the profile's active-animal budget. */
+  readonly animalBudgetScale: number;
+  /** A factor on the profile's terrain shadow distance, for which casters are kept. */
+  readonly shadowCasterDistanceScale: number;
   readonly vegetationDistanceScale: number;
   /**
    * `6-9` (wave-P `P-5`, unimplemented until now): a multiplier on the
@@ -245,11 +255,10 @@ const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
   // lever's notches (8 → 4 → 2 per §5.5) engage only under CPU pressure so a
   // calm renderer keeps its pinned fill-in-one-update streaming behaviour.
   terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
-  detailCellBudgetMs: 2,
-  detailCellCap: 24,
-  cloudShadowIntervalFrames: null,
-  activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
-  shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+  detailBudgetScale: 1,
+  cloudShadowExtraFrames: 0,
+  animalBudgetScale: 1,
+  shadowCasterDistanceScale: 1,
   vegetationDistanceScale: 1,
   groundCoverGateScale: 1,
   computeBudgetScale: 1,
@@ -264,10 +273,10 @@ const CPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 8 }) },
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 4 }) },
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 2 }) },
-  { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailCellBudgetMs: 1.25, detailCellCap: 16 }) },
-  { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailCellBudgetMs: 0.75, detailCellCap: 8 }) },
-  { lever: "animal-budget", apply: (s) => ({ ...s, activeAnimalBudgetCap: 48 }) },
-  { lever: "animal-budget", apply: (s) => ({ ...s, activeAnimalBudgetCap: 16 }) },
+  { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.66 }) },
+  { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.33 }) },
+  { lever: "animal-budget", apply: (s) => ({ ...s, animalBudgetScale: 0.5 }) },
+  { lever: "animal-budget", apply: (s) => ({ ...s, animalBudgetScale: 0.25 }) },
 ]);
 
 /**
@@ -287,10 +296,10 @@ const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "compute-budget", apply: (s) => ({ ...s, computeBudgetScale: 0.35 }) },
   // 2-10 retired the planar-reflection-cadence rungs with their system — a
   // governor lever must never be attached to nothing.
-  { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 3 }) },
-  { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowIntervalFrames: 4 }) },
-  { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_800 }) },
-  { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceMeters: 1_200 }) },
+  { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowExtraFrames: 1 }) },
+  { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowExtraFrames: 2 }) },
+  { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceScale: 0.7 }) },
+  { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceScale: 0.5 }) },
   { lever: "vegetation-distance", apply: (s) => ({ ...s, vegetationDistanceScale: 0.75 }) },
   // `6-9`/`P-5`: the ground-cover gate, last. Two notches for the same reason
   // rung 0 has two — one step per 120-frame window, and a single notch from
