@@ -1,4 +1,10 @@
-import { EPSILON, inverseRotateVectorInto, rotateVectorInto } from "./math";
+import {
+  EPSILON,
+  inverseRotateVectorInto,
+  multiplyQuaternionInto,
+  normalizeQuaternionInto,
+  rotateVectorInto,
+} from "./math";
 import type { Quaternion, Vec3 } from "./types";
 
 /**
@@ -236,7 +242,7 @@ export class ColliderWorld {
     const record = this.requireRecord(handle);
     if (!record.kinematic) throw new TypeError("Only a kinematic collider can be moved");
     copyVec(record.position, position);
-    copyQuat(record.orientation, orientation);
+    normalizeQuaternionInto(record.orientation, orientation);
     copyVec(record.linearVelocity, linearVelocity);
     copyVec(record.angularVelocity, angularVelocity);
     this.refreshWorldGeometry(record);
@@ -409,7 +415,7 @@ export class ColliderWorld {
       group: options.group ?? 0,
       shape,
       position: { ...(options.position ?? ZERO) },
-      orientation: { ...(options.orientation ?? IDENTITY) },
+      orientation: normalizeQuaternionInto({ x: 0, y: 0, z: 0, w: 1 }, options.orientation ?? IDENTITY),
       linearVelocity: { x: 0, y: 0, z: 0 },
       angularVelocity: { x: 0, y: 0, z: 0 },
       worldPoints: new Float64Array(shapePointCount(shape) * 3),
@@ -497,7 +503,8 @@ export class ColliderWorld {
         return;
       case "box": {
         placePoint(0, shape.center);
-        multiplyQuaternion(record.boxOrientation, record.orientation, shape.orientation ?? IDENTITY);
+        multiplyQuaternionInto(record.boxOrientation, record.orientation, shape.orientation ?? IDENTITY);
+        normalizeQuaternionInto(record.boxOrientation, record.boxOrientation);
         boundBox(aabb, worldPoints, record.boxOrientation, shape.halfExtents);
         return;
       }
@@ -509,33 +516,6 @@ function copyVec(out: Vec3, value: Vec3): void {
   out.x = value.x;
   out.y = value.y;
   out.z = value.z;
-}
-
-function copyQuat(out: Quaternion, value: Quaternion): void {
-  const length = Math.hypot(value.x, value.y, value.z, value.w);
-  if (!Number.isFinite(length) || length < EPSILON) {
-    out.x = 0;
-    out.y = 0;
-    out.z = 0;
-    out.w = 1;
-    return;
-  }
-  out.x = value.x / length;
-  out.y = value.y / length;
-  out.z = value.z / length;
-  out.w = value.w / length;
-}
-
-function multiplyQuaternion(out: Quaternion, a: Quaternion, b: Quaternion): void {
-  const x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
-  const y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
-  const z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
-  const w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-  const length = Math.hypot(x, y, z, w) || 1;
-  out.x = x / length;
-  out.y = y / length;
-  out.z = z / length;
-  out.w = w / length;
 }
 
 function copyContact(out: ColliderContact, value: ColliderContact): void {

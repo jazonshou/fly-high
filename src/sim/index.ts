@@ -119,6 +119,13 @@ export {
   type ColliderShape,
   type ColliderSphere,
 } from "./colliders";
+export {
+  ADDED_MASS_SIZE,
+  RigidBody,
+  type AddedMassOptions,
+  type RigidBodyInertia,
+  type RigidBodyOptions,
+} from "./rigidBody";
 export type {
   ActuatorState,
   DynamicsState,
