@@ -172,6 +172,48 @@ function snapshot(sample: WaterSurfaceSample): number[] {
   ];
 }
 
+/** The SeaTwin step budget: 171 hull samples at 120 Hz, on the tuning box. */
+const STEP_BUDGET_MILLISECONDS = 0.15;
+// The reference kernel's best time on the box the twin was tuned on (a cloud
+// session's 2.1 GHz Xeon), where one open-water step costs 0.8-0.9 kernels.
+const REFERENCE_KERNEL_MILLISECONDS = 0.12;
+
+/**
+ * A fixed piece of the twin's kind of work, timed in the same process as the
+ * twin so the step budget follows the machine: phasor rotations over
+ * Float64Arrays with a square root each. Best of five.
+ */
+function referenceKernelMilliseconds(): number {
+  const count = 8192;
+  const re = new Float64Array(count);
+  const im = new Float64Array(count);
+  const weight = new Float64Array(count);
+  for (let index = 0; index < count; index += 1) {
+    re[index] = Math.cos(index * 0.37);
+    im[index] = Math.sin(index * 0.37);
+    weight[index] = 1 + (index % 7) * 0.125;
+  }
+  let best = Number.POSITIVE_INFINITY;
+  let sink = 0;
+  for (let run = 0; run < 5; run += 1) {
+    const started = performance.now();
+    for (let pass = 0; pass < 8; pass += 1) {
+      const cosine = Math.cos(0.01 * (pass + 1));
+      const sine = Math.sin(0.01 * (pass + 1));
+      for (let index = 0; index < count; index += 1) {
+        const a = re[index]!;
+        const b = im[index]!;
+        re[index] = a * cosine - b * sine;
+        im[index] = a * sine + b * cosine;
+        sink += Math.sqrt(a * a + b * b) * weight[index]!;
+      }
+    }
+    best = Math.min(best, performance.now() - started);
+  }
+  if (!Number.isFinite(sink)) throw new Error("reference kernel diverged");
+  return best;
+}
+
 describe("sea twin", () => {
   it("sums the same sea as an FFT of the GPU's spectrum, within 0.1 mm", () => {
     const config = resolveSeaSpectrumConfig(SEA_WORLD, "breezy");
@@ -445,6 +487,8 @@ describe("sea twin", () => {
   });
 
   it("runs a 120 Hz hull step of 171 samples in under 0.15 ms", () => {
+    // Optimised before it is trusted as a yardstick.
+    for (let warm = 0; warm < 4; warm += 1) referenceKernelMilliseconds();
     const measure = (weather: WeatherPreset, speed: number, shelter: readonly SeaShelterEllipse[]) => {
       const twin = createSeaTwin(SEA_WORLD, weather, (x, z) => -8 + 0.001 * x + 0.001 * z);
       twin.setShelter(shelter);
@@ -467,24 +511,34 @@ describe("sea twin", () => {
         }
       };
       for (let warm = 0; warm < 480; warm += 1) step();
-      // Mean over ten seconds of steps, every rebuild included; best of three
-      // runs, so a busy machine's worst run does not decide it.
+      // Mean over ten seconds of steps, every rebuild included; best of
+      // three runs, so a busy moment does not decide it. The budget scales by
+      // how much slower than the tuning box this process runs the reference
+      // kernel, timed around every run (the median of the six).
       let best = Number.POSITIVE_INFINITY;
+      const kernel: number[] = [];
       for (let run = 0; run < 3; run += 1) {
+        kernel.push(referenceKernelMilliseconds());
         const started = performance.now();
         for (let index = 0; index < 1200; index += 1) step();
         best = Math.min(best, (performance.now() - started) / 1200);
+        kernel.push(referenceKernelMilliseconds());
       }
-      return best;
+      kernel.sort((a, b) => a - b);
+      const slowdown = Math.max(1, (kernel[2]! + kernel[3]!) / 2 / REFERENCE_KERNEL_MILLISECONDS);
+      return { step: best, budget: STEP_BUDGET_MILLISECONDS * slowdown, slowdown };
     };
+    const report = (name: string, result: { step: number; budget: number; slowdown: number }) =>
+      `${name}: ${(result.step * 1000).toFixed(0)} us a step against ${(result.budget * 1000).toFixed(0)} us `
+      + `(this machine ran the reference kernel ${result.slowdown.toFixed(2)}x slower than the tuning box)`;
     const marina: SeaShelterEllipse[] = [
       { centerX: 40, centerZ: -25, heading: 0.4, radiusAlong: 60, radiusAcross: 30, floor: 0.15, feather: 40 },
       { centerX: 120, centerZ: 10, heading: 1.2, radiusAlong: 20, radiusAcross: 10, floor: 0.3, feather: 15 },
     ];
     const openWater = measure("cloudy", 6, []);
     const atTheMarina = measure("breezy", 0, marina);
-    expect(openWater, `open water, Cloudy, 6 m/s: ${(openWater * 1000).toFixed(0)} us a step`).toBeLessThan(0.15);
-    expect(atTheMarina, `moored at the marina: ${(atTheMarina * 1000).toFixed(0)} us a step`).toBeLessThan(0.15);
+    expect(openWater.step, report("open water, Cloudy, 6 m/s", openWater)).toBeLessThan(openWater.budget);
+    expect(atTheMarina.step, report("moored at the marina", atTheMarina)).toBeLessThan(atTheMarina.budget);
   });
 });
 
@@ -576,5 +630,48 @@ describe("sea shelter field", () => {
     const ratio = Math.sqrt(shelteredSquares / openSquares);
     expect(ratio).toBeGreaterThan(0.09);
     expect(ratio).toBeLessThan(0.15);
+  });
+
+  it("classifies the basins once per step without changing a bit of the field", () => {
+    // The twin answers points near the hull from one classification of a disk
+    // round the focus; across a run from the open sea through the feather to
+    // the basin's middle, every answer must be the field's, bit for bit.
+    const twin = createSeaTwin(SEA_WORLD, "breezy");
+    twin.setShelter(ellipses);
+    const internals = twin as unknown as {
+      shelterAt(x: number, z: number): Float64Array;
+      shelterFactorAt(x: number, z: number): number;
+      shelterConstant: number;
+    };
+    const field = new Float64Array(3);
+    const random = createRandom(43);
+    const focus: WaveFieldFocus = { x: 100, z: -50, heading: 0.6, halfLength: 3.4, halfBeam: 1.4 };
+    const reach = Math.hypot(3.65, 1.65) + 10;
+    const kinds = { open: 0, basin: 0, edge: 0 };
+    for (let step = 0; step <= 260; step += 1) {
+      // Along the basin's long axis, from 260 m out to its centre.
+      focus.x = 100 + (260 - step) * Math.sin(0.6);
+      focus.z = -50 + (260 - step) * Math.cos(0.6);
+      twin.setTime(10 + step / 120);
+      twin.setFocus(focus);
+      for (let point = 0; point < 24; point += 1) {
+        const angle = 2 * Math.PI * random();
+        const distance = reach * Math.sqrt(random());
+        const x = focus.x + distance * Math.sin(angle);
+        const z = focus.z + distance * Math.cos(angle);
+        seaShelterField(packed, x, z, field);
+        const answer = internals.shelterAt(x, z);
+        expect([answer[0], answer[1], answer[2]], `step ${step}`).toEqual([field[0], field[1], field[2]]);
+        expect(internals.shelterFactorAt(x, z)).toBe(field[0]);
+      }
+      const constant = internals.shelterConstant;
+      if (Number.isNaN(constant)) kinds.edge += 1;
+      else if (constant === 1) kinds.open += 1;
+      else kinds.basin += 1;
+    }
+    // Not vacuous: the run held the hull in the open, on the edge and inside.
+    expect(kinds.open).toBeGreaterThan(20);
+    expect(kinds.edge).toBeGreaterThan(20);
+    expect(kinds.basin).toBeGreaterThan(20);
   });
 });
