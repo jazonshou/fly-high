@@ -27,6 +27,7 @@ import {
 import { consumeGpuDispatchCostMs } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import type { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
+import type { PipelineWarmUp } from "@/src/render/webgpu/core/AsyncPipelineCompiles";
 import { GroundCoverMaterialPlugin } from "./GroundCoverMaterialPlugin";
 import { densityField, dryProvinceGroundCoverKeep, sandCoverGroundFactor } from "./densityField";
 import {
@@ -140,6 +141,13 @@ export interface GroundCoverSystemOptions {
    * loudly at construction when the Babylon private surface has moved.
    */
   readonly indirectInstanceCount?: boolean;
+  /**
+   * The off-frame pipeline compiles (`AsyncPipelineCompiles`). With it the
+   * blades' pipelines compile while the aircraft is still above the fade,
+   * instead of in the frame the first blades appear. Optional; without it
+   * nothing primes.
+   */
+  readonly pipelineWarmUp?: PipelineWarmUp | null;
 }
 
 export interface GroundCoverUpdateInput {
@@ -355,6 +363,11 @@ export class GroundCoverSystem {
   private tilesCompleted = 0;
   private paceFloorCalls = 0;
   private warmed = false;
+  /** A ring has dispatched once: its pipelines were needed, so priming is over. */
+  private dispatchedOnce = false;
+  private bladePipelinesWarm = false;
+  /** Ring 0 is drawing one degenerate blade for the pipeline warm-up. */
+  private bladePrimeActive = false;
   private disposed = false;
   private readonly planeScratch = new Float32Array(24);
   private lastGateScale = 0;
@@ -1017,6 +1030,7 @@ export class GroundCoverSystem {
     this.lastGateScale = gate;
     if (gate <= 0.02) {
       for (const ring of this.rings) this.setRingEnabled(ring, false);
+      this.primeBladePipelines();
       return;
     }
 
@@ -1028,8 +1042,10 @@ export class GroundCoverSystem {
     this.advanceTileBake(desiredOriginX, desiredOriginZ);
     if (!this.frontTileReady) {
       for (const ring of this.rings) this.setRingEnabled(ring, false);
+      this.primeBladePipelines();
       return;
     }
+    this.endBladePrime();
 
     this.plugin?.setWind(
       input.windDirectionX,
@@ -1141,6 +1157,7 @@ export class GroundCoverSystem {
       }
       if (ring.compute.isReady() && ringIndex < admitted) {
         if (dispatched === 0) this.resetCounterSlot(counterFrame);
+        this.dispatchedOnce = true;
         ring.compute.dispatch(Math.ceil(ring.laneCount / 64), 1, 1);
         this.publishIndirect(ring, counterFrame, ringIndex);
         dispatched += 1;
@@ -1158,6 +1175,42 @@ export class GroundCoverSystem {
       this.readCounters(counterFrame);
       this.counterFrame += 1;
     }
+  }
+
+  /**
+   * Before any ring has dispatched: ring 0 draws ONE blade wherever the camera
+   * is, until `pipelineWarmUp` reports its pipelines built. The never-written
+   * blade buffer is zeros, which the vertex shader sends 100 km below the
+   * ground, so the draw is clipped and costs one blade of vertex work; the
+   * point is the pipeline compile it starts off the frame. The rings share
+   * the material and the vertex layout, so ring 0 warms them all.
+   */
+  private primeBladePipelines(): void {
+    const warmUp = this.options.pipelineWarmUp;
+    const ring = this.rings[0];
+    if (!warmUp || !ring || this.bladePipelinesWarm || this.dispatchedOnce || this.hiddenForCapture) {
+      this.endBladePrime();
+      return;
+    }
+    const status = warmUp.warmUp(ring.mesh, false);
+    if (status === "warm" || status === "declined") {
+      // Declined: capture mode, or the material compiles in the frame anyway.
+      if (status === "warm") this.bladePipelinesWarm = true;
+      this.endBladePrime();
+      return;
+    }
+    this.bladePrimeActive = true;
+    ring.mesh.forcedInstanceCount = 1;
+    this.setRingEnabled(ring, true);
+  }
+
+  private endBladePrime(): void {
+    if (!this.bladePrimeActive) return;
+    this.bladePrimeActive = false;
+    const ring = this.rings[0];
+    if (!ring) return;
+    ring.mesh.forcedInstanceCount = ring.drawCount;
+    this.setRingEnabled(ring, false);
   }
 
   private resetCounterSlot(counterFrame: number): void {
