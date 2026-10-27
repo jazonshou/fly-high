@@ -22,13 +22,14 @@ import {
 } from "../surface/types";
 import type { Quaternion, Vec3 } from "../types";
 import type { VehiclePoseState } from "../vehicle";
-import { createWaterSurfaceSample } from "../water/types";
+import { createWaterSurfaceSample, type WaterSurfaceAuthority } from "../water/types";
 import { DrivelineSolver, DRIVELINE_DOF, ENGINE } from "./drivelineSolver";
 import { Engine, IDLE_OMEGA, RPM_PER_RAD_S } from "./engine";
 import { roughnessProfile, type RoughnessPoint } from "./roughness";
 import { createSoilContact, DIG_GAIN, DIG_SLIP, soilCurve, soilPatch } from "./soil";
 import { CAR_COLLIDER_MATERIAL } from "./carColliders";
 import { DeckGround, describeDeck } from "./deckGround";
+import { DOUBLE_ZERO } from "./doubleZero";
 import { Steering } from "./steering";
 import { createCarSurface, describeSurface, SurfaceCache, type CarSurface } from "./surface";
 import { createGroundPoint, TerrainLatticeCache, type GroundField, type GroundPoint } from "./terrainPatch";
@@ -416,19 +417,19 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private placed = false;
   /** Waiting at the start for the terrain pages under the car (`groundReady`), and for how long, s. */
   private settling = false;
-  private groundWait = 0;
+  private groundWait = DOUBLE_ZERO;
   /** The safe spots, newest at `safeSpotNext - 1`: the body origin's x, y, z and the heading, four to a spot. */
   private readonly safeSpots = new Float64Array(SAFE_SPOT_COUNT * 4);
   private safeSpotCount = 0;
   private safeSpotNext = 0;
-  private safeSpotClock = 0;
+  private safeSpotClock = DOUBLE_ZERO;
 
   readonly engine: Engine;
   readonly transmission: Transmission;
   readonly steering = new Steering();
   readonly driveline = new DrivelineSolver();
   private readonly pedals: DriverPedals = { accelerator: 0, brake: 0 };
-  private handbrake = 0;
+  private handbrake = DOUBLE_ZERO;
   private headlights: CarHeadlights = "off";
   private headlightPresses: number | null = null;
   private downhillPresses: number | null = null;
@@ -438,13 +439,13 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   /** Traction control is on (the car's default; tests turn it off). It stands down while a locker is engaged. */
   tractionControl = true;
   absActive = false;
-  private dacIntegral = 0;
-  private hillHold = 0;
-  private hillHoldBrake = 0;
-  private previousBrake = 0;
+  private dacIntegral = DOUBLE_ZERO;
+  private hillHold = DOUBLE_ZERO;
+  private hillHoldBrake = DOUBLE_ZERO;
+  private previousBrake = DOUBLE_ZERO;
   tyrePressureBar = TYRE.roadPressureBar;
   /** Driveline windup between the propeller shafts, radians at the shaft. */
-  windup = 0;
+  windup = DOUBLE_ZERO;
 
   // Axles: heave (m, + into bump) and roll (rad, + right end up) against the frame.
   readonly axleHeave = new Float64Array(2);
@@ -492,7 +493,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly probeTouching = new Uint8Array(HULL.length);
 
   rolled = false;
-  private wadingDepthValue = 0;
+  private wadingDepthValue = DOUBLE_ZERO;
   private readonly waterSample = createWaterSurfaceSample();
   /**
    * The water at each wheel, sampled one wheel a step in turn (`sampleWater`):
@@ -516,11 +517,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private inWater = false;
   private waterDensity = FRESH_WATER_DENSITY;
   /** How far up the body the cabin has flooded, 0 dry .. 1 full. */
-  cabinFlood = 0;
+  cabinFlood = DOUBLE_ZERO;
   // Peaks since the last snapshot, for sound and effects.
-  private bumpStopPeak = 0;
-  private scrapePeak = 0;
-  private splashPeak = 0;
+  private bumpStopPeak = DOUBLE_ZERO;
+  private scrapePeak = DOUBLE_ZERO;
+  private splashPeak = DOUBLE_ZERO;
 
   // Scratch.
   private readonly v0: Vec3 = { x: 0, y: 0, z: 0 };
@@ -543,17 +544,19 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly tyreInput = createTyreInput(TYRE.nominalLoad);
   private readonly contactPoint: Vec3 = { x: 0, y: 0, z: 0 };
   // This step's numbers, as fields so that no call passes one.
-  private dt = 0;
-  private h = 0;
+  private dt = DOUBLE_ZERO;
+  private h = DOUBLE_ZERO;
   /** The environment's gravity, a field: a getter's double return would be boxed in the substep. */
   private gravity = STANDARD_GRAVITY;
-  private columnY = 0;
-  private speed = 0;
-  private slope = 0;
+  private columnY = DOUBLE_ZERO;
+  private speed = DOUBLE_ZERO;
+  private slope = DOUBLE_ZERO;
   private radialStiffness = tyreRadialStiffness(TYRE.roadPressureBar);
-  private hullPenetration = 0;
-  private hullResult = 0;
+  private hullPenetration = DOUBLE_ZERO;
+  private hullResult = DOUBLE_ZERO;
   private readonly groundScratch = createGroundPoint();
+  /** The terrain under a wheel's contact, for the water authority's `isDry`. */
+  private readonly bedPoint = createGroundPoint();
   private readonly normalScratch: Vec3 = { x: 0, y: 1, z: 0 };
 
   constructor(spawn?: SurfaceVehicleSpawn, options: GroundVehicleOptions = {}) {
@@ -1027,7 +1030,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     return Math.abs(drive) > opposing * 1.05;
   }
 
-  private lastCouplingTorque = 0;
+  private lastCouplingTorque = DOUBLE_ZERO;
 
   // ---------------------------------------------------------------- contact
 
@@ -1182,8 +1185,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * (33 ms) since it was last asked is near enough. While all four are dry,
    * a wheel that has rolled less than `DRY_POLL_METERS` since it asked, and
    * asked less than `DRY_POLL_SECONDS` ago, passes its turn: a parked or
-   * crawling car would otherwise spend a fifth of its step asking. Whether a
-   * tyre is under the surface is decided every step, from its contact now.
+   * crawling car would otherwise spend a fifth of its step asking. A turn
+   * first asks whether the point is dry for certain (`dryOverBed`), which
+   * reads no bed. Whether a tyre is under the surface is decided every step,
+   * from its contact now.
    */
   private sampleWater(): void {
     const env = this.environment;
@@ -1214,14 +1219,19 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
         this.waterAskedX[w] = at.x;
         this.waterAskedZ[w] = at.z;
         this.waterAskedTime[w] = time;
-        const sample = env.water.sample(at.x, at.z, this.waterSample);
-        const wet = sample.kind !== "none";
-        this.waterAt[w] = wet ? 1 : 0;
-        this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
-        this.waterHeight[w] = sample.height;
-        this.waterVelocityX[w] = sample.velocity.x;
-        this.waterVelocityY[w] = sample.velocity.y;
-        this.waterVelocityZ[w] = sample.velocity.z;
+        if (this.dryOverBed(env.water, at)) {
+          this.waterAt[w] = 0;
+          this.waterSea[w] = 0;
+        } else {
+          const sample = env.water.sample(at.x, at.z, this.waterSample);
+          const wet = sample.kind !== "none";
+          this.waterAt[w] = wet ? 1 : 0;
+          this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
+          this.waterHeight[w] = sample.height;
+          this.waterVelocityX[w] = sample.velocity.x;
+          this.waterVelocityY[w] = sample.velocity.y;
+          this.waterVelocityZ[w] = sample.velocity.z;
+        }
       }
       if (this.waterAt[w] !== 1) continue;
       if (this.waterSea[w] === 1) sea = true;
@@ -1254,6 +1264,22 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     let front = -Infinity;
     for (let w = 0; w < 2; w += 1) if (this.waterAt[w] === 1) front = Math.max(front, this.waterHeight[w]!);
     if (this.engine.running && this.v1.y < front) this.engine.hydrolock();
+  }
+
+  /**
+   * Whether the water authority can tell `at` is dry from the terrain under
+   * it (beneath any deck), read from the car's own lattice, without reading
+   * the bed itself: in the worker the calm sea's bed is a terrain height
+   * sample, about 13 us. Only on the lattice, which caches the environment's
+   * `bedHeight`, the bed the authority reads; a test's fixed ground may not be.
+   */
+  private dryOverBed(water: WaterSurfaceAuthority, at: Readonly<Vec3>): boolean {
+    if (water.isDry === undefined || this.fixedGround !== null) return false;
+    const bed = this.bedPoint;
+    bed.x = at.x;
+    bed.z = at.z;
+    this.lattice.evaluate(bed);
+    return water.isDry(bed);
   }
 
   /** Column `c`'s centre at body-frame height `columnY` (from the body origin), in the world, into `v1`. */

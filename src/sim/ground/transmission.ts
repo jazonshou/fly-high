@@ -7,6 +7,7 @@ import type {
   CarVisualState,
 } from "@/src/game/types";
 import { LANDCRUISER_76 } from "@/src/vehicles/landcruiser76";
+import { DOUBLE_ZERO } from "./doubleZero";
 import { RPM_PER_RAD_S, type Engine } from "./engine";
 
 /**
@@ -97,12 +98,12 @@ export class Transmission {
   range: CarTransferRange = "2H";
   locks: CarDiffLocks = "off";
   /** The manual's clutch engagement, 0 open .. 1 engaged; the automatic's lockup clutch likewise. */
-  clutch: number;
-  lockup = 0;
+  clutch = DOUBLE_ZERO;
+  lockup = DOUBLE_ZERO;
   /** Seconds left of a shift's torque gap. */
-  shiftTime = 0;
+  shiftTime = DOUBLE_ZERO;
   /** The automatic's turbine (or the manual's clutch disc) speed last step, rad/s. */
-  inputOmega = 0;
+  inputOmega = DOUBLE_ZERO;
 
   /*
    * What the driveline reads every substep, kept current by `refresh` as
@@ -112,32 +113,32 @@ export class Transmission {
   /** The axles' final drive. */
   finalDrive: number;
   /** The transfer case's ratio in this range. */
-  transferRatio: number = TRANSFER.high;
+  transferRatio = DOUBLE_ZERO;
   /** Input shaft speed per rear propeller shaft speed: the gear times the transfer range (negative in reverse). */
-  inputRatio = 0;
+  inputRatio = DOUBLE_ZERO;
   /** The turbine (or clutch disc) and input shaft's inertia, kg m^2. */
   inputInertia: number;
   /** Share of the turbine's torque that reaches the output: less during a clutch-to-clutch shift. */
-  torqueShare = 1;
+  torqueShare = DOUBLE_ZERO;
   /** The coupling between the crank and the input shaft, N m: the dry clutch, or the converter's lockup. */
-  couplingCapacity = 0;
+  couplingCapacity = DOUBLE_ZERO;
 
   private readonly gearRatios: Float64Array;
-  private dt = 0;
-  private speed = 0;
+  private dt = DOUBLE_ZERO;
+  private speed = DOUBLE_ZERO;
   /**
    * This step's turbine rpm per unit of gear ratio at the output speed:
    * times a gear's ratio, the turbine rpm the box would have in that gear.
    */
-  private rpmPerRatio = 0;
+  private rpmPerRatio = DOUBLE_ZERO;
 
   /** The input shaft's speed change, rad/s per s, smoothed: the auto-clutch reads a stop coming. */
-  private inputRate = 0;
-  private directionHold = 0;
+  private inputRate = DOUBLE_ZERO;
+  private directionHold = DOUBLE_ZERO;
   /** The direction rule's pedal has been up with the car stopped: only a fresh press at a stop changes direction. */
   private directionArmed = false;
   private autoClutchPhase: AutoClutchPhase = "engaged";
-  private autoClutchTime = 0;
+  private autoClutchTime = DOUBLE_ZERO;
   private pendingGear = 0;
   private readonly shiftUp = new PressCounter();
   private readonly shiftDown = new PressCounter();

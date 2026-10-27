@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CalmWaterSurface } from "../src/sim/water/calmWater";
+import { CALM_DRY_MARGIN, CalmWaterSurface } from "../src/sim/water/calmWater";
 import { MOUTH_HIGH, WaterSurfaceComposite } from "../src/sim/water/compositeWater";
 import {
   HYDROLOGY_EVICTION_KEEP_METERS,
@@ -295,6 +295,41 @@ describe("the water composite: sea, lakes and rivers", () => {
     const water = new WaterSurfaceComposite(new CalmWaterSurface(0, () => -2), source, 0);
     expect(water.sample(0, 0, sample)).toMatchObject({ kind: "lake", height: MOUTH_HIGH + 0.2 });
     expect(water.sample(0, 150, sample)).toMatchObject({ kind: "sea", height: 0 });
+  });
+
+  it("says dry without reading the bed only where the caller's bed stands a margin over the sea, off the river", () => {
+    let reads = 0;
+    const counted = (x: number, z: number) => {
+      reads += 1;
+      return beach(x, z);
+    };
+    const water = new WaterSurfaceComposite(new CalmWaterSurface(0, counted), mouth(), 0);
+    const at = { x: 0, z: 0, height: 0 };
+    let dry = 0;
+    for (let x = -61; x <= 61; x += 2) {
+      for (let z = 0; z <= 400; z += 2) {
+        at.x = x;
+        at.z = z;
+        at.height = beach(x, z);
+        if (!water.isDry(at)) continue;
+        dry += 1;
+        // Dry for certain: the full answer is none there.
+        expect(water.sample(x, z, sample).kind).toBe("none");
+        // A metre over the sea and outside the 20 m river.
+        expect(at.height).toBeGreaterThan(CALM_DRY_MARGIN);
+        expect(Math.abs(x)).toBeGreaterThan(10);
+      }
+    }
+    // Up the beach (z under 100) and off the river: all of it.
+    expect(dry).toBe(52 * 50);
+    // The answers read no bed of their own; only the full samples did.
+    expect(reads).toBe(dry);
+    // A sea that cannot say is always asked.
+    const swell = new WaterSurfaceComposite(new Swell(beach), mouth(), 0);
+    at.x = 50;
+    at.z = 0;
+    at.height = beach(50, 0);
+    expect(swell.isDry(at)).toBe(false);
   });
 
   it("passes the time to both sources and the hull's focus to the sea only", () => {

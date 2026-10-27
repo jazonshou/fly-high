@@ -57,6 +57,17 @@ roots of sums. A choice between a computed double and a double argument
 is not. On rolling ground a step costs about 30 to 40 us here, inside the
 plan's 60 us on the tuning box (`tests/sim.car-budget.test.ts`).
 
+A field that will hold fractions starts from `DOUBLE_ZERO`
+(`src/sim/ground/doubleZero.ts`), not 0. V8 gives a field the
+representation of the first number stored in it, so a field that starts at
+the integer 0 re-shapes its object at its first fraction, and every
+optimised function that has seen the old shape is thrown away. On the
+simulator that is nearly the whole step: the first 4H shift (the windup),
+scrape, bump stop or ford each cost a run of 13 to 22 steps of 1 to 6 ms
+on the show drive below. Starting from the double, that stretch of the
+drive has 3 or 4 steps over 1 ms, none over 1.5, and the drive ends on the
+same bits.
+
 On a real world, with the lattice, the colliders and the water composite
 under it, a step on this cloud box (which runs the reference kernel about
 1.6 times slower than the tuning box) costs about 51 us parked and about
@@ -457,7 +468,14 @@ steps (33 ms) since it was last asked is near enough. While all four tyres
 are dry, a tyre passes its turn until it has rolled 0.3 m from where it last
 asked or a quarter of a second has gone (a lake can be posted round a parked
 car), so a parked or crawling car does not spend a fifth of its step asking
-about water that is not there; from about 9 m/s every turn is taken. Whether
+about water that is not there; from about 9 m/s every turn is taken. A
+turn first asks the authority whether the point is dry for certain
+(`isDry`), handing it the terrain under the contact (beneath any deck) from
+the car's own lattice: the composite answers from that, a metre's margin
+over the calm sea's level and one bin lookup for the lakes and rivers,
+without reading the bed itself, and only near water is the full sample
+taken. On the show drive (see Driving the world) that took the water from
+about 11.4 us a step to 1.1, and the drive ends on the same bits. Whether
 a tyre is under the surface is decided every step from its contact now. The wading depth is
 the highest surface over the lowest contact. A tyre under the surface
 reports no material and full wetness for the effects, and its bed is wet:
@@ -561,10 +579,18 @@ than the tuning box), after the first 2 s of a leg.
   about 60 on the tuning box. Of that the substeps are about 62 us (the tyres
   32, the soil 6), the contacts against the lattice 14, the hull's probes 15
   and forces 13, the water 11 (the calm sea's bed is a terrain height, about
-  13 us, on each turn the dry poll takes) and the surfaces 9. The slow steps
-  (1 to 2 ms at the 99.9th percentile, 4 to 11 ms at worst) are garbage
-  collections of the probe's own tallies, a run of new lattice nodes as the
-  car reaches them, and V8 compiling.
+  13 us, on each turn the dry poll takes; about 1 us since the composite
+  answers dry ground from the car's own lattice, see Water) and the surfaces
+  9. The slow steps
+  (1 to 2 ms at the 99.9th percentile, 4 to 11 ms at worst) follow no event
+  of the drive and do not repeat from run to run. About half fall in a
+  young-generation collection (1 to 3 ms, up to 9) of the probe's own
+  garbage; a handful are V8 compiling the first second from rest; the rest
+  are this box. A fixed, allocation-free 100 us loop timed the same way here
+  has 20 to 58 of every 106,000 runs over 1 ms and its worst at 4 to 8.5 ms.
+  New lattice nodes (13 us each) and a new surface cell (25 us) do not make
+  a slow step on their own. `PROBE_SLOW=1000` lists every step over 1 ms with
+  what happened in it.
 
 The show drive, on the default world: from the car's start on the apron
 round onto the sealed airport road, along it in 2H to its end, onto the

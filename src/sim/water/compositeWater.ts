@@ -2,6 +2,7 @@ import type { HydrologyWaterSource } from "./hydrologyWater";
 import {
   createWaterSurfaceSample,
   type HullWaterSampler,
+  type WaterBedPoint,
   type WaterSurfaceAuthority,
   type WaterSurfaceSample,
   type WaveFieldFocus,
@@ -51,6 +52,15 @@ export class WaterSurfaceComposite implements HullWaterSampler {
 
   setFocus(focus: Readonly<WaveFieldFocus>): void {
     this.focusable?.setFocus(focus);
+  }
+
+  /**
+   * Dry for certain: the sea says so for this bed (the calm sea, a margin
+   * above its level) and no lake or river holds water here, one bin
+   * lookup. A sea that cannot say (`isDry` absent) is always asked.
+   */
+  isDry(at: Readonly<WaterBedPoint>): boolean {
+    return this.sea.isDry !== undefined && this.sea.isDry(at) && !this.inland.sampleWet(at.x, at.z, this.inlandSample);
   }
 
   sample(x: number, z: number, out: WaterSurfaceSample): WaterSurfaceSample {

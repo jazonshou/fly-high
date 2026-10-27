@@ -1,4 +1,12 @@
-import type { WaterSurfaceAuthority, WaterSurfaceSample } from "./types";
+import type { WaterBedPoint, WaterSurfaceAuthority, WaterSurfaceSample } from "./types";
+
+/**
+ * How far above sea level a bed known to the caller must stand for `isDry`
+ * to answer without reading the bed itself, metres: more than a car's
+ * cached lattice can stand off the terrain authority, whose pages land
+ * under it for up to a second before its nodes are read again.
+ */
+export const CALM_DRY_MARGIN = 1;
 
 /**
  * Still water at sea level wherever the bed lies below it.
@@ -15,6 +23,11 @@ export class CalmWaterSurface implements WaterSurfaceAuthority {
   ) {}
 
   setTime(): void {}
+
+  /** Dry for certain where the caller's bed stands a margin above sea level: no bed read. */
+  isDry(at: Readonly<WaterBedPoint>): boolean {
+    return at.height > this.seaLevel + CALM_DRY_MARGIN;
+  }
 
   sample(x: number, z: number, out: WaterSurfaceSample): WaterSurfaceSample {
     const bed = this.bedHeight(x, z);
