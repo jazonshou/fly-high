@@ -95,12 +95,16 @@ export interface GovernorConfig {
   /** PR B: a presented interval longer than this is late (`lateIntervalFor`). */
   readonly lateIntervalMs: number;
   readonly scaleCeiling: number;
-  /** Floor raised 0.62 → 0.75: below it the image degrades faster than the frame time improves. */
-  readonly scaleFloor: number;
   /**
-   * PR B part 2 (G4): the profile's governor pixel floor ratio. Informational
-   * for now: `scaleFloor` does not derive from it yet.
+   * PR B part 2 (G4): renderScale × sqrt(`pixelFloorRatio`). The step applies
+   * after the pixel cap, so the floor is that share of the capped pixels:
+   * 0.5577 at tier 0, 0.6662 at tier 1, and 0.75 exactly at tiers 2-3 (D4).
+   * Part 1's fixed 0.75, applied before the cap, left tier 0 no resolution
+   * lever and a cap-bound display none at all. The renderer's 0.4 Mpx
+   * minimum (`GOVERNED_MIN_RENDER_PIXELS`) still holds under it.
    */
+  readonly scaleFloor: number;
+  /** PR B part 2 (G4): the profile's governor pixel floor ratio, which `scaleFloor` derives from. */
   readonly pixelFloorRatio: number;
   readonly windowFrames: number;
   readonly downCooldownFrames: number;
@@ -170,7 +174,8 @@ export function governorConfigForProfile(
     tierPresentationTargetMs: tierPresentationMs,
     lateIntervalMs,
     scaleCeiling: profile.renderScale,
-    scaleFloor: Math.min(0.75, profile.renderScale),
+    // G4: the floor is a share of the capped pixels, applied after the cap.
+    scaleFloor: profile.renderScale * Math.sqrt(profile.governorPixelFloorRatio),
     pixelFloorRatio: profile.governorPixelFloorRatio,
     windowFrames,
     downCooldownFrames: 90,
@@ -1070,9 +1075,17 @@ function offCadenceDecision(
         ? next.offCadenceWindows >= HOT_WINDOWS_REQUIRED
         : gpu > config.gpuTargetMs * DOWN_TRIGGER_RATIO;
       if (hot && next.framesSinceScaleChange >= config.downCooldownFrames) {
+        // PR B part 2 (K2): a step that would leave under half a step above
+        // the floor goes to it, so no scale step is under about 6% of the
+        // pixels (0.775 → 0.75 at tiers 2-3, one recovery step above the
+        // floor; 8% or more on the way down from the ceiling), though the
+        // 0.4 Mpx minimum can still clip one to 3.85% (renderScaleLevel.ts).
+        // Tier 0's last would otherwise be 0.57 → 0.5577, 4%: a resize, a
+        // reallocation and a history reset no probe could judge.
+        const stepped = next.renderScale - DOWN_STEP;
         return Object.freeze({
           ...next,
-          renderScale: Math.max(config.scaleFloor, next.renderScale - DOWN_STEP),
+          renderScale: stepped - config.scaleFloor < DOWN_STEP / 2 ? config.scaleFloor : stepped,
           framesSinceScaleChange: 0,
           pendingProbe: {
             preStepGpuP95Ms: intervalDomain ? signals.intervalP95Ms ?? gpu : gpu,

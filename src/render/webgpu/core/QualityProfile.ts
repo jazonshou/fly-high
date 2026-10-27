@@ -96,7 +96,9 @@ export interface WebGpuQualityProfile {
   /**
    * Absolute ceiling on rendered pixels per frame (1A-6a). Applied as a
    * hardware-scaling clamp after DPR and renderScale, so no display or
-   * governor state can push the render target past it.
+   * governor state can push the render target past it. Unpinned, the
+   * governor's resolution step applies on the capped frame (PR B part 2,
+   * G4), never below 0.4 Mpx; pinned captures keep the cap-only rule.
    */
   readonly maxRenderPixels: number;
   /**

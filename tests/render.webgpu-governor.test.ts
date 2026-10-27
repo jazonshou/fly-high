@@ -239,7 +239,9 @@ describe("adaptive governor (1A-6b)", () => {
     expect(state.trial?.ladder).toBe("cpu");
   });
 
-  it("respects the raised 0.75 scale floor", () => {
+  it("respects the governor pixel floor", () => {
+    // PR B part 2 (G4): 0.5625 of the capped pixels at high/balanced, a 0.75
+    // scale floor, as part 1's fixed one was.
     const gpuBound = (gpu: number): GovernorSignals => (
       { gpuP95Ms: gpu, cpuP95Ms: 6, intervalP95Ms: gpu + 1 }
     );
@@ -252,6 +254,7 @@ describe("adaptive governor (1A-6b)", () => {
     }
     expect(state.renderScale).toBeGreaterThanOrEqual(config.scaleFloor - 1e-9);
     expect(config.scaleFloor).toBeCloseTo(0.75, 5);
+    expect(config.scaleFloor).toBe(config.scaleCeiling * Math.sqrt(config.pixelFloorRatio));
   });
 
   it("splits the ladders by cost and keeps each ordered cheapest-looking first (R-11)", () => {

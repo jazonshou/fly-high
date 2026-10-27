@@ -88,7 +88,11 @@ function intervals(onTimeMs: number, late = 0, slowMs = 2 * onTimeMs): number[] 
 
 interface TraceOptions {
   readonly config?: GovernorConfig;
-  /** The pixel cap absorbs every downward step, as at 1440p and on Retina (R5 §2.3). */
+  /**
+   * The cap or the 0.4 Mpx minimum absorbs every downward step: before PR B
+   * part 2 (G4) the cap did at 1440p and on Retina (R5 §2.3); since, the
+   * minimum does on a small Low viewport.
+   */
   readonly capBinds?: boolean;
 }
 
@@ -747,8 +751,9 @@ describe("binomial spikes (red team finding 6)", () => {
     // At 3% one window in fourteen is off cadence. Two in a row step the
     // scale, and a pooled 3% is never calm enough to undo it, so the scale
     // drifts to its floor (as in the red team's own amended prototype),
-    // by window 67, 261 and 178 for these seeds; only then can a pair reach
-    // the GPU ladder.
+    // by window 82, 270 and 187 for these seeds (PR B part 2's floor, 0.6 of
+    // the capped pixels, is four steps down); only then can a pair reach the
+    // GPU ladder.
     for (const seed of SEEDS) {
       const at3 = spikes(seed);
       const states = trace(createGovernorState(config), 300, () => at3(0.03));
@@ -760,7 +765,7 @@ describe("binomial spikes (red team finding 6)", () => {
 
   it("S18: whatever 3-7% spikes shed comes back once they fall to 1.5%", () => {
     // Spike-dominated windows still shed GPU rungs from about 4%, every one
-    // of them by window 281 at 4%: the GPU ladder has no effectiveness latch
+    // of them by window 285 at 4%: the GPU ladder has no effectiveness latch
     // (a known limit, left to G6/G7).
     for (const seed of SEEDS) {
       for (const share of [0.03, 0.05, 0.07]) {
@@ -788,10 +793,13 @@ describe("G2: a step test that sees through vsync", () => {
   // vsync whatever a step buys: only the late share and the mean can move.
   const path = (states: readonly GovernorState[]) => states.map((state) => Number(state.renderScale.toFixed(2)));
 
-  it("E2: a step that cuts the late share is kept, down to the floor", () => {
+  it("E2: a step that cuts the late share is kept until the cadence is met", () => {
     const lateAt = (scale: number) => (scale > 0.85 ? 0.3 : scale > 0.8 ? 0.2 : scale > 0.75 ? 0.12 : 0.04);
     const states = trace(createGovernorState(config), 6, (_, state) => frames(8, lateAt(state.renderScale)));
-    expect(path(states)).toEqual([0.86, 0.81, 0.76, 0.75, 0.75, 0.75]);
+    // PR B part 2 (G4): 4% late at 0.71 is on cadence, so the walk stops
+    // there, above the floor (0.666), not at it.
+    expect(path(states)).toEqual([0.86, 0.81, 0.76, 0.71, 0.71, 0.71]);
+    expect(0.71).toBeGreaterThan(config.scaleFloor);
     expect(states.some((state) => state.resolutionInsensitive)).toBe(false);
     expect(states.every((state) => state.ineffectiveDownSteps === 0)).toBe(true);
     expect(states[4]!.mode).toBe("on-cadence");

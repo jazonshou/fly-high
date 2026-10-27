@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QualityLevel, RequestedRenderingMode } from "../src/game/types";
+import { FlightRenderer } from "../src/render/FlightRenderer";
 import { resolveGovernedWork } from "../src/render/governedWork";
 import {
   createGovernorState,
@@ -11,7 +12,7 @@ import {
   type GovernorConfig,
   type GovernorSignals,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import { resolveWebGpuQualityProfile, type WebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 
 /**
  * PR B must move none of the reference pictures and no perf:ab number
@@ -24,7 +25,8 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * before the governor existed.
  *
  * PR B part 2 adds to each: the config carries the tier's own presentation
- * target and the profile's pixel floor ratio, the state starts not urgent,
+ * target and the profile's pixel floor ratio, which the unfrozen governor's
+ * scale floor derives from (G4) and a pin overrides, the state starts not urgent,
  * unlatched and with no spent windows, and the levers at (0, 0) leave the
  * cloud march, the CSM and cloud-depth refresh and CDLOD selection on the
  * profile's own values.
@@ -42,8 +44,9 @@ function expectedConfig(tier: number, renderScale: number): GovernorConfig {
     // 15% over the cadence: 19.17 ms, or 38.33 on Ultra.
     lateIntervalMs: 1.15 * (ultra ? 1_000 / 30 : 1_000 / 60),
     scaleCeiling: renderScale,
-    scaleFloor: Math.min(0.75, renderScale),
-    // PR B part 2 (G4): informational; scaleFloor does not read it yet.
+    // PR B part 2 (G4): that share of the capped pixels. Only the unfrozen
+    // governor steps toward it; a pin replaces it (below).
+    scaleFloor: renderScale * Math.sqrt(tier <= 1 ? 0.6 : 0.5625),
     pixelFloorRatio: tier <= 1 ? 0.6 : 0.5625,
     windowFrames: 120,
     downCooldownFrames: 90,
@@ -77,11 +80,36 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
       expect(profile.tier, `${quality} ${mode}`).toBe(tier);
       expect(governorConfigForProfile(profile), `${quality} ${mode}`).toEqual(expectedConfig(tier, renderScale));
       expect(governorConfigForProfile(profile, null), `${quality} ${mode}`).toEqual(governorConfigForProfile(profile));
+      // 9/16 is exact and sqrt rounds correctly: tiers 2-3 keep part 1's 0.75 to the bit.
+      if (tier >= 2) expect(Object.is(governorConfigForProfile(profile).scaleFloor, 0.75), `${quality} ${mode}`).toBe(true);
     }
     expect(governorConfigForProfile(resolveWebGpuQualityProfile("medium", "balanced")).lateIntervalMs)
       .toBeCloseTo(19.167, 3);
     expect(governorConfigForProfile(resolveWebGpuQualityProfile("high", "ultra")).lateIntervalMs)
       .toBeCloseTo(38.333, 3);
+  });
+
+  it("pins both scale bounds for a capture, whatever the pixel floor ratio", () => {
+    // FlightRenderer.resolveGovernorConfig, on a receiver with only what it reads.
+    const resolve = (profile: WebGpuQualityProfile, pinnedRenderScale: number | null): GovernorConfig => {
+      const target = Object.assign(Object.create(FlightRenderer.prototype) as object, {
+        profile,
+        presentationCadence: null,
+        pinnedRenderScale,
+      });
+      return (target as unknown as { resolveGovernorConfig(): GovernorConfig }).resolveGovernorConfig();
+    };
+    for (const [quality, mode] of PAIRS) {
+      for (const governorPixelFloorRatio of [0.5, 0.6, 0.9]) {
+        const profile = { ...resolveWebGpuQualityProfile(quality, mode), governorPixelFloorRatio };
+        const base = governorConfigForProfile(profile);
+        const label = `${quality} ${mode} at ${governorPixelFloorRatio}`;
+        expect(resolve(profile, null), label).toEqual(base);
+        for (const pin of [profile.renderScale, 0.5]) {
+          expect(resolve(profile, pin), label).toEqual({ ...base, frozen: true, scaleCeiling: pin, scaleFloor: pin });
+        }
+      }
+    }
   });
 
   it("is frozen while pinned, and returns the very state it was given", () => {
