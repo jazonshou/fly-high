@@ -186,6 +186,7 @@ const surfaceEnvironment: SurfaceVehicleEnvironment = {
   wind: surfaceWind,
   bedHeight: terrainHeightSample,
   groundContact: surfaceGroundContact,
+  groundReady: (x, z, radius) => terrainAuthority.covers(x, z, radius),
   world: null,
   colliders: null,
   gravity: 9.80665,

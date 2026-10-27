@@ -33,6 +33,13 @@ export interface SurfaceVehicleEnvironment {
   /** The world's static colliders (buildings, guardrails); null where none are built. */
   colliders?: ColliderWorld | null;
   /**
+   * Whether the published L0 terrain pages answer everywhere within `radius`
+   * of (x, z) (`TerrainAuthority.covers`). A car waits on it at its start so
+   * it never settles on a fallback height; absent (tests, probes), it never
+   * waits.
+   */
+  groundReady?: (x: number, z: number, radius: number) => boolean;
+  /**
    * The calendar day the renderer paints the terrain for (its clock's
    * `dayOfYear`), so the car's seasonal snow is where the snow is drawn.
    * Absent, the reference day.

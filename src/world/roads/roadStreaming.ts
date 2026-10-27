@@ -2,7 +2,7 @@ import { roadLayerWindow, roadRegionBox, roadRegionOf, ROAD_LAYERS, ROAD_REGION_
 
 /**
  * Which road regions the observer needs, and in what order: the pure half of
- * `RoadStreamController` (src/game), so it can be tested without a worker.
+ * `RoadStreamController` (src/render/roads), so it can be tested without a worker.
  *
  * A layer's region is WANTED when its square comes within the layer's window
  * of the observer, or of where the observer will be `ROAD_STREAM_LEAD_SECONDS`
