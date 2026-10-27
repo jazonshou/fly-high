@@ -52,7 +52,7 @@ const network = new RoadNetwork(world);
 const rx = roadRegionOf(head.startX);
 const rz = roadRegionOf(head.startZ);
 const regions: readonly InfrastructureRegion[] = (["major", "track"] as const)
-  .map((layer) => roadRegionInfrastructure(world, network.region(layer, rx, rz)));
+  .map((layer) => roadRegionInfrastructure(network, network.region(layer, rx, rz)));
 const sites = airfieldStructureExclusionSites(world.airports!, world.seedHash);
 
 afterEach(() => clearInfrastructureRegions());

@@ -83,9 +83,9 @@ describe("road earthworks CPU/GPU parity", () => {
     const network = new RoadNetwork(world);
     const rx = roadRegionOf(head.startX);
     const rz = roadRegionOf(head.startZ);
-    const regions = ROAD_LAYERS.map((layer) => roadRegionInfrastructure(world, network.region(layer, rx, rz)));
+    const regions = ROAD_LAYERS.map((layer) => roadRegionInfrastructure(network, network.region(layer, rx, rz)));
     const neighbours = ROAD_LAYERS.flatMap((layer) => [[1, 0], [0, 1], [-1, 0], [0, -1]].map(([dx, dz]) =>
-      roadRegionInfrastructure(world, network.region(layer, rx + dx!, rz + dz!))));
+      roadRegionInfrastructure(network, network.region(layer, rx + dx!, rz + dz!))));
     clearInfrastructureRegions();
     installInfrastructureRegions(world, regions);
     try {

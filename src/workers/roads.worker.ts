@@ -53,8 +53,9 @@ function step(): void {
     return;
   }
   try {
-    const region = roadNetworkFor(current).region(address.layer, address.rx, address.rz);
-    const infrastructure = roadRegionInfrastructure(current, region);
+    const network = roadNetworkFor(current);
+    const region = network.region(address.layer, address.rx, address.rz);
+    const infrastructure = roadRegionInfrastructure(network, region);
     post({
       type: "region",
       address,

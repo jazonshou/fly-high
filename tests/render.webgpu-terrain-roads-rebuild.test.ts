@@ -30,9 +30,10 @@ import { createWorld } from "@/src/world/world";
 
 const world = createWorld();
 const head = airportRoadHead(world)!;
+const network = new RoadNetwork(world);
 const region: InfrastructureRegion = roadRegionInfrastructure(
-  world,
-  new RoadNetwork(world).region("major", roadRegionOf(head.startX), roadRegionOf(head.startZ)),
+  network,
+  network.region("major", roadRegionOf(head.startX), roadRegionOf(head.startZ)),
 );
 
 afterEach(() => clearInfrastructureRegions());

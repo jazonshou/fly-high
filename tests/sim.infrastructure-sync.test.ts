@@ -35,7 +35,7 @@ import type { SimulationCommand } from "@/src/workers/protocol";
 const world = createWorld();
 const head = airportRoadHead(world)!;
 const network = new RoadNetwork(world);
-const majorRegion = roadRegionInfrastructure(world, network.region("major", roadRegionOf(head.startX), roadRegionOf(head.startZ)));
+const majorRegion = roadRegionInfrastructure(network, network.region("major", roadRegionOf(head.startX), roadRegionOf(head.startZ)));
 
 /** The point of the region's pieces where its earthworks raise the ground most. */
 function highestFill(region: InfrastructureRegion): { x: number; z: number; lift: number } {

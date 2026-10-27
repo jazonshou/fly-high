@@ -217,7 +217,7 @@ describe("a real network in the stage", () => {
   const rx = roadRegionOf(head.startX);
   const rz = roadRegionOf(head.startZ);
   const regions = ROAD_LAYERS.map((layer) => ({ layer, region: network.region(layer, rx, rz) }));
-  const infrastructure = regions.map(({ region }) => roadRegionInfrastructure(world, region));
+  const infrastructure = regions.map(({ region }) => roadRegionInfrastructure(network, region));
 
   it("lays every piece and pad out once, keyed, with reaches sized to the ground", () => {
     expect(infrastructure.map((region) => region.key)).toEqual(ROAD_LAYERS.map((layer) => roadRegionKey(layer, rx, rz)));
