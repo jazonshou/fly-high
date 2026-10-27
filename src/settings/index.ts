@@ -10,6 +10,7 @@ import {
   normalizeAirborneStartAgl,
 } from "@/src/workers/protocol";
 import { AIRCRAFT_KINDS, type AircraftKind } from "@/src/sim";
+import { VEHICLE_KINDS, type VehicleKind } from "@/src/vehicles/kinds";
 import type { LandformsOption } from "@/src/world";
 
 export type UnitSystem = "aviation" | "metric";
@@ -17,7 +18,17 @@ export type HudMode = "minimal" | "full" | "off";
 export type RenderingMode = RequestedRenderingMode;
 
 export interface GameSettings {
+  /**
+   * The aeroplane: what an aircraft session flies, and what the menu's
+   * attract flight always shows, whatever is selected to drive.
+   */
   aircraft: AircraftKind;
+  /**
+   * What Start drives: one of the aircraft (then equal to `aircraft`) or a
+   * surface vehicle. Saved settings from before vehicles existed carry only
+   * `aircraft`, and migrate to driving it.
+   */
+  vehicle: VehicleKind;
   quality: QualityLevel;
   renderingMode: RenderingMode;
   flightMode: FlightMode;
@@ -84,6 +95,7 @@ export const TIME_OF_DAY_PRESET_CLOCKS: Readonly<
 
 export const DEFAULT_SETTINGS: GameSettings = {
   aircraft: "trainer",
+  vehicle: "trainer",
   quality: "medium",
   renderingMode: "balanced",
   // Full pilot authority is the default. Assistance is an explicit selection.
@@ -139,11 +151,13 @@ export function validateSettings(value: unknown): GameSettings {
     ["dawn", "day", "golden", "night"] as const,
     DEFAULT_SETTINGS.timeOfDay,
   );
+  // Reads the catalogue rather than a second hand-written list: a saved
+  // preference naming an airframe this build does not have falls back to the
+  // default, which is what makes adding or removing one safe.
+  const aircraft = oneOf(source.aircraft, AIRCRAFT_KINDS, DEFAULT_SETTINGS.aircraft);
   return {
-    // Reads the catalogue rather than a second hand-written list: a saved
-    // preference naming an airframe this build does not have falls back to the
-    // default, which is what makes adding or removing one safe.
-    aircraft: oneOf(source.aircraft, AIRCRAFT_KINDS, DEFAULT_SETTINGS.aircraft),
+    aircraft,
+    vehicle: oneOf(source.vehicle, VEHICLE_KINDS, aircraft),
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
     renderingMode: renderingMode(source.renderingMode),
     flightMode: oneOf(

@@ -16,6 +16,10 @@ import {
   applyAerialPerspectiveToShaderMaterial,
   type AerialPerspectiveBinding,
 } from "@/src/render/webgpu/atmosphere/AerialPerspective";
+import {
+  keepOpaqueDepthForRenderingGroup,
+  WATER_RENDERING_GROUP_ID,
+} from "@/src/render/webgpu/core/RenderingGroups";
 /**
  * `7-5` — the ~200 lights you SEE.
  *
@@ -98,6 +102,27 @@ export function lightPointRadiusPixels(
  * CPU by `AirfieldLightingSystem.update`.
  */
 export const LIGHT_POINT_BEAM_SOFTNESS = 0.08;
+
+/**
+ * Where the light points draw: in the water's group, after the ocean (0),
+ * inland water (1) and the boat wake (1.5), before volcanic steam (2) and
+ * boat spray (2.5).
+ *
+ * NOT in the opaque world's group 0, where they drew until 2026-10-26. The
+ * mesh writes no depth, so the water drawn after it in group 1 passed the
+ * depth test wherever a lamp stood against open water and painted over it:
+ * the home marina's entrance beacons, on posts in the basin mouth, rendered
+ * nothing at 40 cd or at 4,000 cd, held lit, pixel for pixel. Lamps against
+ * land, a deck or a wall kept their light because the water is depth-tested
+ * away there. Steam and spray stay after the lamps: they stand in front of
+ * a lamp and veil it.
+ *
+ * The lamps still depth-test against everything opaque. The water writes no
+ * depth either, so it cannot hide a lamp now; in this flat world the only
+ * lamp it should hide is one low over the sea behind a crest, seen from a
+ * boat's eye height, and that lamp now shows through the crest.
+ */
+export const LIGHT_POINT_ALPHA_INDEX = 1.75;
 
 /**
  * The beam gain for a fixture, mirroring the shader exactly.
@@ -573,6 +598,9 @@ export class LightPointSystem {
     this.mesh.applyFog = false;
     this.mesh.alwaysSelectAsActiveMesh = true;
     this.mesh.receiveShadows = false;
+    this.mesh.renderingGroupId = WATER_RENDERING_GROUP_ID;
+    this.mesh.alphaIndex = LIGHT_POINT_ALPHA_INDEX;
+    keepOpaqueDepthForRenderingGroup(scene, WATER_RENDERING_GROUP_ID);
 
     this.material = new ShaderMaterial(
       "light-points-material",
@@ -776,6 +804,36 @@ export class LightPointSystem {
       const colour = colors[index]!;
       for (let corner = 0; corner < 4; corner += 1) {
         const vertex = index * 4 + corner;
+        buffer[vertex * 3] = colour[0];
+        buffer[vertex * 3 + 1] = colour[1];
+        buffer[vertex * 3 + 2] = colour[2];
+      }
+    }
+    this.mesh.updateVerticesData("lightColor", buffer, false, false);
+  }
+
+  /**
+   * Recolour home fixtures `[start, start + colours.length)`: the airfield's
+   * on a PAPI transition, the home marina's (appended after the airfield's at
+   * construction) when a beacon flashes or the marina is culled. Uploads the
+   * whole colour buffer, as `setColors` does, from the same persistent array.
+   */
+  setColorRange(
+    start: number,
+    colours: readonly (readonly [number, number, number])[],
+  ): void {
+    if (start < 0 || start + colours.length > this.fixtureCount) {
+      throw new RangeError(
+        `light-point colour update [${start}, ${start + colours.length}) is outside `
+        + `the ${this.fixtureCount} home fixtures`,
+      );
+    }
+    if (colours.length === 0) return;
+    const buffer = this.colourBuffer;
+    for (let index = 0; index < colours.length; index += 1) {
+      const colour = colours[index]!;
+      for (let corner = 0; corner < 4; corner += 1) {
+        const vertex = (start + index) * 4 + corner;
         buffer[vertex * 3] = colour[0];
         buffer[vertex * 3 + 1] = colour[1];
         buffer[vertex * 3 + 2] = colour[2];

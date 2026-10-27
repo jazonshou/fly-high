@@ -63,6 +63,11 @@ import {
   type TerrainLandformDataSource,
 } from "./TerrainLandformKernel";
 import {
+  TERRAIN_INFRASTRUCTURE_WGSL,
+  TerrainInfrastructureDataBinding,
+  terrainInfrastructureDataBindingWgsl,
+} from "./TerrainInfrastructureKernel";
+import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   TERRAIN_HEIGHT_SLOT_EDGE,
   TERRAIN_SUPERSAMPLE_OFFSETS,
@@ -890,6 +895,8 @@ const PAGE_APRON_EDGE = PAGE_WORKGROUP_EDGE + 2;
 export const TERRAIN_PAGE_BOUNDS_SLOTS = 4;
 /** The landform data binding's slot in the page-generation bind group. */
 const PAGE_LANDFORM_DATA_BINDING = 6;
+/** The infrastructure index's slot in the page-generation bind group. */
+const PAGE_INFRASTRUCTURE_DATA_BINDING = 7;
 
 /**
  * The page-generation compute shader.
@@ -914,8 +921,10 @@ export function terrainPageGenerationWgsl(
   return /* wgsl */ `
 ${bindingWgsl}
 ${terrainLandformDataBindingWgsl(0, PAGE_LANDFORM_DATA_BINDING)}
+${terrainInfrastructureDataBindingWgsl(0, PAGE_INFRASTRUCTURE_DATA_BINDING)}
 ${kernelWgsl}
 ${TERRAIN_LANDFORM_WGSL}
+${TERRAIN_INFRASTRUCTURE_WGSL}
 ${airportWgsl}
 ${runwayEarthworksSetWgsl("earthworks")}
 
@@ -967,18 +976,21 @@ var<workgroup> groupDeviation: atomic<u32>;
  */
 fn pageHeightAt(job: PageJob, localX: f32, localZ: f32) -> f32 {
   let natural = terrainNaturalHeight(localX, localZ);
-  // natural -> landforms -> earthworks, sampleTerrainHeight's order. The
-  // landform stage reads the intermediates the call above recorded, so the
-  // kernel runs once; inside the landform core, and on a page built without a
-  // landform input, it returns natural itself, bit for bit.
+  // natural -> landforms -> infrastructure -> earthworks, sampleTerrainHeight's
+  // order. The landform stage reads the intermediates the call above
+  // recorded, so the kernel runs once; inside the landform core, and on a
+  // page built without a landform input, it returns natural itself, bit for
+  // bit, and the infrastructure stage returns its input wherever no segment
+  // reaches (everywhere, in a world with none).
   let landformed = terrainLandforms(localX, localZ, natural);
+  let built = terrainInfrastructure(localX, localZ, landformed);
   // 4-3/4-9: the page stores the AIRPORT-FLATTENED height. The CDLOD min/max
   // AABB has to be correct over the airport, the collision fast path returns
   // the crowned platform, and after 4-4 there is no CPU tile path left to
   // apply the earthworks anywhere else. The airport is the one whose centre
   // is nearest, as the CPU's worldAirportAt picks it.
   return terrainRunwayEarthworksNearestHeight(
-    landformed,
+    built,
     job.world.x + localX - job.placement.z,
     job.world.y + localZ - job.placement.w,
   );
@@ -1239,6 +1251,8 @@ export class TerrainPageGenerator {
   private readonly landformBinding: TerrainLandformDataBinding;
   /** The world's landform core and wind (`terrainLandformInput`), or gain 0. */
   private readonly landform: TerrainKernelLandformInput | null;
+  /** `terrainInfrastructureData`: the world's infrastructure index, packed on first bind. */
+  private readonly infrastructureBinding: TerrainInfrastructureDataBinding;
   private capacity = 0;
   private inFlight: readonly TerrainAtlasSlot[] = [];
   private readbacksInFlight = 0;
@@ -1280,6 +1294,9 @@ export class TerrainPageGenerator {
     // Without a world the pages are the natural kernel's, as they always were.
     this.landform = this.world ? terrainLandformInput(this.world) : null;
     this.landformBinding = new TerrainLandformDataBinding(options.landformData ?? null);
+    // Infrastructure rides the landform base (the page's split offset from
+    // the core), so a page without a landform input has no stage either.
+    this.infrastructureBinding = new TerrainInfrastructureDataBinding(this.landform ? this.world : null);
     this.erosionExecutor = this.world?.worldEvolution === "eroded"
       ? options.erosionExecutor ?? new TerrainPageErosionClient(this.world)
       : null;
@@ -1598,6 +1615,7 @@ export class TerrainPageGenerator {
     // already encoded.
     shader.setStorageBuffer("pageBounds", boundsBuffer);
     this.landformBinding.bind(this.engine as WebGPUEngine, shader);
+    this.infrastructureBinding.bind(this.engine as WebGPUEngine, shader);
     // Captured before the dispatch: a regenerated slot is one that was
     // already resident when its batch was recorded.
     const regenerated = slots.map(
@@ -1993,6 +2011,7 @@ export class TerrainPageGenerator {
     this.earthworksBuffer?.dispose();
     this.earthworksBuffer = null;
     this.landformBinding.dispose();
+    this.infrastructureBinding.dispose();
     this.jobBuffer = null;
     this.pageBuffer = null;
     this.offsetBuffer = null;
@@ -2060,6 +2079,7 @@ export class TerrainPageGenerator {
           supersample: { group: 0, binding: 4 },
           earthworks: { group: 0, binding: 5 },
           terrainLandformData: { group: 0, binding: PAGE_LANDFORM_DATA_BINDING },
+          terrainInfrastructureData: { group: 0, binding: PAGE_INFRASTRUCTURE_DATA_BINDING },
         },
       },
     );

@@ -19,6 +19,11 @@ import type { DataBuffer } from "@babylonjs/core/Buffers/dataBuffer";
 import type { Scene } from "@babylonjs/core/scene";
 import type { TerrainSample } from "@/src/world/types";
 import { TerrainBiome } from "@/src/world";
+import {
+  INFRASTRUCTURE_PLANT_BLEND_METERS,
+  infrastructurePlantFactor,
+  type InfrastructurePlantExclusion,
+} from "@/src/world/infrastructure";
 import { classifyLandCover } from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import {
   SURFACE_MATERIALS,
@@ -139,6 +144,12 @@ export interface GroundCoverSystemOptions {
   readonly seedHash?: number;
   readonly seaLevelMeters?: number;
   /**
+   * Built ground no plant grows on (`infrastructurePlantExclusions`): the
+   * blades take the detail scatter's gate, so neither grows through a
+   * slipway. Absent or empty: every texel exactly as before.
+   */
+  readonly plantExclusions?: readonly InfrastructurePlantExclusion[];
+  /**
    * `6-9` / §7 R4: opt in to the GPU-written indirect instance count. OFF by
    * default — the CPU-readback count is the shipped path — and asserts
    * loudly at construction when the Babylon private surface has moved.
@@ -198,6 +209,7 @@ interface GroundCoverRingResources {
   indirectPassId: number | null;
 }
 
+const NO_PLANT_EXCLUSIONS: readonly InfrastructurePlantExclusion[] = Object.freeze([]);
 const BLADE_BASE_HEIGHT_METERS = 0.42;
 const BLADE_BASE_WIDTH_METERS = 0.016;
 
@@ -850,13 +862,24 @@ export class GroundCoverSystem {
     const seaLevel = this.options.seaLevelMeters ?? 0;
     const seedHash = this.options.seedHash;
     const worldZ = this.backTileOriginZ + (attrRow + 0.5) * step;
+    const plantExclusions = this.rowPlantExclusions(
+      worldZ,
+      this.backTileOriginX + from * step,
+      this.backTileOriginX + to * step,
+    );
     for (let column = from; column < to; column += 1) {
       const worldX = this.backTileOriginX + (column + 0.5) * step;
       const sample = this.options.terrainSample(worldX, worldZ);
       const at = (attrRow * attrEdge + column) * 4;
-      // No cover on runways or in/near water (biome 0 = WATER, 1 = BEACH).
+      // Built ground keeps this share of the blades: 0 on it, exactly 1 off it.
+      const built = plantExclusions.length === 0
+        ? 1
+        : infrastructurePlantFactor(plantExclusions, worldX, worldZ);
+      // No cover on runways, built ground, or in/near water (biome 0 = WATER,
+      // 1 = BEACH).
       if (
         sample.isRunway
+        || built <= 0
         || sample.biome === TerrainBiome.WATER
         || sample.biome === TerrainBiome.BEACH
       ) {
@@ -921,10 +944,32 @@ export class GroundCoverSystem {
       // and moving it would move shipped pixels for a reason 6-9 does not
       // have. The other three archetypes take the card path's coverage below.
       this.backAttributes[at + 3] = Math.round(
-        Math.min(1, Math.max(0, grassWeight * 1.35 * clearance)) * 255,
+        Math.min(1, Math.max(0, grassWeight * 1.35 * clearance)) * built * 255,
       );
-      this.bakeDriverTexel(at, worldX, worldZ, sample, seedHash, seaLevel);
+      this.bakeDriverTexel(at, worldX, worldZ, sample, seedHash, seaLevel, built);
     }
+  }
+
+  /**
+   * The plant exclusions whose blend band reaches a row from `minX` to
+   * `maxX`, so a row off every site tests none (each row bakes 64 texels).
+   * Dropping one never changes a texel: past radius + blend its factor is 1.
+   */
+  private rowPlantExclusions(z: number, minX: number, maxX: number): readonly InfrastructurePlantExclusion[] {
+    const exclusions = this.options.plantExclusions;
+    if (exclusions === undefined || exclusions.length === 0) return NO_PLANT_EXCLUSIONS;
+    let row: InfrastructurePlantExclusion[] | null = null;
+    for (const exclusion of exclusions) {
+      const reach = exclusion.radius + INFRASTRUCTURE_PLANT_BLEND_METERS;
+      if (
+        Math.min(exclusion.az, exclusion.bz) - reach > z
+        || Math.max(exclusion.az, exclusion.bz) + reach < z
+        || Math.min(exclusion.ax, exclusion.bx) - reach > maxX
+        || Math.max(exclusion.ax, exclusion.bx) + reach < minX
+      ) continue;
+      (row ??= []).push(exclusion);
+    }
+    return row ?? NO_PLANT_EXCLUSIONS;
   }
 
   /**
@@ -945,6 +990,7 @@ export class GroundCoverSystem {
     sample: TerrainSample,
     seedHash: number | undefined,
     seaLevel: number,
+    built: number,
   ): void {
     if (seedHash === undefined) {
       // No world seed (fixtures, or a host with no density field): the mix
@@ -982,7 +1028,8 @@ export class GroundCoverSystem {
       : Math.min(1, Math.max(0, 0.35 + sample.moisture * 0.5 + closure * 0.15))
         * (1 - 0.6 * Math.min(1, Math.max(0, sample.airportInfluence)))
         * dryProvinceGroundCoverKeep(sample.dryness)
-        * sandCoverGroundFactor(sample.sandCover);
+        * sandCoverGroundFactor(sample.sandCover)
+        * built;
     this.backDrivers[at] = Math.round(Math.min(1, Math.max(0, sample.moisture)) * 255);
     this.backDrivers[at + 1] = Math.round(shade * 255);
     this.backDrivers[at + 2] = Math.round(Math.min(1, Math.max(0, field.riparianBand)) * 255);

@@ -1,4 +1,5 @@
-import type { ControlState } from "@/src/game/types";
+import type { BoatControlState, ControlState } from "@/src/game/types";
+import type { SpawnKind } from "@/src/workers/protocol";
 
 export type InputAction =
   | "pause"
@@ -11,7 +12,8 @@ export type InputAction =
   | "trimUp"
   | "trimDown"
   | "nearestAirport"
-  | "autoland";
+  | "autoland"
+  | "moor";
 
 export interface InputOptions {
   sensitivity: number;
@@ -106,6 +108,7 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
   KeyG: "gearToggle",
   KeyN: "nearestAirport",
   KeyL: "autoland",
+  KeyM: "moor",
   ArrowUp: "trimUp",
   ArrowDown: "trimDown",
 };
@@ -113,8 +116,42 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
 const HELD_CONTROL_KEYS = new Set([
   "KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE",
   "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
-  "Space",
+  "Space", "KeyF", "KeyV",
 ]);
+
+/** Which set of controls the keys and pad drive. A dock start drives a boat. */
+export type InputProfile = "aircraft" | "boat";
+
+export function inputProfileForSpawn(spawn: SpawnKind): InputProfile {
+  return spawn === "dock" ? "boat" : "aircraft";
+}
+
+/** Lever travel per second while Shift/Ctrl or a trigger is held: neutral to full ahead in 1.7 s. */
+const BOAT_LEVER_RATE = 0.6;
+const BOAT_STEER_RATE = 1.2;
+/** The wheel drifts back to centre when let go, slower than it is turned. */
+const BOAT_STEER_RETURN_RATE = 0.8;
+
+/**
+ * One step of the boat's single-lever binnacle control. Moving through
+ * neutral stops AT neutral, the detent a real lever has, and stays there
+ * until the control is released and pushed again: holding Ctrl to slow down
+ * must not carry on into reverse.
+ */
+export function stepBoatLever(
+  lever: number,
+  direction: number,
+  detentHeld: boolean,
+  deltaSeconds: number,
+): { lever: number; detentHeld: boolean } {
+  if (direction === 0) return { lever, detentHeld: false };
+  if (detentHeld) return { lever: 0, detentHeld: true };
+  const next = Math.min(1, Math.max(-1, lever + direction * BOAT_LEVER_RATE * Math.max(0, deltaSeconds)));
+  if (lever !== 0 && (next === 0 || Math.sign(next) !== Math.sign(lever))) {
+    return { lever: 0, detentHeld: true };
+  }
+  return { lever: next, detentHeld: false };
+}
 
 const INTERACTIVE_SELECTOR = [
   "button",
@@ -199,6 +236,12 @@ export class InputManager {
   private yawTapRemaining = 0;
   private pointerLocked = false;
   private disposed = false;
+  private profile: InputProfile = "aircraft";
+  private boatLever = 0;
+  private boatLeverDetent = false;
+  private boatSteer = 0;
+  private moorPresses = 0;
+  private padMoorWasDown = false;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -279,7 +322,7 @@ export class InputManager {
     if (gamepad.throttle !== null) this.throttle = smoothAxis(this.throttle, gamepad.throttle, 4, deltaSeconds);
     else this.throttle = Math.min(1, Math.max(0, this.throttle + throttleDirection * deltaSeconds * 0.6));
 
-    return {
+    const controls: ControlState = {
       pitch: Math.min(1, Math.max(-1, this.pitch)),
       roll: Math.min(1, Math.max(-1, this.roll)),
       yaw: Math.min(1, Math.max(-1, this.yaw)),
@@ -288,6 +331,52 @@ export class InputManager {
       flaps: this.flaps,
       brake: Math.max(keyboardBrakeCommand(this.pressed), gamepad.brake),
       gear: this.gear,
+    };
+    if (this.profile === "boat") controls.boat = this.boatControls(deltaSeconds, gamepad);
+    return controls;
+  }
+
+  get inputProfile(): InputProfile {
+    return this.profile;
+  }
+
+  /**
+   * The boat's helm, from the same keys and pad (see the plan's controls
+   * table): Shift/Ctrl or the triggers move the lever, A/D (Q/E too) or the
+   * left stick turn the wheel, S/W or the right stick work the power trim
+   * (S trims out, bow up, as pulling back raises a nose), F/V or the
+   * bumpers work the tabs (F lowers them, bow down, as flaps go down), Space
+   * or B brings the lever to neutral, M or Y moors and casts off.
+   */
+  private boatControls(deltaSeconds: number, gamepad: ReturnType<InputManager["readGamepad"]>): BoatControlState {
+    const leverDirection = Math.min(1, Math.max(-1, keyboardThrottleDirection(this.pressed) + gamepad.triggers));
+    const lever = stepBoatLever(this.boatLever, leverDirection, this.boatLeverDetent, deltaSeconds);
+    this.boatLever = lever.lever;
+    this.boatLeverDetent = lever.detentHeld;
+    if (this.pressed.has("Space") || gamepad.buttonB) {
+      this.boatLever = 0;
+      this.boatLeverDetent = leverDirection !== 0;
+    }
+
+    const keySteer = Math.min(1, Math.max(-1,
+      keyboardRollCommand(this.pressed) + (this.pressed.has("KeyE") ? 1 : 0) - (this.pressed.has("KeyQ") ? 1 : 0),
+    ));
+    if (Math.abs(gamepad.roll) > 0.01) {
+      this.boatSteer = smoothAxis(this.boatSteer, gamepad.roll, 8, deltaSeconds);
+    } else {
+      this.boatSteer = slewAxis(this.boatSteer, keySteer, BOAT_STEER_RATE, BOAT_STEER_RETURN_RATE, deltaSeconds);
+    }
+
+    const keyTrim = (this.pressed.has("KeyS") ? 1 : 0) - (this.pressed.has("KeyW") ? 1 : 0);
+    const keyTabs = (this.pressed.has("KeyF") ? 1 : 0) - (this.pressed.has("KeyV") ? 1 : 0);
+    if (gamepad.buttonY && !this.padMoorWasDown) this.moorPresses += 1;
+    this.padMoorWasDown = gamepad.buttonY;
+    return {
+      lever: this.boatLever,
+      steer: Math.min(1, Math.max(-1, this.boatSteer)),
+      trim: Math.min(1, Math.max(-1, keyTrim + gamepad.rightStickY)),
+      tabs: Math.min(1, Math.max(-1, keyTabs + gamepad.bumpers)),
+      moorPresses: this.moorPresses,
     };
   }
 
@@ -300,6 +389,7 @@ export class InputManager {
       if (action === "gearToggle") this.gear = toggledGearPosition(this.gear);
       if (action === "trimUp") this.trim = Math.min(1, this.trim + 0.04);
       if (action === "trimDown") this.trim = Math.max(-1, this.trim - 0.04);
+      if (action === "moor") this.moorPresses += 1;
     }
     return result;
   }
@@ -337,12 +427,17 @@ export class InputManager {
   }
 
   resetForSpawn(
-    spawn: "airborne" | "runway",
+    spawn: SpawnKind,
     airborneThrottle = 0.68,
     runwayTrim = 0.04,
     airborneGear = 1,
     runwayFlaps = 0,
   ): void {
+    this.profile = inputProfileForSpawn(spawn);
+    this.boatLever = 0;
+    this.boatLeverDetent = false;
+    this.boatSteer = 0;
+    this.moorPresses = 0;
     this.pressed.clear();
     this.actions.clear();
     this.roll = 0;
@@ -436,11 +531,22 @@ export class InputManager {
     throttle: number | null;
     throttleStep: number;
     brake: number;
+    /** Standard pad only: right trigger minus left, the boat's lever. */
+    triggers: number;
+    /** Standard pad only: right bumper minus left, the boat's tabs. */
+    bumpers: number;
+    /** Standard pad only: the right stick's Y, pulled back positive, the boat's trim. */
+    rightStickY: number;
+    buttonB: boolean;
+    buttonY: boolean;
   } {
     const pads = navigator.getGamepads?.() ?? [];
     const pad = [...pads].find((candidate) => candidate?.connected);
     if (!pad) {
-      return { roll: 0, pitch: 0, yaw: 0, throttle: null, throttleStep: 0, brake: 0 };
+      return {
+        roll: 0, pitch: 0, yaw: 0, throttle: null, throttleStep: 0, brake: 0,
+        triggers: 0, bumpers: 0, rightStickY: 0, buttonB: false, buttonY: false,
+      };
     }
     const axis = (index: number): number =>
       responseCurve(applyDeadZone(pad.axes[index] ?? 0, this.options.deadZone), this.options.sensitivity);
@@ -465,6 +571,11 @@ export class InputManager {
         pad.buttons[1]?.value ?? 0,
         standardPad ? pad.buttons[6]?.value ?? 0 : 0,
       ),
+      triggers: standardPad ? (pad.buttons[7]?.value ?? 0) - (pad.buttons[6]?.value ?? 0) : 0,
+      bumpers: standardPad ? (pad.buttons[5]?.value ?? 0) - (pad.buttons[4]?.value ?? 0) : 0,
+      rightStickY: standardPad && pad.axes.length > 3 ? axis(3) : 0,
+      buttonB: (pad.buttons[1]?.value ?? 0) > 0.5,
+      buttonY: standardPad && (pad.buttons[3]?.value ?? 0) > 0.5,
     };
   }
 }

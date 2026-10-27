@@ -207,6 +207,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Cloud light-step", (p: (typeof PROFILES)[number]) => p.cloudLightSteps],
     ["Active-animal budget", (p: (typeof PROFILES)[number]) => p.activeAnimalBudget],
     ["Volcanic steam wisp cap", (p: (typeof PROFILES)[number]) => p.volcanicSteamMaxWisps],
+    ["Boat spray particle cap", (p: (typeof PROFILES)[number]) => p.boatSprayParticleCap],
+    ["Boat wake trail seconds", (p: (typeof PROFILES)[number]) => p.boatWakeTrailSeconds],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
@@ -232,6 +234,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
       ["Volcanic materials", (p: (typeof PROFILES)[number]) => p.volcanicMaterials],
       ["Vegetation casts shadows",
         (p: (typeof PROFILES)[number]) => p.vegetationCastsShadows],
+      ["Home marina casts shadows",
+        (p: (typeof PROFILES)[number]) => p.marinaCastsShadows],
     ];
 
   it.each(TIER_BOOLEAN_ROW_CHECKS)(

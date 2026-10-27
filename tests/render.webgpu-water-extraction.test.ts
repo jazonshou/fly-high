@@ -298,12 +298,38 @@ describe("water shader extraction (2-8a)", () => {
     // smoothstep's edges by the carbonate was not, which is why the fades are
     // two literal-edged ones), and within last-bit rounding on Metal, which
     // reassociates.
+    //
+    // Re-pinned, VERTEX ONLY and text only, when the boats' sea twin moved the
+    // cascade displacement into OCEAN_SURFACE_DISPLACEMENT_WGSL so a wake can
+    // ride the drawn waves: the same uniforms, the same fades and the same five
+    // samples, now called through oceanSurfaceFades and
+    // oceanSurfaceCascadeDisplacement.
+    //
+    // Re-pinned, BOTH hashes, by the half-texel alignment
+    // (OCEAN_FFT_TEXEL_ALIGNMENT_WGSL): every cascade's displacement, slope
+    // and foam are now fetched where the FFT computed them instead of half a
+    // texel downstream, so every water pixel moves by that much of each
+    // band's phase (45 degrees on the shortest waves of each band at tier 1).
     // Deliberate, named, reviewed.
+    //
+    // Re-pinned, the VERTEX hash only, by the marina shelter field (boats T1,
+    // SEA_SHELTER_WGSL): the cascade displacement is scaled by
+    // seaShelterFactor, which is exactly 1 with no basin set, so no pixel
+    // moves until a world publishes its marina's ellipse.
+    //
+    // Re-pinned, FRAGMENT ONLY and text only, by the boat's hull clip
+    // (boat/oceanHullClip.ts): two `#ifdef OCEAN_HULL_CLIP` blocks, the
+    // declarations before `@fragment` and a discard after the dry-bed one.
+    // Only a boat session sets the define, so for every other session the
+    // preprocessor strips both and the compiled shader is the one before:
+    // the text with the two blocks taken out hashes to the previous pin
+    // (0fe7b0f4...), and tests/gpu/boat-effects-compile.test.ts compares the
+    // compiled module on a real adapter.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
-      "7a22f44586e782bb4373d85e8a6f7ff21adaba05660f9d7849e7731ef344eab4",
+      "acc8d499e85806a3ff438bcefad28de5d84ed4146bd548db3ba5080df2fdc760",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "5bfdc4c6d1da8171922929b1dda80472fe79f9786b2ec1a11a1eaaee1b182704",
+      "57b8f69c5847fdf6d60752dbce42ed0e8199857d5da086daa981e8f44731a01b",
     );
   });
 

@@ -73,7 +73,7 @@ import {
 import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
-import { resolveShotPlacement } from "../shotPlacement";
+import { boatShotState, resolveShotPlacement } from "../shotPlacement";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
@@ -624,12 +624,14 @@ async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
   landforms: PerfCaptureShotDefinition["landforms"],
+  boat: boolean,
   fresh = false,
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  const forcedKey = climateProvince === undefined && landforms === undefined
+  // A boat shot is a boundary too: its renderer is built with the speedboat.
+  const forcedKey = climateProvince === undefined && landforms === undefined && !boat
     ? null
-    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null });
+    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null, ...(boat ? { boat } : {}) });
   if (!fresh && renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
@@ -666,13 +668,17 @@ async function ensureRenderer(
     ...agentTerrainSamplers(activeWorld, config.gameTerrainHeight, sampleTerrain, sampleTerrainHeight),
     world: activeWorld,
     seed: activeWorld.sourceSeedHash,
+    // Every shot renders Clear, so build the sea for Clear's wind (an arm
+    // whose renderer predates the option ignores it).
+    weather: "clear",
     quality: config.quality as QualityLevel,
     renderingMode: config.renderingMode as RenderingMode,
     reducedMotion: false,
     pinnedRenderScale: profile.renderScale,
     // The capture's rig, for the same reason: the cockpit shots were placed
-    // for it (tests/render.cockpit-rig.test.ts lists the callers).
-    cockpitRigOverride: PERF_COCKPIT_RIG,
+    // for it (tests/render.cockpit-rig.test.ts lists the callers). A boat's
+    // helm view is the gameplay one, as the capture's.
+    ...(boat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
   activeWorldEvolution = worldEvolution;
@@ -827,7 +833,13 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms, request.freshRenderer);
+    await ensureRenderer(
+      shot.worldEvolution ?? "analytic",
+      shot.climateProvince,
+      shot.landforms,
+      shot.boat !== undefined,
+      request.freshRenderer,
+    );
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
@@ -872,20 +884,22 @@ const agent: PerfAgent = {
         )
       : 0;
     const heading = headingVectorFromYaw(yawDegrees);
-    const state: FlightVisualState = {
-      ...INITIAL_VISUAL_STATE,
-      position: { x: positionX, y: altitude, z: positionZ },
-      velocity: {
-        x: shot.airspeedMetersPerSecond * heading.x,
-        y: 0,
-        z: shot.airspeedMetersPerSecond * heading.z,
-      },
-      orientation: orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0),
-      airspeed: shot.airspeedMetersPerSecond,
-      altitude,
-      altitudeAgl: altitude - groundHeight,
-      simulationTime,
-    };
+    const state: FlightVisualState = shot.boat
+      ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+      : {
+          ...INITIAL_VISUAL_STATE,
+          position: { x: positionX, y: altitude, z: positionZ },
+          velocity: {
+            x: shot.airspeedMetersPerSecond * heading.x,
+            y: 0,
+            z: shot.airspeedMetersPerSecond * heading.z,
+          },
+          orientation: orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0),
+          airspeed: shot.airspeedMetersPerSecond,
+          altitude,
+          altitudeAgl: altitude - groundHeight,
+          simulationTime,
+        };
     active.setCameraMode(shot.cameraMode);
     context = {
       shot,
@@ -918,7 +932,7 @@ const agent: PerfAgent = {
       viewport: { width: viewportWidth, height: viewportHeight },
       raster: { width: raster.width, height: raster.height },
       renderScale,
-      position: { x: positionX, y: altitude, z: positionZ },
+      position: { ...state.position },
       yawDegrees,
       elapsedMs: performance.now() - started,
     };

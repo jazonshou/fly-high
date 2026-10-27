@@ -1,6 +1,9 @@
 import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
-import { aircraftSpec } from "@/src/aircraft/catalogue";
+import { aircraftSpec, type EngineSoundSpec } from "@/src/aircraft/catalogue";
+import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
+import { isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
+import { BoatVoice, boatSoundTargets } from "./boatVoice";
 
 export interface AudioLevels {
   master: number;
@@ -10,6 +13,12 @@ export interface AudioLevels {
 
 export interface FlightAudioOptions extends AudioLevels {
   aircraft?: AircraftKind;
+  /**
+   * The surface vehicle this session can drive, if any: its engine voices
+   * the graph whenever the state carries its payload, and the aircraft's does
+   * otherwise (the menu's attract flight).
+   */
+  vehicle?: VehicleKind;
 }
 
 /** Level of the engine's second harmonic against its fundamental. */
@@ -31,6 +40,13 @@ export class FlightAudio {
   private windSource: AudioBufferSourceNode | null = null;
   private levels: AudioLevels;
   private readonly aircraft: AircraftKind;
+  private readonly surfaceVehicle: SurfaceVehicleSpec | null;
+  /** The engine the oscillators and filter are tuned for right now. */
+  private voicedSound: EngineSoundSpec | null = null;
+  private engineFilter: BiquadFilterNode | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+  /** The boat's own layer, built the first time a boat's state arrives. */
+  private boatVoice: BoatVoice | null = null;
   private enabled = false;
   private desiredEnabled = false;
   private activationGeneration = 0;
@@ -41,6 +57,9 @@ export class FlightAudio {
   constructor(options: FlightAudioOptions) {
     this.levels = options;
     this.aircraft = options.aircraft ?? "trainer";
+    this.surfaceVehicle = options.vehicle && isSurfaceVehicleKind(options.vehicle)
+      ? surfaceVehicleSpec(options.vehicle)
+      : null;
   }
 
   async unlock(): Promise<void> {
@@ -75,20 +94,30 @@ export class FlightAudio {
     const context = this.context;
     if (!context || !this.enabled) return;
     const now = context.currentTime;
-    const rpmRatio = normalizedEngineSpeed(this.aircraft, state.engineRpm);
-    const sound = aircraftSpec(this.aircraft).engineSound;
+    const surface = state.vehicle ? this.surfaceVehicle : null;
+    const rpmRatio = surface
+      ? Math.min(1.2, Math.max(0, state.engineRpm / surface.engineReadout.maximum))
+      : normalizedEngineSpeed(this.aircraft, state.engineRpm);
+    const sound = surface ? surface.engineSound : aircraftSpec(this.aircraft).engineSound;
+    if (sound !== this.voicedSound) this.voiceEngine(sound);
     const baseFrequency = sound.baseHz + rpmRatio * sound.spanHz;
     this.engineOscillators.forEach((oscillator, index) => {
       oscillator.frequency.setTargetAtTime(baseFrequency * (index + 1), now, 0.045);
       oscillator.detune.setTargetAtTime(index === 0 ? -4 : 6, now, 0.08);
     });
-    this.engineGain?.gain.setTargetAtTime(
-      this.levels.engine *
-        (sound.gainBase + rpmRatio * sound.gainSpan) *
-        (0.55 + state.throttle * 0.45),
-      now,
-      0.07,
-    );
+    const engineLevel = this.levels.engine *
+      (sound.gainBase + rpmRatio * sound.gainSpan) *
+      (0.55 + state.throttle * 0.45);
+    this.engineGain?.gain.setTargetAtTime(engineLevel, now, 0.07);
+    const boat = surface && state.vehicle?.kind === "boat" ? state.vehicle : null;
+    if (boat && this.master && this.noiseBuffer && this.engineGain) {
+      this.boatVoice ??= new BoatVoice(context, this.master, this.noiseBuffer, this.engineGain.gain);
+      this.boatVoice.update(state, boat, this.levels, engineLevel);
+      // The exhaust: muffled through the hub under way, open at idle.
+      this.engineFilter?.frequency.setTargetAtTime(boatSoundTargets(state, boat).engineCutoffHz, now, 0.15);
+    } else {
+      this.boatVoice?.silence();
+    }
     const windAmount = Math.min(1, Math.max(0, (state.airspeed - 15) / 75));
     this.windGain?.gain.setTargetAtTime(this.levels.wind * windAmount * 0.12, now, 0.1);
     const groundSpeed = Math.hypot(state.velocity.x, state.velocity.z);
@@ -122,6 +151,8 @@ export class FlightAudio {
     this.enabled = false;
     this.disposed = true;
     for (const oscillator of this.engineOscillators) oscillator.stop();
+    this.boatVoice?.dispose();
+    this.boatVoice = null;
     this.stallOscillator?.stop();
     this.windSource?.stop();
     this.engineOscillators = [];
@@ -177,6 +208,8 @@ export class FlightAudio {
     engineFilter.type = "lowpass";
     engineFilter.frequency.value = sound.filterHz;
     engineFilter.Q.value = sound.filterQ;
+    this.engineFilter = engineFilter;
+    this.voicedSound = sound;
     this.engineGain = context.createGain();
     this.engineGain.gain.value = 0;
     this.engineGain.connect(engineFilter).connect(this.master);
@@ -200,6 +233,7 @@ export class FlightAudio {
     const noiseBuffer = context.createBuffer(1, context.sampleRate * 2, context.sampleRate);
     const noise = noiseBuffer.getChannelData(0);
     for (let index = 0; index < noise.length; index += 1) noise[index] = Math.random() * 2 - 1;
+    this.noiseBuffer = noiseBuffer;
     this.windSource = context.createBufferSource();
     this.windSource.buffer = noiseBuffer;
     this.windSource.loop = true;
@@ -225,6 +259,18 @@ export class FlightAudio {
     this.stallGain.gain.value = 0;
     this.stallOscillator.connect(this.stallGain).connect(this.master);
     this.stallOscillator.start();
+  }
+
+  /** Retunes the engine voice between the aircraft and the surface vehicle. */
+  private voiceEngine(sound: EngineSoundSpec): void {
+    this.voicedSound = sound;
+    if (this.engineFilter) {
+      this.engineFilter.frequency.value = sound.filterHz;
+      this.engineFilter.Q.value = sound.filterQ;
+    }
+    this.engineOscillators.forEach((oscillator, index) => {
+      oscillator.type = sound.waveforms[index]!;
+    });
   }
 
   private playImpact(amount: number): void {
