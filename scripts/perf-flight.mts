@@ -346,6 +346,7 @@ function describeLegPipelines(report: FlightReport): string[] {
     lines.push(`frame ${index} (pitch ${fmt(frame.pitchDownDegrees ?? 0, 0)} deg): ${frame.pipelinesCreated} pipelines, `
       + `render ${fmt(frame.renderMs, 1)} + between ${fmt(frame.betweenMs, 1)}`
       + (frame.fenceMs === undefined ? "" : ` + fence ${fmt(frame.fenceMs, 1)}`) + " ms"
+      + (frame.deferredDraws ? `, ${frame.deferredDraws} draws deferred` : "")
       + (sources.length > 0 ? `: ${sources.join("; ")}` : ""));
   }
   return lines;
@@ -361,9 +362,11 @@ function renderPipelineMarkdown(reports: Record<ArmName, readonly FlightReport[]
       any = true;
       const fenced = report.frames.filter((frame) => frame.fenceMs !== undefined);
       const worst = report.frames.reduce((top, frame) => (frameWallMs(frame) > frameWallMs(top) ? frame : top));
+      const deferred = report.frames.reduce((sum, frame) => sum + (frame.deferredDraws ?? 0), 0);
       lines.push(`- ${arm} leg ${leg + 1}`
         + (fenced.length > 0 ? ` (fence ms p50 ${fmt(percentiles(fenced.map((frame) => frame.fenceMs!)).p50, 1)})` : "")
-        + `, worst frame ${fmt(frameWallMs(worst), 1)} ms:`);
+        + `, worst frame ${fmt(frameWallMs(worst), 1)} ms`
+        + (deferred > 0 ? `, ${deferred} draws waited for an off-frame compile` : "") + ":");
       for (const line of legLines) lines.push(`  - ${line}`);
     }
   }

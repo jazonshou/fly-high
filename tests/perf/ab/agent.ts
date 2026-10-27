@@ -350,6 +350,17 @@ function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuM
 }
 
 /**
+ * Draws skipped so far for a pipeline compiling off the frame; undefined from
+ * a build without `getPipelineCompileStatsForCapture` (read loosely: the arm's
+ * own build is read with this branch's agent).
+ */
+function deferredDrawCount(target: FlightRenderer): number | undefined {
+  const read = (target as unknown as { getPipelineCompileStatsForCapture?: () => unknown }).getPipelineCompileStatsForCapture;
+  const deferred = (read?.call(target) as { deferredDraws?: unknown } | null | undefined)?.deferredDraws;
+  return typeof deferred === "number" ? deferred : undefined;
+}
+
+/**
  * Effects (material x defines) the engine compiles, each named by its shader
  * and by the defines that set it apart from the nearest effect of that shader
  * compiled before it: what a mid-flight pipeline compile is FOR.
@@ -1156,6 +1167,7 @@ const agent: PerfAgent = {
       const shaderCodeBefore = creations.shaderCodeChars;
       const effectsBefore = effectsCompiled.length;
       const pipelineSourcesBefore = pipelineSources.length;
+      const deferredBefore = deferredDrawCount(active);
       const heapBefore = heapUsedBytes();
       const heapBetweenBytes = heapBefore - heapMark;
       const renderStarted = performance.now();
@@ -1199,6 +1211,7 @@ const agent: PerfAgent = {
         effectsCompiled: effectsCompiled.slice(effectsBefore),
         pipelineSources: pipelineSources.slice(pipelineSourcesBefore),
         pitchDownDegrees: path.pitchDownDegrees,
+        ...(deferredBefore === undefined ? {} : { deferredDraws: deferredDrawCount(active)! - deferredBefore }),
         bake,
       });
       if (frame % request.fenceEvery === request.fenceEvery - 1) {

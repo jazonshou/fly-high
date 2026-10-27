@@ -250,6 +250,11 @@ export interface FlightFrame {
   readonly pitchDownDegrees?: number;
   /** On a frame that fenced: ms waiting for the GPU to drain it and the frames since the last fence. */
   readonly fenceMs?: number;
+  /**
+   * Draws this frame skipped because their pipeline was still compiling off
+   * the frame (`AsyncPipelineCompiles`); absent from a build without it.
+   */
+  readonly deferredDraws?: number;
   /** Main-thread milliseconds per frame-graph pass (an older build may report none). */
   readonly passMs: Readonly<Record<string, number>>;
   /**
