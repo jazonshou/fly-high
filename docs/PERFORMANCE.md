@@ -151,7 +151,14 @@ splits it after the tier's own nodes and outside `cdlodNodeBudget`, so it
 never trades nodes with the far field: at most 183 more nodes
 (`terrainNearFloorNodeAllowance`), measured 96-120 on rough ground, in the
 same single terrain draw. It geomorphs to L1 over its outer 64 m, so it
-follows the car without a pop. Aircraft and boat sessions never build it.
+follows the car without a pop. The shadow casters draw the tier's own
+selection from under the patch (its relief is centimetres against L1), so
+the patch costs the beauty and cloud-depth passes only. Timed on Low (A/A
+with the radius at 0 in the base arm, 16 rounds): GPU +4.3% clearing, +4.3%
+dune, +2.2% ford, with about 80 / 60 / 30 more nodes drawn. A 96 m disc with
+a 32 m band measured no cheaper (+4.7 / +5.7 / +4.6%, triangles within 3%),
+so in these scenes the radius is not what the cost follows. Aircraft and
+boat sessions never build it.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
