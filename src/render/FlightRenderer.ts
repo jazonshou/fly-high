@@ -3006,7 +3006,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
       // Road regions still coming bring page rebuilds with them: a capture waits.
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating + (this.roads?.pendingRegions ?? 0),
-      pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
+      // Road changes and chunks still to draw (a frame's budget at a time): a capture waits.
+      pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows
+        + (this.roadSurface?.pendingWork ?? 0),
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
         this.profile,

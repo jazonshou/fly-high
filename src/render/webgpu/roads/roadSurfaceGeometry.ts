@@ -11,7 +11,7 @@ import type { RoadPad, RoadPiece } from "@/src/world/roads/roadNetwork";
 /**
  * The roads' drawn surfaces as plain arrays: ribbons along every road, discs
  * on its pads, and the guardrails' posts and beams. Pure, so Node asserts the
- * shapes; `RoadSurfaceSystem` merges what is within reach into meshes.
+ * shapes; `RoadSurfaceSystem` draws what is within reach, a slot a chunk.
  *
  * WHERE THE HEIGHTS COME FROM. Not from here. Every vertex carries the
  * design height (the formation's crown and cross-fall, the pad's level) only
@@ -73,43 +73,92 @@ export interface RoadSurfaceArrays {
   readonly vertexCount: number;
 }
 
-/** A growable builder for one mesh's arrays. */
+/** A growable builder for one mesh's arrays, typed from the start (a chunk's build is a frame's work). */
 export class RoadSurfaceArrayBuilder {
-  private positions: number[] = [];
-  private normals: number[] = [];
-  private surface: number[] = [];
-  private indices: number[] = [];
+  private positions = new Float32Array(3 * 1_024);
+  private normals = new Float32Array(3 * 1_024);
+  private surface = new Float32Array(4 * 1_024);
+  private indices = new Uint32Array(6 * 1_024);
+  private vertices = 0;
+  private indexCount = 0;
 
   get vertexCount(): number {
-    return this.positions.length / 3;
+    return this.vertices;
+  }
+
+  /** Empty again, keeping its arrays: one builder serves every chunk, and `build` copies out. */
+  reset(): void {
+    this.vertices = 0;
+    this.indexCount = 0;
   }
 
   vertex(x: number, y: number, z: number, nx: number, ny: number, nz: number, a: number, b: number, c: number, d: number): number {
-    const index = this.vertexCount;
-    this.positions.push(x, y, z);
-    this.normals.push(nx, ny, nz);
-    this.surface.push(a, b, c, d);
+    const index = this.vertices;
+    if (3 * (index + 1) > this.positions.length) {
+      this.positions = largerFloats(this.positions);
+      this.normals = largerFloats(this.normals);
+      this.surface = largerFloats(this.surface);
+    }
+    const at3 = 3 * index;
+    const at4 = 4 * index;
+    this.positions[at3] = x;
+    this.positions[at3 + 1] = y;
+    this.positions[at3 + 2] = z;
+    this.normals[at3] = nx;
+    this.normals[at3 + 1] = ny;
+    this.normals[at3 + 2] = nz;
+    this.surface[at4] = a;
+    this.surface[at4 + 1] = b;
+    this.surface[at4 + 2] = c;
+    this.surface[at4 + 3] = d;
+    this.vertices = index + 1;
     return index;
   }
 
   triangle(a: number, b: number, c: number): void {
-    this.indices.push(a, b, c);
+    const at = this.reserve(3);
+    this.indices[at] = a;
+    this.indices[at + 1] = b;
+    this.indices[at + 2] = c;
   }
 
   /** A quad (a, b, c, d) in order round its edge, as two triangles. */
   quad(a: number, b: number, c: number, d: number): void {
-    this.indices.push(a, b, c, a, c, d);
+    const at = this.reserve(6);
+    this.indices[at] = a;
+    this.indices[at + 1] = b;
+    this.indices[at + 2] = c;
+    this.indices[at + 3] = a;
+    this.indices[at + 4] = c;
+    this.indices[at + 5] = d;
   }
 
   build(): RoadSurfaceArrays {
     return {
-      positions: Float32Array.from(this.positions),
-      normals: Float32Array.from(this.normals),
-      surface: Float32Array.from(this.surface),
-      indices: Uint32Array.from(this.indices),
-      vertexCount: this.vertexCount,
+      positions: this.positions.slice(0, 3 * this.vertices),
+      normals: this.normals.slice(0, 3 * this.vertices),
+      surface: this.surface.slice(0, 4 * this.vertices),
+      indices: this.indices.slice(0, this.indexCount),
+      vertexCount: this.vertices,
     };
   }
+
+  private reserve(count: number): number {
+    const at = this.indexCount;
+    while (at + count > this.indices.length) {
+      const grown = new Uint32Array(2 * this.indices.length);
+      grown.set(this.indices);
+      this.indices = grown;
+    }
+    this.indexCount = at + count;
+    return at;
+  }
+}
+
+function largerFloats(array: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffer> {
+  const grown = new Float32Array(2 * array.length);
+  grown.set(array);
+  return grown;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,14 +301,19 @@ export function roadRibbonSpansByChunk(runs: readonly RoadRibbonRun[]): Map<stri
     const stations = run.stations;
     let spanStart = 0;
     let spanKey: string | null = null;
+    // The chunk compared as numbers, its key made only where a span starts.
+    let spanCx = 0;
+    let spanCz = 0;
     for (let index = 0; index + 1 < stations.length; index += 1) {
       const a = stations[index]!;
       const b = stations[index + 1]!;
-      const { cx, cz } = roadRibbonChunkOf((a.x + b.x) / 2, (a.z + b.z) / 2);
-      const key = roadRibbonChunkKey(cx, cz);
-      if (key !== spanKey) {
+      const cx = Math.floor((a.x + b.x) / 2 / ROAD_RIBBON_CHUNK_METERS);
+      const cz = Math.floor((a.z + b.z) / 2 / ROAD_RIBBON_CHUNK_METERS);
+      if (spanKey === null || cx !== spanCx || cz !== spanCz) {
         if (spanKey !== null) push(chunks, spanKey, { run, first: spanStart, last: index });
-        spanKey = key;
+        spanKey = roadRibbonChunkKey(cx, cz);
+        spanCx = cx;
+        spanCz = cz;
         spanStart = index;
       }
     }
@@ -396,20 +450,45 @@ function railFrames(rail: InfrastructureRail, spacing: number): RailFrame[] {
   return frames;
 }
 
-/** Posts every `postSpacing` along the run, set at its points. */
+/**
+ * Posts every `postSpacing` along the run: each at the first of the run's
+ * quarter-metre frames (`railFrames`) that reaches it, walked without making
+ * them.
+ */
 function postFrames(rail: InfrastructureRail): RailFrame[] {
-  const all = railFrames(rail, 0.25);
-  if (all.length === 0) return all;
+  const points = rail.points;
+  const count = points.length / 2;
+  const wanted: RailFrame[] = [];
+  if (count < 2) return wanted;
   const length = roadRailLength(rail);
   const posts = Math.max(1, Math.round(length / ROAD_RAIL_SHAPE.postSpacing));
-  const wanted: RailFrame[] = [];
   let walked = 0;
   let next = 0;
-  for (let index = 0; index < all.length; index += 1) {
-    if (index > 0) walked += Math.hypot(all[index]!.x - all[index - 1]!.x, all[index]!.z - all[index - 1]!.z);
-    while (next <= posts && walked + 1e-6 >= (next / posts) * length) {
-      wanted.push(all[index]!);
-      next += 1;
+  let first = true;
+  let previousX = 0;
+  let previousZ = 0;
+  for (let index = 0; index + 1 < count; index += 1) {
+    const ax = points[index * 2]!;
+    const az = points[index * 2 + 1]!;
+    const bx = points[index * 2 + 2]!;
+    const bz = points[index * 2 + 3]!;
+    const segment = Math.hypot(bx - ax, bz - az);
+    if (segment < 1e-6) continue;
+    const tx = (bx - ax) / segment;
+    const tz = (bz - az) / segment;
+    const steps = Math.max(1, Math.ceil(segment / 0.25));
+    for (let step = first ? 0 : 1; step <= steps; step += 1) {
+      const t = step / steps;
+      const x = ax + (bx - ax) * t;
+      const z = az + (bz - az) * t;
+      if (!first) walked += Math.hypot(x - previousX, z - previousZ);
+      first = false;
+      previousX = x;
+      previousZ = z;
+      while (next <= posts && walked + 1e-6 >= (next / posts) * length) {
+        wanted.push({ x, z, nx: tz, nz: -tx, tx, tz });
+        next += 1;
+      }
     }
   }
   return wanted;
@@ -430,48 +509,9 @@ export function appendRoadRail(
   const shape = ROAD_RAIL_SHAPE;
   const top = rail.heightMeters;
   const postTop = top - shape.postBelowTop;
-  const box = (
-    frame: RailFrame,
-    alongHalf: number,
-    acrossNear: number,
-    acrossFar: number,
-    bottom: number,
-    ceiling: number,
-  ) => {
-    // Corners: along -/+, across near (toward the road) / far.
-    const corner = (along: number, across: number) => [
-      frame.x + frame.tx * along + frame.nx * across - anchorX,
-      frame.z + frame.tz * along + frame.nz * across - anchorZ,
-    ] as const;
-    const faces: readonly (readonly [number, number, number, number, number, number])[] = [
-      // [along0, across0, along1, across1, normal x, normal z] for each vertical face, walked round.
-      [-alongHalf, acrossNear, alongHalf, acrossNear, frame.nx, frame.nz],
-      [alongHalf, acrossNear, alongHalf, acrossFar, frame.tx, frame.tz],
-      [alongHalf, acrossFar, -alongHalf, acrossFar, -frame.nx, -frame.nz],
-      [-alongHalf, acrossFar, -alongHalf, acrossNear, -frame.tx, -frame.tz],
-    ];
-    for (const [along0, across0, along1, across1, nx, nz] of faces) {
-      const [x0, z0] = corner(along0, across0);
-      const [x1, z1] = corner(along1, across1);
-      const a = builder.vertex(x0, bottom, z0, nx, 0, nz, bottom, 0, 0, 0);
-      const b = builder.vertex(x1, bottom, z1, nx, 0, nz, bottom, 0, 0, 0);
-      const c = builder.vertex(x1, ceiling, z1, nx, 0, nz, ceiling, 0, 0, 0);
-      const d = builder.vertex(x0, ceiling, z0, nx, 0, nz, ceiling, 0, 0, 0);
-      builder.quad(a, b, c, d);
-    }
-    const [x00, z00] = corner(-alongHalf, acrossNear);
-    const [x10, z10] = corner(alongHalf, acrossNear);
-    const [x11, z11] = corner(alongHalf, acrossFar);
-    const [x01, z01] = corner(-alongHalf, acrossFar);
-    const a = builder.vertex(x00, ceiling, z00, 0, 1, 0, ceiling, 0, 0, 0);
-    const b = builder.vertex(x10, ceiling, z10, 0, 1, 0, ceiling, 0, 0, 0);
-    const c = builder.vertex(x11, ceiling, z11, 0, 1, 0, ceiling, 0, 0, 0);
-    const d = builder.vertex(x01, ceiling, z01, 0, 1, 0, ceiling, 0, 0, 0);
-    builder.quad(a, b, c, d);
-  };
   const postHalfAcross = shape.postAcross / 2;
   for (const frame of postFrames(rail)) {
-    box(frame, shape.postAlong / 2, postHalfAcross, -postHalfAcross, -shape.postBury, postTop);
+    appendRailBox(builder, frame, anchorX, anchorZ, shape.postAlong / 2, postHalfAcross, -postHalfAcross, -shape.postBury, postTop);
   }
   // The beam: a box section swept along the run, its face toward the road.
   const frames = railFrames(rail, shape.stationMeters);
@@ -497,4 +537,57 @@ export function appendRoadRail(
       previous = a;
     }
   }
+}
+
+/** A box's corner, `along` the frame and `across` toward the road, relative to the anchor. */
+function railCornerX(frame: RailFrame, along: number, across: number, anchorX: number): number {
+  return frame.x + frame.tx * along + frame.nx * across - anchorX;
+}
+
+function railCornerZ(frame: RailFrame, along: number, across: number, anchorZ: number): number {
+  return frame.z + frame.tz * along + frame.nz * across - anchorZ;
+}
+
+/** One vertical face of a box, from corner 0 to corner 1, bottom to ceiling. */
+function appendRailFace(
+  builder: RoadSurfaceArrayBuilder,
+  x0: number, z0: number, x1: number, z1: number,
+  nx: number, nz: number, bottom: number, ceiling: number,
+): void {
+  const a = builder.vertex(x0, bottom, z0, nx, 0, nz, bottom, 0, 0, 0);
+  const b = builder.vertex(x1, bottom, z1, nx, 0, nz, bottom, 0, 0, 0);
+  const c = builder.vertex(x1, ceiling, z1, nx, 0, nz, ceiling, 0, 0, 0);
+  const d = builder.vertex(x0, ceiling, z0, nx, 0, nz, ceiling, 0, 0, 0);
+  builder.quad(a, b, c, d);
+}
+
+/** A post: four faces walked round from (-along, near), then its top; no bottom (it is buried). */
+function appendRailBox(
+  builder: RoadSurfaceArrayBuilder,
+  frame: RailFrame,
+  anchorX: number,
+  anchorZ: number,
+  alongHalf: number,
+  acrossNear: number,
+  acrossFar: number,
+  bottom: number,
+  ceiling: number,
+): void {
+  const x00 = railCornerX(frame, -alongHalf, acrossNear, anchorX);
+  const z00 = railCornerZ(frame, -alongHalf, acrossNear, anchorZ);
+  const x10 = railCornerX(frame, alongHalf, acrossNear, anchorX);
+  const z10 = railCornerZ(frame, alongHalf, acrossNear, anchorZ);
+  const x11 = railCornerX(frame, alongHalf, acrossFar, anchorX);
+  const z11 = railCornerZ(frame, alongHalf, acrossFar, anchorZ);
+  const x01 = railCornerX(frame, -alongHalf, acrossFar, anchorX);
+  const z01 = railCornerZ(frame, -alongHalf, acrossFar, anchorZ);
+  appendRailFace(builder, x00, z00, x10, z10, frame.nx, frame.nz, bottom, ceiling);
+  appendRailFace(builder, x10, z10, x11, z11, frame.tx, frame.tz, bottom, ceiling);
+  appendRailFace(builder, x11, z11, x01, z01, -frame.nx, -frame.nz, bottom, ceiling);
+  appendRailFace(builder, x01, z01, x00, z00, -frame.tx, -frame.tz, bottom, ceiling);
+  const a = builder.vertex(x00, ceiling, z00, 0, 1, 0, ceiling, 0, 0, 0);
+  const b = builder.vertex(x10, ceiling, z10, 0, 1, 0, ceiling, 0, 0, 0);
+  const c = builder.vertex(x11, ceiling, z11, 0, 1, 0, ceiling, 0, 0, 0);
+  const d = builder.vertex(x01, ceiling, z01, 0, 1, 0, ceiling, 0, 0, 0);
+  builder.quad(a, b, c, d);
 }
