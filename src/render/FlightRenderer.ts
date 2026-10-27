@@ -79,7 +79,6 @@ import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/cata
 import { isAircraftKind, isSurfaceVehicleKind, vehicleClass, type VehicleKind } from "@/src/vehicles/kinds";
 import {
   infrastructureIndex,
-  infrastructurePlantExclusions,
   withAirports,
   type AirportDefinition,
   type TerrainSample,
@@ -87,6 +86,8 @@ import {
 } from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { homeMarina } from "@/src/world/marina";
+import { infrastructureChangeTouches, infrastructurePlantExclusionsIn } from "@/src/world/infrastructure";
+import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
@@ -643,6 +644,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly groundCover: GroundCoverSystem;
+  /** The streamed roads (null in an eroded world, which has no stage). */
+  private readonly roads: RoadStreamRuntime | null;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   /** FXAA with the final sharpen fused in; attached only where MSAA is off. */
@@ -891,6 +894,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
     groundCover: GroundCoverSystem,
+    roads: RoadStreamRuntime | null,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaSharpenPass,
@@ -953,6 +957,21 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.airport = airport;
     this.detail = detail;
     this.groundCover = groundCover;
+    this.roads = roads;
+    // Every change to the streamed roads, in the order that keeps each copy
+    // of the ground true (`RoadStreamRuntime`): the workers first, on the
+    // ports their ground arrives on, then the CPU and GPU consumers here.
+    roads?.setConsumers({
+      publishInfrastructure: (update) => this.terrainAuthorityPublisher?.publishInfrastructure?.(update),
+      detailInfrastructureChanged: (update, change) => {
+        this.detail.infrastructureChanged(update, change);
+      },
+      groundCoverInfrastructureChanged: (change) => {
+        this.groundCover.invalidateWhere((minX, minZ, maxX, maxZ) =>
+          infrastructureChangeTouches(change, { minX, minZ, maxX, maxZ }));
+      },
+      infrastructureChanged: (change) => this.terrain.infrastructureChanged(change),
+    });
     this.wildlife = wildlife;
     this.toneMap = toneMap;
     this.fxaa = fxaa;
@@ -1199,6 +1218,16 @@ export class FlightRenderer implements FlightRenderingSystem {
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
       if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
+      // The streamed roads: their worker starts on the regions round the home
+      // field now, beside the rest of startup, and the bakes below wait for
+      // them (`roadsPrimed`), so the first pages are built with their roads
+      // rather than rebuilt under the car. An eroded world has no stage.
+      const roads = options.world.worldEvolution === "eroded" ? null : new RoadStreamRuntime(options.world);
+      if (roads) cleanup.push(() => roads.dispose());
+      const roadsPrimed = roads?.prime(
+        options.world.airport?.centerX ?? 0,
+        options.world.airport?.centerZ ?? 0,
+      ) ?? Promise.resolve();
       checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,
@@ -1274,6 +1303,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
       checkpointRendererStartup("terrain authority and bathymetry construction", "sync");
+      await awaitRendererStartup(roadsPrimed, options.signal, "road priming", SCENE_STARTUP_TIMEOUT_MILLISECONDS);
+      checkpointRendererStartup("road priming", "async");
       await awaitRendererStartup(
         bathymetry.initialize(
           options.world.airport?.centerX ?? 0,
@@ -1360,8 +1391,15 @@ export class FlightRenderer implements FlightRenderingSystem {
         seedHash: options.world.sourceSeedHash,
         seaLevelMeters: options.world.seaLevel,
         // Built ground (infrastructure segments with a plant clearance): no
-        // blades, the detail scatter's own gate. None in a world without it.
-        plantExclusions: infrastructurePlantExclusions(infrastructureIndex(options.world)),
+        // blades, the detail scatter's own gate, from the stage as it is when
+        // each row slice bakes. None in a world without it.
+        plantExclusionsIn: (minX, minZ, maxX, maxZ) => infrastructurePlantExclusionsIn(
+          infrastructureIndex(options.world),
+          minX,
+          minZ,
+          maxX,
+          maxZ,
+        ),
       });
       cleanup.push(() => groundCover.dispose());
       checkpointRendererStartup("ground-cover construction", "sync");
@@ -1904,6 +1942,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         airport,
         detail,
         groundCover,
+        roads,
         wildlife,
         toneMap,
         fxaa,
@@ -2015,6 +2054,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     //    The wildlife's cached cells were generated from the old one.
     this.airportGround.setWorld(next);
     this.airportHeight.setWorld(next);
+    this.roads?.setWorld(next);
     this.wildlife.invalidateCellCache();
     // 3. Vegetation: off the new platform and out of its structures; only the
     //    cells the change reaches regenerate.
@@ -2065,6 +2105,9 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   /** Copy before either worker detaches its transfer-owned publication. */
   private publishTerrainConsumerPage(page: TerrainPagePublication): void {
+    // Baked before a road change that reached it: the workers dropped their
+    // copies at the change, and the terrain is rebuilding it.
+    if (this.roads?.holdsBack(page)) return;
     const authority = this.terrainConsumerAuthority;
     if (authority) {
       authority.publish({ ...page, heights: page.heights.slice() });
@@ -2809,7 +2852,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       topPassesByCpuMs: this.passTimingHistory
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
-      pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
+      // Road regions still coming bring page rebuilds with them: a capture waits.
+      pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating + (this.roads?.pendingRegions ?? 0),
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
@@ -2903,6 +2947,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         }
       },
       () => this.terrain.dispose(),
+      () => this.roads?.dispose(),
       () => this.terrainEvolution.dispose(),
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
@@ -3902,6 +3947,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   private updateWorldVisibility(): void {
     const state = this.currentState;
     if (!state) return;
+    // Roads first: a change installed now reaches every bake this frame batches.
+    this.roads?.update({
+      x: state.position.x,
+      z: state.position.z,
+      velocityX: state.velocity.x,
+      velocityZ: state.velocity.z,
+    }, performance.now());
     this.terrain.update({
       x: state.position.x,
       y: state.position.y,

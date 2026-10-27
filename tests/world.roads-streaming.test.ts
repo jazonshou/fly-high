@@ -3,7 +3,9 @@ import {
   RoadStreamController,
   ROAD_STREAM_FLUSH_SEGMENTS,
   type RoadsWorker,
-} from "@/src/game/RoadStreamController";
+} from "@/src/render/roads/RoadStreamController";
+import { RoadStreamRuntime, type RoadStreamConsumers } from "@/src/render/roads/RoadStreamRuntime";
+import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
 import type {
   RoadRegionAddress,
   RoadsWorkerCommand,
@@ -14,8 +16,10 @@ import {
   clearInfrastructureRegions,
   infrastructureRegionsVersion,
   installedInfrastructureRegionKeys,
+  type InfrastructureChange,
   type InfrastructureSegment,
 } from "@/src/world/infrastructure";
+import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import { INFRASTRUCTURE_PROFILE } from "@/src/world/infrastructureProfiles";
 import { roadClass, ROAD_CLASS } from "@/src/world/roads/roadClasses";
 import { roadRegionKey } from "@/src/world/roads/roadInfrastructure";
@@ -31,8 +35,10 @@ import { createWorld } from "@/src/world/world";
 /**
  * Which road regions the observer is given, in what order, and the main
  * thread's controller that asks the roads worker for them and installs them
- * into the stage once a frame (`RoadStreamController`), against a worker
- * stand-in that answers synchronously.
+ * into the stage once a frame (`RoadStreamController`), and the renderer's
+ * end of it (`RoadStreamRuntime`: who hears a change, in what order, and
+ * which late page publications it holds back), against a worker stand-in
+ * that answers synchronously.
  */
 
 const world = createWorld();
@@ -261,5 +267,104 @@ describe("the road stream controller", () => {
     expect(installedInfrastructureRegionKeys(world).length).toBeGreaterThanOrEqual(near);
     expect(near).toBeGreaterThan(4);
     controller.dispose();
+  });
+});
+
+describe("the renderer's road stream runtime", () => {
+  /** Every consumer call, in order, with what it was given. */
+  function recordingConsumers() {
+    const calls: { readonly to: string; readonly version: number; readonly update?: InfrastructureRegionsUpdate }[] = [];
+    const consumers: RoadStreamConsumers = {
+      publishInfrastructure: (update) => calls.push({ to: "simulation", version: update.version, update }),
+      detailInfrastructureChanged: (update, change: InfrastructureChange) => {
+        expect(change.version).toBe(update.version);
+        calls.push({ to: "detail", version: change.version, update });
+      },
+      groundCoverInfrastructureChanged: (change) => calls.push({ to: "groundCover", version: change.version }),
+      infrastructureChanged: (change) => calls.push({ to: "terrain", version: change.version }),
+    };
+    return { calls, consumers };
+  }
+
+  /** The level-0 page under the middle of a region's track, as published at `version`. */
+  function pageUnder(address: RoadRegionAddress, version: number | undefined) {
+    const box = roadRegionBox(address.rx, address.rz);
+    const x = 0.5 * (box.minX + box.maxX);
+    const z = 0.5 * (box.minZ + box.maxZ);
+    return {
+      level: 0,
+      tileX: Math.floor(x / WORLD_PAGE_BASE_EXTENT_METERS),
+      tileZ: Math.floor(z / WORLD_PAGE_BASE_EXTENT_METERS),
+      heights: new Float32Array(0),
+      ...(version === undefined ? {} : { infrastructureVersion: version }),
+    };
+  }
+
+  it("tells the workers first, then the ground cover and the terrain, each change once and whole", () => {
+    const worker = new FakeRoadsWorker();
+    const runtime = new RoadStreamRuntime(world, () => worker);
+    const { calls, consumers } = recordingConsumers();
+    runtime.setConsumers(consumers);
+    const observer = { x: 3_000, z: 2_000, velocityX: 0, velocityZ: 0 };
+    expect(runtime.update(observer, 0)).toBeNull();
+    const asked = worker.lastWant.length;
+    expect(runtime.pendingRegions).toBe(asked);
+
+    worker.answer(3);
+    // Arrived but not installed: still pending, and nobody told yet.
+    expect(runtime.pendingRegions).toBe(asked);
+    expect(calls).toHaveLength(0);
+    const change = runtime.update(observer, 1_000)!;
+    expect(runtime.pendingRegions).toBe(asked - 3);
+    const version = change.infrastructure.version;
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain"]);
+    expect(calls.every((call) => call.version === version)).toBe(true);
+    // The workers get the regions themselves, as an increment on what they hold.
+    const update = calls[0]!.update!;
+    expect(update).toEqual({
+      version,
+      reset: false,
+      install: change.installed.map((event) => event.infrastructure),
+      remove: [],
+    });
+    expect(calls[1]!.update).toBe(update);
+
+    // Leaving: the removal reaches them the same way.
+    calls.length = 0;
+    const leaving = runtime.update({ x: 60_000, z: 0, velocityX: 0, velocityZ: 0 }, 2_000)!;
+    expect(leaving.removed).toHaveLength(3);
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain"]);
+    expect(calls[0]!.update!.remove).toEqual(leaving.removed);
+    runtime.dispose();
+  });
+
+  it("holds back a page baked before a change that reaches it, and only that page", () => {
+    const worker = new FakeRoadsWorker();
+    const runtime = new RoadStreamRuntime(world, () => worker);
+    const observer = { x: 3_000, z: 2_000, velocityX: 0, velocityZ: 0 };
+    runtime.update(observer, 0);
+    // Two regions apart, so neither change reaches the other's pages.
+    const first = worker.lastWant[0]!;
+    const second = worker.lastWant.find((address) => address.rx !== first.rx && address.rz !== first.rz)!;
+    const before = infrastructureRegionsVersion(world);
+    // No consumers yet (startup's priming): the change is still logged.
+    worker.post(regionEvent(first!));
+    const change = runtime.update(observer, 16)!;
+    expect(change.infrastructure.version).toBe(before + 1);
+
+    // Baked before the change, under the road: held back. Baked after it, or
+    // never against a streamed region, or far from it: published.
+    expect(runtime.holdsBack(pageUnder(first!, before))).toBe(true);
+    expect(runtime.holdsBack(pageUnder(first!, before + 1))).toBe(false);
+    expect(runtime.holdsBack(pageUnder(first!, undefined))).toBe(false);
+    const far = pageUnder(first!, before);
+    expect(runtime.holdsBack({ ...far, tileX: far.tileX + 40 })).toBe(false);
+
+    // A second change elsewhere leaves the first road's later pages alone.
+    worker.post(regionEvent(second!));
+    runtime.update(observer, 1_000);
+    expect(runtime.holdsBack(pageUnder(first!, before + 1))).toBe(false);
+    expect(runtime.holdsBack(pageUnder(second!, before + 1))).toBe(true);
+    runtime.dispose();
   });
 });
