@@ -1235,9 +1235,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => terrain.dispose());
       if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
       // The streamed roads: their worker starts on the regions round the
-      // session's start now, beside the rest of startup, and the bakes below
-      // wait for them (`roadsPrimed`), so the first pages are built with their
-      // roads rather than rebuilt under the car. An eroded world has no stage.
+      // session's start now, beside the rest of startup, and the first bake
+      // waits for them (`roadsPrimed`, before the terrain pre-warm), so the
+      // first pages are built with their roads rather than rebuilt under the
+      // car. An eroded world has no stage.
       const roads = options.world.worldEvolution === "eroded" ? null : new RoadStreamRuntime(options.world);
       if (roads) cleanup.push(() => roads.dispose());
       const roadsPrimed = roads?.prime(
@@ -1319,8 +1320,6 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => bathymetry.dispose());
       bathymetry.setMacroEvolution(evolutionResult.evolution);
       checkpointRendererStartup("terrain authority and bathymetry construction", "sync");
-      await awaitRendererStartup(roadsPrimed, options.signal, "road priming", SCENE_STARTUP_TIMEOUT_MILLISECONDS);
-      checkpointRendererStartup("road priming", "async");
       await awaitRendererStartup(
         bathymetry.initialize(
           options.world.airport?.centerX ?? 0,
@@ -1909,6 +1908,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       checkpointRendererStartup("scene shader readiness", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
+      // The streamed roads round the start, primed beside everything above:
+      // the pre-warm below bakes the first real page, and every page, cell
+      // and tile after it bakes with them. The detail worker, started above,
+      // is caught up when the renderer attaches the stream's consumers.
+      await awaitRendererStartup(roadsPrimed, options.signal, "road priming", SCENE_STARTUP_TIMEOUT_MILLISECONDS);
+      checkpointRendererStartup("road priming", "async");
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
       // the load screen. Babylon 9.21 calls `createComputePipeline`
       // synchronously on first dispatch and three of these shaders inline the
