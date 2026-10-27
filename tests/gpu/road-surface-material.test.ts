@@ -24,7 +24,7 @@ import { DRAWN_FRAME_CAMERA, buildDrawnFrame, drawnFrameGround } from "../suppor
  * with `RoadSurfaceMaterialPlugin` (its vertex stage reading the drawn-height
  * lookup, its fragment stage the terrain's material arrays), and draw where
  * the roads are and nowhere else, seen straight down over a real terrain
- * frame's lookup.
+ * frame's lookup; then again after a change written into the buffers in place.
  */
 
 const CANVAS = 128;
@@ -48,7 +48,7 @@ function straight(classId: RoadClassId, edgeId: number, ax: number, az: number, 
 }
 
 describe("the roads' ribbon and rail materials on the GPU", () => {
-  it("compile, and draw the roads in reach where they lie and nowhere else", async () => {
+  it("compile, draw the roads in reach where they lie and nowhere else, and redraw a change in place", async () => {
     const canvas = document.createElement("canvas");
     canvas.width = CANVAS;
     canvas.height = CANVAS;
@@ -125,47 +125,78 @@ describe("the roads' ribbon and rail materials on the GPU", () => {
         rails: [{ points: [x + 30, z - 6, x + 90, z - 6], heightMeters: 0.75 }],
       };
       const system = new RoadSurfaceSystem(scene, terrain, { roadRibbonRangeMeters: 300, barrierDrawRangeMeters: 300 });
+      // Changes and chunk writes take a frame's budget at a time: update until none is left.
+      const settle = () => {
+        for (let step = 0; step < 100 && system.pendingWork > 0; step += 1) system.update(x, z);
+        expect(system.pendingWork).toBe(0);
+      };
       system.apply([region], []);
       system.setFloatingOrigin(0, 0);
-      system.update(x, z);
+      settle();
       expect(system.statistics.draws).toBe(2);
       await scene.whenReadyAsync();
-      // Manual renders on WebGPU need begin/endFrame, and the presented
-      // canvas is copied in the same task, before the compositor clears it.
-      for (let pass = 0; pass < 3; pass += 1) {
+      // Every probe below holds mirrored in x and in z, so the screen's handedness does not matter.
+      const isClear = (rgb: readonly number[]) => rgb.every((value, channel) => Math.abs(value - CLEAR[channel]!) < 3);
+      const render = async () => {
+        // Manual renders on WebGPU need begin/endFrame, and the presented
+        // canvas is copied in the same task, before the compositor clears it.
+        for (let pass = 0; pass < 3; pass += 1) {
+          system.update(x, z);
+          engine.beginFrame();
+          scene.render();
+          engine.endFrame();
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
         system.update(x, z);
         engine.beginFrame();
         scene.render();
         engine.endFrame();
-        await new Promise((resolve) => setTimeout(resolve, 30));
-      }
-      system.update(x, z);
-      engine.beginFrame();
-      scene.render();
-      engine.endFrame();
-      const copy = document.createElement("canvas");
-      copy.width = CANVAS;
-      copy.height = CANVAS;
-      const context = copy.getContext("2d")!;
-      context.drawImage(canvas, 0, 0);
-      const pixels = context.getImageData(0, 0, CANVAS, CANVAS).data;
-      // Every probe below holds mirrored in x and in z, so the screen's handedness does not matter.
-      const at = (worldX: number, worldZ: number): readonly number[] => {
-        const column = Math.round(((worldX - x) / (2 * HALF) + 0.5) * (CANVAS - 1));
-        const row = Math.round((0.5 - (worldZ - z) / (2 * HALF)) * (CANVAS - 1));
-        const index = (row * CANVAS + column) * 4;
-        return [pixels[index]!, pixels[index + 1]!, pixels[index + 2]!];
+        const copy = document.createElement("canvas");
+        copy.width = CANVAS;
+        copy.height = CANVAS;
+        const context = copy.getContext("2d")!;
+        context.drawImage(canvas, 0, 0);
+        const pixels = context.getImageData(0, 0, CANVAS, CANVAS).data;
+        return (worldX: number, worldZ: number): boolean => {
+          const column = Math.round(((worldX - x) / (2 * HALF) + 0.5) * (CANVAS - 1));
+          const row = Math.round((0.5 - (worldZ - z) / (2 * HALF)) * (CANVAS - 1));
+          const index = (row * CANVAS + column) * 4;
+          return !isClear([pixels[index]!, pixels[index + 1]!, pixels[index + 2]!]);
+        };
       };
-      const isClear = (rgb: readonly number[]) => rgb.every((value, channel) => Math.abs(value - CLEAR[channel]!) < 3);
+      let drawn = await render();
       expect(errors.join(" | ")).toBe("");
       // On the gravel, on the sealed road, on the pad: drawn.
-      expect(isClear(at(x - 70, z))).toBe(false);
-      expect(isClear(at(x, z + 70))).toBe(false);
-      expect(isClear(at(x, z))).toBe(false);
+      expect(drawn(x - 70, z)).toBe(true);
+      expect(drawn(x, z + 70)).toBe(true);
+      expect(drawn(x, z)).toBe(true);
       // Between the roads: nothing. Nor the middle of a track, which is the sward's.
-      expect(isClear(at(x - 50, z - 30))).toBe(true);
-      expect(isClear(at(x + 50, z + 30))).toBe(true);
-      expect(isClear(at(x - 70, z + 60))).toBe(true);
+      expect(drawn(x - 50, z - 30)).toBe(false);
+      expect(drawn(x + 50, z + 30)).toBe(false);
+      expect(drawn(x - 70, z + 60)).toBe(false);
+
+      // The buffers are written in place after the first draw: a road another
+      // region brings shows where it lies, and a region removed is gone.
+      const { writes, bufferBuilds } = system.statistics;
+      system.apply([{ key: "gpu-more", pieces: straight(ROAD_CLASS.gravel, 5, x - 50, z - 160, x - 50, z + 160, 16), pads: [], rails: [] }], []);
+      settle();
+      expect(system.statistics.writes).toBeGreaterThan(writes);
+      expect(system.statistics.bufferBuilds).toBe(bufferBuilds);
+      drawn = await render();
+      expect(drawn(x - 50, z - 30)).toBe(true);
+      expect(drawn(x - 70, z)).toBe(true);
+      expect(drawn(x + 50, z + 30)).toBe(false);
+      system.apply([], ["gpu"]);
+      settle();
+      expect(system.statistics.draws).toBe(1);
+      expect(system.statistics.bufferBuilds).toBe(bufferBuilds);
+      drawn = await render();
+      expect(errors.join(" | ")).toBe("");
+      expect(drawn(x - 50, z - 30)).toBe(true);
+      expect(drawn(x - 50, z + 30)).toBe(true);
+      expect(drawn(x - 70, z)).toBe(false);
+      expect(drawn(x, z + 70)).toBe(false);
+      expect(drawn(x, z)).toBe(false);
       system.dispose();
       scene.dispose();
     } finally {

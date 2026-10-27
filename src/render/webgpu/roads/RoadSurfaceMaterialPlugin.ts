@@ -17,7 +17,7 @@ import {
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
 } from "../terrain/TerrainSurfacePlugin";
 import { SURFACE_MATERIALS, SurfaceMaterial } from "../terrain/surfaceMaterials";
-import { ROAD_RIBBON_PAD_KIND } from "./roadSurfaceGeometry";
+import { ROAD_RIBBON_CHUNK_METERS, ROAD_RIBBON_PAD_KIND } from "./roadSurfaceGeometry";
 
 /**
  * The roads' drawn surfaces as PBR materials: the ribbons (running surface,
@@ -91,9 +91,11 @@ export interface RoadSurfaceBinding {
   readonly lookup: TerrainDrawnHeight;
   readonly atlas: BaseTexture;
   readonly atlasShape: TerrainDrawnAtlasShape;
-  /** Absolute world position of the meshes' local origin, metres. */
+  /** Absolute world position of the meshes' local origin, metres: the corner of chunk (anchorCx, anchorCz). */
   readonly anchorX: number;
   readonly anchorZ: number;
+  readonly anchorCx: number;
+  readonly anchorCz: number;
 }
 
 export type RoadSurfaceRole = "ribbon" | "rail";
@@ -131,13 +133,22 @@ const LOOK = ROAD_RIBBON_LOOK;
 
 const VERTEX_DEFINITIONS = /* wgsl */ `
 attribute roadSurface: vec4f;
+attribute roadChunk: vec2f;
 varying roadSurfaceV: vec4f;
 varying roadAbsolute: vec2f;
 ${TERRAIN_DRAWN_HEIGHT_WGSL}
 ${liftWgsl()}
 `;
 
-const RIBBON_VERTEX = /* wgsl */ `
+// A vertex is where its chunk built it, relative to the chunk's corner: the
+// chunk's offset from the anchor's puts it in the mesh's frame.
+const CHUNK_OFFSET = /* wgsl */ `
+let roadChunkOffset = (vertexInputs.roadChunk - uniforms.roadAnchor.zw) * ${wgslNumber(ROAD_RIBBON_CHUNK_METERS)};
+positionUpdated.x += roadChunkOffset.x;
+positionUpdated.z += roadChunkOffset.y;
+`;
+
+const RIBBON_VERTEX = /* wgsl */ `${CHUNK_OFFSET}
 let roadDrawn = terrainDrawnSurfaceAtLocal(positionUpdated.xz);
 if (roadDrawn.valid) {
   positionUpdated.y = roadDrawn.height + roadSurfaceLift(vertexInputs.roadSurface.w);
@@ -147,7 +158,7 @@ vertexOutputs.roadSurfaceV = vertexInputs.roadSurface;
 vertexOutputs.roadAbsolute = positionUpdated.xz + uniforms.roadAnchor.xy;
 `;
 
-const RAIL_VERTEX = /* wgsl */ `
+const RAIL_VERTEX = /* wgsl */ `${CHUNK_OFFSET}
 let roadDrawn = terrainDrawnSurfaceAtLocal(positionUpdated.xz);
 if (roadDrawn.valid) {
   positionUpdated.y = roadDrawn.height + vertexInputs.roadSurface.x;
@@ -343,7 +354,7 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
   }
 
   override getAttributes(attributes: string[]): void {
-    if (!attributes.includes("roadSurface")) attributes.push("roadSurface");
+    for (const name of ["roadSurface", "roadChunk"]) if (!attributes.includes(name)) attributes.push(name);
   }
 
   override getSamplers(samplers: string[]): void {
@@ -366,7 +377,7 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
     const binding = this.binding;
     if (!binding) return;
     binding.lookup.bind(uniformBuffer, binding.atlas, binding.atlasShape, binding.anchorX, binding.anchorZ);
-    uniformBuffer.updateFloat4("roadAnchor", binding.anchorX, binding.anchorZ, 0, 0);
+    uniformBuffer.updateFloat4("roadAnchor", binding.anchorX, binding.anchorZ, binding.anchorCx, binding.anchorCz);
     if (this.role === "ribbon" && this.arrays) {
       uniformBuffer.setTexture("roadSurfaceAlbedo", this.arrays.albedoHeight);
       uniformBuffer.setTexture("roadSurfaceNormal", this.arrays.normalMaterial);
