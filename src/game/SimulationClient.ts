@@ -1,5 +1,6 @@
-import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
+import type { CarSetup, ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
+import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
 import type {
@@ -98,6 +99,7 @@ export class SimulationClient {
     attractMode = false,
     aircraft: AircraftKind = "trainer",
     surfaceVehicle: SurfaceVehicleKind | null = null,
+    carSetup: CarSetup = DEFAULT_CAR_SETUP,
   ) {
     this.worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
@@ -110,6 +112,7 @@ export class SimulationClient {
       world,
       aircraft,
       surfaceVehicle,
+      carSetup,
       mode,
       spawn,
       weather,
@@ -137,6 +140,11 @@ export class SimulationClient {
 
   setWeather(weather: WeatherPreset): void {
     this.send({ type: "weather", weather });
+  }
+
+  /** The car's gearbox and clutch for its next start; a drive under way keeps the one it began with. */
+  setCarSetup(carSetup: CarSetup): void {
+    this.send({ type: "carSetup", carSetup });
   }
 
   setAttractMode(enabled: boolean): void {

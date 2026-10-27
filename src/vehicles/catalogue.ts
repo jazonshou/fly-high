@@ -91,8 +91,49 @@ const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
   }),
 });
 
+/**
+ * The LandCruiser 76 GXL wagon: 2.8 litre 1GD-FTV four-cylinder turbo-diesel,
+ * part-time 4WD (the land plan, 2026-10-25). The framing is from the
+ * published envelope, 4,910 mm long, 1,870 mm wide and 1,940 mm tall on a
+ * 2,730 mm wheelbase, around the plan's estimated centre of gravity, 52% on
+ * the front axle (1.31 m behind it) and 0.80 m up; the car-look build
+ * measures it on the built model as the boat's is. Right-hand drive: the
+ * driver's eye is to starboard, over the seat.
+ */
+const LANDCRUISER: SurfaceVehicleSpec = Object.freeze({
+  kind: "landcruiser",
+  vehicleClass: "car",
+  name: "LandCruiser 76",
+  description: "4x4",
+  follow: "surface",
+  chase: Object.freeze({
+    distance: Object.freeze({ base: 7.5, knee: 8, slope: 0.08, cap: 2.5 }),
+    height: 2.6,
+    fieldOfView: Object.freeze({ base: 58, knee: 8, slope: 0.25, cap: 8 }),
+    aimAhead: Object.freeze({ base: 4, knee: 0, slope: 0, cap: 0 }),
+  }),
+  cinematic: Object.freeze({ radiusMeters: 12, heightMeters: 3, heightDriftMeters: 1 }),
+  topFront: Object.freeze({ centreForward: -0.3, centreUp: 0.17, topDistanceMeters: 14, frontDistanceMeters: 9 }),
+  cockpitEye: Object.freeze({ forward: -0.1, up: 0.75, right: 0.37 }),
+  engineReadout: Object.freeze({ label: "RPM", unit: "ENG", maximum: 4_500, roundTo: 50 }),
+  // A four-cylinder four-stroke fires twice per crank turn: the fundamental
+  // is rpm / 30, 25 Hz at the 750 rpm idle and 150 Hz at 4,500 rpm, which is
+  // exactly 0 + (rpm / 4,500) x 150. A stand-in until the car's own sound
+  // (diesel clatter, turbo whistle, gear whine) replaces it.
+  engineSound: Object.freeze({
+    baseHz: 0,
+    spanHz: 150,
+    gainBase: 0.12,
+    gainSpan: 0.28,
+    filterHz: 520,
+    filterQ: 0.7,
+    waveforms: Object.freeze(["sawtooth", "square"] as const) as readonly [OscillatorType, OscillatorType],
+  }),
+});
+
 export const SURFACE_VEHICLE_SPECS: Readonly<Record<SurfaceVehicleKind, SurfaceVehicleSpec>> = Object.freeze({
   speedboat: SPEEDBOAT,
+  landcruiser: LANDCRUISER,
 });
 
 export const SURFACE_VEHICLE_CATALOGUE: readonly SurfaceVehicleSpec[] = Object.freeze(

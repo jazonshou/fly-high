@@ -1,6 +1,7 @@
 import type { SurfaceVehicleSpawn } from "@/src/sim/surface/types";
+import { sampleGroundHeight } from "@/src/sim/terrainGrid";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
-import { sampleTerrainHeight, type WorldDefinition } from "@/src/world";
+import { runwayToWorld, sampleTerrainHeight, type WorldDefinition } from "@/src/world";
 import { marinaStartPose } from "@/src/world/marina";
 
 /** Water at least this deep, with `OPEN_WATER_CLEARANCE` of it around, counts as open. */
@@ -96,9 +97,45 @@ function openWaterSpawn(world: WorldDefinition, originX: number, originZ: number
 }
 
 /**
+ * The car's start on the home apron, runway frame: in the open ground between
+ * the hangar row's last hangar and the fuel farm, on the hangars' centre
+ * line, facing the runway. The row centres at `runwayLength * -0.12` and runs
+ * 52 m pitch x 3, 34 m deep (`HANGAR_SITING`); `95` clears its last hangar by
+ * 26 m and the fuel farm (along -17..17) by 46 m on the default airport. The
+ * roads build moves it to the access road's head.
+ */
+const APRON_CAR_START = Object.freeze({ alongFraction: -0.12, alongOffset: 95, acrossOffset: 118 });
+
+function apronCarSpawn(world: WorldDefinition): SurfaceVehicleSpawn {
+  const airport = world.airport;
+  // A world without an airport starts the car at the origin, as the marina searches from it.
+  if (!airport) return uprightCarSpawn(world, 0, 0);
+  const across = airport.runwayWidth * 0.5 + APRON_CAR_START.acrossOffset;
+  const along = airport.runwayLength * APRON_CAR_START.alongFraction + APRON_CAR_START.alongOffset;
+  const point = runwayToWorld(airport, along, across);
+  // Toward the runway is -across: (-cos h, sin h) in plan.
+  const heading = Math.atan2(-Math.cos(airport.headingRadians), Math.sin(airport.headingRadians));
+  return {
+    position: { x: point.x, y: sampleGroundHeight(world, point.x, point.z), z: point.z },
+    heading,
+    moored: false,
+  };
+}
+
+/** After a wreck: back on its wheels where it came to rest. */
+function uprightCarSpawn(world: WorldDefinition, wreckX: number, wreckZ: number): SurfaceVehicleSpawn {
+  return {
+    position: { x: wreckX, y: sampleGroundHeight(world, wreckX, wreckZ), z: wreckZ },
+    heading: 0,
+    moored: false,
+  };
+}
+
+/**
  * Where a surface vehicle's session begins. A boat starts at the dock
  * (decision D4): moored in the home marina's start berth, bow out, on the
- * still sea there. The simulator settles the hull to its own draft.
+ * still sea there. The simulator settles the hull to its own draft. The car
+ * starts on the home apron, on its wheels.
  */
 export function createSurfaceSpawn(
   world: WorldDefinition,
@@ -113,10 +150,12 @@ export function createSurfaceSpawn(
         moored: true,
       };
     }
+    case "landcruiser":
+      return apronCarSpawn(world);
   }
 }
 
-/** After a wreck: upright and afloat in the open water nearest it. */
+/** After a wreck: a boat upright and afloat in the open water nearest it, the car upright where it lies. */
 export function createSurfaceRecoverySpawn(
   world: WorldDefinition,
   kind: SurfaceVehicleKind,
@@ -126,5 +165,7 @@ export function createSurfaceRecoverySpawn(
   switch (kind) {
     case "speedboat":
       return openWaterSpawn(world, wreckX, wreckZ);
+    case "landcruiser":
+      return uprightCarSpawn(world, wreckX, wreckZ);
   }
 }

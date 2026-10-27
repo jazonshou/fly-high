@@ -13,6 +13,7 @@ import { cockpitDeckKStyleValue } from "@/src/ui/cockpitHudLayout";
 import { formatAirportDistance } from "@/src/ui/airportMarker";
 import type { NearestAirportInfo } from "@/src/game/AirportNetworkController";
 import { BoatHud } from "@/src/ui/BoatHud";
+import { CarHud } from "@/src/ui/CarHud";
 import { formatHeading, MetricTape } from "@/src/ui/hudParts";
 
 interface HudProps {
@@ -112,6 +113,19 @@ export function Hud({
       <BoatHud
         state={state}
         boat={state.vehicle}
+        mode={mode}
+        flightMode={flightMode}
+        units={units}
+        cameraLabel={cameraLabel}
+        seedLabel={seedLabel}
+      />
+    );
+  }
+  if (state.vehicle?.kind === "car") {
+    return (
+      <CarHud
+        state={state}
+        car={state.vehicle}
         mode={mode}
         flightMode={flightMode}
         units={units}

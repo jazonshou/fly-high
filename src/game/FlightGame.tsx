@@ -61,7 +61,7 @@ import {
   type RenderDiagnostics,
 } from "./types";
 import { handoffTrimSeed, heldElevator } from "@/src/sim";
-import type { SpawnKind } from "@/src/workers/protocol";
+import { isSurfaceSpawn, surfaceSpawnKind, type SpawnKind } from "@/src/workers/protocol";
 import { isAircraftKind, isSurfaceVehicleKind, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import {
   beginTransition,
@@ -232,6 +232,7 @@ export function FlightGame() {
     });
     simulationRef.current?.setMode(next.flightMode);
     simulationRef.current?.setWeather(next.weather);
+    simulationRef.current?.setCarSetup({ gearbox: next.carGearbox, manualClutch: next.carManualClutch });
   }, [invalidatePendingTransitions]);
 
   const toggleNearestAirport = useCallback(() => {
@@ -400,11 +401,15 @@ export function FlightGame() {
   );
 
   /**
-   * A boat's only start: moored at its berth. There is no attract boat to
-   * hand off to, so this is the full reset a runway start is.
+   * A surface vehicle's only start: a boat moored at its berth, the car
+   * parked on the apron. There is no attract boat or car to hand off to, so
+   * this is the full reset a runway start is.
    */
-  const startAtDock = useCallback(
-    () => startNewFlight("dock", true),
+  const startSurfaceVehicle = useCallback(
+    () => {
+      const vehicle = chosenSurfaceVehicle(settingsRef.current);
+      return vehicle ? startNewFlight(surfaceSpawnKind(vehicle), true) : undefined;
+    },
     [startNewFlight],
   );
 
@@ -487,8 +492,9 @@ export function FlightGame() {
     //
     // A boat is the exception that proves it: it recovers upright and afloat
     // in open water near the wreck, still a boat, so its controls stay the
-    // boat's and a later restart still means the berth.
-    const recovery = spawnRef.current === "dock" ? "dock" : "airborne";
+    // boat's and a later restart still means the berth. A rolled car comes
+    // back on its wheels where it lies, still the car.
+    const recovery = isSurfaceSpawn(spawnRef.current) ? spawnRef.current : "airborne";
     inputRef.current?.resetForSpawn(
       recovery,
       airborneThrottleForAircraft(settingsRef.current.aircraft),
@@ -700,6 +706,7 @@ export function FlightGame() {
         initialAttractMode,
         activeSettings.aircraft,
         surfaceVehicle,
+        { gearbox: activeSettings.carGearbox, manualClutch: activeSettings.carManualClutch },
       ));
       renderer.setTerrainAuthorityPublisher(simulation);
       renderer.setCameraMode(cameraModeRef.current);
@@ -1004,9 +1011,11 @@ export function FlightGame() {
                   <button
                     className="primary-action start-screen__start"
                     type="button"
-                    onClick={() => void startAtDock()}
-                    aria-label={`Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
-                    title="At the dock"
+                    onClick={() => void startSurfaceVehicle()}
+                    aria-label={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield"
+                      ? `Start on the apron, parked and ready to drive. ${CONTROL_MODE_LABELS[settings.flightMode]}`
+                      : `Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+                    title={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield" ? "On the apron" : "At the dock"}
                   >
                     <span>Start</span>
                   </button>
@@ -1142,6 +1151,10 @@ export function FlightGame() {
                   ? visualState.crashed
                     ? "Restart afloat near where the boat was damaged"
                     : "Restart at the dock, where this trip began"
+                  : spawnKind === "airfield"
+                    ? visualState.crashed
+                      ? "Restart on the wheels where the car came to rest"
+                      : "Restart on the apron, where this drive began"
                   : visualState.crashed
                     ? "Restart airborne above the crash location"
                     : spawnKind === "runway"

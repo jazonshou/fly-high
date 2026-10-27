@@ -114,6 +114,7 @@ describe("simulation worker lifecycle commands", () => {
       airborneStartAgl: 450,
       attractMode: false,
       surfaceVehicle: null,
+      carSetup: { gearbox: "automatic", manualClutch: false },
     });
 
     client.reset("runway", 450);

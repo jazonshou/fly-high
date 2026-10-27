@@ -1,4 +1,5 @@
 import type {
+  CarGearbox,
   FlightMode,
   QualityLevel,
   RequestedRenderingMode,
@@ -29,6 +30,10 @@ export interface GameSettings {
    * `aircraft`, and migrate to driving it.
    */
   vehicle: VehicleKind;
+  /** The LandCruiser's gearbox, chosen on its card in the picker: the six-speed automatic or the five-speed manual. */
+  carGearbox: CarGearbox;
+  /** With the manual: the player works the clutch (Q). Off, an auto-clutch launches and shifts for them. */
+  carManualClutch: boolean;
   quality: QualityLevel;
   renderingMode: RenderingMode;
   flightMode: FlightMode;
@@ -96,6 +101,8 @@ export const TIME_OF_DAY_PRESET_CLOCKS: Readonly<
 export const DEFAULT_SETTINGS: GameSettings = {
   aircraft: "trainer",
   vehicle: "trainer",
+  carGearbox: "automatic",
+  carManualClutch: false,
   quality: "medium",
   renderingMode: "balanced",
   // Full pilot authority is the default. Assistance is an explicit selection.
@@ -158,6 +165,9 @@ export function validateSettings(value: unknown): GameSettings {
   return {
     aircraft,
     vehicle: oneOf(source.vehicle, VEHICLE_KINDS, aircraft),
+    carGearbox: oneOf(source.carGearbox, ["automatic", "manual"] as const, DEFAULT_SETTINGS.carGearbox),
+    carManualClutch:
+      typeof source.carManualClutch === "boolean" ? source.carManualClutch : DEFAULT_SETTINGS.carManualClutch,
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
     renderingMode: renderingMode(source.renderingMode),
     flightMode: oneOf(

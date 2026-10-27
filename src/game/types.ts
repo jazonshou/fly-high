@@ -83,8 +83,8 @@ export interface FlightVisualState {
   vehicle?: VehicleVisualPayload | null;
 }
 
-/** Surface-vehicle payloads, discriminated by `kind`. The car adds its own. */
-export type VehicleVisualPayload = BoatVisualState;
+/** Surface-vehicle payloads, discriminated by `kind`. */
+export type VehicleVisualPayload = BoatVisualState | CarVisualState;
 
 export type BoatGear = "forward" | "neutral" | "reverse";
 
@@ -149,6 +149,132 @@ export interface BoatControlState {
   moorPresses: number;
 }
 
+/** The LandCruiser 76's gearbox, chosen on its card in the picker (land decision 1). */
+export type CarGearbox = "automatic" | "manual";
+/** The part-time transfer case: rear drive, locked 4WD high, locked 4WD low. */
+export type CarTransferRange = "2H" | "4H" | "4L";
+/** The diff locks, in Toyota's order: the rear engages first, then the front. */
+export type CarDiffLocks = "off" | "rear" | "both";
+export type CarHeadlights = "off" | "dipped" | "main";
+/** The tyre pressure preset, set while stopped: road 2.4 bar, sand 1.2 bar. */
+export type CarTyrePressure = "road" | "sand";
+
+/** How a car session is set up, from settings, before its first step. */
+export interface CarSetup {
+  gearbox: CarGearbox;
+  /** The player works the clutch pedal (Q). Off, an auto-clutch launches and shifts. */
+  manualClutch: boolean;
+}
+
+/** The order of every per-wheel array in `CarVisualState`. */
+export const CAR_WHEELS = ["frontLeft", "frontRight", "rearLeft", "rearRight"] as const;
+export type CarWheel = (typeof CAR_WHEELS)[number];
+
+/**
+ * What the HUD, the drawn car, its effects and its sound read from the sim.
+ * Body frame as everywhere: +X forward, +Y up, +Z right (the driver's side
+ * on the right-hand-drive 76). Per-wheel arrays have four entries in
+ * `CAR_WHEELS` order; per-axle arrays have two, front then rear.
+ */
+export interface CarVisualState {
+  kind: "car";
+  /** Signed speed along the body's forward axis, m/s: what the speedometer reads. */
+  speed: number;
+  gearbox: CarGearbox;
+  /**
+   * The automatic's selector: P, R, N, D, or M in its sequential mode. Null
+   * with the manual, whose position is `gear`.
+   */
+  selector: "P" | "R" | "N" | "D" | "M" | null;
+  /** The gear engaged: -1 reverse, 0 neutral, 1..6 (automatic) or 1..5 (manual). */
+  gear: number;
+  range: CarTransferRange;
+  locks: CarDiffLocks;
+  /** Downhill assist armed (B), and holding the car's speed right now. */
+  downhillAssist: boolean;
+  downhillAssistActive: boolean;
+  tractionControlActive: boolean;
+  absActive: boolean;
+  /** How much torque the clutch passes: 0 open .. 1 fully engaged. */
+  clutch: number;
+  engineRunning: boolean;
+  stalled: boolean;
+  /** Water reached the air intake and the engine hydrolocked: the HUD's FLOODED. */
+  flooded: boolean;
+  /** The roof or a side is on the ground: the HUD's ROLLED. */
+  rolled: boolean;
+  /** Turbo boost, 0..1 of full, for the whistle. */
+  boost: number;
+  headlights: CarHeadlights;
+  brakeLights: boolean;
+  reversing: boolean;
+  tyrePressure: CarTyrePressure;
+  /** What the tyres hold now, bar; they take a while to reach the preset. */
+  tyrePressureBar: number;
+  /** Water above the ground at the car, metres; 0 when dry. The wading bar. */
+  wadingDepth: number;
+  /** Road-wheel steer angle, radians; positive turns the wheel's front to the right. */
+  wheelSteer: number[];
+  /** Rolling angle, radians, wrapped to [0, 2 pi), and spin rate, rad/s. */
+  wheelSpin: number[];
+  wheelSpinRate: number[];
+  /** Vertical tyre load, newtons; 0 in the air. */
+  wheelLoad: number[];
+  /** Combined slip magnitude, 0 rolling .. 1 sliding or spinning: dust, spray, sound. */
+  wheelSlip: number[];
+  /** How deep the tyre sits in soft ground, metres: track width and darkness. */
+  wheelSinkage: number[];
+  /** The `SurfaceMaterial` id under each tyre, or -1 in water or the air. */
+  wheelSurface: number[];
+  /**
+   * Each solid axle's travel against the frame: heave in metres, positive into
+   * bump (the axle closer to the body), and roll in radians, positive with the
+   * axle's right end higher than its left. Wheels sit at the axle's ends.
+   */
+  axleHeave: number[];
+  axleRoll: number[];
+  /** The steering wheel's angle, radians, for the cockpit. */
+  steeringWheel: number;
+  /** Peaks since the last snapshot, 0..1, for sound and effects. */
+  bumpStop: number;
+  scrape: number;
+  splash: number;
+}
+
+/**
+ * The car's controls, carried on `ControlState.car` by the car input profile.
+ * Pedals and wheel are positions; everything a key toggles is a press COUNT,
+ * so a press survives a coalesced message. Only a change is a press: a
+ * simulator adopts the first counts it sees as its baseline.
+ */
+export interface CarControlState {
+  /** Accelerator pedal, 0..1 (W, right trigger). */
+  accelerator: number;
+  /** Service brake, 0..1 (S, left trigger). At a stop the sim turns a held S into reverse. */
+  brake: number;
+  /** Steering, -1 full left .. +1 full right, eased by the input profile. */
+  steer: number;
+  /** Handbrake, 0..1 (Space, A button): the transmission drum. */
+  handbrake: number;
+  /** Clutch pedal, 0 up .. 1 down (Q, X button); read only with `CarSetup.manualClutch`. */
+  clutch: number;
+  /** Shift and Ctrl, the bumpers. */
+  shiftUpPresses: number;
+  shiftDownPresses: number;
+  /** M: the automatic back from its sequential mode to D. */
+  autoModePresses: number;
+  /** T: 2H, 4H, 4L (4L needs a stop). */
+  rangePresses: number;
+  /** K: off, rear, rear and front (4L only). */
+  lockPresses: number;
+  /** B: downhill assist. */
+  downhillAssistPresses: number;
+  /** L: off, dipped, main. */
+  headlightPresses: number;
+  /** The preset asked for in the pause menu's vehicle panel; the sim inflates only while stopped. */
+  tyrePressure: CarTyrePressure;
+}
+
 /** What the HUD shows of an engaged autoland. */
 export interface AutolandVisualState {
   phase: Exclude<AutolandPhase, "off">;
@@ -186,6 +312,8 @@ export interface ControlState {
   gear: number;
   /** Present only while driving a boat; aircraft never send it. */
   boat?: BoatControlState;
+  /** Present only while driving the car; aircraft and boats never send it. */
+  car?: CarControlState;
 }
 
 /** Which governor acted (or held) in the most recent decision window (1A-6b). */

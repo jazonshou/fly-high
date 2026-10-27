@@ -50,7 +50,9 @@ import {
 } from "@/src/sim/terrainGrid";
 import {
   createSurfaceSimulator,
+  DEFAULT_CAR_SETUP,
   NEUTRAL_BOAT_CONTROLS,
+  NEUTRAL_CAR_CONTROLS,
   surfaceVisualState,
   type SurfaceVehicleControls,
   type SurfaceVehicleEnvironment,
@@ -62,9 +64,10 @@ import { homeMarina } from "@/src/world/marina";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
-import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
+import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type {
   AutolandVisualState,
+  CarSetup,
   ControlState,
   FlightMode,
   FlightVisualState,
@@ -72,6 +75,7 @@ import type {
 } from "@/src/game/types";
 import {
   DEFAULT_AIRBORNE_START_AGL,
+  isSurfaceSpawn,
   normalizeAirborneStartAgl,
   type AircraftSpawnKind,
   type SimulationCommand,
@@ -157,23 +161,29 @@ const AUTOLAND_OVERRIDE_STICK = 0.5;
 
 /**
  * The session's surface vehicle, if it has one, and its simulator while it is
- * the thing being driven: a `"dock"` spawn installs it, any aircraft spawn or
- * the menu's attract flight drops it. While it runs, the aeroplane path below
+ * the thing being driven: a `"dock"` or `"airfield"` spawn installs it, any
+ * aircraft spawn or the menu's attract flight drops it. While it runs, the aeroplane path below
  * is not stepped at all, so aircraft sessions are untouched by any of it.
  */
 let surfaceVehicle: SurfaceVehicleKind | null = null;
 let surface: SurfaceVehicleSimulator | null = null;
 /** The home marina's structures, lines and contact, for a boat that has them. */
 let harbour: MarinaHarbour | null = null;
+/** The car's gearbox and clutch, from the session's settings. */
+let carSetup: CarSetup = DEFAULT_CAR_SETUP;
 const surfaceControls: SurfaceVehicleControls = {
   assist: "scenic",
   boat: { ...NEUTRAL_BOAT_CONTROLS },
+  car: { ...NEUTRAL_CAR_CONTROLS },
 };
 const surfaceWind = { x: 0, y: 0, z: 0 };
 const surfaceEnvironment: SurfaceVehicleEnvironment = {
   water: new CalmWaterSurface(0, terrainHeightSample),
   wind: surfaceWind,
   bedHeight: terrainHeightSample,
+  groundContact: surfaceGroundContact,
+  world: null,
+  colliders: null,
   gravity: 9.80665,
 };
 
@@ -196,6 +206,18 @@ function terrainSample(x: number, z: number) {
 
 function terrainHeightSample(x: number, z: number): number {
   return world ? sampleGroundHeight(world, x, z) : 0;
+}
+
+/** `terrainSample` into the caller's own target, for a surface vehicle's several contacts. */
+function surfaceGroundContact(x: number, z: number, target: TerrainCollisionSample): TerrainCollisionSample {
+  if (world) return sampleGroundContact(world, x, z, target);
+  target.height = 0;
+  target.normal.x = 0;
+  target.normal.y = 1;
+  target.normal.z = 0;
+  target.isRunway = false;
+  target.friction = 1;
+  return target;
 }
 
 function installSimulation(kind: AircraftSpawnKind, spawn: SpawnOptions): void {
@@ -240,16 +262,20 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   disengageAutoland();
   controls = { ...DEFAULT_CONTROLS };
   surfaceControls.boat = { ...NEUTRAL_BOAT_CONTROLS };
+  surfaceControls.car = { ...NEUTRAL_CAR_CONTROLS };
+  surfaceEnvironment.world = world;
+  const boat = vehicleClass(kind) === "boat";
   // The sea the renderer draws, from the same spectrum, seed and weather,
-  // calmed inside the home marina's basin, over the worker's own bed.
-  if (world) {
+  // calmed inside the home marina's basin, over the worker's own bed. The
+  // car wades the still level (its build decides whether it needs waves).
+  if (world && boat) {
     const sea = createSeaTwin(world, weather, terrainHeightSample);
     sea.setShelter([homeMarina(world).shelter]);
     surfaceEnvironment.water = sea;
   } else {
-    surfaceEnvironment.water = new CalmWaterSurface(0, terrainHeightSample);
+    surfaceEnvironment.water = new CalmWaterSurface(world?.seaLevel ?? 0, terrainHeightSample);
   }
-  surface = createSurfaceSimulator(kind, spawn);
+  surface = createSurfaceSimulator(kind, boat ? spawn : { ...spawn, car: carSetup });
   harbour = surface instanceof BoatSimulator && world ? new MarinaHarbour(world, surface) : null;
   if (harbour && spawn.moored && world) harbour.makeFastAtStart(world);
   accumulator = 0;
@@ -259,7 +285,7 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
 }
 
 function surfaceVehicleOrThrow(): SurfaceVehicleKind {
-  if (!surfaceVehicle) throw new Error("A dock start needs a boat: this session has no surface vehicle");
+  if (!surfaceVehicle) throw new Error("A surface start needs a surface vehicle: this session has none");
   return surfaceVehicle;
 }
 
@@ -274,6 +300,7 @@ function stepSurface(active: SurfaceVehicleSimulator): void {
   surfaceEnvironment.water.setTime(active.state.time);
   surfaceControls.assist = mode;
   surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
+  surfaceControls.car = controls.car ?? NEUTRAL_CAR_CONTROLS;
   active.setControls(surfaceControls);
   active.setEnvironment(surfaceEnvironment);
   harbour?.beforeStep(surfaceControls.boat, mode === "scenic", surfaceEnvironment);
@@ -361,7 +388,7 @@ function autolandVisualState(): AutolandVisualState | null {
 function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): void {
   if (!world) return;
   airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
-  if (kind === "dock") {
+  if (isSurfaceSpawn(kind)) {
     const vehicle = surfaceVehicleOrThrow();
     installSurface(vehicle, createSurfaceSpawn(world, vehicle));
     return;
@@ -382,7 +409,8 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
 function restartAfterCrash(requestedAirborneStartAgl = airborneStartAgl): void {
   if (surface) {
     // A wrecked boat comes back upright and afloat in the open water nearest
-    // the wreck, not at the dock forty minutes' run away.
+    // the wreck, not at the dock forty minutes' run away; a rolled car comes
+    // back on its wheels where it lies.
     if (!world || !surface.state.crashed) return;
     const vehicle = surfaceVehicleOrThrow();
     const wreck = surface.state.position;
@@ -688,6 +716,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       weather = command.weather;
       attractMode = command.attractMode;
       surfaceVehicle = command.surfaceVehicle;
+      carSetup = command.carSetup;
       surface = null;
       harbour = null;
       airborneStartAgl = normalizeAirborneStartAgl(command.airborneStartAgl);
@@ -704,6 +733,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     if (command.type === "airports") {
       if (world) world = withAirports(world, command.airports);
+      if (surfaceEnvironment.world) surfaceEnvironment.world = world;
       retargetAutoland();
       return;
     }
@@ -733,6 +763,9 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       if (world && surfaceEnvironment.water instanceof SeaTwin) {
         surfaceEnvironment.water.setConfig(resolveSeaSpectrumConfig(world, weather));
       }
+    }
+    else if (command.type === "carSetup") {
+      carSetup = command.carSetup;
     }
     else if (command.type === "attract") {
       attractMode = command.enabled;

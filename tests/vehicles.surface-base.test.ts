@@ -89,7 +89,9 @@ describe("surface visual state", () => {
     // Heading pi/2 is east, +X, as `FlightTelemetry.heading` has it.
     expect(Math.abs(state.heading - 90)).toBeLessThan(2);
     expect(snapshot.position.x).toBeGreaterThan(0.5);
-    expect(state.airspeed).toBe(snapshot.payload.speedThroughWater);
+    const payload = snapshot.payload;
+    if (payload.kind !== "boat") throw new Error("a boat's snapshot carries the boat payload");
+    expect(state.airspeed).toBe(payload.speedThroughWater);
     expect(state.vehicle).toBe(snapshot.payload);
     expect(state.autoland).toBeNull();
     expect(state.crashed).toBe(false);

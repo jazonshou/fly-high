@@ -67,7 +67,7 @@ import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaStat
 import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
-import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
+import { isAircraftKind, isSurfaceVehicleKind, vehicleClass, type VehicleKind } from "@/src/vehicles/kinds";
 import {
   infrastructureIndex,
   infrastructurePlantExclusions,
@@ -1480,9 +1480,9 @@ export class FlightRenderer implements FlightRenderingSystem {
           : {}),
       });
       cleanup.push(() => steam.dispose());
-      // Only with a surface vehicle, so an aircraft session builds and
-      // compiles none of it. Before the readiness gate, as the steam is.
-      const boatEffects = surfaceVehicle
+      // Only with a boat, so an aircraft or car session builds and compiles
+      // none of it. Before the readiness gate, as the steam is.
+      const boatEffects = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "boat"
         ? createBoatEffects(scene, {
           profile,
           world: options.world,
@@ -3212,6 +3212,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
     this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
+    if (state.vehicle?.kind !== "boat") {
+      // The car's lamps are its own visual's (the car-look build); the
+      // aircraft's pools and washes stay dark under it.
+      for (const pool of AIRCRAFT_CAST_POOLS) this.clusteredLighting.setIntensity(pool.name, 0);
+      for (const slot of aircraftWashLights(this.aircraftKind)) this.clusteredLighting.setIntensity(slot.name, 0);
+      return;
+    }
     // The boat's lamp law, from the observer's bearing as the aircraft's is.
     const toCamera = this.camera.position.subtract(visual.root.position);
     const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);

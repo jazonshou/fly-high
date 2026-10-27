@@ -1,6 +1,7 @@
 import type { Scene } from "@babylonjs/core/scene";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { createWebGpuBoat } from "../boat/createBoat";
+import { createWebGpuCar } from "../ground/createCar";
 import type { VehicleVisual } from "./types";
 
 export type { VehicleVisual } from "./types";
@@ -10,5 +11,7 @@ export function createSurfaceVehicleVisual(scene: Scene, kind: SurfaceVehicleKin
   switch (kind) {
     case "speedboat":
       return createWebGpuBoat(scene, kind);
+    case "landcruiser":
+      return createWebGpuCar(scene, kind);
   }
 }
