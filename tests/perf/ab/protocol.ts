@@ -185,6 +185,12 @@ export interface FlightRequest {
   readonly clearanceMeters: number;
   /** Constant bank; 0 flies straight. */
   readonly bankDegrees: number;
+  /**
+   * The nose's attitude below the horizon on this leg, reached at 30 deg/s
+   * from where the last leg left it; the path still follows the terrain.
+   * Absent or 0 flies level.
+   */
+  readonly pitchDownDegrees?: number;
   readonly cameraMode: "chase" | "cockpit";
   /** Drop the frame's own draws (`gpuDrawGate.ts`): CPU and compute only. */
   readonly suppressDraws: boolean;
@@ -235,6 +241,22 @@ export interface FlightFrame {
    * differ from the nearest effect of that shader compiled before it.
    */
   readonly effectsCompiled?: readonly string[];
+  /**
+   * Each render pipeline created in this frame: the frame-graph pass, the
+   * Babylon render pass, the mesh (material) drawn and the pipeline's formats.
+   */
+  readonly pipelineSources?: readonly string[];
+  /** The nose's attitude below the horizon in this frame. */
+  readonly pitchDownDegrees?: number;
+  /** On a frame that fenced: ms waiting for the GPU to drain it and the frames since the last fence. */
+  readonly fenceMs?: number;
+  /**
+   * Draws this frame skipped because their pipeline was still compiling off
+   * the frame (`AsyncPipelineCompiles`); absent from a build without it.
+   */
+  readonly deferredDraws?: number;
+  /** Warm-ups in progress after this frame (meshes drawn out of view until their pipelines are ready). */
+  readonly pipelineWarmUps?: number;
   /** Main-thread milliseconds per frame-graph pass (an older build may report none). */
   readonly passMs: Readonly<Record<string, number>>;
   /**
