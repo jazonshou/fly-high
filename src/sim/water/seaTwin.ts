@@ -3,6 +3,7 @@ import { resolveSeaSpectrumConfig, type SeaWorld } from "./seaState";
 import { packSeaShelterEllipses, seaShelterField } from "./shelter";
 import {
   createOceanWave,
+  OCEAN_CHOP_SIGN,
   OCEAN_TIME_SIGN,
   oceanCascadeFrequencyReach,
   oceanInitialWave,
@@ -35,12 +36,14 @@ import type {
  * `k = 2 pi (fx, fy) / L`. The drawn sea at label point `x0` (the vertex before
  * displacement) is
  *
- *   h(x0, t) = sum Re(A e^{i psi}),  D(x0, t) = sum Re(-i lambda k^ A e^{i psi}),
+ *   h(x0, t) = sum Re(A e^{i psi}),  D(x0, t) = sum Re(c i lambda k^ A e^{i psi}),
  *   psi = k.x0 + s w t,
  *
- * with `A = 2 S^2 h0` (`S` the transform's per-axis scale), `s` the GPU's time
- * sign (`OCEAN_TIME_SIGN`), `w` the GPU's own f32 angular frequency and
- * `lambda` the choppiness. The surface point is `x0 + D(x0)` at height `h(x0)`;
+ * with `A = 2 S^2 h0` (`S` the transform's per-axis scale), `s` and `c` the
+ * GPU's time and chop signs (`OCEAN_TIME_SIGN`, -1: each wave travels along
+ * its `k`, downwind; `OCEAN_CHOP_SIGN`, +1: the surface gathers toward the
+ * crests), `w` the GPU's own f32 angular frequency and `lambda` the
+ * choppiness. The surface point is `x0 + D(x0)` at height `h(x0)`;
  * the twin inverts that with two fixed-point iterations to answer at a world
  * point.
  *
@@ -70,9 +73,9 @@ import type {
  * A point off the hull footprint is answered exactly, by summing every wave.
  *
  * Measured against that exact sum on the shipping world's sea, on a hull
- * 6.8 m by 2.8 m (171 points a step, 0-20 m/s): height within 2.6 mm rms in
- * Clear and 8.7 mm in Cloudy (about 3 m waves), 62 mm at the worst Cloudy
- * crest, where the choppy inversion is steepest; about 0.1 ms a step
+ * 6.8 m by 2.8 m (171 points a step, 0-20 m/s): height within 1.8 mm rms in
+ * Clear and 6.5 mm in Cloudy (about 3 m waves), 47 mm at the worst Cloudy
+ * crest, run through at 20 m/s; about 0.1 ms a step
  * (`tests/world.sea-twin.test.ts`).
  */
 
@@ -161,10 +164,13 @@ interface WaveSet {
   readonly omega: Float64Array;
   readonly amplitudeRe: Float64Array;
   readonly amplitudeIm: Float64Array;
-  /** `lambda * k^`. */
+  /**
+   * `-c lambda k^`, `c` the chop sign: the sums take each wave's displacement
+   * as `Re(-i chop A e^{i psi})`, which is the drawn `Re(c i lambda k^ A e^{i psi})`.
+   */
   readonly chopX: Float64Array;
   readonly chopZ: Float64Array;
-  /** Products the sums weight by: `w^2`, `w lambda k^`, `w^2 lambda k^`. */
+  /** Products the sums weight by: `w^2`, `w chop`, `w^2 chop`. */
   readonly omega2: Float64Array;
   readonly omegaChopX: Float64Array;
   readonly omegaChopZ: Float64Array;
@@ -414,9 +420,9 @@ function buildWaveSet(
     set.amplitudeRe[index] = candidate.re;
     set.amplitudeIm[index] = candidate.im;
     const wavenumber = Math.hypot(candidate.kx, candidate.kz);
-    set.chopX[index] = (config.choppiness * candidate.kx) / wavenumber;
-    const chopX = (config.choppiness * candidate.kx) / wavenumber;
-    const chopZ = (config.choppiness * candidate.kz) / wavenumber;
+    const chop = (-OCEAN_CHOP_SIGN * config.choppiness) / wavenumber;
+    const chopX = chop * candidate.kx;
+    const chopZ = chop * candidate.kz;
     const omega = candidate.omega;
     set.chopX[index] = chopX;
     set.chopZ[index] = chopZ;
@@ -1139,19 +1145,19 @@ export class SeaTwin implements HullWaterSampler {
       const r5 = czz * a;
       const i5 = czz * b;
       h0 += a; h1 += r1; h2 += r2; h3 += r3; h4 += r4; h5 += r5;
-      // D = Re(-i lambda k^ q) = lambda k^ Im(q)
+      // D = Re(-i chop q) = chop Im(q)
       const cx = chopX[index]!;
       const cz = chopZ[index]!;
       x0 += cx * b; x1 += cx * i1; x2 += cx * i2; x3 += cx * i3; x4 += cx * i4; x5 += cx * i5;
       z0 += cz * b; z1 += cz * i1; z2 += cz * i2; z3 += cz * i3; z4 += cz * i4; z5 += cz * i5;
-      // w = dh/dt = Re(i s w q) = -s w Im(q); u = dD/dt = s w lambda k^ Re(q)
+      // w = dh/dt = Re(i s w q) = -s w Im(q); u = dD/dt = s w chop Re(q)
       const omega = omegas[index]!;
       w0 -= omega * b; w1 -= omega * i1; w2 -= omega * i2; w3 -= omega * i3; w4 -= omega * i4; w5 -= omega * i5;
       const ox = omegaChopX[index]!;
       const oz = omegaChopZ[index]!;
       u0 += ox * a; u1 += ox * r1; u2 += ox * r2; u3 += ox * r3; u4 += ox * r4; u5 += ox * r5;
       v0 += oz * a; v1 += oz * r1; v2 += oz * r2; v3 += oz * r3; v4 += oz * r4; v5 += oz * r5;
-      // dw/dt = -w^2 Re(q); du/dt = -w^2 lambda k^ Im(q)
+      // dw/dt = -w^2 Re(q); du/dt = -w^2 chop Im(q)
       wRate -= omega2[index]! * a;
       uxRate -= omega2ChopX[index]! * b;
       uzRate -= omega2ChopZ[index]! * b;
@@ -1294,7 +1300,7 @@ export class SeaTwin implements HullWaterSampler {
           // d/dt = Re(i s w q), so w = -s w b and dw/dt = -w^2 a.
           h += a; ha -= ka * b; hc -= kc * b; hac -= kac * a;
           w -= omega * b; wRate -= omegaSquared * a; haRate -= omegaKa * a; hcRate -= omegaKc * a; hacRate += omegaKac * b;
-          // D = Re(-i lambda k^ q) = lambda k^ b; dD/dt = s w lambda k^ a.
+          // D = Re(-i chop q) = chop b; dD/dt = s w chop a.
           dx += cx * b; dz += cz * b; ux += ocx * a; uz += ocz * a; uxRate -= o2cx * b; uzRate -= o2cz * b;
           nh += na; nha -= ka * nb; nhc -= kc * nb; nhac -= kac * na;
           nw -= omega * nb; nwRate -= omegaSquared * na; nhaRate -= omegaKa * na; nhcRate -= omegaKc * na; nhacRate += omegaKac * nb;
