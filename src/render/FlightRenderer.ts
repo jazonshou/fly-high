@@ -2846,8 +2846,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // The threshold is a product contract, not something a slower workload
     // may redefine until its own misses disappear. A tier-1 frame above
     // 27.4 ms is a visible missed delivery and must remain visible here. PR
-    // B: only the player's own 30 fps choice raises it (to 60 ms, as on
-    // Ultra); a cadence measured from slow frames never does.
+    // B: only the player's own 30 fps choice raises it (to 60 ms where 30
+    // divides the refresh rate, as on Ultra, and a little more where it does
+    // not); a cadence measured from slow frames never does.
     const inventoryLanes = this.inventoryGpuMemoryBreakdown();
     // One viewport for both estimates. Two reads of `clientWidth` could differ
     // across a resize and make the restricted figure incomparable to the one

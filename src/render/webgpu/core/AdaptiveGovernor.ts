@@ -73,9 +73,16 @@ export interface GovernorSignals {
 }
 
 export interface GovernorConfig {
-  /** 13.7 ms on the 60 fps tiers, 30 ms on Ultra and at the 30 fps setting. */
+  /**
+   * 13.7 ms on the 60 fps tiers, 30 ms on Ultra; at the 30 fps setting the
+   * paced interval less 3.33 ms (30 ms where 30 divides the refresh rate).
+   */
   readonly gpuTargetMs: number;
-  /** Pilot-visible cadence: 60 Hz on tiers 0-2, 30 Hz on Ultra and at the 30 fps setting. */
+  /**
+   * Pilot-visible cadence: 60 Hz on tiers 0-2, 30 Hz on Ultra; at the 30 fps
+   * setting the paced interval (33.3 ms where 30 divides the refresh rate,
+   * 40 ms at 75 Hz).
+   */
   readonly presentationTargetMs: number;
   /** PR B: a presented interval longer than this is late (`lateIntervalFor`). */
   readonly lateIntervalMs: number;

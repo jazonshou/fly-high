@@ -314,7 +314,9 @@ export interface RenderDiagnostics {
   hitchCount: number;
   /**
    * PR B: what `hitchCount` counts against: 27.4 ms, 60 ms on Ultra. Only
-   * the 30 fps setting raises it, never frames being slow.
+   * the 30 fps setting raises it, to twice its GPU target (the paced
+   * interval less 3.33 ms: 60 ms where 30 divides the refresh rate, 62.8 ms
+   * at 144 Hz), never frames being slow.
    */
   hitchThresholdMs: number;
   /** Governor B ladder index and the lever that moved most recently. */
@@ -325,7 +327,8 @@ export interface RenderDiagnostics {
   resolutionInsensitive: boolean;
   /**
    * PR B: the presented interval the governor protects: 16.67 ms, 33.3 ms on
-   * Ultra and at the 30 fps setting.
+   * Ultra, and at the 30 fps setting its paced interval (33.3 ms where 30
+   * divides the refresh rate, 40 ms at 75 Hz).
    */
   presentationTargetMs: number;
   /** PR B: the share of the last governor window's frames that were late; null before the first. */

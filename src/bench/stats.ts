@@ -370,7 +370,8 @@ export interface FrameWindowContext {
   readonly granularityMs: number | null;
   /**
    * `hitchThresholdMilliseconds` of the step's tier and its cadence at the
-   * flight's first frame: 27.4 ms, or 60 ms on Ultra and at 30 fps.
+   * flight's first frame: 27.4 ms, or 60 ms on Ultra and at 30 fps where 30
+   * divides the refresh rate (more where it does not: 62.8 ms at 144 Hz).
    */
   readonly tierThresholdMs: number;
 }
