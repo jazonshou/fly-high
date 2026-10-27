@@ -45,8 +45,10 @@ spin mode (2.6 kg m^2 against a tyre very stiff in slip) is far too fast for
 
 The step is deterministic (bit-identical over ten minutes of identical
 inputs) and allocates nothing once V8 has optimised it, apart from
-classifying a new surface cell (see Surfaces): besides keeping to
-scratch objects, no number crosses a call in the hot path. V8 boxes a double
+classifying a new surface cell (see Surfaces) and the one call a step into
+the water authority, whose `sample(x, z, out)` takes two numbers V8 boxes
+when it has not inlined the call: besides keeping to scratch objects, no
+other number crosses a call in the hot path. V8 boxes a double
 passed to or returned from a call it does not inline, and `Math.hypot` boxes
 its arguments, so the step's sizes, the speed and the slope are fields, the
 components take their inputs as fields or objects, and lengths are square
@@ -283,11 +285,16 @@ tuned to it.
 
 ## Water
 
-The car reads the water authority at each tyre's contact once a step (the
-sea today; lakes and rivers once the hydrology sources reach the worker).
-The wading depth is the highest surface over the lowest contact. A tyre
-under the surface reports no material and full wetness for the effects, and
-its bed is wet: loam turns to mud and hard ground keeps 80% of its grip.
+The car reads the water authority at the tyres' contacts, one tyre a step
+in turn and all four at a start (the sea today; lakes and rivers once the
+hydrology sources reach the worker). In the worker each answer costs a
+terrain height sample (about 13 us in Node), so asking for all four every
+step doubled the car's step; the water a tyre has rolled towards in the four
+steps (33 ms) since it was last asked is near enough. Whether a tyre is under
+the surface is decided every step from its contact now. The wading depth is
+the highest surface over the lowest contact. A tyre under the surface
+reports no material and full wetness for the effects, and its bed is wet:
+loam turns to mud, snow keeps its depth and hard ground keeps 80% of its grip.
 
 - Buoyancy: the body's plan is eight columns, each reading the water at its
   nearer wheel, so a car half into a river floats at one end. A column

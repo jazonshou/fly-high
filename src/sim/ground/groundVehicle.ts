@@ -367,8 +367,14 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   rolled = false;
   private wadingDepthValue = 0;
   private readonly waterSample = createWaterSurfaceSample();
-  /** The water at each wheel this step: there at all, its surface height and its velocity (the current). */
+  /**
+   * The water at each wheel, sampled one wheel a step in turn (`sampleWater`):
+   * there at all, sea or fresh, its surface height and its velocity (the current).
+   */
   private readonly waterAt = new Uint8Array(4);
+  private readonly waterSea = new Uint8Array(4);
+  /** The wheel whose water is sampled next; -1 samples all four (a new start). */
+  private waterTurn = -1;
   private readonly waterHeight = new Float64Array(4);
   private readonly waterVelocityX = new Float64Array(4);
   private readonly waterVelocityY = new Float64Array(4);
@@ -507,6 +513,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   }
 
   setEnvironment(environment: Readonly<SurfaceVehicleEnvironment>): void {
+    // A new water authority: ask it about all four wheels at once.
+    if (environment.water !== this.environment?.water) this.waterTurn = -1;
     this.environment = environment;
     this.lattice.setSampler(environment.bedHeight);
     this.gravity = environment.gravity > 0 ? environment.gravity : STANDARD_GRAVITY;
@@ -872,6 +880,14 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * highest surface over the lowest contact), which tyres are under it, the
    * cabin's flooding, and whether the intake has gone under.
    */
+  /**
+   * The water under the wheels. The authority is asked about one wheel a
+   * step, in turn (all four at a start): in the worker each answer costs a
+   * terrain height sample, about 13 us, and the water a wheel has rolled
+   * towards in the 4 steps (33 ms) since it was last asked is near enough.
+   * Whether a tyre is under the surface is decided every step, from its
+   * contact now.
+   */
   private sampleWater(): void {
     const env = this.environment;
     this.wadingDepthValue = 0;
@@ -879,23 +895,31 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     let sea = false;
     let surface = -Infinity;
     let lowest = Infinity;
+    const turn = this.waterTurn;
+    this.waterTurn = (turn + 1) & 3;
     for (let w = 0; w < 4; w += 1) {
-      this.waterAt[w] = 0;
       this.wheelSubmerged[w] = 0;
-      if (!env) continue;
+      if (!env) {
+        this.waterAt[w] = 0;
+        continue;
+      }
       const at = this.contacts[w]!.point;
       lowest = Math.min(lowest, at.y);
-      const sample = env.water.sample(at.x, at.z, this.waterSample);
-      if (sample.kind === "none") continue;
-      if (sample.kind === "sea") sea = true;
+      if (turn < 0 || w === turn) {
+        const sample = env.water.sample(at.x, at.z, this.waterSample);
+        const wet = sample.kind !== "none";
+        this.waterAt[w] = wet ? 1 : 0;
+        this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
+        this.waterHeight[w] = sample.height;
+        this.waterVelocityX[w] = sample.velocity.x;
+        this.waterVelocityY[w] = sample.velocity.y;
+        this.waterVelocityZ[w] = sample.velocity.z;
+      }
+      if (this.waterAt[w] !== 1) continue;
+      if (this.waterSea[w] === 1) sea = true;
       this.inWater = true;
-      this.waterAt[w] = 1;
-      this.waterHeight[w] = sample.height;
-      this.waterVelocityX[w] = sample.velocity.x;
-      this.waterVelocityY[w] = sample.velocity.y;
-      this.waterVelocityZ[w] = sample.velocity.z;
-      surface = Math.max(surface, sample.height);
-      if (sample.height > at.y) this.wheelSubmerged[w] = 1;
+      surface = Math.max(surface, this.waterHeight[w]!);
+      if (this.waterHeight[w]! > at.y) this.wheelSubmerged[w] = 1;
     }
     this.waterDensity = sea ? SEA_WATER_DENSITY : FRESH_WATER_DENSITY;
     // The cabin floods towards the water's height up the body, and drains faster than it fills.
