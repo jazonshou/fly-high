@@ -7,7 +7,6 @@ import {
   type CarVisualState,
 } from "@/src/game/types";
 import { SurfaceMaterial } from "@/src/render/webgpu/terrain/surfaceMaterials";
-import { isPointOnRunway, worldAirportAt } from "@/src/world";
 import { LANDCRUISER_76, type AxleSuspension } from "@/src/vehicles/landcruiser76";
 import { createColliderContact, type ColliderAabb } from "../colliders";
 import { clamp, inverseRotateVectorInto, quaternionFromFlightAngles, rotateVectorInto, wrapAngle } from "../math";
@@ -26,8 +25,11 @@ import type { VehiclePoseState } from "../vehicle";
 import { createWaterSurfaceSample } from "../water/types";
 import { DrivelineSolver, DRIVELINE_DOF, ENGINE } from "./drivelineSolver";
 import { Engine, IDLE_OMEGA, RPM_PER_RAD_S } from "./engine";
+import { roughnessProfile, type RoughnessPoint } from "./roughness";
+import { createSoilContact, DIG_GAIN, DIG_SLIP, soilCurve, soilPatch } from "./soil";
 import { Steering } from "./steering";
-import { createGroundPoint, TerrainLatticeCache, type GroundField } from "./terrainPatch";
+import { createCarSurface, describeSurface, SurfaceCache, type CarSurface } from "./surface";
+import { createGroundPoint, TerrainLatticeCache, type GroundField, type GroundPoint } from "./terrainPatch";
 import {
   converterTorques,
   STOPPED_SPEED,
@@ -181,10 +183,10 @@ export const CRASH_IMPACT_SPEED = 12;
 /** The roof or a side down at more than this speed is a crash, not just rolled, m/s. */
 const CRASH_ROLL_SPEED = 10;
 
-/** Friction scale for the tyre model by surface until P2's classifier: asphalt is the TMeasy reference. */
-const PAVED_FRICTION = 1;
-const LAND_FRICTION = 0.78;
-const WET_FRICTION = 0.35;
+/** Soft ground presses in this fast under a new load, s; it only springs back as the tyre rolls onto fresh soil. */
+const SINK_SECONDS = 0.05;
+/** The speed over which the soil's compaction resistance builds from a standstill, m/s: it holds like friction. */
+const COMPACTION_SPEED = 0.05;
 
 /** ABS: the braking slip it holds, and how fast it bleeds and restores a wheel's pressure. */
 const ABS_SLIP = 0.14;
@@ -226,6 +228,9 @@ const HULL: readonly HullProbeRecord[] = CAR.hull.flatMap((part) =>
   })),
 );
 
+/** A test's or probe's surface: what lies at the ground point `at` (x, z, height and gradient), into `out`. */
+export type CarSurfaceField = (at: Readonly<GroundPoint>, out: CarSurface) => void;
+
 export interface GroundVehicleOptions {
   /**
    * Read the ground from this field rather than the worker's height
@@ -233,6 +238,8 @@ export interface GroundVehicleOptions {
    * shapes (a ramp's sharp toe, a ditch).
    */
   ground?: GroundField;
+  /** Read the surface from this rather than the world's classifier (asphalt without a world). */
+  surface?: CarSurfaceField;
 }
 
 /** Radial stiffness at a pressure, N/m: k grows with p + p0. */
@@ -253,6 +260,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private environment: Readonly<SurfaceVehicleEnvironment> | null = null;
   private readonly lattice = new TerrainLatticeCache(() => 0);
   private readonly fixedGround: GroundField | null;
+  private readonly fixedSurface: CarSurfaceField | null;
+  private readonly surfaceCache = new SurfaceCache();
   private placed = false;
 
   readonly engine: Engine;
@@ -267,6 +276,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   downhillAssist = false;
   downhillAssistActive = false;
   tractionControlActive = false;
+  /** Traction control is on (the car's default; tests turn it off). It stands down while a locker is engaged. */
+  tractionControl = true;
   absActive = false;
   private dacIntegral = 0;
   private hillHold = 0;
@@ -293,12 +304,16 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   readonly wheelSlipRatio = new Float64Array(4);
   readonly wheelForceX = new Float64Array(4);
   readonly wheelForceY = new Float64Array(4);
-  private readonly wheelFriction = new Float64Array(4).fill(LAND_FRICTION);
-  private readonly wheelMaterial = new Int32Array(4).fill(-1);
+  /** What each tyre rolls on this step. */
+  readonly wheelSurface: readonly CarSurface[] = [createCarSurface(), createCarSurface(), createCarSurface(), createCarSurface()];
   private readonly wheelWet = new Float64Array(4);
-  private readonly surfaceX = new Float64Array(4).fill(Number.NaN);
-  private readonly surfaceZ = new Float64Array(4).fill(Number.NaN);
-  private surfaceCursor = 0;
+  /** Soft ground: each tyre's static sinkage and the rut it has dug by slipping, metres. */
+  readonly wheelSinkage = new Float64Array(4);
+  readonly wheelRut = new Float64Array(4);
+  /** The ISO 8608 profile's height under each tyre this step, metres. */
+  private readonly wheelRoughness = new Float64Array(4);
+  private readonly roughPoint: RoughnessPoint = { x: 0, z: 0, height: 0 };
+  private readonly soilContact = createSoilContact();
   private readonly absFactor = new Float64Array(4).fill(1);
   private readonly tcTorque = new Float64Array(4);
   private readonly contacts: WheelContact[] = [createWheelContact(), createWheelContact(), createWheelContact(), createWheelContact()];
@@ -355,6 +370,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   constructor(spawn?: SurfaceVehicleSpawn, options: GroundVehicleOptions = {}) {
     this.setup = spawn?.car ?? DEFAULT_CAR_SETUP;
     this.fixedGround = options.ground ?? null;
+    this.fixedSurface = options.surface ?? null;
     this.engine = new Engine(this.setup.gearbox === "manual" ? CAR.engine.manualTorque : CAR.engine.automaticTorque);
     this.transmission = new Transmission(this.setup);
     const heading = spawn?.heading ?? 0;
@@ -602,7 +618,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       const right = left + 1;
       this.tcTorque[left] = 0;
       this.tcTorque[right] = 0;
-      if (t.locks !== "off" || this.pedals.accelerator < 0.05 || this.engine.flooded) continue;
+      if (!this.tractionControl || t.locks !== "off" || this.pedals.accelerator < 0.05 || this.engine.flooded) continue;
       if (axle === 0 && !t.fourWheelDrive) continue;
       // Which wheel is the faster one depends on the way the axle turns: reverse counts too.
       const direction = omega[left + 1]! + omega[right + 1]! < 0 ? -1 : 1;
@@ -704,36 +720,34 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   }
 
   /**
-   * The surface under each tyre (friction until P2's classifier and soils):
-   * one wheel refreshed per step, and only once it has moved a metre.
+   * The surface under each tyre, and the roughness profile's height there.
+   * With a world, the painted ground is exact at each tyre and the natural
+   * ground comes from the surface cache (`surface.ts`); a change of world or
+   * of its streamed infrastructure regions also drops the cached lattice
+   * nodes, since a road's fill or cut moves the ground. The world's lookups
+   * pass numbers through calls, so this path allocates a little; the
+   * test rig's surfaces do not.
    */
   private sampleSurfaces(): void {
-    const w = this.surfaceCursor;
-    this.surfaceCursor = (w + 1) & 3;
-    const contact = this.contacts[w]!;
-    const x = contact.point.x;
-    const z = contact.point.z;
-    const dx = x - this.surfaceX[w]!;
-    const dz = z - this.surfaceZ[w]!;
-    if (dx * dx + dz * dz < 1 && Number.isFinite(dx)) return;
-    this.surfaceX[w] = x;
-    this.surfaceZ[w] = z;
     const world = this.environment?.world;
-    if (!world) {
-      this.wheelFriction[w] = PAVED_FRICTION;
-      this.wheelMaterial[w] = SurfaceMaterial.Asphalt;
-      return;
-    }
-    const airport = worldAirportAt(world, x, z);
-    if (airport && isPointOnRunway(airport, x, z)) {
-      this.wheelFriction[w] = PAVED_FRICTION;
-      this.wheelMaterial[w] = SurfaceMaterial.Asphalt;
-    } else if (contact.point.y <= world.seaLevel) {
-      this.wheelFriction[w] = WET_FRICTION;
-      this.wheelMaterial[w] = SurfaceMaterial.Sand;
-    } else {
-      this.wheelFriction[w] = LAND_FRICTION;
-      this.wheelMaterial[w] = SurfaceMaterial.Grass;
+    if (world && !this.fixedSurface && this.surfaceCache.beginStep(world)) this.lattice.clear();
+    for (let w = 0; w < 4; w += 1) {
+      const contact = this.contacts[w]!;
+      const surface = this.wheelSurface[w]!;
+      if (this.fixedSurface) this.fixedSurface(contact.ground, surface);
+      else if (world) this.surfaceCache.lookup(world, this.ground, contact.ground, surface);
+      else describeSurface(SurfaceMaterial.Asphalt, 0, surface);
+      this.wheelWet[w] = surface.wetness;
+      if (!surface.soft) {
+        this.wheelSinkage[w] = 0;
+        this.wheelRut[w] = 0;
+      }
+      if (surface.roughness > 0) {
+        this.roughPoint.x = contact.point.x;
+        this.roughPoint.z = contact.point.z;
+        roughnessProfile(this.roughPoint);
+        this.wheelRoughness[w] = surface.roughness * this.roughPoint.height;
+      } else this.wheelRoughness[w] = 0;
     }
   }
 
@@ -915,18 +929,25 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       const c = this.centreWorld;
       const axleNormal = axleDir.x * n.x + axleDir.y * n.y + axleDir.z * n.z;
       const reach = Math.sqrt(Math.max(0, 1 - axleNormal * axleNormal));
+      const surface = this.wheelSurface[w]!;
+      const sunk = surface.soft ? Math.min(surface.maxSinkage, this.wheelSinkage[w]! + this.wheelRut[w]!) : 0;
+      // The tyre's own deflection: the disc's reach past the ground plane, raised by the
+      // roughness profile and let down into soft ground by the sinkage.
       const penetration = TYRE.freeRadius * reach
-        - ((c.x - contact.point.x) * n.x + (c.y - contact.point.y) * n.y + (c.z - contact.point.z) * n.z);
+        - ((c.x - contact.point.x) * n.x + (c.y - contact.point.y) * n.y + (c.z - contact.point.z) * n.z)
+        + this.wheelRoughness[w]! - sunk;
       if (!(penetration > 0)) {
         this.wheelLoad[w] = 0;
         this.wheelForceX[w] = 0;
         this.wheelForceY[w] = 0;
         this.wheelSlip[w] = 0;
         this.wheelSlipRatio[w] = 0;
-        // A tyre in the air springs back.
+        // A tyre in the air springs back, and leaves its rut.
         const relax = Math.exp(-h * 60);
         this.deflectionX[w] = this.deflectionX[w]! * relax;
         this.deflectionY[w] = this.deflectionY[w]! * relax;
+        this.wheelSinkage[w] = this.wheelSinkage[w]! * relax;
+        this.wheelRut[w] = this.wheelRut[w]! * relax;
         this.torque[w + 1] = 0;
         continue;
       }
@@ -969,13 +990,41 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       const rolling = TYRE.freeRadius - Math.min(penetration, RIM_DEFLECTION) / 3;
       const transport = rolling * Math.abs(spin) + TYRE_V_N;
       const slipVelocity = vx - rolling * spin;
-      const friction = this.wheelFriction[w]!;
       input.load = load;
-      input.friction = friction;
+      input.friction = surface.friction;
       input.slipX = -slipVelocity / transport;
       input.slipY = -vy / transport;
-      resolveCurve(TYRE.longitudinal, input, this.curveX);
-      resolveCurve(TYRE.lateral, input, this.curveY);
+      let compaction = 0;
+      if (surface.soft) {
+        // Bekker-Wong (soil.ts): the soil carries the tyre, and its shear is the tyre's curve.
+        const soil = this.soilContact;
+        soil.load = load;
+        soil.deflection = penetration;
+        soil.sinkage = this.wheelSinkage[w]!;
+        soil.rut = this.wheelRut[w]!;
+        soilPatch(surface, soil);
+        const patch = Math.max(soil.patchLength, 0.05);
+        const fresh = Math.min(1, (Math.abs(vx) * h) / patch);
+        // Static sinkage presses in quickly and only lifts as the tyre rolls onto fresh soil.
+        let sinkage = this.wheelSinkage[w]!;
+        const target = soil.targetSinkage;
+        sinkage += (target - sinkage) * (target > sinkage ? Math.min(1, h / SINK_SECONDS) : fresh);
+        // Slip sinkage: a tyre slipping past DIG_SLIP digs; fresh soil fills the rut back in.
+        const tread = Math.abs(rolling * spin);
+        const slipRatio = (rolling * spin - vx) / Math.max(tread, Math.abs(vx), 0.2);
+        const excess = Math.abs(slipRatio) - DIG_SLIP;
+        let rut = this.wheelRut[w]!;
+        if (excess > 0) rut += (h * DIG_GAIN * excess * tread * target) / patch;
+        rut -= rut * fresh;
+        this.wheelSinkage[w] = sinkage;
+        this.wheelRut[w] = Math.max(0, Math.min(rut, surface.maxSinkage - sinkage));
+        soilCurve(surface, soil, false, this.curveX);
+        soilCurve(surface, soil, true, this.curveY);
+        compaction = soil.compaction;
+      } else {
+        resolveCurve(TYRE.longitudinal, input, this.curveX);
+        resolveCurve(TYRE.lateral, input, this.curveY);
+      }
       const result = combinedSlip(this.curveX, this.curveY, input, this.slip);
       // The slip lamp: a smooth step from half the peak slip to twice it.
       const lamp = Math.max(0, Math.min(1, (result.slip - 0.5) / 1.5));
@@ -1018,14 +1067,16 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       this.wheelForceY[w] = forceY;
 
       // Rolling resistance as a torque on the wheel, smooth through a standstill.
-      const resistance = TYRE.rollingResistance * load * rolling * Math.tanh(spin / 2);
+      const resistance = surface.rollingResistance * load * rolling * Math.tanh(spin / 2);
       this.torque[w + 1] = -forceX * rolling - resistance;
 
-      // The force in the world, at the contact point under the disc.
+      // The force in the world, at the contact point under the disc. Soft ground's compaction
+      // resistance holds the car back, not the wheel: the tyre has to climb out of its rut.
+      const along = forceX - compaction * Math.tanh(vx / COMPACTION_SPEED);
       const fw = this.force;
-      fw.x = load * n.x + forceX * ex + forceY * lx;
-      fw.y = load * n.y + forceX * ey + forceY * ly;
-      fw.z = load * n.z + forceX * ez + forceY * lz;
+      fw.x = load * n.x + along * ex + forceY * lx;
+      fw.y = load * n.y + along * ey + forceY * ly;
+      fw.z = load * n.z + along * ez + forceY * lz;
       // Contact point: the disc's deepest point, on the ground plane.
       const k = reach > 1e-9 ? FREE_RADIUS / reach : 0;
       const p = this.contactPoint;
@@ -1487,9 +1538,12 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       wheelSpinRate: [this.driveline.omega[1]!, this.driveline.omega[2]!, this.driveline.omega[3]!, this.driveline.omega[4]!],
       wheelLoad: Array.from(this.wheelLoad),
       wheelSlip: Array.from(this.wheelSlip),
-      wheelSinkage: [0, 0, 0, 0],
-      wheelSurface: CAR_WHEELS.map((_, w) => (this.wheelLoad[w]! > 0 ? this.wheelMaterial[w]! : -1)),
-      wheelWetness: CAR_WHEELS.map((_, w) => this.wheelWet[w]!),
+      wheelSinkage: CAR_WHEELS.map((_, w) =>
+        (this.wheelLoad[w]! > 0 && this.wheelSurface[w]!.soft
+          ? Math.min(this.wheelSurface[w]!.maxSinkage, this.wheelSinkage[w]! + this.wheelRut[w]!)
+          : 0)),
+      wheelSurface: CAR_WHEELS.map((_, w) => (this.wheelLoad[w]! > 0 ? this.wheelSurface[w]!.material : -1)),
+      wheelWetness: CAR_WHEELS.map((_, w) => (this.wheelLoad[w]! > 0 ? this.wheelWet[w]! : 0)),
       axleHeave: Array.from(this.axleHeave),
       axleRoll: Array.from(this.axleRoll),
       steeringWheel: this.steering.wheelAngle,

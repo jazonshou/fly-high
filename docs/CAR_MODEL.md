@@ -44,7 +44,8 @@ spin mode (2.6 kg m^2 against a tyre very stiff in slip) is far too fast for
 - each tyre's two TMeasy deflection states.
 
 The step is deterministic (bit-identical over ten minutes of identical
-inputs) and allocates nothing once V8 has optimised it: besides keeping to
+inputs) and allocates nothing once V8 has optimised it, apart from
+classifying a new surface cell (see Surfaces): besides keeping to
 scratch objects, no number crosses a call in the hot path. V8 boxes a double
 passed to or returned from a call it does not inline, and `Math.hypot` boxes
 its arguments, so the step's sizes, the speed and the slope are fields, the
@@ -84,8 +85,95 @@ braking in a turn trades grip as a real tyre does. Rill's first-order
 deflection dynamics give a relaxation length of about half a metre at speed
 and a carcass spring and damper at a standstill, so a braked car stands on a
 slope without jitter. The radial stiffness follows the pressure (2.4 bar on
-the road, 1.2 for sand). Asphalt is the curves' reference; other surfaces
-scale the friction.
+the road, 1.2 for sand). Asphalt is the curves' reference; other hard
+surfaces scale the friction, and soft ground replaces the curves with the
+soil's (below).
+
+## Surfaces
+
+Each tyre reads the material the splat bake paints under it, from the same
+authorities (`surface.ts`): the runway rectangle, then a streamed or static
+infrastructure segment's paint where it covers at least half the point
+(asphalt, concrete, gravel, or a track: gravel with a track's friction and
+ruts), then the land-cover classifier on the world's surface sample with the
+canopy closure and grass cover the bake hands it (`densityField`, thinned on
+sand as the bake thins it). The natural ground is classified at the centre of
+its 4 m cell (the L0 splat texel) on the car's own ground there and cached
+over a 64 m square, at most one new cell a step; a classification costs about
+20 us and allocates (the classifier returns its weights), so the cache keeps
+the step's average cost flat. The cache and the terrain lattice are dropped
+when the world or its streamed road regions change, so a road's cut or fill
+reaches the tyres as it reaches the drawn ground.
+
+Against the bake's own answer restated on the CPU (four taps, the bake's
+canopy drivers), the worker's material maps to the same soil model at 1,235
+of 1,236 land cells over six forced provinces (`sim.car-terrain`); the bake's
+erosion and soil-depth channels have no CPU twin. The classifier reads the
+reference day (171): seasonal snow the bake paints with the calendar does not
+reach the worker yet.
+
+| Surface | Friction | Rolling resistance | Roughness (RMS) | Soil |
+|---|---|---|---|---|
+| Asphalt, concrete | 1.0 | 0.012 | 0 | hard |
+| Gravel | 0.65 | 0.020 | 6 mm | hard |
+| Track | 0.70 | 0.025 | 12 mm | hard |
+| Rock, lava | 0.75, 0.80 | 0.018, 0.020 | 20, 25 mm | hard |
+| Sand | soil | 0.012 + compaction | 3 mm | dry sand |
+| Grass, dry grass, forest floor, shrub | soil | 0.012 + compaction | 8 to 12 mm | sandy loam, to clay as it gets wet |
+| Snow | soil | 0.012 + compaction | 3 mm | snow |
+| Tephra | soil | 0.012 + compaction | 8 mm | coarse sand |
+
+Wet loam is mud: the classifier's wetness blends sandy loam towards the
+clayey soil between 0.6 and 0.9 (a smoothstep), and the payload's
+`wheelWetness` carries it for the spray.
+
+## Soft ground
+
+Bekker-Wong terramechanics (Wong, Theory of Ground Vehicles, 4th ed.,
+chapters 2 and 5; `soil.ts`), with the soils of Wong's table 2.3:
+
+| Soil | n | k_c | k_phi | c (kPa) | phi | K (m) | Depth (m) |
+|---|---|---|---|---|---|---|---|
+| Dry sand | 1.1 | 990 | 1,528,430 | 1.04 | 28 | 0.025 | 0.35 |
+| Sandy loam | 0.7 | 5,270 | 1,515,040 | 1.72 | 29 | 0.025 | 0.15 |
+| Clayey soil | 0.5 | 13,190 | 692,150 | 4.14 | 13 | 0.03 | 0.30 |
+| Snow | 1.6 | 4,370 | 196,720 | 1.03 | 19.7 | 0.04 | 0.20 |
+| Tephra | 1.1 | 990 | 1,528,430 | 0 | 34 | 0.03 | 0.30 |
+
+K (the shear deformation modulus) is not in the table; 2.5 to 4 cm follows
+Wong's measured shear curves. The depths (the soft layer over firm ground)
+and tephra's row are estimates.
+
+- Sinkage: the tyre's flat, 2 sqrt(D delta) long, presses the soil as a
+  plate of the tread's width, p = (k_c / b + k_phi) z^n. A softer tyre has a
+  longer flat and a lower pressure, so it sinks less: why airing down gets a
+  car through sand. The sinkage presses in within 50 ms and lifts only as the
+  tyre rolls onto fresh soil.
+- Compaction resistance, b k z^(n+1) / (n+1), against the tyre's travel,
+  building like friction over the first 5 cm/s. It is the work of pressing
+  virgin soil ahead of the tyre, to the static sinkage of its present load
+  and pressure plus whatever its slip digs: a tyre aired down in the hole it
+  made at road pressure does not press that soil again, and rises out of it
+  as it rolls.
+- Thrust: Janosi-Hanamoto's tau = (c + p tan phi)(1 - e^(-j/K)), integrated
+  over the patch, is the tyre's longitudinal curve (the initial slope F l /
+  2K, 83% of the capacity A c + W tan phi at i l / K = 6, the sliding level
+  at full slip); sideways the soil holds 85% of it. TMeasy's combined slip
+  and deflection dynamics then work on soil as on asphalt.
+- Slip sinkage: past 20% slip a tyre digs its rut deeper, 5% of its static
+  sinkage for each patch length of tread that slips, and rolling fills the
+  rut back in over a patch length. Spinning in place it digs towards the
+  firm layer, faster where it sinks more, which is how a car bogs.
+
+## Roughness
+
+Under the lattice's 2 m the ground carries an ISO 8608-like profile
+(`roughness.ts`): eight sinusoids in fixed directions at log-spaced
+wavelengths from 0.5 to 4 m, amplitudes as the square root of the
+wavelength (the n^-2 displacement spectrum), unit RMS, scaled by the
+surface's roughness. It is keyed by world position, so a bump is always in
+the same place and the two tyres of an axle meet different ones; asphalt has
+none.
 
 ## Engine and turbo
 
@@ -137,7 +225,8 @@ is a plain H-pattern through R, N and 1 to 5 on the shift keys.
 - ABS holds about 14% braking slip per wheel above 1.5 m/s, bleeding and
   restoring each wheel's pressure, so the car steers while it stops.
 - Traction control brakes a wheel that spins more than 3 rad/s faster than
-  the other on its axle, in either direction of travel.
+  the other on its axle, in either direction of travel. It stands down while
+  a locker is in, and `tractionControl = false` turns it off for tests.
 - Downhill assist (the automatic, 4L, neither pedal) holds about 5 km/h on
   the brakes.
 - Hill-start assist holds the brakes for up to 2 s on slopes over 3 degrees
@@ -165,3 +254,20 @@ bumper first touches at about 31 degrees in front and the tow bar at 22
 behind, 1 to 2 degrees under the published figures. The dynamic test keeps a
 wide band (clear 4 degrees under, touching 1 to 2 over) and the hull is not
 tuned to it.
+
+## Off the road
+
+| Check | The plan's test | Model | Test |
+|---|---|---|---|
+| Sand and air-down | bogs from a stop on a 5 degree dune face at 2.4 bar; drives out at 1.2 | 2H at 60% pedal: 0.3 m and a 26 cm rut at 2.4 bar; aired down where it stood, 56 m in 15 s | `sim.car-terrain` |
+| Steep climb | 30 degrees from a standstill in 4L; fails on loose ground in 2H | 4L at 60% pedal climbs over 20 m on rock and asphalt; 2H on gravel slides back | `sim.car-terrain` |
+| Cross-axle ditch | open diffs with traction control off: stuck; traction control: crosses slowly; rear locker: crosses | a 0.7 m ditch at 45 degrees at a crawl in 4L: open diffs stop with the light wheels at 22 rad/s; traction control crosses after a stall, braking wheels spinning to 8 rad/s; the rear locker crosses with them under 5 | `sim.car-terrain` |
+| Underbody | the hull scrapes and high-centres from the geometry | a berm between the tracks: 0.25 m clears, 0.32 m drags the diffs and the car goes on, 0.42 m beaches it on the axles | `sim.car-terrain` |
+| Surface parity | the worker's material maps to the bake's soil model at least 98% of the time | 1,235 of 1,236 land cells, six provinces | `sim.car-terrain` |
+
+On a 30 degree slope in 2H only the rear tyres pull: they carry about 56% of
+the car's weight there, so the climb needs a friction of about 0.9. Asphalt
+(1.0) makes it; rock (0.75) and gravel (0.65) do not. In 4L both axles pull
+and gravel's 0.65 is still marginal at 30 degrees (atan 0.65 is 33 degrees
+before rolling resistance): the car creeps a few metres and stops, as loose
+stone on that grade does.
