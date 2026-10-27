@@ -326,6 +326,11 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "boat-planing-35kn",
     "boat-helm",
     "boat-wake-lowsun",
+    // Cars, after the boats and for the same reason: nobody has measured a
+    // car scene's memory, and one of them forces a whole sand sea.
+    "car-clearing-chase",
+    "car-dune-cockpit",
+    "car-ford-chase",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -401,6 +406,32 @@ const BOAT_RUN_35KN: PerfCaptureBoatRun = Object.freeze({
   start: "open-water",
   legs: Object.freeze([Object.freeze({ seconds: 30, lever: 0.83, steer: 0 })]),
 });
+
+/** A car shot's pose (`PerfCaptureShotDefinition.car`). */
+export interface PerfCaptureCarRun {
+  /**
+   * Where the car stands, searched from the shot's placement by
+   * `tests/perf/carShotState.ts`: "here", the placement itself on the
+   * shot's yaw; "clearing", open ground ringed by forest with no tree the
+   * densest tier grows within 10 m, on the shot's yaw; "dune", a sand
+   * flank on a crescent's stoss side, facing up it; "ford", a gentle shore
+   * where the sea bed lies `wadingDepthMeters` down, facing up the beach.
+   */
+  readonly site: "here" | "clearing" | "dune" | "ford";
+  /** Road speed, m/s, along the car's heading. */
+  readonly speedMetersPerSecond: number;
+  /** Every wheel's spin over rolling, rad/s: wheelspin, which digs. */
+  readonly wheelspinRadiansPerSecond: number;
+  /** The engine's load and the turbo's boost, 0..1: the exhaust's soot. */
+  readonly throttle: number;
+  readonly boost: number;
+  readonly range: "2H" | "4H" | "4L";
+  readonly tyrePressure: "road" | "sand";
+  /** How deep the tyres sit in soft ground out of the water, metres. */
+  readonly sinkageMeters: number;
+  /** "ford" only: the water over the bed where the car stands, metres. */
+  readonly wadingDepthMeters?: number;
+}
 
 export interface PerfCaptureShotDefinition {
   readonly name: string;
@@ -629,6 +660,17 @@ export interface PerfCaptureShotDefinition {
    * altitude, pitch and airspeed fields are not read.
    */
   readonly boat?: PerfCaptureBoatRun;
+  /**
+   * Cars: the shot drives the LandCruiser 76 instead of flying the
+   * aircraft. The pose is pinned, not driven: the four tyres stand on the
+   * terrain at the site `car` names, the solid axles roll to meet it, and
+   * the payload is the effects' inputs at the run's speed
+   * (`tests/perf/carShotState.ts`, part of the A/B instrument so both arms
+   * photograph the same car). A rebuild boundary like `boat`: the renderer
+   * is built with the car and its own driver's view. The altitude, pitch
+   * and airspeed fields are not read.
+   */
+  readonly car?: PerfCaptureCarRun;
   /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.
@@ -2226,6 +2268,99 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     relativeSunBearingDegrees: 30,
     locate: "coast",
     boat: BOAT_RUN_35KN,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  /**
+   * CARS. Three shots of the LandCruiser 76 (`car` has how the pose is
+   * made), appended after the boats so no earlier shot's canonical index
+   * moves. Not baselined and not floor-pinned: a car frame has no history.
+   * The chase view in a forest clearing (the ground-level scene the car
+   * spends its time in, trees all round), the driver's view climbing a dune
+   * on sand (the forced sand sea, the one shot that carries `landforms`),
+   * and the chase view wading out of the sea up a beach, where the spray
+   * and the bow wave are.
+   */
+  {
+    name: "car-clearing-chase",
+    description:
+      "The chase view of the LandCruiser rolling through a forest clearing at "
+      + "22 km/h: the car, its tracks and the trees all round",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    // A grassy clearing on the flat 2 km west of the forest shots' seed, the
+    // nearest the woods ring at least 7 points in 12, 40 m out.
+    offsetXMeters: -1_830,
+    offsetZMeters: 325,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    relativeSunBearingDegrees: 135,
+    car: {
+      site: "clearing",
+      speedMetersPerSecond: 6,
+      wheelspinRadiansPerSecond: 0,
+      throttle: 0.35,
+      boost: 0.6,
+      range: "2H",
+      tyrePressure: "road",
+      sinkageMeters: 0.01,
+    },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "car-dune-cockpit",
+    description:
+      "The driver's view climbing a dune flank on aired-down tyres at 32 km/h, "
+      + "the crest and the sand sea ahead",
+    cameraMode: "cockpit",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    // The forced world's nearest sand sea, past its 8 km runway clearance.
+    offsetXMeters: -11_000,
+    offsetZMeters: 9_250,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    landforms: { dunes: true },
+    climateProvince: "high-desert",
+    car: {
+      site: "dune",
+      speedMetersPerSecond: 9,
+      wheelspinRadiansPerSecond: 4,
+      throttle: 0.7,
+      boost: 0.5,
+      range: "4H",
+      tyrePressure: "sand",
+      sinkageMeters: 0.04,
+    },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "car-ford-chase",
+    description:
+      "The chase view of the LandCruiser wading up a beach out of 0.45 m of "
+      + "sea at 9 km/h: spray off the tyres and the bow wave round the body",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    // The natural beach 14 km out the shore search finds.
+    offsetXMeters: 11_250,
+    offsetZMeters: -9_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    car: {
+      site: "ford",
+      speedMetersPerSecond: 2.5,
+      wheelspinRadiansPerSecond: 1,
+      throttle: 0.45,
+      boost: 0.3,
+      range: "4L",
+      tyrePressure: "road",
+      sinkageMeters: 0,
+      wadingDepthMeters: 0.45,
+    },
     comparesToBaseline: false,
     ceilings: null,
   },
