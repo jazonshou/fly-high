@@ -432,6 +432,8 @@ const EMPTY_STATIC: StaticInfrastructure = Object.freeze({
 /** An installed region: its validated segments, in composition order, and the rectangle they can change. */
 interface InstalledRegion {
   readonly key: string;
+  /** What was installed, for a worker joining late (`installedInfrastructureRegions`). */
+  readonly source: InfrastructureRegion;
   readonly ordered: readonly OrderedSegment[];
   /** Null for a region with no segments. */
   readonly bounds: InfrastructureRect | null;
@@ -774,6 +776,7 @@ function installRegion(region: InfrastructureRegion): InstalledRegion {
   ordered.sort(compareOrdered);
   const installed: InstalledRegion = Object.freeze({
     key: region.key,
+    source: region,
     ordered: Object.freeze(ordered),
     bounds: ordered.length === 0 ? null : Object.freeze({ minX, minZ, maxX, maxZ }),
   });
@@ -1171,6 +1174,11 @@ export function infrastructureChangeTouches(
 /** The keys of every region installed for the world's terrain, in install order. */
 export function installedInfrastructureRegionKeys(world: WorldDefinition): readonly string[] {
   return [...(registries.get(infrastructureTerrainKey(world))?.regions.keys() ?? [])];
+}
+
+/** Every region installed for the world's terrain, as installed, in install order. */
+export function installedInfrastructureRegions(world: WorldDefinition): readonly InfrastructureRegion[] {
+  return [...(registries.get(infrastructureTerrainKey(world))?.regions.values() ?? [])].map((region) => region.source);
 }
 
 /** Bumped by every change to the world's terrain's regions (0 with none ever installed). */

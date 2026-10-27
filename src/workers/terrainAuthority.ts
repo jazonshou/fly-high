@@ -5,6 +5,11 @@ import {
 import type {
   TerrainHeightAuthorityCounters,
 } from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
+import {
+  terrainPageAirportDomain,
+  type TerrainMutableWorldRect,
+} from "@/src/render/webgpu/terrain/AirportReach";
+import { infrastructureChangeTouches, type InfrastructureChange } from "@/src/world/infrastructure";
 
 /**
  * Worker-side terrain authority (`5-2`).
@@ -52,6 +57,12 @@ export interface TerrainPagePublication {
   readonly tileX: number;
   readonly tileZ: number;
   readonly heights: Float32Array;
+  /**
+   * The main thread's `infrastructureRegionsVersion` the page was baked
+   * against (absent: no streamed region was ever installed). The renderer
+   * holds back a publication a later change touches (`InfrastructureChangeLog`).
+   */
+  readonly infrastructureVersion?: number;
 }
 
 interface ReadbackPage {
@@ -127,6 +138,8 @@ export class TerrainAuthority {
   private macro: TerrainMacroGrid | null = null;
   private sequence = 0;
   private pageCount = 0;
+  private infrastructureDrops = 0;
+  private readonly pageDomain: TerrainMutableWorldRect = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   private readbackSamples = 0;
   private macroSamples = 0;
   private analyticSamples = 0;
@@ -137,6 +150,11 @@ export class TerrainAuthority {
 
   get hasMacroGrid(): boolean {
     return this.macro !== null;
+  }
+
+  /** Pages dropped because the infrastructure stage changed under them. Observation only. */
+  get infrastructureDroppedPages(): number {
+    return this.infrastructureDrops;
   }
 
   /** Snapshot for structured clone on the Worker's 60 Hz state message. */
@@ -204,6 +222,46 @@ export class TerrainAuthority {
     );
   }
 
+  /**
+   * The infrastructure stage changed (roads came or went): drop every page
+   * whose sampled domain the change touches — the clipmap's own test
+   * (`terrainPageAirportDomain`), so these are exactly the pages it rebuilds
+   * and publishes again. Every page held here predates the change (the update
+   * is posted before any page baked against it), so until its rebuild
+   * arrives the caller's analytic fallback answers, from the same regions.
+   * Returns how many were dropped.
+   */
+  applyInfrastructureChange(change: InfrastructureChange): number {
+    return this.dropPagesWhere((page) => infrastructureChangeTouches(
+      change,
+      terrainPageAirportDomain({ level: 0, x: page.tileX, z: page.tileZ }, this.pageDomain),
+    ));
+  }
+
+  /**
+   * The whole infrastructure set was replaced (a worker catching up after a
+   * gap): no page held can be trusted, so drop them all, and the analytic
+   * fallback answers there until each is published again. A safety net: the
+   * forwarder sends one only after an update went missing. Returns how many
+   * were dropped.
+   */
+  applyInfrastructureReset(): number {
+    return this.dropPagesWhere(() => true);
+  }
+
+  private dropPagesWhere(stale: (page: ReadbackPage) => boolean): number {
+    let dropped = 0;
+    for (let index = 0; index < this.pages.length; index += 1) {
+      const page = this.pages[index];
+      if (page === null || page === undefined || !stale(page)) continue;
+      this.pages[index] = null;
+      this.pageCount -= 1;
+      dropped += 1;
+    }
+    this.infrastructureDrops += dropped;
+    return dropped;
+  }
+
   /** Takes ownership of the transferred grid view. */
   publishMacro(grid: TerrainMacroGrid): void {
     assertMacroGrid(grid);
@@ -221,6 +279,7 @@ export class TerrainAuthority {
     this.macro = null;
     this.sequence = 0;
     this.pageCount = 0;
+    this.infrastructureDrops = 0;
     this.resetCounters();
   }
 

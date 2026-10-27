@@ -1,3 +1,4 @@
+import type { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   INFRASTRUCTURE_HEADER_VEC4S,
@@ -5,6 +6,7 @@ import {
   infrastructureGpuBinHash,
   packTerrainInfrastructure,
   packWorldTerrainInfrastructure,
+  TerrainInfrastructureData,
   TerrainInfrastructurePack,
 } from "@/src/render/webgpu/terrain/TerrainInfrastructureKernel";
 import {
@@ -18,6 +20,7 @@ import {
   infrastructureIndex,
   infrastructureIndexChanges,
   installInfrastructureRegions,
+  staticInfrastructureIndex,
   type InfrastructureIndex,
   type InfrastructureRegion,
   type InfrastructureSegment,
@@ -233,5 +236,83 @@ describe("infrastructure GPU bin table", () => {
     }
     expect(pack.relayouts.lists).toBeGreaterThan(0);
     expect(pack.relayouts.table).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * An engine whose storage buffers are plain bytes: what the GPU's copy holds
+ * after every write `TerrainInfrastructureData` makes, read back as words.
+ */
+function bytesEngine() {
+  const buffers: { bytes: Uint8Array }[] = [];
+  const engine = {
+    _storageBuffers: [] as unknown[],
+    createStorageBuffer(size: number) {
+      const buffer = { bytes: new Uint8Array(size) };
+      buffers.push(buffer);
+      return buffer;
+    },
+    updateStorageBuffer(buffer: { bytes: Uint8Array }, data: ArrayBufferView, byteOffset = 0, byteLength?: number) {
+      const source = new Uint8Array(data.buffer, data.byteOffset, byteLength ?? data.byteLength);
+      buffer.bytes.set(source, byteOffset);
+    },
+    _releaseBuffer() {},
+  };
+  return {
+    engine: engine as unknown as WebGPUEngine,
+    words: () => new Uint32Array(buffers.at(-1)!.bytes.buffer),
+  };
+}
+
+describe("the engine's shared copy of the stage", () => {
+  const regionAt = (k: number): InfrastructureRegion => ({
+    key: `behind:${k}`,
+    segments: Array.from({ length: 6 }, (_, j) => road(
+      origin.x - 3_000 + k * 400 + j * 70,
+      origin.z + 900 + (j % 2) * 60,
+      origin.x - 3_000 + k * 400 + j * 70 + 120,
+      origin.z + 950,
+      k * 100 + j,
+    )),
+  });
+
+  it("writes nothing, frame after frame, in a session that never installs a region", () => {
+    const { engine } = bytesEngine();
+    const data = TerrainInfrastructureData.acquire(engine, world);
+    try {
+      expect(infrastructureIndex(world)).toBe(staticInfrastructureIndex(world));
+      const written = { ...data.writes };
+      for (let frame = 0; frame < 120; frame += 1) data.setWorld(world);
+      expect(data.writes).toEqual(written);
+      expect(infrastructureIndex(world)).toBe(staticInfrastructureIndex(world));
+    } finally {
+      data.release();
+    }
+  });
+
+  it("catches up in place from as far back as the terrain remembers, and packs afresh from further", () => {
+    const { engine, words } = bytesEngine();
+    installInfrastructureRegions(world, [regionAt(0), regionAt(1)]);
+    const data = TerrainInfrastructureData.acquire(engine, world);
+    try {
+      // Thirty-two changes behind, one region in and one out each: the history reaches.
+      for (let k = 2; k < 34; k += 1) installInfrastructureRegions(world, [regionAt(k)], [`behind:${k - 2}`]);
+      data.setWorld(world);
+      expect(data.writes).toMatchObject({ packs: 1, updates: 1 });
+      expectTableMatches(infrastructureIndex(world), words());
+      // Thirty-three: it does not, and the copy is packed again from the index.
+      for (let k = 34; k < 67; k += 1) installInfrastructureRegions(world, [regionAt(k)], [`behind:${k - 2}`]);
+      const held = infrastructureIndex(world);
+      data.setWorld(world);
+      expect(data.writes).toMatchObject({ packs: 2, updates: 1 });
+      expectTableMatches(held, words());
+      // And in place again from there.
+      installInfrastructureRegions(world, [regionAt(67)], ["behind:65"]);
+      data.setWorld(world);
+      expect(data.writes).toMatchObject({ packs: 2, updates: 2 });
+      expectTableMatches(infrastructureIndex(world), words());
+    } finally {
+      data.release();
+    }
   });
 });
