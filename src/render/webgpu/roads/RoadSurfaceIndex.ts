@@ -83,12 +83,23 @@ export class RoadSurfaceIndex {
   private readonly pads = new Map<string, Map<string, RoadPad[]>>();
   private readonly rails = new Map<string, Map<string, InfrastructureRail[]>>();
   private readonly built = new Map<string, ChunkArrays>();
+  /** Chunk -> the change that last touched it, while it holds anything. */
+  private readonly stamps = new Map<string, number>();
   private changes = 0;
   private chunkBuilds = 0;
 
   /** Bumped by every install or removal that changed a chunk. */
   get version(): number {
     return this.changes;
+  }
+
+  /**
+   * The change that last touched a chunk (0: none since it was empty): a
+   * merge of chunks whose keys and stamps are all unchanged is the same
+   * merge, whatever changed elsewhere.
+   */
+  chunkStamp(key: string): number {
+    return this.stamps.get(key) ?? 0;
   }
 
   /** Chunk arrays built so far (observation only). */
@@ -133,8 +144,13 @@ export class RoadSurfaceIndex {
       }
     }
     for (const edge of edges) this.recut(edge, dirty);
-    for (const chunk of dirty) this.built.delete(chunk);
-    if (dirty.size > 0) this.changes += 1;
+    if (dirty.size === 0) return;
+    this.changes += 1;
+    for (const chunk of dirty) {
+      this.built.delete(chunk);
+      if (this.spans.has(chunk) || this.pads.has(chunk) || this.rails.has(chunk)) this.stamps.set(chunk, this.changes);
+      else this.stamps.delete(chunk);
+    }
   }
 
   /**
