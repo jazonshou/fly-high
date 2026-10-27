@@ -273,9 +273,6 @@ export interface TerrainClipmapSystemOptions {
   readonly vehicleNearField?: boolean;
 }
 
-/** The near-floor patch's geomorph band: one L0 node, so it finishes within the edge node. */
-export const VEHICLE_NEAR_TERRAIN_BAND_METERS = 64;
-
 /** The disc a car session draws L0 in, or undefined: no car, or a tier whose floor is L0. */
 function vehicleNearFloor(
   profile: WebGpuQualityProfile,
@@ -285,7 +282,7 @@ function vehicleNearFloor(
   return {
     level: 0,
     radiusMeters: profile.vehicleNearTerrainL0RadiusMeters,
-    bandMeters: VEHICLE_NEAR_TERRAIN_BAND_METERS,
+    bandMeters: profile.vehicleNearTerrainL0BandMeters,
   };
 }
 

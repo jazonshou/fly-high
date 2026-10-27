@@ -1523,7 +1523,7 @@ describe("Low's L0 patch round a car, in the host", () => {
     const reach = car.profile.vehicleNearTerrainL0RadiusMeters + terrainNodeSpanMeters(1) * Math.SQRT2;
     for (const node of car.fine) expect(Math.hypot(node.originX + 32, node.originZ + 32)).toBeLessThan(reach);
     expect(car.nodes.length).toBeLessThanOrEqual(
-      car.profile.cdlodNodeBudget + terrainNearFloorNodeAllowance({ level: 0, radiusMeters: car.profile.vehicleNearTerrainL0RadiusMeters, bandMeters: 64 }, 1),
+      car.profile.cdlodNodeBudget + terrainNearFloorNodeAllowance({ level: 0, radiusMeters: car.profile.vehicleNearTerrainL0RadiusMeters, bandMeters: car.profile.vehicleNearTerrainL0BandMeters }, 1),
     );
     // No car, or no radius: the tier's own ground.
     expect((await run("low", false)).fine).toHaveLength(0);
