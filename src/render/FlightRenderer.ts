@@ -890,6 +890,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private presentationCadence: PresentationCadence | null = null;
   /** A cadence change already restarted the governor's window in flight (at most once per window). */
   private governorRebasedThisWindow = false;
+  /** The flight is paused: the static scene's frames are no measure of flight, so no window is judged. */
+  private governorHeld = false;
   private budgetProbe: FrameGraphBudgetProbe | null = null;
   private budgetProbeReport: RenderDiagnostics["budgetProbeReport"] = null;
   private probeDisabledPass: string | null = null;
@@ -2172,6 +2174,20 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.governorState = rebaseGovernorState(this.governorState);
     this.resetTimingSamples();
     this.governorRebasedThisWindow = true;
+  }
+
+  /**
+   * PR B: while the flight is paused the scene is static and nothing
+   * streams, so render() falls and the backlog drains. Judged, those windows
+   * gave back flight-only sheds that the resume then paid for again. Held,
+   * the governor judges nothing and the window in flight restarts on each
+   * change; levels, scale, latch, trial and recovery records stay as they
+   * were.
+   */
+  setGovernorHold(held: boolean): void {
+    if (held === this.governorHeld) return;
+    this.governorHeld = held;
+    this.resetTimingSamples();
   }
 
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
@@ -4275,6 +4291,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * a resolution step that buys nothing is undone and latched against.
    */
   private updateGovernor(): void {
+    if (this.governorHeld) {
+      this.resetTimingSamples();
+      return;
+    }
     const gpuTimingIsFresh = freshFrameTiming(
       this.lastGpuFrameMilliseconds,
       this.lastGpuTimingFrameIndex,

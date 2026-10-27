@@ -43,6 +43,14 @@ describe("FlightGame's frame loop paces its ticks", () => {
     expect(flightGame.match(/setPresentationCadence\(/gu)).toHaveLength(1);
   });
 
+  it("holds the governor while the flight is paused, inside the frame's try", () => {
+    const attempt = renderLoop.slice(renderLoop.indexOf("try {"), renderLoop.indexOf("} catch (renderError)"));
+    expect(attempt).toMatch(
+      /renderer\.setGovernorHold\(phaseRef\.current === "paused"\);[\s\S]*renderer\.render\(frameState, deltaSeconds\);/u,
+    );
+    expect(flightGame.match(/setGovernorHold\(/gu)).toHaveLength(1);
+  });
+
   it("runs the shipped pacer, with no override of its switches", () => {
     expect(flightGame).toContain("const framePacer = new FramePacer();");
     expect(flightGame.match(/new FramePacer\(/gu)).toHaveLength(1);

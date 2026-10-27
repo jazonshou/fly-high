@@ -162,3 +162,85 @@ describe("setPresentationCadence", () => {
     expect(target.frameIntervalDurations).toHaveLength(3);
   });
 });
+
+interface HeldReceiver extends Receiver {
+  governorHeld: boolean;
+  frameIndex: number;
+  lastGpuFrameMilliseconds: number | null;
+  lastGpuTimingFrameIndex: number;
+  renderScale: number;
+  lastSignals: unknown;
+  streamingBacklog: () => number;
+  applyWorkLevels: (cpu: number, gpu: number) => void;
+  deferGovernedRenderScale: () => boolean;
+}
+
+/** A receiver that can run whole governor windows: the subsystems it would touch are stubbed. */
+function governedReceiver(start: GovernorState): HeldReceiver {
+  const target = receiver({ governorState: start, frameIntervalDurations: [], cpuFrameDurations: [] }) as HeldReceiver;
+  return Object.assign(target, {
+    governorHeld: false,
+    frameIndex: 0,
+    lastGpuFrameMilliseconds: null,
+    lastGpuTimingFrameIndex: 0,
+    renderScale: start.renderScale,
+    lastSignals: null,
+    streamingBacklog: () => 0,
+    applyWorkLevels: () => undefined,
+    deferGovernedRenderScale: () => true,
+  });
+}
+
+/** One full window of `intervalMs` frames at `cpuMs`, then the decision render() would ask for. */
+function runWindow(target: HeldReceiver, intervalMs: number, cpuMs: number): void {
+  for (let frame = 0; frame < target.governorConfig.windowFrames; frame += 1) {
+    target.frameIntervalDurations.push(intervalMs);
+    target.cpuFrameDurations.push(cpuMs);
+  }
+  (Reflect.get(FlightRenderer.prototype, "updateGovernor") as (this: HeldReceiver) => void).call(target);
+}
+
+function holdGovernor(target: HeldReceiver, held: boolean): void {
+  FlightRenderer.prototype.setGovernorHold.call(target as unknown as FlightRenderer, held);
+}
+
+describe("setGovernorHold", () => {
+  it("restarts the window in flight on each change, and only on a change", () => {
+    const target = governedReceiver(createGovernorState(governorConfigForProfile(medium)));
+    target.frameIntervalDurations.push(16.7, 16.6);
+    target.cpuFrameDurations.push(5, 5);
+    holdGovernor(target, false);
+    expect(target.frameIntervalDurations).toHaveLength(2);
+    holdGovernor(target, true);
+    expect(target.governorHeld).toBe(true);
+    expect(target.frameIntervalDurations).toHaveLength(0);
+    expect(target.cpuFrameDurations).toHaveLength(0);
+    target.frameIntervalDurations.push(16.7);
+    holdGovernor(target, true);
+    expect(target.frameIntervalDurations).toHaveLength(1);
+    holdGovernor(target, false);
+    expect(target.frameIntervalDurations).toHaveLength(0);
+  });
+
+  it("gives back nothing while paused, and the resume recovers as flight left off", () => {
+    // A CPU-bound flight settled at CPU level 5. Paused, render() falls to 8
+    // ms and every frame is on time: judged, those windows would recover a
+    // rung every four, and the resume would pay for each again.
+    const config = governorConfigForProfile(medium);
+    const settled = Object.freeze({ ...createGovernorState(config), cpuWorkLevel: 5 });
+    const target = governedReceiver(settled);
+    runWindow(target, 1_000 / 60, 19);
+    const flying = target.governorState;
+    holdGovernor(target, true);
+    for (let window = 0; window < 60; window += 1) runWindow(target, 1_000 / 60, 8);
+    expect(target.governorState).toBe(flying);
+    expect(target.frameIntervalDurations).toHaveLength(0);
+    // Unheld, the same calm windows recover as flight left off.
+    const free = governedReceiver(flying);
+    for (let window = 0; window < 8; window += 1) runWindow(free, 1_000 / 60, 8);
+    expect(free.governorState.cpuWorkLevel).toBeLessThan(5);
+    holdGovernor(target, false);
+    for (let window = 0; window < 8; window += 1) runWindow(target, 1_000 / 60, 8);
+    expect(target.governorState.cpuWorkLevel).toBe(free.governorState.cpuWorkLevel);
+  });
+});

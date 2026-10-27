@@ -45,6 +45,7 @@ function fakeRenderer() {
     setReducedMotion: vi.fn(),
     setAirports: vi.fn(),
     setPresentationCadence: vi.fn(),
+    setGovernorHold: vi.fn(),
     projectWorldPointToRef: vi.fn(() => true),
     setTerrainAuthorityPublisher: vi.fn(),
     setAtmosphere: vi.fn(),
@@ -117,6 +118,7 @@ describe("the bench renderer decorator", () => {
       setReducedMotion: () => bench.setReducedMotion(true),
       setAirports: () => bench.setAirports([]),
       setPresentationCadence: () => bench.setPresentationCadence(cadence),
+      setGovernorHold: () => bench.setGovernorHold(true),
       projectWorldPointToRef: () => expect(bench.projectWorldPointToRef(1, 2, 3, point)).toBe(true),
       setTerrainAuthorityPublisher: () => bench.setTerrainAuthorityPublisher(publisher),
       setAtmosphere: () => bench.setAtmosphere(clock, "clear"),
@@ -136,6 +138,7 @@ describe("the bench renderer decorator", () => {
     expect(inner.setReducedMotion).toHaveBeenCalledWith(true);
     expect(inner.setAirports).toHaveBeenCalledWith([]);
     expect(inner.setPresentationCadence).toHaveBeenCalledWith(cadence);
+    expect(inner.setGovernorHold).toHaveBeenCalledWith(true);
     expect(inner.projectWorldPointToRef).toHaveBeenCalledWith(1, 2, 3, point);
     expect(inner.setTerrainAuthorityPublisher).toHaveBeenCalledWith(publisher);
     expect(inner.setAtmosphere).toHaveBeenCalledWith(clock, "clear");

@@ -186,6 +186,11 @@ export class BenchRenderer implements FlightRenderingSystem {
     this.inner.setPresentationCadence(cadence);
   }
 
+  /** Forwarded for the same reason; the bench's flight never pauses. */
+  setGovernorHold(held: boolean): void {
+    this.inner.setGovernorHold(held);
+  }
+
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
     return this.inner.projectWorldPointToRef(x, y, z, result);
   }
