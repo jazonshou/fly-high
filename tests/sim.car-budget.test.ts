@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { GroundVehicleSimulator } from "../src/sim/ground";
+import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
+import { GroundVehicleSimulator } from "../src/sim/ground";
+import { describeSurface } from "../src/sim/ground/surface";
+import type { WaterSurfaceAuthority, WaterSurfaceSample } from "../src/sim/water/types";
 import { referenceKernelMilliseconds, referenceSlowdown, warmReferenceKernel } from "./support/referenceKernel";
 import { car, controls, groundOf, STEP } from "./support/carRig";
 
@@ -71,6 +74,55 @@ describe("LandCruiser step", () => {
     expect(first.digest.every(Number.isFinite)).toBe(true);
     expect(second.digest.length).toBe(first.digest.length);
     for (let k = 0; k < first.digest.length; k += 1) expect(Object.is(second.digest[k], first.digest[k]), `state ${k}`).toBe(true);
+  });
+
+  it("allocates nothing in the step while wading", () => {
+    // A wide river 0.5 m deep over a level bed, flowing across the car's path. The only water class
+    // this file uses, so the car's call into it is monomorphic, as the worker's one authority is.
+    class River implements WaterSurfaceAuthority {
+      setTime(): void {}
+      sample(_x: number, _z: number, out: WaterSurfaceSample): WaterSurfaceSample {
+        out.kind = "river";
+        out.height = 0;
+        out.stillHeight = 0;
+        out.depth = 0.5;
+        out.velocity.x = 0.8;
+        out.velocity.y = 0;
+        out.velocity.z = 0;
+        return out;
+      }
+    }
+    const sim = new GroundVehicleSimulator(
+      { position: { x: 0, y: -0.5, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+      {
+        ground: groundOf((out) => {
+          out.height = -0.5;
+          out.dhdx = 0;
+          out.dhdz = 0;
+        }),
+        surface: (_at, out) => { describeSurface(SurfaceMaterial.Grass, 0, out); },
+      },
+    );
+    sim.setEnvironment({ water: new River(), wind: { x: 0, y: 0, z: 0 }, bedHeight: () => -0.5, world: null, colliders: null, gravity: 9.80665 });
+    controls(sim, { handbrake: 1 });
+    for (let i = 0; i < 240; i += 1) sim.step(STEP);
+    controls(sim, { rangePresses: 2, accelerator: 0.15, steer: 0.1 });
+    for (let i = 0; i < 2_400; i += 1) sim.step(STEP);
+    expect(sim.visualState().wadingDepth).toBeGreaterThan(0.45);
+    const run = (): number => {
+      const before = process.memoryUsage().heapUsed;
+      for (let k = 0; k < 20_000; k += 1) sim.step(STEP);
+      return process.memoryUsage().heapUsed - before;
+    };
+    const deadline = performance.now() + 20_000;
+    let streak = 0;
+    let last = Number.NaN;
+    while (streak < 3 && performance.now() < deadline) {
+      last = run();
+      streak = last >= 0 && last < 32 * 1024 ? streak + 1 : 0;
+    }
+    expect(streak, `last run grew the heap by ${last} B`).toBe(3);
+    expect(sim.engine.running).toBe(true);
   });
 
   it("allocates nothing in the step", () => {

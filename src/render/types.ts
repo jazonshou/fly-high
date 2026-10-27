@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
+import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
 import type {
@@ -16,6 +17,12 @@ import type {
 export interface TerrainAuthorityPublisher {
   publishTerrainPage(page: TerrainPagePublication): void;
   publishTerrainMacro(macro: TerrainMacroGrid): void;
+  /**
+   * One change to the streamed infrastructure regions (roads), made before
+   * any page baked against it is published. Absent: the publisher's ground
+   * ignores streamed regions.
+   */
+  publishInfrastructure?(update: InfrastructureRegionsUpdate): void;
 }
 
 /** A world point on the canvas, written in place by `projectWorldPointToRef`. */

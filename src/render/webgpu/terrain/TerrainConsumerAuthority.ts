@@ -308,6 +308,30 @@ function clamp01(value: number): number {
 }
 
 /**
+ * The height `terrainConsumerSampleFromAuthority` answers, for consumers that
+ * read nothing else: the same ladder and the same airport rule, from an
+ * analytic HEIGHT, so a sample costs no normal and no surface classification.
+ * Where `analyticHeight(x, z)` is the analytic sampler's `.height` bit for bit
+ * (`sampleTerrainHeight` is `sampleTerrain`'s), so is this the full sampler's.
+ *
+ * Explicit analytic worlds return the supplied height function itself.
+ */
+export function terrainConsumerHeightFromAuthority(
+  world: Readonly<WorldDefinition>,
+  analyticHeight: (worldX: number, worldZ: number) => number,
+  authority: TerrainConsumerHeightAuthority,
+): (worldX: number, worldZ: number) => number {
+  if (world.worldEvolution === "analytic") return analyticHeight;
+  return (x, z) => {
+    const analytic = analyticHeight(x, z);
+    if (world.airport && getAirportInfluence(world.airport, x, z) > 0) {
+      return analytic;
+    }
+    return authority.sampleHeight(x, z, analytic) ?? analytic;
+  };
+}
+
+/**
  * Adapts the canonical L0 -> macro -> analytic height ladder to consumers of
  * the richer world terrain sample. Climate/material fields remain sourced by
  * the caller's sampler; height, normal and slope come from the evolved
@@ -344,13 +368,11 @@ export function terrainConsumerSampleFromAuthority(
     };
   };
 
-  const heightAt = (x: number, z: number): number => {
-    const analytic = analyticSample(x, z);
-    if (world.airport && getAirportInfluence(world.airport, x, z) > 0) {
-      return analytic.height;
-    }
-    return authority.sampleHeight(x, z, analytic.height) ?? analytic.height;
-  };
+  const heightAt = terrainConsumerHeightFromAuthority(
+    world,
+    (x, z) => analyticSample(x, z).height,
+    authority,
+  );
 
   return (worldX, worldZ) => {
     const analytic = analyticSample(worldX, worldZ);

@@ -220,8 +220,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
   {
     // The infrastructure stage's GPU half: the packed index (the
     // `terrainInfrastructureData` binding), the stage that applies it after
-    // the landforms, and the per-consumer binding that packs it. The profiles
-    // themselves are defined once, CPU and WGSL side by side, in
+    // the landforms, the pack kept in place as streamed regions come and go,
+    // and the per-consumer binding to the engine's one shared copy. The
+    // profiles themselves are defined once, CPU and WGSL side by side, in
     // src/world/infrastructureProfiles.ts.
     artifact: "terrain-infrastructure-index",
     owner: "terrain-geometry",
@@ -230,6 +231,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "TERRAIN_INFRASTRUCTURE_WGSL",
       "packTerrainInfrastructure",
+      "TerrainInfrastructurePack",
       "TerrainInfrastructureData",
       "TerrainInfrastructureDataBinding",
     ],
@@ -1072,6 +1074,8 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "oceanInitialWave",
       "oceanWaveSeed",
       "oceanDirectionalSpectrum",
+      "OCEAN_TIME_SIGN",
+      "OCEAN_CHOP_SIGN",
       "resolveSeaSpectrumConfig",
       "weatherWindScale",
       "SeaTwin",
@@ -1082,7 +1086,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
     notes:
       "Waves are keyed on the wave, not the texel, so every tier draws the same waves in the "
-      + "bands it has and the twin (bands 1-4, 256-point config) matches each. A weather change "
+      + "bands it has and the twin (bands 1-4, 256-point config) matches each. The evolution "
+      + "shader and the twin read one time sign and one chop sign, so both seas travel downwind "
+      + "and gather onto their crests. A weather change "
       + "rebuilds the GPU h0 and calls SeaTwin.setConfig at the same simulation time. "
       + "tests/world.sea-twin.test.ts holds the twin to an f64 FFT of the spectrum and "
       + "tests/gpu/ocean-twin-parity.test.ts holds the drawn displacement and shelter to the twin.",

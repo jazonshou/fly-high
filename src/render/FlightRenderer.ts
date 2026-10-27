@@ -58,10 +58,18 @@ import {
   DEFAULT_ENVIRONMENT_STATE,
   type EnvironmentState,
 } from "./webgpu/nature/EnvironmentState";
-import { AerialPerspectiveRegistry } from "./webgpu/atmosphere/AerialPerspective";
+import {
+  AerialPerspectiveRegistry,
+  type AerialPerspectiveBinding,
+} from "./webgpu/atmosphere/AerialPerspective";
 import { FULL_MOON_ILLUMINANCE_LUX } from "./webgpu/atmosphere/Ephemeris";
 import { AtmosphereGpuResources } from "./webgpu/atmosphere/AtmosphereGpuResources";
-import { SkyEnvironmentProbe } from "./webgpu/atmosphere/SkyEnvironmentProbe";
+import {
+  SKY_PROBE_REBAKE_ALTITUDE_METERS,
+  SkyEnvironmentProbe,
+  skyProbeRefreshAction,
+  type SkyRebakeStats,
+} from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
@@ -122,6 +130,12 @@ import {
   type WorkLeverSettings,
 } from "./webgpu/core/AdaptiveGovernor";
 import {
+  DISPLAY_RESIZE_REQUEST,
+  GOVERNED_SCALE_REQUEST,
+  RenderScaleQueue,
+  resolveHardwareScalingLevel,
+} from "./renderScaleLevel";
+import {
   DYNAMIC_ALLOCATIONS,
   estimateGpuMemoryMiB,
   estimateInventoriableGpuMemoryMiB,
@@ -146,6 +160,7 @@ import {
 } from "./webgpu/airfield/SpawnedAirfields";
 import {
   LiveAirportGround,
+  analyticTerrainHeightOf,
   analyticTerrainOf,
 } from "./webgpu/airfield/SpawnedAirportGround";
 import {
@@ -167,6 +182,7 @@ import {
 import { terrainMacroGridFromEvolution } from "./webgpu/terrain/TerrainMacroEvolutionClient";
 import {
   TerrainConsumerAuthority,
+  terrainConsumerHeightFromAuthority,
   terrainConsumerSampleFromAuthority,
 } from "./webgpu/terrain/TerrainConsumerAuthority";
 import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
@@ -224,6 +240,7 @@ import {
   topViewCameraUpToRef,
   topViewRigOffsetsToRef,
 } from "./cameraPresentation";
+import { nextObservedGroundSpeed } from "./cameraGroundSpeed";
 
 const FLOATING_ORIGIN_GRID = 2_048;
 const FLOATING_ORIGIN_THRESHOLD = 4_096;
@@ -242,6 +259,14 @@ const GPU_TIMING_STALE_AFTER_FRAMES = 30;
 const DIAGNOSTIC_WINDOW_FRAMES = 600;
 /** The present pass cannot be probed off — cutting it blacks the frame. */
 const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
+/**
+ * B6: main-thread milliseconds a frame spends sampling a sliced sky rebake
+ * (`SkyEnvironmentProbe.advanceRebake`, which always samples one 16-texel
+ * row). A rebake is 96 rows and a slice sampled about twenty on the
+ * SwiftShader perf host, where the irradiance landed five frames after the
+ * rebake began.
+ */
+const SKY_REBAKE_MILLISECONDS_PER_FRAME = 0.5;
 
 function rendererAbortError(): Error {
   const error = new Error("WebGPU renderer startup was cancelled");
@@ -456,6 +481,14 @@ export interface FlightRendererOptions {
    */
   vehicle?: VehicleKind;
   terrainSample: TerrainSampleFunction;
+  /**
+   * `terrainSample(x, z).height` alone, bit for bit (`sampleTerrainHeight` of
+   * the same world), for the consumers that read only the height: it costs
+   * none of the normal's four extra heights or the surface classification.
+   * Unset, those consumers read the full sample's height, and the
+   * ground-cover tile keeps its whole-row bake.
+   */
+  terrainHeight?: (x: number, z: number) => number;
   world: WorldDefinition;
   seed: number;
   /**
@@ -491,6 +524,16 @@ export interface FlightRendererOptions {
    * accepted only together with `pinnedRenderScale`.
    */
   captureGpuTiming?: boolean;
+  /**
+   * B6: how the sky probe re-lights the world after the camera's altitude
+   * drifts. "sliced" (the default) samples the irradiance over frames and
+   * lands it in one; "sync" re-lights in the frame that asks, as every
+   * re-light did before slicing, for a capture whose baselines must not move.
+   * An environment change re-lights at once either way. Render-scale pinning
+   * does not choose this, because perf:flight is pinned and must fly the
+   * sliced path; the capture's time pin does (`pinOceanCascadePhaseForCapture`).
+   */
+  skyRebake?: "sliced" | "sync";
   /**
    * Replace the gameplay cockpit rig — its lens and its lateral eye — with the
    * previous one. Perf capture ONLY: its cockpit-mode shots were placed for a
@@ -676,6 +719,8 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   private readonly sharpen: SharpenPass;
   private readonly resizeObserver: ResizeObserver;
+  /** B1: owns the hardware scaling level; see `RenderScaleQueue`. */
+  private readonly renderScaleQueue: RenderScaleQueue;
   private readonly atmosphereTracker = new AtmosphereChangeTracker();
   private readonly bodyMatrix = Matrix.Identity();
   private readonly bodyQuaternion = Quaternion.Identity();
@@ -693,8 +738,12 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Last frame's aircraft position, for the observed ground speed. */
   private readonly previousAircraftPosition = Vector3.Zero();
   private previousAircraftPositionValid = false;
+  /** B2: that position's simulation time, which the distance is flown over. */
+  private previousSimulationTime = 0;
   /** Observed ground speed in m/s, which is what sets the chase trail. */
   private observedGroundSpeed = 0;
+  /** Frames a frozen simulation clock has held it (`nextObservedGroundSpeed`). */
+  private observedGroundSpeedHeldFrames = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
   /** The camera's view-projection and frustum this frame, for the marina's caster gate. */
@@ -715,11 +764,35 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** `7-15`: which lamp geometry the wash lights follow. Both airframes ship. */
   private readonly aircraftKind: AircraftKind;
   private readonly latitudeDegrees: number;
-  /** The chase rig's ground clamp samples the terrain directly. */
-  private readonly cameraTerrainSample: TerrainSampleFunction;
+  /**
+   * The chase rig's ground clamp, and the free-fly viewer's: the live
+   * consumer height. It must track the terrain the player SEES: in eroded
+   * worlds that is the consumer authority's surface, not the analytic
+   * pre-erosion kernel — clamping against an invisible ridge shoved the
+   * chase camera upward with no visual justification.
+   */
+  private readonly cameraTerrainHeight: (x: number, z: number) => number;
   private environmentState: EnvironmentState = DEFAULT_ENVIRONMENT_STATE;
   private skyProbeStale = false;
   private skyProbeAltitudeMeters = 0;
+  /** B6: re-light in one frame (`FlightRendererOptions.skyRebake`). */
+  private skyRebakeSynchronous: boolean;
+  /** A sliced rebake has sampled every texel; it lands on the next frame. */
+  private skyRebakeSampled = false;
+  /** A sliced rebake landed last frame; its specular cube re-renders on this one. */
+  private skyProbeRearmPending = false;
+  /**
+   * The snapshot a sliced rebake's irradiance was sampled from, for the
+   * cloud ambient LUT, which re-bakes from it on the frame after the cube's
+   * re-arm.
+   */
+  private skyAmbientLutPending: AerialPerspectiveBinding | null = null;
+  /** The camera altitude the probe's refresh saw last frame, to tell a teleport from a climb. */
+  private skyProbeCameraAltitudeMeters = Number.NaN;
+  /** What the probe's refresh cost on the main thread, for the perf probe. */
+  private skyRefreshLastMilliseconds = 0;
+  private skyRefreshMaxMilliseconds = 0;
+  private skyRefreshFrameIndex = -1;
   private currentState: FlightVisualState | null = null;
   private currentDeltaSeconds = 1 / 60;
   private profile: WebGpuQualityProfile;
@@ -744,6 +817,12 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   private readonly airportGround: LiveAirportGround<TerrainSample>;
   /**
+   * `airportGround`'s height alone, bit for bit, for the consumers that read
+   * nothing else: the camera clamp, the spawned airfields, the ground-cover
+   * tile and the birds.
+   */
+  private readonly airportHeight: LiveAirportGround<number>;
+  /**
    * Airfields for airports spawned in flight — structures, lamps and floods,
    * built incrementally on the home field's materials. Null without a home
    * field, which a world that cannot gain airports never has.
@@ -753,6 +832,13 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   private frameIndex = 0;
   private renderScale: number;
+  /**
+   * B1: the `renderScale` the engine's level was last resolved from, which
+   * diagnostics report. A governor step that moves the level waits for the
+   * next frame's start, and until then a snapshot's scale still pairs with
+   * the pixels it rendered. Every application sets it; 1 is a placeholder.
+   */
+  private appliedRenderScale = 1;
   private terrainAuthorityPublisher: TerrainAuthorityPublisher | null = null;
   private readonly atmosphereResources: AtmosphereGpuResources;
   private readonly passTimingHistory = new PassTimingHistory();
@@ -817,6 +903,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     hangarFloodNames: readonly string[],
     airfieldLighting: AirfieldLightingSystem | null,
     airportGround: LiveAirportGround<TerrainSample>,
+    airportHeight: LiveAirportGround<number>,
     spawnedAirfields: SpawnedAirfieldManager | null,
     scotopic: ScotopicVisionPass,
     bloom: BloomPass,
@@ -878,6 +965,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.hangarFloodNames = hangarFloodNames;
     this.airfieldLighting = airfieldLighting;
     this.airportGround = airportGround;
+    this.airportHeight = airportHeight;
     this.spawnedAirfields = spawnedAirfields;
     this.scotopic = scotopic;
     this.bloom = bloom;
@@ -886,7 +974,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.seaLevel = options.world.seaLevel;
     this.aircraftKind = options.aircraft;
     this.latitudeDegrees = options.world.latitudeDegrees;
-    this.cameraTerrainSample = options.terrainSample;
+    this.cameraTerrainHeight = airportHeight.sample;
     this.worldDefinition = options.world;
     this.liveWorld = options.world;
     this.quality = options.quality;
@@ -894,16 +982,29 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = options.reducedMotion;
     this.profile = resolveWebGpuQualityProfile(this.quality, this.renderingMode);
     this.pinnedRenderScale = options.pinnedRenderScale ?? null;
+    this.skyRebakeSynchronous = options.skyRebake === "sync";
     this.cockpitRigOverride = options.cockpitRigOverride ?? null;
     this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
     this.renderScale = this.governorState.renderScale;
+    this.renderScaleQueue = new RenderScaleQueue(
+      this.engine,
+      () => this.resolveRenderScaleLevel(),
+    );
     this.applyRenderScale();
     this.installFrameGraph();
     this.resizeObserver = new ResizeObserver(() => {
       if (this.disposed) return;
       // Re-derive the capped scale: the pixel budget depends on the CSS size.
+      // B1: in flight that waits for the next frame's start, because this
+      // fires after rAF has drawn and a resize now would discard the frame.
+      // Pinned renderers (perf capture, VITE_PERF_RESIZE_WOBBLE) keep the
+      // immediate path.
+      if (this.pinnedRenderScale === null) {
+        this.renderScaleQueue.defer(DISPLAY_RESIZE_REQUEST);
+        return;
+      }
       this.applyRenderScale();
       this.resetTimingWindow();
       this.graph.invalidateHistory("display resize");
@@ -1119,6 +1220,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       terrain.setMacroEvolution(evolutionResult.evolution);
       let terrainConsumerAuthority: TerrainConsumerAuthority | null = null;
       let consumerTerrainSample = options.terrainSample;
+      // The same surface's height alone, for the consumers that read nothing
+      // else. Without the game's height function it is the full sample's.
+      const analyticTerrainHeight = options.terrainHeight
+        ?? ((x: number, z: number) => options.terrainSample(x, z).height);
+      let consumerTerrainHeight = analyticTerrainHeight;
       if (evolutionResult.mode === "eroded") {
         terrainConsumerAuthority = new TerrainConsumerAuthority();
         // This view is retained on the main thread. Simulation and detail
@@ -1129,6 +1235,11 @@ export class FlightRenderer implements FlightRenderingSystem {
         consumerTerrainSample = terrainConsumerSampleFromAuthority(
           options.world,
           options.terrainSample,
+          terrainConsumerAuthority,
+        );
+        consumerTerrainHeight = terrainConsumerHeightFromAuthority(
+          options.world,
+          analyticTerrainHeight,
           terrainConsumerAuthority,
         );
       }
@@ -1142,6 +1253,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       airportGround.setWorld(options.world);
       const liveTerrainSample = airportGround.sample;
+      // Its height alone, `liveTerrainSample(x, z).height` bit for bit
+      // (tests/render.live-terrain-height.test.ts), for the camera clamp, the
+      // spawned airfields, the ground-cover tile and the birds.
+      const airportHeight = new LiveAirportGround<number>(
+        consumerTerrainHeight,
+        analyticTerrainHeightOf,
+      );
+      airportHeight.setWorld(options.world);
+      const liveTerrainHeight = airportHeight.sample;
       // W-6 (C-6): eroded bathymetry overlays resident L0 eroded pages inside
       // its own update dispatch (ARCHITECTURE 5-10 row — water consumers may
       // not implement this independently). The seam is read-only, resolved
@@ -1229,6 +1349,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       // and the camera clamp, so blades stand on the rendered surface.
       const groundCover = new GroundCoverSystem(scene, {
         terrainSample: liveTerrainSample,
+        // The tile's height rows and the altitude gate read only the height,
+        // and with a height-only sampler the tile bakes in 32 m steps under
+        // its frame budget. Without one (the perf harness) a column would cost
+        // a full sample, which the step's pace floor is not sized for, so the
+        // tile keeps its whole-row bake, as before.
+        ...(options.terrainHeight ? { terrainHeight: liveTerrainHeight } : {}),
         // `6-9` debt 1: the per-frame field is admitted through the SAME
         // amortised-compute meter as every other GPU compute producer, which
         // is what `owners.ts` has claimed since `4-0b` and wave G left false.
@@ -1252,6 +1378,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       const wildlife = new WildlifeSystem(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,
+        terrainHeight: liveTerrainHeight,
+        // A cell crossing generates only the cells it brings into range. The
+        // cells read `liveTerrainSample`, so every change to it forgets them
+        // (`setAirports`, `publishTerrainConsumerPage`/`AuxPage`).
+        wildlifeCellCacheCapacity: 64,
       });
       cleanup.push(() => wildlife.dispose());
       checkpointRendererStartup("wildlife construction", "sync");
@@ -1520,7 +1651,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           profile,
           world: options.world,
           atmosphere: atmosphere.snapshot,
-          groundHeight: (x, z) => liveTerrainSample(x, z).height,
+          groundHeight: liveTerrainHeight,
         })
         : null;
       if (carEffects) {
@@ -1630,7 +1761,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           world: options.world,
           materials: airport.materials,
           seedHash: options.world.seedHash,
-          groundHeight: (x, z) => liveTerrainSample(x, z).height,
+          groundHeight: liveTerrainHeight,
           lamps: lightPoints,
           floods: clusteredLighting,
           floodSlots: spawnedFloodSlots.map((slot) => slot.map((light) => light.name)),
@@ -1754,11 +1885,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // a zero-confidence fallback texel inside each water material.
       const info = engine.getInfo();
       const renderer = new FlightRenderer(
-        // The camera's ground clamp must track the terrain the player SEES:
-        // in eroded worlds that is the consumer authority's surface, not the
-        // analytic pre-erosion kernel — clamping against an invisible ridge
-        // shoved the chase camera upward with no visual justification.
-        { ...options, terrainSample: liveTerrainSample },
+        options,
         engine,
         gpuUncapturedErrorGuard,
         scene,
@@ -1794,6 +1921,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         hangarFloods.map((flood) => flood.name),
         airfieldLighting,
         airportGround,
+        airportHeight,
         spawnedAirfields,
         scotopic,
         bloom,
@@ -1848,6 +1976,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
+    this.observedGroundSpeedHeldFrames = 0;
     this.graph.invalidateHistory("camera cut");
   }
 
@@ -1864,7 +1993,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   sampleGroundHeight(x: number, z: number): number {
-    return this.cameraTerrainSample(x, z).height;
+    return this.cameraTerrainHeight(x, z);
   }
 
   /**
@@ -1887,8 +2016,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     //    over later frames.
     this.terrain.setAirports(next.airports);
     // 2. The CPU ground: vegetation, ground cover, wildlife, the camera clamp
-    //    and the spawned structures all read this one sampler.
+    //    and the spawned structures all read this one sampler, or its height.
+    //    The wildlife's cached cells were generated from the old one.
     this.airportGround.setWorld(next);
+    this.airportHeight.setWorld(next);
+    this.wildlife.invalidateCellCache();
     // 3. Vegetation: off the new platform and out of its structures; only the
     //    cells the change reaches regenerate.
     this.detail.setAirports(next.airports);
@@ -1942,6 +2074,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     if (authority) {
       authority.publish({ ...page, heights: page.heights.slice() });
       this.detail.publishTerrainPage({ ...page, heights: page.heights.slice() });
+      // The consumer surface moved under the wildlife's cached cells.
+      this.wildlife.invalidateCellCache();
     }
     // Keep the original for the simulation worker and transfer it last.
     this.terrainAuthorityPublisher?.publishTerrainPage(page);
@@ -1956,6 +2090,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       shoreDistanceR16Sint: page.shoreDistanceR16Sint.slice(),
       soilDepthR8Unorm: page.soilDepthR8Unorm.slice(),
     });
+    this.wildlife.invalidateCellCache();
     // Transfer the producer-owned buffer only after retaining the main-thread copy.
     this.detail.publishTerrainAuxPage(page);
   }
@@ -2037,6 +2172,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       throw new Error("The WebGPU device was lost; rendering cannot continue");
     }
     if (!finiteState(state)) throw new Error("The simulation produced a non-finite render state");
+    // B1: a governor step or display resize waiting since the last frame is
+    // applied before anything draws. Ahead of `started`, so its cost and its
+    // timing reset land where the old out-of-frame resize put them.
+    this.applyPendingRenderScale();
     const started = performance.now();
     this.captureFrameInterval(started);
     this.currentState = this.presentedState(state);
@@ -2229,10 +2368,49 @@ export class FlightRenderer implements FlightRenderingSystem {
    * streamed, which is wall-clock paced, so a water shot's waves differ
    * between runs of identical code. See `OceanCascadeClock`. Production never
    * calls this; mid-flight it would dispatch the slow cascades out of turn.
+   *
+   * It also makes every later sky re-light synchronous, for the renderer's
+   * lifetime (`FlightRendererOptions.skyRebake`): a flight on this renderer
+   * after a capture's settle no longer takes the sliced path.
    */
   pinOceanCascadePhaseForCapture(): void {
     if (this.disposed) return;
     this.ocean.pinCascadePhaseForCapture();
+    // The time pin is where a capture's frames stop being a flight: from
+    // here on the sky probe re-lights in the frame that asks, as it did when
+    // the shots' baselines were made (`FlightRendererOptions.skyRebake`). The
+    // A/B agent's renderer flies perf:flight too, so it cannot say so at
+    // construction.
+    this.skyRebakeSynchronous = true;
+  }
+
+  /**
+   * The perf probe's read of the two bakes that spread over frames, in
+   * constant time. `sky` is this renderer's own timing of its probe refresh
+   * on frame `frameIndex` (a one-frame re-light, a rebake's slice, its
+   * landing, the specular cube's re-arm or the cloud ambient LUT; the cube
+   * itself renders inside the frame's scene render). `skyRebake` and
+   * `groundCover` are the systems' own counters
+   * (`SkyEnvironmentProbe.rebakeStats`, `GroundCoverSystem.bakeStats`).
+   */
+  getBakeStatsForCapture(): {
+    readonly sky: {
+      readonly frameIndex: number;
+      readonly lastMilliseconds: number;
+      readonly maxMilliseconds: number;
+    };
+    readonly skyRebake: SkyRebakeStats;
+    readonly groundCover: GroundCoverSystem["bakeStats"];
+  } {
+    return {
+      sky: {
+        frameIndex: this.skyRefreshFrameIndex,
+        lastMilliseconds: this.skyRefreshLastMilliseconds,
+        maxMilliseconds: this.skyRefreshMaxMilliseconds,
+      },
+      skyRebake: this.skyProbe.rebakeStats,
+      groundCover: this.groundCover.bakeStats,
+    };
   }
 
   /**
@@ -2605,10 +2783,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       lakeCount: hydrology.lakeCount,
       hydrologyMainThreadFallback: hydrology.usingMainThreadFallback,
       hydrologyLastGenerationUsedWorker: hydrology.lastGenerationUsedWorker,
+      // Counters only: the perf probe reads diagnostics every frame, and
+      // `presentationRebuildDiagnostics` walks every cell.
+      detailWorker: this.detail.workerHealth,
       requestedRenderingMode: this.renderingMode,
       renderBackend: "webgpu",
       renderTechnique: "forward-spectral-volumetric",
-      renderScale: this.renderScale,
+      renderScale: this.appliedRenderScale,
       cloudResolutionScale: this.profile.cloudResolutionScale,
       cloudRaySteps: this.profile.cloudPrimarySteps,
       oceanFftCascades: this.ocean.cascadeCount,
@@ -3180,22 +3361,93 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatWake?.setAerialPerspective(binding);
     this.carParticles?.setAerialPerspective(binding);
     this.carBowWave?.setAerialPerspective(binding);
-    // The probe re-lights the world when the environment changes or when the
-    // camera's altitude has drifted enough to matter (the sky itself dims
-    // and clears with height); everything else leaves it untouched.
+    this.refreshSkyProbe(binding);
+  }
+
+  /**
+   * The probe re-lights the world when the environment changes or when the
+   * camera's altitude has drifted enough to matter (the sky itself dims and
+   * clears with height); everything else leaves it untouched.
+   *
+   * B6: in one frame, the whole irradiance bake (6 x 16 x 16 sky-radiance
+   * evaluations and Babylon's converter), the cloud ambient LUT and the six
+   * specular faces with their mips made every 500 m of a climb a single-frame
+   * spike. A drift re-light is now sampled at most
+   * `SKY_REBAKE_MILLISECONDS_PER_FRAME` a frame from a snapshot of the
+   * binding it began on, and lands one output a frame: the irradiance on the
+   * frame after the last sample, the specular cube's re-render on the next,
+   * and the cloud ambient LUT, from the same snapshot, on the one after. The
+   * landing frame still runs Babylon's converter in one call (1.5 ms on the
+   * SwiftShader perf host), which is the floor on that frame. An environment
+   * change, and every re-light of a synchronous renderer, still runs in the
+   * frame that asks (`skyProbeRefreshAction`), and a landing's LUT still to
+   * come is dropped.
+   *
+   * A teleport re-lights in the frame that asks too: a spawn reset or a crash
+   * restart moves the camera past the drift threshold between two frames,
+   * which no flight can. Sliced, the new place would keep the old altitude's
+   * lighting for the frames the rebake takes and then step, after the camera
+   * cut has cleared the history that would have hidden it. cutCamera cannot
+   * ask for it: the simulation's reset reaches the renderer frames after the
+   * cut.
+   */
+  private refreshSkyProbe(binding: AerialPerspectiveBinding): void {
+    const altitude = binding.cameraAltitudeMeters;
+    const teleported = Math.abs(altitude - this.skyProbeCameraAltitudeMeters)
+      > SKY_PROBE_REBAKE_ALTITUDE_METERS;
+    this.skyProbeCameraAltitudeMeters = altitude;
+    const action = skyProbeRefreshAction({
+      stale: this.skyProbeStale,
+      altitudeDeltaMeters: altitude - this.skyProbeAltitudeMeters,
+      inProgress: this.skyProbe.rebakeInProgress,
+      synchronous: this.skyRebakeSynchronous || teleported,
+    });
     if (
-      this.skyProbeStale
-      || Math.abs(binding.cameraAltitudeMeters - this.skyProbeAltitudeMeters) > 500
-    ) {
+      action === "none"
+      && !this.skyProbeRearmPending
+      && this.skyAmbientLutPending === null
+    ) return;
+    const started = performance.now();
+    if (this.skyProbeRearmPending) {
+      this.skyProbeRearmPending = false;
+      this.skyProbe.rearmSpecular();
+    } else if (this.skyAmbientLutPending !== null && action !== "sync") {
+      this.atmosphereResources.update(this.skyAmbientLutPending);
+      this.skyAmbientLutPending = null;
+    }
+    if (action === "sync") {
       // R-26: the below-horizon half of the SH bake is the ground's own
-      // albedo now, not a hardcoded 0.25 floor.
+      // albedo now, not a hardcoded 0.25 floor. A rebake in flight is
+      // dropped: it sampled an older environment.
       this.skyProbe.update(binding, this.atmosphere.surfaceAlbedoLuminance);
       // 2-0a: the cloud ambient LUT re-bakes on the same cadence, from the
       // same binding, so cloud ambient cannot drift from the sky/IBL pair.
+      // A landing's LUT still to come is older: it must not follow this one.
       this.atmosphereResources.update(binding);
+      this.skyAmbientLutPending = null;
       this.skyProbeStale = false;
       this.skyProbeAltitudeMeters = binding.cameraAltitudeMeters;
+      this.skyRebakeSampled = false;
+    } else if (action === "begin") {
+      this.skyProbe.beginRebake(binding, this.atmosphere.surfaceAlbedoLuminance);
+      this.skyRebakeSampled = this.skyProbe.advanceRebake(SKY_REBAKE_MILLISECONDS_PER_FRAME);
+    } else if (action === "advance" && !this.skyRebakeSampled) {
+      this.skyRebakeSampled = this.skyProbe.advanceRebake(SKY_REBAKE_MILLISECONDS_PER_FRAME);
+    } else if (action === "advance") {
+      // The snapshot the rebake sampled, read before the next begin replaces
+      // it: the LUT and the drift threshold take the environment the
+      // irradiance has, as they took the binding in one frame.
+      const baked = this.skyProbe.rebakeBinding!;
+      this.skyProbe.applyRebakeIrradiance();
+      this.skyProbeAltitudeMeters = baked.cameraAltitudeMeters;
+      this.skyRebakeSampled = false;
+      this.skyProbeRearmPending = true;
+      this.skyAmbientLutPending = baked;
     }
+    const spent = performance.now() - started;
+    this.skyRefreshLastMilliseconds = spent;
+    this.skyRefreshMaxMilliseconds = Math.max(this.skyRefreshMaxMilliseconds, spent);
+    this.skyRefreshFrameIndex = this.frameIndex;
   }
 
   /**
@@ -3374,14 +3626,29 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // How fast the aeroplane is ACTUALLY moving through the scene, which is
     // what the chase trail is derived from. A rebase frame moves every
     // coordinate at once, so the delta across it is meaningless and the
-    // previous value is held instead.
+    // previous value is held instead. B2: the distance is between two
+    // simulation poses, so it is divided by the simulation time between them
+    // where that is not the frame's own delta (a hitch past the 0.1 s clamp,
+    // a late snapshot); a steady frame divides as it always did.
     if (this.previousAircraftPositionValid && !this.originShifted) {
-      const travelled = Vector3.Distance(aircraftPosition, this.previousAircraftPosition);
-      this.observedGroundSpeed = travelled / Math.max(1e-4, this.currentDeltaSeconds);
+      const next = nextObservedGroundSpeed({
+        travelled: Vector3.Distance(aircraftPosition, this.previousAircraftPosition),
+        wallDeltaSeconds: this.currentDeltaSeconds,
+        simDeltaSeconds: state.simulationTime - this.previousSimulationTime,
+        previous: this.observedGroundSpeed,
+        heldFrames: this.observedGroundSpeedHeldFrames,
+        // A pinned (perf) renderer re-renders a shot's last state with no
+        // simulation time passing; that frame must read as it always did.
+        holdWhenFrozen: this.pinnedRenderScale === null,
+      });
+      this.observedGroundSpeed = next.speed;
+      this.observedGroundSpeedHeldFrames = next.heldFrames;
     } else if (!this.previousAircraftPositionValid) {
       this.observedGroundSpeed = 0;
+      this.observedGroundSpeedHeldFrames = 0;
     }
     this.previousAircraftPosition.copyFrom(aircraftPosition);
+    this.previousSimulationTime = state.simulationTime;
     this.previousAircraftPositionValid = true;
     if (this.cameraMode === "freefly") {
       // The synthetic viewer state's position IS the camera; its orientation
@@ -3436,10 +3703,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         // it keeps clear of the quay, the shore and the water.
         const orbitFloor = Math.max(
           this.seaLevel,
-          this.cameraTerrainSample(
+          this.cameraTerrainHeight(
             this.desiredCamera.x + this.originX,
             this.desiredCamera.z + this.originZ,
-          ).height,
+          ),
         ) + 1.5;
         if (this.desiredCamera.y < orbitFloor) this.desiredCamera.y = orbitFloor;
       }
@@ -3516,11 +3783,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const cameraWorldZ = this.desiredCamera.z + this.originZ;
       const aheadMeters = Math.min(120, state.airspeed * 0.35);
       const cameraGround = Math.max(
-        this.cameraTerrainSample(cameraWorldX, cameraWorldZ).height,
-        this.cameraTerrainSample(
+        this.cameraTerrainHeight(cameraWorldX, cameraWorldZ),
+        this.cameraTerrainHeight(
           cameraWorldX + rigForward.x * aheadMeters,
           cameraWorldZ + rigForward.z * aheadMeters,
-        ).height,
+        ),
       );
       // A boat's rig floats over the sea, which the terrain sample (the
       // seabed) knows nothing about.
@@ -3909,28 +4176,50 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.graph.invalidateHistory("quality profile changed");
   }
 
-  /** Applies the capped scale product; returns whether it actually changed. */
+  /** The capped scale product as a hardware scaling level (1A-6a). */
+  private resolveRenderScaleLevel(): number {
+    return resolveHardwareScalingLevel({
+      maxDevicePixelRatio: this.profile.maxDevicePixelRatio,
+      devicePixelRatio: window.devicePixelRatio,
+      renderScale: this.renderScale,
+      cssWidth: this.domElement.clientWidth,
+      cssHeight: this.domElement.clientHeight,
+      maxRenderPixels: this.profile.maxRenderPixels,
+    });
+  }
+
+  /**
+   * Applies the capped scale product now, with a forced resize; returns
+   * whether it actually changed. Construction, a profile change and a
+   * capture pin take this path.
+   */
   private applyRenderScale(): boolean {
-    // 1A-6a: the device pixel ratio is a per-tier ceiling, not a multiplier the
-    // display gets to raise for free, and the total scale product is clamped by
-    // an absolute pixel budget. The previous code multiplied DPR into the scale
-    // uncapped, so a Retina panel rendered 5.94 Mpx at tier 2 before any work.
-    const pixelRatio = Math.min(
-      this.profile.maxDevicePixelRatio,
-      window.devicePixelRatio || 1,
-    );
-    const requestedScale = Math.max(0.1, pixelRatio * this.renderScale);
-    const cssPixels = Math.max(
-      1,
-      this.domElement.clientWidth * this.domElement.clientHeight,
-    );
-    // Rendered pixels = cssPixels × totalScale², so the absolute cap on pixels
-    // is a cap of sqrt(maxRenderPixels / cssPixels) on the total scale product.
-    const pixelCapScale = Math.sqrt(this.profile.maxRenderPixels / cssPixels);
-    const level = 1 / Math.min(requestedScale, pixelCapScale);
-    const changed = Math.abs(level - this.engine.getHardwareScalingLevel()) > 1e-4;
-    if (changed) this.engine.setHardwareScalingLevel(level);
-    this.engine.resize(true);
+    const changed = this.renderScaleQueue.applyNow();
+    this.appliedRenderScale = this.renderScale;
+    return changed;
+  }
+
+  /** B1: the frame-start half of a deferred governor step or display resize. */
+  private applyPendingRenderScale(): void {
+    const applied = this.renderScaleQueue.applyPending();
+    if (applied === null) return;
+    this.appliedRenderScale = this.renderScale;
+    if (applied.resetTimingWindow) this.resetTimingWindow();
+    if (applied.changed || applied.force) this.graph.invalidateHistory(applied.reason);
+  }
+
+  /**
+   * B1: queues a governor step for the next frame's start and returns whether
+   * it moves the level, which the anti-ratchet latch needs now. A step the
+   * pixel cap absorbs leaves the level as it is, so it counts as applied.
+   */
+  private deferGovernedRenderScale(): boolean {
+    const changed = this.renderScaleQueue.levelWouldChange();
+    if (changed) {
+      this.renderScaleQueue.defer(GOVERNED_SCALE_REQUEST);
+    } else {
+      this.appliedRenderScale = this.renderScale;
+    }
     return changed;
   }
 
@@ -3960,17 +4249,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const lowered = state.renderScale < this.renderScale;
       this.renderScale = state.renderScale;
       // When the absolute pixel cap is the binding constraint, a governor
-      // step leaves the effective scale unchanged — no history reset, and the
-      // anti-ratchet latch learns about it immediately.
-      const changed = this.applyRenderScale();
-      if (changed) this.graph.invalidateHistory("dynamic resolution changed");
+      // step leaves the effective scale unchanged — no resize, no history
+      // reset, and the anti-ratchet latch learns about it immediately. B1: a
+      // step that does change it resizes at the next frame's start, never
+      // here, after this frame has drawn.
+      const changed = this.deferGovernedRenderScale();
       if (lowered) {
         state = observeRenderScaleApplication(state, changed, this.governorConfig);
         if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
           this.renderScale = state.renderScale;
-          if (this.applyRenderScale()) {
-            this.graph.invalidateHistory("dynamic resolution changed");
-          }
+          this.deferGovernedRenderScale();
         }
       }
     }

@@ -5,7 +5,9 @@ import { Matrix, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
-import { LightPointSystem } from "../src/render/webgpu/lighting/LightPoints";
+import type { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
+import { WATER_RENDERING_GROUP_ID } from "../src/render/webgpu/core/RenderingGroups";
+import { LIGHT_POINT_ALPHA_INDEX, LightPointSystem } from "../src/render/webgpu/lighting/LightPoints";
 import { MarinaSystem } from "../src/render/webgpu/marina/MarinaSystem";
 import {
   buildMarinaSilhouette,
@@ -298,6 +300,26 @@ describe("MarinaSystem", () => {
       lights.setColorRange(airfield, marina.lampColours);
       expect(() => lights.setColorRange(airfield + 1, marina.lampColours)).toThrow(RangeError);
       expect(marina.lampFixtures.length).toBe(layout.lamps.length + layout.beacons.length);
+      lights.dispose();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("draws the lamps after the water, so a beacon seen against the sea keeps its light", () => {
+    const { scene, marina, dispose } = rig(false);
+    try {
+      const lights = new LightPointSystem(scene, marina.lampFixtures, 1);
+      const mesh = scene.getMeshByName("light-points")!;
+      // The light points write no depth: drawn before the water, the sea
+      // passed the depth test behind every beacon and painted over it.
+      expect((mesh.material as ShaderMaterial).disableDepthWrite).toBe(true);
+      expect(mesh.renderingGroupId).toBe(WATER_RENDERING_GROUP_ID);
+      expect(mesh.alphaIndex).toBe(LIGHT_POINT_ALPHA_INDEX);
+      // After the ocean (0), inland water (1) and the wake (1.5); before the
+      // steam (2) and spray (2.5), which stand in front of a lamp.
+      expect(LIGHT_POINT_ALPHA_INDEX).toBeGreaterThan(1.5);
+      expect(LIGHT_POINT_ALPHA_INDEX).toBeLessThan(2);
       lights.dispose();
     } finally {
       dispose();

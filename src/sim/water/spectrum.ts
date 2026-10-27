@@ -15,9 +15,12 @@
  * - `h0` is a complex Gaussian times `sqrt(0.5 * Psi(k))`, `Psi` a spectral
  *   density in m^4 (see `oceanTransformNormalizationScale`).
  * - The inverse transform is `sum h(k, t) exp(+i k.x)` with
- *   `h(k, t) = h0(k) exp(+i w t) + conj(h0(-k)) exp(-i w t)`, so the real height
- *   field is `2 s^2 sum_k Re(h0(k) exp(i (k.x + w t)))` over every grid
- *   frequency, `s` the per-axis normalisation.
+ *   `h(k, t) = h0(k) exp(-i w t) + conj(h0(-k)) exp(+i w t)`, so the real height
+ *   field is `2 s^2 sum_k Re(h0(k) exp(i (k.x - w t)))` over every grid
+ *   frequency, `s` the per-axis normalisation: each wave travels along its own
+ *   `k`, and the spectrum puts the waves' `k` downwind.
+ * - The horizontal displacement is `sum i lambda k^ h(k, t) exp(+i k.x)`, which
+ *   moves the surface toward each crest (`OCEAN_CHOP_SIGN`).
  */
 
 import type { SpectralOceanConfig } from "./spectrumConfig";
@@ -87,10 +90,24 @@ export function oceanWavePhaseIndex(frequencyX: number, frequencyY: number): num
 
 /**
  * The sign of time in a wave's phase, `k.x + s w t`, as the GPU's evolution
- * shader applies it (`h0 e^{+i w t}` against an inverse transform in
+ * shader applies it (`h0 e^{-i w t}` against an inverse transform in
  * `e^{+i k.x}`). The sea twin reads it here so the two cannot disagree.
+ *
+ * -1 sends a wave along `+k`, where `oceanDirectionalSpectrum`'s forward lobe
+ * puts it: downwind. Until 2026-10-27 the shader turned `h0` by `e^{+i w t}`,
+ * and every wave of the sea travelled upwind.
  */
-export const OCEAN_TIME_SIGN = 1;
+export const OCEAN_TIME_SIGN = -1;
+
+/**
+ * The sign of the horizontal displacement, `D = Re(s i lambda k^ h)` per wave,
+ * as the evolution shader applies it. For a wave `h = A cos(psi)` that is
+ * `D = -s lambda A k^ sin(psi)`; +1 is the Gerstner wave, whose surface
+ * gathers toward each crest: the crests come up peaked, the troughs broad,
+ * and the Jacobian's folds, where the foam is, sit on the crests. Until
+ * 2026-10-27 the shader applied -1, which peaked the troughs instead.
+ */
+export const OCEAN_CHOP_SIGN = 1;
 
 /** The grid whose texel index is the phase index of every wave it holds. */
 export const OCEAN_PHASE_BASE_GRID = 128;

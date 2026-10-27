@@ -14,6 +14,10 @@ import type { Scene } from "@babylonjs/core/scene";
  *      steam draws last in this group (alphaIndex 2, after the ocean's 0 and
  *      inland water's 1): after the cloud composite, which would otherwise
  *      cover it in sky pixels, and after any crater lake it rises from.
+ *      The light points (runway, airfield and marina lamps) draw here too,
+ *      after the water and before the steam (`LIGHT_POINT_ALPHA_INDEX`):
+ *      they write no depth, so in group 0 the sea painted over every lamp
+ *      seen against it.
  *   2  the translucent airframe: canopy glass, the propeller blur disc and its
  *      fading blades. Those materials self-sort through a depth PRE-PASS, and a
  *      pre-pass writes depth — so anything drawn after them into a shared depth

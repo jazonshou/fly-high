@@ -8,6 +8,7 @@ import type {
 import type { AircraftKind } from "@/src/sim";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
+import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 /** Where an aeroplane starts. */
@@ -64,6 +65,12 @@ export type SimulationCommand =
       airborneStartAgl: number;
       attractMode: boolean;
       weather: WeatherPreset;
+      /**
+       * The streamed infrastructure regions (roads) the main thread holds now,
+       * as a reset: installed before the spawn is placed, so a car starting on
+       * a road fill stands on it.
+       */
+      infrastructure: InfrastructureRegionsUpdate;
     }
   | { type: "controls"; controls: ControlState }
   | { type: "mode"; mode: FlightMode }
@@ -92,6 +99,14 @@ export type SimulationCommand =
    * reading `world.airports` sees the new runway from the next step.
    */
   | { type: "airports"; airports: readonly AirportDefinition[] }
+  /**
+   * One change to the main thread's streamed infrastructure regions, posted
+   * the moment it is made (`InfrastructureRegionsForwarder`), so it arrives
+   * before any page baked against it. The worker installs the same regions
+   * and drops the L0 pages the change touches; its analytic fallback answers
+   * there from the new regions until the rebuilt pages arrive.
+   */
+  | { type: "infrastructure"; update: InfrastructureRegionsUpdate }
   /**
    * Engage the autoland on the nearest airport's runway, or hand back. The
    * worker refuses to engage on the ground and in the menu flight, and drops

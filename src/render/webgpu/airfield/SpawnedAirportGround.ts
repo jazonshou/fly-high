@@ -1,6 +1,7 @@
 import {
   getAirportInfluence,
   sampleTerrain,
+  sampleTerrainHeight,
   type AirportDefinition,
   type WorldDefinition,
 } from "@/src/world";
@@ -121,4 +122,12 @@ export function analyticTerrainOf(
   world: Readonly<WorldDefinition>,
 ): Sampler<ReturnType<typeof sampleTerrain>> {
   return (x, z) => sampleTerrain(world, x, z);
+}
+
+/**
+ * `sampleTerrainHeight` against a given world: `analyticTerrainOf`'s height
+ * alone, bit for bit, as the analytic source of a `LiveAirportGround<number>`.
+ */
+export function analyticTerrainHeightOf(world: Readonly<WorldDefinition>): Sampler<number> {
+  return (x, z) => sampleTerrainHeight(world, x, z);
 }

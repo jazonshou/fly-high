@@ -61,6 +61,10 @@ import {
 } from "@/src/sim/surface";
 import { CalmWaterSurface, createSeaTwin, resolveSeaSpectrumConfig, SeaTwin } from "@/src/sim/water";
 import { homeMarina } from "@/src/world/marina";
+import {
+  applyInfrastructureRegionsUpdate,
+  type InfrastructureRegionsUpdate,
+} from "@/src/world/infrastructureSync";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
@@ -702,6 +706,18 @@ function simulationTick(): void {
   }
 }
 
+/**
+ * The main thread's streamed regions, into this worker's copy of the stage:
+ * collision's analytic fallback reads them, and the L0 pages they change are
+ * dropped until their rebuilds arrive.
+ */
+function applyInfrastructure(update: InfrastructureRegionsUpdate): void {
+  if (!world) return;
+  const change = applyInfrastructureRegionsUpdate(world, update);
+  if (update.reset) terrainAuthority.applyInfrastructureReset();
+  else if (change) terrainAuthority.applyInfrastructureChange(change);
+}
+
 workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>) => {
   try {
     const command = event.data;
@@ -711,6 +727,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // synchronous airport search or select a different fallback region.
       terrainAuthority.clear();
       world = command.world;
+      applyInfrastructure(command.infrastructure);
       aircraftKind = command.aircraft;
       mode = command.mode;
       weather = command.weather;
@@ -729,6 +746,10 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     if (command.type === "terrainMacro") {
       terrainAuthority.publishMacro(command.macro);
+      return;
+    }
+    if (command.type === "infrastructure") {
+      applyInfrastructure(command.update);
       return;
     }
     if (command.type === "airports") {

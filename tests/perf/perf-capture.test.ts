@@ -652,6 +652,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // boat's helm and a car's driver's seat are the gameplay ones: no
       // aircraft shot moves.
       ...(activeVehicle ? { vehicle: activeVehicle } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
+      // The baselines were made with every sky re-light in one frame; the
+      // time pin also asks for that, this from the first frame on.
+      skyRebake: "sync" as const,
       ...(world.airport ? { runway: world.airport } : {}),
       ...(FAR_SWARD_OVERRIDE !== ""
         ? { terrainFarSwardRead: FAR_SWARD_OVERRIDE as "off" | "cheap" | "soft" }

@@ -7,6 +7,7 @@ import {
   RUNABOUT_21,
   TestSea,
   savitskyBrownImpact,
+  towEquilibrium,
 } from "../src/sim/boat";
 import type { StabilityAssistMode } from "../src/sim/assists";
 import { NEUTRAL_BOAT_CONTROLS } from "../src/sim/surface";
@@ -102,15 +103,10 @@ describe("boat in waves", () => {
     expect(height).toBeGreaterThan(0.85);
     expect(height).toBeLessThan(1.15);
     const lever = 0.64;
-    // Calm-water trim and speed at the same lever, for the prediction.
-    const calm = afloat(new CalmWaterSurface(0, () => -100), 0, 20);
-    calm.controls.boat.lever = lever;
-    calm.boat.setControls(calm.controls);
-    for (let t = 0; t < 30; t += STEP) calm.boat.step(STEP);
-    calm.boat.telemetry(calm.telemetry);
 
-    // Heading into the wind: the waves come from dead ahead.
-    const run = afloat(twin, seaWorld(6.8).prevailingWindRadians, 20);
+    // Heading into the wind (the prevailing wind's bearing is where it blows
+    // toward): the waves come from dead ahead.
+    const run = afloat(twin, seaWorld(6.8).prevailingWindRadians + Math.PI, 20);
     run.controls.boat.lever = lever;
     run.boat.setControls(run.controls);
     for (let t = 0; t < 10; t += STEP) run.boat.step(STEP);
@@ -146,6 +142,9 @@ describe("boat in waves", () => {
     expect(peaks.length).toBeGreaterThan(100);
     expect(impact).toBeGreaterThan(1);
     expect(impact).toBeLessThan(3);
+    // The fit's trim is the calm-water trim at the speed run in the sea, of a
+    // hull towed through its CG: Fridsma's tank setup, and Savitsky's.
+    const calmTrim = towEquilibrium(speed / KNOT).trimDegrees;
     const predicted = savitskyBrownImpact(
       {
         beam: HULL_TRANSOM_CHINE_BEAM,
@@ -154,7 +153,7 @@ describe("boat in waves", () => {
         weight: RUNABOUT_21.mass * 9.80665,
       },
       height,
-      calm.telemetry.runningTrim / DEG,
+      calmTrim,
       speed,
     );
     // The empirical fit's own scatter is about 30 percent.
