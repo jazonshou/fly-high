@@ -72,7 +72,7 @@ import {
 import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
-import { boatShotState, resolveShotPlacement } from "../shotPlacement";
+import { boatShotState, carShotState, resolveShotPlacement } from "../shotPlacement";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
@@ -537,14 +537,19 @@ async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
   landforms: PerfCaptureShotDefinition["landforms"],
-  boat: boolean,
+  vehicle: "speedboat" | "landcruiser" | null,
   fresh = false,
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  // A boat shot is a boundary too: its renderer is built with the speedboat.
-  const forcedKey = climateProvince === undefined && landforms === undefined && !boat
+  // A boat or car shot is a boundary too: its renderer is built with its vehicle.
+  const boat = vehicle === "speedboat";
+  const forcedKey = climateProvince === undefined && landforms === undefined && vehicle === null
     ? null
-    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null, ...(boat ? { boat } : {}) });
+    : JSON.stringify({
+        climateProvince: climateProvince ?? null,
+        landforms: landforms ?? null,
+        ...(boat ? { boat } : vehicle ? { vehicle } : {}),
+      });
   if (!fresh && renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
@@ -590,8 +595,8 @@ async function ensureRenderer(
     pinnedRenderScale: profile.renderScale,
     // The capture's rig, for the same reason: the cockpit shots were placed
     // for it (tests/render.cockpit-rig.test.ts lists the callers). A boat's
-    // helm view is the gameplay one, as the capture's.
-    ...(boat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
+    // helm and a car's driver's seat are the gameplay ones, as the capture's.
+    ...(vehicle ? { vehicle } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
   activeWorldEvolution = worldEvolution;
@@ -749,7 +754,7 @@ const agent: PerfAgent = {
       shot.worldEvolution ?? "analytic",
       shot.climateProvince,
       shot.landforms,
-      shot.boat !== undefined,
+      shot.boat ? "speedboat" : shot.car ? "landcruiser" : null,
       request.freshRenderer,
     );
     const active = requireRenderer();
@@ -798,6 +803,8 @@ const agent: PerfAgent = {
     const heading = headingVectorFromYaw(yawDegrees);
     const state: FlightVisualState = shot.boat
       ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+      : shot.car
+      ? carShotState(activeWorld, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : {
           ...INITIAL_VISUAL_STATE,
           position: { x: positionX, y: altitude, z: positionZ },

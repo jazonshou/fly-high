@@ -211,6 +211,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Boat wake trail seconds", (p: (typeof PROFILES)[number]) => p.boatWakeTrailSeconds],
     ["Vehicle particle budget", (p: (typeof PROFILES)[number]) => p.vehicleParticleBudget],
     ["Tyre track segments", (p: (typeof PROFILES)[number]) => p.tyreTrackSegments],
+    ["L0 terrain round a car", (p: (typeof PROFILES)[number]) => p.vehicleNearTerrainL0RadiusMeters],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],

@@ -186,6 +186,7 @@ const surfaceEnvironment: SurfaceVehicleEnvironment = {
   wind: surfaceWind,
   bedHeight: terrainHeightSample,
   groundContact: surfaceGroundContact,
+  groundReady: (x, z, radius) => terrainAuthority.covers(x, z, radius),
   world: null,
   colliders: null,
   gravity: 9.80665,
@@ -734,6 +735,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       attractMode = command.attractMode;
       surfaceVehicle = command.surfaceVehicle;
       carSetup = command.carSetup;
+      surfaceEnvironment.dayOfYear = command.dayOfYear;
       surface = null;
       harbour = null;
       airborneStartAgl = normalizeAirborneStartAgl(command.airborneStartAgl);
@@ -787,6 +789,9 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     else if (command.type === "carSetup") {
       carSetup = command.carSetup;
+    }
+    else if (command.type === "dayOfYear") {
+      surfaceEnvironment.dayOfYear = command.dayOfYear;
     }
     else if (command.type === "attract") {
       attractMode = command.enabled;

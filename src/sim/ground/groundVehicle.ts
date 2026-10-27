@@ -185,6 +185,14 @@ const CRASH_ROLL_SPEED = 10;
 
 /** Soft ground presses in this fast under a new load, s; it only springs back as the tyre rolls onto fresh soil. */
 const SINK_SECONDS = 0.05;
+
+/**
+ * The start waits at most this long for its terrain pages, s, then settles on
+ * whatever answers: a worker no renderer feeds must not strand the car.
+ */
+export const GROUND_WAIT_SECONDS = 10;
+/** Half-side of the square about the car's origin that must be published before it settles, m: the car and a margin. */
+const GROUND_READY_RADIUS = 8;
 /** The speed over which the soil's compaction resistance builds from a standstill, m/s: it holds like friction. */
 const COMPACTION_SPEED = 0.05;
 
@@ -299,6 +307,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly fixedSurface: CarSurfaceField | null;
   private readonly surfaceCache = new SurfaceCache();
   private placed = false;
+  /** Waiting at the start for the terrain pages under the car (`groundReady`), and for how long, s. */
+  private settling = false;
+  private groundWait = 0;
 
   readonly engine: Engine;
   readonly transmission: Transmission;
@@ -367,8 +378,14 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   rolled = false;
   private wadingDepthValue = 0;
   private readonly waterSample = createWaterSurfaceSample();
-  /** The water at each wheel this step: there at all, its surface height and its velocity (the current). */
+  /**
+   * The water at each wheel, sampled one wheel a step in turn (`sampleWater`):
+   * there at all, sea or fresh, its surface height and its velocity (the current).
+   */
   private readonly waterAt = new Uint8Array(4);
+  private readonly waterSea = new Uint8Array(4);
+  /** The wheel whose water is sampled next; -1 samples all four (a new start). */
+  private waterTurn = -1;
   private readonly waterHeight = new Float64Array(4);
   private readonly waterVelocityX = new Float64Array(4);
   private readonly waterVelocityY = new Float64Array(4);
@@ -507,6 +524,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   }
 
   setEnvironment(environment: Readonly<SurfaceVehicleEnvironment>): void {
+    // A new water authority: ask it about all four wheels at once.
+    if (environment.water !== this.environment?.water) this.waterTurn = -1;
     this.environment = environment;
     this.lattice.setSampler(environment.bedHeight);
     this.gravity = environment.gravity > 0 ? environment.gravity : STANDARD_GRAVITY;
@@ -524,7 +543,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       return;
     }
     this.lattice.setTime(this.state.time);
-    if (!this.placed) this.settleOnGround();
+    if (!this.placed) {
+      if (this.awaitGround(env, dt)) return;
+      this.settleOnGround();
+    }
 
     this.dt = dt;
     this.h = dt / SUBSTEPS;
@@ -542,6 +564,31 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.afterStep();
     this.state.time += dt;
     this.syncState();
+  }
+
+  /**
+   * The spawn gate: hold the car still and unsimulated at its start until
+   * the published terrain pages answer all round it (`groundReady`), so it
+   * never settles on the macro grid's or the analytic kernel's height, or
+   * for `GROUND_WAIT_SECONDS` at most. True while it waits.
+   */
+  private awaitGround(env: Readonly<SurfaceVehicleEnvironment> | null, dt: number): boolean {
+    const ready = env?.groundReady;
+    if (!ready || this.fixedGround || this.groundWait >= GROUND_WAIT_SECONDS) {
+      this.settling = false;
+      return false;
+    }
+    const at = this.state.position;
+    if (ready(at.x, at.z, GROUND_READY_RADIUS)) {
+      this.settling = false;
+      // Nothing read before the pages landed may stand.
+      this.lattice.clear();
+      return false;
+    }
+    this.settling = true;
+    this.groundWait += dt;
+    this.state.time += dt;
+    return true;
   }
 
   /** The first step with a ground: seat the car on it at ride height, level with the ground under its wheels. */
@@ -772,13 +819,14 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * With a world, the painted ground is exact at each tyre and the natural
    * ground comes from the surface cache (`surface.ts`); a change of world or
    * of its streamed infrastructure regions also drops the cached lattice
-   * nodes, since a road's fill or cut moves the ground. The world's lookups
+   * nodes, since a road's fill or cut moves the ground; a new calendar day
+   * (the environment's `dayOfYear`) repaints the cells only. The world's lookups
    * pass numbers through calls, so this path allocates a little; the
    * test rig's surfaces do not.
    */
   private sampleSurfaces(): void {
     const world = this.environment?.world;
-    if (world && !this.fixedSurface && this.surfaceCache.beginStep(world)) this.lattice.clear();
+    if (world && !this.fixedSurface && this.surfaceCache.beginStep(world, this.environment?.dayOfYear)) this.lattice.clear();
     for (let w = 0; w < 4; w += 1) {
       const contact = this.contacts[w]!;
       const surface = this.wheelSurface[w]!;
@@ -787,9 +835,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       else describeSurface(SurfaceMaterial.Asphalt, 0, surface);
       this.wheelFrictionScale[w] = 1;
       if (this.wheelSubmerged[w] === 1) {
-        // A bed under water: loam turns to mud, hard ground loses some grip.
-        if (surface.soft) describeSurface(surface.material, 1, surface);
-        else this.wheelFrictionScale[w] = SUBMERGED_FRICTION;
+        // A bed under water: loam turns to mud, hard ground loses some grip; snow keeps its depth.
+        if (!surface.soft) this.wheelFrictionScale[w] = SUBMERGED_FRICTION;
+        else if (surface.material !== SurfaceMaterial.Snow) describeSurface(surface.material, 1, surface);
       }
       this.wheelWet[w] = this.wheelSubmerged[w] === 1 ? 1 : surface.wetness;
       if (!surface.soft) {
@@ -871,6 +919,14 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * highest surface over the lowest contact), which tyres are under it, the
    * cabin's flooding, and whether the intake has gone under.
    */
+  /**
+   * The water under the wheels. The authority is asked about one wheel a
+   * step, in turn (all four at a start): in the worker each answer costs a
+   * terrain height sample, about 13 us, and the water a wheel has rolled
+   * towards in the 4 steps (33 ms) since it was last asked is near enough.
+   * Whether a tyre is under the surface is decided every step, from its
+   * contact now.
+   */
   private sampleWater(): void {
     const env = this.environment;
     this.wadingDepthValue = 0;
@@ -878,23 +934,31 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     let sea = false;
     let surface = -Infinity;
     let lowest = Infinity;
+    const turn = this.waterTurn;
+    this.waterTurn = (turn + 1) & 3;
     for (let w = 0; w < 4; w += 1) {
-      this.waterAt[w] = 0;
       this.wheelSubmerged[w] = 0;
-      if (!env) continue;
+      if (!env) {
+        this.waterAt[w] = 0;
+        continue;
+      }
       const at = this.contacts[w]!.point;
       lowest = Math.min(lowest, at.y);
-      const sample = env.water.sample(at.x, at.z, this.waterSample);
-      if (sample.kind === "none") continue;
-      if (sample.kind === "sea") sea = true;
+      if (turn < 0 || w === turn) {
+        const sample = env.water.sample(at.x, at.z, this.waterSample);
+        const wet = sample.kind !== "none";
+        this.waterAt[w] = wet ? 1 : 0;
+        this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
+        this.waterHeight[w] = sample.height;
+        this.waterVelocityX[w] = sample.velocity.x;
+        this.waterVelocityY[w] = sample.velocity.y;
+        this.waterVelocityZ[w] = sample.velocity.z;
+      }
+      if (this.waterAt[w] !== 1) continue;
+      if (this.waterSea[w] === 1) sea = true;
       this.inWater = true;
-      this.waterAt[w] = 1;
-      this.waterHeight[w] = sample.height;
-      this.waterVelocityX[w] = sample.velocity.x;
-      this.waterVelocityY[w] = sample.velocity.y;
-      this.waterVelocityZ[w] = sample.velocity.z;
-      surface = Math.max(surface, sample.height);
-      if (sample.height > at.y) this.wheelSubmerged[w] = 1;
+      surface = Math.max(surface, this.waterHeight[w]!);
+      if (this.waterHeight[w]! > at.y) this.wheelSubmerged[w] = 1;
     }
     this.waterDensity = sea ? SEA_WATER_DENSITY : FRESH_WATER_DENSITY;
     // The cabin floods towards the water's height up the body, and drains faster than it fills.
@@ -1721,6 +1785,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       tyrePressure: this.controls.tyrePressure,
       tyrePressureBar: this.tyrePressureBar,
       wadingDepth: this.wadingDepthValue,
+      settling: this.settling,
       wheelSteer: [this.steering.left, this.steering.right, 0, 0],
       wheelSpin: Array.from(this.wheelSpin),
       wheelSpinRate: [this.driveline.omega[1]!, this.driveline.omega[2]!, this.driveline.omega[3]!, this.driveline.omega[4]!],

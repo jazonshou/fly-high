@@ -222,6 +222,8 @@ export function FlightGame() {
       { dayOfYear: next.dayOfYear, solarTimeHours: next.solarTimeHours },
       next.weather,
     );
+    // The car's snow is the snow the terrain is painted with.
+    simulationRef.current?.setDayOfYear(next.dayOfYear);
     inputRef.current?.updateOptions({
       sensitivity: next.sensitivity,
       deadZone: next.gamepadDeadZone,
@@ -725,6 +727,7 @@ export function FlightGame() {
         activeSettings.aircraft,
         surfaceVehicle,
         { gearbox: activeSettings.carGearbox, manualClutch: activeSettings.carManualClutch },
+        activeSettings.dayOfYear,
       ));
       renderer.setTerrainAuthorityPublisher(simulation);
       renderer.setCameraMode(cameraModeRef.current);

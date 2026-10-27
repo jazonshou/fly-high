@@ -76,12 +76,14 @@ describe("LandCruiser step", () => {
     for (let k = 0; k < first.digest.length; k += 1) expect(Object.is(second.digest[k], first.digest[k]), `state ${k}`).toBe(true);
   });
 
-  it("allocates nothing in the step while wading", () => {
+  it("allocates nothing in the step while wading but the two numbers of each call into the water", () => {
     // A wide river 0.5 m deep over a level bed, flowing across the car's path. The only water class
     // this file uses, so the car's call into it is monomorphic, as the worker's one authority is.
+    let calls = 0;
     class River implements WaterSurfaceAuthority {
       setTime(): void {}
       sample(_x: number, _z: number, out: WaterSurfaceSample): WaterSurfaceSample {
+        calls += 1;
         out.kind = "river";
         out.height = 0;
         out.stillHeight = 0;
@@ -109,19 +111,26 @@ describe("LandCruiser step", () => {
     controls(sim, { rangePresses: 2, accelerator: 0.15, steer: 0.1 });
     for (let i = 0; i < 2_400; i += 1) sim.step(STEP);
     expect(sim.visualState().wadingDepth).toBeGreaterThan(0.45);
-    const run = (): number => {
+    // The authority's `sample(x, z, out)` takes two numbers, which V8 boxes (16 B each) whenever it
+    // has not inlined the call, as under a loaded machine; the car asks it one wheel a step.
+    const run = (): { grown: number; allowed: number } => {
       const before = process.memoryUsage().heapUsed;
+      const callsBefore = calls;
       for (let k = 0; k < 20_000; k += 1) sim.step(STEP);
-      return process.memoryUsage().heapUsed - before;
+      return { grown: process.memoryUsage().heapUsed - before, allowed: 32 * 1024 + 32 * (calls - callsBefore) };
     };
     const deadline = performance.now() + 20_000;
     let streak = 0;
-    let last = Number.NaN;
+    let runs = 0;
+    let last = { grown: Number.NaN, allowed: 0 };
     while (streak < 3 && performance.now() < deadline) {
       last = run();
-      streak = last >= 0 && last < 32 * 1024 ? streak + 1 : 0;
+      runs += 1;
+      streak = last.grown >= 0 && last.grown < last.allowed ? streak + 1 : 0;
     }
-    expect(streak, `last run grew the heap by ${last} B`).toBe(3);
+    expect(streak, `last run grew the heap by ${last.grown} B of ${last.allowed}`).toBe(3);
+    // One call a step, after the first step's four.
+    expect(calls).toBe(240 + 2_400 + 20_000 * runs + 3);
     expect(sim.engine.running).toBe(true);
   });
 

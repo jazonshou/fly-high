@@ -131,6 +131,7 @@ audit is why it now carries all four tiers):
 | Boat wake trail seconds (`boatWakeTrailSeconds`; boat sessions only) | 12 | 24 | 40 | 40 |
 | Vehicle particle budget (`vehicleParticleBudget`; car sessions only) | 32 | 128 | 256 | 384 |
 | Tyre track segments (`tyreTrackSegments`; car sessions only) | 0 | 256 | 512 | 1,024 |
+| L0 terrain round a car (`vehicleNearTerrainL0RadiusMeters`; car sessions only; 0 = the floor is already L0) | 160 m | 0 | 0 | 0 |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
@@ -142,6 +143,14 @@ if synthesis moves to GPU compute. Both arrays together are 6.7 MiB at tier 0
 (the ten base materials) and 34.7 MiB above it (those ten, the volcanic pair
 and the ground grain), derived from the tier's edge and layer data rather than
 declared, so the memory row cannot disagree with the knobs.
+
+Low's L0 terrain round a car draws the ground within 160 m of the wheels on
+the 2 m lattice the car's physics drives on, not Low's 4 m one. The selector
+splits it after the tier's own nodes and outside `cdlodNodeBudget`, so it
+never trades nodes with the far field: at most 183 more nodes
+(`terrainNearFloorNodeAllowance`), measured 96-120 on rough ground, in the
+same single terrain draw. It geomorphs to L1 over its outer 64 m, so it
+follows the car without a pop. Aircraft and boat sessions never build it.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
@@ -3325,3 +3334,54 @@ the pontoon lamps that stood against the basin.
 
 Open: the drawn pontoons stand still while the sim's heave on the sea; they
 follow once the sea twin's heights reach the main thread.
+
+### Promotion 2026-10-27 — the Boats PR's sea (all thirty-nine)
+
+The Boats PR moves the sea in every session, aircraft included, and nothing
+else moves a baseline:
+
+- `91b3269`: the FFT cascades sample at texel centres (a half-texel shift).
+- `94cbbfd` (D1): a light-wind sea is capped at the Pierson-Moskowitz limit,
+  so Clear's sea is smaller and cascade 4 (512-2048 m) is empty.
+- `20f780d` (D2): the sea's wind follows the weather preset. The shots render
+  Clear, 6 m/s; Breezy, the game's default, is unchanged.
+- `ec8fd9f`: waves travel downwind, and the surface gathers onto the crests,
+  where the foam now sits.
+- `d76a5ee`: light points draw after the water (the section above).
+
+The marina's meshes draw in no baseline shot, and the marina's calm basin is
+in none.
+
+**Draw calls unchanged.** At `f2c2d51`, every shot draws exactly what main's
+`ac2c76c` capture draws (gpu-tests run 40442800011). Inventoried GPU memory is
+2.1-2.2 MiB higher on every shot, the marina's static buffers (see the
+section above).
+
+**All thirty-nine baselines promoted 2026-10-27** from the hosted macOS
+runner. Source: PR #31's capture at `f2c2d51` (gpu-tests run 40461650012,
+artifact `perf-capture-40461650012-1`, zip sha256
+`4b2a1699dd488cd7…ed99`). Jason approved the new sea and the downwind
+travel from their before/after frames, both on 2026-10-27. Before
+promotion, the capture failed 32 visual gates on 13 shots, every one with
+sea in view. No frame-delivery gate failed.
+
+Against the capture at `b52a67a`, which had everything but the downwind
+travel and main's choppiness fix (gpu-tests run 40442749997), the shots with
+sea in view move only in sea pixels. The rest differ by 0.04/255 mean or
+less.
+
+Committed baselines → this capture:
+
+| shots | mean abs diff /255 | pixels past 4/255 |
+| --- | --- | --- |
+| `water-25ft`, `water-400ft-glitter`, `water-3m` | 6.1-8.1 | 42-46% |
+| the other shots with sea in view: `forest-line-highsun`, `cdlod-transition`, `motion-banked-turn`, `reference-viewport`, `approach-500ft`, `hills-dusk-glint`, `forest-500ft-sunbehind`, `winter-noon`, `slant-10km`, `dusk-mesopic`, `coast-10km-lowsun`, `cruise-horizon` | 0.62-2.39 | 2.9-22% |
+| everything else (the runner's drift since 2026-10-20) | 0.65 or less | 3.6% or less |
+
+**Why all thirty-nine.** The sea moves twelve shots beyond the three water
+shots, and the rest carry the runner's own drift. Promoting from one capture
+keeps the set consistent, as on 2026-10-13. The four `boat-*` shots stay
+unpinned. They have no committed baseline, and a capture only reports them.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.

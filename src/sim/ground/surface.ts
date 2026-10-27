@@ -1,6 +1,12 @@
 import { densityField, sandCoverGroundFactor, sandCoverTreeFactor } from "@/src/render/webgpu/detail/densityField";
-import { classifyLandCover, dominantLandCover, landCoverWetness, type LandCoverInput } from "@/src/render/webgpu/terrain/LandCoverClassifier";
+import {
+  alignSeasonalLandCoverWeights,
+  classifyLandCover,
+  landCoverWetness,
+  type LandCoverInput,
+} from "@/src/render/webgpu/terrain/LandCoverClassifier";
 import { SurfaceMaterial, type SurfaceMaterialId } from "@/src/render/webgpu/terrain/surfaceMaterials";
+import { seasonBakeDayOfYear, seasonBucketBlend, seasonBucketCenterDay } from "@/src/render/webgpu/terrain/TerrainSpineContract";
 import { isPointOnRunway, worldAirportAt } from "@/src/world/airport";
 import {
   infrastructureIndex,
@@ -9,7 +15,7 @@ import {
   type InfrastructureSurface,
   type InfrastructureSurfaceSample,
 } from "@/src/world/infrastructure";
-import { sampleTerrainSurface, TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world/terrain";
+import { sampleTerrainSurface, seasonalTemperatureShift, TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world/terrain";
 import { TerrainBiome, type TerrainSample, type WorldDefinition } from "@/src/world/types";
 import { createGroundPoint, type GroundField, type GroundPoint } from "./terrainPatch";
 
@@ -31,9 +37,11 @@ import { createGroundPoint, type GroundField, type GroundPoint } from "./terrain
  * sward is what tells a desert's dry grass from its open sand. The bake's
  * erosion flow and soil depth have no CPU twin and its four taps are one
  * point here; the materials that differ by them map to the same soil, and a
- * parity test bounds the rest. The classifier reads the reference day: the
- * seasonal snow paint the bake adds with the calendar does not reach the
- * worker yet.
+ * parity test bounds the rest. The calendar is the renderer's: the bake's
+ * two season buckets for the day, cross-faded as the fragment fades them
+ * (`paintedSeason`), so winter's snow is under the tyres where it is drawn.
+ * Snow is soft where it is deep and packed hard where it is thin
+ * (`snowDepthOf`, `describeSnow`).
  */
 
 /** A soil's terramechanics, SI units: Bekker's n, k_c (N/m^(n+1)) and k_phi (N/m^(n+2)), cohesion, friction angle, and Janosi-Hanamoto's shear modulus K. */
@@ -150,6 +158,31 @@ const HARD: Readonly<Record<number, readonly [number, number, number]>> = Object
 /** A track: two worn ruts in firm ground. */
 const TRACK: readonly [number, number, number] = [0.7, 0.025, 0.012];
 
+/**
+ * Packed snow: a thin cover the tyres press down onto the ground under it,
+ * so a hard surface with snow's grip. Wong's table 1.3 has a peak adhesion
+ * of 0.2 on packed snow against 0.8 to 0.9 on dry asphalt: a quarter of the
+ * reference curves (ice is half that again).
+ */
+const PACKED_SNOW: readonly [number, number, number] = [0.25, 0.015, 0.003];
+/** Snow thinner than this packs (`PACKED_SNOW`); deeper, it is Wong's snow soil over that depth, metres. */
+export const PACKED_SNOW_METERS = 0.05;
+/** The snow's share of the drawn mix at the snowfield's edge, where it is no depth, and where it is full depth. */
+const SNOW_EDGE_SHARE = 0.4;
+const SNOW_FULL_SHARE = 0.9;
+
+/**
+ * The snow's depth from its share of the painted mix: nothing at the
+ * snowfield's edge, Wong's full soft layer (`SOILS.snow.maxSinkage`) where
+ * the cell is all snow. The classifier's snow weight is the height above the
+ * seasonal snowline, shed by steep faces, so a cover the season has only
+ * just brought down, or one on a steep face, is thin.
+ */
+export function snowDepthOf(share: number): number {
+  const t = Math.min(1, Math.max(0, (share - SNOW_EDGE_SHARE) / (SNOW_FULL_SHARE - SNOW_EDGE_SHARE)));
+  return SOILS.snow.maxSinkage * t * t * (3 - 2 * t);
+}
+
 /** Roughness of the soft grounds, metres RMS. */
 const SOFT_ROUGHNESS: Readonly<Record<number, number>> = Object.freeze({
   [SurfaceMaterial.Sand]: 0.003,
@@ -186,7 +219,8 @@ export function soilModelOf(material: number): SoilModelId {
 
 /**
  * Fill `out` for `material`, with `wetness` (0..1) turning loam to mud: a
- * blend of sandy loam towards the clayey soil, as the plan has it.
+ * blend of sandy loam towards the clayey soil, as the plan has it. Snow here
+ * is deep snow, Wong's full soft layer; `describeSnow` takes its depth.
  */
 export function describeSurface(material: number, wetness: number, out: CarSurface): CarSurface {
   out.material = material;
@@ -230,6 +264,24 @@ export function describeSurface(material: number, wetness: number, out: CarSurfa
   return out;
 }
 
+/**
+ * Snow `depth` metres deep (`snowDepthOf`): packed onto the ground under it
+ * and hard below `PACKED_SNOW_METERS`, Wong's snow soil over that depth
+ * above it. Its own call, so the hot `describeSurface` takes no double
+ * argument it would have to box.
+ */
+export function describeSnow(depth: number, out: CarSurface): CarSurface {
+  describeSurface(SurfaceMaterial.Snow, 0, out);
+  if (depth < PACKED_SNOW_METERS) {
+    out.soft = false;
+    out.friction = PACKED_SNOW[0];
+    out.rollingResistance = PACKED_SNOW[1];
+    out.roughness = PACKED_SNOW[2];
+    out.maxSinkage = 0;
+  } else out.maxSinkage = Math.min(out.maxSinkage, depth);
+  return out;
+}
+
 /** The painted material of an infrastructure surface. */
 function infrastructureMaterial(surface: InfrastructureSurface): number {
   switch (surface) {
@@ -247,10 +299,45 @@ function infrastructureMaterial(surface: InfrastructureSurface): number {
 /** A painted segment wins once it covers this much of the point, as the splat's top material would. */
 const PAINT_COVERAGE = 0.5;
 
-/** The classified material and wetness at one point of the natural ground: the slow part, cached by `SurfaceCache`. */
+/** The classified material, wetness and snow depth at one point of the natural ground: the slow part, cached by `SurfaceCache`. */
 export interface NaturalSurface {
   material: number;
   wetness: number;
+  /** Metres of snow (`snowDepthOf` its share of the mix); 0 where none is drawn. */
+  snowDepth: number;
+}
+
+/**
+ * The season the terrain is painted for. The splat bake is keyed on the
+ * clock's bucketed day (`seasonBakeDayOfYear`) and classifies every texel at
+ * the seasonal temperature shifts of that day's two resident buckets'
+ * centres; the fragment cross-fades the two by the clock day's own blend.
+ */
+export interface PaintedSeason {
+  dayOfYear: number;
+  /** The day the bake is keyed on. */
+  bakeDayOfYear: number;
+  /** The classifier's seasonal temperature shift at the low and high bucket. */
+  lowShift: number;
+  highShift: number;
+  /** The fragment's cross-fade towards the high bucket, 0..1. */
+  blend: number;
+}
+
+export function createPaintedSeason(): PaintedSeason {
+  return { dayOfYear: Number.NaN, bakeDayOfYear: TERRAIN_REFERENCE_DAY_OF_YEAR, lowShift: 0, highShift: 0, blend: 0 };
+}
+
+/** The season `world` is painted for on `dayOfYear`, as `TerrainClipmapSystem.setSeasonalDayOfYear` and the splat bake work it out. */
+export function paintedSeason(world: WorldDefinition, dayOfYear: number, out: PaintedSeason): PaintedSeason {
+  const bakeDay = seasonBakeDayOfYear(dayOfYear);
+  const buckets = seasonBucketBlend(bakeDay);
+  out.dayOfYear = dayOfYear;
+  out.bakeDayOfYear = bakeDay;
+  out.lowShift = seasonalTemperatureShift(seasonBucketCenterDay(buckets.lo), world.latitudeDegrees);
+  out.highShift = seasonalTemperatureShift(seasonBucketCenterDay(buckets.hi), world.latitudeDegrees);
+  out.blend = Math.min(1, Math.max(0, seasonBucketBlend(dayOfYear).t));
+  return out;
 }
 
 const SAMPLE: TerrainSample = {
@@ -273,7 +360,7 @@ const SAMPLE: TerrainSample = {
   volcanicAge: 0,
 };
 
-/** The classifier's input for a surface sample, at the reference day (as `world/terrain.ts` classifies). */
+/** The classifier's input for a surface sample, at the reference day (as `world/terrain.ts` classifies); the bake sets the day and shift per season bucket. */
 export function landCoverInputOf(world: WorldDefinition, sample: Readonly<TerrainSample>): LandCoverInput {
   return {
     elevationMeters: sample.height - world.seaLevel,
@@ -295,9 +382,12 @@ export function landCoverInputOf(world: WorldDefinition, sample: Readonly<Terrai
 
 /**
  * The natural ground's material at (x, z), where its height and gradient are
- * known: the world's surface sample, the bake's canopy and sward there, then
- * the classifier's dominant material. About 20 us in Node, and it allocates
- * (the classifier returns its weights), so `SurfaceCache` keeps the answers.
+ * known: the world's surface sample, the bake's canopy and sward there, the
+ * classifier at both of `season`'s buckets on one material basis
+ * (`alignSeasonalLandCoverWeights`, as the bake stores them), then the
+ * dominant material of the fragment's cross-fade. About 25 us in Node, and it
+ * allocates (the classifier returns its weights), so `SurfaceCache` keeps the
+ * answers.
  */
 export function classifyNaturalSurface(
   world: WorldDefinition,
@@ -306,6 +396,7 @@ export function classifyNaturalSurface(
   height: number,
   dhdx: number,
   dhdz: number,
+  season: Readonly<PaintedSeason>,
   out: NaturalSurface,
 ): NaturalSurface {
   const ny = 1 / Math.sqrt(1 + dhdx * dhdx + dhdz * dhdz);
@@ -329,11 +420,30 @@ export function classifyNaturalSurface(
   });
   const input: LandCoverInput = {
     ...landCoverInputOf(world, SAMPLE),
+    dayOfYear: season.bakeDayOfYear,
     canopyClosure: plants.canopyClosure * sandCoverTreeFactor(sandCover),
     grassCover: plants.grassCover * sandCoverGroundFactor(sandCover),
   };
-  out.material = dominantLandCover(classifyLandCover(input)) as number;
+  const aligned = alignSeasonalLandCoverWeights(
+    classifyLandCover({ ...input, seasonalTemperatureShift: season.lowShift }),
+    classifyLandCover({ ...input, seasonalTemperatureShift: season.highShift }),
+  );
+  const blend = season.blend;
+  let material: number = SurfaceMaterial.Grass;
+  let best = -1;
+  let snow = 0;
+  for (let slot = 0; slot < aligned.ids.length; slot += 1) {
+    const weight = (aligned.lowWeights[slot] ?? 0) * (1 - blend) + (aligned.highWeights[slot] ?? 0) * blend;
+    const id = aligned.ids[slot]!;
+    if (weight > best) {
+      best = weight;
+      material = id;
+    }
+    if (id === SurfaceMaterial.Snow) snow = weight;
+  }
+  out.material = material;
   out.wetness = landCoverWetness(input);
+  out.snowDepth = material === SurfaceMaterial.Snow ? snowDepthOf(snow) : 0;
   return out;
 }
 
@@ -351,7 +461,7 @@ const CELL_MASK = CELL_SIDE - 1;
  * tyre's own point a few metres off would read another material), at most
  * `MISSES_PER_STEP` a step, so the cost stays flat at speed; a tyre whose
  * cell is not ready yet keeps its last surface. Everything is forgotten when
- * the world or its streamed infrastructure regions change.
+ * the world, its streamed infrastructure regions or the calendar day change.
  */
 export class SurfaceCache {
   private readonly tagI = new Int32Array(CELL_SIDE * CELL_SIDE);
@@ -359,7 +469,9 @@ export class SurfaceCache {
   private readonly valid = new Uint8Array(CELL_SIDE * CELL_SIDE);
   private readonly material = new Int32Array(CELL_SIDE * CELL_SIDE);
   private readonly wetness = new Float64Array(CELL_SIDE * CELL_SIDE);
-  private readonly natural: NaturalSurface = { material: SurfaceMaterial.Grass, wetness: 0 };
+  private readonly snowDepth = new Float64Array(CELL_SIDE * CELL_SIDE);
+  private readonly natural: NaturalSurface = { material: SurfaceMaterial.Grass, wetness: 0, snowDepth: 0 };
+  private readonly season: PaintedSeason = createPaintedSeason();
   private readonly paint: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
   private readonly centre: GroundPoint = createGroundPoint();
   private world: WorldDefinition | null = null;
@@ -370,15 +482,22 @@ export class SurfaceCache {
 
   static readonly MISSES_PER_STEP = 1;
 
-  /** Start a step: refresh the miss budget, and forget everything if the world or its regions changed. Returns true when it forgot. */
-  beginStep(world: WorldDefinition): boolean {
+  /**
+   * Start a step on `dayOfYear` (the renderer's clock): refresh the miss
+   * budget, and forget every cell if the world, its regions or the day
+   * changed. Returns true when the world or its regions changed, so the
+   * ground itself may have moved; a new day only repaints it.
+   */
+  beginStep(world: WorldDefinition, dayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR): boolean {
     this.budget = SurfaceCache.MISSES_PER_STEP;
     const version = infrastructureRegionsVersion(world);
-    if (world === this.world && version === this.version) return false;
+    const moved = world !== this.world || version !== this.version;
+    if (!moved && dayOfYear === this.season.dayOfYear) return false;
+    if (world !== this.world || dayOfYear !== this.season.dayOfYear) paintedSeason(world, dayOfYear, this.season);
     this.world = world;
     this.version = version;
     this.valid.fill(0);
-    return true;
+    return moved;
   }
 
   /**
@@ -416,14 +535,17 @@ export class SurfaceCache {
       centre.x = (i + 0.5) * CELL_METERS;
       centre.z = (j + 0.5) * CELL_METERS;
       ground.evaluate(centre);
-      classifyNaturalSurface(world, centre.x, centre.z, centre.height, centre.dhdx, centre.dhdz, this.natural);
+      classifyNaturalSurface(world, centre.x, centre.z, centre.height, centre.dhdx, centre.dhdz, this.season, this.natural);
       this.valid[slot] = 1;
       this.tagI[slot] = i;
       this.tagJ[slot] = j;
       this.material[slot] = this.natural.material;
       this.wetness[slot] = this.natural.wetness;
+      this.snowDepth[slot] = this.natural.snowDepth;
     }
-    describeSurface(this.material[slot]!, this.wetness[slot]!, out);
+    const material = this.material[slot]!;
+    if (material === SurfaceMaterial.Snow) describeSnow(this.snowDepth[slot]!, out);
+    else describeSurface(material, this.wetness[slot]!, out);
     return true;
   }
 }
