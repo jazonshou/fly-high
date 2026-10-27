@@ -112,7 +112,7 @@ describe("the grain is a pure, tiling, mean-neutral field", () => {
       GROUND_GRAIN_CHANNEL_STD.tone,
       GROUND_GRAIN_CHANNEL_STD.moisture,
       GROUND_GRAIN_CHANNEL_STD.clumps,
-      GROUND_GRAIN_CHANNEL_STD.height,
+      GROUND_GRAIN_CHANNEL_STD.crunch,
     ];
     targets.forEach((target, index) => {
       const measured = std(channel(layer.albedoHeight, index)) / 255;
@@ -120,6 +120,39 @@ describe("the grain is a pure, tiling, mean-neutral field", () => {
       expect(measured, `channel ${index}`).toBeLessThan(target * 1.1);
     });
     expect(std(channel(layer.normalMaterial, 0))).toBeGreaterThan(10);
+  });
+
+  it("keeps the crunch's contrast at every mip, where the tone's sits in its broadest", () => {
+    // The crunch exists because the other channels are red: what a mip level
+    // adds over the level above it (its Laplacian band) is the contrast a
+    // pixel reading that level sees at its own scale. The tone's finest band
+    // is a fraction of its broadest, so a fine footprint saw smooth ground;
+    // the crunch's equal octaves keep every band within a factor of two.
+    const plan = planMippedTextureArray([layer.albedoHeight], EDGE, "box");
+    const chains = plan.layerChains[0]!;
+    const bands = (index: number): number[] => {
+      const out: number[] = [];
+      for (let level = 0; EDGE >> (level + 2) >= 1; level += 1) {
+        const edge = EDGE >> level;
+        const fine = chains[level]!;
+        const coarse = chains[level + 1]!;
+        const differences: number[] = [];
+        for (let y = 0; y < edge; y += 1) {
+          for (let x = 0; x < edge; x += 1) {
+            differences.push(fine[(y * edge + x) * 4 + index]!
+              - coarse[((y >> 1) * (edge >> 1) + (x >> 1)) * 4 + index]!);
+          }
+        }
+        out.push(std(differences) / 255);
+      }
+      return out;
+    };
+    const crunch = bands(3).slice(0, 5);
+    const tone = bands(0).slice(0, 5);
+    expect(crunch[0]).toBeGreaterThan(0.06);
+    for (const band of crunch) expect(band).toBeGreaterThan(crunch[0]! * 0.45);
+    expect(Math.max(...crunch)).toBeLessThan(crunch[0]! * 1.2);
+    expect(tone[0]).toBeLessThan(Math.max(...tone) * 0.4);
   });
 
   it("has no seam at the wrap", () => {
@@ -276,3 +309,4 @@ describe("the shader reads the grain safely", () => {
     expect(GROUND_GRAIN_GAINS.clumps.snow).toBe(0);
   });
 });
+
