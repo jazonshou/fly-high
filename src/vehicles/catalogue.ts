@@ -98,6 +98,10 @@ const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
  * from the tow hitch 2.72 m behind the centre of gravity to the bumper 2.19 m
  * ahead, and from the tyres' feet 0.82 m below it to the snorkel's head
  * 1.19 m above, so the views aim 0.26 m aft of it and fill 60% of the frame.
+ * The chase stands 7.5 m behind the rear bumper (10.2 m behind the centre of
+ * gravity) and 2.6 m up, aimed 1 m ahead at the shared aim height, so the car
+ * fills about a fifth of the width with its roof at the frame's middle
+ * (`render.top-front-views`, chase framing).
  * Right-hand drive: the driver's eye is to starboard, over the seat, and
  * about 0.2 m lower than a seated driver's so the level cockpit lens holds
  * the gauges through the wheel (`DRIVER_EYE` in the drawn car's lines).
@@ -109,10 +113,10 @@ const LANDCRUISER: SurfaceVehicleSpec = Object.freeze({
   description: "4x4",
   follow: "surface",
   chase: Object.freeze({
-    distance: Object.freeze({ base: 7.5, knee: 8, slope: 0.08, cap: 2.5 }),
+    distance: Object.freeze({ base: 10.2, knee: 8, slope: 0.08, cap: 2.5 }),
     height: 2.6,
     fieldOfView: Object.freeze({ base: 58, knee: 8, slope: 0.25, cap: 8 }),
-    aimAhead: Object.freeze({ base: 4, knee: 0, slope: 0, cap: 0 }),
+    aimAhead: Object.freeze({ base: 1, knee: 0, slope: 0, cap: 0 }),
   }),
   cinematic: Object.freeze({ radiusMeters: 12, heightMeters: 3, heightDriftMeters: 1 }),
   topFront: Object.freeze({ centreForward: -0.26, centreUp: 0, topDistanceMeters: 13.45, frontDistanceMeters: 10.25 }),

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { aircraftSpec, type TopFrontViewSpec } from "../src/aircraft/catalogue";
 import { INITIAL_VISUAL_STATE } from "../src/game/types";
 import {
+  CHASE_AIM_HEIGHT_METERS,
   FRONT_VIEW_ELEVATION_DEGREES,
   FRONT_VIEW_FIELD_OF_VIEW_DEGREES,
   TOP_VIEW_FIELD_OF_VIEW_DEGREES,
@@ -16,6 +17,7 @@ import {
   cameraPresentationResponse,
   cameraRigLiftToRef,
   cameraTrailMeters,
+  chaseRigOffsetsToRef,
   frontViewRigOffsetsToRef,
   orthogonalizeCameraUpToRef,
   topViewCameraUpToRef,
@@ -25,6 +27,7 @@ import {
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
+import { chaseCameraProfile } from "../src/render/FlightRenderer";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import { createWebGpuBoat } from "../src/render/webgpu/boat/createBoat";
 import { createWebGpuCar } from "../src/render/webgpu/ground/createCar";
@@ -586,5 +589,70 @@ describe("the LandCruiser's top and front framing, on the built car at 16:9", ()
     expect(top.noseY).toBeLessThan(top.tailY);
     const front = frame(built, "front", framing);
     expect(front.noseDepth).toBeLessThan(front.tailDepth);
+  });
+});
+
+/**
+ * The car's chase rig at rest, as `updateCamera` composes it level on flat
+ * ground: `chaseRigOffsetsToRef` with the catalogue profile at 0 m/s, the
+ * shared aim height and no trail, through the profile's horizontal lens.
+ */
+function chaseFrame(built: ReturnType<typeof builtCar>): Framed {
+  const profile = chaseCameraProfile("landcruiser", 0);
+  const forward = v(1, 0, 0);
+  const up = v(0, 1, 0);
+  const lift = v();
+  cameraRigLiftToRef(forward, up, cameraBankFollow("chase", false), lift);
+  const eye = v();
+  const target = v();
+  chaseRigOffsetsToRef(forward, lift, profile.distance, profile.height, profile.aimAhead, CHASE_AIM_HEIGHT_METERS, 0, eye, target);
+  const { camera, points } = built;
+  camera.fov = (profile.fieldOfView * Math.PI) / 180;
+  camera.position.set(eye.x, eye.y, eye.z);
+  camera.upVector.set(0, 1, 0);
+  camera.setTarget(new Vector3(target.x, target.y, target.z));
+  const transform = camera.getViewMatrix(true).multiply(camera.getProjectionMatrix(true));
+  const viewport = camera.viewport.toGlobal(WIDTH, HEIGHT);
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  let inFront = true;
+  const view = camera.getViewMatrix(true);
+  for (const point of points) {
+    const screen = Vector3.Project(point, Matrix.Identity(), transform, viewport);
+    left = Math.min(left, screen.x / WIDTH);
+    right = Math.max(right, screen.x / WIDTH);
+    top = Math.min(top, screen.y / HEIGHT);
+    bottom = Math.max(bottom, screen.y / HEIGHT);
+    if (!(Vector3.TransformCoordinates(point, view).z < 0)) inFront = false;
+  }
+  return {
+    width: right - left, height: bottom - top, left, right, top, bottom, inFront,
+    noseY: 0, tailY: 0, noseDepth: 0, tailDepth: 0,
+  };
+}
+
+describe("the LandCruiser's chase framing, on the built car at 16:9", () => {
+  let built: ReturnType<typeof builtCar>;
+  beforeAll(() => {
+    built = builtCar();
+  }, 60_000);
+  afterAll(() => built.dispose());
+
+  // Measured: width 0.207, roof at 0.515, tyres' feet at 0.916 of the frame.
+  it("stands the camera 7.5 m behind the rear bumper and 2.6 m up, so the car fills about a fifth of the width", () => {
+    const f = chaseFrame(built);
+    expect(f.inFront).toBe(true);
+    expect(f.width, f.width.toFixed(3)).toBeGreaterThan(0.19);
+    expect(f.width, f.width.toFixed(3)).toBeLessThan(0.23);
+  });
+
+  it("keeps the whole car in frame, its roof at the frame's middle and its tyres clear of the bottom edge", () => {
+    const f = chaseFrame(built);
+    expect(Math.abs((f.left + f.right) / 2 - 0.5)).toBeLessThan(0.01);
+    expect(f.top, f.top.toFixed(3)).toBeGreaterThan(0.47);
+    expect(f.top, f.top.toFixed(3)).toBeLessThan(0.56);
+    expect(f.bottom, f.bottom.toFixed(3)).toBeLessThan(0.93);
   });
 });
