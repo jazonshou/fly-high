@@ -8,7 +8,7 @@ import { STEP } from "./support/carRig";
 /**
  * The car's start (land plan, "The spawn gate"): it waits until the terrain
  * pages under and around it are resident, so it never settles on a
- * fallback level.
+ * fallback level. A recovery goes through the same gate.
  */
 
 const PAGE = WORLD_PAGE_BASE_EXTENT_METERS;
@@ -101,5 +101,22 @@ describe("car spawn gate", () => {
     // On the fallback's 3 m.
     expect(sim.state.position.y).toBeGreaterThan(3.6);
     expect(sim.state.position.y).toBeLessThan(4);
+  });
+
+  it("takes a recovery through the gate too: it waits for the pages at its spot", () => {
+    let ready = true;
+    const { sim } = gated(() => ready);
+    for (let i = 0; i < 3 / STEP; i += 1) sim.step(STEP);
+    expect(sim.safeSpotsHeld).toBe(1);
+    ready = false;
+    sim.recover();
+    for (let i = 0; i < 1 / STEP; i += 1) sim.step(STEP);
+    expect(sim.visualState().settling).toBe(true);
+    expect(sim.wheelLoad.every((load) => load === 0)).toBe(true);
+    ready = true;
+    for (let i = 0; i < 2 / STEP; i += 1) sim.step(STEP);
+    expect(sim.visualState().settling).toBe(false);
+    expect(sim.state.position.y).toBeGreaterThan(0.6);
+    expect(sim.state.position.y).toBeLessThan(1);
   });
 });

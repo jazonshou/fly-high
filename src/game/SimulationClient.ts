@@ -248,6 +248,12 @@ export class SimulationClient {
     this.send({ type: "restartAfterCrash", airborneStartAgl });
   }
 
+  /** R in a car session: the car back on its newest safe spot, upright and stopped, in the same drive. */
+  recover(): void {
+    this.clearPresentationPause();
+    this.send({ type: "recover" });
+  }
+
   getRenderState(timestamp = performance.now()): FlightVisualState | null {
     const latest = this.latestState;
     const previous = this.previousState;

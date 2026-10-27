@@ -514,6 +514,18 @@ export function FlightGame() {
     updatePhase("flying");
   }, [startNewFlight, unlockAudio, updatePhase]);
 
+  /**
+   * R in a car session: the car back on its newest safe spot, upright and
+   * stopped, in the same drive (`GroundVehicleSimulator.recover`). The input
+   * is left alone, so the tyre pressures and the press counts carry on; the
+   * pause menu's Restart still starts the drive over.
+   */
+  const recoverCar = useCallback(() => {
+    simulationRef.current?.recover();
+    rendererRef.current?.cutCamera();
+    if (phaseRef.current === "paused") void resumeFlight();
+  }, [resumeFlight]);
+
   /** Returns to the live start view without silently replacing the current world. */
   const endFlight = useCallback(() => {
     invalidatePendingTransitions();
@@ -540,7 +552,8 @@ export function FlightGame() {
         if (settingsOpenRef.current) continue;
         if (action === "camera" && phaseRef.current === "flying") changeCamera();
         if (action === "reset" && phaseRef.current !== "menu") {
-          void restartFlight();
+          if (latestStateRef.current.vehicle?.kind === "car") recoverCar();
+          else void restartFlight();
         }
         if (action === "pause") {
           if (phaseRef.current === "flying") pauseFlight();
@@ -555,6 +568,7 @@ export function FlightGame() {
       applySettings,
       changeCamera,
       pauseFlight,
+      recoverCar,
       restartFlight,
       resumeFlight,
       toggleAutoland,

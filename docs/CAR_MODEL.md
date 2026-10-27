@@ -71,6 +71,30 @@ height. A worker no renderer feeds gives up after 10 s
 (`GROUND_WAIT_SECONDS`) and settles on whatever answers; tests and probes
 pass no `groundReady` and never wait (`tests/sim.car-spawn.test.ts`).
 
+## Recovery
+
+R in a car session sends the worker `{ type: "recover" }`
+(`SimulationClient.recover`), which the car alone takes: the aircraft's and
+the boats' restarts are untouched, and the pause menu's Restart still starts
+the drive over on the apron (or, after a crash, on the wheels where the car
+came to rest). The car keeps a ring of the last 16 safe spots: at most one a
+second, with all four tyres carrying over 500 N, the body under 25 degrees
+off level, no wheel over water, the engine dry and the car neither rolled
+nor wrecked, and only once it has moved 3 m from the last spot, so a parked
+car keeps its history. `recover` puts the body origin back on the newest
+spot at its heading, level, stopped and through the spawn gate, so it seats
+on the ground at its next step as a start does (and waits if the pages
+there have gone). The engine restarts dry, the box goes to P (or first with
+the clutch open), the cabin drains, and the wreck, the roll, the ruts, the
+tyres' slip and the axles' motion are cleared; the setup, range, locks, tyre
+pressures, lights and downhill assist stay as they were, and the input is
+left alone, so the press counts carry on. A spot the car is still within
+2 m of is dropped for the one before, so a second press, or a press while
+stuck where the last spot was taken, goes one spot further back; the oldest
+is kept. With no spot yet, it comes upright where it lies. The worker posts
+the result as a fresh start, so the renderer cuts to it
+(`tests/sim.car-recovery.test.ts`).
+
 ## Contact
 
 Each tyre is a disc sampled at five points round its lower arc and two across

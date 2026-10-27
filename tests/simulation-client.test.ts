@@ -140,6 +140,15 @@ describe("simulation worker lifecycle commands", () => {
     client.dispose();
   });
 
+  it("sends a car's recovery as its own command, apart from the crash restart", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const client = new SimulationClient(createWorld(123), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const worker = WorkerStub.latest!;
+    client.recover();
+    expect(worker.messages.at(-1)).toEqual({ type: "recover" });
+    client.dispose();
+  });
+
   it("starts the worker on the settings' calendar day and sends each new one, for the car's snow", () => {
     vi.stubGlobal("Worker", WorkerStub);
     const world = createWorld(123);
@@ -197,6 +206,19 @@ describe("simulation worker lifecycle commands", () => {
     expect(recovery).toContain('installSimulation(\n    "airborne"');
     expect(recovery).not.toContain("originX");
     expect(recovery).not.toContain("originZ");
+  });
+
+  it("recovers a car in place, never an aircraft or a boat, as a fresh start the renderer cuts to", () => {
+    const workerSource = readFileSync(
+      new URL("../src/workers/simulation.worker.ts", import.meta.url),
+      "utf8",
+    );
+    const recover = workerSource.match(/function recoverCar[\s\S]*?\n\}/u)?.[0] ?? "";
+    expect(recover).toContain("surface instanceof GroundVehicleSimulator");
+    expect(recover).toContain("surface.recover()");
+    expect(recover).toContain('post({ type: "ready"');
+    expect(recover).not.toContain("installSurface");
+    expect(workerSource).toContain('command.type === "recover"');
   });
 
   it("transfers terrain page and macro publications without adapter objects", () => {

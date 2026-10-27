@@ -66,6 +66,7 @@ import {
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
+import { GroundVehicleSimulator } from "@/src/sim/ground/groundVehicle";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
@@ -438,6 +439,22 @@ function restartAfterCrash(requestedAirborneStartAgl = airborneStartAgl): void {
       aircraftKind,
     ),
   );
+}
+
+/**
+ * R in a car session: the car back on its newest safe spot, upright and
+ * stopped, in place (`GroundVehicleSimulator.recover`): the same simulator,
+ * so the drive's setup and the input's press counts carry on. The aircraft
+ * and the boats never take it. Posted as a fresh start, so the renderer
+ * cuts to the new pose rather than sliding to it.
+ */
+function recoverCar(): void {
+  if (!(surface instanceof GroundVehicleSimulator)) return;
+  surface.recover();
+  accumulator = 0;
+  lastTime = performance.now();
+  lastSnapshotTime = 0;
+  post({ type: "ready", state: visualState() });
 }
 
 /**
@@ -861,6 +878,8 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     } else if (command.type === "restartAfterCrash") {
       attractMode = false;
       restartAfterCrash(command.airborneStartAgl);
+    } else if (command.type === "recover") {
+      recoverCar();
     }
   } catch (error) {
     post({ type: "error", message: error instanceof Error ? error.message : "Simulation error" });

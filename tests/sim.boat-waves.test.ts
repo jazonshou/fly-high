@@ -19,7 +19,7 @@ import type { BoatControlState } from "../src/game/types";
 
 /**
  * The Runabout 21 in waves: riding a long swell, slamming in a short sea,
- * surviving half an hour of anything a player can do on the game's sea, and
+ * surviving ten minutes of anything a player can do on the game's sea, and
  * lying still in calm water.
  */
 
@@ -161,7 +161,11 @@ describe("boat in waves", () => {
     expect(impact / predicted).toBeLessThan(1.4);
   });
 
-  it("takes half an hour of random helm, throttle, trim and tabs on the game's breezy sea and stays finite", { timeout: 120_000 }, () => {
+  // Ten minutes, not the half hour this once ran: every step asks the sea 171
+  // times, so half an hour took 77 s in a cloud session and 93 s on CI's
+  // runner, against a 120 s timeout. The half hour never wrecked the boat
+  // (the same seed, 2026-10-27), so the bound scales with the time.
+  it("takes ten minutes of random helm, throttle, trim and tabs on the game's breezy sea and stays finite", () => {
     const twin = createSeaTwin(seaWorld(9.62323060631752), "breezy");
     const run = afloat(twin, 0, 0, "unassisted");
     let seed = 0x2545f491;
@@ -174,7 +178,7 @@ describe("boat in waves", () => {
     const controls = run.controls.boat;
     let recoveries = 0;
     const finite = (v: { x: number; y: number; z: number }) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
-    for (let i = 0; i < 30 * 60 * 120; i += 1) {
+    for (let i = 0; i < 10 * 60 * 120; i += 1) {
       if (i % 240 === 0) {
         controls.lever = random() * 2.2 - 1.1;
         controls.steer = random() * 2 - 1;
@@ -198,7 +202,7 @@ describe("boat in waves", () => {
       }
     }
     // Random input wrecks a boat now and then, not all the time.
-    expect(recoveries).toBeLessThan(30);
+    expect(recoveries).toBeLessThan(10);
   });
 
   it("lies still at rest in calm water, unmoored, for two minutes", () => {
