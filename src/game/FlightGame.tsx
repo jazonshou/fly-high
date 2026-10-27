@@ -767,6 +767,7 @@ export function FlightGame() {
             : "";
           setNearestAirport(nearest);
         }
+        audio.observe(state);
         if (now - lastAudioUpdateRef.current > 35) {
           lastAudioUpdateRef.current = now;
           audio.update(state);

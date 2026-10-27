@@ -124,8 +124,9 @@ const LANDCRUISER: SurfaceVehicleSpec = Object.freeze({
   engineReadout: Object.freeze({ label: "RPM", unit: "ENG", maximum: 4_500, roundTo: 50 }),
   // A four-cylinder four-stroke fires twice per crank turn: the fundamental
   // is rpm / 30, 25 Hz at the 750 rpm idle and 150 Hz at 4,500 rpm, which is
-  // exactly 0 + (rpm / 4,500) x 150. A stand-in until the car's own sound
-  // (diesel clatter, turbo whistle, gear whine) replaces it.
+  // exactly 0 + (rpm / 4,500) x 150. `CarVoice` (src/audio/carVoice.ts)
+  // layers the diesel's clatter, the turbo, the low-range whine, the tyres
+  // and the water over it, and silences it when the engine stops.
   engineSound: Object.freeze({
     baseHz: 0,
     spanHz: 150,
