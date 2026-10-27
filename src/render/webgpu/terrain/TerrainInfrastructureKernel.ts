@@ -758,6 +758,16 @@ export class TerrainInfrastructureDataBinding {
     this.world = world;
   }
 
+  /**
+   * Bring the shared copy to the world's index now, where a change is
+   * installed (`RoadStreamRuntime`), rather than in the next bake's `bind`:
+   * the same ranged writes, timed with the change. Nothing before the first
+   * bind, which packs afresh anyway.
+   */
+  sync(): void {
+    if (this.data && this.world) this.data.setWorld(this.world);
+  }
+
   bind(engine: WebGPUEngine, shader: ComputeShader): void {
     const data = this.ensureData(engine);
     if (this.world) data.setWorld(this.world);

@@ -305,6 +305,10 @@ describe("the renderer's road stream runtime", () => {
     const runtime = new RoadStreamRuntime(world, () => worker);
     const { calls, consumers } = recordingConsumers();
     runtime.setConsumers(consumers);
+    // Attaching catches the workers up with the whole set (here, none).
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail"]);
+    expect(calls[0]!.update).toMatchObject({ reset: true, install: [], remove: [] });
+    calls.length = 0;
     const observer = { x: 3_000, z: 2_000, velocityX: 0, velocityZ: 0 };
     expect(runtime.update(observer, 0)).toBeNull();
     const asked = worker.lastWant.length;
@@ -335,6 +339,26 @@ describe("the renderer's road stream runtime", () => {
     expect(leaving.removed).toHaveLength(3);
     expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain"]);
     expect(calls[0]!.update!.remove).toEqual(leaving.removed);
+    runtime.dispose();
+  });
+
+  it("catches the workers up with the whole set when its consumers attach after changes", () => {
+    const worker = new FakeRoadsWorker();
+    const runtime = new RoadStreamRuntime(world, () => worker);
+    const observer = { x: 3_000, z: 2_000, velocityX: 0, velocityZ: 0 };
+    runtime.update(observer, 0);
+    worker.answer(4);
+    // Startup: installed with nobody attached, only logged.
+    const change = runtime.update(observer, 1_000)!;
+    const { calls, consumers } = recordingConsumers();
+    runtime.setConsumers(consumers);
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail"]);
+    const snapshot = calls[0]!.update!;
+    expect(snapshot.version).toBe(change.infrastructure.version);
+    expect(snapshot.reset).toBe(true);
+    expect(snapshot.install.map((region) => region.key).sort())
+      .toEqual(change.installed.map((event) => event.infrastructure.key).sort());
+    expect(calls[1]!.update).toBe(snapshot);
     runtime.dispose();
   });
 
