@@ -7,6 +7,7 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import { Scene } from "@babylonjs/core/scene";
 import {
   TERRAIN_DRAWN_CELL_METERS,
   TERRAIN_DRAWN_HEIGHT_WGSL,
@@ -153,6 +154,52 @@ describe("the drawn-height helper on the GPU", () => {
       uniformBuffer.dispose();
       probeBuffer.dispose();
       resultBuffer.dispose();
+    } finally {
+      engine.dispose();
+      canvas.remove();
+    }
+  });
+
+  it("holds its CPU copy after every refresh, the changed band in one write", async () => {
+    const frame = buildDrawnFrame();
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
+    try {
+      await engine.initAsync();
+      engine.runRenderLoop(() => {});
+      const scene = new Scene(engine);
+      const lookup = new TerrainDrawnHeight(scene, 1_400);
+      const texture = lookup.ensureTexture()!;
+      const queue = (engine as unknown as { _device: GPUDevice })._device.queue;
+      const writeTexture = queue.writeTexture.bind(queue);
+      let writes = 0;
+      queue.writeTexture = (...args: Parameters<GPUQueue["writeTexture"]>) => {
+        writes += 1;
+        writeTexture(...args);
+      };
+      // The first fill, then moves of a cell or a few (the window's rows wrap
+      // round its seam), and one that changes nothing.
+      const cell = TERRAIN_DRAWN_CELL_METERS;
+      const moves: readonly [number, number][] = [[0, 0], [cell, 0], [3 * cell, 2 * cell], [3 * cell, 2 * cell], [-5 * cell, -7 * cell]];
+      for (const [dx, dz] of moves) {
+        writes = 0;
+        lookup.refresh(frame.records, DRAWN_FRAME_CAMERA.x + dx, DRAWN_FRAME_CAMERA.z + dz, 1_400);
+        const changed = lookup.statistics.cellsWritten > 0;
+        expect(writes).toBe(changed ? 1 : 0);
+        expect(lookup.statistics.rowsUploaded > 0).toBe(changed);
+        const pixels = (await texture.readPixels()) as Float32Array;
+        const gpu = new Uint32Array(pixels.buffer, pixels.byteOffset, lookup.texels.length);
+        const cpu = new Uint32Array(lookup.texels.buffer, lookup.texels.byteOffset, lookup.texels.length);
+        let differ = 0;
+        for (let k = 0; k < cpu.length; k += 1) if (gpu[k] !== cpu[k]) differ += 1;
+        expect(differ, `texels differing after the move (${dx}, ${dz})`).toBe(0);
+      }
+      queue.writeTexture = writeTexture;
+      lookup.dispose();
+      scene.dispose();
     } finally {
       engine.dispose();
       canvas.remove();

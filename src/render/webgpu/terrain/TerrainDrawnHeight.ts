@@ -35,7 +35,8 @@ import { TERRAIN_BOUNDARY_MORPH_WGSL } from "./TerrainSurfacePlugin";
  * the window left behind reads as missing rather than as another cell's node.
  * It is refreshed only when a consumer asks (one is within reach), after the
  * terrain wrote this frame's node buffers, and only the cells whose record
- * changed are written: one upload per texel row that changed.
+ * changed are written, in one upload: the band of rows and columns that holds
+ * them all, so every cell is fresh the frame it is drawn.
  *
  * THE HELPER. `TERRAIN_DRAWN_HEIGHT_WGSL`'s `terrainDrawnSurface` repeats the
  * terrain's displacement (`TerrainSurfacePlugin`'s
@@ -114,7 +115,7 @@ export interface TerrainDrawnSurfaceSample {
 export interface TerrainDrawnHeightStatistics {
   /** Refreshes since construction (frames a consumer was within reach). */
   readonly refreshes: number;
-  /** Cells whose record changed at the last refresh, and texel rows uploaded for them. */
+  /** Cells whose record changed at the last refresh, and the texel rows of the band uploaded for them. */
   readonly cellsWritten: number;
   readonly rowsUploaded: number;
   /** Main-thread time of the last refresh, milliseconds. */
@@ -346,7 +347,7 @@ export class TerrainDrawnHeight {
   /** Window edge, cells. */
   readonly windowCells: number;
   /** The CPU copy of the texture, row-major, two RGBA32F texels per cell. */
-  readonly texels: Float32Array;
+  readonly texels: Float32Array<ArrayBuffer>;
   private texture: RawTexture | null = null;
   private cornerCellX = 0;
   private cornerCellZ = 0;
@@ -557,33 +558,50 @@ export class TerrainDrawnHeight {
     if (last > this.rowLast[row]!) this.rowLast[row] = last;
   }
 
+  /**
+   * The changed texels in one write: the rows from the first changed to the
+   * last, and the columns from the leftmost changed to the rightmost (a few
+   * unchanged cells go up with them). Straight to the queue, read in place
+   * from the CPU copy: Babylon's `updateTextureData` copies through a new
+   * mapped buffer and a submit of its own whenever a row's bytes are a
+   * multiple of 256, as a whole row of Low's window is.
+   */
   private upload(): void {
     this.rowsUploaded = 0;
-    const texture = this.texture;
-    const internal = texture?.getInternalTexture();
     const edge = this.windowCells;
-    const rowTexels = edge * TEXELS_PER_CELL;
+    let top = -1;
+    let bottom = -1;
+    let left = Number.POSITIVE_INFINITY;
+    let right = -1;
     for (let row = 0; row < edge; row += 1) {
       const first = this.rowFirst[row]!;
       if (first < 0) continue;
-      const last = this.rowLast[row]!;
+      if (top < 0) top = row;
+      bottom = row;
+      left = Math.min(left, first);
+      right = Math.max(right, this.rowLast[row]!);
       this.rowFirst[row] = -1;
       this.rowLast[row] = -1;
-      if (!internal || !this.scene) continue;
-      const start = (row * rowTexels + first) * 4;
-      (this.scene.getEngine() as WebGPUEngine).updateTextureData(
-        internal,
-        this.texels.subarray(start, start + (last - first + 1) * 4),
-        first,
-        row,
-        last - first + 1,
-        1,
-        0,
-        0,
-        false,
-      );
-      this.rowsUploaded += 1;
     }
+    const internal = this.texture?.getInternalTexture();
+    if (top < 0 || !internal || !this.scene) return;
+    const rows = bottom - top + 1;
+    const width = right - left + 1;
+    const rowTexels = edge * TEXELS_PER_CELL;
+    const engine = this.scene.getEngine() as WebGPUEngine & { readonly _device?: GPUDevice };
+    const gpuTexture = (internal._hardwareTexture?.underlyingResource ?? null) as GPUTexture | null;
+    if (engine._device && gpuTexture) {
+      engine._device.queue.writeTexture(
+        { texture: gpuTexture, origin: { x: left, y: top } },
+        this.texels,
+        { offset: (top * rowTexels + left) * 16, bytesPerRow: rowTexels * 16, rowsPerImage: rows },
+        { width, height: rows },
+      );
+    } else {
+      const start = top * rowTexels * 4;
+      engine.updateTextureData(internal, this.texels.subarray(start, start + rows * rowTexels * 4), 0, top, rowTexels, rows, 0, 0, false);
+    }
+    this.rowsUploaded = rows;
   }
 }
 
