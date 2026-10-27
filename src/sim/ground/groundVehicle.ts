@@ -22,7 +22,7 @@ import {
 } from "../surface/types";
 import type { Quaternion, Vec3 } from "../types";
 import type { VehiclePoseState } from "../vehicle";
-import { createWaterSurfaceSample } from "../water/types";
+import { createWaterSurfaceSample, type WaterSurfaceAuthority } from "../water/types";
 import { DrivelineSolver, DRIVELINE_DOF, ENGINE } from "./drivelineSolver";
 import { Engine, IDLE_OMEGA, RPM_PER_RAD_S } from "./engine";
 import { roughnessProfile, type RoughnessPoint } from "./roughness";
@@ -555,6 +555,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private hullPenetration = DOUBLE_ZERO;
   private hullResult = DOUBLE_ZERO;
   private readonly groundScratch = createGroundPoint();
+  /** The terrain under a wheel's contact, for the water authority's `isDry`. */
+  private readonly bedPoint = createGroundPoint();
   private readonly normalScratch: Vec3 = { x: 0, y: 1, z: 0 };
 
   constructor(spawn?: SurfaceVehicleSpawn, options: GroundVehicleOptions = {}) {
@@ -1183,8 +1185,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * (33 ms) since it was last asked is near enough. While all four are dry,
    * a wheel that has rolled less than `DRY_POLL_METERS` since it asked, and
    * asked less than `DRY_POLL_SECONDS` ago, passes its turn: a parked or
-   * crawling car would otherwise spend a fifth of its step asking. Whether a
-   * tyre is under the surface is decided every step, from its contact now.
+   * crawling car would otherwise spend a fifth of its step asking. A turn
+   * first asks whether the point is dry for certain (`dryOverBed`), which
+   * reads no bed. Whether a tyre is under the surface is decided every step,
+   * from its contact now.
    */
   private sampleWater(): void {
     const env = this.environment;
@@ -1215,14 +1219,19 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
         this.waterAskedX[w] = at.x;
         this.waterAskedZ[w] = at.z;
         this.waterAskedTime[w] = time;
-        const sample = env.water.sample(at.x, at.z, this.waterSample);
-        const wet = sample.kind !== "none";
-        this.waterAt[w] = wet ? 1 : 0;
-        this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
-        this.waterHeight[w] = sample.height;
-        this.waterVelocityX[w] = sample.velocity.x;
-        this.waterVelocityY[w] = sample.velocity.y;
-        this.waterVelocityZ[w] = sample.velocity.z;
+        if (this.dryOverBed(env.water, at)) {
+          this.waterAt[w] = 0;
+          this.waterSea[w] = 0;
+        } else {
+          const sample = env.water.sample(at.x, at.z, this.waterSample);
+          const wet = sample.kind !== "none";
+          this.waterAt[w] = wet ? 1 : 0;
+          this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
+          this.waterHeight[w] = sample.height;
+          this.waterVelocityX[w] = sample.velocity.x;
+          this.waterVelocityY[w] = sample.velocity.y;
+          this.waterVelocityZ[w] = sample.velocity.z;
+        }
       }
       if (this.waterAt[w] !== 1) continue;
       if (this.waterSea[w] === 1) sea = true;
@@ -1255,6 +1264,22 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     let front = -Infinity;
     for (let w = 0; w < 2; w += 1) if (this.waterAt[w] === 1) front = Math.max(front, this.waterHeight[w]!);
     if (this.engine.running && this.v1.y < front) this.engine.hydrolock();
+  }
+
+  /**
+   * Whether the water authority can tell `at` is dry from the terrain under
+   * it (beneath any deck), read from the car's own lattice, without reading
+   * the bed itself: in the worker the calm sea's bed is a terrain height
+   * sample, about 13 us. Only on the lattice, which caches the environment's
+   * `bedHeight`, the bed the authority reads; a test's fixed ground may not be.
+   */
+  private dryOverBed(water: WaterSurfaceAuthority, at: Readonly<Vec3>): boolean {
+    if (water.isDry === undefined || this.fixedGround !== null) return false;
+    const bed = this.bedPoint;
+    bed.x = at.x;
+    bed.z = at.z;
+    this.lattice.evaluate(bed);
+    return water.isDry(bed);
   }
 
   /** Column `c`'s centre at body-frame height `columnY` (from the body origin), in the world, into `v1`. */

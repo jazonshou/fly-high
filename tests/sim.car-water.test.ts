@@ -5,6 +5,7 @@ import { GroundVehicleSimulator } from "../src/sim/ground";
 import { describeSurface } from "../src/sim/ground/surface";
 import type { GroundField } from "../src/sim/ground/terrainPatch";
 import type { Vec3 } from "../src/sim/types";
+import { CalmWaterSurface } from "../src/sim/water/calmWater";
 import type { WaterSurfaceAuthority, WaterSurfaceSample } from "../src/sim/water/types";
 import { controls, groundOf, headingOf, speedOf, STEP } from "./support/carRig";
 
@@ -222,5 +223,47 @@ describe("car in water", () => {
     // Flooded: down on its wheels, which carry most of its weight again.
     expect(sim.cabinFlood).toBeGreaterThan(0.6);
     expect(load()).toBeGreaterThan(0.5 * WEIGHT);
+  });
+
+  it("reads no sea bed of its own over ground a metre above the sea, and drives as a car that asks every time", () => {
+    // A beach falling 2 cm a metre through sea level at z = 100; the car drives down it into a calm sea.
+    const beach = (_x: number, z: number): number => 2 - 0.02 * z;
+    let bedReads = 0;
+    const counted = (x: number, z: number): number => {
+      bedReads += 1;
+      return beach(x, z);
+    };
+    const calm = new CalmWaterSurface(0, beach);
+    // The same sea without `isDry`: every wheel's turn reads the bed.
+    const asking: WaterSurfaceAuthority = { setTime: () => {}, sample: (x, z, out) => calm.sample(x, z, out) };
+    // On the car's own lattice over the environment's bed, as in the worker.
+    const cars = [new CalmWaterSurface(0, counted), asking].map((water) => {
+      const sim = new GroundVehicleSimulator({
+        position: { x: 0, y: beach(0, 0), z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false },
+      });
+      sim.setEnvironment({ water, wind: { x: 0, y: 0, z: 0 }, bedHeight: beach, world: null, colliders: null, gravity: 9.80665 });
+      return sim;
+    });
+    let readsHigh = 0;
+    for (let i = 0; i < Math.round(40 / STEP); i += 1) {
+      for (const sim of cars) {
+        const ashore = sim.state.position.z < 104;
+        controls(sim, { accelerator: ashore ? 0.25 : 0, brake: ashore ? 0 : 1 });
+        sim.step(STEP);
+      }
+      // The front tyres a metre over the sea until the body origin is past z = 48.
+      if (cars[0]!.state.position.z < 45) readsHigh = bedReads;
+    }
+    const [lean, full] = cars as [GroundVehicleSimulator, GroundVehicleSimulator];
+    expect(readsHigh).toBe(0);
+    // Into the sea: the near shore read the bed, and the car is wading.
+    expect(bedReads).toBeGreaterThan(0);
+    expect(lean.state.position.z).toBeGreaterThan(104);
+    expect(lean.visualState().wadingDepth).toBeGreaterThan(0.1);
+    // Bit for bit the car that read every bed.
+    for (const key of ["x", "y", "z"] as const) {
+      expect(lean.state.position[key]).toBe(full.state.position[key]);
+      expect(lean.state.velocity[key]).toBe(full.state.velocity[key]);
+    }
   });
 });

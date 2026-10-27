@@ -468,7 +468,14 @@ steps (33 ms) since it was last asked is near enough. While all four tyres
 are dry, a tyre passes its turn until it has rolled 0.3 m from where it last
 asked or a quarter of a second has gone (a lake can be posted round a parked
 car), so a parked or crawling car does not spend a fifth of its step asking
-about water that is not there; from about 9 m/s every turn is taken. Whether
+about water that is not there; from about 9 m/s every turn is taken. A
+turn first asks the authority whether the point is dry for certain
+(`isDry`), handing it the terrain under the contact (beneath any deck) from
+the car's own lattice: the composite answers from that, a metre's margin
+over the calm sea's level and one bin lookup for the lakes and rivers,
+without reading the bed itself, and only near water is the full sample
+taken. On the show drive (see Driving the world) that took the water from
+about 11.4 us a step to 1.1, and the drive ends on the same bits. Whether
 a tyre is under the surface is decided every step from its contact now. The wading depth is
 the highest surface over the lowest contact. A tyre under the surface
 reports no material and full wetness for the effects, and its bed is wet:
@@ -572,7 +579,9 @@ than the tuning box), after the first 2 s of a leg.
   about 60 on the tuning box. Of that the substeps are about 62 us (the tyres
   32, the soil 6), the contacts against the lattice 14, the hull's probes 15
   and forces 13, the water 11 (the calm sea's bed is a terrain height, about
-  13 us, on each turn the dry poll takes) and the surfaces 9. The slow steps
+  13 us, on each turn the dry poll takes; about 1 us since the composite
+  answers dry ground from the car's own lattice, see Water) and the surfaces
+  9. The slow steps
   (1 to 2 ms at the 99.9th percentile, 4 to 11 ms at worst) follow no event
   of the drive and do not repeat from run to run. About half fall in a
   young-generation collection (1 to 3 ms, up to 9) of the probe's own
