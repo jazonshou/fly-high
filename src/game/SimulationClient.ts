@@ -510,6 +510,19 @@ function replayableCommand(command: SimulationCommand): SimulationCommand {
   if (command.type === "terrainMacro") {
     return { ...command, macro: { ...command.macro, heights: command.macro.heights.slice() } };
   }
+  if (command.type === "hydrology") {
+    const region = command.region;
+    return {
+      ...command,
+      region: {
+        riverPoints: region.riverPoints.slice(),
+        riverStarts: region.riverStarts.slice(),
+        lakeLevels: region.lakeLevels.slice(),
+        lakeBoundary: region.lakeBoundary.slice(),
+        lakeStarts: region.lakeStarts.slice(),
+      },
+    };
+  }
   return command;
 }
 

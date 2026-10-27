@@ -236,6 +236,33 @@ describe("simulation worker load failures", () => {
     expect(WorkerStub.created).toHaveLength(1);
   });
 
+  it("replays a car's hydrology region intact after its arrays went to the failed worker", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SimulationClient(createWorld(794), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const first = WorkerStub.latest!;
+    const region = packHydrologyWater(
+      [{ points: [{ x: 0, y: 1, z: 0, widthMeters: 4, flowSpeedMetersPerSecond: 1 }, { x: 0, y: 0.9, z: 50, widthMeters: 4, flowSpeedMetersPerSecond: 1 }] }],
+      [{ surfaceHeight: 3, boundary: [{ x: 100, z: 0 }, { x: 120, z: 0 }, { x: 110, z: 20 }] }],
+    );
+    const expected = structuredClone(region);
+    client.publishHydrology("0:0", region);
+    expect(first.transfers.at(-1)).toHaveLength(5);
+    // What a real transfer does to the sender's arrays.
+    structuredClone(null, { transfer: first.transfers.at(-1)! });
+    expect(region.riverPoints.length).toBe(0);
+
+    first.failToLoad();
+    vi.advanceTimersByTime(SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    const replayed = WorkerStub.latest!.messages.find(
+      (message) => (message as { type: string }).type === "hydrology",
+    ) as { key: string; region: typeof region };
+    expect(replayed.key).toBe("0:0");
+    expect(replayed.region).toEqual(expected);
+    client.dispose();
+  });
+
   it("holds only the newest pages the worker would keep for a replay", () => {
     vi.useFakeTimers();
     vi.stubGlobal("Worker", WorkerStub);
