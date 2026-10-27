@@ -589,6 +589,33 @@ export function selectTerrainNodes(
   input: TerrainNodeSelectionInput,
   diagnostics?: TerrainNodeSelectionDiagnostics,
 ): TerrainNode[] {
+  return selectTerrainNodeSetsFor(input, diagnostics, false).nodes;
+}
+
+/** A selection with `nearFloor`: what the beauty pass draws, and what the casters draw. */
+export interface TerrainNodeSets {
+  /** The tier's selection plus the near floor's patch: the beauty pass. */
+  readonly nodes: TerrainNode[];
+  /**
+   * The tier's own selection, before the patch: the shadow casters. The same
+   * array as `nodes` when there is no near floor.
+   */
+  readonly tierNodes: TerrainNode[];
+}
+
+/** `selectTerrainNodes`, plus the tier's own selection from under the near floor's patch. */
+export function selectTerrainNodeSets(
+  input: TerrainNodeSelectionInput,
+  diagnostics?: TerrainNodeSelectionDiagnostics,
+): TerrainNodeSets {
+  return selectTerrainNodeSetsFor(input, diagnostics, true);
+}
+
+function selectTerrainNodeSetsFor(
+  input: TerrainNodeSelectionInput,
+  diagnostics: TerrainNodeSelectionDiagnostics | undefined,
+  withTierNodes: boolean,
+): TerrainNodeSets {
   const finest = Math.max(0, input.finestResidentLevel);
   const coarsest = Math.max(finest, input.coarsestLevel);
   const near = input.nearFloor && input.nearFloor.radiusMeters > 0 && input.nearFloor.level < finest
@@ -598,8 +625,6 @@ export function selectTerrainNodes(
       band: Math.min(input.nearFloor.radiusMeters, Math.max(1e-3, input.nearFloor.bandMeters)),
     }
     : null;
-  /** The finest level any node reaches: the near floor's where there is one. */
-  const lowest = near ? near.level : finest;
   /** Set once the tier's own selection is done and the near floor's patch begins. */
   let patching = false;
   const floorFor = (node: Candidate): number =>
@@ -742,6 +767,7 @@ export function selectTerrainNodes(
     for (const node of plan) applySplit(node);
   }
 
+  const tierLeaves = near && withTierNodes ? [...leaves.values()] : null;
   if (near) {
     // The near floor's patch, on top of the tier's own selection and outside
     // its budget: every floor-level leaf in the disc whose error asks for it
@@ -766,9 +792,36 @@ export function selectTerrainNodes(
     }
   }
 
+  const nodes = emitTerrainNodes(input, leaves.values(), near, finest, coarsest, rootX, rootZ, reach, diagnostics);
+  return {
+    nodes,
+    tierNodes: tierLeaves
+      ? emitTerrainNodes(input, tierLeaves, null, finest, coarsest, rootX, rootZ, reach, undefined)
+      : nodes,
+  };
+}
+
+/**
+ * A finished leaf set as drawable nodes: morphs, then the synchronized
+ * corners. Run once per partition, because a corner's morph depends on which
+ * neighbours the partition holds.
+ */
+function emitTerrainNodes(
+  input: TerrainNodeSelectionInput,
+  leaves: Iterable<Candidate>,
+  near: { readonly level: number; readonly radius: number; readonly band: number } | null,
+  finest: number,
+  coarsest: number,
+  rootX: number,
+  rootZ: number,
+  reach: number,
+  diagnostics: TerrainNodeSelectionDiagnostics | undefined,
+): TerrainNode[] {
+  /** The finest level any node reaches: the near floor's where there is one. */
+  const lowest = near ? near.level : finest;
   // Nearest first: `writeTerrainNodeBuffers` truncates at the buffer capacity,
   // and the near field is what a truncation must keep.
-  const emitted = [...leaves.values()].sort(
+  const emitted = [...leaves].sort(
     (first, second) => first.distanceMeters - second.distanceMeters,
   );
 

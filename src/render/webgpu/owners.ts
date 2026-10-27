@@ -338,6 +338,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     consumers: ["terrain-geometry"],
     ownedSymbols: [
       "selectTerrainNodes",
+      "selectTerrainNodeSets",
       "terrainNodeMorphK",
       "terrainScreenSpaceError",
       "writeTerrainNodeBuffers",
