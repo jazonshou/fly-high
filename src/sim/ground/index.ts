@@ -1,9 +1,9 @@
 import type { SurfaceVehicleSimulator, SurfaceVehicleSpawn } from "../surface/types";
-import { StandInCarSimulator } from "./standInCar";
+import { GroundVehicleSimulator } from "./groundVehicle";
 
-export * from "./standInCar";
+export * from "./groundVehicle";
 
 /** The LandCruiser 76's simulator, from `createSurfaceSimulator`. */
 export function createCarSimulator(spawn: SurfaceVehicleSpawn): SurfaceVehicleSimulator {
-  return new StandInCarSimulator(spawn);
+  return new GroundVehicleSimulator(spawn);
 }
