@@ -413,6 +413,26 @@ export interface WebGpuQualityProfile {
    */
   readonly boatWakeTrailSeconds: number;
   /**
+   * The LandCruiser: the instance cap on what it throws into the air
+   * (`CarParticleSystem`): dust off dry ground, mud, water off the tyres in a
+   * ford, the bow splash and exhaust smoke. One instanced draw at every cap,
+   * none while nothing is in the air; the emitters scale their rates to the
+   * cap, so a low cap is a thinner cloud rather than a shorter one. Car
+   * sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly vehicleParticleBudget: number;
+  /**
+   * The LandCruiser: the ring of tyre-track segments every tyre's print is laid
+   * in (`CarTrackSystem`), one instanced draw. A straight segment runs 2 m, so
+   * 1,024 keep about half a kilometre of four prints. 0 is OFF: no mesh, no
+   * material and no draw. Car sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly tyreTrackSegments: number;
+  /**
    * The home marina's near meshes (decks, pontoons, walls and buildings, the
    * piles and posts, the moored boats) cast sun shadows: three thin-instanced
    * casters, 2 draws each at two cascades, and only while the camera is
@@ -530,6 +550,8 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
       boatWakeTrailSeconds: 12,
+      vehicleParticleBudget: 32,
+      tyreTrackSegments: 0,
       marinaCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
@@ -637,6 +659,8 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
       boatWakeTrailSeconds: 24,
+      vehicleParticleBudget: 128,
+      tyreTrackSegments: 256,
       marinaCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
@@ -733,6 +757,8 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
       boatWakeTrailSeconds: 40,
+      vehicleParticleBudget: 256,
+      tyreTrackSegments: 512,
       marinaCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
@@ -831,6 +857,8 @@ function resolveBaseQualityProfile(
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,
     boatWakeTrailSeconds: 40,
+    vehicleParticleBudget: 384,
+    tyreTrackSegments: 1_024,
     marinaCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,
