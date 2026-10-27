@@ -283,8 +283,9 @@ export class RoadSurfaceSystem {
       const arrays = this.index.chunkArrays(key, kind);
       if (arrays) chunks.push({ key, arrays });
     }
-    // The same chunks, built from the same version, are the same arrays.
-    const signature = `${this.index.version}|${chunks.map((chunk) => chunk.key).join(",")}`;
+    // The same chunks, none touched since, are the same arrays: a region
+    // installed or dropped out of reach merges nothing again.
+    const signature = chunks.map((chunk) => `${chunk.key}@${this.index.chunkStamp(chunk.key)}`).join(",");
     if (signature === layer.chunks) return false;
     layer.chunks = signature;
     this.merges += 1;

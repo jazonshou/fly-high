@@ -263,6 +263,29 @@ describe("the roads' surface system", () => {
     system.dispose();
   });
 
+  it("merges nothing again for roads that change out of reach", () => {
+    const system = new RoadSurfaceSystem(scene, terrain, ultra);
+    system.apply(regions, []);
+    system.update(head.startX, head.startZ);
+    const merges = system.statistics.merges;
+    const far: RoadSurfaceRegion = {
+      key: "test:far-rail",
+      pieces: [],
+      pads: [],
+      rails: [{ points: [head.startX + 20_000, head.startZ, head.startX + 20_060, head.startZ + 4], heightMeters: 0.75 }],
+    };
+    system.apply([far], []);
+    system.update(head.startX, head.startZ);
+    system.apply([], [far.key]);
+    system.update(head.startX, head.startZ);
+    expect(system.statistics.merges).toBe(merges);
+    // A change in reach still does.
+    system.apply([railRegion], []);
+    system.update(head.startX, head.startZ);
+    expect(system.statistics.merges).toBeGreaterThan(merges);
+    system.dispose();
+  });
+
   /** A stand-in for `AsyncPipelineCompiles`: answers `status`, and notes each mesh asked for. */
   function fakeWarmUp(): PipelineWarmUp & { asked: Mesh[]; status: PipelineWarmUpStatus } {
     const fake = {
