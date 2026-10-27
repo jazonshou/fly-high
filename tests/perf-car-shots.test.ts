@@ -10,9 +10,12 @@ import type { CarVisualState, FlightVisualState } from "../src/game/types";
 import { carWheelContacts, createCarWheelContacts, rotateCarBodyToWorld } from "../src/render/webgpu/ground/carEffectLaws";
 import { sunDirectionForClock } from "../src/render/webgpu/nature/EnvironmentDirector";
 import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
+import { createCarSurface, SurfaceCache } from "../src/sim/ground/surface";
+import type { GroundField } from "../src/sim/ground/terrainPatch";
+import { sampleGroundContact } from "../src/sim/terrainGrid";
 import { LANDCRUISER_76 } from "../src/vehicles/landcruiser76";
 import { createWorld, sampleTerrainHeight } from "../src/world";
-import type { WorldDefinition } from "../src/world/types";
+import type { TerrainCollisionSample, WorldDefinition } from "../src/world/types";
 import {
   CAR_SHOT_CLEAR_TREE_METERS,
   CAR_SHOT_FRONT_AXLE_X,
@@ -23,6 +26,7 @@ import {
   CAR_SHOT_REAR_AXLE_X,
   CAR_SHOT_REAR_TRACK,
   CAR_SHOT_WHEEL_CENTRE_Y,
+  carShotEffectsHistoryFrames,
   nearestVegetation,
 } from "./perf/carShotState";
 import { carShotState, resolveShotPlacement } from "./perf/shotPlacement";
@@ -79,8 +83,13 @@ function feetOnGround(world: WorldDefinition, state: FlightVisualState, car: Car
 }
 
 describe("car shots", () => {
-  it("are three car views, the last shots of all", () => {
-    expect(carShots.map((shot) => shot.name)).toEqual(["car-clearing-chase", "car-dune-cockpit", "car-ford-chase"]);
+  it("are four car views, the last shots of all", () => {
+    expect(carShots.map((shot) => shot.name)).toEqual([
+      "car-clearing-chase",
+      "car-dune-cockpit",
+      "car-ford-chase",
+      "car-dust-chase",
+    ]);
     expect(PERF_CAPTURE_SHOTS.slice(-carShots.length).every((shot) => shot.car !== undefined)).toBe(true);
     for (const shot of carShots) expect(shot.boat).toBeUndefined();
   });
@@ -156,6 +165,8 @@ describe("car shots", () => {
     // Every tyre in the water, wet, and the bed rising ahead.
     expect(car.wheelSurface).toEqual([-1, -1, -1, -1]);
     expect(car.wheelWetness).toEqual([1, 1, 1, 1]);
+    // All of it the sea, whose waves the bow wave rides.
+    expect(car.wadingSea).toBe(1);
     const forward = { x: 0, y: 0, z: 0 };
     rotateCarBodyToWorld(state.orientation, 1, 0, 0, forward);
     const ahead = sampleTerrainHeight(world, state.position.x + forward.x * 30, state.position.z + forward.z * 30);
@@ -166,6 +177,47 @@ describe("car shots", () => {
     expect(car.wadingDepth).toBeLessThan(LANDCRUISER_76.water.wadingDepth);
   });
 
+  it("pull the dust shot's car away over dry grass with its wheels spinning", () => {
+    const { car } = shotState("car-dust-chase");
+    const dry = SurfaceMaterial.DryGrass;
+    expect(car.wheelSurface).toEqual([dry, dry, dry, dry]);
+    expect(car.wheelWetness).toEqual([0, 0, 0, 0]);
+    expect(car.wadingDepth).toBe(0);
+    for (const rate of car.wheelSpinRate) expect(rate * CAR_SHOT_LOADED_RADIUS).toBeGreaterThan(car.speed + 5);
+  });
+
+  it("stand a shot's tyres on the surface the car simulator reports there, where the shot names one", () => {
+    const named = carShots.filter((shot) => shot.car!.surface !== undefined);
+    expect(named.map((shot) => shot.name)).toEqual(["car-dust-chase"]);
+    for (const shot of named) {
+      const { world, state, car } = shotState(shot.name);
+      const ground = worldGround(world);
+      const cache = new SurfaceCache();
+      const out = createCarSurface();
+      const contacts = createCarWheelContacts();
+      carWheelContacts(state, car, contacts);
+      for (const contact of contacts) {
+        cache.beginStep(world);
+        const at = { x: contact.x, z: contact.z, height: 0, dhdx: 0, dhdz: 0 };
+        ground.evaluate(at);
+        expect(cache.lookup(world, ground, at, out)).toBe(true);
+        expect(out.material, `${shot.name}: the simulator's surface under a tyre`).toBe(SurfaceMaterial[shot.car!.surface!]);
+      }
+    }
+  });
+
+  it("run only the dust and the ford shots' effects up to the time pin, the dust's whole life", () => {
+    const history = PERF_CAPTURE_SHOTS.filter((shot) => carShotEffectsHistoryFrames(shot.car) > 0);
+    expect(history.map((shot) => shot.name)).toEqual(["car-ford-chase", "car-dust-chase"]);
+    for (const shot of history) expect(carShotEffectsHistoryFrames(shot.car)).toBe(300);
+    expect(carShotEffectsHistoryFrames(undefined)).toBe(0);
+    expect(carShotEffectsHistoryFrames({})).toBe(0);
+    expect(carShotEffectsHistoryFrames({ effectsHistorySeconds: 0 })).toBe(0);
+    expect(carShotEffectsHistoryFrames({ effectsHistorySeconds: -1 })).toBe(0);
+    expect(carShotEffectsHistoryFrames({ effectsHistorySeconds: Number.NaN })).toBe(0);
+    expect(carShotEffectsHistoryFrames({ effectsHistorySeconds: 1.5 })).toBe(90);
+  });
+
   it("are the same car every time they are built", () => {
     for (const shot of carShots) {
       const first = shotState(shot.name).state;
@@ -174,3 +226,16 @@ describe("car shots", () => {
     }
   });
 });
+
+/** The terrain as the car simulator's ground (as `sim.car-terrain.test.ts` builds it). */
+function worldGround(world: WorldDefinition): GroundField {
+  const contact: TerrainCollisionSample = { height: 0, normal: { x: 0, y: 1, z: 0 }, isRunway: false, friction: 1 };
+  return {
+    evaluate(at) {
+      sampleGroundContact(world, at.x, at.z, contact);
+      at.height = contact.height;
+      at.dhdx = -contact.normal.x / contact.normal.y;
+      at.dhdz = -contact.normal.z / contact.normal.y;
+    },
+  };
+}
