@@ -28,7 +28,7 @@ export type RoadsWorkerFactory = () => RoadsWorker | null;
 
 const defaultWorkerFactory: RoadsWorkerFactory = () => {
   if (typeof Worker === "undefined") return null;
-  return new Worker(new URL("../workers/roads.worker.ts", import.meta.url), {
+  return new Worker(new URL("../../workers/roads.worker.ts", import.meta.url), {
     type: "module",
     name: "fly-high-roads",
   }) as unknown as RoadsWorker;
@@ -85,6 +85,8 @@ export class RoadStreamController {
   private readonly dropped = new Map<string, RoadsWorkerRegionEvent>();
   /** Stage keys within the keep margin at the last check. */
   private keep = new Set<string>();
+  /** Stage keys asked of the worker and not yet arrived (or failed). */
+  private wanted = new Set<string>();
   private lastWant = "";
   private lastCheckMs = Number.NEGATIVE_INFINITY;
   private readonly listeners = new Set<(change: RoadStreamChange) => void>();
@@ -105,6 +107,15 @@ export class RoadStreamController {
   /** Regions installed now, by stage key. Observation only. */
   get installedRegions(): ReadonlyMap<string, RoadsWorkerRegionEvent> {
     return this.installed;
+  }
+
+  /**
+   * Regions still to come or to install: asked of the worker and not yet
+   * arrived, or arrived and not yet flushed. Zero once the observer's
+   * window is in; a capture waits for it. Observation only.
+   */
+  get pendingRegions(): number {
+    return this.wanted.size + this.arrived.length;
   }
 
   /** The live world (a spawned airport's new one shares the terrain, so its regions). */
@@ -136,6 +147,7 @@ export class RoadStreamController {
       }
       want.push({ layer: region.layer, rx: region.rx, rz: region.rz });
     }
+    this.wanted = new Set(want.map((address) => roadRegionKey(address.layer, address.rx, address.rz)));
     const signature = want.map((address) => `${address.layer}:${address.rx}:${address.rz}`).join(",");
     if (signature === this.lastWant) return;
     this.lastWant = signature;
@@ -251,8 +263,10 @@ export class RoadStreamController {
     if (this.disposed) return;
     if (event.type === "error") {
       console.error("Road region failed", event.address, event.message);
+      if (event.address) this.wanted.delete(roadRegionKey(event.address.layer, event.address.rx, event.address.rz));
       return;
     }
+    this.wanted.delete(event.infrastructure.key);
     try {
       prepareInfrastructureRegion(event.infrastructure);
     } catch (error) {

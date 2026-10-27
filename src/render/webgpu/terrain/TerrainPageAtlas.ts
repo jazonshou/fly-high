@@ -13,6 +13,7 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import type { AirportDefinition, WorldDefinition } from "@/src/world/types";
+import { infrastructureRegionsVersion } from "@/src/world/infrastructure";
 import {
   compareWorldPageCacheEvictionOrder,
   touchWorldPageCacheMetadata,
@@ -1176,6 +1177,11 @@ export interface TerrainCollisionPagePublication {
   readonly tileZ: number;
   /** Ownership passes to the sink; a Worker sender may transfer the buffer. */
   readonly heights: Float32Array;
+  /**
+   * The streamed infrastructure regions' version the page was baked against
+   * (`infrastructureRegionsVersion`); absent from an eroded world's DAG pages.
+   */
+  readonly infrastructureVersion?: number;
 }
 
 export type TerrainCollisionPagePublisher = (
@@ -1616,6 +1622,9 @@ export class TerrainPageGenerator {
     shader.setStorageBuffer("pageBounds", boundsBuffer);
     this.landformBinding.bind(this.engine as WebGPUEngine, shader);
     this.infrastructureBinding.bind(this.engine as WebGPUEngine, shader);
+    // The streamed regions this batch reads: the bind just brought the GPU's
+    // copy to them. Its L0 publications say so (`TerrainPagePublication`).
+    const infrastructureVersion = this.world ? infrastructureRegionsVersion(this.world) : 0;
     // Captured before the dispatch: a regenerated slot is one that was
     // already resident when its batch was recorded.
     const regenerated = slots.map(
@@ -1641,7 +1650,7 @@ export class TerrainPageGenerator {
     // NOT awaited: the next batch may dispatch against a different readback
     // ring entry. Unlike the analytic-era fast path, however, this page is not
     // sampleable until collectBounds completes the final publication stage.
-    const readback = this.collectBounds(boundsBuffer, slots, regenerated);
+    const readback = this.collectBounds(boundsBuffer, slots, regenerated, infrastructureVersion);
     this.pendingReadbacks.add(readback);
     void readback.finally(() => this.pendingReadbacks.delete(readback));
     return true;
@@ -1866,6 +1875,7 @@ export class TerrainPageGenerator {
     boundsBuffer: StorageBuffer,
     slots: readonly TerrainAtlasSlot[],
     regenerated: readonly boolean[],
+    infrastructureVersion: number,
   ): Promise<void> {
     this.readbacksInFlight += 1;
     const byteLength = slots.length * TERRAIN_PAGE_BOUNDS_SLOTS * 4;
@@ -1890,8 +1900,8 @@ export class TerrainPageGenerator {
           maxDeviationFromParent: decodeOrderableFloat(read[base + 2]!),
         };
         publications.push(inPlace
-          ? this.publishRegeneratedSlot(slot, stats)
-          : this.publishCompletedSlot(slot, stats));
+          ? this.publishRegeneratedSlot(slot, stats, infrastructureVersion)
+          : this.publishCompletedSlot(slot, stats, infrastructureVersion));
       });
       await Promise.all(publications);
     } catch {
@@ -1917,6 +1927,7 @@ export class TerrainPageGenerator {
   private async publishCompletedSlot(
     slot: TerrainAtlasSlot,
     stats: TerrainSlotStats,
+    infrastructureVersion?: number,
   ): Promise<void> {
     const token = slot.token;
     if (!token) return;
@@ -1930,6 +1941,7 @@ export class TerrainPageGenerator {
         tileX: slot.address.x,
         tileZ: slot.address.z,
         heights: published,
+        ...(infrastructureVersion === undefined ? {} : { infrastructureVersion }),
       });
     }
     this.atlas.residency.complete(slot.key, token, stats);
@@ -1950,6 +1962,7 @@ export class TerrainPageGenerator {
   private async publishRegeneratedSlot(
     slot: TerrainAtlasSlot,
     stats: TerrainSlotStats,
+    infrastructureVersion: number,
   ): Promise<void> {
     const current = (): boolean => !this.disposed
       && this.atlas.residency.get(slot.key) === slot
@@ -1964,6 +1977,7 @@ export class TerrainPageGenerator {
         tileX: slot.address.x,
         tileZ: slot.address.z,
         heights: published,
+        infrastructureVersion,
       });
     }
     slot.stats = stats;

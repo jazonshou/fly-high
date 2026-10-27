@@ -33,7 +33,9 @@ import {
 } from "../airfield/StructureExclusion";
 import {
   INFRASTRUCTURE_PLANT_BLEND_METERS,
+  infrastructurePlantExclusionsIn,
   infrastructurePlantFactor,
+  type InfrastructureIndex,
   type InfrastructurePlantExclusion,
 } from "@/src/world/infrastructure";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
@@ -992,7 +994,7 @@ function structureFactorAt(context: ScatterContext, x: number, z: number): numbe
  * one evaluation per stem, while a site dropped that should have been kept
  * would put a tree through a hangar.
  */
-const STRUCTURE_SITE_CELL_MARGIN_METERS = SCATTER_HALO_METERS + SCATTER_BLOCK_METERS;
+export const STRUCTURE_SITE_CELL_MARGIN_METERS = SCATTER_HALO_METERS + SCATTER_BLOCK_METERS;
 
 /**
  * The structure sites that can touch a cell, from the legacy single-airport
@@ -1030,6 +1032,33 @@ function cellStructureSites(
     maxZ: minZ + cellSize + margin,
   };
   return sites.filter((site) => worldBoundsOverlap(structureExclusionSiteBounds(site), cell));
+}
+
+/**
+ * The plant exclusions a cell's generation can meet, from the index's bins
+ * (`infrastructurePlantExclusionsIn`) rather than every exclusion the world
+ * has: what the worker and the inline path hand `generateDetailCell` as its
+ * `plantExclusions`. Read from the index at the moment of the call, so a
+ * cell generates against the streamed regions installed then. These are
+ * exactly what `cellPlantExclusions` would keep from the full list, in the
+ * same order.
+ */
+export function detailCellPlantExclusions(
+  index: InfrastructureIndex,
+  cellX: number,
+  cellZ: number,
+  cellSizeMeters: number,
+): readonly InfrastructurePlantExclusion[] {
+  const margin = STRUCTURE_SITE_CELL_MARGIN_METERS;
+  const minX = cellX * cellSizeMeters;
+  const minZ = cellZ * cellSizeMeters;
+  return infrastructurePlantExclusionsIn(
+    index,
+    minX - margin,
+    minZ - margin,
+    minX + cellSizeMeters + margin,
+    minZ + cellSizeMeters + margin,
+  );
 }
 
 /**

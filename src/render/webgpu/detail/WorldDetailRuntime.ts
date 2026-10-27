@@ -42,13 +42,13 @@ import {
 } from "./ImpostorAtlas";
 import {
   infrastructureIndex,
-  infrastructurePlantExclusions,
   seasonalWinterFraction,
   withAirports,
   type AirportDefinition,
-  type InfrastructurePlantExclusion,
   type WorldDefinition,
 } from "@/src/world";
+import { infrastructureChangeTouches, type InfrastructureChange } from "@/src/world/infrastructure";
+import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import {
   TERRAIN_READBACK_RING_CAPACITY,
   type TerrainMacroGrid,
@@ -74,6 +74,7 @@ import {
 import {
   DETAIL_CELL_SAMPLE_MARGIN_METERS,
   detailCellKey,
+  detailCellPlantExclusions,
   generateDetailCell,
   GROUND_COVER_GRID,
 } from "./generation";
@@ -1023,11 +1024,6 @@ export class WorldDetailRuntime {
    * is a different number on any guaranteed-airport world.
    */
   private structureSites: readonly StructureExclusionSite[];
-  /**
-   * Built ground no plant grows on (`infrastructurePlantExclusions`), the
-   * inline path's copy of what the worker derives from the same world.
-   */
-  private plantExclusions: readonly InfrastructurePlantExclusion[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -1080,9 +1076,6 @@ export class WorldDetailRuntime {
         this.world.airports ?? (this.world.airport ? [this.world.airport] : []),
         this.world.seedHash,
       )
-      : [];
-    this.plantExclusions = this.world
-      ? infrastructurePlantExclusions(infrastructureIndex(this.world))
       : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
@@ -1554,7 +1547,6 @@ export class WorldDetailRuntime {
     const changed = changedAirports(previous.airports ?? [], next.airports);
     this.world = next;
     this.structureSites = airfieldStructureExclusionSites(next.airports, next.seedHash);
-    this.plantExclusions = infrastructurePlantExclusions(infrastructureIndex(next));
     // Posted BEFORE any regeneration request below can be dispatched, so the
     // worker swaps worlds first; message order does the rest.
     this.client?.setAirports(next.airports);
@@ -1571,6 +1563,33 @@ export class WorldDetailRuntime {
         maxZ: minZ + this.cellSizeMeters + 2 * margin,
       };
       return reaches.some((reach) => airportReachIntersectsBounds(reach, bounds));
+    });
+  }
+
+  /**
+   * The streamed infrastructure regions changed (roads came or went:
+   * `RoadStreamRuntime`). The worker takes the same regions first, posted in
+   * order with generation like an airport change, so every request after
+   * this samples them; then only the cells whose ground or plants the change
+   * can reach are regenerated — a cell whose rectangle, grown by the furthest
+   * its generation reads (`DETAIL_CELL_SAMPLE_MARGIN_METERS`), meets one of
+   * the change's bins — keeping their old trees until the replacements come,
+   * exactly as `setAirports` does. Returns how many residents and in-flight
+   * requests were invalidated.
+   */
+  infrastructureChanged(update: InfrastructureRegionsUpdate, change: InfrastructureChange): number {
+    if (this.disposed) return 0;
+    this.client?.publishInfrastructure(update);
+    if (change.bins.size === 0) return 0;
+    const margin = DETAIL_CELL_SAMPLE_MARGIN_METERS;
+    const size = this.cellSizeMeters;
+    const bounds = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
+    return this.invalidateCellsWhere((cellX, cellZ) => {
+      bounds.minX = cellX * size - margin;
+      bounds.minZ = cellZ * size - margin;
+      bounds.maxX = bounds.minX + size + 2 * margin;
+      bounds.maxZ = bounds.minZ + size + 2 * margin;
+      return infrastructureChangeTouches(change, bounds);
     });
   }
 
@@ -2117,7 +2136,18 @@ export class WorldDetailRuntime {
           ...(this.structureSites.length > 0
             ? { structureExclusionSites: this.structureSites }
             : {}),
-          ...(this.plantExclusions.length > 0 ? { plantExclusions: this.plantExclusions } : {}),
+          // Built ground, from the stage as it is now: the worker reads its
+          // own copy of the same regions (`infrastructureChanged`).
+          ...(this.world
+            ? {
+              plantExclusions: detailCellPlantExclusions(
+                infrastructureIndex(this.world),
+                desired.cellX,
+                desired.cellZ,
+                this.cellSizeMeters,
+              ),
+            }
+            : {}),
         });
         if (credit !== null) {
           recordInlineCellAfterWorkerFailure(credit, this.nowMilliseconds() - cellStartedAt);
