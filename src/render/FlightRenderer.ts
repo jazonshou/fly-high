@@ -148,6 +148,10 @@ import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
+import {
+  AsyncPipelineCompiles,
+  type AsyncPipelineCompileStatistics,
+} from "./webgpu/core/AsyncPipelineCompiles";
 import { meanSeasonalSurfaceAlbedo, type TerrainFarSwardRead } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
@@ -799,6 +803,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private appliedRenderScale = 1;
   private terrainAuthorityPublisher: TerrainAuthorityPublisher | null = null;
   private readonly atmosphereResources: AtmosphereGpuResources;
+  /** The near-ground scenery's off-frame pipeline compiles; null when Babylon's surface moved. */
+  private readonly pipelineCompiles: AsyncPipelineCompiles | null;
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
@@ -862,9 +868,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     bloom: BloomPass,
     sharpen: SharpenPass,
     atmosphereResources: AtmosphereGpuResources,
+    pipelineCompiles: AsyncPipelineCompiles | null,
     adapterLabel: string,
   ) {
     this.atmosphereResources = atmosphereResources;
+    this.pipelineCompiles = pipelineCompiles;
     this.domElement = options.canvas;
     this.engine = engine;
     this.gpuUncapturedErrorGuard = gpuUncapturedErrorGuard;
@@ -1072,6 +1080,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());
+      // The pitch-down freeze: the near-ground scenery (detail and blades,
+      // registered below) compiles its render pipelines off the frame instead
+      // of in the frame it first comes into view. Null when the Babylon
+      // surface it hooks has moved, which leaves Babylon's synchronous path.
+      const pipelineCompiles = AsyncPipelineCompiles.install(scene);
+      if (pipelineCompiles) cleanup.push(() => pipelineCompiles.dispose());
       scene.useRightHandedSystem = true;
       scene.clearColor = new Color4(0.09, 0.19, 0.34, 1);
       scene.performancePriority = ScenePerformancePriority.Intermediate;
@@ -1253,6 +1267,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
         workerWorld: options.world,
+        pipelineWarmUp: pipelineCompiles,
       });
       cleanup.push(() => detail.dispose());
       checkpointRendererStartup("detail runtime construction", "sync");
@@ -1275,9 +1290,16 @@ export class FlightRenderer implements FlightRenderingSystem {
         // realisation or the handoff at the field radius swaps species.
         seedHash: options.world.sourceSeedHash,
         seaLevelMeters: options.world.seaLevel,
+        pipelineWarmUp: pipelineCompiles,
       });
       cleanup.push(() => groundCover.dispose());
       checkpointRendererStartup("ground-cover construction", "sync");
+      // Their draws may wait for a pipeline: a stump or a tuft of grass a
+      // frame late is invisible, a frame stopped for its compile is not.
+      if (pipelineCompiles) {
+        detail.addPbrMaterials((material) => pipelineCompiles.defer(material));
+        groundCover.addPbrMaterials((material) => pipelineCompiles.defer(material));
+      }
       if (evolutionResult.mode === "eroded") {
         detail.publishTerrainMacro(
           terrainMacroGridFromEvolution(evolutionResult.evolution),
@@ -1787,6 +1809,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         bloom,
         sharpen,
         atmosphereResources,
+        pipelineCompiles,
         `${info.vendor} ${info.renderer}`.trim(),
       );
       checkpointRendererStartup("renderer finalization", "sync");
@@ -2201,6 +2224,7 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   async waitForGpuIdleForCapture(): Promise<void> {
     if (this.disposed || this.deviceLost) return;
+    await this.pipelineCompiles?.whenIdle();
     await this.engine._device.queue.onSubmittedWorkDone();
   }
 
@@ -2225,6 +2249,18 @@ export class FlightRenderer implements FlightRenderingSystem {
     // A/B agent's renderer flies perf:flight too, so it cannot say so at
     // construction.
     this.skyRebakeSynchronous = true;
+    // Likewise every pipeline is built in the frame that draws it, so a
+    // shot's frames draw every mesh, as the baselines' did.
+    this.pipelineCompiles?.setSynchronous(true);
+  }
+
+  /**
+   * The perf probe's read of the off-frame pipeline compiles
+   * (`AsyncPipelineCompiles`): counters since startup, or null when they are
+   * not installed.
+   */
+  getPipelineCompileStatsForCapture(): AsyncPipelineCompileStatistics | null {
+    return this.pipelineCompiles?.statistics ?? null;
   }
 
   /**
@@ -2778,6 +2814,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
+      () => this.pipelineCompiles?.dispose(),
       () => this.airport?.dispose(),
       () => this.spawnedAirfields?.dispose(),
       () => this.clouds.dispose(),
