@@ -35,13 +35,18 @@ import {
   type AirportDefinition,
   type WorldDefinition,
 } from "@/src/world";
+import {
+  infrastructureChangeTouches,
+  type InfrastructureChange,
+} from "@/src/world/infrastructure";
 import { sampleErgFarWeight } from "@/src/world/landforms";
 import {
   diffTerrainAirports,
   sameTerrainAirports,
   terrainAirportReaches,
+  terrainPageAirportDomain,
   terrainPageInAirportReach,
-  type TerrainAirportReach,
+  type TerrainMutableWorldRect,
 } from "./AirportReach";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
 import {
@@ -319,11 +324,17 @@ const NO_SLOTS: readonly TerrainAtlasSlot[] = Object.freeze([]);
  */
 export const AIRPORT_INVALIDATION_SLOTS_PER_FRAME = 64;
 
-/** One airport-list change whose reach is still being tested against the slots. */
+/**
+ * One change to the ground the pages bake, still being tested against the
+ * slots: an airport-list change (`setAirports`), or a change to the streamed
+ * infrastructure regions (`infrastructureChanged`), which share the airport
+ * machinery and its names.
+ */
 interface AirportInvalidation {
-  /** The list version the change produced: slots batched at or after it are current. */
+  /** The version the change produced: slots batched at or after it are current. */
   readonly version: number;
-  readonly reaches: readonly TerrainAirportReach[];
+  /** Whether the change reaches what a page samples. */
+  readonly reaches: (address: WorldPageAddress) => boolean;
   /** Snapshots taken when the scan starts; slots requested later are current. */
   heightSlots: readonly TerrainAtlasSlot[] | null;
   channelSlots: readonly TerrainAtlasSlot[] | null;
@@ -726,8 +737,10 @@ export class TerrainClipmapSystem {
   /** The airport pumps' per-frame candidate lists, reused, never reallocated. */
   private readonly heightRegenerationScratch: TerrainAtlasSlot[] = [];
   private readonly channelRebakeScratch: TerrainAtlasSlot[] = [];
-  /** Bumped by every airport-list change; slots record it when batched. */
+  /** Bumped by every airport-list and infrastructure change; slots record it when batched. */
   private airportListVersion = 0;
+  /** `infrastructureChanged`'s page-domain scratch. */
+  private readonly infrastructureDomain: TerrainMutableWorldRect = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   /** Changes whose invalidation scan has not finished, oldest first. */
   private readonly airportInvalidations: AirportInvalidation[] = [];
 
@@ -1033,8 +1046,13 @@ export class TerrainClipmapSystem {
     return {
       residentPages: this.heightAtlas.residency.residentCount,
       residencyReasons: this.residencyReasons,
+      // Pages owed an in-place rebuild (an airport or a road changed under
+      // them) are pending too: a capture waits for the ground it shows.
       pendingPages: this.heightAtlas.residency.generatingCount
-        + (this.provinceField?.pending ? 1 : 0),
+        + (this.provinceField?.pending ? 1 : 0)
+        + this.airportInvalidations.length
+        + this.heightAirportRebuilds.size
+        + this.channelAirportRebuilds.size,
       triangles: trianglesPerNode * this.nodes.length,
       workersBusy: (this.generationInFlight ? 1 : 0) + (this.occlusionInFlight ? 1 : 0),
       residentSlots: this.heightAtlas.residency.residentCount,
@@ -1358,10 +1376,37 @@ export class TerrainClipmapSystem {
     this.pageGenerator?.setAirports?.(next);
     this.splatBake?.setAirports?.(next);
     if (added.length === 0 && removed.length === 0) return;
+    const reaches = [...added, ...removed].flatMap(terrainAirportReaches);
     this.airportListVersion += 1;
     this.airportInvalidations.push({
       version: this.airportListVersion,
-      reaches: [...added, ...removed].flatMap(terrainAirportReaches),
+      reaches: (address) => terrainPageInAirportReach(address, reaches),
+      heightSlots: null,
+      channelSlots: null,
+      cursor: 0,
+    });
+  }
+
+  /**
+   * The streamed infrastructure regions changed (roads came or went:
+   * `changeInfrastructureRegions`): bring every page whose sampled domain the
+   * change touches up to date, exactly as `setAirports` does for a spawned
+   * airport (its steps 2 and 3) — scanned over frames, rebuilt in place
+   * through the pumps and meter, an L0 page published again.
+   *
+   * The stage's GPU copy needs nothing here: every bake binds it, and the
+   * binding brings it to the current regions first, so a page batched after
+   * the change reads them. A page the change does not touch is bit-identical
+   * either way, because outside the change's bins the stage's answer is the
+   * same. Cheap: one queued test per slot, spread like an airport change's.
+   */
+  infrastructureChanged(change: InfrastructureChange): void {
+    if (this.disposed || change.bins.size === 0) return;
+    const domain = this.infrastructureDomain;
+    this.airportListVersion += 1;
+    this.airportInvalidations.push({
+      version: this.airportListVersion,
+      reaches: (address) => infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
       heightSlots: null,
       channelSlots: null,
       cursor: 0,
@@ -1428,7 +1473,7 @@ export class TerrainClipmapSystem {
     // first dispatch needs nothing: it will read the new list.
     const recorded = state === "resident" || (state === "generating" && slot.generationSubmitted);
     if (!recorded || slot.airportListVersion >= change.version) return;
-    if (!terrainPageInAirportReach(slot.address, change.reaches)) return;
+    if (!change.reaches(slot.address)) return;
     slot.airportRebuildOwed = true;
     this.heightAirportRebuilds.add(slot);
     // Its channel page bakes FROM these heights, so it is re-baked after
@@ -1447,7 +1492,7 @@ export class TerrainClipmapSystem {
     // Never batched yet: its first bake reads the new list.
     if (state !== "resident" && state !== "generating") return;
     if (slot.airportListVersion < 0 || slot.airportListVersion >= change.version) return;
-    if (!terrainPageInAirportReach(slot.address, change.reaches)) return;
+    if (!change.reaches(slot.address)) return;
     slot.airportRebuildOwed = true;
     this.channelAirportRebuilds.add(slot);
   }
