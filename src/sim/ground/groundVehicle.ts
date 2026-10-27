@@ -29,6 +29,7 @@ import { roughnessProfile, type RoughnessPoint } from "./roughness";
 import { createSoilContact, DIG_GAIN, DIG_SLIP, soilCurve, soilPatch } from "./soil";
 import { CAR_COLLIDER_MATERIAL } from "./carColliders";
 import { DeckGround, describeDeck } from "./deckGround";
+import { DOUBLE_ZERO } from "./doubleZero";
 import { Steering } from "./steering";
 import { createCarSurface, describeSurface, SurfaceCache, type CarSurface } from "./surface";
 import { createGroundPoint, TerrainLatticeCache, type GroundField, type GroundPoint } from "./terrainPatch";
@@ -416,19 +417,19 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private placed = false;
   /** Waiting at the start for the terrain pages under the car (`groundReady`), and for how long, s. */
   private settling = false;
-  private groundWait = 0;
+  private groundWait = DOUBLE_ZERO;
   /** The safe spots, newest at `safeSpotNext - 1`: the body origin's x, y, z and the heading, four to a spot. */
   private readonly safeSpots = new Float64Array(SAFE_SPOT_COUNT * 4);
   private safeSpotCount = 0;
   private safeSpotNext = 0;
-  private safeSpotClock = 0;
+  private safeSpotClock = DOUBLE_ZERO;
 
   readonly engine: Engine;
   readonly transmission: Transmission;
   readonly steering = new Steering();
   readonly driveline = new DrivelineSolver();
   private readonly pedals: DriverPedals = { accelerator: 0, brake: 0 };
-  private handbrake = 0;
+  private handbrake = DOUBLE_ZERO;
   private headlights: CarHeadlights = "off";
   private headlightPresses: number | null = null;
   private downhillPresses: number | null = null;
@@ -438,13 +439,13 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   /** Traction control is on (the car's default; tests turn it off). It stands down while a locker is engaged. */
   tractionControl = true;
   absActive = false;
-  private dacIntegral = 0;
-  private hillHold = 0;
-  private hillHoldBrake = 0;
-  private previousBrake = 0;
+  private dacIntegral = DOUBLE_ZERO;
+  private hillHold = DOUBLE_ZERO;
+  private hillHoldBrake = DOUBLE_ZERO;
+  private previousBrake = DOUBLE_ZERO;
   tyrePressureBar = TYRE.roadPressureBar;
   /** Driveline windup between the propeller shafts, radians at the shaft. */
-  windup = 0;
+  windup = DOUBLE_ZERO;
 
   // Axles: heave (m, + into bump) and roll (rad, + right end up) against the frame.
   readonly axleHeave = new Float64Array(2);
@@ -492,7 +493,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly probeTouching = new Uint8Array(HULL.length);
 
   rolled = false;
-  private wadingDepthValue = 0;
+  private wadingDepthValue = DOUBLE_ZERO;
   private readonly waterSample = createWaterSurfaceSample();
   /**
    * The water at each wheel, sampled one wheel a step in turn (`sampleWater`):
@@ -516,11 +517,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private inWater = false;
   private waterDensity = FRESH_WATER_DENSITY;
   /** How far up the body the cabin has flooded, 0 dry .. 1 full. */
-  cabinFlood = 0;
+  cabinFlood = DOUBLE_ZERO;
   // Peaks since the last snapshot, for sound and effects.
-  private bumpStopPeak = 0;
-  private scrapePeak = 0;
-  private splashPeak = 0;
+  private bumpStopPeak = DOUBLE_ZERO;
+  private scrapePeak = DOUBLE_ZERO;
+  private splashPeak = DOUBLE_ZERO;
 
   // Scratch.
   private readonly v0: Vec3 = { x: 0, y: 0, z: 0 };
@@ -543,16 +544,16 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly tyreInput = createTyreInput(TYRE.nominalLoad);
   private readonly contactPoint: Vec3 = { x: 0, y: 0, z: 0 };
   // This step's numbers, as fields so that no call passes one.
-  private dt = 0;
-  private h = 0;
+  private dt = DOUBLE_ZERO;
+  private h = DOUBLE_ZERO;
   /** The environment's gravity, a field: a getter's double return would be boxed in the substep. */
   private gravity = STANDARD_GRAVITY;
-  private columnY = 0;
-  private speed = 0;
-  private slope = 0;
+  private columnY = DOUBLE_ZERO;
+  private speed = DOUBLE_ZERO;
+  private slope = DOUBLE_ZERO;
   private radialStiffness = tyreRadialStiffness(TYRE.roadPressureBar);
-  private hullPenetration = 0;
-  private hullResult = 0;
+  private hullPenetration = DOUBLE_ZERO;
+  private hullResult = DOUBLE_ZERO;
   private readonly groundScratch = createGroundPoint();
   private readonly normalScratch: Vec3 = { x: 0, y: 1, z: 0 };
 
@@ -1027,7 +1028,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     return Math.abs(drive) > opposing * 1.05;
   }
 
-  private lastCouplingTorque = 0;
+  private lastCouplingTorque = DOUBLE_ZERO;
 
   // ---------------------------------------------------------------- contact
 
