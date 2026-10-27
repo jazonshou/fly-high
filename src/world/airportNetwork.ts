@@ -272,10 +272,12 @@ export const SPAWNED_AIRPORT_VOLCANIC_COVER_MAX = 0.05;
 
 /**
  * How far a spawned airport's surveyed centre and thresholds keep from any
- * infrastructure segment's reach (`infrastructureNear`): further than an
- * airport's earthworks reach from either, so no runway is graded over a quay
- * or a road, and the infrastructure stage, which runs before the airports,
- * never has its work flattened.
+ * static infrastructure segment's reach (`infrastructureNear`): further than
+ * an airport's earthworks reach from either, so no runway is graded over a
+ * quay, and the infrastructure stage, which runs before the airports, never
+ * has its work flattened. Streamed regions (the roads) are not asked: which
+ * of them were installed when a site was surveyed depends on where the
+ * aircraft flew, so the roads keep airports off their own corridors instead.
  */
 export const SPAWNED_AIRPORT_INFRASTRUCTURE_CLEARANCE_METERS = 1_500;
 

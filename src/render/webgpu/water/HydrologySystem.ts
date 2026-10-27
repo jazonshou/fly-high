@@ -14,6 +14,7 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import type { WorldSeed } from "@/src/world";
+import { withStaticInfrastructure } from "@/src/world/infrastructure";
 import {
   CLOUD_SHADOW_RECEIVER_SAMPLER,
   CLOUD_SHADOW_RECEIVER_UNIFORMS,
@@ -35,6 +36,7 @@ import {
   type HydrologyGenerationResult,
   type HydrologyGenerationConfig,
   type HydrologyLake,
+  type HydrologyTerrainSampler,
   type HydrologyWorldInputs,
   type HydrologyWorldInputsProvider,
   resolveHydrologyConfig,
@@ -1140,11 +1142,18 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       this.generationConfig.extentMeters,
       paging,
     );
+    // Rivers and lakes are laid out on the ground before any streamed
+    // infrastructure region (the roads): the worker has none installed, and
+    // the main thread, which does, samples as if it had none, so either side
+    // lays out the same water.
+    const terrainSample = generationOptions.terrainSample;
+    const staticTerrainSample: HydrologyTerrainSampler = (x, z) =>
+      withStaticInfrastructure(() => terrainSample(x, z));
     this.generationClient = this.graphMode
       ? null
       : generationClient ?? new HydrologyGenerationClient({
         worldSeed: generationOptions.worldSeed,
-        terrainSample: generationOptions.terrainSample,
+        terrainSample: staticTerrainSample,
         ...(workerWorldSeed === undefined ? {} : { workerWorldSeed }),
         ...(workerClimateProvince ? { workerClimateProvince } : {}),
         ...(workerLandforms ? { workerLandforms } : {}),
@@ -1152,7 +1161,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       });
     this.analyticGroundSample = this.graphMode
       ? null
-      : (x, z) => generationOptions.terrainSample(x, z).height;
+      : (x, z) => staticTerrainSample(x, z).height;
     this.material = new ShaderMaterial(
       "hydrology-water-material",
       scene,
