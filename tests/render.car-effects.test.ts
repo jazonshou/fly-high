@@ -6,7 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE, type CarVisualState, type FlightVisualState } from "../src/game/types";
 import { OPAQUE_RENDERING_GROUP_ID, WATER_RENDERING_GROUP_ID } from "../src/render/webgpu/core/RenderingGroups";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
-import { CAR_BOW_WAVE_MIN_DEPTH, CarBowWave, carBowWaveOutline } from "../src/render/webgpu/ground/CarBowWave";
+import {
+  CAR_BOW_WAVE_MIN_DEPTH,
+  CAR_BOW_WAVE_SEA_DEFINE,
+  CAR_BOW_WAVE_VERTEX_WGSL,
+  CarBowWave,
+  carBowWaveOutline,
+  carBowWaveSeaShare,
+} from "../src/render/webgpu/ground/CarBowWave";
 import {
   CAR_SOIL,
   CAR_TRACK_MAX_DARKNESS,
@@ -648,6 +655,41 @@ describe("the bow wave in a ford", () => {
     expect(mesh.renderingGroupId).toBe(WATER_RENDERING_GROUP_ID);
     expect(mesh.alphaIndex).toBeLessThan(2.5);
     bow.dispose();
+  });
+
+  it("rides the drawn sea's waves in the sea, and lies flat on a lake or a river above it", () => {
+    // The calm level the simulator wades the car in is sea level itself.
+    expect(carBowWaveSeaShare(0, 0)).toBe(1);
+    expect(carBowWaveSeaShare(0.08, 0)).toBe(1);
+    expect(carBowWaveSeaShare(-0.08, 0)).toBe(1);
+    expect(carBowWaveSeaShare(0.25, 0)).toBeGreaterThan(0);
+    expect(carBowWaveSeaShare(0.25, 0)).toBeLessThan(1);
+    expect(carBowWaveSeaShare(0.4, 0)).toBe(0);
+    expect(carBowWaveSeaShare(12, 0)).toBe(0);
+    expect(carBowWaveSeaShare(Number.NaN, 0)).toBe(0);
+    // The sea's own displacement, behind the define, and nothing of it otherwise.
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain(`#ifdef ${CAR_BOW_WAVE_SEA_DEFINE}`);
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("fn oceanSurfaceDisplacement(");
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("oceanSurfaceDisplacement(worldXZ) * share");
+
+    const bound: unknown[] = [];
+    const ocean = { bindSurface: (material: unknown) => bound.push(material) };
+    const flat = new CarBowWave(scene);
+    const onSea = new CarBowWave(scene, { sea: { ocean, seaLevel: 0 } });
+    const flatMaterial = flat.bowMesh.material as ShaderMaterial;
+    const seaMaterial = onSea.bowMesh.material as ShaderMaterial;
+    expect(flatMaterial.options.defines).not.toContain(`#define ${CAR_BOW_WAVE_SEA_DEFINE}`);
+    expect(seaMaterial.options.defines).toContain(`#define ${CAR_BOW_WAVE_SEA_DEFINE}`);
+    expect(seaMaterial.options.samplers).toContain("displacement0");
+    // Bound only while it draws, as the boat's wake is.
+    onSea.bindOcean();
+    expect(bound).toHaveLength(0);
+    const wading = rolling(2, { wadingDepth: 0.45, wheelSurface: [-1, -1, -1, -1], wheelSinkage: [0, 0, 0, 0] });
+    run((state) => onSea.update(state), 0.5, 60, 2, wading, { start: 1 });
+    onSea.bindOcean();
+    expect(bound).toEqual([seaMaterial]);
+    flat.dispose();
+    onSea.dispose();
   });
 });
 

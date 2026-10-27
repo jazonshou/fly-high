@@ -2,7 +2,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import type { WorldDefinition } from "@/src/world";
-import { CarBowWave } from "./CarBowWave";
+import { CarBowWave, type CarBowWaveOcean } from "./CarBowWave";
 import { CarParticleSystem } from "./CarParticleSystem";
 import { CarTrackSystem } from "./CarTrackSystem";
 
@@ -15,8 +15,9 @@ import { CarTrackSystem } from "./CarTrackSystem";
  * session compiles none of their shaders and pays none of their draws; each
  * is called where the boat's effects are: its tier field on every profile
  * change, `setFloatingOrigin` on every origin shift, `setAerialPerspective`
- * whenever the binding is rebuilt, `setAtmosphere` with the weather, and
- * `update(state)` once a frame.
+ * whenever the binding is rebuilt, `setAtmosphere` with the weather,
+ * `update(state)` once a frame, and the bow wave's `bindOcean` after the
+ * sea's own update, as the boat's wake is.
  */
 
 /** The tier fields the effects read. */
@@ -29,6 +30,8 @@ export interface CarEffectsOptions {
   readonly atmosphere?: AtmosphereSnapshot;
   /** The drawn ground's height, for the tracks primed behind a car first seen moving. */
   readonly groundHeight?: (x: number, z: number) => number;
+  /** The drawn sea and its level: in a sea ford the bow wave rides its waves. */
+  readonly sea?: { readonly ocean: CarBowWaveOcean; readonly seaLevel: number };
 }
 
 export interface CarEffects {
@@ -49,7 +52,10 @@ export function createCarEffects(scene: Scene, options: CarEffectsOptions): CarE
     segments: options.profile.tyreTrackSegments,
     ...(options.groundHeight ? { groundHeight: options.groundHeight } : {}),
   });
-  const bowWave = new CarBowWave(scene, options.atmosphere ? { atmosphere: options.atmosphere } : {});
+  const bowWave = new CarBowWave(scene, {
+    ...(options.atmosphere ? { atmosphere: options.atmosphere } : {}),
+    ...(options.sea ? { sea: options.sea } : {}),
+  });
   if (options.atmosphere) particles.setAtmosphere(options.atmosphere);
   return { particles, tracks, bowWave };
 }

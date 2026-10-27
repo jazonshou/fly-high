@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
+import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
+import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import type { Material } from "@babylonjs/core/Materials/material";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
@@ -10,14 +12,20 @@ import { INITIAL_VISUAL_STATE, type CarVisualState, type FlightVisualState } fro
 import { resolveAerialPerspectiveBinding } from "../../src/render/webgpu/atmosphere/AerialPerspective";
 import type { AtmosphereSnapshot } from "../../src/render/webgpu/atmosphere/AtmosphereSystem";
 import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
+import { CAR_BOW_WAVE_SEA_DEFINE } from "../../src/render/webgpu/ground/CarBowWave";
 import { createCarEffects } from "../../src/render/webgpu/ground/CarEffects";
 import { resolveEnvironmentState } from "../../src/render/webgpu/nature/EnvironmentDirector";
+import { SpectralOceanSystem } from "../../src/render/webgpu/water/SpectralOceanSystem";
 
 /**
  * The LandCruiser's effects on a real adapter: the particles, the tyre tracks
- * and the bow wave compile, which no Node test can see. Compile errors are
- * read from `getCompilationInfo`, as `boat-effects-compile` reads them.
+ * and the bow wave compile, which no Node test can see, the bow wave both
+ * flat and riding the drawn sea's displacement (`CAR_BOW_WAVE_SEA`, the
+ * renderer's build). Compile errors are read from `getCompilationInfo`, as
+ * `boat-effects-compile` reads them.
  */
+
+const SEED = 0x4f434541;
 
 const atmosphere: AtmosphereSnapshot = {
   sunDirection: new Vector3(0.3, 0.35, 0.89).normalize(),
@@ -109,79 +117,94 @@ async function errorsIn(records: readonly ShaderRecord[]): Promise<string[]> {
   return diagnostics;
 }
 
+async function compileCarEffects(withSea: boolean): Promise<void> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  document.body.appendChild(canvas);
+  const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
+  const modules: ShaderRecord[] = [];
+  try {
+    await engine.initAsync();
+    const device = (engine as unknown as { _device: GPUDevice })._device;
+    const createModule = device.createShaderModule.bind(device);
+    device.createShaderModule = (descriptor: GPUShaderModuleDescriptor) => {
+      const created = createModule(descriptor);
+      modules.push({ code: String(descriptor.code), module: created });
+      return created;
+    };
+    const scene = new Scene(engine);
+    scene.useRightHandedSystem = true;
+    engine.runRenderLoop(() => {});
+    const camera = new UniversalCamera("car-compile-camera", new Vector3(-10, 3, 0), scene);
+    camera.setTarget(Vector3.Zero());
+    scene.activeCamera = camera;
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const ocean = withSea ? await SpectralOceanSystem.create(scene, camera, 0, profile, SEED, atmosphere) : null;
+    const effects = createCarEffects(scene, {
+      profile,
+      world: { prevailingWindRadians: 0.4, prevailingWindSpeed: 4 },
+      atmosphere,
+      groundHeight: () => 0,
+      ...(ocean ? { sea: { ocean, seaLevel: 0 } } : {}),
+    });
+    const environment = resolveEnvironmentState({
+      clock: { dayOfYear: 171, solarTimeHours: 15 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const binding = resolveAerialPerspectiveBinding(environment, 3, [1, 0.9, 0.75], [0.55, 0.72, 0.93], 0.87);
+    effects.particles.setAerialPerspective(binding);
+    effects.bowWave.setAerialPerspective(binding);
+    let time = 600;
+    const step = (): void => {
+      time += 1 / 60;
+      const state: FlightVisualState = {
+        ...INITIAL_VISUAL_STATE,
+        simulationTime: time,
+        position: { x: 3 * (time - 600), y: 0.8, z: 0 },
+        velocity: { x: 3, y: 0, z: 0 },
+        orientation: { x: 0, y: 0, z: 0, w: 1 },
+        throttle: 0.8,
+        vehicle: FORDING,
+      };
+      effects.particles.update(state);
+      effects.tracks.update(state);
+      effects.bowWave.update(state);
+      ocean?.update(camera.position, time, 1 / 60);
+      effects.bowWave.bindOcean();
+    };
+    step();
+    step();
+    const meshes = [effects.particles.mesh!, effects.tracks.mesh!, effects.bowWave.bowMesh];
+    expect(effects.particles.drawing).toBe(true);
+    expect(effects.tracks.drawing).toBe(true);
+    expect(effects.bowWave.drawing).toBe(true);
+    await compiled(engine, meshes, step);
+    const ours = modules.filter((record) => /carA|trackA|bowPose/u.test(record.code));
+    expect(ours.length, "not every effect built its modules").toBeGreaterThanOrEqual(6);
+    const bow = ours.filter((record) => record.code.includes("bowPose"));
+    expect(bow.some((record) => record.code.includes("fn oceanSurfaceDisplacement(")), "the sea's displacement").toBe(withSea);
+    const diagnostics = await errorsIn(ours);
+    expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+    effects.particles.dispose();
+    effects.tracks.dispose();
+    effects.bowWave.dispose();
+    ocean?.dispose();
+    scene.dispose();
+  } finally {
+    engine.stopRenderLoop();
+    engine.dispose();
+    canvas.remove();
+  }
+}
+
 describe("the car's effects on a real adapter", () => {
   it("compiles the particles, the tyre tracks and the bow wave without an error", async () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 64;
-    canvas.height = 64;
-    document.body.appendChild(canvas);
-    const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
-    const modules: ShaderRecord[] = [];
-    try {
-      await engine.initAsync();
-      const device = (engine as unknown as { _device: GPUDevice })._device;
-      const createModule = device.createShaderModule.bind(device);
-      device.createShaderModule = (descriptor: GPUShaderModuleDescriptor) => {
-        const created = createModule(descriptor);
-        modules.push({ code: String(descriptor.code), module: created });
-        return created;
-      };
-      const scene = new Scene(engine);
-      scene.useRightHandedSystem = true;
-      engine.runRenderLoop(() => {});
-      const camera = new UniversalCamera("car-compile-camera", new Vector3(-10, 3, 0), scene);
-      camera.setTarget(Vector3.Zero());
-      scene.activeCamera = camera;
-      const profile = resolveWebGpuQualityProfile("medium", "balanced");
-      const effects = createCarEffects(scene, {
-        profile,
-        world: { prevailingWindRadians: 0.4, prevailingWindSpeed: 4 },
-        atmosphere,
-        groundHeight: () => 0,
-      });
-      const environment = resolveEnvironmentState({
-        clock: { dayOfYear: 171, solarTimeHours: 15 },
-        latitudeDegrees: 45,
-        weather: "clear",
-      });
-      const binding = resolveAerialPerspectiveBinding(environment, 3, [1, 0.9, 0.75], [0.55, 0.72, 0.93], 0.87);
-      effects.particles.setAerialPerspective(binding);
-      effects.bowWave.setAerialPerspective(binding);
-      let time = 600;
-      const step = (): void => {
-        time += 1 / 60;
-        const state: FlightVisualState = {
-          ...INITIAL_VISUAL_STATE,
-          simulationTime: time,
-          position: { x: 3 * (time - 600), y: 0.8, z: 0 },
-          velocity: { x: 3, y: 0, z: 0 },
-          orientation: { x: 0, y: 0, z: 0, w: 1 },
-          throttle: 0.8,
-          vehicle: FORDING,
-        };
-        effects.particles.update(state);
-        effects.tracks.update(state);
-        effects.bowWave.update(state);
-      };
-      step();
-      step();
-      const meshes = [effects.particles.mesh!, effects.tracks.mesh!, effects.bowWave.bowMesh];
-      expect(effects.particles.drawing).toBe(true);
-      expect(effects.tracks.drawing).toBe(true);
-      expect(effects.bowWave.drawing).toBe(true);
-      await compiled(engine, meshes, step);
-      const ours = modules.filter((record) => /carA|trackA|bowPose/u.test(record.code));
-      expect(ours.length, "not every effect built its modules").toBeGreaterThanOrEqual(6);
-      const diagnostics = await errorsIn(ours);
-      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
-      effects.particles.dispose();
-      effects.tracks.dispose();
-      effects.bowWave.dispose();
-      scene.dispose();
-    } finally {
-      engine.stopRenderLoop();
-      engine.dispose();
-      canvas.remove();
-    }
+    await compileCarEffects(false);
+  }, 600_000);
+
+  it(`compiles the bow wave on the drawn sea (${CAR_BOW_WAVE_SEA_DEFINE}) without an error`, async () => {
+    await compileCarEffects(true);
   }, 600_000);
 });
