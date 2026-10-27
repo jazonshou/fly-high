@@ -328,10 +328,12 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "boat-helm",
     "boat-wake-lowsun",
     // Cars, after the boats and for the same reason: nobody has measured a
-    // car scene's memory, and one of them forces a whole sand sea.
+    // car scene's memory, one of them forces a whole sand sea, and another a
+    // whole high-desert province.
     "car-clearing-chase",
     "car-dune-cockpit",
     "car-ford-chase",
+    "car-dust-chase",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
