@@ -28,7 +28,7 @@ import {
   type RoadBox,
   type RoadEdge,
 } from "./roadGraph";
-import { airportRoadHead, airportRoadNode, type RoadNode } from "./roadNodes";
+import { airportRoadHead, airportRoadNode, marinaRoadNode, type RoadNode } from "./roadNodes";
 import { roadRouteDeviationLimit, roadRouteRelaxShift, routeRoadEdge } from "./roadRouting";
 import { RoadGround, roadGroundAt, roadGroundHeight } from "./roadTerrain";
 
@@ -115,6 +115,15 @@ export interface RoadRegion {
   /** In composition order: (class priority, edge id, index). */
   readonly pieces: readonly RoadPiece[];
   readonly pads: readonly RoadPad[];
+}
+
+/** What a guardrail keeps clear of (`RoadNetwork.railKeepOuts`). */
+export interface RoadRailKeepOuts {
+  readonly pads: readonly RoadPad[];
+  /** Every road's pieces that reach the box asked about, of every class and edge. */
+  readonly pieces: readonly RoadPiece[];
+  /** The marina's car park anchor, where the gravel road meets the marina's own pad; null outside the box. */
+  readonly carPark: { readonly x: number; readonly z: number } | null;
 }
 
 export interface RoadGeometryStats {
@@ -340,6 +349,17 @@ function sharedNode(left: RoadEdge, right: RoadEdge): RoadNode[] {
     if (node.key === right.a.key || node.key === right.b.key) shared.push(node);
   }
   return shared;
+}
+
+/** A layer's road that reaches a box: its class, edge and built geometry. */
+interface LayerRoad {
+  readonly classId: RoadClassId;
+  readonly edge: RoadEdge;
+  readonly geometry: RoadGeometry;
+}
+
+function inRoadBox(box: RoadBox, x: number, z: number): boolean {
+  return x >= box.minX && x < box.maxX && z >= box.minZ && z < box.maxZ;
 }
 
 function pieceOrder(left: RoadPiece, right: RoadPiece): number {
@@ -644,11 +664,61 @@ export class RoadNetwork {
   /** One region of one layer: its pieces and pads, in composition order. */
   region(layer: RoadLayer, rx: number, rz: number): RoadRegion {
     const box = roadRegionBox(rx, rz);
-    const inBox = (px: number, pz: number) => px >= box.minX && px < box.maxX && pz >= box.minZ && pz < box.maxZ;
+    const roads = this.layerRoads(layer, box);
     const pieces: RoadPiece[] = [];
+    for (const { geometry } of roads) {
+      for (const piece of geometry.pieces) {
+        if (inRoadBox(box, 0.5 * (piece.ax + piece.bx), 0.5 * (piece.az + piece.bz))) pieces.push(piece);
+      }
+    }
+    pieces.sort(pieceOrder);
+    return Object.freeze({ layer, rx, rz, pieces: Object.freeze(pieces), pads: Object.freeze(this.padsOf(layer, box, roads)) });
+  }
+
+  /**
+   * What a guardrail near `box` keeps clear of (`roadRails.ts`): the pads at
+   * every node in it, of both layers, as their own regions lay them; the
+   * marina's car park, where the road meets it; and every road's pieces that
+   * reach the box, whichever region and layer holds them.
+   */
+  railKeepOuts(box: RoadBox): RoadRailKeepOuts {
+    const pads: RoadPad[] = [];
+    const pieces: RoadPiece[] = [];
+    for (const layer of ROAD_LAYERS) {
+      const roads = this.layerRoads(layer, box);
+      pads.push(...this.padsOf(layer, box, roads));
+      for (const { geometry } of roads) {
+        for (const piece of geometry.pieces) {
+          if (segmentBoxDistance(piece.ax, piece.az, piece.bx, piece.bz, box) <= 0) pieces.push(piece);
+        }
+      }
+    }
+    const marina = marinaRoadNode(this.world);
+    const carPark = marina && inRoadBox(box, marina.x, marina.z) ? { x: marina.x, z: marina.z } : null;
+    return { pads, pieces, carPark };
+  }
+
+  /** A layer's built roads that reach `box`, class by class. */
+  private layerRoads(layer: RoadLayer, box: RoadBox): LayerRoad[] {
+    const roads: LayerRoad[] = [];
+    for (const classId of roadLayerClasses(layer)) {
+      for (const edge of this.edgesNear(classId, box)) {
+        const geometry = this.geometry(edge);
+        if (geometry) roads.push({ classId, edge, geometry });
+      }
+    }
+    return roads;
+  }
+
+  /**
+   * The pads at a layer's nodes inside `box`, by node id. Every road meeting
+   * such a node reaches the box, so a pad is the same whichever box holds its
+   * node: a region's, or a smaller one round a guardrail.
+   */
+  private padsOf(layer: RoadLayer, box: RoadBox, roads: readonly LayerRoad[]): RoadPad[] {
     const incident = new Map<string, { node: RoadNode; classId: RoadClassId; dirs: number[] }>();
     const note = (node: RoadNode, classId: RoadClassId, geometry: RoadGeometry, atStart: boolean) => {
-      if (!inBox(node.x, node.z)) return;
+      if (!inRoadBox(box, node.x, node.z)) return;
       let entry = incident.get(node.key);
       if (!entry) incident.set(node.key, (entry = { node, classId, dirs: [] }));
       entry.classId = Math.max(entry.classId, classId) as RoadClassId;
@@ -656,16 +726,9 @@ export class RoadNetwork {
       const [i0, i1] = atStart ? [0, Math.min(n - 1, 4)] : [n - 1, Math.max(0, n - 5)];
       entry.dirs.push(Math.atan2(geometry.x[i1]! - geometry.x[i0]!, geometry.z[i1]! - geometry.z[i0]!));
     };
-    for (const classId of roadLayerClasses(layer)) {
-      for (const edge of this.edgesNear(classId, box)) {
-        const geometry = this.geometry(edge);
-        if (!geometry) continue;
-        for (const piece of geometry.pieces) {
-          if (inBox(0.5 * (piece.ax + piece.bx), 0.5 * (piece.az + piece.bz))) pieces.push(piece);
-        }
-        note(edge.a, classId, geometry, true);
-        note(edge.b, classId, geometry, false);
-      }
+    for (const { classId, edge, geometry } of roads) {
+      note(edge.a, classId, geometry, true);
+      note(edge.b, classId, geometry, false);
     }
     // A gravel node only tracks reach gets its pad from the track layer.
     if (layer === "track") {
@@ -677,7 +740,6 @@ export class RoadNetwork {
         if (major) incident.delete(key);
       }
     }
-    pieces.sort(pieceOrder);
     const pads: RoadPad[] = [];
     for (const { node, classId, dirs } of incident.values()) {
       // Fixed nodes: the marina's car park pad is the marina's; the airport's road head gets a turning pad.
@@ -700,7 +762,7 @@ export class RoadNetwork {
       pads.push(Object.freeze({ classId, nodeId: node.id, x: node.x, z: node.z, height: node.height, radius }));
     }
     pads.sort((left, right) => (left.nodeId >>> 0) - (right.nodeId >>> 0));
-    return Object.freeze({ layer, rx, rz, pieces: Object.freeze(pieces), pads: Object.freeze(pads) });
+    return pads;
   }
 }
 

@@ -9,6 +9,7 @@ import {
   CarColliders,
   GUARDRAIL_DEPTH,
   guardrailColliders,
+  regionColliders,
 } from "../src/sim/ground/carColliders";
 import { GroundVehicleSimulator } from "../src/sim/ground";
 import { CRASH_IMPACT_SPEED } from "../src/sim/ground/groundVehicle";
@@ -23,6 +24,9 @@ import type { InfrastructureRegion } from "../src/world/infrastructure";
 import { homeMarina } from "../src/world/marina";
 import { marinaToWorld } from "../src/world/marinaLayout";
 import type { WorldDefinition } from "../src/world/types";
+import { roadRegionInfrastructure } from "../src/world/roads/roadInfrastructure";
+import { RoadNetwork, roadRegionOf } from "../src/world/roads/roadNetwork";
+import { airportRoadHead } from "../src/world/roads/roadNodes";
 import { createWorld } from "../src/world/world";
 import { controls, FLAT, headingOf, speedOf, STEP } from "./support/carRig";
 
@@ -330,6 +334,84 @@ describe("the car against buildings and rails", () => {
     expectRedirected(hit, 0.5);
     expect(hit.deepest).toBeGreaterThan(0.5);
     expect(hit.deepest).toBeLessThan(0.8);
+  });
+
+  it("redirects a car at 80 km/h and 20 degrees off a real road's rail, laid on flat ground, the same way", () => {
+    // The longest rail the roads lay round the default world's home airport road (roadRails.ts), through the region's colliders.
+    const world = createWorld();
+    const network = new RoadNetwork(world);
+    const head = airportRoadHead(world)!;
+    let best: { region: InfrastructureRegion; points: readonly number[]; length: number } | null = null;
+    for (let dx = -2; dx <= 2; dx += 1) {
+      for (let dz = -2; dz <= 2; dz += 1) {
+        const region = network.region("major", roadRegionOf(head.startX) + dx, roadRegionOf(head.startZ) + dz);
+        const infrastructure = roadRegionInfrastructure(network, region);
+        for (const rail of infrastructure.rails ?? []) {
+          let length = 0;
+          for (let i = 0; i + 3 < rail.points.length; i += 2) {
+            length += Math.hypot(rail.points[i + 2]! - rail.points[i]!, rail.points[i + 3]! - rail.points[i + 1]!);
+          }
+          if (!best || length > best.length) best = { region: infrastructure, points: rail.points, length };
+        }
+      }
+    }
+    expect(best).not.toBeNull();
+    const { region, points } = best!;
+    expect(best!.length).toBeGreaterThan(45);
+    const colliders = new ColliderWorld();
+    for (const piece of regionColliders(region, () => 0)) colliders.addStatic(piece.shape, { material: piece.material });
+    // The hit's frame: o on the rail 12 m from its start, t along it, n = (dz, -dx) to the road, as the straight rail's x.
+    let along = 12;
+    let i = 0;
+    for (; i + 3 < points.length; i += 2) {
+      const step = Math.hypot(points[i + 2]! - points[i]!, points[i + 3]! - points[i + 1]!);
+      if (along <= step) break;
+      along -= step;
+    }
+    const length = Math.hypot(points[i + 2]! - points[i]!, points[i + 3]! - points[i + 1]!);
+    const t = { x: (points[i + 2]! - points[i]!) / length, z: (points[i + 3]! - points[i + 1]!) / length };
+    const n = { x: t.z, z: -t.x };
+    const o = { x: points[i]! + t.x * along, z: points[i + 1]! + t.z * along };
+    const across = (p: { x: number; z: number }): number => (p.x - o.x) * n.x + (p.z - o.z) * n.z;
+    const alongOf = (p: { x: number; z: number }): number => (p.x - o.x) * t.x + (p.z - o.z) * t.z;
+    // A real rail ends: the car is judged while it is still beside it.
+    const end = alongOf({ x: points[points.length - 2]!, z: points[points.length - 1]! });
+    const railHeading = Math.atan2(t.x, t.z);
+    const heading = railHeading - 20 * DEG;
+    const sim = onFlat(colliders, o.x + 78 * n.x - 210 * t.x, o.z + 78 * n.z - 210 * t.z, heading);
+    const outermost = (): number => Math.min(...hullPoints(sim).map(across));
+    runUp(sim, 22.2, heading, 40, () => outermost() < 0.4);
+    const impactSpeed = speedOf(sim);
+    expect(impactSpeed).toBeGreaterThan(21.5);
+    expect(impactSpeed).toBeLessThan(23);
+    const rideHeight = sim.state.position.y;
+    let deepest = 0;
+    let highest = 0;
+    let roll = 0;
+    controls(sim, {});
+    let seconds = 0;
+    for (; seconds < 4 && alongOf(sim.state.position) < end - 3; seconds += STEP) {
+      sim.step(STEP);
+      deepest = Math.max(deepest, -outermost());
+      highest = Math.max(highest, sim.state.position.y - rideHeight);
+      const q = sim.state.orientation;
+      roll = Math.max(roll, Math.abs(2 * (q.y * q.z + q.w * q.x)));
+    }
+    // Long enough for the hit to be over.
+    expect(seconds).toBeGreaterThan(1.2);
+    const exitHeading = headingOf(sim) - railHeading;
+    const v = sim.state.velocity;
+    expect(exitHeading).toBeGreaterThan(-6 * DEG);
+    expect(exitHeading).toBeLessThan(12 * DEG);
+    expect(v.x * n.x + v.z * n.z).toBeGreaterThan(-1);
+    expect(across(sim.state.position)).toBeGreaterThan(0.5);
+    expect(Math.hypot(v.x, v.z)).toBeGreaterThan(0.6 * impactSpeed);
+    expect(highest).toBeLessThan(0.25);
+    expect(roll).toBeLessThan(Math.sin(15 * DEG));
+    expect(sim.rolled).toBe(false);
+    expect(sim.state.crashed).toBe(false);
+    expect(deepest).toBeGreaterThan(0.25);
+    expect(deepest).toBeLessThan(0.7);
   });
 
   it("holds a car driven square into a rail at 100 km/h on the road side: wrecked, not through it, not thrown back", () => {

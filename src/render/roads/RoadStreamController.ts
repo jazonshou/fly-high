@@ -167,7 +167,11 @@ export class RoadStreamController {
     for (; taken < this.arrived.length; taken += 1) {
       const event = this.arrived[taken]!;
       const key = event.infrastructure.key;
-      if (this.installed.has(key) || !this.keep.has(key) || install.some((other) => other.infrastructure.key === key)) {
+      if (this.installed.has(key) || install.some((other) => other.infrastructure.key === key)) continue;
+      if (!this.keep.has(key)) {
+        // Arrived after the observer left it: kept like a dropped region, so
+        // a return takes it from the cache instead of asking again.
+        this.cacheDropped(key, event);
         continue;
       }
       const size = event.infrastructure.segments.length;
@@ -189,8 +193,7 @@ export class RoadStreamController {
     for (const key of removed) {
       const event = this.installed.get(key)!;
       this.installed.delete(key);
-      this.dropped.set(key, event);
-      if (this.dropped.size > ROAD_STREAM_DROPPED_CACHE) this.dropped.delete(this.dropped.keys().next().value!);
+      this.cacheDropped(key, event);
     }
     for (const event of install) this.installed.set(event.infrastructure.key, event);
     // Null only in an eroded world, which has no stage: nothing to tell.
@@ -231,6 +234,12 @@ export class RoadStreamController {
     this.primeWaiters = [];
     this.worker?.terminate();
     this.worker = null;
+  }
+
+  private cacheDropped(key: string, event: RoadsWorkerRegionEvent): void {
+    this.dropped.delete(key);
+    this.dropped.set(key, event);
+    if (this.dropped.size > ROAD_STREAM_DROPPED_CACHE) this.dropped.delete(this.dropped.keys().next().value!);
   }
 
   private resolvePrimes(): void {

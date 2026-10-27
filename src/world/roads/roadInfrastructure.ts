@@ -3,13 +3,15 @@ import { INFRASTRUCTURE_PROFILE } from "../infrastructureProfiles";
 import { roadBatterTarget, roadCrossOffset } from "../roadEarthworkProfiles";
 import type { WorldDefinition } from "../types";
 import { roadClass, roadFormationHalfWidth, ROAD_PRIORITY, type RoadClassSpec } from "./roadClasses";
-import type { RoadLayer, RoadPad, RoadPiece, RoadRegion } from "./roadNetwork";
+import type { RoadLayer, RoadNetwork, RoadPad, RoadPiece, RoadRegion } from "./roadNetwork";
+import { roadRegionRails } from "./roadRails";
 import { roadGroundHeight } from "./roadTerrain";
 
 /**
  * The roads as the infrastructure stage takes them: one streamed region per
  * network region, a `carriageway` segment per piece and a `junctionPad` per
- * pad (`roadEarthworkProfiles.ts`).
+ * pad (`roadEarthworkProfiles.ts`), and the region's guardrails
+ * (`roadRegionRails`), which the stage carries for the renderer and the car.
  *
  * Every segment's `reach` is sized to where its batters meet the ground,
  * walked out from the formation edge on the ground before the stage, so a
@@ -43,11 +45,17 @@ const BATTER_STATION_SPACING = 12;
 /** A pad's, in this many directions round its edge. */
 const PAD_DIRECTIONS = 8;
 
-export function roadRegionInfrastructure(world: WorldDefinition, region: RoadRegion): InfrastructureRegion {
+export function roadRegionInfrastructure(network: RoadNetwork, region: RoadRegion): InfrastructureRegion {
+  const world = network.world;
   const segments: InfrastructureSegment[] = [];
   for (const piece of region.pieces) segments.push(pieceSegment(world, piece));
   for (const pad of region.pads) segments.push(padSegment(world, pad));
-  return Object.freeze({ key: roadRegionKey(region.layer, region.rx, region.rz), segments: Object.freeze(segments) });
+  const rails = roadRegionRails(network, region);
+  return Object.freeze({
+    key: roadRegionKey(region.layer, region.rx, region.rz),
+    segments: Object.freeze(segments),
+    ...(rails.length > 0 ? { rails } : {}),
+  });
 }
 
 function pieceSegment(world: WorldDefinition, piece: RoadPiece): InfrastructureSegment {

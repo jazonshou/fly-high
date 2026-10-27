@@ -23,10 +23,13 @@ let world: WorldDefinition | null = null;
 let queue: RoadRegionAddress[] = [];
 let scheduled = false;
 /**
- * Regions posted lately, by address key: a `want` list sent while one was on
- * its way still names it, and is not a request to build it twice.
+ * Regions posted lately, by address key, and when: a `want` list sent while
+ * one was on its way still names it, and is not a request to build it twice.
+ * It is answered all the same, from the event already posted: the main
+ * thread may have let that one go (the observer left it before it landed),
+ * and a request it never hears back on stays pending for good.
  */
-const recent = new Map<string, number>();
+const recent = new Map<string, { readonly at: number; readonly event: RoadsWorkerEvent }>();
 const RECENT_MS = 10_000;
 
 function post(event: RoadsWorkerEvent): void {
@@ -48,23 +51,26 @@ function step(): void {
   const key = roadRegionAddressKey(address);
   const started = performance.now();
   const posted = recent.get(key);
-  if (posted !== undefined && started - posted < RECENT_MS) {
+  if (posted !== undefined && started - posted.at < RECENT_MS) {
+    post(posted.event);
     schedule();
     return;
   }
   try {
-    const region = roadNetworkFor(current).region(address.layer, address.rx, address.rz);
-    const infrastructure = roadRegionInfrastructure(current, region);
-    post({
+    const network = roadNetworkFor(current);
+    const region = network.region(address.layer, address.rx, address.rz);
+    const infrastructure = roadRegionInfrastructure(network, region);
+    const event: RoadsWorkerEvent = {
       type: "region",
       address,
       infrastructure,
       pieces: region.pieces,
       pads: region.pads,
       milliseconds: performance.now() - started,
-    });
-    recent.set(key, performance.now());
-    for (const [other, at] of recent) {
+    };
+    post(event);
+    recent.set(key, { at: performance.now(), event });
+    for (const [other, { at }] of recent) {
       if (started - at >= RECENT_MS) recent.delete(other);
     }
   } catch (error) {

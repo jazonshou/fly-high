@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RoadStreamController,
   ROAD_STREAM_FLUSH_SEGMENTS,
@@ -38,7 +38,8 @@ import { createWorld } from "@/src/world/world";
  * into the stage once a frame (`RoadStreamController`), and the renderer's
  * end of it (`RoadStreamRuntime`: who hears a change, in what order, and
  * which late page publications it holds back), against a worker stand-in
- * that answers synchronously.
+ * that answers synchronously; and the roads worker's own answer to a region
+ * asked for twice.
  */
 
 const world = createWorld();
@@ -251,6 +252,33 @@ describe("the road stream controller", () => {
     controller.dispose();
   });
 
+  it("keeps a region that lands after the observer has left it, and takes it back from the cache on return", () => {
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    const home = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+    controller.observe(home, 0);
+    const asked = worker.lastWant.slice();
+    expect(asked.length).toBeGreaterThan(0);
+    controller.observe({ x: 40_000, z: 0, velocityX: 0, velocityZ: 0 }, 1_000);
+    // Home's regions land only now, the observer 40 km on: none is installed.
+    for (const address of asked) worker.post(regionEvent(address));
+    expect(controller.flush()).toBeNull();
+    expect(installedInfrastructureRegionKeys(world)).toHaveLength(0);
+
+    // Back home: the cache holds what it can, and only the rest is asked for again.
+    const commands = worker.commands.length;
+    controller.observe(home, 2_000);
+    const back = controller.flush()!;
+    expect(back.installed.length).toBeGreaterThan(0);
+    const again = worker.commands.length > commands ? worker.lastWant : [];
+    const keyOf = (address: RoadRegionAddress) => roadRegionKey(address.layer, address.rx, address.rz);
+    const installed = new Set(back.installed.map((event) => event.infrastructure.key));
+    expect(again.some((address) => installed.has(keyOf(address)))).toBe(false);
+    expect(back.installed.length + again.length).toBe(asked.length);
+    expect(controller.pendingRegions).toBe(again.length);
+    controller.dispose();
+  });
+
   it("primes: resolves once the regions round the spawn are in, flushing as they come", async () => {
     const worker = new FakeRoadsWorker();
     const controller = new RoadStreamController(world, () => worker);
@@ -390,5 +418,39 @@ describe("the renderer's road stream runtime", () => {
     expect(runtime.holdsBack(pageUnder(first!, before + 1))).toBe(false);
     expect(runtime.holdsBack(pageUnder(second!, before + 1))).toBe(true);
     runtime.dispose();
+  });
+});
+
+describe("the roads worker", () => {
+  it("answers a region asked for again soon after from the answer it posted, never staying silent", async () => {
+    vi.resetModules();
+    const posted: RoadsWorkerEvent[] = [];
+    let listener: ((event: MessageEvent<RoadsWorkerCommand>) => void) | null = null;
+    vi.stubGlobal("self", {
+      addEventListener: (_type: string, handler: (event: MessageEvent<RoadsWorkerCommand>) => void) => {
+        listener = handler;
+      },
+      postMessage: (event: RoadsWorkerEvent) => posted.push(event),
+    });
+    try {
+      await import("@/src/workers/roads.worker");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const send = (command: RoadsWorkerCommand) => listener!({ data: command } as MessageEvent<RoadsWorkerCommand>);
+    const until = async (done: () => boolean) => {
+      for (let k = 0; k < 2_000 && !done(); k += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+      expect(done()).toBe(true);
+    };
+    // A region far out at sea: no roads, so cheap to lay.
+    const address: RoadRegionAddress = { layer: "track", rx: 400, rz: 400 };
+    send({ type: "world", world });
+    send({ type: "want", regions: [address] });
+    await until(() => posted.length === 1);
+    expect(posted[0]!.type).toBe("region");
+    // Asked again (the main thread let the first answer go): the same answer, not silence and not a rebuild.
+    send({ type: "want", regions: [address] });
+    await until(() => posted.length === 2);
+    expect(posted[1]).toBe(posted[0]);
   });
 });
