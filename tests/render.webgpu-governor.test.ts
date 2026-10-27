@@ -274,24 +274,69 @@ describe("adaptive governor (1A-6b)", () => {
       cdlodNodeBudgetScale: 1,
       cdlodPixelThresholdScale: 1,
     });
+    // PR B part 2 (G5, plan §4.2): every lever's first notch before any
+    // second, the least visible first. The CSM rung's place follows Jason's
+    // verdict on the held shadow's lag: accepted, level 3.
+    const levels = (max: number, name: (level: number) => string | null) =>
+      Array.from({ length: max }, (_, index) => name(index + 1));
+    expect(levels(CPU_WORK_MAX_LEVEL, cpuWorkLeverName)).toEqual([
+      "terrain-page-requests",
+      "cloud-depth-refresh",
+      "shadow-refresh",
+      "detail-cell-budget",
+      "cdlod-node-budget",
+      "animal-budget",
+      "terrain-page-requests",
+      "cdlod-node-budget",
+      "detail-and-animal-budget",
+      "terrain-page-requests",
+    ]);
+    expect(levels(GPU_WORK_MAX_LEVEL, gpuWorkLeverName)).toEqual([
+      "compute-budget",
+      "compute-budget",
+      "cloud-shadow-cadence",
+      "cloud-march",
+      "shadow-caster-distance",
+      "vegetation-distance",
+      "cloud-shadow-cadence",
+      "cloud-march",
+      "shadow-caster-distance",
+      "ground-cover-gate",
+      "ground-cover-gate",
+    ]);
     // The CPU ladder touches only CPU-side fields.
     expect(workLeverSettingsFor(1, 0).terrainPageRequestsPerUpdate).toBe(8);
-    expect(workLeverSettingsFor(3, 0).terrainPageRequestsPerUpdate).toBe(2);
+    expect(workLeverSettingsFor(1, 0).cloudDepthRefreshExtraFrames).toBe(0);
+    expect(workLeverSettingsFor(2, 0).cloudDepthRefreshExtraFrames).toBe(1);
+    expect(workLeverSettingsFor(2, 0).shadowRefreshExtraFrames).toBe(0);
+    expect(workLeverSettingsFor(3, 0).shadowRefreshExtraFrames).toBe(1);
     expect(workLeverSettingsFor(3, 0).detailBudgetScale).toBe(1);
     expect(workLeverSettingsFor(4, 0).detailBudgetScale).toBe(0.66);
-    expect(workLeverSettingsFor(5, 0).detailBudgetScale).toBe(0.33);
+    expect(workLeverSettingsFor(4, 0).cdlodNodeBudgetScale).toBe(1);
+    expect(workLeverSettingsFor(5, 0)).toMatchObject({ cdlodNodeBudgetScale: 0.85, cdlodPixelThresholdScale: 1 });
     expect(workLeverSettingsFor(5, 0).animalBudgetScale).toBe(1);
     expect(workLeverSettingsFor(6, 0).animalBudgetScale).toBe(0.5);
+    expect(workLeverSettingsFor(6, 0).terrainPageRequestsPerUpdate).toBe(8);
+    expect(workLeverSettingsFor(7, 0).terrainPageRequestsPerUpdate).toBe(4);
+    expect(workLeverSettingsFor(8, 0)).toMatchObject({ cdlodNodeBudgetScale: 0.7, cdlodPixelThresholdScale: 4 / 3 });
+    expect(workLeverSettingsFor(8, 0)).toMatchObject({ detailBudgetScale: 0.66, animalBudgetScale: 0.5 });
+    expect(workLeverSettingsFor(9, 0)).toMatchObject({ detailBudgetScale: 0.33, animalBudgetScale: 0.25 });
+    expect(workLeverSettingsFor(9, 0).terrainPageRequestsPerUpdate).toBe(4);
     expect(workLeverSettingsFor(CPU_WORK_MAX_LEVEL, 0)).toMatchObject({
       terrainPageRequestsPerUpdate: 2,
       detailBudgetScale: 0.33,
       animalBudgetScale: 0.25,
+      cloudDepthRefreshExtraFrames: 1,
+      shadowRefreshExtraFrames: 1,
+      cdlodNodeBudgetScale: 0.7,
+      cdlodPixelThresholdScale: 4 / 3,
       // GPU-cost levers stay untouched at any CPU level.
       cloudShadowExtraFrames: 0,
       shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
       groundCoverGateScale: 1,
       computeBudgetScale: 1,
+      cloudMarchScale: 1,
     });
     // The GPU ladder touches only render-side fields. (2-10 retired the
     // planar-reflection rungs with their system.)
@@ -300,37 +345,46 @@ describe("adaptive governor (1A-6b)", () => {
     expect(workLeverSettingsFor(0, 1)).toMatchObject({
       computeBudgetScale: 0.6,
       cloudShadowExtraFrames: 0,
+      cloudMarchScale: 1,
       shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
     });
     expect(workLeverSettingsFor(0, 2).computeBudgetScale).toBe(0.35);
     expect(workLeverSettingsFor(0, 2).cloudShadowExtraFrames).toBe(0);
     expect(workLeverSettingsFor(0, 3).cloudShadowExtraFrames).toBe(1);
-    expect(workLeverSettingsFor(0, 4).cloudShadowExtraFrames).toBe(2);
+    expect(workLeverSettingsFor(0, 3).cloudMarchScale).toBe(1);
+    expect(workLeverSettingsFor(0, 4).cloudMarchScale).toBe(0.75);
     expect(workLeverSettingsFor(0, 4).shadowCasterDistanceScale).toBe(1);
     expect(workLeverSettingsFor(0, 5).shadowCasterDistanceScale).toBe(0.7);
-    expect(workLeverSettingsFor(0, 6).shadowCasterDistanceScale).toBe(0.5);
+    expect(workLeverSettingsFor(0, 5).vegetationDistanceScale).toBe(1);
+    expect(workLeverSettingsFor(0, 6).vegetationDistanceScale).toBe(0.75);
+    expect(workLeverSettingsFor(0, 6).cloudShadowExtraFrames).toBe(1);
+    expect(workLeverSettingsFor(0, 7).cloudShadowExtraFrames).toBe(2);
+    expect(workLeverSettingsFor(0, 8).cloudMarchScale).toBe(0.6);
+    expect(workLeverSettingsFor(0, 8).shadowCasterDistanceScale).toBe(0.7);
+    expect(workLeverSettingsFor(0, 9).shadowCasterDistanceScale).toBe(0.5);
     // `6-9`/`P-5`: the ground-cover gate is the LAST rung, after vegetation
     // distance, exactly where the wave-P plan put it — and it is untouched
     // until every cheaper GPU lever has been spent.
-    expect(workLeverSettingsFor(0, 7).groundCoverGateScale).toBe(1);
+    expect(workLeverSettingsFor(0, 9).groundCoverGateScale).toBe(1);
+    expect(workLeverSettingsFor(0, 10).groundCoverGateScale).toBe(0.6);
     expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL)).toMatchObject({
       computeBudgetScale: 0.35,
       cloudShadowExtraFrames: 2,
+      cloudMarchScale: 0.6,
       shadowCasterDistanceScale: 0.5,
       vegetationDistanceScale: 0.75,
       groundCoverGateScale: 0.3,
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
       detailBudgetScale: 1,
       animalBudgetScale: 1,
+      shadowRefreshExtraFrames: 0,
+      cloudDepthRefreshExtraFrames: 0,
+      cdlodNodeBudgetScale: 1,
+      cdlodPixelThresholdScale: 1,
     });
     expect(cpuWorkLeverName(0)).toBeNull();
-    expect(cpuWorkLeverName(1)).toBe("terrain-page-requests");
-    expect(cpuWorkLeverName(CPU_WORK_MAX_LEVEL)).toBe("animal-budget");
-    expect(gpuWorkLeverName(1)).toBe("compute-budget");
-    expect(gpuWorkLeverName(3)).toBe("cloud-shadow-cadence");
-    expect(gpuWorkLeverName(7)).toBe("vegetation-distance");
-    expect(gpuWorkLeverName(GPU_WORK_MAX_LEVEL)).toBe("ground-cover-gate");
+    expect(gpuWorkLeverName(0)).toBeNull();
     expect(() => workLeverSettingsFor(CPU_WORK_MAX_LEVEL + 1, 0)).toThrow(RangeError);
     expect(() => workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL + 1)).toThrow(RangeError);
   });

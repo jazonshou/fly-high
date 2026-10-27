@@ -371,23 +371,38 @@ const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
 
 /**
  * Governor B's ladder — genuinely CPU-side costs only (streaming pump work,
- * worker scheduling, per-instance generation, wildlife simulation). Ordered
- * cheapest-looking damage first; each lever is exhausted before the next.
+ * worker scheduling, per-instance generation, wildlife simulation, and since
+ * PR B part 2 (G5) CDLOD selection and the CSM and cloud-depth submissions,
+ * which the old ladder could not reach). Ordered cheapest-looking damage
+ * first (plan §4.2): every lever's first notch comes before any lever's
+ * second, so a host that needs only a little back loses only the least
+ * visible cut of each.
  */
 const CPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 8 }) },
-  { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 4 }) },
-  { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 2 }) },
+  { lever: "cloud-depth-refresh", apply: (s) => ({ ...s, cloudDepthRefreshExtraFrames: 1 }) },
+  // A held CSM lags the aircraft's own shadow by a frame, at every tier that
+  // reaches this rung. Its place follows Jason's verdict on that lag (PR B
+  // part 2, the CSM clip): accepted, here; rejected, this line moves to the
+  // end, after page requests 2, so every tier sheds it last.
+  { lever: "shadow-refresh", apply: (s) => ({ ...s, shadowRefreshExtraFrames: 1 }) },
   { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.66 }) },
-  { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.33 }) },
+  { lever: "cdlod-node-budget", apply: (s) => ({ ...s, cdlodNodeBudgetScale: 0.85 }) },
   { lever: "animal-budget", apply: (s) => ({ ...s, animalBudgetScale: 0.5 }) },
-  { lever: "animal-budget", apply: (s) => ({ ...s, animalBudgetScale: 0.25 }) },
+  { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 4 }) },
+  // The second notch also coarsens the split threshold ×4/3 (+1 px at tier
+  // 1), which the terrain eases in over about 20 selections.
+  { lever: "cdlod-node-budget", apply: (s) => ({ ...s, cdlodNodeBudgetScale: 0.7, cdlodPixelThresholdScale: 4 / 3 }) },
+  { lever: "detail-and-animal-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.33, animalBudgetScale: 0.25 }) },
+  { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 2 }) },
 ]);
 
 /**
  * The GPU-cost ladder (R-11): render passes and draw volume. Shed when the
  * frame is GPU-bound and Governor A has no resolution lever left (latched
- * resolution-insensitive, or pinned at the scale floor).
+ * resolution-insensitive, or pinned at the scale floor). PR B part 2 (G5,
+ * plan §4.2) adds the cloud view march and orders the visible levers as the
+ * CPU ladder is: each one's first notch before any second.
  */
 const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   // 4-0b rung 0: shrink the shared compute cap BEFORE any visible lever
@@ -402,10 +417,12 @@ const GPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   // 2-10 retired the planar-reflection-cadence rungs with their system — a
   // governor lever must never be attached to nothing.
   { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowExtraFrames: 1 }) },
-  { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowExtraFrames: 2 }) },
+  { lever: "cloud-march", apply: (s) => ({ ...s, cloudMarchScale: 0.75 }) },
   { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceScale: 0.7 }) },
-  { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceScale: 0.5 }) },
   { lever: "vegetation-distance", apply: (s) => ({ ...s, vegetationDistanceScale: 0.75 }) },
+  { lever: "cloud-shadow-cadence", apply: (s) => ({ ...s, cloudShadowExtraFrames: 2 }) },
+  { lever: "cloud-march", apply: (s) => ({ ...s, cloudMarchScale: 0.6 }) },
+  { lever: "shadow-caster-distance", apply: (s) => ({ ...s, shadowCasterDistanceScale: 0.5 }) },
   // `6-9`/`P-5`: the ground-cover gate, last. Two notches for the same reason
   // rung 0 has two — one step per 120-frame window, and a single notch from
   // full to nothing would be a visible cliff at the one pose the whole system
@@ -607,6 +624,8 @@ const MIN_STEP_IMPROVEMENT = 0.04;
 const MIN_LATE_DROP = 0.25;
 const MIN_LATE_BEFORE_STEP = 0.02;
 const MIN_LATE_FRAMES_DROPPED = 3;
+/** `cpuShedNearGpuTarget`: render() p95 within this share of the GPU target, 12.3 ms on the 60 fps tiers. */
+const CPU_SHED_NEAR_GPU_TARGET_RATIO = 0.9;
 /** Below this synthesised GPU estimate the frame is CPU-bound by definition. */
 const MIN_GPU_PROXY_MS = 2;
 const HOT_WINDOWS_REQUIRED = 2;
@@ -635,6 +654,10 @@ const STREAMING_LEVERS: ReadonlySet<string> = new Set([
   "detail-cell-budget",
   "animal-budget",
   "vegetation-distance",
+  // PR B part 2 (G5): a restored CDLOD budget raises page demand late, since
+  // the selection drives which pages stay resident.
+  "cdlod-node-budget",
+  "detail-and-animal-budget",
 ]);
 
 /**
@@ -774,6 +797,23 @@ function gpuSideOfSpentCpuWindow(signals: GovernorSignals, config: GovernorConfi
   if (proxy < MIN_GPU_PROXY_MS) return null;
   const split = splitOnProxy(cpu, proxy, interval);
   return split.classification === "cpu-bound" ? null : split;
+}
+
+/**
+ * PR B part 2 (K1): a host whose CPU ladder is already shedding, with
+ * render() p95 at or over 0.9 of the GPU target. Each CPU rung takes a
+ * little off render(); with other main-thread work (S7b's 3 ms) the frame
+ * stays a refresh late once render() has crossed under the GPU target, and
+ * the interval-minus-CPU proxy, under vsync mostly the wait for the next
+ * refresh, then reads it as GPU-bound. Once resolution has been shown not
+ * to help, such a window keeps to the CPU ladder instead of shedding every
+ * GPU rung one CPU rung short of the fix. The ten-rung ladder takes
+ * render() further than the seven-rung one did, so more hosts cross that
+ * line before their last rung (S7b's 18 ms host stopped at rung 9 of 10).
+ */
+function cpuShedNearGpuTarget(state: GovernorState, signals: GovernorSignals, config: GovernorConfig): boolean {
+  const cpu = signals.cpuP95Ms;
+  return state.cpuWorkLevel > 0 && cpu !== null && cpu >= CPU_SHED_NEAR_GPU_TARGET_RATIO * config.gpuTargetMs;
 }
 
 /** The timing domain a probe's two windows must share: GPU timestamps, or presented intervals. */
@@ -1065,15 +1105,16 @@ function offCadenceDecision(
       });
     }
     if (
-      pacing
+      (pacing || cpuShedNearGpuTarget(next, signals, config))
       && next.resolutionInsensitive
       && signals.gpuP95Ms === null
       && next.cpuWorkLevel < CPU_WORK_MAX_LEVEL
     ) {
       // A miss neither side explains, which resolution was shown not to fix,
       // more likely sits on the main thread: the CPU ladder goes before the
-      // GPU one.
-      return shedCpuWork(next, "frame-pacing", config);
+      // GPU one. So does a GPU-bound reading that only render() crossing
+      // under the GPU target produced (`cpuShedNearGpuTarget`).
+      return shedCpuWork(next, pacing ? "frame-pacing" : "cpu-work", config);
     }
     if (intervalDomain || gpu > config.gpuTargetMs) {
       // Governor A has no lever (latched, or already at the floor): shed a
