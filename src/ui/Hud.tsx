@@ -86,6 +86,14 @@ function requestedRenderingLabel(diagnostics: RenderDiagnostics): string {
   return diagnostics.requestedRenderingMode;
 }
 
+/** What became of the vegetation worker, when anything did; empty while it is healthy. */
+function detailWorkerLabel(diagnostics: RenderDiagnostics): string {
+  const worker = diagnostics.detailWorker;
+  if (!worker) return "";
+  return (!worker.active && worker.fallbacks > 0 ? " · VEG GEN ON MAIN THREAD" : "")
+    + (worker.respawns > 0 ? ` · VEG WORKER RESTARTED x${worker.respawns}` : "");
+}
+
 export function Hud({
   state,
   aircraft,
@@ -464,6 +472,7 @@ export function Hud({
           <span className="diagnostics__wide">
             {diagnostics.visibleInstances.toLocaleString()} detail instances · {diagnostics.activeAnimals} animals · {diagnostics.riverCount} rivers / {diagnostics.lakeCount} lakes
             {diagnostics.hydrologyMainThreadFallback ? " · WATER GEN ON MAIN THREAD" : ""}
+            {detailWorkerLabel(diagnostics)}
           </span>
           <span className="diagnostics__wide">
             {diagnostics.adapter}

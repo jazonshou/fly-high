@@ -161,6 +161,19 @@ export type DetailWorkerEvent =
       type: "presentationError";
       buildId: number;
       message: string;
+    }
+  | {
+      /**
+       * A heartbeat between slices of a build that has not finished. It
+       * carries no records: it only tells the main thread that a slow build
+       * is still being worked on, so a busy worker is not mistaken for a hung
+       * one. The worker never sends it after the build's answer or its cancel.
+       */
+      type: "presentationProgress";
+      buildId: number;
+      /** Slices run so far, and work units packed so far, in this build. */
+      slices: number;
+      units: number;
     };
 
 /** Transfer ownership of retained terrain copies into the detail worker. */
@@ -286,6 +299,11 @@ export function isDetailWorkerEvent(value: unknown): value is DetailWorkerEvent 
       && Array.isArray(value.batches)
       && value.batches.every(isPresentationBatch)
       && isPresentationStatistics(value.statistics);
+  }
+  if (value.type === "presentationProgress") {
+    return isSafeNonNegativeInteger(value.buildId)
+      && isSafeNonNegativeInteger(value.slices)
+      && isSafeNonNegativeInteger(value.units);
   }
   if (
     (value.type !== "cell" && value.type !== "retainedCell" && value.type !== "error")

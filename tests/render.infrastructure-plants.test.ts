@@ -121,11 +121,13 @@ describe("plants on built ground", () => {
           ...(plantExclusions ? { plantExclusions } : {}),
         });
         const internals = system as unknown as {
-          bakeAttributeRow(row: number): void;
+          bakeAttributeColumns(row: number, from: number, to: number): void;
           backAttributes: Uint8Array;
           backDrivers: Uint8Array;
         };
-        for (let row = 0; row < GROUND_COVER_ATTRIBUTE_TILE_EDGE; row += 1) internals.bakeAttributeRow(row);
+        for (let row = 0; row < GROUND_COVER_ATTRIBUTE_TILE_EDGE; row += 1) {
+          internals.bakeAttributeColumns(row, 0, GROUND_COVER_ATTRIBUTE_TILE_EDGE);
+        }
         const result = { attributes: internals.backAttributes.slice(), drivers: internals.backDrivers.slice() };
         system.dispose();
         return result;

@@ -115,6 +115,21 @@ export interface GroundCoverSystemOptions {
   /** The consumer-authority sampler (eroded height where resident). */
   readonly terrainSample: (x: number, z: number) => TerrainSample;
   /**
+   * The same authority's height alone, which MUST equal
+   * `terrainSample(x, z).height` bit for bit. The tile's height rows and the
+   * altitude gate read only the height, and a full sample costs four more
+   * height evaluations for the normal plus the cover fields. Optional: without
+   * it the bake keeps its whole-row step, so a tile never completes later than
+   * it did before the column budget existed.
+   */
+  readonly terrainHeight?: (x: number, z: number) => number;
+  /**
+   * The tile bake's clock in milliseconds, `() => performance.now()` by
+   * default. It is not called on `performance`, so pass a closure: a bare
+   * `performance.now` throws without `performance` as its `this`.
+   */
+  readonly now?: () => number;
+  /**
    * `6-9`: the shared amortised-compute meter. Optional so the NullEngine
    * fixtures and the CPU-only path construct without one; when it is absent
    * every ring dispatches, which is wave G's un-metered behaviour and is
@@ -186,6 +201,34 @@ interface GroundCoverRingResources {
 const NO_PLANT_EXCLUSIONS: readonly InfrastructurePlantExclusion[] = Object.freeze([]);
 const BLADE_BASE_HEIGHT_METERS = 0.42;
 const BLADE_BASE_WIDTH_METERS = 0.016;
+
+/** Height rows per attribute row; also the height columns one attribute column spans. */
+const HEIGHT_ROWS_PER_ATTRIBUTE_ROW =
+  GROUND_COVER_HEIGHT_TILE_EDGE / GROUND_COVER_ATTRIBUTE_TILE_EDGE;
+
+/**
+ * The column-granular bake's step: 32 m of row, which is 32 height columns or
+ * 8 attribute columns. An attribute column costs about four height-only
+ * columns (a full sample, the classifier and the density field), so the two
+ * steps cost about the same, and a call stops within one step of the budget
+ * unless the pace floor below holds it longer.
+ */
+export const GROUND_COVER_TILE_BAKE_STEP_HEIGHT_COLUMNS = 32;
+export const GROUND_COVER_TILE_BAKE_STEP_ATTRIBUTE_COLUMNS =
+  GROUND_COVER_TILE_BAKE_STEP_HEIGHT_COLUMNS / HEIGHT_ROWS_PER_ATTRIBUTE_ROW;
+
+/**
+ * The column-granular bake's floor, in height columns per call (an attribute
+ * column counts as the four it spans): one height row and a quarter of an
+ * attribute row. That is the whole-row bake's minimum of one row per call,
+ * averaged over a tile, so a tile never takes more calls than it has rows,
+ * however slow the host. Where the budget already covers this, it does
+ * nothing. Where it does not, a call bakes past the budget until it has kept
+ * the pace, ending within one step of it, so it costs at most a pace's worth
+ * of work and one step; `bakeStats.paceFloorCalls` counts those calls.
+ */
+export const GROUND_COVER_TILE_BAKE_PACE_COLUMNS =
+  GROUND_COVER_HEIGHT_TILE_EDGE + GROUND_COVER_ATTRIBUTE_TILE_EDGE;
 
 /** One reusable Plane[] target for the per-frame frustum extraction —
  * `GetPlanesToRef` writes into pre-existing planes, it does not allocate. */
@@ -307,6 +350,22 @@ export class GroundCoverSystem {
   private backTileOriginX = 0;
   private backTileOriginZ = 0;
   private backTileRow = -1;
+  // The column-granular bake's cursor inside `backTileRow`: the height row
+  // first, then (every fourth row) its attribute row.
+  private backTileColumn = 0;
+  private backTilePhase: "height" | "attribute" = "height";
+  /** Calls the back tile has had, and the height columns it has swept, for the pace floor. */
+  private backTileCalls = 0;
+  private backTileSweptColumns = 0;
+  private readonly clock: () => number;
+  /** The whole-row bake's height source when there is no height-only sampler. */
+  private readonly fullSampleHeight = (x: number, z: number): number =>
+    this.options.terrainSample(x, z).height;
+  // What the bake cost, for the perf probe (`bakeStats`).
+  private bakeLastMilliseconds = 0;
+  private bakeMaxMilliseconds = 0;
+  private tilesCompleted = 0;
+  private paceFloorCalls = 0;
   private warmed = false;
   private disposed = false;
   private readonly planeScratch = new Float32Array(24);
@@ -342,6 +401,7 @@ export class GroundCoverSystem {
   constructor(scene: Scene, options: GroundCoverSystemOptions) {
     this.scene = scene;
     this.options = options;
+    this.clock = options.now ?? (() => performance.now());
     this.indirectRequested = options.indirectInstanceCount === true;
     this.indirectProbe = probeIndirectInstanceCountSupport(WebGPUDrawContext?.prototype ?? null);
     // §7 R4's loud startup assertion: asking for the optimisation and finding
@@ -421,7 +481,7 @@ export class GroundCoverSystem {
       affected = true;
     }
     if (this.backTileRow >= 0 && overlaps(this.backTileOriginX, this.backTileOriginZ)) {
-      this.backTileRow = 0;
+      this.rewindBackTile();
       affected = true;
     }
     return affected;
@@ -434,6 +494,30 @@ export class GroundCoverSystem {
       return GROUND_COVER_HEIGHT_TILE_EDGE - this.backTileRow;
     }
     return this.frontTileReady ? 0 : GROUND_COVER_HEIGHT_TILE_EDGE;
+  }
+
+  /**
+   * What the tile bake cost, on the bake's own clock, for the perf probe:
+   * the newest update's milliseconds (0 when it baked nothing), the most any
+   * update has spent since construction, the tiles finished, and the calls
+   * the pace floor kept baking past the budget. A call that spent more than
+   * the budget and one step without adding to `paceFloorCalls` overran it.
+   * The update that finishes a tile also times its three texture uploads, and
+   * the maximum keeps the first frames' warm-up, so a per-frame or per-leg
+   * check reads `lastMilliseconds` every frame and keeps its own maximum.
+   */
+  get bakeStats(): {
+    lastMilliseconds: number;
+    maxMilliseconds: number;
+    tilesCompleted: number;
+    paceFloorCalls: number;
+  } {
+    return {
+      lastMilliseconds: this.bakeLastMilliseconds,
+      maxMilliseconds: this.bakeMaxMilliseconds,
+      tilesCompleted: this.tilesCompleted,
+      paceFloorCalls: this.paceFloorCalls,
+    };
   }
 
   get statistics(): {
@@ -623,11 +707,21 @@ export class GroundCoverSystem {
     this.rings = [];
   }
 
-  /** Advance the amortised tile bake within its CPU budget. */
+  /**
+   * Advance the amortised tile bake within its CPU budget.
+   *
+   * With the height-only sampler the bake is column-granular: it resumes at a
+   * cursor inside a row, checks the clock every 32 m of row and stops once the
+   * budget is spent, so a call overruns it by one step at most, unless the
+   * pace floor keeps it going: that happens only on a host too slow to sweep
+   * one row's share of the tile per call within the budget, and
+   * `paceFloorCalls` counts each such call. Without the sampler a row costs a
+   * full sample per column, so the bake keeps its whole-row step and its floor
+   * of one row per call, exactly as before. Either way the textures upload
+   * only when the tile completes, so its bytes do not depend on the budget.
+   */
   private advanceTileBake(desiredOriginX: number, desiredOriginZ: number): void {
     const heightEdge = GROUND_COVER_HEIGHT_TILE_EDGE;
-    const attrEdge = GROUND_COVER_ATTRIBUTE_TILE_EDGE;
-    const span = GROUND_COVER_TILE_SPAN_METERS;
     const needsRestart = this.backTileRow < 0
       && (!this.frontTileReady
         || this.frontTileStale
@@ -636,29 +730,42 @@ export class GroundCoverSystem {
     if (needsRestart) {
       this.backTileOriginX = desiredOriginX;
       this.backTileOriginZ = desiredOriginZ;
-      this.backTileRow = 0;
+      this.rewindBackTile();
       this.frontTileStale = false;
     }
     if (this.backTileRow < 0) return;
-    const started = performance.now();
-    const heightStep = span / heightEdge;
-    while (
-      this.backTileRow < heightEdge
-      && performance.now() - started < GROUND_COVER_TILE_BAKE_MILLISECONDS_PER_FRAME
-    ) {
-      const row = this.backTileRow;
-      const worldZ = this.backTileOriginZ + (row + 0.5) * heightStep;
-      for (let column = 0; column < heightEdge; column += 1) {
-        const worldX = this.backTileOriginX + (column + 0.5) * heightStep;
-        this.backHeights[row * heightEdge + column] =
-          this.options.terrainSample(worldX, worldZ).height;
+    const started = this.clock();
+    const terrainHeight = this.options.terrainHeight;
+    if (terrainHeight) {
+      this.backTileCalls += 1;
+      let paceHeld = false;
+      for (;;) {
+        this.advanceBakeStep(terrainHeight);
+        if (this.backTileRow >= heightEdge) break;
+        if (this.clock() - started < GROUND_COVER_TILE_BAKE_MILLISECONDS_PER_FRAME) continue;
+        if (this.backTileSweptColumns >= this.backTileCalls * GROUND_COVER_TILE_BAKE_PACE_COLUMNS) {
+          break;
+        }
+        paceHeld = true;
       }
-      // Attribute rows bake in lockstep at their coarser cadence.
-      const rowsPerAttributeRow = heightEdge / attrEdge;
-      if (row % rowsPerAttributeRow === 0) {
-        this.bakeAttributeRow(Math.floor(row / rowsPerAttributeRow));
-      }
-      this.backTileRow += 1;
+      if (paceHeld) this.paceFloorCalls += 1;
+    } else {
+      do {
+        const row = this.backTileRow;
+        this.bakeHeightColumns(row, 0, heightEdge, this.fullSampleHeight);
+        // Attribute rows bake in lockstep at their coarser cadence.
+        if (row % HEIGHT_ROWS_PER_ATTRIBUTE_ROW === 0) {
+          this.bakeAttributeColumns(
+            row / HEIGHT_ROWS_PER_ATTRIBUTE_ROW,
+            0,
+            GROUND_COVER_ATTRIBUTE_TILE_EDGE,
+          );
+        }
+        this.backTileRow += 1;
+      } while (
+        this.backTileRow < heightEdge
+        && this.clock() - started < GROUND_COVER_TILE_BAKE_MILLISECONDS_PER_FRAME
+      );
     }
     if (this.backTileRow >= heightEdge) {
       this.backTileRow = -1;
@@ -668,18 +775,81 @@ export class GroundCoverSystem {
       this.heightTexture?.update(this.backHeights);
       this.attributeTexture?.update(this.backAttributes);
       this.driverTexture?.update(this.backDrivers);
+      this.tilesCompleted += 1;
+    }
+    const spent = this.clock() - started;
+    this.bakeLastMilliseconds = spent;
+    this.bakeMaxMilliseconds = Math.max(this.bakeMaxMilliseconds, spent);
+  }
+
+  /** Start the back tile again from its first row; its origin is the caller's. */
+  private rewindBackTile(): void {
+    this.backTileRow = 0;
+    this.backTileColumn = 0;
+    this.backTilePhase = "height";
+    this.backTileCalls = 0;
+    this.backTileSweptColumns = 0;
+  }
+
+  /** One column-granular step: the next 32 m of the cursor's height or attribute row. */
+  private advanceBakeStep(terrainHeight: (x: number, z: number) => number): void {
+    const row = this.backTileRow;
+    const from = this.backTileColumn;
+    if (this.backTilePhase === "height") {
+      const heightEdge = GROUND_COVER_HEIGHT_TILE_EDGE;
+      const to = Math.min(from + GROUND_COVER_TILE_BAKE_STEP_HEIGHT_COLUMNS, heightEdge);
+      this.bakeHeightColumns(row, from, to, terrainHeight);
+      this.backTileSweptColumns += to - from;
+      this.backTileColumn = to;
+      if (to < heightEdge) return;
+      this.backTileColumn = 0;
+      // Attribute rows bake in lockstep at their coarser cadence.
+      if (row % HEIGHT_ROWS_PER_ATTRIBUTE_ROW === 0) {
+        this.backTilePhase = "attribute";
+      } else {
+        this.backTileRow += 1;
+      }
+      return;
+    }
+    const attrEdge = GROUND_COVER_ATTRIBUTE_TILE_EDGE;
+    const to = Math.min(from + GROUND_COVER_TILE_BAKE_STEP_ATTRIBUTE_COLUMNS, attrEdge);
+    this.bakeAttributeColumns(row / HEIGHT_ROWS_PER_ATTRIBUTE_ROW, from, to);
+    this.backTileSweptColumns += (to - from) * HEIGHT_ROWS_PER_ATTRIBUTE_ROW;
+    this.backTileColumn = to;
+    if (to < attrEdge) return;
+    this.backTileColumn = 0;
+    this.backTilePhase = "height";
+    this.backTileRow += 1;
+  }
+
+  private bakeHeightColumns(
+    row: number,
+    from: number,
+    to: number,
+    height: (x: number, z: number) => number,
+  ): void {
+    const heightEdge = GROUND_COVER_HEIGHT_TILE_EDGE;
+    const heightStep = GROUND_COVER_TILE_SPAN_METERS / heightEdge;
+    const worldZ = this.backTileOriginZ + (row + 0.5) * heightStep;
+    for (let column = from; column < to; column += 1) {
+      const worldX = this.backTileOriginX + (column + 0.5) * heightStep;
+      this.backHeights[row * heightEdge + column] = height(worldX, worldZ);
     }
   }
 
-  private bakeAttributeRow(attrRow: number): void {
+  private bakeAttributeColumns(attrRow: number, from: number, to: number): void {
     const attrEdge = GROUND_COVER_ATTRIBUTE_TILE_EDGE;
     const span = GROUND_COVER_TILE_SPAN_METERS;
     const step = span / attrEdge;
     const seaLevel = this.options.seaLevelMeters ?? 0;
     const seedHash = this.options.seedHash;
     const worldZ = this.backTileOriginZ + (attrRow + 0.5) * step;
-    const plantExclusions = this.rowPlantExclusions(worldZ, this.backTileOriginX, this.backTileOriginX + span);
-    for (let column = 0; column < attrEdge; column += 1) {
+    const plantExclusions = this.rowPlantExclusions(
+      worldZ,
+      this.backTileOriginX + from * step,
+      this.backTileOriginX + to * step,
+    );
+    for (let column = from; column < to; column += 1) {
       const worldX = this.backTileOriginX + (column + 0.5) * step;
       const sample = this.options.terrainSample(worldX, worldZ);
       const at = (attrRow * attrEdge + column) * 4;
@@ -877,10 +1047,10 @@ export class GroundCoverSystem {
       this.law = input.law;
       this.buildRings(input.law);
     }
-    const groundHeight = this.options.terrainSample(
-      input.cameraWorldX,
-      input.cameraWorldZ,
-    ).height;
+    this.bakeLastMilliseconds = 0;
+    const groundHeight = this.options.terrainHeight
+      ? this.options.terrainHeight(input.cameraWorldX, input.cameraWorldZ)
+      : this.options.terrainSample(input.cameraWorldX, input.cameraWorldZ).height;
     const heightAboveGround = input.cameraWorldY - groundHeight;
     const fadeSpan = Math.max(
       input.law.altitudeFadeHighMeters - input.law.altitudeFadeLowMeters,

@@ -33,9 +33,25 @@
  *   npm run perf:flight -- --base origin/main
  *   npm run perf:flight -- --base 264b760 --head main --legs 8 --leg-frames 240
  *   npm run perf:flight -- --profile        # also a V8 CPU profile per arm per leg
+ *
+ * Every report also says what the vegetation worker's watchdog did in each
+ * arm, in the stream to rest and in every leg (`perfFlightVerdict.mts`), and
+ * `--fail-on-worker-fallback` fails the run when the commit under test
+ * tripped it. It ends with what the two bakes the renderer spreads over
+ * frames cost, frame by frame (`perfFlightBakes.mts`): the sky probe's
+ * sliced re-light in a climb, and the ground-cover tile bake low down.
+ *
+ * Both arms' renderers are made with the game's two terrain samplers, the
+ * full sample and the height-only one (`AgentConfig.gameTerrainHeight`), so
+ * the ground-cover tile bakes in steps as in the game; a build without
+ * `FlightRendererOptions.terrainHeight` (before 69746b7, "Read height-only
+ * terrain where a consumer needs only the height") ignores the second and
+ * bakes whole rows, as its game did. perf:flight runs from before it asked
+ * for the pair flew the full sample alone, so their low legs do not compare
+ * with later runs'. perf:ab still makes the capture's renderer.
  */
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -52,16 +68,38 @@ import {
   type GpuBackend,
   type StaticServer,
 } from "./perfAbHarness.mts";
+import { bakeSection, describeLegBakes } from "./perfFlightBakes.mts";
+import {
+  ARMS,
+  faultOutcome,
+  flightVerdict,
+  parseFrameRange,
+  parseHitch,
+  parseLegFrame,
+  percentiles,
+  renderVerdictMarkdown,
+  trippedBeyondFault,
+  workerFallbackExitCode,
+  workerTripped,
+  type ArmName,
+  type LegFrame,
+  type Percentiles,
+  type SettleTrial,
+} from "./perfFlightVerdict.mts";
 import type {
   AgentCatalog,
+  DetailWatchdogReport,
+  DetailWorkerFault,
+  DetailWorkerState,
   FlightFrame,
   FlightReport,
   FlightRequest,
   PerfAgent,
 } from "../tests/perf/ab/protocol.ts";
+import type { WeatherPreset } from "../src/game/types.ts";
 
-type ArmName = "base" | "head";
-const ARMS: readonly ArmName[] = ["base", "head"];
+/** The game's weathers, to turn a typo away before both arms are built (each agent checks its own). */
+const WEATHERS: Readonly<Record<WeatherPreset, true>> = { clear: true, breezy: true, cloudy: true };
 
 const USAGE = `usage: npm run perf:flight -- [options]
 
@@ -71,21 +109,54 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --legs <n>              legs per arm (default 6)
   --leg-frames <n>        frames per leg (default 240, 4 s of flight)
   --speed <m/s>           ground speed (default 120)
+  --burst-legs            alternate the legs between 250 and 60 m/s instead (ABBA keeps each leg's speed equal)
+  --park-legs             hold still (0 m/s) on odd legs and fly on even ones: a stop on the runway, then the roll
   --clearance <m>         height kept above the terrain (default 150)
   --bank <deg>            constant bank; 0 flies straight (default 0)
   --camera chase|cockpit  (default chase)
+  --weather clear|breezy|cloudy
+                          (default clear, as the capture; the game's default is breezy)
   --quality, --mode, --aircraft   renderer settings (default medium, balanced, trainer)
   --draws                 keep the frame's own draws (slow on a software adapter)
   --fence-every <n>       fence to GPU idle every n frames (default 4)
   --start <x,z[,yaw]>     begin the flight here (world metres, yaw in degrees) instead of at the shot's pose
   --base-world <json>, --head-world <json>
                           options merged into that arm's createWorld (e.g. a landform under test)
+  --kill-detail-worker <leg>:<frame>
+                          fail the vegetation worker in both arms before that frame of that leg
+                          (legs from 1, frames from 0): an error event, as a crashed worker script
+  --hang-detail-worker <leg>:<frame>
+                          as --kill-detail-worker, but terminate it with no event: a silent worker
+  --settle-trials <k>     after the legs, k independent fresh-region settles: in each, both arms at once
+                          build a new renderer and hold still over the next land start (a spiral out
+                          from the home airport that skips the sea), as in the stream to rest
+  --trial-frames <n>      frames per settle trial (default 600)
+  --emulate-hitch <ms>@<leg>:<frame>
+                          that frame stands for a main thread blocked <ms> while the simulation flew on:
+                          path and simulation time advance by <ms>, render()'s delta is FlightGame's
+                          clamp of it (0.1 s at most); every other frame stays 1/60 s
+  --frame-dump <from>-<to>
+                          read those frames of the hitch's leg back as each renders (no extra render)
+                          and write them as PNGs under <out>/frames (needs --emulate-hitch, --draws)
   --gpu swiftshader|hardware
   --chromium <path>
   --profile               write a V8 CPU profile per arm per leg (perturbs the timings)
   --heap-profile          write a V8 sampling heap profile per arm per leg: where the garbage comes from
   --no-minify             build the arms unminified, so profiles name functions (timings move)
+  --fail-on-worker-fallback
+                          exit 1 when the arm built from the commit under test tripped the
+                          vegetation worker's watchdog (timed out, restarted or fell back)
+  --under-test <ref>      the commit --fail-on-worker-fallback asks about (default the head;
+                          name it when the arms are swapped)
   --out <dir>             (default tests/perf/artifacts/flight/<timestamp>)
+
+The report ends with what the sky re-light and the ground-cover tile bake cost frame by frame,
+and says "not exercised" when the legs never reached one:
+  a sky re-light comes every 500 m of climb and the agent climbs at most 25 m/s, so one needs
+    about 1200 frames of climb: e.g. --clearance 1500 --speed 250 --legs 2 --leg-frames 720
+  the ground cover bakes only below its fade height (55 to 110 m above the ground, by tier) and
+    the agent descends at most 10 m/s from the shot's altitude; --start begins the legs at
+    --clearance above the ground: e.g. --clearance 30 --speed 70 --start <x,z>
 `;
 
 const started = performance.now();
@@ -178,21 +249,6 @@ interface ArmSummary {
   readonly effectsCompiled: readonly string[];
 }
 
-interface Percentiles {
-  readonly p50: number;
-  readonly p95: number;
-  readonly p99: number;
-  readonly max: number;
-  readonly mean: number;
-}
-
-function percentiles(values: readonly number[]): Percentiles {
-  const sorted = [...values].sort((a, b) => a - b);
-  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))] ?? Number.NaN;
-  const mean = sorted.reduce((sum, value) => sum + value, 0) / Math.max(1, sorted.length);
-  return { p50: at(0.5), p95: at(0.95), p99: at(0.99), max: sorted[sorted.length - 1] ?? Number.NaN, mean };
-}
-
 function summarize(legs: readonly FlightReport[], skipLegs: number): ArmSummary {
   const measured = legs.slice(skipLegs);
   const frames: FlightFrame[] = measured.flatMap((leg) => leg.frames);
@@ -243,6 +299,31 @@ function summarize(legs: readonly FlightReport[], skipLegs: number): ArmSummary 
 
 function fmt(value: number, digits = 2): string {
   return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
+/**
+ * One log line's worth of a stream's or a leg's vegetation worker; `fault`
+ * is a failure the harness caused in this leg or an earlier one, which is
+ * not a trip (as in the verdict).
+ */
+function describeDetailWorker(
+  state: DetailWorkerState | null | undefined,
+  watchdog: DetailWatchdogReport | null | undefined,
+  fault: DetailWorkerFault | null = null,
+): string {
+  const parts: string[] = [];
+  if (state && fault) {
+    parts.push(`${fault.kind === "kill" ? "killed" : "hung"} worker: ${faultOutcome(fault, state)}`);
+  }
+  if (state && (fault ? trippedBeyondFault(fault, state) : workerTripped(state))) {
+    parts.push(`DETAIL WORKER TRIPPED (${JSON.stringify(state)})`);
+  }
+  if (watchdog) {
+    const wouldTrip = watchdog.presentation.wouldTripAt120Hz + watchdog.generation.wouldTripAt120Hz;
+    parts.push(`watchdog charged max ${fmt(watchdog.presentation.maxChargedMs, 0)} / ${fmt(watchdog.generation.maxChargedMs, 0)} ms`
+      + (wouldTrip > 0 ? `, ${wouldTrip} WOULD TRIP at 120 Hz` : ""));
+  }
+  return parts.length === 0 ? "" : `, ${parts.join(", ")}`;
 }
 
 function renderMarkdown(
@@ -316,9 +397,12 @@ async function main(): Promise<number> {
       legs: { type: "string", default: "6" },
       "leg-frames": { type: "string", default: "240" },
       speed: { type: "string", default: "120" },
+      "burst-legs": { type: "boolean", default: false },
+      "park-legs": { type: "boolean", default: false },
       clearance: { type: "string", default: "150" },
       bank: { type: "string", default: "0" },
       camera: { type: "string", default: "chase" },
+      weather: { type: "string", default: "clear" },
       quality: { type: "string", default: "medium" },
       mode: { type: "string", default: "balanced" },
       aircraft: { type: "string", default: "trainer" },
@@ -327,11 +411,19 @@ async function main(): Promise<number> {
       start: { type: "string" },
       "base-world": { type: "string" },
       "head-world": { type: "string" },
+      "kill-detail-worker": { type: "string" },
+      "hang-detail-worker": { type: "string" },
+      "settle-trials": { type: "string", default: "0" },
+      "trial-frames": { type: "string", default: "600" },
+      "emulate-hitch": { type: "string" },
+      "frame-dump": { type: "string" },
       gpu: { type: "string" },
       chromium: { type: "string" },
       profile: { type: "boolean", default: false },
       "heap-profile": { type: "boolean", default: false },
       "no-minify": { type: "boolean", default: false },
+      "fail-on-worker-fallback": { type: "boolean", default: false },
+      "under-test": { type: "string" },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -350,6 +442,16 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  const settleTrials = Number(values["settle-trials"]);
+  const trialFrames = Number(values["trial-frames"]);
+  if (!(settleTrials >= 0 && Number.isInteger(settleTrials)) || !(trialFrames >= 10 && Number.isInteger(trialFrames))) {
+    console.error(USAGE);
+    return 2;
+  }
+  if (!Object.hasOwn(WEATHERS, values.weather)) {
+    console.error(`perf-flight: --weather takes ${Object.keys(WEATHERS).join(", ")} (got ${values.weather})`);
+    return 2;
+  }
   const startValues = values.start?.split(",").map(Number) ?? null;
   if (startValues && !(startValues.length >= 2 && startValues.length <= 3 && startValues.every(Number.isFinite))) {
     console.error(`perf-flight: --start takes x,z or x,z,yaw (got ${values.start})`);
@@ -358,6 +460,26 @@ async function main(): Promise<number> {
   const start = startValues
     ? { x: startValues[0]!, z: startValues[1]!, yawDegrees: startValues[2] ?? 0 }
     : null;
+  let faults: { readonly kill: LegFrame | null; readonly hang: LegFrame | null };
+  let hitch: (LegFrame & { readonly milliseconds: number }) | null;
+  let frameDump: { readonly from: number; readonly to: number } | null;
+  try {
+    const parse = (option: "kill-detail-worker" | "hang-detail-worker") => {
+      const text = values[option];
+      return text === undefined ? null : parseLegFrame(`--${option}`, text, legs, legFrames);
+    };
+    faults = { kill: parse("kill-detail-worker"), hang: parse("hang-detail-worker") };
+    // The verdict excuses one failure per arm; a second would read as a trip.
+    if (faults.kill && faults.hang) throw new Error("perf-flight: --kill-detail-worker and --hang-detail-worker are separate runs");
+    hitch = values["emulate-hitch"] === undefined ? null : parseHitch("--emulate-hitch", values["emulate-hitch"], legs, legFrames);
+    frameDump = values["frame-dump"] === undefined ? null : parseFrameRange("--frame-dump", values["frame-dump"], legFrames);
+    if (frameDump && !hitch) throw new Error("perf-flight: --frame-dump reads the --emulate-hitch leg; give one");
+    // With its draws dropped (gpuDrawGate.ts) a frame's own image is never drawn.
+    if (frameDump && !values.draws) throw new Error("perf-flight: --frame-dump needs --draws");
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
   const worldOptions: Record<ArmName, Record<string, unknown> | null> = { base: null, head: null };
   for (const arm of ARMS) {
     const raw = values[`${arm}-world`];
@@ -377,6 +499,20 @@ async function main(): Promise<number> {
     base: `${baseRef} (${baseSha.slice(0, 10)})`,
     head: `${values.head ?? "working tree"} (${headSha.slice(0, 10)}${dirty ? " + uncommitted" : ""})`,
   };
+  const shas: Record<ArmName, string> = { base: baseSha, head: headSha };
+  let underTestSha = headSha;
+  if (values["under-test"]) {
+    try {
+      underTestSha = git(root, "rev-parse", "--verify", `${values["under-test"]}^{commit}`);
+    } catch {
+      console.error(`perf-flight: --under-test ${values["under-test"]} is not a commit`);
+      return 2;
+    }
+  }
+  if (underTestSha !== baseSha && underTestSha !== headSha) {
+    console.error(`perf-flight: --under-test ${values["under-test"]} is neither arm's commit`);
+    return 2;
+  }
   const outDir = resolve(values.out ?? join(root, "tests/perf/artifacts/flight", new Date().toISOString().replace(/[:.]/gu, "-")));
   ensureDirectory(outDir);
   log(`base ${identity.base} vs head ${identity.head}; ${backend}; output ${outDir}`);
@@ -420,6 +556,10 @@ async function main(): Promise<number> {
         aircraft: values.aircraft,
         profileOverride: null,
         worldOptions: worldOptions[arm],
+        weather: values.weather,
+        // Fly the game's terrain samplers: its ground-cover tile bakes in
+        // steps on the height-only one (perf:ab keeps the capture's).
+        gameTerrainHeight: true,
       });
     }
     const catalog: AgentCatalog = await arms.head.call("catalog");
@@ -434,6 +574,11 @@ async function main(): Promise<number> {
       minFrames: 240, maxFrames: 6_000, checkEvery: 30,
     })));
     log(`streamed ${streams[0]!.frames} / ${streams[1]!.frames} frames (base / head)`);
+    const settle = { base: streams[0]!, head: streams[1]! };
+    for (const arm of ARMS) {
+      const detail = describeDetailWorker(settle[arm].detailWorker, settle[arm].detailWatchdog);
+      if (detail) log(`settle ${arm}${detail}`);
+    }
 
     const request: Omit<FlightRequest, "restart"> = {
       frames: legFrames,
@@ -446,6 +591,7 @@ async function main(): Promise<number> {
       start,
     };
     const reports: Record<ArmName, FlightReport[]> = { base: [], head: [] };
+    const injected: Record<ArmName, DetailWorkerFault | null> = { base: null, head: null };
     for (let leg = 0; leg < legs; leg += 1) {
       // ABBA, so a drifting host weighs on both arms alike.
       const order: readonly ArmName[] = leg % 2 === 0 ? ["base", "head"] : ["head", "base"];
@@ -465,7 +611,25 @@ async function main(): Promise<number> {
             includeObjectsCollectedByMinorGC: true,
           });
         }
-        const report = await arms[arm].call("flight", { ...request, restart: leg === 0 });
+        const hitchLeg = hitch?.leg === leg + 1;
+        const { dumpedFrames, ...report } = await arms[arm].call("flight", {
+          ...request,
+          restart: leg === 0,
+          ...(values["burst-legs"] ? { speedMetersPerSecond: leg % 2 === 0 ? 250 : 60 } : {}),
+          ...(values["park-legs"] && leg % 2 === 0 ? { speedMetersPerSecond: 0 } : {}),
+          killDetailWorkerAtFrame: faults.kill?.leg === leg + 1 ? faults.kill.frame : null,
+          hangDetailWorkerAtFrame: faults.hang?.leg === leg + 1 ? faults.hang.frame : null,
+          hitch: hitch && hitchLeg ? { frame: hitch.frame, milliseconds: hitch.milliseconds } : null,
+          dumpFrames: hitchLeg ? frameDump : null,
+        });
+        if (dumpedFrames && dumpedFrames.length > 0) {
+          const directory = join(outDir, "frames");
+          mkdirSync(directory, { recursive: true });
+          for (const dumped of dumpedFrames) {
+            writeFileSync(join(directory, `${arm}-leg${leg + 1}-frame${dumped.frame}.png`), Buffer.from(dumped.pngBase64, "base64"));
+          }
+          log(`leg ${leg + 1} ${arm}: wrote ${dumpedFrames.length} frames to ${directory}`);
+        }
         if (values.profile) {
           const { profile } = await arms[arm].cdp.send("Profiler.stop");
           writeFileSync(join(outDir, `${arm}-leg${leg + 1}.cpuprofile`), JSON.stringify(profile));
@@ -475,32 +639,87 @@ async function main(): Promise<number> {
           writeFileSync(join(outDir, `${arm}-leg${leg + 1}.heapprofile`), JSON.stringify(profile));
         }
         reports[arm].push(report);
+        injected[arm] = report.detailWorkerFault ?? injected[arm];
         const summary = summarize([report], 0);
         log(`leg ${leg + 1} ${arm}: ${(report.elapsedMs / 1000).toFixed(0)} s, render p50 ${fmt(summary.renderMs.p50)} max ${fmt(summary.renderMs.max)} ms, `
           + `between p50 ${fmt(summary.betweenMs.p50)} max ${fmt(summary.betweenMs.max)} ms, `
           + `${summary.pipelinesCreated} pipelines, ${fmt(summary.allocatedKiBPerFrame, 0)} KiB/frame, `
           + `pending pages ${report.pendingTerrainPages}, detail ${report.pendingDetailWork}`
-          + (report.detailWorker && !report.detailWorker.active
-            ? `, VEGETATION INLINE (worker fell back: ${JSON.stringify(report.detailWorker)})`
-            : ""));
+          + (report.detailWorkerFault
+            ? `, detail worker ${report.detailWorkerFault.kind === "kill" ? "killed" : "hung"} at frame `
+              + `${report.detailWorkerFault.frame}${report.detailWorkerFault.delivered ? "" : " (no worker to fail)"}`
+            : "")
+          + describeDetailWorker(report.detailWorker, report.detailWatchdog, injected[arm])
+          + describeLegBakes(report));
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
     }
+
+    // Each trial is a new renderer in each arm, so a worker lost in one
+    // trial cannot leave the next with nothing to trip; both arms settle at
+    // once, the contention of the stream to rest.
+    const trials: SettleTrial[] = [];
+    if (settleTrials > 0) {
+      const starts = await arms.head.call("landStarts", settleTrials);
+      log(`settle trials at ${starts.map((point) => `(${fmt(point.x, 0)}, ${fmt(point.z, 0)})`).join(", ")}`);
+      for (const [index, point] of starts.entries()) {
+        await Promise.all(ARMS.map((arm) => arms[arm].call("prepareShot", {
+          shot, canonicalShotIndex, renderScale: null, openFrames: 2, freshRenderer: true,
+        })));
+        const [base, head] = await Promise.all(ARMS.map((arm) => arms[arm].call("flight", {
+          ...request,
+          frames: trialFrames,
+          restart: true,
+          // Held still and level: a bank would turn it on the spot.
+          speedMetersPerSecond: 0,
+          bankDegrees: 0,
+          start: { x: point.x, z: point.z, yawDegrees: point.yawDegrees },
+        })));
+        trials.push({ start: point, base: base!, head: head! });
+        for (const [arm, report] of [["base", base!], ["head", head!]] as const) {
+          log(`trial ${index + 1} ${arm}: ${(report.elapsedMs / 1000).toFixed(0)} s, `
+            + `render p50 ${fmt(summarize([report], 0).renderMs.p50)} ms, detail ${report.pendingDetailWork}`
+            + describeDetailWorker(report.detailWorker, report.detailWatchdog)
+            + describeLegBakes(report));
+        }
+        writeFileSync(join(outDir, "progress-trials.json"), JSON.stringify(trials));
+      }
+    }
+
     const summaries = { base: summarize(reports.base, 1), head: summarize(reports.head, 1) };
     const firstLeg = { base: summarize(reports.base.slice(0, 1), 0), head: summarize(reports.head.slice(0, 1), 0) };
     const settings = {
       shot: shot.name, legs, legFrames, speed: request.speedMetersPerSecond, clearance: request.clearanceMeters,
-      bank: request.bankDegrees, camera, quality: values.quality, mode: values.mode, aircraft: values.aircraft,
+      bank: request.bankDegrees, camera, weather: values.weather, quality: values.quality, mode: values.mode,
+      aircraft: values.aircraft,
       draws: !request.suppressDraws, backend,
+      gameTerrainHeight: "requested; a build without FlightRendererOptions.terrainHeight ignores it",
       ...(start ? { start } : {}),
+      ...(faults.kill ? { killDetailWorker: faults.kill } : {}),
+      ...(faults.hang ? { hangDetailWorker: faults.hang } : {}),
+      ...(settleTrials > 0 ? { settleTrials, trialFrames } : {}),
+      ...(values["burst-legs"] ? { burstLegs: "250 and 60 m/s, alternating" } : {}),
+      ...(values["park-legs"] ? { parkLegs: "0 m/s on odd legs" } : {}),
+      ...(hitch ? { emulateHitch: hitch } : {}),
+      ...(frameDump ? { frameDump } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
       ...(worldOptions.head ? { headWorld: worldOptions.head } : {}),
     };
-    const markdown = renderMarkdown(identity, settings, summaries, firstLeg);
-    writeFileSync(join(outDir, "report.json"), JSON.stringify({ identity, settings, summaries, firstLeg, reports }, null, 1));
+    const verdict = flightVerdict({ identity, shas, settle, reports, settleTrials: trials });
+    const { bakes, markdown: bakeMarkdown } = bakeSection({ shas, reports, settleTrials: trials });
+    const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`
+      + `\n${bakeMarkdown}`;
+    writeFileSync(
+      join(outDir, "report.json"),
+      JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, settleTrials: trials, verdict, bakes }, null, 1),
+    );
     writeFileSync(join(outDir, "report.md"), markdown);
     console.log(`\n${markdown}`);
     log(`report: ${join(outDir, "report.md")}`);
+    if (values["fail-on-worker-fallback"] && workerFallbackExitCode(verdict, underTestSha) !== 0) {
+      log(`FAIL: the vegetation worker's watchdog tripped in the arm built from ${underTestSha.slice(0, 10)}`);
+      return 1;
+    }
     return 0;
   } finally {
     for (const arm of opened) await arm.close().catch(() => undefined);

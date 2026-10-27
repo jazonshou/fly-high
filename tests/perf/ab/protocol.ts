@@ -7,6 +7,9 @@
 
 import type { PerfCaptureShotDefinition } from "../../../scripts/perf-capture.mts";
 import type { GpuWorkCounters } from "../gpuWorkCounters";
+import type { DetailWatchdogReport } from "./detailWatchdog";
+
+export type { DetailWatchdogReport } from "./detailWatchdog";
 
 export const PERF_AB_PROTOCOL = 1;
 
@@ -26,6 +29,18 @@ export interface AgentConfig {
    * normal run; `worldEvolution` stays the shot's.
    */
   readonly worldOptions?: Readonly<Record<string, unknown>> | null;
+  /**
+   * The weather every shot is rendered in. Absent or null is "clear", what
+   * the capture renders; a flight can fly the game's default, "breezy".
+   */
+  readonly weather?: string | null;
+  /**
+   * True: create the renderer with the game's height-only terrain sampler
+   * beside the full sample, as FlightGame does (`terrainSamplers.ts`).
+   * perf:flight sets it; perf:ab never does, so its renderers are made as the
+   * capture's are. Absent, null or false: the full sample alone.
+   */
+  readonly gameTerrainHeight?: boolean | null;
 }
 
 export interface AgentInfo {
@@ -56,6 +71,11 @@ export interface PrepareRequest {
   readonly renderScale: number | null;
   /** Ordinary frames before the draw gate closes (bakes, per-frame targets). */
   readonly openFrames: number;
+  /**
+   * Dispose the renderer and build a new one (a new world, detail worker and
+   * caches) even when the current one would do: an independent trial.
+   */
+  readonly freshRenderer?: boolean;
 }
 
 export interface PrepareReport {
@@ -87,6 +107,9 @@ export interface StreamReport {
   readonly droppedDraws: number;
   readonly suppressedPasses: number;
   readonly bakedWhileClosed: Readonly<Record<string, number>>;
+  /** As `FlightReport`'s, over the stream (absent from an older agent). */
+  readonly detailWorker?: DetailWorkerState | null;
+  readonly detailWatchdog?: DetailWatchdogReport | null;
 }
 
 export interface SettleRequest {
@@ -172,6 +195,27 @@ export interface FlightRequest {
    * the clearance over the ground there. Null starts at the shot.
    */
   readonly start?: { readonly x: number; readonly z: number; readonly yawDegrees: number } | null;
+  /**
+   * Fail the detail worker before rendering this frame of the leg, as a
+   * crashed worker script does: an error event on the generation client's
+   * Worker. Absent or null leaves it alone.
+   */
+  readonly killDetailWorkerAtFrame?: number | null;
+  /** Terminate the detail worker before this frame with no event: a silent worker, which only the watchdog can catch. */
+  readonly hangDetailWorkerAtFrame?: number | null;
+  /**
+   * This frame of the leg stands for a main thread blocked `milliseconds`
+   * while the simulation flew on: the path and simulation time advance by
+   * that much, and render()'s delta is FlightGame's clamp of it (0.1 s at
+   * most). Every other frame is 1/60 s, as without it.
+   */
+  readonly hitch?: { readonly frame: number; readonly milliseconds: number } | null;
+  /**
+   * Read these frames of the leg (indices, inclusive) back from the canvas
+   * right after rendering them, in the same task and with no extra render;
+   * they are encoded only after the leg. Needs the frame's draws.
+   */
+  readonly dumpFrames?: { readonly from: number; readonly to: number } | null;
 }
 
 export interface FlightFrame {
@@ -193,6 +237,36 @@ export interface FlightFrame {
   readonly effectsCompiled?: readonly string[];
   /** Main-thread milliseconds per frame-graph pass (an older build may report none). */
   readonly passMs: Readonly<Record<string, number>>;
+  /**
+   * What the two bakes that spread over frames did in this frame
+   * (`bakeProbe.ts`): null when neither did anything; absent from a build
+   * whose renderer does not report them, and from an older agent (undefined
+   * in the page, dropped from report.json).
+   */
+  readonly bake?: FlightFrameBake | null | undefined;
+}
+
+/**
+ * One flight frame's share of the sky probe's re-light and of the
+ * ground-cover tile bake, from the renderer's `getBakeStatsForCapture()` read
+ * after `render()`, outside the frame's timed and heap windows. Milliseconds
+ * are the renderer's own clock readings.
+ */
+export interface FlightFrameBake {
+  /** The renderer's sky-probe refresh ran in this frame: its main-thread ms. Null when it did not run. */
+  readonly skyMs: number | null;
+  /** Sampling slices of a sliced sky rebake in this frame (0 or 1), and the slice's ms (null with none). */
+  readonly skyAdvances: number;
+  readonly skyAdvanceMs: number | null;
+  /** Sliced sky rebakes that landed their irradiance in this frame (0 or 1), and the converter's ms (null with none). */
+  readonly skyLandings: number;
+  readonly skyApplyMs: number | null;
+  /** 1 when the ground-cover tile baked in this frame, and that call's ms (null when it did not). */
+  readonly groundCoverCalls: number;
+  readonly groundCoverMs: number | null;
+  /** That call was held past its budget by the pace floor (0 or 1); it finished a tile (0 or 1). */
+  readonly groundCoverPaceFloorCalls: number;
+  readonly groundCoverTilesCompleted: number;
 }
 
 export interface FlightReport {
@@ -210,13 +284,56 @@ export interface FlightReport {
    * The vegetation generator: on its worker (`active`), or fallen back to
    * generating cells inline on the main thread. Null from a build without one.
    */
-  readonly detailWorker: {
-    readonly active: boolean;
-    readonly fallbacks: number;
-    readonly generationTimeouts: number;
-    readonly buildTimeouts: number;
-    readonly buildRejections: number;
-  } | null;
+  readonly detailWorker: DetailWorkerState | null;
+  /** The detail worker's watchdog clocks and build latencies over the leg (absent from an older agent). */
+  readonly detailWatchdog?: DetailWatchdogReport | null;
+  /** The worker failed on purpose in this leg (`killDetailWorkerAtFrame`, `hangDetailWorkerAtFrame`). */
+  readonly detailWorkerFault?: DetailWorkerFault | null;
+  /** `dumpFrames`, as PNGs at the viewport's size. */
+  readonly dumpedFrames?: readonly { readonly frame: number; readonly pngBase64: string }[];
+}
+
+export interface DetailWorkerFault {
+  readonly kind: "kill" | "hang";
+  readonly frame: number;
+  /** False when there was no worker to fail: it had already gone, or the build has none. */
+  readonly delivered: boolean;
+  /** The worker's state just before. */
+  readonly before: DetailWorkerState | null;
+}
+
+/**
+ * The detail worker's state at the end of a stream or a leg; the counters are
+ * the renderer's, so they run on across legs. The optional ones come only from
+ * a build whose runtime restarts a failed worker and reports its silences.
+ */
+export interface DetailWorkerState {
+  readonly active: boolean;
+  readonly fallbacks: number;
+  readonly generationTimeouts: number;
+  readonly buildTimeouts: number;
+  readonly buildRejections: number;
+  readonly respawns?: number;
+  /** The worker failed and its replacement is built at the runtime's next update; `active` counts it. */
+  readonly respawnPending?: boolean;
+  readonly heartbeats?: number;
+  readonly maxSilenceMs?: number;
+  readonly buildMaxLatencyMs?: number;
+  readonly convergenceStalls?: number;
+}
+
+/**
+ * Where a settle trial holds still (`PerfAgent.landStarts`): land above the
+ * sea with vegetation to generate, away from the home airport.
+ */
+export interface LandStart {
+  readonly x: number;
+  readonly z: number;
+  readonly yawDegrees: number;
+  /** From the home airport. */
+  readonly distanceMeters: number;
+  /** The share of the samples around it that are forest or grassland. */
+  readonly vegetatedShare: number;
 }
 
 export interface CaptureResult {
@@ -257,6 +374,8 @@ export interface PerfAgent {
   settle(request: SettleRequest): Promise<SettleReport>;
   measureFrame(): Promise<FrameSample>;
   flight(request: FlightRequest): Promise<FlightReport>;
+  /** `count` settle-trial starts in the current shot's world, the same in every build of that world. */
+  landStarts(count: number): readonly LandStart[];
   capture(): Promise<CaptureResult>;
   compareImages(a: string, b: string, width: number, height: number): Promise<ImageComparison>;
   errors(): AgentErrors;
