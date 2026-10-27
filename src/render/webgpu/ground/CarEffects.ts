@@ -4,6 +4,7 @@ import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfi
 import type { WorldDefinition } from "@/src/world";
 import { CarBowWave, type CarBowWaveOcean } from "./CarBowWave";
 import { CarParticleSystem } from "./CarParticleSystem";
+import type { CarPipelineCompiles } from "./carPipelinePrime";
 import { CarTrackSystem } from "./CarTrackSystem";
 
 /**
@@ -17,7 +18,9 @@ import { CarTrackSystem } from "./CarTrackSystem";
  * change, `setFloatingOrigin` on every origin shift, `setAerialPerspective`
  * whenever the binding is rebuilt, `setAtmosphere` with the weather,
  * `update(state)` once a frame, and the bow wave's `bindOcean` after the
- * sea's own update, as the boat's wake is.
+ * sea's own update, as the boat's wake is. With the renderer's off-frame
+ * compiles each one's pipeline is built from spawn, not in the frame of its
+ * first dust, print or ford (`CarPipelinePrime`).
  */
 
 /** The tier fields the effects read. */
@@ -32,6 +35,8 @@ export interface CarEffectsOptions {
   readonly groundHeight?: (x: number, z: number) => number;
   /** The drawn sea and its level: in a sea ford the bow wave rides its waves. */
   readonly sea?: { readonly ocean: CarBowWaveOcean; readonly seaLevel: number };
+  /** The renderer's off-frame pipeline compiles (`AsyncPipelineCompiles`), when it has them. */
+  readonly pipelineCompiles?: CarPipelineCompiles | null;
 }
 
 export interface CarEffects {
@@ -47,14 +52,17 @@ export function createCarEffects(scene: Scene, options: CarEffectsOptions): CarE
     cap: options.profile.vehicleParticleBudget,
     windX: Math.sin(options.world.prevailingWindRadians) * speed,
     windZ: Math.cos(options.world.prevailingWindRadians) * speed,
+    pipelineCompiles: options.pipelineCompiles ?? null,
   });
   const tracks = new CarTrackSystem(scene, {
     segments: options.profile.tyreTrackSegments,
     ...(options.groundHeight ? { groundHeight: options.groundHeight } : {}),
+    pipelineCompiles: options.pipelineCompiles ?? null,
   });
   const bowWave = new CarBowWave(scene, {
     ...(options.atmosphere ? { atmosphere: options.atmosphere } : {}),
     ...(options.sea ? { sea: options.sea } : {}),
+    pipelineCompiles: options.pipelineCompiles ?? null,
   });
   if (options.atmosphere) particles.setAtmosphere(options.atmosphere);
   return { particles, tracks, bowWave };

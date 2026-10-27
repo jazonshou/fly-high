@@ -31,6 +31,7 @@ import {
   WATER_SUN_IRRADIANCE_SCALE,
 } from "@/src/render/webgpu/water/WaterShaders";
 import { carWheelContacts, carWheelWaterDepths, createCarWheelContacts, rotateCarBodyToWorld } from "./carEffectLaws";
+import { CarPipelinePrime, type CarPipelineCompiles } from "./carPipelinePrime";
 import { BODY } from "./lc76Lines";
 
 /**
@@ -174,11 +175,14 @@ export interface CarBowWaveOptions {
   readonly atmosphere?: AtmosphereSnapshot;
   /** The drawn sea and its level. Without it the skirt lies flat in any water. */
   readonly sea?: { readonly ocean: CarBowWaveOcean; readonly seaLevel: number };
+  /** The renderer's off-frame compiles, for the spawn's pipeline prime (`CarPipelinePrime`). */
+  readonly pipelineCompiles?: CarPipelineCompiles | null;
 }
 
 export class CarBowWave {
   private readonly mesh: Mesh;
   private readonly material: ShaderMaterial;
+  private readonly pipelinePrime: CarPipelinePrime;
   private readonly contacts = createCarWheelContacts();
   private readonly depths = [0, 0, 0, 0];
   private readonly forward = { x: 1, y: 0, z: 0 };
@@ -299,6 +303,8 @@ export class CarBowWave {
     mesh.setEnabled(false);
     this.mesh = mesh;
     this.material = material;
+    this.pipelinePrime = new CarPipelinePrime(options.pipelineCompiles ?? null);
+    this.pipelinePrime.adopt(material);
     if (options.atmosphere) this.setAtmosphere(options.atmosphere);
   }
 
@@ -382,7 +388,7 @@ export class CarBowWave {
       this.motionUniform.z = this.presenceValue;
       this.motionUniform.w = sprayClock(time);
     }
-    const draw = this.presenceValue > 0.001;
+    const draw = this.presenceValue > 0.001 || this.pipelinePrime.wanted(this.mesh);
     if (this.mesh.isEnabled(false) !== draw) this.mesh.setEnabled(draw);
   }
 
@@ -478,7 +484,9 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let radiance = BOW_ALBEDO * (sun + uniforms.bowSky);
   let haze = aerialPerspective(world.y, distanceMeters, dot(toPoint / distanceMeters, sunDirection));
 
-  vertexOutputs.position = uniforms.projection * uniforms.view * vec4f(world, 1.0);
+  let clip = uniforms.projection * uniforms.view * vec4f(world, 1.0);
+  // Out of the water (the spawn's pipeline prime) the skirt rasterises nothing.
+  vertexOutputs.position = select(clip, vec4f(0.0, 0.0, 2.0, 1.0), uniforms.bowMotion.z <= 0.0);
   vertexOutputs.bowOut = out;
   vertexOutputs.bowLead = lead * (0.55 + 0.45 * way);
   vertexOutputs.bowTrail = trail * way;

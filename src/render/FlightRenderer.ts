@@ -1774,6 +1774,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           atmosphere: atmosphere.snapshot,
           groundHeight: liveTerrainHeight,
           sea: { ocean, seaLevel: options.world.seaLevel },
+          pipelineCompiles,
         })
         : null;
       if (carEffects) {
