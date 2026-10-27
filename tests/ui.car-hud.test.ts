@@ -218,6 +218,23 @@ describe("the car's HUD", () => {
     expect(crashed).not.toContain("ROLLED");
   });
 
+  it("says WAITING FOR TERRAIN, quietly and alone, while the car waits at its start", () => {
+    const settling = renderCar(carPayload({ settling: true, stalled: true, wadingDepth: 0.66 }));
+    expect(settling).toContain("WAITING FOR TERRAIN");
+    expect(settling).toContain("flight-alert--quiet");
+    expect(settling).toContain('role="status"');
+    // Not an alarm: none of the car's alerts beside it.
+    expect(settling).not.toContain("STALLED");
+    expect(settling).not.toContain("DEEP WATER");
+    expect(settling).not.toContain("flight-alert--warning");
+    // Gone the moment the car is driven.
+    expect(renderCar(carPayload())).not.toContain("WAITING FOR TERRAIN");
+    // A damaged car still says so.
+    const crashed = renderCar(carPayload({ settling: true }), { state: { crashed: true } });
+    expect(crashed).toContain("CAR DAMAGED · PRESS R");
+    expect(crashed).not.toContain("WAITING FOR TERRAIN");
+  });
+
   it("keeps the nearest-airport readout, as the aircraft HUD draws it", () => {
     const off = renderCar(carPayload());
     expect(off).toContain("NEAREST AIRPORT");

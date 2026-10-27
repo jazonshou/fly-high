@@ -1460,6 +1460,8 @@
 
 .flight-alert--warning { color: var(--warning); }
 .flight-alert--danger { color: var(--danger); }
+/* A state, not an alarm: no colour of its own and no pulse. */
+.flight-alert--quiet { color: var(--muted); animation: none; }
 .flight-alert--brake { top: calc(22% + 42px); }
 
 .flight-hud__bottom {

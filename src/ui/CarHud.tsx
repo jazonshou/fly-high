@@ -79,8 +79,10 @@ const LOCK_LABELS: Record<CarVisualState["locks"], string> = {
  * right, heading, the inclinometer, and a strip with the tachometer, gear,
  * range, the dash's lamps (diff locks, downhill assist, traction control,
  * ABS, main beam), tyre pressure and, in water, the wading bar. FLOODED,
- * ROLLED and STALLED are alerts. The nearest-airport readout is the
- * aircraft's, for finding the way back.
+ * ROLLED and STALLED are alerts. While the car waits at its start for the
+ * ground under it to stream in (`settling`), a quiet WAITING FOR TERRAIN
+ * line says why the controls do nothing yet. The nearest-airport readout is
+ * the aircraft's, for finding the way back.
  *
  * In the cockpit the strip moves up under the session line, off the dash and
  * its own dials.
@@ -143,9 +145,12 @@ export function CarHud({
 
       {state.crashed ? <div className="flight-alert flight-alert--danger">CAR DAMAGED · PRESS R</div> : null}
       {!state.crashed && car.rolled ? <div className="flight-alert flight-alert--danger">ROLLED · PRESS R</div> : null}
-      {upright && car.flooded ? <div className="flight-alert flight-alert--danger">FLOODED · PRESS R</div> : null}
-      {upright && !car.flooded && car.stalled ? <div className="flight-alert flight-alert--warning">STALLED</div> : null}
-      {upright && !car.flooded && !car.stalled && wading.level === "danger" ? (
+      {upright && car.settling ? (
+        <div className="flight-alert flight-alert--quiet" role="status">WAITING FOR TERRAIN</div>
+      ) : null}
+      {upright && !car.settling && car.flooded ? <div className="flight-alert flight-alert--danger">FLOODED · PRESS R</div> : null}
+      {upright && !car.settling && !car.flooded && car.stalled ? <div className="flight-alert flight-alert--warning">STALLED</div> : null}
+      {upright && !car.settling && !car.flooded && !car.stalled && wading.level === "danger" ? (
         <div className="flight-alert flight-alert--warning">DEEP WATER</div>
       ) : null}
 
