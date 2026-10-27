@@ -227,9 +227,17 @@ export interface CarVisualState {
   /** The `SurfaceMaterial` id under each tyre, or -1 in water or the air. */
   wheelSurface: number[];
   /**
+   * The soil's wetness under each tyre, 0 dry .. 1 soaked, raised when the
+   * weather rains; 0 in the air, 1 in water. Mud spray rather than dust, and
+   * darker tracks.
+   */
+  wheelWetness: number[];
+  /**
    * Each solid axle's travel against the frame: heave in metres, positive into
-   * bump (the axle closer to the body), and roll in radians, positive with the
-   * axle's right end higher than its left. Wheels sit at the axle's ends.
+   * bump (the axle closer to the body), zero at the static kerb ride height,
+   * and roll in radians, positive with the axle's right end higher than its
+   * left. Wheels sit at the axle's ends: a wheel centre is at body
+   * y = -0.43 + heave + side x track / 2 x sin(roll), side -1 left, +1 right.
    */
   axleHeave: number[];
   axleRoll: number[];

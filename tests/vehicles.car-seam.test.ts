@@ -97,7 +97,7 @@ describe("car seam", () => {
     expect(moved.payload.speed).toBeGreaterThan(5);
     expect(state.airspeed).toBe(Math.abs(moved.payload.speed));
     expect(state.vehicle).toBe(moved.payload);
-    for (const field of ["wheelSteer", "wheelSpin", "wheelLoad", "wheelSlip", "wheelSinkage", "wheelSurface"] as const) {
+    for (const field of ["wheelSteer", "wheelSpin", "wheelLoad", "wheelSlip", "wheelSinkage", "wheelSurface", "wheelWetness"] as const) {
       expect(moved.payload[field]).toHaveLength(4);
     }
     expect(moved.payload.axleHeave).toHaveLength(2);

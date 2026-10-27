@@ -238,6 +238,7 @@ export class StandInCarSimulator implements SurfaceVehicleSimulator {
     const ground = this.state.position.y - LC76_CG_HEIGHT;
     const spinRate = this.speed / LC76_WHEEL_RADIUS;
     const weight = (LC76_MASS * (this.environment?.gravity ?? 9.80665)) / CAR_WHEELS.length;
+    const wet = sea > ground ? 1 : 0;
     return {
       kind: "car",
       speed: this.speed,
@@ -269,6 +270,7 @@ export class StandInCarSimulator implements SurfaceVehicleSimulator {
       wheelSlip: [0, 0, 0, 0],
       wheelSinkage: [0, 0, 0, 0],
       wheelSurface: [-1, -1, -1, -1],
+      wheelWetness: [wet, wet, wet, wet],
       axleHeave: [0, 0],
       axleRoll: [0, 0],
       // The 76's rack: about 3.6 turns lock to lock.
