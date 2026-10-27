@@ -255,6 +255,38 @@ behind, 1 to 2 degrees under the published figures. The dynamic test keeps a
 wide band (clear 4 degrees under, touching 1 to 2 over) and the hull is not
 tuned to it.
 
+## Water
+
+The car reads the water authority at each tyre's contact once a step (the
+sea today; lakes and rivers once the hydrology sources reach the worker).
+The wading depth is the highest surface over the lowest contact. A tyre
+under the surface reports no material and full wetness for the effects, and
+its bed is wet: loam turns to mud and hard ground keeps 80% of its grip.
+
+- Buoyancy: the body's plan is eight columns, each reading the water at its
+  nearer wheel, so a car half into a river floats at one end. A column
+  displaces its share of the running gear (0.35 m^3 between the ground
+  clearance and the floor) and of the body's sealed 5.2 m^3 above the floor,
+  lifting at the immersed part's middle; each wheel displaces its submerged
+  disc segment of 0.126 m^3, on its axle. Fresh water is 1,000 kg/m^3, the
+  sea 1,025.
+- The cabin floods towards the water's height up the body through the door
+  seals, to within 5% in 60 s, and drains three times faster on land. At
+  about 1 m of water the sealed body floats the car off its wheels until it
+  floods.
+- Drag on the wetted front (C_D 1.05) and side (1.2) below the surface, 85%
+  solid under the floor, and on the plan in heave, all on the velocity
+  through the water: a river's current, the sample's velocity, pushes the
+  car downstream.
+- The intake sits 0.7 m above the ground at the front of the engine bay. Water
+  over it at the front wheels hydrolocks the engine: it stops and will not
+  restart until a recovery.
+
+The water path allocates nothing (`sim.car-budget`) while the authority's
+call is monomorphic, as the worker's single authority is; a getter's double
+return or a double argument to a call V8 does not inline is boxed, so the
+column height and gravity travel in fields.
+
 ## Off the road
 
 | Check | The plan's test | Model | Test |
@@ -264,6 +296,9 @@ tuned to it.
 | Cross-axle ditch | open diffs with traction control off: stuck; traction control: crosses slowly; rear locker: crosses | a 0.7 m ditch at 45 degrees at a crawl in 4L: open diffs stop with the light wheels at 22 rad/s; traction control crosses after a stall, braking wheels spinning to 8 rad/s; the rear locker crosses with them under 5 | `sim.car-terrain` |
 | Underbody | the hull scrapes and high-centres from the geometry | a berm between the tracks: 0.25 m clears, 0.32 m drags the diffs and the car goes on, 0.42 m beaches it on the axles | `sim.car-terrain` |
 | Surface parity | the worker's material maps to the bake's soil model at least 98% of the time | 1,235 of 1,236 land cells, six provinces | `sim.car-terrain` |
+| Wading | a 0.6 m ford at walking pace is fine; 0.9 m floods the intake and stops the engine | 0.6 m: across at 1.4 m/s, engine running; 0.9 m: drowned on the way down, short of the deep bed | `sim.car-water` |
+| Current | a 1.5 m/s river at 0.7 m pushes the car measurably downstream during a crossing | held square to the bank, it crabs 1.3 m downstream over a 30 m crossing; unsteered, the light rear swings downstream and the car yaws upstream | `sim.car-water` |
+| Floating | (the plan's buoyancy and 60 s cabin flooding) | parked under 1.6 m of still water: afloat at first, on its wheels again after 90 s | `sim.car-water` |
 
 On a 30 degree slope in 2H only the rear tyres pull: they carry about 56% of
 the car's weight there, so the climb needs a friction of about 0.9. Asphalt

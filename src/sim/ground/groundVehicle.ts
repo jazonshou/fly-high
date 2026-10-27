@@ -205,6 +205,42 @@ const DAC_INTEGRAL = 0.8;
 const HSA_SECONDS = 2;
 const HSA_MIN_SLOPE = (3 * Math.PI) / 180;
 
+/**
+ * Water (land plan, "Water"): the car displaces its wheels, the frame and
+ * running gear below the body, and the body's sealed volume, which floods
+ * through the door seals over `floodSeconds`. The body's plan is split into
+ * columns, each reading the water at its nearer wheel, so a car half in a
+ * river floats at one end.
+ */
+const WATER = CAR.water;
+const BODY = CAR.body;
+const FRESH_WATER_DENSITY = 1_000;
+const SEA_WATER_DENSITY = 1_025;
+/** ESTIMATE: a submerged hard bed keeps this share of its friction (wet, silted). */
+const SUBMERGED_FRICTION = 0.8;
+/** The cabin drains this much faster than it floods, out of the water. */
+const CABIN_DRAIN_RATE = 3;
+/** The share of the side and front below the body that is solid (wheels, frame, tank) rather than gap. */
+const UNDERBODY_SOLIDITY = 0.85;
+/** Heave drag of the body's plan in water. */
+const PLAN_DRAG_COEFFICIENT = 1.2;
+const COLUMN_ALONG = 4;
+const COLUMN_COUNT = COLUMN_ALONG * 2;
+const COLUMN_LENGTH = BODY.length / COLUMN_ALONG;
+const COLUMN_AREA = COLUMN_LENGTH * (BODY.width / 2);
+const FRONT_FACE_X = GEOMETRY.frontAxleX + BODY.frontOverhang;
+const MID_AXLE_X = (GEOMETRY.frontAxleX + GEOMETRY.rearAxleX) / 2;
+/** Column c: its centre in plan, body frame, and the wheel (same side, nearer axle) whose water it reads. */
+const COLUMN_X = Float64Array.from({ length: COLUMN_COUNT }, (_, c) => FRONT_FACE_X - (Math.floor(c / 2) + 0.5) * COLUMN_LENGTH);
+const COLUMN_Z = Float64Array.from({ length: COLUMN_COUNT }, (_, c) => (c % 2 === 0 ? -0.25 : 0.25) * BODY.width);
+const COLUMN_WHEEL = Int32Array.from({ length: COLUMN_COUNT }, (_, c) => (COLUMN_X[c]! > MID_AXLE_X ? 0 : 2) + (c % 2));
+/** The layers, body-frame heights: running gear from the ground clearance to the body's floor, then the body to its roof. */
+const CHASSIS_BOTTOM_Y = BODY.groundClearance - CG_HEIGHT;
+const CHASSIS_LAYER = WATER.bodyBottomHeight - BODY.groundClearance;
+const BODY_LAYER = BODY.height - WATER.bodyBottomHeight;
+const CHASSIS_POROSITY = WATER.chassisVolume / (BODY.length * BODY.width * CHASSIS_LAYER);
+const BODY_POROSITY = WATER.cabinVolume / (BODY.length * BODY.width * BODY_LAYER);
+
 interface HullProbeRecord {
   part: string;
   x: number;
@@ -331,6 +367,19 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   rolled = false;
   private wadingDepthValue = 0;
   private readonly waterSample = createWaterSurfaceSample();
+  /** The water at each wheel this step: there at all, its surface height and its velocity (the current). */
+  private readonly waterAt = new Uint8Array(4);
+  private readonly waterHeight = new Float64Array(4);
+  private readonly waterVelocityX = new Float64Array(4);
+  private readonly waterVelocityY = new Float64Array(4);
+  private readonly waterVelocityZ = new Float64Array(4);
+  /** A tyre whose contact is under the water surface: wet, and no material of its own for the effects. */
+  readonly wheelSubmerged = new Uint8Array(4);
+  private readonly wheelFrictionScale = new Float64Array(4).fill(1);
+  private inWater = false;
+  private waterDensity = FRESH_WATER_DENSITY;
+  /** How far up the body the cabin has flooded, 0 dry .. 1 full. */
+  cabinFlood = 0;
   // Peaks since the last snapshot, for sound and effects.
   private bumpStopPeak = 0;
   private scrapePeak = 0;
@@ -359,6 +408,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   // This step's numbers, as fields so that no call passes one.
   private dt = 0;
   private h = 0;
+  /** The environment's gravity, a field: a getter's double return would be boxed in the substep. */
+  private gravity = STANDARD_GRAVITY;
+  private columnY = 0;
   private speed = 0;
   private slope = 0;
   private radialStiffness = tyreRadialStiffness(TYRE.roadPressureBar);
@@ -457,15 +509,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   setEnvironment(environment: Readonly<SurfaceVehicleEnvironment>): void {
     this.environment = environment;
     this.lattice.setSampler(environment.bedHeight);
+    this.gravity = environment.gravity > 0 ? environment.gravity : STANDARD_GRAVITY;
   }
 
   private get ground(): GroundField {
     return this.fixedGround ?? this.lattice;
-  }
-
-  private get gravity(): number {
-    const g = this.environment?.gravity;
-    return g !== undefined && g > 0 ? g : STANDARD_GRAVITY;
   }
 
   step(dt: number): void {
@@ -485,9 +533,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.updateSpeed();
     this.updateDriver();
     this.findContacts();
+    this.sampleWater();
     this.sampleSurfaces();
     this.prepareHull();
-    this.sampleWater();
 
     for (let substep = 0; substep < SUBSTEPS; substep += 1) this.substep();
 
@@ -737,7 +785,13 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       if (this.fixedSurface) this.fixedSurface(contact.ground, surface);
       else if (world) this.surfaceCache.lookup(world, this.ground, contact.ground, surface);
       else describeSurface(SurfaceMaterial.Asphalt, 0, surface);
-      this.wheelWet[w] = surface.wetness;
+      this.wheelFrictionScale[w] = 1;
+      if (this.wheelSubmerged[w] === 1) {
+        // A bed under water: loam turns to mud, hard ground loses some grip.
+        if (surface.soft) describeSurface(surface.material, 1, surface);
+        else this.wheelFrictionScale[w] = SUBMERGED_FRICTION;
+      }
+      this.wheelWet[w] = this.wheelSubmerged[w] === 1 ? 1 : surface.wetness;
       if (!surface.soft) {
         this.wheelSinkage[w] = 0;
         this.wheelRut[w] = 0;
@@ -812,23 +866,156 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     return this.body.bodyToWorldPoint(p, out);
   }
 
-  /** The water at the car: the wading depth and whether it reached the intake. */
+  /**
+   * The water at each wheel's contact, once a step: the wading depth (the
+   * highest surface over the lowest contact), which tyres are under it, the
+   * cabin's flooding, and whether the intake has gone under.
+   */
   private sampleWater(): void {
     const env = this.environment;
     this.wadingDepthValue = 0;
-    if (!env) return;
-    const origin = this.state.position;
-    const sample = env.water.sample(origin.x, origin.z, this.waterSample);
-    if (sample.kind === "none") return;
+    this.inWater = false;
+    let sea = false;
+    let surface = -Infinity;
     let lowest = Infinity;
-    for (let w = 0; w < 4; w += 1) lowest = Math.min(lowest, this.contacts[w]!.point.y);
-    this.wadingDepthValue = Math.max(0, sample.height - lowest);
+    for (let w = 0; w < 4; w += 1) {
+      this.waterAt[w] = 0;
+      this.wheelSubmerged[w] = 0;
+      if (!env) continue;
+      const at = this.contacts[w]!.point;
+      lowest = Math.min(lowest, at.y);
+      const sample = env.water.sample(at.x, at.z, this.waterSample);
+      if (sample.kind === "none") continue;
+      if (sample.kind === "sea") sea = true;
+      this.inWater = true;
+      this.waterAt[w] = 1;
+      this.waterHeight[w] = sample.height;
+      this.waterVelocityX[w] = sample.velocity.x;
+      this.waterVelocityY[w] = sample.velocity.y;
+      this.waterVelocityZ[w] = sample.velocity.z;
+      surface = Math.max(surface, sample.height);
+      if (sample.height > at.y) this.wheelSubmerged[w] = 1;
+    }
+    this.waterDensity = sea ? SEA_WATER_DENSITY : FRESH_WATER_DENSITY;
+    // The cabin floods towards the water's height up the body, and drains faster than it fills.
+    let immersed = 0;
+    if (this.inWater) {
+      this.wadingDepthValue = Math.max(0, surface - lowest);
+      for (let c = 0; c < COLUMN_COUNT; c += 1) {
+        const w = COLUMN_WHEEL[c]!;
+        if (this.waterAt[w] !== 1) continue;
+        this.columnY = WATER.bodyBottomHeight - CG_HEIGHT;
+        this.columnPoint(c);
+        immersed += Math.max(0, Math.min(1, (this.waterHeight[w]! - this.v1.y) / BODY_LAYER));
+      }
+      immersed /= COLUMN_COUNT;
+    }
+    const rate = (immersed > this.cabinFlood ? 3 : 3 * CABIN_DRAIN_RATE) / WATER.floodSeconds;
+    this.cabinFlood += (immersed - this.cabinFlood) * Math.min(1, rate * this.dt);
+    if (!this.inWater) return;
     // The intake, ahead of the cab at the wading height above the front wheels' ground.
     this.point.x = CAR.water.intakeX - SPRUNG_CM_OFFSET.x;
     this.point.y = CAR.water.wadingDepth - CG_HEIGHT - SPRUNG_CM_OFFSET.y;
     this.point.z = -SPRUNG_CM_OFFSET.z;
     this.body.bodyToWorldPoint(this.point, this.v1);
-    if (this.engine.running && this.v1.y < sample.height) this.engine.hydrolock();
+    let front = -Infinity;
+    for (let w = 0; w < 2; w += 1) if (this.waterAt[w] === 1) front = Math.max(front, this.waterHeight[w]!);
+    if (this.engine.running && this.v1.y < front) this.engine.hydrolock();
+  }
+
+  /** Column `c`'s centre at body-frame height `columnY` (from the body origin), in the world, into `v1`. */
+  private columnPoint(c: number): void {
+    this.point.x = COLUMN_X[c]! - SPRUNG_CM_OFFSET.x;
+    this.point.y = this.columnY - SPRUNG_CM_OFFSET.y;
+    this.point.z = COLUMN_Z[c]! - SPRUNG_CM_OFFSET.z;
+    this.body.bodyToWorldPoint(this.point, this.v1);
+  }
+
+  /**
+   * Buoyancy and drag in water, each substep. Each column displaces its
+   * running gear and the unflooded part of its body below the water at its
+   * wheel, lifting at the immersed part's middle; each wheel displaces its
+   * submerged segment, on its axle. Drag on the front, side and plan below
+   * the surface acts on the velocity through the water, so a river's
+   * current pushes the car downstream.
+   */
+  private waterForces(): void {
+    if (!this.inWater) return;
+    const body = this.body;
+    const rho = this.waterDensity;
+    const g = this.gravity;
+    const full = CHASSIS_LAYER + BODY_LAYER;
+    const inside = this.cabinFlood * BODY_LAYER;
+    let wetHeight = 0;
+    for (let c = 0; c < COLUMN_COUNT; c += 1) {
+      const w = COLUMN_WHEEL[c]!;
+      if (this.waterAt[w] !== 1) continue;
+      this.columnY = CHASSIS_BOTTOM_Y;
+      this.columnPoint(c);
+      const depth = this.waterHeight[w]! - this.v1.y;
+      // The water from the ground up, for the drag: the column's floor stands the ground clearance above it.
+      wetHeight += Math.max(0, Math.min(BODY.height, depth + BODY.groundClearance));
+      if (depth <= 0) continue;
+      const chassis = Math.min(depth, CHASSIS_LAYER);
+      const sealed = Math.max(0, Math.min(depth - CHASSIS_LAYER, BODY_LAYER) - inside);
+      const lift = rho * g * COLUMN_AREA * (CHASSIS_POROSITY * chassis + BODY_POROSITY * sealed);
+      this.columnY = CHASSIS_BOTTOM_Y + 0.5 * Math.min(depth, full);
+      this.columnPoint(c);
+      this.force.x = 0;
+      this.force.y = lift;
+      this.force.z = 0;
+      body.addForceAtWorldPoint(this.force, this.v1);
+    }
+    wetHeight /= COLUMN_COUNT;
+
+    for (let w = 0; w < 4; w += 1) {
+      if (this.waterAt[w] !== 1) continue;
+      this.wheelFrame(w);
+      const c = this.centreWorld;
+      const depth = Math.max(0, Math.min(2 * FREE_RADIUS, this.waterHeight[w]! - (c.y - FREE_RADIUS)));
+      if (depth <= 0) continue;
+      // The submerged share of the wheel's disc: a circular segment.
+      const t = (FREE_RADIUS - depth) / FREE_RADIUS;
+      const share = (Math.acos(t) - t * Math.sqrt(Math.max(0, 1 - t * t))) / Math.PI;
+      this.force.x = 0;
+      this.force.y = rho * g * WATER.wheelVolume * share;
+      this.force.z = 0;
+      this.routeAxleForce(WHEEL_AXLE[w]!, this.force, c, false);
+    }
+
+    if (wetHeight <= 0) return;
+    // The velocity through the water: the car's less the mean current at its wet wheels.
+    let count = 0;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let w = 0; w < 4; w += 1) {
+      if (this.waterAt[w] !== 1) continue;
+      count += 1;
+      cx += this.waterVelocityX[w]!;
+      cy += this.waterVelocityY[w]!;
+      cz += this.waterVelocityZ[w]!;
+    }
+    const rel = this.v1;
+    rel.x = body.velocity.x - cx / count;
+    rel.y = body.velocity.y - cy / count;
+    rel.z = body.velocity.z - cz / count;
+    const vb = body.worldToBodyVector(rel, this.v2);
+    const solid = UNDERBODY_SOLIDITY * wetHeight;
+    const frontArea = BODY.width * solid;
+    const sideArea = BODY.length * solid;
+    const planArea = BODY.length * BODY.width * Math.min(1, wetHeight / 0.3);
+    const half = 0.5 * rho;
+    this.force.x = -half * WATER.frontDragCoefficient * frontArea * Math.abs(vb.x) * vb.x;
+    this.force.y = -half * PLAN_DRAG_COEFFICIENT * planArea * Math.abs(vb.y) * vb.y;
+    this.force.z = -half * WATER.sideDragCoefficient * sideArea * Math.abs(vb.z) * vb.z;
+    // At the middle of the wetted side, above the ground under the car.
+    this.point.x = (FRONT_FACE_X - 0.5 * BODY.length) - SPRUNG_CM_OFFSET.x;
+    this.point.y = -CG_HEIGHT + 0.5 * wetHeight - SPRUNG_CM_OFFSET.y;
+    this.point.z = -SPRUNG_CM_OFFSET.z;
+    body.addForceAtBodyPoint(this.force, this.point);
+    const through = Math.sqrt(vb.x * vb.x + vb.z * vb.z);
+    this.splashPeak = Math.max(this.splashPeak, Math.min(1, (through / 4) * Math.min(1, wetHeight / 0.5)));
   }
 
   // ---------------------------------------------------------------- substep
@@ -854,6 +1041,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.tyreForces();
     this.hullForces();
     this.aeroForces();
+    this.waterForces();
     this.drivelineStep();
     this.integrateAxles();
     body.advance();
@@ -991,7 +1179,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       const transport = rolling * Math.abs(spin) + TYRE_V_N;
       const slipVelocity = vx - rolling * spin;
       input.load = load;
-      input.friction = surface.friction;
+      input.friction = surface.friction * this.wheelFrictionScale[w]!;
       input.slipX = -slipVelocity / transport;
       input.slipY = -vy / transport;
       let compaction = 0;
@@ -1542,8 +1730,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
         (this.wheelLoad[w]! > 0 && this.wheelSurface[w]!.soft
           ? Math.min(this.wheelSurface[w]!.maxSinkage, this.wheelSinkage[w]! + this.wheelRut[w]!)
           : 0)),
-      wheelSurface: CAR_WHEELS.map((_, w) => (this.wheelLoad[w]! > 0 ? this.wheelSurface[w]!.material : -1)),
-      wheelWetness: CAR_WHEELS.map((_, w) => (this.wheelLoad[w]! > 0 ? this.wheelWet[w]! : 0)),
+      wheelSurface: CAR_WHEELS.map((_, w) =>
+        (this.wheelLoad[w]! > 0 && this.wheelSubmerged[w] !== 1 ? this.wheelSurface[w]!.material : -1)),
+      wheelWetness: CAR_WHEELS.map((_, w) =>
+        (this.wheelSubmerged[w] === 1 ? 1 : this.wheelLoad[w]! > 0 ? this.wheelWet[w]! : 0)),
       axleHeave: Array.from(this.axleHeave),
       axleRoll: Array.from(this.axleRoll),
       steeringWheel: this.steering.wheelAngle,
