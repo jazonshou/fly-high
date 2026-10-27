@@ -166,10 +166,11 @@ export interface WebGpuQualityProfile {
    * Per row: tier 1 sits highest because FXAA is part of what it undoes. The
    * multisampled tiers keep a lighter touch for the canvas stretch alone.
    * Tier 0 is OFF, not for want of need. It was off for memory while the
-   * sharpen was a pass of its own (one LDR target, against tier 0's 259.6 of
-   * 260 MiB at 2560x1440@2); fused into FXAA (`FxaaSharpenPass`) it costs no
-   * target, only RCAS's arithmetic, so turning it on there is now a decision
-   * about the low tier's look, not its budget.
+   * sharpen was a pass of its own (one LDR target, against tier 0's then
+   * 259.6 of 260 MiB at 2560x1440@2, 254.7 since PR B part 2's 0.85 Mpx
+   * cap); fused into FXAA (`FxaaSharpenPass`) it costs no target, only
+   * RCAS's arithmetic, so turning it on there is now a decision about the
+   * low tier's look, not its budget.
    *
    * DATA, not a `profile.tier` branch, per the tier rule.
    */
@@ -481,7 +482,11 @@ function resolveBaseQualityProfile(
       quality,
       mode,
       renderScale: 0.72,
-      maxRenderPixels: 1_000_000,
+      // PR B part 2 (T0a): 1.0 -> 0.85 Mpx. With the DPR ceiling at 1 it
+      // binds only above 1.64 Mpx of CSS pixels (desktop monitors at 100%
+      // scaling), where the memory estimate falls 258.87 -> 254.67 of 260 MiB;
+      // 1366x768 and 1080p laptops at 125-150% render below it, unchanged.
+      maxRenderPixels: 850_000,
       shadowRefreshFrames: 1,
       cloudDepthRefreshFrames: 1,
       governorPixelFloorRatio: 0.6,

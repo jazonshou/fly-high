@@ -103,9 +103,10 @@ export const FRAME_TARGET_MS: Readonly<Record<PerformanceTier, number>> = Object
 
 /**
  * §5.4 publishes the Balanced and Ultra rows; Low scales the per-pixel rows
- * to its 1.0 Mpx cap, and High trades nearly all of Balanced's headroom for
- * its 2.4 Mpx cap (its compute caps come from §5.3). Rows must sum below the
- * tier's frame target — asserted in the budget test, not trusted.
+ * to a 1.0 Mpx raster (its cap until PR B part 2 lowered it to 0.85 Mpx),
+ * and High trades nearly all of Balanced's headroom for its 2.4 Mpx cap (its
+ * compute caps come from §5.3). Rows must sum below the tier's frame target —
+ * asserted in the budget test, not trusted.
  */
 export const FRAME_BUDGET_MS: Readonly<Record<PerformanceTier, SubsystemBudgetMs>> =
   Object.freeze({

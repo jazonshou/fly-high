@@ -103,7 +103,7 @@ audit is why it now carries all four tiers):
 | Budget | Tier 0 | Tier 1 | Tier 2 | Tier 3 (Ultra) |
 | --- | ---: | ---: | ---: | ---: |
 | Initial/internal render-scale ceiling | 0.72 | 0.86 | 1.00 | 1.00 |
-| Absolute pixel cap (1A-6a) | 1.0 Mpx | 1.5 Mpx | 2.4 Mpx | 4.0 Mpx |
+| Absolute pixel cap (1A-6a) | 0.85 Mpx | 1.5 Mpx | 2.4 Mpx | 4.0 Mpx |
 | Device-pixel-ratio ceiling | 1 | 1.5 | 2 | 2 |
 | MSAA samples (offscreen beauty target) | 1 | 1 | 4 | 4 |
 | CDLOD node budget (`4-5`, re-tuned at `4.5-A1`) | 224 | 320 | 448 | 640 |
@@ -667,7 +667,8 @@ species branch draws its extra random only where the weight is above zero.
   since their bare bake was byte-identical to the leafed one, so the impostor
   arrays go from 14 to 12 layers (9.33 → 8.0 MiB). Net: tier 0 at
   2560×1440@2 estimates 258.87 MiB against its 260 ceiling (259.63 before),
-  every tier 0.76 MiB lower. Conifer impostors are pixel-identical.
+  every tier 0.76 MiB lower; PR B part 2's 0.85 Mpx cap has since taken it
+  to 254.67 MiB. Conifer impostors are pixel-identical.
 - **The far band: one shader edit, no new work.** Its season bucket was chosen
   by three `season > selector` comparisons (one per blended view); it is now
   one comparison and a tint test (`season > selector && tint.a < 0.999`)

@@ -105,7 +105,7 @@ describe("WebGPU quality profiles", () => {
 
   it("caps rendered pixels and device pixel ratio per tier (1A-6a)", () => {
     expect(resolveWebGpuQualityProfile("low", "performance")).toMatchObject({
-      maxRenderPixels: 1_000_000,
+      maxRenderPixels: 850_000,
       maxDevicePixelRatio: 1,
     });
     expect(resolveWebGpuQualityProfile("medium", "balanced")).toMatchObject({
