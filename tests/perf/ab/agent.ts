@@ -350,14 +350,20 @@ function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuM
 }
 
 /**
- * Draws skipped so far for a pipeline compiling off the frame; undefined from
- * a build without `getPipelineCompileStatsForCapture` (read loosely: the arm's
- * own build is read with this branch's agent).
+ * Draws skipped so far for a pipeline compiling off the frame, and the
+ * warm-ups in progress (meshes drawn wherever they are until their pipelines
+ * are ready); undefined from a build without `getPipelineCompileStatsForCapture`
+ * (read loosely: the arm's own build is read with this branch's agent).
  */
-function deferredDrawCount(target: FlightRenderer): number | undefined {
+function pipelineCompileCounts(target: FlightRenderer): { deferredDraws: number; warmUps: number } | undefined {
   const read = (target as unknown as { getPipelineCompileStatsForCapture?: () => unknown }).getPipelineCompileStatsForCapture;
-  const deferred = (read?.call(target) as { deferredDraws?: unknown } | null | undefined)?.deferredDraws;
-  return typeof deferred === "number" ? deferred : undefined;
+  const stats = read?.call(target) as Record<string, unknown> | null | undefined;
+  const { deferredDraws, warmUpsStarted, warmUpsCompleted, warmUpsAbandoned } = stats ?? {};
+  if (typeof deferredDraws !== "number") return undefined;
+  const warmUps = [warmUpsStarted, warmUpsCompleted, warmUpsAbandoned].every((count) => typeof count === "number")
+    ? (warmUpsStarted as number) - (warmUpsCompleted as number) - (warmUpsAbandoned as number)
+    : 0;
+  return { deferredDraws, warmUps };
 }
 
 /**
@@ -1167,7 +1173,7 @@ const agent: PerfAgent = {
       const shaderCodeBefore = creations.shaderCodeChars;
       const effectsBefore = effectsCompiled.length;
       const pipelineSourcesBefore = pipelineSources.length;
-      const deferredBefore = deferredDrawCount(active);
+      const compilesBefore = pipelineCompileCounts(active);
       const heapBefore = heapUsedBytes();
       const heapBetweenBytes = heapBefore - heapMark;
       const renderStarted = performance.now();
@@ -1199,6 +1205,7 @@ const agent: PerfAgent = {
       for (const timing of graphPassTimings(active)) {
         if (timing.ran) passMs[timing.name] = timing.cpuMilliseconds;
       }
+      const compilesAfter = pipelineCompileCounts(active);
       frames.push({
         renderMs,
         betweenMs,
@@ -1211,7 +1218,10 @@ const agent: PerfAgent = {
         effectsCompiled: effectsCompiled.slice(effectsBefore),
         pipelineSources: pipelineSources.slice(pipelineSourcesBefore),
         pitchDownDegrees: path.pitchDownDegrees,
-        ...(deferredBefore === undefined ? {} : { deferredDraws: deferredDrawCount(active)! - deferredBefore }),
+        ...(compilesBefore === undefined || compilesAfter === undefined ? {} : {
+          deferredDraws: compilesAfter.deferredDraws - compilesBefore.deferredDraws,
+          pipelineWarmUps: compilesAfter.warmUps,
+        }),
         bake,
       });
       if (frame % request.fenceEvery === request.fenceEvery - 1) {

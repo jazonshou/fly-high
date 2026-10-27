@@ -255,6 +255,8 @@ export interface FlightFrame {
    * the frame (`AsyncPipelineCompiles`); absent from a build without it.
    */
   readonly deferredDraws?: number;
+  /** Warm-ups in progress after this frame (meshes drawn out of view until their pipelines are ready). */
+  readonly pipelineWarmUps?: number;
   /** Main-thread milliseconds per frame-graph pass (an older build may report none). */
   readonly passMs: Readonly<Record<string, number>>;
   /**
