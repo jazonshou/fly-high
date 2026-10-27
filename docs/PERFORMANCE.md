@@ -2479,6 +2479,126 @@ ground-cover blades' PBR, and the far east's plain PBR and hydrology
 water, at load; and the first leg near home, where the fix's sooner trees
 cost p95 in the first 10 s of flight.
 
+## The nose-down freeze: pipelines built inside the frame (2026-10-27)
+
+Jason, 2026-10-27: "sometimes when I point down towards the ground, the
+plane freezes for a moment."
+
+**The cause (measured).** Babylon 9.21.2 builds a render pipeline the first
+time a draw needs it, inside that draw, with the synchronous
+`GPUDevice.createRenderPipeline`, and the GPU process compiles the shader
+before it runs anything else. Every detail PBR material has a pipeline of
+its own. The near-ground prototypes (clutter stumps, logs, moss and litter,
+rocks, shrubs, and the grass blades) stand inside the near band, which in
+level flight a few hundred feet up is below the bottom of the chase
+camera's view. So the first frame that shows one is the frame the nose goes
+down, and that frame waits for the compile. It happens once per material
+per session, which is why it is only "sometimes". The blades had a second
+one: their placement kernel's compute pipeline, which Babylon's
+`_computeDispatch` builds synchronously at the first dispatch, the frame
+after the first ground-cover tile completes.
+
+**How it was measured.** `npm run perf:flight -- --pitch-down <deg>` flies
+legs 2, 4 and 6 nose-down (pitching at 30 deg/s, the path still terrain
+following); `--draws --fence-every 1` keeps the draws and waits for the GPU
+after every frame, so a compile in the GPU process lands in the frame that
+asked for it. The report's "Pipelines created mid-flight" section names
+what asked for each pipeline: frame-graph pass, Babylon render pass, mesh
+(material), pipeline label, and per frame the draws that waited for an
+off-frame compile. Read the hitches on the macOS runner (Metal), through a
+temporary workflow that ran perf:flight there; SwiftShader shows the same
+pipelines in the same frames, but its fence p50 is ~180 ms with 2.5-3.2 s
+compute spikes in level legs too. Main (`ac2c76c`), macOS runner, CI runs
+40444508520 and 40448084761 (fence p50 21-80 ms on these legs):
+
+| What compiled in the frame | When | That frame on main |
+| --- | --- | --- |
+| clutter stump (`detail-clutter-stump-material`) | 13-15 deg nose-down from 150 m | 717-1,615 ms |
+| moss cushion | level at 60 m | 919-1,737 ms |
+| grass blades' compute pipeline, then their render pipeline | level at 60 m, first blades | 412-576 ms, then 887-1,132 ms |
+| limestone rock | 45 deg nose-down from 60 m | 915-1,169 ms |
+| granite rock | level, far east (x = 160 km) | 690-1,076 ms |
+| far impostor, a new texture-state variant | 30 deg nose-down | fence 140-190 ms |
+
+**The fix** (`src/render/webgpu/core/AsyncPipelineCompiles.ts`):
+
+1. A draw of a registered material (the detail set and the blades) whose
+   pipeline is not built does not build it. It starts
+   `createRenderPipelineAsync` with the descriptor Babylon would have used,
+   which the GPU process compiles without holding the frame (on the macOS
+   runner a new impostor variant then cost a 17 ms fence, not 140-190 ms),
+   and skips that one draw; the pipeline joins Babylon's cache when it
+   lands. The object appears a frame or a few late instead of the frame
+   stopping. A pipeline the device refuses asynchronously is built
+   synchronously at its next draw, so its error reaches the
+   uncaptured-error guard as before. The hooks forward Babylon's named
+   parameters, so a draw allocates nothing for them.
+2. Warm-ups start those compiles as the scenery streams in rather than when
+   it scrolls into view: each detail prototype's first published batch
+   draws wherever it is (`alwaysSelectAsActiveMesh`) until a frame draws it
+   with every pipeline ready, and, while the aircraft is above the blades'
+   fade, ring 0 draws one degenerate blade and the placement kernel's
+   compute pipeline is built with `createComputePipelineAsync`
+   (`precompileComputePipeline`). An out-of-view warm-up draw is clipped and
+   costs its vertex work once.
+3. Captures are unchanged: the capture's time pin calls
+   `setSynchronous(true)`, so a shot's frames build pipelines in the frame as
+   the baselines' did, and `waitForGpuIdleForCapture` waits for compiles in
+   flight. No baseline or draw-call ceiling moves.
+
+Wildlife primes its pipelines at startup already and is not registered;
+hydrology water and the airports are not registered either (seen in none of
+these flights).
+
+**Result** (macOS runner, main `ac2c76c` against the fix's final code, CI
+run 40453621587; a frame is render + the tasks behind it + its fence,
+frame 0 of each leg left out, see below):
+
+| Flight | Worst frame, main → fix | Frames over 500 ms | Pipelines built in a frame | Frame p50 / p95, main → fix |
+| --- | --- | --- | --- | --- |
+| 150 m, 120 m/s, 45 deg nose-down | 1,751 → 316 ms | 1 → 0 | 1 → 0 | 86 / 186 → 80 / 175 ms |
+| 60 m, 80 m/s, 45 deg | 1,127 → 336 ms | 4 → 0 | 3 → 0 | 82 / 138 → 80 / 124 ms |
+| far east (x = 160 km), 60 deg | 1,366 → 299 ms | 1 → 0 | 2 → 0 (one compiled off the frame, one draw waited for it) | 47 / 111 → 47 / 104 ms |
+| 40 m, 70 m/s, 45 deg (three flights) | 752, 1,070, 624 → 215, 325, 122 ms | 3, 4, 4 → 0, 0, 0 | 3 each → 0 | 37 / 63 → 35 / 54, 70 / 160 → 67 / 112, 32 / 44 → 34 / 42 ms |
+
+The earlier runs of the fix agree (40450021534, 40451487474, 40452384017:
+worst nose-down frame 2,264 → 345 ms at 150 m; no pipeline built in a
+frame in any flight). Two frames over 500 ms did show up with the fix in
+two 40 m flights there, 558 and 750 ms. Both were the terrain visibility
+pass (`world-page-visibility`, 462 ms of CPU in one, a 629 ms fence after
+100 ms in the other), with no pipeline, warm-up or waiting draw. That pass
+spikes on main too and in both arms of an A/A of the fix (142-247 ms): it
+is a separate hitch, not this one, and is not addressed here.
+
+What the fix costs in flight was checked, because two runs of the fix had
+more 40+ ms render() frames than main (36 against 20 at 150 m, 38 against
+25 at 40 m). perf:flight now records the warm-ups in progress on every
+frame: in all 15 arms of the fix in the 13 flights since (runs
+40451487474, 40452384017 and 40453621587), none was in progress in any
+measured frame, and one draw waited (the far east's, in the table), so in
+the spike frames the fix did nothing but a check per draw.
+Each pass's p50 and p90 CPU match between the arms. The count of 40+ ms
+frames moves as much between two arms running the same code (main against
+main at 40 m: 32 against 17; the fix against itself: 27 against 28 at
+40 m, 18 against 18 at 150 m), and in the final run it went both ways
+(10 → 24 at 150 m; 22 → 22, 15 → 10, 0 → 1, 14 → 11, 1 → 0). It is this
+runner's noise.
+
+Frame 0 of a leg is not flight: the arm that resumes after the harness
+switches arms waits 0.5-1.9 s at its first fence, in both arms alike and in
+the same alternating legs whether or not the arms differ (run 40444508520,
+main against main plus the probe).
+
+Pinned by `tests/render.webgpu-async-pipeline-compiles.test.ts` (the module
+against stand-ins for Babylon's draw path, and the Babylon 9.21.2 source
+facts it relies on) and `tests/gpu/async-pipeline-compiles.test.ts` (real
+WebGPU draws: a first sight compiles nothing in its frame, a warm-up makes
+first sight draw at once, shadow-map draws wait and land, the blades prime
+both pipelines above the fade). Of the choppiness section's open list
+("compiling ... at load") this covers the ground-cover blades' PBR, and in
+the far east the granite rock, a detail material (perhaps that list's
+"plain PBR"). The far east's hydrology water is not covered.
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
