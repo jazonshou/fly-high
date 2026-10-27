@@ -1429,6 +1429,16 @@ export class TerrainPageGenerator {
     this.earthworksBuffer?.update(this.earthworksSetBytes);
   }
 
+  /**
+   * The streamed regions changed: write the stage's GPU copy now, in the
+   * frame and pass that installed them, instead of at the next batch's bind.
+   * The bake, bathymetry and splat bindings share the copy, so this is all of
+   * them.
+   */
+  syncInfrastructure(): void {
+    this.infrastructureBinding.sync();
+  }
+
   /** Install the eager canonical macro authority before eroded pages schedule. */
   setMacroEvolution(macro: Readonly<TerrainMacroEvolutionExport> | null): void {
     if (macro && this.world && macro.provenance.worldSeed !== this.world.seed) {

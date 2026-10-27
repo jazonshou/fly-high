@@ -140,6 +140,8 @@ export interface TerrainPageProducer {
   refresh?(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]>;
   /** Grade these airports (home field first) from the next dispatch on. */
   setAirports?(airports: readonly Readonly<AirportDefinition>[]): void;
+  /** Bring the stage's GPU copy to the streamed regions now (`TerrainPageGenerator.syncInfrastructure`). */
+  syncInfrastructure?(): void;
   /** Fill Phase-5 aux fields for channel slots admitted after height. */
   ensureHydrology?(slots: readonly TerrainAtlasSlot[]): Promise<void>;
   setCollisionPagePublisher?(publisher: TerrainCollisionPagePublisher | null): void;
@@ -1394,14 +1396,17 @@ export class TerrainClipmapSystem {
    * airport (its steps 2 and 3) — scanned over frames, rebuilt in place
    * through the pumps and meter, an L0 page published again.
    *
-   * The stage's GPU copy needs nothing here: every bake binds it, and the
-   * binding brings it to the current regions first, so a page batched after
-   * the change reads them. A page the change does not touch is bit-identical
-   * either way, because outside the change's bins the stage's answer is the
-   * same. Cheap: one queued test per slot, spread like an airport change's.
+   * The stage's GPU copy is written here, with the change (every bake's
+   * bind would bring it to the current regions anyway, so a page batched
+   * after the change reads them either way). A page the change does not
+   * touch is bit-identical either way, because outside the change's bins the
+   * stage's answer is the same. Cheap: one queued test per slot, spread like
+   * an airport change's.
    */
   infrastructureChanged(change: InfrastructureChange): void {
-    if (this.disposed || change.bins.size === 0) return;
+    if (this.disposed) return;
+    this.pageGenerator?.syncInfrastructure?.();
+    if (change.bins.size === 0) return;
     const domain = this.infrastructureDomain;
     this.airportListVersion += 1;
     this.airportInvalidations.push({

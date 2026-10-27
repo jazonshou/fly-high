@@ -259,7 +259,11 @@ const GPU_TIMING_STALE_AFTER_FRAMES = 30;
  */
 const DIAGNOSTIC_WINDOW_FRAMES = 600;
 /** The present pass cannot be probed off — cutting it blacks the frame. */
-const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
+const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set([
+  "hdr-present",
+  // No GPU work of its own; off, the roads would only stop streaming.
+  "road-stream",
+]);
 /**
  * B6: main-thread milliseconds a frame spends sampling a sliced sky rebake
  * (`SkyEnvironmentProbe.advanceRebake`, which always samples one 16-texel
@@ -503,6 +507,13 @@ export interface FlightRendererOptions {
   renderingMode: RenderingMode;
   reducedMotion: boolean;
   runway?: Readonly<AirportDefinition>;
+  /**
+   * Where the session will start in plan (the spawn the simulation is given:
+   * the car on the apron, the boat at its berth, the aircraft on the runway
+   * or in the air off it). Startup waits for the streamed roads round it, so
+   * the first pages bake with them. Unset: the home airport's centre.
+   */
+  startPoint?: { readonly x: number; readonly z: number };
   signal?: AbortSignal;
   onDeviceLost?: (reason: string) => void;
   /**
@@ -1218,15 +1229,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       const terrain = new TerrainClipmapSystem(scene, options.world, profile);
       cleanup.push(() => terrain.dispose());
       if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
-      // The streamed roads: their worker starts on the regions round the home
-      // field now, beside the rest of startup, and the bakes below wait for
-      // them (`roadsPrimed`), so the first pages are built with their roads
-      // rather than rebuilt under the car. An eroded world has no stage.
+      // The streamed roads: their worker starts on the regions round the
+      // session's start now, beside the rest of startup, and the bakes below
+      // wait for them (`roadsPrimed`), so the first pages are built with their
+      // roads rather than rebuilt under the car. An eroded world has no stage.
       const roads = options.world.worldEvolution === "eroded" ? null : new RoadStreamRuntime(options.world);
       if (roads) cleanup.push(() => roads.dispose());
       const roadsPrimed = roads?.prime(
-        options.world.airport?.centerX ?? 0,
-        options.world.airport?.centerZ ?? 0,
+        options.startPoint?.x ?? options.world.airport?.centerX ?? 0,
+        options.startPoint?.z ?? options.world.airport?.centerZ ?? 0,
       ) ?? Promise.resolve();
       checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
@@ -2982,10 +2993,20 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       phase: "simulation",
       execute: () => this.updatePresentation(),
     });
+    // Its own pass, so a frame's install, composition and GPU pack of the
+    // streamed roads read as one number (perf:flight's `passMs`).
+    if (this.roads) {
+      this.graph.register({
+        name: "road-stream",
+        phase: "visibility",
+        after: ["flight-presentation"],
+        execute: () => this.updateRoadStream(),
+      });
+    }
     this.graph.register({
       name: "world-page-visibility",
       phase: "visibility",
-      after: ["flight-presentation"],
+      after: this.roads ? ["flight-presentation", "road-stream"] : ["flight-presentation"],
       execute: () => this.updateWorldVisibility(),
     });
     // 2-10: the shared-planar-water-reflection node is retired with its
@@ -3944,16 +3965,21 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     return height / (2 * Math.tan(Math.max(0.05, verticalFov) / 2));
   }
 
-  private updateWorldVisibility(): void {
+  /** Before the terrain updates: a change installed now reaches every bake this frame batches. */
+  private updateRoadStream(): void {
     const state = this.currentState;
-    if (!state) return;
-    // Roads first: a change installed now reaches every bake this frame batches.
-    this.roads?.update({
+    if (!state || !this.roads) return;
+    this.roads.update({
       x: state.position.x,
       z: state.position.z,
       velocityX: state.velocity.x,
       velocityZ: state.velocity.z,
     }, performance.now());
+  }
+
+  private updateWorldVisibility(): void {
+    const state = this.currentState;
+    if (!state) return;
     this.terrain.update({
       x: state.position.x,
       y: state.position.y,
