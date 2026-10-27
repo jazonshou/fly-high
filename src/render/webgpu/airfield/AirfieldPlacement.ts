@@ -6,8 +6,6 @@ import {
   fuelTankPlacements,
   perimeterFenceStations,
   signPlacements,
-  TOWER_ALONG_FRACTION,
-  TOWER_LATERAL_OFFSET_METERS,
   WINDSOCK_LATERAL_OFFSET_METERS,
   windsockAxisDirectionToRef,
   windsockBoreScale,
@@ -15,6 +13,7 @@ import {
   windsockInflation,
 } from "../detail/AirfieldFurniture";
 import type { TowerAttachments, TowerGeometry, TowerPartName } from "../detail/towerGeometry";
+import { towerPlanPosition } from "./AirfieldSiting";
 import {
   HANGAR_SITING,
   MINIMUM_SKIRT_METERS,
@@ -131,8 +130,7 @@ export function towerSite(
   tower: TowerGeometry,
   groundHeight: AirfieldGroundHeight,
 ): TowerSite {
-  const towerAcross = definition.runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS;
-  const towerAlong = definition.runwayLength * TOWER_ALONG_FRACTION;
+  const { along: towerAlong, across: towerAcross } = towerPlanPosition(definition);
   const towerWorld = runwayToWorld(definition, towerAlong, towerAcross);
   const towerGround = groundHeight(towerWorld.x, towerWorld.z);
   // Same rule as the hangars: the root sits at the datum, so the tower's local
@@ -198,10 +196,8 @@ export function airfieldGroundPoints(definition: Readonly<AirportDefinition>): F
       push(local.along, local.across);
     }
   }
-  push(
-    definition.runwayLength * TOWER_ALONG_FRACTION,
-    definition.runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS,
-  );
+  const tower = towerPlanPosition(definition);
+  push(tower.along, tower.across);
   for (const station of perimeterFenceStations(definition)) push(station.along, station.across);
   for (const tank of fuelTankPlacements()) push(tank.along, tank.across);
   for (const sign of signPlacements(definition)) push(sign.along, sign.across);
