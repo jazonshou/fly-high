@@ -2116,6 +2116,15 @@ export class FlightRenderer implements FlightRenderingSystem {
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
+    // The drawn lakes and rivers, for the car's water.
+    this.hydrology.setWaterPublisher(
+      publisher?.publishHydrology && publisher.evictHydrology
+        ? {
+          publishHydrology: (key, region) => publisher.publishHydrology?.(key, region),
+          evictHydrology: (key) => publisher.evictHydrology?.(key),
+        }
+        : null,
+    );
     const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
     this.terrain.setCollisionPagePublisher(
       publisher || needsEvolvedConsumers

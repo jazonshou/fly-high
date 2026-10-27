@@ -59,7 +59,14 @@ import {
   type SurfaceVehicleSimulator,
   type SurfaceVehicleSpawn,
 } from "@/src/sim/surface";
-import { CalmWaterSurface, createSeaTwin, resolveSeaSpectrumConfig, SeaTwin } from "@/src/sim/water";
+import {
+  CalmWaterSurface,
+  createSeaTwin,
+  HydrologyWaterSource,
+  resolveSeaSpectrumConfig,
+  SeaTwin,
+  WaterSurfaceComposite,
+} from "@/src/sim/water";
 import { homeMarina } from "@/src/world/marina";
 import {
   applyInfrastructureRegionsUpdate,
@@ -177,6 +184,12 @@ let surface: SurfaceVehicleSimulator | null = null;
 let harbour: MarinaHarbour | null = null;
 /** The buildings, the marina and the guardrails a car meets, for a car session. */
 let carColliders: CarColliders | null = null;
+/**
+ * The lakes and rivers the renderer has posted (`hydrology` commands), kept
+ * for the whole session: the car's water is the sea and these together. The
+ * boat takes the same composite later (boats W3).
+ */
+const hydrologyWater = new HydrologyWaterSource(terrainHeightSample);
 /** The car's gearbox and clutch, from the session's settings. */
 let carSetup: CarSetup = DEFAULT_CAR_SETUP;
 const surfaceControls: SurfaceVehicleControls = {
@@ -276,13 +289,15 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   const boat = vehicleClass(kind) === "boat";
   // The sea the renderer draws, from the same spectrum, seed and weather,
   // calmed inside the home marina's basin, over the worker's own bed. The
-  // car wades the still level (its build decides whether it needs waves).
+  // car wades the sea's still level and the posted lakes and rivers.
+  const seaLevel = world?.seaLevel ?? 0;
   if (world && boat) {
     const sea = createSeaTwin(world, weather, terrainHeightSample);
     sea.setShelter([homeMarina(world).shelter]);
     surfaceEnvironment.water = sea;
   } else {
-    surfaceEnvironment.water = new CalmWaterSurface(world?.seaLevel ?? 0, terrainHeightSample);
+    const calm = new CalmWaterSurface(seaLevel, terrainHeightSample);
+    surfaceEnvironment.water = boat ? calm : new WaterSurfaceComposite(calm, hydrologyWater, seaLevel);
   }
   // The boat meets the marina through its harbour; the car meets every
   // airport's buildings, the marina and the roads' guardrails.
@@ -311,6 +326,7 @@ function stepSurface(active: SurfaceVehicleSimulator): void {
   surfaceWind.y = wind.y * windScale;
   surfaceWind.z = wind.z * windScale;
   surfaceEnvironment.water.setTime(active.state.time);
+  hydrologyWater.setVehiclePosition(position.x, position.z);
   surfaceControls.assist = mode;
   surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
   surfaceControls.car = controls.car ?? NEUTRAL_CAR_CONTROLS;
@@ -752,6 +768,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // that structured-cloneable world so worker startup cannot repeat the
       // synchronous airport search or select a different fallback region.
       terrainAuthority.clear();
+      hydrologyWater.clear();
       carColliders = null;
       world = command.world;
       applyInfrastructure(command.infrastructure);
@@ -778,6 +795,14 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     if (command.type === "infrastructure") {
       applyInfrastructure(command.update);
+      return;
+    }
+    if (command.type === "hydrology") {
+      hydrologyWater.setRegion(command.key, command.region);
+      return;
+    }
+    if (command.type === "hydrologyEvict") {
+      hydrologyWater.evictRegion(command.key);
       return;
     }
     if (command.type === "airports") {

@@ -16,6 +16,7 @@ import {
   type InfrastructureRegion,
 } from "../src/world/infrastructure";
 import type { SimulationEvent } from "../src/workers/protocol";
+import { packHydrologyWater } from "../src/sim/water/hydrologyWater";
 
 class WorkerStub extends EventTarget {
   static latest: WorkerStub | null = null;
@@ -146,6 +147,23 @@ describe("simulation worker lifecycle commands", () => {
     const worker = WorkerStub.latest!;
     client.recover();
     expect(worker.messages.at(-1)).toEqual({ type: "recover" });
+    client.dispose();
+  });
+
+  it("posts each drawn hydrology region with its arrays transferred, and the end of one", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const client = new SimulationClient(createWorld(123), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const worker = WorkerStub.latest!;
+    const region = packHydrologyWater(
+      [{ points: [{ x: 0, y: 1, z: 0, widthMeters: 4, flowSpeedMetersPerSecond: 1 }, { x: 0, y: 0.9, z: 50, widthMeters: 4, flowSpeedMetersPerSecond: 1 }] }],
+      [{ surfaceHeight: 3, boundary: [{ x: 100, z: 0 }, { x: 120, z: 0 }, { x: 110, z: 20 }] }],
+    );
+    const buffers = [region.riverPoints, region.riverStarts, region.lakeLevels, region.lakeBoundary, region.lakeStarts].map((array) => array.buffer);
+    client.publishHydrology("0:0", region);
+    expect(worker.messages.at(-1)).toEqual({ type: "hydrology", key: "0:0", region });
+    expect(worker.transfers.at(-1)).toEqual(buffers);
+    client.evictHydrology("0:0");
+    expect(worker.messages.at(-1)).toEqual({ type: "hydrologyEvict", key: "0:0" });
     client.dispose();
   });
 

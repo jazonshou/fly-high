@@ -1,6 +1,7 @@
 import type { CarSetup, ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
 import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
+import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type AirportDefinition, type WorldDefinition } from "@/src/world";
 import {
@@ -225,6 +226,19 @@ export class SimulationClient {
   publishInfrastructure(update: InfrastructureRegionsUpdate): void {
     const post = this.infrastructure.next(update);
     if (post) this.send({ type: "infrastructure", update: post });
+  }
+
+  /** One hydrology region's lakes and rivers, for the car's water; its arrays are transferred. */
+  publishHydrology(key: string, region: HydrologyWaterRegion): void {
+    const buffers = [region.riverPoints, region.riverStarts, region.lakeLevels, region.lakeBoundary, region.lakeStarts]
+      .map((array) => array.buffer)
+      .filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer);
+    this.send({ type: "hydrology", key, region }, buffers);
+  }
+
+  /** The renderer is done with a hydrology region. */
+  evictHydrology(key: string): void {
+    this.send({ type: "hydrologyEvict", key });
   }
 
   /** The world's full airport list, home field first (see `withAirports`). */

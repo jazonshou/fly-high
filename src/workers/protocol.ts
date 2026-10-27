@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
+import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
@@ -116,6 +117,14 @@ export type SimulationCommand =
    * there from the new regions until the rebuilt pages arrive.
    */
   | { type: "infrastructure"; update: InfrastructureRegionsUpdate }
+  /**
+   * One hydrology region's lakes and rivers as the renderer draws them
+   * (`packHydrologyWater`; its buffers are transferred), for the car's
+   * water. Posting a key again replaces that region.
+   */
+  | { type: "hydrology"; key: string; region: HydrologyWaterRegion }
+  /** The renderer is done with a hydrology region: the worker drops it once the vehicle is about a kilometre clear. */
+  | { type: "hydrologyEvict"; key: string }
   /**
    * Engage the autoland on the nearest airport's runway, or hand back. The
    * worker refuses to engage on the ground and in the menu flight, and drops

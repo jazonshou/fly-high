@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
+import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
@@ -23,6 +24,13 @@ export interface TerrainAuthorityPublisher {
    * ignores streamed regions.
    */
   publishInfrastructure?(update: InfrastructureRegionsUpdate): void;
+  /**
+   * Each drawn hydrology region's lakes and rivers, and the end of one
+   * (`HydrologySystem.setWaterPublisher`). Absent: the publisher's water has
+   * no lakes or rivers.
+   */
+  publishHydrology?(key: string, region: HydrologyWaterRegion): void;
+  evictHydrology?(key: string): void;
 }
 
 /** A world point on the canvas, written in place by `projectWorldPointToRef`. */

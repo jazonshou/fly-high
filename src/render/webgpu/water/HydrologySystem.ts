@@ -15,6 +15,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { AtmosphereSnapshot } from "@/src/render/webgpu/atmosphere/AtmosphereSystem";
 import type { WorldSeed } from "@/src/world";
 import { withStaticInfrastructure } from "@/src/world/infrastructure";
+import { packHydrologyWater, type HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import {
   CLOUD_SHADOW_RECEIVER_SAMPLER,
   CLOUD_SHADOW_RECEIVER_UNIFORMS,
@@ -957,6 +958,16 @@ export interface HydrologySystemOptions
   readonly graphHydrology?: HydrologyGraphSource;
 }
 
+/**
+ * Where the drawn lakes and rivers go for the simulation's water (the car
+ * wades them): each resident region as it is installed, under its paging
+ * key, and the end of it once its crossfade has disposed it.
+ */
+export interface HydrologyWaterPublisher {
+  publishHydrology(key: string, region: HydrologyWaterRegion): void;
+  evictHydrology(key: string): void;
+}
+
 export interface HydrologySystemStatistics {
   readonly riverCount: number;
   readonly lakeCount: number;
@@ -1104,6 +1115,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   private readonly bathymetry: BathymetryClipmap | null;
   /** wave R fix 8: null when no world wind was supplied (see the option). */
   private worldWindSpeedMetersPerSecond: number | null = null;
+  private waterPublisher: HydrologyWaterPublisher | null = null;
 
   constructor(
     scene: Scene,
@@ -1483,6 +1495,17 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     });
   }
 
+  /**
+   * Hand every resident region's lakes and rivers to `publisher` now, and
+   * each later region as it lands; null stops it.
+   */
+  setWaterPublisher(publisher: HydrologyWaterPublisher | null): void {
+    this.waterPublisher = publisher;
+    if (!publisher) return;
+    if (this.previousRegion) this.publishWater(this.previousRegion);
+    if (this.currentRegion) this.publishWater(this.currentRegion);
+  }
+
   getStatistics(): HydrologySystemStatistics {
     const generated = this.currentRegion?.hydrology.statistics;
     const regions = [this.previousRegion, this.currentRegion].filter(
@@ -1530,6 +1553,20 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.sunShadowBinding = null;
     // The cloud transmittance texture is owned by VolumetricCloudSystem.
     this.material.dispose(true, false);
+  }
+
+  private publishWater(region: HydrologyRegionRuntime): void {
+    this.waterPublisher?.publishHydrology(
+      region.selection.key,
+      packHydrologyWater(region.hydrology.rivers, region.hydrology.lakes),
+    );
+  }
+
+  /** A disposed region's water goes too, unless a resident region still answers under its key. */
+  private retireWater(region: HydrologyRegionRuntime): void {
+    const key = region.selection.key;
+    if (this.currentRegion?.selection.key === key || this.previousRegion?.selection.key === key) return;
+    this.waterPublisher?.evictHydrology(key);
   }
 
   private initialSelection(): HydrologyRegionSelection {
@@ -1630,9 +1667,12 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     result: HydrologyRegionGenerationResult,
   ): void {
     const next = this.buildRegion(selection, result.hydrology, result.geometry);
-    if (this.previousRegion) disposeRegion(this.previousRegion);
+    const retired = this.previousRegion;
+    if (retired) disposeRegion(retired);
     this.previousRegion = this.currentRegion;
     this.currentRegion = next;
+    if (retired) this.retireWater(retired);
+    this.publishWater(next);
     this.lastGenerationMilliseconds = result.elapsedMilliseconds;
     this.lastGenerationUsedWorker = result.workerGenerated;
     if (this.previousRegion) {
@@ -1663,8 +1703,10 @@ export class HydrologySystem implements PlanarReflectionReceiver {
       setRegionOpacity(this.currentRegion, 1);
     }
     if (progress < 1) return;
-    disposeRegion(this.previousRegion);
+    const retired = this.previousRegion;
+    disposeRegion(retired);
     this.previousRegion = null;
+    this.retireWater(retired);
     setRegionOpacity(this.currentRegion, 1);
   }
 

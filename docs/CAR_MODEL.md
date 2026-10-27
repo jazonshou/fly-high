@@ -370,8 +370,7 @@ tuned to it.
 ## Water
 
 The car reads the water authority at the tyres' contacts, one tyre a step
-in turn and all four at a start (the sea today; lakes and rivers once the
-hydrology sources reach the worker). In the worker each answer costs a
+in turn and all four at a start. In the worker each answer costs a
 terrain height sample (about 13 us in Node), so asking for all four every
 step doubled the car's step; the water a tyre has rolled towards in the four
 steps (33 ms) since it was last asked is near enough. Whether a tyre is under
@@ -398,6 +397,18 @@ loam turns to mud, snow keeps its depth and hard ground keeps 80% of its grip.
 - The intake sits 0.7 m above the ground at the front of the engine bay. Water
   over it at the front wheels hydrolocks the engine: it stops and will not
   restart until a recovery.
+
+The authority is the sea's still level and the lakes and rivers the
+renderer draws, in one `WaterSurfaceComposite` (`src/sim/water/`). The
+renderer's `HydrologySystem` posts each resident region's rivers and lakes as
+it lands and ends it after its crossfade. The worker keeps a region the car
+is within a kilometre of, so a region paged out behind a car still in its
+lake stays until the car has left. A river is its ribbon, the stations'
+surface out to the half width with the current along it; a lake is its level
+inside its ring. Either is water only over a bed below it. Where neither has
+water the sea answers untouched, and where both do, a river or lake wins
+only from a few centimetres above sea level, blending into the sea so a
+river runs into it without a step.
 
 The water path allocates nothing (`sim.car-budget`) while the authority's
 call is monomorphic, as the worker's single authority is; a getter's double
