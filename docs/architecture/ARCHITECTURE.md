@@ -179,6 +179,10 @@ authority, the `sea-surface-authority` row in `owners.ts`.
   both, and a weather change rebuilds the GPU h0 and calls `SeaTwin.setConfig`
   at the same simulation time. The twin's clock is the worker's
   `state.simulationTime`; the ocean is evolved on the same time.
+- Waves travel downwind and the surface gathers onto their crests. The
+  evolution shader and the twin read the same two signs from `spectrum.ts`
+  (`OCEAN_TIME_SIGN`, `OCEAN_CHOP_SIGN`), so the crest a hull rides is the
+  crest drawn, moving the same way, with the foam on it.
 - A marina basin calms the sea through one analytic field
   (`src/sim/water/shelter.ts`, at most 4 ellipses, exactly 1 outside them).
   The ocean's vertex stage multiplies its displacement by it and the twin
@@ -188,7 +192,8 @@ authority, the `sea-surface-authority` row in `owners.ts`.
   must sit on the waves includes `OCEAN_SURFACE_DISPLACEMENT_WGSL`.
 - The invariant tests: `tests/world.sea-twin.test.ts` (the twin equals an f64
   FFT of the spectrum within 0.1 mm, phases hold 1e-6 rad over an hour, the
-  same waves under every tier profile, the shelter equals the shader's in f32)
+  same waves under every tier profile, the shelter equals the shader's in f32,
+  the sea travels downwind with its folds on the crests)
   and `tests/gpu/ocean-twin-parity.test.ts` (the shipping compute pipeline's
   displacement texture equals the twin within fp16, and the vertex stage's
   shelter WGSL equals the twin's).

@@ -111,7 +111,8 @@ function evolve(
         params.surfaceTensionOverDensity,
         params.waterDepth,
       );
-      const phase = omega * timeSeconds;
+      // The evolution shader turns h0(k) by e^{-i w t} (OCEAN_TIME_SIGN).
+      const phase = -omega * timeSeconds;
       const cosPhase = Math.cos(phase);
       const sinPhase = Math.sin(phase);
       const hr = h0[index * 2]!;
@@ -122,13 +123,13 @@ function evolve(
       const heightIm = hr * sinPhase + hi * cosPhase + (-mr * sinPhase + mi * cosPhase);
       const hx = (waveK[index * 3]! / kLength) * choppiness;
       const hz = (waveK[index * 3 + 1]! / kLength) * choppiness;
-      // height × (0, −h): (re, im) × i(−h) = (im·h, −re·h)
+      // height × (0, h): (re, im) × i h = (−im·h, re·h) (OCEAN_CHOP_SIGN)
       a[index * 4] = heightRe;
       a[index * 4 + 1] = heightIm;
-      a[index * 4 + 2] = heightIm * hx;
-      a[index * 4 + 3] = -heightRe * hx;
-      b[index * 4] = heightIm * hz;
-      b[index * 4 + 1] = -heightRe * hz;
+      a[index * 4 + 2] = -heightIm * hx;
+      a[index * 4 + 3] = heightRe * hx;
+      b[index * 4] = -heightIm * hz;
+      b[index * 4 + 1] = heightRe * hz;
     }
   }
   return { a, b };

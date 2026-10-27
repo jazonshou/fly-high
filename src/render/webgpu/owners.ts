@@ -1074,6 +1074,8 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       "oceanInitialWave",
       "oceanWaveSeed",
       "oceanDirectionalSpectrum",
+      "OCEAN_TIME_SIGN",
+      "OCEAN_CHOP_SIGN",
       "resolveSeaSpectrumConfig",
       "weatherWindScale",
       "SeaTwin",
@@ -1084,7 +1086,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
     notes:
       "Waves are keyed on the wave, not the texel, so every tier draws the same waves in the "
-      + "bands it has and the twin (bands 1-4, 256-point config) matches each. A weather change "
+      + "bands it has and the twin (bands 1-4, 256-point config) matches each. The evolution "
+      + "shader and the twin read one time sign and one chop sign, so both seas travel downwind "
+      + "and gather onto their crests. A weather change "
       + "rebuilds the GPU h0 and calls SeaTwin.setConfig at the same simulation time. "
       + "tests/world.sea-twin.test.ts holds the twin to an f64 FFT of the spectrum and "
       + "tests/gpu/ocean-twin-parity.test.ts holds the drawn displacement and shelter to the twin.",

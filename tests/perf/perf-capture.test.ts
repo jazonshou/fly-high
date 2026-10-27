@@ -651,6 +651,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // of the override (tests/render.cockpit-rig.test.ts scans for that). A
       // boat shot's helm view is the gameplay one: no aircraft shot moves.
       ...(activeBoat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
+      // The baselines were made with every sky re-light in one frame; the
+      // time pin also asks for that, this from the first frame on.
+      skyRebake: "sync" as const,
       ...(world.airport ? { runway: world.airport } : {}),
       ...(FAR_SWARD_OVERRIDE !== ""
         ? { terrainFarSwardRead: FAR_SWARD_OVERRIDE as "off" | "cheap" | "soft" }

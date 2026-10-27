@@ -37,6 +37,8 @@ class RuntimeWorkerBridge {
   readonly commands: DetailWorkerCommand[] = [];
   readonly transfers: Transferable[][] = [];
   readonly heldPresentationEvents: DetailWorkerEvent[] = [];
+  /** Heartbeats are held with the answers, so a held build stays silent. */
+  readonly heldProgressEvents: DetailWorkerEvent[] = [];
   readonly heldGenerationEvents: DetailWorkerEvent[] = [];
   holdPresentations = false;
   holdGeneration = false;
@@ -84,6 +86,8 @@ class RuntimeWorkerBridge {
       for (const event of outbound) {
         if (this.holdPresentations && event.type === "presentation") {
           this.heldPresentationEvents.push(event);
+        } else if (this.holdPresentations && event.type === "presentationProgress") {
+          this.heldProgressEvents.push(event);
         } else if (this.holdGeneration && event.type === "retainedCell") {
           this.heldGenerationEvents.push(event);
         } else {
@@ -238,6 +242,8 @@ function createRuntime(
     readonly bridge?: RuntimeWorkerBridge;
     readonly vegetationBudget?: number;
     readonly now?: () => number;
+    /** 0 pins today's fallback: a failed worker is not replaced. */
+    readonly respawnLimit?: number;
   } = {},
 ): WorldDetailRuntime {
   const runtime = new WorldDetailRuntime(scene, {
@@ -258,6 +264,9 @@ function createRuntime(
       maximumMilliseconds: 1_000_000,
     },
     ...(options.now ? { presentationNowMilliseconds: options.now } : {}),
+    ...(options.respawnLimit !== undefined
+      ? { detailWorkerRespawnLimit: options.respawnLimit }
+      : {}),
   });
   if (options.vegetationBudget !== undefined) {
     runtime.setGenerationBudgetCap({
@@ -581,7 +590,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
-    const runtime = createRuntime(scene, world, { bridge });
+    const runtime = createRuntime(scene, world, { bridge, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -623,7 +632,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       )).toEqual(oldBatches);
       expect(runtime.pendingWorkItems).toBeGreaterThan(0);
 
-      for (let pass = 0; pass < 256 && runtime.pendingWorkItems > 0; pass += 1) {
+      // After a worker failure inline cells run on credit, a few updates apart.
+      for (let pass = 0; pass < 8_192 && runtime.pendingWorkItems > 0; pass += 1) {
         runtime.update(observer, ORIGIN, quality);
       }
       expect(runtime.pendingWorkItems).toBe(0);
@@ -648,7 +658,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
-    const runtime = createRuntime(scene, world, { bridge });
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -669,11 +680,13 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       expect(runtime.presentationRebuildDiagnostics.activeBuildSource).toBe("worker");
       bridge.heldPresentationEvents.length = 0;
 
+      // 100 Hz: the update count expires together with its two-second floor.
       for (let update = 0; update < DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES; update += 1) {
         const movingObserver = {
           ...observer,
           x: observer.x + (update % 2 === 0 ? -64 : 64),
         };
+        now += 10;
         runtime.update(movingObserver, ORIGIN, quality);
         bridge.flush();
         if (internals(runtime).client === null) break;
@@ -711,7 +724,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
-    const runtime = createRuntime(scene, world, { bridge });
+    let now = 0;
+    const runtime = createRuntime(scene, world, { bridge, now: () => now, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
@@ -742,12 +756,14 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       ))).toBe(true);
 
       // The deadline runs from the first update that finds the request
-      // outstanding: the one after the update that filed it.
+      // outstanding: the one after the update that filed it. At 100 Hz the
+      // update count expires together with its two-second floor.
       for (
         let update = 0;
         update <= DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES;
         update += 1
       ) {
+        now += 10;
         runtime.update(observer, ORIGIN, quality);
         bridge.flush();
         if (internals(runtime).client === null) break;
@@ -767,7 +783,8 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       // worker ownership or reset the already-entered inline fallback.
       bridge.releaseHeldGeneration();
       expect(internals(runtime).client).toBeNull();
-      for (let update = 0; update < 512 && runtime.pendingWorkItems > 0; update += 1) {
+      // After a worker failure inline cells run on credit, a few updates apart.
+      for (let update = 0; update < 8_192 && runtime.pendingWorkItems > 0; update += 1) {
         runtime.update(observer, ORIGIN, quality);
       }
       expect(runtime.pendingWorkItems).toBe(0);
@@ -831,7 +848,7 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
     const scene = new Scene(engine);
     const bridge = new RuntimeWorkerBridge();
     let now = 0;
-    const runtime = createRuntime(scene, world, { bridge, now: () => now });
+    const runtime = createRuntime(scene, world, { bridge, now: () => now, respawnLimit: 0 });
 
     try {
       settleWorker(runtime, bridge, observer, quality);
