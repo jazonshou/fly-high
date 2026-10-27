@@ -792,13 +792,23 @@ function selectTerrainNodeSetsFor(
     }
   }
 
-  const nodes = emitTerrainNodes(input, leaves.values(), near, finest, coarsest, rootX, rootZ, reach, diagnostics);
-  return {
-    nodes,
-    tierNodes: tierLeaves
-      ? emitTerrainNodes(input, tierLeaves, null, finest, coarsest, rootX, rootZ, reach, undefined)
-      : nodes,
-  };
+  const beauty = emitTerrainNodes(input, leaves.values(), near, finest, coarsest, rootX, rootZ, reach, diagnostics, null);
+  if (!tierLeaves) return { nodes: beauty.nodes, tierNodes: beauty.nodes };
+  // Only the tier's leaves the patch split, and those touching them, differ
+  // between the partitions; every other node is the same record in both.
+  const emittedAs = new Map<Candidate, TerrainNode>();
+  beauty.candidates.forEach((candidate, index) => emittedAs.set(candidate, beauty.nodes[index]!));
+  const reuse = { nodes: emittedAs, split: tierLeaves.filter((leaf) => leaves.get(leaf.key) !== leaf) };
+  const tier = emitTerrainNodes(input, tierLeaves, null, finest, coarsest, rootX, rootZ, reach, undefined, reuse);
+  return { nodes: beauty.nodes, tierNodes: tier.nodes };
+}
+
+/** Records `emitTerrainNodes` may hand back unchanged: see its `reuse`. */
+interface TerrainNodeReuse {
+  /** Another partition's emitted records, by candidate. */
+  readonly nodes: ReadonlyMap<Candidate, TerrainNode>;
+  /** The leaves of THIS partition the other one split. */
+  readonly split: readonly Candidate[];
 }
 
 /**
@@ -816,7 +826,13 @@ function emitTerrainNodes(
   rootZ: number,
   reach: number,
   diagnostics: TerrainNodeSelectionDiagnostics | undefined,
-): TerrainNode[] {
+  /**
+   * A candidate the other partition emitted, and that touches none of `split`,
+   * has the same neighbours in both, so the same morph and corners: its record
+   * is reused and its corners are not resolved again.
+   */
+  reuse: TerrainNodeReuse | null,
+): { readonly nodes: TerrainNode[]; readonly candidates: readonly Candidate[] } {
   /** The finest level any node reaches: the near floor's where there is one. */
   const lowest = near ? near.level : finest;
   // Nearest first: `writeTerrainNodeBuffers` truncates at the buffer capacity,
@@ -842,6 +858,14 @@ function emitTerrainNodes(
     candidate.morphK = morphFor(candidate);
     candidate.emittedIndex = index;
   }
+  const touches = (first: Candidate, second: Candidate): boolean =>
+    first.originX <= second.originX + second.spanMeters && second.originX <= first.originX + first.spanMeters
+    && first.originZ <= second.originZ + second.spanMeters && second.originZ <= first.originZ + first.spanMeters;
+  const reused = (candidate: Candidate): TerrainNode | undefined => {
+    const node = reuse?.nodes.get(candidate);
+    return node && !reuse!.split.some((leaf) => touches(candidate, leaf)) ? node : undefined;
+  };
+  const records: Array<TerrainNode | undefined> = emitted.map(reused);
 
   /**
    * Numeric leaf lookup for the boundary pass.
@@ -939,6 +963,7 @@ function emitTerrainNodes(
   };
 
   for (const candidate of emitted) {
+    if (records[candidate.emittedIndex]) continue;
     const base = candidate.emittedIndex * 4;
     const x0 = candidate.originX;
     const z0 = candidate.originZ;
@@ -1008,6 +1033,7 @@ function emitTerrainNodes(
     cornerMorphs[secondOffset] = target;
   };
   for (const candidate of emitted) {
+    if (records[candidate.emittedIndex]) continue;
     const x0 = candidate.originX;
     const z0 = candidate.originZ;
     const x1 = x0 + candidate.spanMeters;
@@ -1041,7 +1067,9 @@ function emitTerrainNodes(
     diagnostics.cornerLeafLevelProbes = cornerLeafLevelProbes;
   }
 
-  return emitted.map((candidate) => {
+  const nodes = emitted.map((candidate) => {
+    const record = records[candidate.emittedIndex];
+    if (record) return record;
     const cornerBase = candidate.emittedIndex * 4;
     return Object.freeze({
       address: candidate.address,
@@ -1062,6 +1090,7 @@ function emitTerrainNodes(
       distanceMeters: candidate.distanceMeters,
     });
   });
+  return { nodes, candidates: emitted };
 }
 
 // ---------------------------------------------------------------------------

@@ -565,8 +565,9 @@ describe("the near floor round a car (Low's L0 patch)", () => {
   });
 
   it("hands the casters the tier's own selection, without the patch", () => {
-    for (const deviationFor of [BASE_SELECTION.deviationFor, ROUGH]) {
-      for (const [x, z] of [[0, 0], [-250.5, 400.25]] as const) {
+    // Exactly: the records the two partitions share are reused, not re-resolved.
+    for (const deviationFor of [BASE_SELECTION.deviationFor, ROUGH, () => 1_000]) {
+      for (const [x, z] of [[0, 0], [37, -91], [-250.5, 400.25], [63.9, 64.1]] as const) {
         const sets = selectTerrainNodeSets({
           ...BASE_SELECTION, cameraX: x, cameraY: 1.6, cameraZ: z,
           finestResidentLevel: 1, nodeBudget: 224, pixelThreshold: 4, nearFloor: NEAR, deviationFor,
