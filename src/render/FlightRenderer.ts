@@ -1448,9 +1448,14 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => marina.dispose());
       checkpointRendererStartup("marina construction", "sync");
       // The roads' ribbons and rails: two meshes, enabled once something is
-      // in reach and the terrain's lookup and material arrays exist.
-      const roadSurface = roads ? new RoadSurfaceSystem(scene, terrain, profile) : null;
-      if (roadSurface) cleanup.push(() => roadSurface.dispose());
+      // in reach and the terrain's lookup and material arrays exist. Their
+      // pipelines compile off the frame, warmed as the first roads install:
+      // a ribbon a frame late shows the splat's paint under it.
+      const roadSurface = roads ? new RoadSurfaceSystem(scene, terrain, profile, pipelineCompiles) : null;
+      if (roadSurface) {
+        cleanup.push(() => roadSurface.dispose());
+        if (pipelineCompiles) for (const material of roadSurface.materials) pipelineCompiles.defer(material);
+      }
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,

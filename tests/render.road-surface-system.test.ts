@@ -1,7 +1,9 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { PipelineWarmUp, PipelineWarmUpStatus } from "@/src/render/webgpu/core/AsyncPipelineCompiles";
 import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
   RoadSurfaceIndex,
@@ -258,6 +260,100 @@ describe("the roads' surface system", () => {
     system.apply([railRegion], []);
     system.update(x0 + ROAD_RIBBON_CHUNK_METERS, z0);
     expect(system.statistics.merges).toBeGreaterThan(crossed);
+    system.dispose();
+  });
+
+  /** A stand-in for `AsyncPipelineCompiles`: answers `status`, and notes each mesh asked for. */
+  function fakeWarmUp(): PipelineWarmUp & { asked: Mesh[]; status: PipelineWarmUpStatus } {
+    const fake = {
+      asked: [] as Mesh[],
+      status: "started" as PipelineWarmUpStatus,
+      warmUp(mesh: Mesh): PipelineWarmUpStatus {
+        fake.asked.push(mesh);
+        return fake.status;
+      },
+    };
+    return fake;
+  }
+
+  function emptyTriangle(mesh: Mesh): boolean {
+    const positions = mesh.getVerticesData("position");
+    return mesh.getTotalVertices() === 3 && positions !== null && Array.from(positions).every((value) => value === 0);
+  }
+
+  it("warms both pipelines as the first roads install, before any is in reach: one empty triangle each until warm", () => {
+    const warmUp = fakeWarmUp();
+    const system = new RoadSurfaceSystem(scene, terrain, ultra, warmUp);
+    const far = [head.startX + 40_000, head.startZ + 40_000] as const;
+    system.update(...far);
+    // No roads, nothing to warm.
+    expect(warmUp.asked).toHaveLength(0);
+    system.apply([...regions, railRegion], []);
+    refreshes.length = 0;
+    system.update(...far);
+    expect(warmUp.asked).toEqual(system.meshes);
+    expect(system.statistics.warmUps).toBe(2);
+    expect(system.statistics.draws).toBe(0);
+    // The triangle reads nothing that shows: no lookup refresh for it.
+    expect(refreshes).toHaveLength(0);
+    for (const mesh of system.meshes) {
+      expect(mesh.isEnabled()).toBe(true);
+      expect(emptyTriangle(mesh)).toBe(true);
+    }
+
+    // In reach before the compile is done: the chunks draw (deferred), and warm the same pipelines.
+    system.update(head.startX, head.startZ);
+    expect(system.statistics.draws).toBe(2);
+    expect(system.statistics.warmUps).toBe(2);
+    expect(system.meshes.some(emptyTriangle)).toBe(false);
+    // Out of reach again: the triangle again, not the chunks left behind.
+    system.update(...far);
+    expect(system.meshes.every(emptyTriangle)).toBe(true);
+
+    warmUp.status = "warm";
+    system.update(...far);
+    expect(system.statistics.warmLayers).toBe(2);
+    expect(system.statistics.warmUps).toBe(0);
+    expect(system.meshes.every((mesh) => !mesh.isEnabled())).toBe(true);
+    warmUp.asked.length = 0;
+    system.update(...far);
+    system.update(head.startX, head.startZ);
+    expect(warmUp.asked).toHaveLength(0);
+    expect(system.statistics.draws).toBe(2);
+    system.dispose();
+  });
+
+  it("warms nothing in capture mode (declined) or with its range off", () => {
+    const declined = fakeWarmUp();
+    declined.status = "declined";
+    const capture = new RoadSurfaceSystem(scene, terrain, ultra, declined);
+    capture.apply([...regions, railRegion], []);
+    capture.update(head.startX + 40_000, head.startZ + 40_000);
+    expect(declined.asked).toEqual(capture.meshes);
+    expect(capture.statistics.warmLayers).toBe(2);
+    expect(capture.statistics.warmUps).toBe(0);
+    expect(capture.meshes.every((mesh) => !mesh.isEnabled())).toBe(true);
+    capture.dispose();
+
+    const off = fakeWarmUp();
+    let lookups = 0;
+    const counted: RoadSurfaceTerrain = {
+      ...terrain,
+      drawnHeight: (reach) => {
+        lookups += 1;
+        return terrain.drawnHeight(reach);
+      },
+    };
+    const system = new RoadSurfaceSystem(
+      scene, counted, { ...ultra, roadRibbonRangeMeters: 0, barrierDrawRangeMeters: 0 }, off,
+    );
+    system.apply([...regions, railRegion], []);
+    system.update(head.startX, head.startZ);
+    system.update(head.startX + 40_000, head.startZ + 40_000);
+    expect(off.asked).toHaveLength(0);
+    expect(lookups).toBe(0);
+    expect(system.statistics.draws).toBe(0);
+    expect(system.meshes.every((mesh) => !mesh.isEnabled())).toBe(true);
     system.dispose();
   });
 
