@@ -1225,3 +1225,24 @@ describe("M-4: the hemisphere terrain blocks is lit terrain, not black", () => {
     });
   });
 });
+
+describe("the channel lane (terrain fragment)", () => {
+  it("rounds the interpolated channel lane before decoding its slot and level", () => {
+    withPlugin((plugin) => {
+      const code = Object.values(fragmentCode(plugin)).join("\n");
+      // An L0 lane is slot * 32: interpolated a hair under itself, the bare
+      // decode reads the previous slot at level ~32, a page with no splat, and
+      // single fragments fall back to Grass across every L0 node.
+      expect(code).toMatch(
+        /fn terrainSurfacePageUv\(interpolatedLane: f32, pageLocal: vec2f\) -> vec4f \{\n {2}let lane = floor\(interpolatedLane \+ 0\.5\);\n {2}if \(lane < 0\.0\)/u,
+      );
+      const decode = (lane: number) => {
+        const slot = Math.floor(Math.fround(lane * (1 / 32)));
+        return { slot, level: Math.fround(lane - slot * 32) };
+      };
+      const hairUnder = Math.fround(100 * 32 - 2e-4);
+      expect(decode(hairUnder).slot).toBe(99);
+      expect(decode(Math.floor(hairUnder + 0.5))).toEqual({ slot: 100, level: 0 });
+    });
+  });
+});
