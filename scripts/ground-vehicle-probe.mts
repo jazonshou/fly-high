@@ -42,10 +42,16 @@
  *
  * For digging into one world: `PROBE_SEED=3` (or `default`) drives that seed
  * only; `PROBE_TRACE=1` prints the car's state every 15 steps, the show
- * route's sharp turns and the garbage collections behind slow steps;
- * `PROBE_PROFILE_FROM=k` (with the trace) prints the ground and the road
- * pieces under the show route from its point k; `PROBE_NO_ROADS=1` leaves
- * the road regions out.
+ * route's sharp turns and every step over 500 us; `PROBE_PROFILE_FROM=k`
+ * (with the trace) prints the ground and the road pieces under the show
+ * route from its point k; `PROBE_NO_ROADS=1` leaves the road regions out.
+ * For the step's time: `PROBE_SLOW=1000` lists every step over 1000 us with
+ * what happened in it (a collection, new lattice nodes, a new surface
+ * cell), `PROBE_SLOW_MARK=1` also marks each one on stdout as it happens,
+ * in order with V8's own traces (`npx tsx --trace-deopt ...`),
+ * `PROBE_REPEAT=2` drives the show route twice in one process (the second
+ * time on optimised code), and `PROBE_END=1` prints where the show drive
+ * ends, to every bit, to compare two builds.
  */
 import type { CarControlState } from "../src/game/types";
 import { createSurfaceSpawn } from "../src/game/surfaceSpawn";
@@ -90,21 +96,53 @@ for (const p of PROVINCES) if (!CLIMATE_PROVINCE_NAMES.includes(p)) throw new Er
 const run = (section: Section) => asked.length === 0 || asked.includes(section);
 
 const TRACE = process.env.PROBE_TRACE === "1";
-const gcPauses: { startTime: number; duration: number }[] = [];
-const slowSteps: { started: number; end: number; reads: number }[] = [];
-if (TRACE) {
+/** Every step over this many us is kept with what happened in it (`PROBE_SLOW=us`). */
+const SLOW_US = Number(process.env.PROBE_SLOW ?? (TRACE ? 500 : 0));
+const GC_KINDS = new Map([[1, "scavenge"], [2, "mark-compact"], [4, "incremental marking"], [8, "weak callbacks"]]);
+const gcPauses: { startTime: number; duration: number; kind: string }[] = [];
+interface SlowStep {
+  readonly started: number;
+  readonly took: number;
+  readonly time: number;
+  readonly distance: number;
+  readonly speed: number;
+  readonly stretch: string;
+  readonly reads: number;
+  readonly classified: number;
+  readonly drive: number;
+}
+const slowSteps: SlowStep[] = [];
+let driveCount = 0;
+if (SLOW_US > 0) {
   const { PerformanceObserver } = await import("node:perf_hooks");
   new PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) gcPauses.push({ startTime: entry.startTime, duration: entry.duration });
+    for (const entry of list.getEntries()) {
+      const kind = (entry as unknown as { detail?: { kind?: number } }).detail?.kind ?? 0;
+      gcPauses.push({ startTime: entry.startTime, duration: entry.duration, kind: GC_KINDS.get(kind) ?? `gc ${kind}` });
+    }
   }).observe({ entryTypes: ["gc"] });
   process.on("exit", () => {
+    const gcIn = (step: SlowStep) => gcPauses.find((g) => g.startTime < step.started + step.took / 1000 && g.startTime + g.duration > step.started);
+    const cause = (step: SlowStep) => {
+      const gc = gcIn(step);
+      if (gc) return `${gc.kind} ${(gc.duration * 1000).toFixed(0)} us`;
+      if (step.classified > 0) return "classified a cell";
+      if (step.reads > 0) return `${step.reads} lattice reads`;
+      return "none of these";
+    };
     const tally = new Map<string, number>();
     for (const step of slowSteps) {
-      const gc = gcPauses.some((g) => g.startTime < step.end && g.startTime + g.duration > step.started);
-      const key = gc ? "gc" : step.reads > 0 ? "some" : "0";
+      const key = cause(step).replace(/ \d+ us$/, "").replace(/^\d+ lattice/, "lattice");
       tally.set(key, (tally.get(key) ?? 0) + 1);
     }
-    console.log("slow steps (>500 us) by cause:", [...tally].map(([k, v]) => `${k === "gc" ? "in a GC pause" : `${k} reads`}: ${v}`).join(", "));
+    console.log(`\nsteps over ${SLOW_US} us by cause: ${[...tally].map(([k, v]) => `${k} ${v}`).join(", ")}`);
+    console.log(`GC pauses over 1 ms: ${gcPauses.filter((g) => g.duration > 1).map((g) => `${g.kind} ${g.duration.toFixed(1)}`).join(", ") || "none"}`);
+    for (const step of slowSteps) {
+      console.log(
+        `  ${f(step.took, 0, 6)} us  drive ${step.drive}  t ${f(step.time, 2, 7)} s  ${f(step.distance, 0, 5)} m  ${f(step.speed * 3.6, 1, 5)} km/h  `
+        + `${step.stretch.padEnd(24)} reads ${f(step.reads, 0, 3)}  classified ${step.classified}  ${cause(step)}`,
+      );
+    }
   });
 }
 let traceHeight: (x: number, z: number) => number = () => NaN;
@@ -432,7 +470,10 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
   const stuckProgress: number[] = [];
   let stepSum = 0;
   let steps = 0;
-  let lastReads = 0;
+  const probes = sim as unknown as { lattice: { reads: number }; surfaceCache: { classified: number } };
+  let lastReads = probes.lattice.reads;
+  let lastClassified = probes.surfaceCache.classified;
+  driveCount += 1;
   let lastStretch = -1;
   let lastY = 0;
   const limit = Math.round(maxSeconds / STEP);
@@ -533,11 +574,16 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
     const started = performance.now();
     sim.step(STEP);
     const took = (performance.now() - started) * 1000;
-    if (TRACE && i >= 240 && took > 500) {
-      const reads = (sim as unknown as { lattice: { reads: number } }).lattice.reads;
-      slowSteps.push({ started, end: started + took / 1000, reads: reads - lastReads });
+    if (SLOW_US > 0 && took > SLOW_US) {
+      slowSteps.push({
+        started, took, time: sim.state.time, distance: result.distance, speed, stretch: route.names[route.stretch[index]!]!,
+        reads: probes.lattice.reads - lastReads, classified: probes.surfaceCache.classified - lastClassified, drive: driveCount,
+      });
+      // In order with V8's own traces (--trace-deopt and the like) on stdout.
+      if (process.env.PROBE_SLOW_MARK === "1") console.log(`SLOW STEP ${took.toFixed(0)} us at t ${sim.state.time.toFixed(2)} s`);
     }
-    lastReads = (sim as unknown as { lattice: { reads: number } }).lattice.reads;
+    lastReads = probes.lattice.reads;
+    lastClassified = probes.surfaceCache.classified;
     stepSum += took;
     stepTimes[steps] = took;
     steps += 1;
@@ -1215,6 +1261,10 @@ function showDrive(): void {
     ` ${outcome(result)}: ${(result.distance / 1000).toFixed(2)} km in ${result.seconds.toFixed(0)} s, ${result.stuck} stuck, `
     + `${result.offLine.toFixed(1)} m off the line at the end; step ${result.meanStep.toFixed(0)} us mean, ${result.slowStep.toFixed(0)} us at the 99.9th percentile, ${result.worstStep.toFixed(0)} us worst (after the first 2 s)`,
   );
+  if (process.env.PROBE_END === "1") {
+    const { position, velocity } = sim.state;
+    console.log(` end: position ${[position.x, position.y, position.z].map((v) => v.toPrecision(17)).join(", ")}, velocity ${[velocity.x, velocity.y, velocity.z].map((v) => v.toPrecision(17)).join(", ")}`);
+  }
   clearInfrastructureRegions(site.world);
 }
 
@@ -1248,4 +1298,4 @@ if (legs.length > 0) {
   if (legs.includes("slope")) legTable("The steepest fall-line climb within 4 km, 4L from rest, at 3 m/s", rows.slope);
   if (legs.includes("ford")) legTable(`A ford posted across the open line: ${FORD_WIDTH} m wide, ${FORD_DEPTH} m deep, ${FORD_FLOW} m/s, crossed at 2 m/s`, rows.ford);
 }
-if (run("show")) showDrive();
+if (run("show")) for (let k = 0; k < Number(process.env.PROBE_REPEAT ?? 1); k += 1) showDrive();
