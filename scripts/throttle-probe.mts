@@ -37,7 +37,11 @@
  *
  * Frame rate (FRAME_RATE=60|display|30): the game's Frame rate setting, 60
  * by default as players get it. FRAME_RATE=display draws every refresh, the
- * loop the 2026-09-29 baseline measured; on a 60 Hz host 60 does too.
+ * loop the 2026-09-29 baseline measured, and only it keeps the baseline's
+ * labels; the others add -fps60 or -fps30. Every frame statistic counts
+ * DRAWN frames (a tick on which the game took a canvas texture), because a
+ * paced game skips ticks: at the 60 setting on a 120 Hz display a tick is
+ * half a frame. The raw requestAnimationFrame ticks are kept as `ticks`.
  *
  * Usage:  tsx scripts/throttle-probe.mts <outDir> <url> [label]
  * Environment: SCENARIO RATE WORKERS QUALITY MODE FRAME_RATE AIRCRAFT AGL_M
@@ -99,7 +103,7 @@ const HOLD_S = Number(env("HOLD_S", "20"));
 const FREEZE_TIME_S = Number(env("FREEZE_TIME_S", "1000"));
 const KNOTS_PER_MPS = 1.943_844_5;
 const label = labelArg
-  ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}${FRAME_RATE === "60" ? "" : `-fps${FRAME_RATE}`}-x${RATE}`
+  ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}${FRAME_RATE === "display" ? "" : `-fps${FRAME_RATE}`}-x${RATE}`
     + `${THROTTLE_WORKERS ? "w" : ""}`;
 mkdirSync(outDir, { recursive: true });
 
@@ -143,8 +147,20 @@ await page.addInitScript((opts: {
     }));
   } catch { /* storage unavailable */ }
 
-  // First frame drawn to the canvas: Babylon asks the WebGPU context for its
-  // swap-chain texture once per presented frame.
+  // Frame collector: one extra rAF callback per tick, timestamps only. It is
+  // requested before any page script, so it runs first in every tick and
+  // `tickNow` is the tick the game's own callback is drawing in.
+  const frames: number[] = [];
+  const drawn: number[] = [];
+  w.__probeFrames = frames;
+  w.__probeDrawn = drawn;
+  let tickNow = Number.NaN;
+  const tick = (now: number) => { frames.push(now); tickNow = now; requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+
+  // Drawn frames: Babylon asks the WebGPU context for its swap-chain texture
+  // once per presented frame, and a tick the pacer skips asks for none. Each
+  // is timed by its tick, which is vsync-aligned like the rAF series.
   try {
     const proto = (globalThis as unknown as { GPUCanvasContext?: { prototype: Record<string, unknown> } })
       .GPUCanvasContext?.prototype;
@@ -152,6 +168,7 @@ await page.addInitScript((opts: {
     if (proto && original) {
       proto.getCurrentTexture = function wrapped(this: unknown, ...args: unknown[]) {
         if (w.__probeFirstFrame === undefined) w.__probeFirstFrame = performance.now();
+        if (Number.isFinite(tickNow) && drawn.at(-1) !== tickNow) drawn.push(tickNow);
         return original.apply(this, args);
       };
     }
@@ -163,12 +180,6 @@ await page.addInitScript((opts: {
     }
   });
   startObserver.observe(document, { childList: true, subtree: true });
-
-  // Frame collector: one extra rAF callback per frame, timestamps only.
-  const frames: number[] = [];
-  w.__probeFrames = frames;
-  const tick = (now: number) => { frames.push(now); requestAnimationFrame(tick); };
-  requestAnimationFrame(tick);
 
   // Main-thread long tasks (> 50 ms).
   const longTasks: { start: number; duration: number }[] = [];
@@ -346,6 +357,7 @@ async function resetCollectors(): Promise<number> {
     const w = globalThis as unknown as Record<string, unknown>;
     w.__name ??= (fn: unknown) => fn;
     (w.__probeFrames as number[]).length = 0;
+    (w.__probeDrawn as number[]).length = 0;
     (w.__probeLongTasks as unknown[]).length = 0;
     const ws = w.__probeWorkers as { messages: number; snapshots: number; log: unknown[] };
     ws.messages = 0; ws.snapshots = 0; ws.log.length = 0;
@@ -363,7 +375,10 @@ const round = (v: number) => Math.round(v * 100) / 100;
 interface WindowStats {
   longFrames: unknown[];
   seconds: number;
+  /** Drawn frames; every statistic below but `ticks` is over them. */
   frames: number;
+  /** requestAnimationFrame ticks, drawn or skipped by the game's frame pacer. */
+  ticks: { count: number; fpsMean: number; p50: number };
   fpsMean: number;
   fpsMedian: number;
   intervalMs: { p50: number; p95: number; p99: number; max: number };
@@ -387,7 +402,8 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
     const diag = document.querySelector('[aria-label="Performance diagnostics"]') as HTMLElement | null;
     return {
       now: performance.now(),
-      frames: (w.__probeFrames as number[]).slice(),
+      ticks: (w.__probeFrames as number[]).slice(),
+      frames: (w.__probeDrawn as number[]).slice(),
       longTasks: (w.__probeLongTasks as { start: number; duration: number }[]).slice(),
       longFrames: ((w.__probeLongFrames as { start: number; duration: number }[] | undefined) ?? [])
         .filter((f) => f.duration >= 100),
@@ -403,6 +419,10 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
   for (let i = 1; i < frames.length; i += 1) intervals.push(frames[i]! - frames[i - 1]!);
   const sorted = intervals.slice().sort((a, b) => a - b);
   const span = frames.length > 1 ? (frames.at(-1)! - frames[0]!) / 1_000 : Number.NaN;
+  const ticks = fromMs === null ? raw.ticks : raw.ticks.filter((t) => t >= fromMs);
+  const tickIntervals: number[] = [];
+  for (let i = 1; i < ticks.length; i += 1) tickIntervals.push(ticks[i]! - ticks[i - 1]!);
+  const tickSpan = ticks.length > 1 ? (ticks.at(-1)! - ticks[0]!) / 1_000 : Number.NaN;
   // Median fps over 1 s buckets: what a pilot reads off a counter.
   const perSecond: number[] = [];
   if (frames.length > 1) {
@@ -443,6 +463,11 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
     longFrames,
     seconds: round(seconds),
     frames: frames.length,
+    ticks: {
+      count: ticks.length,
+      fpsMean: round(tickIntervals.length / (Number.isFinite(tickSpan) ? tickSpan : 1)),
+      p50: round(quantile(tickIntervals.sort((a, b) => a - b), 0.5)),
+    },
     fpsMean: round(intervals.length / seconds),
     fpsMedian: quantile(perSecond, 0.5),
     intervalMs: {
