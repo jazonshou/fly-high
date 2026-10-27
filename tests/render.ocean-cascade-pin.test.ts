@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { FlightRenderer } from "../src/render/FlightRenderer";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   OceanCascadeClock,
@@ -233,5 +234,46 @@ describe("the pin is capture-only and sits at the time pin", () => {
       expect(settle, path).toBeGreaterThan(cadencePin);
       expect(harness.match(/renderer\.pinOceanCascadePhaseForCapture\(\)/g), path).toHaveLength(1);
     }
+  });
+});
+
+describe("the pin also makes every later sky re-light synchronous", () => {
+  // The capture's baselines were made with every sky re-light in one frame, so
+  // the time pin turns the renderer's sliced re-light off as it pins the
+  // cascades (its JSDoc says so), for good: a flight on the same renderer after
+  // a settle re-lights in one frame too. tests/render.sky-probe-refresh.test.ts
+  // shows what `skyRebakeSynchronous` does to each re-light.
+  const ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+  it("sets skyRebakeSynchronous as it pins the ocean, and a disposed renderer does neither", () => {
+    let oceanPins = 0;
+    const live = {
+      disposed: false,
+      ocean: { pinCascadePhaseForCapture: () => { oceanPins += 1; } },
+      skyRebakeSynchronous: false,
+    };
+    FlightRenderer.prototype.pinOceanCascadePhaseForCapture.call(live as unknown as FlightRenderer);
+    expect(oceanPins).toBe(1);
+    expect(live.skyRebakeSynchronous).toBe(true);
+    const disposed = { ...live, disposed: true, skyRebakeSynchronous: false };
+    FlightRenderer.prototype.pinOceanCascadePhaseForCapture.call(disposed as unknown as FlightRenderer);
+    expect(oceanPins).toBe(1);
+    expect(disposed.skyRebakeSynchronous).toBe(false);
+  });
+
+  it("for the renderer's lifetime: nothing else assigns skyRebakeSynchronous", () => {
+    // The option at construction and the pin are its only writers, and the
+    // pin writes true, so no later frame can turn the sliced re-light back on.
+    const renderer = readFileSync(join(ROOT, "src/render/FlightRenderer.ts"), "utf8");
+    const writes = renderer.match(/this\.skyRebakeSynchronous\s*=(?!=).*$/gm) ?? [];
+    expect(writes).toEqual([
+      'this.skyRebakeSynchronous = options.skyRebake === "sync";',
+      "this.skyRebakeSynchronous = true;",
+    ]);
+    const pin = renderer.slice(
+      renderer.indexOf("  pinOceanCascadePhaseForCapture(): void {"),
+      renderer.indexOf("\n  }\n", renderer.indexOf("  pinOceanCascadePhaseForCapture(): void {")),
+    );
+    expect(pin).toContain("this.skyRebakeSynchronous = true;");
   });
 });

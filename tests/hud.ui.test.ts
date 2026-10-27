@@ -227,6 +227,42 @@ describe("flight HUD camera and terminal-state presentation", () => {
       onRunBudgetProbe: () => undefined,
     }));
     expect(fallbackMarkup).toContain("9 rivers / 3 lakes · WATER GEN ON MAIN THREAD");
+    // So is a vegetation worker that fell back to the main thread, and a
+    // restarted one says how often. A healthy worker adds nothing, and nor
+    // does a snapshot without the field.
+    const detailLine = (detailWorker: NonNullable<RenderDiagnostics["detailWorker"]> | null) => {
+      const workerMarkup = renderToStaticMarkup(createElement(Hud, {
+        state: INITIAL_VISUAL_STATE,
+        aircraft: "trainer",
+        mode: "full",
+        flightMode: "unassisted",
+        units: "aviation",
+        diagnostics: detailWorker ? { ...diagnostics, detailWorker } : diagnostics,
+        showDiagnostics: true,
+        cameraMode: "chase",
+        cameraLabel: "CHASE CAM",
+        seedLabel: "AUD1T0",
+        mouseFlight: false,
+        onRunBudgetProbe: () => undefined,
+      }));
+      return /<span class="diagnostics__wide">([^<]* detail instances [^<]*)<\/span>/.exec(workerMarkup)?.[1];
+    };
+    const worker = {
+      active: true,
+      fallbacks: 0,
+      respawns: 0,
+      buildTimeouts: 0,
+      generationTimeouts: 0,
+      convergenceStalls: 0,
+    };
+    const plainLine = "24,500 detail instances · 48 animals · 9 rivers / 3 lakes";
+    expect(detailLine(null)).toBe(plainLine);
+    expect(detailLine(worker)).toBe(plainLine);
+    expect(detailLine({ ...worker, active: false, fallbacks: 1, buildTimeouts: 1 }))
+      .toBe(`${plainLine} · VEG GEN ON MAIN THREAD`);
+    expect(detailLine({ ...worker, respawns: 2 })).toBe(`${plainLine} · VEG WORKER RESTARTED x2`);
+    expect(detailLine({ ...worker, active: false, fallbacks: 1, respawns: 1 }))
+      .toBe(`${plainLine} · VEG GEN ON MAIN THREAD · VEG WORKER RESTARTED x1`);
     expect(markup).toContain("Test GPU");
     expect(markup).toContain("17.2 ms frame");
     expect(markup).toContain("4.2 ms CPU");

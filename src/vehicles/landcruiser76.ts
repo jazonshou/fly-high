@@ -287,13 +287,15 @@ export const LANDCRUISER_76 = Object.freeze({
     /** ESTIMATE: motoring friction, N m, as a + b rpm (about 55 N m of engine braking at 3,000 rpm). */
     frictionTorque: 18,
     frictionTorquePerRpm: 0.012,
-    /** Turbo: the share of full-load torque available with no boost built, and the spool time constants. */
+    /**
+     * ESTIMATE: turbo. The torque curves are the steady state, boost built;
+     * with no boost the smoke limit allows this share of them, and boost
+     * builds towards the pedal with a time constant that shortens with
+     * engine speed (and lengthens below 1,200 rpm as the exhaust weakens).
+     */
     naturallyAspiratedShare: 0.5,
     spoolSecondsAt1200: 0.9,
     spoolSecondsAt3000: 0.25,
-    /** Boost builds only above this rpm, fully by `boostFullRpm`. */
-    boostOnsetRpm: 1_000,
-    boostFullRpm: 1_900,
     /** Starter: seconds to crank a stalled engine back to idle. */
     crankSeconds: 0.8,
   }),

@@ -1,3 +1,4 @@
+import type { DetailWorkerHealth } from "@/src/render/webgpu/detail/WorldDetailRuntime";
 import type {
   TerrainHeightAuthorityCounters,
 } from "@/src/render/webgpu/terrain/TerrainEvolutionContract";
@@ -389,6 +390,13 @@ export interface RenderDiagnostics {
   hydrologyMainThreadFallback: boolean;
   /** The last completed hydrology region came from the worker. */
   hydrologyLastGenerationUsedWorker: boolean;
+  /**
+   * The vegetation worker's health: whether cells still generate on it, and
+   * how often it was restarted or given up on. A fallback puts every new
+   * vegetation cell on the main thread for the rest of the session.
+   * Optional so a fixture without it stays valid.
+   */
+  detailWorker?: DetailWorkerHealth;
   residentTerrainPages: number;
   /**
    * Why those pages are resident, counted per reason.

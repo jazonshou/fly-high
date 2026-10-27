@@ -104,6 +104,50 @@ const PRESENTATION_INPUT = {
   observerZ: 64,
 };
 
+const EMPTY_PRESENTATION_STATISTICS = {
+  nearCells: 0,
+  midCells: 0,
+  treeInstances: 0,
+  shrubInstances: 0,
+  rockInstances: 0,
+  clutterInstances: 0,
+  groundCoverInstances: 0,
+};
+
+/** A presentation-capable client that already owns retained token 1. */
+function clientOwningOneCell(
+  worker: FakeDetailWorker,
+  onWorkerUnavailable: () => void = () => undefined,
+): DetailGenerationClient {
+  const client = new DetailGenerationClient({
+    worldSeed: "detail-presentation-progress",
+    cellSizeMeters: 128,
+    seaLevelMeters: 0,
+    presentationCatalog: {} as DetailPresentationBuildCatalog,
+    workerFactory: () => worker as unknown as Worker,
+  }, onWorkerUnavailable);
+  const retainedRequest = client.requestRetained(
+    {
+      key: "0:0",
+      generation: 1,
+      priority: 0,
+      cellX: 0,
+      cellZ: 0,
+      densityMultiplier: 1,
+      dayOfYear: 0,
+    },
+    () => undefined,
+  );
+  worker.emit({
+    type: "retainedCell",
+    requestId: retainedRequest,
+    generation: 1,
+    key: "0:0",
+    cell: retainedDescriptor(1, "0:0"),
+  });
+  return client;
+}
+
 const forestSample = (): DetailTerrainSample => ({
   height: 220,
   slope: 0.05,
@@ -658,6 +702,105 @@ describe("detail generation client (1B-10)", () => {
     client.dispose();
   });
 
+  it("routes a build's heartbeats without answering it, then delivers its result once", () => {
+    const worker = new FakeDetailWorker();
+    const client = clientOwningOneCell(worker);
+    const progress: Array<[number, number]> = [];
+    const results: number[] = [];
+    const errors: string[] = [];
+    const buildId = client.requestPresentation(
+      PRESENTATION_INPUT,
+      (result) => results.push(result.buildId),
+      (error) => errors.push(error.message),
+      (slices, units) => progress.push([slices, units]),
+    );
+    expect(buildId).toBeGreaterThan(0);
+
+    worker.emit({ type: "presentationProgress", buildId, slices: 1, units: 64 });
+    worker.emit({ type: "presentationProgress", buildId, slices: 26, units: 1_664 });
+    expect(progress).toEqual([[1, 64], [26, 1_664]]);
+    expect(client.presentationBusy).toBe(true);
+    expect(results).toEqual([]);
+
+    worker.emit({
+      type: "presentation",
+      buildId,
+      batches: [],
+      statistics: EMPTY_PRESENTATION_STATISTICS,
+    });
+    expect(results).toEqual([buildId]);
+    expect(client.presentationBusy).toBe(false);
+    // The answer closed the request: a duplicate answer or a stray heartbeat
+    // reaches nothing.
+    worker.emit({
+      type: "presentation",
+      buildId,
+      batches: [],
+      statistics: EMPTY_PRESENTATION_STATISTICS,
+    });
+    worker.emit({ type: "presentationProgress", buildId, slices: 27, units: 1_728 });
+    expect(results).toEqual([buildId]);
+    expect(progress).toHaveLength(2);
+    expect(errors).toEqual([]);
+    expect(client.isAvailable).toBe(true);
+    client.dispose();
+  });
+
+  it("ignores heartbeats for a canceled or unknown build", () => {
+    const worker = new FakeDetailWorker();
+    let unavailable = 0;
+    const client = clientOwningOneCell(worker, () => { unavailable += 1; });
+    const progress: number[] = [];
+    const buildId = client.requestPresentation(
+      PRESENTATION_INPUT,
+      () => undefined,
+      () => undefined,
+      (slices) => progress.push(slices),
+    );
+    client.cancelPresentation(buildId);
+    expect(() => worker.emit({ type: "presentationProgress", buildId, slices: 2, units: 128 }))
+      .not.toThrow();
+    worker.emit({ type: "presentationProgress", buildId: buildId + 40, slices: 1, units: 64 });
+    expect(progress).toEqual([]);
+    expect(unavailable).toBe(0);
+    expect(client.isAvailable).toBe(true);
+    expect(client.retainedCellCount).toBe(1);
+    client.dispose();
+  });
+
+  it("fails closed on a malformed heartbeat", () => {
+    expect(isDetailWorkerEvent({ type: "presentationProgress", buildId: 1, slices: 1, units: 0 }))
+      .toBe(true);
+    expect(isDetailWorkerEvent({ type: "presentationProgress", buildId: 1, slices: 1.5, units: 0 }))
+      .toBe(false);
+    expect(isDetailWorkerEvent({ type: "presentationProgress", buildId: 1, slices: 1 }))
+      .toBe(false);
+    expect(detailWorkerEventTransferables({
+      type: "presentationProgress",
+      buildId: 1,
+      slices: 1,
+      units: 0,
+    })).toEqual([]);
+
+    const worker = new FakeDetailWorker();
+    let unavailable = 0;
+    const errors: string[] = [];
+    const client = clientOwningOneCell(worker, () => { unavailable += 1; });
+    client.requestPresentation(
+      PRESENTATION_INPUT,
+      () => undefined,
+      (error) => errors.push(error.message),
+      () => undefined,
+    );
+    worker.emit({ type: "presentationProgress", buildId: 1, slices: -1, units: 0 });
+    expect(unavailable).toBe(1);
+    expect(client.isAvailable).toBe(false);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("became unavailable");
+    expect(client.presentationBusy).toBe(false);
+    expect(client.retainedCellCount).toBe(0);
+  });
+
   it("fails both generation and presentation callbacks when the worker dies", () => {
     const worker = new FakeDetailWorker();
     let unavailable = 0;
@@ -868,15 +1011,19 @@ describe("detail generation client (1B-10)", () => {
 
       worker.handleCommand({ type: "buildPresentation", buildId: 8, input });
       expect(worker.activePresentationBuildCount).toBe(1);
+      // Builds first: a generate posted while a build runs waits for the
+      // build's turn, and canceling the build answers it at once.
+      const postedBeforeGenerate = posted.length;
       generateRetained(3);
+      expect(posted).toHaveLength(postedBeforeGenerate);
+      worker.handleCommand({ type: "cancelPresentation", buildId: 8 });
+      expect(worker.activePresentationBuildCount).toBe(0);
       expect(posted.at(-1)?.event).toMatchObject({
         type: "retainedCell",
         requestId: 3,
       });
       expect(posted.some(({ event }) => event.type === "presentation" && event.buildId === 8))
         .toBe(false);
-      worker.handleCommand({ type: "cancelPresentation", buildId: 8 });
-      expect(worker.activePresentationBuildCount).toBe(0);
       macrotasks.flushAll();
       expect(posted.some(({ event }) => event.type === "presentation" && event.buildId === 8))
         .toBe(false);

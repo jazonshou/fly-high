@@ -1,4 +1,4 @@
-import { inverseRotateVectorInto, normalizeQuaternionInto, rotateVectorInto } from "./math";
+import { EPSILON, inverseRotateVectorInto, normalizeQuaternionInto, rotateVectorInto } from "./math";
 import type { Quaternion, Vec3 } from "./types";
 
 /**
@@ -217,11 +217,32 @@ export class RigidBody {
     this.torqueBody.z = 0;
   }
 
+  /** The step `advance` takes, s. */
+  stepSeconds = 0;
+
   /**
    * Advance by `dt` seconds under the accumulated loads, then clear them. A
    * non-finite or non-positive dt only clears the loads.
    */
   step(dt: number): void {
+    this.stepSeconds = dt;
+    this.integrate(true);
+  }
+
+  /**
+   * `step` by `stepSeconds`, allocating nothing: a caller that steps the
+   * same substep many times sets it once and passes no number (V8 boxes a
+   * number passed to a call it does not inline), and the orientation is
+   * renormalised with a square root rather than `Math.hypot`, whose
+   * arguments V8 boxes. The car steps this way; `step` keeps the boat's
+   * numbers bit for bit.
+   */
+  advance(): void {
+    this.integrate(false);
+  }
+
+  private integrate(hypot: boolean): void {
+    const dt = this.stepSeconds;
     if (!(dt > 0) || !Number.isFinite(dt)) {
       this.clearForces();
       return;
@@ -276,7 +297,14 @@ export class RigidBody {
     q.y += halfDt * (qw * omega.y - qx * omega.z + qz * omega.x);
     q.z += halfDt * (qw * omega.z + qx * omega.y - qy * omega.x);
     q.w += halfDt * (-qx * omega.x - qy * omega.y - qz * omega.z);
-    normalizeQuaternionInto(q, q);
+    const length = hypot ? 0 : Math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (!hypot && Number.isFinite(length) && length >= EPSILON) {
+      const inverse = 1 / length;
+      q.x *= inverse;
+      q.y *= inverse;
+      q.z *= inverse;
+      q.w *= inverse;
+    } else normalizeQuaternionInto(q, q);
     this.clearForces();
   }
 

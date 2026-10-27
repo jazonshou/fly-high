@@ -225,11 +225,15 @@ forward. The spin-outs heel at most 23-28 degrees.
   higher than the fit's: it runs steady at 3.8 degrees where the fit says 3.0.
 - **Savitsky and Brown (1976)**, impact acceleration in head seas (the mean of
   the highest tenth at the CG, from Fridsma's towed prismatic models): two
-  minutes into a 0.97 m significant sea on the game's sea twin at 21 kn in
-  Pilot, 183 impacts, n_1/10 = 1.35 g against their 2.11 g (ratio 0.64; the
-  test holds 0.6-1.4 and the absolute 1-3 g). Fridsma's models were free only
-  in heave and pitch and towed at a constant speed; this hull also rolls,
-  yaws and slows into each sea, which takes some of the edge off.
+  minutes into a 0.96 m significant sea on the game's sea twin, heading into
+  the wind, in Pilot: the boat slows to 18.4 kn, 223 impacts, n_1/10 = 2.22 g
+  against their 2.34 g (ratio 0.95; the test holds 0.6-1.4 and the absolute
+  1-3 g). Their trim is the calm-water trim at the speed run in the sea, of a
+  hull towed through its CG as Fridsma's were: 5.9 degrees at 18.4 kn. (Taking
+  instead the calm trim at the same lever, 4.0 degrees at 25 kn, reads the
+  slam 1.41 times the fit.) Fridsma's models were free only in heave and pitch
+  and towed at a constant speed; this hull also rolls, yaws and slows into
+  each sea.
 
 ## Waves
 
@@ -241,6 +245,11 @@ forward. The spin-outs heel at most 23-28 degrees.
 - half an hour of random helm, throttle, trim, tabs and assist on the game's
   breezy sea: everything finite, under 40 m/s, under 30 wrecks;
 - two minutes unmoored at rest in calm water: no drift (2 cm, 2 mm, 0.1 degree).
+
+On the sea that travels downwind (2026-10-27), five minutes at each of the
+same four headings from the waves in 1 m and 2 m seas, in Pilot and in Scenic,
+from 20 kn at lever 0.64 and 0.75, capsized the boat once (2 m, head on,
+Scenic); the same sweep on the old sea capsized it four times.
 
 With chine-first entry and the sinking fix, 80 minutes on the sea twin, five
 minutes at each of four headings (head on, 45 degrees either bow, and 118
