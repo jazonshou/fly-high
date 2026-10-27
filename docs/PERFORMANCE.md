@@ -131,6 +131,7 @@ audit is why it now carries all four tiers):
 | Boat wake trail seconds (`boatWakeTrailSeconds`; boat sessions only) | 12 | 24 | 40 | 40 |
 | Vehicle particle budget (`vehicleParticleBudget`; car sessions only) | 32 | 128 | 256 | 384 |
 | Tyre track segments (`tyreTrackSegments`; car sessions only) | 0 | 256 | 512 | 1,024 |
+| L0 terrain round a car (`vehicleNearTerrainL0RadiusMeters`; car sessions only; 0 = the floor is already L0) | 160 m | 0 | 0 | 0 |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
@@ -142,6 +143,14 @@ if synthesis moves to GPU compute. Both arrays together are 6.7 MiB at tier 0
 (the ten base materials) and 34.7 MiB above it (those ten, the volcanic pair
 and the ground grain), derived from the tier's edge and layer data rather than
 declared, so the memory row cannot disagree with the knobs.
+
+Low's L0 terrain round a car draws the ground within 160 m of the wheels on
+the 2 m lattice the car's physics drives on, not Low's 4 m one. The selector
+splits it after the tier's own nodes and outside `cdlodNodeBudget`, so it
+never trades nodes with the far field: at most 183 more nodes
+(`terrainNearFloorNodeAllowance`), measured 96-120 on rough ground, in the
+same single terrain draw. It geomorphs to L1 over its outer 64 m, so it
+follows the car without a pop. Aircraft and boat sessions never build it.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 

@@ -35,6 +35,7 @@ import {
   TERRAIN_CORNER_SYNC_MAX_LEVEL_PROBES_PER_QUERY,
   TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
   selectTerrainNodes,
+  terrainNearFloorNodeAllowance,
   terrainNodeMorphK,
   terrainNodeVertexMorphK,
   terrainScreenSpaceError,
@@ -504,6 +505,133 @@ describe("CDLOD node selection (4-5)", () => {
     expect(Math.min(...cruise.map((node) => node.level)))
       .toBeGreaterThan(Math.min(...low.map((node) => node.level)));
   });
+});
+
+describe("the near floor round a car (Low's L0 patch)", () => {
+  const NEAR = { level: 0, radiusMeters: 160, bandMeters: 64 } as const;
+  /** Rough ground: every level's error asks for detail, so Low's budget binds. */
+  const ROUGH = (address: { level: number }): number => 0.5 * 2 ** address.level;
+  /** Low at a car's eye: the floor is L1, the camera 1.6 m up. */
+  const lowCar = (cameraX = 0, cameraZ = 0, overrides: Partial<TerrainNodeSelectionInput> = {}): TerrainNode[] =>
+    select({ cameraX, cameraY: 1.6, cameraZ, finestResidentLevel: 1, nodeBudget: 224, pixelThreshold: 4, nearFloor: NEAR, ...overrides });
+  const planar = (node: TerrainNode, x = 0, z = 0): number => Math.hypot(
+    Math.max(node.originX - x, 0, x - (node.originX + node.spanMeters)),
+    Math.max(node.originZ - z, 0, z - (node.originZ + node.spanMeters)),
+  );
+
+  it("draws L0 only round the car, and none without the disc", () => {
+    const without = select({ cameraY: 1.6, finestResidentLevel: 1, nodeBudget: 224, pixelThreshold: 4 });
+    expect(Math.min(...without.map((node) => node.level))).toBe(1);
+    const nodes = lowCar();
+    const fine = nodes.filter((node) => node.level === 0);
+    expect(fine.length).toBeGreaterThan(8);
+    const l1 = terrainNodeSpanMeters(1);
+    for (const node of fine) {
+      // Its parent's ground reaches into the disc.
+      const parentX = Math.floor(node.originX / l1) * l1;
+      const parentZ = Math.floor(node.originZ / l1) * l1;
+      const parentDistance = Math.hypot(Math.max(parentX, 0, -(parentX + l1)), Math.max(parentZ, 0, -(parentZ + l1)));
+      expect(parentDistance).toBeLessThanOrEqual(NEAR.radiusMeters);
+    }
+    // The ground under the car is L0, at full detail.
+    const under = fine.find((node) => planar(node) === 0)!;
+    expect(under.morphK).toBe(0);
+    // A tier whose floor is already L0 is unchanged by the disc.
+    expect(select({ cameraY: 1.6, nearFloor: NEAR })).toEqual(select({ cameraY: 1.6 }));
+  });
+
+  it("spends none of the tier's budget: the patch fits its allowance on ground of any roughness", () => {
+    const allowance = terrainNearFloorNodeAllowance(NEAR, 1);
+    expect(allowance).toBe(183);
+    expect(terrainNearFloorNodeAllowance(undefined, 1)).toBe(0);
+    expect(terrainNearFloorNodeAllowance({ ...NEAR, radiusMeters: 0 }, 1)).toBe(0);
+    for (const deviationFor of [BASE_SELECTION.deviationFor, ROUGH, () => 1_000]) {
+      for (const [x, z] of [[0, 0], [37, -91], [-250.5, 400.25]] as const) {
+        const tier = lowCar(x, z, { deviationFor, nearFloor: undefined });
+        const nodes = lowCar(x, z, { deviationFor });
+        expect(tier.length).toBeLessThanOrEqual(224);
+        expect(nodes.length).toBeLessThanOrEqual(224 + allowance);
+        // Rough ground fills the whole disc with L0 even though the budget is spent.
+        if (deviationFor !== BASE_SELECTION.deviationFor) {
+          expect(tier.length).toBeGreaterThan(224 - 3);
+          const inDisc = nodes.filter((node) => planar(node, x, z) <= NEAR.radiusMeters);
+          for (const node of inDisc) expect(node.level).toBe(0);
+          // Those nodes cover the disc.
+          expect(inDisc.length * terrainNodeSpanMeters(0) ** 2).toBeGreaterThan(Math.PI * NEAR.radiusMeters ** 2);
+        }
+      }
+    }
+  });
+
+  it("geomorphs the patch to L1 across its band, all the way by the disc's edge", () => {
+    const nodes = lowCar(0, 0, { deviationFor: ROUGH });
+    let banded = 0;
+    for (const node of nodes.filter((candidate) => candidate.level === 0)) {
+      const distance = planar(node);
+      if (distance >= NEAR.radiusMeters) expect(node.morphK).toBe(1);
+      const band = (distance - (NEAR.radiusMeters - NEAR.bandMeters)) / NEAR.bandMeters;
+      expect(node.morphK).toBeGreaterThanOrEqual(Math.min(1, Math.max(0, band)) - 1e-12);
+      if (band > 0 && band < 1) banded += 1;
+    }
+    expect(banded).toBeGreaterThan(4);
+  });
+
+  it("closes every seam of the patch: no height step across the band or its edge", () => {
+    for (const deviationFor of [BASE_SELECTION.deviationFor, ROUGH]) {
+      for (const [x, z] of [[0, 0], [37, -91], [-250.5, 400.25], [1_000, 1_000]] as const) {
+        const nodes = lowCar(x, z, { deviationFor });
+        expect(nodes.some((node) => node.level === 0)).toBe(true);
+        const result = terrainContinuityResult(nodes);
+        expect(result.edges).toBeGreaterThan(100);
+        expect(result.maxMorphError).toBe(0);
+        expect(result.maxPositionError).toBeLessThan(1e-8);
+        expect(result.maxHeightError).toBeLessThan(1e-8);
+        expect(result.maxNormalError).toBeLessThan(1e-12);
+      }
+    }
+  });
+
+  it("follows a moving car without a pop: the drawn ground round it changes smoothly step by step", () => {
+    // Drive 400 m and watch a lattice of ground points round the track. A
+    // point's drawn surface is its node's level plus that node's morph toward
+    // the parent; a node appearing or merging is a pop unless that sum is
+    // continuous through it.
+    const STEPS = 400;
+    const stride = Math.hypot(1, 0.37);
+    const worstNear = (deviationFor: TerrainNodeSelectionInput["deviationFor"], overrides: Partial<TerrainNodeSelectionInput>): number => {
+      const points: Array<readonly [number, number]> = [];
+      for (let x = -200; x <= STEPS + 200; x += 16) for (let z = -240; z <= 0.37 * STEPS + 240; z += 16) points.push([x + 3, z + 5]);
+      const surfaceAt = (nodes: readonly TerrainNode[], x: number, z: number): number => {
+        const node = nodes.find((candidate) => x >= candidate.originX && x < candidate.originX + candidate.spanMeters
+          && z >= candidate.originZ && z < candidate.originZ + candidate.spanMeters)!;
+        return node.level + node.morphK;
+      };
+      let previous: number[] | null = null;
+      let worst = 0;
+      for (let step = 0; step <= STEPS; step += 1) {
+        const cameraX = step;
+        const cameraZ = 0.37 * step;
+        const nodes = lowCar(cameraX, cameraZ, { deviationFor, ...overrides });
+        const surface = points.map(([x, z]) => surfaceAt(nodes, x, z));
+        if (previous) for (let index = 0; index < surface.length; index += 1) {
+          const [x, z] = points[index]!;
+          if (Math.hypot(x - cameraX, z - cameraZ) > 250) continue;
+          worst = Math.max(worst, Math.abs(surface[index]! - previous[index]!));
+        }
+        previous = surface;
+      }
+      return worst;
+    };
+    // Rough ground, where Low's budget binds: the patch is the band's own
+    // morph, a step's length over 64 m, and nothing else. Shared with the
+    // budget it traded nodes with the far field and popped whole levels.
+    expect(worstNear(ROUGH, { nearFloor: undefined })).toBeLessThan(1e-9);
+    expect(worstNear(ROUGH, {})).toBeLessThanOrEqual(stride / NEAR.bandMeters + 1e-9);
+    // Measured ground, where the budget does not: no pop beyond the ones a
+    // tier whose floor is L0 already makes (its closures' at 200-250 m).
+    const floorL0 = worstNear(BASE_SELECTION.deviationFor, { finestResidentLevel: 0, nodeBudget: 448, nearFloor: undefined });
+    expect(worstNear(BASE_SELECTION.deviationFor, {})).toBeLessThanOrEqual(floorL0 + 1e-9);
+  }, 60_000);
 });
 
 describe("CDLOD node record (4-5)", () => {
@@ -1335,7 +1463,7 @@ function recordingComputeFactory(): {
   return { factory, generatedBatches, get builds() { return state.builds; } };
 }
 
-function createSeamedSystem(quality: "low" | "medium" | "high" = "medium") {
+function createSeamedSystem(quality: "low" | "medium" | "high" = "medium", vehicleNearField = false) {
   const engine = new NullEngine();
   const scene = new Scene(engine);
   const world = createWorld("quadtree-streaming", { worldEvolution: "analytic" });
@@ -1343,8 +1471,9 @@ function createSeamedSystem(quality: "low" | "medium" | "high" = "medium") {
   const recording = recordingComputeFactory();
   const system = new TerrainClipmapSystem(scene, world, profile, {
     computeFactory: recording.factory,
+    ...(vehicleNearField ? { vehicleNearField } : {}),
   });
-  return { engine, scene, system, profile, recording };
+  return { engine, scene, system, profile, recording, world };
 }
 
 /** Run `count` update/settle cycles, letting the fake producers' promises land. */
@@ -1361,6 +1490,48 @@ async function pump(
     await Promise.resolve();
   }
 }
+
+describe("Low's L0 patch round a car, in the host", () => {
+  it("streams and draws L0 within the tier's radius of a car on Low, and nowhere else", async () => {
+    const run = async (quality: "low" | "medium", vehicleNearField: boolean) => {
+      const { engine, scene, system, profile, world } = createSeamedSystem(quality, vehicleNearField);
+      try {
+        const ground = sampleFilteredTerrainHeight(world, 0, 0, 0);
+        await pump(system, 80, { x: 0, y: ground + 1.6, z: 0, velocityX: 0, velocityZ: 0 });
+        const nodes = system.selectedNodes;
+        const fine = nodes.filter((node) => node.level === 0);
+        const height = system.atlases.height.residency;
+        const channel = system.atlases.channel.residency;
+        for (const node of fine) {
+          // Its own page shaded and its parent's page resident: what the draw samples.
+          const page = height.entries.find((slot) => slot.address.level === 0
+            && slot.address.x === node.address.x && slot.address.z === node.address.z);
+          expect(page, "a drawn L0 node's page is not resident").toBeDefined();
+          expect(channel.entries.some((slot) => slot.address.level === 0
+            && slot.address.x === node.address.x && slot.address.z === node.address.z)).toBe(true);
+        }
+        return { nodes, fine, profile };
+      } finally {
+        system.dispose();
+        scene.dispose();
+        engine.dispose();
+      }
+    };
+    const car = await run("low", true);
+    expect(car.profile.vehicleNearTerrainL0RadiusMeters).toBeGreaterThan(0);
+    expect(car.fine.length).toBeGreaterThan(0);
+    const reach = car.profile.vehicleNearTerrainL0RadiusMeters + terrainNodeSpanMeters(1) * Math.SQRT2;
+    for (const node of car.fine) expect(Math.hypot(node.originX + 32, node.originZ + 32)).toBeLessThan(reach);
+    expect(car.nodes.length).toBeLessThanOrEqual(
+      car.profile.cdlodNodeBudget + terrainNearFloorNodeAllowance({ level: 0, radiusMeters: car.profile.vehicleNearTerrainL0RadiusMeters, bandMeters: 64 }, 1),
+    );
+    // No car, or no radius: the tier's own ground.
+    expect((await run("low", false)).fine).toHaveLength(0);
+    const medium = await run("medium", true);
+    expect(medium.profile.vehicleNearTerrainL0RadiusMeters).toBe(0);
+    expect(medium.nodes).toEqual((await run("medium", false)).nodes);
+  }, 60_000);
+});
 
 describe("terrain streaming lifecycle (4.5-B)", () => {
   it("publishes a channel page only if its splat bake wrote it, and bakes the rest later", async () => {
