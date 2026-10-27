@@ -47,6 +47,27 @@ export const ROAD_STREAM_DROPPED_CACHE = 96;
  */
 export const ROAD_STREAM_FLUSH_SEGMENTS = 1_200;
 
+/** How long after a region fails (the worker threw, or the stage refused it) it is asked again. */
+export const ROAD_STREAM_RETRY_MS = 2_000;
+
+/**
+ * Failures after which a region is given up: no longer asked or counted as
+ * pending, with one console error, until the window leaves it and comes back.
+ */
+export const ROAD_STREAM_FAILURES_TO_GIVE_UP = 2;
+
+/** A region that failed: how often, and when it is asked again. */
+interface RoadRegionFailure {
+  failures: number;
+  retryAtMs: number;
+  /**
+   * Asked again since it last failed. Until then a second failure is the
+   * same ask answered twice (a `want` re-sent before the first answer
+   * landed), and counts once.
+   */
+  retried: boolean;
+}
+
 /** One frame's change to the installed roads. */
 export interface RoadStreamChange {
   /** Regions installed this change, with the pieces and pads they were laid out from. */
@@ -91,6 +112,8 @@ export class RoadStreamController {
   private lastCheckMs = Number.NEGATIVE_INFINITY;
   private readonly listeners = new Set<(change: RoadStreamChange) => void>();
   private primeWaiters: { readonly keys: readonly string[]; readonly resolve: () => void }[] = [];
+  /** Regions that failed, by stage key: empty unless one has. */
+  private readonly failures = new Map<string, RoadRegionFailure>();
   private disposed = false;
 
   constructor(
@@ -136,8 +159,14 @@ export class RoadStreamController {
     }
     this.keep = kept;
     const want: RoadRegionAddress[] = [];
+    const wanted = new Set<string>();
+    // Only once a region has failed: which keys the window holds, and
+    // whether a retry is due (which re-sends the ask, changed or not).
+    const window = this.failures.size > 0 ? new Set<string>() : null;
+    let retryDue = false;
     for (const region of roadStreamRegions(observer)) {
       const key = roadRegionKey(region.layer, region.rx, region.rz);
+      window?.add(key);
       if (this.installed.has(key) || this.arrived.some((event) => event.infrastructure.key === key)) continue;
       const cached = this.dropped.get(key);
       if (cached) {
@@ -145,11 +174,35 @@ export class RoadStreamController {
         this.arrived.push(cached);
         continue;
       }
+      const failure = window ? this.failures.get(key) : undefined;
+      if (failure) {
+        if (failure.failures >= ROAD_STREAM_FAILURES_TO_GIVE_UP) continue;
+        if (nowMs < failure.retryAtMs) {
+          // Backing off: still to come, not asked yet.
+          wanted.add(key);
+          continue;
+        }
+        if (!failure.retried) {
+          failure.retried = true;
+          retryDue = true;
+        }
+      }
+      wanted.add(key);
       want.push({ layer: region.layer, rx: region.rx, rz: region.rz });
     }
-    this.wanted = new Set(want.map((address) => roadRegionKey(address.layer, address.rx, address.rz)));
+    if (window) {
+      // A region given up gets one more try once the window has left it:
+      // a flight that comes back later asks for it again.
+      for (const [key, failure] of this.failures) {
+        if (window.has(key) || failure.failures < ROAD_STREAM_FAILURES_TO_GIVE_UP) continue;
+        failure.failures = ROAD_STREAM_FAILURES_TO_GIVE_UP - 1;
+        failure.retryAtMs = Number.NEGATIVE_INFINITY;
+        failure.retried = false;
+      }
+    }
+    this.wanted = wanted;
     const signature = want.map((address) => `${address.layer}:${address.rx}:${address.rz}`).join(",");
-    if (signature === this.lastWant) return;
+    if (signature === this.lastWant && !retryDue) return;
     this.lastWant = signature;
     worker.postMessage({ type: "want", regions: want });
   }
@@ -245,7 +298,7 @@ export class RoadStreamController {
   private resolvePrimes(): void {
     if (this.primeWaiters.length === 0) return;
     this.primeWaiters = this.primeWaiters.filter((waiter) => {
-      if (!waiter.keys.every((key) => this.installed.has(key))) return true;
+      if (!waiter.keys.every((key) => this.installed.has(key) || this.gaveUp(key))) return true;
       waiter.resolve();
       return false;
     });
@@ -268,20 +321,55 @@ export class RoadStreamController {
     return this.worker;
   }
 
+  private gaveUp(key: string): boolean {
+    return (this.failures.get(key)?.failures ?? 0) >= ROAD_STREAM_FAILURES_TO_GIVE_UP;
+  }
+
+  /**
+   * A region the worker could not lay out, or the stage refused: asked again
+   * after `ROAD_STREAM_RETRY_MS`, and given up (one console error, no longer
+   * pending) at the `ROAD_STREAM_FAILURES_TO_GIVE_UP`th failure, so a region
+   * that can never resolve neither hangs a session nor a capture.
+   */
+  private fail(key: string, reason: string): void {
+    let failure = this.failures.get(key);
+    if (!failure) {
+      failure = { failures: 0, retryAtMs: 0, retried: true };
+      this.failures.set(key, failure);
+    }
+    if (!failure.retried) return;
+    failure.failures += 1;
+    failure.retryAtMs = this.lastCheckMs + ROAD_STREAM_RETRY_MS;
+    failure.retried = false;
+    if (failure.failures < ROAD_STREAM_FAILURES_TO_GIVE_UP) {
+      // Still to come: pending through the back-off.
+      console.warn(`Road region ${key} failed, asking again in ${ROAD_STREAM_RETRY_MS} ms: ${reason}`);
+      return;
+    }
+    this.wanted.delete(key);
+    console.error(`Road region ${key} given up after ${failure.failures} failures: ${reason}`);
+    this.resolvePrimes();
+  }
+
   private handleEvent(event: RoadsWorkerEvent): void {
     if (this.disposed) return;
     if (event.type === "error") {
-      console.error("Road region failed", event.address, event.message);
-      if (event.address) this.wanted.delete(roadRegionKey(event.address.layer, event.address.rx, event.address.rz));
+      if (event.address) {
+        this.fail(roadRegionKey(event.address.layer, event.address.rx, event.address.rz), event.message);
+      } else {
+        console.error("Road region failed", event.message);
+      }
       return;
     }
-    this.wanted.delete(event.infrastructure.key);
+    const key = event.infrastructure.key;
     try {
       prepareInfrastructureRegion(event.infrastructure);
     } catch (error) {
-      console.error("Road region refused", event.address, error);
+      this.fail(key, `refused: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
+    this.wanted.delete(key);
+    this.failures.delete(key);
     this.arrived.push(event);
     // Before the first frame, nothing else flushes.
     if (this.primeWaiters.length > 0) this.flush();

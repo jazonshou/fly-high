@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RoadStreamController,
   ROAD_STREAM_FLUSH_SEGMENTS,
+  ROAD_STREAM_RETRY_MS,
   type RoadsWorker,
 } from "@/src/render/roads/RoadStreamController";
 import { RoadStreamRuntime, type RoadStreamConsumers } from "@/src/render/roads/RoadStreamRuntime";
@@ -208,18 +209,18 @@ describe("the road stream controller", () => {
     controller.observe({ x: 0, z: 0, velocityX: 0, velocityZ: 0 }, 0);
     const [bad, good] = worker.lastWant;
     const broken = regionEvent(bad!);
-    const errors: unknown[] = [];
-    const log = console.error;
-    console.error = (...args: unknown[]) => errors.push(args);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       worker.post({
         ...broken,
         infrastructure: { ...broken.infrastructure, segments: [{ ...broken.infrastructure.segments[0]!, halfWidth: -1 }] },
       });
+      // A first failure is asked again: a warning, not yet an error.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain("refused");
     } finally {
-      console.error = log;
+      warn.mockRestore();
     }
-    expect(errors).toHaveLength(1);
     worker.post(regionEvent(good!));
     expect(controller.flush()!.installed.map((event) => event.address)).toEqual([good]);
     controller.dispose();
@@ -294,6 +295,164 @@ describe("the road stream controller", () => {
     expect(primed).toBe(true);
     expect(installedInfrastructureRegionKeys(world).length).toBeGreaterThanOrEqual(near);
     expect(near).toBeGreaterThan(4);
+    controller.dispose();
+  });
+});
+
+describe("a road region that fails", () => {
+  const home = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+  const away = { x: 40_000, z: 0, velocityX: 0, velocityZ: 0 };
+  const keyOf = (address: RoadRegionAddress) => roadRegionKey(address.layer, address.rx, address.rz);
+  const asks = (worker: FakeRoadsWorker) => worker.commands.filter((command) => command.type === "want").length;
+  const failure = (address: RoadRegionAddress, message: string): RoadsWorkerEvent => ({ type: "error", address, message });
+
+  function quietConsole() {
+    return {
+      warn: vi.spyOn(console, "warn").mockImplementation(() => {}),
+      error: vi.spyOn(console, "error").mockImplementation(() => {}),
+    };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("changes nothing while every region succeeds: one ask per change in what is missing, never a re-send", () => {
+    const { warn, error } = quietConsole();
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    const all = roadStreamRegions(home).map((region) => roadRegionKey(region.layer, region.rx, region.rz));
+    expect(all.length).toBeGreaterThan(60);
+    let nowMs = 0;
+    for (let round = 0; round < 6; round += 1) {
+      // Well past any back-off, checked every interval.
+      for (const end = nowMs + 3 * ROAD_STREAM_RETRY_MS; nowMs < end; nowMs += 250) controller.observe(home, nowMs);
+      expect(asks(worker)).toBe(round + 1);
+      expect(worker.lastWant.map(keyOf)).toEqual(all.slice(10 * round));
+      expect(controller.pendingRegions).toBe(all.length - 10 * round);
+      worker.answer(10);
+      controller.flush();
+    }
+    expect(worker.commands).toHaveLength(1 + 6);
+    expect(controller.pendingRegions).toBe(all.length - 60);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("is asked again after the back-off, and given up at the second failure: one error, no longer pending", () => {
+    const { warn, error } = quietConsole();
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe(home, 0);
+    const asked = worker.lastWant.slice();
+    const failing = asked[0]!;
+    const key = keyOf(failing);
+
+    worker.post(failure(failing, "lost the layout"));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain(key);
+    // The same ask answered twice (a want re-sent before the first answer landed) counts once.
+    worker.post(failure(failing, "lost the layout"));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    // Still to come through the back-off, but not asked of the worker.
+    expect(controller.pendingRegions).toBe(asked.length);
+    controller.observe(home, ROAD_STREAM_RETRY_MS / 2);
+    expect(worker.lastWant.map(keyOf)).toEqual(asked.slice(1).map(keyOf));
+    expect(controller.pendingRegions).toBe(asked.length);
+
+    // The back-off over: asked again, once.
+    controller.observe(home, ROAD_STREAM_RETRY_MS);
+    expect(worker.lastWant.map(keyOf)).toEqual(asked.map(keyOf));
+    const retries = asks(worker);
+    controller.observe(home, ROAD_STREAM_RETRY_MS + 500);
+    expect(asks(worker)).toBe(retries);
+
+    worker.post(failure(failing, "lost the layout again"));
+    expect(error).toHaveBeenCalledTimes(1);
+    const message = String(error.mock.calls[0]![0]);
+    expect(message).toContain(key);
+    expect(message).toContain("lost the layout again");
+    expect(controller.pendingRegions).toBe(asked.length - 1);
+    // Given up: no longer asked, waited on, or reported again.
+    worker.post(failure(failing, "lost the layout again"));
+    for (let nowMs = 3_000; nowMs <= 12_000; nowMs += 250) controller.observe(home, nowMs);
+    expect(worker.lastWant.map(keyOf)).toEqual(asked.slice(1).map(keyOf));
+    expect(error).toHaveBeenCalledTimes(1);
+    worker.answer();
+    controller.flush();
+    expect(controller.pendingRegions).toBe(0);
+    expect(installedInfrastructureRegionKeys(world)).toHaveLength(asked.length - 1);
+    controller.dispose();
+  });
+
+  it("recovers on the retry when the failure passes", () => {
+    const { warn, error } = quietConsole();
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe(home, 0);
+    const failing = worker.lastWant[0]!;
+    worker.post(failure(failing, "worker busy"));
+    controller.observe(home, ROAD_STREAM_RETRY_MS);
+    worker.answer();
+    controller.flush();
+    expect(installedInfrastructureRegionKeys(world)).toContain(keyOf(failing));
+    expect(controller.pendingRegions).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("given up, gets one more try when the window has left it and come back", () => {
+    const { error } = quietConsole();
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe(home, 0);
+    const failing = worker.lastWant[0]!;
+    const key = keyOf(failing);
+    worker.post(failure(failing, "first"));
+    controller.observe(home, ROAD_STREAM_RETRY_MS);
+    worker.post(failure(failing, "second"));
+    expect(error).toHaveBeenCalledTimes(1);
+
+    // Away and back: asked at once, and one failure gives it up again.
+    controller.observe(away, 5_000);
+    expect(worker.lastWant.map(keyOf)).not.toContain(key);
+    controller.observe(home, 6_000);
+    expect(worker.lastWant[0]).toEqual(failing);
+    expect(controller.pendingRegions).toBeGreaterThan(0);
+    worker.post(failure(failing, "third"));
+    expect(error).toHaveBeenCalledTimes(2);
+    controller.observe(home, 10_000);
+    expect(worker.lastWant.map(keyOf)).not.toContain(key);
+
+    // Away and back again, and this time it comes.
+    controller.observe(away, 11_000);
+    controller.observe(home, 12_000);
+    expect(worker.lastWant[0]).toEqual(failing);
+    worker.post(regionEvent(failing));
+    expect(controller.flush()!.installed.map((event) => event.infrastructure.key)).toContain(key);
+    expect(error).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
+  it("does not hold priming once given up", async () => {
+    quietConsole();
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    const spawn = { x: 500, z: 500, velocityX: 0, velocityZ: 0 };
+    let primed = false;
+    const done = controller.prime(spawn, 3_000, 60_000).then(() => { primed = true; });
+    const near = roadStreamRegions(spawn).filter((region) => region.distance <= 3_000).length;
+    const [failing, ...rest] = worker.lastWant.slice(0, near);
+    worker.post(failure(failing!, "first"));
+    for (const address of rest) worker.post(regionEvent(address));
+    await Promise.resolve();
+    expect(primed).toBe(false);
+    controller.observe(spawn, ROAD_STREAM_RETRY_MS);
+    expect(worker.lastWant[0]).toEqual(failing);
+    worker.post(failure(failing!, "second"));
+    await done;
+    expect(primed).toBe(true);
     controller.dispose();
   });
 });
