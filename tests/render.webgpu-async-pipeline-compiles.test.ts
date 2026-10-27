@@ -105,8 +105,12 @@ class FakeCache {
  * the mesh's material. Installed before the module's own hook wraps it.
  */
 let drawEngine: { _draw(...args: unknown[]): void } | null = null;
+/** The arguments the last `_processRendering` and `_draw` stand-ins were called with. */
+let processRenderingArgs: unknown[] = [];
+let drawArgs: unknown[] = [];
 const prototype = Mesh.prototype as unknown as Record<string, unknown>;
-prototype["_processRendering"] = function (this: Mesh) {
+prototype["_processRendering"] = function (this: Mesh, ...args: unknown[]) {
+  processRenderingArgs = args;
   drawEngine?._draw(0, 0, 0, 36, 1);
   return this;
 };
@@ -124,8 +128,9 @@ function graftWebGpu(target: NullEngine): void {
   const engineLike = target as unknown as Record<string, unknown>;
   engineLike["_device"] = device;
   engineLike["_cacheRenderPipeline"] = cache;
-  engineLike["_draw"] = function (_drawType: number, fillMode: number) {
-    const pipeline = cache.getRenderPipeline(fillMode, currentEffect, 1, 0);
+  engineLike["_draw"] = function (...args: unknown[]) {
+    drawArgs = args;
+    const pipeline = cache.getRenderPipeline(args[1] as number, currentEffect, 1, 0);
     drawn.push(pipeline.label);
   };
 }
@@ -227,6 +232,25 @@ describe("AsyncPipelineCompiles against Babylon's private surface", () => {
     expect(device.synchronous).toEqual(["terrain:triangle-list:1", "post:triangle-list:1"]);
     expect(device.pending).toEqual([]);
     expect(drawn).toHaveLength(2);
+    compiles.dispose();
+  });
+
+  it("hands Babylon's own draw methods every argument, for registered materials and the rest", () => {
+    const compiles = AsyncPipelineCompiles.install(scene)!;
+    const moss = material("moss");
+    compiles.defer(moss);
+    const args = ["rendering mesh", "submesh", "effect", 0, "batch", true, "before draw", "effective material"];
+    for (const mesh of [box("terrain", material("terrain")), box("detail-moss", moss)]) {
+      currentEffect = effects.get(mesh.material!)!;
+      drawArgs = [];
+      (mesh as unknown as { _processRendering(...forwarded: unknown[]): void })._processRendering(...args);
+      expect(processRenderingArgs).toEqual(args);
+      // The moss draw is deferred inside `_draw`, which still got all five.
+      expect(drawArgs).toEqual([0, 0, 0, 36, 1]);
+    }
+    expect(compiles.statistics.deferredDraws).toBe(1);
+    (engine as unknown as { _draw(...forwarded: unknown[]): void })._draw(1, 2, 3, 4, 5);
+    expect(drawArgs).toEqual([1, 2, 3, 4, 5]);
     compiles.dispose();
   });
 
@@ -507,9 +531,10 @@ describe("the Babylon facts the module stands on (installed @babylonjs/core)", (
     expect(shader).toContain("this._engine.computeDispatch(this._effect, this._context, this._bindings, x, y, z,");
   });
 
-  it("every pass that draws a mesh goes through _processRendering", () => {
+  it("every pass that draws a mesh goes through _processRendering, with the parameters the hook forwards", () => {
     const mesh = read("Meshes/mesh.pure.js");
-    expect(mesh).toMatch(/\n {4}_processRendering\(/);
+    expect(mesh).toContain("\n    _processRendering(renderingMesh, subMesh, effect, fillMode, batch, "
+      + "hardwareInstancedRendering, onBeforeDraw, effectiveMaterial) {");
     expect(read("Lights/Shadows/shadowGenerator.js")).toContain("renderingMesh._processRendering(");
     expect(read("Rendering/depthRenderer.pure.js")).toContain("renderingMesh._processRendering(");
   });

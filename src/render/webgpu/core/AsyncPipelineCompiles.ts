@@ -85,8 +85,22 @@ interface RenderPipelineCacheLike {
 interface EngineLike {
   _device?: GPUDevice;
   _cacheRenderPipeline?: RenderPipelineCacheLike;
-  _draw?: (...args: unknown[]) => void;
+  _draw?: EngineDraw;
 }
+
+/** `WebGPUEngine._draw` and `Mesh._processRendering`, with Babylon 9.21.2's parameters (pinned by the tests). */
+type EngineDraw = (drawType: number, fillMode: number, start: number, count: number, instancesCount: number) => void;
+type ProcessRendering = (
+  this: Mesh,
+  renderingMesh: unknown,
+  subMesh: unknown,
+  effect: unknown,
+  fillMode: unknown,
+  batch: unknown,
+  hardwareInstancedRendering: unknown,
+  onBeforeDraw: unknown,
+  effectiveMaterial: unknown,
+) => unknown;
 
 /** Why `install` declined: the members of Babylon's private surface that are missing. */
 export function missingAsyncPipelineSurface(engine: unknown): string[] {
@@ -163,16 +177,30 @@ function installMeshHook(): void {
   if (meshHookInstalled) return;
   meshHookInstalled = true;
   const prototype = Mesh.prototype as unknown as Record<string, unknown>;
-  const original = prototype["_processRendering"] as (this: Mesh, ...args: unknown[]) => unknown;
+  const original = prototype["_processRendering"] as ProcessRendering;
   // Every draw of a mesh, in every pass (the scene, shadow maps, render
   // targets), runs through here; a registered material's draw is marked so
-  // the pipeline lookup below knows it may wait.
-  prototype["_processRendering"] = function (this: Mesh, ...args: unknown[]) {
+  // the pipeline lookup below knows it may wait. The parameters are named,
+  // not a rest array, and no closure is made: nothing is allocated per draw.
+  prototype["_processRendering"] = function (
+    this: Mesh, renderingMesh, subMesh, effect, fillMode, batch, hardwareInstancedRendering, onBeforeDraw, effectiveMaterial,
+  ) {
     const material = this.material;
     const owner = material ? ownerByMaterial.get(material) : undefined;
-    if (!owner) return original.apply(this, args);
-    return owner.drawDeferrable(this, () => original.apply(this, args));
-  };
+    if (!owner) {
+      return original.call(
+        this, renderingMesh, subMesh, effect, fillMode, batch, hardwareInstancedRendering, onBeforeDraw, effectiveMaterial,
+      );
+    }
+    const outer = owner.beginDeferrableDraw(this);
+    try {
+      return original.call(
+        this, renderingMesh, subMesh, effect, fillMode, batch, hardwareInstancedRendering, onBeforeDraw, effectiveMaterial,
+      );
+    } finally {
+      owner.endDeferrableDraw(outer);
+    }
+  } satisfies ProcessRendering;
 }
 
 /** A mesh's vertex streams, which with its material decide its pipelines. */
@@ -191,7 +219,7 @@ export class AsyncPipelineCompiles implements PipelineWarmUp {
   private readonly cache: RenderPipelineCacheLike;
   private readonly engine: EngineLike;
   private readonly originalGetRenderPipeline: RenderPipelineCacheLike["getRenderPipeline"];
-  private readonly originalDraw: (...args: unknown[]) => void;
+  private readonly originalDraw: EngineDraw;
   private readonly now: () => number;
   private readonly frameObserver: Observer<Scene> | null;
   private readonly scene: Scene;
@@ -243,10 +271,10 @@ export class AsyncPipelineCompiles implements PipelineWarmUp {
       return this.lookUpOrCompile(fillMode, effect, sampleCount, textureState);
     };
     this.originalDraw = engine._draw!;
-    engine._draw = (...args: unknown[]) => {
-      if (this.drawing === null) return this.originalDraw.apply(engine, args);
+    engine._draw = (drawType, fillMode, start, count, instancesCount) => {
+      if (this.drawing === null) return this.originalDraw.call(engine, drawType, fillMode, start, count, instancesCount);
       try {
-        return this.originalDraw.apply(engine, args);
+        return this.originalDraw.call(engine, drawType, fillMode, start, count, instancesCount);
       } catch (error) {
         // Thrown by the lookup before the draw recorded anything: no pipeline,
         // bind group or bundle was made, so the next draw starts clean.
@@ -314,18 +342,21 @@ export class AsyncPipelineCompiles implements PipelineWarmUp {
     return { ...this.stats, compilesPending: this.pending.size };
   }
 
-  /** Runs one registered mesh's draw with the deferral armed (`installMeshHook`). */
-  drawDeferrable(mesh: AbstractMesh, draw: () => unknown): unknown {
-    if (this.disposed) return draw();
+  /**
+   * Arms the deferral for one registered mesh's draw (`installMeshHook`);
+   * returns the draw it nests in, for `endDeferrableDraw`.
+   */
+  beginDeferrableDraw(mesh: AbstractMesh): AbstractMesh | null {
     const outer = this.drawing;
+    if (this.disposed) return outer;
     this.drawing = mesh;
     const warmUp = this.warmUps.get(mesh);
     if (warmUp) warmUp.drawn = true;
-    try {
-      return draw();
-    } finally {
-      this.drawing = outer;
-    }
+    return outer;
+  }
+
+  endDeferrableDraw(outer: AbstractMesh | null): void {
+    this.drawing = outer;
   }
 
   private lookUpOrCompile(fillMode: number, effect: unknown, sampleCount: number, textureState: number): GPURenderPipeline {
@@ -373,6 +404,7 @@ export class AsyncPipelineCompiles implements PipelineWarmUp {
 
   /** After each render: a warm-up drawn with no draw deferred is done; one not drawn runs down its frames. */
   private advanceWarmUps(): void {
+    if (this.warmUps.size === 0) return;
     for (const warmUp of [...this.warmUps.values()]) {
       if (warmUp.mesh.isDisposed()) {
         this.endWarmUp(warmUp, false);
