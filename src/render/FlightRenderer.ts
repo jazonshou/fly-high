@@ -129,8 +129,10 @@ import {
 } from "./webgpu/core/AdaptiveGovernor";
 import {
   DISPLAY_RESIZE_REQUEST,
+  GOVERNED_MIN_RENDER_PIXELS,
   GOVERNED_SCALE_REQUEST,
   RenderScaleQueue,
+  resolveGovernedHardwareScalingLevel,
   resolveHardwareScalingLevel,
 } from "./renderScaleLevel";
 import {
@@ -4304,15 +4306,28 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.graph.invalidateHistory("quality profile changed");
   }
 
-  /** The capped scale product as a hardware scaling level (1A-6a). */
+  /**
+   * The capped scale product as a hardware scaling level (1A-6a). Unpinned,
+   * PR B part 2 (G4): the cap is judged at the governor's ceiling and its
+   * step applies to the capped frame, never below 0.4 Mpx, so a step the cap
+   * used to swallow is a real one.
+   */
   private resolveRenderScaleLevel(): number {
-    return resolveHardwareScalingLevel({
+    const inputs = {
       maxDevicePixelRatio: this.profile.maxDevicePixelRatio,
       devicePixelRatio: window.devicePixelRatio,
       renderScale: this.renderScale,
       cssWidth: this.domElement.clientWidth,
       cssHeight: this.domElement.clientHeight,
       maxRenderPixels: this.profile.maxRenderPixels,
+    };
+    // Captures, perf:ab and perf:flight pin the scale: the 1A-6a resolver,
+    // untouched (G4 is unpinned only).
+    if (this.pinnedRenderScale !== null) return resolveHardwareScalingLevel(inputs);
+    return resolveGovernedHardwareScalingLevel({
+      ...inputs,
+      ceilingScale: this.governorConfig.scaleCeiling,
+      minRenderPixels: GOVERNED_MIN_RENDER_PIXELS,
     });
   }
 
@@ -4339,7 +4354,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   /**
    * B1: queues a governor step for the next frame's start and returns whether
    * it moves the level, which the anti-ratchet latch needs now. A step the
-   * pixel cap absorbs leaves the level as it is, so it counts as applied.
+   * 0.4 Mpx minimum absorbs (G4; the pixel cap did before) leaves the level
+   * as it is, so it counts as applied.
    */
   private deferGovernedRenderScale(): boolean {
     const changed = this.renderScaleQueue.levelWouldChange();
@@ -4389,11 +4405,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
       const lowered = state.renderScale < this.renderScale;
       this.renderScale = state.renderScale;
-      // When the absolute pixel cap is the binding constraint, a governor
-      // step leaves the effective scale unchanged — no resize, no history
-      // reset, and the anti-ratchet latch learns about it immediately. B1: a
-      // step that does change it resizes at the next frame's start, never
-      // here, after this frame has drawn.
+      // When the 0.4 Mpx minimum binds (G4; the absolute pixel cap did
+      // before), a governor step leaves the effective scale unchanged — no
+      // resize, no history reset, and the anti-ratchet latch learns about it
+      // immediately. B1: a step that does change it resizes at the next
+      // frame's start, never here, after this frame has drawn.
       const changed = this.deferGovernedRenderScale();
       if (lowered) {
         state = observeRenderScaleApplication(state, changed, this.governorConfig);

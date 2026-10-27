@@ -1,7 +1,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FlightRenderer } from "../src/render/FlightRenderer";
+import { resolveHardwareScalingLevel } from "../src/render/renderScaleLevel";
 import {
   createGovernorState,
   governorConfigForProfile,
@@ -98,6 +99,58 @@ describe("the CSM and cloud-depth refresh holds (PR B part 2, G5)", () => {
 });
 
 const medium = resolveWebGpuQualityProfile("medium", "balanced");
+
+describe("the render-scale level (PR B part 2, G4)", () => {
+  it("keeps the pinned path on the 1A-6a resolver and steps the capped frame otherwise", () => {
+    expect(renderer).toMatch(new RegExp(
+      String.raw`private resolveRenderScaleLevel\(\): number \{\s*const inputs = \{[^}]*\};\s*`
+      + String.raw`if \(this\.pinnedRenderScale !== null\) return resolveHardwareScalingLevel\(inputs\);\s*`
+      + String.raw`return resolveGovernedHardwareScalingLevel\(\{\s*\.\.\.inputs,\s*`
+      + String.raw`ceilingScale: this\.governorConfig\.scaleCeiling,\s*minRenderPixels: GOVERNED_MIN_RENDER_PIXELS,\s*\}\);\s*\}`,
+      "u",
+    ));
+  });
+
+  it("is the 1A-6a level at the ceiling, and applies an unpinned step after the cap", () => {
+    // Medium at 1080p: 0.86 asks for 1.53 Mpx and the 1.5 Mpx cap binds.
+    const display = { clientWidth: 1_920, clientHeight: 1_080 };
+    const cssPixels = display.clientWidth * display.clientHeight;
+    const inputs = (renderScale: number) => ({
+      maxDevicePixelRatio: medium.maxDevicePixelRatio,
+      devicePixelRatio: 1,
+      renderScale,
+      cssWidth: display.clientWidth,
+      cssHeight: display.clientHeight,
+      maxRenderPixels: medium.maxRenderPixels,
+    });
+    const level = (renderScale: number, pinnedRenderScale: number | null): number => {
+      const target = {
+        profile: medium,
+        domElement: display,
+        renderScale,
+        pinnedRenderScale,
+        governorConfig: governorConfigForProfile(medium),
+      };
+      return (Reflect.get(FlightRenderer.prototype, "resolveRenderScaleLevel") as (this: typeof target) => number)
+        .call(target);
+    };
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      const ceiling = medium.renderScale;
+      expect(Object.is(level(ceiling, null), resolveHardwareScalingLevel(inputs(ceiling)))).toBe(true);
+      expect(cssPixels / level(ceiling, null) ** 2).toBeCloseTo(medium.maxRenderPixels, 3);
+      // Pinned (a capture at a lower scale): the cap-only rule, as before.
+      expect(Object.is(level(0.81, 0.81), resolveHardwareScalingLevel(inputs(0.81)))).toBe(true);
+      // Unpinned, the same step lands on the capped frame: 1.5 × (0.81 / 0.86)² Mpx,
+      // where the cap-only rule gives 1.36.
+      const governed = level(0.81, null);
+      expect(cssPixels / governed ** 2).toBeCloseTo(medium.maxRenderPixels * (0.81 / ceiling) ** 2, 3);
+      expect(governed).toBeGreaterThan(resolveHardwareScalingLevel(inputs(0.81)));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 /** A governor mid-window: a probe out, a calm streak, and levels to keep. */
 function busyState(config: GovernorConfig): GovernorState {

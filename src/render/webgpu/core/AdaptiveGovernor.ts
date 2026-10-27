@@ -1264,10 +1264,11 @@ function tickLadder(record: LadderRecovery, config: GovernorConfig): LadderRecov
 }
 
 /**
- * Feedback from `applyRenderScale` (1A-6a): when the absolute pixel cap is
- * the binding constraint, a downward `renderScale` step is a no-op on the
- * effective hardware scale. That is detectable immediately — latch without
- * waiting for two ineffective-step p95 measurements.
+ * Feedback from `applyRenderScale` (1A-6a): when the 0.4 Mpx minimum (G4;
+ * the absolute pixel cap before it) absorbs a downward `renderScale` step,
+ * the step is a no-op on the effective hardware scale. That is detectable
+ * immediately — latch without waiting for two ineffective-step p95
+ * measurements.
  */
 export function observeRenderScaleApplication(
   state: GovernorState,
