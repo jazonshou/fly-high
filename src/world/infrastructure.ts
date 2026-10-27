@@ -47,10 +47,12 @@ import type { WorldDefinition } from "./types";
  * object, so a spawned airport's new world keeps them. Each streamed segment
  * carries an order `key`, unique across every region its terrain can hold,
  * and the index composes by (priority, static before streamed, source order or
- * key): the same regions give the same index whatever order they arrived in.
- * Installing or removing bumps the terrain's version; the next sample builds
- * the index again (static sources once per world, regions on top), and every
- * consumer that compares index objects (the GPU twin) repacks.
+ * key): the same regions give the same heights whatever order they arrived
+ * in. Installing or removing bumps the terrain's version and composes the
+ * index in place: each segment keeps a slot while installed, only the bins
+ * the changed regions reach are re-merged, and the next sample sees a new
+ * index object. Consumers that compare index objects (the GPU twin) rewrite
+ * only the slots that changed (`infrastructureSlotsChanged`).
  *
  * Consumers that lay things out on the ground BEFORE the stage never see a
  * region: sources read `sampleTerrainHeightBeforeEarthworks`; a spawned
@@ -59,14 +61,14 @@ import type { WorldDefinition } from "./types";
  * samples inside `withStaticInfrastructure`, which pins the index to the
  * static sources' for the call.
  *
- * The index is built lazily, once per world object and region version, on the
- * first sample that needs it, and costs one bin lookup per sample after that.
+ * The static sources' index is built lazily, once per terrain, on the first
+ * sample that needs it; a sample costs one bin lookup after that.
  * The GPU twin (`TerrainInfrastructureKernel.ts`) packs the same index and
  * runs the same profiles; the two agree within a millimetre.
  */
 
 /** Edge of an index bin, metres. */
-export const INFRASTRUCTURE_BIN_METERS = 512;
+export const INFRASTRUCTURE_BIN_METERS = 64;
 
 /** Most parameters one segment carries (two vec4s on the GPU). */
 export const INFRASTRUCTURE_MAX_PARAMS = 8;
@@ -233,20 +235,30 @@ export function infrastructureSegmentLocal(
 const LOCAL = { along: 0, across: 0 };
 
 export interface InfrastructureIndex {
-  /** Every segment, in composition order. */
+  /**
+   * Every segment by slot. The static sources' index holds them in
+   * composition order; one with regions installed keeps each segment in a
+   * stable slot while it is installed, and a free slot holds a segment that
+   * reaches nothing.
+   */
   readonly segments: readonly PackedInfrastructureSegment[];
-  /** Bin key -> indexes into `segments`, ascending (composition order). */
-  readonly bins: ReadonlyMap<number, Int32Array>;
+  /** Bin key -> slots in `segments` that reach the bin, in composition order. */
+  readonly bins: ReadonlyMap<number, ArrayLike<number>>;
   readonly anchors: ReadonlyMap<string, InfrastructureAnchor>;
   /** Integer bin range covered, inclusive; empty (min > max) with no segments. */
   readonly binMinX: number;
   readonly binMinZ: number;
   readonly binMaxX: number;
   readonly binMaxZ: number;
-  /** The plant-free capsules segments ask for (`plantClearance`), in composition order. */
+  /**
+   * The plant-free capsules segments ask for (`plantClearance`): in
+   * composition order in the static sources' index; by slot, with one that
+   * excludes nothing in the other slots, once regions are installed. Read
+   * them through `infrastructurePlantExclusions` or `...In`.
+   */
   readonly plantExclusions: readonly InfrastructurePlantExclusion[];
-  /** Bin key -> indexes into `plantExclusions` whose blend band reaches the bin, ascending. */
-  readonly plantBins: ReadonlyMap<number, Int32Array>;
+  /** Bin key -> indexes into `plantExclusions` whose blend band reaches the bin, in composition order. */
+  readonly plantBins: ReadonlyMap<number, ArrayLike<number>>;
 }
 
 /** See `capsuleReachesBin`. */
@@ -257,6 +269,16 @@ const BIN_STRIDE = 1 << 21;
 
 export function infrastructureBinKey(binX: number, binZ: number): number {
   return (binX + BIN_OFFSET) * BIN_STRIDE + (binZ + BIN_OFFSET);
+}
+
+/** The bin x of an `infrastructureBinKey`. */
+export function infrastructureBinKeyX(key: number): number {
+  return Math.floor(key / BIN_STRIDE) - BIN_OFFSET;
+}
+
+/** The bin z of an `infrastructureBinKey`. */
+export function infrastructureBinKeyZ(key: number): number {
+  return (key % BIN_STRIDE) - BIN_OFFSET;
 }
 
 export function infrastructureBin(coordinate: number): number {
@@ -321,7 +343,7 @@ interface OrderedSegment {
   readonly position: number;
   readonly packed: PackedInfrastructureSegment;
   /** Keys of the bins its capsule of influence reaches. */
-  readonly bins: Float64Array;
+  readonly bins: readonly number[];
   /** The bin range those cover, inclusive. */
   readonly binMinX: number;
   readonly binMinZ: number;
@@ -329,7 +351,7 @@ interface OrderedSegment {
   readonly binMaxZ: number;
   /** Its plant-free capsule and the bins that capsule's blend band reaches; null without a clearance. */
   readonly exclusion: InfrastructurePlantExclusion | null;
-  readonly plantBins: Float64Array | null;
+  readonly plantBins: readonly number[] | null;
 }
 
 function prepareSegment(
@@ -353,20 +375,21 @@ function prepareSegment(
     length,
     radius: segment.halfWidth + segment.reach,
   });
-  const bins: number[] = [];
+  const bins = binsReached(packed, packed.radius);
   let binMinX = Infinity;
   let binMinZ = Infinity;
   let binMaxX = -Infinity;
   let binMaxZ = -Infinity;
-  forEachBinReached(packed, packed.radius, (binX, binZ) => {
-    bins.push(infrastructureBinKey(binX, binZ));
+  for (let b = 0; b < bins.length; b += 1) {
+    const binX = infrastructureBinKeyX(bins[b]!);
+    const binZ = infrastructureBinKeyZ(bins[b]!);
     binMinX = Math.min(binMinX, binX);
     binMinZ = Math.min(binMinZ, binZ);
     binMaxX = Math.max(binMaxX, binX);
     binMaxZ = Math.max(binMaxZ, binZ);
-  });
+  }
   let exclusion: InfrastructurePlantExclusion | null = null;
-  let plantBins: Float64Array | null = null;
+  let plantBins: number[] | null = null;
   if (segment.plantClearance !== undefined) {
     exclusion = Object.freeze({
       ax: segment.ax,
@@ -375,15 +398,11 @@ function prepareSegment(
       bz: segment.bz,
       radius: segment.halfWidth + segment.reach + segment.plantClearance,
     });
-    const keys: number[] = [];
-    forEachBinReached(packed, exclusion.radius + INFRASTRUCTURE_PLANT_BLEND_METERS, (binX, binZ) => {
-      keys.push(infrastructureBinKey(binX, binZ));
-    });
-    plantBins = Float64Array.from(keys);
+    plantBins = binsReached(packed, exclusion.radius + INFRASTRUCTURE_PLANT_BLEND_METERS);
   }
   return {
     segment, group, order, region, position, packed,
-    bins: Float64Array.from(bins), binMinX, binMinZ, binMaxX, binMaxZ,
+    bins, binMinX, binMinZ, binMaxX, binMaxZ,
     exclusion, plantBins,
   };
 }
@@ -396,9 +415,10 @@ function compareOrdered(left: OrderedSegment, right: OrderedSegment): number {
     || left.position - right.position;
 }
 
-/** The static sources' part of a world's index, and what it is built from. */
+/** The static sources' part of a terrain's index, and what it is built from. */
 interface StaticInfrastructure {
   readonly index: InfrastructureIndex;
+  /** In composition order: the composed index's slots 0, 1, ... */
   readonly ordered: readonly OrderedSegment[];
   readonly anchors: ReadonlyMap<string, InfrastructureAnchor>;
 }
@@ -409,7 +429,7 @@ const EMPTY_STATIC: StaticInfrastructure = Object.freeze({
   anchors: EMPTY_INDEX.anchors,
 });
 
-/** An installed region: its validated segments and the rectangle they can change. */
+/** An installed region: its validated segments, in composition order, and the rectangle they can change. */
 interface InstalledRegion {
   readonly key: string;
   readonly ordered: readonly OrderedSegment[];
@@ -417,9 +437,50 @@ interface InstalledRegion {
   readonly bounds: InfrastructureRect | null;
 }
 
+/**
+ * A terrain's index with regions installed, kept in place as they come and
+ * go (`updateComposed`): every segment has a SLOT, stable while it is
+ * installed. The static sources' take slots 0, 1, ... in composition order;
+ * a region's take free slots, given back when it is removed. A bin lists the
+ * slots that reach it in composition order, so a change re-merges only the
+ * bins its regions reach, and the GPU twin rewrites only the slots it wrote.
+ */
+interface ComposedIndex {
+  readonly base: StaticInfrastructure;
+  /** By slot; null where free. */
+  readonly entries: (OrderedSegment | null)[];
+  /** By slot; `INERT_SEGMENT` where free. */
+  readonly segments: PackedInfrastructureSegment[];
+  /** By slot; `NO_PLANT_EXCLUSION` where free or without a clearance. */
+  readonly exclusions: InfrastructurePlantExclusion[];
+  readonly free: number[];
+  /** Edited in place as regions come and go (a list is never shared with the static index). */
+  readonly bins: Map<number, number[]>;
+  readonly plantBins: Map<number, number[]>;
+  /** Region key -> the slots its segments hold, in its composition order. */
+  readonly slotsOf: Map<string, Int32Array>;
+  /** The last `COMPOSED_HISTORY` changes, oldest first: the version each made, the slots it wrote and the bins it re-merged. */
+  readonly history: InfrastructureIndexChange[];
+  /** The index object `infrastructureIndex` returns now. */
+  index: InfrastructureIndex;
+}
+
+/** One change to a composed index: what a consumer holding a copy rewrites. */
+interface InfrastructureIndexChange {
+  readonly version: number;
+  readonly slots: Int32Array;
+  /** Keys of the bins whose segment lists changed (`infrastructureBinKey`). */
+  readonly bins: Float64Array;
+}
+
+/** How many changes a composed index remembers for consumers catching up (`infrastructureIndexChanges`). */
+const COMPOSED_HISTORY = 32;
+
 interface RegionRegistry {
   readonly regions: Map<string, InstalledRegion>;
   version: number;
+  /** Null while no region is installed: the index is the static one. */
+  composed: ComposedIndex | null;
 }
 
 /** Terrain key -> its installed regions. */
@@ -427,14 +488,22 @@ const registries = new Map<string, RegionRegistry>();
 /** Bumped on every install, removal or clear anywhere: the fast path's check. */
 let registryEpoch = 0;
 
-/** The static sources' index per world object. */
-const staticIndexes = new WeakMap<WorldDefinition, StaticInfrastructure>();
-/** The full index per world object, with the registry version it was built at. */
-const composedIndexes = new WeakMap<WorldDefinition, {
-  readonly registry: RegionRegistry;
+/** A composed index object's origin: its composed index, and the version it was made at. */
+const snapshotOrigins = new WeakMap<InfrastructureIndex, {
+  readonly composed: ComposedIndex;
   readonly version: number;
-  readonly index: InfrastructureIndex;
 }>();
+
+/**
+ * The static sources' index per terrain (they are a function of the terrain:
+ * `infrastructureTerrainKey`), so every world on a terrain, a spawned
+ * airport's included, shares one index object; and per world object, the
+ * fast path to it.
+ */
+const staticByTerrain = new Map<string, StaticInfrastructure>();
+const staticByWorld = new WeakMap<WorldDefinition, StaticInfrastructure>();
+/** Terrains whose static index is kept (a session has one; tests walk a few). */
+const STATIC_TERRAINS_KEPT = 4;
 let lastWorld: WorldDefinition | null = null;
 let lastEpoch = -1;
 let lastIndex: InfrastructureIndex = EMPTY_INDEX;
@@ -443,10 +512,11 @@ let building: WorldDefinition | null = null;
 let staticScope = 0;
 
 /**
- * The world's infrastructure index: its static sources and every region
- * installed for its terrain, built on first use after any change. Inside
- * `withStaticInfrastructure`, the static sources' alone. Sources that call
- * back into the staged height while it is built throw rather than recurse.
+ * The world's infrastructure index: its terrain's static sources and every
+ * region installed for that terrain. With no region installed, the static
+ * sources' index object itself. Inside `withStaticInfrastructure`, the static
+ * sources' alone. Sources that call back into the staged height while it is
+ * built throw rather than recurse.
  */
 export function infrastructureIndex(
   world: WorldDefinition,
@@ -456,19 +526,8 @@ export function infrastructureIndex(
     if (world.worldEvolution === "eroded") return EMPTY_INDEX;
     if (staticScope > 0) return staticInfrastructure(world).index;
     if (world === lastWorld && registryEpoch === lastEpoch) return lastIndex;
-    const registry = registries.get(infrastructureTerrainKey(world));
-    let index: InfrastructureIndex;
-    if (!registry || registry.regions.size === 0) {
-      index = staticInfrastructure(world).index;
-    } else {
-      const cached = composedIndexes.get(world);
-      if (cached && cached.registry === registry && cached.version === registry.version) {
-        index = cached.index;
-      } else {
-        index = composeWorldIndex(world, registry);
-        composedIndexes.set(world, { registry, version: registry.version, index });
-      }
-    }
+    const composed = registries.get(infrastructureTerrainKey(world))?.composed;
+    const index = composed ? composed.index : staticInfrastructure(world).index;
     lastWorld = world;
     lastEpoch = registryEpoch;
     lastIndex = index;
@@ -506,21 +565,19 @@ export function withStaticInfrastructure<T>(sample: () => T): T {
 }
 
 function staticInfrastructure(world: WorldDefinition): StaticInfrastructure {
-  let found = staticIndexes.get(world);
-  if (!found) {
+  const known = staticByWorld.get(world);
+  if (known) return known;
+  const terrain = infrastructureTerrainKey(world);
+  let found = staticByTerrain.get(terrain);
+  if (found) {
+    staticByTerrain.delete(terrain);
+  } else {
     found = INFRASTRUCTURE_SOURCES.length === 0 ? EMPTY_STATIC : buildStaticGuarded(world, INFRASTRUCTURE_SOURCES);
-    staticIndexes.set(world, found);
   }
+  staticByTerrain.set(terrain, found);
+  if (staticByTerrain.size > STATIC_TERRAINS_KEPT) staticByTerrain.delete(staticByTerrain.keys().next().value!);
+  staticByWorld.set(world, found);
   return found;
-}
-
-function composeWorldIndex(world: WorldDefinition, registry: RegionRegistry): InfrastructureIndex {
-  const own = staticInfrastructure(world);
-  const ordered = own.ordered.slice();
-  for (const region of registry.regions.values()) {
-    for (const entry of region.ordered) ordered.push(entry);
-  }
-  return composeIndex(ordered, own.anchors);
 }
 
 function buildIndexGuarded(world: WorldDefinition, sources: readonly InfrastructureSource[]): InfrastructureIndex {
@@ -542,8 +599,9 @@ function buildStaticGuarded(world: WorldDefinition, sources: readonly Infrastruc
 }
 
 function validateSegment(segment: InfrastructureSegment): void {
-  const finite = [segment.ax, segment.az, segment.bx, segment.bz, segment.halfWidth, segment.reach, segment.priority]
-    .every(Number.isFinite);
+  const finite = Number.isFinite(segment.ax) && Number.isFinite(segment.az)
+    && Number.isFinite(segment.bx) && Number.isFinite(segment.bz)
+    && Number.isFinite(segment.halfWidth) && Number.isFinite(segment.reach) && Number.isFinite(segment.priority);
   if (!finite || segment.halfWidth < 0 || segment.reach < 0) {
     throw new RangeError("Infrastructure segment needs finite ends and non-negative halfWidth and reach");
   }
@@ -553,7 +611,10 @@ function validateSegment(segment: InfrastructureSegment): void {
   if (segment.mode !== "set" && segment.mode !== "cut" && segment.mode !== "fill") {
     throw new RangeError(`Unknown infrastructure mode ${String(segment.mode)}`);
   }
-  if (segment.params.length > INFRASTRUCTURE_MAX_PARAMS || !segment.params.every(Number.isFinite)) {
+  const params = segment.params;
+  let paramsFinite = params.length <= INFRASTRUCTURE_MAX_PARAMS;
+  for (let p = 0; paramsFinite && p < params.length; p += 1) paramsFinite = Number.isFinite(params[p]);
+  if (!paramsFinite) {
     throw new RangeError(`Infrastructure segment takes at most ${INFRASTRUCTURE_MAX_PARAMS} finite params`);
   }
   if (segment.plantClearance !== undefined && !(segment.plantClearance >= 0)) {
@@ -654,24 +715,22 @@ function composeIndex(
   });
 }
 
-/** Every bin a capsule of `radius` round the segment's centreline reaches. */
-function forEachBinReached(
-  packed: PackedInfrastructureSegment,
-  radius: number,
-  visit: (binX: number, binZ: number) => void,
-): void {
+/** The keys of every bin a capsule of `radius` round the segment's centreline reaches. */
+function binsReached(packed: PackedInfrastructureSegment, radius: number): number[] {
   const { segment } = packed;
   const x0 = infrastructureBin(Math.min(segment.ax, segment.bx) - radius);
   const x1 = infrastructureBin(Math.max(segment.ax, segment.bx) + radius);
   const z0 = infrastructureBin(Math.min(segment.az, segment.bz) - radius);
   const z1 = infrastructureBin(Math.max(segment.az, segment.bz) + radius);
+  const keys: number[] = [];
   for (let binX = x0; binX <= x1; binX += 1) {
     for (let binZ = z0; binZ <= z1; binZ += 1) {
       // Only bins the capsule actually reaches: a long diagonal road should
       // not list itself in every bin of its bounding box.
-      if (capsuleReachesBin(packed, radius, binX, binZ)) visit(binX, binZ);
+      if (capsuleReachesBin(packed, radius, binX, binZ)) keys.push(infrastructureBinKey(binX, binZ));
     }
   }
+  return keys;
 }
 
 // ---- streamed regions ---------------------------------------------------------------------------------------
@@ -684,7 +743,17 @@ function segmentOuterRadius(segment: InfrastructureSegment): number {
     : Math.max(radius, radius + segment.plantClearance + INFRASTRUCTURE_PLANT_BLEND_METERS);
 }
 
+/**
+ * Prepared regions by region object: a region dropped and installed again
+ * (the observer turned back, and the roads controller kept it) is not
+ * validated and binned twice. Its content is a function of its key, so the
+ * object is as good as the key.
+ */
+const preparedRegions = new WeakMap<InfrastructureRegion, InstalledRegion>();
+
 function installRegion(region: InfrastructureRegion): InstalledRegion {
+  const known = preparedRegions.get(region);
+  if (known) return known;
   const ordered: OrderedSegment[] = [];
   let minX = Infinity;
   let minZ = Infinity;
@@ -702,56 +771,401 @@ function installRegion(region: InfrastructureRegion): InstalledRegion {
     maxX = Math.max(maxX, segment.ax + outer, segment.bx + outer);
     maxZ = Math.max(maxZ, segment.az + outer, segment.bz + outer);
   });
-  return Object.freeze({
+  ordered.sort(compareOrdered);
+  const installed: InstalledRegion = Object.freeze({
     key: region.key,
     ordered: Object.freeze(ordered),
     bounds: ordered.length === 0 ? null : Object.freeze({ minX, minZ, maxX, maxZ }),
   });
+  preparedRegions.set(region, installed);
+  return installed;
+}
+
+/** A free slot's segment: it reaches nothing, and no bin lists it. */
+const INERT_SEGMENT: PackedInfrastructureSegment = Object.freeze({
+  segment: Object.freeze({
+    profile: 0,
+    mode: "set",
+    priority: 0,
+    ax: 0,
+    az: 0,
+    bx: 0,
+    bz: 0,
+    halfWidth: 0,
+    reach: 0,
+    params: Object.freeze([]),
+  } satisfies InfrastructureSegment),
+  profile: INFRASTRUCTURE_PROFILES[0]!,
+  mode: MODE_SET,
+  ax: 0,
+  az: 0,
+  dirX: 1,
+  dirZ: 0,
+  length: 0,
+  radius: -1,
+});
+
+/** A slot's exclusion where there is none: its factor is 1 everywhere. */
+const NO_PLANT_EXCLUSION: InfrastructurePlantExclusion = Object.freeze({
+  ax: 0,
+  az: 0,
+  bx: 0,
+  bz: 0,
+  radius: Number.NEGATIVE_INFINITY,
+});
+
+/** The composed index of a terrain's first region, from its static sources' slots. */
+function startComposed(base: StaticInfrastructure): ComposedIndex {
+  const entries: (OrderedSegment | null)[] = base.ordered.slice();
+  const exclusions = base.ordered.map((entry) => entry.exclusion ?? NO_PLANT_EXCLUSION);
+  // The static index's plant lists name compacted exclusions; the composed one's name slots.
+  const plantBins = new Map<number, number[]>();
+  base.ordered.forEach((entry, slot) => {
+    if (!entry.plantBins) return;
+    for (let b = 0; b < entry.plantBins.length; b += 1) {
+      const key = entry.plantBins[b]!;
+      let list = plantBins.get(key);
+      if (!list) plantBins.set(key, (list = []));
+      list.push(slot);
+    }
+  });
+  return {
+    base,
+    entries,
+    segments: base.index.segments.slice(),
+    exclusions,
+    free: [],
+    bins: new Map([...base.index.bins].map(([key, list]) => [key, Array.from(list)])),
+    plantBins,
+    slotsOf: new Map(),
+    history: [],
+    index: base.index,
+  };
+}
+
+/**
+ * Remove regions from a composed index and add others, in place, and make
+ * its next index object. Only the bins the regions reach are re-merged.
+ */
+function updateComposed(
+  composed: ComposedIndex,
+  removed: readonly InstalledRegion[],
+  added: readonly InstalledRegion[],
+  version: number,
+): void {
+  const { entries, segments, exclusions, free, bins, plantBins } = composed;
+  const written: number[] = [];
+  const touched = new Set<number>();
+  if (removed.length > 0) {
+    const dropping = new Set<number>();
+    const touchedPlants = new Set<number>();
+    for (const region of removed) {
+      const slots = composed.slotsOf.get(region.key);
+      if (!slots) continue;
+      composed.slotsOf.delete(region.key);
+      for (let i = 0; i < slots.length; i += 1) {
+        const slot = slots[i]!;
+        const entry = entries[slot]!;
+        for (let b = 0; b < entry.bins.length; b += 1) touched.add(entry.bins[b]!);
+        if (entry.plantBins) for (let b = 0; b < entry.plantBins.length; b += 1) touchedPlants.add(entry.plantBins[b]!);
+        dropping.add(slot);
+        entries[slot] = null;
+        segments[slot] = INERT_SEGMENT;
+        exclusions[slot] = NO_PLANT_EXCLUSION;
+        free.push(slot);
+        written.push(slot);
+      }
+    }
+    const keep = (slot: number) => !dropping.has(slot);
+    for (const key of touched) dropFromList(bins, key, keep);
+    for (const key of touchedPlants) dropFromList(plantBins, key, keep);
+  }
+  if (added.length > 0) {
+    // Every added entry, in composition order, so each bin's incoming run is sorted.
+    const incoming: { entry: OrderedSegment; slot: number }[] = [];
+    // Lowest free slots first, so a steady stream of installs and removals stays packed low.
+    free.sort((left, right) => right - left);
+    for (const region of added) {
+      const slots = new Int32Array(region.ordered.length);
+      region.ordered.forEach((entry, i) => {
+        const slot = free.length > 0 ? free.pop()! : entries.length;
+        entries[slot] = entry;
+        segments[slot] = entry.packed;
+        exclusions[slot] = entry.exclusion ?? NO_PLANT_EXCLUSION;
+        slots[i] = slot;
+        written.push(slot);
+        incoming.push({ entry, slot });
+      });
+      composed.slotsOf.set(region.key, slots);
+    }
+    // One region's are in its composition order already.
+    if (added.length > 1) incoming.sort((left, right) => compareOrdered(left.entry, right.entry));
+    const runs = new Map<number, number[]>();
+    const plantRuns = new Map<number, number[]>();
+    for (const { entry, slot } of incoming) {
+      for (let b = 0; b < entry.bins.length; b += 1) pushRun(runs, entry.bins[b]!, slot);
+      if (entry.plantBins) for (let b = 0; b < entry.plantBins.length; b += 1) pushRun(plantRuns, entry.plantBins[b]!, slot);
+    }
+    const order = (left: number, right: number) => compareOrdered(entries[left]!, entries[right]!);
+    for (const [key, run] of runs) {
+      mergeIntoList(bins, key, run, order);
+      touched.add(key);
+    }
+    for (const [key, run] of plantRuns) mergeIntoList(plantBins, key, run, order);
+  }
+  composed.history.push({ version, slots: Int32Array.from(written), bins: Float64Array.from(touched) });
+  if (composed.history.length > COMPOSED_HISTORY) composed.history.shift();
+  composed.index = composedIndexObject(composed, version);
+}
+
+function pushRun(runs: Map<number, number[]>, key: number, slot: number): void {
+  let run = runs.get(key);
+  if (!run) runs.set(key, (run = []));
+  run.push(slot);
+}
+
+/** Drop slots from a bin's list, in place. */
+function dropFromList(lists: Map<number, number[]>, key: number, keep: (slot: number) => boolean): void {
+  const list = lists.get(key);
+  if (!list) return;
+  let kept = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    if (keep(list[i]!)) list[kept++] = list[i]!;
+  }
+  if (kept === 0) lists.delete(key);
+  else list.length = kept;
+}
+
+/** Merge a sorted run of slots (the list takes it over) into a bin's sorted list, in place. */
+function mergeIntoList(
+  lists: Map<number, number[]>,
+  key: number,
+  run: number[],
+  order: (left: number, right: number) => number,
+): void {
+  const list = lists.get(key);
+  if (!list) {
+    lists.set(key, run);
+    return;
+  }
+  // From the back, into room pushed on the end (pushing keeps the array packed).
+  let i = list.length - 1;
+  let j = run.length - 1;
+  for (let n = 0; n < run.length; n += 1) list.push(0);
+  let k = list.length - 1;
+  while (j >= 0) list[k--] = i >= 0 && order(list[i]!, run[j]!) > 0 ? list[i--]! : run[j--]!;
+}
+
+/**
+ * The index object for a composed index's latest version. It reads the
+ * composed index's live slots and bins rather than copies (copying them was
+ * most of a change's cost), so it is current only until the next change:
+ * consumers take the world's index again (`infrastructureIndex`), and one
+ * holding an older object reads the newer slots through it.
+ */
+function composedIndexObject(composed: ComposedIndex, version: number): InfrastructureIndex {
+  let binMinX = Infinity;
+  let binMinZ = Infinity;
+  let binMaxX = -Infinity;
+  let binMaxZ = -Infinity;
+  for (const key of composed.bins.keys()) {
+    const binX = infrastructureBinKeyX(key);
+    const binZ = infrastructureBinKeyZ(key);
+    binMinX = Math.min(binMinX, binX);
+    binMinZ = Math.min(binMinZ, binZ);
+    binMaxX = Math.max(binMaxX, binX);
+    binMaxZ = Math.max(binMaxZ, binZ);
+  }
+  if (composed.bins.size === 0) {
+    binMinX = 0;
+    binMinZ = 0;
+    binMaxX = -1;
+    binMaxZ = -1;
+  }
+  const index: InfrastructureIndex = Object.freeze({
+    segments: composed.segments,
+    bins: composed.bins,
+    anchors: composed.base.anchors,
+    binMinX,
+    binMinZ,
+    binMaxX,
+    binMaxZ,
+    plantExclusions: composed.exclusions,
+    plantBins: composed.plantBins,
+  });
+  snapshotOrigins.set(index, { composed, version });
+  return index;
+}
+
+/** Whether an index holds streamed regions (and so changes in place: `infrastructureIndexChanges`). */
+export function infrastructureIndexStreamed(index: InfrastructureIndex): boolean {
+  return snapshotOrigins.has(index);
+}
+
+const NO_CHANGES: { readonly slots: Int32Array; readonly bins: Float64Array } = Object.freeze({
+  slots: new Int32Array(0),
+  bins: new Float64Array(0),
+});
+
+/**
+ * What a consumer holding a copy of `previous` rewrites to hold `next`, two
+ * index objects of one terrain made since its first region was installed:
+ * the slots whose segment may differ and the keys of the bins whose lists
+ * may differ, each once, in no particular order. Null when they are not such
+ * a pair, or `next` is more changes on than the terrain remembers: the
+ * consumer copies everything.
+ */
+export function infrastructureIndexChanges(
+  previous: InfrastructureIndex,
+  next: InfrastructureIndex,
+): { readonly slots: Int32Array; readonly bins: Float64Array } | null {
+  if (previous === next) return NO_CHANGES;
+  const from = snapshotOrigins.get(previous);
+  const to = snapshotOrigins.get(next);
+  if (!from || !to || from.composed !== to.composed || from.version > to.version) return null;
+  // The latest object only: an older one reads the newer slots (`composedIndexObject`).
+  if (to.composed.index !== next) return null;
+  const steps = to.composed.history.filter((change) => change.version > from.version);
+  // Every version between, or the history has moved past `previous`.
+  if (steps.length === 0 || steps[0]!.version !== from.version + 1 || steps.length !== to.version - from.version) {
+    return null;
+  }
+  const slots = new Set<number>();
+  const bins = new Set<number>();
+  for (const step of steps) {
+    for (let i = 0; i < step.slots.length; i += 1) slots.add(step.slots[i]!);
+    for (let i = 0; i < step.bins.length; i += 1) bins.add(step.bins[i]!);
+  }
+  return { slots: Int32Array.from(slots), bins: Float64Array.from(bins) };
+}
+
+/**
+ * Validate and bin a region's segments ahead of its install, so the install
+ * (once a frame, `installInfrastructureRegions`) only merges: the roads
+ * controller prepares each region as it arrives from the worker. Throws on a
+ * malformed segment, as the install would; preparing twice is free.
+ */
+export function prepareInfrastructureRegion(region: InfrastructureRegion): void {
+  installRegion(region);
+}
+
+/**
+ * One change to a terrain's streamed regions, as `changeInfrastructureRegions`
+ * made it: what the consumers that bake or copy the ground refresh.
+ */
+export interface InfrastructureChange {
+  /** The terrain's version after it (`infrastructureRegionsVersion`). */
+  readonly version: number;
+  /** Each installed and each removed region's rectangle: everything the change can touch lies inside one. */
+  readonly rects: readonly InfrastructureRect[];
+  /** Keys of the bins whose ground or paint may differ (`infrastructureBinKey`). */
+  readonly bins: ReadonlySet<number>;
+  /** Keys of the bins whose plants may differ (a segment's plant band reaches them). */
+  readonly plantBins: ReadonlySet<number>;
 }
 
 /**
  * Install streamed regions for the world's terrain and remove others, in one
- * change: the terrain's version bumps once if anything changed, and the next
- * sample of any world on that terrain builds the index again. Installing a key
- * already installed, or removing one that is not, changes nothing.
+ * change: the terrain's version bumps once if anything changed, and the index
+ * every world on that terrain returns is the next one, composed in place
+ * (only the bins the regions reach are re-merged). Installing a key already
+ * installed, or removing one that is not, changes nothing.
  *
- * Returns the rectangles whose ground, paint or plants may have changed (each
- * installed and each removed region's), for the consumers that bake the
- * ground to refresh. A malformed segment throws before anything changes.
+ * Returns the change (null when nothing changed): where the ground, paint or
+ * plants may differ, for the consumers that bake the ground to refresh. A
+ * malformed segment throws before anything changes.
+ */
+export function changeInfrastructureRegions(
+  world: WorldDefinition,
+  install: readonly InfrastructureRegion[],
+  remove: readonly string[] = [],
+): InfrastructureChange | null {
+  if (world.worldEvolution === "eroded") return null;
+  const terrain = infrastructureTerrainKey(world);
+  const registry = registries.get(terrain) ?? { regions: new Map<string, InstalledRegion>(), version: 0, composed: null };
+  const incoming: InstalledRegion[] = [];
+  for (const region of install) {
+    if (registry.regions.has(region.key) || incoming.some((other) => other.key === region.key)) continue;
+    incoming.push(installRegion(region));
+  }
+  const outgoing: InstalledRegion[] = [];
+  for (const key of new Set(remove)) {
+    const region = registry.regions.get(key);
+    if (region) outgoing.push(region);
+  }
+  if (incoming.length === 0 && outgoing.length === 0) return null;
+  const rects: InfrastructureRect[] = [];
+  const bins = new Set<number>();
+  const plantBins = new Set<number>();
+  const footprint = (region: InstalledRegion) => {
+    if (region.bounds) rects.push(region.bounds);
+    for (const entry of region.ordered) {
+      for (let b = 0; b < entry.bins.length; b += 1) bins.add(entry.bins[b]!);
+      if (entry.plantBins) for (let b = 0; b < entry.plantBins.length; b += 1) plantBins.add(entry.plantBins[b]!);
+    }
+  };
+  for (const region of outgoing) {
+    registry.regions.delete(region.key);
+    footprint(region);
+  }
+  for (const region of incoming) {
+    registry.regions.set(region.key, region);
+    footprint(region);
+  }
+  registries.set(terrain, registry);
+  registry.version += 1;
+  registryEpoch += 1;
+  if (registry.regions.size === 0) {
+    registry.composed = null;
+  } else if (registry.composed) {
+    updateComposed(registry.composed, outgoing, incoming, registry.version);
+  } else {
+    registry.composed = startComposed(staticInfrastructure(world));
+    updateComposed(registry.composed, [], [...registry.regions.values()], registry.version);
+  }
+  return { version: registry.version, rects, bins, plantBins };
+}
+
+/**
+ * `changeInfrastructureRegions`, returning only the rectangles that may have
+ * changed (none when nothing did).
  */
 export function installInfrastructureRegions(
   world: WorldDefinition,
   install: readonly InfrastructureRegion[],
   remove: readonly string[] = [],
 ): readonly InfrastructureRect[] {
-  if (world.worldEvolution === "eroded") return [];
-  const terrain = infrastructureTerrainKey(world);
-  const registry = registries.get(terrain) ?? { regions: new Map<string, InstalledRegion>(), version: 0 };
-  const incoming: InstalledRegion[] = [];
-  for (const region of install) {
-    if (registry.regions.has(region.key) || incoming.some((other) => other.key === region.key)) continue;
-    incoming.push(installRegion(region));
+  return changeInfrastructureRegions(world, install, remove)?.rects ?? [];
+}
+
+/**
+ * Whether a change can have touched the world rectangle: one of its bins (or,
+ * with `plants`, its plant bins) meets it. Walks whichever is fewer, the
+ * rectangle's bins or the change's.
+ */
+export function infrastructureChangeTouches(
+  change: InfrastructureChange,
+  rect: InfrastructureRect,
+  plants = false,
+): boolean {
+  const keys = plants ? change.plantBins : change.bins;
+  if (keys.size === 0) return false;
+  const x0 = infrastructureBin(rect.minX);
+  const x1 = infrastructureBin(rect.maxX);
+  const z0 = infrastructureBin(rect.minZ);
+  const z1 = infrastructureBin(rect.maxZ);
+  if ((x1 - x0 + 1) * (z1 - z0 + 1) <= keys.size) {
+    for (let binX = x0; binX <= x1; binX += 1) {
+      for (let binZ = z0; binZ <= z1; binZ += 1) if (keys.has(infrastructureBinKey(binX, binZ))) return true;
+    }
+    return false;
   }
-  const changed: InfrastructureRect[] = [];
-  let touched = false;
-  for (const key of remove) {
-    const region = registry.regions.get(key);
-    if (!region) continue;
-    registry.regions.delete(key);
-    touched = true;
-    if (region.bounds) changed.push(region.bounds);
+  for (const key of keys) {
+    const binX = infrastructureBinKeyX(key);
+    const binZ = infrastructureBinKeyZ(key);
+    if (binX >= x0 && binX <= x1 && binZ >= z0 && binZ <= z1) return true;
   }
-  for (const region of incoming) {
-    registry.regions.set(region.key, region);
-    touched = true;
-    if (region.bounds) changed.push(region.bounds);
-  }
-  if (touched) {
-    registries.set(terrain, registry);
-    registry.version += 1;
-    registryEpoch += 1;
-  }
-  return changed;
+  return false;
 }
 
 /** The keys of every region installed for the world's terrain, in install order. */
@@ -766,19 +1180,16 @@ export function infrastructureRegionsVersion(world: WorldDefinition): number {
 
 /** Drop every region of the world's terrain (a new session), or of every terrain with no world. */
 export function clearInfrastructureRegions(world?: WorldDefinition): void {
-  if (world) {
-    const registry = registries.get(infrastructureTerrainKey(world));
-    if (!registry || registry.regions.size === 0) return;
+  const cleared = world ? [registries.get(infrastructureTerrainKey(world))] : [...registries.values()];
+  let changed = false;
+  for (const registry of cleared) {
+    if (!registry || registry.regions.size === 0) continue;
     registry.regions.clear();
+    registry.composed = null;
     registry.version += 1;
-  } else {
-    if (registries.size === 0) return;
-    for (const registry of registries.values()) {
-      registry.regions.clear();
-      registry.version += 1;
-    }
+    changed = true;
   }
-  registryEpoch += 1;
+  if (changed) registryEpoch += 1;
 }
 
 /** Does a capsule of `radius` round the segment's centreline touch a bin's square? */
@@ -939,14 +1350,33 @@ export interface InfrastructurePlantExclusion {
 }
 
 /**
- * Every plant-free capsule a world's infrastructure asks for: segments that
- * set `plantClearance` keep plants off halfWidth + reach + plantClearance.
- * Plain data, so it crosses to the detail worker as it is.
+ * Every plant-free capsule a world's infrastructure asks for, in composition
+ * order: segments that set `plantClearance` keep plants off halfWidth + reach
+ * + plantClearance. Plain data, so it crosses to the detail worker as it is.
  */
 export function infrastructurePlantExclusions(
   index: InfrastructureIndex,
 ): readonly InfrastructurePlantExclusion[] {
-  return index.plantExclusions;
+  const origin = snapshotOrigins.get(index);
+  if (!origin) return index.plantExclusions;
+  let compact = compactExclusions.get(index);
+  if (!compact) {
+    const slots: number[] = [];
+    origin.composed.entries.forEach((entry, slot) => {
+      if (entry?.exclusion) slots.push(slot);
+    });
+    sortSlots(slots, origin.composed.entries);
+    compact = Object.freeze(slots.map((slot) => index.plantExclusions[slot]!));
+    compactExclusions.set(index, compact);
+  }
+  return compact;
+}
+
+const compactExclusions = new WeakMap<InfrastructureIndex, readonly InfrastructurePlantExclusion[]>();
+
+/** Slots into composition order, by the entries they hold. */
+function sortSlots(slots: number[], entries: readonly (OrderedSegment | null)[]): void {
+  slots.sort((left, right) => compareOrdered(entries[left]!, entries[right]!));
 }
 
 const NO_PLANT_EXCLUSIONS: readonly InfrastructurePlantExclusion[] = Object.freeze([]);
@@ -989,7 +1419,9 @@ export function infrastructurePlantExclusionsIn(
     }
   }
   if (!found) return NO_PLANT_EXCLUSIONS;
-  found.sort((left, right) => left - right);
+  const origin = snapshotOrigins.get(index);
+  if (origin) sortSlots(found, origin.composed.entries);
+  else found.sort((left, right) => left - right);
   const out: InfrastructurePlantExclusion[] = [];
   for (let i = 0; i < found.length; i += 1) {
     if (i > 0 && found[i] === found[i - 1]) continue;

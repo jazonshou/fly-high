@@ -166,7 +166,7 @@ describe("infrastructure index", () => {
     const bounds = Math.ceil(8_040 / INFRASTRUCTURE_BIN_METERS);
     // A bounding-box binning would list the road in ~bounds^2 bins.
     let roadBins = 0;
-    for (const list of index.bins.values()) if (list.includes(index.segments.findIndex((s) => s.segment === road))) roadBins += 1;
+    for (const list of index.bins.values()) if (Array.from(list).includes(index.segments.findIndex((s) => s.segment === road))) roadBins += 1;
     expect(roadBins).toBeLessThan(4 * bounds);
     // Every point equals the stage evaluated over all segments with no bins.
     const brute = (ground: number, x: number, z: number) => {

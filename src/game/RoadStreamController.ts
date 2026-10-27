@@ -1,7 +1,8 @@
 import type { WorldDefinition } from "@/src/world";
 import {
-  installInfrastructureRegions,
-  type InfrastructureRect,
+  changeInfrastructureRegions,
+  prepareInfrastructureRegion,
+  type InfrastructureChange,
 } from "@/src/world/infrastructure";
 import { roadRegionKey } from "@/src/world/roads/roadInfrastructure";
 import {
@@ -39,23 +40,32 @@ export const ROAD_STREAM_CHECK_INTERVAL_MS = 250;
 /** Dropped regions kept for an observer that turns back. */
 export const ROAD_STREAM_DROPPED_CACHE = 96;
 
+/**
+ * Segments one flush installs at most (always one region, however large):
+ * composing them in place and writing the GPU's copy takes about a
+ * millisecond a thousand segments, and the largest regions hold ~450.
+ */
+export const ROAD_STREAM_FLUSH_SEGMENTS = 1_200;
+
 /** One frame's change to the installed roads. */
 export interface RoadStreamChange {
   /** Regions installed this change, with the pieces and pads they were laid out from. */
   readonly installed: readonly RoadsWorkerRegionEvent[];
   /** Stage keys of the regions removed. */
   readonly removed: readonly string[];
-  /** Where the ground, paint or plants may have changed (`installInfrastructureRegions`). */
-  readonly changed: readonly InfrastructureRect[];
+  /** The stage's change: its version, and where the ground, paint or plants may differ. */
+  readonly infrastructure: InfrastructureChange;
 }
 
 /**
  * The main thread's end of the roads: asks the roads worker for the regions
- * the observer needs, most urgent first (`roadStreamRegions`), and installs
- * what comes back into the infrastructure stage, ALL AT ONCE PER FRAME
- * (`flush`), dropping regions the observer has left. Listeners (the
- * renderer, the simulation and detail workers) hear each change once, with
- * the regions themselves, so every copy of the stage holds the same ones.
+ * the observer needs, most urgent first (`roadStreamRegions`), prepares each
+ * as it arrives (`prepareInfrastructureRegion`: validated and binned between
+ * frames), and installs them into the infrastructure stage AS ONE CHANGE PER
+ * FRAME (`flush`), up to `ROAD_STREAM_FLUSH_SEGMENTS`, dropping regions the
+ * observer has left. Listeners (the renderer, the simulation and detail
+ * workers) hear each change once, with the regions themselves, so every copy
+ * of the stage holds the same ones.
  *
  * `prime` holds startup until the regions round the spawn are in, so the
  * first pages bake with their roads rather than rebuilding under the car.
@@ -133,24 +143,33 @@ export class RoadStreamController {
   }
 
   /**
-   * Install what arrived and drop what the observer left, in one change, and
-   * tell the listeners. Call once a frame; returns the change, or null.
+   * Install what arrived (up to `ROAD_STREAM_FLUSH_SEGMENTS`, the rest next
+   * time) and drop what the observer left, in one change, and tell the
+   * listeners. Call once a frame; returns the change, or null.
    */
   flush(): RoadStreamChange | null {
     if (this.disposed) return null;
     const install: RoadsWorkerRegionEvent[] = [];
-    for (const event of this.arrived) {
+    let segments = 0;
+    let taken = 0;
+    for (; taken < this.arrived.length; taken += 1) {
+      const event = this.arrived[taken]!;
       const key = event.infrastructure.key;
-      if (this.installed.has(key) || !this.keep.has(key)) continue;
+      if (this.installed.has(key) || !this.keep.has(key) || install.some((other) => other.infrastructure.key === key)) {
+        continue;
+      }
+      const size = event.infrastructure.segments.length;
+      if (install.length > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
       install.push(event);
+      segments += size;
     }
-    this.arrived = [];
+    this.arrived = this.arrived.slice(taken);
     const removed: string[] = [];
     for (const key of this.installed.keys()) {
       if (!this.keep.has(key)) removed.push(key);
     }
     if (install.length === 0 && removed.length === 0) return null;
-    const changed = installInfrastructureRegions(
+    const infrastructure = changeInfrastructureRegions(
       this.world,
       install.map((event) => event.infrastructure),
       removed,
@@ -162,7 +181,9 @@ export class RoadStreamController {
       if (this.dropped.size > ROAD_STREAM_DROPPED_CACHE) this.dropped.delete(this.dropped.keys().next().value!);
     }
     for (const event of install) this.installed.set(event.infrastructure.key, event);
-    const change: RoadStreamChange = { installed: install, removed, changed };
+    // Null only in an eroded world, which has no stage: nothing to tell.
+    if (!infrastructure) return null;
+    const change: RoadStreamChange = { installed: install, removed, infrastructure };
     for (const listener of this.listeners) listener(change);
     this.resolvePrimes();
     return change;
@@ -230,6 +251,12 @@ export class RoadStreamController {
     if (this.disposed) return;
     if (event.type === "error") {
       console.error("Road region failed", event.address, event.message);
+      return;
+    }
+    try {
+      prepareInfrastructureRegion(event.infrastructure);
+    } catch (error) {
+      console.error("Road region refused", event.address, error);
       return;
     }
     this.arrived.push(event);

@@ -5,6 +5,7 @@ import "@babylonjs/core/Engines/WebGPU/Extensions/engine.computeShader";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import {
   TERRAIN_INFRASTRUCTURE_WGSL,
+  TerrainInfrastructureData,
   packTerrainInfrastructure,
   terrainInfrastructureDataBindingWgsl,
 } from "../../src/render/webgpu/terrain/TerrainInfrastructureKernel";
@@ -38,6 +39,11 @@ import { createWorld } from "../../src/world/world";
  * the join bands) and round every pad, on the real ground and on grounds
  * above and below it, each local to its own 512 m page as a real page bake's
  * are. Agreement within 1 mm, as the runway earthworks.
+ *
+ * Then the GPU's own copy (`TerrainInfrastructureData`), kept in place by
+ * ranged writes while the two regions go and come back with neighbours
+ * installed round them: after each change it grades the same probes as the
+ * CPU's index of the moment does, without a fresh pack.
  */
 
 const KERNEL = /* wgsl */ `
@@ -78,6 +84,8 @@ describe("road earthworks CPU/GPU parity", () => {
     const rx = roadRegionOf(head.startX);
     const rz = roadRegionOf(head.startZ);
     const regions = ROAD_LAYERS.map((layer) => roadRegionInfrastructure(world, network.region(layer, rx, rz)));
+    const neighbours = ROAD_LAYERS.flatMap((layer) => [[1, 0], [0, 1], [-1, 0], [0, -1]].map(([dx, dz]) =>
+      roadRegionInfrastructure(world, network.region(layer, rx + dx!, rz + dz!))));
     clearInfrastructureRegions();
     installInfrastructureRegions(world, regions);
     try {
@@ -176,7 +184,6 @@ describe("road earthworks CPU/GPU parity", () => {
           },
         });
         shader.setStorageBuffer("terrainKernelPages", pageBuffer);
-        shader.setStorageBuffer("terrainInfrastructureData", dataBuffer);
         shader.setStorageBuffer("probes", probeBuffer);
         shader.setStorageBuffer("results", resultBuffer);
         const compileErrors: string[] = [];
@@ -187,35 +194,75 @@ describe("road earthworks CPU/GPU parity", () => {
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
         expect(compileErrors.join(" | ")).toBe("");
-        await shader.dispatchWhenReady(Math.ceil(probes.length / 64), 1, 1);
-        const view = await resultBuffer.read();
-        const raw = new Float32Array(view.buffer.slice(view.byteOffset, view.byteOffset + probes.length * 16));
+
+        /** The probes through `data`, against the CPU's index now: (worst |dh|, probes moved, where). */
+        const grade = async (data: StorageBuffer) => {
+          shader.setStorageBuffer("terrainInfrastructureData", data);
+          await shader.dispatchWhenReady(Math.ceil(probes.length / 64), 1, 1);
+          const view = await resultBuffer.read();
+          const raw = new Float32Array(view.buffer.slice(view.byteOffset, view.byteOffset + probes.length * 16));
+          const now = infrastructureIndex(world);
+          let worst = 0;
+          let worstIndex = 0;
+          let changed = 0;
+          probes.forEach((probe, i) => {
+            const expected = applyInfrastructure(now, world.seaLevel, probe.ground, probe.x, probe.z);
+            if (Math.abs(expected - probe.ground) > 0.01) changed += 1;
+            const delta = Math.abs(raw[i * 4]! - expected);
+            if (delta > worst) {
+              worst = delta;
+              worstIndex = i;
+            }
+          });
+          return { worst, changed, at: probes[worstIndex]! };
+        };
+
+        const first = await grade(dataBuffer);
+        console.log(
+          `road earthworks parity: ${pieces.length} pieces, ${pads.length} pads, ${pageOrigins.length} pages, `
+          + `${probes.length} probes, ${first.changed} moved, max |dh| = ${(first.worst * 1_000).toFixed(3)} mm `
+          + `at (${first.at.x.toFixed(2)}, ${first.at.z.toFixed(2)}) ground ${first.at.ground.toFixed(2)}`,
+        );
+        expect(first.changed).toBeGreaterThan(probes.length / 4);
+        expect(first.worst).toBeLessThan(0.001);
+        expect(infrastructureIndex(world)).toBe(index);
+
+        // The GPU's own copy, kept in place as the regions go and come back among neighbours.
+        installInfrastructureRegions(world, neighbours.slice(0, 5));
+        const shared = TerrainInfrastructureData.acquire(engine, world);
+        try {
+          const steps: [readonly typeof regions[number][], readonly string[]][] = [
+            [[neighbours[5]!], [regions[1]!.key]],
+            [[neighbours[6]!], [regions[0]!.key, neighbours[2]!.key]],
+            [[regions[1]!, regions[0]!], [neighbours[5]!.key, neighbours[6]!.key]],
+          ];
+          const packs = shared.writes.packs;
+          const lines: string[] = [];
+          for (const [add, remove] of steps) {
+            installInfrastructureRegions(world, add, remove);
+            const before = shared.writes.bytes;
+            shared.setWorld(world);
+            const sent = shared.writes.bytes - before;
+            const result = await grade(shared.buffer);
+            lines.push(`${result.changed} moved, max |dh| ${(result.worst * 1_000).toFixed(3)} mm, ${sent} bytes written`);
+            expect(result.worst).toBeLessThan(0.001);
+            expect(sent).toBeGreaterThan(0);
+            // Less than a fresh pack of the index, in the smallest layout.
+            const fresh = packTerrainInfrastructure(infrastructureIndex(world), world.seaLevel, landformCoreCenter(world));
+            expect(sent).toBeLessThan(fresh.byteLength);
+          }
+          console.log(`in place: ${lines.join("; ")}`);
+          // Every change was a ranged write: no fresh pack after the first.
+          expect(shared.writes.packs).toBe(packs);
+          expect(shared.writes.updates).toBe(steps.length);
+        } finally {
+          shared.release();
+        }
         engine.stopRenderLoop();
         pageBuffer.dispose();
         dataBuffer.dispose();
         probeBuffer.dispose();
         resultBuffer.dispose();
-
-        let worst = 0;
-        let worstIndex = 0;
-        let changed = 0;
-        probes.forEach((probe, i) => {
-          const expected = applyInfrastructure(index, world.seaLevel, probe.ground, probe.x, probe.z);
-          if (Math.abs(expected - probe.ground) > 0.01) changed += 1;
-          const delta = Math.abs(raw[i * 4]! - expected);
-          if (delta > worst) {
-            worst = delta;
-            worstIndex = i;
-          }
-        });
-        const at = probes[worstIndex]!;
-        console.log(
-          `road earthworks parity: ${pieces.length} pieces, ${pads.length} pads, ${pageOrigins.length} pages, `
-          + `${probes.length} probes, ${changed} moved, max |dh| = ${(worst * 1_000).toFixed(3)} mm `
-          + `at (${at.x.toFixed(2)}, ${at.z.toFixed(2)}) ground ${at.ground.toFixed(2)}`,
-        );
-        expect(changed).toBeGreaterThan(probes.length / 4);
-        expect(worst).toBeLessThan(0.001);
       } finally {
         engine.dispose();
         canvas.remove();

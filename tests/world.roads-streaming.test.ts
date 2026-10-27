@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { RoadStreamController, type RoadsWorker } from "@/src/game/RoadStreamController";
+import {
+  RoadStreamController,
+  ROAD_STREAM_FLUSH_SEGMENTS,
+  type RoadsWorker,
+} from "@/src/game/RoadStreamController";
 import type {
   RoadRegionAddress,
   RoadsWorkerCommand,
@@ -94,44 +98,48 @@ class FakeRoadsWorker implements RoadsWorker {
 
   private readonly answered = new Set<string>();
 
-  /** Post the next `count` regions of the last list not yet posted. */
-  answer(count = Number.POSITIVE_INFINITY): number {
+  /** Post the next `count` regions of the last list not yet posted, each of `pieces` pieces. */
+  answer(count = Number.POSITIVE_INFINITY, pieces = 1): number {
     let posted = 0;
     for (const address of this.lastWant) {
       if (posted >= count) break;
       const key = `${address.layer}:${address.rx}:${address.rz}`;
       if (this.answered.has(key)) continue;
       this.answered.add(key);
-      this.listener!({ data: regionEvent(address) } as MessageEvent<RoadsWorkerEvent>);
+      this.post(regionEvent(address, pieces));
       posted += 1;
     }
     return posted;
   }
+
+  post(event: RoadsWorkerEvent): void {
+    this.listener!({ data: event } as MessageEvent<RoadsWorkerEvent>);
+  }
 }
 
-/** One short track piece in the middle of the region. */
-function regionEvent(address: RoadRegionAddress): RoadsWorkerRegionEvent {
+/** `pieces` short track pieces in the middle of the region. */
+function regionEvent(address: RoadRegionAddress, pieces = 1): RoadsWorkerRegionEvent {
   const box = roadRegionBox(address.rx, address.rz);
   const x = 0.5 * (box.minX + box.maxX);
   const z = 0.5 * (box.minZ + box.maxZ);
   const spec = roadClass(ROAD_CLASS.track);
-  const segment: InfrastructureSegment = {
+  const segments = Array.from({ length: pieces }, (_, k): InfrastructureSegment => ({
     profile: INFRASTRUCTURE_PROFILE.carriageway,
     mode: "set",
     priority: spec.priority,
-    ax: x,
+    ax: x + k * 20,
     az: z,
-    bx: x + 20,
+    bx: x + k * 20 + 20,
     bz: z,
     halfWidth: 1.75,
     reach: 4,
     params: [30, 30, 0, 0, 0, 0, 0],
-    key: (address.rx & 0xffff) * 65_536 + (address.rz & 0xffff),
-  };
+    key: ((address.rx & 0xffff) * 65_536 + (address.rz & 0xffff)) * 1_024 + k,
+  }));
   return {
     type: "region",
     address,
-    infrastructure: { key: roadRegionKey(address.layer, address.rx, address.rz), segments: [segment] },
+    infrastructure: { key: roadRegionKey(address.layer, address.rx, address.rz), segments },
     pieces: [],
     pads: [],
     milliseconds: 1,
@@ -157,7 +165,8 @@ describe("the road stream controller", () => {
     expect(installedInfrastructureRegionKeys(world)).toHaveLength(0);
     const change = controller.flush()!;
     expect(change.installed).toHaveLength(10);
-    expect(change.changed).toHaveLength(10);
+    expect(change.infrastructure.rects).toHaveLength(10);
+    expect(change.infrastructure.version).toBe(infrastructureRegionsVersion(world));
     expect(infrastructureRegionsVersion(world)).toBe(before + 1);
     expect(changes).toEqual([10]);
     expect(controller.flush()).toBeNull();
@@ -166,6 +175,46 @@ describe("the road stream controller", () => {
     controller.observe(observer, 1_000);
     expect(worker.lastWant).toHaveLength(want.length - 10);
     expect(worker.lastWant[0]).toEqual(want[10]);
+    controller.dispose();
+  });
+
+  it("installs at most a flush's worth of segments a frame, and the rest next frame", () => {
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe({ x: 0, z: 0, velocityX: 0, velocityZ: 0 }, 0);
+    const pieces = Math.ceil(ROAD_STREAM_FLUSH_SEGMENTS / 2.5);
+    expect(worker.answer(5, pieces)).toBe(5);
+    const sizes: number[] = [];
+    for (let change = controller.flush(); change; change = controller.flush()) {
+      sizes.push(change.installed.length);
+      const segments = change.installed.reduce((sum, event) => sum + event.infrastructure.segments.length, 0);
+      expect(segments).toBeLessThanOrEqual(ROAD_STREAM_FLUSH_SEGMENTS);
+    }
+    expect(sizes).toEqual([2, 2, 1]);
+    expect(installedInfrastructureRegionKeys(world)).toHaveLength(5);
+    controller.dispose();
+  });
+
+  it("refuses a malformed region as it arrives, and installs the rest", () => {
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe({ x: 0, z: 0, velocityX: 0, velocityZ: 0 }, 0);
+    const [bad, good] = worker.lastWant;
+    const broken = regionEvent(bad!);
+    const errors: unknown[] = [];
+    const log = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      worker.post({
+        ...broken,
+        infrastructure: { ...broken.infrastructure, segments: [{ ...broken.infrastructure.segments[0]!, halfWidth: -1 }] },
+      });
+    } finally {
+      console.error = log;
+    }
+    expect(errors).toHaveLength(1);
+    worker.post(regionEvent(good!));
+    expect(controller.flush()!.installed.map((event) => event.address)).toEqual([good]);
     controller.dispose();
   });
 
