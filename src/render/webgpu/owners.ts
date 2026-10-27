@@ -220,8 +220,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
   {
     // The infrastructure stage's GPU half: the packed index (the
     // `terrainInfrastructureData` binding), the stage that applies it after
-    // the landforms, and the per-consumer binding that packs it. The profiles
-    // themselves are defined once, CPU and WGSL side by side, in
+    // the landforms, the pack kept in place as streamed regions come and go,
+    // and the per-consumer binding to the engine's one shared copy. The
+    // profiles themselves are defined once, CPU and WGSL side by side, in
     // src/world/infrastructureProfiles.ts.
     artifact: "terrain-infrastructure-index",
     owner: "terrain-geometry",
@@ -230,6 +231,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "TERRAIN_INFRASTRUCTURE_WGSL",
       "packTerrainInfrastructure",
+      "TerrainInfrastructurePack",
       "TerrainInfrastructureData",
       "TerrainInfrastructureDataBinding",
     ],

@@ -15,6 +15,10 @@ import {
   installInfrastructureRegions,
   staticInfrastructureIndex,
   withStaticInfrastructure,
+  infrastructureIndexChanges,
+  changeInfrastructureRegions,
+  infrastructureChangeTouches,
+  type InfrastructureIndex,
   type InfrastructureRegion,
   type InfrastructureSegment,
 } from "@/src/world/infrastructure";
@@ -91,6 +95,21 @@ function regions(): InfrastructureRegion[] {
   ];
 }
 
+/**
+ * Each bin's segments in the order it composes them, named by order key (a
+ * static source's by its place in the static index), keyed by bin: what an
+ * index composes, whatever slots it keeps them in.
+ */
+function binOrders(index: InfrastructureIndex): Map<number, string[]> {
+  const statics = staticInfrastructureIndex(world).segments.map((packed) => packed.segment);
+  const name = (segment: InfrastructureSegment) => segment.key === undefined
+    ? `static:${statics.indexOf(segment)}`
+    : `key:${segment.key}`;
+  const out = new Map<number, string[]>();
+  for (const [key, list] of index.bins) out.set(key, Array.from(list, (slot) => name(index.segments[slot]!.segment)));
+  return out;
+}
+
 /** Heights over a grid round the strips: what the stage gives. */
 function heightsNearStrips(): number[] {
   const out: number[] = [];
@@ -106,22 +125,149 @@ describe("streamed infrastructure regions", () => {
   it("compose by priority and key, whatever order they arrive in", () => {
     const all = regions();
     installInfrastructureRegions(world, all);
-    const forward = infrastructureIndex(world).segments.map((packed) => packed.segment.key);
+    const forward = binOrders(infrastructureIndex(world));
     const heights = heightsNearStrips();
-    expect(forward).toEqual(expect.arrayContaining([1, 2, 3, 5, 7]));
+    const keys = new Set([...forward.values()].flat());
+    for (const key of [1, 2, 3, 5, 7]) expect(keys.has(`key:${key}`)).toBe(true);
 
     clearInfrastructureRegions(world);
     installInfrastructureRegions(world, [all[2]!]);
     installInfrastructureRegions(world, [all[1]!, all[0]!]);
-    expect(infrastructureIndex(world).segments.map((packed) => packed.segment.key)).toEqual(forward);
+    expect(binOrders(infrastructureIndex(world))).toEqual(forward);
     expect(heightsNearStrips()).toEqual(heights);
-    // Priority first, then key: the static marina (10 and up) composes after every strip.
-    const order = infrastructureIndex(world).segments.map((packed) => [packed.segment.priority, packed.segment.key ?? -1]);
-    for (let k = 1; k < order.length; k += 1) {
-      const [p0, k0] = order[k - 1]!;
-      const [p1, k1] = order[k]!;
-      expect(p0! < p1! || (p0 === p1 && (k0! < k1! || k0 === -1))).toBe(true);
+    // Priority first, then static before streamed, then key: the static marina (10 and up) composes after every strip.
+    const index = infrastructureIndex(world);
+    for (const list of index.bins.values()) {
+      for (let k = 1; k < list.length; k += 1) {
+        const before = index.segments[list[k - 1]!]!.segment;
+        const after = index.segments[list[k]!]!.segment;
+        const keyBefore = before.key ?? -1;
+        const keyAfter = after.key ?? -1;
+        expect(before.priority < after.priority
+          || (before.priority === after.priority && (keyBefore === -1 || keyBefore < keyAfter))).toBe(true);
+      }
     }
+  });
+
+  it("with none installed, leave the index the static sources' object itself", () => {
+    expect(infrastructureIndex(world)).toBe(staticInfrastructureIndex(world));
+    installInfrastructureRegions(world, regions());
+    expect(infrastructureIndex(world)).not.toBe(staticInfrastructureIndex(world));
+    installInfrastructureRegions(world, [], regions().map((region) => region.key));
+    expect(installedInfrastructureRegionKeys(world)).toEqual([]);
+    expect(infrastructureIndex(world)).toBe(staticInfrastructureIndex(world));
+    installInfrastructureRegions(world, regions());
+    clearInfrastructureRegions(world);
+    expect(infrastructureIndex(world)).toBe(staticInfrastructureIndex(world));
+  });
+
+  it("compose in place as they come and go, as a fresh install of what is left would", () => {
+    // Twelve regions of strips crossing one another near the home field.
+    const all: InfrastructureRegion[] = Array.from({ length: 12 }, (_, k) => ({
+      key: `test:${k}`,
+      segments: Array.from({ length: 3 + (k % 4) }, (_, j) => strip(
+        k * 100 + j,
+        airport.centerX + 1_450 + ((k * 7 + j * 3) % 11) * 100,
+        airport.centerZ - 1_350 + ((k * 5 + j) % 9) * 120,
+        airport.centerX + 1_450 + ((k * 3 + j * 5) % 11) * 100 + 60,
+        airport.centerZ - 1_350 + ((k + j * 7) % 9) * 120 + 90,
+        12 + ((k + j) % 6) * 3,
+        5 + ((k + j) % 2),
+      )),
+    }));
+    const steps: [number[], number[]][] = [
+      [[0, 1, 2, 3, 4], []], [[5, 6], [1]], [[1], [0, 2]], [[7], [5]], [[0, 8, 9], [3, 6]], [[10, 11, 2], [7, 9]],
+    ];
+    const held = new Set<number>();
+    let index = infrastructureIndex(world);
+    let previousSlots = index.segments.length;
+    const seen: {
+      held: number[];
+      orders: Map<number, string[]>;
+      heights: number[];
+      exclusions: unknown;
+      inRect: unknown;
+    }[] = [];
+    const rect = [airport.centerX + 1_700, airport.centerZ - 1_100, airport.centerX + 2_200, airport.centerZ - 600] as const;
+    for (const [add, remove] of steps) {
+      installInfrastructureRegions(world, add.map((k) => all[k]!), remove.map((k) => all[k]!.key));
+      for (const k of remove) held.delete(k);
+      for (const k of add) held.add(k);
+      const next = infrastructureIndex(world);
+      if (index !== staticInfrastructureIndex(world)) {
+        // What changed: the slots of what left and what came, and nothing else.
+        const slots = new Set(infrastructureIndexChanges(index, next)!.slots);
+        const removedCount = remove.reduce((sum, k) => sum + all[k]!.segments.length, 0);
+        const addedCount = add.reduce((sum, k) => sum + all[k]!.segments.length, 0);
+        expect(slots.size).toBeLessThanOrEqual(removedCount + addedCount);
+        // Freed slots are taken again before the slots grow.
+        expect(next.segments.length).toBeLessThanOrEqual(previousSlots + Math.max(0, addedCount - removedCount));
+      }
+      previousSlots = next.segments.length;
+      index = next;
+      seen.push({
+        held: [...held],
+        orders: binOrders(index),
+        heights: heightsNearStrips(),
+        exclusions: infrastructurePlantExclusions(index),
+        inRect: infrastructurePlantExclusionsIn(index, ...rect),
+      });
+    }
+    expect(held.size).toBeGreaterThan(3);
+    // A fresh install of what each step held, in another order, composes the same.
+    for (const step of seen) {
+      clearInfrastructureRegions(world);
+      installInfrastructureRegions(world, [...step.held].reverse().map((k) => all[k]!));
+      expect(binOrders(infrastructureIndex(world))).toEqual(step.orders);
+      expect(heightsNearStrips()).toEqual(step.heights);
+      expect(infrastructurePlantExclusions(infrastructureIndex(world))).toEqual(step.exclusions);
+      expect(infrastructurePlantExclusionsIn(infrastructureIndex(world), ...rect)).toEqual(step.inRect);
+    }
+  });
+
+  it("say where they may have changed the ground and the plants, to the bin", () => {
+    const points: [number, number][] = [];
+    for (let i = 0; i <= 60; i += 1) {
+      for (let j = 0; j <= 60; j += 1) points.push([airport.centerX + 1_300 + i * 25, airport.centerZ - 1_500 + j * 25]);
+    }
+    const before = points.map(([x, z]) => sampleTerrainHeight(world, x, z));
+    const plantsBefore = points.map(([x, z]) => infrastructurePlantFactor(
+      infrastructurePlantExclusionsIn(infrastructureIndex(world), x, z, x, z), x, z));
+    const change = changeInfrastructureRegions(world, regions())!;
+    expect(change.version).toBe(infrastructureRegionsVersion(world));
+    let moved = 0;
+    let replanted = 0;
+    let untouched = 0;
+    points.forEach(([x, z], k) => {
+      const at = { minX: x - 0.5, minZ: z - 0.5, maxX: x + 0.5, maxZ: z + 0.5 };
+      const touched = infrastructureChangeTouches(change, at);
+      if (sampleTerrainHeight(world, x, z) !== before[k]) {
+        moved += 1;
+        expect(touched).toBe(true);
+      } else if (!touched) {
+        untouched += 1;
+      }
+      const factor = infrastructurePlantFactor(infrastructurePlantExclusionsIn(infrastructureIndex(world), x, z, x, z), x, z);
+      if (factor !== plantsBefore[k]) {
+        replanted += 1;
+        expect(infrastructureChangeTouches(change, at, true)).toBe(true);
+      }
+    });
+    expect(moved).toBeGreaterThan(100);
+    expect(replanted).toBeGreaterThan(100);
+    // Most of the grid is off every strip, and the change says so.
+    expect(untouched).toBeGreaterThan(points.length / 3);
+    // A rectangle as wide as the grid is touched, and one far away is not, whichever way the walk goes.
+    expect(infrastructureChangeTouches(change, {
+      minX: airport.centerX + 1_300, minZ: airport.centerZ - 1_500, maxX: airport.centerX + 2_800, maxZ: airport.centerZ,
+    })).toBe(true);
+    expect(infrastructureChangeTouches(change, {
+      minX: airport.centerX + 30_000, minZ: airport.centerZ, maxX: airport.centerX + 90_000, maxZ: airport.centerZ + 60_000,
+    })).toBe(false);
+    // Removing them touches the same bins.
+    const removal = changeInfrastructureRegions(world, [], regions().map((region) => region.key))!;
+    expect([...removal.bins].sort()).toEqual([...change.bins].sort());
+    expect(changeInfrastructureRegions(world, [], ["test:a"])).toBeNull();
   });
 
   it("change the ground where they reach and nowhere else", () => {

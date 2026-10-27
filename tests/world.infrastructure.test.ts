@@ -66,6 +66,8 @@ const PROFILE_EXAMPLES: Record<string, readonly number[]> = {
   marinaPad: [1.5, 1.5, 2, 0.15],
   marinaSlipway: [1.5, -1.5, 1.5],
   marinaBreakwater: [2, 2.5, 1.5],
+  carriageway: [1.2, 3.4, 0.03, -0.02, 0.04, 0.5, 1.5],
+  junctionPad: [1.2, 6, 0.08],
 };
 
 describe("infrastructure stage containment", () => {
@@ -164,7 +166,7 @@ describe("infrastructure index", () => {
     const bounds = Math.ceil(8_040 / INFRASTRUCTURE_BIN_METERS);
     // A bounding-box binning would list the road in ~bounds^2 bins.
     let roadBins = 0;
-    for (const list of index.bins.values()) if (list.includes(index.segments.findIndex((s) => s.segment === road))) roadBins += 1;
+    for (const list of index.bins.values()) if (Array.from(list).includes(index.segments.findIndex((s) => s.segment === road))) roadBins += 1;
     expect(roadBins).toBeLessThan(4 * bounds);
     // Every point equals the stage evaluated over all segments with no bins.
     const brute = (ground: number, x: number, z: number) => {

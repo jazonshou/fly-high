@@ -6,6 +6,7 @@ import {
   marinaPadHeight,
   marinaSlipwayHeight,
 } from "./marinaEarthworkProfiles";
+import { ROAD_PROFILE_WGSL, roadCarriagewayHeight, roadJunctionPadHeight } from "./roadEarthworkProfiles";
 import {
   infrastructureCapsuleDistance,
   type InfrastructureProfile,
@@ -81,6 +82,9 @@ export const INFRASTRUCTURE_PROFILE = Object.freeze({
   marinaPad: 2,
   marinaSlipway: 3,
   marinaBreakwater: 4,
+  // The roads' (roadEarthworkProfiles.ts).
+  carriageway: 5,
+  junctionPad: 6,
 });
 
 export const INFRASTRUCTURE_PROFILES: readonly InfrastructureProfile[] = Object.freeze([
@@ -99,5 +103,11 @@ export const INFRASTRUCTURE_PROFILES: readonly InfrastructureProfile[] = Object.
     name: "marinaBreakwater",
     height: marinaBreakwaterHeight,
     wgsl: MARINA_PROFILE_WGSL.marinaBreakwater,
+  }),
+  Object.freeze({
+    id: INFRASTRUCTURE_PROFILE.carriageway, name: "carriageway", height: roadCarriagewayHeight, wgsl: ROAD_PROFILE_WGSL.carriageway,
+  }),
+  Object.freeze({
+    id: INFRASTRUCTURE_PROFILE.junctionPad, name: "junctionPad", height: roadJunctionPadHeight, wgsl: ROAD_PROFILE_WGSL.junctionPad,
   }),
 ]);

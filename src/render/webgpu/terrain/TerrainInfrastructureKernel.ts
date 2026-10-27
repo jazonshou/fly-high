@@ -9,8 +9,13 @@ import {
   INFRASTRUCTURE_BIN_METERS,
   INFRASTRUCTURE_SURFACE_FEATHER_METERS,
   infrastructureBin,
-  infrastructureBinKey,
+  infrastructureBinKeyX,
+  infrastructureBinKeyZ,
   infrastructureIndex,
+  infrastructureIndexChanges,
+  infrastructureIndexStreamed,
+  infrastructureTerrainKey,
+  type PackedInfrastructureSegment,
   type InfrastructureIndex,
   type InfrastructureSurface,
 } from "@/src/world/infrastructure";
@@ -50,14 +55,23 @@ import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKern
  *   [0] segment count, bin table mask, first bin-table vec4, longest probe
  *   [1] first list vec4, first segment vec4, sea level (f32), bin size (f32)
  *   [2] the anchor bin's corner: cells (i32 x, z), remainder (f32 x, z)
- *   bin table: one vec4 a slot, (bin x, bin z (i32, from the anchor bin),
- *             first list entry, count); count 0 is an empty slot
- *   lists:    four segment indices per vec4
- *   segments: five vec4s each: (a cell i32 x, z, a remainder f32 x, z),
- *             (dir x, dir z, length, halfWidth + reach) f32,
+ *   segments: five vec4s each, by slot: (a cell i32 x, z, a remainder f32
+ *             x, z), (dir x, dir z, length, halfWidth + reach) f32,
  *             (length, halfWidth, reach f32,
  *              profile | mode << 16 | (surface material + 1) << 20),
  *             params 0-3, params 4-7 (f32)
+ *   bin table: one vec4 a slot, (bin x, bin z (i32, from the anchor bin),
+ *             first list entry, count + 1); 0 in the last lane is a slot
+ *             never used, and a bin emptied since keeps its key with count 0
+ *   lists:    four segment slots per vec4
+ *
+ * IN PLACE. Streamed regions come and go a few times a second while flying,
+ * so the GPU's copy (`TerrainInfrastructureData`) is packed with room to
+ * spare (`TerrainInfrastructurePack`) and then kept by ranged writes: a
+ * change rewrites the segment slots it changed (the CPU index keeps every
+ * segment in a stable slot), the table entries of the bins it re-merged,
+ * those bins' new lists, written past the last list, and the header. It
+ * packs afresh only when the slots, the table or the list space run out.
  *
  * WHY A HASHED BIN TABLE. Streamed regions (the roads) follow the observer
  * while the static sources stay at home, so the occupied bins can sit a
@@ -102,86 +116,175 @@ export const INFRASTRUCTURE_SURFACE_MATERIAL: Readonly<Record<InfrastructureSurf
 export const TERRAIN_INFRASTRUCTURE_PLACEHOLDER_BYTES = INFRASTRUCTURE_HEADER_VEC4S * 16;
 
 /**
- * Pack an index for the GPU, relative to `origin` (the landform core centre).
- * Allocates; done once per world, not per frame.
+ * The room a pack for the GPU's own copy leaves (`TerrainInfrastructurePack`
+ * with headroom): segment slots for half as many again and 64 more, a bin
+ * table at a load of a quarter that takes new bins up to a half, and list
+ * space for three times the entries and 4,096 more.
  */
-export function packTerrainInfrastructure(
-  index: InfrastructureIndex,
-  seaLevel: number,
-  origin: { readonly x: number; readonly z: number },
-): Uint32Array {
-  const segments = index.segments;
-  const empty = segments.length === 0;
-  // The occupied bins, in a fixed order (by bin, z then x), so a pack is a
-  // function of the index alone.
-  const occupied: { readonly binX: number; readonly binZ: number; readonly list: Int32Array }[] = [];
-  if (!empty) {
-    for (let binZ = index.binMinZ; binZ <= index.binMaxZ; binZ += 1) {
-      for (let binX = index.binMinX; binX <= index.binMaxX; binX += 1) {
-        const list = index.bins.get(infrastructureBinKey(binX, binZ));
-        if (list) occupied.push({ binX, binZ, list });
-      }
-    }
-  }
-  let slots = 1;
-  while (slots < 2 * occupied.length) slots *= 2;
-  let entries = 0;
-  for (const { list } of occupied) entries += list.length;
-  const tableBase = INFRASTRUCTURE_HEADER_VEC4S;
-  const listBase = tableBase + slots;
-  const segmentBase = listBase + Math.ceil(entries / 4);
-  const vec4s = segmentBase + segments.length * INFRASTRUCTURE_SEGMENT_VEC4S;
-  const words = new Uint32Array(vec4s * 4);
-  const floats = new Float32Array(words.buffer);
-  const ints = new Int32Array(words.buffer);
+const SEGMENT_HEADROOM = 1.5;
+const SEGMENT_SLACK = 64;
+const LIST_HEADROOM = 3;
+const LIST_SLACK = 4_096;
 
-  const writeSplit = (word: number, x: number, z: number) => {
-    const relX = x - origin.x;
-    const relZ = z - origin.z;
+/**
+ * At least this much once streamed regions are in, so the roads' whole
+ * window round a jet (about 7,000 segments in 2,300 bins round the home
+ * field, measured, and more with the lead ahead) streams in after the first
+ * pack, made while priming round the spawn, without another: about 1.7 MB.
+ */
+const STREAMED_MIN_SEGMENTS = 16_384;
+const STREAMED_MIN_TABLE_SLOTS = 8_192;
+const STREAMED_MIN_LIST_ENTRIES = 65_536;
+
+/** Dirty vec4 ranges closer than this are written as one. */
+const DIRTY_MERGE_VEC4S = 16;
+
+/** A bin as the pack holds it: its table slot, and the block of list space it writes its list into. */
+interface PackedBin {
+  readonly slot: number;
+  first: number;
+  capacity: number;
+  /** Segments listed now; 0 for a bin emptied since it was packed. */
+  count: number;
+}
+
+/**
+ * An index packed for the GPU (the LAYOUT above), and what it takes to keep
+ * it current in place: `update` applies a change to `words` and returns the
+ * vec4 ranges it wrote.
+ *
+ * With headroom, each bin owns a block of list space a power of two long, so
+ * a re-merged list that still fits is rewritten where it is, and a longer one
+ * takes a fresh block past the last. When the list space runs out the blocks
+ * are laid out again, packed, and when the table fills with bins the observer
+ * has left it is rehashed with the bins still listed; only running out of
+ * segment slots takes a fresh pack.
+ */
+export class TerrainInfrastructurePack {
+  readonly words: Uint32Array;
+  private readonly floats: Float32Array;
+  private readonly ints: Int32Array;
+  private readonly segmentCapacity: number;
+  private readonly tableSlots: number;
+  private readonly tableBase: number;
+  private readonly listBase: number;
+  /** List entries the space holds. */
+  private readonly listCapacity: number;
+  private listCursor = 0;
+  private longestProbe = 0;
+  /** Bin key -> how it is packed, emptied bins' included until the table is rehashed. */
+  private bins = new Map<number, PackedBin>();
+  private readonly anchorX: number;
+  private readonly anchorZ: number;
+  private dirty: number[] = [];
+  /** Layouts of the list space and rehashes of the table since the pack, for tests and probes. */
+  readonly relayouts = { lists: 0, table: 0 };
+
+  /**
+   * Pack `index` relative to `origin` (the landform core centre). With
+   * `headroom`, leave the room above for ranged updates, and with
+   * `streamedMinimum` too, at least the streamed minimum for an index with
+   * regions in; without, the smallest pack.
+   */
+  constructor(
+    index: InfrastructureIndex,
+    seaLevel: number,
+    private readonly origin: { readonly x: number; readonly z: number },
+    private readonly headroom: boolean,
+    streamedMinimum = headroom,
+  ) {
+    const count = index.segments.length;
+    // The occupied bins, in key order, so a pack is a function of the index alone.
+    const keys = [...index.bins.keys()].sort((left, right) => left - right);
+    let entries = 0;
+    for (const key of keys) entries += this.blockSize(index.bins.get(key)!.length);
+    const streamed = headroom && streamedMinimum && infrastructureIndexStreamed(index);
+    this.segmentCapacity = headroom
+      ? Math.max(Math.ceil(count * SEGMENT_HEADROOM) + SEGMENT_SLACK, streamed ? STREAMED_MIN_SEGMENTS : 0)
+      : count;
+    let slots = streamed ? STREAMED_MIN_TABLE_SLOTS : 1;
+    while (slots < (headroom ? 4 : 2) * keys.length) slots *= 2;
+    this.tableSlots = slots;
+    const listEntries = headroom
+      ? Math.max(entries * LIST_HEADROOM + LIST_SLACK, streamed ? STREAMED_MIN_LIST_ENTRIES : 0)
+      : entries;
+    this.listCapacity = 4 * Math.ceil(listEntries / 4);
+    this.tableBase = INFRASTRUCTURE_HEADER_VEC4S + this.segmentCapacity * INFRASTRUCTURE_SEGMENT_VEC4S;
+    this.listBase = this.tableBase + slots;
+    this.words = new Uint32Array((this.listBase + this.listCapacity / 4) * 4);
+    this.floats = new Float32Array(this.words.buffer);
+    this.ints = new Int32Array(this.words.buffer);
+    this.anchorX = infrastructureBin(origin.x);
+    this.anchorZ = infrastructureBin(origin.z);
+
+    const words = this.words;
+    words[1] = slots - 1;
+    words[2] = this.tableBase;
+    words[4] = this.listBase;
+    words[5] = INFRASTRUCTURE_HEADER_VEC4S;
+    this.floats[6] = seaLevel;
+    this.floats[7] = INFRASTRUCTURE_BIN_METERS;
+    this.writeSplit(8, this.anchorX * INFRASTRUCTURE_BIN_METERS, this.anchorZ * INFRASTRUCTURE_BIN_METERS);
+    for (let slot = 0; slot < count; slot += 1) this.writeSegment(slot, index.segments[slot]!);
+    for (const key of keys) this.writeBin(index, key);
+    this.writeCount(count);
+    this.dirty = [];
+  }
+
+  /**
+   * Rewrite what changed between the index this holds and `index`
+   * (`infrastructureIndexChanges`). Returns the vec4 ranges written, as
+   * [start, end) pairs, or null when the change does not fit (pack afresh);
+   * `words` is then part-written and no longer to be used.
+   */
+  update(
+    index: InfrastructureIndex,
+    changes: { readonly slots: ArrayLike<number>; readonly bins: ArrayLike<number> },
+  ): number[] | null {
+    const count = index.segments.length;
+    if (count > this.segmentCapacity) return null;
+    for (let i = 0; i < changes.slots.length; i += 1) {
+      const slot = changes.slots[i]!;
+      if (slot < count) this.writeSegment(slot, index.segments[slot]!);
+    }
+    for (let i = 0; i < changes.bins.length; i += 1) {
+      if (!this.writeBin(index, changes.bins[i]!)) return null;
+    }
+    this.writeCount(count);
+    return this.takeDirty();
+  }
+
+  /** List space a bin of `count` segments takes: a power of two with headroom, else exactly. */
+  private blockSize(count: number): number {
+    if (!this.headroom) return count;
+    let size = 4;
+    while (size < count) size *= 2;
+    return size;
+  }
+
+  private writeCount(count: number): void {
+    this.words[0] = count;
+    this.words[3] = this.longestProbe;
+    this.markDirty(0, 1);
+  }
+
+  private writeSplit(word: number, x: number, z: number): void {
+    const relX = x - this.origin.x;
+    const relZ = z - this.origin.z;
     const cellX = terrainLandformCell(relX);
     const cellZ = terrainLandformCell(relZ);
-    ints[word] = cellX;
-    ints[word + 1] = cellZ;
-    floats[word + 2] = relX - cellX * TERRAIN_LANDFORM_CELL_METERS;
-    floats[word + 3] = relZ - cellZ * TERRAIN_LANDFORM_CELL_METERS;
-  };
-  const anchorX = infrastructureBin(origin.x);
-  const anchorZ = infrastructureBin(origin.z);
-  let longestProbe = 0;
-  let cursor = 0;
-  for (const { binX, binZ, list } of occupied) {
-    const keyX = binX - anchorX;
-    const keyZ = binZ - anchorZ;
-    let slot = infrastructureGpuBinHash(keyX, keyZ) & (slots - 1);
-    let probe = 1;
-    while (words[(tableBase + slot) * 4 + 3] !== 0) {
-      slot = (slot + 1) & (slots - 1);
-      probe += 1;
-    }
-    longestProbe = Math.max(longestProbe, probe);
-    const word = (tableBase + slot) * 4;
-    ints[word] = keyX;
-    ints[word + 1] = keyZ;
-    words[word + 2] = cursor;
-    words[word + 3] = list.length;
-    for (let i = 0; i < list.length; i += 1) words[listBase * 4 + cursor + i] = list[i]!;
-    cursor += list.length;
+    this.ints[word] = cellX;
+    this.ints[word + 1] = cellZ;
+    this.floats[word + 2] = relX - cellX * TERRAIN_LANDFORM_CELL_METERS;
+    this.floats[word + 3] = relZ - cellZ * TERRAIN_LANDFORM_CELL_METERS;
   }
 
-  words[0] = segments.length;
-  words[1] = slots - 1;
-  words[2] = tableBase;
-  words[3] = longestProbe;
-  words[4] = listBase;
-  words[5] = segmentBase;
-  floats[6] = seaLevel;
-  floats[7] = INFRASTRUCTURE_BIN_METERS;
-  writeSplit(8, anchorX * INFRASTRUCTURE_BIN_METERS, anchorZ * INFRASTRUCTURE_BIN_METERS);
-
-  segments.forEach((packed, i) => {
-    const word = (segmentBase + i * INFRASTRUCTURE_SEGMENT_VEC4S) * 4;
+  private writeSegment(slot: number, packed: PackedInfrastructureSegment): void {
+    const first = INFRASTRUCTURE_HEADER_VEC4S + slot * INFRASTRUCTURE_SEGMENT_VEC4S;
+    const word = first * 4;
+    const floats = this.floats;
     const { segment } = packed;
-    writeSplit(word, packed.ax, packed.az);
+    this.writeSplit(word, packed.ax, packed.az);
     floats[word + 4] = packed.dirX;
     floats[word + 5] = packed.dirZ;
     floats[word + 6] = packed.length;
@@ -190,34 +293,140 @@ export function packTerrainInfrastructure(
     floats[word + 9] = segment.halfWidth;
     floats[word + 10] = segment.reach;
     const surface = segment.surface === undefined ? 0 : INFRASTRUCTURE_SURFACE_MATERIAL[segment.surface] + 1;
-    words[word + 11] = ((segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16) | (surface << 20)) >>> 0;
+    this.words[word + 11] = ((segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16) | (surface << 20)) >>> 0;
     for (let p = 0; p < 8; p += 1) floats[word + 12 + p] = segment.params[p] ?? 0;
-  });
-  return words;
+    this.markDirty(first, first + INFRASTRUCTURE_SEGMENT_VEC4S);
+  }
+
+  /** A bin's list as `index` has it now; false when the table or the list space cannot hold it. */
+  private writeBin(index: InfrastructureIndex, key: number): boolean {
+    const list = index.bins.get(key);
+    let bin = this.bins.get(key);
+    if (!bin) {
+      if (!list) return true;
+      if ((this.bins.size + 1) * 2 > this.tableSlots && !this.rehashTable()) return false;
+      bin = { slot: this.insertKey(key), first: 0, capacity: 0, count: 0 };
+      this.bins.set(key, bin);
+    }
+    const count = list?.length ?? 0;
+    if (count > bin.capacity) {
+      const size = this.blockSize(count);
+      if (this.listCursor + size > this.listCapacity) return this.layOutLists(index);
+      bin.first = this.listCursor;
+      bin.capacity = size;
+      this.listCursor += size;
+    }
+    bin.count = count;
+    this.writeEntry(bin);
+    if (list) {
+      this.words.set(list, this.listBase * 4 + bin.first);
+      this.markDirty(this.listBase + Math.floor(bin.first / 4), this.listBase + Math.ceil((bin.first + count) / 4));
+    }
+    return true;
+  }
+
+  /** A new key's table slot, probed from its hash. */
+  private insertKey(key: number): number {
+    const words = this.words;
+    const keyX = infrastructureBinKeyX(key) - this.anchorX;
+    const keyZ = infrastructureBinKeyZ(key) - this.anchorZ;
+    const mask = this.tableSlots - 1;
+    let slot = infrastructureGpuBinHash(keyX, keyZ) & mask;
+    let probe = 1;
+    while (words[(this.tableBase + slot) * 4 + 3] !== 0) {
+      slot = (slot + 1) & mask;
+      probe += 1;
+    }
+    this.longestProbe = Math.max(this.longestProbe, probe);
+    this.ints[(this.tableBase + slot) * 4] = keyX;
+    this.ints[(this.tableBase + slot) * 4 + 1] = keyZ;
+    return slot;
+  }
+
+  /** A bin's table entry; an emptied bin keeps its key, so the probes that pass it still find what lies beyond. */
+  private writeEntry(bin: PackedBin): void {
+    const word = (this.tableBase + bin.slot) * 4;
+    this.words[word + 2] = bin.count > 0 ? bin.first : 0;
+    this.words[word + 3] = bin.count + 1;
+    this.markDirty(this.tableBase + bin.slot, this.tableBase + bin.slot + 1);
+  }
+
+  /** The table again with only the bins listing something: emptied bins' keys go. */
+  private rehashTable(): boolean {
+    const live = [...this.bins].filter(([, bin]) => bin.count > 0);
+    if ((live.length + 1) * 2 > this.tableSlots) return false;
+    this.words.fill(0, this.tableBase * 4, this.listBase * 4);
+    this.longestProbe = 0;
+    this.bins = new Map();
+    // Key order, so the table is a function of the bins held.
+    live.sort(([left], [right]) => left - right);
+    for (const [key, bin] of live) {
+      const moved: PackedBin = { slot: this.insertKey(key), first: bin.first, capacity: bin.capacity, count: bin.count };
+      this.bins.set(key, moved);
+      this.writeEntry(moved);
+    }
+    this.markDirty(this.tableBase, this.listBase);
+    this.relayouts.table += 1;
+    return true;
+  }
+
+  /** Every bin's list into a fresh block, packed from the start of the list space, as `index` has them. */
+  private layOutLists(index: InfrastructureIndex): boolean {
+    let cursor = 0;
+    for (const [key, bin] of this.bins) {
+      const list = index.bins.get(key);
+      bin.count = list?.length ?? 0;
+      bin.capacity = bin.count > 0 ? this.blockSize(bin.count) : 0;
+      bin.first = cursor;
+      cursor += bin.capacity;
+    }
+    if (cursor > this.listCapacity) return false;
+    this.listCursor = cursor;
+    for (const [key, bin] of this.bins) {
+      this.writeEntry(bin);
+      const list = index.bins.get(key);
+      if (list) this.words.set(list, this.listBase * 4 + bin.first);
+    }
+    this.markDirty(this.listBase, this.listBase + Math.ceil(cursor / 4));
+    this.relayouts.lists += 1;
+    return true;
+  }
+
+  private markDirty(start: number, end: number): void {
+    this.dirty.push(start, end);
+  }
+
+  /** The dirty ranges, sorted and merged, and a clean slate. */
+  private takeDirty(): number[] {
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < this.dirty.length; i += 2) pairs.push([this.dirty[i]!, this.dirty[i + 1]!]);
+    this.dirty = [];
+    pairs.sort((left, right) => left[0] - right[0]);
+    const merged: number[] = [];
+    for (const [start, end] of pairs) {
+      const last = merged.length - 1;
+      if (last > 0 && start <= merged[last]! + DIRTY_MERGE_VEC4S) merged[last] = Math.max(merged[last]!, end);
+      else merged.push(start, end);
+    }
+    return merged;
+  }
 }
 
-/** Packs of world indexes, so the consumers that each bind one (pages, splat, bathymetry) pack it once. */
-const worldPacks = new WeakMap<InfrastructureIndex, {
-  readonly seaLevel: number;
-  readonly originX: number;
-  readonly originZ: number;
-  readonly words: Uint32Array;
-}>();
-
 /**
- * The index a world's consumers bind, packed; shared by every consumer of
- * the same index (read-only: `StorageBuffer.update` copies it).
+ * Pack an index for the GPU, relative to `origin` (the landform core centre),
+ * in the smallest layout. Allocates.
  */
+export function packTerrainInfrastructure(
+  index: InfrastructureIndex,
+  seaLevel: number,
+  origin: { readonly x: number; readonly z: number },
+): Uint32Array {
+  return new TerrainInfrastructurePack(index, seaLevel, origin, false).words;
+}
+
+/** A world's index packed in the smallest layout (tests and tools; the GPU keeps its own, `TerrainInfrastructureData`). */
 export function packWorldTerrainInfrastructure(world: WorldDefinition): Uint32Array {
-  const index = infrastructureIndex(world);
-  const origin = landformCoreCenter(world);
-  const cached = worldPacks.get(index);
-  if (cached && cached.seaLevel === world.seaLevel && cached.originX === origin.x && cached.originZ === origin.z) {
-    return cached.words;
-  }
-  const words = packTerrainInfrastructure(index, world.seaLevel, origin);
-  worldPacks.set(index, { seaLevel: world.seaLevel, originX: origin.x, originZ: origin.z, words });
-  return words;
+  return packTerrainInfrastructure(infrastructureIndex(world), world.seaLevel, landformCoreCenter(world));
 }
 
 export function terrainInfrastructureDataBindingWgsl(group: number, binding: number): string {
@@ -310,7 +519,7 @@ fn terrainInfraBin(base: vec4f, local: vec2f) -> vec2u {
   for (var probe = 0u; probe < header.w; probe = probe + 1u) {
     let entry = terrainInfrastructureData[header.z + slot];
     if (entry.w == 0u) { break; }
-    if (bitcast<i32>(entry.x) == bin.x && bitcast<i32>(entry.y) == bin.y) { return entry.zw; }
+    if (bitcast<i32>(entry.x) == bin.x && bitcast<i32>(entry.y) == bin.y) { return vec2u(entry.z, entry.w - 1u); }
     slot = (slot + 1u) & header.y;
   }
   return vec2u(0u, 0u);
@@ -404,36 +613,68 @@ fn terrainInfrastructureSurface(localX: f32, localZ: f32) -> vec2f {
 `;
 
 /**
- * A world's packed index on the GPU. `setWorld` repacks only when the world's
- * index object changes (a spawned airport makes a new world, and its index is
- * rebuilt from the same sources; installing or removing streamed regions
- * builds a new index for the same world, so calling it again with the same
- * world after an install repacks), so steady state is one identity check.
+ * A terrain's packed index on the GPU, shared by every consumer on one engine
+ * (`TerrainInfrastructureData.acquire`): page generation, the bathymetry bake
+ * and the splat bake bind the same buffer. `setWorld` brings it to the
+ * world's current index: nothing when the index object is the one it holds
+ * (steady state is one identity check), ranged writes of what changed when
+ * it can (`TerrainInfrastructurePack.update`), a fresh pack otherwise, into
+ * a new buffer only when the old one is too small.
  */
 export class TerrainInfrastructureData {
   private storage: StorageBuffer;
   private capacityBytes: number;
   private version = 0;
   private index: InfrastructureIndex | null;
+  private pack: TerrainInfrastructurePack | null;
+  private seaLevel: number;
+  private originX: number;
+  private originZ: number;
+  private users = 0;
   private disposed = false;
+  /** Writes so far, for tests and probes: fresh packs and ranged updates, and the bytes they sent. */
+  readonly writes = { packs: 0, updates: 0, bytes: 0 };
+
+  /**
+   * The engine's shared copy for the world's terrain, made on first use;
+   * `release` it when done. Without a world, a header that lists nothing.
+   */
+  static acquire(engine: WebGPUEngine, world: WorldDefinition | null): TerrainInfrastructureData {
+    let byTerrain = sharedData.get(engine);
+    if (!byTerrain) sharedData.set(engine, (byTerrain = new Map()));
+    const key = world ? infrastructureTerrainKey(world) : "";
+    let data = byTerrain.get(key);
+    if (!data || data.disposed) {
+      data = new TerrainInfrastructureData(engine, world);
+      byTerrain.set(key, data);
+    }
+    data.users += 1;
+    if (world) data.setWorld(world);
+    return data;
+  }
 
   /** Without a world, the empty index: a header that lists nothing. */
   constructor(private readonly engine: WebGPUEngine, world: WorldDefinition | null) {
-    const words = world
-      ? packWorldTerrainInfrastructure(world)
-      : new Uint32Array(INFRASTRUCTURE_HEADER_VEC4S * 4);
+    const origin = world ? landformCoreCenter(world) : { x: 0, z: 0 };
+    this.seaLevel = world?.seaLevel ?? 0;
+    this.originX = origin.x;
+    this.originZ = origin.z;
+    this.index = world ? infrastructureIndex(world) : null;
+    this.pack = this.index ? new TerrainInfrastructurePack(this.index, this.seaLevel, origin, true) : null;
+    const words = this.pack?.words ?? new Uint32Array(INFRASTRUCTURE_HEADER_VEC4S * 4);
     this.capacityBytes = Math.max(words.byteLength, TERRAIN_INFRASTRUCTURE_PLACEHOLDER_BYTES);
     this.storage = new StorageBuffer(engine, this.capacityBytes, undefined, "terrain-infrastructure");
     registerGpuBufferBytes(this.capacityBytes);
     this.storage.update(words);
-    this.index = world ? infrastructureIndex(world) : null;
+    this.writes.packs += 1;
+    this.writes.bytes += words.byteLength;
   }
 
   get buffer(): StorageBuffer {
     return this.storage;
   }
 
-  /** Bumped whenever `buffer` is replaced or rewritten. */
+  /** Bumped whenever `buffer` is replaced (ranged writes keep it, and its bindings). */
   get bufferVersion(): number {
     return this.version;
   }
@@ -442,17 +683,45 @@ export class TerrainInfrastructureData {
     if (this.disposed) return;
     const index = infrastructureIndex(world);
     if (index === this.index) return;
+    const origin = landformCoreCenter(world);
+    const samePlace = world.seaLevel === this.seaLevel && origin.x === this.originX && origin.z === this.originZ;
+    const previous = this.index;
     this.index = index;
-    const words = packWorldTerrainInfrastructure(world);
+    const changes = samePlace && previous && this.pack ? infrastructureIndexChanges(previous, index) : null;
+    const ranges = changes ? this.pack!.update(index, changes) : null;
+    if (ranges) {
+      const words = this.pack!.words;
+      for (let i = 0; i < ranges.length; i += 2) {
+        const start = ranges[i]! * 4;
+        const end = ranges[i + 1]! * 4;
+        this.storage.update(words.subarray(start, end), start * 4, (end - start) * 4);
+        this.writes.bytes += (end - start) * 4;
+      }
+      this.writes.updates += 1;
+      return;
+    }
+    this.seaLevel = world.seaLevel;
+    this.originX = origin.x;
+    this.originZ = origin.z;
+    this.pack = new TerrainInfrastructurePack(index, world.seaLevel, origin, true);
+    const words = this.pack.words;
     if (words.byteLength > this.capacityBytes) {
       this.storage.dispose();
       releaseGpuBufferBytes(this.capacityBytes);
       this.capacityBytes = words.byteLength;
       this.storage = new StorageBuffer(this.engine, this.capacityBytes, undefined, "terrain-infrastructure");
       registerGpuBufferBytes(this.capacityBytes);
+      this.version += 1;
     }
     this.storage.update(words);
-    this.version += 1;
+    this.writes.packs += 1;
+    this.writes.bytes += words.byteLength;
+  }
+
+  /** Give back a reference from `acquire`; the last one frees the buffer. */
+  release(): void {
+    this.users -= 1;
+    if (this.users <= 0) this.dispose();
   }
 
   dispose(): void {
@@ -463,35 +732,35 @@ export class TerrainInfrastructureData {
   }
 }
 
+/** Engine -> terrain key ("" for none) -> its shared copy. */
+const sharedData = new WeakMap<WebGPUEngine, Map<string, TerrainInfrastructureData>>();
+
 /**
- * One consumer's `terrainInfrastructureData` binding. It packs the world it
- * is given on its first bind (the consumer's constructor runs before the
- * engine is known to be WebGPU, and in Node tests with no engine at all) and
- * owns that buffer; without a world it binds an empty index. Rebinding
- * compares a buffer and a number, as `TerrainLandformDataBinding` does.
- *
- * Each consumer packs its own copy: a few kilobytes, once, against threading
- * one more source through the renderer.
+ * One consumer's `terrainInfrastructureData` binding. It takes the engine's
+ * shared copy for its world on its first bind (the consumer's constructor
+ * runs before the engine is known to be WebGPU, and in Node tests with no
+ * engine at all); without a world it binds an empty index. Every bind first
+ * brings that copy to the world's current index, so a bake dispatched after
+ * streamed regions changed reads them; rebinding then compares a buffer and
+ * a number, as `TerrainLandformDataBinding` does.
  */
 export class TerrainInfrastructureDataBinding {
   private data: TerrainInfrastructureData | null = null;
+  private dataTerrain = "";
   private boundShader: ComputeShader | null = null;
   private boundBuffer: StorageBuffer | null = null;
   private boundVersion = -1;
 
   constructor(private world: WorldDefinition | null) {}
 
-  /**
-   * The world the stage reads: a spawned airport's new world, or the same
-   * world after streamed regions changed, repacks only if its index changed.
-   */
+  /** The world the stage reads: a spawned airport's new world shares its terrain, so its copy. */
   setWorld(world: WorldDefinition | null): void {
     this.world = world;
-    if (world && this.data) this.data.setWorld(world);
   }
 
   bind(engine: WebGPUEngine, shader: ComputeShader): void {
     const data = this.ensureData(engine);
+    if (this.world) data.setWorld(this.world);
     if (
       shader === this.boundShader
       && data.buffer === this.boundBuffer
@@ -504,7 +773,7 @@ export class TerrainInfrastructureDataBinding {
   }
 
   dispose(): void {
-    this.data?.dispose();
+    this.data?.release();
     this.data = null;
     this.boundShader = null;
     this.boundBuffer = null;
@@ -512,7 +781,15 @@ export class TerrainInfrastructureDataBinding {
   }
 
   private ensureData(engine: WebGPUEngine): TerrainInfrastructureData {
-    this.data ??= new TerrainInfrastructureData(engine, this.world);
+    const terrain = this.world ? infrastructureTerrainKey(this.world) : "";
+    if (this.data && this.dataTerrain !== terrain) {
+      this.data.release();
+      this.data = null;
+    }
+    if (!this.data) {
+      this.data = TerrainInfrastructureData.acquire(engine, this.world);
+      this.dataTerrain = terrain;
+    }
     return this.data;
   }
 }
