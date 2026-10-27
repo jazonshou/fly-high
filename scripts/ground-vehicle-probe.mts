@@ -139,7 +139,7 @@ function buildSite(seed: number | undefined, province: ClimateProvinceName | und
       for (const layer of ROAD_LAYERS) regions.push(network.region(layer, rx + dx, rz + dz));
     }
   }
-  if (process.env.PROBE_NO_ROADS !== "1") installInfrastructureRegions(world, regions.map((region) => roadRegionInfrastructure(world, region)));
+  if (process.env.PROBE_NO_ROADS !== "1") installInfrastructureRegions(world, regions.map((region) => roadRegionInfrastructure(network, region)));
   const seen = new Set<string>();
   const pieces: RoadPiece[] = [];
   for (const region of regions) {
