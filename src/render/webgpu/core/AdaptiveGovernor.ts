@@ -29,7 +29,9 @@
  * render() p95 of 7.75-8.92 ms), so a machine that met 60 fps kept every
  * rung it had ever shed. Off cadence the window is classified as before,
  * except that the interval-minus-CPU proxy and the raw pacing interval no
- * longer share a label (P9).
+ * longer share a label (P9), and a render() p95 over the GPU target sheds
+ * the CPU ladder first: vsync puts the presented p95 on a whole refresh, so
+ * the proxy alone read CPU-bound 60 Hz hosts as GPU-bound.
  *
  * Class P: pure functions over numbers. No Babylon import, Node-testable.
  */
@@ -565,18 +567,20 @@ export function resolveSignals(
     // No timestamp queries, which is all of shipping gameplay: infer the
     // GPU's share from the presentation cadence. A tiny remainder means the
     // CPU is the whole story — the case the deleted ratchet used to answer by
-    // lowering resolution. P9: only a split that neither side explains is
-    // pacing-bound; pacing no longer pre-empts a CPU-dominated window.
+    // lowering resolution.
     if (proxy! < MIN_GPU_PROXY_MS) {
       return { gpuMs: null, synthesised: true, classification: "cpu-bound", metric: null };
     }
-    if (proxy! > cpu! * GPU_BOUND_RATIO) {
-      return { gpuMs: proxy, synthesised: true, classification: "gpu-bound", metric: "interval-proxy" };
-    }
-    if (cpu! > proxy! * GPU_BOUND_RATIO) {
+    // Vsync puts the p95 on a whole refresh, 33.3 ms at 60 Hz once more than
+    // 5% of frames are late, so the proxy is mostly the wait for the next
+    // refresh. Split on it alone, a render() p95 of 14-17.8 ms read as
+    // GPU-bound or pacing-bound and shed resolution and every GPU rung while
+    // the CPU ladder never moved. A render() p95 over the GPU target is a CPU
+    // cost the frame cannot hide, so the CPU ladder goes first.
+    if (cpu! > gpuTargetMs) {
       return { gpuMs: proxy, synthesised: true, classification: "cpu-bound", metric: "interval-proxy" };
     }
-    return { gpuMs: interval, synthesised: true, classification: "pacing-bound", metric: "interval-pacing" };
+    return splitOnProxy(cpu!, proxy!, interval!);
   }
   // Timestamp queries measure submitted GPU work, not the pilot-visible time
   // between presented frames. Browser scheduling, queue back-pressure, and
@@ -604,6 +608,40 @@ export function resolveSignals(
   return interval === null
     ? { gpuMs: measured, synthesised: false, classification: "gpu-bound", metric: "gpu" }
     : { gpuMs: interval, synthesised: true, classification: "pacing-bound", metric: "interval-pacing" };
+}
+
+/**
+ * The split on the interval-minus-CPU proxy alone. P9: only a split that
+ * neither side explains is pacing-bound; pacing no longer pre-empts a
+ * CPU-dominated window.
+ */
+function splitOnProxy(cpu: number, proxy: number, interval: number): ResolvedSignals {
+  if (proxy > cpu * GPU_BOUND_RATIO) {
+    return { gpuMs: proxy, synthesised: true, classification: "gpu-bound", metric: "interval-proxy" };
+  }
+  if (cpu > proxy * GPU_BOUND_RATIO) {
+    return { gpuMs: proxy, synthesised: true, classification: "cpu-bound", metric: "interval-proxy" };
+  }
+  return { gpuMs: interval, synthesised: true, classification: "pacing-bound", metric: "interval-pacing" };
+}
+
+/**
+ * A CPU-bound window once the CPU ladder is spent, without timestamps.
+ * While render() alone explains the miss (a p95 the CPU ladder would not
+ * recover at), nothing on the GPU side can help: null, and the governor
+ * holds. Under that, the proxy decides as before the CPU went first, except
+ * that only a resolution step, whose effect is checked, may follow: GPU
+ * rungs are not, unless steps that worked took the scale to its floor.
+ */
+function gpuSideOfSpentCpuWindow(signals: GovernorSignals, config: GovernorConfig): ResolvedSignals | null {
+  const cpu = signals.cpuP95Ms;
+  const interval = signals.intervalP95Ms;
+  if (signals.gpuP95Ms !== null || cpu === null || interval === null) return null;
+  if (cpu >= config.presentationTargetMs * CPU_RECOVERY_RATIO) return null;
+  const proxy = Math.max(0, interval - cpu);
+  if (proxy < MIN_GPU_PROXY_MS) return null;
+  const split = splitOnProxy(cpu, proxy, interval);
+  return split.classification === "cpu-bound" ? null : split;
 }
 
 /** The timing domain a probe's two windows must share: GPU timestamps, or presented intervals. */
@@ -832,7 +870,7 @@ function onCadenceDecision(
 function offCadenceDecision(
   state: GovernorState,
   signals: GovernorSignals,
-  resolved: ResolvedSignals,
+  judged: ResolvedSignals,
   config: GovernorConfig,
 ): GovernorState {
   const next: GovernorState = {
@@ -840,6 +878,10 @@ function offCadenceDecision(
     calmStreak: Object.freeze([]),
     offCadenceWindows: state.offCadenceWindows + 1,
   };
+  const spentCpuWindow = judged.classification === "cpu-bound" && next.cpuWorkLevel >= CPU_WORK_MAX_LEVEL
+    ? gpuSideOfSpentCpuWindow(signals, config)
+    : null;
+  const resolved = spentCpuWindow ?? judged;
   const domain = probeDomain(resolved.metric);
   const intervalDomain = domain === "interval";
   if (
@@ -877,6 +919,30 @@ function offCadenceDecision(
       }
       return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
     }
+    if (spentCpuWindow !== null && next.resolutionInsensitive) {
+      // render() p95 is over the GPU target and resolution did not help: a
+      // GPU rung would cut what the pilot sees for a cost the main thread
+      // carries. The latch holds while this lasts, so the scale is not
+      // probed again every time it re-arms.
+      return Object.freeze({
+        ...next,
+        insensitiveWindowsRemaining: config.insensitiveRearmWindows,
+        mode: "cpu-work",
+        cpuHotWindows: 0,
+        gpuHotWindows: 0,
+      });
+    }
+    if (
+      pacing
+      && next.resolutionInsensitive
+      && signals.gpuP95Ms === null
+      && next.cpuWorkLevel < CPU_WORK_MAX_LEVEL
+    ) {
+      // A miss neither side explains, which resolution was shown not to fix,
+      // more likely sits on the main thread: the CPU ladder goes before the
+      // GPU one.
+      return shedCpuWork(next, "frame-pacing");
+    }
     if (intervalDomain || gpu > config.gpuTargetMs) {
       // Governor A has no lever (latched, or already at the floor): shed a
       // GPU-cost work lever instead — the R-6 missing actuator.
@@ -899,25 +965,31 @@ function offCadenceDecision(
     return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
   }
 
-  // CPU-bound.
+  // CPU-bound. Once the ladder is spent, a render() p95 that alone explains
+  // the miss holds here: the GPU side cannot help.
   const cpu = signals.cpuP95Ms;
   if (intervalDomain || (cpu !== null && cpu > config.gpuTargetMs)) {
-    const hot = next.cpuHotWindows + 1;
-    if (hot >= HOT_WINDOWS_REQUIRED && next.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
-      const level = next.cpuWorkLevel + 1;
-      return Object.freeze({
-        ...next,
-        cpuWorkLevel: level,
-        lastLever: cpuWorkLeverName(level),
-        cpuHotWindows: 0,
-        gpuHotWindows: 0,
-        mode: "cpu-work",
-        recovery: noteShed(next.recovery, "cpu"),
-      });
-    }
-    return Object.freeze({ ...next, cpuHotWindows: hot, gpuHotWindows: 0, mode: "cpu-work" });
+    return shedCpuWork(next, "cpu-work");
   }
   return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuHotWindows: 0 });
+}
+
+/** One CPU rung per two hot windows, while the ladder has one left. */
+function shedCpuWork(state: GovernorState, mode: GovernorMode): GovernorState {
+  const hot = state.cpuHotWindows + 1;
+  if (hot >= HOT_WINDOWS_REQUIRED && state.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
+    const level = state.cpuWorkLevel + 1;
+    return Object.freeze({
+      ...state,
+      cpuWorkLevel: level,
+      lastLever: cpuWorkLeverName(level),
+      cpuHotWindows: 0,
+      gpuHotWindows: 0,
+      mode,
+      recovery: noteShed(state.recovery, "cpu"),
+    });
+  }
+  return Object.freeze({ ...state, cpuHotWindows: hot, gpuHotWindows: 0, mode });
 }
 
 function openTrial(ladder: RecoveryLadder, state: GovernorState, lever: string | null): RecoveryTrial {

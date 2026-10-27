@@ -210,21 +210,95 @@ describe("the shipping governor on a healthy cadence", () => {
 
 describe("the shipping governor off cadence", () => {
   it("S7 (R5 trace2, P9): a CPU-bound host sheds CPU work and keeps its resolution", () => {
-    // render() p95 alternating 14 and 16 ms with the interval held at 23 ms.
-    // Before G1 the pacing label pre-empted the split, the resolution probe
-    // read 23 -> 7 ms as a 70% gain, and the scale walked to its floor while
-    // the CPU ladder never moved.
-    const states = trace(createGovernorState(config), 14, (window) => ({
-      gpuP95Ms: null,
-      cpuP95Ms: window % 2 === 1 ? 14 : 16,
-      intervalP95Ms: 23,
-      intervalMeanMs: 20,
-      lateFraction: 0.4,
-    }));
+    // render() p95 alternating 14 and 16 ms, 48 of 120 frames a refresh
+    // late: the p95 is 33.3 ms, as vsync makes it. Before G1 the pacing
+    // label pre-empted the split, the resolution probe read 23 -> 7 ms as a
+    // 70% gain, and the scale walked to its floor while the CPU ladder never
+    // moved. G1 split on the proxy alone, which at 33.3 ms read 14 ms as
+    // GPU-bound and 16 ms as pacing-bound: the scale pumped, latched, and
+    // every GPU rung went while the CPU ladder stayed at 0.
+    const states = trace(createGovernorState(config), 14, (window) => frames(window % 2 === 1 ? 14 : 16, 0.4));
+    expect(states[0]!.mode).toBe("cpu-work");
     expect(firstWindow(states, (state) => state.cpuWorkLevel > 0)).toBe(2);
     expect(states[13]!.cpuWorkLevel).toBe(CPU_WORK_MAX_LEVEL);
     expect(states.every((state) => state.renderScale === config.scaleCeiling)).toBe(true);
+    expect(states.every((state) => state.gpuWorkLevel === 0)).toBe(true);
     expect(states.some((state) => state.resolutionInsensitive)).toBe(false);
+  });
+
+  it("S7b: a 60 Hz host whose render() alone misses the cadence never sheds resolution or GPU work", () => {
+    // Every frame a refresh late: p95 and mean 33.3 ms. Split on the proxy
+    // alone, 15.5-17.8 ms read as pacing-bound and 14 ms as GPU-bound.
+    for (const cpu of [15.5, 16, 17, 17.8, 20]) {
+      const states = trace(createGovernorState(config), 40, () => frames(cpu, 1));
+      const label = `render() p95 ${cpu} ms`;
+      expect(firstWindow(states, (state) => state.cpuWorkLevel === CPU_WORK_MAX_LEVEL), label).toBe(14);
+      expect(states.every((state) => state.gpuWorkLevel === 0), label).toBe(true);
+      expect(states.every((state) => state.renderScale === config.scaleCeiling), label).toBe(true);
+      expect(states[39]!.mode, label).toBe("cpu-work");
+    }
+  });
+
+  it("S7b: render() over the GPU target sheds the CPU ladder before resolution or GPU work", () => {
+    // 14 ms with 3 ms of other main-thread work misses 16.67 ms; the CPU
+    // rungs are what can bring it back. With the ladder spent and render()
+    // under 15 ms, a resolution step is tried, and undone when it buys
+    // nothing; no GPU rung follows.
+    const states = trace(createGovernorState(config), 40, () => frames(14, 1));
+    expect(firstWindow(states, (state) => state.cpuWorkLevel === CPU_WORK_MAX_LEVEL)).toBe(14);
+    expect(states.slice(0, 14).every((state) => state.renderScale === config.scaleCeiling)).toBe(true);
+    expect(states[14]!.renderScale).toBeLessThan(config.scaleCeiling);
+    expect(firstWindow(states, (state) => state.resolutionInsensitive)).toBe(17);
+    // Latched while it lasts: the scale is not probed again when the latch would re-arm.
+    expect(states.slice(16).every((state) => state.resolutionInsensitive)).toBe(true);
+    expect(states.slice(16).every((state) => state.renderScale === config.scaleCeiling)).toBe(true);
+    expect(states.every((state) => state.gpuWorkLevel === 0)).toBe(true);
+  });
+
+  it("S7b: a host with main-thread work outside render() sheds CPU work and no GPU work", () => {
+    // Each CPU rung takes 3% off render(), and 3 ms of other main-thread
+    // work makes a frame a refresh late whenever the two pass 16.37 ms.
+    // Split on the proxy alone, 15.5 ms took the scale and then every GPU
+    // rung; 17-18 ms end with the CPU ladder spent, render() at 13.8-14.4
+    // ms and every frame still late.
+    for (const cpu of [15.5, 16, 17, 17.5, 18, 20]) {
+      const states = trace(createGovernorState(config), 60, (_, state) => {
+        const render = cpu * 0.97 ** state.cpuWorkLevel;
+        return frames(render, render + 3 > VSYNC_60 - 0.3 ? 1 : 0);
+      });
+      const label = `render() p95 ${cpu} ms at level 0`;
+      expect(states.every((state) => state.gpuWorkLevel === 0), label).toBe(true);
+      expect(states.some((state) => state.cpuWorkLevel >= 5), label).toBe(true);
+      expect(states[59]!.renderScale, label).toBe(config.scaleCeiling);
+    }
+  });
+
+  it("S7b: once the CPU ladder is spent, resolution steps that work may take the GPU ladder on", () => {
+    // render() 14 ms on a GPU that is short too: each step cuts the late
+    // share, so the GPU is part of the miss.
+    const lateAt = (scale: number) => (scale > 0.85 ? 1 : scale > 0.8 ? 0.6 : scale > 0.755 ? 0.3 : 0.2);
+    const states = trace(createGovernorState(config), 30, (_, state) => frames(14, lateAt(state.renderScale)));
+    expect(firstWindow(states, (state) => state.cpuWorkLevel === CPU_WORK_MAX_LEVEL)).toBe(14);
+    expect(firstWindow(states, (state) => state.renderScale === config.scaleFloor)).toBeGreaterThan(14);
+    expect(states.some((state) => state.resolutionInsensitive)).toBe(false);
+    expect(states[29]!.gpuWorkLevel).toBeGreaterThan(0);
+  });
+
+  it("S7c: a pacing-bound miss that resolution did not fix sheds CPU work before GPU work", () => {
+    // 120 Hz paced to 60: a missed slot is 25 ms, and render() p95 12.5 ms
+    // leaves a proxy that neither side explains.
+    const paced = governorConfigForProfile(medium, cadence(60, 2, 120, true));
+    const states = trace(createGovernorState(paced), 20, () => windowOf(intervals(VSYNC_60, 36, 25), 12.5, paced), {
+      config: paced,
+    });
+    expect(resolveSignals(windowOf(intervals(VSYNC_60, 36, 25), 12.5, paced), paced.gpuTargetMs, paced.presentationTargetMs)
+      .classification).toBe("pacing-bound");
+    // Two steps that buy nothing, undone and latched at window 4; then a CPU
+    // rung where E3 sheds a GPU one.
+    expect(firstWindow(states, (state) => state.resolutionInsensitive)).toBe(4);
+    expect(firstWindow(states, (state) => state.cpuWorkLevel > 0)).toBe(5);
+    expect(states[19]!.cpuWorkLevel).toBe(CPU_WORK_MAX_LEVEL);
+    expect(states.every((state) => state.gpuWorkLevel === 0)).toBe(true);
   });
 
   /** R5 trace B: streaming hitches, one window in ten frames a refresh late, behind a binding pixel cap. */
