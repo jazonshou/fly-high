@@ -142,6 +142,8 @@ describe("car in the sea", () => {
       squared += error * error;
       worst = Math.max(worst, Math.abs(error));
       count += 1;
+      // All four tyres in the sea.
+      expect(sim.visualState().wadingSea).toBe(1);
       shallowest = Math.min(shallowest, sim.visualState().wadingDepth);
       deepest = Math.max(deepest, sim.visualState().wadingDepth);
     });

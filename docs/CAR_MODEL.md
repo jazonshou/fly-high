@@ -476,7 +476,9 @@ still sea level and one bin lookup for the lakes and rivers, without
 reading the bed itself, and only near water is the full sample taken. On the show drive (see Driving the world) that took the water from
 about 11.4 us a step to 1.1, and the drive ends on the same bits. Whether
 a tyre is under the surface is decided every step from its contact now. The wading depth is
-the highest surface over the lowest contact. A tyre under the surface
+the highest surface over the lowest contact, and the payload's `wadingSea`
+the share of the tyres in water that are in the sea (the sea's level
+carries its waves, so the level cannot say which water it is). A tyre under the surface
 reports no material and full wetness for the effects, and its bed is wet:
 loam turns to mud, snow keeps its depth and hard ground keeps 80% of its grip.
 

@@ -150,6 +150,8 @@ describe("car in water", () => {
       deepest = Math.max(deepest, state.wadingDepth);
       if (state.wadingDepth > 0.5) {
         submerged += 1;
+        // A river, not the sea.
+        expect(state.wadingSea).toBe(0);
         expect(state.wheelSurface).toEqual([-1, -1, -1, -1]);
         expect(state.wheelWetness).toEqual([1, 1, 1, 1]);
       }
@@ -260,6 +262,7 @@ describe("car in water", () => {
     expect(bedReads).toBeGreaterThan(0);
     expect(lean.state.position.z).toBeGreaterThan(104);
     expect(lean.visualState().wadingDepth).toBeGreaterThan(0.1);
+    expect(lean.visualState().wadingSea).toBe(1);
     // Bit for bit the car that read every bed.
     for (const key of ["x", "y", "z"] as const) {
       expect(lean.state.position[key]).toBe(full.state.position[key]);

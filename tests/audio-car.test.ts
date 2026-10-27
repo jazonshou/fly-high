@@ -37,6 +37,7 @@ const CAR: CarVisualState = {
   tyrePressure: "road",
   tyrePressureBar: 2.4,
   wadingDepth: 0,
+  wadingSea: 0,
   settling: false,
   wheelSteer: [0, 0, 0, 0],
   wheelSpin: [0, 0, 0, 0],

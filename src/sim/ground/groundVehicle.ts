@@ -500,6 +500,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
 
   rolled = false;
   private wadingDepthValue = DOUBLE_ZERO;
+  private wadingSeaValue = DOUBLE_ZERO;
   private readonly waterSample = createWaterSurfaceSample();
   /**
    * The water at each wheel, sampled one wheel a step in turn (`sampleWater`):
@@ -1212,8 +1213,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private sampleWater(): void {
     const env = this.environment;
     this.wadingDepthValue = 0;
+    this.wadingSeaValue = 0;
     this.inWater = false;
     let sea = false;
+    let wetWheels = 0;
+    let seaWheels = 0;
     let surface = -Infinity;
     let lowest = Infinity;
     const turn = this.waterTurn;
@@ -1262,12 +1266,17 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
         this.waterHeight[w] = this.waterHeight[w]! + this.waterVelocityY[w]! * this.dt;
       }
       if (this.waterAt[w] !== 1) continue;
-      if (this.waterSea[w] === 1) sea = true;
+      wetWheels += 1;
+      if (this.waterSea[w] === 1) {
+        sea = true;
+        seaWheels += 1;
+      }
       this.inWater = true;
       surface = Math.max(surface, this.waterHeight[w]!);
       if (this.waterHeight[w]! > at.y) this.wheelSubmerged[w] = 1;
     }
     this.waterDensity = sea ? SEA_WATER_DENSITY : FRESH_WATER_DENSITY;
+    if (wetWheels > 0) this.wadingSeaValue = seaWheels / wetWheels;
     // The cabin floods towards the water's height up the body, and drains faster than it fills.
     let immersed = 0;
     if (this.inWater) {
@@ -2157,6 +2166,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       tyrePressure: this.controls.tyrePressure,
       tyrePressureBar: this.tyrePressureBar,
       wadingDepth: this.wadingDepthValue,
+      wadingSea: this.wadingSeaValue,
       settling: this.settling,
       wheelSteer: [this.steering.left, this.steering.right, 0, 0],
       wheelSpin: Array.from(this.wheelSpin),

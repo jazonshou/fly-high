@@ -89,6 +89,7 @@ function car(overrides: Partial<CarVisualState> = {}): CarVisualState {
     tyrePressure: "sand",
     tyrePressureBar: 1.2,
     wadingDepth: 0,
+    wadingSea: 0,
     settling: false,
     wheelSteer: [0, 0, 0, 0],
     wheelSpin: [0, 0, 0, 0],
