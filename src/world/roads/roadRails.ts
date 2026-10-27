@@ -64,6 +64,7 @@ interface Station {
   readonly dirZ: number;
   readonly centre: number;
   readonly cross: number;
+  readonly crossfall: number;
 }
 
 export function roadRegionRails(network: RoadNetwork, region: RoadRegion): readonly InfrastructureRail[] {
@@ -138,7 +139,7 @@ function runsAlong(world: WorldDefinition, chain: readonly RoadPiece[], out: Rai
       // `side` 1 is (dirZ, -dirX) of a -> b, the stage's positive `across`.
       const outX = side * station.dirZ;
       const outZ = -side * station.dirX;
-      const edge = station.centre + roadCrossOffset(side * half, station.cross, spec.crossfall);
+      const edge = station.centre + roadCrossOffset(side * half, station.cross, station.crossfall);
       let lowest = Number.POSITIVE_INFINITY;
       for (const beyond of RAIL_PROBES_BEYOND) {
         lowest = Math.min(lowest, roadGroundHeight(world, station.x + outX * (half + beyond), station.z + outZ * (half + beyond)));
@@ -289,6 +290,7 @@ function chainStations(chain: readonly RoadPiece[]): Station[] {
         dirZ: sz,
         centre: piece.ha + (piece.hb - piece.ha) * t,
         cross: piece.ca + (piece.cb - piece.ca) * t,
+        crossfall: piece.ka + (piece.kb - piece.ka) * t,
       });
     }
     along += length;

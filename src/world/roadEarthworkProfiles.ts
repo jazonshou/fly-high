@@ -17,7 +17,10 @@ import type { InfrastructureProfileSample, InfrastructureSegment } from "./infra
  * twin (f32) stays within a millimetre of this one.
  *
  * Batters run 1:2 in fill and 1:1.5 in cut, from the formation's edge until
- * they meet the ground; a cutting has a ditch at its foot. The segment's
+ * they meet the ground; a cutting has a ditch at its foot, a V whose two
+ * sides run at its depth over its width (about 1:3, the rural roads' slope
+ * a tyre can cross at an angle), the cut face starting where its far side
+ * is back at the formation's level. The segment's
  * `reach` is sized by the layout to where the batters meet the ground, so
  * the fade over its last 30% only matters where they could not.
  */
@@ -52,9 +55,11 @@ export function roadBatterTarget(
   ditchWidth: number,
 ): number {
   const fill = edge - beyond / ROAD_FILL_BATTER_RUN;
-  const cut = ditchWidth > 0 && beyond <= ditchWidth
-    ? edge - (ditchDepth * beyond) / ditchWidth
-    : edge - ditchDepth + (beyond - ditchWidth) / ROAD_CUT_BATTER_RUN;
+  let cut: number;
+  if (!(ditchWidth > 0)) cut = edge + beyond / ROAD_CUT_BATTER_RUN;
+  else if (beyond <= ditchWidth) cut = edge - (ditchDepth * beyond) / ditchWidth;
+  else if (beyond <= 2 * ditchWidth) cut = edge - (ditchDepth * (2 * ditchWidth - beyond)) / ditchWidth;
+  else cut = edge + (beyond - 2 * ditchWidth) / ROAD_CUT_BATTER_RUN;
   return Math.min(Math.max(ground, fill), cut);
 }
 
@@ -69,8 +74,12 @@ export function roadBatterTarget(
  *            right of a->b (superelevation; 0 on a crowned straight).
  * params[4]: cross-fall each side of the crown, rise per metre.
  * params[5], params[6]: the ditch at a cutting's foot: depth and width
- *            (formation edge to the ditch's bottom), metres; depth/width at
- *            most 1/2, so the cut never undercuts the fill.
+ *            (formation edge to the ditch's bottom, and the bottom to its far
+ *            side), metres; depth/width at most 1/2, so the cut never
+ *            undercuts the fill.
+ * params[7]: the cross-fall's change from a to b (linear between, as the
+ *            cross slope), rise per metre; 0 holds params[4] throughout. A
+ *            road eases its crown out where it crosses another.
  */
 export function roadCarriagewayHeight(
   along: number,
@@ -92,7 +101,8 @@ export function roadCarriagewayHeight(
   const hb = seaLevel + (p[1] ?? 0);
   const ca = p[2] ?? 0;
   const cb = p[3] ?? 0;
-  const crossfall = p[4] ?? 0;
+  const ka = p[4] ?? 0;
+  const dk = p[7] ?? 0;
   const grade = length > 0 ? (hb - ha) / length : 0;
   const half = segment.halfWidth;
   // Past b, the round cap: distances are radial from b. Before a (the join
@@ -100,8 +110,8 @@ export function roadCarriagewayHeight(
   const past = Math.max(0, along - length);
   const radial = Math.hypot(past, across);
   if (radial <= half) {
-    const c = length > 0 ? ca + (cb - ca) * clamp(along / length, 0, 1) : ca;
-    out.target = ha + grade * along + roadCrossOffset(across, c, crossfall);
+    const t = length > 0 ? clamp(along / length, 0, 1) : 0;
+    out.target = ha + grade * along + roadCrossOffset(across, ca + (cb - ca) * t, ka + dk * t);
     out.weight = enter;
     return;
   }
@@ -109,8 +119,8 @@ export function roadCarriagewayHeight(
   const scale = half / radial;
   const edgeAlong = Math.min(along, length) + past * scale;
   const edgeAcross = across * scale;
-  const c = length > 0 ? ca + (cb - ca) * clamp(edgeAlong / length, 0, 1) : ca;
-  const edge = ha + grade * edgeAlong + roadCrossOffset(edgeAcross, c, crossfall);
+  const t = length > 0 ? clamp(edgeAlong / length, 0, 1) : 0;
+  const edge = ha + grade * edgeAlong + roadCrossOffset(edgeAcross, ca + (cb - ca) * t, ka + dk * t);
   const beyond = radial - half;
   out.target = roadBatterTarget(edge, beyond, ground, p[5] ?? 0, p[6] ?? 0);
   out.weight = enter * (1 - smoothstep(0.7 * segment.reach, segment.reach, beyond));
@@ -132,10 +142,14 @@ fn terrainInfraRoadCrossOffset(across: f32, c: f32, k: f32) -> f32 {
 fn terrainInfraRoadBatter(edge: f32, beyond: f32, ground: f32, ditchDepth: f32, ditchWidth: f32) -> f32 {
   let fill = edge - beyond / K_ROAD_FILL_RUN;
   var cut: f32;
-  if (ditchWidth > 0.0 && beyond <= ditchWidth) {
+  if (!(ditchWidth > 0.0)) {
+    cut = edge + beyond / K_ROAD_CUT_RUN;
+  } else if (beyond <= ditchWidth) {
     cut = edge - (ditchDepth * beyond) / ditchWidth;
+  } else if (beyond <= 2.0 * ditchWidth) {
+    cut = edge - (ditchDepth * (2.0 * ditchWidth - beyond)) / ditchWidth;
   } else {
-    cut = edge - ditchDepth + (beyond - ditchWidth) / K_ROAD_CUT_RUN;
+    cut = edge + (beyond - 2.0 * ditchWidth) / K_ROAD_CUT_RUN;
   }
   return min(max(ground, fill), cut);
 }
@@ -158,19 +172,20 @@ fn terrainInfra_carriageway(
   let hb = seaLevel + seg.p0.y;
   let ca = seg.p0.z;
   let cb = seg.p0.w;
-  let crossfall = seg.p1.x;
+  let ka = seg.p1.x;
+  let dk = seg.p1.w;
   let grade = select(0.0, (hb - ha) / segmentLength, segmentLength > 0.0);
   let past = max(0.0, along - segmentLength);
   let radial = length(vec2f(past, across));
   if (radial <= halfWidth) {
-    let c = select(ca, ca + (cb - ca) * kClamp(along / segmentLength, 0.0, 1.0), segmentLength > 0.0);
-    return vec2f(ha + grade * along + terrainInfraRoadCrossOffset(across, c, crossfall), enter);
+    let t = select(0.0, kClamp(along / segmentLength, 0.0, 1.0), segmentLength > 0.0);
+    return vec2f(ha + grade * along + terrainInfraRoadCrossOffset(across, ca + (cb - ca) * t, ka + dk * t), enter);
   }
   let scale = halfWidth / radial;
   let edgeAlong = min(along, segmentLength) + past * scale;
   let edgeAcross = across * scale;
-  let c = select(ca, ca + (cb - ca) * kClamp(edgeAlong / segmentLength, 0.0, 1.0), segmentLength > 0.0);
-  let edge = ha + grade * edgeAlong + terrainInfraRoadCrossOffset(edgeAcross, c, crossfall);
+  let t = select(0.0, kClamp(edgeAlong / segmentLength, 0.0, 1.0), segmentLength > 0.0);
+  let edge = ha + grade * edgeAlong + terrainInfraRoadCrossOffset(edgeAcross, ca + (cb - ca) * t, ka + dk * t);
   let beyond = radial - halfWidth;
   return vec2f(
     terrainInfraRoadBatter(edge, beyond, ground, seg.p1.y, seg.p1.z),
@@ -181,14 +196,17 @@ fn terrainInfra_carriageway(
 
 /**
  * `junctionPad`: a disc where roads meet or one ends, composed after every
- * road. Level within an inner radius; out to its edge (`halfWidth`) it may
- * follow what the roads graded under it (their crowns) by a growing
- * allowance, so a road's cross-section runs onto the pad without a kerb;
- * past the edge, the roads' batters (no ditch) down or up to the ground.
+ * road. A plane within an inner radius (level, or tilted with the road the
+ * others are graded to); out to its edge (`halfWidth`) it may follow what
+ * the roads graded under it (their crowns) by a growing allowance, so a
+ * road's cross-section runs onto the pad without a kerb; past the edge, the
+ * roads' batters (no ditch) down or up to the ground.
  *
- * params[0]: pad level, metres above sea level.
+ * params[0]: the plane's height at a, metres above sea level.
  * params[1]: level-core radius, metres (at most `halfWidth`).
  * params[2]: the allowance's growth from the core to the edge, rise per metre.
+ * params[3], params[4]: the plane's rise per metre along a->b and to its
+ *            right (a disc's frame: along +x, right -z).
  */
 export function roadJunctionPadHeight(
   along: number,
@@ -199,7 +217,7 @@ export function roadJunctionPadHeight(
   seaLevel: number,
   out: InfrastructureProfileSample,
 ): void {
-  const level = seaLevel + (segment.params[0] ?? 0);
+  const level = seaLevel + (segment.params[0] ?? 0) + (segment.params[3] ?? 0) * along + (segment.params[4] ?? 0) * across;
   const halfWidth = segment.halfWidth;
   const core = Math.min(halfWidth, Math.max(0, segment.params[1] ?? 0));
   const apron = Math.max(0, segment.params[2] ?? 0);
@@ -223,7 +241,7 @@ fn terrainInfra_junctionPad(
   let segmentLength = seg.shape.x;
   let halfWidth = seg.shape.y;
   let reach = seg.shape.z;
-  let level = seaLevel + seg.p0.x;
+  let level = seaLevel + seg.p0.x + seg.p0.w * along + seg.p1.x * across;
   let core = min(halfWidth, max(0.0, seg.p0.y));
   let apron = max(0.0, seg.p0.z);
   let radial = length(vec2f(max(0.0, max(-along, along - segmentLength)), across));

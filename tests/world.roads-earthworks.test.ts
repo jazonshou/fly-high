@@ -20,14 +20,20 @@ import {
   ROAD_FILL_BATTER_RUN,
   ROAD_JOIN_BLEND_METERS,
 } from "@/src/world/roadEarthworkProfiles";
-import { ROAD_CLASS, roadClass, roadFormationHalfWidth } from "@/src/world/roads/roadClasses";
+import { ROAD_CLASS, ROAD_PRIORITY, roadClass, roadFormationHalfWidth } from "@/src/world/roads/roadClasses";
 import {
   roadPieceKey,
   roadRegionInfrastructure,
   roadRegionKey,
   ROAD_PIECE_KEY_STRIDE,
 } from "@/src/world/roads/roadInfrastructure";
-import { RoadNetwork, roadRegionOf, ROAD_LAYERS } from "@/src/world/roads/roadNetwork";
+import {
+  RoadNetwork,
+  roadRegionOf,
+  ROAD_LAYERS,
+  ROAD_PAD_APRON_METERS,
+  type RoadPiece,
+} from "@/src/world/roads/roadNetwork";
 import { airportRoadHead } from "@/src/world/roads/roadNodes";
 import { roadGroundHeight } from "@/src/world/roads/roadTerrain";
 import { createWorld } from "@/src/world/world";
@@ -71,11 +77,14 @@ describe("the cross-section", () => {
     const edge = 100;
     // Fill: far below, the batter itself; the ground once the batter has met it.
     expect(roadBatterTarget(edge, 4, 50, 0.5, 1.5)).toBeCloseTo(edge - 4 / ROAD_FILL_BATTER_RUN, 12);
-    // Cut: the ditch's bottom at its width, then the back slope.
+    // Cut: the ditch's bottom at its width, its far side back at the formation's level at twice it
+    // (a 1:3 V either side), then the back slope.
     expect(roadBatterTarget(edge, 1.5, 150, 0.5, 1.5)).toBeCloseTo(edge - 0.5, 12);
-    expect(roadBatterTarget(edge, 4.5, 150, 0.5, 1.5)).toBeCloseTo(edge - 0.5 + 3 / ROAD_CUT_BATTER_RUN, 12);
-    // A ditch digs into level ground beside the road, and no fill rises over it.
+    expect(roadBatterTarget(edge, 3, 150, 0.5, 1.5)).toBeCloseTo(edge, 12);
+    expect(roadBatterTarget(edge, 4.5, 150, 0.5, 1.5)).toBeCloseTo(edge + 1.5 / ROAD_CUT_BATTER_RUN, 12);
+    // A ditch digs into level ground beside the road, the same both sides, and no fill rises over it.
     expect(roadBatterTarget(edge, 0.75, edge, 0.5, 1.5)).toBeCloseTo(edge - 0.25, 12);
+    expect(roadBatterTarget(edge, 2.25, edge, 0.5, 1.5)).toBeCloseTo(edge - 0.25, 12);
     expect(roadBatterTarget(edge, 3, edge - 0.6, 0.5, 1.5)).toBe(edge - 0.6);
     // Continuous in the ground and the distance out.
     for (let beyond = 0; beyond <= 20; beyond += 0.37) {
@@ -84,6 +93,30 @@ describe("the cross-section", () => {
         const target = roadBatterTarget(edge, beyond, ground, 0.5, 1.5);
         expect(Math.abs(target - last)).toBeLessThanOrEqual(0.0100001);
         last = target;
+      }
+    }
+  });
+});
+
+describe("a piece easing its crown out", () => {
+  it("runs its cross-fall linearly from a to b, and holds b's past it", () => {
+    const spec = roadClass(ROAD_CLASS.gravel);
+    const piece: InfrastructureSegment = {
+      profile: INFRASTRUCTURE_PROFILE.carriageway,
+      mode: "set",
+      priority: spec.priority,
+      ax: 0, az: 0, bx: 20, bz: 0,
+      halfWidth: roadFormationHalfWidth(spec),
+      reach: 10,
+      // Crown 4% at a, eased to 0 at b; level, no superelevation.
+      params: [10, 10, 0, 0, 0.04, spec.ditchDepth, spec.ditchWidth, -0.04],
+      key: 1,
+    };
+    const out: InfrastructureProfileSample = { target: 0, weight: 0 };
+    for (const [along, crossfall] of [[0, 0.04], [5, 0.03], [10, 0.02], [20, 0], [21, 0]] as const) {
+      for (const across of [-3, 3]) {
+        roadCarriagewayHeight(along, across, 20, piece, 0, 0, out);
+        expect(out.target).toBeCloseTo(10 + roadCrossOffset(across, 0, crossfall), 12);
       }
     }
   });
@@ -209,6 +242,18 @@ describe("a junction pad", () => {
     roadJunctionPadHeight(-15, 0, 0, pad, sea, sea, out);
     expect(out.target).toBeCloseTo(sea + 30 - 0.24 - 4 / ROAD_FILL_BATTER_RUN, 9);
   });
+
+  it("tilts its level, apron and batters with the plane it is given", () => {
+    const tilted: InfrastructureSegment = { ...pad, params: [30, 8, 0.08, 0.03, -0.01] };
+    const plane = (along: number, across: number) => sea + 30 + 0.03 * along - 0.01 * across;
+    roadJunctionPadHeight(5, -4, 0, tilted, sea + 31, sea, out);
+    expect(out.target).toBeCloseTo(plane(5, -4), 9);
+    // 2 m into the apron over high ground: 0.16 m over the plane there.
+    roadJunctionPadHeight(0, 10, 0, tilted, sea + 40, sea, out);
+    expect(out.target).toBeCloseTo(plane(0, 10) + 0.16, 9);
+    roadJunctionPadHeight(-15, 0, 0, tilted, sea, sea, out);
+    expect(out.target).toBeCloseTo(plane(-15, 0) - 0.24 - 4 / ROAD_FILL_BATTER_RUN, 9);
+  });
 });
 
 describe("a real network in the stage", () => {
@@ -219,11 +264,12 @@ describe("a real network in the stage", () => {
   const regions = ROAD_LAYERS.map((layer) => ({ layer, region: network.region(layer, rx, rz) }));
   const infrastructure = regions.map(({ region }) => roadRegionInfrastructure(network, region));
 
-  it("lays every piece and pad out once, keyed, with reaches sized to the ground", () => {
+  it("lays every piece, patch and pad out once, keyed, with reaches sized to the ground", () => {
     expect(infrastructure.map((region) => region.key)).toEqual(ROAD_LAYERS.map((layer) => roadRegionKey(layer, rx, rz)));
     const segments = infrastructure.flatMap((region) => region.segments);
     const pieces = regions.flatMap(({ region }) => region.pieces);
-    expect(segments.length).toBe(pieces.length + regions.reduce((sum, { region }) => sum + region.pads.length, 0));
+    const others = regions.reduce((sum, { region }) => sum + region.pads.length + region.patches.length, 0);
+    expect(segments.length).toBe(pieces.length + others);
     const keys = new Set<string>();
     for (const segment of segments) {
       const unique = `${segment.priority}:${segment.key}`;
@@ -231,7 +277,11 @@ describe("a real network in the stage", () => {
       keys.add(unique);
     }
     expect(pieces.map(roadPieceKey).every(Number.isSafeInteger)).toBe(true);
-    const reaches = segments.map((segment) => segment.reach);
+    // A crossing patch's batters only run a shoulder into the ditch beside it.
+    const patches = segments.filter((segment) => segment.priority === ROAD_PRIORITY.crossing);
+    expect(patches.length).toBe(regions.reduce((sum, { region }) => sum + region.patches.length, 0));
+    expect(patches.every((segment) => segment.reach === 2 && segment.mode === "set" && segment.surface === undefined)).toBe(true);
+    const reaches = segments.filter((segment) => segment.priority !== ROAD_PRIORITY.crossing).map((segment) => segment.reach);
     expect(Math.min(...reaches)).toBeGreaterThanOrEqual(3);
     expect(Math.max(...reaches)).toBeLessThanOrEqual(34);
     // Most of a rural network sits on easy ground: far less than the class's reach.
@@ -275,6 +325,88 @@ describe("a real network in the stage", () => {
       }
       expect(count).toBeGreaterThan(50);
       expect(worst).toBeLessThan(1e-9);
+    } finally {
+      clearInfrastructureRegions();
+    }
+  });
+
+  /** The largest rise between points 0.25 m apart across x and z, over a 0.5 m grid of the points `on` keeps round (x, z). */
+  function steepestRise(x: number, z: number, radius: number, on: (px: number, pz: number) => boolean): { rise: number; points: number } {
+    const index = infrastructureIndex(world);
+    const height = (px: number, pz: number) => applyInfrastructure(index, sea, roadGroundHeight(world, px, pz), px, pz);
+    let rise = 0;
+    let points = 0;
+    for (let ox = -radius; ox <= radius; ox += 0.5) {
+      for (let oz = -radius; oz <= radius; oz += 0.5) {
+        const px = x + ox;
+        const pz = z + oz;
+        if (ox * ox + oz * oz > radius * radius || !on(px, pz)) continue;
+        const h = height(px, pz);
+        rise = Math.max(rise, Math.abs(height(px + 0.25, pz) - h), Math.abs(height(px, pz + 0.25) - h));
+        points += 1;
+      }
+    }
+    return { rise, points };
+  }
+
+  /** Is (x, z) on the formation of one of `pieces`, 0.3 m in from its edge? */
+  function onFormation(pieces: readonly RoadPiece[], x: number, z: number): boolean {
+    return pieces.some((piece) => {
+      const dx = piece.bx - piece.ax;
+      const dz = piece.bz - piece.az;
+      const t = Math.max(0, Math.min(1, ((x - piece.ax) * dx + (z - piece.az) * dz) / (dx * dx + dz * dz)));
+      const distance = Math.hypot(x - piece.ax - dx * t, z - piece.az - dz * t);
+      return distance <= roadFormationHalfWidth(roadClass(piece.classId)) - 0.3;
+    });
+  }
+
+  it("grades a crossing to one level across both formations, its ditch laid over under the lower road", () => {
+    clearInfrastructureRegions();
+    installInfrastructureRegions(world, infrastructure);
+    try {
+      const pieces = regions.flatMap(({ region }) => region.pieces);
+      const patches = regions.flatMap(({ region }) => region.patches);
+      expect(patches.length).toBeGreaterThan(0);
+      // One probe per crossing: its first patch piece on each side starts at the outranking formation.
+      const starts = patches.filter((patch) => patch.index % 16 === 0);
+      for (const start of starts) {
+        const near = pieces.filter((piece) => Math.min(
+          Math.hypot(piece.ax - start.ax, piece.az - start.az),
+          Math.hypot(piece.bx - start.ax, piece.bz - start.az),
+          Math.hypot(0.5 * (piece.ax + piece.bx) - start.ax, 0.5 * (piece.az + piece.bz) - start.az),
+        ) < 60);
+        const { rise, points } = steepestRise(start.ax, start.az, 18, (px, pz) => onFormation(near, px, pz));
+        expect(points).toBeGreaterThan(200);
+        // A tyre rolls over it: no kerb, no ditch's wall (a 1:3 ditch side is 8 cm in 25 cm).
+        expect(rise, `crossing patch at (${start.ax.toFixed(1)}, ${start.az.toFixed(1)})`).toBeLessThan(0.1);
+      }
+    } finally {
+      clearInfrastructureRegions();
+    }
+  });
+
+  it("lays each pad as a plane the roads meeting it run onto without a kerb", () => {
+    clearInfrastructureRegions();
+    installInfrastructureRegions(world, infrastructure);
+    try {
+      const index = infrastructureIndex(world);
+      const pieces = regions.flatMap(({ region }) => region.pieces);
+      const pads = regions.flatMap(({ region }) => region.pads);
+      expect(pads.length).toBeGreaterThan(3);
+      for (const pad of pads) {
+        const reach = pad.radius + ROAD_PAD_APRON_METERS + 4;
+        const near = pieces.filter((piece) => Math.min(
+          Math.hypot(piece.ax - pad.x, piece.az - pad.z),
+          Math.hypot(piece.bx - pad.x, piece.bz - pad.z),
+        ) < reach + 45);
+        const { rise } = steepestRise(pad.x, pad.z, reach, (px, pz) => onFormation(near, px, pz));
+        expect(rise, `pad at node ${pad.nodeId}`).toBeLessThan(0.1);
+        // Its core is its plane (the marina's car park, composed after, aside).
+        const coreX = pad.x + 0.5 * pad.radius;
+        const plane = pad.height + pad.gradientX * (coreX - pad.x);
+        const h = applyInfrastructure(index, sea, roadGroundHeight(world, coreX, pad.z), coreX, pad.z);
+        if (Math.abs(h - plane) > 1e-6) expect(pad.gradientX === 0 && pad.gradientZ === 0, `pad at node ${pad.nodeId}`).toBe(true);
+      }
     } finally {
       clearInfrastructureRegions();
     }

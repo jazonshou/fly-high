@@ -1,4 +1,5 @@
 import { infrastructureTerrainKey } from "../infrastructure";
+import { ROAD_JOIN_BLEND_METERS, roadCrossOffset } from "../roadEarthworkProfiles";
 import type { WorldDefinition } from "../types";
 import {
   ROAD_CLASS,
@@ -17,6 +18,7 @@ import {
   simplifyRoadPolyline,
   type RoadPieceTolerance,
   type RoadPin,
+  type RoadSamples,
 } from "./roadAlignment";
 import {
   RoadNodeCache,
@@ -47,8 +49,24 @@ import { RoadGround, roadGroundAt, roadGroundHeight } from "./roadTerrain";
  *
  * CROSSINGS. Where two roads cross between nodes, the one that outranks the
  * other (higher class; within a class, higher edge id) keeps its profile and
- * the other is pinned to its height there. The stage lays the lower one
- * first, so the higher one's cross-section runs through unbroken.
+ * the other is graded to it: pinned to the higher one's surface wherever its
+ * centreline is on that formation (and a profile step beyond), its crown
+ * eased out and its cross slope turned to the plane of the higher one's
+ * formation on that side, so the two meet at one level across both
+ * formations. The stage lays the lower one first, so the higher one's
+ * cross-section runs through unbroken; the higher one's ditch would cut
+ * across the lower one, so the lower one lays its own pieces again from that
+ * formation's edge to past the ditch afterwards (`RoadGeometry.patches`,
+ * composed at `ROAD_PRIORITY.crossing`).
+ *
+ * PADS. Where roads meet, the pad is the plane of the node's top road (the
+ * one that outranks every other built there): through the node, rising
+ * along that road's chord to the pad's edge, so that road runs through it
+ * as it was graded; every other road there is pinned to the plane from the
+ * node to past the pad's apron, so none meets it at a kerb. A pad's size
+ * reads every road's heading there, so it takes the others' from their first
+ * routed lines (`firstLine`, which no other road changes) and the top road's
+ * own: the same answer whichever road asks first.
  */
 
 export const ROAD_REGION_METERS = 2_048;
@@ -94,9 +112,15 @@ export interface RoadPiece {
   /** Cross slope at each end (superelevation; 0 on a crowned straight), rise per metre to the right of a->b. */
   readonly ca: number;
   readonly cb: number;
+  /** Cross-fall each side of the crown at each end: the class's, eased to 0 over a crossing. */
+  readonly ka: number;
+  readonly kb: number;
 }
 
-/** A level pad where roads meet (or a road ends). */
+/**
+ * A pad where roads meet (or a road ends): a plane through the node's
+ * height, level or tilted with the node's top road (`RoadNetwork` PADS).
+ */
 export interface RoadPad {
   /** The widest class meeting there. */
   readonly classId: RoadClassId;
@@ -104,7 +128,10 @@ export interface RoadPad {
   readonly x: number;
   readonly z: number;
   readonly height: number;
-  /** Level core radius, metres. */
+  /** The plane's rise per metre along +x and +z. */
+  readonly gradientX: number;
+  readonly gradientZ: number;
+  /** Core radius (the plane's), metres. */
   readonly radius: number;
 }
 
@@ -115,6 +142,8 @@ export interface RoadRegion {
   /** In composition order: (class priority, edge id, index). */
   readonly pieces: readonly RoadPiece[];
   readonly pads: readonly RoadPad[];
+  /** Crossing patches (`RoadGeometry.patches`) whose midpoint lies in the region, in (edge id, index) order. */
+  readonly patches: readonly RoadPiece[];
 }
 
 /** What a guardrail keeps clear of (`RoadNetwork.railKeepOuts`). */
@@ -160,6 +189,18 @@ export interface RoadGeometry {
   /** Cross slope (superelevation), rise per metre to the right. */
   readonly cross: Float64Array;
   readonly pieces: readonly RoadPiece[];
+  /**
+   * Where this road crosses an outranking one with a ditch: this road's own
+   * pieces again, each side, from where its formation first meets that
+   * road's formation edge to past the ditch, heading away from the crossing
+   * (so the soft end, the join band, lies on that road's formation and the
+   * round cap away from it). Each is the part of one of this road's pieces
+   * it lies on, so the stage, laying them after every road with no ditch of
+   * their own, lays this road's surface again over the ditch exactly; a run
+   * ends inside a piece with room for its round cap, which then lies on that
+   * piece too. Indices are their own (`ROAD_PATCH_STRIDE`).
+   */
+  readonly patches: readonly RoadPiece[];
   readonly stats: RoadGeometryStats;
 }
 
@@ -208,6 +249,37 @@ const SHARED_NODE_CLEARANCE = 40;
 const CROSSING_MERGE = 15;
 /** The road head's turning pad radius, metres. */
 const ROAD_HEAD_PAD_RADIUS = 12;
+/** A crossing's grading runs this far past the outranking formation's edge, metres. */
+const CROSSING_GRADE_MARGIN = 1;
+/** A crossing's matched cross slope eases back to the road's own over this, metres. */
+const CROSSING_CROSS_EASE = 15;
+/** A patch runs this far past the outranking road's ditch, metres. */
+const PATCH_MARGIN = 2;
+/** The shortest patch piece, metres. */
+const PATCH_MIN_PIECE = 0.5;
+/** Patch indices: a crossing's ordinal times this, plus 16 on its second side, plus the piece. */
+export const ROAD_PATCH_STRIDE = 32;
+/** A pad's apron, metres, and how fast its allowance grows over it, rise per metre (`roadInfrastructure.ts` lays them). */
+export const ROAD_PAD_APRON_METERS = 3;
+export const ROAD_PAD_APRON_SLOPE = 0.08;
+/** An outranking road is searched for the nearest point this far either side of the crossing, metres. */
+const CROSSING_SEARCH = 60;
+
+/** One pinned crossing of an outranking road: stations on each, and that road's frame there. */
+interface PinnedCrossing {
+  readonly s0: number;
+  readonly s1: number;
+  /** This road's centreline at s0. */
+  readonly x: number;
+  readonly z: number;
+  readonly through: RoadGeometry;
+  /** The outranking road's direction and grade at s1. */
+  readonly tx: number;
+  readonly tz: number;
+  readonly grade: number;
+  /** |sin| of the angle between the two roads. */
+  readonly sine: number;
+}
 
 /** Where earlier attempts failed, bucketed by the penalty radius: the next route's steer. */
 class FailedSpots {
@@ -311,6 +383,232 @@ function polylineCrossings(
   return out;
 }
 
+/** A crossing's outranking frame: its direction and grade at s1, and the angle's sine. */
+function pinnedCrossing(
+  x: Float64Array,
+  z: Float64Array,
+  station: Float64Array,
+  through: RoadGeometry,
+  crossing: Crossing,
+): PinnedCrossing {
+  const s1a = crossing.s1 - 2;
+  const s1b = crossing.s1 + 2;
+  let tx = valueAtStation(through.x, through.station, s1b) - valueAtStation(through.x, through.station, s1a);
+  let tz = valueAtStation(through.z, through.station, s1b) - valueAtStation(through.z, through.station, s1a);
+  const run = Math.hypot(tx, tz);
+  tx = run > 0 ? tx / run : 1;
+  tz = run > 0 ? tz / run : 0;
+  const grade = run > 0
+    ? (valueAtStation(through.height, through.station, s1b) - valueAtStation(through.height, through.station, s1a)) / run
+    : 0;
+  let ux = valueAtStation(x, station, crossing.s0 + 2) - valueAtStation(x, station, crossing.s0 - 2);
+  let uz = valueAtStation(z, station, crossing.s0 + 2) - valueAtStation(z, station, crossing.s0 - 2);
+  const own = Math.hypot(ux, uz);
+  ux = own > 0 ? ux / own : 1;
+  uz = own > 0 ? uz / own : 0;
+  return {
+    s0: crossing.s0,
+    s1: crossing.s1,
+    x: valueAtStation(x, station, crossing.s0),
+    z: valueAtStation(z, station, crossing.s0),
+    through,
+    tx,
+    tz,
+    grade,
+    sine: Math.abs(ux * tz - uz * tx),
+  };
+}
+
+/** A point's place on a road's centreline (`placeOnRoad`). */
+interface RoadPlace {
+  /** The nearest centreline point's station. */
+  along: number;
+  /** Signed distance from it, + to the right of the road's direction. */
+  across: number;
+  /** The road's direction there. */
+  tx: number;
+  tz: number;
+}
+
+/** The nearest point of `road`'s centreline to (px, pz) within `CROSSING_SEARCH` of station `near`, into `out`. */
+function placeOnRoad(road: RoadGeometry, near: number, px: number, pz: number, out: RoadPlace): RoadPlace {
+  const { x, z, station } = road;
+  let best = Number.POSITIVE_INFINITY;
+  for (let k = 0; k + 1 < station.length; k += 1) {
+    if (station[k + 1]! < near - CROSSING_SEARCH || station[k]! > near + CROSSING_SEARCH) continue;
+    const dx = x[k + 1]! - x[k]!;
+    const dz = z[k + 1]! - z[k]!;
+    const run = Math.hypot(dx, dz);
+    if (!(run > 0)) continue;
+    const tx = dx / run;
+    const tz = dz / run;
+    const along = Math.min(run, Math.max(0, (px - x[k]!) * tx + (pz - z[k]!) * tz));
+    const ox = px - (x[k]! + tx * along);
+    const oz = pz - (z[k]! + tz * along);
+    const distance = ox * ox + oz * oz;
+    if (distance >= best) continue;
+    best = distance;
+    out.along = station[k]! + ((station[k + 1]! - station[k]!) * along) / run;
+    out.across = ox * tz - oz * tx;
+    out.tx = tx;
+    out.tz = tz;
+  }
+  return out;
+}
+
+/** The outranking road's design surface at a place on it: its centreline and its crown or plane. */
+function surfaceAtPlace(road: RoadGeometry, place: RoadPlace): number {
+  const spec = roadClass(road.edge.classId);
+  return valueAtStation(road.height, road.station, place.along)
+    + roadCrossOffset(place.across, valueAtStation(road.cross, road.station, place.along), spec.crossfall);
+}
+
+/**
+ * Over each pinned crossing, lay the road's section in the plane of the
+ * outranking road's formation on the side its centreline is on: its
+ * cross-fall eased out (a crown cannot lie in a plane) and its cross slope
+ * turned to that plane's rise along this road's right (the outranking
+ * road's grade, and its cross slope on that side); both eased back to the
+ * road's own over `CROSSING_CROSS_EASE`.
+ */
+function gradeCrossingSections(
+  cross: Float64Array,
+  crossfall: Float64Array,
+  x: Float64Array,
+  z: Float64Array,
+  station: Float64Array,
+  crossings: readonly PinnedCrossing[],
+  step: number,
+): void {
+  const place: RoadPlace = { along: 0, across: 0, tx: 1, tz: 0 };
+  for (const crossing of crossings) {
+    const through = crossing.through;
+    const spec = roadClass(through.edge.classId);
+    const half = roadFormationHalfWidth(spec);
+    const span = (half + step + CROSSING_GRADE_MARGIN) / Math.max(0.2, crossing.sine);
+    for (let k = 0; k < station.length; k += 1) {
+      const distance = Math.abs(station[k]! - crossing.s0);
+      if (distance > span + CROSSING_CROSS_EASE) continue;
+      const previous = Math.max(0, k - 1);
+      const next = Math.min(station.length - 1, k + 1);
+      const dx = x[next]! - x[previous]!;
+      const dz = z[next]! - z[previous]!;
+      const run = Math.hypot(dx, dz);
+      if (!(run > 0)) continue;
+      placeOnRoad(through, crossing.s1, x[k]!, z[k]!, place);
+      const c = valueAtStation(through.cross, through.station, place.along);
+      // The outranking formation's rise to its right on this side (d/d across of its section).
+      const side = place.across >= 0 ? roadCrossOffset(1, c, spec.crossfall) : -roadCrossOffset(-1, c, spec.crossfall);
+      const grade = (valueAtStation(through.height, through.station, place.along + 2)
+        - valueAtStation(through.height, through.station, place.along - 2)) / 4;
+      // This road's right is (dz, -dx) / run; the outranking road's direction (tx, tz), its right (tz, -tx).
+      const matched = (grade * (dz * place.tx - dx * place.tz) + side * (dz * place.tz + dx * place.tx)) / run;
+      const weight = 1 - Math.min(1, Math.max(0, (distance - span) / CROSSING_CROSS_EASE));
+      cross[k] = cross[k]! + (matched - cross[k]!) * weight;
+      crossfall[k] = crossfall[k]! * (1 - weight);
+    }
+  }
+}
+
+/**
+ * A road's crossing patches (`RoadGeometry.patches`) from its pieces and
+ * their bounds (`bounds[i]` to `bounds[i + 1]` the stations piece i spans):
+ * at each crossing of an outranking road with a ditch, one run each side,
+ * from where this road's formation first meets that road's formation edge
+ * to past the ditch's far side and on to where the last patch piece's round
+ * cap (the formation's half-width, and the join band) fits inside one piece.
+ */
+function roadCrossingPatches(
+  edge: RoadEdge,
+  pieces: readonly RoadPiece[],
+  bounds: Float64Array,
+  crossings: readonly PinnedCrossing[],
+): RoadPiece[] {
+  const patches: RoadPiece[] = [];
+  if (pieces.length === 0) return patches;
+  const length = bounds[pieces.length]!;
+  const ownHalf = roadFormationHalfWidth(roadClass(edge.classId));
+  const capRoom = ownHalf + ROAD_JOIN_BLEND_METERS;
+  crossings.forEach((crossing, ordinal) => {
+    const spec = roadClass(crossing.through.edge.classId);
+    if (!(spec.ditchDepth > 0 && spec.ditchWidth > 0)) return;
+    const half = roadFormationHalfWidth(spec);
+    const sine = Math.max(0.2, crossing.sine);
+    const cosine = Math.sqrt(Math.max(0, 1 - crossing.sine * crossing.sine));
+    // Across the outranking road: where this one's formation first meets its edge, to past its ditch.
+    const inner = Math.max(0, half - ownHalf * cosine);
+    const outer = half + 2 * spec.ditchWidth + PATCH_MARGIN + ownHalf * cosine;
+    ([1, -1] as const).forEach((side, sideIndex) => {
+      const from = Math.max(0, Math.min(length, crossing.s0 + (side * inner) / sine));
+      const to = Math.max(0, Math.min(length, crossing.s0 + (side * outer) / sine));
+      // Where the run ends: at or past `to`, with the cap's room left in that piece.
+      let piece = pieceAtStation(bounds, to);
+      let end = side > 0 ? length : 0;
+      for (; piece >= 0 && piece < pieces.length; piece += side) {
+        const candidate = side > 0
+          ? Math.max(to, bounds[piece]! + PATCH_MIN_PIECE)
+          : Math.min(to, bounds[piece + 1]! - PATCH_MIN_PIECE);
+        if (side > 0 ? candidate + capRoom <= bounds[piece + 1]! : candidate - capRoom >= bounds[piece]!) {
+          end = candidate;
+          break;
+        }
+      }
+      let count = 0;
+      for (let k = pieceAtStation(bounds, from); k >= 0 && k < pieces.length && count < 16; k += side) {
+        const lo = bounds[k]!;
+        const hi = bounds[k + 1]!;
+        const sa = side > 0 ? Math.max(from, lo) : Math.min(from, hi);
+        const sb = side > 0 ? Math.min(end, hi) : Math.max(end, lo);
+        if (side * (sb - sa) > 1e-6) {
+          const index = ordinal * ROAD_PATCH_STRIDE + sideIndex * 16 + count;
+          patches.push(clippedPiece(pieces[k]!, (sa - lo) / (hi - lo), (sb - lo) / (hi - lo), index));
+          count += 1;
+        }
+        if (side > 0 ? hi >= end : lo <= end) break;
+      }
+    });
+  });
+  return patches;
+}
+
+/** The piece whose bounds hold station `s` (the first, or last, outside them). */
+function pieceAtStation(bounds: Float64Array, s: number): number {
+  const pieces = bounds.length - 1;
+  let lo = 0;
+  let hi = pieces - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (bounds[mid]! <= s) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * The part of `piece` from fraction `t0` to `t1` of it, as a piece of its
+ * own heading from t0 to t1 (reversed when t1 < t0: its cross slope, rise to
+ * the right, then changes sign).
+ */
+function clippedPiece(piece: RoadPiece, t0: number, t1: number, index: number): RoadPiece {
+  const at = (from: number, to: number, t: number) => from + (to - from) * t;
+  const flip = t1 < t0 ? -1 : 1;
+  return Object.freeze({
+    classId: piece.classId,
+    edgeId: piece.edgeId,
+    index,
+    ax: at(piece.ax, piece.bx, t0),
+    az: at(piece.az, piece.bz, t0),
+    bx: at(piece.ax, piece.bx, t1),
+    bz: at(piece.az, piece.bz, t1),
+    ha: at(piece.ha, piece.hb, t0),
+    hb: at(piece.ha, piece.hb, t1),
+    ca: flip * at(piece.ca, piece.cb, t0),
+    cb: flip * at(piece.ca, piece.cb, t1),
+    ka: at(piece.ka, piece.kb, t0),
+    kb: at(piece.ka, piece.kb, t1),
+  });
+}
+
 /** Linear interpolation of `values` at station `s`. */
 function valueAtStation(values: Float64Array, station: Float64Array, s: number): number {
   const n = station.length;
@@ -351,6 +649,28 @@ function sharedNode(left: RoadEdge, right: RoadEdge): RoadNode[] {
   return shared;
 }
 
+/** One routed, fitted and sampled line for an edge (`RoadNetwork.routeLine`), and the routing's work. */
+interface RoadLine {
+  readonly alignment: RoadSamples;
+  readonly expanded: number;
+  readonly samples: number;
+}
+
+/** A node's pad as every road there sees it (`RoadNetwork.padShape`). */
+interface RoadPadShape {
+  readonly classId: RoadClassId;
+  readonly radius: number;
+  readonly gradientX: number;
+  readonly gradientZ: number;
+}
+
+/** The heading (atan2(dx, dz)) a sampled line leaves a node by: its first 4 steps from that end. */
+function headingFrom(line: { readonly x: ArrayLike<number>; readonly z: ArrayLike<number> }, atStart: boolean): number {
+  const n = line.x.length;
+  const [i0, i1] = atStart ? [0, Math.min(n - 1, 4)] : [n - 1, Math.max(0, n - 5)];
+  return Math.atan2(line.x[i1]! - line.x[i0]!, line.z[i1]! - line.z[i0]!);
+}
+
 /** A layer's road that reaches a box: its class, edge and built geometry. */
 interface LayerRoad {
   readonly classId: RoadClassId;
@@ -373,7 +693,11 @@ export class RoadNetwork {
   private readonly geometries = new Map<number, RoadGeometry | null>();
   private readonly failures = new Map<number, RoadEdgeFailure>();
   private airportEdgeMemo: RoadEdge | null | undefined;
+  /** The sealed road `airportEdge` is trying, while it builds it (its pads read it as the node's). */
+  private airportTrial: RoadEdge | null = null;
   private readonly building = new Set<number>();
+  private readonly firstLines = new Map<number, RoadLine | null>();
+  private readonly padShapes = new Map<string, RoadPadShape | null>();
 
   constructor(readonly world: WorldDefinition) {
     this.nodes = new RoadNodeCache(world);
@@ -398,9 +722,14 @@ export class RoadNetwork {
     for (const node of candidates.slice(0, 6)) {
       if (distance(node) > roadClass(ROAD_CLASS.airport).maxEdgeLength) break;
       const edge = makeRoadEdge(ROAD_CLASS.airport, start, node);
-      if (this.geometry(edge)) {
-        this.airportEdgeMemo = edge;
-        return edge;
+      this.airportTrial = edge;
+      try {
+        if (this.geometry(edge)) {
+          this.airportEdgeMemo = edge;
+          return edge;
+        }
+      } finally {
+        this.airportTrial = null;
       }
     }
     return null;
@@ -409,7 +738,7 @@ export class RoadNetwork {
   /** Every edge of a class whose road can reach the box, in key order. */
   edgesNear(classId: RoadClassId, box: RoadBox, margin = 0): RoadEdge[] {
     if (classId === ROAD_CLASS.airport) {
-      const edge = this.airportEdge();
+      const edge = this.airportTrial ?? this.airportEdge();
       if (!edge) return [];
       const head = airportRoadHead(this.world)!;
       const lead = Math.hypot(head.exitX - head.startX, head.exitZ - head.startZ);
@@ -444,6 +773,46 @@ export class RoadNetwork {
     return this.geometries.size;
   }
 
+  /**
+   * An edge's line: routed (steered off `failed`'s spots, if any), relaxed,
+   * fitted with curves and sampled; null where no route reaches.
+   */
+  private routeLine(edge: RoadEdge, failed?: FailedSpots): RoadLine | null {
+    const spec = roadClass(edge.classId);
+    const head = edge.classId === ROAD_CLASS.airport ? airportRoadHead(this.world) : null;
+    const penalty = failed && failed.size > 0 ? (px: number, pz: number) => failed.penalty(px, pz) : undefined;
+    const route = routeRoadEdge({
+      world: this.world,
+      spec,
+      ax: head ? head.exitX : edge.a.x,
+      az: head ? head.exitZ : edge.a.z,
+      bx: edge.b.x,
+      bz: edge.b.z,
+      corridor: edge.corridor,
+      ...(penalty ? { penalty } : {}),
+    });
+    if (!route) return null;
+    const relaxed = relaxRoadPolyline(route.x, route.z, spec.routingGrid * 0.5, RELAX_ITERATIONS, roadRouteRelaxShift(spec));
+    if (head) {
+      relaxed.x.unshift(head.startX);
+      relaxed.z.unshift(head.startZ);
+    }
+    const simple = simplifyRoadPolyline(relaxed.x, relaxed.z, spec.routingGrid * 0.25);
+    const fit = fitRoadCurves(simple.x, simple.z, spec, head ? ROAD_AIRPORT_LEAD_STRAIGHT : 0, 0);
+    return Object.freeze({
+      alignment: sampleRoadAlignment(fit, PROFILE_STEP[edge.classId]),
+      expanded: route.expanded,
+      samples: route.samples,
+    });
+  }
+
+  /** An edge's first line (`routeLine`, steered off nothing), memoised: what every pad at its nodes reads its heading from. */
+  private firstLine(edge: RoadEdge): RoadLine | null {
+    let line = this.firstLines.get(edge.id);
+    if (line === undefined) this.firstLines.set(edge.id, (line = this.routeLine(edge)));
+    return line;
+  }
+
   private build(edge: RoadEdge): RoadGeometry | null {
     const world = this.world;
     const spec = roadClass(edge.classId);
@@ -458,28 +827,11 @@ export class RoadNetwork {
     let expanded = 0;
     let samples = 0;
     for (let attempt = 0; attempt <= EARTHWORK_RETRIES; attempt += 1) {
-      const penalty = failed.size === 0 ? undefined : (px: number, pz: number) => failed.penalty(px, pz);
-      const route = routeRoadEdge({
-        world,
-        spec,
-        ax: routeStartX,
-        az: routeStartZ,
-        bx: edge.b.x,
-        bz: edge.b.z,
-        corridor: edge.corridor,
-        ...(penalty ? { penalty } : {}),
-      });
-      if (!route) return this.fail(edge, "route");
-      expanded += route.expanded;
-      samples += route.samples;
-      const relaxed = relaxRoadPolyline(route.x, route.z, spec.routingGrid * 0.5, RELAX_ITERATIONS, roadRouteRelaxShift(spec));
-      if (head) {
-        relaxed.x.unshift(head.startX);
-        relaxed.z.unshift(head.startZ);
-      }
-      const simple = simplifyRoadPolyline(relaxed.x, relaxed.z, spec.routingGrid * 0.25);
-      const fit = fitRoadCurves(simple.x, simple.z, spec, head ? ROAD_AIRPORT_LEAD_STRAIGHT : 0, 0);
-      const alignment = sampleRoadAlignment(fit, PROFILE_STEP[edge.classId]);
+      const line = attempt === 0 ? this.firstLine(edge) : this.routeLine(edge, failed);
+      if (!line) return this.fail(edge, "route");
+      expanded += line.expanded;
+      samples += line.samples;
+      const alignment = line.alignment;
       const n = alignment.x.length;
       const ground = new Float64Array(n);
       const walls: number[] = [];
@@ -509,6 +861,7 @@ export class RoadNetwork {
         return this.fail(edge, "shadow");
       }
       const pins = this.pinsFor(edge, alignment.x, alignment.z, alignment.station);
+      this.approachPins(edge, alignment.x, alignment.z, alignment.station, pins.pins);
       const grades = new Float64Array(Math.max(0, n - 1));
       const approach = NODE_APPROACH[edge.classId];
       for (let k = 0; k + 1 < n; k += 1) {
@@ -533,8 +886,13 @@ export class RoadNetwork {
         continue;
       }
       const cross = roadSuperelevationAlong(spec, alignment.curvature, alignment.station, spec.designSpeedKmh * 0.75);
+      const crossfall = new Float64Array(n).fill(spec.crossfall);
+      gradeCrossingSections(
+        cross, crossfall, alignment.x, alignment.z, alignment.station, pins.crossings, PROFILE_STEP[edge.classId],
+      );
       const pieceSpans = roadPieces(
-        alignment.x, alignment.z, alignment.station, profile.height, cross, PIECE_MAX[edge.classId], PIECE_TOLERANCE[edge.classId],
+        alignment.x, alignment.z, alignment.station, profile.height, cross, crossfall,
+        PIECE_MAX[edge.classId], PIECE_TOLERANCE[edge.classId],
       );
       const pieces: RoadPiece[] = pieceSpans.map((span, index) => Object.freeze({
         classId: edge.classId,
@@ -548,7 +906,14 @@ export class RoadNetwork {
         hb: profile.height[span.last]!,
         ca: cross[span.first]!,
         cb: cross[span.last]!,
+        ka: crossfall[span.first]!,
+        kb: crossfall[span.last]!,
       }));
+      const bounds = new Float64Array(pieceSpans.length + 1);
+      pieceSpans.forEach((span, index) => {
+        bounds[index] = alignment.station[span.first]!;
+        bounds[index + 1] = alignment.station[span.last]!;
+      });
       return Object.freeze({
         edge,
         x: alignment.x,
@@ -559,6 +924,7 @@ export class RoadNetwork {
         height: profile.height,
         cross,
         pieces: Object.freeze(pieces),
+        patches: Object.freeze(roadCrossingPatches(edge, pieces, bounds, pins.crossings)),
         stats: Object.freeze({
           expanded,
           samples,
@@ -567,7 +933,7 @@ export class RoadNetwork {
           maxCut: profile.maxCut,
           maxGrade: profile.maxGrade,
           gradeRelaxed: profile.gradeRelaxed,
-          crossings: pins.crossings,
+          crossings: pins.crossings.length,
         }),
       });
     }
@@ -628,20 +994,27 @@ export class RoadNetwork {
     return counted > 0 && shadowed > SHADOW_FRACTION * counted;
   }
 
-  /** The ends' heights, and the height of every outranking road this one crosses. */
+  /**
+   * The ends' heights, and every outranking road this one crosses: pinned to
+   * its surface at every sample whose point lies on its formation, or within
+   * a sample's spacing of it (its section carried on past the edge), so the
+   * two meet level across both formations.
+   */
   private pinsFor(
     edge: RoadEdge,
     x: Float64Array,
     z: Float64Array,
     station: Float64Array,
-  ): { pins: RoadPin[]; crossings: number } {
+  ): { pins: RoadPin[]; crossings: PinnedCrossing[] } {
     const length = station[station.length - 1]!;
     const pins: RoadPin[] = [
       { station: 0, height: edge.a.height },
       { station: length, height: edge.b.height },
     ];
     const box = sampleBox(x, z);
-    let crossings = 0;
+    const crossings: PinnedCrossing[] = [];
+    const step = PROFILE_STEP[edge.classId];
+    const place: RoadPlace = { along: 0, across: 0, tx: 1, tz: 0 };
     for (let classId = edge.classId; classId <= ROAD_CLASS.airport; classId += 1) {
       for (const other of this.edgesNear(classId as RoadClassId, box, -roadClass(classId as RoadClassId).reach)) {
         if (other.id === edge.id || !roadEdgeRanksBelow(edge, other)) continue;
@@ -653,12 +1026,152 @@ export class RoadNetwork {
           const pz = valueAtStation(z, station, crossing.s0);
           if (shared.some((node) => Math.hypot(px - node.x, pz - node.z) < SHARED_NODE_CLEARANCE)) continue;
           if (crossing.s0 < SHARED_NODE_CLEARANCE || length - crossing.s0 < SHARED_NODE_CLEARANCE) continue;
-          pins.push({ station: crossing.s0, height: valueAtStation(through.height, through.station, crossing.s1) });
-          crossings += 1;
+          const pinned = pinnedCrossing(x, z, station, through, crossing);
+          const half = roadFormationHalfWidth(roadClass(through.edge.classId));
+          const span = (half + step + CROSSING_GRADE_MARGIN) / Math.max(0.2, pinned.sine);
+          for (let k = 0; k < station.length; k += 1) {
+            if (Math.abs(station[k]! - crossing.s0) > span) continue;
+            if (station[k]! < SHARED_NODE_CLEARANCE * 0.5 || length - station[k]! < SHARED_NODE_CLEARANCE * 0.5) continue;
+            placeOnRoad(through, crossing.s1, x[k]!, z[k]!, place);
+            if (Math.abs(place.across) > half + step) continue;
+            // On the outranking section, carried on past its edge over the ditch the patch lays again.
+            pins.push({ station: station[k]!, height: surfaceAtPlace(through, place) });
+          }
+          crossings.push(pinned);
         }
       }
     }
     return { pins, crossings };
+  }
+
+  /**
+   * Where this road ends at a pad it does not shape (one that outranks it is
+   * built at the node; at the marina's, every road), a pin at every sample
+   * from the node to a sample past the pad's apron, on the pad's plane, so
+   * the pad lays no kerb across it.
+   */
+  private approachPins(edge: RoadEdge, x: Float64Array, z: Float64Array, station: Float64Array, pins: RoadPin[]): void {
+    const length = station[station.length - 1]!;
+    for (const node of [edge.a, edge.b]) {
+      const pad = this.padUnder(edge, node);
+      if (!pad) continue;
+      const atStart = node === edge.a;
+      const reach = Math.min(0.5 * length, pad.radius + ROAD_PAD_APRON_METERS + PROFILE_STEP[edge.classId]);
+      for (let k = 0; k < station.length; k += 1) {
+        if ((atStart ? station[k]! : length - station[k]!) > reach) continue;
+        pins.push({ station: station[k]!, height: node.height + pad.gradientX * (x[k]! - node.x) + pad.gradientZ * (z[k]! - node.z) });
+      }
+    }
+  }
+
+  /**
+   * The pad an edge's road is graded to at one of its nodes: the marina's
+   * (level with the car park's back, whichever road), or the pad of a node
+   * where a road outranking this one is built (a track's is the major roads'
+   * pad where one is built there, else the tracks'). Null where this road is
+   * the node's top road, which grades the pad itself.
+   */
+  private padUnder(edge: RoadEdge, node: RoadNode): RoadPadShape | null {
+    if (node.key === "marina") return this.padShape("major", node);
+    const layers: readonly RoadLayer[] = edge.classId === ROAD_CLASS.track ? ROAD_LAYERS : ["major"];
+    for (const layer of layers) {
+      for (const other of this.nodeEdges(layer, node)) {
+        // In rank order: the first built one outranking this road is the top road.
+        if (!roadEdgeRanksBelow(edge, other)) break;
+        if (this.geometry(other)) return this.padShape(layer, node);
+      }
+    }
+    return null;
+  }
+
+  /** A layer's edges at a node, highest-ranked first (class, then id). */
+  private nodeEdges(layer: RoadLayer, node: RoadNode): RoadEdge[] {
+    const box = { minX: node.x, minZ: node.z, maxX: node.x, maxZ: node.z };
+    const edges: RoadEdge[] = [];
+    for (const classId of roadLayerClasses(layer)) {
+      for (const edge of this.edgesNear(classId, box)) {
+        if (edge.a.key === node.key || edge.b.key === node.key) edges.push(edge);
+      }
+    }
+    return edges.sort((left, right) => (roadEdgeRanksBelow(left, right) ? 1 : roadEdgeRanksBelow(right, left) ? -1 : 0));
+  }
+
+  /**
+   * The pad a layer lays at a node, memoised (null for none). Its class and
+   * core radius read every road's heading there from its first line (a major
+   * pad's from the tracks' too, as they meet it), so no road's own grading
+   * changes it; its plane is the top road's chord from the node to the
+   * core's edge, with that road's cross slope there (the marina's is level,
+   * with the car park's back edge). A pure function of the node, so every
+   * road graded to it and the region laying it agree.
+   */
+  private padShape(layer: RoadLayer, node: RoadNode): RoadPadShape | null {
+    const key = `${layer}:${node.key}`;
+    let shape = this.padShapes.get(key);
+    if (shape === undefined) this.padShapes.set(key, (shape = this.shapePad(layer, node)));
+    return shape;
+  }
+
+  private shapePad(layer: RoadLayer, node: RoadNode): RoadPadShape | null {
+    const edges = this.nodeEdges(layer, node);
+    const meeting = layer === "major" ? [...edges, ...this.nodeEdges("track", node)] : edges;
+    const dirs: number[] = [];
+    const halves: number[] = [];
+    const ditches: number[] = [];
+    let classId: RoadClassId | null = null;
+    for (const edge of meeting) {
+      const line = this.firstLine(edge);
+      if (!line) continue;
+      const spec = roadClass(edge.classId);
+      dirs.push(headingFrom(line.alignment, edge.a.key === node.key));
+      halves.push(roadFormationHalfWidth(spec));
+      ditches.push(spec.ditchDepth > 0 ? 2 * spec.ditchWidth : 0);
+      if (classId === null || edge.classId > classId) classId = edge.classId;
+    }
+    if (classId === null) return null;
+    // The marina's car park is the pad of a road ending there alone.
+    if (node.key === "marina" && dirs.length < 2) return null;
+    const spec = roadClass(classId);
+    const half = roadFormationHalfWidth(spec);
+    let radius = half + 2;
+    if (node.key === "airport") radius = ROAD_HEAD_PAD_RADIUS;
+    else {
+      for (let i = 0; i < dirs.length; i += 1) {
+        for (let j = i + 1; j < dirs.length; j += 1) {
+          let difference = Math.abs(dirs[i]! - dirs[j]!) % (2 * Math.PI);
+          if (difference > Math.PI) difference = 2 * Math.PI - difference;
+          // Between two ditched roads a car turning wide is in a ditch; onto a track, it backs and fills.
+          if (ditches[i]! > 0 && ditches[j]! > 0) radius = Math.max(radius, roadTurnPadRadius(dirs[i]!, dirs[j]!, halves[i]!, halves[j]!));
+          // Out to where each one's formation clears the other's ditch (its formation, without one),
+          // less what the apron's allowance takes out of a ditch.
+          const sine = Math.sin(Math.min(Math.PI / 2, Math.max(0.2, difference)));
+          const clear = Math.max(ditches[i]!, ditches[j]!) + halves[i]! + halves[j]!;
+          radius = Math.max(radius, Math.min(3 * half + 6, clear / sine - 0.5 * ROAD_PAD_APRON_METERS));
+        }
+      }
+    }
+    if (node.key === "marina") return Object.freeze({ classId, radius, gradientX: 0, gradientZ: 0 });
+    // The plane: the top road's chord from the node to the core's edge, and its cross slope at the node.
+    let top: RoadGeometry | null = null;
+    for (const edge of edges) {
+      top = this.geometry(edge);
+      if (top) break;
+    }
+    if (!top) return null;
+    const atStart = top.edge.a.key === node.key;
+    const length = top.station[top.station.length - 1]!;
+    const chord = Math.min(radius, 0.5 * length);
+    const s = atStart ? chord : length - chord;
+    const dx = valueAtStation(top.x, top.station, s) - node.x;
+    const dz = valueAtStation(top.z, top.station, s) - node.z;
+    const run = Math.hypot(dx, dz);
+    if (!(run > 0)) return Object.freeze({ classId, radius, gradientX: 0, gradientZ: 0 });
+    const grade = (valueAtStation(top.height, top.station, s) - node.height) / run;
+    const ux = dx / run;
+    const uz = dz / run;
+    // Rise to the right of the way it leaves the node (its cross is to the right of a->b).
+    const cross = atStart ? top.cross[0]! : -top.cross[top.cross.length - 1]!;
+    return Object.freeze({ classId, radius, gradientX: grade * ux + cross * uz, gradientZ: grade * uz - cross * ux });
   }
 
   /** One region of one layer: its pieces and pads, in composition order. */
@@ -666,13 +1179,25 @@ export class RoadNetwork {
     const box = roadRegionBox(rx, rz);
     const roads = this.layerRoads(layer, box);
     const pieces: RoadPiece[] = [];
+    const patches: RoadPiece[] = [];
     for (const { geometry } of roads) {
       for (const piece of geometry.pieces) {
         if (inRoadBox(box, 0.5 * (piece.ax + piece.bx), 0.5 * (piece.az + piece.bz))) pieces.push(piece);
       }
+      for (const patch of geometry.patches) {
+        if (inRoadBox(box, 0.5 * (patch.ax + patch.bx), 0.5 * (patch.az + patch.bz))) patches.push(patch);
+      }
     }
     pieces.sort(pieceOrder);
-    return Object.freeze({ layer, rx, rz, pieces: Object.freeze(pieces), pads: Object.freeze(this.padsOf(layer, box, roads)) });
+    patches.sort(pieceOrder);
+    return Object.freeze({
+      layer,
+      rx,
+      rz,
+      pieces: Object.freeze(pieces),
+      pads: Object.freeze(this.padsOf(layer, box, roads)),
+      patches: Object.freeze(patches),
+    });
   }
 
   /**
@@ -716,50 +1241,35 @@ export class RoadNetwork {
    * node: a region's, or a smaller one round a guardrail.
    */
   private padsOf(layer: RoadLayer, box: RoadBox, roads: readonly LayerRoad[]): RoadPad[] {
-    const incident = new Map<string, { node: RoadNode; classId: RoadClassId; dirs: number[] }>();
-    const note = (node: RoadNode, classId: RoadClassId, geometry: RoadGeometry, atStart: boolean) => {
-      if (!inRoadBox(box, node.x, node.z)) return;
-      let entry = incident.get(node.key);
-      if (!entry) incident.set(node.key, (entry = { node, classId, dirs: [] }));
-      entry.classId = Math.max(entry.classId, classId) as RoadClassId;
-      const n = geometry.x.length;
-      const [i0, i1] = atStart ? [0, Math.min(n - 1, 4)] : [n - 1, Math.max(0, n - 5)];
-      entry.dirs.push(Math.atan2(geometry.x[i1]! - geometry.x[i0]!, geometry.z[i1]! - geometry.z[i0]!));
-    };
-    for (const { classId, edge, geometry } of roads) {
-      note(edge.a, classId, geometry, true);
-      note(edge.b, classId, geometry, false);
-    }
-    // A gravel node only tracks reach gets its pad from the track layer.
-    if (layer === "track") {
-      for (const key of [...incident.keys()]) {
-        const node = incident.get(key)!.node;
-        if (node.classId === ROAD_CLASS.track) continue;
-        const major = this.edgesNear(ROAD_CLASS.gravel, box).some((edge) =>
-          (edge.a.key === key || edge.b.key === key) && this.geometry(edge) !== null);
-        if (major) incident.delete(key);
+    const nodes = new Map<string, RoadNode>();
+    for (const { edge } of roads) {
+      for (const node of [edge.a, edge.b]) {
+        if (inRoadBox(box, node.x, node.z)) nodes.set(node.key, node);
       }
     }
     const pads: RoadPad[] = [];
-    for (const { node, classId, dirs } of incident.values()) {
-      // Fixed nodes: the marina's car park pad is the marina's; the airport's road head gets a turning pad.
-      if (node.key === "marina") continue;
-      const spec = roadClass(classId);
-      const half = roadFormationHalfWidth(spec);
-      let radius = half + 2;
-      if (node.key === "airport") radius = ROAD_HEAD_PAD_RADIUS;
-      else if (dirs.length > 1) {
-        let narrowest = Math.PI;
-        for (let i = 0; i < dirs.length; i += 1) {
-          for (let j = i + 1; j < dirs.length; j += 1) {
-            let difference = Math.abs(dirs[i]! - dirs[j]!) % (2 * Math.PI);
-            if (difference > Math.PI) difference = 2 * Math.PI - difference;
-            narrowest = Math.min(narrowest, difference);
-          }
-        }
-        radius = Math.min(3 * half + 6, Math.max(half + 2, half / Math.sin(Math.max(0.2, narrowest) / 2)));
+    for (const node of nodes.values()) {
+      // A gravel node only tracks reach gets its pad from the track layer.
+      if (layer === "track" && node.classId !== ROAD_CLASS.track) {
+        const major = this.nodeEdges("major", node).some((edge) => this.geometry(edge) !== null);
+        if (major) continue;
       }
-      pads.push(Object.freeze({ classId, nodeId: node.id, x: node.x, z: node.z, height: node.height, radius }));
+      // The airport's road head gets a turning pad (`padShape`). The
+      // marina's car park is the marina's; the roads meeting at its back
+      // still get a pad where they turn onto each other (the car park,
+      // composed after it, keeps its own grading wherever the two overlap).
+      const shape = this.padShape(layer, node);
+      if (!shape) continue;
+      pads.push(Object.freeze({
+        classId: shape.classId,
+        nodeId: node.id,
+        x: node.x,
+        z: node.z,
+        height: node.height,
+        gradientX: shape.gradientX,
+        gradientZ: shape.gradientZ,
+        radius: shape.radius,
+      }));
     }
     pads.sort((left, right) => (left.nodeId >>> 0) - (right.nodeId >>> 0));
     return pads;
@@ -768,6 +1278,63 @@ export class RoadNetwork {
 
 /** The composition priority a pad takes. */
 export const ROAD_PAD_PRIORITY = ROAD_PRIORITY.junction;
+
+/**
+ * The tightest line a car is held to between two roads at a node, metres:
+ * the LandCruiser 76's 12.6 m kerb circle with a metre and a half to spare.
+ */
+export const ROAD_JUNCTION_TURN_RADIUS = 8;
+/** Half a car's width, kept inside a formation or a pad on that line, metres. */
+const ROAD_JUNCTION_CAR_HALF_WIDTH = 1;
+/** No pad grows past this for a turn: anything sharper is a three-point turn, metres. */
+export const ROAD_TURN_PAD_MAX_RADIUS = 24;
+
+/**
+ * The level pad a node needs for a car to turn at full lock from one road
+ * onto another: the arc of `ROAD_JUNCTION_TURN_RADIUS` tangent to both
+ * centrelines on the inside of the turn, wherever it leaves both formations
+ * (less half a car), must be on the pad (plus half a car). Headings are
+ * atan2(dx, dz) of each road leaving the node; 0 where the arc stays on the
+ * roads, and never past `ROAD_TURN_PAD_MAX_RADIUS`.
+ */
+export function roadTurnPadRadius(headingA: number, headingB: number, halfA: number, halfB: number): number {
+  const ax = Math.sin(headingA);
+  const az = Math.cos(headingA);
+  const bx = Math.sin(headingB);
+  const bz = Math.cos(headingB);
+  const interior = Math.acos(Math.max(-1, Math.min(1, ax * bx + az * bz)));
+  if (interior < 1e-3 || interior > Math.PI - 1e-3) return 0;
+  const turn = ROAD_JUNCTION_TURN_RADIUS;
+  const tangent = turn / Math.tan(interior / 2);
+  let mx = ax + bx;
+  let mz = az + bz;
+  const bisector = Math.hypot(mx, mz);
+  mx /= bisector;
+  mz /= bisector;
+  const centre = turn / Math.sin(interior / 2);
+  const cx = mx * centre;
+  const cz = mz * centre;
+  // The arc from the tangent point on A to the one on B, round the centre.
+  const startAngle = Math.atan2(ax * tangent - cx, az * tangent - cz);
+  let sweep = Math.atan2(bx * tangent - cx, bz * tangent - cz) - startAngle;
+  if (sweep > Math.PI) sweep -= 2 * Math.PI;
+  if (sweep < -Math.PI) sweep += 2 * Math.PI;
+  const offRoad = (px: number, pz: number, dx: number, dz: number, half: number): boolean => {
+    const along = px * dx + pz * dz;
+    return along < 0 || Math.abs(px * dz - pz * dx) > half - ROAD_JUNCTION_CAR_HALF_WIDTH;
+  };
+  let needed = 0;
+  const steps = 48;
+  for (let k = 0; k <= steps; k += 1) {
+    const angle = startAngle + (sweep * k) / steps;
+    const px = cx + Math.sin(angle) * turn;
+    const pz = cz + Math.cos(angle) * turn;
+    if (offRoad(px, pz, ax, az, halfA) && offRoad(px, pz, bx, bz, halfB)) {
+      needed = Math.max(needed, Math.hypot(px, pz) + ROAD_JUNCTION_CAR_HALF_WIDTH);
+    }
+  }
+  return Math.min(ROAD_TURN_PAD_MAX_RADIUS, needed);
+}
 
 const NETWORKS = new Map<string, RoadNetwork>();
 const NETWORK_CACHE_LIMIT = 2;
