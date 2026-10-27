@@ -471,10 +471,9 @@ car), so a parked or crawling car does not spend a fifth of its step asking
 about water that is not there; from about 9 m/s every turn is taken. A
 turn first asks the authority whether the point is dry for certain
 (`isDry`), handing it the terrain under the contact (beneath any deck) from
-the car's own lattice: the composite answers from that, a metre's margin
-over the calm sea's level and one bin lookup for the lakes and rivers,
-without reading the bed itself, and only near water is the full sample
-taken. On the show drive (see Driving the world) that took the water from
+the car's own lattice: the composite answers from that, 10 cm over the
+still sea level and one bin lookup for the lakes and rivers, without
+reading the bed itself, and only near water is the full sample taken. On the show drive (see Driving the world) that took the water from
 about 11.4 us a step to 1.1, and the drive ends on the same bits. Whether
 a tyre is under the surface is decided every step from its contact now. The wading depth is
 the highest surface over the lowest contact. A tyre under the surface
@@ -500,8 +499,43 @@ loam turns to mud, snow keeps its depth and hard ground keeps 80% of its grip.
   over it at the front wheels hydrolocks the engine: it stops and will not
   restart until a recovery.
 
-The authority is the sea's still level and the lakes and rivers the
-renderer draws, in one `WaterSurfaceComposite` (`src/sim/water/`). In a car
+The authority is the sea and the lakes and rivers the renderer draws, in
+one `WaterSurfaceComposite` (`src/sim/water/`).
+
+The sea is the boat's sea twin (`src/sim/ground/carSea.ts`): the drawn
+ocean's spectrum, seed and weather, calmed in the home marina's basin,
+built when the car starts, inside its wait for the terrain (about 0.2 s),
+and again when the weather changes. The ocean is drawn only over ground
+below the still sea level (the terrain owns the swash above it), so the car
+meets the sea only where its own contact is under that level, up to the
+twin's surface; the twin reads no bed. Its sums cost about 115 us a step
+whatever is asked of them (mostly the 8-32 m band's grid, rebuilt every
+71 ms), as for a boat's 171 points, so for the car's four the twin is
+stepped every fourth step and a sample between is carried to the car's
+time by the surface's vertical velocity, as a wheel's answer is between
+its turns. A car whose wheels all stand higher never steps or samples it
+(`sim.car-sea`). In the sea the step is about 140 us on the cloud box
+(about 170 with the twin stepped every step, at the same error), against
+about 80 ashore. The wading depth follows the twin's exact sum to 5 to 8 mm
+rms (9 to 18 mm at worst) over a beach ford. The drawn sea keeps its
+deep-water swell up to the waterline (the shading shoals it, the surface
+does not), so at a shallow ford the car meets crests far taller than the
+still depth. A ford
+down a 4% beach at walking pace in 4L, against the intake (0.7 m) and the
+floor (0.55 m):
+
+| Weather (H_s) | 0.2 m deep | 0.3 m | 0.4 m | 0.5 m |
+|---|---|---|---|---|
+| Clear (0.6 m) | crosses; crests 1 cm under the intake, 14 cm over the floor, cabin dry | hydrolocks 7.7 s into the water | 7.7 s | 7.8 s |
+| Breezy (1.6 m) | hydrolocks after 6.8 s | 7.4 s | 4.9 s | 4.9 s |
+| Cloudy (2.4 m) | 3.9 s | 4.0 s | 3.9 s | 3.9 s |
+
+Stalled there for another 90 s, the highest water over the bed is 0.9 to
+1.1 m in Clear, 1.6 to 1.9 in Breezy and 2.0 to 2.1 in Cloudy. Breaking
+limited by depth (a crest no taller than about 0.78 of the water under
+it) would have to come to the drawn sea and the twin together.
+
+In a car
 session (only there: nothing else reads them yet), the renderer's
 `HydrologySystem` posts each resident region's rivers and lakes as it lands
 and ends it after its crossfade. The worker keeps a region the car
@@ -513,10 +547,12 @@ water the sea answers untouched, and where both do, a river or lake wins
 only from a few centimetres above sea level, blending into the sea so a
 river runs into it without a step.
 
-The water path allocates nothing (`sim.car-budget`) while the authority's
-call is monomorphic, as the worker's single authority is; a getter's double
-return or a double argument to a call V8 does not inline is boxed, so the
-column height and gravity travel in fields.
+The water path allocates nothing (`sim.car-budget`, and `sim.car-sea` over
+a stand-in sea) while the authority's call is monomorphic, as the worker's
+single authority is; a getter's double return or a double argument to a
+call V8 does not inline is boxed, so the column height and gravity travel
+in fields. The twin's own sums box some of theirs, about 150 B a step on
+the car's path (the grid's node writes, `hermitePatch`, `footprintBed`).
 
 ## Off the road
 
