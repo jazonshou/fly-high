@@ -398,12 +398,42 @@ describe("recovery on trial", () => {
       streamingBacklog: backlog[window - 1]!,
     }));
     expect(states[3]!.cpuWorkLevel).toBe(0);
-    expect(states[3]!.trial).toMatchObject({ ladder: "cpu", streaming: true });
+    expect(states[3]!.trial).toMatchObject({ ladder: "cpu", streaming: true, openBacklog: 0 });
     expect(states[6]!.trial?.windowsPassed).toBe(3);
     // The fourth window passes, but 12 items are still streaming in.
     expect(states[7]!.trial?.windowsPassed).toBe(4);
     expect(states[8]!.trial).toBeNull();
     expect(states[8]!.cpuWorkLevel).toBe(0);
+  });
+
+  it("a streaming trial needs a settled backlog, not an empty one", () => {
+    // In flight the detail backlog rarely reads 0: new cells keep coming
+    // into reach. A trial that waited for 0 never ended, and held every
+    // other recovery while it stayed open.
+    const steady = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 60, () => ({ ...frames(5), streamingBacklog: 5 }));
+    expect(firstWindow(steady, (state) => state.cpuWorkLevel === 0)).toBe(28);
+    const fromBoth = trace(withLevels(CPU_WORK_MAX_LEVEL, GPU_WORK_MAX_LEVEL), 120, () => ({ ...frames(5), streamingBacklog: 5 }));
+    expect(firstWindow(fromBoth, (state) => state.cpuWorkLevel === 0 && state.gpuWorkLevel === 0)).toBeLessThanOrEqual(70);
+  });
+
+  it("a streaming trial waits while the backlog is above where it was, at most two windows past its four", () => {
+    const start = withLevels(1, 0);
+    // The rung comes back at window 4 with 6 items waiting.
+    const backlog = [6, 6, 6, 6, 9, 9, 7, 8, 5, 5, 5];
+    const states = trace(start, backlog.length, (window) => ({ ...frames(5), streamingBacklog: backlog[window - 1]! }));
+    expect(states[3]!.trial).toMatchObject({ openBacklog: 6, windowsPassed: 0 });
+    // Windows 5-8 pass the cadence, but the backlog is above 6.
+    expect(states[7]!.trial?.windowsPassed).toBe(4);
+    expect(states[8]!.trial).toBeNull();
+    // Growing for good: it ends on the cadence alone after six windows.
+    const growing = trace(start, 12, (window) => ({ ...frames(5), streamingBacklog: 10 * window }));
+    expect(growing[8]!.trial?.windowsPassed).toBe(5);
+    expect(growing[9]!.trial).toBeNull();
+    expect(growing[9]!.cpuWorkLevel).toBe(0);
+    // Not growing, but still above where it was: the same.
+    const high = trace(start, 12, (window) => ({ ...frames(5), streamingBacklog: window <= 4 ? 2 : 3 }));
+    expect(high[8]!.trial?.windowsPassed).toBe(5);
+    expect(high[9]!.trial).toBeNull();
   });
 
   it("keeps a strike through a passed trial and forgives it after 60 windows without a failure", () => {
@@ -456,6 +486,8 @@ describe("recovery on trial", () => {
         restoreScale: 0.81,
         windowsPassed: 1,
         streaming: false,
+        openBacklog: null,
+        lastBacklog: null,
       }),
     });
     const rebased = rebaseGovernorState(state);

@@ -66,8 +66,8 @@ export interface GovernorSignals {
   readonly lateFraction?: number | null;
   /**
    * PR B: detail cells, ground-cover rows and terrain pages still waiting
-   * when the window closed. A streaming rung's trial ends only once it reads
-   * 0, because that rung's cost arrives with the streaming.
+   * when the window closed. A streaming rung's trial waits for it to settle,
+   * because that rung's cost arrives with the streaming.
    */
   readonly streamingBacklog?: number | null;
 }
@@ -374,9 +374,12 @@ export interface RecoveryTrial {
   /**
    * The rung's cost arrives with streaming (terrain pages, detail cells,
    * animals, vegetation reach), later than two windows: the trial lasts four
-   * and ends only on an empty streaming backlog (red team finding 3).
+   * and ends once the streaming backlog has settled (red team finding 3).
    */
   readonly streaming: boolean;
+  /** The streaming backlog in the window the step came back, and in the trial's latest window. */
+  readonly openBacklog: number | null;
+  readonly lastBacklog: number | null;
 }
 
 /** PR B (G1): one ladder's recovery record, so a rung that keeps failing waits longer each time. */
@@ -485,6 +488,12 @@ const CALM_LATE_FRACTION = 0.025;
 /** On-cadence windows that keep a recovered step; a streaming rung's trial takes longer. */
 const TRIAL_WINDOWS = 2;
 const STREAMING_TRIAL_WINDOWS = 4;
+/**
+ * The most windows a streaming trial waits past its four for the backlog
+ * to settle. In flight the detail backlog rarely reads 0 (new cells keep
+ * coming into reach), and an open trial holds every other recovery.
+ */
+const STREAMING_SETTLE_WINDOWS = 2;
 /** The backoff after a ladder's first, second, and third or later unforgiven failed trial. */
 const RECOVERY_BACKOFF_WINDOWS: readonly number[] = Object.freeze([15, 30, 60]);
 /** One strike is forgiven after this many windows without a failure on the ladder. */
@@ -826,7 +835,7 @@ function onCadenceDecision(
       gpuWorkLevel: state.gpuWorkLevel - 1,
       lastLever: lever,
       mode: "gpu-work",
-      trial: openTrial("gpu", state, lever),
+      trial: openTrial("gpu", state, lever, signals),
     });
   }
   if (
@@ -841,7 +850,7 @@ function onCadenceDecision(
       cpuWorkLevel: state.cpuWorkLevel - 1,
       lastLever: lever,
       mode: "cpu-work",
-      trial: openTrial("cpu", state, lever),
+      trial: openTrial("cpu", state, lever, signals),
     });
   }
   if (
@@ -856,7 +865,7 @@ function onCadenceDecision(
       framesSinceScaleChange: 0,
       pendingProbe: null,
       mode: "gpu-resolution",
-      trial: openTrial("scale", state, null),
+      trial: openTrial("scale", state, null, signals),
     });
   }
   return Object.freeze(held);
@@ -992,23 +1001,43 @@ function shedCpuWork(state: GovernorState, mode: GovernorMode): GovernorState {
   return Object.freeze({ ...state, cpuHotWindows: hot, gpuHotWindows: 0, mode });
 }
 
-function openTrial(ladder: RecoveryLadder, state: GovernorState, lever: string | null): RecoveryTrial {
+function openTrial(
+  ladder: RecoveryLadder,
+  state: GovernorState,
+  lever: string | null,
+  signals: GovernorSignals,
+): RecoveryTrial {
+  const backlog = signals.streamingBacklog ?? null;
   return Object.freeze({
     ladder,
     restoreLevel: ladder === "gpu" ? state.gpuWorkLevel : ladder === "cpu" ? state.cpuWorkLevel : 0,
     restoreScale: state.renderScale,
     windowsPassed: 0,
     streaming: lever !== null && STREAMING_LEVERS.has(lever),
+    openBacklog: backlog,
+    lastBacklog: backlog,
   });
+}
+
+/**
+ * Whether a streaming rung's cost has arrived: the backlog is no higher
+ * than when the step came back, and not growing. It need not reach 0,
+ * which in flight it rarely does; and after `STREAMING_SETTLE_WINDOWS`
+ * more windows the trial ends on the cadence alone.
+ */
+function streamingSettled(trial: RecoveryTrial, backlog: number | null, windowsPassed: number): boolean {
+  if (backlog === null || windowsPassed >= STREAMING_TRIAL_WINDOWS + STREAMING_SETTLE_WINDOWS) return true;
+  return backlog <= (trial.openBacklog ?? 0) && backlog <= (trial.lastBacklog ?? backlog);
 }
 
 /** An on-cadence window during a trial: it counts, and enough of them keep the step. */
 function advanceTrial(state: GovernorState, trial: RecoveryTrial, signals: GovernorSignals): GovernorState {
   const windowsPassed = trial.windowsPassed + 1;
   const required = trial.streaming ? STREAMING_TRIAL_WINDOWS : TRIAL_WINDOWS;
-  const settled = !trial.streaming || !((signals.streamingBacklog ?? 0) > 0);
+  const backlog = signals.streamingBacklog ?? null;
+  const settled = !trial.streaming || streamingSettled(trial, backlog, windowsPassed);
   if (windowsPassed < required || !settled) {
-    return { ...state, trial: Object.freeze({ ...trial, windowsPassed }) };
+    return { ...state, trial: Object.freeze({ ...trial, windowsPassed, lastBacklog: backlog }) };
   }
   return {
     ...state,
