@@ -70,7 +70,8 @@ import { BODY } from "./lc76Lines";
  * include the ocean and the boat's wake are built from), so it lies on the
  * drawn waves and its collar meets the body where the water does. Inland
  * water is drawn flat and keeps the flat skirt; which water the car is in is
- * read from the level itself (`carBowWaveSeaShare`).
+ * the simulator's (`CarVisualState.wadingSea`, the share of its wet tyres in
+ * the sea), since a lake beside the shore can stand at the sea's level.
  *
  * LIT AS FOAM on a level surface: the albedo under the sea's downwelling (the
  * sun by its elevation, plus the sky), from the same snapshot as the spray.
@@ -90,25 +91,8 @@ export const CAR_BOW_WAVE_FADE_RATE = 3;
 export const CAR_BOW_WAVE_ALBEDO = Object.freeze([0.5, 0.48, 0.43] as const);
 /** The footprint's corner radius, metres. */
 const CORNER_RADIUS = 0.45;
-/**
- * How far the car's water may sit from sea level and still be the sea: the
- * calm level the simulator wades it in is sea level itself, and the drawn
- * lakes and rivers stand above it.
- */
-export const CAR_BOW_WAVE_SEA_BAND: readonly [number, number] = Object.freeze([0.1, 0.4]) as readonly [number, number];
 /** Shader define: the skirt reads the sea's displacement. */
 export const CAR_BOW_WAVE_SEA_DEFINE = "CAR_BOW_WAVE_SEA";
-
-/**
- * 1 when the water the car stands in is the sea, 0 for a lake or a river
- * standing above it: the share of the sea's waves the skirt rides.
- */
-export function carBowWaveSeaShare(waterLevel: number, seaLevel: number): number {
-  if (!Number.isFinite(waterLevel) || !Number.isFinite(seaLevel)) return 0;
-  const [inner, outer] = CAR_BOW_WAVE_SEA_BAND;
-  const t = Math.min(1, Math.max(0, (Math.abs(waterLevel - seaLevel) - inner) / (outer - inner)));
-  return 1 - t * t * (3 - 2 * t);
-}
 
 /**
  * The footprint's outline in the body frame (x forward, z right) with each
@@ -196,7 +180,7 @@ export class CarBowWave {
   private readonly poseUniform = new Vector4();
   /** x speed along the body's forward axis, y water depth, z presence, w clock. */
   private readonly motionUniform = new Vector4();
-  /** x the sea's share (`carBowWaveSeaShare`), y the sea level, zw the floating origin. */
+  /** x the sea's share of the wet tyres (`wadingSea`), y the sea level, zw the floating origin. */
   private readonly seaUniform = new Vector4();
   private readonly sea: CarBowWaveOptions["sea"] | null;
   private readonly sunUniform = new Vector3(1, 1, 1);
@@ -322,6 +306,11 @@ export class CarBowWave {
     return { x: this.worldX, y: this.poseUniform.y, z: this.worldZ, heading: this.poseUniform.w };
   }
 
+  /** The share of the sea's waves the skirt rides: 1 in the sea, 0 on a lake or a river. */
+  get seaShare(): number {
+    return this.seaUniform.x;
+  }
+
   get bowMesh(): Mesh {
     return this.mesh;
   }
@@ -383,7 +372,7 @@ export class CarBowWave {
         Math.atan2(this.forward.z, this.forward.x),
       );
       this.motionUniform.set(Number.isFinite(car.speed) ? car.speed : 0, depth, this.presenceValue, sprayClock(time));
-      this.seaUniform.x = this.sea ? carBowWaveSeaShare(level, this.sea.seaLevel) : 0;
+      this.seaUniform.x = this.sea && Number.isFinite(car.wadingSea) ? Math.min(1, Math.max(0, car.wadingSea)) : 0;
     } else {
       this.motionUniform.z = this.presenceValue;
       this.motionUniform.w = sprayClock(time);

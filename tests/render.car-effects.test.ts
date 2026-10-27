@@ -14,7 +14,6 @@ import {
   CAR_BOW_WAVE_VERTEX_WGSL,
   CarBowWave,
   carBowWaveOutline,
-  carBowWaveSeaShare,
 } from "../src/render/webgpu/ground/CarBowWave";
 import {
   CAR_SOIL,
@@ -664,16 +663,7 @@ describe("the bow wave in a ford", () => {
     bow.dispose();
   });
 
-  it("rides the drawn sea's waves in the sea, and lies flat on a lake or a river above it", () => {
-    // The calm level the simulator wades the car in is sea level itself.
-    expect(carBowWaveSeaShare(0, 0)).toBe(1);
-    expect(carBowWaveSeaShare(0.08, 0)).toBe(1);
-    expect(carBowWaveSeaShare(-0.08, 0)).toBe(1);
-    expect(carBowWaveSeaShare(0.25, 0)).toBeGreaterThan(0);
-    expect(carBowWaveSeaShare(0.25, 0)).toBeLessThan(1);
-    expect(carBowWaveSeaShare(0.4, 0)).toBe(0);
-    expect(carBowWaveSeaShare(12, 0)).toBe(0);
-    expect(carBowWaveSeaShare(Number.NaN, 0)).toBe(0);
+  it("rides the drawn sea's waves in the sea, and lies flat on a lake or a river", () => {
     // The sea's own displacement, behind the define, and nothing of it otherwise.
     expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain(`#ifdef ${CAR_BOW_WAVE_SEA_DEFINE}`);
     expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("fn oceanSurfaceDisplacement(");
@@ -691,10 +681,23 @@ describe("the bow wave in a ford", () => {
     // Bound only while it draws, as the boat's wake is.
     onSea.bindOcean();
     expect(bound).toHaveLength(0);
-    const wading = rolling(2, { wadingDepth: 0.45, wheelSurface: [-1, -1, -1, -1], wheelSinkage: [0, 0, 0, 0] });
-    run((state) => onSea.update(state), 0.5, 60, 2, wading, { start: 1 });
+    const wading = (wadingSea: number) =>
+      rolling(2, { wadingDepth: 0.45, wadingSea, wheelSurface: [-1, -1, -1, -1], wheelSinkage: [0, 0, 0, 0] });
+    run((state) => onSea.update(state), 0.5, 60, 2, wading(1), { start: 1 });
     onSea.bindOcean();
     expect(bound).toEqual([seaMaterial]);
+    // Which water it is comes from the simulator, whatever its level: a lake
+    // beside the shore can stand at the sea's.
+    expect(onSea.seaShare).toBe(1);
+    run((state) => onSea.update(state), 0.1, 60, 2, wading(0.5), { start: 1.5 });
+    expect(onSea.seaShare).toBe(0.5);
+    run((state) => onSea.update(state), 0.1, 60, 2, wading(0), { start: 1.6 });
+    expect(onSea.seaShare).toBe(0);
+    run((state) => onSea.update(state), 0.1, 60, 2, wading(Number.NaN), { start: 1.7 });
+    expect(onSea.seaShare).toBe(0);
+    // A skirt built without the sea never rides it.
+    run((state) => flat.update(state), 0.1, 60, 2, wading(1), { start: 1 });
+    expect(flat.seaShare).toBe(0);
     flat.dispose();
     onSea.dispose();
   });
