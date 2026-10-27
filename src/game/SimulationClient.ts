@@ -2,9 +2,10 @@ import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from 
 import type { AircraftKind } from "@/src/sim";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
-import type {
-  TerrainMacroGrid,
-  TerrainPagePublication,
+import {
+  TERRAIN_READBACK_RING_CAPACITY,
+  type TerrainMacroGrid,
+  type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
 import {
   DEFAULT_AIRBORNE_START_AGL,
@@ -21,6 +22,17 @@ export const MAX_VISUAL_EXTRAPOLATION_SECONDS = 0.05;
 /** Present one normal 60 Hz worker snapshot behind the estimated simulation clock. */
 export const VISUAL_PRESENTATION_DELAY_SECONDS = 1 / 60;
 const CLOCK_OFFSET_WINDOW_SAMPLES = 32;
+/**
+ * New workers tried after the first one's script fails to load, before the
+ * flight gives up. A load failure is retried only until the worker first
+ * answers; a worker that loaded and then failed is never replaced.
+ */
+export const SIMULATION_WORKER_LOAD_RETRIES = 2;
+/** The wait before each replacement worker, so a passing fault can clear. */
+export const SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS = 500;
+export const SIMULATION_WORKER_LOAD_FAILED_MESSAGE =
+  "The flight simulation could not load its code. Reload to try again; if it keeps "
+  + "failing, check that no browser extension is blocking this site.";
 /** A genuine worker-clock slowdown changes phase gradually instead of freezing presentation. */
 const CLOCK_OFFSET_UPWARD_SLEW_SECONDS_PER_SECOND = 0.1;
 
@@ -72,8 +84,15 @@ class WorkerClockOffsetEstimator {
   }
 }
 
+function createSimulationWorker(): Worker {
+  return new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
+    type: "module",
+    name: "aerolith-flight-simulation",
+  });
+}
+
 export class SimulationClient {
-  private readonly worker: Worker;
+  private worker: Worker;
   private stateListener: StateListener | null = null;
   private errorListener: ErrorListener | null = null;
   private previousState: FlightVisualState | null = null;
@@ -88,6 +107,15 @@ export class SimulationClient {
   private resumePresentationFloorSeconds: number | null = null;
   /** The sampled simulation clock may coast or pause, but never move backwards. */
   private lastSampledSimulationTime: number | null = null;
+  /**
+   * Every command sent before the worker first answered, in order, so a
+   * worker whose script failed to load can be replaced and brought to the
+   * same state. Null once the worker has answered: its script is running.
+   */
+  private startupCommands: SimulationCommand[] | null = [];
+  private loadRetries = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
 
   constructor(
     world: WorldDefinition,
@@ -99,12 +127,7 @@ export class SimulationClient {
     aircraft: AircraftKind = "trainer",
     surfaceVehicle: SurfaceVehicleKind | null = null,
   ) {
-    this.worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
-      type: "module",
-      name: "aerolith-flight-simulation",
-    });
-    this.worker.addEventListener("message", this.handleMessage);
-    this.worker.addEventListener("error", this.handleWorkerError);
+    this.worker = this.attachWorker();
     this.send({
       type: "initialize",
       world,
@@ -308,15 +331,73 @@ export class SimulationClient {
   }
 
   dispose(): void {
-    this.worker.removeEventListener("message", this.handleMessage);
-    this.worker.removeEventListener("error", this.handleWorkerError);
-    this.worker.terminate();
+    this.disposed = true;
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.startupCommands = null;
+    this.detachWorker();
     this.stateListener = null;
     this.errorListener = null;
   }
 
+  private attachWorker(): Worker {
+    const worker = createSimulationWorker();
+    worker.addEventListener("message", this.handleMessage);
+    worker.addEventListener("error", this.handleWorkerError);
+    return worker;
+  }
+
+  private detachWorker(): void {
+    this.worker.removeEventListener("message", this.handleMessage);
+    this.worker.removeEventListener("error", this.handleWorkerError);
+    this.worker.terminate();
+  }
+
   private send(command: SimulationCommand, transferables: Transferable[] = []): void {
+    const startup = this.startupCommands;
+    if (startup) {
+      // Until the worker answers, a replacement may need this command again.
+      // Terrain still transfers to this worker, so the replay keeps a copy;
+      // the worker keeps only the newest pages, so only that many are held.
+      startup.push(replayableCommand(command));
+      if (command.type === "terrainPage") {
+        let pages = 0;
+        for (const held of startup) if (held.type === "terrainPage") pages += 1;
+        if (pages > TERRAIN_READBACK_RING_CAPACITY) {
+          startup.splice(startup.findIndex((held) => held.type === "terrainPage"), 1);
+        }
+      }
+    }
     this.worker.postMessage(command, transferables);
+  }
+
+  /**
+   * Replace a worker whose script failed to load, a bounded number of times.
+   * The replacement receives every command the first one was sent.
+   */
+  private retryWorkerLoad(): void {
+    if (this.loadRetries >= SIMULATION_WORKER_LOAD_RETRIES) {
+      console.error(
+        `The flight simulation worker failed to load ${this.loadRetries + 1} times; `
+        + "the browser's Network panel shows which file failed",
+      );
+      this.startupCommands = null;
+      this.errorListener?.(SIMULATION_WORKER_LOAD_FAILED_MESSAGE);
+      return;
+    }
+    this.loadRetries += 1;
+    console.warn(
+      "The flight simulation worker failed to load; retrying "
+      + `(${this.loadRetries} of ${SIMULATION_WORKER_LOAD_RETRIES})`,
+    );
+    this.detachWorker();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.disposed) return;
+      this.worker = this.attachWorker();
+      // Copied, not transferred: a later replacement may need them again.
+      for (const command of this.startupCommands ?? []) this.worker.postMessage(command);
+    }, SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
   }
 
   private clearPresentationPause(): void {
@@ -325,6 +406,8 @@ export class SimulationClient {
   }
 
   private readonly handleMessage = (event: MessageEvent<SimulationEvent>): void => {
+    // Any answer means the script loaded: from here on, terrain is transferred.
+    this.startupCommands = null;
     if (event.data.type === "error") {
       this.errorListener?.(event.data.message);
       return;
@@ -354,8 +437,27 @@ export class SimulationClient {
   };
 
   private readonly handleWorkerError = (event: ErrorEvent): void => {
+    // A script that failed to download or parse is reported as a bare `error`
+    // Event with no message (Firefox and Chrome alike); a script that loaded
+    // and then threw carries its message. Only the first kind is retried, and
+    // only before the worker has answered, while every command is still held.
+    if (!event.message && this.startupCommands) {
+      this.retryWorkerLoad();
+      return;
+    }
     this.errorListener?.(event.message || "The flight simulation worker stopped unexpectedly.");
   };
+}
+
+/** A command a replay can send again after the original's buffers were transferred. */
+function replayableCommand(command: SimulationCommand): SimulationCommand {
+  if (command.type === "terrainPage") {
+    return { ...command, page: { ...command.page, heights: command.page.heights.slice() } };
+  }
+  if (command.type === "terrainMacro") {
+    return { ...command, macro: { ...command.macro, heights: command.macro.heights.slice() } };
+  }
+  return command;
 }
 
 function lerp(first: number, second: number, alpha: number): number {
