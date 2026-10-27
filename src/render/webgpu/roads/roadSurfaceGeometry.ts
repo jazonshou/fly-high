@@ -165,7 +165,7 @@ function largerFloats(array: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffe
 // Ribbons
 // ---------------------------------------------------------------------------
 
-/** One station of a ribbon run: where the centreline is, how the section lies. */
+/** One station of a ribbon run: where the centreline is, how the section lies (`roadRibbonStation`). */
 export interface RoadRibbonStation {
   readonly x: number;
   readonly z: number;
@@ -180,13 +180,34 @@ export interface RoadRibbonStation {
   readonly rightZ: number;
 }
 
+/** A station's floats in a run's `stations`, in `RoadRibbonStation`'s order. */
+export const ROAD_RIBBON_STATION_FLOATS = 8;
+
 /** A run of contiguous pieces of one road edge, as stations. */
 export interface RoadRibbonRun {
   readonly classId: RoadClassId;
   /** `track:<edge>` or `major:<edge>`: edge ids are per layer. */
   readonly edgeKey: string;
   readonly firstIndex: number;
-  readonly stations: readonly RoadRibbonStation[];
+  /** `stationCount` stations of `ROAD_RIBBON_STATION_FLOATS` floats each (the array may run longer). */
+  readonly stations: Float64Array;
+  readonly stationCount: number;
+}
+
+/** A run's station as an object (tests and probes; the sweep reads the floats). */
+export function roadRibbonStation(run: RoadRibbonRun, index: number): RoadRibbonStation {
+  const at = index * ROAD_RIBBON_STATION_FLOATS;
+  const stations = run.stations;
+  return {
+    x: stations[at]!,
+    z: stations[at + 1]!,
+    along: stations[at + 2]!,
+    centre: stations[at + 3]!,
+    cross: stations[at + 4]!,
+    crossfall: stations[at + 5]!,
+    rightX: stations[at + 6]!,
+    rightZ: stations[at + 7]!,
+  };
 }
 
 export function roadRibbonEdgeKey(piece: Pick<RoadPiece, "classId" | "edgeId">): string {
@@ -197,76 +218,188 @@ export function roadRibbonEdgeKey(piece: Pick<RoadPiece, "classId" | "edgeId">):
 const JOIN_METERS = 1e-3;
 /** A mitre never widens a section more than this, however sharp the joint. */
 const MITRE_LIMIT = 1.6;
+/** Pieces `RoadRibbonCut.advance` takes between looks at the clock. */
+const CUT_PIECES_PER_CHECK = 16;
 
 /**
  * Chain one edge's pieces (any order, any regions) into runs of contiguous
  * pieces, and cut each into stations.
  */
 export function roadRibbonRuns(edgeKey: string, pieces: readonly RoadPiece[]): RoadRibbonRun[] {
-  const sorted = [...pieces].sort((first, second) => first.index - second.index);
-  const runs: RoadRibbonRun[] = [];
-  let chain: RoadPiece[] = [];
-  const flush = () => {
-    if (chain.length > 0) runs.push(runOf(edgeKey, chain));
-    chain = [];
-  };
-  for (const piece of sorted) {
-    const last = chain[chain.length - 1];
-    if (last && (piece.index !== last.index + 1
-      || Math.hypot(piece.ax - last.bx, piece.az - last.bz) > JOIN_METERS)) flush();
-    chain.push(piece);
-  }
-  flush();
-  return runs;
+  const cut = new RoadRibbonCut(edgeKey, pieces);
+  cut.advance(Number.POSITIVE_INFINITY);
+  return cut.runs;
 }
 
-function runOf(edgeKey: string, chain: readonly RoadPiece[]): RoadRibbonRun {
-  const directions = chain.map((piece) => {
+interface OpenRun {
+  readonly run: { classId: RoadClassId; edgeKey: string; firstIndex: number; stations: Float64Array; stationCount: number };
+  /** The piece taken last, its stations not cut yet: they wait for the next piece's direction (the joint's mitre). */
+  piece: RoadPiece;
+  dx: number;
+  dz: number;
+  length: number;
+  /** The section at that piece's a end. */
+  startX: number;
+  startZ: number;
+  first: boolean;
+  along: number;
+  /** The span being gathered: its first station and its chunk. */
+  spanStart: number;
+  spanCx: number;
+  spanCz: number;
+  spanKey: string | null;
+}
+
+/**
+ * One edge cut into runs and their spans by chunk, a few pieces at a time
+ * (`advance`), so a long road is cut over as many frames as it takes; the
+ * same runs and spans as at once (`roadRibbonRuns`, `roadRibbonSpansByChunk`).
+ */
+export class RoadRibbonCut {
+  readonly runs: RoadRibbonRun[] = [];
+  /** Chunk key -> spans, in run and station order, complete once `done`. */
+  readonly spans = new Map<string, RoadRibbonSpan[]>();
+  private readonly sorted: readonly RoadPiece[];
+  private next = 0;
+  private open: OpenRun | null = null;
+
+  constructor(readonly edgeKey: string, pieces: readonly RoadPiece[]) {
+    this.sorted = [...pieces].sort((first, second) => first.index - second.index);
+  }
+
+  get done(): boolean {
+    return this.next >= this.sorted.length && this.open === null;
+  }
+
+  /**
+   * Cut pieces until `deadline` (a `performance.now()` reading), looking at
+   * the clock every few pieces (so some are always cut); the last run closes
+   * once every piece is in.
+   */
+  advance(deadline: number): void {
+    const sorted = this.sorted;
+    while (this.next < sorted.length) {
+      const stop = Math.min(sorted.length, this.next + CUT_PIECES_PER_CHECK);
+      for (; this.next < stop; this.next += 1) this.take(sorted[this.next]!);
+      if (this.next < sorted.length && performance.now() >= deadline) return;
+    }
+    if (this.open) this.close(this.open);
+  }
+
+  private take(piece: RoadPiece): void {
     const dx = piece.bx - piece.ax;
     const dz = piece.bz - piece.az;
     const length = Math.hypot(dx, dz);
-    return length > 1e-9 ? { x: dx / length, z: dz / length, length } : { x: 1, z: 0, length: 0 };
-  });
-  /** The section at joint k (0: the first piece's a end; k: piece k-1's b end). */
-  const jointRight = (k: number): { x: number; z: number } => {
-    const before = directions[k - 1];
-    const after = directions[k];
-    const own = after ?? before!;
-    if (!before || !after) return { x: own.z, z: -own.x };
-    let tx = before.x + after.x;
-    let tz = before.z + after.z;
-    const length = Math.hypot(tx, tz);
-    if (length < 1e-6) return { x: own.z, z: -own.x };
-    tx /= length;
-    tz /= length;
-    // Mitred: the section's offset along the bisector keeps each piece's own
-    // width, so the ribbon's edges are straight lines along every piece.
-    const cosine = Math.max(1 / MITRE_LIMIT, tz * after.z + tx * after.x);
-    return { x: tz / cosine, z: -tx / cosine };
-  };
-  const stations: RoadRibbonStation[] = [];
-  let along = 0;
-  chain.forEach((piece, k) => {
-    const start = jointRight(k);
-    const end = jointRight(k + 1);
-    const direction = directions[k]!;
-    const steps = Math.max(1, Math.ceil(direction.length / ROAD_RIBBON_STATION_METERS));
-    for (let step = k === 0 ? 0 : 1; step <= steps; step += 1) {
-      const t = step / steps;
-      stations.push({
-        x: piece.ax + (piece.bx - piece.ax) * t,
-        z: piece.az + (piece.bz - piece.az) * t,
-        along: along + direction.length * t,
-        centre: piece.ha + (piece.hb - piece.ha) * t,
-        cross: piece.ca + (piece.cb - piece.ca) * t,
-        crossfall: piece.ka + (piece.kb - piece.ka) * t,
-        rightX: start.x + (end.x - start.x) * t,
-        rightZ: start.z + (end.z - start.z) * t,
-      });
+    const ux = length > 1e-9 ? dx / length : 1;
+    const uz = length > 1e-9 ? dz / length : 0;
+    const segment = length > 1e-9 ? length : 0;
+    const open = this.open;
+    if (open && piece.index === open.piece.index + 1
+      && Math.hypot(piece.ax - open.piece.bx, piece.az - open.piece.bz) <= JOIN_METERS) {
+      // The joint between the two: mitred along the bisector, so the
+      // ribbon's edges are straight lines along every piece.
+      let jointX = uz;
+      let jointZ = -ux;
+      let tx = open.dx + ux;
+      let tz = open.dz + uz;
+      const bisector = Math.hypot(tx, tz);
+      if (bisector >= 1e-6) {
+        tx /= bisector;
+        tz /= bisector;
+        const cosine = Math.max(1 / MITRE_LIMIT, tz * uz + tx * ux);
+        jointX = tz / cosine;
+        jointZ = -tx / cosine;
+      }
+      this.cutPiece(open, jointX, jointZ);
+      open.piece = piece;
+      open.dx = ux;
+      open.dz = uz;
+      open.length = segment;
+      open.startX = jointX;
+      open.startZ = jointZ;
+      open.first = false;
+      return;
     }
-    along += direction.length;
-  });
-  return { classId: chain[0]!.classId, edgeKey, firstIndex: chain[0]!.index, stations };
+    if (open) this.close(open);
+    this.open = {
+      run: {
+        classId: piece.classId,
+        edgeKey: this.edgeKey,
+        firstIndex: piece.index,
+        stations: new Float64Array(ROAD_RIBBON_STATION_FLOATS * 64),
+        stationCount: 0,
+      },
+      piece,
+      dx: ux,
+      dz: uz,
+      length: segment,
+      startX: uz,
+      startZ: -ux,
+      first: true,
+      along: 0,
+      spanStart: 0,
+      spanCx: 0,
+      spanCz: 0,
+      spanKey: null,
+    };
+  }
+
+  /** The open run's last piece cut with its own section at its b end, and the run's last span filed. */
+  private close(open: OpenRun): void {
+    this.cutPiece(open, open.dz, -open.dx);
+    const run = open.run;
+    if (open.spanKey !== null) {
+      fileSpan(this.spans, open.spanKey, { run, first: open.spanStart, last: run.stationCount - 1 });
+    }
+    this.runs.push(run);
+    this.open = null;
+  }
+
+  /** The stations of the open run's pending piece, its b end's section given, and the spans they close. */
+  private cutPiece(open: OpenRun, endX: number, endZ: number): void {
+    const piece = open.piece;
+    const run = open.run;
+    const steps = Math.max(1, Math.ceil(open.length / ROAD_RIBBON_STATION_METERS));
+    const needed = (run.stationCount + steps + 1) * ROAD_RIBBON_STATION_FLOATS;
+    if (needed > run.stations.length) {
+      const grown = new Float64Array(Math.max(needed, 2 * run.stations.length));
+      grown.set(run.stations);
+      run.stations = grown;
+    }
+    const stations = run.stations;
+    for (let step = open.first ? 0 : 1; step <= steps; step += 1) {
+      const t = step / steps;
+      const at = run.stationCount * ROAD_RIBBON_STATION_FLOATS;
+      stations[at] = piece.ax + (piece.bx - piece.ax) * t;
+      stations[at + 1] = piece.az + (piece.bz - piece.az) * t;
+      stations[at + 2] = open.along + open.length * t;
+      stations[at + 3] = piece.ha + (piece.hb - piece.ha) * t;
+      stations[at + 4] = piece.ca + (piece.cb - piece.ca) * t;
+      stations[at + 5] = piece.ka + (piece.kb - piece.ka) * t;
+      stations[at + 6] = open.startX + (endX - open.startX) * t;
+      stations[at + 7] = open.startZ + (endZ - open.startZ) * t;
+      run.stationCount += 1;
+      if (run.stationCount >= 2) this.segmentEnded(open);
+    }
+    open.along += open.length;
+  }
+
+  /** The segment ending at the run's newest station: its chunk ends the span gathering, or extends it. */
+  private segmentEnded(open: OpenRun): void {
+    const run = open.run;
+    const stations = run.stations;
+    const index = run.stationCount - 2;
+    const a = index * ROAD_RIBBON_STATION_FLOATS;
+    const b = a + ROAD_RIBBON_STATION_FLOATS;
+    const cx = Math.floor((stations[a]! + stations[b]!) / 2 / ROAD_RIBBON_CHUNK_METERS);
+    const cz = Math.floor((stations[a + 1]! + stations[b + 1]!) / 2 / ROAD_RIBBON_CHUNK_METERS);
+    if (open.spanKey !== null && cx === open.spanCx && cz === open.spanCz) return;
+    if (open.spanKey !== null) fileSpan(this.spans, open.spanKey, { run, first: open.spanStart, last: index });
+    open.spanKey = roadRibbonChunkKey(cx, cz);
+    open.spanCx = cx;
+    open.spanCz = cz;
+    open.spanStart = index;
+  }
 }
 
 /** The cross-section's column offsets for a class, metres across, fringe to fringe, 0 among them. */
@@ -304,28 +437,28 @@ export function roadRibbonSpansByChunk(runs: readonly RoadRibbonRun[]): Map<stri
     // The chunk compared as numbers, its key made only where a span starts.
     let spanCx = 0;
     let spanCz = 0;
-    for (let index = 0; index + 1 < stations.length; index += 1) {
-      const a = stations[index]!;
-      const b = stations[index + 1]!;
-      const cx = Math.floor((a.x + b.x) / 2 / ROAD_RIBBON_CHUNK_METERS);
-      const cz = Math.floor((a.z + b.z) / 2 / ROAD_RIBBON_CHUNK_METERS);
+    for (let index = 0; index + 1 < run.stationCount; index += 1) {
+      const a = index * ROAD_RIBBON_STATION_FLOATS;
+      const b = a + ROAD_RIBBON_STATION_FLOATS;
+      const cx = Math.floor((stations[a]! + stations[b]!) / 2 / ROAD_RIBBON_CHUNK_METERS);
+      const cz = Math.floor((stations[a + 1]! + stations[b + 1]!) / 2 / ROAD_RIBBON_CHUNK_METERS);
       if (spanKey === null || cx !== spanCx || cz !== spanCz) {
-        if (spanKey !== null) push(chunks, spanKey, { run, first: spanStart, last: index });
+        if (spanKey !== null) fileSpan(chunks, spanKey, { run, first: spanStart, last: index });
         spanKey = roadRibbonChunkKey(cx, cz);
         spanCx = cx;
         spanCz = cz;
         spanStart = index;
       }
     }
-    if (spanKey !== null) push(chunks, spanKey, { run, first: spanStart, last: stations.length - 1 });
+    if (spanKey !== null) fileSpan(chunks, spanKey, { run, first: spanStart, last: run.stationCount - 1 });
   }
   return chunks;
 }
 
-function push<T>(map: Map<string, T[]>, key: string, value: T): void {
+function fileSpan(map: Map<string, RoadRibbonSpan[]>, key: string, span: RoadRibbonSpan): void {
   const list = map.get(key);
-  if (list) list.push(value);
-  else map.set(key, [value]);
+  if (list) list.push(span);
+  else map.set(key, [span]);
 }
 
 /** Sweep one span of a run into `builder`, positions relative to (anchorX, anchorZ). */
@@ -339,19 +472,28 @@ export function appendRoadRibbonSpan(
   const formation = roadFormationHalfWidth(spec);
   const columns = roadRibbonColumns(span.run.classId);
   const kind = span.run.classId;
+  const stations = span.run.stations;
   let previous = -1;
   for (let index = span.first; index <= span.last; index += 1) {
-    const station = span.run.stations[index]!;
+    const at = index * ROAD_RIBBON_STATION_FLOATS;
+    const x = stations[at]!;
+    const z = stations[at + 1]!;
+    const along = stations[at + 2]!;
+    const centre = stations[at + 3]!;
+    const cross = stations[at + 4]!;
+    const crossfall = stations[at + 5]!;
+    const rightX = stations[at + 6]!;
+    const rightZ = stations[at + 7]!;
     const first = builder.vertexCount;
     for (const across of columns) {
-      const y = station.centre + roadCrossOffset(across, station.cross, station.crossfall) + ROAD_RIBBON_LIFT_METERS;
+      const y = centre + roadCrossOffset(across, cross, crossfall) + ROAD_RIBBON_LIFT_METERS;
       builder.vertex(
-        station.x + station.rightX * across - anchorX,
+        x + rightX * across - anchorX,
         y,
-        station.z + station.rightZ * across - anchorZ,
+        z + rightZ * across - anchorZ,
         0, 1, 0,
         across,
-        station.along,
+        along,
         formation - Math.abs(across),
         kind,
       );

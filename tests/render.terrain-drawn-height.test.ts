@@ -209,6 +209,31 @@ describe("the drawn-height lookup", () => {
     expect(again.statistics.rowsUploaded).toBe(0);
   });
 
+  it("does nothing at all on a frame whose camera cell, reach and records are the last one's", () => {
+    const settled = new TerrainDrawnHeight(null, 1_400);
+    settled.refresh(frame.records, CAMERA.x, CAMERA.z, 1_400);
+    const texels = settled.texels.slice();
+    // The same cell (a few metres on), the same reach and records: nothing read again.
+    settled.refresh(frame.records, CAMERA.x + 1, CAMERA.z, 1_400);
+    settled.refresh(frame.records, CAMERA.x + 1, CAMERA.z, 1_400);
+    expect(settled.statistics).toMatchObject({ refreshes: 3, unchanged: 2, cellsWritten: 0, rowsUploaded: 0 });
+    expect(settled.texels).toEqual(texels);
+    // A record changed: read and written again, whatever the camera did.
+    const laneB = frame.records.laneB.slice();
+    for (let lane = 0; lane < laneB.length; lane += 4) laneB[lane + 3] = laneB[lane + 3]! + 1;
+    settled.refresh({ ...frame.records, laneB }, CAMERA.x + 1, CAMERA.z, 1_400);
+    expect(settled.statistics.unchanged).toBe(2);
+    expect(settled.statistics.cellsWritten).toBeGreaterThan(1_000);
+    // And back: as the first frame left it.
+    settled.refresh(frame.records, CAMERA.x, CAMERA.z, 1_400);
+    expect(settled.statistics.unchanged).toBe(2);
+    expect(settled.texels).toEqual(texels);
+    // Another cell, or another reach: read again.
+    settled.refresh(frame.records, CAMERA.x + TERRAIN_DRAWN_CELL_METERS, CAMERA.z, 1_400);
+    settled.refresh(frame.records, CAMERA.x + TERRAIN_DRAWN_CELL_METERS, CAMERA.z, 1_000);
+    expect(settled.statistics.unchanged).toBe(2);
+  });
+
   it("answers missing, never another cell's node, where the window has moved on", () => {
     const moved = new TerrainDrawnHeight(null, 1_400);
     moved.refresh(frame.records, CAMERA.x, CAMERA.z, 1_400);

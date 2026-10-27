@@ -17,7 +17,7 @@ import {
   type RoadSurfaceRole,
 } from "./RoadSurfaceMaterialPlugin";
 import { RoadSurfaceIndex, type RoadSurfaceRegion } from "./RoadSurfaceIndex";
-import { ROAD_RIBBON_CHUNK_METERS, roadRibbonChunkOf, type RoadSurfaceArrays } from "./roadSurfaceGeometry";
+import { ROAD_RIBBON_CHUNK_METERS, type RoadSurfaceArrays } from "./roadSurfaceGeometry";
 import { ROAD_SURFACE_SLOT_FLOATS, RoadSurfaceSlots } from "./roadSurfaceSlots";
 
 /**
@@ -99,6 +99,8 @@ export interface RoadSurfaceStatistics {
   readonly bufferBuilds: number;
   /** Ranges uploaded in the last update. */
   readonly uploadRanges: number;
+  /** Times a layer was bound to the lookup, the atlas or an anchor it was not bound to already. */
+  readonly bindings: number;
   /** Main-thread time of the last update, milliseconds. */
   readonly updateMilliseconds: number;
 }
@@ -149,8 +151,10 @@ export class RoadSurfaceSystem {
   private ranges: RoadSurfaceRanges;
   private originX = 0;
   private originZ = 0;
-  private cameraChunk = "";
+  private cameraCx = Number.NaN;
+  private cameraCz = Number.NaN;
   private indexVersion = -1;
+  private bindings = 0;
   private writes = 0;
   private releases = 0;
   private bufferBuilds = 0;
@@ -203,6 +207,7 @@ export class RoadSurfaceSystem {
       chunkBuilds: this.index.builds,
       bufferBuilds: this.bufferBuilds,
       uploadRanges: this.uploadRanges,
+      bindings: this.bindings,
       updateMilliseconds: this.updateMilliseconds,
     };
   }
@@ -235,11 +240,12 @@ export class RoadSurfaceSystem {
     const deadline = started + ROAD_SURFACE_FRAME_BUDGET_MS;
     this.overBudget = false;
     this.frameWork = this.index.settle(deadline);
-    const { cx, cz } = roadRibbonChunkOf(cameraX, cameraZ);
-    const chunk = `${cx}:${cz}`;
-    if (chunk !== this.cameraChunk || this.index.version !== this.indexVersion) {
-      const crossed = chunk !== this.cameraChunk;
-      this.cameraChunk = chunk;
+    const cx = Math.floor(cameraX / ROAD_RIBBON_CHUNK_METERS);
+    const cz = Math.floor(cameraZ / ROAD_RIBBON_CHUNK_METERS);
+    if (cx !== this.cameraCx || cz !== this.cameraCz || this.index.version !== this.indexVersion) {
+      const crossed = cx !== this.cameraCx || cz !== this.cameraCz;
+      this.cameraCx = cx;
+      this.cameraCz = cz;
       this.indexVersion = this.index.version;
       this.reach(this.ribbon, cx, cz, this.ranges.roadRibbonRangeMeters, crossed);
       this.reach(this.rail, cx, cz, this.ranges.barrierDrawRangeMeters, crossed);
@@ -262,15 +268,7 @@ export class RoadSurfaceSystem {
           layer.mesh.setEnabled(false);
           continue;
         }
-        layer.plugin.setBinding({
-          lookup,
-          atlas: atlas.texture,
-          atlasShape: atlas.shape,
-          anchorX: layer.anchorCx * ROAD_RIBBON_CHUNK_METERS,
-          anchorZ: layer.anchorCz * ROAD_RIBBON_CHUNK_METERS,
-          anchorCx: layer.anchorCx,
-          anchorCz: layer.anchorCz,
-        });
+        this.bind(layer, lookup, atlas.texture, atlas.shape);
         if (layer.role === "ribbon") layer.plugin.setArrays(arrays);
         const ready = layer.plugin.ready;
         layer.mesh.setEnabled(ready);
@@ -358,6 +356,25 @@ export class RoadSurfaceSystem {
    * reports it warm (or declines it: capture mode, where every pipeline
    * compiles in its frame as the baselines did).
    */
+  /** A layer bound to the lookup, the atlas and its anchor, unless it is already. */
+  private bind(layer: Layer, lookup: TerrainDrawnHeight, atlas: BaseTexture, shape: TerrainDrawnAtlasShape): void {
+    const bound = layer.plugin.binding;
+    if (bound && bound.lookup === lookup && bound.atlas === atlas
+      && bound.anchorCx === layer.anchorCx && bound.anchorCz === layer.anchorCz
+      && bound.atlasShape.atlasEdge === shape.atlasEdge && bound.atlasShape.slotEdge === shape.slotEdge
+      && bound.atlasShape.gutter === shape.gutter && bound.atlasShape.gridEdge === shape.gridEdge) return;
+    this.bindings += 1;
+    layer.plugin.setBinding({
+      lookup,
+      atlas,
+      atlasShape: shape,
+      anchorX: layer.anchorCx * ROAD_RIBBON_CHUNK_METERS,
+      anchorZ: layer.anchorCz * ROAD_RIBBON_CHUNK_METERS,
+      anchorCx: layer.anchorCx,
+      anchorCz: layer.anchorCz,
+    });
+  }
+
   private warmUpPipelines(
     atlas: RoadSurfaceTerrain["drawnHeightAtlas"],
     arrays: RoadMaterialArrays | null,
@@ -375,15 +392,7 @@ export class RoadSurfaceSystem {
           layer.slots.write(PLACEHOLDER, 0, layer.anchorCx, layer.anchorCz, PLACEHOLDER_ARRAYS);
           layer.placeholder = true;
         }
-        layer.plugin.setBinding({
-          lookup: this.terrain.drawnHeight(range + ROAD_SURFACE_REACH_SLACK_METERS),
-          atlas: atlas.texture,
-          atlasShape: atlas.shape,
-          anchorX: layer.anchorCx * ROAD_RIBBON_CHUNK_METERS,
-          anchorZ: layer.anchorCz * ROAD_RIBBON_CHUNK_METERS,
-          anchorCx: layer.anchorCx,
-          anchorCz: layer.anchorCz,
-        });
+        this.bind(layer, this.terrain.drawnHeight(range + ROAD_SURFACE_REACH_SLACK_METERS), atlas.texture, atlas.shape);
         if (layer.role === "ribbon") layer.plugin.setArrays(arrays);
       }
       if (!layer.plugin.ready) continue;

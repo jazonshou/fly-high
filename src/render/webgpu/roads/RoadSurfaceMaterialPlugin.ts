@@ -314,7 +314,7 @@ export interface RoadSurfaceArrays {
 }
 
 export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
-  private binding: RoadSurfaceBinding | null = null;
+  private bound: RoadSurfaceBinding | null = null;
   private arrays: RoadSurfaceArrays | null = null;
 
   constructor(material: Material, readonly role: RoadSurfaceRole) {
@@ -326,17 +326,22 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
 
   /** What the vertex stage reads; the material is not drawn until both this and (ribbons) the arrays are set. */
   setBinding(binding: RoadSurfaceBinding): void {
-    this.binding = binding;
+    this.bound = binding;
     this.updateEnabled();
   }
 
+  get binding(): RoadSurfaceBinding | null {
+    return this.bound;
+  }
+
   setArrays(arrays: RoadSurfaceArrays | null): void {
+    if (arrays === this.arrays) return;
     this.arrays = arrays;
     this.updateEnabled();
   }
 
   get ready(): boolean {
-    return this.binding !== null && (this.role === "rail" || this.arrays !== null);
+    return this.bound !== null && (this.role === "rail" || this.arrays !== null);
   }
 
   override prepareDefines(defines: MaterialDefines): void {
@@ -374,7 +379,7 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
   }
 
   override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
-    const binding = this.binding;
+    const binding = this.bound;
     if (!binding) return;
     binding.lookup.bind(uniformBuffer, binding.atlas, binding.atlasShape, binding.anchorX, binding.anchorZ);
     uniformBuffer.updateFloat4("roadAnchor", binding.anchorX, binding.anchorZ, binding.anchorCx, binding.anchorCz);

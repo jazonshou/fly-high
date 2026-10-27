@@ -4,6 +4,7 @@ import {
   ROAD_RIBBON_CHUNK_METERS,
   ROAD_RIBBON_FRINGE_METERS,
   ROAD_RIBBON_PAD_KIND,
+  ROAD_RIBBON_STATION_FLOATS,
   ROAD_RIBBON_STATION_METERS,
   RoadSurfaceArrayBuilder,
   appendRoadPad,
@@ -16,7 +17,11 @@ import {
   roadRibbonEdgeKey,
   roadRibbonRuns,
   roadRibbonSpansByChunk,
+  roadRibbonStation,
+  RoadRibbonCut,
   type RoadRibbonRun,
+  type RoadRibbonSpan,
+  type RoadRibbonStation,
   type RoadSurfaceArrays,
 } from "@/src/render/webgpu/roads/roadSurfaceGeometry";
 import { buildTerrainNodeGrid } from "@/src/render/webgpu/terrain/TerrainQuadtree";
@@ -70,6 +75,10 @@ for (const piece of pieces) {
   byEdge.set(key, list);
 }
 const runs: RoadRibbonRun[] = [...byEdge.entries()].flatMap(([key, list]) => roadRibbonRuns(key, list));
+
+function stationsOf(run: RoadRibbonRun): RoadRibbonStation[] {
+  return Array.from({ length: run.stationCount }, (_, index) => roadRibbonStation(run, index));
+}
 
 /**
  * Front faces as the terrain draws them: its grid's first triangle looks up,
@@ -134,7 +143,7 @@ describe("the roads' ribbon geometry", () => {
       expect(edgeRuns.length).toBe(breaks);
       for (const piece of list) {
         for (const [x, z] of [[piece.ax, piece.az], [piece.bx, piece.bz]] as const) {
-          const found = edgeRuns.some((run) => run.stations.some((station) => Math.hypot(station.x - x, station.z - z) < 1e-6));
+          const found = edgeRuns.some((run) => stationsOf(run).some((station) => Math.hypot(station.x - x, station.z - z) < 1e-6));
           expect(found).toBe(true);
         }
       }
@@ -145,9 +154,10 @@ describe("the roads' ribbon geometry", () => {
     let joints = 0;
     for (const run of runs) {
       const half = roadFormationHalfWidth(roadClass(run.classId)) + ROAD_RIBBON_FRINGE_METERS;
-      for (let index = 0; index + 1 < run.stations.length; index += 1) {
-        const a = run.stations[index]!;
-        const b = run.stations[index + 1]!;
+      const stations = stationsOf(run);
+      for (let index = 0; index + 1 < stations.length; index += 1) {
+        const a = stations[index]!;
+        const b = stations[index + 1]!;
         expect(Math.hypot(b.x - a.x, b.z - a.z)).toBeLessThanOrEqual(ROAD_RIBBON_STATION_METERS + 1e-6);
         expect(b.along - a.along).toBeCloseTo(Math.hypot(b.x - a.x, b.z - a.z), 6);
         // Each edge of the segment is the segment's own line offset by the half
@@ -175,16 +185,45 @@ describe("the roads' ribbon geometry", () => {
       for (const span of spans) {
         expect(span.last).toBeGreaterThan(span.first);
         for (let index = span.first; index < span.last; index += 1) {
-          const a = span.run.stations[index]!;
-          const b = span.run.stations[index + 1]!;
+          const a = roadRibbonStation(span.run, index);
+          const b = roadRibbonStation(span.run, index + 1);
           const { cx, cz } = roadRibbonChunkOf((a.x + b.x) / 2, (a.z + b.z) / 2);
           expect(roadRibbonChunkKey(cx, cz)).toBe(key);
           segments += 1;
         }
       }
     }
-    expect(segments).toBe(runs.reduce((sum, run) => sum + run.stations.length - 1, 0));
+    expect(segments).toBe(runs.reduce((sum, run) => sum + run.stationCount - 1, 0));
     expect(ROAD_RIBBON_CHUNK_METERS).toBe(128);
+  });
+
+  it("cuts an edge a few pieces at a time into the same runs and spans as at once", () => {
+    const spanOf = (span: RoadRibbonSpan, cutRuns: readonly RoadRibbonRun[]) => `${cutRuns.indexOf(span.run)}:${span.first}-${span.last}`;
+    let stepped = 0;
+    for (const [key, list] of byEdge) {
+      const whole = roadRibbonRuns(key, list);
+      const cut = new RoadRibbonCut(key, list);
+      let advances = 0;
+      while (!cut.done) {
+        // Past the deadline already: as few pieces as an advance takes.
+        cut.advance(Number.NEGATIVE_INFINITY);
+        advances += 1;
+      }
+      if (advances > 1) stepped += 1;
+      expect(cut.runs.map((run) => [run.classId, run.firstIndex, run.stationCount])).toEqual(
+        whole.map((run) => [run.classId, run.firstIndex, run.stationCount]),
+      );
+      cut.runs.forEach((run, k) => {
+        const floats = run.stationCount * ROAD_RIBBON_STATION_FLOATS;
+        expect(run.stations.subarray(0, floats)).toEqual(whole[k]!.stations.subarray(0, floats));
+      });
+      const spans = roadRibbonSpansByChunk(whole);
+      expect([...cut.spans.keys()]).toEqual([...spans.keys()]);
+      for (const [chunk, list] of spans) {
+        expect(cut.spans.get(chunk)!.map((span) => spanOf(span, cut.runs))).toEqual(list.map((span) => spanOf(span, whole)));
+      }
+    }
+    expect(stepped).toBeGreaterThan(5);
   });
 
   it("sweeps a section a metre or less between columns, centreline among them, wound to look up", () => {
