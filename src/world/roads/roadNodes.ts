@@ -2,7 +2,7 @@ import { runwayToWorld } from "../airport";
 import { homeMarina } from "../marina";
 import { hashCoordinates, hashSeed, mixSeed, unitFloatFromHash } from "../seed";
 import type { WorldDefinition } from "../types";
-import { ROAD_CLASS, roadClass, type RoadClassId, type RoadClassSpec } from "./roadClasses";
+import { ROAD_CLASS, roadClass, roadFormationHalfWidth, type RoadClassId, type RoadClassSpec } from "./roadClasses";
 import { RoadGround, roadAirportKeepOut, roadGroundAt, roadGroundHeight } from "./roadTerrain";
 
 /**
@@ -245,6 +245,23 @@ export function airportRoadHead(world: WorldDefinition): AirportRoadHead | null 
     exitX: exit.x,
     exitZ: exit.z,
     headingRadians: Math.atan2(exit.x - start.x, exit.z - start.z),
+  });
+}
+
+/**
+ * Where the access road's lead-out passes through the home field's perimeter
+ * fence: straight out from the head, so at the head's `along` (runway-local)
+ * on the landside run, and as wide as the sealed formation and 2 m either
+ * side. Null where there are no roads (no home field, or an eroded world).
+ */
+export function airportRoadFenceOpening(
+  world: WorldDefinition,
+): { readonly along: number; readonly halfWidthMeters: number } | null {
+  const airport = world.airport;
+  if (!airport || world.worldEvolution === "eroded") return null;
+  return Object.freeze({
+    along: airport.runwayLength * AIRPORT_ROAD_HEAD.alongFraction + AIRPORT_ROAD_HEAD.alongOffset,
+    halfWidthMeters: roadFormationHalfWidth(roadClass(ROAD_CLASS.airport)) + 2,
   });
 }
 

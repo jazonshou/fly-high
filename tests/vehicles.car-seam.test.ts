@@ -18,11 +18,12 @@ import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
 import { LC76_GEOMETRY } from "../src/vehicles/landcruiser76";
 import { vehicleClass } from "../src/vehicles/kinds";
 import { createWorld, worldToRunway, type WorldDefinition } from "../src/world";
+import { airportRoadFenceOpening, airportRoadHead } from "../src/world/roads/roadNodes";
 import { surfaceSpawnKind } from "../src/workers/protocol";
 
 /**
  * The car's side of the shared vehicle seam, driven through the car's
- * simulator: the kind, the apron start, the controls block and the payload
+ * simulator: the kind, the road-head start, the controls block and the payload
  * reach every consumer the boat's do.
  */
 
@@ -57,9 +58,12 @@ describe("car seam", () => {
     expect(surfaceVehicleSpec("landcruiser").follow).toBe("surface");
   });
 
-  it("starts on the home apron, clear of the hangars and the fuel farm, facing the runway", () => {
+  it("starts at the access road head, between the last hangar and the fuel farm, facing out along the road", () => {
     const spawn = createSurfaceSpawn(world, "landcruiser");
     const airport = world.airport!;
+    const head = airportRoadHead(world)!;
+    expect(spawn.position.x).toBe(head.startX);
+    expect(spawn.position.z).toBe(head.startZ);
     const local = worldToRunway(airport, spawn.position.x, spawn.position.z);
     // Off the runway and its shoulders, inside the perimeter fence (168 m).
     expect(local.across).toBeGreaterThan(airport.runwayWidth / 2 + airport.shoulderWidth + 50);
@@ -69,13 +73,14 @@ describe("car seam", () => {
     expect(local.along).toBeGreaterThan(hangarRowEnd + 15);
     expect(local.along).toBeLessThan(-17 - 15);
     expect(spawn.position.y).toBeCloseTo(sampleGroundHeight(world, spawn.position.x, spawn.position.z), 6);
-    // Facing the runway: forward has a negative `across` component.
+    // Facing out along the road, away from the runway, towards its opening in the fence.
     const ahead = worldToRunway(
       airport,
       spawn.position.x + Math.sin(spawn.heading) * 10,
       spawn.position.z + Math.cos(spawn.heading) * 10,
     );
-    expect(ahead.across - local.across).toBeCloseTo(-10, 6);
+    expect(ahead.across - local.across).toBeCloseTo(10, 6);
+    expect(ahead.along).toBeCloseTo(airportRoadFenceOpening(world)!.along, 6);
     const recovery = createSurfaceRecoverySpawn(world, "landcruiser", 120, -340);
     expect(recovery.position).toEqual({ x: 120, y: sampleGroundHeight(world, 120, -340), z: -340 });
   });

@@ -154,6 +154,7 @@ import {
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
+import { airportRoadFenceOpening } from "@/src/world/roads/roadNodes";
 import { MarinaSystem } from "./webgpu/marina/MarinaSystem";
 import {
   SpawnedAirfieldManager,
@@ -1370,6 +1371,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
       checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
+      // The access road leaves the home field through its fence.
+      const fenceOpening = roads && airportDefinition === options.world.airport
+        ? airportRoadFenceOpening(options.world)
+        : null;
       // 3-9: the hangars are the only airport meshes left, and the apron they
       // stood on is gone — they read the ground the earthworks made.
       const airport = airportDefinition
@@ -1378,6 +1383,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           airportDefinition,
           (x, z) => options.terrainSample(x, z).height,
           options.world.seedHash,
+          fenceOpening ? [fenceOpening] : [],
         )
         : null;
       if (airport) cleanup.push(() => airport.dispose());

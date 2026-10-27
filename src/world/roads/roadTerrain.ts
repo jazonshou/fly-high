@@ -4,6 +4,7 @@ import { sampleLandformCover } from "../landforms";
 import { sampleTerrainHeightBeforeEarthworks } from "../terrain";
 import type { WorldDefinition } from "../types";
 import { createVolcanicGroundSample, sampleVolcanicGround } from "../volcanism";
+import { roadLakeWallAt } from "./roadLakes";
 
 /**
  * What the road generator reads of the world: the ground BEFORE every
@@ -20,7 +21,7 @@ import { createVolcanicGroundSample, sampleVolcanicGround } from "../volcanism";
 export const RoadGround = Object.freeze({
   /** Ordinary dry land. */
   land: 0,
-  /** Below or at the sea's edge: never. */
+  /** Below or at the sea's edge, or on a lake or its shore margin (`roadLakes.ts`): never. */
   water: 1,
   /** The home airport's platform and the inner part of its blend: never (the access road is laid out by hand there). */
   airport: 2,
@@ -63,10 +64,11 @@ const VOLCANIC = createVolcanicGroundSample();
 const COVER = { ergWeight: 0, duneHeight: 0, sandCover: 0 };
 const PROVINCE = { temperatureOffset: 0, dryness: 0 };
 
-/** The ground class at a point whose pre-earthworks height is `height`. Allocates nothing. */
+/** The ground class at a point whose pre-earthworks height is `height`. Allocates nothing once the point's lake tile is known. */
 export function roadGroundAt(world: WorldDefinition, x: number, z: number, height: number): RoadGroundId {
   if (height < world.seaLevel + ROAD_SHORE_CLEARANCE_METERS) return RoadGround.water;
   if (roadAirportKeepOut(world, x, z) < 0) return RoadGround.airport;
+  if (roadLakeWallAt(world, x, z)) return RoadGround.water;
   sampleVolcanicGround(world, x, z, 0, VOLCANIC);
   if (VOLCANIC.lavaCover + VOLCANIC.tephraCover > 0.25 && VOLCANIC.age < 0.6) return RoadGround.lava;
   sampleLandformCover(world, x, z, 0, COVER);
