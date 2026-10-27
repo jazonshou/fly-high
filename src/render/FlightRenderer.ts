@@ -1196,7 +1196,12 @@ export class FlightRenderer implements FlightRenderingSystem {
         options.world.prevailingWindRadians,
       );
       cleanup.push(() => atmosphere.dispose());
-      const terrain = new TerrainClipmapSystem(scene, options.world, profile);
+      const terrain = new TerrainClipmapSystem(scene, options.world, profile, {
+        // A car's ground: the observer is the car, and Low draws L0 round it.
+        vehicleNearField: options.vehicle !== undefined
+          && isSurfaceVehicleKind(options.vehicle)
+          && vehicleClass(options.vehicle) === "car",
+      });
       cleanup.push(() => terrain.dispose());
       if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
       checkpointRendererStartup("core scene and terrain construction", "sync");

@@ -40,15 +40,17 @@ import { BODY } from "./lc76Lines";
  *    wider with speed, white where it breaks;
  *  - **the wash** behind: churned water spreading from the trailing faces;
  *  - **a collar** of white water hugging the body wherever it moves.
- * The foam is broken into patches by value noise that flows outward from the
- * body at the water's speed past it. The splash thrown up off the bumper is
+ * The foam is broken into soft-edged patches by value noise that flows
+ * outward from the body at the water's speed past it, and thinned inside them
+ * by a finer octave, so it reads as bubbles rather than paint. The splash thrown up off the bumper is
  * the particles' (`CarParticleSystem`).
  *
  * WHERE. On the water the car stands in: the ground under its lowest tyre
  * (the feet raised by their sinkage, `carWheelContacts`) plus the payload's
- * `wadingDepth`, which the simulator measures from that tyre, turned with the car's heading only, as the water stays
- * level whatever the body does. It fades in and out over a third of a second,
- * so driving into a ford never pops.
+ * `wadingDepth`, which the simulator measures from that tyre, turned with
+ * the car's heading only, as the water stays level whatever the body does.
+ * It fades in and out over a third of a second, so driving into a ford never
+ * pops.
  *
  * LIT AS FOAM on a level surface: the albedo under the sea's downwelling (the
  * sun by its elevation, plus the sky), from the same snapshot as the spray.
@@ -435,9 +437,12 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let cover = clamp(collar + (0.75 * fragmentInputs.bowLead + 0.5 * fragmentInputs.bowTrail) * reach, 0.0, 0.85);
   let p = fragmentInputs.bowNoise;
   let noise = 0.62 * bowValueNoise(p) + 0.38 * bowValueNoise(p * 2.31 + vec2f(3.7, 9.1));
-  // Patches that break up and thin towards the edge rather than a sheet.
-  let foam = smoothstep(1.0 - cover, 1.15 - cover, noise) * (0.35 + 0.65 * reach);
-  let alpha = fragmentInputs.bowGate * foam * 0.8;
+  // Patches that break up and thin towards the edge rather than a sheet, on
+  // soft edges, and broken inside by finer bubbles and streaks: a hard edge
+  // and a flat inside read as white paint on the water.
+  let foam = smoothstep(0.95 - cover, 1.3 - cover, noise) * (0.35 + 0.65 * reach);
+  let bubbles = bowValueNoise(p * vec2f(2.7, 1.6) + vec2f(11.3, 4.7));
+  let alpha = fragmentInputs.bowGate * foam * (0.4 + 0.35 * bubbles);
   if (alpha < 0.003) { discard; }
   fragmentOutputs.color = vec4f(max(fragmentInputs.bowColor, vec3f(0.0)) * alpha, alpha);
 }

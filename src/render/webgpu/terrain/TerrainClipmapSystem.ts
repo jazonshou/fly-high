@@ -80,10 +80,12 @@ import {
   createTerrainNodeBuffers,
   resolveTerrainResidentCornerMorphs,
   selectTerrainNodes,
+  terrainNearFloorNodeAllowance,
   writeTerrainNodeBuffers,
   type TerrainNode,
   type TerrainNodeBuffers,
   type TerrainNodeCornerMorphs,
+  type TerrainNodeSelectionInput,
 } from "./TerrainQuadtree";
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
@@ -263,6 +265,34 @@ export interface TerrainClipmapSystemOptions {
    * inject `computeFactory` pass one here to drive the refresh.
    */
   readonly landformIndex?: TerrainLandformIndex;
+  /**
+   * A car session: the observer is the car, and the tier's
+   * `vehicleNearTerrainL0RadiusMeters` drops the terrain's floor to L0 round
+   * it (`TerrainNodeSelectionInput.nearFloor`).
+   */
+  readonly vehicleNearField?: boolean;
+}
+
+/** The near-floor patch's geomorph band: one L0 node, so it finishes within the edge node. */
+export const VEHICLE_NEAR_TERRAIN_BAND_METERS = 64;
+
+/** The disc a car session draws L0 in, or undefined: no car, or a tier whose floor is L0. */
+function vehicleNearFloor(
+  profile: WebGpuQualityProfile,
+  options: TerrainClipmapSystemOptions,
+): TerrainNodeSelectionInput["nearFloor"] {
+  if (!options.vehicleNearField || !(profile.vehicleNearTerrainL0RadiusMeters > 0)) return undefined;
+  return {
+    level: 0,
+    radiusMeters: profile.vehicleNearTerrainL0RadiusMeters,
+    bandMeters: VEHICLE_NEAR_TERRAIN_BAND_METERS,
+  };
+}
+
+/** Instances a node buffer holds: the budget, plus the near floor's own nodes. */
+function terrainNodeCapacity(profile: WebGpuQualityProfile, options: TerrainClipmapSystemOptions): number {
+  return (options.nodeBudgetOverride ?? profile.cdlodNodeBudget)
+    + terrainNearFloorNodeAllowance(vehicleNearFloor(profile, options), profile.finestResidentLevel);
 }
 
 /** `VolcanicSiteIndexStream` as the clipmap uses it. */
@@ -799,9 +829,7 @@ export class TerrainClipmapSystem {
         ?? new MaterialSynthesisClient();
     }
 
-    this.beautyBuffers = createTerrainNodeBuffers(
-      options.nodeBudgetOverride ?? profile.cdlodNodeBudget,
-    );
+    this.beautyBuffers = createTerrainNodeBuffers(terrainNodeCapacity(profile, options));
     this.beautyMesh = new Mesh("terrain-cdlod", scene);
     buildTerrainNodeGrid().applyToMesh(this.beautyMesh, false);
     this.beautyMesh.material = this.material;
@@ -1475,6 +1503,7 @@ export class TerrainClipmapSystem {
       pixelThreshold: this.profile.cdlodPixelThreshold,
       nodeBudget: this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
       finestResidentLevel: this.profile.finestResidentLevel,
+      nearFloor: vehicleNearFloor(this.profile, this.options),
       coarsestLevel: COARSEST_NODE_LEVEL,
       farPlaneMeters: 45_000,
       deviationFor: (address) => residentPage(address)?.stats.maxDeviationFromParent ?? null,
@@ -1763,9 +1792,7 @@ export class TerrainClipmapSystem {
       mesh.layerMask = 0;
       mesh.metadata = { ...(mesh.metadata ?? {}), excludePlanarReflection: true };
       this.casterMeshes.push(mesh);
-      this.casterBuffers.push(createTerrainNodeBuffers(
-        this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
-      ));
+      this.casterBuffers.push(createTerrainNodeBuffers(terrainNodeCapacity(this.profile, this.options)));
     }
     // `4.5-B4(b)`: new caster submeshes have no ShadowDepthWrapper
     // registration until something creates their FORWARD effect, and nothing
