@@ -42,6 +42,9 @@ import {
 } from "../src/render/webgpu/ground/CarTrackSystem";
 import { LC76_TYRE_LOADED_RADIUS, LC76_TYRE_WIDTH } from "../src/render/webgpu/ground/lc76Lines";
 import { SURFACE_MATERIAL_COUNT, SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
+import { surfaceVisualState } from "../src/sim/surface";
+import { CalmWaterSurface } from "../src/sim/water";
+import { car as rigCar, controls as rigControls, groundOf, STEP as RIG_STEP } from "./support/carRig";
 
 /**
  * The LandCruiser's effects (src/render/webgpu/ground/CarEffects.ts): what it
@@ -637,5 +640,49 @@ describe("the car's effects together", () => {
       scene.dispose();
       engine.dispose();
     }
+  });
+
+  it("spray and push a bow wave off the simulator's own ford", () => {
+    // The real car driven down a 3 degree beach into still water; with no
+    // world its tyres report asphalt, so only the water over each tyre's
+    // ground (from the wading depth) can make it a ford.
+    const grade = Math.tan((3 * Math.PI) / 180);
+    const height = (z: number): number => 0.6 - grade * z;
+    const sim = rigCar({}, groundOf((out) => {
+      out.height = height(out.z);
+      out.dhdx = 0;
+      out.dhdz = -grade;
+    }));
+    sim.setEnvironment({
+      water: new CalmWaterSurface(0, (_x, z) => height(z)),
+      wind: { x: 0, y: 0, z: 0 },
+      bedHeight: (_x, z) => height(z),
+      gravity: 9.80665,
+    });
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const particles = new CarParticleSystem(scene, { cap: 256 });
+    const bow = new CarBowWave(scene);
+    rigControls(sim, { accelerator: 0.25 });
+    let dryBirths = -1;
+    let wading = 0;
+    for (let step = 0; step < 120 * 12 && wading < 0.4; step += 1) {
+      sim.step(RIG_STEP);
+      const state = surfaceVisualState(sim.snapshot(), undefined);
+      particles.update(state);
+      bow.update(state);
+      wading = (state.vehicle as CarVisualState).wadingDepth;
+      if (wading === 0) dryBirths = particles.birthsBySource.water;
+    }
+    expect(wading).toBeGreaterThanOrEqual(0.4);
+    expect(dryBirths).toBe(0);
+    expect(particles.birthsBySource.water).toBeGreaterThan(0);
+    expect(particles.birthsBySource.bow).toBeGreaterThan(0);
+    expect(particles.birthsBySource.mud + particles.birthsBySource.dust).toBe(0);
+    expect(bow.drawing).toBe(true);
+    particles.dispose();
+    bow.dispose();
+    scene.dispose();
+    engine.dispose();
   });
 });
