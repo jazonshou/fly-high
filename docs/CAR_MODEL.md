@@ -521,3 +521,77 @@ the car's weight there, so the climb needs a friction of about 0.9. Asphalt
 and gravel's 0.65 is still marginal at 30 degrees (atan 0.65 is 33 degrees
 before rolling resistance): the car creeps a few metres and stops, as loose
 stone on that grade does.
+
+## Driving the world
+
+`scripts/ground-vehicle-probe.mts` drives the car headless over the real
+world, built as the worker builds the car's: the terrain with the road
+regions round the home airport installed (their earthworks and paint), the
+airports', marina's and guardrails' colliders, and the sea and the posted
+rivers in one water composite, in still air. A scripted driver steers by pure
+pursuit along a 2 m line, follows a speed profile with a PI on the
+accelerator, and when stuck backs 4 m off in R and tries again. It drives
+three legs on five seeds in each of the six forced climate provinces, which
+change the surfaces but not the ground, so a seed's routes are the same in
+every province. The step times are this cloud box's (about 1.6 times slower
+than the tuning box), after the first 2 s of a leg.
+
+| Leg | Finished | Stuck events | Rolled | Mean speed | Peak pitch, roll | Step: mean, 99.9%, worst |
+|---|---|---|---|---|---|---|
+| Open country: 2 km in 250 m legs from the airport road head, 4H at up to 36 km/h, roads crossed at a walk | 30 of 30 | 0 | 0 | 32.8 km/h | 21.6, 30.8 degrees | 95 us, 1.3 ms, 11 ms |
+| The steepest fall-line climb within 4 km, 4L from rest at 3 m/s | 24 of 30 | 18 | 0 | 9.3 km/h | 31.3, 12.3 degrees | 89 us, 1.8 ms, 7.4 ms |
+| A ford posted across the open line (10 m wide, 0.5 m deep, 1 m/s), at 2 m/s | 30 of 30 | 0 | 0 | 13.3 km/h | 6.7, 5.8 degrees | 91 us, 1.8 ms, 8.8 ms |
+
+- Open country. Seed 2's line stops at 1 km, where no bearing passes the
+  line's tests. The worst roll, 30.8 degrees on seed 3 in every province, is
+  a gravel road crossed on a diagonal at 2.5 m/s: one front wheel drops into
+  the 0.5 m ditch while the diagonal rear climbs the far wall and the other
+  front tyre unloads. Before the line kept to roads at grade it crossed one in
+  a cut on seed 3, and the car climbed the 30 degree batter on the forest
+  floor and rolled, in five provinces of six.
+- The climb. The default seed's slope averages 15.6 degrees over its 120 m
+  and reaches 30 over 10 m: the car stops at 126 m on about 31 degrees in
+  every province, three tries each, on forest floor, grass and dry grass
+  alike. Their sandy loam's shear gives out there in 4L (asphalt and rock
+  climb 30 degrees; see Off the road). The other seeds' slopes, 15 to 18
+  degrees on average and up to 24, are climbed at 10 km/h.
+- The fords are crossed at 13 km/h with 0.50 to 0.60 m at the deepest
+  wheel, the engine running.
+- The step. At speed on the real world a step costs about 90 to 100 us here,
+  about 60 on the tuning box. Of that the substeps are about 62 us (the tyres
+  32, the soil 6), the contacts against the lattice 14, the hull's probes 15
+  and forces 13, the water 11 (the calm sea's bed is a terrain height, about
+  13 us, on each turn the dry poll takes) and the surfaces 9. The slow steps
+  (1 to 2 ms at the 99.9th percentile, 4 to 11 ms at worst) are garbage
+  collections of the probe's own tallies, a run of new lattice nodes as the
+  car reaches them, and V8 compiling.
+
+The show drive, on the default world: from the car's start on the apron
+round onto the sealed airport road, along it in 2H to its end, onto the
+gravel in 4H, along it to the steepest 200 m of gravel climb within reach,
+and through a ford posted across the gravel beyond. 5.26 km in 442 s, no
+stuck event; the step 96 us mean, 0.98 ms at the 99.9th percentile, 6.2 ms
+worst.
+
+| Stretch | m | s | Average km/h | Top km/h | Climb m | Peak pitch, roll | Wading m | Range, gears | Tyres on |
+|---|---|---|---|---|---|---|---|---|---|
+| Apron, a U-turn onto the road head | 80 | 20 | 14.3 | 17.3 | -2.5 | 10.0, 10.1 | 0 | 2H, 1-2 | grass 66%, asphalt 34% |
+| Airport road | 1,377 | 85 | 58.1 | 63.0 | -13.0 | 4.4, 3.5 | 0 | 2H, 1-5 | asphalt |
+| Hairpin onto the gravel | 45 | 15 | 10.9 | 15.8 | 1.9 | 26.4, 31.7 | 0 | 2H to 4H, 1-2 | gravel 67%, grass 23%, asphalt 10% |
+| Gravel | 3,180 | 234 | 48.8 | 53.0 | 18.6 | 4.5, 5.0 | 0 | 4H, 1-5 | gravel |
+| Gravel junctions, at a walk | 56 | 18 | 11.3 | 18.4 | 0.5 | 13.7, 20.3 | 0 | 4H, 1-2 | gravel 71%, asphalt 29% |
+| Gravel climb, 7.7% over 205 m | 204 | 15 | 49.3 | 50.9 | 15.7 | 7.0, 0.5 | 0 | 4H, 4 | gravel |
+| Gravel beyond | 232 | 18 | 46.6 | 50.9 | 10.7 | 4.0, 0.9 | 0 | 4H, 2-4 | gravel |
+| To the ford | 34 | 17 | 7.2 | 15.9 | 1.0 | 2.8, 0.7 | 0 | 4H, 1-2 | gravel |
+| Ford, 10 m wide, 0.5 m deep, 1 m/s | 14 | 7 | 6.8 | 7.8 | 0.1 | 1.4, 0.7 | 0.64 | 4H, 1 | water 72%, gravel 28% |
+| Out of the ford | 41 | 11 | 14.0 | 16.5 | -0.4 | 3.3, 0.9 | 0 | 4H, 1-2 | gravel |
+
+Two of its stretches are the roads', not the car's. The sealed road ends at
+the end of its own gravel road, which leaves at 143 degrees: tighter than the
+car's lock, so at full lock and a walk it runs 6 m wide of the line through
+the ditch and onto the batter (a driver would take it in three points). And
+where that gravel road crosses the sealed road there is a 0.6 m step. On a
+rig, a 0.5 m V ditch 1.5 m wide (the gravel class's, 34 degree walls) bottoms
+a tyre on its rim at 100 to 140 kN when hit at 3.5 to 5 m/s at 30 to 50
+degrees, and can roll the car; at 2.5 m/s it is crossed at any angle without rolling, and a
+3 m wide ditch of the same depth (18 degree walls) rolled it in no case.
