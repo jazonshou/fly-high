@@ -59,16 +59,19 @@ import { BODY } from "./lc76Lines";
  * It fades in and out over a third of a second, so driving into a ford never
  * pops.
  *
- * ON THE SEA, ON ITS WAVES. The simulator wades the car in calm water, but
- * the sea is drawn with its swell, and a skirt lying at the calm level sat
- * under a crest: the opaque sea covered the body down to the drawn
+ * ON THE SEA, ON ITS WAVES. The sea is drawn with its swell, and a skirt
+ * lying at one calm level sat under a crest: the opaque sea covered the body down to the drawn
  * waterline while the skirt, a crest's height lower, could only be seen
  * where it lay clear of the body, so the foam broke off a body's width
  * behind the car and left a hole of plain sea under the tail lamps
  * (`car-ford-chase`, 2026-10-27). In the sea (`CarBowWaveOptions.sea`) the
- * skirt takes the sea's own displacement (`oceanSurfaceDisplacement`, the
+ * skirt takes the drawn sea's height (`oceanSurfaceDisplacement`, the
  * include the ocean and the boat's wake are built from), so it lies on the
- * drawn waves and its collar meets the body where the water does. Inland
+ * drawn waves and its collar meets the body where the water does. Only the
+ * height: the sea's vertices also move sideways with the chop, and a skirt
+ * moved with them stood a metre off the body in a Cloudy swell, so it reads
+ * the surface over each of its own points as the sea twin the car wades
+ * does, by two fixed-point steps back along the displacement. Inland
  * water is drawn flat and keeps the flat skirt; which water the car is in is
  * the simulator's (`CarVisualState.wadingSea`, the share of its wet tyres in
  * the sea), since a lake beside the shore can stand at the sea's level.
@@ -448,23 +451,27 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let s = sin(uniforms.bowPose.w);
   // Body x forward, z right, turned to the heading (forward = (cos h, sin h) in world x, z).
   let turned = vec2f(local.x * c - local.y * s, local.x * s + local.y * c);
-  // On the sea, the sea's own displacement at this point, so the skirt lies
-  // on the drawn waves: the calm level eased to sea level, plus the swell.
-  var sea = vec3f(0.0);
+  // On the sea, the drawn surface's height over this point, so the skirt
+  // lies on the drawn waves: the calm level eased to sea level, plus the
+  // swell. The sea's vertices move sideways with the chop as well as up, so
+  // the surface over this point is the one whose vertex started a
+  // displacement away: found as the sea twin finds it, by two fixed-point
+  // steps. The skirt keeps its own place round the body.
+  var swell = 0.0;
   var level = uniforms.bowPose.y;
 #ifdef ${CAR_BOW_WAVE_SEA_DEFINE}
   let share = uniforms.bowSea.x;
   if (share > 0.0) {
     let worldXZ = vec2f(uniforms.bowPose.x + turned.x, uniforms.bowPose.z + turned.y) + uniforms.bowSea.zw;
-    sea = oceanSurfaceDisplacement(worldXZ) * share;
+    var label = worldXZ;
+    for (var iteration = 0; iteration < 2; iteration += 1) {
+      label = worldXZ - oceanSurfaceDisplacement(label).xz * share;
+    }
+    swell = oceanSurfaceDisplacement(label).y * share;
     level = mix(level, uniforms.bowSea.y, share);
   }
 #endif
-  let world = vec3f(
-    uniforms.bowPose.x + turned.x + sea.x,
-    level + 0.02 + rise + sea.y,
-    uniforms.bowPose.z + turned.y + sea.z,
-  );
+  let world = vec3f(uniforms.bowPose.x + turned.x, level + 0.02 + rise + swell, uniforms.bowPose.z + turned.y);
 
   let toPoint = world - uniforms.cameraPosition;
   let distanceMeters = max(length(toPoint), 0.001);

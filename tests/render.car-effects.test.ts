@@ -667,7 +667,12 @@ describe("the bow wave in a ford", () => {
     // The sea's own displacement, behind the define, and nothing of it otherwise.
     expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain(`#ifdef ${CAR_BOW_WAVE_SEA_DEFINE}`);
     expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("fn oceanSurfaceDisplacement(");
-    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("oceanSurfaceDisplacement(worldXZ) * share");
+    // Its height over each of its own points, as the sea twin finds it: two
+    // fixed-point steps back along the chop's sideways displacement.
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("for (var iteration = 0; iteration < 2; iteration += 1)");
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("label = worldXZ - oceanSurfaceDisplacement(label).xz * share;");
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("swell = oceanSurfaceDisplacement(label).y * share;");
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("uniforms.bowPose.x + turned.x, level + 0.02 + rise + swell, uniforms.bowPose.z + turned.y");
 
     const bound: unknown[] = [];
     const ocean = { bindSurface: (material: unknown) => bound.push(material) };
