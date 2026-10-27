@@ -7,6 +7,7 @@ import {
   pageTexelSizeMeters,
 } from "@/src/render/webgpu/world/pageGeometry";
 import type { WorldPageKey } from "@/src/render/webgpu/world/pageKey";
+import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world/terrain";
 import { SurfaceMaterial } from "./surfaceMaterials";
 import {
   WORLD_PAGE_GPU_CHANNELS,
@@ -182,6 +183,20 @@ export function seasonBucketBlend(dayOfYear: number): SeasonBucketBlend {
   const floor = Math.floor(centred);
   const lo = ((floor % SEASON_BUCKETS) + SEASON_BUCKETS) % SEASON_BUCKETS;
   return { lo, hi: (lo + 1) % SEASON_BUCKETS, t: centred - floor };
+}
+
+/**
+ * R-13: the day the land-cover bake is keyed on for the clock's `dayOfYear`,
+ * a whole number of buckets from the reference day, so the reference day
+ * bakes the tuned world exactly. The bake classifies at `seasonBucketBlend`
+ * of THIS day's two buckets; the fragment cross-fades them by the clock
+ * day's own `t`. The car's surfaces read the same pair and the same fade.
+ */
+export function seasonBakeDayOfYear(dayOfYear: number): number {
+  const bucketDays = 365 / SEASON_BUCKETS;
+  const offset = Math.round((dayOfYear - TERRAIN_REFERENCE_DAY_OF_YEAR) / bucketDays);
+  const bucketed = TERRAIN_REFERENCE_DAY_OF_YEAR + offset * bucketDays;
+  return ((bucketed % 365) + 365) % 365;
 }
 
 /** The representative day at a bucket's centre — what a bake is keyed on. */

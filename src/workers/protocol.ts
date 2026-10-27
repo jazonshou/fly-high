@@ -71,12 +71,19 @@ export type SimulationCommand =
        * a road fill stands on it.
        */
       infrastructure: InfrastructureRegionsUpdate;
+      /**
+       * The calendar day the renderer paints the terrain for (settings'
+       * `dayOfYear`): the car's seasonal snow follows it.
+       */
+      dayOfYear: number;
     }
   | { type: "controls"; controls: ControlState }
   | { type: "mode"; mode: FlightMode }
   | { type: "weather"; weather: WeatherPreset }
   /** The car's gearbox and clutch, taken at its next start. */
   | { type: "carSetup"; carSetup: CarSetup }
+  /** A new calendar day, sent with the renderer's: the car's surfaces repaint for it. */
+  | { type: "dayOfYear"; dayOfYear: number }
   | { type: "attract"; enabled: boolean }
   /**
    * `trimSeed` is the player's trim in `controls.trim` units, decided on the

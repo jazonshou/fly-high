@@ -3335,3 +3335,54 @@ the pontoon lamps that stood against the basin.
 
 Open: the drawn pontoons stand still while the sim's heave on the sea; they
 follow once the sea twin's heights reach the main thread.
+
+### Promotion 2026-10-27 — the Boats PR's sea (all thirty-nine)
+
+The Boats PR moves the sea in every session, aircraft included, and nothing
+else moves a baseline:
+
+- `91b3269`: the FFT cascades sample at texel centres (a half-texel shift).
+- `94cbbfd` (D1): a light-wind sea is capped at the Pierson-Moskowitz limit,
+  so Clear's sea is smaller and cascade 4 (512-2048 m) is empty.
+- `20f780d` (D2): the sea's wind follows the weather preset. The shots render
+  Clear, 6 m/s; Breezy, the game's default, is unchanged.
+- `ec8fd9f`: waves travel downwind, and the surface gathers onto the crests,
+  where the foam now sits.
+- `d76a5ee`: light points draw after the water (the section above).
+
+The marina's meshes draw in no baseline shot, and the marina's calm basin is
+in none.
+
+**Draw calls unchanged.** At `f2c2d51`, every shot draws exactly what main's
+`ac2c76c` capture draws (gpu-tests run 40442800011). Inventoried GPU memory is
+2.1-2.2 MiB higher on every shot, the marina's static buffers (see the
+section above).
+
+**All thirty-nine baselines promoted 2026-10-27** from the hosted macOS
+runner. Source: PR #31's capture at `f2c2d51` (gpu-tests run 40461650012,
+artifact `perf-capture-40461650012-1`, zip sha256
+`4b2a1699dd488cd7…ed99`). Jason approved the new sea and the downwind
+travel from their before/after frames, both on 2026-10-27. Before
+promotion, the capture failed 32 visual gates on 13 shots, every one with
+sea in view. No frame-delivery gate failed.
+
+Against the capture at `b52a67a`, which had everything but the downwind
+travel and main's choppiness fix (gpu-tests run 40442749997), the shots with
+sea in view move only in sea pixels. The rest differ by 0.04/255 mean or
+less.
+
+Committed baselines → this capture:
+
+| shots | mean abs diff /255 | pixels past 4/255 |
+| --- | --- | --- |
+| `water-25ft`, `water-400ft-glitter`, `water-3m` | 6.1-8.1 | 42-46% |
+| the other shots with sea in view: `forest-line-highsun`, `cdlod-transition`, `motion-banked-turn`, `reference-viewport`, `approach-500ft`, `hills-dusk-glint`, `forest-500ft-sunbehind`, `winter-noon`, `slant-10km`, `dusk-mesopic`, `coast-10km-lowsun`, `cruise-horizon` | 0.62-2.39 | 2.9-22% |
+| everything else (the runner's drift since 2026-10-20) | 0.65 or less | 3.6% or less |
+
+**Why all thirty-nine.** The sea moves twelve shots beyond the three water
+shots, and the rest carry the runner's own drift. Promoting from one capture
+keeps the set consistent, as on 2026-10-13. The four `boat-*` shots stay
+unpinned. They have no committed baseline, and a capture only reports them.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.

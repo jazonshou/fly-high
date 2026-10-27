@@ -100,17 +100,31 @@ canopy closure and grass cover the bake hands it (`densityField`, thinned on
 sand as the bake thins it). The natural ground is classified at the centre of
 its 4 m cell (the L0 splat texel) on the car's own ground there and cached
 over a 64 m square, at most one new cell a step; a classification costs about
-20 us and allocates (the classifier returns its weights), so the cache keeps
+25 us and allocates (the classifier returns its weights), so the cache keeps
 the step's average cost flat. The cache and the terrain lattice are dropped
 when the world or its streamed road regions change, so a road's cut or fill
 reaches the tyres as it reaches the drawn ground.
 
+The calendar is the renderer's. Settings' `dayOfYear` goes to the worker in
+`initialize`, and `applySettings` sends each new one (`{ type: "dayOfYear" }`)
+beside the renderer's clock; a new day drops the cached cells, not the
+lattice. The cells are classified with the bake's own season law, from the
+same modules (`paintedSeason`): the bake is keyed on the clock's bucketed day
+(`seasonBakeDayOfYear`, shared with `TerrainClipmapSystem`), classifies at the
+seasonal temperature shift (`seasonalTemperatureShift`) of that day's two
+resident buckets' centres, puts both on one material basis
+(`alignSeasonalLandCoverWeights`), and the fragment cross-fades them by the
+clock day's own `seasonBucketBlend(day).t`. The car takes the dominant
+material of that same fade, so winter's snowline comes down the hills under
+the tyres as it does on screen. The fragment's own macro snow blanket (a
+perturbed band for coarse pages) is not followed; on L0 pages the classifier
+already holds the snow.
+
 Against the bake's own answer restated on the CPU (four taps, the bake's
-canopy drivers), the worker's material maps to the same soil model at 1,235
-of 1,236 land cells over six forced provinces (`sim.car-terrain`); the bake's
-erosion and soil-depth channels have no CPU twin. The classifier reads the
-reference day (171): seasonal snow the bake paints with the calendar does not
-reach the worker yet.
+canopy drivers, both season buckets and the fade), the worker's material maps
+to the same soil model at 1,235 of 1,236 land cells over six forced provinces
+at midsummer, and at all 1,236 in mid-January (`sim.car-terrain`); the bake's
+erosion and soil-depth channels have no CPU twin.
 
 | Surface | Friction | Rolling resistance | Roughness (RMS) | Soil |
 |---|---|---|---|---|
@@ -120,12 +134,24 @@ reach the worker yet.
 | Rock, lava | 0.75, 0.80 | 0.018, 0.020 | 20, 25 mm | hard |
 | Sand | soil | 0.012 + compaction | 3 mm | dry sand |
 | Grass, dry grass, forest floor, shrub | soil | 0.012 + compaction | 8 to 12 mm | sandy loam, to clay as it gets wet |
-| Snow | soil | 0.012 + compaction | 3 mm | snow |
+| Snow, deep (5 cm and more) | soil | 0.012 + compaction | 3 mm | snow, over its depth |
+| Snow, packed (under 5 cm) | 0.25 | 0.015 | 3 mm | hard |
 | Tephra | soil | 0.012 + compaction | 8 mm | coarse sand |
 
 Wet loam is mud: the classifier's wetness blends sandy loam towards the
 clayey soil between 0.6 and 0.9 (a smoothstep), and the payload's
 `wheelWetness` carries it for the spray.
+
+Snow's depth is its share of the painted mix (`snowDepthOf`): none at a 0.4
+share, the snowfield's edge, and Wong's full 0.2 m soft layer at 0.9 and up,
+a smoothstep between. The classifier's snow weight is the height above the
+seasonal snowline, shed by steep faces, so a cover the season has only just
+brought down, or one on a steep face, is thin. Under 5 cm the tyres pack it
+onto the ground beneath: a hard surface at a quarter of dry asphalt's grip
+(Wong's table 1.3: 0.2 on packed snow, 0.8 to 0.9 on dry asphalt;
+`describeSnow`). Deeper, it is Wong's snow
+soil (table 2.3), its sinkage stopped at the snow's depth, the firm ground
+under it. A tyre under water keeps the snow's depth; only loam turns to mud.
 
 ## Soft ground
 
@@ -295,7 +321,9 @@ column height and gravity travel in fields.
 | Steep climb | 30 degrees from a standstill in 4L; fails on loose ground in 2H | 4L at 60% pedal climbs over 20 m on rock and asphalt; 2H on gravel slides back | `sim.car-terrain` |
 | Cross-axle ditch | open diffs with traction control off: stuck; traction control: crosses slowly; rear locker: crosses | a 0.7 m ditch at 45 degrees at a crawl in 4L: open diffs stop with the light wheels at 22 rad/s; traction control crosses after a stall, braking wheels spinning to 8 rad/s; the rear locker crosses with them under 5 | `sim.car-terrain` |
 | Underbody | the hull scrapes and high-centres from the geometry | a berm between the tracks: 0.25 m clears, 0.32 m drags the diffs and the car goes on, 0.42 m beaches it on the axles | `sim.car-terrain` |
-| Surface parity | the worker's material maps to the bake's soil model at least 98% of the time | 1,235 of 1,236 land cells, six provinces | `sim.car-terrain` |
+| Surface parity | the worker's material maps to the bake's soil model at least 98% of the time | 1,235 of 1,236 land cells, six provinces, at midsummer; 1,236 of 1,236 in mid-January | `sim.car-terrain` |
+| Seasonal snow | the car drives the snow that is drawn | in the temperate and boreal provinces, cells that are loam on day 171 and that the bake paints loam then are snow on day 15 when the bake paints them snow, read again from the same cache after the day changes | `sim.car-terrain` |
+| Snow | packed snow is slippery; deep snow is soft | 4H from 10 m/s: packed snow stops in 3.8 times asphalt's distance (23 m against 6 m); parked on 0.2 m of deep snow the tyres sink to the ground under it, and half throttle takes 6.6 s to 10 m/s against asphalt's 4.5 | `sim.car-terrain` |
 | Wading | a 0.6 m ford at walking pace is fine; 0.9 m floods the intake and stops the engine | 0.6 m: across at 1.4 m/s, engine running; 0.9 m: drowned on the way down, short of the deep bed | `sim.car-water` |
 | Current | a 1.5 m/s river at 0.7 m pushes the car measurably downstream during a crossing | held square to the bank, it crabs 1.3 m downstream over a 30 m crossing; unsteered, the light rear swings downstream and the car yaws upstream | `sim.car-water` |
 | Floating | (the plan's buoyancy and 60 s cabin flooding) | parked under 1.6 m of still water: afloat at first, on its wheels again after 90 s | `sim.car-water` |
