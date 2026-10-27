@@ -87,8 +87,8 @@ function inverseFft2d(re: Float64Array, im: Float64Array, n: number): void {
 
 /**
  * The CPU mirror of one GPU cascade: the initial spectrum on every texel, the
- * evolution shader's `h0(k) e^{iwt} + conj(h0(-k)) e^{-iwt}` (w as its f32
- * texel holds it) with `D = -i lambda k^ h`, and the inverse FFT with the
+ * evolution shader's `h0(k) e^{-iwt} + conj(h0(-k)) e^{iwt}` (w as its f32
+ * texel holds it) with `D = i lambda k^ h`, and the inverse FFT with the
  * per-axis normalisation squared. Returns the real height and displacement on
  * the texel grid, x fastest.
  */
@@ -124,7 +124,7 @@ function mirrorCascade(config: SpectralOceanConfig, cascade: number, time: numbe
       const index = u + v * n;
       const mirrored = ((n - u) % n) + ((n - v) % n) * n;
       const c = Math.cos(omega[index]! * time);
-      const s = Math.sin(omega[index]! * time);
+      const s = -Math.sin(omega[index]! * time);
       const aRe = h0Re[mirrored]!;
       const aIm = -h0Im[mirrored]!;
       const re = h0Re[index]! * c - h0Im[index]! * s + aRe * c + aIm * s;
@@ -133,10 +133,10 @@ function mirrorCascade(config: SpectralOceanConfig, cascade: number, time: numbe
       hIm[index] = im;
       const lx = hatX[index]! * config.choppiness;
       const lz = hatZ[index]! * config.choppiness;
-      xRe[index] = im * lx;
-      xIm[index] = -re * lx;
-      zRe[index] = im * lz;
-      zIm[index] = -re * lz;
+      xRe[index] = -im * lx;
+      xIm[index] = re * lx;
+      zRe[index] = -im * lz;
+      zIm[index] = re * lz;
     }
   }
   inverseFft2d(hRe, hIm, n);
@@ -171,6 +171,21 @@ function snapshot(sample: WaterSurfaceSample): number[] {
     sample.height, sample.normal.x, sample.normal.y, sample.normal.z,
     sample.velocity.x, sample.velocity.y, sample.velocity.z, sample.depth,
   ];
+}
+
+function correlation(xs: readonly number[], ys: readonly number[]): number {
+  const meanX = xs.reduce((sum, x) => sum + x, 0) / xs.length;
+  const meanY = ys.reduce((sum, y) => sum + y, 0) / ys.length;
+  let xy = 0;
+  let xx = 0;
+  let yy = 0;
+  xs.forEach((x, index) => {
+    const y = ys[index]!;
+    xy += (x - meanX) * (y - meanY);
+    xx += (x - meanX) ** 2;
+    yy += (y - meanY) ** 2;
+  });
+  return xy / Math.sqrt(xx * yy);
 }
 
 /** The SeaTwin step budget: 171 hull samples at 120 Hz, on the tuning box. */
@@ -307,14 +322,15 @@ describe("sea twin", () => {
   it("matches its exact sum on a hull at rest, cruising and planing, in every weather", () => {
     // Height rms and worst, normal, heave and flow (m, m/s). The second-order
     // expansion of the 32-128 m band and the choppy inversion at steep crests
-    // set these; measured worst over 0, 6 and 20 m/s (Clear 2.6/11.6 mm,
-    // Breezy 4.5/26 mm, Cloudy 8.7/62 mm, against a Cloudy sea of about 3 m),
-    // with headroom. The exact sum itself is within 2.6 mm rms of a fully
-    // converged inversion in Cloudy.
+    // set these; measured worst over 0, 6 and 20 m/s (Clear 1.8/8.9 mm,
+    // Breezy 4.3/27 mm, Cloudy 6.5/47 mm, against a Cloudy sea of about 3 m;
+    // normal 0.008/0.021/0.031, flow 0.056/0.068/0.11 m/s), with headroom. The
+    // exact sum itself is within 0.3 mm rms of a fully converged inversion in
+    // Cloudy.
     const tolerance: Record<WeatherPreset, readonly [number, number, number, number, number]> = {
-      clear: [0.004, 0.016, 0.013, 0.03, 0.06],
-      breezy: [0.0065, 0.036, 0.02, 0.085, 0.1],
-      cloudy: [0.012, 0.085, 0.04, 0.16, 0.2],
+      clear: [0.004, 0.016, 0.013, 0.03, 0.075],
+      breezy: [0.0065, 0.036, 0.03, 0.085, 0.1],
+      cloudy: [0.012, 0.085, 0.045, 0.16, 0.2],
     };
     for (const weather of ["clear", "breezy", "cloudy"] as WeatherPreset[]) {
       for (const speed of [0, 6, 20]) {
@@ -360,6 +376,73 @@ describe("sea twin", () => {
         expect(worstHeave, label).toBeLessThan(heave);
         expect(worstFlow, label).toBeLessThan(flow);
       }
+    }
+  });
+
+  it("carries its waves downwind, and gathers the surface and its folds onto the crests", () => {
+    // Waves travel downwind with peaked crests and the whitecaps on them
+    // (Jason, 2026-10-27). Before the fix, every one of these was reversed.
+    for (const weather of ["clear", "cloudy"] as WeatherPreset[]) {
+      const twin = createSeaTwin(SEA_WORLD, weather);
+      const [windX, windZ] = twin.spectrumConfig.windDirection;
+      // Label heights on a line 2 km downwind, a second apart, line up best
+      // a little further downwind: the sea's phase speed, 6-8 m/s.
+      const count = 2048;
+      const line = (time: number) => {
+        twin.setTime(time);
+        return Float64Array.from({ length: count }, (_, i) => twin.exactLabelHeight(37 + windX * i, -91 + windZ * i).h);
+      };
+      const before = line(200);
+      const after = line(201);
+      let bestShift = 0;
+      let bestMatch = -Infinity;
+      for (let shift = -40; shift <= 40; shift += 1) {
+        let match = 0;
+        for (let i = 50; i < count - 50; i += 1) match += before[i]! * after[i + shift]!;
+        if (match > bestMatch) [bestMatch, bestShift] = [match, shift];
+      }
+      expect(bestShift, weather).toBeGreaterThanOrEqual(4);
+      expect(bestShift, weather).toBeLessThanOrEqual(12);
+      // The water on a crest moves the way the crest does.
+      twin.setTime(200);
+      const random = createRandom(5);
+      const sample = createWaterSurfaceSample();
+      const heights: number[] = [];
+      const downwindFlow: number[] = [];
+      const labelHeights: number[] = [];
+      const jacobians: number[] = [];
+      const step = 0.05;
+      for (let point = 0; point < 2000; point += 1) {
+        const x = random() * 1000 - 500;
+        const z = random() * 1000 - 500;
+        twin.sampleExact(x, z, sample);
+        heights.push(sample.height);
+        downwindFlow.push(sample.velocity.x * windX + sample.velocity.z * windZ);
+        // The horizontal Jacobian of the label-to-surface map, which the
+        // GPU's derivation pass turns into foam where it dips.
+        const east = twin.exactLabelHeight(x + step, z);
+        const west = twin.exactLabelHeight(x - step, z);
+        const north = twin.exactLabelHeight(x, z + step);
+        const south = twin.exactLabelHeight(x, z - step);
+        const dxx = (east.dx - west.dx) / (2 * step);
+        const dxz = (north.dx - south.dx) / (2 * step);
+        const dzx = (east.dz - west.dz) / (2 * step);
+        const dzz = (north.dz - south.dz) / (2 * step);
+        labelHeights.push(twin.exactLabelHeight(x, z).h);
+        jacobians.push((1 + dxx) * (1 + dzz) - dxz * dzx);
+      }
+      expect(correlation(heights, downwindFlow), weather).toBeGreaterThan(0.6);
+      // The surface gathers toward the crests, so it folds on them: the
+      // Jacobian falls as the height rises, and the most folded 2% of the sea
+      // stands well above the mean.
+      expect(correlation(labelHeights, jacobians), weather).toBeLessThan(-0.6);
+      const sigma = Math.sqrt(labelHeights.reduce((sum, h) => sum + h * h, 0) / labelHeights.length);
+      const folded = jacobians
+        .map((jacobian, index) => [jacobian, labelHeights[index]!] as const)
+        .sort((first, second) => first[0] - second[0])
+        .slice(0, 40);
+      const foldedHeight = folded.reduce((sum, [, h]) => sum + h, 0) / folded.length;
+      expect(foldedHeight / sigma, weather).toBeGreaterThan(1.4);
     }
   });
 
@@ -435,7 +518,7 @@ describe("sea twin", () => {
           for (let fx = -64; fx <= 64; fx += 1) {
             oceanInitialWave(config, params, cascade, fx, fy, wave);
             if (wave.spectrum <= 0) continue;
-            const phase = wave.kx * focus.x + wave.kz * focus.z + Math.fround(wave.omega) * time;
+            const phase = wave.kx * focus.x + wave.kz * focus.z - Math.fround(wave.omega) * time;
             height += 2 * scale * (wave.h0Re * Math.cos(phase) - wave.h0Im * Math.sin(phase));
           }
         }

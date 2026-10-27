@@ -1,3 +1,4 @@
+import { OCEAN_CHOP_SIGN, OCEAN_TIME_SIGN } from "@/src/sim/water/spectrum";
 import { OCEAN_SPECTRUM_WGSL } from "@/src/sim/water/spectrumWgsl";
 import type { NatureShaderModule } from "./ShaderModule";
 
@@ -111,6 +112,12 @@ struct OceanEvolutionParams {
 @group(0) @binding(3) var height_displacement_x: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var displacement_z_aux: texture_storage_2d<rgba16float, write>;
 
+// The sea twin reads the same two signs (src/sim/water/spectrum.ts): time
+// turns h0 by e^{-i w t}, so every wave travels along its own k, downwind;
+// the displacement i lambda k^ h gathers the surface toward the crests.
+const EVOLUTION_TIME_SIGN: f32 = ${OCEAN_TIME_SIGN.toFixed(1)};
+const EVOLUTION_CHOP_SIGN: f32 = ${OCEAN_CHOP_SIGN.toFixed(1)};
+
 fn conjugate(value: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(value.x, -value.y);
 }
@@ -128,7 +135,7 @@ fn evolveOceanSpectrum(@builtin(global_invocation_id) invocation: vec3<u32>) {
   let initial = textureLoad(initial_spectrum, coordinate, 0).xy;
   let initial_mirrored = conjugate(textureLoad(initial_spectrum, mirrored, 0).xy);
   let wave = textureLoad(wave_data, coordinate, 0);
-  let phase = wave.w * params.time_seconds;
+  let phase = EVOLUTION_TIME_SIGN * wave.w * params.time_seconds;
   let positive_phase = vec2<f32>(cos(phase), sin(phase));
   let negative_phase = vec2<f32>(positive_phase.x, -positive_phase.y);
   let height = oceanComplexMultiply(initial, positive_phase)
@@ -140,11 +147,11 @@ fn evolveOceanSpectrum(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let horizontal = wave.xy / wave.z;
     displacement_x = oceanComplexMultiply(
       height,
-      vec2<f32>(0.0, -horizontal.x * params.choppiness),
+      vec2<f32>(0.0, EVOLUTION_CHOP_SIGN * horizontal.x * params.choppiness),
     );
     displacement_z = oceanComplexMultiply(
       height,
-      vec2<f32>(0.0, -horizontal.y * params.choppiness),
+      vec2<f32>(0.0, EVOLUTION_CHOP_SIGN * horizontal.y * params.choppiness),
     );
   }
   textureStore(height_displacement_x, coordinate, vec4<f32>(height, displacement_x));
