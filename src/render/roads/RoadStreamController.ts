@@ -41,11 +41,13 @@ export const ROAD_STREAM_CHECK_INTERVAL_MS = 250;
 export const ROAD_STREAM_DROPPED_CACHE = 96;
 
 /**
- * Segments one flush installs at most (always one region, however large):
- * composing them in place and writing the GPU's copy takes about a
- * millisecond a thousand segments, and the largest regions hold ~450.
+ * Segments one flush installs and drops at most, installs first (always one
+ * region of each that is due, however large): composing them in place and
+ * writing the GPU's copy takes about a millisecond a thousand segments, and
+ * every consumer rebuilds what they reach in the same frame. The largest
+ * regions hold ~450.
  */
-export const ROAD_STREAM_FLUSH_SEGMENTS = 1_200;
+export const ROAD_STREAM_FLUSH_SEGMENTS = 400;
 
 /** How long after a region fails (the worker threw, or the stage refused it) it is asked again. */
 export const ROAD_STREAM_RETRY_MS = 2_000;
@@ -83,10 +85,10 @@ export interface RoadStreamChange {
  * the observer needs, most urgent first (`roadStreamRegions`), prepares each
  * as it arrives (`prepareInfrastructureRegion`: validated and binned between
  * frames), and installs them into the infrastructure stage AS ONE CHANGE PER
- * FRAME (`flush`), up to `ROAD_STREAM_FLUSH_SEGMENTS`, dropping regions the
- * observer has left. Listeners (the renderer, the simulation and detail
- * workers) hear each change once, with the regions themselves, so every copy
- * of the stage holds the same ones.
+ * FRAME (`flush`), dropping regions the observer has left in the same change,
+ * up to `ROAD_STREAM_FLUSH_SEGMENTS` between them. Listeners (the renderer,
+ * the simulation and detail workers) hear each change once, with the regions
+ * themselves, so every copy of the stage holds the same ones.
  *
  * `prime` holds startup until the regions round the spawn are in, so the
  * first pages bake with their roads rather than rebuilding under the car.
@@ -106,6 +108,8 @@ export class RoadStreamController {
   private readonly dropped = new Map<string, RoadsWorkerRegionEvent>();
   /** Stage keys within the keep margin at the last check. */
   private keep = new Set<string>();
+  /** Installed stage keys past the keep margin, in the order they left it: dropped from the front. */
+  private readonly leaving = new Set<string>();
   /** Stage keys asked of the worker and not yet arrived (or failed). */
   private wanted = new Set<string>();
   private lastWant = "";
@@ -133,12 +137,13 @@ export class RoadStreamController {
   }
 
   /**
-   * Regions still to come or to install: asked of the worker and not yet
-   * arrived, or arrived and not yet flushed. Zero once the observer's
-   * window is in; a capture waits for it. Observation only.
+   * Regions still to come, to install or to drop: asked of the worker and
+   * not yet arrived, arrived and not yet flushed, or left and not yet
+   * dropped. Zero once the observer's window is in and nothing else is; a
+   * capture waits for it. Observation only.
    */
   get pendingRegions(): number {
-    return this.wanted.size + this.arrived.length;
+    return this.wanted.size + this.arrived.length + this.leaving.size;
   }
 
   /** The live world (a spawned airport's new one shares the terrain, so its regions). */
@@ -158,6 +163,12 @@ export class RoadStreamController {
       kept.add(roadRegionKey(region.layer, region.rx, region.rz));
     }
     this.keep = kept;
+    for (const key of this.leaving) {
+      if (kept.has(key)) this.leaving.delete(key);
+    }
+    for (const key of this.installed.keys()) {
+      if (!kept.has(key)) this.leaving.add(key);
+    }
     const want: RoadRegionAddress[] = [];
     const wanted = new Set<string>();
     // Only once a region has failed: which keys the window holds, and
@@ -208,9 +219,14 @@ export class RoadStreamController {
   }
 
   /**
-   * Install what arrived (up to `ROAD_STREAM_FLUSH_SEGMENTS`, the rest next
-   * time) and drop what the observer left, in one change, and tell the
-   * listeners. Call once a frame; returns the change, or null.
+   * Install what arrived and drop what the observer left, in one change, and
+   * tell the listeners. Call once a frame; returns the change, or null.
+   *
+   * Installs come first, up to `ROAD_STREAM_FLUSH_SEGMENTS`; drops take what
+   * they leave of it, in the order the regions left, and at least one region
+   * whenever one is due. So a region that leaves is dropped within as many
+   * flushes as regions left before it and are still installed, plus one: at
+   * most the regions installed when it left.
    */
   flush(): RoadStreamChange | null {
     if (this.disposed) return null;
@@ -234,9 +250,13 @@ export class RoadStreamController {
     }
     this.arrived = this.arrived.slice(taken);
     const removed: string[] = [];
-    for (const key of this.installed.keys()) {
-      if (!this.keep.has(key)) removed.push(key);
+    for (const key of this.leaving) {
+      const size = this.installed.get(key)!.infrastructure.segments.length;
+      if (removed.length > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
+      removed.push(key);
+      segments += size;
     }
+    for (const key of removed) this.leaving.delete(key);
     if (install.length === 0 && removed.length === 0) return null;
     const infrastructure = changeInfrastructureRegions(
       this.world,

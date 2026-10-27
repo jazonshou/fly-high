@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RoadStreamController,
+  ROAD_STREAM_CHECK_INTERVAL_MS,
   ROAD_STREAM_FLUSH_SEGMENTS,
   ROAD_STREAM_RETRY_MS,
   type RoadsWorker,
+  type RoadStreamChange,
 } from "@/src/render/roads/RoadStreamController";
 import { RoadStreamRuntime, type RoadStreamConsumers } from "@/src/render/roads/RoadStreamRuntime";
 import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
@@ -14,6 +16,7 @@ import type {
   RoadsWorkerRegionEvent,
 } from "@/src/workers/roadsProtocol";
 import {
+  changeInfrastructureRegions,
   clearInfrastructureRegions,
   infrastructureRegionsVersion,
   installedInfrastructureRegionKeys,
@@ -30,6 +33,7 @@ import {
   roadStreamRegions,
   ROAD_STREAM_KEEP_MARGIN,
   ROAD_STREAM_LEAD_SECONDS,
+  type RoadStreamObserver,
 } from "@/src/world/roads/roadStreaming";
 import { createWorld } from "@/src/world/world";
 
@@ -557,6 +561,91 @@ describe("the renderer's road stream runtime", () => {
     expect(snapshot.install.map((region) => region.key).sort())
       .toEqual(change.installed.map((event) => event.infrastructure.key).sort());
     expect(calls[1]!.update).toBe(snapshot);
+    runtime.dispose();
+  });
+
+  it("drops what a jump leaves after its installs, a flush's share at a time, each within its bound, to the same set as one big change", () => {
+    const worker = new FakeRoadsWorker();
+    const runtime = new RoadStreamRuntime(world, () => worker);
+    const held = { simulation: new Set<string>(), detail: new Set<string>(), drawing: new Set<string>() };
+    const follow = (set: Set<string>, install: readonly string[], remove: readonly string[], reset = false) => {
+      if (reset) set.clear();
+      for (const key of remove) set.delete(key);
+      for (const key of install) set.add(key);
+    };
+    let terrain: InfrastructureChange[] = [];
+    runtime.setConsumers({
+      publishInfrastructure: (update) => follow(held.simulation, update.install.map((region) => region.key), update.remove, update.reset),
+      detailInfrastructureChanged: (update) => follow(held.detail, update.install.map((region) => region.key), update.remove, update.reset),
+      groundCoverInfrastructureChanged: () => {},
+      infrastructureChanged: (change) => terrain.push(change),
+      roadSurfaceChanged: (install, remove) => follow(held.drawing, install.map((region) => region.key), remove),
+    });
+    const changes: RoadStreamChange[] = [];
+    runtime.stream.onChange((change) => changes.push(change));
+    const segmentsOf = (events: readonly RoadsWorkerRegionEvent[]) => events.reduce((sum, event) => sum + event.infrastructure.segments.length, 0);
+    let now = 0;
+    const frame = (observer: RoadStreamObserver) => {
+      now += 16;
+      return runtime.update(observer, now);
+    };
+    // Home: every region of 60 segments, so a flush installs six.
+    const home = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+    frame(home);
+    worker.answer(Number.POSITIVE_INFINITY, 60);
+    while (frame(home)) { /* installing */ }
+    const homeEvents = new Map(runtime.stream.installedRegions);
+
+    // The perf flight's 9 km jump: what it leaves goes in the order it left
+    // (install order), installs first, one at least every flush.
+    const away = { x: 9_000, z: 0, velocityX: 0, velocityZ: 0 };
+    const kept = new Set(roadStreamRegions(away, ROAD_STREAM_KEEP_MARGIN).map((region) => roadRegionKey(region.layer, region.rx, region.rz)));
+    const left = [...homeEvents.keys()].filter((key) => !kept.has(key));
+    expect(left.length).toBeGreaterThan(20);
+    changes.length = 0;
+    terrain = [];
+    now += ROAD_STREAM_CHECK_INTERVAL_MS;
+    runtime.stream.observe(away, now);
+    // Left, and not dropped yet: still pending, so a capture waits for them.
+    expect(runtime.pendingRegions).toBe(worker.lastWant.length + left.length);
+    worker.answer(Number.POSITIVE_INFINITY, 60);
+    let flushes = 0;
+    const droppedAt = new Map<string, number>();
+    for (let change = frame(away); change; change = frame(away)) {
+      flushes += 1;
+      const installed = segmentsOf(change.installed);
+      const removed = segmentsOf(change.removed.map((key) => homeEvents.get(key)!));
+      expect(change.installed.length === 1 || installed <= ROAD_STREAM_FLUSH_SEGMENTS).toBe(true);
+      expect(change.removed.length <= 1 || installed + removed <= ROAD_STREAM_FLUSH_SEGMENTS).toBe(true);
+      for (const key of change.removed) droppedAt.set(key, flushes);
+    }
+    expect([...droppedAt.keys()]).toEqual(left);
+    left.forEach((key, k) => expect(droppedAt.get(key)!).toBeLessThanOrEqual(k + 1));
+    // Installs and drops shared flushes: the drops were spread, not one change.
+    expect(changes.filter((change) => change.installed.length > 0 && change.removed.length > 0).length).toBeGreaterThan(1);
+    expect(runtime.pendingRegions).toBe(0);
+
+    // Every copy ends on the set one big change would leave, and the terrain
+    // was told of every bin it would have been told of.
+    const end = new Set(installedInfrastructureRegionKeys(world));
+    expect(end).toEqual(new Set([...homeEvents.keys()].filter((key) => kept.has(key))
+      .concat(roadStreamRegions(away).map((region) => roadRegionKey(region.layer, region.rx, region.rz)))));
+    expect(held.simulation).toEqual(end);
+    expect(held.detail).toEqual(end);
+    expect(held.drawing).toEqual(end);
+    const arrivals = changes.flatMap((change) => change.installed.map((event) => event.infrastructure));
+    clearInfrastructureRegions();
+    changeInfrastructureRegions(world, [...homeEvents.values()].map((event) => event.infrastructure));
+    const whole = changeInfrastructureRegions(world, arrivals, left)!;
+    expect(new Set(installedInfrastructureRegionKeys(world))).toEqual(end);
+    const union = (pick: (change: InfrastructureChange) => ReadonlySet<number>) => new Set(terrain.flatMap((change) => [...pick(change)]));
+    expect(union((change) => change.bins)).toEqual(whole.bins);
+    expect(union((change) => change.plantBins)).toEqual(whole.plantBins);
+    const rects = (list: readonly InfrastructureChange[]) => list.flatMap((change) => change.rects.map((rect) => JSON.stringify(rect))).sort();
+    expect(rects(terrain)).toEqual(rects([whole]));
+    // One change per flush, each its own version, in order.
+    expect(terrain.map((change) => change.version)).toEqual(changes.map((change) => change.infrastructure.version));
+    terrain.forEach((change, k) => expect(change.version).toBe(terrain[0]!.version + k));
     runtime.dispose();
   });
 
