@@ -4435,6 +4435,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.setRequestBudgetPerUpdate(work.terrainPageRequestsPerUpdate);
     // 4-0b rung 0: the shared compute cap moves before any visible lever.
     this.terrain.setComputeBudgetScale(work.computeBudgetScale);
+    // PR B part 2 (G5): a smaller CDLOD selection, its threshold easing in.
+    this.terrain.setGovernedSelection(work.cdlodNodeBudget, work.cdlodPixelThreshold);
     this.detail.setGenerationBudgetCap(work.detailGenerationCap);
     this.clouds.setShadowIntervalFloor(work.cloudShadowIntervalFloor);
     // PR B part 2 (G5): fewer, longer view-march steps; 1 is the profile's march.

@@ -11,8 +11,10 @@
  * Deviation per level follows the clipmap test's measured-everywhere fixture
  * (0.135 m x 2^level) times DEVIATION_SCALE, chosen so the selection
  * terminates on the budget as it does in flight.
- * Usage: [DEVIATION_SCALE=16] tsx scripts/cdlod-selection-benchmark.mts [tier] [frames]
+ * Usage: [DEVIATION_SCALE=16] [CPU_LEVEL=0] tsx scripts/cdlod-selection-benchmark.mts [tier] [frames]
  */
+import { resolveGovernedWork } from "../src/render/governedWork";
+import { workLeverSettingsFor } from "../src/render/webgpu/core/AdaptiveGovernor";
 import {
   resolveTerrainResidentCornerMorphs,
   selectTerrainNodes,
@@ -34,6 +36,15 @@ const frames = Number(framesArg ?? 600);
  * that makes the budget bind the same way.
  */
 const DEVIATION_SCALE = Number(process.env.DEVIATION_SCALE ?? "16");
+/**
+ * PR B part 2 (G5): the governor's CPU work level to select at, 0 being the
+ * profile's own. At or past a `cdlod-node-budget` rung the selection takes
+ * that rung's governed budget and threshold, so the shipped notches can be
+ * priced as they ship. The threshold is the rung's target; in flight it
+ * eases there over about 20 frames.
+ */
+const CPU_LEVEL = Number(process.env.CPU_LEVEL ?? "0");
+const work = resolveGovernedWork(profile, workLeverSettingsFor(CPU_LEVEL, 0));
 
 // Same constants TerrainClipmapSystem passes (TerrainClipmapSystem.ts:321, :332).
 const PIXELS_PER_METER = 1_080 / (2 * Math.tan((60 * Math.PI) / 360));
@@ -45,8 +56,8 @@ function selectAt(x: number, y: number, z: number): TerrainNode[] {
     cameraY: y,
     cameraZ: z,
     pixelsPerMeterAtUnitDistance: PIXELS_PER_METER,
-    pixelThreshold: profile.cdlodPixelThreshold,
-    nodeBudget: profile.cdlodNodeBudget,
+    pixelThreshold: work.cdlodPixelThreshold,
+    nodeBudget: work.cdlodNodeBudget,
     finestResidentLevel: profile.finestResidentLevel,
     coarsestLevel: COARSEST_LEVEL,
     farPlaneMeters: 45_000,
@@ -86,6 +97,7 @@ for (let frame = 0; frame < frames; frame += 1) {
 }
 
 console.log(`deviation scale ${DEVIATION_SCALE}; tier ${profile.tier} (${quality}/${mode}): budget ${profile.cdlodNodeBudget}, threshold ${profile.cdlodPixelThreshold} px, finest L${profile.finestResidentLevel}`);
+console.log(`CPU work level ${CPU_LEVEL}: budget ${work.cdlodNodeBudget}, threshold ${Number(work.cdlodPixelThreshold.toFixed(3))} px`);
 console.log(`nodes per frame: ${(nodeCount / frames).toFixed(1)}; levels at frame 0: ${[...levelHistogram].sort((a, b) => a[0] - b[0]).map(([l, n]) => `L${l}x${n}`).join(" ")}`);
 console.log(`selectTerrainNodes:                 ${(selectMs / frames).toFixed(3)} ms/frame at 1x (${(4 * selectMs / frames).toFixed(2)} ms at 4x)`);
 console.log(`resolveTerrainResidentCornerMorphs: ${(cornersMs / frames).toFixed(3)} ms/frame at 1x (${(4 * cornersMs / frames).toFixed(2)} ms at 4x)`);

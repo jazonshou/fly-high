@@ -2,6 +2,12 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { describe, expect, it } from "vitest";
+import { resolveGovernedWork } from "../src/render/governedWork";
+import {
+  CPU_WORK_MAX_LEVEL,
+  workLeverSettingsFor,
+  type WorkLeverSettings,
+} from "../src/render/webgpu/core/AdaptiveGovernor";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
   TerrainClipmapSystem,
@@ -1087,6 +1093,19 @@ function realKernelDeviations(seed: string): (address: {
 }
 
 /**
+ * PR B part 2 (G5): the CPU ladder's first CDLOD notch, found by its field so
+ * a reorder of the ladder cannot move the pin. Until the ladder carries the
+ * CDLOD rungs, the ×0.85 notch they ship with.
+ */
+function firstCdlodNotch(): WorkLeverSettings {
+  for (let level = 1; level <= CPU_WORK_MAX_LEVEL; level += 1) {
+    const settings = workLeverSettingsFor(level, 0);
+    if (settings.cdlodNodeBudgetScale < 1) return settings;
+  }
+  return { ...workLeverSettingsFor(0, 0), cdlodNodeBudgetScale: 0.85 };
+}
+
+/**
  * Largest level difference between edge-adjacent selected nodes.
  *
  * Only the "walk up" direction is checked, and that is sufficient rather than
@@ -1155,6 +1174,41 @@ describe("CDLOD distance-graded selection (4.5-A1)", () => {
     const pages = new Set(nodes.map((node) =>
       `${node.address.level}:${node.address.x}:${node.address.z}`));
     expect(pages.size).toBeLessThan(profile.heightAtlasSlots / 2);
+  }, 120_000);
+
+  it("the first CDLOD notch keeps L2 under the aircraft at 500 ft", () => {
+    // PR B part 2 (G5): the governor's first CDLOD cut must not coarsen the
+    // ground at assertion 107's pose. The second notch (×0.7, 224 nodes)
+    // does reach L3 here, and tier 0's at 60 m AGL: a consequence of that
+    // rung, recorded rather than pinned (×0.75 would keep L2 at both).
+    const seed = "phase1-perf-baseline";
+    const world = createWorld(seed, { worldEvolution: "analytic" });
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const work = resolveGovernedWork(profile, firstCdlodNotch());
+    expect(work.cdlodNodeBudget).toBe(272);
+    const airportX = world.airport?.centerX ?? 0;
+    const airportZ = world.airport?.centerZ ?? 0;
+    const ground = sampleFilteredTerrainHeight(world, airportX, airportZ, 0);
+    const nodes = selectTerrainNodes({
+      cameraX: airportX,
+      cameraY: ground + 152,
+      cameraZ: airportZ,
+      pixelsPerMeterAtUnitDistance: 720 / (2 * Math.tan((60 * Math.PI) / 360)),
+      pixelThreshold: work.cdlodPixelThreshold,
+      nodeBudget: work.cdlodNodeBudget,
+      finestResidentLevel: profile.finestResidentLevel,
+      coarsestLevel: 9,
+      farPlaneMeters: 45_000,
+      deviationFor: realKernelDeviations(seed),
+    });
+    const underCamera = nodes.reduce(
+      (best, node) => (node.distanceMeters < best.distanceMeters ? node : best));
+    expect(underCamera.level, "level under the camera at the approach pose, first notch")
+      .toBeLessThanOrEqual(2);
+    // Non-vacuous: the notch binds at this pose (a split adds three nodes,
+    // so a budget-bound selection ends within one split of its budget).
+    expect(nodes.length).toBeLessThanOrEqual(work.cdlodNodeBudget);
+    expect(nodes.length).toBeGreaterThan(work.cdlodNodeBudget - 3);
   }, 120_000);
 
   it("assertion 108: never puts a >1 level step across an edge", () => {
