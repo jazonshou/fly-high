@@ -3582,8 +3582,12 @@ setting and what the build does with it, the cadence at the first and last
 frames (the divisor, the display rate, and whether the rate was confirmed on
 ticks that drew nothing), and the bench's rAF ticks against the frames the
 game rendered. Missed refreshes are counted against the paced cadence, and
-the vsync buckets count paced slots. Each tier gets a plain label, the worse
-of its two windows:
+the vsync buckets count paced slots. At the 60 and 30 settings the game
+waits up to 0.3 s for its display probe before it creates the renderer,
+which builds before PR B did not; the start-up trace charges that wait to
+its first stage, WebGPU capability discovery, so compare start-up stages
+across that change with `fps=display`, which does not wait. Each tier gets
+a plain label, the worse of its two windows:
 
 | Label | Meaning |
 | --- | --- |
