@@ -26,6 +26,7 @@ import {
   type GameSettings,
 } from "@/src/settings";
 import { AircraftPicker } from "@/src/ui/AircraftPicker";
+import { CarTyrePanel } from "@/src/ui/CarTyrePanel";
 import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
@@ -726,6 +727,7 @@ export function FlightGame() {
       simulation.onError((message) => setError(message));
       simulation.onState((state) => {
         latestStateRef.current = state;
+        if (state.vehicle?.kind === "car") input.setCarSpeed(state.vehicle.speed);
         const lastAutoland = lastAutolandRef.current;
         if (lastAutoland && !state.autoland && state.simulationTime >= lastAutoland.time) {
           input.adoptConfiguration(lastAutoland.state.throttle, lastAutoland.state.flaps, lastAutoland.state.gear);
@@ -990,6 +992,12 @@ export function FlightGame() {
                   ? { ...settingsRef.current, aircraft: vehicle, vehicle }
                   : { ...settingsRef.current, vehicle },
               )}
+              carSetup={{ gearbox: settings.carGearbox, manualClutch: settings.carManualClutch }}
+              onCarSetupChange={(setup) => applySettings({
+                ...settingsRef.current,
+                carGearbox: setup.gearbox,
+                carManualClutch: setup.manualClutch,
+              })}
             />
             {/*
               * One wrapping row of two GROUPS, never four loose buttons. The two
@@ -1165,6 +1173,12 @@ export function FlightGame() {
               </button>
               <button onClick={endFlight}>End flight</button>
             </div>
+            {visualState.vehicle?.kind === "car" ? (
+              <CarTyrePanel
+                car={visualState.vehicle}
+                onChange={(pressure) => inputRef.current?.setCarTyrePressure(pressure)}
+              />
+            ) : null}
             <button
               className="pause-panel__settings"
               type="button"
