@@ -242,8 +242,10 @@ forward. The spin-outs heel at most 23-28 degrees.
 - a 1 m, 80 m swell from ahead: heave 0.85-1.15 of the surface's and in phase
   with it, pitch 0.7-1.2 of the slope;
 - the slam above;
-- half an hour of random helm, throttle, trim, tabs and assist on the game's
-  breezy sea: everything finite, under 40 m/s, under 30 wrecks;
+- ten minutes of random helm, throttle, trim, tabs and assist on the game's
+  breezy sea: everything finite, under 40 m/s, under 10 wrecks (a half hour on
+  the same seed never wrecked; ten minutes keeps the test well inside CI's
+  timeout);
 - two minutes unmoored at rest in calm water: no drift (2 cm, 2 mm, 0.1 degree).
 
 On the sea that travels downwind (2026-10-27), five minutes at each of the
@@ -285,7 +287,7 @@ appeared with no slam and its added mass then hung off that side.
 | `sim.boat-performance.test.ts` | the calibration record, the rpm table, hump, time to plane, top speed, trim, chop, crash stop, backing |
 | `sim.boat-savitsky.test.ts` | the towed hull against Savitsky (1964) |
 | `sim.boat-handling.test.ts` | heel and slip in hard turns, circles, the 35 kn full-wheel turn, the spin-outs, porpoising, ventilation, tabs |
-| `sim.boat-waves.test.ts` | swell, slam, half an hour of random input, rest |
+| `sim.boat-waves.test.ts` | swell, slam, ten minutes of random input, rest |
 | `sim.boat-hydrostatics.test.ts` | the closed mesh, rest waterline, righting curve, natural periods, inverted |
 | `sim.boat-budget.test.ts` | 171 water samples and one focus a step; the step cost |
 | `sim.boat-grounding.test.ts`, `sim.boat-mooring.test.ts`, `sim.boat-harbour.test.ts`, `sim.boat-simulator.test.ts` | beaching, piles, pontoons, lines, the berth, the worker payload |
