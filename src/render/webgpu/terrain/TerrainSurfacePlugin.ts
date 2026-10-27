@@ -2507,8 +2507,15 @@ ${FAR_SWARD_SOFT_READ_WGSL}
  * The lane packs slotIndex * 32 + level, because the fragment needs the
  * page EXTENT to normalise its local position and a shared material cannot
  * carry a per-mesh uniform.
+ *
+ * The lane arrives INTERPOLATED, so a whole number can land a hair under
+ * itself. At level 0 the lane is a multiple of 32, and a hair under one
+ * decoded as the previous slot at level 31: no page, the Grass fallback, in
+ * single fragments across every L0 node (green speckle on sand). It is
+ * rounded first; -1 (no slot) stays negative.
  */
-fn terrainSurfacePageUv(lane: f32, pageLocal: vec2f) -> vec4f {
+fn terrainSurfacePageUv(interpolatedLane: f32, pageLocal: vec2f) -> vec4f {
+  let lane = floor(interpolatedLane + 0.5);
   if (lane < 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
   let slot = floor(lane * ${1 / 32});
   let level = lane - slot * 32.0;
