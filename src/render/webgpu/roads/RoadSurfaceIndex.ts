@@ -7,11 +7,10 @@ import {
   appendRoadPad,
   appendRoadRail,
   appendRoadRibbonSpan,
+  RoadRibbonCut,
   roadRibbonChunkKey,
   roadRibbonChunkOf,
   roadRibbonEdgeKey,
-  roadRibbonRuns,
-  roadRibbonSpansByChunk,
   type RoadRibbonSpan,
   type RoadSurfaceArrays,
 } from "./roadSurfaceGeometry";
@@ -22,11 +21,13 @@ import {
  * layers' slots (`RoadSurfaceSlots`).
  *
  * A region brings its pieces, pads and rails. A road's pieces are chained by
- * edge across every region that holds some of them (`roadRibbonRuns`), so an
+ * edge across every region that holds some of them (`RoadRibbonCut`), so an
  * install or a removal re-cuts the runs of the edges it touches, and only the
  * chunks those runs pass through, or that hold its pads and rails, are built
- * again, and only once one is asked for. A track's pad is not drawn: a track
- * draws its ruts and nothing else (`RoadSurfaceMaterialPlugin`).
+ * again, and only once one is asked for. A long edge is cut over as many
+ * steps as it takes, its old spans drawn until the cut is done. A track's pad
+ * is not drawn: a track draws its ruts and nothing else
+ * (`RoadSurfaceMaterialPlugin`).
  */
 
 /** What a region brings to the drawing. */
@@ -91,6 +92,8 @@ export class RoadSurfaceIndex {
   private readonly queued: (RoadSurfaceRegion | string)[] = [];
   /** Edges whose pieces changed, their runs not cut again yet. */
   private readonly pendingEdges = new Set<string>();
+  /** The edge being cut again, its old spans still filed. */
+  private cutting: RoadRibbonCut | null = null;
   /** Chunks touched by steps since the last change. */
   private readonly dirty = new Set<string>();
   private changes = 0;
@@ -134,32 +137,44 @@ export class RoadSurfaceIndex {
     for (const region of install) this.queued.push(region);
   }
 
-  /** Queued regions and edges still to cut again: steps `settle` has yet to take. */
+  /** Queued regions, the edge being cut and edges still to cut: steps `settle` has yet to take (at least). */
   get pendingSteps(): number {
-    return this.queued.length + this.pendingEdges.size;
+    return this.queued.length + (this.cutting ? 1 : 0) + this.pendingEdges.size;
   }
 
   /**
    * Take steps until `deadline` (a `performance.now()` reading), the first
    * even past it when `first` says so: each queued region's own bookkeeping,
-   * oldest first, then each edge they touched cut again into runs. What the
-   * steps touched is one change (`version`, `chunkStamp`). Returns the steps
-   * taken.
+   * oldest first, then each edge they touched cut again into runs, a few
+   * pieces a step, its spans swapped in once it is cut. What the steps
+   * touched is one change (`version`, `chunkStamp`). Returns the steps taken.
    */
   settle(deadline: number, first = true): number {
     let steps = 0;
-    while (this.queued.length > 0 || this.pendingEdges.size > 0) {
+    while (this.queued.length > 0 || this.cutting || this.pendingEdges.size > 0) {
       if ((steps > 0 || !first) && performance.now() >= deadline) break;
       steps += 1;
       const change = this.queued.shift();
-      if (change === undefined) {
+      if (typeof change === "string") {
+        this.drop(change, this.pendingEdges, this.dirty);
+        continue;
+      }
+      if (change !== undefined) {
+        this.install(change);
+        continue;
+      }
+      let cut = this.cutting;
+      if (!cut) {
         const edge: string = this.pendingEdges.values().next().value!;
         this.pendingEdges.delete(edge);
-        this.recut(edge, this.dirty);
-      } else if (typeof change === "string") {
-        this.drop(change, this.pendingEdges, this.dirty);
-      } else {
-        this.install(change);
+        const pieces = this.edgePieces.get(edge);
+        cut = new RoadRibbonCut(edge, pieces ? [...pieces.values()] : []);
+        this.cutting = cut;
+      }
+      cut.advance(deadline);
+      if (cut.done) {
+        this.cutting = null;
+        this.fileSpans(cut);
       }
     }
     this.publish();
@@ -278,18 +293,18 @@ export class RoadSurfaceIndex {
     }
   }
 
-  /** Cut an edge's runs again and file their spans by chunk. */
-  private recut(edge: string, dirty: Set<string>): void {
+  /** A finished cut's spans filed by chunk in place of its edge's old ones. */
+  private fileSpans(cut: RoadRibbonCut): void {
+    const edge = cut.edgeKey;
+    const dirty = this.dirty;
     for (const chunk of this.edgeChunks.get(edge) ?? []) {
       removeOwner(this.spans, chunk, edge);
       dirty.add(chunk);
     }
     this.edgeChunks.delete(edge);
-    const pieces = this.edgePieces.get(edge);
-    if (!pieces || pieces.size === 0) return;
-    const byChunk = roadRibbonSpansByChunk(roadRibbonRuns(edge, [...pieces.values()]));
+    if (cut.spans.size === 0) return;
     const chunks = new Set<string>();
-    for (const [chunk, list] of byChunk) {
+    for (const [chunk, list] of cut.spans) {
       for (const span of list) addTo(this.spans, chunk, edge, span);
       chunks.add(chunk);
       dirty.add(chunk);

@@ -131,7 +131,7 @@ describe("the roads' chunk index", () => {
     expect([...kinds].some((kind) => kind >= ROAD_RIBBON_PAD_KIND)).toBe(true);
   });
 
-  it("takes a queued change a step at a time, regions then edges, to the same chunks as at once", () => {
+  it("takes a queued change a step at a time, regions then edges a few pieces a step, to the same chunks as at once", () => {
     const whole = new RoadSurfaceIndex();
     whole.apply(regions, []);
     const keys = whole.chunksWithin(cx, cz, 1_200, "ribbon").sort();
@@ -141,15 +141,17 @@ describe("the roads' chunk index", () => {
     expect(stepped.pendingSteps).toBe(regions.length);
     // Past the deadline already: one step a call, as a frame with its budget spent takes.
     let steps = 0;
+    let published = 0;
     while (stepped.pendingSteps > 0) {
       const version = stepped.version;
       expect(stepped.settle(Number.NEGATIVE_INFINITY)).toBe(1);
       steps += 1;
-      // Published as it goes: the frame's chunks see each step's change.
-      if (steps > regions.length) expect(stepped.version).toBeGreaterThan(version);
+      if (steps > regions.length && stepped.version > version) published += 1;
     }
-    expect(steps).toBeGreaterThan(regions.length);
-    expect(steps - regions.length).toBeLessThanOrEqual(edges.size);
+    // An edge's cut takes steps, and its spans are published once, when it is
+    // done: until then its chunks are drawn as they were.
+    expect(published).toBe(edges.size);
+    expect(steps - regions.length).toBeGreaterThan(edges.size);
     // And none at all when it may not take the first past the deadline.
     stepped.enqueue([], [regions[0]!.key]);
     expect(stepped.settle(Number.NEGATIVE_INFINITY, false)).toBe(0);
