@@ -322,6 +322,13 @@ const WATER = CAR.water;
 const BODY = CAR.body;
 const FRESH_WATER_DENSITY = 1_000;
 const SEA_WATER_DENSITY = 1_025;
+/**
+ * While all four wheels are dry, a wheel's turn to ask about the water is
+ * passed over until it has rolled this far from where it last asked, m, or
+ * this long has gone, s (a lake or river can be posted round a parked car).
+ */
+const DRY_POLL_METERS = 0.3;
+const DRY_POLL_SECONDS = 0.25;
 /** ESTIMATE: a submerged hard bed keeps this share of its friction (wet, silted). */
 const SUBMERGED_FRICTION = 0.8;
 /** The cabin drains this much faster than it floods, out of the water. */
@@ -495,6 +502,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly waterSea = new Uint8Array(4);
   /** The wheel whose water is sampled next; -1 samples all four (a new start). */
   private waterTurn = -1;
+  /** Where and when each wheel last asked, for the dry wheels' turns. */
+  private readonly waterAskedX = new Float64Array(4);
+  private readonly waterAskedZ = new Float64Array(4);
+  private readonly waterAskedTime = new Float64Array(4);
   private readonly waterHeight = new Float64Array(4);
   private readonly waterVelocityX = new Float64Array(4);
   private readonly waterVelocityY = new Float64Array(4);
@@ -1168,8 +1179,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * is asked about one wheel a step, in turn (all four at a start or a
    * recovery): in the worker each answer costs a terrain height sample,
    * about 13 us, and the water a wheel has rolled towards in the 4 steps
-   * (33 ms) since it was last asked is near enough. Whether a tyre is under
-   * the surface is decided every step, from its contact now.
+   * (33 ms) since it was last asked is near enough. While all four are dry,
+   * a wheel that has rolled less than `DRY_POLL_METERS` since it asked, and
+   * asked less than `DRY_POLL_SECONDS` ago, passes its turn: a parked or
+   * crawling car would otherwise spend a fifth of its step asking. Whether a
+   * tyre is under the surface is decided every step, from its contact now.
    */
   private sampleWater(): void {
     const env = this.environment;
@@ -1180,6 +1194,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     let lowest = Infinity;
     const turn = this.waterTurn;
     this.waterTurn = (turn + 1) & 3;
+    const dry = this.waterAt[0] === 0 && this.waterAt[1] === 0 && this.waterAt[2] === 0 && this.waterAt[3] === 0;
+    const time = this.state.time;
     for (let w = 0; w < 4; w += 1) {
       this.wheelSubmerged[w] = 0;
       if (!env) {
@@ -1188,7 +1204,16 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       }
       const at = this.contacts[w]!.point;
       lowest = Math.min(lowest, at.y);
-      if (turn < 0 || w === turn) {
+      let ask = turn < 0 || w === turn;
+      if (ask && turn >= 0 && dry) {
+        const dx = at.x - this.waterAskedX[w]!;
+        const dz = at.z - this.waterAskedZ[w]!;
+        ask = dx * dx + dz * dz >= DRY_POLL_METERS * DRY_POLL_METERS || time - this.waterAskedTime[w]! >= DRY_POLL_SECONDS;
+      }
+      if (ask) {
+        this.waterAskedX[w] = at.x;
+        this.waterAskedZ[w] = at.z;
+        this.waterAskedTime[w] = time;
         const sample = env.water.sample(at.x, at.z, this.waterSample);
         const wet = sample.kind !== "none";
         this.waterAt[w] = wet ? 1 : 0;

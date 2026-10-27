@@ -57,6 +57,17 @@ roots of sums. A choice between a computed double and a double argument
 is not. On rolling ground a step costs about 30 to 40 us here, inside the
 plan's 60 us on the tuning box (`tests/sim.car-budget.test.ts`).
 
+On a real world, with the lattice, the colliders and the water composite
+under it, a step on this cloud box (which runs the reference kernel about
+1.6 times slower than the tuning box) costs about 51 us parked and about
+62 us crawling, against about 30 and 33 us on the test rig's analytic
+ground: about 32 and 39 us on the tuning box. Two things brought it down
+from about 74 and 82 us: each lattice cell's 4 x 4 nodes are kept for the
+rest of the step (a tyre's eight samples fall in one or two cells), and a
+dry wheel skips its water turn until it has moved (see Water). What is left
+over the rig is the soil on grass, the hull's probes against the lattice and
+the colliders, and the nodes' expiry reads.
+
 ## The start
 
 A car starts where the worker puts it, but waits there, still and not
@@ -110,7 +121,9 @@ The ground is the physics terrain authority's 2 m lattice, cached round the
 car (`terrainPatch.ts`) and evaluated with the authority's own bicubic
 Catmull-Rom, so where a page is resident the car rolls on exactly the drawn
 ground. One authority height costs about 13 us in Node; the cache reads each
-node once as the car reaches it.
+node once as the car reaches it, and within a step it keeps each cell's
+4 x 4 patch for the next lookup in that cell, so the spline reads no node
+twice a step.
 
 The hull is spheres on the frame and axles (bumpers, sills, tank guard,
 diffs, tow bar, roof) that meet the ground and the world's colliders with a
@@ -440,8 +453,12 @@ The car reads the water authority at the tyres' contacts, one tyre a step
 in turn and all four at a start. In the worker each answer costs a
 terrain height sample (about 13 us in Node), so asking for all four every
 step doubled the car's step; the water a tyre has rolled towards in the four
-steps (33 ms) since it was last asked is near enough. Whether a tyre is under
-the surface is decided every step from its contact now. The wading depth is
+steps (33 ms) since it was last asked is near enough. While all four tyres
+are dry, a tyre passes its turn until it has rolled 0.3 m from where it last
+asked or a quarter of a second has gone (a lake can be posted round a parked
+car), so a parked or crawling car does not spend a fifth of its step asking
+about water that is not there; from about 9 m/s every turn is taken. Whether
+a tyre is under the surface is decided every step from its contact now. The wading depth is
 the highest surface over the lowest contact. A tyre under the surface
 reports no material and full wetness for the effects, and its bed is wet:
 loam turns to mud, snow keeps its depth and hard ground keeps 80% of its grip.
