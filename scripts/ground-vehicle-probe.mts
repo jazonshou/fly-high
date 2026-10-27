@@ -591,7 +591,7 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
     const now = sim.state.position;
     if (TRACE && (i % 15 === 0)) {
       const v = sim.visualState();
-      console.log(`t ${sim.state.time.toFixed(2)} d ${result.distance.toFixed(1)} i ${index} v ${speed.toFixed(2)} want ${wanted.toFixed(1)} acc ${accelerator.toFixed(2)} brk ${brake.toFixed(2)} st ${steer.toFixed(2)} pitch ${(p.pitch / DEG).toFixed(1)} roll ${(p.roll / DEG).toFixed(1)} y ${now.y.toFixed(2)} gnd ${traceHeight(now.x, now.z).toFixed(2)} loads ${v.wheelLoad.map((l) => l.toFixed(0)).join(",")} surf ${v.wheelSurface.join(",")} gear ${v.gear} ${v.range} wade ${v.wadingDepth.toFixed(2)} off ${result.offLine.toFixed(1)}`);
+      console.log(`t ${sim.state.time.toFixed(2)} d ${result.distance.toFixed(1)} at ${now.x.toFixed(0)},${now.z.toFixed(0)} i ${index} v ${speed.toFixed(2)} want ${wanted.toFixed(1)} acc ${accelerator.toFixed(2)} brk ${brake.toFixed(2)} st ${steer.toFixed(2)} pitch ${(p.pitch / DEG).toFixed(1)} roll ${(p.roll / DEG).toFixed(1)} y ${now.y.toFixed(2)} gnd ${traceHeight(now.x, now.z).toFixed(2)} loads ${v.wheelLoad.map((l) => l.toFixed(0)).join(",")} surf ${v.wheelSurface.join(",")} gear ${v.gear} ${v.range} wade ${v.wadingDepth.toFixed(2)} off ${result.offLine.toFixed(1)}`);
     }
     const moved = Math.hypot(now.x - px, now.z - pz);
     px = now.x;
