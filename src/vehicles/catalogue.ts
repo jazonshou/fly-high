@@ -93,12 +93,14 @@ const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
 
 /**
  * The LandCruiser 76 GXL wagon: 2.8 litre 1GD-FTV four-cylinder turbo-diesel,
- * part-time 4WD (the land plan, 2026-10-25). The framing is from the
- * published envelope, 4,910 mm long, 1,870 mm wide and 1,940 mm tall on a
- * 2,730 mm wheelbase, around the plan's estimated centre of gravity, 52% on
- * the front axle (1.31 m behind it) and 0.80 m up; the car-look build
- * measures it on the built model as the boat's is. Right-hand drive: the
- * driver's eye is to starboard, over the seat.
+ * part-time 4WD (the land plan, 2026-10-25). The top and front views are
+ * measured on the built model (`render.top-front-views`): the drawn car runs
+ * from the tow hitch 2.72 m behind the centre of gravity to the bumper 2.19 m
+ * ahead, and from the tyres' feet 0.82 m below it to the snorkel's head
+ * 1.19 m above, so the views aim 0.26 m aft of it and fill 60% of the frame.
+ * Right-hand drive: the driver's eye is to starboard, over the seat, and
+ * about 0.2 m lower than a seated driver's so the level cockpit lens holds
+ * the gauges through the wheel (`DRIVER_EYE` in the drawn car's lines).
  */
 const LANDCRUISER: SurfaceVehicleSpec = Object.freeze({
   kind: "landcruiser",
@@ -113,8 +115,8 @@ const LANDCRUISER: SurfaceVehicleSpec = Object.freeze({
     aimAhead: Object.freeze({ base: 4, knee: 0, slope: 0, cap: 0 }),
   }),
   cinematic: Object.freeze({ radiusMeters: 12, heightMeters: 3, heightDriftMeters: 1 }),
-  topFront: Object.freeze({ centreForward: -0.3, centreUp: 0.17, topDistanceMeters: 14, frontDistanceMeters: 9 }),
-  cockpitEye: Object.freeze({ forward: -0.1, up: 0.75, right: 0.37 }),
+  topFront: Object.freeze({ centreForward: -0.26, centreUp: 0, topDistanceMeters: 13.45, frontDistanceMeters: 10.25 }),
+  cockpitEye: Object.freeze({ forward: -0.36, up: 0.7, right: 0.37 }),
   engineReadout: Object.freeze({ label: "RPM", unit: "ENG", maximum: 4_500, roundTo: 50 }),
   // A four-cylinder four-stroke fires twice per crank turn: the fundamental
   // is rpm / 30, 25 Hz at the 750 rpm idle and 150 Hz at 4,500 rpm, which is

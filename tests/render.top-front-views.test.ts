@@ -23,8 +23,11 @@ import {
   type MutablePresentationVector,
 } from "../src/render/cameraPresentation";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import { createWebGpuBoat } from "../src/render/webgpu/boat/createBoat";
+import { createWebGpuCar } from "../src/render/webgpu/ground/createCar";
 import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
 import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
 
@@ -286,6 +289,46 @@ function builtAirframe(kind: AircraftKind, gear: number) {
   return { camera, points, dispose };
 }
 
+/** Every drawn vertex, each thin instance's copy placed by its own matrix. */
+function drawnInstancedPoints(meshes: readonly AbstractMesh[], camera: UniversalCamera): Vector3[] {
+  const points: Vector3[] = [];
+  for (const mesh of meshes) {
+    const instances = (mesh as Mesh).thinInstanceCount ?? 0;
+    if (instances === 0) {
+      points.push(...drawnPoints([mesh], camera));
+      continue;
+    }
+    mesh.computeWorldMatrix(true);
+    if (!mesh.isEnabled() || !mesh.isVisible) continue;
+    const local = mesh.getVerticesData(VertexBuffer.PositionKind);
+    const matrices = (mesh as Mesh).thinInstanceGetWorldMatrices();
+    if (!local) continue;
+    for (const instance of matrices) {
+      const world = instance.multiply(mesh.getWorldMatrix());
+      for (let i = 0; i + 2 < local.length; i += 3) {
+        points.push(Vector3.TransformCoordinates(new Vector3(local[i]!, local[i + 1]!, local[i + 2]!), world));
+      }
+    }
+  }
+  return points;
+}
+
+/** The LandCruiser 76 as built, at kerb ride, wheels straight. */
+function builtCar() {
+  const { engine, scene, camera } = framingScene();
+  const car = createWebGpuCar(scene, "landcruiser");
+  car.update({ ...INITIAL_VISUAL_STATE }, 1 / 60);
+  car.setCockpitView(false);
+  car.root.computeWorldMatrix(true);
+  const points = drawnInstancedPoints(car.meshes, camera);
+  const dispose = () => {
+    car.dispose();
+    scene.dispose();
+    engine.dispose();
+  };
+  return { camera, points, dispose };
+}
+
 /** The Runabout 21 as built, at rest with the outboard trimmed in. */
 function builtBoat() {
   const { engine, scene, camera } = framingScene();
@@ -494,6 +537,51 @@ describe("the speedboat's top and front framing, on the built boat at 16:9", () 
   });
 
   it("points the bow up the top view's screen, and at the front view's camera", () => {
+    const top = frame(built, "top", framing);
+    expect(top.noseY).toBeLessThan(top.tailY);
+    const front = frame(built, "front", framing);
+    expect(front.noseDepth).toBeLessThan(front.tailDepth);
+  });
+});
+
+describe("the LandCruiser's top and front framing, on the built car at 16:9", () => {
+  let built: ReturnType<typeof builtCar>;
+  beforeAll(() => {
+    built = builtCar();
+  }, 60_000);
+  afterAll(() => built.dispose());
+  const framing = surfaceVehicleSpec("landcruiser").topFront;
+
+  it("fills 60% of the frame with the car along the axis it fills first", () => {
+    for (const view of ["top", "front"] as const) {
+      const f = frame(built, view, framing);
+      const fill = Math.max(f.width, f.height);
+      expect(fill, `${view}: ${f.width.toFixed(3)} x ${f.height.toFixed(3)}`).toBeGreaterThan(0.58);
+      expect(fill, `${view}: ${f.width.toFixed(3)} x ${f.height.toFixed(3)}`).toBeLessThan(0.62);
+    }
+  });
+
+  it("keeps the whole car in front of the camera and inside the frame", () => {
+    for (const view of ["top", "front"] as const) {
+      const f = frame(built, view, framing);
+      expect(f.inFront, view).toBe(true);
+      expect(f.left, view).toBeGreaterThan(0.1);
+      expect(f.right, view).toBeLessThan(0.9);
+      expect(f.top, view).toBeGreaterThan(0.1);
+      expect(f.bottom, view).toBeLessThan(0.9);
+    }
+  });
+
+  it("centres the car: across within 1% (the snorkel and the right mirror are on one side), and within 2% (top) or 4% (front) up and down", () => {
+    const top = frame(built, "top", framing);
+    const front = frame(built, "front", framing);
+    expect(Math.abs((top.left + top.right) / 2 - 0.5)).toBeLessThan(0.01);
+    expect(Math.abs((front.left + front.right) / 2 - 0.5)).toBeLessThan(0.01);
+    expect(Math.abs((top.top + top.bottom) / 2 - 0.5)).toBeLessThan(0.02);
+    expect(Math.abs((front.top + front.bottom) / 2 - 0.5)).toBeLessThan(0.04);
+  });
+
+  it("points the bonnet up the top view's screen, and at the front view's camera", () => {
     const top = frame(built, "top", framing);
     expect(top.noseY).toBeLessThan(top.tailY);
     const front = frame(built, "front", framing);

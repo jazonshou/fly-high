@@ -36,6 +36,7 @@ import {
   AIRCRAFT_CAST_POOLS,
   aircraftWashLights,
   castPoolWorldPosition,
+  cockpitInstrumentGlow,
   observerAzimuthDegrees,
   resolveAircraftLights,
 } from "./webgpu/lighting/AircraftLighting";
@@ -86,6 +87,7 @@ import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
 import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
 import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
+import { CAR_HEADLAMP_POOLS, carLampState, carPoolIntensity } from "./webgpu/ground/carLights";
 import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
@@ -3213,10 +3215,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
     if (state.vehicle?.kind !== "boat") {
-      // The car's lamps are its own visual's (the car-look build); the
-      // aircraft's pools and washes stay dark under it.
-      for (const pool of AIRCRAFT_CAST_POOLS) this.clusteredLighting.setIntensity(pool.name, 0);
-      for (const slot of aircraftWashLights(this.aircraftKind)) this.clusteredLighting.setIntensity(slot.name, 0);
+      this.poseCarLights(state);
       return;
     }
     // The boat's lamp law, from the observer's bearing as the aircraft's is.
@@ -3253,6 +3252,46 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         wash.intensity * lights[wash.driver] * this.lastDaylightAttenuation,
       );
     }
+  }
+
+  /**
+   * The car's lamps follow its own switches (the visual reads them from the
+   * payload); the scene gives only the panel glow. Its headlamp pools take
+   * over the aircraft's two cast-pool slots, dipped on the taxi pool's and
+   * main beam on the landing pool's (`CAR_HEADLAMP_POOLS` has why), under the
+   * daylight attenuation every pool takes; the washes go dark.
+   */
+  private poseCarLights(state: FlightVisualState): void {
+    const car = state.vehicle?.kind === "car" ? state.vehicle : null;
+    this.surfaceVehicle?.setLightState({
+      portNav: 0,
+      starboardNav: 0,
+      tailNav: 0,
+      beacon: 0,
+      strobe: 0,
+      landing: 0,
+      cockpitGlow: cockpitInstrumentGlow(this.environmentState.sun.direction[1], horizontalIlluminanceLux(this.environmentState)),
+    });
+    const lamps = carLampState(car);
+    const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
+    const bodyUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
+    const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+    for (const pool of AIRCRAFT_CAST_POOLS) {
+      const beam = CAR_HEADLAMP_POOLS.find((candidate) => candidate.slot === pool.name);
+      const intensity = beam ? carPoolIntensity(beam, lamps, this.lastDaylightAttenuation) : 0;
+      if (beam && intensity > 0) {
+        const at = castPoolWorldPosition(
+          [state.position.x, state.position.y, state.position.z],
+          [bodyForward.x, bodyForward.y, bodyForward.z],
+          [bodyUp.x, bodyUp.y, bodyUp.z],
+          [bodyStarboard.x, bodyStarboard.y, bodyStarboard.z],
+          beam.offset,
+        );
+        this.clusteredLighting.setPosition(pool.name, at[0], at[1], at[2]);
+      }
+      this.clusteredLighting.setIntensity(pool.name, intensity);
+    }
+    for (const slot of aircraftWashLights(this.aircraftKind)) this.clusteredLighting.setIntensity(slot.name, 0);
   }
 
   private updateCamera(state: FlightVisualState): void {
