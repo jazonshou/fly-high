@@ -77,7 +77,7 @@ function edgeStations(piece: RoadPiece, side: 1 | -1): EdgeStation[] {
     const cx = piece.ax + (piece.bx - piece.ax) * t;
     const cz = piece.az + (piece.bz - piece.az) * t;
     const edge = piece.ha + (piece.hb - piece.ha) * t
-      + roadCrossOffset(side * half, piece.ca + (piece.cb - piece.ca) * t, spec.crossfall);
+      + roadCrossOffset(side * half, piece.ca + (piece.cb - piece.ca) * t, piece.ka + (piece.kb - piece.ka) * t);
     let lowest = Number.POSITIVE_INFINITY;
     for (const beyond of BEYOND) {
       lowest = Math.min(lowest, roadGroundHeight(world, cx + outX * (half + beyond), cz + outZ * (half + beyond)));
@@ -244,9 +244,11 @@ describe("the guardrails on a deep fill", () => {
       hb: roadGroundHeight(world, bx, z0) + 10,
       ca: 0,
       cb: 0,
+      ka: gravel.crossfall,
+      kb: gravel.crossfall,
     });
   }
-  const region: RoadRegion = { layer: "major", rx: roadRegionOf(x0), rz: roadRegionOf(z0), pieces: chain, pads: [] };
+  const region: RoadRegion = { layer: "major", rx: roadRegionOf(x0), rz: roadRegionOf(z0), pieces: chain, pads: [], patches: [] };
   /** A network that answers only for its keep-outs. */
   function stub(keepOuts: RoadRailKeepOuts, boxes: RoadBox[] = []): RoadNetwork {
     return {
@@ -287,7 +289,7 @@ describe("the guardrails on a deep fill", () => {
   });
 
   it("stops short of a pad and of a road crossing it, and lays nothing where nothing is wanted", () => {
-    const pad: RoadPad = { classId: ROAD_CLASS.gravel, nodeId: 1, x: x0 + 30, z: z0, height: 0, radius: 6 };
+    const pad: RoadPad = { classId: ROAD_CLASS.gravel, nodeId: 1, x: x0 + 30, z: z0, height: 0, gradientX: 0, gradientZ: 0, radius: 6 };
     // A track crossing at x0 + 90, square to it.
     const crossing: RoadPiece = { ...chain[0]!, classId: ROAD_CLASS.track, edgeId: 9, ax: x0 + 90, az: z0 - 30, bx: x0 + 90, bz: z0 + 30 };
     const laid = roadRegionRails(stub({ pads: [pad], pieces: [...chain, crossing], carPark: null }), region);

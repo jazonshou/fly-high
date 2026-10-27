@@ -3,7 +3,15 @@ import { INFRASTRUCTURE_PROFILE } from "../infrastructureProfiles";
 import { roadBatterTarget, roadCrossOffset } from "../roadEarthworkProfiles";
 import type { WorldDefinition } from "../types";
 import { roadClass, roadFormationHalfWidth, ROAD_PRIORITY, type RoadClassSpec } from "./roadClasses";
-import type { RoadLayer, RoadNetwork, RoadPad, RoadPiece, RoadRegion } from "./roadNetwork";
+import {
+  ROAD_PAD_APRON_METERS,
+  ROAD_PAD_APRON_SLOPE,
+  type RoadLayer,
+  type RoadNetwork,
+  type RoadPad,
+  type RoadPiece,
+  type RoadRegion,
+} from "./roadNetwork";
 import { roadRegionRails } from "./roadRails";
 import { roadGroundHeight } from "./roadTerrain";
 
@@ -33,9 +41,8 @@ export function roadPieceKey(piece: RoadPiece): number {
   return (piece.edgeId >>> 0) * ROAD_PIECE_KEY_STRIDE + piece.index;
 }
 
-/** The pad's level core runs onto the roads over this apron, metres, rising this much per metre. */
-export const ROAD_PAD_APRON_METERS = 3;
-export const ROAD_PAD_APRON_SLOPE = 0.08;
+/** The pads' apron (the network grades the roads meeting a pad past it). */
+export { ROAD_PAD_APRON_METERS, ROAD_PAD_APRON_SLOPE };
 
 /** The batters' walk: step, and the least reach a segment takes, metres. */
 const BATTER_STEP_METERS = 1.5;
@@ -49,6 +56,7 @@ export function roadRegionInfrastructure(network: RoadNetwork, region: RoadRegio
   const world = network.world;
   const segments: InfrastructureSegment[] = [];
   for (const piece of region.pieces) segments.push(pieceSegment(world, piece));
+  for (const patch of region.patches) segments.push(patchSegment(world, patch));
   for (const pad of region.pads) segments.push(padSegment(world, pad));
   const rails = roadRegionRails(network, region);
   return Object.freeze({
@@ -74,11 +82,12 @@ function pieceSegment(world: WorldDefinition, piece: RoadPiece): InfrastructureS
     const cz = piece.az + dz * t;
     const centre = piece.ha + (piece.hb - piece.ha) * t;
     const c = piece.ca + (piece.cb - piece.ca) * t;
+    const crossfall = piece.ka + (piece.kb - piece.ka) * t;
     for (const side of [1, -1]) {
       // Right of a->b: (dirZ, -dirX), as the stage's `across`.
       const outX = side * dirZ;
       const outZ = -side * dirX;
-      const edge = centre + roadCrossOffset(side * half, c, spec.crossfall);
+      const edge = centre + roadCrossOffset(side * half, c, crossfall);
       meets = Math.max(meets, batterMeets(world, cx + outX * half, cz + outZ * half, outX, outZ, edge, spec));
     }
   }
@@ -97,13 +106,51 @@ function pieceSegment(world: WorldDefinition, piece: RoadPiece): InfrastructureS
       piece.hb - world.seaLevel,
       piece.ca,
       piece.cb,
-      spec.crossfall,
+      piece.ka,
       spec.ditchDepth,
       spec.ditchWidth,
+      piece.kb - piece.ka,
     ]),
     surface: spec.surface,
     plantClearance: spec.plantClearance,
     key: roadPieceKey(piece),
+  });
+}
+
+/** A patch's batters reach this far, into the ditch it fills beside the road, metres. */
+const PATCH_REACH_METERS = 2;
+
+/**
+ * A crossing patch (`RoadGeometry.patches`): part of one of the road's own
+ * pieces laid again over an outranking road's formation edge and ditch,
+ * after every road, with no ditch and no paint of its own (the road's pieces
+ * painted it). Its short batters run a shoulder down into the ditch beside
+ * the road.
+ */
+function patchSegment(world: WorldDefinition, patch: RoadPiece): InfrastructureSegment {
+  const spec = roadClass(patch.classId);
+  return Object.freeze({
+    profile: INFRASTRUCTURE_PROFILE.carriageway,
+    mode: "set",
+    priority: ROAD_PRIORITY.crossing,
+    ax: patch.ax,
+    az: patch.az,
+    bx: patch.bx,
+    bz: patch.bz,
+    halfWidth: roadFormationHalfWidth(spec),
+    reach: PATCH_REACH_METERS,
+    params: Object.freeze([
+      patch.ha - world.seaLevel,
+      patch.hb - world.seaLevel,
+      patch.ca,
+      patch.cb,
+      patch.ka,
+      0,
+      0,
+      patch.kb - patch.ka,
+    ]),
+    plantClearance: spec.plantClearance,
+    key: roadPieceKey(patch),
   });
 }
 
@@ -120,7 +167,8 @@ function padSegment(world: WorldDefinition, pad: RoadPad): InfrastructureSegment
     const z = pad.z + outZ * half;
     // The edge stands where the apron's allowance leaves it over the ground there.
     const ground = roadGroundHeight(world, x, z);
-    const edge = pad.height + Math.min(allowance, Math.max(-allowance, ground - pad.height));
+    const plane = pad.height + pad.gradientX * (x - pad.x) + pad.gradientZ * (z - pad.z);
+    const edge = plane + Math.min(allowance, Math.max(-allowance, ground - plane));
     meets = Math.max(meets, batterMeets(world, x, z, outX, outZ, edge, { ditchDepth: 0, ditchWidth: 0, reach: spec.reach }));
   }
   return Object.freeze({
@@ -133,7 +181,8 @@ function padSegment(world: WorldDefinition, pad: RoadPad): InfrastructureSegment
     bz: pad.z,
     halfWidth: half,
     reach: reachFor(meets, spec),
-    params: Object.freeze([pad.height - world.seaLevel, pad.radius, ROAD_PAD_APRON_SLOPE]),
+    // A disc's frame: along +x, right -z.
+    params: Object.freeze([pad.height - world.seaLevel, pad.radius, ROAD_PAD_APRON_SLOPE, pad.gradientX, -pad.gradientZ]),
     surface: spec.surface,
     plantClearance: spec.plantClearance,
     key: pad.nodeId >>> 0,

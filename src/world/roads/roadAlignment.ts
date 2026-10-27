@@ -664,7 +664,7 @@ export interface RoadPieceTolerance {
   readonly horizontal: number;
   /** Off the linear height between its ends, metres. */
   readonly vertical: number;
-  /** Off the linear cross slope, rise per metre. */
+  /** Off the linear cross slope (and the linear cross-fall), rise per metre. */
   readonly cross: number;
 }
 
@@ -672,7 +672,7 @@ export interface RoadPieceTolerance {
  * Split the samples into straight pieces: each as long as it can be (at most
  * `maxLength`) while every sample it spans stays within `tolerance` of the
  * chord in plan, of the linear height between its ends and of the linear
- * cross slope.
+ * cross slope and cross-fall.
  */
 export function roadPieces(
   x: ArrayLike<number>,
@@ -680,6 +680,7 @@ export function roadPieces(
   station: ArrayLike<number>,
   height: ArrayLike<number>,
   cross: ArrayLike<number>,
+  crossfall: ArrayLike<number>,
   maxLength: number,
   tolerance: RoadPieceTolerance,
 ): RoadPieceGeometry[] {
@@ -698,6 +699,7 @@ export function roadPieces(
       const t = span > 0 ? (station[c]! - station[a]!) / span : 0;
       if (Math.abs(height[c]! - (height[a]! + (height[b]! - height[a]!) * t)) > tolerance.vertical) return false;
       if (Math.abs(cross[c]! - (cross[a]! + (cross[b]! - cross[a]!) * t)) > tolerance.cross) return false;
+      if (Math.abs(crossfall[c]! - (crossfall[a]! + (crossfall[b]! - crossfall[a]!) * t)) > tolerance.cross) return false;
     }
     return true;
   };

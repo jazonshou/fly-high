@@ -78,14 +78,17 @@ export interface RoadClassSpec {
 
 /**
  * Below the marina's priorities (10 and up), so a quay apron or a car park
- * pad shapes its own ground over the road that reaches it; junction pads after
- * every road, so a node is level whichever roads meet there.
+ * pad shapes its own ground over the road that reaches it; crossing patches
+ * after every road, so an outranking road's ditch is filled under the road
+ * crossing it; junction pads after those, so a node is level whichever roads
+ * meet there.
  */
 export const ROAD_PRIORITY = Object.freeze({
   track: 4,
   gravel: 5,
   airport: 6,
-  junction: 7,
+  crossing: 7,
+  junction: 8,
 });
 
 export const ROAD_CLASSES: readonly RoadClassSpec[] = Object.freeze([

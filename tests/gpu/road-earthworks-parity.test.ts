@@ -97,6 +97,9 @@ describe("road earthworks CPU/GPU parity", () => {
       expect(pads.length).toBeGreaterThan(0);
       // The sealed road's curves are superelevated somewhere in its region.
       expect(pieces.some((piece) => piece.params[2] !== 0 || piece.params[3] !== 0)).toBe(true);
+      // Some ease their cross-fall out into a crossing, and some pads tilt with their top road.
+      expect(pieces.some((piece) => (piece.params[7] ?? 0) !== 0)).toBe(true);
+      expect(pads.some((pad) => (pad.params[3] ?? 0) !== 0 || (pad.params[4] ?? 0) !== 0)).toBe(true);
       const words = packTerrainInfrastructure(index, world.seaLevel, landformCoreCenter(world));
 
       const points: { x: number; z: number }[] = [];
