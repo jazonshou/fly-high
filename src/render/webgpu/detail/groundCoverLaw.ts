@@ -88,7 +88,11 @@ export const GROUND_COVER_LAWS: readonly GroundCoverLaw[] = Object.freeze([
       Object.freeze({ outerRadiusMeters: 52, spacingMeters: 0.85, segments: 2, widthScale: 2.6 }),
     ] as const),
     altitudeFadeLowMeters: 16,
-    altitudeFadeHighMeters: 55,
+    // PR B part 2 (T0b): 55 -> 40 m, so the blade compute and the CPU tile
+    // bake stop at 39.5 m instead of 54.2 m. From 30 m up the shrunken ring
+    // ends below a normal view's bottom edge in either case, so only a steep
+    // look down sees the thinner carpet (gate 0.64 -> 0.42 at 30 m).
+    altitudeFadeHighMeters: 40,
   }),
   // Tier 1 — the G-target tier.
   Object.freeze({

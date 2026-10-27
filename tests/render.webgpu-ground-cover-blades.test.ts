@@ -57,6 +57,14 @@ describe("ground-cover blade law (wave G)", () => {
     }
   });
 
+  it("fades tier 0's blades out by 40 m above the ground (PR B part 2, T0b)", () => {
+    // 55 -> 40: the blade compute and the tile bake stop at 39.5 m instead of
+    // 54.2 m. Only tier 0 moves; tier 1's law is the one the reference
+    // pictures draw.
+    expect(GROUND_COVER_LAWS[0]!.altitudeFadeLowMeters).toBe(16);
+    expect(GROUND_COVER_LAWS[0]!.altitudeFadeHighMeters).toBe(40);
+  });
+
   it("pins the blade vertex/triangle formulas", () => {
     const ring = GROUND_COVER_LAWS[1]!.rings[0]!;
     expect(groundCoverBladeVertices(ring)).toBe(2 * ring.segments + 1);

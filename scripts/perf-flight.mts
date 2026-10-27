@@ -157,7 +157,7 @@ The report ends with what the sky re-light and the ground-cover tile bake cost f
 and says "not exercised" when the legs never reached one:
   a sky re-light comes every 500 m of climb and the agent climbs at most 25 m/s, so one needs
     about 1200 frames of climb: e.g. --clearance 1500 --speed 250 --legs 2 --leg-frames 720
-  the ground cover bakes only below its fade height (55 to 110 m above the ground, by tier) and
+  the ground cover bakes only below its fade height (40 to 110 m above the ground, by tier) and
     the agent descends at most 10 m/s from the shot's altitude; --start begins the legs at
     --clearance above the ground: e.g. --clearance 30 --speed 70 --start <x,z>
 `;
