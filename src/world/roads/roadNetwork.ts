@@ -1,3 +1,4 @@
+import { infrastructureTerrainKey } from "../infrastructure";
 import type { WorldDefinition } from "../types";
 import {
   ROAD_CLASS,
@@ -706,31 +707,16 @@ export class RoadNetwork {
 /** The composition priority a pad takes. */
 export const ROAD_PAD_PRIORITY = ROAD_PRIORITY.junction;
 
-/**
- * A world's terrain identity for the roads: what the network depends on.
- * Not the airport list (spawned fields keep clear of roads instead).
- */
-export function roadWorldKey(world: WorldDefinition): string {
-  const airport = world.airport;
-  return [
-    world.seedHash,
-    world.seaLevel,
-    world.worldEvolution,
-    JSON.stringify(world.climateProvince ?? null),
-    JSON.stringify(world.landforms ?? null),
-    airport
-      ? [airport.centerX, airport.centerZ, airport.headingRadians, airport.elevation, airport.runwayLength,
-        airport.runwayWidth, airport.endSafetyArea, airport.shoulderWidth, airport.terrainBlendDistance].join(",")
-      : "none",
-  ].join("|");
-}
-
 const NETWORKS = new Map<string, RoadNetwork>();
 const NETWORK_CACHE_LIMIT = 2;
 
-/** The memoised network for a world's terrain identity (two kept). */
+/**
+ * The memoised network for a world's terrain identity (two kept): the
+ * stage's key, so a spawned airport's new world shares the network (spawned
+ * fields keep clear of roads instead).
+ */
 export function roadNetworkFor(world: WorldDefinition): RoadNetwork {
-  const key = roadWorldKey(world);
+  const key = infrastructureTerrainKey(world);
   let network = NETWORKS.get(key);
   if (network) {
     NETWORKS.delete(key);
