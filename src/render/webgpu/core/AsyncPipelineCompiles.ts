@@ -1,6 +1,7 @@
 import { WebGPUCacheRenderPipeline } from "@babylonjs/core/Engines/WebGPU/webgpuCacheRenderPipeline";
 import { WebGPUTextureHelper } from "@babylonjs/core/Engines/WebGPU/webgpuTextureHelper";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Observer } from "@babylonjs/core/Misc/observable";
 import type { Scene } from "@babylonjs/core/scene";
@@ -410,4 +411,57 @@ export class AsyncPipelineCompiles implements PipelineWarmUp {
     }
     this.materials.clear();
   }
+}
+
+/** `ComputeShader`'s and `WebGPUComputePipelineContext`'s members `precompileComputePipeline` reads (9.21.2). */
+interface ComputeShaderLike {
+  _engine?: { _device?: GPUDevice };
+  _effect?: {
+    _useExplicitComputePipelineLayout?: boolean;
+    getPipelineContext(): { stage?: GPUProgrammableStage; computePipeline?: GPUComputePipeline } | null;
+  };
+}
+
+/** Pipeline contexts with an asynchronous compile under way, or refused. */
+const computeCompiles = new WeakMap<object, "pending" | "failed">();
+
+/**
+ * Builds a compute shader's pipeline with `createComputePipelineAsync` ahead
+ * of its first dispatch, which in Babylon 9.21.2 builds it synchronously
+ * (`_computeDispatch`) and stops that frame for the compile exactly as a
+ * render pipeline did: the blades' placement kernel took 0.4-0.7 s on the
+ * macOS runner's GPU the first time the aircraft came down to the grass. The
+ * descriptor is the one the dispatch would build (the effect's stage, the
+ * "auto" layout), and the pipeline goes in the slot the dispatch reads.
+ *
+ * "pending" while the effect or the compile is under way (call again),
+ * "ready" once the pipeline is in place, "unsupported" when it cannot help:
+ * an explicit layout (built from the bindings at the dispatch), a refused
+ * compile, or a Babylon surface that has moved. A dispatch before the
+ * compile lands builds the pipeline itself, as before.
+ */
+export function precompileComputePipeline(shader: ComputeShader): "ready" | "pending" | "unsupported" {
+  // Compiles the shader module the first time; the pipeline is the slow part.
+  if (!shader.isReady()) return "pending";
+  const internals = shader as unknown as ComputeShaderLike;
+  const effect = internals._effect;
+  const device = internals._engine?._device;
+  const context = typeof effect?.getPipelineContext === "function" ? effect.getPipelineContext() : null;
+  if (!context?.stage || typeof device?.createComputePipelineAsync !== "function" || effect?._useExplicitComputePipelineLayout) {
+    return "unsupported";
+  }
+  if (context.computePipeline) return "ready";
+  const state = computeCompiles.get(context);
+  if (state) return state === "pending" ? "pending" : "unsupported";
+  computeCompiles.set(context, "pending");
+  device.createComputePipelineAsync({ layout: "auto", compute: context.stage }).then(
+    (pipeline) => {
+      computeCompiles.delete(context);
+      // A dispatch may have built it meanwhile; its bind groups are made
+      // against that one.
+      if (!context.computePipeline) context.computePipeline = pipeline;
+    },
+    () => computeCompiles.set(context, "failed"),
+  );
+  return "pending";
 }

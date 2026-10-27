@@ -27,7 +27,10 @@ import {
 import { consumeGpuDispatchCostMs } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import type { ComputeBudget } from "@/src/render/webgpu/core/ComputeBudget";
-import type { PipelineWarmUp } from "@/src/render/webgpu/core/AsyncPipelineCompiles";
+import {
+  precompileComputePipeline,
+  type PipelineWarmUp,
+} from "@/src/render/webgpu/core/AsyncPipelineCompiles";
 import { GroundCoverMaterialPlugin } from "./GroundCoverMaterialPlugin";
 import { densityField, dryProvinceGroundCoverKeep, sandCoverGroundFactor } from "./densityField";
 import {
@@ -366,6 +369,8 @@ export class GroundCoverSystem {
   /** A ring has dispatched once: its pipelines were needed, so priming is over. */
   private dispatchedOnce = false;
   private bladePipelinesWarm = false;
+  /** The placement kernel's pipeline is built, or building it ahead cannot help. */
+  private placementPipelineSettled = false;
   /** Ring 0 is drawing one degenerate blade for the pipeline warm-up. */
   private bladePrimeActive = false;
   private disposed = false;
@@ -1178,16 +1183,23 @@ export class GroundCoverSystem {
   }
 
   /**
-   * Before any ring has dispatched: ring 0 draws ONE blade wherever the camera
-   * is, until `pipelineWarmUp` reports its pipelines built. The never-written
-   * blade buffer is zeros, which the vertex shader sends 100 km below the
-   * ground, so the draw is clipped and costs one blade of vertex work; the
-   * point is the pipeline compile it starts off the frame. The rings share
-   * the material and the vertex layout, so ring 0 warms them all.
+   * Before any ring has dispatched: the placement kernel's compute pipeline
+   * is built off the frame (`precompileComputePipeline`), and ring 0 draws
+   * ONE blade wherever the camera is, until `pipelineWarmUp` reports its
+   * pipelines built. The never-written blade buffer is zeros, which the
+   * vertex shader sends 100 km below the ground, so the draw is clipped and
+   * costs one blade of vertex work; the point is the pipeline compile it
+   * starts off the frame. The rings share the material and the vertex
+   * layout, so ring 0 warms them all.
    */
   private primeBladePipelines(): void {
     const warmUp = this.options.pipelineWarmUp;
     const ring = this.rings[0];
+    if (warmUp && ring && !this.placementPipelineSettled && !this.dispatchedOnce) {
+      // The placement kernel's own pipeline, which the first dispatch would
+      // otherwise build in its frame. The rings share its effect.
+      this.placementPipelineSettled = precompileComputePipeline(ring.compute) !== "pending";
+    }
     if (!warmUp || !ring || this.bladePipelinesWarm || this.dispatchedOnce || this.hiddenForCapture) {
       this.endBladePrime();
       return;

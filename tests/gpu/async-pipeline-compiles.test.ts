@@ -45,6 +45,7 @@ const gpuErrors: string[] = [];
 interface PipelineRecord {
   readonly mesh: string | null;
   readonly mode: "sync" | "async";
+  readonly kind: "render" | "compute";
 }
 const pipelines: PipelineRecord[] = [];
 let drawingMesh: string | null = null;
@@ -62,13 +63,23 @@ beforeAll(async () => {
   });
   const createRenderPipeline = device.createRenderPipeline.bind(device);
   const createRenderPipelineAsync = device.createRenderPipelineAsync.bind(device);
+  const createComputePipeline = device.createComputePipeline.bind(device);
+  const createComputePipelineAsync = device.createComputePipelineAsync.bind(device);
   device.createRenderPipeline = (descriptor) => {
-    pipelines.push({ mesh: drawingMesh, mode: "sync" });
+    pipelines.push({ mesh: drawingMesh, mode: "sync", kind: "render" });
     return createRenderPipeline(descriptor);
   };
   device.createRenderPipelineAsync = (descriptor) => {
-    pipelines.push({ mesh: drawingMesh, mode: "async" });
+    pipelines.push({ mesh: drawingMesh, mode: "async", kind: "render" });
     return createRenderPipelineAsync(descriptor);
+  };
+  device.createComputePipeline = (descriptor) => {
+    pipelines.push({ mesh: null, mode: "sync", kind: "compute" });
+    return createComputePipeline(descriptor);
+  };
+  device.createComputePipelineAsync = (descriptor) => {
+    pipelines.push({ mesh: null, mode: "async", kind: "compute" });
+    return createComputePipelineAsync(descriptor);
   };
   // Every pass's mesh draw names its mesh for the records above.
   const prototype = Mesh.prototype as unknown as Record<string, unknown>;
@@ -91,7 +102,7 @@ afterAll(() => {
 
 /** Pipelines asked for by meshes whose name starts with `prefix`, since `mark`. */
 function pipelinesFor(prefix: string, mark: number): { sync: number; async: number } {
-  const asked = pipelines.slice(mark).filter((record) => record.mesh?.startsWith(prefix));
+  const asked = pipelines.slice(mark).filter((record) => record.kind === "render" && record.mesh?.startsWith(prefix));
   return {
     sync: asked.filter((record) => record.mode === "sync").length,
     async: asked.filter((record) => record.mode === "async").length,
@@ -255,7 +266,7 @@ describe("off-frame pipeline compiles in Babylon's WebGPU draws", () => {
 });
 
 describe("the blades' pipeline prime", () => {
-  it("compiles the blades' pipelines while the aircraft is above the fade, so the first blades compile nothing", async () => {
+  it("compiles the blades' pipelines, render and compute, while the aircraft is above the fade, so the first blades compile nothing", async () => {
     const scene = new Scene(engine);
     scene.clearColor = new Color4(0.2, 0.35, 0.55, 1);
     const camera = new FreeCamera("ground-cover-camera", new Vector3(0, 2, 0), scene);
@@ -316,6 +327,9 @@ describe("the blades' pipeline prime", () => {
       expect(ring.isEnabled(false), "ring 0 kept drawing after its prime").toBe(false);
       expect(ring.forcedInstanceCount).toBe(groundCoverLaneCount(law.rings[0]!));
       expect(pipelinesFor("ground-cover-ring-", 0).sync).toBe(0);
+      // The placement kernel: built off the frame, once, before any dispatch.
+      const computeAtCruise = pipelines.filter((record) => record.kind === "compute");
+      expect(computeAtCruise.map((record) => record.mode)).toEqual(["async"]);
 
       // Descend: the blades appear with their pipelines already built.
       const mark = pipelines.length;
@@ -329,6 +343,7 @@ describe("the blades' pipeline prime", () => {
         "no ring ever drew",
       ).toBeGreaterThan(0);
       expect(pipelinesFor("ground-cover-ring-", mark)).toEqual({ sync: 0, async: 0 });
+      expect(pipelines.slice(mark).filter((record) => record.kind === "compute")).toEqual([]);
       expect(compiles.statistics.deferredDraws).toBe(deferredBefore);
       expect(gpuErrors).toEqual([]);
     } finally {

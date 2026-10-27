@@ -6,10 +6,12 @@ import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ComputeShader } from "@babylonjs/core/Compute/computeShader";
 import {
   AsyncPipelineCompiles,
   missingAsyncPipelineSurface,
   PIPELINE_WARM_UP_FRAME_LIMIT,
+  precompileComputePipeline,
 } from "../src/render/webgpu/core/AsyncPipelineCompiles";
 import { readSource } from "./support/sourceText";
 
@@ -373,6 +375,75 @@ describe("pipeline warm-up", () => {
   });
 });
 
+describe("compute pipelines built ahead of their first dispatch", () => {
+  /** A compute shader as `precompileComputePipeline` reads it, and its device. */
+  function computeShader(options: { explicitLayout?: boolean } = {}) {
+    const compiles: { descriptor: GPUComputePipelineDescriptor; resolve(): void; reject(): void }[] = [];
+    const context: { stage: GPUProgrammableStage; computePipeline?: GPUComputePipeline } = {
+      stage: { module: {} as GPUShaderModule, entryPoint: "placeGroundCover" },
+    };
+    let ready = false;
+    const shader = {
+      isReady: () => ready,
+      _engine: {
+        _device: {
+          createComputePipelineAsync: (descriptor: GPUComputePipelineDescriptor) => new Promise<GPUComputePipeline>((resolve, reject) => {
+            compiles.push({
+              descriptor,
+              resolve: () => resolve({ label: "built" } as GPUComputePipeline),
+              reject: () => reject(new Error("refused")),
+            });
+          }),
+        },
+      },
+      _effect: {
+        _useExplicitComputePipelineLayout: options.explicitLayout ?? false,
+        getPipelineContext: () => context,
+      },
+    };
+    return { shader: shader as unknown as ComputeShader, context, compiles, makeReady: () => { ready = true; } };
+  }
+
+  it("waits for the effect, then compiles once with the dispatch's own descriptor into the dispatch's slot", async () => {
+    const { shader, context, compiles, makeReady } = computeShader();
+    expect(precompileComputePipeline(shader)).toBe("pending");
+    expect(compiles).toEqual([]);
+    makeReady();
+    expect(precompileComputePipeline(shader)).toBe("pending");
+    expect(precompileComputePipeline(shader)).toBe("pending");
+    expect(compiles).toHaveLength(1);
+    expect(compiles[0]!.descriptor).toEqual({ layout: "auto", compute: context.stage });
+    compiles[0]!.resolve();
+    await settle();
+    expect(context.computePipeline).toEqual({ label: "built" });
+    expect(precompileComputePipeline(shader)).toBe("ready");
+  });
+
+  it("keeps a pipeline a dispatch built meanwhile, and gives up on a refused compile or an explicit layout", async () => {
+    const raced = computeShader();
+    raced.makeReady();
+    precompileComputePipeline(raced.shader);
+    const dispatched = { label: "dispatch" } as GPUComputePipeline;
+    raced.context.computePipeline = dispatched;
+    raced.compiles[0]!.resolve();
+    await settle();
+    expect(raced.context.computePipeline).toBe(dispatched);
+
+    const refused = computeShader();
+    refused.makeReady();
+    precompileComputePipeline(refused.shader);
+    refused.compiles[0]!.reject();
+    await settle();
+    expect(precompileComputePipeline(refused.shader)).toBe("unsupported");
+    expect(refused.compiles).toHaveLength(1);
+
+    const explicit = computeShader({ explicitLayout: true });
+    explicit.makeReady();
+    expect(precompileComputePipeline(explicit.shader)).toBe("unsupported");
+    expect(explicit.compiles).toEqual([]);
+  });
+});
+
 describe("the Babylon facts the module stands on (installed @babylonjs/core)", () => {
   const require = createRequire(import.meta.url);
   const read = (path: string) => readFileSync(require.resolve(`@babylonjs/core/${path}`), "utf8");
@@ -421,6 +492,21 @@ describe("the Babylon facts the module stands on (installed @babylonjs/core)", (
     expect(methodBody(tree, "_setRenderPipeline(param) {")).toContain("param.token.pipeline = param.pipeline;");
   });
 
+  it("a compute dispatch builds a missing pipeline from the effect's stage, in the slot it reads", () => {
+    const dispatch = methodBody(
+      read("Engines/WebGPU/Extensions/engine.computeShader.pure.js"),
+      "WebGPUEngine.prototype._computeDispatch = function (effect, context, bindings, x, y, z, buffer, offset, bindingsMapping, gpuPerfCounter) {",
+    );
+    expect(dispatch).toContain("const contextPipeline = effect._pipelineContext;");
+    expect(dispatch).toContain("if (!contextPipeline.computePipeline) {");
+    expect(dispatch).toContain("const explicitLayout = effect._useExplicitComputePipelineLayout");
+    expect(dispatch).toContain("layout: explicitLayout ?? \"auto\"");
+    expect(dispatch).toContain("compute: contextPipeline.stage,");
+    const shader = read("Compute/computeShader.pure.js");
+    expect(shader).toContain("this._effect = effect;");
+    expect(shader).toContain("this._engine.computeDispatch(this._effect, this._context, this._bindings, x, y, z,");
+  });
+
   it("every pass that draws a mesh goes through _processRendering", () => {
     const mesh = read("Meshes/mesh.pure.js");
     expect(mesh).toMatch(/\n {4}_processRendering\(/);
@@ -441,7 +527,11 @@ describe("the renderer's wiring", () => {
   });
 
   it("builds in the frame from the capture's time pin on, and drains compiles at the capture fence", () => {
-    expect(method("pinOceanCascadePhaseForCapture(): void {")).toContain("this.pipelineCompiles?.setSynchronous(true);");
+    // The time pin is found by its sky line, not by its name: the ocean pin's
+    // guard counts every file outside src/ that names it.
+    const timePin = renderer.indexOf("this.skyRebakeSynchronous = true;");
+    expect(timePin).toBeGreaterThan(-1);
+    expect(renderer.slice(timePin, timePin + 200)).toContain("this.pipelineCompiles?.setSynchronous(true);");
     expect(method("async waitForGpuIdleForCapture(): Promise<void> {")).toContain("await this.pipelineCompiles?.whenIdle();");
   });
 });
