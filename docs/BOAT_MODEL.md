@@ -226,13 +226,14 @@ forward. The spin-outs heel at most 23-28 degrees.
 - **Savitsky and Brown (1976)**, impact acceleration in head seas (the mean of
   the highest tenth at the CG, from Fridsma's towed prismatic models): two
   minutes into a 0.96 m significant sea on the game's sea twin, heading into
-  the wind, in Pilot: the boat slows to 18 kn, 223 impacts, n_1/10 = 2.22 g
-  against their 1.58 g at that speed (ratio 1.41; the test holds 0.6-1.5 and
-  the absolute 1-3 g). Fridsma's models were free only in heave and pitch and
-  towed at a constant speed; this hull also rolls, yaws and slows into each
-  sea. Before the sea twin's waves travelled downwind (2026-10-27) the same
-  run met waves whose crest water ran away from the bow: 1.35 g against
-  2.11 g at 21 kn (ratio 0.64).
+  the wind, in Pilot: the boat slows to 18.4 kn, 223 impacts, n_1/10 = 2.22 g
+  against their 2.34 g (ratio 0.95; the test holds 0.6-1.4 and the absolute
+  1-3 g). Their trim is the calm-water trim at the speed run in the sea, of a
+  hull towed through its CG as Fridsma's were: 5.9 degrees at 18.4 kn. (Taking
+  instead the calm trim at the same lever, 4.0 degrees at 25 kn, reads the
+  slam 1.41 times the fit.) Fridsma's models were free only in heave and pitch
+  and towed at a constant speed; this hull also rolls, yaws and slows into
+  each sea.
 
 ## Waves
 

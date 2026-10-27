@@ -210,10 +210,8 @@ if (run("slam")) {
   }
   const height = 4 * Math.sqrt(squares / n - (sum / n) ** 2);
   const lever = 0.64;
-  const calm = underWay("pilot", lever, 20);
-  for (let i = 0; i < 120 * 20; i += 1) calm.boat.step(STEP);
-  calm.boat.telemetry(calm.telemetry);
-  const boat = new BoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: world.prevailingWindRadians, moored: false, speed: 20 * KNOT, gear: "forward", rpm: 4_000 });
+  // Into the wind (its bearing is where it blows toward): the waves come from dead ahead.
+  const boat = new BoatSimulator({ position: { x: 0, y: 0, z: 0 }, heading: world.prevailingWindRadians + Math.PI, moored: false, speed: 20 * KNOT, gear: "forward", rpm: 4_000 });
   boat.setEnvironment({ water: twin, wind: { x: 0, y: 0, z: 0 }, bedHeight: () => -100, gravity: G });
   boat.setControls({ assist: "pilot", boat: { ...NEUTRAL_BOAT_CONTROLS, lever } });
   const telemetry = boat.telemetry();
@@ -246,13 +244,15 @@ if (run("slam")) {
   peaks.sort((a, b) => b - a);
   const tenth = peaks.slice(0, Math.max(1, Math.round(peaks.length / 10)));
   const impact = tenth.reduce((a, b) => a + b, 0) / tenth.length;
+  // The fit's trim: calm water at the speed run in the sea, the hull towed through its CG (Fridsma's setup).
+  const calmTrim = towEquilibrium(speed / KNOT).trimDegrees;
   const predicted = savitskyBrownImpact(
     { beam: HULL_TRANSOM_CHINE_BEAM, deadriseDegrees: HULL_TRANSOM.deadriseDegrees, length: BOAT_WATERLINE_LENGTH, weight: WEIGHT },
     height,
-    calm.telemetry.runningTrim / DEG,
+    calmTrim,
     speed,
   );
-  table("Two minutes into a head sea on the sea twin (Pilot, lever 0.64)", "  Hs m     kn  impacts  n1/10 g  Savitsky-Brown g  ratio  airborne s  crashed", [
-    `${f(height, 2)}${f(speed / KNOT, 1, 7)}${f(peaks.length, 0, 9)}${f(impact, 2, 9)}${f(predicted, 2, 18)}${f(impact / predicted, 2, 7)}${f(airborne * STEP, 1, 12)}  ${boat.state.crashed}`,
+  table("Two minutes into a head sea on the sea twin (Pilot, lever 0.64)", "  Hs m     kn  calm trim  impacts  n1/10 g  Savitsky-Brown g  ratio  airborne s  crashed", [
+    `${f(height, 2)}${f(speed / KNOT, 1, 7)}${f(calmTrim, 2, 11)}${f(peaks.length, 0, 9)}${f(impact, 2, 9)}${f(predicted, 2, 18)}${f(impact / predicted, 2, 7)}${f(airborne * STEP, 1, 12)}  ${boat.state.crashed}`,
   ]);
 }
