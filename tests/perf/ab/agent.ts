@@ -30,6 +30,7 @@
  */
 
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../../src/render/FlightRenderer";
 import { PERF_COCKPIT_RIG } from "../../../src/render/cameraPresentation";
@@ -121,6 +122,14 @@ interface ShotContext {
 
 const errors = { console: [] as string[], logger: [] as string[], gpu: [] as string[], page: [] as string[] };
 const creations = { pipelines: 0, shaderModules: 0, shaderCodeChars: 0 };
+/**
+ * What asked for each render pipeline, in creation order
+ * (`describePipelineSource`): a measured frame reads its own slice.
+ */
+const pipelineSources: string[] = [];
+/** The frame-graph pass executing now, and the mesh Babylon is drawing (`installRenderingMeshNames`). */
+let graphPass: string | null = null;
+let renderingMesh: string | null = null;
 
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
@@ -182,7 +191,6 @@ function capability<Name extends keyof FlightRenderer>(name: Name): FlightRender
  * they draw into, and every compute pass is unlabelled.
  */
 function installRendererPassNames(): void {
-  let graphPass: string | null = null;
   let computeShader: string | null = null;
   const graph = WebGpuFrameGraph.prototype as unknown as {
     register?: (this: WebGpuFrameGraph, pass: FrameGraphPass) => () => void;
@@ -230,6 +238,55 @@ function installRendererPassNames(): void {
   });
 }
 
+/**
+ * Names the mesh (and its material) whose draw is being encoded, for every
+ * pass that draws meshes: the scene's own render, shadow maps and render
+ * targets all go through `Mesh._processRendering`. A pipeline created inside
+ * one is that mesh's pipeline in that pass.
+ */
+function installRenderingMeshNames(): void {
+  const prototype = Mesh.prototype as unknown as Record<string, unknown>;
+  const original = prototype["_processRendering"];
+  if (typeof original !== "function") return;
+  prototype["_processRendering"] = function (this: Mesh, ...args: unknown[]) {
+    const outer = renderingMesh;
+    const subMesh = args[1] as { getMaterial?: () => { name?: string } | null } | undefined;
+    const material = (args[7] as { name?: string } | undefined) ?? subMesh?.getMaterial?.() ?? null;
+    renderingMesh = material?.name ? `${this.name} (${material.name})` : this.name;
+    try {
+      return (original as (...input: unknown[]) => unknown).apply(this, args);
+    } finally {
+      renderingMesh = outer;
+    }
+  };
+}
+
+/** The Babylon render pass (main, a shadow generator's, a render target's) the engine is encoding. */
+function currentRenderPassName(): string {
+  const engine = renderer
+    ? ((renderer as unknown as { scene?: { getEngine(): unknown } }).scene?.getEngine() as
+      | { currentRenderPassId?: number; _renderPassNames?: readonly (string | undefined)[] }
+      | undefined)
+    : undefined;
+  const id = engine?.currentRenderPassId;
+  if (id === undefined) return "?";
+  return engine?._renderPassNames?.[id] ?? `pass ${id}`;
+}
+
+/**
+ * One render pipeline's origin: the frame-graph pass, Babylon's render pass,
+ * the mesh and material, and the pipeline's formats (Babylon's label).
+ */
+function describePipelineSource(method: string, descriptor: { readonly label?: string } | undefined): string {
+  return [
+    method.endsWith("Async") ? "async" : null,
+    graphPass ?? "(outside frame graph)",
+    currentRenderPassName(),
+    renderingMesh ?? "(no mesh)",
+    descriptor?.label ? `[${descriptor.label}]` : null,
+  ].filter((part) => part !== null).join(" › ");
+}
+
 /** Counts pipeline and shader-module creation all the time: a measured frame should create none. */
 function installCreationCounts(): void {
   const device = (globalThis as unknown as { GPUDevice?: { prototype: Record<string, unknown> } }).GPUDevice;
@@ -247,6 +304,14 @@ function installCreationCounts(): void {
   count("createComputePipeline", "pipelines");
   count("createComputePipelineAsync", "pipelines");
   count("createShaderModule", "shaderModules");
+  for (const name of ["createRenderPipeline", "createRenderPipelineAsync"]) {
+    const original = device.prototype[name];
+    if (typeof original !== "function") continue;
+    device.prototype[name] = function (this: unknown, descriptor: { label?: string } | undefined) {
+      if (pipelineSources.length < 10_000) pipelineSources.push(describePipelineSource(name, descriptor));
+      return (original as (descriptor: unknown) => unknown).call(this, descriptor);
+    };
+  }
   const createShaderModule = device.prototype.createShaderModule;
   if (typeof createShaderModule === "function") {
     device.prototype.createShaderModule = function (this: unknown, descriptor: { code?: string }) {
@@ -502,7 +567,12 @@ interface FlightPath {
   z: number;
   yawDegrees: number;
   altitude: number;
+  /** The nose's attitude below the horizon, moving toward each leg's `pitchDownDegrees`. */
+  pitchDownDegrees: number;
 }
+
+/** How fast the scripted nose moves toward a leg's pitch: a firm push on the stick. */
+const FLIGHT_PITCH_RATE_DEGREES_PER_SECOND = 30;
 
 let flightPath: FlightPath | null = null;
 
@@ -722,6 +792,7 @@ const agent: PerfAgent = {
     installGpuPassTiming();
     installGpuDrawGate();
     installRendererPassNames();
+    installRenderingMeshNames();
     installCreationCounts();
     installLongTaskObserver();
     if (next.profileOverride) {
@@ -1014,12 +1085,14 @@ const agent: PerfAgent = {
           z: start.z,
           yawDegrees: start.yawDegrees,
           altitude: sampleTerrainHeight(activeWorld, start.x, start.z) + request.clearanceMeters,
+          pitchDownDegrees: 0,
         }
         : {
           x: shot.state.position.x,
           z: shot.state.position.z,
           yawDegrees: shot.yawDegrees,
           altitude: shot.altitude,
+          pitchDownDegrees: 0,
         };
       active.setCameraMode(request.cameraMode);
     }
@@ -1027,6 +1100,7 @@ const agent: PerfAgent = {
     const speed = request.speedMetersPerSecond;
     const bankRadians = (request.bankDegrees * Math.PI) / 180;
     const turnRateDegrees = ((9.81 * Math.tan(bankRadians)) / Math.max(20, speed)) * (180 / Math.PI);
+    const pitchTargetDegrees = request.pitchDownDegrees ?? 0;
     setGpuDrawsSuppressed(request.suppressDraws);
     const longTaskStart = longTasks.length;
     const frames: FlightFrame[] = [];
@@ -1062,12 +1136,16 @@ const agent: PerfAgent = {
       const target = Math.max(groundHere, groundAhead) + request.clearanceMeters;
       path.altitude += Math.max((-10 / 60) * steps, Math.min((25 / 60) * steps, target - path.altitude));
       path.altitude = Math.max(path.altitude, groundHere + 30);
+      // The nose only: the path still follows the terrain, so a pitched leg
+      // looks at the ground from the clearance without flying into it.
+      const pitchStep = (FLIGHT_PITCH_RATE_DEGREES_PER_SECOND / 60) * steps;
+      path.pitchDownDegrees += Math.max(-pitchStep, Math.min(pitchStep, pitchTargetDegrees - path.pitchDownDegrees));
       const state: FlightVisualState = {
         ...shot.state,
         simulationTime,
         position: { x: path.x, y: path.altitude, z: path.z },
         velocity: { x: speed * heading.x, y: 0, z: speed * heading.z },
-        orientation: orientationFromYawPitchBank(path.yawDegrees, 0, request.bankDegrees),
+        orientation: orientationFromYawPitchBank(path.yawDegrees, path.pitchDownDegrees, request.bankDegrees),
         airspeed: speed,
         altitude: path.altitude,
         altitudeAgl: path.altitude - groundHere,
@@ -1077,6 +1155,7 @@ const agent: PerfAgent = {
       const shaderModulesBefore = creations.shaderModules;
       const shaderCodeBefore = creations.shaderCodeChars;
       const effectsBefore = effectsCompiled.length;
+      const pipelineSourcesBefore = pipelineSources.length;
       const heapBefore = heapUsedBytes();
       const heapBetweenBytes = heapBefore - heapMark;
       const renderStarted = performance.now();
@@ -1118,10 +1197,16 @@ const agent: PerfAgent = {
         shaderModulesCreated: creations.shaderModules - shaderModulesBefore,
         shaderCodeChars: creations.shaderCodeChars - shaderCodeBefore,
         effectsCompiled: effectsCompiled.slice(effectsBefore),
+        pipelineSources: pipelineSources.slice(pipelineSourcesBefore),
+        pitchDownDegrees: path.pitchDownDegrees,
         bake,
       });
       if (frame % request.fenceEvery === request.fenceEvery - 1) {
+        // The wait for the GPU to drain this frame and those since the last
+        // fence: where a pipeline compiled in the GPU process shows.
+        const fenceStarted = performance.now();
         await fence();
+        (frames[frames.length - 1] as { fenceMs?: number }).fenceMs = performance.now() - fenceStarted;
         heapMark = heapUsedBytes();
       }
     }

@@ -113,6 +113,9 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --park-legs             hold still (0 m/s) on odd legs and fly on even ones: a stop on the runway, then the roll
   --clearance <m>         height kept above the terrain (default 150)
   --bank <deg>            constant bank; 0 flies straight (default 0)
+  --pitch-down <deg>      legs 2, 4, ... push the nose that far below the horizon (at 30 deg/s) and
+                          legs 1, 3, ... bring it back level; the path still follows the terrain, so the
+                          camera looks at the ground from the clearance (default 0: every leg level)
   --camera chase|cockpit  (default chase)
   --weather clear|breezy|cloudy
                           (default clear, as the capture; the game's default is breezy)
@@ -326,6 +329,49 @@ function describeDetailWorker(
   return parts.length === 0 ? "" : `, ${parts.join(", ")}`;
 }
 
+/** A frame's whole cost on this host: render(), the tasks behind it, and its fence wait when it fenced. */
+function frameWallMs(frame: FlightFrame): number {
+  return frame.renderMs + frame.betweenMs + (frame.fenceMs ?? 0);
+}
+
+/**
+ * Each frame of a leg that created render pipelines: its index, attitude,
+ * cost and what asked for each pipeline (`FlightFrame.pipelineSources`).
+ */
+function describeLegPipelines(report: FlightReport): string[] {
+  const lines: string[] = [];
+  for (const [index, frame] of report.frames.entries()) {
+    if (frame.pipelinesCreated === 0) continue;
+    const sources = frame.pipelineSources ?? [];
+    lines.push(`frame ${index} (pitch ${fmt(frame.pitchDownDegrees ?? 0, 0)} deg): ${frame.pipelinesCreated} pipelines, `
+      + `render ${fmt(frame.renderMs, 1)} + between ${fmt(frame.betweenMs, 1)}`
+      + (frame.fenceMs === undefined ? "" : ` + fence ${fmt(frame.fenceMs, 1)}`) + " ms"
+      + (sources.length > 0 ? `: ${sources.join("; ")}` : ""));
+  }
+  return lines;
+}
+
+function renderPipelineMarkdown(reports: Record<ArmName, readonly FlightReport[]>): string {
+  const lines = ["## Pipelines created mid-flight", ""];
+  let any = false;
+  for (const arm of ARMS) {
+    for (const [leg, report] of reports[arm].entries()) {
+      const legLines = describeLegPipelines(report);
+      if (legLines.length === 0) continue;
+      any = true;
+      const fenced = report.frames.filter((frame) => frame.fenceMs !== undefined);
+      const worst = report.frames.reduce((top, frame) => (frameWallMs(frame) > frameWallMs(top) ? frame : top));
+      lines.push(`- ${arm} leg ${leg + 1}`
+        + (fenced.length > 0 ? ` (fence ms p50 ${fmt(percentiles(fenced.map((frame) => frame.fenceMs!)).p50, 1)})` : "")
+        + `, worst frame ${fmt(frameWallMs(worst), 1)} ms:`);
+      for (const line of legLines) lines.push(`  - ${line}`);
+    }
+  }
+  if (!any) lines.push("None: every pipeline the flight drew existed before its first leg.");
+  lines.push("");
+  return lines.join("\n");
+}
+
 function renderMarkdown(
   identity: Record<ArmName, string>,
   settings: Record<string, unknown>,
@@ -401,6 +447,7 @@ async function main(): Promise<number> {
       "park-legs": { type: "boolean", default: false },
       clearance: { type: "string", default: "150" },
       bank: { type: "string", default: "0" },
+      "pitch-down": { type: "string", default: "0" },
       camera: { type: "string", default: "chase" },
       weather: { type: "string", default: "clear" },
       quality: { type: "string", default: "medium" },
@@ -440,6 +487,11 @@ async function main(): Promise<number> {
   const camera = values.camera as FlightRequest["cameraMode"];
   if (!(legs >= 2 && Number.isInteger(legs)) || !(legFrames >= 10 && Number.isInteger(legFrames))) {
     console.error(USAGE);
+    return 2;
+  }
+  const pitchDown = Number(values["pitch-down"]);
+  if (!(Number.isFinite(pitchDown) && pitchDown >= 0 && pitchDown <= 89)) {
+    console.error(`perf-flight: --pitch-down takes degrees from 0 to 89 (got ${values["pitch-down"]})`);
     return 2;
   }
   const settleTrials = Number(values["settle-trials"]);
@@ -617,6 +669,7 @@ async function main(): Promise<number> {
           restart: leg === 0,
           ...(values["burst-legs"] ? { speedMetersPerSecond: leg % 2 === 0 ? 250 : 60 } : {}),
           ...(values["park-legs"] && leg % 2 === 0 ? { speedMetersPerSecond: 0 } : {}),
+          ...(pitchDown > 0 ? { pitchDownDegrees: leg % 2 === 1 ? pitchDown : 0 } : {}),
           killDetailWorkerAtFrame: faults.kill?.leg === leg + 1 ? faults.kill.frame : null,
           hangDetailWorkerAtFrame: faults.hang?.leg === leg + 1 ? faults.hang.frame : null,
           hitch: hitch && hitchLeg ? { frame: hitch.frame, milliseconds: hitch.milliseconds } : null,
@@ -651,6 +704,7 @@ async function main(): Promise<number> {
             : "")
           + describeDetailWorker(report.detailWorker, report.detailWatchdog, injected[arm])
           + describeLegBakes(report));
+        for (const line of describeLegPipelines(report)) log(`leg ${leg + 1} ${arm}: ${line}`);
       }
       writeFileSync(join(outDir, "progress.json"), JSON.stringify(reports));
     }
@@ -700,6 +754,7 @@ async function main(): Promise<number> {
       ...(settleTrials > 0 ? { settleTrials, trialFrames } : {}),
       ...(values["burst-legs"] ? { burstLegs: "250 and 60 m/s, alternating" } : {}),
       ...(values["park-legs"] ? { parkLegs: "0 m/s on odd legs" } : {}),
+      ...(pitchDown > 0 ? { pitchDown: `${pitchDown} deg on legs 2, 4, ...; level on legs 1, 3, ...` } : {}),
       ...(hitch ? { emulateHitch: hitch } : {}),
       ...(frameDump ? { frameDump } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),
@@ -707,8 +762,8 @@ async function main(): Promise<number> {
     };
     const verdict = flightVerdict({ identity, shas, settle, reports, settleTrials: trials });
     const { bakes, markdown: bakeMarkdown } = bakeSection({ shas, reports, settleTrials: trials });
-    const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderVerdictMarkdown(verdict)}`
-      + `\n${bakeMarkdown}`;
+    const markdown = `${renderMarkdown(identity, settings, summaries, firstLeg)}\n${renderPipelineMarkdown(reports)}`
+      + `\n${renderVerdictMarkdown(verdict)}\n${bakeMarkdown}`;
     writeFileSync(
       join(outDir, "report.json"),
       JSON.stringify({ identity, shas, settings, summaries, firstLeg, settle, reports, settleTrials: trials, verdict, bakes }, null, 1),
