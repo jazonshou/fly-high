@@ -34,6 +34,7 @@ import {
   TERRAIN_CORNER_SYNC_MAX_LEAF_QUERIES_PER_NODE,
   TERRAIN_CORNER_SYNC_MAX_LEVEL_PROBES_PER_QUERY,
   TERRAIN_PROVISIONAL_AXIS_FROM_HEIGHT,
+  selectTerrainNodeSets,
   selectTerrainNodes,
   terrainNearFloorNodeAllowance,
   terrainNodeMorphK,
@@ -561,6 +562,22 @@ describe("the near floor round a car (Low's L0 patch)", () => {
         }
       }
     }
+  });
+
+  it("hands the casters the tier's own selection, without the patch", () => {
+    // Exactly: the records the two partitions share are reused, not re-resolved.
+    for (const deviationFor of [BASE_SELECTION.deviationFor, ROUGH, () => 1_000]) {
+      for (const [x, z] of [[0, 0], [37, -91], [-250.5, 400.25], [63.9, 64.1]] as const) {
+        const sets = selectTerrainNodeSets({
+          ...BASE_SELECTION, cameraX: x, cameraY: 1.6, cameraZ: z,
+          finestResidentLevel: 1, nodeBudget: 224, pixelThreshold: 4, nearFloor: NEAR, deviationFor,
+        });
+        expect(sets.nodes).toEqual(lowCar(x, z, { deviationFor }));
+        expect(sets.tierNodes).toEqual(lowCar(x, z, { deviationFor, nearFloor: undefined }));
+      }
+    }
+    const plain = selectTerrainNodeSets({ ...BASE_SELECTION, cameraY: 1.6 });
+    expect(plain.tierNodes).toBe(plain.nodes);
   });
 
   it("geomorphs the patch to L1 across its band, all the way by the disc's edge", () => {
@@ -1499,6 +1516,7 @@ describe("Low's L0 patch round a car, in the host", () => {
         const ground = sampleFilteredTerrainHeight(world, 0, 0, 0);
         await pump(system, 80, { x: 0, y: ground + 1.6, z: 0, velocityX: 0, velocityZ: 0 });
         const nodes = system.selectedNodes;
+        const casters = system.selectedCasterNodes;
         const fine = nodes.filter((node) => node.level === 0);
         const height = system.atlases.height.residency;
         const channel = system.atlases.channel.residency;
@@ -1510,7 +1528,12 @@ describe("Low's L0 patch round a car, in the host", () => {
           expect(channel.entries.some((slot) => slot.address.level === 0
             && slot.address.x === node.address.x && slot.address.z === node.address.z)).toBe(true);
         }
-        return { nodes, fine, profile };
+        // The casters draw the tier's own ground, from pages that are resident too.
+        for (const node of casters) {
+          expect(height.entries.some((slot) => slot.address.level === node.address.level
+            && slot.address.x === node.address.x && slot.address.z === node.address.z)).toBe(true);
+        }
+        return { nodes, casters, fine, profile };
       } finally {
         system.dispose();
         scene.dispose();
@@ -1523,13 +1546,18 @@ describe("Low's L0 patch round a car, in the host", () => {
     const reach = car.profile.vehicleNearTerrainL0RadiusMeters + terrainNodeSpanMeters(1) * Math.SQRT2;
     for (const node of car.fine) expect(Math.hypot(node.originX + 32, node.originZ + 32)).toBeLessThan(reach);
     expect(car.nodes.length).toBeLessThanOrEqual(
-      car.profile.cdlodNodeBudget + terrainNearFloorNodeAllowance({ level: 0, radiusMeters: car.profile.vehicleNearTerrainL0RadiusMeters, bandMeters: 64 }, 1),
+      car.profile.cdlodNodeBudget + terrainNearFloorNodeAllowance({ level: 0, radiusMeters: car.profile.vehicleNearTerrainL0RadiusMeters, bandMeters: car.profile.vehicleNearTerrainL0BandMeters }, 1),
     );
-    // No car, or no radius: the tier's own ground.
-    expect((await run("low", false)).fine).toHaveLength(0);
+    expect(Math.min(...car.casters.map((node) => node.level))).toBe(1);
+    expect(car.casters.length).toBeLessThanOrEqual(car.profile.cdlodNodeBudget);
+    // No car, or no radius: the tier's own ground, for the casters too.
+    const plain = await run("low", false);
+    expect(plain.fine).toHaveLength(0);
+    expect(plain.casters).toBe(plain.nodes);
     const medium = await run("medium", true);
     expect(medium.profile.vehicleNearTerrainL0RadiusMeters).toBe(0);
     expect(medium.nodes).toEqual((await run("medium", false)).nodes);
+    expect(medium.casters).toBe(medium.nodes);
   }, 60_000);
 });
 

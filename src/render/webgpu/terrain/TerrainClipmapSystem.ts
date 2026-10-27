@@ -84,7 +84,7 @@ import {
   buildTerrainNodeGrid,
   createTerrainNodeBuffers,
   resolveTerrainResidentCornerMorphs,
-  selectTerrainNodes,
+  selectTerrainNodeSets,
   terrainNearFloorNodeAllowance,
   writeTerrainNodeBuffers,
   type TerrainNode,
@@ -281,9 +281,6 @@ export interface TerrainClipmapSystemOptions {
   readonly vehicleNearField?: boolean;
 }
 
-/** The near-floor patch's geomorph band: one L0 node, so it finishes within the edge node. */
-export const VEHICLE_NEAR_TERRAIN_BAND_METERS = 64;
-
 /** The disc a car session draws L0 in, or undefined: no car, or a tier whose floor is L0. */
 function vehicleNearFloor(
   profile: WebGpuQualityProfile,
@@ -293,11 +290,11 @@ function vehicleNearFloor(
   return {
     level: 0,
     radiusMeters: profile.vehicleNearTerrainL0RadiusMeters,
-    bandMeters: VEHICLE_NEAR_TERRAIN_BAND_METERS,
+    bandMeters: profile.vehicleNearTerrainL0BandMeters,
   };
 }
 
-/** Instances a node buffer holds: the budget, plus the near floor's own nodes. */
+/** Instances the beauty node buffer holds: the budget, plus the near floor's own nodes. */
 function terrainNodeCapacity(profile: WebGpuQualityProfile, options: TerrainClipmapSystemOptions): number {
   return (options.nodeBudgetOverride ?? profile.cdlodNodeBudget)
     + terrainNearFloorNodeAllowance(vehicleNearFloor(profile, options), profile.finestResidentLevel);
@@ -721,6 +718,13 @@ export class TerrainClipmapSystem {
   private casterBuffers: TerrainNodeBuffers[] = [];
   private instanceBuffersBound = false;
   private nodes: readonly TerrainNode[] = [];
+  /**
+   * What the casters draw: the tier's own selection, without the near floor's
+   * patch. The patch's relief is centimetres (L0 against L1, measured p90
+   * 1-10 cm), and drawing it into both cascades cost more GPU time on Low than
+   * drawing it on screen. The same array as `nodes` without a near floor.
+   */
+  private casterNodes: readonly TerrainNode[] = [];
   private profile: WebGpuQualityProfile;
   private frameIndex = 0;
   private originX = 0;
@@ -1127,6 +1131,11 @@ export class TerrainClipmapSystem {
   /** The selected node set, so 4-10's capture can assert on it. */
   get selectedNodes(): readonly TerrainNode[] {
     return this.nodes;
+  }
+
+  /** The node set the shadow casters draw: `selectedNodes` without a near floor's patch. */
+  get selectedCasterNodes(): readonly TerrainNode[] {
+    return this.casterNodes;
   }
 
   setProfile(profile: WebGpuQualityProfile): void {
@@ -1541,7 +1550,7 @@ export class TerrainClipmapSystem {
     };
     this.provinceField?.update(observer.x, observer.z);
     const residentPage = createResidentInvariantPageLookup(this.heightAtlas.residency);
-    this.nodes = selectTerrainNodes({
+    const selection = selectTerrainNodeSets({
       cameraX: observer.x,
       cameraY: observer.y ?? 0,
       cameraZ: observer.z,
@@ -1559,6 +1568,8 @@ export class TerrainClipmapSystem {
         return slot ? [slot.stats.minHeightMeters, slot.stats.maxHeightMeters] : null;
       },
     });
+    this.nodes = selection.nodes;
+    this.casterNodes = selection.tierNodes;
     this.stepCasterReadiness();
     this.updateAtlasResidency();
     this.writeNodeBuffers();
@@ -1839,7 +1850,9 @@ export class TerrainClipmapSystem {
       mesh.layerMask = 0;
       mesh.metadata = { ...(mesh.metadata ?? {}), excludePlanarReflection: true };
       this.casterMeshes.push(mesh);
-      this.casterBuffers.push(createTerrainNodeBuffers(terrainNodeCapacity(this.profile, this.options)));
+      this.casterBuffers.push(createTerrainNodeBuffers(
+        this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
+      ));
     }
     // `4.5-B4(b)`: new caster submeshes have no ShadowDepthWrapper
     // registration until something creates their FORWARD effect, and nothing
@@ -1894,7 +1907,11 @@ export class TerrainClipmapSystem {
     const reasonFor = new Map<string, "drawn" | "parent" | "collision" | "seed">();
     const pageHasNearNode = new Map<string, boolean>();
     const shadowRadius = this.shadowCasterDistanceMeters;
-    for (const node of this.nodes) {
+    // The casters' tier-only nodes sit on the pages of the patch's parents
+    // nearly always, but a patch that splits all four children of a forced
+    // split leaves a grandparent page only the casters draw.
+    const drawnNodes = this.casterNodes === this.nodes ? this.nodes : [...this.nodes, ...this.casterNodes];
+    for (const node of drawnNodes) {
       const nodeKey = `${node.address.level}:${node.address.x}:${node.address.z}`;
       if (!reasonFor.has(nodeKey)) reasonFor.set(nodeKey, "drawn");
       // PAGES, not nodes — the same unit as `drawn`. Up to
@@ -2095,13 +2112,18 @@ export class TerrainClipmapSystem {
     const channelSlotFor = (address: WorldPageAddress): number =>
       this.channelAtlas.residency.slotIndexOf(invariantSlotKey(address));
     const provisionalAxisFor = (): number => terrainFallbackMaterialAxis();
-    // Resolve streaming fallbacks ONCE from the complete beauty partition.
-    // Recomputing on a cascade's distance-filtered subset can omit the evicted
-    // edge peer and make its packed boundary differ from beauty (and from the
-    // other cascades), even though all passes execute the same vertex shader.
-    const resolvedCorners = resolveTerrainResidentCornerMorphs(this.nodes, slotFor);
+    // Resolve streaming fallbacks ONCE per complete partition: the beauty
+    // one, and the casters' when a near floor's patch makes it a different
+    // one. Recomputing on a cascade's distance-filtered subset can omit the
+    // evicted edge peer and make its packed boundary differ from the other
+    // cascades, even though all passes execute the same vertex shader.
     const cornersByNode = new Map<TerrainNode, TerrainNodeCornerMorphs>();
-    this.nodes.forEach((node, index) => cornersByNode.set(node, resolvedCorners[index]!));
+    const resolvePartition = (nodes: readonly TerrainNode[]): void => {
+      const resolvedCorners = resolveTerrainResidentCornerMorphs(nodes, slotFor);
+      nodes.forEach((node, index) => cornersByNode.set(node, resolvedCorners[index]!));
+    };
+    resolvePartition(this.nodes);
+    if (this.casterNodes !== this.nodes) resolvePartition(this.casterNodes);
     const cornerMorphsFor = (node: TerrainNode): TerrainNodeCornerMorphs =>
       cornersByNode.get(node) ?? node.cornerMorphK;
     writeTerrainNodeBuffers({
@@ -2127,7 +2149,7 @@ export class TerrainClipmapSystem {
       // saving that does not measure.
       const outer = shadowReach * ((cascade + 1) / cascades);
       writeTerrainNodeBuffers({
-        nodes: this.nodes.filter((node) => node.distanceMeters <= outer),
+        nodes: this.casterNodes.filter((node) => node.distanceMeters <= outer),
         originX: this.originX,
         originZ: this.originZ,
         slotFor,

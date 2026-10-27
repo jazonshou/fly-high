@@ -200,9 +200,22 @@ export function carWheelSlipSpeed(car: Readonly<CarVisualState>, wheel: number):
   return Math.abs(tread - finite(car.speed));
 }
 
+/**
+ * The wetness bands, on the scale the simulator's tyres report it: the land
+ * cover's topographic soil moisture (`landCoverWetness`). Measured over the
+ * perf seed's land, dry grass sits at 0.24-0.35 in the high desert and
+ * 0.35-0.47 in the savanna, grass and forest floor at 0.48-0.70 in the
+ * temperate, boreal and tundra provinces; the simulator turns loam to mud
+ * from 0.6 to 0.9 (`MUD_WETNESS_LOW`/`HIGH`, src/sim/ground/surface.ts). So
+ * the dry provinces lift full dust, temperate ground some and damp ground
+ * none, and mud comes off only the ground the simulator drives as mud.
+ */
+export const CAR_DUST_WETNESS: readonly [number, number] = Object.freeze([0.45, 0.65]) as readonly [number, number];
+export const CAR_MUD_WETNESS: readonly [number, number] = Object.freeze([0.6, 0.9]) as readonly [number, number];
+
 /** How dry a soil is for dust: wet ground does not lift. */
 function dryness(wetness: number): number {
-  return 1 - smoothstep(0.12, 0.45, wetness);
+  return 1 - smoothstep(CAR_DUST_WETNESS[0], CAR_DUST_WETNESS[1], wetness);
 }
 
 /** How hard the tyre works the ground: rolling speed, and slip, which digs at any speed. */
@@ -230,7 +243,8 @@ export function carMudIntensity(car: Readonly<CarVisualState>, wheel: number, wa
   if (ground.mud <= 0) return 0;
   const speed = Math.abs(finite(car.speed));
   // Under water a tyre throws water, not mud.
-  const soaked = smoothstep(0.25, 0.6, finite(car.wheelWetness[wheel])) * (1 - smoothstep(0.02, 0.08, finite(waterDepth)));
+  const soaked = smoothstep(CAR_MUD_WETNESS[0], CAR_MUD_WETNESS[1], finite(car.wheelWetness[wheel]))
+    * (1 - smoothstep(0.02, 0.08, finite(waterDepth)));
   return clamp01(ground.mud * soaked * working(speed, carWheelSlipSpeed(car, wheel), [3, 16], 1.7) * 0.6);
 }
 
@@ -299,7 +313,8 @@ export function carTrackMark(car: Readonly<CarVisualState>, wheel: number, out: 
   const sinkage = Math.max(0, finite(car.wheelSinkage[wheel]));
   const rut = smoothstep(0.005, 0.08, sinkage);
   if (ground.track <= 0 && rut <= 0) return out;
-  const wet = clamp01(finite(car.wheelWetness[wheel]));
+  // Damper than the ordinary ground darkens the print, up to soaked.
+  const wet = smoothstep(CAR_DUST_WETNESS[0], CAR_MUD_WETNESS[1], finite(car.wheelWetness[wheel]));
   out.darkness = Math.min(CAR_TRACK_MAX_DARKNESS, ground.track * (1 + 0.8 * wet) + 0.22 * rut);
   out.halfWidth = (LC76_TYRE_WIDTH / 2) * (1 + 0.5 * smoothstep(0.01, 0.1, sinkage));
   return out;

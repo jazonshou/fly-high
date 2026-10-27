@@ -589,6 +589,33 @@ export function selectTerrainNodes(
   input: TerrainNodeSelectionInput,
   diagnostics?: TerrainNodeSelectionDiagnostics,
 ): TerrainNode[] {
+  return selectTerrainNodeSetsFor(input, diagnostics, false).nodes;
+}
+
+/** A selection with `nearFloor`: what the beauty pass draws, and what the casters draw. */
+export interface TerrainNodeSets {
+  /** The tier's selection plus the near floor's patch: the beauty pass. */
+  readonly nodes: TerrainNode[];
+  /**
+   * The tier's own selection, before the patch: the shadow casters. The same
+   * array as `nodes` when there is no near floor.
+   */
+  readonly tierNodes: TerrainNode[];
+}
+
+/** `selectTerrainNodes`, plus the tier's own selection from under the near floor's patch. */
+export function selectTerrainNodeSets(
+  input: TerrainNodeSelectionInput,
+  diagnostics?: TerrainNodeSelectionDiagnostics,
+): TerrainNodeSets {
+  return selectTerrainNodeSetsFor(input, diagnostics, true);
+}
+
+function selectTerrainNodeSetsFor(
+  input: TerrainNodeSelectionInput,
+  diagnostics: TerrainNodeSelectionDiagnostics | undefined,
+  withTierNodes: boolean,
+): TerrainNodeSets {
   const finest = Math.max(0, input.finestResidentLevel);
   const coarsest = Math.max(finest, input.coarsestLevel);
   const near = input.nearFloor && input.nearFloor.radiusMeters > 0 && input.nearFloor.level < finest
@@ -598,8 +625,6 @@ export function selectTerrainNodes(
       band: Math.min(input.nearFloor.radiusMeters, Math.max(1e-3, input.nearFloor.bandMeters)),
     }
     : null;
-  /** The finest level any node reaches: the near floor's where there is one. */
-  const lowest = near ? near.level : finest;
   /** Set once the tier's own selection is done and the near floor's patch begins. */
   let patching = false;
   const floorFor = (node: Candidate): number =>
@@ -742,6 +767,7 @@ export function selectTerrainNodes(
     for (const node of plan) applySplit(node);
   }
 
+  const tierLeaves = near && withTierNodes ? [...leaves.values()] : null;
   if (near) {
     // The near floor's patch, on top of the tier's own selection and outside
     // its budget: every floor-level leaf in the disc whose error asks for it
@@ -766,9 +792,52 @@ export function selectTerrainNodes(
     }
   }
 
+  const beauty = emitTerrainNodes(input, leaves.values(), near, finest, coarsest, rootX, rootZ, reach, diagnostics, null);
+  if (!tierLeaves) return { nodes: beauty.nodes, tierNodes: beauty.nodes };
+  // Only the tier's leaves the patch split, and those touching them, differ
+  // between the partitions; every other node is the same record in both.
+  const emittedAs = new Map<Candidate, TerrainNode>();
+  beauty.candidates.forEach((candidate, index) => emittedAs.set(candidate, beauty.nodes[index]!));
+  const reuse = { nodes: emittedAs, split: tierLeaves.filter((leaf) => leaves.get(leaf.key) !== leaf) };
+  const tier = emitTerrainNodes(input, tierLeaves, null, finest, coarsest, rootX, rootZ, reach, undefined, reuse);
+  return { nodes: beauty.nodes, tierNodes: tier.nodes };
+}
+
+/** Records `emitTerrainNodes` may hand back unchanged: see its `reuse`. */
+interface TerrainNodeReuse {
+  /** Another partition's emitted records, by candidate. */
+  readonly nodes: ReadonlyMap<Candidate, TerrainNode>;
+  /** The leaves of THIS partition the other one split. */
+  readonly split: readonly Candidate[];
+}
+
+/**
+ * A finished leaf set as drawable nodes: morphs, then the synchronized
+ * corners. Run once per partition, because a corner's morph depends on which
+ * neighbours the partition holds.
+ */
+function emitTerrainNodes(
+  input: TerrainNodeSelectionInput,
+  leaves: Iterable<Candidate>,
+  near: { readonly level: number; readonly radius: number; readonly band: number } | null,
+  finest: number,
+  coarsest: number,
+  rootX: number,
+  rootZ: number,
+  reach: number,
+  diagnostics: TerrainNodeSelectionDiagnostics | undefined,
+  /**
+   * A candidate the other partition emitted, and that touches none of `split`,
+   * has the same neighbours in both, so the same morph and corners: its record
+   * is reused and its corners are not resolved again.
+   */
+  reuse: TerrainNodeReuse | null,
+): { readonly nodes: TerrainNode[]; readonly candidates: readonly Candidate[] } {
+  /** The finest level any node reaches: the near floor's where there is one. */
+  const lowest = near ? near.level : finest;
   // Nearest first: `writeTerrainNodeBuffers` truncates at the buffer capacity,
   // and the near field is what a truncation must keep.
-  const emitted = [...leaves.values()].sort(
+  const emitted = [...leaves].sort(
     (first, second) => first.distanceMeters - second.distanceMeters,
   );
 
@@ -789,6 +858,14 @@ export function selectTerrainNodes(
     candidate.morphK = morphFor(candidate);
     candidate.emittedIndex = index;
   }
+  const touches = (first: Candidate, second: Candidate): boolean =>
+    first.originX <= second.originX + second.spanMeters && second.originX <= first.originX + first.spanMeters
+    && first.originZ <= second.originZ + second.spanMeters && second.originZ <= first.originZ + first.spanMeters;
+  const reused = (candidate: Candidate): TerrainNode | undefined => {
+    const node = reuse?.nodes.get(candidate);
+    return node && !reuse!.split.some((leaf) => touches(candidate, leaf)) ? node : undefined;
+  };
+  const records: Array<TerrainNode | undefined> = emitted.map(reused);
 
   /**
    * Numeric leaf lookup for the boundary pass.
@@ -886,6 +963,7 @@ export function selectTerrainNodes(
   };
 
   for (const candidate of emitted) {
+    if (records[candidate.emittedIndex]) continue;
     const base = candidate.emittedIndex * 4;
     const x0 = candidate.originX;
     const z0 = candidate.originZ;
@@ -955,6 +1033,7 @@ export function selectTerrainNodes(
     cornerMorphs[secondOffset] = target;
   };
   for (const candidate of emitted) {
+    if (records[candidate.emittedIndex]) continue;
     const x0 = candidate.originX;
     const z0 = candidate.originZ;
     const x1 = x0 + candidate.spanMeters;
@@ -988,7 +1067,9 @@ export function selectTerrainNodes(
     diagnostics.cornerLeafLevelProbes = cornerLeafLevelProbes;
   }
 
-  return emitted.map((candidate) => {
+  const nodes = emitted.map((candidate) => {
+    const record = records[candidate.emittedIndex];
+    if (record) return record;
     const cornerBase = candidate.emittedIndex * 4;
     return Object.freeze({
       address: candidate.address,
@@ -1009,6 +1090,7 @@ export function selectTerrainNodes(
       distanceMeters: candidate.distanceMeters,
     });
   });
+  return { nodes, candidates: emitted };
 }
 
 // ---------------------------------------------------------------------------
