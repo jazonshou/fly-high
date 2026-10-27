@@ -188,7 +188,7 @@ import {
 } from "./webgpu/terrain/TerrainConsumerAuthority";
 import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
 import { WildlifeSystem } from "./webgpu/wildlife";
-import { HydrologySystem } from "./webgpu/water/HydrologySystem";
+import { HydrologySystem, type HydrologyWaterPublisher } from "./webgpu/water/HydrologySystem";
 import {
   resolveSunShadowCascadeLayout,
   type SunShadowCascadeLayout,
@@ -414,6 +414,24 @@ export function chaseCameraProfile(
   out.fieldOfView = rampAtSpeed(chase.fieldOfView, airspeed);
   out.aimAhead = rampAtSpeed(chase.aimAhead, airspeed);
   return out;
+}
+
+/**
+ * The drawn lakes and rivers for the simulation's water, in a car session
+ * alone: the car is the only vehicle that reads them (an aircraft has no
+ * water, and the boat keeps its sea twin until its own inland water comes),
+ * so no other session packs and posts every region for nothing.
+ */
+export function hydrologyWaterPublisher(
+  vehicle: VehicleKind | null | undefined,
+  publisher: TerrainAuthorityPublisher | null,
+): HydrologyWaterPublisher | null {
+  if (!vehicle || vehicleClass(vehicle) !== "car") return null;
+  if (!publisher?.publishHydrology || !publisher.evictHydrology) return null;
+  return {
+    publishHydrology: (key, region) => publisher.publishHydrology?.(key, region),
+    evictHydrology: (key) => publisher.evictHydrology?.(key),
+  };
 }
 
 export function atmosphereFogNear(weather: WeatherPreset): number {
@@ -2117,14 +2135,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
     // The drawn lakes and rivers, for the car's water.
-    this.hydrology.setWaterPublisher(
-      publisher?.publishHydrology && publisher.evictHydrology
-        ? {
-          publishHydrology: (key, region) => publisher.publishHydrology?.(key, region),
-          evictHydrology: (key) => publisher.evictHydrology?.(key),
-        }
-        : null,
-    );
+    this.hydrology.setWaterPublisher(hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher));
     const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
     this.terrain.setCollisionPagePublisher(
       publisher || needsEvolvedConsumers

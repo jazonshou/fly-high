@@ -1,5 +1,7 @@
 import { Color3, FreeCamera, NullEngine, Scene, Vector2, Vector3 } from "@babylonjs/core";
 import { describe, expect, it } from "vitest";
+import { hydrologyWaterPublisher } from "../src/render/FlightRenderer";
+import type { TerrainAuthorityPublisher } from "../src/render/types";
 import type { AtmosphereSnapshot } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import {
   generateHydrology,
@@ -14,6 +16,7 @@ import type {
 import { HydrologySystem, type HydrologyWaterPublisher } from "../src/render/webgpu/water/HydrologySystem";
 import { HydrologyWaterSource, type HydrologyWaterRegion } from "../src/sim/water/hydrologyWater";
 import { createWaterSurfaceSample } from "../src/sim/water/types";
+import type { VehicleKind } from "../src/vehicles/kinds";
 
 /**
  * The renderer's side of the car's lakes and rivers: `HydrologySystem` hands
@@ -147,6 +150,41 @@ describe("the hydrology system's water for the simulation", () => {
     system.dispose();
     scene.dispose();
     engine.dispose();
+  });
+
+  it("feeds a car session alone: an aircraft or a boat session posts nothing", () => {
+    const posted = (vehicle: VehicleKind | undefined): string[] => {
+      const engine = new NullEngine();
+      const scene = new Scene(engine);
+      const camera = new FreeCamera("water-feed-camera", new Vector3(0, 300, -400), scene);
+      const client = new DeferredClient();
+      const system = new HydrologySystem(scene, camera, { ...OPTIONS, generationClient: client });
+      const sink = new RecordingPublisher();
+      const publisher: TerrainAuthorityPublisher = {
+        publishTerrainPage: () => {},
+        publishTerrainMacro: () => {},
+        publishHydrology: (key, region) => sink.publishHydrology(key, region),
+        evictHydrology: (key) => sink.evictHydrology(key),
+      };
+      // As the renderer attaches the worker's publisher (`setTerrainAuthorityPublisher`).
+      system.setWaterPublisher(hydrologyWaterPublisher(vehicle, publisher));
+      const observer = { x: 380, z: 0, velocityX: 0, velocityZ: 0 };
+      system.update(10, camera.position, observer);
+      client.completeLatest();
+      system.update(10.3, camera.position, observer);
+      system.update(10.6, camera.position, observer);
+      system.dispose();
+      scene.dispose();
+      engine.dispose();
+      return sink.log;
+    };
+    expect(posted("landcruiser")).toEqual(["publish 0:0", "publish 1:0", "evict 0:0"]);
+    expect(posted(undefined)).toEqual([]);
+    expect(posted("trainer")).toEqual([]);
+    expect(posted("speedboat")).toEqual([]);
+    // A publisher without the water posts nothing either.
+    expect(hydrologyWaterPublisher("landcruiser", { publishTerrainPage: () => {}, publishTerrainMacro: () => {} })).toBeNull();
+    expect(hydrologyWaterPublisher("landcruiser", null)).toBeNull();
   });
 
   it("hands over the surface it draws: the sim answers a river's own stations", () => {

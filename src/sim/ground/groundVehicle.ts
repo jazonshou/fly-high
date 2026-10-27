@@ -28,6 +28,7 @@ import { Engine, IDLE_OMEGA, RPM_PER_RAD_S } from "./engine";
 import { roughnessProfile, type RoughnessPoint } from "./roughness";
 import { createSoilContact, DIG_GAIN, DIG_SLIP, soilCurve, soilPatch } from "./soil";
 import { CAR_COLLIDER_MATERIAL } from "./carColliders";
+import { DeckGround, describeDeck } from "./deckGround";
 import { Steering } from "./steering";
 import { createCarSurface, describeSurface, SurfaceCache, type CarSurface } from "./surface";
 import { createGroundPoint, TerrainLatticeCache, type GroundField, type GroundPoint } from "./terrainPatch";
@@ -71,8 +72,10 @@ import { createWheelContact, findWheelContact, groundNormal, type WheelContact }
  *   propeller shafts in 4H and 4L; each tyre has TMeasy's two deflection
  *   states (src/sim/ground/tyre.ts).
  * - Contact: each tyre's plane is found once per step from the local ground
- *   patch (src/sim/ground/wheelContact.ts); the hull's probe spheres meet the
- *   ground and the world's colliders.
+ *   patch (src/sim/ground/wheelContact.ts), with the marina's pier deck,
+ *   gangway and quay coping over it (src/sim/ground/deckGround.ts); the
+ *   hull's probe spheres meet the ground and the world's colliders, those
+ *   decks' boxes among them.
  *
  * Nothing physical depends on the graphics tier. `step` does not allocate:
  * besides keeping to scratch objects, no number crosses a call in the hot
@@ -379,6 +382,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private environment: Readonly<SurfaceVehicleEnvironment> | null = null;
   private readonly lattice = new TerrainLatticeCache(() => 0);
   private readonly fixedGround: GroundField | null;
+  /** The tyres' ground: the terrain with the marina's decks over it (the hull's is `decks.hullGround`, which meets the decks as colliders). */
+  private readonly decks: DeckGround;
   private readonly fixedSurface: CarSurfaceField | null;
   private readonly surfaceCache = new SurfaceCache();
   private placed = false;
@@ -520,6 +525,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.setup = spawn?.car ?? DEFAULT_CAR_SETUP;
     this.fixedGround = options.ground ?? null;
     this.fixedSurface = options.surface ?? null;
+    this.decks = new DeckGround(this.fixedGround ?? this.lattice);
     this.engine = new Engine(this.setup.gearbox === "manual" ? CAR.engine.manualTorque : CAR.engine.automaticTorque);
     this.transmission = new Transmission(this.setup);
     const heading = spawn?.heading ?? 0;
@@ -608,6 +614,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     if (environment.water !== this.environment?.water) this.waterTurn = -1;
     this.environment = environment;
     this.lattice.setSampler(environment.bedHeight);
+    this.decks.setWorld(environment.world ?? null);
     this.gravity = environment.gravity > 0 ? environment.gravity : STANDARD_GRAVITY;
   }
 
@@ -788,7 +795,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     // Body +Z, the right side, in plan.
     const rx = -fz;
     const rz = fx;
-    const ground = this.ground;
+    // Set down from above: a deck under a wheel is its ground.
+    const ground = this.decks;
+    ground.viewY = Infinity;
     const heights = [0, 0, 0, 0];
     for (let w = 0; w < 4; w += 1) {
       const axle = AXLES[WHEEL_AXLE[w]!]!;
@@ -994,9 +1003,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   }
 
   private findContacts(): void {
-    const ground = this.ground;
+    const ground = this.decks;
     for (let w = 0; w < 4; w += 1) {
       this.wheelFrame(w);
+      ground.viewY = this.centreWorld.y;
       findWheelContact(ground, this.centreWorld, this.axleDirection, FREE_RADIUS, HALF_TREAD, this.contacts[w]!);
     }
   }
@@ -1017,7 +1027,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     for (let w = 0; w < 4; w += 1) {
       const contact = this.contacts[w]!;
       const surface = this.wheelSurface[w]!;
-      if (this.fixedSurface) this.fixedSurface(contact.ground, surface);
+      const deck = this.decks.materialAt(contact.ground);
+      if (deck >= 0) describeDeck(deck, surface);
+      else if (this.fixedSurface) this.fixedSurface(contact.ground, surface);
       else if (world) this.surfaceCache.lookup(world, this.ground, contact.ground, surface);
       else describeSurface(SurfaceMaterial.Asphalt, 0, surface);
       this.wheelFrictionScale[w] = 1;
@@ -1044,7 +1056,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private prepareHull(): void {
     let highest = -Infinity;
     for (let w = 0; w < 4; w += 1) highest = Math.max(highest, this.contacts[w]!.point.y);
-    const ground = this.ground;
+    const ground = this.decks.hullGround;
     const plane = this.probePlane;
     for (let i = 0; i < HULL.length; i += 1) {
       const probe = HULL[i]!;
@@ -1928,6 +1940,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   touching(part: string): boolean {
     for (let i = 0; i < HULL.length; i += 1) if (HULL[i]!.part === part && this.probeTouching[i] !== 0) return true;
     return false;
+  }
+
+  /** Where a wheel's tyre meets the ground this step, 0 FL to 3 RR (for tests and probes). */
+  wheelContactPoint(wheel: number): Readonly<Vec3> {
+    return this.contacts[wheel]!.point;
   }
 
   /** How many safe spots the recovery holds (for tests and probes). */

@@ -116,6 +116,62 @@ The hull is spheres on the frame and axles (bumpers, sills, tank guard,
 diffs, tow bar, roof) that meet the ground and the world's colliders with a
 stiff penalty and Coulomb friction; `touching(part)` reports each part.
 
+## The marina's decks
+
+Under the pier is the dredged bed, and behind the quay face is the quay cut
+(the apron's front drops to the bed inside the wall). So the tyres also roll
+on the marina's decks (`deckGround.ts`):
+
+- the pier deck;
+- the gangway;
+- the quay wall's coping, 10 cm proud of the apron.
+
+Each deck is the top face of its box in `homeMarina(world).boxes`. Those are
+the records the hull collides with and the renderer draws, so the deck a tyre
+rolls on is the box the bumper meets.
+
+- **Ground in its plan.** Inside a top face's plan, the face is the ground.
+  Its edges are steps, and the tyre contact climbs and rolls off them like
+  any ledge.
+- **Only from above.** A tyre whose centre is under a deck's top does not see
+  that deck. So a wheel in the basin by the wall, or under the pier, keeps
+  the bed, and the hull meets the deck as the collider it is.
+- **Tyres only.** The decks are the tyres' ground and not the hull's, so no
+  probe is pushed by both a deck and its box.
+- **Surface.** The coping is concrete. The pier and gangway are timber: about
+  four fifths of asphalt's grip dry, slightly more rolling resistance, and
+  2 mm of roughness from the plank joints. That is a judgement, not a
+  measurement.
+- **What is left out.** The pontoons and fingers float (they are the boat's
+  kinematic colliders), the buildings are colliders only, and posts and
+  bollards are not ground.
+
+The apron's front needs one more fix. The quay cut is a 4.5 m face in 0.7 m,
+far sharper than the authority's 2 m lattice can hold. Its Catmull-Rom rings
+over the apron behind the wall, with humps of 0.55 m and holes of 1.4 m
+within 2.5 m of the coping, none of them drawn. Before this fix, a car
+driven at the quay was stopped by an unseen 38 cm step in front of the
+coping.
+
+The apron is level at the quay deck by construction, so the car reads it
+that way. Along each quay wall, from the cut's top back 5.66 m, the ground is
+the quay deck's height. That distance is as far as the spline's 4 x 4 patch
+reaches, two lattice cells on a diagonal. Beyond it, the authority is within
+4 cm of the apron. The strip is not a collider, so it is the hull's ground as
+well as the tyres'.
+
+Measured in `sim.car-deck.test.ts`, on the default world's marina:
+
+- **From the apron onto the pier.** At 2 m/s, the car drives off the apron,
+  over the coping and out along the pier deck. Every contact in the coping's
+  plan is on its top, and every contact in the pier's plan is on the deck.
+  No tyre ever goes below the deck. It brakes to a stop on the timber with
+  all four wheels loaded.
+- **To the coping's edge.** At 1 m/s, the car climbs the coping and brakes
+  with its front tyres within half a metre of the edge. It stands there with the front
+  tyres on the coping, over terrain that is the quay cut, more than half a
+  metre down.
+
 ## What it hits
 
 The worker builds one collider world per car session (`carColliders.ts`)
@@ -399,9 +455,10 @@ loam turns to mud, snow keeps its depth and hard ground keeps 80% of its grip.
   restart until a recovery.
 
 The authority is the sea's still level and the lakes and rivers the
-renderer draws, in one `WaterSurfaceComposite` (`src/sim/water/`). The
-renderer's `HydrologySystem` posts each resident region's rivers and lakes as
-it lands and ends it after its crossfade. The worker keeps a region the car
+renderer draws, in one `WaterSurfaceComposite` (`src/sim/water/`). In a car
+session (only there: nothing else reads them yet), the renderer's
+`HydrologySystem` posts each resident region's rivers and lakes as it lands
+and ends it after its crossfade. The worker keeps a region the car
 is within a kilometre of, so a region paged out behind a car still in its
 lake stays until the car has left. A river is its ribbon, the stations'
 surface out to the half width with the current along it; a lake is its level
