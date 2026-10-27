@@ -139,6 +139,36 @@ describe("LandCruiser driveline", () => {
     expect(steering.turned).toBeGreaterThan(0.05);
   });
 
+  it("stops from 10 m/s in 2H nearly as short as in 4H, its free front wheels braking under ABS and no wheel locked", () => {
+    const stop = (range: "2H" | "4H") => {
+      const sim = car();
+      const presses = range === "4H" ? 1 : 0;
+      drive(sim, 0.3, { handbrake: 1 });
+      drive(sim, 0.3, { handbrake: 1, rangePresses: presses });
+      expect(sim.transmission.range).toBe(range);
+      controlsUntil(sim, { accelerator: 1, rangePresses: presses }, (s) => speedOf(s) >= 10, 30);
+      const start = { ...sim.state.position };
+      let abs = false;
+      let locked = 0;
+      controlsUntil(sim, { brake: 1, rangePresses: presses }, (s) => {
+        abs ||= s.absActive;
+        for (let w = 0; w < 4; w += 1) if (speedOf(s) > 1.5 && -s.wheelSlipRatio[w]! > 0.5) locked += STEP / 4;
+        return speedOf(s) < 0.05;
+      }, 10);
+      return { distance: Math.hypot(sim.state.position.x - start.x, sim.state.position.z - start.z), abs, locked };
+    };
+    const twoHigh = stop("2H");
+    const fourHigh = stop("4H");
+    expect(twoHigh.abs).toBe(true);
+    // No shorter than the tyres' peak grip allows (v^2 / 2 g at a friction of 1), and within a sixth of 4H.
+    expect(twoHigh.distance).toBeGreaterThan(5.1);
+    expect(twoHigh.distance).toBeLessThan(fourHigh.distance * 1.17);
+    expect(fourHigh.distance).toBeLessThan(6.3);
+    // A locked wheel, a rear one off-loaded by the dive above all, is what ABS is for: under a tenth of a second all told.
+    expect(twoHigh.locked).toBeLessThan(0.1);
+    expect(fourHigh.locked).toBeLessThan(0.1);
+  });
+
   it("winds up the driveline and scrubs its tyres in a tight 4H turn on asphalt; 2H does not", () => {
     const turn = (presses: number) => {
       const sim = car();
