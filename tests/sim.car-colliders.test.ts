@@ -11,6 +11,7 @@ import {
   guardrailColliders,
 } from "../src/sim/ground/carColliders";
 import { GroundVehicleSimulator } from "../src/sim/ground";
+import { CRASH_IMPACT_SPEED } from "../src/sim/ground/groundVehicle";
 import { rotateVectorInto } from "../src/sim/math";
 import { sampleGroundHeight } from "../src/sim/terrainGrid";
 import type { Vec3 } from "../src/sim/types";
@@ -267,24 +268,26 @@ describe("the car against buildings and rails", () => {
     expect(fast.state.position.z).toBeLessThan(38.2);
   });
 
-  it("redirects a car at 80 km/h and 20 degrees off a rail, without launching it or stopping it dead", () => {
-    // A straight rail along +z at x = 0, the road on +x (n = (dz, -dx) = (1, 0) for points running +z).
+  /** A straight rail along +z at x = 0, the road on +x (n = (dz, -dx) = (1, 0) for points running +z). */
+  function straightRail(): ColliderWorld {
     const colliders = new ColliderWorld();
     for (const piece of guardrailColliders({ points: [0, -300, 0, 600], heightMeters: 0.7 }, () => 0)) {
       colliders.addStatic(piece.shape, { material: piece.material });
     }
-    const heading = -20 * DEG;
-    const sim = onFlat(colliders, 78, -210, heading);
+    return colliders;
+  }
+
+  /** Into the straight rail at `kmh` and `degrees` off it, then hands and feet off for 4 s. */
+  function railHit(degrees: number, kmh: number) {
+    const heading = -degrees * DEG;
+    const sim = onFlat(straightRail(), 200 * Math.sin(degrees * DEG) + 3, -200, heading);
     const outermost = (): number => Math.min(...hullPoints(sim).map((p) => p.x));
-    runUp(sim, 22.2, heading, 40, () => outermost() < 0.4);
+    runUp(sim, kmh / 3.6, heading, 40, () => outermost() < 0.4);
     const impactSpeed = speedOf(sim);
-    expect(impactSpeed).toBeGreaterThan(21.5);
-    expect(impactSpeed).toBeLessThan(23);
     const rideHeight = sim.state.position.y;
     let deepest = 0;
     let highest = 0;
     let roll = 0;
-    // Hands off and foot off at the impact.
     controls(sim, {});
     for (let i = 0; i < 4 / STEP; i += 1) {
       sim.step(STEP);
@@ -294,40 +297,44 @@ describe("the car against buildings and rails", () => {
       // The body's right (+Z) axis's world y: sin of the roll.
       roll = Math.max(roll, Math.abs(2 * (q.y * q.z + q.w * q.x)));
     }
-    const exitHeading = headingOf(sim);
+    return { sim, impactSpeed, deepest, highest, roll };
+  }
+
+  /** Redirected: running along the rail or a little away from it, on the road side, not launched, rolled or wrecked. */
+  function expectRedirected({ sim, impactSpeed, highest, roll }: ReturnType<typeof railHit>, keeps: number): void {
     const v = sim.state.velocity;
-    // Redirected: running along the rail or a little away from it, on the road side.
-    expect(exitHeading).toBeGreaterThan(-6 * DEG);
-    expect(exitHeading).toBeLessThan(12 * DEG);
+    expect(headingOf(sim)).toBeGreaterThan(-6 * DEG);
+    expect(headingOf(sim)).toBeLessThan(12 * DEG);
     expect(v.x).toBeGreaterThan(-1);
     expect(sim.state.position.x).toBeGreaterThan(0.5);
-    // Not stopped dead, not launched, not rolled, not wrecked.
-    expect(Math.hypot(v.x, v.z)).toBeGreaterThan(0.6 * impactSpeed);
+    expect(Math.hypot(v.x, v.z)).toBeGreaterThan(keeps * impactSpeed);
     expect(highest).toBeLessThan(0.25);
     expect(roll).toBeLessThan(Math.sin(15 * DEG));
     expect(sim.rolled).toBe(false);
     expect(sim.state.crashed).toBe(false);
+  }
+
+  it("redirects a car at 80 km/h and 20 degrees off a rail, without launching it or stopping it dead", () => {
+    const hit = railHit(20, 80);
+    expect(hit.impactSpeed).toBeGreaterThan(21.5);
+    expect(hit.impactSpeed).toBeLessThan(23);
+    expectRedirected(hit, 0.6);
     // The rail gave about half a metre.
-    expect(deepest).toBeGreaterThan(0.25);
-    expect(deepest).toBeLessThan(0.7);
+    expect(hit.deepest).toBeGreaterThan(0.25);
+    expect(hit.deepest).toBeLessThan(0.7);
+  });
+
+  it("redirects one at 100 km/h and 30 degrees too: it closes at 13.6 m/s, but under 12 by the beam's stop", () => {
+    const hit = railHit(30, 100);
+    expect(hit.impactSpeed * Math.sin(30 * DEG)).toBeGreaterThan(CRASH_IMPACT_SPEED + 1);
+    expectRedirected(hit, 0.5);
+    expect(hit.deepest).toBeGreaterThan(0.5);
+    expect(hit.deepest).toBeLessThan(0.8);
   });
 
   it("holds a car driven square into a rail at 100 km/h on the road side: wrecked, not through it, not thrown back", () => {
-    const colliders = new ColliderWorld();
-    for (const piece of guardrailColliders({ points: [0, -300, 0, 600], heightMeters: 0.7 }, () => 0)) {
-      colliders.addStatic(piece.shape, { material: piece.material });
-    }
-    const heading = -90 * DEG;
-    const sim = onFlat(colliders, 203, 0, heading);
-    const outermost = (): number => Math.min(...hullPoints(sim).map((p) => p.x));
-    runUp(sim, 27.8, heading, 40, () => outermost() < 0.4);
-    expect(speedOf(sim)).toBeGreaterThan(26);
-    let deepest = 0;
-    controls(sim, {});
-    for (let i = 0; i < 4 / STEP; i += 1) {
-      sim.step(STEP);
-      deepest = Math.max(deepest, -outermost());
-    }
+    const { sim, impactSpeed, deepest } = railHit(90, 100);
+    expect(impactSpeed).toBeGreaterThan(26);
     expect(sim.state.crashed).toBe(true);
     // Short of half the collider's depth, where its back face would be nearest.
     expect(deepest).toBeLessThan(0.9 * (GUARDRAIL_DEPTH / 2));

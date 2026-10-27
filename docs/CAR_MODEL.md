@@ -148,15 +148,18 @@ The hull picks its contact law from the collider's material:
 | Law | Per-probe spring | Damper | Friction | Notes |
 | --- | --- | --- | --- | --- |
 | Buildings and the marina | 800 kN/m | 20 kN s/m | 0.4 | Rigid. A first touch closing faster than 12 m/s wrecks the car. |
-| Guardrails | 25 kN/m to 0.6 m in | 2 kN s/m | 0.25 | Past 0.6 m a wall-stiff stop joins in (the posts). Coming back out, the springs give back a fifth of their force, as a bent beam does, so a car is not thrown back off it. |
+| Guardrails | 25 kN/m to 0.6 m in | 2 kN s/m | 0.25 | Past 0.6 m a wall-stiff stop joins in (the posts). Coming back out, the springs give back a fifth of their force, as a bent beam does, so a car is not thrown back off it. A beam is there to take a shallow hit, so the 12 m/s rule judges the closing speed still left when the give reaches the stop. |
 
 Measured on a straight rail, hands off at the impact:
 
 | Impact | Rail gives | After 4 s |
 | --- | --- | --- |
 | 80 km/h, 20° | 0.41 m | Running along the rail at 0.68 of its speed. 8 mm of lift, under 1° of roll. |
-| 100 km/h, 25° | 0.59 m | Running along it, not wrecked (it closes at 11.5 m/s). |
-| 100 km/h, 30° | 0.64 m | Wrecked: it closes on the rail at 13.6 m/s. |
+| 100 km/h, 25° | 0.59 m | Running along it, not wrecked. |
+| 100 km/h, 30° | 0.64 m | Running along it at 0.60 of its speed. It closes at 13.6 m/s, but has under 12 m/s left at the stop. |
+| 100 km/h, 35° | 0.68 m | Running along it, not wrecked. |
+| 80 km/h, 45° | 0.73 m | Wrecked. |
+| 60 km/h, 90° | 0.66 m | Stopped against the rail, not wrecked. |
 | 100 km/h, 90° | 0.75 m | Wrecked, at rest against the rail, on the road side. |
 
 ## Tyres

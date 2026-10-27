@@ -174,9 +174,10 @@ const RIM_STIFFNESS = 2_000_000;
  * sliding friction across it, how far past a probe's radius into a
  * collider the spring keeps building, m, a stop: past `stop` metres in, a
  * second damped spring (`stopStiffness`, `stopDamping`) joins the first,
- * and `rebound`, the part
- * of the springs' force left as the probe comes back out (1 elastic; under
- * 1 the contact keeps the rest, as a bent beam does).
+ * `rebound`, the part of the springs' force left as the probe comes back
+ * out (1 elastic; under 1 the contact keeps the rest, as a bent beam does),
+ * and `wreckDepth`: the 12 m/s wreck rule judges the closing speed a probe
+ * still has as it first passes this far in, m (0: at the first touch).
  */
 interface HullContactLaw {
   readonly stiffness: number;
@@ -187,6 +188,7 @@ interface HullContactLaw {
   readonly stopStiffness: number;
   readonly stopDamping: number;
   readonly rebound: number;
+  readonly wreckDepth: number;
 }
 const HULL_GROUND: HullContactLaw = Object.freeze({
   stiffness: 250_000,
@@ -197,6 +199,7 @@ const HULL_GROUND: HullContactLaw = Object.freeze({
   stopStiffness: 0,
   stopDamping: 0,
   rebound: 1,
+  wreckDepth: 0,
 });
 /** Walls, buildings, the marina's structures: rigid. */
 const HULL_COLLIDER: HullContactLaw = Object.freeze({
@@ -208,6 +211,7 @@ const HULL_COLLIDER: HullContactLaw = Object.freeze({
   stopStiffness: 0,
   stopDamping: 0,
   rebound: 1,
+  wreckDepth: 0,
 });
 /**
  * A W-beam guardrail (`CAR_COLLIDER_MATERIAL.guardrail`): it gives, 0.4 m
@@ -215,6 +219,8 @@ const HULL_COLLIDER: HullContactLaw = Object.freeze({
  * soft and reaches deep, and the beam is smooth along its length. Past
  * 0.6 m the posts and the beam's tension take over, so a car square on at
  * any speed stays on the road side (the collider is `GUARDRAIL_DEPTH` deep).
+ * A beam is there to take a shallow hit, so the wreck rule judges what is
+ * left of the closing speed when the give reaches that stop.
  */
 const HULL_GUARDRAIL: HullContactLaw = Object.freeze({
   stiffness: 25_000,
@@ -225,6 +231,7 @@ const HULL_GUARDRAIL: HullContactLaw = Object.freeze({
   stopStiffness: 800_000,
   stopDamping: 20_000,
   rebound: 0.2,
+  wreckDepth: 0.6,
 });
 /** A probe higher than this above the highest tyre contact is not sampled this step, metres. */
 const HULL_SAMPLE_MARGIN = 0.9;
@@ -1589,7 +1596,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
           this.normalScratch.y = ny;
           this.normalScratch.z = nz;
           this.hullPenetration = penetration;
-          this.applyHullContact(probe, c, this.normalScratch, null, HULL_GROUND, false);
+          this.applyHullContact(probe, c, this.normalScratch, null, HULL_GROUND, false, false);
           scrape = Math.max(scrape, this.hullResult);
           if (probe.upperBody) upperTouch = true;
         }
@@ -1597,12 +1604,15 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       if (this.collidersNear && colliders) {
         const contact = this.colliderContact;
         if (colliders.deepestSphereContact(c, probe.radius, contact) && contact.penetration > 0) {
-          const first = this.probeTouching[i] !== 2;
+          // 2 touching a collider, 3 past its law's wreck depth too.
+          const was = this.probeTouching[i]!;
           const law = contact.material === CAR_COLLIDER_MATERIAL.guardrail ? HULL_GUARDRAIL : HULL_COLLIDER;
-          this.hullPenetration = Math.min(contact.penetration, probe.radius + law.reach);
-          this.applyHullContact(probe, c, contact.normal, contact.pointVelocity, law, first);
+          const penetration = Math.min(contact.penetration, probe.radius + law.reach);
+          const deep = penetration > law.wreckDepth;
+          this.hullPenetration = penetration;
+          this.applyHullContact(probe, c, contact.normal, contact.pointVelocity, law, was < 2, deep && was !== 3);
           scrape = Math.max(scrape, Math.min(1, this.hullResult));
-          this.probeTouching[i] = 2;
+          this.probeTouching[i] = deep ? 3 : 2;
           continue;
         }
       }
@@ -1620,7 +1630,8 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * One probe's contact force at `hullPenetration`: a damped spring along
    * the normal and sliding friction across it, by `law`. Leaves in
    * `hullResult` the scrape (0..1, from the sliding speed), or for a
-   * collider's first touch the closing speed over the crash speed.
+   * collider's first touch the closing speed over the crash speed. With
+   * `wreckCheck` a closing speed over the crash speed wrecks the car.
    */
   private applyHullContact(
     probe: HullProbeRecord,
@@ -1629,6 +1640,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     surfaceVelocity: Readonly<Vec3> | null,
     law: HullContactLaw,
     firstTouch: boolean,
+    wreckCheck: boolean,
   ): void {
     const penetration = this.hullPenetration;
     const stiffness = law.stiffness;
@@ -1651,7 +1663,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       v.z -= surfaceVelocity.z;
     }
     const vn = v.x * normal.x + v.y * normal.y + v.z * normal.z;
-    if (firstTouch && -vn > CRASH_IMPACT_SPEED) this.state.crashed = true;
+    if (wreckCheck && -vn > CRASH_IMPACT_SPEED) this.state.crashed = true;
     let spring = stiffness * penetration;
     let resist = damping;
     if (penetration > law.stop) {
