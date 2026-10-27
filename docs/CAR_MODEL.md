@@ -390,8 +390,18 @@ is a plain H-pattern through R, N and 1 to 5 on the shift keys.
 
 ## Driver aids
 
-- ABS holds about 14% braking slip per wheel above 1.5 m/s, bleeding and
-  restoring each wheel's pressure, so the car steers while it stops.
+- ABS works per wheel above 1.5 m/s, so the car steers while it stops. It
+  follows the pattern of Bosch's cycle:
+  - past 14% braking slip, the pressure drops at once to 70% of the level the
+    wheel locked at;
+  - it holds there until the wheel spins back up. A wheel still locked after
+    30 ms, usually a rear one the dive has unloaded, keeps bleeding;
+  - it then steps back to 95% of the lock level and builds again.
+
+  The first version bled a locking wheel towards nothing and built it back
+  slowly. That cycled 2H's free front wheels so far that a stop from 10 m/s
+  took 9.0 m. Now it takes 6.6 m, against 5.8 m in 4H, which couples the
+  axles. Neither locks a wheel for more than a few steps.
 - Traction control brakes a wheel that spins more than 3 rad/s faster than
   the other on its axle, in either direction of travel. It stands down while
   a locker is in, and `tractionControl = false` turns it off for tests.
@@ -410,7 +420,8 @@ is a plain H-pattern through R, N and 1 to 5 on the shift keys.
 | Turning circle, kerb to kerb | 12.6 m | 12.75 m | `sim.car-chassis` |
 | Tilt table | about 40 degrees (estimate) | tips between 38 and 42 | `sim.car-chassis` |
 | Crawl ratio in first, 4L | 38.51 (AT), 48.69 (MT) | 38.51, 48.69 | `sim.car-driveline` |
-| 100 to 0 km/h on dry asphalt | none published; the test allows 38 to 50 m | 47.1 m with ABS | `sim.car-driveline` |
+| 100 to 0 km/h on dry asphalt | none published; the test allows 38 to 50 m | 42.3 m with ABS, in 3.1 s | `sim.car-driveline` |
+| 10 m/s to 0 on dry asphalt, 2H and 4H | v^2 / 2g at the tyres' peak friction of 1 is 5.1 m | 6.6 m in 2H, 5.8 m in 4H, no wheel locked | `sim.car-driveline` |
 | Holds on a 20 degree slope for a minute | under 1 cm (the plan's test) | under 6 mm (brake in D; handbrake alone in 4H) | `sim.car-driveline` |
 
 The published approach and departure angles are static: SAE J1100 measures
