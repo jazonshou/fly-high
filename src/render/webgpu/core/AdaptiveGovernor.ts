@@ -88,6 +88,23 @@ export interface GovernorConfig {
   /** Windows before a resolution-insensitive latch re-arms (~30 s). */
   readonly insensitiveRearmWindows: number;
   /**
+   * PR B: a ladder's backoff after its first, second, and third or later
+   * failed trial; how long a strike lasts; and how soon after a passed trial
+   * a re-shed fails it. Set in seconds and counted in windows of frames at
+   * the paced interval, so a fast panel does not retry a failing rung more
+   * often: 15/30/60, 60 and 15 windows at 60 fps, 18/36/72, 72 and 18 at 72.
+   */
+  readonly recoveryBackoffWindows: readonly number[];
+  readonly strikeForgivenAfterWindows: number;
+  readonly lateFailureWindows: number;
+  /**
+   * PR B: CPU recovery needs render() p95 at or under this: 0.9 of the
+   * target (15 ms at 60 Hz), or of the longest interval still on time
+   * where that is shorter (12.5 ms at 144 Hz, where a frame either makes
+   * two refreshes or is late).
+   */
+  readonly cpuRecoveryCeilingMs: number;
+  /**
    * Wave R: a pinned capture freezes the WHOLE governor, not just the render
    * scale. Z-1's rule is "deterministic shipping pixels — no governor may
    * rewrite the target", but only the scale was ever pinned: on a slow
@@ -105,7 +122,9 @@ export interface GovernorConfig {
  * setting, which raises Medium's 16.67 ms to 33.3 ms. A null cadence, which
  * captures, perf:ab and perf:flight always have, gives exactly the tier's
  * own numbers. The GPU target keeps Ultra's present/compositor headroom and
- * is rounded to whole microseconds so Ultra's stays exactly 30.
+ * is rounded to whole microseconds so Ultra's stays exactly 30. The
+ * recovery spans follow the paced interval, which a cadence moves either
+ * way (72 fps at 144 Hz, 30 at the 30 fps setting).
  */
 export function governorConfigForProfile(
   profile: { readonly tier: number; readonly renderScale: number },
@@ -116,20 +135,46 @@ export function governorConfigForProfile(
   const floorMs = cadenceFloorMs(cadence);
   const slower = floorMs > tierPresentationMs + 1e-9;
   const presentationTargetMs = slower ? floorMs : tierPresentationMs;
+  const lateIntervalMs = lateIntervalFor(presentationTargetMs, cadence);
+  const windowFrames = 120;
+  // A window's length when its frames come at the paced interval.
+  const period = cadence?.displayPeriodMs ?? null;
+  const pacedMs = period === null ? presentationTargetMs : Math.min(presentationTargetMs, cadence!.divisor * period);
+  const windowMs = windowFrames * pacedMs;
+  const windowsFor = (seconds: number): number => Math.max(1, Math.round((seconds * 1_000) / windowMs + 1e-9));
   return Object.freeze({
     gpuTargetMs: slower
       ? Math.max(tierGpuMs, Math.round((floorMs - PRESENTATION_HEADROOM_MS) * 1_000) / 1_000)
       : tierGpuMs,
     presentationTargetMs,
-    lateIntervalMs: lateIntervalFor(presentationTargetMs, cadence),
+    lateIntervalMs,
     scaleCeiling: profile.renderScale,
     scaleFloor: Math.min(0.75, profile.renderScale),
-    windowFrames: 120,
+    windowFrames,
     downCooldownFrames: 90,
     upCooldownFrames: 240,
     insensitiveRearmWindows: 15,
+    recoveryBackoffWindows: Object.freeze(RECOVERY_BACKOFF_SECONDS.map(windowsFor)),
+    strikeForgivenAfterWindows: windowsFor(STRIKE_FORGIVEN_AFTER_SECONDS),
+    lateFailureWindows: windowsFor(LATE_FAILURE_SECONDS),
+    cpuRecoveryCeilingMs: CPU_RECOVERY_RATIO
+      * Math.min(presentationTargetMs, onTimeIntervalFor(presentationTargetMs, lateIntervalMs, cadence)),
   });
 }
+
+/** The backoff after a ladder's first, second, and third or later unforgiven failed trial. */
+const RECOVERY_BACKOFF_SECONDS: readonly number[] = Object.freeze([30, 60, 120]);
+/** One strike is forgiven after this long without a failure on the ladder. */
+const STRIKE_FORGIVEN_AFTER_SECONDS = 120;
+/** A ladder shed again this soon after passing a trial failed it, just late. */
+const LATE_FAILURE_SECONDS = 30;
+/**
+ * CPU recovery needs render() p95 within this share of the presentation
+ * target: 15 ms at 60 Hz. The red team's dead band was the old gate of 0.8 x
+ * 13.7 = 10.96 ms, which kept every CPU rung shed on machines between 11 and
+ * 16.7 ms that met 60 fps; the trial guards the rest.
+ */
+const CPU_RECOVERY_RATIO = 0.9;
 
 /** Without a trusted display period, late means 15% over the target: 19.17 ms, or 38.3 ms on Ultra. */
 const UNTRUSTED_LATE_RATIO = 1.15;
@@ -156,13 +201,28 @@ const SINGLE_REFRESH_OBSERVED_MS = 2_000 / 240 - 0.5;
  * would read 48 fps on a 144 Hz panel as on time.
  */
 function lateIntervalFor(targetMs: number, cadence: PresentationCadence | null): number {
+  const period = latePeriodMs(cadence);
+  if (period === null) return UNTRUSTED_LATE_RATIO * targetMs;
+  const placed = halfRefreshPast(targetMs, period);
+  return trustedDisplayPeriodMs(cadence) !== null ? placed : Math.min(UNTRUSTED_LATE_RATIO * targetMs, placed);
+}
+
+/** The period the late threshold is placed between the multiples of: trusted, or observed faster than 128 Hz. */
+function latePeriodMs(cadence: PresentationCadence | null): number | null {
   const trusted = trustedDisplayPeriodMs(cadence);
-  if (trusted !== null) return halfRefreshPast(targetMs, trusted);
-  const late = UNTRUSTED_LATE_RATIO * targetMs;
+  if (trusted !== null) return trusted;
   const observed = cadence?.displayPeriodMs ?? null;
-  return observed !== null && observed < SINGLE_REFRESH_OBSERVED_MS
-    ? Math.min(late, halfRefreshPast(targetMs, observed))
-    : late;
+  return observed !== null && observed < SINGLE_REFRESH_OBSERVED_MS ? observed : null;
+}
+
+/**
+ * The longest presented interval that is still on time: the last whole
+ * refresh under the late threshold, or the target without a period to
+ * count refreshes of. 16.67 ms at 60 and 120 Hz, 13.89 ms at 144 Hz.
+ */
+function onTimeIntervalFor(targetMs: number, lateMs: number, cadence: PresentationCadence | null): number {
+  const period = latePeriodMs(cadence);
+  return period === null ? targetMs : Math.floor(lateMs / period + 1e-9) * period;
 }
 
 function halfRefreshPast(targetMs: number, periodMs: number): number {
@@ -494,19 +554,6 @@ const STREAMING_TRIAL_WINDOWS = 4;
  * coming into reach), and an open trial holds every other recovery.
  */
 const STREAMING_SETTLE_WINDOWS = 2;
-/** The backoff after a ladder's first, second, and third or later unforgiven failed trial. */
-const RECOVERY_BACKOFF_WINDOWS: readonly number[] = Object.freeze([15, 30, 60]);
-/** One strike is forgiven after this many windows without a failure on the ladder. */
-const STRIKE_FORGIVEN_AFTER_WINDOWS = 60;
-/** A ladder shed again this soon after passing a trial failed it, just late. */
-const LATE_FAILURE_WINDOWS = 15;
-/**
- * CPU recovery needs render() p95 within this share of the presentation
- * target: 15 ms at 60 Hz. The red team's dead band was the old gate of 0.8 x
- * 13.7 = 10.96 ms, which kept every CPU rung shed on machines between 11 and
- * 16.7 ms that met 60 fps; the trial guards the rest.
- */
-const CPU_RECOVERY_RATIO = 0.9;
 const STREAMING_LEVERS: ReadonlySet<string> = new Set([
   "terrain-page-requests",
   "detail-cell-budget",
@@ -646,7 +693,7 @@ function gpuSideOfSpentCpuWindow(signals: GovernorSignals, config: GovernorConfi
   const cpu = signals.cpuP95Ms;
   const interval = signals.intervalP95Ms;
   if (signals.gpuP95Ms !== null || cpu === null || interval === null) return null;
-  if (cpu >= config.presentationTargetMs * CPU_RECOVERY_RATIO) return null;
+  if (cpu >= config.cpuRecoveryCeilingMs) return null;
   const proxy = Math.max(0, interval - cpu);
   if (proxy < MIN_GPU_PROXY_MS) return null;
   const split = splitOnProxy(cpu, proxy, interval);
@@ -714,7 +761,7 @@ export function nextGovernorDecision(
     ...state,
     framesSinceScaleChange: state.framesSinceScaleChange + config.windowFrames,
     mode: "holding",
-    recovery: tickRecovery(state.recovery),
+    recovery: tickRecovery(state.recovery, config),
   };
 
   // Re-arm the resolution-insensitive latch on a window clock.
@@ -786,7 +833,7 @@ export function nextGovernorDecision(
 
   const cadenceMet = resolved.classification === "on-cadence";
   if (next.trial !== null) {
-    if (!cadenceMet) return failTrial(next, next.trial);
+    if (!cadenceMet) return failTrial(next, next.trial, config);
     next = advanceTrial(next, next.trial, signals);
   }
   return cadenceMet
@@ -842,7 +889,7 @@ function onCadenceDecision(
     state.cpuWorkLevel > 0
     && state.recovery.cpu.backoffWindows === 0
     && cpu !== null
-    && cpu <= config.presentationTargetMs * CPU_RECOVERY_RATIO
+    && cpu <= config.cpuRecoveryCeilingMs
   ) {
     const lever = cpuWorkLeverName(state.cpuWorkLevel);
     return Object.freeze({
@@ -923,7 +970,7 @@ function offCadenceDecision(
             : resolved.synthesised ? "no-gpu-timing" : "gpu-resolution",
           cpuHotWindows: 0,
           gpuHotWindows: 0,
-          recovery: noteShed(next.recovery, "scale"),
+          recovery: noteShed(next.recovery, "scale", config),
         });
       }
       return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
@@ -950,7 +997,7 @@ function offCadenceDecision(
       // A miss neither side explains, which resolution was shown not to fix,
       // more likely sits on the main thread: the CPU ladder goes before the
       // GPU one.
-      return shedCpuWork(next, "frame-pacing");
+      return shedCpuWork(next, "frame-pacing", config);
     }
     if (intervalDomain || gpu > config.gpuTargetMs) {
       // Governor A has no lever (latched, or already at the floor): shed a
@@ -966,7 +1013,7 @@ function offCadenceDecision(
           gpuHotWindows: 0,
           cpuHotWindows: 0,
           mode,
-          recovery: noteShed(next.recovery, "gpu"),
+          recovery: noteShed(next.recovery, "gpu", config),
         });
       }
       return Object.freeze({ ...next, gpuHotWindows: hot, cpuHotWindows: 0, mode });
@@ -978,13 +1025,13 @@ function offCadenceDecision(
   // the miss holds here: the GPU side cannot help.
   const cpu = signals.cpuP95Ms;
   if (intervalDomain || (cpu !== null && cpu > config.gpuTargetMs)) {
-    return shedCpuWork(next, "cpu-work");
+    return shedCpuWork(next, "cpu-work", config);
   }
   return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuHotWindows: 0 });
 }
 
 /** One CPU rung per two hot windows, while the ladder has one left. */
-function shedCpuWork(state: GovernorState, mode: GovernorMode): GovernorState {
+function shedCpuWork(state: GovernorState, mode: GovernorMode, config: GovernorConfig): GovernorState {
   const hot = state.cpuHotWindows + 1;
   if (hot >= HOT_WINDOWS_REQUIRED && state.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
     const level = state.cpuWorkLevel + 1;
@@ -995,7 +1042,7 @@ function shedCpuWork(state: GovernorState, mode: GovernorMode): GovernorState {
       cpuHotWindows: 0,
       gpuHotWindows: 0,
       mode,
-      recovery: noteShed(state.recovery, "cpu"),
+      recovery: noteShed(state.recovery, "cpu", config),
     });
   }
   return Object.freeze({ ...state, cpuHotWindows: hot, gpuHotWindows: 0, mode });
@@ -1050,7 +1097,7 @@ function advanceTrial(state: GovernorState, trial: RecoveryTrial, signals: Gover
 }
 
 /** An off-cadence window during a trial: restore the step, strike the ladder, shed nothing else. */
-function failTrial(state: GovernorState, trial: RecoveryTrial): GovernorState {
+function failTrial(state: GovernorState, trial: RecoveryTrial, config: GovernorConfig): GovernorState {
   const failed: GovernorState = {
     ...state,
     trial: null,
@@ -1058,7 +1105,7 @@ function failTrial(state: GovernorState, trial: RecoveryTrial): GovernorState {
     offCadenceWindows: state.offCadenceWindows + 1,
     cpuHotWindows: 0,
     gpuHotWindows: 0,
-    recovery: strike(state.recovery, trial.ladder),
+    recovery: strike(state.recovery, trial.ladder, config),
   };
   if (trial.ladder === "gpu") {
     return Object.freeze({
@@ -1092,10 +1139,15 @@ function withLadder(
   return Object.freeze({ ...recovery, [ladder]: Object.freeze(record) });
 }
 
-function strike(recovery: GovernorState["recovery"], ladder: RecoveryLadder): GovernorState["recovery"] {
+function strike(
+  recovery: GovernorState["recovery"],
+  ladder: RecoveryLadder,
+  config: GovernorConfig,
+): GovernorState["recovery"] {
   const strikes = recovery[ladder].strikes + 1;
+  const backoffs = config.recoveryBackoffWindows;
   return withLadder(recovery, ladder, {
-    backoffWindows: RECOVERY_BACKOFF_WINDOWS[Math.min(strikes, RECOVERY_BACKOFF_WINDOWS.length) - 1]!,
+    backoffWindows: backoffs[Math.min(strikes, backoffs.length) - 1]!,
     strikes,
     windowsSinceStrike: 0,
     windowsSincePass: null,
@@ -1103,31 +1155,35 @@ function strike(recovery: GovernorState["recovery"], ladder: RecoveryLadder): Go
 }
 
 /** A shed soon after the ladder passed a trial means the trial missed a cost that came late. */
-function noteShed(recovery: GovernorState["recovery"], ladder: RecoveryLadder): GovernorState["recovery"] {
-  return recovery[ladder].windowsSincePass === null ? recovery : strike(recovery, ladder);
+function noteShed(
+  recovery: GovernorState["recovery"],
+  ladder: RecoveryLadder,
+  config: GovernorConfig,
+): GovernorState["recovery"] {
+  return recovery[ladder].windowsSincePass === null ? recovery : strike(recovery, ladder, config);
 }
 
 /** One window passes for every ladder's backoff, strike and late-failure clocks. */
-function tickRecovery(recovery: GovernorState["recovery"]): GovernorState["recovery"] {
-  const gpu = tickLadder(recovery.gpu);
-  const cpu = tickLadder(recovery.cpu);
-  const scale = tickLadder(recovery.scale);
+function tickRecovery(recovery: GovernorState["recovery"], config: GovernorConfig): GovernorState["recovery"] {
+  const gpu = tickLadder(recovery.gpu, config);
+  const cpu = tickLadder(recovery.cpu, config);
+  const scale = tickLadder(recovery.scale, config);
   if (gpu === recovery.gpu && cpu === recovery.cpu && scale === recovery.scale) return recovery;
   return Object.freeze({ gpu, cpu, scale });
 }
 
-function tickLadder(record: LadderRecovery): LadderRecovery {
+function tickLadder(record: LadderRecovery, config: GovernorConfig): LadderRecovery {
   if (record.backoffWindows === 0 && record.strikes === 0 && record.windowsSincePass === null) {
     return record;
   }
   const forgiven = record.strikes > 0
-    && record.windowsSinceStrike + 1 >= STRIKE_FORGIVEN_AFTER_WINDOWS;
+    && record.windowsSinceStrike + 1 >= config.strikeForgivenAfterWindows;
   const sincePass = record.windowsSincePass === null ? null : record.windowsSincePass + 1;
   return Object.freeze({
     backoffWindows: Math.max(0, record.backoffWindows - 1),
     strikes: forgiven ? record.strikes - 1 : record.strikes,
     windowsSinceStrike: forgiven || record.strikes === 0 ? 0 : record.windowsSinceStrike + 1,
-    windowsSincePass: sincePass !== null && sincePass > LATE_FAILURE_WINDOWS ? null : sincePass,
+    windowsSincePass: sincePass !== null && sincePass > config.lateFailureWindows ? null : sincePass,
   });
 }
 

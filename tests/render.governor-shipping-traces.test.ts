@@ -40,6 +40,7 @@ const medium = resolveWebGpuQualityProfile("medium", "balanced");
 const config = governorConfigForProfile(medium);
 const VSYNC_60 = 1_000 / 60;
 const VSYNC_120 = 1_000 / 120;
+const VSYNC_144 = 1_000 / 144;
 
 function cadence(
   frameCapHz: FrameRateCap,
@@ -165,6 +166,22 @@ describe("the shipping governor on a healthy cadence", () => {
   it("S3: a render() p95 above 15 ms keeps its CPU rungs", () => {
     const states = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => frames(15.5));
     expect(states.every((state) => state.cpuWorkLevel === CPU_WORK_MAX_LEVEL)).toBe(true);
+  });
+
+  it("S3c: at 144 Hz paced to 72, CPU work comes back only within 0.9 of the 13.89 ms slot", () => {
+    // A frame there makes two refreshes or is late, so the 60 fps gate of
+    // 15 ms never bound and only the trial guarded CPU recovery.
+    const paced = governorConfigForProfile(medium, cadence(60, 2, 144, true));
+    expect(paced.cpuRecoveryCeilingMs).toBeCloseTo(0.9 * 2 * VSYNC_144, 9);
+    const at72 = (cpu: number) => windowOf(intervals(2 * VSYNC_144), cpu, paced);
+    const kept = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => at72(13), { config: paced });
+    expect(kept.every((state) => state.cpuWorkLevel === CPU_WORK_MAX_LEVEL)).toBe(true);
+    const back = trace(withLevels(CPU_WORK_MAX_LEVEL, 0), 40, () => at72(12), { config: paced });
+    expect(firstWindow(back, (state) => state.cpuWorkLevel === 0)).toBe(28);
+    // Where a frame of more refreshes is still on time, the target's gate stands:
+    // three refreshes at 165 Hz are 18.2 ms, and two at 120 Hz 16.67.
+    expect(governorConfigForProfile(medium, cadence(60, 2, 165, true)).cpuRecoveryCeilingMs).toBeCloseTo(15, 9);
+    expect(governorConfigForProfile(medium, cadence(60, 2, 120, true)).cpuRecoveryCeilingMs).toBeCloseTo(15, 9);
   });
 
   it("S4: a 120 Hz display paced to 60 recovers exactly like S2", () => {
@@ -339,6 +356,24 @@ describe("recovery on trial", () => {
     expect(states.every((state) => state.gpuWorkLevel >= 2)).toBe(true);
     expect(Math.max(...states.map((state) => state.recovery.gpu.strikes))).toBe(3);
     expect(states[239]!.gpuWorkLevel).toBe(3);
+  });
+
+  it("S10c: at 144 Hz paced to 72, a failing rung is tried no more often in time than at 60 fps", () => {
+    // A window of 120 frames lasts 1.67 s at 72 fps. Counted in windows,
+    // the 60 fps backoffs retried a failing rung every 102 s here.
+    const paced = governorConfigForProfile(medium, cadence(60, 2, 144, true));
+    expect(paced.recoveryBackoffWindows).toEqual([18, 36, 72]);
+    expect(paced.strikeForgivenAfterWindows).toBe(72);
+    expect(paced.lateFailureWindows).toBe(18);
+    const windowSeconds = (paced.windowFrames * 2 * VSYNC_144) / 1_000;
+    const start = withLevels(0, 3);
+    const states = trace(start, 400, (_, state) =>
+      windowOf(intervals(2 * VSYNC_144, state.gpuWorkLevel <= 2 ? 10 : 0, 3 * VSYNC_144), 5, paced), { config: paced });
+    const recoveries = windowsWhere(start, states, recovered);
+    expect(recoveries).toEqual([4, 23, 60, 133, 206, 279, 352]);
+    // After the third strike, one pair per 73 windows: 122 s, as at 60 fps.
+    const gaps = recoveries.slice(3).map((window, index) => (window - recoveries[index + 2]!) * windowSeconds);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(120);
   });
 
   it("S10b: a rung whose cost arrives three windows late is not tried more than once a minute", () => {

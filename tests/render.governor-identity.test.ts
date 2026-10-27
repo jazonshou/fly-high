@@ -16,13 +16,13 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * (design §10). Captures, perf:ab and perf:flight drive FlightRenderer
  * directly, so the presentation cadence stays null, and they pin the render
  * scale, which freezes the governor. These are the guards: a null cadence
- * is bench-b1's config plus a late threshold only the unfrozen governor
- * reads, a frozen governor never leaves its first state, and at that state,
+ * is bench-b1's config plus a late threshold, recovery spans and a CPU
+ * recovery gate only the unfrozen governor reads, a frozen governor never leaves its first state, and at that state,
  * levels (0, 0), the relative levers hand every subsystem what it took
  * before the governor existed.
  */
 
-/** bench-b1's literals for one tier, plus PR B's late threshold. */
+/** bench-b1's literals for one tier, plus what only PR B's unfrozen governor reads. */
 function expectedConfig(tier: number, renderScale: number): GovernorConfig {
   const ultra = tier === 3;
   return {
@@ -36,6 +36,11 @@ function expectedConfig(tier: number, renderScale: number): GovernorConfig {
     downCooldownFrames: 90,
     upCooldownFrames: 240,
     insensitiveRearmWindows: 15,
+    // 30/60/120 s, 120 s and 30 s, in windows of frames at the target.
+    recoveryBackoffWindows: ultra ? [8, 15, 30] : [15, 30, 60],
+    strikeForgivenAfterWindows: ultra ? 30 : 60,
+    lateFailureWindows: ultra ? 8 : 15,
+    cpuRecoveryCeilingMs: 0.9 * (ultra ? 1_000 / 30 : 1_000 / 60),
   };
 }
 
@@ -53,7 +58,7 @@ const PAIRS: readonly [QualityLevel, RequestedRenderingMode, number, number][] =
 ];
 
 describe("the governor without a cadence (captures, perf:ab, perf:flight)", () => {
-  it("is bench-b1's config for every quality and mode, plus the late threshold", () => {
+  it("is bench-b1's config for every quality and mode, plus what only the unfrozen governor reads", () => {
     for (const [quality, mode, tier, renderScale] of PAIRS) {
       const profile = resolveWebGpuQualityProfile(quality, mode);
       expect(profile.tier, `${quality} ${mode}`).toBe(tier);
