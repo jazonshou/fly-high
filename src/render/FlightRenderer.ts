@@ -84,6 +84,10 @@ import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
 import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
+import type { CarBowWave } from "./webgpu/ground/CarBowWave";
+import { createCarEffects, type CarEffects } from "./webgpu/ground/CarEffects";
+import type { CarParticleSystem } from "./webgpu/ground/CarParticleSystem";
+import type { CarTrackSystem } from "./webgpu/ground/CarTrackSystem";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
 import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
 import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
@@ -545,6 +549,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly boatHullClip: OceanHullClip | null;
   /** The swell this tier does not draw, which the drawn boat is lowered by. */
   private readonly boatHeave: UndrawnSeaHeave | null;
+  /** What the car throws into the air, the prints it leaves and its bow wave; null outside a car session. */
+  private readonly carParticles: CarParticleSystem | null;
+  private readonly carTracks: CarTrackSystem | null;
+  private readonly carBowWave: CarBowWave | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -781,6 +789,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     aircraft: AircraftVisual,
     surfaceVehicle: VehicleVisual | null,
     boatEffects: BoatEffects | null,
+    carEffects: CarEffects | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -833,6 +842,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatWake = boatEffects?.wake ?? null;
     this.boatHullClip = boatEffects?.hullClip ?? null;
     this.boatHeave = boatEffects?.heave ?? null;
+    this.carParticles = carEffects?.particles ?? null;
+    this.carTracks = carEffects?.tracks ?? null;
+    this.carBowWave = carEffects?.bowWave ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1497,6 +1509,20 @@ export class FlightRenderer implements FlightRenderingSystem {
         cleanup.push(() => boatEffects.spray.dispose());
         cleanup.push(() => boatEffects.wake.dispose());
       }
+      // Only with a car, as the boat's are.
+      const carEffects = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
+        ? createCarEffects(scene, {
+          profile,
+          world: options.world,
+          atmosphere: atmosphere.snapshot,
+          groundHeight: (x, z) => liveTerrainSample(x, z).height,
+        })
+        : null;
+      if (carEffects) {
+        cleanup.push(() => carEffects.particles.dispose());
+        cleanup.push(() => carEffects.tracks.dispose());
+        cleanup.push(() => carEffects.bowWave.dispose());
+      }
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -1735,6 +1761,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         aircraft,
         surfaceVehicle,
         boatEffects,
+        carEffects,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -1987,6 +2014,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
     this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
     this.boatHeave?.setWeather(weather);
+    this.carParticles?.setAtmosphere(this.atmosphere.snapshot);
+    this.carBowWave?.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
@@ -2704,6 +2733,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.steam.dispose(),
       () => this.boatSpray?.dispose(),
       () => this.boatWake?.dispose(),
+      () => this.carParticles?.dispose(),
+      () => this.carTracks?.dispose(),
+      () => this.carBowWave?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -3013,6 +3045,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
     this.boatSpray?.update(state);
     this.boatWake?.update(state);
+    this.carParticles?.update(state);
+    this.carTracks?.update(state);
+    this.carBowWave?.update(state);
     this.updateAerialPerspective();
   }
 
@@ -3138,6 +3173,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.setAerialPerspective(binding);
     this.boatSpray?.setAerialPerspective(binding);
     this.boatWake?.setAerialPerspective(binding);
+    this.carParticles?.setAerialPerspective(binding);
+    this.carBowWave?.setAerialPerspective(binding);
     // The probe re-lights the world when the environment changes or when the
     // camera's altitude has drifted enough to matter (the sky itself dims
     // and clears with height); everything else leaves it untouched.
@@ -3792,6 +3829,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.marina.setFloatingOrigin(this.originX, this.originZ);
     this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
     this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
+    this.carParticles?.setFloatingOrigin(this.originX, this.originZ);
+    this.carTracks?.setFloatingOrigin(this.originX, this.originZ);
+    this.carBowWave?.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -3840,6 +3880,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
+    this.carParticles?.setCap(this.profile.vehicleParticleBudget);
+    this.carTracks?.setCap(this.profile.tyreTrackSegments);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
