@@ -324,6 +324,66 @@ export function readLandformsFromUrl(url?: string): LandformsOption | undefined 
   }
 }
 
+/**
+ * The in-game benchmark's page request (`?bench=1`, src/bench). It flies one
+ * tier per page load and reloads between them, so the URL says which page
+ * this is: the intro (no `run`), step `k` of a run, or the run's report.
+ */
+export interface BenchUrlRequest {
+  /** 1 to 8 quality tiers (0 Low ... 3 Ultra), in flying order. */
+  readonly tiers: readonly number[];
+  readonly mode: "shipped" | "pinned";
+  /** False only for `hud=0`. */
+  readonly hud: boolean;
+  /** `quick=1`: short timings for development; the report says non-standard. */
+  readonly quick: boolean;
+  readonly run: string | null;
+  readonly step: number | "report" | null;
+}
+
+/** Medium first and last, so a run can check itself for drift. */
+export const DEFAULT_BENCH_TIERS: readonly number[] = Object.freeze([1, 0, 2, 1]);
+const MAX_BENCH_TIERS = 8;
+
+/**
+ * A `tiers` list: 1 to 8 entries, each 0 to 3, separated by commas. Null when
+ * it breaks the rule. The bench intro's Advanced field reads its text with
+ * this too, so it never starts a run that `readBenchFromUrl` would replace
+ * with the default.
+ */
+export function parseBenchTiers(text: string): number[] | null {
+  const names = text.split(",").map((name) => name.trim());
+  return names.length <= MAX_BENCH_TIERS && names.every((name) => /^[0-3]$/.test(name)) ? names.map(Number) : null;
+}
+
+/**
+ * `?bench=1` only. URL only and never persisted, like `?world=`: the bench
+ * keeps its progress in its own tab-scoped store (src/bench/store.ts), never
+ * in the settings. Anything but exactly `bench=1` is the normal game. A bad
+ * `tiers` list falls back to the default; a bad `run` or `step` reads as null,
+ * which means the intro page.
+ */
+export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
+  const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
+  try {
+    const params = new URL(source).searchParams;
+    if (params.get("bench") !== "1") return undefined;
+    const tiers = parseBenchTiers(params.get("tiers") ?? "");
+    const run = params.get("run");
+    const step = params.get("step");
+    return {
+      tiers: tiers ?? [...DEFAULT_BENCH_TIERS],
+      mode: params.get("mode") === "pinned" ? "pinned" : "shipped",
+      hud: params.get("hud") !== "0",
+      quick: params.get("quick") === "1",
+      run: run !== null && /^[a-z0-9]{6,16}$/.test(run) ? run : null,
+      step: step === "report" ? "report" : step !== null && /^\d{1,2}$/.test(step) ? Number(step) : null,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function seedToString(seed: number): string {
   return (seed >>> 0).toString(36).toUpperCase().padStart(6, "0");
 }

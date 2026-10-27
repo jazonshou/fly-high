@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { checkoutCacheDir } from "./scripts/checkoutCacheDir";
+import { commitStamp } from "./scripts/commitStamp";
 
 /**
  * Static-site build used by the GitHub Pages deploy (`npm run build:pages`).
@@ -19,7 +20,10 @@ export default defineConfig({
   // Not the default: that would be the dev server's, shared by every worktree.
   cacheDir: checkoutCacheDir("static"),
   base: process.env.PAGES_BASE ?? "/",
-  plugins: [react()],
+  // `?bench=1` stamps its reports with the commit a Pages build was made from,
+  // which this writes into index.html alone. GitHub Actions sets GITHUB_SHA;
+  // a local build writes nothing and its reports name no commit.
+  plugins: [react(), commitStamp(process.env.GITHUB_SHA)],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),

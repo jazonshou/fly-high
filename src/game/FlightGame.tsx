@@ -12,10 +12,12 @@ import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
 import { type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
+import type { BenchSession } from "@/src/bench/types";
 import {
   createRandomSeed,
   DEFAULT_SETTINGS,
   loadSettings,
+  readBenchFromUrl,
   readLandformsFromUrl,
   readSeedFromUrl,
   readTerrainFarSwardFromUrl,
@@ -167,6 +169,8 @@ export function FlightGame() {
   const lastAudioUpdateRef = useRef(0);
   const readyRef = useRef(false);
   const freeFlyRef = useRef<FreeFlyController | null>(null);
+  /** `?bench=1` only: the benchmark's page session; null for every player. */
+  const benchRef = useRef<BenchSession | null>(null);
   const [viewerStats, setViewerStats] = useState<ViewerStats | null>(null);
   const [phase, setPhase] = useState<GamePhase>("menu");
   const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
@@ -554,6 +558,33 @@ export function FlightGame() {
   );
 
   useEffect(() => {
+    const benchRequest = readBenchFromUrl();
+    if (benchRequest) {
+      // `?bench=1`: the benchmark decides the settings and the world, holds
+      // them in memory only, and saves nothing of the player's.
+      let cancelled = false;
+      void import("@/src/bench/session")
+        .then(({ openBenchSession }) => openBenchSession(benchRequest))
+        .then((session) => {
+          if (cancelled) return;
+          benchRef.current = session;
+          // Null on the intro and report pages: no renderer, no worker.
+          const boot = session.boot;
+          if (!boot) return;
+          settingsRef.current = boot.settings;
+          queueMicrotask(() => {
+            setSettings(boot.settings);
+            setSeed(boot.seed);
+            setBootstrapped(true);
+          });
+        })
+        .catch((caught: unknown) => {
+          if (!cancelled) queueMicrotask(() => setError(`The benchmark could not start: ${String(caught)}`));
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     const loaded = loadSettings();
     settingsRef.current = loaded;
     const urlSeed = readSeedFromUrl();
@@ -576,6 +607,10 @@ export function FlightGame() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  useEffect(() => {
+    if (error !== null) benchRef.current?.reportGameError(error);
+  }, [error]);
 
   useEffect(() => {
     if (phase !== "paused") return;
@@ -630,6 +665,7 @@ export function FlightGame() {
     const initialize = async (): Promise<void> => {
       try {
       const activeSettings = settingsRef.current;
+      const bench = benchRef.current;
       const urlFarSward = readTerrainFarSwardFromUrl();
       const airportNetwork = startupResources.own(new AirportNetworkController(world));
       const surfaceVehicle = chosenSurfaceVehicle(activeSettings);
@@ -664,8 +700,11 @@ export function FlightGame() {
         },
         ...(world.airport ? { runway: world.airport } : {}),
         ...(urlFarSward ? { terrainFarSwardRead: urlFarSward } : {}),
+        ...(bench ? bench.rendererOptions(canvas) : {}),
       };
-      const renderer: FlightRenderingSystem = await FlightRenderer.create(rendererOptions);
+      const created = await FlightRenderer.create(rendererOptions);
+      // `?bench=1` only: the decorator draws the benchmark's scripted flight.
+      const renderer: FlightRenderingSystem = bench ? bench.attach(created, world) : created;
       if (disposed) {
         renderer.dispose();
         return;
