@@ -1,8 +1,11 @@
+import type { AircraftKind } from "@/src/sim";
 import type { SurfaceVehicleSpawn } from "@/src/sim/surface/types";
 import { sampleGroundHeight } from "@/src/sim/terrainGrid";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
+import { isSurfaceSpawn, type SpawnKind } from "@/src/workers/protocol";
 import { runwayToWorld, sampleTerrainHeight, type WorldDefinition } from "@/src/world";
 import { marinaStartPose } from "@/src/world/marina";
+import { createSimulationSpawn } from "./spawn";
 
 /** Water at least this deep, with `OPEN_WATER_CLEARANCE` of it around, counts as open. */
 export const OPEN_WATER_DEPTH = 4;
@@ -168,4 +171,25 @@ export function createSurfaceRecoverySpawn(
     case "landcruiser":
       return uprightCarSpawn(world, wreckX, wreckZ);
   }
+}
+
+/**
+ * Where in plan a session given this spawn starts, as the simulation worker
+ * will place it (`createSurfaceSpawn`, `createSimulationSpawn`): what the
+ * renderer primes the streamed roads round (`FlightRendererOptions.startPoint`).
+ */
+export function sessionStartPoint(
+  world: WorldDefinition,
+  kind: SpawnKind,
+  airborneStartAgl: number,
+  aircraft: AircraftKind,
+  vehicle: SurfaceVehicleKind | null,
+): { x: number; z: number } {
+  if (isSurfaceSpawn(kind) && vehicle) {
+    const { position } = createSurfaceSpawn(world, vehicle);
+    return { x: position.x, z: position.z };
+  }
+  if (!world.airport && kind === "runway") return { x: 0, z: 0 };
+  const { position } = createSimulationSpawn(world, isSurfaceSpawn(kind) ? "airborne" : kind, airborneStartAgl, aircraft);
+  return { x: position?.x ?? 0, z: position?.z ?? 0 };
 }

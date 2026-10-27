@@ -1,7 +1,11 @@
 import { terrainPageAirportDomain, type TerrainMutableWorldRect } from "@/src/render/webgpu/terrain/AirportReach";
 import type { WorldDefinition } from "@/src/world";
 import type { InfrastructureChange } from "@/src/world/infrastructure";
-import { InfrastructureChangeLog, type InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
+import {
+  InfrastructureChangeLog,
+  infrastructureRegionsSnapshot,
+  type InfrastructureRegionsUpdate,
+} from "@/src/world/infrastructureSync";
 import type { RoadStreamObserver } from "@/src/world/roads/roadStreaming";
 import type { TerrainPagePublication } from "@/src/workers/terrainAuthority";
 import {
@@ -45,20 +49,34 @@ export class RoadStreamRuntime {
   private readonly controller: RoadStreamController;
   private readonly domain: TerrainMutableWorldRect = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   private consumers: RoadStreamConsumers | null = null;
+  private world: WorldDefinition;
 
   constructor(world: WorldDefinition, createWorker?: RoadsWorkerFactory) {
+    this.world = world;
     this.controller = new RoadStreamController(world, createWorker);
     this.controller.onChange((change) => this.handleChange(change));
   }
 
   /**
-   * Who hears each change from here on. Before any is attached (startup's
-   * `prime`, ahead of the first bake) a change is only logged: every consumer
-   * built afterwards reads the stage as it then is, and its worker starts
-   * from the whole set (`infrastructureRegionsSnapshot`).
+   * Who hears each change from here on. Before any is attached (startup,
+   * while `prime` runs beside the rest of construction) a change is only
+   * logged: nothing has baked a page, a cell or a tile yet, and each reads
+   * the stage as it is when it does. The workers' copies are caught up here,
+   * with the whole set (`infrastructureRegionsSnapshot`): one started before
+   * the last of the priming landed, and its forwarder posts the set only if
+   * it is newer than what that worker was given.
    */
   setConsumers(consumers: RoadStreamConsumers | null): void {
     this.consumers = consumers;
+    if (!consumers) return;
+    const snapshot = infrastructureRegionsSnapshot(this.world);
+    consumers.publishInfrastructure(snapshot);
+    consumers.detailInfrastructureChanged(snapshot, {
+      version: snapshot.version,
+      rects: [],
+      bins: new Set(),
+      plantBins: new Set(),
+    });
   }
 
   /** Regions still to come or to install (`RoadStreamController.pendingRegions`). */
@@ -97,6 +115,7 @@ export class RoadStreamRuntime {
   }
 
   setWorld(world: WorldDefinition): void {
+    this.world = world;
     this.controller.setWorld(world);
   }
 

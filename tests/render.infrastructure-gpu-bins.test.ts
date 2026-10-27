@@ -7,6 +7,7 @@ import {
   packTerrainInfrastructure,
   packWorldTerrainInfrastructure,
   TerrainInfrastructureData,
+  TerrainInfrastructureDataBinding,
   TerrainInfrastructurePack,
 } from "@/src/render/webgpu/terrain/TerrainInfrastructureKernel";
 import {
@@ -313,6 +314,33 @@ describe("the engine's shared copy of the stage", () => {
       expectTableMatches(infrastructureIndex(world), words());
     } finally {
       data.release();
+    }
+  });
+
+  it("is written where a change is installed when a binding syncs, and the next bind finds it current", () => {
+    const { engine, words } = bytesEngine();
+    const shader = { setStorageBuffer: () => undefined } as unknown as Parameters<TerrainInfrastructureDataBinding["bind"]>[1];
+    const binding = new TerrainInfrastructureDataBinding(world);
+    // Before its first bind a binding holds no copy: nothing to write.
+    binding.sync();
+    binding.bind(engine, shader);
+    const data = TerrainInfrastructureData.acquire(engine, world);
+    try {
+      expect(data.writes).toMatchObject({ packs: 1, updates: 0 });
+      // The first region after the static index packs afresh; the next in place.
+      installInfrastructureRegions(world, [regionAt(0)]);
+      binding.sync();
+      expect(data.writes).toMatchObject({ packs: 2, updates: 0 });
+      installInfrastructureRegions(world, [regionAt(1)]);
+      binding.sync();
+      expect(data.writes).toMatchObject({ packs: 2, updates: 1 });
+      expectTableMatches(infrastructureIndex(world), words());
+      const written = { ...data.writes };
+      binding.bind(engine, shader);
+      expect(data.writes).toEqual(written);
+    } finally {
+      data.release();
+      binding.dispose();
     }
   });
 });

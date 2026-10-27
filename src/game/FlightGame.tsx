@@ -48,6 +48,7 @@ import { DisposableScope } from "./DisposableScope";
 import { DiagnosticsPoller, nearestAirportReadoutKey } from "./diagnosticsCadence";
 import { FreeFlyController } from "./freeFly";
 import { SimulationClient } from "./SimulationClient";
+import { sessionStartPoint } from "./surfaceSpawn";
 import { startFlightControlPump, type FlightControlPump } from "./controlPump";
 import {
   airborneGearForAircraft,
@@ -656,6 +657,16 @@ export function FlightGame() {
       const urlFarSward = readTerrainFarSwardFromUrl();
       const airportNetwork = startupResources.own(new AirportNetworkController(world));
       const surfaceVehicle = chosenSurfaceVehicle(activeSettings);
+      // Where the worker will put the session: the roads round it come in
+      // before the first pages bake. Read again after startup (below), as
+      // the phase can change while the renderer builds.
+      const startPoint = sessionStartPoint(
+        world,
+        phaseRef.current === "menu" ? "airborne" : spawnRef.current,
+        activeSettings.airborneStartAgl,
+        activeSettings.aircraft,
+        surfaceVehicle,
+      );
       const rendererOptions = {
         canvas,
         aircraft: activeSettings.aircraft,
@@ -686,6 +697,7 @@ export function FlightGame() {
           );
         },
         ...(world.airport ? { runway: world.airport } : {}),
+        startPoint,
         ...(urlFarSward ? { terrainFarSwardRead: urlFarSward } : {}),
       };
       const renderer: FlightRenderingSystem = await FlightRenderer.create(rendererOptions);

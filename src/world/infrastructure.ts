@@ -451,7 +451,7 @@ interface ComposedIndex {
   readonly base: StaticInfrastructure;
   /** By slot; null where free. */
   readonly entries: (OrderedSegment | null)[];
-  /** By slot; `INERT_SEGMENT` where free. */
+  /** By slot; `inertSlotSegment()` where free. */
   readonly segments: PackedInfrastructureSegment[];
   /** By slot; `NO_PLANT_EXCLUSION` where free or without a clearance. */
   readonly exclusions: InfrastructurePlantExclusion[];
@@ -784,8 +784,14 @@ function installRegion(region: InfrastructureRegion): InstalledRegion {
   return installed;
 }
 
-/** A free slot's segment: it reaches nothing, and no bin lists it. */
-const INERT_SEGMENT: PackedInfrastructureSegment = Object.freeze({
+/**
+ * A free slot's segment: it reaches nothing, and no bin lists it. Built on
+ * first use, never at module load: `infrastructureProfiles.ts` imports this
+ * module, and a graph that meets it first (the roads worker's) would read the
+ * profile table before it exists.
+ */
+let inertSegment: PackedInfrastructureSegment | null = null;
+const inertSlotSegment = (): PackedInfrastructureSegment => inertSegment ??= Object.freeze({
   segment: Object.freeze({
     profile: 0,
     mode: "set",
@@ -873,7 +879,7 @@ function updateComposed(
         if (entry.plantBins) for (let b = 0; b < entry.plantBins.length; b += 1) touchedPlants.add(entry.plantBins[b]!);
         dropping.add(slot);
         entries[slot] = null;
-        segments[slot] = INERT_SEGMENT;
+        segments[slot] = inertSlotSegment();
         exclusions[slot] = NO_PLANT_EXCLUSION;
         free.push(slot);
         written.push(slot);
