@@ -164,6 +164,11 @@ export interface FramePacerTick {
   render: boolean;
   /** The new cadence on the tick it changes; null on every other tick. */
   cadence: PresentationCadence | null;
+  /**
+   * True on the drawn tick that ends a re-probe's skipped ticks: its delta
+   * is the pacer's own gap, up to 24 refreshes, and no frame time.
+   */
+  afterReprobe: boolean;
 }
 
 function sameRate(a: number, b: number): boolean {
@@ -198,7 +203,9 @@ export class FramePacer {
   private cadence: PresentationCadence | null = null;
   private wasPaused = false;
   private reprobeTicksLeft = 0;
-  private readonly out: FramePacerTick = { render: true, cadence: null };
+  /** A re-probe skipped ticks since the last drawn one. */
+  private reprobeSkipped = false;
+  private readonly out: FramePacerTick = { render: true, cadence: null, afterReprobe: false };
 
   constructor(options: FramePacerOptions = {}) {
     this.pace60 = options.pace60 ?? FRAME_PACING_ENABLED;
@@ -238,6 +245,7 @@ export class FramePacer {
     let render: boolean;
     if (this.reprobeTicksLeft > 0) {
       this.reprobeTicksLeft -= 1;
+      this.reprobeSkipped = true;
       render = false;
     } else {
       const period = this.periodMs;
@@ -246,7 +254,11 @@ export class FramePacer {
         || this.lastRenderMs === null
         || nowMs - this.lastRenderMs >= (this.divisor - 0.5) * period;
     }
-    if (render) this.lastRenderMs = nowMs;
+    this.out.afterReprobe = render && this.reprobeSkipped;
+    if (render) {
+      this.lastRenderMs = nowMs;
+      this.reprobeSkipped = false;
+    }
     this.previousTickWasIdle = !render;
     this.out.render = render;
     return this.out;

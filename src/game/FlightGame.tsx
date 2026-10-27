@@ -873,6 +873,7 @@ export function FlightGame() {
         try {
           // A paused flight draws a static scene, which says nothing about flight.
           renderer.setGovernorHold(phaseRef.current === "paused");
+          if (paced.afterReprobe) renderer.discardNextFrameInterval();
           if (pendingCadence !== null) {
             renderer.setPresentationCadence(pendingCadence);
             pendingCadence = null;

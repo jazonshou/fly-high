@@ -86,6 +86,12 @@ export interface FlightRenderingSystem {
    * of the static scene, so a pause neither sheds nor gives back work.
    */
   setGovernorHold(held: boolean): void;
+  /**
+   * The next frame follows ticks the frame loop skipped on purpose (the
+   * pacer's re-probe on pause): its interval is left out of diagnostics and
+   * the governor's window.
+   */
+  discardNextFrameInterval(): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
   getDiagnostics(): RenderDiagnostics;
   /** Starts the 1A-1 GPU budget-probe sweep; returns whether it began. */

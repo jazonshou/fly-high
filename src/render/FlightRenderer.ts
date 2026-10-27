@@ -2190,6 +2190,16 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.resetTimingSamples();
   }
 
+  /**
+   * PR B: the next frame follows ticks the frame loop skipped on purpose
+   * (the pacer's re-probe of the display when the flight pauses). Its
+   * interval is no frame time, so it is kept out of the diagnostics ring
+   * and the governor's window, as a hidden tab's gap is.
+   */
+  discardNextFrameInterval(): void {
+    this.previousFrameStartedAt = null;
+  }
+
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
     if (!this.atmosphereTracker.update(clock, weather)) return;
     this.environmentState = resolveEnvironmentState({

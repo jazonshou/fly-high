@@ -16,7 +16,7 @@ fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It kee
 - The frame loop draws on every Nth display refresh (Settings → Frame rate, `src/game/framePacer.ts`).
   - "60 fps (smooth)", the default at every tier, uses N = floor(refresh / 60), so frames stay evenly spaced: 60-100 Hz displays draw every refresh, 120 and 240 Hz draw 60, 144 Hz draws 72 and 165 Hz draws 82.5.
   - "30 fps" uses N = round(refresh / 30). "Match display" draws every refresh, the loop every build before PR B ran.
-  - The period is measured from requestAnimationFrame ticks that draw nothing (a short probe at startup, a re-probe while paused, the ticks the pacer skips), so a slow machine cannot relax its own target. A tick that draws nothing only asks for the next frame.
+  - The period is measured from requestAnimationFrame ticks that draw nothing (a short probe at startup, a re-probe while paused, the ticks the pacer skips), so a slow machine cannot relax its own target. A tick that draws nothing only asks for the next frame. The re-probe skips 24 ticks when the flight pauses; the frame that ends that gap is left out of diagnostics and the governor's window, so a pause shows no stall.
   - The capture, perf:ab and perf:flight harnesses call `render()` themselves and never pace.
 - Device loss is terminal for the current renderer instance. Simulation/rendering pause and the user must reload to recreate the adapter, device, and every GPU resource.
 - WebGPU normally requires a secure browser context; local development at `localhost` is accepted.

@@ -347,6 +347,26 @@ describe("confirmation", () => {
     expect(flight.pacer.currentCadence).toEqual(cadenceOf(60, 2, 120, true));
   });
 
+  it("flags the drawn tick that ends a re-probe's skipped ticks, and no other", () => {
+    const pacer = new FramePacer({ pace60: true });
+    const period = 1_000 / 120;
+    const flagged: number[] = [];
+    for (let tick = 0; tick < 600; tick += 1) {
+      // Paused for 100 ticks, then for 10: resumed inside the re-probe.
+      const paused = (tick >= 300 && tick < 400) || (tick >= 500 && tick < 510);
+      const result = pacer.tick(1_000 + tick * period, "60", paused);
+      if (result.afterReprobe) {
+        expect(result.render).toBe(true);
+        flagged.push(tick);
+      }
+    }
+    expect(flagged).toEqual([300 + REPROBE_TICKS, 510]);
+    const unpaced = new FramePacer({ pace60: true });
+    for (let tick = 0; tick < 600; tick += 1) {
+      expect(unpaced.tick(1_000 + tick * period, "display", tick >= 300).afterReprobe).toBe(false);
+    }
+  });
+
   it("does not skip a paused frame where it would not pace anyway", () => {
     const flight = fly(120, "display", { ticks: 400, paused: (tick) => tick >= 200 });
     expect(flight.rendered).toHaveLength(400);

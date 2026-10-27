@@ -191,6 +191,10 @@ export class BenchRenderer implements FlightRenderingSystem {
     this.inner.setGovernorHold(held);
   }
 
+  discardNextFrameInterval(): void {
+    this.inner.discardNextFrameInterval();
+  }
+
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
     return this.inner.projectWorldPointToRef(x, y, z, result);
   }

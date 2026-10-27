@@ -244,3 +244,35 @@ describe("setGovernorHold", () => {
     expect(target.governorState.cpuWorkLevel).toBe(free.governorState.cpuWorkLevel);
   });
 });
+
+describe("discardNextFrameInterval", () => {
+  it("keeps the gap a re-probe leaves out of diagnostics and the governor's window", () => {
+    const target = Object.assign(receiver({ frameIntervalDurations: [] }), {
+      previousFrameStartedAt: null as number | null,
+      diagnosticIntervalDurations: [] as number[],
+      diagnosticPresentWaitDurations: [] as number[],
+      lastFrameIntervalMilliseconds: 0,
+      lastPresentWaitMilliseconds: null as number | null,
+      lastCpuFrameMilliseconds: 5,
+    });
+    const capture = Reflect.get(FlightRenderer.prototype, "captureFrameInterval") as (
+      this: typeof target,
+      started: number,
+      deltaSeconds: number,
+    ) => void;
+    capture.call(target, 1_000, 1 / 60);
+    capture.call(target, 1_016.7, 1 / 60);
+    expect(target.diagnosticIntervalDurations).toEqual([expect.closeTo(16.7, 6)]);
+    expect(target.frameIntervalDurations).toHaveLength(1);
+    // 24 skipped refreshes at 120 Hz are 200 ms: under the 250 ms stall
+    // gate, so without the call they count as a hitch and a late frame.
+    FlightRenderer.prototype.discardNextFrameInterval.call(target as unknown as FlightRenderer);
+    capture.call(target, 1_216.7, 0.1);
+    expect(target.diagnosticIntervalDurations).toHaveLength(1);
+    expect(target.frameIntervalDurations).toHaveLength(1);
+    // Only that one: the frame after it counts again.
+    capture.call(target, 1_233.4, 1 / 60);
+    expect(target.diagnosticIntervalDurations).toHaveLength(2);
+    expect(target.frameIntervalDurations).toHaveLength(2);
+  });
+});
