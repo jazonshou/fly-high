@@ -42,6 +42,8 @@ import {
   cadenceFloorMs,
   type PresentationCadence,
 } from "./presentationCadence";
+// Type-only: QualityProfile.ts imports presentationCadence, never this file.
+import type { WebGpuQualityProfile } from "./QualityProfile";
 
 export type GovernorMode =
   | "gpu-resolution"
@@ -84,11 +86,22 @@ export interface GovernorConfig {
    * 40 ms at 75 Hz).
    */
   readonly presentationTargetMs: number;
+  /**
+   * PR B part 2: the tier's own presentation target, before any cadence
+   * moves it: 16.67 ms, 33.3 ms on Ultra. A profile refresh interval counts
+   * frames at this target.
+   */
+  readonly tierPresentationTargetMs: number;
   /** PR B: a presented interval longer than this is late (`lateIntervalFor`). */
   readonly lateIntervalMs: number;
   readonly scaleCeiling: number;
   /** Floor raised 0.62 → 0.75: below it the image degrades faster than the frame time improves. */
   readonly scaleFloor: number;
+  /**
+   * PR B part 2 (G4): the profile's governor pixel floor ratio. Informational
+   * for now: `scaleFloor` does not derive from it yet.
+   */
+  readonly pixelFloorRatio: number;
   readonly windowFrames: number;
   readonly downCooldownFrames: number;
   readonly upCooldownFrames: number;
@@ -134,7 +147,7 @@ export interface GovernorConfig {
  * way (72 fps at 144 Hz, 30 at the 30 fps setting).
  */
 export function governorConfigForProfile(
-  profile: { readonly tier: number; readonly renderScale: number },
+  profile: Pick<WebGpuQualityProfile, "tier" | "renderScale" | "governorPixelFloorRatio">,
   cadence: PresentationCadence | null = null,
 ): GovernorConfig {
   const tierPresentationMs = profile.tier === 3 ? 1_000 / 30 : 1_000 / 60;
@@ -154,9 +167,11 @@ export function governorConfigForProfile(
       ? Math.max(tierGpuMs, Math.round((floorMs - PRESENTATION_HEADROOM_MS) * 1_000) / 1_000)
       : tierGpuMs,
     presentationTargetMs,
+    tierPresentationTargetMs: tierPresentationMs,
     lateIntervalMs,
     scaleCeiling: profile.renderScale,
     scaleFloor: Math.min(0.75, profile.renderScale),
+    pixelFloorRatio: profile.governorPixelFloorRatio,
     windowFrames,
     downCooldownFrames: 90,
     upCooldownFrames: 240,
@@ -312,6 +327,22 @@ export interface WorkLeverSettings {
    * cut one of those.
    */
   readonly computeBudgetScale: number;
+  /**
+   * PR B part 2 (G5, GPU): a factor on the cloud view march's step count; the
+   * step lengths grow by the inverse, so rays keep their reach.
+   */
+  readonly cloudMarchScale: number;
+  /**
+   * PR B part 2 (G5, CPU): presented frames added to the sun-shadow (CSM)
+   * refresh interval, after the profile's is converted to the cadence.
+   */
+  readonly shadowRefreshExtraFrames: number;
+  /** PR B part 2 (G5, CPU): presented frames added to the cloud-scene-depth refresh interval, likewise. */
+  readonly cloudDepthRefreshExtraFrames: number;
+  /** PR B part 2 (G5, CPU): a factor on the profile's CDLOD node budget. */
+  readonly cdlodNodeBudgetScale: number;
+  /** PR B part 2 (G5, CPU): a factor on the profile's CDLOD split threshold in pixels; above 1 is coarser. */
+  readonly cdlodPixelThresholdScale: number;
 }
 
 interface WorkStep {
@@ -331,6 +362,11 @@ const FULL_QUALITY_SETTINGS: WorkLeverSettings = Object.freeze({
   vegetationDistanceScale: 1,
   groundCoverGateScale: 1,
   computeBudgetScale: 1,
+  cloudMarchScale: 1,
+  shadowRefreshExtraFrames: 0,
+  cloudDepthRefreshExtraFrames: 0,
+  cdlodNodeBudgetScale: 1,
+  cdlodPixelThresholdScale: 1,
 });
 
 /**
@@ -489,6 +525,24 @@ export interface GovernorState {
   readonly calmStreak: readonly number[];
   readonly trial: RecoveryTrial | null;
   readonly recovery: Readonly<Record<RecoveryLadder, LadderRecovery>>;
+  /**
+   * PR B part 2 (G6): the last judged window was urgent, its mean presented
+   * interval over 1.5× the target (or the display's own interval).
+   */
+  readonly urgent: boolean;
+  /**
+   * PR B part 2 (G6): the GPU level when the resolution-insensitive latch was
+   * last set; null while it is not. A latch set before the GPU ladder reached
+   * its top is stale evidence once it has.
+   */
+  readonly latchedAtGpuLevel: number | null;
+  /**
+   * PR B part 2 (G6): judged windows in a row that were off cadence with
+   * nothing left to shed for the side that bound them, each with a mean
+   * interval over 1.2× that reference. `EXHAUSTED_AFTER_WINDOWS` of them is
+   * exhausted (`governorExhausted`).
+   */
+  readonly spentWindows: number;
 }
 
 const FRESH_LADDER: LadderRecovery = Object.freeze({
@@ -518,7 +572,22 @@ export function createGovernorState(config: GovernorConfig): GovernorState {
     calmStreak: Object.freeze([]),
     trial: null,
     recovery: Object.freeze({ gpu: FRESH_LADDER, cpu: FRESH_LADDER, scale: FRESH_LADDER }),
+    urgent: false,
+    latchedAtGpuLevel: null,
+    spentWindows: 0,
   });
+}
+
+/** PR B part 2 (G6): spent windows in a row that make the governor exhausted. */
+export const EXHAUSTED_AFTER_WINDOWS = 4;
+
+/**
+ * PR B part 2 (G6): the governor has had nothing left to shed for four
+ * judged windows in a row, each well over its reference interval. What Auto
+ * will read to move a machine down a tier.
+ */
+export function governorExhausted(state: GovernorState): boolean {
+  return state.spentWindows >= EXHAUSTED_AFTER_WINDOWS;
 }
 
 const GPU_BOUND_RATIO = 1.15;
@@ -1238,9 +1307,9 @@ export function summariseIntervals(
 /**
  * PR B: the presentation cadence moved the targets, so the window in flight
  * was judged against the old ones. Drop what that judgement fed: the
- * pending probe, the calm streak and the hot counts. Levels, scale, latch
- * and recovery records stay, and an open trial restarts its count rather
- * than escaping its verdict (red team finding 11).
+ * pending probe, the calm streak, the hot counts, urgency and the spent
+ * count. Levels, scale, latch and recovery records stay, and an open trial
+ * restarts its count rather than escaping its verdict (red team finding 11).
  */
 export function rebaseGovernorState(state: GovernorState): GovernorState {
   return Object.freeze({
@@ -1253,5 +1322,7 @@ export function rebaseGovernorState(state: GovernorState): GovernorState {
     offCadenceWindows: 0,
     calmStreak: Object.freeze([]),
     trial: state.trial === null ? null : Object.freeze({ ...state.trial, windowsPassed: 0 }),
+    spentWindows: 0,
+    urgent: false,
   });
 }

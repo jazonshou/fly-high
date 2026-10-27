@@ -266,6 +266,13 @@ describe("adaptive governor (1A-6b)", () => {
       vegetationDistanceScale: 1,
       groundCoverGateScale: 1,
       computeBudgetScale: 1,
+      // PR B part 2 (G5). A literal on purpose: a new lever has to state its
+      // identity here.
+      cloudMarchScale: 1,
+      shadowRefreshExtraFrames: 0,
+      cloudDepthRefreshExtraFrames: 0,
+      cdlodNodeBudgetScale: 1,
+      cdlodPixelThresholdScale: 1,
     });
     // The CPU ladder touches only CPU-side fields.
     expect(workLeverSettingsFor(1, 0).terrainPageRequestsPerUpdate).toBe(8);

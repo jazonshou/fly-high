@@ -175,6 +175,9 @@ describe("flight HUD camera and terminal-state presentation", () => {
       presentationTargetMs: 1_000 / 60,
       lateFraction: 0.1,
       governorTrial: null,
+      governorUrgent: true,
+      governorSpentWindows: 2,
+      governorExhausted: false,
       presentationCadence: { frameCapHz: 60, divisor: 2, displayHz: 120, confirmed: true },
       renderPixels: 1_480_000,
       topPassesByCpuMs: [

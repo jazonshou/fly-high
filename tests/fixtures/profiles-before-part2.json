@@ -1,0 +1,920 @@
+{
+  "low/performance": {
+    "tier": 0,
+    "quality": "low",
+    "mode": "performance",
+    "renderScale": 0.72,
+    "maxRenderPixels": 1000000,
+    "maxDevicePixelRatio": 1,
+    "bloomEnabled": false,
+    "msaaSamples": 1,
+    "sharpenAmount": 0,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 55,
+      "near": {
+        "outerRadiusMeters": 110,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 640,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 2000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.045,
+      "impostorFloorShare": 0.2
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 9,
+          "spacingMeters": 0.21,
+          "segments": 5,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 24,
+          "spacingMeters": 0.42,
+          "segments": 3,
+          "widthScale": 1.7
+        },
+        {
+          "outerRadiusMeters": 52,
+          "spacingMeters": 0.85,
+          "segments": 2,
+          "widthScale": 2.6
+        }
+      ],
+      "altitudeFadeLowMeters": 16,
+      "altitudeFadeHighMeters": 55
+    },
+    "treeVariantCap": 1,
+    "treePrototypeMode": "families",
+    "grassRadiusMeters": 90,
+    "materialArrayEdge": 256,
+    "terrainTriplanarMode": "planar",
+    "heightBlendMaxMaterials": 2,
+    "terrainGroundPatchwork": false,
+    "terrainProvinceField": false,
+    "volcanicMaterials": false,
+    "cdlodPixelThreshold": 4,
+    "cdlodNodeBudget": 224,
+    "finestResidentLevel": 1,
+    "heightAtlasSlots": 144,
+    "channelAtlasSlots": 100,
+    "shadowMapSize": 1024,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 900,
+    "oceanResolution": 128,
+    "oceanCascades": 3,
+    "oceanPresentation": {
+      "radialRings": 96,
+      "angularSegments": 128,
+      "nearStepMeters": 1
+    },
+    "cloudResolutionScale": 0.25,
+    "maxCloudPixels": 350000,
+    "cloudPrimarySteps": 40,
+    "cloudLightSteps": 4,
+    "vegetationDistance": 2000,
+    "vegetationDensity": 0.45,
+    "vegetationCastsShadows": false,
+    "activeAnimalBudget": 16,
+    "volcanicSteamMaxWisps": 0,
+    "boatSprayParticleCap": 256,
+    "boatWakeTrailSeconds": 12,
+    "marinaCastsShadows": false,
+    "spawnedAirfields": {
+      "maxStructureFields": 0,
+      "structureBuildRadiusMeters": 0,
+      "structureCullMeters": 0,
+      "structuresCastShadows": false,
+      "floodFields": 0,
+      "lamps": false
+    }
+  },
+  "low/balanced": {
+    "tier": 0,
+    "quality": "low",
+    "mode": "balanced",
+    "renderScale": 0.72,
+    "maxRenderPixels": 1000000,
+    "maxDevicePixelRatio": 1,
+    "bloomEnabled": false,
+    "msaaSamples": 1,
+    "sharpenAmount": 0,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 55,
+      "near": {
+        "outerRadiusMeters": 110,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 640,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 2000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.045,
+      "impostorFloorShare": 0.2
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 9,
+          "spacingMeters": 0.21,
+          "segments": 5,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 24,
+          "spacingMeters": 0.42,
+          "segments": 3,
+          "widthScale": 1.7
+        },
+        {
+          "outerRadiusMeters": 52,
+          "spacingMeters": 0.85,
+          "segments": 2,
+          "widthScale": 2.6
+        }
+      ],
+      "altitudeFadeLowMeters": 16,
+      "altitudeFadeHighMeters": 55
+    },
+    "treeVariantCap": 1,
+    "treePrototypeMode": "families",
+    "grassRadiusMeters": 90,
+    "materialArrayEdge": 256,
+    "terrainTriplanarMode": "planar",
+    "heightBlendMaxMaterials": 2,
+    "terrainGroundPatchwork": false,
+    "terrainProvinceField": false,
+    "volcanicMaterials": false,
+    "cdlodPixelThreshold": 4,
+    "cdlodNodeBudget": 224,
+    "finestResidentLevel": 1,
+    "heightAtlasSlots": 144,
+    "channelAtlasSlots": 100,
+    "shadowMapSize": 1024,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 900,
+    "oceanResolution": 128,
+    "oceanCascades": 3,
+    "oceanPresentation": {
+      "radialRings": 96,
+      "angularSegments": 128,
+      "nearStepMeters": 1
+    },
+    "cloudResolutionScale": 0.25,
+    "maxCloudPixels": 350000,
+    "cloudPrimarySteps": 40,
+    "cloudLightSteps": 4,
+    "vegetationDistance": 2000,
+    "vegetationDensity": 0.45,
+    "vegetationCastsShadows": false,
+    "activeAnimalBudget": 16,
+    "volcanicSteamMaxWisps": 0,
+    "boatSprayParticleCap": 256,
+    "boatWakeTrailSeconds": 12,
+    "marinaCastsShadows": false,
+    "spawnedAirfields": {
+      "maxStructureFields": 0,
+      "structureBuildRadiusMeters": 0,
+      "structureCullMeters": 0,
+      "structuresCastShadows": false,
+      "floodFields": 0,
+      "lamps": false
+    }
+  },
+  "low/ultra": {
+    "tier": 1,
+    "quality": "low",
+    "mode": "ultra",
+    "renderScale": 0.86,
+    "maxRenderPixels": 1500000,
+    "maxDevicePixelRatio": 1.5,
+    "bloomEnabled": true,
+    "msaaSamples": 1,
+    "sharpenAmount": 0.7,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 78,
+      "near": {
+        "outerRadiusMeters": 150,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 1100,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 3000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.045,
+      "impostorFloorShare": 0.3
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 13,
+          "spacingMeters": 0.18,
+          "segments": 7,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 34,
+          "spacingMeters": 0.36,
+          "segments": 3,
+          "widthScale": 1.8
+        },
+        {
+          "outerRadiusMeters": 80,
+          "spacingMeters": 0.72,
+          "segments": 2,
+          "widthScale": 2.8
+        }
+      ],
+      "altitudeFadeLowMeters": 20,
+      "altitudeFadeHighMeters": 80
+    },
+    "treeVariantCap": 1,
+    "treePrototypeMode": "families",
+    "grassRadiusMeters": 150,
+    "materialArrayEdge": 512,
+    "terrainTriplanarMode": "biplanar",
+    "heightBlendMaxMaterials": 3,
+    "terrainGroundPatchwork": true,
+    "terrainProvinceField": true,
+    "volcanicMaterials": true,
+    "cdlodPixelThreshold": 3,
+    "cdlodNodeBudget": 320,
+    "finestResidentLevel": 0,
+    "heightAtlasSlots": 196,
+    "channelAtlasSlots": 196,
+    "shadowMapSize": 1280,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 1400,
+    "oceanResolution": 128,
+    "oceanCascades": 4,
+    "oceanPresentation": {
+      "radialRings": 200,
+      "angularSegments": 192,
+      "nearStepMeters": 0.25
+    },
+    "cloudResolutionScale": 0.45,
+    "maxCloudPixels": 700000,
+    "cloudPrimarySteps": 60,
+    "cloudLightSteps": 6,
+    "vegetationDistance": 3000,
+    "vegetationDensity": 0.75,
+    "vegetationCastsShadows": false,
+    "activeAnimalBudget": 48,
+    "volcanicSteamMaxWisps": 128,
+    "boatSprayParticleCap": 1024,
+    "boatWakeTrailSeconds": 24,
+    "marinaCastsShadows": true,
+    "spawnedAirfields": {
+      "maxStructureFields": 1,
+      "structureBuildRadiusMeters": 6000,
+      "structureCullMeters": 4000,
+      "structuresCastShadows": false,
+      "floodFields": 1,
+      "lamps": true
+    }
+  },
+  "medium/performance": {
+    "tier": 0,
+    "quality": "medium",
+    "mode": "performance",
+    "renderScale": 0.72,
+    "maxRenderPixels": 1000000,
+    "maxDevicePixelRatio": 1,
+    "bloomEnabled": false,
+    "msaaSamples": 1,
+    "sharpenAmount": 0,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 55,
+      "near": {
+        "outerRadiusMeters": 110,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 640,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 2000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.045,
+      "impostorFloorShare": 0.2
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 9,
+          "spacingMeters": 0.21,
+          "segments": 5,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 24,
+          "spacingMeters": 0.42,
+          "segments": 3,
+          "widthScale": 1.7
+        },
+        {
+          "outerRadiusMeters": 52,
+          "spacingMeters": 0.85,
+          "segments": 2,
+          "widthScale": 2.6
+        }
+      ],
+      "altitudeFadeLowMeters": 16,
+      "altitudeFadeHighMeters": 55
+    },
+    "treeVariantCap": 1,
+    "treePrototypeMode": "families",
+    "grassRadiusMeters": 90,
+    "materialArrayEdge": 256,
+    "terrainTriplanarMode": "planar",
+    "heightBlendMaxMaterials": 2,
+    "terrainGroundPatchwork": false,
+    "terrainProvinceField": false,
+    "volcanicMaterials": false,
+    "cdlodPixelThreshold": 4,
+    "cdlodNodeBudget": 224,
+    "finestResidentLevel": 1,
+    "heightAtlasSlots": 144,
+    "channelAtlasSlots": 100,
+    "shadowMapSize": 1024,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 900,
+    "oceanResolution": 128,
+    "oceanCascades": 3,
+    "oceanPresentation": {
+      "radialRings": 96,
+      "angularSegments": 128,
+      "nearStepMeters": 1
+    },
+    "cloudResolutionScale": 0.25,
+    "maxCloudPixels": 350000,
+    "cloudPrimarySteps": 40,
+    "cloudLightSteps": 4,
+    "vegetationDistance": 2000,
+    "vegetationDensity": 0.45,
+    "vegetationCastsShadows": false,
+    "activeAnimalBudget": 16,
+    "volcanicSteamMaxWisps": 0,
+    "boatSprayParticleCap": 256,
+    "boatWakeTrailSeconds": 12,
+    "marinaCastsShadows": false,
+    "spawnedAirfields": {
+      "maxStructureFields": 0,
+      "structureBuildRadiusMeters": 0,
+      "structureCullMeters": 0,
+      "structuresCastShadows": false,
+      "floodFields": 0,
+      "lamps": false
+    }
+  },
+  "medium/balanced": {
+    "tier": 1,
+    "quality": "medium",
+    "mode": "balanced",
+    "renderScale": 0.86,
+    "maxRenderPixels": 1500000,
+    "maxDevicePixelRatio": 1.5,
+    "bloomEnabled": true,
+    "msaaSamples": 1,
+    "sharpenAmount": 0.7,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 78,
+      "near": {
+        "outerRadiusMeters": 150,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 1100,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 3000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.045,
+      "impostorFloorShare": 0.3
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 13,
+          "spacingMeters": 0.18,
+          "segments": 7,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 34,
+          "spacingMeters": 0.36,
+          "segments": 3,
+          "widthScale": 1.8
+        },
+        {
+          "outerRadiusMeters": 80,
+          "spacingMeters": 0.72,
+          "segments": 2,
+          "widthScale": 2.8
+        }
+      ],
+      "altitudeFadeLowMeters": 20,
+      "altitudeFadeHighMeters": 80
+    },
+    "treeVariantCap": 1,
+    "treePrototypeMode": "families",
+    "grassRadiusMeters": 150,
+    "materialArrayEdge": 512,
+    "terrainTriplanarMode": "biplanar",
+    "heightBlendMaxMaterials": 3,
+    "terrainGroundPatchwork": true,
+    "terrainProvinceField": true,
+    "volcanicMaterials": true,
+    "cdlodPixelThreshold": 3,
+    "cdlodNodeBudget": 320,
+    "finestResidentLevel": 0,
+    "heightAtlasSlots": 196,
+    "channelAtlasSlots": 196,
+    "shadowMapSize": 1280,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 1400,
+    "oceanResolution": 128,
+    "oceanCascades": 4,
+    "oceanPresentation": {
+      "radialRings": 200,
+      "angularSegments": 192,
+      "nearStepMeters": 0.25
+    },
+    "cloudResolutionScale": 0.45,
+    "maxCloudPixels": 700000,
+    "cloudPrimarySteps": 60,
+    "cloudLightSteps": 6,
+    "vegetationDistance": 3000,
+    "vegetationDensity": 0.75,
+    "vegetationCastsShadows": false,
+    "activeAnimalBudget": 48,
+    "volcanicSteamMaxWisps": 128,
+    "boatSprayParticleCap": 1024,
+    "boatWakeTrailSeconds": 24,
+    "marinaCastsShadows": true,
+    "spawnedAirfields": {
+      "maxStructureFields": 1,
+      "structureBuildRadiusMeters": 6000,
+      "structureCullMeters": 4000,
+      "structuresCastShadows": false,
+      "floodFields": 1,
+      "lamps": true
+    }
+  },
+  "medium/ultra": {
+    "tier": 2,
+    "quality": "medium",
+    "mode": "ultra",
+    "renderScale": 1,
+    "maxRenderPixels": 2400000,
+    "maxDevicePixelRatio": 2,
+    "bloomEnabled": false,
+    "msaaSamples": 4,
+    "sharpenAmount": 0.4,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 79,
+      "near": {
+        "outerRadiusMeters": 170,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 1500,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 4000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.035,
+      "impostorFloorShare": 0.35
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 15,
+          "spacingMeters": 0.16,
+          "segments": 7,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 40,
+          "spacingMeters": 0.32,
+          "segments": 3,
+          "widthScale": 1.8
+        },
+        {
+          "outerRadiusMeters": 95,
+          "spacingMeters": 0.64,
+          "segments": 2,
+          "widthScale": 2.8
+        }
+      ],
+      "altitudeFadeLowMeters": 22,
+      "altitudeFadeHighMeters": 90
+    },
+    "treeVariantCap": 5,
+    "treePrototypeMode": "species",
+    "grassRadiusMeters": 220,
+    "materialArrayEdge": 512,
+    "terrainTriplanarMode": "triplanar",
+    "heightBlendMaxMaterials": 4,
+    "terrainGroundPatchwork": true,
+    "terrainProvinceField": true,
+    "volcanicMaterials": true,
+    "cdlodPixelThreshold": 2,
+    "cdlodNodeBudget": 448,
+    "finestResidentLevel": 0,
+    "heightAtlasSlots": 256,
+    "channelAtlasSlots": 256,
+    "shadowMapSize": 1536,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 1800,
+    "oceanResolution": 256,
+    "oceanCascades": 5,
+    "oceanPresentation": {
+      "radialRings": 240,
+      "angularSegments": 256,
+      "nearStepMeters": 0.2
+    },
+    "cloudResolutionScale": 0.6,
+    "maxCloudPixels": 1000000,
+    "cloudPrimarySteps": 96,
+    "cloudLightSteps": 6,
+    "vegetationDistance": 4000,
+    "vegetationDensity": 1,
+    "vegetationCastsShadows": true,
+    "activeAnimalBudget": 128,
+    "volcanicSteamMaxWisps": 192,
+    "boatSprayParticleCap": 4096,
+    "boatWakeTrailSeconds": 40,
+    "marinaCastsShadows": true,
+    "spawnedAirfields": {
+      "maxStructureFields": 2,
+      "structureBuildRadiusMeters": 8000,
+      "structureCullMeters": 6000,
+      "structuresCastShadows": true,
+      "floodFields": 3,
+      "lamps": true
+    }
+  },
+  "high/performance": {
+    "tier": 1,
+    "quality": "high",
+    "mode": "performance",
+    "renderScale": 0.86,
+    "maxRenderPixels": 1500000,
+    "maxDevicePixelRatio": 1.5,
+    "bloomEnabled": true,
+    "msaaSamples": 1,
+    "sharpenAmount": 0.7,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 78,
+      "near": {
+        "outerRadiusMeters": 150,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 1100,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 3000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.045,
+      "impostorFloorShare": 0.3
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 13,
+          "spacingMeters": 0.18,
+          "segments": 7,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 34,
+          "spacingMeters": 0.36,
+          "segments": 3,
+          "widthScale": 1.8
+        },
+        {
+          "outerRadiusMeters": 80,
+          "spacingMeters": 0.72,
+          "segments": 2,
+          "widthScale": 2.8
+        }
+      ],
+      "altitudeFadeLowMeters": 20,
+      "altitudeFadeHighMeters": 80
+    },
+    "treeVariantCap": 1,
+    "treePrototypeMode": "families",
+    "grassRadiusMeters": 150,
+    "materialArrayEdge": 512,
+    "terrainTriplanarMode": "biplanar",
+    "heightBlendMaxMaterials": 3,
+    "terrainGroundPatchwork": true,
+    "terrainProvinceField": true,
+    "volcanicMaterials": true,
+    "cdlodPixelThreshold": 3,
+    "cdlodNodeBudget": 320,
+    "finestResidentLevel": 0,
+    "heightAtlasSlots": 196,
+    "channelAtlasSlots": 196,
+    "shadowMapSize": 1280,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 1400,
+    "oceanResolution": 128,
+    "oceanCascades": 4,
+    "oceanPresentation": {
+      "radialRings": 200,
+      "angularSegments": 192,
+      "nearStepMeters": 0.25
+    },
+    "cloudResolutionScale": 0.45,
+    "maxCloudPixels": 700000,
+    "cloudPrimarySteps": 60,
+    "cloudLightSteps": 6,
+    "vegetationDistance": 3000,
+    "vegetationDensity": 0.75,
+    "vegetationCastsShadows": false,
+    "activeAnimalBudget": 48,
+    "volcanicSteamMaxWisps": 128,
+    "boatSprayParticleCap": 1024,
+    "boatWakeTrailSeconds": 24,
+    "marinaCastsShadows": true,
+    "spawnedAirfields": {
+      "maxStructureFields": 1,
+      "structureBuildRadiusMeters": 6000,
+      "structureCullMeters": 4000,
+      "structuresCastShadows": false,
+      "floodFields": 1,
+      "lamps": true
+    }
+  },
+  "high/balanced": {
+    "tier": 2,
+    "quality": "high",
+    "mode": "balanced",
+    "renderScale": 1,
+    "maxRenderPixels": 2400000,
+    "maxDevicePixelRatio": 2,
+    "bloomEnabled": false,
+    "msaaSamples": 4,
+    "sharpenAmount": 0.4,
+    "frameTargetMs": 13.7,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 79,
+      "near": {
+        "outerRadiusMeters": 170,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 1500,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 4000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.035,
+      "impostorFloorShare": 0.35
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 15,
+          "spacingMeters": 0.16,
+          "segments": 7,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 40,
+          "spacingMeters": 0.32,
+          "segments": 3,
+          "widthScale": 1.8
+        },
+        {
+          "outerRadiusMeters": 95,
+          "spacingMeters": 0.64,
+          "segments": 2,
+          "widthScale": 2.8
+        }
+      ],
+      "altitudeFadeLowMeters": 22,
+      "altitudeFadeHighMeters": 90
+    },
+    "treeVariantCap": 5,
+    "treePrototypeMode": "species",
+    "grassRadiusMeters": 220,
+    "materialArrayEdge": 512,
+    "terrainTriplanarMode": "triplanar",
+    "heightBlendMaxMaterials": 4,
+    "terrainGroundPatchwork": true,
+    "terrainProvinceField": true,
+    "volcanicMaterials": true,
+    "cdlodPixelThreshold": 2,
+    "cdlodNodeBudget": 448,
+    "finestResidentLevel": 0,
+    "heightAtlasSlots": 256,
+    "channelAtlasSlots": 256,
+    "shadowMapSize": 1536,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 1800,
+    "oceanResolution": 256,
+    "oceanCascades": 5,
+    "oceanPresentation": {
+      "radialRings": 240,
+      "angularSegments": 256,
+      "nearStepMeters": 0.2
+    },
+    "cloudResolutionScale": 0.6,
+    "maxCloudPixels": 1000000,
+    "cloudPrimarySteps": 96,
+    "cloudLightSteps": 6,
+    "vegetationDistance": 4000,
+    "vegetationDensity": 1,
+    "vegetationCastsShadows": true,
+    "activeAnimalBudget": 128,
+    "volcanicSteamMaxWisps": 192,
+    "boatSprayParticleCap": 4096,
+    "boatWakeTrailSeconds": 40,
+    "marinaCastsShadows": true,
+    "spawnedAirfields": {
+      "maxStructureFields": 2,
+      "structureBuildRadiusMeters": 8000,
+      "structureCullMeters": 6000,
+      "structuresCastShadows": true,
+      "floodFields": 3,
+      "lamps": true
+    }
+  },
+  "high/ultra": {
+    "tier": 3,
+    "quality": "high",
+    "mode": "ultra",
+    "renderScale": 1,
+    "maxRenderPixels": 4000000,
+    "maxDevicePixelRatio": 2,
+    "bloomEnabled": false,
+    "msaaSamples": 4,
+    "sharpenAmount": 0.4,
+    "frameTargetMs": 30,
+    "renderedDensityLaw": {
+      "nearStemsPerHectare": 79,
+      "near": {
+        "outerRadiusMeters": 240,
+        "trianglesPerPlant": 1500
+      },
+      "mid": {
+        "outerRadiusMeters": 2000,
+        "trianglesPerPlant": 340
+      },
+      "far": {
+        "outerRadiusMeters": 6000,
+        "trianglesPerPlant": 8
+      },
+      "farFloorShare": 0.035,
+      "impostorFloorShare": 0.4
+    },
+    "groundCoverLaw": {
+      "rings": [
+        {
+          "outerRadiusMeters": 18,
+          "spacingMeters": 0.15,
+          "segments": 7,
+          "widthScale": 1
+        },
+        {
+          "outerRadiusMeters": 48,
+          "spacingMeters": 0.3,
+          "segments": 3,
+          "widthScale": 1.8
+        },
+        {
+          "outerRadiusMeters": 110,
+          "spacingMeters": 0.6,
+          "segments": 2,
+          "widthScale": 2.8
+        }
+      ],
+      "altitudeFadeLowMeters": 25,
+      "altitudeFadeHighMeters": 110
+    },
+    "treeVariantCap": 5,
+    "treePrototypeMode": "species",
+    "grassRadiusMeters": 320,
+    "materialArrayEdge": 512,
+    "terrainTriplanarMode": "triplanar",
+    "heightBlendMaxMaterials": 4,
+    "terrainGroundPatchwork": true,
+    "terrainProvinceField": true,
+    "volcanicMaterials": true,
+    "cdlodPixelThreshold": 1.5,
+    "cdlodNodeBudget": 640,
+    "finestResidentLevel": 0,
+    "heightAtlasSlots": 256,
+    "channelAtlasSlots": 256,
+    "shadowMapSize": 2048,
+    "shadowCascades": 2,
+    "clusteredLighting": {
+      "horizontalTiles": 64,
+      "verticalTiles": 64,
+      "depthSlices": 16
+    },
+    "shadowDistance": 2400,
+    "oceanResolution": 256,
+    "oceanCascades": 5,
+    "oceanPresentation": {
+      "radialRings": 240,
+      "angularSegments": 256,
+      "nearStepMeters": 0.2
+    },
+    "cloudResolutionScale": 0.7,
+    "maxCloudPixels": 1600000,
+    "cloudPrimarySteps": 96,
+    "cloudLightSteps": 6,
+    "vegetationDistance": 6000,
+    "vegetationDensity": 1,
+    "vegetationCastsShadows": true,
+    "activeAnimalBudget": 128,
+    "volcanicSteamMaxWisps": 256,
+    "boatSprayParticleCap": 4096,
+    "boatWakeTrailSeconds": 40,
+    "marinaCastsShadows": true,
+    "spawnedAirfields": {
+      "maxStructureFields": 2,
+      "structureBuildRadiusMeters": 8000,
+      "structureCullMeters": 6000,
+      "structuresCastShadows": true,
+      "floodFields": 3,
+      "lamps": true
+    }
+  }
+}

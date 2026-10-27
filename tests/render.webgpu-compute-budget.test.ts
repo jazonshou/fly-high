@@ -357,7 +357,7 @@ describe("groundCoverCompute admission (6-9)", () => {
  * time). The most responsive GPU lever in the renderer had no rung.
  */
 describe("Governor GPU ladder: the ground-cover rung (6-9 / P-5)", () => {
-  const config = governorConfigForProfile({ tier: 1, renderScale: 0.86 });
+  const config = governorConfigForProfile({ tier: 1, renderScale: 0.86, governorPixelFloorRatio: 0.6 });
 
   it("sheds the gate LAST, after every cheaper GPU lever", () => {
     const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
@@ -412,7 +412,7 @@ describe("Governor GPU ladder: the ground-cover rung (6-9 / P-5)", () => {
 });
 
 describe("Governor B rung 0 (4-0b)", () => {
-  const config = governorConfigForProfile({ tier: 1, renderScale: 0.86 });
+  const config = governorConfigForProfile({ tier: 1, renderScale: 0.86, governorPixelFloorRatio: 0.6 });
 
   // Assertion 71's governor half: rung 0 fires before any visible lever.
   it("sheds the compute cap before touching anything the pilot can see", () => {

@@ -135,6 +135,9 @@ audit is why it now carries all four tiers):
 | Boat spray particle cap (`boatSprayParticleCap`; boat sessions only) | 256 | 1,024 | 4,096 | 4,096 |
 | Boat wake trail seconds (`boatWakeTrailSeconds`; boat sessions only) | 12 | 24 | 40 | 40 |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
+| CSM refresh interval (frames at the tier's frame rate; G5) | 1 | 1 | 1 | 1 |
+| Cloud-depth refresh interval (frames at the tier's frame rate; G5) | 1 | 1 | 1 | 1 |
+| Governor pixel floor (share of the capped pixels; G4) | 0.6 | 0.6 | 0.5625 | 0.5625 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`

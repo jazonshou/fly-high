@@ -115,6 +115,7 @@ import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
 import {
   createGovernorState,
   governorConfigForProfile,
+  governorExhausted,
   nextGovernorDecision,
   observeRenderScaleApplication,
   rebaseGovernorState,
@@ -2955,6 +2956,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       presentationTargetMs: this.governorConfig.presentationTargetMs,
       lateFraction: this.lastSignals.lateFraction ?? null,
       governorTrial: this.governorState.trial?.ladder ?? null,
+      governorUrgent: this.governorState.urgent,
+      governorSpentWindows: this.governorState.spentWindows,
+      governorExhausted: governorExhausted(this.governorState),
       presentationCadence: this.presentationCadence === null ? null : {
         frameCapHz: this.presentationCadence.frameCapHz,
         divisor: this.presentationCadence.divisor,

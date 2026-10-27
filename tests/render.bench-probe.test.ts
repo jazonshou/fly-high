@@ -18,7 +18,7 @@ import { readSource } from "./support/sourceText";
 const projectRoot = join(import.meta.dirname, "..");
 
 function receiver(overrides: Record<string, unknown> = {}) {
-  const governorConfig = governorConfigForProfile({ tier: 1, renderScale: 0.86 });
+  const governorConfig = governorConfigForProfile({ tier: 1, renderScale: 0.86, governorPixelFloorRatio: 0.6 });
   const fields = {
     frameIndex: 42,
     governorConfig,

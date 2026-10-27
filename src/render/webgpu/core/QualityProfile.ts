@@ -99,6 +99,23 @@ export interface WebGpuQualityProfile {
    * governor state can push the render target past it.
    */
   readonly maxRenderPixels: number;
+  /**
+   * PR B part 2 (G5): frames between sun-shadow (CSM) renders, counted at the
+   * tier's own frame target, so the rate in Hz holds at a slower cadence. The
+   * light matrices are held with the map (Babylon computes them only when it
+   * renders). 1 = every frame. A governed rung adds whole presented frames.
+   */
+  readonly shadowRefreshFrames: number;
+  /**
+   * PR B part 2 (G5): frames between `cloud-scene-depth` renders, counted as
+   * above. Plan 7.2 (analytic cloud depth) deletes this field.
+   */
+  readonly cloudDepthRefreshFrames: number;
+  /**
+   * PR B part 2 (G4): the governor's resolution floor as a share of the
+   * capped pixels; the render-scale floor is renderScale × sqrt(ratio).
+   */
+  readonly governorPixelFloorRatio: number;
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
   /**
@@ -465,6 +482,9 @@ function resolveBaseQualityProfile(
       mode,
       renderScale: 0.72,
       maxRenderPixels: 1_000_000,
+      shadowRefreshFrames: 1,
+      cloudDepthRefreshFrames: 1,
+      governorPixelFloorRatio: 0.6,
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
       msaaSamples: 1,
@@ -555,6 +575,9 @@ function resolveBaseQualityProfile(
       mode,
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
+      shadowRefreshFrames: 1,
+      cloudDepthRefreshFrames: 1,
+      governorPixelFloorRatio: 0.6,
       maxDevicePixelRatio: 1.5,
       // Tier 1 is the strict playability contract. Closed opaque crowns make
       // early-Z useful, but a 2× multisampled half-float beauty target still
@@ -662,6 +685,10 @@ function resolveBaseQualityProfile(
       mode,
       renderScale: 1,
       maxRenderPixels: 2_400_000,
+      shadowRefreshFrames: 1,
+      cloudDepthRefreshFrames: 1,
+      // 0.75², so tiers 2 and 3 keep the 0.75 render-scale floor they have always had.
+      governorPixelFloorRatio: 0.5625,
       maxDevicePixelRatio: 2,
       // `4-8b` restores 4×, which the `1B-11` decision in ARCHITECTURE.md
       // explicitly deferred to this item: Phase 1's full-distance 4096² CSM
@@ -760,6 +787,9 @@ function resolveBaseQualityProfile(
     mode,
     renderScale: 1,
     maxRenderPixels: 4_000_000,
+    shadowRefreshFrames: 1,
+    cloudDepthRefreshFrames: 1,
+    governorPixelFloorRatio: 0.5625,
     maxDevicePixelRatio: 2,
     bloomEnabled: false,
     msaaSamples: 4,
