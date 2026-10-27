@@ -2630,3 +2630,111 @@ baseline stays. The before/after of the six trees is a scratch perf:ab render
 
 **Cost: none.** The classifier reads a field the sampler already returns; the
 A/B at `9d5f98e` is in "Terrain and world paging" above.
+
+## The home marina (2026-10-26): no draw ceiling moves
+
+The home marina (`src/world/marinaLayout.ts`, drawn by
+`src/render/webgpu/marina/`) is world content in every session, aircraft
+included: boats start at its dock, and it stands on the coast nearest the
+home airport. It is four meshes and a set of fixtures in the airfield's
+light-point draw:
+
+- `marina-boxes`: one unit cube, a thin instance per deck, pontoon, finger,
+  quay wall, building, roof and life ring, coloured per instance.
+- `marina-posts`: one 10-sided cylinder, a thin instance per pile, lamp post,
+  cleat, fender and beacon tower.
+- `marina-boats`: one low-detail Runabout 21 (T3's surfaces at every third
+  station, 6.6k vertices), a thin instance per moored boat.
+- `marina-silhouette`: one merged mesh of the big shapes (decks, pontoons,
+  walls, buildings, the moored boats as boxes, the beacon towers), drawn
+  instead of the three above at range. No shadow.
+- Lamps and the two entrance beacons are fixtures appended to the airfield's
+  `LightPointSystem` at startup, so they ride its one draw. Their colours are
+  written back (`LightPointSystem.setColorRange`) only on a beacon's flash
+  edge or when the marina is culled, never per frame.
+
+Draws by camera distance from the site (`MARINA_VISUAL`, 40 m hysteresis at
+each switch):
+
+| | Low | Medium / High / Ultra |
+| --- | --- | --- |
+| Under 1.5 km, in view | 3 | 9 (3, plus 3 casters x 2 cascades) |
+| Under 1.5 km, out of view | 0 | 0 |
+| 1.5 to 4 km | 1 | 1 |
+| Beyond 4 km | 0 (lamps dark) | 0 (lamps dark) |
+
+The first frame draws all four once, pinned active, so no pipeline compiles
+in flight. Shadow casting is the profile field `marinaCastsShadows` (off on
+Low). `tests/render.marina.test.ts` holds this table on every tier.
+
+**The shadow casters are dynamic, and that is what keeps every aircraft
+shot's shadows where they were.** Babylon's `CascadedShadowGenerator` fits
+each cascade's depth range to the bounding boxes of every mesh in its render
+list, enabled or not, and has no per-cascade culling. A static caster
+kilometres away therefore stretches every cascade's depth range (shadow
+precision moves on every pixel of every shot) and costs one draw per
+cascade. So the near meshes join through `syncDynamicShadowCasters`
+(`MarinaSystem.addShadowCasters`) only at the detail level and only while the
+site's sphere, grown by the 120 m its shadows can reach
+(`MARINA_VISUAL.shadowReachMeters`: an 8 m beacon tower at a 4 degree sun),
+meets the camera's frustum. Any later far-away static caster must go the same
+way rather than through `atmosphere.addShadowCaster` at startup.
+
+**Measured** (perf:ab `--rounds 0` on SwiftShader, the marina hidden against
+shown at `efb893e`; scratch shots, not committed):
+
+| Shot | Draws | Triangles | Uploads per frame |
+| --- | --- | --- | --- |
+| `boat-moored-dock` (the dock start) | 115 -> 124 | 2.17M -> 2.38M | 162.3k -> 169.2k B |
+| the marina from 150 m, noon and blue hour | 232 -> 241 | 2.09M -> 2.30M | 205.4k -> 212.4k B |
+| the marina from 150 m, night | 234 -> 243 | 2.10M -> 2.31M | 205.5k -> 212.4k B |
+
+The extra uploads are the nine draws' mesh uniforms; the instance buffers are
+static. The marina's buffers are built at start, so inventoried GPU memory
+rises 2.1 MiB in every session (285.95 -> 288.07 MiB on `approach-500ft`,
+against the 495 MiB ceiling).
+
+**No baseline shot draws it**, and none gains a draw: at `3cd965a` against
+`8791f5b`, `approach-500ft` 247, `night` 249, `coast-10km-lowsun` 219,
+`water-25ft` 224 and `apron-hangar-variety` 117 draws in both arms. The four
+`locate: "coast"` shots sit 1.36 km from the marina, inside detail range:
+the water shots face away (no beauty draw, no caster), and
+`coast-10km-lowsun` looks at it from 1.58 km, the silhouette, which is under
+a pixel there. On macOS (gpu-tests run 40274833204 at `1648fc5`, which
+carries the marina, against main `05f17b4`, run 40212321095) every shot that
+moves moves in sea pixels only, from the sea twin, and the 11 shots without
+sea are identical bit for bit. So the marina's own meshes move no baseline
+and no draw ceiling.
+
+**Timing**: `water-25ft`, the shot nearest it, is SAME at 16 rounds (GPU
+-0.1%, -1.9% to +2.0%; CPU +0.7%, -8.6% to +8.5%), `05f17b4` against
+`57cece0`. `perf:flight --speed 0` hovering on it: render p50 9.10 ms base,
+8.60 ms head over the last three legs.
+
+**The light points moved after the water, and that moves aircraft pixels.**
+The marina's entrance beacons, on posts in the basin mouth, rendered nothing:
+at 40 cd, and at 4,000 cd held lit, the frame was identical pixel for pixel.
+`LightPointSystem` drew in group 0 and writes no depth, so the sea, drawn in
+group 1 and alpha-blended over everything behind it, painted over every lamp
+seen against open water. It now draws in the water group at
+`LIGHT_POINT_ALPHA_INDEX` 1.75: after the ocean (0), inland water (1) and the
+wake (1.5), before steam (2) and spray (2.5). Still one draw; no draw count
+moves. The water writes no depth, so it hides no lamp now; in this flat world
+the only lamp it should hide is one low over the sea behind a crest, from a
+boat's eye height, and that lamp now shows through the crest.
+
+What moved, against `a91f993` (perf:ab `--rounds 0`, SwiftShader, draws
+identical on every shot): `night`, `night-moonlit`, `dusk-mesopic`,
+`blue-hour` and `night-beacon-offset` move by one airport light, the red
+light on a mast top above the hangars, at about (593, 255) in the 1280 x 720
+frame. It stands against the far sea line; its top was cut off flat and is
+now round: 17 to 51 pixels over 32/255, max delta 153 to 253, and the rest is
+within those shots' A/A noise. `approach-lights-outboard` moves by noise only
+(max 16/255). The day shots were not rendered: their lamps are
+daylight-attenuated, so a lamp against water moves faintly if at all. The
+Boats PR promotes all 39 shots once from one macOS capture that carries this.
+In `marina-close-night` the green beacon now shows in its flash, and so do
+the pontoon lamps that stood against the basin.
+
+Open: the drawn pontoons stand still while the sim's heave on the sea; they
+follow once the sea twin's heights reach the main thread.
