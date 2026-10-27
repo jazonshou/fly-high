@@ -3,6 +3,10 @@ import type { AircraftKind } from "@/src/sim";
 import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
+import {
+  InfrastructureRegionsForwarder,
+  type InfrastructureRegionsUpdate,
+} from "@/src/world/infrastructureSync";
 import type {
   TerrainMacroGrid,
   TerrainPagePublication,
@@ -75,6 +79,8 @@ class WorkerClockOffsetEstimator {
 
 export class SimulationClient {
   private readonly worker: Worker;
+  /** What the worker's copy of the streamed infrastructure regions holds. */
+  private readonly infrastructure: InfrastructureRegionsForwarder;
   private stateListener: StateListener | null = null;
   private errorListener: ErrorListener | null = null;
   private previousState: FlightVisualState | null = null;
@@ -107,9 +113,11 @@ export class SimulationClient {
     });
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("error", this.handleWorkerError);
+    this.infrastructure = new InfrastructureRegionsForwarder(world);
     this.send({
       type: "initialize",
       world,
+      infrastructure: this.infrastructure.initial(),
       aircraft,
       surfaceVehicle,
       carSetup,
@@ -200,6 +208,16 @@ export class SimulationClient {
       { type: "terrainMacro", macro },
       macro.heights.buffer instanceof ArrayBuffer ? [macro.heights.buffer] : [],
     );
+  }
+
+  /**
+   * One change to the streamed infrastructure regions (roads), posted on the
+   * port the terrain pages take, so it reaches the worker before any page
+   * baked against it. Each change once; the whole set after a gap.
+   */
+  publishInfrastructure(update: InfrastructureRegionsUpdate): void {
+    const post = this.infrastructure.next(update);
+    if (post) this.send({ type: "infrastructure", update: post });
   }
 
   /** The world's full airport list, home field first (see `withAirports`). */

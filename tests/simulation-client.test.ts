@@ -9,6 +9,12 @@ import {
 } from "../src/game/SimulationClient";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../src/game/types";
 import { createWorld } from "../src/world";
+import {
+  changeInfrastructureRegions,
+  clearInfrastructureRegions,
+  infrastructureRegionsVersion,
+  type InfrastructureRegion,
+} from "../src/world/infrastructure";
 import type { SimulationEvent } from "../src/workers/protocol";
 
 class WorkerStub extends EventTarget {
@@ -115,6 +121,7 @@ describe("simulation worker lifecycle commands", () => {
       attractMode: false,
       surfaceVehicle: null,
       carSetup: { gearbox: "automatic", manualClutch: false },
+      infrastructure: { version: 0, reset: true, install: [], remove: [] },
     });
 
     client.reset("runway", 450);
@@ -130,6 +137,35 @@ describe("simulation worker lifecycle commands", () => {
       airborneStartAgl: 735,
     });
     client.dispose();
+  });
+
+  it("starts the worker with the roads installed, then posts each change once", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const world = createWorld(123);
+    const region: InfrastructureRegion = { key: "test:client", segments: [] };
+    changeInfrastructureRegions(world, [region]);
+    try {
+      const client = new SimulationClient(world, "unassisted");
+      const worker = WorkerStub.latest!;
+      const version = infrastructureRegionsVersion(world);
+      expect((worker.messages[0] as { infrastructure: unknown }).infrastructure).toEqual({
+        version,
+        reset: true,
+        install: [region],
+        remove: [],
+      });
+      // Already in the start set: nothing to post.
+      client.publishInfrastructure({ version, reset: false, install: [region], remove: [] });
+      expect(worker.messages).toHaveLength(1);
+      const removal = changeInfrastructureRegions(world, [], [region.key])!;
+      const update = { version: removal.version, reset: false, install: [], remove: [region.key] };
+      client.publishInfrastructure(update);
+      client.publishInfrastructure(update);
+      expect(worker.messages.slice(1)).toEqual([{ type: "infrastructure", update }]);
+      client.dispose();
+    } finally {
+      clearInfrastructureRegions();
+    }
   });
 
   it("recovers only a crashed simulator from its authoritative world coordinates", () => {
