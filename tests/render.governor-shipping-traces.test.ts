@@ -694,7 +694,7 @@ describe("binomial spikes (red team finding 6)", () => {
 
   const SEEDS = [987_654_321, 12_345, 424_242];
 
-  it("S18: 2% spikes move nothing, and 3% shed at most one GPU rung", () => {
+  it("S18: 2% spikes move nothing, and 3% walk the scale to its floor with at most one GPU rung", () => {
     for (const seed of SEEDS) {
       const at2 = spikes(seed);
       const states = trace(createGovernorState(config), 150, () => at2(0.02));
@@ -703,19 +703,22 @@ describe("binomial spikes (red team finding 6)", () => {
     }
     // At 3% one window in fourteen is off cadence. Two in a row step the
     // scale, and a pooled 3% is never calm enough to undo it, so the scale
-    // drifts to its floor (as in the red team's own amended prototype); only
-    // then can a pair reach the GPU ladder.
+    // drifts to its floor (as in the red team's own amended prototype),
+    // by window 67, 261 and 178 for these seeds; only then can a pair reach
+    // the GPU ladder.
     for (const seed of SEEDS) {
       const at3 = spikes(seed);
-      const states = trace(createGovernorState(config), 150, () => at3(0.03));
+      const states = trace(createGovernorState(config), 300, () => at3(0.03));
+      expect(firstWindow(states, (state) => state.renderScale === config.scaleFloor), `seed ${seed}`).toBeGreaterThan(0);
       expect(Math.max(...states.map((state) => state.gpuWorkLevel)), `seed ${seed}`).toBeLessThanOrEqual(1);
       expect(states.every((state) => state.cpuWorkLevel === 0), `seed ${seed}`).toBe(true);
     }
   });
 
   it("S18: whatever 3-7% spikes shed comes back once they fall to 1.5%", () => {
-    // Spike-dominated windows still shed GPU rungs at 5-7%: the GPU ladder has
-    // no effectiveness latch (a known limit, left to G6/G7).
+    // Spike-dominated windows still shed GPU rungs from about 4%, every one
+    // of them by window 260 at 4%: the GPU ladder has no effectiveness latch
+    // (a known limit, left to G6/G7).
     for (const seed of SEEDS) {
       for (const share of [0.03, 0.05, 0.07]) {
         const label = `seed ${seed}, ${share * 100}% spikes`;
