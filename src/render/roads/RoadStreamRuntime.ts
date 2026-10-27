@@ -7,7 +7,9 @@ import {
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import type { RoadStreamObserver } from "@/src/world/roads/roadStreaming";
+import type { RoadsWorkerRegionEvent } from "@/src/workers/roadsProtocol";
 import type { TerrainPagePublication } from "@/src/workers/terrainAuthority";
+import type { RoadSurfaceRegion } from "../webgpu/roads/RoadSurfaceIndex";
 import {
   RoadStreamController,
   type RoadsWorkerFactory,
@@ -24,6 +26,18 @@ export interface RoadStreamConsumers {
   groundCoverInfrastructureChanged(change: InfrastructureChange): void;
   /** The simulation worker's copy, when one is attached. */
   publishInfrastructure(update: InfrastructureRegionsUpdate): void;
+  /** The ribbons and rails drawn on the ground (`RoadSurfaceSystem`): last, as they lie on what the rest built. */
+  roadSurfaceChanged(install: readonly RoadSurfaceRegion[], remove: readonly string[]): void;
+}
+
+/** What a region brings to the drawing. */
+export function roadSurfaceRegionOf(event: RoadsWorkerRegionEvent): RoadSurfaceRegion {
+  return {
+    key: event.infrastructure.key,
+    pieces: event.pieces,
+    pads: event.pads,
+    rails: event.infrastructure.rails ?? [],
+  };
 }
 
 /** Within this of the start, the roads are in before the first page bakes. */
@@ -42,7 +56,7 @@ export const ROAD_PRIME_TIMEOUT_MS = 4_000;
  * terrain, whose rebuilt pages are published after it; a page batch
  * dispatched before the change and published after it is held back
  * (`holdsBack`) — the terrain rebuilds that page anyway, and the workers have
- * already dropped their copies of it.
+ * already dropped their copies of it. The drawn ribbons and rails come last.
  */
 export class RoadStreamRuntime {
   readonly log = new InfrastructureChangeLog();
@@ -77,6 +91,7 @@ export class RoadStreamRuntime {
       bins: new Set(),
       plantBins: new Set(),
     });
+    consumers.roadSurfaceChanged([...this.controller.installedRegions.values()].map(roadSurfaceRegionOf), []);
   }
 
   /** Regions still to come or to install (`RoadStreamController.pendingRegions`). */
@@ -139,5 +154,6 @@ export class RoadStreamRuntime {
     consumers.detailInfrastructureChanged(update, infrastructure);
     consumers.groundCoverInfrastructureChanged(infrastructure);
     consumers.infrastructureChanged(infrastructure);
+    consumers.roadSurfaceChanged(change.installed.map(roadSurfaceRegionOf), change.removed);
   }
 }

@@ -213,6 +213,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Tyre track segments", (p: (typeof PROFILES)[number]) => p.tyreTrackSegments],
     ["L0 terrain round a car", (p: (typeof PROFILES)[number]) => p.vehicleNearTerrainL0RadiusMeters],
     ["L0 terrain geomorph band", (p: (typeof PROFILES)[number]) => p.vehicleNearTerrainL0BandMeters],
+    ["Road ribbon range", (p: (typeof PROFILES)[number]) => p.roadRibbonRangeMeters],
+    ["Guardrail draw range", (p: (typeof PROFILES)[number]) => p.barrierDrawRangeMeters],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
@@ -340,11 +342,12 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // comparing two empty lists — the exact false pass this family exists to
     // make impossible. And an upper bound too: the first attempt ran past the
     // table's end into the next one and collected 32 labels. The table has
-    // grown to 36 rows since (volcanic land added two, boats two, the car
-    // two), so the end is pinned by its last row as well as by the count.
+    // grown to 40 rows since (volcanic land added two, boats two, the car
+    // three, the roads two), so the end is pinned by its last row as well as
+    // by the count.
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);
-    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(40);
+    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(44);
     expect(rows.at(-1), "the walk ran past the end of the tier table").toContain("Frame target");
     expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);
   });

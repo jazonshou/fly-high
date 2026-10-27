@@ -461,6 +461,7 @@ describe("the renderer's road stream runtime", () => {
   /** Every consumer call, in order, with what it was given. */
   function recordingConsumers() {
     const calls: { readonly to: string; readonly version: number; readonly update?: InfrastructureRegionsUpdate }[] = [];
+    const drawn: { readonly install: readonly string[]; readonly remove: readonly string[] }[] = [];
     const consumers: RoadStreamConsumers = {
       publishInfrastructure: (update) => calls.push({ to: "simulation", version: update.version, update }),
       detailInfrastructureChanged: (update, change: InfrastructureChange) => {
@@ -469,8 +470,12 @@ describe("the renderer's road stream runtime", () => {
       },
       groundCoverInfrastructureChanged: (change) => calls.push({ to: "groundCover", version: change.version }),
       infrastructureChanged: (change) => calls.push({ to: "terrain", version: change.version }),
+      roadSurfaceChanged: (install, remove) => {
+        calls.push({ to: "drawing", version: -1 });
+        drawn.push({ install: install.map((region) => region.key), remove: [...remove] });
+      },
     };
-    return { calls, consumers };
+    return { calls, consumers, drawn };
   }
 
   /** The level-0 page under the middle of a region's track, as published at `version`. */
@@ -487,13 +492,15 @@ describe("the renderer's road stream runtime", () => {
     };
   }
 
-  it("tells the workers first, then the ground cover and the terrain, each change once and whole", () => {
+  it("tells the workers first, then the ground cover, the terrain and the drawing, each change once and whole", () => {
     const worker = new FakeRoadsWorker();
     const runtime = new RoadStreamRuntime(world, () => worker);
-    const { calls, consumers } = recordingConsumers();
+    const { calls, consumers, drawn } = recordingConsumers();
     runtime.setConsumers(consumers);
-    // Attaching catches the workers up with the whole set (here, none).
-    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail"]);
+    // Attaching catches the workers and the drawing up with the whole set (here, none).
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "drawing"]);
+    expect(drawn).toEqual([{ install: [], remove: [] }]);
+    drawn.length = 0;
     expect(calls[0]!.update).toMatchObject({ reset: true, install: [], remove: [] });
     calls.length = 0;
     const observer = { x: 3_000, z: 2_000, velocityX: 0, velocityZ: 0 };
@@ -508,8 +515,10 @@ describe("the renderer's road stream runtime", () => {
     const change = runtime.update(observer, 1_000)!;
     expect(runtime.pendingRegions).toBe(asked - 3);
     const version = change.infrastructure.version;
-    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain"]);
-    expect(calls.every((call) => call.version === version)).toBe(true);
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain", "drawing"]);
+    expect(calls.filter((call) => call.to !== "drawing").every((call) => call.version === version)).toBe(true);
+    // The drawing gets the regions' pieces, pads and rails under the same keys.
+    expect(drawn).toEqual([{ install: change.installed.map((event) => event.infrastructure.key), remove: [] }]);
     // The workers get the regions themselves, as an increment on what they hold.
     const update = calls[0]!.update!;
     expect(update).toEqual({
@@ -524,8 +533,9 @@ describe("the renderer's road stream runtime", () => {
     calls.length = 0;
     const leaving = runtime.update({ x: 60_000, z: 0, velocityX: 0, velocityZ: 0 }, 2_000)!;
     expect(leaving.removed).toHaveLength(3);
-    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain"]);
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain", "drawing"]);
     expect(calls[0]!.update!.remove).toEqual(leaving.removed);
+    expect(drawn.at(-1)).toEqual({ install: [], remove: leaving.removed });
     runtime.dispose();
   });
 
@@ -537,9 +547,10 @@ describe("the renderer's road stream runtime", () => {
     worker.answer(4);
     // Startup: installed with nobody attached, only logged.
     const change = runtime.update(observer, 1_000)!;
-    const { calls, consumers } = recordingConsumers();
+    const { calls, consumers, drawn } = recordingConsumers();
     runtime.setConsumers(consumers);
-    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail"]);
+    expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "drawing"]);
+    expect([...drawn[0]!.install].sort()).toEqual(change.installed.map((event) => event.infrastructure.key).sort());
     const snapshot = calls[0]!.update!;
     expect(snapshot.version).toBe(change.infrastructure.version);
     expect(snapshot.reset).toBe(true);

@@ -79,6 +79,11 @@ import {
   type TerrainAtlasSlot,
 } from "./TerrainPageAtlas";
 import { terrainErosionAdmissionDependencies } from "./TerrainPageErosion";
+import {
+  TerrainDrawnHeight,
+  terrainDrawnWindowCells,
+  type TerrainDrawnAtlasShape,
+} from "./TerrainDrawnHeight";
 import type { TerrainSlotKey } from "./TerrainSpineContract";
 import {
   buildTerrainNodeGrid,
@@ -725,6 +730,8 @@ export class TerrainClipmapSystem {
    * drawing it on screen. The same array as `nodes` without a near floor.
    */
   private casterNodes: readonly TerrainNode[] = [];
+  /** The drawn-surface lookup, made on a consumer's first ask (`drawnHeight`). */
+  private drawnHeightLookup: TerrainDrawnHeight | null = null;
   private profile: WebGpuQualityProfile;
   private frameIndex = 0;
   private originX = 0;
@@ -1136,6 +1143,49 @@ export class TerrainClipmapSystem {
   /** The node set the shadow casters draw: `selectedNodes` without a near floor's patch. */
   get selectedCasterNodes(): readonly TerrainNode[] {
     return this.casterNodes;
+  }
+
+  /**
+   * The ground as this terrain draws it (`TerrainDrawnHeight`), for a
+   * consumer lying on it within `reachMeters` of the camera: made on the
+   * first ask, and made again, larger, for a reach its window cannot hold.
+   * Nothing here touches what the terrain itself draws: the lookup only reads
+   * the node records `writeNodeBuffers` wrote, and only when
+   * `refreshDrawnHeight` asks.
+   */
+  drawnHeight(reachMeters: number): TerrainDrawnHeight {
+    const current = this.drawnHeightLookup;
+    if (current && current.windowCells >= terrainDrawnWindowCells(reachMeters)) return current;
+    if (current) {
+      this.deferredDisposals.push({ retiredAtFrame: this.frameIndex, dispose: () => current.dispose() });
+    }
+    const engine = this.scene.getEngine() as { isWebGPU?: boolean };
+    this.drawnHeightLookup = new TerrainDrawnHeight(engine.isWebGPU ? this.scene : null, reachMeters);
+    return this.drawnHeightLookup;
+  }
+
+  /**
+   * Write the lookup round (x, z) from this frame's beauty records. A
+   * consumer calls it after the terrain's `update` and only on a frame it has
+   * something within reach.
+   */
+  refreshDrawnHeight(x: number, z: number, radiusMeters: number): void {
+    this.drawnHeightLookup?.refresh({
+      nodes: this.nodes,
+      laneA: this.beautyBuffers.laneA,
+      laneB: this.beautyBuffers.laneB,
+      count: this.beautyBuffers.count,
+    }, x, z, radiusMeters);
+  }
+
+  /** The height atlas the lookup's records index, and its shape, as the surface plugin binds them. */
+  get drawnHeightAtlas(): { readonly texture: BaseTexture | null; readonly shape: TerrainDrawnAtlasShape } {
+    return { texture: this.heightAtlas.texture(), shape: this.heightAtlasShape() };
+  }
+
+  /** The surface material arrays the ground samples, once built (null before, and under NullEngine). */
+  get surfaceMaterialArrays(): { readonly albedoHeight: BaseTexture; readonly normalMaterial: BaseTexture } | null {
+    return this.materialArrays;
   }
 
   setProfile(profile: WebGpuQualityProfile): void {
@@ -1611,6 +1661,8 @@ export class TerrainClipmapSystem {
     this.pyramid?.dispose();
     this.provinceField?.dispose();
     this.provinceField = null;
+    this.drawnHeightLookup?.dispose();
+    this.drawnHeightLookup = null;
     this.landformStream?.dispose();
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
@@ -1795,13 +1847,17 @@ export class TerrainClipmapSystem {
     client.request(this.world.seed, edge, layerIds);
   }
 
-  private bindAtlasesToPlugin(): void {
-    this.surfacePlugin.setHeightAtlas(this.heightAtlas.texture(), {
+  private heightAtlasShape(): TerrainDrawnAtlasShape {
+    return {
       atlasEdge: this.heightAtlas.atlasEdge,
       slotEdge: TERRAIN_HEIGHT_SLOT_EDGE,
       gutter: WORLD_PAGE_GUTTER,
       gridEdge: terrainAtlasGridEdge(this.heightAtlas.residency.slotCount),
-    });
+    };
+  }
+
+  private bindAtlasesToPlugin(): void {
+    this.surfacePlugin.setHeightAtlas(this.heightAtlas.texture(), this.heightAtlasShape());
     this.surfacePlugin.setChannelAtlas(
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.occlusion),
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonA),

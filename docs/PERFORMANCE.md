@@ -133,6 +133,8 @@ audit is why it now carries all four tiers):
 | Tyre track segments (`tyreTrackSegments`; car sessions only) | 0 | 256 | 512 | 1,024 |
 | L0 terrain round a car (`vehicleNearTerrainL0RadiusMeters`; car sessions only; 0 = the floor is already L0) | 160 m | 0 | 0 | 0 |
 | L0 terrain geomorph band (`vehicleNearTerrainL0BandMeters`; the outer part of that disc) | 64 m | 0 | 0 | 0 |
+| Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach merged into one draw) | 150 m | 500 m | 800 m | 1,200 m |
+| Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach merged into one draw) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 

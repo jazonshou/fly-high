@@ -449,6 +449,24 @@ export interface WebGpuQualityProfile {
    */
   readonly vehicleNearTerrainL0BandMeters: number;
   /**
+   * The roads' ribbons (`RoadSurfaceSystem`): how far from the camera the
+   * crisp running surface, its shoulders, a track's two ruts and the sealed
+   * road's edge lines are drawn over the splat paint, metres, decided per
+   * 128 m chunk. One draw while any chunk is in reach and none otherwise;
+   * beyond it the splat alone paints the road. 0 is OFF. Every session.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly roadRibbonRangeMeters: number;
+  /**
+   * Guardrails: how far from the camera their posts and beams are drawn,
+   * metres, decided per 128 m chunk; one draw. 0 is OFF. The car's colliders
+   * are the simulation's and never depend on it. Every session.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly barrierDrawRangeMeters: number;
+  /**
    * The home marina's near meshes (decks, pontoons, walls and buildings, the
    * piles and posts, the moored boats) cast sun shadows: three thin-instanced
    * casters, 2 draws each at two cascades, and only while the camera is
@@ -570,6 +588,8 @@ function resolveBaseQualityProfile(
       tyreTrackSegments: 0,
       vehicleNearTerrainL0RadiusMeters: 160,
       vehicleNearTerrainL0BandMeters: 64,
+      roadRibbonRangeMeters: 150,
+      barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
@@ -681,6 +701,8 @@ function resolveBaseQualityProfile(
       tyreTrackSegments: 256,
       vehicleNearTerrainL0RadiusMeters: 0,
       vehicleNearTerrainL0BandMeters: 0,
+      roadRibbonRangeMeters: 500,
+      barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
@@ -781,6 +803,8 @@ function resolveBaseQualityProfile(
       tyreTrackSegments: 512,
       vehicleNearTerrainL0RadiusMeters: 0,
       vehicleNearTerrainL0BandMeters: 0,
+      roadRibbonRangeMeters: 800,
+      barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
@@ -883,6 +907,8 @@ function resolveBaseQualityProfile(
     tyreTrackSegments: 1_024,
     vehicleNearTerrainL0RadiusMeters: 0,
     vehicleNearTerrainL0BandMeters: 0,
+    roadRibbonRangeMeters: 1_200,
+    barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,

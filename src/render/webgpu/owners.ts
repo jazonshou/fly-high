@@ -151,6 +151,28 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "boundary test by name.",
   },
   {
+    // The ground as the terrain DRAWS it, for whatever lies on it (the roads'
+    // ribbons and rails, later the tyre tracks). One lookup per terrain, read
+    // from the node records the terrain already wrote; a second copy of the
+    // terrain's displacement elsewhere would drift from the vertex code the
+    // drawn-height test pins.
+    artifact: "terrain-drawn-height",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainDrawnHeight.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "TerrainDrawnHeight",
+      "TERRAIN_DRAWN_HEIGHT_WGSL",
+      "TERRAIN_DRAWN_HEIGHT_UNIFORMS",
+      "TERRAIN_DRAWN_HEIGHT_SAMPLERS",
+      "terrainDrawnSurfaceAt",
+      "terrainDrawnWindowCells",
+    ],
+    notes:
+      "Refreshed only while a consumer has something within reach, changed "
+      + "cells only; it never changes what the terrain draws.",
+  },
+  {
     // 4-0b: 6-10 pulled forward. Three amortised compute producers with hard
     // millisecond caps documented as "enforced by their schedulers", and no
     // scheduler — FrameGraphPass.cadence is an integer frame divisor and

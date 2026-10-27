@@ -156,6 +156,7 @@ import {
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { airportRoadFenceOpening } from "@/src/world/roads/roadNodes";
 import { MarinaSystem } from "./webgpu/marina/MarinaSystem";
+import { RoadSurfaceSystem } from "./webgpu/roads/RoadSurfaceSystem";
 import {
   SpawnedAirfieldManager,
   spawnedFloodReserve,
@@ -707,6 +708,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly groundCover: GroundCoverSystem;
   /** The streamed roads (null in an eroded world, which has no stage). */
   private readonly roads: RoadStreamRuntime | null;
+  /** The roads' ribbons and guardrails near the camera, on the ground as drawn; with the streamed roads. */
+  private readonly roadSurface: RoadSurfaceSystem | null;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   /** FXAA with the final sharpen fused in; attached only where MSAA is off. */
@@ -958,6 +961,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     detail: WorldDetailRuntime,
     groundCover: GroundCoverSystem,
     roads: RoadStreamRuntime | null,
+    roadSurface: RoadSurfaceSystem | null,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaSharpenPass,
@@ -1023,6 +1027,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.detail = detail;
     this.groundCover = groundCover;
     this.roads = roads;
+    this.roadSurface = roadSurface;
     // Every change to the streamed roads, in the order that keeps each copy
     // of the ground true (`RoadStreamRuntime`): the workers first, on the
     // ports their ground arrives on, then the CPU and GPU consumers here.
@@ -1036,6 +1041,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           infrastructureChangeTouches(change, { minX, minZ, maxX, maxZ }));
       },
       infrastructureChanged: (change) => this.terrain.infrastructureChanged(change),
+      roadSurfaceChanged: (install, remove) => this.roadSurface?.apply(install, remove),
     });
     this.wildlife = wildlife;
     this.toneMap = toneMap;
@@ -1441,6 +1447,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       });
       cleanup.push(() => marina.dispose());
       checkpointRendererStartup("marina construction", "sync");
+      // The roads' ribbons and rails: two meshes, enabled once something is
+      // in reach and the terrain's lookup and material arrays exist.
+      const roadSurface = roads ? new RoadSurfaceSystem(scene, terrain, profile) : null;
+      if (roadSurface) cleanup.push(() => roadSurface.dispose());
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,
@@ -1609,6 +1619,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (surfaceVehicle) cloudShadowReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
       cloudShadowReceivers.registerMeshes(marina.meshes);
+      if (roadSurface) cloudShadowReceivers.registerMeshes(roadSurface.meshes);
       detail.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
@@ -1627,6 +1638,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (surfaceVehicle) aerialReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       aerialReceivers.registerMeshes(marina.meshes);
+      if (roadSurface) aerialReceivers.registerMeshes(roadSurface.meshes);
       detail.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
       });
@@ -2037,6 +2049,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         detail,
         groundCover,
         roads,
+        roadSurface,
         wildlife,
         toneMap,
         fxaa,
@@ -3082,6 +3095,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       },
       () => this.terrain.dispose(),
       () => this.roads?.dispose(),
+      () => this.roadSurface?.dispose(),
       () => this.terrainEvolution.dispose(),
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
@@ -3133,6 +3147,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       after: this.roads ? ["flight-presentation", "road-stream"] : ["flight-presentation"],
       execute: () => this.updateWorldVisibility(),
     });
+    // After the terrain wrote this frame's node records: the ribbons and
+    // rails in reach, and the drawn ground they lie on.
+    if (this.roadSurface) {
+      this.graph.register({
+        name: "road-surface",
+        phase: "visibility",
+        after: ["world-page-visibility"],
+        execute: () => this.roadSurface?.update(this.cameraWorld.x, this.cameraWorld.z),
+      });
+    }
     // 2-10: the shared-planar-water-reflection node is retired with its
     // capture system — the environment probe carries water reflections, and
     // 5-12 rebuilds the lake capture around the preserved plane-selection
@@ -4296,6 +4320,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     this.steam.setFloatingOrigin(this.originX, this.originZ);
     this.marina.setFloatingOrigin(this.originX, this.originZ);
+    this.roadSurface?.setFloatingOrigin(this.originX, this.originZ);
     this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
     this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
     this.carParticles?.setFloatingOrigin(this.originX, this.originZ);
@@ -4351,6 +4376,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
     this.carParticles?.setCap(this.profile.vehicleParticleBudget);
     this.carTracks?.setCap(this.profile.tyreTrackSegments);
+    this.roadSurface?.setRanges(this.profile);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
