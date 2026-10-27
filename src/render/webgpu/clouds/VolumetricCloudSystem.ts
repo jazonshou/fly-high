@@ -28,6 +28,7 @@ import {
   packCloudShadowUniforms,
   packCloudTemporalUniforms,
   resolveVolumetricCloudConfig,
+  scaleCloudMarch,
   type VolumetricCloudConfig,
 } from "@/src/render/webgpu/nature/CloudConfig";
 import {
@@ -321,6 +322,12 @@ export class VolumetricCloudSystem {
   private shadowReady = false;
   /** Governor lever (1A-6b / R-11): a floor on frames between shadow renders. */
   private shadowIntervalFloor: number | null = null;
+  /**
+   * PR B part 2 (G5): the governor's factor on the view march; 1 is the
+   * profile's own. A field initialiser, so it is set before the constructor
+   * body's first resolveConfig.
+   */
+  private marchScale = 1;
   private frameIndex = 0;
   private lastShadowFrame = -1;
   private raymarchDispatchCount = 0;
@@ -406,9 +413,13 @@ export class VolumetricCloudSystem {
     this.setAtmosphere(atmosphere);
   }
 
-  /** Config truth (assertion 35): tier values enter through overrides, once. */
+  /**
+   * Config truth (assertion 35): tier values enter through overrides, once.
+   * PR B part 2 (G5): the governed march scale applies on top, and is the
+   * profile's config itself at 1.
+   */
   private resolveConfig(profile: WebGpuQualityProfile): VolumetricCloudConfig {
-    return resolveVolumetricCloudConfig({
+    return scaleCloudMarch(resolveVolumetricCloudConfig({
       maximumViewSteps: Math.max(8, Math.min(192, profile.cloudPrimarySteps)),
       lightSteps: Math.max(2, Math.min(16, profile.cloudLightSteps)),
       renderScale: profile.cloudResolutionScale,
@@ -416,7 +427,7 @@ export class VolumetricCloudSystem {
       shadowMapResolution: this.shadowSchedule.resolution,
       shadowSteps: this.shadowSchedule.steps,
       shadowUpdateEveryNFrames: this.shadowSchedule.updateEveryNFrames,
-    });
+    }), this.marchScale);
   }
 
   private createPipeline(): CloudComputePipeline {
@@ -611,6 +622,24 @@ export class VolumetricCloudSystem {
   /** Governor lever (R-11 GPU ladder): a floor on frames between shadow renders. */
   setShadowIntervalFloor(intervalFrames: number | null): void {
     this.shadowIntervalFloor = intervalFrames;
+  }
+
+  /**
+   * Governor lever (PR B part 2, G5 GPU ladder): a factor on the view march's
+   * steps, with the step lengths stretched to keep each ray's reach. Not
+   * setProfile, which invalidates history: the temporal resolve blends the
+   * change in, as it does any per-frame jitter.
+   */
+  setGovernedMarchScale(scale: number): void {
+    const next = scale < 1 ? scale : 1;
+    if (next === this.marchScale) return;
+    this.marchScale = next;
+    this.config = this.resolveConfig(this.profile);
+  }
+
+  /** The view march's step count in force, governed or not (diagnostics). */
+  get viewSteps(): number {
+    return this.config.maximumViewSteps;
   }
 
   setProfile(profile: WebGpuQualityProfile): void {

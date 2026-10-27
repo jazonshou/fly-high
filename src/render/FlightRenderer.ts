@@ -2934,7 +2934,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       renderTechnique: "forward-spectral-volumetric",
       renderScale: this.appliedRenderScale,
       cloudResolutionScale: this.profile.cloudResolutionScale,
-      cloudRaySteps: this.profile.cloudPrimarySteps,
+      cloudRaySteps: this.clouds.viewSteps,
       oceanFftCascades: this.ocean.cascadeCount,
       oceanFftResolution: this.ocean.fftResolution,
       adapter: this.adapterLabel,
@@ -4437,6 +4437,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.setComputeBudgetScale(work.computeBudgetScale);
     this.detail.setGenerationBudgetCap(work.detailGenerationCap);
     this.clouds.setShadowIntervalFloor(work.cloudShadowIntervalFloor);
+    // PR B part 2 (G5): fewer, longer view-march steps; 1 is the profile's march.
+    this.clouds.setGovernedMarchScale(work.cloudMarchScale);
     this.governedProfileCache = this.resolveGovernedProfile();
   }
 

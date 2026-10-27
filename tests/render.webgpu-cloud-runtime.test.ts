@@ -1,7 +1,7 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import {
   CLOUD_COMPOSITE_FRAGMENT_WGSL,
@@ -334,6 +334,30 @@ describe("adopted cloud runtime lifecycle (2-0)", () => {
     );
     expect(statistics.historyValid).toBe(false);
     expect(statistics).not.toHaveProperty("densitySamplesPerFrame");
+  });
+
+  it("takes the governor's march scale without invalidating history, and keeps it across a profile change", () => {
+    // PR B part 2 (G5): fewer, longer view-march steps. The temporal resolve
+    // blends the change in, so the history survives it.
+    const { clouds } = createHarness();
+    const config = Reflect.get(clouds, "config") as VolumetricCloudConfig;
+    const invalidate = vi.spyOn(clouds, "invalidateHistory");
+    clouds.setGovernedMarchScale(1);
+    expect(Reflect.get(clouds, "config")).toBe(config);
+    clouds.setGovernedMarchScale(0.75);
+    expect(clouds.statistics.raySteps).toBe(45);
+    expect(clouds.viewSteps).toBe(45);
+    expect(invalidate).not.toHaveBeenCalled();
+    clouds.setGovernedMarchScale(1);
+    expect(clouds.statistics.raySteps).toBe(60);
+    expect(Reflect.get(clouds, "config")).toEqual(config);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    clouds.setGovernedMarchScale(0.6);
+    clouds.setProfile(resolveWebGpuQualityProfile("high", "ultra"));
+    expect(clouds.statistics.raySteps).toBe(58); // round(96 × 0.6)
+    clouds.setGovernedMarchScale(1);
+    expect(clouds.statistics.raySteps).toBe(96);
   });
 
   it("updates without dispatching when compute is unsupported", () => {
