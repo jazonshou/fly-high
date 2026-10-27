@@ -1,12 +1,21 @@
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Constants } from "@babylonjs/core/Engines/constants";
 import type { ShaderMaterial } from "@babylonjs/core/Materials/shaderMaterial";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE, type CarVisualState, type FlightVisualState } from "../src/game/types";
 import { OPAQUE_RENDERING_GROUP_ID, WATER_RENDERING_GROUP_ID } from "../src/render/webgpu/core/RenderingGroups";
+import type { PipelineWarmUpStatus } from "../src/render/webgpu/core/AsyncPipelineCompiles";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
-import { CAR_BOW_WAVE_MIN_DEPTH, CarBowWave, carBowWaveOutline } from "../src/render/webgpu/ground/CarBowWave";
+import {
+  CAR_BOW_WAVE_MIN_DEPTH,
+  CAR_BOW_WAVE_SEA_DEFINE,
+  CAR_BOW_WAVE_VERTEX_WGSL,
+  CarBowWave,
+  carBowWaveOutline,
+  carBowWaveSeaShare,
+} from "../src/render/webgpu/ground/CarBowWave";
 import {
   CAR_SOIL,
   CAR_TRACK_MAX_DARKNESS,
@@ -496,6 +505,10 @@ describe("the car's tyre tracks", () => {
 
   it("lays four prints across sand, joined without gaps, reaching the tyres, in 2 m straight segments", () => {
     const tracks = new CarTrackSystem(scene, { segments: 256 });
+    // The spawn's pipeline prime, empty, then nothing until a segment is laid.
+    tracks.update(driving(0, 10, rolling(10)));
+    expect(tracks.drawing).toBe(true);
+    expect(tracks.segmentCount).toBe(0);
     tracks.update(driving(0, 10, rolling(10)));
     expect(tracks.drawing).toBe(false);
     run((state) => tracks.update(state), 3, 60, 10, rolling(10), { start: 0 });
@@ -649,6 +662,41 @@ describe("the bow wave in a ford", () => {
     expect(mesh.alphaIndex).toBeLessThan(2.5);
     bow.dispose();
   });
+
+  it("rides the drawn sea's waves in the sea, and lies flat on a lake or a river above it", () => {
+    // The calm level the simulator wades the car in is sea level itself.
+    expect(carBowWaveSeaShare(0, 0)).toBe(1);
+    expect(carBowWaveSeaShare(0.08, 0)).toBe(1);
+    expect(carBowWaveSeaShare(-0.08, 0)).toBe(1);
+    expect(carBowWaveSeaShare(0.25, 0)).toBeGreaterThan(0);
+    expect(carBowWaveSeaShare(0.25, 0)).toBeLessThan(1);
+    expect(carBowWaveSeaShare(0.4, 0)).toBe(0);
+    expect(carBowWaveSeaShare(12, 0)).toBe(0);
+    expect(carBowWaveSeaShare(Number.NaN, 0)).toBe(0);
+    // The sea's own displacement, behind the define, and nothing of it otherwise.
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain(`#ifdef ${CAR_BOW_WAVE_SEA_DEFINE}`);
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("fn oceanSurfaceDisplacement(");
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("oceanSurfaceDisplacement(worldXZ) * share");
+
+    const bound: unknown[] = [];
+    const ocean = { bindSurface: (material: unknown) => bound.push(material) };
+    const flat = new CarBowWave(scene);
+    const onSea = new CarBowWave(scene, { sea: { ocean, seaLevel: 0 } });
+    const flatMaterial = flat.bowMesh.material as ShaderMaterial;
+    const seaMaterial = onSea.bowMesh.material as ShaderMaterial;
+    expect(flatMaterial.options.defines).not.toContain(`#define ${CAR_BOW_WAVE_SEA_DEFINE}`);
+    expect(seaMaterial.options.defines).toContain(`#define ${CAR_BOW_WAVE_SEA_DEFINE}`);
+    expect(seaMaterial.options.samplers).toContain("displacement0");
+    // Bound only while it draws, as the boat's wake is.
+    onSea.bindOcean();
+    expect(bound).toHaveLength(0);
+    const wading = rolling(2, { wadingDepth: 0.45, wheelSurface: [-1, -1, -1, -1], wheelSinkage: [0, 0, 0, 0] });
+    run((state) => onSea.update(state), 0.5, 60, 2, wading, { start: 1 });
+    onSea.bindOcean();
+    expect(bound).toEqual([seaMaterial]);
+    flat.dispose();
+    onSea.dispose();
+  });
 });
 
 describe("the car's effects together", () => {
@@ -667,6 +715,78 @@ describe("the car's effects together", () => {
       scene.dispose();
       engine.dispose();
     }
+  });
+
+  it("prime each pipeline from spawn while empty, until the off-frame compiles report it built", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const deferred: object[] = [];
+    const statuses = new Map<string, PipelineWarmUpStatus[]>();
+    const compiles = {
+      defer: (material: object) => deferred.push(material),
+      // Each mesh is "started", then "warming" twice, then "warm".
+      warmUp: (mesh: Mesh): PipelineWarmUpStatus => {
+        const seen = statuses.get(mesh.name) ?? [];
+        const status: PipelineWarmUpStatus = seen.length === 0 ? "started" : seen.length < 3 ? "warming" : "warm";
+        statuses.set(mesh.name, [...seen, status]);
+        return status;
+      },
+    };
+    const effects = createCarEffects(scene, {
+      profile: resolveWebGpuQualityProfile("medium", "balanced"),
+      world: { prevailingWindRadians: 0, prevailingWindSpeed: 4 },
+      pipelineCompiles: compiles,
+    });
+    const { particles, tracks, bowWave } = effects;
+    expect(deferred).toEqual([particles.mesh!.material, tracks.mesh!.material, bowWave.bowMesh.material]);
+    // A car at rest on paving: nothing to show, but each draws empty until its warm-up is done.
+    const asphalt = SurfaceMaterial.Asphalt;
+    const resting = car({ wheelSurface: [asphalt, asphalt, asphalt, asphalt] });
+    const drawn: boolean[][] = [];
+    for (let frame = 0; frame < 6; frame += 1) {
+      const state = driving(frame / 60, 0, resting);
+      particles.update(state);
+      tracks.update(state);
+      bowWave.update(state);
+      drawn.push([particles.drawing, tracks.drawing, bowWave.drawing]);
+    }
+    expect(drawn).toEqual([
+      [true, true, true],
+      [true, true, true],
+      [true, true, true],
+      [false, false, false],
+      [false, false, false],
+      [false, false, false],
+    ]);
+    expect(particles.birthCount).toBe(0);
+    expect(tracks.segmentCount).toBe(0);
+    expect(bowWave.presence).toBe(0);
+    // Out of the water the skirt collapses in its vertex stage, as dead records do.
+    expect(CAR_BOW_WAVE_VERTEX_WGSL).toContain("uniforms.bowMotion.z <= 0.0");
+    // A capture's synchronous mode declines: no prime, the first draw compiles as before.
+    const declining = createCarEffects(scene, {
+      profile: resolveWebGpuQualityProfile("medium", "balanced"),
+      world: { prevailingWindRadians: 0, prevailingWindSpeed: 4 },
+      pipelineCompiles: { defer: () => undefined, warmUp: () => "declined" },
+    });
+    declining.particles.update(driving(0, 0, resting));
+    declining.tracks.update(driving(0, 0, resting));
+    declining.bowWave.update(driving(0, 0, resting));
+    expect([declining.particles.drawing, declining.tracks.drawing, declining.bowWave.drawing]).toEqual([false, false, false]);
+    // A new budget is a new material: deferred, and primed again.
+    particles.setCap(32);
+    expect(particles.capacity).toBe(32);
+    expect(deferred.at(-1)).toBe(particles.mesh!.material);
+    statuses.clear();
+    particles.update(driving(1, 0, resting));
+    expect(particles.drawing).toBe(true);
+    for (const system of [effects, declining]) {
+      system.particles.dispose();
+      system.tracks.dispose();
+      system.bowWave.dispose();
+    }
+    scene.dispose();
+    engine.dispose();
   });
 
   it("spray and push a bow wave off the simulator's own ford", () => {

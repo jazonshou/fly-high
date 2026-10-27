@@ -17,6 +17,7 @@ import {
   createCarWheelContacts,
   type CarTrackMark,
 } from "./carEffectLaws";
+import { CarPipelinePrime, type CarPipelineCompiles } from "./carPipelinePrime";
 
 /**
  * The LandCruiser's tyre tracks, as ONE instanced draw of ribbon segments
@@ -126,11 +127,14 @@ export interface CarTrackOptions {
   readonly segments: number;
   /** The drawn ground's height, for the primed tracks behind a car first seen moving. */
   readonly groundHeight?: (x: number, z: number) => number;
+  /** The renderer's off-frame compiles, for the spawn's pipeline prime (`CarPipelinePrime`). */
+  readonly pipelineCompiles?: CarPipelineCompiles | null;
 }
 
 export class CarTrackSystem {
   private readonly scene: Scene;
   private readonly groundHeight: ((x: number, z: number) => number) | null;
+  private readonly pipelinePrime: CarPipelinePrime;
   private cap = 0;
   private gpu: TrackGpu | null = null;
   private records: Float32Array | null = null;
@@ -155,6 +159,7 @@ export class CarTrackSystem {
   constructor(scene: Scene, options: CarTrackOptions) {
     this.scene = scene;
     this.groundHeight = options.groundHeight ?? null;
+    this.pipelinePrime = new CarPipelinePrime(options.pipelineCompiles ?? null);
     this.dirtyChunks = new Uint8Array(CAR_TRACK_CAPACITY / CAR_TRACK_CHUNK);
     this.setCap(options.segments);
   }
@@ -233,7 +238,7 @@ export class CarTrackSystem {
     }
     this.flushChunks(gpu);
     this.ringUniform.set(this.sequence, this.cap, CAR_TRACK_LIFT_METERS, 0);
-    const draw = this.sequence > 0;
+    const draw = this.sequence > 0 || this.pipelinePrime.wanted(gpu.mesh);
     if (gpu.mesh.isEnabled(false) !== draw) gpu.mesh.setEnabled(draw);
   }
 
@@ -488,6 +493,7 @@ export class CarTrackSystem {
 
     this.gpu = { mesh, material, buffer, chunkViews };
     this.records = records;
+    this.pipelinePrime.adopt(material);
   }
 
   private disposeGpu(): void {
