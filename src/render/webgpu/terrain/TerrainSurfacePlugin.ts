@@ -3803,6 +3803,7 @@ var terrainGroundDirect = 1.0;
 }
 
 var terrainCanopyShade = 0.0;
+var terrainCanopySurface = 0.0;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 {
   let terrainCanopyCover = terrainGroundCanopyClosure;
@@ -3816,6 +3817,7 @@ var terrainCanopyShade = 0.0;
     // The surface half: the ground becomes the canopy's own material, at the
     // impostor's measured response rather than at a chosen colour.
     let canopySurface = canopySplit.surface;
+    terrainCanopySurface = canopySurface;
     // Climate provinces: the paint takes the colour of the crowns the
     // province draws (ProvinceFarTone.ts), so a taiga's canopy does not
     // brighten, nor a tropical one dull, where its stems hand over. The
@@ -3856,7 +3858,20 @@ normalW = normalize(
 // the ambientOcclusionBlock call and roughness/F0 at their declarations.
 var terrainSurfaceRoughness = clamp(terrainRoughness, 0.02, 1.0);
 var terrainSurfaceCavity = clamp(terrainCavity, 0.0, 1.0);
-var terrainSurfaceF0 = clamp(terrainF0, 0.0, 1.0);
+// Sward specular masking: in a grass or shrub sward the blades shadow and
+// hide most of each other's highlights, which is why the vegetation materials
+// run at CANOPY_SURFACE_SPECULAR. The ground under them carried the full
+// dielectric lobe, and at noon that lobe was about a fifth of a meadow's
+// brightness: the milky "plastic" sheen. Paint, wet ground and the canopy's
+// own (already trimmed) share keep theirs.
+let terrainSwardShare = terrainGroundVegetation
+  * (1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))
+  * (1.0 - terrainCanopySurface)
+  * (1.0 - terrainWetness);
+var terrainSurfaceF0 = clamp(
+  terrainF0 * (1.0 - ${terrainWgslFloat(1 - CANOPY_SURFACE_SPECULAR)} * terrainSwardShare),
+  0.0,
+  1.0);
 var terrainSurfaceDiffuseRoughness = clamp(terrainDiffuseRoughness, 0.0, 1.0);
 // Wave Q (plastic-ground fix): Babylon leaves Fresnel F90 at 1.0, so a low
 // sun runs a 2-6% dielectric up to FULL WHITE grazing reflectance across

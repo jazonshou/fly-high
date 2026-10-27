@@ -311,7 +311,7 @@ describe("the shader reads the grain safely", () => {
   });
 });
 
-describe("the crunch shadows the sward", () => {
+describe("the crunch shadows the sward, and the sward is matte", () => {
   const plugin = readSource("src/render/webgpu/terrain/TerrainSurfacePlugin.ts");
 
   it("reads the crunch from the three texels already fetched", () => {
@@ -341,5 +341,19 @@ describe("the crunch shadows the sward", () => {
     // Bounded both ways: a gap never goes black, and never brightens past
     // what a lit top can.
     expect(plugin).toContain("terrainGrainDirect = max(0.25, 1.0 + ");
+  });
+
+  it("trims the sward's specular to the vegetation materials' own", () => {
+    // Grass and shrub crowns already render at CANOPY_SURFACE_SPECULAR; the
+    // ground under them carried the full lobe, the milky sheen.
+    expect(plugin).toContain(
+      "terrainF0 * (1.0 - ${terrainWgslFloat(1 - CANOPY_SURFACE_SPECULAR)} * terrainSwardShare)",
+    );
+    const share = plugin.slice(plugin.indexOf("let terrainSwardShare = "));
+    expect(share.slice(0, 220)).toContain("terrainGroundVegetation");
+    // Paint, the canopy's own trimmed share and wet ground keep theirs.
+    expect(share.slice(0, 220)).toContain("(1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))");
+    expect(share.slice(0, 220)).toContain("(1.0 - terrainCanopySurface)");
+    expect(share.slice(0, 220)).toContain("(1.0 - terrainWetness)");
   });
 });
